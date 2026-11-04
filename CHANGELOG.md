@@ -7,10 +7,54 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
-- **Mod SDK: native actor profiles** can register their own stage names and actor callbacks at startup while sharing
-  the port's profile lookup. Conflicting IDs and names are refused, and full states require matching profile/code
-  fingerprints before they can load. Existing manifest actor behaviors are unchanged.
-
+- **Fixed on Android: save transfers keep the game out** (#382). Starting a second save import or export while one is
+  still running no longer releases the first transfer's lock, so the game can no longer start in the middle of that
+  transfer. The second one is turned away with "Another save transfer is in progress" as before.
+- **Fixed for mod authors: C mods keep the game's paired-single values** (#384). A C mod that replaces a game
+  function, or that the game calls through a function pointer, no longer changes the upper half of the game's saved
+  paired-single float registers (f14–f31). The compiler only keeps the lower half, while the game's own code relies on
+  both, so such a mod could silently change values in the code that called it. Mods built with the SDK need no change.
+- **For testers: scripted Android runs no longer open Settings** (#379). Runs started with `WWHD_NO_HOST_INPUT` (for
+  example `tools/android/bench_phone.py`) skip the first-start touch-controls question, which had left the Settings
+  window open over every scripted run. `WWHD_TEST_TOUCH_QUESTION=1` still asks it. Normal starts are unchanged.
+- **Experimental: randomized USA games in setup** (#366, for #117). Setup now accepts a compatible USA output folder
+  of the TWWHD Randomizer (or its `code/cking.rpx` with the content around it). It checks automatically that the
+  randomized game is compatible with the port, builds that seed's game code, and keeps its saves, save backups,
+  state slots and cloud-folder choice apart from your normal game and from other seeds; settings and controls stay
+  shared. Your existing saves stay where they are. Randomized EU output is not supported (the randomizer supports
+  USA only). This is experimental: only a few seeds have been tested, Windows not yet, and a full playthrough is
+  still outstanding.
+- **Fixed: Match window keeps exact preset ratios** (#372, for #349, thanks @plxjammerplx for the report). A window or
+  screen shaped exactly like a preset (for example 1280×960) now uses that preset's exact ratio instead of a rounded
+  one (1.335 instead of 4:3), so the picture matches the dedicated 4:3, 16:10, 21:9 and 32:9 presets. The 4:3
+  clipping reported on Android in #349 is still being investigated.
+- **Decomp build (experimental): host versions of the game's runtime library** (#373). In the `-DWWHD_DECOMP=ON`
+  build, 63 functions of the game's compiler runtime and nn wrappers (exact math helpers, array construction, string
+  and printf functions, list helpers and others) now run as host code, each matched to the original by measurement.
+  `WWHD_HOSTRT=0` runs the originals and `WWHD_HOSTRT_CHECK=1` runs both and logs any difference. The normal build is
+  unchanged and keeps the game's own code.
+- **Fixed on macOS: Steam Controllers launched through Steam** (#348, fixes #342, thanks @davidsgullick for the change
+  and @jamesmendel for testing every step on real hardware). The macOS app now reads Steam Input's virtual pad, which
+  GameController never shows, so a Steam Controller started from Steam works, appears once in Controller details and
+  is found again after a reconnect. Other joysticks and generic devices stay ignored, and each ignored device gets one
+  `[input]` log line. Not yet tested: a DualSense or Xbox pad with Steam Input turned on for it.
+- **Improved: GameCube button prompts in the HUD** (#374, for #355). With GameCube prompts, the HUD now draws complete
+  GameCube buttons instead of small letters inside the Wii U plates: full A and B discs, grey and purple shoulder
+  plates, and the Y prompt stays readable in front of large item pictures such as the telescope. With **Coloured face
+  button text** on, shoulder actions such as "Defend" take their button's colour. The GameCube action-word font is not
+  reproduced yet. Other prompt styles are unchanged.
+- **Changed: the Controls settings are split into pages** (#371). Settings › Controls now has five tabs: Bindings,
+  Controller, Prompts, Camera and Gameplay, instead of one long list. Every setting keeps its value; only its place
+  changed (for example Rumble and Gyro are under Controller, the item ring under Gameplay, button prompts under
+  Prompts). The docs name the new places.
+- **Fixed on Linux: the launcher and menu entry for data folders with special characters** (#377, fixes #376, thanks
+  @RaphaelFakhri for the report and the fix). Setup now quotes the data folder correctly in `play.sh` and in the menu
+  entry, so a folder name containing `$`, `` ` ``, `"`, `\` or `%` (for example `Games 100%`) no longer breaks the
+  launcher or makes the menu entry invalid. Ordinary folder names produce the same files as before.
+- **Decomp build (experimental): a stand-in for the scalable font** (#370). The game's scalable font takes its data
+  from the Wii U's system font, which the port doesn't provide. In the `-DWWHD_DECOMP=ON` build, the font module's
+  entry points now draw with the game's own main font instead, so its metrics are sane; `WWHD_FONT_GUARD=1` stops if
+  the original font code runs. The normal build is unchanged and keeps running the game's own font code.
 - **Fixed: loading a portable state made while crawling** (#365, fixes #361, thanks @thejorro for the report and the
   state). Link now arrives still crawling instead of standing inside the tunnel's ceiling, which caused damage and a
   respawn loop. Existing states work without conversion; standing and boat states load as before.

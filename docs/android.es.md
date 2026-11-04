@@ -11,7 +11,7 @@ copia del juego de Wii U; este proyecto nunca proporciona archivos del juego.
 | | |
 |---|---|
 | **Controles en pantalla** | Los dos sticks, la cruceta, A B X Y, L R ZL ZR y + −. El botón 🎮 debajo del botón de vista (esquina superior izquierda) los muestra u oculta. Se ocultan mientras hay un mando conectado y vuelven con el siguiente toque. Un mando Bluetooth o USB también funciona. Mantén pulsado 🎮 para editar la distribución táctil: arrastra un control, selecciónalo y usa Tamaño −/+ para cambiar su tamaño; después pulsa Listo. Restablecer recupera la distribución original. Las posiciones y los tamaños se guardan en este dispositivo y se ajustan a la pantalla al girarla. Al editar se sueltan los controles pulsados y no se envían toques al juego. |
-| **Vibración del teléfono** | En Controls → Phone vibration, **Touch only** es la opción predeterminada: el teléfono vibra con el juego al usar los controles táctiles. La entrada de un mando o teclado detiene la vibración del teléfono; al usar los controles táctiles se vuelve a seleccionar el teléfono. **Touch or no rumble controller** también hace vibrar el teléfono si ningún mando conectado tiene vibración. **Off** desactiva la vibración del teléfono; **Rumble** silencia tanto el teléfono como los mandos. Se respetan los ajustes de vibración y el interruptor de respuesta táctil de Android. `WWHD_PHONE_RUMBLE=0`, `touch` o `fallback` tiene prioridad sobre la opción guardada al iniciar. |
+| **Vibración del teléfono** | En Controls → Controller → Phone vibration, **Touch only** es la opción predeterminada: el teléfono vibra con el juego al usar los controles táctiles. La entrada de un mando o teclado detiene la vibración del teléfono; al usar los controles táctiles se vuelve a seleccionar el teléfono. **Touch or no rumble controller** también hace vibrar el teléfono si ningún mando conectado tiene vibración. **Off** desactiva la vibración del teléfono; **Rumble** silencia tanto el teléfono como los mandos. Se respetan los ajustes de vibración y el interruptor de respuesta táctil de Android. `WWHD_PHONE_RUMBLE=0`, `touch` o `fallback` tiene prioridad sobre la opción guardada al iniciar. |
 | **La pantalla del GamePad al pausar** | Pulsa + y la imagen cambia a la pantalla del GamePad (mapa y objetos), como el menú de pausa de la versión de GameCube. Pulsa + otra vez para volver. |
 | **60 fps sin que el juego vaya lento** | En los dispositivos Android rápidos el juego muestra 60 imágenes por segundo. Cuando el dispositivo Android se calienta, pasa solo a 30 estables, y el juego nunca se ralentiza. |
 | **Dispositivos Android antiguos** | Si el driver de tu GPU Adreno es demasiado antiguo, la pantalla de error ofrece instalar un driver como Mesa Turnip. |
@@ -46,7 +46,7 @@ personalizado en Adreno), y unos pocos GB libres.
 
 ## Apuntar con el giroscopio del teléfono
 
-Abre **Settings > Controls > Gyro** y elige **Device gyro (phone/tablet)**.
+Abre **Settings > Controls > Controller > Gyro** y elige **Device gyro (phone/tablet)**.
 Está desactivado de forma predeterminada y necesita giroscopio y acelerómetro.
 Deja el teléfono quieto un segundo para calibrarlo. Activa **Options > Gyro** en
 el juego y apunta en primera persona sin mover el stick derecho. Los ejes siguen

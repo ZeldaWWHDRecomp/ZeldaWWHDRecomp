@@ -22,6 +22,7 @@
 // Backups go to the local save-backups folder (mods/save_backup.h), never into the synced folder.
 #pragma once
 #include "../platform/host.h"
+#include "../randomizer_paths.h"
 #include "mod_json.h"
 #include "save_backup.h"
 
@@ -72,6 +73,48 @@ inline std::optional<Choice> read_choice(const fs::path& file) {
     } catch (const std::exception&) {
         return std::nullopt;  // a broken file: as if no folder was chosen
     }
+}
+// Inspect before any backup restore or cloud copy, including vanilla launches.
+// Legacy seed directories are refused rather than silently abandoned/deleted.
+inline bool legacy_randomizer_preflight(const fs::path& default_dir, const fs::path& config_dir,
+                                        bool explicit_save, std::string& why) {
+    auto inspect = [&](const fs::path& root) {
+        return randomizer_paths::legacy_children(root, why) &&
+               randomizer_paths::legacy_children(root / "save-backups", why, root.parent_path() / "save-backups");
+    };
+    if (!inspect(default_dir) || !randomizer_paths::legacy_children(default_dir.parent_path() / "save-backups", why))
+        return false;
+    if (explicit_save) return true;
+    auto choice = [&](const fs::path& file) {
+        auto c = read_choice(file);
+        if (!c) return true;
+        for (const auto& text : {c->folder, c->copy_from}) {
+            if (text.empty()) continue;
+            const fs::path path(text);
+            if (!randomizer_paths::legacy_reference(path, why) || !inspect(path)) {
+                why += " Saved folder choice: " + file.string();
+                return false;
+            }
+        }
+        return true;
+    };
+    if (!choice(choice_file(config_dir))) return false;
+    std::error_code ec;
+    const bool exists = fs::exists(config_dir, ec);
+    auto failed = [&] {
+        why = "Cannot inspect save-folder choices in " + config_dir.string() + ": " + ec.message();
+        return false;
+    };
+    if (ec) return failed();
+    if (!exists) return true;
+    fs::directory_iterator it(config_dir, ec), end;
+    if (ec) return failed();
+    for (; it != end; it.increment(ec)) {
+        if (ec) return failed();
+        if (randomizer_paths::seed_name(it->path().filename().string()) && !choice(choice_file(it->path())))
+            return false;
+    }
+    return ec ? failed() : true;
 }
 // Written through a temporary file; an empty choice removes the file (the default folder).
 inline bool write_choice(const fs::path& file, const Choice& c) {
@@ -290,6 +333,7 @@ struct State {
     bool active = false;     // the game uses a chosen folder (safe writes, the lock)
     fs::path folder;         // the save folder in use
     fs::path default_folder; // where the save goes without a choice
+    std::string seed_namespace; // randomized saves also isolate chosen folders and backup restores
     fs::path backups;        // the local save-backups folder
     fs::path config_dir;
     std::string machine;
@@ -376,7 +420,8 @@ struct Startup {
 };
 
 // main(), before the game reads any save. default_dir: config::save_dir without a choice.
-inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, const Ask& ask, std::function<void(const std::string&)> log) {
+inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, const Ask& ask, std::function<void(const std::string&)> log,
+                       const std::string& seed_namespace = {}) {
     auto& s = state();
     std::lock_guard guard(s.mu);
     Startup out;
@@ -384,6 +429,8 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
     out.save_dir = default_dir;
     s.default_folder = def;
     s.backups = def.parent_path() / "save-backups";
+    s.seed_namespace = seed_namespace;
+    if (!seed_namespace.empty()) s.backups = randomizer_paths::sibling(s.backups,seed_namespace);
     s.config_dir = config_dir;
     s.machine = machine_name();
     s.folder = def;
@@ -735,7 +782,17 @@ inline bool choose(const std::string& folder) {
     fs::path picked = folder.empty() ? s.default_folder : fs::absolute(fs::path(folder)).lexically_normal();
     if (same_folder(picked, current)) picked = current;  // the same folder, spelled another way
     else if (same_folder(picked, s.default_folder)) picked = s.default_folder;
-    const fs::path next = folder.empty() || picked == current ? picked : save_folder_in(picked);
+    fs::path next = folder.empty() || picked == current ? picked : save_folder_in(picked);
+    if (!s.seed_namespace.empty() && !folder.empty() && picked != current && next != s.default_folder) {
+        std::error_code ec;
+        if (fs::is_directory(picked / "user", ec)) {
+            // An actual vanilla save is a target, not a general synced root.
+            next = randomizer_paths::sibling(picked, s.seed_namespace);
+        } else {
+            // Keep a newly selected synced root in the path of the saved data.
+            next = picked / ("Wind Waker HD-" + s.seed_namespace);
+        }
+    }
     if (next != current && (inside(next, current) || inside(current, next)))
         return s.notice = "The new save folder can't be inside the current one, or the other way round: choose a separate folder.", false;
     Choice c;
@@ -743,7 +800,9 @@ inline bool choose(const std::string& folder) {
     if (next != current) c.copy_from = current.string();
     else if (auto old = read_choice(choice_file(s.config_dir))) c.had_save = old->had_save;
     if (!write_choice(choice_file(s.config_dir), c)) return s.notice = "The new save folder could not be remembered.", false;
-    s.notice = next != picked ? "That folder already holds other files, so your save goes in " + next.string() + "." : std::string();
+    if (next == picked) s.notice.clear();
+    else if (!s.seed_namespace.empty()) s.notice = "This seed's save goes in " + next.string() + ".";
+    else s.notice = "That folder already holds other files, so your save goes in " + next.string() + ".";
     return true;
 }
 }  // namespace save_folder

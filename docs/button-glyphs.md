@@ -1,6 +1,6 @@
 # Button prompts
 
-Choose a button style in **Controls → Button prompts**. The setting works with the GameCube
+Choose a button style in **Controls → Prompts → Button prompts**. The setting works with the GameCube
 controller layout, other controller layouts and custom button bindings.
 
 | Style | What you see |
@@ -18,25 +18,27 @@ GameCube prompts with any controller or binding.
 
 The GameCube style arranges the HUD buttons like a GameCube controller: A is large and to the
 right, B is down-left, X is to the right of A, and Y is above A. An action, its item and its word
-stay together when they move. Messages and menu prompts use the same button style. The item
-menu's OK and Back prompts stay close together to fit its Wii U layout, and the item ring keeps
-its existing layout.
+stay together when they move. The GameCube artwork replaces the original button plates, and
+its labels remain visible in front of large item pictures. Messages and menu prompts use the
+same button style. The item menu's OK and Back prompts stay close together to fit its Wii U
+layout, and the item ring keeps its existing layout.
 
 **Coloured face buttons** controls the button pictures. **Coloured face button text** controls
-the colours of action words such as “Roll” and “Attack.” Turn the text option off to keep the
-game's usual word colours. Original prompts always keep the game's usual colours.
+the colours of action words such as “Roll” and “Attack,” including GameCube shoulder actions
+such as “Defend.” Turn the text option off to keep the game's usual word colours. Original
+prompts always keep the game's usual colours.
 
 **Shoulder names** can follow the prompt style automatically or use Nintendo, numbered or Xbox
 labels. GameCube prompts use L, R and Z. Your choices are saved.
 
 ## Where to change it
 
-Open the **Controls** tab in Settings, then choose **Button prompts**. On macOS, the same choice
+Open **Controls → Prompts** in Settings, then choose **Button prompts**. On macOS, the same choice
 is available in the Controls window. Changes apply to messages and the HUD as well as menus.
 
 ## Keyboard and mouse bindings
 
-Choose **Controls → Button prompts → Keyboard / mouse** to replace A/B/X/Y and
+Choose **Controls → Prompts → Button prompts → Keyboard / mouse** to replace A/B/X/Y and
 L/R/ZL/ZR prompts in the HUD, item menu and dialog text with keycaps. Native
 Plus/Minus and individual D-pad/stick direction icons show their mapped keys too.
 Labelled left/right-stick and D-pad icons show the four directional keys in a cross.

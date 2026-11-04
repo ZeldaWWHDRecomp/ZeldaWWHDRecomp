@@ -46,6 +46,8 @@ TOOL_FILES = [
     "tools/recomp/analyze.py",
     "tools/recomp/ppc2c.py",
     "tools/recomp/builds.py",
+    "tools/recomp/randomizer_compat.py",
+    "tools/recomp/randomizer-usa.json",
     "tools/recomp/crlive.py",
     "tools/recomp/leaflocal.py",
     "tools/recomp/rawstore.py",
@@ -603,7 +605,7 @@ def main():
         copy(os.path.join(ROOT, rel), os.path.join(pkg, rel))
     copy_shader_template(ROOT, pkg)
     for hp in sorted(os.listdir(os.path.join(ROOT, "tools", "recomp"))):
-        if re.match(r"hooks.*\.txt$", hp):
+        if re.match(r"(decomp_only_)?hooks.*\.txt$", hp):  # decomp_only_*: the decomp build's setup
             copy(os.path.join(ROOT, "tools", "recomp", hp), os.path.join(pkg, "tools", "recomp", hp))
     # the address maps of the builds the port can be made from (tools/recomp/builds.py, docs/builds.md)
     for bp in sorted(os.listdir(os.path.join(ROOT, "tools", "recomp", "builds"))):

@@ -1,0 +1,399 @@
+addr	size	block	reach	callers_out	callers_in	data_refs	code_addr_refs	callees	imports	hooked	trace_count	trace_lr	group	name
+0286C590	88	nn	game	1	0	0	0286C5F8	0286C5E8	coreinit_MEMAllocFromExpHeapEx				nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286C5E8	16	nn	internal	0	1	0	0286C5F8	0286C5F8	coreinit_MEMFreeToExpHeap				nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286C5F8	980	nn	game	1	1	0		0286C9CC,0286CBCC,0286CBE4,0286CBFC,0286CC14,0286CC2C,0286CC44,0286CC5C,0286CC74,0286CC8C,0286CCA4,0286CCBC,0286CCD4,0286D5F0	coreinit_MEMAllocFromExpHeapEx,coreinit_MEMCreateExpHeapEx,coreinit_MEMGetAllocatableSizeForExpHeapEx,coreinit_OSDynLoad_Acquire,coreinit_OSDynLoad_SetAllocator,coreinit_OSReport		2	0203326C	nn	nn::erreula::ErrEulaCreate~ (load erreula.rpl, create heap, bind exports)
+0286C9CC	100	nn	game	1	1	0		0286CA30	coreinit_MEMDestroyExpHeap,coreinit_OSDynLoad_Release				nn	nn::erreula::ErrEulaDestroy~
+0286CA30	16	nn	game	2	4	0		0286CA40			41761	0286CA68,0286CAB4,0286CAF8	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CA40	16	nn	game	1	4	0		0286CA50			41761	0286CA74,0286CAC0,0286CB04	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CA50	84	nn	game	1	1	0		0286CA30,0286CA40,0286CAA4			13921	020334B0	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CAA4	68	nn	game	1	1	0		0286CA30,0286CA40,0286CAE8			13920	027C2638	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CAE8	68	nn	game	1	1	0		0286CA30,0286CA40,0286CB2C			13920	027C2638	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CB2C	16	nn	game	1	1	0		0286CB3C					nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CB3C	16	nn	game	1	1	0		0286CB4C					nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CB4C	16	nn	game	1	1	0		0286CB5C					nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CB5C	16	nn	game	1	1	0		0286CB6C					nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CB6C	16	nn	game	1	1	0		0286CB7C					nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CB7C	56	nn	game	1	1	0		0286CBB4					nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CBB4	16	nn	game	1	1	0		0286CBC4					nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CBC4	8	nn	game	1	1	0		0286CBCC			6	020331D0,0203320C,02033228	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CBCC	24	nn	internal	0	2	0		0286CBE4	coreinit_OSDynLoad_FindExport		2	0286C7B8	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CBE4	24	nn	internal	0	2	0		0286CBFC	coreinit_OSDynLoad_FindExport		2	0286C7CC	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CBFC	24	nn	internal	0	2	0		0286CC14	coreinit_OSDynLoad_FindExport		2	0286C7E0	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CC14	24	nn	internal	0	2	0		0286CC2C	coreinit_OSDynLoad_FindExport		8	0286C7F4,0286C81C,0286C830,0286C8D0	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CC2C	24	nn	internal	0	2	0		0286CC44	coreinit_OSDynLoad_FindExport		2	0286C808	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CC44	24	nn	internal	0	2	0		0286CC5C	coreinit_OSDynLoad_FindExport		2	0286C844	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CC5C	24	nn	internal	0	2	0		0286CC74	coreinit_OSDynLoad_FindExport		10	0286C858,0286C86C,0286C880,0286C8BC,0286C8F8	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CC74	24	nn	internal	0	2	0		0286CC8C	coreinit_OSDynLoad_FindExport		2	0286C894	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CC8C	24	nn	internal	0	2	0		0286CCA4	coreinit_OSDynLoad_FindExport		2	0286C8A8	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CCA4	24	nn	internal	0	2	0		0286CCBC	coreinit_OSDynLoad_FindExport		2	0286C8E4	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CCBC	24	nn	internal	0	2	0		0286CCD4	coreinit_OSDynLoad_FindExport		2	0286C90C	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CCD4	24	nn	internal	0	2	0		0286CCEC	coreinit_OSDynLoad_FindExport		4	0286C920,0286C934	nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CCEC	88	nn	internal	0	1	0	0286CD7C	0286CD44	coreinit_MEMAllocFromExpHeapEx				nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CD44	16	nn	internal	0	1	0	0286CD7C	0286CD54	coreinit_MEMFreeToExpHeap				nn	nn::erreula static wrapper: RPL loader, heap, export thunks~
+0286CD54	40	nn	game	1	2	0		0286CD7C			8	02619640,0286CE2C,0286CEC0,0286D1E0	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286CD7C	1252	nn	game	1	1	0		0286CD54,0286D260,0286D410,0286D428,0286D440,0286D458,0286D470,0286D488,0286D4A0,0286D4B8,0286D4D0,0286D4E8,0286D500,0286D518,0286D530,0286D548,0286D560,0286D578,0286D590,0286D5A8,0286D5C0,0286D5D8,0286D5F0	coreinit_MEMAllocFromExpHeapEx,coreinit_MEMCreateExpHeapEx,coreinit_MEMGetAllocatableSizeForExpHeapEx,coreinit_OSDynLoad_Acquire,coreinit_OSDynLoad_SetAllocator,coreinit_OSReport		2	02619944	nn	nn::swkbd::Create~ (load swkbd.rpl, create heap, bind exports)
+0286D260	16	nn	internal	0	4	0		0286D270			376	0286D348	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D270	16	nn	game	3	4	0		0286D280			11571	02619B80,0286D354	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D280	84	nn	game	1	1	0		0286D260,0286D270,0286D2D4					nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D2D4	16	nn	game	1	1	0		0286D2E4					nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D2E4	16	nn	game	1	1	0		0286D2F4					nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D2F4	68	nn	game	2	1	0		0286D260,0286D270,0286D338					nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D338	68	nn	game	2	1	0		0286D260,0286D270,0286D37C			376	0270A9E4	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D37C	68	nn	game	1	1	0		0286D3C0	coreinit_MEMDestroyExpHeap,coreinit_OSDynLoad_Release				nn	nn::swkbd::Destroy~
+0286D3C0	16	nn	game	1	1	0		0286D3D0					nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D3D0	16	nn	game	1	1	0		0286D3E0					nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D3E0	16	nn	game	1	1	0		0286D3F0					nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D3F0	16	nn	game	1	1	0		0286D400					nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D400	16	nn	game	1	1	0		0286D410					nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D410	24	nn	internal	0	2	0		0286D428	coreinit_OSDynLoad_FindExport		2	0286CF2C	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D428	24	nn	internal	0	2	0		0286D440	coreinit_OSDynLoad_FindExport		2	0286CF40	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D440	24	nn	internal	0	2	0		0286D458	coreinit_OSDynLoad_FindExport		14	0286CF54,0286CF68,0286CF90,0286CFB8,0286CFF4,0286D008,0286D120	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D458	24	nn	internal	0	2	0		0286D470	coreinit_OSDynLoad_FindExport		2	0286CF7C	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D470	24	nn	internal	0	2	0		0286D488	coreinit_OSDynLoad_FindExport		2	0286CFA4	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D488	24	nn	internal	0	2	0		0286D4A0	coreinit_OSDynLoad_FindExport		12	0286CFCC,0286CFE0,0286D094,0286D0E4,0286D0F8,0286D10C	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D4A0	24	nn	internal	0	2	0		0286D4B8	coreinit_OSDynLoad_FindExport		2	0286D01C	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D4B8	24	nn	internal	0	2	0		0286D4D0	coreinit_OSDynLoad_FindExport		2	0286D030	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D4D0	24	nn	internal	0	2	0		0286D4E8	coreinit_OSDynLoad_FindExport		2	0286D044	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D4E8	24	nn	internal	0	2	0		0286D500	coreinit_OSDynLoad_FindExport		2	0286D058	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D500	24	nn	internal	0	2	0		0286D518	coreinit_OSDynLoad_FindExport		4	0286D06C,0286D080	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D518	24	nn	internal	0	2	0		0286D530	coreinit_OSDynLoad_FindExport		4	0286D0A8,0286D0BC	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D530	24	nn	internal	0	2	0		0286D548	coreinit_OSDynLoad_FindExport		2	0286D0D0	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D548	24	nn	internal	0	2	0		0286D560	coreinit_OSDynLoad_FindExport		2	0286D134	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D560	24	nn	internal	0	2	0		0286D578	coreinit_OSDynLoad_FindExport		4	0286D148,0286D184	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D578	24	nn	internal	0	2	0		0286D590	coreinit_OSDynLoad_FindExport		4	0286D15C,0286D1D4	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D590	24	nn	internal	0	2	0		0286D5A8	coreinit_OSDynLoad_FindExport		2	0286D170	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D5A8	24	nn	internal	0	2	0		0286D5C0	coreinit_OSDynLoad_FindExport		2	0286D198	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D5C0	24	nn	internal	0	2	0		0286D5D8	coreinit_OSDynLoad_FindExport		2	0286D1AC	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D5D8	24	nn	internal	0	2	0		0286D5F0	coreinit_OSDynLoad_FindExport		2	0286D1C0	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D5F0	4	nn	game	2	3	0					4	0286C6A8,0286CE20	nn	nn::swkbd static wrapper: RPL loader, heap, export thunks~
+0286D5F4	44	nn	internal	0	1	0		0286D620			2	0286D658	nn	nn SCI wrappers (UCReadSysConfig)~
+0286D620	80	nn	game	1	1	0		0286D5F4,0286D670			2	025F9464	nn	nn SCI wrappers (UCReadSysConfig)~
+0286D670	452	nn	internal	0	3	0		0286D834	coreinit_OSReport,coreinit_UCClose,coreinit_UCOpen,coreinit_UCReadSysConfig		6	0286D64C,0286D9A4,0286DA4C	nn	SCI read via UCReadSysConfig~
+0286D834	56	nn	internal	0	2	0		0286D86C			2	0286DA58	nn	nn SCI wrappers (UCReadSysConfig)~
+0286D86C	12	nn	internal	0	2	0		0286D878					nn	nn SCI wrappers (UCReadSysConfig)~
+0286D878	12	nn	internal	0	2	0		0286D884					nn	nn SCI wrappers (UCReadSysConfig)~
+0286D884	12	nn	internal	0	2	0		0286D890					nn	nn SCI wrappers (UCReadSysConfig)~
+0286D890	168	nn	internal	0	3	0		0286D86C,0286D878,0286D884,0286D938	coreinit_OSReport,nn_act_GetParentalControlSlotNoEx__Q2_2nn3actFPUcUc		4	0286D954,0286D9FC	nn	nn::act::GetParentalControlSlotNoEx wrapper~
+0286D938	168	nn	game	1	1	0		0286D670,0286D890,0286D9E0,028F17A8			2	020397FC	nn	nn::act wrappers (parental control)~
+0286D9E0	144	nn	game	1	1	0		0286D670,0286D834,0286D890,0286DA70,028F17A8			2	02039818	nn	nn::act wrappers (parental control)~
+0286DA70	44	nn	game	56	1	0		0286DA9C			43401	0289302C,02893138,02893220,028932EC,028933E8,02898DF4,0289F428,028F6810	nn	nn::ut list insert~
+0286DA9C	48	nn	game	29	2	0		0286DACC			4862	0286DAF8,02875628,0289F734,0289F780,028A05DC,028A4EAC,028A6470,028AE6B4	nn	nn::ut list erase~
+0286DACC	76	nn	game	5	2	0		0286DA9C,0286DB18			3447	0286DB40,02873574,02887BC8	nn	nn::ut list erase range~
+0286DB18	56	nn	game	19	1	0		0286DACC,0286DB50			3405	02874710,02874790,028761AC,0287F588,02896468,02896638,0289C2A0	nn	nn::ut list clear~
+028EA038	100	ghs	game	1	1	0		028EA09C					trivial	memmove~ (start-up copy helper)
+028EA09C	132	ghs	game	1	2	0	028EA120	028EA120			4	02005ED0,028EA1A4	special	__ghs_ind_crt0~ (static init table walk)
+028EA120	388	ghs	entry	0	1	0		02005EA8,028EA038,028EA09C,028EA2A4,028F01B4,028F5914	coreinit_OSGetCurrentThread,coreinit_OSIsDebuggerInitialized,coreinit___ghs_mtx_dst,coreinit___ghs_mtx_init,coreinit___ghs_mtx_lock,coreinit___ghs_mtx_unlock,coreinit_exit,coreinit_memcpy		2		special	RPX entry: C runtime start-up (static init, main, exit)
+028EA2A4	108	ghs	data	0	1	2		0273AF40,028EA310,028EF218,028F61F8,028F6250					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA310	108	ghs	data	0	1	4		0273AF40,028EA37C,028EF218,028F61F8,028F6250					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA37C	116	ghs	internal	0	3	0		0273AF40,028EA3F0,028F61F4,028F624C	coreinit_memcpy				cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA3F0	32	ghs	internal	0	3	0		0273AD10,028EA410,028F61F8,028F6250					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA410	32	ghs	internal	0	2	0		028EA430,028EF834,028F61F8,028F6250			2	028EA528	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA430	32	ghs	internal	0	2	0		028EA450			2	028EA548	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA450	96	ghs	internal	0	2	0		028EA4B0,028EF3E0,028EF3FC,028F61F8,028F6250			8	028EA734	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA4B0	88	ghs	data	0	1	1		0273AF40,028EA508,028F2EA8,028F61F8,028F6250					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA508	84	ghs	internal	0	2	0		028EA410,028EA430,028EA55C,028F61F8,028F6250			2	028EA798	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA55C	84	ghs	data	0	1	1		028EA5B0,028F0374,028F61F8,028F6250			8	028EA950,028EAAE4	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA5B0	336	ghs	internal	0	3	0		028EA700,028F1C34,028F2774,028F2E38,028F2EA8,028F61F4,028F624C			6	028EAC30,028EACAC,028EAD28	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA700	240	ghs	internal	0	3	0		0273AD10,028EA450,028EA508,028EA7F0,028EC8F0,028EC9B8,028ECCA4,028ECD18,028EF3E0,028EF3FC,028F61F4,028F624C			8	028EA8C8,028EAA5C	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA7F0	424	ghs	internal	0	2	0		0273AD10,028EA700,028EA998,028EEAE4,028EF308,028EF384,028EF3E0,028EF3FC,028F61E8,028F6240			2	028EAD48	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EA998	404	ghs	internal	0	2	0		0273AD10,028EA700,028EAB2C,028EEAE4,028EF308,028EF384,028EF3E0,028EF3FC,028F61E8,028F6240			6	028EAD64,028EAD88,028EADB4	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EAB2C	668	ghs	game	1060	2	0		0273AD10,028EA5B0,028EA7F0,028EA998,028EADC8,028ECB90,028EF3E0,028EF3FC,028EF744,028F61E0,028F6238			2122	02001068,0200119C,020012A0,02001518,020015AC,020016F4,020019E4,02001C94	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EADC8	404	ghs	data	0	1	1061		0273AF40,028EAF5C,028EEAE4,028EF3E0,028EF3FC,028F61F0,028F6248					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EAF5C	940	ghs	internal	0	2	0		028EA37C,028EA3F0,028EB308,028EC118,028F2370,028F61E0,028F6238	coreinit_memcpy,coreinit_memset				cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EB308	332	ghs	data	0	1	4		0273AF40,028EA5B0,028EAF5C,028EB454,028EF3E0,028EF3FC,028EF78C,028F1C34,028F2774,028F2920,028F2EA8,028F61EC,028F6244					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EB454	1112	ghs	data	0	1	1		028EA37C,028EA3F0,028EB8AC,028EC118,028F03BC,028F2370,028F61DC,028F6234	coreinit_memcpy,coreinit_memset				cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EB8AC	104	ghs	data	0	1	1		028EB914,028F2774,028F61F8,028F6250					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EB914	120	ghs	internal	0	2	0		0273AD10,028EB98C,028F61F8,028F6250			2	028EBA9C	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EB98C	120	ghs	internal	0	2	0		0273AD10,028EBA04,028F61F8,028F6250			6	028EBABC,028EBADC,028EBAFC	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EBA04	268	ghs	data	0	1	1		028EAB2C,028EB914,028EB98C,028EBB10,028ED6F8,028F026C,028F61F8,028F6250			2	028EA0F4	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EBB10	24	ghs	data	0	1	1		028EBB28					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EBB28	116	ghs	internal	0	4	0		0273AF40,028EBB9C,028F61F4,028F624C	coreinit_memcpy				cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EBB9C	100	ghs	internal	0	2	0		028EBC00					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EBC00	196	ghs	internal	0	4	0		028EBCC4,028EBCE4,028F61F0,028F6248	coreinit_memmove				cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EBCC4	32	ghs	internal	0	4	0		0273AD10,028EBCE4,028F61F8,028F6250					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EBCE4	592	ghs	internal	0	7	0		028EBB28,028EBC00,028EBCC4,028EBF34,028EC118,028EFA1C,028F03F4,028F61E8,028F6240	coreinit_memcpy				cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EBF34	484	ghs	internal	0	2	0		028EBB28,028EBB9C,028EBC00,028EBCC4,028EBCE4,028EC118,028F61E0,028F6238	coreinit_memcpy				cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC118	592	ghs	internal	0	9	0		028EBB28,028EBC00,028EBCC4,028EBF34,028EC368,028EFA1C,028F03F4,028F61E8,028F6240	coreinit_memcpy				cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC368	48	ghs	data	0	1	3		028EC398					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC398	176	ghs	internal	0	1	0	028ECD18	0273AF40,028EC448,028EF3E0,028EF3FC,028F61F4,028F624C					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC448	136	ghs	internal	0	2	0		028EC4D0,028EF3E0,028EF3FC,028F61F8,028F6250					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC4D0	52	ghs	internal	0	1	0	028EC504	028EC448,028EC504,028EF3E0,028EF3FC,028F61F8,028F6250					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC504	76	ghs	internal	0	2	0		028EC550,028F01B4,028F61F8,028F6250			2	028ECB1C	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC550	116	ghs	internal	0	6	0		0273AF40,028EC5C4,028F61F4,028F624C	coreinit_memcpy		18	028EC93C,028EC94C,028ECA14,028ECA24,028ECAA8	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC5C4	32	ghs	internal	0	2	0		0273AD10,028EC5E4,028F61F8,028F6250					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC5E4	100	ghs	internal	0	2	0		028EC648			12	028EC730	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC648	196	ghs	internal	0	2	0		028EBCE4,028EC70C,028F61F0,028F6248	coreinit_memmove				cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC70C	484	ghs	internal	0	4	0		028EBCE4,028EC118,028EC550,028EC5C4,028EC5E4,028EC648,028EC8F0,028F61E0,028F6238	coreinit_memcpy		12	028EC970,028EC9AC,028ECAC4,028ECB40	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC8F0	200	ghs	internal	0	3	0		0273AD10,028EC550,028EC70C,028EC9B8,028EF3E0,028F03F4,028F34E4,028F61F4,028F624C			4	028EA78C,028ED358	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028EC9B8	140	ghs	internal	0	3	0		0273AF40,028EC550,028ECA44,028EF3FC,028F34E4,028F61F8,028F6250			4	028EA7A4,028ED370	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028ECA44	140	ghs	internal	0	2	0		0273AD10,028EC550,028EC70C,028ECAD0,028F03F4,028F5970,028F61F8,028F6250			2	028ECB14	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028ECAD0	192	ghs	internal	0	2	0		028EC504,028EC70C,028ECA44,028ECB90,028EF3E0,028EF3FC,028F03F4,028F61F8,028F6250			28	028ECBC0	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028ECB90	112	ghs	internal	0	4	0		0273AD10,028ECAD0,028ECC00,028EF3E0,028EF3FC,028F61F8,028F6250			28	028EABC0,028EAC4C,028EACC8,028ED78C,028ED818,028ED8D8,028EF3A0	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028ECC00	164	ghs	data	0	1	1		0273AF40,028ECCA4,028EF3E0,028EF3FC,028F61F0,028F6248					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028ECCA4	116	ghs	internal	0	3	0		028ECD18			16	028EA740,028ED30C	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028ECD18	92	ghs	internal	0	3	0		0273AD10,028ECD74,028F01B4,028F61F4,028F624C			4	028EA7DC,028ED3A8	cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028ECD74	252	ghs	data	0	1	1		0273AF40,028EC550,028ECE70,028EF3E0,028EF3FC,028F2EA8,028F61EC,028F6244					cxx	iostream/locale (char): ios_base::Init, streams, facets~
+028ECE70	56	ghs	data	0	1	1		028ECEA8,028F026C,028F61F8,028F6250			2	028EA0F4	cxx	iostream/locale (wchar_t): streams, facets~
+028ECEA8	108	ghs	data	0	1	2		0273AF40,028ECF14,028EF218,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028ECF14	108	ghs	data	0	1	4		0273AF40,028ECF80,028EF218,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028ECF80	116	ghs	internal	0	3	0		0273AF40,028ECFF4,028F61F4,028F624C	coreinit_memcpy				cxx	iostream/locale (wchar_t): streams, facets~
+028ECFF4	32	ghs	internal	0	3	0		0273AD10,028ED014,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028ED014	32	ghs	internal	0	2	0		028ED034,028EF834,028F61F8,028F6250			2	028ED138	cxx	iostream/locale (wchar_t): streams, facets~
+028ED034	96	ghs	internal	0	2	0		028ED094,028EF3E0,028EF3FC,028F61F8,028F6250			8	028ED300	cxx	iostream/locale (wchar_t): streams, facets~
+028ED094	60	ghs	internal	0	2	0		0273AFC8,028ED0D0,028F2EA8,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028ED0D0	76	ghs	data	0	1	1		0273AF40,028ED094,028ED11C,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028ED11C	60	ghs	internal	0	2	0		028ED014,028ED158,028F61F8,028F6250			2	028ED364	cxx	iostream/locale (wchar_t): streams, facets~
+028ED158	372	ghs	internal	0	3	0		028ED2CC,028F1C34,028F2774,028F2E38,028F2EA8,028F61F4,028F624C			6	028ED7FC,028ED878,028ED938	cxx	iostream/locale (wchar_t): streams, facets~
+028ED2CC	240	ghs	internal	0	3	0		0273AD10,028EC8F0,028EC9B8,028ECCA4,028ECD18,028ED034,028ED11C,028ED3BC,028EF3E0,028EF3FC,028F61F4,028F624C			8	028ED494,028ED628	cxx	iostream/locale (wchar_t): streams, facets~
+028ED3BC	424	ghs	internal	0	2	0		0273AD10,028ED2CC,028ED564,028EEAE4,028EF308,028EF384,028EF3E0,028EF3FC,028F61E8,028F6240			2	028ED898	cxx	iostream/locale (wchar_t): streams, facets~
+028ED564	404	ghs	internal	0	2	0		0273AD10,028ED2CC,028ED6F8,028EEAE4,028EF308,028EF384,028EF3E0,028EF3FC,028F61E8,028F6240			6	028ED8B4,028ED954,028ED980	cxx	iostream/locale (wchar_t): streams, facets~
+028ED6F8	668	ghs	game	1060	2	0		0273AD10,028ECB90,028ED158,028ED3BC,028ED564,028ED994,028EF3E0,028EF3FC,028EF744,028F61E0,028F6238			2122	02001050,02001184,02001288,02001500,02001594,020016DC,020019CC,02001C7C	cxx	iostream/locale (wchar_t): streams, facets~
+028ED994	404	ghs	data	0	1	1061		0273AF40,028EDB28,028EEAE4,028EF3E0,028EF3FC,028F61F0,028F6248					cxx	iostream/locale (wchar_t): streams, facets~
+028EDB28	940	ghs	internal	0	2	0		028EC118,028ECF80,028ECFF4,028EDED4,028F2370,028F61E0,028F6238	coreinit_memcpy,coreinit_memset				cxx	iostream/locale (wchar_t): streams, facets~
+028EDED4	332	ghs	data	0	1	4		0273AF40,028ED158,028EDB28,028EE020,028EF3E0,028EF3FC,028EF78C,028F1C34,028F2774,028F2920,028F2EA8,028F61EC,028F6244					cxx	iostream/locale (wchar_t): streams, facets~
+028EE020	1108	ghs	data	0	1	1		028EC118,028ECF80,028ECFF4,028EE474,028F2370,028F25F8,028F61DC,028F6234	coreinit_memcpy,coreinit_memset				cxx	iostream/locale (wchar_t): streams, facets~
+028EE474	104	ghs	data	0	1	1		028EE4DC,028F2774,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028EE4DC	120	ghs	internal	0	2	0		0273AD10,028EE554,028F61F8,028F6250			2	028EE620	cxx	iostream/locale (wchar_t): streams, facets~
+028EE554	120	ghs	internal	0	2	0		0273AD10,028EE5CC,028F61F8,028F6250			6	028EE640,028EE674,028EE694	cxx	iostream/locale (wchar_t): streams, facets~
+028EE5CC	220	ghs	data	0	1	1		028EE4DC,028EE554,028EE6A8,028F026C,028F61F8,028F6250			2	028EA0F4	cxx	iostream/locale (wchar_t): streams, facets~
+028EE6A8	24	ghs	data	0	1	1		028EE6C0			8	028ED51C,028ED6B0	cxx	iostream/locale (wchar_t): streams, facets~
+028EE6C0	24	ghs	data	0	1	1		028EE6D8					cxx	iostream/locale (wchar_t): streams, facets~
+028EE6D8	60	ghs	data	0	1	1		028EE714			2	028EA0F4	cxx	iostream/locale (wchar_t): streams, facets~
+028EE714	116	ghs	internal	0	3	0		0273AF40,028EE788,028F61F4,028F624C	coreinit_memcpy				cxx	iostream/locale (wchar_t): streams, facets~
+028EE788	32	ghs	internal	0	3	0		0273AD10,028EE7A8,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028EE7A8	100	ghs	internal	0	2	0		028EE80C					cxx	iostream/locale (wchar_t): streams, facets~
+028EE80C	196	ghs	internal	0	3	0		028EBCE4,028EE8D0,028F61F0,028F6248	coreinit_memmove				cxx	iostream/locale (wchar_t): streams, facets~
+028EE8D0	484	ghs	internal	0	2	0		028EBCE4,028EC118,028EE714,028EE788,028EE7A8,028EE80C,028EEAB4,028F61E0,028F6238	coreinit_memcpy				cxx	iostream/locale (wchar_t): streams, facets~
+028EEAB4	48	ghs	data	0	1	2		028EEAE4					cxx	iostream/locale (wchar_t): streams, facets~
+028EEAE4	1660	ghs	internal	0	8	0		028EC118,028EE714,028EE788,028EE80C,028EE8D0,028EF160,028EFA1C,028F03F4,028F61E0,028F6238	coreinit_memcpy		16	028EF3D8	cxx	iostream/locale (wchar_t): streams, facets~
+028EF160	80	ghs	internal	0	2	0		028EF1B0,028F61F4,028F624C					cxx	iostream/locale (wchar_t): streams, facets~
+028EF1B0	104	ghs	internal	0	2	0		0273AF40,028EF160,028EF218,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028EF218	240	ghs	data	0	5	1		0273AF40,028EF1B0,028EF308,028EF3E0,028EF3FC,028F61EC,028F6244					cxx	iostream/locale (wchar_t): streams, facets~
+028EF308	124	ghs	internal	0	5	0		028EF384,028EF3E0,028EF3FC,028F61F8,028F6250			16	028EA984,028EAB18,028ED550,028ED6E4	cxx	iostream/locale (wchar_t): streams, facets~
+028EF384	92	ghs	internal	0	5	0		028ECB90,028EEAE4,028EF3E0,028F5970,028F61F8,028F6250			16	028EA884,028EAA18,028ED450,028ED5E4	cxx	iostream/locale (wchar_t): streams, facets~
+028EF3E0	28	ghs	internal	0	25	0		028EF3FC,028F61F8,028F6250	coreinit___ghsLock		4352	028EC92C,028ECAFC,028ECB50,028ECBD4,028ED060,028ED2EC,028ED46C,028ED72C	cxx	iostream/locale (wchar_t): streams, facets~
+028EF3FC	28	ghs	internal	0	25	0		028EF418,028F61F8,028F6250	coreinit___ghsUnlock		4352	028ECA2C,028ECB70,028ECB84,028ECBF4,028ED088,028ED3A0,028ED48C,028ED760	cxx	iostream/locale (wchar_t): streams, facets~
+028EF418	88	ghs	data	0	1	1		0273AF40,028EF470,028F2EA8,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028EF470	84	ghs	data	0	1	1		028EF4C4,028F0374,028F61F8,028F6250					cxx	iostream/locale (wchar_t): streams, facets~
+028EF4C4	40	ghs	data	0	1	1		028EF4EC			2	028EA0F4	cxx	iostream/locale (wchar_t): streams, facets~
+028EF4EC	60	ghs	data	0	1	1		028EF528			2	028EA0F4	cxx	locale facet id / guard init~
+028EF528	60	ghs	data	0	1	1		028EF564			2	028EA0F4	cxx	locale facet id / guard init~
+028EF564	60	ghs	data	0	1	1		028EF5A0			2	028EA0F4	cxx	locale facet id / guard init~
+028EF5A0	60	ghs	data	0	1	1		028EF5DC			2	028EA0F4	cxx	locale facet id / guard init~
+028EF5DC	60	ghs	data	0	1	1		028EF618			2	028EA0F4	cxx	locale facet id / guard init~
+028EF618	60	ghs	data	0	1	1		028EF654			2	028EA0F4	cxx	locale facet id / guard init~
+028EF654	60	ghs	data	0	1	1		028EF690			2	028EA0F4	cxx	locale facet id / guard init~
+028EF690	60	ghs	data	0	1	1		028EF6CC			2	028EA0F4	cxx	locale facet id / guard init~
+028EF6CC	60	ghs	data	0	1	1		028EF708			2	028EA0F4	cxx	locale facet id / guard init~
+028EF708	60	ghs	data	0	1	1		028EF744			2	028EA0F4	cxx	locale facet id / guard init~
+028EF744	72	ghs	internal	0	3	0		0273AD10,028EF78C,028EF7DC,028F61F8,028F6250			12	028EABB8,028EAC44,028EACC0,028ED784,028ED810,028ED8D0	cxx	locale / mutex helpers~
+028EF78C	80	ghs	internal	0	3	0		0273AF40,028EF7DC,028EF808,028F61F8,028F6250					cxx	locale / mutex helpers~
+028EF7DC	44	ghs	internal	0	2	0		028EF808,028F61F8,028F6250	coreinit___ghs_mtx_init		12	028EF780	cxx	locale / mutex helpers~
+028EF808	44	ghs	internal	0	2	0		028EF834,028F61F8,028F6250	coreinit___ghs_mtx_dst				cxx	locale / mutex helpers~
+028EF834	384	ghs	internal	0	3	0		028EF9B4,028F2E60,028F61F8,028F6250			4	028EA424,028ED028	cxx	locale / mutex helpers~
+028EF9B4	104	ghs	internal	0	2	0		028EFA1C,028F24D0,028F2774,028F2ED0,028F61F4					cxx	locale / mutex helpers~
+028EFA1C	56	ghs	internal	0	4	0		028EF9B4,028EFA54,028F61F8,028F6250					cxx	locale / mutex helpers~
+028EFA54	48	ghs	data	0	1	1		028EFA84					cxx	locale / mutex helpers~
+028EFA84	60	ghs	internal	0	2	0		0273AFC8,028EFAC0,028F2EA8,028F61F8,028F6250					cxx	locale facet id / guard init~
+028EFAC0	76	ghs	data	0	1	1		0273AF40,028EFA84,028EFB0C,028F61F8,028F6250					cxx	locale facet id / guard init~
+028EFB0C	24	ghs	data	0	1	1		028EFB24					cxx	locale facet id / guard init~
+028EFB24	60	ghs	data	0	1	1		028EFB60			2	028EA0F4	cxx	locale facet id / guard init~
+028EFB60	60	ghs	data	0	1	1		028EFB9C			2	028EA0F4	cxx	locale facet id / guard init~
+028EFB9C	60	ghs	data	0	1	1		028EFBD8			2	028EA0F4	cxx	locale facet id / guard init~
+028EFBD8	60	ghs	internal	0	2	0		0273AFC8,028EFC14,028F2EA8,028F61F8,028F6250					cxx	locale facet id / guard init~
+028EFC14	76	ghs	data	0	1	1		0273AF40,028EFBD8,028EFC60,028F61F8,028F6250					cxx	locale facet id / guard init~
+028EFC60	24	ghs	data	0	1	1		028EFC78					cxx	locale facet id / guard init~
+028EFC78	60	ghs	data	0	1	1		028EFCB4			2	028EA0F4	cxx	locale facet id / guard init~
+028EFCB4	60	ghs	data	0	1	1		028EFCF0			2	028EA0F4	cxx	locale facet id / guard init~
+028EFCF0	60	ghs	data	0	1	1		028EFD2C			2	028EA0F4	cxx	locale facet id / guard init~
+028EFD2C	60	ghs	data	0	1	1		028EFD68			2	028EA0F4	cxx	locale facet id / guard init~
+028EFD68	60	ghs	data	0	1	1		028EFDA4			2	028EA0F4	cxx	locale facet id / guard init~
+028EFDA4	60	ghs	data	0	1	1		028EFDE0			2	028EA0F4	cxx	locale facet id / guard init~
+028EFDE0	60	ghs	data	0	1	1		028EFE1C			2	028EA0F4	cxx	locale facet id / guard init~
+028EFE1C	60	ghs	data	0	1	1		028EFE58			2	028EA0F4	cxx	locale facet id / guard init~
+028EFE58	308	ghs	internal	0	4	0		0273ADAC,028EFF8C,028F521C,028F61E4,028F623C			4481689	028EFFC0,028F0010,028F0064	cxx	__vec_new_core~ (array new/construct)
+028EFF8C	68	ghs	game	18	1	0		028EFE58,028EFFD0			2615	02761DF0,0280881C,028088AC,0280893C,028089CC,02815A4C,0284440C,0284511C	cxx	__vec_new~ (new T[n])
+028EFFD0	80	ghs	game	328	1	0		028EFE58,028F0020			4479066	0203E19C,021FA5C0,022041A4,0220CA60,02217700,02232BE8,02267904,0227AD2C	cxx	__construct_array
+028F0020	84	ghs	game	2	1	0		028EFE58,028F0074			8	02501C54,0255556C	cxx	__construct_new_array~
+028F0074	8	ghs	internal	0	2	0		028F007C,028F0314					cxx	__vec_delete thunk~
+028F007C	232	ghs	internal	0	2	0		0273AFC8,028F0074,028F0164,028F61D8,028F6230			33712	028F01A0	cxx	__vec_delete_core~ (array destroy/delete)
+028F0164	76	ghs	game	288	1	0		028F007C,028F01B0			33712	02483164,02483184,0248320C,02773BF8,02773E08,027AC124,028443C4,028450D4	cxx	__destroy_arr
+028F01B0	4	ghs	internal	0	1	0	028F01B4	028F01B4,028F0260					cxx	__call_global_dtors~ thunk
+028F01B4	104	ghs	internal	0	4	0		028F021C,028F026C,028F5E10,028F5E24	coreinit___ghsLock,coreinit___ghsUnlock		6	028EA1B0,028EC540,028ECD4C	cxx	__ghs_exit_dtors~ (run registered destructors)
+028F021C	68	ghs	internal	0	2	0		028F0260,028F5E10,028F5E24					cxx	__destroy_global_chain~
+028F0260	12	ghs	internal	0	2	0	028EA120	028F021C,028F026C					cxx	__destroy_global_chain~ (default chain)
+028F026C	40	ghs	game	1396	5	0		028F0294			7169	02001024,0200105C,02001074,02001158,02001190,020011A8,0200125C,028F01F8	cxx	__register_global_object
+028F0294	80	ghs	game	1	1	0		028F02E4,028F5DC0,028F5DD4					cxx	__construct_array_arg~ (ctor with argument)
+028F02E4	8	ghs	data	0	1	332		028F02EC,028F0314					cxx	__deleted_virtual_called~ (runtime error 6)
+028F02EC	40	ghs	internal	0	2	0		028F0314					cxx	__ghs_rterr_msg~ (error text table)
+028F0314	88	ghs	internal	0	4	0		028F02EC,028F036C,028F24D0,028F2ED0,028F5E10					cxx	__ghs_rterr~ (print runtime error, abort)
+028F036C	8	ghs	data	0	1	6404		028F0314,028F0374					cxx	__pure_virtual_called~ (runtime error 13)
+028F0374	72	ghs	internal	0	3	0		028F03BC,028F5288,028F5E10,028F5E24	coreinit___gh_set_errno		8	028EA590	trivial	mbtowc~
+028F03BC	56	ghs	internal	0	2	0		028F03F4,028F2724,028F274C,028F3638,028F5E10,028F5E24					stdio	fputc-like locked wrapper~
+028F03F4	24	ghs	internal	0	8	0		028F040C			208637	028EC960,028EC99C,028ECAB4,028ECB30,028F0E50	trivial	strlen
+028F040C	28	ghs	game	20	2	0		028F0428			2735	021FB674,021FE7C4,021FE838,022860B0,02530A5C,02530A70,025C1358,028127AC,02812C10	trivial	strcpy
+028F0428	48	ghs	internal	0	2	0		028F0458,028F0D8C,028F5E10,028F5E24					format	printf: unsigned to decimal, padded~
+028F0458	288	ghs	internal	0	3	0		028F0428,028F0578,028F0DF4,028F61E8,028F6240					format	printf: integer conversion~
+028F0578	40	ghs	internal	0	2	0	028F11BC	028F0458,028F05A0					format	printf: output callback~
+028F05A0	220	ghs	internal	0	2	0		028F0458,028F067C,028F0DF4,028F1108,028F61FC,028F6254					format	printf: %s/%c conversion~
+028F067C	800	ghs	internal	0	2	0		028F099C,028F0DF4,028F1904,028F605C,028F60F8,028F613C,028F6190			420	028F0D7C	format	printf: %e/%f conversion~
+028F099C	1008	ghs	internal	0	2	0	028F11BC	028F040C,028F067C,028F0D8C,028F0DF4,028F1904,028F605C,028F60F8,028F6154,028F61A8			420	028F161C	format	printf: %g conversion~
+028F0D8C	48	ghs	internal	0	3	0		028F0DBC			99353	028F10DC	format	printf: utoa decimal~
+028F0DBC	56	ghs	internal	0	2	0		028F0DF4,028F5DE8,028F5DFC			414234	028F0FB4,028F10AC	format	printf: pad with spaces~
+028F0DF4	708	ghs	internal	0	8	0		028F03F4,028F0DBC,028F10B8,028F5228,028F61D0,028F6228			208625	028F095C,028F10F8,028F1700	format	printf: emit field~
+028F10B8	80	ghs	internal	0	2	0		028F0D8C,028F0DF4,028F1108			99353	028F15E4	format	printf: utoa + sign~
+028F1108	80	ghs	internal	0	3	0		028F1158					format	printf: octal/hex digits~
+028F1158	100	ghs	internal	0	2	0		028F0DF4,028F1108,028F11BC					format	printf: %p/%x conversion~
+028F11BC	1376	ghs	internal	0	3	0		028F0578,028F05A0,028F099C,028F0DF4,028F10B8,028F1158,028F171C,028F5C88,028F61E8,028F6240			149560	028F1778,028F1850	format	_doprnt~ (printf core)
+028F171C	44	ghs	internal	0	1	0	028F1748	028F1748			2198293	028F0FD0,028F1010,028F1094,028F1214	format	vsnprintf sink~
+028F1748	96	ghs	game	6	2	0		028F11BC,028F17A8,028F61FC,028F6254			149548	02759BC0,027EC928,0287385C,02880CC4,028F1818	format	vsnprintf
+028F17A8	128	ghs	game	6	1	0		028F1748,028F1828			21	025B3D5C,025B3F4C,0286D990,0286DA38	format	snprintf
+028F1828	68	ghs	internal	0	2	0		028F11BC,028F186C			12	028F18DC	format	vsprintf
+028F186C	128	ghs	game	5	1	0		028F1828,028F18EC			12	02077E5C	format	sprintf
+028F18EC	24	ghs	internal	0	1	0	028F1828	028F1904			66	028F1010,028F1094,028F1214	format	vsprintf sink~
+028F1904	748	ghs	internal	0	3	0		028F1BF0,028F5E54,028F61FC,028F6254			420	028F0730	format	printf: float to digits~ (ecvt)
+028F1BF0	68	ghs	internal	0	2	0	028F286C	028F1C34,028F2EA8,028F5E10,028F5E24					stdio	stdio: release buffer~
+028F1C34	1788	ghs	internal	0	5	0		028F2330,028F234C,028F2724,028F274C,028F37E0,028F37E4,028F3F84,028F5DE8,028F5DFC,028F5E54,028F605C,028F60F8,028F6130,028F6184	coreinit___gh_set_errno		12	028EA6B8,028ED288	stdio	stdio: fopen/freopen core~
+028F2330	28	ghs	internal	0	1	0		028F234C					stdio	stdio: fopen wrapper~
+028F234C	36	ghs	internal	0	2	0		028F2370					stdio	stdio: fopen wrapper~
+028F2370	340	ghs	internal	0	5	0		028F24C4,028F2724,028F274C,028F2774,028F5688,028F5DC0,028F5DD4	coreinit___gh_set_errno,coreinit_memcpy				stdio	fwrite
+028F24C4	12	ghs	game	1	1	0		028F24D0					stdio	puts~ (fputs to stdout)
+028F24D0	296	ghs	internal	0	3	0		028F25F8,028F25FC,028F2724,028F274C,028F2774,028F5688,028F5DE8,028F5DFC	coreinit___gh_set_errno				stdio	fputs
+028F25F8	4	ghs	internal	0	3	0		028F25FC,028F36F4					stdio	stdio: flush thunk~
+028F25FC	248	ghs	internal	0	3	0		028F26F4,028F2774,028F5688,028F61FC,028F6254	coreinit___gh_set_errno				stdio	stdio: write buffer~
+028F26F4	48	ghs	internal	0	2	0		028F2724,028F5E10,028F5E24	coreinit___ghs_flock_destroy,coreinit___ghs_flock_ptr				stdio	__ghs_flock_destroy wrapper~
+028F2724	40	ghs	internal	0	8	0		028F274C,028F5E38,028F5E44	coreinit___ghs_flock_file,coreinit___ghs_flock_ptr		12	028F1CB0	stdio	flockfile~
+028F274C	40	ghs	internal	0	8	0		028F2774,028F5E38,028F5E44	coreinit___ghs_flock_ptr,coreinit___ghs_funlock_file		12	028F1D08	stdio	funlockfile~
+028F2774	248	ghs	internal	0	13	0		028F2724,028F274C,028F286C,028F5688,028F5DC0,028F5DD4					stdio	fflush
+028F286C	180	ghs	internal	0	2	0		028F1BF0,028F2774,028F2920,028F5708,028F5E10,028F5E24	coreinit___gh_set_errno,coreinit_memset				stdio	fclose core~
+028F2920	76	ghs	internal	0	4	0		028F26F4,028F2724,028F274C,028F286C,028F296C,028F5E10,028F5E24	coreinit___gh_set_errno				stdio	fclose
+028F296C	64	ghs	internal	0	1	0	028F1C34	028F2774,028F2920,028F29AC,028F5E10,028F5E24					stdio	stdio: close callback~
+028F29AC	292	ghs	internal	0	3	0		028F2AD0			2	028F2CBC	stdio	free core~ (GHS heap)
+028F2AD0	500	ghs	internal	0	2	0		028F29AC,028F2CC4,028F588C,028F5DE8,028F5DFC			2	028F2DEC	stdio	malloc: grow arena~ (sbrk)
+028F2CC4	372	ghs	internal	0	3	0		028F2AD0,028F2E38,028F5DE8,028F5DFC			16	028F2E50,028F2E80	stdio	malloc core~ (GHS heap)
+028F2E38	40	ghs	internal	0	3	0		028F2CC4,028F2E60,028F5E10,028F5E24	coreinit___ghsLock,coreinit___ghsUnlock		12	028EA69C,028ED26C	stdio	malloc
+028F2E60	72	ghs	internal	0	2	0		028F2CC4,028F2EA8,028F5E10,028F5E24	coreinit___ghsLock,coreinit___ghsUnlock,coreinit_memset		4	028EF854	stdio	calloc
+028F2EA8	40	ghs	internal	0	12	0		028F29AC,028F2ED0,028F5E10,028F5E24	coreinit___ghsLock,coreinit___ghsUnlock				stdio	free
+028F2ED0	24	ghs	internal	0	3	0		028F2EE8,028F57D8,028F5E38	coreinit_exit				stdio	abort
+028F2EE8	424	ghs	game	3	1	0		028F3090,028F5E10,028F5E24	coreinit___gh_set_errno				trivial	strtoul (measured: ULONG_MAX on overflow)
+028F3090	460	ghs	game	2	1	0		028F325C,028F5E10,028F5E24	coreinit___gh_set_errno				trivial	strtol (measured: LONG_MAX/LONG_MIN on overflow)
+028F325C	312	ghs	game	3	1	0		028F3394,028F5880					special	setjmp
+028F3394	272	ghs	game	2	1	0		028F34A4,028F5888					special	longjmp
+028F34A4	64	ghs	internal	0	2	0		028F34E4,028F36CC,028F5E10,028F5E24			8	028F3598	stdio	locale name lookup~
+028F34E4	196	ghs	internal	0	3	0		028F34A4,028F35A8,028F3760,028F5D98,028F5DAC			12	028EC958,028EC984,028ECA04	stdio	setlocale~
+028F35A8	28	ghs	game	1	1	0		028F35C4					trivial	div
+028F35C4	116	ghs	internal	0	2	0		028F3638					stdio	stdio: stream state~
+028F3638	148	ghs	internal	0	2	0		028F25F8,028F35C4,028F36CC,028F5228,028F61F4,028F624C	coreinit___gh_set_errno				stdio	ungetc~/fputc~
+028F36CC	40	ghs	internal	0	2	0		028F36F4			8	028F34C4	trivial	strcmp
+028F36F4	108	ghs	internal	0	2	0		028F25FC,028F2724,028F274C,028F3760,028F5E10,028F5E24					stdio	stdio: flush all~
+028F3760	128	ghs	internal	0	2	0		028F37E0,028F5E10,028F5E24	coreinit___ghsLock,coreinit___ghsUnlock				stdio	stdio: walk streams~
+028F37E0	4	ghs	internal	0	2	0		028F37E4,028F3938					math	__huge_val thunk~
+028F37E4	12	ghs	internal	0	2	0		028F37F0					math	__huge_val~ (double)
+028F37F0	264	ghs	game	27	2	0		028F38F8	coreinit___gh_set_errno		14266869	0281EC50,028246C4,02825E08,02835DA0,02835E54,02835EBC,02836104,028F3F24	math	sqrt
+028F38F8	64	ghs	game	1	1	0		028F3938,028F5034			16384	027ED57C	math	sin~
+028F3938	384	ghs	internal	0	3	0		028F3AB8,028F6200,028F6258	coreinit___gh_set_errno				math	fmod kernel~
+028F3AB8	224	ghs	game	2	1	0		028F3938,028F3B98,028F6038,028F60E0,028F615C,028F61B0	coreinit___gh_set_errno				math	fmod~
+028F3B98	224	ghs	game	2	1	0		028F3C78					math	floor~/ceil~ (double)
+028F3C78	40	ghs	game	1	1	0		028F3CA0,028F5034			16384	027ED58C	math	cos~
+028F3CA0	544	ghs	game	1	2	0		028F3EC0			4094	027ED5E8,028F3F7C	math	atan kernel~ (double)
+028F3EC0	196	ghs	game	1	1	0		028F37F0,028F3CA0,028F3F84,028F605C,028F60F8	coreinit___gh_set_errno		2048	027ED650	math	asin~/acos~ (double)
+028F3F84	12	ghs	internal	0	2	0		028F3F90					math	__huge_valf~
+028F3F90	164	ghs	game	2	1	0		028F4034,028F4114,028F41B0,028F6050,028F60F0,028F6158,028F61AC					math	modff~/truncf~
+028F4034	224	ghs	game	3	1	0		028F4114,028F4700,028F6038,028F60E0,028F615C,028F61B0	coreinit___gh_set_errno		15695996	02019528,020198B8,027F32E4	math	fmodf~
+028F4114	156	ghs	game	4	2	0		028F41B0			32960	0259062C,02590698	math	floorf~
+028F41B0	140	ghs	game	3	2	0		028F423C			7034	0287086C,028708AC,02870900,0287090C,02870D50,02870D5C,0287816C,028781B4	math	ceilf~
+028F423C	328	ghs	game	9	1	0		028F4384,028F5E98			950406	02006870,02736F0C,027377EC,0274DE7C,0278CC24,0283805C,028E99BC	math	tanf~
+028F4384	116	ghs	game	743	3	0		028F43F8,028F605C,028F60F8	coreinit___gh_set_errno		38425177	020079FC,0239F2D8,023AB1B4,024F2730,02563E84,02737374,02737530,02806B60	math	sqrtf
+028F43F8	360	ghs	game	38	1	0		028F4560,028F5E98			19783308	02768F60,02769000,027693D0,027696F0,0276972C,027A1FDC,027A235C,027A23EC	math	sinf
+028F4560	416	ghs	game	14	1	0		028F4700,028F47BC,028F48B4,028F4A24,028F5E98,028F6044,028F60E8	coreinit___gh_set_errno		19881	02406DA4,0284852C,0284A978	math	powf~
+028F4700	188	ghs	internal	0	2	0		028F47BC,028F6200,028F6258	coreinit___gh_set_errno		7494765	028F40FC,028F410C	math	fmodf kernel~
+028F47BC	248	ghs	internal	0	2	0		028F48B4,028F5E98	coreinit___gh_set_errno		13444	028F46F0	math	logf~
+028F48B4	368	ghs	internal	0	2	0		028F4A24,028F5E98	coreinit___gh_set_errno				math	powf: exp2 kernel~
+028F4A24	444	ghs	internal	0	2	0		028F4BE0,028F5E98,028F605C,028F60F8	coreinit___gh_set_errno		13444	028F46F8	math	expf~
+028F4BE0	328	ghs	game	30	1	0		028F4D28,028F5E98			16937296	02768F6C,02768FF4,027693C0,027696E0,0276971C,027A1FD0,027A2368,027A23E0	math	cosf
+028F4D28	156	ghs	game	8	1	0		028F4DC4,028F6044,028F60E8			2648429	0256F760,0256F770,0256F794,0256F7A4,0256FCDC,0256FCEC,0256FD20,0256FD30	math	atan2f
+028F4DC4	348	ghs	game	1	3	0		028F4F20			2702803	02738B04,028F4D84,028F5018	math	atanf~ kernel
+028F4F20	140	ghs	game	1	1	0		028F4384,028F4DC4,028F4FAC,028F6050,028F60F0	coreinit___gh_set_errno				math	asinf~
+028F4FAC	136	ghs	game	7	1	0		028F4384,028F4DC4,028F5034,028F6050,028F60F0	coreinit___gh_set_errno		430	028E9C94	math	acosf
+028F5034	412	ghs	internal	0	3	0		028F51D0,028F6050,028F60F0,028F615C,028F61B0			32764	027ED57C,027ED58C	math	__sin_cos kernel~ (double, pi/2 reduction)
+028F51D0	76	ghs	internal	0	1	0		028F521C,028F52F0,028F555C			32764	028F50BC	math	trunc/round helper~ (double)
+028F521C	12	ghs	game	158	2	0		028F5228	coreinit_memset		571552	0258DCA8,0258DCB4,0258DE98,0258DEA4,0258DEB0,0258E084,0258E1C4,025A5C70	trivial	bzero~ / memset(p,0,n) (import memset)
+028F5228	96	ghs	internal	0	3	0		028F5288					trivial	wctomb~ (double-byte)
+028F5288	104	ghs	internal	0	2	0		028F52F0			8	028F0390	trivial	mbtowc kernel~ (double-byte)
+028F52F0	184	ghs	internal	0	2	0		028F53A8			28672	028F520C	abi	__cvt_ll_to_d~ (s64 -> double)
+028F53A8	148	ghs	internal	0	2	0		028F543C			13917	0278C02C	abi	__cvt_ull_to_f~ core
+028F543C	8	ghs	game	2	1	0		028F53A8,028F5444			13917	0278C02C	abi	__cvt_ull_to_f~
+028F5444	280	ghs	internal	0	2	0		028F555C			28672	028F5208	abi	__cvt_d_to_ll~ core
+028F555C	8	ghs	internal	0	2	0		028F5444,028F5564			28672	028F5208	abi	__cvt_d_to_ull~
+028F5564	276	ghs	internal	0	3	0		028F5678			15196769	025EEAD4,025EEB04,025EEB34,027A3EE4,027DACDC,027DAD30,027DAD80,02882768	abi	__cvt_f_to_ll~ core
+028F5678	8	ghs	game	1	1	0		028F5564,028F5680					abi	__cvt_f_to_ll~ variant
+028F5680	8	ghs	game	21	1	0		028F5564,028F5688			15196769	025EEAD4,025EEB04,025EEB34,027A3EE4,027DACDC,027DAD30,027DAD80,02882768	abi	__cvt_f_to_ll~
+028F5688	128	ghs	internal	0	5	0		028F5708,028F58E4	coreinit_OSConsoleWrite				stdio	write~ (fd 1/2 -> OSConsoleWrite)
+028F5708	20	ghs	internal	0	2	0		028F571C,028F58E4					stdio	close~ (syscall)
+028F571C	112	ghs	internal	0	2	0		028F578C					stdio	signal table init~
+028F578C	76	ghs	internal	0	2	0		028F57D8	coreinit_OSPanic,coreinit__Exit				stdio	default signal handler~ (OSPanic/_Exit)
+028F57D8	168	ghs	internal	0	2	0		028F571C,028F578C,028F5880					stdio	raise
+028F5880	8	ghs	internal	0	2	0		028F5888					stdio	__ghs_syscall stub~ (returns 0)
+028F5888	4	ghs	internal	0	2	0							stdio	__ghs_syscall stub~ (empty)
+028F588C	88	ghs	internal	0	1	0		028F58E4	coreinit___gh_set_errno		2	028F2B24	stdio	sbrk~
+028F58E4	48	ghs	internal	0	3	0		028F5914	coreinit___gh_set_errno				stdio	__ghs_syscall~
+028F5914	92	ghs	game	17	2	0		028F5970			221396	027DB0E4,027DD18C,027DD720,027E1584,027E1718,028163B4,028163C0,028A5A40	trivial	__ghs_zero_words~ (clear n words)
+028F5970	12	ghs	internal	0	3	0		028F597C	coreinit_memset		18	028ECA94,028EF3C8	trivial	bzero~ (import memset)
+028F597C	160	ghs	game	2	1	0		028F5A1C			405	027ED778,027ED7B4,027ED814	abi	__mod2u
+028F5A1C	368	ghs	game	8	2	0		028F5B8C			1093	028035BC,02803B68,02803B94,0280E7D0,0289B9B0,028A2298,028A22BC,028F59DC	abi	__div2u~ (u64 divide)
+028F5B8C	252	ghs	game	9	1	0		028F5A1C,028F5C88			8	020352FC,028A115C	abi	__div2i~ (s64 divide)
+028F5C88	272	ghs	game	10	2	0		028F5D98			208723	0275A628,0275C2CC,028F14F4,028F15A4,028F1610,028F16A8	format	__va_arg
+028F5D98	20	ghs	internal	0	2	0		028F5DAC			12	028F34EC	abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5DAC	20	ghs	internal	0	2	0		028F5DC0			12	028F34EC,028F3598	abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5DC0	20	ghs	internal	0	4	0		028F5DD4					abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5DD4	20	ghs	internal	0	4	0		028F5DE8					abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5DE8	20	ghs	internal	0	6	0		028F5DFC			414264	028F0DC4,028F1C3C,028F2AD8,028F2CCC	abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5DFC	20	ghs	internal	0	6	0		028F5E10			414264	028F0DC4,028F1D08,028F2CBC,028F2CCC,028F2DEC	abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5E10	20	ghs	internal	0	20	0		028F5E24			38	028F01BC,028F037C,028F2E40,028F2E68,028F34AC	abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5E24	20	ghs	internal	0	19	0		028F5E38			38	028F01FC,028F0390,028F2E58,028F2EA0,028F34C4	abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5E38	12	ghs	internal	0	4	0		028F5E44			24	028F272C,028F2754	abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5E44	16	ghs	internal	0	3	0		028F5E54			24	028F2730,028F2758	abi	GHS out-of-line prologue/epilogue~ (stmw/lmw)
+028F5E54	68	ghs	internal	0	3	0		028F5E98			840	028F1A20,028F1AD4	abi	__cvt_i_to_d~ (s32 -> double)
+028F5E98	416	ghs	internal	0	8	0		028F6038			15468046	028F42C0,028F44C8,028F4620,028F4894,028F4B64,028F4C98	math	__rem_pio2f~ (float pi/2 reduction)
+028F6038	12	ghs	internal	0	3	0		028F6044			15695996	028F4044	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F6044	12	ghs	internal	0	3	0		028F6050			18364306	028F4044,028F4570,028F4D38	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F6050	12	ghs	internal	0	5	0		028F605C			18397500	028F4044,028F4570,028F4D38,028F4FBC,028F5044	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F605C	132	ghs	internal	0	7	0		028F60E0			56839023	028F068C,028F09AC,028F3ED0,028F4044,028F4394,028F4570,028F4A34,028F5044	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F60E0	8	ghs	internal	0	3	0		028F60E8			15695996	028F4084	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F60E8	8	ghs	internal	0	3	0		028F60F0			18364306	028F4084,028F4570,028F46F8,028F4D84	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F60F0	8	ghs	internal	0	5	0		028F60F8			18397500	028F4084,028F4570,028F46F8,028F4D84,028F5018,028F51C8	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F60F8	56	ghs	internal	0	7	0		028F6130			56839024	028F0994,028F0D84,028F3ED0,028F3F7C,028F4084,028F4394,028F4B64,028F51C8	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F6130	12	ghs	internal	0	2	0		028F613C					abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F613C	24	ghs	internal	0	2	0		028F6154			420	028F0694	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F6154	4	ghs	internal	0	2	0		028F6158			840	028F0694,028F09B4	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F6158	4	ghs	internal	0	2	0		028F615C			840	028F0694,028F09B4	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F615C	40	ghs	internal	0	4	0		028F6184			15729600	028F0694,028F09B4,028F404C,028F504C	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F6184	12	ghs	internal	0	2	0		028F6190					abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F6190	24	ghs	internal	0	2	0		028F61A8			420	028F0994	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F61A8	4	ghs	internal	0	2	0		028F61AC			840	028F0994,028F0D84	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F61AC	4	ghs	internal	0	2	0		028F61B0			840	028F0994,028F0D84	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F61B0	32	ghs	internal	0	4	0		028F61D0			15729600	028F0994,028F0D84,028F4084,028F51C8	abi	_savefpr/_restfpr~ (out-of-line FPR save/restore)
+028F61D0	8	ghs	internal	0	2	0		028F61D8			208625	028F0E04	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61D8	4	ghs	internal	0	2	0		028F61DC			242337	028F008C,028F0E04	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61DC	4	ghs	internal	0	3	0		028F61E0			242337	028F008C,028F0E04	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61E0	4	ghs	internal	0	9	0		028F61E4			246609	028EAB3C,028EC71C,028ED708,028EEAF4,028F008C,028F0E04	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61E4	4	ghs	internal	0	2	0		028F61E8			4728298	028EAB3C,028EC71C,028ED708,028EEAF4,028EFE68,028F008C,028F0E04	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61E8	4	ghs	internal	0	9	0		028F61EC			4877874	028EA800,028EA9A8,028EAB3C,028EC71C,028ED3CC,028ED574,028ED708,028EEAF4	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61EC	4	ghs	internal	0	5	0		028F61F0			4877874	028EA800,028EA9A8,028EAB3C,028EC71C,028ED3CC,028ED574,028ED708,028EEAF4	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61F0	4	ghs	internal	0	7	0		028F61F4			4877874	028EA800,028EA9A8,028EAB3C,028EC71C,028ED3CC,028ED574,028ED708,028EEAF4	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61F4	4	ghs	internal	0	16	0		028F61F8			4877928	028EC560,028EC71C,028EC900,028ED168,028ED2DC,028ED3CC,028ED708,028EEAF4	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61F8	4	ghs	internal	0	53	0		028F61FC			4886810	028ECA54,028ECAE0,028ECBA0,028ED708,028EF3F0,028EF40C,028EF754,028EF7EC	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F61FC	4	ghs	internal	0	5	0		028F6200			5036778	028ECA54,028ECAE0,028ECBA0,028ED708,028EF3F0,028EF40C,028EF754,028EF7EC	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6200	40	ghs	internal	0	3	0		028F6228			12531543	028ECA54,028ECAE0,028ECBA0,028ED708,028EF3F0,028EF40C,028EF754,028EF7EC	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6228	8	ghs	internal	0	2	0		028F6230			208625	028F10AC	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6230	4	ghs	internal	0	2	0		028F6234			242337	028F008C,028F0120,028F014C,028F10AC	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6234	4	ghs	internal	0	3	0		028F6238			242337	028F008C,028F0120,028F014C,028F10AC	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6238	4	ghs	internal	0	9	0		028F623C			246609	028EAB94,028EADB4,028EC8CC,028ED760,028ED980,028EEAF4,028F008C,028F10AC	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F623C	4	ghs	internal	0	2	0		028F6240			4728298	028EAB94,028EADB4,028EC8CC,028ED760,028ED980,028EEAF4,028EFF60,028F10AC	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6240	4	ghs	internal	0	9	0		028F6244			4877874	028EA984,028EAB18,028EADB4,028EC8CC,028ED550,028ED6E4,028ED980,028EEAF4	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6244	4	ghs	internal	0	5	0		028F6248			4877874	028EA984,028EAB18,028EADB4,028EC8CC,028ED550,028ED6E4,028ED980,028EEAF4	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6248	4	ghs	internal	0	7	0		028F624C			4877874	028EA984,028EAB18,028EADB4,028EC8CC,028ED550,028ED6E4,028ED980,028EEAF4	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F624C	4	ghs	internal	0	15	0		028F6250			4877928	028EC560,028EC8CC,028EC9AC,028ECD58,028ED288,028ED3B0,028ED550,028EEAF4	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6250	4	ghs	internal	0	53	0		028F6254			4886810	028EC540,028EC560,028EC8CC,028ECAC4,028EF3F4,028EF410,028EF780,028EF800	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6254	4	ghs	internal	0	5	0		028F6258			5036778	028EC540,028EC560,028EC8CC,028ECAC4,028EF3F4,028EF410,028EF780,028EF800	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)
+028F6258	20	ghs	internal	0	3	0		028F626C			12531543	028EC540,028EC560,028EC8CC,028ECAC4,028EF3F4,028EF410,028EF780,028EF800	abi	_savegpr/_restgpr~ (out-of-line GPR save/restore)

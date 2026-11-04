@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Statically recompile a Wii U RPX into C.
 
-usage: recomp.py game/code/cking.rpx OUTDIR [--insns-per-file N] [--build NAME] [--mod-hooks] [--decomp-hooks FILE] [--ppc-nan-propagation]
+usage: recomp.py game/code/cking.rpx OUTDIR [--insns-per-file N] [--build NAME] [--mod-hooks] [--preserve-registers] [--decomp-hooks FILE] [--ppc-nan-propagation]
 
 The rpx is identified by its SHA-256 (tools/recomp/builds.py). Functions are named by their
 *canonical* (USA) address, so the runtime refers to the same f_XXXXXXXX whichever build of the game
@@ -11,7 +11,14 @@ it was translated from; the dispatch table maps this build's real addresses to t
 g_mod_hook_flags (runtime/src/mods/guest_mods.cpp), so guest mods (docs/mod-sdk-v2.md) can hook or
 replace any game function at runtime without rebuilding the game code.
 
---decomp-hooks FILE: the code for the decomp build (CMake WWHD_DECOMP=ON, docs/decomp-build.md). FILE
+--preserve-registers: experimental patched-RPX builds whose assembly helpers do not follow the
+PowerPC EABI. Keep all guest register writes across function returns and calls, including scratch
+GPRs/FPRs and CR bits. Disables the CR liveness and leaf/nonleaf register-local passes, without
+adding mod hooks or changing RPX identification. Vanilla builds retain their normal optimizations.
+
+--decomp-hooks FILE: the code for the decomp build (CMake WWHD_DECOMP=ON, docs/decomp-build.md); it also
+routes the roots in tools/recomp/decomp_hostrt_hooks.txt (the port-owned guest runtime) to their host
+replacements (runtime/src/hostrt), which only the decomp build has. FILE
 (written by tools/decomp_build/gen.py) lists the decompiled functions; each becomes a hook (f_X calls
 hook_X in the runtime, which runs the decompiled function or the recompiled f_X_orig). A listed address
 that is not a function entry, or a function containing an instruction-level hook ("@ADDR"; the
@@ -55,6 +62,7 @@ import json
 import os
 import re
 import shutil
+from pathlib import Path
 import sys
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -135,14 +143,23 @@ class Recompiler:
     raw_stores = 0     # rawstore.py statistics (report.txt)
     single_stores = 0
 
-    def __init__(self, path, build=None, mod_hooks=False, decomp_hooks=None):
+    def __init__(self, path, build=None, mod_hooks=False, decomp_hooks=None, preserve_registers=False):
         """`build` is which build of the game `path` is (tools/recomp/builds.py); by default it is
         identified by its SHA-256, and an rpx that is none of them is refused."""
         self.build = build or game_builds.identify(path)
         if self.build is None:
             raise SystemExit(unknown_build_message(path))
+        if getattr(self.build, "randomizer", False) and decomp_hooks:
+            raise ValueError("randomized builds cannot use decompiled function replacements")
         self.mod_hooks = mod_hooks
-        self.p = Program(path)
+        self.preserve_registers = preserve_registers or getattr(self.build, "randomizer", False)
+        if getattr(self.build, "randomizer", False):
+            from randomizer_compat import RPX_LIMITS
+            self.p = Program(path, rpx_limits=RPX_LIMITS)
+            if self.p.rpx.buffer_sha256 != self.build.sha256:
+                raise ValueError("randomized RPX changed before translation parsed its input buffer")
+        else:
+            self.p = Program(path)
         self.p.discover()
         self.entries = set(self.p.entries)
         self.imports = {}  # slot address -> (lib, name, kind)
@@ -157,7 +174,14 @@ class Recompiler:
         # canonical i.e. USA) plus the extra lists (hooks_*.txt). "@ADDR" is an instruction-level
         # hook: site_ADDR(c) runs just before the instruction at ADDR (also when ADDR is reached by
         # a branch), so it can adjust what that instruction uses.
-        hook_entries, self.skipped_hooks = game_builds.read_hooks(game_builds.hook_files(), self.build)
+        # the decomp build adds its own runtime replacements (decomp_only_hooks_*.txt, and the port-owned
+        # guest runtime's host replacements in decomp_hostrt_hooks.txt, runtime/src/hostrt); the normal
+        # build keeps the game's code there and never reads these lists
+        hook_list = game_builds.hook_files()
+        if decomp_hooks:
+            hook_list += game_builds.decomp_only_hook_files() + [
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "decomp_hostrt_hooks.txt")]
+        hook_entries, self.skipped_hooks = game_builds.read_hooks(hook_list, self.build)
         self.canon_of = {}              # this build's address -> canonical address (for symbol names)
         self.hooks, self.sites = set(), set()
         for site, canon, addr, _ in hook_entries:
@@ -336,15 +360,16 @@ class Recompiler:
         # the passes (crlive.py, leaflocal.py) only where no outside code can look at this function's
         # registers mid-way: not in hooked functions (hook_X runs around f_X_orig), not in functions
         # with instruction hooks (ppc_host_call(c, site_X) reads and changes the Cpu struct) and not in
-        # builds with guest mod hooks (a mod may hook or replace any function): those keep the plain code
-        plain = hooked or self.mod_hooks or any(a in self.sites for a, _, _ in body)
+        # builds with guest mod hooks (a mod may hook or replace any function). Experimental patched
+        # assembly can also return scratch registers outside the EABI, so preserve every write there.
+        plain = self.preserve_registers or hooked or self.mod_hooks or any(a in self.sites for a, _, _ in body)
         if CRLIVE and not plain:
             live_after, fields = crlive.analyze(body, self.cur_start, self.cur_end, self.p.jump_tables, branch_target,
                                                 self.sites)
             body = [(a, w, crlive.rewrite(s, fields[i], live_after[i], CR_CHECK, a)) for i, (a, w, s) in enumerate(body)]
             self.cr_stats[0] += sum(1 for f in fields if f is not None)
             self.cr_stats[1] += sum(1 for i, f in enumerate(fields) if f is not None and (live_after[i] >> (4 * f)) & 0xF == 0)
-        elif CRLIVE and CR_CHECK and not self.mod_hooks:
+        elif CRLIVE and CR_CHECK and not self.mod_hooks and not self.preserve_registers:
             # checking build: plain functions store every CR bit, but they still check what they read
             # (a bit another function dropped)
             body = [(a, w, crlive.rewrite(s, None, 0, True, a)) for a, w, s in body]
@@ -426,6 +451,12 @@ class Recompiler:
         if ppc2c.NAN_PROPAGATION:  # the helpers, next to funcs.h (the decomp's verify build has its own runtime)
             with _Output(os.path.join(outdir, "ppc_nan.h")) as f:
                 f.write(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "ppc_nan.h"), encoding="utf-8").read())
+        if getattr(self.build, "randomizer", False):
+            with _Output(os.path.join(outdir, "randomizer.json")) as output:
+                json.dump(self.build.randomizer_report, output, indent=2)
+                output.write("\n")
+        else:
+            Path(outdir, "randomizer.json").unlink(missing_ok=True)
         self.write_report(outdir, len(files))
 
     def static_float_gqrs(self):
@@ -536,6 +567,7 @@ class Recompiler:
         f.write('\n/* %s build: canonical (USA) address -> this build\'s (tools/recomp/builds.py) */\n' % b.name)
         f.write('const char g_guest_build_name[] = "%s";\n' % b.name)
         f.write('const char g_guest_build_title_id[] = "%s";\n' % b.title_id)
+        f.write('const char g_guest_build_rpx_sha256[] = "%s";\n' % b.sha256)
         for kind, steps in (("code", b.code_steps()), ("data", b.data_steps())):
             f.write("const GuestStep g_guest_%s_steps[] = {%s};\n" % (
                 kind, ", ".join("{0x%08Xu, %d}" % (a, d) for a, d in steps)))
@@ -566,10 +598,15 @@ class Recompiler:
                 f.write("PowerPC NaN propagation: on (verification build, ppc_nan.h)\n")
             # only with the passes on: with them off (WWHD_RECOMP_PLAIN=1) every output file is the same
             # as without them
-            if CRLIVE and not self.mod_hooks:
+            if getattr(self.build, "randomizer", False):
+                f.write("randomizer compatibility: %s; RPX %s\n" %
+                        (self.build.randomizer_report["profile"], self.build.sha256))
+            if self.preserve_registers:
+                f.write("guest register preservation: on (CR liveness and ABI register-local passes off)\n")
+            if CRLIVE and not self.mod_hooks and not self.preserve_registers:
                 f.write("CR writers: %d, %d with no live bit (liveness on%s)\n" % (
                     self.cr_stats[0], self.cr_stats[1], ", check build" if CR_CHECK else ""))
-            if (LEAF or NONLEAF) and not self.mod_hooks:
+            if (LEAF or NONLEAF) and not self.mod_hooks and not self.preserve_registers:
                 f.write("leaf functions with registers in locals: %d\n" % self.leaf_count)
                 f.write("functions with calls with registers in locals: %d\n" % self.nonleaf_count)
             if RAWSTORE:
@@ -588,14 +625,31 @@ if __name__ == "__main__":
     ap.add_argument("--build", help="which build the rpx is, when it should not be identified by "
                                     "its SHA-256 (%s)" % ", ".join(b.name for b in game_builds.all_builds()))
     ap.add_argument("--mod-hooks", action="store_true", default=os.environ.get("WWHD_RECOMP_MOD_HOOKS") == "1")
+    ap.add_argument("--randomizer", action="store_true", help="validate and translate a compatible USA randomized RPX")
+    ap.add_argument("--expected-rpx-sha256", help="randomizer: require the exact RPX checked by setup")
+    ap.add_argument("--preserve-registers", action="store_true",
+                    help="experimental patched RPX: preserve scratch GPR/FPR/CR writes across guest calls")
     ap.add_argument("--decomp-hooks", help="the decomp build's function list (tools/decomp_build/gen.py)")
     ap.add_argument("--ppc-nan-propagation", action="store_true", default=os.environ.get("WWHD_RECOMP_PPC_NAN") == "1",
                     help="verification builds: float instructions return the NaN operand the PowerPC would (ppc_nan.h)")
     a = ap.parse_args()
     ppc2c.NAN_PROPAGATION = a.ppc_nan_propagation
+    if a.randomizer and a.build:
+        ap.error("--randomizer and --build cannot be combined")
+    if a.randomizer and a.decomp_hooks:
+        ap.error("--randomizer and --decomp-hooks cannot be combined")
+    if a.expected_rpx_sha256 and not a.randomizer:
+        ap.error("--expected-rpx-sha256 requires --randomizer")
     build = None
+    if a.randomizer:
+        import randomizer_compat
+        try:
+            build = randomizer_compat.identify(a.rpx, expected_sha256=a.expected_rpx_sha256)
+        except (ValueError, OSError, KeyError) as error:
+            ap.exit(1, "randomizer compatibility check failed: %s\n" % error)
     if a.build:
         build = game_builds.by_name(a.build)
         if build is None:
             sys.exit("unknown build %r; known: %s" % (a.build, ", ".join(b.name for b in game_builds.all_builds())))
-    Recompiler(a.rpx, build, mod_hooks=a.mod_hooks, decomp_hooks=a.decomp_hooks).run(a.outdir, a.insns_per_file)
+    Recompiler(a.rpx, build, mod_hooks=a.mod_hooks, decomp_hooks=a.decomp_hooks,
+               preserve_registers=a.preserve_registers).run(a.outdir, a.insns_per_file)

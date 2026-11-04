@@ -26,6 +26,8 @@ constexpr uint32_t shoulder_background(int x, int y) {
 // game draws it with its own letter colours (button_glyphs.cpp, coverage_sheet).
 constexpr uint32_t kShapeColours[4] = {0x3C7DD9FF, 0xD9413CFF, 0xD05FB0FF, 0x2AA67DFF};
 constexpr uint32_t kShapeInk = 0x3A3A3AFF;
+// GameCube shoulder plates: purple Z, light grey L/R.
+constexpr uint32_t kGameCubeZ = 0x6754C8FF, kGameCubeShoulder = 0xE5E5E5FF;
 
 namespace art {
 inline float segment(float px, float py, float ax, float ay, float bx, float by) {
@@ -142,10 +144,15 @@ inline uint32_t gamecube_icon(int face, bool framed, int x, int y, bool letter =
 
 inline uint32_t gamecube_shoulder_icon(int shoulder, bool framed, int x, int y) {
     const float px=x+0.5f-32.f, py=y+0.5f-32.f, d=std::hypot(px,py);
-    const bool outer=d<(framed?25.f:22.f), inner=d<20.f;
+    const auto rounded=[](float x,float y,float rx,float ry,float radius) {
+        return std::hypot(std::max(std::fabs(x)-(rx-radius),0.f),
+                          std::max(std::fabs(y)-(ry-radius),0.f))<radius;
+    };
+    const bool outer=framed ? rounded(px,py,29.f,shoulder==1?16.f:20.f,8.f) : d<22.f;
+    const bool inner=framed ? rounded(px,py,26.f,shoulder==1?13.f:17.f,6.f) : d<20.f;
     uint32_t c=0;
     if (framed && outer && !inner) c=0x676B70FF;
-    else if (inner) c=shoulder==1?0x6754C8FF:framed?0xE5E5E5FF:0xFFFFFFFF;
+    else if (inner) c=shoulder==1?kGameCubeZ:framed?kGameCubeShoulder:0xFFFFFFFF;
     const float width=2.5f;
     auto line=[](float px,float py,float ax,float ay,float bx,float by){return art::segment(px,py,ax,ay,bx,by)<2.5f;};
     const int code[4]={0,1,0,2}; // L, Z, L, R for the Wii U's L/R/ZL/ZR prompt panes.
@@ -154,7 +161,7 @@ inline uint32_t gamecube_shoulder_icon(int shoulder, bool framed, int x, int y) 
     if(glyph==0) ink=line(px,py,-6,-10,-6,10)||line(px,py,-6,10,7,10);
     else if(glyph==1) ink=line(px,py,-7,-9,7,-9)||line(px,py,7,-9,-7,9)||line(px,py,-7,9,7,9);
     else ink=line(px,py,-6,-10,3,-10)||line(px,py,-6,-10,-6,10)||line(px,py,3,-10,6,-7)||line(px,py,6,-7,6,-3)||line(px,py,6,-3,3,0)||line(px,py,3,0,-6,0)||line(px,py,0,0,6,10);
-    if (inner && ink) c=framed?0x292D31FF:(shoulder==1?0xFFFFFFFF:0x292D31FF);
+    if (inner && ink) c=shoulder==1?0xFFFFFFFF:0x292D31FF;
     return c;
 }
 

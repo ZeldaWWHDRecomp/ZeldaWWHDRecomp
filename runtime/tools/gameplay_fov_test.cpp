@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
+#include <utility>
 #ifdef _WIN32
 #include <windows.h>
 #else
@@ -52,6 +53,16 @@ int main() {
         assert(aspect::mode()==aspect::k4x3);
         assert(close_enough(aspect::requested(),4.f/3));
     }
+    // Match window agrees with the exact presets, including integer-pixel 4:3 dimensions.
+    aspect::set_mode(aspect::kWindow);
+    for (auto dimensions : {std::pair{1280.f,960.f}, std::pair{1280.f,800.f},
+                            std::pair{1920.f,1080.f}, std::pair{2560.f,1080.f}, std::pair{3840.f,1080.f}}) {
+        const float ratio = dimensions.first / dimensions.second;
+        aspect::set_window_aspect(ratio);
+        assert(close_enough(aspect::requested(),ratio));
+    }
+    aspect::set_window_aspect(1281.f/960.f);assert(close_enough(aspect::requested(),4.f/3));
+    aspect::set_window_aspect(1.431f);assert(close_enough(aspect::requested(),1.43f));
     for(uint32_t base:{0x101E0000u,0x10460000u}) {
         void* address=mem::ptr(base);
 #ifdef _WIN32
