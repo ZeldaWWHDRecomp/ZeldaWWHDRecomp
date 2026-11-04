@@ -26,6 +26,7 @@
 #include "render_prof.h"
 #include "background_shaders.h"
 #include "runtime.h"
+#include "guest_addr.h"
 #include "gx2/gx2.h"
 #include "gx2/gx2_cmd.h"
 #include "shaders.h"
@@ -3149,7 +3150,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     if (linkFrame != R.frame) {  // Link: the actor queue's process 0xA8 (herramientas/lector.py)
       linkFrame = R.frame;
       haveLink = false;
-      uint32_t n = be32(0x101F3328);
+      uint32_t n = be32(GD(0x101F3328));  // g_fopAcTg_Queue (touch_talk.cpp), mapped for this build
       for (int i = 0; i < 4096 && n && valid(n); ++i) {
         const uint32_t a = be32(n + 0xC);
         if (valid(a) && (be32(a + 8) >> 16) == 0xA8) { lx = bef(a + 0x314); lz = bef(a + 0x31C); haveLink = true; break; }
