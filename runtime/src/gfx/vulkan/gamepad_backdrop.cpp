@@ -4,6 +4,7 @@
 #include "backend.h"
 #include "deferred_dispatch.h"
 #include <utility>
+#include <cstring>
 namespace gfxvk {
 namespace {
 struct Image {
@@ -17,12 +18,21 @@ std::unique_ptr<Image> active,building,published;
 uint64_t sourceIdentity=0,nextTicket=0;
 unsigned scopeDepth=0;
 bool replaying=false,failed=false,drawn=false,buildingDirty=false,captureOpaque=false;
-uint64_t identity(Surface* s) { return uint64_t(reinterpret_cast<uintptr_t>(s)); }
+uint64_t identity(Surface* s) {
+ uint64_t value=0;
+ if(s) { static_assert(sizeof(s->image)<=sizeof(value));std::memcpy(&value,&s->image,sizeof(s->image)); }
+ return value;
+}
 }
 void gamepad_backdrop_reset() {
  end_encoder();active.reset();building.reset();published.reset();pending.clear();cache.reset();
  gfx::gamepad_backdrop::set_capture_requested(false);
  sourceIdentity=0;scopeDepth=0;replaying=failed=drawn=buildingDirty=false;
+}
+void gamepad_backdrop_invalidate(Surface* source) {
+ const auto id=identity(source);if(!id)return;
+ if(sourceIdentity==id)failed=true;
+ for(auto& p:pending) if(p.source==id) { p.source=0;p.ticket=0;p.image.reset(); }
 }
 void gamepad_backdrop_scope(const uint32_t*,bool begin) {
  if(begin) { if(scopeDepth++==0) { active.reset();sourceIdentity=0;failed=drawn=false; } return; }

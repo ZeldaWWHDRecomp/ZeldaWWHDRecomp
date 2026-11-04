@@ -20,6 +20,7 @@ struct ComposeQuad {
  bool solid=false; float color[4]{};
  // 1: premultiplied isolated backdrop; 2..5: top/bottom/left/right edge colours.
  int backdrop=0;
+ bool clipped=false; gfx::Box clip{};
 };
 // this frame's layout from gfx/display_modes.cpp, set by swap() (null: the picture scaled to fit)
 void set_present_plan(const gfx::PresentPlan* plan);

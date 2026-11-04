@@ -73,12 +73,33 @@ int main() {
  gamepad_backdrop_scope(nullptr,false);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
  gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&a,false));assert(!gamepad_backdrop_begin_replay(&a,true));gamepad_backdrop_scope(nullptr,false);
  gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
+ // Clearing a source after its pane invalidates the capture before scanout.
+ capture(&a);gamepad_backdrop_invalidate(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
+ // Reusing the same Surface object with a different VkImage is not a match.
+ capture(&a);a.image=101;gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
+ // Explicit destruction invalidation also protects recycled numeric handles.
+ capture(&a);gamepad_backdrop_invalidate(&a);a.image=101;gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
  capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();policy::enabled=false;assert(!gamepad_backdrop_image());policy::enabled=true;
  gamepad_backdrop_reset();assert(!gamepad_backdrop_image()&&!policy::capture_enabled()&&retired==created);
 }
 '''
 
 class BackdropLifecycle(unittest.TestCase):
+    def test_production_reset_clear_and_pipeline_bindings(self):
+        surfaces=(CPP.parent/'surfaces.cpp').read_text()
+        self.assertIn('void ss_reset_surfaces() {\n    gamepad_backdrop_reset();',surfaces)
+        clear=surfaces[surfaces.index('void clear_color('):surfaces.index('void clear_depth_stencil(')]
+        self.assertIn('gamepad_backdrop_invalidate(s);',clear)
+        destroy=surfaces[surfaces.index('void destroy_surface_image('):surfaces.index('VkImageView layer_view(')]
+        self.assertIn('gamepad_backdrop_invalidate(s);',destroy)
+        draw=(CPP.parent/'draw.cpp').read_text()
+        self.assertIn('if (gamepad_backdrop_replaying() && p.pendingCompile) resolve_pending_pipeline(p);',draw)
+        self.assertIn('!aoPrivateReplay && !gamepad_backdrop_replaying()',draw)
+        present=(CPP.parent/'present.cpp').read_text()
+        self.assertIn('auto q=backdrop;q.clipped=true;q.clip=',present)
+        self.assertIn('record::vkCmdSetScissor(cmd,0,1,&quadScissor)',present)
+        self.assertIn('record::vkCmdSetScissor(cmd,0,1,&scissor);\n if(gamepadOverlay)',present)
+
     def test_capture_coverage_not_squared(self):
         source = r'''#include <cassert>
 #include <cmath>

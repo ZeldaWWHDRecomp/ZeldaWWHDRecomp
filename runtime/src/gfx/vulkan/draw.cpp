@@ -3368,10 +3368,13 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if (!p.pipeline && !p.pendingCompile) return;
   // Shader compile Fast (background_shaders.h): a draw that may be left out only waits the frame's
   // budget and is left out of this frame if its pipeline is not ready by then
-  const bool trackTargets = bgshaders::enabled() && !aoPrivateReplay;
+  const bool trackTargets = bgshaders::enabled() && !aoPrivateReplay && !gamepad_backdrop_replaying();
   if (p.pendingCompile && trackTargets && !background_wait(r, p, colors, depth)) return;
   if (p.pendingCompile && !bgshaders::enabled()) bgshaders::exact(bgshaders::kOff);  // (the AO pass's private
                                                                                       // copy of a draw waits)
+  // A capture is published only after its private pipeline is actually ready.
+  // Deferred command counts cannot certify a future driver compilation success.
+  if (gamepad_backdrop_replaying() && p.pendingCompile) resolve_pending_pipeline(p);
   if (p.pendingCompile && !begin_exact_preparation()) resolve_pending_pipeline(p);
   if (trackTargets) track_drawn(r, colors, depth);
   if (!p.pipeline && !p.pendingCompile) return; // terminal driver failure, not pending

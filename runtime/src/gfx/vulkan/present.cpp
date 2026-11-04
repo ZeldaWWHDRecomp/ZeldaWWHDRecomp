@@ -476,6 +476,16 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
  const float whiteScale=hdrOutput?std::min(hdr::menuWhite.load(),hdr::parameters().peak)/80.0f:1.0f;
  for(auto& q:quads) {
   if(q.box.w<=0||q.box.h<=0)continue;
+  VkRect2D quadScissor{{0,0},extent};
+  if(q.clipped) {
+   const int x=int(std::clamp(std::floor(q.clip.x),0.f,float(extent.width)));
+   const int y=int(std::clamp(std::floor(q.clip.y),0.f,float(extent.height)));
+   const int right=int(std::clamp(std::ceil(q.clip.x+q.clip.w),float(x),float(extent.width)));
+   const int bottom=int(std::clamp(std::ceil(q.clip.y+q.clip.h),float(y),float(extent.height)));
+   quadScissor={{x,y},{uint32_t(right-x),uint32_t(bottom-y)}};
+  }
+  if(!quadScissor.extent.width||!quadScissor.extent.height)continue;
+  record::vkCmdSetScissor(cmd,0,1,&quadScissor);
   VkViewport viewport{q.box.x,q.box.y,q.box.w,q.box.h,0,1};record::vkCmdSetViewport(cmd,0,1,&viewport);
   if(q.solid) {
    record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(format,kSolid));
@@ -515,6 +525,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
   params.pq=pqEncode;
   record::vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);record::vkCmdDraw(cmd,3,1,0,0);
  }
+ record::vkCmdSetScissor(cmd,0,1,&scissor);
  if(gamepadOverlay)overlay_draw(gamepadOverlay,cmd,format,extent,targetLinear,-1,whiteScale);
  if(overlay) {
   if (overlay == overlayDraw && overlayFrame.stereo_packed(stereo::frame.mode != stereo::Off, bool(stereoRight.scan))) {
@@ -828,7 +839,12 @@ static void add_gamepad_backdrop(std::vector<ComposeQuad>& quads,VkExtent2D targ
   }
   quads.insert(quads.begin(),bars.begin(),bars.end());return;
  }
- quads.insert(quads.begin(),backdrop);
+ std::vector<ComposeQuad> bars;
+ for(const auto& r:gfx::gamepad_backdrop::bars(float(target.width),float(target.height),{box.x,box.y,box.w,box.h})) {
+  if(r.w<=0||r.h<=0)continue;
+  auto q=backdrop;q.clipped=true;q.clip={r.x,r.y,r.w,r.h};bars.push_back(q);
+ }
+ quads.insert(quads.begin(),bars.begin(),bars.end());
 }
 std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filter) {
  if (&screen != &R.tv || stereo::frame.mode == stereo::Off) {
@@ -844,6 +860,10 @@ std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filt
  std::vector<ComposeQuad> result;
  for (int eye=0;eye<2;++eye) for (auto q:mono) {
   if (q.image == screen.scan.get() && (eye != int(stereo::frame.swap))) q.image = stereoRight.scan.get();
+  if (q.clipped) {
+   if(stereo::frame.mode==stereo::FullSBS)q.clip.x+=eye*logical.width;
+   else { auto r=stereo::pack({q.clip.x,q.clip.y,q.clip.w,q.clip.h},float(target.width),float(target.height),stereo::frame.mode,eye);q.clip={r.x,r.y,r.w,r.h}; }
+  }
   if (stereo::frame.mode == stereo::FullSBS) q.box.x += eye * logical.width;
   else {
    auto r=stereo::pack({q.box.x,q.box.y,q.box.w,q.box.h},float(target.width),float(target.height),stereo::frame.mode,eye);
