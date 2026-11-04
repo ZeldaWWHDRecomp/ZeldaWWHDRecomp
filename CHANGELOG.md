@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **For mod authors: story flags in the SDK** (#369). The new `wwhd/save_flags.h` reads and changes the game's story
+  flags (its persistent event bits) through the game's own functions, with checked inputs. A value outside a flag
+  group's mask is refused instead of changing the neighbouring flags, and the helpers report when no save is loaded.
+  Changing story flags can change story order, so take a save backup first.
 - **Fixed on Android: save transfers keep the game out** (#382). Starting a second save import or export while one is
   still running no longer releases the first transfer's lock, so the game can no longer start in the middle of that
   transfer. The second one is turned away with "Another save transfer is in progress" as before.
