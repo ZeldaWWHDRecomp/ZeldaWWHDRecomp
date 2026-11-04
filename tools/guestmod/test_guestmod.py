@@ -596,12 +596,59 @@ int main(int argc, char** argv) {
             subprocess.run(command, check=True)
             subprocess.run([str(executable), result['module']], check=True)
 
+    def test_flagless_module_entry_stack_alignment(self):
+        src = r'''
+#include "wwhd/bindings.h"
+typedef struct __attribute__((aligned(16))) { u32 words[4]; } Local;
+WWHD_GAME_FUNC(0x02000010,u32,native,(Local*,u32*,u32*,u32,u32));
+#define PARAMETERS u32* out,u32 a,u32 b,u32 c,u32 d,u32 e,u32 f,u32 g,u32 ninth,u32 tenth,u32* escaped
+#define ARGUMENTS out,a,b,c,d,e,f,g,ninth,tenth,escaped
+static u32 body(PARAMETERS) {
+ Local local={{ninth,tenth,*escaped,a+b+c+d+e+f+g}};
+ u32 result=native(&local,out,escaped,ninth,tenth);
+ *out+=a+b+c+d+e+f+g;
+ return result;
+}
+WWHD_REPLACE(0x02000000,u32,legacy,(PARAMETERS)) { return body(ARGUMENTS); }
+WWHD_HOOK(0x02000004,legacy_entry,(PARAMETERS)) { (void)body(ARGUMENTS); }
+WWHD_HOOK_RETURN(0x02000004,legacy_return,(PARAMETERS)) { (void)body(ARGUMENTS); }
+'''
+        import shlex
+        with tempfile.TemporaryDirectory() as d:
+            # Deliberately omit the current SDK's realignment flag: this models old modules.
+            with mock.patch.object(sys.modules[__name__], 'FLAGS', [f for f in FLAGS if f != '-mstackrealign']):
+                self.build_elf(src, d)
+            Path(d, 'manifest.json').write_text(json.dumps({'kind':'guest','id':'legacy-stack','guest':{'api_version':1}}))
+            result=builder.build(d,str(Path(d,'cache')),0x7F000000,builder.default_cc(),str(Path(REPO,'runtime/include')))
+            cxx=shlex.split(os.environ['CXX']) if os.environ.get('CXX') else cxx_command(builder.default_cc())
+            executable=Path(d,'driver.exe' if os.name=='nt' else 'driver')
+            command=cxx+['-std=c++17','-O2','-I',str(Path(REPO,'runtime/include')),'-I',str(Path(REPO,'runtime/src')),
+                         str(Path(HERE,'fixtures/entry_stack_alignment.cpp')),'-o',str(executable)]
+            if sys.platform.startswith('linux'):command.append('-ldl')
+            subprocess.run(command,check=True)
+            subprocess.run([str(executable),result['module']],check=True)
+
     def test_errors(self):
         with self.assertRaises(guestmod.ModError):
             guestmod.Elf(b"not an elf at all" * 4)
 
 
 class BuildInterfaceTest(unittest.TestCase):
+    def test_all_module_entry_boundaries_use_the_stack_adapter(self):
+        import re
+        root = Path(REPO, 'runtime/src')
+        dispatch = (root/'core.cpp').read_text().split('extern "C" void ppc_dispatch(Cpu* c) {', 1)[1].split('// checking builds', 1)[0]
+        self.assertRegex(dispatch, r'invoke_module_entry\(c,\s*f\)')
+        self.assertLess(dispatch.index('dispatch::lookup'), dispatch.index('invoke_module_entry'))
+        self.assertIn('MUSTTAIL return f(c)', dispatch)
+        hooks = (root/'mods/guest_mods.cpp').read_text().split('extern "C" void ppc_mod_run(Cpu* c) {', 1)[1]
+        self.assertEqual(len(re.findall(r'invoke_module_entry\(c,\s*h\)', hooks)), 2)
+        self.assertRegex(hooks, r'invoke_module_entry\(c,\s*ch.replace\)')
+        self.assertEqual(hooks.count('ObserverRegisters preserve(c)'), 2)
+        adapter = (root/'guest_module_entry.h').read_text()
+        self.assertRegex(adapter, r'threads::current_stack_bounds\(cpu,\s*bounds.bottom,\s*bounds.top\)')
+
+
     def test_cxx_driver_keeps_setup_launcher_and_target(self):
         for cc, expected in (
             (['xcrun', 'clang'], ['xcrun', 'clang++']),

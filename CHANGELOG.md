@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed for mod authors: C mods get a correctly aligned stack** (#387, #391). The game can call a mod with a stack
+  that is aligned to 8 bytes, while C code compiled for the game assumes 16, so a mod's local variables and the
+  pointers it passes to game functions could end up misaligned. Mods are now built with `-mstackrealign` (the SDK
+  docs, example Makefile and tests use it). Rebuild existing C mods from source to get the fix. Older mods that
+  aren't rebuilt get a best-effort safeguard: when the port can check the game's stack, it moves the mod's frame to
+  an aligned spot before the mod runs. Rebuilding is still the real fix.
 - **Fixed: GameCube controllers set up right away** (#392, for #356, thanks @itsarahtonin for the report). A recognized
   GameCube controller now gets the full GameCube layout without going through the generic new-controller setup, and
   L targets at a quarter of its travel or at the digital click. Existing controller profiles and shared bindings are
