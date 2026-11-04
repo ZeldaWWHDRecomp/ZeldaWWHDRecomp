@@ -171,9 +171,12 @@ int main(int argc,char** argv) {
     };
     if(experimental) {
         std::lock_guard guard(mods::saves::mutex());
-        // exp-backup-fails: the backups folder can't be created (a file is in its place)
-        if(backup_fails)std::ofstream(root/"blocked")<<"not a folder";
-        mods::saves::store().configure(root/"save",backup_fails?root/"blocked"/"save-backups":fs::path());
+        // Synthetic saves need a deterministic budget, not 10 GiB on the CI host.
+        // Exercise the production backup check through its existing injectable seam.
+        mods::saves::store().free_space = [backup_fails](const fs::path&) {
+            return backup_fails ? uint64_t(0) : UINT64_MAX;
+        };
+        mods::saves::store().configure(root/"save",fs::path());
         hostui::set("mod.showExperimental","1");  // the list shows experimental mods
     }
     if(catalogue||update)set_env("WWHD_MOD_CATALOGUE",(root/"index.json").string());
@@ -340,7 +343,6 @@ int main(int argc,char** argv) {
     const std::string switch_label="##on_"+id;
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(25);
     for(int frame=0;frame<6000&&std::chrono::steady_clock::now()<deadline;++frame) {
-        assert(fs::space(root).available>10ull*1024*1024*1024);
         ImGui_ImplSDLRenderer3_NewFrame();ImGui::NewFrame();setup_run_tick();ui::tick(host,true);
         // the settings window as the overlay sizes it
         ImGui::SetNextWindowPos(ImVec2(width*0.5f,height*0.5f),ImGuiCond_Always,ImVec2(0.5f,0.5f));
@@ -407,7 +409,9 @@ int main(int argc,char** argv) {
         if(f.phase==ui::Phase::Failed&&backup_fails) {
             // the reason (no "confirm the warning first"): the review was the confirmation
             assert(f.error.starts_with("Your saves couldn't be backed up")&&f.error.find("confirm")==std::string::npos);
+            assert(f.error.find("Not enough free disk space for a save backup")!=std::string::npos);
             assert(!view(id).enabled&&pending_setup_runs().empty());
+            assert(fs::is_empty(root/"save-backups"));
             saw_failure=true;break;
         }
         if(f.phase==ui::Phase::Failed) {
