@@ -221,6 +221,8 @@ and target the USA game version; mods work on EU installs too (see below).
 - `wwhd/data.h`: named save/resource pointers, matrix stack and item tables.
 - `actor.h`, `link.h`, `camera.h`, `items.h`, `messages.h`, `save.h`: partial views of game
   objects with checked field offsets; unknown parts are reachable as bytes.
+- `wwhd/save_flags.h`: checked access to native save event bits and masked byte registers,
+  using the game's own methods and the region-mapped save pointer.
 - Functions not in the public decomp can still be hooked by address with
   `WWHD_GAME_FUNC(address, ret, name, (args))`; game variables with
   `WWHD_GAME_DATA(address, type)`.
@@ -230,6 +232,34 @@ the port translates hook targets, game calls, function pointers and `WWHD_GAME_D
 references to the EU build. Functions that differ or don't exist in EU are refused with an
 error naming them. Don't cast integers to pointers (that hard-codes a USA address), and only
 use object fields that are the same in both versions.
+
+### Native save event flags
+
+Include `wwhd/save_flags.h` to access the game's persistent event array. These are
+the game's story flags, separate from a mod's `wwhd_quest_flag` values. Changing
+them can alter story order; take a save backup before applying changes to an
+existing file. The helpers do not run cutscenes or save to disk themselves.
+
+Call on the game thread after save allocation, from an appropriate initialization
+or gameplay hook. A non-null save allocation can also exist before the player has
+selected a file; these helpers do not determine which file should be changed.
+
+| Helper | Result |
+| --- | --- |
+| `wwhd_save_event_test(flag)` | 0 or 1; the selector must have exactly one mask bit. |
+| `wwhd_save_event_set(flag, enabled)` | 0 on success; zero clears the bit, other values set it. |
+| `wwhd_save_event_read(selector)` | The masked byte, without shifting. |
+| `wwhd_save_event_write(selector, bits)` | 0 on success; values outside the mask are rejected. |
+
+All return `WWHD_SAVE_FLAGS_INVALID` (-1) for invalid arguments or
+`WWHD_SAVE_FLAGS_NOT_READY` (-2) if the save allocation is unavailable. A selector
+is a 16-bit value: its high byte indexes the event array and its low byte is a
+nonzero mask. For example, mask `0xF0` uses values `0x00`, `0x10`, … `0xF0`,
+without shifting them down to 0–15. Out-of-mask writes are rejected before calling
+the native setter, which otherwise ORs its value into adjacent flags.
+
+These are header-only adapters over existing game bindings. They add no host
+service requirement and do not change how ordinary saves are loaded.
 
 ## Host services
 
