@@ -56,6 +56,14 @@ void restore_guest_snapshots() {
     assert(!configure_calls&&!install_calls&&!register_calls&&!guestmods::g_actor_profile_import);
 }
 }
+namespace mods {
+// Service dispatch must link on every platform even though these tests exercise
+// hooks, not traversal/quick-use gameplay. Any unexpected invocation is a failure.
+void ship_normal_sail_wind(Cpu*,uint32_t) {assert(false && "unexpected sail-wind service in hook fixture");}
+float ship_sail_target(float stock) {assert(false && "unexpected sail-target service in hook fixture");return stock;}
+void quick_use_item_action_dispatch(Cpu*,uint32_t,uint32_t) {assert(false && "unexpected item-action service in hook fixture");}
+uint32_t quick_use_ready_item_trigger(Cpu*,uint32_t,uint32_t trigger) {assert(false && "unexpected item-trigger service in hook fixture");return trigger;}
+}
 namespace story_native_wait_runtime {
 static unsigned startups=0;
 void startup(bool,LogicStep) {++startups;assert(story_native_scene_request::startup_window_current());}
