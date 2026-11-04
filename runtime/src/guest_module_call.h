@@ -103,9 +103,11 @@ invoke_module(Cpu *cpu, PpcFunc function, ModuleStackBounds bounds,
     cpu->ctr = old_ctr;
     throw;
   }
+  // A normal return keeps the callee's LR and CTR: they are architectural
+  // outputs of the call (non-EABI helpers may return values there), exactly as
+  // without this adapter. Only the stack pointer is ours to put back, since a
+  // shadowed frame returns with r1 at the shadow copy.
   cpu->r[1] = old_sp;
-  cpu->lr = old_lr;
-  cpu->ctr = old_ctr;
   return result;
 }
 } // namespace guestmods

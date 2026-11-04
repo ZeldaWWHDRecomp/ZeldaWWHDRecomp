@@ -185,9 +185,9 @@ int main(int argc, char **argv) {
           guestmods::invoke_module(&c, entry);
         else
           result = guestmods::invoke_module(&c, entry, selected, diagnostic);
+        // The module's epilogue restores LR; CTR is volatile and stays the
+        // module's output, as for any call without the adapter.
         assert(c.r[1] == sp && c.lr == 0x0200C0DE);
-        if (scenario)
-          assert(c.ctr == 0x12345678);
         if (!observer)
           assert(c.r[3] == unsigned(expect_aligned));
         assert(c.f[1].ps0 == 123.5);
