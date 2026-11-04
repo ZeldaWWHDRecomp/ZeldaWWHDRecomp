@@ -25,6 +25,7 @@
 #include "aspect.h"
 #include "savestate.h"
 #include "gfx/stereo.h"
+#include "gfx/gamepad_backdrop.h"
 #include "button_glyphs.h"
 #include "aspect_panes.h"
 #include "aspect_picto.h"
@@ -667,8 +668,17 @@ void aspect::ss_reset() {
 // Scope clipping to DrawSelf, not the subtree: a background and menu content can be siblings
 // under the same container, and tabs may have an offscreen origin but visible descendants.
 static thread_local std::vector<bool> t_layoutScopes;
+static thread_local std::vector<bool> t_backdropScopes;
 extern "C" void site_0287714C(Cpu* c) {
     using namespace aspect;
+    // Scope only this Picture DrawSelf, never its children or the containing UI.
+    // Record even while disabled: a cached list may later be replayed enabled.
+    const bool backdrop = (gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed) ||
+                           gx2::recording_display_list()) &&
+        gfx::gamepad_backdrop::is_background(name_of(c->r[3]),
+            float(ldf32(c->r[3] + kPaneSize)), float(ldf32(c->r[3] + kPaneSize + 4)));
+    t_backdropScopes.push_back(backdrop);
+    if (backdrop) gx2::emit(gx2::OP_GAMEPAD_BACKDROP, {1});
     // Cached prompts/dialogue can be recorded in mono and replayed after 3D is
     // enabled. Keep their 2D identity in the list, independent of the mode at
     // recording time. Immediate original-aspect mono still needs no markers.
@@ -693,6 +703,11 @@ extern "C" void site_0287714C(Cpu* c) {
     gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u,1,photograph});
 }
 extern "C" void site_02877150(Cpu*) {
+    if (!t_backdropScopes.empty()) {
+        const bool backdrop = t_backdropScopes.back();
+        t_backdropScopes.pop_back();
+        if (backdrop) gx2::emit(gx2::OP_GAMEPAD_BACKDROP, {0});
+    }
     if(t_layoutScopes.empty())return;
     const bool scoped=t_layoutScopes.back();t_layoutScopes.pop_back();
     if(!scoped)return;

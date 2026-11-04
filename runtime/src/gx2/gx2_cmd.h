@@ -50,6 +50,7 @@ enum Op : uint32_t {
     // host-only, never recorded: the uniform blocks of the next display-list call as submitted
     // (submitted_uniforms.h; payload: Snapshot* as two words, 0: none from here on)
     OP_SUBMITTED_UNIFORMS,
+    OP_GAMEPAD_BACKDROP, // exact background Picture::DrawSelf scope: begin (1) / end (0)
     OP_COUNT
 };
 

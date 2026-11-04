@@ -1,0 +1,70 @@
+// GamePad backdrop contract shared by the command producer and presenters.
+#pragma once
+#include <array>
+#include <atomic>
+#include <cmath>
+#include <cstdint>
+#include <string_view>
+
+namespace gfx::gamepad_backdrop {
+inline std::atomic<bool> enabled{true};
+
+// Canonical item/map menu layouts both own this 1280x720 picture. Other similarly
+// named panes and containers must never duplicate their children or foreground.
+inline bool is_background(std::string_view name, float width, float height) {
+    return name == "P_BgPattern_00" && width == 1280.f && height == 720.f;
+}
+struct Rect { float x, y, w, h; };
+inline bool has_bars(float width, float height, const Rect& content) {
+    return std::isfinite(width) && std::isfinite(height) && width > 0 && height > 0 &&
+        content.w > 0 && content.h > 0 &&
+        (content.x > .5f || content.y > .5f ||
+         content.x + content.w < width - .5f || content.y + content.h < height - .5f);
+}
+// Only the backdrop uses cover. Original scanout and touch use their existing fit
+// rectangle verbatim. Preserve source alpha: clear capture transparent, replay the
+// original blend/material state, then blend that texture behind the opaque scanout.
+inline Rect cover(float width, float height, float sourceWidth, float sourceHeight) {
+    if (!(width > 0 && height > 0 && sourceWidth > 0 && sourceHeight > 0) ||
+        !std::isfinite(width + height + sourceWidth + sourceHeight)) return {};
+    const float scale = std::fmax(width / sourceWidth, height / sourceHeight);
+    const float w = sourceWidth * scale, h = sourceHeight * scale;
+    return {(width - w) * .5f, (height - h) * .5f, w, h};
+}
+
+// Backend-owned texture tickets, not guest pointers. A capture is eligible ONLY
+// for the next scan copy of its exact render-target identity. Re-presenting must
+// read committed() WITHOUT calling scan(): presentation cadence is not freshness.
+// On OP_COPY_TO_SCAN target4, call scan(source) even if no pane was seen: this
+// cancels a previous menu backdrop when a new map/game frame lacks that picture.
+// Keep tickets alive through actual command-buffer completion; this helper owns
+// no textures and performs no GPU destruction. Reset on state load/device reset.
+class ScanCache {
+public:
+    struct Selection { uint64_t generation = 0, ticket = 0; };
+    void capture(uint64_t source, uint64_t ticket) {
+        if (!source || !ticket) return;
+        for (auto& p : pending_) if (p.source == source) { p.ticket = ticket; return; }
+        for (auto& p : pending_) if (!p.source) { p = {source, ticket}; return; }
+        // Fail closed under abnormal target churn, never reuse another surface.
+        pending_ = {};
+        pending_[0] = {source, ticket};
+    }
+    Selection scan(uint64_t source) {
+        ++committed_.generation;
+        committed_.ticket = 0;
+        for (auto& p : pending_) if (p.source == source && source) {
+            committed_.ticket = p.ticket;
+            break;
+        }
+        pending_ = {}; // no capture may leak across a new DRC scan generation
+        return committed_;
+    }
+    Selection committed() const { return committed_; }
+    void reset() { pending_ = {}; committed_ = {}; }
+private:
+    struct Pending { uint64_t source = 0, ticket = 0; };
+    std::array<Pending, 16> pending_{};
+    Selection committed_{};
+};
+} // namespace gfx::gamepad_backdrop
