@@ -129,6 +129,51 @@ class BackdropLifecycle(unittest.TestCase):
         self.assertIn('record::vkCmdSetScissor(cmd,0,1,&quadScissor)',present)
         self.assertIn('record::vkCmdSetScissor(cmd,0,1,&scissor);\n if(gamepadOverlay)',present)
 
+    def test_resolved_bindings_survive_guest_mutation(self):
+        source=r'''#include <array>
+#include <cassert>
+#include "gamepad_backdrop_replay.h"
+struct Pipeline { unsigned layout;bool dynamicUniforms; };
+struct Shader {};
+struct Resources { unsigned set;std::array<unsigned,17> dynamicOffsets{};unsigned dynamicOffsetCount=1; };
+struct Snapshot {
+ bool replay=true,rasterReady=true;Pipeline* pipeline;uint64_t submission=7;Shader *vs,*ps;
+ struct Stage { Resources resources; } stages[2];
+};
+int main() {
+ Shader vs,ps;Pipeline original{101,true},capture{202,true};
+ unsigned guestUniform=11,guestVertex=22,guestIndex=33;
+ // Fake immutable GPU uploads produced while resolving the original draw.
+ const std::array<unsigned,3> uploaded={guestUniform,guestVertex,guestIndex};
+ Snapshot snapshot{};snapshot.pipeline=&original;snapshot.vs=&vs;snapshot.ps=&ps;
+ snapshot.stages[0].resources={41,{uploaded[0]},1};snapshot.stages[1].resources={42,{55},1};
+ guestUniform=guestVertex=guestIndex=99;
+ Resources v{},p{};
+ assert(gfxvk::backdrop_reuse_resources(snapshot,capture,&vs,&ps,7,v,p));
+ assert(v.set==41&&p.set==42&&v.dynamicOffsets[0]==11);
+ assert(uploaded[1]==22&&uploaded[2]==33); // Geometry replay uses these resolved bindings.
+ assert(!gfxvk::backdrop_reuse_resources(snapshot,capture,&vs,&ps,8,v,p));
+ capture.dynamicUniforms=false;assert(!gfxvk::backdrop_reuse_resources(snapshot,capture,&vs,&ps,7,v,p));
+ capture.dynamicUniforms=true;snapshot.replay=false;assert(!gfxvk::backdrop_reuse_resources(snapshot,capture,&vs,&ps,7,v,p));
+ snapshot.replay=true;snapshot.stages[0].resources.dynamicOffsetCount=18;
+ assert(!gfxvk::backdrop_reuse_resources(snapshot,capture,&vs,&ps,7,v,p));
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'bindings.cpp';path.write_text(source)
+            exe=Path(directory)/'bindings'
+            subprocess.run([os.environ.get('CXX','clang++'),'-std=c++20','-Wall','-Wextra','-Werror','-I',str(CPP.parent),str(path),'-o',str(exe)],check=True)
+            subprocess.run([str(exe)],check=True)
+        draw=(CPP.parent/'draw.cpp').read_text()
+        self.assertIn('if(backdropReplay) targets=backdropReplay->targets;',draw)
+        self.assertIn('backdropShadersIn=shadersOut;',draw)
+        exact=draw[draw.index('  if(backdropReplay) {\n    // Identical shaders'):draw.index('  if (shadersOut) {\n    shadersOut->targets=targets;')]
+        direct=exact[:exact.index('  } else {')]
+        self.assertIn('backdrop_reuse_resources',direct)
+        self.assertNotIn('bind_stage(',direct)
+        self.assertIn('if (replay) {\n    topology = replay->topology;',draw)
+        self.assertIn('bindIndex(replay->indexBuffer, replay->indexOffset, replay->indexType)',draw)
+
     def test_capture_coverage_not_squared(self):
         source = r'''#include <cassert>
 #include <cmath>

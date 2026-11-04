@@ -1,5 +1,6 @@
 #include "gamepad_backdrop.h"
 #include "gamepad_backdrop_blend.h"
+#include "gamepad_backdrop_replay.h"
 #include "gx2/gx2_regs.h"
 #include "vertex_cpu_policy.h"
 #include <set>
@@ -2203,6 +2204,7 @@ struct StereoShaders {
   VkRect2D scissor{};
   bool rasterReady = false;
   StageReplay stages[2];
+  DrawTargets targets; // exact attachments/dimensions used by this resolved draw
   struct VertexBind { uint32_t binding; VkBuffer buffer; VkDeviceSize offset; };
   std::array<VertexBind, 32> vertexBinds{};
   uint32_t vertexBindCount = 0;
@@ -2228,6 +2230,7 @@ std::array<VkFormat, 9> target_formats(const std::array<Surface*, 8>& colors, co
   return f;
 }
 StereoShaders* stereoShadersOut = nullptr;       // eye 0's draw records
+const StereoShaders* backdropShadersIn = nullptr; // exact original draw, no guest resource rereads
 const StereoShaders* stereoShadersIn = nullptr;  // eye 1's draw reuses
 struct ContinuedStats {
   uint64_t lastFrame = 0, draws = 0, verified = 0, mismatches = 0, totalMismatches = 0, totalVerified = 0;
@@ -3083,7 +3086,16 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   auto& continued = continuedEyes[stereoEye];
   // the top-level stereo draw only, never the AO replay below
   StereoShaders* shadersOut = std::exchange(stereoShadersOut, nullptr);
-  const StereoShaders* shadersIn = std::exchange(stereoShadersIn, nullptr);
+  const StereoShaders* backdropReplay = std::exchange(backdropShadersIn,nullptr);
+  const StereoShaders* shadersIn = backdropReplay ? backdropReplay : std::exchange(stereoShadersIn, nullptr);
+  // Record exact upload slices/descriptor bindings while resolving the original
+  // draw. The normal off path allocates nothing and the stereo snapshot is reused.
+  std::unique_ptr<StereoShaders> captureSnapshot;
+  if(!shadersOut && !stereoEye && !aoPrivateReplay && gamepad_backdrop_capture_active()) {
+    try { captureSnapshot=std::make_unique<StereoShaders>();shadersOut=captureSnapshot.get(); }
+    catch(const std::bad_alloc&) {} // Optional capture must not suppress the original draw.
+  }
+  if(backdropReplay && (!backdropReplay->replay || backdropReplay->submission!=R.submissionGeneration))return;
   // eye 1: eye 0's draw, replayed (StereoShaders)
   const StereoShaders* replay = shadersIn && shadersIn->replay && !aoPrivateReplay &&
       shadersIn->submission == R.submissionGeneration ? shadersIn : nullptr;
@@ -3146,7 +3158,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     vs = shadersIn->vs;
     ps = shadersIn->ps;
     static const bool verifyReplay=std::getenv("WWHD_VK_STEREO_REPLAY_VERIFY")!=nullptr;
-    if(verifyReplay) {
+    if(verifyReplay && !backdropReplay) {
       uint64_t checkedKey=0;
       auto* checkedFetch=vk::get_fetch_shader(r,&checkedKey,R.frame);
       vk::Shader* checkedVs=nullptr;
@@ -3347,7 +3359,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   rprof::mark(rprof::kIndices);
   DrawTargets targets;
-  if (fast) targets = continued.targets;
+  if(backdropReplay) targets=backdropReplay->targets;
+  else if (fast) targets = continued.targets;
   else if (!(replay ? resolve_replay_targets(r, ps, targets) : resolve_targets(r, ps, targets)))
     return;
   if (auto* backdrop = gamepad_backdrop_replay_target()) {
@@ -3362,7 +3375,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   clouds_before_draw(r, ps, colors[0], slices[0], depth);  // clouds.cpp: cloud shadows
   rprof::mark(rprof::kTargets);
   auto &p = fast ? *continued.pipeline
-      : replay && replay->formats == target_formats(colors, depth) ? *replay->pipeline
+      : !backdropReplay && replay && replay->formats == target_formats(colors, depth) ? *replay->pipeline
       : pipeline(r, vs, ps, fs, topology, colors, depth);
   rprof::mark(rprof::kPipeline);
   if (!p.pipeline && !p.pendingCompile) return;
@@ -3392,6 +3405,12 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const bool replayStages = replay && &p == replay->pipeline && replay->sx == sx && replay->sy == sy;
   StageResources vres, pres;
   g_artisticBias = ::gfx::artistic_mips::resolution_bias(sx, sy);
+  if(backdropReplay) {
+    // Identical shaders and dynamic-uniform mode give identically defined
+    // descriptor-set layouts, even though the private alpha pipeline differs.
+    // Bind the already resolved sets/offsets, never replay_stage/bind_stage.
+    if(!backdrop_reuse_resources(*backdropReplay,p,vs,ps,R.submissionGeneration,vres,pres))return;
+  } else {
   if (!replayStages || !replay->stages[0].valid ||
       !replay_stage(replay->stages[0], r, vs, cameraEye, colors, depth, vres))
     vres = bind_stage(r, vs, p.sets[0], p.dynamicUniforms, sx, sy, colors, depth, probe, cameraEye, sunShadow,
@@ -3403,7 +3422,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
                       sunShadow ? cameraEye : 0, sunShadow,
                       fast ? &continued.stages[1] : nullptr, recordState ? &continued.stages[1] : nullptr,
                       shadersOut ? &shadersOut->stages[1] : nullptr);
+  }
   if (shadersOut) {
+    shadersOut->targets=targets;
     shadersOut->stages[0].resources = vres;
     shadersOut->stages[1].resources = pres;
     shadersOut->submission = R.submissionGeneration;
@@ -3928,9 +3949,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   rprof::mark(rprof::kSubmit);
   // Original draw is complete. Replay exactly this pane draw with its own color
   // attachment; no main-target pixels are copied and no target state escapes.
-  if(!gamepad_backdrop_capture_active()) return;
+  if(stereoEye||!gamepad_backdrop_capture_active()) return;
   const auto captureBlend=backdrop_blend(r[REGADDR::CB_COLOR_CONTROL],r[REGADDR::CB_BLEND0_CONTROL],r[REGADDR::CB_TARGET_MASK]);
-  bool compatible = captureBlend.supported && colors[0] && slices[0] == 0 && !(r[REGADDR::DB_DEPTH_CONTROL] & 7);
+  bool compatible = shadersOut && shadersOut->replay && shadersOut->rasterReady &&
+      shadersOut->submission==R.submissionGeneration && captureBlend.supported && colors[0] && slices[0] == 0 && !(r[REGADDR::DB_DEPTH_CONTROL] & 7);
   for (unsigned i=1;i<8;++i) compatible &= colors[i] == nullptr;
   if (gamepad_backdrop_begin_replay(colors[0],compatible,captureBlend.opaque)) {
     const auto before=R.drawCount;
@@ -3941,8 +3963,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     captureRegs[REGADDR::CB_COLOR_CONTROL]|=1u<<8;
     captureRegs[REGADDR::CB_TARGET_MASK]|=8;
     continued.valid=false;
+    backdropShadersIn=shadersOut;
     try { draw(captureRegs.data(),prim,count,indexType,indexAddr,baseVertex,instances,nullptr); }
-    catch (...) { gamepad_backdrop_end_replay(false);continued.valid=false;throw; }
+    catch (...) { backdropShadersIn=nullptr;gamepad_backdrop_end_replay(false);continued.valid=false;throw; }
+    backdropShadersIn=nullptr;
     gamepad_backdrop_end_replay(R.drawCount!=before);
     continued.valid=false;
   }
