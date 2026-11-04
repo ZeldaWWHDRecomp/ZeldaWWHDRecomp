@@ -32,6 +32,36 @@ int main() {
     assert(!has_bars(0, 27, content));
     assert(cover(31, 0, 1280, 720).w == 0);
     assert(cover(std::numeric_limits<float>::infinity(), 27, 1280, 720).w == 0);
+    const auto check_bars = [](float w, float h, Rect c) {
+        const auto output = bars(w, h, c);
+        for (const auto& b : output) {
+            assert(b.x >= 0 && b.y >= 0 && b.w >= 0 && b.h >= 0);
+            assert(b.x + b.w <= w && b.y + b.h <= h);
+            if (b.w && b.h) assert(b.x + b.w <= c.x || b.x >= c.x + c.w ||
+                                      b.y + b.h <= c.y || b.y >= c.y + c.h);
+        }
+        // No two nonempty bars overlap.
+        for (unsigned i = 0; i < 4; ++i) for (unsigned j = i + 1; j < 4; ++j) {
+            const auto& a = output[i]; const auto& b = output[j];
+            if (a.w && a.h && b.w && b.h)
+                assert(a.x + a.w <= b.x || b.x + b.w <= a.x ||
+                       a.y + a.h <= b.y || b.y + b.h <= a.y);
+        }
+        return output;
+    };
+    auto b = check_bars(31, 27, content);
+    assert(b[unsigned(Edge::Top)].h == content.y);
+    assert(b[unsigned(Edge::Bottom)].h == content.y);
+    assert(b[unsigned(Edge::Left)].w == 0 && b[unsigned(Edge::Right)].w == 0);
+    b = check_bars(40, 9, {12, 0, 16, 9});
+    assert(b[unsigned(Edge::Left)].w == 12 && b[unsigned(Edge::Right)].w == 12);
+    b = check_bars(16, 9, {0, 0, 16, 9});
+    for (const auto& r : b) assert(r.w * r.h == 0);
+    b = check_bars(16, 9, {-3, -2, 24, 14});
+    for (const auto& r : b) assert(r.w * r.h == 0);
+    check_bars(16, 9, {-3, 2, 10, 14});
+    check_bars(16, 9, {20, 20, 2, 2});
+    for (const auto& r : bars(16, 9, {0, 0, -1, 9})) assert(r.w * r.h == 0);
     ScanCache cache;
     cache.capture(1, 10); cache.capture(2, 20); // TV and DRC distinct surfaces.
     auto selected = cache.scan(2);

@@ -1,5 +1,6 @@
 // GamePad backdrop contract shared by the command producer and presenters.
 #pragma once
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cmath>
@@ -27,6 +28,24 @@ inline bool is_background(std::string_view name, float width, float height) {
     return name == "P_BgPattern_00" && width == 1280.f && height == 720.f;
 }
 struct Rect { float x, y, w, h; };
+enum class Edge : unsigned { Top, Bottom, Left, Right };
+// Local output-viewport coordinates. Bars partition the viewport outside the
+// clipped content and never overlap it or one another. Invalid input draws none.
+// Fallback colour contract: sample each native scan edge at fractions 1/8, 3/8,
+// 5/8, 7/8 (texel-centred nearest edge coordinates), average those four colours,
+// and fill the corresponding bar uniformly. Never stretch foreground UI/map.
+inline std::array<Rect, 4> bars(float width, float height, const Rect& content) {
+    if (!(width > 0 && height > 0 && content.w > 0 && content.h > 0) ||
+        !std::isfinite(width) || !std::isfinite(height) ||
+        !std::isfinite(content.x) || !std::isfinite(content.y) ||
+        !std::isfinite(content.w) || !std::isfinite(content.h)) return {};
+    const float left = std::clamp(content.x, 0.f, width);
+    const float top = std::clamp(content.y, 0.f, height);
+    const float right = std::clamp(content.x + content.w, left, width);
+    const float bottom = std::clamp(content.y + content.h, top, height);
+    return {{{0, 0, width, top}, {0, bottom, width, height - bottom},
+             {0, top, left, bottom - top}, {right, top, width - right, bottom - top}}};
+}
 inline bool has_bars(float width, float height, const Rect& content) {
     return std::isfinite(width) && std::isfinite(height) && width > 0 && height > 0 &&
         content.w > 0 && content.h > 0 &&

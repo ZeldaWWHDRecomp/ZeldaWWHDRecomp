@@ -608,6 +608,10 @@ target_link_libraries(sampler_lod_bias_test PRIVATE cemu_latte)
 target_compile_options(sampler_lod_bias_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
 add_test(NAME sampler_lod_bias COMMAND sampler_lod_bias_test)
 
+add_executable(gamepad_backdrop_test runtime/tools/gamepad_backdrop_test.cpp)
+target_compile_options(gamepad_backdrop_test PRIVATE -UNDEBUG)
+add_test(NAME gamepad_backdrop COMMAND gamepad_backdrop_test)
+
 add_executable(depth_peek_test runtime/tools/depth_peek_test.cpp)
 target_include_directories(depth_peek_test PRIVATE runtime/src)
 target_link_libraries(depth_peek_test PRIVATE Threads::Threads)
