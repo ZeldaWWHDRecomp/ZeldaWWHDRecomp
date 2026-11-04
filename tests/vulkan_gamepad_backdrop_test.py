@@ -23,13 +23,14 @@ struct VkClearColorValue { float float32[4]{}; };
 struct VkImageSubresourceRange { int aspect;unsigned a,b,c,d; };
 namespace gfxvk {
 struct Surface {
- uint64_t image=0;unsigned width=0,height=0,format=0;int fmt=0;float scale=0;int layout=0;
+ uint64_t image=0;unsigned width=0,height=0,format=0;struct {int pixel=1;unsigned hostBytesPerBlock=4,bytesPerBlock=4;} fmt;float scale=0;int layout=0;uint64_t allocationBytes=0;
  struct { unsigned width=0,height=0,depth=1; } extent;
 };
-static unsigned created=0,retired=0,clears=0;
+static unsigned created=0,retired=0,clears=0,allocationAttempts=0;
+static bool failAllocation=false;
 void end_encoder() {}
 void destroy_surface_image(Surface* s) { if(s->image){++retired;s->image=0;} }
-void create_surface_image(Surface* s,bool) { s->image=++created;s->extent={s->width,s->height,1}; }
+void create_surface_image(Surface* s,bool) { ++allocationAttempts;if(failAllocation)throw 1;s->image=++created;s->extent={s->width,s->height,1};s->allocationBytes=uint64_t(s->width)*s->height*4; }
 void transition_image(Surface* s,int layout,int,int) { s->layout=layout; }
 int command_buffer() { return 1; }
 void mark_gpu_written(Surface*) {}
@@ -80,6 +81,22 @@ int main() {
  // Explicit destruction invalidation also protects recycled numeric handles.
  capture(&a);gamepad_backdrop_invalidate(&a);a.image=101;gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
  capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();policy::enabled=false;assert(!gamepad_backdrop_image());policy::enabled=true;
+ // A later failed pane cannot leave an earlier capture for the same source eligible.
+ capture(&a);gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&a,false));gamepad_backdrop_scope(nullptr,false);
+ gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
+ // Repeated same-size frames reuse a bounded pool rather than allocate per pane.
+ policy::enabled=true;policy::set_capture_requested(true);
+ for(unsigned frame=0;frame<8;++frame){capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();}
+ const auto stable=created;
+ for(unsigned frame=0;frame<120;++frame){capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();}
+ assert(created==stable&&imageCount<=kCaptureImages&&imageBytes<=kCaptureBytes);
+ // Oversized images and allocator failure fall back without publishing a capture.
+ Surface huge=a;huge.extent={65535,65535,1};
+ gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&huge,true));gamepad_backdrop_scope(nullptr,false);
+ gamepad_backdrop_scan(&huge);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
+ gamepad_backdrop_reset();policy::set_capture_requested(true);failAllocation=true;
+ gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&a,true));gamepad_backdrop_scope(nullptr,false);
+ gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());failAllocation=false;
  gamepad_backdrop_reset();assert(!gamepad_backdrop_image()&&!policy::capture_enabled()&&retired==created);
 }
 '''
