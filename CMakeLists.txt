@@ -4078,3 +4078,8 @@ add_executable(map_hud_native_test runtime/tools/map_hud_native_test.cpp runtime
 target_include_directories(map_hud_native_test PRIVATE runtime/include runtime/src)
 target_compile_options(map_hud_native_test PRIVATE -UNDEBUG)
 add_test(NAME map_hud_native COMMAND map_hud_native_test)
+
+add_executable(mod_build_constraint_test runtime/tools/mod_build_constraint_test.cpp)
+target_include_directories(mod_build_constraint_test PRIVATE runtime/src runtime/include)
+target_compile_options(mod_build_constraint_test PRIVATE -UNDEBUG)
+add_test(NAME mod_build_constraint COMMAND mod_build_constraint_test)

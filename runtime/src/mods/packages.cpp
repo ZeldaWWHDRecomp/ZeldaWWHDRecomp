@@ -1,5 +1,6 @@
 #include "../exception_report.h"
 #include "packages.h"
+#include "build_constraint.h"
 #include "mod_stages_manifest.h"
 #include "story_game_objects_package.h"
 #include "manager.h"
@@ -167,6 +168,9 @@ Manifest manifest(const fs::path& path){
     if(!game_id_supported(string_field(v,"game_id",false,64)))m.problem="This package targets another game";
     auto minimum=string_field(v,"minimum_manager_version",true,64);
     if(!minimum.empty()&&version(minimum)>version(kManagerVersion))m.problem="This mod needs a newer version of the game (mod manager "+minimum+"; this one has "+std::string(kManagerVersion)+")";
+    auto build_problem=game_build_constraint_problem(v,
+        !minimum.empty()&&version(minimum)>=version("1.7.0"));
+    if(m.problem.empty()&&!build_problem.empty())m.problem=std::move(build_problem);
     bool world_declarations = false;
     // The manifest's story sections (story_manifest.h, story_world_manifest.h): present, even as an empty list
     const bool story_sections=std::any_of(std::begin(kStorySections),std::end(kStorySections),[&](const char* key){return v.get(key).type!=Value::Null;});
