@@ -746,7 +746,7 @@ void rollback(size_t count) noexcept{std::lock_guard guard(world_mutex);if(!inst
 void configure(void(*o)(Cpu*,uint32_t),uint32_t(*i)(Cpu*,uint32_t,std::initializer_list<uint32_t>),uint32_t s,uint32_t grapple_storage){original=o;invoke=i;scratch=s;grapple_storage_address=grapple_storage;native_actor_profiles::configure(o,i);declarations.reserve(128);
     if(grapple_storage)story_world_grapple::configure(o,i,grapple_storage,[](uint32_t parent,uint32_t pid,const story_actors::identity::Fingerprint&identity){return story_world_collision::proof::address(parent,Size)&&valid_actor(parent)&&ld32(parent+4)==pid&&declaration(parent)->fingerprint==identity&&story_world_collision::native::stored(parent,identity);});}
 bool live_ready(){return installed;}
-void heap_sample(Cpu*c){if(c&&heap_trace())heap_sample_now(c);}
+void heap_sample(Cpu*c){if(c&&invoke&&heap_trace())heap_sample_now(c);}
 void editor_enable(){if(!installed)editor_live=true;}
 namespace {
 // declare's checks, shared with redeclare so both validate identically: false for a spec the

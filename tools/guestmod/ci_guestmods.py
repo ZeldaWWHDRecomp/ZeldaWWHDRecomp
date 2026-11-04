@@ -47,7 +47,7 @@ def main():
     subprocess.run([sys.executable, str(REPO / "tools/installer/test_setup.py"), "GuestBuildConfig", "CodeModsBuild"], check=True)
     subprocess.run([sys.executable, str(REPO / "tools/guestmod/test_public_sdk_index.py")], check=True)
     subprocess.run([sys.executable, str(REPO / "tools/bench/test_run_bench.py")], check=True)
-    headers = ["bindings", "vectors", "ptmf", "animation", "objects", "valoo", "medli", "audio", "actor", "link", "camera", "items", "messages", "save", "data"]
+    headers = ["bindings", "vectors", "ptmf", "animation", "objects", "valoo", "medli", "audio", "actor", "link", "camera", "items", "messages", "save", "save_flags", "data"]
     # Both supported source languages exercise nested public aggregate layout.
     assertions = """
 #ifdef __cplusplus
@@ -88,13 +88,14 @@ SDK_ASSERT(WWHD_PLAY_EVENT_RUNNING_OFFSET == 0x5292);
 SDK_ASSERT(WWHD_PLAY_ENABLE_NEXT_STAGE_OFFSET == 0x514C);
 """
     for language in ("c", "c++"):
-        command = [os.environ["WWHD_PPC_CLANG"], "--target=powerpc-unknown-eabi",
+        command = [os.environ["WWHD_PPC_CLANG"], "--target=powerpc-unknown-eabi", "-mstackrealign",
                    "-ffreestanding", "-fsyntax-only", "-x", language, "-"]
         for header in headers:
             command += ["-include", str(REPO / f"runtime/guest/include/wwhd/{header}.h")]
         subprocess.run(command, input=assertions, text=True, check=True)
     print("Host module compiler:", tc.desc, flush=True)
     subprocess.run([sys.executable, str(REPO / "tools" / "guestmod" / "test_guestmod.py"), "-v"], check=True)
+    subprocess.run([sys.executable, str(REPO / "tools" / "guestmod" / "test_save_flags.py"), "-v"], check=True)
 
 
 if __name__ == "__main__":

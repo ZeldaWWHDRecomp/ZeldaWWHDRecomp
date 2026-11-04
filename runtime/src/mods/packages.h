@@ -1,6 +1,7 @@
 #pragma once
 #include "mod_json.h"
 #include "catalogue_schema.h"
+#include "save_profile.h"
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -16,7 +17,7 @@ inline constexpr const char* kLegacyGameId="wwhd-usa";
 inline bool game_id_supported(const std::string& id){return id==kGameId||id==kLegacyGameId;}
 // The game ID native mods (SDK v1) receive in their host table: unchanged, so libraries comparing it keep working.
 inline constexpr const char* kNativeHostGameId="wwhd-usa";
-inline constexpr const char* kManagerVersion="1.6.0"; // 1.4: "experimental" flag; 1.5: game_id "wwhd"; 1.6: Mod SDK wwhd_screen_point, touch pinches, the microphone (wwhd_mic_*, option "permission")
+inline constexpr const char* kManagerVersion="1.7.0"; // 1.7: declarative guest save profiles; 1.4: "experimental" flag; 1.5: game_id "wwhd"; 1.6: Mod SDK wwhd_screen_point, touch pinches, the microphone (wwhd_mic_*, option "permission")
 struct Option {
     std::string id,name,description,type;
     // The item menu's settings page (game_settings.h): "menu": true shows the option there, in the Mods tab
@@ -48,8 +49,15 @@ struct View {
 // Supplied from the running executable marker, never from a saved preference.
 void set_code_mod_support(bool built);
 bool has_code_mod_support(); // this executable was built with code-mod support
+// Startup-only platform capability (Android needs the deferred save-preparation bridge).
+void set_save_profile_support(bool supported,const std::string& reason = {});
 bool needs_code_mod_support(const std::string& id); // includes package dependencies
 void initialize(); // metadata only; before the game starts
+// Freeze eligible/trusted declarative save ownership before recovery, cloud or backups.
+// Throws save_profile::Error for an eligible malformed/conflicting claim.
+save_profile::Selection startup_save_profile();
+// Immutable after startup_save_profile(); safe for state I/O threads.
+const save_profile::Selection& current_save_profile();
 std::string directory();
 std::string package_data_directory(const std::string& id); // configured manager Data/id, empty for unknown packages
 // The configured manager's story/ folder (WWHD_MOD_MANAGER_DIR, else the user folder's ModManager): what the

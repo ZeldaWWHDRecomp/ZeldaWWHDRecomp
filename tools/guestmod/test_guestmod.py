@@ -23,7 +23,7 @@ import build_guest_mod as builder  # noqa: E402
 
 CLANG = os.environ.get("WWHD_PPC_CLANG") or shutil.which("clang")
 LLD = os.environ.get("WWHD_PPC_LLD") or shutil.which("ld.lld")
-FLAGS = ["--target=powerpc-unknown-eabi", "-mcpu=750", "-O2", "-ffreestanding", "-fno-builtin", "-nostdlib",
+FLAGS = ["--target=powerpc-unknown-eabi", "-mcpu=750", "-mstackrealign", "-O2", "-ffreestanding", "-fno-builtin", "-nostdlib",
          "-fno-jump-tables", "-ffunction-sections", "-fdata-sections",
          "-I", os.path.join(REPO, "runtime", "guest", "include")]
 
@@ -46,7 +46,7 @@ def cxx_command(cc):
 def ppc_ok():
     if not CLANG or not LLD or not shutil.which(CLANG) or not shutil.which(LLD):
         return False
-    p = subprocess.run([CLANG, "--target=powerpc-unknown-eabi", "-x", "c", "-c", "-o", os.devnull, "-"],
+    p = subprocess.run([CLANG, "--target=powerpc-unknown-eabi", "-mstackrealign", "-x", "c", "-c", "-o", os.devnull, "-"],
                        input="int x;", capture_output=True, text=True)
     if p.returncode:
         print("PowerPC compiler probe failed:", p.stderr, file=sys.stderr)
@@ -456,7 +456,8 @@ int main(int argc,char** argv) {
             subprocess.run([str(executable),result['module']],check=True)
 
     def test_register_pair_module_executes(self):
-        # Leaf guest functions need no guest RAM: this executes the actual translated module.
+        # Execute the actual translated module with a valid guest stack.
+        # Stack realignment may give even a leaf function a stack frame.
         src = r'''
 #include "wwhd/bindings.h"
 WWHD_REPLACE(0x02000000, wwhd_gpr_pair, pair_result, (void)) {
@@ -475,6 +476,7 @@ WWHD_REPLACE(0x02000004, u32, pair_low, (wwhd_gpr_pair value)) {
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <sys/mman.h>
 #endif
 int main(int argc, char** argv) {
     assert(argc == 2);
@@ -490,7 +492,18 @@ int main(int argc, char** argv) {
     WWHDGuestHostV1 host = {0}; host.size = sizeof(host);
     host.abi_version = WWHD_GUEST_ABI_VERSION; host.core_preempt = preempt;
     const WWHDGuestModuleV1* module = init(&host); assert(module && module->hook_count == 2);
+#ifdef _WIN32
+    void* stack = VirtualAlloc(ppc_ptr(0x20000000), 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    assert(stack == ppc_ptr(0x20000000));
+#else
+    void* stack = mmap(ppc_ptr(0x20000000), 0x10000, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    assert(stack == ppc_ptr(0x20000000));
+#endif
+    for (unsigned alignment = 0; alignment < 2; ++alignment) {
     Cpu cpu = {0}; int pairs = 0, lows = 0;
+    const uint32_t sp = 0x20008000 + alignment * 8;
+    cpu.r[1] = sp;
     for (uint32_t i = 0; i < module->hook_count; ++i) if (module->hooks[i].target == 0x02000000) {
         ++pairs; module->hooks[i].fn(&cpu);
         assert(cpu.r[3] == 0x11223344 && cpu.r[4] == 0x55667788);
@@ -500,9 +513,13 @@ int main(int argc, char** argv) {
         ++lows; module->hooks[i].fn(&cpu); assert(cpu.r[3] == 0x12345678);
     }
     assert(pairs == 1 && lows == 1);
+    assert(cpu.r[1] == sp);
+    }
 #ifdef _WIN32
+    assert(VirtualFree(stack, 0, MEM_RELEASE));
     FreeLibrary(library);
 #else
+    assert(munmap(stack, 0x10000) == 0);
     dlclose(library);
 #endif
     return 0;

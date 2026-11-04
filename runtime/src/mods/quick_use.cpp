@@ -423,6 +423,22 @@ void after_input(Cpu* c, uint32_t link) {
 }
 } // namespace
 
+uint32_t quick_use_ready_item_trigger(Cpu* c, uint32_t link, uint32_t native_trigger) {
+    Cpu local = *c;
+    local.r[31] = link;
+    local.r[3] = native_trigger;
+    hammer_trigger(&local);
+    return local.r[3];
+}
+
+void quick_use_item_action_dispatch(Cpu* c, uint32_t link, uint32_t item) {
+    // These are the three ready-item dispatch seams supported by this bridge.
+    if (item != 0x2F && item != 0x25 && item != 0x2D) return;
+    Cpu local = *c;
+    local.r[3] = link;
+    dispatch(&local, item);
+}
+
 bool quick_use() { return enabled.load(std::memory_order_relaxed); }
 float quick_use_speed() { return animation_speed.load(std::memory_order_relaxed); }
 void set_quick_use_speed(float factor) {

@@ -19,6 +19,9 @@
 #include "story_native_canonical_code_id.h"
 #include "../exception_report.h"
 #include "guest_mods.h"
+#include "mods.h"
+#include "native_actor_profiles.h"
+#include "native_actor_profile_startup.h"
 #include "../guest_module_call.h"
 #include "../model_probe.h"
 #include "story_native_refresh_dispatch_audit.h"
@@ -167,7 +170,7 @@ struct Chain {
 };
 std::unordered_map<uint32_t, Chain> g_chains;  // built before the game starts, read-only afterwards
 struct Loaded {
-    std::string path,id,version,package_path,data_path,name;
+    std::string path,id,version,package_path,data_path,name,elf_fingerprint;
     uint32_t hud_callback=0,hud_screen=0;
     uint64_t hud_step=0;
     bool hud_called=false;
@@ -184,6 +187,8 @@ std::atomic<uint64_t> g_logic_step{0};
 std::atomic<bool> g_hud_callbacks{false};
 bool g_world_scenes=false;
 bool g_native_scenes=false;  // native scene playback can run (set once in init): the game-thread binding
+bool g_actor_profile_import=false;
+thread_local bool g_actor_profile_entry=false;
 bool g_particle_import=false;  // a loaded code mod imports wwhd_actor_particle or wwhd_particle_at
 std::mutex g_hud_mutex;
 thread_local bool g_map_hud_draw=false;
@@ -646,6 +651,18 @@ bool exchange_area(Loaded& mod) {
     if(!mod.scratch)mod.scratch=mod.heap->allocate(32);
     return mod.scratch!=0;
 }
+void svc_ship_normal_sail_wind(Cpu* c) {
+    mods::ship_normal_sail_wind(c, c->r[3]);
+}
+void svc_ship_sail_target(Cpu* c) {
+    c->f[1].ps0 = c->f[1].ps1 = mods::ship_sail_target((float)c->f[1].ps0);
+}
+void svc_item_action_dispatch(Cpu* c) {
+    mods::quick_use_item_action_dispatch(c, c->r[3], c->r[4]);
+}
+void svc_item_ready_trigger(Cpu* c) {
+    c->r[3] = mods::quick_use_ready_item_trigger(c, c->r[3], c->r[4]);
+}
 void svc_input_filter_register(Cpu* c) {
     auto& mod=owner(c);uint32_t fn=c->r[3];c->r[3]=0;
     if(fn&&(!own_function(mod,fn)||!exchange_area(mod))){LOG("[guestmod:%s] input filter refused: the callback must be the mod's own",mod.id.c_str());return;}
@@ -1086,7 +1103,18 @@ void svc_item_used(Cpu* c) {
     c->r[3]=uint32_t(mod_string(mod,c->r[3],story_mail::kMaxIdBytes,id)?story_items::used(mod.id,id):story_items::kResultInvalid);
 }
 #include "guest_actor_services.inc"
+void svc_native_actor_profile_register(Cpu*c){
+    if(!g_actor_profile_entry){c->r[3]=uint32_t(-3);LOG("[guestmods] native actor profiles register only from a GameMain entry hook");return;}
+    auto& mod=owner(c);std::string why;
+    const int32_t result=native_actor_profiles::register_guest(mod.id,mod.elf_fingerprint,c->r[3],
+        [&](uint32_t a,uint32_t n){return setting_buffer(mod,a,n);},
+        [&](uint32_t fn){return own_function(mod,fn);},&why);
+    if(result<0)LOG("[guestmods] %s: native actor profile refused: %s",mod.id.c_str(),why.c_str());
+    else LOG("[guestmods] %s: registered native actor profile %04X from GameMain entry",mod.id.c_str(),unsigned(result));
+    c->r[3]=uint32_t(result);
+}
 const std::unordered_map<std::string, PpcFunc> kServices = {
+    {"wwhd_native_actor_profile_register",svc_native_actor_profile_register},
     {"wwhd_actor_register",svc_actor_register},{"wwhd_actor_find",svc_actor_find},{"wwhd_actor_get",svc_actor_get},
     {"wwhd_actor_combat_get",svc_actor_combat_get},{"wwhd_actor_attack_begin",svc_actor_attack_begin},{"wwhd_actor_attack_cancel",svc_actor_attack_cancel},
     {"wwhd_actor_userdata",svc_actor_userdata},{"wwhd_actor_set_position",svc_actor_set_position},{"wwhd_actor_set_rotation",svc_actor_set_rotation},
@@ -1099,7 +1127,7 @@ const std::unordered_map<std::string, PpcFunc> kServices = {
     {"wwhd_log", svc_log},       {"wwhd_log_int", svc_log_int}, {"wwhd_log_hex", svc_log_hex},
     {"wwhd_log_float", svc_log_float}, {"wwhd_config_int", svc_config_int},
     {"wwhd_config_bool",svc_config_bool},{"wwhd_config_changed",svc_config_changed},
-    {"wwhd_input_filter_register",svc_input_filter_register},{"wwhd_touch_register",svc_touch_register},{"wwhd_touch_claim",svc_touch_claim},{"wwhd_screen_point",svc_project},{"wwhd_mic_open",svc_mic_open},{"wwhd_mic_close",svc_mic_close},{"wwhd_mic_state",svc_mic_state},{"wwhd_mic_pitch",svc_mic_pitch},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
+    {"wwhd_ship_normal_sail_wind",svc_ship_normal_sail_wind},{"wwhd_ship_sail_target",svc_ship_sail_target},{"wwhd_item_action_dispatch",svc_item_action_dispatch},{"wwhd_item_ready_trigger",svc_item_ready_trigger},{"wwhd_input_filter_register",svc_input_filter_register},{"wwhd_touch_register",svc_touch_register},{"wwhd_touch_claim",svc_touch_claim},{"wwhd_screen_point",svc_project},{"wwhd_mic_open",svc_mic_open},{"wwhd_mic_close",svc_mic_close},{"wwhd_mic_state",svc_mic_state},{"wwhd_mic_pitch",svc_mic_pitch},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
     {"wwhd_malloc",svc_malloc},{"wwhd_free",svc_free},{"wwhd_input_read",svc_input},
     {"wwhd_file_read",svc_file_read},{"wwhd_file_write",svc_file_write},
     {"wwhd_hud_boat_compasses",svc_boat_compasses},{"wwhd_hud_boat_compasses_rect",svc_boat_compasses_rect},
@@ -1127,6 +1155,7 @@ PpcFunc service(const char* name) {
         if (g_missing_service.empty()) g_missing_service = name ? name : "?";
         return nullptr;
     }
+    if (!strcmp(name,"wwhd_native_actor_profile_register")) g_actor_profile_import=true;
     if (!strcmp(name, "wwhd_actor_particle") || !strcmp(name, "wwhd_particle_at")) g_particle_import = true;  // particle scratch
     if (!strncmp(name, "wwhd_mail_", 10)) story_mail::note_import();  // the postbox hooks are needed
     if (!strncmp(name, "wwhd_chart_", 11)) {  // the sea chart hooks are needed, and the chart list's captions
@@ -1210,6 +1239,8 @@ std::string notebook_model(const std::filesystem::path& glb,const std::string& d
 }
 
 bool load_one(const std::string& path, std::string& err,const mods::packages::GuestPackage& pkg,uint32_t base,uint32_t reserved) {
+    native_actor_profiles::startup::ImportAttempt profile_import(g_actor_profile_import);
+
 #ifdef _WIN32
     void* lib = (void*)LoadLibraryA(path.c_str());
     auto init = lib ? (WWHDGuestInitV1)(void*)GetProcAddress((HMODULE)lib, WWHD_GUEST_INIT_SYMBOL) : nullptr;
@@ -1253,7 +1284,7 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
             return false;
         }
     Loaded loaded;
-    loaded.path=path;loaded.package_path=pkg.path;loaded.data_path=pkg.data_path;loaded.id=pkg.id;loaded.name=pkg.name;loaded.version=pkg.version;loaded.m=m;loaded.region_size=reserved;loaded.options=pkg.options;loaded.mic_options=pkg.mic_options;
+    loaded.elf_fingerprint=pkg.fingerprint;loaded.path=path;loaded.package_path=pkg.path;loaded.data_path=pkg.data_path;loaded.id=pkg.id;loaded.name=pkg.name;loaded.version=pkg.version;loaded.m=m;loaded.region_size=reserved;loaded.options=pkg.options;loaded.mic_options=pkg.mic_options;
     {std::lock_guard lock(g_options_mutex);for(const auto& [key,value]:pkg.options.object)g_revisions.declare(pkg.id,key);}
     loaded.files=std::make_unique<Files>(pkg.data_path);
     uint32_t heap_base=(m->mem_base+m->mem_size+15)&~15u;
@@ -1315,6 +1346,7 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
     } catch(const std::exception& e) {LOG("[guestmods] %s: manifest quests not read: %s",loaded.id.c_str(),e.what());}
     g_loaded.push_back(std::move(loaded));
     guard.handle = nullptr; // module functions remain resident for the process lifetime
+    profile_import.accept();
     LOG("[guestmods] loaded %s (translator %s): %u functions, %u hooks, guest memory %08X-%08X", path.c_str(),
         m->translator, m->func_count, m->hook_count, m->mem_base, m->mem_base + m->mem_size);
     return true;
@@ -1836,6 +1868,18 @@ void init() {
         int ordinal=ordinal_of(fn);auto& ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(ordinal);
         ch.replace=hook;ch.replace_mod="the port's map/HUD bridge";g_mod_hook_flags[ordinal]=1;
     });
+    // Existing port actor services configure their before-delete listeners
+    // before the central registry becomes immutable. Extend its lookup only
+    // after those services and every guest module have finished installation.
+    if(g_actor_profile_import){
+        native_actor_profiles::configure(call_original,[](Cpu*c,uint32_t f,std::initializer_list<uint32_t>a){return guest_call(c,f,a);});
+        std::string why;
+        const bool ok=native_actor_profiles::install_guest(mem::runtime_alloc(native_actor_profiles::kGuestCapacity*native_actor_profiles::kGuestSlotBytes,16),
+            [](uint32_t a){auto it=g_chains.find(a);return it==g_chains.end()?std::string():it->second.replace_mod;},
+            [](uint32_t a,PpcFunc fn){const int ordinal=ordinal_of(a);if(ordinal<0)fatal("[guestmods] native actor profile hook missing: %08X",a);
+                auto&ch=g_chains[a];ch.addr=a;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's native actor profiles";g_mod_hook_flags[ordinal]=1;},&why);
+        if(!ok)LOG("[guestmods] native actor profiles unavailable: %s",why.c_str());
+    }
     seal_startup();
 }
 
@@ -2104,6 +2148,7 @@ void logic_service(Cpu* c) {
 }
 void service(Cpu* c) { story_lyt_screen::service(c); }
 void state_loaded() {
+    native_actor_profiles::restore_guest_snapshots();
     maphud::state_loaded();
     story_native_event_game_thread::state_loaded();
     story_native_wait_runtime::state_loaded();
@@ -2147,6 +2192,7 @@ extern "C" void ppc_mod_run(Cpu* c) {
     Args a;
     a.save(c);
     for (PpcFunc h : ch.entry) {
+        native_actor_profiles::startup::EntryScope profile_entry(g_actor_profile_entry,addr==GC(0x028EA120));
         ObserverRegisters preserve(c);
         h(c);
     }

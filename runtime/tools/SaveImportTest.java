@@ -7,6 +7,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -42,7 +43,25 @@ public final class SaveImportTest {
     }
     static void test(String name, Checked body) throws Exception { body.run(); tests++; System.out.println("PASS " + name); }
 
+    static void externalLease(Path root, boolean available) throws Exception {
+        String java = Path.of(System.getProperty("java.home"), "bin", "java").toString();
+        Process child = new ProcessBuilder(java, "-cp", System.getProperty("java.class.path"),
+                SaveImportTest.class.getName(), "lease-check", root.toString()).inheritIO().start();
+        try {
+            check(child.waitFor(10, TimeUnit.SECONDS), "Lease check timed out");
+            check(child.exitValue() == (available ? 0 : 3),
+                    available ? "Released lease remains held" : "Active OS lease was lost");
+        } finally { if (child.isAlive()) child.destroyForcibly().waitFor(); }
+    }
+
     public static void main(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("lease-check")) {
+            try (SessionLease lease = SessionLease.acquire(new File(args[1]))) { return; }
+            catch (IOException expected) {
+                check(expected.getMessage().contains("Settings › Quit Game"), "Unexpected external lease error");
+                System.exit(3);
+            }
+        }
         if (args.length > 0 && args[0].equals("lease-child")) {
             try (SessionLease lease = SessionLease.acquire(new File(args[1]))) {
                 Files.writeString(Path.of(args[2]), "ready");
@@ -175,6 +194,40 @@ public final class SaveImportTest {
                     }
                 }
             });
+            test("rejected transfers preserve the active OS lease", () -> {
+                Path root = Files.createDirectory(temp.resolve("overlap-os-lock"));
+                try (SessionLease first = SessionLease.acquire(root.toFile())) {
+                    for (int i = 0; i < 3; i++) {
+                        rejects(() -> SessionLease.acquire(root.resolve(".").toFile()));
+                        externalLease(root, false);
+                    }
+                }
+                externalLease(root, true);
+            });
+            test("hard-linked lock aliases cannot release an active lease", () -> {
+                Path root = Files.createDirectory(temp.resolve("lock-owner"));
+                Path alias = Files.createDirectory(temp.resolve("lock-alias"));
+                try (SessionLease first = SessionLease.acquire(root.toFile())) {
+                    Files.createLink(alias.resolve(".wwhd-session.lock"), root.resolve(".wwhd-session.lock"));
+                    rejects(() -> SessionLease.acquire(alias.toFile()));
+                    externalLease(root, false);
+                }
+                externalLease(alias, true);
+            });
+            test("independent roots and repeated close preserve the current owner", () -> {
+                Path a = Files.createDirectory(temp.resolve("independent-a"));
+                Path b = Files.createDirectory(temp.resolve("independent-b"));
+                SessionLease previous = SessionLease.acquire(a.toFile());
+                previous.close();
+                try (SessionLease current = SessionLease.acquire(a.toFile());
+                     SessionLease other = SessionLease.acquire(b.toFile())) {
+                    previous.close();
+                    externalLease(a, false);
+                    externalLease(b, false);
+                }
+                externalLease(a, true);
+                externalLease(b, true);
+            });
             test("recovery after publication preserves current tree and old backup", () -> {
                 Path root = Files.createDirectory(temp.resolve("published")); dataset(root.resolve(".wwhd-save-previous"), "old"); dataset(root.resolve("save"), "new");
                 new TransactionalSaveStore(root.toFile(), dir -> {}).recover();
@@ -197,6 +250,27 @@ public final class SaveImportTest {
                     }
                 } finally { child.destroyForcibly().waitFor(); }
                 try (SessionLease lease = SessionLease.acquire(root.toFile())) { }
+            });
+            test("native-selected profile leaves interrupted vanilla import untouched", () -> {
+                Path root = Files.createDirectory(temp.resolve("profile-startup"));
+                dataset(root.resolve(".wwhd-save-previous"), "old");
+                Path profile = root.resolve("save-mod-fixture-" + "a".repeat(64));
+                GameSavePreparation.prepare(root.toFile(), profile.toFile(), dir -> {});
+                check(Files.isDirectory(profile), "selected profile was not prepared");
+                check(!Files.exists(root.resolve("save")), "profile prepared an empty vanilla save");
+                consistent(root.resolve(".wwhd-save-previous"), "old");
+                GameSavePreparation.prepare(root.toFile(), root.resolve("save").toFile(), dir -> {});
+                consistent(root.resolve("save"), "old");
+                check(Files.isDirectory(profile), "vanilla recovery touched profile");
+            });
+            test("explicit selected save is exact and leaves vanilla untouched", () -> {
+                Path root = Files.createDirectory(temp.resolve("explicit-startup"));
+                dataset(root.resolve("save"), "old");
+                Path explicit = temp.resolve("exact-custom-save");
+                GameSavePreparation.prepare(root.toFile(), explicit.toFile(), dir -> {});
+                check(Files.isDirectory(explicit), "explicit root was not used");
+                consistent(root.resolve("save"), "old");
+                check(!Files.exists(explicit.resolve("save")), "explicit root was rewritten");
             });
             System.out.println(tests + " safety contracts passed");
         } finally { TransactionalSaveStore.remove(temp.toFile()); }
