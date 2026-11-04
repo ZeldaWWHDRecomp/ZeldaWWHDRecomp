@@ -677,7 +677,7 @@ extern "C" void site_0287714C(Cpu* c) {
                            gx2::recording_display_list()) &&
         gfx::gamepad_backdrop::is_background(name_of(c->r[3]),
             float(ldf32(c->r[3] + kPaneSize)), float(ldf32(c->r[3] + kPaneSize + 4)));
-    t_backdropScopes.push_back(backdrop);
+    if (backdrop || !t_backdropScopes.empty()) t_backdropScopes.push_back(backdrop);
     if (backdrop) gx2::emit(gx2::OP_GAMEPAD_BACKDROP, {1});
     // Cached prompts/dialogue can be recorded in mono and replayed after 3D is
     // enabled. Keep their 2D identity in the list, independent of the mode at
