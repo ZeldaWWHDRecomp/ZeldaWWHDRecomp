@@ -102,7 +102,7 @@ WWHD_HOOK(WWHD_ADDR_daPy_Execute, on_link_step, (void* link)) {
 ### Build
 
 ```sh
-clang --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding \
+clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -ffreestanding \
   -fno-builtin -nostdlib -fno-jump-tables -ffunction-sections -fdata-sections \
   -I<sdk>/include -c mod.c -o mod.o
 ld.lld -m elf32ppc -r mod.o -o mod.elf
@@ -112,6 +112,19 @@ ld.lld -m elf32ppc -r mod.o -o mod.elf
 source checkout. `-mcpu=750` keeps to the game CPU's instructions. Link with `-r` only: the
 ELF must stay relocatable (the port picks its address). `-m elf32ppc` is needed on Windows,
 where MSYS2's lld defaults to PE. The same `mod.elf` works on every desktop platform.
+
+`-mstackrealign` is required for every PowerPC guest translation unit, including
+separately compiled helpers. Native game callers can supply an 8-byte-aligned
+stack, while Clang normally assumes 16-byte alignment. Realigning the guest
+callee's frame preserves its local storage and stack-passed arguments at either
+entry alignment. This flag belongs to the PowerPC compile, not the host compiler
+that later builds the translated module.
+
+Recompile and relink existing guest ELFs with this flag. Current translation
+does not add the missing compiler-generated realignment prologue. An entry-time
+runtime wrapper is a possible additional protection for older modules, but it
+must preserve stack-passed arguments and by-reference data; simply rounding the
+stack pointer is not sufficient. This change supplies the compile-time fix.
 
 ### Package and install
 
