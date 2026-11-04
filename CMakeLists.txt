@@ -4079,3 +4079,7 @@ add_executable(gamepad_backdrop_options_test runtime/tools/gamepad_backdrop_opti
 target_include_directories(gamepad_backdrop_options_test PRIVATE runtime/src runtime/include)
 target_compile_options(gamepad_backdrop_options_test PRIVATE -UNDEBUG)
 add_test(NAME gamepad_backdrop_options COMMAND gamepad_backdrop_options_test)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME vulkan_gamepad_backdrop_policy
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/vulkan_gamepad_backdrop_test.py")
+endif()
