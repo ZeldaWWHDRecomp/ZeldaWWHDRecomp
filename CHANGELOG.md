@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mods: profile mods get their own saves** (#385). A mod can now declare its own save profile in its manifest. Its
+  saves, save backups, settings and save states are then kept apart from your normal game, including when a launcher
+  passes `--save`, so a profile mod can't overwrite an ordinary save. While a profile is running, its saves and mods
+  stay fixed until you exit. Turning the mod off (or using **Switch all mods off**) takes effect on the next launch,
+  which also gives Android players a way back to the normal game without reinstalling. Damaged or unreadable profile
+  data is left untouched instead of being overwritten, and a mod that fails to start now stops with a message
+  explaining how to recover.
 - **Fixed for mod authors: C mods get a correctly aligned stack** (#387, #391). The game can call a mod with a stack
   that is aligned to 8 bytes, while C code compiled for the game assumes 16, so a mod's local variables and the
   pointers it passes to game functions could end up misaligned. Mods are now built with `-mstackrealign` (the SDK
