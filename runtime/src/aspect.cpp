@@ -673,7 +673,7 @@ extern "C" void site_0287714C(Cpu* c) {
     using namespace aspect;
     // Scope only this Picture DrawSelf, never its children or the containing UI.
     // Record even while disabled: a cached list may later be replayed enabled.
-    const bool backdrop = (gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed) ||
+    const bool backdrop = (gfx::gamepad_backdrop::capture_enabled() ||
                            gx2::recording_display_list()) &&
         gfx::gamepad_backdrop::is_background(name_of(c->r[3]),
             float(ldf32(c->r[3] + kPaneSize)), float(ldf32(c->r[3] + kPaneSize + 4)));

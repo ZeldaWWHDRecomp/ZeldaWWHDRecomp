@@ -5,6 +5,17 @@
 using namespace gfx::gamepad_backdrop;
 int main() {
     assert(enabled.load());
+    assert(!capture_requested.load() && !capture_enabled());
+    set_capture_requested(true);
+    assert(capture_enabled());
+    enabled.store(false);
+    assert(!capture_enabled());
+    enabled.store(true);
+    assert(capture_enabled());
+    set_capture_requested(false); // no output/reset/shutdown
+    assert(!capture_enabled());
+    // Entry/exit pairing is producer scope-local, not re-tested from this flag
+    // at exit: disabling between the two must still close an emitted begin.
     assert(is_background("P_BgPattern_00", 1280, 720));
     assert(!is_background("RootPane", 1280, 720));
     assert(!is_background("P_BgPattern_00-child", 1280, 720));

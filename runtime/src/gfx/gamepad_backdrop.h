@@ -8,6 +8,18 @@
 
 namespace gfx::gamepad_backdrop {
 inline std::atomic<bool> enabled{true};
+// Presenters publish the aggregate need of actual visible DRC outputs once per
+// presentation. Captures use the previous presentation's request; the first
+// non-native-aspect frame therefore uses the edge-colour fallback. No output,
+// backend reset and shutdown must clear the request, independently of the option.
+inline std::atomic<bool> capture_requested{false};
+inline bool capture_enabled() {
+    return enabled.load(std::memory_order_relaxed) &&
+        capture_requested.load(std::memory_order_relaxed);
+}
+inline void set_capture_requested(bool requested) {
+    capture_requested.store(requested, std::memory_order_relaxed);
+}
 
 // Canonical item/map menu layouts both own this 1280x720 picture. Other similarly
 // named panes and containers must never duplicate their children or foreground.
