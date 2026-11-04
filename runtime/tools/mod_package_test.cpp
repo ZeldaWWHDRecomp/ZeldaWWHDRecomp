@@ -51,6 +51,16 @@ int restart_check(const char* storage) {
 int main(int argc, char** argv) {
     using namespace mods::packages;
     namespace fs=std::filesystem;
+    if(argc==3&&std::string(argv[1])=="--save-profile-disabled-next-start") {
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",argv[2]);
+        set_code_mod_support(true);
+        assert(startup_save_profile().empty());
+        initialize();frame(1);
+        assert(!view("seed").enabled&&!view("seed").active);
+        assert(!view("dep").enabled&&!view("dep").active);
+        assert(!mods::manager::find("jump-anywhere")->enabled());
+        return 0;
+    }
     if(argc==4&&std::string(argv[1])=="--save-profile-startup") {
         // Keep the fixture alive for the child's full runtime lifetime. Windows
         // releases its loaded DLL only when that process exits.
@@ -94,6 +104,12 @@ int main(int argc, char** argv) {
             db["profiles"]["Default"]["builtin_options"]["direct-camera.speed"]=1.5;
             db["profiles"]["Default"]["builtin_options"]["fast-forward.rate"]=4;
         }
+        if(mode=="session") {
+            db["profiles"]["Default"]["builtins"]["auto-wind"]=true;
+            const auto broken=storage/"Mods/broken";fs::create_directories(broken);
+            std::ofstream(broken/"manifest.json")<<"{bad json";
+            db["profiles"]["Default"]["enabled"]["broken"]=true;
+        }
         if(mode=="session")db["profiles"]["Other"]=mods::json::parse(R"({"enabled":{"seed":true,"dep":false}})");
         if(mode=="graphics-failure") {
             const auto pack=storage/"Mods/bad-graphics";fs::create_directories(pack);
@@ -105,7 +121,7 @@ int main(int argc, char** argv) {
         if(mode=="disabled")db["profiles"]["Default"]["enabled"]["seed"]=false;
         const auto original=mods::json::dump(db);
         std::ofstream(storage/"profiles.json")<<original;
-        bool rejected=false,loaded=false;
+        bool rejected=false,loaded=false;unsigned guest_loads=0;
         try {
             const auto profile=startup_save_profile();
             assert(!view("dep").active&&!view("seed").active);
@@ -136,7 +152,7 @@ int main(int argc, char** argv) {
                         if(mode=="compiler-failure")throw std::runtime_error("Guest compiler is unavailable");
                         return 65536u;
                     },
-                    [&](const GuestPackage&,uint32_t){loaded=true;});
+                    [&](const GuestPackage&,uint32_t){loaded=true;++guest_loads;});
                 assert(view("dep").active&&view("seed").active&&loaded);
                 assert(view("dep").status!="frame-ran"); // Startup activates, never ticks native mods.
                 if(mode=="graphics-failure") {
@@ -152,8 +168,6 @@ int main(int argc, char** argv) {
                     const auto saved=bytes(storage/"profiles.json"),native_manifest=bytes(dep/"manifest.json"),native_binary=bytes(dep/"fixture.dylib");
                     assert(!enable("override",true,error)&&error.find("restart")!=std::string::npos);
                     assert(view("seed").isolated_save_profile&&!view("dep").isolated_save_profile);
-                    assert(!enable("seed",false,error)&&error.find("restart")!=std::string::npos);
-                    assert(!enable("dep",false,error)&&error.find("restart")!=std::string::npos);
                     assert(!remove("dep",error)&&error.find("restart")!=std::string::npos);
                     assert(!begin_setup_run("dep",setup_identity("dep"),{},error)&&error.find("restart")!=std::string::npos);
                     assert(!save_setup_run("dep",true,error)&&error.find("restart")!=std::string::npos);
@@ -161,15 +175,43 @@ int main(int argc, char** argv) {
                     assert(!select_profile("Other",error)&&current_profile()=="Default");
                     assert(!builtin_change_allowed("jump-anywhere",false,error));
                     assert(mods::manager::find("jump-anywhere")->enabled());
-                    disable_all();
-                    assert(view("seed").enabled&&view("dep").enabled&&!take_toasts().empty());
                     assert(bytes(storage/"profiles.json")==saved);
                     assert(bytes(dep/"manifest.json")==native_manifest&&bytes(dep/"fixture.dylib")==native_binary);
-                    // An external edit is checked next startup/load, never by the game-frame path.
+                    // An unrelated malformed package must not prevent scheduling an exit.
+                    assert(view("broken").enabled);
+                    assert(enable("dep",false,error));
+                    assert(!view("dep").enabled&&!view("seed").enabled&&view("broken").enabled);
+                    assert(view("dep").active&&view("seed").active&&view("dep").pending_restart);
+                    frame(2);
+                    assert(view("dep").active&&view("seed").active&&guest_loads==1);
+                    assert(current_save_profile()==profile);
+                    assert(enable("broken",false,error));
+                    assert(enable("seed",true,error));
+                    frame(3);
+                    assert(view("seed").enabled&&view("dep").enabled&&guest_loads==1);
+                    assert(enable("seed",false,error));
+                    frame(4);
+                    assert(!view("seed").enabled&&view("seed").active&&view("dep").active);
+                    // Bulk disable persists next-start choices without applying them to live code/settings.
+                    disable_all();
+                    assert(!view("seed").enabled&&!view("dep").enabled);
+                    assert(view("seed").active&&view("dep").active&&!take_toasts().empty());
+                    assert(mods::manager::find("jump-anywhere")->enabled());
+                    // Re-enabling only the owner must not copy every live builtin back over bulk-off choices.
+                    assert(enable("seed",true,error));
+                    const auto enabled_again=mods::json::parse(bytes(storage/"profiles.json"));
+                    assert(mods::manager::find("auto-wind")->enabled());
+                    assert(!enabled_again.get("profiles").get("Default").get("builtins").get("auto-wind").boolean);
+                    disable_all();
                     std::ofstream(dep/"external-edit")<<"changed after activation";
                     remember_builtin("fast-forward",false);
-                    frame(2);
-                    assert(view("seed").active&&view("dep").active);
+                    frame(5);
+                    assert(view("seed").active&&view("dep").active&&guest_loads==1);
+                    assert(current_save_profile()==profile);
+                    const auto next=host::run_process({fs::absolute(argv[0]).string(),"--save-profile-disabled-next-start",storage.string()});
+                    if(next.code)std::cerr<<next.output<<next.error;
+                    assert(next.code==0);
+
                 }
 
             }
