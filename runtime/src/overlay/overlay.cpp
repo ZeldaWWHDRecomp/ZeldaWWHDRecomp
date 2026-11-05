@@ -1321,17 +1321,23 @@ void tab_graphics() {
 #endif
     heading("Bug reports");
 #ifdef __ANDROID__
-    if (ImGui::Button("Share log")) hostui::post([] {
+    // off at every start: the save files go along only when the player ticks it for this share
+    static bool share_saves = false;
+    const bool saves = share_saves;
+    if (ImGui::Button("Share log")) hostui::post([saves] {
         auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
         auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
         if (!env || !activity) return;
         auto cls = env->GetObjectClass(activity);
-        auto method = env->GetMethodID(cls, "shareLog", "()V");
-        if (method) env->CallVoidMethod(activity, method);
+        auto method = env->GetMethodID(cls, "shareLogWithSaves", "(Z)V");
+        if (method) env->CallVoidMethod(activity, method, jboolean(saves));
         if (env->ExceptionCheck()) env->ExceptionClear();
         env->DeleteLocalRef(cls);
         env->DeleteLocalRef(activity);
     });
+    check("Include my save files", share_saves, &share_saves);
+    help("Adds your save file (with every name replaced by \"Link\") and your Picto Box photos to the shared log, so a "
+         "problem with a save can be reproduced. Off unless you tick it.");
 #endif
     // read once at start-up (main.cpp start_log_file); WWHD_LOG_FILE decides when set
     static bool logFile = [] { std::string v;
