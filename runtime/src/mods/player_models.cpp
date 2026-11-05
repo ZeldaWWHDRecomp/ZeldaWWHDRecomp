@@ -225,7 +225,7 @@ void service() {
     static uint32_t gen = 0;
     static uint64_t loads = ~0ull;
     static int frame = 0, lastScan = -100000;
-    static int current = -2;   // -2 not known, -1 the game's Link, else g_set->models' index
+    static int current = -2;   // -2 not known, -1 the game's Link, -3 a model that isn't installed, else g_set->models' index
     static std::string extra;  // a model a save state brought that no file has (to take it out again)
     static bool newGame[kFiles] = {};
     test_choice();
@@ -319,13 +319,23 @@ void service() {
         int found = -2;
         for (size_t i = 0; i < models.size() && found == -2; i++)
             if (models[i]->id == n && holds(kGuest, base, *models[i], true)) found = (int)i;
-        if (found == -2 && std::all_of(models.begin(), models.end(), [&](auto& m) { return holds(kGuest, base, *m, false); })) found = -1;
+        const bool known = n.empty() || std::any_of(models.begin(), models.end(), [&](auto& m) { return m->id == n; });
+        if (found == -2 && known && std::all_of(models.begin(), models.end(), [&](auto& m) { return holds(kGuest, base, *m, false); })) found = -1;
         for (size_t i = 0; i < models.size() && found == -2; i++)
             if (holds(kGuest, base, *models[i], true)) found = (int)i;
         if (found == -2 && !n.empty() && extra != n) {
             LOG("[playermodel] memory holds %s: loading it", n.c_str());
             extra = n;
             g_gen++;
+            return;
+        }
+        if (found == -2 && !known) {
+            // (a model no longer installed, from a save state: only its own words could take it out, so it stays
+            // as the state had it, and in the next states, until the game loads Link again)
+            LOG("[playermodel] memory holds %s, which isn't installed: left as the save state had it", n.c_str());
+            current = -3;
+            g_areaUsed = kHeader + std::min(be32(mem::ptr(kArea + 4)), kAreaSize - kHeader);
+            set_current(n);
             return;
         }
         if (found == -2) {
@@ -337,6 +347,7 @@ void service() {
         set_current(current >= 0 ? models[current]->id : "");
         LOG("[playermodel] in memory: %s", current >= 0 ? models[current]->id.c_str() : "the game's Link");
     }
+    if (current == -3) return;  // (a model that isn't installed: left in memory, above)
     // the save file played decides
     const uint32_t save = game_progress::save_address();
     if (!save) return;
