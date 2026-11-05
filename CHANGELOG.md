@@ -7,6 +7,41 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: randomized games keep their own saves when started from setup** (#408, for #366). Setup's Play button, the
+  macOS app, the Linux launchers and the Windows shortcuts start the game with its own save folder, and the experimental
+  randomized-game support took that as a folder you had chosen: a randomized game then read and wrote your normal save
+  file instead of its own save folder. Now each randomized game always uses its own folder (a save folder you chose
+  yourself, for example a cloud folder, is still used as given). Only development builds since #366 were affected, and
+  only if you switched an existing install to a randomized game: its progress may have gone into your normal save file.
+  Your earlier normal saves may still be in the save backups (Settings › Mods › Save backups); the recovery steps are in
+  `docs/randomizer-experiment.md`. Save states were not affected.
+- **Touch controls: more button pictures, a boat item ring, and more taps** (#427, ideas and code from the
+  GreenNaugahyde Android fork, thanks @GreenNaugahyde). On the Flexible touch style, Grab, Lift, Throw, Drop, Let Go
+  (on the rope) and Cruise now show a small picture of Link doing the action, drawn on your device from your own game
+  files. On the boat, the item ring only shows items you can use there. Letters, stone tablets and signs move on with
+  a tap, like talks, and after a game over you can tap Continue or Quit. The Classic style now always shows every
+  button. Not yet checked on a phone; reports welcome.
+- **Targeting letterbox: On / Off with enemies / Always off** (#395, for #114, thanks @andreasbertram5-alt for the
+  request). The bars that appear while holding target can now be kept, hidden only when an enemy is targeted, or
+  hidden always, in the Mods page and the in-game settings. Always off also hides the bars of free targeting (holding
+  target with nothing targeted). Cutscene, event and minigame bars stay. Earlier on/off choices keep working as before.
+- **Picture scaling: Sharp is pixel perfect** (#414, idea and code from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). The Graphics settings, the macOS menu tooltip and `docs/vulkan.md` now say that **Sharp** shows
+  each rendered pixel as a crisp block, the same as the fork's "Pixel perfect" mode. Only the wording changed.
+- **Docs: randomized games** (#396). `docs/randomizer-experiment.md` explains that setup stays the way to play a
+  randomized game, links the experimental source-mod route, and notes that the two routes keep separate saves,
+  backups and states (no migration, even for the same seed).
+- **Tests: Vulkan BC self-test accepts NVIDIA's decoder** (#403, thanks @itsarahtonin). NVIDIA GPUs round BC4/BC5
+  slightly differently from Apple's, which made the self-test fail on them; the test now allows that difference and
+  still catches a wrong palette mode or selector.
+- **Tests: SDL input tests ignore real controllers** (#404, thanks @itsarahtonin). A plugged-in GameCube adapter could
+  make the input tests fail; they now only see the virtual pads they create.
+- **For mod authors: quick-use and traversal services** (#389). Source mods get four new guest services: triggering
+  the game's quick-use item actions and ready-item checks, and the normal boat sail-wind and target calculation. The
+  game's own helpers still carry out the actions, with their usual checks. Native actors that a C mod registers now
+  also run at the right rate with True 60.
+- **Editor: MCP access starts once the game is ready** (#386). With `--editor --mcp`, the MCP server now starts after
+  the game code is loaded and all mods are initialized, so an early request can no longer read unloaded game memory.
 - **Setup on Windows: compiler unpacking shows progress** (#394, for #388, thanks @Sherisherisherisheri for the report).
   Unpacking the compiler (about 10,000 files) now shows a "Unpacking the compiler … 4,200 of 10,412 files" line in the
   console and the setup window instead of sitting silent for minutes. If unpacking fails, setup now says why (most

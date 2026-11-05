@@ -1614,7 +1614,7 @@ void tab_display() {
     if (check("Context buttons", mods::context_buttons_on(), &v)) hostui::post([v] { mods::set_context_buttons_on(v); });
     help("Only the buttons that do something now show, with the game's own word or item on them (Open, Lift, "
          "Speak, the bow...); the game's button display is hidden then. A golden ring shows when A offers "
-         "something new. Off: every button always shows.");
+         "something new. Off: every button always shows. The Classic style always shows every button.");
     if (!mods::context_buttons_on()) ImGui::BeginDisabled();
     if (check("Link in the button pictures", link_poses::enabled(), &v)) hostui::post([v] { link_poses::set_enabled(v); });
     help("A small picture of Link in the pose of the action shows on the button: jumping on Jump, a sword swing on the "
@@ -1660,6 +1660,9 @@ void tab_display() {
         if (radio(f[i], hostui::scale_filter() == i, fok))
             hostui::post([i] { hostui::set_scale_filter(i); });
     }
+    help("Smooth blends the game's pixels. Sharp is pixel perfect: each rendered pixel shows as a crisp block of the "
+         "same size at any window size, with no bars. Integer scale uses whole-number sizes only and leaves a border. "
+         "While dynamic resolution has lowered the resolution, the picture is scaled smoothly.");
 
 }
 
@@ -1841,6 +1844,13 @@ void builtin_options(const std::string& id) {
             ImGui::TreePop();
         }
         note("The map of where each thing is found is on the item menu's settings page (Game tab).");
+    } else if (id == "target-letterbox") {
+        int mode = mods::targeting_letterbox_mode();
+        if (ImGui::Combo("Letterbox while targeting", &mode, "On\0Off with enemies\0Always off\0"))
+            hostui::post([mode] { game_settings::set_targeting_letterbox_mode(mode); });
+        help("Always off also removes bars while holding target without an enemy. Cutscenes and scripted cameras keep their bars.");
+        if (const char* value = std::getenv("WWHD_TARGET_LETTERBOX_MODE"))
+            note("WWHD_TARGET_LETTERBOX_MODE=%s overrides the saved choice at startup.", value);
     } else if (id == "direct-camera") {
         float speed = mods::camera_speed();
         if (ImGui::SliderFloat("Camera speed", &speed, .5f, 2.f, "%.2fx"))

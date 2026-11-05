@@ -28,9 +28,11 @@ void env(const char* key, const char* value) {
 }
 }
 namespace mods {
-static bool target_letterbox = true;
-bool letterbox_while_targeting() { return target_letterbox; }
-void set_letterbox_while_targeting(bool on) { target_letterbox = on; }
+static int target_letterbox = 0;
+int targeting_letterbox_mode() { return target_letterbox; }
+void set_targeting_letterbox_mode(int value) { if (value >= 0 && value <= 2) target_letterbox = value; }
+bool letterbox_while_targeting() { return target_letterbox == 0; }
+void set_letterbox_while_targeting(bool on) { target_letterbox = on ? 0 : 1; }
 static bool ff_on = false, ff_mute = true;
 static unsigned ff_rate = 2;
 static uint32_t ff_button = 0x40;
