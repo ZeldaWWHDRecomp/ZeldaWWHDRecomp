@@ -162,6 +162,82 @@ int main() {
         u.add(1000, 3000);  // far before (a new clock): the end starts over
         CHECK(u.take() == 2000);
     }
+    // memory (MemoryGuard): line 384 MB, lowest level 4 (0.5x)
+    {
+        MemoryGuard m;
+        // unknown headroom or plenty: nothing changes
+        CHECK(m.step(0.5, -1, 384, 0, 4) == 0 && m.cap == 0);
+        CHECK(m.step(0.5, 4000, 384, 2, 4) == 2 && m.cap == 0);
+        // under the line: one level down, at most every second, and that is the upper limit
+        CHECK(m.step(0.5, 300, 384, 0, 4) == 1 && m.cap == 1);
+        CHECK(m.step(0.5, 300, 384, 1, 4) == 1);  // half a second later: not yet
+        CHECK(m.step(0.6, 300, 384, 1, 4) == 2 && m.cap == 2);
+        // far under (under half the line): the lowest level at once
+        CHECK(m.step(0.1, 100, 384, 2, 4) == 4 && m.cap == 4);
+        CHECK(m.step(1.5, 100, 384, 4, 4) == 4);  // at the lowest: stays
+        CHECK(m.tight(500, 384) && !m.tight(768, 384) && !m.tight(-1, 384));
+        // between the line and twice the line: the limit stays, the room does not count
+        for (int i = 0; i < 200; i++) CHECK(m.step(0.5, 500, 384, 4, 4) == 4);
+        CHECK(m.cap == 4);
+        // above twice the line: after 60 s the limit goes up one level per 10 s
+        double t = 0;
+        while (m.cap == 4 && t < 120) { m.step(0.5, 1000, 384, 4, 4); t += 0.5; }
+        CHECK(m.cap == 3 && t >= 60 && t <= 61);
+        t = 0;
+        while (m.cap == 3 && t < 60) { m.step(0.5, 1000, 384, 4, 4); t += 0.5; }
+        CHECK(m.cap == 2 && t >= 9.5 && t <= 10.5);
+        // a dip under twice the line starts the minute over
+        m.step(0.5, 500, 384, 4, 4);
+        t = 0;
+        while (m.cap == 2 && t < 120) { m.step(0.5, 1000, 384, 4, 4); t += 0.5; }
+        CHECK(m.cap == 1 && t >= 60);
+        // a step down postpones going up again by a minute
+        MemoryGuard d;
+        d.step(2, 300, 384, 0, 4);
+        CHECK(d.cap == 1);
+        t = 0;
+        while (d.cap == 1 && t < 200) { d.step(0.5, 1000, 384, 1, 4); t += 0.5; }
+        CHECK(d.cap == 0 && t >= 60);
+        // the current level below the limit stays; never above the limit
+        MemoryGuard e;
+        e.cap = 2;
+        CHECK(e.step(0.5, 4000, 384, 3, 4) == 3 && e.step(0.5, 4000, 384, 1, 4) == 2);
+    }
+    // little memory: the level that keeps the 3D view at 1x at most
+    {
+        CHECK(MemoryGuard::one_x_level(1.0f, 4) == 0);
+        CHECK(MemoryGuard::one_x_level(0.75f, 4) == 0);
+        CHECK(MemoryGuard::one_x_level(1.5f, 4) == 3);  // 0.625 of 1.5x = 0.94x
+        CHECK(1.5f * kLevels[MemoryGuard::one_x_level(1.5f, 4)] <= 1.0f);
+        CHECK(MemoryGuard::one_x_level(2.0f, 4) == 4);
+        CHECK(MemoryGuard::one_x_level(2.0f, 2) == 2);  // the lowest allowed level bounds it
+        CHECK(MemoryGuard::one_x_level(1.125f, 4) == 1);
+        MemoryGuard s;
+        s.start_capped(2);
+        CHECK(s.cap == 2 && s.step(0.5, 4000, 64, 2, 4) == 2);
+        for (int i = 0; i < 1000; i++) s.step(0.5, 4000, 64, 2, 4);  // plenty of room for minutes: never above 1x
+        CHECK(s.cap == 2 && s.floor == 2);
+        s.step(2, 40, 64, 2, 4);  // memory low below the floor still steps down, and comes back to the floor only
+        CHECK(s.cap == 3);
+        for (int i = 0; i < 1000; i++) s.step(0.5, 4000, 64, 3, 4);
+        CHECK(s.cap == 2);
+    }
+    // the controller does not step up above its upper limit
+    {
+        Controller c;
+        c.reset(4);
+        c.force(3);
+        c.upperLimit = 3;
+        Window w;
+        w.seconds = 0.5;
+        w.frames = 15;
+        w.busyMs = 50;  // 10%: plenty of room
+        for (int i = 0; i < 200; i++) c.decide(w);
+        CHECK(c.level == 3);
+        c.upperLimit = 0;
+        for (int i = 0; i < 200; i++) c.decide(w);
+        CHECK(c.level == 0);
+    }
     if (failures) {
         std::fprintf(stderr, "dynres_test: %d failures\n", failures);
         return 1;
