@@ -113,6 +113,13 @@ if(WIN32 AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC")
   endif()
 endif()
 
+# the in-app randomizer's command (tools/rando: TWWHD Randomizer 1.2.0) for setup; release builds turn it on.
+# It is a program of its own: the game and its generated code do not change with it.
+option(WWHD_RANDO "build tools/rando's wwhd-rando (setup's randomizer)" OFF)
+if(WWHD_RANDO)
+  add_subdirectory(tools/rando)
+endif()
+
 add_library(gamecode STATIC ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/imports.c)
 target_include_directories(gamecode PUBLIC runtime/include ${GEN_DIR})
 # exact FP semantics: no contraction into FMA, no fast-math; PowerPC integer arithmetic wraps

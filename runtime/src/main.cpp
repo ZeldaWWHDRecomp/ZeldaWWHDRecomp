@@ -656,8 +656,25 @@ int main(int argc, char** argv) {
     }
 #endif
     if (randomizer::compiled_seed()) {
+        // An in-app seed plays its changed files over the installed game (setup --randomize); a seed
+        // installed as a whole output folder is the game folder itself.
+        // (the install folder: a code-mod build's WWHD_INSTALL_DIR, the macOS app's data folder it starts in,
+        // or the folder holding the game)
+        std::vector<std::filesystem::path> installs;
+        if (const char* install = std::getenv("WWHD_INSTALL_DIR")) installs.emplace_back(install);
+        std::error_code ec;
+        installs.push_back(std::filesystem::current_path(ec));
+        installs.push_back(std::filesystem::absolute(config::game_dir, ec).parent_path());
+        for (const auto& install : installs) {
+            const auto overlay = randomizer::overlay_directory(install);
+            if (!overlay.empty() && std::filesystem::is_regular_file(overlay / "code" / "cking.rpx", ec)) {
+                randomizer::overlay_root() = overlay.string();
+                LOG("[randomizer] seed files: %s over %s", randomizer::overlay_root().c_str(), config::game_dir.c_str());
+                break;
+            }
+        }
         // The generator can replace a seed in place. Check before touching any save files.
-        const std::string rpx = config::game_dir + "/code/cking.rpx";
+        const std::string rpx = randomizer::game_rpx(config::game_dir);
         bool matches = false;
         try {
             matches = randomizer::valid_identity() && mods::hash::sha256_file(rpx) == g_guest_build_rpx_sha256;
@@ -733,7 +750,7 @@ int main(int argc, char** argv) {
         });
 
     LoadedModule m{};
-    std::string rpx = config::game_dir + "/code/cking.rpx";
+    std::string rpx = randomizer::game_rpx(config::game_dir);
     if (!load_rpx(rpx, m)) fatal("cannot load %s", rpx.c_str());
     if (m.entry != g_recomp_entry_point) fatal("%s does not match the recompiled code", rpx.c_str());
     LOG("[boot] loaded %s (%s build, title %s): entry %08X sda %08X sda2 %08X data end %08X", rpx.c_str(),

@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <command/Log.hpp>
+#include <libs/yaml.hpp>
 #include <options.hpp>
 #include <randomizer.hpp>
 #include <seedgen/config.hpp>
@@ -202,7 +203,7 @@ std::string spoiler_log() {
 int usage() {
     fprintf(stderr,
             "usage: wwhd-rando --data DIR --work DIR COMMAND\n"
-            "  version | settings | get NAME | set NAME INDEX | seed | set-seed TEXT | new-seed | defaults\n"
+            "  version | locations | settings | get NAME | set NAME INDEX | seed | set-seed TEXT | new-seed | defaults\n"
             "  preset beginner|standard|everything | permalink | load-permalink TEXT\n"
             "  generate --game GAME_DIR --out OUT_DIR [--allow-eur]\n");
     return 2;
@@ -230,6 +231,30 @@ int main(int argc, char** argv) {
     if (args.empty()) return usage();
     const std::string cmd = args[0];
     if (cmd == "version") return ok(Json().s("version", RANDOMIZER_VERSION));
+    // the randomizer's locations with the game files and offsets they change (logic/location_data.yaml), for the
+    // spoiler map's places (places.py): no settings needed
+    if (cmd == "locations" && !data.empty()) {
+        YAML::Node locs;
+        if (!LoadYAML(locs, fspath(data) / "logic" / "location_data.yaml", true) || !locs.IsSequence())
+            return fail("cannot read " + (fspath(data) / "logic" / "location_data.yaml").string());
+        std::string r = "[";
+        for (size_t n = 0; n < locs.size(); n++) {
+            const YAML::Node& l = locs[n];
+            std::string paths = "{";
+            auto add = [&](const std::string& path, const YAML::Node& offs) {
+                std::string o = "[";
+                if (offs && offs.IsSequence())
+                    for (size_t k = 0; k < offs.size(); k++) o += (k ? "," : "") + std::to_string(offs[k].as<uint32_t>());
+                paths += (paths.size() > 1 ? "," : "") + json_str(path) + ":" + o + "]";
+            };
+            if (const YAML::Node ps = l["Paths"]; ps && ps.IsMap())
+                for (const auto& p : ps) add(p.first.as<std::string>(), p.second);
+            else if (const YAML::Node p = l["Path"]; p && p.IsScalar())
+                add(p.as<std::string>(), l["Offsets"] ? l["Offsets"] : YAML::Node());
+            r += (n ? "," : "") + Json().s("name", l["Names"]["English"].as<std::string>()).raw("paths", paths + "}").str();
+        }
+        return ok(Json().raw("locations", r + "]"));
+    }
     if (data.empty() || work.empty()) return usage();
     wwhd_rando::data_path = fspath(data) / "";
     wwhd_rando::save_path = fspath(work) / "";

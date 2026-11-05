@@ -12,7 +12,8 @@ spot (its x / y / z). The square: a sea room's number, the 7 x 7 grid for the se
 square (STAGE_SQUARES); locations without a file (rewards, mail, shops) take their island's square from the name
 ("Windfall Island - ...") as the located ones teach it. Dungeons keep their stage (the map draws its floors).
 
-usage: places.py --game GAME_DIR --out OUT.tsv [--locations location_data.yaml]
+usage: places.py --game GAME_DIR --locations LOCATIONS.json --out OUT.tsv
+  (LOCATIONS.json: the output of `wwhd-rando --data DATA locations`)
   OUT: name<TAB>square (0: none)<TAB>stage ("-": the sea or none)<TAB>x<TAB>y<TAB>z ("nan": no spot)
 """
 import argparse
@@ -28,7 +29,6 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 import shaderprep  # noqa: E402  (Yaz0 and SARC readers)
 
-LOCATIONS = os.path.join(HERE, "twwhd_rando", "logic", "data", "location_data.yaml")
 FILE = re.compile(r"(?:Stage/|@SARC@)([A-Za-z0-9_]+?)_(Stage|Room\d+)\.szs@YAZ0@SARC@[^@]+\.bfres@BFRES@(room\.dzr|stage\.dzs)$")
 # The sea square (1..49) of the stages off the sea's own files: stage names and square numbers only, as
 # GreenNaugahyde's ProgressPlaces.java (MPL-2.0, db65d60) gives them where its places agree on one square.
@@ -128,9 +128,11 @@ def entry_at(d, off):
 
 
 def load_locations(path):
-    import yaml  # (setup's Python has PyYAML: the mod tools use it)
+    """the locations as location_data.yaml has them, from the output of `wwhd-rando --data DATA locations` (JSON: the
+    release's Python has no YAML reader)"""
+    import json
     with open(path, encoding="utf-8") as fh:
-        return yaml.safe_load(fh)
+        return [{"Names": {"English": l["name"]}, "Paths": l["paths"]} for l in json.load(fh)["locations"]]
 
 
 def build(game_dir, locations):
@@ -186,7 +188,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--game", required=True, help="the game folder (code/, content/, meta/)")
     ap.add_argument("--out", required=True)
-    ap.add_argument("--locations", default=LOCATIONS)
+    ap.add_argument("--locations", required=True, help="the output of wwhd-rando --data DATA locations")
     a = ap.parse_args(argv)
     rows = build(a.game, load_locations(a.locations))
     write(rows, a.out)

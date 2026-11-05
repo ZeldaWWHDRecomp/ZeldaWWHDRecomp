@@ -34,6 +34,20 @@ inline std::string seed_directory(const std::string& root) {
     const std::filesystem::path path(root);
     return path.filename() == seed ? root : (path / seed).string();
 }
+// An in-app seed (setup --randomize) keeps only its changed files, in the install folder's
+// randomizer/seeds/<first 16 hex digits of its RPX SHA-256>/out; "" for other builds.
+inline std::filesystem::path overlay_directory(const std::filesystem::path& install_dir) {
+    if (!compiled_seed() || !valid_identity() || install_dir.empty()) return {};
+    return install_dir / "randomizer" / "seeds" / std::string(g_guest_build_rpx_sha256).substr(0, 16) / "out";
+}
+// The overlay this run plays (set once at startup, before the game reads files); "" none.
+inline std::string& overlay_root() {
+    static std::string root;
+    return root;
+}
+inline std::string game_rpx(const std::string& game_dir) {
+    return overlay_root().empty() ? game_dir + "/code/cking.rpx" : overlay_root() + "/code/cking.rpx";
+}
 // Only the per-seed folder preference lives here; general settings stay shared.
 inline std::string config_directory(const std::string& root) {
     return seed_directory(root);

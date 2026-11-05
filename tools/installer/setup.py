@@ -2999,6 +2999,19 @@ def main():
     ap.add_argument("--start-decomp", choices=("0", "1"),
                     help="start the decomp version instead of the normal game from now on (1) or not (0)")
     ap.add_argument("--repair-guest-python", action="store_true", help="upgrade local mod setup Python without rebuilding game code")
+    # the in-app randomizer (tools/rando, randomizer_seeds.py): randomized games made from the installed USA game
+    ap.add_argument("--randomize", action="store_true", help="make a randomized game (TWWHD Randomizer 1.2.0) and build it; "
+                    "the game plays it from its next start")
+    ap.add_argument("--rando-preset", choices=("beginner", "standard", "everything"), help="--randomize: these settings")
+    ap.add_argument("--rando-permalink", help="--randomize: the settings and seed of a TWWHD Randomizer 1.2.0 permalink")
+    ap.add_argument("--rando-settings", help="--randomize: a TWWHD Randomizer config.yaml (its preferences.yaml beside it too)")
+    ap.add_argument("--rando-seed", help="--randomize: the seed name")
+    ap.add_argument("--rando-new-seed", action="store_true", help="--randomize: a new random seed name")
+    ap.add_argument("--rando-no-build", action="store_true", help="--randomize: make the game's files only (no build, no switch)")
+    ap.add_argument("--list-seeds", action="store_true", help="the randomized games made (JSON)")
+    ap.add_argument("--play-seed", metavar="ID|vanilla", help="the game the next start plays: a randomized game (its id or "
+                    "number) or the game as it is; builds its game code if needed")
+    ap.add_argument("--delete-seed", metavar="ID", help="remove a randomized game's files (its saves stay); needs --yes")
     ap.add_argument("--shader-template", help="local shader template (or WWHD_SHADER_TEMPLATE); optional")
     ap.add_argument("--skip-shader-prebuild", action="store_true", help="skip optional shader preparation; compile during play")
     ap.add_argument("--model-sweep", dest="model_sweep", action="store_const", const=True, default=None,
@@ -3057,6 +3070,41 @@ def main():
     return rc
 
 
+def run_randomizer(args, ctx):
+    """--randomize, --list-seeds, --play-seed, --delete-seed (randomizer_seeds.py)"""
+    import randomizer_seeds
+    if args.list_seeds:
+        print(json.dumps(randomizer_seeds.listing(ctx.data_dir), indent=1, sort_keys=True))
+        return 0
+    if not ctx.installed():
+        raise SetupError("No installed game: run setup with your game first")
+    hooks = (code_mods.hooks_option(args.code_mods) if args.code_mods is not None
+             else bool(ctx.state().get("code_mods")))
+    if args.delete_seed:
+        if not (args.yes or os.environ.get("WWHD_SETUP_NONINTERACTIVE") == "1"):
+            raise SetupError("--delete-seed removes that randomized game's files: add --yes to confirm (its saves stay)")
+        s = randomizer_seeds.delete(sys.modules[__name__], ctx, args.delete_seed)
+        say("Removed randomized game %s (%s). Its saves stay in the save-randomizer-%s folders." % (
+            s["id"], s.get("hash", ""), s["rpx_sha256"]))
+        return 0
+    which = args.play_seed
+    if args.randomize:
+        say("Making a randomized game from %s" % ctx.game_dir)
+        entry = randomizer_seeds.make(sys.modules[__name__], ctx, say, preset=args.rando_preset,
+                                      permalink=args.rando_permalink, settings_file=args.rando_settings,
+                                      seed=args.rando_seed, new_seed=args.rando_new_seed)
+        say("  Permalink: %s" % entry["permalink"])
+        if args.rando_no_build:
+            return 0
+        which = entry["id"]
+    say("Preparing %s (game code %s)" % ("the game as it is" if which == "vanilla" else "randomized game " + which,
+                                         "with code-mod support" if hooks else "without code-mod support"))
+    result = randomizer_seeds.select(sys.modules[__name__], ctx, which, hooks)
+    say("  Ready%s: the game plays it from its next start." % (" (built before)" if result.get("cached") else
+                                                               " in %d s" % result.get("seconds", 0)))
+    return 0
+
+
 def run(args, ui):
     ctx = Ctx(args)
     if getattr(args, "repair_guest_python", False):
@@ -3068,6 +3116,9 @@ def run(args, ui):
         code_mods.rebuild(sys.modules[__name__], ctx, code_mods.hooks_option(args.code_mods),
                           args.code_mods_status, args.code_mods_cancel)
         return 0
+    if (getattr(args, "randomize", False) or getattr(args, "list_seeds", False) or getattr(args, "play_seed", None)
+            or getattr(args, "delete_seed", None)):
+        return run_randomizer(args, ctx)
     version, data_dir, game_dir = ctx.version, ctx.data_dir, ctx.game_dir
     say("The Legend of Zelda: The Wind Waker HD - native PC port, setup %s" % version)
     hint = "" if GUI else legacy_appimage_data_notice()  # the setup window shows it itself

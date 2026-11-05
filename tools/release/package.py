@@ -48,6 +48,7 @@ TOOL_FILES = [
     "tools/recomp/builds.py",
     "tools/recomp/randomizer_compat.py",
     "tools/recomp/randomizer-usa.json",
+    "tools/rando/places.py",  # the spoiler map's places from the player's own stage files
     "tools/recomp/crlive.py",
     "tools/recomp/leaflocal.py",
     "tools/recomp/rawstore.py",
@@ -74,6 +75,7 @@ TOOL_FILES = [
 INSTALLER_FILES = [
     "tools/installer/setup.py",
     "tools/installer/code_mods.py",
+    "tools/installer/randomizer_seeds.py",
     "tools/installer/decomp_setup.py",
     "tools/installer/shader_prebuild.py",
     "tools/installer/model_sweep.py",
@@ -154,6 +156,14 @@ VENDORED_LICENSES = {
     "ImGuizmo (MIT)": "runtime/third_party/imguizmo/LICENSE",
     "metal-cpp (Apache-2.0)": "runtime/third_party/metal-cpp/LICENSE.txt",
     "xxHash (BSD-2-Clause)": "runtime/third_party/xxhash/LICENSE",
+}
+# tools/bin/wwhd-rando (tools/rando, CMake -DWWHD_RANDO=ON): the in-app randomizer and its libraries
+RANDO_LICENSES = {
+    "TWWHD Randomizer (MIT)": "tools/rando/twwhd_rando/LICENSE.txt",
+    "yaml-cpp (MIT)": "tools/rando/twwhd_rando/libs/yaml-cpp/LICENSE",
+    "TinyXML-2 (Zlib)": "tools/rando/twwhd_rando/libs/tinyxml2/LICENSE.txt",
+    "base64pp (MIT)": "tools/rando/twwhd_rando/libs/base64pp/LICENSE",
+    "BS thread_pool (MIT)": "tools/rando/twwhd_rando/libs/thread-pool/LICENSE.txt",
 }
 
 
@@ -555,6 +565,7 @@ def main():
                     "shipped unmodified as tools/python")
     ap.add_argument("--decomp-build", help="macOS development builds: a build configured with -DWWHD_DECOMP=ON "
                     "-DWWHD_DECOMP_RUNTIME_ONLY=ON; the release then lets setup build the decomp version (experimental)")
+    ap.add_argument("--no-rando", action="store_true", help="leave out the in-app randomizer (a build without -DWWHD_RANDO=ON)")
     ap.add_argument("--no-zip", action="store_true")
     a = ap.parse_args()
 
@@ -628,6 +639,13 @@ def main():
     if not os.path.isfile(os.path.join(build, yaz0_name)):
         sys.exit("%s missing in %s (CMake target wwhd_yaz0)" % (yaz0_name, build))
     copy(os.path.join(build, yaz0_name), os.path.join(pkg, "tools", "lib", yaz0_name))
+    # the in-app randomizer (tools/rando): its command and its data (no game files: tools/release/guard.py)
+    rando = os.path.join(build, "tools", "rando")
+    if not a.no_rando:
+        if not os.path.isfile(os.path.join(rando, "wwhd-rando" + exe_suffix)):
+            sys.exit("wwhd-rando missing in %s: configure release builds with -DWWHD_RANDO=ON (or --no-rando)" % rando)
+        copy(os.path.join(rando, "wwhd-rando" + exe_suffix), os.path.join(pkg, "tools", "bin", "wwhd-rando" + exe_suffix))
+        shutil.copytree(os.path.join(rando, "data"), os.path.join(pkg, "tools", "rando", "data"))
 
     # the setup in a terminal (the fallback for the program above), in tools/
     inst = os.path.join(ROOT, "tools", "installer")
@@ -660,6 +678,8 @@ def main():
     licdir = os.path.join(pkg, "third-party-licenses")
     os.makedirs(licdir)
     entries = dict(VENDORED_LICENSES)
+    if not a.no_rando:
+        entries.update(RANDO_LICENSES)
     # zstd: compiled into tools/bin/wwhd-extract on every platform (pinned source, cmake/Zstd.cmake)
     entries["Zstandard (BSD-3-Clause)"] = zstd_license
     if a.platform.startswith("windows"):

@@ -44,6 +44,15 @@ class RandoCli(unittest.TestCase):
         p = subprocess.run([str(EXE), 'version'], capture_output=True, text=True, timeout=60)
         self.assertEqual(json.loads(p.stdout), {'ok': True, 'version': '1.2.0'})
 
+    def test_locations(self):
+        locs = self.cli('locations')['locations']
+        self.assertGreater(len(locs), 300)
+        chest = [l for l in locs if l['paths']]
+        self.assertTrue(chest)
+        path, offsets = next(iter(chest[0]['paths'].items()))
+        self.assertTrue(path.startswith('content/'))
+        self.assertTrue(all(isinstance(o, int) for o in offsets))
+
     def test_data_has_no_game_art(self):
         files = [p.relative_to(DATA).as_posix() for p in DATA.rglob('*') if p.is_file()]
         self.assertTrue(files)

@@ -31,6 +31,7 @@ and `last.json`.
 | `defaults`, `preset beginner\|standard\|everything` | the randomizer's defaults, optionally with a few changes; the seed name stays |
 | `permalink`, `load-permalink TEXT` | the same permalink as the PC randomizer 1.2.0 |
 | `generate --game GAME --out OUT` | one randomized game; only the changed files go to `OUT` |
+| `locations` | every location with the game files and offsets it changes (for `places.py`; no `--work` needed) |
 
 Refused:
 - race-mode settings (no spoiler log). The official builds add a secret key to those seeds, so the same permalink would make a different game here.
@@ -40,12 +41,14 @@ Refused:
 
 ## Spoiler map places
 
-`places.py --game GAME --out places.tsv` reads the player's own stage files and writes where each
-randomizer location is: its sea square, stage and position. Setup runs it on the player's machine.
+`places.py --game GAME --out places.tsv --locations LOCATIONS.json` (the output of `locations`) reads the player's
+own stage files and writes where each randomizer location is: its sea square, stage and position. Setup runs it on the player's machine.
 Nothing game-derived ships with the port.
 
 ## Checks against the official randomizer
 
 These need a USA game and run outside CI:
-- The `code/cking.rpx` must have the same SHA-256 as the official 1.2.0 build makes from the same settings.
+- The `code/cking.rpx` must hold the same code and data as the official 1.2.0 build makes from the same settings,
+  section by section once inflated. The file's SHA-256 differs: the system zlib packs the sections differently from
+  the official build's zlib-ng.
 - With `-DWWHD_RANDO_UPSTREAM_ART=ON` and upstream's `assets/` in the data folder, every changed file must be the same. This build is for that test only and is never released.

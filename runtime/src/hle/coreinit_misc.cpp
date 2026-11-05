@@ -1,3 +1,4 @@
+#include "../randomizer_identity.h"
 #include "crash_context.h"
 // coreinit: logging, dynamic loading, system info, and small odds and ends.
 #include "../overlay/hostui.h"
@@ -135,7 +136,14 @@ uint32_t console_language() {
         if (const char* r = getenv("WWHD_LANGUAGE_REGION"); r && *r) region_text = r;
         else if ((!env_language || !*env_language) && !hostui::get("language_region", region_text)) region_text.clear();
         const int region = game_lang::region_from_code(region_text);
-        const game_lang::Start s = game_lang::choose((int)v, region);
+        game_lang::Start s = game_lang::choose((int)v, region);
+        if (s.pack && randomizer::compiled_seed()) {
+            // the randomizer changed the installed game's texts only (item names, hints): another region's
+            // pack would show the unrandomized ones
+            LOG("[config] randomized game: the %s language source is not used; %s texts are the installed game's",
+                game_lang::region_name(s.region), game_lang::name(s.language));
+            s = game_lang::choose((int)v, game_lang::kNoRegion);
+        }
         if (s.pack) {
             LOG("[config] %s from the language source (%s): %s%s", game_lang::name(s.language),
                 game_lang::region_name(s.region), s.pack->host.c_str(),

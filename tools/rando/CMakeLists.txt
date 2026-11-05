@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
 # wwhd-rando: TWWHD Randomizer 1.2.0 (twwhd_rando/, MIT, see twwhd_rando/WWHD.md) as the setup's randomizer command.
-# A project of its own: the game build (the top-level CMakeLists.txt) does not include it.
+# A project of its own; the game's build includes it with -DWWHD_RANDO=ON (release builds), the game code is the same.
 #   cmake -S tools/rando -B <dir> -G Ninja -DCMAKE_BUILD_TYPE=Release && cmake --build <dir>
 #   <dir>/wwhd-rando --data <dir>/data --work WORK COMMAND   (cli/main.cpp)
 # Adapted from GreenNaugahyde/ZeldaWWHDRecompAndroid (MPL-2.0) tools/rando/host/CMakeLists.txt at db65d60.
@@ -20,11 +20,11 @@ file(GLOB RANDO_SOURCES CONFIGURE_DEPENDS
 
 set(GIT_TAG 1.2.0)  # the release it is: permalinks and seeds match the PC randomizer 1.2.0
 set(SEED_KEY "")    # the official builds' race-mode key is secret; race mode is refused (cli/main.cpp)
-configure_file(${RANDO_DIR}/version.hpp.in ${CMAKE_BINARY_DIR}/rando/version.hpp @ONLY)
-configure_file(${RANDO_DIR}/keys/keys.hpp.in ${CMAKE_BINARY_DIR}/rando/keys/keys.hpp @ONLY)
+configure_file(${RANDO_DIR}/version.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/rando/version.hpp @ONLY)
+configure_file(${RANDO_DIR}/keys/keys.hpp.in ${CMAKE_CURRENT_BINARY_DIR}/rando/keys/keys.hpp @ONLY)
 
 add_executable(wwhd-rando ${RANDO_SOURCES} cli/main.cpp)
-target_include_directories(wwhd-rando PRIVATE ${RANDO_DIR} ${CMAKE_BINARY_DIR}/rando ${RANDO_DIR}/libs/yaml-cpp/include
+target_include_directories(wwhd-rando PRIVATE ${RANDO_DIR} ${CMAKE_CURRENT_BINARY_DIR}/rando ${RANDO_DIR}/libs/yaml-cpp/include
                                               ${RANDO_DIR}/libs/base64pp/base64pp/include)
 string(LENGTH "${RANDO_DIR}/" RANDO_PATH_SIZE)
 # WWHD_NO_GAME_ART: the randomizer's edited game textures (title logo, icons, key chest) are not shipped (tweaks.cpp)
@@ -40,12 +40,18 @@ if(MSVC)
 else()
   target_compile_options(wwhd-rando PRIVATE -w)
 endif()
-find_package(ZLIB REQUIRED)
+if(NOT TARGET ZLIB::ZLIB)  # (in the game's build: its zlib, the pinned one in release builds)
+  if(WWHD_BUNDLED_DEPS)
+    include(${CMAKE_CURRENT_SOURCE_DIR}/../../cmake/WindowsDependencies.cmake)
+  else()
+    find_package(ZLIB REQUIRED)
+  endif()
+endif()
 find_package(Threads REQUIRED)
 target_link_libraries(wwhd-rando PRIVATE ZLIB::ZLIB Threads::Threads)
 
 # the data folder the command reads (--data), laid out as the randomizer's CMakeLists lays out its own
-set(DATA ${CMAKE_BINARY_DIR}/data)
+set(DATA ${CMAKE_CURRENT_BINARY_DIR}/data)
 add_custom_target(wwhd-rando-data ALL
   COMMAND ${CMAKE_COMMAND} -E rm -rf ${DATA}
   COMMAND ${CMAKE_COMMAND} -E make_directory ${DATA}/asm ${DATA}/asm_eur ${DATA}/asm_jpn ${DATA}/logic ${DATA}/customizer/Link

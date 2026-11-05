@@ -3,6 +3,45 @@
 Setup compiles the player's randomized USA RPX together with that seed's content. It is
 an experimental installer feature, not a claim that every seed is compatible.
 
+## Randomized games made in setup
+
+Setup can now make randomized games itself. It includes TWWHD Randomizer 1.2.0 by SuperDude88
+and its contributors (MIT), so you don't need the PC randomizer or a full copy of the game per
+seed. Install the game as it is (USA release) first. Then run:
+
+```sh
+python3 tools/installer/setup.py --randomize --rando-preset standard   # or beginner, everything
+python3 tools/installer/setup.py --randomize --rando-permalink PERMALINK
+python3 tools/installer/setup.py --randomize --rando-new-seed          # same settings, new seed
+python3 tools/installer/setup.py --list-seeds
+python3 tools/installer/setup.py --play-seed 2                         # or vanilla
+python3 tools/installer/setup.py --delete-seed 2 --yes
+```
+
+What each run does:
+- Each seed keeps only the files the randomizer changed (about 500 MB), in
+  `data/randomizer/seeds/<id>/`, together with its spoiler log.
+- The same compatibility check as below runs before anything is built, then that seed's game
+  code is built. Making a seed takes about 10 s; the build takes a few minutes.
+- The game plays the seed from its next start. `--play-seed vanilla` switches back. A
+  build that was made before is reused, so switching takes no new build.
+- Saves, backups and save states stay separate per seed.
+- Deleting a seed removes its files and keeps its saves.
+
+Permalinks match the PC randomizer 1.2.0, with these exceptions:
+- Race-mode settings ("do not generate spoiler log") are refused. The official randomizer adds
+  a secret key to those seeds, so the same permalink would make a different game. Use the
+  official randomizer for race seeds and import its output folder as described below.
+- Plandomizer settings are refused.
+- The randomizer's replacement title logo, its icons and the key-chest texture are left out:
+  they are edited game art, which the port doesn't ship.
+
+Setup also reads the places of the randomizer's locations from your own game's stage files for
+the spoiler log's map (`data/randomizer/places.tsv`).
+
+A language source from another region is not used while a randomized game is played. The
+randomizer changes only the installed game's own texts.
+
 ## Player setup
 
 Generate a USA game with the official TWWHD Randomizer, then choose its complete
