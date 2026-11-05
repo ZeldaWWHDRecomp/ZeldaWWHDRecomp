@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **For mod authors: mods can require an exact game build** (#429, split from #385). A manifest can list
+  `supported_game_builds` (for example `["USA"]`); the manager then refuses the mod on a port built for another game
+  version before any of its content or code is used. Needs `minimum_manager_version` 1.8.0.
 - **Mods: profile mods get their own saves** (#385). A mod can now declare its own save profile in its manifest. Its
   saves, save backups, settings and save states are then kept apart from your normal game, including when a launcher
   passes `--save`, so a profile mod can't overwrite an ordinary save. While a profile is running, its saves and mods
