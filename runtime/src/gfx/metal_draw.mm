@@ -2237,9 +2237,8 @@ unsigned capture_coverage(const uint32_t* regs) {
 bool prepare_backdrop(Surface* source, unsigned coverage) {
     const auto pixel = source->tex.pixelFormat;
     backdrop_trace("prepare",pixel,(uint64_t(source->tex.width)<<32)|source->tex.height,backdropPool.size());
-    if (pixel != MTLPixelFormatRGBA8Unorm && pixel != MTLPixelFormatRGBA8Unorm_sRGB &&
-        pixel != MTLPixelFormatBGRA8Unorm && pixel != MTLPixelFormatBGRA8Unorm_sRGB &&
-        pixel != MTLPixelFormatRGBA16Float) {backdrop_trace("format-reject",pixel);return false;}
+    const auto capturePixel = gamepad_capture_pixel_format(pixel);
+    if(capturePixel == MTLPixelFormatInvalid) {backdrop_trace("format-reject",pixel);return false;}
     if (backdropCapture) {
         const bool match=backdropCapture->source.matches(source->tex) && backdropCapture->coverage == coverage;
         if(!match)backdrop_trace("existing-reject",backdropCapture->source.key(),metal_backdrop_source_key(source->tex),backdropCapture->coverage);
@@ -2249,8 +2248,14 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
     capture->source.texture = source->tex; capture->ticket = ++backdropTicket; capture->coverage = coverage;
     capture->surface = std::make_unique<Surface>(*source);
     auto& surface = *capture->surface;
+    // Only the private Surface changes format. Pipeline metadata must match its
+    // promoted texture; source identity and scanout colour encoding stay native.
+    if(capturePixel != pixel) {
+        surface.format = 0x20; // GX2 R16_G16_B16_A16_FLOAT
+        surface.fmt = format_info(surface.format, false);
+    }
     surface.addr = surface.mipAddr = 0; surface.mipChain.reset(); surface.spares.clear(); surface.levelRanges.clear();
-    MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pixel width:source->tex.width height:source->tex.height mipmapped:NO];
+    MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:capturePixel width:source->tex.width height:source->tex.height mipmapped:NO];
     d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     d.storageMode = MTLStorageModePrivate;
     // Bounded, nonblocking reuse. A slot is fenced by command completion and
@@ -2271,7 +2276,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
         backdropPool.push_back(capture->storage);
     }
     auto storage = capture->storage;
-    if (!storage->texture || storage->texture.width != d.width || storage->texture.height != d.height || storage->texture.pixelFormat != pixel)
+    if (!storage->texture || storage->texture.width != d.width || storage->texture.height != d.height || storage->texture.pixelFormat != capturePixel)
         storage->texture = [R.device newTextureWithDescriptor:d];
     surface.tex = storage->texture;
     if (!surface.tex) {backdrop_trace("texture-reject",pixel,d.width,d.height);return false;}

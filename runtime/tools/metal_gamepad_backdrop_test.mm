@@ -16,9 +16,9 @@ int main() {
       return 77;
     }
     auto q = [d newCommandQueue];
-    auto tex = [&](unsigned w, unsigned h) {
+    auto tex = [&](unsigned w, unsigned h, MTLPixelFormat format=MTLPixelFormatRGBA8Unorm) {
       auto td = [MTLTextureDescriptor
-          texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
+          texture2DDescriptorWithPixelFormat:format
                                        width:w
                                       height:h
                                    mipmapped:NO];
@@ -83,6 +83,7 @@ int main() {
  using namespace metal;
  vertex float4 capture_vs(uint i [[vertex_id]]) {return float4(i==2?3:-1,i==1?3:-1,0,1);}
  fragment float4 capture_fs(){return float4(.8,0,0,.5);}
+ fragment float4 low_fs(){return float4(.8,0,0,.02);}
 fragment float4 binding_fs(constant float4& bytes [[buffer(0)]], constant float4* values [[buffer(1)]],
  texture2d<float> image [[texture(0)]],sampler s [[sampler(0)]]) {
  return float4(bytes.r,values[0].g,image.sample(s,float2(.5)).b,1);
@@ -93,13 +94,13 @@ fragment float4 binding_fs(constant float4& bytes [[buffer(0)]], constant float4
                                     options:nil
                                       error:&error];
     check(material != nil, "capture material compiled");
-    auto capture = [&](bool opaque, bool policy) {
-      auto image = tex(16, 9);
+    auto capture = [&](bool opaque, bool policy, MTLPixelFormat format=MTLPixelFormatRGBA8Unorm, bool low=false) {
+      auto image = tex(16, 9, format);
       auto pd = [MTLRenderPipelineDescriptor new];
       pd.vertexFunction = [material newFunctionWithName:@"capture_vs"];
-      pd.fragmentFunction = [material newFunctionWithName:@"capture_fs"];
+      pd.fragmentFunction = [material newFunctionWithName:low ? @"low_fs" : @"capture_fs"];
       auto attachment = pd.colorAttachments[0];
-      attachment.pixelFormat = MTLPixelFormatRGBA8Unorm;
+      attachment.pixelFormat = format;
       attachment.blendingEnabled = !opaque;
       attachment.sourceRGBBlendFactor = attachment.sourceAlphaBlendFactor =
           MTLBlendFactorSourceAlpha;
@@ -148,7 +149,35 @@ fragment float4 binding_fs(constant float4& bytes [[buffer(0)]], constant float4
     auto opaque = readPixel(capture(true, true));
     check(abs(int(opaque[0]) - 204) <= 1 && opaque[3] == 255,
           "opaque RGB capture keeps alpha one");
+    // Native GamePad scanout is RGB10A2. Replaying its material into that
+    // same format loses low coverage entirely; only the private layer promotes.
+    auto native10 = capture(false, true, MTLPixelFormatRGB10A2Unorm, true);
+    uint32_t nativeBefore=0,nativeAfter=0;
+    [native10 getBytes:&nativeBefore bytesPerRow:4 fromRegion:MTLRegionMake2D(8,4,1,1) mipmapLevel:0];
+    check((nativeBefore>>30)==0 && (nativeBefore&1023)>0,
+          "negative control RGB10A2 loses low alpha while RGB remains nonzero");
+    const auto promotedFormat=gamepad_capture_pixel_format(native10.pixelFormat);
+    check(promotedFormat==MTLPixelFormatRGBA16Float,
+          "actual RGB10A2 source selects high precision private capture");
+    auto promoted=capture(false,true,promotedFormat,true);
+    __fp16 lowPixel[4]{};
+    [promoted getBytes:lowPixel bytesPerRow:8 fromRegion:MTLRegionMake2D(8,4,1,1) mipmapLevel:0];
+    check(fabs(float(lowPixel[0])-.016f)<.0001f && fabs(float(lowPixel[3])-.02f)<.0001f,
+          "promoted private layer retains low coverage and premultiplied RGB");
+    auto halfPromoted=capture(false,true,promotedFormat);
+    [halfPromoted getBytes:lowPixel bytesPerRow:8 fromRegion:MTLRegionMake2D(8,4,1,1) mipmapLevel:0];
+    check(fabs(float(lowPixel[0])-.4f)<.001f && fabs(float(lowPixel[3])-.5f)<.001f,
+          "promoted layer retains fractional coverage");
+    [native10 getBytes:&nativeAfter bytesPerRow:4 fromRegion:MTLRegionMake2D(8,4,1,1) mipmapLevel:0];
+    check(nativeBefore==nativeAfter && native10.pixelFormat==MTLPixelFormatRGB10A2Unorm,
+          "private capture leaves native ten-bit scanout unchanged");
     gamepad_backdrop::Rect content{0, 48, 310, 174};
+    auto lowBars=run(promoted,true,content);
+    check(abs(int(lowBars[4*(10*310+155)])-4)<=1,
+          "promoted low-alpha capture samples and composes without losing RGB");
+    auto halfBars=run(halfPromoted,true,content);
+    check(abs(int(halfBars[4*(10*310+155)])-102)<=1,
+          "promoted fractional-alpha capture composes using original colour encoding");
     auto p = run(bg, true, content);
     check(abs(int(p[4 * (10 * 310 + 155)]) - 100) <= 1,
           "captured premultiplied coverage survives composition");
