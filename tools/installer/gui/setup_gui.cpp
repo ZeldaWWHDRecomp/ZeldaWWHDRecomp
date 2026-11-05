@@ -453,7 +453,7 @@ struct App {
     std::string source_path, source_kind;  // kind: image | archive (Cemu .wua, no keys) | folder
     std::string probe_msg;
     bool probe_ok = false;
-    bool source_randomizer = false;
+    bool source_randomized = false;  // the chosen game is a randomized one: it goes on the Randomizer page instead
     std::string disc_key_found, disc_key_file, common_key_found, common_key_file;
     int disc_mode = 0;
     char disc_paste[128] = {};
@@ -794,6 +794,8 @@ static void choose_folder(const std::string& target) {
     SDL_ShowOpenFolderDialog(dialog_cb, nullptr, g_window, nullptr, false);
 }
 
+static void rando_import(const std::string& path);  // the Randomizer page's Import seed... (below)
+
 static void set_source(const std::string& path) {
     A.source_path = path;
     A.probe_ok = false;
@@ -831,6 +833,7 @@ static void apply_dialog(const std::string& target, const std::string& path) {
     else if (target == "disc_key") set_disc_key_file(path);
     else if (target == "common_key") set_common_key_file(path);
     else if (target == "save") set_save_path(path);
+    else if (target == "rando_import") rando_import(path);
 }
 
 static void start_install(const std::string& source) {
@@ -840,7 +843,7 @@ static void start_install(const std::string& source) {
     A.current = -1;
     std::string f = "\"source\":" + jstr(source);
     f += std::string(",\"code_mods\":") + (A.code_mods ? "true" : "false");
-    if (A.decomp_offered) f += std::string(",\"decomp\":") + (A.decomp && !A.source_randomizer ? "true" : "false");
+    if (A.decomp_offered) f += std::string(",\"decomp\":") + (A.decomp ? "true" : "false");
     if (source != "installed") f += ",\"path\":" + jstr(A.source_path);
     f += std::string(",\"skip_shader_prebuild\":") + (A.prepare_shaders ? "false" : "true");
     f += std::string(",\"model_sweep\":") + (A.prepare_shaders && A.model_sweep ? "true" : "false");
@@ -879,7 +882,7 @@ static void handle_reply(const J& ev) {
     if ((int)ev.num("id") == A.pending_id) A.pending_id = 0, A.pending_cmd.clear();
     if (cmd == "probe") {
         A.probe_ok = ok;
-        A.source_randomizer = ok && ev.boolean("randomizer");
+        A.source_randomized = !ok && ev.str("problem") == "randomized";
         if (!ok) {
             A.probe_msg = ev.str("message");
             return;
@@ -1232,13 +1235,11 @@ static void code_mods_choice() {
           "content mods do not need this. The game code gets a small check in every function, which can "
           "cost some performance, and the build takes a bit longer. You can switch this later in "
           "Settings > Mods; that requires another rebuild.");
-    if (A.decomp_offered && !A.source_randomizer) {
+    if (A.decomp_offered) {
         checkbox("Also build the decomp version (experimental)", &A.decomp);
         muted(A.decomp_text);
         if (button("About the decomp version (docs/decomp-build.md)")) SDL_OpenURL(A.decomp_docs.c_str());
     }
-    if (A.source_randomizer)
-        muted("Randomized games use their own translated code. The decomp version is unavailable for them.");
     ImGui::Spacing();
 }
 
@@ -1268,7 +1269,7 @@ struct RandoSetting {
 
 struct RandoSeed {
     std::string id, hash, permalink, seed, created, spoiler_log;
-    bool built = false;
+    bool built = false, imported = false;  // imported: made with the official randomizer (no permalink or spoiler log)
 };
 
 struct Rando {
@@ -1344,6 +1345,13 @@ static const RandoRow kRandoConvenience[] = {
 
 static void rando_send(const std::string& cmd, const std::string& fields = "") { request(cmd, fields); }
 
+// a seed made with the official randomizer: setup checks it, keeps its changed files beside the installed game, builds it
+static void rando_import(const std::string& path) {
+    R.message = "Importing, checking and building the seed (a few minutes)...";
+    R.select_tab = 0;
+    rando_send("rando_import", "\"path\": " + jstr(path));
+}
+
 static void rando_read(const J& ev) {
     R.loaded = true;
     R.available = ev.boolean("ok");
@@ -1356,7 +1364,9 @@ static void rando_read(const J& ev) {
         R.available = true;
         return;
     }
-    R.message = ev.str("made").empty() ? "" : "Made randomized game " + ev.str("made") + ". The game plays it from its next start.";
+    R.message = ev.str("made").empty() ? ""
+                : (ev.boolean("imported") ? "Imported seed " : "Made randomized game ") + ev.str("made") +
+                      ". The game plays it from its next start.";
     R.settings.clear();
     if (const J* s = ev.get("settings"))
         for (const auto& [name, v] : s->o) {
@@ -1379,6 +1389,7 @@ static void rando_read(const J& ev) {
                 RandoSeed x;
                 x.id = s.str("id"), x.hash = s.str("hash"), x.permalink = s.str("permalink"), x.seed = s.str("seed");
                 x.created = s.str("created"), x.spoiler_log = s.str("spoiler_log"), x.built = s.boolean("built");
+                x.imported = s.boolean("imported");
                 R.seeds.push_back(x);
             }
     }
@@ -1451,10 +1462,13 @@ static void screen_randomizer() {
             play_row("vanilla", "The game as it is", true);
             for (const auto& s : R.seeds) {
                 ImGui::Separator();
-                play_row(s.id, "Randomized game " + s.hash + "  (seed " + s.seed + ", " + s.created + ")", s.built);
+                play_row(s.id, s.imported ? "Imported seed " + s.id + "  (official randomizer, " + s.created + ")"
+                                          : "Randomized game " + s.hash + "  (seed " + s.seed + ", " + s.created + ")", s.built);
                 ImGui::PushID(s.id.c_str());
-                if (button("Copy permalink", ImVec2(0, 0), false)) SDL_SetClipboardText(s.permalink.c_str()), show_toast("Permalink copied");
-                ImGui::SameLine();
+                if (!s.permalink.empty()) {
+                    if (button("Copy permalink", ImVec2(0, 0), false)) SDL_SetClipboardText(s.permalink.c_str()), show_toast("Permalink copied");
+                    ImGui::SameLine();
+                }
                 if (!s.spoiler_log.empty() && button("Spoiler log...", ImVec2(0, 0), false)) R.ask_spoiler = s.id;
                 ImGui::SameLine();
                 if (R.playing != s.id && button("Delete...", ImVec2(0, 0), false, !busy())) R.confirm_delete = s.id;
@@ -1465,13 +1479,19 @@ static void screen_randomizer() {
                     if (button("Cancel")) R.ask_spoiler.clear();
                 }
                 if (R.confirm_delete == s.id) {
-                    ImGui::TextWrapped("Delete randomized game %s? Its files go; its saves and save states stay.", s.hash.c_str());
+                    ImGui::TextWrapped("Delete randomized game %s? Its files go; its saves and save states stay.",
+                                       s.imported ? s.id.c_str() : s.hash.c_str());
                     if (button("Delete", ImVec2(0, 0), true, !busy())) rando_send("rando_delete", "\"seed\": " + jstr(s.id)), R.confirm_delete.clear();
                     ImGui::SameLine();
                     if (button("Keep it")) R.confirm_delete.clear();
                 }
                 ImGui::PopID();
             }
+            ImGui::Separator();
+            if (button("Import seed...", ImVec2(0, 0), false, !busy())) choose_folder("rando_import");
+            muted("A seed made with the official TWWHD Randomizer 1.2.0 (USA): choose its output folder (with code, "
+                  "content and meta). It is checked, built and played like the games made here, with its own saves; "
+                  "the output folder is not needed afterwards.");
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
@@ -1544,14 +1564,13 @@ static void screen_menu() {
 
 static void screen_source() {
     page_header("Choose your game",
-                "A Wii U disc image, a Cemu archive or an extracted game folder. For a randomized game, choose the official randomizer output folder or its code/cking.rpx.");
-    static const SDL_DialogFileFilter filters[] = {{"Wii U game or randomized RPX (.wux, .wud, .wua, .rpx)", "wux;wud;wua;rpx"},
+                "A Wii U disc image, a Cemu archive or an extracted game folder. Randomized games go on the Randomizer page.");
+    static const SDL_DialogFileFilter filters[] = {{"Wii U game (.wux, .wud, .wua)", "wux;wud;wua"},
                                                    {"Wii U disc image (.wux, .wud)", "wux;wud"},
                                                    {"Cemu Wii U archive (.wua)", "wua"},
-                                                   {"Randomizer game code (.rpx)", "rpx"},
                                                    {"All files", "*"}};
     if (button("Choose game file...", ImVec2(320, 0), A.source_path.empty()))
-        choose_file("source", filters, 5);
+        choose_file("source", filters, 4);
     ImGui::SameLine();
     if (button("Choose extracted game folder...", ImVec2(320, 0))) choose_folder("source");
     ImGui::Spacing();
@@ -1561,6 +1580,13 @@ static void screen_source() {
         else mark(A.probe_ok ? 2 : 3);
         ImGui::TextWrapped("%s", A.probe_msg.c_str());
         muted(A.source_path);
+        if (A.source_randomized && A.installed && A.installed_version == A.version &&
+            button("Import it on the Randomizer page", ImVec2(0, 0), false, !busy())) {
+            const std::string chosen = A.source_path;
+            A.source_path.clear(), A.source_randomized = false;
+            R.loaded = false, go(Screen::Randomizer);
+            rando_import(chosen);
+        }
         ImGui::EndChild();
     }
     code_mods_choice();
@@ -2191,7 +2217,7 @@ static void start_child() {
 //   {"screen": "keys", "set": {"common_mode": "file", "common_key_file": "..."}, "when_step": "compile",
 //    "idle": true, "shot": "03-keys.png", "click": "Check keys and install"}
 // "set" fields: code_mods (boolean), decomp (boolean), model_sweep (boolean), source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
-// (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true), rando_tab (games|new), rando_page ("0".."5"). Screenshots are PNG files
+// (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true), rando_tab (games|new), rando_page ("0".."5"), rando_import (a folder, as if chosen with Import seed...). Screenshots are PNG files
 // of the window. The run ends (exit 0) after the last step, or with exit 2 on a 45-minute timeout.
 
 
@@ -2233,6 +2259,7 @@ static void automation_frame() {
             else if (k == "open_details") details_open = true;
             else if (k == "rando_tab") R.select_tab = v == "new" ? 1 : 0;  // the Randomizer page's Games / New game
             else if (k == "rando_page") R.page = std::clamp(atoi(v.c_str()), 0, 5);
+            else if (k == "rando_import") rando_import(v);  // as if chosen with Import seed...
         }
     }
     A.stable_frames++;  // frames on this screen (the "set" above runs once, at 0)

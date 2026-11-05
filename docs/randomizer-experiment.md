@@ -14,9 +14,10 @@ In the setup window, choose **Randomized games (TWWHD Randomizer)**:
 - **New game** has the presets (beginner, standard, everything), the seed name, the permalink
   (copy, or paste one), and every setting on six pages. **Make this game** makes and builds it;
   the game plays it from its next start.
-- **Games** lists the game as it is and every randomized game made, each with **Play this**,
-  **Copy permalink**, **Spoiler log...** (it asks first) and **Delete...** (asks first; the saves
-  stay).
+- **Games** lists the game as it is and every randomized game made or imported, each with
+  **Play this**, **Copy permalink**, **Spoiler log...** (it asks first) and **Delete...** (asks
+  first; the saves stay). **Import seed...** adds a seed made with the official randomizer (see
+  below).
 
 Making a seed takes about 10 s. The first seed's build takes about as long as the game's first
 build; later seeds build much faster (on a Mac: 94 s for the first seed, 24 s for the next).
@@ -36,6 +37,8 @@ The setup screen has **Randomized game...** once the game is set up:
 - choose a preset and a seed name, or paste a permalink;
 - **Make it**: setup makes the randomized game from the installed one, checks it and builds it,
   and the game plays it from its next start;
+- **Import a seed...** in the same dialog adds a seed made with the official randomizer (see
+  below);
 - **Play the game as it is** in the same dialog goes back to the normal game.
 
 ## Saves
@@ -56,9 +59,25 @@ while the game is closed; never merge or overwrite an existing folder.
 ## A seed from the official randomizer
 
 Make a USA game with the official TWWHD Randomizer 1.2.0 (the official randomizer supports the
-USA release only). In the setup window, choose **Change the game**, then its complete
-`code/content/meta` output folder (its `code/cking.rpx` works too). Keep that output folder for
-as long as you play the seed. If you make a new game into the same folder, run setup again.
+USA release only), then:
+- in the setup window: **Randomized games (TWWHD Randomizer)**, **Games**, **Import seed...**,
+  and choose its output folder (the one with `code`, `content` and `meta`);
+- on Android: **Randomized game...**, **Import a seed...**, and choose that folder.
+
+Setup runs the same check as for every randomized game, keeps only the seed's files that differ
+from your installed game (the installed game must be the USA one, as it is) and builds it. The
+game plays it from its next start, with its own saves. You can delete the output folder
+afterwards. Imported seeds have no permalink, and their spoiler log stays in the official
+randomizer's `logs` folder.
+
+Setup no longer installs a randomized output folder as the game: choosing one as the game (in
+the setup window, on Android, or with `setup --game-dir`) is refused with a pointer to Import
+seed (`setup --import-seed PATH` in a terminal).
+
+If an earlier setup installed a randomized output folder as the game, it still plays, updates
+and repairs as before, with its saves. To use the Randomizer page, install the game as it is
+(**Change the game**); importing that same output folder again then plays it with the same
+saves.
 
 Use the official randomizer for race seeds ("do not generate spoiler log"); the included one
 refuses those settings.
@@ -93,6 +112,7 @@ python3 tools/installer/setup.py --randomize --rando-new-seed          # same se
 python3 tools/installer/setup.py --list-seeds
 python3 tools/installer/setup.py --play-seed 2                         # or vanilla
 python3 tools/installer/setup.py --delete-seed 2 --yes
+python3 tools/installer/setup.py --import-seed /path/to/official-output  # a seed from the official randomizer
 ```
 
 Seeds are kept in `data/randomizer/seeds/<id>/` with their spoiler logs.

@@ -300,6 +300,21 @@ class Adapter:
         self.emit({"stage": "randomize", "state": "complete", "seed": entry["id"]})
         return randomizer_seeds.seed_dir(storage, entry["id"]) / "out", entry
 
+    def import_seed(self, folder, game, randomize):
+        """A seed made with the official TWWHD Randomizer (its output folder, copied privately by the setup job), added
+        beside the installed game like a seed made in setup (tools/installer/randomizer_seeds.py import_seed: the same
+        compatibility check, only its changed files kept). randomize: {"storage", ...} as for randomize(). Returns (the
+        seed's changed files, its entry)."""
+        import randomizer_seeds
+        self.boundary()
+        storage = Path(randomize["storage"]).resolve()
+        self.emit({"stage": "randomize", "state": "running"})
+        ctx = SimpleNamespace(data_dir=str(storage), game_dir=str(Path(game).resolve()), manifest={})
+        entry = randomizer_seeds.import_seed(self.setup, ctx, str(folder),
+                                             lambda line: self.emit({"stage": "randomize", "detail": line.strip()}))
+        self.emit({"stage": "randomize", "state": "complete", "seed": entry["id"]})
+        return randomizer_seeds.seed_dir(storage, entry["id"]) / "out", entry
+
     def translate(self, game, hooks=False):
         """Validate the supported dump, resume verified C, or run setup.recompile.
 

@@ -185,6 +185,9 @@ public final class SetupImport {
             control.progress(copied, total, index + 1, files.length());
         }
         JSONObject input = new JSONObject().put("kind", kind).put("path", kind.equals("folder") ? "input/game" : "input/dump");
+        // a seed made with the official randomizer (Randomized game... > Import a seed...): built beside the installed game
+        if (kind.equals("folder") && source.has("seed_import"))
+            input.put("seed_import", new JSONObject().put("installed", source.getJSONObject("seed_import").getString("installed")));
         // An older release may have been killed after copying keys, before publishing job.json.
         if (kind.equals("image")) for (String key : new String[] {"disc", "common"}) {
             if (new File(job, "input/" + key + ".key").isFile()) input.put(key + "_key", "input/" + key + ".key");

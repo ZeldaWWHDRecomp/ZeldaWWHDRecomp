@@ -245,6 +245,86 @@ class SetupJobTests(unittest.TestCase):
         self.assertEqual(out, (self.root / "storage").resolve() / "randomizer/seeds/fedcba9876543210/out")
         self.assertEqual(entry["id"], "fedcba9876543210")
 
+    def seed_import_job(self):
+        """an official randomizer output folder copied privately (input/game) and the installed game in storage"""
+        storage = self.root / "storage"
+        installed = storage / "game"
+        shutil.copytree(self.game, installed)
+        for name in ("code/app.xml", "meta/meta.xml"):
+            (self.game / name).write_text("<menu><title_id>0005000010143599</title_id></menu>")
+        return storage, installed, {**self.value, "input": {**self.value["input"], "seed_import": {"installed": str(installed)}},
+                                    "randomize": {"exe": "x", "data": "d", "storage": str(storage)}}
+
+    def test_imported_seed_is_built_beside_the_installed_game(self):
+        """Randomized game... > Import a seed...: the copied output folder goes beside the installed game (its changed
+        files in setup storage), the copy goes, and a resumed job builds from the kept files"""
+        storage, installed, job = self.seed_import_job()
+        overlay = storage / "randomizer/seeds/0123456789abcdef/out"
+        seen = []
+
+        def adapter(*args):
+            value = self.adapter(*args)
+            translate = value.translate
+
+            def import_seed(folder, game, randomize):
+                seen.append(("import", Path(folder), Path(game), randomize["storage"]))
+                (overlay / "code").mkdir(parents=True, exist_ok=True)
+                (overlay / "code/cking.rpx").write_bytes(b"seed")
+                return overlay, {"id": "0123456789abcdef", "hash": "", "permalink": ""}
+            value.import_seed = import_seed
+            value.randomize = lambda *a: self.fail("an imported seed is not randomized again")
+
+            def recorded(game, hooks=False):
+                seen.append(("translate", Path(game)))
+                return translate(installed)  # (the synthetic harness stands in for the seed's code)
+            value.translate = recorded
+            return value
+        self.configuration.write_text(json.dumps(job))
+        result = run(self.configuration, self.package, self.native, adapter)
+        self.assertEqual(seen, [("import", self.game, installed.resolve(), str(storage)), ("translate", overlay)])
+        self.assertEqual(result["game"], str(installed.resolve()))
+        self.assertEqual(result["randomizer"]["files"], str(overlay))
+        self.assertFalse(self.game.exists())  # the job's private copy of the output folder
+        self.assertEqual(json.loads((self.job / "seed-import.json").read_text())["id"], "0123456789abcdef")
+        seen.clear()
+        result = run(self.configuration, self.package, self.native, adapter)  # resumed: no copy, no new import
+        self.assertEqual(seen, [("translate", overlay)])
+        self.assertEqual(result["randomizer"]["seed"], "0123456789abcdef")
+
+    def test_seed_import_needs_the_installed_game_in_storage(self):
+        storage, installed, job = self.seed_import_job()
+        for broken, why in (({**job, "randomize": None}, "beside the installed game"),
+                            ({**job, "input": {**job["input"], "seed_import": {"installed": str(self.root / "elsewhere")}}},
+                             "outside setup storage")):
+            self.configuration.write_text(json.dumps(broken))
+            with self.assertRaisesRegex(ValueError, why):
+                run(self.configuration, self.package, self.native, self.adapter)
+
+    def test_randomized_folder_is_not_installed_as_the_game(self):
+        self.seed_import_job()
+        with self.assertRaisesRegex(ValueError, "Import a seed"):
+            self.execute()
+
+    def test_adapter_imports_with_the_desktop_import(self):
+        sys.path.insert(0, str(ROOT / "tools/installer"))
+        import randomizer_seeds
+        adapter = self.adapter(self.package, self.root / "checkpoints", "fixture-v1")
+        calls = []
+
+        def import_seed(setup, ctx, folder, say):
+            calls.append((ctx.data_dir, ctx.game_dir, folder))
+            say("  Imported")
+            return {"id": "fedcba9876543210"}
+        original = randomizer_seeds.import_seed
+        randomizer_seeds.import_seed = import_seed
+        try:
+            out, entry = adapter.import_seed(self.game, self.root / "storage/game", {"storage": str(self.root / "storage")})
+        finally:
+            randomizer_seeds.import_seed = original
+        self.assertEqual(calls, [(str((self.root / "storage").resolve()), str((self.root / "storage/game").resolve()),
+                                  str(self.game))])
+        self.assertEqual(out, (self.root / "storage").resolve() / "randomizer/seeds/fedcba9876543210/out")
+
     def test_rejects_outside_input_and_unsupported_manifest(self):
         self.value["input"]["path"] = "../outside"
         with self.assertRaisesRegex(ValueError, "inside the setup job"): self.execute()

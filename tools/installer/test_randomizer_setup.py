@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Player setup routing, metadata checks and child hash pinning for randomized game folders."""
+"""Randomized game folders: setup routing (Choose your game sends them to the Randomizer page), metadata checks,
+child hash pinning, and installs made the old way (the output folder installed as the game)."""
 import hashlib
 from io import StringIO
 import json
@@ -106,27 +107,123 @@ class RandomizerSetup(unittest.TestCase):
             setup.archive_info('synthetic.wua')
         self.assertEqual(read.call_args_list[1].args, ('synthetic.wua', setup.RANDOMIZER_TITLE))
 
-    def test_gui_protocol_normalizes_rpx_and_reports_checked_randomizer(self):
+    def probe(self, ctx, path, **patches):
+        requests = StringIO(json.dumps({'id':1, 'cmd':'probe', 'path':str(path)})+'\n')
+        output = StringIO()
+        with mock.patch.object(setup, 'Ctx', return_value=ctx), \
+             mock.patch.object(setup, 'GUI', None), \
+             mock.patch.object(setup, 'LOG', SimpleNamespace(f=None, write=lambda line: None)), \
+             mock.patch.object(setup, 'import_sources', return_value=(None, [])), \
+             mock.patch.object(setup.sys, 'stdin', requests), mock.patch.object(setup.sys, 'stdout', output):
+            for name, value in patches.items():
+                mock.patch.object(setup, name, value).start()
+            try:
+                self.assertEqual(setup.gui_main(ctx.args), 0)
+            finally:
+                mock.patch.stopall()
+        return [json.loads(line) for line in output.getvalue().splitlines() if json.loads(line).get('cmd') == 'probe'][0]
+
+    def test_choose_your_game_sends_randomized_games_to_the_randomizer_page(self):
+        """the setup window's game choice no longer installs a randomized game as the game: the Randomizer page's
+        Import seed... adds it beside the installed game (test_randomizer_seeds.py Import)"""
         with tempfile.TemporaryDirectory() as tmp:
-            folder = self.folder(Path(tmp)/'seed');build = self.build(folder)
+            folder = self.folder(Path(tmp)/'seed')
             ctx = SimpleNamespace(args=SimpleNamespace(code_mods='0', decomp=False, model_sweep=False),
                                   manifest={'platform':'test', 'toolchain':{}, 'version':'test'}, version='test',
-                                  data_dir=tmp, app_dir=tmp, game_dir=str(folder), state=lambda: {}, installed=lambda: False)
-            requests = StringIO(json.dumps({'id':1, 'cmd':'probe', 'path':str(folder/'code/cking.rpx')})+'\n')
-            output = StringIO()
-            with mock.patch.object(setup, 'Ctx', return_value=ctx), \
-                 mock.patch.object(setup, 'GUI', None), \
-                 mock.patch.object(setup, 'LOG', SimpleNamespace(f=None, write=lambda line: None)), \
-                 mock.patch.object(setup.randomizer_compat, 'identify', return_value=build), \
-                 mock.patch.object(setup, 'import_sources', return_value=(None, [])), \
-                 mock.patch.object(setup.sys, 'stdin', requests), mock.patch.object(setup.sys, 'stdout', output):
-                self.assertEqual(setup.gui_main(ctx.args), 0)
-            reply = [json.loads(line) for line in output.getvalue().splitlines() if json.loads(line).get('cmd') == 'probe'][0]
-            self.assertTrue(reply['ok'])
-            self.assertTrue(reply['randomizer'])
-            self.assertEqual(reply['kind'], 'folder')
-            self.assertEqual(Path(reply['path']), folder)
-            self.assertEqual(reply['title'], 'The Wind Waker HD Randomizer')
+                                  data_dir=tmp, app_dir=tmp, game_dir=str(folder), state=lambda: {}, installed=lambda: True)
+            for path in (folder, folder/'code/cking.rpx'):
+                with mock.patch.object(setup.randomizer_compat, 'identify') as check:
+                    reply = self.probe(ctx, path)
+                    check.assert_not_called()
+                self.assertFalse(reply['ok'])
+                self.assertEqual(reply['problem'], 'randomized')
+                self.assertIn('Import seed', reply['message'])
+            listed = {'title_id':setup.RANDOMIZER_TITLE, 'version':'0', 'selected':'00050000/10143599', 'titles':[]}
+            (Path(tmp)/'seed.wua').write_bytes(b'')
+            reply = self.probe(ctx, Path(tmp)/'seed.wua', archive_info=mock.Mock(return_value=(None, '', listed)))
+            self.assertEqual(reply['problem'], 'randomized')
+
+    def test_game_dir_and_other_new_sources_refuse_a_randomized_game(self):
+        """setup --game-dir (and --image / --archive) with a randomized game: refused with the pointer to
+        --import-seed before anything is asked, downloaded or built; the game as it is still installs"""
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            seed = self.folder(root/'seed')
+            data = root/'data'
+            for path in (seed, seed/'code/cking.rpx'):
+                args = mock.Mock(game_dir=str(path), gen_dir=None, archive=None, image=None, decomp=None,
+                                 start_decomp=None, remove_language_source=None, language_source=None,
+                                 randomize=False, list_seeds=False, play_seed=None, delete_seed=None, import_seed=None,
+                                 repair_guest_python=False, rebuild_code_mods=False)
+                ctx = SimpleNamespace(args=args, data_dir=str(data), game_dir=str(data/'game'), version='test',
+                                      manifest={'platform':'test'}, state=lambda: {}, installed=lambda: False)
+                lines = []
+                with mock.patch.object(setup, 'Ctx', return_value=ctx), mock.patch.object(setup, 'say', lines.append), \
+                     mock.patch.object(setup, 'install') as install:
+                    with self.assertRaises(setup.SetupError) as refused:
+                        setup.run(args, setup.UI(False))
+                    install.assert_not_called()
+                self.assertIn('setup --import-seed PATH', str(refused.exception))
+            self.assertFalse(data.exists())
+            # install() itself (every caller): a folder, an archive or a disc image holding a randomized game
+            ctx = SimpleNamespace(args=SimpleNamespace(code_mods='0'), manifest={'platform':'test', 'toolchain':{}},
+                                  data_dir=str(data), game_dir=str(seed), state=lambda: {})
+            patches = {'setup_code_mods': False, 'model_sweep_wanted': False, 'decomp_wanted': False,
+                       'archive_info': (None, '', {'title_id': setup.RANDOMIZER_TITLE, 'version': '0', 'titles': []})}
+            (root/'seed.wua').write_bytes(b'')
+            (root/'seed.wux').write_bytes(b'')
+            with mock.patch.multiple(setup, **{k: mock.Mock(return_value=v) for k, v in patches.items()}), \
+                 mock.patch.object(setup, 'get_toolchain') as toolchain:
+                for source in (('folder', str(seed)), ('archive', str(root/'seed.wua')), ('image', str(root/'seed.wux'))):
+                    with self.assertRaisesRegex(setup.SetupError, 'import-seed'):
+                        setup.install(ctx, source, check_keys=lambda image: ({}, {'title_id': setup.RANDOMIZER_TITLE}))
+                toolchain.assert_not_called()
+            self.assertFalse(setup.is_randomized_folder(str(self.folder(root/'usa', title='0005000010143500'))))
+
+    def test_seed_installed_the_old_way_still_updates_with_its_save_folder(self):
+        """an install made before the Randomizer page (the output folder installed as the game): Update and Repair
+        rebuild it from the installed files as before, and setup keeps using that seed's own save folder"""
+        from contextlib import ExitStack
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);game=self.folder(root/'data/game');data=root/'data'
+            selected=self.build(game);identity=selected.sha256
+            compiled={'profile':'synthetic','rpx_sha256':identity}
+            (data/'install.json').write_text(json.dumps({'version':'old','randomizer':compiled}))
+            user=data/('save-randomizer-'+identity)/'user';user.mkdir(parents=True)
+            (user/'cking.sav').write_bytes(b'progress')
+            (data/'save/user').mkdir(parents=True);(data/'save/user/cking.sav').write_bytes(b'vanilla')
+            self.assertEqual(Path(setup.save_user_dir(str(data))), user)
+            args=SimpleNamespace(code_mods='0',jobs=1,shortcuts=False,keep_work=False)
+            tc=SimpleNamespace(desc='fixture',env={},cc=['fixture'])
+            ctx=SimpleNamespace(args=args,manifest={'platform':'test','toolchain':{},'exe':'fixture'},
+                                data_dir=str(data),game_dir=str(game),exe=str(data/'bin/fixture'),
+                                exe_dir=str(data/'bin'),version='test',state=lambda:json.loads((data/'install.json').read_text()))
+            translated=[]
+            def translate(game_dir,gen,hooks=False):
+                translated.append(game_dir)
+                out=Path(gen);out.mkdir(parents=True)
+                (out/'randomizer.json').write_text(json.dumps(compiled))
+                (out/'table.c').write_text('const char g_guest_build_title_id[] = "'+setup.RANDOMIZER_TITLE+'";\nconst char g_guest_build_rpx_sha256[] = "'+identity+'";\n')
+                return 1
+            def link(tc,manifest,objs,work,target):Path(target).write_bytes(b'synthetic executable')
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch.multiple(setup,PKG=str(root),PORTABLE=True))
+                stack.enter_context(mock.patch.object(setup.randomizer_compat,'identify',return_value=selected))
+                for name,value in {'get_toolchain':tc,'free_space':20<<30,
+                                   'compile_gamecode':[],'prepare_shaders_nonfatal':{'status':'skipped'},
+                                   'model_sweep_wanted':False,'decomp_wanted':False,'setup_code_mods':False,
+                                   'write_guest_build_config':None,'install_story_notebook':None}.items():
+                    stack.enter_context(mock.patch.object(setup,name,return_value=value))
+                stack.enter_context(mock.patch.object(setup,'recompile',side_effect=translate))
+                stack.enter_context(mock.patch.object(setup,'link_game',side_effect=link))
+                stack.enter_context(mock.patch.object(setup.code_mods,'remember_installed'))
+                state=setup.install(ctx,('installed',str(game)))
+            self.assertEqual(translated,[str(game)])
+            self.assertEqual(state['randomizer'],compiled)
+            self.assertEqual(Path(setup.save_user_dir(str(data))), user)
+            self.assertEqual((user/'cking.sav').read_bytes(), b'progress')
+            self.assertEqual((data/'save/user/cking.sav').read_bytes(), b'vanilla')
+            self.assertTrue(setup.have_save(str(data)))
 
     def test_compiled_identity_report_matches_actual_build_map(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -158,6 +255,7 @@ class RandomizerSetup(unittest.TestCase):
             ctx=SimpleNamespace(args=args,manifest={'platform':'test','toolchain':{},'exe':'fixture'},
                                 data_dir=str(data),game_dir=str(game),exe=str(data/'bin/fixture'),
                                 exe_dir=str(data/'bin'),version='test',state=lambda:{})
+            # (an install made the old way, rebuilt from its installed files: Update / Repair)
             def translate(game,gen,hooks=False):
                 out=Path(gen);out.mkdir(parents=True)
                 (out/'randomizer.json').write_text(json.dumps(compiled))
@@ -174,7 +272,7 @@ class RandomizerSetup(unittest.TestCase):
                 stack.enter_context(mock.patch.object(setup,'recompile',side_effect=translate))
                 stack.enter_context(mock.patch.object(setup,'link_game',side_effect=link))
                 stack.enter_context(mock.patch.object(setup.code_mods,'remember_installed'))
-                state=setup.install(ctx,('folder',str(game)))
+                state=setup.install(ctx,('installed',str(game)))
             self.assertEqual(state['randomizer'],compiled)
             self.assertEqual(json.loads((data/'install.json').read_text())['randomizer'],compiled)
 

@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -105,6 +106,16 @@ class Base(unittest.TestCase):
         self.log.stop()
         self.env.stop()
         self.tmp.cleanup()
+
+    def official(self, name="official-seed", rpx=b"official randomized code"):
+        """an official randomizer output folder: the whole game, its code and metadata randomized, one file changed"""
+        out = Path(self.tmp.name) / name
+        shutil.copytree(self.game, out)
+        (out / "code/cking.rpx").write_bytes(rpx)
+        for f in ("code/app.xml", "meta/meta.xml"):
+            (out / f).write_text("<app><title_id>0005000010143599</title_id><title_version>0</title_version></app>")
+        (out / "content/Common/changed.bin").write_bytes(b"randomized")
+        return out
 
     def make(self, **k):
         lines = []
@@ -270,12 +281,122 @@ class GuiProtocol(Base):
         r, _ = self.run_gui({"cmd": "rando_delete", "seed": made["made"]})
         self.assertEqual(r["rando_delete1"]["seeds"]["seeds"], [])
 
+    def test_import_seed_button(self):
+        out = self.official()
+        r, built = self.run_gui({"cmd": "rando_import", "path": str(out)},
+                                {"cmd": "rando_import", "path": str(self.game)})
+        made = r["rando_import1"]
+        self.assertTrue(made["ok"], made)
+        self.assertTrue(made["imported"])
+        self.assertEqual(made["seeds"]["playing"], made["made"])
+        self.assertTrue(made["seeds"]["seeds"][0]["imported"])
+        self.assertEqual(built, [str(rs.seed_dir(self.data, made["made"]) / "out")])
+        self.assertFalse(r["rando_import2"]["ok"])
+        self.assertIn("not a randomized game", r["rando_import2"]["message"])
+
     def test_unavailable(self):
         with mock.patch.dict(os.environ, {"WWHD_RANDO_EXE": str(Path(self.tmp.name) / "none")}):
             r, _ = self.run_gui({"cmd": "rando_state"})
         self.assertFalse(r["rando_state1"]["ok"])
         self.assertEqual(r["rando_state1"]["problem"], "unavailable")
         self.assertIn("no randomizer", r["rando_state1"]["message"])
+
+
+class Import(Base):
+    """Import seed...: a seed made with the official TWWHD Randomizer (randomizer_seeds.import_seed), the one route for
+    such seeds (setup's Choose your game refuses them, test_randomizer_setup.py)"""
+
+    def test_import_keeps_changed_files_checked_on_the_copy(self):
+        out = self.official()
+        lines = []
+        entry = rs.import_seed(setup, self.ctx, str(out), lines.append)
+        digest = hashlib.sha256(b"official randomized code").hexdigest()
+        self.assertEqual((entry["id"], entry["rpx_sha256"], entry["imported"]), (digest[:16], digest, True))
+        self.assertEqual((entry["permalink"], entry["spoiler_log"], entry["release"]), ("", "", "USA"))
+        d = rs.seed_dir(self.data, entry["id"]) / "out"
+        self.assertEqual((d / "code/cking.rpx").read_bytes(), b"official randomized code")
+        self.assertEqual((d / "content/Common/changed.bin").read_bytes(), b"randomized")
+        self.assertFalse((d / "content/Common/same.bin").exists())  # the same as the installed game: left out
+        self.assertTrue((d / "meta/meta.xml").is_file() and (d / "code/app.xml").is_file())
+        # the compatibility check: the installed game, then the copy that is built (not the player's folder)
+        self.assertEqual(self.compat[0], str(self.game))
+        self.assertTrue(Path(self.compat[1]).parent.name.startswith(".import-") and Path(self.compat[1]).name == "out")
+        self.assertFalse([p for p in d.parent.parent.iterdir() if p.name.startswith(".import-")])
+        self.assertTrue((out / "content/Common/same.bin").is_file())  # the player's folder is left as it is
+        self.assertTrue(any("no longer needed" in l for l in lines))
+        listing = rs.listing(self.data)
+        self.assertTrue(listing["seeds"][0]["imported"] and listing["seeds"][0]["files"])
+        self.assertEqual(listing["seeds"][0]["spoiler_log"], "")
+
+    def test_import_by_rpx_and_again(self):
+        out = self.official()
+        first = rs.import_seed(setup, self.ctx, str(out / "code/cking.rpx"), lambda l: None)
+        lines = []
+        again = rs.import_seed(setup, self.ctx, str(out), lines.append)
+        self.assertEqual(first["id"], again["id"])
+        self.assertTrue(any("imported already" in l for l in lines))
+        self.assertEqual(len(rs.load(self.data)["seeds"]), 1)
+
+    def test_import_refusals(self):
+        with self.assertRaisesRegex(setup.SetupError, "output folder of the official TWWHD Randomizer"):
+            rs.import_seed(setup, self.ctx, str(Path(self.tmp.name) / "none"), lambda l: None)
+        with self.assertRaisesRegex(setup.SetupError, "not a randomized game"):
+            rs.import_seed(setup, self.ctx, str(self.game), lambda l: None)
+        out = self.official()
+        self.refuse = True
+        with self.assertRaisesRegex(setup.SetupError, "not compatible"):
+            rs.import_seed(setup, self.ctx, str(out), lambda l: None)
+        self.assertEqual(rs.load(self.data)["seeds"], [])
+        self.assertEqual(list((self.data / "randomizer/seeds").iterdir()), [])  # nothing kept
+        self.refuse = False
+        self.check.stop()
+        with mock.patch.object(setup, "check_game_version", return_value=SimpleNamespace(name="EU")):
+            with self.assertRaisesRegex(setup.SetupError, "USA games.*European"):
+                rs.import_seed(setup, self.ctx, str(out), lambda l: None)
+        self.check.start()
+        self.ctx.manifest = {"variant": "decomp"}
+        with self.assertRaisesRegex(setup.SetupError, "decomp"):
+            rs.import_seed(setup, self.ctx, str(out), lambda l: None)
+
+    def test_imported_seed_plays_and_goes_like_a_made_one(self):
+        out = self.official()
+        entry = rs.import_seed(setup, self.ctx, str(out), lambda l: None)
+        built = []
+        rebuild = lambda setup_, c, hooks, *rest: built.append(c.game_dir) or {"state": "ready", "fingerprint": "fp"}
+        with mock.patch("code_mods.rebuild", side_effect=rebuild):
+            rs.select(setup, self.ctx, entry["id"], False)
+            self.assertEqual(built, [str(rs.seed_dir(self.data, entry["id"]) / "out")])  # the per-seed build
+            self.assertEqual(rs.listing(self.data)["playing"], entry["id"])
+            rs.select(setup, self.ctx, "vanilla", False)
+            rs.delete(setup, self.ctx, entry["id"])
+        self.assertEqual(rs.load(self.data)["seeds"], [])
+
+    def test_seed_installed_the_old_way_keeps_its_saves_when_imported(self):
+        """an install made before the Randomizer page took the output folder as the game; its saves are named by the RPX's
+        SHA-256, so the same folder imported beside the game as it is plays with them"""
+        out = self.official()
+        digest = hashlib.sha256(b"official randomized code").hexdigest()
+        old = Path(self.tmp.name) / "old-install"
+        old.mkdir()
+        (old / "install.json").write_text(json.dumps({"randomizer": {"rpx_sha256": digest}}))
+        saves = Path(setup.save_user_dir(str(old)))
+        self.assertEqual(saves.parent.name, "save-randomizer-" + digest)
+        entry = rs.import_seed(setup, self.ctx, str(out), lambda l: None)
+        self.assertEqual("save-randomizer-" + entry["rpx_sha256"], saves.parent.name)
+
+    def test_setup_import_seed_option(self):
+        out = self.official()
+        ctx = SimpleNamespace(**vars(self.ctx), installed=lambda: True, state=lambda: {"code_mods": False})
+        args = SimpleNamespace(list_seeds=False, code_mods=None, delete_seed=None, randomize=False, play_seed=None,
+                               import_seed=str(out), rando_no_build=False)
+        built = []
+        rebuild = lambda setup_, c, hooks, *rest: built.append((c.game_dir, hooks)) or {"state": "ready", "fingerprint": "fp"}
+        with mock.patch("code_mods.rebuild", side_effect=rebuild), mock.patch.object(setup, "say"):
+            setup.run_randomizer(args, ctx)
+        entry = rs.load(self.data)["seeds"][0]
+        self.assertTrue(entry["imported"])
+        self.assertEqual(built, [(str(rs.seed_dir(self.data, entry["id"]) / "out"), False)])
+        self.assertEqual(rs.load(self.data)["playing"], entry["id"])
 
 
 class Trim(unittest.TestCase):
