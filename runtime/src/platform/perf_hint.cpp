@@ -313,6 +313,12 @@ extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_MemoryPressure_native
     memory_trim::request(level >= memory_trim::kFull ? memory_trim::kFull : memory_trim::kLight, source);
 }
 
+// Memory above the system's low-memory line and the line itself, in MB (MemoryPressure.java, every 2 s in the
+// foreground; memory_trim.h): save states check it, dynamic resolution follows it
+extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_MemoryPressure_nativeHeadroom(JNIEnv*, jclass, jint headroomMb, jint thresholdMb) {
+    memory_trim::set_headroom(headroomMb, thresholdMb);
+}
+
 #else
 namespace perf_hint {
 void add_current_thread() {}
