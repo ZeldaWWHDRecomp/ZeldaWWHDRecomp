@@ -58,6 +58,14 @@ jobs:
           # Every translator test (synthetic inputs only, no game files); new test files run automatically.
           python3 -m unittest discover -s tools/recomp -p "test_*.py"
 
+      # The in-app randomizer's command (tools/rando: TWWHD Randomizer 1.2.0); no game files
+      - name: Randomizer command
+        run: |
+          cmake -S tools/rando -B build/rando -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/rando -j 8
+          python3 tools/rando/test_rando_cli.py build/rando
+          python3 tools/rando/test_places.py
+
       # Synthetic fixtures only: no game files, caches or performance runs.
       - name: Shader preparation and benchmark tooling unit tests
         run: |
