@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **True 60 is retired** (#407). The experimental "True 60" frame rate (Link and the camera at 60 game steps a second)
+  was broken in many places and is gone from the Settings window, the pause menu's Graphics page and the Graphics
+  menu; key 7 does nothing now. **If you had True 60 selected, the game starts with 60 fps frame interpolation
+  instead**: the game logic runs its original 30 steps a second and in-between frames are added. Nothing to do on your
+  side. For mod authors: `render.true60` still exists and always reads 0, and `wwhd_logic_dt` is always one 30 Hz step.
 - **Randomizer built in: make randomized games in setup** (#430, the in-app approach from the GreenNaugahyde Android
   fork, thanks @GreenNaugahyde; randomizer: TWWHD Randomizer 1.2.0, MIT). Setup's **Randomized games** page makes a
   seed from a preset, a seed name or a permalink, checks it against the port and builds it; **Settings › Randomizer**
