@@ -318,7 +318,7 @@ if(UNIX AND NOT APPLE AND NOT ANDROID)
   target_include_directories(wwhd PRIVATE ${WWHD_CURL_INCLUDE})
   target_link_libraries(wwhd PRIVATE ${CMAKE_DL_LIBS})
 endif()
-target_link_libraries(wwhd PRIVATE gamecode cemu_latte imgui ZLIB::ZLIB Threads::Threads)
+target_link_libraries(wwhd PRIVATE gamecode cemu_latte wwhd_gcmodel imgui ZLIB::ZLIB Threads::Threads)
 # the macOS AppKit host's optional generic-HID reader (WWHD_HAS_IOKIT, declared with the other
 # options): the mapping is platform/hid_gamepad.cpp and gfx/input.mm is the reader.
 if(APPLE AND NOT WWHD_SDL_HOST AND WWHD_HAS_IOKIT)

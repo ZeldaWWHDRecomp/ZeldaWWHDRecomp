@@ -14,6 +14,7 @@
 #include "gcmodel/gcm_j3d.h"
 #include "gcmodel/gcmodel.h"
 #include "gcmodel_synth.h"
+#include "mods/player_models_core.h"
 
 using namespace gcmodel;
 namespace s = gcmsynth;
@@ -306,12 +307,92 @@ static void refusals() {
     CHECK(errors > 0);
 }
 
+// the live part (mods/player_models_core.h): the converted file put over the game's in a pretend guest memory
+static void in_memory() {
+    namespace pm = player_models;
+    const Scene sc = scene();
+    Bytes szs;
+    CHECK(convert(sc.arc, sc.pack, szs).error.empty());
+    const Bytes model = sarc_read(yaz0_decode(szs)).at("Link.bfres");
+    const Bytes game = hd_bfres();
+    const pm::Layout gl = pm::layout(game);
+    CHECK(gl.buffers.size() == 4 && gl.textures.size() == 1);  // 2 vertex + 2 index buffers
+    // guest memory: the game's file at 0x10000000 as the game leaves it after loading (data pointers set)
+    const uint32_t base = 0x10000000;
+    Bytes low(game.size() + 0x1000, 0), area(pm::kAreaSize, 0);
+    memcpy(low.data(), game.data(), game.size());
+    for (auto& b : gl.buffers) pm::put_be32(&low[b.at], base + b.data);
+    const Bytes loaded = low;
+    const pm::Memory mem = [&](uint32_t a) -> uint8_t* {
+        if (a >= pm::kArea && a < pm::kArea + pm::kAreaSize) return &area[a - pm::kArea];
+        if (a >= base && a < base + low.size()) return &low[a - base];
+        fprintf(stderr, "address %08X outside the pretend memory\n", a);
+        abort();
+    };
+    std::string why;
+    auto m = pm::make_model("synthetic", game, gl, model, why);
+    CHECK(m && why.empty());
+    if (!m) return;
+    CHECK(!m->runs.empty() && !m->fixes.empty() && !m->probes.empty());
+    CHECK(m->tail0 + m->tail.size() == model.size());
+    CHECK(pm::holds(mem, base, *m, false) && !pm::holds(mem, base, *m, true));
+    CHECK(pm::noted(mem).empty());
+    pm::write_in(mem, base, *m);
+    CHECK(pm::holds(mem, base, *m, true) && !pm::holds(mem, base, *m, false));
+    CHECK(pm::noted(mem) == "synthetic");
+    // each changed buffer's data pointer aims into the area, at the model's data
+    const pm::Layout ml = pm::layout(model);
+    int moved = 0;
+    for (size_t i = 0; i < ml.buffers.size(); i++) {
+        const uint32_t p = pm::be32(&low[ml.buffers[i].at]);
+        if (ml.buffers[i].data == gl.buffers[i].data) {
+            CHECK(p == base + gl.buffers[i].data);
+            continue;
+        }
+        moved++;
+        CHECK(p >= pm::kArea + pm::kHeader && p + ml.buffers[i].size <= pm::kArea + pm::kAreaSize);
+        CHECK(!memcmp(mem(p), &model[ml.buffers[i].data], ml.buffers[i].size));
+    }
+    CHECK(moved == 4);
+    // a relative offset (the vertex buffer's data offset, +0x14) followed from memory lands on the same bytes
+    {
+        const uint32_t at = ml.buffers[0].at + 0x14;
+        const uint32_t to = (uint32_t)((int64_t)base + at + (int32_t)pm::be32(&low[at]));
+        CHECK(to >= pm::kArea && !memcmp(mem(to), &model[ml.buffers[0].data], 16));
+    }
+    // the texture's data replaced in place
+    const auto& t = gl.textures[0].second;
+    CHECK(!memcmp(&low[t[0]], &model[t[0]], t[1]) && memcmp(&loaded[t[0]], &model[t[0]], t[1]));
+    // out again: the memory exactly as the game had it
+    pm::write_out(mem, base, *m);
+    CHECK(low == loaded);
+    CHECK(pm::noted(mem).empty() && pm::holds(mem, base, *m, false));
+    // refusals: a file made from another Link, a damaged one
+    s::HDModel other;
+    other.name = "cl";
+    other.bones = {{"root", -1, 0, -1, {0, 0, 0}}};
+    s::HDShape sh;
+    sh.name = "x", sh.attrs = {{"_p0", 0x811}};
+    other.shapes = {sh};
+    other.materials = {{"x", {}}};
+    CHECK(!pm::make_model("other", game, gl, s::bfres({other}, {}), why) && !why.empty());
+    Bytes small(game.begin(), game.begin() + 0x100);
+    CHECK(!pm::make_model("small", game, gl, small, why));
+    // a new game: no events but the two set from the start
+    uint8_t ev[0x100] = {};
+    ev[0x7E] = 1, ev[0xBE] = 4;
+    CHECK(pm::new_game(ev));
+    ev[3] = 1;
+    CHECK(!pm::new_game(ev));
+}
+
 int main() {
     containers();
     textures();
     j3d_reader();
     convert_scene();
     refusals();
+    in_memory();
     if (g_fail) {
         fprintf(stderr, "gcmodel_test: %d failed\n", g_fail);
         return 1;

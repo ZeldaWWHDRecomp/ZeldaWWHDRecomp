@@ -107,6 +107,8 @@ namespace ss {class NativeRestorePipelineIssuer {public:
 #include "quit_prompt.h"
 #include "rumble.h"
 #include "save_convenience.h"
+#include "mods/player_models.h"
+#include "mods/player_models_core.h"
 
 // module sections
 bool threads_ss_save(ss::Writer& w, std::string& why);
@@ -178,12 +180,17 @@ using Region=MemoryRegion;
 
 std::vector<Region> regions() {
     uint32_t top = (mem::runtime_top() + kChunk - 1) & ~(kChunk - 1);
-    return {{mem::kMem2Start, mem::kMem2End - mem::kMem2Start},
+    std::vector<Region> r = {{mem::kMem2Start, mem::kMem2End - mem::kMem2Start},
             {mem::kRuntimeStart, top - mem::kRuntimeStart},
             {mem::kFixedStart, mem::kFixedSize},
             {mem::kFgBucket, mem::kFgBucketSize},
             {mem::kMem1, mem::kMem1Size},
             {guestmods::kRegionStart,guestmods::kRegionSize}};
+    // a GameCube player model's appended data while one is in (mods/player_models.h); states without one are as before
+    uint32_t pmUsed = 0;
+    const uint32_t pm = player_models::area(&pmUsed);
+    if (pmUsed) r.push_back({pm, (pmUsed + kChunk - 1) & ~(kChunk - 1)});
+    return r;
 }
 
 // A snapshot in memory: header + payload (sections); memory chunks point into the payload.
@@ -225,7 +232,7 @@ struct Snapshot {
         const std::vector<Region> allowed={{mem::kMem2Start,mem::kMem2End-mem::kMem2Start},
             {mem::kRuntimeStart,mem::kHostStart-mem::kRuntimeStart},{mem::kFixedStart,mem::kFixedSize},
             {mem::kFgBucket,mem::kFgBucketSize},{mem::kMem1,mem::kMem1Size},
-            {guestmods::kRegionStart,guestmods::kRegionSize}};
+            {guestmods::kRegionStart,guestmods::kRegionSize},{player_models::kArea,player_models::kAreaSize}};
         for(const auto& region:regs) {
             bool valid=false;
             for(const auto& range:allowed)if(region.base>=range.base && uint64_t(region.base)+region.size<=uint64_t(range.base)+range.size)valid=true;

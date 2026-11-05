@@ -266,6 +266,7 @@ void init() {
     // GPU-visible guest memory: MEM2 (code data + heaps), runtime objects, foreground bucket, MEM1
     map_guest_range(0x10000000, 0x40000000);
     map_guest_range(0x60000000, 0x10000000);
+    map_guest_range(0x58000000, 0x00400000);  // a GameCube player model's vertex/index data (mods/player_models_core.h kArea)
     map_guest_range(0xE0000000, 0x04000000);
     map_guest_range(0xF4000000, 0x02000000);
     LOG("[gfx] Metal device: %s", R.device.name.UTF8String);
