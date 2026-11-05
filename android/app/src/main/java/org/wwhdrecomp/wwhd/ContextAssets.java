@@ -45,6 +45,10 @@ final class ContextAssets {
     static String itemFile(int item) { return String.format(Locale.ROOT, "item_%02X.png", item & 0xFF); }
     /** The file name of Link's pose for an action code (only actions with a pose have one). */
     static String poseFile(int action) { return String.format(Locale.ROOT, "pose_%02X.png", action & 0xFF); }
+    /** ... with the thing of kind `variant` in his hands (0: the plain one): pose_HH_KK.png */
+    static String poseFile(int action, int variant) {
+        return variant == 0 ? poseFile(action) : String.format(Locale.ROOT, "pose_%02X_%02X.png", action & 0xFF, variant & 0xFF);
+    }
 
     /** The Jump button (P6) shows the pose of the game's Jump action. */
     static final int JUMP_ACTION = 0x12;
