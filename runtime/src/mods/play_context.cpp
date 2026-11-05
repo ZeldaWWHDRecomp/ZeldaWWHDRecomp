@@ -44,6 +44,19 @@ struct GuestMem {
     uint16_t u16(uint32_t a) const { return ld16(a); }
     uint32_t u32(uint32_t a) const { return ld32(a); }
     bool object(uint32_t p, uint32_t size) const { return (p & 3) == 0 && p >= mem::kMem2Start && p <= mem::kMem2End - size; }
+    // fopAcM_SearchByID(id, actor**) on the game thread; the answer goes into guest_call's own frame (its
+    // callee's frame lies below it), every register is put back
+    uint32_t actor_by_id(uint32_t id) const {
+        Cpu* c = threads::current();
+        if (!c || !id || id == 0xFFFFFFFFu) return 0;
+        const Cpu saved = *c;
+        const uint32_t out = c->r[1] - 0x30;
+        st32(out, 0);
+        guest_call(c, GC(0x025D54C4), {id, out});
+        const uint32_t a = ld32(out);
+        *c = saved;
+        return object(a, 0x10) && ld32(a + kActorProcId) == id ? a : 0;
+    }
 };
 
 int log_level() {
@@ -72,6 +85,7 @@ std::atomic<uint64_t> g_seen[kPaneSignalCount];
 std::atomic<int> g_choice_count{0}, g_zoom_kind{0};
 std::atomic<int> g_choice_y{0}, g_cursor_y{0}, g_msg_x{0}, g_msg_y{0}, g_msg_hw{0}, g_msg_hh{0};
 std::atomic<int> g_choice_x{0}, g_wind_x{0}, g_wind_y{0};
+std::atomic<int> g_question_x[3], g_question_y[3], g_question_scale[3];
 
 constexpr uint32_t kPaneParent = 0x0C, kPaneChildren = 0x14, kPaneSize = 0x3C, kPaneFlags = 0x44, kPaneAlpha = 0x45,
                    kPaneGlobal = 0x48, kPaneName = 0x80;  // nw::lyt::Pane (aspect.cpp)
@@ -79,6 +93,19 @@ bool pane_visible(uint32_t p) { return (ld8(p + kPaneFlags) & 1) && ld8(p + kPan
 float global_x(uint32_t p) { return (float)ldf32(p + kPaneGlobal + 0xC); }
 float global_y(uint32_t p) { return (float)ldf32(p + kPaneGlobal + 0x1C); }
 int16_t clamp16(float v) { return int16_t(std::fmax(-32768.f, std::fmin(32767.f, v))); }
+// a pane named `name` among `pane`'s children, `depth` levels down (0 none); the child list is a ring headed at
+// +0x14 (next +0x0, as kPaneZoom's first child)
+uint32_t find_child(uint32_t pane, const char* name, int depth) {
+    if (depth <= 0) return 0;
+    const uint32_t head = pane + kPaneChildren;
+    uint32_t link = ld32(head);
+    for (int n = 0; link && link != head && n < 64; n++, link = ld32(link)) {
+        const uint32_t child = link;  // (the link sits at the start of the child pane, as zoom_kind's read)
+        if (!strncmp((const char*)mem::ptr(child + kPaneName), name, 24)) return child;
+        if (const uint32_t deeper = find_child(child, name, depth - 1)) return deeper;
+    }
+    return 0;
+}
 
 void note(PaneSignal s) { g_seen[s].store(step() + 1, std::memory_order_relaxed); }
 
@@ -96,6 +123,14 @@ PaneSignals aged_panes() {
     if (p.flags & kWindCompass) {
         p.wind_x = int16_t(g_wind_x.load(std::memory_order_relaxed));
         p.wind_y = int16_t(g_wind_y.load(std::memory_order_relaxed));
+    }
+    for (int i = 0; i < 3; i++) {  // a system question's buttons, each by its own stamp
+        const uint64_t s = seen[kPaneQuestionL + i];
+        if (!s || step() + 1 - s > kPaneSteps) continue;
+        p.question_shown |= uint8_t(1u << i);
+        p.question_x[i] = int16_t(g_question_x[i].load(std::memory_order_relaxed));
+        p.question_y[i] = int16_t(g_question_y[i].load(std::memory_order_relaxed));
+        p.question_scale[i] = int16_t(g_question_scale[i].load(std::memory_order_relaxed));
     }
     if (p.flags & kZoomBar) p.zoom_kind = uint8_t(g_zoom_kind.load(std::memory_order_relaxed));
     if (p.flags & kMsgWindow) {
@@ -172,6 +207,20 @@ void play_context_pane(uint32_t pane) {
             g_wind_y.store(clamp16(global_y(pane)), std::memory_order_relaxed);
             note(s);
             return;
+        case kPaneQuestionL: case kPaneQuestionR: case kPaneQuestionC: {
+            // the button's centre, and how large its N_Btn_00 is drawn (the Select animation scales the cursor's
+            // one up): its global matrix's width scale, per mille. From the GreenNaugahyde fork's hud.cpp.
+            if (!pane_visible(pane)) return;
+            const int i = s - kPaneQuestionL;
+            const uint32_t btn = find_child(pane, "N_Btn_00", 5);
+            const uint32_t m = (btn ? btn : pane) + kPaneGlobal;
+            g_question_x[i].store(clamp16(global_x(pane)), std::memory_order_relaxed);
+            g_question_y[i].store(clamp16(global_y(pane)), std::memory_order_relaxed);
+            g_question_scale[i].store(btn ? clamp16(std::round(1000 * std::hypot((float)ldf32(m), (float)ldf32(m + 0x10)))) : -1,
+                                      std::memory_order_relaxed);
+            note(s);
+            return;
+        }
         case kPaneFinder: case kPaneAlbum:
             note(s);  // (the screen's frame: drawn while the screen is up)
             return;

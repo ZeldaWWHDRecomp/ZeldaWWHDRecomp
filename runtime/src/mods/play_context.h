@@ -120,7 +120,25 @@ enum Flag : uint32_t {
     kShop = 1u << 17,        // a shop's item choice: A Choose / B Cancel in a talk without a choice box
     kHasWindWaker = 1u << 18,  // the Wind Waker is in the inventory (d-pad up conducts)
     kHasSwiftSail = 1u << 19,  // the HD Swift Sail in place of the sail
+    kQuestion = 1u << 20,    // a system question's buttons (SequenceWindow_00: the save question after a game over)
 };
+
+// What Link holds or A would lift (PlayContext held_kind / lift_kind), for the buttons' pictures: 1-7 an enemy's
+// weapon (1 stick, 2 a lit stick, 3 machete, 4 Stalfos' mace, 5 Darknut's sword, 6 Moblin's spear, 7 Phantom Ganon's
+// sword); 16.. things: 16 small pot, 17 big pot, 18 Kmtub_00, 19 barrel, 20 stool, 21 skull, 22 bucket, 23 box,
+// 24 Ptubo, 25 rock, 26 pebble, 27 bomb, 28 a bomb flower's bomb; 0 anything else.
+// From the GreenNaugahyde Android fork (GreenNaugahyde/ZeldaWWHDRecompAndroid db65d60, MPL-2.0), touch_state.cpp
+// thing_kind(): the actor's process name (base_process_class::mProcName +0x8, HD numbers) and parameters (+0xB0).
+enum ThingKind : uint8_t {
+    kThingNone = 0, kThingStick = 1, kThingTorch = 2, kThingPot = 16, kThingBigPot = 17, kThingBarrel = 19,
+    kThingRock = 25, kThingPebble = 26, kThingBomb = 27, kThingBombFlower = 28,
+};
+constexpr uint32_t kLinkKeepEquip = 0x6590, kLinkKeepGrab = 0x65A0;  // daPy_lk_c {process id, actor}
+constexpr uint32_t kAttListActorId = 0x0C;                           // dAttList_c::mActorID
+constexpr uint32_t kActorProcName = 0x08, kActorParams = 0xB0, kBokoFlameTimer = 0x43C;
+constexpr int16_t kProcBomb = 0x126, kProcTsubo = 0x1C5, kProcStone = 0x1C6, kProcStone2 = 0x1C7, kProcBarrel = 0x1C8,
+                  kProcBoko = 0x1CF;
+constexpr uint16_t kHandBoko = 0x101;  // mEquipItem: an enemy's weapon (mActorKeepEquip)
 
 struct PlayContext {
     uint64_t step = 0;     // logic step it was read on
@@ -147,6 +165,11 @@ struct PlayContext {
     int16_t msg_x = 0, msg_y = 0, msg_hw = 0, msg_hh = 0;  // the message window's centre and half size
     int16_t choice_x = 0;            // the choice box's centre x
     int16_t wind_x = 0, wind_y = 0;  // the wind compass's centre (kWindCompass)
+    // a system question's buttons (kQuestion): 0 left, 1 right, 2 centre; shown bits, centres, and the width scale
+    // of each one's N_Btn_00 per mille (the one the cursor is on is drawn larger)
+    uint8_t question_shown = 0;
+    int16_t question_x[3] = {}, question_y[3] = {}, question_scale[3] = {};
+    uint8_t held_kind = kThingNone, lift_kind = kThingNone;  // ThingKind: what Link holds / A would lift
 
     bool has(uint32_t f) const { return (flags & f) != 0; }
 };
@@ -193,6 +216,9 @@ enum PaneSignal : int {
     kPaneAlbum,      // N_PictographAll_00: the picto album
     kPaneWind,       // P_WindDirectionBase_00 of ControlWind_00: the wind compass
     kPaneZoom,       // N_Zoom_00: the Picto Box's (first child P_Bar_00) or telescope's (P_TelescopeBar_00) zoom bar
+    kPaneQuestionL,  // L_BtnSeqenceL_00 / R_00 / C_00 of SequenceWindow_00: a system question's buttons
+    kPaneQuestionR,
+    kPaneQuestionC,
     kPaneSignalCount,
     kPaneNone = kPaneSignalCount,
 };
@@ -201,14 +227,20 @@ constexpr uint64_t kPaneSteps = 3;  // a part counts as shown while drawn within
 inline PaneSignal classify_pane(const char* n) {
     auto is = [n](const char* s) { return strncmp(n, s, 24) == 0; };
     switch (n[0]) {
-        case 'L': return is("L_KeyIcon_00") ? kPaneKeyIcon : kPaneNone;
+        case 'L':
+            if (is("L_BtnSeqenceL_00")) return kPaneQuestionL;
+            if (is("L_BtnSeqenceR_00")) return kPaneQuestionR;
+            if (is("L_BtnSeqenceC_00")) return kPaneQuestionC;
+            return is("L_KeyIcon_00") ? kPaneKeyIcon : kPaneNone;
         case 'W':
             if (is("W_Choise2_00")) return kPaneChoice2;
             if (is("W_Choise3_00")) return kPaneChoice3;
             return is("W_Cursor_00") ? kPaneCursor : kPaneNone;
         case 'P':
             if (is("P_SelNumber_00")) return kPaneNumber;
-            if (is("P_MsgWindow_00")) return kPaneMsgWindow;
+            // the message window's box; or MsgWindowScroll_00's for letters (P_Paper_00), stone tablets (P_Stone_00)
+            // and signs (P_Wood_00): a tap goes on there too (the GreenNaugahyde fork's hud.cpp note_choice)
+            if (is("P_MsgWindow_00") || is("P_Paper_00") || is("P_Stone_00") || is("P_Wood_00")) return kPaneMsgWindow;
             return is("P_WindDirectionBase_00") ? kPaneWind : kPaneNone;
         case 'N':
             if (is("N_Finder_00")) return kPaneFinder;
@@ -233,6 +265,7 @@ inline uint32_t pane_signal_flag(PaneSignal s) {
         case kPaneAlbum: return kAlbum;
         case kPaneWind: return kWindCompass;
         case kPaneZoom: return kZoomBar;
+        case kPaneQuestionL: case kPaneQuestionR: case kPaneQuestionC: return kQuestion;
         default: return 0;
     }
 }
@@ -248,12 +281,15 @@ inline uint32_t aged_pane_flags(const uint64_t (&seen)[kPaneSignalCount], uint64
 }
 
 // ---- the reader ----
-// Mem: u8 / u16 / u32(addr) (big-endian guest reads) and object(addr, size) (the range is guest heap)
+// Mem: u8 / u16 / u32(addr) (big-endian guest reads), object(addr, size) (the range is guest heap) and
+// actor_by_id(process id) (the actor with that id, 0 none: fopAcM_SearchByID in the game)
 struct PaneSignals {  // from the Pane::Draw observer (play_context.cpp), already aged
     uint32_t flags = 0;  // kKeyIcon, kChoice, kNumberEntry, kMsgWindow, kPictoFinder, kAlbum, kWindCompass, kZoomBar
     uint8_t choice_count = 0, zoom_kind = 0;
     int16_t choice_y = 0, cursor_y = 0, msg_x = 0, msg_y = 0, msg_hw = 0, msg_hh = 0;
     int16_t choice_x = 0, wind_x = 0, wind_y = 0;
+    uint8_t question_shown = 0;  // bit per button (kQuestion)
+    int16_t question_x[3] = {}, question_y[3] = {}, question_scale[3] = {};
 };
 struct GameUiSignals {  // hud_gate.cpp's reading (mods::GameUi)
     bool event = false, message = false, menu = false;
@@ -343,6 +379,34 @@ struct LockTracker {
     }
 };
 
+// the kind of thing an actor is (ThingKind), 0 for none or anything else
+template <class Mem>
+uint8_t thing_kind(const Mem& m, uint32_t a) {
+    if (!m.object(a, 0x440)) return kThingNone;
+    const int16_t pn = int16_t(m.u16(a + kActorProcName));
+    const uint32_t prm = m.u32(a + kActorParams);
+    switch (pn) {
+        case kProcBoko:
+            if (prm == 0) return m.u16(a + kBokoFlameTimer) != 0 ? kThingTorch : kThingStick;
+            return prm <= 5 ? uint8_t(prm + 2) : kThingStick;
+        case kProcTsubo: {
+            static constexpr uint8_t kTsubo[16] = {16, 17, 18, 19, 20, 21, 22, 0, 23, 0, 0, 0, 0, 0, 24, 0};
+            return kTsubo[prm >> 24 & 0xF];
+        }
+        case kProcStone: return kThingRock;
+        case kProcStone2: return kThingPebble;
+        case kProcBarrel: return kThingBarrel;
+        case kProcBomb: return (prm & 0xFF) == 5 || (prm & 0xFF) == 6 ? kThingBombFlower : kThingBomb;
+        default: return kThingNone;
+    }
+}
+// the actor kept at Link + off ({process id, actor}), if it is still that one
+template <class Mem>
+uint32_t kept_actor(const Mem& m, uint32_t link, uint32_t off) {
+    const uint32_t id = m.u32(link + off), a = m.u32(link + off + 4);
+    return m.object(a, 0x10) && m.u32(a + kActorProcId) == id ? a : 0;
+}
+
 // One reading. `ui` is hud_gate.cpp's (event, message, menu), `panes` the Pane::Draw observer's.
 template <class Mem>
 PlayContext read(const Mem& m, const Addresses& a, const GameUiSignals& ui, const PaneSignals& panes,
@@ -367,6 +431,9 @@ PlayContext read(const Mem& m, const Addresses& a, const GameUiSignals& ui, cons
     c.choice_x = panes.choice_x;
     c.wind_x = panes.wind_x;
     c.wind_y = panes.wind_y;
+    c.question_shown = panes.question_shown;
+    for (int i = 0; i < 3; i++)
+        c.question_x[i] = panes.question_x[i], c.question_y[i] = panes.question_y[i], c.question_scale[i] = panes.question_scale[i];
     if (!in_game(m, a)) {
         lock.step(m, 0, 0, c);
         return c;
@@ -415,6 +482,10 @@ PlayContext read(const Mem& m, const Addresses& a, const GameUiSignals& ui, cons
             const uint32_t type = m.u32(entry + kAttListType);
             c.attention_type = type <= kAttnShip ? uint8_t(type) : kAttnNone;
         }
+        // what he holds (an enemy's weapon while mEquipItem says so, else what he carries) and what A would lift
+        c.held_kind = thing_kind(m, kept_actor(m, link, c.item_in_hand == kHandBoko ? kLinkKeepEquip : kLinkKeepGrab));
+        if (m.object(entry, 0x10) && (c.a_normal == kActLift || c.a_forced == kActLift || c.a_normal == kActPickUp))
+            c.lift_kind = thing_kind(m, m.actor_by_id(m.u32(entry + kAttListActorId)));
     }
     lock.step(m, link, link_attention(m, link), c);
     // a shop's item choice: in a talk the game prompts A Choose / B Cancel without a choice box
@@ -453,12 +524,13 @@ inline bool same_for_log(const PlayContext& x, const PlayContext& y) {
            x.attention_type == y.attention_type && x.mesg_status == y.mesg_status &&
            x.scope_mesg_status == y.scope_mesg_status && x.choice_count == y.choice_count && x.zoom_kind == y.zoom_kind &&
            x.item_in_hand == y.item_in_hand && x.proc == y.proc && x.player_status0 == y.player_status0 &&
-           x.player_status1 == y.player_status1 && x.mode_flags == y.mode_flags && x.defeats == y.defeats;
+           x.player_status1 == y.player_status1 && x.mode_flags == y.mode_flags && x.defeats == y.defeats &&
+           x.held_kind == y.held_kind && x.lift_kind == y.lift_kind && x.question_shown == y.question_shown;
 }
 inline int format(const PlayContext& c, char* buf, int size) {
     static const char* const kNames[] = {"game", "link", "play", "event", "message", "menu", "fade", "stagechange",
                                          "locked", "keyicon", "choice", "number", "msgwin", "finder", "album",
-                                         "windcompass", "zoom", "shop", "windwaker", "swiftsail"};
+                                         "windcompass", "zoom", "shop", "windwaker", "swiftsail", "question"};
     char names[200] = "";
     int k = 0;
     for (int i = 0; i < int(sizeof kNames / sizeof *kNames); i++)
@@ -466,11 +538,11 @@ inline int format(const PlayContext& c, char* buf, int size) {
     return snprintf(buf, size,
                     "step=%llu flags=%s A=%02X B=%02X ZR=%02X forced=%02X/%02X/%02X X=%02X Y=%02X R=%02X hand=%04X "
                     "proc=%d st0=%08X st1=%08X mode=%08X minigame=%u ready=%u lock=%u reach=%u attn=%u defeats=%u "
-                    "mesg=%u/%u choice=%u zoom=%u",
+                    "mesg=%u/%u choice=%u zoom=%u held=%u lift=%u",
                     (unsigned long long)c.step, names, c.a_action, c.b_action, c.zr_action, c.a_forced, c.b_forced,
                     c.zr_forced, c.x_item, c.y_item, c.r_item, c.item_in_hand, c.proc, c.player_status0, c.player_status1,
                     c.mode_flags, c.minigame, c.ready_item_button, c.lock_state, c.lock_reach, c.attention_type,
-                    c.defeats, c.mesg_status, c.scope_mesg_status, c.choice_count, c.zoom_kind);
+                    c.defeats, c.mesg_status, c.scope_mesg_status, c.choice_count, c.zoom_kind, c.held_kind, c.lift_kind);
 }
 
 }  // namespace mods::playctx
