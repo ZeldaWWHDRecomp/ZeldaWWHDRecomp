@@ -29,7 +29,8 @@ seed. Default save folders are siblings, such as `save-randomizer-<hash>/user`
 and `save-backups-randomizer-<hash>/`. When you choose an empty cloud folder,
 its seed-specific save folder stays inside that folder so it is synced. When
 selecting an existing vanilla save folder, the randomized save uses a sibling
-instead. An explicit `--save DIR` uses exactly that directory. Save-state slots
+instead. An explicit `--save DIR` uses exactly that directory, except a folder named `save` (the install's
+own, which setup's Play button, launchers and shortcuts pass): the seed's folder is its sibling then. Save-state slots
 retain their per-seed subfolder.
 Copying a save or a state manually between seeds is unsupported.
 
