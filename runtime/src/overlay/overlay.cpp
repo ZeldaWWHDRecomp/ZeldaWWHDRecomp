@@ -1658,6 +1658,9 @@ void tab_display() {
         if (radio(f[i], hostui::scale_filter() == i, fok))
             hostui::post([i] { hostui::set_scale_filter(i); });
     }
+    help("Smooth blends the game's pixels. Sharp is pixel perfect: each rendered pixel shows as a crisp block of the "
+         "same size at any window size, with no bars. Integer scale uses whole-number sizes only and leaves a border. "
+         "While dynamic resolution has lowered the resolution, the picture is scaled smoothly.");
 
 }
 
