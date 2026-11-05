@@ -582,6 +582,17 @@ static void emit_host(Op op, std::initializer_list<uint32> payload) {
     host::with_autorelease_pool([&] { execute_one(op, payload.begin(), (uint32)payload.size()); });
 }
 
+// 60 fps (generated, framegen.h): the camera of the frame being drawn, host-only (also while a display
+// list is being recorded: the camera belongs to the frame, not to the list). Never called while off.
+void framegen_camera(const uint32* words, uint32 n) {
+    if (g_render_thread) {
+        enqueue(OP_FRAMEGEN_CAMERA, words, n);
+        return;
+    }
+    std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
+    host::with_autorelease_pool([&] { execute_one(OP_FRAMEGEN_CAMERA, words, n); });
+}
+
 #ifdef WWHD_HAS_VULKAN
 static gfxvk::BackgroundCheckpoint& background_cache_checkpoint() {
     static gfxvk::BackgroundCheckpoint worker([] {
@@ -873,6 +884,15 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         aspect::layout_root_target(p[0], render::target_aspect_factors(g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG], kx, ky));
         break;
     }
+    // 60 fps (generated, framegen.h): only emitted while it is on
+    case OP_FRAMEGEN_CAMERA:
+        if (render::g_backend->framegen_camera) render::g_backend->framegen_camera(p, n);
+        break;
+    case OP_FRAMEGEN_LAYOUT:
+        if (render::g_backend->framegen_layout)
+            render::g_backend->framegen_layout(g_regs[mmCB_COLOR0_BASE], g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG],
+                                               g_regs[mmDB_DEPTH_BASE]);
+        break;
     case OP_SETUP_CONTEXT:
         g_contexts[p[0]].assign(kNumRegs, 0);
         g_shadow = g_contexts[p[0]].data();

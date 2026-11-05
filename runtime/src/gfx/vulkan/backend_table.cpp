@@ -3,6 +3,7 @@
 #include "stereo.h"
 #include "buffer_cache.h"
 #include "settings.h"
+#include "reproj.h"
 #include "gfx/renderer.h"
 
 #include <stdexcept>
@@ -28,6 +29,9 @@ const Backend& vulkan_backend() {
         Backend b{};
         b.api = Api::Vulkan;
         b.sky_clouds_begin = gfxvk::sky_clouds_begin;
+        // 60 fps (generated, reproj.cpp): called only for the ops emitted while WWHD_FRAMEGEN=1
+        b.framegen_camera = gfxvk::reproj::note_camera;
+        b.framegen_layout = gfxvk::reproj::layout;
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
         b.init = [] {
             gfx::display_create_windows();

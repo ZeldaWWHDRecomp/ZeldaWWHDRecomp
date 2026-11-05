@@ -40,6 +40,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include <unordered_map>
 #include <vector>
 
+#include "framegen.h"
 #include "interp_camera.h"
 #include "interp_fade.h"
 #include "interp_joints.h"
@@ -514,6 +515,11 @@ extern "C" void hook_024FFC40(Cpu* c) {
     g_last_camera.store(cam, std::memory_order_relaxed);
     camera_draw(c);
     editor::camera_drawn(cam);
+    // 60 fps (generated, framegen.h; only while WWHD_FRAMEGEN=1): the camera this frame's scene is drawn
+    // with; the renderer makes no in-between frame while another mode already does
+    if (framegen::requested())
+        framegen::camera_drawn(cam, (interp::interp_on() ? framegen::kInterp : 0u) | (true60::enabled() ? framegen::kTrue60 : 0u) |
+                                        (mods::fast_forward_active() ? framegen::kFastForward : 0u));
 }
 static void camera_draw_body(Cpu* c);
 // Exact culling. Which actors a pass draws decides game logic: a drawn actor's draw takes random
