@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mod SDK: mirrored HUD images and the game's own layout texts** (#434, from the HD minimap's SDK proposal in
+  ZeldaWWHDMods #33, thanks @francosang). For mod authors: a HUD image drawn with reversed UVs now shows mirrored, and
+  `wwhd_game_message_get("layout-message:<Layout>/<label>", …)` returns the game's own text for a layout label in the
+  language the game runs in (read from your game files). Mods check `hud.mirrored-images.version` /
+  `layout-message.version` first, so they keep working on older versions. HUD API 3, mod manager 1.9.0.
 - **True 60 is retired** (#407). The experimental "True 60" frame rate (Link and the camera at 60 game steps a second)
   was broken in many places and is gone from the Settings window, the pause menu's Graphics page and the Graphics
   menu; key 7 does nothing now. **If you had True 60 selected, the game starts with 60 fps frame interpolation
