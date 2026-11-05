@@ -611,7 +611,7 @@ void register_game() {
     {  // the save file's name for Link (player_name.h): the page is only open in play, with a file loaded
         Item it;
         it.id = "game.link-name", it.tab = "game", it.label = "Change Link's name", it.kind = Kind::Action;
-        it.help = "Gives your hero a new name on this save file. It's kept the next time you save.";
+        it.help = "Gives your hero a new name on this save file, up to 16 characters. It's kept the next time you save.";
         it.text = [] { return player_name::current(); };
         it.set = [](float) { player_name::ask(); };
         it.enabled = [] { return player_name::loaded(); };

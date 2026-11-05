@@ -47,6 +47,11 @@ same values.
   resolution, bloom, edge smoothing (FXAA), anisotropic filtering, clouds, cloud shadows and
   full-size torchlight. They apply at once. The rest (renderer, aspect ratio, HDR, ambient occlusion
   and more) is in the Settings window's Graphics tab.
+- **Game:** *Change Link's name* gives the save file being played a new name of up to 16 characters.
+  The game itself keeps 8: the file select shows the first 8, and so does a copy of the save in the
+  original game. The whole name is kept with the save (in the port's part of `cking.sav`, which
+  backups, the save folder and save exports carry along) and the game's texts use it. (Idea from
+  the GreenNaugahyde Android fork.)
 - **Game:** the built-in gameplay mods that apply while the game runs: quick doors, fast scene
   changes, fast forward, instant text, no pauses in texts, jump anywhere, Deku Leaf: wave to rise, climbing, run/swim speed, enemy lock-on, quick-use items,
   ladders, sidling, ivy, ledges, sailing speed, automatic wind. Their finer options (speeds, buttons)
