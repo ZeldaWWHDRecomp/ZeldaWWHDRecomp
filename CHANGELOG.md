@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **60 fps (generated), experimental** (#425, from the GreenNaugahyde and Nycolazs Android forks, thanks
+  @GreenNaugahyde and @Nycolazs). On Vulkan, Graphics › Frame rate › **60 fps (generated, experimental)** keeps the
+  game at 30 fps and generates every other frame on the GPU from the last real one (camera and object movement, with
+  the HUD kept exact). Off by default; not yet checked on a phone. Not available on Metal (on a Mac, use the Vulkan
+  renderer).
 - **Vulkan: continued draws pick the right colour targets after a scissor change** (#399, thanks @DaniXK-96). A draw
   that continued the previous one could keep its colour targets even when a new scissor changed which targets are
   active. They're now rechecked whenever the scissor changes. No known visible glitch; a correctness fix.
