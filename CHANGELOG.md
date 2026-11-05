@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **GamePad screen: bars filled with the menu background** (#397). Where the GamePad picture doesn't fill the screen
+  (the Thor's second screen, phones in GamePad-only mode, the GamePad window), the bars around it now show the menu's
+  own background instead of black. **On by default**; switch it off in **Settings → Display → Fill GamePad bars with
+  background** to keep black bars. With it off the picture is exactly as before.
 - **For mod authors: mods can require an exact game build** (#429, split from #385). A manifest can list
   `supported_game_builds` (for example `["USA"]`); the manager then refuses the mod on a port built for another game
   version before any of its content or code is used. Needs `minimum_manager_version` 1.8.0.
