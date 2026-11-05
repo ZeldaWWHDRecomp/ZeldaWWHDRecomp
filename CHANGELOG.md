@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Vulkan: continued draws pick the right colour targets after a scissor change** (#399, thanks @DaniXK-96). A draw
+  that continued the previous one could keep its colour targets even when a new scissor changed which targets are
+  active. They're now rechecked whenever the scissor changes. No known visible glitch; a correctness fix.
 - **GamePad screen: bars filled with the menu background** (#397). Where the GamePad picture doesn't fill the screen
   (the Thor's second screen, phones in GamePad-only mode, the GamePad window), the bars around it now show the menu's
   own background instead of black. **On by default**; switch it off in **Settings → Display → Fill GamePad bars with
