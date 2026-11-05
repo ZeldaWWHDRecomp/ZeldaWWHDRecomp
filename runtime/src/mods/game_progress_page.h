@@ -280,7 +280,7 @@ private:
             const float y = kListY + kRow * float(i);
             const bool sel = i == part_, full = s_.r.done[i] >= s_.r.total[i];
             if (s_.icons) out.push_back(icon(icons[i], kListX + 4, y + 4, 36));
-            out.push_back(Page::text(kListX + 50, y + 9, 24, gs::kInk, fit(sel ? gs::bold(s_.part[size_t(i)]) : s_.part[size_t(i)], 24, 190)));
+            out.push_back(Page::text(kListX + 50, y + 9, 24, gs::kInk, fit(sel ? gs::bold(s_.part[size_t(i)]) : s_.part[size_t(i)], 24, 222)));
             const std::string c = count(s_.r.done[i], s_.r.total[i]);
             out.push_back(Page::text(kListX + kListW - 8 - width(gs::bold(c), 22), y + 10, 22, full ? gs::kArrowFill : gs::kInkSoft, gs::bold(c)));
             // the bar under the row
