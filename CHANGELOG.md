@@ -7,6 +7,16 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Randomizer built in: make randomized games in setup** (#430, the in-app approach from the GreenNaugahyde Android
+  fork, thanks @GreenNaugahyde; randomizer: TWWHD Randomizer 1.2.0, MIT). Setup's **Randomized games** page makes a
+  seed from a preset, a seed name or a permalink, checks it against the port and builds it; **Settings › Randomizer**
+  in the game shows the seed, its permalink and (after a question) the spoiler log with a sea-chart map. Works for USA
+  and European games and on Android. Every randomized game has its own saves, backups and save states; your normal
+  save is never touched.
+- **Randomizer: Import seed** (#431). A game made with the official TWWHD Randomizer is added with **Import seed…** on
+  the same page (or `setup --import-seed PATH`); only the changed files are kept. **Choose your game and
+  `setup --game-dir` no longer accept a randomized game folder** — install the game as it is, then import the seed.
+  Randomized games installed the old way keep updating and keep their saves.
 - **60 fps (generated), experimental** (#425, from the GreenNaugahyde and Nycolazs Android forks, thanks
   @GreenNaugahyde and @Nycolazs). On Vulkan, Graphics › Frame rate › **60 fps (generated, experimental)** keeps the
   game at 30 fps and generates every other frame on the GPU from the last real one (camera and object movement, with
