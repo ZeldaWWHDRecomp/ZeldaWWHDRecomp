@@ -287,6 +287,7 @@ set_source_files_properties(runtime/src/gfx/vulkan/pass_cache.cpp PROPERTIES COM
 set_source_files_properties(runtime/src/gfx/vulkan/pipeline_demand.cpp PROPERTIES COMPILE_OPTIONS "")
 set_source_files_properties(runtime/src/gfx/vulkan/shader_translation.cpp
     runtime/src/gfx/vulkan/shader_compiler.cpp
+    runtime/src/gfx/vulkan/compile_journal.cpp
     runtime/src/gfx/vulkan/deferred_commands.cpp
     runtime/src/gfx/vulkan/pod_commands.cpp
     runtime/src/gfx/vulkan/record_worker.cpp
@@ -1011,7 +1012,7 @@ if(WWHD_HAS_VULKAN)
   target_link_libraries(shader_translation_test PRIVATE Threads::Threads)
   add_test(NAME shader_translation_worker COMMAND shader_translation_test)
   add_executable(shader_binary_test runtime/tools/shader_binary_test.cpp
-      runtime/src/gfx/vulkan/shader_compiler.cpp)
+      runtime/src/gfx/vulkan/shader_compiler.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(shader_binary_test PRIVATE runtime/src)
   target_compile_options(shader_binary_test PRIVATE -UNDEBUG)
   target_link_libraries(shader_binary_test PRIVATE Threads::Threads
@@ -1019,7 +1020,7 @@ if(WWHD_HAS_VULKAN)
   add_test(NAME shader_binary_shared_result COMMAND shader_binary_test)
   set_tests_properties(shader_binary_shared_result shader_translation_worker PROPERTIES TIMEOUT 30)
   add_executable(shader_compiler_test runtime/tools/shader_compiler_test.cpp
-      runtime/src/gfx/vulkan/shader_compiler.cpp)
+      runtime/src/gfx/vulkan/shader_compiler.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(shader_compiler_test PRIVATE runtime/src)
   target_compile_options(shader_compiler_test PRIVATE -UNDEBUG)
   target_link_libraries(shader_compiler_test PRIVATE Threads::Threads
@@ -1028,7 +1029,7 @@ if(WWHD_HAS_VULKAN)
   set_tests_properties(shader_compiler_worker PROPERTIES TIMEOUT 30)
   # panvk depth clipping in shaders: the rewrite, and the normal-path fallback when a stage can't take it
   add_executable(clip_emulation_test runtime/tools/clip_emulation_test.cpp
-      runtime/src/gfx/vulkan/shader_compiler.cpp)
+      runtime/src/gfx/vulkan/shader_compiler.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(clip_emulation_test PRIVATE runtime/src)
   target_compile_options(clip_emulation_test PRIVATE -UNDEBUG)
   target_link_libraries(clip_emulation_test PRIVATE Threads::Threads
@@ -1037,7 +1038,7 @@ if(WWHD_HAS_VULKAN)
   set_tests_properties(clip_emulation PROPERTIES TIMEOUT 30)
   # SET_CUBEMAP_INDEX on a unit without a cube map: the translated GLSL declares the index (head-start records)
   add_executable(cubemap_index_shader_test runtime/tools/cubemap_index_shader_test.cpp
-      runtime/src/gfx/vulkan/shader_compiler.cpp)
+      runtime/src/gfx/vulkan/shader_compiler.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(cubemap_index_shader_test PRIVATE runtime/src)
   target_compile_options(cubemap_index_shader_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
   if(WWHD_HAS_METAL)
@@ -2165,7 +2166,8 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(comparison_format_test SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_options(comparison_format_test PRIVATE -UNDEBUG)
   add_test(NAME comparison_format COMMAND comparison_format_test)
-  add_executable(serial_pipelines_test runtime/tools/serial_pipelines_test.cpp runtime/src/gfx/vulkan/loader.cpp)
+  add_executable(serial_pipelines_test runtime/tools/serial_pipelines_test.cpp runtime/src/gfx/vulkan/loader.cpp
+    runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(serial_pipelines_test PRIVATE runtime/src runtime/third_party/fmt/include)
   target_include_directories(serial_pipelines_test SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_definitions(serial_pipelines_test PRIVATE VK_NO_PROTOTYPES)
@@ -2177,6 +2179,11 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(bc_decoder_choice_test SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_options(bc_decoder_choice_test PRIVATE -UNDEBUG)
   add_test(NAME bc_decoder_choice COMMAND bc_decoder_choice_test)
+  add_executable(compile_journal_test runtime/tools/compile_journal_test.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
+  target_include_directories(compile_journal_test PRIVATE runtime/src runtime/include runtime/third_party/fmt/include)
+  target_compile_options(compile_journal_test PRIVATE -UNDEBUG)
+  target_link_libraries(compile_journal_test PRIVATE Threads::Threads)
+  add_test(NAME compile_journal COMMAND compile_journal_test ${CMAKE_BINARY_DIR}/compile_journal_test.dir)
   # the BC compute shader on a real Vulkan device against the CPU decoder and the device's native BC
   # sampling; compiles the shader everywhere, skipped (77) without a Vulkan device
   if(NOT ANDROID)
