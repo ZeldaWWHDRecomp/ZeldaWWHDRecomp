@@ -24,6 +24,8 @@
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "guest_addr.h"
 #include "input.h"
@@ -336,6 +338,30 @@ constexpr uint32_t moon_ground_flags = 0x834, moon_fall_height = 0x6A48;
 }  // namespace
 
 void request_cheat(int which) { g_pending |= which; }
+
+// what has been used in this run (applied, not only asked for): Achievements pause for the rest of the run
+namespace {
+std::atomic<int> g_used{0}, g_story_used{0};
+}
+std::vector<std::string> cheats_pausing() {
+    std::vector<std::string> out;
+    static const std::pair<int, const char*> kInf[] = {
+        {kInfHealth, "Infinite health"}, {kInfMagic, "Infinite magic"}, {kInfAmmo, "Infinite arrows and bombs"},
+        {kInfRupees, "Infinite rupees"}, {kInfBags, "Infinite bait and spoils"}, {kInfBreath, "Infinite swimming"},
+        {kMoonJump, "Moon jump"}, {kMoonNoFall, "No fall damage"}};
+    for (const auto& [bit, name] : kInf)
+        if (infinite(bit)) out.push_back(std::string(name) + " (on)");
+    static const std::pair<int, const char*> kOnce[] = {
+        {kCheatItems, "Give all items"}, {kCheatSword, "Equip Master Sword and Mirror Shield"},
+        {kCheatStats, "20 hearts, double magic, 5000 rupees"}, {kCheatSongs, "All songs"},
+        {kCheatTriforce, "All Triforce shards"}, {kCheatDungeon, "Map, compass and boss key"}, {kCheatKey, "Add a small key"},
+        {kCheatBags, "Fill the bags"}, {kCheatFigurines, "All Nintendo Gallery figurines"}};
+    const int used = g_used.load(std::memory_order_relaxed);
+    for (const auto& [bit, name] : kOnce)
+        if (used & bit) out.push_back(std::string(name) + " (used)");
+    if (g_story_used.load(std::memory_order_relaxed)) out.push_back("Story items (used)");
+    return out;
+}
 bool story_item_confirmation_needed() { return !g_story_confirmed.load(std::memory_order_acquire); }
 void request_story_item(int which, bool confirmed) {
     if (!(which & (kStoryNayru|kStoryDin|kStoryFarore|kStorySword))) return;
@@ -467,7 +493,7 @@ void cheats_service() {
         }
         return;
     }
-    if (story) story_items(s, story);
+    if (story) story_items(s, story), g_story_used |= story;
     // Ordinary cheats keep their existing pending-until-load behavior.
     // ponytail: topped up once per frame, so a single hit bigger than your whole health still kills
     if (inf & kInfHealth) st16(s + kLife, ld16(s + kMaxLife));
@@ -481,6 +507,7 @@ void cheats_service() {
     if (inf & kInfBreath) keep_breath();
     if (!g_pending.load(std::memory_order_relaxed)) return;
     int w = g_pending.exchange(0);
+    g_used |= w;
     if (w & kCheatItems) all_items(s);
     if (w & kCheatSword) best_sword(s);
     if (w & kCheatStats) max_stats(s);

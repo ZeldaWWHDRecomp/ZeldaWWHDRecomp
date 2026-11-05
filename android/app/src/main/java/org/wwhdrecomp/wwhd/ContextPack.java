@@ -25,6 +25,8 @@ final class ContextPack {
             LINK_POSES = 1 << 7;
     // per-button state
     static final int SHOWN = 1, KIND_SHIFT = 1, KIND_MASK = 3 << 1, HELD = 1 << 3;
+    // an action's picture variant: the kind of thing Link lifts or holds (play_context.h ThingKind), pose_HH_KK.png
+    static final int VARIANT_SHIFT = 8, VARIANT_MASK = 0xFF << 8;
     static final int KIND_PLAIN = 0, KIND_ACTION = 1, KIND_ITEM = 2, KIND_FAST_FORWARD = 3;
     // ctxbtn::Button
     static final int A = 0, B = 1, X = 2, Y = 3, R = 4, ZR = 5, ZL = 6, PLUS = 7, R3 = 8, UP = 9, LEFT_RIGHT = 10,
@@ -110,6 +112,11 @@ final class ContextPack {
     int kindFor(String key) {
         final int b = buttonFor(key);
         return on() && b >= 0 && shown(b) ? kind(b) : KIND_PLAIN;
+    }
+    /** The picture variant of an action button (0 none): the kind of thing in Link's hands. */
+    int variantFor(String key) {
+        final int b = buttonFor(key);
+        return b >= 0 ? (state(b) & VARIANT_MASK) >>> VARIANT_SHIFT : 0;
     }
     /** kindFor's label: the action code or item number. */
     int labelFor(String key) {

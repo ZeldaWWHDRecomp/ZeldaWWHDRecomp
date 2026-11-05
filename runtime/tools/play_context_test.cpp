@@ -18,6 +18,11 @@ struct Fixture {
     uint16_t u16(uint32_t a) const { return uint16_t(u8(a) << 8 | u8(a + 1)); }
     uint32_t u32(uint32_t a) const { return uint32_t(u16(a)) << 16 | u16(a + 2); }
     bool object(uint32_t p, uint32_t size) const { return (p & 3) == 0 && p >= 0x10000000 && p <= 0x50000000 - size; }
+    std::map<uint32_t, uint32_t> actors;  // process id -> actor (fopAcM_SearchByID)
+    uint32_t actor_by_id(uint32_t id) const {
+        auto it = actors.find(id);
+        return it == actors.end() ? 0 : it->second;
+    }
     void s8(uint32_t a, uint8_t v) { bytes[a] = v; }
     void s16(uint32_t a, uint16_t v) { s8(a, uint8_t(v >> 8)); s8(a + 1, uint8_t(v)); }
     void s32(uint32_t a, uint32_t v) { s16(a, uint16_t(v >> 16)); s16(a + 2, uint16_t(v)); }
@@ -272,6 +277,70 @@ static void panes() {
            (kZoomBar | kPictoFinder | kAlbum | kWindCompass | kNumberEntry | kMsgWindow));
 }
 
+// letters, stone tablets and signs count as the message window; a system question's buttons
+static void scroll_windows_and_question() {
+    for (const char* n : {"P_Paper_00", "P_Stone_00", "P_Wood_00"}) assert(classify_pane(n) == kPaneMsgWindow);
+    assert(classify_pane("P_Paper_01") == kPaneNone);
+    assert(classify_pane("L_BtnSeqenceL_00") == kPaneQuestionL && classify_pane("L_BtnSeqenceR_00") == kPaneQuestionR &&
+           classify_pane("L_BtnSeqenceC_00") == kPaneQuestionC && classify_pane("L_BtnSeqenceX_00") == kPaneNone);
+    uint64_t seen[kPaneSignalCount] = {};
+    seen[kPaneQuestionR] = 101;
+    assert(aged_pane_flags(seen, 100) == kQuestion && aged_pane_flags(seen, 104) == 0);
+    // the question's buttons reach the reading
+    Fixture f = outset();
+    LockTracker lock;
+    PaneSignals p;
+    p.flags = kQuestion;
+    p.question_shown = 3;
+    p.question_x[0] = -200, p.question_x[1] = 200, p.question_scale[0] = 1000, p.question_scale[1] = 1100;
+    const PlayContext c = read_at(f, lock, {}, p);
+    assert(c.has(kQuestion) && c.question_shown == 3 && c.question_x[1] == 200 && c.question_scale[1] == 1100);
+    char buf[512];
+    format(c, buf, sizeof buf);
+    assert(strstr(buf, "question"));
+}
+
+// what Link holds or A would lift (the GreenNaugahyde fork's thing_kind)
+static void held_and_lift() {
+    constexpr uint32_t kPot = 0x17200000, kBoko = 0x17300000, kRock = 0x17400000;
+    Fixture f = outset();
+    f.s16(kPot + kActorProcName, uint16_t(kProcTsubo));
+    f.s32(kPot + kActorParams, 0x01000000);  // daTsubo type 1: a big pot
+    f.s32(kPot + kActorProcId, 77);
+    f.s16(kBoko + kActorProcName, uint16_t(kProcBoko));
+    f.s32(kBoko + kActorParams, 0);
+    f.s16(kBoko + kBokoFlameTimer, 900);  // lit: a torch
+    f.s32(kBoko + kActorProcId, 78);
+    f.s16(kRock + kActorProcName, uint16_t(kProcStone));
+    f.s32(kRock + kActorProcId, 79);
+    assert(thing_kind(f, kPot) == kThingBigPot && thing_kind(f, kBoko) == kThingTorch && thing_kind(f, kRock) == kThingRock);
+    assert(thing_kind(f, 0) == kThingNone);
+    LockTracker lock;
+    // carrying the pot (mActorKeepGrab {id, actor})
+    f.s32(kLinkAddr + kLinkKeepGrab, 77);
+    f.s32(kLinkAddr + kLinkKeepGrab + 4, kPot);
+    PlayContext c = read_at(f, lock);
+    assert(c.held_kind == kThingBigPot && c.lift_kind == kThingNone);
+    f.s32(kLinkAddr + kLinkKeepGrab, 76);  // a stale entry (another process at that address): nothing
+    assert(read_at(f, lock).held_kind == kThingNone);
+    // an enemy's weapon in his hand: mActorKeepEquip while mEquipItem says so
+    f.s16(kLinkAddr + kLinkEquipItem, kHandBoko);
+    f.s32(kLinkAddr + kLinkKeepEquip, 78);
+    f.s32(kLinkAddr + kLinkKeepEquip + 4, kBoko);
+    assert(read_at(f, lock).held_kind == kThingTorch);
+    // A offers Lift on the rock: its actor by the attention entry's process id
+    f.s16(kLinkAddr + kLinkEquipItem, kHandNone);
+    f.s32(kLinkAddr + kLinkAttnEntryA, kEntry);
+    f.s32(kEntry + kAttListType, kAttnCarry);
+    f.s32(kEntry + kAttListActorId, 79);
+    f.actors[79] = kRock;
+    f.s8(G + kDoStatus, kActLift);
+    c = read_at(f, lock);
+    assert(c.lift_kind == kThingRock);
+    f.s8(G + kDoStatus, kActSpeak);  // no Lift: no search
+    assert(read_at(f, lock).lift_kind == kThingNone);
+}
+
 static void pack_and_trace() {
     Fixture f = outset();
     f.s8(G + kDoStatus, kActSpeak);
@@ -304,6 +373,8 @@ int main() {
     shops_and_scopes();
     lock_on_and_defeats();
     panes();
+    scroll_windows_and_question();
+    held_and_lift();
     pack_and_trace();
     return 0;
 }

@@ -625,10 +625,17 @@ void install_menu(NSWindow* tv) {
     toggle(gp, @"Jump anywhere (L by default)", ^BOOL { return mods::jump_anywhere(); },
            ^(BOOL on) { mods::manager::set_enabled("jump-anywhere", on); },
            @"Choose the button, double jump and automatic ledge jumps in Settings > Mods > Gameplay");
+    toggle(gp, @"Deku Leaf: wave to rise", ^BOOL { return mods::leaf_rise(); },
+           ^(BOOL on) { mods::manager::set_enabled("leaf-rise", on); },
+           @"While gliding, each wave of the leaf lifts Link a little; choose the height in Settings > Mods > Gameplay");
     toggle(gp, @"Fast forward cutscenes and dialogue (hold ZR by default)", ^BOOL { return mods::fast_forward(); },
            ^(BOOL on) { mods::manager::set_enabled("fast-forward", on); }, @"Choose the speed, hold button and audio setting in Settings > Mods > Gameplay");
     toggle(gp, @"Fast scene changes", ^BOOL { return mods::fast_scenes(); }, ^(BOOL on) { mods::set_fast_scenes(on); },
            @"Fades and loading between areas run at 4x speed; the scenes themselves are not sped up");
+    toggle(gp, @"Instant text", ^BOOL { return mods::instant_text(); }, ^(BOOL on) { mods::manager::set_enabled("instant-text", on); },
+           @"Message boxes show their whole text at once instead of letter by letter");
+    toggle(gp, @"No pauses in texts", ^BOOL { return mods::no_text_pauses(); }, ^(BOOL on) { mods::manager::set_enabled("no-text-pauses", on); },
+           @"Leaves out the short pauses written into some texts");
     [gp addItem:[NSMenuItem separatorItem]];
     [gp addItemWithTitle:@"Cheats (save in game to keep them)" action:nil keyEquivalent:@""].enabled = NO;
     toggle(gp, @"    Give all items", ^BOOL { return NO; }, ^(BOOL) { mods::request_cheat(mods::kCheatItems); },

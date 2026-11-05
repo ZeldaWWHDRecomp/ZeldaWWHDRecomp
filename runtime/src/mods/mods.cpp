@@ -7,6 +7,8 @@
 //   WWHD_MOD_QUICK_USE=1       one-press items against locked enemies (quick_use.cpp)
 //   WWHD_MOD_QUICK_DOORS=1     quick doors (WWHD_MOD_DOOR_MODE=walk: walk through, WWHD_MOD_WALK_DOORS_A=1 with A)
 //   WWHD_MOD_FAST_SCENES=1     fast scene changes
+//   WWHD_MOD_INSTANT_TEXT=1    instant text (instant_text.cpp)
+//   WWHD_MOD_NO_TEXT_PAUSES=1  no pauses in texts (instant_text.cpp)
 //   WWHD_MODS_TRACE=path       log of mod decisions and timing events (door events, scene changes,
 //                              Link's control), one line per event with the logic step
 #include "mods.h"

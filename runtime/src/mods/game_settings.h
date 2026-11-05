@@ -57,6 +57,7 @@ float apply(const Item& item, int direction);
 float pending(const std::string& id);
 
 // The Settings window's writers that the page shares (one source of truth for how they are saved)
+void set_targeting_letterbox_mode(int mode); // main thread, applies and persists the three-way choice
 void set_camera_speed(float speed);         // main thread
 void set_mouse_sensitivity(float degrees);  // main thread
 void set_invert_camera_y(bool on);          // main thread

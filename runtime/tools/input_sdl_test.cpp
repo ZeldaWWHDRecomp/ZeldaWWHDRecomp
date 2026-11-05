@@ -310,6 +310,9 @@ static int gamecube_auto_prompts() {
 }
 
 int main(int argc,char** argv){
+ // Physical controllers stay out (a plugged-in WUP-028 reaches SDL through libusb): only the virtual pads count.
+ for(const char* backend:{SDL_HINT_JOYSTICK_HIDAPI,SDL_HINT_JOYSTICK_RAWINPUT,SDL_HINT_XINPUT_ENABLED,SDL_HINT_JOYSTICK_WGI,
+  SDL_HINT_JOYSTICK_GAMEINPUT,SDL_HINT_JOYSTICK_DIRECTINPUT,SDL_HINT_JOYSTICK_MFI,SDL_HINT_JOYSTICK_IOKIT})SDL_SetHint(backend,"0");
  if(argc>1&&std::string(argv[1])=="--gamecube")return gamecube_preset();
  if(argc>1&&std::string(argv[1])=="--gamecube-auto")return gamecube_auto_prompts();
  if(argc>1&&std::string(argv[1])=="--menu-matrix")return menu_matrix();

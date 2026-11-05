@@ -12,9 +12,11 @@
 //   WWHD_MOD_JUMP=1            jump anywhere    (WWHD_MOD_JUMP_DOUBLE=1 double jump,
 //                                                WWHD_MOD_JUMP_NO_AUTO=1 no automatic ledge jumps,
 //                                                WWHD_MOD_JUMP_BUTTON=0x20 the button, default L)
+//   WWHD_MOD_LEAF_RISE=1       Deku Leaf: wave to rise (WWHD_MOD_LEAF_HEIGHT=100 its height, percent)
 #include "mods.h"
 #include "traversal.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cstdlib>
 
@@ -47,6 +49,11 @@ std::atomic<uint32_t> g_jump_button{[] {
     const char* e = getenv("WWHD_MOD_JUMP_BUTTON");
     const uint32_t b = e ? (uint32_t)strtoul(e, nullptr, 0) : 0x20;
     return valid_jump_button(b) ? b : 0x20u;
+}()};
+std::atomic<bool> g_leaf{env_on("WWHD_MOD_LEAF_RISE")};
+std::atomic<int> g_leaf_height{[] {
+    const char* e = getenv("WWHD_MOD_LEAF_HEIGHT");
+    return std::clamp(e ? atoi(e) : 100, 25, 400);
 }()};
 // the story system: on unless WWHD_STORY_SYSTEM=0 (or the player turns it off)
 std::atomic<bool> g_story_system{[] { const char* e = std::getenv("WWHD_STORY_SYSTEM"); return !(e && *e == '0'); }()};
@@ -87,6 +94,10 @@ bool no_auto_jump() { return g_jump_no_auto.load(kRelaxed); }
 void set_no_auto_jump(bool on) { g_jump_no_auto = on; }
 uint32_t jump_button() { return g_jump_button.load(kRelaxed); }
 void set_jump_button(uint32_t b) { if (valid_jump_button(b)) g_jump_button = b; }
+bool leaf_rise() { return g_leaf.load(kRelaxed); }
+void set_leaf_rise(bool on) { g_leaf = on; }
+float leaf_rise_height() { return float(g_leaf_height.load(kRelaxed)); }
+void set_leaf_rise_height(float percent) { g_leaf_height = std::clamp(int(percent + 0.5f), 25, 400); }
 
 bool traversal_anim() { return ladder_speed() || sidle_speed(); }
 float traversal_getter_factor(int getter, uint32_t proc) {

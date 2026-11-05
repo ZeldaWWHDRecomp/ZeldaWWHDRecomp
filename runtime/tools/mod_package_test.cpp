@@ -368,6 +368,24 @@ int main(int argc, char** argv) {
 
     namespace fs=std::filesystem;
     using namespace mods::packages;
+    if(argc==3&&std::string(argv[1])=="--letterbox-startup") {
+        const auto root=unique_temp("wwhd-letterbox-");fs::create_directories(root);
+        env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
+        env("WWHD_TARGET_LETTERBOX",nullptr);env("WWHD_TARGET_LETTERBOX_MODE",nullptr);
+        const std::string how=argv[2];
+        auto saved=mods::json::parse(R"({"format_version":1,"active":"Default","profiles":{"Default":{"builtins":{"target-letterbox":false},"builtin_options":{}}}})");
+        auto& profile=saved["profiles"]["Default"];
+        if(how=="saved")profile["builtin_options"]["target-letterbox.mode"]=2;
+        if(how=="invalid")profile["builtin_options"]["target-letterbox.mode"]=99;
+        if(how=="on"){profile["builtins"]["target-letterbox"]=true;profile["builtin_options"]["target-letterbox.mode"]=2;}
+        std::ofstream(root/"profiles.json")<<mods::json::dump(saved);
+        initialize();
+        const int expected=how=="on"?0:how=="saved"?2:1;
+        assert(mods::targeting_letterbox_mode()==expected);
+        std::string error;assert(select_profile("Default",error));frame(1);
+        assert(mods::targeting_letterbox_mode()==expected);
+        fs::remove_all(root);return 0;
+    }
     if(argc==3&&std::string(argv[1])=="--lock-on-startup") {
         auto root=unique_temp("wwhd-lock-on-");
         fs::create_directories(root);
@@ -1059,6 +1077,11 @@ int main(int argc, char** argv) {
     assert(enable("climb-preset",false,error));frame(2);assert(!state[3]);
     mods::set_fast_forward_rate(3); mods::set_fast_forward_button(0x20); mods::set_fast_forward_mute(false);
     remember_option("fast-forward.rate", 3); remember_option("fast-forward.button", 0x20); remember_option("fast-forward.mute", 0);
+    for (const char* mode : {"saved", "legacy", "invalid", "on"}) {
+        auto result=host::run_process({argv[0],"--letterbox-startup",mode});
+        if(result.code!=0)std::cerr<<result.output;
+        assert(result.code==0);
+    }
     for (const char* mode : {"saved", "legacy", "invalid", "env"}) {
         auto result=host::run_process({argv[0],"--lock-on-startup",mode});
         if(result.code!=0)std::cerr<<result.output;
@@ -1071,6 +1094,8 @@ int main(int argc, char** argv) {
     remember_option("lock-on.range",2.5);remember_option("lock-on.cycling",0);
     mods::set_move_speed_bar(false);remember_option("move-speed.bar",0);  // "Show boost bar" off
     assert(mods::manager::set_enabled("camera-directed-items",true));
+    mods::set_targeting_letterbox_mode(2);
+    remember_option("target-letterbox.mode",2);
     assert(create_profile("Adventure",error));
     assert(mods::manager::set_enabled("camera-directed-items",false));
     assert(mods::manager::set_enabled("target-letterbox",true));
@@ -1083,6 +1108,7 @@ int main(int argc, char** argv) {
     assert(enable("climb-preset",true,error));frame(20);assert(state[3]);
     assert(select_profile("Adventure",error));frame(21);assert(!state[3]);
     assert(!mods::letterbox_while_targeting());
+    assert(mods::targeting_letterbox_mode()==2);
     assert(mods::fast_forward_rate()==3 && mods::fast_forward_button()==0x20 && !mods::fast_forward_mute());
     assert(mods::camera_directed_items());
     assert(mods::extended_lock_on() && mods::lock_on_range()==2.5f && !mods::lock_on_cycling());
@@ -1097,6 +1123,7 @@ int main(int argc, char** argv) {
     assert(select_profile("Default",error));assert(mods::fast_forward_rate()==4 && mods::fast_forward_button()==0x80 && mods::fast_forward_mute());assert(mods::move_speed_bar());assert(delete_profile("Adventure",error));
     assert(!mods::extended_lock_on() && mods::lock_on_range()==1.f && mods::lock_on_cycling());
     assert(mods::letterbox_while_targeting());
+    assert(mods::targeting_letterbox_mode()==0);
     assert(!mods::camera_directed_items()); // Default profile preserves its independent off value.
     assert(install(package("missing-dep",",\"dependencies\":[{\"id\":\"absent\"}]"),error));
     assert(!enable("missing-dep",true,error));
