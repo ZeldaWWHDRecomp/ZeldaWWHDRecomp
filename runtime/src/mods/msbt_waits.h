@@ -27,7 +27,7 @@ inline uint32_t file_size(const uint8_t* file, size_t avail) {
     if (avail < 0x20 || memcmp(file, kMagic, 8) || be16(file + 8) != 0xFEFF) return 0;
     const uint32_t size = be32(file + 0x12);
     const int sections = be16(file + 0xE);
-    if (size < 0x30 || size > 0x2000000 || size > avail || sections <= 0 || sections > 16) return 0;
+    if (size < 0x30 || size > (32u << 20) || size > avail || sections <= 0 || sections > 16) return 0;
     return size;
 }
 

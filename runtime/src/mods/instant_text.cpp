@@ -44,7 +44,6 @@ std::atomic<bool> g_instant{env_on("WWHD_MOD_INSTANT_TEXT")};
 std::atomic<bool> g_no_pauses{env_on("WWHD_MOD_NO_TEXT_PAUSES")};
 const bool kLog = env_on("WWHD_INSTANT_TEXT_LOG");
 
-constexpr uint32_t kManager = 0x101F4B5C;  // the message manager (hdMsgManager_l)
 constexpr uint32_t kMessage = 0x14;        // its message text work (HdMsgText)
 constexpr uint32_t kMode = 0x94C;          // 1: a message runs
 constexpr uint32_t kDrawType = 0x696;      // HdMsgText: 0 letter by letter, 1 at once
@@ -61,6 +60,16 @@ int64_t now_s() {
 }
 bool guest_ptr(uint32_t a) { return a >= mem::kMem2Start && a < mem::kMem2End; }
 
+// the next "MsgStdBn" in [p, end), or null: memchr for its first letter, then the rest (memmem isn't on Windows)
+const uint8_t* find_magic(const uint8_t* p, const uint8_t* end) {
+    while (size_t(end - p) >= sizeof msbt::kMagic) {
+        p = static_cast<const uint8_t*>(std::memchr(p, msbt::kMagic[0], size_t(end - p) - sizeof msbt::kMagic + 1));
+        if (!p) return nullptr;
+        if (!std::memcmp(p, msbt::kMagic, sizeof msbt::kMagic)) return p;
+        ++p;
+    }
+    return nullptr;
+}
 void scan() {
     const auto t0 = std::chrono::steady_clock::now();
     int files = 0, waits = 0;
@@ -71,7 +80,7 @@ void scan() {
         const size_t len = hi - lo;
         const uint8_t* p = base;
         while (g_no_pauses.load(std::memory_order_relaxed)) {
-            p = static_cast<const uint8_t*>(memmem(p, len - size_t(p - base), msbt::kMagic, 8));
+            p = find_magic(p, base + len);
             if (!p) break;
             const uint32_t a = lo + uint32_t(p - base);
             p += 8;
@@ -134,7 +143,7 @@ void set_no_text_pauses(bool on) {
 void instant_text_step() {
     const bool instant = instant_text(), pauses = no_text_pauses();
     if (!instant && !pauses && !kLog) return;  // (the log also reports an unchanged game)
-    const uint32_t manager = ld32(GD(kManager));
+    const uint32_t manager = ld32(GD(0x101F4B5C));  // the message manager (hdMsgManager_l)
     if (!guest_ptr(manager) || ld32(manager + kMode) != 1) return;
     const uint32_t msg = manager + kMessage;
     if (kLog) {  // each message: its number, then the characters laid out after 1, 2, 4, ... 64 steps
