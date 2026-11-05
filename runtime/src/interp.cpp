@@ -117,9 +117,18 @@ static bool performance_reports() {
 using pacing::valid_fps;
 static const int g_env_fps = [] { const char* e = getenv("WWHD_INTERP_FPS"); return e ? valid_fps(atoi(e)) : 0; }();
 static std::atomic<int> g_fps{g_env_fps ? g_env_fps : 60};
+// WWHD_TRUE60=1 (True 60 was retired): starts 60 fps frame interpolation like WWHD_INTERP=1
+static bool env_true60() {
+    const char* e = getenv("WWHD_TRUE60");
+    return e && atoi(e) != 0;
+}
 static std::atomic<bool> g_on{[] {
     const char* e = getenv("WWHD_INTERP");
-    return (e ? atoi(e) != 0 : g_env_fps != 0) && !true60::enabled();
+    if (!e && env_true60()) {
+        LOG("[interp] WWHD_TRUE60 is no longer supported (True 60 was retired): 60 fps frame interpolation instead");
+        return true;
+    }
+    return e ? atoi(e) != 0 : g_env_fps != 0;
 }()};
 bool interp_on() { return g_on.load(std::memory_order_relaxed) && !mods::fast_forward_active(); }
 // the pass structure below is used by both 60 fps modes and the 120/240 fps interpolation:
@@ -211,13 +220,19 @@ void set_fps(int f) {
     if (g_fps.exchange(f) != f && interp_on()) LOG("[interp] frame interpolation at %s", fps_name(f));
     note_display_40();
 }
-// the 60 fps mode: 0 off, 1 frame interpolation (at fps()), 2 true 60 (game logic at 60 steps per second)
-int mode() { return true60::selected() ? 2 : g_on.load(std::memory_order_relaxed) ? 1 : 0; }
+// the 60 fps mode: 0 off, 1 frame interpolation (at fps()). 2 was True 60 (game logic at 60 steps
+// per second, retired): a saved 2 or a test's mode 2 becomes 60 fps frame interpolation.
+int mode() { return g_on.load(std::memory_order_relaxed) ? 1 : 0; }
 void set_mode(int m) {
+    if (m == 2) {
+        static bool logged = false;
+        if (!logged) LOG("[interp] True 60 was retired: 60 fps frame interpolation instead");
+        logged = true;
+        set_fps(60);
+        m = 1;
+    }
     g_on = false;
-    true60::set_enabled(false);
     if (m == 1) set_enabled(true);
-    if (m == 2) true60::set_enabled(true);
 }
 // menus and the 6 key: frame interpolation at f on, or off if it is on at f already
 void toggle_fps(int f) {
@@ -228,10 +243,10 @@ void toggle_fps(int f) {
     set_fps(f);
     set_mode(1);
 }
-// the frame rate shown in titles and the overlay: "30 fps", "60 fps", "120 fps", "240 fps", "true 60"
+// the frame rate shown in titles and the overlay: "30 fps", "60 fps", "120 fps", "240 fps"
 // (with the rate capped to the display: "240 fps (120 shown)")
 const char* mode_name() {
-    if (mode() != 1) return mode() == 2 ? "true 60" : "30 fps";
+    if (mode() != 1) return "30 fps";
     const int f = fps(), out = output_fps();
     if (out < f) return f == 240 ? (out == 120 ? "240 fps (120 shown)" : "240 fps (60 shown)") : "120 fps (60 shown)";
     return fps_name(f);
@@ -1975,9 +1990,6 @@ extern "C" void hook_0203593C(Cpu* c) {
     static uint64_t passes = 0;
     static const uint64_t at = getenv("WWHD_INTERP_AT_STEP") ? strtoull(getenv("WWHD_INTERP_AT_STEP"), nullptr, 10) : 0;
     if (at && ++passes == at) set_enabled(true);
-    static uint64_t at60 = getenv("WWHD_TRUE60_AT_STEP") ? strtoull(getenv("WWHD_TRUE60_AT_STEP"), nullptr, 10) : 0;
-    static uint64_t passes60 = 0;
-    if (at60 && ++passes60 == at60) set_mode(2);
     if (ff_transition) restart_fast_forward_pacing(mods::fast_forward_active());
     log_paced_start();
     paced_pass_start();

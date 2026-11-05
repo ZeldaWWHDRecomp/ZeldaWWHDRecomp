@@ -18,12 +18,11 @@ inline int scale_choice(float scale) {
     return best;
 }
 
-// Frame rate: interp::mode() 0 (30 fps), 1 (frame interpolation at interp::fps()), 2 (true 60)
-inline constexpr const char* kRateNames[] = {"30 fps (original)", "40 fps", "60 fps", "120 fps", "240 fps", "True 60"};  // (experimental: the Settings window says so; the page's plate is narrow)
+// Frame rate: interp::mode() 0 (30 fps), 1 (frame interpolation at interp::fps())
+inline constexpr const char* kRateNames[] = {"30 fps (original)", "40 fps", "60 fps", "120 fps", "240 fps"};
 inline constexpr int kRates[] = {30, 40, 60, 120, 240};  // the interpolated choices' fps (index 1..4)
-inline constexpr int kRateCount = 6, kTrue60 = 5;
+inline constexpr int kRateCount = 5;
 inline int rate_choice(int mode, int fps) {
-    if (mode == 2) return kTrue60;
     if (mode != 1) return 0;
     for (int i = 1; i < 5; i++)
         if (kRates[i] == fps) return i;
@@ -32,7 +31,6 @@ inline int rate_choice(int mode, int fps) {
 struct Rate { int mode, fps; };  // fps 0: keep the interpolation's
 inline Rate rate_of(int choice) {
     if (choice <= 0 || choice >= kRateCount) return {0, 0};
-    if (choice == kTrue60) return {2, 0};
     return {1, kRates[choice]};
 }
 

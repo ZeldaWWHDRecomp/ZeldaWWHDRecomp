@@ -79,7 +79,7 @@ uint64_t logic_steps();    // full logic steps so far
 
 namespace true60 {
 
-static std::atomic<bool> g_on{[] { const char* e = getenv("WWHD_TRUE60"); return e && atoi(e) != 0; }()};
+static std::atomic<bool> g_on{false};  // retired: nothing switches it on any more (interp::set_mode(2) = 60 fps interpolation)
 bool selected() { return g_on.load(std::memory_order_relaxed); }
 bool enabled() { return selected() && !mods::fast_forward_active(); }
 void set_enabled(bool v) {

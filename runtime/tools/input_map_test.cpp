@@ -1108,6 +1108,19 @@ static void test_shortcuts() {
         m.pad[kZR]=p; Mapping round; CHECK(from_json(to_json(m),round)); CHECK(round==m);
         float raw[kPadCount]{};raw[p]=1;CHECK(controller_state(m,raw).buttons&input::kZR);
     }
+    {
+        // A file from before True 60 was retired: its "True60" row (key 7) is ignored without a
+        // warning, the other shortcuts load, and key 7 is no shortcut any more.
+        std::string warn;
+        Mapping old;
+        CHECK(from_json(R"({"shortcuts_version":3,"shortcuts":{"True60":{"keys":[{"key":"7","modifiers":0}],"hold":"","button":""},)"
+                        R"("FXAA":{"keys":[{"key":"F8","modifiers":4}],"hold":"","button":""}}})", old, &warn));
+        CHECK(warn.empty());
+        CHECK(old.shortcuts[kFXAA].keys[0] == (ShortcutKey{kVK_F8, kModAlt}));
+        CHECK(shortcut_for_key(old, kVK_ANSI_7, 0) == -1);
+        CHECK(to_json(old).find("True60") == std::string::npos);
+        CHECK(shortcut_for_key(Mapping::defaults(), kVK_ANSI_7, 0) == -1);
+    }
     m=Mapping::defaults();
     CHECK(from_json(R"({"shortcuts":{"Settings":{"keys":[{"key":"F9","modifiers":0}],"hold":"","button":""}}})",m));
     CHECK(m.shortcuts[kSettings].keys[0].code==kVK_F9 && m.shortcuts[kSettings].button==kPadHome);

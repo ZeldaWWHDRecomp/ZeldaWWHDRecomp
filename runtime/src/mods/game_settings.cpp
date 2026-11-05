@@ -434,7 +434,7 @@ void register_graphics() {
     {
         Item it;
         it.id = "graphics.frame-rate", it.tab = "graphics", it.label = "Frame rate", it.kind = Kind::Choice;
-        it.help = "40 fps and more add in-between frames; the game logic keeps its 30 steps. True 60 runs it at 60.";
+        it.help = "40 fps and more add in-between frames; the game logic keeps its 30 steps.";
         it.choices.assign(std::begin(g::kRateNames), std::end(g::kRateNames));
         it.get = [] { return float(g::rate_choice(interp::mode(), interp::fps())); };
         it.set = [](float v) {

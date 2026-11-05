@@ -238,7 +238,7 @@ void graphics_changed() {
     put("fxaa", {"WWHD_FXAA"}, gfxvk::fxaa_enabled() ? "1" : "0");
 #ifdef __ANDROID__
     // the player's choice: the phone pauses interpolation by itself (platform/perf_hint.cpp)
-    put("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"}, interp::mode() == 2 ? "2" : perf_hint::fps60_chosen() ? "1" : "0");
+    put("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"}, perf_hint::fps60_chosen() ? "1" : "0");
     // Graphics > Heat guard: normal | relaxed | off
     put("heatGuard", {"WWHD_HEAT_GUARD"}, heat_guard::name(heat_guard::to_setting(heat_guard::choice.load())));
 #else

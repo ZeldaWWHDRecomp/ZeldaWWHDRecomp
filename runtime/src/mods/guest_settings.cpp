@@ -21,8 +21,8 @@ std::optional<Value> read(const std::string& key) {
         int mode=gfx::g_mode.load(std::memory_order_relaxed);
         if(mode>=0&&mode<gfx::kDrcModeCount)data=std::string(gfx::kModeNames[mode]);
     }else if(key=="display.aspect")data=double(aspect::game());
-    else if(key=="render.interp_fps")data=uint32_t(interp::mode()==1?interp::output_fps():interp::mode()==2?60:30);
-    else if(key=="render.true60")data=interp::mode()==2;
+    else if(key=="render.interp_fps")data=uint32_t(interp::mode()==1?interp::output_fps():30);
+    else if(key=="render.true60")data=false;  // True 60 was retired: always 0 (kept for mods that read it)
     else if(key.rfind("settings.",0)==0) {  // the item menu page's settings (game_settings.h): toggles bool, choices u32, numbers f64
         if(const game_settings::Item* item=game_settings::find(key.substr(9));item&&item->owner=="port"&&item->get) {
             const float v=item->get();
