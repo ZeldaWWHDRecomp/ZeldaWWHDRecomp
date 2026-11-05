@@ -185,7 +185,7 @@ void leaf_reset() {
 // with WWHD_LINK_WARP (the tests need no ledge). Off by default; not a player option.
 void leaf_test_glide(Cpu* c, uint32_t link) {
     static const uint64_t from = [] { const char* e = getenv("WWHD_TEST_LEAF_GLIDE"); return e ? strtoull(e, nullptr, 10) : ~0ull; }();
-    if (step() < from || link < 0x10000 || link > 0xFFFF9000 || true60::dt() < 1.f) return;
+    if (step() < from || link < 0x10000 || link > 0xFFFF9000) return;
     static uint64_t done_at = ~0ull;
     if (ld32(link + kCurProc) != 0x27 || step() - done_at < 60) return;  // procFall; once per fall
     done_at = step();
@@ -202,7 +202,7 @@ void leaf_step(Cpu* c, uint32_t link) {
         g_leaf_gliding = false;
         return;
     }
-    if (link < 0x10000 || link > 0xFFFF9000 || true60::dt() < 1.f) return;  // (full logic steps only)
+    if (link < 0x10000 || link > 0xFFFF9000) return;
     if (link != g_leaf_link.exchange(link)) g_glide = {};
     const uint32_t proc = ld32(link + kCurProc);
     static const bool trace = getenv("WWHD_LEAF_TRACE") != nullptr;  // each glide step whose gravity changed

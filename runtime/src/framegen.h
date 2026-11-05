@@ -7,7 +7,7 @@
 //
 // The Settings window's Graphics > Frame rate "60 fps (generated)" (saved as fpsGenerated) or
 // WWHD_FRAMEGEN=1/0 (wins, not saved) chooses it; it runs on Vulkan only, and only while frame
-// interpolation and true 60 are off (choosing one of those in the menus also clears this choice). While
+// interpolation is off (choosing it in the menus also clears this choice). While
 // it does not run nothing below emits a command: the GX2 command streams are the ones without the feature.
 #pragma once
 #include <cstdint>
@@ -29,8 +29,7 @@ bool available();
 constexpr uint32_t kCameraWords = 14;
 enum CameraFlags : uint32_t {
     kInterp = 1,       // frame interpolation (interp_on): it already draws in-between frames
-    kTrue60 = 2,       // true 60: the game itself runs at 60
-    kFastForward = 4,  // fast forward: frames come faster than the game's 30
+    kFastForward = 4,  // (2 was True 60, retired) fast forward: frames come faster than the game's 30
 };
 
 // game thread, after camera_draw (interp.cpp hook_024FFC40): the camera this frame's scene is drawn

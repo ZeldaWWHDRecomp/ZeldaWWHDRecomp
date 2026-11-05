@@ -41,7 +41,7 @@ bool requested() {
         return true;
     }();
     (void)logged;
-    return interp::mode() == 0;  // (frame interpolation and true 60 draw their own in-between frames)
+    return interp::mode() == 0;  // (frame interpolation draws its own in-between frames)
 }
 
 // Camera layout (camera_draw, 024FFC40; interp.cpp): near +0xCC, far +0xD0, fovy +0xD4, eye +0xDC,

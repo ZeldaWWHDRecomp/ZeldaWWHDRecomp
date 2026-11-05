@@ -512,7 +512,7 @@ extern "C" void hook_024FFC40(Cpu* c) {
     // 60 fps (generated, framegen.h; only while WWHD_FRAMEGEN=1): the camera this frame's scene is drawn
     // with; the renderer makes no in-between frame while another mode already does
     if (framegen::requested())
-        framegen::camera_drawn(cam, (interp::interp_on() ? framegen::kInterp : 0u) | (true60::enabled() ? framegen::kTrue60 : 0u) |
+        framegen::camera_drawn(cam, (interp::interp_on() ? framegen::kInterp : 0u) |
                                         (mods::fast_forward_active() ? framegen::kFastForward : 0u));
 }
 static void camera_draw_body(Cpu* c);

@@ -609,7 +609,7 @@ bool walk_door_exit() {
     return walk_doors() && std::chrono::steady_clock::now() < g_exit_until.load();
 }
 
-// fpcM_Execute's per-process gate (true60.cpp): while the mode is on, or a door of ours is still open, a door's
+// fpcM_Execute's hook (game_hooks.cpp): while the mode is on, or a door of ours is still open, a door's
 // execute in its method table (fopAc_ac_c::sub_method 0xF0, its execute +8) points at our host function for this
 // one call. The game's fopAc_Execute between the two still decides whether the door runs this step.
 DoorExecuteWrap::DoorExecuteWrap(uint32_t proc) {

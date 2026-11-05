@@ -1145,7 +1145,7 @@ void note_camera(const uint32_t* words, uint32_t n) {
 void layout(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase) {
     if (S.sceneFrame == R.frame || stereo::frame.mode != stereo::Off) return;
     // (no copy while another 60 fps mode or fast forward runs: no in-between frame follows)
-    if (S.cur.valid && S.cur.frame == R.frame && (S.cur.flags & (framegen::kInterp | framegen::kTrue60 | framegen::kFastForward))) return;
+    if (S.cur.valid && S.cur.frame == R.frame && (S.cur.flags & (framegen::kInterp | framegen::kFastForward))) return;
     // the TV picture: 16:9 at the console's size (the GamePad's 854x480 family is not it)
     if (height < 360 || height == 480 || std::abs((float)width * 9.0f / ((float)height * 16.0f) - 1.0f) > 0.03f) return;
     Surface* color = find_surface(colorBase, width, height, false);
@@ -1219,7 +1219,7 @@ Surface* generate(Surface* scan, Skip skip) {
                       gridOn = env_on("WWHD_FRAMEGEN_GRID", true);
     if (skip == kNone) {
         if (!cur.valid || cur.frame != R.frame) skip = kNoCamera;
-        else if (cur.flags & (framegen::kInterp | framegen::kTrue60 | framegen::kFastForward)) skip = kOtherMode;
+        else if (cur.flags & (framegen::kInterp | framegen::kFastForward)) skip = kOtherMode;
         else if (S.sceneFrame != R.frame || !S.scene || !S.scene->image) skip = kNoScene;
         else if (!scan || !scan->image || !scan->view || !same_extent(scan, S.scene.get()) || scan->fmt.pixel != S.scene->fmt.pixel)
             skip = kSize;

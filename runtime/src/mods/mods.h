@@ -67,7 +67,7 @@ bool walk_doors_by_a();           // walk-through doors open with A (the game's 
 void set_walk_doors_by_a(bool on);
 bool walk_door_exit();            // walk_doors.cpp: Link went into the doorway of a house door: its scene change runs fast
 void walk_doors_reset();          // game thread after a save state load
-// fpcM_Execute's per-process gate (true60.cpp): a door's execute runs walk_doors.cpp's for this call
+// fpcM_Execute's hook (game_hooks.cpp): a door's execute runs walk_doors.cpp's for this call
 class DoorExecuteWrap {
 public:
     explicit DoorExecuteWrap(uint32_t proc);
