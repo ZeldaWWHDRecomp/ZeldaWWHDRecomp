@@ -2479,6 +2479,12 @@ endforeach()
 
 
 if(NOT ANDROID)
+  # Settings dialogs with a controller (overlay/popup.h, gamepad_nav.h): real ImGui frames, no window or SDL
+  add_executable(popup_pad_test runtime/tools/popup_pad_test.cpp)
+  target_include_directories(popup_pad_test PRIVATE runtime/src)
+  target_compile_options(popup_pad_test PRIVATE -UNDEBUG)
+  target_link_libraries(popup_pad_test PRIVATE imgui)
+  add_test(NAME popup_pad COMMAND popup_pad_test)
   find_package(SDL3 CONFIG QUIET)
   if(SDL3_FOUND)
     add_executable(mod_restart_ui_test runtime/tools/mod_restart_ui_test.cpp runtime/third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp)
