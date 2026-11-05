@@ -52,7 +52,7 @@ public class SetupActivity extends Activity {
     private volatile boolean checkingFolder;
     private String pickerJob;
     private String shaderWarmJob;
-    private static final int FOLDER = 10, ARCHIVE = 11, IMAGE = 12, DISC = 13, COMMON = 14, RESTORE = 15;
+    private static final int FOLDER = 10, ARCHIVE = 11, IMAGE = 12, DISC = 13, COMMON = 14, RESTORE = 15, SEED = 16;
     static final String EXTRA_SHOW_SETUP = "org.wwhdrecomp.wwhd.SHOW_SETUP";
 
     /** A game is ready: an active phone build that needs no rebuild and no setup in progress, or the
@@ -175,6 +175,10 @@ public class SetupActivity extends Activity {
         play.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF0D5C8A));
         // the home-screen game icon again, for players who declined or removed it
         addIcon = button(layout, getString(R.string.game_icon_add), this::addIcon);
+        // the in-app randomizer (TWWHD Randomizer 1.2.0): a randomized game made from the installed game
+        Button randomizer = button(layout, "Randomized game...", this::randomizerDialog);
+        randomizer.setVisibility(phoneSetup && AndroidRandomizer.available(this) && AndroidGame.selected(this) != null
+            ? android.view.View.VISIBLE : android.view.View.GONE);
         // one button for the three kinds of dump; the activity results are the same as before
         choose = button(layout, getString(R.string.setup_choose), this::chooseKind);
         pickers.add(choose);
@@ -232,6 +236,136 @@ public class SetupActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(layout);
         setContentView(scroll);
+    }
+
+    /** Randomized game: a preset, a seed name and an optional permalink (TWWHD Randomizer 1.2.0); the setup job then
+     *  makes the game from the installed one, checks it and builds its code, and the game plays it from its next start.
+     *  "The game as it is" goes back to the previous build (the one before the randomized game). */
+    private void randomizerDialog() {
+        android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
+        int gap = (int)(12 * metrics.density);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(gap * 2, gap, gap * 2, 0);
+        TextView about = new TextView(this);
+        about.setText("TWWHD Randomizer 1.2.0 by SuperDude88 and contributors (MIT). Permalinks match the PC randomizer "
+            + "1.2.0. The randomized game has its own saves.");
+        box.addView(about);
+        android.widget.RadioGroup presets = new android.widget.RadioGroup(this);
+        String[] names = {"beginner", "standard", "everything"};
+        String[] labels = {"Beginner", "Standard (the randomizer's defaults)", "Everything"};
+        for (int i = 0; i < names.length; i++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this);
+            b.setText(labels[i]);
+            b.setId(i + 1);
+            presets.addView(b);
+        }
+        presets.check(2);
+        box.addView(presets);
+        android.widget.EditText seed = new android.widget.EditText(this);
+        seed.setHint("Seed name (empty: a new random one)");
+        seed.setSingleLine(true);
+        box.addView(seed);
+        android.widget.EditText permalink = new android.widget.EditText(this);
+        permalink.setHint("Or a permalink (its settings and seed)");
+        permalink.setSingleLine(true);
+        box.addView(permalink);
+        // a seed made with the official TWWHD Randomizer: its output folder, checked and built like the ones made here
+        TextView official = new TextView(this);
+        official.setText("Or play a seed made with the official TWWHD Randomizer 1.2.0 (USA): choose its output folder "
+            + "(with code, content and meta).");
+        official.setPadding(0, gap, 0, 0);
+        box.addView(official);
+        Button importSeed = new Button(this);
+        importSeed.setText("Import a seed...");
+        box.addView(importSeed);
+        AndroidGame.Selection current = AndroidGame.selected(this);
+        android.app.AlertDialog.Builder dialog = new android.app.AlertDialog.Builder(this)
+            .setTitle("Randomized game").setView(box)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton("Make it", (d, which) -> makeRandomized(names[Math.max(0, presets.getCheckedRadioButtonId() - 1)],
+                seed.getText().toString().trim(), permalink.getText().toString().trim()));
+        if (current != null && current.randomizerFiles != null)
+            dialog.setNeutralButton("Play the game as it is", (d, which) -> new Thread(() -> {
+                String message;
+                try {
+                    message = AndroidGame.playNormal(this) ? "The game as it is starts next time."
+                        : "The game as it is has no build yet: start the setup with your game.";
+                }
+                catch (Exception failure) { message = "The game as it is needs setup again: " + failure.getMessage(); }
+                String shown = message;
+                runOnUiThread(() -> android.widget.Toast.makeText(this, shown, android.widget.Toast.LENGTH_LONG).show());
+            }, "wwhd-rando-rollback").start());
+        android.app.AlertDialog shownDialog = dialog.show();
+        importSeed.setOnClickListener(view -> { shownDialog.dismiss(); pick(SEED); });
+    }
+
+    /** Import a seed: the chosen output folder is checked like a game folder, then a setup job copies it privately,
+     *  and the setup worker keeps only its files that differ from the installed game (tools/android/ondevice_setup.py
+     *  seed_import), checks and builds it; the game plays it from its next start, with its own saves. */
+    private void importSeed(Uri uri) {
+        if (checkingFolder) return;
+        checkingFolder = true;
+        android.content.Context context = getApplicationContext();
+        new Thread(() -> {
+            String refusal = null;
+            try {
+                AndroidGame.Selection current = AndroidGame.selected(context);
+                if (current == null || current.game == null) throw new java.io.IOException("No installed game");
+                SetupFolderCheck.Result found = SetupImport.checkFolder(context, uri,
+                    android.provider.DocumentsContract.getTreeDocumentId(uri));
+                if (!found.usable()) refusal = folderMessage(found);
+                else {
+                    if (!replaceable(SetupStore.current(context))) throw new Exception("Pause setup before changing input");
+                    context.getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    synchronized (SetupJobCleanup.CREATION) {
+                        String id = UUID.randomUUID().toString().replace("-", "");
+                        File job = SetupStore.job(context, id);
+                        JSONObject source = new JSONObject().put("schema", 1).put("kind", "folder").put("uri", uri.toString())
+                            .put("seed_import", new JSONObject().put("installed", current.game.getAbsolutePath()));
+                        if (found.kind == SetupFolderCheck.Kind.SUBFOLDER) source.put("document", found.document);
+                        SetupStore.write(new File(job, "source.json"), source);
+                        SetupStore.write(new File(job, "host.json"), new JSONObject().put("schema", 1).put("state", "selected"));
+                        SetupStore.select(context, id);
+                    }
+                }
+            } catch (Exception failure) { refusal = "Import a seed: " + failure.getMessage(); }
+            String refused = refusal;
+            runOnUiThread(() -> {
+                checkingFolder = false;
+                if (refused != null) android.widget.Toast.makeText(this, refused, android.widget.Toast.LENGTH_LONG).show();
+                else control(SetupService.RESUME);
+            });
+        }, "wwhd-rando-import").start();
+    }
+
+    private void makeRandomized(String preset, String seed, String permalink) {
+        new Thread(() -> {
+            String message = null;
+            try {
+                AndroidGame.Selection current = AndroidGame.selected(this);
+                if (current == null || current.game == null) throw new java.io.IOException("No installed game");
+                if (!permalink.isEmpty()) AndroidRandomizer.run(this, "load-permalink", permalink);
+                else {
+                    AndroidRandomizer.run(this, "preset", preset);
+                    if (seed.isEmpty()) AndroidRandomizer.run(this, "new-seed");
+                    else AndroidRandomizer.run(this, "set-seed", seed);
+                }
+                synchronized (SetupJobCleanup.CREATION) {
+                    String id = UUID.randomUUID().toString().replace("-", "");
+                    File job = SetupStore.job(this, id);
+                    SetupStore.write(new File(job, "source.json"), new org.json.JSONObject().put("schema", 1)
+                        .put("kind", "installed").put("path", current.game.getAbsolutePath()));
+                    SetupStore.write(new File(job, "host.json"), new org.json.JSONObject().put("schema", 1).put("state", "selected"));
+                    SetupStore.select(this, id);
+                }
+            } catch (Exception failure) { message = failure.getMessage(); }
+            String shown = message;
+            runOnUiThread(() -> {
+                if (shown != null) android.widget.Toast.makeText(this, "Randomized game: " + shown, android.widget.Toast.LENGTH_LONG).show();
+                else control(SetupService.RESUME);
+            });
+        }, "wwhd-rando-make").start();
     }
 
     /** The Code mods switch: remembered for the next build; a finished setup builds again now (the
@@ -356,7 +490,7 @@ public class SetupActivity extends Activity {
             if (!replaceable(job)) throw new Exception("Pause setup and wait for its checkpoint before changing input");
             if (checkingFolder) throw new Exception("Still checking the chosen folder");
             pickerJob = job == null ? null : job.getName();
-            boolean folder = request == FOLDER;
+            boolean folder = request == FOLDER || request == SEED;
             if (request == RESTORE) {
                 if (job == null || new File(job, "job.json").exists()) throw new Exception("This job already uses a private input copy");
                 folder = SetupStore.read(new File(job, "source.json")).getString("kind").equals("folder");
@@ -401,6 +535,7 @@ public class SetupActivity extends Activity {
                 if (new File(current, "job.json").isFile())
                     actionMessage = "Replacement key file selected. Tap Start / resume to read it and retry. Your dump copy is retained.";
             } else if (request == FOLDER) checkFolder(uri);
+            else if (request == SEED) importSeed(uri);
             else if (request == ARCHIVE || request == IMAGE) {
                 getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
                 newJob(this, request == ARCHIVE ? "archive" : "image", uri, null);

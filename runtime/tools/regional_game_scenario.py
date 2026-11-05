@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Native language, Outset gameplay, interpolation and true60 regression.
+"""Native language, Outset gameplay, interpolation and mode-switch regression.
 
 Uses copied saves and private output paths. Run once per renderer/language with
 BINARY GAME SAVE WORK --language 3 (German), 4 (Italian), or 1 (English).
@@ -40,7 +40,8 @@ def main():
     checks = {
         "language": f"console language {args.language} (WWHD_LANGUAGE)" in log,
         "interpolation": "60 fps mode 1" in log,
-        "true60": "60 fps mode 2" in log,
+        # mode 2 (the retired True 60) must fall back to 60 fps frame interpolation
+        "true60_fallback": "60 fps mode 2" in log and "True 60 was retired" in log,
         "return_to_30": "60 fps mode 0" in log,
         "outset_state": state.exists() and scenario.parse_state(state)["stage"] == "sea",
         "finished": done(log),

@@ -22,10 +22,12 @@ public final class AndroidGame {
         public final File library;
         public final File game;
         public final boolean codeMods;  // built with code-mod support (the setup's choice at that time)
-        private Selection(File library, File game, boolean codeMods) {
+        public final File randomizerFiles;  // a randomized game's changed files (played over the game), else null
+        private Selection(File library, File game, boolean codeMods, File randomizerFiles) {
             this.library = library;
             this.game = game;
             this.codeMods = codeMods;
+            this.randomizerFiles = randomizerFiles;
         }
     }
 
@@ -160,7 +162,20 @@ public final class AndroidGame {
             if (!hash(new File(game, "code/cking.rpx")).equals(value.getString("rpx_sha256")))
                 throw new IOException("Selected game executable checksum mismatch");
         } else if (value.has("rpx_sha256")) throw new IOException("Game asset selection is incomplete");
+        if (value.has("randomizer_files")) {  // the randomized game's own executable, as built
+            File files = randomizerFiles(context, value);
+            if (!hash(new File(files, "code/cking.rpx")).equals(value.getString("randomizer_rpx_sha256")))
+                throw new IOException("Randomized game executable checksum mismatch");
+        }
         return library;
+    }
+
+    private static File randomizerFiles(Context context, JSONObject value) throws Exception {
+        File root = storage(context).getCanonicalFile();
+        File files = new File(storage(context), value.getString("randomizer_files")).getCanonicalFile();
+        if (!files.getPath().startsWith(root.getPath() + File.separator) || !new File(files, "code/cking.rpx").isFile())
+            throw new IOException("Randomized game files are outside setup storage or incomplete");
+        return files;
     }
 
     private static File gameFolder(Context context, File game) throws Exception {
@@ -191,7 +206,8 @@ public final class AndroidGame {
             JSONObject value = read(record(context, "active"));
             File library = library(context, value, false);
             File game = value.has("game") ? new File(storage(context), value.getString("game")).getCanonicalFile() : null;
-            return new Selection(library, game, value.optBoolean("code_mods", false));
+            File files = value.has("randomizer_files") ? randomizerFiles(context, value) : null;
+            return new Selection(library, game, value.optBoolean("code_mods", false), files);
         } catch (java.io.FileNotFoundException missing) {
             return null;
         } catch (Exception failure) {
@@ -222,14 +238,27 @@ public final class AndroidGame {
 
     /** codeMods: the candidate was built with code-mod support. */
     public static synchronized void activate(Context context, File candidate, File game, boolean codeMods) throws Exception {
+        activate(context, candidate, game, codeMods, null);
+    }
+
+    /** randomizerFiles: a randomized game's changed files (the in-app randomizer), played over game; null for none. */
+    public static synchronized void activate(Context context, File candidate, File game, boolean codeMods,
+                                             File randomizerFiles) throws Exception {
         try (SelectionLock ignored = new SelectionLock(context)) {
-            activateLocked(context, candidate, game, codeMods);
+            activateLocked(context, candidate, game, codeMods, randomizerFiles);
         }
     }
 
-    private static void activateLocked(Context context, File candidate, File game, boolean codeMods) throws Exception {
+    private static void activateLocked(Context context, File candidate, File game, boolean codeMods,
+                                       File randomizerFiles) throws Exception {
         JSONObject value = expected(context);
         if (codeMods) value.put("code_mods", true);
+        if (randomizerFiles != null) {
+            File root = storage(context).getCanonicalFile();
+            File files = randomizerFiles.getCanonicalFile();
+            value.put("randomizer_files", root.toPath().relativize(files.toPath()).toString())
+                .put("randomizer_rpx_sha256", hash(new File(files, "code/cking.rpx")));
+        }
         File root = storage(context).getCanonicalFile();
         candidate = candidate.getCanonicalFile();
         if (!candidate.getPath().startsWith(root.getPath() + File.separator) ||
@@ -257,6 +286,29 @@ public final class AndroidGame {
         catch (Exception corrupt) { Log.w("wwhd-game", "Replacing unreadable active build metadata"); }
         if (previous != null && !previous.toString().equals(value.toString())) write(record(context, "previous"), previous);
         write(record(context, "active"), value);
+        // the game as it is stays one choice away from any randomized game: its newest build is kept as "normal"
+        // (SetupJobCleanup keeps every job a record in setup storage names)
+        if (!value.has("randomizer_files")) write(record(context, "normal"), value);
+        else if (previous != null && !previous.has("randomizer_files")) {
+            JSONObject normal = null;
+            try { normal = read(record(context, "normal")); } catch (java.io.FileNotFoundException none) { /* none yet */ }
+            if (normal == null) write(record(context, "normal"), previous);  // (builds made before this record existed)
+        }
+    }
+
+    /** The game as it is (not randomized) from the next start: its newest build. False when there is none. */
+    public static synchronized boolean playNormal(Context context) throws Exception {
+        try (SelectionLock ignored = new SelectionLock(context)) {
+            JSONObject normal;
+            try { normal = read(record(context, "normal")); } catch (java.io.FileNotFoundException none) { return false; }
+            if (normal.has("randomizer_files")) throw new IOException("The normal game's record names a randomized game");
+            library(context, normal, false);  // only a runtime compatible with the Java host
+            JSONObject active = null;
+            try { active = read(record(context, "active")); } catch (java.io.FileNotFoundException none) { /* first */ }
+            if (active != null && !active.toString().equals(normal.toString())) write(record(context, "previous"), active);
+            write(record(context, "active"), normal);
+            return true;
+        }
     }
 
     public static synchronized boolean rollback(Context context) throws Exception {

@@ -41,7 +41,7 @@ void f_025E0EE4_orig(Cpu* c);  // fpcPi_Handler
 void f_025DDCEC_orig(Cpu* c);  // fpcCt_Handler
 void f_025D42C4_orig(Cpu* c);  // fapGm_After
 void f_0200E6EC_orig(Cpu* c);  // cCt_Counter
-void f_025DF940(Cpu* c);       // fpcM_Execute (true60's per-process gate runs too)
+void f_025DF940(Cpu* c);       // fpcM_Execute (game_hooks.cpp's hook runs too)
 void f_0252A684_orig(Cpu* c);  // dDoor_info_c::getDemoAction
 void f_021C0078_orig(Cpu* c);  // daMbdoor_c::getDemoAction
 void f_025DC86C_orig(Cpu* c);  // fopScnM_ChangeReq
@@ -95,7 +95,7 @@ void trace_due_deletes(const char* when) {
         int timer = (int16_t)ld16(n + 0x18);
         if (timer > 0) continue;
         uint32_t proc = ld32(n + 0xC);
-        uint32_t sub = proc ? ld32(proc + 0xF0) : 0;  // fopAc_ac_c::sub_method (true60.cpp kSubMethod)
+        uint32_t sub = proc ? ld32(proc + 0xF0) : 0;  // fopAc_ac_c::sub_method (game_hooks.cpp kSubMethod)
         uint32_t exec = sub >= 0x10000000 && sub < 0x50000000 ? ld32(sub + 8) : 0;
         trace("%s: process %08X (execute %08X) due for deletion", when, proc, exec);
     }
@@ -165,7 +165,7 @@ void call(Cpu* c, void (*f)(Cpu*), uint32_t r3) {
 // leaving). FN=list traces the actors (execute function, position) instead.
 const uint32_t kActorQueue = GD(0x101F3328);  // g_fopAcTg_Queue (fopAcIt_Executor 025D51DC)
 uint32_t actor_execute(uint32_t a) {
-    uint32_t sub = ld32(a + 0xF0);  // fopAc_ac_c::sub_method (true60.cpp kSubMethod)
+    uint32_t sub = ld32(a + 0xF0);  // fopAc_ac_c::sub_method (game_hooks.cpp kSubMethod)
     return sub >= 0x10000000 && sub < 0x50000000 ? ld32(sub + 8) : 0;
 }
 void test_door_delete(Cpu* c) {

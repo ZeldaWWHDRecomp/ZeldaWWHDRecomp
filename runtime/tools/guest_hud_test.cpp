@@ -1,4 +1,5 @@
 #include "mods/guest_hud.h"
+#include <array>
 #include <cassert>
 #include <thread>
 using namespace guestmods::hud;
@@ -44,6 +45,31 @@ int main() {
         assert(store.append("shapes",primitives,command));
     }
     assert(store.commit("shapes",primitives));store.drop("shapes");
+    // v3: reversed UVs mirror an image (both axes, any subrect within 0..1); other kinds keep u1 >= u0, v1 >= v0,
+    // and no UV may leave 0..1 in either order.
+    {
+        uint8_t px[4]{};auto mirrored=store.create_image("mirror",1,1,4,px,4);assert(mirrored);
+        auto good=store.begin("mirror",0);command=Command{};command.w=command.h=10;
+        command.u0=1;command.u1=0;assert(store.picture("mirror",good,mirrored,command));
+        command.u0=0;command.u1=1;command.v0=1;command.v1=0;assert(store.picture("mirror",good,mirrored,command));
+        command.u0=.75f;command.u1=.25f;command.v0=.5f;command.v1=.125f;assert(store.picture("mirror",good,mirrored,command));
+        assert(store.commit("mirror",good));
+        auto snap=store.snapshot(0);bool seen=false;
+        for(auto& l:snap)if(l->owner=="mirror"){seen=true;assert(l->commands.size()==3&&l->commands[2].u0==.75f&&l->commands[2].u1==.25f);}
+        assert(seen);
+        for(auto [u0,v0,u1,v1]:{std::array<float,4>{1.5f,0,0,1},{1,0,-.5f,1},{0,2,1,0},{0,0,1,-1}}) {
+            auto bad_uv=store.begin("mirror",0);command=Command{};command.w=command.h=10;
+            command.u0=u0;command.v0=v0;command.u1=u1;command.v1=v1;
+            assert(!store.picture("mirror",bad_uv,mirrored,command)&&!store.commit("mirror",bad_uv));
+        }
+        for(auto kind:{Command::Rect,Command::Text,Command::Line}) {
+            auto other=store.begin("mirror",0);command=Command{};command.kind=kind;command.w=command.h=10;command.text="x";
+            command.u0=1;command.u1=0;
+            assert(!store.append("mirror",other,command)&&!store.commit("mirror",other));
+        }
+        static_assert(kMirroredImagesVersion==1);
+        store.drop("mirror");assert(store.release("mirror",mirrored));
+    }
     // Clips are transactional, owner-scoped and balanced within one list.
     auto clipped=store.begin("clip",0);command=Command{};command.kind=Command::ClipPush;command.w=20;command.h=30;
     assert(!store.append("other",clipped,command));

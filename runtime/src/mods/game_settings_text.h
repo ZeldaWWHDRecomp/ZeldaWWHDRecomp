@@ -157,12 +157,25 @@ inline const std::unordered_map<std::string, Line>& table() {
           "Quanto è nitida l'immagine del gioco. Più alta richiede un chip grafico più veloce.",
           "Lo nítida que se dibuja la imagen. Más alta necesita un chip gráfico más rápido."}},
         {"Frame rate", {"Images par seconde", "Bildrate", "Frequenza fotogrammi", "Fotogramas por segundo"}},
-        {"40 fps and more add in-between frames; the game logic keeps its 30 steps. True 60 runs it at 60.",
-         {"40 fps et plus ajoutent des images intermédiaires ; la logique du jeu garde ses 30 pas. True 60 la fait tourner à 60.",
-          "Ab 40 fps kommen Zwischenbilder hinzu; die Spiellogik behält ihre 30 Schritte. True 60 lässt sie mit 60 laufen.",
-          "Da 40 fps in su si aggiungono fotogrammi intermedi; la logica del gioco resta a 30 passi. True 60 la porta a 60.",
-          "Desde 40 fps se añaden fotogramas intermedios; la lógica del juego sigue a 30 pasos. True 60 la ejecuta a 60."}},
+        {"40 fps and more add in-between frames; the game logic keeps its 30 steps.",
+         {"40 fps et plus ajoutent des images intermédiaires ; la logique du jeu garde ses 30 pas.",
+          "Ab 40 fps kommen Zwischenbilder hinzu; die Spiellogik behält ihre 30 Schritte.",
+          "Da 40 fps in su si aggiungono fotogrammi intermedi; la logica del gioco resta a 30 passi.",
+          "Desde 40 fps se añaden fotogramas intermedios; la lógica del juego sigue a 30 pasos."}},
+        {"40 fps and more add in-between frames; the game logic keeps its 30 steps. Generated: "
+         "every other frame made on the graphics chip.",
+         {"40 fps et plus ajoutent des images intermédiaires ; la logique du jeu garde ses 30 pas. "
+          "Générées : une image sur deux est créée par la puce graphique.",
+          "Ab 40 fps kommen Zwischenbilder hinzu; die Spiellogik behält ihre 30 Schritte. "
+          "Erzeugt: jedes zweite Bild entsteht auf dem Grafikchip.",
+          "Da 40 fps in su si aggiungono fotogrammi intermedi; la logica del gioco resta a 30 passi. "
+          "Generati: un fotogramma su due è creato dal chip grafico.",
+          "Desde 40 fps se añaden fotogramas intermedios; la lógica del juego sigue a 30 pasos. "
+          "Generados: uno de cada dos fotogramas lo crea el chip gráfico."}},
         {"30 fps (original)", {"30 fps (original)", "30 fps (Original)", "30 fps (originale)", "30 fps (original)"}},
+        {"60 fps (generated, experimental)",
+         {"60 fps (générées, expérimental)", "60 fps (erzeugt, experimentell)", "60 fps (generati, sperimentale)",
+          "60 fps (generados, experimental)"}},
         {"Dynamic resolution", {"Résolution dynamique", "Dynamische Auflösung", "Risoluzione dinamica", "Resolución dinámica"}},
         {"Lowers the resolution while the graphics chip cannot keep up, and raises it again when there is room.",
          {"Baisse la résolution quand la puce graphique ne suit pas, et la remonte quand elle le peut.",

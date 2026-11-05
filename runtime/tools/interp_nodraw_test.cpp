@@ -81,7 +81,7 @@ static void test_passes_match_logic() {
     }
 }
 
-// a hold pass keeps a request made by its own logic (true 60's 60 Hz processes), and adds none for
+// a hold pass keeps a request it makes itself, and adds none for
 // actors the logic pass drew
 static void test_hold_pass_requests() {
     OneShotNoDraw book;

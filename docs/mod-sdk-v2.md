@@ -413,8 +413,8 @@ settings once per logic step.
 | `game.build` | STRING | `USA`, `EU` |
 | `display.drc_mode` | STRING | `window`, `pip`, `auto`, `off`, `gamepad` |
 | `display.aspect` | F64 | Aspect ratio of the current frame |
-| `render.interp_fps` | U32 | Frame rate shown: 30, the interpolation rate, or 60 in true 60 mode |
-| `render.true60` | BOOL | 0 or 1 |
+| `render.interp_fps` | U32 | Frame rate shown: 30 or the interpolation rate |
+| `render.true60` | BOOL | Always 0: True 60 was retired; kept so older mods still read a value. `wwhd_logic_dt` is one 30 Hz step (1/30 s) in every mode |
 | `settings.<id>` | BOOL, U32 or F64 | A setting of the item menu's Settings page by its ID: switches are BOOL, choices U32 (the choice's index), numbers F64. For example `settings.camera.invert-y`, `settings.direct-camera.speed`, `settings.screen.fov` |
 
 ```c
@@ -475,11 +475,33 @@ an unbalanced callback drops the entire list. Clips belong to one recording list
 and cannot affect another mod. Send ordinary drawing elements through
 `wwhd_hud_emit`; that service rejects clip commands.
 
-`WWHD_HUD_API_VERSION` is 2; the guest module ABI and manifest `guest.api_version`
-remain 1. Importing `wwhd_hud_clip` is the runtime capability check: older hosts
+Importing `wwhd_hud_clip` is the runtime capability check for clips: older hosts
 lack that service and refuse the module during loading. Existing HUD v1 mods
 continue to load without it. Do not emulate clipping by moving or shrinking the
 image, since that changes registration at a map boundary.
+
+**Mirrored images (HUD v3).** An image element whose `u1` is smaller than `u0` is drawn
+mirrored left to right over that part of the picture; `v1` smaller than `v0` mirrors it top
+to bottom. All four values stay within 0..1. The game draws some of its art this way: half
+of a symmetric picture, mirrored into the whole one (the floor-change arrow
+`DungeonMapUp_00/MapFloorUpDown_00^t` is one half of it). Draw such art as two images side by
+side, the second with `u0 = 1, u1 = 0`:
+
+```c
+image.u0 = 0; image.u1 = 1; image.x = x;         wwhd_hud_emit(list, &image);  /* the half as it is */
+image.u0 = 1; image.u1 = 0; image.x = x + half;  wwhd_hud_emit(list, &image);  /* its mirror image */
+```
+
+Older hosts refuse reversed UVs and drop the whole list, so check first:
+`wwhd_hud_mirrored_images()` (the unsigned setting `hud.mirrored-images.version`) is 1 on
+hosts that draw them and 0 before. Rotation, tint, blending and clips work as for any image.
+Other element kinds keep the old rule (`u1 >= u0`, `v1 >= v0`).
+
+`WWHD_HUD_API_VERSION` is 3 (v3: mirrored images and the game's layout texts, see
+[The game's layout art](#the-games-layout-art)); the 72-byte element, the guest module ABI
+and manifest `guest.api_version` stay as they are, and v3 imports no new host service. Hosts
+with v3 have mod manager 1.9.0: give `"minimum_manager_version": "1.9.0"` to refuse older
+ports up front, or check the capability settings at run time and keep a fallback.
 
 It draws on Metal and Vulkan, in the TV picture and the GamePad screen (window or
 picture-in-picture); the settings overlay stays on top. Positions are not interpolated
@@ -631,6 +653,20 @@ player's installed 2D pack, in the language the game uses, while the game runs:
   visible, and, for a picture pane, its texture's name. The result is a 64-byte `wwhd_game_pane`.
   The key `layout-texture:<Layout>/<texture>` checks that a texture exists, without loading it. It
   sets flag 4 and returns the texture's size in `w` and `h`.
+- `wwhd_game_message_get("layout-message:<Layout>/<label>", buffer, capacity)` (HUD v3) copies the
+  game's own text of a label of the layout's message file, in the language the game runs in, so a mod
+  can label its drawing as the game does without carrying translations. For example
+  `"layout-message:DungeonMapUp_00/T_FloorU_00_2F"` is `2F` in English and `P1` in Spanish. The text is
+  UTF-8 with its NUL; the game's control codes (colours, icons, sizes) are left out and line breaks
+  stay `\n`. The call returns the bytes written including the NUL, or 0: a missing layout or label, a
+  text of 4 KiB or more, or a buffer too small (it stays unchanged). A null buffer with capacity 0
+  gives the size. The key is at most 63 bytes. The texts don't change while the game runs: read each
+  once and keep it. `wwhd_game_messages()` (the unsigned setting `layout-message.version`) is 1 on
+  hosts with this query and 0 before.
+
+  The port reads these texts from the message files of the player's installed 2D pack, never from
+  game memory: the key names a layout and a label, nothing else, and the text is copied whole into the
+  mod's own memory or not at all.
 
 Names may contain letters, digits and `_ ^ + - .` only. A missing layout, texture or pane returns 0,
 with the reason in the Mods tab. Older hosts return 0 for both: the texture source and the query key
@@ -1434,7 +1470,7 @@ normal save and extracted HD game, the ZIP, source `catalogue.json`, an explicit
 private game-source JSON and a private output folder. The JSON maps declared game
 IDs to the player's local paths (for example `gc_wind_waker` to an RVZ); use `{}`
 for a mod without a game-source step. Run separately with `--region USA`/`EU` and
-`--renderer metal`/`vulkan`; `--mode` accepts `30`, `interp60` and `true60`.
+`--renderer metal`/`vulkan`; `--mode` accepts `30` and `interp60`.
 
 Before launching, the driver invokes the real installer with
 `--rebuild-code-mods --code-mods 0 --jobs N` and verifies its completed off cache.

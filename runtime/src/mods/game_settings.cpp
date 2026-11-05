@@ -21,7 +21,9 @@
 #include "player_name.h"
 #include "../aspect.h"
 #include "../dynres.h"
+#include "../framegen.h"
 #include "../gfx/renderer.h"
+#include "../gfx/gamepad_backdrop_options.h"
 #include "../interp.h"
 #include "../input.h"
 #include "../rumble.h"
@@ -395,6 +397,14 @@ void register_controls() {
 void register_screen() {
     {
         Item it;
+        it.id = "screen.gamepad-background", it.tab = "screen", it.label = "Fill GamePad bars with background", it.kind = Kind::Toggle;
+        it.help = "Fills unused space with the menu background or edge colours. Menus and touch positions keep their normal size.";
+        it.get = [] { return gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed) ? 1.f : 0.f; };
+        it.set = [](float v) { gfx::gamepad_backdrop::set_option(v >= .5f); };
+        add(std::move(it));
+    }
+    {
+        Item it;
         it.id = "screen.large-picto", it.tab = "screen", it.label = "Large Picto Box view", it.kind = Kind::Toggle;
         it.help = "The finder fills the screen; the photo is what the corner marks frame.";
         it.get = [] { return mods::large_picto_on() ? 1.0f : 0.0f; };
@@ -445,14 +455,19 @@ void register_graphics() {
     {
         Item it;
         it.id = "graphics.frame-rate", it.tab = "graphics", it.label = "Frame rate", it.kind = Kind::Choice;
-        it.help = "40 fps and more add in-between frames; the game logic keeps its 30 steps. True 60 runs it at 60.";
-        it.choices.assign(std::begin(g::kRateNames), std::end(g::kRateNames));
-        it.get = [] { return float(g::rate_choice(interp::mode(), interp::fps())); };
+        it.help = framegen::available()
+            ? "40 fps and more add in-between frames; the game logic keeps its 30 steps. Generated: "
+              "every other frame made on the graphics chip."
+            : "40 fps and more add in-between frames; the game logic keeps its 30 steps.";
+        // 60 fps (generated, framegen.h) on Vulkan only (the last choice)
+        it.choices.assign(std::begin(g::kRateNames), std::end(g::kRateNames) - (framegen::available() ? 0 : 1));
+        it.get = [] { return float(g::rate_choice(interp::mode(), interp::fps(), framegen::available() && framegen::chosen())); };
         it.set = [](float v) {
             const g::Rate r = g::rate_of(int(std::lround(v)));
             saved([r] {
                 if (r.fps) interp::set_fps(r.fps);
                 interp::set_mode(r.mode);
+                framegen::set_chosen(r.generated && framegen::available());  // (any other choice: off)
             });
         };
         add(std::move(it));

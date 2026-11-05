@@ -161,7 +161,6 @@ namespace input {PadState read() {return {};}}
 // live options and scripted test options (QoL M0): the fixtures run no renderer or host UI
 namespace render {uint64_t frame_count() {return 0;}}
 namespace hostui {void post(std::function<void()> fn) {fn();}}
-namespace true60 {float dt() {return 0.5f;}}
 // guest module entry alignment: no emulated threads here, so the stack bounds are unknown (call kept as is)
 namespace threads {bool current_stack_bounds(const Cpu*, uint32_t&, uint32_t&) {return false;}}
 namespace interp { uint32_t last_camera() { return 0; } }  // screen points (QoL M2): no camera here
@@ -483,6 +482,13 @@ namespace game_layouts {
 bool texture(const std::string&,Image&,std::string& error) {error="no game layouts in this test";return false;}
 bool texture_size(const std::string&,uint32_t&,uint32_t&) {return false;}
 bool pane(const std::string&,Pane&) {return false;}
+// one label in two sizes, a text at the size limit, everything else missing
+bool message(const std::string& spec,std::string& out) {
+    if(spec=="DungeonMapUp_00/T_FloorU_00_2F"){out="P1";return true;}
+    if(spec=="Big_00/T_Long"){out.assign(kMaxMessageBytes,'x');return true;}
+    if(spec=="Big_00/T_Edge"){out.assign(kMaxMessageBytes-1,'y');return true;}
+    return false;
+}
 }
 namespace story_mail { void set_item_get_next(void (*)(Cpu*)) {} }
 namespace story_notebook {
@@ -1042,7 +1048,7 @@ int main() {
     guestmods::g_loaded[0].options["option"]=2.5;c.r[3]=1;c.f[1].ps0=8;
     guestmods::svc_config_float(&c);assert(c.f[1].ps0==2.5);
     c.r[3]=1;c.r[4]=9;guestmods::svc_config_int(&c);assert(c.r[3]==9); // non-integral numeric option
-    guestmods::svc_logic_dt(&c);assert(c.f[1].ps0==1.0/60.0);
+    guestmods::svc_logic_dt(&c);assert(c.f[1].ps0==1.0/30.0);  // one 30 Hz logic step in every mode
     guestmods::frame(0x100000002ull);guestmods::svc_logic_step(&c);assert(c.r[3]==1&&c.r[4]==2);
     guestmods::g_loaded[0].region_size=0x10000;
     auto read_setting=[&](const char* key,uint32_t type,uint32_t destination,uint32_t capacity) {
@@ -1087,6 +1093,26 @@ int main() {
     assert(guestmods::hud::store().release("first",first_corner_image));
     assert(guestmods::hud::store().release("first",ld32(target+4)));
     mod_stages::fixture_has_corner_map=false;corner={};
+    // HUD v3 capabilities and the game's layout texts: string type only, exact sizes, a short or foreign buffer
+    // left unchanged, a text at the limit refused, nothing but the named label reaches the mod.
+    assert(read_setting("hud.mirrored-images.version",3,0,0)==4);
+    assert(read_setting("hud.mirrored-images.version",3,target,4)==4&&ld32(target)==1);
+    assert(read_setting("layout-message.version",3,target,4)==4&&ld32(target)==1);
+    assert(read_setting("layout-message.version",1,target,4)==0&&read_setting("layout-message.version",3,target,3)==0);
+    assert(read_setting("hud.mirrored-images.version",3,data_base+0xFFFE,4)==0);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,0,0)==3);
+    std::memset(mem::ptr(target),0x5A,8);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,target,2)==0&&ld8(target)==0x5A);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",3,target,8)==0&&ld8(target)==0x5A);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,data_base+0xFFFE,8)==0);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,0x10000000,8)==0);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,target,8)==3);
+    assert(std::string(reinterpret_cast<char*>(mem::ptr(target)))=="P1"&&ld8(target+3)==0x5A);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_Missing",1,target,8)==0);
+    assert(read_setting("layout-message:Big_00/T_Long",1,0,0)==0);
+    assert(read_setting("layout-message:Big_00/T_Edge",1,0,0)==game_layouts::kMaxMessageBytes);
+    assert(read_setting("layout-message:Big_00/T_Edge",1,target,game_layouts::kMaxMessageBytes)==game_layouts::kMaxMessageBytes);
+    assert(ld8(target)=='y'&&ld8(target+game_layouts::kMaxMessageBytes-1)==0);
     std::strcpy(reinterpret_cast<char*>(mem::ptr(data_base+0x400)),"input.face_layout");
     c.r[3]=data_base+0x400;guestmods::svc_setting_changed(&c);assert(c.r[3]==0&&c.r[4]==7);
     WWHDGuestModuleV1 second{};second.mem_base=0x7F010000;second.mem_size=4096;

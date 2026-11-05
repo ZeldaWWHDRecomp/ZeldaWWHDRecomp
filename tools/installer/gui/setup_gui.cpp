@@ -402,7 +402,7 @@ static bool shift_held() {
 // ---------------------------------------------------------------------------------------------
 // state
 
-enum class Screen { Starting, NeedCLT, Menu, Welcome, Source, Keys, Installing, Error, Save, Done, Fatal };
+enum class Screen { Starting, NeedCLT, Menu, Welcome, Source, Keys, Installing, Error, Save, Done, Fatal, Randomizer };
 
 static const char* screen_name(Screen s) {
     switch (s) {
@@ -417,6 +417,7 @@ static const char* screen_name(Screen s) {
     case Screen::Save: return "save";
     case Screen::Done: return "done";
     case Screen::Fatal: return "fatal";
+    case Screen::Randomizer: return "randomizer";
     }
     return "?";
 }
@@ -452,7 +453,7 @@ struct App {
     std::string source_path, source_kind;  // kind: image | archive (Cemu .wua, no keys) | folder
     std::string probe_msg;
     bool probe_ok = false;
-    bool source_randomizer = false;
+    bool source_randomized = false;  // the chosen game is a randomized one: it goes on the Randomizer page instead
     std::string disc_key_found, disc_key_file, common_key_found, common_key_file;
     int disc_mode = 0;
     char disc_paste[128] = {};
@@ -793,6 +794,8 @@ static void choose_folder(const std::string& target) {
     SDL_ShowOpenFolderDialog(dialog_cb, nullptr, g_window, nullptr, false);
 }
 
+static void rando_import(const std::string& path);  // the Randomizer page's Import seed... (below)
+
 static void set_source(const std::string& path) {
     A.source_path = path;
     A.probe_ok = false;
@@ -830,6 +833,7 @@ static void apply_dialog(const std::string& target, const std::string& path) {
     else if (target == "disc_key") set_disc_key_file(path);
     else if (target == "common_key") set_common_key_file(path);
     else if (target == "save") set_save_path(path);
+    else if (target == "rando_import") rando_import(path);
 }
 
 static void start_install(const std::string& source) {
@@ -839,7 +843,7 @@ static void start_install(const std::string& source) {
     A.current = -1;
     std::string f = "\"source\":" + jstr(source);
     f += std::string(",\"code_mods\":") + (A.code_mods ? "true" : "false");
-    if (A.decomp_offered) f += std::string(",\"decomp\":") + (A.decomp && !A.source_randomizer ? "true" : "false");
+    if (A.decomp_offered) f += std::string(",\"decomp\":") + (A.decomp ? "true" : "false");
     if (source != "installed") f += ",\"path\":" + jstr(A.source_path);
     f += std::string(",\"skip_shader_prebuild\":") + (A.prepare_shaders ? "false" : "true");
     f += std::string(",\"model_sweep\":") + (A.prepare_shaders && A.model_sweep ? "true" : "false");
@@ -870,13 +874,15 @@ static int step_index(const std::string& id) {
     return -1;
 }
 
+static void rando_read(const J& ev);  // the Randomizer page (below)
+
 static void handle_reply(const J& ev) {
     std::string cmd = ev.str("cmd");
     bool ok = ev.boolean("ok");
     if ((int)ev.num("id") == A.pending_id) A.pending_id = 0, A.pending_cmd.clear();
     if (cmd == "probe") {
         A.probe_ok = ok;
-        A.source_randomizer = ok && ev.boolean("randomizer");
+        A.source_randomized = !ok && ev.str("problem") == "randomized";
         if (!ok) {
             A.probe_msg = ev.str("message");
             return;
@@ -923,6 +929,8 @@ static void handle_reply(const J& ev) {
             A.error_back = A.install_source == "installed" ? "menu" : "source";
             go(Screen::Error);
         }
+    } else if (cmd.rfind("rando_", 0) == 0) {
+        rando_read(ev);
     } else if (cmd == "remove_toolchain" || cmd == "shortcut") {
         if (!ok) addlog(ev.str("message"));
     } else if (cmd == "import_save" || cmd == "import_existing") {
@@ -1227,13 +1235,11 @@ static void code_mods_choice() {
           "content mods do not need this. The game code gets a small check in every function, which can "
           "cost some performance, and the build takes a bit longer. You can switch this later in "
           "Settings > Mods; that requires another rebuild.");
-    if (A.decomp_offered && !A.source_randomizer) {
+    if (A.decomp_offered) {
         checkbox("Also build the decomp version (experimental)", &A.decomp);
         muted(A.decomp_text);
         if (button("About the decomp version (docs/decomp-build.md)")) SDL_OpenURL(A.decomp_docs.c_str());
     }
-    if (A.source_randomizer)
-        muted("Randomized games use their own translated code. The decomp version is unavailable for them.");
     ImGui::Spacing();
 }
 
@@ -1248,6 +1254,290 @@ static void start_choice() {
     }
     muted("The decomp version runs the decompiled game functions as compiled source (experimental). Starting "
           "Wind Waker HD with --decomp starts it once.");
+}
+
+// ---------------------------------------------------------------------------------------------
+// Randomizer (setup.py rando_*: randomizer_seeds.py, tools/rando's wwhd-rando)
+
+struct RandoSetting {
+    std::string name;
+    int value = 0;
+    std::string kind;              // bool | count | choice
+    int lo = 0, hi = 1;            // count
+    std::vector<std::string> choices;
+};
+
+struct RandoSeed {
+    std::string id, hash, permalink, seed, created, spoiler_log;
+    bool built = false, imported = false;  // imported: made with the official randomizer (no permalink or spoiler log)
+};
+
+struct Rando {
+    bool loaded = false, available = false;
+    std::string unavailable;  // why not (setup's message)
+    std::vector<RandoSetting> settings;
+    std::string seed, permalink;
+    std::vector<RandoSeed> seeds;
+    std::string playing = "vanilla";
+    std::string message;
+    char seed_edit[128] = {}, permalink_edit[512] = {};
+    int page = 0;
+    int select_tab = -1;  // automation: 0 Games, 1 New game
+    std::string confirm_delete;  // a seed id the player is asked about
+    std::string spoiler_id;      // the seed whose spoiler log is shown (after the question)
+    std::string ask_spoiler;
+};
+static Rando R;
+
+// the settings by page, by the randomizer's own names (options.cpp nameToSetting); labels are ours
+struct RandoRow {
+    const char* name;
+    const char* label;
+};
+static const RandoRow kRandoPlaces[] = {
+    {"Progress Dungeons", "Dungeons"}, {"Progress Great Fairies", "Great Fairies"}, {"Progress Puzzle Caves", "Puzzle caves"},
+    {"Progress Combat Caves", "Combat caves"}, {"Progress Short Sidequests", "Short sidequests"},
+    {"Progress Long Sidequests", "Long sidequests"}, {"Progress Spoils Trading", "Spoils trading"},
+    {"Progress Minigames", "Minigames"}, {"Progress Free Gifts", "Free gifts"}, {"Progress Mail", "Mail"},
+    {"Progress Platforms Rafts", "Platforms and rafts"}, {"Progress Submarines", "Submarines"},
+    {"Progress Eye Reefs", "Eye reef chests"}, {"Progress Octos Gunboats", "Big Octos and gunboats"},
+    {"Progress Triforce Charts", "Triforce charts"}, {"Progress Treasure Charts", "Treasure charts"},
+    {"Progress Exp Purchases", "Expensive purchases"}, {"Progress Misc", "Miscellaneous"},
+    {"Progress Tingle Chests", "Tingle chests"}, {"Progress Battlesquid", "Battlesquid"},
+    {"Progress Savage Labyrinth", "Savage Labyrinth"}, {"Progress Island Puzzles", "Island puzzles"},
+    {"Progress Dungeon Secrets", "Dungeon secrets"}, {"Progress Obscure", "Obscure"},
+};
+static const RandoRow kRandoDungeons[] = {
+    {"Num Required Dungeons", "Required dungeons"}, {"Required Boss Items", "Required bosses' items"},
+    {"Dungeon Small Keys", "Small keys"}, {"Dungeon Big Keys", "Big keys"}, {"Dungeon Maps And Compasses", "Maps and compasses"},
+    {"Remove Swords", "Swordless"}, {"Random Charts", "Randomize charts"}, {"CTMC", "Chest type matches contents"},
+    {"Skip Refights", "Skip boss refights"}, {"Open DRC", "Open Dragon Roost Cavern"},
+    {"Progressive Magic Always Double", "Magic always double"}, {"Damage Multiplier", "Damage multiplier"},
+};
+static const RandoRow kRandoEntrances[] = {
+    {"Randomize Dungeon Entrances", "Dungeon entrances"}, {"Randomize Boss Entrances", "Boss entrances"},
+    {"Randomize Miniboss Entrances", "Miniboss entrances"}, {"Randomize Cave Entrances", "Cave entrances"},
+    {"Randomize Door Entrances", "Door entrances"}, {"Randomize Misc Entrances", "Other entrances"},
+    {"Mix Dungeons", "Mix dungeons"}, {"Mix Bosses", "Mix bosses"}, {"Mix Minibosses", "Mix minibosses"},
+    {"Mix Caves", "Mix caves"}, {"Mix Doors", "Mix doors"}, {"Mix Misc", "Mix others"},
+    {"Decouple Entrances", "Decouple entrances"}, {"Random Start Island", "Random starting island"},
+};
+static const RandoRow kRandoHints[] = {
+    {"Ho Ho Hints", "Old Man Ho Ho hints"}, {"Ho Ho Triforce Hints", "Ho Ho Triforce hints"}, {"Korl Hints", "King of Red Lions hints"},
+    {"Korl Sword Hints", "KoRL sword hints"}, {"Kreeb Bow Hints", "Kreeb bow hints"}, {"Clearer Hints", "Clearer hints"},
+    {"Use Always Hints", "Always hints"}, {"Hint Importance", "Hint importance"}, {"Path Hints", "Path hints"},
+    {"Barren Hints", "Barren hints"}, {"Item Hints", "Item hints"}, {"Location Hints", "Location hints"},
+};
+static const RandoRow kRandoStart[] = {
+    {"Starting HC", "Heart containers"}, {"Starting HP", "Pieces of heart"}, {"Starting Joy Pendants", "Joy pendants"},
+    {"Starting Skull Necklaces", "Skull necklaces"}, {"Starting Boko Baba Seeds", "Boko Baba seeds"},
+    {"Starting Golden Feathers", "Golden feathers"}, {"Starting Knights Crests", "Knight's crests"},
+    {"Starting Red Chu Jellys", "Red Chu jellies"}, {"Starting Green Chu Jellys", "Green Chu jellies"},
+    {"Starting Blue Chu Jellys", "Blue Chu jellies"}, {"Start With Random Item", "Start with a random item"},
+};
+static const RandoRow kRandoConvenience[] = {
+    {"Instant Text", "Instant text boxes"}, {"Reveal Sea Chart", "Reveal the full sea chart"},
+    {"Quiet Swift Sail", "Quiet Swift Sail"}, {"Add Shortcut Warps", "Warps between dungeons"}, {"Fix RNG", "Fixed RNG"},
+    {"Performance", "Performance"}, {"Invert Compass", "Invert the sea compass"}, {"Remove Music", "Remove music"},
+    {"Classic Mode", "Classic mode"}, {"Pig Color", "Outset pig colour"}, {"Target Type", "Targeting"},
+    {"Camera", "Camera"}, {"First Person Camera", "First-person camera"}, {"Gyroscope", "Gyroscope"}, {"UI Display", "HUD"},
+};
+
+static void rando_send(const std::string& cmd, const std::string& fields = "") { request(cmd, fields); }
+
+// a seed made with the official randomizer: setup checks it, keeps its changed files beside the installed game, builds it
+static void rando_import(const std::string& path) {
+    R.message = "Importing, checking and building the seed (a few minutes)...";
+    R.select_tab = 0;
+    rando_send("rando_import", "\"path\": " + jstr(path));
+}
+
+static void rando_read(const J& ev) {
+    R.loaded = true;
+    R.available = ev.boolean("ok");
+    if (!R.available && ev.str("problem") == "unavailable") {
+        R.unavailable = ev.str("message");
+        return;
+    }
+    if (!R.available) {
+        R.message = ev.str("message");
+        R.available = true;
+        return;
+    }
+    R.message = ev.str("made").empty() ? ""
+                : (ev.boolean("imported") ? "Imported seed " : "Made randomized game ") + ev.str("made") +
+                      ". The game plays it from its next start.";
+    R.settings.clear();
+    if (const J* s = ev.get("settings"))
+        for (const auto& [name, v] : s->o) {
+            RandoSetting x;
+            x.name = name;
+            x.value = (int)v.num("value");
+            x.kind = v.str("kind", "bool");
+            x.lo = (int)v.num("min"), x.hi = (int)v.num("max");
+            if (const J* c = v.get("choices"))
+                for (const auto& l : c->a) x.choices.push_back(l.s);
+            R.settings.push_back(x);
+        }
+    R.seed = ev.str("seed"), R.permalink = ev.str("permalink");
+    snprintf(R.seed_edit, sizeof R.seed_edit, "%s", R.seed.c_str());
+    R.seeds.clear();
+    if (const J* l = ev.get("seeds")) {
+        R.playing = l->str("playing", "vanilla");
+        if (const J* a = l->get("seeds"))
+            for (const auto& s : a->a) {
+                RandoSeed x;
+                x.id = s.str("id"), x.hash = s.str("hash"), x.permalink = s.str("permalink"), x.seed = s.str("seed");
+                x.created = s.str("created"), x.spoiler_log = s.str("spoiler_log"), x.built = s.boolean("built");
+                x.imported = s.boolean("imported");
+                R.seeds.push_back(x);
+            }
+    }
+}
+
+static RandoSetting* rando_setting(const char* name) {
+    for (auto& s : R.settings)
+        if (s.name == name) return &s;
+    return nullptr;
+}
+
+static void rando_rows(const RandoRow* rows, size_t n) {
+    for (size_t i = 0; i < n; i++) {
+        RandoSetting* s = rando_setting(rows[i].name);
+        if (!s) continue;
+        ImGui::PushID(rows[i].name);
+        int v = s->value;
+        bool changed = false;
+        if (s->kind == "bool") {
+            bool b = v != 0;
+            changed = checkbox(rows[i].label, &b);
+            v = b;
+        } else if (s->kind == "count") {
+            ImGui::SetNextItemWidth(160);
+            changed = ImGui::SliderInt(rows[i].label, &v, s->lo, s->hi);
+        } else {
+            ImGui::SetNextItemWidth(260);
+            const char* now = v >= 0 && v < (int)s->choices.size() ? s->choices[v].c_str() : "?";
+            if (ImGui::BeginCombo(rows[i].label, now)) {
+                for (int k = 0; k < (int)s->choices.size(); k++)
+                    if (ImGui::Selectable(s->choices[k].c_str(), k == v)) v = k, changed = true;
+                ImGui::EndCombo();
+            }
+        }
+        if (changed && v != s->value && !busy()) {
+            s->value = v;
+            rando_send("rando_change", "\"set\": {" + jstr(s->name) + ": " + std::to_string(v) + "}");
+        }
+        ImGui::PopID();
+    }
+}
+
+static void screen_randomizer() {
+    page_header("Randomizer", "TWWHD Randomizer 1.2.0 by SuperDude88 and contributors (MIT). Permalinks match the PC randomizer 1.2.0.");
+    if (!R.loaded) {
+        if (!busy()) rando_send("rando_state");
+        muted("Loading the randomizer's settings...");
+        if (footer({"Back"}) == 0) go(Screen::Menu);
+        return;
+    }
+    if (!R.unavailable.empty()) {
+        ImGui::TextWrapped("%s", R.unavailable.c_str());
+        if (footer({"Back"}) == 0) go(Screen::Menu);
+        return;
+    }
+    if (ImGui::BeginTabBar("rando")) {
+        if (ImGui::BeginTabItem("Games", nullptr, R.select_tab == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::BeginChild("games", ImVec2(0, -ImGui::GetFrameHeight() - 24));
+            auto play_row = [](const std::string& id, const std::string& label, bool built) {
+                ImGui::PushID(id.c_str());
+                const bool now = R.playing == id;
+                mark(now ? 2 : 0);
+                ImGui::TextUnformatted(label.c_str());
+                ImGui::SameLine();
+                if (now) muted("(the game plays this)");
+                else if (button(built ? "Play this" : "Prepare and play this", ImVec2(0, 0), false, !busy()))
+                    rando_send("rando_play", "\"seed\": " + jstr(id));
+                ImGui::PopID();
+            };
+            play_row("vanilla", "The game as it is", true);
+            for (const auto& s : R.seeds) {
+                ImGui::Separator();
+                play_row(s.id, s.imported ? "Imported seed " + s.id + "  (official randomizer, " + s.created + ")"
+                                          : "Randomized game " + s.hash + "  (seed " + s.seed + ", " + s.created + ")", s.built);
+                ImGui::PushID(s.id.c_str());
+                if (!s.permalink.empty()) {
+                    if (button("Copy permalink", ImVec2(0, 0), false)) SDL_SetClipboardText(s.permalink.c_str()), show_toast("Permalink copied");
+                    ImGui::SameLine();
+                }
+                if (!s.spoiler_log.empty() && button("Spoiler log...", ImVec2(0, 0), false)) R.ask_spoiler = s.id;
+                ImGui::SameLine();
+                if (R.playing != s.id && button("Delete...", ImVec2(0, 0), false, !busy())) R.confirm_delete = s.id;
+                if (R.ask_spoiler == s.id) {
+                    ImGui::TextWrapped("The spoiler log shows where every item of this game is. Open it?");
+                    if (button("Open", ImVec2(0, 0), true)) open_folder(s.spoiler_log), R.ask_spoiler.clear();
+                    ImGui::SameLine();
+                    if (button("Cancel")) R.ask_spoiler.clear();
+                }
+                if (R.confirm_delete == s.id) {
+                    ImGui::TextWrapped("Delete randomized game %s? Its files go; its saves and save states stay.",
+                                       s.imported ? s.id.c_str() : s.hash.c_str());
+                    if (button("Delete", ImVec2(0, 0), true, !busy())) rando_send("rando_delete", "\"seed\": " + jstr(s.id)), R.confirm_delete.clear();
+                    ImGui::SameLine();
+                    if (button("Keep it")) R.confirm_delete.clear();
+                }
+                ImGui::PopID();
+            }
+            ImGui::Separator();
+            if (button("Import seed...", ImVec2(0, 0), false, !busy())) choose_folder("rando_import");
+            muted("A seed made with the official TWWHD Randomizer 1.2.0 (USA): choose its output folder (with code, "
+                  "content and meta). It is checked, built and played like the games made here, with its own saves; "
+                  "the output folder is not needed afterwards.");
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("New game", nullptr, R.select_tab == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+            ImGui::BeginChild("new", ImVec2(0, -ImGui::GetFrameHeight() - 24));
+            muted("Presets: the randomizer's defaults, with a few changes for a first game or for every place.");
+            for (const char* p : {"beginner", "standard", "everything"}) {
+                ImGui::SameLine();
+                if (button(p, ImVec2(0, 0), false, !busy())) rando_send("rando_change", "\"preset\": " + jstr(p));
+            }
+            ImGui::SetNextItemWidth(320);
+            if (ImGui::InputText("Seed", R.seed_edit, sizeof R.seed_edit, ImGuiInputTextFlags_EnterReturnsTrue) && !busy())
+                rando_send("rando_change", "\"seed\": " + jstr(R.seed_edit));
+            ImGui::SameLine();
+            if (button("New seed", ImVec2(0, 0), false, !busy())) rando_send("rando_change", "\"new_seed\": true");
+            ImGui::TextWrapped("Permalink: %s", R.permalink.c_str());
+            if (button("Copy permalink")) SDL_SetClipboardText(R.permalink.c_str()), show_toast("Permalink copied");
+            ImGui::SetNextItemWidth(520);
+            ImGui::InputText("##paste", R.permalink_edit, sizeof R.permalink_edit);
+            ImGui::SameLine();
+            if (button("Use this permalink", ImVec2(0, 0), false, !busy() && R.permalink_edit[0]))
+                rando_send("rando_change", "\"permalink\": " + jstr(R.permalink_edit));
+            static const char* pages[] = {"Where items can be", "Dungeons", "Entrances", "Hints", "Starting items", "Convenience"};
+            for (int i = 0; i < 6; i++) {
+                if (i) ImGui::SameLine();
+                if (ImGui::RadioButton(pages[i], R.page == i)) R.page = i;
+            }
+            ImGui::Separator();
+            switch (R.page) {
+            case 0: rando_rows(kRandoPlaces, std::size(kRandoPlaces)); break;
+            case 1: rando_rows(kRandoDungeons, std::size(kRandoDungeons)); break;
+            case 2: rando_rows(kRandoEntrances, std::size(kRandoEntrances)); break;
+            case 3: rando_rows(kRandoHints, std::size(kRandoHints)); break;
+            case 4: rando_rows(kRandoStart, std::size(kRandoStart)); break;
+            case 5: rando_rows(kRandoConvenience, std::size(kRandoConvenience)); break;
+            }
+            ImGui::EndChild();
+            ImGui::EndTabItem();
+        }
+        ImGui::EndTabBar();
+        R.select_tab = -1;
+    }
+    if (!R.message.empty()) muted(R.message);
+    int b = footer({"Back", "Make this game"}, 1, busy() ? 3 : 0);
+    if (b == 0) go(Screen::Menu);
+    if (b == 1) R.message = "Making and building the randomized game (a few minutes)...", rando_send("rando_make");
 }
 
 static void screen_menu() {
@@ -1267,20 +1557,20 @@ static void screen_menu() {
     muted("Rebuilds the game code from the installed game files.");
     if (button("Change the game (disc image, Cemu archive or game folder)", ImVec2(w, 0))) go(Screen::Source);
     if (button("Import saves or settings...", ImVec2(w, 0))) go(Screen::Save);
+    if (button("Randomized games (TWWHD Randomizer)...", ImVec2(w, 0), false, !update)) R.loaded = false, go(Screen::Randomizer);
     if (button("Open the folder", ImVec2(w, 0))) open_folder(home_folder());
     if (footer({"Quit"}) == 0) A.exit_code = 0;
 }
 
 static void screen_source() {
     page_header("Choose your game",
-                "A Wii U disc image, a Cemu archive or an extracted game folder. For a randomized game, choose the official randomizer output folder or its code/cking.rpx.");
-    static const SDL_DialogFileFilter filters[] = {{"Wii U game or randomized RPX (.wux, .wud, .wua, .rpx)", "wux;wud;wua;rpx"},
+                "A Wii U disc image, a Cemu archive or an extracted game folder. Randomized games go on the Randomizer page.");
+    static const SDL_DialogFileFilter filters[] = {{"Wii U game (.wux, .wud, .wua)", "wux;wud;wua"},
                                                    {"Wii U disc image (.wux, .wud)", "wux;wud"},
                                                    {"Cemu Wii U archive (.wua)", "wua"},
-                                                   {"Randomizer game code (.rpx)", "rpx"},
                                                    {"All files", "*"}};
     if (button("Choose game file...", ImVec2(320, 0), A.source_path.empty()))
-        choose_file("source", filters, 5);
+        choose_file("source", filters, 4);
     ImGui::SameLine();
     if (button("Choose extracted game folder...", ImVec2(320, 0))) choose_folder("source");
     ImGui::Spacing();
@@ -1290,6 +1580,13 @@ static void screen_source() {
         else mark(A.probe_ok ? 2 : 3);
         ImGui::TextWrapped("%s", A.probe_msg.c_str());
         muted(A.source_path);
+        if (A.source_randomized && A.installed && A.installed_version == A.version &&
+            button("Import it on the Randomizer page", ImVec2(0, 0), false, !busy())) {
+            const std::string chosen = A.source_path;
+            A.source_path.clear(), A.source_randomized = false;
+            R.loaded = false, go(Screen::Randomizer);
+            rando_import(chosen);
+        }
         ImGui::EndChild();
     }
     code_mods_choice();
@@ -1920,7 +2217,7 @@ static void start_child() {
 //   {"screen": "keys", "set": {"common_mode": "file", "common_key_file": "..."}, "when_step": "compile",
 //    "idle": true, "shot": "03-keys.png", "click": "Check keys and install"}
 // "set" fields: code_mods (boolean), decomp (boolean), model_sweep (boolean), source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
-// (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true). Screenshots are PNG files
+// (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true), rando_tab (games|new), rando_page ("0".."5"), rando_import (a folder, as if chosen with Import seed...). Screenshots are PNG files
 // of the window. The run ends (exit 0) after the last step, or with exit 2 on a 45-minute timeout.
 
 
@@ -1960,6 +2257,9 @@ static void automation_frame() {
             else if (k == "decomp") A.decomp = kv.second.t == J::Bool && kv.second.b;
             else if (k == "model_sweep") A.model_sweep = kv.second.t == J::Bool && kv.second.b;
             else if (k == "open_details") details_open = true;
+            else if (k == "rando_tab") R.select_tab = v == "new" ? 1 : 0;  // the Randomizer page's Games / New game
+            else if (k == "rando_page") R.page = std::clamp(atoi(v.c_str()), 0, 5);
+            else if (k == "rando_import") rando_import(v);  // as if chosen with Import seed...
         }
     }
     A.stable_frames++;  // frames on this screen (the "set" above runs once, at 0)
@@ -2184,6 +2484,7 @@ int main(int argc, char** argv) {
         case Screen::Save: screen_save(); break;
         case Screen::Done: screen_done(); break;
         case Screen::Fatal: screen_fatal(); break;
+        case Screen::Randomizer: screen_randomizer(); break;
         }
         if (!A.toast.empty() && ImGui::GetTime() < A.toast_until) {
             ImGui::SetCursorPos(ImVec2(ImGui::GetStyle().WindowPadding.x,

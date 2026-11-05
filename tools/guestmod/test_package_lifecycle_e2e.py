@@ -116,7 +116,7 @@ def main():
     parser.add_argument('--guest-build-config', type=Path)
     parser.add_argument('--renderer', choices=('metal', 'vulkan'), required=True)
     parser.add_argument('--region', choices=('USA', 'EU'), required=True)
-    parser.add_argument('--mode', choices=('30', 'interp60', 'true60'), default='30')
+    parser.add_argument('--mode', choices=('30', 'interp60'), default='30')
     parser.add_argument('--max-game-sessions', type=int, choices=range(1, 5), default=4)
     parser.add_argument('--timeout', type=int, default=600)
     parser.add_argument('--jobs', type=int, choices=range(1, 5), default=4,
@@ -193,7 +193,7 @@ def main():
                    WWHD_TEST_ORIGIN='2950', WWHD_TEST_END='10', WWHD_DUMP_FRAMES='3000,3002,3004',
                    WWHD_DUMP_PRESENT='1', WWHD_SIM_SCREEN='1280x720',
                    WWHD_PRESS=','.join('%d-%d:8000' % (frame, frame + 8) for frame in range(150, 2800, 30)),
-                   WWHD_TRUE60='1' if args.mode == 'true60' else '0', WWHD_INTERP='0',
+                   WWHD_INTERP='0',
                    XDG_CONFIG_HOME=str(args.out / 'config'))
         if args.mode == 'interp60':
             env['WWHD_INTERP_AT_STEP'] = '2810'

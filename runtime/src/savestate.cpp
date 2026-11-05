@@ -352,7 +352,7 @@ void build_uuid(uint8_t out[16]) {
 uint64_t game_id() {
     static const uint64_t id = [] {
         uint64_t h = 0xcbf29ce484222325ull;
-        FILE* f = fopen((config::game_dir + "/code/cking.rpx").c_str(), "rb");
+        FILE* f = fopen(randomizer::game_rpx(config::game_dir).c_str(), "rb");
         if (!f) return h;
         std::vector<uint8_t> buf(1 << 20);
         size_t n;

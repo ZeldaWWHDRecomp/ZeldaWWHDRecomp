@@ -92,7 +92,7 @@ def main():
         "WWHD_SHADER_CACHE": str(directory / "shaders.bin"),
         "WWHD_VK_SHADER_CACHE": str(directory / "vk-shaders"),
         "WWHD_RENDERER_RUNTIME": args.renderer, "WWHD_NO_CONTROLLERS": "1",
-        "WWHD_INTERP": "0", "WWHD_TRUE60": "0", "WWHD_DISPLAY_HZ": "0",
+        "WWHD_INTERP": "0", "WWHD_DISPLAY_HZ": "0",
         "WWHD_INTERP_FPS": str(60 if args.fps == 30 else args.fps),
         "WWHD_INTERP_PACED": str(int(args.paced)), "WWHD_UNCAPPED": str(int(args.uncapped)),
         "WWHD_TEST_MODE": f"{int(args.fps != 30)}@{args.activate_after_step / 30:.9f}",

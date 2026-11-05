@@ -31,6 +31,8 @@
 #include "../mods/content.h"
 #include "../mods/mod_stages_files.h"
 #include "../game_languages.h"
+#include "../randomizer_identity.h"
+#include <filesystem>
 #include "../rtl_text.h"
 #include "save_root.h"
 #include "os_time.h"
@@ -160,8 +162,27 @@ std::string host_path(const std::string& guest) {
 #endif
 }
 
+// An in-app randomized game's own file (randomizer_identity.h overlay_root: only the files the randomizer
+// changed) for a /vol/content, /vol/code or /vol/meta path; "" when it has none.
+std::string overlay_path(const std::string& guest) {
+    const std::string& root = randomizer::overlay_root();
+    if (root.empty()) return {};
+    const std::string g = !guest.empty() && guest[0] != '/' ? "/vol/content/" + guest : guest;
+    for (const char* volume : {"/vol/content", "/vol/code", "/vol/meta"}) {
+        const size_t n = strlen(volume);
+        if (g.compare(0, n, volume) != 0 || (g.size() > n && g[n] != '/')) continue;
+        std::string p = root + "/" + (volume + 5) + g.substr(n);
+#ifndef _WIN32
+        p = resolve_case(p);
+#endif
+        std::error_code ec;
+        return std::filesystem::is_regular_file(p, ec) ? p : std::string();
+    }
+    return {};
+}
+
 // Optional content mods affect read-only content access only. A content mod's file comes first, then
-// the pack of the active language source (game_languages.h: the European or Japanese pack the player
+// an in-app randomized game's changed file (overlay_path), then the pack of the active language source (game_languages.h: the European or Japanese pack the player
 // chose, read under the name the game asks for), then the installed game.
 std::string read_path(const std::string& guest,const std::string& mode="rb") {
     if(const char* trace=std::getenv("WWHD_MOD_ACTOR_HEAPS");trace&&std::string(trace)=="1"&&guest.find("/mod")!=std::string::npos)LOG("[mod_actor_fs] %s mode=%s override=%s",guest.c_str(),mode.c_str(),actor_model_cache::archive_for(guest).c_str());
@@ -170,6 +191,7 @@ std::string read_path(const std::string& guest,const std::string& mode="rb") {
     if(mode=="r"||mode=="rb")if(auto lyt=story_lyt_screen::archive_for(guest);!lyt.empty())return lyt;  // a story layout (story_lyt_screen.h)
     if(mode=="r"||mode=="rb")if(auto stage=mod_stages::archive_for(guest);!stage.empty())return stage;  // a mod stage (mod_stages.h)
     auto override=mods::content::replacement(guest,mode);
+    if(override.empty()&&(mode=="r"||mode=="rb"))override=overlay_path(guest);
     if(!override.empty())if(const char* trace=std::getenv("WWHD_TEST_CONTENT_TRACE");trace&&std::string(trace)=="1")LOG("[content-mod] read %s -> %s",guest.c_str(),override.c_str());
     if(override.empty()&&(mode=="r"||mode=="rb"))override=game_lang::redirect(guest);
     const std::string path=override.empty()?host_path(guest):override;
@@ -417,6 +439,7 @@ HLE(coreinit, FSReadDir) {
         struct stat st;
         auto path=it->second.path + "/" + de->d_name;
         auto replacement=mods::content::replacement(it->second.gpath + "/" + de->d_name);
+        if(replacement.empty())replacement=overlay_path(it->second.gpath + "/" + de->d_name);
         if(!replacement.empty())path=std::move(replacement);
         if (stat(path.c_str(), &st) != 0) continue;
         const std::string entry = it->second.gpath + "/" + de->d_name;

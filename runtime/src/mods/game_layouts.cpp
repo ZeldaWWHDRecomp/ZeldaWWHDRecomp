@@ -13,6 +13,7 @@
 
 #include "item_icons.h"
 #include "lyt_build.h"
+#include "msbt_text.h"
 
 namespace game_layouts {
 namespace {
@@ -409,7 +410,14 @@ std::mutex g_mu;
 std::string g_pack_path;
 std::map<std::string, Bytes> g_pack;  // the pack's members, read once
 bool g_pack_read = false;
-struct Archive { std::string name; std::map<std::string, Bytes> files; Layout layout; bool has_layout = false; };
+struct Archive {
+    std::string name;
+    std::map<std::string, Bytes> files;
+    Layout layout;
+    bool has_layout = false;
+    std::map<std::string, std::string> texts;  // a message archive's label -> text (message()), read once
+    bool texts_read = false;
+};
 std::list<Archive> g_archives;  // most recently used first, at most 8
 constexpr size_t kMaxArchives = 8;
 
@@ -518,6 +526,24 @@ bool pane(const std::string& spec, Pane& out) {
     const Pane* p = a->layout.find(item);
     if (!p) return false;
     out = *p;
+    return true;
+}
+
+bool message(const std::string& spec, std::string& out) {
+    std::string layout, label, material, error;
+    if (!split_spec(spec, layout, label, material) || !material.empty()) return false;
+    const std::string name = layout + "_msbt";
+    if (!name_ok(name)) return false;
+    std::lock_guard lock(g_mu);
+    Archive* a = archive(name, error);
+    if (!a) return false;
+    if (!a->texts_read) {
+        a->texts_read = true;
+        if (const auto it = a->files.find(layout + ".msbt"); it != a->files.end()) a->texts = mods::msbt::texts(it->second, false, true);
+    }
+    const auto it = a->texts.find(label);
+    if (it == a->texts.end()) return false;
+    out = it->second;
     return true;
 }
 

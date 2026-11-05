@@ -106,7 +106,7 @@ std::string make_package(const fs::path& tree, const fs::path& arc, const fs::pa
     m["version"] = "1.0.0";
     m["game_id"] = "wwhd";
     m["kind"] = kKind;
-    m["minimum_manager_version"] = "1.9.0";
+    m["minimum_manager_version"] = "1.10.0";
     if (!author.empty()) m["author"] = author;
     m["description"] = "A GameCube player model converted for HD Link. Choose it for a save file on this page; the game "
                        "shows it at once.";

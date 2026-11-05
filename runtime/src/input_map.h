@@ -84,7 +84,7 @@ constexpr float kMinStickRange = 1.0f, kMaxStickRange = 1.5f;
 // Host actions share controls.json, but do not drive GamePad inputs.
 enum Shortcut { kSettings, kFullscreen, kPhoto, kSave1, kSave2, kSave3, kSave4, kSave5,
     kLoad1, kLoad2, kLoad3, kLoad4, kLoad5, kResolution, kAO, kAOHires, kAniso,
-    kInterpolation, kTrue60, kFXAA, kPiP, kPerformance, kMute, kVolumeDown, kVolumeUp, kShortcutCount };
+    kInterpolation, kFXAA, kPiP, kPerformance, kMute, kVolumeDown, kVolumeUp, kShortcutCount };
 enum KeyModifier { kModShift = 1, kModCtrl = 2, kModAlt = 4, kModSuper = 8 };
 struct ShortcutKey {
     int code = kNoKey, mods = 0;

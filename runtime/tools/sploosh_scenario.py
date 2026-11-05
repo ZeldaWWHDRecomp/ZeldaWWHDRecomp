@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Replay Sploosh shots from a local full state; never modifies the source state/save.
 
-sploosh_scenario.py BINARY GAME SAVE_FILE STATE OUT --mode 30|60|120|true60
+sploosh_scenario.py BINARY GAME SAVE_FILE STATE OUT --mode 30|60|120
   --shots '5:5,4:4,3:6,1:6,1:5,3:5,3:7,2:2,3:2,4:2,5:2'
 
 The fixture must be an active board, cursor (0,0); supply cells from its own target
@@ -101,7 +101,7 @@ def main():
     ap = argparse.ArgumentParser(description=__doc__)
     for arg in ('binary', 'game', 'save', 'state', 'out'):
         ap.add_argument(arg, type=Path)
-    ap.add_argument('--mode', choices=('30', '60', '120', 'true60'), required=True)
+    ap.add_argument('--mode', choices=('30', '60', '120'), required=True)
     ap.add_argument('--shots', required=True)
     ap.add_argument('--renderer', choices=('metal', 'vulkan'),
                     default='metal' if sys.platform == 'darwin' else 'vulkan')
@@ -129,12 +129,12 @@ def main():
     captures = sorted({30 + s*factor + d for s in fires for d in range(-8, 17)})
     env = dict(os.environ, WWHD_HIDDEN_WINDOWS='1', WWHD_NO_HOST_INPUT='1', WWHD_NO_GAMEPAD='1',
                WWHD_NO_AUDIO='1', WWHD_RENDERER_RUNTIME=a.renderer, WWHD_DISPLAY_HZ='0',
-               WWHD_INTERP='0', WWHD_TRUE60='0', WWHD_INTERP_FPS='120' if a.mode == '120' else '60',
+               WWHD_INTERP='0', WWHD_INTERP_FPS='120' if a.mode == '120' else '60',
                WWHD_INTERP_PACED='0', WWHD_STATE_DIR='states', WWHD_SHADER_CACHE='../shaders.bin',
                WWHD_VK_SHADER_CACHE='../vulkan-cache',
                WWHD_PRESS=','.join(f'{f}-{f+8}:8000' for f in range(120, 721, 60)),
                WWHD_STATE_LOAD_AT='1000:3', WWHD_TEST_ORIGIN_LOAD='30',
-               WWHD_TEST_MODE=('2' if a.mode == 'true60' else '0' if a.mode == '30' else '1')+'@0',
+               WWHD_TEST_MODE=('0' if a.mode == '30' else '1')+'@0',
                WWHD_TEST_PRESS=presses, WWHD_TEST_END=str(end/30),
                WWHD_DUMP_LOAD_FRAMES=','.join(map(str, captures)), WWHD_SAVEINFO_DUMP='saveinfo.bin',
                WWHD_ACTOR_DUMP='board.bin:021C5634:6E8', WWHD_SE_TRACE='sounds.txt', WWHD_INTERP_MODEL_TRACE='1000000',

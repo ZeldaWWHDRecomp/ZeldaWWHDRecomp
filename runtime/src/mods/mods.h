@@ -67,7 +67,7 @@ bool walk_doors_by_a();           // walk-through doors open with A (the game's 
 void set_walk_doors_by_a(bool on);
 bool walk_door_exit();            // walk_doors.cpp: Link went into the doorway of a house door: its scene change runs fast
 void walk_doors_reset();          // game thread after a save state load
-// fpcM_Execute's per-process gate (true60.cpp): a door's execute runs walk_doors.cpp's for this call
+// fpcM_Execute's hook (game_hooks.cpp): a door's execute runs walk_doors.cpp's for this call
 class DoorExecuteWrap {
 public:
     explicit DoorExecuteWrap(uint32_t proc);
@@ -177,11 +177,11 @@ void pad_play_rules(input::PadState& p);
 uint32_t jump_touch_buttons();
 // ---- the item ring (item_ring.cpp; rules in item_ring.h) ----
 // the active controller's pad read (VPADRead, or KPADReadEx in Pro Controller mode), after the play rules:
-// X / Y / R held back or opening the ring; `repeat`: true 60's repeated buttons (only the stick is kept)
+// X / Y / R held back or opening the ring; `repeat`: interpolation's repeated read (only the stick is kept)
 void item_ring_pad(input::PadState& p, bool repeat);
-// frame boundary (interp.cpp, every pass): the equip, the pace, the ring drawn. `full`: a full logic step
-// follows; `half60`: true 60's half pass (Link's 60 Hz half step) follows
-void item_ring_service(Cpu* c, bool full, bool half60);
+// frame boundary (interp.cpp, every pass): the equip, the pace, the ring drawn. `full`: a logic step
+// follows
+void item_ring_service(Cpu* c, bool full);
 void item_ring_reset();          // a state load
 bool item_ring_open();
 void item_ring_finger(int button, bool down, float dx, float dy);  // Android: the finger on X / Y / R
@@ -215,7 +215,7 @@ int zl_latch_mode();  // touchplay::ZlLatch: 0 off, 1 let go (default), 2 next t
 void set_zl_latch_mode(int mode);
 // ---- talks, answers, shops... by touch or mouse, and hold to go on (touch_talk.cpp; rules in touch_talk.h) ----
 // the active controller's pad read, after the touch controls' rules: the fingers' presses and stick pushes,
-// the held A; `repeat`: true 60's repeated read (the pushed stick stays)
+// the held A; `repeat`: interpolation's repeated read (the pushed stick stays)
 void touch_talk_pad(input::PadState& p, bool repeat);
 void touch_talk_reset();  // a state load
 // code mods (guest_mods.cpp, guest_live.h): the touches their claims got and their input filters, on the game's

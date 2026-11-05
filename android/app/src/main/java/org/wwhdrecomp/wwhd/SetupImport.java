@@ -124,6 +124,12 @@ public final class SetupImport {
         JSONObject source = SetupStore.read(new File(job, "source.json"));
         if (source.getInt("schema") != 1) throw new IOException("Unsupported input selection version");
         String kind = source.getString("kind");
+        if (kind.equals("installed")) {  // a randomized game from the installed game (no copy: the game stays where it is)
+            JSONObject result = new JSONObject().put("schema", 1)
+                .put("input", new JSONObject().put("kind", "installed").put("path", source.getString("path")));
+            SetupStore.write(configuration, result);
+            return result;
+        }
         if (!kind.equals("folder") && !kind.equals("archive") && !kind.equals("image"))
             throw new IOException("Unsupported input selection");
         control.checkpoint();
@@ -179,6 +185,9 @@ public final class SetupImport {
             control.progress(copied, total, index + 1, files.length());
         }
         JSONObject input = new JSONObject().put("kind", kind).put("path", kind.equals("folder") ? "input/game" : "input/dump");
+        // a seed made with the official randomizer (Randomized game... > Import a seed...): built beside the installed game
+        if (kind.equals("folder") && source.has("seed_import"))
+            input.put("seed_import", new JSONObject().put("installed", source.getJSONObject("seed_import").getString("installed")));
         // An older release may have been killed after copying keys, before publishing job.json.
         if (kind.equals("image")) for (String key : new String[] {"disc", "common"}) {
             if (new File(job, "input/" + key + ".key").isFile()) input.put(key + "_key", "input/" + key + ".key");

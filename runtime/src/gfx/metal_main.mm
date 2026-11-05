@@ -315,6 +315,7 @@ void clear_color(const uint32_t* regs, uint32_t cb, const float rgba[4]) {
     Surface* s = surface_from_color_buffer(cb, &first, &num);
     if (log_this_frame() && s)
         LOG("[clear] color %08X %ux%u fmt %X -> %.3f %.3f %.3f %.3f", s->addr, s->width, s->height, s->format, rgba[0], rgba[1], rgba[2], rgba[3]);
+    if (s) gamepad_backdrop_clear(s);
     clear_surface(s, rgba, false, 0, false, 0, first, num);
 }
 
@@ -371,6 +372,7 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
             sourceSize:MTLSizeMake(w, h, 1) toTexture:scr.tex destinationSlice:0 destinationLevel:0
      destinationOrigin:MTLOriginMake(0, 0, 0)];
     [b endEncoding];
+    if (!(target & 1)) gamepad_backdrop_scan(s);
     if (target & 1) ::mods::draw_overlay(command_buffer(), scr.tex);  // HUD of gameplay mods (stamina wheel)
 }
 
@@ -582,6 +584,7 @@ void swap() {
     if (const char* dir = capture_begin_frame()) pendingCapture = dir;
     @autoreleasepool {
         present_screens();
+        gamepad_backdrop_maintain();
         [command_buffer() addCompletedHandler:^(id<MTLCommandBuffer>) { g_frames_completed++; }];
         flush();
     }

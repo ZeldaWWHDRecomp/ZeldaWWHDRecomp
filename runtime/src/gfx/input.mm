@@ -34,7 +34,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../runtime.h"
 #include "../savestate.h"
 #include "../screenshot.h"
-#include "../true60.h"
+#include "../game_hooks.h"
 #include "../rumble.h"
 #include "../motion/motion.h"
 #include "../overlay/overlay.h"
@@ -1088,7 +1088,7 @@ static std::vector<Stick> scripted_stick(const char* var = "WWHD_STICK") {
 //   WWHD_TEST_STICK=2-5:0:1,...   left stick (x, y) from 2 s to 5 s
 //   WWHD_TEST_RSTICK=2-5:1:0,...  right stick
 //   WWHD_TEST_PRESS=3-3.1:8000    buttons (hex)
-//   WWHD_TEST_MODE=2@0.5          60 fps mode at 0.5 s (0 off, 1 interpolation, 2 true 60)
+//   WWHD_TEST_MODE=1@0.5          60 fps mode at 0.5 s (0 off, 1 interpolation; 2, the retired True 60, = 1 at 60 fps)
 //   WWHD_TEST_END=12              writes the file "test_done" at 12 s (the test script stops the game)
 namespace {
 struct TimedStick { double from, to; float x, y; };
@@ -1128,7 +1128,7 @@ struct Scenario {
 }  // namespace
 }  // namespace input
 namespace interp { void set_mode(int m); uint64_t logic_steps(); }
-namespace true60_test { void tick(double t, bool ended); void set_origin_step(uint64_t s); }
+namespace test_aids { void tick(double t, bool ended); void set_origin_step(uint64_t s); }
 namespace input {
 // WWHD_TEST_TOUCH=t0-t1:x:y,...: touches the GamePad screen at (x, y) (0..1) during scenario times
 static bool g_test_touch = false;
@@ -1139,13 +1139,13 @@ static void apply_scenario(PadState& s) {
     // load completes asynchronously, so a fixed frame can fall a step apart between two runs)
     static const char* ol = getenv("WWHD_TEST_ORIGIN_LOAD");
     uint64_t ol_step = 0;
-    // (the clock is the number of Link's full-pass executes since the load, true60::link_steps: the
+    // (the clock is the number of Link's executes since the load, game_hooks::link_steps: the
     // pass at which a load lands differs between runs, and the steps after it are the game's)
     if (ol) {
-        if (!true60::state_loaded()) return;
+        if (!game_hooks::state_loaded()) return;
         static uint64_t found = 0;
         if (!found) {
-            int64_t past = (int64_t)true60::link_steps() - (int64_t)strtoull(ol, nullptr, 10);
+            int64_t past = (int64_t)game_hooks::link_steps() - (int64_t)strtoull(ol, nullptr, 10);
             if (past < 0) return;
             found = interp::logic_steps() - (uint64_t)past;  // the logic step at which the count reached it
         }
@@ -1159,12 +1159,12 @@ static void apply_scenario(PadState& s) {
         if (ol_step) {
             LOG("[test] origin at logic step %llu (load + WWHD_TEST_ORIGIN_LOAD), logic step %llu", (unsigned long long)ol_step,
                 (unsigned long long)ol_step);
-            true60_test::set_origin_step(ol_step);
+            test_aids::set_origin_step(ol_step);
             return ol_step;
         }
         LOG("[test] origin at guest time %.4f s, logic step %llu", (double)timebase::now() / timebase::kTicksPerSec,
             (unsigned long long)interp::logic_steps());
-        true60_test::set_origin_step(interp::logic_steps());
+        test_aids::set_origin_step(interp::logic_steps());
         return interp::logic_steps();
     }();
     // (with WWHD_TEST_ORIGIN_LOAD: the game's own step counter, which the load restores, is the clock)
@@ -1176,7 +1176,7 @@ static void apply_scenario(PadState& s) {
         LOG("[test] t=%.3f s: 60 fps mode %d", t, sc.mode);
         interp::set_mode(sc.mode);
     }
-    // WWHD_TEST_MODES=m@t,m@t,...: further mode switches (0 off, 1 interpolation, 2 true 60)
+    // WWHD_TEST_MODES=m@t,m@t,...: further mode switches (0 off, 1 interpolation)
     static std::vector<std::pair<double, int>> modes = [] {
         std::vector<std::pair<double, int>> v;
         for (const char* e = getenv("WWHD_TEST_MODES"); e && *e;) {
@@ -1195,7 +1195,7 @@ static void apply_scenario(PadState& s) {
             interp::set_mode(m);
             m = -1;
         }
-    true60_test::tick(t, sc.end > 0 && t >= sc.end);  // test aids (true60_test.cpp)
+    test_aids::tick(t, sc.end > 0 && t >= sc.end);  // test aids (test_aids.cpp)
     if (sc.end > 0 && t >= sc.end && !ended.exchange(true)) {
         LOG("[test] t=%.3f s: end", t);
         #ifdef WWHD_HAS_VULKAN

@@ -99,7 +99,7 @@ def main():
     p.add_argument("--state", required=True, help="portable save state (.wwstate) to load")
     p.add_argument("--slot", type=int, default=4)
     p.add_argument("--scene", choices=sorted(run_bench.SCENES), default="still")
-    p.add_argument("--mode", choices=["30", "60", "true60"], default="30")
+    p.add_argument("--mode", choices=["30", "60"], default="30")
     p.add_argument("--seconds", type=float, default=120, help="measured game seconds")
     p.add_argument("--warmup", type=float, default=10, help="seconds after the load excluded from the results")
     p.add_argument("--load-frame", type=int, default=3400, help="TV frame of the state load (A presses before it)")
@@ -133,7 +133,7 @@ def main():
     # lower file system's permissions, so it needs them open (files pushed into game/ likewise)
     shell(args.serial, "chmod a+rwX %s/bench && chmod -R a+rwX %s" % (shlex.quote(files), shlex.quote(remote)))
 
-    fps = {"30": 30, "60": 60, "true60": 60}[args.mode]
+    fps = {"30": 30, "60": 60}[args.mode]
     origin = args.load_frame + 60  # input and the mode switch start a little after the load
     _, stick, rstick = run_bench.SCENES[args.scene]
     presses = ",".join("%d-%d:8000" % (f, f + 8) for f in range(max(0, args.load_frame - 2200), args.load_frame, 60))
@@ -155,12 +155,9 @@ def main():
         env["WWHD_TEST_RSTICK"] = rstick
     if args.mode == "30":
         env["WWHD_INTERP"] = "0"
-    elif args.mode == "60":
-        env["WWHD_INTERP"] = "0"
-        env["WWHD_INTERP_AT_STEP"] = str(origin)
     else:
         env["WWHD_INTERP"] = "0"
-        env["WWHD_TRUE60_AT_STEP"] = str(origin)
+        env["WWHD_INTERP_AT_STEP"] = str(origin)
     if args.worker is not None:
         env["WWHD_VK_RECORD_WORKER"] = args.worker
     for item in args.env:

@@ -11,19 +11,18 @@
 using namespace mods;
 
 static void test_distance() {
-    // The site multiplies the horizontal speed by the factor, composed with true60's dt. One second
-    // of movement must be exactly `factor` times the unboosted distance at any rate and logic mode.
+    // The site multiplies the horizontal speed by the factor. One second of movement must be exactly
+    // `factor` times the unboosted distance at any drawn rate (30 logic steps a second).
     for (auto proc : {kProcMove, kProcSwimMove})
         for (float factor : {1.25f, 1.5f, 2.f, 4.f})
-            for (int rate : {30, 60, 120, 240})
-                for (bool true60 : {false, true}) {
-                    float distance = 0;
-                    const int logic = true60 ? 60 : 30;
-                    for (int frame = 0; frame < rate; ++frame)
-                        for (int n = frame * logic / rate; n < (frame + 1) * logic / rate; ++n)
-                            distance += 10.f * (true60 ? .5f : 1.f) * move_target(true, proc, factor, factor);
-                    assert(std::abs(distance / 300.f - factor) < 1e-6f);
-                }
+            for (int rate : {30, 60, 120, 240}) {
+                float distance = 0;
+                constexpr int logic = 30;
+                for (int frame = 0; frame < rate; ++frame)
+                    for (int n = frame * logic / rate; n < (frame + 1) * logic / rate; ++n)
+                        distance += 10.f * move_target(true, proc, factor, factor);
+                assert(std::abs(distance / 300.f - factor) < 1e-6f);
+            }
 }
 
 static void test_target() {

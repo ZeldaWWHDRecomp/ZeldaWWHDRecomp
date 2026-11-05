@@ -97,7 +97,6 @@
 #include "story_treasure_chest.h"
 #include "mod_json.h"
 #include "input.h"
-#include "true60.h"
 #include "guest_addr.h"
 #include <atomic>
 #include <limits>
@@ -751,7 +750,7 @@ void svc_input(Cpu* c) {
     st32(a,p.buttons);stf32(a+4,p.lx);stf32(a+8,p.ly);stf32(a+12,p.rx);stf32(a+16,p.ry);
     st32(a+20,p.touch);stf32(a+24,p.tx);stf32(a+28,p.ty);
 }
-void svc_logic_dt(Cpu* c) {c->f[1].ps0=double(true60::dt())/30.0;}
+void svc_logic_dt(Cpu* c) {c->f[1].ps0=1.0/30.0;}  // one 30 Hz logic step (every mode)
 void svc_logic_step(Cpu* c) {uint64_t step=g_logic_step.load(std::memory_order_relaxed);c->r[3]=uint32_t(step>>32);c->r[4]=uint32_t(step);}
 bool setting_buffer(const Loaded& mod,uint32_t address,uint32_t bytes) {
     return address>=mod.m->mem_base&&uint64_t(address)+bytes<=uint64_t(mod.m->mem_base)+mod.region_size;
@@ -825,6 +824,24 @@ void svc_setting_get(Cpu* c) {
         if(!destination&&!capacity){c->r[3]=4;return;}
         if(capacity<4||!setting_buffer(mod,destination,4))return;
         st32(destination,maphud::capability());c->r[3]=4;return;
+    }
+    if(key=="hud.mirrored-images.version"||key=="layout-message.version"){  // HUD v3 (wwhd_guest.h)
+        c->r[3]=0;if(expected!=settings::Unsigned)return;
+        if(!destination&&!capacity){c->r[3]=4;return;}
+        if(capacity<4||!setting_buffer(mod,destination,4))return;
+        st32(destination,key[0]=='h'?hud::kMirroredImagesVersion:game_layouts::kMessageVersion);c->r[3]=4;return;
+    }
+    // "layout-message:<Layout>/<label>": the game's own text of a label of a layout's message file, in the
+    // language the game runs in (game_layouts::message). Only names reach the pack reader; the text is copied
+    // whole (with its NUL) into the mod's own memory or not at all.
+    if(key.rfind("layout-message:",0)==0){
+        c->r[3]=0;if(expected!=settings::String)return;
+        std::string text;
+        if(!game_layouts::message(key.substr(15),text)||text.size()>=game_layouts::kMaxMessageBytes)return;
+        const uint32_t bytes=uint32_t(text.size()+1);
+        if(!destination&&!capacity){c->r[3]=bytes;return;}
+        if(capacity<bytes||!setting_buffer(mod,destination,bytes))return;
+        memcpy(mem::ptr(destination),text.c_str(),bytes);c->r[3]=bytes;return;
     }
     auto value=settings::read(key);c->r[3]=0;
     if(!value||value->type()!=expected)return;

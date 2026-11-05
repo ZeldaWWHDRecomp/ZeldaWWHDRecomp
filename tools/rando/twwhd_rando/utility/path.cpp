@@ -1,0 +1,83 @@
+#include "utility/path.hpp"
+
+#include <version.hpp>
+#include <utility/file.hpp>
+
+#ifdef QT_GUI
+    #if defined(__APPLE__) || defined(__linux__)
+        #include <QStandardPaths>
+    #else
+        #include <QCoreApplication>
+    #endif
+#endif
+
+#ifdef WWHD_APP
+namespace wwhd_rando {
+fspath data_path, save_path;
+}
+#endif
+
+namespace Utility {
+    fspath get_data_path() {
+        #ifdef QT_GUI
+            #ifdef EMBED_DATA
+                return ":/";
+            #else
+                return fromQString(QCoreApplication::applicationDirPath()) / "data/";
+            #endif
+        #elif defined(WWHD_APP)
+            return wwhd_rando::data_path; // WWHD: set by the app before each run
+        #elif defined(DEVKITPRO)
+            return "/vol/content/";
+        #elif defined(APPLE)
+            return "../../../data/";
+        #else
+            return "./data/";
+        #endif
+    }
+
+    fspath get_app_save_path() {
+        fspath path;
+        #if (defined(__APPLE__) || defined(__linux__)) && defined(QT_GUI)
+            path = fromQString(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation));
+        #elif defined(QT_GUI)
+            path = fromQString(QCoreApplication::applicationDirPath());
+        #elif defined(WWHD_APP)
+            return wwhd_rando::save_path;
+        #elif defined(DEVKITPRO)
+            return "/vol/save/";
+        #else
+            return "./";
+        #endif
+        
+        if (!std::filesystem::is_directory(path))
+        {
+            Utility::create_directories(path);
+        }
+
+        return path;
+    }
+
+    fspath get_logs_path() {
+        const fspath path = get_app_save_path() / "logs/";
+
+        if (!std::filesystem::is_directory(path))
+        {
+            Utility::create_directories(path);
+        }
+
+        return path;
+    }
+
+    fspath get_temp_dir() {
+        // could get the OS-provided temp folder with Qt but it might be harder to find and debug should we use it for anything
+        const fspath path = get_app_save_path() / "temp/";
+
+        if (!std::filesystem::is_directory(path))
+        {
+            Utility::create_directories(path);
+        }
+
+        return path;
+    }
+}

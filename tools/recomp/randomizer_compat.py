@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Automatic compatibility checks for USA randomized RPX files.
+"""Automatic compatibility checks for randomized RPX files (USA; EU from the in-app randomizer's port of its patches).
 
 The shipped profile contains hashes and layout facts, never game instructions. It
 covers the port's hook sites and their containing functions. It is a hook-clash
@@ -23,6 +23,9 @@ RPX_LIMITS = dict(file=32 << 20, section=32 << 20, inflated=64 << 20,
                   sections=128, symbols=8192, relocations=500000,
                   name=1024, name_bytes=1 << 20)
 PROFILE = Path(__file__).with_name('randomizer-usa.json')
+# one profile per build the randomizer can be run on, chosen by the randomized RPX's entry point (the randomizer
+# never moves it; the releases' differ)
+PROFILES = [PROFILE, Path(__file__).with_name('randomizer-eu.json')]
 # Short instruction sequences (including li/blr) must not expose enumerable digests.
 # Group every body below 64 bytes with all hook words in one canonical aggregate.
 MIN_FUNCTION_HASH_BYTES = 64
@@ -78,9 +81,14 @@ def range_profile(rpx, points, ranges):
                 guard_sha256=guard_digest(rpx, points, tiny))
 
 
+def base_build(profile):
+    """the build of the game a profile was made from (tools/recomp/builds.py), or None"""
+    return builds.by_sha256(profile.get('base_sha256', ''))
+
+
 def check(rpx, profile, hooks, entry):
-    if profile.get('format') != 2 or profile.get('base_sha256') != builds.canonical_build().sha256:
-        raise CompatibilityError('randomizer compatibility profile does not match the supported USA build')
+    if profile.get('format') != 2 or base_build(profile) is None:
+        raise CompatibilityError('randomizer compatibility profile does not match a supported build')
     if hook_digest(hooks) != profile['hooks_sha256']:
         raise CompatibilityError('randomizer compatibility profile needs updating for this port hook set')
     if entry != profile['entry_point']:
@@ -121,6 +129,17 @@ def check(rpx, profile, hooks, entry):
                 hook_points_checked=len(profile['points']), functions_checked=len(profile['functions'])+len(profile['tiny_functions']))
 
 
+def randomized_build(base, rpx_sha256):
+    """the identity of a randomized RPX made from `base`: base's address map, the randomizer's title, its own hash"""
+    if base.canonical:
+        return builds.Build(dict(name=base.name, title_id=TITLE_ID, rpx_sha256=rpx_sha256))
+    for path in sorted(Path(builds.HERE, 'builds').glob('*.json')):
+        d = json.loads(path.read_text(encoding='utf-8'))
+        if d.get('rpx_sha256') == base.sha256:
+            return builds.Build(dict(d, title_id=TITLE_ID, rpx_sha256=rpx_sha256))
+    raise CompatibilityError('no address map for the %s build' % base.name)
+
+
 def identify(path, profile=None, expected_sha256=None):
     """Return a private USA identity map and audit for this compatible randomized RPX.
 
@@ -139,8 +158,17 @@ def identify(path, profile=None, expected_sha256=None):
     if expected_sha256 is not None and actual != expected_sha256:
         raise CompatibilityError('randomized RPX changed after the setup compatibility check')
     if profile is None:
-        profile = json.loads(PROFILE.read_text(encoding='utf-8'))
-    hooks, _ = builds.read_hooks(builds.hook_files(), builds.canonical_build())
+        entry = struct.unpack_from('>I', header, 0x18)[0]
+        for candidate in PROFILES:
+            if candidate.is_file():
+                p = json.loads(candidate.read_text(encoding='utf-8'))
+                if p.get('entry_point') == entry:
+                    profile = p
+                    break
+        if profile is None:  # (the USA profile's checks say what does not match)
+            profile = json.loads(PROFILE.read_text(encoding='utf-8'))
+    base = base_build(profile) or builds.canonical_build()  # (check() refuses a profile of an unknown build)
+    hooks, _ = builds.read_hooks(builds.hook_files(), base)
     try:
         rpx = Rpx(str(path), limits=RPX_LIMITS)
         if rpx.buffer_sha256 != actual:
@@ -153,7 +181,7 @@ def identify(path, profile=None, expected_sha256=None):
         raise CompatibilityError('randomizer input has an invalid RPX section or symbol table') from error
     if builds.file_sha256(path) != actual:
         raise CompatibilityError('randomized RPX changed during compatibility checking')
-    build = builds.Build(dict(name='USA', title_id=TITLE_ID, rpx_sha256=actual))
+    build = randomized_build(base, actual)
     build.randomizer = True
     report['rpx_sha256'] = actual
     build.randomizer_report = report

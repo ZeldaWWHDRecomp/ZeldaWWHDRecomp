@@ -13,7 +13,7 @@
 #include "../motion/motion.h"
 #include "../rumble.h"
 
-namespace interp { bool repeat_input(); bool fresh_sticks(); uint64_t logic_steps(); }
+namespace interp { bool repeat_input(); uint64_t logic_steps(); }
 
 namespace {
 constexpr int32_t kWpadErrNone = 0, kWpadErrNoController = -1;
@@ -86,14 +86,8 @@ HLE(padscore, KPADReadEx) {
     const bool repeat = interp::repeat_input();
     input::PadState p = repeat ? last_p : crashrec::read(1);  // see interp.cpp; crash recovery records/replays it
     if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
-    uint32_t live_virt = p.virt;  // as VPADRead: the virtual inputs as read now, also on half steps
-    bool live = !repeat;
-    if (repeat && interp::fresh_sticks()) {  // true 60: sticks every pass, buttons on full passes
-        input::PadState f = input::read();
-        p.lx = f.lx; p.ly = f.ly; p.rx = f.rx; p.ry = f.ry;
-        live_virt = f.virt;
-        live = true;
-    }
+    const uint32_t live_virt = p.virt;  // as VPADRead: the virtual inputs as read now
+    const bool live = !repeat;
     if (input::pro_controller() && chan == 0) mods::item_ring_pad(p, repeat);  // X / Y / R: tap, or hold for the item ring
     if (input::pro_controller() && chan == 0) mods::context_touch_pad(p, repeat);  // touch play: items by tap, put-away, ZL latch
     if (input::pro_controller() && chan == 0) mods::touch_talk_pad(p, repeat);  // talks, answers, shops by touch; hold to go on

@@ -201,17 +201,25 @@ int main() {
         assert(g::scale_choice(1.0f) == 0 && g::scale_choice(1.5f) == 1 && g::scale_choice(2.0f) == 2 && g::scale_choice(3.0f) == 3);
         assert(g::scale_choice(1.2f) == 0 && g::scale_choice(2.6f) == 3 && g::scale_choice(0.5f) == 0);
         assert(g::rate_choice(0, 60) == 0 && g::rate_choice(1, 40) == 1 && g::rate_choice(1, 60) == 2);
-        assert(g::rate_choice(1, 120) == 3 && g::rate_choice(1, 240) == 4 && g::rate_choice(2, 40) == g::kTrue60);
+        assert(g::rate_choice(1, 120) == 3 && g::rate_choice(1, 240) == 4 && g::kRateCount == 6);
         for (int c = 0; c < g::kRateCount; c++) {  // every choice round-trips
             const g::Rate r = g::rate_of(c);
-            assert(g::rate_choice(r.mode, r.fps ? r.fps : 60) == c);
+            assert(g::rate_choice(r.mode, r.fps ? r.fps : 60, r.generated) == c);
         }
-        assert(g::rate_of(0).mode == 0 && g::rate_of(2).mode == 1 && g::rate_of(2).fps == 60 && g::rate_of(g::kTrue60).mode == 2);
+        assert(g::rate_of(0).mode == 0 && g::rate_of(2).mode == 1 && g::rate_of(2).fps == 60);  // (no True 60 choice)
+        // 60 fps (generated): the last choice, at mode 0; every other choice turns it off; while another
+        // 60 fps mode runs the page shows that one (frame generation does not run then)
+        assert(g::kGenerated == g::kRateCount - 1 && g::rate_of(g::kGenerated).generated && g::rate_of(g::kGenerated).mode == 0);
+        for (int c = 0; c < g::kGenerated; c++) assert(!g::rate_of(c).generated);
+        assert(g::rate_choice(0, 60, true) == g::kGenerated && g::rate_choice(0, 60, false) == 0);
+        assert(g::rate_choice(1, 60, true) == 2 && g::rate_of(g::kRateCount).mode == 0 && !g::rate_of(g::kRateCount).generated);
         assert(g::dyn_choice(0) == 0 && g::dyn_choice(0.75f) == 1 && g::dyn_choice(0.5f) == 2 && g::dyn_choice(0.55f) == 2);
         // its words are translated (French, German, Italian, Spanish), as the other tabs'
         const char* words[] = {"Graphics", "Internal resolution", "Frame rate", "Dynamic resolution", "Bloom", "Edge smoothing (FXAA)",
                                "Anisotropic filtering (16x)", "Clouds", "Cloud shadows", "Full-size torchlight", "Down to 75%",
-                               "Down to 50%", "30 fps (original)", "Toon (Lite)", "Toon (High)"};
+                               "Down to 50%", "30 fps (original)", "60 fps (generated, experimental)", "Toon (Lite)", "Toon (High)",
+                               "40 fps and more add in-between frames; the game logic keeps its 30 steps. Generated: "
+                               "every other frame made on the graphics chip."};
         for (const char* w : words)
             for (uint32_t lang = 2; lang <= 5; lang++) assert(game_settings_text::table().count(w) && !game_settings_text::tr(w, lang).empty());
         assert(game_settings_text::tr("Graphics", 3) == "Grafik");

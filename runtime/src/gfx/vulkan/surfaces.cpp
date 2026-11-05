@@ -1,3 +1,5 @@
+#include "vulkan_error.h"
+#include "gamepad_backdrop.h"
 #include "background_shaders.h"
 #include "pass.h"
 #include "deferred_dispatch.h"
@@ -30,6 +32,7 @@
 #include "gx2_texture_regs.h"
 #include "runtime.h"
 #include "dynres.h"
+#include "reproj.h"
 #include "platform/memory_trim.h"
 #include <algorithm>
 #include <numeric>
@@ -93,7 +96,11 @@ static const LatteAddrLib::AddrSurfaceInfo_OUT& guest_info(const Surface* s, uin
     return cached.info;
 }
 static void check_vk(VkResult result, const char* what) {
-    if (result != VK_SUCCESS) exception_report::raise(std::string("Vulkan surfaces: ")+what+" failed ("+std::to_string(result)+")");
+    if (result != VK_SUCCESS) {
+        VulkanFailure failure(result,(std::string("Vulkan surfaces: ")+what).c_str());
+        exception_report::record(failure.what());
+        throw failure;
+    }
 }
 static uint64_t content_hash(const uint8_t* p, size_t n) {
     // Full-byte coverage, including unaligned guest ranges and the final tail.
@@ -809,6 +816,7 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
 }
 void destroy_surface_image(Surface* s) {
     if (!s) return;
+    gamepad_backdrop_invalidate(s);
     if (s->mipChain) { destroy_surface_image(s->mipChain.get()); s->mipChain.reset(); }
     if (!s->spares.empty()) release_spares(s);
     if(!s->image)return;
@@ -1738,6 +1746,7 @@ void upload_surface(Surface* s) {
 void clear_color(const uint32_t*,uint32_t cb,const float rgba[4]) {
     uint32_t first,num;auto* s=surface_from_color_buffer(cb,&first,&num);if(!s)return;
     if(s->fmt.depth||s->fmt.compressed)exception_report::raise("GX2 clear color requires an uncompressed color surface");
+    gamepad_backdrop_invalidate(s);
     VkClearColorValue value{};
     for(unsigned i=0;i<4;++i) {
         double integerValue = std::isnan(rgba[i]) ? 0.0 : double(rgba[i]);
@@ -1769,9 +1778,13 @@ void clear_depth_stencil(const uint32_t*,uint32_t db,float depth,uint32_t stenci
     uint32_t first,num;auto* s=surface_from_depth_buffer(db,&first,&num);if(!s)return;
     VkImageAspectFlags aspects=0;if(flags&1)aspects|=VK_IMAGE_ASPECT_DEPTH_BIT;if((flags&2)&&s->fmt.stencil)aspects|=VK_IMAGE_ASPECT_STENCIL_BIT;
     if(!aspects)return;
+    // 60 fps (generated, reproj.cpp): a second 3D pass of the frame keeps the first one's depth (only while on)
+    const bool framegen=reproj::enabled()&&(flags&1);
+    if(framegen)reproj::depth_clearing(s);
     end_encoder();transition_image(s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
     VkClearDepthStencilValue value{depth,stencil};VkImageSubresourceRange range{aspects,0,1,first,num};
     record::vkCmdClearDepthStencilImage(command_buffer(),s->image,s->layout,&value,1,&range);mark_gpu_written(s);
+    if(framegen)reproj::depth_cleared(s);
 }
 // ---------------------------------------------------------------- write-back to guest memory
 // Render results stay on the GPU, except where the game reads them with the CPU: render targets and
@@ -2065,6 +2078,7 @@ void invalidate_surface_cache(decltype(Renderer::surfaces)& surfaces,
     });
 }
 void ss_reset_surfaces() {
+    gamepad_backdrop_reset();
     R.mainDepthAddr = 0;
     bgshaders::tracker().forget();
     ++g_surface_epoch;

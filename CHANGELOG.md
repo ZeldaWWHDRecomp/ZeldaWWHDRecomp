@@ -7,6 +7,38 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mod SDK: mirrored HUD images and the game's own layout texts** (#434, from the HD minimap's SDK proposal in
+  ZeldaWWHDMods #33, thanks @francosang). For mod authors: a HUD image drawn with reversed UVs now shows mirrored, and
+  `wwhd_game_message_get("layout-message:<Layout>/<label>", …)` returns the game's own text for a layout label in the
+  language the game runs in (read from your game files). Mods check `hud.mirrored-images.version` /
+  `layout-message.version` first, so they keep working on older versions. HUD API 3, mod manager 1.9.0.
+- **True 60 is retired** (#407). The experimental "True 60" frame rate (Link and the camera at 60 game steps a second)
+  was broken in many places and is gone from the Settings window, the pause menu's Graphics page and the Graphics
+  menu; key 7 does nothing now. **If you had True 60 selected, the game starts with 60 fps frame interpolation
+  instead**: the game logic runs its original 30 steps a second and in-between frames are added. Nothing to do on your
+  side. For mod authors: `render.true60` still exists and always reads 0, and `wwhd_logic_dt` is always one 30 Hz step.
+- **Randomizer built in: make randomized games in setup** (#430, the in-app approach from the GreenNaugahyde Android
+  fork, thanks @GreenNaugahyde; randomizer: TWWHD Randomizer 1.2.0, MIT). Setup's **Randomized games** page makes a
+  seed from a preset, a seed name or a permalink, checks it against the port and builds it; **Settings › Randomizer**
+  in the game shows the seed, its permalink and (after a question) the spoiler log with a sea-chart map. Works for USA
+  and European games and on Android. Every randomized game has its own saves, backups and save states; your normal
+  save is never touched.
+- **Randomizer: Import seed** (#431). A game made with the official TWWHD Randomizer is added with **Import seed…** on
+  the same page (or `setup --import-seed PATH`); only the changed files are kept. **Choose your game and
+  `setup --game-dir` no longer accept a randomized game folder** — install the game as it is, then import the seed.
+  Randomized games installed the old way keep updating and keep their saves.
+- **60 fps (generated), experimental** (#425, from the GreenNaugahyde and Nycolazs Android forks, thanks
+  @GreenNaugahyde and @Nycolazs). On Vulkan, Graphics › Frame rate › **60 fps (generated, experimental)** keeps the
+  game at 30 fps and generates every other frame on the GPU from the last real one (camera and object movement, with
+  the HUD kept exact). Off by default; not yet checked on a phone. Not available on Metal (on a Mac, use the Vulkan
+  renderer).
+- **Vulkan: continued draws pick the right colour targets after a scissor change** (#399, thanks @DaniXK-96). A draw
+  that continued the previous one could keep its colour targets even when a new scissor changed which targets are
+  active. They're now rechecked whenever the scissor changes. No known visible glitch; a correctness fix.
+- **GamePad screen: bars filled with the menu background** (#397). Where the GamePad picture doesn't fill the screen
+  (the Thor's second screen, phones in GamePad-only mode, the GamePad window), the bars around it now show the menu's
+  own background instead of black. **On by default**; switch it off in **Settings → Display → Fill GamePad bars with
+  background** to keep black bars. With it off the picture is exactly as before.
 - **For mod authors: mods can require an exact game build** (#429, split from #385). A manifest can list
   `supported_game_builds` (for example `["USA"]`); the manager then refuses the mod on a port built for another game
   version before any of its content or code is used. Needs `minimum_manager_version` 1.8.0.

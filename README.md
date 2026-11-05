@@ -482,7 +482,7 @@ in the **Shortcuts** menu.
 
 The **Graphics** menu in the menu bar switches fixes and enhancements while playing (the TV
 window title shows what is active and the current frame rate): 60 fps by frame interpolation
-(**6**; 120 and 240 fps in the menu and the settings overlay), true 60 fps (**7**, experimental), internal resolution 1x / 1.5x / 2x / 3x (**R**
+(**6**; 120 and 240 fps in the menu and the settings overlay), internal resolution 1x / 1.5x / 2x / 3x (**R**
 cycles; the game renders at 1280x720, 2x renders at 2560x1440), edge smoothing (FXAA, **8**),
 ambient-occlusion mode (**O** cycles), full-size occlusion depth (**M**), full-size torchlight, 16x anisotropic
 filtering (**N**), the aspect ratio, the renderer (Metal or Vulkan), **Take Screenshot** (**F10**,
@@ -521,11 +521,6 @@ off and must be enabled explicitly. If HDR is unavailable, output falls back to 
 note in the Graphics overlay. Default calibration is 240-nit paper white, 1025-nit peak,
 -0.32 EV exposure, 0.32 highlight expansion and 160-nit settings menus. Calibrate for the display
 in use. PNG screenshots remain SDR.
-
-True 60 (**7**) computes Link and the camera at 60 Hz while the game state after every 30 Hz step
-stays bit-identical to the 30 fps game, except the random-number sequence, which drifts because
-drawing code draws random numbers too (later drops and ambient behaviour differ like in any other
-session; see docs/decomp-notes.md, "True 60 fps").
 
 The **Gameplay** menu has optional changes to how the game plays, all off by default: climb any
 wall (with a stamina wheel; B or A lets go), a direct right-stick camera (no easing, adjustable
@@ -700,7 +695,7 @@ The SDK reference is [docs/mod-sdk-v2.md](docs/mod-sdk-v2.md), the mod manager i
   full screen this time instead of as it was left; that session's full screen is not remembered), `WWHD_ASPECT=16:9|window|16:10|21:9|32:9|<w:h>`,
   `WWHD_AUDIO_VOLUME=0..1` (the master volume the session starts at, whatever the Audio slider saved), `WWHD_AUDIO_OUTPUT=auto|tv|gamepad` (the host plays the TV's sound, plus the GamePad's in Off-TV Play: auto; or only one of them), `WWHD_SHADER_CACHE=<file>|0`, `WWHD_AO_MODE=0..2`, `WWHD_AO_HIRES=0|1`, `WWHD_FULL_LIGHT=0|1`, `WWHD_ANISO=0|1`, `WWHD_RES_SCALE=1|1.5|2|3`,
   `WWHD_FXAA=0|1`, `WWHD_QUIT_PROMPT=0` (macOS: quit without asking, also during a game), `WWHD_INTERP=1`, `WWHD_INTERP_FPS=60|120|240` (frame interpolation at that rate),
-  `WWHD_INTERP_PACED=0|1`, `WWHD_TRUE60=1` (start values for the Graphics menu; they
+  `WWHD_INTERP_PACED=0|1` (start values for the Graphics menu; they
   override the remembered choices); `WWHD_DISPLAY_HZ=n` replaces the detected display refresh rate
   that 120/240 fps are capped to (0: no cap); `WWHD_UNCAPPED=1` starts with the debug switch
   "Uncapped" on (no frame limit, no vsync; the game runs faster than real time);
@@ -808,7 +803,7 @@ Linux commands and local template selection.
 
 `tools/decomp/` names WWHD functions by matching them against the
 [zeldaret/tww](https://github.com/zeldaret/tww) GameCube decompilation (CC0); the 60 fps features
-are built on those names (`tools/recomp/hooks.txt`, `runtime/src/interp*.cpp`, `runtime/src/true60*.cpp`).
+are built on those names (`tools/recomp/hooks.txt`, `runtime/src/interp*.cpp`, `runtime/src/game_hooks.cpp`).
 Findings are in `docs/decomp-notes.md`.
 
 `tools/verify/` is a differential test harness for a functionally verified decompilation: it runs
@@ -860,7 +855,7 @@ The game is playable from start to finish (players have completed it) on macOS, 
 and Android, and bugs are fixed as they are reported (see the [changelog](CHANGELOG.md) and the
 [issues](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/issues)). Rendering is compared with
 Cemu side by side. It runs at the console's 30 fps or, with frame interpolation, at 60, 120 or
-240 fps (up to the display's refresh rate); true 60 fps is experimental. Known gaps: geometry
+240 fps (up to the display's refresh rate). Known gaps: geometry
 shaders and rectangle primitives are not implemented yet (not encountered in the game so far).
 
 ## Other platforms

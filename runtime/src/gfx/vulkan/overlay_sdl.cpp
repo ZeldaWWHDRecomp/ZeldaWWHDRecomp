@@ -11,6 +11,7 @@
 #include "stereo.h"
 #include "input.h"
 #include "interp.h"
+#include "framegen.h"
 #include "overlay/hostui.h"
 #include "platform/host.h"
 #include "platform/perf_hint.h"
@@ -238,7 +239,7 @@ void graphics_changed() {
     put("fxaa", {"WWHD_FXAA"}, gfxvk::fxaa_enabled() ? "1" : "0");
 #ifdef __ANDROID__
     // the player's choice: the phone pauses interpolation by itself (platform/perf_hint.cpp)
-    put("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"}, interp::mode() == 2 ? "2" : perf_hint::fps60_chosen() ? "1" : "0");
+    put("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"}, perf_hint::fps60_chosen() ? "1" : "0");
     // Graphics > Heat guard: normal | relaxed | off
     put("heatGuard", {"WWHD_HEAT_GUARD"}, heat_guard::name(heat_guard::to_setting(heat_guard::choice.load())));
 #else
@@ -246,6 +247,7 @@ void graphics_changed() {
 #endif
     // (fps60 is the mode, from before 120/240 fps; interpFps the interpolation's frame rate)
     put("interpFps", {"WWHD_INTERP_FPS"}, std::to_string(interp::fps()));
+    put("fpsGenerated", {"WWHD_FRAMEGEN"}, framegen::chosen() ? "1" : "0");  // 60 fps (generated, framegen.h)
     put("fps60Paced", {"WWHD_INTERP_PACED"}, interp::paced_interpolation_at(60) ? "1" : "0");
     put("fpsHighPaced", {"WWHD_INTERP_PACED"}, interp::paced_interpolation_at(120) ? "1" : "0");
     put("scaleFilter", {"WWHD_SCALE_FILTER"}, std::to_string(gfxvk::scale_filter()));
@@ -312,6 +314,7 @@ void load_saved_options() {
     if (saved("fxaa", {"WWHD_FXAA"})) gfxvk::set_fxaa(num("fxaa") != 0);
     if (saved("interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps((int)num("interpFps"));
     if (saved("fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode((int)num("fps60"));
+    if (saved("fpsGenerated", {"WWHD_FRAMEGEN"})) framegen::set_chosen(num("fpsGenerated") != 0);  // (after fps60: it clears it)
     if (saved("fps60Paced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(60, num("fps60Paced") != 0);
     if (saved("fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(120, num("fpsHighPaced") != 0);
     if (saved("scaleFilter", {"WWHD_SCALE_FILTER"})) gfxvk::set_scale_filter((int)num("scaleFilter"));

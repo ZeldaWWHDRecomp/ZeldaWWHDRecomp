@@ -11,16 +11,19 @@ from recomp import Recompiler
 from randomizer_compat import digest, hook_digest, import_digest, text_slice, check, range_profile
 from rpx import Rpx
 
+# the profile of each build (randomizer_compat.PROFILES); EU seeds come from the in-app randomizer's port of the patches
+PROFILE_IDS = {'USA': 'twwhd-randomizer-usa-v0-2', 'EU': 'twwhd-randomizer-eu-v0-1'}
+
 
 def make(base_path, reviewed_paths, reviewed_functions):
     reference = Recompiler(str(base_path))  # exact supported-build SHA check
-    if reference.build.name != 'USA':
-        raise ValueError('profile reference must be the original USA RPX')
+    if reference.build.name not in PROFILE_IDS:
+        raise ValueError('profile reference must be the original USA or EU RPX')
     rpx = reference.p.rpx
     hooks, _ = builds.read_hooks(builds.hook_files(), reference.build)
     starts = sorted({reference.func_of(address) for _, _, address, _ in hooks})
     points = sorted({address for _, _, address, _ in hooks})
-    profile = dict(format=2, id='twwhd-randomizer-usa-v0-2', base_sha256=reference.build.sha256,
+    profile = dict(format=2, id=PROFILE_IDS[reference.build.name], base_sha256=reference.build.sha256,
                    hooks_sha256=hook_digest(hooks), entry_point=reference.p.entry,
                    imports_sha256=import_digest(rpx),
                    sections=[dict(name=s.name, address=s.addr, size=s.size, type=s.type, flags=s.flags & 7)

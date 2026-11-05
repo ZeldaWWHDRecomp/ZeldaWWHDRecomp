@@ -169,9 +169,15 @@ matrices produced by `calc` and the camera inputs of `camera_draw`. For the in-b
 replay the frame's GX2 command list with draw matrices recomputed from blended world matrices and
 the blended camera. Models without a previous tick (spawned, teleported) use the current matrices.
 
-## True 60 fps (runtime/src/true60.cpp, true60_link.cpp)
+## True 60 fps (retired)
 
-Link and the camera at 60 steps per second ("true 60", Graphics menu / key 7 / `WWHD_TRUE60=1`;
+**Retired.** True 60 was removed from the port: its runtime code (`true60.cpp`, `true60_link.cpp`,
+`true60_sites.cpp`) and its tools (`tools/true60/`) are gone. Its entries in `tools/recomp/hooks.txt`
+stay so the generated code is unchanged; they now run the game's own code (`runtime/src/game_hooks.cpp`)
+or serve frame interpolation and the mods. A saved True 60 choice (or `WWHD_TRUE60=1`) starts 60 fps
+frame interpolation. The notes below are kept as a record of what was learned.
+
+Link and the camera at 60 steps per second ("true 60", formerly Graphics menu / key 7;
 exclusive with interpolation). Experimental, off by default.
 
 ### Design: the full pass is the 30 fps step, the half pass a preview
@@ -336,7 +342,7 @@ Debug aids: `WWHD_LINK_TRACE`, `WWHD_CAM_TRACE`, `WWHD_ACTOR_DUMP=path:FN|link:S
 
 ### Per-step logic in the other actors (survey)
 
-`tools/true60/actor_survey.py [d_a_]` scans the generated code of every named actor function and
+`tools/true60/actor_survey.py [d_a_]` (removed with True 60) scanned the generated code of every named actor function and
 writes `build/true60_survey.tsv`, one line per GameCube source file. It reports:
 - calls to the primitives that true60 already scales;
 - inline step counters: a 16/32-bit field loaded, ±1, stored back. The offset is from the base
@@ -423,7 +429,7 @@ Debug aids, all off by default:
 - `WWHD_GX2_DELAY_COPY=ms` (gx2_core.cpp): the render thread waits before each copy; reproduces the
   crash on a build without the sync;
 - `WWHD_COPYDBG=1`: logs each GX2CopySurface (thread, lr, images) and each CPU-path execution;
-- in true60_test.cpp: `WWHD_BOOTDBG=1`, `WWHD_BOOTDBG_SLOW=ms`, `WWHD_BOOTDBG_PROT=1` (write-protects the
+- in test_aids.cpp: `WWHD_BOOTDBG=1`, `WWHD_BOOTDBG_SLOW=ms`, `WWHD_BOOTDBG_PROT=1` (write-protects the
   first program array's page and logs the writing thread) and `WWHD_HEAPLOG=1`.
 
 ## ResMgr pack requests finish before the load task continues
@@ -515,7 +521,7 @@ Layouts used:
 - Billboards: J3D billboard shapes get their view-space matrices in viewCalc (`027DE8A0` →
   `027DB590`, view matrix from `104B45F8`), i.e. from the blended camera and world matrices.
 
-## True 60 fps: per-step primitives
+## True 60 fps: per-step primitives (retired; record)
 
 The game advances its logic one step per 30 Hz frame. Running logic at 60 steps/s means halving
 every per-step rate below (or calling it with half steps). These are the shared primitives that
@@ -697,7 +703,7 @@ Free functions on `xxx_class*` count as that class.
 The shared TIMER process (letter sorting on Dragon Roost, the Windfall auction, the boat race, the
 volcano and Orca training challenges) installs `025C5A8C` (`dTimer_c::_execute`, EU `025C5A4C`) in its
 **draw** method slot (`101EE73C + 0x10`), so it runs through `fpcLf_Draw`, not the execute queue.
-Interpolation and true 60 hold actor execution on in-between frames but still draw, so the countdown
+Interpolation holds actor execution on in-between frames but still draw, so the countdown
 at `this + 0x10C` ran 2× fast at 60 fps and 4× at 120. `runtime/src/countdown.cpp` runs the callback
 on full game steps only and refreshes its text between steps (through the HD UI hook `02715310`) so the
 display stays smooth. Actor-local countdowns (`OBJ_TIMER` at `023A232C`, the flight challenge) already

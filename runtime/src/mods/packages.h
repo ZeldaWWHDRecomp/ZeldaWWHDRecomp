@@ -17,7 +17,7 @@ inline constexpr const char* kLegacyGameId="wwhd-usa";
 inline bool game_id_supported(const std::string& id){return id==kGameId||id==kLegacyGameId;}
 // The game ID native mods (SDK v1) receive in their host table: unchanged, so libraries comparing it keep working.
 inline constexpr const char* kNativeHostGameId="wwhd-usa";
-inline constexpr const char* kManagerVersion="1.9.0"; // 1.9: kind "player-model" (GameCube player models); 1.8: supported_game_builds; 1.7: declarative guest save profiles; 1.4: "experimental" flag; 1.5: game_id "wwhd"; 1.6: Mod SDK wwhd_screen_point, touch pinches, the microphone (wwhd_mic_*, option "permission")
+inline constexpr const char* kManagerVersion="1.10.0"; // 1.10: kind "player-model" (GameCube player models); 1.9: Mod SDK HUD v3 (mirrored images, layout-message texts); 1.8: supported_game_builds; 1.7: declarative guest save profiles; 1.4: "experimental" flag; 1.5: game_id "wwhd"; 1.6: Mod SDK wwhd_screen_point, touch pinches, the microphone (wwhd_mic_*, option "permission")
 struct Option {
     std::string id,name,description,type;
     // The item menu's settings page (game_settings.h): "menu": true shows the option there, in the Mods tab

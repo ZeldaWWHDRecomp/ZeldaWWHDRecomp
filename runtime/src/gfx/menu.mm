@@ -13,6 +13,7 @@
 #include <tuple>
 
 #include "../interp.h"
+#include "../framegen.h"
 #include "../savestate.h"
 #include "../screenshot.h"
 #include "../input_map.h"
@@ -119,10 +120,12 @@ static void load_prefs() {
     if (saved(@"fullLight", {"WWHD_FULL_LIGHT"})) render::set_full_light([pref(@"fullLight") boolValue]);
     if (saved(@"cloudStyle", {"WWHD_CLOUD_STYLE"})) render::set_cloud_style([pref(@"cloudStyle") intValue]);
     if (saved(@"fxaa", {"WWHD_FXAA"})) render::set_fxaa([pref(@"fxaa") boolValue]);
-    // frame rate: fps60 is the mode (0 30 fps, 1 frame interpolation, 2 true 60; the key predates
+    // frame rate: fps60 is the mode (0 30 fps, 1 frame interpolation; a saved 2, the retired True 60,
+    // loads as 60 fps interpolation; the key predates
     // 120/240 fps), interpFps the interpolation's rate; "keep game speed" for 60 and for 120/240 fps
     if (saved(@"interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps([pref(@"interpFps") intValue]);
     if (saved(@"fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode([pref(@"fps60") intValue]);
+    if (saved(@"fpsGenerated", {"WWHD_FRAMEGEN"})) framegen::set_chosen([pref(@"fpsGenerated") boolValue]);  // 60 fps (generated)
     if (saved(@"fps60Paced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(60, [pref(@"fps60Paced") boolValue]);
     if (saved(@"fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(120, [pref(@"fpsHighPaced") boolValue]);
 #ifdef WWHD_HAS_VULKAN
@@ -143,6 +146,7 @@ static void save_prefs() {
     if (!env_set({"WWHD_FXAA"})) set_pref(@"fxaa", @(render::fxaa()));
     if (!env_set({"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) set_pref(@"fps60", @(interp::mode()));
     if (!env_set({"WWHD_INTERP_FPS"})) set_pref(@"interpFps", @(interp::fps()));
+    if (!env_set({"WWHD_FRAMEGEN"})) set_pref(@"fpsGenerated", @(framegen::chosen()));
     if (!env_set({"WWHD_INTERP_PACED"})) {
         set_pref(@"fps60Paced", @(interp::paced_interpolation_at(60)));
         set_pref(@"fpsHighPaced", @(interp::paced_interpolation_at(120)));
@@ -326,7 +330,6 @@ static WWStateMenu* g_state_menu;
     else input_map::apply_face_layout(m, item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
     input_map::set_current(m);
 }
-- (void)toggleInterp:(NSMenuItem*)item { interp::set_mode(interp::mode() == item.tag ? 0 : (int)item.tag); update_title(); }
 - (void)toggleInterpFps:(NSMenuItem*)item { interp::toggle_fps((int)item.tag); update_title(); }
 - (void)toggleDrcWindow:(NSMenuItem*)item { gfx::show_drc_window(!gfx::drc_window_shown()); }
 - (void)toggleFxaa:(NSMenuItem*)item { render::set_fxaa(!render::fxaa()); update_title(); }
@@ -364,7 +367,6 @@ static WWStateMenu* g_state_menu;
         if (item.tag == 4) return m.preset.saved;
         item.state = on ? NSControlStateValueOn : NSControlStateValueOff;
     }
-    if (item.action == @selector(toggleInterp:)) item.state = interp::mode() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleInterpFps:))
         item.state = interp::mode() == 1 && interp::fps() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleDrcWindow:)) {
@@ -527,7 +529,6 @@ void install_menu(NSWindow* tv) {
     add(g, @"60 fps: frame interpolation (6)", @selector(toggleInterpFps:), @"6", 60);
     add(g, @"120 fps: frame interpolation", @selector(toggleInterpFps:), @"", 120);
     add(g, @"240 fps: frame interpolation", @selector(toggleInterpFps:), @"", 240);
-    add(g, @"60 fps: true 60, game logic at 60 steps/s (7, experimental)", @selector(toggleInterp:), @"7", 2);
     [g addItem:[NSMenuItem separatorItem]];
     add(g, @"Take Screenshot", @selector(screenshot:), @"").toolTip =
         @"Saves the TV picture as a PNG (internal resolution, without the settings overlay) in the screenshots folder. "

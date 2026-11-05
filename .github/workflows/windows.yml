@@ -47,6 +47,14 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build/windows --output-on-failure
 
+      # The in-app randomizer's command (tools/rando: TWWHD Randomizer 1.2.0); no game files
+      - name: Randomizer command
+        run: |
+          cmake -S tools/rando -B build/rando -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/rando
+          python tools/rando/test_rando_cli.py build/rando
+          python tools/rando/test_places.py
+
       # Synthetic fixtures only: no game files, caches or performance runs.
       - name: Shader preparation and benchmark tooling unit tests
         run: |

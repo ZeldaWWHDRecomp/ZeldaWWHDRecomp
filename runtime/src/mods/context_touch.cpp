@@ -259,7 +259,7 @@ void set_zl_latch_mode(int m) { g_zl.set(m); }
 
 // ---- the pad reads (VPADRead / KPADReadEx, after the item ring's gate) ----
 void context_touch_pad(input::PadState& p, bool repeat) {
-    if (repeat) return;  // true 60's half passes repeat the full pass's buttons
+    if (repeat) return;  // interpolation's repeated reads repeat the logic pass's buttons
     const bool touch = touch_play();
     if (touch) want_context();
     const PlayContext c = play_context();

@@ -36,4 +36,10 @@ int main() {
     assert(randomizer::explicit_save_folder(true, "/cloud/wwhd"));
     assert(randomizer::save_directory("/cloud/wwhd", randomizer::explicit_save_folder(true, "/cloud/wwhd")) == "/cloud/wwhd");
     assert(!randomizer::explicit_save_folder(false, "/cloud/wwhd"));
+    // an in-app seed's changed files (setup --randomize): found by the build's own identity
+    assert(randomizer::overlay_directory("data") == fs::path("data") / "randomizer" / "seeds" / std::string(16, 'a') / "out");
+    assert(randomizer::overlay_directory("").empty());
+    assert(randomizer::game_rpx("game") == "game/code/cking.rpx");
+    randomizer::overlay_root() = "seed/out";
+    assert(randomizer::game_rpx("game") == "seed/out/code/cking.rpx");
 }
