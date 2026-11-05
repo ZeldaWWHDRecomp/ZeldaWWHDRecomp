@@ -2,6 +2,7 @@
 // Built-in mod "Game progress" (game_progress.cpp has the details): the switch, its option, the count for the
 // Settings window, and the game thread's service.
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 
