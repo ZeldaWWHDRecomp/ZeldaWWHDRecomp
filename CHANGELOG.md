@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **For mod authors: quick-use and traversal services** (#389). Source mods get four new guest services: triggering
+  the game's quick-use item actions and ready-item checks, and the normal boat sail-wind and target calculation. The
+  game's own helpers still carry out the actions, with their usual checks. Native actors that a C mod registers now
+  also run at the right rate with True 60.
 - **Editor: MCP access starts once the game is ready** (#386). With `--editor --mcp`, the MCP server now starts after
   the game code is loaded and all mods are initialized, so an early request can no longer read unloaded game memory.
 - **Setup on Windows: compiler unpacking shows progress** (#394, for #388, thanks @Sherisherisherisheri for the report).

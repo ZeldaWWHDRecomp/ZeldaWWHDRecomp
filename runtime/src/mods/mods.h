@@ -42,6 +42,12 @@ void set_quick_use_speed(float factor);
 // Authored rates are restored before returning; crossing predicates are never altered.
 void quick_use_animation_call(Cpu* c, void (*native)(Cpu*), bool advance = true);
 void quick_use_filter_pad(input::PadState& s);
+// Source-owned item handlers preserve the local ready-trigger rule without
+// publishing synthetic pad input or changing the caller CPU registers.
+void ship_normal_sail_wind(Cpu* c, uint32_t ship);
+float ship_sail_target(float stock);
+void quick_use_item_action_dispatch(Cpu* c, uint32_t link, uint32_t item);
+uint32_t quick_use_ready_item_trigger(Cpu* c, uint32_t link, uint32_t native_trigger);
 void quick_use_reset();  // drop transient/pending input on capture, focus loss and savestates
 bool quick_doors();
 void set_quick_doors(bool on);
