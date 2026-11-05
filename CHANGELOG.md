@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New built-in mod: Achievements** (#410, goals, texts and points from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). Off by default (Mods › Built-in). 99 goals read from your save data, earned for good, for all save
+  games together and for each one; the record is kept in `achievements.json` in the port's config folder, never in the
+  save. When you earn one, Link turns round and holds it up with the game's item fanfare (its volume is an option),
+  drawn and played from your own game files. Cheats pause achievements while they're used (the page says which), unless
+  you turn on **Earn with cheats**; loading a save state never takes one back. Pages on the item menu's settings page
+  (Game tab) and in the Esc settings, with a reset behind a confirmation.
 - **New built-in mod: Game progress** (#409, idea, count and places from the GreenNaugahyde Android fork, thanks
   @GreenNaugahyde; chart numbers from TWWHD Randomizer). Off by default (Mods › Built-in). Shows how much of the game
   your save file has found: a percent, a checklist in ten parts (dungeons, hearts, items, equipment, upgrades, songs,
