@@ -583,7 +583,6 @@ int main(int argc, char** argv) {
     }
     crash_context::initialize();
     editor_ui::register_tab();  // the world editor's Editor tab (only with --editor)
-    editor_mcp::launch(start_mcp);  // --editor --mcp: Claude / MCP access on now; --mcp alone says it needs --editor
     index_game_functions();
     install_crash_handler();
     start_log_file();
@@ -830,6 +829,10 @@ int main(int argc, char** argv) {
     if (editor::enabled()) guestmods::set_package_observer(editor::register_package);
     try { guestmods::init(); }  // trusted manager packages, before guest threads start
     catch(const std::exception& e) { fatal("Cannot load code mods: %s\n%s",e.what(),mod_recovery); }
+    // MCP reads live game globals. Publish its listener only after the RPX is mapped
+    // and package initialization is finished, so an early read_state cannot access
+    // unmapped memory or observe a partially initialized package registry.
+    editor_mcp::launch(start_mcp);  // --mcp still requires --editor
     // mods skipped because a requirement can't be met (the GameCube game for mods is gone, ...): the rest started
     for (const auto& line : mods::packages::startup_problems()) LOG("[mods] skipped: %s", line.c_str());
     // the island arrival notice (story_world_arrival.h): an overlay layer only when a loaded package
