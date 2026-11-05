@@ -8,11 +8,15 @@
 //                                   save state load (full: its load; portable: its arrival)
 //   WWHD_DYNRES_TEST_AT=f:factor,.. from render frame f on (or Lf), force that level (nearest of the
 //                                   levels); factor 0 hands back to the controller
+//   WWHD_DYN_RES_MEM_MB=mb          the memory line (MemoryGuard, dynres_core.h): default 384, 64 under 3800 MB
+//   WWHD_TEST_HEADROOM_MB=mb        stands for the room above the system's low-memory line (any system)
+//   WWHD_TEST_TOTAL_MB=mb           stands for the device's memory (MemTotal; under 3800: starts at 1x at most)
 //   WWHD_DYNRES_LOG_FRAMES=1        around each change, log the 8 frames before and after it: wall time
 //                                   between frame boundaries and the render thread's CPU time (spikes)
 #include "dynres.h"
 #include "dynres_core.h"
 #include "interp.h"
+#include "platform/memory_trim.h"
 #include "savestate.h"
 #include "render_prof.h"
 #include "runtime.h"
@@ -22,6 +26,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <utility>
 #include <vector>
@@ -87,7 +92,67 @@ struct FrameLog {
 };
 FrameLog g_frame_log;
 Controller g_ctl;
+MemoryGuard g_mem;
+clk::time_point g_mem_at{};
 bool g_started = false;
+
+// ---- memory (MemoryGuard): Android's room above its low-memory line
+// /proc/meminfo's field in MB, -1 when not readable
+int meminfo_mb(const char* field) {
+#if defined(__ANDROID__) || defined(__linux__)
+    FILE* f = fopen("/proc/meminfo", "r");
+    if (!f) return -1;
+    char line[128];
+    int mb = -1;
+    const size_t n = strlen(field);
+    while (fgets(line, sizeof line, f))
+        if (!strncmp(line, field, n) && line[n] == ':') {
+            mb = (int)(atol(line + n + 1) >> 10);
+            break;
+        }
+    fclose(f);
+    return mb;
+#else
+    (void)field;
+    return -1;
+#endif
+}
+int env_int(const char* name, int fallback) { const char* e = getenv(name); return e ? atoi(e) : fallback; }
+// devices with little memory (Tegra X1, 3 GB): start at 1x at most and use a lower line (they play with ~150 MB of
+// room at the title). Only where the system gives a low-memory line (Android).
+bool low_ram() {
+    static const bool v = [] {
+        const int t = env_int("WWHD_TEST_TOTAL_MB", -1) >= 0 ? env_int("WWHD_TEST_TOTAL_MB", -1)
+#ifdef __ANDROID__
+                                                          : meminfo_mb("MemTotal");
+#else
+                                                          : -1;
+#endif
+        return t > 0 && t < 3800;
+    }();
+    return v;
+}
+int mem_line() {
+    static const int v = env_int("WWHD_DYN_RES_MEM_MB", low_ram() ? 64 : 384);
+    return v;
+}
+// the room above the line: Java's reading (every 2 s, memory_trim.h) or, fresher, MemAvailable read here every
+// 250 ms against Java's line, the lower of both (a load can eat 300 MB in 4 s); -1 unknown
+int headroom(clk::time_point now) {
+    static const int test = env_int("WWHD_TEST_HEADROOM_MB", -1);
+    if (test >= 0) return test;
+    const int h = memory_trim::headroom_mb(), thr = memory_trim::threshold_mb();
+    static int fast = -1;
+    static clk::time_point fastAt{};
+    if (thr < 0) return h;
+    if (std::chrono::duration<double>(now - fastAt).count() >= 0.25) {
+        fastAt = now;
+        const int avail = meminfo_mb("MemAvailable");
+        fast = avail >= 0 ? std::max(0, avail - thr) : -1;
+    }
+    if (fast < 0) return h;
+    return h < 0 ? fast : std::min(h, fast);
+}
 clk::time_point g_window{};
 int g_frames = 0;
 bool g_no_timing_logged = false;
@@ -161,6 +226,7 @@ float latch(uint64_t frame, float base) {
         if (g_started) {
             g_started = false;
             g_ctl.reset(0);
+            g_mem = MemoryGuard{};
             g_share = -1;
             std::lock_guard<std::mutex> lock(g_busy_mutex);
             g_busy = {};
@@ -173,6 +239,16 @@ float latch(uint64_t frame, float base) {
     if (!g_started) {
         g_started = true;
         g_ctl.reset(lowest_level(min_factor()));
+        g_mem = MemoryGuard{};
+        g_mem_at = now;
+        if (low_ram()) {
+            const int l = MemoryGuard::one_x_level(base, g_ctl.lowest);
+            if (l > 0) {
+                g_mem.start_capped(l);
+                g_ctl.force(l);
+                LOG("[dynres] little memory: starts at %gx of the %gx internal resolution at most (MemoryGuard)", kLevels[l], base);
+            }
+        }
         g_window = now;
         g_frames = 0;
         std::lock_guard<std::mutex> lock(g_busy_mutex);
@@ -182,6 +258,24 @@ float latch(uint64_t frame, float base) {
     static const auto forcedAt = schedule("WWHD_DYNRES_TEST_AT");
     static const auto budgetAt = schedule("WWHD_DYNRES_TEST_BUDGET");
     const float forced = scheduled(forcedAt, frame);
+    // memory before the GPU: a step down for memory is taken at once, and limits the steps up
+    {
+        const double dt = std::chrono::duration<double>(now - g_mem_at).count();
+        g_mem_at = now;
+        const int h = headroom(now), line = mem_line();
+        const int was = g_ctl.level;
+        const int to = forced > 0 ? was : g_mem.step(dt, h, line, was, g_ctl.lowest);
+        if (to != was) {
+            g_ctl.force(to);
+            LOG("[dynres] %gx -> %gx of the %gx internal resolution (memory low: %d MB above the low-memory line, under %d%s; "
+                "upper limit %gx)", kLevels[was], kLevels[to], base, h, line, h < line / 2 ? ", far under: lowest" : "",
+                kLevels[g_mem.cap]);
+        }
+        g_ctl.upperLimit = g_mem.tight(h, line) ? g_ctl.level : g_mem.cap;
+        static int loggedCap = 0;
+        if (g_mem.cap < loggedCap) LOG("[dynres] memory back (%d MB above the low-memory line): upper limit %gx", h, kLevels[g_mem.cap]);
+        loggedCap = g_mem.cap;
+    }
     g_frames++;
     double busyNs;
     {

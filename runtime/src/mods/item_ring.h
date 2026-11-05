@@ -140,7 +140,17 @@ struct Entries {
         if (n < kMaxEntries) e[n++] = Entry{k, slot, item};
     }
 };
-// The entries for `button`: the inventory in its order (bag < 0), or bag `bag`'s contents
+// Of no use on the boat, so the ring leaves them out there: the Spoils Bag, the Iron Boots, the Delivery Bag,
+// the Skull Hammer and the Deku Leaf (the bags' contents stay). From the GreenNaugahyde Android fork
+// (GreenNaugahyde/ZeldaWWHDRecompAndroid db65d60, MPL-2.0), ItemRing.java NOT_ON_SHIP.
+inline bool ring_on_ship(uint8_t item) {
+    static constexpr uint8_t kNotOnShip[] = {0x24, 0x29, 0x30, 0x33, 0x34};
+    for (uint8_t no : kNotOnShip)
+        if (item == no) return false;
+    return true;
+}
+// The entries for `button`: the inventory in its order (bag < 0), or bag `bag`'s contents; on the boat only
+// what Link can use there (ring_on_ship)
 inline Entries entries(const Save& s, int button, int bag, bool on_ship) {
     Entries out;
     if (bag >= 0 && bag < kBags) {
@@ -153,7 +163,7 @@ inline Entries entries(const Save& s, int button, int bag, bool on_ship) {
     }
     for (int k = 0; k < kInventorySlots; k++) {
         const uint8_t item = s.inventory[k];
-        if (item == kNone) continue;
+        if (item == kNone || (on_ship && !ring_on_ship(item))) continue;
         if (item == playctx::kItemWindWaker) out.add(kEntryConduct, uint8_t(k), item);
         else if (bag_of_inventory_slot(uint8_t(k)) >= 0) out.add(kEntryBag, uint8_t(k), item);
         else out.add(kEntryItem, uint8_t(k), item);

@@ -21,6 +21,9 @@ struct FullStateHeader {
     uint32_t controller = 0; // 0 absent/unknown, 1 GamePad, 2 Pro Controller (slot label only: a load keeps the host's choice)
     uint32_t reserved = 0;
 };
+// Older readers reject every nonzero reserved value before reading payloads.
+// Keep this required feature outside optional payload sections.
+inline constexpr uint32_t kRequiresSaveProfile = 1;
 constexpr size_t kLegacyHeaderSize = offsetof(FullStateHeader, controller);
 static_assert(kLegacyHeaderSize == 96);
 inline bool read_full_state_header(FILE* file, FullStateHeader& h, std::string& why) {
@@ -35,7 +38,7 @@ inline bool read_full_state_header(FILE* file, FullStateHeader& h, std::string& 
         fread(reinterpret_cast<uint8_t*>(&h) + kLegacyHeaderSize, sizeof h - kLegacyHeaderSize, 1, file) != 1) {
         why = "truncated save state header"; return false;
     }
-    if (h.controller > 2 || h.reserved) { why = "invalid controller mode"; return false; }
+    if (h.controller > 2 || (h.reserved & ~kRequiresSaveProfile)) { why = "invalid controller mode"; return false; }
     return true;
 }
 inline const char* controller_label(int mode) {

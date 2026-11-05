@@ -246,7 +246,8 @@ void after_execute(Cpu* c, uint32_t execute_fn) {
             for (size_t k = 0; k < sizeof kTrigWords / sizeof *kTrigWords; k++) st32(pad + kTrigWords[k], saved[k]);
     }
     // fast scene changes: transition machinery only
-    if (fast_scenes()) {
+    // (also while Link walks into a house doorway with walk-through doors: walk_doors.cpp)
+    if (fast_scenes() || walk_door_exit()) {
         for (int i = 0; i < kSceneExtra && overlap_active(); i++) {
             uint32_t ovl_req = ld32(kOverlap);
             uint32_t task = ovl_req ? ld32(ovl_req + kOvlpTask) : 0;

@@ -24,7 +24,7 @@ def gate():
 
 def payload(cache):
     data = cache.read_bytes()
-    assert data[:8] == b"WWVKPC02"
+    assert data[:8] == b"WWVKPC03"
     size = int.from_bytes(data[8:16], "little")
     assert size == len(data) - 24 and size > 32
     checksum = 14695981039346656037

@@ -1,5 +1,6 @@
 #include "../exception_report.h"
 #include "packages.h"
+#include "build_constraint.h"
 #include "mod_stages_manifest.h"
 #include "story_game_objects_package.h"
 #include "manager.h"
@@ -46,6 +47,7 @@ namespace fs=std::filesystem;
 using json::Value;
 struct Requirement {std::string id,version;};
 struct Manifest {
+    save_profile::Declaration save_profile;
     Value world; // cached validated manifest for aggregate actor/scene graph checks
     std::string id,name,version,author,description,kind,binary,problem,fingerprint,trust_fingerprint,manifest_fingerprint; // fingerprint: SHA-256 of the native library or guest ELF
     std::vector<Requirement> dependencies;
@@ -74,7 +76,16 @@ fs::path root;
 std::mutex story_mutex;
 std::string story_dir;
 bool ready=false,guests_started=false,code_mod_support=false;
+bool metadata_ready=false, activation_ready=false, metadata_needs_save=false;
+std::vector<std::string> metadata_sequence;
+std::map<std::string,std::string> save_profile_inventory;
+std::set<std::string> save_profile_session_enabled;
+std::map<std::string,bool> save_profile_builtins;
 std::vector<std::string> guest_startup_ids;
+save_profile::Selection planned_save_profile, frozen_save_profile;
+std::string save_profile_problem;
+bool save_profile_frozen=false, save_profile_supported=true;
+std::string save_profile_unsupported_reason;
 GuestInspect guest_inspect;
 GuestBuild guest_build;
 std::set<std::string> validated_guest_cache;
@@ -167,6 +178,11 @@ Manifest manifest(const fs::path& path){
     if(!game_id_supported(string_field(v,"game_id",false,64)))m.problem="This package targets another game";
     auto minimum=string_field(v,"minimum_manager_version",true,64);
     if(!minimum.empty()&&version(minimum)>version(kManagerVersion))m.problem="This mod needs a newer version of the game (mod manager "+minimum+"; this one has "+std::string(kManagerVersion)+")";
+    auto build_problem=game_build_constraint_problem(v,
+        !minimum.empty()&&version(minimum)>=version("1.8.0"));
+    if(m.problem.empty()&&!build_problem.empty())m.problem=std::move(build_problem);
+    m.save_profile=save_profile::parse(v,m.kind=="guest",
+        !minimum.empty()&&version(minimum)>=version(save_profile::kMinimumManagerVersion));
     bool world_declarations = false;
     // The manifest's story sections (story_manifest.h, story_world_manifest.h): present, even as an empty list
     const bool story_sections=std::any_of(std::begin(kStorySections),std::end(kStorySections),[&](const char* key){return v.get(key).type!=Value::Null;});
@@ -390,6 +406,16 @@ std::string setup_identity_unlocked(const std::string& id) {
 const char* kUnconfirmed="Not loaded: it contains native code you have not confirmed. Enable it again to review.";
 Value config(const Manifest& m){Value out;out.type=Value::Object;for(const auto& o:m.options){const auto& saved=profile().get("config").get(m.id).get(o.id);out[o.id]=valid_option(o,saved)?saved:o.default_value;}return out;}
 void save(){if(!ready)return;fs::create_directories(root);auto tmp=root/"profiles.json.tmp";std::ofstream f(tmp,std::ios::binary|std::ios::trunc);f<<json::dump(database)<<'\n';f.close();require(bool(f)&&host::replace_file(tmp.string(),(root/"profiles.json").string()),"Cannot save mod profiles");}
+void save_letterbox_options(Value& options) {
+    options["target-letterbox.mode"] = double(targeting_letterbox_mode());
+}
+void load_letterbox_options(const Value& options) {
+    if (std::getenv("WWHD_TARGET_LETTERBOX") || std::getenv("WWHD_TARGET_LETTERBOX_MODE")) return;
+    const auto& value = options.get("target-letterbox.mode");
+    // The legacy boolean remains authoritative for old profiles and settings presets.
+    if (!letterbox_while_targeting() && value.type == Value::Number &&
+        (value.number == 1 || value.number == 2)) set_targeting_letterbox_mode(int(value.number));
+}
 void save_fast_forward_options(Value& options) {
     options["fast-forward.rate"] = double(fast_forward_rate());
     options["fast-forward.button"] = double(fast_forward_button());
@@ -486,6 +512,8 @@ void save_traversal_options(Value& options) {
     options["jump-anywhere.double"] = double_jump();
     options["jump-anywhere.no-auto"] = no_auto_jump();
     options["jump-anywhere.button"] = double(jump_button());
+    options["quick-doors.mode"] = double(door_mode());  // 0 faster, 1 walk through
+    options["quick-doors.by-a"] = walk_doors_by_a();
 }
 void load_traversal_options(const Value& options) {
     for (const auto& option : manager::traversal_options()) {
@@ -500,14 +528,19 @@ void load_traversal_options(const Value& options) {
     };
     flag("jump-anywhere.double", "WWHD_MOD_JUMP_DOUBLE", set_double_jump);
     flag("jump-anywhere.no-auto", "WWHD_MOD_JUMP_NO_AUTO", set_no_auto_jump);
+    flag("quick-doors.by-a", "WWHD_MOD_WALK_DOORS_A", set_walk_doors_by_a);
+    if (!std::getenv("WWHD_MOD_DOOR_MODE")) {
+        const auto& m = options.get("quick-doors.mode");
+        set_door_mode(m.type == Value::Number && m.number == 1 ? kDoorWalk : kDoorFaster);
+    }
     if (!std::getenv("WWHD_MOD_JUMP_BUTTON")) {
         const auto& b = options.get("jump-anywhere.button");
         set_jump_button(b.type == Value::Number && b.number >= 0 && b.number <= UINT32_MAX && std::floor(b.number) == b.number &&
                                 valid_jump_button(uint32_t(b.number)) ? uint32_t(b.number) : 0x20);
     }
 }
-void defaults(){database=Value{};database["format_version"]=1;database["active"]="Default";auto& p=profile();save_fast_forward_options(p["builtin_options"]);save_move_speed_options(p["builtin_options"]);save_traversal_options(p["builtin_options"]);save_lock_on_options(p["builtin_options"]);p["builtin_options"]["quick-use.speed"]=double(quick_use_speed());p["enabled"].type=Value::Object;for(const auto& e:manager::entries())p["builtins"][e.id]=e.enabled();p["builtin_options"]["direct-camera.speed"]=double(camera_speed());p["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());}
-void scan(){records.clear();if(!ready)return;fs::create_directories(root/"Mods");for(const auto& e:fs::directory_iterator(root/"Mods")){if(!e.is_directory()||e.is_symlink()||!id_ok(e.path().filename().string()))continue;Record r;r.path=e.path();try{r.manifest=manifest(e.path());require(r.manifest.id==e.path().filename(),"Folder and manifest IDs differ");}catch(const std::exception& ex){r.manifest.id=e.path().filename().string();r.manifest.name=r.manifest.id;r.manifest.problem=ex.what();}auto id=r.manifest.id;records.emplace(id,std::move(r));}}
+void defaults(){database=Value{};database["format_version"]=1;database["active"]="Default";auto& p=profile();save_letterbox_options(p["builtin_options"]);save_fast_forward_options(p["builtin_options"]);save_move_speed_options(p["builtin_options"]);save_traversal_options(p["builtin_options"]);save_lock_on_options(p["builtin_options"]);p["builtin_options"]["quick-use.speed"]=double(quick_use_speed());p["enabled"].type=Value::Object;for(const auto& e:manager::entries())p["builtins"][e.id]=e.enabled();p["builtin_options"]["direct-camera.speed"]=double(camera_speed());p["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());}
+void scan(bool create=true){records.clear();if(!ready)return;if(create)fs::create_directories(root/"Mods");else if(!fs::exists(root/"Mods"))return;for(const auto& e:fs::directory_iterator(root/"Mods")){if(!e.is_directory()||e.is_symlink()||!id_ok(e.path().filename().string()))continue;Record r;r.path=e.path();try{r.manifest=manifest(e.path());require(r.manifest.id==e.path().filename(),"Folder and manifest IDs differ");}catch(const std::exception& ex){r.manifest.id=e.path().filename().string();r.manifest.name=r.manifest.id;r.manifest.problem=ex.what();}auto id=r.manifest.id;records.emplace(id,std::move(r));}}
 std::string source_warning(const std::vector<catalogue::Step>& steps) {
     catalogue::Sources sources(database.get("game_sources"));
     for(const auto& step:steps)if(!step.optional&&catalogue::uses_game_source(step,"gc_wind_waker")) {
@@ -546,6 +579,12 @@ std::string source_problem(const Manifest& m) {
 std::string own_problem(const Record& r) {
     const auto& m=r.manifest;
     if(!m.problem.empty())return m.name+": "+m.problem;
+    if(m.graphics) {
+        try { cemu::validate({cemu::Selection{m.id,*m.graphics,config(m)}}); }
+        catch(const std::exception& e) { return m.name+": "+e.what(); }
+    }
+    if(m.save_profile.present&&!save_profile_supported)
+        return m.name+": "+(save_profile_unsupported_reason.empty()?"Save profiles are unavailable on this platform":save_profile_unsupported_reason);
     if(auto problem=source_problem(m);!problem.empty())return problem;
     for(const auto& dep:m.dependencies) {
         if(dep.id.starts_with("builtin:")) {
@@ -591,6 +630,11 @@ std::vector<std::string> order(const std::set<std::string>& enabled,bool check_s
     for(const auto& id:enabled)visit(id);return result;
 }
 std::set<std::string> enabled_set(){std::set<std::string> result;for(const auto& [id,r]:records)if(wanted(id))result.insert(id);return result;}
+// Saved choices may change for the next launch. The loaded save-profile session
+// keeps its original package set until the process exits.
+std::set<std::string> activation_enabled_set() {
+    return frozen_save_profile.empty()?enabled_set():save_profile_session_enabled;
+}
 std::string graphics_conflict(const std::string& a,const std::string& b){
     const auto& x=records.at(a).manifest;const auto& y=records.at(b).manifest;
     if(!x.graphics||!y.graphics)return {};
@@ -604,12 +648,79 @@ std::vector<std::string> repair_graphics(){
         auto rank=[](const auto& id){return profile().get("enabled_since").get(id).number;};
         return rank(a)<rank(b);
     });
-    for(const auto& id:candidates){bool reject=false;for(const auto& other:kept)if(!graphics_conflict(id,other).empty()){
+    for(const auto& id:candidates){
+        // Invalid settings in one pack skip that pack, not an unrelated save owner.
+        if(records.at(id).manifest.graphics&&!own_problem(records.at(id)).empty())continue;
+        bool reject=false;for(const auto& other:kept)if(!graphics_conflict(id,other).empty()){
         profile()["enabled"][id]=false;messages.push_back(records.at(id).manifest.name+" was turned off: it conflicts with "+records.at(other).manifest.name);reject=true;break;
     }if(!reject)kept.push_back(id);}
     return messages;
 }
+// The dependency plan predates trust/code-support checks: those normally run in
+// start_guests. Resolve only declarations whose complete startup closure could
+// actually activate; merely installed/untrusted/code-off mods own no save path.
+save_profile::Selection save_selection(const std::vector<std::string>& sequence) {
+    if(std::none_of(sequence.begin(),sequence.end(),[](const std::string& id) {
+        return records.at(id).manifest.save_profile.present;
+    }))return {};
+    std::map<std::string,bool> eligible;
+    std::vector<save_profile::Claim> claims;
+    for(const auto& id:sequence) {
+        const auto& record=records.at(id);
+        const auto& manifest=record.manifest;
+        bool can_start=own_problem(record).empty()&&confirmed(record);
+        if(manifest.kind=="guest"&&!code_mod_support)can_start=false;
+        for(const auto& dependency:manifest.dependencies)if(!dependency.id.starts_with("builtin:")) {
+            auto found=eligible.find(dependency.id);
+            if(found==eligible.end()||!found->second)can_start=false;
+        }
+        if(manifest.graphics&&!manifest.graphics->shaders.empty()&&!cemu::vulkan())can_start=false;
+        eligible[id]=can_start;
+        if(can_start)claims.push_back({id,manifest.name,trust_fingerprint(manifest),manifest.save_profile});
+    }
+    auto selection=save_profile::select(claims);
+    if(!selection.empty())selection.fingerprint=hash::sha256_text(setup_identity_unlocked(selection.owner));
+    return selection;
+}
+void check_frozen_save_profile(const std::vector<std::string>& sequence) {
+    if(save_profile_frozen&&save_selection(sequence)!=frozen_save_profile)
+        throw save_profile::Error("The active save profile changed after save startup; restart before activating this mod");
+}
+const char* kSessionChange = "This package belongs to the current save profile. Turn off the profile mod in Settings > Mods and restart before changing its files or options. Switching mods off now takes effect at the next launch.";
+void require_session_mutable(const std::string& id) {
+    require(!save_profile_inventory.contains(id),kSessionChange);
+}
+void check_session_enabled(const std::set<std::string>& enabled) {
+    if(frozen_save_profile.empty())return;
+    for(const auto& [id,fingerprint]:save_profile_inventory)
+        require(enabled.contains(id),kSessionChange);
+    for(const auto& id:enabled)for(const auto& [setting,on]:records.at(id).manifest.settings) {
+        auto locked=save_profile_builtins.find(setting);
+        require(locked==save_profile_builtins.end()||locked->second==on,kSessionChange);
+    }
+    check_frozen_save_profile(startup_order(enabled).order);
+}
+void check_session_profile(const Value& chosen) {
+    if(frozen_save_profile.empty())return;
+    std::set<std::string> enabled;
+    for(const auto& [id,record]:records)
+        if(chosen.get("enabled").get(id).boolean)enabled.insert(id);
+    check_session_enabled(enabled);
+    for(const auto& [id,fingerprint]:save_profile_inventory)
+        require(chosen.get("config").get(id)==profile().get("config").get(id),kSessionChange);
+    for(const auto& [id,on]:save_profile_builtins) {
+        const auto& value=chosen.get("builtins").get(id);
+        const auto* entry=manager::find(id);
+        require((value.type==Value::Bool?value.boolean:entry->default_enabled)==on,kSessionChange);
+    }
+}
 void validate_conflicts(const std::set<std::string>& enabled,const Value* planned=nullptr){
+    // Also reject conflicting eligible ownership during an enable operation.
+    // Unrelated skipped packages retain their existing startup behavior.
+    if(std::any_of(enabled.begin(),enabled.end(),[](const std::string& id) {
+        auto found=records.find(id);
+        return found!=records.end()&&found->second.manifest.save_profile.present;
+    }))(void)save_selection(startup_order(enabled).order);
     std::vector<std::pair<std::string,Value>> world_packages;
     for(const auto& id:enabled)if(records.at(id).manifest.world.type!=Value::Null)world_packages.push_back({id,records.at(id).manifest.world});
     std::string world_error;require(story_notebook::world_manifest::validate_world_packages(world_packages,world_error),world_error);
@@ -672,7 +783,11 @@ void unload(Live& item){if(item.initialized&&item.api.on_unload)item.api.on_unlo
 }item.library=nullptr;}
 void load(Live& item,const Record& record,const Value& configuration){
     item.kind=record.manifest.kind;item.context=std::make_unique<Context>();auto& c=*item.context;c.id=record.manifest.id;c.path=record.path.string();c.config=configuration;
-    if(item.kind=="settings"){for(const auto& [id,on]:record.manifest.settings){auto* e=manager::find(id);item.previous[id]=e->enabled();
+    if(item.kind=="settings"){
+        for(const auto& [id,on]:record.manifest.settings) {
+            std::string why;require(builtin_change_allowed(id,on,why),why);
+        }
+        for(const auto& [id,on]:record.manifest.settings){auto* e=manager::find(id);item.previous[id]=e->enabled();
         if(e->restart_required){std::lock_guard guard(mutex);const auto& saved=profile().get("builtins").get(id);if(saved.type==Value::Bool)item.previous[id]=saved.boolean;}
         e->apply(on);}return;}
     auto path=record.path/record.manifest.binary;
@@ -711,67 +826,287 @@ std::string platform_key(){
     return key+"-x86_64";
 #endif
 }
-void initialize(){
-    std::lock_guard guard(mutex);if(ready)return;const char* override=std::getenv("WWHD_MOD_MANAGER_DIR");if(std::getenv("WWHD_NO_HOST_INPUT")&&!override)return;
-    root=override?fs::path(override):fs::path(host::config_dir())/"ModManager";ready=true;{std::lock_guard story(story_mutex);story_dir=(root/"story").string();}defaults();
-    try{fs::create_directories(root);if(fs::exists(root/"profiles.json")){auto saved=json::parse(read_text(root/"profiles.json"));require(saved.get("format_version").type==Value::Number&&saved.get("format_version").number==1,"Unsupported profile format");require(saved.get("profiles").type==Value::Object&&!saved.get("profiles").object.empty(),"Invalid profiles");require(saved.get("active").type==Value::String&&saved.get("profiles").object.contains(saved.get("active").text),"Invalid active profile");database=std::move(saved);}scan();
-        {auto messages=repair_graphics();if(!messages.empty()){save();notices.insert(notices.end(),messages.begin(),messages.end());}}
-        for(const auto& e:manager::entries()){const auto& v=profile().get("builtins").get(e.id);if(!std::getenv(e.startup_env)&&v.type==Value::Bool)e.apply(v.boolean);}
-        const auto& options=profile().get("builtin_options");load_fast_forward_options(options);load_move_speed_options(options,true);load_traversal_options(options);load_lock_on_options(options,true);load_quick_use_speed(options,true);auto speed=options.get("direct-camera.speed"),sens=options.get("mouse-camera.sensitivity");if(!std::getenv("WWHD_MOD_CAMERA_SPEED")&&speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(!std::getenv("WWHD_MOD_MOUSE_SENS")&&sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);
-        // A rebuild offer queues an enable for this profile. Apply it only in a
-        // new process whose generated code registered the actual hook marker.
-        if(code_mod_support&&!profile().get("code_mod_pending").object.empty()) {
-            auto previous=database;
-            try {
-                auto enabled=enabled_set();auto planned=profile().get("builtins");std::set<std::string> seen;
-                std::function<void(const std::string&)> add=[&](const std::string& id){
-                    require(records.contains(id),"Pending code mod is missing: "+id);
-                    if(!seen.insert(id).second)return;
-                    const auto& r=records.at(id);require(confirmed(r),"Pending code mod changed; confirm its code again");
-                    for(const auto& dep:r.manifest.dependencies){
-                        if(dep.id.starts_with("builtin:")){auto builtin=dep.id.substr(8);require(manager::find(builtin)!=nullptr,"Missing built-in dependency: "+builtin);planned[builtin]=true;}else add(dep.id);
-                    }
-                    enabled.insert(id);
-                };
-                for(const auto& [id,value]:profile().get("code_mod_pending").object) {
-                    require(records.contains(id)&&records.at(id).manifest.trust_fingerprint==value.string(),"Pending code mod changed; confirm its code again");add(id);
+namespace {
+// This phase reads declarations and trust receipts only. It does not apply
+// settings, publish content/graphics, load code, or write profile/save files.
+void prepare_metadata_unlocked() {
+    if (metadata_ready)
+        return;
+    const char *override = std::getenv("WWHD_MOD_MANAGER_DIR");
+    if (std::getenv("WWHD_NO_HOST_INPUT") && !override)
+        return;
+    root = override ? fs::path(override) : fs::path(host::config_dir()) / "ModManager";
+    // Defaults are only a candidate until existing profile data has been read
+    // and validated. A failed read must leave every persistence API disabled.
+    ready = false;
+    defaults();
+    if (fs::exists(root / "profiles.json")) {
+        auto saved = json::parse(read_text(root / "profiles.json"));
+        require(saved.get("format_version").type == Value::Number &&
+                    saved.get("format_version").number == 1,
+                "Unsupported profile format");
+        require(saved.get("profiles").type == Value::Object &&
+                    !saved.get("profiles").object.empty(),
+                "Invalid profiles");
+        require(saved.get("active").type == Value::String &&
+                    saved.get("profiles").object.contains(saved.get("active").text),
+                "Invalid active profile");
+        for(const auto& [name, value]:saved.get("profiles").object)
+            require(value.type==Value::Object,"Invalid profile data: "+name);
+        database = std::move(saved);
+    }
+    ready = true;
+    scan(false);
+    auto messages = repair_graphics();
+    for(const auto& message:messages)
+        if(std::find(notices.begin(),notices.end(),message)==notices.end())notices.push_back(message);
+    metadata_needs_save=!messages.empty();
+    // A rebuild offer queues an enable for this profile. Apply it only in a
+    // new process whose generated code registered the actual hook marker.
+    if (code_mod_support && !profile().get("code_mod_pending").object.empty()) {
+        metadata_needs_save=true;
+        auto previous = database;
+        try {
+            auto enabled = enabled_set();
+            auto planned = profile().get("builtins");
+            std::set<std::string> seen;
+            std::function<void(const std::string &)> add = [&](const std::string &id) {
+                require(records.contains(id), "Pending code mod is missing: " + id);
+                if (!seen.insert(id).second)
+                    return;
+                const auto &r = records.at(id);
+                require(confirmed(r), "Pending code mod changed; confirm its code again");
+                for (const auto &dep : r.manifest.dependencies) {
+                    if (dep.id.starts_with("builtin:")) {
+                        auto builtin = dep.id.substr(8);
+                        require(manager::find(builtin) != nullptr,
+                                "Missing built-in dependency: " + builtin);
+                        planned[builtin] = true;
+                    } else
+                        add(dep.id);
                 }
-                order(enabled);validate_conflicts(enabled,&planned);
-                profile()["builtins"]=planned;
-                for(const auto& id:enabled){profile()["enabled"][id]=true;database["experimental_ack"].object.erase(id);}
-                profile()["code_mod_pending"].object.clear();save();
-                for(const auto& entry:manager::entries())if(planned.get(entry.id).type==Value::Bool)entry.apply(planned.get(entry.id).boolean);
-            }catch(const std::exception& e){
-                database=previous;
-                for(const auto& [id,value]:profile().get("code_mod_pending").object)
-                    if(records.contains(id))records.at(id).error=e.what();
-                profile()["code_mod_pending"].object.clear();save();
+                enabled.insert(id);
+            };
+            for (const auto &[id, value] : profile().get("code_mod_pending").object) {
+                require(records.contains(id) &&
+                            records.at(id).manifest.trust_fingerprint == value.string(),
+                        "Pending code mod changed; confirm its code again");
+                add(id);
+            }
+            order(enabled);
+            planned_save_profile = save_selection(startup_order(enabled).order);
+            validate_conflicts(enabled, &planned);
+            profile()["builtins"] = planned;
+            for (const auto &id : enabled) {
+                profile()["enabled"][id] = true;
+                database["experimental_ack"].object.erase(id);
+            }
+            profile()["code_mod_pending"].object.clear();
+        } catch (const std::exception &e) {
+            if (!planned_save_profile.empty() || dynamic_cast<const save_profile::Error *>(&e))
+                throw save_profile::Error("Cannot prepare requested save profile: " +
+                                          std::string(e.what()));
+            database = previous;
+            for (const auto &[id, value] : profile().get("code_mod_pending").object)
+                if (records.contains(id))
+                    records.at(id).error = e.what();
+            profile()["code_mod_pending"].object.clear();
+        }
+    }
+
+    auto plan = startup_order(activation_enabled_set());
+    metadata_sequence = plan.order;
+    // Preserve candidate ownership before any other validation can fail.
+    planned_save_profile = save_selection(metadata_sequence);
+    auto builtins = profile().get("builtins");
+    for (const auto &entry : manager::entries()) {
+        const auto &saved = builtins.get(entry.id);
+        const bool env_owned = std::getenv(entry.startup_env) ||
+                               (std::string_view(entry.id) == "target-letterbox" &&
+                                std::getenv("WWHD_TARGET_LETTERBOX_MODE"));
+        builtins[entry.id] = env_owned                    ? entry.enabled()
+                             : saved.type == Value::Bool    ? saved.boolean
+                                                            : entry.enabled();
+    }
+    validate_conflicts(started(plan), &builtins);
+    metadata_ready = true;
+}
+void apply_saved_builtin_preferences() {
+        for (const auto &e : manager::entries()) {
+            const auto &v = profile().get("builtins").get(e.id);
+            if (!std::getenv(e.startup_env) &&
+                !(std::string_view(e.id) == "target-letterbox" &&
+                  std::getenv("WWHD_TARGET_LETTERBOX_MODE")) &&
+                v.type == Value::Bool)
+                e.apply(v.boolean);
+        }
+        const auto &options = profile().get("builtin_options");
+        load_letterbox_options(options);
+        load_fast_forward_options(options);
+        load_move_speed_options(options, true);
+        load_traversal_options(options);
+        load_lock_on_options(options, true);
+        load_quick_use_speed(options, true);
+        auto speed = options.get("direct-camera.speed"),
+             sens = options.get("mouse-camera.sensitivity");
+        if (!std::getenv("WWHD_MOD_CAMERA_SPEED") && speed.type == Value::Number &&
+            speed.number >= .5 && speed.number <= 2)
+            set_camera_speed(speed.number);
+        if (!std::getenv("WWHD_MOD_MOUSE_SENS") && sens.type == Value::Number &&
+            sens.number >= .08 && sens.number <= .3)
+            set_mouse_sensitivity(sens.number);
+}
+void verify_save_profile_inventory() {
+    for (const auto &[id, fingerprint] : save_profile_inventory) {
+        auto found = records.find(id);
+        if (found == records.end() || package_fingerprint(found->second.path) != fingerprint)
+            throw save_profile::Error("Save-profile dependency changed after startup selection: " +
+                                      id + "; restart and confirm the package again");
+    }
+}
+} // namespace
+void initialize() {
+    std::lock_guard guard(mutex);
+    if (activation_ready)
+        return;
+    try {
+        prepare_metadata_unlocked();
+        if (!ready)
+            return;
+        if (!save_profile_problem.empty())
+            throw save_profile::Error(save_profile_problem);
+        check_frozen_save_profile(metadata_sequence);
+        verify_save_profile_inventory();
+        {
+            std::lock_guard story(story_mutex);
+            story_dir = (root / "story").string();
+        }
+        fs::create_directories(root / "Mods");
+        if(metadata_needs_save)save();
+        apply_saved_builtin_preferences();
+        const auto &sequence = metadata_sequence;
+        guest_startup_ids.clear();
+        for (const auto &id : sequence)
+            if (records.at(id).manifest.kind == "guest") {
+                guest_startup_ids.push_back(id);
+                records.at(id).startup_config = config(records.at(id).manifest);
+            }
+        content::Files files;
+        for (const auto &id : sequence) {
+            auto &record = records.at(id);
+            if (record.manifest.kind == "content") {
+                files.insert(record.manifest.files.begin(), record.manifest.files.end());
+                record.active = true;
+                record.status = std::to_string(record.manifest.files.size()) + " replacement files";
             }
         }
-        // Next-launch (restart_required) settings must be selected before the game starts.
-        try { auto plan=startup_order(enabled_set());auto sequence=plan.order;validate_conflicts(started(plan));
-            guest_startup_ids.clear();
-            for(const auto& id:sequence)if(records.at(id).manifest.kind=="guest") {
-                guest_startup_ids.push_back(id);records.at(id).startup_config=config(records.at(id).manifest);
+        std::vector<cemu::Selection> graphics;
+        for (const auto &id : sequence) {
+            auto &record = records.at(id);
+            if (record.manifest.graphics &&
+                (record.manifest.graphics->shaders.empty() || cemu::vulkan())) {
+                record.startup_config = config(record.manifest);
+                cemu::Selection selected{id, *record.manifest.graphics, record.startup_config};
+                try {
+                    cemu::validate({selected});
+                } catch(const std::exception& e) {
+                    // An unrelated broken graphics pack cannot invalidate the
+                    // selected save owner. Its dependents will fail normally.
+                    record.error=e.what();
+                    skip_reasons[id]=record.error;
+                    fprintf(stderr,"[mod-manager] %s not loaded: %s\n",id.c_str(),e.what());
+                    continue;
+                }
+                graphics.push_back(std::move(selected));
+                record.active = true;
+                record.status =
+                    std::to_string(record.manifest.graphics->textures.size()) + " texture rules, " +
+                    std::to_string(record.manifest.graphics->shaders.size()) + " shader candidates";
             }
-            content::Files files;
-            for(const auto& id:sequence){auto& record=records.at(id);if(record.manifest.kind=="content"){
-                files.insert(record.manifest.files.begin(),record.manifest.files.end());record.active=true;
-                record.status=std::to_string(record.manifest.files.size())+" replacement files";
-            }}
-            std::vector<cemu::Selection> graphics;
-            for(const auto& id:sequence){auto& record=records.at(id);if(record.manifest.graphics&&(record.manifest.graphics->shaders.empty()||cemu::vulkan())){
-                record.startup_config=config(record.manifest);graphics.push_back({id,*record.manifest.graphics,record.startup_config});
-                record.active=true;record.status=std::to_string(record.manifest.graphics->textures.size())+" texture rules, "+std::to_string(record.manifest.graphics->shaders.size())+" shader candidates";
-            }}
-            cemu::activate(graphics);
-            startup_content=files;content::activate(std::move(files));
-            for(const auto& id:sequence)for(const auto& [setting,on]:records.at(id).manifest.settings) {
-            const auto* entry=manager::find(setting);
-            if(entry->restart_required&&!std::getenv(entry->startup_env))entry->apply(on);
-        }} catch(const std::exception& e) {last_problem=e.what();}
-        dirty=true;
-    }catch(const std::exception& e){last_problem=e.what();ready=false;records.clear();fprintf(stderr,"[mod-manager] %s\n",e.what());}
+        }
+        cemu::activate(graphics);
+        startup_content = files;
+        content::activate(std::move(files));
+        for (const auto &id : sequence)
+            for (const auto &[setting, on] : records.at(id).manifest.settings) {
+                const auto *entry = manager::find(setting);
+                if (entry->restart_required && !std::getenv(entry->startup_env))
+                    entry->apply(on);
+            }
+        activation_ready = true;
+        dirty = true;
+    } catch (const std::exception &e) {
+        last_problem = e.what();
+        if (!planned_save_profile.empty() || !frozen_save_profile.empty() ||
+            !save_profile_problem.empty())
+            throw save_profile::Error("Cannot activate selected save profile: " +
+                                      std::string(e.what()));
+        // Keep metadata and saved built-ins available so Settings can disable
+        // the conflicting package. No third-party package is activated here.
+        guest_startup_ids.clear();
+        metadata_sequence.clear();
+        for(auto& [id,record]:records)record.error=e.what();
+        try { if(ready)apply_saved_builtin_preferences(); }
+        catch(const std::exception& preference_error) {last_problem += "; "+std::string(preference_error.what());}
+        metadata_ready = ready;
+        activation_ready = ready;
+        dirty = false;
+        fprintf(stderr, "[mod-manager] %s\n", e.what());
+    }
+}
+void set_save_profile_support(bool supported, const std::string &reason) {
+    std::lock_guard guard(mutex);
+    require(!ready, "Save profile platform support must be selected before mod startup");
+    save_profile_supported = supported;
+    save_profile_unsupported_reason = reason;
+}
+save_profile::Selection startup_save_profile() {
+    std::lock_guard guard(mutex);
+    if (save_profile_frozen)
+        return frozen_save_profile;
+    const char *override = std::getenv("WWHD_MOD_MANAGER_DIR");
+    const auto directory =
+        override ? fs::path(override) : fs::path(host::config_dir()) / "ModManager";
+    // No saved enable choices means no eligible claimant. Leave fresh-profile
+    // defaults to ordinary initialize(), after host preferences have loaded.
+    std::error_code metadata_error;
+    const bool have_choices=fs::exists(directory / "profiles.json",metadata_error);
+    if (!(std::getenv("WWHD_NO_HOST_INPUT") && !override) && !metadata_error && have_choices) {
+        try {
+            prepare_metadata_unlocked();
+        } catch (const std::exception &e) {
+            if (!planned_save_profile.empty() || dynamic_cast<const save_profile::Error *>(&e))
+                throw save_profile::Error("Cannot select requested save profile: " +
+                                          std::string(e.what()));
+            // Existing ordinary manager errors keep their nonfatal behavior.
+            metadata_ready = false;
+            planned_save_profile = {};
+        }
+    }
+    frozen_save_profile = planned_save_profile;
+    save_profile_frozen = true;
+    if (!frozen_save_profile.empty()) {
+        save_profile_session_enabled=enabled_set();
+        std::set<std::string> seen;
+        std::function<void(const std::string &)> snapshot = [&](const std::string &id) {
+            if (!seen.insert(id).second)
+                return;
+            const auto &record = records.at(id);
+            save_profile_inventory[id] = package_fingerprint(record.path);
+            for (const auto &dependency : record.manifest.dependencies)
+                if (!dependency.id.starts_with("builtin:"))
+                    snapshot(dependency.id);
+                else if(const auto* entry=manager::find(dependency.id.substr(8)))
+                    save_profile_builtins[entry->id]=true;
+        };
+        snapshot(frozen_save_profile.owner);
+    }
+    return frozen_save_profile;
+}
+const save_profile::Selection &current_save_profile() {
+    // Published once before guest/state I/O threads start; runtime profile
+    // switches affect the next launch and never mutate this frozen selection.
+    return frozen_save_profile;
 }
 std::string directory(){std::lock_guard guard(mutex);return ready?(root/"Mods").string():"";}
 // The story cache folder is fixed once the manager knows its root, so reading it never takes the manager
@@ -813,6 +1148,7 @@ bool begin_setup_run(const std::string& id,const std::string& identity,
         const std::map<std::string,std::string>& choices,std::string& error) {
     return operation(error,[&]{
         require(records.contains(id),"Mod not found");
+        require_session_mutable(id);
         require(!identity.empty()&&identity==setup_identity_unlocked(id),"Package changed; review setup and confirm again");
         std::set<std::string> seen;
         std::function<void(const std::string&)> check=[&](const auto& current) {
@@ -847,6 +1183,7 @@ bool begin_setup_run(const std::string& id,const std::string& identity,
 bool save_setup_run(const std::string& id,bool pending,std::string& error) {
     return operation(error,[&]{
         require(records.contains(id),"Mod not found");
+        require_session_mutable(id);
         auto previous=database;
         if(pending) {
             require_source(records.at(id).manifest);
@@ -896,18 +1233,19 @@ bool set_game_source(const std::string& game,const std::string& path,std::string
         auto previous=database;
         if(sources.local_settings()==database.get("game_sources"))return;
         for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing the game source");
-        database["game_sources"]=sources.local_settings();
         std::set<std::string> affected;bool undone=false;
         auto shared=game.starts_with("gc_")?std::string("gc_wind_waker"):game;
-        for(const auto& [id,r]:records)if(std::any_of(r.manifest.setup.begin(),r.manifest.setup.end(),[&](const auto& step){return catalogue::uses_game_source(step,shared);})) {
-            affected.insert(id);
-            // something the player had (a finished preparation, a built code mod) is undone: worth a notice
+        auto uses_source=[&](const auto& record){return std::any_of(record.manifest.setup.begin(),record.manifest.setup.end(),[&](const auto& step){return catalogue::uses_game_source(step,shared);});};
+        for(const auto& [id,r]:records)if(uses_source(r))affected.insert(id);
+        // Check the whole affected closure before changing sources or receipts.
+        bool added=true;while(added){added=false;for(const auto& [id,r]:records)
+            for(const auto& dep:r.manifest.dependencies)if(affected.contains(dep.id)&&affected.insert(id).second)added=true;}
+        for(const auto& id:affected)require_session_mutable(id);
+        database["game_sources"]=sources.local_settings();
+        for(const auto& [id,r]:records)if(uses_source(r)) {
             if(database.get("setup_receipts").object.contains(id)||database.get("guest_prepared").object.contains(id))undone=true;
             database["setup_receipts"].object.erase(id);database["guest_prepared"].object.erase(id);
         }
-        // A preset or another mod may enable one of these as a dependency.
-        bool added=true;while(added){added=false;for(const auto& [id,r]:records)
-            for(const auto& dep:r.manifest.dependencies)if(affected.contains(dep.id)&&affected.insert(id).second)added=true;}
         for(auto& [name,p]:database["profiles"].object)for(const auto& id:affected){
             const auto& on=p.get("enabled").get(id);if(on.type==Value::Bool&&on.boolean)undone=true;
             p["enabled"][id]=false;p["code_mod_pending"].object.erase(id);p["setup_pending"].object.erase(id);}
@@ -923,6 +1261,7 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
     try {
         {
             std::lock_guard guard(mutex);require(ready&&records.contains(id),"Mod is unavailable");auto& r=records.at(id);
+            require_session_mutable(id);
             require_source(r.manifest);
             require(!wanted(id)&&!r.active&&!r.loading,"Disable this mod and restart before preparing its files");
             require(confirmed(r),"Confirm this package's native code before running its preparation tool");
@@ -978,7 +1317,7 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
         return false;
     }
 }
-std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest";v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.experimental=experimental(r);v.reason=m.problem.empty()?r.error:m.problem;v.status=r.status;v.game_source_warning=source_warning(m);if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;if(m.graphics)for(const auto& other:enabled_set())if(other!=id){try{auto reason=graphics_conflict(id,other);if(!reason.empty())v.graphics_conflicts.push_back({other,records.at(other).manifest.name,reason});}catch(const std::exception& e){v.reason=e.what();}}out.push_back(std::move(v));}return out;}
+std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest"||!frozen_save_profile.empty();v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.experimental=experimental(r);v.isolated_save_profile=m.kind=="guest"&&m.save_profile.present&&m.save_profile.error.empty();v.reason=!m.save_profile.error.empty()?m.save_profile.error:(m.problem.empty()?r.error:m.problem);if(!m.save_profile.error.empty())v.compatible=false;v.status=r.status;v.game_source_warning=source_warning(m);if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;if(m.graphics)for(const auto& other:enabled_set())if(other!=id){try{auto reason=graphics_conflict(id,other);if(!reason.empty())v.graphics_conflicts.push_back({other,records.at(other).manifest.name,reason});}catch(const std::exception& e){v.reason=e.what();}}out.push_back(std::move(v));}return out;}
 static bool content_name(std::string n){for(char& c:n)if(c>='A'&&c<='Z')c+='a'-'A';return n=="content";}
 // fresh: a new package only (install_new): refused when the ID is installed or its folder exists
 static bool install_package(const std::string& source,std::string& error,std::string* installed_id_out,bool fresh){return operation(error,[&]{
@@ -996,12 +1335,12 @@ static bool install_package(const std::string& source,std::string& error,std::st
         auto named=fs::path(source).lexically_normal();if(named.filename().empty())named=named.parent_path();
         if(content_name(named.filename().string())&&!named.parent_path().filename().empty())named=named.parent_path();
         if(graphics)cemu::import_legacy(stage,named.filename().string());else content::import_legacy(stage,named.filename().string());
-    }auto m=manifest(stage);require(m.problem.empty()||m.problem.starts_with("No binary for")||m.problem.starts_with("GLSL shader packs require Vulkan"),m.problem);target=root/"Mods"/m.id;auto it=records.find(m.id);if(fresh){std::error_code exists_error;require(it==records.end()&&!fs::exists(fs::symlink_status(target,exists_error)),"A mod with the ID "+m.id+" is installed already");}require(it==records.end()||(!wanted(m.id)&&!it->second.active&&!it->second.loading),it!=records.end()&&(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before updating":"Disable this mod and wait for it to unload before updating");fs::create_directories(target.parent_path());if(fs::exists(target)){fs::rename(target,backup);backed=true;}fs::rename(stage,target);moved=true;m=manifest(target);Record r;r.path=target;r.manifest=std::move(m);auto installed_id=r.manifest.id;records[installed_id]=std::move(r);if(installed_id_out)*installed_id_out=installed_id;if(backed){std::error_code cleanup;fs::remove_all(backup,cleanup);}dirty=true;
+    }auto m=manifest(stage);require(m.problem.empty()||m.problem.starts_with("No binary for")||m.problem.starts_with("GLSL shader packs require Vulkan"),m.problem);require_session_mutable(m.id);target=root/"Mods"/m.id;auto it=records.find(m.id);if(fresh){std::error_code exists_error;require(it==records.end()&&!fs::exists(fs::symlink_status(target,exists_error)),"A mod with the ID "+m.id+" is installed already");}require(it==records.end()||(!wanted(m.id)&&!it->second.active&&!it->second.loading),it!=records.end()&&(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before updating":"Disable this mod and wait for it to unload before updating");fs::create_directories(target.parent_path());if(fs::exists(target)){fs::rename(target,backup);backed=true;}fs::rename(stage,target);moved=true;m=manifest(target);Record r;r.path=target;r.manifest=std::move(m);auto installed_id=r.manifest.id;records[installed_id]=std::move(r);if(installed_id_out)*installed_id_out=installed_id;if(backed){std::error_code cleanup;fs::remove_all(backup,cleanup);}dirty=true;
     }catch(...){if(moved)fs::remove_all(target);if(backed)fs::rename(backup,target);if(fs::exists(stage))fs::remove_all(stage);throw;}
 });}
 bool install(const std::string& source,std::string& error,std::string* installed_id_out){return install_package(source,error,installed_id_out,false);}
 bool install_new(const std::string& source,std::string& error,std::string* installed_id_out){return install_package(source,error,installed_id_out,true);}
-bool remove(const std::string& id,std::string& error){return operation(error,[&]{auto it=records.find(id);require(it!=records.end(),"Mod not found");require(!(id==story_notebook::kNotebookPackage&&story_system()),"The Story Notebook is part of the story system: turn off the story system to remove it");require(!wanted(id)&&!it->second.active&&!it->second.loading,(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before removing":"Disable this mod and wait for it to unload before removing");for(const auto& [other,r]:records)if(wanted(other))for(const auto& d:r.manifest.dependencies)require(d.id!=id,r.manifest.name+" depends on this mod");auto previous=database;for(auto& [name,p]:database["profiles"].object){p["enabled"].object.erase(id);p["config"].object.erase(id);p["setup_pending"].object.erase(id);}database["native_trust"].object.erase(id);database["experimental_ack"].object.erase(id);database["catalogue_experimental"].object.erase(id);database["guest_regions"].object.erase(id);database["guest_prepared"].object.erase(id);database["setup_receipts"].object.erase(id);try{save();}catch(...){database=previous;throw;}fs::remove_all(it->second.path);std::error_code ignored;fs::remove_all(root/"Data"/id,ignored);records.erase(it);dirty=true;});}
+bool remove(const std::string& id,std::string& error){return operation(error,[&]{require_session_mutable(id);auto it=records.find(id);require(it!=records.end(),"Mod not found");require(!(id==story_notebook::kNotebookPackage&&story_system()),"The Story Notebook is part of the story system: turn off the story system to remove it");require(!wanted(id)&&!it->second.active&&!it->second.loading,(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before removing":"Disable this mod and wait for it to unload before removing");for(const auto& [other,r]:records)if(wanted(other))for(const auto& d:r.manifest.dependencies)require(d.id!=id,r.manifest.name+" depends on this mod");auto previous=database;for(auto& [name,p]:database["profiles"].object){p["enabled"].object.erase(id);p["config"].object.erase(id);p["setup_pending"].object.erase(id);}database["native_trust"].object.erase(id);database["experimental_ack"].object.erase(id);database["catalogue_experimental"].object.erase(id);database["guest_regions"].object.erase(id);database["guest_prepared"].object.erase(id);database["setup_receipts"].object.erase(id);try{save();}catch(...){database=previous;throw;}fs::remove_all(it->second.path);std::error_code ignored;fs::remove_all(root/"Data"/id,ignored);records.erase(it);dirty=true;});}
 uint64_t disk_use(const std::string& id){
     // the package files and the files its setup prepared (Data/<id>); Remove deletes both
     fs::path package,data;{std::lock_guard guard(mutex);auto it=records.find(id);if(!ready||it==records.end())return 0;package=it->second.path;data=root/"Data"/id;}
@@ -1032,19 +1371,51 @@ bool enable_after_code_rebuild(const std::string& id,std::string& error){return 
     auto previous=database;profile()["code_mod_pending"][id]=records.at(id).manifest.trust_fingerprint;
     try{save();}catch(...){database=previous;throw;}
 });}
-bool enable(const std::string& id,bool on,std::string& error,bool switch_conflicts){std::vector<std::string> builtin_dependencies,experimental_ids;bool ok=operation(error,[&]{require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for this mod's current operation to finish");auto enabled=enabled_set();if(on){
+bool enable(const std::string& id,bool on,std::string& error,bool switch_conflicts){bool deferred=false;std::vector<std::string> builtin_dependencies,experimental_ids;bool ok=operation(error,[&]{require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for this mod's current operation to finish");deferred=!frozen_save_profile.empty();auto enabled=enabled_set();if(on){
     std::set<std::string> visiting;
     std::function<void(const std::string&)> add=[&](const std::string& current){require(!visiting.contains(current),"Dependency cycle at "+current);require(records.contains(current),missing(current));require(!records.at(current).loading,"Wait for mod preparation to finish: "+current);require(records.at(current).manifest.kind!="guest"||code_mod_support,"This mod needs code-mod support. Enable code mods in Settings > Mods, rebuild and restart first");const auto& graphics=records.at(current).manifest.graphics;if(graphics&&!graphics->shaders.empty())require(cemu::vulkan(),"GLSL shader packs require Vulkan; choose it in Graphics and restart");if(enabled.contains(current))return;visiting.insert(current);for(const auto& d:records.at(current).manifest.dependencies){if(d.id.starts_with("builtin:"))builtin_dependencies.push_back(d.id.substr(8));else add(d.id);}visiting.erase(current);require(confirmed(records.at(current)),records.at(current).manifest.name+" contains native code that has not been confirmed");enabled.insert(current);};add(id);
     require_experimental_ack(id);experimental_ids=newly_experimental(id);
     if(switch_conflicts)for(auto it=enabled.begin();it!=enabled.end();){if(*it!=id&&!graphics_conflict(id,*it).empty())it=enabled.erase(it);else ++it;}
-    }else{require(!(id==story_notebook::kNotebookPackage&&story_system()),"The Story Notebook is part of the story system: turn off the story system to turn it off");enabled.erase(id);}order(enabled,on);auto planned=profile().get("builtins");for(const auto& entry:manager::entries())planned[entry.id]=entry.enabled();for(const auto& dependency:builtin_dependencies)planned[dependency]=true;validate_conflicts(enabled,&planned);auto previous=database;profile()["builtins"]=planned;
+    }else{require(!(id==story_notebook::kNotebookPackage&&story_system()),"The Story Notebook is part of the story system: turn off the story system to turn it off");enabled.erase(id);
+        if(deferred) {
+            bool changed=true;
+            while(changed){changed=false;for(auto it=enabled.begin();it!=enabled.end();) {
+                const auto& dependencies=records.at(*it).manifest.dependencies;
+                if(std::any_of(dependencies.begin(),dependencies.end(),[&](const auto& dep){return !dep.id.starts_with("builtin:")&&!enabled.contains(dep.id);})) {it=enabled.erase(it);changed=true;}
+                else ++it;
+            }}
+        }
+    }
+    if(deferred&&on)for(const auto& current:enabled)for(const auto& [setting,value]:records.at(current).manifest.settings){auto locked=save_profile_builtins.find(setting);require(locked==save_profile_builtins.end()||locked->second==value,kSessionChange);}
+    if(!(deferred&&!on))order(enabled,on);auto planned=profile().get("builtins");if(!deferred)for(const auto& entry:manager::entries())planned[entry.id]=entry.enabled();for(const auto& dependency:builtin_dependencies)planned[dependency]=true;
+    if(!(deferred&&!on))validate_conflicts(enabled,&planned);
+    auto previous=database;profile()["builtins"]=planned;
     double serial=profile().get("enable_serial").number;
     for(const auto& [key,r]:records){if(enabled.contains(key)&&!wanted(key))profile()["enabled_since"][key]=++serial;profile()["enabled"][key]=enabled.contains(key);}profile()["enable_serial"]=serial;
     for(const auto& key:experimental_ids)database["experimental_ack"].object.erase(key); // the confirmation is used up
-    try{save();}catch(...){database=previous;throw;}for(const auto& key:enabled)records.at(key).error.clear();dirty=true;});if(ok)for(const auto& key:builtin_dependencies)manager::set_enabled(key,true);return ok;}
+    try{save();}catch(...){database=previous;throw;}for(const auto& key:enabled)records.at(key).error.clear();if(!deferred)dirty=true;});
+    if(ok&&!deferred)for(const auto& key:builtin_dependencies)manager::set_enabled(key,true);
+    if(ok&&deferred)post_toast("Mod changes will apply after restarting the game. The current save profile stays active until then.");
+    return ok;}
 // The guest packages of this start again (required.h installed or enabled one after initialize()),
 // while the guest mods haven't started yet
-void refresh_guest_startup(){std::lock_guard guard(mutex);if(!ready||guests_started)return;try{auto plan=startup_order(enabled_set());auto sequence=plan.order;validate_conflicts(started(plan));guest_startup_ids.clear();for(const auto& id:sequence)if(records.at(id).manifest.kind=="guest"){guest_startup_ids.push_back(id);records.at(id).startup_config=config(records.at(id).manifest);}}catch(const std::exception& e){last_problem=e.what();}}
+void refresh_guest_startup() {
+    std::lock_guard guard(mutex);
+    if(!ready||guests_started)return;
+    try {
+        auto plan=startup_order(activation_enabled_set());
+        const auto& sequence=plan.order;
+        validate_conflicts(started(plan));
+        check_frozen_save_profile(sequence);
+        guest_startup_ids.clear();
+        for(const auto& id:sequence)if(records.at(id).manifest.kind=="guest") {
+            guest_startup_ids.push_back(id);
+            records.at(id).startup_config=config(records.at(id).manifest);
+        }
+    } catch(const save_profile::Error& e) {
+        save_profile_problem=e.what();last_problem=e.what();
+    } catch(const std::exception& e) {last_problem=e.what();}
+}
 std::vector<std::pair<std::string,std::string>> unacknowledged_experimental(const std::string& id){
     std::lock_guard guard(mutex);std::vector<std::pair<std::string,std::string>> result;if(!ready)return result;
     for(const auto& current:newly_experimental(id))if(!experimental_acknowledged(current))result.emplace_back(current,records.at(current).manifest.name);
@@ -1082,18 +1453,43 @@ bool confirm_native(const std::string& id,std::string& error){return operation(e
 OptionObserver g_option_observer;
 void set_option_observer(OptionObserver observer){g_option_observer=std::move(observer);}
 bool configure(const std::string& id,const std::string& option_id,const Value& value,std::string& error){bool live=false;const bool ok=configure_option(id,option_id,value,error,live);if(ok&&g_option_observer)g_option_observer(id,option_id,value,live);return ok;}
-bool configure_option(const std::string& id,const std::string& option_id,const Value& value,std::string& error,bool& live){return operation(error,[&]{require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for mod preparation to finish before changing options");auto& opts=records.at(id).manifest.options;auto it=std::find_if(opts.begin(),opts.end(),[&](const Option& o){return o.id==option_id;});require(it!=opts.end()&&valid_option(*it,value),"Invalid configuration value");live=it->live;auto previous=database;profile()["config"][id][option_id]=value;try{if(records.at(id).manifest.graphics)cemu::validate({{id,*records.at(id).manifest.graphics,config(records.at(id).manifest)}});bool was_enabled=wanted(id);auto messages=was_enabled?repair_graphics():std::vector<std::string>{};if(was_enabled){order(enabled_set());validate_conflicts(enabled_set());}save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}dirty=true;});}
+bool configure_option(const std::string& id,const std::string& option_id,const Value& value,std::string& error,bool& live){return operation(error,[&]{require_session_mutable(id);require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for mod preparation to finish before changing options");auto& opts=records.at(id).manifest.options;auto it=std::find_if(opts.begin(),opts.end(),[&](const Option& o){return o.id==option_id;});require(it!=opts.end()&&valid_option(*it,value),"Invalid configuration value");live=it->live;auto previous=database;profile()["config"][id][option_id]=value;try{if(records.at(id).manifest.graphics)cemu::validate({{id,*records.at(id).manifest.graphics,config(records.at(id).manifest)}});bool was_enabled=wanted(id);auto messages=was_enabled?repair_graphics():std::vector<std::string>{};if(was_enabled){order(enabled_set());validate_conflicts(enabled_set());}save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}dirty=true;});}
 std::vector<std::string> startup_problems(){std::lock_guard guard(mutex);std::vector<std::string> out;for(const auto& [id,why]:skip_reasons)out.push_back(why);return out;}
 namespace {std::mutex g_toast_mutex;std::vector<std::string> g_toasts;}
 void post_toast(const std::string& text){std::lock_guard guard(g_toast_mutex);if(g_toasts.size()<8)g_toasts.push_back(text);}
 std::vector<std::string> take_toasts(){std::lock_guard guard(g_toast_mutex);auto result=std::move(g_toasts);g_toasts.clear();return result;}
 std::vector<std::string> take_notices(){std::lock_guard guard(mutex);auto result=std::move(notices);notices.clear();return result;}
-void disable_all(){std::string ignored;operation(ignored,[&]{auto previous=database;for(const auto& [id,r]:records)profile()["enabled"][id]=false;profile()["setup_pending"].object.clear();try{save();}catch(...){database=previous;throw;}dirty=true;});manager::disable_all();}
+void disable_all(){
+    std::string error;bool deferred=false;
+    const bool ok=operation(error,[&]{
+        deferred=!frozen_save_profile.empty();
+        auto previous=database;
+        for(const auto& [id,r]:records)profile()["enabled"][id]=false;
+        profile()["setup_pending"].object.clear();
+        if(deferred)for(const auto& entry:manager::entries())profile()["builtins"][entry.id]=false;
+        try{save();}catch(...){database=previous;throw;}
+        if(!deferred)dirty=true;
+    });
+    if(ok&&!deferred)manager::disable_all();
+    else if(ok)post_toast("Mods will be disabled after restarting the game. The current save profile stays active until then.");
+    else post_toast(error);
+}
 std::vector<std::string> profiles(){std::lock_guard guard(mutex);std::vector<std::string> result;if(ready)for(const auto& [name,p]:database.get("profiles").object)result.push_back(name);return result;}
 std::string current_profile(){std::lock_guard guard(mutex);return ready?database.get("active").string():"Default";}
-bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();copy["setup_pending"].object.clear();save_fast_forward_options(copy["builtin_options"]);save_move_speed_options(copy["builtin_options"]);save_traversal_options(copy["builtin_options"]);save_lock_on_options(copy["builtin_options"]);copy["builtin_options"]["quick-use.speed"]=double(quick_use_speed());for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
-bool select_profile(const std::string& name,std::string& error){Value chosen;bool ok=operation(error,[&]{for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing profiles");require(database.get("profiles").object.contains(name),"Profile not found");auto previous=database;database["active"]=name;try{auto messages=repair_graphics();order(enabled_set());validate_conflicts(enabled_set(),&profile().get("builtins"));save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}chosen=profile();profile_changed=true;dirty=true;});if(ok){for(const auto& e:manager::entries()){const auto& v=chosen.get("builtins").get(e.id);manager::set_enabled(e.id,v.type==Value::Bool?v.boolean:e.default_enabled);}load_fast_forward_options(chosen.get("builtin_options"));load_move_speed_options(chosen.get("builtin_options"));load_traversal_options(chosen.get("builtin_options"));load_lock_on_options(chosen.get("builtin_options"));load_quick_use_speed(chosen.get("builtin_options"));auto speed=chosen.get("builtin_options").get("direct-camera.speed"),sens=chosen.get("builtin_options").get("mouse-camera.sensitivity");if(speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);}return ok;}
+bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();copy["setup_pending"].object.clear();save_letterbox_options(copy["builtin_options"]);save_fast_forward_options(copy["builtin_options"]);save_move_speed_options(copy["builtin_options"]);save_traversal_options(copy["builtin_options"]);save_lock_on_options(copy["builtin_options"]);copy["builtin_options"]["quick-use.speed"]=double(quick_use_speed());for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
+bool select_profile(const std::string& name,std::string& error){Value chosen;bool ok=operation(error,[&]{for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing profiles");require(database.get("profiles").object.contains(name),"Profile not found");check_session_profile(database.get("profiles").get(name));auto previous=database;database["active"]=name;try{auto messages=repair_graphics();order(enabled_set());validate_conflicts(enabled_set(),&profile().get("builtins"));save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}chosen=profile();profile_changed=true;dirty=true;});if(ok){for(const auto& e:manager::entries()){const auto& v=chosen.get("builtins").get(e.id);manager::set_enabled(e.id,v.type==Value::Bool?v.boolean:e.default_enabled);}load_letterbox_options(chosen.get("builtin_options"));load_fast_forward_options(chosen.get("builtin_options"));load_move_speed_options(chosen.get("builtin_options"));load_traversal_options(chosen.get("builtin_options"));load_lock_on_options(chosen.get("builtin_options"));load_quick_use_speed(chosen.get("builtin_options"));auto speed=chosen.get("builtin_options").get("direct-camera.speed"),sens=chosen.get("builtin_options").get("mouse-camera.sensitivity");if(speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);}return ok;}
 bool delete_profile(const std::string& name,std::string& error){return operation(error,[&]{require(name!=database.get("active").string(),"Switch profiles before deleting the active one");require(database.get("profiles").object.contains(name),"Profile not found");auto previous=database;database["profiles"].object.erase(name);try{save();}catch(...){database=previous;throw;}});}
+bool builtin_change_allowed(const std::string& id,bool on,std::string& error) {
+    bool allowed=true;
+    {
+        std::lock_guard guard(mutex);
+        auto locked=save_profile_builtins.find(id);
+        if(locked!=save_profile_builtins.end()&&locked->second!=on){error=kSessionChange;allowed=false;}
+        else error.clear();
+    }
+    if(!allowed)post_toast(error);
+    return allowed;
+}
 void remember_builtin(const std::string& id,bool on){std::string error;operation(error,[&]{profile()["builtins"][id]=on;save();dirty=true;});}
 void remember_option(const std::string& id,double value){std::string error;operation(error,[&]{profile()["builtin_options"][id]=value;save();});}
 void remember_option(const std::string& id,const std::string& value){std::string error;operation(error,[&]{profile()["builtin_options"][id]=value;save();});}
@@ -1156,9 +1552,16 @@ bool prepare_guest(const std::string& id,std::string& error) {
         return false;
     }
 }
+namespace { void activate_live_mods(); }
 void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
+    // Paths and guest memory have been configured before this entry. Native
+    // dependencies are eligible metadata even while unloaded; now activate them
+    // and require success before any save-profile owner may execute guest code.
+    if(!frozen_save_profile.empty())activate_live_mods();
     std::lock_guard guard(mutex);
     if(!ready||guests_started)return;
+    if(!save_profile_problem.empty())throw save_profile::Error(save_profile_problem);
+    check_frozen_save_profile(startup_order(activation_enabled_set()).order);
     guests_started=true;
     auto files=startup_content;
     for(const auto& id:guest_startup_ids) {
@@ -1176,6 +1579,12 @@ void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
                         r.manifest.name+" needs "+dependency.manifest.name+", which could not start"+
                         (dependency.error.empty()?std::string("."):": "+dependency.error));
             }
+            verify_save_profile_inventory();
+            if(save_profile_frozen&&r.manifest.save_profile.present&&
+               (frozen_save_profile.owner!=id||
+                r.manifest.save_profile.provider!=frozen_save_profile.provider||
+                r.manifest.save_profile.identity!=frozen_save_profile.identity))
+                throw save_profile::Error("This mod has no matching save profile selected at startup");
             GuestPackage pkg{id,r.manifest.version,r.path.string(),(root/"Data"/id).string(),r.manifest.fingerprint,r.startup_config,r.manifest.heap_size};pkg.name=r.manifest.name;for(const auto& o:r.manifest.options)if(o.permission=="microphone")pkg.mic_options.push_back({o.id,o.name});
             uint32_t bytes=inspect(pkg);
             uint32_t base=assign_guest_region(id,bytes);
@@ -1185,19 +1594,24 @@ void start_guests(const GuestInspect& inspect,const GuestLoad& load) {
         } catch(const std::exception& e) {
             r.active=false;r.error=e.what();
             fprintf(stderr,"[mod-manager] %s not loaded: %s\n",id.c_str(),e.what());
+            if(save_profile_frozen&&id==frozen_save_profile.owner)
+                throw save_profile::Error("The save-profile owner could not load: "+id+": "+e.what());
         }
     }
     content::activate(std::move(files));
 }
 void set_memory_access(ReadMemory read,WriteMemory write){read_memory=read;write_memory=write;}
-void frame(uint64_t step){
-    if(!dirty.load(std::memory_order_relaxed)&&!running.load(std::memory_order_relaxed))return;
-    static uint64_t previous=~uint64_t(0);if(step==previous)return;previous=step;
+namespace {
+void activate_live_mods(){
+    if(!activation_ready)return;
     if(dirty.exchange(false)){
-        std::map<std::string,std::pair<Record,Value>> desired;std::vector<std::string> sequence;std::set<std::string> unconfirmed;Value baseline;bool switching=false;
-        {std::lock_guard guard(mutex);switching=profile_changed.exchange(false);baseline=profile().get("builtins");try{auto plan=startup_order(enabled_set());sequence=plan.order;validate_conflicts(started(plan));std::erase_if(sequence,[](const auto& id){return records.at(id).manifest.kind=="content"||records.at(id).manifest.kind=="cemu"||records.at(id).manifest.kind=="guest";});for(const auto& id:sequence){desired[id]={records.at(id),config(records.at(id).manifest)};records.at(id).loading=true;if(!confirmed(records.at(id)))unconfirmed.insert(id);}}catch(const std::exception& e){last_problem=e.what();for(auto& [id,r]:records)if(wanted(id))r.error=e.what();sequence.clear();desired.clear();}}
+        std::map<std::string,std::pair<Record,Value>> desired;std::vector<std::string> sequence;std::set<std::string> unconfirmed;Value baseline,baseline_options;bool switching=false;
+        {std::lock_guard guard(mutex);switching=profile_changed.exchange(false);baseline=profile().get("builtins");baseline_options=profile().get("builtin_options");try{auto plan=startup_order(activation_enabled_set());sequence=plan.order;validate_conflicts(started(plan));std::erase_if(sequence,[](const auto& id){return records.at(id).manifest.kind=="content"||records.at(id).manifest.kind=="cemu"||records.at(id).manifest.kind=="guest";});for(const auto& id:sequence){desired[id]={records.at(id),config(records.at(id).manifest)};records.at(id).loading=true;if(!confirmed(records.at(id)))unconfirmed.insert(id);}}catch(const std::exception& e){last_problem=e.what();for(auto& [id,r]:records)if(wanted(id))r.error=e.what();sequence.clear();desired.clear();}}
         for(auto it=live_order.rbegin();it!=live_order.rend();++it)if(!desired.contains(*it)||(switching&&live.at(*it).kind=="settings")){auto found=live.find(*it);if(found!=live.end()){unload(found->second);live.erase(found);}std::lock_guard guard(mutex);if(records.contains(*it)){records.at(*it).active=false;records.at(*it).status.clear();}}
-        if(switching)for(const auto& entry:manager::entries()){const auto& value=baseline.get(entry.id);entry.apply(value.type==Value::Bool?value.boolean:entry.default_enabled);}
+        if(switching){
+            for(const auto& entry:manager::entries()){const auto& value=baseline.get(entry.id);entry.apply(value.type==Value::Bool?value.boolean:entry.default_enabled);}
+            load_letterbox_options(baseline_options);
+        }
         live_order.clear();
         for(const auto& id:sequence){const auto& [record,cfg]=desired.at(id);bool deps_ok=true;for(const auto& dep:record.manifest.dependencies)if(!dep.id.starts_with("builtin:")&&!live.contains(dep.id)){std::lock_guard guard(mutex);if(!records.at(dep.id).active)deps_ok=false;}
             if(!deps_ok){std::lock_guard guard(mutex);records.at(id).loading=false;records.at(id).error="A dependency is unavailable (content dependencies may require restart)";continue;}
@@ -1211,6 +1625,13 @@ void frame(uint64_t step){
         }
         running=!live.empty();
     }
+}
+} // namespace
+void frame(uint64_t step){
+    if(!activation_ready)return;
+    if(!dirty.load(std::memory_order_relaxed)&&!running.load(std::memory_order_relaxed))return;
+    static uint64_t previous=~uint64_t(0);if(step==previous)return;previous=step;
+    activate_live_mods();
     for(const auto& id:live_order){auto& item=live.at(id);if(item.api.on_frame)item.api.on_frame(item.api.instance,step);if(item.context){std::lock_guard guard(mutex);if(records.contains(id))records.at(id).status=item.context->status;}}
 }
 }

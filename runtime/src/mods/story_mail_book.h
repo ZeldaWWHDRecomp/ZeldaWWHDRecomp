@@ -55,6 +55,9 @@ inline constexpr uint8_t kRecordStageResume = 23, kRecordStageResumePoint = 24;
 // mod stages' own save records (mod_stages.h): a save group's slot (key mod_stages::save_key(mod, "group:" + group),
 // value 1..250) and the non-zero bytes of its 0x24-byte stage record (key slot << 8 | byte, value the byte)
 inline constexpr uint8_t kRecordStageGroup = 25, kRecordStageMemory = 26;
+// the save file's whole name when it is longer than the game's 8 characters (long_name.h): key index * 2 + 0 / 1
+// the character's high / low byte, key 0x100 the length
+inline constexpr uint8_t kRecordLongName = 27;
 
 inline constexpr uint16_t kItemNotebook = 1;  // the story notebook
 
