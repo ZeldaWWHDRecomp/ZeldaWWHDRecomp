@@ -38,21 +38,39 @@ void discard_pending(uint64_t id) {
  if(!id)return;
  for(auto& p:pending)if(p.source==id){p.source=0;p.ticket=0;recycle(p.image);}
 }
+// Coverage alpha needs at least 8 bits: c/coverage over a 2-bit RGB10A2 alpha
+// bands. Like Metal (RGBA16Float), promote only the private capture; the source
+// keeps its format. A device that cannot render, blend and sample the promoted
+// format keeps the source format (the previous behaviour).
+struct CaptureFormat { uint32_t format; FormatInfo fmt; };
+CaptureFormat capture_format(const Surface* source) {
+ CaptureFormat result{source->format,source->fmt};
+ if(source->fmt.pixel!=VK_FORMAT_A2B10G10R10_UNORM_PACK32 && source->fmt.pixel!=VK_FORMAT_A2R10G10B10_UNORM_PACK32)
+  return result;
+ constexpr uint32_t kRGBA16Float=0x20; // GX2 R16_G16_B16_A16_FLOAT
+ const auto promoted=format_info(kRGBA16Float,false);
+ const auto needed=VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT|VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT|
+     VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT|VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+ if(promoted.pixel==VK_FORMAT_UNDEFINED || (format_properties(promoted.pixel).optimalTilingFeatures&needed)!=needed)
+  return result;
+ return {kRGBA16Float,promoted};
+}
 std::unique_ptr<Image> acquire(Surface* source) {
- for(auto& slot:spare)if(slot && slot->surface->format==source->format &&
-     slot->surface->fmt.pixel==source->fmt.pixel &&
+ const auto wanted=capture_format(source);
+ for(auto& slot:spare)if(slot && slot->surface->format==wanted.format &&
+     slot->surface->fmt.pixel==wanted.fmt.pixel &&
      slot->surface->extent.width==source->extent.width && slot->surface->extent.height==source->extent.height)
   return std::move(slot);
  // Only idle images may be retired for a format/extent change. Pending,
  // building and published images retain exclusive ownership throughout use.
  for(auto& slot:spare)slot.reset();
  const uint64_t estimate=uint64_t(source->extent.width)*source->extent.height*
-     std::max(1u,source->fmt.hostBytesPerBlock?source->fmt.hostBytesPerBlock:source->fmt.bytesPerBlock);
+     std::max(1u,wanted.fmt.hostBytesPerBlock?wanted.fmt.hostBytesPerBlock:wanted.fmt.bytesPerBlock);
  if(!estimate||estimate>kCaptureBytes||imageCount>=kCaptureImages||estimate>kCaptureBytes-imageBytes)return {};
  try {
   auto image=std::make_unique<Image>();image->surface=std::make_unique<Surface>();
   auto* s=image->surface.get();s->width=source->extent.width;s->height=source->extent.height;
-  s->format=source->format;s->fmt=source->fmt;s->scale=1;
+  s->format=wanted.format;s->fmt=wanted.fmt;s->scale=1;
   create_surface_image(s,false);
   const uint64_t bytes=s->allocationBytes;
   if(!bytes||bytes>kCaptureBytes-imageBytes)return {};

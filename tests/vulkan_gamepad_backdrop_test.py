@@ -22,12 +22,23 @@ using VkImageLayout=int;using VkPipelineStageFlags=int;using VkAccessFlags=int;
 constexpr int VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL=1,VK_PIPELINE_STAGE_TRANSFER_BIT=2,VK_ACCESS_TRANSFER_WRITE_BIT=4,VK_IMAGE_ASPECT_COLOR_BIT=8;
 struct VkClearColorValue { float float32[4]{}; };
 struct VkImageSubresourceRange { int aspect;unsigned a,b,c,d; };
+constexpr int VK_FORMAT_UNDEFINED=0,VK_FORMAT_R8G8B8A8_UNORM=37,VK_FORMAT_A2R10G10B10_UNORM_PACK32=58,
+ VK_FORMAT_A2B10G10R10_UNORM_PACK32=64,VK_FORMAT_R16G16B16A16_SFLOAT=97;
+constexpr unsigned VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT=1,VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BIT=0x80,
+ VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT=0x100,VK_FORMAT_FEATURE_TRANSFER_SRC_BIT=0x4000,VK_FORMAT_FEATURE_TRANSFER_DST_BIT=0x8000;
+struct VkFormatProperties { unsigned linearTilingFeatures=0,optimalTilingFeatures=0,bufferFeatures=0; };
 namespace gfxvk {
+struct FormatInfo { int pixel=VK_FORMAT_R8G8B8A8_UNORM;unsigned bytesPerBlock=4,hostBytesPerBlock=4; };
 struct Surface {
- uint64_t image=0;unsigned width=0,height=0,format=0;struct {int pixel=1;unsigned hostBytesPerBlock=4,bytesPerBlock=4;} fmt;float scale=0;int layout=0;uint64_t allocationBytes=0;
+ uint64_t image=0;unsigned width=0,height=0,format=0x1a;FormatInfo fmt;float scale=0;int layout=0;uint64_t allocationBytes=0;
  struct { unsigned width=0,height=0,depth=1; } extent;
 };
 static struct {uint64_t frame=0;} R;
+static unsigned promotedFeatures=~0u;
+FormatInfo format_info(uint32_t gx2,bool) { return gx2==0x20?FormatInfo{VK_FORMAT_R16G16B16A16_SFLOAT,8,8}:FormatInfo{}; }
+const VkFormatProperties& format_properties(int format) {
+ static VkFormatProperties p;p={};p.optimalTilingFeatures=format==VK_FORMAT_R16G16B16A16_SFLOAT?promotedFeatures:~0u;return p;
+}
 static unsigned created=0,retired=0,clears=0,allocationAttempts=0;
 static bool failAllocation=false;
 static bool failDevice=false,failHost=false;
@@ -38,7 +49,7 @@ public:explicit VulkanFailure(bool isAllocation):std::runtime_error("fake driver
 };
 void end_encoder() {}
 void destroy_surface_image(Surface* s) { if(s->image){++retired;s->image=0;} }
-void create_surface_image(Surface* s,bool) { ++allocationAttempts;if(failHost)throw std::bad_alloc();if(failAllocation)throw VulkanFailure(true);if(failDevice)throw VulkanFailure(false);s->image=++created;s->extent={s->width,s->height,1};s->allocationBytes=uint64_t(s->width)*s->height*4; }
+void create_surface_image(Surface* s,bool) { ++allocationAttempts;if(failHost)throw std::bad_alloc();if(failAllocation)throw VulkanFailure(true);if(failDevice)throw VulkanFailure(false);s->image=++created;s->extent={s->width,s->height,1};s->allocationBytes=uint64_t(s->width)*s->height*s->fmt.hostBytesPerBlock; }
 void transition_image(Surface* s,int layout,int,int) { s->layout=layout; }
 int command_buffer() { return 1; }
 void mark_gpu_written(Surface*) {}
@@ -116,6 +127,29 @@ int main() {
  try { gamepad_backdrop_begin_replay(&a,true); } catch(const VulkanFailure&) { propagated=true; }
  assert(propagated);failDevice=false;gamepad_backdrop_scope(nullptr,false);
  gamepad_backdrop_reset();assert(!gamepad_backdrop_image()&&!policy::capture_enabled()&&retired==created);
+ // Ten-bit sources (2-bit alpha) capture into RGBA16 float, like Metal; the
+ // source keeps its format. Eight-bit sources keep theirs.
+ policy::set_capture_requested(true);
+ Surface ten=a;ten.image=300;ten.format=0x19;ten.fmt={VK_FORMAT_A2B10G10R10_UNORM_PACK32,4,4};
+ gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&ten,true));
+ auto* promoted=gamepad_backdrop_replay_target();
+ assert(promoted->fmt.pixel==VK_FORMAT_R16G16B16A16_SFLOAT&&promoted->format==0x20&&promoted->allocationBytes==1280ull*720*8);
+ assert(ten.fmt.pixel==VK_FORMAT_A2B10G10R10_UNORM_PACK32&&ten.format==0x19);
+ gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
+ gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&a,true));
+ assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_R8G8B8A8_UNORM&&gamepad_backdrop_replay_target()->format==0x1a);
+ gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
+ Surface ten2=ten;ten2.image=301;ten2.fmt.pixel=VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+ gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&ten2,true));
+ assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_R16G16B16A16_SFLOAT);
+ gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
+ // Without blendable colour-attachment support the capture keeps the source format.
+ gamepad_backdrop_reset();policy::set_capture_requested(true);
+ promotedFeatures=~0u&~VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
+ gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&ten,true));
+ assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_A2B10G10R10_UNORM_PACK32&&gamepad_backdrop_replay_target()->format==0x19);
+ gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);promotedFeatures=~0u;
+ gamepad_backdrop_reset();assert(imageCount==0&&imageBytes==0&&retired==created);
 }
 '''
 
