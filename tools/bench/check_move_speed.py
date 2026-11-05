@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Check actual WWHD_LINK_TRACE displacement from paired 30/true60 hold-to-boost runs.
+"""Check actual WWHD_LINK_TRACE displacement from paired 30/60 fps hold-to-boost runs.
 
 Usage: check_move_speed.py EVIDENCE_DIR [--factor 2] [--stock TRACE]
-EVIDENCE_DIR contains speed-30/{off,on}_01/link.trace and speed-true60 equivalents.
+EVIDENCE_DIR contains speed-30/{off,on}_01/link.trace and, optionally, speed-60 equivalents
+(60 fps frame interpolation).
 Inputs and traces stay local; this script contains no game data. Rates use the fixed 30-Hz
-logic clock, excluding true60 preview positions. Swimming averages the first three complete
+logic clock. Swimming averages the first three complete
 stroke cycles after settling, avoiding unequal stroke phases and subsequent collisions.
 """
 import argparse
@@ -67,7 +68,9 @@ def main():
     parser.add_argument("--stock", type=Path)
     args = parser.parse_args()
     result = {}
-    for mode in ("30", "true60"):
+    for mode in ("30", "60"):
+        if mode != "30" and not (args.evidence / ("speed-" + mode)).is_dir():
+            continue
         result[mode] = {}
         for state in ("off", "on"):
             rows = read(args.evidence / ("speed-" + mode) / (state + "_01") / "link.trace")
@@ -75,18 +78,11 @@ def main():
             expected = 1 if state == "off" else args.factor
             for ratio in measured["median_step_distance_over_velocity"].values():
                 assert abs(ratio / expected - 1) < .001, (mode, state, "once per step", ratio)
-            if mode == "true60":
-                halves = [distance(a, b) / horizontal(b) for a, b in zip(rows, rows[1:])
-                          if a[5] == b[5] == 6 and a[3] != b[3] and b[2] > a[2]
-                          and a[9] >= 16.9 and b[9] >= 16.9 and horizontal(b) > 1]
-                assert len(halves) >= 10
-                measured["preview_distance_over_velocity"] = statistics.median(halves)
-                assert abs(statistics.median(halves) / (.5 * expected) - 1) < .001
             result[mode][state] = measured
         for key in ("run_units_per_second", "swim_units_per_second"):
             ratio = result[mode]["on"][key] / result[mode]["off"][key]
             assert abs(ratio / args.factor - 1) < .005, (mode, key, ratio)
-        if mode == "true60":
+        if mode != "30":  # the logic is the same 30 Hz steps: the same speeds
             for state in ("off", "on"):
                 for key in ("run_units_per_second", "swim_units_per_second"):
                     assert abs(result[mode][state][key] / result["30"][state][key] - 1) < .001

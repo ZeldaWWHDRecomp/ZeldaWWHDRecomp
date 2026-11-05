@@ -19,7 +19,7 @@ game; this project never provides game files.
 | **GPU recovery** | After a GPU device-lost error, the next start names the driver and offers the system driver, another installed driver, or the existing driver ZIP picker before starting Vulkan. Continuing keeps your current choice; an unfinished first-start probe still falls back to the system driver. |
 | **Saves** | Export and import your save files and keep them in Android's backup. Saves from a real Wii U (USA or Europe) work too. |
 
-Android requests a 60 Hz display mode for 30 fps, interpolated 60 fps and true 60 fps, or the selected 120/240 Hz cadence for faster interpolation. For 40 fps it asks for 120 Hz (a multiple of 40), or 80 Hz if the screen has it. Android may choose another supported rate. The request is reapplied after returning to the game. To leave refresh-rate selection entirely to Android, set `WWHD_NO_60HZ=1` in a developer build (`0` keeps the request enabled).
+Android requests a 60 Hz display mode for 30 fps and interpolated 60 fps, or the selected 120/240 Hz cadence for faster interpolation. For 40 fps it asks for 120 Hz (a multiple of 40), or 80 Hz if the screen has it. Android may choose another supported rate. The request is reapplied after returning to the game. To leave refresh-rate selection entirely to Android, set `WWHD_NO_60HZ=1` in a developer build (`0` keeps the request enabled).
 
 With 60 fps or faster on, frames are spaced evenly: a frame that is ready early waits a few
 milliseconds so that each one stays on screen for the same time. This matters most with **Record graphics on a second
@@ -174,7 +174,7 @@ controls; it does not turn the game into a head-tracked first-person VR game.
 Frame interpolation can provide smoother output, but neither a locked 30 FPS
 simulation nor locked 60 FPS output is guaranteed on Quest 3.
 
-Moon jump is an optional cheat in **Gameplay → Cheats**, off by default. Enable it and hold **L** to rise; the left stick steers relative to the camera while airborne, including after you release L. Release the stick to stop horizontal flight. **No fall damage after moon jump** is a separate option that applies only to a flight started with this cheat. Both options work with 30 fps, frame interpolation and true 60; loading a state clears the current flight.
+Moon jump is an optional cheat in **Gameplay → Cheats**, off by default. Enable it and hold **L** to rise; the left stick steers relative to the camera while airborne, including after you release L. Release the stick to stop horizontal flight. **No fall damage after moon jump** is a separate option that applies only to a flight started with this cheat. Both options work with 30 fps and frame interpolation; loading a state clears the current flight.
 
 ## Fair play
 

@@ -157,7 +157,7 @@ tools/bench/run_bench.py --binary build/cmake/wwhd --state-dir my_states --scene
 ```
 
 `--state-dir` holds `slot<N>.bin` files made with the game's save-state keys (outset: slot 3,
-windfall: slot 2, or `--slot`). `--fps 30|60|120|240|true60`, `--display-hz n` (the refresh rate
+windfall: slot 2, or `--slot`). `--fps 30|60|120|240`, `--display-hz n` (the refresh rate
 120/240 fps are capped to; 0: no cap, for hidden-window runs), `--uncapped` (throughput),
 `--renderer metal`.
 The state is loaded at TV frame 450 (A presses from frame 120 skip the intro), the input starts 200
@@ -239,7 +239,7 @@ not involved), 25 s per run, old and new interleaved in one binary, render threa
 | 240 (paced) | Vulkan | 48.2 / 24.1 | 56.7 / 30.0 |
 | 120 (paced) | Metal | 40.2 / 20.1 | 54.5 / 30.0 |
 | 240 (paced) | Metal | 48.1 / 24.1 | 54.6 / 30.0 |
-| true 60 | Vulkan | 30.3 / 15.1 | 56.2 / 28.1 |
+| true 60 (since retired) | Vulkan | 30.3 / 15.1 | 56.2 / 28.1 |
 | Uncapped | Vulkan | 56.0 / 28.0 | 55.7 / 27.9 |
 | 30 | Vulkan | 30.0 / 30.0 | 30.0 / 30.0 |
 

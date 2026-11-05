@@ -2,7 +2,7 @@
 """Headless shared-countdown regression, using a caller's private local checkpoint.
 
 usage: countdown_scenario.py BINARY GAME SAVE STATE_DIR WORK [--slot 2]
-       [--renderer metal|vulkan|both] [--mode 30|60|120|true60|all]
+       [--renderer metal|vulkan|both] [--mode 30|60|120|all]
 
 STATE_DIR must contain a full checkpoint in the running letter-sorting game, with
 at least 15 seconds remaining. Create it locally; never commit/share it. SAVE is
@@ -64,7 +64,7 @@ def measure_display(path, fps, paced):
 
 
 def run_case(args, renderer, mode, paced):
-    fps = 60 if mode == "true60" else int(mode)
+    fps = int(mode)
     tag = f"{renderer}-{mode}-paced{paced}"
     resource_gate(args.work)
     directory = Path(scenario.prepare(str(args.work), tag, str(args.save)))
@@ -72,10 +72,10 @@ def run_case(args, renderer, mode, paced):
         "WWHD_RENDERER_RUNTIME": renderer, "WWHD_STATE_DIR": str(args.state_dir),
         "WWHD_STATE_LOAD_AT": f"1800:{args.slot}",
         "WWHD_PRESS": ",".join(f"{f}-{f + 4}:8000" for f in range(600, 1500, 50)),
-        "WWHD_INTERP": "0", "WWHD_TRUE60": "0", "WWHD_INTERP_FPS": str(max(60, fps)),
+        "WWHD_INTERP": "0", "WWHD_INTERP_FPS": str(max(60, fps)),
         "WWHD_INTERP_PACED": str(paced), "WWHD_DISPLAY_HZ": "0", "WWHD_UNCAPPED": "1",
         "WWHD_TEST_ORIGIN": "1", "WWHD_TEST_ORIGIN_LOAD": "0", "WWHD_TEST_END": "10",
-        "WWHD_TEST_MODE": f"{2 if mode == 'true60' else int(fps != 30)}@0",
+        "WWHD_TEST_MODE": f"{int(fps != 30)}@0",
         "WWHD_COUNTDOWN_TRACE": str(directory / "countdown.txt"), "WWHD_COUNTDOWN_REALTIME": "1",
         "WWHD_COUNTDOWN_DISPLAY_TRACE": str(directory / "display.txt"),
         "WWHD_DISPLAY_SETTINGS": str(directory / "display.plist"),
@@ -102,12 +102,12 @@ def main():
         parser.add_argument(name, type=lambda p: Path(p).resolve())
     parser.add_argument("--slot", type=int, choices=range(1, 6), default=2)
     parser.add_argument("--renderer", choices=("metal", "vulkan", "both"), default="both")
-    parser.add_argument("--mode", choices=("30", "60", "120", "true60", "all"), default="all")
+    parser.add_argument("--mode", choices=("30", "60", "120", "all"), default="all")
     args = parser.parse_args()
     if args.work.exists(): parser.error("WORK must be a fresh directory")
     args.work.mkdir(parents=True)
     renderers = ("metal", "vulkan") if args.renderer == "both" else (args.renderer,)
-    modes = ("30", "60", "120", "true60") if args.mode == "all" else (args.mode,)
+    modes = ("30", "60", "120") if args.mode == "all" else (args.mode,)
     results = [run_case(args, renderer, mode, paced)
                for renderer in renderers for mode in modes for paced in (0, 1)]
     (args.work / "results.json").write_text(json.dumps(results, indent=2) + "\n")

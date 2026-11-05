@@ -34,7 +34,7 @@ Source builds use Homebrew's loader, MoltenVK and glslang as below.
 Both renderers use the same AppKit host (`gfx/display.mm`, `menu.mm`, `input.mm`,
 `controls_ui.mm`, `mods/mouse.mm`): TV and GamePad windows, full screen, GamePad screen modes
 (separate window, picture-in-picture, automatic), scaling filters, aspect ratio, the Controls window,
-the Gameplay mods including the mouse camera, save states, 60 fps / true 60. Vulkan presents into
+the Gameplay mods including the mouse camera, save states, 40/60/120/240 fps frame interpolation. Vulkan presents into
 the windows' views through a `CAMetalLayer` and `VK_EXT_metal_surface`; `display_plan()` gives it the
 same layout as the Metal composition (picture rectangle, GamePad overlay with frame and opacity,
 filter), and `gfx/vulkan/present.cpp` draws it. The TV window title starts with the renderer in use.
@@ -50,7 +50,7 @@ can also be dragged while placement is open. See [GamePad screen modes](gamepad-
 | Internal resolution, AO modes, full-size AO depth, 16x AF | yes | yes |
 | Dynamic resolution (Settings → Graphics: off, down to 75 % or 50 %) | yes | yes |
 | Aspect ratio (16:9, 4:3, 16:10, 21:9, 32:9, match window) | yes | yes |
-| 60 fps interpolation, true 60 | yes | yes |
+| 40/60/120/240 fps interpolation | yes | yes |
 | Save states (menu, Shift+F1..F5 / F6, F2..F5) | yes | yes (a state loads with either renderer) |
 | Controls window, keyboard, game controllers, mouse camera, mods | yes | yes |
 | Climb mod stamina wheel | yes | yes (ported shader; not yet seen in a test run) |
@@ -719,8 +719,7 @@ controls remain disabled until the renderer reports support.
 | `M` | Toggle full-size AO depth. A private 1.5× replay of the game's depth-downsample pass supplies the AO pass without changing guest surface metadata. |
 | `N` | Toggle anisotropic filtering up to 16×, bounded by device support, for eligible mipmapped asset textures. |
 | `8` | Toggle FXAA in final screen presentation. This is post-process antialiasing; it does not enable multisampled guest surfaces. |
-| `6` | Toggle 60 FPS interpolation mode. |
-| `7` | Toggle true 60 FPS mode. Selecting either mode does not guarantee its target frame rate. |
+| `6` | Toggle 60 FPS interpolation mode. Selecting it does not guarantee its target frame rate. |
 | Graphics menu: Scaling | Select smooth, sharp, or integer scaling for presentation. |
 
 Startup overrides match Metal: `WWHD_RES_SCALE` selects the initial internal scale
@@ -928,7 +927,7 @@ samples over 30 seconds. Its 99th-percentile ready time was 13.558 ms and maximu
 draws per frame; this is not an exact reproduction of the earlier user view of
 roughly 6,600 draws. Character checks are complete.
 
-A separate default-only warm heavy-view run in true 60 FPS mode averaged roughly
+A separate default-only warm heavy-view run in true 60 FPS mode (a mode since retired) averaged roughly
 6,230 draws per frame. Over 30 seconds it covered 1,799 flip intervals across
 1,800 nominal display ticks (99.94% coverage, one missed tick). Its 99th-percentile
 ready time was 15.488 ms and maximum 18.894 ms; every warmed 120-frame reporting
@@ -962,7 +961,7 @@ and reuse after pool reset. Actual Outset Island gameplay and scripted keyboard
 movement render correctly on an Apple M3 Max through MoltenVK. Earlier warm gameplay builds
 ran approximately 29.4–30.0 FPS, with median frame intervals near 33.4 ms and
 95th percentiles around 36–37 ms; occasional longer frames remain. Enabling
-true 60 FPS mode alone does not guarantee sustained 60 FPS. A bounded
+true 60 FPS mode (since retired) alone did not guarantee sustained 60 FPS. A bounded
 20-frame trace measured a median 17.53 ms from vsync wake to the next swap,
 missing the 16.68 ms deadline with one vsync wait per frame in that earlier build.
 At an earlier optimization checkpoint, descriptor/state deduplication, asynchronous

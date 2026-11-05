@@ -3,7 +3,7 @@
 
 Usage: lock_on_smoke.py BINARY GAME SAVE WORK [--renderer vulkan|metal]
 
-Runs assistance off/on in native 30, interpolated 60 and true60 modes. WORK must
+Runs assistance off/on in native 30 and interpolated 60 modes. WORK must
 not exist. Saves, settings, caches and logs stay in WORK; nothing is written to
 SAVE. This is NOT a multi-enemy combat acceptance test: it verifies native-game
 startup and input integration without claiming acquisition/release/cycling works
@@ -21,7 +21,7 @@ def run_case(args, enabled, mode):
     directory = Path(scenario.prepare(str(args.work), f"enabled-{enabled}-mode-{mode}", str(args.save)))
     env = {
         "WWHD_RENDERER_RUNTIME": args.renderer, "WWHD_UNCAPPED": "1",
-        "WWHD_INTERP": "0", "WWHD_TRUE60": "0", "WWHD_INTERP_FPS": "60",
+        "WWHD_INTERP": "0", "WWHD_INTERP_FPS": "60",
         "WWHD_INTERP_PACED": "0", "WWHD_DISPLAY_HZ": "0",
         "WWHD_SETTINGS": str(directory / "settings.ini"),
         "WWHD_DISPLAY_SETTINGS": str(directory / "display.ini"),

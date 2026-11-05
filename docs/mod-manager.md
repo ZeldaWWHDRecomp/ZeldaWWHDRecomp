@@ -214,8 +214,8 @@ sounds. On the macOS menu bar the same switches and a few speed presets are unde
 `WWHD_MOD_SAIL_SPEED` and `WWHD_MOD_AUTO_WIND` (`=1`) switch them on at startup, with the factors
 `WWHD_MOD_LADDER_FACTOR`, `WWHD_MOD_SIDLE_FACTOR`, `WWHD_MOD_IVY_FACTOR`, `WWHD_MOD_HANG_FACTOR`,
 `WWHD_MOD_SAIL_FACTOR` and `WWHD_MOD_SWIFT_SAIL_FACTOR`. With a mod off,
-the game runs its original code. These mods work the same at 30 fps, with 60/120/240 fps
-interpolation and with true 60: they change animation rates and speed targets inside the game's
+the game runs its original code. These mods work the same at 30 fps and with 40/60/120/240 fps
+interpolation: they change animation rates and speed targets inside the game's
 own steps, never amounts added per frame.
 
 Jump anywhere makes Link jump from standing or running with an input of its own (L1 and Q by
