@@ -2,6 +2,7 @@
 #include "packages.h"
 #include "mods.h"
 #include "climb.h"
+#include "game_progress_host.h"
 #include "../overlay/hostui.h"
 #include <cstdlib>
 #include <cmath>
@@ -74,6 +75,10 @@ const Entry catalogue[] = {
      "Letters, quests, the story notebook and mod charts. It comes with the Story Notebook package, which the "
      "mod manager downloads from the mod catalogue and keeps installed while this is on.",
      "WWHD_STORY_SYSTEM", story_system, set_story_system, true},
+    {"game-progress", "Game progress", "Game",
+     "How far your save file is: a percent and a checklist of what you have collected and what is still missing, and a "
+     "map of where each thing is found. On the item menu's settings page (Game tab); optionally the percent on screen.",
+     "WWHD_MOD_GAME_PROGRESS", game_progress::enabled, game_progress::set_enabled},
     {"fast-scenes", "Fast scene changes", "Gameplay",
      "Speed up fades and scene transitions while keeping ordinary gameplay at normal speed.",
      "WWHD_MOD_FAST_SCENES", fast_scenes, set_fast_scenes},
@@ -147,6 +152,10 @@ void load_saved() {
         number("mod.target-letterbox.mode", "WWHD_TARGET_LETTERBOX_MODE", 1.f, 2.f,
                [](float value) { if (std::floor(value) == value) set_targeting_letterbox_mode(int(value)); });
     number("mod.lock-on.range", "WWHD_MOD_LOCK_ON_RANGE", 1.f, 3.f, set_lock_on_range);
+    if (!std::getenv("WWHD_MOD_PROGRESS_ON_SCREEN")) {
+        std::string v;
+        if (hostui::get("mod.game-progress.on-screen", v) && (v == "0" || v == "1")) game_progress::set_on_screen(v == "1");
+    }
     if (!std::getenv("WWHD_MOD_LOCK_ON_CYCLING")) {
         std::string v;
         if (hostui::get("mod.lock-on.cycling", v) && (v == "0" || v == "1"))

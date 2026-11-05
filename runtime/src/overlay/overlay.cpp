@@ -58,6 +58,7 @@
 #include "trace.h"
 #include "hostui.h"
 #include "../mods/link_poses.h"
+#include "../mods/game_progress_host.h"
 #include "../mods/menu_sounds_port.h"
 #include "../mods/code_mods.h"
 #include "../mods/save_folder.h"
@@ -1767,7 +1768,34 @@ void restart_notice_frame(bool draw) {
 
 // A built-in mod's options on its page (Mods > the mod).
 void builtin_options(const std::string& id) {
-    if (id == "target-letterbox") {
+    if (id == "game-progress") {  // (game_progress.cpp): its option, and the count of the save in play
+        bool shown = game_progress::on_screen();
+        if (ImGui::Checkbox("Percent on screen", &shown))
+            hostui::post([shown] { game_progress::set_on_screen(shown); hostui::set("mod.game-progress.on-screen", shown ? "1" : "0"); });
+        help("The percent in the bottom left corner of the TV picture, hidden while a menu, a cutscene or a dialogue is up.");
+        gp_result r;
+        std::vector<std::string> names;
+        if (!game_progress::result(r, &names)) {
+            note("The checklist and the map are on the item menu's settings page (Game tab) while a save file is played.");
+            return;
+        }
+        ImGui::Text("This save file: %d %%", gp_percent(&r));
+        static const char* const parts[GP_PARTS] = {"Dungeons", "Hearts", "Items", "Equipment", "Upgrades", "Songs",
+                                                    "Pearls and Triforce", "Treasure charts", "Sea chart", "Nintendo Gallery"};
+        for (int p = 0; p < GP_PARTS; p++) {
+            char label[96];
+            std::snprintf(label, sizeof label, "%s: %u / %u###gp%d", parts[p], r.done[p], r.total[p], p);
+            if (!ImGui::TreeNode(label)) continue;
+            for (unsigned i = r.first[p]; i < r.first[p + 1]; i++) {
+                const gp_entry& e = r.e[i];
+                const std::string n = i < names.size() ? names[i] : std::string();
+                if (e.total > 1) ImGui::Text("%s %s: %u / %u", e.done >= e.total ? "[x]" : "[ ]", n.c_str(), e.done, e.total);
+                else ImGui::Text("%s %s", e.done ? "[x]" : "[ ]", n.c_str());
+            }
+            ImGui::TreePop();
+        }
+        note("The map of where each thing is found is on the item menu's settings page (Game tab).");
+    } else if (id == "target-letterbox") {
         int mode = mods::targeting_letterbox_mode();
         if (ImGui::Combo("Letterbox while targeting", &mode, "On\0Off with enemies\0Always off\0"))
             hostui::post([mode] { game_settings::set_targeting_letterbox_mode(mode); });

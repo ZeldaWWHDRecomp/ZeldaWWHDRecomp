@@ -78,6 +78,12 @@ void set_quick_use_speed(float f) { if (f == 1.f || f == 1.25f || f == 1.5f) qui
 void set_camera_speed(float f) { speed=f; }
 void set_mouse_sensitivity(float f) { sensitivity=f; }
 }
+// the built-in Game progress (mods/game_progress.cpp)
+namespace game_progress {
+static bool gp_on = false, gp_screen = false;
+bool enabled() { return gp_on; } void set_enabled(bool b) { gp_on = b; }
+bool on_screen() { return gp_screen; } void set_on_screen(bool b) { gp_screen = b; }
+}
 namespace hostui {
 bool get(const char* k, std::string& value) {
     ++reads; auto it=preferences.find(k);
@@ -98,8 +104,16 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==20);  // with camera-directed-items (#203) and quick-use (#196)
+    assert(entries().size()==21);  // with camera-directed-items (#203), quick-use (#196) and game-progress
     assert(find("camera-directed-items") && find("quick-use"));
+    // Game progress: off by default, its switch and its on-screen option saved like the others'
+    env("WWHD_MOD_PROGRESS_ON_SCREEN",nullptr);
+    assert(find("game-progress") && std::string(find("game-progress")->category)=="Game" && !find("game-progress")->default_enabled);
+    assert(!game_progress::enabled() && !game_progress::on_screen());
+    preferences["mod.game-progress.on-screen"]="1"; preferences["mod.game-progress.enabled"]="1";
+    load_saved(); assert(game_progress::on_screen() && game_progress::enabled());
+    assert(set_enabled("game-progress",false) && !game_progress::enabled() && preferences["mod.game-progress.enabled"]=="0");
+    preferences.erase("mod.game-progress.on-screen"); preferences.erase("mod.game-progress.enabled"); game_progress::set_on_screen(false);
     for(const auto& option:traversal_options()) env(option.startup_env,nullptr);
     env("WWHD_MOD_LOCK_ON_RANGE",nullptr);env("WWHD_MOD_LOCK_ON_CYCLING",nullptr);
     assert(find("target-letterbox") && find("target-letterbox")->default_enabled);

@@ -84,6 +84,12 @@ void set_camera_speed(float f) { speed=f; }
 float mouse_sensitivity() { return sensitivity; }
 void set_mouse_sensitivity(float f) { sensitivity=f; }
 }
+// the built-in Game progress (mods/game_progress.cpp)
+namespace game_progress {
+static bool gp_on = false, gp_screen = false;
+bool enabled() { return gp_on; } void set_enabled(bool b) { gp_on = b; }
+bool on_screen() { return gp_screen; } void set_on_screen(bool b) { gp_screen = b; }
+}
 namespace hostui {
 bool get(const char* k, std::string& value) {
     ++reads; auto it=preferences.find(k);

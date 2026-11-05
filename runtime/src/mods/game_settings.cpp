@@ -1,5 +1,7 @@
 // The common settings list (game_settings.h).
 #include "game_settings.h"
+#include "game_progress_host.h"
+#include "game_settings_page.h"
 
 #include <algorithm>
 #include <cmath>
@@ -613,10 +615,25 @@ void register_game() {
         it.enabled = [] { return player_name::loaded(); };
         add(std::move(it));
     }
+    {  // Game progress (game_progress.cpp): its row opens its page; shown while the built-in mod is on
+        static bool page = (game_progress::register_page(), true);
+        (void)page;
+        Item it;
+        it.id = "game.progress", it.tab = "game", it.label = "Game progress", it.kind = Kind::Action;
+        it.help = "What this save file has collected and what is still missing, and a map of where each thing is found.";
+        it.text = [] {
+            const int p = game_progress::percent();
+            return p < 0 ? std::string() : std::to_string(p) + " %";
+        };
+        it.set = [](float) { game_settings_page::open_detail("game.progress"); };
+        it.enabled = [] { return game_progress::loaded(); };
+        add(std::move(it));
+    }
     // the built-in gameplay mods (mods/manager.cpp), switched as the Mods tab switches them
     // (short names and help lines of the page's own, translated in game_settings_text.h; the Settings window
     // keeps the catalogue's longer descriptions)
     static const struct { const char *id, *label, *help; } kGame[] = {
+        {"game-progress", "Game progress", "A percent, a checklist and a map of what this save file has found (the row above)."},
         {"quick-doors", "Quick doors", "Doors open and close four times as fast."},
         {"fast-scenes", "Fast scene changes", "Shorter waits when the game loads a new place."},
         {"fast-forward", "Fast forward scenes and talks", "Hold the fast forward button to speed up cutscenes and dialogue."},
