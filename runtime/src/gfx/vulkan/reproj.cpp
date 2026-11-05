@@ -1038,7 +1038,7 @@ void log_totals() {
 // attachment blends otherwise than the picture)
 bool hud_coverage_on() {
     static const bool on = env_on("WWHD_HUD_COVERAGE", true);
-    return on && R.enabledFeatures.independentBlend && false;  // (draw.cpp writes it from the next change on)
+    return on && R.enabledFeatures.independentBlend;
 }
 // at the first layout on the TV picture: from here on the HUD draws into `tv` also write their coverage
 void hud_coverage_begin(Surface* tv) {

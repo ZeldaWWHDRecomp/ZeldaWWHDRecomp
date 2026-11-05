@@ -44,6 +44,8 @@
 #include "index_conversion.h"
 #include "vertex_history.h"
 #include "vertex_snapshot_history.h"
+#include "hud_coverage.h"
+#include "reproj.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -643,6 +645,7 @@ struct PendingPipeline {
   VkShaderModule modules[2]{};
   std::optional<PipelineDemandTicket> ticket;
   std::shared_ptr<PipelineRecipe> recipe;
+  bool keepRecipe = true;  // false: a HUD coverage variant (hud_coverage.h), never recorded as a recipe
   ~PendingPipeline() {
     // Even abandoned jobs can still read these immutable prerequisites.
     if (ticket) ticket->discard_and_wait();
@@ -698,9 +701,12 @@ struct PipelineKeyHash {
 static_assert(sizeof(PipelineKey) % 8 == 0);
 static_assert(sizeof(PipelineKey) == 208, "update the persisted pipeline recipe schema");
 std::unordered_map<PipelineKey, Pipeline, PipelineKeyHash> pipelines;
+// covSlot (60 fps (generated), hud_coverage.h): the colour attachment the pixel shader's coverage variant
+// writes (0: none). It is kept in the key's reserved word, so the key (and the persisted recipes, which
+// never hold such a pipeline) keeps its size; that attachment's blend and mask are the coverage's own.
 PipelineKey pipeline_key(const uint32_t* r, const vk::Shader* vs, const vk::Shader* ps,
                          const LatteFetchShader* fs, VkPrimitiveTopology topology,
-                         const std::array<Surface*, 8>& colors, const Surface* depth) {
+                         const std::array<Surface*, 8>& colors, const Surface* depth, uint32_t covSlot = 0) {
   PipelineKey key;
   key.vs = vs->key; // process-local canonical variant; portable identity is separate
   key.ps = ps->key;
@@ -749,6 +755,12 @@ PipelineKey pipeline_key(const uint32_t* r, const vk::Shader* vs, const vk::Shad
   for (auto& g : fs->bufferGroups)
     key.strides[key.strideCount++] =
         (r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7 + 2] >> 11) & 0xFFFF;
+  if (covSlot) {
+    key.reserved = covSlot;
+    key.blend[covSlot] = 0;
+    key.colorControl &= ~(1u << (8 + covSlot));
+    key.targetMask &= ~(15u << (4 * covSlot));
+  }
   return key;
 }
 struct LastPipelineLookup {
@@ -840,12 +852,13 @@ Pipeline& resolve_pending_pipeline(Pipeline& pipeline, bool wait = true, bool pr
     vk_check(built->result, "graphics pipeline");
     pipeline.pipeline = built->pipeline;
     auto recipe = std::move(pending.recipe);
+    const bool keepRecipe = pending.keepRecipe;
     // Publish the consumed result before fallible recipe bookkeeping. Never
     // retain a consumed ticket, even when recording or driver validation throws.
     pipeline.pendingCompile.reset();
     R.pipelineCacheDirty = true;
     R.pipelineCacheChangedFrame = R.frame;
-    remember_pipeline_recipe(std::move(recipe));
+    if (keepRecipe) remember_pipeline_recipe(std::move(recipe));
     return pipeline;
   } catch (...) {
     if (!pipeline.pipeline) pipeline.compileError = std::current_exception();
@@ -892,16 +905,67 @@ static bool background_wait(const uint32_t* r, Pipeline& p, const std::array<Sur
   if (depthWritten) t.left_out(depth->addr, R.frame);
   return false;
 }
+// ---------------------------------------------------------------- HUD coverage (60 fps generated)
+// (WindWakerHD-Android-Plus fc5ddee, via GreenNaugahyde v0.9.9 vk_draw.cpp, MPL-2.0) From the first layout
+// drawn on the TV picture (reproj::layout, where the scene is copied aside) each draw into that picture
+// also writes how much it covers what lies behind: an R8 image of the picture's size cleared to 0
+// (reproj.cpp), written by a variant of the pixel shader (hud_coverage.h) with a blend that follows the
+// draw's own. The in-between frame then moves the scene behind translucent HUD parts too; a frame with a
+// HUD draw that couldn't write it (a shader without the variant, another target alongside, its pipeline
+// still compiling) is generated with the HUD found by comparing pictures. WWHD_HUD_COVERAGE=0: off.
+// Nothing of it runs unless 60 fps (generated) does (reproj::hud_coverage_wanted).
+struct CoverageWords { std::vector<uint32_t> words; uint32_t location = 0; };
+std::unordered_map<uint64_t, CoverageWords> coverageVariants;  // by pixel shader key; empty words: none
+// the pixel shader's coverage variant and the location it writes, or null (none, or its SPIR-V not ready yet)
+const std::vector<uint32_t>* coverage_words(const vk::Shader* ps, uint32_t& location) {
+  if (!ps) return nullptr;
+  if (auto it = coverageVariants.find(ps->key); it != coverageVariants.end()) {
+    location = it->second.location;
+    return it->second.words.empty() ? nullptr : &it->second.words;
+  }
+  std::vector<uint32_t> words = ps->spirv();
+  if (words.empty() && ps->binary) {
+    if (!vk::shader_binary_ready(ps->binary)) return nullptr;  // (asked again at its next draw)
+    words = vk::shader_binary_words(ps->binary);
+  }
+  if (words.empty()) return nullptr;
+  CoverageWords v;
+  if (hud_coverage::add_output(words, v.location)) v.words = std::move(words);
+  static int failures = 0;
+  if (v.words.empty() && failures++ < 8) LOG("[framegen] HUD shader %016llx: no coverage variant", (unsigned long long)ps->key);
+  auto& kept = coverageVariants[ps->key] = std::move(v);
+  location = kept.location;
+  return kept.words.empty() ? nullptr : &kept.words;
+}
+// the coverage attachment's blend from the picture's: what the draw leaves of the picture behind
+VkPipelineColorBlendAttachmentState coverage_blend(const VkPipelineColorBlendAttachmentState& c0) {
+  VkPipelineColorBlendAttachmentState c{};
+  c.colorWriteMask = (c0.colorWriteMask & 7) ? VK_COLOR_COMPONENT_R_BIT : 0;
+  if (!c0.blendEnable) return c;  // replaces what was there: covered
+  c.blendEnable = VK_TRUE;
+  c.colorBlendOp = c.alphaBlendOp = VK_BLEND_OP_ADD;
+  VkBlendFactor src = VK_BLEND_FACTOR_SRC_ALPHA, dst = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;  // "over"
+  if (c0.colorBlendOp == VK_BLEND_OP_ADD || c0.colorBlendOp == VK_BLEND_OP_SUBTRACT) switch (c0.dstColorBlendFactor) {
+      case VK_BLEND_FACTOR_ZERO: src = VK_BLEND_FACTOR_ONE; dst = VK_BLEND_FACTOR_ZERO; break;          // replaces
+      case VK_BLEND_FACTOR_ONE: src = VK_BLEND_FACTOR_ZERO; dst = VK_BLEND_FACTOR_ONE; break;           // adds: covers nothing
+      case VK_BLEND_FACTOR_SRC_ALPHA: src = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA; dst = VK_BLEND_FACTOR_SRC_ALPHA; break;
+      default: break;
+    }
+  c.srcColorBlendFactor = c.srcAlphaBlendFactor = src;
+  c.dstColorBlendFactor = c.dstAlphaBlendFactor = dst;
+  return c;
+}
 // Setup's Vulkan preparation (derive_guest_pipeline_recipe): pipeline() hands the recipe it would compile to this
 // sink instead of compiling it or taking a warmed pipeline. Render thread only.
 std::vector<std::shared_ptr<PipelineRecipe>>* g_recipeSink = nullptr;
 Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
                    LatteFetchShader *fs, VkPrimitiveTopology topology,
-                   const std::array<Surface *, 8> &colors, Surface *depth) {
+                   const std::array<Surface *, 8> &colors, Surface *depth, uint32_t covSlot = 0) {
   if(preparation_stats_enabled())++R.cpuPreparation.pipelineLookups;
-  const PipelineKey key = pipeline_key(r, vs, ps, fs, topology, colors, depth);
+  if (g_recipeSink) covSlot = 0;  // (the setup's preparation: never a coverage variant)
+  const PipelineKey key = pipeline_key(r, vs, ps, fs, topology, colors, depth, covSlot);
   // the setup's model sweep: every pipeline a swept archive's models use is filed under that archive (once each)
-  if (pipeline_groups::sweeping() && !pipeline_groups::sweeping_new_only()) {
+  if (!covSlot && pipeline_groups::sweeping() && !pipeline_groups::sweeping_new_only()) {
     static std::unordered_set<uint64_t> noted;
     for (const uint32_t group : pipeline_groups::sweeping_all()) {
       const uint64_t id = PipelineKeyHash{}(key) * 1099511628211ull ^ group;
@@ -1011,6 +1075,13 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
       if(!async_pipeline_enabled()) recipeSpirv[i]=vk::shader_binary_words_exact(shaderBinaries[i],R.frame);
       else if(vk::shader_binary_ready(shaderBinaries[i])) recipeSpirv[i]=vk::shader_binary_words(shaderBinaries[i]);
     }
+  // 60 fps (generated): the pixel shader's HUD coverage variant (the draw checked it can be made)
+  if (covSlot) {
+    uint32_t location = 0;
+    const auto* words = coverage_words(ps, location);
+    if (!words || location != covSlot) exception_report::raise("HUD coverage variant missing");
+    recipeSpirv[1] = *words;
+  }
   for (int st = 0; st < 2; st++) {
     auto& b = descriptorBindings[st];
     VkDescriptorSetLayoutCreateInfo ci{
@@ -1246,6 +1317,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
             ? blendop(static_cast<uint32_t>(raw.get_ALPHA_COMB_FCN()))
             : b.colorBlendOp;
   }
+  if (covSlot && covSlot < ncolor) cb[covSlot] = coverage_blend(cb[0]);  // (60 fps (generated): hud_coverage.h)
   VkPipelineColorBlendStateCreateInfo bs{
       VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
   bs.attachmentCount = ncolor;
@@ -1367,7 +1439,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
     for (uint8_t byte : recipeKey) std::fprintf(keyDump, "%02x", byte);
     std::fputc('\n', keyDump); std::fflush(keyDump);
   };
-  if (!g_recipeSink) {
+  if (!g_recipeSink && !covSlot) {
     ++R.pipelineKeysNew;
     const bool known = pipeline_recipe_known(recipeKey);
     R.pipelineKeysKnown += known;
@@ -1392,7 +1464,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
     none = Pipeline{};
     return none;
   }
-  if (!recipeSpirv[0].empty() && !recipeSpirv[1].empty() &&
+  if (!covSlot && !recipeSpirv[0].empty() && !recipeSpirv[1].empty() &&
       take_warm_pipeline(recipeKey, recipeSpirv, descriptorBindings, p.dynamicUniforms, pipelineState, warmed)) {
     for (auto module : modules) if (module) vkDestroyShaderModule(R.device, module, nullptr);
     vkDestroyPipelineLayout(R.device, p.layout, nullptr);
@@ -1409,7 +1481,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   // the setup's model sweep, record only (WWHD_DSWEEP_RECORD_ONLY=1): the recipe is recorded as when the pipeline is
   // made, but the driver never compiles it; its draws are left out (nobody sees the hidden sweep)
   static const bool recordOnly = [] { const char* e = getenv("WWHD_DSWEEP_RECORD_ONLY"); return e && *e == '1'; }();
-  if (recordOnly) {
+  if (recordOnly && !covSlot) {
     for (size_t i = 0; i < shaderBinaries.size(); ++i)
       if (recipeSpirv[i].empty() && shaderBinaries[i]) recipeSpirv[i] = vk::shader_binary_words_exact(shaderBinaries[i], R.frame);
     for (auto module : modules) if (module) vkDestroyShaderModule(R.device, module, nullptr);
@@ -1439,6 +1511,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
     recipe->state = std::make_unique<GraphicsPipelineState>(std::move(pipelineState));
     for (const uint32_t group : pipeline_groups::sweeping_all()) recipe->add_group(group);
     pending->recipe = std::move(recipe);
+    pending->keepRecipe = !covSlot;
     // The owner waits for its ticket before destroying modules or itself.
     // Capturing a shared owner here would form an owner/ticket/job cycle.
     pending->shaders[0]=vs; pending->shaders[1]=ps;
@@ -1470,7 +1543,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
         capture_pipeline_failure(built.result,vs,ps,pending->recipe->words(0),pending->recipe->words(1));
       else vk_check(built.result, "graphics pipeline");
       p.pipeline = built.pipeline;
-      if(p.pipeline) remember_pipeline_recipe(std::move(pending->recipe));
+      if(p.pipeline && !covSlot) remember_pipeline_recipe(std::move(pending->recipe));
       pending.reset();
       R.pipelineCacheDirty = true; R.pipelineCacheChangedFrame = R.frame;
     } else p.pendingCompile = std::move(pending);
@@ -1478,7 +1551,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   } else {
     result = vkCreateGraphicsPipelines(R.device, R.pipelineCache, 1, pipelineState.get(), nullptr, &p.pipeline);
   }
-  const bool recordRecipe = result == VK_SUCCESS;
+  const bool recordRecipe = result == VK_SUCCESS && !covSlot;
   if (!async_pipeline_enabled() && stutter::trace().enabled())
     stutter::trace().add("guest_pipeline", R.frame, PipelineKeyHash{}(key),
         std::chrono::duration_cast<std::chrono::nanoseconds>(pipelineStarted.time_since_epoch()).count(),
@@ -3354,9 +3427,36 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const float sx = targets.sx, sy = targets.sy;
   clouds_before_draw(r, ps, colors[0], slices[0], depth);  // clouds.cpp: cloud shadows
   rprof::mark(rprof::kTargets);
-  auto &p = fast ? *continued.pipeline
-      : replay && replay->formats == target_formats(colors, depth) ? *replay->pipeline
-      : pipeline(r, vs, ps, fs, topology, colors, depth);
+  // 60 fps (generated): a HUD draw into the TV picture writes its coverage too (only while it runs;
+  // a continued draw keeps the targets and pipeline it was resolved with)
+  uint32_t covSlot = 0;
+  if (!fast && !replay && !aoPrivateReplay && reproj::hud_coverage_wanted())
+    if (Surface* cov = reproj::hud_coverage_target(colors[0])) {
+      bool alone = true;
+      for (int i = 1; i < 8; i++) alone = alone && !colors[i];
+      uint32_t location = 0;
+      if (alone && colors[0]->fmt.kind == FormatInfo::FLOAT && cov->extent.width == width && cov->extent.height == height &&
+          coverage_words(ps, location) && location > 0 && location < 8) {
+        colors[location] = cov;
+        slices[location] = 0;
+        covSlot = location;
+      } else {
+        reproj::hud_coverage_failed();  // this frame's in-between one: the HUD found by comparing pictures
+      }
+    }
+  Pipeline* pp = fast ? continued.pipeline
+      : replay && replay->formats == target_formats(colors, depth) ? replay->pipeline
+      : &pipeline(r, vs, ps, fs, topology, colors, depth, covSlot);
+  if (covSlot) {  // its coverage variant still compiling (or failed): drawn as usual, the frame generated the old way
+    if (pp->pendingCompile) resolve_pending_pipeline(*pp, false);
+    if (!pp->pipeline || pp->pendingCompile) {
+      colors[covSlot] = nullptr;
+      covSlot = 0;
+      reproj::hud_coverage_failed();
+      pp = &pipeline(r, vs, ps, fs, topology, colors, depth);
+    }
+  }
+  auto &p = *pp;
   rprof::mark(rprof::kPipeline);
   if (!p.pipeline && !p.pendingCompile) return;
   // Shader compile Fast (background_shaders.h): a draw that may be left out only waits the frame's
