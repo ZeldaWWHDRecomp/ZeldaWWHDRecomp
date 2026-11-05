@@ -213,7 +213,7 @@ double geometry_near(HDCache& hd, const std::string& name, const Model& gc) {
     if (size <= 0) size = 1;
     const double lim = 0.01 * size;
     const size_t step = std::max<size_t>(1, G.size() / 400);
-    size_t n = 0, near = 0;
+    size_t n = 0, close = 0;
     for (size_t i = 0; i < G.size(); i += step) {
         double best = 1e300;
         for (auto& h : H) {
@@ -221,9 +221,9 @@ double geometry_near(HDCache& hd, const std::string& name, const Model& gc) {
             best = std::min(best, dx * dx + dy * dy + dz * dz);
         }
         n++;
-        if (std::sqrt(best) < lim) near++;
+        if (std::sqrt(best) < lim) close++;
     }
-    return 100.0 * near / n;
+    return 100.0 * close / n;
 }
 
 Image to_image(const Texture& t) {
