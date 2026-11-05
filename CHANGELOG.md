@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Setup on Windows: compiler unpacking shows progress** (#394, for #388, thanks @Sherisherisherisheri for the report).
+  Unpacking the compiler (about 10,000 files) now shows a "Unpacking the compiler … 4,200 of 10,412 files" line in the
+  console and the setup window instead of sitting silent for minutes. If unpacking fails, setup now says why (most
+  often an antivirus program locking a file, or a full disk) and what to do next, instead of only writing it to
+  setup.log. A complete earlier download is reused, and `tools/installer/README.md` explains how to unpack the
+  compiler yourself.
 - **Fixed for mod authors: C mods get a correctly aligned stack** (#387, #391). The game can call a mod with a stack
   that is aligned to 8 bytes, while C code compiled for the game assumes 16, so a mod's local variables and the
   pointers it passes to game functions could end up misaligned. Mods are now built with `-mstackrealign` (the SDK

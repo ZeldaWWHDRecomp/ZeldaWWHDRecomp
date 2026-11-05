@@ -37,6 +37,7 @@ Game options: --editor, --trace, --warm-shaders, --renderer NAME and everything 
 setup. Setup passes them on to the game when it starts it (setup.py --editor, setup.py -- --user-dir DIR).
 """
 import argparse
+import errno
 import getpass
 import glob
 import hashlib
@@ -758,6 +759,10 @@ def download(url, dst, sha256, size_hint, label, attempts=DOWNLOAD_ATTEMPTS, wai
     downloaded themselves is used instead when present (local_copy). sha256 None: the caller checks the
     content itself (the decomp source: its unpacked tree, decomp_setup.py)."""
     name = os.path.basename(url.split("?")[0])
+    if sha256 and os.path.isfile(dst) and file_sha256(dst) == sha256:
+        # an earlier run's complete download (e.g. the compiler archive when unpacking failed, issue #388)
+        say("  Using the earlier download %s" % plain_path(dst))
+        return
     own = local_copy(name, sha256) if sha256 else None
     if own:
         say("  Using %s" % own)
@@ -962,6 +967,59 @@ def ensure_xcode_clt(ui):
     say("  Command Line Tools installed.")
 
 
+def unpack_zip(arc, dst, label):
+    """Unpacks the zip arc into dst member by member with a progress line ("4,200 of 10,412 files"):
+    llvm-mingw has about 10,000 files, and a silent extractall looked frozen on Windows (issue #388).
+    \\\\?\\ paths: the deepest files of llvm-mingw exceed MAX_PATH below a deep release folder (#144)."""
+    pr = Progress(label)
+    with zipfile.ZipFile(arc) as z:
+        members = z.infolist()
+        total = sum(1 for m in members if not m.is_dir())
+        done = 0
+        out = longpath(dst)
+        for m in members:
+            z.extract(m, out)
+            if not m.is_dir():
+                done += 1
+                pr.update(done, total, "{:,} of {:,} files".format(done, total))
+    pr.done("{:,} files".format(total))
+
+
+WINDOWS_LOCK_ERRORS = (5, 32, 33)  # ERROR_ACCESS_DENIED, ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+
+
+def toolchain_unpack_error(e, stage, tc, data_dir, arc):
+    """The player-facing SetupError for a compiler archive that could not be unpacked or moved into place
+    (stage "unpack" or "move"); the technical error goes to setup.log (issue #388)."""
+    LOG.write("compiler %s failed: %r" % (stage, e))
+    full = getattr(e, "errno", None) in (errno.ENOSPC, getattr(errno, "EDQUOT", errno.ENOSPC)) or \
+        getattr(e, "winerror", None) in (39, 112)  # ERROR_HANDLE_DISK_FULL, ERROR_DISK_FULL
+    locked = isinstance(e, PermissionError) or getattr(e, "winerror", None) in WINDOWS_LOCK_ERRORS
+    what = "unpacked" if stage == "unpack" else "moved into place"
+    if full:
+        cause = ("The disk is full: the compiler needs about %s free on the drive of the data folder."
+                 % human(tc.get("size", 0) * 6))
+    elif locked:
+        cause = ("Most likely an antivirus program is blocking or locking one of its files (antivirus programs "
+                 "scan every new program file and may hold it open or move it to quarantine).")
+    else:
+        cause = "The usual causes are an antivirus program blocking or locking a file, or a full disk."
+    log = LOG.f.name if LOG.f else os.path.join(data_dir, "setup.log")
+    by_hand = ("unpack %s yourself" % plain_text(arc)) if os.path.isfile(arc) else \
+        ("download %s and unpack it yourself" % tc["url"])
+    return SetupError(
+        "the compiler could not be %s (%s).\n%s\nWhat to do:\n"
+        "- Add the data folder (%s) to your antivirus program's exclusions, or wait until its scan has finished, "
+        "then run setup again.\n"
+        "%s"
+        "- The exact error is in the setup log (%s).\n"
+        "- Or %s (for example with 7-Zip or Windows Explorer), set the environment variable WWHD_TOOLCHAIN_DIR "
+        "to the unpacked %s folder and run setup again (tools/installer/README.md, \"Using a compiler you "
+        "unpacked yourself\")."
+        % (what, plain_text(e), cause, data_dir, "" if full else "- If the disk is full, free some space and run "
+           "setup again.\n", log, by_hand, tc["dir"]))
+
+
 def get_toolchain(name, data_dir, ui):
     tcs = load_toolchains()["toolchains"]
     if name not in tcs:
@@ -975,7 +1033,10 @@ def get_toolchain(name, data_dir, ui):
     os.makedirs(root, exist_ok=True)
     tdir = os.path.join(root, tc["dir"])
     marker = os.path.join(tdir, ".wwhd-toolchain")
-    if os.environ.get("WWHD_TOOLCHAIN_DIR"):  # CI: a toolchain already unpacked from the same pinned archive
+    # WWHD_TOOLCHAIN_DIR: a copy of the same pinned compiler that is already unpacked (its llvm-mingw-... or
+    # zig-... folder), used as it is. CI sets it; players use it when setup cannot unpack the archive itself
+    # (an antivirus program locking files, issue #388; tools/installer/README.md).
+    if os.environ.get("WWHD_TOOLCHAIN_DIR"):
         tdir = os.environ["WWHD_TOOLCHAIN_DIR"]
     elif not (os.path.isfile(marker) and open(marker).read().strip() == tc["sha256"]):
         need = tc.get("size", 0) * 6
@@ -985,24 +1046,27 @@ def get_toolchain(name, data_dir, ui):
         arc = os.path.join(root, os.path.basename(tc["url"].split("?")[0]))
         download(tc["url"], arc, tc["sha256"], tc.get("size"), "compiler")
         tmp = os.path.join(root, "unpack.tmp")
-        shutil.rmtree(longpath(tmp), ignore_errors=True)
-        os.makedirs(longpath(tmp))
-        say("  Unpacking...")
-        if arc.endswith(".zip"):
-            # \\?\ paths: the deepest files of llvm-mingw exceed MAX_PATH below a deep release folder (#144)
-            with zipfile.ZipFile(arc) as z:
-                z.extractall(longpath(tmp))
-        elif shutil.which("tar"):
-            run_logged(["tar", "-xf", arc, "-C", tmp], what="unpacking the compiler")
-        else:
-            with tarfile.open(arc) as t:
-                t.extractall(longpath(tmp))
-        src = os.path.join(tmp, tc["dir"])
-        if not os.path.isdir(longpath(src)):
-            raise SetupError("unexpected compiler archive layout")
-        shutil.rmtree(longpath(tdir), ignore_errors=True)
-        os.replace(longpath(src), longpath(tdir))
-        shutil.rmtree(longpath(tmp), ignore_errors=True)
+        stage = "unpack"
+        try:
+            shutil.rmtree(longpath(tmp), ignore_errors=True)
+            os.makedirs(longpath(tmp))
+            say("  Unpacking...")
+            if arc.endswith(".zip"):
+                unpack_zip(arc, tmp, "Unpacking the compiler")
+            elif shutil.which("tar"):
+                run_logged(["tar", "-xf", arc, "-C", tmp], what="unpacking the compiler")
+            else:
+                with tarfile.open(arc) as t:
+                    t.extractall(longpath(tmp))
+            src = os.path.join(tmp, tc["dir"])
+            if not os.path.isdir(longpath(src)):
+                raise SetupError("unexpected compiler archive layout")
+            stage = "move"
+            shutil.rmtree(longpath(tdir), ignore_errors=True)
+            os.replace(longpath(src), longpath(tdir))
+            shutil.rmtree(longpath(tmp), ignore_errors=True)
+        except (OSError, zipfile.BadZipFile, tarfile.TarError) as e:
+            raise toolchain_unpack_error(e, stage, tc, data_dir, arc)
         os.remove(arc)
         with open(marker, "w") as f:
             f.write(tc["sha256"] + "\n")
