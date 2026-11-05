@@ -210,11 +210,18 @@ import builds as game_builds  # noqa: E402
 import randomizer_compat  # noqa: E402
 RANDOMIZER_TITLE = randomizer_compat.TITLE_ID
 # A randomized game is not installed as the game any more: it is added beside the installed game (the Randomizer page's
-# Import seed..., setup --import-seed; randomizer_seeds.import_seed). Installs made the old way still update and repair.
+# Import seed..., setup --import-seed; randomizer_seeds.import_seed). Every way of choosing the game (setup window,
+# terminal prompt, --game-dir, --image/--archive, Android) refuses one; installs made the old way still update and repair
+# from their installed files ("installed" in install()).
 RANDOMIZED_SOURCE = ("This is a randomized game. Install the game as it is here first, then add this seed on the "
                      "Randomizer page: Randomized games (TWWHD Randomizer), Import seed...")
 RANDOMIZED_SOURCE_TERMINAL = ("That is a randomized game. Install the game as it is first, then add the seed with "
                               "setup --import-seed PATH.")
+
+
+def is_randomized_folder(path):
+    """an extracted game folder whose metadata or code says it is a randomized game"""
+    return game_folder_title(path) == RANDOMIZER_TITLE or code_title_version(path)[0] == RANDOMIZER_TITLE
 SUPPORTED_BUILDS = {b.title_id: b for b in game_builds.all_builds()}
 SUPPORTED_TITLE = game_builds.canonical_build().title_id
 # The translated code (tools/recomp, the hooks in tools/recomp/hooks*.txt, the runtime) is made for
@@ -2746,6 +2753,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
             raise SetupError("disc image not found: %s" % source[1])
         if keys is None or info is None:
             keys, info = check_keys(source[1])
+        if info.get("title_id", "") == RANDOMIZER_TITLE:
+            raise SetupError(RANDOMIZED_SOURCE_TERMINAL)
         check_title(info.get("title_id", ""))
         say("  OK: %s, %s files, %s" % (title_desc(info.get("title_id", "")), info.get("files"),
                                         human(int(info.get("bytes", 0)))))
@@ -2756,6 +2765,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         problem, err, info = archive_info(source[1])
         if problem and problem != "wrong_title":
             raise SetupError("cannot read the Cemu archive: %s" % err)
+        if info.get("title_id") == RANDOMIZER_TITLE:
+            raise SetupError(RANDOMIZED_SOURCE_TERMINAL)
         archive_title, notes = archive_choice(info)
         say("  Using %s from the archive (folder %s): %s files, %s. A Cemu archive needs no keys." %
             (title_desc(info["title_id"], int(info["version"])), archive_title, info.get("files"),
@@ -2766,6 +2777,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         begin("folder")
         if not valid_game_folder(source[1]):
             raise SetupError("%s is not an extracted game folder (needs code/cking.rpx, content/, meta/meta.xml)" % source[1])
+        if is_randomized_folder(source[1]):
+            raise SetupError(RANDOMIZED_SOURCE_TERMINAL)
         tid = game_folder_title(source[1])
         if tid:
             check_title(tid)
@@ -3016,8 +3029,8 @@ def main():
     ap.add_argument("--archive", help="Cemu Wii U archive (.wua): no keys needed")
     ap.add_argument("--disc-key", help="disc key file or Cemu keys.txt (default: IMAGE.key)")
     ap.add_argument("--common-key", help="Wii U common key file or Cemu keys.txt (or WIIU_COMMON_KEY)")
-    ap.add_argument("--game-dir", help="an extracted game folder (or its code/cking.rpx); a seed from the official "
-                    "randomizer goes beside the installed game with --import-seed")
+    ap.add_argument("--game-dir", help="an extracted game folder (or its code/cking.rpx) of the game as it is; a randomized "
+                    "folder is refused: add a seed from the official randomizer with --import-seed PATH")
     ap.add_argument("--gen-dir", help="use this generated code instead of recompiling (build checks)")
     ap.add_argument("--data-dir", help="where the game is installed (default: %s)" % default_data_dir())
     ap.add_argument("--app-dir", help="macOS: where the app goes (default: ~/Applications)")
@@ -3203,6 +3216,8 @@ def run(args, ui):
         source = ("image", os.path.abspath(args.image))
     elif args.game_dir:
         source = ("folder", selected_game_folder(args.game_dir) or os.path.abspath(args.game_dir))
+        if valid_game_folder(source[1]) and is_randomized_folder(source[1]):
+            raise SetupError(RANDOMIZED_SOURCE_TERMINAL)  # (before any question or download)
     elif args.repair or decomp_change:
         if not valid_game_folder(game_dir):
             raise SetupError("no installed game files to repair from; run setup with your disc image")

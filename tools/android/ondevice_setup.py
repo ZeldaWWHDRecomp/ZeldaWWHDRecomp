@@ -116,7 +116,7 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
                         ("meta/meta.xml", (path / "meta" / "meta.xml").is_file())) if not present]
                     raise ValueError("Imported game folder is incomplete (missing " + ", ".join(missing) +
                                      "). Choose the folder that contains code, content and meta.")
-                if seed_import is None and adapter.setup.game_folder_title(str(path)) == adapter.setup.RANDOMIZER_TITLE:
+                if seed_import is None and adapter.setup.is_randomized_folder(str(path)):
                     raise ValueError("This is a randomized game. Set up the game as it is first, then add this seed "
                                      "with Randomized game... > Import a seed...")
                 game = path

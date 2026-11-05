@@ -70,6 +70,10 @@ game plays it from its next start, with its own saves. You can delete the output
 afterwards. Imported seeds have no permalink, and their spoiler log stays in the official
 randomizer's `logs` folder.
 
+Setup no longer installs a randomized output folder as the game: choosing one as the game (in
+the setup window, on Android, or with `setup --game-dir`) is refused with a pointer to Import
+seed (`setup --import-seed PATH` in a terminal).
+
 If an earlier setup installed a randomized output folder as the game, it still plays, updates
 and repairs as before, with its saves. To use the Randomizer page, install the game as it is
 (**Change the game**); importing that same output folder again then plays it with the same
