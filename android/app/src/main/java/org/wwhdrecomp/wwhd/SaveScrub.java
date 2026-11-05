@@ -30,9 +30,13 @@ final class SaveScrub {
     private static final int[] NAME_FIELDS = {0x14, 0x25, 0x36};
     static final String NAME = "Link";
 
-    /** the copy with every name "Link", or null when `sav` is not a valid cking.sav */
+    /** the copy with every name "Link", or null when `sav` is not a valid cking.sav. The port's story block after
+     *  the game's bytes (runtime/src/mods/story_block.h: payload, then the 16-byte footer "WSTB", payload length, ...)
+     *  is left out: it can hold the whole name (long_name.h) and the story mods' records. */
     static byte[] withoutNames(byte[] sav) {
-        if (sav == null || !valid(sav)) return null;
+        if (sav == null) return null;
+        sav = gamePart(sav);
+        if (!valid(sav)) return null;
         byte[] out = sav.clone();
         for (int s = 0; s < 3; s++) {
             int o = s * HD_SLOT;
@@ -53,6 +57,17 @@ final class SaveScrub {
         }
         put32(out, crcAt(), crc(out));
         return out;
+    }
+
+    /** the game's part of a cking.sav that may carry the port's story block (the file itself without one) */
+    static byte[] gamePart(byte[] sav) {
+        final int footer = 16;
+        if (sav.length <= HD_FILE || sav.length < HD_FILE + footer) return sav;
+        int f = sav.length - footer;
+        if (sav[f] != 'W' || sav[f + 1] != 'S' || sav[f + 2] != 'T' || sav[f + 3] != 'B') return sav;
+        long length = get32(sav, f + 4);
+        if (length > f || f - length != HD_FILE) return sav;
+        return Arrays.copyOf(sav, HD_FILE);
     }
 
     /** whether `sav` is a cking.sav as the game writes it: size, each slot's sums, the format word and the CRC */

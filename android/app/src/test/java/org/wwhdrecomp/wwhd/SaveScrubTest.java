@@ -87,6 +87,17 @@ public final class SaveScrubTest {
         bad = sav.clone();
         put32(bad, SaveScrub.HD_FILE - 8, 3);  // another format
         assert SaveScrub.withoutNames(bad) == null;
+        // a save with the port's story block (the whole name of a long name, story records): the block is left out
+        byte[] block = new byte[3 * 0x400 + 16];
+        java.util.Arrays.fill(block, 0, 3 * 0x400, (byte) 0x4C);
+        block[3 * 0x400] = 'W'; block[3 * 0x400 + 1] = 'S'; block[3 * 0x400 + 2] = 'T'; block[3 * 0x400 + 3] = 'B';
+        put32(block, 3 * 0x400 + 4, 3 * 0x400);
+        byte[] withBlock = java.util.Arrays.copyOf(sav, sav.length + block.length);
+        System.arraycopy(block, 0, withBlock, sav.length, block.length);
+        byte[] fromBlock = SaveScrub.withoutNames(withBlock);
+        assert fromBlock != null && java.util.Arrays.equals(fromBlock, out);
+        withBlock[withBlock.length - 16] = 'X';  // no footer: not a cking.sav
+        assert SaveScrub.withoutNames(withBlock) == null;
         // a scrubbed copy scrubs to itself
         assert java.util.Arrays.equals(SaveScrub.withoutNames(out), out);
         System.out.println("SaveScrubTest: ok");
