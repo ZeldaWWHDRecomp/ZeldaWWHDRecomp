@@ -32,6 +32,7 @@
 #include "gx2_texture_regs.h"
 #include "runtime.h"
 #include "dynres.h"
+#include "platform/memory_trim.h"
 #include <algorithm>
 #include <numeric>
 #include <array>
@@ -42,6 +43,9 @@
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
+#ifdef __ANDROID__
+#include <unistd.h>
+#endif
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -1565,17 +1569,43 @@ uint64_t trim_textures(uint64_t idle, uint64_t& released) {
     return bytes;
 }
 void texture_budget_step() {
-    static const bool on = [] { const char* e = getenv("WWHD_VK_TEXTURE_BUDGET"); return e && !strcmp(e, "1"); }();
-    if (!on || R.frame % 30) return;
+    // the policy (texture_budget.h): off on the desktop unless WWHD_VK_TEXTURE_BUDGET=1, on by default on Android
+#ifdef __ANDROID__
+    constexpr bool android = true;
+#else
+    constexpr bool android = false;
+#endif
     extern uint64_t vulkan_device_memory_budget();
-    static const uint64_t budget = [] {
+    static const char* envOn = getenv("WWHD_VK_TEXTURE_BUDGET");
+    static const uint64_t ram = [] {  // (the Android policy's budget only)
+#ifdef __ANDROID__
+        const long pages = sysconf(_SC_PHYS_PAGES), size = sysconf(_SC_PAGESIZE);
+        return pages > 0 && size > 0 ? uint64_t(pages) * uint64_t(size) : uint64_t(0);
+#else
+        return uint64_t(0);
+#endif
+    }();
+    static const uint64_t deviceBudget = android || (envOn && !strcmp(envOn, "1")) ? vulkan_device_memory_budget() : 0;
+    const texture_budget::Policy p = texture_budget::policy(android, envOn, deviceBudget, ram, memory_trim::headroom_mb());
+    if (!p.on || R.frame % p.every) return;
+    static const uint64_t budget = [&] {
         const char* e = getenv("WWHD_VK_TEXTURE_BUDGET_MB");
-        const uint64_t bytes = e && *e ? uint64_t(std::max(0, atoi(e))) << 20 : vulkan_device_memory_budget() / 4;
-        LOG("[vulkan] texture budget: %.0f MiB (WWHD_VK_TEXTURE_BUDGET_MB=%s)", bytes / 1048576.0, e && *e ? e : "a quarter of the device budget");
+        const uint64_t bytes = e && *e ? uint64_t(std::max(0, atoi(e))) << 20 : p.budget;
+        LOG("[vulkan] texture budget: %.0f MiB (WWHD_VK_TEXTURE_BUDGET_MB=%s), unused for %llu frames released%s",
+            bytes / 1048576.0, e && *e ? e : (android ? "max(RAM / 10, 384 MiB)" : "a quarter of the device budget"),
+            (unsigned long long)p.idle, android ? " (Android default; WWHD_VK_TEXTURE_BUDGET=0 off)" : "");
         return bytes;
     }();
-    static const uint64_t idle = [] { const char* e = getenv("WWHD_VK_TEXTURE_IDLE_FRAMES"); return e && *e ? uint64_t(std::max(0, atoi(e))) : 0; }();
-    static const uint64_t pin = [] { const char* e = getenv("WWHD_VK_TEXTURE_PIN_FRAMES"); return e && *e ? uint64_t(std::max(1, atoi(e))) : 3; }();
+    static const char* idleEnv = getenv("WWHD_VK_TEXTURE_IDLE_FRAMES");
+    const uint64_t idle = idleEnv && *idleEnv ? uint64_t(std::max(0, atoi(idleEnv))) : p.idle;
+    static const uint64_t pin = [&] { const char* e = getenv("WWHD_VK_TEXTURE_PIN_FRAMES"); return e && *e ? uint64_t(std::max(1, atoi(e))) : p.pin; }();
+    static bool wasTight = false;
+    if (const bool tight = android && idle == texture_budget::kAndroidPin && !(idleEnv && *idleEnv); tight != wasTight) {
+        wasTight = tight;
+        LOG("[vulkan] texture budget: %s (%d MB above the low-memory line)", tight ? "memory tight, every texture unused for 300 frames released" :
+            "memory back, idle release after 7200 frames", memory_trim::headroom_mb());
+    }
+    const uint64_t releasedBefore = g_stat_tex_evictions, bytesBefore = g_stat_tex_evicted_bytes;
     std::vector<Surface*> surfaces;
     std::vector<texture_budget::Candidate> candidates;
     uint64_t total = 0;
@@ -1591,6 +1621,10 @@ void texture_budget_step() {
         release_texture_image(surfaces[i]);
     }
     g_stat_tex_resident_bytes = total;
+    if (g_stat_tex_evictions != releasedBefore)
+        LOG("[vulkan] texture budget: released %llu unused textures (%.1f MiB), %.1f MiB kept",
+            (unsigned long long)(g_stat_tex_evictions - releasedBefore), (g_stat_tex_evicted_bytes - bytesBefore) / 1048576.0,
+            total / 1048576.0);
 }
 void upload_surface(Surface* s) {
     if(!s)return;

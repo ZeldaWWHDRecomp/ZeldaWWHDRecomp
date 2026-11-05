@@ -1890,6 +1890,176 @@ class LongPaths(unittest.TestCase):
         self.assertFalse(os.path.exists(root))
 
 
+class CompilerUnpack(unittest.TestCase):
+    """Issue #388: llvm-mingw's zip (about 10,000 files) is unpacked member by member with a progress line,
+    still through \\\\?\\ paths (#144); an error while unpacking or moving it into place stops setup with a
+    message the player can act on (antivirus, disk full, setup.log, WWHD_TOOLCHAIN_DIR)."""
+    FILES = ["llvm-mingw-test/bin/x86_64-w64-mingw32-clang.exe", "llvm-mingw-test/bin/llvm-ar.exe",
+             "llvm-mingw-test/lib/libc++.a", "llvm-mingw-test/include/stdio.h"]
+
+    def fixture(self):
+        import shutil
+        import zipfile
+        top = tempfile.mkdtemp()
+        self.addCleanup(lambda: shutil.rmtree(setup.longpath(top), ignore_errors=True))
+        data = os.path.join(top, "data")
+        os.makedirs(data)
+        arc = os.path.join(top, "src.zip")
+        with zipfile.ZipFile(arc, "w") as z:
+            for f in self.FILES:
+                z.writestr(f, b"x")
+        pins = {"toolchains": {"test-mingw": {"kind": "llvm-mingw", "url": "https://example.invalid/llvm-mingw-test.zip",
+                                              "sha256": setup.file_sha256(arc), "size": os.path.getsize(arc),
+                                              "dir": "llvm-mingw-test"}}}
+        env = {k: v for k, v in os.environ.items() if k != "WWHD_TOOLCHAIN_DIR"}
+        fetch = lambda url, dst, *a, **k: shutil.copyfile(arc, dst)
+        patches = [mock.patch.object(setup, "load_toolchains", return_value=pins),
+                   mock.patch.object(setup, "download", fetch), mock.patch.dict(os.environ, env, clear=True),
+                   mock.patch.object(setup, "say")]
+        for p in patches:
+            p.start()
+            self.addCleanup(p.stop)
+        return data
+
+    def test_progress_counts_files(self):
+        data = self.fixture()
+        updates, finished = [], []
+
+        class Rec:
+            def __init__(self, label):
+                self.label = label
+
+            def update(self, done, total, detail="", force=False):
+                updates.append((self.label, done, total, detail))
+
+            def done(self, detail=""):
+                finished.append((self.label, detail))
+
+        with mock.patch.object(setup, "Progress", Rec):
+            setup.get_toolchain("test-mingw", data, setup.UI(False))
+        n = len(self.FILES)
+        self.assertEqual(updates, [("Unpacking the compiler", i, n, "%d of %d files" % (i, n)) for i in range(1, n + 1)])
+        self.assertEqual(finished, [("Unpacking the compiler", "%d files" % n)])
+        self.assertTrue(os.path.isfile(os.path.join(data, "toolchain", *self.FILES[0].split("/"))))
+
+    def test_progress_detail_uses_thousands_separators(self):
+        updates = []
+        with tempfile.TemporaryDirectory() as d:
+            import zipfile
+            arc = os.path.join(d, "a.zip")
+            with zipfile.ZipFile(arc, "w") as z:
+                for i in range(1200):
+                    z.writestr("t/%d" % i, b"")
+            rec = mock.Mock()
+            rec.update.side_effect = lambda done, total, detail="", force=False: updates.append(detail)
+            with mock.patch.object(setup, "Progress", return_value=rec):
+                setup.unpack_zip(arc, os.path.join(d, "out"), "Unpacking the compiler")
+        self.assertEqual(updates[-1], "1,200 of 1,200 files")
+        rec.done.assert_called_once_with("1,200 files")
+
+    def test_members_are_extracted_through_long_paths(self):
+        import zipfile
+        data = self.fixture()
+        made, targets = [], []
+        real_longpath, real_extract = setup.longpath, zipfile.ZipFile.extract
+
+        def longpath(p, windows=None):
+            out = real_longpath(p, windows)
+            made.append(out)
+            return out
+
+        def extract(z, member, path=None, pwd=None):
+            targets.append(path)
+            return real_extract(z, member, path, pwd)
+
+        with mock.patch.object(setup, "longpath", longpath), mock.patch.object(zipfile.ZipFile, "extract", extract), \
+                mock.patch.object(zipfile.ZipFile, "extractall", side_effect=AssertionError("no extractall")):
+            setup.get_toolchain("test-mingw", data, setup.UI(False))
+        tmp = real_longpath(os.path.join(data, "toolchain", "unpack.tmp"))
+        self.assertEqual(targets, [tmp] * len(self.FILES))
+        self.assertIn(tmp, made)
+        # and the string form on Windows, where unpack.tmp is below a \\?\ prefix
+        self.assertTrue(setup.longpath("C:\\WWHD\\data\\toolchain\\unpack.tmp", windows=True).startswith("\\\\?\\"))
+
+    def test_a_complete_earlier_download_is_not_fetched_again(self):
+        with tempfile.TemporaryDirectory() as d:
+            dst = os.path.join(d, "llvm-mingw-test.zip")
+            with open(dst, "wb") as f:
+                f.write(b"archive")
+            sha = setup.file_sha256(dst)
+            with mock.patch.object(setup.urllib.request, "urlopen", side_effect=AssertionError("downloaded again")), \
+                    mock.patch.object(setup, "say"):
+                setup.download("https://example.invalid/llvm-mingw-test.zip", dst, sha, 7, "compiler")
+            with open(dst, "rb") as f:
+                self.assertEqual(f.read(), b"archive")
+            # a different file under that name is downloaded as before
+            with mock.patch.object(setup.urllib.request, "urlopen", side_effect=OSError("offline")), \
+                    mock.patch.object(setup, "say"), self.assertRaises(setup.SetupError):
+                setup.download("https://example.invalid/llvm-mingw-test.zip", dst, "0" * 64, 7, "compiler", attempts=1)
+
+    def check_message(self, e, cause):
+        msg = str(e.exception)
+        self.assertIn("the compiler could not be", msg)
+        self.assertIn(cause, msg)
+        self.assertIn("exclusions", msg)
+        self.assertIn("setup log", msg)
+        self.assertIn("WWHD_TOOLCHAIN_DIR", msg)
+        self.assertIn("llvm-mingw-test folder", msg)
+        self.assertNotIn("\\\\?\\", msg)
+        self.assertNotIn("Traceback", msg)
+        return msg
+
+    def run_logged_setup(self, data):
+        logged = []
+        with mock.patch.object(setup.LOG, "write", logged.append):
+            with self.assertRaises(setup.SetupError) as e:
+                setup.get_toolchain("test-mingw", data, setup.UI(False))
+        return e, logged
+
+    def test_permission_error_while_unpacking(self):
+        import zipfile
+        data = self.fixture()
+        err = PermissionError(13, "Permission denied", setup.longpath(os.path.join(data, "toolchain", "x.exe"), windows=True))
+        with mock.patch.object(zipfile.ZipFile, "extract", side_effect=err):
+            e, logged = self.run_logged_setup(data)
+        msg = self.check_message(e, "antivirus program is blocking or locking")
+        self.assertIn("could not be unpacked", msg)
+        self.assertIn(os.path.join(data, "toolchain", "llvm-mingw-test.zip"), msg)  # the archive stays for unpacking by hand
+        self.assertTrue(os.path.isfile(os.path.join(data, "toolchain", "llvm-mingw-test.zip")))
+        self.assertTrue(any("compiler unpack failed: PermissionError" in line for line in logged))
+
+    def test_permission_error_while_moving(self):
+        data = self.fixture()
+        real_replace = os.replace
+
+        def replace(src, dst):
+            if "unpack.tmp" in os.fspath(src):
+                raise PermissionError(13, "Access is denied", src)
+            return real_replace(src, dst)
+
+        with mock.patch.object(setup.os, "replace", replace):
+            e, logged = self.run_logged_setup(data)
+        msg = self.check_message(e, "antivirus program is blocking or locking")
+        self.assertIn("could not be moved into place", msg)
+        self.assertTrue(any("compiler move failed: PermissionError" in line for line in logged))
+        self.assertFalse(os.path.exists(os.path.join(data, "toolchain", "llvm-mingw-test", ".wwhd-toolchain")))
+
+    def test_disk_full_while_unpacking(self):
+        import errno
+        import zipfile
+        data = self.fixture()
+        with mock.patch.object(zipfile.ZipFile, "extract", side_effect=OSError(errno.ENOSPC, "No space left on device")):
+            e, _ = self.run_logged_setup(data)
+        self.check_message(e, "The disk is full")
+
+    def test_windows_sharing_violation_counts_as_locked(self):
+        err = OSError(22, "The process cannot access the file because it is being used by another process")
+        err.winerror = 32
+        e = setup.toolchain_unpack_error(err, "unpack", {"dir": "llvm-mingw-x", "url": "https://x/y.zip"}, "D", "/nonexistent")
+        self.assertIn("antivirus program is blocking or locking", str(e))
+        self.assertIn("download https://x/y.zip and unpack it yourself", str(e))  # no archive left
+
+
 class DecompOption(unittest.TestCase):
     """Setup's optional decomp version (decomp_setup.py): gates, the bundled source check, the remembered
     option, the link line."""

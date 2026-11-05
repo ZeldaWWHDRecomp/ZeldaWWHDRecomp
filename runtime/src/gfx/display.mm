@@ -1217,7 +1217,8 @@ void install_display_menu(NSMenu* bar) {
     [m addItem:[NSMenuItem separatorItem]];
     header(m, @"Picture scaling");
     add(m, @"    Smooth (bilinear)", @selector(setFilter:), kSmooth).toolTip = @"Bilinear filtering, box-filtered when the picture is shrunk";
-    add(m, @"    Sharp", @selector(setFilter:), kSharp).toolTip = @"Crisp pixel edges at any scale (sharp bilinear)";
+    add(m, @"    Sharp", @selector(setFilter:), kSharp).toolTip =
+        @"Pixel perfect: each rendered pixel shows as a crisp block of the same size, at any window size (sharp bilinear)";
     add(m, @"    Integer scale (pixel exact)", @selector(setFilter:), kInteger).toolTip =
         @"Whole-number scale with a border; falls back to Smooth when the picture is larger than the window";
     [m addItem:[NSMenuItem separatorItem]];

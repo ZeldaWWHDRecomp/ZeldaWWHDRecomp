@@ -22,6 +22,12 @@
 // the next full step once (jump_policy::Latch).
 //
 // Idea/code from GreenNaugahyde/ZeldaWWHDRecompAndroid (MPL-2.0), mods/jump.cpp.
+//
+// Deku Leaf: wave to rise (its own switch, off by default; the rules in leaf_lift.h): after Link's step, a wave of
+// the leaf while gliding raises speed.y to the lift and keeps the glide's gravity; held, the leaf's item button
+// waves on. Off means identical: no guest reads or writes. From GreenNaugahyde/ZeldaWWHDRecompAndroid db65d60
+// (MPL-2.0), mods/jump.cpp. WWHD_LEAF_LOG=1 logs each lift, WWHD_LEAF_TRACE=1 each glide step whose gravity
+// changed.
 // WWHD_JUMP_LOG=1 logs each jump.
 #include <atomic>
 #include <cstdlib>
@@ -32,6 +38,7 @@
 #include "input.h"
 #include "input_map.h"
 #include "jump_policy.h"
+#include "leaf_lift.h"
 #include "mods.h"
 #include "runtime.h"
 #include "true60.h"
@@ -98,7 +105,10 @@ void jump_input(uint32_t virt) {
     g_latch.see(virt);
 }
 
+void leaf_reset();
+
 void jump_reset() {
+    leaf_reset();
     g_state = {};
     g_link = 0;
     g_straight = false;
@@ -158,6 +168,78 @@ void jump_step(Cpu* c, uint32_t link, bool before) {
     guest_call(c, kFallInit, {link, 0});
     *c = saved;
     if (log_on() && !preview) LOG("[jump] the game's ledge jump made a fall (speedF %.1f)", ldf32(link + kSpeedF));
+}
+
+// ---- Deku Leaf: wave to rise ----
+namespace {
+constexpr uint32_t kGravity = 0x374;  // fopAc_ac_c::gravity
+leaf_lift::Glide g_glide;
+leaf_lift::Repeat g_leaf_repeat;
+std::atomic<uint64_t> g_leaf_waves{0};
+std::atomic<uint32_t> g_leaf_link{0};
+std::atomic<bool> g_leaf_gliding{false};
+}  // namespace
+
+void leaf_reset() {
+    g_glide = {};
+    g_leaf_repeat = {};
+    g_leaf_gliding = false;
+}
+
+// test aid: WWHD_TEST_LEAF_GLIDE=step: from that logic step on, Link falling (procFall) opens the Deku Leaf into
+// a glide (procFanGlide_init 0241A3C4), as its button does in the air; for scripted runs that put him in the air
+// with WWHD_LINK_WARP (the tests need no ledge). Off by default; not a player option.
+void leaf_test_glide(Cpu* c, uint32_t link) {
+    static const uint64_t from = [] { const char* e = getenv("WWHD_TEST_LEAF_GLIDE"); return e ? strtoull(e, nullptr, 10) : ~0ull; }();
+    if (step() < from || link < 0x10000 || link > 0xFFFF9000 || true60::dt() < 1.f) return;
+    static uint64_t done_at = ~0ull;
+    if (ld32(link + kCurProc) != 0x27 || step() - done_at < 60) return;  // procFall; once per fall
+    done_at = step();
+    const Cpu saved = *c;
+    guest_call(c, GC(0x0241A3C4), {link, 0});
+    *c = saved;
+    LOG("[leaf] test: the fall became a glide (proc 0x%X)", ld32(link + kCurProc));
+}
+
+void leaf_step(Cpu* c, uint32_t link) {
+    leaf_test_glide(c, link);
+    if (!leaf_rise()) {
+        g_glide = {};
+        g_leaf_gliding = false;
+        return;
+    }
+    if (link < 0x10000 || link > 0xFFFF9000 || true60::dt() < 1.f) return;  // (full logic steps only)
+    if (link != g_leaf_link.exchange(link)) g_glide = {};
+    const uint32_t proc = ld32(link + kCurProc);
+    static const bool trace = getenv("WWHD_LEAF_TRACE") != nullptr;  // each glide step whose gravity changed
+    if (trace) {
+        static uint32_t last_proc = ~0u;
+        static float last_g = 99;
+        const float g = ldf32(link + kGravity);
+        if (proc != last_proc || (proc == leaf_lift::kProcFanGlide && g != last_g))
+            LOG("[leaf] step %llu: proc 0x%X, gravity %.2f, speed.y %.2f", (unsigned long long)step(), proc, g,
+                ldf32(link + kSpeedY));
+        last_proc = proc, last_g = g;
+    }
+    g_leaf_gliding = proc == leaf_lift::kProcFanGlide;
+    const float vy = ldf32(link + kSpeedY);
+    const leaf_lift::Lifted l =
+        leaf_lift::after_step(g_glide, true, proc, ldf32(link + kGravity), vy, int(leaf_rise_height()));
+    if (!l.wave) return;
+    stf32(link + kSpeedY, l.speed_y);
+    stf32(link + kGravity, l.gravity);
+    g_leaf_waves = g_glide.waves;
+    static const bool log = getenv("WWHD_LEAF_LOG") != nullptr;
+    if (log) LOG("[leaf] wave %llu: speed.y %.1f -> %.1f, gravity %.2f", (unsigned long long)g_glide.waves, vy, l.speed_y, l.gravity);
+}
+
+void leaf_filter_pad(input::PadState& s) {
+    constexpr uint32_t kItems = input::kX | input::kY | input::kR;
+    const bool on = leaf_rise();
+    if (!on && g_leaf_repeat.seen_waves == ~0ull) return;
+    if (leaf_lift::drop(g_leaf_repeat, on, on && g_leaf_gliding.load(), (s.buttons & kItems) != 0, g_leaf_waves.load(),
+                        step()))
+        s.buttons &= ~kItems;  // (while gliding the other item buttons have no use)
 }
 
 }  // namespace mods

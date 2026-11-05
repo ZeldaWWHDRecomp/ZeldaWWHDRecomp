@@ -4,6 +4,7 @@
 #include "guest_heap_query.h"
 #include "runtime.h"
 #include <array>
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -23,8 +24,24 @@ const Entry* entry(uint32_t id){for(const auto&e:entries)if(e.address&&id==e.id)
 uint32_t free(Cpu*c,uint32_t heap){return guest_heap::free_size(c,heap,invoke);}
 using Heaps=std::array<std::pair<uint32_t,uint32_t>,4>;
 Heaps heaps(Cpu*c){Cpu probe=*c;Heaps out{};const uint32_t getters[]={GC(0x025E3268),GC(0x025E2FBC),GC(0x025EE048),GC(0x025EE060)};for(unsigned i=0;i<4;++i){out[i].first=invoke(&probe,getters[i],{});out[i].second=free(&probe,out[i].first);}return out;}
-void lookup(Cpu*c){if(const auto*e=entry(c->r[3]))c->r[3]=e->address;else if(reserved(c->r[3]))c->r[3]=0;else original(c,GC(0x025E10E0));}
-void base_create(Cpu*c){const auto*e=entry(c->r[3]);if(!e&&reserved(c->r[3])){c->r[3]=0;return;}const bool measure=e&&invoke&&(tracing()||e->allocated);if(!measure){original(c,GC(0x025DD414));return;}
+const Entry* guest_entry(uint32_t);
+bool guest_enabled=false,guest_closed=false;
+void lookup(Cpu*c){
+    if(guest_enabled){
+        if(const auto*e=guest_entry(c->r[3])){c->r[3]=e->address;return;}
+        if(c->r[3]>=0x1E4&&!reserved(c->r[3])){c->r[3]=0;return;}
+    }
+    if(const auto*e=entry(c->r[3]))c->r[3]=e->address;
+    else if(reserved(c->r[3]))c->r[3]=0;
+    else original(c,GC(0x025E10E0));
+}
+void base_create(Cpu*c){
+    if(guest_enabled){
+        if(!guest_closed)LOG("[native_actor_profiles] registration closed before first process allocation (profile %04X)",c->r[3]);
+        guest_closed=true;
+        if(c->r[3]>=0x1E4&&!reserved(c->r[3])&&!guest_entry(c->r[3])){c->r[3]=0;return;}
+    }
+    const auto*e=entry(c->r[3]);if(!e&&reserved(c->r[3])){c->r[3]=0;return;}const bool measure=e&&invoke&&(tracing()||e->allocated);if(!measure){original(c,GC(0x025DD414));return;}
     const uint32_t params=c->r[5],token=params?ld32(params):0,heap=ld32(GD(0x1018CA3C));Cpu probe=*c;const uint32_t before=free(&probe,heap);
     original(c,GC(0x025DD414));const Cpu returned=*c;probe=returned;const uint32_t after=free(&probe,heap);
     if(returned.r[3]&&e->allocated)e->allocated(token,returned.r[3],before>=after?before-after:0);
@@ -51,5 +68,24 @@ bool add(uint16_t id,uint32_t address,BaseAllocated allocated,std::string*why){c
     return refuse("the profile table is full");}
 bool remove(uint16_t id,uint32_t address){for(auto&e:entries)if(e.address&&e.id==id&&e.address==address){e=Entry{};return true;}return false;}
 bool add_before_delete_listener(const std::string& name,BeforeDelete callback){if(name.empty()||!callback)return false;for(const auto& listener:listeners){if(listener.name==name)return listener.callback==callback;if(listener.callback==callback)return false;}if(installed)return false;for(auto& listener:listeners)if(!listener.callback){listener={name,callback};return true;}return false;}
-bool install(const Owner&owner,const Replace&replace,std::string*why){if(installed)return true;if(!available(owner,why))return false;bool any=false;for(const auto&e:entries)any|=e.address!=0;if(!any){if(why)*why="no profile registered";return false;}replace(GC(0x025E10E0),lookup);replace(GC(0x025DD414),base_create);replace(GC(0x025D4B4C),destroy);installed=true;return true;}
+bool install(const Owner&owner,const Replace&replace,std::string*why){if(installed)return true;if(!available(owner,why))return false;bool any=false;for(const auto&e:entries)any|=e.address!=0;if(!any&&!guest_enabled){if(why)*why="no profile registered";return false;}replace(GC(0x025E10E0),lookup);replace(GC(0x025DD414),base_create);replace(GC(0x025D4B4C),destroy);installed=true;return true;}
+}
+
+#include "native_actor_guest_profiles.inc"
+
+namespace native_actor_profiles {
+uint32_t guest_execute_method(uint16_t profile,uint32_t table) noexcept {
+    if(!guest_enabled||!installed)return 0;
+    for(const auto& e:guest_entries){
+        const uint32_t address=e.profile.address;
+        if(!address||e.profile.id!=profile||table!=address+0x30)continue;
+        // A matching identity never permits reads outside snapshot-owned RAM.
+        if(!valid_storage(address)||address>mem::kHostStart-kGuestSlotBytes)return 0;
+        if(std::memcmp(mem::ptr(address),e.bytes.data(),e.bytes.size()))return 0;
+        // Return the immutable admitted value, not a second mutable-memory read.
+        return (uint32_t(e.bytes[0x38])<<24)|(uint32_t(e.bytes[0x39])<<16)|
+               (uint32_t(e.bytes[0x3A])<<8)|uint32_t(e.bytes[0x3B]);
+    }
+    return 0;
+}
 }

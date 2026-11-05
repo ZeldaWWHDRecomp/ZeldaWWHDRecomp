@@ -108,7 +108,11 @@ static void crash_log_raw(int fd, const char* s, size_t n) {
 }
 static void crash_out(int fd, const char* s, size_t n) { crash_context::redact(fd, {s,n}, crash_raw); }
 static void crash_log_only(int fd, const char* s, size_t n) { crash_context::redact(fd, {s,n}, crash_log_raw); }
+extern "C" void wwhd_compile_journal_on_crash() __attribute__((weak));  // gfx/vulkan/compile_journal.cpp
+
 static void crash_handler(int sig, siginfo_t* si, void* uctx) {
+    // a crash while compiling a shader or pipeline: noted so the next start leaves it out (compile_journal.h)
+    if (wwhd_compile_journal_on_crash) wwhd_compile_journal_on_crash();
     uintptr_t a = (uintptr_t)si->si_addr;
     uintptr_t base = (uintptr_t)PPC_MEM_BASE;
     char path[96];
@@ -581,7 +585,6 @@ int main(int argc, char** argv) {
     }
     crash_context::initialize();
     editor_ui::register_tab();  // the world editor's Editor tab (only with --editor)
-    editor_mcp::launch(start_mcp);  // --editor --mcp: Claude / MCP access on now; --mcp alone says it needs --editor
     index_game_functions();
     install_crash_handler();
     start_log_file();
@@ -683,7 +686,7 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    config::save_dir = randomizer::save_directory(config::save_dir, save_arg);
+    config::save_dir = randomizer::save_directory(config::save_dir, randomizer::explicit_save_folder(save_arg, config::save_dir));
     const std::string seed_namespace = randomizer::compiled_seed() ?
         std::string("randomizer-") + g_guest_build_rpx_sha256 : std::string();
     // Save backups (Mods tab): a restore chosen there is applied now, before the game reads saves.
@@ -771,6 +774,10 @@ int main(int argc, char** argv) {
     // into an editor session; set_launch_mode ran in the argument loop above, before any package loads
     if (editor::enabled()) guestmods::set_package_observer(editor::register_package);
     guestmods::init();  // trusted manager packages, before guest threads start
+    // MCP reads live game globals. Publish its listener only after the RPX is mapped
+    // and package initialization is finished, so an early read_state cannot access
+    // unmapped memory or observe a partially initialized package registry.
+    editor_mcp::launch(start_mcp);  // --mcp still requires --editor
     // mods skipped because a requirement can't be met (the GameCube game for mods is gone, ...): the rest started
     for (const auto& line : mods::packages::startup_problems()) LOG("[mods] skipped: %s", line.c_str());
     // the island arrival notice (story_world_arrival.h): an overlay layer only when a loaded package

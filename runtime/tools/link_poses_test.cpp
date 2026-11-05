@@ -90,6 +90,13 @@ int main() {
                       pc::kActNone, pc::kActHidden})
         CHECK(pose_for_action(a) == nullptr);
     CHECK(file_for(0x35) == "pose_35.png");
+    CHECK(file_for(0x04, 25) == "pose_04_19.png");
+    // the carried things: each of Lift, Throw and Drop with each drawn kind, the props as named
+    CHECK(carry_poses().size() == sizeof kCarryActions * (sizeof kCarryKinds / sizeof kCarryKinds[0]));
+    for (const PoseSpec& p : carry_poses()) CHECK(p.variant && p.prop == carry_prop(p.variant) && p.place == Place::kHands);
+    CHECK(carry_prop(16) == Prop::kPot && carry_prop(19) == Prop::kBarrel && carry_prop(18) == Prop::kNone && carry_prop(0) == Prop::kNone);
+    CHECK(pose_for_action(pc::kActGrab)->prop == Prop::kBlock && pose_for_action(pc::kActCruise)->place == Place::kAlone);
+    CHECK(pose_for_action(pc::kActLetGoRope) && pose_for_action(pc::kActLetGoRope)->rope);
     CHECK(file_for(0x0A) == "pose_0A.png");
 
     // ---- the camera: yaw 0 looks at Link's front (+z towards the viewer); 90 shows his left side (+x)
@@ -170,7 +177,8 @@ int main() {
         std::string why;
         const Bytes pack = read_file(std::string(game) + "/content/Common/Pack/permanent_3d.pack");
         CHECK(read_pack(pack, link, anim, why));
-        const auto model = load(link, why);
+        const Bytes pack0 = read_file(std::string(game) + "/content/Common/Pack/szs_permanent0.pack");
+        const auto model = load(link, why, &pack, &pack0);
         if (!model) fprintf(stderr, "load: %s\n", why.c_str());
         CHECK(model != nullptr);
         for (const PoseSpec& p : kPoses) {
@@ -186,6 +194,33 @@ int main() {
             if (out && *out) write_png(std::string(out) + "/" + file_for(p.action), kIconSize, kIconSize, rgba);
         }
         fprintf(stderr, "rendered %zu poses from %s\n", sizeof kPoses / sizeof kPoses[0], game);
+        // trying the boat's view: WWHD_LINK_POSE_TRY_ALONE="yaw:pitch,..." writes alone_<n>.png (the Cruise picture)
+        if (const char* t = getenv("WWHD_LINK_POSE_TRY_ALONE"); t && model && out && *out) {
+            int n = 0;
+            for (const char* q = t; *q;) {
+                float yaw = 0, pitch = 0;
+                int used = 0;
+                if (sscanf(q, "%f:%f%n", &yaw, &pitch, &used) != 2) break;
+                PoseSpec p = *pose_for_action(pc::kActCruise);
+                p.yaw = yaw, p.pitch = pitch;
+                Bytes rgba;
+                if (render(*model, anim, p, rgba, why)) write_png(std::string(out) + "/alone_" + std::to_string(n) + ".png", kIconSize, kIconSize, rgba);
+                n++;
+                q += used;
+                if (*q == ',') q++;
+            }
+        }
+        // the things drawn with him: every prop read, every carried-thing picture drawn
+        for (Prop pr : {Prop::kPot, Prop::kBigPot, Prop::kBarrel, Prop::kRock, Prop::kPebble, Prop::kBomb, Prop::kBlock, Prop::kShip})
+            CHECK(!model || has_prop(*model, pr));
+        for (const PoseSpec& p : carry_poses()) {
+            if (!model) break;
+            Bytes rgba;
+            const bool ok = render(*model, anim, p, rgba, why);
+            if (!ok) fprintf(stderr, "pose %02X/%02X: %s\n", p.action, p.variant, why.c_str());
+            CHECK(ok);
+            if (ok && out && *out) write_png(std::string(out) + "/" + file_for(p.action, p.variant), kIconSize, kIconSize, rgba);
+        }
         // trying a pose: WWHD_LINK_POSE_TRY="anim:frame:yaw:pitch:gear,..." (gear 0 none, 1 sword, 2 sword and shield)
         // writes try_<n>.png into WWHD_LINK_POSES_OUT
         if (const char* t = getenv("WWHD_LINK_POSE_TRY"); t && model && out && *out) {

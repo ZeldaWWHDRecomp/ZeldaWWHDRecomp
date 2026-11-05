@@ -29,7 +29,8 @@ seed. Default save folders are siblings, such as `save-randomizer-<hash>/user`
 and `save-backups-randomizer-<hash>/`. When you choose an empty cloud folder,
 its seed-specific save folder stays inside that folder so it is synced. When
 selecting an existing vanilla save folder, the randomized save uses a sibling
-instead. An explicit `--save DIR` uses exactly that directory. Save-state slots
+instead. An explicit `--save DIR` uses exactly that directory, except a folder named `save` (the install's
+own, which setup's Play button, launchers and shortcuts pass): the seed's folder is its sibling then. Save-state slots
 retain their per-seed subfolder.
 Copying a save or a state manually between seeds is unsupported.
 
@@ -40,9 +41,28 @@ old and new paths to move that data out of the vanilla folder while the game is
 closed. Never overwrite or merge an existing destination; keep both copies until
 you have verified which one to use. Update any old cloud-folder choice as well.
 
-Two default-option 1.2.0 seeds and one swordless seed pass the automatic compatibility check. Windows,
-other option combinations and a full playthrough still need validation; passing
-the hook check is not a guarantee of complete gameplay compatibility.
+The automatic compatibility check covers TWWHD Randomizer **1.2.0** (the newest
+release) with every option that patches game code, each alone over the defaults:
+instant text boxes and full sea chart (on and off), Quiet Swift Sail, fix RNG,
+performance, classic mode, inverted sea compass, swordless, remove music, fewer
+than two starting hearts, random starting island, and dungeon, boss, miniboss,
+cave, door and misc entrance shuffle. Combinations checked: all entrances mixed
+and decoupled, everything code-related on at once, a race-style seed, and the
+cosmetic and data-only options. Older releases (1.1.1 and earlier) are not covered; the check refuses them.
+Windows and a full playthrough still need validation; passing the hook check is
+not a guarantee of complete gameplay compatibility.
+
+## Experimental source mod
+
+The separate [core-mod source project](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDMods/blob/codex/i117-randomizer-core/twwhd-randomizer-core/README.md)
+runs the unmodified game with a seed-specific guest mod. It is experimental,
+requires additional runtime support, and is not a catalogue download. Use the
+setup flow above for normal play.
+
+The two routes use separate save folders, backups and save states, even for the
+same seed. **Saves do not transfer between them.** Neither setup nor the mod
+builder migrates progress from the other route; keep each route's saves with
+its own installation.
 
 ## Maintainer audit of a new compatibility variant
 
@@ -81,7 +101,10 @@ python3 tools/recomp/mk_randomizer_profile.py /private/original-usa/code/cking.r
   --reviewed-functions REVIEWED_COMMA_SEPARATED_FUNCTIONS
 ```
 
-Repeat `--reviewed-rpx` for independently reviewed variants. The tool refuses a
+Repeat `--reviewed-rpx` for independently reviewed variants. The profile is rebuilt
+from scratch, so pass outputs that together cover every reviewed variant (for 1.2.0:
+one seed with Quiet Swift Sail and any entrance shuffle on, or one seed for each),
+or earlier variants are dropped. The tool refuses a
 changed hook instruction or a changed function missing from the explicit review
 list. Adding a port hook also invalidates the profile until it is regenerated
 and reviewed; `test_randomizer_compat.py` checks that it matches the current hooks.
@@ -89,8 +112,9 @@ and reviewed; `test_randomizer_compat.py` checks that it matches the current hoo
 ## Generate and build
 
 After reviewing the reported overlaps, pass their exact function entries. For
-the tested 1.2.0 seed these were `0216F7FC,023EFF20,025499A0`; do not copy that list
-for another output without reading its report.
+default-option 1.2.0 seeds these are `0216F7FC,023EFF20,025499A0`; Quiet Swift Sail adds
+`0247E854` and any entrance shuffle adds `025217F8`. Do not copy that list for
+another output without reading its report.
 
 ```sh
 python3 tools/recomp/randomizer_experiment.py \
@@ -128,9 +152,10 @@ file through name entry and new-save initialization as well as existing saves.
 
 ## Evidence and limits
 
-Compatibility has been checked with TWWHD Randomizer **1.2.0**. Two default-option
-seeds and one swordless seed have been built and reached playable Outset on
-macOS Metal. Fresh saves contained the expected starting equipment, songs and
+Compatibility has been checked with TWWHD Randomizer **1.2.0**. Through normal
+setup on macOS Metal, default-option, swordless, Quiet Swift Sail and door-entrance
+seeds reached playable Outset, and a seed with every code-patching option on
+(random starting island) reached its starting island. Fresh saves contained the expected starting equipment, songs and
 visited islands. These are initialization and boot checks, not full playthroughs.
 Windows builds pass CI; Windows gameplay remains untested.
 

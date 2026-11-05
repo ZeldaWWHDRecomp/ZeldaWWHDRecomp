@@ -102,7 +102,7 @@ WWHD_HOOK(WWHD_ADDR_daPy_Execute, on_link_step, (void* link)) {
 ### Build
 
 ```sh
-clang --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding \
+clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -ffreestanding \
   -fno-builtin -nostdlib -fno-jump-tables -ffunction-sections -fdata-sections \
   -I<sdk>/include -c mod.c -o mod.o
 ld.lld -m elf32ppc -r mod.o -o mod.elf
@@ -112,6 +112,19 @@ ld.lld -m elf32ppc -r mod.o -o mod.elf
 source checkout. `-mcpu=750` keeps to the game CPU's instructions. Link with `-r` only: the
 ELF must stay relocatable (the port picks its address). `-m elf32ppc` is needed on Windows,
 where MSYS2's lld defaults to PE. The same `mod.elf` works on every desktop platform.
+
+`-mstackrealign` is required for every PowerPC guest translation unit, including
+separately compiled helpers. Native game callers can supply an 8-byte-aligned
+stack, while Clang normally assumes 16-byte alignment. Realigning the guest
+callee's frame preserves its local storage and stack-passed arguments at either
+entry alignment. This flag belongs to the PowerPC compile, not the host compiler
+that later builds the translated module.
+
+Recompile and relink existing guest ELFs with this flag. Current translation
+does not add the missing compiler-generated realignment prologue. An entry-time
+runtime wrapper is a possible additional protection for older modules, but it
+must preserve stack-passed arguments and by-reference data; simply rounding the
+stack pointer is not sufficient. This change supplies the compile-time fix.
 
 ### Package and install
 
@@ -194,6 +207,20 @@ with their content:
 - Calls into a guest module preserve both lanes of nonvolatile FPRs f14–f31,
   including when native code calls a module function pointer. This bridges the
   scalar compiler ABI to the game's paired-single calling convention.
+- The runtime also offers a best-effort stack bridge for old mods compiled without
+  `-mstackrealign`. At an 8-modulo-16 entry, it copies the complete ordinary EABI
+  caller frame into a disjoint aligned stack area, preserving original pointer
+  arguments and the parent backchain. It never copies stale frame contents back
+  over writes through pointers into the caller's original frame. Writes to
+  by-value stack-argument slots stay in the shadow; writes through original
+  pointer arguments remain in caller RAM.
+  This requires a host-verified current-thread stack receipt, a valid bounded
+  caller backchain, and at least 64 KiB left below the shadow frame for callees.
+  Missing receipts (including some restored threads), invalid frames, or low
+  headroom retain the original call without stack relocation and log one warning.
+  This is not a guarantee for arbitrary dynamic stack use, custom assembly stack
+  layouts, or nonlocal guest unwinding. Keep using `-mstackrealign` when building
+  mods; the bridge is a second layer for older binaries.
 - Observer hooks preserve the game's register state, including scratch registers, paired
   floating-point values and condition bits. Return hooks receive the original argument
   registers, while the game's result (including nonstandard assembly returns) is kept.
@@ -221,6 +248,8 @@ and target the USA game version; mods work on EU installs too (see below).
 - `wwhd/data.h`: named save/resource pointers, matrix stack and item tables.
 - `actor.h`, `link.h`, `camera.h`, `items.h`, `messages.h`, `save.h`: partial views of game
   objects with checked field offsets; unknown parts are reachable as bytes.
+- `wwhd/save_flags.h`: checked access to native save event bits and masked byte registers,
+  using the game's own methods and the region-mapped save pointer.
 - Functions not in the public decomp can still be hooked by address with
   `WWHD_GAME_FUNC(address, ret, name, (args))`; game variables with
   `WWHD_GAME_DATA(address, type)`.
@@ -231,6 +260,34 @@ references to the EU build. Functions that differ or don't exist in EU are refus
 error naming them. Don't cast integers to pointers (that hard-codes a USA address), and only
 use object fields that are the same in both versions.
 
+### Native save event flags
+
+Include `wwhd/save_flags.h` to access the game's persistent event array. These are
+the game's story flags, separate from a mod's `wwhd_quest_flag` values. Changing
+them can alter story order; take a save backup before applying changes to an
+existing file. The helpers do not run cutscenes or save to disk themselves.
+
+Call on the game thread after save allocation, from an appropriate initialization
+or gameplay hook. A non-null save allocation can also exist before the player has
+selected a file; these helpers do not determine which file should be changed.
+
+| Helper | Result |
+| --- | --- |
+| `wwhd_save_event_test(flag)` | 0 or 1; the selector must have exactly one mask bit. |
+| `wwhd_save_event_set(flag, enabled)` | 0 on success; zero clears the bit, other values set it. |
+| `wwhd_save_event_read(selector)` | The masked byte, without shifting. |
+| `wwhd_save_event_write(selector, bits)` | 0 on success; values outside the mask are rejected. |
+
+All return `WWHD_SAVE_FLAGS_INVALID` (-1) for invalid arguments or
+`WWHD_SAVE_FLAGS_NOT_READY` (-2) if the save allocation is unavailable. A selector
+is a 16-bit value: its high byte indexes the event array and its low byte is a
+nonzero mask. For example, mask `0xF0` uses values `0x00`, `0x10`, … `0xF0`,
+without shifting them down to 0–15. Out-of-mask writes are rejected before calling
+the native setter, which otherwise ORs its value into adjacent flags.
+
+These are header-only adapters over existing game bindings. They add no host
+service requirement and do not change how ordinary saves are loaded.
+
 ## Host services
 
 | Service | What it does |
@@ -240,6 +297,10 @@ use object fields that are the same in both versions.
 | `wwhd_config_changed` | A live option's revision, below |
 | `wwhd_malloc`, `wwhd_free` | Per-mod heap, 16-byte aligned; size from `guest.heap_size` (default 256 KiB, max 8 MiB); null when full |
 | `wwhd_input_read` | Buttons, sticks and touch (read-only) |
+| `wwhd_ship_normal_sail_wind` | Compose the port’s optional normal-sail wind callback before the sail transition flag is read; takes ship actor, preserves CPU context |
+| `wwhd_ship_sail_target` | Scale a completed native wind target using the live sail/settings; caller retains local original/written target and conditionally restores it before jump checks |
+| `wwhd_item_action_dispatch` | Preserve quick-use bookkeeping immediately before an eligible native ready hookshot, rope or boomerang action; takes Link and item ID, preserves CPU context and writes no global input/equipment |
+| `wwhd_item_ready_trigger` | Preserve the port’s local quick-use predicate after a native ready-item query; takes Link and the original result, changes no global pad input |
 | `wwhd_input_filter_register` | Change the controller state the game reads, below |
 | `wwhd_touch_register`, `wwhd_touch_claim` | Touches (or mouse clicks) on parts of the TV picture your mod claims, and pinches there, below |
 | `wwhd_screen_point` | Where the drawn camera shows a point of the world, in the touches' layout units, below |
@@ -1481,3 +1542,52 @@ those of the existing output backend.
 
 For bounded service-call diagnostics, `WWHD_AUDIO_STREAM_TRACE=1` logs open/submit/close
 results and epochs, never sample payloads. Leave it unset for normal operation.
+
+### Native ACTR profiles (startup only)
+
+`wwhd_native_actor_profile_register` adds a native actor process and an eight-byte
+stage ACTR name without replacing `fpcPf_Get` or the stage name lookup functions.
+It shares the port's profile registry with the higher-level `wwhd_actor_register`
+API; that existing manifest/behavior API is unchanged.
+
+Call this API from a `WWHD_HOOK(0x028EA120, ..., (void))` GameMain entry hook.
+Registration from other hooks is refused. The window also closes before the
+first native process allocation, including an allocation triggered by another
+entry hook. Register all profiles before creating any actor. Modules and their
+callbacks remain resident until the game exits. There is no hot unregister or
+callback unloading; changing the enabled code-mod set requires restarting.
+
+Set the descriptor's `size` to `sizeof(wwhd_native_actor_profile_v1)` and `version`
+to 1. `profile` points to a module-owned 0x30-byte native actor profile, with a
+module-owned five-word create/delete/execute/isDelete/draw method table at
+profile offset 0x24. Each callback must be an exact function entry in the calling
+module. The native process and actor base-method pointers at offsets 0x0C and
+0x1C can be zero: the runtime fills these from its region's retail actor template.
+Nonzero values must match that template. Actor class size must be at least
+0x3AC; class size plus extra allocation must not exceed 1 MiB.
+
+The runtime copies the profile, method table and name into its snapshot-owned
+pool (64 registrations). Later changes to the source descriptor do not change
+registration. Unused native profile padding is zeroed for deterministic snapshots. Requested IDs are 0x01E4 through 0x7FCF. Retail IDs and the port's
+0x7FD0–0x7FFE reservation cannot be claimed, even if currently unused. A duplicate
+ID or name is refused rather than remapped. Choose a unique name of one to eight
+ASCII letters, digits or underscores; zero-pad shorter names. `argument` is -1
+through 127 and `gba_name` is 0 through 255. Name lookup and reverse lookup use
+the copied entry; reverse lookup retains the native same-process fallback when
+the requested subtype differs. The retail tables remain immutable. All native
+code/data addresses pass through the regional address maps; an unexpected retail
+profile-table boundary disables this bridge.
+
+Success returns the requested positive process ID. Negative results are invalid
+input (-1), collision (-2), registration closed/outside GameMain entry (-3),
+bridge unavailable (-4), and capacity exhausted (-5). Refusals are logged with
+the caller and cause. Check the result before requesting actor creation.
+
+Full save states contain a bounded exact identity of the registered snapshots,
+owner IDs and owning ELF SHA-256 fingerprints. A different callback/profile/name
+or changed ELF refuses a full-state restore before memory is changed, even when
+the package version is unchanged. Legacy full states are accepted only when no
+guest profiles are registered. Restoring a compatible full state republishes the
+immutable snapshots. Portable states retain the existing mod-set warning and
+rebuild actors from the current modules; use those to transfer progress across
+code changes.

@@ -78,6 +78,7 @@ namespace ss {class NativeRestorePipelineIssuer {public:
 #include <lz4.h>
 #endif
 #include "platform/host.h"
+#include "platform/memory_trim.h"
 #include "gfx/renderer.h"
 #include <sys/stat.h>
 #ifndef _WIN32
@@ -96,6 +97,8 @@ namespace ss {class NativeRestorePipelineIssuer {public:
 #include "state_memory.h"
 #include "state_file_section.h"
 #include "mods/guest_mods.h"
+#include "mods/native_actor_profiles.h"
+#include "mods/guest_profile_state.h"
 #include "mods/mods.h"
 #include "mods/guest_state_section.h"
 #include "mods/story_chart.h"
@@ -155,6 +158,7 @@ enum : uint32_t {
     kSecDispatch = 'DSPT',
     kSecMemory = 'MEM ',
     kSecGuestMods = 'GMOD',
+    kSecGuestProfiles = 'GPRF',
     kSecAspectParticles = 'APAR',
     kSecOsTime = 'OSTB',  // the calendar clock's bias (hle/os_time.h); absent in older states
 };
@@ -594,6 +598,8 @@ bool do_save_fast(int slot, const std::string& destination, std::function<void(b
     put_section(*payload, kSecDispatch, w);
     w=Writer();guestmods::save_mod_set(w,guestmods::enabled_mods());
     put_section(*payload,kSecGuestMods,w);
+    w=Writer();w.str(native_actor_profiles::guest_identity());
+    put_section(*payload,kSecGuestProfiles,w);
     w=Writer();aspect::ss_save_particles(w);
     put_section(*payload,kSecAspectParticles,w);
     w=Writer();w.u64((uint64_t)os_time::bias());
@@ -720,6 +726,8 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     put_section(*payload, kSecDispatch, w);
     w=Writer();guestmods::save_mod_set(w,guestmods::enabled_mods());
     put_section(*payload,kSecGuestMods,w);
+    w=Writer();w.str(native_actor_profiles::guest_identity());
+    put_section(*payload,kSecGuestProfiles,w);
     w=Writer();aspect::ss_save_particles(w);
     put_section(*payload,kSecAspectParticles,w);
     w=Writer();w.u64((uint64_t)os_time::bias());
@@ -769,7 +777,21 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     return true;
 }
 
+// Android about to end the game for lack of memory (memory_trim.h, save_refused): the save is refused with a message
+// instead of being started (GreenNaugahyde/ZeldaWWHDRecompAndroid v0.9.9, issue #51). Automatic states stay quiet.
+int save_min_headroom_mb() {
+    static const int v = getenv("WWHD_STATE_MIN_HEADROOM_MB") ? atoi(getenv("WWHD_STATE_MIN_HEADROOM_MB")) : memory_trim::kSaveMinHeadroomMb;
+    return v;
+}
 bool do_save(int slot,const std::string& destination = {},std::function<void(bool,const std::string&)> done = {}) {
+    if (const int headroom = memory_trim::headroom_mb(); memory_trim::save_refused(headroom, save_min_headroom_mb())) {
+        LOG("[savestate] %s: not saved: %d MB above the system's low-memory line (needs %d)", slot_label(slot).c_str(), headroom,
+            save_min_headroom_mb());
+        if (!is_auto(slot) && slot != -1) message("%s: not saved (too little free memory, close other apps)", slot_label(slot).c_str());
+        const std::string why = "too little free memory";
+        if (done) done(false, why); else report_done(slot, false, why);
+        return true;
+    }
     return use_streaming_save(save_path()) ? do_save_streaming(slot,destination,std::move(done)) : do_save_fast(slot,destination,std::move(done));
 }
 
@@ -779,6 +801,12 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     auto refused=[&](const std::string& why){s->load_result.complete(false,why);return true;};
     for(uint32_t tag:{kSecThreads,kSecHeaps,kSecFiles,kSecAudio,kSecGx2,kSecAllocs,kSecDispatch})
         if(!s->sections.count(tag)){message("%s: incomplete state",slot_label(s->slot).c_str());return refused("incomplete state");}
+    {
+        if(!native_actor_profiles::compatible_state(s->section(kSecGuestProfiles),native_actor_profiles::guest_identity())){
+            message("%s: actor profile/code fingerprint differs; use a portable state",slot_label(s->slot).c_str());
+            return refused("actor profile/code fingerprint differs");
+        }
+    }
     // a state made in a mod stage needs the package that makes the stage (its rooms load from the stage cache)
     if(mod_stages::missing(std::string(s->h.area,strnlen(s->h.area,sizeof s->h.area)))){message("%s: made in a mod stage that no installed package makes",slot_label(s->slot).c_str());return refused("made in a mod stage that no installed package makes");}
     mods::fast_forward_reset();

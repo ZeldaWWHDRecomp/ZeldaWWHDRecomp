@@ -131,6 +131,44 @@ that as a dropper (issue #58). Nothing needs the mark removed: SmartScreen asks 
 and remembers "Run anyway", and programs started with CreateProcess (Python, the extractor, the compiler,
 the game) and DLLs are not checked for it.
 
+## Windows: unpacking the compiler
+
+Setup downloads llvm-mingw (a zip of about 190 MB, SHA-256 checked) into `data\toolchain\` and unpacks its
+roughly 10,000 files there. This can take several minutes, longer while an antivirus program scans each new
+file; the step shows "Unpacking the compiler … 4,200 of 10,412 files" as it goes (issue #388). When
+unpacking or moving the unpacked folder into place fails, setup stops and says why. The usual causes are an
+antivirus program locking a file or moving it to quarantine, and a full disk. The technical error is in
+`data\setup.log`. Try these in order:
+
+1. Add the release's `data` folder to your antivirus program's exclusions (or wait until its scan has
+   finished), free disk space if it is low, and open Wind Waker HD again. The finished download stays in
+   `data\toolchain\` and is used again, so only the unpacking repeats.
+2. Unpack the compiler yourself and point setup at it (below).
+
+### Using a compiler you unpacked yourself (`WWHD_TOOLCHAIN_DIR`)
+
+`WWHD_TOOLCHAIN_DIR` points setup at an already unpacked copy of the **same pinned compiler**; setup then
+neither downloads nor unpacks one. CI uses it too. Setup uses that folder as it is and does not check it
+against the pin, so it must come from exactly the archive in `toolchains.json` (the `url` of the
+`llvm-mingw-20260922-ucrt-x86_64` entry, or `…-aarch64` on Windows on ARM). Keep the folder afterwards:
+guest mod builds use the compiler from it.
+
+1. Take the zip setup left in `data\toolchain\` (for example `llvm-mingw-20260922-ucrt-x86_64.zip`), or
+   download it from that `url`.
+2. Unpack it with 7-Zip or Explorer (**Extract All**) to a short path, for example `C:\wwhd-compiler`. It
+   contains one folder named like the zip, for example `C:\wwhd-compiler\llvm-mingw-20260922-ucrt-x86_64`,
+   with `bin\` inside.
+3. Set `WWHD_TOOLCHAIN_DIR` to that inner folder and run setup again:
+   - console setup: in a Command Prompt run
+     `set WWHD_TOOLCHAIN_DIR=C:\wwhd-compiler\llvm-mingw-20260922-ucrt-x86_64`, then start
+     `tools\Setup in a console window.bat` from that same window;
+   - the setup window: run `setx WWHD_TOOLCHAIN_DIR C:\wwhd-compiler\llvm-mingw-20260922-ucrt-x86_64` (or add it
+     under **Advanced system settings › Environment Variables**), then open Wind Waker HD again. Remove the
+     variable when you no longer need it.
+
+The variable works the same way on Linux with the unpacked `zig-…` folder of the matching `toolchains.json`
+entry.
+
 ## Linux on x86-64 and arm64
 
 There are two Linux releases, `linux-x86_64` and `linux-aarch64`, built by the same release job on
