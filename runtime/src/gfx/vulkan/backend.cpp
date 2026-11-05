@@ -1,3 +1,5 @@
+#include "../gamepad_backdrop.h"
+#include "gamepad_backdrop.h"
 #include "background_shaders.h"
 #include "vertex_cpu_policy.h"
 #include "dynres.h"
@@ -28,6 +30,7 @@
 #include "platform/quest_theater.h"
 #endif
 #include "backend.h"
+#include "vulkan_error.h"
 #include "../../dsweep.h"
 #include "../hidden_presentation.h"
 #include "pass.h"
@@ -692,12 +695,6 @@ void save_pipeline_cache(bool shutdown) try {
 } catch (const std::exception& error) {
   LOG("[vulkan cache] save skipped after error: %s",error.what());
 }
-class VulkanFailure : public std::runtime_error {
-public:
-  VkResult result;
-  VulkanFailure(VkResult value,const char* operation)
-      : std::runtime_error(std::string(operation)+": Vulkan result "+std::to_string(value)),result(value) {}
-};
 void vk_check(VkResult r, const char *op) {
   if (r != VK_SUCCESS) {
 #ifdef __ANDROID__
@@ -3280,6 +3277,7 @@ static bool present(Screen &s) {
 }
 void copy_to_scan(uint32_t cb, uint32_t target) {
   Surface *src = surface_from_color_buffer(cb);
+  if (target == 4 && !stereoEye) gamepad_backdrop_scan(src);
   if (!src)
     return;
   if (stereoEye && target == 4) return; // GamePad is a shared 2D device.
@@ -3612,6 +3610,7 @@ void present_completed_frame_while_pipeline_pending() {
   // sampled here; buildingScan and all guest attachments remain untouched.
   end_encoder();
   const auto proof = begin_pending_picture_proof();
+  GamepadBackdropDemandFrame backdropDemandFrame;
   set_present_plan(&completedPresentPlan);
   bool presented = false;
   try {
@@ -3620,6 +3619,7 @@ void present_completed_frame_while_pipeline_pending() {
     flush_async();
   } catch (...) { set_present_plan(nullptr); throw; }
   set_present_plan(nullptr);
+  backdropDemandFrame.publish();
   finish_pending_picture_proof(proof, presented);
   const auto ended = stutter::now();
   nextPipelineRepeatNs = ended + 16666667; // At most 60 repeats/s, independent of guest progress.
@@ -3778,6 +3778,7 @@ void swap() {
     std::swap(s->scanDisplayExtent,s->buildingScanDisplayExtent);
     s->scanSrgb = s->buildingScanSrgb;
     s->buildingScanDirty = false;
+    if(s==&R.drc)gamepad_backdrop_publish();
   }
   service_screenshots();
   const auto swapPhaseStarted=std::chrono::steady_clock::now();
@@ -3859,6 +3860,7 @@ void swap() {
   if (perf_hint::fps60_chosen())
     plan.button_dot = interp::mode() != 0 ? 1 : 2;
 #endif
+  GamepadBackdropDemandFrame backdropDemandFrame;
   set_present_plan(&plan);
   // Full SBS uses a half-width logical canvas before placing the two eyes.
   // Publish that same layout for GamePad hit testing and the software pointer.
@@ -3996,6 +3998,8 @@ void swap() {
   }
   set_present_plan(nullptr);
   service_screenshots();  // this frame's: the submission that holds them
+  backdropDemandFrame.publish();
+  gamepad_backdrop_maintain();
   fallback_stats::complete_frame(R.frame);
   stutter::frame(R.frame);
   std::atomic_ref<uint64_t>(R.frame).fetch_add(1);
@@ -5353,6 +5357,7 @@ void shutdown_renderer_caches() {
   // Destructive teardown is reserved for orderly shutdown under execution lock.
   try {
     if (presentObservation || handoff_trace::enabled() || fallback_stats::storage) flush_present_observer();
+    gamepad_backdrop_reset();
     reset_feedback_images();
     wait_idle();
   } catch (...) {

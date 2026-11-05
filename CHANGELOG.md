@@ -7,6 +7,23 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Vulkan: continued draws pick the right colour targets after a scissor change** (#399, thanks @DaniXK-96). A draw
+  that continued the previous one could keep its colour targets even when a new scissor changed which targets are
+  active. They're now rechecked whenever the scissor changes. No known visible glitch; a correctness fix.
+- **GamePad screen: bars filled with the menu background** (#397). Where the GamePad picture doesn't fill the screen
+  (the Thor's second screen, phones in GamePad-only mode, the GamePad window), the bars around it now show the menu's
+  own background instead of black. **On by default**; switch it off in **Settings → Display → Fill GamePad bars with
+  background** to keep black bars. With it off the picture is exactly as before.
+- **For mod authors: mods can require an exact game build** (#429, split from #385). A manifest can list
+  `supported_game_builds` (for example `["USA"]`); the manager then refuses the mod on a port built for another game
+  version before any of its content or code is used. Needs `minimum_manager_version` 1.8.0.
+- **Mods: profile mods get their own saves** (#385). A mod can now declare its own save profile in its manifest. Its
+  saves, save backups, settings and save states are then kept apart from your normal game, including when a launcher
+  passes `--save`, so a profile mod can't overwrite an ordinary save. While a profile is running, its saves and mods
+  stay fixed until you exit. Turning the mod off (or using **Switch all mods off**) takes effect on the next launch,
+  which also gives Android players a way back to the normal game without reinstalling. Damaged or unreadable profile
+  data is left untouched instead of being overwritten, and a mod that fails to start now stops with a message
+  explaining how to recover.
 - **Android: Turnip on Adreno 6xx GPUs runs without UBWC** (#420, from the Nycolazs and GreenNaugahyde Android forks,
   thanks @Nycolazs and @GreenNaugahyde). With a custom Turnip driver, Adreno 6xx phones (seen on a Galaxy S20 FE)
   could restart at the first frame above 1x resolution. On those GPUs Turnip now starts with its bandwidth

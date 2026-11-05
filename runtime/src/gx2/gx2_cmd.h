@@ -50,6 +50,7 @@ enum Op : uint32_t {
     // host-only, never recorded: the uniform blocks of the next display-list call as submitted
     // (submitted_uniforms.h; payload: Snapshot* as two words, 0: none from here on)
     OP_SUBMITTED_UNIFORMS,
+    OP_GAMEPAD_BACKDROP, // exact background Picture::DrawSelf scope: begin (1) / end (0)
     // 60 fps (generated, framegen.h; emitted only while WWHD_FRAMEGEN=1):
     // host-only, never recorded: the 3D camera of the frame being drawn (framegen::kCameraWords words)
     OP_FRAMEGEN_CAMERA,

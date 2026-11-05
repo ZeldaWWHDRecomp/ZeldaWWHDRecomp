@@ -879,6 +879,10 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         if (cloud_proto::g_on_end && cloud_proto::g_active_seq) cloud_proto::g_on_end();
         cloud_proto::g_active_seq = 0;
         break;
+    case OP_GAMEPAD_BACKDROP:
+        if (render::g_backend->gamepad_backdrop_scope)
+            render::g_backend->gamepad_backdrop_scope(g_regs, n && p[0]);
+        break;
     case OP_LAYOUT_ROOT: {
         float kx, ky;
         aspect::layout_root_target(p[0], render::target_aspect_factors(g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG], kx, ky));

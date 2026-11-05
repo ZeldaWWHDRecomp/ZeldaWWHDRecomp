@@ -91,6 +91,7 @@ struct Review {
     std::map<std::string, std::string> chosen;
     std::vector<std::string> code_names;  // code that runs on the computer (native, guest, setup tools)
     bool experimental = false;
+    bool isolated_save_profile = false;
     std::string error;
 };
 
@@ -369,6 +370,7 @@ inline void open_review_for_entry(const mods::catalogue::Entry& e, const fs::pat
     r.entry = e;
     r.fixtures = fixtures;
     r.plan = update && installed ? plan_for_update(e, *installed) : plan_for_entry(e);
+    r.isolated_save_profile = installed && installed->isolated_save_profile;
     r.experimental = e.experimental && !r.plan.keep_off;  // the warning is for switching it on
     for (const auto& s : e.setup) {
         if (s.optional) continue;
@@ -389,6 +391,7 @@ inline void open_review_for_installed(const mods::packages::View& v) {
     r.name = v.name;
     r.description = v.description;
     r.plan = plan_for_installed(v);
+    r.isolated_save_profile = v.isolated_save_profile;
     r.experimental = !unacknowledged_experimental(v.id).empty();
     for (const auto& s : setup_steps(v.id)) {
         if (s.step.optional || s.satisfied) continue;
@@ -896,6 +899,8 @@ inline void review_popup(Host& h) {
     ImGui::Spacing();
     // what it needs, all at once
     if (r.experimental) colored(kWarn, kExperimentalShort);
+    if (h.android && r.isolated_save_profile)
+        colored(kWarn, "This mod uses separate saves. Android cannot import or export them yet. Uninstalling the app deletes them.");
     if (!r.source_game.empty()) {
         ImGui::SeparatorText("Your GameCube game");
         game_source_picker(h, r.source_game);
@@ -1310,6 +1315,8 @@ inline void package_page(Host& h, const mods::packages::View& v) {
     if (!r.switch_enabled && !r.switch_reason.empty()) muted(r.switch_reason);
     if (!v.description.empty()) text(v.description);
     if (v.experimental) colored(kWarn, kExperimentalShort);
+    if (h.android && v.isolated_save_profile)
+        colored(kWarn, "Separate mod saves cannot be imported or exported on Android yet. Uninstalling the app deletes them.");
     if (!v.reason.empty() && v.reason != v.game_source_warning) colored(kBad, "This mod has a problem: " + v.reason);
     const bool flow_shown = flow_for(v.id);
     if (flow_shown) {

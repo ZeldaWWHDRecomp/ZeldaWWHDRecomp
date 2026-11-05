@@ -91,6 +91,11 @@ struct Backend {
     // (OP_FRAMEGEN_LAYOUT). Only called while framegen::requested().
     void (*framegen_camera)(const uint32_t* words, uint32_t n);
     void (*framegen_layout)(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase);
+    // Optional: bracket ONLY P_BgPattern_00 DrawSelf. Duplicate its original GPU
+    // draws into an isolated transparent backdrop; never redirect or alter the
+    // original draw. Source target recognition and texture lifetime are backend-owned.
+    // Markers execute in command order, including cached display-list replay.
+    void (*gamepad_backdrop_scope)(const uint32_t* regs, bool begin) = nullptr;
 };
 enum Feature : int { kFeatureAO, kFeatureAOHires, kFeatureAniso, kFeatureFXAA, kFeatureScaleFilter, kFeatureCapture,
                      kFeatureShaderHeadStart };

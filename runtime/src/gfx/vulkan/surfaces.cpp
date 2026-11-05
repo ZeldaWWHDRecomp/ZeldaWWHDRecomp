@@ -1,3 +1,5 @@
+#include "vulkan_error.h"
+#include "gamepad_backdrop.h"
 #include "background_shaders.h"
 #include "pass.h"
 #include "deferred_dispatch.h"
@@ -94,7 +96,11 @@ static const LatteAddrLib::AddrSurfaceInfo_OUT& guest_info(const Surface* s, uin
     return cached.info;
 }
 static void check_vk(VkResult result, const char* what) {
-    if (result != VK_SUCCESS) exception_report::raise(std::string("Vulkan surfaces: ")+what+" failed ("+std::to_string(result)+")");
+    if (result != VK_SUCCESS) {
+        VulkanFailure failure(result,(std::string("Vulkan surfaces: ")+what).c_str());
+        exception_report::record(failure.what());
+        throw failure;
+    }
 }
 static uint64_t content_hash(const uint8_t* p, size_t n) {
     // Full-byte coverage, including unaligned guest ranges and the final tail.
@@ -810,6 +816,7 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
 }
 void destroy_surface_image(Surface* s) {
     if (!s) return;
+    gamepad_backdrop_invalidate(s);
     if (s->mipChain) { destroy_surface_image(s->mipChain.get()); s->mipChain.reset(); }
     if (!s->spares.empty()) release_spares(s);
     if(!s->image)return;
@@ -1739,6 +1746,7 @@ void upload_surface(Surface* s) {
 void clear_color(const uint32_t*,uint32_t cb,const float rgba[4]) {
     uint32_t first,num;auto* s=surface_from_color_buffer(cb,&first,&num);if(!s)return;
     if(s->fmt.depth||s->fmt.compressed)exception_report::raise("GX2 clear color requires an uncompressed color surface");
+    gamepad_backdrop_invalidate(s);
     VkClearColorValue value{};
     for(unsigned i=0;i<4;++i) {
         double integerValue = std::isnan(rgba[i]) ? 0.0 : double(rgba[i]);
@@ -2070,6 +2078,7 @@ void invalidate_surface_cache(decltype(Renderer::surfaces)& surfaces,
     });
 }
 void ss_reset_surfaces() {
+    gamepad_backdrop_reset();
     R.mainDepthAddr = 0;
     bgshaders::tracker().forget();
     ++g_surface_epoch;

@@ -609,6 +609,10 @@ target_link_libraries(sampler_lod_bias_test PRIVATE cemu_latte)
 target_compile_options(sampler_lod_bias_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
 add_test(NAME sampler_lod_bias COMMAND sampler_lod_bias_test)
 
+add_executable(gamepad_backdrop_test runtime/tools/gamepad_backdrop_test.cpp)
+target_compile_options(gamepad_backdrop_test PRIVATE -UNDEBUG)
+add_test(NAME gamepad_backdrop COMMAND gamepad_backdrop_test)
+
 add_executable(depth_peek_test runtime/tools/depth_peek_test.cpp)
 target_include_directories(depth_peek_test PRIVATE runtime/src)
 target_link_libraries(depth_peek_test PRIVATE Threads::Threads)
@@ -4143,3 +4147,51 @@ add_executable(map_hud_native_test runtime/tools/map_hud_native_test.cpp runtime
 target_include_directories(map_hud_native_test PRIVATE runtime/include runtime/src)
 target_compile_options(map_hud_native_test PRIVATE -UNDEBUG)
 add_test(NAME map_hud_native COMMAND map_hud_native_test)
+
+add_executable(gamepad_backdrop_options_test runtime/tools/gamepad_backdrop_options_test.cpp)
+target_include_directories(gamepad_backdrop_options_test PRIVATE runtime/src runtime/include)
+target_compile_options(gamepad_backdrop_options_test PRIVATE -UNDEBUG)
+add_test(NAME gamepad_backdrop_options COMMAND gamepad_backdrop_options_test)
+if(APPLE)
+  add_executable(metal_gamepad_backdrop_test
+    runtime/tools/metal_gamepad_backdrop_test.mm
+    runtime/src/gfx/metal_gamepad_backdrop.mm)
+  target_compile_options(metal_gamepad_backdrop_test PRIVATE -fobjc-arc -UNDEBUG)
+  target_include_directories(metal_gamepad_backdrop_test PRIVATE runtime/third_party/fmt/include)
+  target_link_libraries(metal_gamepad_backdrop_test PRIVATE "-framework Metal" "-framework Foundation")
+  add_test(NAME metal_gamepad_backdrop COMMAND metal_gamepad_backdrop_test)
+  add_executable(metal_backdrop_pending_test runtime/tools/metal_backdrop_pending_test.mm)
+  target_compile_options(metal_backdrop_pending_test PRIVATE -fobjc-arc -UNDEBUG)
+  target_link_libraries(metal_backdrop_pending_test PRIVATE "-framework Metal" "-framework Foundation")
+  add_test(NAME metal_backdrop_pending COMMAND metal_backdrop_pending_test)
+  set_tests_properties(metal_gamepad_backdrop PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+if(Python3_Interpreter_FOUND)
+  add_test(NAME vulkan_gamepad_backdrop_policy
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/vulkan_gamepad_backdrop_test.py")
+endif()
+add_executable(mod_build_constraint_test runtime/tools/mod_build_constraint_test.cpp)
+target_include_directories(mod_build_constraint_test PRIVATE runtime/src runtime/include)
+target_compile_options(mod_build_constraint_test PRIVATE -UNDEBUG)
+add_test(NAME mod_build_constraint COMMAND mod_build_constraint_test)
+# Declarative guest save ownership: native filesystem/cloud and state guards.
+add_executable(save_profile_test runtime/tools/save_profile_test.cpp)
+target_include_directories(save_profile_test PRIVATE runtime/src runtime/include)
+target_compile_options(save_profile_test PRIVATE -UNDEBUG)
+target_link_libraries(save_profile_test PRIVATE Threads::Threads)
+add_test(NAME save_profile COMMAND save_profile_test)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME save_namespace_startup_order COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/runtime/tools/test_save_namespace_startup.py)
+endif()
+
+foreach(mode success malformed conflict disabled untrusted code-off unsupported native-failure compiler-failure graphics-failure changed ordinary-conflict session)
+  add_test(NAME save_profile_startup_${mode} COMMAND mod_package_test --save-profile-startup ${mode} $<TARGET_FILE:mod_fixture>)
+endforeach()
+
+
+foreach(mode format damaged shape size)
+  add_test(NAME mod_profile_read_failure_${mode} COMMAND mod_package_test --profile-read-failure ${mode})
+endforeach()
+
+add_test(NAME mod_game_build_constraint COMMAND mod_package_test --game-build-constraint)
