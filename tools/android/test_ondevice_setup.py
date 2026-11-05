@@ -177,6 +177,74 @@ class SetupJobTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "true or false"):
             run(self.configuration, self.package, self.native, adapter)
 
+    def test_randomized_game_is_translated_from_its_own_files(self):
+        """job "randomize": the in-app randomizer makes the seed first; its files are translated, the game stays"""
+        seen = []
+        overlay = self.job / "seed/out"
+
+        def adapter(*args):
+            value = self.adapter(*args)
+            translate = value.translate
+
+            def randomize(game, randomize, native_run):
+                seen.append(("randomize", Path(game), randomize["exe"]))
+                return overlay, {"id": "0123456789abcdef", "hash": "Kane Ankle", "permalink": "P"}
+            value.randomize = randomize
+
+            def recorded(game, hooks=False):
+                seen.append(("translate", Path(game)))
+                return translate(self.game)  # (the synthetic harness stands in for the seed's code)
+            value.translate = recorded
+            return value
+        self.configuration.write_text(json.dumps({**self.value, "randomize": {"exe": "x", "data": "d", "storage": "s"}}))
+        result = run(self.configuration, self.package, self.native, adapter)
+        self.assertEqual(seen, [("randomize", self.game, "x"), ("translate", overlay)])
+        self.assertEqual(result["game"], str(self.game))  # the installed game; the seed's files go over it
+        self.assertEqual(result["randomizer"], {"files": str(overlay), "seed": "0123456789abcdef",
+                                                "hash": "Kane Ankle", "permalink": "P"})
+
+    def test_installed_game_input_only_for_a_randomized_game_inside_storage(self):
+        def adapter(*args):
+            value = self.adapter(*args)
+            value.randomize = lambda game, randomize, native_run: (game, {"id": "0123456789abcdef"})
+            return value
+        installed = {**self.value, "input": {"kind": "installed", "path": str(self.game)}}
+        self.configuration.write_text(json.dumps(installed))
+        with self.assertRaisesRegex(ValueError, "Only a randomized game"):
+            run(self.configuration, self.package, self.native, adapter)
+        self.configuration.write_text(json.dumps({**installed, "randomize": {"exe": "x", "data": "d", "storage": str(self.root / "other")}}))
+        with self.assertRaisesRegex(ValueError, "outside setup storage"):
+            run(self.configuration, self.package, self.native, adapter)
+        self.configuration.write_text(json.dumps({**installed, "randomize": {"exe": "x", "data": "d", "storage": str(self.root)}}))
+        result = run(self.configuration, self.package, self.native, adapter)
+        self.assertEqual(result["game"], str(self.game))
+        self.assertEqual(result["randomizer"]["seed"], "0123456789abcdef")
+
+    def test_adapter_runs_the_randomizer_through_the_native_bridge(self):
+        sys.path.insert(0, str(ROOT / "tools/installer"))
+        import randomizer_seeds
+        adapter = self.adapter(self.package, self.root / "checkpoints", "fixture-v1")
+        commands = []
+
+        def native(command, env=None, cancel=lambda: False):
+            commands.append(command)
+            return 0, b'[rando] Randomizing...\n{"ok": true, "permalink": "P"}\n'
+
+        def make(setup, ctx, say, **k):
+            self.assertEqual(randomizer_seeds.call(setup, "w", "permalink")["permalink"], "P")
+            self.assertEqual(ctx.data_dir, str((self.root / "storage").resolve()))
+            return {"id": "fedcba9876543210"}
+        original = randomizer_seeds.make
+        randomizer_seeds.make = make
+        try:
+            out, entry = adapter.randomize(self.game, {"exe": "/apk/libwwhd-rando-driver.so", "data": "/data/rando",
+                                                       "storage": str(self.root / "storage")}, native)
+        finally:
+            randomizer_seeds.make, randomizer_seeds.RUNNER, randomizer_seeds.TOOL = original, None, None
+        self.assertEqual(commands, [["/apk/libwwhd-rando-driver.so", "--data", "/data/rando", "--work", "w", "permalink"]])
+        self.assertEqual(out, (self.root / "storage").resolve() / "randomizer/seeds/fedcba9876543210/out")
+        self.assertEqual(entry["id"], "fedcba9876543210")
+
     def test_rejects_outside_input_and_unsupported_manifest(self):
         self.value["input"]["path"] = "../outside"
         with self.assertRaisesRegex(ValueError, "inside the setup job"): self.execute()

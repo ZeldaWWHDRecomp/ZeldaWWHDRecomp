@@ -23,6 +23,12 @@ In the game, **Settings > Randomizer** shows:
 - the spoiler log, after a question: the way to the end, every location, entrances, hints,
   charts, and a map of the sea chart's squares with the places of the locations.
 
+On Android, the setup screen has **Randomized game...** once the game is set up:
+- choose a preset and a seed name, or paste a permalink;
+- the setup makes the randomized game from the installed one, checks it and builds its code, and
+  the game plays it from its next start, with its own saves;
+- **Play the game as it is** in the same dialog goes back to the build before it.
+
 The same in a terminal:
 
 ```sh

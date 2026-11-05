@@ -42,20 +42,29 @@ def tool(setup):
     return exe, data
 
 
+# How a command runs: (command) -> (exit code, stdout text, stderr text). Setup on Android sets one that runs the
+# APK's executable through its native process bridge (tools/android/setup_adapter.py); else a subprocess.
+RUNNER = None
+TOOL = None  # (command, data folder) set by that host instead of the release's tools/bin
+
+
 def call(setup, work, *args, log=True):
     """one wwhd-rando command; its JSON result, SetupError with the randomizer's message when it refuses"""
-    exe, data = tool(setup)
+    exe, data = TOOL or tool(setup)
     cmd = ([sys.executable] if exe.endswith(".py") else []) + [exe, "--data", data, "--work", str(work)] + [str(a) for a in args]
     if log:
         setup.LOG.write("$ " + " ".join(cmd))
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    err = p.stderr.decode("utf-8", "replace")
+    if RUNNER:
+        code, out, err = RUNNER(cmd)
+    else:
+        p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        code, out, err = p.returncode, p.stdout.decode("utf-8", "replace"), p.stderr.decode("utf-8", "replace")
     if log and err.strip():
         setup.LOG.write(err[-20000:])
     try:
-        res = json.loads(p.stdout.decode("utf-8", "replace").strip().splitlines()[-1])
+        res = json.loads([l for l in out.strip().splitlines() if l.startswith("{")][-1])
     except (ValueError, IndexError):
-        raise setup.SetupError("the randomizer stopped (exit code %d):\n%s" % (p.returncode, "\n".join(err.strip().splitlines()[-15:])))
+        raise setup.SetupError("the randomizer stopped (exit code %d):\n%s" % (code, "\n".join(err.strip().splitlines()[-15:])))
     if not res.get("ok"):
         raise setup.SetupError(res.get("error") or "the randomizer failed")
     return res
@@ -147,7 +156,7 @@ def ensure_places(setup, data_dir, game_dir):
         locations = rando_dir(data_dir) / "locations.json"
         res = call(setup, settings_dir(data_dir), "locations", log=False)
         locations.write_text(json.dumps(res), encoding="utf-8")
-        sys.path.insert(0, os.path.join(setup.PKG, "tools", "rando"))
+        sys.path.insert(0, os.path.join(str(setup.PKG), "tools", "rando"))
         import places  # tools/rando/places.py
         rows = places.build(game_dir, places.load_locations(str(locations)))
         places.write(rows, str(out))

@@ -124,6 +124,12 @@ public final class SetupImport {
         JSONObject source = SetupStore.read(new File(job, "source.json"));
         if (source.getInt("schema") != 1) throw new IOException("Unsupported input selection version");
         String kind = source.getString("kind");
+        if (kind.equals("installed")) {  // a randomized game from the installed game (no copy: the game stays where it is)
+            JSONObject result = new JSONObject().put("schema", 1)
+                .put("input", new JSONObject().put("kind", "installed").put("path", source.getString("path")));
+            SetupStore.write(configuration, result);
+            return result;
+        }
         if (!kind.equals("folder") && !kind.equals("archive") && !kind.equals("image"))
             throw new IOException("Unsupported input selection");
         control.checkpoint();

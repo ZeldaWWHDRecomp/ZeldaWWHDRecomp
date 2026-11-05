@@ -33,6 +33,9 @@ namespace json = mods::json;
 
 fs::path install_dir() {
     if (const char* d = std::getenv("WWHD_INSTALL_DIR")) return d;
+    // (Android: the seed's files are <setup storage>/randomizer/seeds/<id>/out, given with --randomizer-files)
+    if (!randomizer::overlay_root().empty())
+        return fs::path(randomizer::overlay_root()).parent_path().parent_path().parent_path().parent_path();
     return {};
 }
 
@@ -267,7 +270,16 @@ void draw() {
     }
 
     ImGui::SeparatorText("The game the next start plays");
+#ifdef __ANDROID__
+    // (the phone's setup screen keeps the builds and chooses: Randomized game...)
+    constexpr bool switchable = false;
+    overlay::widgets::note("Randomized games are made and chosen in the setup screen (Randomized game...). Each has its own "
+                           "saves and save states.");
+#else
+    constexpr bool switchable = true;
     overlay::widgets::note("Randomized games are made and built in setup (Randomizer). Each has its own saves and save states.");
+#endif
+    if (switchable) {
     auto row = [&](const std::string& label, const std::map<std::string, std::string>& builds, bool current) {
         ImGui::PushID(label.c_str());
         ImGui::TextUnformatted(label.c_str());
@@ -287,6 +299,7 @@ void draw() {
     row("The game as it is", S.vanilla_builds, !randomizer::compiled_seed());
     for (const auto& s : S.seeds) row("Randomized game " + s.hash + " (" + s.id + ")", s.builds, me && me->id == s.id);
     if (!S.message.empty()) overlay::widgets::note("%s", S.message.c_str());
+    }
 
     if (!me) return;
     ImGui::SeparatorText("Spoiler log");

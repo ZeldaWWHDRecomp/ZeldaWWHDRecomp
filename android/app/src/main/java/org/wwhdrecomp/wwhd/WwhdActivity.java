@@ -193,6 +193,8 @@ public class WwhdActivity extends SDLActivity {
         if (selection != null && selection.game != null) {
             args.add("--game"); args.add(selection.game.getAbsolutePath());
             args.add("--shader-prebuild-library"); args.add(selection.library.getAbsolutePath());
+            // a randomized game (the in-app randomizer): its changed files over the game
+            if (selection.randomizerFiles != null) { args.add("--randomizer-files"); args.add(selection.randomizerFiles.getAbsolutePath()); }
         }
         // Keep devel's external config folder; no implicit WWHD_USER_DIR override.
         return args.toArray(new String[0]);
