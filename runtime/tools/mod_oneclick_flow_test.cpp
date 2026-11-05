@@ -83,7 +83,9 @@ int main(int argc,char** argv) {
     fs::path root=fs::absolute(argv[1]);std::string mode=argv[2],id=getenv("WWHD_TEST_MOD_SETUP");
     bool resumed=fs::weakly_canonical(fs::absolute(argv[0])).parent_path()==fs::weakly_canonical(root/"code-builds/synthetic/bin");
     // exp-*: an experimental mod (the review warns; switching it on backs up the saves once, first)
-    bool experimental=mode.starts_with("exp-"),backup_fails=mode=="exp-backup-fails";
+    // exp-backup-fails: the backups folder can't be created; exp-backup-nospace: not enough free space for a backup
+    bool experimental=mode.starts_with("exp-"),backup_blocked=mode=="exp-backup-fails",backup_nospace=mode=="exp-backup-nospace";
+    bool backup_fails=backup_blocked||backup_nospace;
     bool missing=mode=="missing",broken=mode=="broken",catalogue=mode=="catalogue"||mode=="exp-catalogue"||backup_fails;
     bool tabs=mode=="tabs";  // each mod is listed in its own sub-tab
     bool update_off=mode=="update-off",update_on=mode=="update-on"||mode=="exp-update-on",ids=mode=="ids"||tabs,update=update_off||update_on||ids;
@@ -173,10 +175,12 @@ int main(int argc,char** argv) {
         std::lock_guard guard(mods::saves::mutex());
         // Synthetic saves need a deterministic budget, not 10 GiB on the CI host.
         // Exercise the production backup check through its existing injectable seam.
-        mods::saves::store().free_space = [backup_fails](const fs::path&) {
-            return backup_fails ? uint64_t(0) : UINT64_MAX;
+        mods::saves::store().free_space = [backup_nospace](const fs::path&) {
+            return backup_nospace ? uint64_t(0) : UINT64_MAX;
         };
-        mods::saves::store().configure(root/"save",fs::path());
+        // exp-backup-fails: a file sits where the backups folder would be created
+        if(backup_blocked)std::ofstream(root/"blocked")<<"not a folder";
+        mods::saves::store().configure(root/"save",backup_blocked?root/"blocked"/"save-backups":fs::path());
         hostui::set("mod.showExperimental","1");  // the list shows experimental mods
     }
     if(catalogue||update)set_env("WWHD_MOD_CATALOGUE",(root/"index.json").string());
@@ -409,9 +413,11 @@ int main(int argc,char** argv) {
         if(f.phase==ui::Phase::Failed&&backup_fails) {
             // the reason (no "confirm the warning first"): the review was the confirmation
             assert(f.error.starts_with("Your saves couldn't be backed up")&&f.error.find("confirm")==std::string::npos);
-            assert(f.error.find("Not enough free disk space for a save backup")!=std::string::npos);
             assert(!view(id).enabled&&pending_setup_runs().empty());
-            assert(fs::is_empty(root/"save-backups"));
+            if(backup_nospace) {
+                assert(f.error.find("Not enough free disk space for a save backup")!=std::string::npos);
+                assert(fs::is_empty(root/"save-backups"));
+            } else assert(fs::is_regular_file(root/"blocked"));  // nothing was created in place of the file
             saw_failure=true;break;
         }
         if(f.phase==ui::Phase::Failed) {
