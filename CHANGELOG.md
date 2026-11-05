@@ -7,6 +7,14 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: randomized games keep their own saves when started from setup** (#408, for #366). Setup's Play button, the
+  macOS app, the Linux launchers and the Windows shortcuts start the game with its own save folder, and the experimental
+  randomized-game support took that as a folder you had chosen: a randomized game then read and wrote your normal save
+  file instead of its own save folder. Now each randomized game always uses its own folder (a save folder you chose
+  yourself, for example a cloud folder, is still used as given). Only development builds since #366 were affected, and
+  only if you switched an existing install to a randomized game: its progress may have gone into your normal save file.
+  Your earlier normal saves may still be in the save backups (Settings › Mods › Save backups); the recovery steps are in
+  `docs/randomizer-experiment.md`. Save states were not affected.
 - **Editor: MCP access starts once the game is ready** (#386). With `--editor --mcp`, the MCP server now starts after
   the game code is loaded and all mods are initialized, so an early request can no longer read unloaded game memory.
 - **Setup on Windows: compiler unpacking shows progress** (#394, for #388, thanks @Sherisherisherisheri for the report).
