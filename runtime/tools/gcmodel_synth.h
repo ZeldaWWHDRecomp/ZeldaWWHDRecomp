@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include "gcmodel/gcm_image.h"
 #include "gcmodel/gcm_io.h"
 
 namespace gcmsynth {
@@ -597,5 +598,68 @@ inline Bytes bfres(const std::vector<HDModel>& models, const std::vector<HDTextu
     b.u32(0xC, (uint32_t)b.size());
     return b.d;
 }
+
+// The tests' model: HD Link "cl" with two bones (root, arm 20 up), a skinned body shape (2 weights) and a rigid hat on
+// the arm; the GameCube model has the same joints with the arm 10 up, three draw matrices (root, arm, 1/4 root +
+// 3/4 arm), a red 8x8 texture for the body
+struct Scene {
+    Bytes pack, arc;
+};
+
+inline J3DModel test_gc_model() {
+    J3DModel m;
+    m.joints = {{"root", -1, {0, 0, 0}}, {"arm", 0, {0, 10, 0}}};
+    m.pos = {{1, 0, 0}, {0, 10, 0}, {0, 1, 0}, {2, 0, 0}, {0, 0, 1}, {3, 3, 0}};
+    m.uv = {{0, 0}, {1, 0}, {0, 1}, {0.5, 0.5}};
+    m.draw = {{{0, 1.0}}, {{1, 1.0}}, {{0, 0.25}, {1, 0.75}}};
+    m.weighted = {false, false, true};
+    // body (material 0): a triangle on the arm (rigid), one with the weighted vertex, one on the root
+    J3DShape body;
+    body.material = 0;
+    body.tris = {{{{0, 0, 1}, {3, 1, 1}, {4, 2, 1}}}, {{{1, 3, 2}, {3, 1, 1}, {4, 2, 1}}}, {{{0, 0, 0}, {3, 1, 0}, {5, 2, 0}}}};
+    J3DShape hat;
+    hat.material = 1;
+    hat.tris = {{{{2, 0, 1}, {0, 1, 1}, {4, 2, 1}}}};
+    m.shapes = {body, hat};
+    m.materials = {"body", "hat"};
+    m.materialTexture = {0, -1};
+    J3DTexture t;
+    t.name = "testtex";
+    t.rgba.assign(8 * 8 * 4, 0);
+    for (int i = 0; i < 64; i++) t.rgba[i * 4] = 255, t.rgba[i * 4 + 3] = 255;
+    m.textures = {t};
+    return m;
+}
+
+inline Bytes test_hd_bfres() {
+    HDModel cl;
+    cl.name = "cl";
+    cl.bones = {{"root", -1, 0, -1, {0, 0, 0}}, {"arm", 0, 1, 0, {0, 20, 0}}};
+    HDShape body;
+    body.name = "body__skin";
+    body.material = 0, body.bone = 0, body.skin = 2, body.vertices = 4, body.indexFormat = 9;
+    body.attrs = {{"_p0", 0x811}, {"_n0", 0x811}, {"_u0", 0x80D}, {"_i0", 0x10C}, {"_w0", 0x80D}};
+    HDShape hat;
+    hat.name = "hat";
+    hat.material = 1, hat.bone = 1, hat.skin = 0, hat.vertices = 3, hat.indexFormat = 0;
+    hat.attrs = {{"_p0", 0x811}, {"_u0", 0x80D}};
+    cl.shapes = {body, hat};
+    cl.materials = {{"body", {"testtex"}}, {"hat", {}}};
+    HDTexture t;
+    t.name = "testtex";
+    const Bytes lin = gcmodel::bc_encode(0x31, [] { gcmodel::Image im(16, 16); for (auto& p : im.px) p = 255; return im; }());
+    Bytes mip;
+    gcmodel::gx2_tile(0x31, 16, 16, 1, 4, 0, lin, t.image, mip, gcmodel::gx2_surface_size(0x31, 16, 16, 4), 0);
+    return bfres({cl}, {t});
+}
+
+inline Scene scene() {
+    Scene sc;
+    const Bytes link = sarc({{"Link.bfres", test_hd_bfres()}});
+    sc.pack = sarc({{"Other.szs", Bytes(40, 7)}, {"Link.szs", gcmodel::yaz0_encode(link, 0x2000)}});
+    sc.arc = gcmodel::yaz0_encode(rarc({{"cl.bdl", j3d(test_gc_model())}}), 0);
+    return sc;
+}
+
 
 }  // namespace gcmsynth

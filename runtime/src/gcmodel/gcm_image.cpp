@@ -408,6 +408,12 @@ void gx2_tile(uint32_t fmt, int w, int h, int mips, uint32_t tileMode, uint32_t 
     }
 }
 
+size_t gx2_surface_size(uint32_t fmt, int w, int h, uint32_t tileMode) {
+    LatteAddrLib::AddrSurfaceInfo_OUT info{};
+    LatteAddrLib::GX2CalculateSurfaceInfo((Latte::E_GX2SURFFMT)fmt, w, h, 1, Latte::E_DIM::DIM_2D, (Latte::E_GX2TILEMODE)tileMode, 0, 0, &info);
+    return info.surfSize;
+}
+
 Bytes gx2_untile_level0(uint32_t fmt, int w, int h, uint32_t tileMode, uint32_t swizzle, const uint8_t* image, size_t imageSize) {
     const uint32_t bb = block_bytes(fmt);
     Bytes out;

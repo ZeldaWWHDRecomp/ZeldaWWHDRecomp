@@ -8,7 +8,6 @@
 #include <cstdlib>
 #include <random>
 
-#include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
 #include "gcmodel/gcm_image.h"
 #include "gcmodel/gcm_io.h"
 #include "gcmodel/gcm_j3d.h"
@@ -18,6 +17,10 @@
 
 using namespace gcmodel;
 namespace s = gcmsynth;
+using s::Scene;
+using s::scene;
+static s::J3DModel gc_model() { return s::test_gc_model(); }
+static Bytes hd_bfres() { return s::test_hd_bfres(); }
 
 static int g_fail = 0;
 #define CHECK(c)                                                         \
@@ -30,11 +33,7 @@ static int g_fail = 0;
 
 static bool near(double a, double b, double eps = 1e-3) { return std::fabs(a - b) < eps; }
 
-static size_t surface_size(uint32_t fmt, int w, int h, uint32_t tm) {
-    LatteAddrLib::AddrSurfaceInfo_OUT info{};
-    LatteAddrLib::GX2CalculateSurfaceInfo((Latte::E_GX2SURFFMT)fmt, w, h, 1, Latte::E_DIM::DIM_2D, (Latte::E_GX2TILEMODE)tm, 0, 0, &info);
-    return info.surfSize;
-}
+static size_t surface_size(uint32_t fmt, int w, int h, uint32_t tm) { return gx2_surface_size(fmt, w, h, tm); }
 
 static Image solid(int w, int h, uint8_t r, uint8_t g, uint8_t b, uint8_t a = 255) {
     Image im(w, h);
@@ -121,68 +120,6 @@ static void textures() {
     // UV coverage of a triangle
     const auto cov = raster_uv({{{{0, 0}, {1, 0}, {0, 1}}}}, 8, 8);
     CHECK(cov.size() == 64 && cov[0] && !cov[63]);
-}
-
-// The test model: HD Link "cl" with two bones (root, arm 20 up), a skinned body shape (2 weights) and a rigid hat on
-// the arm; the GameCube model has the same joints with the arm 10 up, three draw matrices (root, arm, 1/4 root +
-// 3/4 arm), a red 8x8 texture for the body
-struct Scene {
-    Bytes pack, arc;
-};
-
-static s::J3DModel gc_model() {
-    s::J3DModel m;
-    m.joints = {{"root", -1, {0, 0, 0}}, {"arm", 0, {0, 10, 0}}};
-    m.pos = {{1, 0, 0}, {0, 10, 0}, {0, 1, 0}, {2, 0, 0}, {0, 0, 1}, {3, 3, 0}};
-    m.uv = {{0, 0}, {1, 0}, {0, 1}, {0.5, 0.5}};
-    m.draw = {{{0, 1.0}}, {{1, 1.0}}, {{0, 0.25}, {1, 0.75}}};
-    m.weighted = {false, false, true};
-    // body (material 0): a triangle on the arm (rigid), one with the weighted vertex, one on the root
-    s::J3DShape body;
-    body.material = 0;
-    body.tris = {{{{0, 0, 1}, {3, 1, 1}, {4, 2, 1}}}, {{{1, 3, 2}, {3, 1, 1}, {4, 2, 1}}}, {{{0, 0, 0}, {3, 1, 0}, {5, 2, 0}}}};
-    s::J3DShape hat;
-    hat.material = 1;
-    hat.tris = {{{{2, 0, 1}, {0, 1, 1}, {4, 2, 1}}}};
-    m.shapes = {body, hat};
-    m.materials = {"body", "hat"};
-    m.materialTexture = {0, -1};
-    s::J3DTexture t;
-    t.name = "testtex";
-    t.rgba.assign(8 * 8 * 4, 0);
-    for (int i = 0; i < 64; i++) t.rgba[i * 4] = 255, t.rgba[i * 4 + 3] = 255;
-    m.textures = {t};
-    return m;
-}
-
-static Bytes hd_bfres() {
-    s::HDModel cl;
-    cl.name = "cl";
-    cl.bones = {{"root", -1, 0, -1, {0, 0, 0}}, {"arm", 0, 1, 0, {0, 20, 0}}};
-    s::HDShape body;
-    body.name = "body__skin";
-    body.material = 0, body.bone = 0, body.skin = 2, body.vertices = 4, body.indexFormat = 9;
-    body.attrs = {{"_p0", 0x811}, {"_n0", 0x811}, {"_u0", 0x80D}, {"_i0", 0x10C}, {"_w0", 0x80D}};
-    s::HDShape hat;
-    hat.name = "hat";
-    hat.material = 1, hat.bone = 1, hat.skin = 0, hat.vertices = 3, hat.indexFormat = 0;
-    hat.attrs = {{"_p0", 0x811}, {"_u0", 0x80D}};
-    cl.shapes = {body, hat};
-    cl.materials = {{"body", {"testtex"}}, {"hat", {}}};
-    s::HDTexture t;
-    t.name = "testtex";
-    const Bytes lin = bc_encode(0x31, solid(16, 16, 255, 255, 255));
-    Bytes mip;
-    gx2_tile(0x31, 16, 16, 1, 4, 0, lin, t.image, mip, surface_size(0x31, 16, 16, 4), 0);
-    return s::bfres({cl}, {t});
-}
-
-static Scene scene() {
-    Scene sc;
-    const Bytes link = s::sarc({{"Link.bfres", hd_bfres()}});
-    sc.pack = s::sarc({{"Other.szs", Bytes(40, 7)}, {"Link.szs", yaz0_encode(link, 0x2000)}});
-    sc.arc = yaz0_encode(s::rarc({{"cl.bdl", s::j3d(gc_model())}}), 0);
-    return sc;
 }
 
 struct Out {

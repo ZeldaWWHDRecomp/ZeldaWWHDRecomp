@@ -222,6 +222,7 @@ inline std::string kind_words(const std::string& kind) {
     if (kind == "native") return "Program for your computer";
     if (kind == "cemu") return "Graphics pack";
     if (kind == "content") return "Replacement models, textures or text";
+    if (kind == "player-model") return "GameCube player model, converted for HD Link";
     return "Settings preset";
 }
 inline constexpr const char* kRunsCode =
@@ -1071,6 +1072,7 @@ inline void builtin_list(Host& h) {
 // Community: the installed packages (catalogue, file, graphics packs), then the catalogue's mods that aren't
 // downloaded yet. Every row has the same switch: switching on a mod that isn't downloaded yet downloads,
 // sets up and switches it on (after the review, when there is anything to decide or know).
+inline void player_model_row(const mods::packages::View& v, Row& r, std::string& note);  // (GameCube player models, below)
 inline void community_list(Host& h) {
     using namespace mods::packages;
     auto& s = state();
@@ -1105,6 +1107,7 @@ inline void community_list(Host& h) {
                 r.switch_reason = "Part of the story system: turn off the story system (Built-in) to turn it off.";
                 note = "Part of the story system";
             }
+            if (v.kind == "player-model") player_model_row(v, r, note);  // (chosen per save file on its page)
             const Host* host = &h;
             row_line(v.id, v.name, r, note, v.experimental, false, [view, host](bool on) { switch_package(view, on, host); });
         }
@@ -1285,8 +1288,83 @@ inline void remove_popup(Host& h) {
     if (accept || cancel) { s.remove_id.clear(); ImGui::CloseCurrentPopup(); }
     popup::end();
 }
+// ---------------------------------------------------------------- GameCube player models
+// (mods/player_model_packages.h): not switched on; each save file shows one of them or HD Link
+inline bool player_model_converted(const mods::packages::View& v) { return v.status == "Converted for HD Link"; }
+inline std::string player_model_files(const std::string& id) {
+    std::string f;
+    for (int i = 1; i <= 3; i++)
+        if (mods::packages::player_model(i) == id) f += (f.empty() ? "Save file " : ", ") + std::to_string(i);
+    return f;
+}
+inline void player_model_row(const mods::packages::View& v, Row& r, std::string& note) {
+    r.switch_on = v.enabled;
+    r.switch_enabled = false;
+    r.switch_reason.clear();
+    r.text = v.status;
+    r.status = player_model_converted(v) ? (v.enabled ? Status::On : Status::Off)
+               : v.status.rfind("Converting", 0) == 0 ? Status::Installing : Status::Error;
+    note = player_model_files(v.id);
+}
+inline void player_model_page(Host& h, const mods::packages::View& v) {
+    using namespace mods::packages;
+    auto& s = state();
+    ImGui::TextUnformatted(v.name.c_str());
+    const bool converting = v.status.rfind("Converting", 0) == 0, ready = player_model_converted(v);
+    colored(ready ? kGood : converting ? kAccent : kBad, v.status);
+    if (!v.description.empty()) text(v.description);
+    if (!v.reason.empty()) colored(kBad, "The conversion failed: " + v.reason);
+    ImGui::SeparatorText("Save files");
+    for (int f = 1; f <= 3; f++) {
+        const std::string now = player_model(f);
+        bool on = now == v.id;
+        ImGui::BeginDisabled(!ready);
+        const std::string label = "Save file " + std::to_string(f) + "##pm" + std::to_string(f);
+        if (on_switch(label.c_str(), &on)) {
+            std::string error;
+            if (!choose_player_model(f, on ? v.id : "", error)) s.error = error;
+        }
+        ImGui::EndDisabled();
+        if (!on) {
+            ImGui::SameLine();
+            std::string other = "HD Link";
+            if (!now.empty()) {
+                other = now;
+                for (const auto& o : list()) if (o.id == now) other = o.name;
+            }
+            muted(other);
+        }
+    }
+    muted("Each save file shows its own model or HD Link. It changes as soon as that file is played; a new game in a "
+          "file starts with HD Link.");
+    ImGui::Spacing();
+    if (!converting) {
+        if (button("Convert again##pm")) {
+            std::string error;
+            if (!convert_player_model(v.id, error)) s.error = error;
+        }
+        same_line_if_fits("Remove");
+        if (button("Remove##page")) { s.remove_id = v.id; s.remove_bytes = disk_use(v.id); s.remove_request = true; }
+    }
+    if (h.test) if (const char* t = getenv("WWHD_TEST_MOD_REMOVE"); t && v.id == t && !converting && s.remove_id.empty()) {
+        s.remove_id = v.id; s.remove_bytes = disk_use(v.id); s.remove_request = true;
+    }
+    if (ready && section("What was converted")) {
+        ImGui::Indent();
+        muted(player_model_report(v.id));
+        ImGui::Unindent();
+    }
+    if (section("Details")) {
+        ImGui::Indent();
+        if (!v.author.empty()) muted("By " + v.author);
+        muted(kind_words(v.kind));
+        muted("Converted on this device from the pack you imported; nothing is downloaded.");
+        ImGui::Unindent();
+    }
+}
 inline void package_page(Host& h, const mods::packages::View& v) {
     using namespace mods::packages;
+    if (v.kind == "player-model") { player_model_page(h, v); return; }
     auto& s = state();
     auto snap = s.loader.snapshot();
     const auto* entry = catalogue_entry(snap, v.id);
@@ -1467,10 +1545,10 @@ inline void install_picked(Host& h) {
         if (installed) {
             s.error.clear();
             for (const auto& v : list()) if (v.id == id) {
-                s.message = v.name + " was installed.";
+                s.message = v.name + (v.kind == "player-model" ? " was installed and is being converted for HD Link." : " was installed.");
                 go_area(kCommunity);
                 open_page(id, false);
-                if (v.compatible) {  // straight on to switching it on: the review asks what it needs
+                if (v.compatible && v.kind != "player-model") {  // straight on to switching it on: the review asks what it needs
                     if (needs_review(v)) open_review_for_installed(v);
                 }
             }
@@ -1520,6 +1598,8 @@ inline void more(Host& h) {
         // Android's chooser has no folders (SDL answers a folder request with nothing)
         if (h.android) muted("A mod package (.wwhdmod or ZIP) or a replacement .pack file.");
         else muted("A mod package (.wwhdmod or ZIP), a mod folder, or a replacement .pack file.");
+        muted("A GameCube player model pack you have (a ZIP or folder with a Link.arc) is converted for HD Link; then "
+              "choose it for a save file on its page.");
         auto pick = [&h](bool folder) {
             if (!h.choose_mod_source) return;
             h.choose_mod_source(folder, [](std::string path) {
@@ -1629,6 +1709,8 @@ inline void test_switches(Host& h) {
     if (!h.test) return;
     static const char* enable = getenv("WWHD_TEST_MOD_ENABLE");
     static const char* disable = getenv("WWHD_TEST_MOD_DISABLE");
+    // WWHD_TEST_PLAYER_MODEL_CHOOSE=<file>:<id>: that save file shows the player model once it is converted
+    static const char* choose = getenv("WWHD_TEST_PLAYER_MODEL_CHOOSE");
     for (const auto& v : mods::packages::list()) {
         if (enable && v.id == enable) {
             // with WWHD_TEST_GAME_SOURCES the test sets the GameCube game the review would ask for
@@ -1642,6 +1724,13 @@ inline void test_switches(Host& h) {
             if (!v.enabled) switch_package(v, true);
         }
         if (disable && v.id == disable) { disable = nullptr; switch_package(v, false); }
+        if (choose && v.kind == "player-model" && player_model_converted(v) && v.id == std::string(choose).substr(std::string(choose).find(':') + 1)) {
+            std::string error;
+            const int file = atoi(choose);
+            choose = nullptr;
+            const bool ok = mods::packages::choose_player_model(file, v.id, error);
+            fprintf(stderr, "[player model test] save file %d: %s %s\n", file, v.id.c_str(), ok ? "chosen" : error.c_str());
+        }
         if (state().job.flow.phase == Phase::Done && state().job.flow.id == v.id && v.enabled) {
             static std::string reported;
             if (reported != v.id) { reported = v.id; fprintf(stderr, "[setup test] ready %s\n", v.id.c_str()); }

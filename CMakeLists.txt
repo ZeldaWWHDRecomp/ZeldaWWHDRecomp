@@ -144,8 +144,10 @@ target_compile_options(cemu_latte PRIVATE -w -O2)
 # ---- GameCube player models (runtime/src/gcmodel, from GreenNaugahyde/ZeldaWWHDRecompAndroid, MPL-2.0): a player
 # model pack's Link.arc converted onto HD's Link (the mod manager's import); tiling through Cemu's address library
 file(GLOB GCMODEL_SOURCES CONFIGURE_DEPENDS runtime/src/gcmodel/*.cpp)
-add_library(wwhd_gcmodel STATIC ${GCMODEL_SOURCES})
+# (with the mod manager's player model packages: the import and the conversion thread's work)
+add_library(wwhd_gcmodel STATIC ${GCMODEL_SOURCES} runtime/src/mods/player_model_packages.cpp)
 target_link_libraries(wwhd_gcmodel PUBLIC cemu_latte)
+target_include_directories(wwhd_gcmodel PRIVATE runtime/src)
 target_compile_options(wwhd_gcmodel PRIVATE "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"" -O2)
 
 # ---- Dear ImGui (MIT, runtime/third_party/imgui, pinned release): the in-game settings overlay
@@ -214,6 +216,7 @@ endif()
 # strong HLE definitions replace the generated weak import stubs.
 file(GLOB RUNTIME_SOURCES CONFIGURE_DEPENDS runtime/src/*.cpp runtime/src/*.c runtime/src/hle/*.cpp runtime/src/mods/*.cpp runtime/src/motion/*.cpp
                                             runtime/src/overlay/*.cpp runtime/src/editor/*.cpp)
+list(REMOVE_ITEM RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/src/mods/player_model_packages.cpp)  # (in wwhd_gcmodel)
 # the world editor's MCP interface for Claude and other tool clients (runtime/src/editor/mcp.h): only in the
 # --editor launch mode of desktop builds, off until turned on in Settings -> Editor
 option(WWHD_EDITOR_MCP "world editor: the MCP interface for tool clients (localhost, token, off by default)" ON)
@@ -445,9 +448,9 @@ target_compile_options(mod_manager_test PRIVATE -UNDEBUG)
 add_library(mod_fixture MODULE runtime/tools/mod_fixture.cpp)
 target_include_directories(mod_fixture PRIVATE runtime/include)
 add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/required.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
-target_include_directories(mod_package_test PRIVATE runtime/src runtime/include)
+target_include_directories(mod_package_test PRIVATE runtime/src runtime/include runtime/tools)
 target_compile_options(mod_package_test PRIVATE -UNDEBUG)
-target_link_libraries(mod_package_test PRIVATE ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(mod_package_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
 # World editor command layer (runtime/src/editor): commands, warp list, test-mode record reset, saving.
 add_executable(editor_test runtime/tools/editor_test.cpp runtime/src/editor/commands.cpp runtime/src/editor/commands_build.cpp runtime/src/editor/model_import.cpp runtime/src/editor/commands_game_objects.cpp runtime/src/editor/commands_game_pieces.cpp runtime/src/editor/commands_stages.cpp runtime/src/editor/stage_files.cpp
                            runtime/src/editor/commands_quest.cpp runtime/src/editor/commands_story.cpp runtime/src/editor/quests.cpp runtime/src/editor/commands_scene.cpp runtime/src/editor/demo_names.cpp runtime/src/editor/commands_route.cpp runtime/src/editor/commands_paths.cpp runtime/src/editor/commands_water.cpp runtime/src/editor/water.cpp runtime/src/editor/scenes.cpp runtime/src/editor/demo_tracks.cpp runtime/src/mods/story_native_scene_coverage.cpp ${WWHD_NPC_CATALOGUE})
@@ -2584,17 +2587,18 @@ if(NOT ANDROID AND SDL3_FOUND AND Python3_Interpreter_FOUND)
     runtime/src/overlay/extensions.cpp runtime/src/overlay/text_field.cpp runtime/src/mods/required.cpp ${WWHD_BUILD_INFO})
   target_include_directories(mod_oneclick_flow_test PRIVATE runtime/src runtime/include)
   target_compile_options(mod_oneclick_flow_test PRIVATE -UNDEBUG)
-  target_link_libraries(mod_oneclick_flow_test PRIVATE imgui SDL3::SDL3 ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
+  target_link_libraries(mod_oneclick_flow_test PRIVATE wwhd_gcmodel imgui SDL3::SDL3 ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
   add_test(NAME mod_oneclick_flow COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/runtime/tools/test_mod_oneclick_flow.py $<TARGET_FILE:mod_oneclick_flow_test>)
 endif()
 
 add_test(NAME mod_setup_acceptance COMMAND mod_package_test --setup-acceptance)
+add_test(NAME mod_player_models COMMAND mod_package_test --player-models)
 
 # Experimental mods: flag, list filter, save backup before enabling, retention, staged restore.
 add_executable(mod_experimental_test runtime/tools/mod_experimental_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_experimental_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_experimental_test PRIVATE -UNDEBUG)
-target_link_libraries(mod_experimental_test PRIVATE ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
+target_link_libraries(mod_experimental_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
 foreach(mode schema store unicode delete manager)
   add_test(NAME mod_experimental_${mode} COMMAND mod_experimental_test ${mode})
 endforeach()

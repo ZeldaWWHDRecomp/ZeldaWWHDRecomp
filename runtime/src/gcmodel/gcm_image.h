@@ -33,6 +33,8 @@ Image bc_decode(uint32_t fmt, int w, int h, const Bytes& data);
 // GX2 surfaces: levels as rows of blocks one after the other <-> a BFRES texture's image and mip data
 void gx2_tile(uint32_t fmt, int w, int h, int mips, uint32_t tileMode, uint32_t swizzle, const Bytes& linear, Bytes& image,
               Bytes& mipData, size_t imageSize, size_t mipSize);
+// a level-0 surface's size in bytes (GX2CalculateSurfaceInfo)
+size_t gx2_surface_size(uint32_t fmt, int w, int h, uint32_t tileMode);
 Bytes gx2_untile_level0(uint32_t fmt, int w, int h, uint32_t tileMode, uint32_t swizzle, const uint8_t* image, size_t imageSize);
 
 // see-through texels get the colour of the nearest visible one and become visible; inside each region (the
