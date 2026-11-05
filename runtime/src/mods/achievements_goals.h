@@ -113,9 +113,9 @@ inline const Goal kAll[] = {
     // the story
     {"set_sail", kStory, 5, "Off to Sea", "Leave %s on the pirate ship.", 0, kOutset, [](const Read& s) { return s.stage_bit(0, 0x0A, 4); }, false, kSaves},
     {"king_red_lions", kStory, 3, "A Boat That Talks", "Meet the King of Red Lions.", 0, 0, [](const Read& s) { return s.stage_bit(0, 0x06, 2); }, false, kSaves},
-    {"pearl_din", kStory, 5, "Gift of the Rito", kGet, 0x6A, 0, [](const Read& s) { return s.pearl(1); }, false, kCount},
-    {"pearl_farore", kStory, 5, "Gift of the Forest", kGet, 0x6B, 0, [](const Read& s) { return s.pearl(2); }, false, kCount},
-    {"pearl_nayru", kStory, 5, "Gift of the Sea", kGet, 0x69, 0, [](const Read& s) { return s.pearl(0); }, false, kCount},
+    {"pearl_din", kStory, 5, "Gift of the Rito", "Get Din's Pearl.", 0, 0, [](const Read& s) { return s.pearl(1); }, false, kCount},
+    {"pearl_farore", kStory, 5, "Gift of the Forest", "Get Farore's Pearl.", 0, 0, [](const Read& s) { return s.pearl(2); }, false, kCount},
+    {"pearl_nayru", kStory, 5, "Gift of the Sea", "Get Nayru's Pearl.", 0, 0, [](const Read& s) { return s.pearl(0); }, false, kCount},
     {"tower_rises", kStory, 3, "Rising Tower", "Raise the %s from the sea.", 0, kTower, [](const Read& s) { return s.stage_bit(0, 0x1B, 0); }, false, kSaves},
     {"bell", kStory, 10, "The Bell Tolls", "Ring the bell at the top of the %s.", 0, kTower, [](const Read& s) { return s.stage_bit(0, 0x09, 7); }, false, kSaves},
     {"master_sword", kStory, 10, "The Blade of Evil's Bane", kGet, 0x39, 0, [](const Read& s) { return (s.u8(GP_COLLECT) & 2) != 0; }, false, kCount},
