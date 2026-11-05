@@ -1881,6 +1881,19 @@ void builtin_options(const std::string& id) {
         if (ImGui::Checkbox("No automatic jumps off ledges", &no_auto))
             hostui::post([no_auto] { mods::set_no_auto_jump(no_auto); hostui::set("mod.jump-anywhere.no-auto", no_auto ? "1" : "0"); mods::packages::remember_option("jump-anywhere.no-auto", no_auto); });
         help("Link drops off ledges instead of jumping when automatic ledge jumps are off; press the button just after leaving the edge to jump. On one input with the moon jump cheat, the moon jump wins while it is on.");
+    } else if (id == "leaf-rise") {
+        ImGui::TextUnformatted("Height of one wave");
+        for (int pct : {50, 100, 150, 200}) {
+            char label[16];
+            std::snprintf(label, sizeof label, "%d%%", pct);
+            if (pct != 50) flow::next(flow::check(label));
+            if (radio(label, int(mods::leaf_rise_height()) == pct))
+                hostui::post([pct] { mods::set_leaf_rise_height(float(pct)); hostui::set("mod.leaf-rise.height", std::to_string(pct)); mods::packages::remember_option("leaf-rise.height", float(pct)); });
+        }
+        help("100% lifts Link about his own height per wave. Holding the leaf's button waves on every 0.3 s. "
+             "The glide uses magic as usual, so the magic meter is still the limit. Idea from the GreenNaugahyde Android fork.");
+        if (const char* override = std::getenv("WWHD_MOD_LEAF_HEIGHT"))
+            note("WWHD_MOD_LEAF_HEIGHT=%s overrides the saved height at startup.", override);
     } else if (id == "quick-use") {
         ImGui::TextUnformatted("Quick-use animation speed");
         for (float speed : {1.f, 1.25f, 1.5f}) {

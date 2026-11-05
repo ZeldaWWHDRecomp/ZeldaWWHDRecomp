@@ -142,6 +142,13 @@ inline bool valid_jump_button(uint32_t b) {
 void jump_input(uint32_t virt);                     // the virtual inputs (input::kVirt*) of every VPAD/KPAD read
 void jump_step(Cpu* c, uint32_t link, bool before); // around daPy_lk_c::execute (climb.cpp)
 void jump_reset();                                  // game thread after a state load
+// Deku Leaf: wave to rise (jump.cpp, leaf_lift.h; settings in traversal_settings.cpp)
+bool leaf_rise();                         // while gliding, each wave of the leaf lifts Link
+void set_leaf_rise(bool on);
+float leaf_rise_height();                 // percent of the default lift's height (25..400, default 100)
+void set_leaf_rise_height(float percent);
+void leaf_step(Cpu* c, uint32_t link);    // after daPy_lk_c::execute (climb.cpp)
+void leaf_filter_pad(input::PadState& s); // the held button waves on (camera.cpp filter_pad)
 // controller_play.cpp: L and d-pad down by whether Link plays (VPAD/KPAD full reads), and which
 // on-screen Jump / Moon jump buttons show (input::kVirt* bits)
 void pad_play_rules(input::PadState& p);

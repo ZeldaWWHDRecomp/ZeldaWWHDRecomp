@@ -39,7 +39,7 @@ mod's page), the *Experimental* tag where it applies and a one-word status (*On*
 
 - **Built-in** ("Included with the game. Switch on or off any time."): the mods compiled
   into the game: direct camera, mouse camera, camera-directed items, first-person shortcut, extended enemy lock-on, wall climbing,
-  run/swim speed, faster ladders, faster sidling, faster ivy climbing, faster ledge hanging, sailing speed, automatic wind, jump anywhere,
+  run/swim speed, faster ladders, faster sidling, faster ivy climbing, faster ledge hanging, sailing speed, automatic wind, jump anywhere, Deku Leaf: wave to rise,
   quick doors, fast forward, fast scene changes, instant text and no pauses in texts; all off by default.
 - **Community** ("Made by players. Downloaded from the mod catalogue."): every installed
   package (from the catalogue, from a file or folder, graphics packs and content packs),

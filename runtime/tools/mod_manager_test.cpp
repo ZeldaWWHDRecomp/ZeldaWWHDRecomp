@@ -115,7 +115,8 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==24);  // with camera-directed-items (#203), quick-use (#196), instant-text, no-text-pauses, game-progress and achievements
+    assert(entries().size()==25);  // with camera-directed-items (#203), quick-use (#196), leaf-rise, instant-text, no-text-pauses, game-progress and achievements
+    assert(find("leaf-rise") && !find("leaf-rise")->default_enabled);
     assert(find("instant-text") && !find("instant-text")->default_enabled && find("no-text-pauses"));
     assert(find("camera-directed-items") && find("quick-use"));
     // Game progress: off by default, its switch and its on-screen option saved like the others'

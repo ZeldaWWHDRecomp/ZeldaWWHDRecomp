@@ -69,6 +69,10 @@ const Entry catalogue[] = {
      "Jump from standing or running with a button (default L), optionally once more in the air. "
      "Can also turn off the automatic jumps off ledges.",
      "WWHD_MOD_JUMP", jump_anywhere, set_jump_anywhere},
+    {"leaf-rise", "Deku Leaf: wave to rise", "Gameplay",
+     "While Link glides on the Deku Leaf, each wave of the leaf (its button again) lifts him a little. Holding "
+     "the button waves on. The height of a wave is a choice; the leaf still uses magic as usual.",
+     "WWHD_MOD_LEAF_RISE", leaf_rise, set_leaf_rise},
     {"fast-forward", "Fast forward cutscenes and dialogue", "Gameplay",
      "Hold the selected button during events to play faster. Choices still wait for input.",
      "WWHD_MOD_FAST_FORWARD", fast_forward, set_fast_forward},
@@ -164,6 +168,7 @@ void load_saved() {
         number("mod.target-letterbox.mode", "WWHD_TARGET_LETTERBOX_MODE", 1.f, 2.f,
                [](float value) { if (std::floor(value) == value) set_targeting_letterbox_mode(int(value)); });
     number("mod.lock-on.range", "WWHD_MOD_LOCK_ON_RANGE", 1.f, 3.f, set_lock_on_range);
+    number("mod.leaf-rise.height", "WWHD_MOD_LEAF_HEIGHT", 25.f, 400.f, set_leaf_rise_height);
     if (!std::getenv("WWHD_MOD_PROGRESS_ON_SCREEN")) {
         std::string v;
         if (hostui::get("mod.game-progress.on-screen", v) && (v == "0" || v == "1")) game_progress::set_on_screen(v == "1");
