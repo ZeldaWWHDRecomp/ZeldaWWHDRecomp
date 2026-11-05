@@ -7,6 +7,30 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Quick doors: new "Walk through" mode** (#426, from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Quick
+  doors is now Off, Faster or Walk through. With Walk through, dungeon shutters and house doors open as Link walks up,
+  he walks through without the door scene and the door shuts behind him; going in or out of a house is quicker too.
+  Locked doors, boss doors and doors with bars keep their scene, sped up as with Faster. **Walk-through doors open with
+  A** makes them wait for A at the Open prompt. This adds one game-code hook, so the game code is rebuilt once after
+  the update.
+- **Save file names up to 16 characters** (#428, idea from the GreenNaugahyde Android fork, thanks @GreenNaugahyde).
+  Change Link's name now takes up to 16 characters. The game's texts use the whole name; the file select and the
+  original game show the first 8. The whole name is kept with the save itself (in the port's story data at the end of
+  `cking.sav`), so backups, the save folder, exports and randomizer seed saves carry it along; a save without it
+  shows the 8-character name.
+- **Instant text and No pauses in texts** (#411, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Two new switches under Settings › Game,
+  both off by default: message boxes show their whole text at once (each box still waits for A), and the short waits
+  written into some texts are left out.
+- **Deku Leaf: wave to rise** (#412, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). A new built-in option next to Jump anywhere, off by
+  default: while gliding, each wave of the Deku Leaf lifts Link a little, and holding the button keeps waving. The
+  height of one wave is 50–200 %; the glide still uses magic.
+- **Settings dialogs with a controller** (#413, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Dialogs open with their default button
+  selected (Cancel where the action can't be undone), the selection shows again when the controller takes over from the
+  mouse, the right stick scrolls long dialog text, and a button still held while the menu opens presses nothing.
+- **Android: Share log can include your save files** (#415, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). A new checkbox under Share log,
+  off at every start, adds a zip with your save file and Picto Box photos for bug reports. Every name in the save
+  becomes "Link" first, and the port's story data (which can hold your full name) is left out. Not yet tested on a
+  phone.
 - **New built-in mod: Achievements** (#410, goals, texts and points from the GreenNaugahyde Android fork, thanks
   @GreenNaugahyde). Off by default (Mods › Built-in). 99 goals read from your save data, earned for good, for all save
   games together and for each one; the record is kept in `achievements.json` in the port's config folder, never in the
