@@ -721,6 +721,10 @@ static LatteDecompilerShader* translate_msl(const uint32_t* regs, bool vertex, L
     // mail sorting game); Cemu's default too. WWHD_STRICT_MUL=0 turns it off for comparisons
     static const bool strictMul = !getenv("WWHD_STRICT_MUL") || strcmp(getenv("WWHD_STRICT_MUL"), "0");
     opt.strictMul = strictMul;
+    // pixel colours without NaN / infinity (LatteDecompiler.h): the thunderstorm's flash at sea blacked out
+    // the 3D picture for a few frames (Vulkan's shaders.cpp). WWHD_NAN_GUARD=0: as the shader computes them
+    static const bool nanGuard = !getenv("WWHD_NAN_GUARD") || strcmp(getenv("WWHD_NAN_GUARD"), "0");
+    opt.finiteColorOutputs = nanGuard;
     LatteDecompilerOutput_t out{};
     if (vertex)
         LatteDecompiler_DecompileVertexShader(base, (uint32*)regs, mem::ptr(addr), size, fs, opt, &out);

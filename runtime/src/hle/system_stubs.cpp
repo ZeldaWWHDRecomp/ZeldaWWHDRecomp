@@ -10,6 +10,7 @@
 #include "../mods/game_settings_page.h"
 #include "../mods/menu_sounds_port.h"
 #include "../mods/player_name.h"
+#include "../mods/long_name.h"
 #include "../mods/story_scenes.h"
 #include "../rumble.h"
 #include "../motion/motion.h"
@@ -130,6 +131,7 @@ HLE(vpad, VPADRead) {
     game_settings_page::pad(p, c);  // the settings page in the item menu (left of the items), while open
     if (!repeat) menu_sounds::service(c);  // the Settings overlay's menu sounds, through the game (menu_sounds.h)
     player_name::service(c);  // a new name for Link (settings page or Settings window) goes in here, on the game's thread
+    long_name::service(c);    // save file names over 8 characters (mods/long_name.h)
     if (!input::pro_controller()) mods::moon_jump_input(p);
     if (!input::pro_controller()) mods::move_speed_input(p.buttons);
     if (!input::pro_controller() && live) mods::jump_input(live_virt);

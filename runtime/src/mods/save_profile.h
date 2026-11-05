@@ -163,12 +163,21 @@ struct Paths {
     std::vector<std::filesystem::path> protected_roots;
     std::string namespace_key;
 };
-inline std::filesystem::path sibling(const std::filesystem::path &path, const std::string &suffix) {
+// The ordinary save folder a profile folder belongs to: --save save-<suffix> (the profile's own
+// folder given again) names the same profile as --save save, so it doesn't nest a second suffix.
+inline std::filesystem::path ordinary_base(const std::filesystem::path &path, const std::string &suffix) {
     auto base = path.lexically_normal();
     if (!base.has_filename())
         base = base.parent_path();
     if (!base.has_filename())
         throw Error("A mod save profile needs a named base save folder");
+    const std::string name = base.filename().string(), tail = "-" + suffix;
+    if (name.size() > tail.size() && name.compare(name.size() - tail.size(), tail.size(), tail) == 0)
+        base = base.parent_path() / name.substr(0, name.size() - tail.size());
+    return base;
+}
+inline std::filesystem::path sibling(const std::filesystem::path &path, const std::string &suffix) {
+    const auto base = ordinary_base(path, suffix);
     return base.parent_path() / (base.filename().string() + "-" + suffix);
 }
 inline Paths paths(const Selection &selection, const std::filesystem::path &ordinary_save,
@@ -182,9 +191,7 @@ inline Paths paths(const Selection &selection, const std::filesystem::path &ordi
     // --save is also supplied by official launchers. Always isolate a mod
     // profile from that ordinary save root, including explicit command lines.
     out.save = sibling(ordinary_save, out.namespace_key);
-    auto base = ordinary_save.lexically_normal();
-    if (!base.has_filename())
-        base = base.parent_path();
+    const auto base = ordinary_base(ordinary_save, out.namespace_key);
     out.backups = base.parent_path() / ("save-backups-" + out.namespace_key);
     out.preferences = config / "save-profiles" / out.namespace_key;
     out.protected_roots = {base, base.parent_path() / "save-backups"};

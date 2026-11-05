@@ -116,7 +116,8 @@ path=pathlib.Path(a.code_mods_status);temporary=path.with_suffix('.tmp');tempora
     while not (root / 'flow-result.json').exists() and time.monotonic() < deadline:
         time.sleep(.02)
     final = json.loads((root / 'flow-result.json').read_text())
-    switched_on = mode not in ('missing', 'cancel', 'cancel-rebuild', 'update-off', 'exp-backup-fails')
+    backup_fails = mode in ('exp-backup-fails', 'exp-backup-nospace')
+    switched_on = mode not in ('missing', 'cancel', 'cancel-rebuild', 'update-off') and not backup_fails
     assert final['enabled'] is switched_on
     if mode == 'restart':
         assert final['resumed'] and final['confirmations'] == 0
@@ -129,9 +130,9 @@ path=pathlib.Path(a.code_mods_status);temporary=path.with_suffix('.tmp');tempora
         assert profile['config'][ident] == dict(consent=True, colour='blue')
     if experimental:  # exactly one backup before it was switched on (none when the backup could not be made)
         backups = [p for p in (root / 'save-backups').glob('*') if (p / 'backup.json').is_file()] if (root / 'save-backups').is_dir() else []
-        assert len(backups) == (0 if mode == 'exp-backup-fails' else 1), backups
+        assert len(backups) == (0 if backup_fails else 1), backups
     # a settings preset runs no code: nothing to trust; a failed backup stops before trust is recorded
-    if mode not in ('missing', 'update-on', 'exp-update-on', 'exp-backup-fails'):
+    if mode not in ('missing', 'update-on', 'exp-update-on') and not backup_fails:
         assert database['native_trust'][ident]
         if ident == 'gc-sea-minimap':
             assert database['setup_receipts'][ident]['prepare']
@@ -142,7 +143,8 @@ scenarios = [('gc-sea-minimap', 'normal'), ('heart-ticker', 'normal'), ('gc-sea-
              ('gc-sea-minimap', 'catalogue'), ('heart-ticker', 'catalogue'), ('gc-sea-minimap', 'cancel-rebuild'),
              ('gc-sea-minimap', 'update-off'), ('quick-preset', 'update-on'), ('gc-sea-minimap', 'ids'),
              ('gc-sea-minimap', 'exp-catalogue'), ('heart-ticker', 'exp-switch-on'), ('quick-preset', 'exp-update-on'),
-             ('gc-sea-minimap', 'exp-backup-fails'), ('gc-sea-minimap', 'tabs')]
+             ('gc-sea-minimap', 'exp-backup-fails'), ('gc-sea-minimap', 'exp-backup-nospace'),
+             ('gc-sea-minimap', 'tabs')]
 if retained:
     for ident, mode in scenarios:
         run(retained / (ident + '-' + mode), ident, mode)

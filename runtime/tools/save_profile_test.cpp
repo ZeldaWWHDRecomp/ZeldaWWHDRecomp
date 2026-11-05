@@ -49,6 +49,10 @@ int main() {
     const auto launched = profile::paths(selected, normal, config, true);
     assert(launched.save == paths.save && launched.backups == paths.backups);
     assert(launched.save != normal);
+    // --save naming the profile's own folder again maps to the same folders, not a nested save-<ns>-<ns>
+    const auto again = profile::paths(selected, paths.save, config, true);
+    assert(again.save == paths.save && again.backups == paths.backups &&
+           again.protected_roots == paths.protected_roots);
     assert(profile::paths({}, exact, config, true).save == exact);
     assert(profile::paths({}, normal, config, false).save == normal);
     assert(profile::windows_budget(211, 48) && !profile::windows_budget(212, 48));

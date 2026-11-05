@@ -3251,8 +3251,14 @@ static void _emitExportCode(LatteDecompilerShaderContext* shaderContext, LatteDe
 				auto dataType = GetColorBufferDataType(pixelColorOutputIndex, *shaderContext->contextRegistersNew);
 				if (dataType != MetalDataType::NONE)
 				{
+    				// WWHD: float colour outputs without NaN / infinity (finiteColorOutputs); integer targets keep their bits
+    				const bool finite = shaderContext->options->finiteColorOutputs && dataType == MetalDataType::FLOAT;
     				src->addFmt("out.passPixelColor{} = as_type<{}>(", pixelColorOutputIndex, GetDataTypeStr(dataType));
+    				if (finite)
+    					src->add("wwhd_finite(");
     				_emitExportGPRReadCode(shaderContext, cfInstruction, LATTE_DECOMPILER_DTYPE_FLOAT, i);
+    				if (finite)
+    					src->add(")");
     				src->add(");" _CRLF);
 				}
 
@@ -3753,6 +3759,10 @@ void LatteDecompiler_emitHelperFunctions(LatteDecompilerShaderContext* shaderCon
 		"return as_type<int>(clamp(as_type<float>(v), 0.0, 1.0));\r\n"
 	"}\r\n");
 
+	// WWHD: NaN -> 0 and infinity -> +-65000 in the pixel colour outputs (finiteColorOutputs; the shader is
+	// compiled with MTLMathModeSafe, so isnan/isinf are kept)
+	if (shaderContext->options->finiteColorOutputs && shaderContext->shaderType == LatteConst::ShaderType::Pixel)
+		fCStr_shaderSource->add("float4 wwhd_finite(float4 v){ v = select(v, sign(v) * 65000.0, isinf(v)); return select(v, float4(0.0), isnan(v)); }" _CRLF);
 	// mul non-ieee way (0*NaN/INF => 0.0)
 	if (shaderContext->options->strictMul)
 	{

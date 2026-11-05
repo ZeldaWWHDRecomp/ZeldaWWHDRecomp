@@ -2,7 +2,7 @@
   "format": 2,
   "id": "twwhd-randomizer-usa-v0-2",
   "base_sha256": "c4f0ab300542e0bfc462696850534e71db2ad02288a7eb55e5a4cd4062f16153",
-  "hooks_sha256": "3b618361bb5f910043d5f289245e8ed43f074c7142a097ca574c29312a7b56a3",
+  "hooks_sha256": "7b5e2a1b8a4c3c623e5fa70015fd70ed35e4b103598d80ee047b84bb8c8bbc5f",
   "entry_point": 42901792,
   "imports_sha256": "a56776e8fbb6f29271fb2b5755e80eeb30e2b96555f45dfa30dd7bbb1679011e",
   "sections": [
@@ -526,6 +526,7 @@
     39675904,
     39676784,
     39677160,
+    39679760,
     39700588,
     39705836,
     39706660,
@@ -2211,6 +2212,13 @@
       ]
     },
     {
+      "start": 39679760,
+      "end": 39679860,
+      "sha256": [
+        "f397454f5d954632f9b30827095cab561c9778f042cdd02a7b2011cbf4b9d3ef"
+      ]
+    },
+    {
       "start": 39700588,
       "end": 39700688,
       "sha256": [
@@ -2849,5 +2857,5 @@
     }
   ],
   "minimum_function_hash_bytes": 64,
-  "guard_sha256": "e6f7adfc6d4f41d696d6dd26436fef0396f21c7d3e3a8edb3a48d454a9f22e2f"
+  "guard_sha256": "18a12c2aeddcdcf831b3ee77a1f9f3889f5a4555240f501f7ea4c12164180d8e"
 }

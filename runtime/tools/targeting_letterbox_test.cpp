@@ -43,7 +43,7 @@ extern "C" void f_024FBF9C_orig(Cpu* c) {
     if (table_write) { c->r[31] = c->r[3]; c->r[3] = 1; site_024FC080(c); }
 }
 int main(int argc, char** argv) {
-    if (argc > 1) { assert(mods::letterbox_while_targeting() == (std::atoi(argv[1]) != 0)); return 0; }
+    if (argc > 1) { assert(mods::targeting_letterbox_mode() == std::atoi(argv[1])); return 0; }
     assert(mods::letterbox_while_targeting());
     map(camera); map(GD(0x1046F0B0) + 0x5292);
     const uint32_t play = GD(0x1046F0B0);
@@ -53,20 +53,24 @@ int main(int argc, char** argv) {
     st32(play + 0x5804 + 0xD4, 1);
     st32(play + 0x5804 + 0x54 + 12, 42);
     st32(camera + 0x1000 + 4, 42);
-    for (bool on : {false, true}) for (unsigned size = 0; size <= 4; ++size)
-    for (unsigned mode = 0; mode <= 19; ++mode) for (unsigned flags = 0; flags < 32; ++flags) {
+    for (int policy : {0, 1, 2}) for (unsigned size = 0; size <= 4; ++size)
+    for (unsigned mode = 0; mode <= 19; ++mode) for (unsigned flags = 0; flags < 64; ++flags) {
         const bool event = flags & 1, scripted = flags & 2, minigame = flags & 4;
-        const bool target = flags & 8, provenance = flags & 16;
+        const bool target = flags & 8, provenance = flags & 16, attention = flags & 32;
+        st32(play + 0x5824, attention ? 0x20000000u : 0);
         st32(camera + 0x600, size); st32(camera + 0x13C, mode);
         st8(play + 0x5292, event); st32(play + 0x52E4, scripted);
         st8(play + 0x5CEA, minigame); st32(camera + 0x12C, target ? camera + 0x1000 : 0);
-        mods::set_letterbox_while_targeting(on);
+        mods::set_targeting_letterbox_mode(policy);
         Cpu c{}; c.r[3] = camera; table_write = provenance;
         hook_024FBF9C(&c);
         c.r[31] = camera; c.f[11].ps0 = c.f[11].ps1 = 48;
         Cpu before = c;
         site_024FF980(&c);
-        const bool suppress = !on && size == 1 && mode == 2 && !event && !scripted && !minigame && target && provenance;
+        const bool enemy = mode == 2 && target;
+        const bool free = mode == 1 && !target && attention;
+        const bool suppress = policy != 0 && size == 1 && !event && !scripted && !minigame && provenance &&
+                              (enemy || (policy == 2 && free));
         if (suppress) before.f[11].ps0 = before.f[11].ps1 = 0;
         assert(std::memcmp(&before, &c, sizeof(c)) == 0);
         assert(ld32(camera + 0x600) == size);

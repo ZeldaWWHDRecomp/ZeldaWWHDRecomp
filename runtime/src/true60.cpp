@@ -1,4 +1,5 @@
 #include "mods/mods.h"
+#include "mods/native_actor_profiles.h"
 // True 60 fps: game logic at 60 steps per second (not interpolation).
 //
 // Pass structure (shared with interp.cpp): the per-frame function runs every vsync. Passes alternate:
@@ -154,7 +155,8 @@ uint64_t g_link_steps = 0;  // Link's full-pass executes since the last save-sta
 
 uint32_t actor_execute_fn(uint32_t proc) {
     uint32_t sub = ld32(proc + kSubMethod);
-    if (sub < 0x10000000 || sub >= 0x50000000) return 0;
+    if (sub < 0x10000000 || sub >= 0x50000000)
+        return native_actor_profiles::guest_execute_method(ld16(proc+0xE),sub);
     return ld32(sub + 8);
 }
 
@@ -677,6 +679,7 @@ static void rx_log(uint32_t proc, uint32_t s0) {
 }
 extern "C" void hook_025DF940(Cpu* c) {
     uint32_t proc = c->r[3];
+    mods::DoorExecuteWrap door_wrap{proc};  // Quick doors' walk-through mode (mods/walk_doors.cpp)
     uint32_t rx_s0 = ld32(kRndSeeds);
     struct WatchGuard { uint32_t p, v; ~WatchGuard() { watch_link("execute", p, v); } } watch_guard{proc, watch_val()};
     struct RxLog { uint32_t p, s; ~RxLog() { rx_log(p, s); } } rx_guard{proc, rx_s0};

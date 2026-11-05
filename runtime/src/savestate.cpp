@@ -78,6 +78,7 @@ namespace ss {class NativeRestorePipelineIssuer {public:
 #include <lz4.h>
 #endif
 #include "platform/host.h"
+#include "platform/memory_trim.h"
 #include "gfx/renderer.h"
 #include <sys/stat.h>
 #ifndef _WIN32
@@ -804,7 +805,21 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     return true;
 }
 
+// Android about to end the game for lack of memory (memory_trim.h, save_refused): the save is refused with a message
+// instead of being started (GreenNaugahyde/ZeldaWWHDRecompAndroid v0.9.9, issue #51). Automatic states stay quiet.
+int save_min_headroom_mb() {
+    static const int v = getenv("WWHD_STATE_MIN_HEADROOM_MB") ? atoi(getenv("WWHD_STATE_MIN_HEADROOM_MB")) : memory_trim::kSaveMinHeadroomMb;
+    return v;
+}
 bool do_save(int slot,const std::string& destination = {},std::function<void(bool,const std::string&)> done = {}) {
+    if (const int headroom = memory_trim::headroom_mb(); memory_trim::save_refused(headroom, save_min_headroom_mb())) {
+        LOG("[savestate] %s: not saved: %d MB above the system's low-memory line (needs %d)", slot_label(slot).c_str(), headroom,
+            save_min_headroom_mb());
+        if (!is_auto(slot) && slot != -1) message("%s: not saved (too little free memory, close other apps)", slot_label(slot).c_str());
+        const std::string why = "too little free memory";
+        if (done) done(false, why); else report_done(slot, false, why);
+        return true;
+    }
     return use_streaming_save(save_path()) ? do_save_streaming(slot,destination,std::move(done)) : do_save_fast(slot,destination,std::move(done));
 }
 
