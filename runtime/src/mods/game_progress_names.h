@@ -213,7 +213,7 @@ public:
         case GP_K_BIGKEY: return item(0x4E) + " \xC2\xB7 " + dungeon(p.what - 1u);
         case GP_K_BOSS: return "Boss \xC2\xB7 " + dungeon(p.what - 1u);
         case GP_K_CHART: return chart(p.what);
-        case GP_K_SALVAGE: return "Sunken treasure \xC2\xB7 " + chart(p.what);
+        case GP_K_SALVAGE: return chart(p.what) + " (its treasure)";
         case GP_K_SQUARE: return "Sea chart square";
         case GP_K_ITEM: return item(p.what);
         case GP_K_ARROWS: return p.what == 2 ? "Fire & Ice Arrows" : "Light Arrows";

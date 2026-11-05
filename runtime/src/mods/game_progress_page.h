@@ -295,7 +295,7 @@ private:
         out.push_back(Page::box("nb:panel", kItemsX - 14, kItemsY - 12, kItemsW + 28, kItemRow * kItemsShown + 24));
         const std::vector<unsigned> list = entries();
         const size_t per = 2 * kItemsShown, from = size_t(epage_) * per;
-        const float colw = kItemsW / 2;
+        const float colw = list.size() <= kItemsShown ? kItemsW : kItemsW / 2;  // (one column when they fit: room for the names)
         if (list.empty())
             out.push_back(Page::text(kItemsX + 10, kItemsY + 6, 24, gs::kInkSoft, s_.texts.all_found));
         for (size_t k = from; k < list.size() && k < from + per; k++) {

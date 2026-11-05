@@ -435,6 +435,7 @@ std::mutex g_detail_mu;
 std::map<std::string, std::function<std::unique_ptr<Detail>()>> g_detail_makers;
 std::string g_detail_wanted;
 std::unique_ptr<Detail> g_detail;
+int g_test_detail = -1;  // reads until WWHD_TEST_SETTINGS_DETAIL's page opens (test aid)
 
 // the sheets (set_sheet): their images, and the handles made of them in the store (game thread)
 struct Sheet {
@@ -626,8 +627,21 @@ void pad(input::PadState& p, Cpu* c) {
         Input watched = in;
         if (!eligible) watched.touch = false, watched.arrow_focused = false;
         const bool on_arrow_touch = eligible && !pro && p.touch && g_page.on_arrow(in.x, in.y, true);
-        if (g_page.entry(watched) && eligible) {
+        // test aid WWHD_TEST_SETTINGS_PAGE=<tab> (e.g. game): the page opens by itself on that tab, once, as soon as
+        // it is offered (scripted runs: the item menu opened by WWHD_PRESS)
+        static const char* test_tab = getenv("WWHD_TEST_SETTINGS_PAGE");
+        static bool test_opened = false;
+        const bool test_open = test_tab && !test_opened && eligible && m.cursor;
+        if (test_open) {
+            test_opened = true;
+            g_test_detail = 30;
+            for (size_t i = 0; i < tabs.size(); i++)
+                if (tabs[i] == test_tab) g_page.set_tab(int(i));
+        }
+        if ((g_page.entry(watched) || test_open) && eligible) {
+            const int tab = g_page.tab();
             g_page.show(int(tabs.size()));
+            if (test_open) g_page.set_tab(tab);
             g_has_controller.store(true, std::memory_order_relaxed);
             LOG("[game-settings] page opened (%s)", in.arrow_focused ? "focused entry arrow" : "the arrow");
             g_entry.clear();
@@ -670,6 +684,8 @@ void pad(input::PadState& p, Cpu* c) {
     } else {
         hide_game_pieces(m, true);
     }
+    if (g_test_detail > 0 && --g_test_detail == 0)
+        if (const char* id = getenv("WWHD_TEST_SETTINGS_DETAIL")) LOG("[game-settings] test: opening %s", id), open_detail(id);
     {  // a row's own page asked for (its set() ran on the main thread)
         std::function<std::unique_ptr<Detail>()> make;
         {

@@ -108,6 +108,7 @@ public:
         touch_ = false;
     }
     void hide() { open_ = false; }
+    void set_tab(int tab) { tab_ = tab, selected_ = 0, top_ = 0; }
     // buttons held now act only after their release (a page opened from a row closed with them)
     void hold_buttons() { held_ = ~0u; }
 

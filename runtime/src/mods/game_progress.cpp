@@ -12,8 +12,8 @@
 // db65d60, MPL-2.0): mods/progress.cpp, GameProgress.java, ProgressPlaces.java, ProgressMapView.java.
 //
 // Test aids: WWHD_MOD_GAME_PROGRESS=1 switches it on (manager.cpp); WWHD_MOD_PROGRESS_ON_SCREEN=0|1 the percent;
-// WWHD_PROGRESS_LOG=1 logs the count when it changes ("[progress] ..."); WWHD_TEST_PROGRESS_PAGE=<step> opens
-// the page by itself at that logic step while the item menu's settings page is open (screenshots).
+// WWHD_PROGRESS_LOG=1 logs the count when it changes ("[progress] ..."). Screenshots of the page: the settings
+// page's test aids WWHD_TEST_SETTINGS_PAGE=game and WWHD_TEST_SETTINGS_DETAIL=game.progress (game_settings_page.cpp).
 #include "game_progress_host.h"
 
 #include <algorithm>
@@ -60,8 +60,10 @@ bool log_on() {
     return on;
 }
 
+}  // namespace
+
 // the save data in play, 0 on the title screen, in the file select or with no file loaded (cheats.cpp's checks)
-uint32_t live_save() {
+uint32_t save_address() {
     const uint32_t sv = ld32(kSaveInfoPtr);
     if ((sv & 3) || sv < mem::kMem2Start || sv > mem::kMem2End - 0x2000) return 0;
     const uint32_t s = sv + 0x20;
@@ -73,11 +75,14 @@ uint32_t live_save() {
     return s;
 }
 
+namespace {
+
 // ---- the game's words and pictures (read once per language from the player's 2D pack) ----
 struct Words {
     uint32_t language = ~0u;
     game_progress_names::Names names;
-} g_words;  // (game thread)
+} g_words;  // (written on the game thread under g_words_mu)
+std::mutex g_words_mu;
 
 void load_words() {
     const uint32_t lang = console_language();
@@ -96,6 +101,7 @@ void load_words() {
     LOG("[progress] game texts: %zu messages, %zu gallery texts, %zu dungeon and %zu place names", t.message.size(), t.message4.size(),
         t.dungeons.size(), t.places.size());
     // (a language whose texts aren't readable yet: the English names, and another try at the next opening)
+    std::lock_guard lock(g_words_mu);
     if (!t.message.empty()) g_words.language = lang;
     g_words.names.t = std::move(t);
 }
@@ -177,6 +183,7 @@ game_progress_page::Snapshot snapshot() {
     }
     load_words();
     make_sheets();
+    std::lock_guard words(g_words_mu);
     const auto& n = g_words.names;
     s.valid = true;
     s.icons = g_sheets.icons, s.map_art = g_sheets.map;
@@ -236,6 +243,7 @@ bool result(gp_result& out, std::vector<std::string>* names) {
         out = g_result;
     }
     if (names) {  // (the overlay: English names unless the game thread has read the game's words)
+        std::lock_guard words(g_words_mu);
         names->clear();
         for (unsigned i = 0; i < out.count; i++) names->push_back(g_words.names.entry(out.e[i]));
     }
@@ -250,7 +258,7 @@ void service(Cpu* c) {
         g_loaded = false, g_percent = -1;
         return;
     }
-    const uint32_t s = live_save();
+    const uint32_t s = save_address();
     int pc = -1;
     {
         std::lock_guard lock(g_mu);
@@ -278,13 +286,24 @@ void service(Cpu* c) {
     }
     const bool show = on_screen() && pc >= 0 && !mods::game_ui_hides_hud(mods::game_ui_now());
     publish_percent(show, pc);
-    // test aid: open the page at a logic step (the settings page must be open then)
-    static const uint64_t open_at = std::getenv("WWHD_TEST_PROGRESS_PAGE") ? std::strtoull(std::getenv("WWHD_TEST_PROGRESS_PAGE"), nullptr, 10) : 0;
-    if (open_at && mods::step() == open_at) {
-        LOG("[progress] test: opening the page");
-        game_settings_page::open_detail("game.progress");
-    }
 }
+
+std::string fill_name(const std::string& text, int item, int place) {
+    const size_t at = text.find("%s");
+    if (at == std::string::npos) return text;
+    std::string name;
+    {
+        std::lock_guard words(g_words_mu);
+        const auto& n = g_words.names;
+        if (item <= -1000) name = n.song(unsigned(-item - 1000));
+        else if (item > 0) name = n.item(unsigned(item));
+        else if (place > 0) name = n.square(unsigned(place));
+        else if (place < 0) name = n.dungeon(unsigned(-place));
+    }
+    return text.substr(0, at) + name + text.substr(at + 2);
+}
+
+void prepare_words() { load_words(); }
 
 void register_page() {
     game_settings_page::register_detail("game.progress", []() -> std::unique_ptr<game_settings_page::Detail> {
