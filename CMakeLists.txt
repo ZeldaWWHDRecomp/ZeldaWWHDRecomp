@@ -141,6 +141,13 @@ if(WWHD_HAS_VULKAN)
 endif()
 target_compile_options(cemu_latte PRIVATE -w -O2)
 
+# ---- GameCube player models (runtime/src/gcmodel, from GreenNaugahyde/ZeldaWWHDRecompAndroid, MPL-2.0): a player
+# model pack's Link.arc converted onto HD's Link (the mod manager's import); tiling through Cemu's address library
+file(GLOB GCMODEL_SOURCES CONFIGURE_DEPENDS runtime/src/gcmodel/*.cpp)
+add_library(wwhd_gcmodel STATIC ${GCMODEL_SOURCES})
+target_link_libraries(wwhd_gcmodel PUBLIC cemu_latte)
+target_compile_options(wwhd_gcmodel PRIVATE "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"" -O2)
+
 # ---- Dear ImGui (MIT, runtime/third_party/imgui, pinned release): the in-game settings overlay
 set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/runtime/third_party/imgui)
 # ImGuizmo (MIT, runtime/third_party/imguizmo, pinned commit): the world editor's move and turn handles
@@ -420,6 +427,16 @@ if(WWHD_SETUP_GUI)
 endif()
 
 # recomp mod-manager preferences and catalogue (standalone host stubs)
+# GameCube player models: the converter on synthetic files (runtime/tools/gcmodel_synth.h)
+add_executable(gcmodel_test runtime/tools/gcmodel_test.cpp)
+target_include_directories(gcmodel_test PRIVATE runtime/src runtime/tools)
+target_link_libraries(gcmodel_test PRIVATE wwhd_gcmodel)
+target_compile_options(gcmodel_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
+add_test(NAME gcmodel COMMAND gcmodel_test)
+add_executable(gcmodel_tool runtime/tools/gcmodel_tool.cpp)
+target_include_directories(gcmodel_tool PRIVATE runtime/src runtime/tools)
+target_link_libraries(gcmodel_tool PRIVATE wwhd_gcmodel)
+
 add_executable(mod_manager_test runtime/tools/mod_manager_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp)
 target_include_directories(mod_manager_test PRIVATE runtime/src)
 target_compile_options(mod_manager_test PRIVATE -UNDEBUG)
