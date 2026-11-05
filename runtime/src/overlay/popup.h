@@ -7,6 +7,10 @@
 //    (body_begin / body_end) between the title bar and a footer with the buttons.
 // A list opened inside a dialog (a combo) closes first: while one is open, or was open the frame before,
 // a tap outside, Esc or B is the list's. Every dialog is centred and at most 96% x 94% of the screen.
+// With a controller in use (controller_nav(), set by the overlay each frame) a dialog opens with a button or row
+// selected: its default (SetItemDefaultFocus: Cancel where a dialog confirms something that can't be undone) or
+// else its first; and the right stick scrolls a long body. Idea from the GreenNaugahyde Android fork
+// (GreenNaugahyde/ZeldaWWHDRecompAndroid db65d60, GameDialog.java preselect / rightStick); reimplemented.
 // Kept free of the game so the offscreen tests (runtime/tools/settings_popup_ui_test.cpp) drive it.
 #pragma once
 #include "imgui.h"
@@ -54,6 +58,20 @@ inline bool close_button() {
 inline bool child_open() { return ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId); }
 }  // namespace detail
 
+// The overlay's controller navigation is active this frame (gamepad_nav.h controller_active, set by its host)
+inline bool& controller_nav() {
+    static bool on = false;
+    return on;
+}
+// Right-stick body scrolling: pixels per frame at full tilt, in font sizes (squared response for fine control)
+constexpr float kStickScroll = 1.1f;
+inline float stick_scroll_delta() {
+    if (!controller_nav()) return 0;
+    const float v = ImGui::GetKeyData(ImGuiKey_GamepadRStickDown)->AnalogValue -
+                    ImGui::GetKeyData(ImGuiKey_GamepadRStickUp)->AnalogValue;
+    return (v < 0 ? -v * v : v * v) * kStickScroll * ImGui::GetFontSize();
+}
+
 // The smallest width that shows the title beside the X.
 inline float min_width(const char* title) {
     const ImGuiStyle& s = ImGui::GetStyle();
@@ -75,6 +93,10 @@ inline bool begin(const char* title, bool open, float least_width = 0, bool clos
         return false;
     ImGuiStorage* st = detail::state();
     const bool x = closable && detail::close_button();
+    // with a controller the dialog's button or row (its default, else its first) shows selected from the start,
+    // and again when the controller takes the navigation back from the mouse or a touch
+    if (controller_nav() && (ImGui::IsWindowAppearing() || !st->GetBool(detail::key("#pad")))) ImGui::SetNavCursorVisible(true);
+    st->SetBool(detail::key("#pad"), controller_nav());
     // a list open now or the frame before has the tap, Esc and B (closing it); a tap in the dialog's first
     // quarter second (the second tap of a double tap that opened it) is not a tap outside it
     const bool child = st->GetBool(detail::key("#child_before")) || detail::child_open();
@@ -125,6 +147,9 @@ inline void body_begin(int footer_rows = 1) {
                       ImGuiChildFlags_AutoResizeX | ImGuiChildFlags_AutoResizeY | ImGuiChildFlags_NavFlattened);
 }
 inline void body_end() {
+    // the right stick scrolls the body (only the top dialog: it has the focus)
+    if (const float d = stick_scroll_delta(); d != 0 && ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+        ImGui::SetScrollY(std::clamp(ImGui::GetScrollY() + d, 0.f, ImGui::GetScrollMaxY()));
     ImGui::EndChild();
     ImGui::Separator();
 }

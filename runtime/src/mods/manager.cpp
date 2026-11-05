@@ -2,6 +2,8 @@
 #include "packages.h"
 #include "mods.h"
 #include "climb.h"
+#include "game_progress_host.h"
+#include "achievements_host.h"
 #include "../overlay/hostui.h"
 #include <cstdlib>
 #include <cmath>
@@ -11,7 +13,7 @@ namespace mods::manager {
 namespace {
 const Entry catalogue[] = {
     {"target-letterbox", "Letterbox while targeting", "Camera",
-     "Show letterbox bars during normal targeting; cutscenes and special cameras keep their original bars.",
+     "Choose whether bars remain during enemy lock-on and free targeting. Cutscenes and special cameras keep their original bars.",
      "WWHD_TARGET_LETTERBOX", letterbox_while_targeting, set_letterbox_while_targeting, false, true},
     {"direct-camera", "Direct right-stick camera", "Camera",
      "Turn the camera immediately with the right stick, without the original easing.",
@@ -78,9 +80,24 @@ const Entry catalogue[] = {
      "Letters, quests, the story notebook and mod charts. It comes with the Story Notebook package, which the "
      "mod manager downloads from the mod catalogue and keeps installed while this is on.",
      "WWHD_STORY_SYSTEM", story_system, set_story_system, true},
+    {"game-progress", "Game progress", "Game",
+     "How far your save file is: a percent and a checklist of what you have collected and what is still missing, and a "
+     "map of where each thing is found. On the item menu's settings page (Game tab); optionally the percent on screen.",
+     "WWHD_MOD_GAME_PROGRESS", game_progress::enabled, game_progress::set_enabled},
+    {"achievements", "Achievements", "Game",
+     "99 goals, from the story to the Savage Labyrinth, read from your save data and earned for good, for all save games "
+     "and for each one, with a pop-up of Link holding each one up. Cheats pause them unless Earn with cheats is on.",
+     "WWHD_MOD_ACHIEVEMENTS", achievements::enabled, achievements::set_enabled},
     {"fast-scenes", "Fast scene changes", "Gameplay",
      "Speed up fades and scene transitions while keeping ordinary gameplay at normal speed.",
      "WWHD_MOD_FAST_SCENES", fast_scenes, set_fast_scenes},
+    {"instant-text", "Instant text", "Gameplay",
+     "Message boxes show their whole text at once instead of letter by letter. A box still waits for A "
+     "before the next one.",
+     "WWHD_MOD_INSTANT_TEXT", instant_text, set_instant_text},
+    {"no-text-pauses", "No pauses in texts", "Gameplay",
+     "Leaves out the short pauses written into some texts, so the rest of the line follows at once.",
+     "WWHD_MOD_NO_TEXT_PAUSES", no_text_pauses, set_no_text_pauses},
 };
 std::string key(const Entry& entry) { return std::string("mod.")+entry.id+".enabled"; }
 bool player_preferences() { return !std::getenv("WWHD_NO_HOST_INPUT"); }
@@ -115,7 +132,7 @@ void load_saved() {
     if (!player_preferences()) return;
     for (const auto& entry : catalogue) {
         // An explicitly supplied zero also overrides a saved enabled preference.
-        if (std::getenv(entry.startup_env)) continue;
+        if (std::getenv(entry.startup_env) || (std::string_view(entry.id) == "target-letterbox" && std::getenv("WWHD_TARGET_LETTERBOX_MODE"))) continue;
         std::string value;
         if (hostui::get(key(entry).c_str(), value) && (value == "0" || value == "1"))
             if (entry.enabled() != (value == "1")) entry.apply(value == "1");
@@ -146,8 +163,35 @@ void load_saved() {
         std::string v;
         if (hostui::get("mod.fast-forward.mute", v) && (v == "0" || v == "1")) set_fast_forward_mute(v == "1");
     }
+    if (!std::getenv("WWHD_TARGET_LETTERBOX") && !std::getenv("WWHD_TARGET_LETTERBOX_MODE") &&
+        !letterbox_while_targeting())
+        number("mod.target-letterbox.mode", "WWHD_TARGET_LETTERBOX_MODE", 1.f, 2.f,
+               [](float value) { if (std::floor(value) == value) set_targeting_letterbox_mode(int(value)); });
     number("mod.lock-on.range", "WWHD_MOD_LOCK_ON_RANGE", 1.f, 3.f, set_lock_on_range);
     number("mod.leaf-rise.height", "WWHD_MOD_LEAF_HEIGHT", 25.f, 400.f, set_leaf_rise_height);
+    if (!std::getenv("WWHD_MOD_PROGRESS_ON_SCREEN")) {
+        std::string v;
+        if (hostui::get("mod.game-progress.on-screen", v) && (v == "0" || v == "1")) game_progress::set_on_screen(v == "1");
+    }
+    {  // Achievements' options (overlay.cpp writes them)
+        achievements::Settings a = achievements::settings();
+        auto flag = [](const char* key, bool& out) {
+            std::string v;
+            if (hostui::get(key, v) && (v == "0" || v == "1")) out = v == "1";
+        };
+        flag("mod.achievements.popup", a.popup);
+        flag("mod.achievements.link", a.link);
+        flag("mod.achievements.jingle", a.jingle);
+        flag("mod.achievements.each-file", a.each_file);
+        flag("mod.achievements.with-cheats", a.with_cheats);
+        std::string v;
+        if (hostui::get("mod.achievements.volume", v) && !v.empty()) {
+            char* end = nullptr;
+            const float f = std::strtof(v.c_str(), &end);
+            if (end != v.c_str() && *end == '\0' && f >= 0 && f <= 1) a.volume = f;
+        }
+        achievements::set_settings(a);
+    }
     if (!std::getenv("WWHD_MOD_LOCK_ON_CYCLING")) {
         std::string v;
         if (hostui::get("mod.lock-on.cycling", v) && (v == "0" || v == "1"))
