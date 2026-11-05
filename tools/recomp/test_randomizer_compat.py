@@ -179,7 +179,7 @@ class Compatibility(unittest.TestCase):
             self.assertGreaterEqual(function['end']-function['start'], C.MIN_FUNCTION_HASH_BYTES)
             for value in function['sha256']:
                 self.assertRegex(value, r'^[0-9a-f]{64}$')
-        # Reviewed 1.2.0 variants (docs/randomizer-experiment.md): every seed (grapple/block speed,
+        # Reviewed 1.2.0 variants (docs/randomizer-maintainers.md): every seed (grapple/block speed,
         # vanilla-bug fixes, misc features); Quiet Swift Sail (procSteerMove); any entrance shuffle
         # (setGameStartStage). One reviewed variant each: the patches do not depend on the seed.
         reviewed = {0x0216F7FC: 2, 0x023EFF20: 2, 0x025499A0: 2, 0x0247E854: 2, 0x025217F8: 2}
