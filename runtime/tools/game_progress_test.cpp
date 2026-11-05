@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "mods/game_progress.h"
+#include "mods/game_progress_places.h"
 
 namespace {
 unsigned char d[GP_SAVE_LEN];
@@ -146,6 +147,37 @@ int main() {
     d[GP_GOT_ITEMS + 12] = 4;
     count();
     assert(r.done[GP_PART_ITEMS] == 2);  // the bow and the Light Arrows
+    // the places: a full save finds every place but the weak ones only by count; an empty one none
+    {
+        unsigned char st[GP_PLACES];
+        empty();
+        gp_place_states(d, st);
+        for (unsigned i = 0; i < GP_PLACES; i++) assert(st[i] == GP_MISSING || gp_places[i].flag == GP_F_SQUARE);
+        assert(GP_PLACES == 279);
+        unsigned per_kind[GP_KINDS] = {};
+        for (const gp_place& pl : gp_places) {
+            per_kind[pl.kind]++;
+            assert(pl.square <= 49 && pl.kind < GP_KINDS);
+        }
+        assert(per_kind[GP_K_HEART] == 44 && per_kind[GP_K_CONTAINER] == 6 && per_kind[GP_K_SQUARE] == 49);
+        assert(per_kind[GP_K_CHART] == 49 && per_kind[GP_K_SALVAGE] == 49 && per_kind[GP_K_SHARD] == 8);
+        // a weak heart: found "maybe" when the pieces leave one over
+        empty();
+        d[GP_MAX_LIFE + 1] = 13;  // one piece, no sure flag set
+        gp_place_states(d, st);
+        unsigned maybe = 0;
+        for (unsigned i = 0; i < GP_PLACES; i++) maybe += st[i] == GP_MAYBE && gp_places[i].weak;
+        assert(maybe == 1);
+        // the bottles: two in the bag, the submarine's chest opened: the submarine's and the first in story order
+        empty();
+        d[GP_ITEMS + 14] = d[GP_ITEMS + 15] = 0x50;
+        d[GP_STAGES + 10 * GP_STAGE_SIZE + 3] |= 4;  // table 10 mTbox bit 2
+        gp_place_states(d, st);
+        unsigned found = 0;
+        for (unsigned i = 0; i < GP_PLACES; i++)
+            if (gp_places[i].flag == GP_F_BOTTLE && st[i] == GP_FOUND) found++, assert(gp_places[i].a == 0 || gp_places[i].a == 2);
+        assert(found == 2);
+    }
     // the entries fit
     assert(r.count == 247 && r.count <= GP_ENTRIES_MAX);
     // a cking.sav block: packed (no alignment gaps); collect at 0xB2 there, 0xB4 in memory; the events at 0x618
@@ -176,6 +208,27 @@ int main() {
                 count();
                 printf("%s Quest Log %u: %d %%", path.c_str(), slot + 1, gp_percent(&r));
                 for (int p = 0; p < GP_PARTS; p++) printf(" %u/%u", r.done[p], r.total[p]);
+                // the places against the count: found hearts (sure + maybe) = the pieces, containers, charts got,
+                // charts salvaged (of the 49 counted), squares
+                unsigned char st[GP_PLACES];
+                gp_place_states(d, st);
+                unsigned hearts = 0, maybe = 0, cont = 0, charts = 0, salv = 0, squares = 0;
+                for (unsigned i = 0; i < GP_PLACES; i++) {
+                    const gp_place& pl = gp_places[i];
+                    const bool f = st[i] != GP_MISSING;
+                    if (pl.kind == GP_K_HEART) hearts += f, maybe += st[i] == GP_MAYBE;
+                    if (pl.kind == GP_K_CONTAINER) cont += f;
+                    if (pl.kind == GP_K_CHART && pl.a != 35 && pl.a != 36 && pl.a <= 51) charts += f;
+                    if (pl.kind == GP_K_SALVAGE && pl.a != 35 && pl.a != 36 && pl.a <= 51) salv += f;
+                    if (pl.kind == GP_K_SQUARE) squares += f;
+                }
+                const gp_entry* e = r.e;
+                unsigned pieces = e[r.first[GP_PART_HEARTS]].done, life = d[0] << 8 | d[1];
+                unsigned want = life > 12 + 4 * cont ? life - 12 - 4 * cont : 0;
+                printf("  places: hearts %u (%u maybe) of pieces %u%s, containers %u, charts got %u of %u, salvaged %u of %u, squares %u of %u\n",
+                       hearts, maybe, want, hearts == (want > 44 ? 44 : want) ? "" : hearts < want ? " (pieces without a set place flag)" : " MORE FLAGS THAN PIECES", cont, charts, (unsigned)e[r.first[GP_PART_CHARTS]].done,
+                       salv, (unsigned)e[r.first[GP_PART_CHARTS] + 1].done, squares, (unsigned)r.done[GP_PART_SEA]);
+                (void)pieces;
                 printf("\n");
             }
         }
