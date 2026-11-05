@@ -23,7 +23,7 @@ import build_guest_mod as builder  # noqa: E402
 
 CLANG = os.environ.get("WWHD_PPC_CLANG") or shutil.which("clang")
 LLD = os.environ.get("WWHD_PPC_LLD") or shutil.which("ld.lld")
-FLAGS = ["--target=powerpc-unknown-eabi", "-mcpu=750", "-O2", "-ffreestanding", "-fno-builtin", "-nostdlib",
+FLAGS = ["--target=powerpc-unknown-eabi", "-mcpu=750", "-mstackrealign", "-O2", "-ffreestanding", "-fno-builtin", "-nostdlib",
          "-fno-jump-tables", "-ffunction-sections", "-fdata-sections",
          "-I", os.path.join(REPO, "runtime", "guest", "include")]
 
@@ -46,7 +46,7 @@ def cxx_command(cc):
 def ppc_ok():
     if not CLANG or not LLD or not shutil.which(CLANG) or not shutil.which(LLD):
         return False
-    p = subprocess.run([CLANG, "--target=powerpc-unknown-eabi", "-x", "c", "-c", "-o", os.devnull, "-"],
+    p = subprocess.run([CLANG, "--target=powerpc-unknown-eabi", "-mstackrealign", "-x", "c", "-c", "-o", os.devnull, "-"],
                        input="int x;", capture_output=True, text=True)
     if p.returncode:
         print("PowerPC compiler probe failed:", p.stderr, file=sys.stderr)
@@ -456,7 +456,8 @@ int main(int argc,char** argv) {
             subprocess.run([str(executable),result['module']],check=True)
 
     def test_register_pair_module_executes(self):
-        # Leaf guest functions need no guest RAM: this executes the actual translated module.
+        # Execute the actual translated module with a valid guest stack.
+        # Stack realignment may give even a leaf function a stack frame.
         src = r'''
 #include "wwhd/bindings.h"
 WWHD_REPLACE(0x02000000, wwhd_gpr_pair, pair_result, (void)) {
@@ -475,6 +476,7 @@ WWHD_REPLACE(0x02000004, u32, pair_low, (wwhd_gpr_pair value)) {
 #include <windows.h>
 #else
 #include <dlfcn.h>
+#include <sys/mman.h>
 #endif
 int main(int argc, char** argv) {
     assert(argc == 2);
@@ -490,7 +492,18 @@ int main(int argc, char** argv) {
     WWHDGuestHostV1 host = {0}; host.size = sizeof(host);
     host.abi_version = WWHD_GUEST_ABI_VERSION; host.core_preempt = preempt;
     const WWHDGuestModuleV1* module = init(&host); assert(module && module->hook_count == 2);
+#ifdef _WIN32
+    void* stack = VirtualAlloc(ppc_ptr(0x20000000), 0x10000, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+    assert(stack == ppc_ptr(0x20000000));
+#else
+    void* stack = mmap(ppc_ptr(0x20000000), 0x10000, PROT_READ | PROT_WRITE,
+                       MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+    assert(stack == ppc_ptr(0x20000000));
+#endif
+    for (unsigned alignment = 0; alignment < 2; ++alignment) {
     Cpu cpu = {0}; int pairs = 0, lows = 0;
+    const uint32_t sp = 0x20008000 + alignment * 8;
+    cpu.r[1] = sp;
     for (uint32_t i = 0; i < module->hook_count; ++i) if (module->hooks[i].target == 0x02000000) {
         ++pairs; module->hooks[i].fn(&cpu);
         assert(cpu.r[3] == 0x11223344 && cpu.r[4] == 0x55667788);
@@ -500,9 +513,13 @@ int main(int argc, char** argv) {
         ++lows; module->hooks[i].fn(&cpu); assert(cpu.r[3] == 0x12345678);
     }
     assert(pairs == 1 && lows == 1);
+    assert(cpu.r[1] == sp);
+    }
 #ifdef _WIN32
+    assert(VirtualFree(stack, 0, MEM_RELEASE));
     FreeLibrary(library);
 #else
+    assert(munmap(stack, 0x10000) == 0);
     dlclose(library);
 #endif
     return 0;
@@ -519,6 +536,34 @@ int main(int argc, char** argv) {
                 command.append('-ldl')
             subprocess.run(command, check=True)
             subprocess.run([str(executable), result['module']], check=True)
+
+    def test_native_entry_stack_realignment(self):
+        # Reduced from the real #117 heap-frame failure, without its game
+        # consumer: preserve the same align16 local-frame/callback pattern.
+        fixtures=Path(HERE, 'fixtures')
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary)
+            executable=root/('driver.exe' if os.name=='nt' else 'driver')
+            command=cxx_command(builder.default_cc())+['-std=c++17','-O2','-Wall','-Wextra','-Werror',
+                '-I',str(Path(REPO,'runtime/include')),str(fixtures/'stack_realign.cpp'),'-o',str(executable)]
+            if sys.platform.startswith('linux'):
+                command.append('-ldl')
+            subprocess.run(command,check=True)
+            # Run identical ordinary C with and without the required producer
+            # flag. The negative control must expose all 64 SP8 entries.
+            for realign in (False, True):
+                with self.subTest(realign=realign):
+                    directory=root/('aligned' if realign else 'flagless');directory.mkdir()
+                    flags=FLAGS if realign else [flag for flag in FLAGS if flag!='-mstackrealign']
+                    subprocess.run([CLANG,*flags,'-c',str(fixtures/'stack_realign.c'),
+                                    '-o',str(directory/'mod.o')],check=True)
+                    subprocess.run([LLD,'-m','elf32ppc','-r',str(directory/'mod.o'),
+                                    '-o',str(directory/'mod.elf')],check=True)
+                    (directory/'manifest.json').write_text(json.dumps({'kind':'guest','id':'stack-entry',
+                        'guest':{'api_version':1}}))
+                    result=builder.build(str(directory),str(root/'cache'),0x7F000000,
+                        builder.default_cc(),str(Path(REPO,'runtime/include')))
+                    subprocess.run([str(executable),result['module'],'0' if realign else '64'],check=True)
 
     def test_nonvolatile_paired_single_module_boundaries(self):
         # Eighteen scalar float values force ordinary Clang C to use f14..f31.
@@ -551,12 +596,59 @@ int main(int argc, char** argv) {
             subprocess.run(command, check=True)
             subprocess.run([str(executable), result['module']], check=True)
 
+    def test_flagless_module_entry_stack_alignment(self):
+        src = r'''
+#include "wwhd/bindings.h"
+typedef struct __attribute__((aligned(16))) { u32 words[4]; } Local;
+WWHD_GAME_FUNC(0x02000010,u32,native,(Local*,u32*,u32*,u32,u32));
+#define PARAMETERS u32* out,u32 a,u32 b,u32 c,u32 d,u32 e,u32 f,u32 g,u32 ninth,u32 tenth,u32* escaped
+#define ARGUMENTS out,a,b,c,d,e,f,g,ninth,tenth,escaped
+static u32 body(PARAMETERS) {
+ Local local={{ninth,tenth,*escaped,a+b+c+d+e+f+g}};
+ u32 result=native(&local,out,escaped,ninth,tenth);
+ *out+=a+b+c+d+e+f+g;
+ return result;
+}
+WWHD_REPLACE(0x02000000,u32,legacy,(PARAMETERS)) { return body(ARGUMENTS); }
+WWHD_HOOK(0x02000004,legacy_entry,(PARAMETERS)) { (void)body(ARGUMENTS); }
+WWHD_HOOK_RETURN(0x02000004,legacy_return,(PARAMETERS)) { (void)body(ARGUMENTS); }
+'''
+        import shlex
+        with tempfile.TemporaryDirectory() as d:
+            # Deliberately omit the current SDK's realignment flag: this models old modules.
+            with mock.patch.object(sys.modules[__name__], 'FLAGS', [f for f in FLAGS if f != '-mstackrealign']):
+                self.build_elf(src, d)
+            Path(d, 'manifest.json').write_text(json.dumps({'kind':'guest','id':'legacy-stack','guest':{'api_version':1}}))
+            result=builder.build(d,str(Path(d,'cache')),0x7F000000,builder.default_cc(),str(Path(REPO,'runtime/include')))
+            cxx=shlex.split(os.environ['CXX']) if os.environ.get('CXX') else cxx_command(builder.default_cc())
+            executable=Path(d,'driver.exe' if os.name=='nt' else 'driver')
+            command=cxx+['-std=c++17','-O2','-I',str(Path(REPO,'runtime/include')),'-I',str(Path(REPO,'runtime/src')),
+                         str(Path(HERE,'fixtures/entry_stack_alignment.cpp')),'-o',str(executable)]
+            if sys.platform.startswith('linux'):command.append('-ldl')
+            subprocess.run(command,check=True)
+            subprocess.run([str(executable),result['module']],check=True)
+
     def test_errors(self):
         with self.assertRaises(guestmod.ModError):
             guestmod.Elf(b"not an elf at all" * 4)
 
 
 class BuildInterfaceTest(unittest.TestCase):
+    def test_all_module_entry_boundaries_use_the_stack_adapter(self):
+        import re
+        root = Path(REPO, 'runtime/src')
+        dispatch = (root/'core.cpp').read_text().split('extern "C" void ppc_dispatch(Cpu* c) {', 1)[1].split('// checking builds', 1)[0]
+        self.assertRegex(dispatch, r'invoke_module_entry\(c,\s*f\)')
+        self.assertLess(dispatch.index('dispatch::lookup'), dispatch.index('invoke_module_entry'))
+        self.assertIn('MUSTTAIL return f(c)', dispatch)
+        hooks = (root/'mods/guest_mods.cpp').read_text().split('extern "C" void ppc_mod_run(Cpu* c) {', 1)[1]
+        self.assertEqual(len(re.findall(r'invoke_module_entry\(c,\s*h\)', hooks)), 2)
+        self.assertRegex(hooks, r'invoke_module_entry\(c,\s*ch.replace\)')
+        self.assertEqual(hooks.count('ObserverRegisters preserve(c)'), 2)
+        adapter = (root/'guest_module_entry.h').read_text()
+        self.assertRegex(adapter, r'threads::current_stack_bounds\(cpu,\s*bounds.bottom,\s*bounds.top\)')
+
+
     def test_cxx_driver_keeps_setup_launcher_and_target(self):
         for cc, expected in (
             (['xcrun', 'clang'], ['xcrun', 'clang++']),

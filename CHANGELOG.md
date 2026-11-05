@@ -9,6 +9,18 @@ what is on `devel` and not released yet (also in the
 
 - **Editor: MCP access starts once the game is ready** (#386). With `--editor --mcp`, the MCP server now starts after
   the game code is loaded and all mods are initialized, so an early request can no longer read unloaded game memory.
+- **Setup on Windows: compiler unpacking shows progress** (#394, for #388, thanks @Sherisherisherisheri for the report).
+  Unpacking the compiler (about 10,000 files) now shows a "Unpacking the compiler … 4,200 of 10,412 files" line in the
+  console and the setup window instead of sitting silent for minutes. If unpacking fails, setup now says why (most
+  often an antivirus program locking a file, or a full disk) and what to do next, instead of only writing it to
+  setup.log. A complete earlier download is reused, and `tools/installer/README.md` explains how to unpack the
+  compiler yourself.
+- **Fixed for mod authors: C mods get a correctly aligned stack** (#387, #391). The game can call a mod with a stack
+  that is aligned to 8 bytes, while C code compiled for the game assumes 16, so a mod's local variables and the
+  pointers it passes to game functions could end up misaligned. Mods are now built with `-mstackrealign` (the SDK
+  docs, example Makefile and tests use it). Rebuild existing C mods from source to get the fix. Older mods that
+  aren't rebuilt get a best-effort safeguard: when the port can check the game's stack, it moves the mod's frame to
+  an aligned spot before the mod runs. Rebuilding is still the real fix.
 - **Fixed: GameCube controllers set up right away** (#392, for #356, thanks @itsarahtonin for the report). A recognized
   GameCube controller now gets the full GameCube layout without going through the generic new-controller setup, and
   L targets at a quarter of its travel or at the digital click. Existing controller profiles and shared bindings are
