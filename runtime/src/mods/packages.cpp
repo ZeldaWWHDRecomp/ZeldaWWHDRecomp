@@ -1,5 +1,6 @@
 #include "../exception_report.h"
 #include "packages.h"
+#include "build_constraint.h"
 #include "mod_stages_manifest.h"
 #include "story_game_objects_package.h"
 #include "manager.h"
@@ -177,6 +178,9 @@ Manifest manifest(const fs::path& path){
     if(!game_id_supported(string_field(v,"game_id",false,64)))m.problem="This package targets another game";
     auto minimum=string_field(v,"minimum_manager_version",true,64);
     if(!minimum.empty()&&version(minimum)>version(kManagerVersion))m.problem="This mod needs a newer version of the game (mod manager "+minimum+"; this one has "+std::string(kManagerVersion)+")";
+    auto build_problem=game_build_constraint_problem(v,
+        !minimum.empty()&&version(minimum)>=version("1.8.0"));
+    if(m.problem.empty()&&!build_problem.empty())m.problem=std::move(build_problem);
     m.save_profile=save_profile::parse(v,m.kind=="guest",
         !minimum.empty()&&version(minimum)>=version(save_profile::kMinimumManagerVersion));
     bool world_declarations = false;

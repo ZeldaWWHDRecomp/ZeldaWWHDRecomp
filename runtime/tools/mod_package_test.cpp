@@ -372,6 +372,31 @@ int main(int argc, char** argv) {
         fs::rename(moved,source);
         assert(!inspected&&!loaded&&!view("gc-guest").active);return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--game-build-constraint") {
+        auto root=unique_temp("wwhd-build-constraint-");
+        env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+        initialize();std::string error;
+        auto candidate=[&](const std::string& id,const std::string& builds,const std::string& minimum) {
+            auto dir=root/id;fs::create_directories(dir);
+            std::ofstream(dir/"manifest.json")<<R"({"format_version":1,"id":")"+id+
+                R"(","name":")"+id+R"(","version":"1.0.0","game_id":"wwhd","kind":"settings","settings":{"wall-climb":true},"supported_game_builds":)"+builds+
+                (minimum.empty()?"":R"(,"minimum_manager_version":")"+minimum+R"(")")+"}";
+            return dir.string();
+        };
+        assert(install(candidate("usa",R"(["USA"])" ,"1.8.0"),error));
+        assert(view("usa").compatible);
+        assert(install(candidate("both",R"(["USA","EUR"])" ,"1.8.0"),error));
+        assert(view("both").compatible);
+        assert(!install(candidate("eur",R"(["EUR"])" ,"1.8.0"),error));
+        assert(error.find("EUR")!=std::string::npos&&error.find("USA")!=std::string::npos);
+        for(const auto& minimum:{std::string(),std::string("1.7.0")}) {
+            assert(!install(candidate("unguarded",R"(["USA"])" ,minimum),error));
+            assert(error.find("requires minimum_manager_version 1.8.0")!=std::string::npos);
+        }
+        fs::remove_all(root);
+        std::cout<<"Actual manifest parser accepts USA/multiple builds and rejects EUR/missing or old capability guard\n";
+        return 0;
+    }
     // manifest game IDs: "wwhd" (any region, manager 1.5) and "wwhd-usa" (older manifests) are this game
     if(argc==2&&std::string(argv[1])=="--game-id") {
         namespace fs=std::filesystem;

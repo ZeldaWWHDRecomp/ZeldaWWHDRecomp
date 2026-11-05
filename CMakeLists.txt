@@ -4136,6 +4136,10 @@ target_include_directories(map_hud_native_test PRIVATE runtime/include runtime/s
 target_compile_options(map_hud_native_test PRIVATE -UNDEBUG)
 add_test(NAME map_hud_native COMMAND map_hud_native_test)
 
+add_executable(mod_build_constraint_test runtime/tools/mod_build_constraint_test.cpp)
+target_include_directories(mod_build_constraint_test PRIVATE runtime/src runtime/include)
+target_compile_options(mod_build_constraint_test PRIVATE -UNDEBUG)
+add_test(NAME mod_build_constraint COMMAND mod_build_constraint_test)
 # Declarative guest save ownership: native filesystem/cloud and state guards.
 add_executable(save_profile_test runtime/tools/save_profile_test.cpp)
 target_include_directories(save_profile_test PRIVATE runtime/src runtime/include)
@@ -4155,3 +4159,5 @@ endforeach()
 foreach(mode format damaged shape size)
   add_test(NAME mod_profile_read_failure_${mode} COMMAND mod_package_test --profile-read-failure ${mode})
 endforeach()
+
+add_test(NAME mod_game_build_constraint COMMAND mod_package_test --game-build-constraint)
