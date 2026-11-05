@@ -48,9 +48,13 @@ same values.
   full-size torchlight. They apply at once. The rest (renderer, aspect ratio, HDR, ambient occlusion
   and more) is in the Settings window's Graphics tab.
 - **Game:** the built-in gameplay mods that apply while the game runs: quick doors, fast scene
-  changes, fast forward, jump anywhere, climbing, run/swim speed, enemy lock-on, quick-use items,
+  changes, fast forward, jump anywhere, Deku Leaf: wave to rise, climbing, run/swim speed, enemy lock-on, quick-use items,
   ladders, sidling, ivy, ledges, sailing speed, automatic wind. Their finer options (speeds, buttons)
   are in the Settings window's Mods tab.
+  - *Deku Leaf: wave to rise*: while Link glides on the Deku Leaf, each wave of the leaf (its button
+    again) lifts him a little; holding the button waves on. The height of one wave (50 %, 100 %,
+    150 % or 200 %) is in the Mods tab. The glide still uses magic. (Idea from the GreenNaugahyde
+    Android fork.)
 - **Mods:** options of your enabled mods that their authors put on the page. An option that only
   applies at the next start says so.
 

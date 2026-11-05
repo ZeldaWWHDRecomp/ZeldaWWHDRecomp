@@ -96,7 +96,8 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==20);  // with camera-directed-items (#203) and quick-use (#196)
+    assert(entries().size()==21);  // with camera-directed-items (#203), quick-use (#196) and leaf-rise
+    assert(find("leaf-rise") && !find("leaf-rise")->default_enabled);
     assert(find("camera-directed-items") && find("quick-use"));
     for(const auto& option:traversal_options()) env(option.startup_env,nullptr);
     env("WWHD_MOD_LOCK_ON_RANGE",nullptr);env("WWHD_MOD_LOCK_ON_CYCLING",nullptr);

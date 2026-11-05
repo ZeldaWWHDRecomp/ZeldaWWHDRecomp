@@ -620,6 +620,9 @@ void install_menu(NSWindow* tv) {
     toggle(gp, @"Jump anywhere (L by default)", ^BOOL { return mods::jump_anywhere(); },
            ^(BOOL on) { mods::manager::set_enabled("jump-anywhere", on); },
            @"Choose the button, double jump and automatic ledge jumps in Settings > Mods > Gameplay");
+    toggle(gp, @"Deku Leaf: wave to rise", ^BOOL { return mods::leaf_rise(); },
+           ^(BOOL on) { mods::manager::set_enabled("leaf-rise", on); },
+           @"While gliding, each wave of the leaf lifts Link a little; choose the height in Settings > Mods > Gameplay");
     toggle(gp, @"Fast forward cutscenes and dialogue (hold ZR by default)", ^BOOL { return mods::fast_forward(); },
            ^(BOOL on) { mods::manager::set_enabled("fast-forward", on); }, @"Choose the speed, hold button and audio setting in Settings > Mods > Gameplay");
     toggle(gp, @"Fast scene changes", ^BOOL { return mods::fast_scenes(); }, ^(BOOL on) { mods::set_fast_scenes(on); },
