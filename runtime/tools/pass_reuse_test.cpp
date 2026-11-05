@@ -96,6 +96,46 @@ int main() {
     p4.addr[1] = 0;
     assert(subset_absent(p4, draw, none, 0) == 0);
   }
+  // the cheap comparison alone (no texture registers read): the same answer before the sampling check
+  {
+    assert(subset_candidates(pass, draw) == 0b10);
+    assert(subset_candidates(pass, pass) == 0);
+    Targets t = draw;
+    t.width = 1280;
+    assert(subset_candidates(pass, t) == 0);
+    const uint32_t hit[] = {0x20000000u};
+    assert(samples_absent(pass, 0b10, hit, 1) && !samples_absent(pass, 0, hit, 1));
+  }
+  // a target's memory as invalidation_hits counts it: the larger of its data size and pitch x height x
+  // slices x bytes per block
+  assert(target_bytes(0x1000, 256, 64, 1, 4) == 0x10000);
+  assert(target_bytes(0x20000, 256, 64, 1, 4) == 0x20000);
+  assert(target_bytes(0, 256, 64, 6, 4) == 6 * 0x10000);
+  assert(target_bytes(0, 256, 64, 0, 4) == 0x10000);  // (no slice count: one)
+  assert(target_bytes(0, 0x10000, 0x10000, 4, 16) == 0xFFFFFFFFu);  // clamped
+  {
+    // a sampled address past the data size but inside the pitch-padded size (a wide pitch) hits
+    Targets p5 = pass;
+    p5.bytes[1] = target_bytes(0x1000, 1024, 544, 1, 1);  // pitch-padded: 0x88000
+    const uint32_t s5[] = {0x20004000u};
+    assert(subset_absent(p5, draw, s5, 1) == 0);
+    // a later slice of an array target
+    p5.bytes[1] = target_bytes(0x80000, 1024, 512, 2, 1);
+    const uint32_t s6[] = {0x200C0000u};
+    assert(subset_absent(p5, draw, s6, 1) == 0);
+  }
+  // the absent target's mip chain: a texture whose base or mip base (WORD3) is in it ends the pass
+  {
+    Targets p6 = pass;
+    p6.mipAddr[1] = 0x28000000u;
+    const uint32_t s7[] = {0x30000000u, 0x28000100u};  // base elsewhere, mip base inside the chain
+    assert(subset_absent(p6, draw, s7, 2) == 0);
+    const uint32_t s8[] = {0x30000000u, 0x30040000u};
+    assert(subset_absent(p6, draw, s8, 2) == 0b10);
+    // a sampled mip base inside the target's base memory
+    const uint32_t s9[] = {0x40000000u, 0x20010000u};
+    assert(subset_absent(pass, draw, s9, 2) == 0);
+  }
   // samples_target edge cases
   assert(!samples_target(0, 0x1000, 0x100));
   assert(!samples_target(0x1000, 0, 0x100));
