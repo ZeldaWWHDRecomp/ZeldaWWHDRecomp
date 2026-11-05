@@ -124,6 +124,16 @@ void loader(uint32_t gen, std::string basePack, std::vector<Want> wants, std::sh
             if (!m) {
                 Bytes szs, b;
                 if (w.szs.empty() || !read_file(w.szs, szs) || !bfres_of_szs(szs, b)) {
+                    // its file gone (the package removed while the model is shown): the one made before stays, so
+                    // its own words can take it out
+                    if (had && had->basePack == set->basePack)
+                        for (auto& h : had->models)
+                            if (h->id == w.id) m = h;
+                    if (m) {
+                        LOG("[playermodel] %s: its file is gone; kept until it is taken out", w.id.c_str());
+                        set->models.push_back(m);
+                        continue;
+                    }
                     LOG("[playermodel] %s: no converted model at %s", w.id.c_str(), w.szs.c_str());
                     continue;
                 }
