@@ -72,6 +72,9 @@ bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1
 bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
 bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
 bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
+static int door_mode_v = 0; static bool doors_by_a = false;
+DoorMode door_mode() { return DoorMode(door_mode_v); } void set_door_mode(DoorMode m) { door_mode_v = int(m); }
+bool walk_doors_by_a() { return doors_by_a; } void set_walk_doors_by_a(bool b) { doors_by_a = b; }
 bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=b; }
 bool quick_use() { return state[6]; } void set_quick_use(bool b) { state[6]=b; }
 static float quick_speed = 1.f;

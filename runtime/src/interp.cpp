@@ -1465,6 +1465,7 @@ void reticle_reset();
 void ss_reset() {
     mods::moon_jump_reset();
     mods::jump_reset();
+    mods::walk_doors_reset();
     countdown::reset();
     for (auto& p : g_prev) p = Prev{};
     g_models.clear();

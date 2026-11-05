@@ -68,6 +68,9 @@ bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1
 bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
 bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
 bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
+static int door_mode_v = 0; static bool doors_by_a = false;
+DoorMode door_mode() { return DoorMode(door_mode_v); } void set_door_mode(DoorMode m) { door_mode_v = int(m); }
+bool walk_doors_by_a() { return doors_by_a; } void set_walk_doors_by_a(bool b) { doors_by_a = b; }
 bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=b; }
 bool quick_use() { return state[6]; } void set_quick_use(bool b) { state[6]=b; }
 static float quick_speed = 1.f;
@@ -125,6 +128,19 @@ int main() {
     disable_all(); assert(!mods::camera_directed_items());
     load_saved(); for(bool on:state) assert(!on); // stock defaults stay off
     assert(!mods::ladder_speed() && !mods::sidle_speed() && !mods::sail_speed() && !mods::auto_wind());
+    // Quick doors' mode (Faster by default, Walk through) and walk-through doors opening with A (off by default)
+    env("WWHD_MOD_DOOR_MODE",nullptr);env("WWHD_MOD_WALK_DOORS_A",nullptr);
+    assert(mods::door_mode()==mods::kDoorFaster && !mods::walk_doors_by_a());
+    preferences["mod.quick-doors.mode"]="walk";preferences["mod.quick-doors.by-a"]="1";
+    load_saved();assert(mods::door_mode()==mods::kDoorWalk && mods::walk_doors_by_a());
+    preferences["mod.quick-doors.mode"]="sideways";preferences["mod.quick-doors.by-a"]="yes";
+    load_saved();assert(mods::door_mode()==mods::kDoorWalk && mods::walk_doors_by_a());  // invalid values: unchanged
+    preferences["mod.quick-doors.mode"]="faster";preferences["mod.quick-doors.by-a"]="0";
+    env("WWHD_MOD_DOOR_MODE","walk");env("WWHD_MOD_WALK_DOORS_A","1");
+    load_saved();assert(mods::door_mode()==mods::kDoorWalk && mods::walk_doors_by_a());  // the start-up switches win
+    env("WWHD_MOD_DOOR_MODE",nullptr);env("WWHD_MOD_WALK_DOORS_A",nullptr);
+    load_saved();assert(mods::door_mode()==mods::kDoorFaster && !mods::walk_doors_by_a());
+    preferences.erase("mod.quick-doors.mode");preferences.erase("mod.quick-doors.by-a");
     env("WWHD_MOD_QUICK_USE_SPEED",nullptr);
     assert(mods::quick_use_speed()==1.f);
     load_saved();assert(mods::quick_use_speed()==1.f);

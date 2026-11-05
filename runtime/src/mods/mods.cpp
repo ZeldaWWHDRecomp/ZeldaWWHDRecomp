@@ -5,7 +5,7 @@
 //   WWHD_MOD_MOUSE_CAMERA=1    mouse camera (WWHD_MOD_MOUSE_SENS=0.15 degrees per point)
 //   WWHD_MOD_FIRST_PERSON=1    first person on R3 / mouse wheel
 //   WWHD_MOD_QUICK_USE=1       one-press items against locked enemies (quick_use.cpp)
-//   WWHD_MOD_QUICK_DOORS=1     quick doors
+//   WWHD_MOD_QUICK_DOORS=1     quick doors (WWHD_MOD_DOOR_MODE=walk: walk through, WWHD_MOD_WALK_DOORS_A=1 with A)
 //   WWHD_MOD_FAST_SCENES=1     fast scene changes
 //   WWHD_MODS_TRACE=path       log of mod decisions and timing events (door events, scene changes,
 //                              Link's control), one line per event with the logic step
@@ -45,6 +45,11 @@ std::atomic<bool> g_mouse{env_on("WWHD_MOD_MOUSE_CAMERA")};
 std::atomic<float> g_sens{env_f("WWHD_MOD_MOUSE_SENS", 0.15f)};
 std::atomic<bool> g_fp{env_on("WWHD_MOD_FIRST_PERSON")};
 std::atomic<bool> g_doors{env_on("WWHD_MOD_QUICK_DOORS")};
+std::atomic<int> g_door_mode{[] {
+    const char* e = getenv("WWHD_MOD_DOOR_MODE");
+    return e && std::string(e) == "walk" ? int(kDoorWalk) : int(kDoorFaster);
+}()};
+std::atomic<bool> g_doors_by_a{env_on("WWHD_MOD_WALK_DOORS_A")};
 std::atomic<bool> g_move{env_on("WWHD_MOD_MOVE_SPEED")};
 std::atomic<int> g_move_mode{(int)MoveMode::kHold};
 // WWHD_MOD_MOVE_ANIM=native|dash|sprint is the animation test aid.
@@ -150,6 +155,17 @@ bool first_person_wheel() { return g_fp.load(std::memory_order_relaxed); }
 void set_first_person_wheel(bool on) { g_fp = on; note("first person on R3 / mouse wheel", on); }
 bool quick_doors() { return g_doors.load(std::memory_order_relaxed); }
 void set_quick_doors(bool on) { g_doors = on; note("quick doors", on); }
+DoorMode door_mode() { return DoorMode(g_door_mode.load(std::memory_order_relaxed)); }
+void set_door_mode(DoorMode m) {
+    g_door_mode = int(m);
+    LOG("[mods] quick doors: %s", m == kDoorWalk ? "walk through" : "faster");
+}
+bool walk_doors() { return quick_doors() && door_mode() == kDoorWalk; }
+bool walk_doors_by_a() { return g_doors_by_a.load(std::memory_order_relaxed); }
+void set_walk_doors_by_a(bool on) {
+    g_doors_by_a = on;
+    LOG("[mods] walk-through doors open %s", on ? "with A" : "when Link comes near");
+}
 bool fast_scenes() { return g_scenes.load(std::memory_order_relaxed); }
 void set_fast_scenes(bool on) { g_scenes = on; note("fast scene changes", on); }
 

@@ -3,6 +3,7 @@
 //   lock_on.cpp optional enemy range and R3 cycling through the native eligible list
 //   mouse.mm    mouse capture in the game window (macOS events)
 //   turbo.cpp   quick doors and fast scene changes (extra logic steps while they run)
+//   walk_doors.cpp  Quick doors' walk-through mode (doors open as Link comes near, no door scene)
 //   cheats.cpp  items, sword/shield, stats, infinite health/magic/ammo, songs, Triforce, dungeon items
 // Test/start-up switches: WWHD_MOD_<NAME>=1 (see mods.cpp).
 #pragma once
@@ -45,6 +46,27 @@ void quick_use_filter_pad(input::PadState& s);
 void quick_use_reset();  // drop transient/pending input on capture, focus loss and savestates
 bool quick_doors();
 void set_quick_doors(bool on);
+// Quick doors' mode: Faster (door scenes run four times as fast) or Walk through (walk_doors.cpp: dungeon
+// shutters and house doors open as Link comes near, he walks through himself, no door scene; the door scenes
+// that still run, such as locked doors, run fast as in Faster)
+enum DoorMode { kDoorFaster = 0, kDoorWalk = 1 };
+DoorMode door_mode();
+void set_door_mode(DoorMode m);
+bool walk_doors();                // quick_doors() and door_mode() == kDoorWalk
+bool walk_doors_by_a();           // walk-through doors open with A (the game's "Open" prompt), not on coming near
+void set_walk_doors_by_a(bool on);
+bool walk_door_exit();            // walk_doors.cpp: Link went into the doorway of a house door: its scene change runs fast
+void walk_doors_reset();          // game thread after a save state load
+// fpcM_Execute's per-process gate (true60.cpp): a door's execute runs walk_doors.cpp's for this call
+class DoorExecuteWrap {
+public:
+    explicit DoorExecuteWrap(uint32_t proc);
+    ~DoorExecuteWrap();
+    DoorExecuteWrap(const DoorExecuteWrap&) = delete;
+    DoorExecuteWrap& operator=(const DoorExecuteWrap&) = delete;
+private:
+    uint32_t slot_ = 0, game_ = 0;
+};
 bool fast_scenes();
 void set_fast_scenes(bool on);
 

@@ -610,7 +610,6 @@ void register_game() {
     // (short names and help lines of the page's own, translated in game_settings_text.h; the Settings window
     // keeps the catalogue's longer descriptions)
     static const struct { const char *id, *label, *help; } kGame[] = {
-        {"quick-doors", "Quick doors", "Doors open and close four times as fast."},
         {"fast-scenes", "Fast scene changes", "Shorter waits when the game loads a new place."},
         {"fast-forward", "Fast forward scenes and talks", "Hold the fast forward button to speed up cutscenes and dialogue."},
         {"jump-anywhere", "Jump anywhere", "A button of its own makes Link jump, standing or running."},
@@ -625,6 +624,36 @@ void register_game() {
         {"sail-speed", "Sailing speed", "The boat sails faster."},
         {"auto-wind", "Automatic wind", "The wind follows the boat with the normal sail too."},
     };
+    {  // Quick doors: Off, Faster (the door scenes four times as fast) or Walk through (walk_doors.cpp)
+        Item it;
+        it.id = "quick-doors", it.tab = "game", it.label = "Quick doors", it.kind = Kind::Choice;
+        it.help = "Faster: doors open and close four times as fast. Walk through: doors open as Link walks up.";
+        it.choices = {"Off", "Faster", "Walk through"};
+        it.get = [] { return !mods::quick_doors() ? 0.0f : mods::door_mode() == mods::kDoorWalk ? 2.0f : 1.0f; };
+        it.set = [](float v) {
+            const int c = std::clamp(int(std::lround(v)), 0, 2);
+            if (c) {
+                mods::set_door_mode(c == 2 ? mods::kDoorWalk : mods::kDoorFaster);
+                hostui::set("mod.quick-doors.mode", c == 2 ? "walk" : "faster");
+                mods::packages::remember_option("quick-doors.mode", float(c - 1));
+            }
+            mods::manager::set_enabled("quick-doors", c != 0);
+        };
+        add(std::move(it));
+    }
+    {
+        Item it;
+        it.id = "quick-doors.by-a", it.tab = "game", it.label = "Walk-through doors open with A", it.kind = Kind::Toggle;
+        it.help = "The doors wait for A on their Open prompt instead of opening as Link walks up.";
+        it.get = [] { return mods::walk_doors_by_a() ? 1.0f : 0.0f; };
+        it.set = [](float v) {
+            mods::set_walk_doors_by_a(v >= 0.5f);
+            hostui::set("mod.quick-doors.by-a", v >= 0.5f ? "1" : "0");
+            mods::packages::remember_option("quick-doors.by-a", v >= 0.5f);
+        };
+        it.enabled = [] { return mods::walk_doors(); };
+        add(std::move(it));
+    }
     for (const auto& g : kGame) {
         const auto* e = mods::manager::find(g.id);
         if (!e || e->restart_required) continue;  // (the page applies live only)

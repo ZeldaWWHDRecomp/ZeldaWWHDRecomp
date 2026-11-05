@@ -45,7 +45,6 @@ void f_025DF940(Cpu* c);       // fpcM_Execute (true60's per-process gate runs t
 void f_0252A684_orig(Cpu* c);  // dDoor_info_c::getDemoAction
 void f_021C0078_orig(Cpu* c);  // daMbdoor_c::getDemoAction
 void f_025DC86C_orig(Cpu* c);  // fopScnM_ChangeReq
-void f_025D7710_orig(Cpu* c);  // fopAcM_orderDoorEvent
 void f_025D57E0(Cpu* c);       // fopAcM_delete
 }
 
@@ -247,7 +246,8 @@ void after_execute(Cpu* c, uint32_t execute_fn) {
             for (size_t k = 0; k < sizeof kTrigWords / sizeof *kTrigWords; k++) st32(pad + kTrigWords[k], saved[k]);
     }
     // fast scene changes: transition machinery only
-    if (fast_scenes()) {
+    // (also while Link walks into a house doorway with walk-through doors: walk_doors.cpp)
+    if (fast_scenes() || walk_door_exit()) {
         for (int i = 0; i < kSceneExtra && overlap_active(); i++) {
             uint32_t ovl_req = ld32(kOverlap);
             uint32_t task = ovl_req ? ld32(ovl_req + kOvlpTask) : 0;
@@ -289,10 +289,6 @@ extern "C" void hook_021C0078(Cpu* c) {
     f_021C0078_orig(c);
     g_door_cut = true;
 }
-
-// fopAcM_orderDoorEvent(Link, door): Link's A on a door's "Open" prompt orders the door event. Hooked for
-// the walk-through mode of Quick doors (opening with A); for now it only passes the call on.
-extern "C" void hook_025D7710(Cpu* c) { f_025D7710_orig(c); }
 
 // fopScnM_ChangeReq: scene change trigger (traces only)
 extern "C" void hook_025DC86C(Cpu* c) {

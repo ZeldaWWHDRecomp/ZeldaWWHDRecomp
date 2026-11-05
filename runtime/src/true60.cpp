@@ -677,6 +677,7 @@ static void rx_log(uint32_t proc, uint32_t s0) {
 }
 extern "C" void hook_025DF940(Cpu* c) {
     uint32_t proc = c->r[3];
+    mods::DoorExecuteWrap door_wrap{proc};  // Quick doors' walk-through mode (mods/walk_doors.cpp)
     uint32_t rx_s0 = ld32(kRndSeeds);
     struct WatchGuard { uint32_t p, v; ~WatchGuard() { watch_link("execute", p, v); } } watch_guard{proc, watch_val()};
     struct RxLog { uint32_t p, s; ~RxLog() { rx_log(p, s); } } rx_guard{proc, rx_s0};
