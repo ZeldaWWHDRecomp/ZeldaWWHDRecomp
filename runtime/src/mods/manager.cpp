@@ -3,6 +3,7 @@
 #include "mods.h"
 #include "climb.h"
 #include "game_progress_host.h"
+#include "achievements_host.h"
 #include "../overlay/hostui.h"
 #include <cstdlib>
 #include <cmath>
@@ -79,6 +80,10 @@ const Entry catalogue[] = {
      "How far your save file is: a percent and a checklist of what you have collected and what is still missing, and a "
      "map of where each thing is found. On the item menu's settings page (Game tab); optionally the percent on screen.",
      "WWHD_MOD_GAME_PROGRESS", game_progress::enabled, game_progress::set_enabled},
+    {"achievements", "Achievements", "Game",
+     "99 goals, from the story to the Savage Labyrinth, read from your save data and earned for good, for all save games "
+     "and for each one, with a pop-up of Link holding each one up. Cheats pause them unless Earn with cheats is on.",
+     "WWHD_MOD_ACHIEVEMENTS", achievements::enabled, achievements::set_enabled},
     {"fast-scenes", "Fast scene changes", "Gameplay",
      "Speed up fades and scene transitions while keeping ordinary gameplay at normal speed.",
      "WWHD_MOD_FAST_SCENES", fast_scenes, set_fast_scenes},
@@ -151,6 +156,25 @@ void load_saved() {
     if (!std::getenv("WWHD_MOD_PROGRESS_ON_SCREEN")) {
         std::string v;
         if (hostui::get("mod.game-progress.on-screen", v) && (v == "0" || v == "1")) game_progress::set_on_screen(v == "1");
+    }
+    {  // Achievements' options (overlay.cpp writes them)
+        achievements::Settings a = achievements::settings();
+        auto flag = [](const char* key, bool& out) {
+            std::string v;
+            if (hostui::get(key, v) && (v == "0" || v == "1")) out = v == "1";
+        };
+        flag("mod.achievements.popup", a.popup);
+        flag("mod.achievements.link", a.link);
+        flag("mod.achievements.jingle", a.jingle);
+        flag("mod.achievements.each-file", a.each_file);
+        flag("mod.achievements.with-cheats", a.with_cheats);
+        std::string v;
+        if (hostui::get("mod.achievements.volume", v) && !v.empty()) {
+            char* end = nullptr;
+            const float f = std::strtof(v.c_str(), &end);
+            if (end != v.c_str() && *end == '\0' && f >= 0 && f <= 1) a.volume = f;
+        }
+        achievements::set_settings(a);
     }
     if (!std::getenv("WWHD_MOD_LOCK_ON_CYCLING")) {
         std::string v;

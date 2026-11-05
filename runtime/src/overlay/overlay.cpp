@@ -59,6 +59,7 @@
 #include "hostui.h"
 #include "../mods/link_poses.h"
 #include "../mods/game_progress_host.h"
+#include "../mods/achievements_host.h"
 #include "../mods/menu_sounds_port.h"
 #include "../mods/code_mods.h"
 #include "../mods/save_folder.h"
@@ -1765,7 +1766,55 @@ void restart_notice_frame(bool draw) {
 
 // A built-in mod's options on its page (Mods > the mod).
 void builtin_options(const std::string& id) {
-    if (id == "game-progress") {  // (game_progress.cpp): its option, and the count of the save in play
+    if (id == "achievements") {  // (achievements.cpp): its options, what pauses them, the goals
+        achievements::Settings a = achievements::settings();
+        auto save = [](const achievements::Settings& s) {
+            hostui::post([s] {
+                achievements::set_settings(s);
+                hostui::set("mod.achievements.popup", s.popup ? "1" : "0");
+                hostui::set("mod.achievements.link", s.link ? "1" : "0");
+                hostui::set("mod.achievements.jingle", s.jingle ? "1" : "0");
+                hostui::set("mod.achievements.each-file", s.each_file ? "1" : "0");
+                hostui::set("mod.achievements.with-cheats", s.with_cheats ? "1" : "0");
+                hostui::set("mod.achievements.volume", std::to_string(s.volume));
+            });
+        };
+        bool changed = false;
+        changed |= ImGui::Checkbox("Pop-up on screen", &a.popup);
+        changed |= ImGui::Checkbox("Link holds it up", &a.link);
+        changed |= ImGui::Checkbox("Jingle (the game's item fanfare)", &a.jingle);
+        changed |= ImGui::SliderFloat("Jingle volume", &a.volume, 0.f, 1.f, "%.2f");
+        changed |= ImGui::Checkbox("Pop-ups in every save game", &a.each_file);
+        help("On: each save game earns its own and shows them again. Off: only achievements no save game had before.");
+        changed |= ImGui::Checkbox("Earn with cheats", &a.with_cheats);
+        help("On: cheats no longer pause achievements.");
+        if (changed) save(a);
+        const achievements::View v = achievements::view();
+        if (!v.pausing.empty()) {
+            std::string p;
+            for (const auto& s : v.pausing) p += (p.empty() ? "" : ", ") + s;
+            note("Paused now: %s.", p.c_str());
+        }
+        unsigned all = 0, here = 0;
+        for (const auto& r : v.rows) all += r.all != 0, here += r.file != 0;
+        ImGui::Text("All save games: %u of %zu earned", all, v.rows.size());
+        if (!v.file.empty()) ImGui::Text("This save game: %u of %zu earned", here, v.rows.size());
+        static const char* const groups[achievements::kGroups] = {"Story", "Items and upgrades", "Songs", "Side quests", "Collections", "Nintendo Gallery"};
+        for (int g = 0; g < achievements::kGroups; g++) {
+            if (!ImGui::TreeNode(groups[g])) continue;
+            for (const auto& r : v.rows)
+                if (r.group == g) ImGui::Text("%s %s (%u): %s", r.all ? "[x]" : "[ ]", r.title.c_str(), r.points, r.desc.c_str());
+            ImGui::TreePop();
+        }
+        static bool ask = false;
+        if (!ask && ImGui::Button("Reset achievements")) ask = true;
+        if (ask) {
+            ImGui::TextUnformatted("All of them become open again, for every save game.");
+            if (ImGui::Button("Reset")) hostui::post([] { achievements::reset(); }), ask = false;
+            ImGui::SameLine();
+            if (ImGui::Button("Keep them")) ask = false;
+        }
+    } else if (id == "game-progress") {  // (game_progress.cpp): its option, and the count of the save in play
         bool shown = game_progress::on_screen();
         if (ImGui::Checkbox("Percent on screen", &shown))
             hostui::post([shown] { game_progress::set_on_screen(shown); hostui::set("mod.game-progress.on-screen", shown ? "1" : "0"); });

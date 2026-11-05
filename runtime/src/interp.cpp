@@ -1,5 +1,6 @@
 #include "mods/map_hud.h"
 #include "mods/game_progress_host.h"
+#include "mods/achievements_host.h"
 #include "interp.h"
 #include "dsweep.h"
 #include "mods/story_native_restore_resume.h"
@@ -2001,6 +2002,7 @@ extern "C" void hook_0203593C(Cpu* c) {
         true60_test::logic_step(g_logic_steps);
         mods::play_context_step();  // once per full logic step (the context buttons' reading)
         game_progress::service(c);  // built-in Game progress: the count of the save in play (off: nothing read)
+        achievements::service(c);   // built-in Achievements: the check once a second, the pop-up (off: nothing read)
     }
     if (!enabled()) {
         g_hold_next = false;
