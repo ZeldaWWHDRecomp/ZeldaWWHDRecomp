@@ -130,7 +130,7 @@ bool leaf_rise();                         // while gliding, each wave of the lea
 void set_leaf_rise(bool on);
 float leaf_rise_height();                 // percent of the default lift's height (25..400, default 100)
 void set_leaf_rise_height(float percent);
-void leaf_step(uint32_t link);            // after daPy_lk_c::execute (climb.cpp)
+void leaf_step(Cpu* c, uint32_t link);    // after daPy_lk_c::execute (climb.cpp)
 void leaf_filter_pad(input::PadState& s); // the held button waves on (camera.cpp filter_pad)
 // controller_play.cpp: L and d-pad down by whether Link plays (VPAD/KPAD full reads), and which
 // on-screen Jump / Moon jump buttons show (input::kVirt* bits)

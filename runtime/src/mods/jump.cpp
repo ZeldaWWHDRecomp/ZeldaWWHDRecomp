@@ -26,7 +26,8 @@
 // Deku Leaf: wave to rise (its own switch, off by default; the rules in leaf_lift.h): after Link's step, a wave of
 // the leaf while gliding raises speed.y to the lift and keeps the glide's gravity; held, the leaf's item button
 // waves on. Off means identical: no guest reads or writes. From GreenNaugahyde/ZeldaWWHDRecompAndroid db65d60
-// (MPL-2.0), mods/jump.cpp. WWHD_LEAF_LOG=1 logs each lift.
+// (MPL-2.0), mods/jump.cpp. WWHD_LEAF_LOG=1 logs each lift, WWHD_LEAF_TRACE=1 each glide step whose gravity
+// changed.
 // WWHD_JUMP_LOG=1 logs each jump.
 #include <atomic>
 #include <cstdlib>
@@ -185,7 +186,23 @@ void leaf_reset() {
     g_leaf_gliding = false;
 }
 
-void leaf_step(uint32_t link) {
+// test aid: WWHD_TEST_LEAF_GLIDE=step: from that logic step on, Link falling (procFall) opens the Deku Leaf into
+// a glide (procFanGlide_init 0241A3C4), as its button does in the air; for scripted runs that put him in the air
+// with WWHD_LINK_WARP (the tests need no ledge). Off by default; not a player option.
+void leaf_test_glide(Cpu* c, uint32_t link) {
+    static const uint64_t from = [] { const char* e = getenv("WWHD_TEST_LEAF_GLIDE"); return e ? strtoull(e, nullptr, 10) : ~0ull; }();
+    if (step() < from || link < 0x10000 || link > 0xFFFF9000 || true60::dt() < 1.f) return;
+    static uint64_t done_at = ~0ull;
+    if (ld32(link + kCurProc) != 0x27 || step() - done_at < 60) return;  // procFall; once per fall
+    done_at = step();
+    const Cpu saved = *c;
+    guest_call(c, GC(0x0241A3C4), {link, 0});
+    *c = saved;
+    LOG("[leaf] test: the fall became a glide (proc 0x%X)", ld32(link + kCurProc));
+}
+
+void leaf_step(Cpu* c, uint32_t link) {
+    leaf_test_glide(c, link);
     if (!leaf_rise()) {
         g_glide = {};
         g_leaf_gliding = false;
@@ -194,6 +211,16 @@ void leaf_step(uint32_t link) {
     if (link < 0x10000 || link > 0xFFFF9000 || true60::dt() < 1.f) return;  // (full logic steps only)
     if (link != g_leaf_link.exchange(link)) g_glide = {};
     const uint32_t proc = ld32(link + kCurProc);
+    static const bool trace = getenv("WWHD_LEAF_TRACE") != nullptr;  // each glide step whose gravity changed
+    if (trace) {
+        static uint32_t last_proc = ~0u;
+        static float last_g = 99;
+        const float g = ldf32(link + kGravity);
+        if (proc != last_proc || (proc == leaf_lift::kProcFanGlide && g != last_g))
+            LOG("[leaf] step %llu: proc 0x%X, gravity %.2f, speed.y %.2f", (unsigned long long)step(), proc, g,
+                ldf32(link + kSpeedY));
+        last_proc = proc, last_g = g;
+    }
     g_leaf_gliding = proc == leaf_lift::kProcFanGlide;
     const float vy = ldf32(link + kSpeedY);
     const leaf_lift::Lifted l =
