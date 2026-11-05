@@ -71,6 +71,7 @@
 #include "runtime.h"
 #include "mods/story_world_arrival.h"
 #include "overlay/editor_panel.h"
+#include "overlay/randomizer_tab.h"
 #include "editor/editor_game.h"
 #include "editor/mcp_game.h"
 #if defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
@@ -545,6 +546,7 @@ int main(int argc, char** argv) {
 #endif
     bool warm_shaders = false;
     bool save_arg = false;  // --save: the command line wins over a save folder chosen in the Saves tab
+    std::string randomizer_files;  // --randomizer-files
     bool install_story_notebook = false;
     bool start_mcp = false;
 #ifdef WWHD_HAS_VULKAN
@@ -556,6 +558,8 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) config::game_dir = argv[++i];
         else if (!strcmp(argv[i], "--save") && i + 1 < argc) config::save_dir = argv[++i], save_arg = true;
+        // an in-app randomized game's changed files (Android passes its seed folder; the desktop finds it itself)
+        else if (!strcmp(argv[i], "--randomizer-files") && i + 1 < argc) randomizer_files = argv[++i];
         else if (!strcmp(argv[i], "--trace")) g_trace_hle = true;
         else if (!strcmp(argv[i], "--warm-shaders")) warm_shaders = true;
         else if (!strcmp(argv[i], "--install-story-notebook")) install_story_notebook = true;  // setup's step (mods/required.h)
@@ -588,6 +592,7 @@ int main(int argc, char** argv) {
     }
     crash_context::initialize();
     editor_ui::register_tab();  // the world editor's Editor tab (only with --editor)
+    randomizer_tab::register_tab();  // Settings > Randomizer (randomized games made in setup)
     index_game_functions();
     install_crash_handler();
     start_log_file();
@@ -665,8 +670,30 @@ int main(int argc, char** argv) {
     }
 #endif
     if (randomizer::compiled_seed()) {
+        // An in-app seed plays its changed files over the installed game (setup --randomize); a seed
+        // installed as a whole output folder is the game folder itself.
+        // (the install folder: a code-mod build's WWHD_INSTALL_DIR, the macOS app's data folder it starts in,
+        // or the folder holding the game)
+        std::vector<std::filesystem::path> installs;
+        if (const char* install = std::getenv("WWHD_INSTALL_DIR")) installs.emplace_back(install);
+        std::error_code ec;
+        installs.push_back(std::filesystem::current_path(ec));
+        installs.push_back(std::filesystem::absolute(config::game_dir, ec).parent_path());
+        if (!randomizer_files.empty() && std::filesystem::is_regular_file(std::filesystem::path(randomizer_files) / "code" / "cking.rpx", ec)) {
+            randomizer::overlay_root() = randomizer_files;  // (checked against the build's identity below)
+            LOG("[randomizer] seed files: %s over %s", randomizer_files.c_str(), config::game_dir.c_str());
+            installs.clear();
+        }
+        for (const auto& install : installs) {
+            const auto overlay = randomizer::overlay_directory(install);
+            if (!overlay.empty() && std::filesystem::is_regular_file(overlay / "code" / "cking.rpx", ec)) {
+                randomizer::overlay_root() = overlay.string();
+                LOG("[randomizer] seed files: %s over %s", randomizer::overlay_root().c_str(), config::game_dir.c_str());
+                break;
+            }
+        }
         // The generator can replace a seed in place. Check before touching any save files.
-        const std::string rpx = config::game_dir + "/code/cking.rpx";
+        const std::string rpx = randomizer::game_rpx(config::game_dir);
         bool matches = false;
         try {
             matches = randomizer::valid_identity() && mods::hash::sha256_file(rpx) == g_guest_build_rpx_sha256;
@@ -801,7 +828,7 @@ int main(int argc, char** argv) {
         });
 
     LoadedModule m{};
-    std::string rpx = config::game_dir + "/code/cking.rpx";
+    std::string rpx = randomizer::game_rpx(config::game_dir);
     if (!load_rpx(rpx, m)) fatal("cannot load %s", rpx.c_str());
     if (m.entry != g_recomp_entry_point) fatal("%s does not match the recompiled code", rpx.c_str());
     LOG("[boot] loaded %s (%s build, title %s): entry %08X sda %08X sda2 %08X data end %08X", rpx.c_str(),

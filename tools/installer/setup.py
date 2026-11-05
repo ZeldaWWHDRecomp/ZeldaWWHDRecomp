@@ -57,6 +57,7 @@ import zipfile
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Windows embeddable Python runs in isolated mode: it does not add the script
@@ -1799,13 +1800,28 @@ def gamecode_compile_flags(manifest):
     return debug_info_flags(manifest["gamecode_cflags"])
 
 
-def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress=None):
+def object_cache(tc, data_dir, flags, gen_dir):
+    """the compiled-object cache of this install (object_cache.py), or None when the compiler can't say its version"""
+    import object_cache as oc
+    try:
+        version = subprocess.run(tc.cc + ["--version"], env=tc.env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT).stdout.decode("utf-8", "replace")
+    except OSError:
+        return None
+    return oc.Cache(os.path.join(data_dir, "code-objects"), " ".join(tc.cc) + "\n" + version, flags,
+                    {fwd(gen_dir): "<gen>"})
+
+
+def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress=None, cache_dir=None):
+    """compiles the generated game code; with cache_dir (the install folder), objects whose preprocessed source,
+    flags and compiler are unchanged come from its code-objects cache instead (object_cache.py)"""
     os.makedirs(obj_dir, exist_ok=True)
     srcs = sorted(glob.glob(os.path.join(glob.escape(gen_dir), "code_*.c")))
     srcs += [os.path.join(gen_dir, f) for f in ("table.c", "imports.c")]
     srcs.sort(key=lambda s: -os.path.getsize(s))  # big files first: better use of the cores
     m = {"sdk": fwd(os.path.join(PKG, "sdk")), "gen": fwd(gen_dir)}
     flags = [sub(a, m) for a in gamecode_compile_flags(manifest)]
+    cache = object_cache(tc, cache_dir, flags, gen_dir) if cache_dir else None
     objs = []
     pr = Progress("compiling")
     total = len(srcs)
@@ -1817,9 +1833,15 @@ def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress
         if cancel:
             cancel()
         obj = os.path.join(obj_dir, os.path.basename(src) + ".o")
-        cmd = tc.cc + flags + ["-c", fwd(src), "-o", fwd(obj)]
-        p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        out = p.stdout.decode("utf-8", "replace")
+        key = cache.key(tc.cc, flags, fwd(src), tc.env) if cache else None
+        if key and cache.fetch(key, obj):
+            p, out = SimpleNamespace(returncode=0), ""
+        else:
+            cmd = tc.cc + flags + ["-c", fwd(src), "-o", fwd(obj)]
+            p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            out = p.stdout.decode("utf-8", "replace")
+            if p.returncode == 0 and key:
+                cache.store(key, obj)
         with lock:
             if p.returncode != 0:
                 failures.append((src, out))
@@ -1838,7 +1860,12 @@ def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress
     if failures:
         src, out = failures[0]
         raise SetupError("compiling %s failed:\n%s" % (os.path.basename(src), "\n".join(out.strip().splitlines()[-20:])))
-    pr.done("%d files" % total)
+    if cache:
+        cache.trim()
+        LOG.write("object cache: %d of %d files from the cache" % (cache.hits, total))
+        pr.done("%d files, %d unchanged from an earlier build" % (total, cache.hits))
+    else:
+        pr.done("%d files" % total)
     return sorted(objs)
 
 
@@ -2803,7 +2830,7 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     begin("compile")
     jobs = args.jobs or default_jobs()
     t0 = time.time()
-    objs = compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs)
+    objs = compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs, cache_dir=data_dir)
     say("  compiled in %d s" % (time.time() - t0))
 
     begin("app")
@@ -2999,6 +3026,19 @@ def main():
     ap.add_argument("--start-decomp", choices=("0", "1"),
                     help="start the decomp version instead of the normal game from now on (1) or not (0)")
     ap.add_argument("--repair-guest-python", action="store_true", help="upgrade local mod setup Python without rebuilding game code")
+    # the in-app randomizer (tools/rando, randomizer_seeds.py): randomized games made from the installed USA game
+    ap.add_argument("--randomize", action="store_true", help="make a randomized game (TWWHD Randomizer 1.2.0) and build it; "
+                    "the game plays it from its next start")
+    ap.add_argument("--rando-preset", choices=("beginner", "standard", "everything"), help="--randomize: these settings")
+    ap.add_argument("--rando-permalink", help="--randomize: the settings and seed of a TWWHD Randomizer 1.2.0 permalink")
+    ap.add_argument("--rando-settings", help="--randomize: a TWWHD Randomizer config.yaml (its preferences.yaml beside it too)")
+    ap.add_argument("--rando-seed", help="--randomize: the seed name")
+    ap.add_argument("--rando-new-seed", action="store_true", help="--randomize: a new random seed name")
+    ap.add_argument("--rando-no-build", action="store_true", help="--randomize: make the game's files only (no build, no switch)")
+    ap.add_argument("--list-seeds", action="store_true", help="the randomized games made (JSON)")
+    ap.add_argument("--play-seed", metavar="ID|vanilla", help="the game the next start plays: a randomized game (its id or "
+                    "number) or the game as it is; builds its game code if needed")
+    ap.add_argument("--delete-seed", metavar="ID", help="remove a randomized game's files (its saves stay); needs --yes")
     ap.add_argument("--shader-template", help="local shader template (or WWHD_SHADER_TEMPLATE); optional")
     ap.add_argument("--skip-shader-prebuild", action="store_true", help="skip optional shader preparation; compile during play")
     ap.add_argument("--model-sweep", dest="model_sweep", action="store_const", const=True, default=None,
@@ -3057,6 +3097,41 @@ def main():
     return rc
 
 
+def run_randomizer(args, ctx):
+    """--randomize, --list-seeds, --play-seed, --delete-seed (randomizer_seeds.py)"""
+    import randomizer_seeds
+    if args.list_seeds:
+        print(json.dumps(randomizer_seeds.listing(ctx.data_dir), indent=1, sort_keys=True))
+        return 0
+    if not ctx.installed():
+        raise SetupError("No installed game: run setup with your game first")
+    hooks = (code_mods.hooks_option(args.code_mods) if args.code_mods is not None
+             else bool(ctx.state().get("code_mods")))
+    if args.delete_seed:
+        if not (args.yes or os.environ.get("WWHD_SETUP_NONINTERACTIVE") == "1"):
+            raise SetupError("--delete-seed removes that randomized game's files: add --yes to confirm (its saves stay)")
+        s = randomizer_seeds.delete(sys.modules[__name__], ctx, args.delete_seed)
+        say("Removed randomized game %s (%s). Its saves stay in the save-randomizer-%s folders." % (
+            s["id"], s.get("hash", ""), s["rpx_sha256"]))
+        return 0
+    which = args.play_seed
+    if args.randomize:
+        say("Making a randomized game from %s" % ctx.game_dir)
+        entry = randomizer_seeds.make(sys.modules[__name__], ctx, say, preset=args.rando_preset,
+                                      permalink=args.rando_permalink, settings_file=args.rando_settings,
+                                      seed=args.rando_seed, new_seed=args.rando_new_seed)
+        say("  Permalink: %s" % entry["permalink"])
+        if args.rando_no_build:
+            return 0
+        which = entry["id"]
+    say("Preparing %s (game code %s)" % ("the game as it is" if which == "vanilla" else "randomized game " + which,
+                                         "with code-mod support" if hooks else "without code-mod support"))
+    result = randomizer_seeds.select(sys.modules[__name__], ctx, which, hooks)
+    say("  Ready%s: the game plays it from its next start." % (" (built before)" if result.get("cached") else
+                                                               " in %d s" % result.get("seconds", 0)))
+    return 0
+
+
 def run(args, ui):
     ctx = Ctx(args)
     if getattr(args, "repair_guest_python", False):
@@ -3068,6 +3143,9 @@ def run(args, ui):
         code_mods.rebuild(sys.modules[__name__], ctx, code_mods.hooks_option(args.code_mods),
                           args.code_mods_status, args.code_mods_cancel)
         return 0
+    if (getattr(args, "randomize", False) or getattr(args, "list_seeds", False) or getattr(args, "play_seed", None)
+            or getattr(args, "delete_seed", None)):
+        return run_randomizer(args, ctx)
     version, data_dir, game_dir = ctx.version, ctx.data_dir, ctx.game_dir
     say("The Legend of Zelda: The Wind Waker HD - native PC port, setup %s" % version)
     hint = "" if GUI else legacy_appimage_data_notice()  # the setup window shows it itself
@@ -3554,12 +3632,98 @@ def gui_main(args):
         write_state(ctx.data_dir, st)
         reply(req, start_decomp=on)
 
+    # ---- the in-app randomizer (randomizer_seeds.py): Randomizer page of the setup window
+    def rando_reply(req, **kw):
+        import randomizer_seeds
+        work = randomizer_seeds.settings_dir(ctx.data_dir)
+        st = randomizer_seeds.call(sys.modules[__name__], work, "settings", log=False)
+        reply(req, settings=st["settings"], seed=st["seed"], permalink=st["permalink"],
+              seeds=randomizer_seeds.listing(ctx.data_dir, bool(ctx.state().get("code_mods"))), **kw)
+
+    def rando_guard(req):
+        """None when the randomizer can be used here, else the failure reply sent"""
+        import randomizer_seeds
+        try:
+            randomizer_seeds.tool(sys.modules[__name__])
+            if not ctx.installed():
+                raise SetupError("Install the game first (the USA release as it is), then make randomized games.")
+            randomizer_seeds.check_base(sys.modules[__name__], ctx)
+        except SetupError as e:
+            fail(req, "unavailable", str(e))
+            return True
+        return None
+
+    def do_rando_state(req):
+        if rando_guard(req):
+            return
+        rando_reply(req)
+
+    def do_rando_change(req):
+        """{set: {name: index}} | {preset} | {seed} | {new_seed: true} | {permalink} | {defaults: true}"""
+        import randomizer_seeds
+        if rando_guard(req):
+            return
+        work = randomizer_seeds.settings_dir(ctx.data_dir)
+        me = sys.modules[__name__]
+        try:
+            for name, value in (req.get("set") or {}).items():
+                randomizer_seeds.call(me, work, "set", name, int(value))
+            if req.get("defaults"):
+                randomizer_seeds.call(me, work, "defaults")
+            if req.get("preset"):
+                randomizer_seeds.configure(me, ctx.data_dir, preset=req["preset"])
+            if req.get("permalink"):
+                randomizer_seeds.configure(me, ctx.data_dir, permalink=req["permalink"].strip())
+            if req.get("seed"):
+                randomizer_seeds.configure(me, ctx.data_dir, seed=req["seed"].strip())
+            if req.get("new_seed"):
+                randomizer_seeds.call(me, work, "new-seed")
+        except (SetupError, ValueError) as e:
+            return fail(req, "refused", str(e))
+        rando_reply(req)
+
+    def do_rando_make(req):
+        """a new randomized game with the settings as they are, built and chosen for the next start"""
+        import randomizer_seeds
+        if rando_guard(req):
+            return
+        me = sys.modules[__name__]
+        try:
+            entry = randomizer_seeds.make(me, ctx, say)
+            hooks = bool(ctx.state().get("code_mods"))
+            randomizer_seeds.select(me, ctx, entry["id"], hooks)
+        except SetupError as e:
+            return fail(req, "failed", str(e))
+        rando_reply(req, made=entry["id"])
+
+    def do_rando_play(req):
+        """{seed: seed id | "vanilla"}: the game the next start plays (built first when needed)"""
+        import randomizer_seeds
+        if rando_guard(req):
+            return
+        try:
+            randomizer_seeds.select(sys.modules[__name__], ctx, req.get("seed") or "vanilla", bool(ctx.state().get("code_mods")))
+        except SetupError as e:
+            return fail(req, "failed", str(e))
+        rando_reply(req)
+
+    def do_rando_delete(req):
+        """{seed}: a seed's files go (its saves stay); the window asked the player first"""
+        import randomizer_seeds
+        try:
+            randomizer_seeds.delete(sys.modules[__name__], ctx, req.get("seed") or "")
+        except SetupError as e:
+            return fail(req, "refused", str(e))
+        rando_reply(req)
+
     handlers = {"probe": probe, "check_keys": check, "install": do_install, "import_save": save,
                 "import_existing": do_import_existing, "remove_toolchain": do_remove_toolchain,
                 "shortcut": do_shortcut, "launch": do_launch, "hello": lambda req: hello(),
                 "start_decomp": do_start_decomp,
                 "language_sources": do_language_sources, "add_language_source": do_add_language_source,
-                "remove_language_source": do_remove_language_source}
+                "remove_language_source": do_remove_language_source,
+                "rando_state": do_rando_state, "rando_change": do_rando_change, "rando_make": do_rando_make,
+                "rando_play": do_rando_play, "rando_delete": do_rando_delete}
     hello()
     for line in sys.stdin:
         line = line.strip()

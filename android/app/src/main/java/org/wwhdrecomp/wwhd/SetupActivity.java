@@ -175,6 +175,10 @@ public class SetupActivity extends Activity {
         play.setBackgroundTintList(android.content.res.ColorStateList.valueOf(0xFF0D5C8A));
         // the home-screen game icon again, for players who declined or removed it
         addIcon = button(layout, getString(R.string.game_icon_add), this::addIcon);
+        // the in-app randomizer (TWWHD Randomizer 1.2.0): a randomized game made from the installed game
+        Button randomizer = button(layout, "Randomized game...", this::randomizerDialog);
+        randomizer.setVisibility(phoneSetup && AndroidRandomizer.available(this) && AndroidGame.selected(this) != null
+            ? android.view.View.VISIBLE : android.view.View.GONE);
         // one button for the three kinds of dump; the activity results are the same as before
         choose = button(layout, getString(R.string.setup_choose), this::chooseKind);
         pickers.add(choose);
@@ -232,6 +236,87 @@ public class SetupActivity extends Activity {
         ScrollView scroll = new ScrollView(this);
         scroll.addView(layout);
         setContentView(scroll);
+    }
+
+    /** Randomized game: a preset, a seed name and an optional permalink (TWWHD Randomizer 1.2.0); the setup job then
+     *  makes the game from the installed one, checks it and builds its code, and the game plays it from its next start.
+     *  "The game as it is" goes back to the previous build (the one before the randomized game). */
+    private void randomizerDialog() {
+        android.util.DisplayMetrics metrics = getResources().getDisplayMetrics();
+        int gap = (int)(12 * metrics.density);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(gap * 2, gap, gap * 2, 0);
+        TextView about = new TextView(this);
+        about.setText("TWWHD Randomizer 1.2.0 by SuperDude88 and contributors (MIT). Permalinks match the PC randomizer "
+            + "1.2.0. The randomized game has its own saves.");
+        box.addView(about);
+        android.widget.RadioGroup presets = new android.widget.RadioGroup(this);
+        String[] names = {"beginner", "standard", "everything"};
+        String[] labels = {"Beginner", "Standard (the randomizer's defaults)", "Everything"};
+        for (int i = 0; i < names.length; i++) {
+            android.widget.RadioButton b = new android.widget.RadioButton(this);
+            b.setText(labels[i]);
+            b.setId(i + 1);
+            presets.addView(b);
+        }
+        presets.check(2);
+        box.addView(presets);
+        android.widget.EditText seed = new android.widget.EditText(this);
+        seed.setHint("Seed name (empty: a new random one)");
+        seed.setSingleLine(true);
+        box.addView(seed);
+        android.widget.EditText permalink = new android.widget.EditText(this);
+        permalink.setHint("Or a permalink (its settings and seed)");
+        permalink.setSingleLine(true);
+        box.addView(permalink);
+        AndroidGame.Selection current = AndroidGame.selected(this);
+        android.app.AlertDialog.Builder dialog = new android.app.AlertDialog.Builder(this)
+            .setTitle("Randomized game").setView(box)
+            .setNegativeButton(android.R.string.cancel, null)
+            .setPositiveButton("Make it", (d, which) -> makeRandomized(names[Math.max(0, presets.getCheckedRadioButtonId() - 1)],
+                seed.getText().toString().trim(), permalink.getText().toString().trim()));
+        if (current != null && current.randomizerFiles != null)
+            dialog.setNeutralButton("Play the game as it is", (d, which) -> new Thread(() -> {
+                String message;
+                try {
+                    message = AndroidGame.playNormal(this) ? "The game as it is starts next time."
+                        : "The game as it is has no build yet: start the setup with your game.";
+                }
+                catch (Exception failure) { message = "The game as it is needs setup again: " + failure.getMessage(); }
+                String shown = message;
+                runOnUiThread(() -> android.widget.Toast.makeText(this, shown, android.widget.Toast.LENGTH_LONG).show());
+            }, "wwhd-rando-rollback").start());
+        dialog.show();
+    }
+
+    private void makeRandomized(String preset, String seed, String permalink) {
+        new Thread(() -> {
+            String message = null;
+            try {
+                AndroidGame.Selection current = AndroidGame.selected(this);
+                if (current == null || current.game == null) throw new java.io.IOException("No installed game");
+                if (!permalink.isEmpty()) AndroidRandomizer.run(this, "load-permalink", permalink);
+                else {
+                    AndroidRandomizer.run(this, "preset", preset);
+                    if (seed.isEmpty()) AndroidRandomizer.run(this, "new-seed");
+                    else AndroidRandomizer.run(this, "set-seed", seed);
+                }
+                synchronized (SetupJobCleanup.CREATION) {
+                    String id = UUID.randomUUID().toString().replace("-", "");
+                    File job = SetupStore.job(this, id);
+                    SetupStore.write(new File(job, "source.json"), new org.json.JSONObject().put("schema", 1)
+                        .put("kind", "installed").put("path", current.game.getAbsolutePath()));
+                    SetupStore.write(new File(job, "host.json"), new org.json.JSONObject().put("schema", 1).put("state", "selected"));
+                    SetupStore.select(this, id);
+                }
+            } catch (Exception failure) { message = failure.getMessage(); }
+            String shown = message;
+            runOnUiThread(() -> {
+                if (shown != null) android.widget.Toast.makeText(this, "Randomized game: " + shown, android.widget.Toast.LENGTH_LONG).show();
+                else control(SetupService.RESUME);
+            });
+        }, "wwhd-rando-make").start();
     }
 
     /** The Code mods switch: remembered for the next build; a finished setup builds again now (the

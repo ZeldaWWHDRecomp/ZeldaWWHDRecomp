@@ -292,7 +292,8 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
             progress('Compiling game code')
             objs = setup.compile_gamecode(tc, ctx.manifest, str(work / 'gen'), str(work / 'obj'),
                                          ctx.args.jobs or setup.default_jobs(), cancel=check,
-                                         progress=lambda n, total: progress('Compiling game code', n, total))
+                                         progress=lambda n, total: progress('Compiling game code', n, total),
+                                         cache_dir=ctx.data_dir)
             check()
             progress('Linking game code')
             target = work / 'bin' / ctx.manifest['exe']

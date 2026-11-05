@@ -84,8 +84,19 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             adapter = adapter_factory(package, root / "checkpoints", job["port_revision"], publish, paused)
             adapter.boundary()
             source = job["input"]
-            path = private_input(root, source["path"])
-            if source["kind"] == "folder":
+            if source["kind"] == "installed":
+                # a randomized game made from the installed game: that game stays where setup put it
+                if not job.get("randomize"):
+                    raise ValueError("Only a randomized game is made from the installed game")
+                storage = Path(job["randomize"]["storage"]).resolve()
+                path = Path(source["path"]).resolve()
+                if not path.is_relative_to(storage) or not adapter.setup.valid_game_folder(str(path)):
+                    raise ValueError("The installed game is missing or outside setup storage")
+            else:
+                path = private_input(root, source["path"])
+            if source["kind"] == "installed":
+                game = path
+            elif source["kind"] == "folder":
                 if not adapter.setup.valid_game_folder(str(path)):
                     missing = [name for name, present in (
                         ("code/cking.rpx", (path / "code" / "cking.rpx").is_file()),
@@ -133,7 +144,15 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
                         key_files.clear()
             else:
                 raise ValueError("Unsupported imported input kind")
-            generated = adapter.translate(game, hooks=code_mods)
+            # the in-app randomizer: a randomized game made from this game, its code built instead (its changed files
+            # are played over the game: --randomizer-files, WwhdActivity)
+            overlay = None
+            if job.get("randomize"):
+                if native_run is None:
+                    import wwhd_native
+                    native_run = wwhd_native.run
+                overlay, seed = adapter.randomize(game, job["randomize"], native_run)
+            generated = adapter.translate(overlay or game, hooks=code_mods)
             compiler = job["compiler"]
             toolchain = SimpleNamespace(cc=compiler["cc"], cxx=compiler["cxx"], ar=compiler["ar"],
                                         env=compiler.get("env"), rsp=compiler.get("rsp", True))
@@ -147,6 +166,9 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             result = {"schema": 1, "library": str(library), "game": str(game),
                       "port_revision": job["port_revision"], "compiler_identity": compiler["identity"],
                       "code_mods": code_mods}
+            if overlay:
+                result["randomizer"] = {"files": str(overlay), "seed": seed["id"], "hash": seed.get("hash", ""),
+                                        "permalink": seed.get("permalink", "")}
             # Android cannot execute the guest shared library as a subprocess.
             # Assemble privately here; renderer startup owns native GPU warming.
             import importlib.util

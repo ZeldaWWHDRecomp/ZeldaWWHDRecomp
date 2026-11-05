@@ -179,13 +179,33 @@ class Compatibility(unittest.TestCase):
             self.assertGreaterEqual(function['end']-function['start'], C.MIN_FUNCTION_HASH_BYTES)
             for value in function['sha256']:
                 self.assertRegex(value, r'^[0-9a-f]{64}$')
-        # Reviewed 1.2.0 variants (docs/randomizer-experiment.md): every seed (grapple/block speed,
+        # Reviewed 1.2.0 variants (docs/randomizer-maintainers.md): every seed (grapple/block speed,
         # vanilla-bug fixes, misc features); Quiet Swift Sail (procSteerMove); any entrance shuffle
         # (setGameStartStage). One reviewed variant each: the patches do not depend on the seed.
         reviewed = {0x0216F7FC: 2, 0x023EFF20: 2, 0x025499A0: 2, 0x0247E854: 2, 0x025217F8: 2}
         self.assertEqual({f['start']: len(f['sha256']) for f in profile['functions'] if len(f['sha256']) > 1},
                          reviewed)
         self.assertIsNone(builds.by_title(C.TITLE_ID))  # not a normal immutable build hash
+
+    def test_shipped_eu_profile_matches_the_eu_build_and_the_reviewed_usa_variants(self):
+        """randomizer-eu.json (EU seeds from the in-app randomizer's port of the patches): the EU build's hooks, the
+        same reviewed functions as the USA profile through the EU address map, chosen by the EU entry point"""
+        profile = json.loads(C.PROFILES[1].read_text())
+        eu = builds.by_name('EU')
+        hooks, _ = builds.read_hooks(builds.hook_files(), eu)
+        self.assertEqual(profile['base_sha256'], eu.sha256)
+        self.assertEqual(profile['hooks_sha256'], C.hook_digest(hooks))
+        self.assertEqual(set(profile['points']), {a for _, _, a, _ in hooks})
+        self.assertNotEqual(profile['entry_point'], json.loads(C.PROFILE.read_text())['entry_point'])
+        reviewed = {eu.code(a): 2 for a in (0x0216F7FC, 0x023EFF20, 0x025499A0, 0x0247E854, 0x025217F8)}
+        self.assertEqual({f['start']: len(f['sha256']) for f in profile['functions'] if len(f['sha256']) > 1},
+                         reviewed)
+        for function in profile['functions']:
+            for value in function['sha256']:
+                self.assertRegex(value, r'^[0-9a-f]{64}$')
+        build = C.randomized_build(eu, 'c' * 64)
+        self.assertEqual((build.name, build.title_id, build.sha256), ('EU', C.TITLE_ID, 'c' * 64))
+        self.assertEqual(build.code(0x0216F7FC), eu.code(0x0216F7FC))
 
 
 if __name__ == '__main__':

@@ -174,8 +174,10 @@ by their own CI/build and platform testing, not by these macOS game runs.
 
 ## Randomized games
 
-Setup accepts USA output from the official TWWHD Randomizer as an experimental
-feature. It checks the randomized executable against a compatibility profile and
-pins the build to that exact game file. Arbitrary modified RPX files and
-randomized European games remain unsupported. See [randomized USA games](randomizer-experiment.md)
-for setup instructions, compatibility limits and the maintainer audit workflow.
+Setup makes randomized games itself from the USA or European game (the in-app
+randomizer, TWWHD Randomizer 1.2.0) and also plays USA seeds made with the official
+TWWHD Randomizer. It checks every randomized executable against a compatibility
+profile (`tools/recomp/randomizer-usa.json`, `randomizer-eu.json`) and pins the build
+to that exact game file. Arbitrary modified RPX files and randomized Japanese games
+remain unsupported. See [randomized games](randomizer-experiment.md) for players and
+[randomizer-maintainers.md](randomizer-maintainers.md) for the profile review.

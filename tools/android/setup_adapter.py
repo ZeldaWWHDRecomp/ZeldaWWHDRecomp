@@ -281,6 +281,25 @@ class Adapter:
         self.boundary()
         return game
 
+    def randomize(self, game, randomize, native_run):
+        """A randomized game from the installed one (the in-app randomizer: tools/installer/randomizer_seeds.py with
+        the APK's wwhd-rando run through the native process bridge). randomize: {"exe", "data", "storage"} (storage:
+        the folder whose randomizer/ holds the settings and the seeds). Returns (the seed's changed files, its entry)."""
+        import randomizer_seeds
+        self.boundary()
+        exe, data, storage = randomize["exe"], randomize["data"], Path(randomize["storage"]).resolve()
+
+        def runner(command):
+            code, output = self.run_native("randomize", native_run, command, None)
+            text = output.decode("utf-8", "replace") if isinstance(output, bytes) else str(output)
+            return code, text, text
+        randomizer_seeds.RUNNER, randomizer_seeds.TOOL = runner, (exe, data)
+        self.emit({"stage": "randomize", "state": "running"})
+        ctx = SimpleNamespace(data_dir=str(storage), game_dir=str(Path(game).resolve()), manifest={})
+        entry = randomizer_seeds.make(self.setup, ctx, lambda line: self.emit({"stage": "randomize", "detail": line.strip()}))
+        self.emit({"stage": "randomize", "state": "complete", "seed": entry["id"]})
+        return randomizer_seeds.seed_dir(storage, entry["id"]) / "out", entry
+
     def translate(self, game, hooks=False):
         """Validate the supported dump, resume verified C, or run setup.recompile.
 

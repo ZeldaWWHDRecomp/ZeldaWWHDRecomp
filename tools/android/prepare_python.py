@@ -74,7 +74,11 @@ def source_files(root, test_fixtures=False):
                     # setup's models step (android_models.py drives the desktop's model_sweep.py)
                     root / "tools/android/android_models.py",
                     root / "tools/installer/model_sweep.py", root / "tools/installer/model_sweep_skip.txt",
-                    root / "tools/rpx.py"]
+                    root / "tools/rpx.py",
+                    # the in-app randomizer (randomized games made in setup) and its compatibility profile
+                    root / "tools/installer/randomizer_seeds.py", root / "tools/installer/object_cache.py",
+                    root / "tools/rando/places.py", root / "tools/recomp/randomizer-usa.json",
+                    root / "tools/recomp/randomizer-eu.json"]
     # Newer desktop installers import these production siblings at start-up (setup.py:
     # "import code_mods", "import decomp_setup"). Older branches do not have them; support
     # both without changing installer behavior.
