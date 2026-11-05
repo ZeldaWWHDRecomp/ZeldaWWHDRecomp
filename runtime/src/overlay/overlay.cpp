@@ -1612,7 +1612,7 @@ void tab_display() {
     if (check("Context buttons", mods::context_buttons_on(), &v)) hostui::post([v] { mods::set_context_buttons_on(v); });
     help("Only the buttons that do something now show, with the game's own word or item on them (Open, Lift, "
          "Speak, the bow...); the game's button display is hidden then. A golden ring shows when A offers "
-         "something new. Off: every button always shows.");
+         "something new. Off: every button always shows. The Classic style always shows every button.");
     if (!mods::context_buttons_on()) ImGui::BeginDisabled();
     if (check("Link in the button pictures", link_poses::enabled(), &v)) hostui::post([v] { link_poses::set_enabled(v); });
     help("A small picture of Link in the pose of the action shows on the button: jumping on Jump, a sword swing on the "

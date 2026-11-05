@@ -83,19 +83,37 @@ static void carrying_a_pot() {
     PlayContext c = walking();
     c.a_action = kActLift;
     c.attention_type = kAttnCarry;
+    c.lift_kind = kThingRock;
     action(context_buttons(c), kA, kActLift);
+    assert(context_buttons(c)[kA].variant == kThingRock);  // the picture: Link lifting the rock
     // lifted: A throws, ZR sets it down, and B (the game says sword) throws too
     c.a_action = kActThrow;
     c.zr_action = kActDrop;
     assert(carrying(c));
+    c.held_kind = kThingBigPot;
     const Buttons b = context_buttons(c);
     action(b, kA, kActThrow);
     action(b, kB, kActThrow);
     action(b, kZR, kActDrop);
+    // the pictures: Link with the big pot he holds (Throw, Drop), whatever A would lift no longer counts
+    assert(b[kA].variant == kThingBigPot && b[kB].variant == kThingBigPot && b[kZR].variant == kThingBigPot);
     // a Bokoblin's club is no pot: B keeps the club
     c.b_action = kActBokoStick;
     assert(!carrying(c));
     action(context_buttons(c), kB, kActBokoStick);
+    assert(context_buttons(c)[kB].variant == 0);  // (no variant for other actions)
+}
+
+// the save question after a game over: A takes the button the cursor is on; the taps go to the question itself
+static void game_over_question() {
+    PlayContext c = walking();
+    c.flags = kInGame | kLink | kQuestion;
+    c.question_shown = 3;
+    const Buttons b = context_buttons(c);
+    action(b, kA, kActChoose);
+    for (int i = kB; i < kCount; i++) assert(!b[Button(i)].shown);
+    c.question_shown = 0;  // (the flag without a drawn button: the usual rules)
+    assert(context_buttons(c)[kZL].shown);
 }
 
 static void swimming_around() {
@@ -395,6 +413,7 @@ int main() {
     off_and_menus();
     walking_around();
     carrying_a_pot();
+    game_over_question();
     swimming_around();
     on_a_ladder();
     aiming_the_bow();

@@ -125,7 +125,13 @@ static void entries_and_bags() {
     assert(find(l, kEntryCannon) < 0 && find(l, kEntrySalvage) < 0);
     // on the boat: the cannon (bombs owned) and the salvage arm (grappling hook owned)
     l = entries(s, 0, -1, true);
-    assert(find(l, kEntryCannon) >= 0 && find(l, kEntrySalvage) >= 0 && l.n == 16);
+    // ... and only what Link can use there: no Spoils Bag, Deku Leaf or Delivery Bag (16 - 3); the Bait Bag stays
+    assert(find(l, kEntryCannon) >= 0 && find(l, kEntrySalvage) >= 0 && l.n == 13);
+    for (int i = 0; i < l.n; i++) assert(l.e[i].item != 0x24 && l.e[i].item != 0x34 && l.e[i].item != 0x30);
+    assert(find(l, kEntryBag, 11) >= 0 && find(l, kEntryBag, 4) < 0 && find(l, kEntryBag, 18) < 0);
+    assert(!ring_on_ship(0x29) && !ring_on_ship(0x33) && ring_on_ship(0x2C) && ring_on_ship(0x20) && ring_on_ship(0x31));
+    // a bag's contents are never filtered
+    assert(entries(s, 0, 0, true).n == 3);
     // a bag's ring: its contents and Back
     l = entries(s, 0, 0, false);
     assert(l.n == 3 && l.e[0].slot == 24 && l.e[0].item == 0x48 && l.e[1].slot == 25 && l.e[2].kind == kEntryBack);
