@@ -39,8 +39,8 @@ mod's page), the *Experimental* tag where it applies and a one-word status (*On*
 
 - **Built-in** ("Included with the game. Switch on or off any time."): the mods compiled
   into the game: direct camera, mouse camera, camera-directed items, first-person shortcut, extended enemy lock-on, wall climbing,
-  run/swim speed, faster ladders, faster sidling, faster ivy climbing, faster ledge hanging, sailing speed, automatic wind, jump anywhere,
-  quick doors, fast forward and fast scene changes; all off by default.
+  run/swim speed, faster ladders, faster sidling, faster ivy climbing, faster ledge hanging, sailing speed, automatic wind, jump anywhere, Deku Leaf: wave to rise,
+  quick doors, fast forward, fast scene changes, instant text and no pauses in texts; all off by default.
 - **Community** ("Made by players. Downloaded from the mod catalogue."): every installed
   package (from the catalogue, from a file or folder, graphics packs and content packs),
   then **Available to download**: the catalogue's mods that aren't downloaded yet (see
@@ -116,7 +116,7 @@ now** (on Android: close and reopen the app). There is one restart offer at a ti
 the end of an install and the page of a mod that is off but still loaded offer
 their own instead, and switching mods does not open a popup.
 
-**Letterbox while targeting** is on by default in **Mods > Built-in > Camera**; switch it off to remove bars during normal targeting while keeping cutscenes and special cameras unchanged.
+**Letterbox while targeting** in **Mods > Built-in > Camera** offers **On** (the default), **Off with enemies** (remove bars only while locked on to a selected enemy), and **Always off** (also remove bars during free targeting without an enemy). Cutscenes and scripted cameras keep their original bars. Existing saved On/Off choices retain their behavior.
 
 ### Camera-directed items (prototype)
 

@@ -1,5 +1,9 @@
 // The common settings list (game_settings.h).
 #include "game_settings.h"
+#include "game_progress_host.h"
+#include "achievements_host.h"
+#include "achievements_page.h"
+#include "game_settings_page.h"
 
 #include <algorithm>
 #include <cmath>
@@ -70,6 +74,13 @@ std::string times(float v) {
 
 }  // namespace
 
+void set_targeting_letterbox_mode(int mode) {
+    if (mode < 0 || mode > 2) return;
+    if (!mods::manager::set_enabled("target-letterbox", mode == 0)) return;
+    mods::set_targeting_letterbox_mode(mode);
+    hostui::set("mod.target-letterbox.mode", std::to_string(mode));
+    mods::packages::remember_option("target-letterbox.mode", mode);
+}
 void set_camera_speed(float speed) {
     mods::set_camera_speed(speed);
     hostui::set("mod.direct-camera.speed", std::to_string(speed));
@@ -606,14 +617,53 @@ void register_game() {
         it.enabled = [] { return player_name::loaded(); };
         add(std::move(it));
     }
+    {  // Game progress (game_progress.cpp): its row opens its page; shown while the built-in mod is on
+        static bool page = (game_progress::register_page(), true);
+        (void)page;
+        Item it;
+        it.id = "game.progress", it.tab = "game", it.label = "Game progress", it.kind = Kind::Action;
+        it.help = "What this save file has collected and what is still missing, and a map of where each thing is found.";
+        it.text = [] {
+            const int p = game_progress::percent();
+            return p < 0 ? std::string() : std::to_string(p) + " %";
+        };
+        it.set = [](float) { game_settings_page::open_detail("game.progress"); };
+        it.enabled = [] { return game_progress::loaded(); };
+        add(std::move(it));
+    }
+    {  // Achievements (achievements.cpp): its row opens its page
+        static bool page = (game_settings_page::register_detail("game.achievements", []() -> std::unique_ptr<game_settings_page::Detail> {
+            if (!achievements::enabled()) return nullptr;
+            game_progress::prepare_words();
+            return std::make_unique<achievements_page::View>(achievements::view());
+        }), true);
+        (void)page;
+        Item it;
+        it.id = "game.achievements", it.tab = "game", it.label = "Achievements", it.kind = Kind::Action;
+        it.help = "Goals from the story to the Savage Labyrinth, earned for good for all save games and for each one.";
+        it.text = [] {
+            if (!achievements::enabled()) return std::string();
+            const achievements::View v = achievements::view();
+            unsigned n = 0;
+            for (const auto& r : v.rows) n += (v.file.empty() ? r.all : r.file) != 0;
+            return std::to_string(n) + " / " + std::to_string(v.rows.size());
+        };
+        it.set = [](float) { game_settings_page::open_detail("game.achievements"); };
+        it.enabled = [] { return achievements::enabled(); };
+        add(std::move(it));
+    }
     // the built-in gameplay mods (mods/manager.cpp), switched as the Mods tab switches them
     // (short names and help lines of the page's own, translated in game_settings_text.h; the Settings window
     // keeps the catalogue's longer descriptions)
     static const struct { const char *id, *label, *help; } kGame[] = {
-        {"quick-doors", "Quick doors", "Doors open and close four times as fast."},
+        {"achievements", "Achievements", "Goals read from your save data, earned for good, with a pop-up (the row above)."},
+        {"game-progress", "Game progress", "A percent, a checklist and a map of what this save file has found (the row above)."},
         {"fast-scenes", "Fast scene changes", "Shorter waits when the game loads a new place."},
         {"fast-forward", "Fast forward scenes and talks", "Hold the fast forward button to speed up cutscenes and dialogue."},
+        {"instant-text", "Instant text", "Message boxes show their whole text at once."},
+        {"no-text-pauses", "No pauses in texts", "Texts go on without their short pauses."},
         {"jump-anywhere", "Jump anywhere", "A button of its own makes Link jump, standing or running."},
+        {"leaf-rise", "Deku Leaf: wave to rise", "While gliding, each wave of the leaf lifts Link a little."},
         {"wall-climb", "Climb any wall", "Grab and climb walls with a stamina wheel; A or B lets go."},
         {"move-speed", "Run/swim speed", "A boost for running and swimming, with a stamina bar."},
         {"lock-on", "Extended enemy lock-on", "Target enemies from further away; R3 cycles targets while locked on."},
@@ -625,6 +675,36 @@ void register_game() {
         {"sail-speed", "Sailing speed", "The boat sails faster."},
         {"auto-wind", "Automatic wind", "The wind follows the boat with the normal sail too."},
     };
+    {  // Quick doors: Off, Faster (the door scenes four times as fast) or Walk through (walk_doors.cpp)
+        Item it;
+        it.id = "quick-doors", it.tab = "game", it.label = "Quick doors", it.kind = Kind::Choice;
+        it.help = "Faster: doors open and close four times as fast. Walk through: doors open as Link walks up.";
+        it.choices = {"Off", "Faster", "Walk through"};
+        it.get = [] { return !mods::quick_doors() ? 0.0f : mods::door_mode() == mods::kDoorWalk ? 2.0f : 1.0f; };
+        it.set = [](float v) {
+            const int c = std::clamp(int(std::lround(v)), 0, 2);
+            if (c) {
+                mods::set_door_mode(c == 2 ? mods::kDoorWalk : mods::kDoorFaster);
+                hostui::set("mod.quick-doors.mode", c == 2 ? "walk" : "faster");
+                mods::packages::remember_option("quick-doors.mode", float(c - 1));
+            }
+            mods::manager::set_enabled("quick-doors", c != 0);
+        };
+        add(std::move(it));
+    }
+    {
+        Item it;
+        it.id = "quick-doors.by-a", it.tab = "game", it.label = "Walk-through doors open with A", it.kind = Kind::Toggle;
+        it.help = "The doors wait for A on their Open prompt instead of opening as Link walks up.";
+        it.get = [] { return mods::walk_doors_by_a() ? 1.0f : 0.0f; };
+        it.set = [](float v) {
+            mods::set_walk_doors_by_a(v >= 0.5f);
+            hostui::set("mod.quick-doors.by-a", v >= 0.5f ? "1" : "0");
+            mods::packages::remember_option("quick-doors.by-a", v >= 0.5f);
+        };
+        it.enabled = [] { return mods::walk_doors(); };
+        add(std::move(it));
+    }
     for (const auto& g : kGame) {
         const auto* e = mods::manager::find(g.id);
         if (!e || e->restart_required) continue;  // (the page applies live only)
@@ -742,8 +822,15 @@ void register_builtin() {
     }
     add(builtin_toggle("camera", "first-person", "First person on R3 / wheel",
                        "R3 or the mouse wheel enters and leaves first person."));
-    add(builtin_toggle("camera", "target-letterbox", "Letterbox while targeting",
-                       "Black bars at the top and bottom while Link targets, as in the original."));
+    {
+        Item it;
+        it.id = "target-letterbox", it.tab = "camera", it.label = "Letterbox while targeting", it.kind = Kind::Choice;
+        it.help = "Choose bars for enemy lock-on and free targeting. Cutscenes and scripted cameras keep their bars.";
+        it.choices = {"On", "Off with enemies", "Always off"};
+        it.get = [] { return float(mods::targeting_letterbox_mode()); };
+        it.set = [](float v) { set_targeting_letterbox_mode(int(std::lround(v))); };
+        add(std::move(it));
+    }
     register_controls();
     register_screen();
 #ifdef __ANDROID__

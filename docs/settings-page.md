@@ -53,9 +53,21 @@ same values.
   backups, the save folder and save exports carry along) and the game's texts use it. (Idea from
   the GreenNaugahyde Android fork.)
 - **Game:** the built-in gameplay mods that apply while the game runs: quick doors, fast scene
-  changes, fast forward, jump anywhere, climbing, run/swim speed, enemy lock-on, quick-use items,
+  changes, fast forward, instant text, no pauses in texts, jump anywhere, Deku Leaf: wave to rise, climbing, run/swim speed, enemy lock-on, quick-use items,
   ladders, sidling, ivy, ledges, sailing speed, automatic wind. Their finer options (speeds, buttons)
   are in the Settings window's Mods tab.
+  - *Quick doors*: Off, Faster or Walk through. Faster runs every door scene four times as fast.
+    Walk through: dungeon shutters and house doors open as Link walks up, he walks through without the
+    door scene and the door shuts behind him; leaving a house is quicker too. Locked doors, boss doors
+    and doors with bars keep their scene, sped up as with Faster. *Walk-through doors open with A*
+    makes those doors wait for A on their Open prompt instead. (From the GreenNaugahyde Android fork.)
+  - *Instant text*: message boxes show their whole text at once instead of letter by letter; each box
+    still waits for A. *No pauses in texts*: the short pauses written into some texts are left out.
+    (Ideas from the GreenNaugahyde Android fork.)
+  - *Deku Leaf: wave to rise*: while Link glides on the Deku Leaf, each wave of the leaf (its button
+    again) lifts him a little; holding the button waves on. The height of one wave (50 %, 100 %,
+    150 % or 200 %) is in the Mods tab. The glide still uses magic. (Idea from the GreenNaugahyde
+    Android fork.)
 - **Mods:** options of your enabled mods that their authors put on the page. An option that only
   applies at the next start says so.
 
