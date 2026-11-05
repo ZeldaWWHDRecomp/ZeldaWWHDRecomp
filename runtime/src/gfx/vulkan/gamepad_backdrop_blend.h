@@ -12,4 +12,21 @@ inline BackdropBlend backdrop_blend(uint32_t colorControl,uint32_t blend,uint32_
  if((src!=4&&src!=1)||dst!=5||op!=0)return {};
  return {true,false,(blend&0x1FFFu)|(1u<<29)|(1u<<16)|(5u<<24)};
 }
+// The capture replay's alpha override, applied to exactly these registers of
+// the draw's own register file and restored on scope exit (exceptions too):
+// no copy of the 64K-register file per captured draw.
+class BackdropRegisterPatch {
+ uint32_t* regs_;
+ uint32_t index_[3],saved_[3];
+public:
+ BackdropRegisterPatch(uint32_t* regs,uint32_t blend0,uint32_t colorControl,uint32_t targetMask,const BackdropBlend& blend)
+  : regs_(regs),index_{blend0,colorControl,targetMask},saved_{regs[blend0],regs[colorControl],regs[targetMask]} {
+  regs[blend0]=blend.control;
+  regs[colorControl]|=1u<<8;
+  regs[targetMask]|=8;
+ }
+ ~BackdropRegisterPatch() { for(int i=2;i>=0;--i)regs_[index_[i]]=saved_[i]; }
+ BackdropRegisterPatch(const BackdropRegisterPatch&)=delete;
+ BackdropRegisterPatch& operator=(const BackdropRegisterPatch&)=delete;
+};
 }

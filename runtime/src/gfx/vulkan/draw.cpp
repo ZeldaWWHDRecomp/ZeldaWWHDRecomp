@@ -2229,6 +2229,9 @@ std::array<VkFormat, 9> target_formats(const std::array<Surface*, 8>& colors, co
   f[8] = depth ? depth->fmt.pixel : VK_FORMAT_UNDEFINED;
   return f;
 }
+// The record of a GamePad backdrop pane draw (outside stereo): one reused object, no per-draw allocation.
+// Only the outermost draw writes it; its private replay reads it (backdropShadersIn) and writes none.
+StereoShaders backdropSnapshot;
 StereoShaders* stereoShadersOut = nullptr;       // eye 0's draw records
 const StereoShaders* backdropShadersIn = nullptr; // exact original draw, no guest resource rereads
 const StereoShaders* stereoShadersIn = nullptr;  // eye 1's draw reuses
@@ -3089,11 +3092,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const StereoShaders* backdropReplay = std::exchange(backdropShadersIn,nullptr);
   const StereoShaders* shadersIn = backdropReplay ? backdropReplay : std::exchange(stereoShadersIn, nullptr);
   // Record exact upload slices/descriptor bindings while resolving the original
-  // draw. The normal off path allocates nothing and the stereo snapshot is reused.
-  std::unique_ptr<StereoShaders> captureSnapshot;
+  // draw. The normal off path records nothing and the stereo snapshot is reused.
   if(!shadersOut && !stereoEye && !aoPrivateReplay && gamepad_backdrop_capture_active()) {
-    try { captureSnapshot=std::make_unique<StereoShaders>();shadersOut=captureSnapshot.get(); }
-    catch(const std::bad_alloc&) {} // Optional capture must not suppress the original draw.
+    backdropSnapshot.reset();shadersOut=&backdropSnapshot;
   }
   if(backdropReplay && (!backdropReplay->replay || backdropReplay->submission!=R.submissionGeneration))return;
   // eye 1: eye 0's draw, replayed (StereoShaders)
@@ -3387,7 +3388,14 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
                                                                                       // copy of a draw waits)
   // A capture is published only after its private pipeline is actually ready.
   // Deferred command counts cannot certify a future driver compilation success.
-  if (gamepad_backdrop_replaying() && p.pendingCompile) resolve_pending_pipeline(p);
+  // Never wait for it on the render thread (the phone's bottleneck): poll, and
+  // while it compiles in the background this pane is not captured (edge-colour
+  // fallback); a later presentation captures it. Its recipe joins the pipeline
+  // database like any other, so later sessions start with it warmed.
+  if (gamepad_backdrop_replaying() && p.pendingCompile) {
+    resolve_pending_pipeline(p, false);
+    if (p.pendingCompile) { gamepad_backdrop_debug("pipeline-pending", R.frame); return; }
+  }
   if (p.pendingCompile && !begin_exact_preparation()) resolve_pending_pipeline(p);
   if (trackTargets) track_drawn(r, colors, depth);
   if (!p.pipeline && !p.pendingCompile) return; // terminal driver failure, not pending
@@ -3961,15 +3969,20 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       (uint64_t(r[REGADDR::DB_DEPTH_CONTROL])<<32)|r[REGADDR::CB_TARGET_MASK],R.submissionGeneration);
   if (gamepad_backdrop_begin_replay(colors[0],compatible,captureBlend.opaque)) {
     const auto before=R.drawCount;
-    // A private register snapshot makes the coverage-only alpha override part
-    // of the ordinary pipeline key without changing guest/native draw state.
-    std::vector<uint32_t> captureRegs(r,r+gx2::kNumRegs);
-    captureRegs[REGADDR::CB_BLEND0_CONTROL]=captureBlend.control;
-    captureRegs[REGADDR::CB_COLOR_CONTROL]|=1u<<8;
-    captureRegs[REGADDR::CB_TARGET_MASK]|=8;
+    // The coverage-only alpha override is part of the ordinary pipeline key: the
+    // three capture registers of the pane's own register file (the gx2 file the
+    // scope was opened with) are patched for the replay only and restored on
+    // every exit, so guest/native draw state is unchanged. Any other register
+    // file gets one reused private copy (never expected).
+    uint32_t* regs=const_cast<uint32_t*>(r);
+    if(!gamepad_backdrop_scope_registers(r)) {
+      static std::vector<uint32_t> privateRegs;
+      privateRegs.assign(r,r+gx2::kNumRegs);regs=privateRegs.data();
+    }
+    BackdropRegisterPatch patch(regs,REGADDR::CB_BLEND0_CONTROL,REGADDR::CB_COLOR_CONTROL,REGADDR::CB_TARGET_MASK,captureBlend);
     continued.valid=false;
     backdropShadersIn=shadersOut;
-    try { draw(captureRegs.data(),prim,count,indexType,indexAddr,baseVertex,instances,nullptr); }
+    try { draw(regs,prim,count,indexType,indexAddr,baseVertex,instances,nullptr); }
     catch (...) { backdropShadersIn=nullptr;gamepad_backdrop_end_replay(false);continued.valid=false;throw; }
     backdropShadersIn=nullptr;
     gamepad_backdrop_end_replay(R.drawCount!=before);

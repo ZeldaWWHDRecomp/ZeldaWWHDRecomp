@@ -175,6 +175,11 @@ int main() {
  // Never inside a pane scope.
  gamepad_backdrop_scope(nullptr,true);policy::enabled=false;gamepad_backdrop_maintain();assert(imageCount>0);
  gamepad_backdrop_scope(nullptr,false);gamepad_backdrop_maintain();assert(imageCount==0);policy::enabled=true;
+ // Only the pane's own register file is patched in place.
+ uint32_t file[4]{};gamepad_backdrop_scope(file,true);
+ assert(gamepad_backdrop_scope_registers(file)&&!gamepad_backdrop_scope_registers(file+1));
+ gamepad_backdrop_scope(nullptr,false);assert(!gamepad_backdrop_scope_registers(file));
+ gamepad_backdrop_reset();assert(retired==created);
 }
 '''
 
@@ -187,7 +192,6 @@ class BackdropLifecycle(unittest.TestCase):
         destroy=surfaces[surfaces.index('void destroy_surface_image('):surfaces.index('VkImageView layer_view(')]
         self.assertIn('gamepad_backdrop_invalidate(s);',destroy)
         draw=(CPP.parent/'draw.cpp').read_text()
-        self.assertIn('if (gamepad_backdrop_replaying() && p.pendingCompile) resolve_pending_pipeline(p);',draw)
         self.assertIn('!aoPrivateReplay && !gamepad_backdrop_replaying()',draw)
         present=(CPP.parent/'present.cpp').read_text()
         self.assertIn('auto q=backdrop;q.clipped=true;q.clip=',present)
@@ -238,6 +242,50 @@ int main() {
         self.assertNotIn('bind_stage(',direct)
         self.assertIn('if (replay) {\n    topology = replay->topology;',draw)
         self.assertIn('bindIndex(replay->indexBuffer, replay->indexOffset, replay->indexType)',draw)
+
+    def test_register_patch_and_no_per_draw_copies(self):
+        source=r'''#include <cassert>
+#include <cstdint>
+#include <stdexcept>
+#include "gamepad_backdrop_blend.h"
+int main() {
+ uint32_t regs[8]={1,2,3,4,5,6,7,8};
+ const auto blend=gfxvk::backdrop_blend(0x00CC0100,4u|(5u<<8),7);
+ assert(blend.supported);
+ {
+  gfxvk::BackdropRegisterPatch patch(regs,2,4,6,blend);
+  assert(regs[2]==blend.control&&regs[4]==(5u|(1u<<8))&&regs[6]==(7u|8u));
+  assert(regs[0]==1&&regs[1]==2&&regs[3]==4&&regs[5]==6&&regs[7]==8);
+ }
+ for(uint32_t i=0;i<8;++i)assert(regs[i]==i+1);
+ try { gfxvk::BackdropRegisterPatch patch(regs,2,4,6,blend);throw std::runtime_error("replay"); }
+ catch(const std::runtime_error&) {}
+ for(uint32_t i=0;i<8;++i)assert(regs[i]==i+1); // restored on exceptions too
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path=Path(directory)/'patch.cpp';path.write_text(source)
+            exe=Path(directory)/'patch'
+            subprocess.run([os.environ.get('CXX','clang++'),'-std=c++20','-Wall','-Wextra','-Werror','-I',str(CPP.parent),str(path),'-o',str(exe)],check=True)
+            subprocess.run([str(exe)],check=True)
+        draw=(CPP.parent/'draw.cpp').read_text()
+        tail=draw[draw.index('  if (gamepad_backdrop_begin_replay(colors[0],compatible,captureBlend.opaque)) {'):draw.index('// Setup\'s Vulkan preparation (headstart.cpp')]
+        # No full register-file copy and no allocation per captured draw.
+        self.assertNotIn('captureRegs',tail)
+        self.assertIn('BackdropRegisterPatch patch(regs,REGADDR::CB_BLEND0_CONTROL,REGADDR::CB_COLOR_CONTROL,REGADDR::CB_TARGET_MASK,captureBlend);',tail)
+        self.assertIn('if(!gamepad_backdrop_scope_registers(r)) {',tail)
+        self.assertNotIn('make_unique<StereoShaders>',draw)
+        self.assertIn('backdropSnapshot.reset();shadersOut=&backdropSnapshot;',draw)
+        # The capture pipeline is polled, never waited for on the render thread.
+        self.assertIn('if (gamepad_backdrop_replaying() && p.pendingCompile) {\n    resolve_pending_pipeline(p, false);',draw)
+        self.assertNotIn('if (gamepad_backdrop_replaying() && p.pendingCompile) resolve_pending_pipeline(p);',draw)
+        backend=(CPP.parent/'backend.cpp').read_text()
+        self.assertIn('backdropDemandFrame.publish();\n  gamepad_backdrop_maintain();',backend)
+        metal=(CPP.parent.parent/'metal_main.mm').read_text()
+        self.assertIn('present_screens();\n        gamepad_backdrop_maintain();',metal)
+        metalDraw=(CPP.parent.parent/'metal_draw.mm').read_text()
+        self.assertIn('gamepad_backdrop::fits_pool(backdrop_pool_bytes(), backdrop_bytes(storage->texture), wanted)',metalDraw)
+        self.assertIn('gamepad_backdrop::release_idle(on, R.frame, lastBackdropFrame)',metalDraw)
 
     def test_bars_after_pip_frame(self):
         present=(CPP.parent/'present.cpp').read_text()

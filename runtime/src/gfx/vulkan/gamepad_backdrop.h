@@ -9,6 +9,8 @@ void gamepad_backdrop_invalidate(Surface* source);
 // Draw replay remains private: it never enters the normal surface cache.
 bool gamepad_backdrop_replaying();
 bool gamepad_backdrop_capture_active();
+// regs is the (mutable) gx2 register file the open pane scope was opened with
+bool gamepad_backdrop_scope_registers(const uint32_t* regs);
 Surface* gamepad_backdrop_replay_target();
 bool gamepad_backdrop_begin_replay(Surface* source, bool compatible, bool opaque=false);
 void gamepad_backdrop_end_replay(bool drawn);

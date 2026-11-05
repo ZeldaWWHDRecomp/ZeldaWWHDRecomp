@@ -27,6 +27,7 @@ std::unique_ptr<Image> active,building,published;
 std::array<std::unique_ptr<Image>,kCaptureImages> spare;
 uint64_t sourceIdentity=0,nextTicket=0,lastCaptureFrame=0;
 unsigned scopeDepth=0;
+const uint32_t* scopeRegs=nullptr; // the gx2 register file the outermost scope was opened with
 bool replaying=false,failed=false,drawn=false,buildingDirty=false,captureOpaque=false;
 void recycle(std::unique_ptr<Image>& image) {
  if(!image)return;
@@ -96,17 +97,18 @@ void gamepad_backdrop_debug(const char* event,uint64_t a,uint64_t b,uint64_t c,u
 void gamepad_backdrop_reset() {
  end_encoder();active.reset();building.reset();published.reset();pending.clear();for(auto& slot:spare)slot.reset();cache.reset();
  gfx::gamepad_backdrop::set_capture_requested(false);
- sourceIdentity=0;scopeDepth=0;lastCaptureFrame=0;replaying=failed=drawn=buildingDirty=false;
+ sourceIdentity=0;scopeDepth=0;lastCaptureFrame=0;scopeRegs=nullptr;replaying=failed=drawn=buildingDirty=false;
 }
 void gamepad_backdrop_invalidate(Surface* source) {
  const auto id=identity(source);if(!id)return;
  if(sourceIdentity==id)failed=true;
  discard_pending(id);
 }
-void gamepad_backdrop_scope(const uint32_t*,bool begin) {
+void gamepad_backdrop_scope(const uint32_t* regs,bool begin) {
  gamepad_backdrop_debug(begin?"scope-begin":"scope-end",scopeDepth,gfx::gamepad_backdrop::capture_enabled(),sourceIdentity,uint64_t(drawn)|(uint64_t(failed)<<1));
- if(begin) { if(scopeDepth++==0) { recycle(active);sourceIdentity=0;failed=drawn=false; } return; }
+ if(begin) { if(scopeDepth++==0) { recycle(active);sourceIdentity=0;failed=drawn=false;scopeRegs=regs; } return; }
  if(!scopeDepth || --scopeDepth) return;
+ scopeRegs=nullptr;
  if(failed)discard_pending(sourceIdentity);
  gamepad_backdrop_debug("scope-result",sourceIdentity,drawn,failed,active?identity(active->surface.get()):0);
  if(active && drawn && !failed && gfx::gamepad_backdrop::enabled.load()) {
@@ -119,6 +121,7 @@ void gamepad_backdrop_scope(const uint32_t*,bool begin) {
  recycle(active);
 }
 bool gamepad_backdrop_replaying() { return replaying; }
+bool gamepad_backdrop_scope_registers(const uint32_t* regs) { return scopeDepth&&regs&&regs==scopeRegs; }
 bool gamepad_backdrop_capture_active() { return scopeDepth&&!replaying&&gfx::gamepad_backdrop::capture_enabled(); }
 Surface* gamepad_backdrop_replay_target() { return replaying&&active ? active->surface.get():nullptr; }
 bool gamepad_backdrop_begin_replay(Surface* source,bool compatible,bool opaque) {
