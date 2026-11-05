@@ -25,7 +25,7 @@ enum Skip : int {
     kNoDepth,     // no depth buffer of the scene's size
     kSize,        // the TV picture's size or format differs from the scene's
     kCut,         // a camera cut (turn >= 0.5 rad, eye step >= 400) or no camera of the frame before
-    kStill,       // the camera did not move: the in-between frame would be the real one
+    kStill,       // the camera did not move and the objects' movement is off: the in-between frame would be the real one
     kFailed,      // a pipeline or image could not be made
     kSkipCount
 };
@@ -36,6 +36,18 @@ void note_camera(const uint32_t* words, uint32_t n);
 // with the depth buffer at depthBase bound. At the first one on the TV picture this frame the scene is
 // complete: it is copied aside, and its depth buffer noted.
 void layout(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase);
+
+// surfaces.cpp clear_depth_stencil, around a depth clear: the main depth buffer cleared again in a frame
+// after being drawn into (a second 3D pass) keeps the first pass's depth for the in-between frame
+void depth_clearing(Surface* depth);
+void depth_cleared(Surface* depth);
+// HUD coverage (hud_coverage.h, draw.cpp): the coverage image a draw whose first colour target is
+// `color0` also writes this frame (null: none, or not the TV picture); hud_coverage_failed(): a HUD draw
+// could not write it (the frame's in-between one then finds the HUD by comparing pictures);
+// hud_coverage_wanted(): frame generation and the coverage are on (else draw.cpp does nothing of it)
+Surface* hud_coverage_target(Surface* color0);
+void hud_coverage_failed();
+bool hud_coverage_wanted();
 
 // swap() after the real TV present: `shown` it was presented at `nowNs` (steady clock). Returns half the
 // real frames' recent interval (ns), the in-between frame's delay; 0: none can be placed (kFast).

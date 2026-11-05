@@ -3734,7 +3734,7 @@ static void present_generated(bool tvShown) {
   Surface* generated = reproj::generate(R.tv.scan.get(), skip);
   if (!generated) return;
   if (headlessTest && !tvShown) {
-    const uint64_t f = fixed_seed::script_frame(R.frame);
+    const uint64_t f = fixed_seed::script_frame(R.frame + 1);  // (named as frame_dumps names this swap's real frame)
     if (gfx::capture_schedule::contains(testDumps, f)) {
       try {
         const std::string path = "framegen_" + std::to_string(f) + ".png";

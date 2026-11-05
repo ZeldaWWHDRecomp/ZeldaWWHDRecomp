@@ -127,6 +127,27 @@ int main() {
         assert(near(move[0], 199.5f, 1e-3f));
         printf("cuts: a 0.6 rad turn and a 450 step cut, a 399 step moves; a still camera makes no frame\n");
     }
+    // the objects' movement search (full_step): a point of the current camera's space, in the previous
+    // camera's, is where the previous camera sees that world point
+    {
+        const Cam prev = cam(10, 20, 30, 0, 0, -100), cur = cam(40, 15, -10, 30, 5, -140);
+        float full[9], fullMove[3];
+        full_step(prev.m, prev.eye, cur.m, cur.eye, full, fullMove);
+        int checked = 0;
+        for (float z : {50.0f, 900.0f})
+            for (float px : {-0.5f, 0.3f})
+                for (float py : {-0.2f, 0.4f}) {
+                    const float vc[3] = {px * z, py * z, -z};
+                    float x[3], vp[3], got[3];
+                    for (int k = 0; k < 3; k++)
+                        x[k] = cur.eye[k] + cur.m[k * 3 + 0] * vc[0] + cur.m[k * 3 + 1] * vc[1] + cur.m[k * 3 + 2] * vc[2];
+                    view(prev, x, vp);
+                    for (int r = 0; r < 3; r++) got[r] = full[r * 3 + 0] * vc[0] + full[r * 3 + 1] * vc[1] + full[r * 3 + 2] * vc[2] + fullMove[r];
+                    for (int r = 0; r < 3; r++) assert(near(got[r], vp[r], 2e-2f));
+                    checked++;
+                }
+        printf("full_step: %d points of this camera's space land in the previous camera's\n", checked);
+    }
     printf("reproj_camera: ok\n");
     return 0;
 }

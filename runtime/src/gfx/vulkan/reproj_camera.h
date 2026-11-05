@@ -73,4 +73,24 @@ inline Step half_step(const float prevM[9], const float prevEye[3], const float 
     return Step::Moved;
 }
 
+// The objects' movement search (kFlow / kSelect): a point in the current camera's space, in the
+// previous camera's = D p + Cprev^T step (D = Cprev^T Ccur, full[row * 3 + column]; fullMove: Cprev^T
+// step). From the fork's record() (the flow pass's camera).
+inline void full_step(const float prevM[9], const float prevEye[3], const float curM[9], const float curEye[3], float full[9],
+                      float fullMove[3]) {
+    float step[3];
+    for (int k = 0; k < 3; k++) step[k] = curEye[k] - prevEye[k];
+    for (int a = 0; a < 3; a++)
+        for (int b = 0; b < 3; b++) {
+            float s = 0;
+            for (int k = 0; k < 3; k++) s += prevM[k * 3 + a] * curM[k * 3 + b];
+            full[a * 3 + b] = s;
+        }
+    for (int j = 0; j < 3; j++) {
+        float v = 0;
+        for (int k = 0; k < 3; k++) v += prevM[k * 3 + j] * step[k];
+        fullMove[j] = v;
+    }
+}
+
 }  // namespace gfxvk::reproj
