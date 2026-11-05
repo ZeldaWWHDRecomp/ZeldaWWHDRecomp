@@ -55,19 +55,9 @@ void f_025D7710_orig(Cpu* c);  // fopAcM_orderDoorEvent
 
 namespace mods {
 namespace {
-// the fork's release.h: USA addresses, translated for the build the port was made from
-namespace release {
-struct Code {
-    uint32_t usa;
-    operator uint32_t() const { return GC(usa); }
-};
-struct Data {
-    uint32_t usa;
-    operator uint32_t() const { return GD(usa); }
-};
-}  // namespace release
+// USA addresses (the fork's release::Code / Data), translated for the build the port was made from with GC() / GD()
 // the doors' own executes (the game's code, reached through the dispatch table: a decompiled one in the decomp build)
-constexpr uint32_t kDoor10Execute = 0x021277D0, kDoor12Execute = 0x02129830, kKnobExecute = 0x021A5008;
+const uint32_t kDoor10Execute = GC(0x021277D0), kDoor12Execute = GC(0x02129830), kKnobExecute = GC(0x021A5008);
 PpcFunc g_knob_orig = nullptr;
 void f_021A5008_orig(Cpu* c) { g_knob_orig(c); }
 // Link: g_dComIfG_gameInfo.play mpPlayerPtr[0] (as story_chart.cpp)
@@ -94,7 +84,7 @@ constexpr float kLowY = -80.0f, kHighY = 260.0f;
 
 struct Kind {
     const char* name;
-    release::Code open_init, open_proc, open_end, close_init, close_proc, close_end, set_stop;
+    uint32_t open_init, open_proc, open_end, close_init, close_proc, close_end, set_stop;  // GC()
     uint32_t key;     // dDoor_key2_c (its first byte: the lock is on)
     uint32_t stop;    // dDoor_stop_c (+4 mOffsY, +8 m8: bars down on Link's side)
     uint32_t action;  // the actor's action (0 init, 1 wait, 2 bars closing, 3 event)
@@ -102,14 +92,14 @@ struct Kind {
     uint8_t boss_type;
     bool hkyo;  // door10's light-sensitive bars (mHkyo.m11 at 0x4E1)
 };
-const Kind kDoor10{"door10", {0x021262D8}, {0x0212662C}, {0x0212673C}, {0x02126334}, {0x021267A8}, {0x0212683C},
-                   {0x02126594}, 0x424, 0x4C4, 0x4EC, 0x4F0, 1, true};
-const Kind kDoor12{"door12", {0x02128430}, {0x021287A0}, {0x021288E0}, {0x0212848C}, {0x02128974}, {0x021289EC},
-                   {0x02128708}, 0x400, 0x4A0, 0x4AC, 0x4B4, 3, false};
-const release::Code kStopCloseInit{0x0252BB9C};  // dDoor_stop_c::closeInit
-const release::Data kStayNo{0x1047E6C8};
-const release::Data kRoomStatus{0x1047E8E8};
-const release::Data kCounter{0x101FF558};  // g_Counter.mCounter0: +1 per logic step
+const Kind kDoor10{"door10", GC(0x021262D8), GC(0x0212662C), GC(0x0212673C), GC(0x02126334), GC(0x021267A8), GC(0x0212683C),
+                   GC(0x02126594), 0x424, 0x4C4, 0x4EC, 0x4F0, 1, true};
+const Kind kDoor12{"door12", GC(0x02128430), GC(0x021287A0), GC(0x021288E0), GC(0x0212848C), GC(0x02128974), GC(0x021289EC),
+                   GC(0x02128708), 0x400, 0x4A0, 0x4AC, 0x4B4, 3, false};
+const uint32_t kStopCloseInit = GC(0x0252BB9C);  // dDoor_stop_c::closeInit
+const uint32_t kStayNo = GD(0x1047E6C8);
+const uint32_t kRoomStatus = GD(0x1047E8E8);
+const uint32_t kCounter = GD(0x101FF558);  // g_Counter.mCounter0: +1 per logic step
 constexpr uint32_t kRoomStride = 0x22C;
 constexpr uint32_t kPos = 0x314, kHomeAngleX = 0x2F8, kRoomNo2 = 0x3AC, kFrom = 0x3AD, kTo = 0x3AE, kVec = 0x3B0,
                    kFront = 0x3BC, kEvtKind = 0x3E2;
@@ -312,8 +302,8 @@ void door_execute(Cpu* c, const Kind& k, void (*orig)(Cpu*)) {
 // where the walk ends with the door's own setStart 021A39CC (f1 sideways, f2 along: minus along its facing); his own
 // step ends his demo mode once no event runs. The door then waits until Link has left its zone once.
 // HD daPy_py_c::mDemo at 0x420 (the knob's setAngle writes its move angle at 0x422): type u16 0x420, mode u32 0x430.
-const release::Code kKnobOpenInit{0x021A3AA0}, kKnobOpenProc{0x021A3BF8}, kKnobOpenEnd{0x021A3E14};
-const release::Code kKnobSetStart{0x021A39CC}, kGameInfo{0x025200D4};
+const uint32_t kKnobOpenInit = GC(0x021A3AA0), kKnobOpenProc = GC(0x021A3BF8), kKnobOpenEnd = GC(0x021A3E14);
+const uint32_t kKnobSetStart = GC(0x021A39CC), kGameInfo = GC(0x025200D4);
 constexpr uint32_t kKnobAction = 0x5A4, kKnobRegist = 0x5A7, kKnobFrame = 0x508, kKnobAnmRes = 0x58C;
 constexpr uint32_t kEvtResetFlags = 0x52B8;
 const float kKnobSwing = env_f("WWHD_WALK_DOORS_SWING", 2.2f);
@@ -625,13 +615,13 @@ bool walk_door_exit() {
 DoorExecuteWrap::DoorExecuteWrap(uint32_t proc) {
     if (!walk_doors() && g_doors.empty() && g_knobs.empty() && g_place.door == 0) return;
     if (!g_wrap_ready) {
-        g_door10_orig = dispatch::lookup(GC(kDoor10Execute));
-        g_door12_orig = dispatch::lookup(GC(kDoor12Execute));
-        g_knob_orig = dispatch::lookup(GC(kKnobExecute));
+        g_door10_orig = dispatch::lookup(kDoor10Execute);
+        g_door12_orig = dispatch::lookup(kDoor12Execute);
+        g_knob_orig = dispatch::lookup(kKnobExecute);
         if (!g_door10_orig || !g_door12_orig || !g_knob_orig) return;
-        g_wrapped[0] = {GC(kDoor10Execute), dispatch::register_host(door10_execute, "walk_doors door10 execute")};
-        g_wrapped[1] = {GC(kDoor12Execute), dispatch::register_host(door12_execute, "walk_doors door12 execute")};
-        g_wrapped[2] = {GC(kKnobExecute), dispatch::register_host(knob_host_execute, "walk_doors knob execute")};
+        g_wrapped[0] = {kDoor10Execute, dispatch::register_host(door10_execute, "walk_doors door10 execute")};
+        g_wrapped[1] = {kDoor12Execute, dispatch::register_host(door12_execute, "walk_doors door12 execute")};
+        g_wrapped[2] = {kKnobExecute, dispatch::register_host(knob_host_execute, "walk_doors knob execute")};
         g_wrap_ready = true;
     }
     uint32_t sub = ld32(proc + 0xF0);
