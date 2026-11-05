@@ -6,6 +6,7 @@
 
 #include "guest_addr.h"
 #include "long_name.h"
+#include "../gfx/renderer.h"
 #include "runtime.h"
 #include "story_lyt_text_markup.h"  // to_utf8
 #include "../console_language.h"
@@ -93,11 +94,14 @@ void ask() {
 }
 
 // test aid: WWHD_TEST_PLAYER_NAME=name (UTF-8) renames the file being played once, as the settings page's prompt
-// does, as soon as a file is played (scripted runs: the whole name of long_name.h)
+// does, as soon as a file is played, or from TV frame WWHD_TEST_PLAYER_NAME_FRAME on (after a save state's load)
+// (scripted runs: the whole name of long_name.h)
 void test_rename() {
     static bool done = false;
     const char* e = getenv("WWHD_TEST_PLAYER_NAME");
     if (done || !e || !*e || !loaded()) return;
+    static const uint64_t from = [] { const char* f = getenv("WWHD_TEST_PLAYER_NAME_FRAME"); return f ? strtoull(f, nullptr, 10) : 0ull; }();
+    if (render::frame_count() < from) return;
     done = true;
     std::u16string name;
     for (const char* p = e; *p;) {  // (UTF-8 to UTF-16, up to three bytes)
