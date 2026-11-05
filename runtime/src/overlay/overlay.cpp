@@ -58,6 +58,8 @@
 #include "trace.h"
 #include "hostui.h"
 #include "../mods/link_poses.h"
+#include "../mods/game_progress_host.h"
+#include "../mods/achievements_host.h"
 #include "../mods/menu_sounds_port.h"
 #include "../mods/code_mods.h"
 #include "../mods/save_folder.h"
@@ -1612,7 +1614,7 @@ void tab_display() {
     if (check("Context buttons", mods::context_buttons_on(), &v)) hostui::post([v] { mods::set_context_buttons_on(v); });
     help("Only the buttons that do something now show, with the game's own word or item on them (Open, Lift, "
          "Speak, the bow...); the game's button display is hidden then. A golden ring shows when A offers "
-         "something new. Off: every button always shows.");
+         "something new. Off: every button always shows. The Classic style always shows every button.");
     if (!mods::context_buttons_on()) ImGui::BeginDisabled();
     if (check("Link in the button pictures", link_poses::enabled(), &v)) hostui::post([v] { link_poses::set_enabled(v); });
     help("A small picture of Link in the pose of the action shows on the button: jumping on Jump, a sword swing on the "
@@ -1658,6 +1660,9 @@ void tab_display() {
         if (radio(f[i], hostui::scale_filter() == i, fok))
             hostui::post([i] { hostui::set_scale_filter(i); });
     }
+    help("Smooth blends the game's pixels. Sharp is pixel perfect: each rendered pixel shows as a crisp block of the "
+         "same size at any window size, with no bars. Integer scale uses whole-number sizes only and leaves a border. "
+         "While dynamic resolution has lowered the resolution, the picture is scaled smoothly.");
 
 }
 
@@ -1764,7 +1769,89 @@ void restart_notice_frame(bool draw) {
 
 // A built-in mod's options on its page (Mods > the mod).
 void builtin_options(const std::string& id) {
-    if (id == "direct-camera") {
+    if (id == "achievements") {  // (achievements.cpp): its options, what pauses them, the goals
+        achievements::Settings a = achievements::settings();
+        auto save = [](const achievements::Settings& s) {
+            hostui::post([s] {
+                achievements::set_settings(s);
+                hostui::set("mod.achievements.popup", s.popup ? "1" : "0");
+                hostui::set("mod.achievements.link", s.link ? "1" : "0");
+                hostui::set("mod.achievements.jingle", s.jingle ? "1" : "0");
+                hostui::set("mod.achievements.each-file", s.each_file ? "1" : "0");
+                hostui::set("mod.achievements.with-cheats", s.with_cheats ? "1" : "0");
+                hostui::set("mod.achievements.volume", std::to_string(s.volume));
+            });
+        };
+        bool changed = false;
+        changed |= ImGui::Checkbox("Pop-up on screen", &a.popup);
+        changed |= ImGui::Checkbox("Link holds it up", &a.link);
+        changed |= ImGui::Checkbox("Jingle (the game's item fanfare)", &a.jingle);
+        changed |= ImGui::SliderFloat("Jingle volume", &a.volume, 0.f, 1.f, "%.2f");
+        changed |= ImGui::Checkbox("Pop-ups in every save game", &a.each_file);
+        help("On: each save game earns its own and shows them again. Off: only achievements no save game had before.");
+        changed |= ImGui::Checkbox("Earn with cheats", &a.with_cheats);
+        help("On: cheats no longer pause achievements.");
+        if (changed) save(a);
+        const achievements::View v = achievements::view();
+        if (!v.pausing.empty()) {
+            std::string p;
+            for (const auto& s : v.pausing) p += (p.empty() ? "" : ", ") + s;
+            note("Paused now: %s.", p.c_str());
+        }
+        unsigned all = 0, here = 0;
+        for (const auto& r : v.rows) all += r.all != 0, here += r.file != 0;
+        ImGui::Text("All save games: %u of %zu earned", all, v.rows.size());
+        if (!v.file.empty()) ImGui::Text("This save game: %u of %zu earned", here, v.rows.size());
+        static const char* const groups[achievements::kGroups] = {"Story", "Items and upgrades", "Songs", "Side quests", "Collections", "Nintendo Gallery"};
+        for (int g = 0; g < achievements::kGroups; g++) {
+            if (!ImGui::TreeNode(groups[g])) continue;
+            for (const auto& r : v.rows)
+                if (r.group == g) ImGui::Text("%s %s (%u): %s", r.all ? "[x]" : "[ ]", r.title.c_str(), r.points, r.desc.c_str());
+            ImGui::TreePop();
+        }
+        static bool ask = false;
+        if (!ask && ImGui::Button("Reset achievements")) ask = true;
+        if (ask) {
+            ImGui::TextUnformatted("All of them become open again, for every save game.");
+            if (ImGui::Button("Reset")) hostui::post([] { achievements::reset(); }), ask = false;
+            ImGui::SameLine();
+            if (ImGui::Button("Keep them")) ask = false;
+        }
+    } else if (id == "game-progress") {  // (game_progress.cpp): its option, and the count of the save in play
+        bool shown = game_progress::on_screen();
+        if (ImGui::Checkbox("Percent on screen", &shown))
+            hostui::post([shown] { game_progress::set_on_screen(shown); hostui::set("mod.game-progress.on-screen", shown ? "1" : "0"); });
+        help("The percent in the bottom left corner of the TV picture, hidden while a menu, a cutscene or a dialogue is up.");
+        gp_result r;
+        std::vector<std::string> names;
+        if (!game_progress::result(r, &names)) {
+            note("The checklist and the map are on the item menu's settings page (Game tab) while a save file is played.");
+            return;
+        }
+        ImGui::Text("This save file: %d %%", gp_percent(&r));
+        static const char* const parts[GP_PARTS] = {"Dungeons", "Hearts", "Items", "Equipment", "Upgrades", "Songs",
+                                                    "Pearls and Triforce", "Treasure charts", "Sea chart", "Nintendo Gallery"};
+        for (int p = 0; p < GP_PARTS; p++) {
+            char label[96];
+            std::snprintf(label, sizeof label, "%s: %u / %u###gp%d", parts[p], r.done[p], r.total[p], p);
+            if (!ImGui::TreeNode(label)) continue;
+            for (unsigned i = r.first[p]; i < r.first[p + 1]; i++) {
+                const gp_entry& e = r.e[i];
+                const std::string n = i < names.size() ? names[i] : std::string();
+                if (e.total > 1) ImGui::Text("%s %s: %u / %u", e.done >= e.total ? "[x]" : "[ ]", n.c_str(), e.done, e.total);
+                else ImGui::Text("%s %s", e.done ? "[x]" : "[ ]", n.c_str());
+            }
+            ImGui::TreePop();
+        }
+        note("The map of where each thing is found is on the item menu's settings page (Game tab).");
+    } else if (id == "target-letterbox") {
+        int mode = mods::targeting_letterbox_mode();
+        if (ImGui::Combo("Letterbox while targeting", &mode, "On\0Off with enemies\0Always off\0"))
+            hostui::post([mode] { game_settings::set_targeting_letterbox_mode(mode); });
+        help("Always off also removes bars while holding target without an enemy. Cutscenes and scripted cameras keep their bars.");
+        if (const char* value = std::getenv("WWHD_TARGET_LETTERBOX_MODE"))
+            note("WWHD_TARGET_LETTERBOX_MODE=%s overrides the saved choice at startup.", value);
+    } else if (id == "direct-camera") {
         float speed = mods::camera_speed();
         if (ImGui::SliderFloat("Camera speed", &speed, .5f, 2.f, "%.2fx"))
             hostui::post([speed] { game_settings::set_camera_speed(speed); });  // as the item menu's settings page (game_settings.h)

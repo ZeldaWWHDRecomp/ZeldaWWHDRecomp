@@ -1,5 +1,6 @@
 #pragma once
 // Standalone host-side tests; no game files, player settings or guest code needed.
+#include "mods/achievements_host.h"
 #include "mods/manager.h"
 #include "mods/mods.h"
 #include "mods/climb.h"
@@ -27,9 +28,11 @@ void env(const char* key, const char* value) {
 }
 }
 namespace mods {
-static bool target_letterbox = true;
-bool letterbox_while_targeting() { return target_letterbox; }
-void set_letterbox_while_targeting(bool on) { target_letterbox = on; }
+static int target_letterbox = 0;
+int targeting_letterbox_mode() { return target_letterbox; }
+void set_targeting_letterbox_mode(int value) { if (value >= 0 && value <= 2) target_letterbox = value; }
+bool letterbox_while_targeting() { return target_letterbox == 0; }
+void set_letterbox_while_targeting(bool on) { target_letterbox = on ? 0 : 1; }
 static bool ff_on = false, ff_mute = true;
 static unsigned ff_rate = 2;
 static uint32_t ff_button = 0x40;
@@ -84,6 +87,19 @@ float camera_speed() { return speed; }
 void set_camera_speed(float f) { speed=f; }
 float mouse_sensitivity() { return sensitivity; }
 void set_mouse_sensitivity(float f) { sensitivity=f; }
+}
+// the built-in Achievements (mods/achievements.cpp)
+namespace achievements {
+static bool ach_on = false;
+static Settings ach_settings;
+bool enabled() { return ach_on; } void set_enabled(bool b) { ach_on = b; }
+Settings settings() { return ach_settings; } void set_settings(const Settings& s) { ach_settings = s; }
+}
+// the built-in Game progress (mods/game_progress.cpp)
+namespace game_progress {
+static bool gp_on = false, gp_screen = false;
+bool enabled() { return gp_on; } void set_enabled(bool b) { gp_on = b; }
+bool on_screen() { return gp_screen; } void set_on_screen(bool b) { gp_screen = b; }
 }
 namespace hostui {
 bool get(const char* k, std::string& value) {

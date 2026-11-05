@@ -9,6 +9,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "move_speed.h"  // MoveMode (the run/swim speed mod's public vocabulary)
 #include "fast_forward.h"
@@ -23,6 +24,8 @@ namespace mods {
 bool camera_directed_items();
 void set_camera_directed_items(bool on);
 bool direct_camera();
+int targeting_letterbox_mode(); // 0: On, 1: Off with enemies, 2: Always off during targeting
+void set_targeting_letterbox_mode(int mode);
 bool letterbox_while_targeting();
 void set_letterbox_while_targeting(bool on);
 void set_direct_camera(bool on);
@@ -43,6 +46,12 @@ void set_quick_use_speed(float factor);
 // Authored rates are restored before returning; crossing predicates are never altered.
 void quick_use_animation_call(Cpu* c, void (*native)(Cpu*), bool advance = true);
 void quick_use_filter_pad(input::PadState& s);
+// Source-owned item handlers preserve the local ready-trigger rule without
+// publishing synthetic pad input or changing the caller CPU registers.
+void ship_normal_sail_wind(Cpu* c, uint32_t ship);
+float ship_sail_target(float stock);
+void quick_use_item_action_dispatch(Cpu* c, uint32_t link, uint32_t item);
+uint32_t quick_use_ready_item_trigger(Cpu* c, uint32_t link, uint32_t native_trigger);
 void quick_use_reset();  // drop transient/pending input on capture, focus loss and savestates
 bool quick_doors();
 void set_quick_doors(bool on);
@@ -292,6 +301,9 @@ enum Cheat {
     kCheatFigurines = 256,  // every Nintendo Gallery figurine (Carlov then leaves, as in the game's ending)
 };
 void request_cheat(int which);  // any thread
+// the cheats that pause Achievements now, as the menus name them: the infinite ones that are on, and the one-shot
+// cheats and story-item grants used in this run (any thread)
+std::vector<std::string> cheats_pausing();
 // Explicit, one-shot inventory grants. The first request needs consent; no grant precedes a backup.
 enum StoryItem { kStoryNayru = 1, kStoryDin = 2, kStoryFarore = 4, kStorySword = 8 };
 bool story_item_confirmation_needed();

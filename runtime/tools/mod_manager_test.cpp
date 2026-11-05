@@ -1,4 +1,5 @@
 // Standalone host-side tests; no game files, player settings or guest code needed.
+#include "mods/achievements_host.h"
 #include "mods/manager.h"
 #include "mods/mods.h"
 #include "mods/climb.h"
@@ -23,9 +24,11 @@ void env(const char* key, const char* value) {
 }
 }
 namespace mods {
-static bool target_letterbox = true;
-bool letterbox_while_targeting() { return target_letterbox; }
-void set_letterbox_while_targeting(bool on) { target_letterbox = on; }
+static int target_letterbox = 0;
+int targeting_letterbox_mode() { return target_letterbox; }
+void set_targeting_letterbox_mode(int value) { if (value >= 0 && value <= 2) target_letterbox = value; }
+bool letterbox_while_targeting() { return target_letterbox == 0; }
+void set_letterbox_while_targeting(bool on) { target_letterbox = on ? 0 : 1; }
 static bool ff_on = false, ff_mute = true;
 static unsigned ff_rate = 2;
 static uint32_t ff_button = 0x40;
@@ -79,6 +82,19 @@ void set_quick_use_speed(float f) { if (f == 1.f || f == 1.25f || f == 1.5f) qui
 void set_camera_speed(float f) { speed=f; }
 void set_mouse_sensitivity(float f) { sensitivity=f; }
 }
+// the built-in Achievements (mods/achievements.cpp)
+namespace achievements {
+static bool ach_on = false;
+static Settings ach_settings;
+bool enabled() { return ach_on; } void set_enabled(bool b) { ach_on = b; }
+Settings settings() { return ach_settings; } void set_settings(const Settings& s) { ach_settings = s; }
+}
+// the built-in Game progress (mods/game_progress.cpp)
+namespace game_progress {
+static bool gp_on = false, gp_screen = false;
+bool enabled() { return gp_on; } void set_enabled(bool b) { gp_on = b; }
+bool on_screen() { return gp_screen; } void set_on_screen(bool b) { gp_screen = b; }
+}
 namespace hostui {
 bool get(const char* k, std::string& value) {
     ++reads; auto it=preferences.find(k);
@@ -99,9 +115,25 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==22);  // with camera-directed-items (#203), quick-use (#196), instant-text and no-text-pauses
+    assert(entries().size()==24);  // with camera-directed-items (#203), quick-use (#196), instant-text, no-text-pauses, game-progress and achievements
     assert(find("instant-text") && !find("instant-text")->default_enabled && find("no-text-pauses"));
     assert(find("camera-directed-items") && find("quick-use"));
+    // Game progress: off by default, its switch and its on-screen option saved like the others'
+    env("WWHD_MOD_PROGRESS_ON_SCREEN",nullptr);
+    assert(find("game-progress") && std::string(find("game-progress")->category)=="Game" && !find("game-progress")->default_enabled);
+    assert(!game_progress::enabled() && !game_progress::on_screen());
+    preferences["mod.game-progress.on-screen"]="1"; preferences["mod.game-progress.enabled"]="1";
+    load_saved(); assert(game_progress::on_screen() && game_progress::enabled());
+    assert(set_enabled("game-progress",false) && !game_progress::enabled() && preferences["mod.game-progress.enabled"]=="0");
+    preferences.erase("mod.game-progress.on-screen"); preferences.erase("mod.game-progress.enabled"); game_progress::set_on_screen(false);
+    // Achievements: off by default; its options read from the settings (the pop-up's volume within 0..1)
+    assert(find("achievements") && std::string(find("achievements")->category)=="Game" && !find("achievements")->default_enabled);
+    preferences["mod.achievements.volume"]="0.25"; preferences["mod.achievements.with-cheats"]="1"; preferences["mod.achievements.link"]="0";
+    load_saved();
+    assert(achievements::settings().volume==0.25f && achievements::settings().with_cheats && !achievements::settings().link && achievements::settings().popup);
+    preferences["mod.achievements.volume"]="7"; load_saved(); assert(achievements::settings().volume==0.25f);  // (out of range: kept)
+    for (const char* k : {"mod.achievements.volume","mod.achievements.with-cheats","mod.achievements.link"}) preferences.erase(k);
+    achievements::set_settings({});
     for(const auto& option:traversal_options()) env(option.startup_env,nullptr);
     env("WWHD_MOD_LOCK_ON_RANGE",nullptr);env("WWHD_MOD_LOCK_ON_CYCLING",nullptr);
     assert(find("target-letterbox") && find("target-letterbox")->default_enabled);
@@ -115,6 +147,18 @@ int main() {
     load_saved(); assert(!mods::letterbox_while_targeting());
     env("WWHD_TARGET_LETTERBOX", nullptr);
     load_saved(); assert(mods::letterbox_while_targeting());
+    // Old false means enemy-only; the new choice survives preference reloads.
+    preferences["mod.target-letterbox.enabled"] = "0";
+    preferences["mod.target-letterbox.mode"] = "2";
+    load_saved(); assert(mods::targeting_letterbox_mode() == 2);
+    preferences["mod.target-letterbox.enabled"] = "1";
+    load_saved(); assert(mods::targeting_letterbox_mode() == 0);
+    env("WWHD_TARGET_LETTERBOX_MODE", "2");
+    mods::set_targeting_letterbox_mode(2);
+    load_saved(); assert(mods::targeting_letterbox_mode() == 2);
+    env("WWHD_TARGET_LETTERBOX_MODE", nullptr);
+    preferences.erase("mod.target-letterbox.mode");
+    load_saved(); assert(mods::targeting_letterbox_mode() == 0);
     assert(find("lock-on") && std::string(find("lock-on")->name)=="Extended enemy lock-on");
     assert(std::string(find("lock-on")->category)=="Gameplay");
     assert(!mods::extended_lock_on() && mods::lock_on_range()==1.f && mods::lock_on_cycling());

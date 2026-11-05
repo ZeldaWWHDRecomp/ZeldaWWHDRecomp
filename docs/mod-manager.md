@@ -116,7 +116,7 @@ now** (on Android: close and reopen the app). There is one restart offer at a ti
 the end of an install and the page of a mod that is off but still loaded offer
 their own instead, and switching mods does not open a popup.
 
-**Letterbox while targeting** is on by default in **Mods > Built-in > Camera**; switch it off to remove bars during normal targeting while keeping cutscenes and special cameras unchanged.
+**Letterbox while targeting** in **Mods > Built-in > Camera** offers **On** (the default), **Off with enemies** (remove bars only while locked on to a selected enemy), and **Always off** (also remove bars during free targeting without an enemy). Cutscenes and scripted cameras keep their original bars. Existing saved On/Off choices retain their behavior.
 
 ### Camera-directed items (prototype)
 

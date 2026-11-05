@@ -701,6 +701,32 @@ target_include_directories(link_poses_test PRIVATE runtime/include runtime/src r
 target_compile_options(link_poses_test PRIVATE -UNDEBUG)
 target_link_libraries(link_poses_test PRIVATE ZLIB::ZLIB)
 add_test(NAME link_poses COMMAND link_poses_test)
+# Game progress (runtime/src/mods/game_progress.h): the count of a save in ten parts, on byte images built in the
+# test; WWHD_PROGRESS_SAVES=<cking.sav,...> also prints the count of real Quest Logs
+add_executable(game_progress_test runtime/tools/game_progress_test.cpp)
+target_include_directories(game_progress_test PRIVATE runtime/src)
+target_compile_options(game_progress_test PRIVATE -UNDEBUG)
+add_test(NAME game_progress COMMAND game_progress_test)
+# the Game progress page (game_progress_page.h) and its names (game_progress_names.h)
+add_executable(game_progress_page_test runtime/tools/game_progress_page_test.cpp)
+target_include_directories(game_progress_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(game_progress_page_test PRIVATE -UNDEBUG)
+add_test(NAME game_progress_page COMMAND game_progress_page_test)
+# Achievements (achievements_goals.h, achievements_store.h): the goals, the record, the two-read rule, the pause;
+# WWHD_PROGRESS_SAVES=<cking.sav,...> prints the goals real Quest Logs meet
+add_executable(achievements_test runtime/tools/achievements_test.cpp)
+target_include_directories(achievements_test PRIVATE runtime/src runtime/src/mods)
+target_compile_options(achievements_test PRIVATE -UNDEBUG)
+add_test(NAME achievements COMMAND achievements_test)
+add_executable(achievements_page_test runtime/tools/achievements_page_test.cpp)
+target_include_directories(achievements_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(achievements_page_test PRIVATE -UNDEBUG)
+add_test(NAME achievements_page COMMAND achievements_page_test)
+# the sound archive reader (nw_sound_archive.h: the Achievements fanfare); WWHD_GAME_DIR reads the real one
+add_executable(nw_sound_archive_test runtime/tools/nw_sound_archive_test.cpp)
+target_include_directories(nw_sound_archive_test PRIVATE runtime/src)
+target_compile_options(nw_sound_archive_test PRIVATE -UNDEBUG)
+add_test(NAME nw_sound_archive COMMAND nw_sound_archive_test)
 # the world editor's live item icons (#270): spare frames, and the textures written into the game's archive
 add_executable(item_icons_live_test runtime/tools/item_icons_live_test.cpp runtime/src/mods/item_icons.cpp runtime/src/mods/item_icons_game.cpp
                runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c)
@@ -1556,8 +1582,9 @@ add_executable(targeting_letterbox_test runtime/tools/targeting_letterbox_test.c
 target_include_directories(targeting_letterbox_test PRIVATE runtime/src runtime/include)
 target_compile_options(targeting_letterbox_test PRIVATE -UNDEBUG)
 add_test(NAME targeting_letterbox COMMAND targeting_letterbox_test)
-add_test(NAME targeting_letterbox_startup_off COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=0 $<TARGET_FILE:targeting_letterbox_test> 0)
-add_test(NAME targeting_letterbox_startup_on COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=1 $<TARGET_FILE:targeting_letterbox_test> 1)
+add_test(NAME targeting_letterbox_startup_off COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=0 $<TARGET_FILE:targeting_letterbox_test> 1)
+add_test(NAME targeting_letterbox_startup_on COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=1 $<TARGET_FILE:targeting_letterbox_test> 0)
+add_test(NAME targeting_letterbox_startup_always_off COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=1 WWHD_TARGET_LETTERBOX_MODE=2 $<TARGET_FILE:targeting_letterbox_test> 2)
 target_include_directories(lock_on_runtime_test PRIVATE runtime/src runtime/include)
 target_compile_options(lock_on_runtime_test PRIVATE -UNDEBUG)
 add_test(NAME lock_on_runtime COMMAND lock_on_runtime_test)
