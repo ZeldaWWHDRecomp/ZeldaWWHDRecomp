@@ -85,6 +85,11 @@ struct Backend {
     // optional: the game starts drawing its sky clouds (drawVrkumo, cloud_proto.cpp) into the sky
     // buffer, whose pass is the open one; `seq` names the cloud snapshot. Draws the horizon-haze grade.
     void (*sky_clouds_begin)(const uint32_t* regs, uint32_t seq);
+    // Optional: bracket ONLY P_BgPattern_00 DrawSelf. Duplicate its original GPU
+    // draws into an isolated transparent backdrop; never redirect or alter the
+    // original draw. Source target recognition and texture lifetime are backend-owned.
+    // Markers execute in command order, including cached display-list replay.
+    void (*gamepad_backdrop_scope)(const uint32_t* regs, bool begin) = nullptr;
 };
 enum Feature : int { kFeatureAO, kFeatureAOHires, kFeatureAniso, kFeatureFXAA, kFeatureScaleFilter, kFeatureCapture,
                      kFeatureShaderHeadStart };

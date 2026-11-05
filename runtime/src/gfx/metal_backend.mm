@@ -4,6 +4,7 @@
 
 #include "gx2/gx2.h"
 #include "renderer.h"
+#include "metal_gamepad_backdrop.h"
 
 namespace gfx {
 void sky_clouds_begin(const uint32_t* regs, uint32_t seq);  // metal_clouds.mm
@@ -13,6 +14,8 @@ void request_tv_dump(const std::string& path, int frames_ahead);
 void run_appkit_loop();
 uint64_t frame_count();
 void ss_reset_surfaces();
+void gamepad_backdrop_scope(const uint32_t*,bool);
+void gamepad_backdrop_reset();
 void request_capture();
 float res_scale();
 void set_res_scale(float f);
@@ -36,6 +39,7 @@ const Backend& metal_backend() {
         b.init = gfx::init;
         b.run_main_loop = gfx::run_appkit_loop;  // [NSApp run] plus the test hooks (display.mm)
         b.draw = gfx::draw;
+        b.gamepad_backdrop_scope = gfx::gamepad_backdrop_scope;
         b.clear_color = gfx::clear_color;
         b.clear_depth_stencil = gfx::clear_depth_stencil;
         b.copy_surface = gfx::copy_surface;
@@ -52,11 +56,11 @@ const Backend& metal_backend() {
         b.guest_flush = gfx::flush;
         b.wait_idle = gfx::wait_idle;
         b.write_back = gfx::write_back_linear_targets;
-        b.ss_reset = gfx::ss_reset_surfaces;
+        b.ss_reset = [] { gfx::gamepad_backdrop_reset(); gfx::reset_gamepad_bar_pipelines(); gfx::ss_reset_surfaces(); };
         b.frame_count = gfx::frame_count;
         b.request_tv_dump = gfx::request_tv_dump;
         b.request_capture = gfx::request_capture;
-        b.shutdown = [] {};  // the shader cache is written as it grows
+        b.shutdown = [] { gfx::gamepad_backdrop_reset(); gfx::reset_gamepad_bar_pipelines(); };  // the shader cache is written as it grows
         b.res_scale = gfx::res_scale;
         b.set_res_scale = gfx::set_res_scale;
         b.ao_mode = gfx::ao_mode;

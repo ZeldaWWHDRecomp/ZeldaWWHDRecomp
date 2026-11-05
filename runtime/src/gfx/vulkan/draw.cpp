@@ -1,3 +1,7 @@
+#include "gamepad_backdrop.h"
+#include "gamepad_backdrop_blend.h"
+#include "gamepad_backdrop_replay.h"
+#include "gx2/gx2_regs.h"
 #include "vertex_cpu_policy.h"
 #include <set>
 #include <tuple>
@@ -2200,6 +2204,7 @@ struct StereoShaders {
   VkRect2D scissor{};
   bool rasterReady = false;
   StageReplay stages[2];
+  DrawTargets targets; // exact attachments/dimensions used by this resolved draw
   struct VertexBind { uint32_t binding; VkBuffer buffer; VkDeviceSize offset; };
   std::array<VertexBind, 32> vertexBinds{};
   uint32_t vertexBindCount = 0;
@@ -2224,7 +2229,11 @@ std::array<VkFormat, 9> target_formats(const std::array<Surface*, 8>& colors, co
   f[8] = depth ? depth->fmt.pixel : VK_FORMAT_UNDEFINED;
   return f;
 }
+// The record of a GamePad backdrop pane draw (outside stereo): one reused object, no per-draw allocation.
+// Only the outermost draw writes it; its private replay reads it (backdropShadersIn) and writes none.
+StereoShaders backdropSnapshot;
 StereoShaders* stereoShadersOut = nullptr;       // eye 0's draw records
+const StereoShaders* backdropShadersIn = nullptr; // exact original draw, no guest resource rereads
 const StereoShaders* stereoShadersIn = nullptr;  // eye 1's draw reuses
 struct ContinuedStats {
   uint64_t lastFrame = 0, draws = 0, verified = 0, mismatches = 0, totalMismatches = 0, totalVerified = 0;
@@ -3080,7 +3089,14 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   auto& continued = continuedEyes[stereoEye];
   // the top-level stereo draw only, never the AO replay below
   StereoShaders* shadersOut = std::exchange(stereoShadersOut, nullptr);
-  const StereoShaders* shadersIn = std::exchange(stereoShadersIn, nullptr);
+  const StereoShaders* backdropReplay = std::exchange(backdropShadersIn,nullptr);
+  const StereoShaders* shadersIn = backdropReplay ? backdropReplay : std::exchange(stereoShadersIn, nullptr);
+  // Record exact upload slices/descriptor bindings while resolving the original
+  // draw. The normal off path records nothing and the stereo snapshot is reused.
+  if(!shadersOut && !stereoEye && !aoPrivateReplay && gamepad_backdrop_capture_active()) {
+    backdropSnapshot.reset();shadersOut=&backdropSnapshot;
+  }
+  if(backdropReplay && (!backdropReplay->replay || backdropReplay->submission!=R.submissionGeneration))return;
   // eye 1: eye 0's draw, replayed (StereoShaders)
   const StereoShaders* replay = shadersIn && shadersIn->replay && !aoPrivateReplay &&
       shadersIn->submission == R.submissionGeneration ? shadersIn : nullptr;
@@ -3093,7 +3109,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   // continued-draw fast path (see fastpath_config); the AO replay draw stays outside of it
   const auto& fastPath = fastpath_config();
   // a replayed eye 1 draw records no continuation of its own
-  const bool fastPathDraw = fastPath.on && !aoPrivateReplay && !replay;
+  const bool fastPathDraw = fastPath.on && !aoPrivateReplay && !replay && !gamepad_backdrop_replaying();
   if (replay) {
     continued.valid = false;
     continued.invalidReason = kNoState;
@@ -3143,7 +3159,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     vs = shadersIn->vs;
     ps = shadersIn->ps;
     static const bool verifyReplay=std::getenv("WWHD_VK_STEREO_REPLAY_VERIFY")!=nullptr;
-    if(verifyReplay) {
+    if(verifyReplay && !backdropReplay) {
       uint64_t checkedKey=0;
       auto* checkedFetch=vk::get_fetch_shader(r,&checkedKey,R.frame);
       vk::Shader* checkedVs=nullptr;
@@ -3344,9 +3360,14 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   rprof::mark(rprof::kIndices);
   DrawTargets targets;
-  if (fast) targets = continued.targets;
+  if(backdropReplay) targets=backdropReplay->targets;
+  else if (fast) targets = continued.targets;
   else if (!(replay ? resolve_replay_targets(r, ps, targets) : resolve_targets(r, ps, targets)))
     return;
+  if (auto* backdrop = gamepad_backdrop_replay_target()) {
+    targets.colors[0] = backdrop;
+    targets.slices[0] = 0;
+  }
   auto& colors = targets.colors;
   auto& slices = targets.slices;
   Surface* depth = targets.depth;
@@ -3355,16 +3376,26 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   clouds_before_draw(r, ps, colors[0], slices[0], depth);  // clouds.cpp: cloud shadows
   rprof::mark(rprof::kTargets);
   auto &p = fast ? *continued.pipeline
-      : replay && replay->formats == target_formats(colors, depth) ? *replay->pipeline
+      : !backdropReplay && replay && replay->formats == target_formats(colors, depth) ? *replay->pipeline
       : pipeline(r, vs, ps, fs, topology, colors, depth);
   rprof::mark(rprof::kPipeline);
   if (!p.pipeline && !p.pendingCompile) return;
   // Shader compile Fast (background_shaders.h): a draw that may be left out only waits the frame's
   // budget and is left out of this frame if its pipeline is not ready by then
-  const bool trackTargets = bgshaders::enabled() && !aoPrivateReplay;
+  const bool trackTargets = bgshaders::enabled() && !aoPrivateReplay && !gamepad_backdrop_replaying();
   if (p.pendingCompile && trackTargets && !background_wait(r, p, colors, depth)) return;
   if (p.pendingCompile && !bgshaders::enabled()) bgshaders::exact(bgshaders::kOff);  // (the AO pass's private
                                                                                       // copy of a draw waits)
+  // A capture is published only after its private pipeline is actually ready.
+  // Deferred command counts cannot certify a future driver compilation success.
+  // Never wait for it on the render thread (the phone's bottleneck): poll, and
+  // while it compiles in the background this pane is not captured (edge-colour
+  // fallback); a later presentation captures it. Its recipe joins the pipeline
+  // database like any other, so later sessions start with it warmed.
+  if (gamepad_backdrop_replaying() && p.pendingCompile) {
+    resolve_pending_pipeline(p, false);
+    if (p.pendingCompile) { gamepad_backdrop_debug("pipeline-pending", R.frame); return; }
+  }
   if (p.pendingCompile && !begin_exact_preparation()) resolve_pending_pipeline(p);
   if (trackTargets) track_drawn(r, colors, depth);
   if (!p.pipeline && !p.pendingCompile) return; // terminal driver failure, not pending
@@ -3382,6 +3413,12 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const bool replayStages = replay && &p == replay->pipeline && replay->sx == sx && replay->sy == sy;
   StageResources vres, pres;
   g_artisticBias = ::gfx::artistic_mips::resolution_bias(sx, sy);
+  if(backdropReplay) {
+    // Identical shaders and dynamic-uniform mode give identically defined
+    // descriptor-set layouts, even though the private alpha pipeline differs.
+    // Bind the already resolved sets/offsets, never replay_stage/bind_stage.
+    if(!backdrop_reuse_resources(*backdropReplay,p,vs,ps,R.submissionGeneration,vres,pres))return;
+  } else {
   if (!replayStages || !replay->stages[0].valid ||
       !replay_stage(replay->stages[0], r, vs, cameraEye, colors, depth, vres))
     vres = bind_stage(r, vs, p.sets[0], p.dynamicUniforms, sx, sy, colors, depth, probe, cameraEye, sunShadow,
@@ -3393,7 +3430,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
                       sunShadow ? cameraEye : 0, sunShadow,
                       fast ? &continued.stages[1] : nullptr, recordState ? &continued.stages[1] : nullptr,
                       shadersOut ? &shadersOut->stages[1] : nullptr);
+  }
   if (shadersOut) {
+    shadersOut->targets=targets;
     shadersOut->stages[0].resources = vres;
     shadersOut->stages[1].resources = pres;
     shadersOut->submission = R.submissionGeneration;
@@ -3916,6 +3955,39 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     ++drawBatchSubmissions;
   }
   rprof::mark(rprof::kSubmit);
+  // Original draw is complete. Replay exactly this pane draw with its own color
+  // attachment; no main-target pixels are copied and no target state escapes.
+  if(stereoEye||!gamepad_backdrop_capture_active()) return;
+  const auto captureBlend=backdrop_blend(r[REGADDR::CB_COLOR_CONTROL],r[REGADDR::CB_BLEND0_CONTROL],r[REGADDR::CB_TARGET_MASK]);
+  bool compatible = shadersOut && shadersOut->replay && shadersOut->rasterReady &&
+      shadersOut->submission==R.submissionGeneration && captureBlend.supported && colors[0] && slices[0] == 0 && !(r[REGADDR::DB_DEPTH_CONTROL] & 7);
+  for (unsigned i=1;i<8;++i) compatible &= colors[i] == nullptr;
+  const uint64_t snapshotFlags=uint64_t(bool(shadersOut))|(uint64_t(shadersOut&&shadersOut->replay)<<1)|
+      (uint64_t(shadersOut&&shadersOut->rasterReady)<<2)|(uint64_t(shadersOut&&shadersOut->submission==R.submissionGeneration)<<3)|
+      (uint64_t(captureBlend.supported)<<4)|(uint64_t(bool(colors[0]))<<5)|(uint64_t(slices[0]==0)<<6)|(uint64_t(compatible)<<7);
+  gamepad_backdrop_debug("draw-gate",snapshotFlags,(uint64_t(r[REGADDR::CB_BLEND0_CONTROL])<<32)|r[REGADDR::CB_COLOR_CONTROL],
+      (uint64_t(r[REGADDR::DB_DEPTH_CONTROL])<<32)|r[REGADDR::CB_TARGET_MASK],R.submissionGeneration);
+  if (gamepad_backdrop_begin_replay(colors[0],compatible,captureBlend.opaque)) {
+    const auto before=R.drawCount;
+    // The coverage-only alpha override is part of the ordinary pipeline key: the
+    // three capture registers of the pane's own register file (the gx2 file the
+    // scope was opened with) are patched for the replay only and restored on
+    // every exit, so guest/native draw state is unchanged. Any other register
+    // file gets one reused private copy (never expected).
+    uint32_t* regs=const_cast<uint32_t*>(r);
+    if(!gamepad_backdrop_scope_registers(r)) {
+      static std::vector<uint32_t> privateRegs;
+      privateRegs.assign(r,r+gx2::kNumRegs);regs=privateRegs.data();
+    }
+    BackdropRegisterPatch patch(regs,REGADDR::CB_BLEND0_CONTROL,REGADDR::CB_COLOR_CONTROL,REGADDR::CB_TARGET_MASK,captureBlend);
+    continued.valid=false;
+    backdropShadersIn=shadersOut;
+    try { draw(regs,prim,count,indexType,indexAddr,baseVertex,instances,nullptr); }
+    catch (...) { backdropShadersIn=nullptr;gamepad_backdrop_end_replay(false);continued.valid=false;throw; }
+    backdropShadersIn=nullptr;
+    gamepad_backdrop_end_replay(R.drawCount!=before);
+    continued.valid=false;
+  }
 }
 // Setup's Vulkan preparation (headstart.cpp, the head start's Metal pipeline recipes): the recipe of the pipeline a
 // draw with these registers would make, by the live derivation: fetch shader, vertex and pixel translation, active

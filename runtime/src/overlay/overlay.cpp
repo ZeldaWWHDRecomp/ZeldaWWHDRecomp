@@ -2,6 +2,7 @@
 #include "tooltip.h"
 #include "controls_options.h"
 #include "gfx/display_modes.h"
+#include "gfx/gamepad_backdrop_options.h"
 #include "platform/touch_options.h"
 #include <mutex>
 // In-game settings overlay: the Dear ImGui user interface (see overlay.h). The renderers draw the
@@ -1495,6 +1496,9 @@ static void pip_percent(const char* label, float value, float minimum, float max
 void tab_display() {
     bool v;
     heading("GamePad screen");
+    if (check("Fill GamePad bars with background", gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed), &v))
+        hostui::post([v] { gfx::gamepad_backdrop::set_option(v); });
+    help("Fills the space around the GamePad picture with its menu background or edge colours. Menus and touch positions keep their normal size.");
     // One screen (handheld) mode (mods/one_screen.cpp): applies at the next start
     if (check("One screen (handheld)", mods::one_screen_next(), &v)) hostui::post([v] { mods::set_one_screen_next(v); });
     help("The game plays on one screen as on the Wii U GamePad alone (Off-TV Play) from the start: no GamePad "

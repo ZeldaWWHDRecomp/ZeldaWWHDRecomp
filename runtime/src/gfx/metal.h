@@ -60,6 +60,7 @@ struct Surface {
 // A display output: the TV or the GamePad screen, each in its own window.
 struct Screen {
     id<MTLTexture> tex = nil;          // last image copied to the scan buffer
+    id<MTLTexture> backdrop = nil;     // isolated pane paired with this DRC scan
     float dyn = 1.0f;                  // dynamic resolution factor of that image (the layout uses tex / dyn)
     std::vector<id<MTLTexture>> scanSpares;  // dynamic resolution: scan textures of other sizes
     CAMetalLayer* layer = nil;
@@ -108,6 +109,12 @@ extern Renderer R;
 // command buffer / encoder management
 id<MTLCommandBuffer> command_buffer();
 void end_encoder();
+void gamepad_backdrop_scope(const uint32_t*, bool begin);
+void gamepad_backdrop_scan(Surface*);
+void gamepad_backdrop_clear(Surface*);
+void gamepad_backdrop_reset();
+void gamepad_backdrop_maintain(); // once per presentation: release idle captures
+
 
 // guest memory -> (buffer, offset); returns nil if the address is not GPU-visible
 id<MTLBuffer> guest_buffer(uint32_t addr, uint32_t* offset);

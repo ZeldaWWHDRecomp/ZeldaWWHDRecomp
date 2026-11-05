@@ -22,6 +22,7 @@
 #include "../aspect.h"
 #include "../dynres.h"
 #include "../gfx/renderer.h"
+#include "../gfx/gamepad_backdrop_options.h"
 #include "../interp.h"
 #include "../input.h"
 #include "../rumble.h"
@@ -393,6 +394,14 @@ void register_controls() {
 #endif
 }
 void register_screen() {
+    {
+        Item it;
+        it.id = "screen.gamepad-background", it.tab = "screen", it.label = "Fill GamePad bars with background", it.kind = Kind::Toggle;
+        it.help = "Fills unused space with the menu background or edge colours. Menus and touch positions keep their normal size.";
+        it.get = [] { return gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed) ? 1.f : 0.f; };
+        it.set = [](float v) { gfx::gamepad_backdrop::set_option(v >= .5f); };
+        add(std::move(it));
+    }
     {
         Item it;
         it.id = "screen.large-picto", it.tab = "screen", it.label = "Large Picto Box view", it.kind = Kind::Toggle;
