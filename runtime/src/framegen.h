@@ -5,15 +5,23 @@
 // From Nycolazs/WindWakerHD-Android-Plus (vk/reproj.cpp 84b0ff2) via GreenNaugahyde/ZeldaWWHDRecompAndroid
 // v0.9.9 (db65d60), MPL-2.0; the capture and present steps are this port's own.
 //
-// WWHD_FRAMEGEN=1 turns it on (Vulkan only; off by default). While it is off nothing below emits a
-// command: the GX2 command streams are the ones without the feature.
+// The Settings window's Graphics > Frame rate "60 fps (generated)" (saved as fpsGenerated) or
+// WWHD_FRAMEGEN=1/0 (wins, not saved) chooses it; it runs on Vulkan only, and only while frame
+// interpolation and true 60 are off (choosing one of those in the menus also clears this choice). While
+// it does not run nothing below emits a command: the GX2 command streams are the ones without the feature.
 #pragma once
 #include <cstdint>
 
 namespace framegen {
 
-// WWHD_FRAMEGEN=1 and the Vulkan renderer runs (read once, any thread after the renderer started)
+// it runs now: chosen, the Vulkan renderer, and no other 60 fps mode (any thread after the renderer started)
 bool requested();
+// the player's choice (or WWHD_FRAMEGEN); set_chosen is ignored while WWHD_FRAMEGEN is set
+bool chosen();
+void set_chosen(bool on);
+bool env_override();
+// it can run here: the Vulkan renderer
+bool available();
 
 // OP_FRAMEGEN_CAMERA payload (words): eye xyz, center xyz, up xyz, fovy (degrees, as the camera holds
 // it), near, far, tan(fovy/2) of the projection the scene is drawn with (the aspect's Vert+ and the

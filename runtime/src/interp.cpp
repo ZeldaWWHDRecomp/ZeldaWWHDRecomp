@@ -217,6 +217,7 @@ void set_fps(int f) {
 // the 60 fps mode: 0 off, 1 frame interpolation (at fps()), 2 true 60 (game logic at 60 steps per second)
 int mode() { return true60::selected() ? 2 : g_on.load(std::memory_order_relaxed) ? 1 : 0; }
 void set_mode(int m) {
+    if (m) framegen::set_chosen(false);  // (one 60 fps mode at a time: 60 fps (generated) goes)
     g_on = false;
     true60::set_enabled(false);
     if (m == 1) set_enabled(true);

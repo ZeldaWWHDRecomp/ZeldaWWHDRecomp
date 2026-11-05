@@ -32,6 +32,7 @@
 #include "widgets.h"
 #include "gamepad_nav.h"
 #include "perf_average.h"
+#include "../framegen.h"
 #ifdef __ANDROID__
 #include "android_telemetry.h"
 #include <SDL3/SDL_system.h>
@@ -811,7 +812,7 @@ std::string performance_report() {
     h.gpu = performance_device();
     h.renderer = render::api_name(render::active());
     h.host = hostui::name();
-    h.fps = interp::mode() == 2 ? "true 60 fps" : interp::mode() == 1 ? std::to_string(interp::fps()) + " fps interpolation" : "30 fps";
+    h.fps = framegen::requested() ? "60 fps (generated)" : interp::mode() == 2 ? "true 60 fps" : interp::mode() == 1 ? std::to_string(interp::fps()) + " fps interpolation" : "30 fps";
     if (interp::mode() == 1) h.keepGameSpeed = interp::paced_interpolation();  // at that rate
     h.scale = hostui::res_scale();
 #ifdef WWHD_HAS_VULKAN
@@ -897,20 +898,31 @@ void tab_graphics() {
     }
     heading("Frame rate");
     int m = interp::mode(), f = interp::fps();
-    if (radio("30 fps (original)", m == 0)) post_changed([] { interp::set_mode(0); });
+    // 60 fps (generated, framegen.h): Vulkan only; one choice with the others (picking another clears it)
+    const bool genShown = framegen::available(), gen = genShown && m == 0 && framegen::chosen(), genFixed = framegen::env_override();
+    if (radio("30 fps (original)", m == 0 && !gen)) post_changed([] { interp::set_mode(0); framegen::set_chosen(false); });
     for (int r : {40, 60, 120, 240}) {
         ImGui::SameLine();
         char label[16];
         snprintf(label, sizeof label, "%d fps", r);
-        if (radio(label, m == 1 && f == r)) post_changed([r] { interp::set_fps(r); interp::set_mode(1); });
+        if (radio(label, m == 1 && f == r)) post_changed([r] { framegen::set_chosen(false); interp::set_fps(r); interp::set_mode(1); });
     }
     help("40, 60, 120 and 240 fps: frame interpolation. The game logic keeps its 30 steps a second, and the\n"
          "frames in between are drawn blended (1 in-between frame per step at 60 fps, 3 at 120 fps,\n"
          "7 at 240 fps). The display shows at most its refresh rate: higher choices draw that many.\n"
          "40 fps draws 4 frames for every 3 steps (1 in-between frame per 3 steps), for 40, 80 and\n"
          "120 Hz screens (a Steam Deck set to 40 Hz or 80 Hz, phones with a 120 Hz panel).");
-    if (radio("True 60 (experimental)", m == 2)) post_changed([] { interp::set_mode(2); });
+    if (radio("True 60 (experimental)", m == 2)) post_changed([] { framegen::set_chosen(false); interp::set_mode(2); });
     help("True 60 runs the game logic at 60 steps per second");
+    if (genShown) {
+        if (radio("60 fps (generated, experimental)", gen, !genFixed)) post_changed([] { interp::set_mode(0); framegen::set_chosen(true); });
+        help("The game runs at its own 30 fps, and every other frame is made on the graphics chip from the\n"
+             "frame before it: the picture moves on by half the camera's last step (and objects by half of\n"
+             "their own), while the HUD stays where it is. Costs much less than frame interpolation, so it\n"
+             "holds 60 where the processor cannot draw 60 frames. Moving edges can look less exact than\n"
+             "real frames. Not with fast forward or stereo 3D (the real 30 frames are shown then).");
+        if (genFixed) note("Set by WWHD_FRAMEGEN for this start.");
+    }
     // the display's refresh rate, and what the chosen rate draws on it (interp::output_fps)
     if (const int hz = interp::display_hz(); hz > 0) {
         const int out = interp::output_fps();

@@ -3,25 +3,45 @@
 // v0.9.9 (db65d60), MPL-2.0 (their camera capture in camera_draw_orig and OP_FRAMEGEN_CAMERA).
 #include "framegen.h"
 
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 
 #include "aspect.h"
 #include "gfx/renderer.h"
 #include "gx2/gx2_cmd.h"
+#include "interp.h"
 #include "runtime.h"
 
 namespace framegen {
 
-bool requested() {
-    static const bool on = [] {
+namespace {
+std::atomic<bool> g_chosen{false};
+// WWHD_FRAMEGEN: -1 unset, else its value (read once)
+int env_choice() {
+    static const int v = [] {
         const char* e = getenv("WWHD_FRAMEGEN");
-        const bool want = e && atoi(e) != 0;
-        if (want && !render::vulkan()) LOG("[framegen] WWHD_FRAMEGEN=1 needs the Vulkan renderer: off");
-        else if (want) LOG("[framegen] 60 fps (generated) on: an in-between frame after each real one (WWHD_FRAMEGEN=1)");
-        return want && render::vulkan();
+        return e && *e ? (atoi(e) != 0 ? 1 : 0) : -1;
     }();
-    return on;
+    return v;
+}
+}  // namespace
+
+bool env_override() { return env_choice() >= 0; }
+bool chosen() { return env_override() ? env_choice() == 1 : g_chosen.load(std::memory_order_relaxed); }
+bool available() { return render::vulkan(); }
+void set_chosen(bool on) {
+    if (env_override() || g_chosen.exchange(on) == on) return;
+    LOG("[framegen] 60 fps (generated) %s%s", on ? "chosen" : "off", on && !available() ? " (needs the Vulkan renderer: not running)" : "");
+}
+bool requested() {
+    if (!chosen() || !render::vulkan()) return false;
+    static const bool logged = [] {
+        LOG("[framegen] 60 fps (generated) on: an in-between frame after each real one%s", env_override() ? " (WWHD_FRAMEGEN=1)" : "");
+        return true;
+    }();
+    (void)logged;
+    return interp::mode() == 0;  // (frame interpolation and true 60 draw their own in-between frames)
 }
 
 // Camera layout (camera_draw, 024FFC40; interp.cpp): near +0xCC, far +0xD0, fovy +0xD4, eye +0xDC,
