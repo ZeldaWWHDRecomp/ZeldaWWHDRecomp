@@ -54,5 +54,16 @@ int main() {
     int32_t small[3];
     ctxtouch::pack(b, e, small, 3);  // a shorter array takes the front
     assert(small[0] == 1 && small[2] == 7);
+    // an action's picture variant rides in the state's bits 8..15
+    {
+        ctxbtn::Buttons v = b;
+        v.b[ctxbtn::kA].variant = 0x19;
+        int32_t pv[ctxtouch::kPackLen];
+        ctxtouch::pack(v, e, pv, ctxtouch::kPackLen);
+        assert(((pv[ctxtouch::kButtons + 3 * ctxbtn::kA] & ctxtouch::kVariantMask) >> ctxtouch::kVariantShift) == 0x19);
+        assert((pv[ctxtouch::kButtons + 3 * ctxbtn::kA] & ~ctxtouch::kVariantMask) == out[ctxtouch::kButtons + 3 * ctxbtn::kA]);
+    }
+    // the Classic style hides no button: the rules (and the game's cluster hiding) are for Flexible only
+    assert(ctxtouch::context_rules(true, 1) && !ctxtouch::context_rules(true, 0) && !ctxtouch::context_rules(false, 1));
     puts("context_touch: pack layout, flags, kinds, held, rings PASS");
 }

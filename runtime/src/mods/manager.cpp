@@ -11,7 +11,7 @@ namespace mods::manager {
 namespace {
 const Entry catalogue[] = {
     {"target-letterbox", "Letterbox while targeting", "Camera",
-     "Show letterbox bars during normal targeting; cutscenes and special cameras keep their original bars.",
+     "Choose whether bars remain during enemy lock-on and free targeting. Cutscenes and special cameras keep their original bars.",
      "WWHD_TARGET_LETTERBOX", letterbox_while_targeting, set_letterbox_while_targeting, false, true},
     {"direct-camera", "Direct right-stick camera", "Camera",
      "Turn the camera immediately with the right stick, without the original easing.",
@@ -111,7 +111,7 @@ void load_saved() {
     if (!player_preferences()) return;
     for (const auto& entry : catalogue) {
         // An explicitly supplied zero also overrides a saved enabled preference.
-        if (std::getenv(entry.startup_env)) continue;
+        if (std::getenv(entry.startup_env) || (std::string_view(entry.id) == "target-letterbox" && std::getenv("WWHD_TARGET_LETTERBOX_MODE"))) continue;
         std::string value;
         if (hostui::get(key(entry).c_str(), value) && (value == "0" || value == "1"))
             if (entry.enabled() != (value == "1")) entry.apply(value == "1");
@@ -142,6 +142,10 @@ void load_saved() {
         std::string v;
         if (hostui::get("mod.fast-forward.mute", v) && (v == "0" || v == "1")) set_fast_forward_mute(v == "1");
     }
+    if (!std::getenv("WWHD_TARGET_LETTERBOX") && !std::getenv("WWHD_TARGET_LETTERBOX_MODE") &&
+        !letterbox_while_targeting())
+        number("mod.target-letterbox.mode", "WWHD_TARGET_LETTERBOX_MODE", 1.f, 2.f,
+               [](float value) { if (std::floor(value) == value) set_targeting_letterbox_mode(int(value)); });
     number("mod.lock-on.range", "WWHD_MOD_LOCK_ON_RANGE", 1.f, 3.f, set_lock_on_range);
     if (!std::getenv("WWHD_MOD_LOCK_ON_CYCLING")) {
         std::string v;

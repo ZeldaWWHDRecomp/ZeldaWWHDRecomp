@@ -1008,7 +1008,9 @@ inline void row_line(const std::string& id, const std::string& name, const Row& 
     ImGui::TableNextColumn();
     bool on = r.switch_on;
     ImGui::BeginDisabled(!r.switch_enabled);
-    if (on_switch(("##on_" + id).c_str(), &on)) toggle(on);
+    if (id == "target-letterbox" && builtin) {
+        if (ImGui::SmallButton("Choose")) open_page(id, true);
+    } else if (on_switch(("##on_" + id).c_str(), &on)) toggle(on);
     ImGui::EndDisabled();
     tooltip(r.switch_reason);
     ImGui::TableNextColumn();
@@ -1052,6 +1054,10 @@ inline void builtin_list(Host& h) {
         fx.builtin = true;
         fx.enabled = e.enabled();
         Row r = row(fx);
+        if (std::string_view(e.id) == "target-letterbox") {
+            constexpr const char* labels[] = {"On", "Off with enemies", "Always off"};
+            r.text = labels[mods::targeting_letterbox_mode()];
+        }
         std::string id = e.id;
         row_line(id, e.name, r, e.restart_required ? "applies after a restart" : "", false, true,
                  [id, &h](bool on) {
@@ -1368,12 +1374,14 @@ inline void builtin_page(Host& h, const mods::manager::Entry& e) {
     ImGui::TextUnformatted(e.name);
     bool on = e.enabled();
     std::string id = e.id;
-    if (on_switch("##on_builtin", &on)) {
-        hostui::post([id, on] { mods::manager::set_enabled(id, on); });
-        if (id == "story-system" && on && !find_view(mods::packages::list(), mods::required::kStoryNotebook)) install_story_notebook(h);
+    if (id != "target-letterbox") {
+        if (on_switch("##on_builtin", &on)) {
+            hostui::post([id, on] { mods::manager::set_enabled(id, on); });
+            if (id == "story-system" && on && !find_view(mods::packages::list(), mods::required::kStoryNotebook)) install_story_notebook(h);
+        }
+        ImGui::SameLine();
+        colored(on ? kGood : kMuted, on ? "On" : "Off");
     }
-    ImGui::SameLine();
-    colored(on ? kGood : kMuted, on ? "On" : "Off");
     text(e.description);
     if (e.restart_required) muted("Changes apply after a restart.");
     if (const char* o = getenv(e.startup_env)) muted(std::string(e.startup_env) + "=" + o + " overrides the saved choice at startup.");

@@ -35,6 +35,14 @@ inline constexpr int kSupersample = 3;  // drawn at 3 x 3 samples per pixel, the
 // what Link holds in a pose (the sword in his left hand as in the game, the shield on his right arm)
 enum class Gear : uint8_t { kNone, kSword, kSwordShield };
 
+// a thing drawn with him (or alone), a model of the player's own files (link_poses.cpp kProps)
+enum class Prop : uint8_t { kNone, kPot, kBigPot, kBarrel, kRock, kPebble, kBomb, kBlock, kShip, kShipHead };
+enum class Place : uint8_t {
+    kHands,  // carried: upright between his hands, its foot on them (as daPy_lk_c holds the grabbed actor)
+    kFront,  // standing before him at `at` (Link's model space), turned prop_yaw degrees
+    kAlone,  // drawn without Link, turned prop_yaw degrees (the boat)
+};
+
 struct PoseSpec {
     uint8_t action;     // the action code (play_context.h kAct*) whose button shows it
     const char* anim;   // an animation of LkAnm.bfres
@@ -42,6 +50,13 @@ struct PoseSpec {
     float yaw;          // camera: degrees around Link (0 his front, 90 his left side)
     float pitch;        // ... and down from above
     Gear gear;
+    uint8_t variant = 0;  // the thing's kind (play_context.h ThingKind) for a carried thing's picture, 0 the plain one
+    Prop prop = Prop::kNone;
+    Place place = Place::kHands;
+    float at[3] = {0, 0, 0};
+    float prop_yaw = 0;
+    bool rope = false;  // a rope from his hands straight up out of the picture (the Grappling Hook's)
+    bool fit_link = false;  // framed on Link (the thing may reach past the picture's edges)
 };
 
 // The poses, by action code (A / B / ZR words). Codes without one keep the word only.
@@ -52,25 +67,63 @@ inline constexpr PoseSpec kPoses[] = {
     {0x35, "cutf", 8, -50, 10, Gear::kSword},              // Sword (B): a swing, the blade out in front
     {0x36, "difence", 5, -20, 10, Gear::kSwordShield},     // Defend: the shield up
     {0x04, "grabup", 7, -60, 10, Gear::kNone},             // Lift: the arms up
-    {0x0E, "grabthrow", 3, -60, 10, Gear::kNone},          // Throw
+    {0x0E, "grabthrow", 0.5f, -60, 10, Gear::kNone},       // Throw: from over his head (the fork's first picture)
     {0x0B, "boxopenshortlink", 12, -60, 15, Gear::kNone},  // Open
     {0x02, "talka", 8, -40, 10, Gear::kNone},              // Speak
     {0x01, "waitq", 25, -45, 10, Gear::kNone},             // Look
     {0x0A, "waitq", 25, -45, 10, Gear::kNone},             // Check
     {0x10, "wallwl", 6, 25, 15, Gear::kNone},              // Sidle: back to the wall
-    {0x11, "walkpush", 10, -90, 10, Gear::kNone},          // Grab: pushing
+    // Grab (push and pull): the dungeons' stone block before him (Osiblk); from the GreenNaugahyde fork's "link_push"
+    {0x11, "walkpush", 10, -115, 15, Gear::kNone, 0, Prop::kBlock, Place::kFront, {0, 0, 100}, 0, false, true},
     {0x1B, "grabp", 5, -70, 20, Gear::kNone},              // Pick up
     {0x05, "ladderupst", 10, 150, 10, Gear::kNone},        // Climb
+    {0x09, "grabup", 3, -60, 10, Gear::kNone},             // Drop: setting it down
+    // Let Go on the Grappling Hook's rope: swinging on it (the fork's "link_rope")
+    {0x16, "ropeswingf", 0, -90, 5, Gear::kNone, 0, Prop::kNone, Place::kHands, {0, 0, 0}, 0, true},
+    // Cruise on the boat (R held: the sail down, the boat creeps on): the boat alone, from its side
+    {0x2C, "waitq", 0, 120, 15, Gear::kNone, 0, Prop::kShip, Place::kAlone, {0, 0, 0}, 0},
 };
+// What Link holds or lifts (play_context.h ThingKind) on Lift, Throw and Drop: the same poses with the thing in his
+// hands, one picture per kind the port draws (pose_HH_KK.png); other kinds keep the plain pose. From the
+// GreenNaugahyde Android fork (MPL-2.0), link_icons.cpp's carried things.
+inline constexpr uint8_t kCarryActions[] = {0x04, 0x0E, 0x09};
+struct CarryKind {
+    uint8_t kind;
+    Prop prop;
+};
+inline constexpr CarryKind kCarryKinds[] = {{16, Prop::kPot}, {17, Prop::kBigPot}, {19, Prop::kBarrel}, {25, Prop::kRock},
+                                            {26, Prop::kPebble}, {27, Prop::kBomb}, {28, Prop::kBomb}};
+inline Prop carry_prop(uint8_t kind) {
+    for (const CarryKind& k : kCarryKinds)
+        if (k.kind == kind) return k.prop;
+    return Prop::kNone;
+}
+// every carried-thing picture: the action's pose with the thing
+inline std::vector<PoseSpec> carry_poses();
 inline const PoseSpec* pose_for_action(uint8_t action) {
     for (const PoseSpec& p : kPoses)
         if (p.action == action) return &p;
     return nullptr;
 }
-// the exported picture of an action's pose: "pose_HH.png" (HH the action code in hex, as item_HH.png)
-inline std::string file_for(uint8_t action) {
-    char name[16];
-    snprintf(name, sizeof name, "pose_%02X.png", action);
+inline std::vector<PoseSpec> carry_poses() {
+    std::vector<PoseSpec> out;
+    for (uint8_t a : kCarryActions) {
+        const PoseSpec* base = pose_for_action(a);
+        if (!base) continue;
+        for (const CarryKind& k : kCarryKinds) {
+            PoseSpec p = *base;
+            p.variant = k.kind, p.prop = k.prop, p.place = Place::kHands;
+            out.push_back(p);
+        }
+    }
+    return out;
+}
+// the exported picture of an action's pose: "pose_HH.png" (HH the action code in hex, as item_HH.png); with a
+// carried thing's kind "pose_HH_KK.png"
+inline std::string file_for(uint8_t action, uint8_t variant = 0) {
+    char name[24];
+    if (variant) snprintf(name, sizeof name, "pose_%02X_%02X.png", action, variant);
+    else snprintf(name, sizeof name, "pose_%02X.png", action);
     return name;
 }
 
@@ -244,8 +297,12 @@ inline void outline(Bytes& rgba, int w, int h, float radius, std::array<uint8_t,
 
 // ---- reading and rendering (link_poses.cpp) ----
 struct Model;  // Link's model "cl" with his gear, ready to pose
-// Reads Link.bfres (the model, its skeleton and textures). Null with `why` on failure.
-std::shared_ptr<const Model> load(const Bytes& link_bfres, std::string& why);
+// Reads Link.bfres (the model, its skeleton and textures). Null with `why` on failure. With the 3D pack and
+// szs_permanent0.pack (content/Common/Pack) also the things drawn with him (the props: pots, a rock, a barrel, the
+// push block, the boat); a missing one only leaves its pictures out.
+std::shared_ptr<const Model> load(const Bytes& link_bfres, std::string& why, const Bytes* pack3d = nullptr,
+                                  const Bytes* pack_permanent0 = nullptr);
+bool has_prop(const Model& m, Prop p);
 // One pose as a kIconSize x kIconSize RGBA picture. False with `why` (no such animation...).
 bool render(const Model& m, const Bytes& anim_bfres, const PoseSpec& pose, Bytes& rgba, std::string& why, int size = kIconSize);
 // Link.bfres and LkAnm.bfres out of permanent_3d.pack (a SARC of Yaz0 SARCs). False with `why`.

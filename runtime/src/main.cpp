@@ -708,7 +708,9 @@ int main(int argc, char** argv) {
                 return 1;
             }
         }
-        config::save_dir = randomizer::save_directory(config::save_dir, save_arg);
+        // Setup and launchers pass --save with the install's default folder: that is no
+        // choice of the player, so a randomized game still gets its own per-seed folder.
+        config::save_dir = randomizer::save_directory(config::save_dir, randomizer::explicit_save_folder(save_arg, config::save_dir));
         save_paths=mods::save_profile::paths(save_profile,config::save_dir,host::config_dir(),save_arg);
         if (randomizer::compiled_seed()) {
             save_paths.preferences = randomizer::config_directory(host::config_dir());

@@ -402,6 +402,16 @@ std::string setup_identity_unlocked(const std::string& id) {
 const char* kUnconfirmed="Not loaded: it contains native code you have not confirmed. Enable it again to review.";
 Value config(const Manifest& m){Value out;out.type=Value::Object;for(const auto& o:m.options){const auto& saved=profile().get("config").get(m.id).get(o.id);out[o.id]=valid_option(o,saved)?saved:o.default_value;}return out;}
 void save(){if(!ready)return;fs::create_directories(root);auto tmp=root/"profiles.json.tmp";std::ofstream f(tmp,std::ios::binary|std::ios::trunc);f<<json::dump(database)<<'\n';f.close();require(bool(f)&&host::replace_file(tmp.string(),(root/"profiles.json").string()),"Cannot save mod profiles");}
+void save_letterbox_options(Value& options) {
+    options["target-letterbox.mode"] = double(targeting_letterbox_mode());
+}
+void load_letterbox_options(const Value& options) {
+    if (std::getenv("WWHD_TARGET_LETTERBOX") || std::getenv("WWHD_TARGET_LETTERBOX_MODE")) return;
+    const auto& value = options.get("target-letterbox.mode");
+    // The legacy boolean remains authoritative for old profiles and settings presets.
+    if (!letterbox_while_targeting() && value.type == Value::Number &&
+        (value.number == 1 || value.number == 2)) set_targeting_letterbox_mode(int(value.number));
+}
 void save_fast_forward_options(Value& options) {
     options["fast-forward.rate"] = double(fast_forward_rate());
     options["fast-forward.button"] = double(fast_forward_button());
@@ -518,7 +528,7 @@ void load_traversal_options(const Value& options) {
                                 valid_jump_button(uint32_t(b.number)) ? uint32_t(b.number) : 0x20);
     }
 }
-void defaults(){database=Value{};database["format_version"]=1;database["active"]="Default";auto& p=profile();save_fast_forward_options(p["builtin_options"]);save_move_speed_options(p["builtin_options"]);save_traversal_options(p["builtin_options"]);save_lock_on_options(p["builtin_options"]);p["builtin_options"]["quick-use.speed"]=double(quick_use_speed());p["enabled"].type=Value::Object;for(const auto& e:manager::entries())p["builtins"][e.id]=e.enabled();p["builtin_options"]["direct-camera.speed"]=double(camera_speed());p["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());}
+void defaults(){database=Value{};database["format_version"]=1;database["active"]="Default";auto& p=profile();save_letterbox_options(p["builtin_options"]);save_fast_forward_options(p["builtin_options"]);save_move_speed_options(p["builtin_options"]);save_traversal_options(p["builtin_options"]);save_lock_on_options(p["builtin_options"]);p["builtin_options"]["quick-use.speed"]=double(quick_use_speed());p["enabled"].type=Value::Object;for(const auto& e:manager::entries())p["builtins"][e.id]=e.enabled();p["builtin_options"]["direct-camera.speed"]=double(camera_speed());p["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());}
 void scan(bool create=true){records.clear();if(!ready)return;if(create)fs::create_directories(root/"Mods");else if(!fs::exists(root/"Mods"))return;for(const auto& e:fs::directory_iterator(root/"Mods")){if(!e.is_directory()||e.is_symlink()||!id_ok(e.path().filename().string()))continue;Record r;r.path=e.path();try{r.manifest=manifest(e.path());require(r.manifest.id==e.path().filename(),"Folder and manifest IDs differ");}catch(const std::exception& ex){r.manifest.id=e.path().filename().string();r.manifest.name=r.manifest.id;r.manifest.problem=ex.what();}auto id=r.manifest.id;records.emplace(id,std::move(r));}}
 std::string source_warning(const std::vector<catalogue::Step>& steps) {
     catalogue::Sources sources(database.get("game_sources"));
@@ -900,7 +910,10 @@ void prepare_metadata_unlocked() {
     auto builtins = profile().get("builtins");
     for (const auto &entry : manager::entries()) {
         const auto &saved = builtins.get(entry.id);
-        builtins[entry.id] = std::getenv(entry.startup_env) ? entry.enabled()
+        const bool env_owned = std::getenv(entry.startup_env) ||
+                               (std::string_view(entry.id) == "target-letterbox" &&
+                                std::getenv("WWHD_TARGET_LETTERBOX_MODE"));
+        builtins[entry.id] = env_owned                    ? entry.enabled()
                              : saved.type == Value::Bool    ? saved.boolean
                                                             : entry.enabled();
     }
@@ -910,10 +923,14 @@ void prepare_metadata_unlocked() {
 void apply_saved_builtin_preferences() {
         for (const auto &e : manager::entries()) {
             const auto &v = profile().get("builtins").get(e.id);
-            if (!std::getenv(e.startup_env) && v.type == Value::Bool)
+            if (!std::getenv(e.startup_env) &&
+                !(std::string_view(e.id) == "target-letterbox" &&
+                  std::getenv("WWHD_TARGET_LETTERBOX_MODE")) &&
+                v.type == Value::Bool)
                 e.apply(v.boolean);
         }
         const auto &options = profile().get("builtin_options");
+        load_letterbox_options(options);
         load_fast_forward_options(options);
         load_move_speed_options(options, true);
         load_traversal_options(options);
@@ -1448,8 +1465,8 @@ void disable_all(){
 }
 std::vector<std::string> profiles(){std::lock_guard guard(mutex);std::vector<std::string> result;if(ready)for(const auto& [name,p]:database.get("profiles").object)result.push_back(name);return result;}
 std::string current_profile(){std::lock_guard guard(mutex);return ready?database.get("active").string():"Default";}
-bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();copy["setup_pending"].object.clear();save_fast_forward_options(copy["builtin_options"]);save_move_speed_options(copy["builtin_options"]);save_traversal_options(copy["builtin_options"]);save_lock_on_options(copy["builtin_options"]);copy["builtin_options"]["quick-use.speed"]=double(quick_use_speed());for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
-bool select_profile(const std::string& name,std::string& error){Value chosen;bool ok=operation(error,[&]{for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing profiles");require(database.get("profiles").object.contains(name),"Profile not found");check_session_profile(database.get("profiles").get(name));auto previous=database;database["active"]=name;try{auto messages=repair_graphics();order(enabled_set());validate_conflicts(enabled_set(),&profile().get("builtins"));save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}chosen=profile();profile_changed=true;dirty=true;});if(ok){for(const auto& e:manager::entries()){const auto& v=chosen.get("builtins").get(e.id);manager::set_enabled(e.id,v.type==Value::Bool?v.boolean:e.default_enabled);}load_fast_forward_options(chosen.get("builtin_options"));load_move_speed_options(chosen.get("builtin_options"));load_traversal_options(chosen.get("builtin_options"));load_lock_on_options(chosen.get("builtin_options"));load_quick_use_speed(chosen.get("builtin_options"));auto speed=chosen.get("builtin_options").get("direct-camera.speed"),sens=chosen.get("builtin_options").get("mouse-camera.sensitivity");if(speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);}return ok;}
+bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();copy["setup_pending"].object.clear();save_letterbox_options(copy["builtin_options"]);save_fast_forward_options(copy["builtin_options"]);save_move_speed_options(copy["builtin_options"]);save_traversal_options(copy["builtin_options"]);save_lock_on_options(copy["builtin_options"]);copy["builtin_options"]["quick-use.speed"]=double(quick_use_speed());for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
+bool select_profile(const std::string& name,std::string& error){Value chosen;bool ok=operation(error,[&]{for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing profiles");require(database.get("profiles").object.contains(name),"Profile not found");check_session_profile(database.get("profiles").get(name));auto previous=database;database["active"]=name;try{auto messages=repair_graphics();order(enabled_set());validate_conflicts(enabled_set(),&profile().get("builtins"));save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}chosen=profile();profile_changed=true;dirty=true;});if(ok){for(const auto& e:manager::entries()){const auto& v=chosen.get("builtins").get(e.id);manager::set_enabled(e.id,v.type==Value::Bool?v.boolean:e.default_enabled);}load_letterbox_options(chosen.get("builtin_options"));load_fast_forward_options(chosen.get("builtin_options"));load_move_speed_options(chosen.get("builtin_options"));load_traversal_options(chosen.get("builtin_options"));load_lock_on_options(chosen.get("builtin_options"));load_quick_use_speed(chosen.get("builtin_options"));auto speed=chosen.get("builtin_options").get("direct-camera.speed"),sens=chosen.get("builtin_options").get("mouse-camera.sensitivity");if(speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);}return ok;}
 bool delete_profile(const std::string& name,std::string& error){return operation(error,[&]{require(name!=database.get("active").string(),"Switch profiles before deleting the active one");require(database.get("profiles").object.contains(name),"Profile not found");auto previous=database;database["profiles"].object.erase(name);try{save();}catch(...){database=previous;throw;}});}
 bool builtin_change_allowed(const std::string& id,bool on,std::string& error) {
     bool allowed=true;
@@ -1577,10 +1594,13 @@ namespace {
 void activate_live_mods(){
     if(!activation_ready)return;
     if(dirty.exchange(false)){
-        std::map<std::string,std::pair<Record,Value>> desired;std::vector<std::string> sequence;std::set<std::string> unconfirmed;Value baseline;bool switching=false;
-        {std::lock_guard guard(mutex);switching=profile_changed.exchange(false);baseline=profile().get("builtins");try{auto plan=startup_order(activation_enabled_set());sequence=plan.order;validate_conflicts(started(plan));std::erase_if(sequence,[](const auto& id){return records.at(id).manifest.kind=="content"||records.at(id).manifest.kind=="cemu"||records.at(id).manifest.kind=="guest";});for(const auto& id:sequence){desired[id]={records.at(id),config(records.at(id).manifest)};records.at(id).loading=true;if(!confirmed(records.at(id)))unconfirmed.insert(id);}}catch(const std::exception& e){last_problem=e.what();for(auto& [id,r]:records)if(wanted(id))r.error=e.what();sequence.clear();desired.clear();}}
+        std::map<std::string,std::pair<Record,Value>> desired;std::vector<std::string> sequence;std::set<std::string> unconfirmed;Value baseline,baseline_options;bool switching=false;
+        {std::lock_guard guard(mutex);switching=profile_changed.exchange(false);baseline=profile().get("builtins");baseline_options=profile().get("builtin_options");try{auto plan=startup_order(activation_enabled_set());sequence=plan.order;validate_conflicts(started(plan));std::erase_if(sequence,[](const auto& id){return records.at(id).manifest.kind=="content"||records.at(id).manifest.kind=="cemu"||records.at(id).manifest.kind=="guest";});for(const auto& id:sequence){desired[id]={records.at(id),config(records.at(id).manifest)};records.at(id).loading=true;if(!confirmed(records.at(id)))unconfirmed.insert(id);}}catch(const std::exception& e){last_problem=e.what();for(auto& [id,r]:records)if(wanted(id))r.error=e.what();sequence.clear();desired.clear();}}
         for(auto it=live_order.rbegin();it!=live_order.rend();++it)if(!desired.contains(*it)||(switching&&live.at(*it).kind=="settings")){auto found=live.find(*it);if(found!=live.end()){unload(found->second);live.erase(found);}std::lock_guard guard(mutex);if(records.contains(*it)){records.at(*it).active=false;records.at(*it).status.clear();}}
-        if(switching)for(const auto& entry:manager::entries()){const auto& value=baseline.get(entry.id);entry.apply(value.type==Value::Bool?value.boolean:entry.default_enabled);}
+        if(switching){
+            for(const auto& entry:manager::entries()){const auto& value=baseline.get(entry.id);entry.apply(value.type==Value::Bool?value.boolean:entry.default_enabled);}
+            load_letterbox_options(baseline_options);
+        }
         live_order.clear();
         for(const auto& id:sequence){const auto& [record,cfg]=desired.at(id);bool deps_ok=true;for(const auto& dep:record.manifest.dependencies)if(!dep.id.starts_with("builtin:")&&!live.contains(dep.id)){std::lock_guard guard(mutex);if(!records.at(dep.id).active)deps_ok=false;}
             if(!deps_ok){std::lock_guard guard(mutex);records.at(id).loading=false;records.at(id).error="A dependency is unavailable (content dependencies may require restart)";continue;}
