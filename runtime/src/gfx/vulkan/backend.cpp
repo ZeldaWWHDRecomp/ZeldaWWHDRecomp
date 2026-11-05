@@ -39,6 +39,7 @@
 #include "attachment_view_usage.h"
 #include "background_cache_readiness.h"
 #include "../../build_info.h"
+#include "compile_journal.h"
 #include "../../tv_pointer.h"
 #include "../../one_screen.h"
 #include "deferred_commands.h"
@@ -306,8 +307,9 @@ bool compatible_pipeline_cache(const std::vector<uint8_t>& bytes) {
          word(8)==R.properties.vendorID && word(12)==R.properties.deviceID &&
          !std::memcmp(bytes.data()+16,R.properties.pipelineCacheUUID,VK_UUID_SIZE);
 }
-// strictMul changes translated shaders; discard old driver pipelines before the 64 MB cap.
-constexpr std::array<uint8_t,8> pipelineCacheMagic{'W','W','V','K','P','C','0','2'};
+// strictMul (PC02) and the finite pixel colours (PC03) change translated shaders; discard old driver pipelines
+// before the 64 MB cap.
+constexpr std::array<uint8_t,8> pipelineCacheMagic{'W','W','V','K','P','C','0','3'};
 constexpr size_t pipelineCacheWrapperSize=24;
 uint64_t pipeline_cache_checksum(const uint8_t* bytes,size_t size) {
   uint64_t hash=14695981039346656037ull;
@@ -376,6 +378,29 @@ static uint64_t device_memory_budget() {
   }
   LOG("[vulkan warmup] device memory budget %.0f MB (%s)", budget / 1e6, hasBudget && properties2 ? "VK_EXT_memory_budget" : "heap size");
   return budget;
+}
+
+// The compile journal (compile_journal.h): shaders and pipelines that crashed the process while compiling are left out
+// at the next start. Keyed by this GPU, driver and runtime build; next to a WWHD_SHADER_CACHE file (test runs, so they
+// never touch the player's journal), else with the shader caches. WWHD_VK_COMPILE_JOURNAL=0 turns it off.
+void open_compile_journal() {
+  if (const char* off = getenv("WWHD_VK_COMPILE_JOURNAL"); off && !strcmp(off, "0")) return;
+  const auto shaderStorage = path_environment_utf8("WWHD_SHADER_CACHE");
+  std::string dir;
+  if (shaderStorage && *shaderStorage == "0") return;
+  if (shaderStorage) dir = *shaderStorage + ".journal";
+  else
+#ifdef __ANDROID__
+    dir = drivers::pipeline_directory() + "/journal";
+#else
+    dir = host::config_dir() + "/shadercache/journal";
+#endif
+  char key[256];
+  std::snprintf(key, sizeof key, "%08X %08X %08X %s %s %s", R.properties.vendorID, R.properties.deviceID,
+                R.properties.driverVersion, build::version(), build::commit(), WWHD_PIPELINE_RUNTIME_ID);
+  compile_journal::set_logger([](const char* line) { LOG("%s", line); });
+  try { compile_journal::open(dir, key); }
+  catch (const std::exception& e) { LOG("[vulkan] compile journal not opened: %s", e.what()); }
 }
 
 void init_pipeline_cache() try {
@@ -4912,6 +4937,7 @@ static void init_device(std::vector<const char *> extensions,
     LOG("[vulkan] vertex format fallback mask: %u", R.vertexFormats.fallbackMask);
   vk_check(vkCreateDevice(R.physicalDevice, &di, nullptr, &R.device),
            "create Vulkan device");
+  open_compile_journal();
   load_device_functions(R.device, R.dynamicRenderingKHR, R.renderPasses);
   VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
   if (deviceApi >= VK_API_VERSION_1_2 || has_extension(des, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME)) {

@@ -19,6 +19,7 @@ final class MemoryPressure {
     static final long CHECK_INTERVAL_MS = 2000;
 
     private static native void nativeTrim(int level, int source);
+    private static native void nativeHeadroom(int headroomMb, int thresholdMb);
 
     private final Context context;
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -35,6 +36,8 @@ final class MemoryPressure {
             ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
             if (am != null) {
                 am.getMemoryInfo(info);
+                // save states check it before they start, dynamic resolution follows it (memory_trim.h)
+                sendHeadroom(MemoryPressurePolicy.headroomMb(info.availMem, info.threshold), MemoryPressurePolicy.mb(info.threshold));
                 if (MemoryPressurePolicy.low(info.lowMemory, info.availMem, info.threshold) && spacing.allow(SystemClock.elapsedRealtime())) {
                     Log.i("wwhd", "memory low: " + (info.availMem >> 20) + " MB free (system threshold "
                             + (info.threshold >> 20) + " MB): freeing caches");
@@ -49,7 +52,7 @@ final class MemoryPressure {
     void start() {
         if (checking) return;
         checking = true;
-        handler.postDelayed(check, CHECK_INTERVAL_MS);
+        handler.post(check);  // the first figure at once (a save may come before the first two seconds)
     }
 
     /** onPause. */
@@ -64,6 +67,18 @@ final class MemoryPressure {
         if (level == MemoryPressurePolicy.NONE) return;
         Log.i("wwhd", "onTrimMemory(" + trimLevel + "): " + (level == MemoryPressurePolicy.FULL ? "full" : "light") + " trim");
         send(level, trimLevel);
+    }
+
+    private boolean headroomAvailable = true;  // false once the game library turned out not to have nativeHeadroom
+
+    private void sendHeadroom(int headroomMb, int thresholdMb) {
+        if (!headroomAvailable) return;
+        try {
+            nativeHeadroom(headroomMb, thresholdMb);
+        } catch (UnsatisfiedLinkError e) {
+            headroomAvailable = false;
+            Log.w("wwhd", "free memory not passed: " + e.getMessage());
+        }
     }
 
     private void send(int level, int source) {

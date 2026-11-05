@@ -354,6 +354,8 @@ public class WwhdActivity extends SDLActivity {
     }
 
     public void shareLog() { runOnUiThread(() -> LogShare.share(this)); }
+    /** Settings > Bug reports > Share log, with "Include my save files" (off by default; names made "Link") */
+    public void shareLogWithSaves(boolean saves) { runOnUiThread(() -> LogShare.share(this, saves)); }
 
     private static final int GPU_DRIVER_REQUEST = 4972;
     private static native String installGpuDriver(String path, boolean select);

@@ -508,6 +508,8 @@ void save_traversal_options(Value& options) {
     options["jump-anywhere.double"] = double_jump();
     options["jump-anywhere.no-auto"] = no_auto_jump();
     options["jump-anywhere.button"] = double(jump_button());
+    options["quick-doors.mode"] = double(door_mode());  // 0 faster, 1 walk through
+    options["quick-doors.by-a"] = walk_doors_by_a();
 }
 void load_traversal_options(const Value& options) {
     for (const auto& option : manager::traversal_options()) {
@@ -522,6 +524,11 @@ void load_traversal_options(const Value& options) {
     };
     flag("jump-anywhere.double", "WWHD_MOD_JUMP_DOUBLE", set_double_jump);
     flag("jump-anywhere.no-auto", "WWHD_MOD_JUMP_NO_AUTO", set_no_auto_jump);
+    flag("quick-doors.by-a", "WWHD_MOD_WALK_DOORS_A", set_walk_doors_by_a);
+    if (!std::getenv("WWHD_MOD_DOOR_MODE")) {
+        const auto& m = options.get("quick-doors.mode");
+        set_door_mode(m.type == Value::Number && m.number == 1 ? kDoorWalk : kDoorFaster);
+    }
     if (!std::getenv("WWHD_MOD_JUMP_BUTTON")) {
         const auto& b = options.get("jump-anywhere.button");
         set_jump_button(b.type == Value::Number && b.number >= 0 && b.number <= UINT32_MAX && std::floor(b.number) == b.number &&

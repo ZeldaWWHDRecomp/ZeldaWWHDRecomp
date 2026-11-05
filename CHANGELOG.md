@@ -14,6 +14,68 @@ what is on `devel` and not released yet (also in the
   which also gives Android players a way back to the normal game without reinstalling. Damaged or unreadable profile
   data is left untouched instead of being overwritten, and a mod that fails to start now stops with a message
   explaining how to recover.
+- **Fixed: leaving Beedle's Shop Ship could stop the game** (#416, from the Nycolazs and GreenNaugahyde Android forks,
+  thanks @Nycolazs and @GreenNaugahyde). When the game hadn't recorded which sea square the ship was in, leaving it
+  stopped the game with an error. The square is now taken from the ship's position on the sea chart.
+- **Fixed: the 3D picture could go black for some frames in a storm** (#417, from the Nycolazs and GreenNaugahyde Android
+  forks, thanks @Nycolazs and @GreenNaugahyde). Some GPUs (seen on an Adreno 650 and a Galaxy S20 FE) produced invalid
+  pixel values near lightning at night, which bloom and blur spread over the whole screen. Pixel colours are now kept
+  valid (`WWHD_NAN_GUARD=0` turns this off). **Shaders are compiled once more after this update.**
+- **Android: textures that haven't been used for a while are freed** (#423, from the GreenNaugahyde and Nycolazs Android
+  forks, thanks @GreenNaugahyde and @Nycolazs). On Android the texture budget is now on by default: textures not drawn
+  for about four minutes are released (after about ten seconds when memory is tight), so long sessions use less memory.
+  Desktop is unchanged; `WWHD_VK_TEXTURE_BUDGET=0` turns it off. Not yet measured on a phone.
+- **Fixed: a shader that crashes the GPU driver no longer stops the game from starting** (#418, from the GreenNaugahyde
+  Android fork, thanks @GreenNaugahyde). If compiling a shader or pipeline crashed the game (seen with Huawei's
+  Maleoon driver), it was compiled again at every start. Now the next start leaves that one out and logs it; it's
+  tried again after a driver, GPU or port update. (Linux, macOS and Android; Windows doesn't use this.)
+- **Android: BC textures decoded on the CPU on Huawei GPUs** (#419, from the GreenNaugahyde and Nycolazs Android forks,
+  thanks @GreenNaugahyde and @Nycolazs). Huawei's Maleoon driver crashed compiling the texture decoder shader, so those
+  GPUs now decode BC textures on the CPU (`WWHD_VK_BC_CPU=0` still tries the shader).
+- **Android: no save state when memory is about to run out** (#421, from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). With very little free memory, Android could close the game in the middle of a save state. Such a
+  save is now refused with "not saved (too little free memory, close other apps)"; automatic states skip quietly.
+- **Dynamic resolution also steps down when memory runs low** (#422, from the GreenNaugahyde and Nycolazs Android forks,
+  thanks @GreenNaugahyde and @Nycolazs). While dynamic resolution is on, low free memory now lowers the resolution
+  and it goes back up once memory recovers; on devices with less than 3.8 GB of RAM it starts at 1× at most.
+- **Quick doors: new "Walk through" mode** (#426, from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Quick
+  doors is now Off, Faster or Walk through. With Walk through, dungeon shutters and house doors open as Link walks up,
+  he walks through without the door scene and the door shuts behind him; going in or out of a house is quicker too.
+  Locked doors, boss doors and doors with bars keep their scene, sped up as with Faster. **Walk-through doors open with
+  A** makes them wait for A at the Open prompt. This adds one game-code hook, so the game code is rebuilt once after
+  the update.
+- **Save file names up to 16 characters** (#428, idea from the GreenNaugahyde Android fork, thanks @GreenNaugahyde).
+  Change Link's name now takes up to 16 characters. The game's texts use the whole name; the file select and the
+  original game show the first 8. The whole name is kept with the save itself (in the port's story data at the end of
+  `cking.sav`), so backups, the save folder, exports and randomizer seed saves carry it along; a save without it
+  shows the 8-character name.
+- **Instant text and No pauses in texts** (#411, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Two new switches under Settings › Game,
+  both off by default: message boxes show their whole text at once (each box still waits for A), and the short waits
+  written into some texts are left out.
+- **Deku Leaf: wave to rise** (#412, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). A new built-in option next to Jump anywhere, off by
+  default: while gliding, each wave of the Deku Leaf lifts Link a little, and holding the button keeps waving. The
+  height of one wave is 50–200 %; the glide still uses magic.
+- **Settings dialogs with a controller** (#413, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Dialogs open with their default button
+  selected (Cancel where the action can't be undone), the selection shows again when the controller takes over from the
+  mouse, the right stick scrolls long dialog text, and a button still held while the menu opens presses nothing.
+- **Android: Share log can include your save files** (#415, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). A new checkbox under Share log,
+  off at every start, adds a zip with your save file and Picto Box photos for bug reports. Every name in the save
+  becomes "Link" first, and the port's story data (which can hold your full name) is left out. Not yet tested on a
+  phone.
+- **New built-in mod: Achievements** (#410, goals, texts and points from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). Off by default (Mods › Built-in). 99 goals read from your save data, earned for good, for all save
+  games together and for each one; the record is kept in `achievements.json` in the port's config folder, never in the
+  save. When you earn one, Link turns round and holds it up with the game's item fanfare (its volume is an option),
+  drawn and played from your own game files. Cheats pause achievements while they're used (the page says which), unless
+  you turn on **Earn with cheats**; loading a save state never takes one back. Pages on the item menu's settings page
+  (Game tab) and in the Esc settings, with a reset behind a confirmation.
+- **New built-in mod: Game progress** (#409, idea, count and places from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde; chart numbers from TWWHD Randomizer). Off by default (Mods › Built-in). Shows how much of the game
+  your save file has found: a percent, a checklist in ten parts (dungeons, hearts, items, equipment, upgrades, songs,
+  pearls and Triforce, charts, the sea chart, the Nintendo Gallery) and a sea-chart map of where each thing is found.
+  It's on the item menu's settings page (Game tab) and in the Esc settings; an option shows the percent on screen. It
+  only reads your save: names and pictures come from your own game. Two places (Crescent Moon Island's sunken
+  treasure, Triforce Chart 2) are still to be checked in the game.
 - **Fixed: randomized games keep their own saves when started from setup** (#408, for #366). Setup's Play button, the
   macOS app, the Linux launchers and the Windows shortcuts start the game with its own save folder, and the experimental
   randomized-game support took that as a folder you had chosen: a randomized game then read and wrote your normal save

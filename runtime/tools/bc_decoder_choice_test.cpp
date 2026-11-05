@@ -1,5 +1,5 @@
 // Which decoder a device without BC textures uses (gfx/vulkan/bc_decoder_choice.h): the CPU decoder for
-// Qualcomm's proprietary drivers before v700, the compute shader elsewhere, WWHD_VK_BC_CPU=0/1 overrides.
+// Qualcomm's proprietary drivers before v700 and Huawei GPUs, the compute shader elsewhere, WWHD_VK_BC_CPU=0/1 overrides.
 #include "gfx/vulkan/bc_decoder_choice.h"
 #include <cassert>
 #include <initializer_list>
@@ -28,4 +28,16 @@ int main() {
         assert((choose_bc_decoder(VK_DRIVER_ID_QUALCOMM_PROPRIETARY, qualcomm, c.version, "auto").decoder == BcDecoder::Cpu) == c.cpu);
     }
     assert(!std::strcmp(choose_bc_decoder(VK_DRIVER_ID_MOLTENVK, 0x106b, 0, "1").reason, "WWHD_VK_BC_CPU=1"));
+    // Huawei (Maleoon, vendor 0x19E5): the CPU decoder whatever the driver reports; WWHD_VK_BC_CPU=0 tries the shader
+    const uint32_t huawei = 0x19E5;
+    for (VkDriverId d : {VkDriverId(0), VK_DRIVER_ID_ARM_PROPRIETARY, VK_DRIVER_ID_MESA_TURNIP})
+        for (const char* v : {(const char*)nullptr, "", "auto"}) {
+            auto choice = choose_bc_decoder(d, huawei, 1, v);
+            assert(choice.decoder == BcDecoder::Cpu && !std::strcmp(choice.reason, "driver rule: Huawei GPU"));
+        }
+    assert(choose_bc_decoder(VkDriverId(0), huawei, 1, "0").decoder == BcDecoder::Compute);
+    // the Xiaomi 14's stock driver (Adreno 750, v762 era), Apple and Arm keep the compute shader
+    assert(choose_bc_decoder(VK_DRIVER_ID_QUALCOMM_PROPRIETARY, qualcomm, (512u << 22) | (762u << 12), nullptr).decoder == BcDecoder::Compute);
+    assert(choose_bc_decoder(VK_DRIVER_ID_MOLTENVK, 0x106b, 0, nullptr).decoder == BcDecoder::Compute);
+    assert(choose_bc_decoder(VK_DRIVER_ID_ARM_PROPRIETARY, 0x13b5, 0, nullptr).decoder == BcDecoder::Compute);
 }

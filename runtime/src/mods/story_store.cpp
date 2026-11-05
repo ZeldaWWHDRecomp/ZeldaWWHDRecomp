@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "guest_addr.h"
+#include "long_name.h"
 #include "runtime.h"
 
 namespace story_store {
@@ -134,6 +135,8 @@ uint64_t opened_for_read(const std::string& guest_path, const std::string& host_
             LOG("[story] %s: the story block is damaged (checksum); it is not used", base_name(guest_path).c_str());
         }
     }
+    if (base_name(guest_path) == "cking.sav")  // save file names over 8 characters (long_name.h)
+        long_name::loaded(s.found == story_block::Found::Valid ? s.payload : nullptr);
     if (base_name(guest_path) == "cking.sav" && s.found == story_block::Found::Valid) {
         std::lock_guard lock(g_mu);
         if (g_memory) memcpy(saved_copy(0), s.payload, story_block::kPayloadSize);
@@ -155,19 +158,24 @@ uint64_t game_size(const std::string& host_path, uint64_t file_size) {
 }
 
 void written(const std::string& guest_path, const std::string& host_path) {
-    std::vector<uint8_t> block;
-    {
-        std::lock_guard lock(g_mu);
-        if (g_memory) {
-            if (!story_block::all_zero(saved_copy(0), story_block::kPayloadSize)) block = story_block::build(saved_copy(0));
-        } else if (!g_unplaced.empty()) {
-            block = story_block::build(g_unplaced.data());
-        }
-    }
     std::vector<uint8_t> file;
     if (!read_file(host_path, file)) return;
     const story_block::Split s = story_block::split(file.data(), file.size());
-    if (block.empty() && s.found == story_block::Found::None) {
+    std::vector<uint8_t> block;
+    bool game_part_changed = false;
+    {
+        std::lock_guard lock(g_mu);
+        // the areas: the saved copies in memory, else the block read before them, else empty ones
+        std::vector<uint8_t> areas(story_block::kPayloadSize, 0);
+        if (g_memory) memcpy(areas.data(), saved_copy(0), story_block::kPayloadSize);
+        else if (!g_unplaced.empty()) areas = g_unplaced;
+        // save file names over 8 characters (long_name.h): their records, and the game's names cut back to 8
+        game_part_changed = long_name::written(file.data(), s.game_size, areas.data());
+        if (g_memory) memcpy(saved_copy(0), areas.data(), story_block::kPayloadSize);
+        else if (!g_unplaced.empty() || !story_block::all_zero(areas.data(), areas.size())) g_unplaced = areas;
+        if (!story_block::all_zero(areas.data(), areas.size())) block = story_block::build(areas.data());
+    }
+    if (block.empty() && s.found == story_block::Found::None && !game_part_changed) {
         if (trace()) LOG("[story] %s written by the game: no story block", guest_path.c_str());
         return;  // nothing of ours: the game's file as the game wrote it
     }

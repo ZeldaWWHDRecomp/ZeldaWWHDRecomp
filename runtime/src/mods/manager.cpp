@@ -2,6 +2,8 @@
 #include "packages.h"
 #include "mods.h"
 #include "climb.h"
+#include "game_progress_host.h"
+#include "achievements_host.h"
 #include "../overlay/hostui.h"
 #include <cstdlib>
 #include <cmath>
@@ -39,7 +41,9 @@ const Entry catalogue[] = {
      "Outside enemy lock, native aiming is unchanged.",
      "WWHD_MOD_QUICK_USE", quick_use, set_quick_use},
     {"quick-doors", "Quick doors", "Gameplay",
-     "Run door-opening and closing events at four times their normal speed.",
+     "Faster: door-opening and closing events run at four times their normal speed. Walk through: dungeon "
+     "shutters and house doors open as Link walks up and he walks through without the door scene (or opens them "
+     "with A); locked and boss doors keep their scene, sped up.",
      "WWHD_MOD_QUICK_DOORS", quick_doors, set_quick_doors},
     {"move-speed", "Run/swim speed", "Gameplay",
      "Boost Link's running and swimming speed, separate multipliers, held or toggled, with a stamina "
@@ -67,6 +71,10 @@ const Entry catalogue[] = {
      "Jump from standing or running with a button (default L), optionally once more in the air. "
      "Can also turn off the automatic jumps off ledges.",
      "WWHD_MOD_JUMP", jump_anywhere, set_jump_anywhere},
+    {"leaf-rise", "Deku Leaf: wave to rise", "Gameplay",
+     "While Link glides on the Deku Leaf, each wave of the leaf (its button again) lifts him a little. Holding "
+     "the button waves on. The height of a wave is a choice; the leaf still uses magic as usual.",
+     "WWHD_MOD_LEAF_RISE", leaf_rise, set_leaf_rise},
     {"fast-forward", "Fast forward cutscenes and dialogue", "Gameplay",
      "Hold the selected button during events to play faster. Choices still wait for input.",
      "WWHD_MOD_FAST_FORWARD", fast_forward, set_fast_forward},
@@ -74,9 +82,24 @@ const Entry catalogue[] = {
      "Letters, quests, the story notebook and mod charts. It comes with the Story Notebook package, which the "
      "mod manager downloads from the mod catalogue and keeps installed while this is on.",
      "WWHD_STORY_SYSTEM", story_system, set_story_system, true},
+    {"game-progress", "Game progress", "Game",
+     "How far your save file is: a percent and a checklist of what you have collected and what is still missing, and a "
+     "map of where each thing is found. On the item menu's settings page (Game tab); optionally the percent on screen.",
+     "WWHD_MOD_GAME_PROGRESS", game_progress::enabled, game_progress::set_enabled},
+    {"achievements", "Achievements", "Game",
+     "99 goals, from the story to the Savage Labyrinth, read from your save data and earned for good, for all save games "
+     "and for each one, with a pop-up of Link holding each one up. Cheats pause them unless Earn with cheats is on.",
+     "WWHD_MOD_ACHIEVEMENTS", achievements::enabled, achievements::set_enabled},
     {"fast-scenes", "Fast scene changes", "Gameplay",
      "Speed up fades and scene transitions while keeping ordinary gameplay at normal speed.",
      "WWHD_MOD_FAST_SCENES", fast_scenes, set_fast_scenes},
+    {"instant-text", "Instant text", "Gameplay",
+     "Message boxes show their whole text at once instead of letter by letter. A box still waits for A "
+     "before the next one.",
+     "WWHD_MOD_INSTANT_TEXT", instant_text, set_instant_text},
+    {"no-text-pauses", "No pauses in texts", "Gameplay",
+     "Leaves out the short pauses written into some texts, so the rest of the line follows at once.",
+     "WWHD_MOD_NO_TEXT_PAUSES", no_text_pauses, set_no_text_pauses},
 };
 std::string key(const Entry& entry) { return std::string("mod.")+entry.id+".enabled"; }
 bool player_preferences() { return !std::getenv("WWHD_NO_HOST_INPUT"); }
@@ -147,6 +170,30 @@ void load_saved() {
         number("mod.target-letterbox.mode", "WWHD_TARGET_LETTERBOX_MODE", 1.f, 2.f,
                [](float value) { if (std::floor(value) == value) set_targeting_letterbox_mode(int(value)); });
     number("mod.lock-on.range", "WWHD_MOD_LOCK_ON_RANGE", 1.f, 3.f, set_lock_on_range);
+    number("mod.leaf-rise.height", "WWHD_MOD_LEAF_HEIGHT", 25.f, 400.f, set_leaf_rise_height);
+    if (!std::getenv("WWHD_MOD_PROGRESS_ON_SCREEN")) {
+        std::string v;
+        if (hostui::get("mod.game-progress.on-screen", v) && (v == "0" || v == "1")) game_progress::set_on_screen(v == "1");
+    }
+    {  // Achievements' options (overlay.cpp writes them)
+        achievements::Settings a = achievements::settings();
+        auto flag = [](const char* key, bool& out) {
+            std::string v;
+            if (hostui::get(key, v) && (v == "0" || v == "1")) out = v == "1";
+        };
+        flag("mod.achievements.popup", a.popup);
+        flag("mod.achievements.link", a.link);
+        flag("mod.achievements.jingle", a.jingle);
+        flag("mod.achievements.each-file", a.each_file);
+        flag("mod.achievements.with-cheats", a.with_cheats);
+        std::string v;
+        if (hostui::get("mod.achievements.volume", v) && !v.empty()) {
+            char* end = nullptr;
+            const float f = std::strtof(v.c_str(), &end);
+            if (end != v.c_str() && *end == '\0' && f >= 0 && f <= 1) a.volume = f;
+        }
+        achievements::set_settings(a);
+    }
     if (!std::getenv("WWHD_MOD_LOCK_ON_CYCLING")) {
         std::string v;
         if (hostui::get("mod.lock-on.cycling", v) && (v == "0" || v == "1"))
@@ -203,6 +250,12 @@ void load_saved() {
         if (!std::getenv(env) && hostui::get(key, v) && (v == "0" || v == "1")) apply(v == "1");
     };
     flag("mod.jump-anywhere.double", "WWHD_MOD_JUMP_DOUBLE", set_double_jump);
+    if (!std::getenv("WWHD_MOD_DOOR_MODE")) {
+        std::string v;
+        if (hostui::get("mod.quick-doors.mode", v) && (v == "faster" || v == "walk"))
+            set_door_mode(v == "walk" ? kDoorWalk : kDoorFaster);
+    }
+    flag("mod.quick-doors.by-a", "WWHD_MOD_WALK_DOORS_A", set_walk_doors_by_a);
     flag("mod.jump-anywhere.no-auto", "WWHD_MOD_JUMP_NO_AUTO", set_no_auto_jump);
     std::string jump;
     if (!std::getenv("WWHD_MOD_JUMP_BUTTON") && hostui::get("mod.jump-anywhere.button", jump)) {
