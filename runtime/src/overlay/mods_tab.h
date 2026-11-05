@@ -91,6 +91,7 @@ struct Review {
     std::map<std::string, std::string> chosen;
     std::vector<std::string> code_names;  // code that runs on the computer (native, guest, setup tools)
     bool experimental = false;
+    bool isolated_save_profile = false;
     std::string error;
 };
 
@@ -369,6 +370,7 @@ inline void open_review_for_entry(const mods::catalogue::Entry& e, const fs::pat
     r.entry = e;
     r.fixtures = fixtures;
     r.plan = update && installed ? plan_for_update(e, *installed) : plan_for_entry(e);
+    r.isolated_save_profile = installed && installed->isolated_save_profile;
     r.experimental = e.experimental && !r.plan.keep_off;  // the warning is for switching it on
     for (const auto& s : e.setup) {
         if (s.optional) continue;
@@ -389,6 +391,7 @@ inline void open_review_for_installed(const mods::packages::View& v) {
     r.name = v.name;
     r.description = v.description;
     r.plan = plan_for_installed(v);
+    r.isolated_save_profile = v.isolated_save_profile;
     r.experimental = !unacknowledged_experimental(v.id).empty();
     for (const auto& s : setup_steps(v.id)) {
         if (s.step.optional || s.satisfied) continue;
@@ -896,6 +899,8 @@ inline void review_popup(Host& h) {
     ImGui::Spacing();
     // what it needs, all at once
     if (r.experimental) colored(kWarn, kExperimentalShort);
+    if (h.android && r.isolated_save_profile)
+        colored(kWarn, "This mod uses separate saves. Android cannot import or export them yet. Uninstalling the app deletes them.");
     if (!r.source_game.empty()) {
         ImGui::SeparatorText("Your GameCube game");
         game_source_picker(h, r.source_game);
@@ -1003,7 +1008,9 @@ inline void row_line(const std::string& id, const std::string& name, const Row& 
     ImGui::TableNextColumn();
     bool on = r.switch_on;
     ImGui::BeginDisabled(!r.switch_enabled);
-    if (on_switch(("##on_" + id).c_str(), &on)) toggle(on);
+    if (id == "target-letterbox" && builtin) {
+        if (ImGui::SmallButton("Choose")) open_page(id, true);
+    } else if (on_switch(("##on_" + id).c_str(), &on)) toggle(on);
     ImGui::EndDisabled();
     tooltip(r.switch_reason);
     ImGui::TableNextColumn();
@@ -1047,6 +1054,10 @@ inline void builtin_list(Host& h) {
         fx.builtin = true;
         fx.enabled = e.enabled();
         Row r = row(fx);
+        if (std::string_view(e.id) == "target-letterbox") {
+            constexpr const char* labels[] = {"On", "Off with enemies", "Always off"};
+            r.text = labels[mods::targeting_letterbox_mode()];
+        }
         std::string id = e.id;
         row_line(id, e.name, r, e.restart_required ? "applies after a restart" : "", false, true,
                  [id, &h](bool on) {
@@ -1304,6 +1315,8 @@ inline void package_page(Host& h, const mods::packages::View& v) {
     if (!r.switch_enabled && !r.switch_reason.empty()) muted(r.switch_reason);
     if (!v.description.empty()) text(v.description);
     if (v.experimental) colored(kWarn, kExperimentalShort);
+    if (h.android && v.isolated_save_profile)
+        colored(kWarn, "Separate mod saves cannot be imported or exported on Android yet. Uninstalling the app deletes them.");
     if (!v.reason.empty() && v.reason != v.game_source_warning) colored(kBad, "This mod has a problem: " + v.reason);
     const bool flow_shown = flow_for(v.id);
     if (flow_shown) {
@@ -1361,12 +1374,14 @@ inline void builtin_page(Host& h, const mods::manager::Entry& e) {
     ImGui::TextUnformatted(e.name);
     bool on = e.enabled();
     std::string id = e.id;
-    if (on_switch("##on_builtin", &on)) {
-        hostui::post([id, on] { mods::manager::set_enabled(id, on); });
-        if (id == "story-system" && on && !find_view(mods::packages::list(), mods::required::kStoryNotebook)) install_story_notebook(h);
+    if (id != "target-letterbox") {
+        if (on_switch("##on_builtin", &on)) {
+            hostui::post([id, on] { mods::manager::set_enabled(id, on); });
+            if (id == "story-system" && on && !find_view(mods::packages::list(), mods::required::kStoryNotebook)) install_story_notebook(h);
+        }
+        ImGui::SameLine();
+        colored(on ? kGood : kMuted, on ? "On" : "Off");
     }
-    ImGui::SameLine();
-    colored(on ? kGood : kMuted, on ? "On" : "Off");
     text(e.description);
     if (e.restart_required) muted("Changes apply after a restart.");
     if (const char* o = getenv(e.startup_env)) muted(std::string(e.startup_env) + "=" + o + " overrides the saved choice at startup.");

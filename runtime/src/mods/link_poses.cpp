@@ -7,6 +7,7 @@
 // Idea from the GreenNaugahyde Android fork (MPL-2.0), its link_icons.cpp; reimplemented on our readers.
 #include "link_poses.h"
 
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <stdexcept>
@@ -43,6 +44,8 @@ struct Model {
     bool has_sword = false, has_grip = false, has_shield = false;
     int left_hand = -1, right_hand = -1;
     std::vector<Texture> textures;
+    std::map<Prop, Part> props;  // the things drawn with him, each set at rest with its foot at y 0
+    bool ship_head = false;      // the boat's head was read (and the boat set upright)
 };
 
 namespace {
@@ -287,6 +290,99 @@ Posed skin(const Part& p, const Shape& s, const std::vector<M34>& world, const M
 
 }  // namespace
 
+namespace {
+// The props: which file of which pack holds each model (the GreenNaugahyde Android fork's link_icons.cpp kThings,
+// MPL-2.0): 0 the 3D pack, 1 szs_permanent0.pack, 2 Link.bfres itself
+struct PropFile {
+    Prop prop;
+    int pack;
+    const char *arc, *file, *model;
+};
+constexpr PropFile kProps[] = {
+    {Prop::kPot, 0, "Always.szs", "Always.bfres", "obm_kotubo1"},   {Prop::kBigPot, 0, "Always.szs", "Always.bfres", "obm_ootubo1"},
+    {Prop::kRock, 0, "Always.szs", "Always.bfres", "obm_koisi1"},   {Prop::kPebble, 0, "Always.szs", "Always.bfres", "mpi_koishi"},
+    {Prop::kBomb, 2, nullptr, nullptr, "bomb"},                     {Prop::kBarrel, 1, "Ktaru_01.szs", "Ktaru_01.bfres", "ktaru_01"},
+    {Prop::kBlock, 1, "Osiblk.szs", "Osiblk.bfres", "obm_osihikiblk1"}, {Prop::kShip, 1, "Ship.szs", "Ship.bfres", "fn_body"},
+};
+// a file of a Yaz0 SARC inside a pack (a SARC); empty when it isn't there
+Bytes pack_file(const Bytes& pack, const char* arc, const char* file) {
+    try {
+        const auto files = item_icons::read_sarc(pack);
+        const auto it = files.find(arc);
+        if (it == files.end()) return {};
+        const auto sarc = item_icons::read_sarc(item_icons::yaz0_decode(it->second));
+        const auto f = sarc.find(file);
+        return f == sarc.end() ? Bytes() : f->second;
+    } catch (const std::exception&) {
+        return {};
+    }
+}
+// a prop's rest pose moved so that its lowest point is at y 0 (its foot on his hands or on the ground)
+float stand_on_foot(Part& p) {
+    float low = 1e30f;
+    for (const Shape& s : p.shapes)
+        for (size_t k = 0; k < s.pos.size(); k++) {
+            const V3& v = s.pos[k];
+            const V3 q = s.skin == 0 ? p.rest_world[size_t(s.bone)].point(v) : s.skin == 1 ? p.rest_world[s.idx[k][0]].point(v) : v;
+            low = std::min(low, q.y);
+        }
+    if (!(low < 1e29f)) return 0;
+    for (M34& w : p.rest_world) w.m[1][3] -= low;
+    return low;
+}
+void load_props(Model& m, const Bytes& link_bfres, const Bytes* pack3d, const Bytes* pack0) {
+    std::map<std::string, Bytes> files;  // by archive
+    for (const PropFile& f : kProps) {
+        const Bytes* src = f.pack == 2 ? &link_bfres : nullptr;
+        if (f.pack < 2) {
+            const Bytes* pack = f.pack == 0 ? pack3d : pack0;
+            if (!pack || pack->empty()) continue;
+            auto it = files.find(f.arc);
+            if (it == files.end()) it = files.emplace(f.arc, pack_file(*pack, f.arc, f.file)).first;
+            src = &it->second;
+        }
+        if (!src || src->empty()) continue;
+        wc::Reader r{*src};
+        if (!wc::fres(r)) continue;
+        std::map<std::string, int> tex;  // (the file's own textures)
+        Part p;
+        std::string why;
+        if (!read_part(r, f.model, m, tex, p, why)) continue;  // (export_to says which pictures are left out)
+        auto pose_by = [&](Part& part, const char* anim) {  // its rest pose: frame 0 of an animation of its file
+            wc::Clip clip;
+            if (!wc::clip(*src, anim, clip, why)) return false;
+            std::vector<int> track(part.bones.size(), -1);
+            for (size_t i = 0; i < part.bones.size(); i++)
+                for (size_t j = 0; j < clip.bones.size(); j++)
+                    if (clip.bones[j].name == part.bones[i].name) track[i] = int(j);
+            part.rest_world = world_of(part.bones, wc::sample(part.bones, clip, track, 0));
+            return true;
+        };
+        if (f.prop == Prop::kShip) {
+            // The boat: its body (the mast down along the deck) and the King of Red Lions' head, posed by one of its
+            // animations (its bind pose is a tangle: the game always plays one; the GreenNaugahyde fork takes
+            // fn_talk_a), whose root already sits where the head goes. Both files' rest lies on its side here: set
+            // upright by a quarter turn about the length (checked by eye on the rendered pictures).
+            Part head;
+            if (read_part(r, "fn_head_h", m, tex, head, why) && pose_by(head, "fn_talk_a")) {
+                const M34 up = camera(0, -90);
+                for (M34& w : p.rest_world) w = up * w;
+                for (M34& w : head.rest_world) w = up * w;
+                m.ship_head = true;
+                m.props.emplace(Prop::kShipHead, std::move(head));
+            }
+        }
+        const float low = stand_on_foot(p);
+        if (f.prop == Prop::kShip && m.ship_head)  // (the head goes down with the body)
+            for (M34& w : m.props[Prop::kShipHead].rest_world) w.m[1][3] -= low;
+        m.props.emplace(f.prop, std::move(p));
+    }
+}
+
+}  // namespace
+
+bool has_prop(const Model& m, Prop p) { return m.props.count(p) != 0; }
+
 bool read_pack(const Bytes& pack, Bytes& link_bfres, Bytes& anim_bfres, std::string& why) {
     try {
         const auto files = item_icons::read_sarc(pack);
@@ -307,7 +403,7 @@ bool read_pack(const Bytes& pack, Bytes& link_bfres, Bytes& anim_bfres, std::str
     }
 }
 
-std::shared_ptr<const Model> load(const Bytes& link_bfres, std::string& why) {
+std::shared_ptr<const Model> load(const Bytes& link_bfres, std::string& why, const Bytes* pack3d, const Bytes* pack0) {
     auto m = std::make_shared<Model>();
     wc::Reader r{link_bfres};
     if (!wc::fres(r)) return why = "Link.bfres is not a BFRES file", nullptr;
@@ -320,6 +416,7 @@ std::shared_ptr<const Model> load(const Bytes& link_bfres, std::string& why) {
     m->has_sword = read_part(r, "swa", *m, tex, m->sword, ignored);
     m->has_grip = read_part(r, "swgripa", *m, tex, m->grip, ignored);
     m->has_shield = read_part(r, "sha", *m, tex, m->shield, ignored);
+    load_props(*m, link_bfres, pack3d, pack0);
     return m;
 }
 
@@ -340,7 +437,38 @@ bool render(const Model& m, const Bytes& anim_bfres, const PoseSpec& pose, Bytes
         int texture;
     };
     std::vector<Item> items;
-    for (const Shape& s : m.link.shapes) items.push_back({&s, skin(m.link, s, world, cam), s.texture});
+    if (pose.prop == Prop::kNone || pose.place != Place::kAlone)
+        for (const Shape& s : m.link.shapes) items.push_back({&s, skin(m.link, s, world, cam), s.texture});
+    // the thing drawn with him (or alone)
+    auto hand_mid = [&] {
+        V3 p{};
+        if (m.left_hand >= 0 && m.right_hand >= 0) {
+            const M34 &l = world[size_t(m.left_hand)], &r = world[size_t(m.right_hand)];
+            p = {(l.m[0][3] + r.m[0][3]) / 2, (l.m[1][3] + r.m[1][3]) / 2, (l.m[2][3] + r.m[2][3]) / 2};
+        }
+        return p;
+    };
+    if (pose.prop != Prop::kNone) {
+        const auto it = m.props.find(pose.prop);
+        if (it == m.props.end()) return why = "its thing isn't in the game files", false;
+        M34 place;
+        if (pose.place == Place::kHands) {
+            const V3 h = hand_mid();
+            place.m[0][3] = h.x, place.m[1][3] = h.y, place.m[2][3] = h.z;
+        } else {
+            place = camera(-pose.prop_yaw, 0);  // (a turn about +y)
+            if (pose.place == Place::kFront) place.m[0][3] = pose.at[0], place.m[1][3] = pose.at[1], place.m[2][3] = pose.at[2];
+        }
+        const Part& p = it->second;
+        for (const Shape& s : p.shapes) items.push_back({&s, skin(p, s, p.rest_world, cam * place), s.texture});
+        const auto head = pose.prop == Prop::kShip ? m.props.find(Prop::kShipHead) : m.props.end();
+        if (head != m.props.end()) {
+            const Part& h = head->second;
+            const M34 base = cam * place;
+            for (const Shape& s : h.shapes) items.push_back({&s, skin(h, s, h.rest_world, base), s.texture});
+        }
+    }
+    const size_t link_items = pose.prop == Prop::kNone || pose.place != Place::kAlone ? m.link.shapes.size() : 0;
     auto attach = [&](const Part& p, bool has, int hand) {
         if (!has || hand < 0) return;
         const M34 base = cam * world[size_t(hand)];
@@ -353,9 +481,20 @@ bool render(const Model& m, const Bytes& anim_bfres, const PoseSpec& pose, Bytes
     if (pose.gear == Gear::kSwordShield) attach(m.shield, m.has_shield, m.right_hand);
     // framing: the pose's bounds fill the picture with a margin, centred
     float x0 = 1e30f, x1 = -1e30f, y0 = 1e30f, y1 = -1e30f;
-    for (const Item& it : items)
-        for (const V3& p : it.posed.pos) x0 = std::min(x0, p.x), x1 = std::max(x1, p.x), y0 = std::min(y0, p.y), y1 = std::max(y1, p.y);
+    for (size_t i = 0; i < (pose.fit_link ? link_items : items.size()); i++)
+        for (const V3& p : items[i].posed.pos) x0 = std::min(x0, p.x), x1 = std::max(x1, p.x), y0 = std::min(y0, p.y), y1 = std::max(y1, p.y);
+    if (pose.fit_link) {  // some room around him for the thing (the fork's fitMore)
+        const float wx = (x1 - x0) * 0.25f, wy = (y1 - y0) * 0.25f;
+        x0 -= wx, x1 += wx, y0 -= wy, y1 += wy;
+    }
     if (!(x1 > x0) || !(y1 > y0)) return why = "empty pose", false;
+    // a rope from his hands straight up, out past the top of the picture (the fork's, drawn as a thin band)
+    V3 rope_foot{}, rope_top{};
+    if (pose.rope) {
+        rope_foot = cam.point(hand_mid());
+        rope_top = rope_foot + V3{0, 10 * (y1 - y0), 0};
+        y1 = std::max(y1, rope_foot.y + 0.25f * (y1 - y0));  // (the framing keeps some of it in)
+    }
     const int px = size * kSupersample;
     const float margin = px * 0.06f;
     const float scale = (px - 2 * margin) / std::max(x1 - x0, y1 - y0);
@@ -373,6 +512,16 @@ bool render(const Model& m, const Bytes& anim_bfres, const PoseSpec& pose, Bytes
         const Texture* over = s.overlay >= 0 && size_t(s.overlay) < m.textures.size() ? &m.textures[size_t(s.overlay)] : nullptr;
         for (size_t t = 0; t + 2 < s.tris.size(); t += 3)
             draw_triangle(c, sv[s.tris[t]], sv[s.tris[t + 1]], sv[s.tris[t + 2]], tex, s.flat, over);
+    }
+    if (pose.rope) {
+        const float half = 1.6f * kSupersample;
+        auto sv = [&](const V3& p, float dx) {
+            return ScreenVertex{px / 2 + (p.x - cx) * scale + dx, px / 2 - (p.y - cy) * scale, p.z + 1, 0, 0, 0.5f};
+        };
+        const ScreenVertex a = sv(rope_foot, -half), b = sv(rope_foot, half), d = sv(rope_top, -half), e = sv(rope_top, half);
+        const std::array<uint8_t, 3> hemp{150, 118, 74};
+        draw_triangle(c, a, b, d, nullptr, hemp);
+        draw_triangle(c, b, e, d, nullptr, hemp);
     }
     rgba = downsample(c, kSupersample);
     outline(rgba, size, size, size / 64.0f);

@@ -1,5 +1,6 @@
 // Portable save state file format (portable_state.h).
 #include "portable_state.h"
+#include "mods/save_profile_identity.h"
 
 #include <cstdio>
 #include <cstring>
@@ -23,7 +24,7 @@ const char* const kTextKeys[] = {
     "format", "title_id", "title_version", "game_hash", "runtime", "created", "file_slot", "player_name",
     "stage", "start_point", "start_room", "layer", "room", "link_pos", "link_angle_y", "link_proc", "on_ship",
     "has_ship", "ship_pos", "ship_angle_y",
-    "time_of_day", "date", "controller",
+    "time_of_day", "date", "controller", "save_profile",
 };
 constexpr size_t kMaxText = 128;  // longest value of a text key
 
@@ -213,6 +214,10 @@ std::string write(const State& s, std::string& why) {
     kv("title_id", clean(s.title_id));
     kv("title_version", std::to_string(s.title_version));
     kv("game_hash", clean(s.game_hash));
+    if(!s.save_profile.empty()) {
+        if(!mods::save_profile::valid_namespace(s.save_profile)){why="invalid save profile identity";return {};}
+        kv("save_profile",s.save_profile);
+    }
     kv("runtime", clean(s.runtime));
     kv("created", clean(s.created));
     if (s.controller) kv("controller", std::to_string(s.controller));
@@ -352,6 +357,10 @@ bool read(const std::string& text, State& out, std::string& why) {
     }
     s.title_id = m["title_id"];
     s.game_hash = m["game_hash"];
+    s.save_profile=m["save_profile"];
+    if(!s.save_profile.empty()&&!mods::save_profile::valid_namespace(s.save_profile)) {
+        why="invalid save profile identity";return false;
+    }
     s.runtime = m["runtime"];
     s.created = m["created"];
     for(const auto& [key,value]:m)if(is_guest_key(key,value))s.guest_mods.push_back({key.substr(10),value});

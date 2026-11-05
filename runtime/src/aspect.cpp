@@ -23,8 +23,10 @@
 // switches its render-target factors at the matching swap (the value travels with the swap
 // command), so a change never lands in the middle of a frame.
 #include "aspect.h"
+#include "framegen.h"
 #include "savestate.h"
 #include "gfx/stereo.h"
+#include "gfx/gamepad_backdrop.h"
 #include "button_glyphs.h"
 #include "aspect_panes.h"
 #include "aspect_picto.h"
@@ -146,6 +148,18 @@ float layout_scale(float fovyDeg) {
     if (fov != 1.0f) angle = std::min(angle, 110.0f);
     const float t = std::tan(angle * (float)M_PI / 360.0f);
     return t > 0 ? 360.0f * ky / t : 0.0f;
+}
+
+float scene_tan_half_fovy(float fovyDeg) {
+    if (!(fovyDeg > 1.0f && fovyDeg < 170.0f)) return 0.0f;
+    float kx = 1.0f, ky = 1.0f, fov = 1.0f;
+    if (!original() || g_fov_game.load() != 1.0f) {  // (as layout_scale)
+        factors(g_game, kx, ky);
+        fov = gameplay_fov_scale();
+    }
+    float angle = vert_plus_fovy(fovyDeg, ky * fov);
+    if (fov != 1.0f) angle = std::min(angle, 110.0f);
+    return std::tan(angle * (float)M_PI / 360.0f);
 }
 
 const char* mode_name(int m) {
@@ -581,12 +595,48 @@ extern "C" void hook_028766CC(Cpu* c) {
     button_glyphs::calculate_pane(c, calculate_aspect_pane);
 }
 
+// Private bounded producer diagnostics: count Draw and DrawSelf separately so an
+// inherited-alpha skip remains visible without changing any selection/render gate.
+static void trace_gamepad_backdrop_pane(const char* stage, uint32_t pane) {
+    using namespace aspect;
+    static const uint64_t first = [] {
+        const char* e = std::getenv("WWHD_GAMEPAD_BACKDROP_LOG");
+        return e && *e ? std::strtoull(e, nullptr, 10) : ~uint64_t{0};
+    }();
+    if (game_frame() < first) return;
+    const auto name = name_of(pane);
+    const bool exact = name == "P_BgPattern_00";
+    char lower[25]{};
+    for (size_t i = 0; i < name.size(); ++i) {
+        const char ch = name[i];
+        lower[i] = ch >= 'A' && ch <= 'Z' ? char(ch + ('a' - 'A')) : ch;
+    }
+    const float width = float(ldf32(pane+kPaneSize));
+    const float height = float(ldf32(pane+kPaneSize+4));
+    const bool candidate = !std::strcmp(stage, "DrawSelf") &&
+        (std::strstr(lower, "bg") || std::strstr(lower, "back") ||
+         (width >= 1200.f && height >= 680.f));
+    if (!exact && !candidate) return;
+    // Separate quotas keep inactive exact-name panes from hiding actual candidates.
+    static std::atomic<unsigned> exactCount{0}, candidateCount{0};
+    auto& count = exact ? exactCount : candidateCount;
+    if (count.fetch_add(1, std::memory_order_relaxed) >= 100) return;
+    LOG("[backdrop producer] stage=%s name=%.*s game_frame=%llu pane=%08X flags=%02X alpha=%u inheritedAlpha=%u enabled=%d requested=%d capture=%d recording=%d size=%.3f,%.3f",
+        stage, int(name.size()), name.data(), (unsigned long long)game_frame(), pane, ld8(pane+0x44),
+        ld8(pane+0x45), ld8(pane+0x46),
+        int(gfx::gamepad_backdrop::enabled.load()),
+        int(gfx::gamepad_backdrop::capture_requested.load()),
+        int(gfx::gamepad_backdrop::capture_enabled()), int(gx2::recording_display_list()),
+        float(ldf32(pane+kPaneSize)), float(ldf32(pane+kPaneSize+4)));
+}
+
 // Pane::Draw(this, DrawInfo&): the render thread reports where each layout root is drawn. The
 // game thread can't tell: TV and GamePad layouts share DrawInfos and are recorded on threads that
 // don't bind the targets.
 extern "C" void hook_02877100(Cpu* c) {
     using namespace aspect;
     uint32_t pane = c->r[3];
+    trace_gamepad_backdrop_pane("Draw", pane);
     if(guestmods::maphud::hide_pane(pane))return;
     static const uint64_t trace_frame = getenv("WWHD_ASPECT_TRACE_FRAME") ? strtoull(getenv("WWHD_ASPECT_TRACE_FRAME"), nullptr, 10) : 0;
     if (trace_frame && game_frame() == trace_frame) {
@@ -610,6 +660,8 @@ extern "C" void hook_02877100(Cpu* c) {
             if (root != pane && root_on_tv(root)) return;
         }
     }
+    // 60 fps (generated, framegen.h): the first layout on the TV picture ends its scene (only while on)
+    if (framegen::requested() && !ld32(pane + kPaneParent)) gx2::emit(gx2::OP_FRAMEGEN_LAYOUT, {});
     if (original()) { button_glyphs::draw_pane(c, f_02877100_orig); return; }
     uint32_t parent = ld32(pane + kPaneParent);
     if (!parent) {
@@ -667,8 +719,18 @@ void aspect::ss_reset() {
 // Scope clipping to DrawSelf, not the subtree: a background and menu content can be siblings
 // under the same container, and tabs may have an offscreen origin but visible descendants.
 static thread_local std::vector<bool> t_layoutScopes;
+static thread_local std::vector<bool> t_backdropScopes;
 extern "C" void site_0287714C(Cpu* c) {
     using namespace aspect;
+    trace_gamepad_backdrop_pane("DrawSelf", c->r[3]);
+    // Scope only this Picture DrawSelf, never its children or the containing UI.
+    // Record even while disabled: a cached list may later be replayed enabled.
+    const bool backdrop = (gfx::gamepad_backdrop::capture_enabled() ||
+                           gx2::recording_display_list()) &&
+        gfx::gamepad_backdrop::is_background(name_of(c->r[3]),
+            float(ldf32(c->r[3] + kPaneSize)), float(ldf32(c->r[3] + kPaneSize + 4)));
+    if (backdrop || !t_backdropScopes.empty()) t_backdropScopes.push_back(backdrop);
+    if (backdrop) gx2::emit(gx2::OP_GAMEPAD_BACKDROP, {1});
     // Cached prompts/dialogue can be recorded in mono and replayed after 3D is
     // enabled. Keep their 2D identity in the list, independent of the mode at
     // recording time. Immediate original-aspect mono still needs no markers.
@@ -693,6 +755,11 @@ extern "C" void site_0287714C(Cpu* c) {
     gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u,1,photograph});
 }
 extern "C" void site_02877150(Cpu*) {
+    if (!t_backdropScopes.empty()) {
+        const bool backdrop = t_backdropScopes.back();
+        t_backdropScopes.pop_back();
+        if (backdrop) gx2::emit(gx2::OP_GAMEPAD_BACKDROP, {0});
+    }
     if(t_layoutScopes.empty())return;
     const bool scoped=t_layoutScopes.back();t_layoutScopes.pop_back();
     if(!scoped)return;

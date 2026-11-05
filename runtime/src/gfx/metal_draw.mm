@@ -1,3 +1,8 @@
+#include "gamepad_backdrop.h"
+#include "metal_gamepad_backdrop.h"
+#include "metal_draw_replay.h"
+#include "metal_backdrop_source.h"
+#include <optional>
 #include "background_shaders.h"
 #include "aspect.h"
 #include "aspect_panes.h"
@@ -721,6 +726,10 @@ static LatteDecompilerShader* translate_msl(const uint32_t* regs, bool vertex, L
     // mail sorting game); Cemu's default too. WWHD_STRICT_MUL=0 turns it off for comparisons
     static const bool strictMul = !getenv("WWHD_STRICT_MUL") || strcmp(getenv("WWHD_STRICT_MUL"), "0");
     opt.strictMul = strictMul;
+    // pixel colours without NaN / infinity (LatteDecompiler.h): the thunderstorm's flash at sea blacked out
+    // the 3D picture for a few frames (Vulkan's shaders.cpp). WWHD_NAN_GUARD=0: as the shader computes them
+    static const bool nanGuard = !getenv("WWHD_NAN_GUARD") || strcmp(getenv("WWHD_NAN_GUARD"), "0");
+    opt.finiteColorOutputs = nanGuard;
     LatteDecompilerOutput_t out{};
     if (vertex)
         LatteDecompiler_DecompileVertexShader(base, (uint32*)regs, mem::ptr(addr), size, fs, opt, &out);
@@ -1012,7 +1021,7 @@ struct TargetFormats {
 static void cache_record_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, uint64_t fsKey, const TargetFormats& t);
 
 static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, LatteFetchShader* fs,
-                                               uint64_t fsKey, const TargetFormats& tf) {
+                                               uint64_t fsKey, const TargetFormats& tf, unsigned backdropCoverage = 0) {
     FormatInfo cfmt[8], dfmt;
     for (int i = 0; i < 8; i++)
         if (tf.color[i]) cfmt[i] = format_info(tf.color[i], false);
@@ -1029,6 +1038,7 @@ static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs,
     h = hash_regs(regs, REGADDR::CB_BLEND0_CONTROL, 8, h);
     h = hash_regs(regs, REGADDR::CB_COLOR_CONTROL, 1, h);
     h = hash_regs(regs, REGADDR::CB_TARGET_MASK, 1, h);
+    if (backdropCoverage) h = hash_bytes(&backdropCoverage, sizeof backdropCoverage, h);
     auto it = g_pipelines.find(h);
     Pipeline* pl;
     if (it != g_pipelines.end()) {
@@ -1042,7 +1052,7 @@ static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs,
         pl = new Pipeline();
         g_pipelines[h] = pl;
         render_objects::set_pipelines(g_pipelines.size());
-        cache_record_pipeline(regs, vs, ps, fsKey, tf);
+        if (!backdropCoverage) cache_record_pipeline(regs, vs, ps, fsKey, tf);
         pipeline_groups::note_created();
         // the setup's model sweep, record only (WWHD_DSWEEP_RECORD_ONLY=1): the recipe is appended, the pipeline never
         // built; its draws are left out (nobody sees the hidden sweep)
@@ -1120,6 +1130,8 @@ static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs,
             }
         }
     }
+    if (backdropCoverage)
+        gamepad_capture_coverage(d.colorAttachments[0], backdropCoverage == 2);
     if (tf.depth) {
         d.depthAttachmentPixelFormat = dfmt.pixel;
         if (dfmt.stencil) d.stencilAttachmentPixelFormat = dfmt.pixel;
@@ -1393,7 +1405,19 @@ static Surface* hires_surface(Surface& dst, const Surface* like) {
 // pixels of the current render target per guest pixel (viewport/scissor/fragment-coordinate scale)
 static float g_target_kx = 1.0f, g_target_ky = 1.0f;
 
-static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Shader* sh, bool vertex, Surface* const* colors) {
+static inline void bind_buffer(id<MTLRenderCommandEncoder> encoder, bool vertex, id<MTLBuffer> buffer,
+                               NSUInteger offset, NSUInteger index, MetalDrawBindings* record) {
+    if (vertex) [encoder setVertexBuffer:buffer offset:offset atIndex:index];
+    else [encoder setFragmentBuffer:buffer offset:offset atIndex:index];
+    if (record) record->buffer(vertex,buffer,offset,index);
+}
+static inline void bind_bytes(id<MTLRenderCommandEncoder> encoder, bool vertex, const void* bytes,
+                              NSUInteger length, NSUInteger index, MetalDrawBindings* record) {
+    if (vertex) [encoder setVertexBytes:bytes length:length atIndex:index];
+    else [encoder setFragmentBytes:bytes length:length atIndex:index];
+    if (record) record->bytes(vertex,bytes,length,index);
+}
+static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Shader* sh, bool vertex, Surface* const* colors, MetalDrawBindings* record = nullptr) {
     LatteDecompilerShader* dec = sh->dec;
     float texScale[18][2];
     for (auto& t : texScale) t[0] = t[1] = 1.0f;
@@ -1468,6 +1492,7 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
             [enc setFragmentTexture:tex atIndex:binding];
             [enc setFragmentSamplerState:smp atIndex:binding];
         }
+        if (record) { record->texture(vertex,tex,binding); record->sampler(vertex,smp,binding); }
     }
 
     // support buffer (uniform registers, remapped uniforms, helper values)
@@ -1554,12 +1579,10 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
             sz[1] = (regs[REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + t * 7 + 1] & 0x1FFF) + 1;
         }
         if (buf.size() <= 4096) {
-            if (vertex) [enc setVertexBytes:buf.data() length:buf.size() atIndex:rm.uniformVarsBufferBindingPoint];
-            else [enc setFragmentBytes:buf.data() length:buf.size() atIndex:rm.uniformVarsBufferBindingPoint];
+            bind_bytes(enc,vertex,buf.data(),buf.size(),rm.uniformVarsBufferBindingPoint,record);
         } else {
             Upload u = upload(buf.data(), (uint32_t)buf.size());
-            if (vertex) [enc setVertexBuffer:u.buf offset:u.offset atIndex:rm.uniformVarsBufferBindingPoint];
-            else [enc setFragmentBuffer:u.buf offset:u.offset atIndex:rm.uniformVarsBufferBindingPoint];
+            bind_buffer(enc,vertex,u.buf,u.offset,rm.uniformVarsBufferBindingPoint,record);
         }
     }
 
@@ -1578,18 +1601,15 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
         // once per submission and upload pool chunk (guest memory is what the GPU reads later)
         if (const uint8_t* submitted = gx2::submitted_uniform_block(addr, size)) {
             Upload u = submitted_upload(addr, size, submitted);
-            if (vertex) [enc setVertexBuffer:u.buf offset:u.offset atIndex:binding];
-            else [enc setFragmentBuffer:u.buf offset:u.offset atIndex:binding];
+            bind_buffer(enc,vertex,u.buf,u.offset,binding,record);
             continue;
         }
         Upload u;
         if (g_snapshot || rewritten_copy(kRangeUniform, addr, size, u)) {
             if (g_snapshot) u = upload(mem::ptr(addr), size);
-            if (vertex) [enc setVertexBuffer:u.buf offset:u.offset atIndex:binding];
-            else [enc setFragmentBuffer:u.buf offset:u.offset atIndex:binding];
+            bind_buffer(enc,vertex,u.buf,u.offset,binding,record);
         } else {
-            if (vertex) [enc setVertexBuffer:gb offset:off atIndex:binding];
-            else [enc setFragmentBuffer:gb offset:off atIndex:binding];
+            bind_buffer(enc,vertex,gb,off,binding,record);
         }
     }
 }
@@ -2165,8 +2185,204 @@ void clouds_after_sky_composite(id<MTLRenderCommandEncoder> enc, const uint32_t*
                                 id<MTLDepthStencilState> depthState, bool (*ensure)(Surface* const*, const uint32_t*, Surface*, uint32_t));
 void clouds_mark_start(Surface* const* colors, const uint32_t* colorSlices, Surface* depth, uint32_t depthSlice,
                        bool (*ensure)(Surface* const*, const uint32_t*, Surface*, uint32_t));
+namespace {
+struct BackdropDrawReplay {
+    MetalDrawBindings bindings;
+    std::vector<uint32_t> indices;
+    MTLPrimitiveType primitive;
+    Shader* vertex = nullptr;
+    Shader* pixel = nullptr;
+    LatteFetchShader* fetch = nullptr;
+    uint64_t fetchKey = 0;
+};
+BackdropDrawReplay* backdropBindings = nullptr;
+struct BackdropStorage {
+    id<MTLTexture> texture = nil;
+    std::atomic<bool> complete{true};
+};
+struct BackdropCapture {
+    std::shared_ptr<BackdropStorage> storage;
+    std::unique_ptr<Surface> surface;
+    MetalBackdropSource source;
+    uint64_t ticket = 0;
+    unsigned coverage = 0;
+};
+gamepad_backdrop::ScanCache backdropScans;
+std::vector<std::shared_ptr<BackdropCapture>> pendingBackdrops;
+std::vector<std::shared_ptr<BackdropStorage>> backdropPool;
+std::shared_ptr<BackdropCapture> backdropCapture;
+uint64_t backdropTicket = 0, lastBackdropFrame = 0;
+unsigned backdropExpected = 0, backdropFinished = 0;
+bool backdropScope = false, backdropFailed = false, backdropReplay = false, backdropEncoded = false;
+void backdrop_trace(const char* phase, uint64_t a=0, uint64_t b=0, uint64_t c=0) {
+    static const uint64_t first=[] { const char* e=std::getenv("WWHD_GAMEPAD_BACKDROP_LOG"); return e&&*e?std::strtoull(e,nullptr,10):~uint64_t{0}; }();
+    if(aspect::game_frame()<first)return;
+    // Empty scanouts before a menu appears must not exhaust the pane quota.
+    static unsigned logged[15]{};
+    const char* phases[]={"begin","end","draw","blend","replay","clear","scan","prepare","format-reject","existing-reject","pool-reject","texture-reject","encoder-reject","release"};
+    unsigned slot=0;while(slot<14 && std::strcmp(phase,phases[slot]))++slot;
+    if(logged[slot]++ >= (slot>=5?16u:100u))return;
+    LOG("[metal backdrop] phase=%s game=%llu render=%llu a=%llx b=%llx c=%llx",phase,
+        (unsigned long long)aspect::game_frame(),(unsigned long long)R.frame,
+        (unsigned long long)a,(unsigned long long)b,(unsigned long long)c);
+}
+unsigned capture_coverage(const uint32_t* regs) {
+    if (((regs[REGADDR::CB_TARGET_MASK] & 15) & 7) != 7 || (regs[REGADDR::DB_DEPTH_CONTROL] & 7)) return 0;
+    if (!((regs[REGADDR::CB_COLOR_CONTROL] >> 8) & 1)) return 2;
+    LATTE_CB_BLENDN_CONTROL blend; uint32_t raw = regs[REGADDR::CB_BLEND0_CONTROL];
+    memcpy(&blend, &raw, 4);
+    if (blend_op(uint32_t(blend.get_COLOR_COMB_FCN())) != MTLBlendOperationAdd) return 0;
+    const auto source = blend_factor(uint32_t(blend.get_COLOR_SRCBLEND()));
+    const auto destination = blend_factor(uint32_t(blend.get_COLOR_DSTBLEND()));
+    if (source == MTLBlendFactorOne && destination == MTLBlendFactorZero) return 2;
+    return (source == MTLBlendFactorSourceAlpha || source == MTLBlendFactorOne) &&
+           destination == MTLBlendFactorOneMinusSourceAlpha ? 1 : 0;
+}
+uint64_t backdrop_bytes(id<MTLTexture> texture) {
+    if (!texture) return 0;
+    return uint64_t(texture.width) * texture.height * (texture.pixelFormat == MTLPixelFormatRGBA16Float ? 8 : 4);
+}
+uint64_t backdrop_pool_bytes() {
+    uint64_t bytes = 0;
+    for (const auto& slot : backdropPool) bytes += backdrop_bytes(slot->texture);
+    return bytes;
+}
+bool prepare_backdrop(Surface* source, unsigned coverage) {
+    const auto pixel = source->tex.pixelFormat;
+    backdrop_trace("prepare",pixel,(uint64_t(source->tex.width)<<32)|source->tex.height,backdropPool.size());
+    const auto capturePixel = gamepad_capture_pixel_format(pixel);
+    if(capturePixel == MTLPixelFormatInvalid) {backdrop_trace("format-reject",pixel);return false;}
+    if (backdropCapture) {
+        const bool match=backdropCapture->source.matches(source->tex) && backdropCapture->coverage == coverage;
+        if(!match)backdrop_trace("existing-reject",backdropCapture->source.key(),metal_backdrop_source_key(source->tex),backdropCapture->coverage);
+        return match;
+    }
+    auto capture = std::make_shared<BackdropCapture>();
+    capture->source.texture = source->tex; capture->ticket = ++backdropTicket; capture->coverage = coverage;
+    capture->surface = std::make_unique<Surface>(*source);
+    auto& surface = *capture->surface;
+    // Only the private Surface changes format. Pipeline metadata must match its
+    // promoted texture; source identity and scanout colour encoding stay native.
+    if(capturePixel != pixel) {
+        surface.format = 0x20; // GX2 R16_G16_B16_A16_FLOAT
+        surface.fmt = format_info(surface.format, false);
+    }
+    surface.addr = surface.mipAddr = 0; surface.mipChain.reset(); surface.spares.clear(); surface.levelRanges.clear();
+    MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:capturePixel width:source->tex.width height:source->tex.height mipmapped:NO];
+    d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    d.storageMode = MTLStorageModePrivate;
+    // Bounded, nonblocking reuse. A slot is fenced by command completion and
+    // cannot alias the committed scan or an as-yet unscanned pane. Same-queue
+    // tracked-resource ordering also protects earlier presentation reads.
+    for (const auto& slot : backdropPool) {
+        if (!slot->complete.load(std::memory_order_acquire) || slot->texture == R.drc.backdrop) continue;
+        if (std::any_of(pendingBackdrops.begin(),pendingBackdrops.end(),[&](const auto& p){return p->storage == slot;})) continue;
+        capture->storage = slot; break;
+    }
+    if (!capture->storage) {
+        if (backdropPool.size() >= 4) {
+            uint64_t flags=0;unsigned index=0;
+            for(const auto& slot:backdropPool) { flags|=uint64_t(slot->complete.load())<<(index*2);flags|=uint64_t(slot->texture==R.drc.backdrop)<<(index*2+1);++index; }
+            backdrop_trace("pool-reject",flags,pendingBackdrops.size());return false;
+        } // Edge-colour fallback, never wait on the GPU.
+        capture->storage = std::make_shared<BackdropStorage>();
+        backdropPool.push_back(capture->storage);
+    }
+    auto storage = capture->storage;
+    if (!storage->texture || storage->texture.width != d.width || storage->texture.height != d.height || storage->texture.pixelFormat != capturePixel) {
+        // The same byte cap as Vulkan (gamepad_backdrop::kPoolBytes): beyond it, the edge-colour fallback.
+        const uint64_t wanted = uint64_t(d.width) * d.height * (capturePixel == MTLPixelFormatRGBA16Float ? 8 : 4);
+        if (!gamepad_backdrop::fits_pool(backdrop_pool_bytes(), backdrop_bytes(storage->texture), wanted)) {
+            backdrop_trace("pool-reject",backdrop_pool_bytes(),wanted,backdropPool.size());
+            if (!storage->texture) std::erase(backdropPool, storage);
+            return false;
+        }
+        storage->texture = [R.device newTextureWithDescriptor:d];
+    }
+    surface.tex = storage->texture;
+    if (!surface.tex) {backdrop_trace("texture-reject",pixel,d.width,d.height);return false;}
+    end_encoder();
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    pass.colorAttachments[0].texture = surface.tex;
+    pass.colorAttachments[0].loadAction = MTLLoadActionClear;
+    pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, coverage == 2 ? 1 : 0);
+    pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
+    if (!encoder) {backdrop_trace("encoder-reject",pixel,d.width,d.height);return false;}
+    [encoder endEncoding];
+    storage->complete.store(false,std::memory_order_release);
+    backdropCapture = std::move(capture);
+    return true;
+}
+}
+void gamepad_backdrop_scope(const uint32_t*, bool begin) {
+    if (begin) {
+        backdrop_trace("begin",gamepad_backdrop::capture_enabled(),pendingBackdrops.size());
+        backdropCapture.reset(); backdropExpected = backdropFinished = 0; backdropFailed = false;
+        backdropScope = gamepad_backdrop::capture_enabled();
+    } else {
+        if (backdropCapture) {
+            auto capture = backdropCapture;
+            // Fence after the complete tagged replay, including any earlier
+            // chunked submissions. Retain storage across resize/reset.
+            [command_buffer() addCompletedHandler:^(id<MTLCommandBuffer>) {
+                capture->storage->complete.store(true,std::memory_order_release);
+            }];
+        }
+        const bool complete = backdropScope && gamepad_backdrop::capture_enabled() && !backdropFailed && backdropExpected && backdropExpected == backdropFinished && backdropCapture && backdropCapture->source.valid;
+        backdrop_trace("end",complete,(uint64_t(backdropExpected)<<32)|backdropFinished, (uint64_t(backdropFailed)<<1)|bool(backdropCapture));
+        metal_backdrop_finish_scope(complete,backdropScans,pendingBackdrops);
+        if (complete) {
+            if (pendingBackdrops.size() >= 16) { pendingBackdrops.clear(); backdropScans.reset(); }
+            backdropScans.capture(backdropCapture->source.key(), backdropCapture->ticket);
+            pendingBackdrops.push_back(backdropCapture);
+            lastBackdropFrame = R.frame;
+        }
+        backdropScope = false; backdropCapture.reset();
+    }
+}
+void gamepad_backdrop_scan(Surface* source) {
+    const auto selection = backdropScans.scan(metal_backdrop_source_key(source->tex));
+    backdrop_trace("scan",metal_backdrop_source_key(source->tex),selection.ticket,pendingBackdrops.size());
+    R.drc.backdrop = nil;
+    for (const auto& capture : pendingBackdrops)
+        if (capture->ticket == selection.ticket) { R.drc.backdrop = capture->surface->tex; break; }
+    pendingBackdrops.clear();
+}
+void gamepad_backdrop_clear(Surface* source) {
+    if(backdropCapture || !pendingBackdrops.empty())backdrop_trace("clear",metal_backdrop_source_key(source->tex),pendingBackdrops.size());
+    if (backdropCapture && backdropCapture->source.clear(source->tex)) backdropFailed = true;
+    std::erase_if(pendingBackdrops, [source](const auto& p) { return p->source.matches(source->tex); });
+}
+// Once per presentation (swap), outside any pane scope: as on Vulkan, turning
+// the option off drops every capture at once (none is shown while off), and
+// idle pool textures go after kIdleFrames presentations without a capture.
+// Only completed slots are dropped; the command buffers retain what they use.
+void gamepad_backdrop_maintain() {
+    if (backdropScope || backdropReplay) return;
+    const bool on = gamepad_backdrop::enabled.load(std::memory_order_relaxed);
+    if (!gamepad_backdrop::release_idle(on, R.frame, lastBackdropFrame) || backdropPool.empty()) return;
+    if (!on) { pendingBackdrops.clear(); backdropScans.reset(); R.drc.backdrop = nil; }
+    const auto before = backdropPool.size();
+    const auto bytes = backdrop_pool_bytes();
+    std::erase_if(backdropPool, [](const auto& slot) {
+        return slot->complete.load(std::memory_order_acquire) && slot->texture != R.drc.backdrop &&
+            std::none_of(pendingBackdrops.begin(), pendingBackdrops.end(), [&](const auto& p) { return p->storage == slot; });
+    });
+    if (backdropPool.size() != before) backdrop_trace("release", before - backdropPool.size(), bytes, on);
+}
+void gamepad_backdrop_reset() {
+    lastBackdropFrame = 0;
+    backdropScope = backdropReplay = false; backdropCapture.reset(); pendingBackdrops.clear(); backdropPool.clear();
+    backdropScans.reset(); R.drc.backdrop = nil;
+    gamepad_backdrop::set_capture_requested(false);
+}
 void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexType, uint32_t indexAddr, uint32_t baseVertex,
           uint32_t instances) {
+    const bool captureDraw = backdropScope && !backdropReplay && gamepad_backdrop::capture_enabled();
+    if (captureDraw) ++backdropExpected;
+    std::optional<BackdropDrawReplay> capturedBindings;
+    if (captureDraw) capturedBindings.emplace();
     static bool cacheLoaded = (cache_load(), true);
     (void)cacheLoaded;
     R.drawCount++;
@@ -2182,7 +2398,8 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     if (regs[REGADDR::PA_CL_CLIP_CNTL] & (1 << 22)) { g_skip[SK_RASTER_KILL]++; return; }  // rasterization disabled
 
     uint64_t fsKey = 0;
-    LatteFetchShader* fs = get_fetch_shader(regs, &fsKey);
+    LatteFetchShader* fs = backdropReplay ? backdropBindings->fetch : get_fetch_shader(regs, &fsKey);
+    if (backdropReplay) fsKey = backdropBindings->fetchKey;
     if (!fs) {
         if (g_skip[SK_NO_FETCH]++ < 5) {
             uint32_t prog = regs[mmSQ_PGM_START_FS] << 8;
@@ -2191,8 +2408,8 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         }
         return;
     }
-    Shader* vs = get_shader(regs, true, fs, fsKey);
-    Shader* ps = get_shader(regs, false, fs, fsKey);
+    Shader* vs = backdropReplay ? backdropBindings->vertex : get_shader(regs, true, fs, fsKey);
+    Shader* ps = backdropReplay ? backdropBindings->pixel : get_shader(regs, false, fs, fsKey);
     if (!vs || !ps || !vs->dec || !ps->dec) { g_skip[SK_NO_SHADER]++; return; }  // translation failed
     const LatteContextRegister& lcr = *(const LatteContextRegister*)regs;
     uint8_t mask = LatteMRT::GetActiveColorBufferMask(ps->dec, lcr);
@@ -2200,8 +2417,14 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     uint32_t colorSlices[8] = {}, depthSlice = 0;
     const auto claim = gfx::size_request(ps->kind);
     for (int i = 0; i < 8; i++)
-        if (mask & (1 << i)) colors[i] = color_target(regs, i, &colorSlices[i], claim);
-    Surface* depth = LatteMRT::GetActiveDepthBufferMask(lcr) ? depth_target(regs, &depthSlice) : nullptr;
+        if (!backdropReplay && (mask & (1 << i))) colors[i] = color_target(regs, i, &colorSlices[i], claim);
+    Surface* depth = !backdropReplay && LatteMRT::GetActiveDepthBufferMask(lcr) ? depth_target(regs, &depthSlice) : nullptr;
+    if (backdropReplay) {
+        if (!backdropCapture) return;
+        colors[0] = backdropCapture->surface.get(); colorSlices[0] = 0;
+        for (int i = 1; i < 8; ++i) colors[i] = nullptr;
+        depth = nullptr;
+    }
     if (depth && depth->width == 1280 && depth->height == 720) R.mainDepthAddr = depth->addr;
     // must this draw run even if its compile takes longer than the budget? (see wait_compiled)
     const bool fast = bgshaders::enabled();
@@ -2286,11 +2509,17 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     // textures must be uploaded before the render encoder opens
     static std::vector<uint32_t> indices;  // render thread only; keeps its capacity between draws
     MTLPrimitiveType ptype;
-    if (!build_indices(prim, count, indexType, indexAddr, indices, ptype)) { g_skip[SK_PRIM]++; return; }
+    if (backdropReplay) { indices = backdropBindings->indices; ptype = backdropBindings->primitive; }
+    else if (!build_indices(prim, count, indexType, indexAddr, indices, ptype)) { g_skip[SK_PRIM]++; return; }
+    if (captureDraw) {
+        capturedBindings->indices = indices; capturedBindings->primitive = ptype;
+        capturedBindings->vertex = vs; capturedBindings->pixel = ps;
+        capturedBindings->fetch = fs; capturedBindings->fetchKey = fsKey;
+    }
     rprof::mark(rprof::kIndices);
     bool samplesSky = false;  // cloud prototype: this draw reads the half-res sky buffer (its composite)
     bool readsPicture = false;  // ... or the picture the cloud shadows go into
-    for (Shader* sh : {vs, ps}) {
+    if (!backdropReplay) for (Shader* sh : {vs, ps}) {
         uint32_t texBase = sh == vs ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
         for (int u = 0; u < sh->dec->textureUnitListCount; u++) {
             uint8_t unit = sh->dec->textureUnitList[u];
@@ -2320,7 +2549,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     for (int i = 0; i < 8; i++)
         if (colors[i]) tf.color[i] = colors[i]->format;
     if (depth) tf.depth = depth->format;
-    id<MTLRenderPipelineState> pipe = get_pipeline(regs, vs, ps, fs, fsKey, tf);
+    id<MTLRenderPipelineState> pipe = get_pipeline(regs, vs, ps, fs, fsKey, tf, backdropReplay ? backdropCapture->coverage : 0);
     if (!pipe) {
         g_skip[SK_PIPE_COMPILING]++;
         if (!g_draw_must_run) leftOut();  // else the build failed for good
@@ -2387,6 +2616,9 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     // vertex buffers: small ones (UI, particles, dynamic geometry) are snapshotted like uniforms;
     // large static meshes are read from guest memory directly
     static const uint32_t kSnapshotLimit = getenv("WWHD_VB_SNAPSHOT") ? (uint32_t)atoi(getenv("WWHD_VB_SNAPSHOT")) : 256 * 1024;
+    if (backdropReplay) {
+        backdropBindings->bindings.apply(enc);
+    } else {
     for (auto& g : fs->bufferGroups) {
         uint32_t addr = regs[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7];
         uint32_t size = regs[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7 + 1] + 1;
@@ -2396,20 +2628,21 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         Upload u;
         if (g_snapshot && size <= kSnapshotLimit) {
             u = upload(mem::ptr(addr), size);
-            [enc setVertexBuffer:u.buf offset:u.offset atIndex:GET_MTL_VERTEX_BUFFER_INDEX(g.attributeBufferIndex)];
+            bind_buffer(enc,true,u.buf,u.offset,GET_MTL_VERTEX_BUFFER_INDEX(g.attributeBufferIndex),captureDraw ? &capturedBindings->bindings : nullptr);
         } else if (rewritten_copy(kRangeVertex, addr, size, u)) {
-            [enc setVertexBuffer:u.buf offset:u.offset atIndex:GET_MTL_VERTEX_BUFFER_INDEX(g.attributeBufferIndex)];
+            bind_buffer(enc,true,u.buf,u.offset,GET_MTL_VERTEX_BUFFER_INDEX(g.attributeBufferIndex),captureDraw ? &capturedBindings->bindings : nullptr);
         } else {
-            [enc setVertexBuffer:b offset:off atIndex:GET_MTL_VERTEX_BUFFER_INDEX(g.attributeBufferIndex)];
+            bind_buffer(enc,true,b,off,GET_MTL_VERTEX_BUFFER_INDEX(g.attributeBufferIndex),captureDraw ? &capturedBindings->bindings : nullptr);
         }
     }
     rprof::mark(rprof::kVertex);
     {
         rprof::UploadKind uploads(rprof::kUpUbo);  // Metal: uniform snapshots and bindings of both stages
         R.binding = true;
-        bind_stage(enc, regs, vs, true, colors);
-        bind_stage(enc, regs, ps, false, colors);
+        bind_stage(enc, regs, vs, true, colors, captureDraw ? &capturedBindings->bindings : nullptr);
+        bind_stage(enc, regs, ps, false, colors, captureDraw ? &capturedBindings->bindings : nullptr);
         R.binding = false;
+    }
     }
     rprof::mark(rprof::kUniforms);
 
@@ -2433,6 +2666,10 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
                      instanceCount:instances
                         baseVertex:baseVertex
                       baseInstance:0];
+    }
+    if (backdropReplay) {
+        backdropEncoded = true;
+        return; // private replay never changes game target history, AO or debug captures
     }
     for (int i = 0; i < 8; i++)
         if (colors[i] && regs[mmCB_COLOR0_BASE + i]) g_target_drawn[regs[mmCB_COLOR0_BASE + i]].drawn(R.frame);
@@ -2557,6 +2794,28 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         draw(regs, prim, count, indexType, indexAddr, baseVertex, instances);
         g_hires_redraw = false;
     }
+    if (captureDraw) {
+        ++backdropFinished;
+        const unsigned coverage = capture_coverage(regs);
+        backdrop_trace("draw",(uint64_t(mask)<<32)|coverage,
+            (uint64_t(regs[REGADDR::DB_DEPTH_CONTROL])<<32)|regs[REGADDR::CB_TARGET_MASK],
+            colors[0]?metal_backdrop_source_key(colors[0]->tex):0);
+        backdrop_trace("blend",regs[REGADDR::CB_COLOR_CONTROL],regs[REGADDR::CB_BLEND0_CONTROL],
+            (uint64_t(colorSlices[0])<<32)|uint32_t(cloud_proto::g_active_seq));
+        if (!colors[0] || mask != 1 || colorSlices[0] || cloud_proto::g_active_seq || !coverage ||
+            !prepare_backdrop(colors[0], coverage)) backdropFailed = true;
+        if (!backdropFailed) {
+            backdropReplay = true; backdropEncoded = false;
+            backdropBindings = &*capturedBindings;
+            draw(regs, prim, count, indexType, indexAddr, baseVertex, instances);
+            backdropBindings = nullptr; backdropReplay = false;
+            backdrop_trace("replay",backdropEncoded,backdropFailed);
+            if (!backdropEncoded) backdropFailed = true;
+            // Replayed bindings/RTs never leak into the next ordinary draw.
+            end_encoder();
+        }
+    }
+
 }
 
 // ---------------------------------------------------------------- shader head start hooks (shader_headstart.mm)

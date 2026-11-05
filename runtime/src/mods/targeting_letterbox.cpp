@@ -14,7 +14,13 @@ extern "C" void f_02515280_orig(Cpu*);
 extern "C" void f_024FBF9C_orig(Cpu*);
 
 namespace {
-std::atomic<bool> enabled{[]{const char* e = std::getenv("WWHD_TARGET_LETTERBOX"); return !e || std::atoi(e) != 0;}()};
+std::atomic<int> mode{[]{
+    if (const char* e = std::getenv("WWHD_TARGET_LETTERBOX_MODE")) {
+        if (e[0] >= '0' && e[0] <= '2' && e[1] == 0) return int(e[0] - '0');
+    }
+    const char* e = std::getenv("WWHD_TARGET_LETTERBOX");
+    return e && std::atoi(e) == 0 ? 1 : 0; // Preserve the original boolean override.
+}()};
 uint32_t normal_camera = 0;
 uint64_t normal_step = ~0ull;
 mods::targeting_letterbox::Context context(uint32_t camera) {
@@ -35,12 +41,19 @@ mods::targeting_letterbox::Context context(uint32_t camera) {
             ld32(play + 0x52E4) != 0 || (ld32(camera + 0x510) & 0x20000000u) != 0,
             ld8(play + 0x5CEA) != 0,
             selected,
-            normal_camera == camera && normal_step == mods::step()};
+            normal_camera == camera && normal_step == mods::step(),
+            target == 0 && (ld32(attention + 0x20) & 0x20000000u) != 0};
 }
 }
 namespace mods {
-bool letterbox_while_targeting() { return enabled.load(std::memory_order_relaxed); }
-void set_letterbox_while_targeting(bool on) { enabled.store(on, std::memory_order_relaxed); }
+int targeting_letterbox_mode() { return mode.load(std::memory_order_relaxed); }
+void set_targeting_letterbox_mode(int value) {
+    if (value >= 0 && value <= 2) mode.store(value, std::memory_order_relaxed);
+}
+bool letterbox_while_targeting() { return targeting_letterbox_mode() == targeting_letterbox::On; }
+void set_letterbox_while_targeting(bool on) {
+    set_targeting_letterbox_mode(on ? targeting_letterbox::On : targeting_letterbox::OffWithEnemies);
+}
 }
 using namespace mods;
 namespace {
@@ -114,7 +127,8 @@ extern "C" void site_024FF4E4(Cpu* c) { event_trim(c); }
 // Immediately before the shared table-result store. The native force/player gates
 // have already passed. Mode 2 is native lock-on; mode 1 is attention without a target.
 extern "C" void site_024FC080(Cpu* c) {
-    if (c->r[3] == 1 && ld32(c->r[31] + 0x13C) == 2) {
+    const uint32_t camera_mode = ld32(c->r[31] + 0x13C);
+    if (c->r[3] == 1 && (camera_mode == 1 || camera_mode == 2)) {
         normal_camera = c->r[31];
         normal_step = step();
     }
@@ -123,11 +137,11 @@ extern "C" void site_024FC080(Cpu* c) {
 extern "C" void site_024FF980(Cpu* c) {
     const uint32_t camera = c->r[31];
     const auto state = context(camera);
-    if (targeting_letterbox::suppress(letterbox_while_targeting(), state)) {
+    if (targeting_letterbox::suppress(targeting_letterbox_mode(), state)) {
         c->f[11].ps0 = c->f[11].ps1 = 0.0;
     }
     if (trace_on()) trace("trim vista: camera %08X mode %u event %u scripted %u target %u normal %u suppressed %u height %.6f",
         camera, state.mode, state.event, state.scripted, state.target, state.normal_write,
-        targeting_letterbox::suppress(letterbox_while_targeting(), state), ldf32(camera + 0x5FC));
+        targeting_letterbox::suppress(targeting_letterbox_mode(), state), ldf32(camera + 0x5FC));
     normal_camera = 0;
 }

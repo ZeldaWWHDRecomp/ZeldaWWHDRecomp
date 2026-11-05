@@ -2,6 +2,7 @@
 #include "../../exception_report.h"
 #include "android_driver.h"
 #include "backend.h"
+#include "turnip_debug.h"
 #include "platform/quest_theater.h"
 #include "runtime.h"
 #include <SDL3/SDL_system.h>
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <mutex>
 #include <atomic>
+#include <fstream>
 
 namespace gfxvk::drivers {
 namespace {
@@ -38,6 +40,22 @@ std::string hook_directory() {
     auto info=env->CallObjectMethod(activity,method);auto ic=env->GetObjectClass(info);
     auto field=env->GetFieldID(ic,"nativeLibraryDir","Ljava/lang/String;");auto value=static_cast<jstring>(env->GetObjectField(info,field));
     auto result=jstring_text(env,value);env->DeleteLocalRef(value);env->DeleteLocalRef(ic);env->DeleteLocalRef(info);env->DeleteLocalRef(cls);env->DeleteLocalRef(activity);return result;
+}
+// the kernel's name of the GPU ("Adreno650v2"), "" if unreadable; WWHD_TEST_GPU_MODEL stands for it (tests)
+std::string gpu_model() {
+    if(const char* test=getenv("WWHD_TEST_GPU_MODEL"))return test;
+    std::ifstream in("/sys/class/kgsl/kgsl-3d0/gpu_model");std::string model;std::getline(in,model);
+    while(!model.empty()&&std::isspace((unsigned char)model.back()))model.pop_back();
+    return model;
+}
+// Turnip's settings for this GPU (turnip_debug.h), set before the driver library is loaded
+void turnip_settings(const Driver& driver) {
+    if(!is_turnip(driver.library,driver.vendor,driver.name))return;
+    const std::string gpu=gpu_model();const char* user=getenv("TU_DEBUG");
+    const std::string debug=tu_debug_for(gpu,true,user!=nullptr);
+    if(!debug.empty())setenv("TU_DEBUG",debug.c_str(),0);
+    LOG("[vulkan driver] Turnip on %s: TU_DEBUG=%s%s",gpu.empty()?"an unknown GPU":gpu.c_str(),
+        user?user:debug.c_str(),user?" (set by the player)":"");
 }
 Store& storage() {
     if(!store) {
@@ -97,6 +115,7 @@ PFN_vkGetInstanceProcAddr open_custom() {
         auto list=s.list();auto item=std::find_if(list.begin(),list.end(),[&](const auto& d){return d.id==s.selected();});
         if(item==list.end()||item->min_api>android_get_device_api_level())exception_report::raise("Selected driver is unavailable or requires a newer Android version");
         auto hooks=hook_directory();auto dir=item->directory.string()+"/";
+        turnip_settings(*item);
 #if WWHD_ADRENOTOOLS
         driver_handle=adrenotools_open_libvulkan(RTLD_NOW|RTLD_LOCAL,ADRENOTOOLS_DRIVER_CUSTOM,nullptr,hooks.c_str(),dir.c_str(),item->library.c_str(),nullptr,nullptr);
 #else

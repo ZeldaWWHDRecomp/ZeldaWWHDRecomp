@@ -287,6 +287,7 @@ set_source_files_properties(runtime/src/gfx/vulkan/pass_cache.cpp PROPERTIES COM
 set_source_files_properties(runtime/src/gfx/vulkan/pipeline_demand.cpp PROPERTIES COMPILE_OPTIONS "")
 set_source_files_properties(runtime/src/gfx/vulkan/shader_translation.cpp
     runtime/src/gfx/vulkan/shader_compiler.cpp
+    runtime/src/gfx/vulkan/compile_journal.cpp
     runtime/src/gfx/vulkan/deferred_commands.cpp
     runtime/src/gfx/vulkan/pod_commands.cpp
     runtime/src/gfx/vulkan/record_worker.cpp
@@ -517,13 +518,13 @@ target_link_libraries(guest_png_test PRIVATE ZLIB::ZLIB)
 add_test(NAME guest_png COMMAND guest_png_test "${CMAKE_SOURCE_DIR}/examples/guest-mods")
 
 # Synthetic integration tests call the real guest filesystem HLE handlers.
-add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_content_fs_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_content_fs_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_content_fs_test PRIVATE ZLIB::ZLIB Threads::Threads)
 
 # language sources: synthetic European/Japanese packs read through the guest file system (game_languages.h)
-add_executable(language_source_test runtime/tools/language_source_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
+add_executable(language_source_test runtime/tools/language_source_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(language_source_test PRIVATE runtime/src runtime/include)
 target_compile_options(language_source_test PRIVATE -UNDEBUG)
 target_link_libraries(language_source_test PRIVATE ZLIB::ZLIB Threads::Threads)
@@ -607,6 +608,10 @@ target_include_directories(sampler_lod_bias_test PRIVATE runtime/src)
 target_link_libraries(sampler_lod_bias_test PRIVATE cemu_latte)
 target_compile_options(sampler_lod_bias_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
 add_test(NAME sampler_lod_bias COMMAND sampler_lod_bias_test)
+
+add_executable(gamepad_backdrop_test runtime/tools/gamepad_backdrop_test.cpp)
+target_compile_options(gamepad_backdrop_test PRIVATE -UNDEBUG)
+add_test(NAME gamepad_backdrop COMMAND gamepad_backdrop_test)
 
 add_executable(depth_peek_test runtime/tools/depth_peek_test.cpp)
 target_include_directories(depth_peek_test PRIVATE runtime/src)
@@ -701,6 +706,32 @@ target_include_directories(link_poses_test PRIVATE runtime/include runtime/src r
 target_compile_options(link_poses_test PRIVATE -UNDEBUG)
 target_link_libraries(link_poses_test PRIVATE ZLIB::ZLIB)
 add_test(NAME link_poses COMMAND link_poses_test)
+# Game progress (runtime/src/mods/game_progress.h): the count of a save in ten parts, on byte images built in the
+# test; WWHD_PROGRESS_SAVES=<cking.sav,...> also prints the count of real Quest Logs
+add_executable(game_progress_test runtime/tools/game_progress_test.cpp)
+target_include_directories(game_progress_test PRIVATE runtime/src)
+target_compile_options(game_progress_test PRIVATE -UNDEBUG)
+add_test(NAME game_progress COMMAND game_progress_test)
+# the Game progress page (game_progress_page.h) and its names (game_progress_names.h)
+add_executable(game_progress_page_test runtime/tools/game_progress_page_test.cpp)
+target_include_directories(game_progress_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(game_progress_page_test PRIVATE -UNDEBUG)
+add_test(NAME game_progress_page COMMAND game_progress_page_test)
+# Achievements (achievements_goals.h, achievements_store.h): the goals, the record, the two-read rule, the pause;
+# WWHD_PROGRESS_SAVES=<cking.sav,...> prints the goals real Quest Logs meet
+add_executable(achievements_test runtime/tools/achievements_test.cpp)
+target_include_directories(achievements_test PRIVATE runtime/src runtime/src/mods)
+target_compile_options(achievements_test PRIVATE -UNDEBUG)
+add_test(NAME achievements COMMAND achievements_test)
+add_executable(achievements_page_test runtime/tools/achievements_page_test.cpp)
+target_include_directories(achievements_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(achievements_page_test PRIVATE -UNDEBUG)
+add_test(NAME achievements_page COMMAND achievements_page_test)
+# the sound archive reader (nw_sound_archive.h: the Achievements fanfare); WWHD_GAME_DIR reads the real one
+add_executable(nw_sound_archive_test runtime/tools/nw_sound_archive_test.cpp)
+target_include_directories(nw_sound_archive_test PRIVATE runtime/src)
+target_compile_options(nw_sound_archive_test PRIVATE -UNDEBUG)
+add_test(NAME nw_sound_archive COMMAND nw_sound_archive_test)
 # the world editor's live item icons (#270): spare frames, and the textures written into the game's archive
 add_executable(item_icons_live_test runtime/tools/item_icons_live_test.cpp runtime/src/mods/item_icons.cpp runtime/src/mods/item_icons_game.cpp
                runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c)
@@ -751,6 +782,14 @@ add_test(NAME interp_nodraw COMMAND interp_nodraw_test)
 add_executable(interp_camera_test runtime/tools/interp_camera_test.cpp)
 target_compile_options(interp_camera_test PRIVATE -UNDEBUG)
 add_test(NAME interp_camera COMMAND interp_camera_test)
+# 60 fps (generated): the generated camera and the warp's mapping (runtime/src/gfx/vulkan/reproj_camera.h)
+add_executable(reproj_camera_test runtime/tools/reproj_camera_test.cpp)
+target_compile_options(reproj_camera_test PRIVATE -UNDEBUG)
+add_test(NAME reproj_camera COMMAND reproj_camera_test)
+# 60 fps (generated): the HUD coverage variant of a pixel shader (runtime/src/gfx/vulkan/hud_coverage.h)
+add_executable(hud_coverage_test runtime/tools/hud_coverage_test.cpp)
+target_compile_options(hud_coverage_test PRIVATE -UNDEBUG)
+add_test(NAME hud_coverage COMMAND hud_coverage_test)
 # frame interpolation: grass/tree/flower animation slots of their own blend only for the same plant (runtime/src/interp_slots.h)
 add_executable(interp_slots_test runtime/tools/interp_slots_test.cpp)
 target_compile_options(interp_slots_test PRIVATE -UNDEBUG)
@@ -798,6 +837,12 @@ endif()
 # quick doors: extra logic steps against the game's process deletion (runtime/src/mods/turbo_steps.h)
 add_executable(turbo_steps_test runtime/tools/turbo_steps_test.cpp)
 target_compile_options(turbo_steps_test PRIVATE -UNDEBUG)
+add_executable(long_name_test runtime/tools/long_name_test.cpp)
+target_compile_options(long_name_test PRIVATE -UNDEBUG)
+add_executable(leaf_lift_test runtime/tools/leaf_lift_test.cpp)
+target_compile_options(leaf_lift_test PRIVATE -UNDEBUG)
+add_executable(msbt_waits_test runtime/tools/msbt_waits_test.cpp)
+target_compile_options(msbt_waits_test PRIVATE -UNDEBUG)
 add_executable(true60_steps_test runtime/tools/true60_steps_test.cpp)
 target_include_directories(true60_steps_test PRIVATE runtime/src)
 target_compile_options(true60_steps_test PRIVATE -UNDEBUG)
@@ -979,7 +1024,7 @@ if(WWHD_HAS_VULKAN)
   target_link_libraries(shader_translation_test PRIVATE Threads::Threads)
   add_test(NAME shader_translation_worker COMMAND shader_translation_test)
   add_executable(shader_binary_test runtime/tools/shader_binary_test.cpp
-      runtime/src/gfx/vulkan/shader_compiler.cpp)
+      runtime/src/gfx/vulkan/shader_compiler.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(shader_binary_test PRIVATE runtime/src)
   target_compile_options(shader_binary_test PRIVATE -UNDEBUG)
   target_link_libraries(shader_binary_test PRIVATE Threads::Threads
@@ -987,7 +1032,7 @@ if(WWHD_HAS_VULKAN)
   add_test(NAME shader_binary_shared_result COMMAND shader_binary_test)
   set_tests_properties(shader_binary_shared_result shader_translation_worker PROPERTIES TIMEOUT 30)
   add_executable(shader_compiler_test runtime/tools/shader_compiler_test.cpp
-      runtime/src/gfx/vulkan/shader_compiler.cpp)
+      runtime/src/gfx/vulkan/shader_compiler.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(shader_compiler_test PRIVATE runtime/src)
   target_compile_options(shader_compiler_test PRIVATE -UNDEBUG)
   target_link_libraries(shader_compiler_test PRIVATE Threads::Threads
@@ -996,7 +1041,7 @@ if(WWHD_HAS_VULKAN)
   set_tests_properties(shader_compiler_worker PROPERTIES TIMEOUT 30)
   # panvk depth clipping in shaders: the rewrite, and the normal-path fallback when a stage can't take it
   add_executable(clip_emulation_test runtime/tools/clip_emulation_test.cpp
-      runtime/src/gfx/vulkan/shader_compiler.cpp)
+      runtime/src/gfx/vulkan/shader_compiler.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(clip_emulation_test PRIVATE runtime/src)
   target_compile_options(clip_emulation_test PRIVATE -UNDEBUG)
   target_link_libraries(clip_emulation_test PRIVATE Threads::Threads
@@ -1005,7 +1050,7 @@ if(WWHD_HAS_VULKAN)
   set_tests_properties(clip_emulation PROPERTIES TIMEOUT 30)
   # SET_CUBEMAP_INDEX on a unit without a cube map: the translated GLSL declares the index (head-start records)
   add_executable(cubemap_index_shader_test runtime/tools/cubemap_index_shader_test.cpp
-      runtime/src/gfx/vulkan/shader_compiler.cpp)
+      runtime/src/gfx/vulkan/shader_compiler.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(cubemap_index_shader_test PRIVATE runtime/src)
   target_compile_options(cubemap_index_shader_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
   if(WWHD_HAS_METAL)
@@ -1441,6 +1486,9 @@ add_test(NAME interp_pacing COMMAND interp_pacing_test)
 add_test(NAME vsync_pacing COMMAND vsync_pacing_test)
 add_test(NAME fixed_seed COMMAND fixed_seed_test)
 add_test(NAME turbo_steps COMMAND turbo_steps_test)
+add_test(NAME long_name COMMAND long_name_test)
+add_test(NAME leaf_lift COMMAND leaf_lift_test)
+add_test(NAME msbt_waits COMMAND msbt_waits_test)
 add_test(NAME hidden_presentation COMMAND hidden_presentation_test)
 add_test(NAME quit_prompt COMMAND quit_prompt_test)
 add_test(NAME write_watch COMMAND write_watch_test)
@@ -1553,8 +1601,9 @@ add_executable(targeting_letterbox_test runtime/tools/targeting_letterbox_test.c
 target_include_directories(targeting_letterbox_test PRIVATE runtime/src runtime/include)
 target_compile_options(targeting_letterbox_test PRIVATE -UNDEBUG)
 add_test(NAME targeting_letterbox COMMAND targeting_letterbox_test)
-add_test(NAME targeting_letterbox_startup_off COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=0 $<TARGET_FILE:targeting_letterbox_test> 0)
-add_test(NAME targeting_letterbox_startup_on COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=1 $<TARGET_FILE:targeting_letterbox_test> 1)
+add_test(NAME targeting_letterbox_startup_off COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=0 $<TARGET_FILE:targeting_letterbox_test> 1)
+add_test(NAME targeting_letterbox_startup_on COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=1 $<TARGET_FILE:targeting_letterbox_test> 0)
+add_test(NAME targeting_letterbox_startup_always_off COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=1 WWHD_TARGET_LETTERBOX_MODE=2 $<TARGET_FILE:targeting_letterbox_test> 2)
 target_include_directories(lock_on_runtime_test PRIVATE runtime/src runtime/include)
 target_compile_options(lock_on_runtime_test PRIVATE -UNDEBUG)
 add_test(NAME lock_on_runtime COMMAND lock_on_runtime_test)
@@ -1669,6 +1718,10 @@ target_compile_options(crash_redact_test PRIVATE -UNDEBUG)
 add_test(NAME crash_redact COMMAND crash_redact_test)
 
 # Cheats must preserve sword ownership: it controls Medli/Makar story placement (#85).
+add_executable(shop_ship_test runtime/tools/shop_ship_test.cpp)
+target_include_directories(shop_ship_test PRIVATE runtime/src)
+target_compile_options(shop_ship_test PRIVATE -UNDEBUG)
+add_test(NAME shop_ship COMMAND shop_ship_test)
 add_executable(cheats_test runtime/tools/cheats_test.cpp runtime/src/mods/cheats.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(cheats_test PRIVATE runtime/src runtime/include)
 target_compile_options(cheats_test PRIVATE -UNDEBUG)
@@ -1941,30 +1994,30 @@ target_compile_options(guest_hooks_test PRIVATE -UNDEBUG)
 target_link_libraries(guest_hooks_test PRIVATE ZLIB::ZLIB ${CMAKE_DL_LIBS} Threads::Threads)
 add_test(NAME guest_hooks COMMAND guest_hooks_test)
 # letters from story mods: save record, text, services and postbox hooks on synthetic guest objects
-add_executable(story_mail_test runtime/tools/story_mail_test.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/guest_addr_identity.c)
+add_executable(story_mail_test runtime/tools/story_mail_test.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_mail_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_mail_test PRIVATE -UNDEBUG)
 add_test(NAME story_mail COMMAND story_mail_test)
 # mod charts: shared save record, services and sea chart menu hooks on synthetic guest objects
-add_executable(story_chart_test runtime/tools/story_chart_test.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/guest_addr_identity.c)
+add_executable(story_chart_test runtime/tools/story_chart_test.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_chart_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_chart_test PRIVATE -UNDEBUG)
 add_test(NAME story_chart COMMAND story_chart_test)
 # mod treasure charts (a): reserved save numbers, salvage points, spawn and registration on a synthetic registry
 add_executable(story_treasure_salvage_test runtime/tools/story_treasure_salvage_test.cpp runtime/src/mods/story_treasure_salvage.cpp
-               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/guest_addr_identity.c)
+               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_treasure_salvage_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_treasure_salvage_test PRIVATE -UNDEBUG)
 add_test(NAME story_treasure_salvage COMMAND story_treasure_salvage_test)
 # mod treasure charts, chart state: the salvage code's collect-map questions for reserved save numbers
 add_executable(story_treasure_state_test runtime/tools/story_treasure_state_test.cpp runtime/src/mods/story_treasure_state.cpp
-               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/guest_addr_identity.c)
+               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_treasure_state_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_treasure_state_test PRIVATE -UNDEBUG)
 add_test(NAME story_treasure_state COMMAND story_treasure_state_test)
 # the story notebook: quest list, save record, page navigation, services and item menu hooks
 add_executable(story_notebook_test runtime/tools/story_notebook_test.cpp runtime/src/mods/story_notebook.cpp runtime/src/mods/game_look.cpp
-               runtime/tools/story_notebook_layout_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp
+               runtime/tools/story_notebook_layout_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp
                runtime/src/mods/story_chart.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_item_buttons.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c
                ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_notebook_test PRIVATE runtime/include runtime/src runtime/src/mods)
@@ -1972,7 +2025,7 @@ target_compile_options(story_notebook_test PRIVATE -UNDEBUG)
 target_link_libraries(story_notebook_test PRIVATE ZLIB::ZLIB)
 add_test(NAME story_notebook COMMAND story_notebook_test)
 # mod items: save record, manifest items, registry, services, bag actions and the item table hooks
-add_executable(story_items_test runtime/tools/story_items_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
+add_executable(story_items_test runtime/tools/story_items_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_items_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_items_test PRIVATE -UNDEBUG)
 add_test(NAME story_items COMMAND story_items_test)
@@ -1980,14 +2033,14 @@ add_executable(story_prop_rewards_test runtime/tools/story_prop_rewards_test.cpp
 target_include_directories(story_prop_rewards_test PRIVATE runtime/src)
 target_compile_options(story_prop_rewards_test PRIVATE -UNDEBUG)
 add_test(NAME story_prop_rewards COMMAND story_prop_rewards_test)
-add_executable(story_prop_rewards_runtime_test runtime/tools/story_prop_rewards_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
+add_executable(story_prop_rewards_runtime_test runtime/tools/story_prop_rewards_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_prop_rewards_runtime_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_prop_rewards_runtime_test PRIVATE -UNDEBUG)
 target_compile_definitions(story_prop_rewards_runtime_test PRIVATE STORY_PROP_REWARDS_RUNTIME_TEST)
 add_test(NAME story_prop_rewards_runtime COMMAND story_prop_rewards_runtime_test)
 # mod items and the notebook on X/Y/R: the decisions, the menu assignment, the game's reads and the item use
 add_executable(story_item_buttons_test runtime/tools/story_item_buttons_test.cpp runtime/src/mods/story_item_buttons.cpp runtime/src/mods/story_notebook.cpp runtime/src/mods/game_look.cpp runtime/tools/story_notebook_layout_stub.cpp
-               runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_items.cpp
+               runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_items.cpp
                runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_item_buttons_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_item_buttons_test PRIVATE -UNDEBUG)
@@ -1995,7 +2048,7 @@ target_link_libraries(story_item_buttons_test PRIVATE ZLIB::ZLIB)
 add_test(NAME story_item_buttons COMMAND story_item_buttons_test)
 # mod treasure charts, the chest's item: game items, the mod item's stand-in and its get, on a synthetic save
 add_executable(story_treasure_chest_test runtime/tools/story_treasure_chest_test.cpp runtime/src/mods/story_treasure_chest.cpp
-               runtime/src/mods/story_items.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp
+               runtime/src/mods/story_items.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp
                runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_treasure_chest_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_treasure_chest_test PRIVATE -UNDEBUG)
@@ -2129,7 +2182,8 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(comparison_format_test SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_options(comparison_format_test PRIVATE -UNDEBUG)
   add_test(NAME comparison_format COMMAND comparison_format_test)
-  add_executable(serial_pipelines_test runtime/tools/serial_pipelines_test.cpp runtime/src/gfx/vulkan/loader.cpp)
+  add_executable(serial_pipelines_test runtime/tools/serial_pipelines_test.cpp runtime/src/gfx/vulkan/loader.cpp
+    runtime/src/gfx/vulkan/compile_journal.cpp)
   target_include_directories(serial_pipelines_test PRIVATE runtime/src runtime/third_party/fmt/include)
   target_include_directories(serial_pipelines_test SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_definitions(serial_pipelines_test PRIVATE VK_NO_PROTOTYPES)
@@ -2146,6 +2200,15 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(pass_reuse_test PRIVATE runtime/src)
   target_compile_options(pass_reuse_test PRIVATE -UNDEBUG)
   add_test(NAME pass_reuse COMMAND pass_reuse_test)
+  add_executable(turnip_debug_test runtime/tools/turnip_debug_test.cpp)
+  target_include_directories(turnip_debug_test PRIVATE runtime/src)
+  target_compile_options(turnip_debug_test PRIVATE -UNDEBUG)
+  add_test(NAME turnip_debug COMMAND turnip_debug_test)
+  add_executable(compile_journal_test runtime/tools/compile_journal_test.cpp runtime/src/gfx/vulkan/compile_journal.cpp)
+  target_include_directories(compile_journal_test PRIVATE runtime/src runtime/include runtime/third_party/fmt/include)
+  target_compile_options(compile_journal_test PRIVATE -UNDEBUG)
+  target_link_libraries(compile_journal_test PRIVATE Threads::Threads)
+  add_test(NAME compile_journal COMMAND compile_journal_test ${CMAKE_BINARY_DIR}/compile_journal_test.dir)
   # the BC compute shader on a real Vulkan device against the CPU decoder and the device's native BC
   # sampling; compiles the shader everywhere, skipped (77) without a Vulkan device
   if(NOT ANDROID)
@@ -2454,6 +2517,12 @@ endforeach()
 
 
 if(NOT ANDROID)
+  # Settings dialogs with a controller (overlay/popup.h, gamepad_nav.h): real ImGui frames, no window or SDL
+  add_executable(popup_pad_test runtime/tools/popup_pad_test.cpp)
+  target_include_directories(popup_pad_test PRIVATE runtime/src)
+  target_compile_options(popup_pad_test PRIVATE -UNDEBUG)
+  target_link_libraries(popup_pad_test PRIVATE imgui)
+  add_test(NAME popup_pad COMMAND popup_pad_test)
   find_package(SDL3 CONFIG QUIET)
   if(SDL3_FOUND)
     add_executable(mod_restart_ui_test runtime/tools/mod_restart_ui_test.cpp runtime/third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp)
@@ -4083,3 +4152,51 @@ add_executable(map_hud_native_test runtime/tools/map_hud_native_test.cpp runtime
 target_include_directories(map_hud_native_test PRIVATE runtime/include runtime/src)
 target_compile_options(map_hud_native_test PRIVATE -UNDEBUG)
 add_test(NAME map_hud_native COMMAND map_hud_native_test)
+
+add_executable(gamepad_backdrop_options_test runtime/tools/gamepad_backdrop_options_test.cpp)
+target_include_directories(gamepad_backdrop_options_test PRIVATE runtime/src runtime/include)
+target_compile_options(gamepad_backdrop_options_test PRIVATE -UNDEBUG)
+add_test(NAME gamepad_backdrop_options COMMAND gamepad_backdrop_options_test)
+if(APPLE)
+  add_executable(metal_gamepad_backdrop_test
+    runtime/tools/metal_gamepad_backdrop_test.mm
+    runtime/src/gfx/metal_gamepad_backdrop.mm)
+  target_compile_options(metal_gamepad_backdrop_test PRIVATE -fobjc-arc -UNDEBUG)
+  target_include_directories(metal_gamepad_backdrop_test PRIVATE runtime/third_party/fmt/include)
+  target_link_libraries(metal_gamepad_backdrop_test PRIVATE "-framework Metal" "-framework Foundation")
+  add_test(NAME metal_gamepad_backdrop COMMAND metal_gamepad_backdrop_test)
+  add_executable(metal_backdrop_pending_test runtime/tools/metal_backdrop_pending_test.mm)
+  target_compile_options(metal_backdrop_pending_test PRIVATE -fobjc-arc -UNDEBUG)
+  target_link_libraries(metal_backdrop_pending_test PRIVATE "-framework Metal" "-framework Foundation")
+  add_test(NAME metal_backdrop_pending COMMAND metal_backdrop_pending_test)
+  set_tests_properties(metal_gamepad_backdrop PROPERTIES SKIP_RETURN_CODE 77)
+endif()
+if(Python3_Interpreter_FOUND)
+  add_test(NAME vulkan_gamepad_backdrop_policy
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/vulkan_gamepad_backdrop_test.py")
+endif()
+add_executable(mod_build_constraint_test runtime/tools/mod_build_constraint_test.cpp)
+target_include_directories(mod_build_constraint_test PRIVATE runtime/src runtime/include)
+target_compile_options(mod_build_constraint_test PRIVATE -UNDEBUG)
+add_test(NAME mod_build_constraint COMMAND mod_build_constraint_test)
+# Declarative guest save ownership: native filesystem/cloud and state guards.
+add_executable(save_profile_test runtime/tools/save_profile_test.cpp)
+target_include_directories(save_profile_test PRIVATE runtime/src runtime/include)
+target_compile_options(save_profile_test PRIVATE -UNDEBUG)
+target_link_libraries(save_profile_test PRIVATE Threads::Threads)
+add_test(NAME save_profile COMMAND save_profile_test)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME save_namespace_startup_order COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/runtime/tools/test_save_namespace_startup.py)
+endif()
+
+foreach(mode success malformed conflict disabled untrusted code-off unsupported native-failure compiler-failure graphics-failure changed ordinary-conflict session)
+  add_test(NAME save_profile_startup_${mode} COMMAND mod_package_test --save-profile-startup ${mode} $<TARGET_FILE:mod_fixture>)
+endforeach()
+
+
+foreach(mode format damaged shape size)
+  add_test(NAME mod_profile_read_failure_${mode} COMMAND mod_package_test --profile-read-failure ${mode})
+endforeach()
+
+add_test(NAME mod_game_build_constraint COMMAND mod_package_test --game-build-constraint)

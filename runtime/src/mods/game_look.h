@@ -80,6 +80,8 @@ struct Look {
     float font_scale = 1.05f, atlas_scale = 0.62f;
     // pixels per page unit a box is composed at (default: the game's art at 75 %)
     std::function<float(const std::string& name)> box_resolution;
+    // other pictures by name (a page's own images, e.g. "gs:sheet:..."): their handle in the store, 0 to leave them out
+    std::function<Handle(const std::string& name)> picture_handle;
 
     Look(std::string owner_, std::string tag_) : owner(std::move(owner_)), tag(std::move(tag_)) {}
     bool font_ready() const { return main.ready(); }

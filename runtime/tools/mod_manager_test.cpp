@@ -1,4 +1,5 @@
 // Standalone host-side tests; no game files, player settings or guest code needed.
+#include "mods/achievements_host.h"
 #include "mods/manager.h"
 #include "mods/mods.h"
 #include "mods/climb.h"
@@ -23,9 +24,11 @@ void env(const char* key, const char* value) {
 }
 }
 namespace mods {
-static bool target_letterbox = true;
-bool letterbox_while_targeting() { return target_letterbox; }
-void set_letterbox_while_targeting(bool on) { target_letterbox = on; }
+static int target_letterbox = 0;
+int targeting_letterbox_mode() { return target_letterbox; }
+void set_targeting_letterbox_mode(int value) { if (value >= 0 && value <= 2) target_letterbox = value; }
+bool letterbox_while_targeting() { return target_letterbox == 0; }
+void set_letterbox_while_targeting(bool on) { target_letterbox = on ? 0 : 1; }
 static bool ff_on = false, ff_mute = true;
 static unsigned ff_rate = 2;
 static uint32_t ff_button = 0x40;
@@ -68,13 +71,32 @@ bool mouse_camera() { return state[1]; } void set_mouse_camera(bool b) { state[1
 bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool b) { state[2]=b; }
 bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
 bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
+static int door_mode_v = 0; static bool doors_by_a = false;
+DoorMode door_mode() { return DoorMode(door_mode_v); } void set_door_mode(DoorMode m) { door_mode_v = int(m); }
+bool walk_doors_by_a() { return doors_by_a; } void set_walk_doors_by_a(bool b) { doors_by_a = b; }
 bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=b; }
+static bool instant = false, no_pauses = false;
+bool instant_text() { return instant; } void set_instant_text(bool b) { instant=b; }
+bool no_text_pauses() { return no_pauses; } void set_no_text_pauses(bool b) { no_pauses=b; }
 bool quick_use() { return state[6]; } void set_quick_use(bool b) { state[6]=b; }
 static float quick_speed = 1.f;
 float quick_use_speed() { return quick_speed; }
 void set_quick_use_speed(float f) { if (f == 1.f || f == 1.25f || f == 1.5f) quick_speed = f; }
 void set_camera_speed(float f) { speed=f; }
 void set_mouse_sensitivity(float f) { sensitivity=f; }
+}
+// the built-in Achievements (mods/achievements.cpp)
+namespace achievements {
+static bool ach_on = false;
+static Settings ach_settings;
+bool enabled() { return ach_on; } void set_enabled(bool b) { ach_on = b; }
+Settings settings() { return ach_settings; } void set_settings(const Settings& s) { ach_settings = s; }
+}
+// the built-in Game progress (mods/game_progress.cpp)
+namespace game_progress {
+static bool gp_on = false, gp_screen = false;
+bool enabled() { return gp_on; } void set_enabled(bool b) { gp_on = b; }
+bool on_screen() { return gp_screen; } void set_on_screen(bool b) { gp_screen = b; }
 }
 namespace hostui {
 bool get(const char* k, std::string& value) {
@@ -85,7 +107,12 @@ bool get(const char* k, std::string& value) {
 void set(const char* k, const std::string& value) { ++writes;preferences[k]=value; }
 }
 static std::map<std::string,double> remembered;
+static bool builtin_change_permitted = true;
 namespace mods::packages {
+bool builtin_change_allowed(const std::string&,bool,std::string& error) {
+    if (builtin_change_permitted) return true;
+    error = "Restart before changing a save-profile dependency"; return false;
+}
 void remember_builtin(const std::string&,bool) {}
 void remember_option(const std::string& id,double value) { remembered[id]=value; }
 void remember_option(const std::string&,const std::string&) {}
@@ -96,8 +123,26 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==20);  // with camera-directed-items (#203) and quick-use (#196)
+    assert(entries().size()==25);  // with camera-directed-items (#203), quick-use (#196), leaf-rise, instant-text, no-text-pauses, game-progress and achievements
+    assert(find("leaf-rise") && !find("leaf-rise")->default_enabled);
+    assert(find("instant-text") && !find("instant-text")->default_enabled && find("no-text-pauses"));
     assert(find("camera-directed-items") && find("quick-use"));
+    // Game progress: off by default, its switch and its on-screen option saved like the others'
+    env("WWHD_MOD_PROGRESS_ON_SCREEN",nullptr);
+    assert(find("game-progress") && std::string(find("game-progress")->category)=="Game" && !find("game-progress")->default_enabled);
+    assert(!game_progress::enabled() && !game_progress::on_screen());
+    preferences["mod.game-progress.on-screen"]="1"; preferences["mod.game-progress.enabled"]="1";
+    load_saved(); assert(game_progress::on_screen() && game_progress::enabled());
+    assert(set_enabled("game-progress",false) && !game_progress::enabled() && preferences["mod.game-progress.enabled"]=="0");
+    preferences.erase("mod.game-progress.on-screen"); preferences.erase("mod.game-progress.enabled"); game_progress::set_on_screen(false);
+    // Achievements: off by default; its options read from the settings (the pop-up's volume within 0..1)
+    assert(find("achievements") && std::string(find("achievements")->category)=="Game" && !find("achievements")->default_enabled);
+    preferences["mod.achievements.volume"]="0.25"; preferences["mod.achievements.with-cheats"]="1"; preferences["mod.achievements.link"]="0";
+    load_saved();
+    assert(achievements::settings().volume==0.25f && achievements::settings().with_cheats && !achievements::settings().link && achievements::settings().popup);
+    preferences["mod.achievements.volume"]="7"; load_saved(); assert(achievements::settings().volume==0.25f);  // (out of range: kept)
+    for (const char* k : {"mod.achievements.volume","mod.achievements.with-cheats","mod.achievements.link"}) preferences.erase(k);
+    achievements::set_settings({});
     for(const auto& option:traversal_options()) env(option.startup_env,nullptr);
     env("WWHD_MOD_LOCK_ON_RANGE",nullptr);env("WWHD_MOD_LOCK_ON_CYCLING",nullptr);
     assert(find("target-letterbox") && find("target-letterbox")->default_enabled);
@@ -111,6 +156,18 @@ int main() {
     load_saved(); assert(!mods::letterbox_while_targeting());
     env("WWHD_TARGET_LETTERBOX", nullptr);
     load_saved(); assert(mods::letterbox_while_targeting());
+    // Old false means enemy-only; the new choice survives preference reloads.
+    preferences["mod.target-letterbox.enabled"] = "0";
+    preferences["mod.target-letterbox.mode"] = "2";
+    load_saved(); assert(mods::targeting_letterbox_mode() == 2);
+    preferences["mod.target-letterbox.enabled"] = "1";
+    load_saved(); assert(mods::targeting_letterbox_mode() == 0);
+    env("WWHD_TARGET_LETTERBOX_MODE", "2");
+    mods::set_targeting_letterbox_mode(2);
+    load_saved(); assert(mods::targeting_letterbox_mode() == 2);
+    env("WWHD_TARGET_LETTERBOX_MODE", nullptr);
+    preferences.erase("mod.target-letterbox.mode");
+    load_saved(); assert(mods::targeting_letterbox_mode() == 0);
     assert(find("lock-on") && std::string(find("lock-on")->name)=="Extended enemy lock-on");
     assert(std::string(find("lock-on")->category)=="Gameplay");
     assert(!mods::extended_lock_on() && mods::lock_on_range()==1.f && mods::lock_on_cycling());
@@ -125,6 +182,19 @@ int main() {
     disable_all(); assert(!mods::camera_directed_items());
     load_saved(); for(bool on:state) assert(!on); // stock defaults stay off
     assert(!mods::ladder_speed() && !mods::sidle_speed() && !mods::sail_speed() && !mods::auto_wind());
+    // Quick doors' mode (Faster by default, Walk through) and walk-through doors opening with A (off by default)
+    env("WWHD_MOD_DOOR_MODE",nullptr);env("WWHD_MOD_WALK_DOORS_A",nullptr);
+    assert(mods::door_mode()==mods::kDoorFaster && !mods::walk_doors_by_a());
+    preferences["mod.quick-doors.mode"]="walk";preferences["mod.quick-doors.by-a"]="1";
+    load_saved();assert(mods::door_mode()==mods::kDoorWalk && mods::walk_doors_by_a());
+    preferences["mod.quick-doors.mode"]="sideways";preferences["mod.quick-doors.by-a"]="yes";
+    load_saved();assert(mods::door_mode()==mods::kDoorWalk && mods::walk_doors_by_a());  // invalid values: unchanged
+    preferences["mod.quick-doors.mode"]="faster";preferences["mod.quick-doors.by-a"]="0";
+    env("WWHD_MOD_DOOR_MODE","walk");env("WWHD_MOD_WALK_DOORS_A","1");
+    load_saved();assert(mods::door_mode()==mods::kDoorWalk && mods::walk_doors_by_a());  // the start-up switches win
+    env("WWHD_MOD_DOOR_MODE",nullptr);env("WWHD_MOD_WALK_DOORS_A",nullptr);
+    load_saved();assert(mods::door_mode()==mods::kDoorFaster && !mods::walk_doors_by_a());
+    preferences.erase("mod.quick-doors.mode");preferences.erase("mod.quick-doors.by-a");
     env("WWHD_MOD_QUICK_USE_SPEED",nullptr);
     assert(mods::quick_use_speed()==1.f);
     load_saved();assert(mods::quick_use_speed()==1.f);
@@ -270,4 +340,13 @@ int main() {
     env("WWHD_NO_HOST_INPUT","1");prior=reads;load_saved();assert(reads==prior);
     prior=writes;assert(set_enabled("quick-doors",true));assert(state[4]);assert(writes==prior);
     assert(set_enabled("quick-use",true)&&mods::quick_use());assert(writes==prior);
+    // A frozen profile dependency is refused before live settings or preferences change.
+    env("WWHD_NO_HOST_INPUT", nullptr);
+    const bool before_guard = find("direct-camera")->enabled();
+    const int writes_before_guard = writes;
+    builtin_change_permitted = false;
+    assert(!set_enabled("direct-camera", !before_guard));
+    assert(find("direct-camera")->enabled() == before_guard);
+    assert(writes == writes_before_guard);
+
 }

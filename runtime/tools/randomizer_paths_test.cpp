@@ -24,4 +24,16 @@ int main() {
     assert(randomizer_paths::backups("data/save", "") == "data/save-backups");
     assert(!randomizer_paths::seed_name("randomizer-"));
     assert(!randomizer_paths::seed_name(seed + "b"));
+    // setup's Play button, launchers and shortcuts pass the install's own save folder: still a seed of its own
+    for (const char* launcher : {"save", "save/", "/data/save", "/data/save/", "C:/Games/WWHD/data/save"}) {
+        assert(!randomizer::explicit_save_folder(true, launcher));
+        const fs::path seed_save = randomizer::save_directory(launcher, randomizer::explicit_save_folder(true, launcher));
+        assert(seed_save.filename() == "save-" + seed);
+    }
+    assert(fs::path(randomizer::save_directory("/data/save", randomizer::explicit_save_folder(true, "/data/save"))) ==
+           fs::path("/data/save-" + seed));
+    // a folder the player names is used as it is; without --save there is nothing explicit
+    assert(randomizer::explicit_save_folder(true, "/cloud/wwhd"));
+    assert(randomizer::save_directory("/cloud/wwhd", randomizer::explicit_save_folder(true, "/cloud/wwhd")) == "/cloud/wwhd");
+    assert(!randomizer::explicit_save_folder(false, "/cloud/wwhd"));
 }

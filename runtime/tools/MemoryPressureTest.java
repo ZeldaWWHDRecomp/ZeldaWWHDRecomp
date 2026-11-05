@@ -29,6 +29,13 @@ public final class MemoryPressureTest {
         check(!s.allow(30001), "right after: no");
         MemoryPressurePolicy.Spacing negative = new MemoryPressurePolicy.Spacing();
         check(negative.allow(-5000), "any clock value for the first");
+        // headroom above the system's line, for save states and dynamic resolution
+        check(MemoryPressurePolicy.headroomMb(1024 * mib, 512 * mib) == 512, "512 MiB above the line");
+        check(MemoryPressurePolicy.headroomMb(400 * mib, 512 * mib) == 0, "below the line: 0");
+        check(MemoryPressurePolicy.headroomMb(0, 512 * mib) == -1, "no figure: unknown");
+        check(MemoryPressurePolicy.headroomMb(1024 * mib, -1) == -1, "no threshold: unknown");
+        check(MemoryPressurePolicy.headroomMb(Long.MAX_VALUE, 0) == Integer.MAX_VALUE, "huge: clamped");
+        check(MemoryPressurePolicy.mb(512 * mib) == 512 && MemoryPressurePolicy.mb(-1) == -1, "mb");
         System.out.println("memory pressure: ok");
     }
 }
