@@ -57,6 +57,7 @@ import zipfile
 import zlib
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from types import SimpleNamespace
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # Windows embeddable Python runs in isolated mode: it does not add the script
@@ -1799,13 +1800,28 @@ def gamecode_compile_flags(manifest):
     return debug_info_flags(manifest["gamecode_cflags"])
 
 
-def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress=None):
+def object_cache(tc, data_dir, flags, gen_dir):
+    """the compiled-object cache of this install (object_cache.py), or None when the compiler can't say its version"""
+    import object_cache as oc
+    try:
+        version = subprocess.run(tc.cc + ["--version"], env=tc.env, stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT).stdout.decode("utf-8", "replace")
+    except OSError:
+        return None
+    return oc.Cache(os.path.join(data_dir, "code-objects"), " ".join(tc.cc) + "\n" + version, flags,
+                    {fwd(gen_dir): "<gen>"})
+
+
+def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress=None, cache_dir=None):
+    """compiles the generated game code; with cache_dir (the install folder), objects whose preprocessed source,
+    flags and compiler are unchanged come from its code-objects cache instead (object_cache.py)"""
     os.makedirs(obj_dir, exist_ok=True)
     srcs = sorted(glob.glob(os.path.join(glob.escape(gen_dir), "code_*.c")))
     srcs += [os.path.join(gen_dir, f) for f in ("table.c", "imports.c")]
     srcs.sort(key=lambda s: -os.path.getsize(s))  # big files first: better use of the cores
     m = {"sdk": fwd(os.path.join(PKG, "sdk")), "gen": fwd(gen_dir)}
     flags = [sub(a, m) for a in gamecode_compile_flags(manifest)]
+    cache = object_cache(tc, cache_dir, flags, gen_dir) if cache_dir else None
     objs = []
     pr = Progress("compiling")
     total = len(srcs)
@@ -1817,9 +1833,15 @@ def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress
         if cancel:
             cancel()
         obj = os.path.join(obj_dir, os.path.basename(src) + ".o")
-        cmd = tc.cc + flags + ["-c", fwd(src), "-o", fwd(obj)]
-        p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        out = p.stdout.decode("utf-8", "replace")
+        key = cache.key(tc.cc, flags, fwd(src), tc.env) if cache else None
+        if key and cache.fetch(key, obj):
+            p, out = SimpleNamespace(returncode=0), ""
+        else:
+            cmd = tc.cc + flags + ["-c", fwd(src), "-o", fwd(obj)]
+            p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            out = p.stdout.decode("utf-8", "replace")
+            if p.returncode == 0 and key:
+                cache.store(key, obj)
         with lock:
             if p.returncode != 0:
                 failures.append((src, out))
@@ -1838,7 +1860,12 @@ def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress
     if failures:
         src, out = failures[0]
         raise SetupError("compiling %s failed:\n%s" % (os.path.basename(src), "\n".join(out.strip().splitlines()[-20:])))
-    pr.done("%d files" % total)
+    if cache:
+        cache.trim()
+        LOG.write("object cache: %d of %d files from the cache" % (cache.hits, total))
+        pr.done("%d files, %d unchanged from an earlier build" % (total, cache.hits))
+    else:
+        pr.done("%d files" % total)
     return sorted(objs)
 
 
@@ -2803,7 +2830,7 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     begin("compile")
     jobs = args.jobs or default_jobs()
     t0 = time.time()
-    objs = compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs)
+    objs = compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs, cache_dir=data_dir)
     say("  compiled in %d s" % (time.time() - t0))
 
     begin("app")

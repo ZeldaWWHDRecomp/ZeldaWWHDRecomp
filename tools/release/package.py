@@ -76,6 +76,7 @@ INSTALLER_FILES = [
     "tools/installer/setup.py",
     "tools/installer/code_mods.py",
     "tools/installer/randomizer_seeds.py",
+    "tools/installer/object_cache.py",
     "tools/installer/decomp_setup.py",
     "tools/installer/shader_prebuild.py",
     "tools/installer/model_sweep.py",

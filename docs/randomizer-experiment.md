@@ -22,7 +22,10 @@ What each run does:
 - Each seed keeps only the files the randomizer changed (about 500 MB), in
   `data/randomizer/seeds/<id>/`, together with its spoiler log.
 - The same compatibility check as below runs before anything is built, then that seed's game
-  code is built. Making a seed takes about 10 s; the build takes a few minutes.
+  code is built. Making a seed takes about 10 s. The first seed's build takes about as long as
+  the game's first build. Later seeds compile only the few source files that differ (about a
+  sixth of them); setup keeps compiled files in `data/code-objects` (up to 1 GB). On a Mac with
+  4 compile jobs that took 94 s for the first seed and 24 s for the next.
 - The game plays the seed from its next start. `--play-seed vanilla` switches back. A
   build that was made before is reused, so switching takes no new build.
 - Saves, backups and save states stay separate per seed.

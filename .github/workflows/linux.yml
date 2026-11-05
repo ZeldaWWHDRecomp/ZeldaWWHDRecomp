@@ -56,6 +56,7 @@ jobs:
           python3 tools/installer/test_setup.py
           python3 tools/installer/test_randomizer_setup.py
           python3 tools/installer/test_randomizer_seeds.py
+          python3 tools/installer/test_object_cache.py
           # Every translator test (synthetic inputs only, no game files); new test files run automatically.
           python3 -m unittest discover -s tools/recomp -p "test_*.py"
 
