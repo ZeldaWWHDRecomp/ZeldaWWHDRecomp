@@ -12,7 +12,8 @@ class GamepadNavigation {
     std::array<float, ImGuiKey_NamedKey_COUNT> trace_values_{};
     std::array<bool, ImGuiKey_NamedKey_COUNT> trace_valid_{};
     // inputs already held when the navigation became active: not a press until let go (a button held from
-    // the game or from before a dialog doesn't confirm anything)
+    // the game or from before a dialog doesn't confirm anything). When a press takes the navigation back from
+    // the mouse, only the buttons wait: a stick or d-pad direction moves or scrolls at once, as before.
     std::array<bool, input_map::kPadCount> held_over_{};
     bool was_active_ = false;
 public:
@@ -36,12 +37,14 @@ public:
         if (enabled)
             for (int p : navigation)
                 pressed |= values[p] > 0.5f && previous[p] <= 0.5f;
+        bool reclaimed = false;  // a press took the navigation back from the mouse this frame
         if (!wwhd_trace::handoff()) mouse_owned_ = false;
         else if (mouse_used) mouse_owned_ = true;
-        else if (pressed) mouse_owned_ = false;
+        else if (pressed && mouse_owned_) mouse_owned_ = false, reclaimed = true;
         const bool active = enabled && controller_active();
         if (active && !was_active_)
-            for (int p = 0; p < kPadCount; p++) held_over_[p] = values[p] > 0.5f;
+            for (int p = 0; p < kPadCount; p++)
+                held_over_[p] = values[p] > 0.5f && !(reclaimed && p >= kPadDUp && p <= kPadRSRight);
         was_active_ = active;
         // Suspend gamepad navigation while the mouse owns the menu, rather than only
         // clearing its highlight. This also blocks ImGui 1.92's direct LStick analog
