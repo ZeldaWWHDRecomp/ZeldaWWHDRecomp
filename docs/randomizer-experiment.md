@@ -51,6 +51,18 @@ cosmetic and data-only options. Older releases (1.1.1 and earlier) are not cover
 Windows and a full playthrough still need validation; passing the hook check is
 not a guarantee of complete gameplay compatibility.
 
+## Experimental source mod
+
+The separate [core-mod source project](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDMods/blob/codex/i117-randomizer-core/twwhd-randomizer-core/README.md)
+runs the unmodified game with a seed-specific guest mod. It is experimental,
+requires additional runtime support, and is not a catalogue download. Use the
+setup flow above for normal play.
+
+The two routes use separate save folders, backups and save states, even for the
+same seed. **Saves do not transfer between them.** Neither setup nor the mod
+builder migrates progress from the other route; keep each route's saves with
+its own installation.
+
 ## Maintainer audit of a new compatibility variant
 
 You need an original supported USA dump and a randomized `code/content/meta`
