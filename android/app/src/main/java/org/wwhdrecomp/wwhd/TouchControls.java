@@ -403,7 +403,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             final Bitmap jump = contextPack.linkPoses() ? pose(ContextAssets.JUMP_ACTION) : null;
             if (jump != null) { drawPose(canvas, jump, c.label, x, y, r, op); return; }
         }
-        final Bitmap posed = look == ContextPack.KIND_ACTION && contextPack.linkPoses() ? pose(contextPack.labelFor(k)) : null;
+        final Bitmap posed = look == ContextPack.KIND_ACTION && contextPack.linkPoses() ? pose(contextPack.labelFor(k), contextPack.variantFor(k)) : null;
         if (ContextAssets.showPose(contextPack.linkPoses(), look, posed != null)) {
             final String word = ContextPack.word(contextPack.labelFor(k), words);
             drawPose(canvas, posed, word != null ? word : "", x, y, r, op);
@@ -1219,14 +1219,18 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
 
     // Link's pose for an action code (P8), from the exported pose_HH.png; null: none (the word shows)
-    private Bitmap pose(int action) {
+    private Bitmap pose(int action) { return pose(action, 0); }
+    // ... with the thing of kind `variant` in his hands (pose_HH_KK.png; the plain pose when there is none)
+    private Bitmap pose(int action, int variant) {
         if (assetDir == null || assets.generation() <= 0) return null;
-        if (poses.containsKey(action)) return poses.get(action);
-        File f = new File(assetDir, ContextAssets.poseFile(action));
+        final int key = (variant & 0xFF) << 8 | (action & 0xFF);
+        if (poses.containsKey(key)) return poses.get(key);
+        File f = new File(assetDir, ContextAssets.poseFile(action, variant));
         Bitmap bm = null;
         try { if (f.isFile()) bm = BitmapFactory.decodeFile(f.getPath()); }
         catch (RuntimeException | OutOfMemoryError ignored) { /* the word shows */ }
-        poses.put(action, bm);
+        if (bm == null && variant != 0) bm = pose(action, 0);
+        poses.put(key, bm);
         return bm;
     }
 

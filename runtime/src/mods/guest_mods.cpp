@@ -19,6 +19,7 @@
 #include "story_native_canonical_code_id.h"
 #include "../exception_report.h"
 #include "guest_mods.h"
+#include "mods.h"
 #include "../guest_module_entry.h"
 #include "native_actor_profiles.h"
 #include "native_actor_profile_startup.h"
@@ -651,6 +652,18 @@ bool exchange_area(Loaded& mod) {
     if(!mod.scratch)mod.scratch=mod.heap->allocate(32);
     return mod.scratch!=0;
 }
+void svc_ship_normal_sail_wind(Cpu* c) {
+    mods::ship_normal_sail_wind(c, c->r[3]);
+}
+void svc_ship_sail_target(Cpu* c) {
+    c->f[1].ps0 = c->f[1].ps1 = mods::ship_sail_target((float)c->f[1].ps0);
+}
+void svc_item_action_dispatch(Cpu* c) {
+    mods::quick_use_item_action_dispatch(c, c->r[3], c->r[4]);
+}
+void svc_item_ready_trigger(Cpu* c) {
+    c->r[3] = mods::quick_use_ready_item_trigger(c, c->r[3], c->r[4]);
+}
 void svc_input_filter_register(Cpu* c) {
     auto& mod=owner(c);uint32_t fn=c->r[3];c->r[3]=0;
     if(fn&&(!own_function(mod,fn)||!exchange_area(mod))){LOG("[guestmod:%s] input filter refused: the callback must be the mod's own",mod.id.c_str());return;}
@@ -1115,7 +1128,7 @@ const std::unordered_map<std::string, PpcFunc> kServices = {
     {"wwhd_log", svc_log},       {"wwhd_log_int", svc_log_int}, {"wwhd_log_hex", svc_log_hex},
     {"wwhd_log_float", svc_log_float}, {"wwhd_config_int", svc_config_int},
     {"wwhd_config_bool",svc_config_bool},{"wwhd_config_changed",svc_config_changed},
-    {"wwhd_input_filter_register",svc_input_filter_register},{"wwhd_touch_register",svc_touch_register},{"wwhd_touch_claim",svc_touch_claim},{"wwhd_screen_point",svc_project},{"wwhd_mic_open",svc_mic_open},{"wwhd_mic_close",svc_mic_close},{"wwhd_mic_state",svc_mic_state},{"wwhd_mic_pitch",svc_mic_pitch},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
+    {"wwhd_ship_normal_sail_wind",svc_ship_normal_sail_wind},{"wwhd_ship_sail_target",svc_ship_sail_target},{"wwhd_item_action_dispatch",svc_item_action_dispatch},{"wwhd_item_ready_trigger",svc_item_ready_trigger},{"wwhd_input_filter_register",svc_input_filter_register},{"wwhd_touch_register",svc_touch_register},{"wwhd_touch_claim",svc_touch_claim},{"wwhd_screen_point",svc_project},{"wwhd_mic_open",svc_mic_open},{"wwhd_mic_close",svc_mic_close},{"wwhd_mic_state",svc_mic_state},{"wwhd_mic_pitch",svc_mic_pitch},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
     {"wwhd_malloc",svc_malloc},{"wwhd_free",svc_free},{"wwhd_input_read",svc_input},
     {"wwhd_file_read",svc_file_read},{"wwhd_file_write",svc_file_write},
     {"wwhd_hud_boat_compasses",svc_boat_compasses},{"wwhd_hud_boat_compasses_rect",svc_boat_compasses_rect},

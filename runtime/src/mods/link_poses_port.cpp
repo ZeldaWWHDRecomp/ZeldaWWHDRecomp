@@ -67,6 +67,30 @@ void note_open(const std::string& guest_path, const std::string& host_path) {
     g_pack3d = host_path;
 }
 
+bool render_now(const PoseSpec& pose, int size, Bytes& rgba, std::string& why) {
+    static std::mutex mu;
+    static std::shared_ptr<const Model> model;
+    static Bytes anim;
+    std::lock_guard<std::mutex> once(mu);
+    if (!model) {
+        std::string path;
+        {
+            std::lock_guard<std::mutex> lk(g_mu);
+            path = g_pack3d;
+        }
+        if (path.empty()) return why = "the game hasn't opened its 3D pack yet", false;
+        Bytes pack;
+        std::ifstream f(path, std::ios::binary);
+        if (!f) return why = path + " can't be read", false;
+        pack.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+        Bytes link;
+        if (!read_pack(pack, link, anim, why)) return false;
+        model = load(link, why);
+        if (!model) return false;
+    }
+    return render(*model, anim, pose, rgba, why, size);
+}
+
 int export_to(const std::string& dir, bool (*encode)(uint32_t w, uint32_t h, const uint8_t* rgba, Bytes& png)) {
     std::string path;
     {
@@ -83,28 +107,39 @@ int export_to(const std::string& dir, bool (*encode)(uint32_t w, uint32_t h, con
         }
         pack.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
     }
+    // szs_permanent0.pack next to it: the barrel, the push block and the boat drawn with him
+    Bytes pack0;
+    {
+        const std::filesystem::path p0 = std::filesystem::path(path).parent_path() / "szs_permanent0.pack";
+        std::ifstream f(p0, std::ios::binary);
+        if (f) pack0.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+    }
     Bytes link, anim;
     std::string why;
     std::shared_ptr<const Model> model;
-    if (read_pack(pack, link, anim, why)) model = load(link, why);
+    if (read_pack(pack, link, anim, why)) model = load(link, why, &pack, &pack0);
     if (!model) {
         LOG("[link-poses] Link's model not read (%s); the buttons keep their words", why.c_str());
         return -1;
     }
     pack.clear(), pack.shrink_to_fit();
+    pack0.clear(), pack0.shrink_to_fit();
     std::error_code ec;
     std::filesystem::create_directories(dir, ec);
     int written = 0;
-    for (const PoseSpec& p : kPoses) {
+    std::vector<PoseSpec> all(std::begin(kPoses), std::end(kPoses));
+    for (const PoseSpec& p : carry_poses()) all.push_back(p);  // Lift / Throw / Drop with each thing (pose_HH_KK.png)
+    for (const PoseSpec& p : all) {
         Bytes rgba, png;
         if (!render(*model, anim, p, rgba, why)) {
-            LOG("[link-poses] pose %02X (%s): %s", p.action, p.anim, why.c_str());
+            LOG("[link-poses] pose %02X/%02X (%s): %s", p.action, p.variant, p.anim, why.c_str());
             continue;
         }
-        if (encode(uint32_t(kIconSize), uint32_t(kIconSize), rgba.data(), png) && write_file(std::filesystem::path(dir) / file_for(p.action), png))
+        if (encode(uint32_t(kIconSize), uint32_t(kIconSize), rgba.data(), png) &&
+            write_file(std::filesystem::path(dir) / file_for(p.action, p.variant), png))
             written++;
     }
-    LOG("[link-poses] %d of %zu Link poses drawn into %s", written, sizeof kPoses / sizeof kPoses[0], dir.c_str());
+    LOG("[link-poses] %d of %zu Link poses drawn into %s", written, all.size(), dir.c_str());
     return written > 0 ? written : -1;
 }
 

@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -106,6 +108,9 @@ public:
         touch_ = false;
     }
     void hide() { open_ = false; }
+    void set_tab(int tab) { tab_ = tab, selected_ = 0, top_ = 0; }
+    // buttons held now act only after their release (a page opened from a row closed with them)
+    void hold_buttons() { held_ = ~0u; }
 
     // A / Left on the focused arrow turns the page. Reaching it is handled by EntryFocus,
     // after the game has received Left. Touch and swipes keep their existing behaviour.
@@ -400,6 +405,9 @@ private:
         chevron(out, cx + (left ? -2.0f : 2.0f), cy, r * 0.42f, !left, kWhite, r * 0.22f);
         for (size_t i = from; i < out.size(); i++) out[i].text = "gs:drawn";
     }
+
+public:
+    // the page's drawing pieces (also for the pages opened from a row: Detail below)
     static Command rect(float x, float y, float w, float h, uint32_t rgba) {
         Command c;
         c.kind = Command::Rect, c.x = x, c.y = y, c.w = w, c.h = h, c.rgba = rgba;
@@ -427,6 +435,25 @@ private:
         return c;
     }
 };
+
+// A page of its own opened from an Action row (Game progress, Achievements): it takes the page's place in the
+// same window until it closes (B), then the rows come back. Pure (input in, draw commands out), like Page.
+class Detail {
+public:
+    virtual ~Detail() = default;
+    // act.closed: back to the rows
+    virtual Action input(const Input& in) = 0;
+    virtual void tick(float dt) { (void)dt; }
+    // in page units; `measure` is the game's font when loaded
+    virtual std::vector<Command> draw(float (*measure)(const std::string&, float)) const = 0;
+};
+// A row's page: open_detail(id) from the row's set() (any thread) opens the page that make() builds at the
+// driver's next read (game thread). make() returns null when there is nothing to show (no file loaded).
+void register_detail(const std::string& id, std::function<std::unique_ptr<Detail>()> make);
+void open_detail(const std::string& id);
+// A picture sheet the pages draw parts of: a picture command whose text is "gs:sheet:<name>" with its UVs (any
+// thread; null removes it). The driver makes its image in the HUD store when it is first drawn.
+void set_sheet(const std::string& name, std::shared_ptr<const guestmods::hud::Image> image);
 
 // The driver (game_settings_page.cpp): pad() runs once per GamePad read (VPADRead, game thread, `c` the
 // reading thread for the game's fonts and sounds); mute() on the Pro Controller's reads

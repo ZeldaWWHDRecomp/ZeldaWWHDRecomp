@@ -7,6 +7,108 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: Turnip on Adreno 6xx GPUs runs without UBWC** (#420, from the Nycolazs and GreenNaugahyde Android forks,
+  thanks @Nycolazs and @GreenNaugahyde). With a custom Turnip driver, Adreno 6xx phones (seen on a Galaxy S20 FE)
+  could restart at the first frame above 1x resolution. On those GPUs Turnip now starts with its bandwidth
+  compression off (`TU_DEBUG=noubwc`), which also lets 1.5x run. Other GPUs and Qualcomm's own driver are unchanged,
+  and a `TU_DEBUG` you set yourself still wins.
+- **Fixed: leaving Beedle's Shop Ship could stop the game** (#416, from the Nycolazs and GreenNaugahyde Android forks,
+  thanks @Nycolazs and @GreenNaugahyde). When the game hadn't recorded which sea square the ship was in, leaving it
+  stopped the game with an error. The square is now taken from the ship's position on the sea chart.
+- **Fixed: the 3D picture could go black for some frames in a storm** (#417, from the Nycolazs and GreenNaugahyde Android
+  forks, thanks @Nycolazs and @GreenNaugahyde). Some GPUs (seen on an Adreno 650 and a Galaxy S20 FE) produced invalid
+  pixel values near lightning at night, which bloom and blur spread over the whole screen. Pixel colours are now kept
+  valid (`WWHD_NAN_GUARD=0` turns this off). **Shaders are compiled once more after this update.**
+- **Android: textures that haven't been used for a while are freed** (#423, from the GreenNaugahyde and Nycolazs Android
+  forks, thanks @GreenNaugahyde and @Nycolazs). On Android the texture budget is now on by default: textures not drawn
+  for about four minutes are released (after about ten seconds when memory is tight), so long sessions use less memory.
+  Desktop is unchanged; `WWHD_VK_TEXTURE_BUDGET=0` turns it off. Not yet measured on a phone.
+- **Fixed: a shader that crashes the GPU driver no longer stops the game from starting** (#418, from the GreenNaugahyde
+  Android fork, thanks @GreenNaugahyde). If compiling a shader or pipeline crashed the game (seen with Huawei's
+  Maleoon driver), it was compiled again at every start. Now the next start leaves that one out and logs it; it's
+  tried again after a driver, GPU or port update. (Linux, macOS and Android; Windows doesn't use this.)
+- **Android: BC textures decoded on the CPU on Huawei GPUs** (#419, from the GreenNaugahyde and Nycolazs Android forks,
+  thanks @GreenNaugahyde and @Nycolazs). Huawei's Maleoon driver crashed compiling the texture decoder shader, so those
+  GPUs now decode BC textures on the CPU (`WWHD_VK_BC_CPU=0` still tries the shader).
+- **Android: no save state when memory is about to run out** (#421, from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). With very little free memory, Android could close the game in the middle of a save state. Such a
+  save is now refused with "not saved (too little free memory, close other apps)"; automatic states skip quietly.
+- **Dynamic resolution also steps down when memory runs low** (#422, from the GreenNaugahyde and Nycolazs Android forks,
+  thanks @GreenNaugahyde and @Nycolazs). While dynamic resolution is on, low free memory now lowers the resolution
+  and it goes back up once memory recovers; on devices with less than 3.8 GB of RAM it starts at 1× at most.
+- **Quick doors: new "Walk through" mode** (#426, from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Quick
+  doors is now Off, Faster or Walk through. With Walk through, dungeon shutters and house doors open as Link walks up,
+  he walks through without the door scene and the door shuts behind him; going in or out of a house is quicker too.
+  Locked doors, boss doors and doors with bars keep their scene, sped up as with Faster. **Walk-through doors open with
+  A** makes them wait for A at the Open prompt. This adds one game-code hook, so the game code is rebuilt once after
+  the update.
+- **Save file names up to 16 characters** (#428, idea from the GreenNaugahyde Android fork, thanks @GreenNaugahyde).
+  Change Link's name now takes up to 16 characters. The game's texts use the whole name; the file select and the
+  original game show the first 8. The whole name is kept with the save itself (in the port's story data at the end of
+  `cking.sav`), so backups, the save folder, exports and randomizer seed saves carry it along; a save without it
+  shows the 8-character name.
+- **Instant text and No pauses in texts** (#411, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Two new switches under Settings › Game,
+  both off by default: message boxes show their whole text at once (each box still waits for A), and the short waits
+  written into some texts are left out.
+- **Deku Leaf: wave to rise** (#412, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). A new built-in option next to Jump anywhere, off by
+  default: while gliding, each wave of the Deku Leaf lifts Link a little, and holding the button keeps waving. The
+  height of one wave is 50–200 %; the glide still uses magic.
+- **Settings dialogs with a controller** (#413, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Dialogs open with their default button
+  selected (Cancel where the action can't be undone), the selection shows again when the controller takes over from the
+  mouse, the right stick scrolls long dialog text, and a button still held while the menu opens presses nothing.
+- **Android: Share log can include your save files** (#415, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). A new checkbox under Share log,
+  off at every start, adds a zip with your save file and Picto Box photos for bug reports. Every name in the save
+  becomes "Link" first, and the port's story data (which can hold your full name) is left out. Not yet tested on a
+  phone.
+- **New built-in mod: Achievements** (#410, goals, texts and points from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). Off by default (Mods › Built-in). 99 goals read from your save data, earned for good, for all save
+  games together and for each one; the record is kept in `achievements.json` in the port's config folder, never in the
+  save. When you earn one, Link turns round and holds it up with the game's item fanfare (its volume is an option),
+  drawn and played from your own game files. Cheats pause achievements while they're used (the page says which), unless
+  you turn on **Earn with cheats**; loading a save state never takes one back. Pages on the item menu's settings page
+  (Game tab) and in the Esc settings, with a reset behind a confirmation.
+- **New built-in mod: Game progress** (#409, idea, count and places from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde; chart numbers from TWWHD Randomizer). Off by default (Mods › Built-in). Shows how much of the game
+  your save file has found: a percent, a checklist in ten parts (dungeons, hearts, items, equipment, upgrades, songs,
+  pearls and Triforce, charts, the sea chart, the Nintendo Gallery) and a sea-chart map of where each thing is found.
+  It's on the item menu's settings page (Game tab) and in the Esc settings; an option shows the percent on screen. It
+  only reads your save: names and pictures come from your own game. Two places (Crescent Moon Island's sunken
+  treasure, Triforce Chart 2) are still to be checked in the game.
+- **Fixed: randomized games keep their own saves when started from setup** (#408, for #366). Setup's Play button, the
+  macOS app, the Linux launchers and the Windows shortcuts start the game with its own save folder, and the experimental
+  randomized-game support took that as a folder you had chosen: a randomized game then read and wrote your normal save
+  file instead of its own save folder. Now each randomized game always uses its own folder (a save folder you chose
+  yourself, for example a cloud folder, is still used as given). Only development builds since #366 were affected, and
+  only if you switched an existing install to a randomized game: its progress may have gone into your normal save file.
+  Your earlier normal saves may still be in the save backups (Settings › Mods › Save backups); the recovery steps are in
+  `docs/randomizer-experiment.md`. Save states were not affected.
+- **Touch controls: more button pictures, a boat item ring, and more taps** (#427, ideas and code from the
+  GreenNaugahyde Android fork, thanks @GreenNaugahyde). On the Flexible touch style, Grab, Lift, Throw, Drop, Let Go
+  (on the rope) and Cruise now show a small picture of Link doing the action, drawn on your device from your own game
+  files. On the boat, the item ring only shows items you can use there. Letters, stone tablets and signs move on with
+  a tap, like talks, and after a game over you can tap Continue or Quit. The Classic style now always shows every
+  button. Not yet checked on a phone; reports welcome.
+- **Targeting letterbox: On / Off with enemies / Always off** (#395, for #114, thanks @andreasbertram5-alt for the
+  request). The bars that appear while holding target can now be kept, hidden only when an enemy is targeted, or
+  hidden always, in the Mods page and the in-game settings. Always off also hides the bars of free targeting (holding
+  target with nothing targeted). Cutscene, event and minigame bars stay. Earlier on/off choices keep working as before.
+- **Picture scaling: Sharp is pixel perfect** (#414, idea and code from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). The Graphics settings, the macOS menu tooltip and `docs/vulkan.md` now say that **Sharp** shows
+  each rendered pixel as a crisp block, the same as the fork's "Pixel perfect" mode. Only the wording changed.
+- **Docs: randomized games** (#396). `docs/randomizer-experiment.md` explains that setup stays the way to play a
+  randomized game, links the experimental source-mod route, and notes that the two routes keep separate saves,
+  backups and states (no migration, even for the same seed).
+- **Tests: Vulkan BC self-test accepts NVIDIA's decoder** (#403, thanks @itsarahtonin). NVIDIA GPUs round BC4/BC5
+  slightly differently from Apple's, which made the self-test fail on them; the test now allows that difference and
+  still catches a wrong palette mode or selector.
+- **Tests: SDL input tests ignore real controllers** (#404, thanks @itsarahtonin). A plugged-in GameCube adapter could
+  make the input tests fail; they now only see the virtual pads they create.
+- **For mod authors: quick-use and traversal services** (#389). Source mods get four new guest services: triggering
+  the game's quick-use item actions and ready-item checks, and the normal boat sail-wind and target calculation. The
+  game's own helpers still carry out the actions, with their usual checks. Native actors that a C mod registers now
+  also run at the right rate with True 60.
+- **Editor: MCP access starts once the game is ready** (#386). With `--editor --mcp`, the MCP server now starts after
+  the game code is loaded and all mods are initialized, so an early request can no longer read unloaded game memory.
 - **Setup on Windows: compiler unpacking shows progress** (#394, for #388, thanks @Sherisherisherisheri for the report).
   Unpacking the compiler (about 10,000 files) now shows a "Unpacking the compiler … 4,200 of 10,412 files" line in the
   console and the setup window instead of sitting silent for minutes. If unpacking fails, setup now says why (most

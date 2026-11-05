@@ -130,7 +130,7 @@ uint64_t hash_bytes(const void* bytes, size_t size, uint64_t hash = 0x9E3779B97F
 // the text (shader_disk_cache.h). Translator changes produce different GLSL and
 // therefore a different key and identity.
 // Bump this compile recipe whenever compilation options/defaults change.
-constexpr char cacheRecipe[] = "WWVKSC02:glsl450:vk1.1:spv1.3:noopt:resources1:strictmul1:"
+constexpr char cacheRecipe[] = "WWVKSC02:glsl450:vk1.1:spv1.3:noopt:resources1:strictmul1:finite1:"
     GLSLANG_VERSION_FLAVOR;
 constexpr size_t maxCacheBytes = diskcache::kMaxBytes;
 constexpr size_t maxSourceBytes = diskcache::kMaxSourceBytes;
@@ -629,6 +629,10 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     // mail sorting game); Cemu's default too. WWHD_STRICT_MUL=0 turns it off for comparisons
     static const bool strictMul = !getenv("WWHD_STRICT_MUL") || strcmp(getenv("WWHD_STRICT_MUL"), "0");
     options.strictMul = strictMul;
+    // pixel colours without NaN / infinity (LatteDecompiler.h): the thunderstorm's flash at sea blacked out
+    // the 3D picture for a few frames. WWHD_NAN_GUARD=0: as the shader computes them
+    static const bool nanGuard = !getenv("WWHD_NAN_GUARD") || strcmp(getenv("WWHD_NAN_GUARD"), "0");
+    options.finiteColorOutputs = nanGuard;
     uint64_t packBase=0;
     if(mods::cemu::has_shaders()) {
         packBase=cemu_pack_hash::base(program,size,regs,vertex,fetch);
