@@ -55,8 +55,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "perf_metrics.h"
 #include "runtime.h"
 #include "savestate.h"
-#include "true60.h"
-#include "true60_steps.h"
+#include "game_hooks.h"
 #include "gx2/gx2.h"
 #include "gfx/renderer.h"
 
@@ -103,7 +102,7 @@ void f_027F5018_orig(Cpu* c);  // J3DModel UBO update
 
 }
 
-namespace true60_test { void logic_step(uint64_t step); }
+namespace test_aids { void logic_step(uint64_t step); }
 
 namespace interp {
 
@@ -120,15 +119,22 @@ static bool performance_reports() {
 using pacing::valid_fps;
 static const int g_env_fps = [] { const char* e = getenv("WWHD_INTERP_FPS"); return e ? valid_fps(atoi(e)) : 0; }();
 static std::atomic<int> g_fps{g_env_fps ? g_env_fps : 60};
+// WWHD_TRUE60=1 (True 60 was retired): starts 60 fps frame interpolation like WWHD_INTERP=1
+static bool env_true60() {
+    const char* e = getenv("WWHD_TRUE60");
+    return e && atoi(e) != 0;
+}
 static std::atomic<bool> g_on{[] {
     const char* e = getenv("WWHD_INTERP");
-    return (e ? atoi(e) != 0 : g_env_fps != 0) && !true60::enabled();
+    if (!e && env_true60()) {
+        LOG("[interp] WWHD_TRUE60 is no longer supported (True 60 was retired): 60 fps frame interpolation instead");
+        return true;
+    }
+    return e ? atoi(e) != 0 : g_env_fps != 0;
 }()};
 bool interp_on() { return g_on.load(std::memory_order_relaxed) && !mods::fast_forward_active(); }
-// the pass structure below is used by both 60 fps modes and the 120/240 fps interpolation:
-// interpolation (30 Hz logic) and true 60 (true60.cpp: 60 Hz processes also execute on the
-// in-between "hold" passes; always one per step)
-bool enabled() { return interp_on() || true60::enabled(); }
+// the pass structure below: logic passes and in-between "hold" passes (frame interpolation)
+bool enabled() { return interp_on(); }
 int fps() { return g_fps.load(std::memory_order_relaxed); }  // the chosen rate
 
 // The display: refresh rate of the TV window's screen (hosts: gfx/display.mm, the SDL main loop;
@@ -178,16 +184,15 @@ void set_present_vsync(bool on) {
 }
 // 40 fps frame interpolation runs (3 steps over 4 frames: pacing::is_fps40)
 bool fps40() { return interp_on() && pacing::is_fps40(output_fps()); }
-// in-between frames per logic step of the current mode (true 60: its one half pass; 40 fps: at most
-// one, in one step of three)
-int in_between() { return interp_on() ? (fps40() ? 1 : output_fps() / 30 - 1) : true60::enabled() ? 1 : 0; }
-// frames drawn per logic step: 1 (30 fps), 2 (60 fps, true 60), 4 (120 fps), 8 (240 fps); at 40 fps
+// in-between frames per logic step of the current mode (40 fps: at most one, in one step of three)
+int in_between() { return interp_on() ? (fps40() ? 1 : output_fps() / 30 - 1) : 0; }
+// frames drawn per logic step: 1 (30 fps), 2 (60 fps), 4 (120 fps), 8 (240 fps); at 40 fps
 // the most a step has (2; 4 frames per 3 steps: frame_ns, vsync_granule_ticks)
 int frames_per_step() { return in_between() + 1; }
 // the drawn frame interval: two 59.94 Hz vsyncs over the frames of a step (16.68 ms at 60 fps), 1.5
 // vsyncs at 40 fps (25.03 ms)
 int64_t frame_ns() { return fps40() ? pacing::frame_40(2 * 16'683'333LL) : 16'683'333LL * 2 / std::max(1, frames_per_step()); }
-// the virtual vsync's ticks (quarter 59.94 Hz vsyncs) per drawn frame: 4 (30/60 fps, true 60), 6 (40),
+// the virtual vsync's ticks (quarter 59.94 Hz vsyncs) per drawn frame: 4 (30/60 fps), 6 (40),
 // 2 (120), 1 (240)
 uint32_t vsync_granule_ticks() { return fps40() ? 6 : interp_on() ? uint32_t(8 / std::max(2, frames_per_step())) : 4; }
 static const char* fps_name(int f) { return f == 240 ? "240 fps" : f == 120 ? "120 fps" : f == 40 ? "40 fps" : "60 fps"; }
@@ -204,7 +209,6 @@ static void note_display_40() {
         "(for 1 and 2 refreshes in turn). 30 or 60 fps are even here.", hz);
 }
 void set_enabled(bool v) {
-    if (v) true60::set_enabled(false);
     g_on = v;
     LOG("[interp] frame interpolation %s", v ? (fps() == 240 ? "on (240 fps)" : fps() == 120 ? "on (120 fps)" : fps() == 40 ? "on (40 fps)" : "on (60 fps)") : "off");
     note_display_40();
@@ -214,14 +218,20 @@ void set_fps(int f) {
     if (g_fps.exchange(f) != f && interp_on()) LOG("[interp] frame interpolation at %s", fps_name(f));
     note_display_40();
 }
-// the 60 fps mode: 0 off, 1 frame interpolation (at fps()), 2 true 60 (game logic at 60 steps per second)
-int mode() { return true60::selected() ? 2 : g_on.load(std::memory_order_relaxed) ? 1 : 0; }
+// the 60 fps mode: 0 off, 1 frame interpolation (at fps()). 2 was True 60 (game logic at 60 steps
+// per second, retired): a saved 2 or a test's mode 2 becomes 60 fps frame interpolation.
+int mode() { return g_on.load(std::memory_order_relaxed) ? 1 : 0; }
 void set_mode(int m) {
+    if (m == 2) {
+        static bool logged = false;
+        if (!logged) LOG("[interp] True 60 was retired: 60 fps frame interpolation instead");
+        logged = true;
+        set_fps(60);
+        m = 1;
+    }
     if (m) framegen::set_chosen(false);  // (one 60 fps mode at a time: 60 fps (generated) goes)
     g_on = false;
-    true60::set_enabled(false);
     if (m == 1) set_enabled(true);
-    if (m == 2) true60::set_enabled(true);
 }
 // menus and the 6 key: frame interpolation at f on, or off if it is on at f already
 void toggle_fps(int f) {
@@ -232,10 +242,10 @@ void toggle_fps(int f) {
     set_fps(f);
     set_mode(1);
 }
-// the frame rate shown in titles and the overlay: "30 fps", "60 fps", "120 fps", "240 fps", "true 60"
+// the frame rate shown in titles and the overlay: "30 fps", "60 fps", "120 fps", "240 fps"
 // (with the rate capped to the display: "240 fps (120 shown)")
 const char* mode_name() {
-    if (mode() != 1) return mode() == 2 ? "true 60" : "30 fps";
+    if (mode() != 1) return "30 fps";
     const int f = fps(), out = output_fps();
     if (out < f) return f == 240 ? (out == 120 ? "240 fps (120 shown)" : "240 fps (60 shown)") : "120 fps (60 shown)";
     return fps_name(f);
@@ -356,8 +366,6 @@ struct Prev {
     float trim = 0;            // letterbox height (dCamera_c mTrimHeight) at the exact step
     CamState drawn{};          // the camera as camera_draw drew it on pass drawn_pass (blended or exact)
     uint64_t drawn_pass = ~0ull;
-    uint32_t projection[16]{}; // raw projection-view words before true60's actor rollback
-    uint64_t projection_pass = ~0ull;
     camera::Shake shake;       // the shake offset the exact step was drawn with (interp_camera.h)
     fade::FloatsGate<1> zoom;  // the HD projection zoom camera_draw eases (zoom_ease)
 };
@@ -391,12 +399,6 @@ camera::Shake read_shake(uint32_t cam) {
     }
     k.on = added;
     return k;
-}
-
-void capture_projection(Prev& p) {
-    if (!enabled()) return;
-    memcpy(p.projection, ppc_ptr(p.cam + 0x1A4), sizeof p.projection);
-    p.projection_pass = g_passes;
 }
 
 // debug: WWHD_INTERP_CAM_SLOT_TRACE=n logs n cameras taking a history slot (and the camera that had it)
@@ -485,17 +487,6 @@ float reticle_t() {
     return pass_t();
 }
 
-bool reticle_projection(uint32_t& address, uint32_t* words) {
-    const uint32_t view = ld32(GD(0x1046F0B0) + 0x5FA4);
-    for (const auto& p : g_prev) {
-        if (p.cam != view || p.projection_pass != g_passes) continue;
-        address = view + 0x1A4;
-        memcpy(words, p.projection, sizeof p.projection);
-        return true;
-    }
-    return false;
-}
-
 }  // namespace interp
 
 // debug: WWHD_INTERP_CAM_TRACE=n logs n camera draws: logic step, pass fraction, eye and center as drawn
@@ -521,7 +512,7 @@ extern "C" void hook_024FFC40(Cpu* c) {
     // 60 fps (generated, framegen.h; only while WWHD_FRAMEGEN=1): the camera this frame's scene is drawn
     // with; the renderer makes no in-between frame while another mode already does
     if (framegen::requested())
-        framegen::camera_drawn(cam, (interp::interp_on() ? framegen::kInterp : 0u) | (true60::enabled() ? framegen::kTrue60 : 0u) |
+        framegen::camera_drawn(cam, (interp::interp_on() ? framegen::kInterp : 0u) |
                                         (mods::fast_forward_active() ? framegen::kFastForward : 0u));
 }
 static void camera_draw_body(Cpu* c);
@@ -580,7 +571,7 @@ bool exact_cull_on() {
     return !off;
 }
 void exact_prerun(Cpu* c) {
-    if (!exact_cull_on() || !interp_on() || true60::enabled() || g_prerun_pass == g_passes) return;
+    if (!exact_cull_on() || !interp_on() || g_prerun_pass == g_passes) return;
     const Cpu saved = *c;
     g_cam_prerun = true;
     g_cam_blended = true;  // (the sound engine keeps the record pass's camera)
@@ -699,7 +690,7 @@ void tevstr_put_back() {
 void interp_tevstr_keep(uint32_t tevstr) {
     using namespace interp;
     static const bool off = getenv("WWHD_INTERP_TEV_KEEP") && !atoi(getenv("WWHD_INTERP_TEV_KEEP"));
-    if (off || !g_hold || !enabled() || true60::enabled() || tevstr < 0x10000000 || tevstr >= 0x50000000) return;
+    if (off || !g_hold || !enabled() || tevstr < 0x10000000 || tevstr >= 0x50000000) return;
     for (const auto& k : g_tev_kept)
         if (k.addr == tevstr) return;
     if (g_tev_kept.size() >= 4096) return;
@@ -738,7 +729,7 @@ std::atomic<bool> g_shadow_sub{false};
 constexpr uint32_t kShadowView = 0x30, kShadowProj = 0x80;
 void shadow_cascades_launch() {
     g_shadow_sub = false;
-    if (!exact_cull_on() || !interp_on() || true60::enabled() || !(record_pass() || record_blended())) return;
+    if (!exact_cull_on() || !interp_on() || !(record_pass() || record_blended())) return;
     const uint32_t v = g_shadow_view_src, pr = g_shadow_proj_src, slot = mem::fixed_slot(mem::kFixShadowCam);
     if (!v || !pr) return;
     if (record_pass()) {  // drawn exactly: the camera as it is now
@@ -787,7 +778,7 @@ extern "C" void f_025D4654(Cpu* c);
 // leaves draw-side state in their memory (animation caches, line buffers, rope point counts) that the
 // 30 fps game, which did not draw them, does not have. Their memory is saved before such a draw and
 // put back at the start of the next pass (after the pass has been painted), except the links of their
-// packets that a draw list still holds (as true60.cpp does for its half-pass previews).
+// packets that a draw list still holds.
 namespace interp {
 struct ActorKeep { uint32_t actor; std::vector<uint32_t> words; };
 // the process manager's part of an actor (f_pc_base.h, f_op_actor.h): base_process_class (+0 .. +0xB8:
@@ -920,7 +911,7 @@ static void camera_draw_body(Cpu* c) {
     uint32_t cam = c->r[3];
     mods::moon_jump_camera(cam);
     Prev* p = prev_for(cam);
-    if (g_blend_draw && !true60::runs_60(cam)) {  // blended between the step drawn last (S) and the new one (S+1)
+    if (g_blend_draw) {  // blended between the step drawn last (S) and the new one (S+1)
         if (!g_hold && p->valid) exact_prerun(c);  // (logic pass: the exact camera's culling view first)
         CamState cur = read_cam(cam);
         float trim_drawn = NAN;  // the exact letterbox height, when it was drawn blended
@@ -973,10 +964,9 @@ static void camera_draw_body(Cpu* c) {
         g_cam_blended = p->valid;
         cam_trace(cam, "blended");
         f_024FFC40_orig(c);
-        capture_projection(*p);
         g_cam_blended = false;
         g_view_pass = g_passes;
-        if (p->valid && !true60::enabled()) clipper_blend(c, cam, (float)ldf32(cam + kFovy), cur.fovy);
+        if (p->valid) clipper_blend(c, cam, (float)ldf32(cam + kFovy), cur.fovy);
         write_cam(cam, cur);
         if (trim_drawn == trim_drawn) stf32(cam + kCamBody + kTrimHeight, trim_drawn);  // (exact back)
         if (record_blended()) {  // 40 fps blended record pass: the step's camera for the next step's frames
@@ -1003,14 +993,6 @@ static void camera_draw_body(Cpu* c) {
     p->drawn = p->s;
     p->drawn_pass = g_passes;
     cam_trace(cam, "exact");
-    if (g_hold && true60::enabled()) {  // true 60: the half pass's camera is a preview (true60.cpp)
-        p->drawn_pass = ~0ull;  // (drawn with the preview: the stars keep the camera as it is)
-        true60::camera_draw_preview(true);
-        f_024FFC40_orig(c);
-        capture_projection(*p);
-        true60::camera_draw_preview(false);
-        return;
-    }
     static const bool dbg = getenv("WWHD_T60_CAMDRAWLOG") != nullptr;  // debug: statics camera_draw writes
     if (dbg && g_hold) {
         static std::vector<uint32_t> before;
@@ -1019,7 +1001,6 @@ static void camera_draw_body(Cpu* c) {
         const uint32_t lo = GD(0x10100000), hi = 0x10500000;
         before.assign((uint32_t*)ppc_ptr(lo), (uint32_t*)ppc_ptr(hi));
         f_024FFC40_orig(c);
-        capture_projection(*p);
         const uint32_t* cur = (const uint32_t*)ppc_ptr(lo);
         for (size_t i = 0; i < before.size(); i++)
             if (cur[i] != before[i]) cnt[lo + 4 * (uint32_t)i]++;
@@ -1039,7 +1020,6 @@ static void camera_draw_body(Cpu* c) {
         return;
     }
     f_024FFC40_orig(c);
-    capture_projection(*p);
     g_view_pass = g_passes;
 }
 
@@ -1047,12 +1027,12 @@ static void camera_draw_body(Cpu* c) {
 // drawn pass, eases it towards 1 with cLib_addCalc (0.2, at most 0.3, at least 0.1 per call) after
 // the cinema-scope display mode (trim sizes 2/3 set 4:3, 1.333) ends, so the ease ran 2x/4x/8x per
 // logic step. The call (returning to 0250018C) is gated (interp_fade.h floats_call): the zoom eases
-// once per logic step and every pass shows it at its fraction. true60.cpp hook_0200ECD4 hands the
+// once per logic step and every pass shows it at its fraction. game_hooks.cpp hook_0200ECD4 hands the
 // call here. debug: WWHD_INTERP_ZOOM_EASE=0 turns the gate off
 namespace interp {
 bool zoom_ease(Cpu* c, void (*orig)(Cpu*)) {
     static const bool off = getenv("WWHD_INTERP_ZOOM_EASE") && !atoi(getenv("WWHD_INTERP_ZOOM_EASE"));
-    if (!interp_on() || off || true60::enabled() || !g_drawing_cam) return false;
+    if (!interp_on() || off || !g_drawing_cam) return false;
     Prev* p = prev_for(g_drawing_cam);
     const uint32_t v = c->r[3];
     float x = (float)ldf32(v), before = x;
@@ -1317,7 +1297,7 @@ extern "C" void hook_025A4204(Cpu* c) {
 extern "C" void hook_027F55FC(Cpu* c) {
     using namespace interp;
     static const bool off = getenv("WWHD_INTERP_MODELS") && !atoi(getenv("WWHD_INTERP_MODELS"));  // debug
-    if (!enabled() || off || g_ptcl_model_draw || (!g_hold && !g_record_logic && (true60::drawing_60() || g_exact_step))) {
+    if (!enabled() || off || g_ptcl_model_draw || (!g_hold && !g_record_logic && g_exact_step)) {
         f_027F55FC_orig(c);
         return;
     }
@@ -1489,7 +1469,7 @@ void ss_reset() {
     fx_ss_reset();
     nodraw_reset();
     reticle_reset();
-    true60::ss_reset();
+    game_hooks::ss_reset();
 }
 // Paced interpolation (WWHD_INTERP_PACED=1, the default on Android, Windows on ARM64 and at 120/240
 // fps): an in-between pass is drawn only when it fits before the next logic step is due (33.3 ms
@@ -1523,7 +1503,7 @@ static std::atomic<bool>& paced_flag(int f) { return f > 60 ? g_paced_hi : g_pac
 static bool paced() { return paced_flag(fps()).load(std::memory_order_relaxed); }
 bool paced_interpolation() { return paced(); }  // at the current frame rate
 // the step schedule of paced interpolation is in use (gx2_core.cpp step slots): Keep game speed on
-// at the current rate and frame interpolation on (not true 60, whose passes are not dropped)
+// at the current rate and frame interpolation on
 bool paced_step_schedule() { return paced() && interp_on(); }
 bool paced_interpolation_at(int f) { return paced_flag(f).load(std::memory_order_relaxed); }
 // Where each value came from, for the log (players' logs show which one they play with): the
@@ -1592,7 +1572,7 @@ constexpr auto kPacedBudget = std::chrono::nanoseconds(kPacedStep + std::chrono:
 // game thread is the bottleneck: logic and in-between passes of different lengths showed a third of
 // the 60 fps frames for 1 or 3 refreshes of a 120 Hz screen); off elsewhere until measured there.
 // WWHD_INTERP_EVEN_PACING=0/1 wins. The interval of the frame being swapped: the step's length over
-// its planned frames (60 fps and true 60: 16.68 ms; paced 120/240 fps: over the frames this step
+// its planned frames (60 fps: 16.68 ms; paced 120/240 fps: over the frames this step
 // plans); 0 (frames go out as they come) at 30 fps.
 #ifdef __ANDROID__
 constexpr bool kEvenPacingDefault = true;
@@ -1898,8 +1878,8 @@ std::string pass_cpu_report() {
 static void fader_between_passes();  // debug (WWHD_INTERP_FADER_TRACE), below
 namespace interp {
 // The game's other sead tasks (ResLoadTask: archive and stage loads) calc in the same frame as the
-// per-frame function, before it: this frame is a hold pass (frame interpolation, not true 60)
-bool frame_is_hold() { return interp_on() && !true60::enabled() && g_hold_next; }
+// per-frame function, before it: this frame is a hold pass (frame interpolation)
+bool frame_is_hold() { return interp_on() && g_hold_next; }
 }  // namespace interp
 extern "C" void hook_0203593C(Cpu* c) {
     using namespace interp;
@@ -1973,9 +1953,8 @@ extern "C" void hook_0203593C(Cpu* c) {
     interp::NativeResumeBoundaryIssuer::after_service(c); // before any resumed native/game service
     mods::cheats_service();
     mods::shop_ship_service();  // the ships' way back to the sea (mods/shop_ship.h)
-    // the item ring: its equip, the game's pace while open (full logic passes, and true 60's half passes,
-    // which also run Link), the ring drawn
-    mods::item_ring_service(c, !enabled() || !g_hold_next, enabled() && g_hold_next && true60::enabled());
+    // the item ring: its equip, the game's pace while open (full logic passes), the ring drawn
+    mods::item_ring_service(c, !enabled() || !g_hold_next);
     mods::context_touch_service();  // tests: the context buttons' assets export (WWHD_CONTEXT_ASSETS)
     mods::hud_service();  // the boost bar and climb wheel fade out over the game's menus, events, messages
     const bool was_fast_forward = mods::fast_forward_active();
@@ -1986,14 +1965,10 @@ extern "C" void hook_0203593C(Cpu* c) {
     static uint64_t passes = 0;
     static const uint64_t at = getenv("WWHD_INTERP_AT_STEP") ? strtoull(getenv("WWHD_INTERP_AT_STEP"), nullptr, 10) : 0;
     if (at && ++passes == at) set_enabled(true);
-    static uint64_t at60 = getenv("WWHD_TRUE60_AT_STEP") ? strtoull(getenv("WWHD_TRUE60_AT_STEP"), nullptr, 10) : 0;
-    static uint64_t passes60 = 0;
-    if (at60 && ++passes60 == at60) set_mode(2);
     if (ff_transition) restart_fast_forward_pacing(mods::fast_forward_active());
     log_paced_start();
     paced_pass_start();
-    true60::new_pass();
-    true60::pass_begin(ff_transition || !enabled() || !g_hold_next);  // full pass: take back Link's half-pass preview
+    game_hooks::new_pass();
     if (ff_transition) {
         for (auto& p : g_prev) p = Prev{};
         g_models.clear();
@@ -2008,7 +1983,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     }
     if (!enabled() || !g_hold_next) {
         g_logic_steps++;
-        true60_test::logic_step(g_logic_steps);
+        test_aids::logic_step(g_logic_steps);
         mods::play_context_step();  // once per full logic step (the context buttons' reading)
         game_progress::service(c);  // built-in Game progress: the count of the save in play (off: nothing read)
         achievements::service(c);   // built-in Achievements: the check once a second, the pop-up (off: nothing read)
@@ -2037,7 +2012,6 @@ extern "C" void hook_0203593C(Cpu* c) {
         // hold pass: the per-frame function runs, but its children only per kHoldRun and the loop
         // body draws without logic (blended at pass_t() before the record pass)
         g_phase++;
-        if (true60::enabled()) g_step_n = 1;  // (switched to true 60 within a step)
         g_hold = true;
         g_hold_frame = true;
         PassTimer timer(record_pass() ? 2 : 1);
@@ -2096,7 +2070,7 @@ namespace {
 struct Drawn { uint64_t pass = ~0ull; float t = 1.0f; bool record = false, record_blended = false; } g_drawn;
 void note_drawn() {
     g_drawn = Drawn{g_passes, pass_t(), record_pass(), record_blended()};
-    mods::hud_drawn(g_drawn.t, g_logic_steps, interp_on() && !true60::enabled());  // (the mod HUDs of this frame)
+    mods::hud_drawn(g_drawn.t, g_logic_steps, interp_on());  // (the mod HUDs of this frame)
 }
 }  // namespace
 // blend fraction of the pass being drawn or painted (1: exact, or interpolation off)
@@ -2250,26 +2224,7 @@ extern "C" void hook_0255E854(Cpu* c) {
             for (int i = 0; i < 3 && st; i++) st32(st + 4 * i, s.pos[i]);
         }
     }
-    // true 60: the hold pass ran with the preview camera; the next full pass continues from the
-    // state the logic pass left, as the 30 fps game's next step does
-    static SetLightState after_logic;
-    if (true60::enabled() && called_from_frame_function() && !interp::g_hold_frame && after_logic.step + 1 == interp::g_logic_steps) {
-        uint32_t st2 = ld32(kLightStatusPt);
-        if (after_logic.status == st2) {
-            st32(kSetLightTarget, after_logic.target);
-            st32(kSetLightEfTarget, after_logic.ef_target);
-            for (int i = 0; i < 3 && st2; i++) st32(st2 + 4 * i, after_logic.pos[i]);
-        }
-    }
     f_0255E854_orig(c);
-    if (true60::enabled() && called_from_frame_function() && !interp::g_hold_frame) {
-        uint32_t st2 = ld32(kLightStatusPt);
-        after_logic.step = interp::g_logic_steps;
-        after_logic.target = ld32(kSetLightTarget);
-        after_logic.ef_target = ld32(kSetLightEfTarget);
-        after_logic.status = st2;
-        for (int i = 0; i < 3; i++) after_logic.pos[i] = st2 ? ld32(st2 + 4 * i) : 0;
-    }
     uint32_t st = ld32(GD(0x101E8CC8));  // lightStatusPt
     interp::light_trace_add(" setLight t%.2f r%u p(%.1f,%.1f,%.1f)", ldf32(GD(0x101E8EC8)), st ? ld8(st + 0x18) : 0, st ? ldf32(st) : 0.0,
                             st ? ldf32(st + 4) : 0.0, st ? ldf32(st + 8) : 0.0);
@@ -2349,17 +2304,17 @@ extern "C" void hook_02039834(Cpu* c) { FaderWatch fw("child 14"); g_hold_child_
 // (1 execute, 2 delete, 4 priority, 8 create, 16 fapGm_After, 32 counter, 64 HD UI screens)
 static bool skip(int bit) {
     static const int run = getenv("WWHD_INTERP_RUN") ? atoi(getenv("WWHD_INTERP_RUN")) : 0;
-    return true60::skip_step_part(interp::g_hold, true60::enabled(), run, bit);
+    return interp::g_hold && !(run & bit);
 }
 static bool g_in_execute = false;  // inside fpcEx_Handler (actor Execute): logic, not drawing
 namespace mods { void after_execute(Cpu* c, uint32_t execute_fn); }  // mods/turbo.cpp
 namespace editor { void logic_service(Cpu* c); void camera_service(Cpu* c, bool logic_pass); }  // editor/editor_game.cpp: the world editor (live actors, fly camera)
 extern "C" void hook_025DE788(Cpu* c) {
-    if (skip(1) && !true60::enabled()) return;  // true 60: the per-process gate decides (true60.cpp)
+    if (skip(1)) return;
     interp::record_executed_step();
     g_in_execute = true;
     uint32_t execute_fn = c->r[3];
-    if(!interp::g_hold_frame)guestmods::maphud::begin_logic(c,double(true60::dt())/30.0);
+    if(!interp::g_hold_frame)guestmods::maphud::begin_logic(c,1.0/30.0);  // one 30 Hz logic step
     if (!interp::g_hold_frame) mods::instant_text_step();  // instant text (mods/instant_text.cpp)
     dsweep::before_execute(c);  // the setup's actor sweep (WWHD_DSWEEP): its actors do not run their logic
     f_025DE788_orig(c);
@@ -2367,7 +2322,7 @@ extern "C" void hook_025DE788(Cpu* c) {
     if (!interp::g_hold_frame) mods::instant_text_step();
     mods::after_execute(c, execute_fn);  // quick doors / fast scene changes: extra steps (full passes only)
     if (!interp::g_hold_frame) {guestmods::frame(interp::g_logic_steps);guestmods::logic_service(c);editor::logic_service(c);mods::packages::frame(interp::g_logic_steps);}
-    editor::camera_service(c, !interp::g_hold_frame);  // the fly camera: every logic pass, and true 60's 60 Hz passes
+    editor::camera_service(c, !interp::g_hold_frame);  // the fly camera: every logic pass
     if(!interp::g_hold_frame)guestmods::maphud::finish_logic();
     guestmods::draw_frame(c,interp::executed_steps());
     g_in_execute = false;
@@ -2386,7 +2341,7 @@ extern "C" void hook_0200E6EC(Cpu* c) { if (!skip(32)) f_0200E6EC_orig(c); }
 // "back to play" state checks the screen on logic passes only; with 3 or more in-between passes per
 // step it always found the screen open again and waited forever: the menu would not close (issues
 // #64, #74; #73, no control after an item-get message, looks like the same). Once per logic step, as
-// at 30 fps (true 60 too: these screens are 30 Hz logic).
+// at 30 fps.
 extern "C" void f_02715310_orig(Cpu* c);
 extern "C" void hook_02715310(Cpu* c) {
     if (!skip(64)) f_02715310_orig(c);
@@ -2412,7 +2367,7 @@ extern "C" void hook_025499A0(Cpu* c) {
 namespace interp { bool exact_cull_on(); void edge_draw(const Cpu& call, Cpu* c, uint32_t actor); void actor_keep(uint32_t actor); }
 // fopAc_Draw(fopAc_ac_c*): one-shot "not drawn this frame" requests (fopAcStts_NODRAW_e) made by
 // the step's logic hold for all passes of the step (interp_nodraw.h; issue #126: in conversations
-// the talk camera hides Link on logic frames only, so he flickered at 60/120/240 fps and true 60).
+// the talk camera hides Link on logic frames only, so he flickered at 60/120/240 fps).
 // debug: WWHD_INTERP_NODRAW=0 turns this off; WWHD_INTERP_NODRAW_TRACE=n logs n kept requests
 extern "C" void f_025D4654_orig(Cpu* c);
 static interp::OneShotNoDraw g_nodraw;
@@ -2424,7 +2379,7 @@ extern "C" void hook_025D4654(Cpu* c) {
     // cull with the camera they draw with (blended), and the record pass with shadow cascades set up
     // after the blended logic pass: at the next step's logic an actor could count as drawn or not
     // drawn where at 30 fps it did not. debug: WWHD_INTERP_EXACT_CULL=0 (as before)
-    const bool keep_condition = interp::enabled() && interp::g_hold && interp::exact_cull_on() && !true60::enabled();
+    const bool keep_condition = interp::enabled() && interp::g_hold && interp::exact_cull_on();
     const uint32_t condition = keep_condition ? ld32(actor + 0x2E4) : 0;
     const Cpu saved = *c;
     const bool kept = keep_condition && (condition & 0x04);
@@ -2494,9 +2449,6 @@ bool in_execute() { return g_in_execute; }
 uint64_t hold_pass_count() { return g_record_passes; }
 uint64_t pass_count() { return g_passes; }  // every pass (per-pass bookkeeping)
 const char* phase_name() { return !enabled() ? "interp off" : g_hold ? "IN-BETWEEN" : g_logic_pass ? "logic" : "other"; }
-// true 60: the sticks are read fresh on every pass (60 Hz processes use them on the half passes);
-// buttons still change on full passes only, so every press reaches the 30 Hz processes and menus
-bool fresh_sticks() { return true60::enabled(); }
 bool repeat_input() {
     static const bool off = getenv("WWHD_INTERP_NO_REPEAT") != nullptr;  // debug
     return enabled() && g_hold_next && !off;
@@ -2505,12 +2457,11 @@ bool repeat_input() {
 
 // Sound effect starts (JAIZelBasic::seStart core and the mDoAud_* start wrappers). Some sounds are
 // started from drawing code (animation-linked effects); an in-between frame only redraws, so a
-// sound started there would play a second time. Suppressed while the hold pass draws, and with true
-// 60 on the whole half pass: its executes are previews that the next full pass takes back and runs
-// again (true60.cpp), so every sound starts once, on the full pass of the 30 fps game's step.
+// sound started there would play a second time. Suppressed while the hold pass draws, so every
+// sound starts once, on the logic pass of the 30 fps game's step.
 // debug: WWHD_SE_STATS=1 logs calls per second by frame phase every 5 s
 // debug: WWHD_SE_TRACE=path logs every start that is not suppressed: logic step, full pass (1/0),
-// wrapper index, r4 (the sound id for the seStart wrappers), caller (true60 comparisons)
+// wrapper index, r4 (the sound id for the seStart wrappers), caller
 static void se_trace(int fn, Cpu* c) {
     static FILE* f = getenv("WWHD_SE_TRACE") ? fopen(getenv("WWHD_SE_TRACE"), "w") : nullptr;
     if (!f || interp::g_hold) return;

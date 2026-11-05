@@ -197,7 +197,6 @@ static const ShortcutInfo kShortcuts[kShortcutCount] = {
     {"AOHires", "Full-size occlusion depth", "Graphics", {kVK_ANSI_M}, {}},
     {"Aniso", "Anisotropic filtering", "Graphics", {kVK_ANSI_N}, {}},
     {"Interpolation", "Frame interpolation", "Graphics", {kVK_ANSI_6}, {}},
-    {"True60", "True 60 fps", "Graphics", {kVK_ANSI_7}, {}},
     {"FXAA", "FXAA", "Graphics", {kVK_ANSI_8}, {}},
     {"PiP", "GamePad picture-in-picture", "Display and audio", {}, {}},
     {"Performance", "Performance overlay", "Display and audio", {}, {}},

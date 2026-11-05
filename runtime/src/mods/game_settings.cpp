@@ -456,9 +456,9 @@ void register_graphics() {
         Item it;
         it.id = "graphics.frame-rate", it.tab = "graphics", it.label = "Frame rate", it.kind = Kind::Choice;
         it.help = framegen::available()
-            ? "40 fps and more add in-between frames; the game logic keeps its 30 steps. True 60 runs it at 60. Generated: "
+            ? "40 fps and more add in-between frames; the game logic keeps its 30 steps. Generated: "
               "every other frame made on the graphics chip."
-            : "40 fps and more add in-between frames; the game logic keeps its 30 steps. True 60 runs it at 60.";
+            : "40 fps and more add in-between frames; the game logic keeps its 30 steps.";
         // 60 fps (generated, framegen.h) on Vulkan only (the last choice)
         it.choices.assign(std::begin(g::kRateNames), std::end(g::kRateNames) - (framegen::available() ? 0 : 1));
         it.get = [] { return float(g::rate_choice(interp::mode(), interp::fps(), framegen::available() && framegen::chosen())); };

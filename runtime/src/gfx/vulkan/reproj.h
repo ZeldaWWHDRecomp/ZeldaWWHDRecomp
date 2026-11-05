@@ -15,7 +15,7 @@ bool enabled();  // framegen::requested()
 // why no in-between frame was made for a frame (counted; the [framegen] and [vulkan perf] lines)
 enum Skip : int {
     kNone = -1,
-    kOtherMode,   // frame interpolation, true 60 or fast forward is on
+    kOtherMode,   // frame interpolation or fast forward is on
     kStereo,      // stereo 3D
     kPresentPath, // synchronous presentation, a present capture or the present observer
     kNotShown,    // the real frame was not presented (no TV window, GamePad only, no swapchain)

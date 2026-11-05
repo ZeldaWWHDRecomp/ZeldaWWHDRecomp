@@ -14,14 +14,14 @@
 #include <cstdlib>
 
 static input::PadState sample;
-static bool pro=false, repeat=false, fresh=false, held=false, held_gamepad=false, live_pro=false;
+static bool pro=false, repeat=false, held=false, held_gamepad=false, live_pro=false;
 HleReg::HleReg(const char*,const char*,PpcFunc){}
 void log_msg(const char*,...){}
 bool g_trace_hle=false;
 namespace input { PadState read(){return sample;} bool pro_controller(){return pro;} }
 namespace controller_reapply { bool holds_pro_controller(){return held;} bool holds_gamepad(){return held_gamepad;} bool pro_controller_live(){return live_pro;} }
 namespace crashrec { input::PadState read(int){return sample;} }
-namespace interp { bool repeat_input(){return repeat;} bool fresh_sticks(){return fresh;} void trace_read(const char*){} uint64_t logic_steps(){return 0;} }
+namespace interp { bool repeat_input(){return repeat;} void trace_read(const char*){} uint64_t logic_steps(){return 0;} }
 namespace mods { void move_speed_input(uint32_t){} void jump_input(uint32_t){} void fast_forward_input(uint32_t&){} void moon_jump_input(const input::PadState&){} void pad_play_rules(input::PadState&){} void item_ring_pad(input::PadState&, bool){} void context_touch_pad(input::PadState&, bool){} void touch_talk_pad(input::PadState&, bool){} void one_screen_pad(input::PadState&){} void guest_pad_filter(Cpu*, input::PadState&, bool){} }
 namespace motion { void right_stick(float,float){} VpadMotion vpad(bool){return {};} }
 namespace threads { void park_sleep_until(std::chrono::steady_clock::time_point,bool,void (*)()){} }
@@ -63,11 +63,11 @@ int main(){
    if(!pro){const uint32_t analogBits[]={0x10000000,0x08000000,0x40000000,0x20000000};assert(ld32(at)==analogBits[d]);}
    else assert(ld8(at+0x5C)==31&&ld8(at+0x5F)==22);
 
-   // Interpolation reuses the previous analog sample; true60 may refresh analog only.
+   // Interpolation's repeated read reuses the previous analog sample (fresh input is not read).
    const auto prior=sample;sample={};repeat=true;read(pro);
    assert(ldf32(at+stick)==prior.lx&&ldf32(at+stick+4)==prior.ly);
-   fresh=true;read(pro);assert(ldf32(at+stick)==0&&ldf32(at+stick+4)==0);
-   repeat=fresh=false;sample={};read(pro);
+   read(pro);assert(ldf32(at+stick)==prior.lx&&ldf32(at+stick+4)==prior.ly);
+   repeat=false;sample={};read(pro);
    printf("mode=%s direction=%d packet/edges/repeat/sticks passed\n",pro?"pro":"gamepad",d);
   }
   if(pro)break;

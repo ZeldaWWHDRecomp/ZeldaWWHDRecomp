@@ -376,8 +376,6 @@ def run_once(args, variant, env_extra, index, out_dir):
             env["WWHD_INTERP"], env["WWHD_INTERP_FPS"] = "0", args.fps
     if args.display_hz is not None:
         env["WWHD_DISPLAY_HZ"] = str(args.display_hz)
-    elif args.fps == "true60":
-        env["WWHD_TRUE60_AT_STEP"] = str(load_at + 60)
     if args.uncapped:
         env["WWHD_UNCAPPED"] = "1"
         env["WWHD_VK_UNCAPPED"] = "1"
@@ -519,7 +517,7 @@ def main():
     p.add_argument("--state-dir", required=True, help="folder with slot<N>.bin save states (read only)")
     p.add_argument("--scene", choices=sorted(SCENES), default="outset")
     p.add_argument("--slot", type=int, default=0, help="state slot (default: the scene's)")
-    p.add_argument("--fps", choices=["30", "60", "120", "240", "true60"], default="30",
+    p.add_argument("--fps", choices=["30", "60", "120", "240"], default="30",
                    help="60, 120, 240 = frame interpolation (120/240: paced unless WWHD_INTERP_PACED=0)")
     p.add_argument("--display-hz", type=int, help="WWHD_DISPLAY_HZ: the display refresh rate frame interpolation is "
                    "capped to (0: no cap; default: the detected one, e.g. 120 on a ProMotion Mac)")

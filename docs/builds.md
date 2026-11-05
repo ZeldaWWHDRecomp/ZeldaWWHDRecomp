@@ -104,8 +104,8 @@ lend a European or Japanese game's text to the USA code.
    JSON (and only the JSON).
 2. Run the recompiler on the new executable. It reports the hooks it skipped and every hook that
    sits on a function the build compiled differently; look at each one.
-3. Check the features that lean on a particular piece of the game's code: frame interpolation and
-   true 60 fps (`tools/recomp/hooks.txt`, `tools/true60/`), the save states
+3. Check the features that lean on a particular piece of the game's code: frame interpolation
+   (`tools/recomp/hooks.txt`), the save states
    (`runtime/src/savestate.cpp`), the mods, and the Cemu aspect-ratio pack
    (`runtime/src/mods/cemu_pack.cpp` picks the section for the build).
 4. The Japanese build also needs its own text handling: the port's region patch is written for the
@@ -134,7 +134,8 @@ With an extracted game and a disposable copy of an existing save, the scripts in
 - `interp_menu_scenario.py`: pause/open/close at 120 and 240 interpolation passes on
   both renderers, plus F10 TV/GamePad screenshots through the normal key handler.
 - `regional_game_scenario.py`: native German/Italian (or USA English), Outset gameplay,
-  interpolation and true60 mode switches, returning to 30 fps and saving a portable state.
+  interpolation mode switches (including a saved True 60 choice falling back to 60 fps
+  interpolation), returning to 30 fps and saving a portable state.
 
 These scripts use private caches, states and screenshot folders and never modify the
 input save. Keep extracted games and generated recompilation output outside Git

@@ -5,13 +5,13 @@
 // every draw, so the request has to be made again by the next step's logic. The talk camera does
 // this on every step of an over-the-shoulder shot: the listener, usually Link, is hidden
 // (dCamera_c::talktoCamera, talkShoulder).
-// With frame interpolation and true 60 the in-between (hold) passes draw without logic: nothing sets
+// With frame interpolation the in-between (hold) passes draw without logic: nothing sets
 // the bit again after the logic pass's draw consumed it, so the actor was drawn on every in-between
 // frame and hidden on the logic frames - it flickered at 60/120/240 fps (issue #126).
 // The bookkeeping here gives every pass of a step the visibility the step's logic asked for: the
 // logic (full) pass records which actors it drew with the bit set, and the hold passes of the same
 // step set it again before their draw (which then clears it, as on the logic pass). Requests a hold
-// pass makes itself (true 60's 60 Hz processes) are kept as they are.
+// pass makes itself are kept as they are.
 #pragma once
 #include <algorithm>
 #include <cstdint>

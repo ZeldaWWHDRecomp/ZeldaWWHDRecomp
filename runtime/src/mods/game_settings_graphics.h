@@ -18,16 +18,15 @@ inline int scale_choice(float scale) {
     return best;
 }
 
-// Frame rate: interp::mode() 0 (30 fps), 1 (frame interpolation at interp::fps()), 2 (true 60), and 60 fps
-// (generated) (framegen.h: mode 0 with frame generation chosen; offered on Vulkan only, as the Settings
-// window offers it: the last choice, left out of the list elsewhere)
-inline constexpr const char* kRateNames[] = {"30 fps (original)", "40 fps", "60 fps", "120 fps", "240 fps", "True 60",  // (experimental: the Settings window says so; the page's plate is narrow)
+// Frame rate: interp::mode() 0 (30 fps), 1 (frame interpolation at interp::fps()), and 60 fps (generated)
+// (framegen.h: mode 0 with frame generation chosen; offered on Vulkan only, as the Settings window offers
+// it: the last choice, left out of the list elsewhere)
+inline constexpr const char* kRateNames[] = {"30 fps (original)", "40 fps", "60 fps", "120 fps", "240 fps",
                                              "60 fps (generated, experimental)"};
 inline constexpr int kRates[] = {30, 40, 60, 120, 240};  // the interpolated choices' fps (index 1..4)
-inline constexpr int kRateCount = 7, kTrue60 = 5, kGenerated = 6;
+inline constexpr int kRateCount = 6, kGenerated = 5;
 // generated: frame generation chosen and available (it runs at mode 0 only)
 inline int rate_choice(int mode, int fps, bool generated = false) {
-    if (mode == 2) return kTrue60;
     if (mode != 1) return generated ? kGenerated : 0;
     for (int i = 1; i < 5; i++)
         if (kRates[i] == fps) return i;
@@ -37,7 +36,6 @@ inline int rate_choice(int mode, int fps, bool generated = false) {
 struct Rate { int mode, fps; bool generated; };
 inline Rate rate_of(int choice) {
     if (choice <= 0 || choice >= kRateCount) return {0, 0, false};
-    if (choice == kTrue60) return {2, 0, false};
     if (choice == kGenerated) return {0, 0, true};
     return {1, kRates[choice], false};
 }

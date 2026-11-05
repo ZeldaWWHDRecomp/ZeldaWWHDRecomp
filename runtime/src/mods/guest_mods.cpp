@@ -97,7 +97,6 @@
 #include "story_treasure_chest.h"
 #include "mod_json.h"
 #include "input.h"
-#include "true60.h"
 #include "guest_addr.h"
 #include <atomic>
 #include <limits>
@@ -751,7 +750,7 @@ void svc_input(Cpu* c) {
     st32(a,p.buttons);stf32(a+4,p.lx);stf32(a+8,p.ly);stf32(a+12,p.rx);stf32(a+16,p.ry);
     st32(a+20,p.touch);stf32(a+24,p.tx);stf32(a+28,p.ty);
 }
-void svc_logic_dt(Cpu* c) {c->f[1].ps0=double(true60::dt())/30.0;}
+void svc_logic_dt(Cpu* c) {c->f[1].ps0=1.0/30.0;}  // one 30 Hz logic step (every mode)
 void svc_logic_step(Cpu* c) {uint64_t step=g_logic_step.load(std::memory_order_relaxed);c->r[3]=uint32_t(step>>32);c->r[4]=uint32_t(step);}
 bool setting_buffer(const Loaded& mod,uint32_t address,uint32_t bytes) {
     return address>=mod.m->mem_base&&uint64_t(address)+bytes<=uint64_t(mod.m->mem_base)+mod.region_size;

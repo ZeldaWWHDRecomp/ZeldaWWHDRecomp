@@ -52,7 +52,7 @@ void action_tests() {
         for(unsigned gate=0;gate<22;++gate) {
             c=action_fixture(a);
             switch(gate) {
-            case 0:focus=false;break;case 1:blocked=true;break;case 2:preview=true;break;
+            case 0:focus=false;break;case 1:blocked=true;break;case 2:blocked=true;break;  // (gate 2 was the retired True 60 preview)
             case 3:st32(player_addr+0x834,0);break;case 4:st32(player_addr+0x6A70,0x80);break;
             case 5:st32(player_addr+0x65B0,process);break;
             case 6:st32(GD(0x1046F0B0)+0x5B34,player_addr+4);break;

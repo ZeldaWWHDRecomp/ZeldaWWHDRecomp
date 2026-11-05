@@ -413,8 +413,8 @@ settings once per logic step.
 | `game.build` | STRING | `USA`, `EU` |
 | `display.drc_mode` | STRING | `window`, `pip`, `auto`, `off`, `gamepad` |
 | `display.aspect` | F64 | Aspect ratio of the current frame |
-| `render.interp_fps` | U32 | Frame rate shown: 30, the interpolation rate, or 60 in true 60 mode |
-| `render.true60` | BOOL | 0 or 1 |
+| `render.interp_fps` | U32 | Frame rate shown: 30 or the interpolation rate |
+| `render.true60` | BOOL | Always 0: True 60 was retired; kept so older mods still read a value. `wwhd_logic_dt` is one 30 Hz step (1/30 s) in every mode |
 | `settings.<id>` | BOOL, U32 or F64 | A setting of the item menu's Settings page by its ID: switches are BOOL, choices U32 (the choice's index), numbers F64. For example `settings.camera.invert-y`, `settings.direct-camera.speed`, `settings.screen.fov` |
 
 ```c
@@ -1434,7 +1434,7 @@ normal save and extracted HD game, the ZIP, source `catalogue.json`, an explicit
 private game-source JSON and a private output folder. The JSON maps declared game
 IDs to the player's local paths (for example `gc_wind_waker` to an RVZ); use `{}`
 for a mod without a game-source step. Run separately with `--region USA`/`EU` and
-`--renderer metal`/`vulkan`; `--mode` accepts `30`, `interp60` and `true60`.
+`--renderer metal`/`vulkan`; `--mode` accepts `30` and `interp60`.
 
 Before launching, the driver invokes the real installer with
 `--rebuild-code-mods --code-mods 0 --jobs N` and verifies its completed off cache.

@@ -8,7 +8,7 @@
 #include <sys/mman.h>
 #include <unistd.h>
 #endif
-// Test aids for the true 60 fps conversions (debug only; nothing here runs unless its env var is set).
+// Test aids for scenario runs and build comparisons (debug only; nothing here runs unless its env var is set).
 //
 //   WWHD_TEST_POKE=t:ADDR:HEX,...   at scenario time t (s, game time; see input.mm) writes the bytes
 //                                   HEX to guest memory at ADDR. ADDR is hex, or *PTR+OFF (the word
@@ -21,10 +21,8 @@
 //                                   in WWHD_SAVEINFO_AT=t1,t2,... to path.t1, path.t2, ...
 //   WWHD_ACTOR_DUMP=path:FN:SIZE,...  after every execute of a process whose execute function is FN
 //                                   (hex; "link" for daPy_lk_c) appends a record to path: header
-//                                   'ADMP', u64 logic step, u32 full pass, f32 dt, u32 process,
+//                                   'ADMP', u64 logic step, u32 full pass (1), f32 dt (1), u32 process,
 //                                   u32 size, then SIZE raw (big-endian guest) bytes of the process.
-//                                   tools/true60/field_rates.py compares such dumps between a 30 fps
-//                                   and a true 60 run to find per-step state that is not converted.
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,7 +33,6 @@
 
 #include "guest_addr.h"
 #include "runtime.h"
-#include "true60.h"
 #include "mods/fast_forward.h"
 #include "game_clock.h"
 #include "savestate.h"
@@ -44,7 +41,7 @@
 
 namespace interp { uint64_t logic_steps(); uint64_t pass_count(); bool hold_pass(); }
 
-namespace true60_test {
+namespace test_aids {
 namespace {
 uint32_t g_gameover_proc = 0;  // diagnostic checkpoint at the native save-window handoff
 struct Poke { double t; uint32_t ptr; bool deref; uint32_t off; std::vector<uint8_t> bytes; bool done = false; };
@@ -353,8 +350,9 @@ std::vector<DumpSpec> parse_dumps() {
 }  // namespace
 
 void rng_trace();
-// after each process execute (true60.cpp, also with true 60 off); fn = its execute function
-void after_execute(uint32_t proc, uint32_t fn, bool is_link, float dt) {
+// after each process execute (game_hooks.cpp); fn = its execute function
+void after_execute(uint32_t proc, uint32_t fn, bool is_link) {
+    const float dt = 1.0f;  // (the record keeps its step-length field)
     static std::vector<DumpSpec> dumps = parse_dumps();
     if (is_link) rng_trace();
     if (dumps.empty()) return;
@@ -403,7 +401,7 @@ bool dumping() {
     static const bool on = getenv("WWHD_ACTOR_DUMP") || getenv("WWHD_RNG_TRACE") || getenv("WWHD_MEM_DUMP") || getenv("WWHD_LINK_PRE") || getenv("WWHD_LINK_WARP");
     return on;
 }
-// WWHD_PROC_DIGEST=path (true 60 off; comparisons of two builds, e.g. tools/decomp_build/compare.py): after
+// WWHD_PROC_DIGEST=path (comparisons of two builds, e.g. tools/decomp_build/compare.py): after
 // every process execute one line: logic step, process id, profile name, size (process_profile_definition
 // +0x10), a 64-bit FNV-1a hash of the whole process, the execute function (actors), and for actors
 // (size >= fopAc_ac_c 0x3AC) the raw words of current.pos (+0x314).
@@ -511,10 +509,10 @@ void proc_digest(uint32_t proc) {
     if (size >= 0x3AC) fprintf(f, " %08X %08X %08X", ld32(proc + 0x314), ld32(proc + 0x318), ld32(proc + 0x31C));
     fputc('\n', f);
 }
-}  // namespace true60_test
+}  // namespace test_aids
 
 // WWHD_LIGHT_TRACE=path: point-light registrations (dKy_plight_set/priority_set/cut,
-// dKy_efplight_set/cut) with logic step, full pass and caller (true60 comparisons)
+// dKy_efplight_set/cut) with logic step, full pass and caller
 namespace {
 void light_trace(int fn, Cpu* c) {
     static FILE* f = getenv("WWHD_LIGHT_TRACE") ? fopen(getenv("WWHD_LIGHT_TRACE"), "w") : nullptr;
@@ -532,7 +530,7 @@ void hook_0255B9C8(Cpu* c) { light_trace(3, c); f_0255B9C8_orig(c); }
 void hook_0255BA9C(Cpu* c) { light_trace(4, c); f_0255BA9C_orig(c); }
 }
 
-namespace true60_test {
+namespace test_aids {
 // WWHD_LINK_PRE=path: Link's process (0x8284 bytes) right before each full-pass execute (same record format)
 uint64_t origin_step();
 void before_execute_link(uint32_t proc) {
@@ -589,7 +587,7 @@ void before_execute_link(uint32_t proc) {
 }
 }
 
-namespace true60_test {
+namespace test_aids {
 uint64_t g_origin_step = 0;
 // Called at the actual logic-step boundary, including frames that do not poll input.
 void logic_step(uint64_t step) {
@@ -644,16 +642,16 @@ extern "C" void hook_025626A4(Cpu* c) {
 void interp_exact_cull(Cpu* c, void (*orig)(Cpu*));  // interp.cpp
 // debug: WWHD_CULLLOG=path: fopAcM_cullingCheck (025D6CE8): step, full, actor, result
 extern "C" void f_025D6CE8_orig(Cpu* c);
-namespace true60_test { uint64_t origin_step(); }
+namespace test_aids { uint64_t origin_step(); }
 extern "C" void hook_025D6CE8(Cpu* c) {
     // debug: WWHD_T60_PAGEHASH=step:actor:path writes a hash per 4 KB page of 10000000..4A000000 at that
     // actor's culling check on the full pass of that scenario step (to diff two runs)
     static const char* ph = getenv("WWHD_T60_PAGEHASH");
-    if (ph && true60_test::origin_step() && !interp::hold_pass()) {
+    if (ph && test_aids::origin_step() && !interp::hold_pass()) {
         static uint64_t st = strtoull(ph, nullptr, 10);
         static uint32_t act = (uint32_t)strtoul(strchr(ph, ':') + 1, nullptr, 16);
         static bool done = false;
-        if (!done && c->r[3] == act && interp::logic_steps() == true60_test::origin_step() + st) {
+        if (!done && c->r[3] == act && interp::logic_steps() == test_aids::origin_step() + st) {
             done = true;
             if (FILE* f = fopen(strchr(strchr(ph, ':') + 1, ':') + 1, "w")) {
                 for (uint32_t a = 0x10000000; a < 0x4A000000; a += 0x1000) {
@@ -810,7 +808,7 @@ extern "C" void hook_02753D6C(Cpu* c) {
 // target acquisition, not marker drawing: five real nearby actors are submitted
 // through daBoomerang_c::setLockActor, with no sounds. No effect unless opted in.
 extern "C" void f_020CC020(Cpu*);
-namespace true60_test {
+namespace test_aids {
 void reticle_targets(Cpu* cpu, uint32_t link) {
     const uint32_t boom = ld32(link + 0x6594);
     if (boom < mem::kMem2Start || boom >= mem::kMem2End) return;

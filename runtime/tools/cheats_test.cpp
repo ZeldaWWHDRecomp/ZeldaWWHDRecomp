@@ -18,7 +18,6 @@ void log_msg(const char*, ...) {}
 namespace mods { uint64_t step() { return 1000; } }
 static std::string last_notice;
 namespace ss { void notice(const std::string& text) { last_notice=text; } }
-namespace true60 { float test_dt = 1; float dt() { return test_dt; } }
 uint32_t guest_call(Cpu* cpu, uint32_t address, std::initializer_list<uint32_t> args) {
     assert(address == 0x023F6564 && args.size() == 2);
     const uint32_t link = *args.begin();
@@ -177,16 +176,7 @@ int main() {
     assert(ldf32(link + 0x6A48) == 999); // optional fall protection is off
     assert(mods::moon_jump_move(link, x, z) && ld16(link + 0x322) == 3000);
     mods::moon_jump_step(&cpu, link, false);
-    std::array<uint8_t, 0x7000> full_actor;
-    std::memcpy(full_actor.data(), mem::ptr(link), full_actor.size());
-    true60::test_dt = .5f;
-    mods::moon_jump_step(&cpu, link, true);
-    assert(mods::moon_jump_move(link, x, z) && ld16(link + 0x322) == 4500);
-    mods::moon_jump_step(&cpu, link, false);
-    // Simulate true60's guest actor rollback; the host turn must also roll back.
-    std::memcpy(mem::ptr(link), full_actor.data(), full_actor.size());
-    true60::test_dt = 1;
-    mods::moon_jump_step(&cpu, link, true);
+    mods::moon_jump_step(&cpu, link, true);  // the next logic step turns on
     assert(mods::moon_jump_move(link, x, z) && ld16(link + 0x322) == 6000);
     mods::moon_jump_step(&cpu, link, false);
     mods::set_infinite(mods::kMoonNoFall, true);

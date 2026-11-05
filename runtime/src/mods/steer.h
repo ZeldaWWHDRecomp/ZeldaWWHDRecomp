@@ -64,7 +64,7 @@ public:
             offset_ = int16_t(offset_ + turn);
             if (std::abs(int(turn)) > kTurnJitter) turned_ = now;
         }
-        if (offset_ != 0 && now > turned_ + kEaseAfter && now != eased_) {  // (once per logic step: true 60 runs it twice)
+        if (offset_ != 0 && now > turned_ + kEaseAfter && now != eased_) {  // (once per logic step)
             eased_ = now;
             const int mag = std::abs(int(offset_)), d = std::max(mag / 10, int(units(kEaseMinDeg)));
             offset_ = mag <= d ? 0 : int16_t(offset_ > 0 ? offset_ - d : offset_ + d);

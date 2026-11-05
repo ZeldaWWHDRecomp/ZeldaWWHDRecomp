@@ -250,7 +250,7 @@ bool item_names_on_hud() {
 void item_ring_pad(input::PadState& p, bool repeat) {
     const int mode = g_mode.get();
     std::lock_guard<std::mutex> lk(g_mu);
-    if (repeat) {  // true 60's half passes: buttons repeat; fresh sticks must not walk while a controller picks
+    if (repeat) {  // interpolation's repeated read: buttons repeat; the stick must not walk while a controller picks
         if (g_ring.open() && !g_ring.by_touch()) p.lx = p.ly = 0;
         return;
     }
@@ -302,7 +302,7 @@ void item_ring_pad(input::PadState& p, bool repeat) {
 }
 
 // ---- the frame boundary (game thread, interp.cpp, every pass) ----
-void item_ring_service(Cpu* c, bool full, bool half60) {
+void item_ring_service(Cpu* c, bool full) {
     std::lock_guard<std::mutex> lk(g_mu);
     if (g_pending.kind == Action::kEquip) {
         const Action a = g_pending;
@@ -316,16 +316,11 @@ void item_ring_service(Cpu* c, bool full, bool half60) {
                 s ? ld8(s + kSaveSelect + 1) : 0, s ? ld8(s + kSaveSelect + 2) : 0, ld8(kPlaySelect), ld8(kPlaySelect + 1),
                 ld8(kPlaySelect + 2));
     }
-    // the pace: the game's pause timer, written each pass while the ring is open
-    // (full passes by the schedule; true 60's half passes held whenever the pace isn't normal, so Link's
-    // half-step preview never runs ahead of a held step and is then taken back; interpolation's in-between
-    // passes run no logic and are left alone)
+    // the pace: the game's pause timer, written each logic pass while the ring is open (interpolation's
+    // in-between passes run no logic and are left alone)
     const int pace = g_pace.get();
     const int v = g_ring.open() && full ? pause_value(pace, step() - g_open_step) : 0;
     if (v) st8(kNextPauseTimer, uint8_t(v));
-    // (a half pass runs no scene step, so nothing would take a "next" value there and it would hold the
-    // following full step: the running timer itself is set; the next full step counts it down)
-    if (g_ring.open() && half60 && pace != kPaceNormal && !ld8(kPauseTimer)) st8(kPauseTimer, 1);
     if (log_on() && g_ring.open() != g_paused_last) {
         static const char* const names[] = {"normal", "slow motion", "paused"};
         if (g_ring.open()) LOG("[ring] pace: held (%s, step %llu)", names[g_pace.get()], (unsigned long long)step());

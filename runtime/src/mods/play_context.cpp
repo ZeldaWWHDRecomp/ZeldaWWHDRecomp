@@ -5,7 +5,7 @@
 // overlay and a host-drawn HUD.
 //
 // - Reads happen on full logic steps only (interp.cpp calls play_context_step where the logic-step
-//   counter advances, after true 60's half-pass preview was taken back), as mods/jump.cpp decides.
+//   counter advances), as mods/jump.cpp decides.
 // - The game's own screens (event, message, menu) are hud_gate.cpp's reading, not read twice.
 // - The message's parts, the Picto Box screens, the wind compass and the zoom bars are noted when
 //   nw::lyt::Pane::Draw draws them (aspect.cpp's hook): a part counts as shown while it was drawn

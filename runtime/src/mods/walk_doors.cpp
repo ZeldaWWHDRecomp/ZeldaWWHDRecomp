@@ -5,7 +5,7 @@
 // From GreenNaugahyde/ZeldaWWHDRecompAndroid db65d60 (MPL-2.0), mods/walk_doors.cpp. In this port it is the
 // "Walk through" mode of Quick doors (mods.cpp: quick_doors() on and door_mode() == kDoorWalk; door scenes that
 // still run, such as locked doors, run fast as in the "Faster" mode). Changes to the fork's file: the three door
-// executes are not hooked (no hook lines of their own): fpcM_Execute's per-process gate (true60.cpp, hook_025DF940)
+// executes are not hooked (no hook lines of their own): fpcM_Execute's hook (game_hooks.cpp, hook_025DF940)
 // points the door's execute in its method table at a host function for the call (DoorExecuteWrap below), so the
 // game's fopAc_Execute (pause, event and culling checks) still decides whether the door runs; addresses go through
 // GC()/GD() for the other regional builds; the state is dropped when a save state is loaded (walk_doors_reset).
@@ -609,7 +609,7 @@ bool walk_door_exit() {
     return walk_doors() && std::chrono::steady_clock::now() < g_exit_until.load();
 }
 
-// fpcM_Execute's per-process gate (true60.cpp): while the mode is on, or a door of ours is still open, a door's
+// fpcM_Execute's hook (game_hooks.cpp): while the mode is on, or a door of ours is still open, a door's
 // execute in its method table (fopAc_ac_c::sub_method 0xF0, its execute +8) points at our host function for this
 // one call. The game's fopAc_Execute between the two still decides whether the door runs this step.
 DoorExecuteWrap::DoorExecuteWrap(uint32_t proc) {

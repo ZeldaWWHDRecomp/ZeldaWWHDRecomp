@@ -38,7 +38,7 @@ std::atomic<bool> g_chosen{true};
 std::atomic<int> g_set{-1};
 void sync_choice() {
     const int mode = interp::mode();
-    if (mode != 2 && mode != g_set.load()) {  // (true 60 is left alone)
+    if (mode != g_set.load()) {
         g_chosen = mode == 1;
         g_set = mode;
     }

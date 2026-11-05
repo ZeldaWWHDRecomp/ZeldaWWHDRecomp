@@ -7,7 +7,6 @@
 #include "../console_language.h"
 #include <cstdlib>
 #include <cstring>
-#include "../true60.h"
 #include <filesystem>
 #include <ctime>
 #include <vector>
@@ -236,10 +235,7 @@ static void write_crash_log(Cpu* c, const std::string& file, uint32_t line, cons
         }
         if (!found.empty()) fprintf(f, "texts on the game stack (the failed check's place and message):\n%s", found.c_str());
     }
-    fprintf(f, "60 fps pass: %s; true 60 %s, half pass %d, executing process %08X", interp::phase_name(),
-            true60::enabled() ? "on" : "off", (int)true60::half_pass(), true60::exec_proc());
-    if (uint32_t p = true60::exec_proc()) fprintf(f, " (words %08X %08X %08X %08X)", ld32(p), ld32(p + 4), ld32(p + 8), ld32(p + 12));
-    fprintf(f, ", dt %.2f\nlr %08X %s\n", true60::dt(), c->lr, name(c->lr).c_str());
+    fprintf(f, "60 fps pass: %s\nlr %08X %s\n", interp::phase_name(), c->lr, name(c->lr).c_str());
     for (uint32_t sp = c->r[1], i = 0; i < 40 && sp; i++) {
         uint32_t prev = ld32(sp);
         if (!prev || prev <= sp) break;

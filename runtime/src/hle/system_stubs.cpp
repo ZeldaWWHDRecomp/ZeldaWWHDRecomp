@@ -15,7 +15,7 @@
 #include "../rumble.h"
 #include "../motion/motion.h"
 
-namespace interp { bool repeat_input(); bool fresh_sticks(); void trace_read(const char*); uint64_t logic_steps(); }
+namespace interp { bool repeat_input(); void trace_read(const char*); uint64_t logic_steps(); }
 
 // nn::Result: bit 31 set = failure
 static constexpr uint32_t kResultOk = 0;
@@ -112,14 +112,8 @@ HLE(vpad, VPADRead) {
     input::PadState p = repeat ? last_p : crashrec::read(0);  // live input, recorded/replayed by crash recovery
     if (!repeat) mods::one_screen_pad(p);  // One screen: Minus pauses as Plus (Off-TV Play has no TV to switch to)
     if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
-    uint32_t live_virt = p.virt;  // the virtual inputs (Jump, moon jump) as read now: not on a stale repeat
-    bool live = !repeat;
-    if (repeat && interp::fresh_sticks()) {  // true 60: sticks every pass, buttons on full passes
-        input::PadState f = input::read();
-        p.lx = f.lx; p.ly = f.ly; p.rx = f.rx; p.ry = f.ry;
-        live_virt = f.virt;  // a jump pressed on a half step reaches the next full step (jump_policy::Latch)
-        live = true;
-    }
+    const uint32_t live_virt = p.virt;  // the virtual inputs (Jump, moon jump) as read now: not on a stale repeat
+    const bool live = !repeat;
     if (!input::pro_controller()) mods::item_ring_pad(p, repeat);  // X / Y / R: tap, or hold for the item ring
     if (!input::pro_controller()) mods::context_touch_pad(p, repeat);  // touch play: items by tap, put-away, ZL latch
     if (!input::pro_controller()) mods::touch_talk_pad(p, repeat);  // talks, answers, shops by touch; hold to go on

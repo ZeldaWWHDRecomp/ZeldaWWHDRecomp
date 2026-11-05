@@ -86,21 +86,17 @@ static void test_ladder_rest() {
 
 static void test_ladder_timing() {
     // A rung clip of N frames played at rate r ends after ceil(N / r) logic steps; with the factor it
-    // ends k times sooner, at 30 Hz and at true 60 (two half steps of dt = 0.5 per original step,
-    // J3DFrameCtrl::update advancing rate * dt). The stored rate is the same on both passes.
+    // ends k times sooner (J3DFrameCtrl::update advancing rate per 30 Hz step).
     const float frames = 24.f;
     for (float k : {1.f, 1.5f, 2.f, 3.f})
-        for (float stick_rate : {1.f, 1.5f, 2.f})
-            for (bool true60 : {false, true}) {
-                const float dt = true60 ? .5f : 1.f;
-                const float rate = stick_rate * k;
-                float frame = 0, steps = 0;
-                while (frame < frames) frame += rate * dt, steps += dt;
-                const float expected = std::ceil(frames / rate / dt) * dt;
-                assert(std::fabs(steps - expected) < 1e-4f);
-                // one second of climbing covers k times the stock rungs (to the step)
-                if (!true60) assert(std::fabs(frames / rate - frames / stick_rate / k) < 1e-4f);
-            }
+        for (float stick_rate : {1.f, 1.5f, 2.f}) {
+            const float rate = stick_rate * k;
+            float frame = 0, steps = 0;
+            while (frame < frames) frame += rate, steps += 1;
+            assert(std::fabs(steps - std::ceil(frames / rate)) < 1e-4f);
+            // one second of climbing covers k times the stock rungs (to the step)
+            assert(std::fabs(frames / rate - frames / stick_rate / k) < 1e-4f);
+        }
 }
 
 static void test_sail() {

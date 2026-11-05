@@ -813,7 +813,7 @@ std::string performance_report() {
     h.gpu = performance_device();
     h.renderer = render::api_name(render::active());
     h.host = hostui::name();
-    h.fps = framegen::requested() ? "60 fps (generated)" : interp::mode() == 2 ? "true 60 fps" : interp::mode() == 1 ? std::to_string(interp::fps()) + " fps interpolation" : "30 fps";
+    h.fps = framegen::requested() ? "60 fps (generated)" : interp::mode() == 1 ? std::to_string(interp::fps()) + " fps interpolation" : "30 fps";
     if (interp::mode() == 1) h.keepGameSpeed = interp::paced_interpolation();  // at that rate
     h.scale = hostui::res_scale();
 #ifdef WWHD_HAS_VULKAN
@@ -829,8 +829,8 @@ std::string performance_report() {
     d.overridden = interp::display_hz_overridden();
     d.requestedHz = interp::requested_display_hz();
     interp::display_hz_seen(&d.seenLo, &d.seenHi);
-    // the drawn rate: frame interpolation's (capped to the display), true 60's or the original 30
-    d.fps = interp::mode() == 1 ? interp::output_fps() : interp::mode() == 2 ? 60 : 30;
+    // the drawn rate: frame interpolation's (capped to the display) or the original 30
+    d.fps = interp::mode() == 1 ? interp::output_fps() : 30;
     h.display = reporthdr::display_line(d);
     report = reporthdr::format(h) + report;
     return report;
@@ -913,8 +913,6 @@ void tab_graphics() {
          "7 at 240 fps). The display shows at most its refresh rate: higher choices draw that many.\n"
          "40 fps draws 4 frames for every 3 steps (1 in-between frame per 3 steps), for 40, 80 and\n"
          "120 Hz screens (a Steam Deck set to 40 Hz or 80 Hz, phones with a 120 Hz panel).");
-    if (radio("True 60 (experimental)", m == 2)) post_changed([] { framegen::set_chosen(false); interp::set_mode(2); });
-    help("True 60 runs the game logic at 60 steps per second");
     if (genShown) {
         if (radio("60 fps (generated, experimental)", gen, !genFixed)) post_changed([] { interp::set_mode(0); framegen::set_chosen(true); });
         help("The game runs at its own 30 fps, and every other frame is made on the graphics chip from the\n"
@@ -3557,7 +3555,6 @@ void activate_shortcut(int action, KeyOrigin origin) {
         case kAOHires: if (render::feature_available(render::kFeatureAOHires)) render::set_ao_hires(!render::ao_hires()); break;
         case kAniso: if (render::feature_available(render::kFeatureAniso)) render::set_aniso(!render::aniso()); break;
         case kInterpolation: interp::toggle_fps(60); break;
-        case kTrue60: interp::set_mode(interp::mode() == 2 ? 0 : 2); break;
         case kFXAA: if (render::feature_available(render::kFeatureFXAA)) render::set_fxaa(!render::fxaa()); break;
         case kPiP:
             if (hostui::drc_mode() != gfx::kDrcPip) { hostui::set_drc_mode(gfx::kDrcPip); hostui::show_drc(true); }

@@ -13,7 +13,6 @@
 #include <sys/mman.h>
 #endif
 void log_msg(const char*, ...) {}
-namespace true60 { float test_dt = 1; float dt() { return test_dt; } }
 namespace mods {
 static int moon = 0; bool infinite(int which) { return moon & which; }
 uint64_t step() { return 0; }  // (the Deku Leaf part of jump.cpp reads the logic step; mods.cpp is not linked)
@@ -57,10 +56,6 @@ int main() {
     mods::jump_input(0);
     mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
     mods::jump_input(input::kVirtJump);
-    true60::test_dt = .5f;  // a true 60 preview never starts a jump
-    mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
-    assert(calls.empty());
-    true60::test_dt = 1;
     mods::jump_step(&cpu, link, true);
     assert(calls.size() == 1 && calls[0] == 0x023F7958 && cpu.r[3] == link);
     assert(ldf32(link + 0x340) == 16.f && (ld32(link + 0x834) & 0xE0) == 0);
@@ -111,17 +106,14 @@ int main() {
     mods::jump_input(input::kVirtJump); mods::jump_step(&cpu, link, true);
     assert(calls.size() == 4);
     mods::jump_step(&cpu, link, false);
-    // True 60: a press that begins on a half step (preview, dt < 1) and is let go before the next full
-    // step still jumps there, once; one held through several full steps jumps once
+    // A press read on an in-between pass (frame interpolation: no logic) and let go before the next
+    // logic step still jumps there, once; one held through several logic steps jumps once
     mods::moon = 0;
     st32(link + 0x65F0, 0x04);
     mods::jump_input(0); mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
-    true60::test_dt = .5f;
-    mods::jump_input(input::kVirtJump);  // the half step's read
-    mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
-    assert(calls.size() == 4);  // the preview starts nothing
-    true60::test_dt = 1;
-    mods::jump_input(0);  // let go before the full step's read
+    mods::jump_input(input::kVirtJump);  // the in-between pass's read
+    assert(calls.size() == 4);  // nothing starts between logic steps
+    mods::jump_input(0);  // let go before the logic step's read
     mods::jump_step(&cpu, link, true);
     assert(calls.size() == 5 && calls[4] == 0x023F7958);
     mods::jump_step(&cpu, link, false);
@@ -130,16 +122,11 @@ int main() {
         mods::jump_input(0); mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
     }
     assert(calls.size() == 5);
-    true60::test_dt = .5f;
     mods::jump_input(input::kVirtJump);
-    mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
-    true60::test_dt = 1;
-    for (int i = 0; i < 3; i++) {  // held on through three full steps (and their half steps): one jump
+    for (int i = 0; i < 3; i++) {  // held on through three logic steps (and their in-between passes): one jump
         mods::jump_input(input::kVirtJump); mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
         st32(link + 0x65F0, 0x04);
-        true60::test_dt = .5f;
-        mods::jump_input(input::kVirtJump); mods::jump_step(&cpu, link, true); mods::jump_step(&cpu, link, false);
-        true60::test_dt = 1;
+        mods::jump_input(input::kVirtJump);  // the in-between pass's read
     }
     assert(calls.size() == 6);
     // running (stick pushed): the game's speed kept, the air step on the stick rule

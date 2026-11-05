@@ -34,8 +34,8 @@ static bool mouseCamera=false, wheelOption=false;
 namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return wheelOption;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} }
 namespace interp { void set_mode(int){} uint64_t logic_steps(){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
-namespace true60 { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }  // test scenario clock (input_sdl.cpp)
-namespace true60_test { void set_origin_step(uint64_t){} void tick(double,bool){} }
+namespace game_hooks { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }  // test scenario clock (input_sdl.cpp)
+namespace test_aids { void set_origin_step(uint64_t){} void tick(double,bool){} }
 static int lockOnResets=0,quickUseResets=0,quickUseFilters=0;static bool quickUsePending=false;
 static input::PadState quickUseSample{};
 namespace mods {
@@ -77,7 +77,7 @@ namespace overlay { void offer_controller_setup(const std::string&,const std::st
     else if (a >= input_map::kLoad1 && a <= input_map::kLoad5) ss::request_load(a-input_map::kLoad1+1);
     else if (a == input_map::kPhoto) screenshot::key_down(code);
     else if (a >= input_map::kResolution && a <= input_map::kFXAA) {
-     const char keys[] = {'R','O','M','N','6','7','8'};
+     const char keys[] = {'R','O','M','N','6','8'};
      gfxvk::graphics_hotkey(keys[a-input_map::kResolution],true);
     }
    }
@@ -427,11 +427,13 @@ int main(int argc,char** argv){
  input::held_keys(held);
  for(const char* id:{"F1","F2","F3","F4","F5"})assert(!held[input_map::key_from_id(id)]);
  auto graphicsEvent=[&](SDL_Scancode code,SDL_Window* window, bool repeat=false, Uint32 type=SDL_EVENT_KEY_DOWN,SDL_Keymod mod=SDL_KMOD_NONE){SDL_Event e{};e.type=type;e.key.scancode=code;e.key.windowID=SDL_GetWindowID(window);e.key.repeat=repeat;e.key.mod=mod;input::handle_event(e);};
- for(auto code:{SDL_SCANCODE_R,SDL_SCANCODE_O,SDL_SCANCODE_M,SDL_SCANCODE_N,SDL_SCANCODE_8,SDL_SCANCODE_6,SDL_SCANCODE_7}){
+ for(auto code:{SDL_SCANCODE_R,SDL_SCANCODE_O,SDL_SCANCODE_M,SDL_SCANCODE_N,SDL_SCANCODE_8,SDL_SCANCODE_6}){
   int before=graphicsRequests;graphicsEvent(code,game);assert(graphicsRequests==before+1);
   graphicsEvent(code,game,true);graphicsEvent(code,game,false,SDL_EVENT_KEY_UP);graphicsEvent(code,controls);graphicsEvent(code,game,false,SDL_EVENT_KEY_DOWN,SDL_KMOD_CTRL);assert(graphicsRequests==before+1);
  }
- assert(graphicsKey=='7');input::release_keys();
+ assert(graphicsKey=='6');
+ {int before=graphicsRequests;graphicsEvent(SDL_SCANCODE_7,game);assert(graphicsRequests==before);}  // key 7 (True 60) is retired
+ input::release_keys();
  // Screenshot (F10 by default): one per press, never a held game key; rebinding moves it
  graphicsEvent(SDL_SCANCODE_F10,game);graphicsEvent(SDL_SCANCODE_F10,game,true);assert(shots==1);
  input::held_keys(held);assert(!held[input_map::key_from_id("F10")]);
@@ -439,7 +441,7 @@ int main(int argc,char** argv){
  {auto m=input_map::current();m.keys[input_map::kScreenshot]={input_map::key_from_id("F9"),input_map::kNoKey};input_map::set_current(m,false);
   graphicsEvent(SDL_SCANCODE_F10,game);assert(shots==1);graphicsEvent(SDL_SCANCODE_F9,game);assert(shots==2);
   m.keys[input_map::kScreenshot]={input_map::key_from_id("F10"),input_map::kNoKey};input_map::set_current(m,false);input::release_keys();}
- set_env("WWHD_NO_HOST_INPUT","1");graphicsEvent(SDL_SCANCODE_R,game);assert(graphicsRequests==7);set_env("WWHD_NO_HOST_INPUT",nullptr);
+ set_env("WWHD_NO_HOST_INPUT","1");graphicsEvent(SDL_SCANCODE_R,game);assert(graphicsRequests==6);set_env("WWHD_NO_HOST_INPUT",nullptr);
  // the text prompt: typed text goes to it, keys of every game window to overlay::key, none to the game
  promptShown=true;input::update();
  SDL_Event typed{};typed.type=SDL_EVENT_TEXT_INPUT;typed.text.text="Link";input::handle_event(typed);assert(promptText=="Link");
