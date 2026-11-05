@@ -12,6 +12,7 @@ import java.io.IOException;
 final class SaveSession {
     // Retained until the dedicated :game process exits, including Activity recreation.
     private static SessionLease gameLease;
+    private static File gameRoot, preparedSave;
     static File root(Context context) throws IOException {
         File root = context.getExternalFilesDir(null);
         if (root == null) throw new IOException("App storage is unavailable.");
@@ -23,9 +24,27 @@ final class SaveSession {
         File root = root(context);
         SessionLease lease = SessionLease.acquire(root);
         try {
-            store(root).prepareForGame();
+            gameRoot = root;
             gameLease = lease;
         } finally { if (gameLease == null) lease.close(); }
+    }
+
+    static synchronized void prepareSelectedGameSave(String directory) throws IOException {
+        if (gameLease == null || gameRoot == null) throw new IOException("The game save session is unavailable.");
+        File selected = new File(directory);
+        if (!selected.isAbsolute()) throw new IOException("The selected save directory must be absolute.");
+        selected = selected.getCanonicalFile();
+        if (preparedSave != null) {
+            if (!preparedSave.equals(selected)) throw new IOException("The save location cannot change during a game session.");
+            return;
+        }
+        GameSavePreparation.prepare(gameRoot, selected, SaveSession::sync);
+        preparedSave = selected;
+    }
+
+    static synchronized void prepareLegacyGame() throws IOException {
+        if (gameRoot == null) throw new IOException("The game save session is unavailable.");
+        prepareSelectedGameSave(new File(gameRoot, "save").getAbsolutePath());
     }
 
     static TransactionalSaveStore store(File root) {

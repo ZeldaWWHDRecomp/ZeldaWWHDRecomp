@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mods: profile mods get their own saves** (#385). A mod can now declare its own save profile in its manifest. Its
+  saves, save backups, settings and save states are then kept apart from your normal game, including when a launcher
+  passes `--save`, so a profile mod can't overwrite an ordinary save. While a profile is running, its saves and mods
+  stay fixed until you exit. Turning the mod off (or using **Switch all mods off**) takes effect on the next launch,
+  which also gives Android players a way back to the normal game without reinstalling. Damaged or unreadable profile
+  data is left untouched instead of being overwritten, and a mod that fails to start now stops with a message
+  explaining how to recover.
 - **Android: Turnip on Adreno 6xx GPUs runs without UBWC** (#420, from the Nycolazs and GreenNaugahyde Android forks,
   thanks @Nycolazs and @GreenNaugahyde). With a custom Turnip driver, Adreno 6xx phones (seen on a Galaxy S20 FE)
   could restart at the first frame above 1x resolution. On those GPUs Turnip now starts with its bandwidth

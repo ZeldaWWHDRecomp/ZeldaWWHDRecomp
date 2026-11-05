@@ -45,6 +45,7 @@ struct State {
     std::string title_id;       // "0005000010143500" (meta.xml)
     uint32_t title_version = 0;
     std::string game_hash;      // FNV-1a of cking.rpx, hex (which executable; not its contents)
+    std::string save_profile;   // optional provider/seed namespace; absent = ordinary gameplay
     std::string runtime;        // "v0.2.6 (abc1234)"
     std::string created;        // local time, "2026-10-08 14:03:11"
     int controller = 0;         // optional: 0 unknown, 1 GamePad, 2 Pro Controller
