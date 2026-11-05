@@ -34,6 +34,7 @@ Driver Store::read(const fs::path& dir) const {
     auto string=[&](const char* key,bool required=true){const auto& v=m.get(key);require(!required||v.type==mods::json::Value::String,"Driver metadata field missing");auto s=v.string();require(s.size()<=512&&s.find_first_of("\r\n\0",0,3)==s.npos,"Invalid driver metadata text");return s;};
     const auto& schema=m.get("schemaVersion");require(schema.type==mods::json::Value::Number&&schema.number==1,"Unsupported driver metadata schema");
     d.library=string("libraryName");d.name=string("name");d.version=string("driverVersion",false);if(d.version.empty())d.version=string("packageVersion",false);
+    d.vendor=string("vendor",false);
     require(!d.name.empty()&&!d.library.empty()&&d.library.ends_with(".so")&&d.library.find_first_of("/\\:")==d.library.npos&&d.library!="..","Invalid driver library name");
     auto api=m.get("minApi");require(api.type==mods::json::Value::Number&&std::isfinite(api.number)&&api.number>=0&&api.number<=1000&&std::floor(api.number)==api.number,"Invalid driver minimum API");d.min_api=int(api.number);
     for(const auto& entry:fs::directory_iterator(dir)) {

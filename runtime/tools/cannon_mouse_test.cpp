@@ -28,7 +28,7 @@ bool direct_camera(){return false;} bool direct_boat_speed(){return false;}
 float camera_speed(){return 1;} bool first_person_wheel(){return false;}
 uint64_t step(){return clock_step;} double game_time(){return double(clock_step)/30;}
 bool trace_on(){return false;} void trace(const char*,...){}
-void link_executed(uint32_t){} void lock_on_filter_pad(input::PadState&){}
+void link_executed(uint32_t){} void lock_on_filter_pad(input::PadState&){} void leaf_filter_pad(input::PadState&){}
 float steer_swing_degrees(bool){return 0;}
 }
 namespace motion {

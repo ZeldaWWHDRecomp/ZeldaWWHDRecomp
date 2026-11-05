@@ -60,6 +60,7 @@ struct Controller {
     double sinceDown = 1e9, sinceUp = 1e9;
     int room = 0;
     bool settle = false;
+    int upperLimit = 0;  // the highest-resolution level a step up may reach (MemoryGuard::cap; a tight memory: the level)
 
     void reset(int lowestLevel) {
         *this = Controller{};
@@ -102,7 +103,7 @@ struct Controller {
                 if (sinceUp < kUndoneWithin) hold = std::min(kHoldMax, hold * 2);
                 sinceDown = 0;
             }
-        } else if (level > 0) {
+        } else if (level > upperLimit) {
             const double r = double(kLevels[level - 1]) / kLevels[level];
             const double predicted = d.share * r * r;
             room = predicted < kUpShare ? room + 1 : 0;
@@ -119,6 +120,55 @@ struct Controller {
         d.changed = level != before;
         return d;
     }
+};
+
+// Memory (Android): when the room above the system's low-memory line falls under `line` MB, the scale goes down a
+// level (at most every second; under half the line straight to the lowest level) and that level becomes the upper
+// limit; no step up while the room is under twice the line. The limit goes back up one level per 10 s once the room
+// stayed above twice the line for a minute (and the last step down is a minute ago). Devices with little memory
+// keep the limit at the level that keeps the 3D view at 1x at most, and start there.
+// A Tegra X1 (3 GB) at 2x was ended by the low-memory killer after 13 min while the scale swung back and forth.
+// From GreenNaugahyde/ZeldaWWHDRecompAndroid v0.9.9 (db65d60, runtime/src/vk/vk_dynres.cpp memory_step), MPL-2.0;
+// here in this file's levels (one level is about the fork's two 0.05 steps).
+struct MemoryGuard {
+    static constexpr double kDownEvery = 1.0, kRoomFor = 60.0, kUpEvery = 10.0;
+    int cap = 0;           // the highest-resolution level allowed (0: no limit)
+    int floor = 0;         // the limit never goes above this level (devices with little memory: 1x at most)
+    double sinceDown = 1e9, sinceUp = 1e9, room = -1;  // room: seconds with room above twice the line (-1: none)
+
+    // the level for a scale base * kLevels[level] of 1x at most (low-memory devices), within 0..lowest
+    static int one_x_level(float base, int lowest) {
+        int l = 0;
+        while (l < lowest && base * kLevels[l] > 1.0f + 1e-4f) l++;
+        return l;
+    }
+    void start_capped(int level) { cap = floor = level; sinceDown = 0; room = -1; }
+    // one measurement (`seconds` since the last), `headroomMb` < 0: unknown (nothing changes). Returns the level
+    // to use now given the current one; the controller is not to go above `cap`.
+    int step(double seconds, int headroomMb, int lineMb, int level, int lowest) {
+        sinceDown += seconds;
+        sinceUp += seconds;
+        if (headroomMb < 0 || lineMb <= 0) return std::max(level, cap);
+        if (headroomMb < lineMb) {
+            room = -1;
+            const bool far = headroomMb < lineMb / 2;
+            if (!far && sinceDown < kDownEvery) return std::max(level, cap);
+            const int to = far ? lowest : std::min(lowest, level + 1);
+            if (to != level) sinceDown = 0;
+            cap = std::max(cap, to);
+            return to;
+        }
+        if (headroomMb < 2 * lineMb) { room = -1; return std::max(level, cap); }
+        if (cap > floor) {
+            room = room < 0 ? 0 : room + seconds;
+            if (room >= kRoomFor && sinceDown >= kRoomFor && sinceUp >= kUpEvery) {
+                cap--;
+                sinceUp = 0;
+            }
+        }
+        return std::max(level, cap);
+    }
+    bool tight(int headroomMb, int lineMb) const { return headroomMb >= 0 && headroomMb < 2 * lineMb; }
 };
 
 // GPU busy time from command buffer intervals that may overlap or come out of order: each interval

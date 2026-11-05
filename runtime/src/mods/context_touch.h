@@ -13,6 +13,8 @@
 //       dir/item_HH.png   the game's icon for item number HH (hex), RGBA PNG 128 x 128
 //       dir/pose_HH.png   Link in the pose of action code HH (link_poses.h), RGBA PNG 128 x 128; only the
 //                         actions with a pose, and none when Link's model can't be read
+//       dir/pose_HH_KK.png the same with the thing of kind KK in his hands (a button's variant, below); Java
+//                         falls back to pose_HH.png when there is none
 //
 // Idea from the GreenNaugahyde Android fork (GreenNaugahyde/ZeldaWWHDRecompAndroid, MPL-2.0),
 // ControlsView's context buttons; reimplemented for our design.
@@ -40,7 +42,13 @@ enum : int32_t {
     kShown = 1 << 0,
     kKindShift = 1, kKindMask = 3 << 1,  // 0 plain, 1 action word, 2 item icon, 3 fast forward
     kHeld = 1 << 3,  // natively held (a latched item, the ZL latch): draw it pressed
+    kVariantShift = 8, kVariantMask = 0xFF << 8,  // an action's picture variant (ctxbtn::ButtonView::variant): pose_HH_KK.png
 };
+
+// The context rules (hiding buttons, the game's words and pictures, the game's own cluster hidden) apply in the
+// Flexible style only: the Classic layout hides no button and shows the plain pad (style: touch_style::Style,
+// 0 Classic, 1 Flexible). From the GreenNaugahyde Android fork (MPL-2.0), ControlsView.contextActive().
+inline bool context_rules(bool option_on, int style) { return option_on && style == 1; }
 
 constexpr int kPackVersion = 1;
 constexpr int kButtons = 4;  // first per-button slot
@@ -70,7 +78,8 @@ inline void pack(const ctxbtn::Buttons& b, const Extra& e, int32_t* out, int n) 
     v[3] = startup_touch::pack(e.startup_scene);
     for (int i = 0; i < ctxbtn::kCount; i++) {
         const ctxbtn::ButtonView& bv = b.b[i];
-        v[kButtons + 3 * i] = (bv.shown ? kShown : 0) | (int32_t(bv.kind) << kKindShift) | ((e.held >> i & 1) ? kHeld : 0);
+        v[kButtons + 3 * i] = (bv.shown ? kShown : 0) | (int32_t(bv.kind) << kKindShift) | ((e.held >> i & 1) ? kHeld : 0) |
+                              (int32_t(bv.variant) << kVariantShift);
         v[kButtons + 3 * i + 1] = bv.label;
         v[kButtons + 3 * i + 2] = e.ring[i];
     }

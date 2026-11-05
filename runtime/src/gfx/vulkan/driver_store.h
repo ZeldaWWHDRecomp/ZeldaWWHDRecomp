@@ -6,7 +6,7 @@
 namespace gfxvk::drivers {
 struct DeviceLoss { std::string driver; bool custom = false; };
 struct Driver {
-    std::string id, name, version, library;
+    std::string id, name, version, library, vendor;  // vendor: meta.json "vendor" (optional, e.g. "Mesa")
     int min_api = 0;
     std::filesystem::path directory;
 };

@@ -9,7 +9,7 @@ inline unsigned block_bytes(unsigned type) { return type == 1 || type == 4 ? 8 :
 inline uint32_t word(const uint8_t* p, unsigned n) { return uint32_t(p[n]) | uint32_t(p[n+1]) << 8; }
 // BC3 alpha / BC4 / BC5 channel block (2 endpoint bytes, 48 selector bits). Which palette a block
 // uses is decided on the raw endpoints: signed -127 > -128 is the 8-value mode although both decode
-// to -1.0 (D3D / Khronos BC4 rule; native BC hardware agrees). Selector 6 / 7 of the 6-value mode
+// to -1.0 (D3D / Khronos BC4 rule; Apple GPUs agree, NVIDIA's clamp -128 first). Selector 6 / 7 of the 6-value mode
 // are the constants 0 / 255 (signed: -127 / 127), never interpolants.
 inline bool eight_values(const uint8_t* p, bool sign) {
     return sign ? int8_t(p[0]) > int8_t(p[1]) : p[0] > p[1];
