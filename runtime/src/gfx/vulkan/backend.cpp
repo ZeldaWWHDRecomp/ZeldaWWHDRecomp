@@ -4140,13 +4140,14 @@ void swap() {
       if (reproj::enabled()) LOG("[vulkan perf] framegen %s", reproj::perf_line().c_str());
       {  // draw.cpp: totals since the start (the pass subset's no-stutter check compares them ON vs OFF)
         extern uint64_t g_pipelineSyncCompiles, g_pipelineRenderWaits, g_pipelineBudgetWaits;
-        extern uint64_t g_backgroundRequests, g_backgroundAdmitted, g_backgroundDeclined;
+        extern uint64_t g_backgroundRequests, g_backgroundAdmitted, g_backgroundDeclined, g_backgroundWaits;
         LOG("[vulkan pipeline stalls] %llu compiled on the render thread, %llu render-thread waits for a compile, "
-            "%llu bounded waits (Shader compile Fast); background lane: %llu requests, %llu admitted, %llu declined",
+            "%llu bounded waits (Shader compile Fast); background lane: %llu requests, %llu admitted, %llu declined, "
+            "%llu waited for",
             (unsigned long long)g_pipelineSyncCompiles, (unsigned long long)g_pipelineRenderWaits,
             (unsigned long long)g_pipelineBudgetWaits,
             (unsigned long long)g_backgroundRequests, (unsigned long long)g_backgroundAdmitted,
-            (unsigned long long)g_backgroundDeclined);
+            (unsigned long long)g_backgroundDeclined, (unsigned long long)g_backgroundWaits);
       }
       if (R.renderPasses) {
         const auto created = pass_caches().framebuffers_created();

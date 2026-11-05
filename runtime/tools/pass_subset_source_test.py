@@ -62,6 +62,9 @@ check("if (!covSlot && !variant.background && pipeline_groups::sweeping()" in pi
 check("if (!variant.background)\n      for (const uint32_t group : pipeline_groups::sweeping_all())" in pipe,
       "pipeline(): background variants get no sweep groups")
 check("if (variant.background) {\n    // (not a template miss" in pipe, "pipeline(): background variants aren't template misses")
+drain = body(draw, "void drain_pending_guest_pipelines()")
+check("!value.pendingCompile->background" in drain, "the cache checkpoint's drain waits for background variants")
+check("pending->background = variant.background;" in pipe, "pipeline(): background pendings are marked")
 # 4. every masked request is a background one
 for call in re.findall(r"\{\.clearMask = [^}]*\}", draw):
     check(call.endswith(".background = true}"), f"a masked pipeline request that isn't a background one: {call}")

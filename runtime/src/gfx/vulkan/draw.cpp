@@ -73,6 +73,8 @@ namespace gfxvk {
 // background-lane requests / admissions / declines (the pass subset's masked variants)
 uint64_t g_pipelineSyncCompiles = 0, g_pipelineRenderWaits = 0, g_pipelineBudgetWaits = 0;
 uint64_t g_backgroundRequests = 0, g_backgroundAdmitted = 0, g_backgroundDeclined = 0;
+uint64_t g_backgroundWaits = 0;  // waits for a background variant: must stay 0 (the shutdown drain aside)
+bool g_drainingPipelines = false;  // drain_pending_guest_pipelines (shutdown): its waits aren't counted
 namespace {
 bool preparation_stats_enabled() {
   static const bool enabled=std::getenv("WWHD_VK_STATS")!=nullptr;
@@ -659,6 +661,7 @@ struct PendingPipeline {
   // false: a HUD coverage variant (hud_coverage.h) or a pass subset's masked variant (pass_reuse.h),
   // never recorded as a recipe
   bool keepRecipe = true;
+  bool background = false;  // compiled in the background lane (PipelineVariant::background)
   ~PendingPipeline() {
     // Even abandoned jobs can still read these immutable prerequisites.
     if (ticket) ticket->discard_and_wait();
@@ -865,7 +868,7 @@ Pipeline& resolve_pending_pipeline(Pipeline& pipeline, bool wait = true, bool pr
           }
         pending.ticket->prioritize();
       }
-      ++g_pipelineRenderWaits;
+      if (!g_drainingPipelines) ++(pending.background ? g_backgroundWaits : g_pipelineRenderWaits);
       if (present) begin_pipeline_pending_frame();
       built = pending.ticket->wait(present ? std::function<void()>(present_completed_frame_while_pipeline_pending)
                                            : std::function<void()>{});
@@ -1582,6 +1585,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
       for (const uint32_t group : pipeline_groups::sweeping_all()) recipe->add_group(group);
     pending->recipe = std::move(recipe);
     pending->keepRecipe = !covSlot && !variant.background;
+    pending->background = variant.background;
     // The owner waits for its ticket before destroying modules or itself.
     // Capturing a shared owner here would form an owner/ticket/job cycle.
     pending->shaders[0]=vs; pending->shaders[1]=ps;
@@ -3521,7 +3525,15 @@ void reset_ao_private_cache() {
   }
 }
 void drain_pending_guest_pipelines() {
-  for (auto& [key, value] : pipelines) resolve_pending_pipeline(value);
+  // (a background variant is not waited for: never recorded, nothing here needs it; the compiler's
+  // shutdown, finish_pipeline_demand, lets its lane finish)
+  g_drainingPipelines = true;
+  try {
+    for (auto& [key, value] : pipelines)
+      if (!value.pendingCompile || !value.pendingCompile->background) resolve_pending_pipeline(value);
+  }
+  catch (...) { g_drainingPipelines = false; throw; }
+  g_drainingPipelines = false;
 }
 void reset_pipeline_lookup_cache() { lastPipelineLookup = {}; pipelineLookaside = {}; samplerMemo = {}; drawBatchState = {}; continuedEyes = {}; }
 uint64_t draw_batch_submissions() { return drawBatchSubmissions; }
