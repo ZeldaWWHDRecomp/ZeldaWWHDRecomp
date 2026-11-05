@@ -16,6 +16,10 @@ struct BcDecoderChoice {
 // as vertical stripes and checkerboards there while Mesa Turnip on the same phone was correct.
 // The CPU decoder needs no shader at all. Driver id 0 with Qualcomm's vendor id is a driver
 // without VK_KHR_driver_properties, i.e. an old proprietary one (Turnip reports its id).
+// Huawei GPUs (PCI vendor 0x19E5, Maleoon): the driver aborted inside its shader compiler shortly after
+// the start (GreenNaugahyde/ZeldaWWHDRecompAndroid issue #53); the CPU decoder compiles no shader, and the
+// rule is decided before the compute self-test would compile one. From Nycolazs/WindWakerHD-Android-Plus
+// 74f24f4 via GreenNaugahyde/ZeldaWWHDRecompAndroid db65d60 (v0.9.9), MPL-2.0.
 // WWHD_VK_BC_CPU=1 / 0 forces the CPU / compute decoder; other values keep the rule.
 inline BcDecoderChoice choose_bc_decoder(VkDriverId driver, uint32_t vendor, uint32_t version,
                                          const char* overrideValue) {
@@ -24,6 +28,7 @@ inline BcDecoderChoice choose_bc_decoder(VkDriverId driver, uint32_t vendor, uin
     const bool qualcomm = driver == VK_DRIVER_ID_QUALCOMM_PROPRIETARY || (driver == VkDriverId(0) && vendor == 0x5143);
     if (qualcomm && qualcomm_driver_release(version) < 700)
         return {BcDecoder::Cpu, "driver rule: Qualcomm proprietary < v700"};
+    if (vendor == 0x19E5) return {BcDecoder::Cpu, "driver rule: Huawei GPU"};
     return {};
 }
 } // namespace gfxvk
