@@ -77,6 +77,7 @@
 0252A684  # dDoor_info_c::getDemoAction: a door event cut is running
 021C0078  # daMbdoor_c::getDemoAction
 025DC86C  # fopScnM_ChangeReq: scene change trigger (traces)
+025D7710  # fopAcM_orderDoorEvent(Link, door): A on a door's "Open" prompt (Quick doors' walk-through mode, opening with A)
 023DE788  # daPy_lk_c::setFrameCtrl: the run/swim boost scales the animation rate (mods.cpp)
 023DE7E8  # daPy_lk_c::setActAnimeUpper: identify scoped quick-use animation generations
 @023FB49C # native boomerang launch: optional trace observation only

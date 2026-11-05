@@ -1881,6 +1881,24 @@ void builtin_options(const std::string& id) {
         if (ImGui::Checkbox("No automatic jumps off ledges", &no_auto))
             hostui::post([no_auto] { mods::set_no_auto_jump(no_auto); hostui::set("mod.jump-anywhere.no-auto", no_auto ? "1" : "0"); mods::packages::remember_option("jump-anywhere.no-auto", no_auto); });
         help("Link drops off ledges instead of jumping when automatic ledge jumps are off; press the button just after leaving the edge to jump. On one input with the moon jump cheat, the moon jump wins while it is on.");
+    } else if (id == "quick-doors") {
+        for (int m : {0, 1}) {
+            const char* label = m == 0 ? "Faster" : "Walk through";
+            if (m) flow::next(flow::check(label));
+            if (radio(label, int(mods::door_mode()) == m))
+                hostui::post([m] { mods::set_door_mode(mods::DoorMode(m)); hostui::set("mod.quick-doors.mode", m ? "walk" : "faster"); mods::packages::remember_option("quick-doors.mode", float(m)); });
+        }
+        help("Faster: every door scene runs four times as fast. Walk through: dungeon shutters and house doors open as "
+             "Link walks up, he walks through without the door scene and the door shuts behind him; leaving a house is "
+             "quicker too. Locked doors, boss doors and doors with bars keep their scene, sped up. "
+             "From the GreenNaugahyde Android fork.");
+        bool by_a = mods::walk_doors_by_a();
+        if (ImGui::Checkbox("Walk-through doors open with A", &by_a))
+            hostui::post([by_a] { mods::set_walk_doors_by_a(by_a); hostui::set("mod.quick-doors.by-a", by_a ? "1" : "0"); mods::packages::remember_option("quick-doors.by-a", by_a); });
+        help("The doors wait for A on their Open prompt, then open the walk-through way.");
+        for (const char* env : {"WWHD_MOD_DOOR_MODE", "WWHD_MOD_WALK_DOORS_A"})
+            if (const char* override = std::getenv(env))
+                note("%s=%s overrides the saved option at startup.", env, override);
     } else if (id == "leaf-rise") {
         ImGui::TextUnformatted("Height of one wave");
         for (int pct : {50, 100, 150, 200}) {

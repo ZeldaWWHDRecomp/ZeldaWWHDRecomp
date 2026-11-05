@@ -616,7 +616,12 @@ void install_menu(NSWindow* tv) {
            ^(BOOL on) { mods::manager::set_enabled("auto-wind", on); },
            @"Makes the normal sail behave like the Swift Sail: the wind always blows the way the boat is heading");
     toggle(gp, @"Quick doors", ^BOOL { return mods::quick_doors(); }, ^(BOOL on) { mods::set_quick_doors(on); },
-           @"Door events (walk-in, opening, closing) run at 4x speed");
+           @"Door events (walk-in, opening, closing) run at 4x speed, or Link walks through the doors (below)");
+    toggle(gp, @"        Faster", ^BOOL { return mods::door_mode() == mods::kDoorFaster; },
+           ^(BOOL) { mods::set_door_mode(mods::kDoorFaster); hostui::set("mod.quick-doors.mode", "faster"); });
+    toggle(gp, @"        Walk through", ^BOOL { return mods::door_mode() == mods::kDoorWalk; },
+           ^(BOOL) { mods::set_door_mode(mods::kDoorWalk); hostui::set("mod.quick-doors.mode", "walk"); },
+           @"Dungeon shutters and house doors open as Link walks up; he walks through without the door scene");
     toggle(gp, @"Jump anywhere (L by default)", ^BOOL { return mods::jump_anywhere(); },
            ^(BOOL on) { mods::manager::set_enabled("jump-anywhere", on); },
            @"Choose the button, double jump and automatic ledge jumps in Settings > Mods > Gameplay");

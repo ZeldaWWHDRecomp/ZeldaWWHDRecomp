@@ -41,7 +41,9 @@ const Entry catalogue[] = {
      "Outside enemy lock, native aiming is unchanged.",
      "WWHD_MOD_QUICK_USE", quick_use, set_quick_use},
     {"quick-doors", "Quick doors", "Gameplay",
-     "Run door-opening and closing events at four times their normal speed.",
+     "Faster: door-opening and closing events run at four times their normal speed. Walk through: dungeon "
+     "shutters and house doors open as Link walks up and he walks through without the door scene (or opens them "
+     "with A); locked and boss doors keep their scene, sped up.",
      "WWHD_MOD_QUICK_DOORS", quick_doors, set_quick_doors},
     {"move-speed", "Run/swim speed", "Gameplay",
      "Boost Link's running and swimming speed, separate multipliers, held or toggled, with a stamina "
@@ -248,6 +250,12 @@ void load_saved() {
         if (!std::getenv(env) && hostui::get(key, v) && (v == "0" || v == "1")) apply(v == "1");
     };
     flag("mod.jump-anywhere.double", "WWHD_MOD_JUMP_DOUBLE", set_double_jump);
+    if (!std::getenv("WWHD_MOD_DOOR_MODE")) {
+        std::string v;
+        if (hostui::get("mod.quick-doors.mode", v) && (v == "faster" || v == "walk"))
+            set_door_mode(v == "walk" ? kDoorWalk : kDoorFaster);
+    }
+    flag("mod.quick-doors.by-a", "WWHD_MOD_WALK_DOORS_A", set_walk_doors_by_a);
     flag("mod.jump-anywhere.no-auto", "WWHD_MOD_JUMP_NO_AUTO", set_no_auto_jump);
     std::string jump;
     if (!std::getenv("WWHD_MOD_JUMP_BUTTON") && hostui::get("mod.jump-anywhere.button", jump)) {
