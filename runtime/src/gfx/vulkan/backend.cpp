@@ -51,6 +51,7 @@
 #include "deferred_dispatch.h"
 #include "pipeline_cache_path.h"
 #include "bc_decode.h"
+#include "pass_reuse.h"
 #include "shader_compiler.h"
 #include "android_driver.h"
 #include "stutter_trace.h"
@@ -3979,6 +3980,7 @@ void swap() {
     static std::array<double, 120> swapIntervals{};
     static size_t intervalCount = 0, slowIntervals = 0;
     static uint64_t frame=0,draws=0,bytes=0,allocs=0,passes=0,framebuffers=0;
+    static uint64_t subsetKept=0,prefetched=0,prefetchUsed=0,splitsSeen=0;  // pass_reuse.h
     static uint64_t descriptorLookups=0,descriptorHits=0,descriptorAllocations=0,descriptorFastHits=0;
     static uint64_t vertexDeclaredBytes=0,vertexCopiedBytes=0;
     static uint64_t vertexReuseChecks=0,vertexReuseHits=0,vertexReuseBytes=0,vertexReuseCompareNs=0;
@@ -4015,10 +4017,18 @@ void swap() {
             double(currentThreadCpu - previousThreadCpu) / 1e6 / (R.frame - frame));
       previousThreadCpu = currentThreadCpu;
 #endif
-      LOG("[vulkan perf] frame %llu %.2f fps, %.1f draws/frame, %.2f MiB uploads/frame, %llu new upload blocks, %.1f passes/frame",
+      // pass_reuse.h (WWHD_PASS_SUBSET, WWHD_PASS_PREFETCH): appended while either is on
+      char passReuse[256]="";
+      if (pass_reuse::subset_on() || pass_reuse::prefetch_on())
+        std::snprintf(passReuse,sizeof passReuse,"; pass subset %s %.1f kept/frame; textures ready before their pass %s %.1f/frame "
+                      "(%.1f read there), %.1f first reads inside one",
+                      pass_reuse::subset_on() ? "on" : "off", double(R.passSubsetKept-subsetKept)/(R.frame-frame),
+                      pass_reuse::prefetch_on() ? "on" : "off", double(R.passPrefetched-prefetched)/(R.frame-frame),
+                      double(R.passPrefetchUsed-prefetchUsed)/(R.frame-frame), double(R.passSplitsSeen-splitsSeen)/(R.frame-frame));
+      LOG("[vulkan perf] frame %llu %.2f fps, %.1f draws/frame, %.2f MiB uploads/frame, %llu new upload blocks, %.1f passes/frame%s",
           (unsigned long long)R.frame,(R.frame-frame)/seconds,
           double(R.drawCount-draws)/(R.frame-frame),double(R.uploadBytes-bytes)/(R.frame-frame)/(1<<20),
-          (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame));
+          (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame), passReuse);
       if (R.renderPasses) {
         const auto created = pass_caches().framebuffers_created();
         LOG("[vulkan render passes] %.3f framebuffers created/frame, %zu cached",
@@ -4217,6 +4227,7 @@ void swap() {
       submitWait = {}; presentSubmitWait = {}; queueSubmitTiming = {};
       }
       start=now;frame=R.frame;draws=R.drawCount;bytes=R.uploadBytes;allocs=R.uploadAllocations;passes=R.renderPassCount;
+      subsetKept=R.passSubsetKept;prefetched=R.passPrefetched;prefetchUsed=R.passPrefetchUsed;splitsSeen=R.passSplitsSeen;
     }
   }
 }

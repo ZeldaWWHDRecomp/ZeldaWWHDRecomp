@@ -52,6 +52,7 @@ struct Surface {
  // was released to stay within the budget (made again, and uploaded from guest memory, at its next lookup)
  uint64_t lastUsedFrame=0; bool evicted=false;
  bool artisticMips=false; // hand-drawn mip levels (gfx/artistic_mips.h): resolution-aware bias, no forced anisotropy
+ uint64_t passReadyFor=0; // made ready before render pass number N (draw.cpp prefetch_pass_reads, pass_reuse.h)
  uint32_t dataSize=0; FormatInfo fmt;
  mutable std::shared_ptr<CachedGuestLayout> guestLayout;
  float scale=1,sx=1,sy=1;
@@ -192,6 +193,9 @@ struct Renderer {
  uint32_t passDepthSlice=0,passWidth=0,passHeight=0;
  bool passTracked=false;
  uint64_t renderPassCount=0;
+ // pass_reuse.h: draws kept in the open pass with a subset of its colour targets; textures made ready before
+ // their pass, and how many of those the pass then read; sampled textures whose first read ended a pass
+ uint64_t passSubsetKept=0,passPrefetched=0,passPrefetchUsed=0,passSplitsSeen=0;
  uint64_t frame=0,drawCount=0; std::atomic<uint64_t> completed{0};
  struct UploadBlock { Buffer buffer; VkDeviceSize used=0; };
  std::vector<UploadBlock> uploadBlocks;

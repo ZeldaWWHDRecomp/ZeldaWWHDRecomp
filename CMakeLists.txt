@@ -2141,6 +2141,11 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(bc_decoder_choice_test SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_options(bc_decoder_choice_test PRIVATE -UNDEBUG)
   add_test(NAME bc_decoder_choice COMMAND bc_decoder_choice_test)
+  # fewer render pass splits (pass subset, textures ready before their pass): decisions and bookkeeping
+  add_executable(pass_reuse_test runtime/tools/pass_reuse_test.cpp)
+  target_include_directories(pass_reuse_test PRIVATE runtime/src)
+  target_compile_options(pass_reuse_test PRIVATE -UNDEBUG)
+  add_test(NAME pass_reuse COMMAND pass_reuse_test)
   # the BC compute shader on a real Vulkan device against the CPU decoder and the device's native BC
   # sampling; compiles the shader everywhere, skipped (77) without a Vulkan device
   if(NOT ANDROID)
