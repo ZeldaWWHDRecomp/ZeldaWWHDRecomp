@@ -3649,6 +3649,7 @@ void prepare_menu_input(ImGuiIO& io, bool open, bool mouse_used) {
     const int face[4] = {input_map::face_input(input_map::kA), input_map::face_input(input_map::kB),
                           input_map::face_input(input_map::kX), input_map::face_input(input_map::kY)};
     U.gamepad_navigation.feed(io, U.nav_values.data(), U.nav_prev.data(), open && U.cap_action < 0 && !capturing_at_start, mouse_used, face);  // the text prompt reads the controller itself
+    popup::controller_nav() = (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) != 0;  // dialogs: a selection, stick scrolling
 }
 bool pointer_shortcut(int code, bool down) {
     if (g_no_host_mouse || captures()) return false;

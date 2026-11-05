@@ -11,6 +11,10 @@ class GamepadNavigation {
     bool mouse_owned_ = false;
     std::array<float, ImGuiKey_NamedKey_COUNT> trace_values_{};
     std::array<bool, ImGuiKey_NamedKey_COUNT> trace_valid_{};
+    // inputs already held when the navigation became active: not a press until let go (a button held from
+    // the game or from before a dialog doesn't confirm anything)
+    std::array<bool, input_map::kPadCount> held_over_{};
+    bool was_active_ = false;
 public:
     void reset_trace() { trace_valid_ = {}; }
     bool controller_active() const { return !mouse_owned_; }
@@ -36,13 +40,17 @@ public:
         else if (mouse_used) mouse_owned_ = true;
         else if (pressed) mouse_owned_ = false;
         const bool active = enabled && controller_active();
+        if (active && !was_active_)
+            for (int p = 0; p < kPadCount; p++) held_over_[p] = values[p] > 0.5f;
+        was_active_ = active;
         // Suspend gamepad navigation while the mouse owns the menu, rather than only
         // clearing its highlight. This also blocks ImGui 1.92's direct LStick analog
         // scrolling, which does not require Down=true.
         if (active) io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         else io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
         auto key = [&](ImGuiKey k, int p) {
-            const float v = active && values[p] >= 0.35f ? values[p] : 0.0f;
+            if (held_over_[p] && values[p] <= 0.5f) held_over_[p] = false;
+            const float v = active && !held_over_[p] && values[p] >= 0.35f ? values[p] : 0.0f;
             if (wwhd_trace::enabled() && wwhd_trace::open) {
                 const int i = k - ImGuiKey_NamedKey_BEGIN;
                 if (!trace_valid_[i] || trace_values_[i] != v) {
@@ -64,7 +72,10 @@ public:
         key(ImGuiKey_GamepadLStickDown, kPadLSDown);
         key(ImGuiKey_GamepadLStickLeft, kPadLSLeft);
         key(ImGuiKey_GamepadLStickRight, kPadLSRight);
-        // Right-stick movement is not overlay navigation and cannot reclaim it.
+        // Right-stick movement is not overlay navigation and cannot reclaim it; it scrolls a dialog's long
+        // body (popup.h body_end), nothing else.
+        key(ImGuiKey_GamepadRStickUp, kPadRSUp);
+        key(ImGuiKey_GamepadRStickDown, kPadRSDown);
         key(ImGuiKey_GamepadL2, kPadLT);
         key(ImGuiKey_GamepadR2, kPadRT);
         key(ImGuiKey_GamepadStart, kPadMenu);
