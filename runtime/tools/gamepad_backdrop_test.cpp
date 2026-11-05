@@ -97,6 +97,17 @@ int main() {
     assert(gfxvk::gamepad_backdrop_quad(quads, &drc, true) == quads.size());
     quads.clear();
     assert(gfxvk::gamepad_backdrop_quad(quads, &drc, true) == 0);
+    // Shared video-memory policy (both backends).
+    assert(!release_idle(true, 0, 0) && !release_idle(true, kIdleFrames - 1, 0));
+    assert(release_idle(true, kIdleFrames, 0) && release_idle(true, 1000 + kIdleFrames, 1000));
+    assert(!release_idle(true, 1000 + kIdleFrames - 1, 1000));
+    assert(release_idle(false, 0, 0) && release_idle(false, 5, 5)); // option off: at once
+    assert(!release_idle(true, 10, 20)); // frame counter behind the last capture: not idle
+    const uint64_t rgba16 = 1280ull * 720 * 8;
+    assert(fits_pool(0, 0, rgba16) && fits_pool(kPoolBytes - rgba16, 0, rgba16));
+    assert(!fits_pool(kPoolBytes - rgba16 + 1, 0, rgba16));
+    assert(fits_pool(kPoolBytes, rgba16, rgba16)); // replacing an image of the same size
+    assert(!fits_pool(0, 0, kPoolBytes + 1) && !fits_pool(0, 0, 0));
     ScanCache cache;
     cache.capture(1, 10); cache.capture(2, 20); // TV and DRC distinct surfaces.
     auto selected = cache.scan(2);

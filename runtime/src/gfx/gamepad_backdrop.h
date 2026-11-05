@@ -22,6 +22,20 @@ inline void set_capture_requested(bool requested) {
     capture_requested.store(requested, std::memory_order_relaxed);
 }
 
+// Video memory of private captures, the same on both backends: at most
+// kPoolBytes of capture images. Images that no presentation uses go when the
+// option is turned off, and after kIdleFrames presentations without a capture.
+inline constexpr uint64_t kPoolBytes = 96ull * 1024 * 1024;
+inline constexpr uint64_t kIdleFrames = 300;
+inline bool release_idle(bool option, uint64_t frame, uint64_t lastCapture) {
+    return !option || (frame >= lastCapture && frame - lastCapture >= kIdleFrames);
+}
+// used: bytes of all pool images; replaced: bytes of the image a new one replaces.
+inline bool fits_pool(uint64_t used, uint64_t replaced, uint64_t wanted) {
+    const uint64_t kept = used >= replaced ? used - replaced : 0;
+    return wanted && wanted <= kPoolBytes && kept <= kPoolBytes - wanted;
+}
+
 // Canonical item/map menu layouts both own this 1280x720 picture. Other similarly
 // named panes and containers must never duplicate their children or foreground.
 inline bool is_background(std::string_view name, float width, float height) {

@@ -583,6 +583,7 @@ void swap() {
     if (const char* dir = capture_begin_frame()) pendingCapture = dir;
     @autoreleasepool {
         present_screens();
+        gamepad_backdrop_maintain();
         [command_buffer() addCompletedHandler:^(id<MTLCommandBuffer>) { g_frames_completed++; }];
         flush();
     }

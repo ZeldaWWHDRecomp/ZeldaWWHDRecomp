@@ -14,5 +14,7 @@ bool gamepad_backdrop_begin_replay(Surface* source, bool compatible, bool opaque
 void gamepad_backdrop_end_replay(bool drawn);
 void gamepad_backdrop_scan(Surface* source);
 void gamepad_backdrop_publish();
+// once per presentation: releases captures when the option is off or after an idle period
+void gamepad_backdrop_maintain();
 Surface* gamepad_backdrop_image();
 }

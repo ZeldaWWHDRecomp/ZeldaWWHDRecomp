@@ -113,6 +113,7 @@ void gamepad_backdrop_scope(const uint32_t*, bool begin);
 void gamepad_backdrop_scan(Surface*);
 void gamepad_backdrop_clear(Surface*);
 void gamepad_backdrop_reset();
+void gamepad_backdrop_maintain(); // once per presentation: release idle captures
 
 
 // guest memory -> (buffer, offset); returns nil if the address is not GPU-visible

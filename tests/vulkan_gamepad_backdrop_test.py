@@ -150,6 +150,31 @@ int main() {
  assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_A2B10G10R10_UNORM_PACK32&&gamepad_backdrop_replay_target()->format==0x19);
  gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);promotedFeatures=~0u;
  gamepad_backdrop_reset();assert(imageCount==0&&imageBytes==0&&retired==created);
+ // Video memory: captures stop (menu closed), images move to the spare pool and
+ // go after kIdleFrames presentations without a capture.
+ policy::set_capture_requested(true);R.frame=1000;
+ for(unsigned frame=0;frame<4;++frame){capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();gamepad_backdrop_maintain();++R.frame;}
+ assert(gamepad_backdrop_image()&&imageCount>0);
+ const uint64_t closed=R.frame;
+ gamepad_backdrop_scan(&a);gamepad_backdrop_publish();gamepad_backdrop_scan(&a);gamepad_backdrop_publish();
+ assert(!gamepad_backdrop_image()&&imageCount>0);
+ const uint64_t last=closed-1; // the frame of the last capture
+ R.frame=last+policy::kIdleFrames-1;gamepad_backdrop_maintain();assert(imageCount>0);
+ R.frame=last+policy::kIdleFrames;gamepad_backdrop_maintain();
+ assert(imageCount==0&&imageBytes==0&&retired==created);
+ // An idle period never takes the picture still shown (published), only spares.
+ capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();auto* shown=gamepad_backdrop_image();assert(shown);
+ R.frame+=10*policy::kIdleFrames;gamepad_backdrop_maintain();assert(gamepad_backdrop_image()==shown&&imageCount==1);
+ // Option off: every capture goes at once, the published one included.
+ capture(&a);gamepad_backdrop_scan(&a);capture(&a);assert(imageCount==3);
+ policy::enabled=false;gamepad_backdrop_maintain();
+ assert(imageCount==0&&imageBytes==0&&retired==created);
+ policy::enabled=true;gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
+ // ... and the next capture after turning it on again works normally.
+ capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(gamepad_backdrop_image());
+ // Never inside a pane scope.
+ gamepad_backdrop_scope(nullptr,true);policy::enabled=false;gamepad_backdrop_maintain();assert(imageCount>0);
+ gamepad_backdrop_scope(nullptr,false);gamepad_backdrop_maintain();assert(imageCount==0);policy::enabled=true;
 }
 '''
 

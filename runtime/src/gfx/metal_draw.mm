@@ -2211,16 +2211,16 @@ gamepad_backdrop::ScanCache backdropScans;
 std::vector<std::shared_ptr<BackdropCapture>> pendingBackdrops;
 std::vector<std::shared_ptr<BackdropStorage>> backdropPool;
 std::shared_ptr<BackdropCapture> backdropCapture;
-uint64_t backdropTicket = 0;
+uint64_t backdropTicket = 0, lastBackdropFrame = 0;
 unsigned backdropExpected = 0, backdropFinished = 0;
 bool backdropScope = false, backdropFailed = false, backdropReplay = false, backdropEncoded = false;
 void backdrop_trace(const char* phase, uint64_t a=0, uint64_t b=0, uint64_t c=0) {
     static const uint64_t first=[] { const char* e=std::getenv("WWHD_GAMEPAD_BACKDROP_LOG"); return e&&*e?std::strtoull(e,nullptr,10):~uint64_t{0}; }();
     if(aspect::game_frame()<first)return;
     // Empty scanouts before a menu appears must not exhaust the pane quota.
-    static unsigned logged[13]{};
-    const char* phases[]={"begin","end","draw","blend","replay","clear","scan","prepare","format-reject","existing-reject","pool-reject","texture-reject","encoder-reject"};
-    unsigned slot=0;while(slot<12 && std::strcmp(phase,phases[slot]))++slot;
+    static unsigned logged[15]{};
+    const char* phases[]={"begin","end","draw","blend","replay","clear","scan","prepare","format-reject","existing-reject","pool-reject","texture-reject","encoder-reject","release"};
+    unsigned slot=0;while(slot<14 && std::strcmp(phase,phases[slot]))++slot;
     if(logged[slot]++ >= (slot>=5?16u:100u))return;
     LOG("[metal backdrop] phase=%s game=%llu render=%llu a=%llx b=%llx c=%llx",phase,
         (unsigned long long)aspect::game_frame(),(unsigned long long)R.frame,
@@ -2237,6 +2237,15 @@ unsigned capture_coverage(const uint32_t* regs) {
     if (source == MTLBlendFactorOne && destination == MTLBlendFactorZero) return 2;
     return (source == MTLBlendFactorSourceAlpha || source == MTLBlendFactorOne) &&
            destination == MTLBlendFactorOneMinusSourceAlpha ? 1 : 0;
+}
+uint64_t backdrop_bytes(id<MTLTexture> texture) {
+    if (!texture) return 0;
+    return uint64_t(texture.width) * texture.height * (texture.pixelFormat == MTLPixelFormatRGBA16Float ? 8 : 4);
+}
+uint64_t backdrop_pool_bytes() {
+    uint64_t bytes = 0;
+    for (const auto& slot : backdropPool) bytes += backdrop_bytes(slot->texture);
+    return bytes;
 }
 bool prepare_backdrop(Surface* source, unsigned coverage) {
     const auto pixel = source->tex.pixelFormat;
@@ -2280,8 +2289,16 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
         backdropPool.push_back(capture->storage);
     }
     auto storage = capture->storage;
-    if (!storage->texture || storage->texture.width != d.width || storage->texture.height != d.height || storage->texture.pixelFormat != capturePixel)
+    if (!storage->texture || storage->texture.width != d.width || storage->texture.height != d.height || storage->texture.pixelFormat != capturePixel) {
+        // The same byte cap as Vulkan (gamepad_backdrop::kPoolBytes): beyond it, the edge-colour fallback.
+        const uint64_t wanted = uint64_t(d.width) * d.height * (capturePixel == MTLPixelFormatRGBA16Float ? 8 : 4);
+        if (!gamepad_backdrop::fits_pool(backdrop_pool_bytes(), backdrop_bytes(storage->texture), wanted)) {
+            backdrop_trace("pool-reject",backdrop_pool_bytes(),wanted,backdropPool.size());
+            if (!storage->texture) std::erase(backdropPool, storage);
+            return false;
+        }
         storage->texture = [R.device newTextureWithDescriptor:d];
+    }
     surface.tex = storage->texture;
     if (!surface.tex) {backdrop_trace("texture-reject",pixel,d.width,d.height);return false;}
     end_encoder();
@@ -2319,6 +2336,7 @@ void gamepad_backdrop_scope(const uint32_t*, bool begin) {
             if (pendingBackdrops.size() >= 16) { pendingBackdrops.clear(); backdropScans.reset(); }
             backdropScans.capture(backdropCapture->source.key(), backdropCapture->ticket);
             pendingBackdrops.push_back(backdropCapture);
+            lastBackdropFrame = R.frame;
         }
         backdropScope = false; backdropCapture.reset();
     }
@@ -2336,7 +2354,25 @@ void gamepad_backdrop_clear(Surface* source) {
     if (backdropCapture && backdropCapture->source.clear(source->tex)) backdropFailed = true;
     std::erase_if(pendingBackdrops, [source](const auto& p) { return p->source.matches(source->tex); });
 }
+// Once per presentation (swap), outside any pane scope: as on Vulkan, turning
+// the option off drops every capture at once (none is shown while off), and
+// idle pool textures go after kIdleFrames presentations without a capture.
+// Only completed slots are dropped; the command buffers retain what they use.
+void gamepad_backdrop_maintain() {
+    if (backdropScope || backdropReplay) return;
+    const bool on = gamepad_backdrop::enabled.load(std::memory_order_relaxed);
+    if (!gamepad_backdrop::release_idle(on, R.frame, lastBackdropFrame) || backdropPool.empty()) return;
+    if (!on) { pendingBackdrops.clear(); backdropScans.reset(); R.drc.backdrop = nil; }
+    const auto before = backdropPool.size();
+    const auto bytes = backdrop_pool_bytes();
+    std::erase_if(backdropPool, [](const auto& slot) {
+        return slot->complete.load(std::memory_order_acquire) && slot->texture != R.drc.backdrop &&
+            std::none_of(pendingBackdrops.begin(), pendingBackdrops.end(), [&](const auto& p) { return p->storage == slot; });
+    });
+    if (backdropPool.size() != before) backdrop_trace("release", before - backdropPool.size(), bytes, on);
+}
 void gamepad_backdrop_reset() {
+    lastBackdropFrame = 0;
     backdropScope = backdropReplay = false; backdropCapture.reset(); pendingBackdrops.clear(); backdropPool.clear();
     backdropScans.reset(); R.drc.backdrop = nil;
     gamepad_backdrop::set_capture_requested(false);

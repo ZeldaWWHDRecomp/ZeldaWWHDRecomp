@@ -3930,6 +3930,7 @@ void swap() {
   set_present_plan(nullptr);
   service_screenshots();  // this frame's: the submission that holds them
   backdropDemandFrame.publish();
+  gamepad_backdrop_maintain();
   fallback_stats::complete_frame(R.frame);
   stutter::frame(R.frame);
   std::atomic_ref<uint64_t>(R.frame).fetch_add(1);

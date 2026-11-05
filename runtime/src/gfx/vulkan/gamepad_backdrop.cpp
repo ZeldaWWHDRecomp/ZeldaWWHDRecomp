@@ -11,7 +11,7 @@
 namespace gfxvk {
 namespace {
 constexpr unsigned kCaptureImages=6;
-constexpr uint64_t kCaptureBytes=96ull*1024*1024;
+constexpr uint64_t kCaptureBytes=gfx::gamepad_backdrop::kPoolBytes;
 unsigned imageCount=0;
 uint64_t imageBytes=0;
 struct Image {
@@ -25,7 +25,7 @@ gfx::gamepad_backdrop::ScanCache cache;
 std::vector<Pending> pending;
 std::unique_ptr<Image> active,building,published;
 std::array<std::unique_ptr<Image>,kCaptureImages> spare;
-uint64_t sourceIdentity=0,nextTicket=0;
+uint64_t sourceIdentity=0,nextTicket=0,lastCaptureFrame=0;
 unsigned scopeDepth=0;
 bool replaying=false,failed=false,drawn=false,buildingDirty=false,captureOpaque=false;
 void recycle(std::unique_ptr<Image>& image) {
@@ -96,7 +96,7 @@ void gamepad_backdrop_debug(const char* event,uint64_t a,uint64_t b,uint64_t c,u
 void gamepad_backdrop_reset() {
  end_encoder();active.reset();building.reset();published.reset();pending.clear();for(auto& slot:spare)slot.reset();cache.reset();
  gfx::gamepad_backdrop::set_capture_requested(false);
- sourceIdentity=0;scopeDepth=0;replaying=failed=drawn=buildingDirty=false;
+ sourceIdentity=0;scopeDepth=0;lastCaptureFrame=0;replaying=failed=drawn=buildingDirty=false;
 }
 void gamepad_backdrop_invalidate(Surface* source) {
  const auto id=identity(source);if(!id)return;
@@ -114,6 +114,7 @@ void gamepad_backdrop_scope(const uint32_t*,bool begin) {
   cache.capture(sourceIdentity,ticket);
   if(pending.size()==16) recycle_pending();
   pending.push_back({sourceIdentity,ticket,std::move(active)});
+  lastCaptureFrame=R.frame;
  }
  recycle(active);
 }
@@ -146,5 +147,22 @@ void gamepad_backdrop_scan(Surface* source) {
  recycle_pending();buildingDirty=true;
 }
 void gamepad_backdrop_publish() { if(buildingDirty) { if(building||published)gamepad_backdrop_debug("publish",building?identity(building->surface.get()):0,published?identity(published->surface.get()):0); published.swap(building);buildingDirty=false; } }
+// Once per presentation, outside any pane scope. Turning the option off drops
+// every capture at once (none is shown while off); otherwise idle spares go
+// after kIdleFrames presentations without a capture. Destruction is deferred
+// to command completion by destroy_surface_image.
+void gamepad_backdrop_maintain() {
+ if(scopeDepth||replaying)return;
+ const bool on=gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed);
+ if(!gfx::gamepad_backdrop::release_idle(on,R.frame,lastCaptureFrame))return;
+ if(!on) {
+  if(published||building||!pending.empty())gamepad_backdrop_debug("release-off",imageCount,imageBytes);
+  published.reset();building.reset();pending.clear();cache.reset();buildingDirty=false;
+ }
+ bool any=false;for(auto& slot:spare)any|=bool(slot);
+ if(!any)return;
+ gamepad_backdrop_debug("release-idle",imageCount,imageBytes,R.frame-lastCaptureFrame);
+ for(auto& slot:spare)slot.reset();
+}
 Surface* gamepad_backdrop_image() { return gfx::gamepad_backdrop::enabled.load()&&published ? published->surface.get():nullptr; }
 }
