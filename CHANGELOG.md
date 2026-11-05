@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Touch controls: more button pictures, a boat item ring, and more taps** (#427, ideas and code from the
+  GreenNaugahyde Android fork, thanks @GreenNaugahyde). On the Flexible touch style, Grab, Lift, Throw, Drop, Let Go
+  (on the rope) and Cruise now show a small picture of Link doing the action, drawn on your device from your own game
+  files. On the boat, the item ring only shows items you can use there. Letters, stone tablets and signs move on with
+  a tap, like talks, and after a game over you can tap Continue or Quit. The Classic style now always shows every
+  button. Not yet checked on a phone; reports welcome.
 - **Targeting letterbox: On / Off with enemies / Always off** (#395, for #114, thanks @andreasbertram5-alt for the
   request). The bars that appear while holding target can now be kept, hidden only when an enemy is targeted, or
   hidden always, in the Mods page and the in-game settings. Always off also hides the bars of free targeting (holding
