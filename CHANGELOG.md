@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: leaving Beedle's Shop Ship could stop the game** (#416, from the Nycolazs and GreenNaugahyde Android forks,
+  thanks @Nycolazs and @GreenNaugahyde). When the game hadn't recorded which sea square the ship was in, leaving it
+  stopped the game with an error. The square is now taken from the ship's position on the sea chart.
+- **Fixed: the 3D picture could go black for some frames in a storm** (#417, from the Nycolazs and GreenNaugahyde Android
+  forks, thanks @Nycolazs and @GreenNaugahyde). Some GPUs (seen on an Adreno 650 and a Galaxy S20 FE) produced invalid
+  pixel values near lightning at night, which bloom and blur spread over the whole screen. Pixel colours are now kept
+  valid (`WWHD_NAN_GUARD=0` turns this off). **Shaders are compiled once more after this update.**
 - **Android: textures that haven't been used for a while are freed** (#423, from the GreenNaugahyde and Nycolazs Android
   forks, thanks @GreenNaugahyde and @Nycolazs). On Android the texture budget is now on by default: textures not drawn
   for about four minutes are released (after about ten seconds when memory is tight), so long sessions use less memory.
