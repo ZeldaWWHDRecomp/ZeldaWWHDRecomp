@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: Turnip on Adreno 6xx GPUs runs without UBWC** (#420, from the Nycolazs and GreenNaugahyde Android forks,
+  thanks @Nycolazs and @GreenNaugahyde). With a custom Turnip driver, Adreno 6xx phones (seen on a Galaxy S20 FE)
+  could restart at the first frame above 1x resolution. On those GPUs Turnip now starts with its bandwidth
+  compression off (`TU_DEBUG=noubwc`), which also lets 1.5x run. Other GPUs and Qualcomm's own driver are unchanged,
+  and a `TU_DEBUG` you set yourself still wins.
 - **Fixed: leaving Beedle's Shop Ship could stop the game** (#416, from the Nycolazs and GreenNaugahyde Android forks,
   thanks @Nycolazs and @GreenNaugahyde). When the game hadn't recorded which sea square the ship was in, leaving it
   stopped the game with an error. The square is now taken from the ship's position on the sea chart.
