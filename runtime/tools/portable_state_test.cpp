@@ -104,6 +104,16 @@ int main() {
     CHECK(read(text, r, why));
     CHECK(r.title_id == s.title_id && r.runtime == s.runtime && r.created == s.created);
     CHECK(r.controller == 2);
+    CHECK(text.find("save_profile") == std::string::npos); // Vanilla bytes stay compatible.
+    State profiled=s;
+    profiled.save_profile="mod-fixture-"+std::string(64,'a');
+    State decoded_profile;
+    const auto profile_text=write(profiled,why);
+    CHECK(read(profile_text,decoded_profile,why));
+    CHECK(decoded_profile.save_profile==profiled.save_profile);
+    profiled.save_profile="invalid";
+    CHECK(write(profiled,why).empty());
+    CHECK(!read(reseal(replace(profile_text,"mod-fixture-","mod-Fixture-")),decoded_profile,why));
     State legacy;
     CHECK(read(reseal(replace(text, "controller = 2\n", "")), legacy, why));
     CHECK(legacy.controller == 0);

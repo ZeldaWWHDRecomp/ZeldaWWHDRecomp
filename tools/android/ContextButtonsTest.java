@@ -173,6 +173,19 @@ public final class ContextButtonsTest {
         // Link's poses (P8): pose_HH.png as native code writes it (link_poses.h file_for); shown only for an
         // action with the option on and its picture loaded, else the word as before
         check(ContextAssets.poseFile(0x35).equals("pose_35.png") && ContextAssets.poseFile(0x0A).equals("pose_0A.png"), "pose file names");
+        // a carried thing's picture (link_poses.h file_for(action, variant)): pose_HH_KK.png; variant 0 the plain one
+        check(ContextAssets.poseFile(0x04, 0x19).equals("pose_04_19.png") && ContextAssets.poseFile(0x0E, 0).equals("pose_0E.png"), "variant file names");
+        {
+            int[] v = new int[ContextPack.LEN];
+            v[0] = ContextPack.VERSION;
+            v[1] = ContextPack.ENABLED | ContextPack.ACTIVE;
+            v[4 + 3 * ContextPack.A] = ContextPack.SHOWN | 1 << ContextPack.KIND_SHIFT | 0x10 << ContextPack.VARIANT_SHIFT;
+            v[5 + 3 * ContextPack.A] = 0x04;
+            ContextPack p = new ContextPack();
+            p.set(v, ContextPack.VERSION);
+            check(p.variantFor(TouchLayout.KEY_A) == 0x10 && p.kindFor(TouchLayout.KEY_A) == ContextPack.KIND_ACTION
+                    && p.labelFor(TouchLayout.KEY_A) == 0x04 && p.variantFor(TouchLayout.KEY_B) == 0, "variant in the state");
+        }
         check(ContextAssets.showPose(true, ContextPack.KIND_ACTION, true), "pose shown");
         check(!ContextAssets.showPose(false, ContextPack.KIND_ACTION, true), "option off: the word");
         check(!ContextAssets.showPose(true, ContextPack.KIND_ACTION, false), "no picture (not exported, or the model unreadable): the word");

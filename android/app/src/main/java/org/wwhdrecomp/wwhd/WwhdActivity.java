@@ -166,8 +166,31 @@ public class WwhdActivity extends SDLActivity {
             Log.i("wwhd-game", "Loaded on-device game " + onDeviceGame.getAbsolutePath());
             if (selection.game != null) Log.i("wwhd-game", "Selected game assets " + selection.game.getAbsolutePath());
         }
+        if (getClass() == WwhdActivity.class || getClass() == QuestActivity.class) {
+            boolean deferred;
+            try { deferred = supportsSaveProfilePreparation(); }
+            catch (UnsatisfiedLinkError oldLibrary) { deferred = false; }
+            if (!deferred) {
+                // Older on-device native libraries cannot declare save_profile;
+                // keep their ordinary vanilla import recovery working.
+                try { SaveSession.prepareLegacyGame(); }
+                catch (java.io.IOException failure) { throw new IllegalStateException(failure.getMessage(), failure); }
+            }
+        }
         sessionSelection = selection;
         sessionLibrary = onDeviceGame;
+    }
+
+    private static native boolean supportsSaveProfilePreparation();
+
+    /** Native main calls this only after freezing the trusted save-profile plan. */
+    public static String prepareSelectedGameSave(String directory) {
+        try {
+            SaveSession.prepareSelectedGameSave(directory);
+            return "ok";
+        } catch (java.io.IOException failure) {
+            return "error:" + failure.getMessage();
+        }
     }
 
     private static volatile boolean gameStarted;
@@ -302,7 +325,7 @@ public class WwhdActivity extends SDLActivity {
         File files = getExternalFilesDir(null);
         if (files != null) {
             new File(files, "game").mkdirs();
-            // SaveSession creates save/ only after interrupted-import recovery under the lease.
+            // Native startup selects the save root before SaveSession prepares it under the lease.
             Log.i("wwhd", "game folder: " + new File(files, "game"));
         }
         super.onCreate(savedInstanceState);
@@ -333,6 +356,8 @@ public class WwhdActivity extends SDLActivity {
     }
 
     public void shareLog() { runOnUiThread(() -> LogShare.share(this)); }
+    /** Settings > Bug reports > Share log, with "Include my save files" (off by default; names made "Link") */
+    public void shareLogWithSaves(boolean saves) { runOnUiThread(() -> LogShare.share(this, saves)); }
 
     private static final int GPU_DRIVER_REQUEST = 4972;
     private static native String installGpuDriver(String path, boolean select);

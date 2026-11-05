@@ -422,6 +422,57 @@ int main() {
         d.read(play());
         assert(!d.m.busy());
     }
+    // ---- a system question (the save question after a game over): a tap on a button takes it
+    {
+        PlayContext q;
+        q.flags = kInGame | kLink | kQuestion;
+        q.question_shown = 3;
+        q.question_x[0] = -200, q.question_y[0] = -150, q.question_x[1] = 200, q.question_y[1] = -150;
+        q.question_scale[0] = 1100, q.question_scale[1] = 1000;  // the cursor is on the left one
+        Options o;
+        assert(claims(q, o, false) && mode_of(q, false) == kModeQuestion);
+        assert(question_button_at(q, -180, -140) == 0 && question_button_at(q, 210, -170) == 1 && question_button_at(q, 0, 0) == -1);
+        assert(question_cursor_on(q, 0) && !question_cursor_on(q, 1));
+        // on the button the cursor is on: A only
+        Driver d;
+        d.down(-200, -150);
+        d.read(q);
+        d.up(-200, -150);
+        std::vector<Out> v = d.run(q, 12);
+        assert(count_press(v, kBtnA) == 1 && count_stick(v, 1, 0) == 0 && count_stick(v, -1, 0) == 0);
+        // on the other one: the stick right first, then A
+        Driver e;
+        e.down(200, -150);
+        e.read(q);
+        e.up(200, -150);
+        v = e.run(q, 16);
+        assert(count_stick(v, 1, 0) == 1 && count_press(v, kBtnA) == 1);
+        size_t first_stick = 0, first_a = 0;
+        for (size_t i = 0; i < v.size(); i++) {
+            if (!first_stick && v[i].stick && v[i].lx == 1) first_stick = i + 1;
+            if (!first_a && (v[i].press & kBtnA)) first_a = i + 1;
+        }
+        assert(first_stick && first_a > first_stick);
+        // off the buttons: nothing
+        Driver g;
+        g.down(0, 200);
+        g.read(q);
+        g.up(0, 200);
+        v = g.run(q, 12);
+        assert(count_press(v, kBtnA) == 0);
+    }
+    // ---- a letter / stone tablet / sign: its scroll window is the message window, so a tap goes on (A)
+    {
+        PlayContext letter;
+        letter.flags = kInGame | kLink | kEvent | kMsgWindow;  // (no talk's message status, no key icon needed)
+        Options o;
+        assert(claims(letter, o, false) && mode_of(letter, false) == kModeTalk);
+        Driver d;
+        d.down(0, 0);
+        d.read(letter);
+        d.up(0, 0);
+        assert(count_press(d.run(letter, 8), kBtnA) == 1);
+    }
     printf("touch_talk_test: ok\n");
     return 0;
 }

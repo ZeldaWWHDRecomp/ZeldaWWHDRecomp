@@ -40,6 +40,15 @@ final class MemoryPressurePolicy {
         return systemLow || (availBytes > 0 && availBytes < thresholdBytes + MARGIN_BYTES);
     }
 
+    /** Memory above the system's low-memory line in MB (0 at or below it), -1 when the system gave no figure. */
+    static int headroomMb(long availBytes, long thresholdBytes) {
+        if (availBytes <= 0 || thresholdBytes < 0) return -1;
+        return (int) Math.min(Integer.MAX_VALUE, Math.max(0L, availBytes - thresholdBytes) >> 20);
+    }
+
+    /** Bytes as MB, -1 for no figure. */
+    static int mb(long bytes) { return bytes < 0 ? -1 : (int) Math.min(Integer.MAX_VALUE, bytes >> 20); }
+
     /** Spacing of the free-memory check's trims (times in ms of any monotonic clock). */
     static final class Spacing {
         private long last;
