@@ -3,6 +3,7 @@
 //   lock_on.cpp optional enemy range and R3 cycling through the native eligible list
 //   mouse.mm    mouse capture in the game window (macOS events)
 //   turbo.cpp   quick doors and fast scene changes (extra logic steps while they run)
+//   instant_text.cpp instant text, no pauses in texts
 //   cheats.cpp  items, sword/shield, stats, infinite health/magic/ammo, songs, Triforce, dungeon items
 // Test/start-up switches: WWHD_MOD_<NAME>=1 (see mods.cpp).
 #pragma once
@@ -56,6 +57,13 @@ bool quick_doors();
 void set_quick_doors(bool on);
 bool fast_scenes();
 void set_fast_scenes(bool on);
+// Instant text and No pauses in texts (instant_text.cpp): message boxes show their whole text at once; the
+// waits written into texts are left out. instant_text_step: interp.cpp, around the processes' execute.
+bool instant_text();
+void set_instant_text(bool on);
+bool no_text_pauses();
+void set_no_text_pauses(bool on);
+void instant_text_step();
 
 // Optional enemy targeting assistance. Off preserves the game's targeting unchanged.
 bool extended_lock_on();

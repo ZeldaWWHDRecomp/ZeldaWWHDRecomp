@@ -87,6 +87,13 @@ const Entry catalogue[] = {
     {"fast-scenes", "Fast scene changes", "Gameplay",
      "Speed up fades and scene transitions while keeping ordinary gameplay at normal speed.",
      "WWHD_MOD_FAST_SCENES", fast_scenes, set_fast_scenes},
+    {"instant-text", "Instant text", "Gameplay",
+     "Message boxes show their whole text at once instead of letter by letter. A box still waits for A "
+     "before the next one.",
+     "WWHD_MOD_INSTANT_TEXT", instant_text, set_instant_text},
+    {"no-text-pauses", "No pauses in texts", "Gameplay",
+     "Leaves out the short pauses written into some texts, so the rest of the line follows at once.",
+     "WWHD_MOD_NO_TEXT_PAUSES", no_text_pauses, set_no_text_pauses},
 };
 std::string key(const Entry& entry) { return std::string("mod.")+entry.id+".enabled"; }
 bool player_preferences() { return !std::getenv("WWHD_NO_HOST_INPUT"); }

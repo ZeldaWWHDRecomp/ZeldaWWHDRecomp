@@ -624,6 +624,10 @@ void install_menu(NSWindow* tv) {
            ^(BOOL on) { mods::manager::set_enabled("fast-forward", on); }, @"Choose the speed, hold button and audio setting in Settings > Mods > Gameplay");
     toggle(gp, @"Fast scene changes", ^BOOL { return mods::fast_scenes(); }, ^(BOOL on) { mods::set_fast_scenes(on); },
            @"Fades and loading between areas run at 4x speed; the scenes themselves are not sped up");
+    toggle(gp, @"Instant text", ^BOOL { return mods::instant_text(); }, ^(BOOL on) { mods::manager::set_enabled("instant-text", on); },
+           @"Message boxes show their whole text at once instead of letter by letter");
+    toggle(gp, @"No pauses in texts", ^BOOL { return mods::no_text_pauses(); }, ^(BOOL on) { mods::manager::set_enabled("no-text-pauses", on); },
+           @"Leaves out the short pauses written into some texts");
     [gp addItem:[NSMenuItem separatorItem]];
     [gp addItemWithTitle:@"Cheats (save in game to keep them)" action:nil keyEquivalent:@""].enabled = NO;
     toggle(gp, @"    Give all items", ^BOOL { return NO; }, ^(BOOL) { mods::request_cheat(mods::kCheatItems); },

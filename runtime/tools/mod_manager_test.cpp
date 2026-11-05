@@ -72,6 +72,9 @@ bool first_person_wheel() { return state[2]; } void set_first_person_wheel(bool 
 bool climb_enabled() { return state[3]; } void set_climb_enabled(bool b) { state[3]=b; }
 bool quick_doors() { return state[4]; } void set_quick_doors(bool b) { state[4]=b; }
 bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=b; }
+static bool instant = false, no_pauses = false;
+bool instant_text() { return instant; } void set_instant_text(bool b) { instant=b; }
+bool no_text_pauses() { return no_pauses; } void set_no_text_pauses(bool b) { no_pauses=b; }
 bool quick_use() { return state[6]; } void set_quick_use(bool b) { state[6]=b; }
 static float quick_speed = 1.f;
 float quick_use_speed() { return quick_speed; }
@@ -112,7 +115,8 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==22);  // with camera-directed-items (#203), quick-use (#196), game-progress and achievements
+    assert(entries().size()==24);  // with camera-directed-items (#203), quick-use (#196), instant-text, no-text-pauses, game-progress and achievements
+    assert(find("instant-text") && !find("instant-text")->default_enabled && find("no-text-pauses"));
     assert(find("camera-directed-items") && find("quick-use"));
     // Game progress: off by default, its switch and its on-screen option saved like the others'
     env("WWHD_MOD_PROGRESS_ON_SCREEN",nullptr);

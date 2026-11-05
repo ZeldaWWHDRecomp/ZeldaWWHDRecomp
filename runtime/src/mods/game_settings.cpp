@@ -661,6 +661,8 @@ void register_game() {
         {"quick-doors", "Quick doors", "Doors open and close four times as fast."},
         {"fast-scenes", "Fast scene changes", "Shorter waits when the game loads a new place."},
         {"fast-forward", "Fast forward scenes and talks", "Hold the fast forward button to speed up cutscenes and dialogue."},
+        {"instant-text", "Instant text", "Message boxes show their whole text at once."},
+        {"no-text-pauses", "No pauses in texts", "Texts go on without their short pauses."},
         {"jump-anywhere", "Jump anywhere", "A button of its own makes Link jump, standing or running."},
         {"wall-climb", "Climb any wall", "Grab and climb walls with a stamina wheel; A or B lets go."},
         {"move-speed", "Run/swim speed", "A boost for running and swimming, with a stamina bar."},
