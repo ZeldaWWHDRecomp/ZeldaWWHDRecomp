@@ -21,8 +21,8 @@ inline void utf8(std::string& s, uint32_t ch) {
 }
 
 // marks: a colour change (control code group 0 type 3: the names in the game's messages are coloured) becomes
-// '*' and a line break '\n' (both are left out otherwise)
-inline std::map<std::string, std::string> texts(const std::vector<uint8_t>& m, bool marks = false) {
+// '*' and a line break '\n' (both are left out otherwise); lines: line breaks stay '\n' without the colour marks
+inline std::map<std::string, std::string> texts(const std::vector<uint8_t>& m, bool marks = false, bool lines = false) {
     std::map<std::string, std::string> out;
     const size_t n = m.size();
     auto be16 = [&](size_t o) -> uint32_t { return o + 2 <= n ? uint32_t(m[o]) << 8 | m[o + 1] : 0; };
@@ -71,7 +71,7 @@ inline std::map<std::string, std::string> texts(const std::vector<uint8_t>& m, b
                 q += 4;
                 continue;
             }
-            if (marks && ch == '\n') {
+            if ((marks || lines) && ch == '\n') {
                 t += '\n';
                 continue;
             }

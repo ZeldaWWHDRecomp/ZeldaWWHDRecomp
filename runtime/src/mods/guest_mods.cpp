@@ -826,6 +826,24 @@ void svc_setting_get(Cpu* c) {
         if(capacity<4||!setting_buffer(mod,destination,4))return;
         st32(destination,maphud::capability());c->r[3]=4;return;
     }
+    if(key=="hud.mirrored-images.version"||key=="layout-message.version"){  // HUD v3 (wwhd_guest.h)
+        c->r[3]=0;if(expected!=settings::Unsigned)return;
+        if(!destination&&!capacity){c->r[3]=4;return;}
+        if(capacity<4||!setting_buffer(mod,destination,4))return;
+        st32(destination,key[0]=='h'?hud::kMirroredImagesVersion:game_layouts::kMessageVersion);c->r[3]=4;return;
+    }
+    // "layout-message:<Layout>/<label>": the game's own text of a label of a layout's message file, in the
+    // language the game runs in (game_layouts::message). Only names reach the pack reader; the text is copied
+    // whole (with its NUL) into the mod's own memory or not at all.
+    if(key.rfind("layout-message:",0)==0){
+        c->r[3]=0;if(expected!=settings::String)return;
+        std::string text;
+        if(!game_layouts::message(key.substr(15),text)||text.size()>=game_layouts::kMaxMessageBytes)return;
+        const uint32_t bytes=uint32_t(text.size()+1);
+        if(!destination&&!capacity){c->r[3]=bytes;return;}
+        if(capacity<bytes||!setting_buffer(mod,destination,bytes))return;
+        memcpy(mem::ptr(destination),text.c_str(),bytes);c->r[3]=bytes;return;
+    }
     auto value=settings::read(key);c->r[3]=0;
     if(!value||value->type()!=expected)return;
     uint32_t bytes=value->type()==settings::String?uint32_t(std::get<std::string>(value->data).size()+1):value->type()==settings::Number?8:4;

@@ -17,6 +17,9 @@ using Handle = uint32_t;
 inline constexpr uint32_t kMaxCommands=1024, kMaxImages=32, kMaxLists=2, kMaxVertices=32768, kMaxClipDepth=16;
 inline constexpr size_t kMaxPixels=16*1024*1024, kMaxText=64*1024;
 inline constexpr size_t kMaxPortPixels=48*1024*1024;  // the port's own pages at most (Store::raise_pixel_quota)
+// Optional HUD features a mod finds with an unsigned setting (wwhd_setting_get, guest_mods.cpp); 0 / missing on
+// older hosts. "hud.mirrored-images.version" 1: an image's reversed UVs (u1 < u0, v1 < v0) sample it mirrored.
+inline constexpr uint32_t kMirroredImagesVersion=1;
 struct Image { uint32_t width,height; std::vector<uint8_t> rgba; };
 enum class Anchor : uint32_t { Center,TopLeft,Top,TopRight,Left,Right,BottomLeft,Bottom,BottomRight };
 enum class Blend : uint32_t { Alpha,Additive };
@@ -94,6 +97,7 @@ class Store {
     std::atomic<float> pixel_scale[2]{0.f,0.f};
     std::map<std::string,std::string> errors;
     Handle handle() {return next<=UINT32_MAX?uint32_t(next++):0;}
+    static bool uv(float v) {return v>=0&&v<=1;}
     static bool geometry(const Command& c) {
         return std::isfinite(c.x)&&std::isfinite(c.y)&&std::isfinite(c.w)&&std::isfinite(c.h)&&
                std::isfinite(c.size)&&std::abs(c.x)<=65536&&std::abs(c.y)<=65536&&
@@ -102,7 +106,9 @@ class Store {
                std::isfinite(c.thickness)&&c.thickness>0&&c.thickness<=1024&&
                std::isfinite(c.rotation)&&std::abs(c.rotation)<=65536&&
                std::isfinite(c.u0)&&std::isfinite(c.v0)&&std::isfinite(c.u1)&&std::isfinite(c.v1)&&
-               c.u0>=0&&c.v0>=0&&c.u1<=1&&c.v1<=1&&c.u1>=c.u0&&c.v1>=c.v0&&
+               uv(c.u0)&&uv(c.v0)&&uv(c.u1)&&uv(c.v1)&&
+               // an image with u1 < u0 (or v1 < v0) is drawn mirrored on that axis (HUD v3)
+               (c.kind==Command::Picture||(c.u1>=c.u0&&c.v1>=c.v0))&&
                uint32_t(c.anchor)<=uint32_t(Anchor::BottomRight)&&uint32_t(c.blend)<=uint32_t(Blend::Additive);
     }
     static bool utf8(const std::string& text) {

@@ -85,6 +85,22 @@ int main() {
     assert(std::abs(vertex.pos.x-40)<.001f&&std::abs(vertex.pos.y-10)<.001f);
     assert(vertex.uv.x==.25f&&vertex.uv.y==.125f);
     store.reset();overlay::guesthud::backend_destroyed();
+    // v3: reversed UVs reach the quad's corners as they are, so the one ImGui path (Metal and Vulkan draw its
+    // draw data) samples the image mirrored: left corners get u0, right corners u1, top v0, bottom v1.
+    image=store.create_image("mirror",1,1,4,pixel,4);list=store.begin("mirror",0);
+    rect={};rect.x=10;rect.y=20;rect.w=40;rect.h=20;rect.u0=1;rect.u1=0;rect.v0=.75f;rect.v1=.25f;
+    assert(store.picture("mirror",list,image,rect)&&store.commit("mirror",list));
+    ImGui::NewFrame();overlay::guesthud::frame();ImGui::Render();
+    draw=ImGui::GetDrawData();assert(draw->TotalVtxCount==4);
+    {
+        const auto& v=draw->CmdLists[0]->VtxBuffer;
+        for(int i=0;i<4;++i) {
+            const bool left=v[i].pos.x<30,top=v[i].pos.y<30;
+            assert(v[i].uv.x==(left?1.f:0.f)&&v[i].uv.y==(top?.75f:.25f));
+        }
+        assert(v[0].pos.x<30&&v[1].pos.x>30);
+    }
+    store.reset();overlay::guesthud::backend_destroyed();
     // TV coordinates are relative to the fitted game region, including wide anchors.
     list=store.begin("anchor",0);rect={};rect.x=1260;rect.y=20;rect.w=10;rect.h=10;
     rect.anchor=guestmods::hud::Anchor::TopRight;assert(store.append("anchor",list,rect)&&store.commit("anchor",list));

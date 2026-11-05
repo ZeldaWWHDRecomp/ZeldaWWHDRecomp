@@ -295,7 +295,7 @@ unsigned long long wwhd_setting_changed(const char* key);
  * per logic step. Its immutable output is held for every presentation until the next
  * step. TV=0 (1280x720), DRC=1 (854x480), both=2 (TV coordinates scaled to each screen).
  * Element/text/path buffers must be static or allocated in this mod's heap. */
-#define WWHD_HUD_API_VERSION 2
+#define WWHD_HUD_API_VERSION 3
 enum { WWHD_HUD_TV=0,WWHD_HUD_DRC=1,WWHD_HUD_BOTH=2 };
 enum { WWHD_HUD_RECT=0,WWHD_HUD_TEXT=1,WWHD_HUD_IMAGE=2,WWHD_HUD_RECT_OUTLINE=3,
        WWHD_HUD_CIRCLE=4,WWHD_HUD_CIRCLE_OUTLINE=5,WWHD_HUD_LINE=6,WWHD_HUD_CLIP_PUSH=7,WWHD_HUD_CLIP_POP=8 };
@@ -313,7 +313,14 @@ typedef struct {
 } wwhd_hud_element;
 /* x/y is the top-left except circles (center). w/h is extent, or signed line delta.
  * size is circle radius / text height. Rotation is radians about image center.
- * UVs are normalized subrect coordinates. rgba is RRGGBBAA. Set thickness>0. */
+ * UVs are normalized subrect coordinates. rgba is RRGGBBAA. Set thickness>0.
+ * v3: an image with u1 < u0 (or v1 < v0) is drawn mirrored on that axis (u0 = 1, u1 = 0: flipped left to
+ * right), as the game mirrors half art. All four stay within 0..1. Older hosts drop the whole list for such an
+ * element: draw mirrored only when wwhd_hud_mirrored_images() is nonzero. */
+static inline u32 wwhd_hud_mirrored_images(void) {
+    static u32 version;
+    return wwhd_setting_get("hud.mirrored-images.version", WWHD_SETTING_U32, &version, 4) == 4 ? version : 0;
+}
 u32 wwhd_hud_register(void (*callback)(u32 list),u32 screen);
 u32 wwhd_hud_emit(u32 list,const wwhd_hud_element* element);
 /* v2: record CLIP_PUSH/CLIP_POP only through this service. PUSH uses x/y/w/h
@@ -468,6 +475,19 @@ _Static_assert(sizeof(wwhd_game_pane) == 64, "wwhd_game_pane layout");
  * flags 4, w/h its size. */
 static inline u32 wwhd_game_pane_get(const char* key, wwhd_game_pane* pane) {
     return wwhd_setting_get(key, 6, pane, sizeof(*pane)) == sizeof(*pane);
+}
+/* The game's own text of a layout (v3): key "layout-message:<Layout>/<label>" (at most 63 bytes), a label of the
+ * layout's message file, e.g. "layout-message:DungeonMapUp_00/T_FloorU_00_2F", in the language the game runs in.
+ * UTF-8 with its NUL; the game's control codes (colours, icons) left out, line breaks kept as '\n'. Returns the
+ * bytes written with the NUL, or 0 (missing label, a text of 4 KiB or more, a buffer too small: then it is unchanged;
+ * older hosts). A null buffer with capacity 0 gives the size. The text doesn't change while the game runs: read
+ * it once and keep it. wwhd_game_messages() is nonzero on hosts with this query. */
+static inline u32 wwhd_game_message_get(const char* key, char* buffer, u32 capacity) {
+    return wwhd_setting_get(key, WWHD_SETTING_STRING, buffer, capacity);
+}
+static inline u32 wwhd_game_messages(void) {
+    static u32 version;
+    return wwhd_setting_get("layout-message.version", WWHD_SETTING_U32, &version, 4) == 4 ? version : 0;
 }
 
 /* Optional current-room map from a mod stage. Returns 1 with a 808-byte output,
