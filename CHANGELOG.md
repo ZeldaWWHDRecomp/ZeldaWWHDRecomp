@@ -7,6 +7,8 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Editor: MCP access starts once the game is ready** (#386). With `--editor --mcp`, the MCP server now starts after
+  the game code is loaded and all mods are initialized, so an early request can no longer read unloaded game memory.
 - **Setup on Windows: compiler unpacking shows progress** (#394, for #388, thanks @Sherisherisherisheri for the report).
   Unpacking the compiler (about 10,000 files) now shows a "Unpacking the compiler … 4,200 of 10,412 files" line in the
   console and the setup window instead of sitting silent for minutes. If unpacking fails, setup now says why (most
