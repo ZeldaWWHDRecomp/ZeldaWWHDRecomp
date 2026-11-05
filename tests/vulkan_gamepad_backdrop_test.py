@@ -95,17 +95,22 @@ int main() {
  // Repeated same-size frames reuse a bounded pool rather than allocate per pane.
  policy::enabled=true;policy::set_capture_requested(true);
  for(unsigned frame=0;frame<8;++frame){capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();}
- const auto stable=created;
+ const auto stable=created,stableAttempts=allocationAttempts;
  for(unsigned frame=0;frame<120;++frame){capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();}
- assert(created==stable&&imageCount<=kCaptureImages&&imageBytes<=kCaptureBytes);
+ assert(created==stable&&allocationAttempts==stableAttempts&&imageCount<=kCaptureImages&&imageBytes<=kCaptureBytes);
  // Oversized images and allocator failure fall back without publishing a capture.
- Surface huge=a;huge.extent={65535,65535,1};
+ // (an oversized image is refused before the driver is asked; a failing allocator is asked once per pane)
+ Surface huge=a;huge.extent={65535,65535,1};auto attempts=allocationAttempts;
  gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&huge,true));gamepad_backdrop_scope(nullptr,false);
+ assert(allocationAttempts==attempts);
  gamepad_backdrop_scan(&huge);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
  gamepad_backdrop_reset();policy::set_capture_requested(true);failAllocation=true;
+ attempts=allocationAttempts;
  gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&a,true));gamepad_backdrop_scope(nullptr,false);
+ assert(allocationAttempts==attempts+1);
  gamepad_backdrop_scan(&a);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());failAllocation=false;
  failHost=true;gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&a,true));gamepad_backdrop_scope(nullptr,false);failHost=false;
+ assert(allocationAttempts==attempts+2);
  // Device loss is not an optional capture miss: propagate to normal backend handling.
  failDevice=true;bool propagated=false;gamepad_backdrop_scope(nullptr,true);
  try { gamepad_backdrop_begin_replay(&a,true); } catch(const VulkanFailure&) { propagated=true; }
