@@ -77,7 +77,8 @@ def source_files(root, test_fixtures=False):
                     root / "tools/rpx.py",
                     # the in-app randomizer (randomized games made in setup) and its compatibility profile
                     root / "tools/installer/randomizer_seeds.py", root / "tools/installer/object_cache.py",
-                    root / "tools/rando/places.py", root / "tools/recomp/randomizer-usa.json"]
+                    root / "tools/rando/places.py", root / "tools/recomp/randomizer-usa.json",
+                    root / "tools/recomp/randomizer-eu.json"]
     # Newer desktop installers import these production siblings at start-up (setup.py:
     # "import code_mods", "import decomp_setup"). Older branches do not have them; support
     # both without changing installer behavior.

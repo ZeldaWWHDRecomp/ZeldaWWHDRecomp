@@ -48,6 +48,7 @@ TOOL_FILES = [
     "tools/recomp/builds.py",
     "tools/recomp/randomizer_compat.py",
     "tools/recomp/randomizer-usa.json",
+    "tools/recomp/randomizer-eu.json",
     "tools/rando/places.py",  # the spoiler map's places from the player's own stage files
     "tools/recomp/crlive.py",
     "tools/recomp/leaflocal.py",

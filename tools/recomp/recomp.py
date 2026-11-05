@@ -625,7 +625,7 @@ if __name__ == "__main__":
     ap.add_argument("--build", help="which build the rpx is, when it should not be identified by "
                                     "its SHA-256 (%s)" % ", ".join(b.name for b in game_builds.all_builds()))
     ap.add_argument("--mod-hooks", action="store_true", default=os.environ.get("WWHD_RECOMP_MOD_HOOKS") == "1")
-    ap.add_argument("--randomizer", action="store_true", help="validate and translate a compatible USA randomized RPX")
+    ap.add_argument("--randomizer", action="store_true", help="validate and translate a compatible randomized RPX (USA or EU)")
     ap.add_argument("--expected-rpx-sha256", help="randomizer: require the exact RPX checked by setup")
     ap.add_argument("--preserve-registers", action="store_true",
                     help="experimental patched RPX: preserve scratch GPR/FPR/CR writes across guest calls")

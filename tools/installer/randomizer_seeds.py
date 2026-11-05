@@ -177,8 +177,8 @@ def check_base(setup, ctx):
         raise setup.SetupError("The installed game is a randomized one (an imported output folder). Install the game as it "
                                "is to make randomized games in setup.")
     build = setup.check_game_version(ctx.game_dir)
-    if not build.canonical:
-        raise setup.SetupError("Randomized games can be made from the USA release only for now (yours is the %s one)." % build.name)
+    if build.name not in ("USA", "EU"):
+        raise setup.SetupError("Randomized games can be made from the USA and European releases (yours is the %s one)." % build.name)
     return build
 
 

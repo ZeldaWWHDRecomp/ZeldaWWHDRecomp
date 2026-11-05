@@ -7,7 +7,8 @@ an experimental installer feature, not a claim that every seed is compatible.
 
 Setup can now make randomized games itself. It includes TWWHD Randomizer 1.2.0 by SuperDude88
 and its contributors (MIT), so you don't need the PC randomizer or a full copy of the game per
-seed. Install the game as it is (USA release) first.
+seed. Install the game as it is (the USA or the European release) first. The Japanese release
+can't be randomized: the port has no Japanese build.
 
 In the setup window, choose **Randomized games (TWWHD Randomizer)**:
 - **New game** has the presets (beginner, standard, everything), the seed name, the permalink
@@ -219,3 +220,26 @@ maintainers should inspect those reports before approving another variant.
 The upstream [licence](https://github.com/SuperDude88/TWWHD-Randomizer/blob/main/LICENSE.txt)
 is MIT. This feature distributes no randomized game files or upstream randomizer
 implementation. Players generate their own output using the official randomizer.
+
+## European randomized games
+
+The official TWWHD Randomizer supports the USA release only. The in-app randomizer also makes
+European games. It uses the port of the randomizer's patches to the European release from
+GreenNaugahyde's ZeldaWWHDRecompAndroid (MPL-2.0, `tools/rando/twwhd_rando/asm_eur`).
+
+That port was checked independently of the fork's own mapper:
+- Every one of its 3514 patched words matches the USA patch at the address this port's own
+  USA-to-EU map gives (`tools/recomp/builds/eu.json`).
+- Branches were compared by their mapped targets.
+- The randomizer's own code moves as one block (+0x8C0).
+- Data addresses were mapped through the EU map.
+
+`randomizer-eu.json` was made from the 22 option sets of the 1.2.0 sweep, generated from a
+European game:
+- Each changed a hooked function exactly as the USA seed with the same settings changed the
+  mapped USA function. These are the five reviewed USA functions: 0216F7FC, 023EFF20->023EFF24,
+  0247E854->0247E858, 025217F8->025217FC, 025499A0->025499A4.
+- The same seed and settings give the same hash words on both releases.
+
+On macOS, European seeds with the standard and the everything preset reached the Outset pier
+from a fresh file.

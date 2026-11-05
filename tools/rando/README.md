@@ -37,7 +37,9 @@ Refused:
 - race-mode settings (no spoiler log). The official builds add a secret key to those seeds, so the same permalink would make a different game here.
 - plandomizer settings.
 - the Japanese release (the port has no Japanese build).
-- the European release, until its compatibility check exists (`--allow-eur` is for that work only).
+
+The European release uses the fork's port of the randomizer's patches (`twwhd_rando/asm_eur`). Every patched word
+was checked against this port's own USA-to-EU address map (`tools/recomp/builds/eu.json`).
 
 ## Spoiler map places
 
