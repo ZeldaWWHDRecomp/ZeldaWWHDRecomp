@@ -48,6 +48,7 @@ std::string read_file(const fs::path& p) {
 
 struct Seed {
     std::string id, hash, permalink, seed, created, spoiler_log;
+    bool imported = false;  // made with the official randomizer (setup's Import seed...): no permalink or spoiler log
     std::map<std::string, std::string> builds;  // "plain" / "hooks" -> code-builds fingerprint
 };
 
@@ -77,6 +78,7 @@ void load() {
         Seed x;
         x.id = s.get("id").string(), x.hash = s.get("hash").string(), x.permalink = s.get("permalink").string();
         x.seed = s.get("seed").string(), x.created = s.get("created").string(), x.spoiler_log = s.get("spoiler_log").string();
+        x.imported = s.get("imported").boolean;
         for (const auto& [k, b] : s.get("builds").object) x.builds[k] = b.string();
         if (x.id.size() == 16) S.seeds.push_back(x);
     }
@@ -251,7 +253,12 @@ void draw() {
         }
     }
     const Seed* me = this_seed();
-    if (me) {
+    if (me && me->imported) {
+        ImGui::SeparatorText("This game");
+        ImGui::Text("Imported seed %s", me->id.c_str());
+        overlay::widgets::note("Made with the official TWWHD Randomizer, imported %s. Its spoiler log is in the official "
+                               "randomizer's logs folder.", me->created.c_str());
+    } else if (me) {
         ImGui::SeparatorText("This game");
         ImGui::Text("Randomized game %s", me->hash.c_str());
         overlay::widgets::note("Seed %s, made %s. TWWHD Randomizer 1.2.0 by SuperDude88 and contributors (MIT).", me->seed.c_str(),
@@ -273,11 +280,12 @@ void draw() {
 #ifdef __ANDROID__
     // (the phone's setup screen keeps the builds and chooses: Randomized game...)
     constexpr bool switchable = false;
-    overlay::widgets::note("Randomized games are made and chosen in the setup screen (Randomized game...). Each has its own "
-                           "saves and save states.");
+    overlay::widgets::note("Randomized games are made, imported and chosen in the setup screen (Randomized game...). Each "
+                           "has its own saves and save states.");
 #else
     constexpr bool switchable = true;
-    overlay::widgets::note("Randomized games are made and built in setup (Randomizer). Each has its own saves and save states.");
+    overlay::widgets::note("Randomized games are made, imported (Import seed...) and built in setup (Randomized games). Each "
+                           "has its own saves and save states.");
 #endif
     if (switchable) {
     auto row = [&](const std::string& label, const std::map<std::string, std::string>& builds, bool current) {
@@ -297,11 +305,12 @@ void draw() {
         ImGui::PopID();
     };
     row("The game as it is", S.vanilla_builds, !randomizer::compiled_seed());
-    for (const auto& s : S.seeds) row("Randomized game " + s.hash + " (" + s.id + ")", s.builds, me && me->id == s.id);
+    for (const auto& s : S.seeds)
+        row(s.imported ? "Imported seed " + s.id : "Randomized game " + s.hash + " (" + s.id + ")", s.builds, me && me->id == s.id);
     if (!S.message.empty()) overlay::widgets::note("%s", S.message.c_str());
     }
 
-    if (!me) return;
+    if (!me || me->imported) return;
     ImGui::SeparatorText("Spoiler log");
     if (!S.spoilers_shown) {
         if (ImGui::Button("Show the spoiler log...")) S.ask = true;

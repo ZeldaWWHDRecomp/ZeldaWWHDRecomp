@@ -209,6 +209,12 @@ sys.path.insert(0, os.path.join(PKG, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
 import randomizer_compat  # noqa: E402
 RANDOMIZER_TITLE = randomizer_compat.TITLE_ID
+# A randomized game is not installed as the game any more: it is added beside the installed game (the Randomizer page's
+# Import seed..., setup --import-seed; randomizer_seeds.import_seed). Installs made the old way still update and repair.
+RANDOMIZED_SOURCE = ("This is a randomized game. Install the game as it is here first, then add this seed on the "
+                     "Randomizer page: Randomized games (TWWHD Randomizer), Import seed...")
+RANDOMIZED_SOURCE_TERMINAL = ("That is a randomized game. Install the game as it is first, then add the seed with "
+                              "setup --import-seed PATH.")
 SUPPORTED_BUILDS = {b.title_id: b for b in game_builds.all_builds()}
 SUPPORTED_TITLE = game_builds.canonical_build().title_id
 # The translated code (tools/recomp, the hooks in tools/recomp/hooks*.txt, the runtime) is made for
@@ -3010,7 +3016,8 @@ def main():
     ap.add_argument("--archive", help="Cemu Wii U archive (.wua): no keys needed")
     ap.add_argument("--disc-key", help="disc key file or Cemu keys.txt (default: IMAGE.key)")
     ap.add_argument("--common-key", help="Wii U common key file or Cemu keys.txt (or WIIU_COMMON_KEY)")
-    ap.add_argument("--game-dir", help="an extracted game folder or randomized code/cking.rpx with its content/meta folders")
+    ap.add_argument("--game-dir", help="an extracted game folder (or its code/cking.rpx); a seed from the official "
+                    "randomizer goes beside the installed game with --import-seed")
     ap.add_argument("--gen-dir", help="use this generated code instead of recompiling (build checks)")
     ap.add_argument("--data-dir", help="where the game is installed (default: %s)" % default_data_dir())
     ap.add_argument("--app-dir", help="macOS: where the app goes (default: ~/Applications)")
@@ -3034,8 +3041,11 @@ def main():
     ap.add_argument("--rando-settings", help="--randomize: a TWWHD Randomizer config.yaml (its preferences.yaml beside it too)")
     ap.add_argument("--rando-seed", help="--randomize: the seed name")
     ap.add_argument("--rando-new-seed", action="store_true", help="--randomize: a new random seed name")
-    ap.add_argument("--rando-no-build", action="store_true", help="--randomize: make the game's files only (no build, no switch)")
-    ap.add_argument("--list-seeds", action="store_true", help="the randomized games made (JSON)")
+    ap.add_argument("--rando-no-build", action="store_true", help="--randomize, --import-seed: the seed's files only (no build, no switch)")
+    ap.add_argument("--import-seed", metavar="PATH", help="add a seed made with the official TWWHD Randomizer 1.2.0 (its "
+                    "output folder or code/cking.rpx) beside the installed USA game and build it; the game plays it "
+                    "from its next start")
+    ap.add_argument("--list-seeds", action="store_true", help="the randomized games made and imported (JSON)")
     ap.add_argument("--play-seed", metavar="ID|vanilla", help="the game the next start plays: a randomized game (its id or "
                     "number) or the game as it is; builds its game code if needed")
     ap.add_argument("--delete-seed", metavar="ID", help="remove a randomized game's files (its saves stay); needs --yes")
@@ -3098,7 +3108,7 @@ def main():
 
 
 def run_randomizer(args, ctx):
-    """--randomize, --list-seeds, --play-seed, --delete-seed (randomizer_seeds.py)"""
+    """--randomize, --import-seed, --list-seeds, --play-seed, --delete-seed (randomizer_seeds.py)"""
     import randomizer_seeds
     if args.list_seeds:
         print(json.dumps(randomizer_seeds.listing(ctx.data_dir), indent=1, sort_keys=True))
@@ -3124,6 +3134,12 @@ def run_randomizer(args, ctx):
         if args.rando_no_build:
             return 0
         which = entry["id"]
+    if getattr(args, "import_seed", None):
+        say("Importing a seed made with the official TWWHD Randomizer")
+        entry = randomizer_seeds.import_seed(sys.modules[__name__], ctx, os.path.abspath(clean_path(args.import_seed)), say)
+        if args.rando_no_build:
+            return 0
+        which = entry["id"]
     say("Preparing %s (game code %s)" % ("the game as it is" if which == "vanilla" else "randomized game " + which,
                                          "with code-mod support" if hooks else "without code-mod support"))
     result = randomizer_seeds.select(sys.modules[__name__], ctx, which, hooks)
@@ -3144,7 +3160,7 @@ def run(args, ui):
                           args.code_mods_status, args.code_mods_cancel)
         return 0
     if (getattr(args, "randomize", False) or getattr(args, "list_seeds", False) or getattr(args, "play_seed", None)
-            or getattr(args, "delete_seed", None)):
+            or getattr(args, "delete_seed", None) or getattr(args, "import_seed", None)):
         return run_randomizer(args, ctx)
     version, data_dir, game_dir = ctx.version, ctx.data_dir, ctx.game_dir
     say("The Legend of Zelda: The Wind Waker HD - native PC port, setup %s" % version)
@@ -3245,10 +3261,12 @@ def run(args, ui):
             else:
                 while True:
                     p = ui.pick_path("Choose the extracted game folder (it contains code, content and meta)", folder=True)
-                    if valid_game_folder(p):
-                        break
-                    if valid_game_folder(os.path.dirname(p)):
+                    if not valid_game_folder(p) and valid_game_folder(os.path.dirname(p)):
                         p = os.path.dirname(p)
+                    if valid_game_folder(p) and game_folder_title(p) == RANDOMIZER_TITLE:
+                        say("  " + RANDOMIZED_SOURCE_TERMINAL)
+                        continue
+                    if valid_game_folder(p):
                         break
                     say("  That folder does not contain code/cking.rpx, content and meta/meta.xml.")
                 source = ("folder", p)
@@ -3454,16 +3472,13 @@ def gui_main(args):
                     check_title(tid)
                 except SetupError as e:
                     return fail(req, "wrong_title", str(e))
+            if tid == RANDOMIZER_TITLE or code_title_version(folder)[0] == RANDOMIZER_TITLE:
+                return fail(req, "randomized", RANDOMIZED_SOURCE)  # (the Randomizer page imports it: rando_import)
             try:
-                checked_build = check_game_version(folder)
-                if getattr(checked_build, "randomizer", False) is True:
-                    problem = path_length_problem(ctx.data_dir, PKG, extra_path_chars=RANDOMIZER_PATH_EXTRA)
-                    if problem:
-                        return fail(req, "path_length", problem)
+                check_game_version(folder)
             except SetupError as e:
                 return fail(req, "wrong_version", str(e)[0].upper() + str(e)[1:])
             return reply(req, kind="folder", path=folder, title=title_desc(tid) if tid else "The Wind Waker HD",
-                         randomizer=getattr(checked_build, "randomizer", False) is True,
                          in_place=PORTABLE, bytes=folder_size(folder))
         if not os.path.isfile(p):
             return fail(req, "invalid", "File not found.")
@@ -3475,11 +3490,12 @@ def gui_main(args):
                 folder, notes = archive_choice(info)
             except SetupError as e:
                 return fail(req, "wrong_title", str(e)[0].upper() + str(e)[1:])
+            if info["title_id"] == RANDOMIZER_TITLE:
+                return fail(req, "randomized", RANDOMIZED_SOURCE)
             msg = ("Cemu Wii U archive: %s (folder %s), no keys needed. The game files are extracted from it into "
                    "this folder (about %s)." % (title_desc(info["title_id"], int(info["version"])), folder,
                                                 human(int(info.get("bytes", 0)))))
             return reply(req, kind="archive", path=p, title=title_desc(info["title_id"], int(info["version"])),
-                         randomizer=info["title_id"] == RANDOMIZER_TITLE,
                          folder=folder, bytes=int(info.get("bytes", 0)), message=" ".join([msg] + notes))
         if not p.lower().endswith((".wux", ".wud")):
             return fail(req, "invalid", "Choose a .wux or .wud disc image, a .wua Cemu archive, or an extracted game "
@@ -3696,6 +3712,20 @@ def gui_main(args):
             return fail(req, "failed", str(e))
         rando_reply(req, made=entry["id"])
 
+    def do_rando_import(req):
+        """{path}: a seed made with the official TWWHD Randomizer (its output folder or code/cking.rpx), added beside the
+        installed game, built and chosen for the next start"""
+        import randomizer_seeds
+        if rando_guard(req):
+            return
+        me = sys.modules[__name__]
+        try:
+            entry = randomizer_seeds.import_seed(me, ctx, req.get("path") or "", say)
+            randomizer_seeds.select(me, ctx, entry["id"], bool(ctx.state().get("code_mods")))
+        except SetupError as e:
+            return fail(req, "failed", str(e))
+        rando_reply(req, made=entry["id"], imported=True)
+
     def do_rando_play(req):
         """{seed: seed id | "vanilla"}: the game the next start plays (built first when needed)"""
         import randomizer_seeds
@@ -3723,7 +3753,7 @@ def gui_main(args):
                 "language_sources": do_language_sources, "add_language_source": do_add_language_source,
                 "remove_language_source": do_remove_language_source,
                 "rando_state": do_rando_state, "rando_change": do_rando_change, "rando_make": do_rando_make,
-                "rando_play": do_rando_play, "rando_delete": do_rando_delete}
+                "rando_play": do_rando_play, "rando_delete": do_rando_delete, "rando_import": do_rando_import}
     hello()
     for line in sys.stdin:
         line = line.strip()

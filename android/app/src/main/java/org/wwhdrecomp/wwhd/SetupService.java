@@ -264,7 +264,8 @@ public class SetupService extends Service {
                 configuration.put("compiler", AndroidToolchain.prepare(this, () -> checkPause(active)));
                 checkPause(active);
                 String kind = configuration.getJSONObject("input").getString("kind");
-                if (kind.equals("installed")) configuration.put("randomize", AndroidRandomizer.prepare(this));
+                boolean seedImport = configuration.getJSONObject("input").has("seed_import");
+                if (kind.equals("installed") || seedImport) configuration.put("randomize", AndroidRandomizer.prepare(this));
                 else if (!kind.equals("folder")) configuration.put("extractor", AndroidExtractor.prepare(this));
                 String revision = EmbeddedPython.checksum(this, "python-source.zip", () -> checkPause(active));
                 // the APK's native Yaz0 decoder for shader preparation (shaderprep.py; android/build_native.sh)

@@ -10,6 +10,9 @@ game reads at its next start, no build when the variant is cached):
   <data>/randomizer/seeds/<id>/     one seed: its settings, logs (spoiler log), last.json, out/ (changed files)
   <data>/randomizer/places.tsv      the spoiler map's places, from the player's own stage files (places.py)
 
+A seed made with the official TWWHD Randomizer (import_seed: its output folder) is kept the same way, marked
+"imported" (it has no permalink, seed name or spoiler log of its own).
+
 <id> is the first 16 hex digits of the randomized RPX's SHA-256: the game finds its seed's files by its own
 build identity (runtime/src/randomizer_identity.h overlay_directory). Saves, backups and save states are
 separate per seed already (the full SHA-256, randomizer_paths.h).
@@ -27,6 +30,7 @@ PRESETS = ("beginner", "standard", "everything")
 OUTPUT_ROOM = 1 << 30  # a seed's changed files (about 600 MB) and its logs
 LANGUAGE_NOTE = ("Randomized games use the installed game's own languages: the randomizer changes those texts, so "
                  "a language source from another region is not used while a randomized game is played.")
+IDENTITY_FILES = ("code/cking.rpx", "code/app.xml", "meta/meta.xml")  # a seed's build identity: always kept
 
 
 def rando_dir(data_dir):
@@ -124,7 +128,7 @@ def trim_unchanged(out, game):
             continue
         rel = p.relative_to(out)
         g = Path(game) / rel
-        if rel.as_posix() in ("code/cking.rpx", "code/app.xml", "meta/meta.xml"):
+        if rel.as_posix() in IDENTITY_FILES:
             continue  # (the build's identity: kept even if one were the same)
         try:
             if g.is_file() and g.stat().st_size == p.stat().st_size and same_file(g, p):
@@ -174,8 +178,10 @@ def check_base(setup, ctx):
     if not setup.valid_game_folder(ctx.game_dir):
         raise setup.SetupError("No installed game: run setup with your game first, then make a randomized game.")
     if setup.game_folder_title(ctx.game_dir) == setup.RANDOMIZER_TITLE:
-        raise setup.SetupError("The installed game is a randomized one (an imported output folder). Install the game as it "
-                               "is to make randomized games in setup.")
+        raise setup.SetupError("The installed game is a randomized one (an output folder installed by an earlier setup). It "
+                               "still plays, with its saves. To make or import randomized games, install the game as it "
+                               "is (Change the game); the randomized game's saves stay, and importing the same output "
+                               "folder again plays it with them.")
     build = setup.check_game_version(ctx.game_dir)
     if build.name not in ("USA", "EU"):
         raise setup.SetupError("Randomized games can be made from the USA and European releases (yours is the %s one)." % build.name)
@@ -252,6 +258,90 @@ def make(setup, ctx, say=print, preset=None, permalink=None, settings_file=None,
         say("  Randomized game %s (%s) made in %d s; %d unchanged files left out (%d MB)." % (
             seed_id, entry["hash"], time.time() - t0, n, size >> 20))
         ensure_places(setup, data_dir, ctx.game_dir)
+        return entry
+    finally:
+        if tmp is not None and tmp.exists():
+            shutil.rmtree(setup.longpath(str(tmp)), ignore_errors=True)  # (made by this run, failed)
+
+
+def copy_changed(src, game, out):
+    """copies the files of the game folder `src` that differ from the installed game's into `out` (the build's identity
+    files always): (copied count, copied bytes, left-out count, left-out bytes)"""
+    copied = size = skipped = skipped_size = 0
+    for p in sorted(Path(src).rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(src)
+        g = Path(game) / rel
+        n = p.stat().st_size
+        if rel.as_posix() not in IDENTITY_FILES and g.is_file() and g.stat().st_size == n and same_file(g, p):
+            skipped, skipped_size = skipped + 1, skipped_size + n
+            continue
+        dst = Path(out) / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(p, dst)
+        copied, size = copied + 1, size + n
+    return copied, size, skipped, skipped_size
+
+
+IMPORT_FOLDER = ("Choose the output folder of the official TWWHD Randomizer (it contains code, content and meta), or its "
+                 "code/cking.rpx.")
+
+
+def import_seed(setup, ctx, path, say=print):
+    """a seed made with the official TWWHD Randomizer (its output folder, or that folder's code/cking.rpx), kept like the
+    seeds made here: only its files that differ from the installed game, in seeds/<id>/out. The same compatibility check
+    as every randomized game runs on the copy before it is kept (setup.check_game_version); select() then builds it like
+    a seed made here. Its saves are its own by its RPX's SHA-256, the same folder a setup that installed this output folder
+    as the game used. Returns its registry entry (not built yet)."""
+    base = check_base(setup, ctx)
+    if base.name != "USA":
+        raise setup.SetupError("Seeds from the official TWWHD Randomizer are USA games. Install the USA game as it is to "
+                               "play them (yours is the %s one)." % ("European" if base.name == "EU" else base.name))
+    folder = setup.selected_game_folder(path) if path else None
+    if not folder:
+        raise setup.SetupError(IMPORT_FOLDER)
+    if setup.game_folder_title(folder) != setup.RANDOMIZER_TITLE:
+        raise setup.SetupError("This is not a randomized game (its title is not the randomizer's). " + IMPORT_FOLDER)
+    data_dir = Path(ctx.data_dir)
+    if os.path.realpath(folder).startswith(os.path.realpath(str(rando_dir(data_dir))) + os.sep):
+        raise setup.SetupError("This randomized game is in setup already: choose it under Games.")
+    digest = setup.file_sha256(os.path.join(folder, "code", "cking.rpx"))
+    seed_id = digest[:16]
+    for s in load(data_dir)["seeds"]:
+        if s["id"] == seed_id and (seed_dir(data_dir, seed_id) / "out" / "code" / "cking.rpx").is_file():
+            say("  This seed was imported already (%s)." % seed_id)
+            return s
+    if setup.free_space(str(data_dir)) < OUTPUT_ROOM + (2 << 30):
+        raise setup.SetupError("not enough free disk space in %s for a randomized game (3 GB needed: its files and its build)" % data_dir)
+    root = rando_dir(data_dir) / "seeds"
+    root.mkdir(parents=True, exist_ok=True)
+    tmp = root / (".import-%d-%d" % (os.getpid(), int(time.time())))
+    tmp.mkdir()
+    try:
+        t0 = time.time()
+        say("  Importing the randomized game from %s..." % folder)
+        n, size, left, left_size = copy_changed(folder, ctx.game_dir, tmp / "out")
+        rpx = tmp / "out" / "code" / "cking.rpx"
+        if setup.file_sha256(str(rpx)) != digest:
+            raise setup.SetupError("The randomized game changed while it was imported. Import it again once the randomizer is done.")
+        # the port's compatibility check of the randomized code (randomizer_compat.py), on the copy that is built
+        build = setup.check_game_version(str(tmp / "out"))
+        if getattr(build, "randomizer", False) is not True:
+            raise setup.SetupError("This is not a randomized game. " + IMPORT_FOLDER)
+        final = seed_dir(data_dir, seed_id)
+        if final.exists():
+            raise setup.SetupError("A folder for this seed is already there but incomplete (%s). Delete the seed in Games "
+                                   "first, then import it again." % final)
+        os.replace(tmp, final)
+        tmp = None
+        entry = {"id": seed_id, "rpx_sha256": digest, "hash": "", "permalink": "", "seed": "", "version": "",
+                 "release": "USA", "created": time.strftime("%Y-%m-%d %H:%M:%S"), "spoiler_log": "", "imported": True}
+        reg = load(data_dir)
+        reg["seeds"] = [s for s in reg["seeds"] if s["id"] != seed_id] + [entry]
+        save(data_dir, reg)
+        say("  Imported randomized game %s in %d s: %d files (%d MB); %d files the same as the installed game left out "
+            "(%d MB). The output folder is no longer needed." % (seed_id, time.time() - t0, n, size >> 20, left, left_size >> 20))
         return entry
     finally:
         if tmp is not None and tmp.exists():
