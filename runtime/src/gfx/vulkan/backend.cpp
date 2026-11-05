@@ -1231,7 +1231,7 @@ void transition_buffer(Buffer& buffer, VkPipelineStageFlags stage, VkAccessFlags
   b.size = VK_WHOLE_SIZE;
   record::vkCmdPipelineBarrier(command_buffer(), d.source, d.destination, 0, 0, nullptr, 1, &b, 0, nullptr);
 }
-void transition_image(Surface *s, VkImageLayout layout,
+bool transition_image(Surface *s, VkImageLayout layout,
                       VkPipelineStageFlags stage, VkAccessFlags access) {
   const bool conservativePassBreak = s->layout != layout ||
       layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || access != VK_ACCESS_SHADER_READ_BIT;
@@ -1248,10 +1248,10 @@ void transition_image(Surface *s, VkImageLayout layout,
     if (!dependency.needed) {
       // Barrier elision must not also change dynamic-rendering pass boundaries.
       if (conservativePassBreak) end_encoder();
-      return;
+      return false;
     }
   } else if (!changed && layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
-             access == VK_ACCESS_SHADER_READ_BIT) return;
+             access == VK_ACCESS_SHADER_READ_BIT) return false;
   end_encoder();
   VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   b.oldLayout = s->layout;
@@ -1266,6 +1266,7 @@ void transition_image(Surface *s, VkImageLayout layout,
       (s->layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
       stage, 0, 0, nullptr, 0, nullptr, 1, &b);
   s->layout = layout;
+  return true;
 }
 static VkResult initialize_submission_queries(Renderer::Submission& slot,bool passes) {
   VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -4128,6 +4129,16 @@ void swap() {
           double(R.drawCount-draws)/(R.frame-frame),double(R.uploadBytes-bytes)/(R.frame-frame)/(1<<20),
           (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame), passReuse);
       if (reproj::enabled()) LOG("[vulkan perf] framegen %s", reproj::perf_line().c_str());
+      {  // draw.cpp: totals since the start (the pass subset's no-stutter check compares them ON vs OFF)
+        extern uint64_t g_pipelineSyncCompiles, g_pipelineRenderWaits, g_pipelineBudgetWaits;
+        extern uint64_t g_backgroundRequests, g_backgroundAdmitted, g_backgroundDeclined;
+        LOG("[vulkan pipeline stalls] %llu compiled on the render thread, %llu render-thread waits for a compile, "
+            "%llu bounded waits (Shader compile Fast); background lane: %llu requests, %llu admitted, %llu declined",
+            (unsigned long long)g_pipelineSyncCompiles, (unsigned long long)g_pipelineRenderWaits,
+            (unsigned long long)g_pipelineBudgetWaits,
+            (unsigned long long)g_backgroundRequests, (unsigned long long)g_backgroundAdmitted,
+            (unsigned long long)g_backgroundDeclined);
+      }
       if (R.renderPasses) {
         const auto created = pass_caches().framebuffers_created();
         LOG("[vulkan render passes] %.3f framebuffers created/frame, %zu cached",

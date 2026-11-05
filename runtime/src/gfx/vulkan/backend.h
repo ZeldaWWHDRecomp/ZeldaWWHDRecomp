@@ -299,7 +299,8 @@ GpuScopeToken gpu_begin_feedback_scope(const Surface&);
 void gpu_end_feedback_scope(GpuScopeToken);
 bool narrow_barriers();
 void transition_buffer(Buffer&, VkPipelineStageFlags, VkAccessFlags);
-void transition_image(Surface*,VkImageLayout,VkPipelineStageFlags stage=VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VkAccessFlags access=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT);
+// true: a barrier was recorded
+bool transition_image(Surface*,VkImageLayout,VkPipelineStageFlags stage=VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VkAccessFlags access=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT);
 void forget_texture_views();
 void service_captures();
 void request_tv_dump(const std::string&, int);

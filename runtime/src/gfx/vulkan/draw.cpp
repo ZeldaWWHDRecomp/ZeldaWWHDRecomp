@@ -67,6 +67,11 @@
 extern "C" uint64_t g_shader_state_gen;
 using namespace Latte;
 namespace gfxvk {
+// diagnostics (the [vulkan pipeline stalls] line of the performance report): pipelines compiled on the
+// render thread (no async ticket, or async off), render-thread waits for a pending compile, and
+// background-lane requests / admissions / declines (the pass subset's masked variants)
+uint64_t g_pipelineSyncCompiles = 0, g_pipelineRenderWaits = 0, g_pipelineBudgetWaits = 0;
+uint64_t g_backgroundRequests = 0, g_backgroundAdmitted = 0, g_backgroundDeclined = 0;
 namespace {
 bool preparation_stats_enabled() {
   static const bool enabled=std::getenv("WWHD_VK_STATS")!=nullptr;
@@ -650,7 +655,9 @@ struct PendingPipeline {
   VkShaderModule modules[2]{};
   std::optional<PipelineDemandTicket> ticket;
   std::shared_ptr<PipelineRecipe> recipe;
-  bool keepRecipe = true;  // false: a HUD coverage variant (hud_coverage.h), never recorded as a recipe
+  // false: a HUD coverage variant (hud_coverage.h) or a pass subset's masked variant (pass_reuse.h),
+  // never recorded as a recipe
+  bool keepRecipe = true;
   ~PendingPipeline() {
     // Even abandoned jobs can still read these immutable prerequisites.
     if (ticket) ticket->discard_and_wait();
@@ -668,6 +675,15 @@ struct Pipeline {
   const LatteFetchShader* trimFetch = nullptr;
   const vk::Shader* trimVertex = nullptr;
   std::vector<BindingTrimMetadata> bindingTrims;
+  // pass subset (pass_reuse.h, draw()): this pipeline's masked variant last used, by the slots it takes
+  // over and their formats, so a subset draw doesn't build and look up a second 208-byte key each time;
+  // declinedFrame: the frame the background lane last had no room for it (asked again next frame)
+  struct MaskedVariant {
+    uint32_t clearMask = 0;
+    std::array<VkFormat, 8> formats{};
+    struct Pipeline* pipeline = nullptr;
+    uint64_t declinedFrame = ~0ull;
+  } masked;
 };
 // Pipeline key: the two shader identities plus exactly the fixed-function state pipeline() bakes
 // in, normalized so that state the pipeline ignores (blend factors of attachments that do not
@@ -834,6 +850,7 @@ Pipeline& resolve_pending_pipeline(Pipeline& pipeline, bool wait = true, bool pr
   if (!pipeline.pendingCompile) return pipeline;
   try {
     auto& pending = *pipeline.pendingCompile;
+    if (!wait && budgetNs) ++g_pipelineBudgetWaits;  // (Shader compile Fast: a bounded wait)
     std::optional<PipelineBuildResult> built = pending.ticket->wait_for(wait ? 0 : budgetNs);
     if (!built && !wait) return pipeline;
     if (!built) {
@@ -847,6 +864,7 @@ Pipeline& resolve_pending_pipeline(Pipeline& pipeline, bool wait = true, bool pr
           }
         pending.ticket->prioritize();
       }
+      ++g_pipelineRenderWaits;
       if (present) begin_pipeline_pending_frame();
       built = pending.ticket->wait(present ? std::function<void()>(present_completed_frame_while_pipeline_pending)
                                            : std::function<void()>{});
@@ -978,7 +996,22 @@ struct PipelineVariant {
   uint32_t clearMask = 0;
   // 60 fps (generated), hud_coverage.h: the colour slot the pixel shader's HUD coverage variant writes
   uint32_t covSlot = 0;
+  // compiled only in the background lane (begin_pipeline_background), never on the render thread and
+  // never waited for; never recorded as a recipe (pipeline database, template), never filed by the
+  // setup's sweeps, not taken from or counted as warm-up. A miss the lane has no room for (or with
+  // WWHD_VK_ASYNC_PIPELINES=0, or in the setup's preparation) returns declined_pipeline(), unstored.
+  bool background = false;
 };
+// pipeline()'s answer to a background request it did not admit (never stored, never drawn with)
+Pipeline& declined_pipeline_storage() {
+  static Pipeline none;
+  return none;
+}
+Pipeline& declined_pipeline() {
+  auto& none = declined_pipeline_storage();
+  none = Pipeline{};
+  return none;
+}
 Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
                    LatteFetchShader *fs, VkPrimitiveTopology topology,
                    const std::array<Surface *, 8> &colors, Surface *depth,
@@ -989,7 +1022,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   const uint32_t covSlot = g_recipeSink ? 0 : variant.covSlot;
   const PipelineKey key = pipeline_key(r, vs, ps, fs, topology, colors, depth, clearMask, covSlot);
   // the setup's model sweep: every pipeline a swept archive's models use is filed under that archive (once each)
-  if (!covSlot && pipeline_groups::sweeping() && !pipeline_groups::sweeping_new_only()) {
+  if (!covSlot && !variant.background && pipeline_groups::sweeping() && !pipeline_groups::sweeping_new_only()) {
     static std::unordered_set<uint64_t> noted;
     for (const uint32_t group : pipeline_groups::sweeping_all()) {
       const uint64_t id = PipelineKeyHash{}(key) * 1099511628211ull ^ group;
@@ -1033,6 +1066,16 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   if(preparation_stats_enabled())++R.cpuPreparation.pipelineMapLookups;
   if (auto it = pipelines.find(key); it != pipelines.end())
     return remember(it->second);
+  static const bool recordOnly = [] { const char* e = getenv("WWHD_DSWEEP_RECORD_ONLY"); return e && *e == '1'; }();
+  if (variant.background) {
+    ++g_backgroundRequests;
+    // never on the render thread: without the async compiler, in the setup's preparation or its
+    // record-only sweep there is no background lane, and a full lane is not waited for
+    if (g_recipeSink || recordOnly || !async_pipeline_enabled() || !pipeline_background_has_room()) {
+      ++g_backgroundDeclined;
+      return declined_pipeline();
+    }
+  }
   Pipeline p;
   vk::Shader *shaders[] = {vs, ps};
   uint32_t uniformBindings = 0;
@@ -1463,7 +1506,9 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
     for (uint8_t byte : recipeKey) std::fprintf(keyDump, "%02x", byte);
     std::fputc('\n', keyDump); std::fflush(keyDump);
   };
-  if (!g_recipeSink && !covSlot) {
+  if (variant.background) {
+    // (not a template miss: masked variants are never recorded)
+  } else if (!g_recipeSink && !covSlot) {
     ++R.pipelineKeysNew;
     const bool known = pipeline_recipe_known(recipeKey);
     R.pipelineKeysKnown += known;
@@ -1488,7 +1533,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
     none = Pipeline{};
     return none;
   }
-  if (!covSlot && !recipeSpirv[0].empty() && !recipeSpirv[1].empty() &&
+  if (!covSlot && !variant.background && !recipeSpirv[0].empty() && !recipeSpirv[1].empty() &&
       take_warm_pipeline(recipeKey, recipeSpirv, descriptorBindings, p.dynamicUniforms, pipelineState, warmed)) {
     for (auto module : modules) if (module) vkDestroyShaderModule(R.device, module, nullptr);
     vkDestroyPipelineLayout(R.device, p.layout, nullptr);
@@ -1501,10 +1546,9 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
     }
     return remember(pipelines.emplace(key, std::move(p)).first->second);
   }
-  pipeline_groups::note_created();
+  if (!variant.background) pipeline_groups::note_created();
   // the setup's model sweep, record only (WWHD_DSWEEP_RECORD_ONLY=1): the recipe is recorded as when the pipeline is
   // made, but the driver never compiles it; its draws are left out (nobody sees the hidden sweep)
-  static const bool recordOnly = [] { const char* e = getenv("WWHD_DSWEEP_RECORD_ONLY"); return e && *e == '1'; }();
   if (recordOnly && !covSlot) {
     for (size_t i = 0; i < shaderBinaries.size(); ++i)
       if (recipeSpirv[i].empty() && shaderBinaries[i]) recipeSpirv[i] = vk::shader_binary_words_exact(shaderBinaries[i], R.frame);
@@ -1533,9 +1577,10 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
     recipe->descriptors = std::move(descriptorBindings);
     recipe->dynamicUniforms = p.dynamicUniforms;
     recipe->state = std::make_unique<GraphicsPipelineState>(std::move(pipelineState));
-    for (const uint32_t group : pipeline_groups::sweeping_all()) recipe->add_group(group);
+    if (!variant.background)
+      for (const uint32_t group : pipeline_groups::sweeping_all()) recipe->add_group(group);
     pending->recipe = std::move(recipe);
-    pending->keepRecipe = !covSlot;
+    pending->keepRecipe = !covSlot && !variant.background;
     // The owner waits for its ticket before destroying modules or itself.
     // Capturing a shared owner here would form an owner/ticket/job cycle.
     pending->shaders[0]=vs; pending->shaders[1]=ps;
@@ -1553,9 +1598,24 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
         owner->recipe->state->set_stage_module(i,owner->modules[i]);
       }
     };
+    if (variant.background) {
+      pending->ticket = begin_pipeline_background(*pending->recipe->state, R.frame,
+          PipelineKeyHash{}(key), "masked_pipeline", prepare);
+      if (!pending->ticket) {  // the lane filled up after all: nothing compiled here, nothing stored
+        ++g_backgroundDeclined;
+        pending.reset();  // (no modules yet: they are made by prepare, on the worker)
+        vkDestroyPipelineLayout(R.device, p.layout, nullptr);
+        for (auto set : p.sets) vkDestroyDescriptorSetLayout(R.device, set, nullptr);
+        return declined_pipeline();
+      }
+      ++g_backgroundAdmitted;
+      p.pendingCompile = std::move(pending);
+      return remember(pipelines.emplace(key, std::move(p)).first->second);
+    }
     pending->ticket = begin_pipeline_async(*pending->recipe->state, R.frame,
         PipelineKeyHash{}(key), "guest_pipeline", prepare);
     if (!pending->ticket) {
+      ++g_pipelineSyncCompiles;
       // Capacity pressure always completes this draw exactly. No new snapshot
       // is retained and no silently omitted draw is introduced by admission.
       deferred_commands().finish_exact();
@@ -1573,6 +1633,7 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
     } else p.pendingCompile = std::move(pending);
     return remember(pipelines.emplace(key, std::move(p)).first->second);
   } else {
+    ++g_pipelineSyncCompiles;
     result = vkCreateGraphicsPipelines(R.device, R.pipelineCache, 1, pipelineState.get(), nullptr, &p.pipeline);
   }
   const bool recordRecipe = result == VK_SUCCESS && !covSlot;
@@ -2280,6 +2341,7 @@ struct ContinuedDraw {
   // pipeline was made for; targets stays the draw's own
   uint32_t subsetAbsent = 0;
   std::array<Surface*, 8> subsetColors{};
+  Pipeline* ownPipeline = nullptr;  // the draw's own pipeline (pipeline: its masked variant, with a subset)
 };
 // Stereo: each eye's command stream continues its own previous draw (stereo.h).
 std::array<ContinuedDraw, 2> continuedEyes;
@@ -2606,7 +2668,8 @@ void prefetch_pass_reads(const std::array<Surface*, 8>& colors, Surface* depth, 
       for (auto* c : colors) attached |= c == s;
       if (attached) continue;
       if (!narrow_barriers() && s->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) continue;  // ready
-      transition_image(s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, pr.stages, VK_ACCESS_SHADER_READ_BIT);
+      // counted (and marked) only when a barrier was actually recorded
+      if (!transition_image(s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, pr.stages, VK_ACCESS_SHADER_READ_BIT)) continue;
       s->passReadyFor = serial;
       ++R.passPrefetched;
     }
@@ -2621,16 +2684,13 @@ void prefetch_pass_reads(const std::array<Surface*, 8>& colors, Surface* depth, 
 // ended), with stereo (per-eye passes and eye 1's pipeline replay) or in the AO replay.
 // Returns the slots taken over (targets updated); 0: none. WWHD_PASS_SUBSET=0: off.
 uint32_t take_pass_subset(const uint32_t* r, const vk::Shader* vs, const vk::Shader* ps, DrawTargets& t) {
+  // the cheap comparison first (target identities); texture registers only for a candidate
   pass_reuse::Targets pass, draw;
   for (int i = 0; i < 8; i++) {
     Surface* c = R.passColors[i];
     pass.colors[i] = c;
     pass.slices[i] = R.passSlices[i];
-    if (c) {
-      if (c->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) return 0;
-      pass.addr[i] = c->addr;
-      pass.bytes[i] = c->dataSize;
-    }
+    pass.addr[i] = c ? c->addr : 0;
     draw.colors[i] = t.colors[i];
     draw.slices[i] = t.slices[i];
   }
@@ -2642,24 +2702,65 @@ uint32_t take_pass_subset(const uint32_t* r, const vk::Shader* vs, const vk::Sha
   draw.depthSlice = t.depthSlice;
   draw.width = t.width;
   draw.height = t.height;
-  // the base addresses of the textures both stages sample
-  uint32_t sampled[2 * LATTE_NUM_MAX_TEX_UNITS];
+  const uint32_t absent = pass_reuse::subset_candidates(pass, draw);
+  if (!absent) return 0;
+  for (int i = 1; i < 8; i++)
+    if ((absent >> i) & 1) {
+      const Surface* c = R.passColors[i];
+      if (c->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) return 0;
+      pass.bytes[i] = pass_reuse::target_bytes(c->dataSize, c->pitch, c->height, c->slices, c->fmt.bytesPerBlock);
+      pass.mipAddr[i] = c->mips > 1 ? c->mipAddr : 0;
+    }
+  // the base and mip base addresses (SQ_TEX_RESOURCE_WORD2/3) of the textures both stages sample
+  uint32_t sampled[4 * LATTE_NUM_MAX_TEX_UNITS];
   size_t count = 0;
   for (const vk::Shader* sh : {vs, ps}) {
+    if (!sh->dec) return 0;
     const uint32_t texbase = sh->vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
-    for (int i = 0; i < sh->dec->textureUnitListCount && count < std::size(sampled); i++) {
+    for (int i = 0; i < sh->dec->textureUnitListCount; i++) {
       const uint32_t unit = sh->dec->textureUnitList[i];
-      if (unit >= LATTE_NUM_MAX_TEX_UNITS) return 0;
+      if (unit >= LATTE_NUM_MAX_TEX_UNITS || count + 2 > std::size(sampled)) return 0;
       sampled[count++] = r[texbase + unit * 7 + 2] << 8;
+      sampled[count++] = r[texbase + unit * 7 + 3] << 8;
     }
   }
-  const uint32_t absent = pass_reuse::subset_absent(pass, draw, sampled, count);
+  if (pass_reuse::samples_absent(pass, absent, sampled, count)) return 0;
   for (int i = 0; i < 8; i++)
     if ((absent >> i) & 1) {
       t.colors[i] = R.passColors[i];
       t.slices[i] = R.passSlices[i];
     }
   return absent;
+}
+// The masked variant of `own` for the slots `absent` of `colors` (the pass's targets), from own's link
+// when it is the same one as last time (no second key built or looked up), else requested from
+// pipeline() as a background variant. Never compiles or waits on the render thread: nullptr, or a
+// pipeline still compiling, while it is not ready; one finished in the background is taken here.
+Pipeline* masked_variant(Pipeline& own, const uint32_t* r, vk::Shader* vs, vk::Shader* ps, LatteFetchShader* fs,
+                         VkPrimitiveTopology topology, const std::array<Surface*, 8>& colors, Surface* depth,
+                         uint32_t absent) {
+  const uint32_t clear = pass_reuse::clear_mask(absent);
+  std::array<VkFormat, 8> formats{};
+  for (int i = 0; i < 8; i++)
+    if ((absent >> i) & 1) formats[i] = colors[i]->fmt.pixel;
+  auto& link = own.masked;
+  const bool same = link.clearMask == clear && link.formats == formats;
+  Pipeline* v = same ? link.pipeline : nullptr;
+  if (!v) {
+    if (same && link.declinedFrame == R.frame) return nullptr;  // no room this frame: asked again next frame
+    Pipeline& got = pipeline(r, vs, ps, fs, topology, colors, depth, PipelineVariant{.clearMask = clear, .background = true});
+    if (&got == &declined_pipeline_storage()) {
+      link = {clear, formats, nullptr, R.frame};
+      return nullptr;
+    }
+    v = &got;
+    link = {clear, formats, v, ~0ull};
+  }
+  // a compile in the background: taken if it has finished, never waited for
+  if (!v->pipeline && v->pendingCompile && !v->compileError) {
+    try { resolve_pending_pipeline(*v, false); } catch (...) {}
+  }
+  return v;
 }
 StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                           VkDescriptorSetLayout layout, bool dynamicUniforms, float sx, float sy,
@@ -3152,8 +3253,10 @@ bool verify_continued(const uint32_t* r, uint32_t prim) {
   else if (ps != c.ps || !ps || !ps->ready()) kind = 2;
   else if (primitive_topology(prim) != c.topology) kind = 7;
   else if (!resolve_targets(r, ps, t) || !t.same(c.targets)) kind = 3;
-  else if (&pipeline(r, vs, ps, fs, c.topology, c.subsetAbsent ? c.subsetColors : t.colors, t.depth,
-                     {.clearMask = pass_reuse::clear_mask(c.subsetAbsent)}) != c.pipeline) kind = 4;
+  else if (&pipeline(r, vs, ps, fs, c.topology, t.colors, t.depth) != c.ownPipeline ||
+           (c.subsetAbsent && &pipeline(r, vs, ps, fs, c.topology, c.subsetColors, t.depth,
+                                        {.clearMask = pass_reuse::clear_mask(c.subsetAbsent), .background = true}) != c.pipeline))
+    kind = 4;
   else
     for (int stage = 0; stage < 2 && kind < 0; ++stage) {
       vk::Shader* sh = stage ? ps : vs;
@@ -3326,6 +3429,7 @@ void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexTy
 }
 void clouds_before_draw(const uint32_t* r, const vk::Shader* ps, Surface* color0, uint32_t slice0, Surface* depth);
 bool clouds_skip_card();
+bool clouds_pass_subset_ok(const std::array<Surface*, 8>& colors, const Surface* depth);
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances, bool* viewIndependent) {
   const uint32_t dirtyGroups = gx2::take_dirty_groups();  // register groups changed since the previous draw
@@ -3636,37 +3740,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
         reproj::hud_coverage_failed();  // this frame's in-between one: the HUD found by comparing pictures
       }
     }
-  // pass subset (take_pass_subset): colour slots taken over from the open pass, written by nothing
-  uint32_t subsetAbsent = 0;
-  std::array<Surface*, 8> ownColors{};  // the draw's own colour targets, when it took over others
-  std::array<uint32_t, 8> ownSlices{};
-  if (pass_reuse::subset_on() && R.rendering && R.passTracked && !aoPrivateReplay && !replay && !backdropReplay &&
-      !covSlot && stereo::frame.mode == stereo::Off) {
-    ownColors = colors;
-    ownSlices = slices;
-    subsetAbsent = take_pass_subset(r, vs, ps, targets);
-    if (subsetAbsent) ++R.passSubsetKept;
-  }
-  uint32_t subsetClear = pass_reuse::clear_mask(subsetAbsent);
-  Pipeline* subsetPipeline = nullptr;
-  if (subsetAbsent) {
-    subsetPipeline = fast && subsetAbsent == continued.subsetAbsent && continued.subsetColors == colors
-        ? continued.pipeline : &pipeline(r, vs, ps, fs, topology, colors, depth, {.clearMask = subsetClear});
-    // a compile in the background: taken if it has finished, never waited for
-    if (!subsetPipeline->pipeline && subsetPipeline->pendingCompile && !subsetPipeline->compileError) {
-      try { resolve_pending_pipeline(*subsetPipeline, false); } catch (...) {}
-    }
-    if (!subsetPipeline->pipeline) {
-      // its variant isn't ready (compiling, or failed): drawn as before, in a pass of its own targets
-      subsetPipeline = nullptr;
-      colors = ownColors;
-      slices = ownSlices;
-      subsetAbsent = subsetClear = 0;
-      --R.passSubsetKept;
-    }
-  }
-  Pipeline* pp = subsetPipeline ? subsetPipeline
-      : fast && !continued.subsetAbsent ? continued.pipeline
+  Pipeline* pp = fast ? continued.ownPipeline
       : !backdropReplay && replay && replay->formats == target_formats(colors, depth) ? replay->pipeline
       : &pipeline(r, vs, ps, fs, topology, colors, depth, {.covSlot = covSlot});
   if (covSlot) {  // its coverage variant still compiling (or failed): drawn as usual, the frame generated the old way
@@ -3678,7 +3752,45 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       pp = &pipeline(r, vs, ps, fs, topology, colors, depth);
     }
   }
-  auto &p = *pp;
+  // the draw's own pipeline, exactly as without the pass subset
+  auto &own = *pp;
+  // Pass subset (take_pass_subset): colour slots taken over from the open pass, written by nothing. Only
+  // when the draw's own pipeline is ready (so falling back to it later never waits) and its masked
+  // variant is ready too: that variant is only ever compiled in the background lane (never on the render
+  // thread, never recorded as a recipe), and until it is ready the draw keeps its own pass as before.
+  // Not while the GamePad backdrop captures or replays (its snapshot keeps the draw's own targets), for
+  // a HUD coverage draw (60 fps (generated), decided on the draw's own colours above), nor with stereo,
+  // eye 1's replay, the AO replay, or without the async compiler.
+  uint32_t subsetAbsent = 0;
+  std::array<Surface*, 8> ownColors{};  // the draw's own colour targets, when it took over others
+  std::array<uint32_t, 8> ownSlices{};
+  Pipeline* subsetPipeline = nullptr;
+  if (pass_reuse::subset_on() && R.rendering && R.passTracked && !aoPrivateReplay && !replay && !backdropReplay &&
+      !covSlot && stereo::frame.mode == stereo::Off && own.pipeline && !own.pendingCompile && async_pipeline_enabled() &&
+      !gamepad_backdrop_replaying() && !gamepad_backdrop_capture_active()) {
+    ownColors = colors;
+    ownSlices = slices;
+    subsetAbsent = take_pass_subset(r, vs, ps, targets);
+    // toon clouds / horizon haze drawn into this pass next must not need a pipeline for its wider target set
+    if (subsetAbsent && !clouds_pass_subset_ok(colors, depth)) {
+      colors = ownColors;
+      slices = ownSlices;
+      subsetAbsent = 0;
+    }
+    if (subsetAbsent) {
+      subsetPipeline = fast && subsetAbsent == continued.subsetAbsent && continued.subsetColors == colors
+          ? continued.pipeline : masked_variant(own, r, vs, ps, fs, topology, colors, depth, subsetAbsent);
+      if (!subsetPipeline || !subsetPipeline->pipeline) {
+        // its variant isn't ready (compiling, not admitted, or failed): drawn as before, in its own pass
+        subsetPipeline = nullptr;
+        colors = ownColors;
+        slices = ownSlices;
+        subsetAbsent = 0;
+      }
+    }
+  }
+  const uint32_t subsetClear = pass_reuse::clear_mask(subsetAbsent);
+  auto &p = subsetPipeline ? *subsetPipeline : own;
   rprof::mark(rprof::kPipeline);
   if (!p.pipeline && !p.pendingCompile) return;
   // Shader compile Fast (background_shaders.h): a draw that may be left out only waits the frame's
@@ -3767,6 +3879,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       c.targets = targets;
       c.scissorBR = r[REGADDR::PA_SC_GENERIC_SCISSOR_BR];
       c.pipeline = &p;
+      c.ownPipeline = &own;
       c.subsetAbsent = subsetAbsent;
       c.subsetColors = colors;
       if (subsetAbsent) {  // the continued state keeps the draw's own targets (verify_continued)
@@ -3787,6 +3900,23 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       reusePass = false;
   if (depth && depth->layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
     reusePass = false;
+  // pass subset: the textures bound above ended the pass anyway, so the draw begins a pass of its own
+  // targets with its own pipeline (ready: checked before the subset was taken), exactly as without the
+  // subset. Its descriptor sets were made with the variant's set layouts, which are identically defined
+  // (the same shaders and uniform mode), so they suit its own pipeline layout.
+  if (subsetAbsent && !reusePass) {
+    colors = ownColors;
+    slices = ownSlices;
+    subsetAbsent = 0;
+    if (fastPathDraw && !fast) {
+      continued.pipeline = &own;
+      continued.subsetAbsent = 0;
+      continued.subsetColors = ownColors;
+    }
+  } else if (subsetAbsent) {
+    ++R.passSubsetKept;
+  }
+  Pipeline& dp = subsetAbsent ? p : own;  // the pipeline the draw is recorded with
   struct DrawStateCache {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkBuffer indexBuffer = VK_NULL_HANDLE;
@@ -3894,19 +4024,19 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     R.passHeight = height;
   }
   rprof::mark(rprof::kPass);
-  if (!p.pipeline && !p.pendingCompile) return;
-  const bool deferredPipelineDraw = bool(p.pendingCompile);
-  if (p.pendingCompile) {
-    auto* ownedPipeline = &p;
+  if (!dp.pipeline && !dp.pendingCompile) return;
+  const bool deferredPipelineDraw = bool(dp.pendingCompile);
+  if (dp.pendingCompile) {
+    auto* ownedPipeline = &dp;
     record::emit_owned([ownedPipeline,cmd]() {
       resolve_pending_pipeline(*ownedPipeline);
       if(ownedPipeline->pipeline)
         record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ownedPipeline->pipeline);
     });
     state.pipeline = VK_NULL_HANDLE;
-  } else if (state.pipeline != p.pipeline) {
-    record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, p.pipeline);
-    state.pipeline = p.pipeline;
+  } else if (state.pipeline != dp.pipeline) {
+    record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, dp.pipeline);
+    state.pipeline = dp.pipeline;
   }
   VkDescriptorSet sets[] = {vres.set, pres.set};
   std::array<uint32_t, 34> dynamicOffsets{};
@@ -3920,7 +4050,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   DescriptorBindProbe::Matches matches;
   const bool preparationStats=preparation_stats_enabled();
   if(skipRedundantBinds || preparationStats)
-    matches=state.descriptorProbe.observe(cmd,R.submissionGeneration,p.layout,sets,
+    matches=state.descriptorProbe.observe(cmd,R.submissionGeneration,dp.layout,sets,
         dynamicOffsets.data(),vres.dynamicOffsetCount,pres.dynamicOffsetCount);
   const auto bind=DescriptorBindProbe::bind_range(matches,skipRedundantBinds,
       vres.dynamicOffsetCount,pres.dynamicOffsetCount);
@@ -3932,7 +4062,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     R.cpuPreparation.descriptorSkippedSets+=2-bind.count;
   }
   if(bind.count)
-    record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,p.layout,
+    record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,dp.layout,
         bind.first,bind.count,sets+bind.first,bind.offsetCount,
         dynamicOffsets.data()+bind.offsetBegin);
   VkViewport vp;
@@ -4113,8 +4243,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     }
   }
   rprof::g_upload_kind = rprof::kUpVertex;
-  const bool cachedTrims = p.trimFetch == fs && p.trimVertex == vs &&
-                           p.bindingTrims.size() == fs->bufferGroups.size();
+  const bool cachedTrims = dp.trimFetch == fs && dp.trimVertex == vs &&
+                           dp.bindingTrims.size() == fs->bufferGroups.size();
   size_t trimGroup = 0;
   for (auto &g : fs->bufferGroups) {
     uint32_t addr =
@@ -4124,7 +4254,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     if (!addr || !size)
       exception_report::raise("missing vertex buffer");
     const BindingTrimMetadata trim = cachedTrims
-        ? p.bindingTrims[trimGroup] : binding_trim_metadata(r, vs, g);
+        ? dp.bindingTrims[trimGroup] : binding_trim_metadata(r, vs, g);
     ++trimGroup;
     const auto attributeEnd = trim.attributeEnd;
     const auto stride = trim.stride;
@@ -4212,7 +4342,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
                          indexType == 0 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
     recordDraw(true, nativeIndexSlice.buffer, nativeIndexSlice.offset,
                indexType == 0 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32, count);
-    if(deferredPipelineDraw) { auto* pipeline=&p; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, count, instances, 0, int32_t(baseVertex), 0); }); }
+    if(deferredPipelineDraw) { auto* pipeline=&dp; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, count, instances, 0, int32_t(baseVertex), 0); }); }
     else record::vkCmdDrawIndexed(cmd, count, instances, 0, int32_t(baseVertex), 0);
   } else if (convertedEntry) {
     const uint32_t converted = convertedEntry->outSize / 4;
@@ -4220,18 +4350,18 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     rprof::guest_read(rprof::kUpIndex, indexAddr, guestBytes);
     bindIndex(b.buffer, b.offset, VK_INDEX_TYPE_UINT32);
     recordDraw(true, b.buffer, b.offset, VK_INDEX_TYPE_UINT32, converted);
-    if(deferredPipelineDraw) { auto* pipeline=&p; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, converted, instances, 0, int32_t(baseVertex), 0); }); }
+    if(deferredPipelineDraw) { auto* pipeline=&dp; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, converted, instances, 0, int32_t(baseVertex), 0); }); }
     else record::vkCmdDrawIndexed(cmd, converted, instances, 0, int32_t(baseVertex), 0);
   } else if (indices.empty()) {
     recordDraw(false, VK_NULL_HANDLE, 0, VK_INDEX_TYPE_UINT32, count);
-    if(deferredPipelineDraw) { auto* pipeline=&p; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDraw(cmd, count, instances, baseVertex, 0); }); }
+    if(deferredPipelineDraw) { auto* pipeline=&dp; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDraw(cmd, count, instances, baseVertex, 0); }); }
     else record::vkCmdDraw(cmd, count, instances, baseVertex, 0);
   } else {
     auto b = snapshot(indices.data(), indices.size() * 4, 4);
     if (indexAddr) rprof::guest_read(rprof::kUpIndex, indexAddr, guestBytes);
     bindIndex(b.buffer, b.offset, VK_INDEX_TYPE_UINT32);
     recordDraw(true, b.buffer, b.offset, VK_INDEX_TYPE_UINT32, indices.size());
-    const auto drawCount=indices.size(); if(deferredPipelineDraw) { auto* pipeline=&p; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, drawCount, instances, 0, int32_t(baseVertex), 0); }); }
+    const auto drawCount=indices.size(); if(deferredPipelineDraw) { auto* pipeline=&dp; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, drawCount, instances, 0, int32_t(baseVertex), 0); }); }
     else record::vkCmdDrawIndexed(cmd, indices.size(), instances, 0, int32_t(baseVertex), 0);
   }
   }

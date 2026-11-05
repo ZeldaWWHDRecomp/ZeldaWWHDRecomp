@@ -41,26 +41,35 @@ inline bool prefetch_on() {
 
 // ------------------------------------------------------------------------------------- (a) subset
 // One side of the comparison: 8 colour slots and the depth buffer, by identity (any pointer), with
-// slices, and the guest address and byte size of each colour slot (sampling check).
+// slices; for the pass's colour slots also the guest base address, and for the slots a draw leaves out
+// (sampling check) the byte size of the target's memory and its mip chain's base address (0: none).
 struct Targets {
   std::array<const void*, 8> colors{};
   std::array<uint32_t, 8> slices{};
-  std::array<uint32_t, 8> addr{}, bytes{};
+  std::array<uint32_t, 8> addr{}, bytes{}, mipAddr{};
   const void* depth = nullptr;
   uint32_t depthSlice = 0, width = 0, height = 0;
 };
-// Does a sampled texture base address (bytes, swizzle bits possibly set) fall in a target's memory?
-// Conservative: the 2 KiB below the base (macro-tile swizzle bits, 0x700) count as the target's too.
+// A target's memory for the sampling check, as surfaces.cpp invalidation_hits counts a surface's base
+// bytes: the larger of its data size and pitch x height x slices x bytes per block.
+inline uint32_t target_bytes(uint32_t dataSize, uint32_t pitch, uint32_t height, uint32_t slices, uint32_t bytesPerBlock) {
+  const uint64_t geometry = uint64_t(pitch) * height * (slices ? slices : 1) * bytesPerBlock;
+  const uint64_t bytes = dataSize > geometry ? dataSize : geometry;
+  return bytes > 0xFFFFFFFFull ? 0xFFFFFFFFu : uint32_t(bytes);
+}
+// Does a sampled texture address (a base or mip base, bytes, swizzle bits possibly set) fall in a
+// target's memory? Conservative: the 2 KiB below the base (macro-tile swizzle bits, 0x700) count as the
+// target's too.
 inline bool samples_target(uint32_t sampled, uint32_t addr, uint32_t bytes) {
   if (!sampled || !addr) return false;
   const uint32_t lo = addr & ~0x7FFu;
-  const uint32_t hi = addr + (bytes ? bytes : 1u);
+  const uint64_t hi = uint64_t(addr) + (bytes ? bytes : 1u);
   return sampled >= lo && sampled < hi;
 }
-// The colour slots the draw leaves out of the open pass, which the draw may take over with writes
-// masked; 0: the draw can't stay in the pass that way (or binds the exact set already).
-// sampled: the base addresses (bytes) of the textures the draw's stages sample.
-inline uint32_t subset_absent(const Targets& pass, const Targets& draw, const uint32_t* sampled, size_t sampledCount) {
+// The cheap part, by target identity only (no texture registers read): the colour slots the draw
+// leaves out of the open pass, which it may take over with writes masked; 0: the draw can't stay in the
+// pass that way (or binds the exact set already).
+inline uint32_t subset_candidates(const Targets& pass, const Targets& draw) {
   if (!draw.colors[0] || draw.colors[0] != pass.colors[0] || draw.slices[0] != pass.slices[0]) return 0;
   if (draw.depth != pass.depth || (draw.depth && draw.depthSlice != pass.depthSlice)) return 0;
   if (draw.width != pass.width || draw.height != pass.height) return 0;
@@ -70,12 +79,27 @@ inline uint32_t subset_absent(const Targets& pass, const Targets& draw, const ui
       if (draw.colors[i] != pass.colors[i] || draw.slices[i] != pass.slices[i]) return 0;
     } else if (pass.colors[i]) {
       if (!pass.addr[i]) return 0;
-      for (size_t t = 0; t < sampledCount; t++)
-        if (samples_target(sampled[t], pass.addr[i], pass.bytes[i])) return 0;
       absent |= 1u << i;
     }
   }
   return absent;
+}
+// Does the draw sample one of the absent slots' targets (base memory or mip chain)? sampled: the base
+// and mip base addresses (bytes) of the textures the draw's stages sample.
+inline bool samples_absent(const Targets& pass, uint32_t absent, const uint32_t* sampled, size_t sampledCount) {
+  for (int i = 1; i < 8; i++) {
+    if (!((absent >> i) & 1)) continue;
+    for (size_t t = 0; t < sampledCount; t++)
+      if (samples_target(sampled[t], pass.addr[i], pass.bytes[i]) ||
+          samples_target(sampled[t], pass.mipAddr[i], pass.bytes[i]))
+        return true;
+  }
+  return false;
+}
+// Both: the slots taken over, 0 when not a strict subset or when the draw samples one of them.
+inline uint32_t subset_absent(const Targets& pass, const Targets& draw, const uint32_t* sampled, size_t sampledCount) {
+  const uint32_t absent = subset_candidates(pass, draw);
+  return absent && !samples_absent(pass, absent, sampled, sampledCount) ? absent : 0;
 }
 // CB_TARGET_MASK nibbles of the absent slots
 inline uint32_t clear_mask(uint32_t absent) {
