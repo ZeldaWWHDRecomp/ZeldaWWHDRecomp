@@ -23,9 +23,11 @@ void env(const char* key, const char* value) {
 }
 }
 namespace mods {
-static bool target_letterbox = true;
-bool letterbox_while_targeting() { return target_letterbox; }
-void set_letterbox_while_targeting(bool on) { target_letterbox = on; }
+static int target_letterbox = 0;
+int targeting_letterbox_mode() { return target_letterbox; }
+void set_targeting_letterbox_mode(int value) { if (value >= 0 && value <= 2) target_letterbox = value; }
+bool letterbox_while_targeting() { return target_letterbox == 0; }
+void set_letterbox_while_targeting(bool on) { target_letterbox = on ? 0 : 1; }
 static bool ff_on = false, ff_mute = true;
 static unsigned ff_rate = 2;
 static uint32_t ff_button = 0x40;
@@ -125,6 +127,18 @@ int main() {
     load_saved(); assert(!mods::letterbox_while_targeting());
     env("WWHD_TARGET_LETTERBOX", nullptr);
     load_saved(); assert(mods::letterbox_while_targeting());
+    // Old false means enemy-only; the new choice survives preference reloads.
+    preferences["mod.target-letterbox.enabled"] = "0";
+    preferences["mod.target-letterbox.mode"] = "2";
+    load_saved(); assert(mods::targeting_letterbox_mode() == 2);
+    preferences["mod.target-letterbox.enabled"] = "1";
+    load_saved(); assert(mods::targeting_letterbox_mode() == 0);
+    env("WWHD_TARGET_LETTERBOX_MODE", "2");
+    mods::set_targeting_letterbox_mode(2);
+    load_saved(); assert(mods::targeting_letterbox_mode() == 2);
+    env("WWHD_TARGET_LETTERBOX_MODE", nullptr);
+    preferences.erase("mod.target-letterbox.mode");
+    load_saved(); assert(mods::targeting_letterbox_mode() == 0);
     assert(find("lock-on") && std::string(find("lock-on")->name)=="Extended enemy lock-on");
     assert(std::string(find("lock-on")->category)=="Gameplay");
     assert(!mods::extended_lock_on() && mods::lock_on_range()==1.f && mods::lock_on_cycling());

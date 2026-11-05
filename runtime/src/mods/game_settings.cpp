@@ -72,6 +72,13 @@ std::string times(float v) {
 
 }  // namespace
 
+void set_targeting_letterbox_mode(int mode) {
+    if (mode < 0 || mode > 2) return;
+    if (!mods::manager::set_enabled("target-letterbox", mode == 0)) return;
+    mods::set_targeting_letterbox_mode(mode);
+    hostui::set("mod.target-letterbox.mode", std::to_string(mode));
+    mods::packages::remember_option("target-letterbox.mode", mode);
+}
 void set_camera_speed(float speed) {
     mods::set_camera_speed(speed);
     hostui::set("mod.direct-camera.speed", std::to_string(speed));
@@ -759,8 +766,15 @@ void register_builtin() {
     }
     add(builtin_toggle("camera", "first-person", "First person on R3 / wheel",
                        "R3 or the mouse wheel enters and leaves first person."));
-    add(builtin_toggle("camera", "target-letterbox", "Letterbox while targeting",
-                       "Black bars at the top and bottom while Link targets, as in the original."));
+    {
+        Item it;
+        it.id = "target-letterbox", it.tab = "camera", it.label = "Letterbox while targeting", it.kind = Kind::Choice;
+        it.help = "Choose bars for enemy lock-on and free targeting. Cutscenes and scripted cameras keep their bars.";
+        it.choices = {"On", "Off with enemies", "Always off"};
+        it.get = [] { return float(mods::targeting_letterbox_mode()); };
+        it.set = [](float v) { set_targeting_letterbox_mode(int(std::lround(v))); };
+        add(std::move(it));
+    }
     register_controls();
     register_screen();
 #ifdef __ANDROID__

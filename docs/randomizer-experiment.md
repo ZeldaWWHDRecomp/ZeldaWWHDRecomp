@@ -29,7 +29,8 @@ seed. Default save folders are siblings, such as `save-randomizer-<hash>/user`
 and `save-backups-randomizer-<hash>/`. When you choose an empty cloud folder,
 its seed-specific save folder stays inside that folder so it is synced. When
 selecting an existing vanilla save folder, the randomized save uses a sibling
-instead. An explicit `--save DIR` uses exactly that directory. Save-state slots
+instead. An explicit `--save DIR` uses exactly that directory, except a folder named `save` (the install's
+own, which setup's Play button, launchers and shortcuts pass): the seed's folder is its sibling then. Save-state slots
 retain their per-seed subfolder.
 Copying a save or a state manually between seeds is unsupported.
 
@@ -50,6 +51,18 @@ and decoupled, everything code-related on at once, a race-style seed, and the
 cosmetic and data-only options. Older releases (1.1.1 and earlier) are not covered; the check refuses them.
 Windows and a full playthrough still need validation; passing the hook check is
 not a guarantee of complete gameplay compatibility.
+
+## Experimental source mod
+
+The separate [core-mod source project](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDMods/blob/codex/i117-randomizer-core/twwhd-randomizer-core/README.md)
+runs the unmodified game with a seed-specific guest mod. It is experimental,
+requires additional runtime support, and is not a catalogue download. Use the
+setup flow above for normal play.
+
+The two routes use separate save folders, backups and save states, even for the
+same seed. **Saves do not transfer between them.** Neither setup nor the mod
+builder migrates progress from the other route; keep each route's saves with
+its own installation.
 
 ## Maintainer audit of a new compatibility variant
 
