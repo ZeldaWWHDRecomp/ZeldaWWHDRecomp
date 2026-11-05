@@ -30,6 +30,12 @@ int main(int argc, char** argv) {
     assert(!cj::active() && !cj::left_out(cj::kPipeline, 42));
     cj::begin(cj::kPipeline, 42);
     cj::end();
+#ifdef _WIN32
+    // Windows has no journal (compile_journal.cpp): open() keeps it closed, so nothing is ever left out there
+    assert(cj::open(dir.string(), key) == 0 && !cj::active() && !cj::left_out(cj::kPipeline, 42));
+    std::puts("compile journal: off on Windows, as designed");
+    return 0;
+#endif
     // first start: nothing left out
     assert(cj::open(dir.string(), key) == 0 && cj::active());
     // a compile that ended normally, then one on another thread that "crashes" (the handler marks it)
