@@ -673,7 +673,7 @@ save file: each save file shows one model or HD Link, and the game changes at
 once, no restart. The choices are kept in the current mod profile. A new game in
 a save file starts with HD Link and forgets that file's choice; removing a model
 puts its save files back to HD Link. **Convert again** redoes the conversion
-(after a game update, say). Save states keep the model shown when they were made.
+(after a game update, say). After loading a save state the save file's choice applies again.
 
 The converter and the live switch come from the GreenNaugahyde Android fork
 (v0.9.9, MPL-2.0): `runtime/src/gcmodel`, `runtime/src/mods/player_models.cpp`.

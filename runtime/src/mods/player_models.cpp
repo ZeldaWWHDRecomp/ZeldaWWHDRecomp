@@ -278,14 +278,25 @@ void service() {
     {
         std::lock_guard<std::mutex> lk(g_mu);
         if (g_pending) {
-            // the model in memory, if any, stays known under the new set (same id)
-            std::string was = g_set && current >= 0 && current < (int)g_set->models.size() ? g_set->models[current]->id : "";
+            // the model in memory, if any, stays known under the new set (the same one: same id and file)
+            std::shared_ptr<Model> was = g_set && current >= 0 && current < (int)g_set->models.size() ? g_set->models[current] : nullptr;
             g_set = std::move(g_pending);
             int now = -2;
             if (current == -1) now = -1;
-            for (size_t i = 0; i < g_set->models.size(); i++)
-                if (g_set->models[i]->id == was) now = (int)i;
-            if (current >= 0 && now == -2) LOG("[playermodel] %s in memory but no longer loaded", was.c_str());
+            for (size_t i = 0; i < g_set->models.size() && was; i++) {
+                if (g_set->models[i]->id != was->id) continue;
+                if (g_set->models[i] == was) {
+                    now = (int)i;
+                } else if (g_scan.load() == 2 && g_base.load()) {
+                    // converted again while shown: the old one out first (its words, not the new one's)
+                    write_out(kGuest, g_base.load(), *was);
+                    g_areaUsed = 0;
+                    set_current("");
+                    LOG("[playermodel] %s was made again: the old one taken out", was->id.c_str());
+                    now = -1;
+                }
+            }
+            if (was && now == -2) LOG("[playermodel] %s in memory but no longer loaded", was->id.c_str());
             current = now;
         }
     }
