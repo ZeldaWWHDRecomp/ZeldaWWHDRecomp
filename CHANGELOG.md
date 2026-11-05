@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New built-in mod: Game progress** (#409, idea, count and places from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde; chart numbers from TWWHD Randomizer). Off by default (Mods › Built-in). Shows how much of the game
+  your save file has found: a percent, a checklist in ten parts (dungeons, hearts, items, equipment, upgrades, songs,
+  pearls and Triforce, charts, the sea chart, the Nintendo Gallery) and a sea-chart map of where each thing is found.
+  It's on the item menu's settings page (Game tab) and in the Esc settings; an option shows the percent on screen. It
+  only reads your save: names and pictures come from your own game. Two places (Crescent Moon Island's sunken
+  treasure, Triforce Chart 2) are still to be checked in the game.
 - **Fixed: randomized games keep their own saves when started from setup** (#408, for #366). Setup's Play button, the
   macOS app, the Linux launchers and the Windows shortcuts start the game with its own save folder, and the experimental
   randomized-game support took that as a folder you had chosen: a randomized game then read and wrote your normal save
