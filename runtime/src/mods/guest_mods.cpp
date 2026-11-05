@@ -19,6 +19,7 @@
 #include "story_native_canonical_code_id.h"
 #include "../exception_report.h"
 #include "guest_mods.h"
+#include "../guest_module_entry.h"
 #include "native_actor_profiles.h"
 #include "native_actor_profile_startup.h"
 #include "../guest_module_call.h"
@@ -2181,14 +2182,14 @@ extern "C" void ppc_mod_run(Cpu* c) {
     for (PpcFunc h : ch.entry) {
         native_actor_profiles::startup::EntryScope profile_entry(g_actor_profile_entry,addr==GC(0x028EA120));
         ObserverRegisters preserve(c);
-        h(c);
+        guestmods::invoke_module_entry(c, h);
     }
-    if (ch.replace) guestmods::invoke_module(c, ch.replace);
+    if (ch.replace) guestmods::invoke_module_entry(c, ch.replace);
     else { c->mod_skip = addr; story_native_stage_owner_hooks::invoke_original(c,addr,[&]{guestmods::original_started(c,addr);g_mod_bodies[ch.ordinal](c);guestmods::original_completed(c,addr);}); }
     for (PpcFunc h : ch.ret) {
         ObserverRegisters preserve(c); // save the body's result before restoring arguments
         a.load(c);
-        h(c);
+        guestmods::invoke_module_entry(c, h);
     }
     });
     });
