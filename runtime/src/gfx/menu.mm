@@ -13,6 +13,7 @@
 #include <tuple>
 
 #include "../interp.h"
+#include "../framegen.h"
 #include "../savestate.h"
 #include "../screenshot.h"
 #include "../input_map.h"
@@ -123,6 +124,7 @@ static void load_prefs() {
     // 120/240 fps), interpFps the interpolation's rate; "keep game speed" for 60 and for 120/240 fps
     if (saved(@"interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps([pref(@"interpFps") intValue]);
     if (saved(@"fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode([pref(@"fps60") intValue]);
+    if (saved(@"fpsGenerated", {"WWHD_FRAMEGEN"})) framegen::set_chosen([pref(@"fpsGenerated") boolValue]);  // 60 fps (generated)
     if (saved(@"fps60Paced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(60, [pref(@"fps60Paced") boolValue]);
     if (saved(@"fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(120, [pref(@"fpsHighPaced") boolValue]);
 #ifdef WWHD_HAS_VULKAN
@@ -143,6 +145,7 @@ static void save_prefs() {
     if (!env_set({"WWHD_FXAA"})) set_pref(@"fxaa", @(render::fxaa()));
     if (!env_set({"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) set_pref(@"fps60", @(interp::mode()));
     if (!env_set({"WWHD_INTERP_FPS"})) set_pref(@"interpFps", @(interp::fps()));
+    if (!env_set({"WWHD_FRAMEGEN"})) set_pref(@"fpsGenerated", @(framegen::chosen()));
     if (!env_set({"WWHD_INTERP_PACED"})) {
         set_pref(@"fps60Paced", @(interp::paced_interpolation_at(60)));
         set_pref(@"fpsHighPaced", @(interp::paced_interpolation_at(120)));

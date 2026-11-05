@@ -70,6 +70,7 @@
 #include "report_header.h"
 #include "present.h"
 #include "present_worker.h"
+#include "reproj.h"
 #include "android_isolated_presenter.h"
 #include "presentation_queue.h"
 #include "gfx/display.h"
@@ -1606,8 +1607,12 @@ struct HeldPresent {
   VkSemaphore wait = VK_NULL_HANDLE;
   uint32_t observedPresentId = 0;
   uint64_t frame = 0, generation = 0;
+  bool generated = false;  // 60 fps (generated, reproj.cpp): an in-between frame waiting for its time
 };
 static HeldPresent heldPresent;
+// 60 fps (generated): while swap() presents the in-between frame, when it is due (present() holds it
+// until then; 0: not presenting one)
+static int64_t framegenDue = 0;
 static interp::pacing::EvenSchedule evenSchedule;
 static uint32_t evenPresentInterval = 0;  // of the frame being swapped (ns; 0: no schedule)
 static bool evenPresentHold = false, evenPresentSwap = false;
@@ -2778,6 +2783,11 @@ static void present_held(bool forced) {
     return;
   }
   const int64_t at = even_now_ns();
+  if (h.generated) {  // 60 fps (generated): not part of the even schedule
+    queue_present(R.tv, h.swapchain, h.index, h.wait, nullptr, h.observedPresentId, h.frame, false, true);
+    reproj::presented(forced && at < h.due);
+    return;
+  }
   if (forced && at < h.due) ++evenForcedPresents;  // early: the next frame or a swapchain change forced it out
   queue_present(R.tv, h.swapchain, h.index, h.wait, nullptr, h.observedPresentId, h.frame, false, true);
   evenSchedule.presented(h.due, at);
@@ -3220,6 +3230,12 @@ static bool present(Screen &s) {
     return false;
   }
 #endif
+  // 60 fps (generated, reproj.cpp; swap() present_generated): the in-between frame is submitted now and
+  // presented at its time, half a real frame after the real one (service_present, or the next present)
+  if (framegenDue && &s == &R.tv && async && !secondary) {
+    heldPresent = {true, framegenDue, s.swapchain, index, finishedSemaphore, observedPresentId, R.frame, s.swapchainGeneration, true};
+    return true;
+  }
   // Even frame delivery (interp_pacing.h EvenSchedule; interp.cpp: on by default on Android): a TV frame of a
   // swap that is ready before its slot is held (its work is submitted; only the present call waits)
   if (&s == &R.tv && async && evenPresentSwap && !secondary && !present_capture_requested() &&
@@ -3693,6 +3709,57 @@ static void trim_memory_step() {
       pipelines, (unsigned long long)textures, textureBytes / mib, rssBefore / mib, rssAfter / mib,
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
 }
+// 60 fps (generated, reproj.cpp; WWHD_FRAMEGEN=1): after the real TV frame of a swap, the in-between
+// frame. Its picture is the published TV scan reprojected (reproj::generate, recorded into the next
+// submission); it is presented through the normal window composition with the TV screen's scan
+// exchanged for it, and held (heldPresent, as even frame delivery holds frames) until half the real
+// frames' interval after the real one. When none is made the real frame stays on screen for the
+// whole interval, as without the feature.
+static void present_generated(bool tvShown) {
+  using reproj::Skip;
+  const int64_t now = even_now_ns();
+  const int64_t delay = reproj::real_presented(tvShown, now);
+  Skip skip = reproj::kNone;
+  // test aid (headless runs, hidden windows): WWHD_FRAMEGEN_TEST_DUMP=f[,f...] makes the in-between frame although
+  // nothing is shown, and writes the ones after those TV frames to framegen_<f>.png (the real one: WWHD_DUMP_FRAMES)
+  static const auto testDumps = gfx::capture_schedule::parse(getenv("WWHD_FRAMEGEN_TEST_DUMP"));
+  const bool headlessTest = !testDumps.empty();
+  if (!tvShown && !headlessTest) skip = reproj::kNotShown;
+  else if (!async_present() || present_capture_requested() || presentObservation || heldPresent.pending) skip = reproj::kPresentPath;
+  else if (stereo::frame.mode != stereo::Off) skip = reproj::kStereo;
+#ifdef __ANDROID__
+  else if (quest_theater::active()) skip = reproj::kStereo;
+#endif
+  else if (!delay && !(headlessTest && !tvShown)) skip = reproj::kFast;
+  Surface* generated = reproj::generate(R.tv.scan.get(), skip);
+  if (!generated) return;
+  if (headlessTest && !tvShown) {
+    const uint64_t f = fixed_seed::script_frame(R.frame + 1);  // (named as frame_dumps names this swap's real frame)
+    if (gfx::capture_schedule::contains(testDumps, f)) {
+      try {
+        const std::string path = "framegen_" + std::to_string(f) + ".png";
+        write_rgba_png(path, generated->extent.width, generated->extent.height, read_surface_rgba(*generated, R.tv.scanSrgb));
+        LOG("[framegen] wrote %s (%ux%u)", path.c_str(), generated->extent.width, generated->extent.height);
+      } catch (const std::exception& e) { LOG("[framegen] cannot write the in-between frame: %s", e.what()); }
+    }
+    reproj::not_presented();
+    return;
+  }
+  auto& slot = reproj::generated_scan();
+  R.tv.scan.swap(slot);
+  framegenDue = now + delay;
+  bool shown = false;
+  try {
+    shown = present(R.tv);
+  } catch (...) {
+    framegenDue = 0;
+    R.tv.scan.swap(slot);
+    throw;
+  }
+  framegenDue = 0;
+  R.tv.scan.swap(slot);
+  if (!shown) reproj::not_presented();
+}
 void swap() {
   texture_budget_step();
   trim_memory_step();
@@ -3854,8 +3921,10 @@ void swap() {
         std::chrono::steady_clock::now()-swapPhaseStarted).count();
   }
   evenPresentSwap = true;  // (repeated frames while a pipeline compiles are never held)
-  try { timed_call(swapPhaseTiming[1],[&] { present(R.tv);return VK_SUCCESS; }); } catch (...) { evenPresentSwap = false; throw; }
+  bool tvShown = false;
+  try { timed_call(swapPhaseTiming[1],[&] { tvShown = present(R.tv);return VK_SUCCESS; }); } catch (...) { evenPresentSwap = false; throw; }
   evenPresentSwap = false;
+  if (reproj::enabled()) present_generated(tvShown);  // 60 fps (generated): the in-between frame
   if (plan.drc_window)
     timed_call(swapPhaseTiming[2],[&] { present(R.drc);return VK_SUCCESS; });
   // Asynchronous presentation is retired by the ring's fences. Present dumps and captures
@@ -4048,6 +4117,7 @@ void swap() {
           (unsigned long long)R.frame,(R.frame-frame)/seconds,
           double(R.drawCount-draws)/(R.frame-frame),double(R.uploadBytes-bytes)/(R.frame-frame)/(1<<20),
           (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame));
+      if (reproj::enabled()) LOG("[vulkan perf] framegen %s", reproj::perf_line().c_str());
       if (R.renderPasses) {
         const auto created = pass_caches().framebuffers_created();
         LOG("[vulkan render passes] %.3f framebuffers created/frame, %zu cached",

@@ -23,6 +23,7 @@
 // switches its render-target factors at the matching swap (the value travels with the swap
 // command), so a change never lands in the middle of a frame.
 #include "aspect.h"
+#include "framegen.h"
 #include "savestate.h"
 #include "gfx/stereo.h"
 #include "gfx/gamepad_backdrop.h"
@@ -147,6 +148,18 @@ float layout_scale(float fovyDeg) {
     if (fov != 1.0f) angle = std::min(angle, 110.0f);
     const float t = std::tan(angle * (float)M_PI / 360.0f);
     return t > 0 ? 360.0f * ky / t : 0.0f;
+}
+
+float scene_tan_half_fovy(float fovyDeg) {
+    if (!(fovyDeg > 1.0f && fovyDeg < 170.0f)) return 0.0f;
+    float kx = 1.0f, ky = 1.0f, fov = 1.0f;
+    if (!original() || g_fov_game.load() != 1.0f) {  // (as layout_scale)
+        factors(g_game, kx, ky);
+        fov = gameplay_fov_scale();
+    }
+    float angle = vert_plus_fovy(fovyDeg, ky * fov);
+    if (fov != 1.0f) angle = std::min(angle, 110.0f);
+    return std::tan(angle * (float)M_PI / 360.0f);
 }
 
 const char* mode_name(int m) {
@@ -647,6 +660,8 @@ extern "C" void hook_02877100(Cpu* c) {
             if (root != pane && root_on_tv(root)) return;
         }
     }
+    // 60 fps (generated, framegen.h): the first layout on the TV picture ends its scene (only while on)
+    if (framegen::requested() && !ld32(pane + kPaneParent)) gx2::emit(gx2::OP_FRAMEGEN_LAYOUT, {});
     if (original()) { button_glyphs::draw_pane(c, f_02877100_orig); return; }
     uint32_t parent = ld32(pane + kPaneParent);
     if (!parent) {

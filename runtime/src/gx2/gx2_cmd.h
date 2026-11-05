@@ -51,6 +51,12 @@ enum Op : uint32_t {
     // (submitted_uniforms.h; payload: Snapshot* as two words, 0: none from here on)
     OP_SUBMITTED_UNIFORMS,
     OP_GAMEPAD_BACKDROP, // exact background Picture::DrawSelf scope: begin (1) / end (0)
+    // 60 fps (generated, framegen.h; emitted only while WWHD_FRAMEGEN=1):
+    // host-only, never recorded: the 3D camera of the frame being drawn (framegen::kCameraWords words)
+    OP_FRAMEGEN_CAMERA,
+    // a layout root pane is about to be drawn into the target bound now (aspect.cpp hook_02877100, as
+    // OP_LAYOUT_ROOT, also with the original aspect): the first one on the TV picture ends the scene
+    OP_FRAMEGEN_LAYOUT,
     OP_COUNT
 };
 
@@ -80,6 +86,10 @@ uint32_t* regs();
 
 // execute a sequence of encoded commands
 void execute(const uint32_t* words, uint32_t count);
+
+// 60 fps (generated, framegen.h): OP_FRAMEGEN_CAMERA, in order with the game thread's commands (never
+// into a display list being recorded)
+void framegen_camera(const uint32_t* words, uint32_t n);
 
 // float <-> bits helpers for command payloads
 inline uint32_t fbits(float f) { uint32_t u; __builtin_memcpy(&u, &f, 4); return u; }

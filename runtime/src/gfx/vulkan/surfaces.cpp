@@ -32,6 +32,7 @@
 #include "gx2_texture_regs.h"
 #include "runtime.h"
 #include "dynres.h"
+#include "reproj.h"
 #include "platform/memory_trim.h"
 #include <algorithm>
 #include <numeric>
@@ -1777,9 +1778,13 @@ void clear_depth_stencil(const uint32_t*,uint32_t db,float depth,uint32_t stenci
     uint32_t first,num;auto* s=surface_from_depth_buffer(db,&first,&num);if(!s)return;
     VkImageAspectFlags aspects=0;if(flags&1)aspects|=VK_IMAGE_ASPECT_DEPTH_BIT;if((flags&2)&&s->fmt.stencil)aspects|=VK_IMAGE_ASPECT_STENCIL_BIT;
     if(!aspects)return;
+    // 60 fps (generated, reproj.cpp): a second 3D pass of the frame keeps the first one's depth (only while on)
+    const bool framegen=reproj::enabled()&&(flags&1);
+    if(framegen)reproj::depth_clearing(s);
     end_encoder();transition_image(s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
     VkClearDepthStencilValue value{depth,stencil};VkImageSubresourceRange range{aspects,0,1,first,num};
     record::vkCmdClearDepthStencilImage(command_buffer(),s->image,s->layout,&value,1,&range);mark_gpu_written(s);
+    if(framegen)reproj::depth_cleared(s);
 }
 // ---------------------------------------------------------------- write-back to guest memory
 // Render results stay on the GPU, except where the game reads them with the CPU: render targets and
