@@ -349,6 +349,9 @@ void moon_jump_reset(); // game thread after state restore
 void moon_jump_step(Cpu* cpu, uint32_t link, bool before);
 bool moon_jump_move(uint32_t link, float& x, float& z);
 void cheats_service();          // game main thread, frame start (interp.cpp)
+// Beedle's Shop Ship and the other ships entered from the sea: the sea room their way out sails back to is made sure
+// of (mods/shop_ship.h); game main thread, frame start (interp.cpp)
+void shop_ship_service();
 
 // shared helpers (mods.cpp)
 uint64_t step();    // full logic steps so far (interp::logic_steps)

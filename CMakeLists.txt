@@ -1706,6 +1706,10 @@ target_compile_options(crash_redact_test PRIVATE -UNDEBUG)
 add_test(NAME crash_redact COMMAND crash_redact_test)
 
 # Cheats must preserve sword ownership: it controls Medli/Makar story placement (#85).
+add_executable(shop_ship_test runtime/tools/shop_ship_test.cpp)
+target_include_directories(shop_ship_test PRIVATE runtime/src)
+target_compile_options(shop_ship_test PRIVATE -UNDEBUG)
+add_test(NAME shop_ship COMMAND shop_ship_test)
 add_executable(cheats_test runtime/tools/cheats_test.cpp runtime/src/mods/cheats.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(cheats_test PRIVATE runtime/src runtime/include)
 target_compile_options(cheats_test PRIVATE -UNDEBUG)
