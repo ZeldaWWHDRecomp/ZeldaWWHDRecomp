@@ -1,3 +1,4 @@
+#include "compile_journal.h"
 #include <exception>
 #include "shader_compiler.h"
 #include "spirv_precision.h"
@@ -80,9 +81,19 @@ ShaderCompileResult execute(const std::string& source, ShaderStage stage, uint64
     default: throw std::runtime_error("invalid shader compiler stage");
     }
     ShaderCompileResult result;
+    // the compile journal (compile_journal.h): GLSL that crashed glslang at an earlier start is not compiled again
+    const uint64_t journalId = compile_journal::glslang_id(source, int(language));
+    if (compile_journal::left_out(compile_journal::kGlslang, journalId)) {
+        result.error = "left out: it crashed the shader compiler at an earlier start (compile journal)";
+        result.thread = uint64_t(std::hash<std::thread::id>{}(std::this_thread::get_id()));
+        return result;
+    }
     const auto cpuStart = stutter::trace().enabled() ? stutter::thread_cpu_now() : 0;
     const auto start = stutter::now();
-    result.words = compile_stage(source, language, &result.error);
+    {
+        compile_journal::Scope journal(compile_journal::kGlslang, journalId);
+        result.words = compile_stage(source, language, &result.error);
+    }
     const auto end = stutter::now();
     result.compileNs = end - start;
     result.thread = uint64_t(std::hash<std::thread::id>{}(std::this_thread::get_id()));
