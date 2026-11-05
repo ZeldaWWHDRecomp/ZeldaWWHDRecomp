@@ -2347,9 +2347,11 @@ extern "C" void hook_025DE788(Cpu* c) {
     g_in_execute = true;
     uint32_t execute_fn = c->r[3];
     if(!interp::g_hold_frame)guestmods::maphud::begin_logic(c,double(true60::dt())/30.0);
+    if (!interp::g_hold_frame) mods::instant_text_step();  // instant text (mods/instant_text.cpp)
     dsweep::before_execute(c);  // the setup's actor sweep (WWHD_DSWEEP): its actors do not run their logic
     f_025DE788_orig(c);
     dsweep::after_execute(c);
+    if (!interp::g_hold_frame) mods::instant_text_step();
     mods::after_execute(c, execute_fn);  // quick doors / fast scene changes: extra steps (full passes only)
     if (!interp::g_hold_frame) {guestmods::frame(interp::g_logic_steps);guestmods::logic_service(c);editor::logic_service(c);mods::packages::frame(interp::g_logic_steps);}
     editor::camera_service(c, !interp::g_hold_frame);  // the fly camera: every logic pass, and true 60's 60 Hz passes
