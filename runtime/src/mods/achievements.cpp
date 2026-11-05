@@ -6,8 +6,8 @@
 //     play. Off, nothing is read, drawn or written.
 //   - The pop-up: when one is earned, a plate at the top of the TV picture for a few seconds, with Link holding it up
 //     as he holds up a treasure (his item get "itemget", drawn once on the CPU from the player's own Link.bfres and
-//     LkAnm.bfres by link_poses) and the game's item fanfare (NW_BGM_ITEM_GET through the game's own named-sound call
-//     with a volume, 02030B6C), each part an option. More than three at once (a file loaded that had reached them
+//     LkAnm.bfres by link_poses) and the game's item fanfare (NW_BGM_ITEM_GET decoded from the player's own sound
+//     archive and mixed into the port's output, past the game's sound system), each part an option. More than three at once (a file loaded that had reached them
 //     already) are one plate with their count.
 //   - Pausing: a cheat that keeps running, or a one-shot cheat or story-item grant used in this run (cheats.cpp
 //     cheats_pausing), pauses them; the page names what does; "Earn with cheats" lets them count anyway. A save
@@ -33,6 +33,8 @@
 
 #include "achievements_store.h"
 #include "game_layouts.h"
+#include "guest_audio.h"
+#include "nw_sound_archive.h"
 #include "game_progress_host.h"
 #include "guest_addr.h"
 #include "guest_hud.h"
@@ -49,7 +51,6 @@ namespace {
 const std::string kOwner = "port:achievements";
 const uint32_t kSaveInfoPtr = GD(0x101F84DC);        // dComIfGs save area (dSv_info_c - 0x20)
 const uint32_t kStageName = GD(0x1046F0B0) + 0x5134;  // the stage in play
-const uint32_t kSetSeParams = GC(0x02030B6C);         // the HD sound interface: a named sound, its volume and pitch
 constexpr uint32_t kDataNum = 0x1290;                 // dSv_info_c::mDataNum (0..2: the file select's slot)
 constexpr uint32_t kHeroFlags = 0x12C0 + 3 * 0x10 + 6;  // SaveMgr's slot flags of the file in play (hdSaveSlotFlags_c +6)
 
@@ -191,16 +192,68 @@ guestmods::hud::Handle handle_of(const std::shared_ptr<guestmods::hud::Image>& i
     return h;
 }
 
-void play_jingle(Cpu* c) {
-    if (!c || !g_jingle.load(std::memory_order_relaxed)) return;
-    static uint32_t label = 0;
-    if (!label) label = mem::host_alloc(32, 16), mem::write_cstr(label, "NW_BGM_ITEM_GET", 32);
-    Cpu call = *c;
-    call.f[1].ps0 = std::clamp(double(g_volume.load(std::memory_order_relaxed)), 0.0, 1.0);
-    call.f[2].ps0 = 1.0;  // pitch
-    const double volume = call.f[1].ps0;
-    guest_call(&call, kSetSeParams, {label});
-    LOG("[achievements] item fanfare at volume %.2f", volume);
+// The item fanfare: NW_BGM_ITEM_GET decoded once from the player's own sound archive (nw_sound_archive.h; the path
+// the game opened, note_open) and mixed into the port's output through the PCM streams (guest_audio.h), at the sound's
+// own archive volume times the option's. It goes past the game's sound system: the game's music and sounds and their
+// state stay as they are.
+struct Fanfare {
+    std::mutex mu;
+    std::string path;                        // c_king.bfsar on the host
+    nw_sound::Pcm pcm;                       // decoded
+    bool started = false, done = false;
+    std::vector<int16_t> playing;            // 48 kHz stereo at the volume of the pop-up now
+    size_t at = 0;
+    int32_t stream = 0;
+} g_fanfare;
+
+void start_fanfare_decode() {
+    std::lock_guard lock(g_fanfare.mu);
+    if (g_fanfare.started || g_fanfare.path.empty()) return;
+    g_fanfare.started = true;
+    std::thread([path = g_fanfare.path] {
+        std::ifstream f(std::filesystem::u8path(path), std::ios::binary);
+        std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+        nw_sound::Archive a(bytes);
+        nw_sound::Pcm p;
+        std::string why;
+        const bool ok = a.read("NW_BGM_ITEM_GET", p, why);
+        std::lock_guard lock(g_fanfare.mu);
+        g_fanfare.done = true;
+        if (ok) g_fanfare.pcm = std::move(p);
+        if (ok) LOG("[achievements] item fanfare read from the game's sound archive (%.2f s)", double(g_fanfare.pcm.samples.size()) / g_fanfare.pcm.channels / g_fanfare.pcm.rate);
+        else LOG("[achievements] item fanfare not read: %s (the pop-up stays quiet)", why.c_str());
+    }).detach();
+}
+
+void play_jingle() {
+    if (!g_jingle.load(std::memory_order_relaxed)) return;
+    std::lock_guard lock(g_fanfare.mu);
+    if (g_fanfare.pcm.samples.empty()) return;
+    const float gain = float(g_fanfare.pcm.volume) / 127.0f * std::clamp(g_volume.load(std::memory_order_relaxed), 0.0f, 1.0f);
+    g_fanfare.playing = nw_sound::to_48k_stereo(g_fanfare.pcm, gain);
+    g_fanfare.at = 0;
+    if (!g_fanfare.stream) g_fanfare.stream = guestmods::pcm::store().open(kOwner, 48000, 2);
+    LOG("[achievements] item fanfare at volume %.2f (stream %d)", double(g_volume.load()), g_fanfare.stream);
+}
+
+// once per logic step: what the stream has room for (its queue holds about 0.17 s)
+void feed_fanfare() {
+    std::lock_guard lock(g_fanfare.mu);
+    auto& pcm = guestmods::pcm::store();
+    if (g_fanfare.stream <= 0) return;
+    if (g_fanfare.at >= g_fanfare.playing.size() / 2) {
+        pcm.close(kOwner, uint32_t(g_fanfare.stream)), g_fanfare.stream = 0, g_fanfare.playing.clear();
+        return;
+    }
+    for (int i = 0; i < 4; i++) {
+        const int32_t room = pcm.available(kOwner, uint32_t(g_fanfare.stream));
+        if (room <= 0) break;
+        const size_t n = std::min({size_t(room), size_t(guestmods::pcm::kMaxSubmit), g_fanfare.playing.size() / 2 - g_fanfare.at});
+        if (!n) break;
+        const int32_t took = pcm.submit(kOwner, uint32_t(g_fanfare.stream), &g_fanfare.playing[g_fanfare.at * 2], uint32_t(n), 2);
+        if (took <= 0) break;
+        g_fanfare.at += size_t(took);
+    }
 }
 
 void draw_popup(Cpu* c, double dt, bool hidden) {
@@ -217,7 +270,7 @@ void draw_popup(Cpu* c, double dt, bool hidden) {
     const double total = link ? kShowLink : kShow;
     g_since += dt;
     const Shown cur = g_queue.front();
-    if (!g_jingled && g_since >= (link ? kGetFrom + kGetFrames * 11.0 / 18.0 : 0.0)) play_jingle(c), g_jingled = true;
+    if (!g_jingled && g_since >= (link ? kGetFrom + kGetFrames * 11.0 / 18.0 : 0.0)) play_jingle(), g_jingled = true;
     if (g_since >= total) {
         g_queue.erase(g_queue.begin());
         g_since = -1;
@@ -281,6 +334,15 @@ std::string file_id(uint32_t sv) {
 
 }  // namespace
 
+void note_open(const std::string& guest_path, const std::string& host_path) {
+    const size_t slash = guest_path.find_last_of('/');
+    std::string name = slash == std::string::npos ? guest_path : guest_path.substr(slash + 1);
+    for (char& ch : name) ch = char(std::tolower((unsigned char)ch));
+    if (name != "c_king.bfsar") return;
+    std::lock_guard lock(g_fanfare.mu);
+    g_fanfare.path = host_path;
+}
+
 bool enabled() { return g_on.load(std::memory_order_relaxed); }
 void set_enabled(bool on) {
     g_on.store(on, std::memory_order_relaxed);
@@ -335,6 +397,7 @@ void service(Cpu* c) {
     was_on = true;
     const bool hidden = mods::game_ui_hides_hud(mods::game_ui_now()) || !g_popup.load(std::memory_order_relaxed);
     draw_popup(c, 1.0 / 30.0, hidden && g_since < 0);
+    feed_fanfare();
     if (mods::step() % 30) return;  // (a second of game time)
     const uint32_t s = game_progress::save_address();
     std::lock_guard lock(g_mu);
@@ -345,6 +408,7 @@ void service(Cpu* c) {
         return;
     }
     if (g_link.load(std::memory_order_relaxed)) start_link_art();
+    if (g_jingle.load(std::memory_order_relaxed)) start_fanfare_decode();
     const uint32_t sv = ld32(kSaveInfoPtr);
     unsigned char d[GP_SAVE_LEN];
     std::memcpy(d, mem::ptr(s), sizeof d);

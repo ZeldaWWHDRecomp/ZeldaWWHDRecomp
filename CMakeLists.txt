@@ -722,6 +722,11 @@ add_executable(achievements_page_test runtime/tools/achievements_page_test.cpp)
 target_include_directories(achievements_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(achievements_page_test PRIVATE -UNDEBUG)
 add_test(NAME achievements_page COMMAND achievements_page_test)
+# the sound archive reader (nw_sound_archive.h: the Achievements fanfare); WWHD_GAME_DIR reads the real one
+add_executable(nw_sound_archive_test runtime/tools/nw_sound_archive_test.cpp)
+target_include_directories(nw_sound_archive_test PRIVATE runtime/src)
+target_compile_options(nw_sound_archive_test PRIVATE -UNDEBUG)
+add_test(NAME nw_sound_archive COMMAND nw_sound_archive_test)
 # the world editor's live item icons (#270): spare frames, and the textures written into the game's archive
 add_executable(item_icons_live_test runtime/tools/item_icons_live_test.cpp runtime/src/mods/item_icons.cpp runtime/src/mods/item_icons_game.cpp
                runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c)

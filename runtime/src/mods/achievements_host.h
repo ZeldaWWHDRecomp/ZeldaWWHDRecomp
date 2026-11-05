@@ -42,6 +42,8 @@ View view();
 // every achievement open again (the record for all save games and for each); main or game thread
 void reset();
 
+// the game opened a file (fs.cpp): remember the host path of its sound archive (the fanfare)
+void note_open(const std::string& guest_path, const std::string& host_path);
 // once per full logic step (interp.cpp, game thread)
 void service(Cpu* c);
 
