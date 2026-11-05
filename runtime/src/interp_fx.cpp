@@ -1,14 +1,12 @@
 // Frame interpolation of effects. See interp.cpp for the pass structure: logic pass (logic
 // S -> S+1, everything drawn at t = 1/(N+1)) and hold passes (no logic; hold pass k drawn at
 // t = (k+1)/(N+1), the last one, the record pass, at S+1). At 60 fps (N = 1) the logic pass is
-// drawn halfway and the one hold pass is the record pass. In true 60 (true60.cpp) the full passes
-// are the logic passes and the half passes the hold passes for every 30 Hz process; things driven
-// by 60 Hz processes (Link, the follow camera) are not blended.
+// drawn halfway and the one hold pass is the record pass.
 //
 // Per-step work in drawing code is held back on hold passes (it ran twice per step before):
 // particle calc, J3DFrameCtrl::update from Draw, the sea's scroll counter, bush calc; the world
 // systems in dScnPly_Draw (grass/tree/wood/flower calc, g_Counter.mTimer, ...) are held back by
-// true60.cpp (site_025B00B0).
+// game_hooks.cpp (site_025B00B0).
 // On blended passes these are drawn between the previous step and this one at the pass's fraction
 // (the exact values are back at the start of the next pass, after the painter has drawn the pass).
 // Values that only logic computes (particles, sprites, sway, waves) are blended on the logic pass,
@@ -23,7 +21,7 @@
 //   - material animations (btk, brk, ...): the frame they are evaluated at,
 //   - grass/tree/flower sway slots, bush animation matrices, cloth (flags, sails) vertices.
 // Billboards need nothing here: they are J3D models (viewCalc blending) drawn with the blended
-// camera. The attention arrow too, except in true 60 (see hook_024EC1C8).
+// camera. The attention arrow too.
 //
 // debug: WWHD_INTERP_FX=mask turns parts off (1 particles, 2 sea, 4 material animations, 8 hold
 // back per-step work on hold passes, 16 grass/tree/flower/bush/cloth, 32 weather and sky sprites,
@@ -51,7 +49,6 @@
 #include "interp_slots.h"
 #include "interp_trail.h"
 #include "runtime.h"
-#include "true60.h"
 
 namespace interp {
 bool enabled();
@@ -383,7 +380,7 @@ bool plausible(float v) { return v == 0.0f || (std::fabs(v) > 1e-12f && std::fab
 // ---------------------------------------------------------------------------------------------
 // Grass, trees and flowers (and other drawing effects: cloth, hookshot chain, Link's sparkles) use
 // g_Counter.mTimer (101FF560) as their clock; dScnPly_Draw increments it in its world-system
-// block, which true60.cpp (site_025B00B0) runs on full passes only. Each kind keeps animation slots
+// block, which game_hooks.cpp (site_025B00B0) runs on logic passes only. Each kind keeps animation slots
 // (interp_slots.h) written by its calc (in that block): 8 shared wind sway slots as a function of
 // mTimer, and slots of their own for plants that are hit, cut or walked through (bent grass and
 // flowers, shaking trees, the falling top of a cut tree). Layout per kind: slot array (packet
@@ -782,7 +779,7 @@ extern "C" void hook_025D0994(Cpu* c) {
 // (interp_fade.h bytes_call). Tree data: packet +0x9C, 0xA8 apart, alpha at +3.
 extern "C" void f_025CA6EC_orig(Cpu* c);
 extern "C" void hook_025CA6EC(Cpu* c) {
-    if (!on(8) || true60::enabled() || interp::in_execute()) { f_025CA6EC_orig(c); return; }
+    if (!on(8) || interp::in_execute()) { f_025CA6EC_orig(c); return; }
     const uint32_t pk = c->r[3];
     static interp::fade::BytesGate<64> gate;
     uint8_t v[64];
@@ -1001,7 +998,7 @@ struct LineLayout { uint32_t count, points, lines; };
 constexpr LineLayout kLineMat1Layout{0x17C, 0x17E, 0x184}, kLineMat0Layout{0x13C, 0x13E, 0x144};
 std::unordered_map<uint64_t, std::vector<uint32_t>> g_line_layouts;  // (kind << 32 | packet) -> layout seen
 void line_packet(Cpu* c, void (*original)(Cpu*), ClothPacketKind kind, const LineLayout& lay) {
-    if (!on(16) || true60::enabled() || interp::in_execute()) { original(c); return; }
+    if (!on(16) || interp::in_execute()) { original(c); return; }
     static const bool off = getenv("WWHD_INTERP_LINES") && !atoi(getenv("WWHD_INTERP_LINES")); // diagnostic ablation
     if (off) { original(c); return; }
     const uint32_t packet = c->r[3];
@@ -1150,7 +1147,7 @@ extern "C" void hook_025AF8A0(Cpu* c) {
     // (already done at the pass start; a blended hold pass has its particles re-applied by now)
     if (!(interp::hold_pass() && !interp::record_pass())) ptcl_restore();
     if (interp::logic_pass()) fx_step_stats();
-    if (interp::logic_pass() && on(32) && !true60::enabled() && g_mono.step == interp::logic_steps() && g_mono.before != g_mono.after &&
+    if (interp::logic_pass() && on(32) && g_mono.step == interp::logic_steps() && g_mono.before != g_mono.after &&
         (int16_t)ld16(GD(0x101F4808) + 0x18) == g_mono.after) {
         temp_blend_s16(GD(0x101F4808) + 0x18, g_mono.before, interp::pass_t());
         static int tr = trace_left(14);
@@ -1258,7 +1255,7 @@ extern "C" void hook_0281FE40(Cpu* c) {
 
 // key animator evaluation (btk texture SRT, brk TEV colours, ...)
 extern "C" void hook_027DF40C(Cpu* c) {
-    if (!on(4) || true60::drawing_60()) {  // (60 Hz processes advance their animations every pass)
+    if (!on(4)) {
         f_027DF40C_orig(c);
         return;
     }
@@ -1318,7 +1315,7 @@ void fx_anm_settle(Cpu* c) {
     if (g_anm_blended.empty()) return;
     std::vector<uint32_t> list;
     list.swap(g_anm_blended);
-    if (off || true60::enabled()) return;
+    if (off) return;
     std::sort(list.begin(), list.end());
     list.erase(std::unique(list.begin(), list.end()), list.end());
     const Cpu saved = *c;
@@ -1341,7 +1338,7 @@ void fx_anm_settle(Cpu* c) {
 }  // namespace interp
 
 // J3DFrameCtrl::update: animation frames advanced from Draw (e.g. daSalvage_c::_draw) are logic too
-// (the hook itself is in true60.cpp, which also scales the step for 60 Hz processes)
+// (the hook itself is in game_hooks.cpp)
 namespace interp {
 bool fx_hold_anim() { return hold_back() && !in_execute(); }
 }
@@ -1482,8 +1479,7 @@ static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
             c->f[1].ps0 = (float)from_frac(it->second[i]);
             return;
         }
-        // A draw on a pass without logic must not consume random numbers (frame interpolation and
-        // true 60): the logic keeps the 30 fps sequence (drops, AI choices, effects). It gets the next
+        // A draw on a pass without logic must not consume random numbers (frame interpolation): the logic keeps the 30 fps sequence (drops, AI choices, effects). It gets the next
         // value without using it. (With frame interpolation this was missing: a draw that called
         // cM_rnd more often on a hold pass than on its logic pass, or only there, advanced the
         // game's seeds once per extra drawn frame, and from then on the game drew other random
@@ -1491,7 +1487,7 @@ static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
         // debug: WWHD_INTERP_RND_KEEP=0 lets those calls consume the seeds again
         static const bool consume = getenv("WWHD_INTERP_RND_KEEP") && !atoi(getenv("WWHD_INTERP_RND_KEEP"));
         uint32_t seeds[3];
-        const bool keep = true60::enabled() || !consume;
+        const bool keep = !consume;
         if (keep)
             for (int k = 0; k < 3; k++) seeds[k] = ld32(GD(0x101FF9D4) + 4 * k);
         orig(c);
@@ -1637,69 +1633,9 @@ void fx_step_stats() {
 }
 }  // namespace
 
-// The attention arrow (dAttDraw_c::draw 024EC1C8, from dAttention_c::Draw in the play scene's draw,
-// every pass): model base = translate(target's attention position) x inverse camera rotation (it
-// faces the camera); its animation (mDoExt_McaMorf at dAttDraw_c +0, frame control +0x98: rate,
-// +0x9C frame) is played by dAttention_c::Run in the play scene's execute (30 Hz).
-// In true 60 the camera runs at 60 Hz: blending the arrow's model matrices between the half pass and
-// the full pass also blended its facing between the camera of the half pass and the current one (a
-// quarter step behind the drawn camera). There, the full pass draws it unblended, built from the
-// halfway target position and animation frame (the 30 Hz convention) and the current camera.
-// Frame interpolation (no 60 Hz camera) keeps the model blending.
-namespace {
-constexpr uint32_t kMorfFrameCtrl = 0x98;
-struct AttRec {
-    float pos[3], frame;
-    uint64_t pass;  // hold pass count when recorded
-};
-std::unordered_map<uint32_t, AttRec> g_att;
-}  // namespace
-extern "C" void hook_024EC1C8(Cpu* c) {
-    uint32_t self = c->r[3], pos = c->r[4];
-    uint32_t morf = ld32(self);
-    if (!true60::enabled() || !interp::enabled() || !on(16) || morf < 0x10000000 || morf >= 0x50000000) {
-        f_024EC1C8_orig(c);
-        return;
-    }
-    const uint32_t fc = morf + kMorfFrameCtrl;
-    if (interp::record_pass()) {  // half pass: exact; remembered for the next full pass
-        AttRec& r = g_att[self];
-        for (int i = 0; i < 3; i++) r.pos[i] = (float)ldf32(pos + 4 * i);
-        r.frame = (float)ldf32(fc + 4);
-        r.pass = interp::hold_pass_count();
-        f_024EC1C8_orig(c);
-        return;
-    }
-    if (!halfway()) {
-        f_024EC1C8_orig(c);
-        return;
-    }
-    const uint32_t mid_pos = mem::fixed_slot(mem::kFixFxMidPos);
-    auto it = g_att.find(self);
-    bool valid = it != g_att.end() && it->second.pass == interp::hold_pass_count();
-    float d2 = 0, mp[3];
-    for (int i = 0; i < 3; i++) {
-        float cur = (float)ldf32(pos + 4 * i);
-        mp[i] = valid ? lerp_f(it->second.pos[i], cur, interp::pass_t()) : cur;
-        d2 += (mp[i] - cur) * (mp[i] - cur);
-    }
-    if (!(d2 < 200.0f * 200.0f)) for (int i = 0; i < 3; i++) mp[i] = (float)ldf32(pos + 4 * i);  // new target
-    for (int i = 0; i < 3; i++) stf32(mid_pos + 4 * i, mp[i]);
-    float frame = (float)ldf32(fc + 4);
-    float mf = valid ? anm_mid(it->second.frame, frame, (float)(int16_t)ld16(fc + 8), (float)(int16_t)ld16(fc + 0xA), true, interp::pass_t()) : frame;
-    static int tr = trace_left(6);
-    if (tr) {
-        tr--;
-        LOG("[interp-fx] attention arrow (true 60, full pass): target %.2f %.2f %.2f -> drawn at %.2f %.2f %.2f, frame %.2f -> %.2f",
-            ldf32(pos), ldf32(pos + 4), ldf32(pos + 8), mp[0], mp[1], mp[2], frame, mf);
-    }
-    stf32(fc + 4, mf);
-    c->r[4] = mid_pos;
-    true60::force_draw_60(true);  // no model blending: built from halfway values and the current camera
-    f_024EC1C8_orig(c);
-    true60::force_draw_60(false);
-    stf32(fc + 4, frame);
-}
+// The attention arrow (dAttDraw_c::draw 024EC1C8): drawn as the game draws it; frame interpolation
+// blends its model matrices like any J3D model (the hook served the retired True 60)
+extern "C" void hook_024EC1C8(Cpu* c) { f_024EC1C8_orig(c); }
 
 // ---------------------------------------------------------------------------------------------
 // Swing trails (interp_trail.h): the sword (daPy_swBlur_c::draw 024142F0: segments +0x9C, blade
@@ -1800,7 +1736,7 @@ extern "C" void f_021768B0_orig(Cpu*);
 extern "C" void hook_021768B0(Cpu* c) {
     const uint32_t hs = ld32(c->r[3] + 0x18);
     const uint32_t link = ld32(GD(0x1046F0B0) + 0x5B34);
-    if (!on(16) || !hs || !link || true60::enabled()) { f_021768B0_orig(c); return; }
+    if (!on(16) || !hs || !link) { f_021768B0_orig(c); return; }
     const uint32_t root = link + 0x72F0, tip = hs + 0x314, ang = hs + 0x328, cnt = hs + 0xD504;
     float r[3], p[3];
     for (int i = 0; i < 3; i++) { r[i] = (float)ldf32(root + 4 * i); p[i] = (float)ldf32(tip + 4 * i); }
@@ -1907,7 +1843,7 @@ ShipRec g_ship;
 extern "C" void f_0247255C_orig(Cpu*);
 extern "C" void hook_0247255C(Cpu* c) {
     const uint32_t ship = c->r[3];
-    if (!on(16) || true60::enabled()) { f_0247255C_orig(c); return; }
+    if (!on(16)) { f_0247255C_orig(c); return; }
     const uint32_t scroll_a = ship + 0x6B8, segs = ld32(ship + 0x1B54 + 0xA0), phase_a = GD(0x101D0348), reset = GD(0x104A03EC);
     const float scroll = (float)ldf32(scroll_a), phase = (float)ldf32(phase_a);
     // (40 fps blended record pass: recorded, then drawn blended from the record before it)
@@ -1992,7 +1928,7 @@ std::unordered_map<uint32_t, SkyRec> g_sky_rec;
 extern "C" void f_024D1D44_orig(Cpu*);
 extern "C" void f_024D1C44_orig(Cpu*);
 extern "C" void hook_024D1D44(Cpu* c) {
-    if (!on(32) || true60::enabled() || interp::in_execute()) { f_024D1D44_orig(c); return; }
+    if (!on(32) || interp::in_execute()) { f_024D1D44_orig(c); return; }
     g_sky.active = true;
     g_sky.speed = (float)ldf32(c->r[3] + 0x3C8);
     g_sky.touched.clear();
@@ -2060,7 +1996,7 @@ void magma_balls(uint32_t pk, F&& f) {
 extern "C" void f_0258CA60_orig(Cpu*);
 extern "C" void hook_0258CA60(Cpu* c) {
     const uint32_t pk = c->r[3], kuro = GD(0x104776E4);
-    if (!on(16) || true60::enabled()) { f_0258CA60_orig(c); return; }
+    if (!on(16)) { f_0258CA60_orig(c); return; }
     const float scroll[2] = {(float)ldf32(kuro + 0x0C), (float)ldf32(kuro + 0x1C)};
     if (interp::record_pass()) {
         g_magma.record = interp::hold_pass_count();
@@ -2122,7 +2058,7 @@ WipeRec g_wipe;
 extern "C" void f_025A1D10_orig(Cpu*);
 extern "C" void hook_025A1D10(Cpu* c) {
     const uint32_t self = c->r[3];
-    if (!on(32) || true60::enabled() || !self) { f_025A1D10_orig(c); return; }
+    if (!on(32) || !self) { f_025A1D10_orig(c); return; }
     const int16_t rot = (int16_t)ld16(self + 0x114);
     const float scale = (float)ldf32(self + 0x118);
     if (interp::record_pass()) {
@@ -2197,7 +2133,7 @@ std::unordered_map<uint32_t, EyeCopyRec> g_eye_copies;
 extern "C" void f_02413E80_orig(Cpu*);
 extern "C" void hook_02413E80(Cpu* c) {
     const uint32_t self = c->r[3], mat = c->r[4];
-    if (!on(4) || true60::enabled()) { f_02413E80_orig(c); return; }
+    if (!on(4)) { f_02413E80_orig(c); return; }
     if (g_eyes.size() > 16) g_eyes.clear();
     EyeRec& r = g_eyes[self];
     if (r.mat != mat) {
@@ -2257,7 +2193,7 @@ extern "C" void hook_02413E80(Cpu* c) {
 }
 static void eye_copy(Cpu* c, void (*orig)(Cpu*)) {
     const uint32_t self = c->r[3];
-    if (!on(4) || true60::enabled()) { orig(c); return; }
+    if (!on(4)) { orig(c); return; }
     const float off[2] = {(float)ldf32(self + 0x6C), (float)ldf32(self + 0x70)};
     if (interp::record_pass()) {
         if (g_eye_copies.size() > 32) g_eye_copies.clear();
@@ -2287,7 +2223,7 @@ extern "C" void hook_02281564(Cpu* c) { eye_copy(c, f_02281564_orig); }
 extern "C" void hook_023086FC(Cpu* c) { eye_copy(c, f_023086FC_orig); }
 
 // ---------------------------------------------------------------------------------------------
-// Actor draws that advance their own state (fpcM_Draw, true60.cpp hook_025DF904, calls these around
+// Actor draws that advance their own state (fpcM_Draw, game_hooks.cpp hook_025DF904, calls these around
 // every process draw). At 30 fps an actor's Draw runs once per logic step; with frame interpolation
 // it runs on every drawn pass, so state a Draw advances ran 2x/4x/8x per step. On the passes without
 // logic (hold passes) these fields are put back after the draw, so they advance once per step, as at
@@ -2404,7 +2340,7 @@ void fx_actor_draw(uint32_t proc, uint32_t exec, bool begin) {
     static const bool replay_on = !(getenv("WWHD_INTERP_DRAW_REPLAY") && !atoi(getenv("WWHD_INTERP_DRAW_REPLAY")));
     static const bool blend_on = !(getenv("WWHD_INTERP_DRAW_BLEND") && !atoi(getenv("WWHD_INTERP_DRAW_BLEND")));
     if (begin) {
-        const DrawKeepSpec* spec = off || !on(8) || true60::enabled() ? nullptr : draw_keep_spec(exec);
+        const DrawKeepSpec* spec = off || !on(8) ? nullptr : draw_keep_spec(exec);
         DrawKept k{proc, spec, {}, {}, {}};
         if (!spec) { g_draw_kept.push_back(std::move(k)); return; }
         for (const auto& f : spec->keep) k.addrs.push_back(field_addr(proc, f));
@@ -2481,7 +2417,7 @@ std::unordered_map<uint32_t, ChainRec> g_chains;
 extern "C" void f_0251AE90_orig(Cpu*);
 extern "C" void hook_0251AE90(Cpu* c) {
     const uint32_t pk = c->r[3];
-    if (!on(16) || true60::enabled()) { f_0251AE90_orig(c); return; }
+    if (!on(16)) { f_0251AE90_orig(c); return; }
     const uint32_t n = ld32(pk + 0xA8), pt = ld32(pk + 0xAC);
     if (!n || n > 256 || pt < 0x10000000 || pt >= 0x50000000) { f_0251AE90_orig(c); return; }
     std::vector<float> cur(3 * n);
@@ -2533,7 +2469,6 @@ void fx_ss_reset() {
     g_cloth_cur.clear();
     g_packet_poses.clear();
     g_line_layouts.clear();
-    g_att.clear();
     g_trails.clear();
     g_hook = HookRec{};
     g_ship = ShipRec{};
@@ -2565,7 +2500,7 @@ extern "C" void f_02732D3C_orig(Cpu*);
 extern "C" void hook_02732D3C(Cpu* c) {
     static const bool off = getenv("WWHD_INTERP_BLUR") && !atoi(getenv("WWHD_INTERP_BLUR"));
     const uint32_t enabled = GD(0x101F4825), alpha_a = GD(0x101F4826), mtx = GD(0x1048CF84);
-    const float n = interp::enabled() && !true60::enabled() ? interp::output_fps() / 30.0f : 1.0f;
+    const float n = interp::enabled() ? interp::output_fps() / 30.0f : 1.0f;
     if (off || !on(32) || !(n > 1.0f) || !ld8(enabled)) { f_02732D3C_orig(c); return; }
     const uint8_t alpha = ld8(alpha_a);
     uint32_t saved[12];
@@ -2621,7 +2556,7 @@ std::unordered_map<uint32_t, BeamRec> g_beams;
 extern "C" void f_0252DA64_orig(Cpu*);
 extern "C" void hook_0252DA64(Cpu* c) {
     const uint32_t pkt = c->r[3], mtx = c->r[4];
-    if (!on(16) || true60::enabled() || mtx < 0x10000000 || mtx >= 0x50000000) { f_0252DA64_orig(c); return; }
+    if (!on(16) || mtx < 0x10000000 || mtx >= 0x50000000) { f_0252DA64_orig(c); return; }
     float cur[12];
     for (int k = 0; k < 12; k++) cur[k] = (float)ldf32(mtx + 4 * k);
     if (interp::record_pass()) {
@@ -2665,7 +2600,7 @@ extern "C" void hook_0252DA64(Cpu* c) {
 // not run: once per logic step, as at 30 fps. debug: WWHD_INTERP_FX bit 8
 extern "C" void f_02466578_orig(Cpu*);
 extern "C" void hook_02466578(Cpu* c) {
-    if (interp::fx_hold_anim() && !true60::enabled()) return;
+    if (interp::fx_hold_anim()) return;
     f_02466578_orig(c);
 }
 
@@ -2680,7 +2615,7 @@ std::unordered_map<uint32_t, SearchRec> g_search;
 extern "C" void f_0238B258_orig(Cpu*);
 extern "C" void hook_0238B258(Cpu* c) {
     const uint32_t a = c->r[3], base = a + 0x740;
-    if (!on(16) || true60::enabled()) { f_0238B258_orig(c); return; }
+    if (!on(16)) { f_0238B258_orig(c); return; }
     float cur[12];
     for (int k = 0; k < 12; k++) cur[k] = (float)ldf32(base + 4 * k);
     if (interp::record_pass()) {
@@ -2746,7 +2681,7 @@ extern "C" void hook_025D39A8(Cpu* c) {
     float view[12], inv[12], m[12];
     for (int k = 0; k < 12; k++) view[k] = (float)ldf32(GD(0x104B45F8) + 4 * k);
     f_025D39A8_orig(c);
-    if (!interp::enabled() || true60::enabled()) return;
+    if (!interp::enabled()) return;
     if (g_wpot.size() > 32) g_wpot.clear();
     for (int k = 0; k < 12; k++) m[k] = (float)ldf32(self + 0x198 + 4 * k);
     if (!mtx_inverse(view, inv)) { g_wpot.erase(self); return; }
@@ -2758,7 +2693,7 @@ extern "C" void f_025D3968_orig(Cpu*);
 extern "C" void hook_025D3968(Cpu* c) {
     const uint32_t self = c->r[3];
     auto it = g_wpot.find(self);
-    if (!on(16) || true60::enabled() || it == g_wpot.end() || it->second.step != interp::logic_steps() || !interp::view_drawn_this_pass()) {
+    if (!on(16) || it == g_wpot.end() || it->second.step != interp::logic_steps() || !interp::view_drawn_this_pass()) {
         f_025D3968_orig(c);
         return;
     }
@@ -2798,7 +2733,7 @@ thread_local bool g_in_shadow_pass = false;
 thread_local std::vector<std::pair<uint32_t, uint32_t>> g_split_put_back;
 bool split_blend_on() {
     static const bool off = getenv("WWHD_INTERP_SHADOW_SPLIT") && !atoi(getenv("WWHD_INTERP_SHADOW_SPLIT"));
-    return !off && on(16) && !true60::enabled() && g_in_shadow_pass;
+    return !off && on(16) && g_in_shadow_pass;
 }
 // the step's exact values `cur` (recorded); true and `out` the drawn ones when this frame blends
 bool split_blend(SplitRec& r, const std::vector<float>& cur, std::vector<float>& out, bool fade) {

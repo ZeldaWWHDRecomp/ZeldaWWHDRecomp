@@ -10,7 +10,6 @@
 
 namespace {
 bool active = false, recording = false, executing = false, blend_rec = false;
-bool true_mode = false;
 uint64_t stamp = 1;
 float fraction = .5f;
 int draws = 0;
@@ -34,7 +33,6 @@ void blend_world_matrix(const float* a, const float* b, float* out, float t) {
 }
 }
 void log_msg(const char*, ...) {}
-namespace true60 { bool enabled() { return true_mode; } }
 
 static void upload(Cpu*) {
     draws++;
@@ -208,10 +206,7 @@ int main() {
         active = recording = executing = false;
         draw_lines(10);
         assert(g_packet_poses.empty() && g_line_layouts.empty());
-        active = true; true_mode = true;
-        draw_lines(10);
-        assert(g_packet_poses.empty() && g_line_layouts.empty());
-        true_mode = false; executing = true;
+        active = true; executing = true;
         draw_lines(10);
         assert(g_packet_poses.empty() && g_line_layouts.empty());
         executing = false;

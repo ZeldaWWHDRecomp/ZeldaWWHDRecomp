@@ -150,7 +150,7 @@ inline int shop_item_at(const Shop& s, float x, float y) {
 
 class Machine {
 public:
-    // One pad read on a full logic step (true 60's repeated reads use held()). `pad_a` / `pad_b` in `in` are
+    // One pad read on a logic step (repeated reads between steps use held()). `pad_a` / `pad_b` in `in` are
     // the controller's, as this read has them.
     Out step(const PlayContext& c, const In& in, const Options& o) {
         Out out;
@@ -228,7 +228,7 @@ public:
         last_ = out;
         return out;
     }
-    // true 60's repeated read: the same as the full read (the queue doesn't advance)
+    // a repeated read between logic steps: the same as the step's read (the queue doesn't advance)
     const Out& held() const { return last_; }
 
     bool busy() const { return !pushes_.empty(); }

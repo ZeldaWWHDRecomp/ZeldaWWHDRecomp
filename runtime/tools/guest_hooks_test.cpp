@@ -153,7 +153,6 @@ namespace input {PadState read() {return {};}}
 // live options and scripted test options (QoL M0): the fixtures run no renderer or host UI
 namespace render {uint64_t frame_count() {return 0;}}
 namespace hostui {void post(std::function<void()> fn) {fn();}}
-namespace true60 {float dt() {return 0.5f;}}
 // guest module entry alignment: no emulated threads here, so the stack bounds are unknown (call kept as is)
 namespace threads {bool current_stack_bounds(const Cpu*, uint32_t&, uint32_t&) {return false;}}
 namespace interp { uint32_t last_camera() { return 0; } }  // screen points (QoL M2): no camera here
@@ -1034,7 +1033,7 @@ int main() {
     guestmods::g_loaded[0].options["option"]=2.5;c.r[3]=1;c.f[1].ps0=8;
     guestmods::svc_config_float(&c);assert(c.f[1].ps0==2.5);
     c.r[3]=1;c.r[4]=9;guestmods::svc_config_int(&c);assert(c.r[3]==9); // non-integral numeric option
-    guestmods::svc_logic_dt(&c);assert(c.f[1].ps0==1.0/60.0);
+    guestmods::svc_logic_dt(&c);assert(c.f[1].ps0==1.0/30.0);  // one 30 Hz logic step in every mode
     guestmods::frame(0x100000002ull);guestmods::svc_logic_step(&c);assert(c.r[3]==1&&c.r[4]==2);
     guestmods::g_loaded[0].region_size=0x10000;
     auto read_setting=[&](const char* key,uint32_t type,uint32_t destination,uint32_t capacity) {

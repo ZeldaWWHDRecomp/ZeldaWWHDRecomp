@@ -42,7 +42,7 @@ Code-quality passes (each on by default; the variable set to 0 when generating t
   WWHD_RECOMP_GQR          paired-single loads/stores through GQRs the game never writes skip the GQR check
   WWHD_RECOMP_RAWSTORE     an stfs of a register still holding an lfs value stores the loaded word (rawstore.py)
 WWHD_RECOMP_PLAIN=1 turns them all off: the output is then the same as without these passes (the
-plain c->r[N] form that tools/true60 and tools/verify read).
+plain c->r[N] form that tools/verify reads).
 Checking builds (set to 1): WWHD_RECOMP_CR_CHECK (a dropped CR bit that is read aborts),
 WWHD_RECOMP_LEAF_POISON (scratch registers get garbage at returns).
 
@@ -389,7 +389,7 @@ class Recompiler:
         out += ["void %s(Cpu* __restrict c) {" % fname, "    PPC_ENTER(0x%08Xu);" % start]
         if self.mod_hooks:
             # guest mods: the check sits in the game's code (f_X, or f_X_orig behind a port hook), so the
-            # port's own hooks (interpolation, true 60) stay outermost and mods hook the game's code
+            # port's own hooks (interpolation) stay outermost and mods hook the game's code
             out.append("    PPC_MOD_HOOK(%d, 0x%08Xu);" % (self.ordinal[start], start))
         if raws:
             out.append("    uint32_t %s;" % ", ".join("fw%d" % n for n in sorted(raws)))

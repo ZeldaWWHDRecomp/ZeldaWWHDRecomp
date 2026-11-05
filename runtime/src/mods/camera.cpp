@@ -53,8 +53,7 @@
 //   changing the style's limits or its centre-height, radius and field-of-view input.
 //
 // Logic only runs on logic passes: the sites run inside the camera's execute, and the camera's
-// manual and subject modes run at 30 Hz in both 60 fps modes (true60 converts the follow camera only),
-// so the per-step amounts above hold in all modes; interpolation blends the drawn camera.
+// manual and subject modes run at 30 Hz with frame interpolation, so the per-step amounts above hold in all modes; interpolation blends the drawn camera.
 #include <atomic>
 #include <cmath>
 #include <cstdlib>

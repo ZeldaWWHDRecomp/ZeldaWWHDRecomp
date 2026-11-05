@@ -65,7 +65,7 @@ int touch_pinch(uint32_t kind, float scale, float x, float y);
 bool touch_claimed_at(float x, float y);  // any thread
 bool touch_claims();                      // a mod claims some part of the picture now
 // the game's controller reads (VPADRead / KPADReadEx, after the port's own filters): the mods' touch callbacks
-// for the queued fingers, then their input filters in load order; `repeat`: true 60's repeated read (nothing)
+// for the queued fingers, then their input filters in load order; `repeat`: interpolation's repeated read (nothing)
 void pad_filter(Cpu* c, input::PadState& p, bool repeat);
 inline constexpr uint32_t kRegionStart=0x7F000000,kRegionSize=0x01000000;
 std::vector<ModIdentity> enabled_mods();
@@ -86,7 +86,7 @@ std::shared_ptr<const story_game_pieces::BuiltSet> editor_build_piece(const std:
 std::shared_ptr<const story_game_pieces::BuiltSet> editor_build_kit_model(const std::string& mod,const std::string& package_dir,const std::string& data_dir,const mods::json::Value& entry);
 void logic_service(Cpu* cpu); // once per game logic pass, never interpolation-only
 void frame(uint64_t step); // original full-step clock
-void draw_frame(Cpu* cpu,uint64_t executed_step); // once per actual logic pass, including true60
+void draw_frame(Cpu* cpu,uint64_t executed_step); // once per actual logic pass
 void state_loaded(); // discard host HUD lists and texture handles after a full state load
 void service(Cpu* cpu); // at the frame boundary (main thread, other threads idle): story layouts' builds after a load
 }

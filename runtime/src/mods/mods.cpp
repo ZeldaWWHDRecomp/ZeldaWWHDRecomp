@@ -14,7 +14,6 @@
 #include "sprint_pose.h"
 #include "guest_addr.h"
 #include "../input.h"
-#include "../true60.h"  // dt(): the per-step tick must advance once per original 30 Hz step
 
 #include <atomic>
 #include <cstdarg>
@@ -94,8 +93,7 @@ constexpr float kRampTau = 0.15f;  // seconds; the ramp's time constant
 std::atomic<bool> g_scenes{env_on("WWHD_MOD_FAST_SCENES")};
 
 // ---- the animation cadence follows the boost (daPy_lk_c::setFrameCtrl 023DE788) ----
-// The rate the game stores is the authored one: true60 only scales the advance inside
-// J3DFrameCtrl::update, transiently, so scaling the stored rate composes with true 60. The hook
+// The rate the game stores is the authored one. The hook
 // records what the game asked for, the per-step tick follows the ramp, and the authored rate goes
 // back when the boost ends. An entry the game overwrote itself is dropped, so the mod never fights
 // the game for a field it owns.
@@ -192,8 +190,8 @@ MoveHud move_hud() {
             g_move_exhausted.load(std::memory_order_relaxed)};
 }
 
-// One logic step of the boost. Called from the 023FD39C site (true60_link.cpp) on every pass; the
-// state advances once per original 30 Hz step (previews only reuse the ramp). Returns the factor
+// One logic step of the boost. Called from the 023FD39C site (game_hooks.cpp) on each of Link's
+// steps; the state advances once per 30 Hz step. Returns the factor
 // the site multiplies the horizontal speed by, which is exactly 1 whenever the mod is off.
 float link_move_factor(uint32_t link) {
     if (!move_speed() || !link) {
@@ -218,7 +216,7 @@ float link_move_factor(uint32_t link) {
     const uint32_t buttons = g_move_buttons.load(std::memory_order_relaxed);
     const bool roll_a = move_speed_button() == kMoveButtonRollA;
     const uint32_t proc = ld32(link + 0x65F0);
-    if (true60::dt() >= 1.0f) {  // a full step, not a true60 preview
+    {  // one 30 Hz logic step
         const float dt = 1.f / 30.f;
         const float seconds = move_speed_stamina_seconds();
         // "Roll, then hold A" is held by nature (A is the game's own button): the boost is the state
@@ -308,7 +306,7 @@ float link_move_factor(uint32_t link) {
 }
 
 void move_start_effect(Cpu* c, uint32_t link) {
-    if (!c || !link || g_move_dust_pending != link || true60::dt() < 1.f) return;
+    if (!c || !link || g_move_dust_pending != link) return;
     if (move_speed_land_factor() <= 1.f) { g_move_dust_pending = 0; return; }
     // Reuse the native one-shot land-smoke helper, which stops emission after one particle step.
     // Keep the ordinary foot emitters untouched. No dust in water, midair, lock-on or a demo.
@@ -351,7 +349,7 @@ void move_start_effect(Cpu* c, uint32_t link) {
 // few logic steps so it reads as a trail rather than another burst. The game's own foot emitters
 // are left alone; no trail in water, midair, lock-on, demos or during a forward roll.
 void move_trail_effect(Cpu* c, uint32_t link) {
-    if (!c || !link || true60::dt() < 1.f) return;
+    if (!c || !link) return;
     const bool running = g_move_boosted.load(std::memory_order_relaxed) && ld32(link + 0x65F0) == kProcMove;
     if (!running || move_speed_land_factor() <= 1.f) { g_move_trail_step = 0; return; }
     if (++g_move_trail_step < 5) return;
@@ -385,7 +383,7 @@ void move_trail_effect(Cpu* c, uint32_t link) {
 // a light foam trail behind. Uses the native water element (sea-coloured, same one-shot helper the
 // dust uses), so the game's own wake emitters are left alone. No effects in demos or out of water.
 void move_swim_effect(Cpu* c, uint32_t link) {
-    if (!c || !link || true60::dt() < 1.f) return;
+    if (!c || !link) return;
     const bool swimming = g_move_boosted.load(std::memory_order_relaxed) && ld32(link + 0x65F0) == kProcSwimMove;
     if (!swimming || move_speed_swim_factor() <= 1.f) { g_move_swirl_sign = 0; g_move_swim_trail_step = 0; return; }
     const uint32_t play = GD(0x1046F0B0), manager = ld32(play + 0x5AB0);

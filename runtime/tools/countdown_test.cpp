@@ -50,7 +50,7 @@ int main() {
     st8(timer + 0x124, 2);
     Cpu c{};
     for (int fps : {30, 60, 120}) for (bool paced : {false, true}) {
-        // Interpolation and true60 share this contract; live scenarios select each actual mode.
+        // Frame interpolation's contract; live scenarios select each actual mode.
         enabled = fps != 30; calls = 0; st32(timer + 0x10C, 900);
         for (int tick = 0; tick < 30; tick++) {
             step++;

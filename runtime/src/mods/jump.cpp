@@ -17,9 +17,8 @@
 // The jump has its own input (input_map kJump, the virtual input::kVirtJump): it never presses the
 // game's own L, and any controller button, key or the on-screen Jump button can be it (Controls). The
 // moon jump held at the same time wins. Off means identical: no guest reads or writes.
-// True 60: decisions and guest calls happen on full steps only; previews are rolled back by true60.
-// The input is read on every pass (also the half steps): a press that begins on a half step reaches
-// the next full step once (jump_policy::Latch).
+// The input is read on every pass (also the in-between passes of frame interpolation): a press that
+// begins between two logic steps reaches the next step once (jump_policy::Latch).
 //
 // Idea/code from GreenNaugahyde/ZeldaWWHDRecompAndroid (MPL-2.0), mods/jump.cpp.
 // WWHD_JUMP_LOG=1 logs each jump.
@@ -34,7 +33,6 @@
 #include "jump_policy.h"
 #include "mods.h"
 #include "runtime.h"
-#include "true60.h"
 
 namespace mods {
 namespace {
@@ -112,16 +110,13 @@ void jump_step(Cpu* c, uint32_t link, bool before) {
         return;
     }
     if (link < 0x10000 || link > 0xFFFF9000) return;
-    const bool preview = true60::dt() < 1.f;
     if (link != g_link) {
-        if (preview) return;
         jump_reset();
         g_link = link;
     }
     const uint32_t proc = ld32(link + kCurProc);
     if (before) {
         if (g_straight) g_root_x = ldf32(link + kRoot), g_root_z = ldf32(link + kRoot + 8);
-        if (preview) return;
         // the old Jump anywhere button choice becomes the Jump binding of an old controls.json (once)
         static const bool adopted = (input_map::adopt_legacy_jump_button(jump_button()), true);
         (void)adopted;
@@ -139,7 +134,7 @@ void jump_step(Cpu* c, uint32_t link, bool before) {
     // after the execute: a straight-up jump takes back what the take-off animation moved him this pass
     if (g_straight) {
         if (proc != kProcAutoJump) {
-            if (!preview) g_straight = false;
+            g_straight = false;
         } else if (ld8(link + kRootMode) == 1) {
             const Xz d = root_motion(ldf32(link + kRoot) - g_root_x, ldf32(link + kRoot + 8) - g_root_z, int16_t(ld16(link + kFacing)));
             for (uint32_t x : {link + kPosX, kHeldPos}) {  // (and the HD's retained copy the next execute reads)
@@ -149,15 +144,14 @@ void jump_step(Cpu* c, uint32_t link, bool before) {
         }
     }
     // the game's own ledge jump began in this step: a plain fall instead
-    const bool convert = preview ? proc == kProcAutoJump && !g_state.own && no_auto_jump()
-                                 : after_step(g_state, proc, no_auto_jump());
+    const bool convert = after_step(g_state, proc, no_auto_jump());
     if (!convert) return;
     stf32(link + kSpeedY, 0.f);
     const Cpu saved = *c;
     c->f[1].ps0 = c->f[1].ps1 = 5.;  // animation blend
     guest_call(c, kFallInit, {link, 0});
     *c = saved;
-    if (log_on() && !preview) LOG("[jump] the game's ledge jump made a fall (speedF %.1f)", ldf32(link + kSpeedF));
+    if (log_on()) LOG("[jump] the game's ledge jump made a fall (speedF %.1f)", ldf32(link + kSpeedF));
 }
 
 }  // namespace mods

@@ -477,8 +477,7 @@ inline int format(const PlayContext& c, char* buf, int size) {
 
 namespace mods {
 // ---- runtime (play_context.cpp) ----
-// Once per full logic step on the game thread (interp.cpp, after a full pass began: true 60's half-pass
-// preview is already taken back). No guest reads unless a consumer wants the context.
+// Once per logic step on the game thread (interp.cpp, when a logic pass begins). No guest reads unless a consumer wants the context.
 void play_context_step();
 // a consumer (touch controls, the overlay, a test) wants the context read; reference-counted
 void play_context_want(bool on);

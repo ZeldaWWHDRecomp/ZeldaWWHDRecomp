@@ -27,7 +27,6 @@
 
 #include "guest_addr.h"
 #include "input.h"
-#include "true60.h"
 #include "moon_jump_policy.h"
 #include "mods.h"
 #include "runtime.h"
@@ -326,9 +325,8 @@ struct Flight {
     int16_t facing = 0;
     float x = 0, z = 0;
 };
-Flight flight, preview_saved;
-bool preview_saved_valid = false;
-// WWHD daPy_lk_c fields shared with climb.cpp and true60_link.cpp.
+Flight flight;
+// WWHD daPy_lk_c fields shared with climb.cpp.
 constexpr uint32_t moon_proc = 0x65F0, moon_mode = 0x6A70;
 constexpr uint32_t moon_speed_y = 0x340, moon_pos_y = 0x318;
 constexpr uint32_t moon_angle = 0x322, moon_shape_angle = 0x32A;
@@ -371,7 +369,7 @@ void moon_jump_camera(uint32_t camera) {
 }
 
 void moon_jump_reset() {
-    flight = {}; preview_saved = {}; preview_saved_valid = false;
+    flight = {};
     moon_camera.store(0, std::memory_order_relaxed);
     moon_camera_scene.store(0, std::memory_order_relaxed);
     moon_buttons.store(0, std::memory_order_relaxed);
@@ -379,13 +377,11 @@ void moon_jump_reset() {
 
 void moon_jump_step(Cpu* cpu, uint32_t link, bool before) {
     if (!infinite(kMoonJump)) return; // stock path: no guest reads or writes
-    const bool preview = true60::dt() < 1.f;
     if (before) {
         if (moon_reset_requested.exchange(false, std::memory_order_acquire)) moon_jump_reset();
         // Do not allow a malformed actor or title/file-select input to dereference fields.
         if (link < 0x10000 || link > 0xFFFF9000 || !save_loaded(save_addr())) {
             flight = {};
-            preview_saved_valid = false;
             moon_camera.store(0, std::memory_order_relaxed);
             moon_camera_scene.store(0, std::memory_order_relaxed);
             return;
@@ -397,10 +393,9 @@ void moon_jump_step(Cpu* cpu, uint32_t link, bool before) {
             if (flight.link) moon_camera.store(0, std::memory_order_relaxed);
             flight = {}; flight.link = link; flight.scene = scene;
         }
-        if (preview) { preview_saved = flight; preview_saved_valid = true; }
     } else if (flight.link != link) return;
     const bool held = (moon_buttons.load(std::memory_order_acquire) & input::kVirtMoonJump) != 0;
-    if (before && held && !preview) {
+    if (before && held) {
         if (ld32(link + moon_proc) != 0x27) {
             const Cpu saved = *cpu;
             cpu->f[1].ps0 = cpu->f[1].ps1 = 5.;
@@ -428,15 +423,12 @@ void moon_jump_step(Cpu* cpu, uint32_t link, bool before) {
             }
             auto movement = moon_jump_policy::steer(flight.facing,
                 moon_stick_x.load(std::memory_order_relaxed), moon_stick_y.load(std::memory_order_relaxed),
-                fx, fz, preview ? true60::dt() : 1.f);
+                fx, fz, 1.f);
             flight.facing = movement.facing; flight.x = movement.x; flight.z = movement.z;
         }
         st16(link + moon_angle, uint16_t(flight.facing));
         st16(link + moon_shape_angle, uint16_t(flight.facing));
     }
-    // Guest preview memory is rolled back by true60. Its host steering state must
-    // also be temporary, otherwise every preview would turn the next full step twice.
-    if (!before && preview_saved_valid) { flight = preview_saved; preview_saved_valid = false; }
 }
 
 bool moon_jump_move(uint32_t link, float& x, float& z) {

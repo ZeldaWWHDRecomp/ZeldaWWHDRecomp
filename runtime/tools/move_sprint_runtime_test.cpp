@@ -16,7 +16,6 @@
 
 namespace {
 constexpr uint32_t kLink = 0x11000000, quat = 0x11009000, table = 0x100366A0;
-float dt = 1.f;
 bool native_adjust = false;
 unsigned calls = 0;
 unsigned dust_calls = 0;
@@ -41,7 +40,6 @@ void after(unsigned joint) {
 }
 }
 namespace interp { uint64_t logic_steps() { return 0; } }
-namespace true60 { float dt() { return ::dt; } }
 namespace mods { void mouse_release() {} }
 void log_msg(const char*, ...) {}
 uint32_t guest_call(Cpu* c, uint32_t fn, std::initializer_list<uint32_t> args) {
@@ -105,14 +103,13 @@ int main(int argc, char** argv) {
     assert(!is_identity()); // the actual runtime hook must visibly change the torso pose
     assert(ld8(kLink+0x68E2+3)&1);
     after(3); assert(is_identity()); // no pose accumulation between model calculations
-    // Repeated draws and true60 previews must not compound the additive rotation.
+    // Repeated draws must not compound the additive rotation.
     for(int i=0;i<100;++i) {
-        dt=.5f; mods::link_move_factor(kLink); before(3);
+        mods::link_move_factor(kLink); before(3);
         const float z=u32_as_f32(ld32(quat+8)), w=u32_as_f32(ld32(quat+12));
         assert(z>0.f && std::abs(z*z+w*w-1.f)<1e-5f);
         after(3); assert(is_identity());
     }
-    dt=1.f;
     // A native look/turn correction may already own the restore slot. Do not overwrite it.
     native_adjust=true;
     before(15); after(15); assert(is_identity());
@@ -213,9 +210,6 @@ int main(int argc, char** argv) {
         st32(kLink+0x834,condition==1?0:0x20); st32(kLink+0x69D4,condition==2?0x13:0);
         mods::move_speed_input(input::kStickL); mods::link_move_factor(kLink);
         const auto count=dust_calls;
-        if(condition==0) {
-            dt=.5f; mods::move_start_effect(&fx,kLink); assert(dust_calls==count); dt=1.f;
-        }
         mods::move_start_effect(&fx,kLink);
         assert(dust_calls==count+(condition==0?3:0));
         if(condition!=0) {

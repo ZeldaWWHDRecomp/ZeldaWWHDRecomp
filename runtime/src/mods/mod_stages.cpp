@@ -26,7 +26,6 @@
 #include "guest_png.h"
 #include "../input.h"
 #include "story_world_placement.h"
-#include "../true60.h"
 
 extern "C" void f_020277AC_orig(Cpu* c);
 extern "C" void f_025217F8_orig(Cpu* c);
@@ -687,7 +686,6 @@ bool enter_stage(const std::string& mod, const std::string& id, unsigned room, u
 
 void link_step(Cpu* c, uint32_t link, bool before) {
     if (!g_lift.on || !before || link < 0x10000 || link > 0xFFFF9000) return;
-    if (true60::dt() < 1.f) return;  // an interpolated preview frame: the 30 Hz steps lift him
     if (ld32(link + kLinkProc) != kProcFall) {
         const Cpu saved = *c;
         c->f[1].ps0 = c->f[1].ps1 = 5.;

@@ -4,7 +4,6 @@
 #include "../runtime.h"
 #include "../input.h"
 #include "../overlay/overlay.h"
-#include "../true60.h"
 #include "guest_addr.h"
 #include <atomic>
 #include <cmath>
@@ -58,7 +57,7 @@ bool field_camera(uint32_t cam) {
 // Game-thread read at the native collision/use boundary, never a retained camera/player pointer.
 // Process +DC/+E8 and dCamera +3C ViewCache are render inputs, NOT our gameplay direction.
 bool direction(uint32_t link, Direction& out) {
-    if (!camera_directed_items() || true60::preview() || overlay::blocks_input() ||
+    if (!camera_directed_items() || overlay::blocks_input() ||
         !input::gameplay_focused() || !object(link,0x8000)) return false;
     const auto play = GD(0x1046F0B0);
     if (ld32(play+0x5B34)!=link || ld8(play+0x5292) || ld32(play+0x52E4) || ld16(link+0x420) ||

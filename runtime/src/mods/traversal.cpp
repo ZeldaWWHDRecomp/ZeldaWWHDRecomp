@@ -33,11 +33,8 @@
 //   same call when the toggle is on. The Swift Sail's sound, sail swap and speed stay its own.
 // Off means identical: every hook checks its switch first and then runs only the original code.
 // 60 fps: all of this runs inside the game's own procedures, once per execute of Link or the ship,
-//   and writes only rates and targets (never per-step amounts), so interpolation (60/120/240) and
-//   true 60 (J3DFrameCtrl::update and cLib_addCalc scale the advance by dt) compose with it. In true
-//   60 the ladder, sidle and ship procedures run at 30 Hz (not in true60.cpp's kLinkGroups; the
-//   ship is not converted). The test setting WWHD_TRUE60_LINK=audited runs the ladder procedures on
-//   every pass; that set is not checked with these mods.
+//   and writes only rates and targets (never per-step amounts), so interpolation (40/60/120/240)
+//   composes with it.
 #include "mods/mods.h"
 #include "mods/traversal.h"
 

@@ -5,7 +5,6 @@
 #include "runtime.h"
 #include "guest_addr.h"
 #include "input.h"
-#include "true60.h"
 #include "overlay/overlay.h"
 #include <atomic>
 #include <cstdlib>
@@ -337,7 +336,7 @@ void bow_release(Cpu* c) {
     request.phase = Phase::spent;
 }
 void note_animation(Cpu* c, uint32_t link, uint32_t clip, unsigned channel, uint64_t epoch) {
-    if (!enabled.load(std::memory_order_relaxed) || channel != 2 || true60::preview()) return;
+    if (!enabled.load(std::memory_order_relaxed) || channel != 2) return;
     std::lock_guard lock(mutex);
     if (epoch != reset_epoch.load()) return; // a host reset during native setup wins
     animation = {}; // even restarting the same clip is a new native generation
@@ -371,9 +370,7 @@ float animation_factor(Cpu* c, uint32_t ctrl, bool advance) {
         pid != r.target_pid || (equip && (ld16(r.link + 0x69B2) != r.item || ld16(r.link + 0x69B0) != a.old_item ||
                                         ld16(r.link + 0x69B0) == r.item)) ||
         (!equip && (!ld32(r.link + 0x6594) || ld32(ld32(r.link + 0x6594) + 0xB0) != 0))) {
-        // Guest previews roll back, host tokens do not. A temporary end/stop in a preview
-        // must not consume a generation that the authoritative full pass will restore.
-        if (!true60::preview()) { animation = {}; animated_ctrl = 0; }
+        animation = {}; animated_ctrl = 0;
         return 1.f;
     }
     const float rate = u32_as_f32(ld32(ctrl)), frame = u32_as_f32(ld32(ctrl + 4));
@@ -382,12 +379,12 @@ float animation_factor(Cpu* c, uint32_t ctrl, bool advance) {
     // attributes, reversed/stopped or malformed controls retain exactly native behavior.
     if (ld8(ctrl + 14) != 0 || !std::isfinite(rate) || rate <= 0.f ||
         !std::isfinite(frame) || start < 0 || end <= start || frame < start || frame > end || rate > end - start) {
-        if (!true60::preview()) { animation = {}; animated_ctrl = 0; }
+        animation = {}; animated_ctrl = 0;
         return 1.f;
     }
     if (!advance) {
         const float key = float(c->f[1].ps0);
-        if (std::isfinite(key) && !true60::preview()) {
+        if (std::isfinite(key)) {
             bool found = false;
             for (unsigned i = 0; i < a.key_count; ++i) found |= a.keys[i] == key;
             if (!found) {
@@ -438,8 +435,7 @@ void quick_use_animation_call(Cpu* c, void (*native)(Cpu*), bool advance) {
     const float rate = u32_as_f32(authored);
     if (!std::isfinite(rate) || rate <= 0.f) { native(c); return; }
     const uint32_t scaled = f32_as_u32(rate * factor), before = ld32(ctrl + 4);
-    // Called only on the emulation thread, around an existing native frame operation. true60's
-    // dt/preview logic runs INSIDE this scope. Key crossings remain entirely native. Sound
+    // Called only on the emulation thread, around an existing native frame operation. Key crossings remain entirely native. Sound
     // pitch, save capture and every other guest caller continue to see the authored rate.
     st32(ctrl, scaled);
     native(c);

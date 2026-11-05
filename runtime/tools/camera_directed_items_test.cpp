@@ -17,7 +17,7 @@
 #endif
 namespace {
 constexpr uint32_t player_addr = 0x11000000, process = 0x11010000, camera = process+0x248;
-bool focus=true, blocked=false, preview=false, throws=false, disable_inside=false;
+bool focus=true, blocked=false, throws=false, disable_inside=false;
 unsigned calls=0;
 uint16_t seen_yaw=0, seen_pitch=0;
 void map(uint32_t a) {
@@ -55,7 +55,7 @@ void fixture() {
     st32(player_addr+0x65F0,0x92);st16(player_addr+0x69B0,0x34);st32(player_addr+0x834,0x20);
     st16(player_addr+0x6984,10);st16(player_addr+0x6986,123);st16(player_addr+0x6988,456);
     st16(player_addr+0x322,111);st16(player_addr+0x32A,222);st16(player_addr+0x3D0,333);
-    focus=true;blocked=preview=throws=disable_inside=false;
+    focus=true;blocked=throws=disable_inside=false;
 }
 void room_fixture() {
     fixture();st32(camera+0x51C,60);st32(camera+0x520,60);st32(camera+0x524,60);
@@ -64,7 +64,6 @@ void room_fixture() {
 }
 namespace input { bool gameplay_focused(){return focus;} }
 namespace overlay { bool blocks_input(){return blocked;} }
-namespace true60 { bool preview(){return ::preview;} }
 void log_msg(const char*,...) {}
 extern "C" void f_024076CC_orig(Cpu* c) {
     ++calls;seen_yaw=ld16(c->r[3]+0x6986);seen_pitch=ld16(c->r[3]+0x6988);
@@ -123,7 +122,7 @@ int main(int argc,char**) {
     for(int gate=0;gate<38;++gate){
         fixture();
         switch(gate){
-        case 0:focus=false;break;case 1:blocked=true;break;case 2:preview=true;break;
+        case 0:focus=false;break;case 1:blocked=true;break;case 2:blocked=true;break;  // (gate 2 was the retired True 60 preview)
         case 3:st8(camera+4,0);break;case 4:st8(camera+5,1);break;
         case 5:st32(camera+0x128,player_addr+4);break;case 6:st32(camera+0x12C,player_addr+4);break;
         case 7:st32(camera+0x134,player_addr+4);break;case 8:st8(camera+0x19C,1);break;

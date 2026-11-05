@@ -43,7 +43,7 @@ constexpr uint32_t player_addr = 0x11000000, attention = 0x11010000, enemy = 0x1
 constexpr uint32_t buttons[] = {input::kX, input::kY, input::kR};
 constexpr uint32_t release_bits[] = {8, 16, 0x4000};
 uint64_t now = 0;
-bool blocked = false, live = true, preview = false;
+bool blocked = false, live = true;
 unsigned resolves = 0, native_inputs = 0, native_setups = 0, automatic_releases = 0;
 bool reset_during_setup = false;
 uint16_t item;
@@ -164,7 +164,6 @@ uint32_t boomerang_hold(uint32_t native) {
 }
 }
 namespace overlay { bool blocks_input() { return blocked; } }
-namespace true60 { bool preview() { return ::preview; } }
 namespace mods {
 uint64_t step() { return now; }
 void trace(const char* format, ...) {
@@ -276,9 +275,7 @@ int main(int argc, char** argv) {
         setup(0x2D); accepted_equip(); animation(0x105);
         advance_animation(); assert(seen_rate == 1.f); // no acceleration before native key observation
         assert(!key(20.f));
-        preview = true; blocked = true; advance_animation(); assert(seen_rate == 1.f);
-        preview = false; blocked = false; st32(player_addr + 0x58DC, 0); // native preview rollback
-        advance_animation(); assert(seen_rate == 1.5f); // preview did not consume host ownership
+        advance_animation(); assert(seen_rate == 1.5f);
         mods::quick_use_reset(); advance_animation(); assert(seen_rate == 1.f);
         for (unsigned interruption = 0; interruption < 13; ++interruption) {
             setup(0x2D); accepted_equip(); animation(0x105); assert(!key(20.f));

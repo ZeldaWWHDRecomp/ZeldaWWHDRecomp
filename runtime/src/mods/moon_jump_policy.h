@@ -4,8 +4,8 @@
 #include <cstdint>
 
 namespace mods::moon_jump_policy {
-// Speeds use the game's 30 Hz units. A true-60 preview scales displacement at
-// the existing movement site; this policy scales only the turning rate.
+// Speeds use the game's 30 Hz units; dt (a fraction of one 30 Hz step, the game passes 1) scales
+// only the turning rate.
 struct Steering { int16_t facing; float x = 0, z = 0; };
 inline Steering steer(int16_t facing, float stick_x, float stick_y,
                       float forward_x, float forward_z, float dt) {
