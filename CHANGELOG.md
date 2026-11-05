@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: textures that haven't been used for a while are freed** (#423, from the GreenNaugahyde and Nycolazs Android
+  forks, thanks @GreenNaugahyde and @Nycolazs). On Android the texture budget is now on by default: textures not drawn
+  for about four minutes are released (after about ten seconds when memory is tight), so long sessions use less memory.
+  Desktop is unchanged; `WWHD_VK_TEXTURE_BUDGET=0` turns it off. Not yet measured on a phone.
 - **Fixed: a shader that crashes the GPU driver no longer stops the game from starting** (#418, from the GreenNaugahyde
   Android fork, thanks @GreenNaugahyde). If compiling a shader or pipeline crashed the game (seen with Huawei's
   Maleoon driver), it was compiled again at every start. Now the next start leaves that one out and logs it; it's
