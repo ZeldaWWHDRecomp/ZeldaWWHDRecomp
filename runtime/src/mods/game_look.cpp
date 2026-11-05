@@ -106,7 +106,10 @@ std::vector<Command> Look::render(std::vector<Command> cmds, std::vector<Handle>
             c.image.reset();
             continue;
         }
-        if (c.text.rfind("art:", 0) != 0) continue;
+        if (c.text.rfind("art:", 0) != 0) {
+            if (picture_handle && !c.text.empty()) images[i] = picture_handle(c.text), c.text.clear();
+            continue;
+        }
         int bw, bh;  // the size the box was laid out at (the animations scale only the picture)
         style::box_size(c.text, bw, bh);
         const std::string name = "nb:" + style::box_name(c.text).substr(4);

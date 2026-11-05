@@ -22,6 +22,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <mutex>
 
 #include "game_settings.h"
 #include "game_settings_text.h"
@@ -47,6 +48,7 @@ namespace style = story_notebook::style;
 using guestmods::hud::Handle;
 
 const std::string kOwner = "port:game-settings";
+Handle sheet_handle(const std::string& text);  // a page's sheet picture (set_sheet)
 const uint32_t kIngameUi = GD(0x101F8344);       // sIngameUi (hdIngameUi_c*)
 const uint32_t kStateMenu = GD(0x1049ECB0);      // l_ingameMenuState (::StateID_Menu)
 const uint32_t kPlay = GD(0x1046F0B0);           // g_dComIfG_gameInfo.play
@@ -260,6 +262,7 @@ void publish(std::vector<Command> cmds, Cpu* c) {
         store.drop(kOwner);
         return;
     }
+    if (!g_look.picture_handle) g_look.picture_handle = sheet_handle;
     g_look.load_glyphs(c, font::texts_of(cmds));
     const uint32_t screen = story_notebook::menu_screen(input::pro_controller());
     const Handle list = store.begin(kOwner, screen);
@@ -427,7 +430,51 @@ bool test_tv_pointer(tv_pointer::State& s) {
     return true;
 }
 
+// the pages opened from rows (register_detail / open_detail) and the one shown now (game thread)
+std::mutex g_detail_mu;
+std::map<std::string, std::function<std::unique_ptr<Detail>()>> g_detail_makers;
+std::string g_detail_wanted;
+std::unique_ptr<Detail> g_detail;
+
+// the sheets (set_sheet): their images, and the handles made of them in the store (game thread)
+struct Sheet {
+    std::shared_ptr<const guestmods::hud::Image> image, made;
+    Handle handle = 0;
+    uint64_t generation = 0;
+};
+std::map<std::string, Sheet> g_sheets;  // (g_detail_mu)
+Handle sheet_handle(const std::string& text) {
+    if (text.rfind("gs:sheet:", 0) != 0) return 0;
+    auto& store = guestmods::hud::store();
+    std::lock_guard lock(g_detail_mu);
+    auto it = g_sheets.find(text.substr(9));
+    if (it == g_sheets.end() || !it->second.image) return 0;
+    Sheet& sh = it->second;
+    const uint64_t generation = store.state_generation();
+    if (sh.made != sh.image || sh.generation != generation || !sh.handle) {
+        if (sh.handle && sh.generation == generation) store.release(kOwner, sh.handle);
+        const auto& img = *sh.image;
+        sh.handle = store.create_image(kOwner, img.width, img.height, img.width * 4, img.rgba.data(), img.rgba.size());
+        sh.made = sh.image, sh.generation = generation;
+    }
+    return sh.handle;
+}
+
 }  // namespace
+
+void set_sheet(const std::string& name, std::shared_ptr<const guestmods::hud::Image> image) {
+    std::lock_guard lock(g_detail_mu);
+    g_sheets[name].image = std::move(image);
+}
+
+void register_detail(const std::string& id, std::function<std::unique_ptr<Detail>()> make) {
+    std::lock_guard lock(g_detail_mu);
+    g_detail_makers[id] = std::move(make);
+}
+void open_detail(const std::string& id) {
+    std::lock_guard lock(g_detail_mu);
+    g_detail_wanted = id;
+}
 
 bool page_open() { return g_has_controller.load(std::memory_order_relaxed); }
 
@@ -617,10 +664,46 @@ void pad(input::PadState& p, Cpu* c) {
     g_has_controller.store(true, std::memory_order_relaxed);
     if (!m.items_page && m.descriptor != kStateMenu) {  // the menu closed under the page (a state load, a cutscene)
         g_page.hide();
+        g_detail.reset();
         g_hidden.clear();  // (its screens may be gone: nothing is written back)
         LOG("[game-settings] page closed: the menu is gone");
     } else {
         hide_game_pieces(m, true);
+    }
+    {  // a row's own page asked for (its set() ran on the main thread)
+        std::function<std::unique_ptr<Detail>()> make;
+        {
+            std::lock_guard lock(g_detail_mu);
+            if (!g_detail_wanted.empty()) {
+                if (auto it = g_detail_makers.find(g_detail_wanted); it != g_detail_makers.end()) make = it->second;
+                g_detail_wanted.clear();
+            }
+        }
+        if (make && g_page.open()) {
+            g_detail = make();
+            if (g_detail) {
+                play(c, Sound::Open);
+                LOG("[game-settings] a row's page opened");
+                shot_after(10);
+            }
+        }
+    }
+    if (g_detail && g_page.open()) {  // that page has the controller until B closes it
+        const Action act = g_detail->input(in);
+        g_detail->tick(dt);
+        g_page.tick(dt);
+        play(c, act.sound);
+        if (act.closed) {
+            g_detail.reset();
+            g_page.hold_buttons();  // (the B that closed it doesn't close the settings page too)
+            LOG("[game-settings] a row's page closed");
+            publish(g_page.draw(rows_of(tabs.empty() ? "" : tabs[size_t(std::min<int>(g_page.tab(), int(tabs.size()) - 1))]), labels), c);
+        } else {
+            if (!act.id.empty()) shot_after(10);
+            publish(g_detail->draw(g_page.measure), c);
+        }
+        p = input::PadState{};
+        return;
     }
     auto tab_name = [&] { return tabs.empty() ? std::string() : tabs[size_t(std::min<int>(g_page.tab(), int(tabs.size()) - 1))]; };
     std::string tab = tab_name();
@@ -637,6 +720,7 @@ void pad(input::PadState& p, Cpu* c) {
         }
     play(c, act.sound);
     if (act.closed) {
+        g_detail.reset();
         g_swallow.store(p.buttons, std::memory_order_relaxed);  // the B that closed it doesn't reach the game
         LOG("[game-settings] page closed");
     }

@@ -707,6 +707,11 @@ add_executable(game_progress_test runtime/tools/game_progress_test.cpp)
 target_include_directories(game_progress_test PRIVATE runtime/src)
 target_compile_options(game_progress_test PRIVATE -UNDEBUG)
 add_test(NAME game_progress COMMAND game_progress_test)
+# the Game progress page (game_progress_page.h) and its names (game_progress_names.h)
+add_executable(game_progress_page_test runtime/tools/game_progress_page_test.cpp)
+target_include_directories(game_progress_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(game_progress_page_test PRIVATE -UNDEBUG)
+add_test(NAME game_progress_page COMMAND game_progress_page_test)
 # the world editor's live item icons (#270): spare frames, and the textures written into the game's archive
 add_executable(item_icons_live_test runtime/tools/item_icons_live_test.cpp runtime/src/mods/item_icons.cpp runtime/src/mods/item_icons_game.cpp
                runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c)
