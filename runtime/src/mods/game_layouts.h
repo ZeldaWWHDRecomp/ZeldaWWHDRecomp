@@ -74,6 +74,13 @@ bool texture(const std::string& spec, Image& out, std::string& error);
 bool texture_size(const std::string& spec, uint32_t& width, uint32_t& height);
 // "<Layout>/<pane>". False when the pack, the layout or the pane is missing.
 bool pane(const std::string& spec, Pane& out);
+// "<Layout>/<label>": the text of a label of the layout's message file (the pack's archive <Layout>_msbt, its
+// <Layout>.msbt), so in the language of the pack the game opened: UTF-8, the game's control codes (colours,
+// icons, sizes) left out, line breaks kept (msbt_text.h). False for a bad name, a missing pack, archive or label.
+// The guest query "layout-message:" (guest_mods.cpp) refuses texts of kMaxMessageBytes or more.
+inline constexpr uint32_t kMessageVersion = 1;  // "layout-message.version"
+inline constexpr size_t kMaxMessageBytes = 4096;
+bool message(const std::string& spec, std::string& out);
 // A member file of an archive of the pack, e.g. ("CommandGuide_00_msbt", "CommandGuide_00.msbt"): the
 // archive <name>.szs, decoded. False with a short reason (also while the game has not opened its pack).
 bool file(const std::string& archive_name, const std::string& member, Bytes& out, std::string& error);

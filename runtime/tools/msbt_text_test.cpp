@@ -61,6 +61,10 @@ int main() {
     assert(t["T_ACT_Command_04"] == "Lift");
     assert(t["T_ACT_Command_05"] == "Entr\xC3\xA9" "e!");
     assert(t["T_ACT_Command_06"] == "Let go\xF0\x9F\x98\x80");
+    // lines: the line break stays, the colour code is still left out (no '*' as with marks)
+    auto l = mods::msbt::texts(m, false, true);
+    assert(l["T_ACT_Command_06"] == "Let\ngo\xF0\x9F\x98\x80" && l["T_ACT_Command_04"] == "Lift");
+    assert(mods::msbt::texts(m, true)["T_ACT_Command_04"] == "*Lift");
     // bad files: empty maps
     Bytes bad = m;
     bad[8] = 0xFF;  // little-endian: not ours

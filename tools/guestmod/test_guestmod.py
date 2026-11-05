@@ -188,7 +188,7 @@ WWHD_REPLACE(0x02005678, void, repl, (void)) { ptr = helper; orig_fn(); wwhd_log
         src = r'''
 #include "wwhd_guest.h"
 _Static_assert(sizeof(wwhd_hud_element)==72, "HUD wire ABI");
-_Static_assert(WWHD_HUD_API_VERSION==2, "HUD capability version");
+_Static_assert(WWHD_HUD_API_VERSION==3, "HUD capability version");
 static void draw(u32 list) {
     static wwhd_hud_element element = {.kind=WWHD_HUD_RECT,.w=10,.h=20,.thickness=1,.u1=1,.v1=1,.rgba=0xFFFFFFFF};
     wwhd_hud_emit(list,&element);
@@ -204,6 +204,9 @@ WWHD_HOOK(0x02000000, all_services, (void)) {
     u32 image=wwhd_hud_texture(WWHD_HUD_PACKAGE,"assets/original.png");
     wwhd_hud_release(image);
     wwhd_log_int("hud epoch",(int)wwhd_hud_epoch());
+    wwhd_log_int("mirrored",(int)wwhd_hud_mirrored_images());
+    static char label[16];
+    if (wwhd_game_messages()) wwhd_game_message_get("layout-message:DungeonMapUp_00/T_FloorU_00_2F",label,sizeof label);
     char* p = wwhd_malloc(64);
     wwhd_setting_get("input.face_layout",WWHD_SETTING_STRING,p,64);
     wwhd_log_int("settings revision",(int)wwhd_setting_changed("input.face_layout"));

@@ -6,9 +6,17 @@
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <ctime>
+#include <filesystem>
+#include <fstream>
+#include <map>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "game_layouts.h"
+#include "item_icons.h"
 #include "lyt_build.h"
 
 using Bytes = game_layouts::Bytes;
@@ -177,7 +185,79 @@ static void enlarging() {
     assert(!game_layouts::split_spec("Map_00/MapShip_00^t@9", l, it, m, f));
 }
 
+// a message file (MsgStdBn, big-endian UTF-16) with these labels and texts
+static Bytes msbt(const std::vector<std::pair<std::string, std::u16string>>& entries) {
+    auto be16 = [](Bytes& b, uint32_t v) { b.push_back(uint8_t(v >> 8)), b.push_back(uint8_t(v)); };
+    auto be32 = [&](Bytes& b, uint32_t v) { be16(b, v >> 16), be16(b, v); };
+    auto section = [&](Bytes& out, const char* magic, const Bytes& body) {
+        out.insert(out.end(), magic, magic + 4);
+        be32(out, uint32_t(body.size()));
+        out.resize(out.size() + 8, 0);
+        out.insert(out.end(), body.begin(), body.end());
+        while (out.size() % 16) out.push_back(0xAB);
+    };
+    Bytes lbl, txt;
+    be32(lbl, 1), be32(lbl, uint32_t(entries.size())), be32(lbl, 12);
+    for (size_t i = 0; i < entries.size(); i++) {
+        lbl.push_back(uint8_t(entries[i].first.size()));
+        lbl.insert(lbl.end(), entries[i].first.begin(), entries[i].first.end());
+        be32(lbl, uint32_t(i));
+    }
+    be32(txt, uint32_t(entries.size()));
+    uint32_t off = 4 + 4 * uint32_t(entries.size());
+    for (auto& e : entries) be32(txt, off), off += uint32_t(e.second.size() * 2 + 2);
+    for (auto& e : entries) {
+        for (char16_t c : e.second) be16(txt, c);
+        be16(txt, 0);
+    }
+    Bytes m(0x20, 0);
+    std::memcpy(m.data(), "MsgStdBn", 8);
+    m[8] = 0xFE, m[9] = 0xFF, m[0x0C] = 1, m[0x0F] = 2;
+    section(m, "LBL1", lbl);
+    section(m, "TXT2", txt);
+    return m;
+}
+
+// layout-message texts from a 2D pack written here (outer SARC of Yaz0 SARCs, as the game's): the pack the game
+// "opened", its <Layout>_msbt archives, labels, control codes and line breaks, bad names and a later pack
+static void messages() {
+    namespace fs = std::filesystem;
+    const fs::path dir = fs::temp_directory_path() / ("game_layouts_test_" + std::to_string(uint64_t(std::rand()) ^ uint64_t(time(nullptr))));
+    fs::create_directories(dir);
+    auto write_pack = [&](const char* name, const std::u16string& two_f) {
+        const Bytes up = msbt({{"T_FloorU_00_1F", u"1F"}, {"T_FloorU_00_2F", two_f},
+                               {"T_Colour", std::u16string{u'R', 0x0E, 0, 3, 2, 0xFFFF, u'e', u'd'}}, {"T_Lines", u"a\nb"}});
+        std::map<std::string, Bytes> pack;
+        pack["DungeonMapUp_00_msbt.szs"] = item_icons::yaz0_compress(item_icons::archive({{"DungeonMapUp_00.msbt", up}}));
+        pack["Other_00_msbt.szs"] = item_icons::yaz0_compress(item_icons::archive({{"Wrong_00.msbt", up}}));
+        const Bytes bytes = item_icons::archive(pack);
+        const fs::path p = dir / name;
+        std::ofstream(p, std::ios::binary).write(reinterpret_cast<const char*>(bytes.data()), std::streamsize(bytes.size()));
+        return p.string();
+    };
+    std::string text;
+    assert(!game_layouts::message("DungeonMapUp_00/T_FloorU_00_2F", text));  // no pack opened yet
+    game_layouts::note_open("/vol/content/Common/Pack/permanent_2d_UsEnglish.pack", write_pack("en.pack", u"2F"));
+    assert(game_layouts::message("DungeonMapUp_00/T_FloorU_00_2F", text) && text == "2F");
+    assert(game_layouts::message("DungeonMapUp_00/T_FloorU_00_1F", text) && text == "1F");
+    assert(game_layouts::message("DungeonMapUp_00/T_Colour", text) && text == "Red");  // the colour code left out
+    assert(game_layouts::message("DungeonMapUp_00/T_Lines", text) && text == "a\nb");
+    text = "kept";
+    for (const char* bad : {"DungeonMapUp_00/T_Missing", "DungeonMapUp_00", "Missing_00/T_FloorU_00_1F", "Other_00/T_FloorU_00_1F",
+                            "DungeonMapUp_00/T_FloorU_00_1F#M", "../DungeonMapUp_00/T_FloorU_00_1F", "DungeonMapUp_00/a/b",
+                            "DungeonMapUp_00/..", "DungeonMapUp_00/T FloorU", ""})
+        assert(!game_layouts::message(bad, text) && text == "kept");
+    // a name of 44 bytes is fine, its archive name (+ "_msbt") over the archive name limit is refused
+    assert(!game_layouts::message(std::string(44, 'A') + "/T_FloorU_00_1F", text));
+    // another language's pack: its own texts, not the cached ones
+    game_layouts::note_open("/vol/content/Common/Pack/permanent_2d_UsSpanish.pack", write_pack("es.pack", u"P1"));
+    assert(game_layouts::message("DungeonMapUp_00/T_FloorU_00_2F", text) && text == "P1");
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+}
+
 int main() {
+    messages();
     text_style();
     enlarging();
     exact_rgba8();
