@@ -162,7 +162,20 @@ inline const std::unordered_map<std::string, Line>& table() {
           "Ab 40 fps kommen Zwischenbilder hinzu; die Spiellogik behält ihre 30 Schritte. True 60 lässt sie mit 60 laufen.",
           "Da 40 fps in su si aggiungono fotogrammi intermedi; la logica del gioco resta a 30 passi. True 60 la porta a 60.",
           "Desde 40 fps se añaden fotogramas intermedios; la lógica del juego sigue a 30 pasos. True 60 la ejecuta a 60."}},
+        {"40 fps and more add in-between frames; the game logic keeps its 30 steps. True 60 runs it at 60. Generated: "
+         "every other frame made on the graphics chip.",
+         {"40 fps et plus ajoutent des images intermédiaires ; la logique du jeu garde ses 30 pas. True 60 la fait tourner à 60. "
+          "Générées : une image sur deux est créée par la puce graphique.",
+          "Ab 40 fps kommen Zwischenbilder hinzu; die Spiellogik behält ihre 30 Schritte. True 60 lässt sie mit 60 laufen. "
+          "Erzeugt: jedes zweite Bild entsteht auf dem Grafikchip.",
+          "Da 40 fps in su si aggiungono fotogrammi intermedi; la logica del gioco resta a 30 passi. True 60 la porta a 60. "
+          "Generati: un fotogramma su due è creato dal chip grafico.",
+          "Desde 40 fps se añaden fotogramas intermedios; la lógica del juego sigue a 30 pasos. True 60 la ejecuta a 60. "
+          "Generados: uno de cada dos fotogramas lo crea el chip gráfico."}},
         {"30 fps (original)", {"30 fps (original)", "30 fps (Original)", "30 fps (originale)", "30 fps (original)"}},
+        {"60 fps (generated, experimental)",
+         {"60 fps (générées, expérimental)", "60 fps (erzeugt, experimentell)", "60 fps (generati, sperimentale)",
+          "60 fps (generados, experimental)"}},
         {"Dynamic resolution", {"Résolution dynamique", "Dynamische Auflösung", "Risoluzione dinamica", "Resolución dinámica"}},
         {"Lowers the resolution while the graphics chip cannot keep up, and raises it again when there is room.",
          {"Baisse la résolution quand la puce graphique ne suit pas, et la remonte quand elle le peut.",

@@ -21,6 +21,7 @@
 #include "player_name.h"
 #include "../aspect.h"
 #include "../dynres.h"
+#include "../framegen.h"
 #include "../gfx/renderer.h"
 #include "../interp.h"
 #include "../input.h"
@@ -445,14 +446,19 @@ void register_graphics() {
     {
         Item it;
         it.id = "graphics.frame-rate", it.tab = "graphics", it.label = "Frame rate", it.kind = Kind::Choice;
-        it.help = "40 fps and more add in-between frames; the game logic keeps its 30 steps. True 60 runs it at 60.";
-        it.choices.assign(std::begin(g::kRateNames), std::end(g::kRateNames));
-        it.get = [] { return float(g::rate_choice(interp::mode(), interp::fps())); };
+        it.help = framegen::available()
+            ? "40 fps and more add in-between frames; the game logic keeps its 30 steps. True 60 runs it at 60. Generated: "
+              "every other frame made on the graphics chip."
+            : "40 fps and more add in-between frames; the game logic keeps its 30 steps. True 60 runs it at 60.";
+        // 60 fps (generated, framegen.h) on Vulkan only (the last choice)
+        it.choices.assign(std::begin(g::kRateNames), std::end(g::kRateNames) - (framegen::available() ? 0 : 1));
+        it.get = [] { return float(g::rate_choice(interp::mode(), interp::fps(), framegen::available() && framegen::chosen())); };
         it.set = [](float v) {
             const g::Rate r = g::rate_of(int(std::lround(v)));
             saved([r] {
                 if (r.fps) interp::set_fps(r.fps);
                 interp::set_mode(r.mode);
+                framegen::set_chosen(r.generated && framegen::available());  // (any other choice: off)
             });
         };
         add(std::move(it));
