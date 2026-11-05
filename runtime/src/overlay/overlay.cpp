@@ -1767,7 +1767,14 @@ void restart_notice_frame(bool draw) {
 
 // A built-in mod's options on its page (Mods > the mod).
 void builtin_options(const std::string& id) {
-    if (id == "direct-camera") {
+    if (id == "target-letterbox") {
+        int mode = mods::targeting_letterbox_mode();
+        if (ImGui::Combo("Letterbox while targeting", &mode, "On\0Off with enemies\0Always off\0"))
+            hostui::post([mode] { game_settings::set_targeting_letterbox_mode(mode); });
+        help("Always off also removes bars while holding target without an enemy. Cutscenes and scripted cameras keep their bars.");
+        if (const char* value = std::getenv("WWHD_TARGET_LETTERBOX_MODE"))
+            note("WWHD_TARGET_LETTERBOX_MODE=%s overrides the saved choice at startup.", value);
+    } else if (id == "direct-camera") {
         float speed = mods::camera_speed();
         if (ImGui::SliderFloat("Camera speed", &speed, .5f, 2.f, "%.2fx"))
             hostui::post([speed] { game_settings::set_camera_speed(speed); });  // as the item menu's settings page (game_settings.h)
