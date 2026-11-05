@@ -2141,6 +2141,10 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(bc_decoder_choice_test SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_options(bc_decoder_choice_test PRIVATE -UNDEBUG)
   add_test(NAME bc_decoder_choice COMMAND bc_decoder_choice_test)
+  add_executable(turnip_debug_test runtime/tools/turnip_debug_test.cpp)
+  target_include_directories(turnip_debug_test PRIVATE runtime/src)
+  target_compile_options(turnip_debug_test PRIVATE -UNDEBUG)
+  add_test(NAME turnip_debug COMMAND turnip_debug_test)
   # the BC compute shader on a real Vulkan device against the CPU decoder and the device's native BC
   # sampling; compiles the shader everywhere, skipped (77) without a Vulkan device
   if(NOT ANDROID)
