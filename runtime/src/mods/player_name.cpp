@@ -5,6 +5,7 @@
 #include <mutex>
 
 #include "guest_addr.h"
+#include "long_name.h"
 #include "runtime.h"
 #include "story_lyt_text_markup.h"  // to_utf8
 #include "../console_language.h"
@@ -40,10 +41,12 @@ std::u16string read_name() {
     const uint32_t sv = save_info();
     const int s = slot(sv);
     if (s < 0) return {};
-    const uint32_t text = ld32(sv + kCardInfo + 0xA0 + uint32_t(s) * 0x40);  // getCardName, as 0x02720154 computes it
+    // getCardName's object, as 0x02720154 computes it: its own buffer (+0xC; its pointer may be on the whole
+    // name, long_name.h)
+    const uint32_t text = sv + kCardInfo + 0xA0 + uint32_t(s) * 0x40 + 0xC;
     std::u16string out;
     if (text < mem::kMem2Start || text >= mem::kMem2End - 2 * kMaxLen) return out;
-    for (int i = 0; i < kMaxLen; i++) {
+    for (int i = 0; i < kGameLen; i++) {
         const uint16_t ch = ld16(text + 2 * uint32_t(i));
         if (!ch) break;
         out.push_back(char16_t(ch));
@@ -56,12 +59,16 @@ std::u16string read_name() {
 // (the title and the file select already hold every file's name, and mDataNum is 0 there)
 bool loaded() { return ss::in_gameplay() && slot(save_info()) >= 0; }
 
-std::string current() { return story_lyt_text::to_utf8(read_name()); }
+std::string current() {
+    const std::u16string whole = long_name::shown(slot(save_info()));
+    return story_lyt_text::to_utf8(whole.empty() ? read_name() : whole);
+}
 
 void ask() {
     if (!loaded()) return;
     text_entry::Request r;
-    r.initial = read_name();
+    r.initial = long_name::shown(slot(save_info()));
+    if (r.initial.empty()) r.initial = read_name();
     r.max_len = kMaxLen;
     r.language = int(console_language());  // the keyboard layout (AZERTY, QWERTZ, ...) and the name font
     // setCardName formats the name (0x02759D3C: a printf-style format string), here and at every start
@@ -85,7 +92,30 @@ void ask() {
     if (!text_entry::start(r, done)) input::prompt_text(r.initial, kMaxLen, done);
 }
 
+// test aid: WWHD_TEST_PLAYER_NAME=name (UTF-8) renames the file being played once, as the settings page's prompt
+// does, as soon as a file is played (scripted runs: the whole name of long_name.h)
+void test_rename() {
+    static bool done = false;
+    const char* e = getenv("WWHD_TEST_PLAYER_NAME");
+    if (done || !e || !*e || !loaded()) return;
+    done = true;
+    std::u16string name;
+    for (const char* p = e; *p;) {  // (UTF-8 to UTF-16, up to three bytes)
+        const unsigned char b = (unsigned char)*p;
+        const int n = b < 0x80 ? 1 : b < 0xE0 ? 2 : 3;
+        char16_t ch = n == 1 ? b : n == 2 ? (b & 0x1F) : (b & 0x0F);
+        for (int k = 1; k < n && p[k]; k++) ch = char16_t(ch << 6 | (p[k] & 0x3F));
+        name.push_back(ch);
+        p += n;
+    }
+    std::lock_guard lock(g_mu);
+    g_name = name.substr(0, kMaxLen);
+    g_pending = true;
+    LOG("[player-name] test: renaming the file being played");
+}
+
 void service(Cpu* c) {
+    test_rename();
     std::u16string name;
     {
         std::lock_guard lock(g_mu);
@@ -103,10 +133,12 @@ void service(Cpu* c) {
     // 18-byte UTF-16 buffer
     static const uint32_t buf = mem::host_alloc(0x20, 16);
     std::memset(mem::ptr(buf), 0, 0x20);
-    for (size_t i = 0; i < name.size() && i < size_t(kMaxLen); i++) st16(buf + 2 * uint32_t(i), uint16_t(name[i]));
+    for (size_t i = 0; i < name.size() && i < size_t(kGameLen); i++) st16(buf + 2 * uint32_t(i), uint16_t(name[i]));
+    long_name::release(s);  // the setter writes through the object's pointer: onto the file's own buffer
     Cpu call = *c;
     const uint32_t object = guest_call(&call, fn_get_card_name, {sv + kCardInfo, uint32_t(s)});
     guest_call(&call, fn_set_card_name, {object, buf});
+    long_name::renamed(s, name);  // over 8 characters: the whole name, kept with the next save
     LOG("[player-name] save file %d: Link is now \"%s\"", s + 1, current().c_str());
 }
 
