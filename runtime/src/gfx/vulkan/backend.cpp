@@ -1,3 +1,5 @@
+#include "../gamepad_backdrop.h"
+#include "gamepad_backdrop.h"
 #include "background_shaders.h"
 #include "vertex_cpu_policy.h"
 #include "dynres.h"
@@ -28,6 +30,7 @@
 #include "platform/quest_theater.h"
 #endif
 #include "backend.h"
+#include "vulkan_error.h"
 #include "../../dsweep.h"
 #include "../hidden_presentation.h"
 #include "pass.h"
@@ -39,6 +42,7 @@
 #include "attachment_view_usage.h"
 #include "background_cache_readiness.h"
 #include "../../build_info.h"
+#include "compile_journal.h"
 #include "../../tv_pointer.h"
 #include "../../one_screen.h"
 #include "deferred_commands.h"
@@ -66,6 +70,7 @@
 #include "report_header.h"
 #include "present.h"
 #include "present_worker.h"
+#include "reproj.h"
 #include "android_isolated_presenter.h"
 #include "presentation_queue.h"
 #include "gfx/display.h"
@@ -306,8 +311,9 @@ bool compatible_pipeline_cache(const std::vector<uint8_t>& bytes) {
          word(8)==R.properties.vendorID && word(12)==R.properties.deviceID &&
          !std::memcmp(bytes.data()+16,R.properties.pipelineCacheUUID,VK_UUID_SIZE);
 }
-// strictMul changes translated shaders; discard old driver pipelines before the 64 MB cap.
-constexpr std::array<uint8_t,8> pipelineCacheMagic{'W','W','V','K','P','C','0','2'};
+// strictMul (PC02) and the finite pixel colours (PC03) change translated shaders; discard old driver pipelines
+// before the 64 MB cap.
+constexpr std::array<uint8_t,8> pipelineCacheMagic{'W','W','V','K','P','C','0','3'};
 constexpr size_t pipelineCacheWrapperSize=24;
 uint64_t pipeline_cache_checksum(const uint8_t* bytes,size_t size) {
   uint64_t hash=14695981039346656037ull;
@@ -376,6 +382,29 @@ static uint64_t device_memory_budget() {
   }
   LOG("[vulkan warmup] device memory budget %.0f MB (%s)", budget / 1e6, hasBudget && properties2 ? "VK_EXT_memory_budget" : "heap size");
   return budget;
+}
+
+// The compile journal (compile_journal.h): shaders and pipelines that crashed the process while compiling are left out
+// at the next start. Keyed by this GPU, driver and runtime build; next to a WWHD_SHADER_CACHE file (test runs, so they
+// never touch the player's journal), else with the shader caches. WWHD_VK_COMPILE_JOURNAL=0 turns it off.
+void open_compile_journal() {
+  if (const char* off = getenv("WWHD_VK_COMPILE_JOURNAL"); off && !strcmp(off, "0")) return;
+  const auto shaderStorage = path_environment_utf8("WWHD_SHADER_CACHE");
+  std::string dir;
+  if (shaderStorage && *shaderStorage == "0") return;
+  if (shaderStorage) dir = *shaderStorage + ".journal";
+  else
+#ifdef __ANDROID__
+    dir = drivers::pipeline_directory() + "/journal";
+#else
+    dir = host::config_dir() + "/shadercache/journal";
+#endif
+  char key[256];
+  std::snprintf(key, sizeof key, "%08X %08X %08X %s %s %s", R.properties.vendorID, R.properties.deviceID,
+                R.properties.driverVersion, build::version(), build::commit(), WWHD_PIPELINE_RUNTIME_ID);
+  compile_journal::set_logger([](const char* line) { LOG("%s", line); });
+  try { compile_journal::open(dir, key); }
+  catch (const std::exception& e) { LOG("[vulkan] compile journal not opened: %s", e.what()); }
 }
 
 void init_pipeline_cache() try {
@@ -666,12 +695,6 @@ void save_pipeline_cache(bool shutdown) try {
 } catch (const std::exception& error) {
   LOG("[vulkan cache] save skipped after error: %s",error.what());
 }
-class VulkanFailure : public std::runtime_error {
-public:
-  VkResult result;
-  VulkanFailure(VkResult value,const char* operation)
-      : std::runtime_error(std::string(operation)+": Vulkan result "+std::to_string(value)),result(value) {}
-};
 void vk_check(VkResult r, const char *op) {
   if (r != VK_SUCCESS) {
 #ifdef __ANDROID__
@@ -1584,8 +1607,12 @@ struct HeldPresent {
   VkSemaphore wait = VK_NULL_HANDLE;
   uint32_t observedPresentId = 0;
   uint64_t frame = 0, generation = 0;
+  bool generated = false;  // 60 fps (generated, reproj.cpp): an in-between frame waiting for its time
 };
 static HeldPresent heldPresent;
+// 60 fps (generated): while swap() presents the in-between frame, when it is due (present() holds it
+// until then; 0: not presenting one)
+static int64_t framegenDue = 0;
 static interp::pacing::EvenSchedule evenSchedule;
 static uint32_t evenPresentInterval = 0;  // of the frame being swapped (ns; 0: no schedule)
 static bool evenPresentHold = false, evenPresentSwap = false;
@@ -2756,6 +2783,11 @@ static void present_held(bool forced) {
     return;
   }
   const int64_t at = even_now_ns();
+  if (h.generated) {  // 60 fps (generated): not part of the even schedule
+    queue_present(R.tv, h.swapchain, h.index, h.wait, nullptr, h.observedPresentId, h.frame, false, true);
+    reproj::presented(forced && at < h.due);
+    return;
+  }
   if (forced && at < h.due) ++evenForcedPresents;  // early: the next frame or a swapchain change forced it out
   queue_present(R.tv, h.swapchain, h.index, h.wait, nullptr, h.observedPresentId, h.frame, false, true);
   evenSchedule.presented(h.due, at);
@@ -3198,6 +3230,12 @@ static bool present(Screen &s) {
     return false;
   }
 #endif
+  // 60 fps (generated, reproj.cpp; swap() present_generated): the in-between frame is submitted now and
+  // presented at its time, half a real frame after the real one (service_present, or the next present)
+  if (framegenDue && &s == &R.tv && async && !secondary) {
+    heldPresent = {true, framegenDue, s.swapchain, index, finishedSemaphore, observedPresentId, R.frame, s.swapchainGeneration, true};
+    return true;
+  }
   // Even frame delivery (interp_pacing.h EvenSchedule; interp.cpp: on by default on Android): a TV frame of a
   // swap that is ready before its slot is held (its work is submitted; only the present call waits)
   if (&s == &R.tv && async && evenPresentSwap && !secondary && !present_capture_requested() &&
@@ -3239,6 +3277,7 @@ static bool present(Screen &s) {
 }
 void copy_to_scan(uint32_t cb, uint32_t target) {
   Surface *src = surface_from_color_buffer(cb);
+  if (target == 4 && !stereoEye) gamepad_backdrop_scan(src);
   if (!src)
     return;
   if (stereoEye && target == 4) return; // GamePad is a shared 2D device.
@@ -3571,6 +3610,7 @@ void present_completed_frame_while_pipeline_pending() {
   // sampled here; buildingScan and all guest attachments remain untouched.
   end_encoder();
   const auto proof = begin_pending_picture_proof();
+  GamepadBackdropDemandFrame backdropDemandFrame;
   set_present_plan(&completedPresentPlan);
   bool presented = false;
   try {
@@ -3579,6 +3619,7 @@ void present_completed_frame_while_pipeline_pending() {
     flush_async();
   } catch (...) { set_present_plan(nullptr); throw; }
   set_present_plan(nullptr);
+  backdropDemandFrame.publish();
   finish_pending_picture_proof(proof, presented);
   const auto ended = stutter::now();
   nextPipelineRepeatNs = ended + 16666667; // At most 60 repeats/s, independent of guest progress.
@@ -3668,6 +3709,57 @@ static void trim_memory_step() {
       pipelines, (unsigned long long)textures, textureBytes / mib, rssBefore / mib, rssAfter / mib,
       std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count());
 }
+// 60 fps (generated, reproj.cpp; WWHD_FRAMEGEN=1): after the real TV frame of a swap, the in-between
+// frame. Its picture is the published TV scan reprojected (reproj::generate, recorded into the next
+// submission); it is presented through the normal window composition with the TV screen's scan
+// exchanged for it, and held (heldPresent, as even frame delivery holds frames) until half the real
+// frames' interval after the real one. When none is made the real frame stays on screen for the
+// whole interval, as without the feature.
+static void present_generated(bool tvShown) {
+  using reproj::Skip;
+  const int64_t now = even_now_ns();
+  const int64_t delay = reproj::real_presented(tvShown, now);
+  Skip skip = reproj::kNone;
+  // test aid (headless runs, hidden windows): WWHD_FRAMEGEN_TEST_DUMP=f[,f...] makes the in-between frame although
+  // nothing is shown, and writes the ones after those TV frames to framegen_<f>.png (the real one: WWHD_DUMP_FRAMES)
+  static const auto testDumps = gfx::capture_schedule::parse(getenv("WWHD_FRAMEGEN_TEST_DUMP"));
+  const bool headlessTest = !testDumps.empty();
+  if (!tvShown && !headlessTest) skip = reproj::kNotShown;
+  else if (!async_present() || present_capture_requested() || presentObservation || heldPresent.pending) skip = reproj::kPresentPath;
+  else if (stereo::frame.mode != stereo::Off) skip = reproj::kStereo;
+#ifdef __ANDROID__
+  else if (quest_theater::active()) skip = reproj::kStereo;
+#endif
+  else if (!delay && !(headlessTest && !tvShown)) skip = reproj::kFast;
+  Surface* generated = reproj::generate(R.tv.scan.get(), skip);
+  if (!generated) return;
+  if (headlessTest && !tvShown) {
+    const uint64_t f = fixed_seed::script_frame(R.frame + 1);  // (named as frame_dumps names this swap's real frame)
+    if (gfx::capture_schedule::contains(testDumps, f)) {
+      try {
+        const std::string path = "framegen_" + std::to_string(f) + ".png";
+        write_rgba_png(path, generated->extent.width, generated->extent.height, read_surface_rgba(*generated, R.tv.scanSrgb));
+        LOG("[framegen] wrote %s (%ux%u)", path.c_str(), generated->extent.width, generated->extent.height);
+      } catch (const std::exception& e) { LOG("[framegen] cannot write the in-between frame: %s", e.what()); }
+    }
+    reproj::not_presented();
+    return;
+  }
+  auto& slot = reproj::generated_scan();
+  R.tv.scan.swap(slot);
+  framegenDue = now + delay;
+  bool shown = false;
+  try {
+    shown = present(R.tv);
+  } catch (...) {
+    framegenDue = 0;
+    R.tv.scan.swap(slot);
+    throw;
+  }
+  framegenDue = 0;
+  R.tv.scan.swap(slot);
+  if (!shown) reproj::not_presented();
+}
 void swap() {
   texture_budget_step();
   trim_memory_step();
@@ -3686,6 +3778,7 @@ void swap() {
     std::swap(s->scanDisplayExtent,s->buildingScanDisplayExtent);
     s->scanSrgb = s->buildingScanSrgb;
     s->buildingScanDirty = false;
+    if(s==&R.drc)gamepad_backdrop_publish();
   }
   service_screenshots();
   const auto swapPhaseStarted=std::chrono::steady_clock::now();
@@ -3767,6 +3860,7 @@ void swap() {
   if (perf_hint::fps60_chosen())
     plan.button_dot = interp::mode() != 0 ? 1 : 2;
 #endif
+  GamepadBackdropDemandFrame backdropDemandFrame;
   set_present_plan(&plan);
   // Full SBS uses a half-width logical canvas before placing the two eyes.
   // Publish that same layout for GamePad hit testing and the software pointer.
@@ -3827,8 +3921,10 @@ void swap() {
         std::chrono::steady_clock::now()-swapPhaseStarted).count();
   }
   evenPresentSwap = true;  // (repeated frames while a pipeline compiles are never held)
-  try { timed_call(swapPhaseTiming[1],[&] { present(R.tv);return VK_SUCCESS; }); } catch (...) { evenPresentSwap = false; throw; }
+  bool tvShown = false;
+  try { timed_call(swapPhaseTiming[1],[&] { tvShown = present(R.tv);return VK_SUCCESS; }); } catch (...) { evenPresentSwap = false; throw; }
   evenPresentSwap = false;
+  if (reproj::enabled()) present_generated(tvShown);  // 60 fps (generated): the in-between frame
   if (plan.drc_window)
     timed_call(swapPhaseTiming[2],[&] { present(R.drc);return VK_SUCCESS; });
   // Asynchronous presentation is retired by the ring's fences. Present dumps and captures
@@ -3902,6 +3998,8 @@ void swap() {
   }
   set_present_plan(nullptr);
   service_screenshots();  // this frame's: the submission that holds them
+  backdropDemandFrame.publish();
+  gamepad_backdrop_maintain();
   fallback_stats::complete_frame(R.frame);
   stutter::frame(R.frame);
   std::atomic_ref<uint64_t>(R.frame).fetch_add(1);
@@ -4019,6 +4117,7 @@ void swap() {
           (unsigned long long)R.frame,(R.frame-frame)/seconds,
           double(R.drawCount-draws)/(R.frame-frame),double(R.uploadBytes-bytes)/(R.frame-frame)/(1<<20),
           (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame));
+      if (reproj::enabled()) LOG("[vulkan perf] framegen %s", reproj::perf_line().c_str());
       if (R.renderPasses) {
         const auto created = pass_caches().framebuffers_created();
         LOG("[vulkan render passes] %.3f framebuffers created/frame, %zu cached",
@@ -4912,6 +5011,7 @@ static void init_device(std::vector<const char *> extensions,
     LOG("[vulkan] vertex format fallback mask: %u", R.vertexFormats.fallbackMask);
   vk_check(vkCreateDevice(R.physicalDevice, &di, nullptr, &R.device),
            "create Vulkan device");
+  open_compile_journal();
   load_device_functions(R.device, R.dynamicRenderingKHR, R.renderPasses);
   VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
   if (deviceApi >= VK_API_VERSION_1_2 || has_extension(des, VK_KHR_DRIVER_PROPERTIES_EXTENSION_NAME)) {
@@ -5257,6 +5357,7 @@ void shutdown_renderer_caches() {
   // Destructive teardown is reserved for orderly shutdown under execution lock.
   try {
     if (presentObservation || handoff_trace::enabled() || fallback_stats::storage) flush_present_observer();
+    gamepad_backdrop_reset();
     reset_feedback_images();
     wait_idle();
   } catch (...) {

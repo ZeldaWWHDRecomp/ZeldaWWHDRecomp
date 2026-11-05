@@ -1,4 +1,6 @@
 #include "mods/map_hud.h"
+#include "mods/game_progress_host.h"
+#include "mods/achievements_host.h"
 #include "interp.h"
 #include "dsweep.h"
 #include "mods/story_native_restore_resume.h"
@@ -40,6 +42,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include <unordered_map>
 #include <vector>
 
+#include "framegen.h"
 #include "interp_camera.h"
 #include "interp_fade.h"
 #include "interp_joints.h"
@@ -226,6 +229,7 @@ void set_mode(int m) {
         set_fps(60);
         m = 1;
     }
+    if (m) framegen::set_chosen(false);  // (one 60 fps mode at a time: 60 fps (generated) goes)
     g_on = false;
     if (m == 1) set_enabled(true);
 }
@@ -505,6 +509,11 @@ extern "C" void hook_024FFC40(Cpu* c) {
     g_last_camera.store(cam, std::memory_order_relaxed);
     camera_draw(c);
     editor::camera_drawn(cam);
+    // 60 fps (generated, framegen.h; only while WWHD_FRAMEGEN=1): the camera this frame's scene is drawn
+    // with; the renderer makes no in-between frame while another mode already does
+    if (framegen::requested())
+        framegen::camera_drawn(cam, (interp::interp_on() ? framegen::kInterp : 0u) | (true60::enabled() ? framegen::kTrue60 : 0u) |
+                                        (mods::fast_forward_active() ? framegen::kFastForward : 0u));
 }
 static void camera_draw_body(Cpu* c);
 // Exact culling. Which actors a pass draws decides game logic: a drawn actor's draw takes random
@@ -1445,6 +1454,7 @@ void reticle_reset();
 void ss_reset() {
     mods::moon_jump_reset();
     mods::jump_reset();
+    mods::walk_doors_reset();
     countdown::reset();
     for (auto& p : g_prev) p = Prev{};
     g_models.clear();
@@ -1942,6 +1952,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     interp::NativeResumeBoundaryIssuer::after_service(c); // before any resumed native/game service
     mods::cheats_service();
+    mods::shop_ship_service();  // the ships' way back to the sea (mods/shop_ship.h)
     // the item ring: its equip, the game's pace while open (full logic passes), the ring drawn
     mods::item_ring_service(c, !enabled() || !g_hold_next);
     mods::context_touch_service();  // tests: the context buttons' assets export (WWHD_CONTEXT_ASSETS)
@@ -1974,6 +1985,8 @@ extern "C" void hook_0203593C(Cpu* c) {
         g_logic_steps++;
         test_aids::logic_step(g_logic_steps);
         mods::play_context_step();  // once per full logic step (the context buttons' reading)
+        game_progress::service(c);  // built-in Game progress: the count of the save in play (off: nothing read)
+        achievements::service(c);   // built-in Achievements: the check once a second, the pop-up (off: nothing read)
     }
     if (!enabled()) {
         g_hold_next = false;
@@ -2302,9 +2315,11 @@ extern "C" void hook_025DE788(Cpu* c) {
     g_in_execute = true;
     uint32_t execute_fn = c->r[3];
     if(!interp::g_hold_frame)guestmods::maphud::begin_logic(c,1.0/30.0);  // one 30 Hz logic step
+    if (!interp::g_hold_frame) mods::instant_text_step();  // instant text (mods/instant_text.cpp)
     dsweep::before_execute(c);  // the setup's actor sweep (WWHD_DSWEEP): its actors do not run their logic
     f_025DE788_orig(c);
     dsweep::after_execute(c);
+    if (!interp::g_hold_frame) mods::instant_text_step();
     mods::after_execute(c, execute_fn);  // quick doors / fast scene changes: extra steps (full passes only)
     if (!interp::g_hold_frame) {guestmods::frame(interp::g_logic_steps);guestmods::logic_service(c);editor::logic_service(c);mods::packages::frame(interp::g_logic_steps);}
     editor::camera_service(c, !interp::g_hold_frame);  // the fly camera: every logic pass

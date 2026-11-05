@@ -13,6 +13,7 @@
 #include <tuple>
 
 #include "../interp.h"
+#include "../framegen.h"
 #include "../savestate.h"
 #include "../screenshot.h"
 #include "../input_map.h"
@@ -124,6 +125,7 @@ static void load_prefs() {
     // 120/240 fps), interpFps the interpolation's rate; "keep game speed" for 60 and for 120/240 fps
     if (saved(@"interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps([pref(@"interpFps") intValue]);
     if (saved(@"fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode([pref(@"fps60") intValue]);
+    if (saved(@"fpsGenerated", {"WWHD_FRAMEGEN"})) framegen::set_chosen([pref(@"fpsGenerated") boolValue]);  // 60 fps (generated)
     if (saved(@"fps60Paced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(60, [pref(@"fps60Paced") boolValue]);
     if (saved(@"fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(120, [pref(@"fpsHighPaced") boolValue]);
 #ifdef WWHD_HAS_VULKAN
@@ -144,6 +146,7 @@ static void save_prefs() {
     if (!env_set({"WWHD_FXAA"})) set_pref(@"fxaa", @(render::fxaa()));
     if (!env_set({"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) set_pref(@"fps60", @(interp::mode()));
     if (!env_set({"WWHD_INTERP_FPS"})) set_pref(@"interpFps", @(interp::fps()));
+    if (!env_set({"WWHD_FRAMEGEN"})) set_pref(@"fpsGenerated", @(framegen::chosen()));
     if (!env_set({"WWHD_INTERP_PACED"})) {
         set_pref(@"fps60Paced", @(interp::paced_interpolation_at(60)));
         set_pref(@"fpsHighPaced", @(interp::paced_interpolation_at(120)));
@@ -614,14 +617,26 @@ void install_menu(NSWindow* tv) {
            ^(BOOL on) { mods::manager::set_enabled("auto-wind", on); },
            @"Makes the normal sail behave like the Swift Sail: the wind always blows the way the boat is heading");
     toggle(gp, @"Quick doors", ^BOOL { return mods::quick_doors(); }, ^(BOOL on) { mods::set_quick_doors(on); },
-           @"Door events (walk-in, opening, closing) run at 4x speed");
+           @"Door events (walk-in, opening, closing) run at 4x speed, or Link walks through the doors (below)");
+    toggle(gp, @"        Faster", ^BOOL { return mods::door_mode() == mods::kDoorFaster; },
+           ^(BOOL) { mods::set_door_mode(mods::kDoorFaster); hostui::set("mod.quick-doors.mode", "faster"); });
+    toggle(gp, @"        Walk through", ^BOOL { return mods::door_mode() == mods::kDoorWalk; },
+           ^(BOOL) { mods::set_door_mode(mods::kDoorWalk); hostui::set("mod.quick-doors.mode", "walk"); },
+           @"Dungeon shutters and house doors open as Link walks up; he walks through without the door scene");
     toggle(gp, @"Jump anywhere (L by default)", ^BOOL { return mods::jump_anywhere(); },
            ^(BOOL on) { mods::manager::set_enabled("jump-anywhere", on); },
            @"Choose the button, double jump and automatic ledge jumps in Settings > Mods > Gameplay");
+    toggle(gp, @"Deku Leaf: wave to rise", ^BOOL { return mods::leaf_rise(); },
+           ^(BOOL on) { mods::manager::set_enabled("leaf-rise", on); },
+           @"While gliding, each wave of the leaf lifts Link a little; choose the height in Settings > Mods > Gameplay");
     toggle(gp, @"Fast forward cutscenes and dialogue (hold ZR by default)", ^BOOL { return mods::fast_forward(); },
            ^(BOOL on) { mods::manager::set_enabled("fast-forward", on); }, @"Choose the speed, hold button and audio setting in Settings > Mods > Gameplay");
     toggle(gp, @"Fast scene changes", ^BOOL { return mods::fast_scenes(); }, ^(BOOL on) { mods::set_fast_scenes(on); },
            @"Fades and loading between areas run at 4x speed; the scenes themselves are not sped up");
+    toggle(gp, @"Instant text", ^BOOL { return mods::instant_text(); }, ^(BOOL on) { mods::manager::set_enabled("instant-text", on); },
+           @"Message boxes show their whole text at once instead of letter by letter");
+    toggle(gp, @"No pauses in texts", ^BOOL { return mods::no_text_pauses(); }, ^(BOOL on) { mods::manager::set_enabled("no-text-pauses", on); },
+           @"Leaves out the short pauses written into some texts");
     [gp addItem:[NSMenuItem separatorItem]];
     [gp addItemWithTitle:@"Cheats (save in game to keep them)" action:nil keyEquivalent:@""].enabled = NO;
     toggle(gp, @"    Give all items", ^BOOL { return NO; }, ^(BOOL) { mods::request_cheat(mods::kCheatItems); },

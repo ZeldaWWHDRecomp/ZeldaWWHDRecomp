@@ -37,6 +37,7 @@
 #include "play_context.h"
 #include "touch_play.h"
 #include "../gfx/display_modes.h"
+#include "../platform/touch_options.h"
 #include "../input.h"
 #include "../overlay/hostui.h"
 #include "../runtime.h"
@@ -303,7 +304,7 @@ void context_touch_step(const PlayContext& c) {
     g_rings.step(b, c, c.step);
     g_held = (g_machine.zl_latched() ? 1u << ctxbtn::kZL : 0) |
              (g_machine.latched() >= 0 ? 1u << (ctxbtn::kX + g_machine.latched()) : 0);
-    const bool hide = context_buttons_on() && controls_shown() && b.active;
+    const bool hide = ctxtouch::context_rules(context_buttons_on(), touch_options::get().style) && controls_shown() && b.active;
     if (log_on() && hide != g_hide_cluster.load()) LOG("[touchplay] the game's buttons %s", hide ? "hidden" : "shown");
     g_hide_cluster.store(hide, std::memory_order_relaxed);
     if (log_on()) {
@@ -332,7 +333,7 @@ void context_touch_pack(int32_t* out, int n) {
         e.held = g_held;
         e.ring[ctxbtn::kA] = g_rings.count();
     }
-    e.enabled = context_buttons_on();
+    e.enabled = ctxtouch::context_rules(context_buttons_on(), touch_options::get().style);
     e.cluster_hidden = g_hide_cluster.load(std::memory_order_relaxed);
     e.item_names_a = item_names_on_hud();
     e.link_poses = link_poses::enabled();

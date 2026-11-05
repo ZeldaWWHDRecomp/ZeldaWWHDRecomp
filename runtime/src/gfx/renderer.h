@@ -85,6 +85,17 @@ struct Backend {
     // optional: the game starts drawing its sky clouds (drawVrkumo, cloud_proto.cpp) into the sky
     // buffer, whose pass is the open one; `seq` names the cloud snapshot. Draws the horizon-haze grade.
     void (*sky_clouds_begin)(const uint32_t* regs, uint32_t seq);
+    // optional, render thread, 60 fps (generated) (framegen.h; Vulkan: gfx/vulkan/reproj.cpp): the
+    // frame's camera (OP_FRAMEGEN_CAMERA payload), and a layout root about to be drawn into the colour
+    // target at `colorBase` (guest width x height) with the depth buffer at `depthBase` bound
+    // (OP_FRAMEGEN_LAYOUT). Only called while framegen::requested().
+    void (*framegen_camera)(const uint32_t* words, uint32_t n);
+    void (*framegen_layout)(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase);
+    // Optional: bracket ONLY P_BgPattern_00 DrawSelf. Duplicate its original GPU
+    // draws into an isolated transparent backdrop; never redirect or alter the
+    // original draw. Source target recognition and texture lifetime are backend-owned.
+    // Markers execute in command order, including cached display-list replay.
+    void (*gamepad_backdrop_scope)(const uint32_t* regs, bool begin) = nullptr;
 };
 enum Feature : int { kFeatureAO, kFeatureAOHires, kFeatureAniso, kFeatureFXAA, kFeatureScaleFilter, kFeatureCapture,
                      kFeatureShaderHeadStart };

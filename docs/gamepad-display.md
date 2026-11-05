@@ -45,6 +45,18 @@ Auto no longer measures brightness or picture changes. `WWHD_DRC_AUTO` and `WWHD
 have been removed. No GPU sampling, signature textures or signature readback is used. Screenshots
 and present dumps retain their own capture path.
 
+## Background around the GamePad picture
+
+**Settings → Display → Fill GamePad bars with background** fills the space around
+the centred GamePad picture on displays with a different aspect ratio, including
+the AYN Thor's 31:27 bottom screen. It is on by default and remembers your choice;
+the same toggle is available on the in-game Screen settings page.
+
+Item and map menus extend their background pattern into the bars. Other screens
+use colours from the picture's edges. The menu content keeps its original size
+and proportions, and touch positions stay the same. Turn the option off to keep
+black bars. A 16:9 output needs no extra background.
+
 ## Steam Deck Gaming Mode
 
 In Gaming Mode, the GamePad screen defaults to **Picture-in-picture** and the game starts

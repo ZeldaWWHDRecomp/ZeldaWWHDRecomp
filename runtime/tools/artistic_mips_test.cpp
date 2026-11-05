@@ -60,6 +60,28 @@ int main() {
     assert((select(all, 120, 100, 0, 60, 3) == std::vector<size_t>{1}));
     // pin larger than everything: nothing goes even far over budget
     assert(select(all, 120, 100, 10, 0, 1000).empty());
+    // the sweep's policy: desktop off unless WWHD_VK_TEXTURE_BUDGET=1 (as before); Android on by default
+    using gfxvk::texture_budget::policy;
+    const uint64_t mib = 1ull << 20, gib = 1ull << 30;
+    {
+        auto p = policy(false, nullptr, 8 * gib, 16 * gib, -1);
+        assert(!p.on);
+        p = policy(false, "1", 8 * gib, 16 * gib, 100);
+        assert(p.on && p.budget == 2 * gib && p.idle == 0 && p.pin == 3 && p.every == 30);
+        assert(!policy(false, "0", 8 * gib, 16 * gib, -1).on && !policy(false, "yes", 8 * gib, 16 * gib, -1).on);
+        p = policy(true, nullptr, 4 * gib, 12 * gib, 2000);  // the Xiaomi 14: 12 GB, plenty of room
+        assert(p.on && p.every == 300 && p.pin == 300 && p.idle == 7200 && p.budget == 12 * gib / 10);
+        p = policy(true, nullptr, 4 * gib, 3 * gib, -1);  // 3 GB, no figure yet: the 384 MB floor
+        assert(p.on && p.budget == 384 * mib && p.idle == 7200);
+        p = policy(true, nullptr, 4 * gib, 4 * gib, 767);  // room under 768 MB: unused for 300 frames goes
+        assert(p.idle == 300 && p.pin == 300);
+        assert(policy(true, nullptr, 4 * gib, 4 * gib, 768).idle == 7200);
+        assert(!policy(true, "0", 4 * gib, 4 * gib, 100).on);
+        p = policy(true, "1", 4 * gib, 4 * gib, 100);  // the desktop rules on request
+        assert(p.on && p.budget == gib && p.pin == 3);
+        // with idle == pin everything past the pin goes, whatever the budget
+        assert((select(all, 120, 100, 1000, 3, 3) == std::vector<size_t>{1, 2}));
+    }
     puts("artistic_mips_test: ok");
     return 0;
 }

@@ -2,6 +2,7 @@
 #include "tooltip.h"
 #include "controls_options.h"
 #include "gfx/display_modes.h"
+#include "gfx/gamepad_backdrop_options.h"
 #include "platform/touch_options.h"
 #include <mutex>
 // In-game settings overlay: the Dear ImGui user interface (see overlay.h). The renderers draw the
@@ -32,6 +33,7 @@
 #include "widgets.h"
 #include "gamepad_nav.h"
 #include "perf_average.h"
+#include "../framegen.h"
 #ifdef __ANDROID__
 #include "android_telemetry.h"
 #include <SDL3/SDL_system.h>
@@ -58,6 +60,8 @@
 #include "trace.h"
 #include "hostui.h"
 #include "../mods/link_poses.h"
+#include "../mods/game_progress_host.h"
+#include "../mods/achievements_host.h"
 #include "../mods/menu_sounds_port.h"
 #include "../mods/code_mods.h"
 #include "../mods/save_folder.h"
@@ -550,7 +554,7 @@ void tab_saves() {
             hostui::post([] { player_name::ask(); });
         }
         ImGui::EndDisabled();
-        if (loaded) help("Gives your hero a new name on this save file. It's kept the next time you save.");
+        if (loaded) help("Gives your hero a new name on this save file, up to 16 characters (the file select shows the first 8). It's kept the next time you save.");
         else note("Load a save file first.");
     }
     heading("Save states");
@@ -809,7 +813,7 @@ std::string performance_report() {
     h.gpu = performance_device();
     h.renderer = render::api_name(render::active());
     h.host = hostui::name();
-    h.fps = interp::mode() == 1 ? std::to_string(interp::fps()) + " fps interpolation" : "30 fps";
+    h.fps = framegen::requested() ? "60 fps (generated)" : interp::mode() == 1 ? std::to_string(interp::fps()) + " fps interpolation" : "30 fps";
     if (interp::mode() == 1) h.keepGameSpeed = interp::paced_interpolation();  // at that rate
     h.scale = hostui::res_scale();
 #ifdef WWHD_HAS_VULKAN
@@ -895,18 +899,29 @@ void tab_graphics() {
     }
     heading("Frame rate");
     int m = interp::mode(), f = interp::fps();
-    if (radio("30 fps (original)", m == 0)) post_changed([] { interp::set_mode(0); });
+    // 60 fps (generated, framegen.h): Vulkan only; one choice with the others (picking another clears it)
+    const bool genShown = framegen::available(), gen = genShown && m == 0 && framegen::chosen(), genFixed = framegen::env_override();
+    if (radio("30 fps (original)", m == 0 && !gen)) post_changed([] { interp::set_mode(0); framegen::set_chosen(false); });
     for (int r : {40, 60, 120, 240}) {
         ImGui::SameLine();
         char label[16];
         snprintf(label, sizeof label, "%d fps", r);
-        if (radio(label, m == 1 && f == r)) post_changed([r] { interp::set_fps(r); interp::set_mode(1); });
+        if (radio(label, m == 1 && f == r)) post_changed([r] { framegen::set_chosen(false); interp::set_fps(r); interp::set_mode(1); });
     }
     help("40, 60, 120 and 240 fps: frame interpolation. The game logic keeps its 30 steps a second, and the\n"
          "frames in between are drawn blended (1 in-between frame per step at 60 fps, 3 at 120 fps,\n"
          "7 at 240 fps). The display shows at most its refresh rate: higher choices draw that many.\n"
          "40 fps draws 4 frames for every 3 steps (1 in-between frame per 3 steps), for 40, 80 and\n"
          "120 Hz screens (a Steam Deck set to 40 Hz or 80 Hz, phones with a 120 Hz panel).");
+    if (genShown) {
+        if (radio("60 fps (generated, experimental)", gen, !genFixed)) post_changed([] { interp::set_mode(0); framegen::set_chosen(true); });
+        help("The game runs at its own 30 fps, and every other frame is made on the graphics chip from the\n"
+             "frame before it: the picture moves on by half the camera's last step (and objects by half of\n"
+             "their own), while the HUD stays where it is. Costs much less than frame interpolation, so it\n"
+             "holds 60 where the processor cannot draw 60 frames. Moving edges can look less exact than\n"
+             "real frames. Not with fast forward or stereo 3D (the real 30 frames are shown then).");
+        if (genFixed) note("Set by WWHD_FRAMEGEN for this start.");
+    }
     // the display's refresh rate, and what the chosen rate draws on it (interp::output_fps)
     if (const int hz = interp::display_hz(); hz > 0) {
         const int out = interp::output_fps();
@@ -1317,17 +1332,23 @@ void tab_graphics() {
 #endif
     heading("Bug reports");
 #ifdef __ANDROID__
-    if (ImGui::Button("Share log")) hostui::post([] {
+    // off at every start: the save files go along only when the player ticks it for this share
+    static bool share_saves = false;
+    const bool saves = share_saves;
+    if (ImGui::Button("Share log")) hostui::post([saves] {
         auto* env = static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
         auto activity = static_cast<jobject>(SDL_GetAndroidActivity());
         if (!env || !activity) return;
         auto cls = env->GetObjectClass(activity);
-        auto method = env->GetMethodID(cls, "shareLog", "()V");
-        if (method) env->CallVoidMethod(activity, method);
+        auto method = env->GetMethodID(cls, "shareLogWithSaves", "(Z)V");
+        if (method) env->CallVoidMethod(activity, method, jboolean(saves));
         if (env->ExceptionCheck()) env->ExceptionClear();
         env->DeleteLocalRef(cls);
         env->DeleteLocalRef(activity);
     });
+    check("Include my save files", share_saves, &share_saves);
+    help("Adds your save file (with every name replaced by \"Link\") and your Picto Box photos to the shared log, so a "
+         "problem with a save can be reproduced. Off unless you tick it.");
 #endif
     // read once at start-up (main.cpp start_log_file); WWHD_LOG_FILE decides when set
     static bool logFile = [] { std::string v;
@@ -1485,6 +1506,9 @@ static void pip_percent(const char* label, float value, float minimum, float max
 void tab_display() {
     bool v;
     heading("GamePad screen");
+    if (check("Fill GamePad bars with background", gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed), &v))
+        hostui::post([v] { gfx::gamepad_backdrop::set_option(v); });
+    help("Fills the space around the GamePad picture with its menu background or edge colours. Menus and touch positions keep their normal size.");
     // One screen (handheld) mode (mods/one_screen.cpp): applies at the next start
     if (check("One screen (handheld)", mods::one_screen_next(), &v)) hostui::post([v] { mods::set_one_screen_next(v); });
     help("The game plays on one screen as on the Wii U GamePad alone (Off-TV Play) from the start: no GamePad "
@@ -1610,7 +1634,7 @@ void tab_display() {
     if (check("Context buttons", mods::context_buttons_on(), &v)) hostui::post([v] { mods::set_context_buttons_on(v); });
     help("Only the buttons that do something now show, with the game's own word or item on them (Open, Lift, "
          "Speak, the bow...); the game's button display is hidden then. A golden ring shows when A offers "
-         "something new. Off: every button always shows.");
+         "something new. Off: every button always shows. The Classic style always shows every button.");
     if (!mods::context_buttons_on()) ImGui::BeginDisabled();
     if (check("Link in the button pictures", link_poses::enabled(), &v)) hostui::post([v] { link_poses::set_enabled(v); });
     help("A small picture of Link in the pose of the action shows on the button: jumping on Jump, a sword swing on the "
@@ -1656,6 +1680,9 @@ void tab_display() {
         if (radio(f[i], hostui::scale_filter() == i, fok))
             hostui::post([i] { hostui::set_scale_filter(i); });
     }
+    help("Smooth blends the game's pixels. Sharp is pixel perfect: each rendered pixel shows as a crisp block of the "
+         "same size at any window size, with no bars. Integer scale uses whole-number sizes only and leaves a border. "
+         "While dynamic resolution has lowered the resolution, the picture is scaled smoothly.");
 
 }
 
@@ -1762,7 +1789,89 @@ void restart_notice_frame(bool draw) {
 
 // A built-in mod's options on its page (Mods > the mod).
 void builtin_options(const std::string& id) {
-    if (id == "direct-camera") {
+    if (id == "achievements") {  // (achievements.cpp): its options, what pauses them, the goals
+        achievements::Settings a = achievements::settings();
+        auto save = [](const achievements::Settings& s) {
+            hostui::post([s] {
+                achievements::set_settings(s);
+                hostui::set("mod.achievements.popup", s.popup ? "1" : "0");
+                hostui::set("mod.achievements.link", s.link ? "1" : "0");
+                hostui::set("mod.achievements.jingle", s.jingle ? "1" : "0");
+                hostui::set("mod.achievements.each-file", s.each_file ? "1" : "0");
+                hostui::set("mod.achievements.with-cheats", s.with_cheats ? "1" : "0");
+                hostui::set("mod.achievements.volume", std::to_string(s.volume));
+            });
+        };
+        bool changed = false;
+        changed |= ImGui::Checkbox("Pop-up on screen", &a.popup);
+        changed |= ImGui::Checkbox("Link holds it up", &a.link);
+        changed |= ImGui::Checkbox("Jingle (the game's item fanfare)", &a.jingle);
+        changed |= ImGui::SliderFloat("Jingle volume", &a.volume, 0.f, 1.f, "%.2f");
+        changed |= ImGui::Checkbox("Pop-ups in every save game", &a.each_file);
+        help("On: each save game earns its own and shows them again. Off: only achievements no save game had before.");
+        changed |= ImGui::Checkbox("Earn with cheats", &a.with_cheats);
+        help("On: cheats no longer pause achievements.");
+        if (changed) save(a);
+        const achievements::View v = achievements::view();
+        if (!v.pausing.empty()) {
+            std::string p;
+            for (const auto& s : v.pausing) p += (p.empty() ? "" : ", ") + s;
+            note("Paused now: %s.", p.c_str());
+        }
+        unsigned all = 0, here = 0;
+        for (const auto& r : v.rows) all += r.all != 0, here += r.file != 0;
+        ImGui::Text("All save games: %u of %zu earned", all, v.rows.size());
+        if (!v.file.empty()) ImGui::Text("This save game: %u of %zu earned", here, v.rows.size());
+        static const char* const groups[achievements::kGroups] = {"Story", "Items and upgrades", "Songs", "Side quests", "Collections", "Nintendo Gallery"};
+        for (int g = 0; g < achievements::kGroups; g++) {
+            if (!ImGui::TreeNode(groups[g])) continue;
+            for (const auto& r : v.rows)
+                if (r.group == g) ImGui::Text("%s %s (%u): %s", r.all ? "[x]" : "[ ]", r.title.c_str(), r.points, r.desc.c_str());
+            ImGui::TreePop();
+        }
+        static bool ask = false;
+        if (!ask && ImGui::Button("Reset achievements")) ask = true;
+        if (ask) {
+            ImGui::TextUnformatted("All of them become open again, for every save game.");
+            if (ImGui::Button("Reset")) hostui::post([] { achievements::reset(); }), ask = false;
+            ImGui::SameLine();
+            if (ImGui::Button("Keep them")) ask = false;
+        }
+    } else if (id == "game-progress") {  // (game_progress.cpp): its option, and the count of the save in play
+        bool shown = game_progress::on_screen();
+        if (ImGui::Checkbox("Percent on screen", &shown))
+            hostui::post([shown] { game_progress::set_on_screen(shown); hostui::set("mod.game-progress.on-screen", shown ? "1" : "0"); });
+        help("The percent in the bottom left corner of the TV picture, hidden while a menu, a cutscene or a dialogue is up.");
+        gp_result r;
+        std::vector<std::string> names;
+        if (!game_progress::result(r, &names)) {
+            note("The checklist and the map are on the item menu's settings page (Game tab) while a save file is played.");
+            return;
+        }
+        ImGui::Text("This save file: %d %%", gp_percent(&r));
+        static const char* const parts[GP_PARTS] = {"Dungeons", "Hearts", "Items", "Equipment", "Upgrades", "Songs",
+                                                    "Pearls and Triforce", "Treasure charts", "Sea chart", "Nintendo Gallery"};
+        for (int p = 0; p < GP_PARTS; p++) {
+            char label[96];
+            std::snprintf(label, sizeof label, "%s: %u / %u###gp%d", parts[p], r.done[p], r.total[p], p);
+            if (!ImGui::TreeNode(label)) continue;
+            for (unsigned i = r.first[p]; i < r.first[p + 1]; i++) {
+                const gp_entry& e = r.e[i];
+                const std::string n = i < names.size() ? names[i] : std::string();
+                if (e.total > 1) ImGui::Text("%s %s: %u / %u", e.done >= e.total ? "[x]" : "[ ]", n.c_str(), e.done, e.total);
+                else ImGui::Text("%s %s", e.done ? "[x]" : "[ ]", n.c_str());
+            }
+            ImGui::TreePop();
+        }
+        note("The map of where each thing is found is on the item menu's settings page (Game tab).");
+    } else if (id == "target-letterbox") {
+        int mode = mods::targeting_letterbox_mode();
+        if (ImGui::Combo("Letterbox while targeting", &mode, "On\0Off with enemies\0Always off\0"))
+            hostui::post([mode] { game_settings::set_targeting_letterbox_mode(mode); });
+        help("Always off also removes bars while holding target without an enemy. Cutscenes and scripted cameras keep their bars.");
+        if (const char* value = std::getenv("WWHD_TARGET_LETTERBOX_MODE"))
+            note("WWHD_TARGET_LETTERBOX_MODE=%s overrides the saved choice at startup.", value);
+    } else if (id == "direct-camera") {
         float speed = mods::camera_speed();
         if (ImGui::SliderFloat("Camera speed", &speed, .5f, 2.f, "%.2fx"))
             hostui::post([speed] { game_settings::set_camera_speed(speed); });  // as the item menu's settings page (game_settings.h)
@@ -1792,6 +1901,37 @@ void builtin_options(const std::string& id) {
         if (ImGui::Checkbox("No automatic jumps off ledges", &no_auto))
             hostui::post([no_auto] { mods::set_no_auto_jump(no_auto); hostui::set("mod.jump-anywhere.no-auto", no_auto ? "1" : "0"); mods::packages::remember_option("jump-anywhere.no-auto", no_auto); });
         help("Link drops off ledges instead of jumping when automatic ledge jumps are off; press the button just after leaving the edge to jump. On one input with the moon jump cheat, the moon jump wins while it is on.");
+    } else if (id == "quick-doors") {
+        for (int m : {0, 1}) {
+            const char* label = m == 0 ? "Faster" : "Walk through";
+            if (m) flow::next(flow::check(label));
+            if (radio(label, int(mods::door_mode()) == m))
+                hostui::post([m] { mods::set_door_mode(mods::DoorMode(m)); hostui::set("mod.quick-doors.mode", m ? "walk" : "faster"); mods::packages::remember_option("quick-doors.mode", float(m)); });
+        }
+        help("Faster: every door scene runs four times as fast. Walk through: dungeon shutters and house doors open as "
+             "Link walks up, he walks through without the door scene and the door shuts behind him; leaving a house is "
+             "quicker too. Locked doors, boss doors and doors with bars keep their scene, sped up. "
+             "From the GreenNaugahyde Android fork.");
+        bool by_a = mods::walk_doors_by_a();
+        if (ImGui::Checkbox("Walk-through doors open with A", &by_a))
+            hostui::post([by_a] { mods::set_walk_doors_by_a(by_a); hostui::set("mod.quick-doors.by-a", by_a ? "1" : "0"); mods::packages::remember_option("quick-doors.by-a", by_a); });
+        help("The doors wait for A on their Open prompt, then open the walk-through way.");
+        for (const char* env : {"WWHD_MOD_DOOR_MODE", "WWHD_MOD_WALK_DOORS_A"})
+            if (const char* override = std::getenv(env))
+                note("%s=%s overrides the saved option at startup.", env, override);
+    } else if (id == "leaf-rise") {
+        ImGui::TextUnformatted("Height of one wave");
+        for (int pct : {50, 100, 150, 200}) {
+            char label[16];
+            std::snprintf(label, sizeof label, "%d%%", pct);
+            if (pct != 50) flow::next(flow::check(label));
+            if (radio(label, int(mods::leaf_rise_height()) == pct))
+                hostui::post([pct] { mods::set_leaf_rise_height(float(pct)); hostui::set("mod.leaf-rise.height", std::to_string(pct)); mods::packages::remember_option("leaf-rise.height", float(pct)); });
+        }
+        help("100% lifts Link about his own height per wave. Holding the leaf's button waves on every 0.3 s. "
+             "The glide uses magic as usual, so the magic meter is still the limit. Idea from the GreenNaugahyde Android fork.");
+        if (const char* override = std::getenv("WWHD_MOD_LEAF_HEIGHT"))
+            note("WWHD_MOD_LEAF_HEIGHT=%s overrides the saved height at startup.", override);
     } else if (id == "quick-use") {
         ImGui::TextUnformatted("Quick-use animation speed");
         for (float speed : {1.f, 1.25f, 1.5f}) {
@@ -3646,6 +3786,7 @@ void prepare_menu_input(ImGuiIO& io, bool open, bool mouse_used) {
     const int face[4] = {input_map::face_input(input_map::kA), input_map::face_input(input_map::kB),
                           input_map::face_input(input_map::kX), input_map::face_input(input_map::kY)};
     U.gamepad_navigation.feed(io, U.nav_values.data(), U.nav_prev.data(), open && U.cap_action < 0 && !capturing_at_start, mouse_used, face);  // the text prompt reads the controller itself
+    popup::controller_nav() = (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) != 0;  // dialogs: a selection, stick scrolling
 }
 bool pointer_shortcut(int code, bool down) {
     if (g_no_host_mouse || captures()) return false;

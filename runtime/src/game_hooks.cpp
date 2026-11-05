@@ -11,6 +11,7 @@
 #include "guest_addr.h"
 #include "runtime.h"
 #include "mods/mods.h"
+#include "mods/native_actor_profiles.h"
 
 namespace interp {
 bool enabled();          // frame interpolation is on
@@ -49,7 +50,8 @@ bool g_follow_called = false;  // followCamera ran during the camera's execute (
 
 uint32_t actor_execute_fn(uint32_t proc) {
     uint32_t sub = ld32(proc + kSubMethod);
-    if (sub < 0x10000000 || sub >= 0x50000000) return 0;
+    if (sub < 0x10000000 || sub >= 0x50000000)
+        return native_actor_profiles::guest_execute_method(ld16(proc+0xE),sub);
     return ld32(sub + 8);
 }
 bool is_camera(uint32_t proc) {
@@ -152,6 +154,7 @@ void f_02593B10_orig(Cpu* c);  // d_meter per-step update
 // (was True 60's per-process gate)
 extern "C" void hook_025DF940(Cpu* c) {
     uint32_t proc = c->r[3];
+    mods::DoorExecuteWrap door_wrap{proc};  // Quick doors' walk-through mode (mods/walk_doors.cpp)
     uint32_t rx_s0 = ld32(kRndSeeds);
     uint32_t wv = watch_val();
     const uint32_t fn = actor_execute_fn(proc);

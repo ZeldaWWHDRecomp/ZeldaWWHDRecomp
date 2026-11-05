@@ -356,6 +356,7 @@ void filter_pad(input::PadState& s) {
         }
     }
     if (now >= g_r3_from && now < g_r3_to) s.buttons |= input::kStickR;
+    leaf_filter_pad(s);
     lock_on_filter_pad(s);
     editor::filter_pad(s);  // the world editor's fly camera takes the controller (the game gets nothing)
 }

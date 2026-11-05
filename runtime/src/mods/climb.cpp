@@ -252,6 +252,7 @@ extern "C" void hook_0240CDD0(Cpu* c) {
     mods::jump_step(c, self, true);
     mod_stages::link_step(c, self, true);
     f_0240CDD0_orig(c);
+    mods::leaf_step(c, self);
     mods::jump_step(c, self, false);
     mods::moon_jump_step(c, self, false);
     if (!g_on) {

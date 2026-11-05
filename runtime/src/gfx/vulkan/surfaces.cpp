@@ -1,3 +1,5 @@
+#include "vulkan_error.h"
+#include "gamepad_backdrop.h"
 #include "background_shaders.h"
 #include "pass.h"
 #include "deferred_dispatch.h"
@@ -30,6 +32,8 @@
 #include "gx2_texture_regs.h"
 #include "runtime.h"
 #include "dynres.h"
+#include "reproj.h"
+#include "platform/memory_trim.h"
 #include <algorithm>
 #include <numeric>
 #include <array>
@@ -40,6 +44,9 @@
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
+#ifdef __ANDROID__
+#include <unistd.h>
+#endif
 #include <string>
 #include <tuple>
 #include <unordered_map>
@@ -89,7 +96,11 @@ static const LatteAddrLib::AddrSurfaceInfo_OUT& guest_info(const Surface* s, uin
     return cached.info;
 }
 static void check_vk(VkResult result, const char* what) {
-    if (result != VK_SUCCESS) exception_report::raise(std::string("Vulkan surfaces: ")+what+" failed ("+std::to_string(result)+")");
+    if (result != VK_SUCCESS) {
+        VulkanFailure failure(result,(std::string("Vulkan surfaces: ")+what).c_str());
+        exception_report::record(failure.what());
+        throw failure;
+    }
 }
 static uint64_t content_hash(const uint8_t* p, size_t n) {
     // Full-byte coverage, including unaligned guest ranges and the final tail.
@@ -805,6 +816,7 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
 }
 void destroy_surface_image(Surface* s) {
     if (!s) return;
+    gamepad_backdrop_invalidate(s);
     if (s->mipChain) { destroy_surface_image(s->mipChain.get()); s->mipChain.reset(); }
     if (!s->spares.empty()) release_spares(s);
     if(!s->image)return;
@@ -1558,17 +1570,43 @@ uint64_t trim_textures(uint64_t idle, uint64_t& released) {
     return bytes;
 }
 void texture_budget_step() {
-    static const bool on = [] { const char* e = getenv("WWHD_VK_TEXTURE_BUDGET"); return e && !strcmp(e, "1"); }();
-    if (!on || R.frame % 30) return;
+    // the policy (texture_budget.h): off on the desktop unless WWHD_VK_TEXTURE_BUDGET=1, on by default on Android
+#ifdef __ANDROID__
+    constexpr bool android = true;
+#else
+    constexpr bool android = false;
+#endif
     extern uint64_t vulkan_device_memory_budget();
-    static const uint64_t budget = [] {
+    static const char* envOn = getenv("WWHD_VK_TEXTURE_BUDGET");
+    static const uint64_t ram = [] {  // (the Android policy's budget only)
+#ifdef __ANDROID__
+        const long pages = sysconf(_SC_PHYS_PAGES), size = sysconf(_SC_PAGESIZE);
+        return pages > 0 && size > 0 ? uint64_t(pages) * uint64_t(size) : uint64_t(0);
+#else
+        return uint64_t(0);
+#endif
+    }();
+    static const uint64_t deviceBudget = android || (envOn && !strcmp(envOn, "1")) ? vulkan_device_memory_budget() : 0;
+    const texture_budget::Policy p = texture_budget::policy(android, envOn, deviceBudget, ram, memory_trim::headroom_mb());
+    if (!p.on || R.frame % p.every) return;
+    static const uint64_t budget = [&] {
         const char* e = getenv("WWHD_VK_TEXTURE_BUDGET_MB");
-        const uint64_t bytes = e && *e ? uint64_t(std::max(0, atoi(e))) << 20 : vulkan_device_memory_budget() / 4;
-        LOG("[vulkan] texture budget: %.0f MiB (WWHD_VK_TEXTURE_BUDGET_MB=%s)", bytes / 1048576.0, e && *e ? e : "a quarter of the device budget");
+        const uint64_t bytes = e && *e ? uint64_t(std::max(0, atoi(e))) << 20 : p.budget;
+        LOG("[vulkan] texture budget: %.0f MiB (WWHD_VK_TEXTURE_BUDGET_MB=%s), unused for %llu frames released%s",
+            bytes / 1048576.0, e && *e ? e : (android ? "max(RAM / 10, 384 MiB)" : "a quarter of the device budget"),
+            (unsigned long long)p.idle, android ? " (Android default; WWHD_VK_TEXTURE_BUDGET=0 off)" : "");
         return bytes;
     }();
-    static const uint64_t idle = [] { const char* e = getenv("WWHD_VK_TEXTURE_IDLE_FRAMES"); return e && *e ? uint64_t(std::max(0, atoi(e))) : 0; }();
-    static const uint64_t pin = [] { const char* e = getenv("WWHD_VK_TEXTURE_PIN_FRAMES"); return e && *e ? uint64_t(std::max(1, atoi(e))) : 3; }();
+    static const char* idleEnv = getenv("WWHD_VK_TEXTURE_IDLE_FRAMES");
+    const uint64_t idle = idleEnv && *idleEnv ? uint64_t(std::max(0, atoi(idleEnv))) : p.idle;
+    static const uint64_t pin = [&] { const char* e = getenv("WWHD_VK_TEXTURE_PIN_FRAMES"); return e && *e ? uint64_t(std::max(1, atoi(e))) : p.pin; }();
+    static bool wasTight = false;
+    if (const bool tight = android && idle == texture_budget::kAndroidPin && !(idleEnv && *idleEnv); tight != wasTight) {
+        wasTight = tight;
+        LOG("[vulkan] texture budget: %s (%d MB above the low-memory line)", tight ? "memory tight, every texture unused for 300 frames released" :
+            "memory back, idle release after 7200 frames", memory_trim::headroom_mb());
+    }
+    const uint64_t releasedBefore = g_stat_tex_evictions, bytesBefore = g_stat_tex_evicted_bytes;
     std::vector<Surface*> surfaces;
     std::vector<texture_budget::Candidate> candidates;
     uint64_t total = 0;
@@ -1584,6 +1622,10 @@ void texture_budget_step() {
         release_texture_image(surfaces[i]);
     }
     g_stat_tex_resident_bytes = total;
+    if (g_stat_tex_evictions != releasedBefore)
+        LOG("[vulkan] texture budget: released %llu unused textures (%.1f MiB), %.1f MiB kept",
+            (unsigned long long)(g_stat_tex_evictions - releasedBefore), (g_stat_tex_evicted_bytes - bytesBefore) / 1048576.0,
+            total / 1048576.0);
 }
 void upload_surface(Surface* s) {
     if(!s)return;
@@ -1704,6 +1746,7 @@ void upload_surface(Surface* s) {
 void clear_color(const uint32_t*,uint32_t cb,const float rgba[4]) {
     uint32_t first,num;auto* s=surface_from_color_buffer(cb,&first,&num);if(!s)return;
     if(s->fmt.depth||s->fmt.compressed)exception_report::raise("GX2 clear color requires an uncompressed color surface");
+    gamepad_backdrop_invalidate(s);
     VkClearColorValue value{};
     for(unsigned i=0;i<4;++i) {
         double integerValue = std::isnan(rgba[i]) ? 0.0 : double(rgba[i]);
@@ -1735,9 +1778,13 @@ void clear_depth_stencil(const uint32_t*,uint32_t db,float depth,uint32_t stenci
     uint32_t first,num;auto* s=surface_from_depth_buffer(db,&first,&num);if(!s)return;
     VkImageAspectFlags aspects=0;if(flags&1)aspects|=VK_IMAGE_ASPECT_DEPTH_BIT;if((flags&2)&&s->fmt.stencil)aspects|=VK_IMAGE_ASPECT_STENCIL_BIT;
     if(!aspects)return;
+    // 60 fps (generated, reproj.cpp): a second 3D pass of the frame keeps the first one's depth (only while on)
+    const bool framegen=reproj::enabled()&&(flags&1);
+    if(framegen)reproj::depth_clearing(s);
     end_encoder();transition_image(s,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
     VkClearDepthStencilValue value{depth,stencil};VkImageSubresourceRange range{aspects,0,1,first,num};
     record::vkCmdClearDepthStencilImage(command_buffer(),s->image,s->layout,&value,1,&range);mark_gpu_written(s);
+    if(framegen)reproj::depth_cleared(s);
 }
 // ---------------------------------------------------------------- write-back to guest memory
 // Render results stay on the GPU, except where the game reads them with the CPU: render targets and
@@ -2031,6 +2078,7 @@ void invalidate_surface_cache(decltype(Renderer::surfaces)& surfaces,
     });
 }
 void ss_reset_surfaces() {
+    gamepad_backdrop_reset();
     R.mainDepthAddr = 0;
     bgshaders::tracker().forget();
     ++g_surface_epoch;

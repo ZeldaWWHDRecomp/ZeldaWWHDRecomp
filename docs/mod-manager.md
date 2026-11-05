@@ -39,8 +39,8 @@ mod's page), the *Experimental* tag where it applies and a one-word status (*On*
 
 - **Built-in** ("Included with the game. Switch on or off any time."): the mods compiled
   into the game: direct camera, mouse camera, camera-directed items, first-person shortcut, extended enemy lock-on, wall climbing,
-  run/swim speed, faster ladders, faster sidling, faster ivy climbing, faster ledge hanging, sailing speed, automatic wind, jump anywhere,
-  quick doors, fast forward and fast scene changes; all off by default.
+  run/swim speed, faster ladders, faster sidling, faster ivy climbing, faster ledge hanging, sailing speed, automatic wind, jump anywhere, Deku Leaf: wave to rise,
+  quick doors, fast forward, fast scene changes, instant text and no pauses in texts; all off by default.
 - **Community** ("Made by players. Downloaded from the mod catalogue."): every installed
   package (from the catalogue, from a file or folder, graphics packs and content packs),
   then **Available to download**: the catalogue's mods that aren't downloaded yet (see
@@ -116,7 +116,7 @@ now** (on Android: close and reopen the app). There is one restart offer at a ti
 the end of an install and the page of a mod that is off but still loaded offer
 their own instead, and switching mods does not open a popup.
 
-**Letterbox while targeting** is on by default in **Mods > Built-in > Camera**; switch it off to remove bars during normal targeting while keeping cutscenes and special cameras unchanged.
+**Letterbox while targeting** in **Mods > Built-in > Camera** offers **On** (the default), **Off with enemies** (remove bars only while locked on to a selected enemy), and **Always off** (also remove bars during free targeting without an enemy). Cutscenes and scripted cameras keep their original bars. Existing saved On/Off choices retain their behavior.
 
 ### Camera-directed items (prototype)
 
@@ -426,6 +426,8 @@ Package manifest fields:
 | `game_id` | `wwhd`: this game, any region (manager 1.5; give `"minimum_manager_version": "1.5.0"` with it). `wwhd-usa` from older manifests is still accepted. Region checks stay where they apply: the title ID of Cemu and SDCafiine packs and the game build of code mods; the runtime also verifies its exact RPX entry |
 | `author`, `description` | Optional display metadata |
 | `minimum_manager_version` | Optional three-part minimum |
+| `supported_game_builds` | Optional array of 1–16 exact compiled build names, such as `["USA"]`; requires manager 1.8.0. Checked before content or code activation; `game_id: "wwhd-usa"` alone remains an any-region legacy alias |
+| `save_profile` | Guest-only declarative save ownership; requires manager 1.7.0 (below) |
 | `experimental` | Optional `true` for untested mods: hidden by default, enabling backs up the saves first (manager 1.4) |
 | `kind` | `native`, `settings`, `content` or `cemu` |
 | `abi_version`, `binaries` | Native ABI `1`; platform-to-relative-library map |
@@ -441,6 +443,68 @@ Platform keys include `macos-arm64`, `macos-x86_64`, `windows-x86_64`,
 Unsupported platform binaries remain visible as incompatible. The desktop
 folder/file install workflow is the current supported UI; Android document URIs
 need a separate import bridge. Online downloads/catalogues are outside v1.
+
+## A separate save for a guest mod
+
+A seed-producing guest mod can declare its save identity in `manifest.json`:
+
+```json
+"minimum_manager_version": "1.7.0",
+"save_profile": {
+  "version": 1,
+  "provider": "my-randomizer",
+  "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+```
+
+`provider` is 1–24 lowercase ASCII letters, digits or hyphens, starting with a
+letter. `identity` is exactly 64 lowercase hexadecimal digits. Producers must
+hash the complete gameplay seed, including assets and options that can change
+the world; an executable hash alone may describe several different seeds.
+The minimum-manager guard is mandatory so older ports cannot ignore this field
+and activate the mod against the normal save.
+
+Before save recovery, cloud selection or backups, the runtime selects at most
+one enabled, trusted and eligible guest owner from the startup dependency plan.
+Disabled, unconfirmed and unavailable packages do not select a profile. Invalid
+or conflicting eligible claims stop startup before save I/O. Package activation
+happens after path selection; dependency changes or load failures stop the owner
+instead of running it against a different save.
+
+The namespace is `mod-<provider>-<identity>`. A normal `save` folder becomes the
+sibling `save-mod-…`; backups use sibling `save-backups-mod-…`. Save-folder
+preferences live under `save-profiles/<namespace>` in the configuration folder.
+Choosing a new cloud container puts a dedicated save inside it. Choosing an
+existing actual save puts the new profile save beside that save. Normal saves
+and backups are never copied or migrated automatically. `--save DIR` selects the ordinary root; a profile mod always uses its
+namespaced sibling, including launches through official desktop launchers.
+Its backups are namespaced beside it. A launch without a profile mod keeps
+the exact selected directory.
+
+State slots, automatic states and last-session/editor states use a sibling state
+directory with the same namespace, including when `WWHD_STATE_DIR` is supplied.
+Portable restores require the same provider/seed. Full restores additionally
+require the same owner and trusted dependency fingerprints, before changing
+files, guest memory or threads. Profile full states carry a required header flag
+that older runtimes reject. Ordinary states retain their existing paths and
+legacy compatibility. The current save paths and loaded packages remain fixed until exit.
+
+You can switch off the profile mod, one of its dependencies, or **Switch all mods off**
+while playing. These choices are saved for the next launch and shown as requiring
+a restart; they do not unload the running mod or redirect its saves. Disabling a
+required dependency also disables its dependent mods for the next launch. Quit
+through **Settings > Quit Game**, then start again to apply the change. This
+works on Android without a code-mod rebuild. Package files and active-profile
+options stay protected until that restart.
+
+Android takes its app-wide game lease before native startup but defers save
+creation/import recovery until native metadata selects the directory. Import
+and export remain vanilla-only; profile saves are not migrated. Android warns
+before enabling an installed profile mod and on its details page: these saves
+cannot currently be imported/exported and are deleted when the app is uninstalled. The matching
+app/native save-preparation bridge is required for profile activation. Windows
+rejects locations whose complete namespace and save/backup suffixes exceed the
+supported path budget; select a shorter installation or save root.
 
 ## Packaging a mod
 

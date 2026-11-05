@@ -3280,7 +3280,11 @@ void _emitExportCode(LatteDecompilerShaderContext* shaderContext, LatteDecompile
 				}
 				// pixel color output
 				src->addFmt("passPixelColor{} = ", pixelColorOutputIndex);
+				if (shaderContext->options->finiteColorOutputs)
+					src->add("wwhd_finite(");
 				_emitExportGPRReadCode(shaderContext, cfInstruction, LATTE_DECOMPILER_DTYPE_FLOAT, i);
+				if (shaderContext->options->finiteColorOutputs)
+					src->add(")");
 				src->add(";" _CRLF);
 
 				if( cfInstruction->exportArrayBase+i >= 8 )
@@ -3775,6 +3779,9 @@ void LatteDecompiler_emitGLSLHelperFunctions(LatteDecompilerShaderContext* shade
 		"	return floatBitsToInt(0.0);\r\n"
 		"return floatBitsToInt(clamp(intBitsToFloat(v), 0.0, 1.0));\r\n"
 	"}\r\n");
+	// WWHD: NaN -> 0 and infinity -> +-65000 in the pixel colour outputs (finiteColorOutputs)
+	if (shaderContext->options->finiteColorOutputs && shaderContext->shaderType == LatteConst::ShaderType::Pixel)
+		fCStr_shaderSource->add("vec4 wwhd_finite(vec4 v){ v = mix(v, sign(v) * 65000.0, isinf(v)); return mix(v, vec4(0.0), isnan(v)); }" _CRLF);
 	// mul non-ieee way (0*NaN/INF => 0.0)
 	if (shaderContext->options->strictMul)
 	{

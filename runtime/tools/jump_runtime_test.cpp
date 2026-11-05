@@ -13,7 +13,10 @@
 #include <sys/mman.h>
 #endif
 void log_msg(const char*, ...) {}
-namespace mods { static int moon = 0; bool infinite(int which) { return moon & which; } }
+namespace mods {
+static int moon = 0; bool infinite(int which) { return moon & which; }
+uint64_t step() { return 0; }  // (the Deku Leaf part of jump.cpp reads the logic step; mods.cpp is not linked)
+}
 static std::vector<uint32_t> calls;
 uint32_t guest_call(Cpu* cpu, uint32_t address, std::initializer_list<uint32_t> args) {
     const uint32_t link = *args.begin();

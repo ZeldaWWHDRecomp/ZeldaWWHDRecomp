@@ -822,6 +822,7 @@ All off by default; hooks in `tools/recomp/hooks_mods.txt`. Test switches `WWHD_
 | `0250FDC8` `dCamera_c::manualCamera` | right-stick camera: bezier-shaped stick → `cLib_chaseF` on the turning speed `this+0x154` (+0.25/step) → yaw += speed × 0.92 × f25 (param, 8) → drawn U/V smoothed (≈0.66) | sites `@02510448`/`@025104A0` (speed), `@0251053C` (f28 = vertical rate), `@02510EA0`/`@02510EE4` (V/U smoothing) |
 | `025071FC` `dCamera_c::subjectCamera` | first-person camera | mouse → right stick (rate) |
 | `0252A684` `dDoor_info_c::getDemoAction`, `021C0078` `daMbdoor_c::getDemoAction` | door event cut (action table: 16 = TALK) | quick doors |
+| `021277D0` `daDoor10_Execute`, `02129830` `daDoor12_Execute`, `021A5008` `daKnob00_Execute`; `025D7710` `fopAcM_orderDoorEvent` | the door executes (wrapped for one call through their method table, `fopAc_ac_c::sub_method` `0xF0` +8, in fpcM_Execute's gate); A on a door's Open prompt | quick doors, walk-through mode (`runtime/src/mods/walk_doors.cpp`) |
 | `101F36CC` | `l_fopOvlpM_overlap[0]` (request: `+0x20` task) | fast scene changes |
 | `101F3A1C` | `g_fpcDtTg_Queue` (delete tags: `+8` next, `+0xC` process, `+0x18` timer; `fpcDtTg_Do` `025DDE44`) | quick doors leave deletion out of the extra steps (issue #61, `runtime/src/mods/turbo_steps.h`) |
 | `101F3328` | `g_fopAcTg_Queue` (actor tags: `+8` next, `+0xC` actor; `fopAcIt_Executor` `025D51DC`) | test aid `WWHD_TEST_DOOR_DELETE` |

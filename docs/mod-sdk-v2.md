@@ -297,6 +297,10 @@ service requirement and do not change how ordinary saves are loaded.
 | `wwhd_config_changed` | A live option's revision, below |
 | `wwhd_malloc`, `wwhd_free` | Per-mod heap, 16-byte aligned; size from `guest.heap_size` (default 256 KiB, max 8 MiB); null when full |
 | `wwhd_input_read` | Buttons, sticks and touch (read-only) |
+| `wwhd_ship_normal_sail_wind` | Compose the port’s optional normal-sail wind callback before the sail transition flag is read; takes ship actor, preserves CPU context |
+| `wwhd_ship_sail_target` | Scale a completed native wind target using the live sail/settings; caller retains local original/written target and conditionally restores it before jump checks |
+| `wwhd_item_action_dispatch` | Preserve quick-use bookkeeping immediately before an eligible native ready hookshot, rope or boomerang action; takes Link and item ID, preserves CPU context and writes no global input/equipment |
+| `wwhd_item_ready_trigger` | Preserve the port’s local quick-use predicate after a native ready-item query; takes Link and the original result, changes no global pad input |
 | `wwhd_input_filter_register` | Change the controller state the game reads, below |
 | `wwhd_touch_register`, `wwhd_touch_claim` | Touches (or mouse clicks) on parts of the TV picture your mod claims, and pinches there, below |
 | `wwhd_screen_point` | Where the drawn camera shows a point of the world, in the touches' layout units, below |

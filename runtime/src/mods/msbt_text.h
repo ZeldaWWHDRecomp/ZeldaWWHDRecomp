@@ -20,7 +20,9 @@ inline void utf8(std::string& s, uint32_t ch) {
     else s += char(0xF0 | ch >> 18), s += char(0x80 | (ch >> 12 & 0x3F)), s += char(0x80 | (ch >> 6 & 0x3F)), s += char(0x80 | (ch & 0x3F));
 }
 
-inline std::map<std::string, std::string> texts(const std::vector<uint8_t>& m) {
+// marks: a colour change (control code group 0 type 3: the names in the game's messages are coloured) becomes
+// '*' and a line break '\n' (both are left out otherwise)
+inline std::map<std::string, std::string> texts(const std::vector<uint8_t>& m, bool marks = false) {
     std::map<std::string, std::string> out;
     const size_t n = m.size();
     auto be16 = [&](size_t o) -> uint32_t { return o + 2 <= n ? uint32_t(m[o]) << 8 | m[o + 1] : 0; };
@@ -61,11 +63,16 @@ inline std::map<std::string, std::string> texts(const std::vector<uint8_t>& m) {
             if (ch == 0) break;
             if (ch == 0x0E) {  // group, type, parameter size, parameters
                 if (q + 6 > e) break;
+                if (marks && be16(txt + q) == 0 && be16(txt + q + 2) == 3) t += '*';
                 q += 6 + be16(txt + q + 4);
                 continue;
             }
             if (ch == 0x0F) {  // an end tag (group, type)
                 q += 4;
+                continue;
+            }
+            if (marks && ch == '\n') {
+                t += '\n';
                 continue;
             }
             if (ch == '\n' || ch == '\r' || ch == '\t') ch = ' ';

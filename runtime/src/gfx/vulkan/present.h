@@ -18,9 +18,20 @@ Screen& presentation_source_screen(Screen& physical);
 struct ComposeQuad {
  Surface* image=nullptr; bool sourceLinear=false; gfx::Box box; float alpha=1;
  bool solid=false; float color[4]{};
+ // 1: premultiplied isolated backdrop; 2..5: top/bottom/left/right edge colours.
+ int backdrop=0;
+ bool clipped=false; gfx::Box clip{};
 };
 // this frame's layout from gfx/display_modes.cpp, set by swap() (null: the picture scaled to fit)
 void set_present_plan(const gfx::PresentPlan* plan);
+void begin_gamepad_backdrop_demand();
+void publish_gamepad_backdrop_demand();
+void cancel_gamepad_backdrop_demand();
+struct GamepadBackdropDemandFrame {
+ GamepadBackdropDemandFrame() { begin_gamepad_backdrop_demand(); }
+ ~GamepadBackdropDemandFrame() { cancel_gamepad_backdrop_demand(); }
+ void publish() { publish_gamepad_backdrop_demand(); }
+};
 // Internal hidden-only bounded diagnostic; never reads back or presents its reused target.
 void compose_headless_diagnostic(Screen& screen);
 std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filter);
