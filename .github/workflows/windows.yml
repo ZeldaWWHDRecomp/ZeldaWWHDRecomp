@@ -56,8 +56,9 @@ jobs:
       # Issue #144: setup unpacks the compiler with \\?\ paths and stops early in a folder too deep for the
       # game. MSYS2's Python joins paths with "/" and keeps ordinary paths (setup.NATIVE_WINDOWS_PATHS);
       # the release's kind of Python (python.org, backslashes) really crosses MAX_PATH in the deep unpack test.
+      # CompilerUnpack (issue #388): the unpack progress and the player-facing errors on Windows.
       - name: Installer long path unit tests (MSYS2 Python)
-        run: python tools/installer/test_setup.py LongPaths
+        run: python tools/installer/test_setup.py LongPaths CompilerUnpack
 
       - uses: actions/setup-python@v6
         with:
@@ -65,7 +66,7 @@ jobs:
 
       - name: Installer long path unit tests (python.org Python, as in the release)
         shell: pwsh
-        run: python tools/installer/test_setup.py LongPaths
+        run: python tools/installer/test_setup.py LongPaths CompilerUnpack
 
       - name: Shader generation and console setup on local UNC share
         shell: pwsh
