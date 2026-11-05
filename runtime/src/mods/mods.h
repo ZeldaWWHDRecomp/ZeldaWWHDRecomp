@@ -8,6 +8,7 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <vector>
 
 #include "move_speed.h"  // MoveMode (the run/swim speed mod's public vocabulary)
 #include "fast_forward.h"
@@ -292,6 +293,9 @@ enum Cheat {
     kCheatFigurines = 256,  // every Nintendo Gallery figurine (Carlov then leaves, as in the game's ending)
 };
 void request_cheat(int which);  // any thread
+// the cheats that pause Achievements now, as the menus name them: the infinite ones that are on, and the one-shot
+// cheats and story-item grants used in this run (any thread)
+std::vector<std::string> cheats_pausing();
 // Explicit, one-shot inventory grants. The first request needs consent; no grant precedes a backup.
 enum StoryItem { kStoryNayru = 1, kStoryDin = 2, kStoryFarore = 4, kStorySword = 8 };
 bool story_item_confirmation_needed();

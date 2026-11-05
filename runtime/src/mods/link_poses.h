@@ -314,6 +314,9 @@ bool enabled();
 void set_enabled(bool on);
 // the game opened a file (fs.cpp): remember the host path of its 3D pack
 void note_open(const std::string& guest_path, const std::string& host_path);
+// One pose of the player's own Link as a size x size RGBA picture now (any thread; the model is read once and kept).
+// False with `why` (the game hasn't opened its 3D pack yet, no such animation...).
+bool render_now(const PoseSpec& pose, int size, Bytes& rgba, std::string& why);
 // Writes every pose's picture into `dir` (file_for(action), RGBA PNG), with `encode` making the PNG.
 // The number written; -1 when the files can't be read (logged once), 0 when the game hasn't opened its
 // 3D pack yet.

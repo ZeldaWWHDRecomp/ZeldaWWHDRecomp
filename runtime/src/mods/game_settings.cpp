@@ -1,6 +1,8 @@
 // The common settings list (game_settings.h).
 #include "game_settings.h"
 #include "game_progress_host.h"
+#include "achievements_host.h"
+#include "achievements_page.h"
 #include "game_settings_page.h"
 
 #include <algorithm>
@@ -629,10 +631,32 @@ void register_game() {
         it.enabled = [] { return game_progress::loaded(); };
         add(std::move(it));
     }
+    {  // Achievements (achievements.cpp): its row opens its page
+        static bool page = (game_settings_page::register_detail("game.achievements", []() -> std::unique_ptr<game_settings_page::Detail> {
+            if (!achievements::enabled()) return nullptr;
+            game_progress::prepare_words();
+            return std::make_unique<achievements_page::View>(achievements::view());
+        }), true);
+        (void)page;
+        Item it;
+        it.id = "game.achievements", it.tab = "game", it.label = "Achievements", it.kind = Kind::Action;
+        it.help = "Goals from the story to the Savage Labyrinth, earned for good for all save games and for each one.";
+        it.text = [] {
+            if (!achievements::enabled()) return std::string();
+            const achievements::View v = achievements::view();
+            unsigned n = 0;
+            for (const auto& r : v.rows) n += (v.file.empty() ? r.all : r.file) != 0;
+            return std::to_string(n) + " / " + std::to_string(v.rows.size());
+        };
+        it.set = [](float) { game_settings_page::open_detail("game.achievements"); };
+        it.enabled = [] { return achievements::enabled(); };
+        add(std::move(it));
+    }
     // the built-in gameplay mods (mods/manager.cpp), switched as the Mods tab switches them
     // (short names and help lines of the page's own, translated in game_settings_text.h; the Settings window
     // keeps the catalogue's longer descriptions)
     static const struct { const char *id, *label, *help; } kGame[] = {
+        {"achievements", "Achievements", "Goals read from your save data, earned for good, with a pop-up (the row above)."},
         {"game-progress", "Game progress", "A percent, a checklist and a map of what this save file has found (the row above)."},
         {"quick-doors", "Quick doors", "Doors open and close four times as fast."},
         {"fast-scenes", "Fast scene changes", "Shorter waits when the game loads a new place."},

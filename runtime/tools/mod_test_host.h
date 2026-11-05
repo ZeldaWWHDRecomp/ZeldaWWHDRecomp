@@ -1,5 +1,6 @@
 #pragma once
 // Standalone host-side tests; no game files, player settings or guest code needed.
+#include "mods/achievements_host.h"
 #include "mods/manager.h"
 #include "mods/mods.h"
 #include "mods/climb.h"
@@ -83,6 +84,13 @@ float camera_speed() { return speed; }
 void set_camera_speed(float f) { speed=f; }
 float mouse_sensitivity() { return sensitivity; }
 void set_mouse_sensitivity(float f) { sensitivity=f; }
+}
+// the built-in Achievements (mods/achievements.cpp)
+namespace achievements {
+static bool ach_on = false;
+static Settings ach_settings;
+bool enabled() { return ach_on; } void set_enabled(bool b) { ach_on = b; }
+Settings settings() { return ach_settings; } void set_settings(const Settings& s) { ach_settings = s; }
 }
 // the built-in Game progress (mods/game_progress.cpp)
 namespace game_progress {
