@@ -73,6 +73,24 @@ int main() {
     assert(gfxvk::gamepad_backdrop_quad(quads, &drc, true) == 2);
     assert(gfxvk::gamepad_backdrop_quad(quads, &drc, false) == quads.size()); // PiP
     assert(quads[2].box.y == content.y && quads[2].box.h == content.h);
+    {
+        // Off-TV plan: tv placeholder, 0.6-alpha PiP frame, picture. The bars go
+        // after the frame and before the picture (Metal compose_tv order), so the
+        // frame's border never lies over the bars.
+        auto ordered = quads;
+        const std::vector<Quad> barQuads{{&drc, {0, 0, 31, 4.78f}}, {&drc, {0, 22.2f, 31, 4.8f}}};
+        const auto picture = gfxvk::gamepad_backdrop_quad(ordered, &drc, true);
+        gfxvk::insert_backdrop_bars(ordered, picture, barQuads);
+        assert(ordered.size() == 5 && ordered[1].solid);
+        assert(ordered[2].box.y == 0 && ordered[3].box.y == 22.2f);
+        assert(ordered[4].image == &drc && ordered[4].box.h == content.h);
+        // The frame precedes every bar: nothing solid is drawn after the first bar.
+        for (std::size_t i = 2; i < ordered.size(); ++i) assert(!ordered[i].solid);
+        // DRC window: the picture is the only quad; bars come first.
+        std::vector<Quad> window{{&drc, content}};
+        gfxvk::insert_backdrop_bars(window, gfxvk::gamepad_backdrop_quad(window, &drc, false), barQuads);
+        assert(window.size() == 3 && window[2].box.h == content.h);
+    }
     quads = {{&drc, content}};
     assert(gfxvk::gamepad_backdrop_quad(quads, &drc, false) == 0); // DRC window
     quads[0].box.w = 0;

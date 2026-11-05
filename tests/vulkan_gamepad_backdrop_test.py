@@ -180,6 +180,12 @@ int main() {
         self.assertIn('if (replay) {\n    topology = replay->topology;',draw)
         self.assertIn('bindIndex(replay->indexBuffer, replay->indexOffset, replay->indexType)',draw)
 
+    def test_bars_after_pip_frame(self):
+        present=(CPP.parent/'present.cpp').read_text()
+        body=present[present.index('static void add_gamepad_backdrop('):present.index('std::vector<ComposeQuad> screen_quads(')]
+        self.assertNotIn('quads.insert(quads.begin()',body)
+        self.assertEqual(body.count('insert_backdrop_bars(quads,index,bars);'),2)
+
     def test_demand_published_once_after_both_windows(self):
         source=r'''#include <cassert>
 #include "gamepad_backdrop_demand.h"

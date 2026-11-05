@@ -15,4 +15,13 @@ std::size_t gamepad_backdrop_quad(const Quads& quads, Image* drc, bool drcOnly) 
     }
     return quads.size();
 }
+// Bars are drawn after every quad before the GamePad picture (the Off-TV
+// plan's 0.6-alpha PiP frame, whose border reaches into the bars) and before
+// the picture itself: the same order as Metal's compose_tv (frame, bars,
+// picture). Bars first would leave the frame as a dark seam over them.
+template<class Quads>
+void insert_backdrop_bars(Quads& quads, std::size_t picture, const Quads& bars) {
+    if (picture > quads.size()) picture = quads.size();
+    quads.insert(quads.begin() + std::ptrdiff_t(picture), bars.begin(), bars.end());
+}
 }

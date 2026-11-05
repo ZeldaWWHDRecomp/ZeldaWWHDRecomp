@@ -850,14 +850,14 @@ static void add_gamepad_backdrop(std::vector<ComposeQuad>& quads,VkExtent2D targ
    const auto r=regions[edge];if(r.w<=0||r.h<=0)continue;
    auto q=content;q.box={r.x,r.y,r.w,r.h};q.backdrop=2+int(edge);bars.push_back(q);
   }
-  quads.insert(quads.begin(),bars.begin(),bars.end());return;
+  insert_backdrop_bars(quads,index,bars);return;
  }
  std::vector<ComposeQuad> bars;
  for(const auto& r:gfx::gamepad_backdrop::bars(float(target.width),float(target.height),{box.x,box.y,box.w,box.h})) {
   if(r.w<=0||r.h<=0)continue;
   auto q=backdrop;q.clipped=true;q.clip={r.x,r.y,r.w,r.h};bars.push_back(q);
  }
- quads.insert(quads.begin(),bars.begin(),bars.end());
+ insert_backdrop_bars(quads,index,bars);
 }
 std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filter) {
  if (&screen != &R.tv || stereo::frame.mode == stereo::Off) {
