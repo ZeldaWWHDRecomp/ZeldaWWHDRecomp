@@ -3695,15 +3695,31 @@ static void present_generated(bool tvShown) {
   const int64_t now = even_now_ns();
   const int64_t delay = reproj::real_presented(tvShown, now);
   Skip skip = reproj::kNone;
-  if (!tvShown) skip = reproj::kNotShown;
+  // test aid (headless runs, hidden windows): WWHD_FRAMEGEN_TEST_DUMP=f[,f...] makes the in-between frame although
+  // nothing is shown, and writes the ones after those TV frames to framegen_<f>.png (the real one: WWHD_DUMP_FRAMES)
+  static const auto testDumps = gfx::capture_schedule::parse(getenv("WWHD_FRAMEGEN_TEST_DUMP"));
+  const bool headlessTest = !testDumps.empty();
+  if (!tvShown && !headlessTest) skip = reproj::kNotShown;
   else if (!async_present() || present_capture_requested() || presentObservation || heldPresent.pending) skip = reproj::kPresentPath;
   else if (stereo::frame.mode != stereo::Off) skip = reproj::kStereo;
 #ifdef __ANDROID__
   else if (quest_theater::active()) skip = reproj::kStereo;
 #endif
-  else if (!delay) skip = reproj::kFast;
+  else if (!delay && !(headlessTest && !tvShown)) skip = reproj::kFast;
   Surface* generated = reproj::generate(R.tv.scan.get(), skip);
   if (!generated) return;
+  if (headlessTest && !tvShown) {
+    const uint64_t f = fixed_seed::script_frame(R.frame);
+    if (gfx::capture_schedule::contains(testDumps, f)) {
+      try {
+        const std::string path = "framegen_" + std::to_string(f) + ".png";
+        write_rgba_png(path, generated->extent.width, generated->extent.height, read_surface_rgba(*generated, R.tv.scanSrgb));
+        LOG("[framegen] wrote %s (%ux%u)", path.c_str(), generated->extent.width, generated->extent.height);
+      } catch (const std::exception& e) { LOG("[framegen] cannot write the in-between frame: %s", e.what()); }
+    }
+    reproj::not_presented();
+    return;
+  }
   auto& slot = reproj::generated_scan();
   R.tv.scan.swap(slot);
   framegenDue = now + delay;
