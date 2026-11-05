@@ -680,7 +680,7 @@ int main(int argc, char** argv) {
             return 1;
         }
     }
-    config::save_dir = randomizer::save_directory(config::save_dir, save_arg);
+    config::save_dir = randomizer::save_directory(config::save_dir, randomizer::explicit_save_folder(save_arg, config::save_dir));
     const std::string seed_namespace = randomizer::compiled_seed() ?
         std::string("randomizer-") + g_guest_build_rpx_sha256 : std::string();
     // Save backups (Mods tab): a restore chosen there is applied now, before the game reads saves.
