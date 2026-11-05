@@ -271,6 +271,17 @@ def select(setup, ctx, which, hooks, status_file=None, cancel_file=None):
         if not (out / "code" / "cking.rpx").is_file():
             raise setup.SetupError("the files of randomized game %s are missing; make it again" % s["id"])
         c.game_dir = str(out)
+    # the game as it is was the one selected so far (setup's install keeps its build in code-builds): note its
+    # build before the selection changes, so the game's settings can switch back to it without setup
+    before = load(ctx.data_dir)
+    if before.get("playing", "vanilla") == "vanilla":
+        try:
+            active = json.loads((Path(ctx.data_dir) / "code-mods-active.json").read_text(encoding="utf-8"))
+            if active.get("state") == "ready" and active.get("fingerprint"):
+                before.setdefault("vanilla_builds", {})["hooks" if active.get("hooks") else "plain"] = active["fingerprint"]
+                save(ctx.data_dir, before)
+        except (OSError, ValueError, AttributeError):
+            pass
     result = code_mods.rebuild(setup, c, hooks, status_file, cancel_file)
     reg = load(ctx.data_dir)
     reg["playing"] = "vanilla" if which == "vanilla" else s["id"]
@@ -303,12 +314,20 @@ def delete(setup, ctx, which):
     return s
 
 
-def listing(data_dir):
+def built(data_dir, builds, hooks=None):
+    """a game's build is still in code-builds (with code-mod support `hooks`, or either when None)"""
+    kinds = ("hooks", "plain") if hooks is None else ("hooks" if hooks else "plain",)
+    return any((Path(data_dir) / "code-builds" / builds[k][:16] / "ready.json").is_file()
+               for k in kinds if (builds or {}).get(k))
+
+
+def listing(data_dir, hooks=None):
     reg = load(data_dir)
     out = []
     for i, s in enumerate(reg["seeds"], 1):
         d = seed_dir(data_dir, s["id"])
         out.append(dict(s, number=i, files=(d / "out" / "code" / "cking.rpx").is_file(),
+                        built=built(data_dir, s.get("builds"), hooks),
                         spoiler_log=str(d / s["spoiler_log"]) if s.get("spoiler_log") else ""))
     places = rando_dir(data_dir) / "places.tsv"
     return {"seeds": out, "playing": reg.get("playing", "vanilla"), "places": str(places) if places.is_file() else ""}

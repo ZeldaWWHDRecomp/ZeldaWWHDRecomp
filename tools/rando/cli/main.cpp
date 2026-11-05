@@ -133,6 +133,48 @@ bool plain_setting(Option o) {
     }
 }
 
+// How a setting's value index is chosen, as the PC randomizer's window offers it (gui/desktop/mainwindow.cpp ranges)
+struct Kind {
+    const char* kind;  // bool | count | choice
+    int lo = 0, hi = 1;
+    std::vector<const char*> choices;
+};
+
+Kind kind_of(Option o) {
+    auto count = [](int lo, int hi) { return Kind{"count", lo, hi, {}}; };
+    auto choice = [](std::vector<const char*> c) { return Kind{"choice", 0, int(c.size()) - 1, std::move(c)}; };
+    switch (o) {
+        case Option::ProgressDungeons: return choice({"Off", "Standard", "Race mode (required dungeons only)"});
+        case Option::DungeonSmallKeys:
+        case Option::DungeonBigKeys:
+        case Option::DungeonMapsAndCompasses: return choice({"Vanilla", "Own dungeon", "Any dungeon", "Overworld", "Keysanity"});
+        case Option::RandomizeCaveEntrances: return choice({"Off", "Caves", "Caves and fairy fountains"});
+        case Option::PigColor: return choice({"Black", "Pink", "Spotted", "Random"});
+        case Option::TargetType: return choice({"Hold", "Switch"});
+        case Option::Camera: return choice({"Standard", "Reverse left/right"});
+        case Option::FirstPersonCamera: return choice({"Standard", "Reverse up/down"});
+        case Option::Gyroscope: return choice({"Off", "On"});
+        case Option::UIDisplay: return choice({"On", "Off"});
+        case Option::NumRequiredDungeons: return count(0, MAXIMUM_NUM_DUNGEONS);
+        case Option::DamageMultiplier: return count(2, int(MAXIMUM_DAMAGE_MULTIPLIER));
+        case Option::PathHints: return count(0, MAXIMUM_PATH_HINT_COUNT);
+        case Option::BarrenHints: return count(0, MAXIMUM_BARREN_HINT_COUNT);
+        case Option::ItemHints: return count(0, MAXIMUM_ITEM_HINT_COUNT);
+        case Option::LocationHints: return count(0, MAXIMUM_LOCATION_HINT_COUNT);
+        case Option::StartingHC: return count(1, MAXIMUM_STARTING_HC);
+        case Option::StartingHP: return count(0, MAXIMUM_STARTING_HP);
+        case Option::StartingJoyPendants: return count(0, MAXIMUM_STARTING_JOY_PENDANTS);
+        case Option::StartingSkullNecklaces: return count(0, MAXIMUM_STARTING_SKULL_NECKLACES);
+        case Option::StartingBokoBabaSeeds: return count(0, MAXIMUM_STARTING_BOKO_BABA_SEEDS);
+        case Option::StartingGoldenFeathers: return count(0, MAXIMUM_STARTING_GOLDEN_FEATHERS);
+        case Option::StartingKnightsCrests: return count(0, MAXIMUM_STARTING_KNIGHTS_CRESTS);
+        case Option::StartingRedChuJellys: return count(0, MAXIMUM_STARTING_RED_CHU_JELLYS);
+        case Option::StartingGreenChuJellys: return count(0, MAXIMUM_STARTING_GREEN_CHU_JELLYS);
+        case Option::StartingBlueChuJellys: return count(0, MAXIMUM_STARTING_BLUE_CHU_JELLYS);
+        default: return Kind{"bool", 0, 1, {}};
+    }
+}
+
 // The official randomizer builds add a secret key to race-mode (no spoiler log) seeds; no other build can make the same game.
 const char* kRaceMode =
     "Race-mode settings (no spoiler log) are not supported: the official TWWHD Randomizer adds a secret key to those "
@@ -154,7 +196,6 @@ bool apply_preset(Config& c, const std::string& name) {
         set("Path Hints", 3);
         set("Barren Hints", 2);
         set("Item Hints", 3);
-        set("Damage Multiplier", 1);
         return true;
     }
     if (name == "everything") {
@@ -279,7 +320,12 @@ int main(int argc, char** argv) {
         for (int n = 1; n < (int)Option::COUNT; n++) {
             Option o = (Option)n;
             if (!plain_setting(o)) continue;
-            r += (first ? "" : ",") + json_str(settingToName(o)) + ":" + std::to_string(c.settings.getSetting(o));
+            const Kind k = kind_of(o);
+            std::string choices = "[";
+            for (size_t i = 0; i < k.choices.size(); i++) choices += (i ? "," : "") + json_str(k.choices[i]);
+            Json d;
+            d.i("value", c.settings.getSetting(o)).s("kind", k.kind).i("min", k.lo).i("max", k.hi).raw("choices", choices + "]");
+            r += (first ? "" : ",") + json_str(settingToName(o)) + ":" + d.str();
             first = false;
         }
         return ok(Json().raw("settings", r + "}").s("seed", c.seed).s("permalink", c.getPermalink()));
@@ -294,7 +340,9 @@ int main(int argc, char** argv) {
         if (!setting(args[1], o)) return 1;
         char* end = nullptr;
         long v = strtol(args[2].c_str(), &end, 10);
-        if (!end || *end || v < 0 || v > 255) return fail("not a value index: " + args[2]);
+        const Kind k = kind_of(o);
+        if (!end || *end || v < k.lo || v > k.hi)
+            return fail("not a value of " + args[1] + ": " + args[2] + " (" + std::to_string(k.lo) + ".." + std::to_string(k.hi) + ")");
         c.settings.setSetting(o, (size_t)v);
         return store(Json().s("name", args[1]).i("value", c.settings.getSetting(o)));
     }

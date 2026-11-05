@@ -3632,12 +3632,98 @@ def gui_main(args):
         write_state(ctx.data_dir, st)
         reply(req, start_decomp=on)
 
+    # ---- the in-app randomizer (randomizer_seeds.py): Randomizer page of the setup window
+    def rando_reply(req, **kw):
+        import randomizer_seeds
+        work = randomizer_seeds.settings_dir(ctx.data_dir)
+        st = randomizer_seeds.call(sys.modules[__name__], work, "settings", log=False)
+        reply(req, settings=st["settings"], seed=st["seed"], permalink=st["permalink"],
+              seeds=randomizer_seeds.listing(ctx.data_dir, bool(ctx.state().get("code_mods"))), **kw)
+
+    def rando_guard(req):
+        """None when the randomizer can be used here, else the failure reply sent"""
+        import randomizer_seeds
+        try:
+            randomizer_seeds.tool(sys.modules[__name__])
+            if not ctx.installed():
+                raise SetupError("Install the game first (the USA release as it is), then make randomized games.")
+            randomizer_seeds.check_base(sys.modules[__name__], ctx)
+        except SetupError as e:
+            fail(req, "unavailable", str(e))
+            return True
+        return None
+
+    def do_rando_state(req):
+        if rando_guard(req):
+            return
+        rando_reply(req)
+
+    def do_rando_change(req):
+        """{set: {name: index}} | {preset} | {seed} | {new_seed: true} | {permalink} | {defaults: true}"""
+        import randomizer_seeds
+        if rando_guard(req):
+            return
+        work = randomizer_seeds.settings_dir(ctx.data_dir)
+        me = sys.modules[__name__]
+        try:
+            for name, value in (req.get("set") or {}).items():
+                randomizer_seeds.call(me, work, "set", name, int(value))
+            if req.get("defaults"):
+                randomizer_seeds.call(me, work, "defaults")
+            if req.get("preset"):
+                randomizer_seeds.configure(me, ctx.data_dir, preset=req["preset"])
+            if req.get("permalink"):
+                randomizer_seeds.configure(me, ctx.data_dir, permalink=req["permalink"].strip())
+            if req.get("seed"):
+                randomizer_seeds.configure(me, ctx.data_dir, seed=req["seed"].strip())
+            if req.get("new_seed"):
+                randomizer_seeds.call(me, work, "new-seed")
+        except (SetupError, ValueError) as e:
+            return fail(req, "refused", str(e))
+        rando_reply(req)
+
+    def do_rando_make(req):
+        """a new randomized game with the settings as they are, built and chosen for the next start"""
+        import randomizer_seeds
+        if rando_guard(req):
+            return
+        me = sys.modules[__name__]
+        try:
+            entry = randomizer_seeds.make(me, ctx, say)
+            hooks = bool(ctx.state().get("code_mods"))
+            randomizer_seeds.select(me, ctx, entry["id"], hooks)
+        except SetupError as e:
+            return fail(req, "failed", str(e))
+        rando_reply(req, made=entry["id"])
+
+    def do_rando_play(req):
+        """{seed: seed id | "vanilla"}: the game the next start plays (built first when needed)"""
+        import randomizer_seeds
+        if rando_guard(req):
+            return
+        try:
+            randomizer_seeds.select(sys.modules[__name__], ctx, req.get("seed") or "vanilla", bool(ctx.state().get("code_mods")))
+        except SetupError as e:
+            return fail(req, "failed", str(e))
+        rando_reply(req)
+
+    def do_rando_delete(req):
+        """{seed}: a seed's files go (its saves stay); the window asked the player first"""
+        import randomizer_seeds
+        try:
+            randomizer_seeds.delete(sys.modules[__name__], ctx, req.get("seed") or "")
+        except SetupError as e:
+            return fail(req, "refused", str(e))
+        rando_reply(req)
+
     handlers = {"probe": probe, "check_keys": check, "install": do_install, "import_save": save,
                 "import_existing": do_import_existing, "remove_toolchain": do_remove_toolchain,
                 "shortcut": do_shortcut, "launch": do_launch, "hello": lambda req: hello(),
                 "start_decomp": do_start_decomp,
                 "language_sources": do_language_sources, "add_language_source": do_add_language_source,
-                "remove_language_source": do_remove_language_source}
+                "remove_language_source": do_remove_language_source,
+                "rando_state": do_rando_state, "rando_change": do_rando_change, "rando_make": do_rando_make,
+                "rando_play": do_rando_play, "rando_delete": do_rando_delete}
     hello()
     for line in sys.stdin:
         line = line.strip()

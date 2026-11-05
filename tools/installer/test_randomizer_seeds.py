@@ -41,6 +41,14 @@ if c == "load-permalink":
     if cmd[1].startswith("RACE"): fail("Race-mode settings (no spoiler log) are not supported")
     _, st["preset"], st["seed"] = cmd[1].split("-", 2); done(permalink=link())
 if c == "locations": done(locations=[])
+if c == "settings":
+    st.setdefault("mail", 0)
+    done(settings={"Progress Mail": {"value": st["mail"], "kind": "bool", "min": 0, "max": 1, "choices": []}},
+         seed=st["seed"], permalink=link())
+if c == "set":
+    if cmd[1] != "Progress Mail": fail("no plain setting named " + cmd[1])
+    st["mail"] = int(cmd[2]); done(name=cmd[1], value=st["mail"])
+if c == "defaults": st["preset"] = "standard"; st["mail"] = 0; done(seed=st["seed"])
 if c == "generate":
     game, out = Path(cmd[cmd.index("--game") + 1]), Path(cmd[cmd.index("--out") + 1])
     for d in ("code", "content/Common", "meta"): (out / d).mkdir(parents=True, exist_ok=True)
@@ -58,7 +66,7 @@ fail("unknown " + c)
 '''
 
 
-class Seeds(unittest.TestCase):
+class Base(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
@@ -102,6 +110,8 @@ class Seeds(unittest.TestCase):
         lines = []
         return rs.make(setup, self.ctx, lines.append, **k), lines
 
+
+class Seeds(Base):
     def test_make_registers_trimmed_seed(self):
         entry, lines = self.make(preset="beginner", seed="Alpha")
         rpx = b"randomized LINK-beginner-Alpha"
@@ -164,6 +174,8 @@ class Seeds(unittest.TestCase):
     def test_select_and_delete(self):
         a, _ = self.make(seed="Alpha")
         b, _ = self.make(seed="Beta")
+        # setup's install selected the game as it is (code_mods.remember_installed)
+        (self.data / "code-mods-active.json").write_text(json.dumps({"state": "ready", "hooks": False, "fingerprint": "fp0"}))
         built = []
         rebuild = lambda setup_, c, hooks, *rest: built.append((c.game_dir, hooks)) or {"state": "ready", "cached": False,
                                                                                          "fingerprint": "fp%d" % len(built)}
@@ -173,6 +185,7 @@ class Seeds(unittest.TestCase):
             self.assertEqual(self.ctx.game_dir, str(self.game))  # (a copy is built from the seed; the install stays)
             self.assertEqual(rs.listing(self.data)["playing"], a["id"])
             self.assertEqual(rs.find(self.data, a["id"])["builds"], {"hooks": "fp1"})
+            self.assertEqual(rs.load(self.data)["vanilla_builds"], {"plain": "fp0"})  # noted before switching
             with self.assertRaisesRegex(setup.SetupError, "the one the game starts"):
                 rs.delete(setup, self.ctx, a["id"])
             saves = self.data / ("save-randomizer-" + b["rpx_sha256"])
@@ -184,7 +197,7 @@ class Seeds(unittest.TestCase):
             rs.select(setup, self.ctx, "vanilla", False)
             self.assertEqual(built[-1], (str(self.game), False))
             self.assertEqual(rs.listing(self.data)["playing"], "vanilla")
-            self.assertEqual(rs.load(self.data)["vanilla_builds"], {"plain": "fp2"})
+            self.assertEqual(rs.load(self.data)["vanilla_builds"], {"plain": "fp2"})  # (the rebuild's own)
             with self.assertRaisesRegex(setup.SetupError, "no randomized game"):
                 rs.select(setup, self.ctx, "ffff", False)
 
@@ -208,6 +221,61 @@ class Seeds(unittest.TestCase):
         with mock.patch.dict(os.environ, {"WWHD_RANDO_EXE": str(Path(self.tmp.name) / "none")}):
             with self.assertRaisesRegex(setup.SetupError, "no randomizer"):
                 self.make()
+
+
+class GuiProtocol(Base):
+    """the setup window's Randomizer page: setup.py's rando_* requests"""
+
+    def run_gui(self, *requests):
+        from io import StringIO
+        ctx = SimpleNamespace(args=SimpleNamespace(code_mods="0", decomp=False, model_sweep=False),
+                              manifest={"platform": "test", "toolchain": {}, "version": "test"}, version="test",
+                              data_dir=str(self.data), app_dir=str(self.data), game_dir=str(self.game),
+                              state=lambda: {"code_mods": False}, installed=lambda: True)
+        lines = "".join(json.dumps(dict(r, id=i + 1)) + "\n" for i, r in enumerate(requests))
+        out = StringIO()
+        built = []
+        rebuild = lambda setup_, c, hooks, *rest: built.append(c.game_dir) or {"state": "ready", "fingerprint": "f" * 64}
+        with mock.patch.object(setup, "Ctx", return_value=ctx), mock.patch.object(setup, "GUI", None), \
+             mock.patch.object(setup, "import_sources", return_value=(None, [])), \
+             mock.patch("code_mods.rebuild", side_effect=rebuild), \
+             mock.patch.object(setup.sys, "stdin", io.StringIO(lines)), mock.patch.object(setup.sys, "stdout", out):
+            self.assertEqual(setup.gui_main(ctx.args), 0)
+        replies = [json.loads(l) for l in out.getvalue().splitlines() if json.loads(l).get("event") == "reply"]
+        return {r["cmd"] + str(r["id"]): r for r in replies}, built
+
+    def test_page_requests(self):
+        r, built = self.run_gui({"cmd": "rando_state"},
+                                {"cmd": "rando_change", "set": {"Progress Mail": 1}},
+                                {"cmd": "rando_change", "preset": "everything", "seed": "Gamma"},
+                                {"cmd": "rando_change", "permalink": "RACE-x"},
+                                {"cmd": "rando_make"},
+                                {"cmd": "rando_play", "seed": "vanilla"},
+                                {"cmd": "rando_change", "set": {"Starting Gear": 1}})
+        self.assertTrue(r["rando_state1"]["ok"])
+        self.assertEqual(r["rando_state1"]["settings"]["Progress Mail"]["value"], 0)
+        self.assertEqual(r["rando_change2"]["settings"]["Progress Mail"]["value"], 1)
+        self.assertEqual(r["rando_change3"]["permalink"], "LINK-everything-Gamma")
+        self.assertFalse(r["rando_change4"]["ok"])
+        self.assertIn("Race-mode", r["rando_change4"]["message"])
+        made = r["rando_make5"]
+        self.assertTrue(made["ok"])
+        self.assertEqual(made["seeds"]["playing"], made["made"])
+        self.assertEqual(made["seeds"]["seeds"][0]["hash"], "Hash Gamma")
+        self.assertEqual(built[0], str(rs.seed_dir(self.data, made["made"]) / "out"))
+        self.assertTrue(r["rando_play6"]["ok"], r["rando_play6"])
+        self.assertEqual(r["rando_play6"]["seeds"]["playing"], "vanilla")
+        self.assertEqual(built[1], str(self.game))
+        self.assertFalse(r["rando_change7"]["ok"])
+        r, _ = self.run_gui({"cmd": "rando_delete", "seed": made["made"]})
+        self.assertEqual(r["rando_delete1"]["seeds"]["seeds"], [])
+
+    def test_unavailable(self):
+        with mock.patch.dict(os.environ, {"WWHD_RANDO_EXE": str(Path(self.tmp.name) / "none")}):
+            r, _ = self.run_gui({"cmd": "rando_state"})
+        self.assertFalse(r["rando_state1"]["ok"])
+        self.assertEqual(r["rando_state1"]["problem"], "unavailable")
+        self.assertIn("no randomizer", r["rando_state1"]["message"])
 
 
 class Trim(unittest.TestCase):

@@ -64,6 +64,12 @@ class RandoCli(unittest.TestCase):
         s = self.cli('settings')['settings']
         self.assertIn('Progress Dungeons', s)
         self.assertNotIn('Starting Gear', s)
+        self.assertEqual(s['Progress Mail']['kind'], 'bool')
+        self.assertEqual((s['Path Hints']['kind'], s['Path Hints']['min'], s['Path Hints']['max']), ('count', 0, 7))
+        self.assertEqual(s['Dungeon Small Keys']['choices'][0], 'Vanilla')
+        self.assertEqual(s['Damage Multiplier']['min'], 2)
+        self.cli('set', 'Path Hints', '8', ok=False)  # outside the PC randomizer's range
+        self.cli('set', 'Damage Multiplier', '1', ok=False)
         self.cli('set', 'Progress Mail', '1')
         self.assertEqual(self.cli('get', 'Progress Mail')['value'], 1)
         self.cli('set', 'Progress Mail', '0')

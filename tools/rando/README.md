@@ -25,8 +25,8 @@ and `last.json`.
 | Command | What it does |
 |---|---|
 | `version` | `1.2.0` |
-| `settings` | every plain setting by its randomizer name, as a value index; the seed and the permalink |
-| `get NAME`, `set NAME INDEX` | one setting (names as in `options.cpp`, e.g. `Progress Dungeons`) |
+| `settings` | every plain setting by its randomizer name: its value index, kind (bool, count, choice), range and choice names as the PC randomizer's window offers them; the seed and the permalink |
+| `get NAME`, `set NAME INDEX` | one setting (names as in `options.cpp`, e.g. `Progress Dungeons`); values outside that range are refused |
 | `seed`, `set-seed TEXT`, `new-seed` | the seed name |
 | `defaults`, `preset beginner\|standard\|everything` | the randomizer's defaults, optionally with a few changes; the seed name stays |
 | `permalink`, `load-permalink TEXT` | the same permalink as the PC randomizer 1.2.0 |

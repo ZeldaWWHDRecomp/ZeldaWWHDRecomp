@@ -7,7 +7,23 @@ an experimental installer feature, not a claim that every seed is compatible.
 
 Setup can now make randomized games itself. It includes TWWHD Randomizer 1.2.0 by SuperDude88
 and its contributors (MIT), so you don't need the PC randomizer or a full copy of the game per
-seed. Install the game as it is (USA release) first. Then run:
+seed. Install the game as it is (USA release) first.
+
+In the setup window, choose **Randomized games (TWWHD Randomizer)**:
+- **New game** has the presets (beginner, standard, everything), the seed name, the permalink
+  (copy, or paste one), and every setting on six pages. **Make this game** makes and builds it;
+  the game plays it from its next start.
+- **Games** lists the game as it is and every randomized game made, each with **Play this**,
+  **Copy permalink**, **Spoiler log...** (it asks first) and **Delete...** (asks first; the saves
+  stay).
+
+In the game, **Settings > Randomizer** shows:
+- this game's seed hash words and permalink;
+- the games already built, to play from the next start;
+- the spoiler log, after a question: the way to the end, every location, entrances, hints,
+  charts, and a map of the sea chart's squares with the places of the locations.
+
+The same in a terminal:
 
 ```sh
 python3 tools/installer/setup.py --randomize --rando-preset standard   # or beginner, everything
