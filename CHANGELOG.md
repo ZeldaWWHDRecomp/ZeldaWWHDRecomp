@@ -7,6 +7,19 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: a shader that crashes the GPU driver no longer stops the game from starting** (#418, from the GreenNaugahyde
+  Android fork, thanks @GreenNaugahyde). If compiling a shader or pipeline crashed the game (seen with Huawei's
+  Maleoon driver), it was compiled again at every start. Now the next start leaves that one out and logs it; it's
+  tried again after a driver, GPU or port update. (Linux, macOS and Android; Windows doesn't use this.)
+- **Android: BC textures decoded on the CPU on Huawei GPUs** (#419, from the GreenNaugahyde and Nycolazs Android forks,
+  thanks @GreenNaugahyde and @Nycolazs). Huawei's Maleoon driver crashed compiling the texture decoder shader, so those
+  GPUs now decode BC textures on the CPU (`WWHD_VK_BC_CPU=0` still tries the shader).
+- **Android: no save state when memory is about to run out** (#421, from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). With very little free memory, Android could close the game in the middle of a save state. Such a
+  save is now refused with "not saved (too little free memory, close other apps)"; automatic states skip quietly.
+- **Dynamic resolution also steps down when memory runs low** (#422, from the GreenNaugahyde and Nycolazs Android forks,
+  thanks @GreenNaugahyde and @Nycolazs). While dynamic resolution is on, low free memory now lowers the resolution
+  and it goes back up once memory recovers; on devices with less than 3.8 GB of RAM it starts at 1× at most.
 - **Quick doors: new "Walk through" mode** (#426, from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Quick
   doors is now Off, Faster or Walk through. With Walk through, dungeon shutters and house doors open as Link walks up,
   he walks through without the door scene and the door shuts behind him; going in or out of a house is quicker too.
