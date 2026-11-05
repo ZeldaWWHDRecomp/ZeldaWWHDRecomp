@@ -17,10 +17,10 @@
 // and are not part of this (docs/settings-page.md).
 //
 // No pauses in texts: the wait code 0E 0001 0006 0002 <frames> gets 0 frames in every message file (MSBT) in
-// memory (msbt_waits.h). The files are found by a scan of MEM2 for "MsgStdBn" on a thread of its own, when a
-// message starts and the last scan is at least kRescanSeconds ago (a new place loads its message files). The
+// memory (msbt_waits.h). The files are found by a scan of MEM2 for "MsgStdBn" on a thread of its own (about a
+// second on a Mac), when a new message starts and the last scan is at least kRescanSeconds ago (a new place loads its message files). The
 // game's values are kept and written back when it goes off (where the wait is still a 0).
-// WWHD_INSTANT_TEXT_LOG=1 logs each message seen.
+// WWHD_INSTANT_TEXT_LOG=1 logs each message seen and how far it is laid out after 1, 2, 4 ... 64 steps.
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -133,23 +133,31 @@ void set_no_text_pauses(bool on) {
 // interp.cpp's fpcEx_Handler hook, before and after the processes' execute (full logic passes only)
 void instant_text_step() {
     const bool instant = instant_text(), pauses = no_text_pauses();
-    if (!instant && !pauses) return;
+    if (!instant && !pauses && !kLog) return;  // (the log also reports an unchanged game)
     const uint32_t manager = ld32(GD(kManager));
     if (!guest_ptr(manager) || ld32(manager + kMode) != 1) return;
     const uint32_t msg = manager + kMessage;
-    if (kLog) {
-        static uint32_t last = ~0u;
+    if (kLog) {  // each message: its number, then the characters laid out after 1, 2, 4, ... 64 steps
+        static uint32_t last = ~0u, steps = 0;
+        static bool second = false;  // (called twice a step)
         const uint32_t number = ld32(msg + 0x11C);  // HdMsgText::mMessageNumber
         if (number != last) {
-            last = number;
-            LOG("[instant-text] message %u: draw type %u, progress %d / %d", number, ld8(msg + kDrawType),
-                (int32_t)ld32(msg + 0x650), (int32_t)ld32(msg + 0x654));
+            last = number, steps = 0, second = false;
+            LOG("[instant-text] message %u starts: draw type %u", number, ld8(msg + kDrawType));
         }
+        if ((second = !second) && ++steps <= 64 && !(steps & (steps - 1)))
+            LOG("[instant-text] message %u after %u steps: drawn %u of %u, draw type %u", number, steps,
+                ld32(msg + 0x68C), ld32(msg + 0x63C), ld8(msg + kDrawType));  // HdMsgText mDrawIndex, mCharacterIndex
     }
     if (instant && ld8(msg + kDrawType) != 1) st8(msg + kDrawType, 1);
-    if (pauses && !g_scanning.load(std::memory_order_relaxed) &&
-        now_s() - g_last_scan.load(std::memory_order_relaxed) >= kRescanSeconds)
+    // a new message (not every step of a long talk) may come from files loaded since the last scan
+    static uint32_t scanned_for = ~0u;
+    const uint32_t number = ld32(msg + 0x11C);
+    if (pauses && number != scanned_for && !g_scanning.load(std::memory_order_relaxed) &&
+        now_s() - g_last_scan.load(std::memory_order_relaxed) >= kRescanSeconds) {
+        scanned_for = number;
         start_scan();
+    }
 }
 
 }  // namespace mods
