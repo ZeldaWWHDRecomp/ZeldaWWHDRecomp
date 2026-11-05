@@ -4135,3 +4135,23 @@ add_executable(map_hud_native_test runtime/tools/map_hud_native_test.cpp runtime
 target_include_directories(map_hud_native_test PRIVATE runtime/include runtime/src)
 target_compile_options(map_hud_native_test PRIVATE -UNDEBUG)
 add_test(NAME map_hud_native COMMAND map_hud_native_test)
+
+# Declarative guest save ownership: native filesystem/cloud and state guards.
+add_executable(save_profile_test runtime/tools/save_profile_test.cpp)
+target_include_directories(save_profile_test PRIVATE runtime/src runtime/include)
+target_compile_options(save_profile_test PRIVATE -UNDEBUG)
+target_link_libraries(save_profile_test PRIVATE Threads::Threads)
+add_test(NAME save_profile COMMAND save_profile_test)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME save_namespace_startup_order COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_SOURCE_DIR}/runtime/tools/test_save_namespace_startup.py)
+endif()
+
+foreach(mode success malformed conflict disabled untrusted code-off unsupported native-failure compiler-failure graphics-failure changed ordinary-conflict session)
+  add_test(NAME save_profile_startup_${mode} COMMAND mod_package_test --save-profile-startup ${mode} $<TARGET_FILE:mod_fixture>)
+endforeach()
+
+
+foreach(mode format damaged shape size)
+  add_test(NAME mod_profile_read_failure_${mode} COMMAND mod_package_test --profile-read-failure ${mode})
+endforeach()

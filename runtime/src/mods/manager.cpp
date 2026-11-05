@@ -267,6 +267,9 @@ void load_saved() {
 bool set_enabled(std::string_view id, bool on) {
     const auto* entry = find(id);
     if (!entry) return false;
+    std::string error;
+    if (entry->enabled() != on && !packages::builtin_change_allowed(std::string(id), on, error))
+        return false;
     if (entry->enabled() != on) entry->apply(on);
     if (player_preferences()) hostui::set(key(*entry).c_str(), on ? "1" : "0");
     packages::remember_builtin(std::string(id), on);

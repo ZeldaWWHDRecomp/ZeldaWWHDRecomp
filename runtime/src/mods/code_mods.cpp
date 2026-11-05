@@ -124,11 +124,13 @@ const char* rebuild_duration(){
 #endif
 }
 bool enabled(){
+    // A recovery override disables guest loading even in an Android build that
+    // contains the hooks. It never changes the compiled game or save paths.
+    if(const char* value=std::getenv("WWHD_CODE_MODS"))return std::string(value)=="1";
 #ifdef __ANDROID__
     // the phone's build is the choice: the setup builds the game code with or without mod support
     return guestmods::hooks_built();
 #endif
-    if(const char* value=std::getenv("WWHD_CODE_MODS"))return std::string(value)=="1";
     std::string value;return hostui::get("code-mods",value)&&value=="1";
 }
 void request(bool on,const std::string& mod){std::lock_guard guard(mutex);if(state.building)return;state={};state.requested=true;state.target=on;state.mod=mod;pending_mod=mod;fprintf(stderr,"[code mods] rebuild offer: support %s%s%s\n",on?"on":"off",mod.empty()?"":" for ",mod.c_str());}
