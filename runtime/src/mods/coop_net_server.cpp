@@ -74,6 +74,9 @@ std::map<std::pair<std::string, int8_t>, uint16_t> g_runner;
 // the party's record, signed by its leader (made here while leading, else the leader's newest): sent again after a
 // fresh welcome so the party survives a server restart (DESIGN 2.6 / 3.4; proto/messages.h PartyRecord)
 constexpr uint8_t kAppPartyRecord = 0x7E;
+// the party's switches as the server keeps them, for the pages and the game (g_ui_mu)
+uint16_t g_flags = 0;
+bool g_flags_known = false, g_leading = false;
 op::crypto::Identity g_identity;
 op::PartyRecord g_record;
 bool g_have_record = false;
@@ -199,6 +202,7 @@ std::string read_code(const std::string& spec) {
 
 }  // namespace
 
+bool set_party_flags(uint16_t flags, std::string& why);
 bool active() { return g_active; }
 
 bool start(const std::string& server, int port, const std::string& my_name, int my_tunic, std::string& why) {
@@ -234,6 +238,10 @@ void stop(const char* why) {
     if (g_client) g_client->stop(), delete g_client, g_client = nullptr, mods::trace("coop: server session stopped%s%s", why ? ": " : "", why ? why : "");
     g_active = false, g_status = why ? why : "Off", g_me_sid = 0, g_peers.clear(), g_party = {}, g_slot_of_me = 0, g_where_known = false;
     g_runner.clear();
+    {
+        std::lock_guard<std::mutex> l(g_ui_mu);
+        g_flags = 0, g_flags_known = g_leading = false;
+    }
     {
         std::lock_guard<std::mutex> l(g_ui_mu);
         g_invites.clear(), g_actions.clear();
@@ -439,6 +447,15 @@ void poll(Handler& h) {
         case op::ClientEvent::kPartyState:
             if (e.party.party != g_party.party) g_runner.clear();
             g_party = e.party;
+            {
+                std::lock_guard<std::mutex> l(g_ui_mu);
+                if (e.party.party && e.party.flags != g_flags)
+                    mods::trace("coop: server: party switches %04X (progress %d, rupees %d, friendly fire %d, together %d)", e.party.flags,
+                                !!(e.party.flags & op::kPartySharedProgress), !!(e.party.flags & op::kPartySharedRupees),
+                                !!(e.party.flags & op::kPartyFriendlyFire), !!(e.party.flags & op::kPartyStayTogether));
+                g_flags = e.party.flags, g_flags_known = e.party.party != 0 && online_members() > 1;
+                g_leading = g_flags_known && leader() == g_me_sid;
+            }
             if (e.party.party && e.party.leader == g_me_sid && e.party.members.size() > 1) {  // (leading: the record made and given out)
                 g_record = op::make_party_record(e.party, g_identity, (uint32_t)time(nullptr)), g_have_record = true;
                 const op::Bytes b = op::encode_party_record(g_record);
@@ -479,6 +496,12 @@ void poll(Handler& h) {
         }
         if (g_client->state() == op::ClientState::kOnline) for (auto& f : todo) f(*g_client);
         else if (!todo.empty()) say("Not online yet: try again once the status says Online", false);
+    }
+    // test aid: WWHD_ONLINE_PARTY_FLAGS=<hex>: the party's switches set to that once this game leads a party
+    if (static const char* pf = getenv("WWHD_ONLINE_PARTY_FLAGS"); pf && g_leading) {
+        std::string why;
+        if (set_party_flags((uint16_t)strtoul(pf, nullptr, 16), why)) mods::trace("coop: server: party switches asked: %s", pf);
+        pf = nullptr;
     }
     // test aid: WWHD_ONLINE_INVITE=<friend code> or @<file holding it>: invited once online (the file may come later)
     if (!g_auto_invite.empty() && g_client->state() == op::ClientState::kOnline) {
@@ -527,6 +550,20 @@ void leave_party() {
     std::lock_guard<std::mutex> l(g_ui_mu);
     g_actions.push_back([](op::Client&) { g_have_record = false; });  // (left on purpose: not asked back)
     g_actions.push_back([](op::Client& c) { c.party_leave(); });
+}
+
+bool party_flags(uint16_t& flags, bool& leading) {
+    std::lock_guard<std::mutex> l(g_ui_mu);
+    if (!g_active || !g_flags_known) return false;
+    flags = g_flags, leading = g_leading;
+    return true;
+}
+bool set_party_flags(uint16_t flags, std::string& why) {
+    std::lock_guard<std::mutex> l(g_ui_mu);
+    if (!g_flags_known) return why = "you are in no party", false;
+    if (!g_leading) return why = "only the party's leader changes these", false;
+    g_actions.push_back([flags](op::Client& c) { c.party_settings(flags); });
+    return true;
 }
 
 bool runners(std::vector<Runner>& out) {

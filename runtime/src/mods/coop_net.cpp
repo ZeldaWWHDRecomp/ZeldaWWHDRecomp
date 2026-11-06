@@ -77,6 +77,8 @@ void leave_party();
 std::vector<servers::Server> saved_servers();
 void forget_server(const std::string& addr, int port);
 bool runners(std::vector<Runner>& out);
+bool party_flags(uint16_t& flags, bool& leading);
+bool set_party_flags(uint16_t flags, std::string& why);
 }  // namespace srv
 #define VIA_SERVER(call) if (srv::active()) return srv::call
 #else
@@ -521,6 +523,11 @@ void leave_party() { srv::leave_party(); }
 std::vector<servers::Server> saved_servers() { return srv::saved_servers(); }
 void forget_server(const std::string& addr, int port) { srv::forget_server(addr, port); }
 bool server_runners(std::vector<Runner>& out) { return srv::active() && srv::runners(out); }
+bool party_flags(uint16_t& flags, bool& leading) { return srv::active() && srv::party_flags(flags, leading); }
+bool set_party_flags(uint16_t flags, std::string& why) {
+    if (!srv::active()) return why = "not through a server", false;
+    return srv::set_party_flags(flags, why);
+}
 #else
 std::string friend_code() { return ""; }
 bool invite(const std::string&, std::string& why) { why = "this build has no server connection"; return false; }
@@ -530,5 +537,12 @@ void leave_party() {}
 std::vector<servers::Server> saved_servers() { return {}; }
 void forget_server(const std::string&, int) {}
 bool server_runners(std::vector<Runner>& out) { out.clear(); return false; }
+bool party_flags(uint16_t&, bool&) { return false; }
+bool set_party_flags(uint16_t, std::string& why) { why = "this build has no server connection"; return false; }
 #endif
+bool party_flag(PartyFlag f, bool otherwise) {
+    uint16_t flags = 0;
+    bool leading = false;
+    return party_flags(flags, leading) ? (flags & f) != 0 : otherwise;
+}
 }  // namespace mods::coop::net

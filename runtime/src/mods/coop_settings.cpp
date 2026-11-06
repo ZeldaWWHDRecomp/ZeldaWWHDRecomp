@@ -56,6 +56,7 @@ void set_addr(const std::string& a) { change([&](sync::Settings& s) { s.addr = a
 void set_name(const std::string& n) { change([&](sync::Settings& s) { s.name = n; }); }
 
 // ---- the Settings window's tab ----
+bool party_leader = false;
 void draw_tab() {
     sync::Settings s = sync::settings();
     ImGui::TextWrapped("Play together with up to three friends. One of you hosts, the others join.");
@@ -145,6 +146,22 @@ void draw_tab() {
             if (ImGui::Button(("No##" + std::to_string(party)).c_str())) hostui::post([p = party] { net::answer(p, false); });
         }
         if (net::via_server() && ImGui::Button("Leave the party")) hostui::post([] { net::leave_party(); });
+        if (uint16_t flags = 0; [&] { bool l = false; return net::party_flags(flags, l) && (party_leader = l, true); }()) {
+            ImGui::TextUnformatted(party_leader ? "Party switches (you lead: yours to set)" : "Party switches (the leader sets them)");
+            ImGui::BeginDisabled(!party_leader);
+            const struct { net::PartyFlag f; const char* name; } sw[] = {
+                {net::kShareProgress, "Shared progress"}, {net::kShareRupees, "Shared rupees"},
+                {net::kFriendlyFire, "Friendly fire"}, {net::kStayTogether, "Stay together (the leader's world)"}};
+            for (const auto& w : sw) {
+                bool v = flags & w.f;
+                if (ImGui::Checkbox(w.name, &v)) {
+                    const uint16_t next = (uint16_t)(v ? flags | w.f : flags & ~w.f);
+                    std::string why;
+                    if (!net::set_party_flags(next, why)) ss::notice("Can't change it: " + why);
+                }
+            }
+            ImGui::EndDisabled();
+        }
         ImGui::Separator();
     } else {
     if (ImGui::RadioButton("Host on this computer", s.role == 0)) hostui::post([] { change([](sync::Settings& x) { x.role = 0; }); });

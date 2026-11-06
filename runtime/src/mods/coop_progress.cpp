@@ -95,7 +95,7 @@ int g_rupees_in = 0;               // the others' gains not put in yet
 // rupee sharing: a party option, off by default (each player's own wallet; WWHD_COOP_SHARE_RUPEES=1 turns it on)
 bool share_rupees() {
     static const bool on = [] { const char* e = getenv("WWHD_COOP_SHARE_RUPEES"); return e && atoi(e); }();
-    return on;
+    return net::party_flag(net::kShareRupees, on);  // (through a server: the party's switch)
 }
 int wallet(uint32_t info) { return ld16(info + 4) + (int32_t)ld32(kRupeeCount); }
 
@@ -382,7 +382,7 @@ void step(Cpu* c, bool live) {
     if (changed > kReplaced) {
         mods::trace("coop: progress: %d fields changed at once (the save data replaced): not sent", changed);
         g_purse = -1;
-    } else if (!out.empty()) {
+    } else if (!out.empty() && net::party_flag(net::kShareProgress, true)) {
         net::send(-1, net::kProgress, out);
         mods::trace("coop: progress out:%s", said.c_str());
     }

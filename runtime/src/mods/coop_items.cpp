@@ -54,7 +54,7 @@ bool arrow_hit(Cpu* c, uint32_t a, Mine& m) {
         return std::hypot(from[0] + vx * t - p[0], from[2] + vz * t - p[2]) < 70 && y > p[1] && y < p[1] + 170;
     };
     for (int id = 0; id < net::kMaxPlayers; id++)
-        if (float p[3]; id != net::my_id() && sync::place(id, p) && near(p)) {
+        if (float p[3]; id != net::my_id() && net::party_flag(net::kFriendlyFire, true) && sync::place(id, p) && near(p)) {
             const int16_t way = (int16_t)(std::atan2(dx, dz) * 32768 / M_PI);
             net::send(-1, net::kPlayerHit, std::string{(char)id, (char)2} + std::string((const char*)&way, 2));
             guest_call(c, GC(0x025D57E4), {ld32(a + 4)});  // fopAcM_delete

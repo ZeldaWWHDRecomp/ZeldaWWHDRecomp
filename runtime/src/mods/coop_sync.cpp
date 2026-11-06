@@ -47,6 +47,7 @@
 namespace hlefs { extern std::atomic<bool> g_block_saves; }
 
 namespace mods::coop::sync {
+bool together();  // (below)
 namespace {
 
 const uint32_t kPlay = GD(0x1046F0B0), kStage = kPlay + 0x5134;
@@ -286,7 +287,7 @@ bool door_draw(const float* pad) {
 
 // (the hook) this stage change is held for the host's answer
 bool door_held(Cpu* c) {
-    if (g_door.go || !guest() || !arrived() || !c->r[3] || !settings().stay_together) return false;
+    if (g_door.go || !guest() || !arrived() || !c->r[3] || !together()) return false;
     char st[8] = {};
     strncpy(st, (const char*)mem::ptr(c->r[3]), 8);
     const Remote& h = g_remote[0];
@@ -312,7 +313,7 @@ struct Handler : net::Handler {
     void message(int from, net::Msg type, const uint8_t* d, size_t n) override {
         if ((type == net::kEffect || type == net::kSound) && g_effects_in.size() + g_sounds_in.size() >= 256) return;  // (bounded)
         if (type == net::kEffect) return g_effects_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
-        if (type == net::kProgress) return progress::received(d, n);
+        if (type == net::kProgress) return net::party_flag(net::kShareProgress, true) ? progress::received(d, n) : void();
         if (type == net::kDoorMove) return progress::door_moved(d, n);
         if (type == net::kRupees) return progress::rupees_received(d, n);
         if (type == net::kSound) return g_sounds_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
@@ -427,7 +428,7 @@ struct Handler : net::Handler {
         if (id != 0 || net::role() != net::Role::kOff) return ss::notice(net::name(id) + " left");
         g_failed = g_gen;  // (not joined again until the toggle, Connect again or the settings change)
         g_status = std::string("Stopped: ") + why;
-        if (g_was_guest && settings().stay_together) g_back = why;  // (the fork's way: the host's world is gone with it)
+        if (g_was_guest && together()) g_back = why;  // (the fork's way: the host's world is gone with it)
         else if (g_was_guest) {  // (Anchor's way: this game plays on, alone, in its own Quest Log, which it saves itself)
             hlefs::g_block_saves = false, g_was_guest = false;
             ss::notice(std::string("Online co-op: ") + why + ". You play on alone.");
@@ -486,6 +487,9 @@ Settings settings() {
     }
     return g_set;
 }
+
+// "stay together": through a server in a party the party's switch, else this game's setting
+bool together() { return net::party_flag(net::kStayTogether, settings().stay_together); }
 
 void set_settings(const Settings& s) {
     settings();
@@ -569,7 +573,7 @@ bool sound_started(Cpu* c) {
 }
 
 // (the host's world arrived: not the Quest Log the guest picked to have it loaded into, whose Link comes first)
-bool arrived() { return host() || (guest() && (!settings().stay_together || g_join_load == 2)); }
+bool arrived() { return host() || (guest() && (!together() || g_join_load == 2)); }
 
 bool take_deck_drop(float local[3]) {
     if (!g_deck_drop || !arrived()) return false;
@@ -631,7 +635,7 @@ void poll(Cpu* c, bool on) {
         net::stop(nullptr);
         for (Remote& r : g_remote) r = Remote{};
         for (int i = 0; i < kPuppets; i++) release(i);
-        if (was && settings().stay_together) g_back = "You left the host's game";
+        if (was && together()) g_back = "You left the host's game";
         else if (was) hlefs::g_block_saves = false, g_was_guest = false;
     }
     if (!g_back.empty()) {
@@ -781,7 +785,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 }
             }
         }
-        if (settings().stay_together && !ev && ev_was && ev_steps >= 90 && (bits() != ev_bits || stage_now() != ev_stage)) {
+        if (together() && !ev && ev_was && ev_steps >= 90 && (bits() != ev_bits || stage_now() != ev_stage)) {
             const std::string here = stage_now();
             const int8_t my_room = (int8_t)ld8(link + kRoom);
             for (int id = 1; id < net::kMaxPlayers; id++) {
@@ -898,7 +902,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     // falling (Asad's rule: a guest comes back beside the host; the host falling is a Game Over for everyone): a guest's
     // Link with no health for 45 steps (a fairy in a bottle revives sooner) tells the host, which sends its world again;
     // the host's own fall: once it plays again (a new Link after the Game Over), every guest is brought to it
-    if (settings().stay_together) {
+    if (together()) {
         const uint16_t life = ld16(ld32(GD(0x101F84DC)) + 0x20 + 2);  // dSv_player_status_a_c::mLife (quarter hearts)
         static uint32_t down_steps = 0, down_link = 0;
         down_steps = life ? 0 : down_steps + 1;
@@ -917,11 +921,12 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     }
     // the host: to each guest that has just joined, the team state (Anchor's way: the shared progress, union-merged into
     // the guest's own Quest Log, the guest staying where it is); with "stay together" (the fork's way) its world
-    if (!settings().stay_together && host()) {
+    if (!together() && host()) {
         for (const int id : g_send_join) {
             const std::vector<std::string> team = progress::team_state();
             size_t bytes = 0;
-            for (const std::string& m : team) if (!m.empty()) net::send(id, net::kProgress, m), bytes += m.size();
+            if (net::party_flag(net::kShareProgress, true))
+                for (const std::string& m : team) if (!m.empty()) net::send(id, net::kProgress, m), bytes += m.size();
             mods::trace("coop: the team state sent to player %d (%zu messages, %zu bytes)", id, team.size(), bytes);
         }
         g_send_join.clear();

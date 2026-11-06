@@ -112,5 +112,12 @@ void forget_server(const std::string& addr, int port);
 // is in no party through a server (then the host's own table, coop_sync, decides)
 struct Runner { char stage[8]; int8_t room; int slot; };
 bool server_runners(std::vector<Runner>& out);
+// The party's switches (GAPS C15; the server's PartyFlags, the same bits): through a server in a party, as its leader
+// set them (kept by the server, the same for every member); else `otherwise` (the direct transport: the host's own
+// settings, as before). The leader changes them (others: refused here)
+enum PartyFlag : uint16_t { kShareProgress = 1, kShareRupees = 2, kFriendlyFire = 4, kDeckRiding = 8, kStayTogether = 16 };
+bool party_flag(PartyFlag f, bool otherwise);
+bool party_flags(uint16_t& flags, bool& leading);  // false: in no party through a server
+bool set_party_flags(uint16_t flags, std::string& why);
 
 }  // namespace mods::coop::net

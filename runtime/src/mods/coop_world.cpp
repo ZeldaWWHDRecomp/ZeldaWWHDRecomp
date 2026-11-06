@@ -99,6 +99,7 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
     for (size_t i = 0; settled && i < held.size(); i++) {
         const sync::WorldMsg& m = held[i];
         Reader r{m.body};
+        if (m.type == net::kPlayerHit && !net::party_flag(net::kFriendlyFire, true)) continue;  // (the party's switch: off)
         if (m.type == net::kPlayerHit) {  // another player's sword or arrow on this game's Link (friendly fire)
             const uint8_t who = r.get<uint8_t>(), quarters = r.get<uint8_t>();
             const int16_t way = r.get<int16_t>();
@@ -125,7 +126,7 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
         if (cut && proc != was) {
             const double yaw = (int16_t)ld16(link + kAngleY) * M_PI / 32768;
             for (int id = 0; id < net::kMaxPlayers; id++)
-                if (float p[3]; id != net::my_id() && sync::place(id, p)) {
+                if (float p[3]; id != net::my_id() && net::party_flag(net::kFriendlyFire, true) && sync::place(id, p)) {
                     const double dx = p[0] - me.x, dz = p[2] - me.z, d = std::hypot(dx, dz);
                     const double off = std::remainder(atan2(dx, dz) - yaw, 2 * M_PI);
                     if (d > 200 || std::fabs(p[1] - me.y) > 120 || (!spin && std::fabs(off) > 75 * M_PI / 180)) continue;
