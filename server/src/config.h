@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "proto/mods.h"
+#include "proto/pvp.h"
 
 namespace online::server {
 
@@ -34,6 +35,15 @@ struct Config {
     std::string report_file = "reports.log";
     std::string admin_socket = "wwhd-online-admin.sock";  // "" disables the admin socket
     std::string team_state_file = "team-state.txt";  // parties and their team progress over restarts ("": memory only)
+
+    // PvP at sea (docs/online-server.md, "PvP at sea")
+    proto::PvpRules pvp = [] {
+        proto::PvpRules r;
+        r.zones = proto::default_pvp_zones();
+        return r;
+    }();
+    double pvp_hits_per_s = 8, pvp_shots_per_s = 4;
+    uint8_t pvp_max_damage = 16;  // quarter hearts in one hit
 
     // gameplay-mod rules (docs/online-server.md, "Mod rules"): none by default (anything goes)
     proto::ModRules mods;

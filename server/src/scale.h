@@ -81,6 +81,7 @@ enum LinkMsg : uint8_t {
     kLBan = 13,       // coordinator -> workers: u64 code40, u64 until, reason (an operator ban)
     kLKick = 14,      // coordinator -> workers: u64 code40, reason
     kLHandoffAck = 15,  // worker -> worker: the ticket is stored; now the client is sent over
+    kLPvpHit = 16,    // worker -> worker: u16 attacker id, u64 attacker key hash, u32 attacker party, PvpHit (victim)
 };
 
 

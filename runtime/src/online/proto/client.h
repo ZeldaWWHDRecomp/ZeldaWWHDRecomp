@@ -19,6 +19,7 @@
 #include "handshake.h"
 #include "messages.h"
 #include "protocol.h"
+#include "pvp.h"
 #include "tcp.h"
 #include "udp.h"
 
@@ -72,6 +73,14 @@ struct ClientEvent {
         kPartyResult,    // value (code), text
         kPartyWhere,     // members: where every online party member is (1 Hz)
         kServerRules,    // info (with info.mods: the server's mod rules), before joining; query_only stops after it
+        kPvpRules,       // pvp_rules
+        kPvpHitOn,       // pvp_hit (other = the attacker)
+        kPvpShotOf,      // pvp_shot (with the shooter)
+        kPvpKoOf,        // id = the victim, value16 = by
+        kPvpRupees,      // value16 = rupees to remove (they vanish)
+        kPvpState,       // value = PvpStateFlags, value16 = protection ms left
+        kPvpRespawn,     // value = square, pvp_hit.x / z = where
+        kPvpMarks,       // pvp_marks: {id, flags (bit 0 PvP active, bit 1 protected)} of players seen near or mid
     } kind;
     ClientState state = ClientState::kOff;
     std::string text;
@@ -99,6 +108,11 @@ struct ClientEvent {
     std::vector<MemberWhere> members;
     std::vector<ModProblem> mod_problems;  // kRefused with Refusal::kMods; kPartyResult with value 10
     std::vector<ModRef> mods;              // kPartyInvited: the party's mod set (its leader's)
+    uint16_t value16 = 0;
+    PvpRules pvp_rules;
+    PvpHit pvp_hit;
+    PvpShot pvp_shot;
+    std::vector<std::pair<uint16_t, uint8_t>> pvp_marks;
 };
 
 struct ClientStats {
@@ -125,7 +139,12 @@ public:
     void send_app(const AppHeader& h, const uint8_t* body, size_t n, bool reliable);
     void send_emote(uint8_t emote);
     void block(uint64_t key_hash, bool on);
-    void mute(uint64_t key_hash, bool on);  // that player's emotes, effects, sounds (and voice) stop reaching you
+    void mute(uint64_t key_hash, bool on);
+    // PvP at sea (pvp.h): the player's toggle and whether it is busy (protected); a hit, a shot, a knockout
+    void pvp_flag(bool on, bool busy);
+    void pvp_hit(const PvpHit& h);   // h.other = the victim
+    void pvp_shot(const PvpShot& s);
+    void pvp_ko(uint16_t by, uint16_t wallet);  // that player's emotes, effects, sounds (and voice) stop reaching you
     void report(uint64_t key_hash, uint8_t reason);
     void switch_copy();
     void join_copy_of(uint64_t key_hash);  // the copy a friend (or anyone visible) is in

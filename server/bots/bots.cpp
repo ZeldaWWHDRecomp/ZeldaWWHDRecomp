@@ -55,6 +55,8 @@ struct Options {
     int converge_s = 60;     // converge: everyone arrives within this long after the warm-up
     std::string pose_file;   // replay the game's pose recorder file (WWHD_COOP_RECORD) instead of moving
     float ring = 220.0f;     // pose file: bots stand on a ring of this radius around the recorded place
+    bool accept_invites = false;  // every bot accepts any party invitation
+    std::string codes_file;       // each bot's friend code, one a line, written once all have identities
 };
 
 // the game's recorder file: back-to-back records, each u32 total size (little-endian), stage[8] at +4, room s8 at
@@ -176,12 +178,15 @@ int main(int argc, char** argv) {
         else if (a == "--converge-s") o.converge_s = std::atoi(next().c_str());
         else if (a == "--pose-file") o.pose_file = next();
         else if (a == "--ring") o.ring = float(std::atof(next().c_str()));
+        else if (a == "--accept-invites") o.accept_invites = true;
+        else if (a == "--codes-file") o.codes_file = next();
         else {
             std::fprintf(stderr,
                          "usage: wwhd-online-bots [--host h] [--port p] [--count n] [--duration s] [--warmup s]\n"
                          "  [--scenario quiet|busy|town|mixed] [--pose-bytes n] [--pose-hz n] [--ramp n/s]\n"
                          "  [--seed n] [--report file.json] [--max-rss-mb n] [--phones %%] [--busy-squares n]\n"
-                         "  [--pose-file game.rec [--ring 220]]  (replay the game's pose recorder file)\n");
+                         "  [--pose-file game.rec [--ring 220]]  (replay the game's pose recorder file)\n"
+                         "  [--accept-invites] [--codes-file codes.txt]  (party tests)\n");
             return 2;
         }
     }
@@ -331,6 +336,15 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "bots: %s\n", why.c_str());
                 return 1;
             }
+            if (!o.codes_file.empty() && started + 1 == o.count) {
+                // the friend codes (the identities are made at start), one a line
+                std::string tmp = o.codes_file + ".new";
+                if (std::FILE* f = std::fopen(tmp.c_str(), "w")) {
+                    for (int k = 0; k <= started; ++k) std::fprintf(f, "%s\n", bots[size_t(k)].c->friend_code().c_str());
+                    std::fclose(f);
+                    std::rename(tmp.c_str(), o.codes_file.c_str());
+                }
+            }
             b.started = true;
             b.next_at = now + uint32_t(rng() % period);
             ++started;
@@ -422,6 +436,8 @@ int main(int argc, char** argv) {
                     }
                     b.poses += e.poses.size();
                     total_poses += e.poses.size();
+                } else if (e.kind == ClientEvent::kPartyInvited && o.accept_invites) {
+                    b.c->party_accept(e.party_id);
                 } else if (e.kind == ClientEvent::kPlayerIn) {
                     auto it = b.out_at.find(e.id);
                     if (it != b.out_at.end()) {

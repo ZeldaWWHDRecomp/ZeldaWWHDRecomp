@@ -537,6 +537,8 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     s->emote.init(cfg_.emote_per_s, 2, now);
     s->invite.init(1.0 / cfg_.invite_every_s, 2, now);
     s->report.init(1.0 / cfg_.report_every_s, 1, now);
+    s->pvp_hits.init(cfg_.pvp_hits_per_s, cfg_.pvp_hits_per_s * 2, now);
+    s->pvp_shots.init(cfg_.pvp_shots_per_s, cfg_.pvp_shots_per_s * 2, now);
 
     Welcome w;
     w.nonce = h.nonce;
@@ -549,6 +551,7 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     s->welcome = encode_welcome(w, identity_, h.eph, tx);
     send_dg(sock_, from, s->welcome.data(), s->welcome.size());
     metrics_.bytes_out += s->welcome.size();
+    pvp_welcome(*s, now);  // the PvP rules and, at the next tick, the player's PvP state
     party_member_online(*s, now);
     if (join_party) {
         // it came here to accept an invite to a party this worker holds
@@ -740,6 +743,10 @@ void Server::on_message(Session& s, const Delivered& m, uint32_t now) {
             if (Party* p = party_of(s)) party_send_team(*p, s);
             break;
         case kMsgPartyRestore: party_restore(s, r, now); break;
+        case kMsgPvpFlag: on_pvp_flag(s, r, now); break;
+        case kMsgPvpHit: on_pvp_hit(s, r, now); break;
+        case kMsgPvpShot: on_pvp_shot(s, r, now); break;
+        case kMsgPvpKo: on_pvp_ko(s, r, now); break;
         case kMsgPinRunner: {
             uint8_t on = r.u8();
             Party* p = party_of(s);
@@ -1117,21 +1124,6 @@ void Server::gather(Session& s, std::vector<Session*>& out, std::vector<Ghost*>*
     }
 }
 
-template <class F>
-void Server::for_viewers(Session& s, F&& fn) {
-    std::vector<Session*> around;
-    gather(s, around, nullptr, cfg_.hysteresis);
-    if (Party* p = party_of(s))
-        for (uint64_t kh : p->members)
-            if (Session* t = online_member(kh)) around.push_back(t);
-    std::sort(around.begin(), around.end());
-    around.erase(std::unique(around.begin(), around.end()), around.end());
-    for (Session* v : around) {
-        if (v == &s || !v->online) continue;
-        auto it = v->seen.find(s.id);
-        if (it != v->seen.end()) fn(*v, it->second.tier);
-    }
-}
 
 namespace {
 struct Cand {
@@ -1180,7 +1172,10 @@ void Server::interest(Session& s, uint32_t now) {
         }
         float dist = std::sqrt(dx * dx + (at_sea ? 0 : dy * dy) + dz * dz);
         if (!s.has_pose || s.hidden) dist = 1e9f;  // a receiver between places sees only its party (markers)
-        cands.push_back({was ? dist / h : dist, dist, o, g, party});
+        float key = was ? dist / h : dist;
+        // party members within the near radius come before strangers: a crowd never pushes them down to mid
+        if (party && dist < cfg_.near_radius * h) key = -1e9f + dist;
+        cands.push_back({key, dist, o, g, party});
     };
     std::sort(around.begin(), around.end());
     around.erase(std::unique(around.begin(), around.end()), around.end());
@@ -1216,7 +1211,7 @@ void Server::interest(Session& s, uint32_t now) {
         int slack_far = was ? cfg_.far_cap / 8 : 0;
         if (c.dist < near_lim && near_n < s.near_cap + slack_near) tier = kTierNear;
         else if (c.party || mid_n < s.mid_cap + slack_mid) tier = kTierMid;
-        else if (at_sea && far_n < cfg_.far_cap + slack_far) tier = kTierFar;
+        else if (at_sea && far_n < cfg_.far_cap + slack_far && !(c.s && c.s->pvp_band && !c.party)) tier = kTierFar;
         else continue;
         if (!was) {
             if (in_n >= cfg_.player_in_per_tick) continue;  // the rest next tick
@@ -1225,7 +1220,8 @@ void Server::interest(Session& s, uint32_t now) {
             pi.id = id;
             pi.key_hash = c.s ? c.s->key_hash : c.g->key_hash;
             pi.look = c.s ? c.s->look : c.g->look;
-            pi.flags = uint8_t((c.party ? 1 : 0) | (c.s && c.s->device == kPhone ? 4 : 0));
+            pi.flags = uint8_t((c.party ? 1 : 0) | (c.s && c.s->device == kPhone ? 4 : 0) |
+                               (c.s && (pvp_flags(*c.s, now) & kPvpActive) ? 8 : 0));
             pi.name = c.party ? (c.s ? c.s->name : c.g->name) : stranger_name(pi.key_hash);
             s.chan.send_reliable(kMsgPlayerIn, encode_player_in(pi));
             it = s.seen.emplace(id, Seen{}).first;
@@ -1271,6 +1267,27 @@ void Server::interest(Session& s, uint32_t now) {
         sn.tick = tick_no_;
     }
     flush_batch();
+    // who of the players seen near or mid can fight now (PvP marks), sent as they change
+    if (cfg_.pvp.mode != PvpMode::kOff) {
+        Bytes marks;
+        Writer mw(marks);
+        for (const Cand& c : cands) {
+            if (!c.s || c.party) continue;  // (party friendly fire needs no marks; other workers' players: none)
+            auto it = s.seen.find(c.s->id);
+            if (it == s.seen.end() || !it->second.marked || it->second.tier > kTierMid) continue;
+            uint8_t f = pvp_flags(*c.s, now);
+            uint8_t m = uint8_t(((f & kPvpActive) ? 1 : 0) | ((f & kPvpProtected) ? 2 : 0));
+            if (it->second.pvp == m) continue;
+            it->second.pvp = m;
+            mw.u16(c.s->id);
+            mw.u8(m);
+            if (marks.size() > 1000) {
+                s.chan.send_reliable(kMsgPvpMarks, marks);
+                marks.clear();
+            }
+        }
+        if (!marks.empty()) s.chan.send_reliable(kMsgPvpMarks, marks);
+    }
     // players no longer visible
     for (auto it = s.seen.begin(); it != s.seen.end();) {
         if (it->second.marked) {
@@ -1298,6 +1315,7 @@ void Server::send_markers(Session& s) {
     int n = 0;
     auto add = [&](Session* o) {
         if (o == &s || n >= cfg_.marker_cap || !sees(s, *o) || o->square < 0) return;
+        if (o->pvp_band && !(o->party && o->party == s.party)) return;  // PvP players near a safe zone stay off the chart
         Marker m;
         m.id = o->id;
         m.square = uint8_t(o->square);
@@ -1449,6 +1467,7 @@ void Server::tick(uint32_t now) {
     parallel(work, &Server::interest, now);
     metrics_.interest_us.push_back(uint32_t(monotonic_us() - t0));
     runners_tick(now);
+    pvp_tick(now);
     if (tick_no_ % uint32_t(cfg_.tick_hz) == 0) party_where_tick(now);
     if (linked()) link_tick(now);
     if (now - last_areas_ >= 2000) {

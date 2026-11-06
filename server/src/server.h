@@ -72,6 +72,7 @@ struct Seen {
     uint32_t pose_seq = 0;   // newest pose of theirs sent at the near tier
     uint32_t tick = 0;       // when last sent
     bool marked = false;     // still visible this tick
+    uint8_t pvp = 0xFF;      // the PvP marks last sent for them (kMsgPvpMarks)
 };
 
 struct Session {
@@ -118,6 +119,16 @@ struct Session {
     int strikes = 0;
     uint32_t strikes_since = 0;
     uint32_t freeze_until = 0;  // an implausible move: poses held until then (or a stage change)
+
+    // PvP at sea (pvp.cpp)
+    bool pvp_on = true, pvp_busy = false;  // the player's toggle (on by default) and busy (protected)
+    bool in_zone = true;                   // in a safe zone (interiors are)
+    uint32_t zone_since = 0, fight_at = 0, protected_until = 0;
+    bool pvp_band = false;                 // PvP-active in the band outside a zone: hidden from strangers' far view
+    int pvp_sent = -1;                     // the PVP_STATE flags last sent
+    uint16_t last_hit_by = 0;
+    uint32_t last_hit_at = 0;
+    Bucket pvp_hits, pvp_shots;
 
     // party
     uint32_t party = 0;
@@ -191,6 +202,9 @@ struct Metrics {
     std::vector<uint32_t> interest_us, send_us;  // the two parallel phases of each tick
     std::atomic<uint64_t> out_churn{0}, out_gone{0};
     std::atomic<uint64_t> blocked_drops{0}, muted_drops{0}, mod_refusals{0};
+    // PvP: hits passed on, and the ones dropped by reason (pvp.cpp: PvpDrop)
+    uint64_t pvp_hits = 0, pvp_kos = 0, pvp_rupees = 0;
+    uint64_t pvp_drops[12] = {};
     std::atomic<uint64_t> pose_entries_near{0}, pose_entries_mid{0}, pose_entries_far{0}, markers{0};
     uint64_t handovers_out = 0, handovers_in = 0, ghosts = 0, splits = 0, moves = 0, merges = 0;
     uint64_t workers_started = 0, workers_stopped = 0, copies_opened = 0, copy_moves = 0;
@@ -289,6 +303,25 @@ private:
     void kick(Session& s, uint8_t kind, const std::string& text);
     void kick_quiet(Session& s, const std::string& text);
     void party_where_tick(uint32_t now);
+    // PvP at sea (pvp.cpp)
+    void pvp_welcome(Session& s, uint32_t now);
+    void pvp_tick(uint32_t now);
+    void on_pvp_flag(Session& s, proto::Reader& r, uint32_t now);
+    void on_pvp_hit(Session& s, proto::Reader& r, uint32_t now);
+    void on_pvp_shot(Session& s, proto::Reader& r, uint32_t now);
+    void on_pvp_ko(Session& s, proto::Reader& r, uint32_t now);
+    int pvp_check_victim(Session& attacker_or_null, uint64_t attacker_kh, uint32_t attacker_party, Session& v, uint32_t now);
+    void pvp_deliver_hit(uint16_t attacker_id, Session& v, const proto::PvpHit& h, uint32_t now);
+    bool pvp_active(const Session& s) const;
+    bool pvp_safe(const Session& s, uint32_t now) const;
+    bool pvp_protected(const Session& s, uint32_t now) const;
+    uint8_t pvp_flags(const Session& s, uint32_t now) const;
+    void pvp_zone_of(const Session& s, bool& in_zone, bool& in_band, int& nearest) const;
+    struct PvpPair {
+        std::deque<uint32_t> kos;  // knockouts of the victim by the attacker (ms)
+        uint32_t blocked_until = 0;
+    };
+    std::map<std::pair<uint64_t, uint64_t>, PvpPair> pvp_pairs_;  // (attacker, victim) key hashes
     void party_elect_leader(Party& p, uint32_t now);
     bool sees(const Session& viewer, uint64_t other_key) const;
     bool sees(const Session& viewer, const Session& other) const {
@@ -499,5 +532,21 @@ private:
     Metrics metrics_;
     std::vector<Bytes> outq_;
 };
+
+template <class F>
+inline void Server::for_viewers(Session& s, F&& fn) {
+    std::vector<Session*> around;
+    gather(s, around, nullptr, cfg_.hysteresis);
+    if (Party* p = party_of(s))
+        for (uint64_t kh : p->members)
+            if (Session* t = online_member(kh)) around.push_back(t);
+    std::sort(around.begin(), around.end());
+    around.erase(std::unique(around.begin(), around.end()), around.end());
+    for (Session* v : around) {
+        if (v == &s || !v->online) continue;
+        auto it = v->seen.find(s.id);
+        if (it != v->seen.end()) fn(*v, it->second.tier);
+    }
+}
 
 }  // namespace online::server
