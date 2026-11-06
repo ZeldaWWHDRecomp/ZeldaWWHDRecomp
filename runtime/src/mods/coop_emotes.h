@@ -226,4 +226,8 @@ inline Gait gait_for(float speed, Gait was) {
 // p's models: the body (Link's model body_k) in that gait at `t` seconds (looping); false while the clips aren't read
 bool cheap_pose(Gait g, float t, int body_k, Pose& p);
 
+// (C28) a place in the world as the drawn camera shows it, in layout units (the picture 720 high around its centre, +y
+// up); false behind the camera or with no camera yet (game thread)
+bool to_layout(const float p[3], float& x, float& y);
+
 }  // namespace mods::coop::emotes

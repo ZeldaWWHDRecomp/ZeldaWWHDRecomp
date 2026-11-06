@@ -34,6 +34,8 @@ constexpr uint32_t kPos = 0x314, kRoom = 0x326, kFuse = 0xA7C;  // daBomb_c::mRe
 const uint32_t kStage = GD(0x1046F0B0) + names::inf::kCurStage;
 struct Mine { uint32_t id; int16_t proc; int unseen = 0; float was[3] = {}; };  // unseen: steps not found yet (still being made)
 std::vector<Mine> g_mine;
+struct Gone { uint32_t id; int16_t proc; uint32_t at; };  // (C28) gone lately: a bomb's blast still hits a while after
+std::vector<Gone> g_gone;
 
 uint32_t actor_of(Cpu* c, uint32_t id) { return guest_call(c, GC(0x025DE50C), {id}); }  // fopAcM_SearchByID
 
@@ -72,10 +74,12 @@ void made(int16_t proc, uint32_t actor) {
         g_mine.push_back({ld32(actor + 4), proc});
 }
 
-int16_t mine(uint32_t actor) {
-    const uint32_t id = ld32(actor + 4);
+int16_t mine(uint32_t actor) { return mine_id(ld32(actor + 4)); }
+int16_t mine_id(uint32_t id) {
     const auto it = std::find_if(g_mine.begin(), g_mine.end(), [&](const Mine& m) { return m.id == id; });
-    return it == g_mine.end() ? 0 : it->proc;
+    if (it != g_mine.end()) return it->proc;
+    const auto g = std::find_if(g_gone.begin(), g_gone.end(), [&](const Gone& m) { return m.id == id; });
+    return g == g_gone.end() ? 0 : g->proc;
 }
 
 uint32_t spawn(Cpu* c, uint32_t link, int16_t proc, uint32_t param, const float pos[3]) {
@@ -91,7 +95,9 @@ uint32_t spawn(Cpu* c, uint32_t link, int16_t proc, uint32_t param, const float 
 }
 
 void step(Cpu* c) {
-    if (net::role() == net::Role::kOff) return g_mine.clear();
+    if (net::role() == net::Role::kOff) return g_mine.clear(), g_gone.clear();
+    const uint32_t now = net::now_ms();
+    g_gone.erase(std::remove_if(g_gone.begin(), g_gone.end(), [&](const Gone& g) { return now - g.at > 3000; }), g_gone.end());
     for (size_t i = 0; i < g_mine.size();) {
         Mine& m = g_mine[i];
         const uint32_t a = actor_of(c, m.id);
@@ -105,6 +111,7 @@ void step(Cpu* c) {
             for (int e = 0; e < 3; e++) { const uint32_t v = ld32(a + kPos + 4 * e); b.append((const char*)&v, 4); }
             net::send(-1, net::kBombed, b);
         }
+        g_gone.push_back({m.id, m.proc, now});
         g_mine.erase(g_mine.begin() + i);
     }
 }

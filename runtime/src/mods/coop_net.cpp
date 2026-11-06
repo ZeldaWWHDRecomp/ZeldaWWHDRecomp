@@ -91,6 +91,14 @@ bool party_flags(uint16_t& flags, bool& leading);
 bool set_party_flags(uint16_t flags, std::string& why);
 int party_max();
 int party_size();
+PvpRules pvp_rules();
+uint8_t pvp_state(uint32_t* left_ms);
+uint8_t pvp_mark(int id);
+void pvp_flag(bool on, bool busy);
+void pvp_hit(int victim, uint8_t kind, uint8_t quarters, const float at[3]);
+void pvp_shot(uint8_t kind, const float at[3], const float v[3]);
+void pvp_ko(int by, uint16_t wallet);
+std::vector<PvpEvent> pvp_take();
 }  // namespace srv
 #define VIA_SERVER(call) if (srv::active()) return srv::call
 #else
@@ -579,6 +587,14 @@ bool set_party_flags(uint16_t flags, std::string& why) {
     if (!srv::active()) return why = "not through a server", false;
     return srv::set_party_flags(flags, why);
 }
+PvpRules pvp_rules() { return srv::active() ? srv::pvp_rules() : PvpRules{}; }
+uint8_t pvp_state(uint32_t* left_ms) { if (left_ms) *left_ms = 0; return srv::active() ? srv::pvp_state(left_ms) : 0; }
+uint8_t pvp_mark(int id) { return srv::active() ? srv::pvp_mark(id) : 0; }
+void pvp_flag(bool on, bool busy) { if (srv::active()) srv::pvp_flag(on, busy); }
+void pvp_hit(int victim, uint8_t kind, uint8_t quarters, const float at[3]) { if (srv::active()) srv::pvp_hit(victim, kind, quarters, at); }
+void pvp_shot(uint8_t kind, const float at[3], const float v[3]) { if (srv::active()) srv::pvp_shot(kind, at, v); }
+void pvp_ko(int by, uint16_t wallet) { if (srv::active()) srv::pvp_ko(by, wallet); }
+std::vector<PvpEvent> pvp_take() { return srv::active() ? srv::pvp_take() : std::vector<PvpEvent>{}; }
 int party_max() { VIA_SERVER(party_max()); return kMaxDirect; }
 int party_size() {
     VIA_SERVER(party_size());
@@ -587,6 +603,14 @@ int party_size() {
     return std::max(n, 1);
 }
 #else
+PvpRules pvp_rules() { return {}; }
+uint8_t pvp_state(uint32_t* left_ms) { if (left_ms) *left_ms = 0; return 0; }
+uint8_t pvp_mark(int) { return 0; }
+void pvp_flag(bool, bool) {}
+void pvp_hit(int, uint8_t, uint8_t, const float*) {}
+void pvp_shot(uint8_t, const float*, const float*) {}
+void pvp_ko(int, uint16_t) {}
+std::vector<PvpEvent> pvp_take() { return {}; }
 int party_max() { return kMaxDirect; }
 int party_size() {
     int n = 0;

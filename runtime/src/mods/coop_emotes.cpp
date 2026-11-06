@@ -159,6 +159,10 @@ bool project(const View& v, const float p[3], float& x, float& y) {
     return std::isfinite(x) && std::isfinite(y);
 }
 
+}  // namespace
+bool to_layout(const float p[3], float& x, float& y) { return project(camera(), p, x, y); }
+namespace {
+
 // test aid: WWHD_COOP_TEST_EMOTE=<s>:<id>[,...]: this player's emotes at those seconds after the session's first step
 struct Planned { uint32_t at_ms; uint8_t id; };
 std::vector<Planned> planned() {

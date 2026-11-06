@@ -2261,10 +2261,19 @@ void service_warp(Cpu* c) {
         st8(rs + 0, (uint8_t)p.w.room);
         st16(rs + 0x16, (uint16_t)p.w.angle);
         for (int i = 0; i < 3; i++) stf32(rs + 0x18 + 4 * i, p.w.pos[i]);
-        st32(rs + 0x24, (uint32_t)(p.w.room & 0x3F) | 0xFF000000u);
+        st32(rs + 0x24, (uint32_t)(p.w.room & 0x3F) | (p.w.on_ship ? 2u << 12 | 0x100u : 0u) | 0xFF000000u);
         stf32(rs + 0x28, 0.0);
         st32(rs + 0x2C, 0);
         point = 0xFFFF;
+        if (p.w.on_ship) {  // (as apply_portable: the turn-restart record with the boat at Link's place, start mode 2)
+            CallScope scope(c);
+            const uint32_t buf = scratch();
+            for (int i = 0; i < 3; i++) stf32(buf + 4 * i, p.w.pos[i] + (i == 1 ? 149.f : 0.f)), stf32(buf + 0x10 + 4 * i, p.w.pos[i]);  // (Link 149 over the boat, the sea_boat state)
+            const uint32_t param = (uint32_t)(p.w.room & 0x3F) | (2u << 12) | 0xFF000000u | 0x100u;
+            guest_call(c, fn_turnRestartSet, {sv + kTurnRestart, buf, (uint32_t)(uint16_t)p.w.angle, (uint32_t)(uint8_t)p.w.room, param,
+                                              buf + 0x10, (uint32_t)(uint16_t)p.w.angle, 1});
+            point = 0xFFFD;
+        }
     }
     for (int i = 0; i < 8; i++) st8(kNextStage + i, (uint8_t)name[i]);
     st16(kNextStage + 8, point);

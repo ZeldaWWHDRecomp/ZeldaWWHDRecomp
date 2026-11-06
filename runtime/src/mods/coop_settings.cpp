@@ -270,6 +270,25 @@ void draw_tab() {
         if (ImGui::Checkbox("Far players on a sea radar", &radar)) hostui::post([radar] { change([&](sync::Settings& x) { x.radar = radar; }); });
         ImGui::TextDisabled("At sea, through a server: players too far to be drawn show as dots, party members in green.");
     }
+    {  // (C28) PvP at sea: the toggle (hidden when the server has everyone fight), the server's rule, this player's state
+        const net::PvpRules r = net::pvp_rules();
+        uint32_t left = 0;
+        const uint8_t st = net::pvp_state(&left);
+        if (r.mode != 2) {
+            bool pvp = s.pvp_sea;
+            if (ImGui::Checkbox("PvP at sea", &pvp)) hostui::post([pvp] { change([&](sync::Settings& x) { x.pvp_sea = pvp; }); });
+            ImGui::TextDisabled("Through a server that allows it: you and other players who have it on can fight on the open sea,");
+            ImGui::TextDisabled("outside the safe zones around the big islands. A knockout costs some rupees; party members only by");
+            ImGui::TextDisabled("the party's friendly fire.");
+        }
+        if (r.mode == 0) ImGui::TextDisabled("This server has no PvP.");
+        else if (r.mode > 0) {
+            if (r.mode == 2) ImGui::TextUnformatted("PvP at sea: on for everyone on this server.");
+            ImGui::TextDisabled("A knockout costs %d%% of your rupees (at most %d). %zu safe zones.", r.ko_rupee_percent, r.ko_rupee_max, r.zones.size());
+            ImGui::Text("Now: %s", (st & 4) ? "in a safe zone" : (st & 2) ? ("protected, " + std::to_string((left + 999) / 1000) + " s").c_str()
+                                    : (st & 1) ? "PvP zone: you can fight" : "not fighting");
+        }
+    }
     ImGui::Separator();
     ImGui::TextWrapped("Status: %s", sync::status());
     if (s.on && s.notice_ok && net::role() == net::Role::kOff && ImGui::Button("Connect again")) hostui::post([] { sync::retry(); });
@@ -440,6 +459,15 @@ void register_items() {
         it.help = "See-through players are easy to tell from your party, who always look solid.";
         it.get = [] { return (float)sync::settings().strangers; };
         it.set = [](float v) { change([&](sync::Settings& x) { x.strangers = v >= 0.5f; }); };
+        game_settings::add(std::move(it));
+    }
+    {
+        Item it;
+        it.id = "online.pvp_sea", it.tab = "online", it.label = "PvP at sea", it.kind = Kind::Toggle;
+        it.help = "Through a server that allows it: you and other players who have it on can fight on the open sea, outside the safe zones around the big islands. A knockout costs some of your rupees. Party members fight only with the party's friendly fire.";
+        it.get = [] { return sync::settings().pvp_sea ? 1.0f : 0.0f; };
+        it.set = [](float v) { change([&](sync::Settings& x) { x.pvp_sea = v >= 0.5f; }); };
+        it.enabled = [] { return net::pvp_rules().mode != 2; };
         game_settings::add(std::move(it));
     }
     {

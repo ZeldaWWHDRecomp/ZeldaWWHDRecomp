@@ -30,6 +30,7 @@ struct Settings {
     std::string server_addr = "127.0.0.1";
     int server_port = 7777;
     bool radar = true;                 // (C13) far players as dots on a small sea radar (through a server, at sea)
+    bool pvp_sea = true;               // (C28) PvP at sea: this player can fight others who have it on (a server's opt-in)
     int strangers = 0;                 // how players outside the party look (presence): 0 like any Link, 1 see-through
     bool stay_together = false;        // the fork's way (a party option): the guest plays in the host's world, its saves
                                        // off, asked before going where the host isn't, back to the title when the host goes
@@ -64,6 +65,8 @@ bool host();   // hosting
 bool guest();  // joined someone's game (welcomed)
 // another player's place in the world as drawn now (for pushing), i 0..kPuppets-1
 bool place(int i, float out[3]);
+// (C28) any other player's puppet as drawn now (party or not): its place and heading; false when not drawn
+bool shown_at(int id, float out[3], int16_t* yaw = nullptr);
 // the player a monster at `at` goes for: this game's Link (`link`'s place) or another player shown here, the nearest,
 // kept while no other is clearly nearer (by 30%) and it is still here; `target` is the monster's choice (player id, -1
 // none yet), kept between calls. Out: where that player is

@@ -154,4 +154,31 @@ bool set_party_flags(uint16_t flags, std::string& why);
 int party_max();
 int party_size();
 
+// ---- (C28, through a server) PvP at sea: the server referees (proto/pvp.h); coop_pvp.h plays it in the game ----
+struct PvpZone { int square; float x, z, r; };  // a safe zone: its centre in the world, its radius
+struct PvpRules {
+    int mode = -1;  // -1: no rules (no server, or not said yet); 0 off, 1 opt-in, 2 on for everyone at sea
+    uint32_t protect_ms = 12000, enter_delay_ms = 10000;
+    float hide_band = 8000, max_hit_dist = 3000;
+    int ko_rupee_percent = 10, ko_rupee_max = 100;
+    std::vector<PvpZone> zones;
+};
+PvpRules pvp_rules();                     // any thread
+uint8_t pvp_state(uint32_t* left_ms = nullptr);  // the server's PvP state flags for this game (proto PvpStateFlags)
+uint8_t pvp_mark(int id);                 // another player's: bit 0 PvP active, bit 1 protected (0: not or unknown)
+void pvp_flag(bool on, bool busy);        // this game's toggle and whether it is busy (sent on change)
+void pvp_hit(int victim, uint8_t kind, uint8_t quarters, const float at[3]);
+void pvp_shot(uint8_t kind, const float at[3], const float v[3]);
+void pvp_ko(int by, uint16_t wallet);
+struct PvpEvent {
+    enum Kind : uint8_t { kHitOn, kShotOf, kKoOf, kRupees, kRespawn } kind;
+    int from = -1;        // kHitOn: the attacker; kShotOf: the shooter; kKoOf: the victim (my_id(): this game)
+    int by = -1;          // kKoOf: who knocked them out (my_id(): this game; -1 unknown here)
+    uint8_t what = 0, quarters = 0;  // the weapon (proto PvpKind), the damage
+    float at[3] = {}, v[3] = {};
+    uint32_t value = 0;   // kRupees: how many; kRespawn: the square
+    std::string by_name;  // kKoOf: the attacker's name as known here
+};
+std::vector<PvpEvent> pvp_take();         // game thread: what came since the last call
+
 }  // namespace mods::coop::net

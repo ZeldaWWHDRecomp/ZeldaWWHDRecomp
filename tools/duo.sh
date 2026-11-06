@@ -52,6 +52,8 @@ if [ -n "${DUO_SERVER:-}" ]; then
   [ -n "${DUO_GAMES:-}" ] && printf '[network]\ngame_data = [%s]\n' "$DUO_GAMES" >> "$out/server/server.toml"
   # DUO_MODS='vanilla_only = true' or 'required = ["jump-anywhere"]': the server's [mods] rules (C5)
   [ -n "${DUO_MODS:-}" ] && printf '[mods]\n%s\n' "$DUO_MODS" >> "$out/server/server.toml"
+  # DUO_PVP='sea = "on"' or 'zones = ["17:r=19000"]': the server's [pvp] lines (C28)
+  [ -n "${DUO_PVP:-}" ] && printf '[pvp]\n%s\n' "$DUO_PVP" >> "$out/server/server.toml"
   [ -n "${DUO_PARTY_MAX:-}" ] && printf '[party]\nmax_size = %s\n' "$DUO_PARTY_MAX" >> "$out/server/server.toml"
   (exec "${bin:h}/server/wwhd-online-server" --config "$out/server/server.toml" 2>&1 | head -c 5000000 > "$out/server.log") &
   spid=$!

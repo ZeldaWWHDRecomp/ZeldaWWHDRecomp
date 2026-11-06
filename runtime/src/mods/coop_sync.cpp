@@ -557,6 +557,7 @@ Settings settings() {
         if (hostui::get("mod.coop.stay_together", v)) g_set.stay_together = atoi(v.c_str()) != 0;
         if (hostui::get("online.strangers", v)) g_set.strangers = atoi(v.c_str()) == 1;
         if (hostui::get("online.radar", v)) g_set.radar = atoi(v.c_str()) != 0;
+        if (hostui::get("online.pvp_sea", v)) g_set.pvp_sea = atoi(v.c_str()) != 0;
         if (hostui::get("online.server", v)) g_set.server = atoi(v.c_str()) != 0;
         if (hostui::get("online.server_addr", v) && !v.empty()) g_set.server_addr = v;
         if (hostui::get("online.server_port", v) && atoi(v.c_str()) > 0) g_set.server_port = atoi(v.c_str());
@@ -621,11 +622,18 @@ void save_settings(const Settings& s) {
     hostui::set("mod.coop.stay_together", s.stay_together ? "1" : "0");
     hostui::set("online.strangers", std::to_string(s.strangers));
     hostui::set("online.radar", s.radar ? "1" : "0");
+    hostui::set("online.pvp_sea", s.pvp_sea ? "1" : "0");
     hostui::set("online.server", s.server ? "1" : "0");
     hostui::set("online.server_addr", s.server_addr), hostui::set("online.server_port", std::to_string(s.server_port));
 }
 
 const char* status() { return g_status.c_str(); }
+bool shown_at(int id, float out[3], int16_t* yaw) {
+    if (id < 0 || id >= net::kMaxPlayers || id == net::my_id() || !g_remote[id].shown) return false;
+    memcpy(out, g_remote[id].at, 12);
+    if (yaw) *yaw = g_remote[id].yaw;
+    return true;
+}
 bool host() { return net::role() == net::Role::kHost; }
 bool guest() { return net::role() == net::Role::kGuest && net::my_id() != 0; }
 
@@ -1273,9 +1281,9 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         bool known[net::kMaxPlayers] = {};
         for (int id = 0; id < net::kMaxPlayers; id++)
             if (Remote& r = g_remote[id]; id != net::my_id() && r.far && !r.shown && now - r.far_ms < 3000 && !block::blocked_id(id))
-                far.push_back({r.far_at[0], r.far_at[2], net::member(id)}), known[id] = true;
+                far.push_back({r.far_at[0], r.far_at[2], net::member(id), (net::pvp_mark(id) & 1) != 0}), known[id] = true;
         for (const net::Marker& m : net::server_markers())
-            if (m.slot >= 0 && m.slot < net::kMaxPlayers && !known[m.slot] && !g_remote[m.slot].shown && !block::blocked_id(m.slot)) far.push_back({m.x, m.z, m.party}), known[m.slot] = true;
+            if (m.slot >= 0 && m.slot < net::kMaxPlayers && !known[m.slot] && !g_remote[m.slot].shown && !block::blocked_id(m.slot)) far.push_back({m.x, m.z, m.party, (net::pvp_mark(m.slot) & 1) != 0}), known[m.slot] = true;
         radar::step(link, far);
     }
     // their sounds, at their puppets as those are shown (each player's place kept for the sound engine, which keeps reading

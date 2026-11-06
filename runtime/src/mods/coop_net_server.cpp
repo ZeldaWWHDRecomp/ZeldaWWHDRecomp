@@ -155,6 +155,15 @@ int shown_cap() {
     return cap;
 }
 
+// (C28) PvP at sea: the server's rules and this game's state (g_pvp_mu: the pages read them), the others' marks by
+// server id, the events for coop_pvp (game thread), the toggle as last sent
+std::mutex g_pvp_mu;
+PvpRules g_pvp_rules;
+uint8_t g_pvp_flags = 0;
+uint32_t g_pvp_left = 0, g_pvp_left_at = 0;
+std::map<uint16_t, uint8_t> g_pvp_marks;
+std::vector<PvpEvent> g_pvp_events;
+int g_pvp_sent = -1;  // on | busy << 1 as last sent (-1: not yet this session)
 std::atomic<int> g_party_max{4};  // (C29) the server's party.max_size, as it says it
 std::atomic<int> g_party_size{1};  // online members of this game's party (itself included), for the pages
 
@@ -379,6 +388,7 @@ void stop(const char* why) {
     g_active = false, g_status = why ? why : "Off", g_me_sid = 0, g_peers.clear(), g_party = {}, g_party_size = 1, g_slot_of_me = 0, g_where_known = false;
     for (Tiered& t : g_tiered) t = Tiered{};
     { std::lock_guard<std::mutex> l(g_far_mu); g_markers.clear(), g_markers_at = 0; }
+    { std::lock_guard<std::mutex> l(g_pvp_mu); g_pvp_rules = {}, g_pvp_flags = 0, g_pvp_marks.clear(), g_pvp_events.clear(), g_pvp_sent = -1; }
     g_runner.clear();
     {
         std::lock_guard<std::mutex> l(g_ui_mu);
@@ -578,6 +588,11 @@ void poll(Handler& h) {
             Peer p{true, e.player.id, e.player.key_hash, e.player.name, e.player.look, (e.player.flags & 1) != 0};
             if (it == g_peers.end()) g_peers.push_back(p), mods::trace("coop: server: player %u (%s) in", p.sid, p.name.c_str());
             else *it = p;
+            {  // (C28) PvP active as they come into view (bit 3); later changes come as PVP_MARKS
+                std::lock_guard<std::mutex> l(g_pvp_mu);
+                if (e.player.flags & 8) g_pvp_marks[e.player.id] = 1;
+                else g_pvp_marks.erase(e.player.id);
+            }
             remap(h);
             break;
         }
@@ -755,6 +770,61 @@ void poll(Handler& h) {
             if (s >= 0) h.message(s, kEmote, &id, 1);
             break;
         }
+        case op::ClientEvent::kPvpRules: {
+            PvpRules r;
+            r.mode = (int)e.pvp_rules.mode, r.protect_ms = e.pvp_rules.protect_ms, r.enter_delay_ms = e.pvp_rules.enter_delay_ms;
+            r.hide_band = e.pvp_rules.hide_band, r.max_hit_dist = e.pvp_rules.max_hit_dist;
+            r.ko_rupee_percent = e.pvp_rules.ko_rupee_percent, r.ko_rupee_max = e.pvp_rules.ko_rupee_max;
+            for (const op::PvpZone& z : e.pvp_rules.zones) {
+                const float cx = kSeaOrigin + (float(z.square % op::kSeaSquares) + 0.5f) * op::kSquareUnits + z.cx;
+                const float cz = kSeaOrigin + (float(z.square / op::kSeaSquares) + 0.5f) * op::kSquareUnits + z.cz;
+                r.zones.push_back({(int)z.square, cx, cz, z.radius});
+            }
+            mods::trace("coop: server: PvP rules: mode %d, %zu safe zones, protection %u ms, knockout %d%% (at most %d)", r.mode, r.zones.size(),
+                        r.protect_ms, r.ko_rupee_percent, r.ko_rupee_max);
+            std::lock_guard<std::mutex> l(g_pvp_mu);
+            g_pvp_rules = std::move(r);
+            break;
+        }
+        case op::ClientEvent::kPvpState: {
+            std::lock_guard<std::mutex> l(g_pvp_mu);
+            if (g_pvp_flags != (uint8_t)e.value) mods::trace("coop: server: PvP state %02X (protected %u ms)", e.value, e.value16);
+            g_pvp_flags = (uint8_t)e.value, g_pvp_left = e.value16, g_pvp_left_at = now_ms();
+            break;
+        }
+        case op::ClientEvent::kPvpMarks: {
+            std::lock_guard<std::mutex> l(g_pvp_mu);
+            for (const auto& [sid, f] : e.pvp_marks) {
+                if (f) g_pvp_marks[sid] = f;
+                else g_pvp_marks.erase(sid);
+            }
+            break;
+        }
+        case op::ClientEvent::kPvpHitOn:
+        case op::ClientEvent::kPvpShotOf:
+        case op::ClientEvent::kPvpKoOf:
+        case op::ClientEvent::kPvpRupees:
+        case op::ClientEvent::kPvpRespawn: {
+            PvpEvent v{};
+            const auto who = [&](uint16_t sid) { return sid == g_me_sid ? g_slot_of_me : slot_of(sid); };
+            if (e.kind == op::ClientEvent::kPvpHitOn) {
+                v.kind = PvpEvent::kHitOn, v.from = slot_of(e.pvp_hit.other), v.what = e.pvp_hit.kind, v.quarters = e.pvp_hit.damage;
+                v.at[0] = e.pvp_hit.x, v.at[1] = e.pvp_hit.y, v.at[2] = e.pvp_hit.z;
+            } else if (e.kind == op::ClientEvent::kPvpShotOf) {
+                v.kind = PvpEvent::kShotOf, v.from = slot_of(e.pvp_shot.shooter), v.what = e.pvp_shot.kind;
+                v.at[0] = e.pvp_shot.x, v.at[1] = e.pvp_shot.y, v.at[2] = e.pvp_shot.z, v.v[0] = e.pvp_shot.vx, v.v[1] = e.pvp_shot.vy, v.v[2] = e.pvp_shot.vz;
+            } else if (e.kind == op::ClientEvent::kPvpKoOf) {
+                v.kind = PvpEvent::kKoOf, v.from = who(e.id), v.by = who(e.value16);
+                if (v.by >= 0) v.by_name = g_slot[v.by].name;
+            } else if (e.kind == op::ClientEvent::kPvpRupees) {
+                v.kind = PvpEvent::kRupees, v.value = e.value16;
+            } else {
+                v.kind = PvpEvent::kRespawn, v.value = e.value, v.at[0] = e.pvp_hit.x, v.at[2] = e.pvp_hit.z;
+            }
+            std::lock_guard<std::mutex> l(g_pvp_mu);
+            if (g_pvp_events.size() < 64) g_pvp_events.push_back(std::move(v));
+            break;
+        }
         default: break;  // (markers, copies: later items)
         }
     }
@@ -872,6 +942,56 @@ void leave_party() {
     g_actions.push_back([](op::Client& c) { c.party_leave(); });
 }
 
+
+// ---- (C28) PvP at sea ----
+PvpRules pvp_rules() { std::lock_guard<std::mutex> l(g_pvp_mu); return g_pvp_rules; }
+uint8_t pvp_state(uint32_t* left_ms) {
+    std::lock_guard<std::mutex> l(g_pvp_mu);
+    if (left_ms) {
+        const uint32_t gone = now_ms() - g_pvp_left_at;
+        *left_ms = (g_pvp_flags & op::kPvpProtected) && g_pvp_left > gone ? g_pvp_left - gone : 0;
+    }
+    return g_pvp_flags;
+}
+uint8_t pvp_mark(int id) {
+    if (id < 0 || id >= kMaxPlayers || !g_slot[id].on || id == g_slot_of_me) return 0;
+    std::lock_guard<std::mutex> l(g_pvp_mu);
+    const auto it = g_pvp_marks.find(g_slot[id].sid);
+    return it == g_pvp_marks.end() ? 0 : it->second;
+}
+void pvp_flag(bool on, bool busy) {
+    if (!g_client || g_client->state() != op::ClientState::kOnline) return;
+    const int now = (on ? 1 : 0) | (busy ? 2 : 0);
+    {
+        std::lock_guard<std::mutex> l(g_pvp_mu);
+        if (now == g_pvp_sent) return;
+        g_pvp_sent = now;
+    }
+    g_client->pvp_flag(on, busy);
+    mods::trace("coop: PvP toggle %s%s", on ? "on" : "off", busy ? ", busy" : "");
+}
+void pvp_hit(int victim, uint8_t kind, uint8_t quarters, const float at[3]) {
+    if (!g_client || victim < 0 || victim >= kMaxPlayers || !g_slot[victim].on || victim == g_slot_of_me) return;
+    op::PvpHit h;
+    h.other = g_slot[victim].sid, h.kind = kind, h.damage = std::min<uint8_t>(quarters, 16), h.x = at[0], h.y = at[1], h.z = at[2];
+    g_client->pvp_hit(h);
+}
+void pvp_shot(uint8_t kind, const float at[3], const float v[3]) {
+    if (!g_client) return;
+    op::PvpShot s;
+    s.kind = kind, s.x = at[0], s.y = at[1], s.z = at[2], s.vx = v[0], s.vy = v[1], s.vz = v[2];
+    g_client->pvp_shot(s);
+}
+void pvp_ko(int by, uint16_t wallet) {
+    if (!g_client || by < 0 || by >= kMaxPlayers || !g_slot[by].on) return;
+    g_client->pvp_ko(g_slot[by].sid, wallet);
+}
+std::vector<PvpEvent> pvp_take() {
+    std::lock_guard<std::mutex> l(g_pvp_mu);
+    std::vector<PvpEvent> out;
+    out.swap(g_pvp_events);
+    return out;
+}
 int party_max() { return g_party_max; }
 int party_size() { return g_party_size; }
 

@@ -75,6 +75,7 @@
 #include "mods/coop_settings.h"
 #include "mods/coop_emotes.h"
 #include "mods/coop_radar.h"
+#include "mods/coop_pvp.h"
 #include "editor/editor_game.h"
 #include "editor/mcp_game.h"
 #if defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
@@ -598,7 +599,8 @@ int main(int argc, char** argv) {
     randomizer_tab::register_tab();  // Settings > Randomizer (randomized games made in setup)
     mods::coop::settings_ui::register_tab();  // Settings > Online (online co-op)
     mods::coop::emotes::register_overlay();
-    mods::coop::radar::register_overlay();  // (far players at sea, C13)   // (the bubble over one's own Link while an emote plays for the others)
+    mods::coop::radar::register_overlay();  // (far players at sea, C13)
+    mods::coop::pvp::register_overlay();    // (C28: the marks over PvP players)
     index_game_functions();
     install_crash_handler();
     start_log_file();

@@ -147,6 +147,9 @@ struct Warp {
     int room = 0, point = 0, angle = 0;
     bool at_position = false;
     float pos[3] = {};
+    // (at_position at sea) Link on his boat there, as a portable state with "on_ship" restores him (online PvP's
+    // knockout, mods/coop_pvp.cpp: no swim back)
+    bool on_ship = false;
 };
 void request_warp(const Warp& w, std::function<void(bool ok, const std::string& why)> done = nullptr);
 // any thread, cheap (memory reads only): why Link is not under the player's control now, or ""

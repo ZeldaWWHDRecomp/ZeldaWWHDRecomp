@@ -112,6 +112,36 @@ Through a server, players close to you are drawn in full detail. Players further
 simpler Link, standing, walking or running. At sea, players too far away to draw show as dots on a small radar in
 the lower left corner, with party members in green. You can turn the radar off in Settings > Online.
 
+## PvP at sea
+
+Through a server that allows it, you can fight other players on the open sea. Your switch is **PvP at sea**, in
+Settings > Online and on the Online page of the pause menu. It is on by default. Two players can only hurt each
+other when both have it on. A server can also turn PvP off, or turn it on for everyone (then the switch is hidden).
+
+- **Where:** only on the open sea. Never inside buildings, caves or dungeons, and never while a cutscene, a talk,
+  a shop or a menu is on.
+- **Safe zones:** the big islands and a ring of water around them are safe. That means the towns and the islands
+  where dungeons start, such as Windfall, Outset, Dragon Roost and Forest Haven. Small islands are not safe.
+  - A note tells you when you enter a safe zone or the PvP waters.
+  - The radar shows the borders of the safe zones near you in blue.
+  - Players who can fight you have a small red mark over their heads and show as red dots on the radar.
+- **Protection:**
+  - **After leaving a safe zone:** you are protected for about 12 seconds. Attacking ends it early.
+  - **Fleeing into a safe zone mid-fight:** you are only safe after about 10 seconds.
+  - **Near the borders:** players with PvP on who are just outside a safe zone don't show on other players' radars.
+- **Weapons:** the boat's cannon, arrows, bombs, the boomerang, and the sword up close. The server checks every
+  hit, and your game checks it again before it costs you hearts.
+- **Knockout:** a hit that would take your last heart knocks you out instead. There is no game-over screen.
+  - You lose part of your wallet: 10% by default, at most 100 rupees. The rupees are gone; the attacker gets
+    nothing. Nothing else in your save changes, and the loss counts once you save.
+  - You come back with full hearts at the edge of the nearest safe zone, on your boat if you had it, and are
+    protected for a while.
+  - The same player can't knock you out again and again: after two knockouts in a few minutes, their hits on
+    you stop counting for a while.
+- **Your party** fights only with the party's friendly fire switch (off by default), as before, never through
+  PvP.
+- **Blocking** a player ends PvP between you.
+
 ## Blocking and muting
 
 Through a server you can block or mute players outside your party. Use the list of nearby players in

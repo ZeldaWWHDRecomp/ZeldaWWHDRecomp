@@ -20,6 +20,7 @@
 #include "coop_monsters.h"
 #include "coop_net.h"
 #include "coop_pose.h"
+#include "coop_pvp.h"
 #include "coop_sync.h"
 #include "guest_addr.h"
 #include "mods.h"
@@ -69,26 +70,41 @@ void boat_shot_out() {
     for (int16_t v : g_boat_shot.angle) b.put(v);
     b.put((float)ldf32(ball + ac::speedF)).put((float)ldf32(ball + ac::kSpeedY)).put((float)ldf32(ball + ac::gravity));
     net::send(-1, net::kBoatShot, b.b);
+    mods::coop::pvp::fired(ball, g_boat_shot.pos, g_boat_shot.angle[1], (float)ldf32(ball + ac::speedF), (float)ldf32(ball + ac::kSpeedY));
 }
 void boat_shot_from(Cpu* c, uint32_t link, Reader& r) {
-    static const uint32_t buf = mem::host_alloc(0x20);  // pos at +0, angle at +0x10
     float p[3];
     for (float& v : p) v = r.get<float>();
-    for (int i = 0; i < 3; i++) st16(buf + 0x10 + 2 * i, (uint16_t)r.get<int16_t>());
+    int16_t angle[3];
+    for (int16_t& a : angle) a = r.get<int16_t>();
     const float f = r.get<float>(), y = r.get<float>(), g = r.get<float>();
+    spawn_ball(c, link, p, angle, f, y, g);
+}
+}  // namespace
+
+// a boat's cannon ball made here as the ship makes its own (also PvP's, C28: another player's shot shown)
+uint32_t spawn_ball(Cpu* c, uint32_t link, const float p[3], const int16_t angle[3], float f, float y, float g) {
+    static const uint32_t buf = mem::host_alloc(0x20);  // pos at +0, angle at +0x10
+    for (int i = 0; i < 3; i++) st16(buf + 0x10 + 2 * i, (uint16_t)angle[i]);
     // (another game's numbers: a ball off any stage or of no speed would halt the game's checks)
-    for (float v : {p[0], p[1], p[2], f, y, g}) if (!std::isfinite(v) || std::fabs(v) > 1e6f) return;
+    for (float v : {p[0], p[1], p[2], f, y, g}) if (!std::isfinite(v) || std::fabs(v) > 1e6f) return 0;
     for (int i = 0; i < 3; i++) st32(buf + 4 * i, u32_bits(p[i]));
     const uint32_t layer = guest_call(c, GC(0x025DED64));  // fpcLy_CurrentLayer
     guest_call(c, GC(0x025DEAB4), {ld32(link + bpc::kLayer)});  // fpcLy_SetCurrentLayer (Link's)
     st32(c->r[1] - 0x40 + 8, 0);
     const uint32_t ball = guest_call(c, GC(0x025D5928), {0x126, 0x80020004, buf, (uint32_t)(int8_t)ld8(link + kRoom), buf + 0x10, 0, 0xFFFFFFFF, 0});
     guest_call(c, GC(0x025DEAB4), {layer});
-    if (!in_mem2(ball)) return;
+    if (!in_mem2(ball)) return 0;
     guest_call(c, GC(0x020CB89C), {ball, 8});
     st32(ball + ac::speedF, u32_bits(f)), st32(ball + ac::kSpeedY, u32_bits(y)), st32(ball + ac::gravity, u32_bits(g));
     guest_call(c, GC(0x025E1988), {0x2852});
+    return ball;
 }
+
+void put_link_at(uint32_t link, const float w[3]) { put_link(link, {w[0], w[1], w[2]}); }
+void hurt(uint8_t quarters, int16_t way) { g_hurt = {quarters, way}; }
+
+namespace {
 
 // each step in play: the world's messages put in once this game is settled in its stage, its own shots and bombs out,
 // friendly fire, pushing
@@ -119,6 +135,7 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
     }
     if (settled) held.clear();
     if (settled) mods::coop::monsters::step(c, link);  // the placed monsters: ours out, the others' put in
+    mods::coop::pvp::step(c, link, settled);  // (C28: PvP at sea, through a server)
     // friendly fire (the fork's rule: always on): a sword attack of this game's Link (as it starts: daPy_lk_c::mCurProc
     // entering a cut, d_a_player_main.h daPyProc_CUT_*) hits each other player shown within 200 in front of him (75
     // degrees either side); spin and jump cuts a heart, the others half. The puppets have no colliders: this game decides
@@ -181,6 +198,7 @@ struct StandIn {
 // leaves the last quarter heart
 void before_execute(Cpu* c) {
     mods::coop::deck::move(c);  // (C16: a friend's boat's deck, before Link runs)
+    mods::coop::pvp::before_execute(c);  // (C28: the puppets' hit areas read, a hit on this Link put in)
     const uint32_t link = ld32(kLinkPtr);
     if (!g_hurt.quarters || !in_mem2(link) || ld16(link + py::mDamageWaitTimer) || ld32(link + py::mModeFlg) & 8) return;
     const int q = std::min<int>(g_hurt.quarters, ld16(save() + layout::sv::kStatusA + layout::sv::kLife) - 1);
