@@ -96,6 +96,8 @@ with only two players, the one left keeps playing in their own Quest Log.
 
 - Up to 4 players in a party. Through a server, up to 31 other players nearby are shown on a computer (fewer on
   a phone). The other players are shown about 60 ms behind, plus the network's delay.
+- **Players outside your party** (Settings > Online): **Like any Link**, or **See-through**: drawn half
+  transparent, so you tell them from your party, who always look solid.
 - Each other player shown takes about 0.5 MB of the port's own memory the first time; the game's memory is not
   used for them.
 - Friendly fire is on: a sword hit or an arrow on another player costs them half a heart (a heart for

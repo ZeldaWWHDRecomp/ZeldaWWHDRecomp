@@ -189,7 +189,50 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
 }
 #endif
 
+// ---- see-through draws (OP_SEE_THROUGH): while on, the colour target 0's blend is forced to constant alpha x source
+// + (1 - constant alpha) x destination (the destination's alpha kept); what the game writes to those registers
+// meanwhile is kept and put back when it ends. The registers: CB_COLOR_CONTROL (its blend mask, target 0),
+// CB_BLEND0_CONTROL, CB_BLEND_ALPHA.
+static bool g_see = false;
+static uint32 g_see_alpha = 0;
+static uint32 g_see_want[3];
+static const uint32 kSeeRegs[3] = {REGADDR::CB_COLOR_CONTROL, REGADDR::CB_BLEND0_CONTROL, REGADDR::CB_BLEND_RED + 3};
+static void apply_regs_now(uint32 first, const uint32* v, uint32 n);
+static uint32 see_forced(int k, uint32 want) {
+    if (k == 0) return want | (1u << 8);  // (BLEND_MASK bits 8..15: target 0 blends)
+    if (k == 2) return g_see_alpha;
+    using BF = LATTE_CB_BLENDN_CONTROL::E_BLENDFACTOR;
+    using CF = LATTE_CB_BLENDN_CONTROL::E_COMBINEFUNC;
+    LATTE_CB_BLENDN_CONTROL r;
+    r.set_COLOR_SRCBLEND(BF::BLEND_CONST_ALPHA).set_COLOR_DSTBLEND(BF::BLEND_ONE_MINUS_CONST_ALPHA);
+    r.set_COLOR_COMB_FCN(CF::DST_PLUS_SRC).set_SEPARATE_ALPHA_BLEND(true);
+    r.set_ALPHA_SRCBLEND(BF::BLEND_ZERO).set_ALPHA_DSTBLEND(BF::BLEND_ONE).set_ALPHA_COMB_FCN(CF::DST_PLUS_SRC);
+    return r.getRawValue();
+}
+static void see_through(uint32 alpha_bits) {
+    if (alpha_bits && !g_see) for (int k = 0; k < 3; k++) g_see_want[k] = g_regs[kSeeRegs[k]];
+    const bool was = g_see;
+    g_see = alpha_bits != 0, g_see_alpha = alpha_bits;
+    for (int k = 0; k < 3; k++) {
+        if (!g_see && !was) break;
+        const uint32 v = g_see ? see_forced(k, g_see_want[k]) : g_see_want[k];
+        apply_regs_now(kSeeRegs[k], &v, 1);
+    }
+}
+
 static void apply_regs(uint32 first, const uint32* v, uint32 n) {
+    // (the three lie between CB_BLEND_RED + 3, 0xA108, and CB_COLOR_CONTROL, 0xA202)
+    if (g_see && first <= (uint32)REGADDR::CB_COLOR_CONTROL && first + n > (uint32)REGADDR::CB_BLEND_RED + 3 && first < kNumRegs &&
+        n <= kNumRegs - first) {
+        std::vector<uint32> tmp(v, v + n);
+        for (int k = 0; k < 3; k++)
+            if (kSeeRegs[k] >= first && kSeeRegs[k] < first + n)
+                g_see_want[k] = tmp[kSeeRegs[k] - first], tmp[kSeeRegs[k] - first] = see_forced(k, g_see_want[k]);
+        return apply_regs_now(first, tmp.data(), n);
+    }
+    apply_regs_now(first, v, n);
+}
+static void apply_regs_now(uint32 first, const uint32* v, uint32 n) {
     if (first >= kNumRegs || n > kNumRegs - first) return;
     ensure_reg_tables();
     g_register_blocks.touch(first, n);
@@ -868,6 +911,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             stereo::layoutPhotograph = photo;
             note_full_state_change();
         }
+        break;
+    case OP_SEE_THROUGH:
+        see_through(n ? p[0] : 0);
         break;
     case OP_CLOUDS_BEGIN:
         cloud_proto::g_active_seq = n ? p[0] : 0;

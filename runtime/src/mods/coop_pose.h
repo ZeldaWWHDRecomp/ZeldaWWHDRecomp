@@ -60,7 +60,8 @@ void blend(const Pose& a, const Pose& b, float t, Pose& out);
 // the real Link's pose from his last draw (step() asks for a new one each logic step); false until one is taken
 bool own_pose(Pose& out);
 // what puppet i shows: a pose drawn at a place and heading (nullptr: hidden), in a tunic (0 green, 1 red, 2 blue, 3 purple)
-void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic = 0);
+// see_through: drawn at half opacity, after the opaque world (a player outside the party, when the player chose so)
+void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic = 0, bool see_through = false);
 // puppet i's player left: hidden, and its kit (its copies of Link's models, on a heap of its own) given back at the
 // next step
 void release(int i);

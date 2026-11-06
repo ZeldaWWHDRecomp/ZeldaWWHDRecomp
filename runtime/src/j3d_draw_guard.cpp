@@ -13,9 +13,12 @@
 #include "j3d_draw_guard.h"
 
 #include <atomic>
+#include <cstring>
 #include <cstdint>
+#include <unordered_map>
 
 #include "runtime.h"
+#include "gx2/gx2_cmd.h"
 
 extern "C" void f_027F10CC_orig(Cpu* c);  // J3DDrawBuffer::drawHead(this, context)
 extern "C" void f_027F1174_orig(Cpu* c);  // J3DDrawBuffer::drawTail(this, context)
@@ -68,27 +71,69 @@ bool entered_already(uint32_t packet, const char* entry) {
             packet, slot, entry, n);
     return true;
 }
+uint32_t g_marking = 0;
+std::unordered_map<uint32_t, uint32_t> g_marks;  // packet: its alpha (float bits)
+void mark(uint32_t packet) {
+    if (g_marking) g_marks[packet] = g_marking;
+}
+// drawHead / drawTail's walk (drawHead: the buckets first to last, drawTail last to first; each bucket's packets in
+// order, each one's draw: its vtable +0xC, slot +0x2C, with the context), the marked ones between the see-through
+// brackets
+void walk_marked(Cpu* c, bool tail) {
+    const uint32_t buffer = c->r[3], ctx = c->r[4];
+    const uint32_t count = ld32(buffer + kBucketCount), buckets = ld32(buffer + kBuckets);
+    uint32_t r[32];
+    memcpy(r, c->r, sizeof r);
+    for (uint32_t j = 0; j < count; ++j)
+        for (uint32_t pk = ld32(buckets + (tail ? count - 1 - j : j) * 4); pk; pk = ld32(pk + kNext)) {
+            const auto it = g_marks.find(pk);
+            if (it != g_marks.end()) gx2::emit(gx2::OP_SEE_THROUGH, {it->second});
+            guest_call(c, ld32(ld32(pk + 0xC) + 0x2C), {pk, ctx});
+            if (it != g_marks.end()) gx2::emit(gx2::OP_SEE_THROUGH, {0u});
+        }
+    for (int k = 13; k < 32; k++) c->r[k] = r[k];  // (the callee-saved ones as the walk leaves them)
+    c->r[1] = r[1], c->r[2] = r[2];
+}
+bool any_marked(uint32_t buffer) {
+    if (g_marks.empty()) return false;
+    const uint32_t count = ld32(buffer + kBucketCount), buckets = ld32(buffer + kBuckets);
+    if (!count || count > kMaxBuckets) return false;
+    for (uint32_t i = 0; i < count; ++i)
+        for (uint32_t pk = ld32(buckets + i * 4), n = 0; pk && n < (1u << 20); pk = ld32(pk + kNext), n++)
+            if (g_marks.count(pk)) return true;
+    return false;
+}
 }  // namespace
+
+namespace j3d_draw_guard {
+void set_marking(uint32_t alpha_bits) { g_marking = alpha_bits; }
+void clear_marks() { g_marks.clear(); }
+}  // namespace j3d_draw_guard
 
 extern "C" void hook_027F0C14(Cpu* c) {
     if (entered_already(c->r[4], "entryZSort")) { c->r[3] = 1; return; }
+    mark(c->r[4]);
     f_027F0C14_orig(c);
 }
 extern "C" void hook_027F0DA8(Cpu* c) {
     if (entered_already(c->r[4], "entryNonSort")) { c->r[3] = 1; return; }
+    mark(c->r[4]);
     f_027F0DA8_orig(c);
 }
 extern "C" void hook_027F0E04(Cpu* c) {
     if (entered_already(c->r[4], "entryImm")) { c->r[3] = 1; return; }
+    mark(c->r[4]);
     f_027F0E04_orig(c);
 }
 
 extern "C" void hook_027F10CC(Cpu* c) {
     cut_loops(c->r[3], "drawHead");
+    if (any_marked(c->r[3])) return walk_marked(c, false);
     f_027F10CC_orig(c);
 }
 extern "C" void hook_027F1174(Cpu* c) {
     cut_loops(c->r[3], "drawTail");
+    if (any_marked(c->r[3])) return walk_marked(c, true);
     f_027F1174_orig(c);
 }
 extern "C" void hook_027F093C(Cpu* c) {

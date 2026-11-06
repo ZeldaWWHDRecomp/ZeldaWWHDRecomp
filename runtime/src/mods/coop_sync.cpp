@@ -477,6 +477,7 @@ Settings settings() {
         if (const char* e = getenv("WWHD_COOP_NOTICE_OK")) g_set.notice_ok = atoi(e) != 0;
         if (const char* e = getenv("WWHD_COOP_NAME")) g_set.name = e;
         if (const char* e = getenv("WWHD_COOP_STAY_TOGETHER")) g_set.stay_together = atoi(e) != 0;
+        if (const char* e = getenv("WWHD_COOP_STRANGERS")) g_set.strangers = atoi(e) == 1;  // (1: see-through)
         if (const char* e = getenv("WWHD_COOP_TUNIC")) g_set.tunic = atoi(e) & 3;
         if (const char* e = getenv("WWHD_COOP_VOICE")) g_set.voice = atoi(e) != 0;
         if (const char* e = getenv("WWHD_CHARACTER")) g_set.character = atoi(e) & 3;
@@ -960,7 +961,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         if (p.flags & 1) to_world(hull, p.pos, r.at), yaw = (int16_t)(yaw + (int16_t)ld16(hull + kAngleY));
         else memcpy(r.at, p.pos, 12);
         r.yaw = yaw;
-        show(slot, &p, r.at, yaw, net::tunic(id));
+        show(slot, &p, r.at, yaw, net::tunic(id), !net::member(id) && settings().strangers == 1);  // (X1b)
     }
     // their sounds, at their puppets as those are shown (each player's place kept for the sound engine, which keeps reading
     // it while the sound plays)

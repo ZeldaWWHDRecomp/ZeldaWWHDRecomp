@@ -32,6 +32,7 @@
 #include "guest_addr.h"
 #include "mods.h"
 #include "runtime.h"
+#include "../j3d_draw_guard.h"
 
 namespace interp {
 bool mtx_to_quat(const float* m, float* s, float* q);
@@ -93,6 +94,7 @@ Pose g_pose, g_taking;
 
 struct Puppet {
     bool shown = false;
+    bool see = false;  // drawn see-through (a player outside the party, the player's choice: GAPS X1b)
     int tunic = 0;
     Pose pose;
     float pos[3] = {};
@@ -100,6 +102,31 @@ struct Puppet {
 } g_puppet[kPuppets];
 
 float f32(uint32_t a) { return (float)ldf32(a); }
+
+// A see-through puppet's entries (X1b): into the translucent draw list (the current lists 104B4634 / 104B4638: opaque,
+// translucent; both the translucent one around its entries, so it is drawn after the opaque world, sorted), and each
+// packet entered marked (j3d_draw_guard): drawn at kSeeAlpha whatever blend its material sets
+constexpr float kSeeAlpha = 0.5f;
+struct SeeThrough {
+    bool on;
+    uint32_t was[2];
+    explicit SeeThrough(int i) : on(i >= 0 && i < kPuppets && g_puppet[i].see) {
+        if (!on) return;
+        const uint32_t lists = GD(0x104B4634);
+        was[0] = ld32(lists), was[1] = ld32(lists + 4);
+        st32(lists, was[1]);
+        float a = kSeeAlpha;
+        uint32_t b;
+        memcpy(&b, &a, 4);
+        j3d_draw_guard::set_marking(b);
+    }
+    ~SeeThrough() {
+        if (!on) return;
+        const uint32_t lists = GD(0x104B4634);
+        st32(lists, was[0]), st32(lists + 4, was[1]);
+        j3d_draw_guard::set_marking(0);
+    }
+};
 uint32_t bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 
 // a material's shown flag: the model data's (shared by Link's model and its copies), Link's draw sets it as he is
@@ -818,7 +845,10 @@ void enter_character(Cpu* c, uint32_t link, int ch, int slot, uint32_t src) {
         if (pt.face) enter_face(c, pt, model, src, slot);
         for (uint32_t m = 0; m < n; m++) st8(shown_flag(model, m), was[m] & !((pt.face | pt.cover) >> m & 1));
         c->r[3] = link, c->r[4] = model, c->r[5] = 0;
-        f_023D8DF0_orig(c);  // entryDLSetLight
+        {
+            SeeThrough see(slot - 1);  // (slot 0: this game's own)
+            f_023D8DF0_orig(c);  // entryDLSetLight
+        }
         c->r[3] = r3, c->r[4] = r4, c->r[5] = r5;
         for (uint32_t m = 0; m < n; m++) st8(shown_flag(model, m), was[m]);
         st32(lists, was_lists[0]), st32(lists + 4, was_lists[1]);
@@ -1338,10 +1368,11 @@ void release(int i) {
     if (i >= 0 && i < kPuppets) g_puppet[i].shown = false, g_kit[i].release = true;
 }
 
-void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic) {
+void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic, bool see_through) {
     Puppet& u = g_puppet[i];
     u.shown = p != nullptr;
     if (!p) return;
+    u.see = see_through;
     u.tunic = tunic & 3;
     u.pose = *p;
     memcpy(u.pos, pos, sizeof u.pos), u.yaw = yaw;
@@ -1438,7 +1469,9 @@ void step(Cpu* c, uint32_t link, bool on) {
             const Pose& q = g ? g_ghost[(g_ghost_at + 37 * g) % g_ghost.size()] : p;
             const float turn = 6.2831853f * g / n_ghosts, r = g ? 220.f : 0.f;
             const float gat[3] = {q.pos[0] + g_ghost_off[0] + r * std::cos(turn), q.pos[1] + g_ghost_off[1], q.pos[2] + g_ghost_off[2] + r * std::sin(turn)};
-            show(g, here ? &q : nullptr, gat, q.yaw, (tunic + g) & 3);
+            // (WWHD_COOP_GHOST_SEE=1: every other one see-through, from the second)
+            static const bool see = getenv("WWHD_COOP_GHOST_SEE") != nullptr;
+            show(g, here ? &q : nullptr, gat, q.yaw, (tunic + g) & 3, see && (g & 1));
         }
         static int n = 0;
         // test aid: WWHD_COOP_HEAP_PROBE=1 traces the game heap's free bytes every 300 steps (a solid heap of all that
@@ -1568,7 +1601,10 @@ static void enter(Cpu* c, uint32_t link, int i, const Model& m) {
     Red red(c, link, &u);
     const uint32_t r3 = c->r[3], r4 = c->r[4], r5 = c->r[5];
     c->r[3] = link, c->r[4] = twin, c->r[5] = 0;
-    f_023D8DF0_orig(c);
+    {
+        SeeThrough see(i);
+        f_023D8DF0_orig(c);
+    }
     c->r[3] = r3, c->r[4] = r4, c->r[5] = r5;
     for (uint32_t k = 0; k < n; k++) st8(shown_flag(twin, k), was[k]);
     if (ch && m.k == g_body_k) enter_character(c, link, ch, i + 1, twin);
@@ -1650,7 +1686,7 @@ extern "C" void hook_027F583C(Cpu* c) {
     for (int i = 0; i < kPuppets; i++)
         if (g_puppet[i].shown && g_models[k].twin[i] && !((g_puppet[i].pose.flags >> 4 & 3) && body_part(k)))
             for (const Model& m : g_puppet[i].pose.models)
-                if (m.k == k) joint_without(model, joint, m.shown, [&] { c->r[3] = g_models[k].twin[i], c->r[4] = joint, f_027F583C_orig(c); });
+                if (m.k == k) joint_without(model, joint, m.shown, [&] { SeeThrough see(i); c->r[3] = g_models[k].twin[i], c->r[4] = joint, f_027F583C_orig(c); });
     c->r[3] = r3, c->r[4] = r4;
 }
 
@@ -1661,6 +1697,7 @@ extern "C" void hook_023D9820(Cpu* c) {
     if (g_want) g_taking = Pose{};
     for (uint64_t& e : g_entered) e = 0;
     g_in_draw = true, g_link_drawing = link, g_body_k = index_of(ld32(link + 0x448)), g_char_entered = 0;
+    j3d_draw_guard::clear_marks();  // (this frame's see-through entries follow)
     g_viewed.clear();
     f_023D9820_orig(c);
     g_in_draw = false;

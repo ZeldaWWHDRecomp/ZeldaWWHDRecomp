@@ -12,6 +12,13 @@
 
 namespace j3d_draw_guard {
 
+// Marked packets (online co-op's see-through players, coop_pose.cpp): while marking is on (a value other than 0,
+// the draw's constant alpha as float bits), every packet the entry functions take is marked with it; drawHead and
+// drawTail then draw each marked packet between gx2 OP_SEE_THROUGH(alpha) and OP_SEE_THROUGH(0). Game thread.
+// clear_marks: once a frame, before the first entry (a frame's marks are its own).
+void set_marking(uint32_t alpha_bits);
+void clear_marks();
+
 // The packet whose next link closes a loop in the list from `head` (cutting that link leaves every
 // packet in the list once), or 0 when the list ends. `next(p)` reads a packet's next link; 0 ends the
 // list. Brent's cycle detection: no memory, at most a few passes over the list. `limit` bounds the

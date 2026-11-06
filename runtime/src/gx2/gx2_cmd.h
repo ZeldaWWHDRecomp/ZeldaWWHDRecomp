@@ -57,6 +57,9 @@ enum Op : uint32_t {
     // a layout root pane is about to be drawn into the target bound now (aspect.cpp hook_02877100, as
     // OP_LAYOUT_ROOT, also with the original aspect): the first one on the TV picture ends the scene
     OP_FRAMEGEN_LAYOUT,
+    // online co-op's see-through players (coop_pose.cpp, GAPS X1b): the draws up to the next one blend at this
+    // constant alpha (float bits; 0: back to the game's own blend state), whatever blend the game sets meanwhile
+    OP_SEE_THROUGH,
     OP_COUNT
 };
 
