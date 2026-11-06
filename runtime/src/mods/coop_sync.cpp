@@ -741,15 +741,18 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         } else if (deck_was != -1) deck_was = -1, mods::trace("coop: off the deck");
         if (static bool told = false; sailing != told) told = sailing, mods::trace("coop: %s", sailing ? "sailing" : "not sailing");
         // test aid: WWHD_COOP_TEST_DRIFT=<units a step>,<seconds>: while sailing, this game's boat is held where it began
-        // and, after that many seconds, goes straight ahead that fast (a friend sailing steadily, without the controls)
+        // and, after that many seconds, goes straight ahead that fast (a friend sailing steadily, without the controls);
+        // 0 units: let go then, the game sailing it (its sail is up in sea_boat.wwstate)
         static float drift = -2, drift_after = 0, anchor[3];
         static uint32_t sail_since = 0, steps = 0;
         if (drift == -2) drift = -1, sscanf(getenv("WWHD_COOP_TEST_DRIFT") ? getenv("WWHD_COOP_TEST_DRIFT") : "", "%f,%f", &drift, &drift_after);
         if (!sailing) sail_since = 0;
         else if (!sail_since) sail_since = net::now_ms(), steps = 0, anchor[0] = f32(ship + kPos), anchor[1] = f32(ship + kPos + 4), anchor[2] = f32(ship + kPos + 8);
-        if (sailing && drift >= 0) {
+        // (a speed of 0 after the hold: the boat let go then, sailing on by itself as the game sails it)
+        const bool held = now_ms_since(sail_since) < (uint32_t)(drift_after * 1000);
+        if (sailing && drift >= 0 && (held || drift > 0)) {
             const double t = (int16_t)ld16(ship + kAngleY) * M_PI / 32768;
-            const float d = now_ms_since(sail_since) >= (uint32_t)(drift_after * 1000) ? drift * (float)++steps : 0;
+            const float d = held ? 0 : drift * (float)++steps;
             stf32(ship + kPos, anchor[0] + d * (float)sin(t)), stf32(ship + kPos + 8, anchor[2] + d * (float)cos(t));
         }
         if (static uint32_t n = 0; ++n % 150 == 0 && (sailing || deck_of >= 0))
@@ -1042,10 +1045,18 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     for (int id = 0; id < net::kMaxPlayers; id++) {
         has[id] = id != net::my_id() && net::connected(id) && now - g_remote[id].heard < (uint32_t)kStale &&
                   pose_at(g_remote[id], g_remote[id].clock.shown(now), shown[id]);
+        // (in this game's room; or, carrying Link, wherever it sails: he goes into its room with it, c16drift0)
         if (id < deck::kDecks && has[id] && net::member(id) && (shown[id].flags & kSailing) && !strncmp(shown[id].stage, stage.c_str(), 8) &&
-            shown[id].room == room) {
+            (shown[id].room == room || deck_of == id)) {
             deck::Boat& b = boats[id];
             b.on = true, memcpy(b.pos, shown[id].boat, 12), b.yaw = shown[id].boat_yaw, b.room = shown[id].room;
+        }
+        // a boat sailing here is put on this game's waves (each game runs its own: the friend's boat height there is
+        // not the water here, and a deck at it had the rider swimming, c16z), its sailor and anyone on it with it
+        if (float y; has[id] && (shown[id].flags & kSailing) && stage == "sea" && deck::water(c, shown[id].boat[0], shown[id].boat[2], y)) {
+            const float dy = y - shown[id].boat[1];
+            shown[id].boat[1] = y, shown[id].pos[1] += dy;
+            if (id < deck::kDecks) boats[id].pos[1] = y;
         }
     }
     if (static bool had = false; getenv("WWHD_COOP_DECK_TRACE") && had != boats[0].on && (had = boats[0].on, !had))
@@ -1074,7 +1085,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 memcpy(deck_at, shown[p.deck_of].boat, 12), deck_yaw = shown[p.deck_of].boat_yaw, deck_known = true;
         }
         r.shown = has[id] && !strncmp(p.stage, stage.c_str(), 8) &&
-                  ((p.flags & 1) ? hull != 0 : (p.flags & kOnFriend) ? deck_known : p.room == room);
+                  ((p.flags & 1) ? hull != 0 : (p.flags & kOnFriend) ? deck_known : p.room == room || (deck_of == id && (p.flags & kSailing)));
         if (!r.shown) {
             if (was) show(slot, nullptr, nullptr, 0);  // (only the ones it showed: the ghost test aid has slot 0 to itself)
             continue;

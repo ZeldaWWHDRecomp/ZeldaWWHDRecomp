@@ -126,6 +126,18 @@ bool registered(Cpu* c, const Deck& d) {
 
 }  // namespace
 
+// the sea's height here at x, z (daSea_calcWave 0246BA0C: f1 x, f2 z, f1 the height; the base height off the waves'
+// grid). Each game runs its own waves, so a friend's boat is put on this game's water, not at its height there
+bool water(Cpu* c, float x, float z, float& y) {
+    if (!c) return false;
+    const Cpu saved = *c;
+    c->f[1].ps0 = x, c->f[2].ps0 = z;
+    guest_call(c, GC(0x0246BA0C), {});
+    y = (float)c->f[1].ps0;
+    *c = saved;
+    return std::isfinite(y) && std::fabs(y) < 1e5f;
+}
+
 void update(Cpu* c, const Boat boats[kDecks], uint32_t own_ship) {
     if (own_ship != g_owner) clear(c), g_owner = own_ship;  // (another boat: the decks registered again under it)
     for (int i = 0; i < kDecks; i++) {
@@ -136,7 +148,7 @@ void update(Cpu* c, const Boat boats[kDecks], uint32_t own_ship) {
             continue;
         }
         if (!make(c, d, b)) continue;
-        d.at = b;  // (at the boat's height too: the water rises and falls with it; Link is carried up and down, move())
+        d.at = b;  // (on this game's water: Link is carried up and down with it, move(); see water())
         if (d.in && !registered(c, d)) d.in = false;
         const uint32_t r3 = c->r[3];
         if (!d.in) {
@@ -165,6 +177,17 @@ void move(Cpu* c) {
     // move him here, c16m: it needs the body moved by an actor running in that step, which the deck is not.)
     const uint32_t link = ld32(GD(0x1046F0B0) + 0x5B34);
     int on = link >= 0x10000000 ? standing_on(link) : -1;
+    // (test aid: WWHD_COOP_DECK_TRACE=2: each step on a deck, Link's procedure, ground body and poly, his place in the
+    // deck's frame, the deck's place, this game's own boat)
+    if (static const bool every = getenv("WWHD_COOP_DECK_TRACE") && atoi(getenv("WWHD_COOP_DECK_TRACE")) == 2; every && link >= 0x10000000 &&
+        (on >= 0 || g_hop_steps > 0 || standing_on(link) != -1 || g_deck[0].in)) {
+        const Deck& d = g_deck[0];
+        const double t = d.at.yaw * M_PI / 32768, dx = ldf32(link + kPos) - d.at.pos[0], dz = ldf32(link + kPos + 8) - d.at.pos[2];
+        mods::trace("coop: deck step: on %d, proc %u, ground %08X poly %u, local %.0f %.0f %.0f, deck %.0f %.0f %.0f yaw %d, own boat %.0f %.0f", on,
+                    ld32(link + 0x65F0), ld32(link + kGndBg), ld16(link + kGndBg - 4), dx * cos(t) - dz * sin(t), ldf32(link + kPos + 4) - d.at.pos[1],
+                    dx * sin(t) + dz * cos(t), d.at.pos[0], d.at.pos[1], d.at.pos[2], d.at.yaw, g_owner ? ldf32(g_owner + kPos) : 0.0,
+                    g_owner ? ldf32(g_owner + kPos + 8) : 0.0);
+    }
     if (on >= 0) g_hop_steps = 0;
     else if (g_hop_steps > 0 && g_hop >= 0 && g_deck[g_hop].in) on = g_hop, g_hop_steps--;  // (landing: the deck rides the waves)
     if (static uint32_t n = 0; getenv("WWHD_COOP_DECK_TRACE") && ++n % 20 == 0)

@@ -23,6 +23,8 @@ struct Boat { bool on = false; float pos[3] = {}; int16_t yaw = 0; int8_t room =
 void update(Cpu* c, const Boat boats[kDecks], uint32_t own_ship);
 // just before the actors run: each deck moved to its place (Link on it carried)
 void move(Cpu* c);
+// the sea's height at x, z in this game (its own waves); false off the sea
+bool water(Cpu* c, float x, float z, float& y);
 // all decks taken away (the session off, another stage)
 void clear(Cpu* c);
 // the party number whose deck Link stands on, or -1
