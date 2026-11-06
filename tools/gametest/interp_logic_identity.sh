@@ -47,7 +47,7 @@ run() {  # run EXE NAME FPS [VAR=value ...]
         WWHD_TEST_FIXED_SEED=1 WWHD_PRESS=$boot WWHD_STATE_LOAD_AT=$load:1 WWHD_TEST_ORIGIN=1 WWHD_TEST_ORIGIN_LOAD=30 WWHD_TEST_END=$end \
         WWHD_TEST_STICK=$stick WWHD_TEST_RSTICK=$rstick WWHD_TEST_PRESS=$press \
         WWHD_LINK_TRACE=trace.txt WWHD_CAM_TRACE=cam.txt WWHD_SAVEINFO_DUMP=si.bin WWHD_SE_TRACE=se.txt WWHD_RNG_TRACE=rng.txt \
-        WWHD_PROC_DIGEST=digest.txt WWHD_PROC_DIGEST_SKIP=$skip WWHD_PROC_DIGEST_ANM_CACHE=$anm \
+        WWHD_PROC_DIGEST=digest.txt WWHD_PROC_DIGEST_SKIP=$skip WWHD_PROC_DIGEST_ANM_CACHE=$anm WWHD_PROC_DIGEST_LINE_LINKS=$anm \
         $mode "$@" $x --game $game --save save > log 2>&1 ) &
     local pid=$!
     trap "kill -9 $pid 2>/dev/null" EXIT INT TERM HUP
@@ -77,10 +77,13 @@ run() {  # run EXE NAME FPS [VAR=value ...]
 # draw stores) and the same callback's points in the harbour boats (ikada 0044 +0x508: dPa_trackEcallBack
 # mPos, written and read only by its draw); its sail's render packet (00AB +0x3BC, 0x2100 bytes); the water pillars' tevStr
 # (01C1 +0x204); and every material animator's evaluation cache (the frame drawing last
-# evaluated, WWHD_PROC_DIGEST_ANM_CACHE). The logic does not read these. DRAW_SKIP=0 hashes them too.
+# evaluated, WWHD_PROC_DIGEST_ANM_CACHE); the pigs' (daKb 00DC) own two tevstrs (+0x3AC, +0x574: as the
+# actor's), every 3D line material's link in the line sort packet's list (mpNextLineMat, +0: set by
+# setMat when drawn, cleared by the draw buffers' reset; WWHD_PROC_DIGEST_LINE_LINKS: the bridges'
+# ropes). The logic does not read these. DRAW_SKIP=0 hashes them too.
 skip0=A8:64F0:98,6B:3D0:30,A8:6D9C:6,A8:713C:6,A8:71DC:6,1DC:508:8,A8:48C:168
 skip=$skip0
-[ "${DRAW_SKIP:-1}" = 1 ] && skip=$skip0,AE:3AC:1344,A8:66C:4:58:3,A5:5BC:3C,A5:D0DC:50,44:508:24,AB:3BC:2100,1C1:204:1C8,*:110:1C8
+[ "${DRAW_SKIP:-1}" = 1 ] && skip=$skip0,AE:3AC:1344,A8:66C:4:58:3,A5:5BC:3C,A5:D0DC:50,44:508:24,AB:3BC:2100,1C1:204:1C8,DC:3AC:1C8:1C8:2,*:110:1C8
 anm=0
 [ "${DRAW_SKIP:-1}" = 1 ] && anm=1
 bad=0

@@ -486,10 +486,18 @@ void proc_digest(uint32_t proc) {
     // step gets depends on real-time pacing): left out
     std::vector<uint32_t> auto_skip;
     static const bool anm_cache = getenv("WWHD_PROC_DIGEST_ANM_CACHE") && atoi(getenv("WWHD_PROC_DIGEST_ANM_CACHE"));
+    // WWHD_PROC_DIGEST_LINE_LINKS=1: their +0 too, mpNextLineMat: the link of the line sort packet's
+    // list of materials drawn this frame (mDoExt_3DlineMatSortPacket::setMat, cleared by its reset
+    // 025EDBC0 when the draw buffers are reset): draw-list state, not game state
+    static const bool line_links = getenv("WWHD_PROC_DIGEST_LINE_LINKS") && atoi(getenv("WWHD_PROC_DIGEST_LINE_LINKS"));
+    auto line_link = [&](uint32_t o) {
+        if (line_links)
+            for (uint32_t k = 0; k < 4; k++) auto_skip.push_back(o - 0x130 + k);
+    };
     for (uint32_t o = 0x130; o + 4 <= size; o += 4) {
         uint32_t w = ld32(proc + o);
-        if (w == GD(0x10058DC0u)) auto_skip.push_back(o - 0x130 + 0x142);
-        else if (w == GD(0x10058DF0u)) auto_skip.push_back(o - 0x130 + 0x182);
+        if (w == GD(0x10058DC0u)) { auto_skip.push_back(o - 0x130 + 0x142); line_link(o); }
+        else if (w == GD(0x10058DF0u)) { auto_skip.push_back(o - 0x130 + 0x182); line_link(o); }
         // WWHD_PROC_DIGEST_ANM_CACHE=1: a material animator's evaluation cache (the frame it last
         // evaluated, +0x28; its time block's frame mapping function, loop 027DA9E8 / clamp 027DAAA0,
         // sits 0x14 before it): what drawing evaluated, not game state
