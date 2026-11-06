@@ -108,7 +108,9 @@ with only two players, the one left keeps playing in their own Quest Log.
 
 Through a server you can join and leave a party as often as you like while you play, with no loading and no
 trip to the title screen. Whoever leaves keeps playing where they are, in their own Quest Log, and can save.
-When you join (again), what you did while apart is merged both ways: the story, chests, items and maps that
+Through a server, the party's shared progress is also kept by the server (for as long as the privacy notice
+says), so a friend who comes back while nobody else is online still gets what the others did. When you join
+(again), what you did while apart is merged both ways: the story, chests, items and maps that
 either of you got are then in both games. Small keys follow the party's leader. With **Stay together** on,
 leaving the party takes you back to the title screen, because you were playing in the host's world.
 

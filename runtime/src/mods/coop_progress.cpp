@@ -420,6 +420,13 @@ void step(Cpu* c, bool live) {
         }
 }
 
+int store_mode(uint16_t off, uint8_t size) {
+    for (const Field& k : kFields)
+        if (off >= k.off && off + size <= k.off + k.size)
+            return k.mode == kBits ? 0 : k.mode == kMax ? 1 : k.mode == kFill || k.mode == kBottle ? 2 : -1;
+    return -1;
+}
+
 std::vector<std::string> team_state(bool counts) {
     const uint32_t sv = ld32(kSaveInfoPtr);
     if (!sv) return {};

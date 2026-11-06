@@ -30,6 +30,7 @@
 #include <map>
 #include <mutex>
 
+#include "coop_progress.h"
 #include "coop_servers.h"
 #include "mods.h"
 #include "proto/client.h"
@@ -293,7 +294,31 @@ std::string friend_code() {
     return code;
 }
 
+// (X3) shared progress also to the server's team store, in any party (alone in it too): a member who comes later, with
+// nobody else online, gets it from there. Our records (coop_progress.cpp: u16 offset, u8 size, the value, and for bit
+// fields the changed bits) as the store's fields; counts as they come (small keys) are not stored
+void store_progress(const std::string& body) {
+    if (!g_client || !g_party.party) return;
+    std::vector<op::TeamField> fields;
+    const auto* d = (const uint8_t*)body.data();
+    for (size_t i = 0; i + 3 <= body.size();) {
+        const uint16_t off = (uint16_t)(d[i] | d[i + 1] << 8);
+        const uint8_t size = d[i + 2];
+        const int mode = progress::store_mode(off, size);
+        const size_t len = 3 + size * (mode == 0 ? 2 : 1);
+        if (i + len > body.size() || !size || size > op::kMaxTeamFieldBytes) break;
+        if (mode >= 0) {
+            op::TeamField f;
+            f.offset = off, f.mode = (uint8_t)mode, f.value.assign((const char*)d + i + 3, size);
+            if (mode != 0 || std::any_of(f.value.begin(), f.value.end(), [](char c) { return c != 0; })) fields.push_back(std::move(f));
+        }
+        i += len;
+    }
+    if (!fields.empty()) g_client->send_progress(fields);
+}
+
 void send(int to, Msg type, const std::string& body) {
+    if (type == kProgress) store_progress(body);  // (a member's changes, and its whole team state at a join: the store has all)
     if (!g_client || !in_party()) return;
     op::AppHeader h;
     h.type = (uint8_t)type;
@@ -496,7 +521,20 @@ void poll(Handler& h) {
             if (e.value == 9) g_have_record = false;  // (not restored: invitations again)
             say(servers::party(e.value, e.text), true);
             break;
-        default: break;  // (markers, emotes, copies, runners, team state: later items)
+        case op::ClientEvent::kTeamState: {  // (X3) the server's team store: at a join, and others' changes
+            if (!g_party.party || !party_flag(kShareProgress, true)) break;
+            std::string m;
+            for (const op::TeamField& f : e.fields) {
+                if (f.value.empty() || f.value.size() > op::kMaxTeamFieldBytes || progress::store_mode(f.offset, (uint8_t)f.value.size()) != f.mode) continue;
+                m += std::string{(char)(f.offset & 0xFF), (char)(f.offset >> 8), (char)f.value.size()};
+                m += f.value;
+                if (f.mode == 0) m += f.value;  // (bits: those set, as the changed ones)
+            }
+            mods::trace("coop: server: team state %u, %zu fields", e.version, e.fields.size());
+            if (!m.empty()) progress::received((const uint8_t*)m.data(), m.size());
+            break;
+        }
+        default: break;  // (markers, emotes, copies: later items)
         }
     }
     {
