@@ -290,7 +290,7 @@ if(WWHD_SDL_HOST)
   if(NOT TARGET SDL3::SDL3)
     find_package(SDL3 CONFIG REQUIRED)
   endif()
-  list(APPEND GFX_SOURCES runtime/src/platform/input_sdl.cpp runtime/src/platform/mouse_sdl.cpp runtime/src/platform/display_rate.cpp
+  list(APPEND GFX_SOURCES runtime/src/platform/input_sdl.cpp runtime/src/platform/window_focus.cpp runtime/src/platform/mouse_sdl.cpp runtime/src/platform/display_rate.cpp
                           runtime/src/platform/mic_sdl.cpp)
   if(APPLE)
     enable_language(OBJCXX)
@@ -1162,9 +1162,9 @@ if(WWHD_SDL_HOST)
   set_tests_properties(overlay_trace_paths PROPERTIES ENVIRONMENT "WWHD_NO_AUDIO=1;WWHD_OVERLAY_TRACE=1;WWHD_OVERLAY_MOUSE_HANDOFF=1")
   add_test(NAME overlay_trace_positive COMMAND overlay_scroll_test)
   set_tests_properties(overlay_trace_positive PROPERTIES ENVIRONMENT "WWHD_NO_AUDIO=1;WWHD_OVERLAY_TRACE=1;WWHD_OVERLAY_MOUSE_HANDOFF=0")
-  add_executable(input_sdl_test runtime/tools/input_sdl_test.cpp runtime/src/input_map.cpp runtime/src/rumble.cpp runtime/src/fixed_seed.cpp runtime/src/platform/input_sdl.cpp runtime/src/platform/mouse_sdl.cpp ${MOTION_SOURCES})
+  add_executable(input_sdl_test runtime/tools/input_sdl_test.cpp runtime/src/input_map.cpp runtime/src/rumble.cpp runtime/src/fixed_seed.cpp runtime/src/platform/input_sdl.cpp runtime/src/platform/window_focus.cpp runtime/src/platform/mouse_sdl.cpp ${MOTION_SOURCES})
   target_include_directories(input_sdl_test PRIVATE ${IMGUI_DIR} runtime/src runtime/include ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
-  target_compile_definitions(input_sdl_test PRIVATE WWHD_HAS_VULKAN=1 WWHD_SDL_HOST=1 WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION=1)
+  target_compile_definitions(input_sdl_test PRIVATE WWHD_HAS_VULKAN=1 WWHD_SDL_HOST=1 WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION=1 WWHD_TEST_WINDOW_FOCUS=1)
   target_link_libraries(input_sdl_test PRIVATE SDL3::SDL3 Threads::Threads)
   if(WIN32)
     target_link_libraries(input_sdl_test PRIVATE ws2_32)
@@ -2706,6 +2706,7 @@ add_test(NAME overlay_toggle COMMAND overlay_toggle_test)
 if(WWHD_SDL_HOST)
   add_test(NAME overlay_focus_matrix COMMAND input_sdl_test --menu-matrix)
   add_test(NAME sdl_background_controllers COMMAND input_sdl_test --background)
+  add_test(NAME sdl_controller_focus COMMAND input_sdl_test --focus)  # issue #406: TV or GamePad window focused
 endif()
 
 # Link only the overlay input API and SDL boundary. Dead code elimination drops renderer/game
@@ -2726,7 +2727,7 @@ if(WWHD_SDL_HOST AND UNIX AND NOT ANDROID)
   add_executable(overlay_input_integration_test runtime/tools/overlay_input_integration_test.cpp
     runtime/src/overlay/controls_view.cpp
     runtime/src/gfx/display_modes.cpp runtime/src/overlay/extensions.cpp runtime/src/input_map.cpp
-    runtime/src/rumble.cpp runtime/src/fixed_seed.cpp runtime/src/platform/input_sdl.cpp runtime/src/platform/mouse_sdl.cpp ${MOTION_SOURCES})
+    runtime/src/rumble.cpp runtime/src/fixed_seed.cpp runtime/src/platform/input_sdl.cpp runtime/src/platform/window_focus.cpp runtime/src/platform/mouse_sdl.cpp ${MOTION_SOURCES})
   target_include_directories(overlay_input_integration_test PRIVATE ${IMGUI_DIR} runtime/src runtime/include
     ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
   target_compile_definitions(overlay_input_integration_test PRIVATE WWHD_HAS_VULKAN=1 WWHD_SDL_HOST=1 WWHD_TEST_GAMESCOPE=1)

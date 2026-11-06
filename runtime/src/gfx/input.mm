@@ -74,8 +74,9 @@ bool gameplay_focused() { return g_gameplay_focus.load(std::memory_order_relaxed
 bool window_focused() { return g_window_focus.load(std::memory_order_relaxed); }
 // ---- controllers in the background (issue #267)
 // GameController.framework stops sending controller input to an app that is not in front unless
-// GCController.shouldMonitorBackgroundEvents is set (macOS 11.3+); Controls > "Controller input when
-// the game isn't focused" sets it. Keyboard and mouse are released on focus loss either way.
+// GCController.shouldMonitorBackgroundEvents is set (macOS 11.3+); Controls > "Controller input in the
+// background" sets it. Keyboard and mouse are released on focus loss either way. Any window of the app in
+// front counts as focused (the TV window, the GamePad window, the controls window: issue #406).
 bool background_controllers() { return input_map::background_controllers(); }
 static void apply_background_controllers() {  // main thread
     static int applied = -1;
@@ -83,7 +84,7 @@ static void apply_background_controllers() {  // main thread
     if (applied == (int)on) return;
     if (@available(macOS 11.3, *)) GCController.shouldMonitorBackgroundEvents = on;
     else if (on) LOG("[input] controller input in the background needs macOS 11.3 or later");
-    if (applied >= 0 || on) LOG("[input] controller input while the game isn't focused: %s", on ? "on" : "off");
+    if (applied >= 0 || on) LOG("[input] controller input in the background: %s", on ? "on" : "off");
     applied = on;
 }
 static PadState g_pad;  // controller part, refreshed on the main thread
@@ -635,7 +636,7 @@ static void haptic_tick() {
     float level = std::max(0.f, std::min(1.f, rumble::host_level(1000000 / 60)));
     // as on the SDL hosts (input_sdl.cpp): the game cannot stop the motors from there while the
     // settings overlay holds the input, and they stay still while the app is not focused, unless
-    // "Controller input when the game isn't focused" is on
+    // "Controller input in the background" is on
     if (overlay::is_open() || !(window_focused() || background_controllers())) level = 0.f;
     for (auto& h : g_haptics) haptic_apply(h, level);
 }

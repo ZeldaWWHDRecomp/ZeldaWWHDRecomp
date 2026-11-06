@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the controller stopped working after clicking the GamePad window** (#406, thanks @KaitoCrisHub for the
+  report). Controllers now keep driving the game while the TV window or the GamePad window is in front (on Windows the
+  focus could stay empty when it moved between the game's own windows). The existing option is now called
+  **Controller input in the background** (Settings › Controls, off by default): turn it on to keep using the
+  controller while another app is in front. Keyboard and mouse still need a game window in front.
 - **Fixed: the bottom of the picture cut off on Android devices that keep their navigation bar over the game**
   (#349, thanks @plxjammerplx for the report). On the Retroid Pocket Nova, 4:3 / Match window filled the whole
   screen and the system's navigation bar covered the rupee counter. The picture, the view button and Match
