@@ -3076,7 +3076,7 @@ void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexTy
 void clouds_before_draw(const uint32_t* r, const vk::Shader* ps, Surface* color0, uint32_t slice0, Surface* depth);
 bool clouds_skip_card();
 // the tall grass vertex programs (Graphics > Grass draw distance), by vk::vertex_program_hash
-// (the three of the islands' tall grass, 832, 1120 and 1648 bytes; logged with WWHD_VK_CULL_VS)
+// (the three of the islands' tall grass, 832, 1120 and 1648 bytes)
 constexpr uint64_t kGrassVs[] = {0x23CDD3D4D6BAAACDull, 0x042E089911FC3CC0ull, 0x7C8717CA596569B3ull};
 
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
@@ -3097,83 +3097,48 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   ((uint32_t *)r)[REGADDR::VGT_PRIMITIVE_TYPE] = prim;
   // Graphics > Grass draw distance (render::grass_distance): drop (before any resolution) the tall grass patches whose
   // model translation (vertex uniform block 1, a 3x4 row-major matrix) lies farther than that from Link (horizontal).
-  // The grass is told by its vertex program's bytes (kGrassVs; WWHD_GRASS_VS_HASH=HASH,... replaces the list);
-  // WWHD_VK_CULL_VS=ADDR,... picks programs by address instead and logs their hashes.
-  static const std::vector<uint64_t> grassVs = [] {
-    std::vector<uint64_t> v = {kGrassVs, kGrassVs + std::size(kGrassVs)};
-    if (const char* e = std::getenv("WWHD_GRASS_VS_HASH")) {
-      v.clear();
-      for (const char* p = e; *p;) { v.push_back(std::strtoull(p, const_cast<char**>(&p), 16)); while (*p == ',') ++p; }
-    }
-    return v;
-  }();
-  static const std::vector<uint32_t> cullVs = [] {
-    std::vector<uint32_t> v;
-    if (const char* e = std::getenv("WWHD_VK_CULL_VS"))
-      for (const char* p = e; *p;) { v.push_back(uint32_t(std::strtoul(p, const_cast<char**>(&p), 16))); while (*p == ',') ++p; }
-    return v;
-  }();
+  // The grass is told by its vertex program's bytes (kGrassVs). A patch is 108 vertices; the same programs also draw
+  // the small palms and plants (216), which stay.
   const int grassDistance = render::grass_distance();
-  auto is_grass = [&] {
-    const uint32_t vsAddr = r[mmSQ_PGM_START_VS] << 8;
-    if (!cullVs.empty()) {
-      const bool hit = std::find(cullVs.begin(), cullVs.end(), vsAddr) != cullVs.end();
-      static std::unordered_map<uint32_t, uint64_t> logged;
-      if (hit && !logged.count(vsAddr)) {
-        logged[vsAddr] = vk::vertex_program_hash(r, R.frame);
-        LOG("[grass] VS %08X (%u bytes): hash %016llX", vsAddr, r[mmSQ_PGM_START_VS + 1] << 3, (unsigned long long)logged[vsAddr]);
-      }
-      return hit;
-    }
+  if (grassDistance > 0 && uint64_t(count) * instances == 108) {
     // a few programs a frame: their answer is kept for the frame (program_hash revalidates once per frame)
     struct Seen { uint32_t addr = 0, size = 0; uint64_t frame = ~0ull; bool grass = false; };
     static Seen seen[8];
-    const uint32_t size = r[mmSQ_PGM_START_VS + 1];
-    Seen& e = seen[(vsAddr >> 8) & 7];
-    if (e.frame != R.frame || e.addr != vsAddr || e.size != size) {
+    const uint32_t vsAddr = r[mmSQ_PGM_START_VS] << 8, vsSize = r[mmSQ_PGM_START_VS + 1];
+    Seen& s = seen[(vsAddr >> 8) & 7];
+    if (s.frame != R.frame || s.addr != vsAddr || s.size != vsSize) {
       const uint64_t h = vk::vertex_program_hash(r, R.frame);
-      e = {vsAddr, size, R.frame, h && std::find(grassVs.begin(), grassVs.end(), h) != grassVs.end()};
+      s = {vsAddr, vsSize, R.frame, h && std::find(std::begin(kGrassVs), std::end(kGrassVs), h) != std::end(kGrassVs)};
     }
-    return e.grass;
-  };
-  // a patch is 108 vertices; the same programs also draw the small palms and plants (216), which stay
-  if ((grassDistance > 0 || !cullVs.empty()) && uint64_t(count) * instances == 108 && is_grass()) {
-    static const float envDist = [] { const char* e = std::getenv("WWHD_VK_CULL_DIST"); return e ? float(std::atof(e)) : 0.f; }();
-    const float cullDist = grassDistance > 0 ? float(grassDistance) : envDist > 0 ? envDist : 6000.f;
-    static uint64_t linkFrame = ~0ull;
-    static bool haveLink = false;
-    static float lx = 0, lz = 0;
-    static uint64_t culled = 0, kept = 0;
-    auto be32 = [](uint32_t a) { uint32_t v; std::memcpy(&v, mem::ptr(a), 4); return __builtin_bswap32(v); };
-    auto bef = [&](uint32_t a) { const uint32_t v = be32(a); float f; std::memcpy(&f, &v, 4); return f; };
-    auto valid = [](uint32_t a) { return a >= 0x10000000u && a < 0x60000000u && !(a & 3); };
-    if (linkFrame != R.frame) {  // Link: the actor queue's process 0xA8 (herramientas/lector.py)
-      linkFrame = R.frame;
-      haveLink = false;
-      uint32_t n = be32(GD(0x101F3328));  // g_fopAcTg_Queue (touch_talk.cpp), mapped for this build
-      for (int i = 0; i < 4096 && n && valid(n); ++i) {
-        const uint32_t a = be32(n + 0xC);
-        if (valid(a) && (be32(a + 8) >> 16) == 0xA8) { lx = bef(a + 0x314); lz = bef(a + 0x31C); haveLink = true; break; }
-        n = be32(n + 8);
+    if (s.grass) {
+      static uint64_t linkFrame = ~0ull;
+      static bool haveLink = false;
+      static float lx = 0, lz = 0;
+      auto be32 = [](uint32_t a) { uint32_t v; std::memcpy(&v, mem::ptr(a), 4); return __builtin_bswap32(v); };
+      auto bef = [&](uint32_t a) { const uint32_t v = be32(a); float f; std::memcpy(&f, &v, 4); return f; };
+      auto valid = [](uint32_t a) { return a >= 0x10000000u && a < 0x60000000u && !(a & 3); };
+      if (linkFrame != R.frame) {  // Link: the actor queue's process 0xA8 (herramientas/lector.py)
+        linkFrame = R.frame;
+        haveLink = false;
+        uint32_t n = be32(GD(0x101F3328));  // g_fopAcTg_Queue (touch_talk.cpp), mapped for this build
+        for (int i = 0; i < 4096 && n && valid(n); ++i) {
+          const uint32_t a = be32(n + 0xC);
+          if (valid(a) && (be32(a + 8) >> 16) == 0xA8) { lx = bef(a + 0x314); lz = bef(a + 0x31C); haveLink = true; break; }
+          n = be32(n + 8);
+        }
       }
-      if (R.frame % 600 == 0 && culled + kept)
-        LOG("[cull] frame %llu: %.1f%% of the selected draws culled (Link %s %.0f %.0f)", (unsigned long long)R.frame,
-            100.0 * culled / (culled + kept), haveLink ? "at" : "not found", lx, lz);
-      if (R.frame % 600 == 0) culled = kept = 0;
-    }
-    const uint32_t addr = r[mmSQ_VTX_UNIFORM_BLOCK_START + 7], size = r[mmSQ_VTX_UNIFORM_BLOCK_START + 8] + 1;
-    if (haveLink && addr && size >= 48) {
-      float m[12];
-      std::memcpy(m, mem::ptr(addr), sizeof m);  // uploaded as is (uniform())
-      const float dx = m[3] - lx, dz = m[11] - lz;
-      if (dx * dx + dz * dz > cullDist * cullDist) {
-        // the next draw continues from the previous drawn one: keep this draw's register changes
-        gx2::g_dirty_groups |= dirtyGroups;
-        ++culled;
-        return;
+      const uint32_t addr = r[mmSQ_VTX_UNIFORM_BLOCK_START + 7], size = r[mmSQ_VTX_UNIFORM_BLOCK_START + 8] + 1;
+      if (haveLink && addr && size >= 48) {
+        float m[12];
+        std::memcpy(m, mem::ptr(addr), sizeof m);  // uploaded as is (uniform())
+        const float dx = m[3] - lx, dz = m[11] - lz, d = float(grassDistance);
+        if (dx * dx + dz * dz > d * d) {
+          // the next draw continues from the previous drawn one: keep this draw's register changes
+          gx2::g_dirty_groups |= dirtyGroups;
+          return;
+        }
       }
     }
-    ++kept;
   }
   // continued-draw fast path (see fastpath_config); the AO replay draw stays outside of it
   const auto& fastPath = fastpath_config();
@@ -3246,72 +3211,6 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     vk::translate_stages(r, fs, fsKey, R.frame, g_shader_state_gen, vs, ps);
   }
   rprof::mark(rprof::kShader);
-  // WWHD_VK_DRAW_CENSUS=N: every N frames, log the vertex/pixel programs with the most draws (and
-  // their first pixel texture) since the previous report
-  static const uint32_t censusEvery = [] {
-    const char* e = std::getenv("WWHD_VK_DRAW_CENSUS");
-    return e ? uint32_t(std::max(0, std::atoi(e))) : 0u;
-  }();
-  if (censusEvery && !replay && !aoPrivateReplay) {
-    struct CensusEntry { uint64_t draws = 0, fast = 0, vertices = 0; uint32_t texture = 0; };
-    static std::unordered_map<uint64_t, CensusEntry> census;
-    static uint64_t censusFrame = R.frame, censusDraws = 0;
-    const uint64_t key = uint64_t(r[mmSQ_PGM_START_VS]) << 32 | r[mmSQ_PGM_START_PS];
-    auto& e = census[key];
-    ++e.draws; e.fast += fast; e.vertices += uint64_t(count) * instances; ++censusDraws;
-    if (!e.texture) e.texture = r[REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + 2] << 8;
-    if (R.frame >= censusFrame + censusEvery) {
-      std::vector<std::pair<uint64_t, CensusEntry>> top(census.begin(), census.end());
-      std::sort(top.begin(), top.end(), [](const auto& a, const auto& b) { return a.second.draws > b.second.draws; });
-      const double frames = double(R.frame - censusFrame);
-      LOG("[census] frame %llu: %.0f draws/frame, %zu program pairs", (unsigned long long)R.frame, censusDraws / frames, census.size());
-      for (size_t i = 0; i < top.size() && i < 16; ++i) {
-        const auto& [k, c] = top[i];
-        LOG("[census]   VS %08X PS %08X  %7.1f draws/frame (%4.1f%%, %3.0f%% continued) %6.1f verts/draw tex %08X",
-            uint32_t(k >> 32) << 8, uint32_t(k) << 8, c.draws / frames, 100.0 * c.draws / censusDraws,
-            100.0 * c.fast / c.draws, double(c.vertices) / c.draws, c.texture);
-      }
-      census.clear(); censusDraws = 0; censusFrame = R.frame;
-    }
-  }
-  // WWHD_VK_SKIP_VS=ADDR,ADDR...: drop the draws of these vertex programs (diagnosis);
-  // WWHD_VK_DUMP_VS=ADDR: log the vertex stage constants of a few of its draws
-  static const std::vector<uint32_t> skipVs = [] {
-    std::vector<uint32_t> v;
-    if (const char* e = std::getenv("WWHD_VK_SKIP_VS"))
-      for (const char* p = e; *p;) { v.push_back(uint32_t(std::strtoul(p, const_cast<char**>(&p), 16))); while (*p == ',') ++p; }
-    return v;
-  }();
-  static const uint32_t dumpVs = [] { const char* e = std::getenv("WWHD_VK_DUMP_VS"); return e ? uint32_t(std::strtoul(e, nullptr, 16)) : 0u; }();
-  const uint32_t vsAddress = r[mmSQ_PGM_START_VS] << 8;
-  if (dumpVs == vsAddress && !replay) {
-    static uint32_t dumped = 0;
-    if (dumped < 24 && R.frame > 900 && R.frame % 300 == 0) {
-      ++dumped;
-      auto f = [](uint32_t v) { float x; std::memcpy(&x, &v, 4); return x; };
-      const uint32_t* alu = r + mmSQ_ALU_CONSTANT0_0 + 0x400;
-      std::string s;
-      char b[64];
-      for (int i = 0; i < 64; ++i) { std::snprintf(b, sizeof b, "%s%.3f", i % 4 ? " " : " | ", f(alu[i])); s += b; }
-      LOG("[dumpvs] frame %llu alu0..15:%s", (unsigned long long)R.frame, s.c_str());
-      const uint32_t* alu0 = r + mmSQ_ALU_CONSTANT0_0;
-      s.clear();
-      for (int i = 0; i < 64; ++i) { std::snprintf(b, sizeof b, "%s%.3f", i % 4 ? " " : " | ", f(alu0[i])); s += b; }
-      LOG("[dumpvs]   alu(+0)0..15:%s", s.c_str());
-      for (int blk = 0; blk < 4; ++blk) {
-        const uint32_t addr = r[mmSQ_VTX_UNIFORM_BLOCK_START + blk * 7], size = r[mmSQ_VTX_UNIFORM_BLOCK_START + blk * 7 + 1] + 1;
-        if (!addr) continue;
-        const auto* p = static_cast<const uint8_t*>(mem::ptr(addr));
-        s.clear();
-        for (uint32_t i = 0; i < 48 && i * 4 < size; ++i) {
-          uint32_t w; std::memcpy(&w, p + i * 4, 4);  // uploaded as is (uniform())
-          std::snprintf(b, sizeof b, "%s%.3f", i % 4 ? " " : " | ", f(w)); s += b;
-        }
-        LOG("[dumpvs]   block %d @%08X size %u:%s", blk, addr, size, s.c_str());
-      }
-    }
-  }
-  if (!skipVs.empty() && std::find(skipVs.begin(), skipVs.end(), vsAddress) != skipVs.end()) return;
   if (shadersOut && vs && vs->ready() && ps && ps->ready()) {
     shadersOut->fs = fs;
     shadersOut->fsKey = fsKey;
