@@ -856,9 +856,35 @@ void Server::link_tick(uint32_t now) {
                     // its regions come back here; its players reconnect to us by themselves
                     for (auto& w : map_.workers)
                         if (w.index == int(i)) w.alive = false;
-                    for (auto& g : map_.regions)
-                        if (g.worker == int(i)) g.worker = 0;
-                    scale_log_.push_back(std::to_string(now) + " worker " + std::to_string(i) + " lost: its regions back on 0");
+                    // its regions (and copies) go to the least loaded live worker, region by region
+                    auto least = [&]() {
+                        int best = 0;
+                        double bl = 1e18;
+                        for (auto& w : map_.workers) {
+                            if (!w.alive || (w.index != 0 && (size_t(w.index) >= peers_.size() || !peers_[size_t(w.index)].up)))
+                                continue;
+                            const LoadReport& l = peers_[size_t(w.index)].load;
+                            double L = std::max(l.cpu_pct / cfg_.split_cpu, double(l.out_Bps) / cfg_.split_bw);
+                            if (L < bl) {
+                                bl = L;
+                                best = w.index;
+                            }
+                        }
+                        return best;
+                    };
+                    std::string where;
+                    for (auto& g : map_.regions) {
+                        if (g.worker == int(i)) {
+                            g.worker = least();
+                            where += " " + std::to_string(g.id) + "->" + std::to_string(g.worker);
+                            // count it on the new owner until its next report
+                            peers_[size_t(g.worker)].load.out_Bps += uint64_t(cfg_.split_bw / 4);
+                        }
+                        for (auto& c : g.copy_worker)
+                            if (c == i) c = uint8_t(g.worker);
+                    }
+                    peers_[i].load = LoadReport();
+                    scale_log_.push_back(std::to_string(now) + " worker " + std::to_string(i) + " lost: its regions" + where);
                     map_changed();
                 }
             }
