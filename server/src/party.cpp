@@ -3,6 +3,7 @@
 // comes back is in the party again, the enemy runner of each place chosen by the server and handed over when the
 // runner leaves or goes silent, and the team progress store: one shared progress, merged as a union (flags are only
 // set, counters only grow), kept as the last known team state while no member is online.
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <fstream>

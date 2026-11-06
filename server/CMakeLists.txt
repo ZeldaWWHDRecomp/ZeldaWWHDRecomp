@@ -1,7 +1,7 @@
 # wwhd-online-server: the standalone online server (docs/online-server.md).
 # Builds on its own (cmake -S server -B build) or from the top level with -DWWHD_ONLINE=ON.
 cmake_minimum_required(VERSION 3.20)
-project(wwhd_online_server CXX)
+project(wwhd_online_server C CXX)
 if(NOT CMAKE_CXX_STANDARD)
   set(CMAKE_CXX_STANDARD 20)
 endif()

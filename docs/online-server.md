@@ -4,10 +4,9 @@ The online server lets players see each other at sea and in the same places, and
 2–4 friends play together. It is open source and self-hostable. There is no official server: you
 run your own, on your computer ("Host on this computer" in the game) or on a box you control.
 
-> **Status: experimental.** The protocol's cryptography currently uses a placeholder backend
-> ("plain") that provides **no encryption and no real authentication**. Use it only on a LAN, a VPN
-> or with friends you trust until a crypto library is approved for the project. A server with
-> `public = true` refuses to start with this backend.
+> **Status: experimental.** Traffic is encrypted and authenticated with the vendored
+> [Monocypher](https://monocypher.org) 4.0.2: X25519 key exchange, XChaCha20-Poly1305 packets and EdDSA
+> identities. Players pin the server's key the first time they connect, and are warned if it changes.
 
 ## What the server does and doesn't do
 
@@ -39,6 +38,7 @@ Copy `server/server.example.toml` to `server.toml` and edit it. The keys you'll 
 | Key | Default | Meaning |
 |---|---|---|
 | `server.name`, `server.contact`, `server.rules` | | Shown to players before they connect. The contact is your name or address, for the privacy notice. |
+| `server.public` | off | A public server (in a community list). Needs the real crypto backend, which is the default. |
 | `server.invite_only`, `server.allow` | off | Only the listed friend codes may join. |
 | `network.bind`, `network.port` | `127.0.0.1`, `7777` | Where it listens (UDP). Use `0.0.0.0` to accept players from other machines. |
 | `network.max_players` | 1000 | |
@@ -202,10 +202,23 @@ adds cores.
 
 ### Crypto backends
 
-`proto/crypto.h` is the only interface: identity keys, signatures, a session key exchange and
-authenticated encryption. The "plain" backend implements the shapes without security. A real backend
-(Monocypher is proposed: Ed25519, X25519, ChaCha20-Poly1305) drops in behind the same header once
-the dependency is approved.
+`proto/crypto.h` is the only interface. CMake `WWHD_ONLINE_CRYPTO` picks the backend:
+- **`monocypher`** (the default): the vendored Monocypher 4.0.2 in
+  `runtime/src/online/proto/third_party/monocypher` (BSD-2-Clause or CC0, unchanged, with its licence and
+  SHA-256s in its README).
+  - **Identities and the server key:** EdDSA (Curve25519, BLAKE2b). The identity file keeps the 32-byte
+    seed.
+  - **Sessions:** X25519 between fresh ephemeral keys, then keyed BLAKE2b into one key per direction.
+    All-zero shared secrets are refused.
+  - **Packets:** XChaCha20-Poly1305, with the packet number and direction as the nonce and the header as
+    additional data. A replayed or altered packet is dropped.
+  - **Signatures:** the client signs its HELLO with its identity key, and the server signs its CHALLENGE
+    and WELCOME with the server key, which the client pins. Handover tickets are random 32-byte tokens.
+    They travel between workers over the encrypted link and reach the client inside its encrypted
+    session. The new worker accepts a ticket only together with a HELLO signed by the same identity
+    key.
+- **`plain`**: the same message shapes with no secrecy and no authentication, for protocol debugging
+  only. Both sides must use the same backend.
 
 ### Tests
 
