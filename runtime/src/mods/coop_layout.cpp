@@ -250,6 +250,32 @@ std::vector<std::string> team_state(const uint8_t* now, bool counts) {
     return out;
 }
 
+static uint32_t crc32(const uint8_t* p, size_t n) {
+    uint32_t c = 0xFFFFFFFFu;
+    for (size_t i = 0; i < n; i++) {
+        c ^= p[i];
+        for (int k = 0; k < 8; k++) c = c >> 1 ^ (0xEDB88320u & (0u - (c & 1)));
+    }
+    return ~c;
+}
+
+std::string seal(const std::string& m) {
+    const uint32_t c = crc32((const uint8_t*)m.data(), m.size());
+    std::string out = m;
+    for (int i = 0; i < 4; i++) out += (char)(c >> (8 * i));
+    return out;
+}
+
+bool open(std::string& m) {
+    if (m.size() < 4) return false;
+    const auto* d = (const uint8_t*)m.data();
+    const size_t n = m.size() - 4;
+    const uint32_t c = (uint32_t)d[n] | (uint32_t)d[n + 1] << 8 | (uint32_t)d[n + 2] << 16 | (uint32_t)d[n + 3] << 24;
+    if (c != crc32(d, n)) return false;
+    m.resize(n);
+    return true;
+}
+
 bool from_card(const std::vector<uint8_t>& sav, int n, std::vector<uint8_t>& save) {
     constexpr size_t kSlot = 0xA94, kUsed = 0xA8C, kPacked = 0x768;
     if (n < 0 || n > 2 || sav.size() < 3 * kSlot) return false;

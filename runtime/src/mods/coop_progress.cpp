@@ -271,7 +271,9 @@ void door_moved(const uint8_t* d, size_t n) {
 }
 
 void received(const uint8_t* d, size_t n) {
-    if (g_in.size() < 4096) g_in.emplace_back((const char*)d, n);
+    std::string m((const char*)d, n);
+    if (!layout::open(m)) return mods::trace("coop: progress: a damaged message (%zu bytes, its checksum wrong) refused", n);
+    if (g_in.size() < 4096) g_in.push_back(std::move(m));
 }
 
 void rupees_received(const uint8_t* d, size_t n) {
@@ -336,6 +338,13 @@ void step(Cpu* c, bool live) {
         }
         return v;
     }();
+    // test aid (C20): WWHD_COOP_TEST_DUMP=<path> writes the save data (dSv_save_c, kSaveSize bytes) to <path>.first at the
+    // first step in play and to <path>.last every 300 steps, for `coop_layout_test --raw FIRST LAST`
+    if (static const char* dump = getenv("WWHD_COOP_TEST_DUMP"); dump && (t_steps == 0 || t_steps % 300 == 299)) {
+        std::vector<uint8_t> img;
+        read(info, img);
+        if (FILE* f = fopen((std::string(dump) + (t_steps ? ".last" : ".first")).c_str(), "wb")) fwrite(img.data(), 1, img.size(), f), fclose(f);
+    }
     if (!t_show.empty() && t_steps % 300 == 299) {
         std::string l;
         for (unsigned o : t_show) {
@@ -359,7 +368,11 @@ void step(Cpu* c, bool live) {
         mods::trace("coop: progress: %d fields changed at once (the save data replaced): not sent", changed);
         g_purse = -1;
     } else if (!out.empty() && net::party_flag(net::kShareProgress, true)) {
-        net::send(-1, net::kProgress, out);
+        std::string m = layout::seal(out);
+        // test aid (C20): WWHD_COOP_TEST_CORRUPT=1 flips a bit of this game's first progress message (the others refuse it)
+        if (static bool once = getenv("WWHD_COOP_TEST_CORRUPT") && atoi(getenv("WWHD_COOP_TEST_CORRUPT")); once)
+            m[0] ^= 0x10, once = false, mods::trace("coop: progress test: this message damaged on purpose");
+        net::send(-1, net::kProgress, m);
         mods::trace("coop: progress out:%s", said.c_str());
     }
     if (const int purse = wallet(info); share_rupees() && g_purse >= 0 && purse > g_purse) {
@@ -410,7 +423,9 @@ std::vector<std::string> team_state(bool counts) {
     if (!sv) return {};
     std::vector<uint8_t> now;
     read(sv + kInfo, now);
-    return layout::team_state(now.data(), counts);
+    std::vector<std::string> out = layout::team_state(now.data(), counts);
+    for (std::string& m : out) m = layout::seal(m);
+    return out;
 }
 
 }  // namespace mods::coop::progress

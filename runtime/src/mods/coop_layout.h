@@ -76,6 +76,11 @@ std::string diff(const uint8_t* was, const uint8_t* now, int* changed = nullptr,
 // shared field as a change from nothing; `counts` false leaves out kSet counts (only the leader's at a join)
 std::vector<std::string> team_state(const uint8_t* now, bool counts = true);
 
+// C20: every kProgress message carries a CRC-32 of its records (4 bytes, little end, after them): seal adds it, open
+// checks and removes it (false: damaged, `m` unchanged); a damaged message is refused whole
+std::string seal(const std::string& m);
+bool open(std::string& m);
+
 // C20: a Quest Log's dSv_save_c from a cking.sav (3 files of 0xA94 bytes, each the card's packed save data first:
 // dSv_info_c::memory_to_card, no padding, checked by its byte sum pair at +0xA8C); false: not a cking.sav or file `n`
 // (0-2) damaged

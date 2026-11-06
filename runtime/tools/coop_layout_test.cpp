@@ -11,7 +11,9 @@
 //   - from_card reads a Quest Log of a cking.sav (checksums), and local_changes names what changed outside the shared
 //     bits (the save check: after a party session the only differences to the backup that are not the player's own
 //     play are shared fields).
-// `coop_layout_test BACKUP.sav NOW.sav [file]` runs the save check on two real files instead (prints the local changes).
+//   - the seal (a CRC-32 on every progress message): one flipped bit or a cut refuses it.
+// `coop_layout_test BACKUP.sav NOW.sav [file]` runs the save check on two real files instead (prints the local changes);
+// `coop_layout_test --raw FIRST LAST` on two images written by WWHD_COOP_TEST_DUMP.
 #include "mods/coop_layout.h"
 
 #include <cstdio>
@@ -67,8 +69,38 @@ static int check_files(const char* a, const char* b, int n) {
     return 0;
 }
 
+static int check_raw(const char* a, const char* b) {  // two images written by WWHD_COOP_TEST_DUMP
+    auto load = [](const char* p) {
+        std::ifstream f(p, std::ios::binary);
+        return std::vector<uint8_t>(std::istreambuf_iterator<char>(f), {});
+    };
+    const std::vector<uint8_t> x = load(a), y = load(b);
+    if (x.size() != ly::kSaveSize || y.size() != ly::kSaveSize) return fprintf(stderr, "not save images of %u bytes\n", ly::kSaveSize), 2;
+    const auto l = ly::local_changes(x.data(), y.data());
+    int shared = 0;
+    for (uint16_t o = 0; o < ly::kSaveSize; o++) shared += ((x[o] ^ y[o]) & ly::shared_bits(o)) != 0;
+    printf("%d bytes changed in shared fields, %zu outside them\n", shared, l.size());
+    for (const std::string& s : l) printf("  %s\n", s.c_str());
+    return 0;
+}
+
 int main(int argc, char** argv) {
+    if (argc >= 4 && !strcmp(argv[1], "--raw")) return check_raw(argv[2], argv[3]);
     if (argc >= 3) return check_files(argv[1], argv[2], argc > 3 ? atoi(argv[3]) - 1 : 0);
+
+    // the seal: a CRC-32 over the records; any flipped bit or a cut refuses the message
+    {
+        const std::string m = rec(sv::kGetItem, {0x01}, {0x01}) + rec(sv::kStatusA, {0x00, 0x0C});
+        std::string s = ly::seal(m), t = s;
+        CHECK(s.size() == m.size() + 4 && ly::open(t) && t == m);
+        for (size_t i = 0; i < s.size() * 8; i++) {
+            std::string f = s;
+            f[i / 8] ^= (char)(1 << (i % 8));
+            CHECK(!ly::open(f) && f.size() == s.size());
+        }
+        std::string cut = s.substr(0, s.size() - 1), empty;
+        CHECK(!ly::open(cut) && !ly::open(empty));
+    }
 
     // the whole of dSv_save_c is covered, once
     const auto& fs = ly::fields();

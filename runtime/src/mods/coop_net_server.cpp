@@ -30,6 +30,7 @@
 #include <map>
 #include <mutex>
 
+#include "coop_layout.h"
 #include "coop_progress.h"
 #include "coop_servers.h"
 #include "mods.h"
@@ -297,8 +298,10 @@ std::string friend_code() {
 // (X3) shared progress also to the server's team store, in any party (alone in it too): a member who comes later, with
 // nobody else online, gets it from there. Our records (coop_progress.cpp: u16 offset, u8 size, the value, and for bit
 // fields the changed bits) as the store's fields; counts as they come (small keys) are not stored
-void store_progress(const std::string& body) {
+void store_progress(const std::string& sealed) {
     if (!g_client || !g_party.party) return;
+    std::string body = sealed;
+    if (!layout::open(body)) return;  // (its CRC-32: coop_layout.h)
     std::vector<op::TeamField> fields;
     const auto* d = (const uint8_t*)body.data();
     for (size_t i = 0; i + 3 <= body.size();) {
@@ -531,7 +534,7 @@ void poll(Handler& h) {
                 if (f.mode == 0) m += f.value;  // (bits: those set, as the changed ones)
             }
             mods::trace("coop: server: team state %u, %zu fields", e.version, e.fields.size());
-            if (!m.empty()) progress::received((const uint8_t*)m.data(), m.size());
+            if (!m.empty()) m = layout::seal(m), progress::received((const uint8_t*)m.data(), m.size());
             break;
         }
         default: break;  // (markers, emotes, copies: later items)
