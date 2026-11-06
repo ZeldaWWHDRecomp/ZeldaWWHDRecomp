@@ -30,6 +30,7 @@
 #include "render_prof.h"
 #include "background_shaders.h"
 #include "runtime.h"
+#include "../../interp.h"
 #include "gx2/gx2.h"
 #include "gx2/gx2_cmd.h"
 #include "shaders.h"
@@ -3175,6 +3176,10 @@ void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexTy
 }
 void clouds_before_draw(const uint32_t* r, const vk::Shader* ps, Surface* color0, uint32_t slice0, Surface* depth);
 bool clouds_skip_card();
+// the tall grass vertex programs (Graphics > Grass draw distance), by vk::vertex_program_hash
+// (the three of the islands' tall grass, 832, 1120 and 1648 bytes)
+constexpr uint64_t kGrassVs[] = {0x23CDD3D4D6BAAACDull, 0x042E089911FC3CC0ull, 0x7C8717CA596569B3ull};
+
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances, bool* viewIndependent) {
   const uint32_t dirtyGroups = gx2::take_dirty_groups();  // register groups changed since the previous draw
@@ -3198,6 +3203,34 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if (r[REGADDR::PA_CL_CLIP_CNTL] & (1 << 22))
     return;
   ((uint32_t *)r)[REGADDR::VGT_PRIMITIVE_TYPE] = prim;
+  // Graphics > Grass draw distance (render::grass_distance): drop (before any resolution) the tall grass patches whose
+  // model translation (vertex uniform block 1, a 3x4 row-major matrix) lies farther than that from the drawn camera's
+  // eye (interp::drawn_eye; horizontal). The grass is told by its vertex program's bytes (kGrassVs). A patch is 108
+  // vertices; the same programs also draw the small palms and plants (216), which stay.
+  const int grassDistance = render::grass_distance();
+  if (grassDistance > 0 && uint64_t(count) * instances == 108) {
+    // a few programs a frame: their answer is kept for the frame (program_hash revalidates once per frame)
+    struct Seen { uint32_t addr = 0, size = 0; uint64_t frame = ~0ull; bool grass = false; };
+    static Seen seen[8];
+    const uint32_t vsAddr = r[mmSQ_PGM_START_VS] << 8, vsSize = r[mmSQ_PGM_START_VS + 1];
+    Seen& s = seen[(vsAddr >> 8) & 7];
+    if (s.frame != R.frame || s.addr != vsAddr || s.size != vsSize) {
+      const uint64_t h = vk::vertex_program_hash(r, R.frame);
+      s = {vsAddr, vsSize, R.frame, h && std::find(std::begin(kGrassVs), std::end(kGrassVs), h) != std::end(kGrassVs)};
+    }
+    float eye[3];
+    const uint32_t addr = r[mmSQ_VTX_UNIFORM_BLOCK_START + 7], size = r[mmSQ_VTX_UNIFORM_BLOCK_START + 8] + 1;
+    if (s.grass && addr && size >= 48 && interp::drawn_eye(eye)) {
+      float m[12];
+      std::memcpy(m, mem::ptr(addr), sizeof m);  // uploaded as is (uniform())
+      const float dx = m[3] - eye[0], dz = m[11] - eye[2], d = float(grassDistance);
+      if (dx * dx + dz * dz > d * d) {
+        // the next draw continues from the previous drawn one: keep this draw's register changes
+        gx2::g_dirty_groups |= dirtyGroups;
+        return;
+      }
+    }
+  }
   // continued-draw fast path (see fastpath_config); the AO replay draw stays outside of it
   const auto& fastPath = fastpath_config();
   // a replayed eye 1 draw records no continuation of its own

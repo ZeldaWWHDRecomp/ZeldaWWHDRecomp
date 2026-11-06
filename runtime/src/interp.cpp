@@ -506,6 +506,18 @@ static void camera_draw(Cpu* c);
 // camera_draw(camera_process_class*)
 static std::atomic<uint32_t> g_last_camera{0};
 uint32_t interp::last_camera() { return g_last_camera.load(std::memory_order_relaxed); }
+// the eye camera_draw drew last (interp::drawn_eye), published at each p->drawn
+static std::atomic<float> g_drawn_eye[3];
+static std::atomic<bool> g_drawn_eye_valid{false};
+static void publish_drawn_eye(const interp::camera::CamState& s) {
+    for (int i = 0; i < 3; i++) g_drawn_eye[i].store(s.eye[i], std::memory_order_relaxed);
+    g_drawn_eye_valid.store(true, std::memory_order_release);
+}
+bool interp::drawn_eye(float eye[3]) {
+    if (!g_drawn_eye_valid.load(std::memory_order_acquire)) return false;
+    for (int i = 0; i < 3; i++) eye[i] = g_drawn_eye[i].load(std::memory_order_relaxed);
+    return true;
+}
 extern "C" void hook_024FFC40(Cpu* c) {
     const uint32_t cam = c->r[3];
     g_last_camera.store(cam, std::memory_order_relaxed);
@@ -979,6 +991,7 @@ static void camera_draw_body(Cpu* c) {
         }
         p->drawn = read_cam(cam);
         p->drawn_pass = g_passes;
+        publish_drawn_eye(p->drawn);
         // (also on a snap: the sound listener keeps following only the record pass's camera)
         g_cam_blended = p->valid;
         cam_trace(cam, "blended");
@@ -1011,6 +1024,7 @@ static void camera_draw_body(Cpu* c) {
     p->valid = true;
     p->drawn = p->s;
     p->drawn_pass = g_passes;
+    publish_drawn_eye(p->drawn);
     cam_trace(cam, "exact");
     static const bool dbg = getenv("WWHD_T60_CAMDRAWLOG") != nullptr;  // debug: statics camera_draw writes
     if (dbg && g_hold) {
