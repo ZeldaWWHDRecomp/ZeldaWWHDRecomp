@@ -23,6 +23,11 @@ what is on `devel` and not released yet (also in the
   Above 30 fps the sail and flag off Outset were drawn torn on some frames (dark blotches), a regression in v0.5.1.
   Cloth that the game draws into two alternating buffers (sails, flags, mantles, the tapestry, Molgera's sand floor)
   now keeps switching buffers on every drawn frame. 30 fps is unchanged.
+- **Fixed: the bottom of the picture cut off on Android devices that keep their navigation bar over the game**
+  (#349, thanks @plxjammerplx for the report). On the Retroid Pocket Nova, 4:3 / Match window filled the whole
+  screen and the system's navigation bar covered the rupee counter. The picture, the view button and Match
+  window's shape now leave out the bars the system draws over the game. Desktop and devices that hide the bars
+  are unchanged.
 
 ## v0.5.1
 

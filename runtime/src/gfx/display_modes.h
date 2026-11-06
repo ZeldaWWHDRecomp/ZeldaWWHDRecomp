@@ -131,6 +131,14 @@ struct Layout { Box tv, pip; bool pip_on = false; bool drc_only = false; float s
 // the TV window's layout: TV picture (tw x th) scaled to fit dw x dh, GamePad picture (pw x ph) in
 // the selected anchor (pip_on) or alone, fitted (drc_only)
 Layout layout(float dw, float dh, float tw, float th, float pw, float ph, bool pip_on, bool drc_only = false);
+// The part of the TV surface the system leaves visible: Android may draw its navigation/status bars over the
+// game instead of hiding them (issue #349). display_set_obscured: the bars' thickness at each edge in the
+// platform view's pixels and that view's size (any thread); the TV layout and "Match window" then use the rest.
+struct VisibleArea { float x = 0, y = 0, w = 0, h = 0; };
+void display_set_obscured(float left, float top, float right, float bottom, float view_w, float view_h);
+// the visible part of a dw x dh target for obscured (left, top, right, bottom) of a view_w x view_h view
+// (scaled to the target; ignored when it would leave less than half of either side)
+VisibleArea visible_area(float dw, float dh, const float obscured[4], float view_w, float view_h);
 // The game's picture in a layout: the TV picture, or in One screen mode's Off-TV Play (one_screen.h) the GamePad
 // picture, which is the game then; false while the window shows the GamePad picture alone otherwise, or before a
 // layout. Touches (game_picture_hit) and the code mods' TV HUD layer (overlay/guest_hud.cpp) both use this box, so

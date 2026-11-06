@@ -359,6 +359,44 @@ static float g_tv_dw = 0, g_tv_dh = 0;
 
 Box display_layout(float dw, float dh, float tw, float th) { return layout(dw, dh, tw, th, 0, 0, false).tv; }
 
+// Parts of the TV surface the system draws over (Android: navigation/status bars it shows on top of the game
+// instead of hiding them, issue #349: the bottom 48 pixels of a 1280x960 Retroid Pocket Nova screen, which cut off
+// the rupee counter once Match window filled the whole screen). Reported by the platform in its view's pixels with
+// the view's size (display_set_obscured); WWHD_SIM_OBSCURED=left,top,right,bottom (pixels of WWHD_SIM_SCREEN or
+// the window) simulates it in test runs. The pictures, the view button and "Match window" use the rest.
+static std::mutex g_obscured_mu;
+static float g_obscured[4] = {}, g_obscured_view[2] = {};  // left, top, right, bottom; the view size they are for
+void display_set_obscured(float left, float top, float right, float bottom, float view_w, float view_h) {
+    std::lock_guard<std::mutex> lk(g_obscured_mu);
+    const float v[4] = {std::max(0.0f, left), std::max(0.0f, top), std::max(0.0f, right), std::max(0.0f, bottom)};
+    if (!memcmp(v, g_obscured, sizeof v) && g_obscured_view[0] == view_w && g_obscured_view[1] == view_h) return;
+    memcpy(g_obscured, v, sizeof v);
+    g_obscured_view[0] = view_w, g_obscured_view[1] = view_h;
+    LOG("[display] covered by the system: left %.0f, top %.0f, right %.0f, bottom %.0f of %.0fx%.0f", v[0], v[1], v[2], v[3],
+        view_w, view_h);
+}
+VisibleArea visible_area(float dw, float dh, const float obscured[4], float view_w, float view_h) {
+    VisibleArea a{0, 0, dw, dh};
+    if (dw <= 0 || dh <= 0 || view_w <= 0 || view_h <= 0) return a;
+    const float sx = dw / view_w, sy = dh / view_h;
+    const float l = obscured[0] * sx, t = obscured[1] * sy, r = obscured[2] * sx, b = obscured[3] * sy;
+    // a report that leaves less than half the surface is not a bar (a keyboard, a stale size): ignored
+    if (dw - l - r < dw * 0.5f || dh - t - b < dh * 0.5f) return a;
+    a.x = std::round(l), a.y = std::round(t);
+    a.w = std::round(dw - r) - a.x, a.h = std::round(dh - b) - a.y;
+    return a;
+}
+static VisibleArea visible_area(float dw, float dh) {
+    static float sim[4] = {};
+    static const bool simulated = [] {
+        const char* e = getenv("WWHD_SIM_OBSCURED");
+        return e && sscanf(e, "%f,%f,%f,%f", &sim[0], &sim[1], &sim[2], &sim[3]) == 4;
+    }();
+    if (simulated) return visible_area(dw, dh, sim, dw, dh);
+    std::lock_guard<std::mutex> lk(g_obscured_mu);
+    return visible_area(dw, dh, g_obscured, g_obscured_view[0], g_obscured_view[1]);
+}
+
 static bool sim_screen(float* w, float* h) {
     static float sw = 0, sh = 0;
     static bool parsed = [] {
@@ -586,19 +624,24 @@ std::vector<std::string> display_take_present_dumps() {
     return dumps;
 }
 
-static PresentPlan plan_from(const Layout& L, float dw, float dh) {
+static Box shifted(Box b, float x, float y) {
+    if (b.w > 0 && b.h > 0) b.x += x, b.y += y;
+    return b;
+}
+// L: the layout for the visible area v of the dw x dh target
+static PresentPlan plan_from(const Layout& L, float dw, float dh, const VisibleArea& v) {
     PresentPlan p;
     p.dw = dw;
     p.dh = dh;
-    p.tv = L.tv;
-    p.pip = L.pip;
+    p.tv = shifted(L.tv, v.x, v.y);
+    p.pip = shifted(L.pip, v.x, v.y);
     p.pip_on = L.pip_on;
     p.drc_only = L.drc_only;
     p.scale = L.scale;
     p.pip_opacity = L.drc_only ? 1.0f : g_pip_opacity.load();
     p.filter = g_filter;
     p.drc_window = g_mode == kDrcWindow && g_has_drc_window && g_shown;
-    if (!g_pip_preview && view_button_enabled()) p.button = view_button(dw, dh);
+    if (!g_pip_preview && view_button_enabled()) p.button = shifted(view_button(v.w, v.h), v.x, v.y);
     return p;
 }
 
@@ -652,10 +695,12 @@ PresentPlan display_plan(bool have_tv, float tw, float th, bool have_drc, float 
     float dw = 0, dh = 0;
     bool sim = sim_screen(&dw, &dh);
     if (!sim) dw = layer_w, dh = layer_h;
-    if (dw >= 1 && dh >= 1) aspect::set_window_aspect(dw / dh);  // "Match window" (aspect.cpp): the TV window / screen shape
+    // the part of the window the system leaves visible (all of it unless bars are drawn over it)
+    const VisibleArea v = visible_area(dw, dh);
+    if (v.w >= 1 && v.h >= 1) aspect::set_window_aspect(v.w / v.h);  // "Match window" (aspect.cpp): the visible TV window / screen shape
     Layout L;
-    if (have_tv || drc_only) L = layout(dw, dh, have_tv ? tw : 0, have_tv ? th : 0, have_drc ? pw : 0, have_drc ? ph : 0, pip, drc_only);
-    PresentPlan p = plan_from(L, dw, dh);
+    if (have_tv || drc_only) L = layout(v.w, v.h, have_tv ? tw : 0, have_tv ? th : 0, have_drc ? pw : 0, have_drc ? ph : 0, pip, drc_only);
+    PresentPlan p = plan_from(L, dw, dh, v);
     if(publish_input) display_input_plan(p);
     p.sim = sim;
     p.pip_wanted = pip;
@@ -663,7 +708,8 @@ PresentPlan display_plan(bool have_tv, float tw, float th, bool have_drc, float 
 }
 
 PresentPlan display_plan_for(const PresentPlan& p, float dw, float dh, float tw, float th, float pw, float ph) {
-    PresentPlan q = plan_from(layout(dw, dh, tw, th, pw, ph, p.pip_wanted, p.drc_only), dw, dh);
+    const VisibleArea v = visible_area(dw, dh);
+    PresentPlan q = plan_from(layout(v.w, v.h, tw, th, pw, ph, p.pip_wanted, p.drc_only), dw, dh, v);
     q.sim = p.sim;
     q.pip_wanted = p.pip_wanted;
     q.drc_window = p.drc_window;

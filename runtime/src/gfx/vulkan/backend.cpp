@@ -2170,6 +2170,12 @@ extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_seedSavedOff(JNIEnv*, jclass, jboolean off) {
   gfx::seed_second_screen_off(off);
 }
+// System bars the platform draws over the game's view (WwhdActivity, issue #349): the TV layout uses the rest.
+extern "C" JNIEXPORT void JNICALL
+Java_org_wwhdrecomp_wwhd_WwhdActivity_publishObscured(JNIEnv*, jclass, jint left, jint top, jint right, jint bottom,
+                                                      jint viewWidth, jint viewHeight) {
+  gfx::display_set_obscured(float(left), float(top), float(right), float(bottom), float(viewWidth), float(viewHeight));
+}
 extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_publishSurface(
     JNIEnv* env, jclass, jobject surface, jint width, jint height, jlong generation) {
