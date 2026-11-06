@@ -164,7 +164,8 @@ Bots are headless clients that send a 140-byte pose 15 times a second, with phon
 | 5,000 players in one square (auto) | 6 workers, 9 splits and one copy moved; all 5,000 stayed online; handover p50 132 ms, p99 0.66 s; ping p50 83 ms |
 | 2,000 players sailing into one square within a minute | 1,320 handovers, all players stayed online, 9 brief losses of sight; handover p50 132 ms; ping p50 10 ms |
 | The 1,000-player crowd leaves, then 150 s of calm (auto) | the split halves merged back 20 s after the last player left, and the started worker stopped 30 s later |
-| Pool mode: two workers in their own folders and ports join the coordinator over the link, 1,000 players in one square | both registered; the square split onto one of them; handover p50 132 ms, ping p50 8 ms |
+| Pool mode, two simulated machines (two worker processes each, own folders and ports), 1,200 players in one square, one machine killed after 100 s | splits on both machines, handovers between them (p50 134 ms); the lost machine's regions went to the other machine and the coordinator; 1,197 of 1,200 online at the end, the moved players back within about 6 s |
+| 2,000 players in one square for 150 s, then 30 min with nobody (auto) | 3 workers started, 6 splits and one move; 45 s after the last player left every split had merged back, 30 s later the 3 workers stopped; no worker started again in the rest of the 30 min |
 
 **Real capacity needs a Linux server, with the bots on another machine.** These numbers come from one
 Mac where the bots and every server process share the same cores. Linux also sends UDP in batches

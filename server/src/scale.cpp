@@ -1271,6 +1271,14 @@ void Server::coordinate(uint32_t now) {
         if (!p.idle_since) p.idle_since = now;
         if (p.pid && now - p.idle_since >= uint32_t(cfg_.idle_worker_s) * 1000) {
             link_send(w, kLStop, {});
+            // flush the stop now: the link to it is closed here (no "lost" alarm for a worker we stopped)
+            std::vector<Bytes> out;
+            p.chan.flush(now, out, 8, 0);
+            link_.send_many(p.addr, out);
+            p.up = false;
+            p.epoch = 0;
+            p.sub.clear();
+            p.load = LoadReport();
             for (auto& k : map_.workers)
                 if (k.index == w) k.alive = false;
             scale_log_.push_back(std::to_string(now) + " worker " + std::to_string(w) + " stopped (idle)");
