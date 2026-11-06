@@ -67,6 +67,19 @@ void note_open(const std::string& guest_path, const std::string& host_path) {
     g_pack3d = host_path;
 }
 
+bool game_files(Bytes& link_bfres, Bytes& anim_bfres, std::string& why) {
+    std::string path;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        path = g_pack3d;
+    }
+    if (path.empty()) return why = "the game hasn't opened its 3D pack yet", false;
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return why = path + " can't be read", false;
+    const Bytes pack((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+    return read_pack(pack, link_bfres, anim_bfres, why);
+}
+
 bool render_now(const PoseSpec& pose, int size, Bytes& rgba, std::string& why) {
     static std::mutex mu;
     static std::shared_ptr<const Model> model;

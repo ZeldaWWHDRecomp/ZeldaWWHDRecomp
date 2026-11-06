@@ -314,6 +314,9 @@ bool enabled();
 void set_enabled(bool on);
 // the game opened a file (fs.cpp): remember the host path of its 3D pack
 void note_open(const std::string& guest_path, const std::string& host_path);
+// Link.bfres and LkAnm.bfres of the 3D pack the game opened (read now, any thread; online co-op's emotes take Link's
+// skeleton and animations from them). False with `why` (the game hasn't opened its 3D pack yet...).
+bool game_files(Bytes& link_bfres, Bytes& anim_bfres, std::string& why);
 // One pose of the player's own Link as a size x size RGBA picture now (any thread; the model is read once and kept).
 // False with `why` (the game hasn't opened its 3D pack yet, no such animation...).
 bool render_now(const PoseSpec& pose, int size, Bytes& rgba, std::string& why);

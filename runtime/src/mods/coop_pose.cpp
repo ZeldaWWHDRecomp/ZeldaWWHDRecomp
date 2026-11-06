@@ -16,6 +16,7 @@
 // pose names its file, and each puppet gets its own copy of that file's model the first time it holds it, on a heap
 // of its own, given back as Link is made again.
 #include "coop_pose.h"
+#include "coop_emotes.h"
 #include "coop_items.h"
 #include "coop_names.h"
 
@@ -1457,7 +1458,7 @@ void state_loaded() {
 }
 
 void release(int i) {
-    if (i >= 0 && i < kPuppets) g_puppet[i].shown = false, g_kit[i].release = true;
+    if (i >= 0 && i < kPuppets) g_puppet[i].shown = false, g_kit[i].release = true, emotes::stop(i);
 }
 
 void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic, bool see_through) {
@@ -1468,6 +1469,16 @@ void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic, bool
     u.tunic = tunic & 3;
     u.pose = *p;
     memcpy(u.pos, pos, sizeof u.pos), u.yaw = yaw;
+    // test aid: WWHD_COOP_TEST_PUPPET_AT=<forward>,<turn degrees>: every puppet shown that far ahead along its heading and
+    // turned (two games started on one save stand on one spot: one faces the other's camera)
+    static float ahead = 0, turn = 0;
+    static const bool moved = [] { const char* e = getenv("WWHD_COOP_TEST_PUPPET_AT"); return e && sscanf(e, "%f,%f", &ahead, &turn) >= 1; }();
+    if (moved) {
+        float s, c;
+        rot_y(yaw, s, c);
+        u.pos[0] += s * ahead, u.pos[2] += c * ahead, u.yaw = (int16_t)(yaw + (int)(turn * 32768 / 180));
+    }
+    emotes::pose(i, u.pose, u.pos, g_body_k);  // (C22: an emote its player played)
 }
 
 // Medli flies (Asad's rule: as in the game; daNpc_Md_c::flyPlayerAction, 02294160, when one plays her): in the air

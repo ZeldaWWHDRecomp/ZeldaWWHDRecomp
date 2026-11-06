@@ -73,6 +73,7 @@
 #include "overlay/editor_panel.h"
 #include "overlay/randomizer_tab.h"
 #include "mods/coop_settings.h"
+#include "mods/coop_emotes.h"
 #include "editor/editor_game.h"
 #include "editor/mcp_game.h"
 #if defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
@@ -595,6 +596,7 @@ int main(int argc, char** argv) {
     editor_ui::register_tab();  // the world editor's Editor tab (only with --editor)
     randomizer_tab::register_tab();  // Settings > Randomizer (randomized games made in setup)
     mods::coop::settings_ui::register_tab();  // Settings > Online (online co-op)
+    mods::coop::emotes::register_overlay();   // (the bubble over one's own Link while an emote plays for the others)
     index_game_functions();
     install_crash_handler();
     start_log_file();

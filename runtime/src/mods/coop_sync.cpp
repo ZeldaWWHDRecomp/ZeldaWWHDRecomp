@@ -24,6 +24,7 @@
 #include <mutex>
 
 #include "coop_deck.h"
+#include "coop_emotes.h"
 #include "coop_layout.h"
 #include "coop_names.h"
 #include "coop_monsters.h"
@@ -334,6 +335,7 @@ struct Handler : net::Handler {
         if (type == net::kProgress) return net::party_flag(net::kShareProgress, true) ? progress::received(d, n) : void();
         if (type == net::kDoorMove) return progress::door_moved(d, n);
         if (type == net::kRupees) return progress::rupees_received(d, n);
+        if (type == net::kEmote) return n == 1 ? emotes::play(from < net::my_id() ? from : from - 1, d[0]) : void();  // (its puppet)
         if (type == net::kSound) return g_sounds_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
         if (type == net::kOwner && net::via_server()) return;  // (through a server: its runners, X2)
         if (type == net::kOwner) {  // (a guest) the host's table of who runs each place

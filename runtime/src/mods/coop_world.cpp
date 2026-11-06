@@ -5,6 +5,7 @@
 // Online co-op, the game thread's entry (coop_world.h).
 #include "coop_world.h"
 #include "coop_deck.h"
+#include "coop_emotes.h"
 
 #include <cmath>
 #include <unordered_map>
@@ -210,6 +211,7 @@ void step(Cpu* c) {
     // riding the boat (daPy_lk_c::mCurProc, SHIP_READY..SHIP_RESTART but not SHIP_GET_OFF)
     const int proc = (int)ld32(link + kCurProc);
     const bool riding = proc >= 0x86 && proc <= 0x91 && proc != 0x90;
+    mods::coop::emotes::step(link);           // (C22: one asked for sent, the bubble over Link)
     mods::coop::own_character(set.character);  // (also without a session)
     mods::coop::step(c, link, set.on);         // the test aids (record, ghost)
     sync::step(c, link, 0, false);             // (no shared ship's deck in this port)

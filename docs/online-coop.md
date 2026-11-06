@@ -103,6 +103,14 @@ leave. If you stop sailing, go out of sight or leave the party, the boat is gone
 drop into the sea. Riding needs the rider's own boat somewhere in the sea (the game uses it to hold the
 deck), so it works once you have the King of Red Lions.
 
+## Emotes
+
+While you're online, pick an emote under **Emotes** in Settings > Online, or on the Online page of the pause
+menu: Wave, Cheer, Yes, Surprised or Look around. The other players see your Link do it. Players near you who
+aren't in your party see it too. Your own Link doesn't move. A small bubble over his head shows the emote while
+the others see it. You can play one emote a second. If you walk away, the emote stops. The animations come from
+your own game files.
+
 ## What stays yours
 
 Your health, magic, rupees, ammunition and bottle contents, and where you are: joining does not move

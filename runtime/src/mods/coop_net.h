@@ -58,6 +58,7 @@ enum Msg : uint8_t {
     kCutscene,    // host -> guests: {stage[8], s8 room, name[32]}: a cutscene of the stage's event list started (no name: over)
     kDoorMove,    // any -> host -> others: {stage[8], s16 proc, f32 home x, z, u8 open, u8 way}: a player's door moving
     kRupees,      // any -> host -> others: {s32 rupees}: what a player just gained, gained by everyone
+    kEmote,       // any -> host -> others: {u8 emote} (coop_emotes.h; through a server its EMOTE, strangers near by too)
 };
 
 enum class Role { kOff, kHost, kGuest };

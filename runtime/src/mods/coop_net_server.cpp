@@ -322,6 +322,10 @@ void store_progress(const std::string& sealed) {
 
 void send(int to, Msg type, const std::string& body) {
     if (type == kProgress) store_progress(body);  // (a member's changes, and its whole team state at a join: the store has all)
+    if (type == kEmote) {  // (the server's EMOTE: to everyone near who sees this player, party or not; rate-limited there)
+        if (g_client && body.size() == 1) g_client->send_emote((uint8_t)body[0]);
+        return;
+    }
     if (!g_client || !in_party()) return;
     op::AppHeader h;
     h.type = (uint8_t)type;
@@ -537,7 +541,13 @@ void poll(Handler& h) {
             if (!m.empty()) m = layout::seal(m), progress::received((const uint8_t*)m.data(), m.size());
             break;
         }
-        default: break;  // (markers, emotes, copies: later items)
+        case op::ClientEvent::kEmote: {  // (C22) a player near by, in the party or not: only its puppet plays it
+            const int s = slot_of(e.id);
+            const uint8_t id = (uint8_t)e.value;
+            if (s >= 0) h.message(s, kEmote, &id, 1);
+            break;
+        }
+        default: break;  // (markers, copies: later items)
         }
     }
     {

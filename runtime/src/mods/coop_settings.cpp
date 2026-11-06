@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <string>
 
+#include "coop_emotes.h"
 #include "coop_net.h"
 #include "coop_servers.h"
 #include "coop_sync.h"
@@ -204,12 +205,19 @@ void draw_tab() {
                 first = false;
                 if (ImGui::Button(("Go to " + net::name(id)).c_str())) hostui::post([id] { sync::go_to(id); });
             }
+        // emotes (C22): the others see this player's Link play it; here a bubble over him names it
+        ImGui::TextUnformatted("Emotes");
+        for (int e = 0; e < emotes::kCount; e++) {
+            if (e) ImGui::SameLine();
+            if (ImGui::Button(emotes::kEmotes[e].name)) emotes::mine(emotes::kEmotes[e].id);
+        }
     }
     ImGui::Spacing();
     ImGui::TextDisabled("Before your first session your save is backed up. A new Quest Log just for co-op is recommended.");
 }
 
 // ---- the pause menu's page ----
+int g_emote_choice = 0;  // (the pause page's emote row: the last one played)
 void register_items() {
     using game_settings::Item;
     using game_settings::Kind;
@@ -348,6 +356,19 @@ void register_items() {
         it.help = "See-through players are easy to tell from your party, who always look solid.";
         it.get = [] { return (float)sync::settings().strangers; };
         it.set = [](float v) { change([&](sync::Settings& x) { x.strangers = v >= 0.5f; }); };
+        game_settings::add(std::move(it));
+    }
+    {
+        Item it;
+        it.id = "online.emote", it.tab = "online", it.label = "Emote", it.kind = Kind::Choice;
+        for (const emotes::Emote& e : emotes::kEmotes) it.choices.push_back(e.name);
+        it.help = "Left and right play an emote: the other players see your Link do it.";
+        it.get = [] { return (float)g_emote_choice; };
+        it.set = [](float v) {
+            g_emote_choice = std::clamp((int)(v + 0.5f), 0, emotes::kCount - 1);
+            emotes::mine(emotes::kEmotes[g_emote_choice].id);
+        };
+        it.enabled = [] { return net::role() != net::Role::kOff; };
         game_settings::add(std::move(it));
     }
     {
