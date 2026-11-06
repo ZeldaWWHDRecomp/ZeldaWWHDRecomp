@@ -120,6 +120,13 @@ if(WWHD_RANDO)
   add_subdirectory(tools/rando)
 endif()
 
+# online play (docs/online-server.md): the shared protocol library and wwhd-online-server
+option(WWHD_ONLINE "online play: the protocol library (runtime/src/online/proto) and wwhd-online-server" OFF)
+if(WWHD_ONLINE)
+  add_subdirectory(runtime/src/online/proto)
+  add_subdirectory(server)
+endif()
+
 add_library(gamecode STATIC ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/imports.c)
 target_include_directories(gamecode PUBLIC runtime/include ${GEN_DIR})
 # exact FP semantics: no contraction into FMA, no fast-math; PowerPC integer arithmetic wraps
