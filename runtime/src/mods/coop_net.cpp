@@ -69,6 +69,7 @@ bool member(int id);
 std::string friend_code();
 void send(int to, Msg type, const std::string& body);
 void put_state(uint8_t kind, const std::string& body);
+void put_pose_place(const float at[3]);
 void poll(Handler& h);
 bool invite(const std::string& code, std::string& why);
 std::vector<std::pair<uint32_t, std::string>> invites();
@@ -383,6 +384,14 @@ void send(int to, Msg type, const std::string& body) {
 }
 
 void put_state(uint8_t kind, const std::string& body) { VIA_SERVER(put_state(kind, body)); g_states[kind] = {now_ms(), body}; }
+// (through a server: the world place the next pose stands at, for the server's interest; the direct transport has none)
+void put_pose_place(const float at[3]) {
+#if WWHD_ONLINE
+    if (srv::active()) srv::put_pose_place(at);
+#else
+    (void)at;
+#endif
+}
 void add_state(uint8_t kind, const std::string& more) {
     VIA_SERVER(put_state(kind, more));
     auto& s = g_states[kind];

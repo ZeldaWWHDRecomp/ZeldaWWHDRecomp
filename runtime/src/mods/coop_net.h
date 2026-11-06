@@ -74,6 +74,9 @@ void stop(const char* why);
 void send(int to, Msg type, const std::string& body);
 // unreliable: this game's newest snapshot of kind k (a pose, the ship), sent at the next tick to everyone
 void put_state(uint8_t kind, const std::string& body);
+// the world place of the pose put next, when its own is in another frame (on a friend's boat, C16): what a server's
+// interest uses
+void put_pose_place(const float at[3]);
 // unreliable, a stream: added to what of kind k goes at the next tick (voice frames: none overwritten)
 void add_state(uint8_t kind, const std::string& more);
 

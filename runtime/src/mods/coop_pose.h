@@ -48,7 +48,14 @@ struct Pose {
     // the grappling hook's rope (daHimo2's line, +0x204C): its width and points relative to his place and heading (x4)
     float rope_width = 0;
     std::vector<int16_t> rope_pts;
+    // (kSailing) the boat he rides, in the world; (kOnFriend) pos and yaw are local to party member deck_of's boat (C16)
+    float boat[3] = {};
+    int16_t boat_yaw = 0;
+    uint8_t deck_of = 0xFF;
 };
+// a pose's flags beside kOnDeck (1, Tetra's ship) and the pose's own (coop_pose.cpp): riding his boat; standing on a
+// friend's boat
+constexpr uint8_t kOnDeck = 0x01, kSailing = 0x08, kOnFriend = 0x10;
 
 // the bytes of a pose (the recorder's frame and the network's), and back
 void pack(const Pose& p, std::string& out);

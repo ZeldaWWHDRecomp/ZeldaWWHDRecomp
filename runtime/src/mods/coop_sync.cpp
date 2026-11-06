@@ -23,6 +23,7 @@
 #include <memory>
 #include <mutex>
 
+#include "coop_deck.h"
 #include "coop_monsters.h"
 #include "coop_pose.h"
 #include "coop_progress.h"
@@ -116,6 +117,17 @@ void to_world(uint32_t hull, const float l[3], float w[3]) {
     w[0] = (float)(f32(hull + kPos) + l[0] * cos(t) + l[2] * sin(t));
     w[1] = f32(hull + kPos + 4) + l[1];
     w[2] = (float)(f32(hull + kPos + 8) - l[0] * sin(t) + l[2] * cos(t));
+}
+// a frame given by its place and heading (a friend's boat, C16): the same as to_world / to_local below
+void frame_to_world(const float at[3], int16_t yaw, const float l[3], float w[3]) {
+    const double t = yaw * M_PI / 32768;
+    const float x = l[0], y = l[1], z = l[2];
+    w[0] = (float)(at[0] + x * cos(t) + z * sin(t)), w[1] = at[1] + y, w[2] = (float)(at[2] - x * sin(t) + z * cos(t));
+}
+void frame_to_local(const float at[3], int16_t yaw, const float w[3], float l[3]) {
+    const double t = yaw * M_PI / 32768, dx = w[0] - at[0], dz = w[2] - at[2];
+    const float y = w[1] - at[1];
+    l[0] = (float)(dx * cos(t) - dz * sin(t)), l[1] = y, l[2] = (float)(dx * sin(t) + dz * cos(t));
 }
 void to_local(uint32_t hull, const float w[3], float l[3]) {
     const double t = (int16_t)ld16(hull + kAngleY) * M_PI / 32768;
@@ -231,7 +243,7 @@ bool host_near(uint32_t link) {
     const Remote& h = g_remote[0];
     if (h.poses.empty()) return false;
     const Pose& p = h.poses.back().second;
-    return !(p.flags & 1) && !strncmp(p.stage, (const char*)mem::ptr(kStage), 8) &&
+    return !(p.flags & (kOnDeck | kOnFriend)) && !strncmp(p.stage, (const char*)mem::ptr(kStage), 8) &&
            std::hypot(p.pos[0] - f32(link + kPos), p.pos[2] - f32(link + kPos + 8)) < 3000;
 }
 // an everyday event: its own player's alone (Dragon Roost Cavern's list: DEFAULT_TALK, KNOB_START, SHUTTER_START,
@@ -402,6 +414,8 @@ struct Handler : net::Handler {
                 r.gaps++, r.gap_sum += gap, r.gap_max = std::max(r.gap_max, gap), r.heard = now;
             else r.heard = now;
             r.size = n;
+            if (static uint32_t k = 0; getenv("WWHD_COOP_DECK_TRACE") && ++k % 40 == 0)
+                mods::trace("coop: deck test: pose from %d at %u (newest kept %u), flags %02X, %zu bytes", from, ms, r.poses.empty() ? 0 : r.poses.back().first, p.flags, n);
             if (!r.poses.empty() && (int32_t)(ms - r.poses.back().first) <= 0) return;  // (out of order: dropped)
             // that player came into this game's stage or left it: told by name
             const std::string mine = stage_now(), now_at(p.stage, strnlen(p.stage, 8));
@@ -640,6 +654,7 @@ void poll(Cpu* c, bool on) {
         net::stop(nullptr);
         for (Remote& r : g_remote) r = Remote{};
         for (int i = 0; i < kPuppets; i++) release(i);
+        deck::clear(c);  // (C16: no friend's deck without the session)
         if (was && together()) g_back = "You left the host's game";
         else if (was) hlefs::g_block_saves = false, g_was_guest = false;
     }
@@ -698,16 +713,48 @@ void go_to(int id) { g_go_to = id; }
 
 void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     if (link != g_hud_link) g_hud_hidden = false;  // (playing again)
-    if (net::role() == net::Role::kOff) return;
+    if (net::role() == net::Role::kOff) return deck::clear(c);  // (C16: no friend's deck without the session)
     // this game's pose out (on Tetra's ship's deck, or the craft's: in its frame)
     Pose me;
     const float at[3] = {f32(link + kPos), f32(link + kPos + 4), f32(link + kPos + 8)};
     const bool on_deck = hull && aboard;
+    const uint32_t ship = ld32(kPlay + 0x5B3C), proc = ld32(link + 0x65F0);  // dComIfGp_getShipActor, daPy_lk_c::mCurProc
+    const bool sailing = ship >= 0x10000000 && proc >= 0x86 && proc <= 0x91 && proc != 0x90;  // (SHIP_READY..SHIP_RESTART)
+    const int deck_of = deck::standing_on(link);
+    static int deck_was = -1;
     if (own_pose(me)) {
         if (on_deck) {
             to_local(hull, me.pos, me.pos);
             me.yaw = (int16_t)(me.yaw - (int16_t)ld16(hull + kAngleY)), me.flags |= 1;
         }
+        if (sailing) {  // (C16: his boat's place, for a friend standing on it)
+            for (int e = 0; e < 3; e++) me.boat[e] = f32(ship + kPos + 4 * e);
+            me.boat_yaw = (int16_t)ld16(ship + kAngleY), me.flags |= kSailing;
+        }
+        float at[3];
+        int16_t yaw;
+        if (!on_deck && !sailing && deck_of >= 0 && deck::frame(deck_of, at, yaw)) {  // on a friend's boat: in its frame
+            net::put_pose_place(me.pos);  // (the server's interest: where Link is in the world)
+            frame_to_local(at, yaw, me.pos, me.pos);
+            me.yaw = (int16_t)(me.yaw - yaw), me.flags |= kOnFriend, me.deck_of = (uint8_t)deck_of;
+            if (deck_was != deck_of) deck_was = deck_of, mods::trace("coop: standing on %d's deck at %.0f %.0f %.0f", deck_of, me.pos[0], me.pos[1], me.pos[2]);
+        } else if (deck_was != -1) deck_was = -1, mods::trace("coop: off the deck");
+        if (static bool told = false; sailing != told) told = sailing, mods::trace("coop: %s", sailing ? "sailing" : "not sailing");
+        // test aid: WWHD_COOP_TEST_DRIFT=<units a step>,<seconds>: while sailing, this game's boat is held where it began
+        // and, after that many seconds, goes straight ahead that fast (a friend sailing steadily, without the controls)
+        static float drift = -2, drift_after = 0, anchor[3];
+        static uint32_t sail_since = 0, steps = 0;
+        if (drift == -2) drift = -1, sscanf(getenv("WWHD_COOP_TEST_DRIFT") ? getenv("WWHD_COOP_TEST_DRIFT") : "", "%f,%f", &drift, &drift_after);
+        if (!sailing) sail_since = 0;
+        else if (!sail_since) sail_since = net::now_ms(), steps = 0, anchor[0] = f32(ship + kPos), anchor[1] = f32(ship + kPos + 4), anchor[2] = f32(ship + kPos + 8);
+        if (sailing && drift >= 0) {
+            const double t = (int16_t)ld16(ship + kAngleY) * M_PI / 32768;
+            const float d = now_ms_since(sail_since) >= (uint32_t)(drift_after * 1000) ? drift * (float)++steps : 0;
+            stf32(ship + kPos, anchor[0] + d * (float)sin(t)), stf32(ship + kPos + 8, anchor[2] + d * (float)cos(t));
+        }
+        if (static uint32_t n = 0; ++n % 150 == 0 && (sailing || deck_of >= 0))
+            mods::trace("coop: at %.0f %.0f %.0f%s%s (boat %.0f %.0f %.0f)", f32(link + kPos), f32(link + kPos + 4), f32(link + kPos + 8),
+                        sailing ? ", sailing" : "", deck_of >= 0 ? ", on a friend's deck" : "", me.boat[0], me.boat[1], me.boat[2]);
         std::string b;
         pack(me, b);
         net::put_state(kPose, b);
@@ -807,7 +854,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 if (!net::member(id) || std::find(g_send_join.begin(), g_send_join.end(), id) != g_send_join.end()) continue;
                 const Remote& r = g_remote[id];
                 const Pose* p = r.poses.empty() ? nullptr : &r.poses.back().second;
-                const bool near = p && !strncmp(p->stage, here.c_str(), 8) && p->room == my_room && !(p->flags & 1) &&
+                const bool near = p && !strncmp(p->stage, here.c_str(), 8) && p->room == my_room && !(p->flags & (kOnDeck | kOnFriend)) &&
                                   std::hypot(p->pos[0] - at[0], p->pos[2] - at[2]) < 1500;
                 if (near) continue;
                 g_send_join.push_back(id);
@@ -829,8 +876,13 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         const Remote& r = g_remote[id];
         std::string why;
         if (!net::connected(id) || r.poses.empty()) why = "not playing yet";
-        else if (r.poses.back().second.flags & 1) why = "on a ship's deck";
-        else {
+        else if (r.poses.back().second.flags & kOnDeck) why = "on a ship's deck";
+        else if (r.poses.back().second.flags & kOnFriend) why = "on a friend's boat";
+        else if ((r.poses.back().second.flags & kSailing) && id < deck::kDecks) {  // (C16: onto their boat, if it is here)
+            const uint32_t proc = ld32(link + 0x65F0);
+            if (proc >= 0x86 && proc <= 0x91) why = "get off your boat first";
+            else if (!deck::hop(link, id)) why = "their boat is not near you";
+        } else {
             const Pose& p = r.poses.back().second;
             const double t = p.yaw * M_PI / 32768;
             const float at[3] = {p.pos[0] + 100 * (float)cos(t), p.pos[1], p.pos[2] - 100 * (float)sin(t)};
@@ -982,20 +1034,54 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     const std::string stage = stage_now();
     const int8_t room = (int8_t)ld8(link + kRoom);
     const uint32_t now = net::now_ms();
+    // (C16) first each party member's boat as shown here (theirs as their pose has it; this game's own as it is), then
+    // the players: one standing on a member's boat is put in that boat's frame; the decks follow the boats shown
+    static Pose shown[net::kMaxPlayers];
+    static bool has[net::kMaxPlayers];
+    deck::Boat boats[deck::kDecks];
+    for (int id = 0; id < net::kMaxPlayers; id++) {
+        has[id] = id != net::my_id() && net::connected(id) && now - g_remote[id].heard < (uint32_t)kStale &&
+                  pose_at(g_remote[id], g_remote[id].clock.shown(now), shown[id]);
+        if (id < deck::kDecks && has[id] && net::member(id) && (shown[id].flags & kSailing) && !strncmp(shown[id].stage, stage.c_str(), 8) &&
+            shown[id].room == room) {
+            deck::Boat& b = boats[id];
+            b.on = true, memcpy(b.pos, shown[id].boat, 12), b.yaw = shown[id].boat_yaw, b.room = shown[id].room;
+        }
+    }
+    if (static bool had = false; getenv("WWHD_COOP_DECK_TRACE") && had != boats[0].on && (had = boats[0].on, !had))
+        mods::trace("coop: deck test: player 0's boat gone here: shown %d, flags %02X, stage %.8s, room %d (here %d), heard %u ms ago", has[0],
+                    shown[0].flags, shown[0].stage, shown[0].room, room, now - g_remote[0].heard);
+    if (static uint32_t n = 0; getenv("WWHD_COOP_DECK_TRACE") && ++n % 150 == 0)
+        for (int id = 0; id < deck::kDecks; id++)
+            if (has[id]) mods::trace("coop: deck test: player %d flags %02X stage %.8s room %d (here %d), boat %.0f %.0f %.0f, newest %.0f %.0f, %zu poses", id, shown[id].flags,
+                                     shown[id].stage, shown[id].room, room, shown[id].boat[0], shown[id].boat[1], shown[id].boat[2],
+                                     g_remote[id].poses.back().second.boat[0], g_remote[id].poses.back().second.boat[2], g_remote[id].poses.size());
+    deck::update(c, boats, ship >= 0x10000000 && !sailing ? ship : 0);  // (riding his own boat: no friend's deck to stand on)
     for (int id = 0; id < net::kMaxPlayers; id++) {
         if (id == net::my_id()) continue;
         const int slot = id < net::my_id() ? id : id - 1;
         Remote& r = g_remote[id];
-        Pose p;
+        Pose& p = shown[id];
         const bool was = r.shown;
-        r.shown = net::connected(id) && now - r.heard < (uint32_t)kStale && pose_at(r, r.clock.shown(now), p) && !strncmp(p.stage, stage.c_str(), 8) &&
-                  ((p.flags & 1) ? hull != 0 : p.room == room);
+        // a friend's deck: this game's own boat (it sails), or a member's as shown here
+        float deck_at[3] = {};
+        int16_t deck_yaw = 0;
+        bool deck_known = false;
+        if (has[id] && (p.flags & kOnFriend)) {
+            if (p.deck_of == net::my_id() && sailing)
+                for (int e = 0; e < 3; e++) deck_at[e] = f32(ship + kPos + 4 * e), deck_yaw = (int16_t)ld16(ship + kAngleY), deck_known = true;
+            else if (p.deck_of < net::kMaxPlayers && has[p.deck_of] && (shown[p.deck_of].flags & kSailing))
+                memcpy(deck_at, shown[p.deck_of].boat, 12), deck_yaw = shown[p.deck_of].boat_yaw, deck_known = true;
+        }
+        r.shown = has[id] && !strncmp(p.stage, stage.c_str(), 8) &&
+                  ((p.flags & 1) ? hull != 0 : (p.flags & kOnFriend) ? deck_known : p.room == room);
         if (!r.shown) {
             if (was) show(slot, nullptr, nullptr, 0);  // (only the ones it showed: the ghost test aid has slot 0 to itself)
             continue;
         }
         int16_t yaw = p.yaw;
         if (p.flags & 1) to_world(hull, p.pos, r.at), yaw = (int16_t)(yaw + (int16_t)ld16(hull + kAngleY));
+        else if (p.flags & kOnFriend) frame_to_world(deck_at, deck_yaw, p.pos, r.at), yaw = (int16_t)(yaw + deck_yaw);
         else memcpy(r.at, p.pos, 12);
         r.yaw = yaw;
         show(slot, &p, r.at, yaw, net::tunic(id), !net::member(id) && settings().strangers == 1);  // (X1b)

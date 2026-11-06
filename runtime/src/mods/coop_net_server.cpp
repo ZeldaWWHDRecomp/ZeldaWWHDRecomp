@@ -304,13 +304,16 @@ void send(int to, Msg type, const std::string& body) {
     g_client->send_app(h, (const uint8_t*)body.data(), body.size(), true);
 }
 
+float g_place[3];
+bool g_place_set = false;
+void put_pose_place(const float at[3]) { memcpy(g_place, at, 12), g_place_set = true; }
 void put_state(uint8_t kind, const std::string& body) {
     if (!g_client) return;
     // (the server's near tier is 15 Hz and its default upload budget 8 KB/s: every other of the 30 Hz poses goes,
     // ~380 bytes in the compact form (coop_pose.cpp, ~5.7 KB/s), and the other states at most 10 Hz)
     static uint32_t calls[256];
     const uint32_t n = calls[kind]++;
-    if (kind == 1 ? n % 2 : n % 3) return;
+    if (kind == 1 ? n % 2 : n % 3) { if (kind == 1) g_place_set = false; return; }
     if (kind == 1 && body.size() >= 28) {  // a pose (coop_pose.h pack: u32 size, stage[8], room, flags, pos[3], s16 yaw)
         op::PoseHeader h;
         memcpy(h.where.stage.data(), body.data() + 4, 8);
@@ -320,9 +323,11 @@ void put_state(uint8_t kind, const std::string& body) {
         int16_t yaw;
         memcpy(&yaw, body.data() + 26, 2);
         h.x = p[0], h.y = p[1], h.z = p[2], h.yaw = (uint16_t)yaw;
+        if (g_place_set) h.x = g_place[0], h.y = g_place[1], h.z = g_place[2];  // (a pose in a deck's frame: its world place)
         if (body[13] & 1) h.flags |= 1;  // (on a deck: its frame)
         if (!g_where_known || !(h.where == g_where_sent)) g_client->send_stage(h.where), g_where_sent = h.where, g_where_known = true;
         g_client->send_pose(h, (const uint8_t*)body.data(), body.size());
+        g_place_set = false;
         return;
     }
     if (!in_party()) return;
@@ -406,7 +411,8 @@ void poll(Handler& h) {
             for (const op::PoseEntry& p : e.poses) {
                 const int s = slot_of(p.id);
                 if (s < 0 || p.tier != op::kTierNear || p.blob.empty()) continue;  // (mid / far tiers: puppets come with C13)
-                h.state(s, 1, p.ms, p.blob.data(), p.blob.size());
+                // (a server that stamps no time, ms 0: the time it came here, so the poses still follow one another)
+                h.state(s, 1, p.ms ? p.ms : now_ms(), p.blob.data(), p.blob.size());
             }
             break;
         case op::ClientEvent::kApp: {

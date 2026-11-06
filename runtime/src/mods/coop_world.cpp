@@ -4,6 +4,7 @@
 //
 // Online co-op, the game thread's entry (coop_world.h).
 #include "coop_world.h"
+#include "coop_deck.h"
 
 #include <cmath>
 #include <unordered_map>
@@ -174,7 +175,8 @@ struct StandIn {
 // before his execute, where daPy_lk_c::changeDamageProc (023FA578) finds it and plays his damage. Not while he still
 // flinches from the last (+0x3B0, his damage timer; mode +0x6A70 bit 8), as the game's own hits; a friend's blow
 // leaves the last quarter heart
-void before_execute() {
+void before_execute(Cpu* c) {
+    mods::coop::deck::move(c);  // (C16: a friend's boat's deck, before Link runs)
     const uint32_t link = ld32(kLinkPtr);
     if (!g_hurt.quarters || !in_mem2(link) || ld16(link + 0x3B0) || ld32(link + 0x6A70) & 8) return;
     const int q = std::min<int>(g_hurt.quarters, ld16(save() + 2) - 1);

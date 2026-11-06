@@ -87,6 +87,15 @@ For scripted tests the environment variables `WWHD_COOP=host[:port]` or `WWHD_CO
 - **Monsters:** the monsters placed in a place are run by one player's game; everyone's hits count,
   and a monster killed stays dead while someone is in that place.
 
+## Boats
+
+Everyone sails their own boat, and the others see it with you in it. A friend in your party can ride along
+on your boat: when you sail and they are close by (swimming or standing, not in their own boat), they choose
+**Go to** you and land on the back of your boat. They stay on it while you sail and turn, and jump off to
+leave. If you stop sailing, go out of sight or leave the party, the boat is gone under their feet and they
+drop into the sea. Riding needs the rider's own boat somewhere in the sea (the game uses it to hold the
+deck), so it works once you have the King of Red Lions.
+
 ## What stays yours
 
 Your health, magic, rupees, ammunition and bottle contents, and where you are: joining does not move

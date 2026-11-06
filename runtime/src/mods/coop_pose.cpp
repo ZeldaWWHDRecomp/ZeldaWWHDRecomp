@@ -1269,6 +1269,8 @@ void pack(const Pose& p, std::string& out) {
     const uint8_t nr = (uint8_t)(p.rope_pts.size() / 3);
     put_bytes(&nr, 1);
     if (nr) put_bytes(&p.rope_width, 4), put_bytes(p.rope_pts.data(), 6 * nr);
+    if (p.flags & kSailing) put_bytes(p.boat, 12), put_bytes(&p.boat_yaw, 2);  // (C16: his boat, for a friend's deck)
+    if (p.flags & kOnFriend) put_bytes(&p.deck_of, 1);
     size = (uint32_t)(out.size() - start);
     memcpy(&out[start], &size, 4);
     // test aid WWHD_COOP_POSE_CHECK=1: each compact pose read back and compared with what was packed (largest joint
@@ -1370,12 +1372,17 @@ bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
     if (!get(&p.chain, 2) || (p.chain && (!get(p.chain_root, 6) || !get(p.chain_angle, 4))) || !get(&nr, 1)) return false;
     p.rope_pts.resize(3 * nr);
     if (nr && (!get(&p.rope_width, 4) || !get(p.rope_pts.data(), 6 * nr))) return false;
+    if ((p.flags & kSailing) && (!get(p.boat, 12) || !get(&p.boat_yaw, 2))) return false;
+    if ((p.flags & kOnFriend) && !get(&p.deck_of, 1)) return false;
     if (used) *used = size;
     if (o != size) return false;
     // (another game's data, written into this game's objects as it is drawn: what the game itself could not have made
     // is refused: a place off any stage, numbers that are no numbers, a trail index, chain or rope past their arrays)
     auto finite = [](float v, float most) { return std::isfinite(v) && std::fabs(v) <= most; };
     for (float v : p.pos) if (!finite(v, 1e6f)) return false;
+    for (float v : p.boat) if (!finite(v, 1e6f)) return false;
+    if ((p.flags & kOnFriend) && (p.deck_of >= 4 || !finite(p.pos[0], 1000) || !finite(p.pos[1], 1000) || !finite(p.pos[2], 1000)))
+        return false;  // (a friend's deck: a party member's, a few steps across)
     if (p.trail > 0 && (p.trail_idx < 0 || p.trail_idx >= 60 || !finite(p.trail_top, 1e4f))) return false;
     if (p.chain > 300 || p.rope_pts.size() > 3 * 200 || (nr && !finite(p.rope_width, 1e3f))) return false;
     for (const Model& m : p.models) if (m.k == kHeld && !finite(m.brk, 1e5f)) return false;
@@ -1384,8 +1391,14 @@ bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
 
 void blend(const Pose& a, const Pose& b, float t, Pose& out) {
     out = b;
-    for (int i = 0; i < 3; i++) out.pos[i] = a.pos[i] + (b.pos[i] - a.pos[i]) * t;
-    out.yaw = (int16_t)(a.yaw + (int16_t)(b.yaw - a.yaw) * t);
+    // (a place in another frame, a world one and a deck's or two decks': the newer as it is)
+    const bool frame = !((a.flags ^ b.flags) & (kOnDeck | kOnFriend)) && a.deck_of == b.deck_of;
+    for (int i = 0; i < 3 && frame; i++) out.pos[i] = a.pos[i] + (b.pos[i] - a.pos[i]) * t;
+    if (frame) out.yaw = (int16_t)(a.yaw + (int16_t)(b.yaw - a.yaw) * t);
+    if (a.flags & b.flags & kSailing) {
+        for (int i = 0; i < 3; i++) out.boat[i] = a.boat[i] + (b.boat[i] - a.boat[i]) * t;
+        out.boat_yaw = (int16_t)(a.boat_yaw + (int16_t)(b.boat_yaw - a.boat_yaw) * t);
+    }
     for (Model& m : out.models)
         for (const Model& n : a.models) {
             if (n.k != m.k || n.file != m.file || n.j.size() != m.j.size()) continue;

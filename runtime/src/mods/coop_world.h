@@ -15,6 +15,6 @@ struct Cpu;
 namespace mods::coop::world {
 
 void step(Cpu* c);       // interp.cpp, after the actors' executes, full logic passes only
-void before_execute();   // interp.cpp, just before them: a friend's blow on this game's Link
+void before_execute(Cpu* c);   // interp.cpp, just before them: a friend's blow on this game's Link
 
 }  // namespace mods::coop::world

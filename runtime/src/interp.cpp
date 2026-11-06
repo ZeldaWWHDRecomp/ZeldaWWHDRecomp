@@ -2325,7 +2325,7 @@ extern "C" void hook_025DE788(Cpu* c) {
     if(!interp::g_hold_frame)guestmods::maphud::begin_logic(c,1.0/30.0);  // one 30 Hz logic step
     if (!interp::g_hold_frame) mods::instant_text_step();  // instant text (mods/instant_text.cpp)
     dsweep::before_execute(c);  // the setup's actor sweep (WWHD_DSWEEP): its actors do not run their logic
-    if (!interp::g_hold_frame) mods::coop::world::before_execute();  // (online co-op: a friend's blow on Link)
+    if (!interp::g_hold_frame) mods::coop::world::before_execute(c);  // (online co-op: a friend's blow on Link)
     f_025DE788_orig(c);
     dsweep::after_execute(c);
     if (!interp::g_hold_frame) mods::instant_text_step();
