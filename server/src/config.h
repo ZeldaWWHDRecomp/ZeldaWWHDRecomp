@@ -40,6 +40,7 @@ struct Config {
 
     // interest (DESIGN.md 3.3)
     int tick_hz = 15;
+    int threads = 0;                // worker threads for the tick (interest, sending); 0: automatic (up to 8)
     float near_radius = 3000.0f;
     float window_half = 18750.0f;   // the 3x3 sub-cell window as a box around the receiver
     float hysteresis = 0.15f;

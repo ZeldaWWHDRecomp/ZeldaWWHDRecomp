@@ -28,7 +28,7 @@ std::vector<TeamField> TeamStore::merge(const std::vector<TeamField>& in, int& r
     std::vector<TeamField> changed;
     for (const TeamField& f : in) {
         if (f.value.empty() || f.value.size() > kMaxTeamFieldBytes || size_t(f.offset) + f.value.size() > 0x10000 ||
-            f.mode > kFieldMax) {
+            f.mode > kFieldFill) {
             ++refused;
             continue;
         }
@@ -53,6 +53,14 @@ std::vector<TeamField> TeamStore::merge(const std::vector<TeamField>& in, int& r
                 char v = char(uint8_t(have.value[i]) | uint8_t(f.value[i]));
                 if (v != have.value[i]) {
                     have.value[i] = v;
+                    diff = true;
+                }
+            }
+        } else if (f.mode == kFieldFill) {
+            for (size_t i = 0; i < f.value.size(); ++i) {
+                uint8_t h = uint8_t(have.value[i]), v = uint8_t(f.value[i]);
+                if ((h == 0x00 || h == 0xFF) && v != 0x00 && v != 0xFF) {
+                    have.value[i] = char(v);
                     diff = true;
                 }
             }

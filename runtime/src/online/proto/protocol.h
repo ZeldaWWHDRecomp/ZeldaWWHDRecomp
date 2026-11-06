@@ -174,6 +174,7 @@ struct AppHeader {
 enum FieldMode : uint8_t {
     kFieldBits = 0,  // OR, byte by byte (flags are only ever set)
     kFieldMax = 1,   // unsigned big-endian counter, MAX
+    kFieldFill = 2,  // per byte: set only where the stored byte is empty (0x00 or 0xFF); items are never taken away
 };
 struct TeamField {
     uint16_t offset = 0;

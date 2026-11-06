@@ -154,7 +154,7 @@ void UdpSocket::close() {
 #define native() s_
 #endif
 
-bool UdpSocket::open(const std::string& host, uint16_t port, std::string& why) {
+bool UdpSocket::open(const std::string& host, uint16_t port, std::string& why, bool reuse_port) {
     ensure_wsa();
     close();
     Address a;
@@ -177,6 +177,17 @@ bool UdpSocket::open(const std::string& host, uint16_t port, std::string& why) {
     }
     fcntl(s, F_SETFL, fcntl(s, F_GETFL, 0) | O_NONBLOCK);
     s_ = s;
+#endif
+#ifndef _WIN32
+    if (reuse_port) {
+        // several sockets on one port: the server sends from one per worker thread (one socket's send path is
+        // a single lock in the kernel) and reads them all
+        int one = 1;
+        setsockopt(native(), SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+        setsockopt(native(), SOL_SOCKET, SO_REUSEPORT, &one, sizeof one);
+    }
+#else
+    (void)reuse_port;
 #endif
     if (bind(native(), reinterpret_cast<const sockaddr*>(a.storage), a.len) != 0) {
         why = "cannot bind " + a.text();

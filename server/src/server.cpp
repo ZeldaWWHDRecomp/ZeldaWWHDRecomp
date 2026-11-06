@@ -57,8 +57,21 @@ bool Server::start(std::string& why) {
     crypto::random_bytes(cookie_key_, sizeof cookie_key_);
     // the IP salt must survive restarts for bans by IP hash: derived from the server key
     crypto::hash(identity_.secret, 32, ip_salt_);
-    if (!sock_.open(cfg_.bind, cfg_.port, why)) return false;
+    workers_ = cfg_.threads > 0 ? cfg_.threads : int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() / 2)));
+#ifdef _WIN32
+    bool reuse = false;
+#else
+    bool reuse = workers_ > 1;
+#endif
+    if (!sock_.open(cfg_.bind, cfg_.port, why, reuse)) return false;
     sock_.set_buffers(8 << 20);
+    for (int i = 1; reuse && i < workers_; ++i) {
+        auto extra = std::make_unique<UdpSocket>();
+        std::string w;
+        if (!extra->open(cfg_.bind, sock_.local_port(), w, true)) break;
+        extra->set_buffers(4 << 20);
+        send_socks_.push_back(std::move(extra));
+    }
     load_bans();
     load_team_states();
     if (!open_admin(why)) return false;
@@ -103,16 +116,21 @@ void Server::step(int wait_ms) {
     uint32_t now = monotonic_ms();
     int until_tick = int(int32_t(next_tick_ - now));
     int w = std::max(0, std::min(wait_ms, until_tick));
-    if (sock_.wait(w)) {
+    bool ready = sock_.wait(send_socks_.empty() ? w : std::min(w, 1));
+    if (ready || !send_socks_.empty()) {
         uint8_t buf[2048];
         Address from;
-        for (int i = 0; i < 20000; ++i) {
-            int n = sock_.recv_from(from, buf, sizeof buf);
-            if (n < 0) break;
-            metrics_.bytes_in += size_t(n);
-            metrics_.packets_in++;
-            on_datagram(buf, size_t(n), from, monotonic_ms());
-        }
+        auto drain = [&](UdpSocket& u) {
+            for (int i = 0; i < 20000; ++i) {
+                int n = u.recv_from(from, buf, sizeof buf);
+                if (n < 0) break;
+                metrics_.bytes_in += size_t(n);
+                metrics_.packets_in++;
+                on_datagram(buf, size_t(n), from, monotonic_ms());
+            }
+        };
+        drain(sock_);
+        for (auto& u : send_socks_) drain(*u);  // a port shared by several sockets may deliver to any of them
     }
     admin_poll();
     if (cfg_.shard_count > 1) link_poll(monotonic_ms());
@@ -894,11 +912,12 @@ void Server::interest(Session& s, uint32_t now) {
     bool at_sea = s.head.where.stage_name() == cfg_.sea_stage;
     if (s.has_pose && !s.hidden) gather(s, around, &ghosts, cfg_.hysteresis);
     Party* p = party_of(s);
-    std::unordered_set<uint64_t> party_keys;
+    uint64_t party_keys[kMaxPartySize] = {};
+    int party_n = 0;
     if (p)
         for (uint64_t kh : p->members)
-            if (kh != s.key_hash) {
-                party_keys.insert(kh);
+            if (kh != s.key_hash && party_n < kMaxPartySize) {
+                party_keys[party_n++] = kh;
                 Session* t = online_member(kh);
                 if (t && t->has_pose && !t->hidden && t->world == s.world) around.push_back(t);
             }
@@ -906,12 +925,12 @@ void Server::interest(Session& s, uint32_t now) {
     auto consider = [&](Session* o, Ghost* g) {
         uint16_t id = o ? o->id : g->id;
         uint64_t kh = o ? o->key_hash : g->key_hash;
-        if (id == s.id || !sees(s, kh)) return;
+        if (id == s.id || (o ? !sees(s, *o) : !s.blocks.empty() && s.blocks.count(kh))) return;
         const PoseHeader& oh = o ? o->head : g->head;
         float dx = oh.x - s.head.x, dy = oh.y - s.head.y, dz = oh.z - s.head.z;
         auto prev = s.seen.find(id);
         bool was = prev != s.seen.end();
-        bool party = party_keys.count(kh) != 0;
+        bool party = std::find(party_keys, party_keys + party_n, kh) != party_keys + party_n;
         if (!party && at_sea) {
             float lim = cfg_.window_half * (was ? h : 1.0f);
             if (std::fabs(dx) > lim || std::fabs(dz) > lim) return;
@@ -1025,7 +1044,7 @@ void Server::send_markers(Session& s) {
     Writer w(b);
     int n = 0;
     auto add = [&](Session* o) {
-        if (o == &s || n >= cfg_.marker_cap || !sees(s, o->key_hash) || o->square < 0) return;
+        if (o == &s || n >= cfg_.marker_cap || !sees(s, *o) || o->square < 0) return;
         Marker m;
         m.id = o->id;
         m.square = uint8_t(o->square);
@@ -1052,18 +1071,55 @@ void Server::send_markers(Session& s) {
     if (!b.empty()) s.chan.send_unreliable(kMsgMarkers, b);
 }
 
-void Server::flush_all(uint32_t now) {
-    for (auto& [cid, sp] : sessions_) {
-        Session& s = *sp;
-        if (s.dead || (!s.online && !s.redirected)) continue;
-        outq_.clear();
-        s.chan.flush(now, outq_, kMaxDatagramsPerFlush);
-        for (auto& b : outq_) {
-            sock_.send_to(s.addr, b.data(), b.size());
-            metrics_.bytes_out += b.size();
-            metrics_.packets_out++;
-        }
+static thread_local int t_worker = 0;
+
+UdpSocket& Server::out_sock() {
+    if (t_worker <= 0 || size_t(t_worker) > send_socks_.size()) return sock_;
+    return *send_socks_[size_t(t_worker - 1)];
+}
+
+void Server::flush_one(Session& s, uint32_t now) {
+    static thread_local std::vector<Bytes> out;
+    out.clear();
+    s.chan.flush(now, out, kMaxDatagramsPerFlush);
+    uint64_t bytes = 0;
+    UdpSocket& u = out_sock();
+    for (auto& b : out) {
+        u.send_to(s.addr, b.data(), b.size());
+        bytes += b.size();
     }
+    metrics_.bytes_out += bytes;
+    metrics_.packets_out += out.size();
+}
+
+// runs fn over the sessions on the worker threads: each call touches only its own session (its channel and what it
+// has seen) and reads the others, which nothing changes during the tick
+void Server::parallel(const std::vector<Session*>& work, void (Server::*fn)(Session&, uint32_t), uint32_t now) {
+    int n = workers_;
+    if (n <= 1 || work.size() < 64) {
+        for (Session* s : work) (this->*fn)(*s, now);
+        return;
+    }
+    std::atomic<size_t> next{0};
+    auto run = [&](int worker) {
+        t_worker = worker;
+        for (;;) {
+            size_t i = next.fetch_add(32);
+            if (i >= work.size()) break;
+            for (size_t k = i; k < std::min(work.size(), i + 32); ++k) (this->*fn)(*work[k], now);
+        }
+    };
+    std::vector<std::thread> pool;
+    for (int i = 1; i < n; ++i) pool.emplace_back(run, i);
+    run(0);
+    for (auto& t : pool) t.join();
+}
+
+void Server::flush_all(uint32_t now) {
+    std::vector<Session*> work;
+    for (auto& [cid, sp] : sessions_)
+        if (!sp->dead && (sp->online || sp->redirected)) work.push_back(sp.get());
+    parallel(work, &Server::flush_one, now);
 }
 
 void Server::tick(uint32_t now) {
@@ -1088,8 +1144,10 @@ void Server::tick(uint32_t now) {
         it = now - it->second.at > 1500 ? ghosts_.erase(it) : std::next(it);
 
     rebuild_grid();
+    std::vector<Session*> work;
     for (auto& [cid, sp] : sessions_)
-        if (sp->online && !sp->redirected) interest(*sp, now);
+        if (sp->online && !sp->redirected && !sp->dead) work.push_back(sp.get());
+    parallel(work, &Server::interest, now);
     runners_tick(now);
     if (cfg_.shard_count > 1) link_tick(now);
     flush_all(now);

@@ -157,7 +157,7 @@ bool get_team_fields(Reader& r, std::vector<TeamField>& out) {
         f.offset = r.u16();
         f.mode = r.u8();
         size_t len = r.u8();
-        if (len == 0 || len > kMaxTeamFieldBytes || f.mode > kFieldMax) return false;
+        if (len == 0 || len > kMaxTeamFieldBytes || f.mode > kFieldFill) return false;
         f.value = std::string(r.view(len));
         out.push_back(std::move(f));
     }

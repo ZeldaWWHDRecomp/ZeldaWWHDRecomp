@@ -51,3 +51,7 @@ if(WWHD_ONLINE_FUZZ)
   target_compile_options(wwhd_online_fuzz PRIVATE -fsanitize=fuzzer)
   target_link_options(wwhd_online_fuzz PRIVATE -fsanitize=fuzzer)
 endif()
+
+# headless load-test clients (no game)
+add_executable(wwhd-online-bots bots/bots.cpp)
+target_link_libraries(wwhd-online-bots PRIVATE wwhd_online_proto)

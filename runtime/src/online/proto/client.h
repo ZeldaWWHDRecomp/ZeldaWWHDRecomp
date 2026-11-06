@@ -158,7 +158,7 @@ private:
     Channel chan_;
     bool pose_pending_ = false;
     Bytes pose_;
-    std::vector<ClientEvent> events_;
+    std::vector<ClientEvent> events_, out_;
     std::vector<Bytes> outq_;
     ClientStats stats_;
 };

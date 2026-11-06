@@ -2,6 +2,7 @@
 // A small non-blocking UDP socket (POSIX and Winsock), IPv4 and IPv6.
 #pragma once
 #include <cstddef>
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -30,7 +31,7 @@ public:
     UdpSocket& operator=(const UdpSocket&) = delete;
 
     // bind to host:port (port 0: any); host "" binds to 127.0.0.1
-    bool open(const std::string& host, uint16_t port, std::string& why);
+    bool open(const std::string& host, uint16_t port, std::string& why, bool reuse_port = false);
     void close();
     bool is_open() const;
     uint16_t local_port() const;
@@ -42,7 +43,7 @@ public:
     bool wait(int timeout_ms);
     void set_buffers(int bytes);
 
-    uint64_t send_errors = 0;
+    std::atomic<uint64_t> send_errors{0};  // send_to may be called from several threads
 
 private:
 #ifdef _WIN32

@@ -167,11 +167,12 @@ struct Party {
 };
 
 struct Metrics {
-    uint64_t bytes_out = 0, bytes_in = 0, packets_out = 0, packets_in = 0;
+    std::atomic<uint64_t> bytes_out{0}, packets_out{0};  // also counted by the tick's worker threads
+    uint64_t bytes_in = 0, packets_in = 0;
     uint64_t handshakes = 0, refused = 0, kicked = 0, dropped_rate = 0, dropped_bad = 0, implausible = 0;
     uint64_t ticks = 0;
     std::vector<uint32_t> tick_us;  // since the last report
-    uint64_t pose_entries_near = 0, pose_entries_mid = 0, pose_entries_far = 0, markers = 0;
+    std::atomic<uint64_t> pose_entries_near{0}, pose_entries_mid{0}, pose_entries_far{0}, markers{0};
     uint64_t handovers_out = 0, handovers_in = 0, ghosts = 0;
 };
 
@@ -240,6 +241,12 @@ private:
     void notice(Session& s, uint8_t kind, uint16_t seconds, const std::string& text);
     void kick(Session& s, uint8_t kind, const std::string& text);
     bool sees(const Session& viewer, uint64_t other_key) const;
+    bool sees(const Session& viewer, const Session& other) const {
+        return (viewer.blocks.empty() || !viewer.blocks.count(other.key_hash)) &&
+               (other.blocks.empty() || !other.blocks.count(viewer.key_hash));
+    }
+    void parallel(const std::vector<Session*>& work, void (Server::*fn)(Session&, uint32_t), uint32_t now);
+    void flush_one(Session& s, uint32_t now);
 
     // tick
     void tick(uint32_t now);
@@ -294,6 +301,9 @@ private:
     uint8_t cookie_key_[32]{};
     uint8_t ip_salt_[32]{};
     proto::UdpSocket sock_;
+    std::vector<std::unique_ptr<proto::UdpSocket>> send_socks_;  // more sockets on the same port, one per worker
+    int workers_ = 1;
+    proto::UdpSocket& out_sock();
     std::atomic<bool> stop_{false};
     std::thread thread_;
 

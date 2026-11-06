@@ -115,7 +115,9 @@ void Client::step_pow(uint32_t now) {
 }
 
 const std::vector<ClientEvent>& Client::poll(uint32_t now) {
-    events_.clear();
+    // what on_datagram() produced since the last poll comes first
+    out_.clear();
+    out_.swap(events_);
     if (sock_ == &own_) {
         uint8_t buf[2048];
         Address from;
@@ -172,7 +174,9 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
             if (chan_.broken()) lost(now, "protocol error");
         }
     }
-    return events_;
+    for (auto& e : events_) out_.push_back(std::move(e));
+    events_.clear();
+    return out_;
 }
 
 void Client::on_datagram(const uint8_t* d, size_t n, uint32_t now) {

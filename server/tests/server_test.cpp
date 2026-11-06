@@ -260,8 +260,10 @@ static void test_party() {
     CHECK(run(&s, {a.get(), b.get(), c.get()}, 5000, [&] { return a->saw(ClientEvent::kApp); }));
     if (auto* e = a->last(ClientEvent::kApp)) CHECK(e->app_type == 23 && e->id == b->c.my_id() && e->body.size() == 4);
     // team progress: union merge, forwarded live
-    std::vector<TeamField> f1 = {{0x100, kFieldBits, std::string("\x01\x00", 2)}, {0x200, kFieldMax, std::string("\x00\x05", 2)}};
-    std::vector<TeamField> f2 = {{0x100, kFieldBits, std::string("\x00\x80", 2)}, {0x200, kFieldMax, std::string("\x00\x03", 2)}};
+    std::vector<TeamField> f1 = {{0x100, kFieldBits, std::string("\x01\x00", 2)}, {0x200, kFieldMax, std::string("\x00\x05", 2)},
+                                 {0x300, kFieldFill, std::string("\x21\xFF", 2)}};
+    std::vector<TeamField> f2 = {{0x100, kFieldBits, std::string("\x00\x80", 2)}, {0x200, kFieldMax, std::string("\x00\x03", 2)},
+                                 {0x300, kFieldFill, std::string("\x30\x31", 2)}};
     a->c.send_progress(f1);
     run(&s, {a.get(), b.get(), c.get()}, 300);
     b->c.send_progress(f2);
@@ -292,7 +294,9 @@ static void test_party() {
     c->c.ask_team_state();
     CHECK(run(&s, {c.get()}, 3000, [&] {
         auto* e = c->last(ClientEvent::kTeamState);
-        return e && e->fields.size() == 2;
+        // union: bits OR'ed, the counter's maximum, a filled slot kept and an empty one filled
+        return e && e->fields.size() == 3 && e->fields[0].value == std::string("\x01\x80", 2) &&
+               e->fields[1].value == std::string("\x00\x05", 2) && e->fields[2].value == std::string("\x21\x31", 2);
     }));
     std::printf("party/runner/team state: ok\n");
 }
