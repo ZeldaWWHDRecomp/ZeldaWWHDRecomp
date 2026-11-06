@@ -26,17 +26,21 @@ struct Settings {
     int character = 0;                 // who this game plays as (coop_pose.h's own_character)
     bool voice = false;                // proximity voice chat (coop_voice.h); off until chosen, as it asks for the microphone
     bool on = false;                   // online switched on by the player (mod.coop.enabled; WWHD_COOP in tests)
+    bool server = false;               // through a server (online, the party there) instead of directly to a host
+    std::string server_addr = "127.0.0.1";
+    int server_port = 7777;
     int strangers = 0;                 // how players outside the party look (presence): 0 like any Link, 1 see-through
     bool stay_together = false;        // the fork's way (a party option): the guest plays in the host's world, its saves
                                        // off, asked before going where the host isn't, back to the title when the host goes
     bool notice_ok = false;            // the privacy notice accepted (its version, online.notice_accepted)
 };
 // the privacy notice's version: a changed notice is shown and accepted again
-constexpr const char* kNoticeVersion = "1";
+constexpr const char* kNoticeVersion = "2";
 constexpr const char* kNotice =
-    "Online co-op connects your game directly to other players' games. They see your IP address (and you theirs), "
-    "which can reveal your approximate location. Only play with people you trust. Nothing is sent until you switch "
-    "online co-op on, and it stops when you switch it off.";
+    "Online co-op connects your game to other players' games, directly or through a server. Played directly, the "
+    "other players see your IP address (and you theirs); through a server, its operator sees it. An IP address can "
+    "reveal your approximate location. Only play with people you trust, on servers you trust. Nothing is sent until "
+    "you switch online co-op on, and it stops when you switch it off.";
 Settings settings();
 void set_settings(const Settings& s);
 void save_settings(const Settings& s);  // the same, and kept (the Settings window, the pause menu's page: main thread)  // the menu (any thread); a running session restarts with them

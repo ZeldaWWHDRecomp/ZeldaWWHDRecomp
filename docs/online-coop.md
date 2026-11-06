@@ -8,9 +8,9 @@ The online co-op code comes from [Galvakron's ZeldaWWHDRecompMP](https://github.
 
 ## Before you start: privacy
 
-Online co-op connects your game directly to the other players' games. **They see your IP address,
-and you see theirs.** An IP address can reveal your approximate location. Only play with people you
-trust.
+Online co-op connects your game to the other players' games, directly or through a server. **Played
+directly, they see your IP address, and you see theirs; through a server, its operator sees it.** An IP
+address can reveal your approximate location. Only play with people you trust, on servers you trust.
 
 Nothing is sent over the network until you switch online co-op on and accept this notice. It stops
 when you switch it off.
@@ -44,6 +44,11 @@ pause menu.
 
 The host's UDP port (7777 unless you change it) must be reachable from the other players. On a VPN such as
 Tailscale nothing else is needed. The status line shows who is connected; **Go to** takes you to a friend.
+
+**Through a server** (builds made with `WWHD_ONLINE=ON`): choose **Through a server** and enter the address
+of a `wwhd-online-server` you or a friend runs. Everyone on the server sees the others nearby; to play
+together, enter a friend's code under **Invite** (your own code is shown there) and they join from the
+invitation. If the party's leader leaves, another member takes over.
 
 **Stay together** (off by default) plays the fork's way: you play in the host's world, your own saves are off,
 going somewhere the host isn't asks the host first, and you go back to the title screen when the host leaves.

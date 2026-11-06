@@ -17,6 +17,7 @@
 #include "../overlay/hostui.h"
 #include "../overlay/text_entry.h"
 #include "../input.h"
+#include "../savestate.h"
 
 namespace mods::coop::settings_ui {
 namespace {
@@ -70,13 +71,45 @@ void draw_tab() {
     ImGui::EndDisabled();
     if (!s.notice_ok) ImGui::TextDisabled("Accept the privacy notice first.");
     ImGui::Spacing();
-    if (ImGui::RadioButton("Host on this computer", s.role == 0)) hostui::post([] { change([](sync::Settings& x) { x.role = 0; }); });
-    ImGui::SameLine();
-    if (ImGui::RadioButton("Join a friend", s.role == 1)) hostui::post([] { change([](sync::Settings& x) { x.role = 1; }); });
     static char addr[128], name[32];
     static int port = 0;
     static bool filled = false;
     if (!filled) snprintf(addr, sizeof addr, "%s", s.addr.c_str()), snprintf(name, sizeof name, "%s", s.name.c_str()), port = s.port, filled = true;
+    if (net::server_built()) {
+        if (ImGui::RadioButton("Directly", !s.server)) hostui::post([] { change([](sync::Settings& x) { x.server = false; }); });
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Through a server", s.server)) hostui::post([] { change([](sync::Settings& x) { x.server = true; }); });
+    }
+    if (s.server && net::server_built()) {
+        static char srv[128];
+        static int sport = 0;
+        static bool sfilled = false;
+        if (!sfilled) snprintf(srv, sizeof srv, "%s", s.server_addr.c_str()), sport = s.server_port, sfilled = true;
+        ImGui::InputText("Server address", srv, sizeof srv);
+        if (ImGui::IsItemDeactivatedAfterEdit()) hostui::post([a = std::string(srv)] { change([&](sync::Settings& x) { if (!a.empty()) x.server_addr = a; }); });
+        ImGui::InputInt("Server port (UDP)", &sport, 0);
+        if (ImGui::IsItemDeactivatedAfterEdit()) hostui::post([p = std::clamp(sport, 1, 65535)] { change([&](sync::Settings& x) { x.server_port = p; }); });
+        ImGui::TextDisabled("A server you or a friend runs (wwhd-online-server). Everyone on it sees each other nearby;");
+        ImGui::TextDisabled("your party shares enemies and progress.");
+        const std::string code = net::friend_code();
+        ImGui::Text("Your friend code: %s", code.empty() ? "(when online)" : code.c_str());
+        static char invite[32];
+        ImGui::InputText("Friend's code", invite, sizeof invite);
+        ImGui::SameLine();
+        if (ImGui::Button("Invite")) hostui::post([c = std::string(invite)] { std::string why; if (!net::invite(c, why)) ss::notice("Can't invite: " + why); });
+        for (const auto& [party, from] : net::invites()) {
+            ImGui::Text("%s invites you to their party", from.c_str());
+            ImGui::SameLine();
+            if (ImGui::Button(("Join##" + std::to_string(party)).c_str())) hostui::post([p = party] { net::answer(p, true); });
+            ImGui::SameLine();
+            if (ImGui::Button(("No##" + std::to_string(party)).c_str())) hostui::post([p = party] { net::answer(p, false); });
+        }
+        if (net::via_server() && ImGui::Button("Leave the party")) hostui::post([] { net::leave_party(); });
+        ImGui::Separator();
+    } else {
+    if (ImGui::RadioButton("Host on this computer", s.role == 0)) hostui::post([] { change([](sync::Settings& x) { x.role = 0; }); });
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Join a friend", s.role == 1)) hostui::post([] { change([](sync::Settings& x) { x.role = 1; }); });
     if (s.role == 1) {
         ImGui::InputText("Host's address", addr, sizeof addr);
         if (ImGui::IsItemDeactivatedAfterEdit()) hostui::post([a = std::string(addr)] { set_addr(a); });
@@ -85,6 +118,7 @@ void draw_tab() {
     ImGui::InputInt("Port (UDP)", &port, 0);
     if (ImGui::IsItemDeactivatedAfterEdit()) hostui::post([p = std::clamp(port, 1, 65535)] { change([&](sync::Settings& x) { x.port = p; }); });
     if (s.role == 0) ImGui::TextDisabled("Your friends need to reach this port (on a VPN nothing else is needed).");
+    }
     ImGui::InputText("Your name", name, sizeof name);
     if (ImGui::IsItemDeactivatedAfterEdit()) hostui::post([n = std::string(name)] { if (!n.empty()) set_name(n); });
     ImGui::TextUnformatted("Tunic");
@@ -138,6 +172,42 @@ void register_items() {
         it.enabled = [] { return sync::settings().notice_ok; };
         game_settings::add(std::move(it));
     }
+    if (net::server_built()) {
+        Item it;
+        it.id = "online.connection", it.tab = "online", it.label = "Connection", it.kind = Kind::Choice;
+        it.choices = {"Directly", "Through a server"};
+        it.help = "Directly: one of you hosts. Through a server: a server you or a friend runs.";
+        it.get = [] { return sync::settings().server ? 1.0f : 0.0f; };
+        it.set = [](float v) { change([&](sync::Settings& x) { x.server = v >= 0.5f; }); };
+        game_settings::add(std::move(it));
+    }
+    if (net::server_built()) {
+        Item it;
+        it.id = "online.server", it.tab = "online", it.label = "Server address", it.kind = Kind::Action;
+        it.help = "The server's address, e.g. its IP address or name.";
+        it.text = [] { return sync::settings().server_addr; };
+        it.set = [](float) { ask_text(sync::settings().server_addr, 120, [](const std::string& a) { change([&](sync::Settings& x) { x.server_addr = a; }); }); };
+        it.enabled = [] { return sync::settings().server; };
+        game_settings::add(std::move(it));
+    }
+    if (net::server_built()) {
+        Item it;
+        it.id = "online.invite", it.tab = "online", it.label = "Invite a friend", it.kind = Kind::Action;
+        it.help = "Enter your friend's code. Your own code is shown here; tell it to friends so they can invite you.";
+        it.text = [] { const std::string c = net::friend_code(); return c.empty() ? std::string("-") : c; };
+        it.set = [](float) { ask_text("", 16, [](const std::string& c) { std::string why; if (!net::invite(c, why)) ss::notice("Can't invite: " + why); }); };
+        it.enabled = [] { return net::via_server(); };
+        game_settings::add(std::move(it));
+    }
+    if (net::server_built()) {
+        Item it;
+        it.id = "online.invitation", it.tab = "online", it.label = "Join an invitation", it.kind = Kind::Action;
+        it.help = "A friend invited you: A joins their party.";
+        it.text = [] { const auto v = net::invites(); return v.empty() ? std::string("-") : v.front().second; };
+        it.set = [](float) { const auto v = net::invites(); if (!v.empty()) net::answer(v.front().first, true); };
+        it.enabled = [] { return !net::invites().empty(); };
+        game_settings::add(std::move(it));
+    }
     {
         Item it;
         it.id = "online.role", it.tab = "online", it.label = "Play as", it.kind = Kind::Choice;
@@ -145,6 +215,7 @@ void register_items() {
         it.help = "The host's friends join it. Joining needs the host's address.";
         it.get = [] { return (float)sync::settings().role; };
         it.set = [](float v) { change([&](sync::Settings& x) { x.role = v >= 0.5f; }); };
+        it.enabled = [] { return !sync::settings().server; };
         game_settings::add(std::move(it));
     }
     {
@@ -153,7 +224,7 @@ void register_items() {
         it.help = "An IP address or a name, e.g. the host's VPN name.";
         it.text = [] { return sync::settings().addr; };
         it.set = [](float) { ask_text(sync::settings().addr, 120, set_addr); };
-        it.enabled = [] { return sync::settings().role == 1; };
+        it.enabled = [] { return sync::settings().role == 1 && !sync::settings().server; };
         game_settings::add(std::move(it));
     }
     {

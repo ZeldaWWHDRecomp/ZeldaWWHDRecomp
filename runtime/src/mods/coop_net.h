@@ -8,6 +8,8 @@
 #pragma once
 #include <cstdint>
 #include <string>
+#include <utility>
+#include <vector>
 
 struct Cpu;
 
@@ -83,5 +85,19 @@ int ping_ms(int id);
 const std::string& name(int id);
 int tunic(int id);
 bool connected(int id);
+// a player who shares the game with this one (the direct transport: everyone; through a server: the party, not the
+// strangers shown nearby, whose puppets alone come here)
+bool member(int id);
+
+// ---- through a server (GAPS C7; built with WWHD_ONLINE) ----
+bool server_built();                    // this build has the server transport
+// start through a server instead of the direct transport (any role: the party decides who leads)
+bool start_server(const std::string& addr, int port, const std::string& my_name, int my_tunic, std::string& why);
+bool via_server();                      // the session runs through a server
+std::string friend_code();              // this player's, once online through a server ("" else)
+bool invite(const std::string& code, std::string& why);  // into this game's party (made if none)
+std::vector<std::pair<uint32_t, std::string>> invites();  // invitations waiting: party, from whom
+void answer(uint32_t party, bool yes);
+void leave_party();
 
 }  // namespace mods::coop::net

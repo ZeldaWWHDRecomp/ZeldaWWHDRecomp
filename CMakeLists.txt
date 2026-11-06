@@ -326,6 +326,10 @@ if(UNIX AND NOT APPLE AND NOT ANDROID)
   target_link_libraries(wwhd PRIVATE ${CMAKE_DL_LIBS})
 endif()
 target_link_libraries(wwhd PRIVATE gamecode cemu_latte imgui ZLIB::ZLIB Threads::Threads)
+if(WWHD_ONLINE)  # online co-op through a server (runtime/src/mods/coop_net_server.cpp)
+  target_link_libraries(wwhd PRIVATE wwhd_online_proto)
+  target_compile_definitions(wwhd PRIVATE WWHD_ONLINE=1)
+endif()
 # the macOS AppKit host's optional generic-HID reader (WWHD_HAS_IOKIT, declared with the other
 # options): the mapping is platform/hid_gamepad.cpp and gfx/input.mm is the reader.
 if(APPLE AND NOT WWHD_SDL_HOST AND WWHD_HAS_IOKIT)

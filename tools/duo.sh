@@ -10,7 +10,9 @@
 # guest starts GUEST_AFTER seconds (5) after the host. Each game's log (capped at 20 MB) and co-op trace
 # (WWHD_MODS_TRACE) are host.log, host.trace, guest.log, guest.trace; WWHD_DUMP_FRAMES (DUO_FRAMES) writes pictures
 # into host/ and guest/. A game over DUO_RSS_MB (6000) of memory is stopped. Only this script's own games are
-# stopped, never another wwhd. DUO_KILL=host@S or guest@S stops that game S seconds after the guest started (a player
+# stopped, never another wwhd. DUO_SERVER=1: through a local wwhd-online-server (build/rel/server, WWHD_ONLINE=ON)
+# on DUO_PORT, each game with its own identity; the host invites the guest by the friend code the guest writes, and the
+# guest accepts (test aids); DUO_PARTY=0 leaves them strangers (presence only). DUO_KILL=host@S or guest@S stops that game S seconds after the guest started (a player
 # leaving).
 set -u
 root=${0:A:h:h}
@@ -37,9 +39,22 @@ run() {  # run ROLE COOP-VALUE ENV...
   pids+=($!)
 }
 trap 'for p in $pids; do pkill -9 -P $p 2>/dev/null; kill -9 $p 2>/dev/null; done' EXIT INT TERM HUP
-run host "host:$port" ${=HOST_ENV:-}
-sleep ${GUEST_AFTER:-5}
-run guest "join:127.0.0.1:$port" ${=GUEST_ENV:-}
+if [ -n "${DUO_SERVER:-}" ]; then
+  mkdir -p "$out/server"
+  printf '[server]\nname = "duo"\n[network]\nbind = "127.0.0.1"\nport = %s\n[files]\nkey = "%s/server/server.key"\nadmin_socket = "%s/server/admin.sock"\n[limits]\npow_bits = 8\nper_ip = 8\nbytes_per_s = 32768\n' \
+    "$port" "$out" "$out" > "$out/server/server.toml"
+  (exec "$root/build/rel/server/wwhd-online-server" --config "$out/server/server.toml" 2>&1 | head -c 5000000 > "$out/server.log") &
+  spid=$!
+  sleep 1
+  invite=; [ "${DUO_PARTY:-1}" = 1 ] && invite="WWHD_ONLINE_INVITE=@$out/guest.code"
+  run host "" WWHD_ONLINE_SERVER=127.0.0.1:$port WWHD_ONLINE_IDENTITY=$out/host/id.key $invite ${=HOST_ENV:-}
+  sleep ${GUEST_AFTER:-5}
+  run guest "" WWHD_ONLINE_SERVER=127.0.0.1:$port WWHD_ONLINE_IDENTITY=$out/guest/id.key WWHD_ONLINE_CODE_FILE=$out/guest.code WWHD_ONLINE_ACCEPT=1 ${=GUEST_ENV:-}
+else
+  run host "host:$port" ${=HOST_ENV:-}
+  sleep ${GUEST_AFTER:-5}
+  run guest "join:127.0.0.1:$port" ${=GUEST_ENV:-}
+fi
 limit=${DUO_RSS_MB:-6000}
 for i in $(seq 1 $secs); do
   alive=0
@@ -58,6 +73,7 @@ for i in $(seq 1 $secs); do
   sleep 1
 done
 for p in $pids; do for g in $(pgrep -P $p -x wwhd 2>/dev/null); do kill -9 $g; done; done
+[ -n "${spid:-}" ] && { pkill -P $spid wwhd-online-server 2>/dev/null; kill $spid 2>/dev/null; }
 wait 2>/dev/null
 rm -rf "$out/host/save" "$out/guest/save"
 echo "$name: host $(grep -c . "$out/host.trace" 2>/dev/null) trace lines, guest $(grep -c . "$out/guest.trace" 2>/dev/null)"

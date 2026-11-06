@@ -10,6 +10,10 @@
 // A game the host does not know becomes a link only by a valid hello as its first message.
 #include "coop_net.h"
 
+#ifndef WWHD_ONLINE
+#define WWHD_ONLINE 0
+#endif
+
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
@@ -49,6 +53,32 @@ static void close_socket(socket_t s) { close(s); }
 #endif
 
 namespace mods::coop::net {
+#if WWHD_ONLINE
+namespace srv {  // coop_net_server.cpp
+bool active();
+bool start(const std::string& server, int port, const std::string& my_name, int my_tunic, std::string& why);
+void stop(const char* why);
+Role role();
+int my_id();
+const char* status();
+int ping_ms();
+const std::string& name(int id);
+int tunic(int id);
+bool connected(int id);
+bool member(int id);
+std::string friend_code();
+void send(int to, Msg type, const std::string& body);
+void put_state(uint8_t kind, const std::string& body);
+void poll(Handler& h);
+bool invite(const std::string& code, std::string& why);
+std::vector<std::pair<uint32_t, std::string>> invites();
+void answer(uint32_t party, bool yes);
+void leave_party();
+}  // namespace srv
+#define VIA_SERVER(call) if (srv::active()) return srv::call
+#else
+#define VIA_SERVER(call)
+#endif
 namespace {
 
 constexpr uint32_t kMagic = 0x4F435757;  // "WWCO"
@@ -265,13 +295,14 @@ uint64_t game_hash() {
     return ss::game_data_id();
 }
 
-Role role() { return g_role; }
-int my_id() { return g_me; }
-const char* status() { return g_status.c_str(); }
-int ping_ms(int id) { return g_link[g_role == Role::kGuest ? 0 : id].ping; }
-const std::string& name(int id) { return g_player[id].name; }
-int tunic(int id) { return g_player[id].tunic; }
-bool connected(int id) { return g_player[id].on; }
+Role role() { VIA_SERVER(role()); return g_role; }
+int my_id() { VIA_SERVER(my_id()); return g_me; }
+const char* status() { VIA_SERVER(status()); return g_status.c_str(); }
+int ping_ms(int id) { VIA_SERVER(ping_ms()); return g_link[g_role == Role::kGuest ? 0 : id].ping; }
+const std::string& name(int id) { VIA_SERVER(name(id)); return g_player[id].name; }
+int tunic(int id) { VIA_SERVER(tunic(id)); return g_player[id].tunic; }
+bool connected(int id) { VIA_SERVER(connected(id)); return g_player[id].on; }
+bool member(int id) { VIA_SERVER(member(id)); return id >= 0 && id < kMaxPlayers && g_player[id].on; }
 
 bool start(Role r, const std::string& addr, int port, const std::string& my_name, int my_tunic, std::string& why) {
     stop(nullptr);
@@ -323,6 +354,9 @@ bool start(Role r, const std::string& addr, int port, const std::string& my_name
 }
 
 void stop(const char* why) {
+#if WWHD_ONLINE
+    if (srv::active()) srv::stop(why);
+#endif
     if (g_sock != kNoSocket) {
         for (Link& l : g_link)
             if (l.on) for (int k = 0; k < 3; k++) raw(l.addr, head(l, kControl, (uint8_t)g_me, 0) + std::string("\0\0\0\0", 4) + (char)kBye);
@@ -336,12 +370,14 @@ void stop(const char* why) {
 }
 
 void send(int to, Msg type, const std::string& body) {
+    VIA_SERVER(send(to, type, body));
     for (int i = 0; i < kMaxPlayers; i++)
         if (g_link[i].on && (to < 0 || i == (g_role == Role::kGuest ? 0 : to))) queue(g_link[i], type, (uint8_t)g_me, body);
 }
 
-void put_state(uint8_t kind, const std::string& body) { g_states[kind] = {now_ms(), body}; }
+void put_state(uint8_t kind, const std::string& body) { VIA_SERVER(put_state(kind, body)); g_states[kind] = {now_ms(), body}; }
 void add_state(uint8_t kind, const std::string& more) {
+    VIA_SERVER(put_state(kind, more));
     auto& s = g_states[kind];
     if (s.second.empty()) s.first = now_ms();
     if (s.second.size() + more.size() <= 1000) s.second += more;  // (a late tick: the newest dropped, under the packet size)
@@ -381,6 +417,7 @@ bool migrate(Handler& h) {
 }
 
 void poll(Handler& h) {
+    VIA_SERVER(poll(h));
     if (g_sock == kNoSocket) return;
     const uint32_t now = now_ms();
     uint8_t buf[8192];
@@ -449,4 +486,38 @@ void poll(Handler& h) {
                    (players == 1 ? "" : "s") + (worst >= 0 ? ", ping " + std::to_string(worst) + " ms" : "");
 }
 
+}  // namespace mods::coop::net
+
+namespace mods::coop::net {
+bool server_built() { return WWHD_ONLINE != 0; }
+bool via_server() {
+#if WWHD_ONLINE
+    return srv::active();
+#else
+    return false;
+#endif
+}
+bool start_server(const std::string& addr, int port, const std::string& my_name, int my_tunic, std::string& why) {
+    stop(nullptr);
+#if WWHD_ONLINE
+    return srv::start(addr, port, my_name, my_tunic, why);
+#else
+    (void)addr, (void)port, (void)my_name, (void)my_tunic;
+    why = "this build has no server connection";
+    return false;
+#endif
+}
+#if WWHD_ONLINE
+std::string friend_code() { return srv::friend_code(); }
+bool invite(const std::string& code, std::string& why) { return srv::invite(code, why); }
+std::vector<std::pair<uint32_t, std::string>> invites() { return srv::invites(); }
+void answer(uint32_t party, bool yes) { srv::answer(party, yes); }
+void leave_party() { srv::leave_party(); }
+#else
+std::string friend_code() { return ""; }
+bool invite(const std::string&, std::string& why) { why = "this build has no server connection"; return false; }
+std::vector<std::pair<uint32_t, std::string>> invites() { return {}; }
+void answer(uint32_t, bool) {}
+void leave_party() {}
+#endif
 }  // namespace mods::coop::net

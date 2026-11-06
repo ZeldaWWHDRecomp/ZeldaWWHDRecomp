@@ -67,7 +67,8 @@ struct Clock {  // another game's clock: ours less theirs
         const int32_t gap = (int32_t)(ours - theirs);
         offset = !known || gap < offset ? gap : offset + 1, known = true;
     }
-    uint32_t shown(uint32_t ours) const { return ours - offset - kBehind; }  // their time we show now
+    // their time we show now (through a server, poses come at 15 Hz: 100 ms behind, as the design's buffer)
+    uint32_t shown(uint32_t ours) const { return ours - offset - (net::via_server() ? 100 : kBehind); }
 };
 struct Remote {
     Clock clock;
@@ -450,6 +451,16 @@ Settings settings() {
         if (hostui::get("mod.coop.enabled", v)) g_set.on = atoi(v.c_str()) != 0;
         if (hostui::get("mod.coop.stay_together", v)) g_set.stay_together = atoi(v.c_str()) != 0;
         if (hostui::get("online.strangers", v)) g_set.strangers = atoi(v.c_str()) == 1;
+        if (hostui::get("online.server", v)) g_set.server = atoi(v.c_str()) != 0;
+        if (hostui::get("online.server_addr", v) && !v.empty()) g_set.server_addr = v;
+        if (hostui::get("online.server_port", v) && atoi(v.c_str()) > 0) g_set.server_port = atoi(v.c_str());
+        // (tests: WWHD_ONLINE_SERVER=<address>[:port] goes through that server)
+        if (const char* e = getenv("WWHD_ONLINE_SERVER")) {
+            std::string a = e;
+            g_set.server = true, g_set.on = true;
+            if (const size_t colon = a.rfind(':'); colon != std::string::npos) g_set.server_port = atoi(a.c_str() + colon + 1), a.resize(colon);
+            g_set.server_addr = a;
+        }
         if (hostui::get("online.notice_accepted", v)) g_set.notice_ok = v == kNoticeVersion;
         if (hostui::get("mod.coop.character", v)) g_set.character = atoi(v.c_str()) & 3;
         // (tests: WWHD_COOP=host[:port] or join:<address>[:port], WWHD_COOP_NAME, WWHD_COOP_TUNIC 0-3)
@@ -477,7 +488,8 @@ void set_settings(const Settings& s) {
     settings();
     std::lock_guard<std::mutex> lk(g_mu);
     // (a session restarts only for what it was started with: not the character or voice chat)
-    if (s.role != g_set.role || s.addr != g_set.addr || s.port != g_set.port || s.name != g_set.name || s.tunic != g_set.tunic)
+    if (s.role != g_set.role || s.addr != g_set.addr || s.port != g_set.port || s.name != g_set.name || s.tunic != g_set.tunic ||
+        s.server != g_set.server || s.server_addr != g_set.server_addr || s.server_port != g_set.server_port)
         g_set_gen++;
     g_set = s;
 }
@@ -491,6 +503,8 @@ void save_settings(const Settings& s) {
     hostui::set("mod.coop.name", s.name), hostui::set("mod.coop.tunic", std::to_string(s.tunic));
     hostui::set("mod.coop.stay_together", s.stay_together ? "1" : "0");
     hostui::set("online.strangers", std::to_string(s.strangers));
+    hostui::set("online.server", s.server ? "1" : "0");
+    hostui::set("online.server_addr", s.server_addr), hostui::set("online.server_port", std::to_string(s.server_port));
 }
 
 const char* status() { return g_status.c_str(); }
@@ -498,7 +512,7 @@ bool host() { return net::role() == net::Role::kHost; }
 bool guest() { return net::role() == net::Role::kGuest && net::my_id() != 0; }
 
 bool place(int id, float out[3]) {
-    if (id < 0 || id >= net::kMaxPlayers || !g_remote[id].shown) return false;
+    if (id < 0 || id >= net::kMaxPlayers || !g_remote[id].shown || !net::member(id)) return false;  // (strangers: puppets only)
     memcpy(out, g_remote[id].at, 12);
     return true;
 }
@@ -507,7 +521,7 @@ void nearest(const float at[3], uint32_t link, int& target, float out[3]) {
     const int me = net::role() == net::Role::kOff ? 0 : net::my_id();
     auto where = [&](int id, float p[3]) {
         if (id == me) return p[0] = f32(link + kPos), p[1] = f32(link + kPos + 4), p[2] = f32(link + kPos + 8), true;
-        return id >= 0 && id < net::kMaxPlayers && g_remote[id].shown && (memcpy(p, g_remote[id].at, 12), true);
+        return id >= 0 && id < net::kMaxPlayers && g_remote[id].shown && net::member(id) && (memcpy(p, g_remote[id].at, 12), true);
     };
     auto dist = [&](const float p[3]) { return std::hypot(p[0] - at[0], p[2] - at[2]); };
     float p[3], best[3];
@@ -623,7 +637,8 @@ void poll(Cpu* c, bool on) {
     if (on && net::role() == net::Role::kOff && failed != want_gen) {
         gen = want_gen;
         std::string why;
-        if (!net::start(s.role ? net::Role::kGuest : net::Role::kHost, s.addr, s.port, s.name, s.tunic, why)) {
+        if (!(s.server ? net::start_server(s.server_addr, s.server_port, s.name, s.tunic, why)
+                       : net::start(s.role ? net::Role::kGuest : net::Role::kHost, s.addr, s.port, s.name, s.tunic, why))) {
             failed = want_gen;
             g_status = "Not started: " + why;
             ss::notice("Online co-op: " + why);
@@ -682,7 +697,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         const uint32_t now = net::now_ms();
         for (int id = 0; id < net::kMaxPlayers; id++) {
             const Remote& r = g_remote[id];
-            const Pose* p = id && net::connected(id) && !r.poses.empty() && now - r.heard < (uint32_t)kStale ? &r.poses.back().second : nullptr;
+            const Pose* p = id && net::member(id) && !r.poses.empty() && now - r.heard < (uint32_t)kStale ? &r.poses.back().second : nullptr;
             Here& h = here[id];
             if (id && !p) { h.in = false; continue; }
             char st[8];
@@ -751,7 +766,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
             const std::string here = stage_now();
             const int8_t my_room = (int8_t)ld8(link + kRoom);
             for (int id = 1; id < net::kMaxPlayers; id++) {
-                if (!net::connected(id) || std::find(g_send_join.begin(), g_send_join.end(), id) != g_send_join.end()) continue;
+                if (!net::member(id) || std::find(g_send_join.begin(), g_send_join.end(), id) != g_send_join.end()) continue;
                 const Remote& r = g_remote[id];
                 const Pose* p = r.poses.empty() ? nullptr : &r.poses.back().second;
                 const bool near = p && !strncmp(p->stage, here.c_str(), 8) && p->room == my_room && !(p->flags & 1) &&
@@ -876,7 +891,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         if (host() && down_link && link != down_link && life) {
             down_link = 0;
             for (int id = 1; id < net::kMaxPlayers; id++)
-                if (net::connected(id) && std::find(g_send_join.begin(), g_send_join.end(), id) == g_send_join.end())
+                if (net::member(id) && std::find(g_send_join.begin(), g_send_join.end(), id) == g_send_join.end())
                     g_send_join.push_back(id);
             mods::trace("coop: the host plays again after falling: every guest brought here");
         }
