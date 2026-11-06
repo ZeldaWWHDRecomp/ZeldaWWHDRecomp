@@ -53,7 +53,58 @@ struct Options {
     float sea_origin = -350000.0f;
     int square = 24;         // crowd / converge: the square everyone goes to
     int converge_s = 60;     // converge: everyone arrives within this long after the warm-up
+    std::string pose_file;   // replay the game's pose recorder file (WWHD_COOP_RECORD) instead of moving
+    float ring = 220.0f;     // pose file: bots stand on a ring of this radius around the recorded place
 };
+
+// the game's recorder file: back-to-back records, each u32 total size (little-endian), stage[8] at +4, room s8 at
+// +12, flags u8 at +13, position float[3] at +14, yaw s16 at +26 (the game's own pose record, sent unchanged)
+struct Rec {
+    Bytes raw;
+    Where where;
+    float x = 0, y = 0, z = 0;
+    int16_t yaw = 0;
+    uint8_t flags = 0;
+};
+
+bool load_records(const std::string& path, std::vector<Rec>& out, std::string& why) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) {
+        why = "cannot read " + path;
+        return false;
+    }
+    Bytes d;
+    uint8_t buf[65536];
+    size_t n;
+    while ((n = std::fread(buf, 1, sizeof buf, f)) > 0) d.insert(d.end(), buf, buf + n);
+    std::fclose(f);
+    size_t o = 0;
+    while (o + 4 <= d.size()) {
+        Reader r(d.data() + o, d.size() - o);
+        uint32_t total = r.u32();
+        if (total < 28 || total > kMaxPoseBlob || o + total > d.size()) {
+            why = path + ": a bad record at byte " + std::to_string(o);
+            return false;
+        }
+        Rec rec;
+        rec.raw.assign(d.begin() + long(o), d.begin() + long(o + total));
+        char st[9] = {};
+        std::memcpy(st, rec.raw.data() + 4, 8);
+        rec.where = Where::of(st, int8_t(rec.raw[12]));
+        rec.flags = rec.raw[13];
+        std::memcpy(&rec.x, rec.raw.data() + 14, 4);
+        std::memcpy(&rec.y, rec.raw.data() + 18, 4);
+        std::memcpy(&rec.z, rec.raw.data() + 22, 4);
+        std::memcpy(&rec.yaw, rec.raw.data() + 26, 2);
+        out.push_back(std::move(rec));
+        o += total;
+    }
+    if (out.empty()) {
+        why = path + ": no records";
+        return false;
+    }
+    return true;
+}
 
 struct Bot {
     std::unique_ptr<Client> c;
@@ -65,6 +116,9 @@ struct Bot {
     bool started = false, counted = false;
     int players_seen = 0, near = 0, mid = 0, far = 0;
     uint64_t poses = 0;
+    uint64_t step = 0;       // pose file: records sent so far
+    bool staged = false;
+    Where last_where;
     float tx = 0, tz = 0;    // converge: the target
     bool converging = false;
     // handovers and glitches
@@ -120,15 +174,27 @@ int main(int argc, char** argv) {
         else if (a == "--game-data") o.game_data = std::strtoull(next().c_str(), nullptr, 0);
         else if (a == "--square") o.square = std::atoi(next().c_str());
         else if (a == "--converge-s") o.converge_s = std::atoi(next().c_str());
+        else if (a == "--pose-file") o.pose_file = next();
+        else if (a == "--ring") o.ring = float(std::atof(next().c_str()));
         else {
             std::fprintf(stderr,
                          "usage: wwhd-online-bots [--host h] [--port p] [--count n] [--duration s] [--warmup s]\n"
                          "  [--scenario quiet|busy|town|mixed] [--pose-bytes n] [--pose-hz n] [--ramp n/s]\n"
-                         "  [--seed n] [--report file.json] [--max-rss-mb n] [--phones %%] [--busy-squares n]\n");
+                         "  [--seed n] [--report file.json] [--max-rss-mb n] [--phones %%] [--busy-squares n]\n"
+                         "  [--pose-file game.rec [--ring 220]]  (replay the game's pose recorder file)\n");
             return 2;
         }
     }
     o.pose_bytes = std::clamp(o.pose_bytes, 0, int(kMaxPoseBlob));
+    std::vector<Rec> recs;
+    if (!o.pose_file.empty()) {
+        std::string why;
+        if (!load_records(o.pose_file, recs, why)) {
+            std::fprintf(stderr, "bots: %s\n", why.c_str());
+            return 1;
+        }
+        std::fprintf(stderr, "bots: %zu pose records from %s\n", recs.size(), o.pose_file.c_str());
+    }
     UdpSocket sock;
     std::string why;
     if (!sock.open("127.0.0.1", 0, why) && !sock.open("0.0.0.0", 0, why)) {
@@ -257,7 +323,7 @@ int main(int argc, char** argv) {
             cfg.port = o.port;
             cfg.game_data = o.game_data;
             cfg.identity = crypto::Identity::generate();
-            cfg.name = "bot" + std::to_string(started);
+            cfg.name = recs.empty() ? "bot" + std::to_string(started) : "Bot " + std::to_string(started + 1);
             cfg.device = int(rng() % 100) < o.phone_percent ? kPhone : kBot;
             cfg.send_hz = o.pose_hz;
             cfg.tag = "bots";
@@ -378,9 +444,35 @@ int main(int argc, char** argv) {
                     b.reconnect_at = 0;
                 }
             }
-            if (b.c->state() != before) reidx = true;
+            if (b.c->state() != before) {
+                reidx = true;
+                b.staged = false;  // (re)connected: the stage is sent again
+            }
             if (warmed && b.c->ping_ms() >= 0 && (b.poses % 15) == 0) b.pings.push_back(b.c->ping_ms());
-            if (b.c->state() == ClientState::kOnline) {
+            if (b.c->state() == ClientState::kOnline && !recs.empty()) {
+                // replay the recording: bot k starts k*37 records later, on a ring around the recorded place
+                size_t k = size_t(&b - bots.data());
+                const Rec& rec = recs[(k * 37 + b.step++) % recs.size()];
+                float ang = 6.2831853f * float(k) / float(std::max(1, o.count));
+                float ox = std::cos(ang) * o.ring, oz = std::sin(ang) * o.ring;
+                if (!b.staged || !(rec.where == b.last_where)) {
+                    b.c->send_stage(rec.where);
+                    b.staged = true;
+                    b.last_where = rec.where;
+                }
+                PoseHeader h;
+                h.where = rec.where;
+                h.x = rec.x + ox;
+                h.y = rec.y;
+                h.z = rec.z + oz;
+                h.yaw = uint16_t(rec.yaw);
+                h.flags = rec.flags;
+                Bytes raw = rec.raw;
+                float px = rec.x + ox, pz = rec.z + oz;
+                std::memcpy(raw.data() + 14, &px, 4);
+                std::memcpy(raw.data() + 22, &pz, 4);
+                b.c->send_pose(h, raw.data(), raw.size());
+            } else if (b.c->state() == ClientState::kOnline) {
                 PoseHeader h;
                 h.where = b.sc == kTown ? Where::of("town", 0) : Where::of("sea", 1);
                 h.x = b.x;
