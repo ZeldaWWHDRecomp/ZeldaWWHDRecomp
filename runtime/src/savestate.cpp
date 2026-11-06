@@ -1937,6 +1937,7 @@ void set_save_profile(const mods::save_profile::Selection& selected,const mods::
 }
 
 std::string states_dir() { return state_dir(); }
+uint64_t game_data_id() { return game_id(); }
 
 // ---- conveniences (save_convenience.h) ----
 namespace {

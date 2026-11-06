@@ -105,6 +105,9 @@ void set_save_path(SavePath path);      // stored beside the full-state option
 bool full_states_forced();              // the environment decides (WWHD_FULL_SAVE_STATES or test variables)
 std::string bug_report_text();          // paths of the newest portable state and of cking.sav, for a bug report
 std::string states_dir();               // where slots live (created on first use)
+// FNV-1a of the game's own code file (cking.rpx, the player's copy): the same in the recompiled and the decomp
+// build of one game, different for another region, version or a randomized game (online co-op's compatibility)
+uint64_t game_data_id();
 // Main selects immutable identity/paths before recovery or any state-slot access.
 void set_save_profile(const mods::save_profile::Selection&,const mods::save_profile::Paths&);
 std::string last_message();             // short status for the title bar ("" when stale)
