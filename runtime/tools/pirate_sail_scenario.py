@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MPL-2.0
-"""Real-game regression for #446: the pirate ship's sail drawn torn at 60/120/240 fps.
+"""Real-game regression for #446: the pirate ship's sail drawn torn at 40/60/120/240 fps.
 
 Requires Pillow and private game/save files. --state is a portable state (.wwstate) on Outset
 Island early in the game, Link on the rock by the beach with the pirate ship anchored offshore
@@ -69,7 +69,7 @@ def main():
     for name in ("binary", "game", "save", "work"):
         parser.add_argument(name, nargs="?", type=lambda p: str(Path(p).resolve()))
     parser.add_argument("--state", help="local portable state, never uploaded or committed")
-    parser.add_argument("--fps", nargs="+", type=int, default=(60, 120, 240), choices=(60, 120, 240))
+    parser.add_argument("--fps", nargs="+", type=int, default=(60, 120, 240), choices=(40, 60, 120, 240))
     parser.add_argument("--check", help="check captures without running the game")
     parser.add_argument("--roi", nargs=4, type=int, default=(380, 170, 500, 310),
                         metavar=("LEFT", "TOP", "RIGHT", "BOTTOM"))

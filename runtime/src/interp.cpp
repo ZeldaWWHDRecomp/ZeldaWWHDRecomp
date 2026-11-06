@@ -821,12 +821,9 @@ void model_calc_before(uint32_t model) {
     memcpy(g_model_kept.back().words.data(), ppc_ptr(mtx), 48 * n);
 }
 // The draws' GPU buffer selectors (interp_keep.h, issue #446): the put-back leaves them as the last
-// draw left them. debug: WWHD_INTERP_KEEP_GPU_SETS=0 puts them back too (as before)
+// draw left them.
 DrawSideWords g_draw_side;
-void keep_draw_side(uint32_t ea) {
-    static const bool off = getenv("WWHD_INTERP_KEEP_GPU_SETS") && !atoi(getenv("WWHD_INTERP_KEEP_GPU_SETS"));
-    if (!off) g_draw_side.add(ea);
-}
+void keep_draw_side(uint32_t ea) { g_draw_side.add(ea); }
 void actor_keep(uint32_t actor) {
     for (const auto& k : g_actor_kept)
         if (k.actor == actor) return;

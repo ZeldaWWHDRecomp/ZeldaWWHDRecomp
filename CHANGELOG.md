@@ -12,6 +12,10 @@ what is on `devel` and not released yet (also in the
   focus could stay empty when it moved between the game's own windows). The existing option is now called
   **Controller input in the background** (Settings › Controls, off by default): turn it on to keep using the
   controller while another app is in front. Keyboard and mouse still need a game window in front.
+- **Fixed: the pirate ship's sail flickered with frame interpolation** (#446, thanks @darklinkpower for the report).
+  Above 30 fps the sail and flag off Outset were drawn torn on some frames (dark blotches), a regression in v0.5.1.
+  Cloth that the game draws into two alternating buffers (sails, flags, mantles, the tapestry, Molgera's sand floor)
+  now keeps switching buffers on every drawn frame. 30 fps is unchanged.
 
 ## v0.5.1
 
