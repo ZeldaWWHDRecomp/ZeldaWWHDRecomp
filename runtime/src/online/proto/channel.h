@@ -81,6 +81,7 @@ private:
     };
 
     void on_ack(uint32_t pkt);
+    void put_burst_acks(Writer& w, size_t room);
     uint32_t expand_seq(uint16_t wire) const;
     void take_reliable(uint32_t seq, uint8_t type, const uint8_t* d, size_t n, std::vector<Delivered>& got);
 
@@ -101,6 +102,7 @@ private:
     uint32_t top_pkt_ = 0;  // newest packet number taken
     std::array<uint32_t, 1024> seen_{};
     uint32_t next_in_seq_ = 0;
+    std::vector<uint32_t> recv_since_flush_;  // packet numbers taken since the last flush (burst acks)
     std::map<uint32_t, std::pair<uint8_t, Bytes>> ahead_;
     Bytes stream_;  // pieces of a split message so far
     uint8_t stream_type_ = 0;

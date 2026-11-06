@@ -364,6 +364,48 @@ static void test_crypto() {
 #endif
 }
 
+// a burst far over one packet's ack range (a mass handover on a link): everything arrives, in order, and is acked
+static void test_channel_burst() {
+    uint8_t k1[32] = {1}, k2[32] = {2};
+    Channel a, b;
+    a.setup(7, k1, k2, true, 1);
+    b.setup(7, k2, k1, false, 1);
+    a.set_queue_cap(64u << 20, 1u << 20);
+    b.set_queue_cap(64u << 20, 1u << 20);
+    const int kN = 3000;
+    for (int i = 0; i < kN; ++i) {
+        Bytes m(250, uint8_t(i));
+        Writer(m).u32(uint32_t(i));
+        a.send_reliable(20, m);
+    }
+    int got = 0;
+    bool order = true;
+    uint32_t now = 2;
+    for (; now < 60000 && (got < kN || a.reliable_queued()); now += 33) {
+        std::vector<Bytes> out;
+        a.flush(now, out, 8192, 250);
+        for (auto& d : out) {
+            std::vector<Delivered> g;
+            b.receive(d.data(), d.size(), now + 1, g);
+            for (auto& m : g) {
+                Reader r(m.body.data() + 250, 4);
+                (void)r;
+                order = order && m.body.size() == 254 && m.body[0] == uint8_t(got);
+                ++got;
+            }
+        }
+        out.clear();
+        b.flush(now + 1, out, 8192, 250);
+        for (auto& d : out) {
+            std::vector<Delivered> g;
+            a.receive(d.data(), d.size(), now + 2, g);
+        }
+    }
+    std::printf("channel burst: %d/%d delivered, in order %d, %zu still queued after %u ms, resends %llu\n", got, kN, order,
+                a.reliable_queued(), now, (unsigned long long)a.stats().resends);
+    CHECK(got == kN && order && a.reliable_queued() == 0);
+}
+
 int main() {
     test_sha256();
     test_crypto();
@@ -371,6 +413,7 @@ int main() {
     test_pow();
     test_handshake();
     test_messages();
+    test_channel_burst();
     test_channel(0, 0, 0, 1);
     test_channel(0.2, 0.1, 0.3, 2);
     test_channel(0.4, 0.2, 0.5, 3);

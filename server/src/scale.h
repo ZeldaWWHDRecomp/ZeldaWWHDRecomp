@@ -22,6 +22,7 @@ struct Region {
     int16_t x0 = 0, z0 = 0, x1 = 0, z1 = 0;
     std::string stage;
     int worker = 0;
+    bool pinned = false;  // placed by the operator (admin move / split): the coordinator does not move or merge it
     // the safety valve beyond the smallest region: copy k of this region runs on copy_worker[k-1] (copy 0 and any
     // copy past the list run on `worker`)
     std::vector<uint8_t> copy_worker;

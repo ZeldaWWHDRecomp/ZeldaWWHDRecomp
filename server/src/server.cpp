@@ -408,6 +408,9 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
         by_token_[t] = s->conn_id;
         if (ticket) {
             metrics_.handovers_in++;
+            if (std::getenv("WWHD_ONLINE_DEBUG_HANDOVER"))
+                log("handover: player " + std::to_string(ticket->who.id) + " arrived on worker " + std::to_string(me_) +
+                    " from worker " + std::to_string(ticket->from) + (h.resume ? "" : " (no ticket?)"));
             ghosts_.erase(s->id);
             s->lent_from = ticket->from == me_ ? -1 : ticket->from;
             // seen at once where the old worker last saw it: no gap until its first pose here

@@ -187,7 +187,7 @@ Bytes RegionMap::encode() const {
         w.s16(r.x1);
         w.s16(r.z1);
         w.str8(r.stage);
-        w.u8(uint8_t(r.worker));
+        w.u8(uint8_t(r.worker | (r.pinned ? 0x80 : 0)));
         w.u8(uint8_t(std::min<size_t>(r.copy_worker.size(), 64)));
         for (size_t k = 0; k < r.copy_worker.size() && k < 64; ++k) w.u8(r.copy_worker[k]);
     }
@@ -222,6 +222,8 @@ bool RegionMap::decode(const uint8_t* d, size_t n) {
         g.z1 = r.s16();
         g.stage = r.str8(8);
         g.worker = r.u8();
+        g.pinned = (g.worker & 0x80) != 0;
+        g.worker &= 0x7F;
         size_t nc = r.u8();
         for (size_t k = 0; k < nc; ++k) g.copy_worker.push_back(r.u8());
         m.regions.push_back(g);
@@ -393,6 +395,7 @@ void Server::link_datagram(const uint8_t* d, size_t n, const Address& from, uint
             if (me_ == 0) {  // a (re)started worker gets the map at once
                 p.chan.send_reliable(kLMap, map_.encode());
             }
+            if (!my_sub_.empty()) p.chan.send_reliable(kLSub, my_sub_);  // and what we look into
         }
         p.heard = now;
     } else if (d[0] == kLinkRegister && me_ == 0) {
@@ -446,6 +449,7 @@ void Server::link_datagram(const uint8_t* d, size_t n, const Address& from, uint
         peers_[0].epoch = ep;
         setup_peer_channel(peers_[0], key, me_, 0, epoch_, now);
         log("worker " + std::to_string(me_) + " registered with the coordinator");
+        send_subscription(now, true);
     }
 }
 
@@ -488,12 +492,24 @@ int Server::owner_of(const Session& s) const {
 }
 
 void Server::handover_check(Session& s, uint32_t now) {
-    if (!linked() || !registered_ || s.redirected || s.handing || !s.online || s.dead) return;
-    if (handovers_this_tick_ >= 150) return;  // a mass move is spread over ticks (on_pose asks again)
+    // (WWHD_ONLINE_DEBUG_HANDOVER=1: every 5 s, why players who should move did not)
+    static const bool debug = std::getenv("WWHD_ONLINE_DEBUG_HANDOVER") != nullptr;
+    static uint32_t why[8] = {}, last = 0;
+    if (debug && now - last > 5000) {
+        last = now;
+        log("handover debug (worker " + std::to_string(me_) + "): handing " + std::to_string(why[0]) + ", cap " +
+            std::to_string(why[1]) + ", target down " + std::to_string(why[2]) + ", not deep " + std::to_string(why[3]) +
+            ", started " + std::to_string(why[4]) + ", pending " + std::to_string(pending_.size()));
+        std::fill(std::begin(why), std::end(why), 0);
+    }
+    if (!linked() || !registered_ || s.redirected || !s.online || s.dead) return;
     int target = owner_of(s);
     if (target == me_) return;
+    if (s.handing) return void(++why[0]);
+    if (handovers_this_tick_ >= 150) return void(++why[1]);  // a mass move is spread over ticks (on_pose asks again)
     const WorkerInfo* w = map_.worker(target);
-    if (!w || !w->alive || size_t(target) >= peers_.size() || !peers_[size_t(target)].up) return;
+    if (!w || !w->alive || size_t(target) >= peers_.size() || !peers_[size_t(target)].up) return void(++why[2]);
+    ++why[4];
     if (s.where.stage_name() == cfg_.sea_stage) {
         // deep enough inside: the region a little way out on every side is the target's too
         float d = cfg_.handover_depth;
@@ -505,7 +521,10 @@ void Server::handover_check(Session& s, uint32_t now) {
         for (int k = 0; k < 4; ++k) {
             float x = s.head.x + (k == 0 ? d : k == 1 ? -d : 0), z = s.head.z + (k == 2 ? d : k == 3 ? -d : 0);
             cell(x, z, gx, gz);
-            if (map_.owner_at(gx, gz, s.copy) != target) return;
+            if (map_.owner_at(gx, gz, s.copy) != target) {
+                --why[4];
+                return void(++why[3]);
+            }
         }
     }
     // the party stays together, on the worker of its host member (the leader, or the first member online here)
@@ -574,6 +593,10 @@ void Server::redirect(Session& s, int target, const uint8_t ticket[32], uint32_t
     s.redirected = true;
     s.redirect_at = now;
     metrics_.handovers_out++;
+    static const bool debug = std::getenv("WWHD_ONLINE_DEBUG_HANDOVER") != nullptr;
+    if (debug)
+        log("handover: player " + std::to_string(s.id) + " at " + std::to_string(int(s.head.x)) + " " +
+            std::to_string(int(s.head.z)) + " from worker " + std::to_string(me_) + " to worker " + std::to_string(target));
 }
 
 // ---------------------------------------------------------------- parties over the link
@@ -795,6 +818,31 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
 
 // ---------------------------------------------------------------- the link tick
 
+// my subscription: the cells my players look into. Worked out every tick and sent (reliably) as soon as it changes,
+// every 2 s anyway, and at once to a peer whose link comes up: a viewer never waits a second for the poses of
+// players just across a region border (a newly started worker was missed for up to that long)
+void Server::send_subscription(uint32_t now, bool force) {
+    std::vector<uint8_t> sub(size_t(kGrid * kGrid / 8), 0);
+    int reach = int(std::ceil(cfg_.window_half * (1.0f + cfg_.hysteresis) / kSubCellUnits));
+    for (auto& [cid, sp] : sessions_) {
+        Session& s = *sp;
+        if (s.dead || !s.online || s.redirected || !s.has_pose || s.head.where.stage_name() != cfg_.sea_stage) continue;
+        for (int dz = -reach; dz <= reach; ++dz)
+            for (int dx = -reach; dx <= reach; ++dx) {
+                int x = s.gx + dx, z = s.gz + dz;
+                if (x < 0 || z < 0 || x >= kGrid || z >= kGrid) continue;
+                size_t bit = size_t(z * kGrid + x);
+                sub[bit / 8] |= uint8_t(1u << (bit % 8));
+            }
+    }
+    bool changed = sub != my_sub_;
+    if (!changed && !force && now - last_sub_sent_ < 2000) return;
+    my_sub_ = std::move(sub);
+    last_sub_sent_ = now;
+    for (size_t i = 0; i < peers_.size(); ++i)
+        if (int(i) != me_ && peers_[i].up) peers_[i].chan.send_reliable(kLSub, my_sub_);
+}
+
 void Server::link_tick(uint32_t now) {
     uint8_t key[32];
     link_key(cfg_.link_secret, key);
@@ -888,22 +936,6 @@ void Server::link_tick(uint32_t now) {
                     map_changed();
                 }
             }
-        // my subscription: the cells my players look into
-        my_sub_.assign(size_t(kGrid * kGrid / 8), 0);
-        int reach = int(std::ceil(cfg_.window_half * (1.0f + cfg_.hysteresis) / kSubCellUnits));
-        for (auto& [cid, sp] : sessions_) {
-            Session& s = *sp;
-            if (s.dead || !s.online || s.redirected || !s.has_pose || s.head.where.stage_name() != cfg_.sea_stage) continue;
-            for (int dz = -reach; dz <= reach; ++dz)
-                for (int dx = -reach; dx <= reach; ++dx) {
-                    int x = s.gx + dx, z = s.gz + dz;
-                    if (x < 0 || z < 0 || x >= kGrid || z >= kGrid) continue;
-                    size_t bit = size_t(z * kGrid + x);
-                    my_sub_[bit / 8] |= uint8_t(1u << (bit % 8));
-                }
-        }
-        for (size_t i = 0; i < peers_.size(); ++i)
-            if (int(i) != me_ && peers_[i].up) peers_[i].chan.send_unreliable(kLSub, my_sub_);
         // the load report
         uint64_t cpu = 0, rss = 0;
 #ifndef _WIN32
@@ -990,6 +1022,7 @@ void Server::link_tick(uint32_t now) {
             }
         if (free_ids < 512) id_blocks_.push_back(uint16_t(next_block_++ * kBlock));
     }
+    if (registered_) send_subscription(now, false);
     // ghosts: my players in the cells each peer subscribed
     std::vector<Bytes> per(peers_.size());
     auto ship = [&](size_t i) {
@@ -1022,7 +1055,7 @@ void Server::link_tick(uint32_t now) {
         Peer& p = peers_[i];
         if (int(i) == me_ || !p.up || !p.addr.valid()) continue;
         std::vector<Bytes> out;
-        p.chan.flush(now, out, 8192, 250);
+        p.chan.flush(now, out, 1024, 250);  // paced: a burst over several ticks rather than overflowing the socket buffers
         link_.send_many(p.addr, out);
     }
 }
@@ -1107,7 +1140,7 @@ void Server::coordinate(uint32_t now) {
         std::vector<std::pair<int, size_t>> mine;
         int total = 0;
         for (size_t i = 0; i < map_.regions.size(); ++i)
-            if (map_.regions[i].worker == hot) {
+            if (map_.regions[i].worker == hot && !map_.regions[i].pinned) {
                 int n = players_in(hot, map_.regions[i].id);
                 total += n;
                 if (n) mine.push_back({n, i});
@@ -1218,7 +1251,7 @@ void Server::coordinate(uint32_t now) {
             Peer& pb = peers_[size_t(b.worker)];
             bool calm = pa.under_since && pb.under_since && now - pa.under_since >= uint32_t(cfg_.merge_hold_s) * 1000 &&
                         now - pb.under_since >= uint32_t(cfg_.merge_hold_s) * 1000;
-            if (!calm || load_of(a.worker) + load_of(b.worker) > 0.6) continue;
+            if (!calm || load_of(a.worker) + load_of(b.worker) > 0.6 || a.pinned || b.pinned) continue;
             Region m = a;
             m.id = a.parent;
             auto rp = retired_.find(a.parent);
@@ -1248,7 +1281,7 @@ void Server::coordinate(uint32_t now) {
             if (!p.under_since || now - p.under_since < uint32_t(cfg_.merge_hold_s) * 1000) continue;
             if (load_of(0) + load_of(w) > 0.6) continue;
             for (auto& g : map_.regions)
-                if (g.worker == w && !g.parent) {
+                if (g.worker == w && !g.parent && !g.pinned) {
                     g.worker = 0;
                     std::string what = "move region " + std::to_string(g.id) + " back from worker " + std::to_string(w) + " to 0";
                     scale_log_.push_back(std::to_string(now) + " " + what);
@@ -1414,6 +1447,7 @@ std::string Server::scale_admin(const std::string& cmd, std::istringstream& in) 
         const WorkerInfo* k = map_.worker(w);
         if (!k || !k->alive) return "no live worker " + std::to_string(w);
         it->worker = w;
+        it->pinned = true;  // the operator's choice stays (no automatic move or merge)
         scale_log_.push_back(std::to_string(monotonic_ms()) + " admin: move region " + std::to_string(id) + " to " + std::to_string(w));
         metrics_.moves++;
         map_changed();
@@ -1433,6 +1467,7 @@ std::string Server::scale_admin(const std::string& cmd, std::istringstream& in) 
         if (along_x) a.x1 = b.x0 = int16_t(r.x0 + len / 2);
         else a.z1 = b.z0 = int16_t(r.z0 + len / 2);
         if (map_.worker(w) && map_.worker(w)->alive) b.worker = w;
+        a.pinned = b.pinned = true;
         retired_[r.id] = r.parent;
         *it = a;
         map_.regions.push_back(b);

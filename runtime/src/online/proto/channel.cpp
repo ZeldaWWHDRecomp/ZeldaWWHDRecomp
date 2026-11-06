@@ -106,6 +106,12 @@ void Channel::flush(uint32_t now, std::vector<Bytes>& out, size_t max_datagrams,
             m.last_sent = now;
             rec.seqs.push_back(m.seq);
         }
+        // after a burst from the peer, the first packet says which of it came (the header covers only 33)
+        if (made == 0 && recv_since_flush_.size() > 30) {
+            size_t room = kBodyRoom - body.size();
+            if (room > 64) put_burst_acks(w, std::min<size_t>(room / 2, 600));
+            recv_since_flush_.clear();
+        }
         while (ui < unreliable_.size() &&
                body.size() + kUnreliableFrame + unreliable_[ui].second.size() <= kBodyRoom) {
             auto& u = unreliable_[ui++];
@@ -160,6 +166,22 @@ void Channel::on_ack(uint32_t pkt) {
     while (!out_.empty() && out_.front().acked) {
         out_bytes_ -= out_.front().body.size();
         out_.pop_front();
+    }
+}
+
+// the burst's packet numbers as 64-packet bitmaps (12 bytes each), the newest first, within `room` bytes
+void Channel::put_burst_acks(Writer& w, size_t room) {
+    std::map<uint32_t, uint64_t, std::greater<uint32_t>> runs;
+    for (uint32_t p : recv_since_flush_) runs[p & ~63u] |= uint64_t(1) << (p & 63);
+    size_t n = std::min(runs.size(), std::min<size_t>((room - 2) / 12, 255));
+    if (!n) return;
+    w.u8(kFrameAcks);
+    w.u8(uint8_t(n));
+    size_t i = 0;
+    for (auto& [base, bits] : runs) {
+        if (i++ == n) break;
+        w.u32(base);
+        w.u64(bits);
     }
 }
 
@@ -232,6 +254,7 @@ bool Channel::receive(const uint8_t* d, size_t n, uint32_t now, std::vector<Deli
         return false;
     }
     seen_[h.pkt % 1024] = h.pkt;
+    if (recv_since_flush_.size() < 4096) recv_since_flush_.push_back(h.pkt);
     if (h.pkt > top_pkt_) top_pkt_ = h.pkt;
     ack_due_ = true;
     last_heard_ = now;
@@ -272,6 +295,15 @@ bool Channel::receive(const uint8_t* d, size_t n, uint32_t now, std::vector<Deli
             r.skip(len);
             if (!r.ok()) break;
             got.push_back({false, type, Bytes(p, p + len)});
+        } else if (kind == kFrameAcks) {
+            size_t n = r.u8();
+            for (size_t i = 0; i < n && r.ok(); ++i) {
+                uint32_t base = r.u32();
+                uint64_t bits = r.u64();
+                if (!r.ok()) break;
+                for (int b = 0; b < 64; ++b)
+                    if (bits >> b & 1) on_ack(base + uint32_t(b));
+            }
         } else {
             break;
         }
