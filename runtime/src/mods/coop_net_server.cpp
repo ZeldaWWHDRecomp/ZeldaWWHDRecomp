@@ -295,7 +295,8 @@ void poll(Handler& h) {
         }
         case op::ClientEvent::kNotice:
             mods::trace("coop: server notice %u: %s", e.value, e.text.c_str());
-            if (e.value == op::kNoticeKick || e.value == op::kNoticeBan) g_status = "Removed by the server: " + e.text;
+            if (e.value == op::kNoticeKick || e.value == op::kNoticeBan || e.value == op::kNoticeKickLimit) g_status = "Removed by the server: " + e.text;
+            if (e.value == op::kNoticeThrottle) g_status = "The server asks to slow down: " + e.text;
             break;
         case op::ClientEvent::kPartyInvited:
             g_invites.push_back({e.party_id, e.player.name});

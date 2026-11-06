@@ -961,6 +961,51 @@ void t_unpack(uint32_t w, int16_t t[3]) {
     for (int e = 0; e < 3; e++) t[e] = (int16_t)((((int)(w >> (20 - 10 * e)) & 1023) - 512) * 4);
 }
 
+// Local joints (mode bit 3): each joint of one of Link's models as its rotation under its parent (the model's
+// skeleton, FSKL: the same game data on every game) in 32 bits, and a translation only where it is not the
+// skeleton's own (the root's, relative to Link; one an animation moves), in 32 bits. Both games build the joints the
+// same way from those numbers, the sender from what it sent (so no error adds up down the chain), into the pose's
+// joints as before (relative to Link). For a model of a unit scale whose skeleton has its joints' count.
+void jmtx(const Joint& j, float m[12]) {
+    float w = j.q[0] / 32767.f, x = j.q[1] / 32767.f, y = j.q[2] / 32767.f, z = j.q[3] / 32767.f;
+    const float n = 1 / std::sqrt(std::max(1e-9f, w * w + x * x + y * y + z * z));
+    w *= n, x *= n, y *= n, z *= n;
+    const float r[12] = {1 - 2 * (y * y + z * z), 2 * (x * y - w * z), 2 * (x * z + w * y), j.t[0] / 8.f,
+                         2 * (x * y + w * z), 1 - 2 * (x * x + z * z), 2 * (y * z - w * x), j.t[1] / 8.f,
+                         2 * (x * z - w * y), 2 * (y * z + w * x), 1 - 2 * (x * x + y * y), j.t[2] / 8.f};
+    memcpy(m, r, sizeof r);
+}
+Joint jof(const float m[12]) {
+    Joint j{};
+    float sc[3], q[4] = {1, 0, 0, 0};
+    interp::mtx_to_quat(m, sc, q);
+    for (int e = 0; e < 4; e++) j.q[e] = (int16_t)std::lround(std::clamp(q[e], -1.f, 1.f) * 32767);
+    for (int e = 0; e < 3; e++) j.t[e] = (int16_t)std::clamp<long>(std::lround(m[4 * e + 3] * 8), -32768, 32767);
+    j.s = 64;
+    return j;
+}
+void inv_rigid(const float a[12], float o[12]) {  // [R | t]^-1 = [R^T | -R^T t]
+    rot_t(a, o);
+    for (int i = 0; i < 3; i++) o[4 * i + 3] = -(o[4 * i] * a[3] + o[4 * i + 1] * a[7] + o[4 * i + 2] * a[11]);
+}
+const std::vector<Bone>* skel_for(uint8_t k, size_t joints) {
+    if (k >= g_models.size()) return nullptr;
+    static std::unordered_map<uint32_t, std::vector<Bone>> cache;
+    const uint32_t data = g_models[k].data;
+    auto it = cache.find(data);
+    if (it == cache.end()) it = cache.emplace(data, skeleton(data)).first;
+    return it->second.size() == joints && joints ? &it->second : nullptr;
+}
+// one joint's local transform as sent: its rotation (32 bits) and, if it has one, translation (32 bits); out: the
+// matrix both games use
+void local_of(uint32_t rot, const uint32_t* t, const Bone& b, float out[12]) {
+    Joint j{};
+    q_unpack(rot, j.q);
+    if (t) t_unpack(*t, j.t);
+    jmtx(j, out);
+    if (!t) out[3] = b.local[3], out[7] = b.local[7], out[11] = b.local[11];
+}
+
 void pack(const Pose& p, std::string& out) {
     static const bool full = getenv("WWHD_COOP_FULL_POSES") != nullptr;  // (test aid: the fork's form, to compare)
     auto put_bytes = [&](const void* v, size_t n) { out.append((const char*)v, n); };
@@ -983,6 +1028,38 @@ void pack(const Pose& p, std::string& out) {
         std::vector<uint32_t> ts(m.j.size());
         bool compact = true, unit = true;
         for (size_t i = 0; i < m.j.size(); i++) compact &= t_pack(m.j[i].t, ts[i]), unit &= m.j[i].s == 64;
+        if (const std::vector<Bone>* sk = unit && m.k != kHeld && !getenv("WWHD_COOP_NO_LOCAL") ? skel_for(m.k, m.j.size()) : nullptr) {
+            // local: each joint under the parent as rebuilt (the receiver's), its translation only if not the skeleton's
+            std::vector<std::array<float, 12>> built(m.j.size());
+            std::vector<uint32_t> rots(m.j.size()), trs;
+            std::vector<uint8_t> mask((m.j.size() + 7) / 8, 0);
+            bool ok = true;
+            for (size_t i = 0; i < m.j.size() && ok; i++) {
+                const Bone& b = (*sk)[i];
+                float w[12], l[12], ip[12];
+                jmtx(m.j[i], w);
+                if (b.parent >= 0) inv_rigid(built[b.parent].data(), ip), mul(ip, w, l);
+                else memcpy(l, w, sizeof l);
+                const Joint lj = jof(l);
+                rots[i] = q_pack(lj.q);
+                const bool own = b.parent < 0 || std::fabs(l[3] - b.local[3]) > 0.3f || std::fabs(l[7] - b.local[7]) > 0.3f ||
+                                 std::fabs(l[11] - b.local[11]) > 0.3f;
+                uint32_t tw = 0;
+                if (own) ok = t_pack(lj.t, tw), mask[i / 8] |= (uint8_t)(1 << (i % 8)), trs.push_back(tw);
+                float lq[12];
+                local_of(rots[i], own ? &tw : nullptr, b, lq);
+                if (b.parent >= 0) mul(built[b.parent].data(), lq, built[i].data());
+                else memcpy(built[i].data(), lq, sizeof lq);
+            }
+            if (ok) {
+                const uint8_t mode = (uint8_t)((m.shown == ~0u ? 1 : 0) | 8);
+                put_bytes(&m.k, 1), put_bytes(&mode, 1);
+                if (!(mode & 1)) put_bytes(&m.shown, 4);
+                put_bytes(&nj, 1), put_bytes(mask.data(), mask.size());
+                put_bytes(rots.data(), 4 * rots.size()), put_bytes(trs.data(), 4 * trs.size());
+                continue;
+            }
+        }
         const uint8_t mode = (uint8_t)((m.shown == ~0u ? 1 : 0) | (compact ? 2 : 0) | (unit ? 4 : 0));
         put_bytes(&m.k, 1), put_bytes(&mode, 1);
         if (!(mode & 1)) put_bytes(&m.shown, 4);
@@ -1062,6 +1139,25 @@ bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
         if (!get(&nj, 1)) return false;
         if (m.k == kHeld && (!get(&m.file, 2) || !get(&m.diff, 4) || !get(&m.brk, 4))) return false;
         m.j.resize(nj);
+        if (compact_form && (mode & 8)) {  // local joints: rebuilt as the sender did
+            const std::vector<Bone>* sk = skel_for(m.k, nj);
+            std::vector<uint8_t> mask((nj + 7) / 8);
+            std::vector<uint32_t> rots(nj);
+            if (!sk || !get(mask.data(), mask.size()) || !get(rots.data(), 4 * nj)) return false;
+            std::vector<std::array<float, 12>> built(nj);
+            for (size_t i = 0; i < nj; i++) {
+                const Bone& b = (*sk)[i];
+                uint32_t tw = 0;
+                const bool own = mask[i / 8] >> (i % 8) & 1;
+                if (own && !get(&tw, 4)) return false;
+                float lq[12];
+                local_of(rots[i], own ? &tw : nullptr, b, lq);
+                if (b.parent >= 0) mul(built[b.parent].data(), lq, built[i].data());
+                else memcpy(built[i].data(), lq, sizeof lq);
+                m.j[i] = jof(built[i].data());
+            }
+            continue;
+        }
         for (Joint& j : m.j) {
             if (!compact_form) {
                 if (!get(j.q, 8) || !get(j.t, 6) || !get(&j.s, 1)) return false;
