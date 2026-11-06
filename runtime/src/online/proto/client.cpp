@@ -67,6 +67,35 @@ void Client::set_state(ClientState s, const std::string& text) {
 void Client::begin_connect(uint32_t now) {
     crypto::random_bytes(&nonce_, sizeof nonce_);
     if (!nonce_) nonce_ = 1;
+    if (redirecting_ && transport_ == Transport::kUdp && !direct_hello_) {
+        // straight to HELLO with the ticket: no CONNECT / CHALLENGE / proof-of-work round
+        direct_hello_ = true;
+        std::memset(chal_.salt, 0, sizeof chal_.salt);
+        chal_.bucket = 0;
+        chal_.difficulty = 0;
+        pow_next_ = 0;
+        pow_found_ = true;
+        eph_ = crypto::Ephemeral::generate();
+        Hello h;
+        h.nonce = nonce_;
+        h.game_data = cfg_.game_data;
+        std::memcpy(h.eph, eph_.pub, 32);
+        h.name = cfg_.name;
+        h.look = cfg_.look;
+        h.device = cfg_.device;
+        h.near_cap = cfg_.near_cap;
+        h.mid_cap = cfg_.mid_cap;
+        h.resume = true;
+        std::memcpy(h.token, token_, 32);
+        h.tag = cfg_.tag;
+        h.mods = cfg_.mods;
+        hello_ = encode_hello(h, cfg_.identity);
+        phase_ = Phase::kHello;
+        phase_at_ = 0;
+        phase_started_ = now;
+        first_connect_sent_ = 0;
+        return;
+    }
     phase_ = Phase::kConnect;
     phase_at_ = 0;
     phase_started_ = now;
@@ -77,7 +106,14 @@ void Client::begin_connect(uint32_t now) {
         tcp_.connect(server_, why);  // a fresh connection for each attempt (a failure shows as no answer)
     }
     ClientState s = have_token_ ? ClientState::kReconnecting : ClientState::kConnecting;
-    if (s != state_) set_state(s, "");
+    if (s != state_ && !redirecting_) set_state(s, "");
+}
+
+void Client::send_raw_to(const Address& to, const Bytes& b) {
+    if (sock_->send_to(to, b.data(), b.size())) {
+        stats_.bytes_up += b.size();
+        stats_.packets_up++;
+    }
 }
 
 void Client::send_raw(const Bytes& b) {
@@ -98,6 +134,8 @@ void Client::send_raw(const Bytes& b) {
 void Client::lost(uint32_t now, const std::string& why) {
     phase_ = Phase::kNone;
     pose_pending_ = false;
+    redirecting_ = false;
+    direct_hello_ = false;
     // a worker we were redirected to is gone: back to the server's front door (the session resumes there or anew)
     if (!(server_ == home_)) {
         server_ = home_;
@@ -188,7 +226,7 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
         for (int i = 0; i < 512; ++i) {
             int n = own_.recv_from(from, buf, sizeof buf);
             if (n < 0) break;
-            if (!(from == server_)) continue;  // only the server talks to us
+            if (!(from == server_) && !(redirecting_ && from == old_server_)) continue;  // only the server talks to us
             on_datagram(buf, size_t(n), now);
         }
     }
@@ -235,6 +273,14 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
             if (phase_ != Phase::kHello) break;
             [[fallthrough]];
         case Phase::kHello:
+            if (redirecting_ && direct_hello_ && now - phase_started_ > 1500 && first_connect_sent_ == 0) {
+                // no answer to the direct HELLO (an older server?): the normal handshake with the ticket
+                first_connect_sent_ = 1;
+                phase_ = Phase::kConnect;
+                phase_at_ = 0;
+                phase_started_ = now;
+                break;
+            }
             if (now - phase_started_ > kHandshakeTimeoutMs) {
                 lost(now, "no answer from the server");
                 break;
@@ -259,7 +305,10 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
             }
             outq_.clear();
             chan_.flush(now, outq_, 4);
-            for (auto& b : outq_) send_raw(b);
+            for (auto& b : outq_) {
+                if (redirecting_) send_raw_to(old_server_, b);  // the old session until the new one welcomes us
+                else send_raw(b);
+            }
             if (chan_.broken()) lost(now, "protocol error");
         }
     }
@@ -337,6 +386,8 @@ void Client::handle(const uint8_t* d, size_t n, uint32_t now) {
             if (!crypto::session_keys(eph_, w.eph, true, tx_, rx_)) return;
             if (!decode_welcome_inner(d, n, info_.pub, eph_.pub, rx_, w)) return;
             chan_.setup(w.conn_id, tx_, rx_, true, now);
+            redirecting_ = false;
+            direct_hello_ = false;
             my_id_ = w.id;
             std::memcpy(token_, w.token, 32);
             have_token_ = true;
@@ -520,12 +571,17 @@ void Client::handle_message(const Delivered& m) {
             std::string why;
             Address a;
             if (!resolve(host.empty() ? cfg_.host : host, port, a, why)) break;
+            Address was = server_;
             server_ = a;
             cfg_.port = port;
             if (!host.empty()) cfg_.host = host;
             std::memcpy(token_, ticket, 32);
             have_token_ = true;
-            begin_pending_ = true;  // (at the next poll; reports kReconnecting: the handover is under way)
+            // the old session goes on until the new worker welcomes us (no state change for the game)
+            old_server_ = was;
+            redirecting_ = transport_ == Transport::kUdp;
+            direct_hello_ = false;
+            begin_pending_ = true;
             phase_ = Phase::kNone;
             break;
         }

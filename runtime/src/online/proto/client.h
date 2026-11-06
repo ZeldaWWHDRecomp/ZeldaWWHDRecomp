@@ -169,7 +169,12 @@ private:
     // the caller's clock (poll's now_ms): every time in here is on it, never on monotonic_ms(), which the game's
     // clock need not match (mixing them made every redirect and the first connect time out at once)
     uint32_t now_ = 0;
-    bool begin_pending_ = false;  // start() and REDIRECT begin at the next poll, on the caller's clock  // the TCP fallback counts from the first CONNECT really sent
+    bool begin_pending_ = false;  // start() and REDIRECT begin at the next poll, on the caller's clock
+    // a REDIRECT (handover between workers): the old session goes on (poses out, the world in) while the new one
+    // is made with a HELLO straight away (the ticket needs no challenge); the game sees no state change
+    bool redirecting_ = false, direct_hello_ = false;
+    Address old_server_;
+    void send_raw_to(const Address& to, const Bytes& b);  // the TCP fallback counts from the first CONNECT really sent
     UdpSocket* sock_ = nullptr;
     Address server_, home_;  // home_: the address start() was given (redirects come back to it after a loss)
     std::string home_host_;

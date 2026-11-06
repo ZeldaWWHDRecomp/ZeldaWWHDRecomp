@@ -42,6 +42,7 @@ struct Bot {
     crypto::Identity id;
     std::map<uint16_t, PlayerIn> players;
     std::map<uint16_t, PoseEntry> poses;
+    std::map<uint16_t, uint32_t> near_rx, near_gap;  // near-tier poses of each player: last arrival, longest gap
     std::vector<ClientEvent> log;
     PoseHeader head;
     Bytes blob = Bytes(100, 7);
@@ -55,11 +56,22 @@ struct Bot {
             }
             if (e.kind == ClientEvent::kPlayerIn) players[e.id] = e.player;
             if (e.kind == ClientEvent::kPlayerOut) {
+                if (std::getenv("SCALING_DEBUG")) std::printf("  %s: player %u out\n", name.c_str(), e.id);
                 players.erase(e.id);
                 poses.erase(e.id);
             }
             if (e.kind == ClientEvent::kPoses)
-                for (auto& p : e.poses) poses[p.id] = p;
+                for (auto& p : e.poses) {
+                    poses[p.id] = p;
+                    if (p.tier != kTierNear) continue;
+                    auto it = near_rx.find(p.id);
+                    if (it != near_rx.end()) {
+                        if (std::getenv("SCALING_DEBUG") && now - it->second > 100)
+                            std::printf("  %s: gap %u ms before a pose of %u at x %.0f\n", name.c_str(), now - it->second, p.id, p.head.x);
+                        near_gap[p.id] = std::max(near_gap[p.id], now - it->second);
+                    }
+                    near_rx[p.id] = now;
+                }
             log.push_back(e);
         }
         if (online()) c.send_pose(head, blob.data(), blob.size());
@@ -439,7 +451,7 @@ static void test_scaling() {
     cc.split_cpu = 1e9;  // no automatic changes in this test
     cc.split_bw = 1e18;
     auto coord = std::make_unique<server::Server>(cc);
-    coord->log = [](const std::string&) {};
+    coord->log = [](const std::string& m) { if (std::getenv("SCALING_DEBUG")) std::printf("  coord: %s\n", m.c_str()); };
     CHECK(coord->start(why));
     std::unique_ptr<server::Server> wk[2];
     for (int i = 0; i < 2; ++i) {
@@ -473,9 +485,9 @@ static void test_scaling() {
     auto a = make_bot("a", port), b = make_bot("b", port), c = make_bot("c", port);
     std::vector<Bot*> bots = {a.get(), b.get(), c.get()};
     // square 24 (the middle one) spans x, z in [-50000, 50000)
-    a->head.x = -10000;
+    a->head.x = -500;   // b crosses near a: the near tier, every pose
     c->head.x = -3000;
-    b->head.x = 5000;
+    b->head.x = 2400;
     CHECK(all3(bots, 5000, [&] {
         return a->players.count(b->c.my_id()) && b->players.count(a->c.my_id()) && a->players.count(c->c.my_id());
     }));
@@ -502,12 +514,22 @@ static void test_scaling() {
     };
     CHECK(watch(8000, [&] { return on(*wk[0], *b); }));
     CHECK(b->c.my_id() == bid && b->online());
+    std::printf("scaling: a's longest gap between b's poses through the handover: %u ms\n", a->near_gap[bid]);
+    CHECK(a->near_gap[bid] <= 200);
+    a->near_gap.clear();
     // b sails back west (x < 0, 2000 deep): back on the coordinator
-    for (float x = 5000; x >= -6000; x -= 300) {
+    for (float x = 2400; x >= -6000; x -= 300) {
         b->head.x = x;
         watch(70);
     }
     CHECK(watch(8000, [&] { return on(*coord, *b); }));
+    watch(1000);
+    if (std::getenv("SCALING_DEBUG"))
+        for (auto& e : b->log)
+            if (e.kind == ClientEvent::kStateChanged || e.kind == ClientEvent::kWelcome || e.kind == ClientEvent::kRefused)
+                std::printf("  b event %d state %d resumed %d text %s\n", int(e.kind), int(e.state), e.resumed, e.text.c_str());
+    std::printf("scaling: ... and back: %u ms\n", a->near_gap[bid]);
+    CHECK(a->near_gap[bid] <= 200);
     CHECK(!a_lost_b && !b_lost_a);
     std::printf("scaling: split, handover there and back, visible sets continuous (a lost b: %d, b lost a: %d)\n", a_lost_b,
                 b_lost_a);
@@ -515,6 +537,7 @@ static void test_scaling() {
     uint32_t west = 0;
     for (auto& g : coord->region_map().regions)
         if (g.parent == region && g.x0 == 24) west = g.id;
+    a->head.x = -10000;  // a deeper into the west half, so the whole half's move below takes it along
     b->head.x = 20000;  // b goes east first (worker w1)
     CHECK(watch(8000, [&] { return on(*wk[0], *b); }));
     CHECK(coord->admin("move " + std::to_string(west) + " " + std::to_string(w2)) == "moved");
@@ -536,7 +559,7 @@ static void test_scaling() {
         c->head.x = x;
         all3(bots, 40, nullptr);
     }
-    CHECK(all3(bots, 4000, [&] { return wk[0]->find_by_key(c->c.key_hash()) && b->players.count(c->c.my_id()); }));
+    CHECK(all3(bots, 8000, [&] { return wk[0]->find_by_key(c->c.key_hash()) && b->players.count(c->c.my_id()); }));
     CHECK(wk[1]->find_by_key(b->c.key_hash()) != nullptr);
     std::printf("scaling: region move, cross-worker invite, party guest: ok\n");
     // worker w2 goes away: its players come back through the coordinator

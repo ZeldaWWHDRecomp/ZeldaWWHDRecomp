@@ -332,24 +332,8 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     if (!cfg_.game_data.empty() &&
         std::find(cfg_.game_data.begin(), cfg_.game_data.end(), h.game_data) == cfg_.game_data.end())
         return refuse(from, h.nonce, Refusal::kGameData, "");
-    // the challenge cookie: this address asked for it in the last minute
-    uint32_t bucket = uint32_t(now / 30000);
-    if (h.bucket != bucket && h.bucket + 1 != bucket) return;
-    uint8_t salt[16];
-    salt_for(from, h.bucket, salt);
-    if (std::memcmp(salt, h.salt, 16) != 0) return;
-    uint64_t kh = key_hash(h.pub);
-
-    // a repeated hello (our welcome was lost): the same answer again
-    if (Session* old = find_by_key(kh); old && old->online && std::memcmp(old->client_eph, h.eph, 32) == 0) {
-        if (old->addr == from) {
-            send_dg(sock_, from, old->welcome.data(), old->welcome.size());
-            metrics_.bytes_out += old->welcome.size();
-        }
-        return;
-    }
-
-    // resume (session token) or shard handover (ticket): no proof-of-work needed
+    // resume (session token) or a handover (ticket): no challenge round trip and no proof-of-work needed, the
+    // 32-byte token is the proof (it only ever travelled inside encrypted sessions and links)
     std::array<uint8_t, 32> tok{};
     std::memcpy(tok.data(), h.token, 32);
     Session* resume = nullptr;
@@ -365,6 +349,25 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
             if (tk != tickets_.end() && std::memcmp(tk->second.pub, h.pub, 32) == 0) ticket = &tk->second;
         }
     }
+    if (!resume && !ticket) {
+        // the challenge cookie: this address asked for it in the last minute
+        uint32_t bucket = uint32_t(now / 30000);
+        if (h.bucket != bucket && h.bucket + 1 != bucket) return;
+        uint8_t salt[16];
+        salt_for(from, h.bucket, salt);
+        if (std::memcmp(salt, h.salt, 16) != 0) return;
+    }
+    uint64_t kh = key_hash(h.pub);
+
+    // a repeated hello (our welcome was lost): the same answer again
+    if (Session* old = find_by_key(kh); old && old->online && std::memcmp(old->client_eph, h.eph, 32) == 0) {
+        if (old->addr == from) {
+            send_dg(sock_, from, old->welcome.data(), old->welcome.size());
+            metrics_.bytes_out += old->welcome.size();
+        }
+        return;
+    }
+
     bool exempt = cfg_.loopback_exempt && from.is_loopback();
     if (!resume && !ticket && !exempt && !pow_check(h.salt, h.pub, h.pow, cfg_.pow_bits))
         return refuse(from, h.nonce, Refusal::kBadProof, "");
@@ -453,6 +456,15 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
             if (std::getenv("WWHD_ONLINE_DEBUG_HANDOVER"))
                 log("handover: player " + std::to_string(ticket->who.id) + " arrived on worker " + std::to_string(me_) +
                     " from worker " + std::to_string(ticket->from) + (h.resume ? "" : " (no ticket?)"));
+            // the newest pose known here: the ticket's, or a ghost of the player relayed since (newer, as it kept
+            // sending to its old worker until now): viewers never get a pose older than one they already have
+            if (auto g = ghosts_.find(s->id); g != ghosts_.end() && g->second.key_hash == kh &&
+                                              int32_t(g->second.pose_ms - ticket->who.pose_ms) > 0) {
+                ticket->who.head = g->second.head;
+                ticket->who.blob = g->second.blob;
+                ticket->who.pose_ms = g->second.pose_ms;
+                ticket->who.pose_seq = g->second.pose_seq;
+            }
             ghosts_.erase(s->id);
             s->lent_from = ticket->from == me_ ? -1 : ticket->from;
             for (uint64_t k : ticket->blocks) lists_[kh].blocks.insert(k);
@@ -1431,7 +1443,7 @@ void Server::tick(uint32_t now) {
     rebuild_grid();
     std::vector<Session*> work;
     for (auto& [cid, sp] : sessions_)
-        if (sp->online && !sp->redirected && !sp->dead) work.push_back(sp.get());
+        if (sp->online && !sp->dead) work.push_back(sp.get());  // (a player being handed over too, until it arrives)
     uint64_t t0 = monotonic_us();
     parallel(work, &Server::interest, now);
     metrics_.interest_us.push_back(uint32_t(monotonic_us() - t0));
