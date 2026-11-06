@@ -125,6 +125,10 @@ void forget_server(const std::string& addr, int port);
 // each place's enemy runner as the server names it (GAPS X2), as this game's player numbers; false while this game
 // is in no party through a server (then the host's own table, coop_sync, decides)
 struct Runner { char stage[8]; int8_t room; int slot; };
+// (C13, through a server) the players of this sea square shown on no puppet: their places as the server's markers give
+// them (about 400 units exact), party members marked; empty without a server or when none came for 10 s
+struct Marker { int slot; float x, z; bool party; };
+std::vector<Marker> server_markers();
 bool server_runners(std::vector<Runner>& out);
 // The party's switches (GAPS C15; the server's PartyFlags, the same bits): through a server in a party, as its leader
 // set them (kept by the server, the same for every member); else `otherwise` (the direct transport: the host's own

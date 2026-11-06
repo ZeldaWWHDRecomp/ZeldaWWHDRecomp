@@ -26,6 +26,7 @@
 #include "coop_deck.h"
 #include "coop_emotes.h"
 #include "coop_modset.h"
+#include "coop_radar.h"
 #include "coop_layout.h"
 #include "coop_names.h"
 #include "coop_monsters.h"
@@ -87,6 +88,13 @@ struct Remote {
     int16_t yaw = 0;
     uint32_t sounds = 0;  // its sounds played here since the last trace
     uint32_t voice = 0;   // its voice frames played here since the last trace
+    // (C13) at mid range: its last place and when (its speed picks the cheap puppet's gait); far: a radar dot
+    float mid_at[3] = {};
+    uint32_t mid_ms = 0;
+    emotes::Gait gait = emotes::kWait;
+    bool far = false;
+    float far_at[3] = {};
+    uint32_t far_ms = 0;
 };
 Remote g_remote[net::kMaxPlayers];
 std::deque<std::pair<uint32_t, std::string>> g_state[net::kMaxPlayers][kKinds];  // each player's states by kind, by its time
@@ -414,6 +422,8 @@ struct Handler : net::Handler {
     void state(int from, uint8_t kind, uint32_t ms, const uint8_t* d, size_t n) override {
         Remote& r = g_remote[from];
         if (kind == kVoice) return;  // (voice chat: not in this build yet)
+        if (kind == kMid || kind == kFar) return far_pose(r, from, kind, ms, d, n);
+        r.far = false;
         r.clock.seen(ms, net::now_ms());
         if (kind == kPose) {
             Pose p;
@@ -424,7 +434,10 @@ struct Handler : net::Handler {
             r.size = n;
             if (static uint32_t k = 0; getenv("WWHD_COOP_DECK_TRACE") && ++k % 40 == 0)
                 mods::trace("coop: deck test: pose from %d at %u (newest kept %u), flags %02X, %zu bytes", from, ms, r.poses.empty() ? 0 : r.poses.back().first, p.flags, n);
-            if (!r.poses.empty() && (int32_t)(ms - r.poses.back().first) <= 0) return;  // (out of order: dropped)
+            if (!r.poses.empty() && (int32_t)(ms - r.poses.back().first) <= 0) {
+                if ((int32_t)(r.poses.back().first - ms) < 2000) return;  // (out of order: dropped)
+                r.poses.clear();  // (C13: after mid poses timed by this game's clock, its own again)
+            }
             // that player came into this game's stage or left it: told by name
             const std::string mine = stage_now(), now_at(p.stage, strnlen(p.stage, 8));
             if (const std::string was = r.poses.empty() ? now_at : std::string(r.poses.back().second.stage, strnlen(r.poses.back().second.stage, 8));
@@ -440,6 +453,42 @@ struct Handler : net::Handler {
             q.emplace_back(ms, std::string((const char*)d, n));
             while (q.size() > 2 && (int32_t)(ms - q.front().first) > 1000) q.pop_front();
         }
+    }
+    // (C13) a player at mid range: a cheap puppet (Link's body in a wait, walk or dash clip by its speed) at its place,
+    // shown like a near pose; far: a dot on the radar only (its puppet goes once no pose comes, kStale)
+    void far_pose(Remote& r, int from, uint8_t kind, uint32_t ms, const uint8_t* d, size_t n) {
+        struct __attribute__((packed)) Afar { float x, y, z; uint16_t yaw, anim; uint8_t flags; } a;
+        if (n < sizeof a) return;
+        memcpy(&a, d, sizeof a);
+        if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z)) return;
+        const uint32_t now = net::now_ms();
+        if (kind == kFar) {
+            r.far = true, r.far_at[0] = a.x, r.far_at[1] = a.y, r.far_at[2] = a.z, r.far_ms = now;
+            return;
+        }
+        r.far = false;
+        r.clock.seen(ms, now);
+        const float dt = r.mid_ms ? (now - r.mid_ms) / 1000.f : 0;
+        if (dt > 0.05f || !r.mid_ms) {
+            const float speed = r.mid_ms && dt < 2 ? std::hypot(a.x - r.mid_at[0], a.z - r.mid_at[2]) / dt : 0;
+            r.gait = emotes::gait_for(speed, r.gait);
+            r.mid_at[0] = a.x, r.mid_at[1] = a.y, r.mid_at[2] = a.z, r.mid_ms = now;
+        }
+        Pose p;
+        // (mid poses carry no stage or room: the server shows them within this game's instance; the room this game's)
+        const std::string st = stage_now();
+        memcpy(p.stage, st.data(), std::min<size_t>(st.size(), 8));
+        const uint32_t link = ld32(kPlay + inf::kLink);
+        p.room = link >= 0x10000000u ? (int8_t)ld8(link + kRoom) : 0;
+        p.pos[0] = a.x, p.pos[1] = a.y, p.pos[2] = a.z, p.yaw = (int16_t)a.yaw;
+        if (!emotes::cheap_pose(r.gait, now / 1000.f, body_model(), p)) return;
+        if (!r.poses.empty() && (int32_t)(ms - r.poses.back().first) <= 0) {
+            if ((int32_t)(r.poses.back().first - ms) < 2000) return;  // (out of order: dropped)
+            r.poses.clear();  // (another clock: this game's for a mid stream without a near pose before)
+        }
+        r.poses.emplace_back(ms, std::move(p));
+        while (r.poses.size() > 2 && (int32_t)(ms - r.poses.front().first) > 1000) r.poses.pop_front();
+        (void)from;
     }
     void joined(int id) override {
         ss::notice(net::name(id) + " joined (" + kTunics[net::tunic(id)] + ")");
@@ -481,6 +530,7 @@ Settings settings() {
         if (hostui::get("mod.coop.enabled", v)) g_set.on = atoi(v.c_str()) != 0;
         if (hostui::get("mod.coop.stay_together", v)) g_set.stay_together = atoi(v.c_str()) != 0;
         if (hostui::get("online.strangers", v)) g_set.strangers = atoi(v.c_str()) == 1;
+        if (hostui::get("online.radar", v)) g_set.radar = atoi(v.c_str()) != 0;
         if (hostui::get("online.server", v)) g_set.server = atoi(v.c_str()) != 0;
         if (hostui::get("online.server_addr", v) && !v.empty()) g_set.server_addr = v;
         if (hostui::get("online.server_port", v) && atoi(v.c_str()) > 0) g_set.server_port = atoi(v.c_str());
@@ -544,6 +594,7 @@ void save_settings(const Settings& s) {
     hostui::set("mod.coop.name", s.name), hostui::set("mod.coop.tunic", std::to_string(s.tunic));
     hostui::set("mod.coop.stay_together", s.stay_together ? "1" : "0");
     hostui::set("online.strangers", std::to_string(s.strangers));
+    hostui::set("online.radar", s.radar ? "1" : "0");
     hostui::set("online.server", s.server ? "1" : "0");
     hostui::set("online.server_addr", s.server_addr), hostui::set("online.server_port", std::to_string(s.server_port));
 }
@@ -1129,6 +1180,16 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         else memcpy(r.at, p.pos, 12);
         r.yaw = yaw;
         show(slot, &p, r.at, yaw, net::tunic(id), !net::member(id) && settings().strangers == 1);  // (X1b)
+    }
+    {  // (C13) the far players (no puppet): the far tier's places, else the server's markers, on the sea radar
+        std::vector<radar::Far> far;
+        bool known[net::kMaxPlayers] = {};
+        for (int id = 0; id < net::kMaxPlayers; id++)
+            if (Remote& r = g_remote[id]; id != net::my_id() && r.far && !r.shown && now - r.far_ms < 3000)
+                far.push_back({r.far_at[0], r.far_at[2], net::member(id)}), known[id] = true;
+        for (const net::Marker& m : net::server_markers())
+            if (m.slot >= 0 && m.slot < net::kMaxPlayers && !known[m.slot] && !g_remote[m.slot].shown) far.push_back({m.x, m.z, m.party}), known[m.slot] = true;
+        radar::step(link, far);
     }
     // their sounds, at their puppets as those are shown (each player's place kept for the sound engine, which keeps reading
     // it while the sound plays)

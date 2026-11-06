@@ -1461,6 +1461,8 @@ void state_loaded() {
     trace("coop: a full state was loaded: the puppets wait for Link to be made again");
 }
 
+int body_model() { return g_body_k; }
+
 void release(int i) {
     if (i >= 0 && i < kPuppets) g_puppet[i].shown = false, g_kit[i].release = true, emotes::stop(i);
 }

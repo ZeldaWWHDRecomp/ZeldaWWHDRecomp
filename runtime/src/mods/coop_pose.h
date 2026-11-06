@@ -82,6 +82,8 @@ void own_tunic(int tunic);
 constexpr int kCharacters = 4;
 constexpr const char* kCharacterNames[kCharacters] = {"Link", "Tetra", "Medli", "Zelda"};
 void own_character(int ch);
+// Link's body among his models (his creation order; -1 until he is drawn): what a cheap puppet poses (C13)
+int body_model();
 int own_char();
 // a sound effect Link's voice starts (JA_SE_LK_V_*: 0x1800 + the variant daPy_lk_c::voiceStart picks) as character `ch`
 // says it: hers (Medli's MD_*; Tetra and Zelda Zelda's ZL_*), 0 none (she has nothing for it); any other sound as it is

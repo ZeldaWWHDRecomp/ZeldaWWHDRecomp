@@ -27,6 +27,7 @@
 #include <vector>
 
 #include <functional>
+#include <mutex>
 #include <map>
 #include <mutex>
 
@@ -53,6 +54,22 @@ struct Peer {
     bool party = false;
 };
 
+// (C13) each player's tier as shown here, with the hold that keeps it from flickering
+constexpr uint32_t kTierHoldMs = 250;
+struct Tiered {
+    uint8_t shown = op::kTierNear, next = op::kTierNear;
+    uint32_t next_since = 0, shown_at = 0, switches = 0;
+    uint32_t near_ms = 0, near_at = 0;  // the newest near pose's sender time, and when it came
+    uint16_t sid = 0;                   // whose (a slot given to another player starts over)
+};
+Tiered g_tiered[kMaxPlayers];
+#pragma pack(push, 1)
+struct Afar { float x, y, z; uint16_t yaw, anim; uint8_t flags; };  // a mid or far pose to coop_sync (kMid, kFar)
+#pragma pack(pop)
+constexpr float kSeaOrigin = -350000.0f;  // the corner of square 0 (the server's default world.sea_origin)
+std::mutex g_far_mu;
+std::vector<Marker> g_markers;
+uint32_t g_markers_at = 0;
 op::Client* g_client = nullptr;
 bool g_active = false;
 std::string g_status = "Off";
@@ -244,6 +261,8 @@ bool start(const std::string& server, int port, const std::string& my_name, int 
 void stop(const char* why) {
     if (g_client) g_client->stop(), delete g_client, g_client = nullptr, mods::trace("coop: server session stopped%s%s", why ? ": " : "", why ? why : "");
     g_active = false, g_status = why ? why : "Off", g_me_sid = 0, g_peers.clear(), g_party = {}, g_slot_of_me = 0, g_where_known = false;
+    for (Tiered& t : g_tiered) t = Tiered{};
+    { std::lock_guard<std::mutex> l(g_far_mu); g_markers.clear(), g_markers_at = 0; }
     g_runner.clear();
     {
         std::lock_guard<std::mutex> l(g_ui_mu);
@@ -444,11 +463,57 @@ void poll(Handler& h) {
         case op::ClientEvent::kPoses:
             for (const op::PoseEntry& p : e.poses) {
                 const int s = slot_of(p.id);
-                if (s < 0 || p.tier != op::kTierNear || p.blob.empty()) continue;  // (mid / far tiers: puppets come with C13)
-                // (a server that stamps no time, ms 0: the time it came here, so the poses still follow one another)
-                h.state(s, 1, p.ms ? p.ms : now_ms(), p.blob.data(), p.blob.size());
+                if (s < 0) continue;
+                // (C13) the tier a player is shown at changes only once the new one has come for kTierHoldMs, or the
+                // old one stopped coming that long: a player at a sub-cell border does not flicker between them
+                Tiered& t = g_tiered[s];
+                if (t.sid != p.id) t = Tiered{}, t.sid = p.id;
+                const uint32_t now = now_ms();
+                if (p.tier != t.shown) {
+                    if (p.tier != t.next) t.next = p.tier, t.next_since = now;
+                    if (now - t.next_since < kTierHoldMs && now - t.shown_at < kTierHoldMs && t.shown_at) continue;
+                    t.shown = p.tier, t.switches++;
+                    mods::trace("coop: player %d shown %s", s, p.tier == op::kTierNear ? "near" : p.tier == op::kTierMid ? "at mid range" : "far");
+                }
+                t.shown_at = now;
+                if (p.tier == op::kTierNear && !p.blob.empty()) {
+                    // (a server that stamps no time, ms 0: the time it came here, so the poses still follow one another)
+                    if (p.ms) t.near_ms = p.ms, t.near_at = now;
+                    h.state(s, 1, p.ms ? p.ms : now, p.blob.data(), p.blob.size());
+                } else if (p.tier == op::kTierMid || p.tier == op::kTierFar) {
+                    // mid: its place, heading and state for a cheap puppet; far: a dot on the radar. Their time: the
+                    // sender's, from its last full one and the low 16 bits a mid pose carries (else this game's)
+                    uint32_t ms = now;
+                    if (p.tier == op::kTierMid && t.near_at) {
+                        const uint32_t guess = t.near_ms + (now - t.near_at);
+                        ms = (guess & 0xFFFF0000u) | (p.ms & 0xFFFFu);
+                        if ((int32_t)(ms - guess) > 32768) ms -= 0x10000;
+                        else if ((int32_t)(guess - ms) > 32768) ms += 0x10000;
+                    }
+                    Afar a{p.head.x, p.head.y, p.head.z, p.head.yaw, p.head.anim, p.head.flags};
+                    h.state(s, p.tier == op::kTierMid ? 6 : 7, ms, (const uint8_t*)&a, sizeof a);
+                }
+            }
+            if (static uint32_t last = 0; now_ms() - last >= 5000) {
+                last = now_ms();
+                int n[3] = {}, sw = 0;
+                for (int i = 0; i < kMaxPlayers; i++)
+                    if (g_slot[i].on && i != g_slot_of_me && g_tiered[i].shown_at && now_ms() - g_tiered[i].shown_at < 2000) n[g_tiered[i].shown]++, sw += g_tiered[i].switches;
+                mods::trace("coop: tiers: %d near, %d at mid range, %d far; %d tier changes so far", n[0], n[1], n[2], sw);
             }
             break;
+        case op::ClientEvent::kMarkers: {  // (C13) the rest of the square: dots on the radar
+            std::lock_guard<std::mutex> l(g_far_mu);
+            g_markers.clear();
+            for (const op::Marker& m : e.markers) {
+                const int s = slot_of(m.id);
+                if (s < 0) continue;
+                const float sx = kSeaOrigin + float(m.square % op::kSeaSquares) * op::kSquareUnits, sz = kSeaOrigin + float(m.square / op::kSeaSquares) * op::kSquareUnits;
+                g_markers.push_back({s, sx + (m.x + 0.5f) / 256.f * op::kSquareUnits, sz + (m.z + 0.5f) / 256.f * op::kSquareUnits, (m.flags & 1) != 0});
+            }
+            g_markers_at = now_ms();
+            break;
+        }
         case op::ClientEvent::kApp: {
             const int s = slot_of(e.id);
             if (s < 0 || !member_sid(e.id)) break;  // (presence: nothing of a stranger's acts here)
@@ -661,6 +726,11 @@ bool set_party_flags(uint16_t flags, std::string& why) {
     return true;
 }
 
+std::vector<Marker> markers() {
+    std::lock_guard<std::mutex> l(g_far_mu);
+    if (!g_markers_at || now_ms() - g_markers_at > 10000) return {};
+    return g_markers;
+}
 bool runners(std::vector<Runner>& out) {
     out.clear();
     if (!g_client || !in_party()) return false;

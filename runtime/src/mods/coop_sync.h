@@ -16,7 +16,7 @@ struct Cpu;
 
 namespace mods::coop::sync {
 
-enum Kind : uint8_t { kPose = 1, kShip, kMonsters, kVoice, kArea, kKinds };  // the unreliable states (kVoice: coop_voice.h's
+enum Kind : uint8_t { kPose = 1, kShip, kMonsters, kVoice, kArea, kMid, kFar, kKinds };  // (kMid, kFar: a server's tiers, C13)  // the unreliable states (kVoice: coop_voice.h's
 // frames; kArea: the monsters of the place a player runs, coop_monsters.h)
 
 struct Settings {
@@ -29,6 +29,7 @@ struct Settings {
     bool server = false;               // through a server (online, the party there) instead of directly to a host
     std::string server_addr = "127.0.0.1";
     int server_port = 7777;
+    bool radar = true;                 // (C13) far players as dots on a small sea radar (through a server, at sea)
     int strangers = 0;                 // how players outside the party look (presence): 0 like any Link, 1 see-through
     bool stay_together = false;        // the fork's way (a party option): the guest plays in the host's world, its saves
                                        // off, asked before going where the host isn't, back to the title when the host goes

@@ -218,6 +218,11 @@ void draw_tab() {
         if (ImGui::RadioButton(i ? "See-through" : "Like any Link", s.strangers == i)) hostui::post([i] { change([&](sync::Settings& x) { x.strangers = i; }); });
     }
     ImGui::TextDisabled("Party members always look solid. (Players outside your party come with online servers.)");
+    {
+        bool radar = s.radar;
+        if (ImGui::Checkbox("Far players on a sea radar", &radar)) hostui::post([radar] { change([&](sync::Settings& x) { x.radar = radar; }); });
+        ImGui::TextDisabled("At sea, through a server: players too far to be drawn show as dots, party members in green.");
+    }
     ImGui::Separator();
     ImGui::TextWrapped("Status: %s", sync::status());
     if (s.on && s.notice_ok && net::role() == net::Role::kOff && ImGui::Button("Connect again")) hostui::post([] { sync::retry(); });

@@ -34,6 +34,7 @@ struct Clips {
 };
 std::atomic<int> g_load{0};  // 0 not asked, 1 loading, 2 ready, 3 failed
 Clips g_clips;               // (written by the loader before g_load is 2)
+std::vector<std::vector<Mx>> g_gaits[kGaits];  // (C13) the cheap puppets' clips, frame by frame
 
 void load() {
     wc::Bytes link, anim;
@@ -65,6 +66,25 @@ void load() {
                 mods::trace("coop: emote %s: its clip %s is not read (%s)", e.name, e.clip, no.c_str());
             }
             c.frames.push_back(std::move(out));
+        }
+        for (int gi = 0; gi < kGaits; gi++) {
+            wc::Clip clip;
+            std::string no;
+            if (!wc::clip(anim, kGaitClips[gi], clip, no) || clip.frames <= 1) { mods::trace("coop: clip %s not read (%s)", kGaitClips[gi], no.c_str()); continue; }
+            std::vector<int> track(skel.size(), -1);
+            for (size_t i = 0; i < skel.size(); i++)
+                for (size_t j = 0; j < clip.bones.size(); j++)
+                    if (clip.bones[j].name == skel[i].name) track[i] = int(j);
+            for (unsigned f = 0; f < clip.frames; f++) {
+                const wc::World w = wc::fk(skel, wc::sample(skel, clip, track, f));
+                std::vector<Mx> joints(skel.size());
+                for (size_t b = 0; b < skel.size(); b++)
+                    for (int r = 0; r < 3; r++) {
+                        for (int k = 0; k < 3; k++) joints[b].m[4 * r + k] = float(w.rot[b].m[r][k]);
+                        joints[b].m[4 * r + 3] = float(w.pos[b][r]);
+                    }
+                g_gaits[gi].push_back(std::move(joints));
+            }
         }
         g_clips = std::move(c);
         mods::trace("coop: emotes: Link's skeleton (%zu bones) and %d clips read", g_clips.bones, kCount);
@@ -206,6 +226,22 @@ void pose(int slot, Pose& p, const float pos[3], int body_k) {
         mods::trace("coop: puppet %d: emote %s on its pose: %s (body %d: %zu joints, the clip %zu)", slot, kEmotes[u.emote].name,
                     ok ? "put on" : "not put on", body_k, body ? body->j.size() : 0, joints.size());
     }
+}
+
+bool cheap_pose(Gait g, float t, int body_k, Pose& p) {
+    if (!ready() || g >= kGaits || body_k < 0 || g_gaits[g].size() < 2) return false;
+    const auto& frames = g_gaits[g];
+    const float len = float(frames.size() - 1) / kFps;
+    const float f = std::fmod(std::max(t, 0.f), len) * kFps;
+    const size_t f0 = std::min(size_t(f), frames.size() - 1), f1 = std::min(f0 + 1, frames.size() - 1);
+    Model m;
+    m.k = (uint8_t)body_k;
+    m.j.resize(frames[f0].size());
+    for (size_t b = 0; b < m.j.size(); b++)
+        if (!to_joint(blend(frames[f0][b], frames[f1][b], f - float(f0)), m.j[b])) return false;
+    p.models.clear();
+    p.models.push_back(std::move(m));
+    return true;
 }
 
 void mine(uint8_t id) {

@@ -213,4 +213,17 @@ void step(uint32_t link);
 // main (before the overlay seals): the bubble's layer
 void register_overlay();
 
+// (C13) a cheap puppet for a player at mid range: only Link's body, posed by one of his own clips by its speed
+enum Gait : uint8_t { kWait, kWalk, kDash, kGaits };
+inline constexpr const char* kGaitClips[kGaits] = {"wait", "walk", "dash"};
+// the gait for a speed (units a second), with hysteresis around the steps (`was` the gait shown)
+inline Gait gait_for(float speed, Gait was) {
+    const float up[kGaits] = {0, 40, 330}, down[kGaits] = {0, 25, 290};
+    Gait g = kWait;
+    for (int i = 1; i < kGaits; i++) if (speed >= (int(was) >= i ? down[i] : up[i])) g = Gait(i);
+    return g;
+}
+// p's models: the body (Link's model body_k) in that gait at `t` seconds (looping); false while the clips aren't read
+bool cheap_pose(Gait g, float t, int body_k, Pose& p);
+
 }  // namespace mods::coop::emotes
