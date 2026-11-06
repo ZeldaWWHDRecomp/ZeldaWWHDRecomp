@@ -755,7 +755,7 @@ void poll(Cpu* c, bool on) {
     if (!on && net::role() == net::Role::kOff && g_status.rfind("Not started", 0) != 0) g_status = "Off";
     // test aid: WWHD_COOP_TEST_USE_PARTY_MODS=1: refused for its gameplay mods, this game takes the party's set (as the
     // Online page's "Use the party's mods" does) and connects again (C5)
-    if (static const bool use_party = getenv("WWHD_COOP_TEST_USE_PARTY_MODS") != nullptr; use_party && net::role() == net::Role::kOff)
+    if (static const bool use_party = getenv("WWHD_COOP_TEST_USE_PARTY_MODS") != nullptr; use_party && (net::role() == net::Role::kOff || net::via_server()))
         if (const std::string got = net::refused_mods(); !got.empty()) {
             static std::string done;
             modset::Set party;
@@ -765,7 +765,10 @@ void poll(Cpu* c, bool on) {
                 std::string why;
                 const bool ok = modset::use(party, restart, why);
                 mods::trace("coop: test: the party's mods taken: %s%s", ok ? "yes" : why.c_str(), restart ? " (a restart needed)" : "");
-                if (ok && !restart) retry();
+                if (ok && !restart) {
+                    if (net::role() != net::Role::kOff) net::stop("your mods changed: connecting again");  // (a server: the new list goes in the next hello)
+                    retry();
+                }
             }
         }
     if (net::role() == net::Role::kOff) {

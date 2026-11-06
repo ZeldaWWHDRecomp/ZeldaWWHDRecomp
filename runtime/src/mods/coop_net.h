@@ -132,6 +132,14 @@ std::vector<Marker> server_markers();
 // (C14, through a server) a player's key hash (0: none, or the direct transport), and telling the server a block
 uint64_t player_key(int id);
 void tell_block(uint64_t key, bool on);
+void tell_mute(uint64_t key, bool on);
+// (server mod rules, GAPS C5) why the server or a party turned this game away for its gameplay mods (the problems'
+// codes as coop_modset.h's); empty otherwise
+struct ModIssue { uint8_t code; std::string id, wanted, have; };
+std::vector<ModIssue> mod_issues();
+// a server's mod rules in words, asked for without joining (query_rules starts the question; "" until the answer)
+void query_rules(const std::string& addr, int port);
+std::string server_rules(const std::string& addr, int port);
 bool server_runners(std::vector<Runner>& out);
 // The party's switches (GAPS C15; the server's PartyFlags, the same bits): through a server in a party, as its leader
 // set them (kept by the server, the same for every member); else `otherwise` (the direct transport: the host's own

@@ -129,7 +129,9 @@ std::span<const Entry> entries() { return catalogue; }
 bool changes_gameplay(std::string_view id) {
     static constexpr std::string_view kGameplay[] = {"camera-directed-items", "lock-on", "wall-climb", "quick-use", "quick-doors",
                                                      "move-speed", "ladder-speed", "sidle-speed", "ivy-speed", "hang-speed",
-                                                     "sail-speed", "auto-wind", "jump-anywhere", "leaf-rise", "story-system"};
+                                                     "sail-speed", "auto-wind", "jump-anywhere", "leaf-rise"};
+    // (not the Story system itself: on by default, it changes nothing until a story package, which carries its own
+    // "gameplay" flag, is installed)
     for (std::string_view g : kGameplay) if (g == id) return true;
     return false;
 }

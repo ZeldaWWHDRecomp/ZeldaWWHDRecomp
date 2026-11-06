@@ -30,9 +30,9 @@
 #include <functional>
 #include <mutex>
 #include <map>
-#include <mutex>
 
 #include "coop_layout.h"
+#include "coop_modset.h"
 #include "coop_progress.h"
 #include "coop_servers.h"
 #include "mods.h"
@@ -230,6 +230,86 @@ bool invite(const std::string& code, std::string& why);
 void leave_party();
 bool active() { return g_active; }
 
+void tell_mute(uint64_t key, bool on) { if (g_client && key) g_client->mute(key, on); }
+// (C5 through a server) the problems a server or a party named, and the party's set from its invitation
+std::mutex g_mods_mu;
+std::vector<ModIssue> g_mod_issues;
+std::string g_party_set;  // the party's gameplay mods (coop_modset's wire form) after a party refused this game's
+std::map<uint32_t, std::string> g_invite_sets;  // each invitation's party set
+std::vector<ModIssue> issues_of(const std::vector<op::ModProblem>& ps) {
+    std::vector<ModIssue> out;
+    for (const op::ModProblem& p : ps) out.push_back({(uint8_t)p.problem, p.id, p.wanted, p.have});
+    return out;
+}
+std::string set_of(const std::vector<op::ModRef>& refs) {
+    modset::Set s;
+    for (const op::ModRef& r : refs) {
+        modset::ModRef m;
+        m.id = r.id, m.version = r.version, m.hash = r.hash;
+        s.push_back(std::move(m));
+    }
+    return modset::encode(s);
+}
+std::vector<ModIssue> mod_issues() { std::lock_guard<std::mutex> l(g_mods_mu); return g_mod_issues; }
+std::string refused_mods() { std::lock_guard<std::mutex> l(g_mods_mu); return g_party_set; }
+// a server's rules in words (the server list's "Rules")
+std::string rules_words(const op::ServerInfo& info) {
+    const op::ModRules& r = info.mods;
+    if (r.vanilla_only) return "No mods that change the game.";
+    if (r.empty()) return "Any mods.";
+    std::string req, allow, ban;
+    for (const op::ModRule& m : r.rules) {
+        std::string& to = m.kind == op::ModRuleKind::kRequired ? req : m.kind == op::ModRuleKind::kBanned ? ban : allow;
+        to += (to.empty() ? "" : ", ") + modset::name_of(m.id) + (m.version.empty() ? "" : " " + m.version);
+    }
+    std::string out;
+    if (!req.empty()) out += "Needs " + req + ". ";
+    if (!allow.empty()) out += "Allows only " + allow + (req.empty() ? "" : " (and the ones it needs)") + ". ";
+    if (!ban.empty()) out += "Bans " + ban + ".";
+    return out;
+}
+struct Query { op::Client* client = nullptr; std::string key; uint32_t since = 0; };
+Query g_query;
+std::map<std::string, std::string> g_rules_seen;  // "addr:port": the rules in words
+void query_rules(const std::string& addr, int port) {
+    std::lock_guard<std::mutex> l(g_mods_mu);
+    if (g_query.client) return;  // (one at a time)
+    op::ClientConfig cfg;
+    cfg.host = addr, cfg.port = (uint16_t)port, cfg.game_data = ss::game_data_id(), cfg.query_only = true, cfg.tag = "wwhd";
+    cfg.reconnect = false;
+    std::string why;
+    op::crypto::Identity id;
+    if (!op::crypto::Identity::load_or_create(path_of_identity(), id, why)) return;
+    cfg.identity = id;
+    auto* c = new op::Client();
+    const std::string key = addr + ":" + std::to_string(port);
+    if (!c->start(cfg, why)) { delete c; g_rules_seen[key] = "Can't ask: " + why; return; }
+    g_query = {c, key, now_ms()};
+    g_rules_seen[key] = "Asking...";
+}
+std::string server_rules(const std::string& addr, int port) {
+    std::lock_guard<std::mutex> l(g_mods_mu);
+    const auto it = g_rules_seen.find(addr + ":" + std::to_string(port));
+    return it == g_rules_seen.end() ? "" : it->second;
+}
+// each poll: the server list's question answered (or given up after 10 s)
+void poll_query() {
+    std::lock_guard<std::mutex> l(g_mods_mu);
+    if (!g_query.client) return;
+    bool done = false;
+    for (const op::ClientEvent& e : g_query.client->poll(now_ms())) {
+        if (e.kind == op::ClientEvent::kServerRules) g_rules_seen[g_query.key] = rules_words(e.info), done = true;
+        else if (e.kind == op::ClientEvent::kRefused || e.kind == op::ClientEvent::kServerKeyChanged) g_rules_seen[g_query.key] = "No answer: " + e.text, done = true;
+        else if (e.kind == op::ClientEvent::kStateChanged && e.state == op::ClientState::kStopped) done = true;
+    }
+    if (!done && now_ms() - g_query.since > 10000) g_rules_seen[g_query.key] = "No answer from the server", done = true;
+    if (done) {
+        mods::trace("coop: rules of %s: %s", g_query.key.c_str(), g_rules_seen[g_query.key].c_str());
+        g_query.client->stop();
+        delete g_query.client;
+        g_query = {};
+    }
+}
 bool start(const std::string& server, int port, const std::string& my_name, int my_tunic, std::string& why) {
     stop(nullptr);
     op::crypto::Identity id;
@@ -240,6 +320,22 @@ bool start(const std::string& server, int port, const std::string& my_name, int 
     if (const char* e = getenv("WWHD_COOP_GAME")) cfg.game_data = strtoull(e, nullptr, 16);
     cfg.name = my_name.substr(0, 24), cfg.look = (uint32_t)(my_tunic & 3), cfg.tag = "wwhd";
     cfg.near_cap = (uint8_t)(shown_cap() - 1);  // (the server's near tier: no more poses than are shown)
+    for (const modset::ModRef& m : modset::current()) {  // (C5) this game's gameplay mods, for the server's rules and parties
+        op::ModRef r;
+        r.id = m.id, r.version = m.version, r.hash = m.hash;
+        cfg.mods.push_back(std::move(r));
+    }
+    {
+        std::lock_guard<std::mutex> l(g_mods_mu);
+        g_mod_issues.clear(), g_party_set.clear();
+    }
+    {
+        std::string list;
+        for (const op::ModRef& r : cfg.mods) list += " " + r.id + (r.version.empty() ? "" : "@" + r.version);
+        mods::trace("coop: gameplay mods sent:%s", list.empty() ? " none" : list.c_str());
+    }
+    // test aid: WWHD_COOP_TEST_RULES=1: the server's mod rules asked for first, as the server list's button does
+    if (getenv("WWHD_COOP_TEST_RULES")) query_rules(server, port);
 #ifdef __ANDROID__
     cfg.device = op::kPhone;
 #endif
@@ -435,6 +531,13 @@ void poll(Handler& h) {
             break;
         case op::ClientEvent::kRefused:
             g_end_why = servers::refusal((int)e.refusal, e.text == op::refusal_text(e.refusal) ? std::string() : e.text, e.seconds);
+            if (e.refusal == op::Refusal::kMods) {  // (C5) each mod named
+                std::vector<modset::Problem> ps;
+                for (const op::ModProblem& p : e.mod_problems) ps.push_back({(uint8_t)p.problem, p.id, p.wanted, p.have});
+                g_end_why = "The server doesn't take your mods: " + modset::describe(ps) + ".";
+                std::lock_guard<std::mutex> l(g_mods_mu);
+                g_mod_issues = issues_of(e.mod_problems);
+            }
             g_status = g_end_why;
             mods::trace("coop: server refused (%d): %s", (int)e.refusal, e.text.c_str());
             say(g_end_why, false);
@@ -550,6 +653,10 @@ void poll(Handler& h) {
             std::lock_guard<std::mutex> l(g_ui_mu);
             g_invites.erase(std::remove_if(g_invites.begin(), g_invites.end(), [&](const Invite& i) { return i.party == e.party_id; }), g_invites.end());
             g_invites.push_back({e.party_id, e.player.name});
+            {
+                std::lock_guard<std::mutex> lm(g_mods_mu);
+                g_invite_sets[e.party_id] = set_of(e.mods);  // (C5: the party's mods, for "use the party's mods")
+            }
             if (g_invites.size() > 8) g_invites.erase(g_invites.begin());
             if (getenv("WWHD_ONLINE_ACCEPT")) g_client->party_accept(e.party_id), g_invites.pop_back();  // (tests)
         }
@@ -594,6 +701,16 @@ void poll(Handler& h) {
             break;
         case op::ClientEvent::kPartyResult:
             mods::trace("coop: server: party result %u: %s", e.value, e.text.c_str());
+            if (e.value == 10) {  // (C5) the party plays with other gameplay mods: each named, and its set kept
+                std::vector<modset::Problem> ps;
+                for (const op::ModProblem& p : e.mod_problems) ps.push_back({(uint8_t)p.problem, p.id, p.wanted, p.have});
+                std::lock_guard<std::mutex> l(g_mods_mu);
+                g_mod_issues = issues_of(e.mod_problems);
+                for (const auto& [party, set] : g_invite_sets) if (!set.empty()) g_party_set = set;  // (the newest invitation's)
+                say("Your mods that change the game differ from the party's: " + modset::describe(ps) + ".", false);
+                mods::trace("coop: the party's mods differ: %s", modset::describe(ps).c_str());
+                break;
+            }
             if (e.value == 9) g_have_record = false;  // (not restored: invitations again)
             say(servers::party(e.value, e.text), true);
             break;
@@ -636,12 +753,19 @@ void poll(Handler& h) {
     }
     // test aid: WWHD_ONLINE_INVITE=<friend code> or @<file holding it>: invited once online (the file may come later)
     if (!g_auto_invite.empty() && g_client->state() == op::ClientState::kOnline) {
+        // test aid: WWHD_ONLINE_INVITE_EVERY=<s>: invited again every <s> seconds while nobody else is in the party (C5:
+        // one refused for its mods comes back with the party's mods); else once
+        static const int every = getenv("WWHD_ONLINE_INVITE_EVERY") ? atoi(getenv("WWHD_ONLINE_INVITE_EVERY")) : 0;
+        static uint32_t last = 0;
+        bool alone = true;
+        for (const Peer& p : g_slot) alone &= !(p.on && p.party);
         const std::string code = read_code(g_auto_invite);
-        if (!code.empty()) {
+        if (!code.empty() && (!last || (every > 0 && alone && now_ms() - last >= (uint32_t)every * 1000))) {
             std::string why;
+            last = now_ms();
             if (invite(code, why)) mods::trace("coop: server: invited %s", code.c_str());
             else say(why, true);
-            g_auto_invite.clear();
+            if (every <= 0) g_auto_invite.clear();
         }
     }
     // test aids for drop-in / drop-out (C17), main thread: WWHD_ONLINE_LEAVE_EVERY=<s>,<n>: this game leaves its party

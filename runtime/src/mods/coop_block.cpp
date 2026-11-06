@@ -60,6 +60,7 @@ bool set(int id, Kind kind, std::string& why) {
     save_locked();
     if (kind == kBlocked) net::tell_block(key, true);
     else if (was_blocked) net::tell_block(key, false);  // (a block turned into a mute: they are seen again)
+    net::tell_mute(key, kind == kMuted);  // (the server stops their emotes, effects and sounds too)
     mods::trace("coop: player %d %s", id, kind == kBlocked ? "blocked" : "muted");
     return true;
 }
@@ -71,6 +72,7 @@ bool undo(uint64_t key) {
     if (!g_list.clear(key)) return false;
     save_locked();
     if (was_blocked) net::tell_block(key, false);
+    else net::tell_mute(key, false);
     mods::trace("coop: a player unblocked or unmuted");
     return true;
 }
@@ -95,8 +97,8 @@ void resend() {
     load_locked();
     size_t n = 0;
     for (const Entry& e : g_list.entries())
-        if (e.kind == kBlocked) net::tell_block(e.key, true), n++;
-    if (n) mods::trace("coop: %zu blocks sent to the server again", n);
+        e.kind == kBlocked ? net::tell_block(e.key, true) : net::tell_mute(e.key, true), n++;
+    if (n) mods::trace("coop: %zu blocks and mutes sent to the server again", n);
 }
 
 }  // namespace mods::coop::block

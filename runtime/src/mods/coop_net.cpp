@@ -81,6 +81,12 @@ bool runners(std::vector<Runner>& out);
 std::vector<Marker> markers();
 uint64_t player_key(int id);
 void tell_block(uint64_t key, bool on);
+void tell_mute(uint64_t key, bool on);
+std::vector<ModIssue> mod_issues();
+std::string refused_mods();
+void poll_query();
+void query_rules(const std::string& addr, int port);
+std::string server_rules(const std::string& addr, int port);
 bool party_flags(uint16_t& flags, bool& leading);
 bool set_party_flags(uint16_t flags, std::string& why);
 }  // namespace srv
@@ -326,7 +332,12 @@ bool member(int id) { VIA_SERVER(member(id)); return id >= 0 && id < kMaxDirect 
 
 void set_hello_mods(const std::string& encoded) { g_hello_mods = encoded.empty() ? std::string(1, '\0') : encoded; }
 void set_hello_check(HelloCheck check) { g_hello_check = check; }
-std::string refused_mods() { return g_refused_mods; }
+std::string refused_mods() {
+#if WWHD_ONLINE
+    if (const std::string s = srv::refused_mods(); !s.empty()) return s;  // (a party through a server)
+#endif
+    return g_refused_mods;
+}
 
 bool start(Role r, const std::string& addr, int port, const std::string& my_name, int my_tunic, std::string& why) {
     g_refused_mods.clear();
@@ -450,6 +461,9 @@ bool migrate(Handler& h) {
 }
 
 void poll(Handler& h) {
+#if WWHD_ONLINE
+    srv::poll_query();  // (the server list's question about a server's mod rules, online or not)
+#endif
     VIA_SERVER(poll(h));
     if (g_sock == kNoSocket) return;
     const uint32_t now = now_ms();
@@ -554,6 +568,10 @@ bool server_runners(std::vector<Runner>& out) { return srv::active() && srv::run
 std::vector<Marker> server_markers() { return srv::active() ? srv::markers() : std::vector<Marker>{}; }
 uint64_t player_key(int id) { return srv::active() ? srv::player_key(id) : 0; }
 void tell_block(uint64_t key, bool on) { if (srv::active()) srv::tell_block(key, on); }
+void tell_mute(uint64_t key, bool on) { if (srv::active()) srv::tell_mute(key, on); }
+std::vector<ModIssue> mod_issues() { return srv::mod_issues(); }
+void query_rules(const std::string& addr, int port) { srv::query_rules(addr, port); }
+std::string server_rules(const std::string& addr, int port) { return srv::server_rules(addr, port); }
 bool party_flags(uint16_t& flags, bool& leading) { return srv::active() && srv::party_flags(flags, leading); }
 bool set_party_flags(uint16_t flags, std::string& why) {
     if (!srv::active()) return why = "not through a server", false;
@@ -571,6 +589,10 @@ bool server_runners(std::vector<Runner>& out) { out.clear(); return false; }
 std::vector<Marker> server_markers() { return {}; }
 uint64_t player_key(int) { return 0; }
 void tell_block(uint64_t, bool) {}
+void tell_mute(uint64_t, bool) {}
+std::vector<ModIssue> mod_issues() { return {}; }
+void query_rules(const std::string&, int) {}
+std::string server_rules(const std::string&, int) { return ""; }
 bool party_flags(uint16_t&, bool&) { return false; }
 bool set_party_flags(uint16_t, std::string& why) { why = "this build has no server connection"; return false; }
 #endif

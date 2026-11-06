@@ -47,6 +47,8 @@ if [ -n "${DUO_SERVER:-}" ]; then
     "$([ "${DUO_UDP:-1}" = 0 ] && echo false || echo true)" "$port" "$out" "$out" "$out" "$([ "${DUO_TEAM_STATE:-1}" = 1 ] && echo "$out/server/team-state.txt")" "${DUO_PER_IP:-8}" "${DUO_UPLOAD:-8192}" > "$out/server/server.toml"
   # DUO_GAMES="0x..., 0x...": the server takes only these games (else any, each its own world)
   [ -n "${DUO_GAMES:-}" ] && printf '[network]\ngame_data = [%s]\n' "$DUO_GAMES" >> "$out/server/server.toml"
+  # DUO_MODS='vanilla_only = true' or 'required = ["jump-anywhere"]': the server's [mods] rules (C5)
+  [ -n "${DUO_MODS:-}" ] && printf '[mods]\n%s\n' "$DUO_MODS" >> "$out/server/server.toml"
   (exec "$root/build/rel/server/wwhd-online-server" --config "$out/server/server.toml" 2>&1 | head -c 5000000 > "$out/server.log") &
   spid=$!
   sleep 1

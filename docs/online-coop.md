@@ -132,8 +132,8 @@ your own game files.
 
 ## Mods
 
-Only mods that change how the game plays count online. Those are built-in mods like Jump anywhere, Climb any wall,
-the traversal speeds or the Story system; packages whose author marked them as gameplay mods; and a randomized game.
+Only mods that change how the game plays count online. Those are built-in mods like Jump anywhere, Climb any wall
+or the traversal speeds; packages whose author marked them as gameplay mods; and a randomized game.
 Graphics packs, the camera mods, texts and other mods that only change what you see are never sent or checked.
 
 - **In a party** everyone plays with the leader's gameplay mods: the same mods, in the same version, with the same
@@ -141,8 +141,9 @@ Graphics packs, the camera mods, texts and other mods that only change what you 
   mod the party uses installed, **Use the party's mods** turns them on and your other gameplay mods off. Some mods
   need a restart for that; the page says so. Then connect again.
 - **Players outside your party** are never checked.
-- **A server** can also set rules: no gameplay mods, only some, some required or some banned. If it turns you
-  away, the Online page names each mod it doesn't accept. Nothing is ever downloaded from a server.
+- **A server** can also set rules: no gameplay mods, only some, some required or some banned. **Mod rules** next to
+  a server in Settings > Online shows its rules before you join. If it turns you away, the Online page names each
+  mod it doesn't accept. Nothing is ever downloaded from a server.
 
 ## What stays yours
 

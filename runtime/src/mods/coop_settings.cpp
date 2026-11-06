@@ -66,7 +66,16 @@ std::string g_mods_done;  // what the last switch said
 void draw_party_mods() {
     const std::string got = net::refused_mods();
     modset::Set party;
-    if (got.empty() || !modset::decode((const uint8_t*)got.data(), got.size(), party)) return;
+    if (got.empty() || !modset::decode((const uint8_t*)got.data(), got.size(), party)) {
+        // (a server's rules: each mod it doesn't take; no set to switch to)
+        const auto issues = net::mod_issues();
+        if (issues.empty()) return;
+        ImGui::Spacing();
+        ImGui::TextUnformatted("The server doesn't take these mods:");
+        for (const net::ModIssue& i : issues) ImGui::BulletText("%s", modset::words(modset::Problem{i.code, i.id, i.wanted, i.have}, modset::name_of(i.id)).c_str());
+        ImGui::TextDisabled("Change them in Mods, then connect again.");
+        return;
+    }
     const auto problems = modset::diff(party, modset::current());
     ImGui::Spacing();
     ImGui::TextUnformatted("The party plays with other mods that change the game:");
@@ -163,7 +172,17 @@ void draw_tab() {
                 ImGui::EndDisabled();
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Forget")) hostui::post([a = v.addr, p = v.port] { net::forget_server(a, p); });
+                ImGui::SameLine();  // (C5) the server's mod rules, asked for without joining
+                if (ImGui::SmallButton("Mod rules")) hostui::post([a = v.addr, p = v.port] { net::query_rules(a, p); });
+                if (const std::string r = net::server_rules(v.addr, v.port); !r.empty()) ImGui::TextDisabled("    Mod rules: %s", r.c_str());
                 ImGui::PopID();
+            }
+            if (std::none_of(saved.begin(), saved.end(), [&](const servers::Server& v) { return v.addr == s.server_addr && v.port == s.server_port; }) &&
+                !s.server_addr.empty()) {
+                ImGui::BulletText("%s:%d (not visited yet)", s.server_addr.c_str(), s.server_port);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Mod rules##new")) hostui::post([a = s.server_addr, p = s.server_port] { net::query_rules(a, p); });
+                if (const std::string r = net::server_rules(s.server_addr, s.server_port); !r.empty()) ImGui::TextDisabled("    Mod rules: %s", r.c_str());
             }
             ImGui::TextDisabled("Servers are saved when you connect. Each server's key is remembered from your first visit, so");
             ImGui::TextDisabled("another server using its address is noticed. Forget also forgets the key.");
