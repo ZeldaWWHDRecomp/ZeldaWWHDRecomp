@@ -15,8 +15,8 @@ struct Cpu;
 namespace mods::coop {
 
 // puppets: other players drawn (the direct transport and a party use 3; strangers more, GAPS C11); each made only
-// when shown (its kit on a heap of its own)
-constexpr int kPuppets = 15;
+// when shown (its kit on a heap of its own over the port's memory)
+constexpr int kPuppets = 31;  // (32 players an instance: GAPS C11)
 
 struct Joint { int16_t q[4], t[3]; uint8_t s; };  // rotation (x32767), translation (x8), uniform scale (x64)
 constexpr uint8_t kHeld = 0xFF;  // a model's k: one Link makes as he takes it out (his sword, an item), by its file

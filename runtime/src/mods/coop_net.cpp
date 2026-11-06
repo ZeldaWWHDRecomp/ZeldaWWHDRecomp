@@ -112,8 +112,8 @@ struct Player { bool on = false; std::string name; int tunic = 0; sockaddr_in ad
 socket_t g_sock = kNoSocket;
 Role g_role = Role::kOff;
 int g_me = 0;
-Link g_link[kMaxPlayers];     // host: [i] guest i; guest: [0] the host
-Player g_player[kMaxPlayers];
+Link g_link[kMaxDirect];     // host: [i] guest i; guest: [0] the host
+Player g_player[kMaxDirect];
 std::map<uint8_t, std::pair<uint32_t, std::string>> g_states;  // this game's newest, by kind (time, bytes)
 uint32_t g_next_tick = 0;
 std::string g_status = "Off";
@@ -191,7 +191,7 @@ void hello(const sockaddr_in& from, const uint8_t* d, size_t n, Handler& h) {
     if (proto == kProto && len < 11) return;
     if (proto == kProto) memcpy(&game, b + 2, 8);
     int id = 0;
-    for (int i = 1; i < kMaxPlayers && !id; i++) if (!g_link[i].on) id = i;
+    for (int i = 1; i < kMaxDirect && !id; i++) if (!g_link[i].on) id = i;
     char t[160];
     if (proto != kProto) snprintf(t, sizeof t, "Different version of online co-op: host %d, you %d. Both need a version with the same co-op.", kProto, proto), no = t;
     else if (game != game_hash())
@@ -210,7 +210,7 @@ void hello(const sockaddr_in& from, const uint8_t* d, size_t n, Handler& h) {
     int tunic = b[10] % 4;
     for (int k = 0; k < 4; k++, tunic = (b[10] + k) % 4) {
         bool worn = false;
-        for (int i = 0; i < kMaxPlayers; i++) worn |= i != id && g_player[i].on && g_player[i].tunic == tunic;
+        for (int i = 0; i < kMaxDirect; i++) worn |= i != id && g_player[i].on && g_player[i].tunic == tunic;
         if (!worn) break;
     }
     g_player[id] = {true, std::string((const char*)b + 11, std::min<size_t>(len - 11, 31)), tunic};
@@ -247,23 +247,23 @@ void take(int li, const uint8_t* d, size_t n, Handler& h) {
         if (type == kHello) {  // host: the new guest in, everyone told
             g_link[li].heard = now_ms();
             queue(l, kWelcome, 0, std::string{(char)li, (char)g_player[li].tunic});
-            for (int i = 0; i < kMaxPlayers; i++) if (g_player[i].on && i != li) queue(l, kJoined, 0, player_line(i));
-            for (int i = 1; i < kMaxPlayers; i++) if (i != li && g_link[i].on) queue(g_link[i], kJoined, 0, player_line(li));
+            for (int i = 0; i < kMaxDirect; i++) if (g_player[i].on && i != li) queue(l, kJoined, 0, player_line(i));
+            for (int i = 1; i < kMaxDirect; i++) if (i != li && g_link[i].on) queue(g_link[i], kJoined, 0, player_line(li));
             mods::trace("coop: %s joined as player %d from %s:%d", g_player[li].name.c_str(), li, inet_ntoa(l.addr.sin_addr), ntohs(l.addr.sin_port));
             h.joined(li);
         } else if (type == kWelcome && len >= 2) {
             g_me = b[0], g_player[g_me] = {true, g_my_name, b[1] % 4}, g_player[0].on = true;
             mods::trace("coop: welcomed as player %d", g_me);
         } else if (type == kJoined && len >= 8) {
-            Player& p = g_player[b[0] % kMaxPlayers];
+            Player& p = g_player[b[0] % kMaxDirect];
             p = {true, std::string((const char*)b + 8, std::min<size_t>(len - 8, 31)), b[1] % 4};
             p.addr.sin_family = AF_INET, memcpy(&p.addr.sin_addr.s_addr, b + 2, 4), memcpy(&p.addr.sin_port, b + 6, 2);
-            h.joined(b[0] % kMaxPlayers);
+            h.joined(b[0] % kMaxDirect);
         } else if (type == kLeft && len >= 1) {
-            drop(b[0] % kMaxPlayers, "left", h);
+            drop(b[0] % kMaxDirect, "left", h);
         } else {
             if (g_role == Role::kHost && (type == kFired || type == kEffect || type == kBoatShot || type == kProgress || type == kSound || type == kPlayerHit || type == kBombed || type == kMonHit || type == kMonGone || type == kDoorMove || type == kRupees))  // passed on to the other guests
-                for (int i = 1; i < kMaxPlayers; i++) if (i != li && g_link[i].on) queue(g_link[i], type, origin, std::string((const char*)b, len));
+                for (int i = 1; i < kMaxDirect; i++) if (i != li && g_link[i].on) queue(g_link[i], type, origin, std::string((const char*)b, len));
             h.message(origin, type, b, len);
         }
     }
@@ -280,7 +280,7 @@ std::string hello_body() {
 }
 
 int link_of(const sockaddr_in& a) {
-    for (int i = 0; i < kMaxPlayers; i++)
+    for (int i = 0; i < kMaxDirect; i++)
         if (g_link[i].on && g_link[i].addr.sin_addr.s_addr == a.sin_addr.s_addr && g_link[i].addr.sin_port == a.sin_port) return i;
     return -1;
 }
@@ -300,11 +300,13 @@ uint64_t game_hash() {
 Role role() { VIA_SERVER(role()); return g_role; }
 int my_id() { VIA_SERVER(my_id()); return g_me; }
 const char* status() { VIA_SERVER(status()); return g_status.c_str(); }
-int ping_ms(int id) { VIA_SERVER(ping_ms()); return g_link[g_role == Role::kGuest ? 0 : id].ping; }
-const std::string& name(int id) { VIA_SERVER(name(id)); return g_player[id].name; }
-int tunic(int id) { VIA_SERVER(tunic(id)); return g_player[id].tunic; }
-bool connected(int id) { VIA_SERVER(connected(id)); return g_player[id].on; }
-bool member(int id) { VIA_SERVER(member(id)); return id >= 0 && id < kMaxPlayers && g_player[id].on; }
+// (numbers go up to kMaxPlayers for every transport; the direct one has kMaxDirect)
+static bool direct_id(int id) { return id >= 0 && id < kMaxDirect; }
+int ping_ms(int id) { VIA_SERVER(ping_ms()); return direct_id(id) ? g_link[g_role == Role::kGuest ? 0 : id].ping : -1; }
+const std::string& name(int id) { VIA_SERVER(name(id)); static const std::string none; return direct_id(id) ? g_player[id].name : none; }
+int tunic(int id) { VIA_SERVER(tunic(id)); return direct_id(id) ? g_player[id].tunic : 0; }
+bool connected(int id) { VIA_SERVER(connected(id)); return direct_id(id) && g_player[id].on; }
+bool member(int id) { VIA_SERVER(member(id)); return id >= 0 && id < kMaxDirect && g_player[id].on; }
 
 bool start(Role r, const std::string& addr, int port, const std::string& my_name, int my_tunic, std::string& why) {
     stop(nullptr);
@@ -373,7 +375,7 @@ void stop(const char* why) {
 
 void send(int to, Msg type, const std::string& body) {
     VIA_SERVER(send(to, type, body));
-    for (int i = 0; i < kMaxPlayers; i++)
+    for (int i = 0; i < kMaxDirect; i++)
         if (g_link[i].on && (to < 0 || i == (g_role == Role::kGuest ? 0 : to))) queue(g_link[i], type, (uint8_t)g_me, body);
 }
 
@@ -390,7 +392,7 @@ void add_state(uint8_t kind, const std::string& more) {
 // address the old host told them. Each keeps playing where it is; the new host sends the team state as at any join
 bool migrate(Handler& h) {
     int next = 0;
-    for (int i = 1; i < kMaxPlayers && !next; i++) if (g_player[i].on) next = i;
+    for (int i = 1; i < kMaxDirect && !next; i++) if (g_player[i].on) next = i;
     if (!next) return false;
     const std::string why = g_left_why;
     const std::string old_name = g_player[0].name;
@@ -451,16 +453,16 @@ void poll(Handler& h) {
             }
             take(li, d, dn, h);
         } else {
-            const int origin = g_role == Role::kHost ? li : hd.origin % kMaxPlayers;
+            const int origin = g_role == Role::kHost ? li : hd.origin % kMaxDirect;
             if (g_role == Role::kHost)  // passed on as it comes
-                for (int i = 1; i < kMaxPlayers; i++)
+                for (int i = 1; i < kMaxDirect; i++)
                     if (i != li && g_link[i].on) raw(g_link[i].addr, head(g_link[i], hd.kind, (uint8_t)li, hd.ot) + std::string((const char*)d, dn));
             h.state(origin, hd.kind, hd.ot, d, dn);
         }
     }
     // gone: 5 s of nothing (test aid: WWHD_COOP_TIMEOUT, in ms), or (guest) the host said so
     static const uint32_t kTimeout = getenv("WWHD_COOP_TIMEOUT") ? (uint32_t)strtoul(getenv("WWHD_COOP_TIMEOUT"), nullptr, 10) : 5000;
-    for (int i = 0; i < kMaxPlayers; i++)
+    for (int i = 0; i < kMaxDirect; i++)
         if (g_link[i].on && (int32_t)(now - g_link[i].heard) > (int32_t)kTimeout) {
             if (g_role == Role::kGuest) g_left_why = g_me ? "Connection lost" : "No answer from the host";
             else drop(i, "Connection lost", h);
@@ -482,7 +484,7 @@ void poll(Handler& h) {
     }
     g_states.clear();
     int players = 0, worst = -1;
-    for (int i = 0; i < kMaxPlayers; i++) players += g_player[i].on, worst = std::max(worst, g_link[i].on ? g_link[i].ping : -1);
+    for (int i = 0; i < kMaxDirect; i++) players += g_player[i].on, worst = std::max(worst, g_link[i].on ? g_link[i].ping : -1);
     if (g_role == Role::kHost || g_me)
         g_status = std::string(g_role == Role::kHost ? "Hosting" : "Joined") + ", " + std::to_string(players) + " player" +
                    (players == 1 ? "" : "s") + (worst >= 0 ? ", ping " + std::to_string(worst) + " ms" : "");

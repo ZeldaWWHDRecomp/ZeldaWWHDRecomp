@@ -104,6 +104,21 @@ std::string path_of_identity() {
     return host::config_dir() + "/online-identity.key";
 }
 
+// how many players this game shows at most (itself included): an instance's 32 on a computer; on a phone 9 until C12's
+// measurement sets it (each puppet is ~100 more draws a frame; the phone is render-thread bound). WWHD_ONLINE_SHOWN: tests
+int shown_cap() {
+    static const int cap = [] {
+#ifdef __ANDROID__
+        int n = 9;
+#else
+        int n = kMaxPlayers;
+#endif
+        if (const char* e = getenv("WWHD_ONLINE_SHOWN")) n = atoi(e);
+        return std::clamp(n, 2, (int)kMaxPlayers);
+    }();
+    return cap;
+}
+
 int online_members() {
     int n = 0;
     for (const op::PartyMember& m : g_party.members) n += m.online || m.id == g_me_sid;
@@ -140,7 +155,7 @@ void remap(Handler& h) {
     } else {
         order.push_back(g_me_sid);
     }
-    for (const Peer& p : g_peers) if (!p.party && order.size() < (size_t)kMaxPlayers) order.push_back(p.sid);
+    for (const Peer& p : g_peers) if (!p.party && order.size() < (size_t)shown_cap()) order.push_back(p.sid);
     int me = 0;
     for (size_t i = 0; i < order.size() && i < (size_t)kMaxPlayers; i++) {
         Peer& s = next[i];
@@ -184,6 +199,10 @@ bool start(const std::string& server, int port, const std::string& my_name, int 
     cfg.host = server, cfg.port = (uint16_t)port, cfg.game_data = ss::game_data_id(), cfg.identity = id;
     if (const char* e = getenv("WWHD_COOP_GAME")) cfg.game_data = strtoull(e, nullptr, 16);
     cfg.name = my_name.substr(0, 24), cfg.look = (uint32_t)(my_tunic & 3), cfg.tag = "wwhd";
+    cfg.near_cap = (uint8_t)(shown_cap() - 1);  // (the server's near tier: no more poses than are shown)
+#ifdef __ANDROID__
+    cfg.device = op::kPhone;
+#endif
     {  // a server visited before: its key as pinned then (trust on first use)
         std::lock_guard<std::mutex> l(g_list_mu);
         if (const servers::Server* s = servers::find(list_locked(), server, port); s && !s->key.empty()) {

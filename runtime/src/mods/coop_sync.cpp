@@ -795,7 +795,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         int who = -1; float secs = 0;
         if (!done && sscanf(e, "%d@%f", &who, &secs) == 2 && now_ms_since(since) >= (uint32_t)(secs * 1000)) done = true, g_go_to = who;
     }
-    if (const int id = g_go_to.exchange(-1); id >= 0 && id < net::kMaxPlayers && id != net::my_id()) {
+    if (const int id = g_go_to.exchange(-1); id >= 0 && id < net::kMaxPlayers && id != net::my_id() && net::member(id)) {
         const Remote& r = g_remote[id];
         std::string why;
         if (!net::connected(id) || r.poses.empty()) why = "not playing yet";

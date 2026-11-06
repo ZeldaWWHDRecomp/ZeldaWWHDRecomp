@@ -182,7 +182,7 @@ void draw_tab() {
     if (net::role() != net::Role::kOff) {
         bool first = true;
         for (int id = 0; id < net::kMaxPlayers; ++id)
-            if (id != net::my_id() && net::connected(id)) {
+            if (id != net::my_id() && net::member(id)) {  // (party members: strangers are only shown)
                 if (!first) ImGui::SameLine();
                 first = false;
                 if (ImGui::Button(("Go to " + net::name(id)).c_str())) hostui::post([id] { sync::go_to(id); });

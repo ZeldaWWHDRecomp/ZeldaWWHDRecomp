@@ -21,7 +21,9 @@ namespace mods::coop::net {
 // addresses for host migration (5)); a game of another protocol
 // is refused. Players meet by protocol and game data (ss::game_data_id), not by executable: a recompiled and a decomp
 // build of the same game play together
-constexpr int kProto = 5, kPort = 7777, kMaxPlayers = 4;
+// kMaxPlayers: the players' numbers any transport gives (through a server: a party of up to 4 and the strangers shown
+// nearby, GAPS C11: an instance's 32); kMaxDirect: the direct transport's (a host and three guests)
+constexpr int kProto = 5, kPort = 7777, kMaxPlayers = 32, kMaxDirect = 4;
 
 // the reliable messages (the game's side reads them through on_message)
 enum Msg : uint8_t {
