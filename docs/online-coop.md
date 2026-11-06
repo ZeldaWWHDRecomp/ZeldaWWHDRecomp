@@ -111,6 +111,20 @@ aren't in your party see it too. Your own Link doesn't move. A small bubble over
 the others see it. You can change the keys in Settings > Controls, under Online. You can play one emote a second. If you walk away, the emote stops. The animations come from
 your own game files.
 
+## Mods
+
+Only mods that change how the game plays count online. Those are built-in mods like Jump anywhere, Climb any wall,
+the traversal speeds or the Story system; packages whose author marked them as gameplay mods; and a randomized game.
+Graphics packs, the camera mods, texts and other mods that only change what you see are never sent or checked.
+
+- **In a party** everyone plays with the leader's gameplay mods: the same mods, in the same version, with the same
+  settings. If yours differ, you can't join, and Settings > Online lists each mod that differs. If you have every
+  mod the party uses installed, **Use the party's mods** turns them on and your other gameplay mods off. Some mods
+  need a restart for that; the page says so. Then connect again.
+- **Players outside your party** are never checked.
+- **A server** can also set rules: no gameplay mods, only some, some required or some banned. If it turns you
+  away, the Online page names each mod it doesn't accept. Nothing is ever downloaded from a server.
+
 ## What stays yours
 
 Your health, magic, rupees, ammunition and bottle contents, and where you are: joining does not move

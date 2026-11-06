@@ -46,6 +46,8 @@ struct View {
     std::vector<std::string> dependencies,conflicts;
     std::vector<std::string> setup_tools; // package-relative executables covered by native confirmation
     std::vector<std::pair<std::string,std::string>> content_hashes;
+    bool gameplay=false;      // manifest "gameplay": true (online co-op compares these mods between players; coop_modset.h)
+    std::string fingerprint;  // SHA-256 of its native library or guest ELF ("" for content-only mods)
 };
 // Supplied from the running executable marker, never from a saved preference.
 void set_code_mod_support(bool built);

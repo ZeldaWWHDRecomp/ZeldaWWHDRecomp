@@ -10,6 +10,7 @@
 #include <string>
 
 #include "coop_emotes.h"
+#include "coop_modset.h"
 #include "coop_net.h"
 #include "coop_servers.h"
 #include "coop_sync.h"
@@ -59,6 +60,28 @@ void set_name(const std::string& n) { change([&](sync::Settings& s) { s.name = n
 
 // ---- the Settings window's tab ----
 bool party_leader = false;
+// (C5) refused by a party for the mods: what differs, and switching to the party's set when every mod is installed
+std::string g_mods_done;  // what the last switch said
+void draw_party_mods() {
+    const std::string got = net::refused_mods();
+    modset::Set party;
+    if (got.empty() || !modset::decode((const uint8_t*)got.data(), got.size(), party)) return;
+    const auto problems = modset::diff(party, modset::current());
+    ImGui::Spacing();
+    ImGui::TextUnformatted("The party plays with other mods that change the game:");
+    for (const modset::Problem& p : problems) ImGui::BulletText("%s", modset::words(p, modset::name_of(p.id)).c_str());
+    std::string why;
+    if (problems.empty()) ImGui::TextDisabled("Your mods match the party's now: connect again.");
+    else if (!modset::can_use(party, why)) ImGui::TextDisabled("Can't use the party's mods: %s.", why.c_str());
+    else if (ImGui::Button("Use the party's mods")) hostui::post([party] {  // (the mods change on the main thread)
+        bool restart = false;
+        std::string no;
+        g_mods_done = modset::use(party, restart, no) ? (restart ? "Done. Restart the game for the change, then connect again." : "Done: connect again.")
+                                                      : "Can't use the party's mods: " + no + ".";
+    });
+    if (!g_mods_done.empty()) ImGui::TextWrapped("%s", g_mods_done.c_str());
+}
+
 void draw_tab() {
     sync::Settings s = sync::settings();
     ImGui::TextWrapped("Play together with up to three friends. One of you hosts, the others join.");
@@ -198,6 +221,7 @@ void draw_tab() {
     ImGui::Separator();
     ImGui::TextWrapped("Status: %s", sync::status());
     if (s.on && s.notice_ok && net::role() == net::Role::kOff && ImGui::Button("Connect again")) hostui::post([] { sync::retry(); });
+    draw_party_mods();
     if (net::role() != net::Role::kOff) {
         bool first = true;
         for (int id = 0; id < net::kMaxPlayers; ++id)
@@ -373,6 +397,29 @@ void register_items() {
             emotes::mine(emotes::kEmotes[g_emote_choice].id);
         };
         it.enabled = [] { return net::role() != net::Role::kOff; };
+        game_settings::add(std::move(it));
+    }
+    {
+        Item it;
+        it.id = "online.party_mods", it.tab = "online", it.label = "Use the party's mods", it.kind = Kind::Action;
+        it.help = "The party plays with other mods that change the game. A turns on the party's and turns off your others, when all of them are installed (some need a restart). Settings > Online lists what differs.";
+        it.text = [] {
+            const std::string got = net::refused_mods();
+            modset::Set party;
+            if (got.empty() || !modset::decode((const uint8_t*)got.data(), got.size(), party)) return std::string("-");
+            std::string why;
+            return modset::can_use(party, why) ? std::string("Use") : "Can't: " + why;
+        };
+        it.set = [](float) {
+            const std::string got = net::refused_mods();
+            modset::Set party;
+            std::string why;
+            bool restart = false;
+            if (got.empty() || !modset::decode((const uint8_t*)got.data(), got.size(), party)) return;
+            ss::notice(modset::use(party, restart, why) ? (restart ? "Done. Restart the game for the change, then connect again." : "Done: connect again.")
+                                                        : "Can't use the party's mods: " + why);
+        };
+        it.enabled = [] { return !net::refused_mods().empty(); };
         game_settings::add(std::move(it));
     }
     {

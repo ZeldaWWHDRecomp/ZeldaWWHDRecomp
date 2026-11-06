@@ -362,6 +362,13 @@ Package manifests and catalogue entries mark a mod with `"experimental": true`
 package installed from an experimental catalogue entry counts as experimental
 even if its own manifest predates the field.
 
+A package manifest marks a mod that changes how the game plays with `"gameplay": true`. The field is optional and
+defaults to `false`. Use it for anything that changes movement, combat, items, the world or the story, but not for
+graphics, camera, sound or text-only mods. Online co-op compares these mods between players: a party plays with
+its leader's gameplay mods, and a server can require, allow or ban them. A mod without the flag is never sent or
+checked. For each gameplay mod the game sends its ID, its version and a SHA-256 of the ID, the version, its code's
+fingerprint, its files' hashes and its option values (docs/online-coop.md, "Mods").
+
 Profiles (More > Profiles) save package switches/configuration and built-in
 choices. **Copy current** creates another profile from the name typed next to it;
 choose the active one in the Profile list. Other profiles can be deleted; the

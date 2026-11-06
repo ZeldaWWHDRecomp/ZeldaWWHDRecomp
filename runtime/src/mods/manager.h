@@ -16,6 +16,9 @@ struct Entry {
     bool restart_required = false;
     bool default_enabled = false;
 };
+// the built-in mods that change how the game plays (traversal, combat, the world): online co-op compares them between
+// players (coop_modset.h); the others (camera, texts, scene speed, progress pages) only change what one player sees
+bool changes_gameplay(std::string_view id);
 std::span<const Entry> entries();
 // A number setting of a built-in mod: saved as `key` (settings file), `profile_key` (mod profiles).
 struct NumberOption {

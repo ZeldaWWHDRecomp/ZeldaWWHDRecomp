@@ -89,6 +89,9 @@ namespace {
 
 constexpr uint32_t kMagic = 0x4F435757;  // "WWCO"
 constexpr uint8_t kControl = 0, kRefuse = 0xFE;
+std::string g_hello_mods(1, '\0');  // (no mods: a count of 0)
+HelloCheck g_hello_check = nullptr;
+std::string g_refused_mods;
 constexpr uint32_t kTick = 33, kKeepAlive = 1000;  // (a tick each game step: 30 Hz)
 constexpr size_t kMtu = 1200;
 
@@ -192,7 +195,7 @@ void hello(const sockaddr_in& from, const uint8_t* d, size_t n, Handler& h) {
     uint16_t proto;
     uint64_t game = 0;
     memcpy(&proto, b, 2);  // (first, as every protocol's hello has it: another protocol is refused by it)
-    if (proto == kProto && len < 11) return;
+    if (proto == kProto && (len < 12 || 12u + b[11] > len)) return;
     if (proto == kProto) memcpy(&game, b + 2, 8);
     int id = 0;
     for (int i = 1; i < kMaxDirect && !id; i++) if (!g_link[i].on) id = i;
@@ -202,9 +205,14 @@ void hello(const sockaddr_in& from, const uint8_t* d, size_t n, Handler& h) {
         snprintf(t, sizeof t, "Different game: host %016llX, you %016llX. Both need the same game (region, version, randomizer seed).",
                  (unsigned long long)game_hash(), (unsigned long long)game), no = t;
     else if (!id) no = "The host's game is full (4 players).";
+    bool for_mods = false;
+    if (no.empty() && g_hello_check) {  // (the party's gameplay mods: the host's)
+        no = g_hello_check(b + 12 + b[11], len - 12 - b[11]);
+        for_mods = !no.empty();
+    }
     if (!no.empty()) {
         Link tmp;
-        raw(from, head(tmp, kRefuse, 0, 0) + no);
+        raw(from, head(tmp, kRefuse, 0, 0) + no + (for_mods ? std::string(1, '\0') + g_hello_mods : std::string()));
         mods::trace("coop: refused %s:%d: %s", inet_ntoa(from.sin_addr), ntohs(from.sin_port), no.c_str());
         return;
     }
@@ -217,7 +225,7 @@ void hello(const sockaddr_in& from, const uint8_t* d, size_t n, Handler& h) {
         for (int i = 0; i < kMaxDirect; i++) worn |= i != id && g_player[i].on && g_player[i].tunic == tunic;
         if (!worn) break;
     }
-    g_player[id] = {true, std::string((const char*)b + 11, std::min<size_t>(len - 11, 31)), tunic};
+    g_player[id] = {true, std::string((const char*)b + 12, std::min<size_t>(b[11], 31)), tunic};
     (void)h;  // (the hello itself is taken below, as message 1 of the new link)
 }
 
@@ -279,7 +287,8 @@ std::string hello_body() {
     const uint16_t proto = getenv("WWHD_COOP_PROTO") ? (uint16_t)atoi(getenv("WWHD_COOP_PROTO")) : (uint16_t)kProto;
     const uint64_t game = game_hash();
     memcpy(&b[0], &proto, 2), memcpy(&b[2], &game, 8);
-    b += (char)g_my_tunic, b += g_my_name;
+    const std::string name = g_my_name.substr(0, 31);
+    b += (char)g_my_tunic, b += (char)name.size(), b += name, b += g_hello_mods;
     return b;
 }
 
@@ -312,7 +321,12 @@ int tunic(int id) { VIA_SERVER(tunic(id)); return direct_id(id) ? g_player[id].t
 bool connected(int id) { VIA_SERVER(connected(id)); return direct_id(id) && g_player[id].on; }
 bool member(int id) { VIA_SERVER(member(id)); return id >= 0 && id < kMaxDirect && g_player[id].on; }
 
+void set_hello_mods(const std::string& encoded) { g_hello_mods = encoded.empty() ? std::string(1, '\0') : encoded; }
+void set_hello_check(HelloCheck check) { g_hello_check = check; }
+std::string refused_mods() { return g_refused_mods; }
+
 bool start(Role r, const std::string& addr, int port, const std::string& my_name, int my_tunic, std::string& why) {
+    g_refused_mods.clear();
     stop(nullptr);
     if (r == Role::kOff) return true;
 #ifdef _WIN32
@@ -446,7 +460,9 @@ void poll(Handler& h) {
         const size_t dn = n - sizeof hd;
         if (hd.magic != kMagic) continue;
         if (hd.kind == kRefuse) {
-            g_left_why = std::string((const char*)d, dn), g_refused = true;
+            const size_t text = strnlen((const char*)d, dn);  // (a refusal for the mods: the host's set after a 0)
+            g_left_why = std::string((const char*)d, text), g_refused = true;
+            g_refused_mods = text < dn ? std::string((const char*)d + text + 1, dn - text - 1) : std::string();
             mods::trace("coop: the host refused: %s", g_left_why.c_str());
             continue;
         }

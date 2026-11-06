@@ -126,6 +126,13 @@ void set_traversal_option(std::string_view profile_key, float value) {
 }
 
 std::span<const Entry> entries() { return catalogue; }
+bool changes_gameplay(std::string_view id) {
+    static constexpr std::string_view kGameplay[] = {"camera-directed-items", "lock-on", "wall-climb", "quick-use", "quick-doors",
+                                                     "move-speed", "ladder-speed", "sidle-speed", "ivy-speed", "hang-speed",
+                                                     "sail-speed", "auto-wind", "jump-anywhere", "leaf-rise", "story-system"};
+    for (std::string_view g : kGameplay) if (g == id) return true;
+    return false;
+}
 const Entry* find(std::string_view id) {
     for (const auto& entry : catalogue) if (id == entry.id) return &entry;
     return nullptr;

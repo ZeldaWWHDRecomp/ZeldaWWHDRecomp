@@ -25,6 +25,7 @@
 
 #include "coop_deck.h"
 #include "coop_emotes.h"
+#include "coop_modset.h"
 #include "coop_layout.h"
 #include "coop_names.h"
 #include "coop_monsters.h"
@@ -678,6 +679,16 @@ void poll(Cpu* c, bool on) {
     if (on && net::role() == net::Role::kOff && failed != want_gen) {
         gen = want_gen;
         std::string why;
+        // (C5) this game's gameplay mods: in its hello, and the host's (the party's) set its guests must have
+        net::set_hello_mods(modset::encode(modset::current()));
+        net::set_hello_check([](const uint8_t* d, size_t n) -> std::string {
+            modset::Set theirs;
+            if (!modset::decode(d, n, theirs)) return "Your game's mod list could not be read.";
+            const auto problems = modset::diff(modset::current(), theirs);
+            if (problems.empty()) return "";
+            mods::trace("coop: a guest's gameplay mods differ: %s", modset::describe(problems).c_str());
+            return "Your mods that change the game differ from the party's: " + modset::describe(problems) + ".";
+        });
         if (!(s.server ? net::start_server(s.server_addr, s.server_port, s.name, s.tunic, why)
                        : net::start(s.role ? net::Role::kGuest : net::Role::kHost, s.addr, s.port, s.name, s.tunic, why))) {
             failed = want_gen;

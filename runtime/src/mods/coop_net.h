@@ -18,17 +18,18 @@ struct Cpu;
 namespace mods::coop::net {
 
 // kProto: this port's co-op protocol (the fork's 3, plus the game-data check in the hello (4), plus the players'
-// addresses for host migration (5), plus the poses' rest mask (6)); a game of another protocol
+// addresses for host migration (5), plus the poses' rest mask (6), plus the gameplay mods in the hello (7)); a game of
+// another protocol
 // is refused. Players meet by protocol and game data (ss::game_data_id), not by executable: a recompiled and a decomp
 // build of the same game play together
 // kMaxPlayers: the players' numbers any transport gives (through a server: a party of up to 4 and the strangers shown
 // nearby, GAPS C11: an instance's 32); kMaxDirect: the direct transport's (a host and three guests)
-constexpr int kProto = 6, kPort = 7777, kMaxPlayers = 32, kMaxDirect = 4;
+constexpr int kProto = 7, kPort = 7777, kMaxPlayers = 32, kMaxDirect = 4;
 inline constexpr const char* kStrangerGone = "a stranger out of sight";  // (Handler::left: a stranger's puppet, no notice)
 
 // the reliable messages (the game's side reads them through on_message)
 enum Msg : uint8_t {
-    kHello = 1,   // guest -> host: {u16 proto, u64 game data, u8 tunic, name}
+    kHello = 1,   // guest -> host: {u16 proto, u64 game data, u8 tunic, u8 name length, name, gameplay mods (coop_modset.h)}
     kWelcome,     // host -> guest: {u8 id, u8 tunic: the one asked for, or the next no one wears}
     kReject,      // host -> guest: text
     kJoinState,   // host -> guest: {u32 total, u32 at, bytes}: the host's portable state, in pieces
@@ -70,6 +71,14 @@ uint64_t game_hash();            // the game data this game plays (ss::game_data
 // start or stop; WWHD_COOP=host[:port] or join:<addr>[:port] (with WWHD_COOP_NAME, WWHD_COOP_TUNIC) at the first step
 bool start(Role r, const std::string& addr, int port, const std::string& my_name, int my_tunic, std::string& why);
 void stop(const char* why);
+
+// the party's gameplay mods (GAPS C5, coop_modset.h) on the direct transport: this game's set, sent in its hello (a
+// guest) or given back with a refusal (the host, whose set is the party's); the host's check of a guest's set (its
+// refusal in words, "" to let it in); after a refusal for its mods, the host's set ("" otherwise)
+void set_hello_mods(const std::string& encoded);
+using HelloCheck = std::string (*)(const uint8_t* mods, size_t n);
+void set_hello_check(HelloCheck check);
+std::string refused_mods();
 
 // queue a reliable message to one player (-1: everyone this game talks to)
 void send(int to, Msg type, const std::string& body);
