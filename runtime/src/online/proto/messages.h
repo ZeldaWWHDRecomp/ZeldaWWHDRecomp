@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "crypto.h"
 #include "protocol.h"
 #include "wire.h"
 
@@ -75,6 +76,32 @@ struct RunnerEntry {
 };
 Bytes encode_runners(const std::vector<RunnerEntry>& r);
 bool decode_runners(const uint8_t* d, size_t n, std::vector<RunnerEntry>& out);
+
+// ---- party restore after a server restart ----
+// u8 version (1), u32 party id, u64 leader key hash, u16 flags, u32 issued (the leader's unix seconds), u8 n,
+// n x u64 member key hash (join order, leader first), u8 signed,
+// [leader public key 32, EdDSA signature 64 over "wwhd-online party" + the bytes before `signed`]
+// Members are named by key hash: each proves its own key with its signed HELLO, so only the leader's key is needed.
+// The leader signs the record whenever the party changes (sign_party_record) and gives it to the members (an app
+// message); a member can then rebuild the party even before the leader is back.
+struct PartyRecord {
+    uint32_t party = 0;
+    uint64_t leader = 0;
+    uint16_t flags = 0;
+    uint32_t issued = 0;
+    std::vector<uint64_t> members;
+    bool is_signed = false;
+    uint8_t pub[32]{};
+    uint8_t sig[64]{};
+};
+Bytes encode_party_record(const PartyRecord& r);
+bool decode_party_record(const uint8_t* d, size_t n, PartyRecord& r);
+// signs as the leader (fills pub and sig); `leader_identity` must be the leader's
+void sign_party_record(PartyRecord& r, const crypto::Identity& leader_identity);
+// the leader's record of a PARTY_STATE (ids mapped to key hashes by the state itself), signed, issued now
+PartyRecord make_party_record(const PartyState& state, const crypto::Identity& leader_identity, uint32_t unix_now);
+// the signature is valid and made by the record's leader
+bool party_record_signed_by_leader(const PartyRecord& r);
 
 // the generated stranger name: "Sailor 7Q2F" from the key hash
 std::string stranger_name(uint64_t key_hash);

@@ -80,6 +80,7 @@ static server::Config base_config(uint16_t port) {
     c.admin_socket = "";
     c.game_data = {0x1111};
     c.copy_size = 2;
+    c.team_state_file = "";  // tests that want it set it
     return c;
 }
 
@@ -634,6 +635,76 @@ static void test_chaos(const char* profile, double loss, double dup, uint32_t de
                 profile, loss * 100, dup * 100, delay, jitter, seen_ms, a->c.ping_ms(), got_all() ? "ok" : "FAILED");
 }
 
+// a party survives a server crash and restart: (A) from the saved team state, (B) from the records the games
+// re-send (the leader's own claim, a member's leader-signed record)
+static void test_party_restart() {
+    for (int mode = 0; mode < 2; ++mode) {
+        auto cfg = base_config(0);
+        if (mode == 0) {
+            cfg.team_state_file = g_dir + "/team-state-test.txt";
+            if (std::FILE* f = std::fopen(cfg.team_state_file.c_str(), "w")) std::fclose(f);  // a clean start
+        }
+        std::string why;
+        auto s1 = std::make_unique<server::Server>(cfg);
+        s1->log = [](const std::string&) {};
+        CHECK(s1->start(why));
+        cfg.port = s1->port();
+        auto a = make_bot("lead", cfg.port), b = make_bot("member", cfg.port);
+        std::vector<Bot*> both = {a.get(), b.get()};
+        CHECK(run(s1.get(), both, 5000, [&] { return a->online() && b->online(); }));
+        uint64_t code = 0;
+        parse_friend_code(b->c.friend_code(), code);
+        a->c.party_invite(code);
+        CHECK(run(s1.get(), both, 3000, [&] { return b->saw(ClientEvent::kPartyInvited); }));
+        b->c.party_accept(b->last(ClientEvent::kPartyInvited)->party_id);
+        CHECK(run(s1.get(), both, 3000, [&] {
+            auto* e = a->last(ClientEvent::kPartyState);
+            return e && e->party.members.size() == 2;
+        }));
+        PartyState st = a->last(ClientEvent::kPartyState)->party;
+        std::vector<TeamField> f = {{0x6A4, kFieldBits, std::string("\x01", 1)}};
+        b->c.send_progress(f);
+        run(s1.get(), both, 3000);  // the save is due within 2 s of a change
+        // the leader's record, given to the member while the party lasts
+        PartyRecord rec = make_party_record(st, a->id, 1000);
+        CHECK(party_record_signed_by_leader(rec));
+        s1->abandon();  // a crash: no final save
+        s1.reset();
+        run(nullptr, both, 6000);
+        auto s2 = std::make_unique<server::Server>(cfg);
+        s2->log = [](const std::string&) {};
+        CHECK(s2->start(why));
+        a->log.clear();
+        b->log.clear();
+        CHECK(run(s2.get(), both, 20000, [&] { return a->online() && b->online(); }));
+        if (mode == 1) {
+            // the member comes first with the leader-signed record, then the leader claims its own
+            b->c.party_restore(rec);
+            run(s2.get(), both, 300);
+            PartyRecord own = make_party_record(st, a->id, 1001);
+            a->c.party_restore(own);
+            b->c.send_progress(f);  // and the members re-send their progress
+        }
+        bool together = run(s2.get(), both, 5000, [&] {
+            auto* ea = a->last(ClientEvent::kPartyState);
+            auto* eb = b->last(ClientEvent::kPartyState);
+            return ea && eb && ea->party.party == st.party && eb->party.party == st.party && ea->party.members.size() == 2;
+        });
+        CHECK(together);
+        a->c.ask_team_state();
+        bool progress = run(s2.get(), both, 3000, [&] {
+            auto* e = a->last(ClientEvent::kTeamState);
+            if (!e) return false;
+            for (auto& x : e->fields)
+                if (x.offset == 0x6A4 && x.value == std::string("\x01", 1)) return true;
+            return false;
+        });
+        CHECK(progress);
+        std::printf("party restart (%s): same party %d, progress kept %d\n", mode == 0 ? "saved team state" : "re-sent records",
+                    together, progress);
+    }
+}
+
 // the fork's full-size poses (~680 B at 30 Hz) are over the default 8 KB/s upload: warned, then removed with
 // the upload reason code
 static void test_upload_limit() {
@@ -664,6 +735,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "copies") test_copies();
     if (only.empty() || only == "flood") test_flood();
     if (only.empty() || only == "upload") test_upload_limit();
+    if (only.empty() || only == "partyrestart") test_party_restart();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "chaos") {

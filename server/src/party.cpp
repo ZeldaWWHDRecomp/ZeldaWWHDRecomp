@@ -130,6 +130,7 @@ void Server::party_send_team(Party& p, Session& to) {
 }
 
 void Server::party_join(Party& p, Session& s, uint32_t now) {
+    team_dirty_ = true;
     if (std::find(p.members.begin(), p.members.end(), s.key_hash) == p.members.end()) p.members.push_back(s.key_hash);
     p.names[s.key_hash] = s.name;
     party_by_key_[s.key_hash] = p.id;
@@ -209,6 +210,64 @@ void Server::party_place_changed(Session& s, uint32_t now) {
     if (it == p->arrived.end() || it->second.first < here || here < it->second.first) p->arrived[s.key_hash] = {here, now};
 }
 
+// After a server restart (DESIGN.md 2.6 / 3.4) the party comes back from what the games re-send: each member sends
+// the party record its leader signed (or the leader its own). The record names the members by key hash; each
+// claimant is proven by its signed HELLO. The party is rebuilt with its old id when the leader claims it or a member
+// shows a record the leader signed; the other listed members join when they claim the same party id. A newer
+// record (issued later) replaces the member list of an older one. With files.team_state (on by default) the
+// party and its team progress are already back from disk, and members are put back in it as they sign in.
+void Server::party_restore(Session& s, Reader& r, uint32_t now) {
+    PartyRecord rec;
+    if (!decode_party_record(r.here(), r.left(), rec)) return party_result(s, 9, "your party could not be restored");
+    bool listed = std::find(rec.members.begin(), rec.members.end(), s.key_hash) != rec.members.end();
+    bool by_leader = s.key_hash == rec.leader || party_record_signed_by_leader(rec);
+    if (!listed || !rec.party) return party_result(s, 9, "your party could not be restored");
+    if (s.party == rec.party) return;  // back already (from the saved team state)
+    auto it = parties_.find(rec.party);
+    if (it != parties_.end() && it->second.world != s.world) return party_result(s, 9, "your party could not be restored");
+    if (it == parties_.end()) {
+        if (!by_leader) {
+            // a member without a leader-signed record: it waits for the leader's claim
+            s.restore_party = rec.party;
+            s.restore_at = now;
+            return;
+        }
+        Party p;
+        p.id = rec.party;
+        p.world = s.world;
+        p.leader = rec.leader;
+        p.flags = rec.flags;
+        p.issued = rec.issued;
+        p.members = rec.members;
+        p.empty_since = 0;
+        for (uint64_t kh : p.members) party_by_key_[kh] = p.id;
+        it = parties_.emplace(p.id, std::move(p)).first;
+        log("party " + std::to_string(rec.party) + " rebuilt from its record after a restart");
+    } else if (by_leader && rec.issued > it->second.issued) {
+        // a newer record from the leader: its member list wins
+        Party& p = it->second;
+        for (uint64_t kh : p.members) party_by_key_.erase(kh);
+        p.members = rec.members;
+        p.leader = rec.leader;
+        p.flags = rec.flags;
+        p.issued = rec.issued;
+        for (uint64_t kh : p.members) party_by_key_[kh] = p.id;
+    } else if (std::find(it->second.members.begin(), it->second.members.end(), s.key_hash) == it->second.members.end()) {
+        return party_result(s, 9, "your party could not be restored");
+    }
+    Party& p = it->second;
+    if (s.party && s.party != p.id) party_leave(s, now);
+    party_join(p, s, now);
+    // members who claimed this party before it was rebuilt come in now
+    for (uint64_t kh : p.members)
+        if (Session* t = online_member(kh); t && t != &s && t->party != p.id && t->restore_party == p.id &&
+                                             now - t->restore_at < 600000) {
+            t->restore_party = 0;
+            party_join(p, *t, now);
+        }
+    party_elect_leader(p, now);  // the leader may not be back yet
+}
+
 void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
     if (!s.invite.take(1, now)) return party_result(s, 1, "wait a little before the next invite");
     Session* to = nullptr;
@@ -224,8 +283,11 @@ void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
     if (!p) {
         // unique over all workers: parties move between them
         uint32_t id = 0;
-        do id = (uint32_t(std::max(me_, 0)) << 24) | (next_party_++ & 0xFFFFFF);
-        while (parties_.count(id) || !(id & 0xFFFFFF));
+        // random, so a party rebuilt after a restart keeps its old id without meeting a new party's
+        do {
+            crypto::random_bytes(&id, sizeof id);
+            id = (uint32_t(std::max(me_, 0)) << 24) | (id & 0xFFFFFF);
+        } while (parties_.count(id) || !(id & 0xFFFFFF));
         Party np;
         np.id = id;
         np.world = s.world;
@@ -318,6 +380,7 @@ void Server::party_decline(Session& s, uint32_t id) {
 }
 
 void Server::party_leave(Session& s, uint32_t now) {
+    team_dirty_ = true;
     Party* p = party_of(s);
     if (!p) return;
     (void)now;
@@ -343,6 +406,7 @@ void Server::party_leave(Session& s, uint32_t now) {
 }
 
 void Server::party_settings(Session& s, uint16_t flags) {
+    team_dirty_ = true;
     Party* p = party_of(s);
     if (!p || p->leader != s.key_hash) return;
     bool sharing_on = !(p->flags & kPartySharedProgress) && (flags & kPartySharedProgress);
@@ -360,6 +424,7 @@ void Server::party_progress(Session& s, Reader& r) {
     if (!p || !(p->flags & kPartySharedProgress)) return;
     int refused = 0;
     std::vector<TeamField> changed = p->team.merge(in, refused);
+    if (!changed.empty()) team_dirty_ = true;
     if (refused) strike(s, monotonic_ms(), "progress field");
     if (changed.empty()) return;
     Bytes b;
@@ -510,6 +575,7 @@ void Server::save_team_states() {
             std::fprintf(f, "\n");
         }
         std::fprintf(f, "V %u\n", p.team.version);
+        std::fprintf(f, "I %u\n", p.issued);
     }
     std::fclose(f);
     std::rename(tmp.c_str(), cfg_.team_state_file.c_str());
@@ -558,6 +624,8 @@ void Server::load_team_states() {
             if (ls && !f.value.empty() && f.value.size() <= kMaxTeamFieldBytes) cur->team.fields[f.offset] = f;
         } else if (k == 'V' && cur) {
             ls >> cur->team.version;
+        } else if (k == 'I' && cur) {
+            ls >> cur->issued;
         }
     }
 }

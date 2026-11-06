@@ -27,6 +27,7 @@ static server::Server* server_once() {
         c.key_file = "fuzz-server.key";
         c.ban_file = "fuzz-bans.txt";
         c.report_file = "";
+        c.team_state_file = "";
         c.admin_socket = "";
         c.pow_bits = 0;
         c.loopback_exempt = true;

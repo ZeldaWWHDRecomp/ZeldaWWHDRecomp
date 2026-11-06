@@ -536,6 +536,11 @@ void Client::send_progress(const std::vector<TeamField>& fields) {
     chan_.send_reliable(kMsgProgress, b);
 }
 
+void Client::party_restore(const PartyRecord& record) {
+    if (state_ != ClientState::kOnline || record.members.size() < 1) return;
+    chan_.send_reliable(kMsgPartyRestore, encode_party_record(record));
+}
+
 void Client::ask_team_state() {
     if (state_ == ClientState::kOnline) chan_.send_reliable(kMsgTeamStateAsk, nullptr, 0);
 }

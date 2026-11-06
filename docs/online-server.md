@@ -13,8 +13,13 @@ run your own, on your computer ("Host on this computer" in the game) or on a box
 - It relays poses, emotes and party messages between players. It never runs game logic and ships
   no game data.
 - Players only ever see the server, never each other's IP addresses.
-- **What it keeps on disk:** its key (`server.key`), the ban list, the report log and, if you ask for
-  it, the parties' last known team state. Nothing else: IP addresses stay in memory for the session.
+- **What it keeps on disk:**
+  - its key (`server.key`), the ban list and the report log;
+  - the parties' last known team state (`team-state.txt`, on by default): the party members' key hashes and
+    their shared game progress, so a party survives a restart. A party nobody has played in for
+    `party.team_state_keep_h` hours (72) is dropped. Set `files.team_state = ""` to keep it in memory only.
+
+  Nothing else is kept: IP addresses stay in memory for the session.
 - **Compatibility:** players need the same protocol version and the same game data. Different game
   versions or regions never see each other, even on one server.
 
@@ -47,7 +52,7 @@ Copy `server/server.example.toml` to `server.toml` and edit it. The keys you'll 
 | `scale.area_cap` | 200 | Players per small area of sea and copy before newcomers go to a copy. |
 | `limits.pow_bits` | 18 | The join puzzle (about 0.3 s on a phone). Higher slows down mass sign-ups. |
 | `limits.per_ip` | 4 | Players from one address. |
-| `files.team_state` | none | Keep parties' last known team state over restarts. |
+| `files.team_state` | `team-state.txt` | Parties and their team progress over restarts (`""` keeps them in memory only). |
 | `metrics.file` | none | Writes a line of counts (players, traffic, tick times) every `every_s` seconds. |
 
 All other keys (interest radii and caps, rate limits, scaling thresholds) have working defaults and
@@ -88,8 +93,13 @@ Players are named by friend code. A ban holds across reconnects and restarts; wi
 ### Restarts
 
 After `admin restart` (or a crash), start the server again. Players' games keep running, show
-"reconnecting" and come back by themselves. Parties are rebuilt as members return. Under Docker or
-systemd, a restart policy does this for you.
+"reconnecting" and come back by themselves. Under Docker or systemd, a restart policy does this for you.
+
+Parties survive restarts in two ways:
+- **From disk.** The saved team state, written within 2 s of any change, brings each party back with
+  its progress, and members are put back in it as they sign in.
+- **From the games.** Each game re-sends the record its party leader signed. The party is rebuilt from
+  the leader's claim, or from a member's signed record, and the members re-send their progress.
 
 ### Docker
 

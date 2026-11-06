@@ -123,6 +123,8 @@ public:
     void party_settings(uint16_t flags);
     void pin_runner(bool on);
     void send_progress(const std::vector<TeamField>& fields);
+    // after a fresh (not resumed) kWelcome: the party this game was in (the leader's record; messages.h)
+    void party_restore(const PartyRecord& record);
     void ask_team_state();
 
     ClientState state() const { return state_; }

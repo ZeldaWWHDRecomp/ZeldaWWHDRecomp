@@ -118,6 +118,9 @@ struct Session {
 
     // party
     uint32_t party = 0;
+    // a party claimed after a server restart before its leader's record arrived (kMsgPartyRestore)
+    uint32_t restore_party = 0;
+    uint32_t restore_at = 0;
 
     // handover to another worker in progress
     bool redirected = false, handing = false;  // handing: a handover waits for the target's ack
@@ -166,6 +169,7 @@ struct Party {
     std::map<uint64_t, std::pair<PartyPlace, uint32_t>> arrived;  // member -> place and when they arrived
     TeamStore team;
     uint32_t empty_since = 0;          // ms; 0 while a member is online
+    uint32_t issued = 0;               // the newest leader record seen (party restore)
     struct Invite {
         uint64_t to;
         uint32_t at;
@@ -242,6 +246,8 @@ public:
     void fuzz_datagram(const uint8_t* d, size_t n, const proto::Address& from) { on_datagram(d, n, from, proto::monotonic_ms()); }
     void fuzz_message(uint8_t type, bool reliable, const uint8_t* d, size_t n);
     void fuzz_tick() { tick(proto::monotonic_ms()); }
+    // tests: end like a crash (no final save of the team states)
+    void abandon() { abandoned_ = true; }
     Party* party_of(const Session& s);
     std::function<void(const std::string&)> log;
 
@@ -307,6 +313,10 @@ private:
     Session* online_member(uint64_t key_hash);
     void parties_gc(uint32_t now);
     void save_team_states();
+    void party_restore(Session& s, proto::Reader& r, uint32_t now);
+    uint32_t last_team_save_ = 0;
+    bool team_dirty_ = false;
+    bool abandoned_ = false;  // a party or its progress changed since the last save
     void load_team_states();
 
     // admin (admin.cpp)
