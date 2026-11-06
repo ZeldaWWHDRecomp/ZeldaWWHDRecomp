@@ -290,6 +290,28 @@ struct ProgramUse {
 };
 std::unordered_map<uint64_t, ProgramUse> programUses;  // linkage key -> use
 std::unordered_map<uint64_t, Shader*> variants;         // full key -> shader (may be shared)
+// Direct-mapped front caches of the two lookups every draw makes (keys are hashes, so the low bits
+// index well): a hit skips the unordered_map's bucket division and node chase. The maps' nodes keep
+// their addresses until clear_shader_cache, which clears these too.
+struct UseSlot { uint64_t key; ProgramUse* use; };
+struct VariantSlot { uint64_t key; Shader* shader; };
+std::array<UseSlot, 256> useFront{};
+std::array<VariantSlot, 512> variantFront{};
+ProgramUse& program_use(uint64_t linkage) {
+    auto& slot = useFront[linkage & (useFront.size() - 1)];
+    if (slot.use && slot.key == linkage) return *slot.use;
+    ProgramUse& use = programUses[linkage];
+    slot = {linkage, &use};
+    return use;
+}
+Shader* find_variant(uint64_t key) {
+    auto& slot = variantFront[key & (variantFront.size() - 1)];
+    if (slot.shader && slot.key == key) return slot.shader;
+    auto it = variants.find(key);
+    if (it == variants.end()) return nullptr;
+    slot = {key, it->second};
+    return it->second;
+}
 std::unordered_multimap<uint64_t, Shader*> shadersByOutput;
 std::unordered_multimap<uint64_t, Shader*> shadersByModule;  // SPIR-V + resource mapping
 // A pixel shader translated for the draw's vertex shader: the semantic ids that vertex shader
@@ -1072,14 +1094,14 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     // Level 2: the units and exports this program uses; for a pixel shader, the inputs its
     // vertex shader does not feed.
     const PsLink link = vertex ? PsLink{} : ps_link(regs, linkedVs);
-    auto& use = programUses[linkage];
+    auto& use = program_use(linkage);
     if (use.failed) return remember(use.failed);
     if (use.known) {
         const uint64_t key = lastVariantKey = variant_hash(regs, vertex, use, linkage, link);
-        if (auto it = variants.find(key); it != variants.end()) {
+        if (Shader* found = find_variant(key)) {
             ++stats.variantHits;
-            verify_key(regs, vertex, fetch, fsKey, address, size, base, key, *it->second, link, clip);
-            return remember(it->second);
+            verify_key(regs, vertex, fetch, fsKey, address, size, base, key, *found, link, clip);
+            return remember(found);
         }
     }
     auto started = std::chrono::steady_clock::now();
@@ -1445,6 +1467,8 @@ void clear_shader_cache() {
     shaders.clear();
     variants.clear();
     programUses.clear();
+    useFront = {};
+    variantFront = {};
     shadersByOutput.clear();
     shadersByModule.clear();
     verifiedKeys.clear();

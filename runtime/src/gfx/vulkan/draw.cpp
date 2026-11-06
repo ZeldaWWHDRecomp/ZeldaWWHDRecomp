@@ -3994,8 +3994,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     rprof::guest_read(rprof::kUpVertex, addr, copied);
     const uint64_t windowBegin=uint64_t(extent.minimum)*stride;
     const uint64_t windowEnd=uint64_t(extent.maximum)*stride+attributeEnd;
+    // Converted indices (quads) too: a buffer drawn in consecutive chunks otherwise copies its
+    // whole prefix once per chunk; their extent is the memoized scan of the converted bytes.
     const bool copyWindow=vertex_copy_window_enabled() &&
-        (nativeIndices || !indices.empty()) && supported && rate &&
+        (nativeIndices || convertedEntry || !indices.empty()) && supported && rate &&
         attributeEnd && stride && extent.valid && vertexExtent.valid &&
         windowEnd<=copied && windowBegin<windowEnd && windowBegin!=0;
     UploadSlice b;

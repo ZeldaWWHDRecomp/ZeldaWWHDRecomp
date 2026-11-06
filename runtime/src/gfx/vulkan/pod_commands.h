@@ -38,6 +38,9 @@ public:
   std::vector<std::byte> take() {
     auto result = std::move(bytes_);
     bytes_.clear();
+    // the next batch starts with the capacity this one reached, not from empty (a 32 KiB batch
+    // otherwise regrows through ~15 reallocations); on allocation failure it simply grows again
+    try { bytes_.reserve(result.capacity()); } catch (const std::bad_alloc&) {}
     commands_ = 0;
     return result;
   }
