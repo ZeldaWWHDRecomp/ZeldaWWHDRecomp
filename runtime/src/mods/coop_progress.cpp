@@ -25,6 +25,7 @@
 #include <string>
 #include <vector>
 
+#include "coop_layout.h"
 #include "coop_net.h"
 #include "guest_addr.h"
 #include "mods.h"
@@ -36,43 +37,11 @@ namespace {
 const uint32_t kSaveInfoPtr = GD(0x101F84DC);  // dComIfGs save area, dSv_info_c at +0x20 (savestate.cpp)
 const uint32_t kNextStage = GD(0x1046F0B0) + 0x5140;  // dStage_nextStage_c, enabled at +12
 constexpr uint32_t kInfo = 0x20, kLive = 0x778, kStageNo = 0x79C, kDataNum = 0x1290;  // dSv_info_c: mMemory, mDan.mStageNo, mDataNum
-constexpr uint16_t kTable = 0x380, kMemSize = 0x24, kStages = 16, kSaveSize = 0x778;
+constexpr uint16_t kTable = layout::sv::kMemory, kMemSize = layout::sv::kMemSize, kStages = layout::sv::kStages,
+                   kSaveSize = layout::kSaveSize;
 constexpr int kReplaced = 40;  // more fields changed in one step than play does: the save data was replaced (a load)
-
-// the union merge (Anchor's way, DESIGN.md Q6): kBits only set, kMax the larger, kFill only where this game has
-// none (0xFF) or the same kind's better one, kSet as it comes (a shared count: small keys), kBottle a new bottle
-// as an empty one
-enum Mode : uint8_t { kBits, kSet, kMax, kBottle, kFill };
-struct Field { uint16_t off, size; Mode mode; };
-
-std::vector<Field> fields() {
-    std::vector<Field> f = {
-        {0x000, 2, kMax},      // dSv_player_status_a_c: max life (heart containers and pieces)
-        // (current life +0x002, magic, rupees +0x004: each player's own, Anchor's way; the fork shared the life)
-        {0x00E, 3, kFill},     //   sword, shield, bracelets (mSelectEquip): filled where empty, never taken away
-        {0x012, 1, kMax},      //   wallet size
-        {0x013, 1, kMax},      //   max magic
-        {0x051, 21, kBits},    // dSv_player_get_item_c
-        {0x06E, 1, kMax}, {0x06F, 1, kMax}, {0x070, 1, kMax},  // dSv_player_item_max_c: arrows, bombs
-        {0x0B4, 13, kBits},    // dSv_player_collect_c: collected items, songs, Triforce, pearls
-        {0x0C4, 0x84, kBits},  // dSv_player_map_c: charts, sea map
-        {0x5C0, 0x64, kBits},  // dSv_ocean_c: salvage
-        {0x624, 0x100, kBits}, // dSv_event_c: the story
-    };
-    for (uint16_t i = 0; i < 21; i++)  // dSv_player_item_c, dInvSlot_* (bottles 14-17)
-        f.push_back({(uint16_t)(0x03C + i), 1, i >= 14 && i <= 17 ? kBottle : kFill});
-    for (uint16_t s = 0; s < kStages; s++) {  // dSv_memBit_c of each stage
-        const uint16_t m = kTable + s * kMemSize;
-        f.push_back({m, 4, kBits});                 // chests
-        f.push_back({(uint16_t)(m + 0x04), 16, kBits});  // switches 0-127
-        f.push_back({(uint16_t)(m + 0x14), 4, kBits});   // pickups
-        f.push_back({(uint16_t)(m + 0x18), 8, kBits});   // visited rooms
-        f.push_back({(uint16_t)(m + 0x20), 1, kSet});    // small keys
-        f.push_back({(uint16_t)(m + 0x21), 1, kBits});   // map, compass, big key, boss beaten, heart taken, boss met
-    }
-    return f;
-}
-const std::vector<Field> kFields = fields();
+const uint32_t kEventRun = GD(0x1046F0B0) + 0x5292;  // dComIfGp_event_runCheck (dEvt_control_c mode, savestate.cpp)
+constexpr int kHoldSteps = 30 * 180;                 // the others' changes wait for this game's event at most 3 minutes
 
 const uint32_t kActorQueue = GD(0x101F3328);  // g_fopAcTg_Queue: node next +8, actor +0xC (turbo.cpp)
 const uint32_t kObjNames = GD(0x101EBFDC);    // the object name table: name[8], s16 process, s8 subtype, u8 (extras.cpp)
@@ -117,41 +86,26 @@ uint32_t value(const uint8_t* p, int n) {
     return v;
 }
 
-// the others' changes in; out: the fields as they are now ("04A=50 66B=03"), for the trace
+// the others' changes in, by the layout's merge on an image of the save data (coop_layout.h: local state never
+// touched; a malformed message changes nothing), then the bytes it changed written where they are now; out: the fields
+// as they are now (" 04A=50 66B=03"), for the trace
 std::string put_in(uint32_t info, const std::string& m) {
-    const auto* d = (const uint8_t*)m.data();
+    std::vector<uint8_t> was, img;
+    read(info, was);
+    img = was;
     std::string done;
-    for (size_t i = 0; i + 3 <= m.size();) {
-        const uint16_t off = (uint16_t)(d[i] | d[i + 1] << 8);
-        const uint8_t size = d[i + 2];
-        const Field* f = nullptr;
-        for (const Field& k : kFields) if (off >= k.off && off + size <= k.off + k.size) { f = &k; break; }
-        const size_t len = 3 + size * (f && f->mode == kBits ? 2 : 1);
-        if (!f || i + len > m.size()) break;  // (the same build on both: not expected)
-        const uint8_t* v = d + i + 3;
-        if (f->mode == kBits) {
-            for (int b = 0; b < size; b++) {
-                const uint32_t a = at(info, off + b);
-                st8(a, (uint8_t)((ld8(a) & ~v[size + b]) | (v[b] & v[size + b])));
-            }
-        } else if (f->mode == kFill) {
-            for (int b = 0; b < size; b++) {
-                const uint32_t a = at(info, off + b);
-                const uint8_t cur = ld8(a);
-                if (v[b] != 0xFF && (cur == 0xFF || cur == 0 || (cur < v[b] && off == 0x00E))) st8(a, v[b]);
-            }
-        } else if (f->mode == kBottle) {
-            if (ld8(at(info, off)) == 0xFF && v[0] != 0xFF) st8(at(info, off), 0x50);  // dItemNo_EMPTY_BOTTLE_e
-        } else {
-            uint8_t cur[4];
-            for (int b = 0; b < size; b++) cur[b] = ld8(at(info, off + b));
-            if (f->mode == kSet || value(v, size) > value(cur, size))
-                for (int b = 0; b < size; b++) st8(at(info, off + b), v[b]);
-        }
-        char t[16];
-        snprintf(t, sizeof t, " %03X=%02X", off + size - 1, ld8(at(info, off + size - 1)));  // (its last byte)
-        done += t, i += len;
+    if (!layout::merge(img.data(), (const uint8_t*)m.data(), m.size(), &done)) {
+        mods::trace("coop: progress: a damaged message (%zu bytes) refused, nothing written", m.size());
+        return " (refused)";
     }
+    for (uint16_t o = 0; o < kSaveSize; o++)
+        if (img[o] != was[o]) {
+            if ((img[o] ^ was[o]) & ~layout::shared_bits(o)) {  // (C20: never; the merge masks them)
+                mods::trace("coop: progress: SAFETY: %s would change outside the shared bits: not written", layout::name_of(o).c_str());
+                continue;
+            }
+            st8(at(info, o), img[o]);
+        }
     return done;
 }
 
@@ -317,7 +271,7 @@ void door_moved(const uint8_t* d, size_t n) {
 }
 
 void received(const uint8_t* d, size_t n) {
-    if (g_in.size() < 512) g_in.emplace_back((const char*)d, n);
+    if (g_in.size() < 4096) g_in.emplace_back((const char*)d, n);
 }
 
 void rupees_received(const uint8_t* d, size_t n) {
@@ -336,17 +290,29 @@ void step(Cpu* c, bool live) {
         return;
     }
     const uint32_t info = sv + kInfo;
-    // test aid: WWHD_COOP_TEST_PROGRESS=<offset>:<value>:<mask> (hex, dSv_save_c): those bits set here 300 steps after
-    // arriving
-    // (a fourth field: that many steps instead of 300, decimal, e.g. to set them while out of a party)
-    static unsigned t_off = 0, t_val = 0, t_mask = 0, t_steps = 0, t_at = 300;
-    static const bool t_on = getenv("WWHD_COOP_TEST_PROGRESS") &&
-                             sscanf(getenv("WWHD_COOP_TEST_PROGRESS"), "%x:%x:%x:%u", &t_off, &t_val, &t_mask, &t_at) >= 3 && t_off < kSaveSize;
-    if (t_on && t_steps + 1 == t_at) {
-        const uint8_t was = ld8(at(info, t_off));
-        st8(at(info, t_off), (uint8_t)((was & ~t_mask) | (t_val & t_mask)));
-        mods::trace("coop: progress test: byte %03X from %02X to %02X", t_off, was, ld8(at(info, t_off)));
-    }
+    // test aid: WWHD_COOP_TEST_PROGRESS=<offset>:<value>:<mask>[:<steps>][,...] (hex, dSv_save_c; steps decimal,
+    // default 300): those bits set here that many steps after arriving (e.g. while out of a party); several entries for
+    // the local-state checks (C19: a local one must not reach the others)
+    struct TestSet { unsigned off, val, mask, at; };
+    static const std::vector<TestSet> t_sets = [] {
+        std::vector<TestSet> v;
+        for (const char* e = getenv("WWHD_COOP_TEST_PROGRESS"); e && *e;) {
+            TestSet t{0, 0, 0, 300};
+            if (sscanf(e, "%x:%x:%x:%u", &t.off, &t.val, &t.mask, &t.at) < 3 || t.off >= kSaveSize) break;
+            v.push_back(t);
+            if (!(e = strchr(e, ','))) break;
+            e++;
+        }
+        return v;
+    }();
+    static unsigned t_steps = 0;
+    for (const TestSet& t : t_sets)
+        if (t_steps + 1 == t.at) {
+            const uint8_t was = ld8(at(info, t.off));
+            st8(at(info, t.off), (uint8_t)((was & ~t.mask) | (t.val & t.mask)));
+            mods::trace("coop: progress test: byte %03X (%s) from %02X to %02X", t.off, layout::name_of(t.off).c_str(), was,
+                        ld8(at(info, t.off)));
+        }
     // test aid: WWHD_COOP_TEST_CHESTS=1 traces the chests loaded here every 300 steps (number, type, room, place, opened)
     if (static const bool list = getenv("WWHD_COOP_TEST_CHESTS"); list && t_steps % 300 == 150 && tbox_proc() >= 0) {
         uint32_t n = ld32(kActorQueue);
@@ -358,28 +324,37 @@ void step(Cpu* c, bool live) {
                             (int8_t)ld8(info + kStageNo), ld32(info + kLive));
             }
     }
+    // test aid: WWHD_COOP_TEST_SHOW=<offset>,... (hex, dSv_save_c) traces those bytes every 300 steps
+    static const std::vector<unsigned> t_show = [] {
+        std::vector<unsigned> v;
+        for (const char* e = getenv("WWHD_COOP_TEST_SHOW"); e && *e;) {
+            unsigned o;
+            if (sscanf(e, "%x", &o) != 1 || o >= kSaveSize) break;
+            v.push_back(o);
+            if (!(e = strchr(e, ','))) break;
+            e++;
+        }
+        return v;
+    }();
+    if (!t_show.empty() && t_steps % 300 == 299) {
+        std::string l;
+        for (unsigned o : t_show) {
+            char t[16];
+            snprintf(t, sizeof t, " %03X=%02X", o, ld8(at(info, (uint16_t)o)));
+            l += t;
+        }
+        mods::trace("coop: progress test: step %u:%s", t_steps + 1, l.c_str());
+    }
     t_steps++;
     std::vector<uint8_t> now;
     read(info, now);
     if (g_was.empty() || ld8(info + kDataNum) != g_data_num) {  // the first step in the host's world, or another Quest Log
         g_was = now, g_data_num = ld8(info + kDataNum), g_purse = -1;
     }
-    // this game's changes out
-    std::string out, said;
+    // this game's changes out (shared bits only, coop_layout.h)
+    std::string said;
     int changed = 0;
-    for (const Field& f : kFields) {
-        if (!memcmp(&now[f.off], &g_was[f.off], f.size)) continue;
-        changed++;
-        if (char t[8]; said.size() < 64) snprintf(t, sizeof t, " %03X", f.off), said += t;
-        if (f.mode != kBits) {
-            out += std::string{(char)(f.off & 0xFF), (char)(f.off >> 8), (char)f.size};
-            out.append((const char*)&now[f.off], f.size);
-            continue;
-        }
-        for (uint16_t b = f.off; b < f.off + f.size; b++)
-            if (const uint8_t diff = now[b] ^ g_was[b])
-                out += std::string{(char)(b & 0xFF), (char)(b >> 8), (char)1, (char)now[b], (char)diff};
-    }
+    const std::string out = layout::diff(g_was.data(), now.data(), &changed, &said);
     if (changed > kReplaced) {
         mods::trace("coop: progress: %d fields changed at once (the save data replaced): not sent", changed);
         g_purse = -1;
@@ -404,6 +379,14 @@ void step(Cpu* c, bool live) {
         memset(g_pend_tbox, 0, sizeof g_pend_tbox), memset(g_pend_sw, 0, sizeof g_pend_sw), g_done.clear(), g_pend_stage = cur, g_pend_steps = 0;
     if (g_pend_steps > 0) catch_up(c, cur);
     move_doors(c);
+    // (the others' changes wait while this game plays an event or cutscene: its own story bits and layers are not
+    // changed under it; at most kHoldSteps)
+    static int held = 0;
+    if (!g_in.empty() && ld8(kEventRun) && held < kHoldSteps) {
+        if (held++ == 0) mods::trace("coop: progress: %zu changes from others wait for this game's event", g_in.size());
+        return read(info, g_was);
+    }
+    if (held) mods::trace("coop: progress: the event ended after %d steps: the others' changes in", held), held = 0;
     if (g_in.empty()) return read(info, g_was);
     for (const std::string& m : g_in) mods::trace("coop: progress in:%s", put_in(info, m).c_str());
     g_in.clear();
@@ -420,37 +403,14 @@ void step(Cpu* c, bool live) {
         }
 }
 
-int store_mode(uint16_t off, uint8_t size) {
-    for (const Field& k : kFields)
-        if (off >= k.off && off + size <= k.off + k.size)
-            return k.mode == kBits ? 0 : k.mode == kMax ? 1 : k.mode == kFill || k.mode == kBottle ? 2 : -1;
-    return -1;
-}
+int store_mode(uint16_t off, uint8_t size) { return layout::store_mode(off, size); }
 
 std::vector<std::string> team_state(bool counts) {
     const uint32_t sv = ld32(kSaveInfoPtr);
     if (!sv) return {};
     std::vector<uint8_t> now;
     read(sv + kInfo, now);
-    // every shared field as a change from nothing: bits with their mask (all set bits), the others as they are; in
-    // messages of at most 1000 bytes (a reliable message must fit a packet), cut between fields
-    std::vector<std::string> out(1);
-    auto add = [&](const std::string& rec) {
-        if (out.back().size() + rec.size() > 1000) out.emplace_back();
-        out.back() += rec;
-    };
-    for (const Field& f : kFields) {
-        if (f.mode != kBits) {
-            if (f.mode == kSet && !counts) continue;  // (a shared count as it comes: only the leader's at a join)
-            std::string rec{(char)(f.off & 0xFF), (char)(f.off >> 8), (char)f.size};
-            rec.append((const char*)&now[f.off], f.size);
-            add(rec);
-            continue;
-        }
-        for (uint16_t b = f.off; b < f.off + f.size; b++)
-            if (now[b]) add(std::string{(char)(b & 0xFF), (char)(b >> 8), (char)1, (char)now[b], (char)now[b]});
-    }
-    return out;
+    return layout::team_state(now.data(), counts);
 }
 
 }  // namespace mods::coop::progress

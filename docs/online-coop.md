@@ -87,6 +87,13 @@ For scripted tests the environment variables `WWHD_COOP=host[:port]` or `WWHD_CO
 - **Monsters:** the monsters placed in a place are run by one player's game; everyone's hits count,
   and a monster killed stays dead while someone is in that place.
 
+**What stays your own:** your hearts and magic, your rupees (unless the party shares gains), arrows, bombs,
+bottle contents, bags, item buttons, the time of day, where you start after loading, your name and options,
+side-quest counters and minigame records, a dungeon's or room's temporary state (moving platforms, water,
+blocks you pushed), and things the game resets on its own (what happened today or this week, one visit to a
+place). Story changes another player makes while you are in a cutscene or talking to someone reach you when it
+ends.
+
 ## Boats
 
 Everyone sails their own boat, and the others see it with you in it. A friend in your party can ride along
