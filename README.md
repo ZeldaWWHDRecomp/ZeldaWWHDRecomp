@@ -22,14 +22,16 @@ The project has three parts:
 
 ## What's new
 
-**v0.5.0: settings in the pause menu, new touch controls and a sharper picture.**
-- **Settings in the game's own pause menu**, drawn like the game's menus, with Camera, Controls, Screen, Graphics,
-  Game and Mods tabs.
-- **Touch and controllers:** floating touch sticks and context buttons on Android, an item wheel, a One screen
-  (handheld) mode, a setup for each controller, and button prompts that follow your own face buttons.
-- **Graphics:** smooth bloom and sharp torchlight at higher resolutions, sharper textures on the Mac, smoother frame
-  interpolation that plays exactly like 30 fps, and fewer shader stutters. HDR on Linux and a Meta Quest theater.
-- Many fixes, and more for mod makers and the world editor.
+**v0.5.1: a built-in randomizer, GameCube models and many ideas from the Android forks.**
+- **Randomizer built in:** make a randomized game from a preset, seed name or permalink in setup, or import a seed
+  from the official TWWHD Randomizer. Each randomized game keeps its own saves.
+- **New options:** GameCube player models from a pack you have, Achievements and Game progress, walk-through doors,
+  instant text, Deku Leaf wave to rise, 16-character names, a cloud save folder, GameCube controller layout and
+  prompts, keyboard and mouse prompts, and experimental 60 fps frame generation on Vulkan.
+- **Smoother and more exact:** 60 fps interpolation now runs the same game logic as 30 fps (True 60 is retired), HDR with
+  truer shadows, and Android back to full speed with less memory use and fixes for Adreno and Huawei GPUs.
+- Many fixes on every platform, and more for mod makers. Thanks to all contributors and the GreenNaugahyde and
+  Nycolazs Android forks.
 
 The changes in each update are in [CHANGELOG.md](CHANGELOG.md) and in the release notes on the
 [Releases](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/releases) page.
