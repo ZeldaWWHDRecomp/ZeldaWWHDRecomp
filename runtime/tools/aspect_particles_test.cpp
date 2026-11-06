@@ -22,6 +22,7 @@ namespace mods { void play_context_pane(uint32_t) {} }  // the context buttons' 
 static uint32_t faded_pane = 0;
 static float hud_alpha = 1.f;
 namespace mods { float hud_fade_alpha_of(uint32_t p) { return p == faded_pane ? hud_alpha : 1.f; } int hud_pane_hide(uint32_t) { return 0; } }  // HUD fades (mods/hud_fade.cpp)
+namespace mods::coop { void particle(Cpu*) {} namespace sync { bool hud_hidden() { return false; } } }  // online co-op (mods/coop_*.cpp)
 namespace button_glyphs { void calculate_pane(Cpu* c,PpcFunc fn) { fn(c); } void draw_pane(Cpu* c,PpcFunc fn) { fn(c); } }
 static constexpr uint32_t base=0x20000000, pane=base+0x100, out=base+0x200,
     root=base+0xa00, emitter=base+0x400, projection=base+0x900;

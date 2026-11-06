@@ -24,6 +24,7 @@ bool recording_display_list() { return false; }
 namespace mods::cemu { float aspect_ratio() { return 0; } }
 namespace mods { void play_context_pane(uint32_t) {} }  // the context buttons' pane observer (mods/play_context.cpp)
 namespace mods { float hud_fade_alpha_of(uint32_t) { return 1.f; } int hud_pane_hide(uint32_t) { return 0; } }  // HUD fades (mods/hud_fade.cpp)
+namespace mods::coop { void particle(Cpu*) {} namespace sync { bool hud_hidden() { return false; } } }  // online co-op (mods/coop_*.cpp)
 namespace button_glyphs { void calculate_pane(Cpu* c,PpcFunc fn) { fn(c); } void draw_pane(Cpu* c,PpcFunc fn) { fn(c); } }
 extern "C" {
 void f_025A847C_orig(Cpu*) {}

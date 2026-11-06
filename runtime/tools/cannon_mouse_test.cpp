@@ -20,6 +20,7 @@ static bool enabled=true,captured=true,gyro_mouse=true,aiming=false;
 static float sensitivity=.15f;
 static bool inverted=false;
 void log_msg(const char*, ...) {}
+namespace mods::coop { void link_executes(uint32_t) {} }  // online co-op (mods/coop_pose.cpp)
 namespace mods {
 void filter_pad(input::PadState&);
 bool mouse_camera(){return enabled;} bool mouse_captured(){return captured;}
