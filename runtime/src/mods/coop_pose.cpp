@@ -3,8 +3,10 @@
 //
 // Online co-op: Link's pose and the puppets (coop_pose.h).
 //
-// Link's models: daPy_lk_c::createHeap (023D5548) makes them all with mDoExt_J3DModel__create (025E38E0); right after
-// it, on the same heap, each is made once more for every puppet (a model that does not fit is left out). Link's draw
+// Link's models: daPy_lk_c::createHeap (023D5548) makes them all with mDoExt_J3DModel__create (025E38E0). Each puppet
+// gets its own copy of every one of them (its kit) the first time it is shown, on a solid heap of its own from the game
+// heap (the puppet pool, GAPS C9: not on Link's heap, so nothing is made while nobody is shown, and the number of
+// puppets is not bound by his heap); a kit is given back as Link is made again and as its player leaves. Link's draw
 // (023D9820) enters them through entryDLSetLight (023D8DF0) / updateDLSetLight (023D8454): there, once a logic step,
 // each model's world joint matrices (model +0x2C -> block +0x10, count block +0x2C) are taken relative to Link's place
 // and heading. Right after each of his models is entered, each puppet's copy of it gets its matrices from the puppet's
@@ -55,6 +57,9 @@ std::map<uint32_t, Made> g_link_files;  // Link's models by initModel: their fil
 struct Held { uint16_t file; uint32_t model, heap; };
 std::vector<Held> g_held[kPuppets];  // each puppet's copies of what its player held
 std::unordered_map<uint32_t, int> g_wearer;  // Link's models (-1) and the puppets' copies (their slot): whose tunic
+// each puppet's kit: its copies of Link's models (LinkModel::twin) on a solid heap of its own; tried once until Link is
+// made again or it is let go (a game heap too full for it is not tried every step)
+struct Kit { uint32_t heap = 0; bool tried = false, release = false; } g_kit[kPuppets];
 bool g_in_heap = false;
 
 bool g_want = false;  // take a pose at Link's next draw
@@ -218,6 +223,20 @@ void load_ghost(const char* spec) {
     trace("coop: ghost %s, %zu steps, offset %.0f %.0f", path.c_str(), g_ghost.size(), g_ghost_off[0], g_ghost_off[2]);
 }
 
+// a solid heap's size (JKRSolidHeap's virtual getHeapSize: its vtable at +0xC, the slot +0x6C)
+uint32_t heap_size(Cpu* c, uint32_t heap) {
+    const uint32_t r3 = c->r[3];
+    const uint32_t n = guest_call(c, ld32(ld32(heap + 0xC) + 0x6C), {heap});
+    c->r[3] = r3;
+    return n;
+}
+// a solid heap from the game heap for a few models, only with this much free (else 0: see make_kit)
+uint32_t heap_for_models(Cpu* c, uint32_t need) {
+    const uint32_t heap = guest_call(c, GC(0x025E3528), {0, 0});
+    if (heap && heap_size(c, heap) < need) return guest_call(c, GC(0x025E3868), {heap}), 0;
+    return heap;
+}
+
 // puppet i's copy of a held model: made from its file of Link's archive (dComIfG_getObjectRes, 026066C4, as initModel
 // asks; the boat's archive for kShipFile) the first time, on a solid heap of its own from the game heap (a file that
 // makes none is not tried again)
@@ -229,7 +248,7 @@ void make_held(Cpu* c, int i, const Model& m) {
         return b;
     }();
     const uint32_t data = guest_call(c, GC(0x026066C4), {ld32(GD(0x101F4F28)), arc + (m.file & kShipFile ? 8u : 0u), (uint32_t)(m.file & ~kShipFile)});
-    uint32_t heap = data ? guest_call(c, GC(0x025E3528), {0, 0}) : 0, model = 0;  // mDoExt_createSolidHeapFromGame
+    uint32_t heap = data ? heap_for_models(c, 0x40000) : 0, model = 0;  // mDoExt_createSolidHeapFromGame, 256 KB free
     if (heap) {
         const uint32_t was = guest_call(c, GC(0x027EC220), {heap});  // JKRHeap::becomeCurrentHeap
         model = guest_call(c, GC(0x025E38E0), {data, 0x80000, m.diff});
@@ -242,6 +261,57 @@ void make_held(Cpu* c, int i, const Model& m) {
     trace("coop: puppet %d holds file %u: %s", i, m.file, model ? "its copy made" : "no copy");
 }
 
+// puppet i's kit made: a copy of each of Link's models, made with his data, flags and differed-list flags, on a solid
+// heap of its own from the game heap (mDoExt_createSolidHeapFromGame, then cut to what they took). A model made on a
+// heap too small for it does not fail cleanly (J3DModel's set-up writes through a null allocation), so a kit is only
+// started on a heap with room for a whole one (the first kit's size, learned; 2 MB until then) and the game's reserve:
+// 3 MB stay free for what the game makes later (a kit is ~441 KB; Outset's pier had ~6.5 MB free: 7 kits there)
+uint32_t g_kit_bytes = 0;
+constexpr uint32_t kGameReserve = 3u << 20;
+void make_kit(Cpu* c, int i) {
+    Kit& k = g_kit[i];
+    if (k.heap || k.tried || g_models.empty()) return;
+    k.tried = true;
+    const uint32_t r3 = c->r[3];
+    uint32_t heap = guest_call(c, GC(0x025E3528), {0, 0});
+    const uint32_t room = heap ? heap_size(c, heap) : 0, need = (g_kit_bytes ? g_kit_bytes : 0x200000) + kGameReserve;
+    if (heap && room < need) {
+        guest_call(c, GC(0x025E3868), {heap}), heap = 0;
+        trace("coop: puppet %d's kit: no room (%u KB free in the game heap, %u KB needed)", i, room >> 10, need >> 10);
+    }
+    int made = 0, missed = 0;
+    if (heap) {
+        const uint32_t was = guest_call(c, GC(0x027EC220), {heap});  // JKRHeap::becomeCurrentHeap
+        for (LinkModel& m : g_models)
+            (m.twin[i] = guest_call(c, GC(0x025E38E0), {m.data, m.flags, m.diff})) ? made++ : missed++;
+        guest_call(c, GC(0x027EC220), {was});
+        guest_call(c, GC(0x025E3678), {heap});  // mDoExt_adjustSolidHeap
+    }
+    const uint32_t bytes = heap ? heap_size(c, heap) : 0;
+    if (made && !g_kit_bytes) g_kit_bytes = bytes;
+    if (!made && heap) guest_call(c, GC(0x025E3868), {heap});
+    else k.heap = heap;
+    for (const LinkModel& m : g_models) if (m.twin[i]) g_wearer[m.twin[i]] = i;
+    c->r[3] = r3;
+    if (heap) trace("coop: puppet %d's kit: %d of Link's models copied, %u KB (%u KB were free)%s%s", i, made, bytes >> 10, room >> 10,
+                    missed ? ", did not fit: " : "", missed ? std::to_string(missed).c_str() : "");
+}
+// ... given back (mDoExt_destroySolidHeap), with what it held and its rope
+void free_kit(Cpu* c, int i) {
+    const uint32_t r3 = c->r[3];
+    for (LinkModel& m : g_models) if (m.twin[i]) g_wearer.erase(m.twin[i]), m.twin[i] = 0;
+    if (g_kit[i].heap) guest_call(c, GC(0x025E3868), {g_kit[i].heap}), trace("coop: puppet %d's kit given back", i);
+    g_kit[i] = Kit{};
+    for (const Held& h : g_held[i]) {
+        g_wearer.erase(h.model);
+        if (h.heap) guest_call(c, GC(0x025E3868), {h.heap});
+    }
+    g_held[i].clear();
+    if (g_rope[i].heap) guest_call(c, GC(0x025E3868), {g_rope[i].heap});
+    g_rope[i] = Rope{};
+    c->r[3] = r3;
+}
+
 // a rope line as daHimo2 makes its own (mDoExt_3DlineMat1_c: ctor 025EB82C, init 025EBA58 with the "Always" archive's
 // rope texture, file 0x7E), on a solid heap of its own; mat 1 if it was not made (not tried again)
 Rope make_rope(Cpu* c) {
@@ -251,7 +321,7 @@ Rope make_rope(Cpu* c) {
         return b;
     }();
     const uint32_t tex = guest_call(c, GC(0x026066C4), {ld32(GD(0x101F4F28)), arc, 0x7E});
-    const uint32_t heap = tex ? guest_call(c, GC(0x025E3528), {0, 0}) : 0;  // mDoExt_createSolidHeapFromGame
+    const uint32_t heap = tex ? heap_for_models(c, 0x20000) : 0;  // mDoExt_createSolidHeapFromGame, 128 KB free
     uint32_t mat = 0;
     if (heap) {
         mat = mem::host_alloc(0x188, 0x20);
@@ -1217,6 +1287,10 @@ bool own_pose(Pose& out) {
     return g_have;
 }
 
+void release(int i) {
+    if (i >= 0 && i < kPuppets) g_puppet[i].shown = false, g_kit[i].release = true;
+}
+
 void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic) {
     Puppet& u = g_puppet[i];
     u.shown = p != nullptr;
@@ -1305,7 +1379,14 @@ void step(Cpu* c, uint32_t link, bool on) {
         const float at[3] = {p.pos[0] + g_ghost_off[0], p.pos[1] + g_ghost_off[1], p.pos[2] + g_ghost_off[2]};
         const bool here = strncmp(p.stage, (const char*)mem::ptr(kStage), 8) == 0;
         static const int tunic = getenv("WWHD_COOP_GHOST_TUNIC") ? atoi(getenv("WWHD_COOP_GHOST_TUNIC")) : 1;
-        show(0, here ? &p : nullptr, at, p.yaw, tunic);
+        // WWHD_COOP_GHOSTS=<n>: n of them (1..kPuppets), in a ring around that place, each a little further on in it
+        static const int n_ghosts = std::clamp(getenv("WWHD_COOP_GHOSTS") ? atoi(getenv("WWHD_COOP_GHOSTS")) : 1, 1, kPuppets);
+        for (int g = 0; g < n_ghosts; g++) {
+            const Pose& q = g ? g_ghost[(g_ghost_at + 37 * g) % g_ghost.size()] : p;
+            const float turn = 6.2831853f * g / n_ghosts, r = g ? 220.f : 0.f;
+            const float gat[3] = {q.pos[0] + g_ghost_off[0] + r * std::cos(turn), q.pos[1] + g_ghost_off[1], q.pos[2] + g_ghost_off[2] + r * std::sin(turn)};
+            show(g, here ? &q : nullptr, gat, q.yaw, (tunic + g) & 3);
+        }
         static int n = 0;
         if (++n % 150 == 0)
             trace("coop: ghost step %zu at %.0f %.0f %.0f, %zu models, %s", g_ghost_at, at[0], at[1], at[2], p.models.size(),
@@ -1313,7 +1394,9 @@ void step(Cpu* c, uint32_t link, bool on) {
     }
     for (int i = 0; i < kPuppets; i++) {
         const Puppet& u = g_puppet[i];
+        if (g_kit[i].release && !u.shown) free_kit(c, i);
         if (!u.shown) continue;
+        if (link) make_kit(c, i);
         for (const Model& m : u.pose.models) if (m.k == kHeld) make_held(c, i, m);
         // its chain: a hookshot of our own, made as its player's flies, kept (its execute waits, as Link's own
         // hookshot does in his hand: it draws nothing of itself), drawn as theirs (hook_025D4654)
@@ -1335,16 +1418,7 @@ extern "C" void f_023D5548_orig(Cpu* c);
 // what the puppets hold and their ropes given back (mDoExt_destroySolidHeap) as Link is made again; his this (r3) kept
 // around it (guest_call leaves its own result there: his createHeap then ran on that, a crash after a reload)
 static void free_held(Cpu* c) {
-    const uint32_t self = c->r[3];
-    for (auto& held : g_held) {
-        for (const Held& h : held) if (h.heap) guest_call(c, GC(0x025E3868), {h.heap});
-        held.clear();
-    }
-    for (Rope& r : g_rope) {
-        if (r.heap) guest_call(c, GC(0x025E3868), {r.heap});
-        r = Rope{};
-    }
-    c->r[3] = self;
+    for (int i = 0; i < kPuppets; i++) free_kit(c, i);  // (keeps r3: Link's this)
 }
 extern "C" void hook_023D5548(Cpu* c) {
     free_held(c);
@@ -1354,17 +1428,8 @@ extern "C" void hook_023D5548(Cpu* c) {
     g_in_heap = true;
     f_023D5548_orig(c);
     g_in_heap = false;
-    const uint32_t ok = c->r[3];
-    int made = 0, missed = 0;
-    if (ok && mods::coop::sync::settings().on)
-        for (LinkModel& m : g_models)
-            for (uint32_t& t : m.twin) (t = guest_call(c, GC(0x025E38E0), {m.data, m.flags, m.diff})) ? made++ : missed++;
-    c->r[3] = ok;
     g_wearer.clear();
-    for (const LinkModel& m : g_models) {
-        g_wearer[m.model] = -1;
-        for (int i = 0; i < kPuppets; i++) if (m.twin[i]) g_wearer[m.twin[i]] = i;
-    }
+    for (const LinkModel& m : g_models) g_wearer[m.model] = -1;
     find_clothes();
     g_body_parts = 0;
     for (size_t k = 0; k < g_models.size() && k < 64; k++) {  // (by his model files' names: cl, hands, katsura, ...)
@@ -1373,7 +1438,7 @@ extern "C" void hook_023D5548(Cpu* c) {
         for (uint32_t t = fmdl + 4 + ld32(fmdl + 4); ld8(t); t++) name += (char)ld8(t);
         for (const char* n : kBodyParts) if (name == n) g_body_parts |= 1ull << k;
     }
-    mods::trace("coop: Link made %zu models; %d puppet copies made, %d did not fit", g_models.size(), made, missed);
+    mods::trace("coop: Link made %zu models (the puppets' copies: their kits, as they are shown)", g_models.size());
 }
 
 // mDoExt_J3DModel__create(data, flags, diff flags): the ones Link's createHeap makes

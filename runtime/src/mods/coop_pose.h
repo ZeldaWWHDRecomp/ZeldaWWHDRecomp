@@ -14,7 +14,9 @@ struct Cpu;
 
 namespace mods::coop {
 
-constexpr int kPuppets = 3;  // up to three other players
+// puppets: other players drawn (the direct transport and a party use 3; strangers more, GAPS C11); each made only
+// when shown (its kit on a heap of its own)
+constexpr int kPuppets = 15;
 
 struct Joint { int16_t q[4], t[3]; uint8_t s; };  // rotation (x32767), translation (x8), uniform scale (x64)
 constexpr uint8_t kHeld = 0xFF;  // a model's k: one Link makes as he takes it out (his sword, an item), by its file
@@ -59,6 +61,9 @@ void blend(const Pose& a, const Pose& b, float t, Pose& out);
 bool own_pose(Pose& out);
 // what puppet i shows: a pose drawn at a place and heading (nullptr: hidden), in a tunic (0 green, 1 red, 2 blue, 3 purple)
 void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic = 0);
+// puppet i's player left: hidden, and its kit (its copies of Link's models, on a heap of its own) given back at the
+// next step
+void release(int i);
 // this game's own Link's tunic while a session is on (-1: none, his own clothes)
 void own_tunic(int tunic);
 // who this game plays as (0 Link, 1 Tetra, 2 Medli, 3 Princess Zelda): drawn in Link's place here, and the others see

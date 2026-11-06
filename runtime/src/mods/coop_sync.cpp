@@ -422,7 +422,7 @@ struct Handler : net::Handler {
     }
     void left(int id, const char* why) override {
         g_remote[id] = Remote{};
-        show(id < net::my_id() ? id : std::max(0, id - 1), nullptr, nullptr, 0);
+        release(id < net::my_id() ? id : std::max(0, id - 1));  // (hidden, its kit given back)
         if (id != 0 || net::role() != net::Role::kOff) return ss::notice(net::name(id) + " left");
         g_failed = g_gen;  // (not joined again until the toggle, Connect again or the settings change)
         g_status = std::string("Stopped: ") + why;
@@ -628,7 +628,7 @@ void poll(Cpu* c, bool on) {
         const bool was = guest();
         net::stop(nullptr);
         for (Remote& r : g_remote) r = Remote{};
-        for (int i = 0; i < kPuppets; i++) show(i, nullptr, nullptr, 0);
+        for (int i = 0; i < kPuppets; i++) release(i);
         if (was && settings().stay_together) g_back = "You left the host's game";
         else if (was) hlefs::g_block_saves = false, g_was_guest = false;
     }
