@@ -6,12 +6,16 @@
 #include <cstring>
 #include <random>
 #include <string>
+#include <vector>
 
 #include "proto/channel.h"
 #include "proto/handshake.h"
 #include "proto/messages.h"
 #include "proto/protocol.h"
 #include "proto/sha256.h"
+#ifdef WWHD_ONLINE_MONOCYPHER
+#include "proto/third_party/monocypher/monocypher.h"
+#endif
 
 using namespace online::proto;
 
@@ -281,8 +285,88 @@ static void test_channel(double loss, double dup, double reorder, uint32_t seed)
     CHECK(!b.receive(out[0].data(), out[0].size(), 300000, got));
 }
 
+static std::vector<uint8_t> unhex(const char* h) {
+    std::vector<uint8_t> v;
+    for (size_t i = 0; h[i] && h[i + 1]; i += 2) {
+        unsigned x = 0;
+        std::sscanf(h + i, "%2x", &x);
+        v.push_back(uint8_t(x));
+    }
+    return v;
+}
+
+static void test_crypto() {
+    std::printf("crypto backend: %s\n", crypto::backend_name());
+    // signatures: valid, then any change to the message, the signature or the key fails
+    auto id = crypto::Identity::generate(), other = crypto::Identity::generate();
+    const char* msg = "hello from the hero";
+    uint8_t sig[64];
+    crypto::sign(id, msg, std::strlen(msg), sig);
+    CHECK(crypto::verify(id.pub, msg, std::strlen(msg), sig));
+    CHECK(!crypto::verify(other.pub, msg, std::strlen(msg), sig));
+    std::string m2 = msg;
+    m2[0] ^= 1;
+    CHECK(!crypto::verify(id.pub, m2.data(), m2.size(), sig));
+    sig[10] ^= 1;
+    CHECK(!crypto::verify(id.pub, msg, std::strlen(msg), sig));
+    // the same seed gives the same identity (identity files keep only the seed)
+    auto again = crypto::Identity::from_secret(id.secret);
+    CHECK(std::memcmp(again.pub, id.pub, 32) == 0);
+    // packets: sealed bytes differ from the plain text (secure backend), open restores them, tampering fails
+    uint8_t key[32];
+    crypto::random_bytes(key, 32);
+    uint8_t ad[17] = {1, 2, 3};
+    Bytes plain(300);
+    for (size_t i = 0; i < plain.size(); ++i) plain[i] = uint8_t(i);
+    Bytes box = plain;
+    uint8_t tag[16];
+    crypto::seal(key, 42, ad, sizeof ad, box.data(), box.size(), tag);
+    if (crypto::backend_secure()) CHECK(box != plain);
+    Bytes t = box;
+    CHECK(crypto::open(key, 42, ad, sizeof ad, t.data(), t.size(), tag) && t == plain);
+    t = box;
+    CHECK(!crypto::open(key, 43, ad, sizeof ad, t.data(), t.size(), tag));  // another nonce
+    t = box;
+    t[5] ^= 1;
+    CHECK(!crypto::open(key, 42, ad, sizeof ad, t.data(), t.size(), tag));
+    t = box;
+    uint8_t ad2[17] = {1, 2, 4};
+    CHECK(!crypto::open(key, 42, ad2, sizeof ad2, t.data(), t.size(), tag));
+#ifdef WWHD_ONLINE_MONOCYPHER
+    // X25519, RFC 7748 section 6.1
+    crypto::Ephemeral alice, bob;
+    auto as = unhex("77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a");
+    auto bs = unhex("5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb");
+    std::memcpy(alice.secret, as.data(), 32);
+    std::memcpy(bob.secret, bs.data(), 32);
+    auto ap = unhex("8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a");
+    auto bp = unhex("de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f");
+    std::memcpy(alice.pub, ap.data(), 32);
+    std::memcpy(bob.pub, bp.data(), 32);
+    uint8_t atx[32], arx[32], btx[32], brx[32];
+    CHECK(crypto::session_keys(alice, bob.pub, true, atx, arx));
+    CHECK(crypto::session_keys(bob, alice.pub, false, btx, brx));
+    CHECK(std::memcmp(atx, brx, 32) == 0 && std::memcmp(arx, btx, 32) == 0 && std::memcmp(atx, arx, 32) != 0);
+    // the RFC's public keys and shared secret from the vendored library itself
+    uint8_t pk[32], shared[32];
+    crypto_x25519_public_key(pk, as.data());
+    CHECK(std::memcmp(pk, ap.data(), 32) == 0);
+    crypto_x25519_public_key(pk, bs.data());
+    CHECK(std::memcmp(pk, bp.data(), 32) == 0);
+    crypto_x25519(shared, as.data(), bp.data());
+    CHECK(hex(shared, 32) == "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742");
+    auto e = crypto::Ephemeral::generate();
+    crypto_x25519_public_key(pk, e.secret);
+    CHECK(std::memcmp(pk, e.pub, 32) == 0);
+    // a low-order point (all zero) is refused
+    uint8_t zero[32] = {};
+    CHECK(!crypto::session_keys(alice, zero, true, atx, arx));
+#endif
+}
+
 int main() {
     test_sha256();
+    test_crypto();
     test_codes();
     test_pow();
     test_handshake();

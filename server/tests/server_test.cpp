@@ -159,6 +159,14 @@ static void test_presence_and_stage() {
 }
 
 static void test_refusals_and_ban() {
+    {
+        // a public server needs the real crypto backend
+        auto pc = base_config(0);
+        pc.public_server = true;
+        server::Server p(pc);
+        std::string w;
+        CHECK(p.start(w) == crypto::backend_secure());
+    }
     server::Server s(base_config(0));
     std::string why;
     CHECK(s.start(why));

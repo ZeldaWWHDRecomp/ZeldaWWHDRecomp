@@ -1,13 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
 // The online protocol's cryptography behind one small interface (docs/online-server.md, "Crypto backends").
 //
-// Two backends share this API:
-//  - "plain" (crypto_plain.cpp, the default today): NO secrecy and NO real authentication. Keys are derived so that
-//    the protocol, the handshake, friend codes and session resumption all work end to end, but anyone who sees the
-//    traffic can read and forge it. For LAN tests and development only; the server refuses to start in public mode
-//    with it unless `allow_insecure = true` is set.
-//  - "monocypher" (planned; Ed25519 signatures, X25519 key exchange, ChaCha20-Poly1305, BLAKE2b): waits for the
-//    user's OK on the dependency. It drops in behind this header without protocol changes.
+// Two backends share this API (CMake WWHD_ONLINE_CRYPTO):
+//  - "monocypher" (crypto_monocypher.cpp, the default): the vendored Monocypher 4.0.2: EdDSA identities, X25519
+//    session keys, XChaCha20-Poly1305 packets.
+//  - "plain" (crypto_plain.cpp): NO secrecy and NO real authentication, for protocol debugging only; the server
+//    refuses `public = true` with it unless `allow_insecure = true` is set.
+// Both have the same sizes on the wire; they do not talk to each other (different keys and tags).
 #pragma once
 #include <cstddef>
 #include <cstdint>
