@@ -31,6 +31,8 @@ pids=()
 run() {  # run ROLE COOP-VALUE ENV...
   local role=$1 coop=$2; shift 2
   cp -R "$save" "$out/$role/save"
+  # (the shader prebuild, ~80 MB, is kept once per role for all runs, not in each run's user folder)
+  mkdir -p "$out/$role/user" "$runs/duo-shader-prebuild-$role" && ln -s "$runs/duo-shader-prebuild-$role" "$out/$role/user/shader-prebuild"
   (cd "$out/$role" && exec env WWHD_HIDDEN_WINDOWS=1 WWHD_NO_HOST_INPUT=1 WWHD_NO_AUDIO=1 WWHD_NO_GAMEPAD=1 \
     WWHD_USER_DIR="$out/$role/user" WWHD_STATE_DIR="$out/$role/states" WWHD_SHADER_CACHE="$runs/duo-cache-$role.bin" \
     WWHD_VK_SHADER_CACHE="$runs/duo-vkshaders-$role.bin" WWHD_PRESS="$press" WWHD_COOP="$coop" WWHD_COOP_NAME=${(C)role} \
@@ -41,8 +43,8 @@ run() {  # run ROLE COOP-VALUE ENV...
 trap 'for p in $pids; do pkill -9 -P $p 2>/dev/null; kill -9 $p 2>/dev/null; done' EXIT INT TERM HUP
 if [ -n "${DUO_SERVER:-}" ]; then
   mkdir -p "$out/server"
-  printf '[server]\nname = "duo"\n[network]\nbind = "127.0.0.1"\nport = %s\n[files]\nkey = "%s/server/server.key"\nadmin_socket = "%s/server/admin.sock"\n[limits]\npow_bits = 8\nper_ip = 8\nbytes_per_s = 32768\n' \
-    "$port" "$out" "$out" > "$out/server/server.toml"
+  printf '[server]\nname = "duo"\n[network]\nbind = "127.0.0.1"\nport = %s\n[files]\nkey = "%s/server/server.key"\nadmin_socket = "%s/server/admin.sock"\n[limits]\npow_bits = 8\nper_ip = 8\nbytes_per_s = %s\n' \
+    "$port" "$out" "$out" "${DUO_UPLOAD:-8192}" > "$out/server/server.toml"
   (exec "$root/build/rel/server/wwhd-online-server" --config "$out/server/server.toml" 2>&1 | head -c 5000000 > "$out/server.log") &
   spid=$!
   sleep 1

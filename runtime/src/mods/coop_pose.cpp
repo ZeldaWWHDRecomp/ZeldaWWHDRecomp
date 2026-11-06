@@ -916,20 +916,88 @@ void effect_at(Cpu* c, const Effect& e, const float pos[3], int16_t yaw) {
     guest_call(c, GC(0x025A847C), {ld32(kPlay + 0x5AB0), 0, e.id, buf, buf + 0xC, 0, 0xFF, 0});
 }
 
+// Compact joints (GAPS C10, the pose's flags bit 7): a model's joints in 8 bytes each instead of 15: the rotation as
+// the smallest three of its quaternion (2 bits which is left out, 3 x 10 bits of the others, sign made positive for
+// the one left out) and the translation relative to Link as 3 x 10 bits at half a unit (within 256 of him); a
+// model's scales only when not all 1, its shown materials only when not all. A model with a joint further away (an
+// arrow flown off) keeps the full form. A model's mode byte: bit 0 all shown, bit 1 compact, bit 2 every scale 1.
+constexpr uint8_t kCompact = 0x80;
+uint32_t q_pack(const int16_t q[4]) {
+    float f[4];
+    for (int e = 0; e < 4; e++) f[e] = q[e] / 32767.f;
+    int big = 0;
+    for (int e = 1; e < 4; e++) if (std::fabs(f[e]) > std::fabs(f[big])) big = e;
+    const float sign = f[big] < 0 ? -1.f : 1.f;
+    uint32_t out = (uint32_t)big << 30;
+    for (int e = 0, k = 0; e < 4; e++) {
+        if (e == big) continue;
+        const float v = std::clamp(f[e] * sign * (float)M_SQRT2, -1.f, 1.f);  // (the others lie within +-1/sqrt 2)
+        out |= (uint32_t)std::lround((v + 1) * 511.5f) << (20 - 10 * k++);
+    }
+    return out;
+}
+void q_unpack(uint32_t w, int16_t q[4]) {
+    const int big = (int)(w >> 30);
+    float f[4], sum = 0;
+    for (int e = 0, k = 0; e < 4; e++) {
+        if (e == big) continue;
+        f[e] = ((float)((w >> (20 - 10 * k++)) & 1023) / 511.5f - 1) / (float)M_SQRT2;
+        sum += f[e] * f[e];
+    }
+    f[big] = std::sqrt(std::max(0.f, 1 - sum));
+    for (int e = 0; e < 4; e++) q[e] = (int16_t)std::lround(std::clamp(f[e], -1.f, 1.f) * 32767);
+}
+// a translation (x8 units) as 3 x 10 bits at half a unit; false when it is not within 255.5 units
+bool t_pack(const int16_t t[3], uint32_t& out) {
+    out = 0;
+    for (int e = 0; e < 3; e++) {
+        const long v = std::lround(t[e] / 4.0) + 512;  // (x8 -> x2)
+        if (v < 0 || v > 1023) return false;
+        out |= (uint32_t)v << (20 - 10 * e);
+    }
+    return true;
+}
+void t_unpack(uint32_t w, int16_t t[3]) {
+    for (int e = 0; e < 3; e++) t[e] = (int16_t)((((int)(w >> (20 - 10 * e)) & 1023) - 512) * 4);
+}
+
 void pack(const Pose& p, std::string& out) {
+    static const bool full = getenv("WWHD_COOP_FULL_POSES") != nullptr;  // (test aid: the fork's form, to compare)
     auto put_bytes = [&](const void* v, size_t n) { out.append((const char*)v, n); };
     const size_t start = out.size();
     uint32_t size = 0;
     put_bytes(&size, 4);  // filled in below
-    put_bytes(p.stage, 8), put_bytes(&p.room, 1), put_bytes(&p.flags, 1), put_bytes(p.pos, 12), put_bytes(&p.yaw, 2);
+    const uint8_t flags = (uint8_t)((p.flags & ~kCompact) | (full ? 0 : kCompact));
+    put_bytes(p.stage, 8), put_bytes(&p.room, 1), put_bytes(&flags, 1), put_bytes(p.pos, 12), put_bytes(&p.yaw, 2);
     put_bytes(&p.proc, 2), put_bytes(&p.equip, 2);
     const uint8_t nm = (uint8_t)p.models.size();
     put_bytes(&nm, 1);
     for (const Model& m : p.models) {
         const uint8_t nj = (uint8_t)m.j.size();
-        put_bytes(&m.k, 1), put_bytes(&m.shown, 4), put_bytes(&nj, 1);
+        if (full) {
+            put_bytes(&m.k, 1), put_bytes(&m.shown, 4), put_bytes(&nj, 1);
+            if (m.k == kHeld) put_bytes(&m.file, 2), put_bytes(&m.diff, 4), put_bytes(&m.brk, 4);
+            for (const Joint& j : m.j) put_bytes(j.q, 8), put_bytes(j.t, 6), put_bytes(&j.s, 1);
+            continue;
+        }
+        std::vector<uint32_t> ts(m.j.size());
+        bool compact = true, unit = true;
+        for (size_t i = 0; i < m.j.size(); i++) compact &= t_pack(m.j[i].t, ts[i]), unit &= m.j[i].s == 64;
+        const uint8_t mode = (uint8_t)((m.shown == ~0u ? 1 : 0) | (compact ? 2 : 0) | (unit ? 4 : 0));
+        put_bytes(&m.k, 1), put_bytes(&mode, 1);
+        if (!(mode & 1)) put_bytes(&m.shown, 4);
+        put_bytes(&nj, 1);
         if (m.k == kHeld) put_bytes(&m.file, 2), put_bytes(&m.diff, 4), put_bytes(&m.brk, 4);
-        for (const Joint& j : m.j) put_bytes(j.q, 8), put_bytes(j.t, 6), put_bytes(&j.s, 1);
+        for (size_t i = 0; i < m.j.size(); i++) {
+            const Joint& j = m.j[i];
+            if (compact) {
+                const uint32_t q = q_pack(j.q);
+                put_bytes(&q, 4), put_bytes(&ts[i], 4);
+            } else {
+                put_bytes(j.q, 8), put_bytes(j.t, 6);
+            }
+            if (!unit) put_bytes(&j.s, 1);
+        }
     }
     put_bytes(&p.trail, 4);
     if (p.trail > 0) {
@@ -943,6 +1011,29 @@ void pack(const Pose& p, std::string& out) {
     if (nr) put_bytes(&p.rope_width, 4), put_bytes(p.rope_pts.data(), 6 * nr);
     size = (uint32_t)(out.size() - start);
     memcpy(&out[start], &size, 4);
+    // test aid WWHD_COOP_POSE_CHECK=1: each compact pose read back and compared with what was packed (largest joint
+    // rotation error in degrees, largest translation error in units, the sizes), traced every 300 poses
+    if (static const bool check = getenv("WWHD_COOP_POSE_CHECK") != nullptr; check && !full) {
+        static double worst_deg = 0, worst_t = 0, sum_size = 0;
+        static uint32_t n = 0;
+        Pose back;
+        if (unpack((const uint8_t*)out.data() + start, size, back)) {
+            for (size_t mi = 0; mi < p.models.size() && mi < back.models.size(); mi++)
+                for (size_t ji = 0; ji < p.models[mi].j.size() && ji < back.models[mi].j.size(); ji++) {
+                    const Joint &a = p.models[mi].j[ji], &b = back.models[mi].j[ji];
+                    double dot = 0, na = 0, nb = 0;
+                    for (int e = 0; e < 4; e++) dot += (double)a.q[e] * b.q[e], na += (double)a.q[e] * a.q[e], nb += (double)b.q[e] * b.q[e];
+                    if (na > 0 && nb > 0) worst_deg = std::max(worst_deg, 2 * std::acos(std::min(1.0, std::fabs(dot) / std::sqrt(na * nb))) * 180 / M_PI);
+                    for (int e = 0; e < 3; e++) worst_t = std::max(worst_t, std::fabs(a.t[e] - b.t[e]) / 8.0);
+                }
+        } else worst_deg = 999;
+        sum_size += size;
+        if (++n % 300 == 0) {
+            trace("coop: pose check: %u poses, %.0f bytes on average (this one %u), worst joint error %.2f degrees, %.2f units", n,
+                  sum_size / n, size, worst_deg, worst_t);
+            worst_deg = worst_t = 0;
+        }
+    }
 }
 
 bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
@@ -959,14 +1050,31 @@ bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
     if (!get(p.stage, 8) || !get(&p.room, 1) || !get(&p.flags, 1) || !get(p.pos, 12) || !get(&p.yaw, 2) ||
         !get(&p.proc, 2) || !get(&p.equip, 2) || !get(&nm, 1))
         return false;
+    const bool compact_form = p.flags & kCompact;
+    p.flags &= ~kCompact;
     p.models.resize(nm);
     for (Model& m : p.models) {
-        uint8_t nj = 0;
-        if (!get(&m.k, 1) || !get(&m.shown, 4) || !get(&nj, 1)) return false;
+        uint8_t nj = 0, mode = 0;
+        if (!get(&m.k, 1)) return false;
+        if (compact_form && !get(&mode, 1)) return false;
+        if (compact_form && (mode & 1)) m.shown = ~0u;
+        else if (!get(&m.shown, 4)) return false;
+        if (!get(&nj, 1)) return false;
         if (m.k == kHeld && (!get(&m.file, 2) || !get(&m.diff, 4) || !get(&m.brk, 4))) return false;
         m.j.resize(nj);
-        for (Joint& j : m.j)
-            if (!get(j.q, 8) || !get(j.t, 6) || !get(&j.s, 1)) return false;
+        for (Joint& j : m.j) {
+            if (!compact_form) {
+                if (!get(j.q, 8) || !get(j.t, 6) || !get(&j.s, 1)) return false;
+                continue;
+            }
+            if (mode & 2) {
+                uint32_t q, t;
+                if (!get(&q, 4) || !get(&t, 4)) return false;
+                q_unpack(q, j.q), t_unpack(t, j.t);
+            } else if (!get(j.q, 8) || !get(j.t, 6)) return false;
+            j.s = 64;
+            if (!(mode & 4) && !get(&j.s, 1)) return false;
+        }
     }
     if (!get(&p.trail, 4)) return false;
     if (p.trail > 0) {

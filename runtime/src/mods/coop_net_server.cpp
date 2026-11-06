@@ -198,8 +198,8 @@ void send(int to, Msg type, const std::string& body) {
 
 void put_state(uint8_t kind, const std::string& body) {
     if (!g_client) return;
-    // (the server's near tier is 15 Hz and its upload budget a few KB/s, made for compact poses (GAPS C10): until
-    // those come, every other pose of the fork's 30 Hz ~700-byte poses goes, and the other states at most 10 Hz)
+    // (the server's near tier is 15 Hz and its default upload budget 8 KB/s: every other of the 30 Hz poses goes,
+    // ~380 bytes in the compact form (coop_pose.cpp, ~5.7 KB/s), and the other states at most 10 Hz)
     static uint32_t calls[256];
     const uint32_t n = calls[kind]++;
     if (kind == 1 ? n % 2 : n % 3) return;
