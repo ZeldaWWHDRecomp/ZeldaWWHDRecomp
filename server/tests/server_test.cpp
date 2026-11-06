@@ -30,6 +30,11 @@ static int g_fail = 0;
 
 static std::string g_dir;
 
+// the clock the bots hand to Client::poll: monotonic_ms() plus an offset, like a game's own clock (the client must
+// never mix it with its own monotonic_ms(): that made redirects and the first connect time out at once)
+static uint32_t g_clock_offset = 0x40000000u;
+static uint32_t bot_now() { return monotonic_ms() + g_clock_offset; }
+
 struct Bot {
     Client c;
     std::string name;
@@ -40,7 +45,8 @@ struct Bot {
     PoseHeader head;
     Bytes blob = Bytes(100, 7);
     bool online() const { return c.state() == ClientState::kOnline; }
-    void poll(uint32_t now) {
+    void poll(uint32_t) {
+        uint32_t now = bot_now();
         for (auto& e : c.poll(now)) {
             if (e.kind == ClientEvent::kWelcome && !e.resumed) {
                 players.clear();

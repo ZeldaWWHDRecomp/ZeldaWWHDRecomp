@@ -37,7 +37,7 @@ bool Client::start(const ClientConfig& cfg, std::string& why) {
     }
     if (sock_ != &own_) mode_ = TransportMode::kUdpOnly;  // a shared socket (bots) is UDP only
     transport_ = mode_ == TransportMode::kTcpOnly ? Transport::kTcp : Transport::kUdp;
-    begin_connect(monotonic_ms());
+    begin_pending_ = true;  // at the first poll, on the caller's clock
     return true;
 }
 
@@ -45,7 +45,7 @@ void Client::stop() {
     if (state_ == ClientState::kOnline) {
         chan_.send_reliable(kMsgBye, nullptr, 0);
         std::vector<Bytes> out;
-        chan_.flush(monotonic_ms(), out, 2, 0);
+        chan_.flush(now_, out, 2, 0);
         for (auto& b : out) send_raw(b);
     }
     if (state_ != ClientState::kOff && state_ != ClientState::kStopped) state_ = ClientState::kStopped;
@@ -71,6 +71,7 @@ void Client::begin_connect(uint32_t now) {
     phase_at_ = 0;
     phase_started_ = now;
     pow_found_ = false;
+    first_connect_sent_ = 0;
     if (transport_ == Transport::kTcp) {
         std::string why;
         tcp_.connect(server_, why);  // a fresh connection for each attempt (a failure shows as no answer)
@@ -149,6 +150,11 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
     // what on_datagram() produced since the last poll comes first
     out_.clear();
     out_.swap(events_);
+    now_ = now;
+    if (begin_pending_) {
+        begin_pending_ = false;
+        begin_connect(now);
+    }
     if (transport_ == Transport::kTcp) {
         tcp_.pump();
         uint8_t buf[kMaxTcpFrame];
@@ -172,7 +178,9 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
     switch (phase_) {
         case Phase::kConnect:
             // no answer over UDP for 3 s: the network may block it; try TCP to the same address
-            if (mode_ == TransportMode::kAuto && transport_ == Transport::kUdp && now - phase_started_ >= 3000) {
+            // (counted from the first CONNECT sent: a game busy loading may not poll for seconds after start())
+            if (mode_ == TransportMode::kAuto && transport_ == Transport::kUdp && first_connect_sent_ &&
+                now - first_connect_sent_ >= 3000) {
                 transport_ = Transport::kTcp;
                 begin_connect(now);
                 break;
@@ -186,6 +194,7 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
                 c.nonce = nonce_;
                 send_raw(encode_connect(c));
                 phase_at_ = now;
+                if (!first_connect_sent_) first_connect_sent_ = now;
             }
             break;
         case Phase::kPow:
@@ -463,7 +472,8 @@ void Client::handle_message(const Delivered& m) {
             if (!host.empty()) cfg_.host = host;
             std::memcpy(token_, ticket, 32);
             have_token_ = true;
-            begin_connect(monotonic_ms());  // (reports kReconnecting: the handover is under way)
+            begin_pending_ = true;  // (at the next poll; reports kReconnecting: the handover is under way)
+            phase_ = Phase::kNone;
             break;
         }
         default: break;  // unknown types are ignored

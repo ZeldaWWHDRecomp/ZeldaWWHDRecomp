@@ -159,6 +159,11 @@ private:
     TcpStream tcp_;
     Transport transport_ = Transport::kUdp;
     TransportMode mode_ = TransportMode::kAuto;
+    uint32_t first_connect_sent_ = 0;
+    // the caller's clock (poll's now_ms): every time in here is on it, never on monotonic_ms(), which the game's
+    // clock need not match (mixing them made every redirect and the first connect time out at once)
+    uint32_t now_ = 0;
+    bool begin_pending_ = false;  // start() and REDIRECT begin at the next poll, on the caller's clock  // the TCP fallback counts from the first CONNECT really sent
     UdpSocket* sock_ = nullptr;
     Address server_, home_;  // home_: the address start() was given (redirects come back to it after a loss)
     std::string home_host_;
