@@ -79,6 +79,8 @@ std::vector<servers::Server> saved_servers();
 void forget_server(const std::string& addr, int port);
 bool runners(std::vector<Runner>& out);
 std::vector<Marker> markers();
+uint64_t player_key(int id);
+void tell_block(uint64_t key, bool on);
 bool party_flags(uint16_t& flags, bool& leading);
 bool set_party_flags(uint16_t flags, std::string& why);
 }  // namespace srv
@@ -550,6 +552,8 @@ std::vector<servers::Server> saved_servers() { return srv::saved_servers(); }
 void forget_server(const std::string& addr, int port) { srv::forget_server(addr, port); }
 bool server_runners(std::vector<Runner>& out) { return srv::active() && srv::runners(out); }
 std::vector<Marker> server_markers() { return srv::active() ? srv::markers() : std::vector<Marker>{}; }
+uint64_t player_key(int id) { return srv::active() ? srv::player_key(id) : 0; }
+void tell_block(uint64_t key, bool on) { if (srv::active()) srv::tell_block(key, on); }
 bool party_flags(uint16_t& flags, bool& leading) { return srv::active() && srv::party_flags(flags, leading); }
 bool set_party_flags(uint16_t flags, std::string& why) {
     if (!srv::active()) return why = "not through a server", false;
@@ -565,6 +569,8 @@ std::vector<servers::Server> saved_servers() { return {}; }
 void forget_server(const std::string&, int) {}
 bool server_runners(std::vector<Runner>& out) { out.clear(); return false; }
 std::vector<Marker> server_markers() { return {}; }
+uint64_t player_key(int) { return 0; }
+void tell_block(uint64_t, bool) {}
 bool party_flags(uint16_t&, bool&) { return false; }
 bool set_party_flags(uint16_t, std::string& why) { why = "this build has no server connection"; return false; }
 #endif

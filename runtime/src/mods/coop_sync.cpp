@@ -25,6 +25,7 @@
 
 #include "coop_deck.h"
 #include "coop_emotes.h"
+#include "coop_block.h"
 #include "coop_modset.h"
 #include "coop_radar.h"
 #include "coop_layout.h"
@@ -339,6 +340,8 @@ bool door_held(Cpu* c) {
 
 struct Handler : net::Handler {
     void message(int from, net::Msg type, const uint8_t* d, size_t n) override {
+        // (C14) nothing heard from a blocked or muted player
+        if ((type == net::kEffect || type == net::kSound || type == net::kEmote) && block::silent_id(from)) return;
         if ((type == net::kEffect || type == net::kSound) && g_effects_in.size() + g_sounds_in.size() >= 256) return;  // (bounded)
         if (type == net::kEffect) return g_effects_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
         if (type == net::kProgress) return net::party_flag(net::kShareProgress, true) ? progress::received(d, n) : void();
@@ -796,6 +799,19 @@ void poll(Cpu* c, bool on) {
 bool hud_hidden() { return g_hud_hidden.load(std::memory_order_relaxed); }
 
 void go_to(int id) { g_go_to = id; }
+int nearest_stranger() {
+    const uint32_t link = ld32(kPlay + inf::kLink);
+    if (link < 0x10000000u) return -1;
+    int best = -1;
+    float d = 1e30f;
+    for (int id = 0; id < net::kMaxPlayers; id++) {
+        const Remote& r = g_remote[id];
+        if (id == net::my_id() || !r.shown || net::member(id)) continue;
+        const float e = std::hypot(r.at[0] - f32(link + kPos), r.at[2] - f32(link + kPos + 8));
+        if (e < d) d = e, best = id;
+    }
+    return best;
+}
 
 void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     if (link != g_hud_link) g_hud_hidden = false;  // (playing again)
@@ -1170,7 +1186,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
             else if (p.deck_of < net::kMaxPlayers && has[p.deck_of] && (shown[p.deck_of].flags & kSailing))
                 memcpy(deck_at, shown[p.deck_of].boat, 12), deck_yaw = shown[p.deck_of].boat_yaw, deck_known = true;
         }
-        r.shown = has[id] && !strncmp(p.stage, stage.c_str(), 8) &&
+        r.shown = has[id] && !block::blocked_id(id) && !strncmp(p.stage, stage.c_str(), 8) &&
                   ((p.flags & 1) ? hull != 0 : (p.flags & kOnFriend) ? deck_known : p.room == room || (deck_of == id && (p.flags & kSailing)));
         if (!r.shown) {
             if (was) show(slot, nullptr, nullptr, 0);  // (only the ones it showed: the ghost test aid has slot 0 to itself)
@@ -1183,14 +1199,29 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         r.yaw = yaw;
         show(slot, &p, r.at, yaw, net::tunic(id), !net::member(id) && settings().strangers == 1);  // (X1b)
     }
+    // test aid: WWHD_COOP_TEST_BLOCK=<s>[:mute]: that many seconds into the session, the first player outside the party
+    // is blocked (or muted), as the Online page's button does (C14)
+    if (static const char* e = getenv("WWHD_COOP_TEST_BLOCK"); e && net::role() != net::Role::kOff) {
+        static uint32_t since = 0;
+        static bool done = false;
+        if (!since) since = now;
+        if (!done && now - since >= (uint32_t)(atof(e) * 1000))
+            for (int id = 0; id < net::kMaxPlayers && !done; id++)
+                if (id != net::my_id() && net::connected(id) && !net::member(id) && net::player_key(id)) {
+                    std::string why;
+                    done = true;
+                    const bool ok = block::set(id, strstr(e, "mute") ? block::kMuted : block::kBlocked, why);
+                    mods::trace("coop: test: player %d (%s) %s: %s", id, net::name(id).c_str(), strstr(e, "mute") ? "muted" : "blocked", ok ? "yes" : why.c_str());
+                }
+    }
     {  // (C13) the far players (no puppet): the far tier's places, else the server's markers, on the sea radar
         std::vector<radar::Far> far;
         bool known[net::kMaxPlayers] = {};
         for (int id = 0; id < net::kMaxPlayers; id++)
-            if (Remote& r = g_remote[id]; id != net::my_id() && r.far && !r.shown && now - r.far_ms < 3000)
+            if (Remote& r = g_remote[id]; id != net::my_id() && r.far && !r.shown && now - r.far_ms < 3000 && !block::blocked_id(id))
                 far.push_back({r.far_at[0], r.far_at[2], net::member(id)}), known[id] = true;
         for (const net::Marker& m : net::server_markers())
-            if (m.slot >= 0 && m.slot < net::kMaxPlayers && !known[m.slot] && !g_remote[m.slot].shown) far.push_back({m.x, m.z, m.party}), known[m.slot] = true;
+            if (m.slot >= 0 && m.slot < net::kMaxPlayers && !known[m.slot] && !g_remote[m.slot].shown && !block::blocked_id(m.slot)) far.push_back({m.x, m.z, m.party}), known[m.slot] = true;
         radar::step(link, far);
     }
     // their sounds, at their puppets as those are shown (each player's place kept for the sound engine, which keeps reading

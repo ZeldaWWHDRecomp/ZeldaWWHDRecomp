@@ -109,6 +109,19 @@ Through a server, players close to you are drawn in full detail. Players further
 simpler Link, standing, walking or running. At sea, players too far away to draw show as dots on a small radar in
 the lower left corner, with party members in green. You can turn the radar off in Settings > Online.
 
+## Blocking and muting
+
+Through a server you can block or mute players outside your party. Use the list of nearby players in
+Settings > Online, or **Block the nearest player** / **Mute the nearest player** on the Online page of the pause
+menu.
+
+- **Blocked:** you and they don't see each other any more. No Link, sounds, effects, emotes or radar dot, and
+  the server stops passing their messages to you.
+- **Muted:** you still see them, but hear no sounds and see no emotes from them.
+
+The list is kept between sessions and on every server. Undo an entry in Settings > Online. Party members can't be
+blocked; leave the party instead.
+
 ## Emotes
 
 While you're online, press **Alt+1** to **Alt+5** on the keyboard, or pick an emote under **Emotes** in

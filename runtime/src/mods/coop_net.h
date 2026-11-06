@@ -129,6 +129,9 @@ struct Runner { char stage[8]; int8_t room; int slot; };
 // them (about 400 units exact), party members marked; empty without a server or when none came for 10 s
 struct Marker { int slot; float x, z; bool party; };
 std::vector<Marker> server_markers();
+// (C14, through a server) a player's key hash (0: none, or the direct transport), and telling the server a block
+uint64_t player_key(int id);
+void tell_block(uint64_t key, bool on);
 bool server_runners(std::vector<Runner>& out);
 // The party's switches (GAPS C15; the server's PartyFlags, the same bits): through a server in a party, as its leader
 // set them (kept by the server, the same for every member); else `otherwise` (the direct transport: the host's own

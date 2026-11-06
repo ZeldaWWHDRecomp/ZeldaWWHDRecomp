@@ -14,6 +14,7 @@
 // poses as the server's pose with the fork's pose as its blob. Only party members' app messages are taken; strangers
 // bring poses alone (presence: nothing of theirs acts on this game).
 #include "coop_net.h"
+#include "coop_block.h"
 
 #if WWHD_ONLINE
 
@@ -416,6 +417,7 @@ void poll(Handler& h) {
                 for (Peer& p : g_slot) p = Peer{};
             }
             g_status = "Online, friend code " + g_client->friend_code();
+            if (!e.resumed) block::resend();  // (C14: the server keeps blocks in memory only)
             // (C25: UDP blocked, the client library went over TCP to the same address)
             mods::trace("coop: online over %s", g_client->transport() == op::Transport::kTcp ? "TCP" : "UDP");
             {  // kept in the saved servers, most recent first, its key pinned
@@ -726,6 +728,8 @@ bool set_party_flags(uint16_t flags, std::string& why) {
     return true;
 }
 
+uint64_t player_key(int id) { return id >= 0 && id < kMaxPlayers && g_slot[id].on ? g_slot[id].key : 0; }
+void tell_block(uint64_t key, bool on) { if (g_client && key) g_client->block(key, on); }
 std::vector<Marker> markers() {
     std::lock_guard<std::mutex> l(g_far_mu);
     if (!g_markers_at || now_ms() - g_markers_at > 10000) return {};

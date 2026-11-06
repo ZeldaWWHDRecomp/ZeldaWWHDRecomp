@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <string>
 
+#include "coop_block.h"
 #include "coop_emotes.h"
 #include "coop_modset.h"
 #include "coop_net.h"
@@ -80,6 +81,32 @@ void draw_party_mods() {
                                                       : "Can't use the party's mods: " + no + ".";
     });
     if (!g_mods_done.empty()) ImGui::TextWrapped("%s", g_mods_done.c_str());
+}
+
+// (C14) players outside the party near by: block (hidden, the server told) or mute (seen, not heard); and the list
+void draw_blocks() {
+    bool any = false;
+    for (int id = 0; id < net::kMaxPlayers; id++) {
+        if (id == net::my_id() || !net::connected(id) || net::member(id) || !net::player_key(id) || block::blocked_id(id)) continue;
+        if (!any) ImGui::TextUnformatted("Players near you outside your party"), any = true;
+        ImGui::BulletText("%s", net::name(id).c_str());
+        ImGui::SameLine();
+        if (ImGui::SmallButton(("Block##b" + std::to_string(id)).c_str())) hostui::post([id] { std::string why; if (!block::set(id, block::kBlocked, why)) ss::notice("Can't block: " + why); });
+        if (!block::silent_id(id)) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton(("Mute##m" + std::to_string(id)).c_str())) hostui::post([id] { std::string why; if (!block::set(id, block::kMuted, why)) ss::notice("Can't mute: " + why); });
+        }
+    }
+    const block::List list = block::current();
+    if (list.entries().empty()) return;
+    ImGui::TextUnformatted("Blocked and muted players");
+    for (const block::Entry& e : list.entries()) {
+        ImGui::BulletText("%s (%s)", e.name.empty() ? "someone" : e.name.c_str(), e.kind == block::kBlocked ? "blocked" : "muted");
+        ImGui::SameLine();
+        const uint64_t key = e.key;
+        if (ImGui::SmallButton(("Undo##u" + std::to_string(key)).c_str())) hostui::post([key] { block::undo(key); });
+    }
+    ImGui::TextDisabled("Blocked: you and they don't see each other. Muted: seen, but no sounds or emotes from them.");
 }
 
 void draw_tab() {
@@ -245,6 +272,7 @@ void draw_tab() {
             if (ImGui::Button(label.c_str())) emotes::mine(emotes::kEmotes[e].id);
         }
     }
+    draw_blocks();
     ImGui::Spacing();
     ImGui::TextDisabled("Before your first session your save is backed up. A new Quest Log just for co-op is recommended.");
 }
@@ -425,6 +453,22 @@ void register_items() {
                                                         : "Can't use the party's mods: " + why);
         };
         it.enabled = [] { return !net::refused_mods().empty(); };
+        game_settings::add(std::move(it));
+    }
+    for (int k = 0; k < 2; k++) {  // (C14) the nearest player outside the party: block or mute, one press
+        Item it;
+        it.id = k ? "online.mute" : "online.block", it.tab = "online", it.label = k ? "Mute the nearest player" : "Block the nearest player";
+        it.kind = Kind::Action;
+        it.help = k ? "The nearest player outside your party stays visible, without sounds or emotes. Undo it in Settings > Online."
+                    : "The nearest player outside your party is hidden, and you from them. Undo it in Settings > Online.";
+        it.text = [] { const int id = sync::nearest_stranger(); return id < 0 ? std::string("-") : net::name(id); };
+        it.set = [k](float) {
+            const int id = sync::nearest_stranger();
+            std::string why;
+            if (id >= 0 && !block::set(id, k ? block::kMuted : block::kBlocked, why)) ss::notice("Can't: " + why);
+            else if (id >= 0) ss::notice(net::name(id) + (k ? " muted" : " blocked"));
+        };
+        it.enabled = [] { return sync::nearest_stranger() >= 0; };
         game_settings::add(std::move(it));
     }
     {

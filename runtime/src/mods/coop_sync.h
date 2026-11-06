@@ -97,5 +97,7 @@ bool anyone_in(const char stage[8]);
 // (the menu, any thread) this game's Link taken beside player id, where their newest pose is (a warp, as the mods'
 // warps go: their stage, room and place)
 void go_to(int id);
+// (C14) the player outside the party whose puppet stands nearest this game's Link (-1: none shown)
+int nearest_stranger();
 
 }  // namespace mods::coop::sync
