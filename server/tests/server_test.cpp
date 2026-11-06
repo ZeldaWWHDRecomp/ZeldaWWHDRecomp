@@ -1396,6 +1396,52 @@ static void test_pvp() {
                 (unsigned long long)s.metrics().pvp_drops[6], (unsigned long long)s.metrics().pvp_drops[7]);
 }
 
+// many players hitting each other as fast as they can: the hit rate holds, hits pass only where allowed, nothing
+// breaks (a bot test of the PvP path)
+static void test_pvp_stress() {
+    auto cfg = base_config(0);
+    cfg.per_ip = 64;
+    std::string why;
+    CHECK(server::parse_config_text("[pvp]\nzones_replace = true\nprotect_s = 0\nmax_hit_dist = 5000\n", cfg, why));
+    server::Server s(cfg);
+    s.log = [](const std::string&) {};
+    CHECK(s.start(why));
+    std::vector<std::unique_ptr<Bot>> v;
+    std::vector<Bot*> all;
+    for (int i = 0; i < 16; ++i) {
+        v.push_back(make_bot("f" + std::to_string(i), s.port()));
+        v.back()->head.x = float(i % 4) * 400.0f;
+        v.back()->head.z = float(i / 4) * 400.0f;
+        all.push_back(v.back().get());
+    }
+    CHECK(run(&s, all, 8000, [&] { return std::all_of(v.begin(), v.end(), [](auto& b) { return b->online(); }); }));
+    run(&s, all, 500);
+    // 3 s at 30 hits a second each, at random others; the server allows 8 a second each
+    std::mt19937 rng(5);
+    uint32_t end = monotonic_ms() + 3000;
+    int sent = 0;
+    while (int32_t(monotonic_ms() - end) < 0) {
+        for (auto& b : v) {
+            Bot& t = *v[rng() % v.size()];
+            PvpHit h;
+            h.other = t.c.my_id();
+            h.kind = uint8_t(1 + rng() % 5);
+            h.damage = uint8_t(1 + rng() % 8);
+            h.x = t.head.x;
+            h.z = t.head.z;
+            b->c.pvp_hit(h);
+            ++sent;
+        }
+        run(&s, all, 33);
+    }
+    run(&s, all, 1500);
+    uint64_t ok = s.metrics().pvp_hits, rate = s.metrics().pvp_drops[4], self = s.metrics().pvp_drops[10];
+    std::printf("pvp stress: %d hits sent, %llu passed, %llu over the rate, %llu at oneself\n", sent, (unsigned long long)ok,
+                (unsigned long long)rate, (unsigned long long)self);
+    CHECK(ok > 0 && rate > 0 && ok <= uint64_t(16 * (8 * 4.5 + 16)));
+    CHECK(std::all_of(v.begin(), v.end(), [](auto& b) { return b->online(); }));
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     g_dir = argc > 1 ? argv[1] : ".";
@@ -1414,6 +1460,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "party16") test_party_16();
     if (only.empty() || only == "party16ho") test_party_16_handover();
     if (only.empty() || only == "pvp") test_pvp();
+    if (only.empty() || only == "pvpstress") test_pvp_stress();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "scalingmass") test_scaling_mass();
