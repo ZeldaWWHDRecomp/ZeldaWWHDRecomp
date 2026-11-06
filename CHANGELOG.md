@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the controller stopped working after clicking the GamePad window** (#406, thanks @KaitoCrisHub for the
+  report). Controllers now keep driving the game while the TV window or the GamePad window is in front (on Windows the
+  focus could stay empty when it moved between the game's own windows). The existing option is now called
+  **Controller input in the background** (Settings › Controls, off by default): turn it on to keep using the
+  controller while another app is in front. Keyboard and mouse still need a game window in front.
+
 ## v0.5.1
 
 ### Thanks

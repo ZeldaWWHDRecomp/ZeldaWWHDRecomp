@@ -14,6 +14,7 @@
 #include "rumble.h"
 #include "platform/input_sdl.h"
 #include "platform/mouse_sdl.h"
+#include "platform/window_focus.h"
 #include "mods/mods.h"
 #include "platform/android_controller.h"
 #include "overlay/binding_capture.h"
@@ -161,9 +162,10 @@ static int menu_matrix(){
  key(drc,true,1,SDL_KMOD_SHIFT);key(drc,true,2);assert(saveRequests==saved&&loadRequests==loaded);promptShown=false;
  SDL_DestroyWindow(drc);SDL_DestroyWindow(tv);SDL_Quit();return 0;
 }
-// Issue #267: "Controller input when the game isn't focused". A hidden dummy-driver window never gets the
-// keyboard focus, so SDL's own focus filter is live here: a background controller press reaches the game
-// only with the option on. Keyboard and mouse are released on focus loss either way.
+// Issue #267: "Controller input in the background". A hidden dummy-driver window never gets the keyboard
+// focus, so the game is in the background here: a controller press reaches the game only with the option
+// on. Keyboard and mouse are released on focus loss either way. Since #406 SDL reads the controllers always
+// on desktop (the hint stays on) and the host applies the focus rule itself (platform/window_focus.h).
 static int background_controllers(){
  // a scratch user folder: input::init() reads controls.json from it, never the player's
  const auto userDir=std::filesystem::temp_directory_path()/"wwhd-input-sdl-test-267";
@@ -175,7 +177,7 @@ static int background_controllers(){
  assert(SDL_GetKeyboardFocus()==nullptr);  // the game is in the background
  input::update();
  auto hint=[]{return std::string(SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS)?SDL_GetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS):"(unset)");};
- assert(!input::background_controllers()&&hint()=="0");
+ assert(!input::background_controllers()&&hint()=="1");
  static std::atomic<Uint16> motor{0};
  SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
  d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=SDL_GAMEPAD_AXIS_COUNT;d.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;d.name="background #267 pad";
@@ -199,11 +201,11 @@ static int background_controllers(){
   key(false);
  };
  keyboardAndMouseReleased();
- // option off: SDL drops the background press, and no rumble there
+ // option off: the host drops the background press, and no rumble there
  assert(!pressed());south(true);assert(!pressed()&&poll().buttons==0);south(false);
  const uint8_t on[15]={0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
  rumble::set_enabled(true);rumble::gamepad_pattern(0,on,120);input::update();assert(motor==0);
- // option on (saved with the controls): the hint follows at once, at run time
+ // option on (saved with the controls): applies at once, at run time
  auto m=input_map::Mapping::defaults();m.background_controllers=true;input_map::set_current(m,false);
  assert(input::background_controllers());
  input::update();assert(hint()=="1");
@@ -216,13 +218,101 @@ static int background_controllers(){
  // Settings never opens from a background controller press with the option on (overlay.cpp)
  assert(!overlay::controller_may_open_settings(false,true));
  assert(overlay::controller_may_open_settings(false,false)&&overlay::controller_may_open_settings(true,true));
- // off again: the hint and the drop come back
- input_map::set_current(input_map::Mapping::defaults(),false);input::update();assert(hint()=="0");
+ // off again: the drop comes back (SDL keeps reading; the host gate decides)
+ input_map::set_current(input_map::Mapping::defaults(),false);input::update();assert(hint()=="1");
  south(true);assert(!pressed());south(false);
  input::update();assert(motor==0);
  mouseCamera=false;rumble::gamepad_stop(0);
  SDL_CloseJoystick(pad);SDL_DetachVirtualJoystick(id);input::set_prompt_window(nullptr);SDL_DestroyWindow(tv);
- SDL_Quit();puts("input_sdl_test --background: hint follows the option (default off), background controller presses and rumble only with it on, keyboard and mouse released on focus loss either way: passed");
+ SDL_Quit();puts("input_sdl_test --background: option default off, background controller presses and rumble only with it on, keyboard and mouse released on focus loss either way: passed");
+ return 0;
+}
+// Issue #406: controllers keep driving the game while the GamePad window (not only the TV window) has the
+// focus; another window that is not the game's counts as the background. The dummy driver gives a window
+// the keyboard focus when it is shown (SDL_ShowWindow without a driver ShowWindow), so the focus really
+// moves between the windows here, with SDL's own focus-lost / focus-gained events.
+static int focus_rule(){
+ using window_focus::Front;
+ // the rule itself (window_focus.h): which windows count, the option, keyboard and mouse
+ static_assert(window_focus::controllers(Front::TV,false)&&window_focus::controllers(Front::GamePad,false));
+ static_assert(!window_focus::controllers(Front::None,false)&&window_focus::controllers(Front::None,true));
+ static_assert(window_focus::controllers(Front::NoWindows,false));
+ static_assert(window_focus::keyboard_and_mouse(Front::TV)&&window_focus::keyboard_and_mouse(Front::GamePad));
+ static_assert(!window_focus::keyboard_and_mouse(Front::None)&&!window_focus::keyboard_and_mouse(Front::NoWindows));
+ const auto userDir=std::filesystem::temp_directory_path()/"wwhd-input-sdl-test-406";
+ std::filesystem::create_directories(userDir);set_env("WWHD_USER_DIR",userDir.string().c_str());
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+ input::init();input_map::set_current(input_map::Mapping::defaults(),false);
+ assert(window_focus::front(nullptr,nullptr)==Front::NoWindows);
+ auto* tv=SDL_CreateWindow("TV",32,32,SDL_WINDOW_HIDDEN);
+ auto* drc=SDL_CreateWindow("GamePad",32,32,SDL_WINDOW_HIDDEN);
+ auto* other=SDL_CreateWindow("not the game's",32,32,SDL_WINDOW_HIDDEN);  // stands for another app in front
+ assert(tv&&drc&&other);input::set_prompt_window(tv);input::set_gamepad_window(drc);
+ static std::atomic<Uint16> motor{0};
+ SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
+ d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=SDL_GAMEPAD_AXIS_COUNT;d.nbuttons=SDL_GAMEPAD_BUTTON_COUNT;d.name="focus #406 pad";
+ d.Rumble=[](void*,Uint16 low,Uint16){motor=low;return true;};
+ const SDL_JoystickID id=SDL_AttachVirtualJoystick(&d);assert(id);
+ auto pump=[&]{SDL_UpdateJoysticks();for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);input::update();};
+ pump();
+ auto* pad=SDL_OpenJoystick(id);assert(pad);
+ auto front=[&]{return window_focus::front(tv,drc);};
+ auto pressA=[&](){  // the south face button
+  assert(SDL_SetJoystickVirtualButton(pad,SDL_GAMEPAD_BUTTON_SOUTH,true));pump();
+  const bool down=input::read().buttons!=0;  // (the south face button: Wii U B or A by the face layout)
+  float v[input_map::kPadCount];input::controller_values(v);assert((v[input_map::kPadA]>0.5f)==down);  // Settings sees the same
+  assert(SDL_SetJoystickVirtualButton(pad,SDL_GAMEPAD_BUTTON_SOUTH,false));pump();assert(input::read().buttons==0);
+  return down;
+ };
+ auto stick=[&](){SDL_SetJoystickVirtualAxis(pad,SDL_GAMEPAD_AXIS_LEFTX,32767);pump();const float lx=input::read().lx;
+  SDL_SetJoystickVirtualAxis(pad,SDL_GAMEPAD_AXIS_LEFTX,0);pump();return lx>0.9f;};
+ auto key=[&](SDL_Window* w,bool down){SDL_Event e{};e.type=down?SDL_EVENT_KEY_DOWN:SDL_EVENT_KEY_UP;e.key.windowID=SDL_GetWindowID(w);e.key.scancode=SDL_SCANCODE_K;input::handle_event(e);};
+ auto keyHeld=[&]{bool held[256];input::held_keys(held);return held[input_map::key_from_id("K")];};
+ const uint8_t on[15]={0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+ rumble::set_enabled(true);rumble::gamepad_pattern(0,on,120);
+ auto report=[&](const char* what,bool a){printf("#406 %-46s front=%-8s press %s, window_focused=%d, motor=%s\n",what,
+  front()==Front::TV?"TV":front()==Front::GamePad?"GamePad":front()==Front::None?"none":"no-wins",a?"reaches the game":"dropped",
+  (int)input::window_focused(),motor?"on":"off");};
+ // nothing shown: the game is in the background, option off
+ assert(front()==Front::None);bool a=pressA();input::update();report("no game window focused, option off:",a);
+ assert(!a&&!stick()&&!input::window_focused()&&motor==0);
+ // the TV window takes the focus
+ SDL_ShowWindow(tv);pump();assert(front()==Front::TV);
+ a=pressA();input::update();report("TV window focused, option off:",a);assert(a&&stick()&&input::window_focused()&&motor==0xFFFF);
+ key(tv,true);assert(keyHeld()&&(input::read().buttons&input::kA));
+ // a click on the GamePad window: the focus moves to it (TV focus lost, GamePad focus gained)
+ SDL_ShowWindow(drc);pump();assert(SDL_GetKeyboardFocus()==drc&&front()==Front::GamePad);
+ assert(!keyHeld()&&!(input::read().buttons&input::kA));  // keyboard: released by the TV's focus loss, as before
+ a=pressA();input::update();report("GamePad window focused, option off:",a);
+ assert(a&&stick()&&input::window_focused()&&motor==0xFFFF);  // the controller (and rumble) keep working
+ key(drc,true);assert(keyHeld());key(drc,false);  // keys typed into the GamePad window still play, as before
+ // another window that is not the game's takes the focus: background, option off
+ SDL_ShowWindow(other);pump();assert(SDL_GetKeyboardFocus()==other&&front()==Front::None);
+ assert(!keyHeld());
+ a=pressA();input::update();report("another window focused, option off:",a);assert(!a&&!stick()&&!input::window_focused()&&motor==0);
+ // option on: controllers (and rumble) play in the background; keyboard and mouse still do not count as focused
+ auto m=input_map::Mapping::defaults();m.background_controllers=true;input_map::set_current(m,false);
+ a=pressA();input::update();report("another window focused, option on:",a);assert(a&&stick()&&!input::window_focused()&&motor==0xFFFF);
+ assert(!input::gameplay_focused());
+ // Windows (issue #406): after the click, the window system has the GamePad window in front while SDL's
+ // keyboard focus stayed empty. The controller follows the window system (SDL's own filter dropped it here).
+ input_map::set_current(input_map::Mapping::defaults(),false);
+ SDL_HideWindow(other);SDL_HideWindow(drc);SDL_HideWindow(tv);pump();assert(SDL_GetKeyboardFocus()==nullptr&&front()==Front::None);
+ window_focus::test_set_os_foreground(drc);pump();assert(SDL_GetKeyboardFocus()==nullptr&&front()==Front::GamePad);
+ a=pressA();input::update();report("OS: GamePad in front, SDL focus empty, off:",a);assert(a&&stick()&&input::window_focused()&&motor==0xFFFF);
+ window_focus::test_set_os_foreground(other);pump();assert(front()==Front::None);  // another program's window
+ a=pressA();input::update();report("OS: another window in front, option off:",a);assert(!a&&!input::window_focused()&&motor==0);
+ window_focus::test_set_os_foreground(nullptr);
+ // back to the GamePad window with the option on, then off again
+ input_map::set_current(m,false);pump();assert(front()==Front::None);
+ SDL_ShowWindow(drc);pump();assert(front()==Front::GamePad);
+ input_map::set_current(input_map::Mapping::defaults(),false);
+ a=pressA();input::update();report("GamePad window focused again, option off:",a);assert(a&&motor==0xFFFF);
+ rumble::gamepad_stop(0);input::update();assert(motor==0);rumble::reset();
+ SDL_CloseJoystick(pad);SDL_DetachVirtualJoystick(id);input::set_gamepad_window(nullptr);input::set_prompt_window(nullptr);
+ SDL_DestroyWindow(other);SDL_DestroyWindow(drc);SDL_DestroyWindow(tv);SDL_Quit();
+ puts("input_sdl_test --focus: controllers work while the TV or the GamePad window is focused, not while another window is "
+      "(only with Controller input in the background on); keyboard follows the focus as before: passed");
  return 0;
 }
 static int gamecube_preset() {
@@ -317,6 +407,7 @@ int main(int argc,char** argv){
  if(argc>1&&std::string(argv[1])=="--gamecube-auto")return gamecube_auto_prompts();
  if(argc>1&&std::string(argv[1])=="--menu-matrix")return menu_matrix();
  if(argc>1&&std::string(argv[1])=="--background")return background_controllers();
+ if(argc>1&&std::string(argv[1])=="--focus")return focus_rule();
  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
  assert(SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO));
  SDL_Event device{};device.type=SDL_EVENT_AUDIO_DEVICE_REMOVED;device.adevice.recording=false;

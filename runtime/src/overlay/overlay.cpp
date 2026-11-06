@@ -2946,13 +2946,13 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
 #ifndef __ANDROID__
     // issue #267 (not on Android: the app is in front or paused there). Saved with the controls; the host
     // applies it at once (input_sdl.cpp, gfx/input.mm); beside Skip, or below it in a narrow window
-    flow::next(flow::check("Controller input when the game isn't focused"), 24);
-    if (check("Controller input when the game isn't focused", m.background_controllers, &v)) {
+    flow::next(flow::check("Controller input in the background"), 24);
+    if (check("Controller input in the background", m.background_controllers, &v)) {
         m.background_controllers = v;
         edit_set(m);
     }
-    help("For a second screen, streaming or remote play. Keyboard and mouse still only work while the "
-         "game is focused.");
+    help("Controllers always work while the TV or the GamePad window is in front. Turn this on to keep them\n"
+         "working while another app is in front (streaming, remote play). Keyboard and mouse still need a game window in front.");
 #endif
 }
 
