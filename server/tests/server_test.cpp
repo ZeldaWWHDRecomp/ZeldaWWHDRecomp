@@ -1503,6 +1503,202 @@ static void test_pvp_islands() {
                 safe, open);
 }
 
+// PvP state across a worker border: protection keeps its remaining time, the repeat-knockout cooldown and the
+// toggle survive, a fight goes on with the two players on different workers, and a knockout right after a crossing
+// still counts (the carry's encoding: a unit check first)
+static void test_pvp_handover() {
+    {
+        server::PvpCarry c;
+        c.valid = true;
+        c.on = false;
+        c.in_zone = false;
+        c.zone_age = 1234;
+        c.protect_left = 2500;
+        c.fighting = true;
+        c.fight_age = 700;
+        c.last_hit_by = 77;
+        c.last_hit_age = 650;
+        c.pairs.push_back({0x1122334455667788ull, 40000, {9000, 3000}});
+        Bytes b;
+        Writer w(b);
+        server::put_pvp_carry(w, c);
+        Reader r(b);
+        server::PvpCarry d;
+        CHECK(server::get_pvp_carry(r, d) && r.done() && d.valid);
+        CHECK(!d.on && !d.busy && !d.in_zone && d.zone_age == 1234 && d.protect_left == 2500 && d.fighting &&
+              d.fight_age == 700 && d.last_hit_by == 77 && d.last_hit_age == 650);
+        CHECK(d.pairs.size() == 1 && d.pairs[0].attacker == 0x1122334455667788ull && d.pairs[0].blocked_left == 40000 &&
+              d.pairs[0].ko_ages == std::vector<uint32_t>({9000, 3000}));
+        Bytes cut(b.begin(), b.end() - 3);
+        Reader rc(cut);
+        CHECK(!server::get_pvp_carry(rc, d));
+    }
+    std::string why;
+    auto cc = base_config(0);
+    cc.scale_mode = "pool";
+    cc.link_port = 0;
+    cc.link_secret = "test-link-secret-0123456789";
+    cc.split_cpu = 1e9;
+    cc.split_bw = 1e18;
+    cc.per_ip = 64;
+    cc.handover_depth = 200;  // a short crossing (the hits need the players near each other)
+    cc.pvp.protect_ms = 3000;
+    cc.pvp.enter_delay_ms = 1000;
+    cc.pvp.max_hit_dist = 5000;
+    cc.pvp.cooldown_kos = 2;
+    cc.pvp.cooldown_s = 120;
+    auto coord = std::make_unique<server::Server>(cc);
+    coord->log = [](const std::string&) {};
+    CHECK(coord->start(why));
+    if (!why.empty()) std::printf("  pvp handover: coordinator: %s\n", why.c_str());
+    auto wc = cc;
+    wc.worker = true;
+    wc.scale_mode = "off";
+    wc.join = "127.0.0.1:" + std::to_string(coord->link_port());
+    wc.port = 0;
+    auto wk = std::make_unique<server::Server>(wc);
+    wk->log = [](const std::string&) {};
+    CHECK(wk->start(why));
+    for (uint32_t end = monotonic_ms() + 5000; wk->worker_index() <= 0 && int32_t(monotonic_ms() - end) < 0;) {
+        coord->step(1);
+        wk->step(1);
+    }
+    CHECK(wk->worker_index() > 0);
+    // square 24 (open sea, centred on 0,0): its east half goes to the worker
+    CHECK(coord->admin("split 25 " + std::to_string(wk->worker_index())).find("split into") == 0);
+    auto a = make_bot("a", coord->port()), b = make_bot("b", coord->port()), c = make_bot("c", coord->port()),
+         d = make_bot("d", coord->port());
+    std::vector<Bot*> all = {a.get(), b.get(), c.get(), d.get()};
+    a->head.x = -1500;
+    b->head.x = -800;
+    c->head.x = -1200;
+    c->head.z = 600;
+    d->head.x = -1000;
+    d->head.z = -900;
+    auto go = [&](uint32_t ms, std::function<bool()> done) {
+        uint32_t end = monotonic_ms() + ms;
+        while (int32_t(monotonic_ms() - end) < 0) {
+            coord->step(1);
+            wk->step(0);
+            for (Bot* x : all) x->poll(0);
+            if (done && done()) return true;
+        }
+        return done ? done() : true;
+    };
+    auto on = [&](server::Server& srv, Bot& x) {
+        Session* t = srv.find_by_key(x.c.key_hash());
+        return t && t->online && !t->redirected ? t : nullptr;
+    };
+    CHECK(go(8000, [&] { return std::all_of(all.begin(), all.end(), [&](Bot* x) { return on(*coord, *x); }); }));
+    go(3500, nullptr);  // the protection after "leaving" the start
+    auto hits_on = [&](Bot& x) {
+        int n = 0;
+        for (auto& e : x.log)
+            if (e.kind == ClientEvent::kPvpHitOn) ++n;
+        return n;
+    };
+    auto hit = [&](Bot& from, Bot& to) {
+        PvpHit h;
+        h.other = to.c.my_id();
+        h.kind = kPvpSword;
+        h.damage = 4;
+        h.x = to.head.x;
+        h.z = to.head.z;
+        from.c.pvp_hit(h);
+    };
+    auto rupees = [&](Bot& x) {
+        int sum = 0;
+        for (auto& e : x.log)
+            if (e.kind == ClientEvent::kPvpRupees) sum += e.value16;
+        return sum;
+    };
+    // two knockouts of b by a: the cooldown; b protected for 3 s after the second
+    uint32_t ko_at = 0;
+    for (int k = 0; k < 2; ++k) {
+        if (k) go(3300, nullptr);
+        int before = hits_on(*b);
+        hit(*a, *b);
+        CHECK(go(2000, [&] { return hits_on(*b) > before; }));
+        b->c.pvp_ko(a->c.my_id(), 500);
+        CHECK(go(2000, [&] { return rupees(*b) == 50 * (k + 1); }));
+        ko_at = monotonic_ms();
+    }
+    // b (protected) and d (PvP toggled off) cross into the worker's half
+    d->c.pvp_flag(false, false);
+    go(300, nullptr);
+    b->head.x = 800;
+    d->head.x = 900;
+    CHECK(go(8000, [&] { return on(*wk, *b) && on(*wk, *d); }));
+    uint32_t crossed = monotonic_ms() - ko_at;
+    Session* wb = on(*wk, *b);
+    CHECK(wb && int32_t(wb->protected_until - monotonic_ms()) > 0);
+    // what is left of the 3 s, not a new protection
+    CHECK(wb && int32_t(wb->protected_until - monotonic_ms()) <= int32_t(3000 - crossed) + 300);
+    CHECK(on(*wk, *d) && !on(*wk, *d)->pvp_on);
+    // protected for the rest of the 3 s only
+    CHECK(go(5000, [&] {
+        Session* t = on(*wk, *b);
+        return t && int32_t(t->protected_until - monotonic_ms()) <= 0;
+    }));
+    uint32_t prot = monotonic_ms() - ko_at;
+    CHECK(prot >= 2900 && prot < 3300);
+    go(200, nullptr);
+    // a (on the coordinator) is still in its cooldown on b (on the worker)
+    uint64_t cool0 = wk->metrics().pvp_drops[7];
+    int h0 = hits_on(*b);
+    hit(*a, *b);
+    go(800, nullptr);
+    CHECK(hits_on(*b) == h0 && wk->metrics().pvp_drops[7] > cool0);
+    // the fight goes on across the border: c (coordinator) hits b (worker); b crosses back and is knocked out by c at
+    // once: it counts there (who hit last came along)
+    hit(*c, *b);
+    CHECK(go(2000, [&] { return hits_on(*b) == h0 + 1; }));
+    b->head.x = -700;
+    CHECK(go(8000, [&] { return on(*coord, *b) != nullptr; }));
+    Session* cb = on(*coord, *b);
+    CHECK(cb && cb->last_hit_by == c->c.my_id() && cb->fight_at != 0);
+    go(300, nullptr);
+    cb = on(*coord, *b);
+    CHECK(cb && int32_t(cb->protected_until - monotonic_ms()) <= 0);  // no new protection from the crossing
+    int r0 = rupees(*b);
+    b->c.pvp_ko(c->c.my_id(), 400);
+    CHECK(go(2000, [&] { return rupees(*b) == r0 + 40; }));
+    // and a's cooldown came back with b
+    go(3300, nullptr);
+    uint64_t cool1 = coord->metrics().pvp_drops[7];
+    int h1 = hits_on(*b);
+    hit(*a, *b);
+    go(800, nullptr);
+    CHECK(hits_on(*b) == h1 && coord->metrics().pvp_drops[7] > cool1);
+    // hits during the crossing itself (c hits b five times a second while b sails over the border at 2,000 a
+    // second): none is lost, whichever worker has b when the hit arrives
+    go(3300, nullptr);  // b's protection after the knockout
+    int sent = 0, h2 = hits_on(*b);
+    uint64_t fwd_drops = wk->metrics().pvp_drops[8] + coord->metrics().pvp_drops[8];
+    {
+        uint32_t t0 = monotonic_ms(), next_hit = t0;
+        go(2600, [&] {
+            uint32_t t = monotonic_ms() - t0;
+            b->head.x = std::min(-700.0f + 2.0f * float(t), 900.0f);
+            if (int32_t(monotonic_ms() - next_hit) >= 0 && t < 2000) {
+                next_hit += 200;
+                hit(*c, *b);
+                ++sent;
+            }
+            return false;
+        });
+    }
+    CHECK(go(2000, [&] { return hits_on(*b) - h2 == sent; }));
+    CHECK(on(*wk, *b) != nullptr);
+    int landed = hits_on(*b) - h2;
+    uint64_t lost = wk->metrics().pvp_drops[8] + coord->metrics().pvp_drops[8] - fwd_drops;
+    std::printf("pvp handover: %d of %d hits landed while the victim crossed (%llu unknown)\n", landed, sent,
+                (unsigned long long)lost);
+    std::printf("pvp handover: protection crossed %u ms after the knockout and ended %u ms after it (3,000), cooldown kept "
+                "both ways, toggle kept, a cross-border hit landed, a knockout right after crossing back counted\n",
+                crossed, prot);
+}
+
 // many players hitting each other as fast as they can: the hit rate holds, hits pass only where allowed, nothing
 // breaks (a bot test of the PvP path)
 static void test_pvp_stress() {
@@ -1569,6 +1765,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "pvp") test_pvp();
     if (only.empty() || only == "pvpstress") test_pvp_stress();
     if (only.empty() || only == "pvpislands") test_pvp_islands();
+    if (only.empty() || only == "pvphandover") test_pvp_handover();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "scalingmass") test_scaling_mass();

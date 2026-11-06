@@ -75,6 +75,35 @@ struct Seen {
     uint8_t pvp = 0xFF;      // the PvP marks last sent for them (kMsgPvpMarks)
 };
 
+// a hit on a player on another worker, held until the player arrives (a handover in flight)
+struct PvpQueuedHit {
+    uint16_t aid = 0;
+    uint64_t akh = 0;
+    uint32_t aparty = 0;
+    proto::PvpHit h;
+    uint32_t at = 0;
+};
+
+// a player's PvP state carried with a handover: times as ages and time left (the workers' clocks differ), and the
+// repeat-knockout records of attackers on this player (they live on the victim's worker)
+struct PvpCarry {
+    bool valid = false;
+    bool on = true, busy = false, in_zone = true;
+    uint32_t zone_age = 0, protect_left = 0;
+    bool fighting = false;
+    uint32_t fight_age = 0;
+    uint16_t last_hit_by = 0;
+    uint32_t last_hit_age = 0xFFFFFFFF;
+    struct Pair {
+        uint64_t attacker = 0;
+        uint32_t blocked_left = 0;
+        std::vector<uint32_t> ko_ages;
+    };
+    std::vector<Pair> pairs;
+};
+void put_pvp_carry(proto::Writer& w, const PvpCarry& c);
+bool get_pvp_carry(proto::Reader& r, PvpCarry& c);
+
 struct Session {
     uint32_t conn_id = 0;
     proto::Address addr;
@@ -129,6 +158,8 @@ struct Session {
     uint16_t last_hit_by = 0;
     uint32_t last_hit_at = 0;
     Bucket pvp_hits, pvp_shots;
+    std::vector<PvpQueuedHit> pvp_queued;        // hits that reached us before the player (a handover)
+    uint32_t pvp_carried_at = 0;                  // the PvP state came with a handover (then the redirect's update)
 
     // party
     uint32_t party = 0;
@@ -140,6 +171,7 @@ struct Session {
     bool redirected = false, handing = false;  // handing: a handover waits for the target's ack
     uint32_t redirect_at = 0;
     int lent_from = -1;   // the id came with a handover from this worker (told when it is free again)
+    int redirect_to = -1; // the worker it was redirected to (hits that still reach us go on there)
     int area = -1;        // at sea: the 2x2 sub-cell area (sea copies are per area)
 };
 
@@ -317,6 +349,10 @@ private:
     bool pvp_protected(const Session& s, uint32_t now) const;
     uint8_t pvp_flags(const Session& s, uint32_t now) const;
     void pvp_zone_of(const Session& s, bool& in_zone, bool& in_band, int& nearest) const;
+    // handovers: the PvP state goes with the player; hits on a player in flight follow it
+    PvpCarry pvp_carry_of(const Session& s, uint32_t now) const;
+    void apply_pvp_carry(Session& s, const PvpCarry& c, uint32_t now);
+    void pvp_link_hit(const proto::Bytes& body, uint32_t now);
     struct PvpPair {
         std::deque<uint32_t> kos;  // knockouts of the victim by the attacker (ms)
         uint32_t blocked_until = 0;
@@ -498,6 +534,8 @@ private:
         int from;
         std::vector<uint64_t> blocks, mutes;
         std::vector<proto::ModRef> mods;
+        PvpCarry pvp;
+        std::vector<PvpQueuedHit> hits;  // hits that arrived before the player
     };
     std::map<std::array<uint8_t, 32>, Ticket> tickets_;
     struct Pending {

@@ -154,6 +154,16 @@ cooldown_s = 300            # ... that attacker can't hit that player, or cost t
 - **A knockout** costs the knocked-out player a share of their rupees. The rupees vanish; the attacker
   gains nothing. The player comes back at the nearest safe zone's edge, protected for a while.
 
+- **Across worker borders** (with `scale.mode` "auto" or "pool"), a player's PvP state moves with them:
+  - the toggle;
+  - the protection, with only its remaining time (crossing doesn't start a new one);
+  - the delay of a safe zone entered mid-fight, and the fight itself;
+  - who hit them last, so a knockout right after a crossing still counts;
+  - the repeat-knockout cooldowns of attackers on them.
+
+  Hits on a player who is crossing follow them to the new worker. Attacker and victim on different
+  workers fight as if on one.
+
 ### Block and mute
 
 A player can block or mute another player from the game:
