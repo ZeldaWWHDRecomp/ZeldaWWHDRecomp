@@ -6,12 +6,14 @@
 #include "coop_world.h"
 
 #include <cmath>
+#include <unordered_map>
 #include <cstring>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "coop_items.h"
+#include "coop_monsters.h"
 #include "coop_net.h"
 #include "coop_pose.h"
 #include "coop_sync.h"
@@ -97,6 +99,8 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
             const uint8_t who = r.get<uint8_t>(), quarters = r.get<uint8_t>();
             const int16_t way = r.get<int16_t>();
             if (who == net::my_id()) g_hurt = {quarters, way};
+        } else if (m.type == net::kMonHit || m.type == net::kMonGone) {
+            mods::coop::monsters::message(c, m.type, m.body);
         } else if (m.type == net::kBoatShot) {
             boat_shot_from(c, link, r);
         } else if (m.type == net::kBombed) {
@@ -104,6 +108,7 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
         }
     }
     if (settled) held.clear();
+    if (settled) mods::coop::monsters::step(c, link);  // the placed monsters: ours out, the others' put in
     // friendly fire (the fork's rule: always on): a sword attack of this game's Link (as it starts: daPy_lk_c::mCurProc
     // entering a cut, d_a_player_main.h daPyProc_CUT_*) hits each other player shown within 200 in front of him (75
     // degrees either side); spin and jump cuts a heart, the others half. The puppets have no colliders: this game decides
@@ -135,6 +140,27 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
             if (d > 0.01 && d < 70 && std::fabs(me.y - p[1]) < 80) put_link(link, {p[0] + dx / d * 70, me.y, p[2] + dz / d * 70});
         }
 }
+
+// a placed monster this game runs goes for the nearest player: around its execute, Link stands where that player is
+// (every monster reads Link's place through play +0x5B2C / +0x5B34), then is put back
+std::unordered_map<uint32_t, int> g_target;  // by actor id: the player it goes for
+struct StandIn {
+    uint32_t link = 0;
+    float was[3];
+    explicit StandIn(uint32_t actor, bool runs) {
+        if (!runs) return;
+        const uint32_t l = ld32(kLinkPtr);
+        if (!in_mem2(l)) return;
+        const float at[3] = {(float)ldf32(actor + kPos), (float)ldf32(actor + kPos + 4), (float)ldf32(actor + kPos + 8)};
+        int& target = g_target.try_emplace(ld32(actor + 4), -1).first->second;
+        float to[3];
+        mods::coop::sync::nearest(at, l, target, to);
+        if (target == mods::coop::net::my_id()) return;
+        link = l;
+        for (int i = 0; i < 3; i++) was[i] = (float)ldf32(l + kPos + 4 * i), st32(l + kPos + 4 * i, u32_bits(to[i]));
+    }
+    ~StandIn() { if (link) for (int i = 0; i < 3; i++) st32(link + kPos + 4 * i, u32_bits(was[i])); }
+};
 
 }  // namespace
 
@@ -198,4 +224,32 @@ extern "C" void hook_025D5928(Cpu* c) {
     f_025D5928_orig(c);
     if (his) items::made(proc, c->r[3]);
     if (boat) world::g_boat_shot.ball = c->r[3];
+}
+
+// fopAc_Execute (025D475C): a placed monster this game runs goes for the nearest player, and takes the other players'
+// hits as its own; another's copy here takes their kills as its own death (coop_monsters.h)
+extern "C" void f_025D475C_orig(Cpu* c);
+extern "C" void hook_025D475C(Cpu* c) {
+    using namespace mods::coop;
+    const uint32_t a = c->r[3];
+    if (net::role() == net::Role::kOff) return f_025D475C_orig(c);
+    const bool takes = monsters::takes(a);
+    world::StandIn s(a, monsters::runs(a));
+    if (takes) monsters::before(a);
+    f_025D475C_orig(c);
+    if (const uint32_t r = c->r[3]; takes) monsters::after(c, a), c->r[3] = r;
+}
+// dSv_info_c::isActor (025BA6A4, r4 set id, r5 room): a placed monster killed in this stage while a player was in it is
+// not made again (coop_monsters.h)
+extern "C" void f_025BA6A4_orig(Cpu* c);
+extern "C" void hook_025BA6A4(Cpu* c) {
+    const int set = (int)c->r[4], room = (int)c->r[5];
+    f_025BA6A4_orig(c);
+    if (!c->r[3] && mods::coop::monsters::killed(set, room)) c->r[3] = 1;
+}
+// fopAcM_createDisappear (025D99E8, r6 the drop): one of ours another player killed drops nothing here (theirs did)
+extern "C" void f_025D99E8_orig(Cpu* c);
+extern "C" void hook_025D99E8(Cpu* c) {
+    if (mods::coop::monsters::dropless(c->r[3])) c->r[6] = 1, mods::trace("coop: a monster another player killed: no drop here");  // daDisItem_NONE1_e
+    f_025D99E8_orig(c);
 }

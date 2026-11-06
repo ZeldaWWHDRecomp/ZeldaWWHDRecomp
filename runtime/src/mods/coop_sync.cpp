@@ -22,6 +22,7 @@
 #include <memory>
 #include <mutex>
 
+#include "coop_monsters.h"
 #include "coop_pose.h"
 #include "coop_progress.h"
 #include "guest_addr.h"
@@ -285,6 +286,7 @@ struct Handler : net::Handler {
             }
             return;
         }
+        if (type == net::kDead) return monsters::dead_from(d, n);  // (a guest) the host's killed monsters
         if (type == net::kCutscene && n == 9 && guest()) {  // (over: not started here yet, not started; started, its 10 s from now)
             if (g_cut.since && !g_cut.asked) g_cut = Cut{};
             return void(g_cut_over = net::now_ms());

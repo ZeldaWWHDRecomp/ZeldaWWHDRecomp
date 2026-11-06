@@ -277,7 +277,8 @@ bool start(Role r, const std::string& addr, int port, const std::string& my_name
         l.on = true, memcpy(&l.addr, res->ai_addr, sizeof l.addr), l.heard = now_ms();
         freeaddrinfo(res);
         std::string b(10, '\0');
-        const uint16_t proto = kProto;
+        // (test aid: WWHD_COOP_PROTO, another protocol in the hello, as an older or newer build would send)
+        const uint16_t proto = getenv("WWHD_COOP_PROTO") ? (uint16_t)atoi(getenv("WWHD_COOP_PROTO")) : (uint16_t)kProto;
         const uint64_t game = game_hash();
         memcpy(&b[0], &proto, 2), memcpy(&b[2], &game, 8);
         b += (char)g_my_tunic, b += my_name;

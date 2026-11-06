@@ -122,3 +122,7 @@
 02128430  # door12 openInit
 0212848C  # door12 closeInit
 021A3AA0  # daKnob00 openInit: a player's knob door swinging, shown on the others
+# Online co-op, the placed monsters (mods/coop_monsters.cpp, mods/coop_world.cpp)
+025D475C  # fopAc_Execute: a placed monster a co-op game runs goes for the nearest player, takes the others' hits
+025BA6A4  # dSv_info_c::isActor: a placed monster killed while a co-op player was in its stage is not made again
+025D99E8  # fopAcM_createDisappear: a co-op monster another player killed drops nothing on its owner's game
