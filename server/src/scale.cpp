@@ -1278,7 +1278,12 @@ void Server::spawn_worker(uint32_t now) {
     std::string join = cfg_.link_bind + ":" + std::to_string(link_.local_port());
     std::string port = std::to_string(cfg_.worker_port_base + idx - 1);
     std::string lport = std::to_string(cfg_.link_port + idx);
-    std::string threads = std::to_string(cfg_.worker_threads);
+    int nthreads = cfg_.worker_threads;
+    if (nthreads <= 0) {
+        int hw = int(std::max(1u, std::thread::hardware_concurrency()));
+        nthreads = std::clamp(hw / std::max(1, cfg_.max_workers), 2, 16);
+    }
+    std::string threads = std::to_string(nthreads);
     std::vector<std::string> args = {exe, "--worker", "--join", join, "--port", port, "--link-port", lport, "--threads", threads};
     if (!cfg_.config_path.empty()) {
         args.push_back("--config");

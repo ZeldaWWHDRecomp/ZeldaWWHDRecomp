@@ -71,7 +71,8 @@ struct Config {
     // starting local processes (only registered workers are used).
     std::string scale_mode = "off";
     int max_workers = 8;            // worker processes including the coordinator (at most 15)
-    int worker_threads = 2;         // tick threads of a started worker
+    int worker_threads = 0;         // tick threads of a started worker; 0: the machine's cores shared by max_workers
+                                    // (at least 2, at most 16)
     uint16_t link_port = 7900;      // the coordinator's link port (loopback / LAN); workers: link_port + index
     uint16_t worker_port_base = 7778;  // client ports of started workers: base + index - 1
     std::string public_host;        // the host name clients use for redirects ("" : the bind address)

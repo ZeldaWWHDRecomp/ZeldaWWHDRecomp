@@ -60,7 +60,9 @@ bool Server::start(std::string& why) {
     crypto::random_bytes(cookie_key_, sizeof cookie_key_);
     // the IP salt must survive restarts for bans by IP hash: derived from the server key
     crypto::hash(identity_.secret, 32, ip_salt_);
-    workers_ = cfg_.threads > 0 ? cfg_.threads : int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() / 2)));
+    // tick threads: the config's, else half the cores (at most 16; a big machine running one process uses them)
+    workers_ = cfg_.threads > 0 ? std::min(cfg_.threads, 64)
+                                : int(std::min(16u, std::max(1u, std::thread::hardware_concurrency() / 2)));
 #ifdef _WIN32
     bool reuse = false;
 #else
