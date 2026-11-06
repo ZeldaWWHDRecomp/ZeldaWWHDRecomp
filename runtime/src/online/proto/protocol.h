@@ -90,6 +90,10 @@ enum Msg : uint8_t {
     kMsgPinRunner = 17,     // reliable: u8 on (leader pins enemy running to themselves)
     kMsgPing = 18,          // unreliable: keep-alive with nothing else to say
     kMsgJoinCopyOf = 19,    // reliable: u64 key hash: go to the copy that player is in (a friend's copy)
+    kMsgPartyRestore = 20,  // reliable: PartyRecord (messages.h): after a fresh WELCOME (the server restarted),
+                            // the party this game was in; the leader's own claim, or a record the leader signed,
+                            // rebuilds it, and members with the same party id join. Then re-send your progress
+                            // fields (the union merge fills what the server's last saved state lacks)
 
     // ---- server -> client ----
     kMsgPoseBatch = 64,   // unreliable: n x {u16 id, u8 tier, tier payload}

@@ -29,7 +29,7 @@ struct Config {
     std::string ban_file = "bans.txt";
     std::string report_file = "reports.log";
     std::string admin_socket = "wwhd-online-admin.sock";  // "" disables the admin socket
-    std::string team_state_file;    // "" keeps team states in memory only
+    std::string team_state_file = "team-state.txt";  // parties and their team progress over restarts ("": memory only)
 
     // world
     std::string sea_stage = "sea";  // the stage code of the open sea

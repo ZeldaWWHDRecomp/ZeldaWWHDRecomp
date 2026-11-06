@@ -2,6 +2,7 @@
 #include "messages.h"
 
 #include <cmath>
+#include <cstring>
 
 namespace online::proto {
 
@@ -241,6 +242,83 @@ bool decode_runners(const uint8_t* d, size_t n, std::vector<RunnerEntry>& out) {
         out.push_back(e);
     }
     return r.done();
+}
+
+static Bytes party_record_body(const PartyRecord& r) {
+    Bytes b;
+    Writer w(b);
+    w.u8(1);
+    w.u32(r.party);
+    w.u64(r.leader);
+    w.u16(r.flags);
+    w.u32(r.issued);
+    w.u8(uint8_t(r.members.size()));
+    for (uint64_t k : r.members) w.u64(k);
+    return b;
+}
+
+Bytes encode_party_record(const PartyRecord& r) {
+    Bytes b = party_record_body(r);
+    Writer w(b);
+    w.u8(r.is_signed ? 1 : 0);
+    if (r.is_signed) {
+        w.bytes(r.pub, 32);
+        w.bytes(r.sig, 64);
+    }
+    return b;
+}
+
+bool decode_party_record(const uint8_t* d, size_t n, PartyRecord& r) {
+    Reader rd(d, n);
+    r = PartyRecord();
+    if (rd.u8() != 1) return false;
+    r.party = rd.u32();
+    r.leader = rd.u64();
+    r.flags = rd.u16();
+    r.issued = rd.u32();
+    size_t m = rd.u8();
+    if (m < 1 || m > size_t(kMaxPartySize)) return false;
+    for (size_t i = 0; i < m; ++i) r.members.push_back(rd.u64());
+    r.is_signed = rd.u8() != 0;
+    if (r.is_signed) {
+        rd.bytes(r.pub, 32);
+        rd.bytes(r.sig, 64);
+    }
+    return rd.done();
+}
+
+static Bytes party_record_signed_bytes(const PartyRecord& r) {
+    static const char kLabel[] = "wwhd-online party";
+    Bytes b(kLabel, kLabel + sizeof kLabel - 1);
+    Bytes body = party_record_body(r);
+    b.insert(b.end(), body.begin(), body.end());
+    return b;
+}
+
+void sign_party_record(PartyRecord& r, const crypto::Identity& id) {
+    std::memcpy(r.pub, id.pub, 32);
+    Bytes b = party_record_signed_bytes(r);
+    crypto::sign(id, b.data(), b.size(), r.sig);
+    r.is_signed = true;
+}
+
+PartyRecord make_party_record(const PartyState& st, const crypto::Identity& id, uint32_t unix_now) {
+    PartyRecord r;
+    r.party = st.party;
+    r.leader = key_hash(id.pub);
+    r.flags = st.flags;
+    r.issued = unix_now;
+    r.members.push_back(r.leader);
+    for (auto& m : st.members)
+        if (m.key_hash != r.leader) r.members.push_back(m.key_hash);
+    sign_party_record(r, id);
+    return r;
+}
+
+bool party_record_signed_by_leader(const PartyRecord& r) {
+    if (!r.is_signed || key_hash(r.pub) != r.leader) return false;
+    Bytes b = party_record_signed_bytes(r);
+    return crypto::verify(r.pub, b.data(), b.size(), r.sig);
 }
 
 std::string stranger_name(uint64_t kh) {

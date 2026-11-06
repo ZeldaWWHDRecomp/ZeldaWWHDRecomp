@@ -44,7 +44,7 @@ Server::~Server() {
     join();
     pool_stop();
     stop_children();
-    save_team_states();
+    if (!abandoned_) save_team_states();
 #ifndef _WIN32
     if (admin_fd_ >= 0 && !cfg_.admin_socket.empty()) std::remove(cfg_.admin_socket.c_str());
 #endif
@@ -652,6 +652,7 @@ void Server::on_message(Session& s, const Delivered& m, uint32_t now) {
         case kMsgTeamStateAsk:
             if (Party* p = party_of(s)) party_send_team(*p, s);
             break;
+        case kMsgPartyRestore: party_restore(s, r, now); break;
         case kMsgPinRunner: {
             uint8_t on = r.u8();
             Party* p = party_of(s);
@@ -1354,6 +1355,12 @@ void Server::tick(uint32_t now) {
     flush_all(now);
     metrics_.send_us.push_back(uint32_t(monotonic_us() - t0));
     if ((tick_no_ % uint32_t(cfg_.tick_hz * 10)) == 0) parties_gc(now);
+    // the team-state file (when configured) is written within 2 s of a change, so a crash loses little
+    if (!cfg_.team_state_file.empty() && team_dirty_ && now - last_team_save_ >= 2000) {
+        last_team_save_ = now;
+        team_dirty_ = false;
+        save_team_states();
+    }
     if (restart_at_ && int32_t(now - restart_at_) >= 0) {
         log("planned restart: stopping");
         stop_ = true;
