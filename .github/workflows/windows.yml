@@ -6,6 +6,11 @@ name: windows
 on:
   push:
     branches: ["**"]   # not on tag pushes: a release tag points at a commit CI already tested
+    # Markdown-only pushes (changelog, README, docs) start no build; docs/mod-editor.md is read by a test
+    paths:
+      - "**"
+      - "!**.md"
+      - "docs/mod-editor.md"
   pull_request:
 
 jobs:
