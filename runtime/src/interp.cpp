@@ -1,5 +1,6 @@
 #include "mods/map_hud.h"
 #include "mods/game_progress_host.h"
+#include "mods/player_models.h"
 #include "mods/achievements_host.h"
 #include "interp.h"
 #include "dsweep.h"
@@ -1953,6 +1954,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     interp::NativeResumeBoundaryIssuer::after_service(c); // before any resumed native/game service
     mods::cheats_service();
     mods::shop_ship_service();  // the ships' way back to the sea (mods/shop_ship.h)
+    player_models::service();  // a GameCube player model over HD Link for the save file played (mods/player_models.h)
     // the item ring: its equip, the game's pace while open (full logic passes), the ring drawn
     mods::item_ring_service(c, !enabled() || !g_hold_next);
     mods::context_touch_service();  // tests: the context buttons' assets export (WWHD_CONTEXT_ASSETS)

@@ -63,6 +63,7 @@
 #include "mods/mods.h"
 #include "platform/https.h"
 #include "mods/packages.h"
+#include "mods/player_models.h"
 #ifdef __ANDROID__
 #include "platform/android_code_mods.h"
 #endif
@@ -807,6 +808,14 @@ int main(int argc, char** argv) {
         LOG("[code mods] off (setting or WWHD_CODE_MODS): guest code mods are not loaded; the port's own services keep their hooks");
     try { mods::packages::initialize(); }
     catch(const std::exception& e) { fatal("Cannot start mods: %s\n%s",e.what(),mod_recovery); }
+    // GameCube player models: the save files' choices (mod manager) to the runtime, live (mods/player_models.h)
+    player_models::set_resolver([](const std::string& id) { return mods::packages::player_model_szs(id); });
+    player_models::set_new_game_listener([](int file) { mods::packages::player_model_new_game(file); });
+    mods::packages::set_player_model_sink([](const std::vector<std::pair<std::string, std::string>>& files) {
+        std::array<player_models::Choice, player_models::kFiles> c;
+        for (size_t i = 0; i < c.size() && i < files.size(); i++) c[i] = {files[i].first, files[i].second};
+        player_models::set_choices(c);
+    });
     mem::init();
     auto valid_mod_memory = [](uint32_t address, size_t size) {
         if (size > 1024 * 1024) return false;

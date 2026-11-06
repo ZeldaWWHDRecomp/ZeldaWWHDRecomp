@@ -429,7 +429,7 @@ Package manifest fields:
 | `supported_game_builds` | Optional array of 1–16 exact compiled build names, such as `["USA"]`; requires manager 1.8.0. Checked before content or code activation; `game_id: "wwhd-usa"` alone remains an any-region legacy alias |
 | `save_profile` | Guest-only declarative save ownership; requires manager 1.7.0 (below) |
 | `experimental` | Optional `true` for untested mods: hidden by default, enabling backs up the saves first (manager 1.4) |
-| `kind` | `native`, `settings`, `content` or `cemu` |
+| `kind` | `native`, `settings`, `content`, `cemu` or `player-model` (made by the import, below; manager 1.9) |
 | `abi_version`, `binaries` | Native ABI `1`; platform-to-relative-library map |
 | `content_dir` | Content package: relative folder holding game-relative replacement files. A content package that only declares story content (letters, charts, items, quests, models, actors, scenes) can leave it out |
 | `cemu_dir` | Cemu package: relative folder holding `rules.txt` and shader files (empty for the package root) |
@@ -655,6 +655,28 @@ does not record an asset fingerprint yet. Import/staging limits are 4096
 entries, 128 MiB per file and 512 MiB per package. Symlinks and path traversal
 are rejected. Content mods are copied into manager storage; the original game
 files are not changed, and game assets stay outside Git.
+
+## GameCube player models (manager 1.9)
+
+Install from a file also takes a GameCube player model pack you have: an archive
+or folder with a `Link.arc` (a model made for the GameCube game). Each `Link.arc`
+becomes a package of kind `player-model`, named after its folder (the author from
+the pack's `metadata.txt` line `author:`). The package keeps the `Link.arc` in
+`source/`; right after the install it is converted on your device onto HD Link
+(`model/Link.szs`, with `model/conversion.txt` saying what was converted): HD's
+skeleton, materials and animations stay, the pack's meshes are moved onto HD's
+joints and its textures upscaled to HD's sizes and formats. Nothing is
+downloaded; the port ships only the converter.
+
+A player model is not switched on like other mods. Its page has a switch per
+save file: each save file shows one model or HD Link, and the game changes at
+once, no restart. The choices are kept in the current mod profile. A new game in
+a save file starts with HD Link and forgets that file's choice; removing a model
+puts its save files back to HD Link. **Convert again** redoes the conversion
+(after a game update, say). After loading a save state the save file's choice applies again.
+
+The converter and the live switch come from the GreenNaugahyde Android fork
+(v0.9.9, MPL-2.0): `runtime/src/gcmodel`, `runtime/src/mods/player_models.cpp`.
 
 ## Cemu graphics packs (manager 1.2)
 

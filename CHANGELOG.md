@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **GameCube player models** (#432, from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Mods › **Install from a file**
+  takes a GameCube model pack you have (a folder or zip with `Link.arc`). The port converts it on your device onto HD Link's
+  skeleton, materials and animations, with textures upscaled to HD's sizes. On the model's page in the Mods tab you choose it per save file;
+  the choice is stored per mod profile and applies live, no restart. No model packs ship with the port: import a pack you have.
 - **Windows: the in-app randomizer builds again** (#435). A missing include stopped the Windows build since the randomizer landed.
 - **Mod SDK: mirrored HUD images and the game's own layout texts** (#434, from the HD minimap's SDK proposal in
   ZeldaWWHDMods #33, thanks @francosang). For mod authors: a HUD image drawn with reversed UVs now shows mirrored, and

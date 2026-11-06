@@ -8,6 +8,11 @@
 #include <algorithm>
 #include "mods/content.h"
 #include "mods/cemu_pack.h"
+#include "mods/player_model_packages.h"
+#include "gcmodel_synth.h"
+#include "gcmodel/gcm_io.h"
+#include <mutex>
+#include <thread>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -36,6 +41,66 @@ std::filesystem::path unique_temp(const std::string& prefix) {
     }
 }
 mods::packages::View view(const std::string& id) {for(auto v:mods::packages::list())if(v.id==id)return v;return {};}
+// GameCube player models (player_model_packages.h): a synthetic game pack and Link.arc (gcmodel_synth.h), installed
+// from a folder with two models and a damaged one, converted on the manager's thread, chosen per save file
+int player_models_check() {
+    using namespace mods::packages;
+    namespace fs=std::filesystem;
+    const auto root=unique_temp("wwhd-player-models-");
+    const auto scene=gcmsynth::scene();
+    auto put=[](const fs::path& p,const std::vector<uint8_t>& d){fs::create_directories(p.parent_path());std::ofstream(p,std::ios::binary).write((const char*)d.data(),(std::streamsize)d.size());};
+    auto puts=[&](const fs::path& p,const std::string& t){put(p,std::vector<uint8_t>(t.begin(),t.end()));};
+    put(root/"game/content/Common/Pack/permanent_3d.pack",scene.pack);
+    mods::content::set_game_root(root/"game");
+    env("WWHD_NO_HOST_INPUT","1");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());
+    initialize();
+    std::mutex m;std::vector<std::vector<std::pair<std::string,std::string>>> pushes;
+    set_player_model_sink([&](const auto& files){std::lock_guard g(m);pushes.push_back(files);});
+    auto last=[&]{std::lock_guard g(m);assert(!pushes.empty());return pushes.back();};
+    assert(last().size()==3&&last()[0].first.empty());
+    // a pack with two models (each folder names one; metadata.txt credits it) and a read-me
+    const auto pack=root/"My models";
+    put(pack/"Hero/Link.arc",scene.arc);puts(pack/"Hero/metadata.txt","Author: Someone\nversion: 2\n");
+    put(pack/"Second/link.ARC",scene.arc);puts(pack/"readme.txt","hello");
+    std::string error,id;
+    assert(install(pack.string(),error,&id));assert(id=="player-model.hero");
+    auto wait=[&](const std::string& pid){for(int i=0;i<600;i++){auto v=view(pid);if(!v.status.empty()&&v.status.rfind("Converting",0)!=0)return v;std::this_thread::sleep_for(std::chrono::milliseconds(50));}return view(pid);};
+    auto hero=wait("player-model.hero"),second=wait("player-model.second");
+    assert(hero.kind=="player-model"&&hero.author=="Someone"&&hero.name=="Hero"&&!hero.enabled&&!hero.restart_required);
+    assert(hero.status=="Converted for HD Link"&&second.status=="Converted for HD Link");
+    assert(!fs::exists(root/"manager"/".models-")&&player_model_report("player-model.hero").find("model cl")!=std::string::npos);
+    for(const auto& e:fs::directory_iterator(root/"manager"))assert(e.path().filename().string().rfind(".models-",0)!=0&&e.path().filename().string().rfind(".stage-",0)!=0);
+    // the converted file: a Link.szs whose Link.bfres is bigger than the game's (the appended model)
+    const auto szs=player_model_szs("player-model.hero");assert(!szs.empty());
+    {std::ifstream f(szs,std::ios::binary);std::vector<uint8_t> d{std::istreambuf_iterator<char>(f),{}};
+     auto files=gcmodel::sarc_read(gcmodel::yaz0_decode(d));assert(files.at("Link.bfres").size()>gcmsynth::test_hd_bfres().size());}
+    // not switched on; chosen per save file, pushed to the runtime
+    assert(!enable("player-model.hero",true,error)&&error.find("save file")!=std::string::npos);
+    assert(choose_player_model(1,"player-model.hero",error)&&player_model(1)=="player-model.hero");
+    assert(last()[0].first=="player-model.hero"&&last()[0].second==szs&&last()[1].first.empty());
+    assert(choose_player_model(2,"player-model.second",error)&&choose_player_model(3,"player-model.hero",error));
+    assert(view("player-model.hero").enabled);
+    assert(!choose_player_model(2,"nothing",error)&&!choose_player_model(4,"player-model.hero",error));
+    assert(player_model(2)=="player-model.second");
+    // a new game in file 1: HD Link there, the choice forgotten
+    player_model_new_game(0);
+    assert(player_model(1).empty()&&last()[0].first.empty()&&last()[2].first=="player-model.hero");
+    // removed: its file goes back to HD Link
+    assert(remove("player-model.second",error)&&player_model(2).empty()&&last()[1].first.empty());
+    assert(!fs::exists(root/"manager/Mods/player-model.second"));
+    // a damaged one: installed, the conversion fails and says why, it can't be chosen
+    std::vector<uint8_t> bad=scene.arc;bad.resize(64);
+    put(root/"Broken/Link.arc",bad);
+    assert(install((root/"Broken").string(),error,&id)&&id=="player-model.broken");
+    auto broken=wait(id);assert(broken.status=="Conversion failed"&&!broken.reason.empty());
+    assert(!choose_player_model(1,id,error));
+    // the choices live in the profile
+    {std::ifstream f(root/"manager/profiles.json");std::string t{std::istreambuf_iterator<char>(f),{}};assert(t.find("\"player_models\"")!=std::string::npos);}
+    set_player_model_sink({});
+    std::error_code ec;fs::remove_all(root,ec);
+    printf("player models: ok\n");
+    return 0;
+}
 // Second process on the same storage: a confirmed native package loads after a restart without asking.
 int restart_check(const char* storage) {
     using namespace mods::packages;
@@ -312,6 +377,7 @@ int main(int argc, char** argv) {
         std::cout<<"Quick-use startup override "<<override<<" survives saved toggle "<<saved<<"\n";
         return 0;
     }
+    if(argc==2&&std::string(argv[1])=="--player-models") return player_models_check();
     if(argc==2&&std::string(argv[1])=="--setup-acceptance") {
         auto root=unique_temp("wwhd-acceptance-");
         fs::create_directories(root/"source");env("WWHD_MOD_MANAGER_DIR",(root/"manager").string().c_str());env("WWHD_TEST_TRUST_NATIVE_MODS",nullptr);

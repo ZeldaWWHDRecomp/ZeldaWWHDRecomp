@@ -23,6 +23,7 @@
 #include "static_model_validation.h"
 #include "startup_plan.h"
 #include "skinned_model_validation.h"
+#include "player_model_packages.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -39,6 +40,7 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <unordered_set>
 
 namespace mods::packages {
@@ -172,7 +174,7 @@ Manifest manifest(const fs::path& path){
     m.name=string_field(v,"name",false,128);require(!m.name.empty(),"Mod name is empty");
     m.version=string_field(v,"version",false,64);version(m.version);
     m.author=string_field(v,"author",true,256);m.description=string_field(v,"description",true);
-    m.kind=string_field(v,"kind",false,32);require(m.kind=="native"||m.kind=="guest"||m.kind=="settings"||m.kind=="content"||m.kind=="cemu","Unsupported mod kind");
+    m.kind=string_field(v,"kind",false,32);require(m.kind=="native"||m.kind=="guest"||m.kind=="settings"||m.kind=="content"||m.kind=="cemu"||m.kind==player_model_packages::kKind,"Unsupported mod kind");
     const auto& experimental=v.get("experimental");require(experimental.type==Value::Null||experimental.type==Value::Bool,"Invalid experimental flag");
     m.experimental=experimental.boolean;
     if(!game_id_supported(string_field(v,"game_id",false,64)))m.problem="This package targets another game";
@@ -277,6 +279,10 @@ Manifest manifest(const fs::path& path){
             auto checked=path;for(const auto& part:fs::path(folder)){checked/=part;require(!fs::is_symlink(checked),"Content paths may not use symlinks");}
             m.files=content::index(path/folder, world_declarations && m.problem.empty());
         }
+    } else if(m.kind==player_model_packages::kKind) {
+        // a GameCube player model: its Link.arc, converted after the install (model/Link.szs)
+        const auto source=path/player_model_packages::kSource;
+        require(fs::is_regular_file(source)&&!fs::is_symlink(source),"Player model package without its Link.arc");
     } else {
         const auto& settings=v.get("settings");require(settings.type==Value::Object&&!settings.object.empty(),"Settings mod has no settings");
         for(const auto& [id,b]:settings.object){require(manager::find(id)&&b.type==Value::Bool,"Unknown built-in setting: "+id);m.settings[id]=b.boolean;}
@@ -358,6 +364,35 @@ Manifest manifest(const fs::path& path){
 }
 Value& profile(){return database["profiles"][database.get("active").string("Default")];}
 bool wanted(const std::string& id){const auto& v=profile().get("enabled").get(id);return v.type==Value::Bool&&v.boolean;}
+// ---- GameCube player models (player_model_packages.h): chosen per save file, never switched on
+namespace pmp=player_model_packages;
+PlayerModelSink player_model_sink;           // under mutex
+std::vector<fs::path> player_model_extra;    // more models of the archive being installed (install() installs them next)
+bool is_player_model(const Record& r){return r.manifest.kind==pmp::kKind;}
+std::string player_model_szs_unlocked(const std::string& id){
+    auto it=records.find(id);if(id.empty()||it==records.end()||!is_player_model(it->second)||it->second.loading)return {};
+    auto p=it->second.path/pmp::kModel;std::error_code ec;return fs::is_regular_file(p,ec)&&!fs::is_symlink(p,ec)?p.string():std::string();
+}
+std::string chosen_player_model(int file){return profile().get("player_models").get(std::to_string(file)).string();}
+// the runtime gets each file's model (outside the manager's lock)
+void push_player_models(){
+    PlayerModelSink sink;std::vector<std::pair<std::string,std::string>> files;
+    {std::lock_guard guard(mutex);sink=player_model_sink;
+     for(int f=1;f<=3;f++){auto id=ready?chosen_player_model(f):std::string();auto szs=player_model_szs_unlocked(id);files.push_back(szs.empty()?std::make_pair(std::string(),std::string()):std::make_pair(id,szs));}}
+    if(sink)sink(files);
+}
+// the model converted on a thread (the manager's lock held by the caller); the package shows how far
+void convert_player_model_async(const std::string& id){
+    auto& r=records.at(id);r.loading=true;r.error.clear();r.status="Converting the model for HD Link";
+    const fs::path package=r.path,pack=pmp::game_pack(content::game_root_path());
+    std::thread([id,package,pack]{
+        std::string why;int shown=-1;
+        const bool ok=pmp::convert(package,pack,[&](int pc){if(pc/10==shown)return;shown=pc/10;std::lock_guard guard(mutex);auto it=records.find(id);if(it!=records.end())it->second.status="Converting the model for HD Link ("+std::to_string(pc)+" %)";},why);
+        {std::lock_guard guard(mutex);auto it=records.find(id);if(it!=records.end()){it->second.loading=false;it->second.status=ok?"Converted for HD Link":"Conversion failed";it->second.error=ok?std::string():why;}}
+        fprintf(stderr,"[mod-manager] player model %s: %s\n",id.c_str(),ok?"converted":why.c_str());
+        push_player_models();
+    }).detach();
+}
 // Test aid: WWHD_TEST_TRUST_NATIVE_MODS=id[,id...] pre-confirms packages, only in isolated test runs
 // (WWHD_NO_HOST_INPUT plus an explicit WWHD_MOD_MANAGER_DIR). Nothing is written to profiles.json.
 bool test_trusted(const std::string& id){
@@ -1033,6 +1068,10 @@ void initialize() {
                 if (entry->restart_required && !std::getenv(entry->startup_env))
                     entry->apply(on);
             }
+        // player models installed but not converted (the game closed meanwhile): converted now; a failure waits
+        for (const auto &[id, record] : records)
+            if (is_player_model(record) && !record.loading && !fs::exists(record.path / pmp::kModel) && !fs::exists(record.path / pmp::kFailed))
+                convert_player_model_async(id);
         activation_ready = true;
         dirty = true;
     } catch (const std::exception &e) {
@@ -1317,7 +1356,8 @@ bool run_setup_tool(const std::string& id,const std::string& step_id,std::string
         return false;
     }
 }
-std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest"||!frozen_save_profile.empty();v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.experimental=experimental(r);v.isolated_save_profile=m.kind=="guest"&&m.save_profile.present&&m.save_profile.error.empty();v.reason=!m.save_profile.error.empty()?m.save_profile.error:(m.problem.empty()?r.error:m.problem);if(!m.save_profile.error.empty())v.compatible=false;v.status=r.status;v.game_source_warning=source_warning(m);if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;if(m.graphics)for(const auto& other:enabled_set())if(other!=id){try{auto reason=graphics_conflict(id,other);if(!reason.empty())v.graphics_conflicts.push_back({other,records.at(other).manifest.name,reason});}catch(const std::exception& e){v.reason=e.what();}}out.push_back(std::move(v));}return out;}
+std::vector<View> list(){std::lock_guard guard(mutex);std::vector<View> out;for(const auto& [id,r]:records){const auto& m=r.manifest;View v;v.id=id;v.name=m.name;v.version=m.version;v.author=m.author;v.description=m.description;v.kind=m.kind;v.restart_required=m.kind=="content"||m.kind=="cemu"||m.kind=="guest"||!frozen_save_profile.empty();v.enabled=wanted(id);v.active=r.active;v.compatible=m.problem.empty();v.native_confirmed=confirmed(r);v.experimental=experimental(r);v.isolated_save_profile=m.kind=="guest"&&m.save_profile.present&&m.save_profile.error.empty();v.reason=!m.save_profile.error.empty()?m.save_profile.error:(m.problem.empty()?r.error:m.problem);if(!m.save_profile.error.empty())v.compatible=false;v.status=r.status;v.game_source_warning=source_warning(m);if(m.graphics){auto diagnostics=cemu::runtime_status(id);if(!diagnostics.empty())v.status+=". "+diagnostics;}if(m.kind=="guest"){auto hud_error=guestmods::hud::store().error(id);if(!hud_error.empty())v.status+=". "+hud_error;}v.options=m.options;v.setup_tools=m.setup_tools;v.content_hashes=m.content_hashes;auto cfg=config(m);v.pending_restart=v.restart_required&&(v.enabled!=v.active||((m.graphics||m.kind=="guest")&&v.active&&!(r.startup_config==cfg)));if(m.graphics&&!m.graphics->shaders.empty()&&!cemu::vulkan()){v.active=false;v.compatible=false;v.reason="GLSL shader packs require Vulkan; choose it in Graphics and restart";}for(auto& o:v.options)o.value=cfg.get(o.id);for(const auto& dep:m.dependencies)v.dependencies.push_back(dep.id+">="+dep.version);v.conflicts=m.conflicts;if(m.graphics)for(const auto& other:enabled_set())if(other!=id){try{auto reason=graphics_conflict(id,other);if(!reason.empty())v.graphics_conflicts.push_back({other,records.at(other).manifest.name,reason});}catch(const std::exception& e){v.reason=e.what();}}if(is_player_model(r)){v.restart_required=v.pending_restart=v.active=false;v.enabled=false;for(int f=1;f<=3;f++)if(chosen_player_model(f)==id)v.enabled=true;if(!r.loading&&r.error.empty()){std::error_code ec;if(fs::is_regular_file(r.path/pmp::kModel,ec))v.status="Converted for HD Link";else if(fs::is_regular_file(r.path/pmp::kFailed,ec)){v.status="Conversion failed";v.reason=read_text(r.path/pmp::kFailed);}else v.status="Not converted yet";}}
+out.push_back(std::move(v));}return out;}
 static bool content_name(std::string n){for(char& c:n)if(c>='A'&&c<='Z')c+='a'-'A';return n=="content";}
 // fresh: a new package only (install_new): refused when the ID is installed or its folder exists
 static bool install_package(const std::string& source,std::string& error,std::string* installed_id_out,bool fresh){return operation(error,[&]{
@@ -1334,13 +1374,58 @@ static bool install_package(const std::string& source,std::string& error,std::st
         // a mod's own content folder selected on its own is named after the mod (Arabic_Hesham/content -> Arabic_Hesham)
         auto named=fs::path(source).lexically_normal();if(named.filename().empty())named=named.parent_path();
         if(content_name(named.filename().string())&&!named.parent_path().filename().empty())named=named.parent_path();
-        if(graphics)cemu::import_legacy(stage,named.filename().string());else content::import_legacy(stage,named.filename().string());
-    }auto m=manifest(stage);require(m.problem.empty()||m.problem.starts_with("No binary for")||m.problem.starts_with("GLSL shader packs require Vulkan"),m.problem);require_session_mutable(m.id);target=root/"Mods"/m.id;auto it=records.find(m.id);if(fresh){std::error_code exists_error;require(it==records.end()&&!fs::exists(fs::symlink_status(target,exists_error)),"A mod with the ID "+m.id+" is installed already");}require(it==records.end()||(!wanted(m.id)&&!it->second.active&&!it->second.loading),it!=records.end()&&(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before updating":"Disable this mod and wait for it to unload before updating");fs::create_directories(target.parent_path());if(fs::exists(target)){fs::rename(target,backup);backed=true;}fs::rename(stage,target);moved=true;m=manifest(target);Record r;r.path=target;r.manifest=std::move(m);auto installed_id=r.manifest.id;records[installed_id]=std::move(r);if(installed_id_out)*installed_id_out=installed_id;if(backed){std::error_code cleanup;fs::remove_all(backup,cleanup);}dirty=true;
+        // a GameCube player model pack (a Link.arc, made for the GameCube game): each Link.arc is a package of its own
+        if(auto arcs=pmp::find_arcs(stage);!arcs.empty()){
+            const auto models=root/(".models-"+nonce);fs::create_directories(models);
+            std::vector<fs::path> made;
+            try{for(size_t k=0;k<arcs.size()&&k<64;k++){auto out=models/std::to_string(k);fs::create_directories(out);pmp::make_package(stage,arcs[k],out,named.stem().string());made.push_back(out);}}
+            catch(...){fs::remove_all(models);throw;}
+            fs::remove_all(stage);fs::rename(made.front(),stage);if(made.size()==1)fs::remove(models);
+            for(size_t k=1;k<made.size();k++)player_model_extra.push_back(made[k]);
+        }
+        else if(graphics)cemu::import_legacy(stage,named.filename().string());else content::import_legacy(stage,named.filename().string());
+    }auto m=manifest(stage);require(m.problem.empty()||m.problem.starts_with("No binary for")||m.problem.starts_with("GLSL shader packs require Vulkan"),m.problem);require_session_mutable(m.id);target=root/"Mods"/m.id;auto it=records.find(m.id);if(fresh){std::error_code exists_error;require(it==records.end()&&!fs::exists(fs::symlink_status(target,exists_error)),"A mod with the ID "+m.id+" is installed already");}require(it==records.end()||(!wanted(m.id)&&!it->second.active&&!it->second.loading),it!=records.end()&&(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before updating":"Disable this mod and wait for it to unload before updating");fs::create_directories(target.parent_path());if(fs::exists(target)){fs::rename(target,backup);backed=true;}fs::rename(stage,target);moved=true;m=manifest(target);Record r;r.path=target;r.manifest=std::move(m);auto installed_id=r.manifest.id;records[installed_id]=std::move(r);if(installed_id_out)*installed_id_out=installed_id;if(is_player_model(records.at(installed_id)))convert_player_model_async(installed_id);if(backed){std::error_code cleanup;fs::remove_all(backup,cleanup);}dirty=true;
     }catch(...){if(moved)fs::remove_all(target);if(backed)fs::rename(backup,target);if(fs::exists(stage))fs::remove_all(stage);throw;}
 });}
-bool install(const std::string& source,std::string& error,std::string* installed_id_out){return install_package(source,error,installed_id_out,false);}
+bool install(const std::string& source,std::string& error,std::string* installed_id_out){
+    const bool ok=install_package(source,error,installed_id_out,false);
+    // the other player models of the same archive: packages of their own
+    for(;;){fs::path next;{std::lock_guard guard(mutex);if(player_model_extra.empty())break;next=player_model_extra.back();player_model_extra.pop_back();}
+        std::string more;if(ok&&!install_package(next.string(),more,nullptr,false))fprintf(stderr,"[mod-manager] %s\n",more.c_str());
+        std::error_code ec;fs::remove_all(next,ec);if(fs::is_empty(next.parent_path(),ec))fs::remove(next.parent_path(),ec);}
+    if(ok)push_player_models();
+    return ok;
+}
+static bool remove_package(const std::string& id,std::string& error);
+bool remove(const std::string& id,std::string& error){const bool ok=remove_package(id,error);if(ok)push_player_models();return ok;}
+std::string player_model(int file){std::lock_guard guard(mutex);return ready&&file>=1&&file<=3?chosen_player_model(file):std::string();}
+bool choose_player_model(int file,const std::string& id,std::string& error){
+    const bool ok=operation(error,[&]{
+        require(file>=1&&file<=3,"No such save file");
+        if(!id.empty()){auto it=records.find(id);require(it!=records.end()&&is_player_model(it->second),"Player model not found");
+            require(!player_model_szs_unlocked(id).empty(),it->second.loading?"Wait for the model's conversion to finish":"This model is not converted");}
+        auto previous=database;
+        if(id.empty())profile()["player_models"].object.erase(std::to_string(file));else profile()["player_models"][std::to_string(file)]=id;
+        try{save();}catch(...){database=previous;throw;}
+    });
+    if(ok)push_player_models();
+    return ok;
+}
+std::string player_model_report(const std::string& id){
+    fs::path p;{std::lock_guard guard(mutex);auto it=records.find(id);if(it==records.end()||!is_player_model(it->second))return {};p=it->second.path/pmp::kReport;}
+    try{return read_text(p);}catch(...){return {};}
+}
+bool convert_player_model(const std::string& id,std::string& error){return operation(error,[&]{auto it=records.find(id);require(it!=records.end()&&is_player_model(it->second),"Player model not found");require(!it->second.loading,"The model is being converted");convert_player_model_async(id);});}
+void set_player_model_sink(PlayerModelSink sink){{std::lock_guard guard(mutex);player_model_sink=std::move(sink);}push_player_models();}
+std::string player_model_szs(const std::string& id){std::lock_guard guard(mutex);return player_model_szs_unlocked(id);}
+void player_model_new_game(int file){
+    {std::lock_guard guard(mutex);if(!ready||file<0||file>2||chosen_player_model(file+1).empty())return;
+     auto previous=database;profile()["player_models"].object.erase(std::to_string(file+1));
+     try{save();}catch(const std::exception& e){database=previous;fprintf(stderr,"[mod-manager] %s\n",e.what());}}
+    push_player_models();
+}
 bool install_new(const std::string& source,std::string& error,std::string* installed_id_out){return install_package(source,error,installed_id_out,true);}
-bool remove(const std::string& id,std::string& error){return operation(error,[&]{require_session_mutable(id);auto it=records.find(id);require(it!=records.end(),"Mod not found");require(!(id==story_notebook::kNotebookPackage&&story_system()),"The Story Notebook is part of the story system: turn off the story system to remove it");require(!wanted(id)&&!it->second.active&&!it->second.loading,(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before removing":"Disable this mod and wait for it to unload before removing");for(const auto& [other,r]:records)if(wanted(other))for(const auto& d:r.manifest.dependencies)require(d.id!=id,r.manifest.name+" depends on this mod");auto previous=database;for(auto& [name,p]:database["profiles"].object){p["enabled"].object.erase(id);p["config"].object.erase(id);p["setup_pending"].object.erase(id);}database["native_trust"].object.erase(id);database["experimental_ack"].object.erase(id);database["catalogue_experimental"].object.erase(id);database["guest_regions"].object.erase(id);database["guest_prepared"].object.erase(id);database["setup_receipts"].object.erase(id);try{save();}catch(...){database=previous;throw;}fs::remove_all(it->second.path);std::error_code ignored;fs::remove_all(root/"Data"/id,ignored);records.erase(it);dirty=true;});}
+static bool remove_package(const std::string& id,std::string& error){return operation(error,[&]{require_session_mutable(id);auto it=records.find(id);require(it!=records.end(),"Mod not found");require(!(id==story_notebook::kNotebookPackage&&story_system()),"The Story Notebook is part of the story system: turn off the story system to remove it");require(!wanted(id)&&!it->second.active&&!it->second.loading,(it->second.manifest.kind=="content"||it->second.manifest.kind=="cemu"||it->second.manifest.kind=="guest")?"Disable this content mod and restart before removing":"Disable this mod and wait for it to unload before removing");for(const auto& [other,r]:records)if(wanted(other))for(const auto& d:r.manifest.dependencies)require(d.id!=id,r.manifest.name+" depends on this mod");auto previous=database;for(auto& [name,p]:database["profiles"].object){p["enabled"].object.erase(id);if(p.get("player_models").type==Value::Object)for(auto& [file,c]:p["player_models"].object)if(c.string()==id)c=Value();p["config"].object.erase(id);p["setup_pending"].object.erase(id);}database["native_trust"].object.erase(id);database["experimental_ack"].object.erase(id);database["catalogue_experimental"].object.erase(id);database["guest_regions"].object.erase(id);database["guest_prepared"].object.erase(id);database["setup_receipts"].object.erase(id);try{save();}catch(...){database=previous;throw;}fs::remove_all(it->second.path);std::error_code ignored;fs::remove_all(root/"Data"/id,ignored);records.erase(it);dirty=true;});}
 uint64_t disk_use(const std::string& id){
     // the package files and the files its setup prepared (Data/<id>); Remove deletes both
     fs::path package,data;{std::lock_guard guard(mutex);auto it=records.find(id);if(!ready||it==records.end())return 0;package=it->second.path;data=root/"Data"/id;}
@@ -1371,7 +1456,7 @@ bool enable_after_code_rebuild(const std::string& id,std::string& error){return 
     auto previous=database;profile()["code_mod_pending"][id]=records.at(id).manifest.trust_fingerprint;
     try{save();}catch(...){database=previous;throw;}
 });}
-bool enable(const std::string& id,bool on,std::string& error,bool switch_conflicts){bool deferred=false;std::vector<std::string> builtin_dependencies,experimental_ids;bool ok=operation(error,[&]{require(records.contains(id),"Mod not found");require(!records.at(id).loading,"Wait for this mod's current operation to finish");deferred=!frozen_save_profile.empty();auto enabled=enabled_set();if(on){
+bool enable(const std::string& id,bool on,std::string& error,bool switch_conflicts){bool deferred=false;std::vector<std::string> builtin_dependencies,experimental_ids;bool ok=operation(error,[&]{require(records.contains(id),"Mod not found");require(!is_player_model(records.at(id)),"A player model is chosen for a save file on its page, not switched on");require(!records.at(id).loading,"Wait for this mod's current operation to finish");deferred=!frozen_save_profile.empty();auto enabled=enabled_set();if(on){
     std::set<std::string> visiting;
     std::function<void(const std::string&)> add=[&](const std::string& current){require(!visiting.contains(current),"Dependency cycle at "+current);require(records.contains(current),missing(current));require(!records.at(current).loading,"Wait for mod preparation to finish: "+current);require(records.at(current).manifest.kind!="guest"||code_mod_support,"This mod needs code-mod support. Enable code mods in Settings > Mods, rebuild and restart first");const auto& graphics=records.at(current).manifest.graphics;if(graphics&&!graphics->shaders.empty())require(cemu::vulkan(),"GLSL shader packs require Vulkan; choose it in Graphics and restart");if(enabled.contains(current))return;visiting.insert(current);for(const auto& d:records.at(current).manifest.dependencies){if(d.id.starts_with("builtin:"))builtin_dependencies.push_back(d.id.substr(8));else add(d.id);}visiting.erase(current);require(confirmed(records.at(current)),records.at(current).manifest.name+" contains native code that has not been confirmed");enabled.insert(current);};add(id);
     require_experimental_ack(id);experimental_ids=newly_experimental(id);
@@ -1477,7 +1562,7 @@ void disable_all(){
 std::vector<std::string> profiles(){std::lock_guard guard(mutex);std::vector<std::string> result;if(ready)for(const auto& [name,p]:database.get("profiles").object)result.push_back(name);return result;}
 std::string current_profile(){std::lock_guard guard(mutex);return ready?database.get("active").string():"Default";}
 bool create_profile(const std::string& name,std::string& error){return operation(error,[&]{require(!name.empty()&&name.size()<=64&&name.find('\0')==std::string::npos,"Invalid profile name");require(database.get("profiles").object.size()<64,"Profile limit reached");require(!database.get("profiles").object.contains(name),"Profile already exists");auto previous=database;Value copy=profile();copy["setup_pending"].object.clear();save_letterbox_options(copy["builtin_options"]);save_fast_forward_options(copy["builtin_options"]);save_move_speed_options(copy["builtin_options"]);save_traversal_options(copy["builtin_options"]);save_lock_on_options(copy["builtin_options"]);copy["builtin_options"]["quick-use.speed"]=double(quick_use_speed());for(const auto& e:manager::entries())copy["builtins"][e.id]=e.enabled();copy["builtin_options"]["direct-camera.speed"]=double(camera_speed());copy["builtin_options"]["mouse-camera.sensitivity"]=double(mouse_sensitivity());database["profiles"][name]=std::move(copy);try{save();}catch(...){database=previous;throw;}});}
-bool select_profile(const std::string& name,std::string& error){Value chosen;bool ok=operation(error,[&]{for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing profiles");require(database.get("profiles").object.contains(name),"Profile not found");check_session_profile(database.get("profiles").get(name));auto previous=database;database["active"]=name;try{auto messages=repair_graphics();order(enabled_set());validate_conflicts(enabled_set(),&profile().get("builtins"));save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}chosen=profile();profile_changed=true;dirty=true;});if(ok){for(const auto& e:manager::entries()){const auto& v=chosen.get("builtins").get(e.id);manager::set_enabled(e.id,v.type==Value::Bool?v.boolean:e.default_enabled);}load_letterbox_options(chosen.get("builtin_options"));load_fast_forward_options(chosen.get("builtin_options"));load_move_speed_options(chosen.get("builtin_options"));load_traversal_options(chosen.get("builtin_options"));load_lock_on_options(chosen.get("builtin_options"));load_quick_use_speed(chosen.get("builtin_options"));auto speed=chosen.get("builtin_options").get("direct-camera.speed"),sens=chosen.get("builtin_options").get("mouse-camera.sensitivity");if(speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);}return ok;}
+bool select_profile(const std::string& name,std::string& error){Value chosen;bool ok=operation(error,[&]{for(const auto& [id,r]:records)require(!r.loading,"Wait for mod preparation to finish before changing profiles");require(database.get("profiles").object.contains(name),"Profile not found");check_session_profile(database.get("profiles").get(name));auto previous=database;database["active"]=name;try{auto messages=repair_graphics();order(enabled_set());validate_conflicts(enabled_set(),&profile().get("builtins"));save();notices.insert(notices.end(),messages.begin(),messages.end());}catch(...){database=previous;throw;}chosen=profile();profile_changed=true;dirty=true;});if(ok){for(const auto& e:manager::entries()){const auto& v=chosen.get("builtins").get(e.id);manager::set_enabled(e.id,v.type==Value::Bool?v.boolean:e.default_enabled);}load_letterbox_options(chosen.get("builtin_options"));load_fast_forward_options(chosen.get("builtin_options"));load_move_speed_options(chosen.get("builtin_options"));load_traversal_options(chosen.get("builtin_options"));load_lock_on_options(chosen.get("builtin_options"));load_quick_use_speed(chosen.get("builtin_options"));auto speed=chosen.get("builtin_options").get("direct-camera.speed"),sens=chosen.get("builtin_options").get("mouse-camera.sensitivity");if(speed.type==Value::Number&&speed.number>=.5&&speed.number<=2)set_camera_speed(speed.number);if(sens.type==Value::Number&&sens.number>=.08&&sens.number<=.3)set_mouse_sensitivity(sens.number);}if(ok)push_player_models();return ok;}
 bool delete_profile(const std::string& name,std::string& error){return operation(error,[&]{require(name!=database.get("active").string(),"Switch profiles before deleting the active one");require(database.get("profiles").object.contains(name),"Profile not found");auto previous=database;database["profiles"].object.erase(name);try{save();}catch(...){database=previous;throw;}});}
 bool builtin_change_allowed(const std::string& id,bool on,std::string& error) {
     bool allowed=true;

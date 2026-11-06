@@ -3859,6 +3859,13 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         if (test.perf) g_perf = true;
         LOG("[overlay] test switch: %s", getenv("WWHD_TEST_OVERLAY"));
     }
+    // WWHD_TEST_OVERLAY_CLOSE=<TV frame>: the menu closed again (a test that opened it goes on playing)
+    static uint64_t test_close = getenv("WWHD_TEST_OVERLAY_CLOSE") ? strtoull(getenv("WWHD_TEST_OVERLAY_CLOSE"), nullptr, 10) : 0;
+    if (test_close && render::frame_count() + 1 >= test_close) {
+        test_close = 0;
+        set_open(false);
+        LOG("[overlay] test switch: closed");
+    }
 #ifdef WWHD_HAS_VULKAN
     // debug: WWHD_TEST_PRESENT_MODE=mailbox@330 picks Graphics > Presentation at TV frame 330, as the
     // radio button does (the swapchains are recreated)
