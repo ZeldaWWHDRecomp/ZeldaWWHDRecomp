@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <iterator>
 
 #include <logic/flatten/bits.hpp>
 
