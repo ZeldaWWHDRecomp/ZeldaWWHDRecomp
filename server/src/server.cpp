@@ -316,6 +316,7 @@ void Server::on_connect(const uint8_t* d, size_t n, const Address& from, uint32_
     ch.info.mod_flags = cfg_.mods.flags();
     ch.info.rule_pages = cfg_.mods.rules.empty() ? 0 : uint8_t(rule_pages(cfg_.mods).size());
     ch.info.rules_digest = cfg_.mods.digest();
+    ch.info.party_max = uint8_t(cfg_.party_max);
     Bytes b = encode_challenge(ch, identity_);
     send_dg(sock_, from, b.data(), b.size());
     metrics_.bytes_out += b.size();
@@ -552,7 +553,7 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     if (join_party) {
         // it came here to accept an invite to a party this worker holds
         auto p = parties_.find(join_party);
-        if (p != parties_.end() && p->second.members.size() < size_t(kMaxPartySize) && party_mods_ok(p->second, *s)) {
+        if (p != parties_.end() && p->second.members.size() < size_t(cfg_.party_max) && party_mods_ok(p->second, *s)) {
             p->second.invites.erase(std::remove_if(p->second.invites.begin(), p->second.invites.end(),
                                                    [&](const Party::Invite& i) { return i.to == s->key_hash; }),
                                     p->second.invites.end());

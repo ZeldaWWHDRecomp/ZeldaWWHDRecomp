@@ -8,8 +8,8 @@
 #include <functional>
 #include <random>
 #include <map>
-#include <memory>
 #include <set>
+#include <memory>
 #include <string>
 #include <thread>
 
@@ -1030,6 +1030,216 @@ static void test_block_mute() {
                 (unsigned long long)s.metrics().blocked_drops.load());
 }
 
+// a party of 16 (party.max_size = 16): enemy snapshots to 15, hits from 15, the runner leaving, team progress from
+// 16, and the whole party carried across a handover between workers
+static std::vector<std::unique_ptr<Bot>> make_party(server::Server& s, std::vector<server::Server*> others, int n,
+                                                    uint16_t port, std::vector<Bot*>& all, float x0) {
+    std::vector<std::unique_ptr<Bot>> v;
+    for (int i = 0; i < n; ++i) {
+        v.push_back(make_bot("p" + std::to_string(i), port));
+        v.back()->head.x = x0 + float(i % 4) * 300.0f;
+        v.back()->head.z = float(i / 4) * 300.0f;
+        all.push_back(v.back().get());
+    }
+    auto go = [&](uint32_t ms, std::function<bool()> done) {
+        uint32_t end = monotonic_ms() + ms;
+        while (int32_t(monotonic_ms() - end) < 0) {
+            s.step(1);
+            for (auto* o : others) o->step(0);
+            for (Bot* b : all) b->poll(0);
+            if (done && done()) return true;
+        }
+        return done ? done() : true;
+    };
+    CHECK(go(15000, [&] { return std::all_of(v.begin(), v.end(), [](auto& b) { return b->online(); }); }));
+    for (int i = 1; i < n; ++i) {
+        uint64_t code = 0;
+        parse_friend_code(v[size_t(i)]->c.friend_code(), code);
+        v[0]->c.party_invite(code);
+        CHECK(go(3000, [&] { return v[size_t(i)]->saw(ClientEvent::kPartyInvited); }));
+        v[size_t(i)]->c.party_accept(v[size_t(i)]->last(ClientEvent::kPartyInvited)->party_id);
+    }
+    CHECK(go(5000, [&] {
+        auto* e = v[0]->last(ClientEvent::kPartyState);
+        return e && int(e->party.members.size()) == n;
+    }));
+    return v;
+}
+
+static void test_party_16() {
+    // the setting's range
+    {
+        server::Config c;
+        std::string why;
+        CHECK(server::parse_config_text("[party]\nmax_size = 16\n", c, why) && c.party_max == 16);
+        CHECK(!server::parse_config_text("[party]\nmax_size = 17\n", c, why) && why.find("between 2 and 16") != std::string::npos);
+        CHECK(!server::parse_config_text("[party]\nmax_size = 1\n", c, why));
+        server::Config d;
+        CHECK(d.party_max == 8);
+    }
+    auto cfg = base_config(0);
+    cfg.party_max = 16;
+    cfg.invite_every_s = 0.01;
+    cfg.per_ip = 64;
+    server::Server s(cfg);
+    s.log = [](const std::string&) {};
+    std::string why;
+    CHECK(s.start(why));
+    std::vector<Bot*> all;
+    auto v = make_party(s, {}, 16, s.port(), all, 1000);
+    auto go = [&](uint32_t ms, std::function<bool()> done) { return run(&s, all, ms, done); };
+    if (auto* e = v[0]->last(ClientEvent::kPartyState)) CHECK(e->party.max == 16 && e->party.members.size() == 16);
+    // a 17th is refused: the party is full
+    {
+        auto extra = make_bot("p16", s.port());
+        all.push_back(extra.get());
+        CHECK(go(5000, [&] { return extra->online(); }));
+        uint64_t code = 0;
+        parse_friend_code(extra->c.friend_code(), code);
+        v[0]->c.party_invite(code);
+        CHECK(go(3000, [&] {
+            auto* e = v[0]->last(ClientEvent::kPartyResult);
+            return e && e->value == 5;
+        }));
+        all.pop_back();
+    }
+    // all in one dungeon room: p0 (first there) runs the enemies
+    for (auto& b : v) {
+        b->head.where = Where::of("dun1", 3);
+        b->c.send_stage(b->head.where);
+        go(40, nullptr);
+    }
+    auto runner_seen = [&](Bot& b) {
+        int r = -1;
+        for (auto& e : b.log)
+            if (e.kind == ClientEvent::kRunners)
+                for (auto& x : e.runners)
+                    if (x.where.stage_name() == "dun1" && x.where.room == 3) r = x.runner;
+        return r;
+    };
+    CHECK(go(3000, [&] { return std::all_of(v.begin(), v.end(), [&](auto& b) { return runner_seen(*b) == v[0]->c.my_id(); }); }));
+    // enemy snapshots from the runner to 15 members (unreliable, 400 bytes, 10 Hz for 2 s)
+    for (auto& b : v) b->log.clear();
+    uint8_t snap[400] = {};
+    AppHeader sh;
+    sh.type = 31;
+    sh.target = kToParty;
+    for (int k = 0; k < 20; ++k) {
+        v[0]->c.send_app(sh, snap, sizeof snap, false);
+        go(100, nullptr);
+    }
+    go(300, nullptr);
+    int min_snaps = 1 << 30;
+    for (size_t i = 1; i < v.size(); ++i) {
+        int n = 0;
+        for (auto& e : v[i]->log)
+            if (e.kind == ClientEvent::kApp && e.app_type == 31 && e.body.size() == 400) ++n;
+        min_snaps = std::min(min_snaps, n);
+    }
+    CHECK(min_snaps >= 18);
+    // hit claims from the 15 others, to the runner
+    v[0]->log.clear();
+    AppHeader hh;
+    hh.type = 32;
+    hh.target = kToRunner;
+    for (size_t i = 1; i < v.size(); ++i) {
+        uint8_t hit[4] = {uint8_t(i), 1, 2, 3};
+        v[i]->c.send_app(hh, hit, 4, true);
+    }
+    std::set<uint16_t> from;
+    CHECK(go(3000, [&] {
+        from.clear();
+        for (auto& e : v[0]->log)
+            if (e.kind == ClientEvent::kApp && e.app_type == 32) from.insert(e.id);
+        return from.size() == 15;
+    }));
+    // team progress: each of the 16 sets its own bit; everyone ends with all 16
+    for (size_t i = 0; i < v.size(); ++i) {
+        std::string val(2, '\0');
+        val[i / 8] = char(1 << (i % 8));
+        v[i]->c.send_progress({{0x700, kFieldBits, val}});
+    }
+    go(1500, nullptr);
+    v[15]->c.ask_team_state();
+    CHECK(go(3000, [&] {
+        auto* e = v[15]->last(ClientEvent::kTeamState);
+        if (!e) return false;
+        for (auto& f : e->fields)
+            if (f.offset == 0x700) return f.value == std::string("\xFF\xFF", 2);
+        return false;
+    }));
+    // the runner leaves: the next member there takes over, for all 15
+    uint16_t old = v[0]->c.my_id();
+    uint32_t t0 = monotonic_ms();
+    all.erase(all.begin());
+    v[0].reset();
+    CHECK(go(3000, [&] {
+        return std::all_of(v.begin() + 1, v.end(), [&](auto& b) { int r = runner_seen(*b); return r > 0 && r != old; });
+    }));
+    std::printf("party of 16: snapshots >= %d of 20 at every member, 15 hit claims, union of 16 bits, runner handed over in %u ms\n",
+                min_snaps, monotonic_ms() - t0);
+}
+
+// a party of 16 crossing into another worker's region: all of it moves, together, and stays one party
+static void test_party_16_handover() {
+    std::string why;
+    auto cc = base_config(0);
+    cc.scale_mode = "pool";
+    cc.link_port = 0;
+    cc.link_secret = "test-link-secret-0123456789";
+    cc.split_cpu = 1e9;
+    cc.split_bw = 1e18;
+    cc.party_max = 16;
+    cc.invite_every_s = 0.01;
+    cc.per_ip = 64;
+    auto coord = std::make_unique<server::Server>(cc);
+    coord->log = [](const std::string&) {};
+    CHECK(coord->start(why));
+    auto wc = cc;
+    wc.worker = true;
+    wc.scale_mode = "off";
+    wc.join = "127.0.0.1:" + std::to_string(coord->link_port());
+    wc.port = 0;
+    auto wk = std::make_unique<server::Server>(wc);
+    wk->log = [](const std::string&) {};
+    CHECK(wk->start(why));
+    std::vector<Bot*> none;
+    CHECK(run(coord.get(), none, 1, nullptr));
+    for (int i = 0; i < 200 && wk->worker_index() <= 0; ++i) {
+        coord->step(1);
+        wk->step(1);
+    }
+    std::vector<Bot*> all;
+    // the party sails in square 24's west half, then the leader and everyone cross into the east half (worker 1)
+    auto v = make_party(*coord, {wk.get()}, 16, coord->port(), all, -9000);
+    std::string r = coord->admin("split 25 " + std::to_string(wk->worker_index()));
+    CHECK(r.find("split into") == 0);
+    auto go = [&](uint32_t ms, std::function<bool()> done) {
+        uint32_t end = monotonic_ms() + ms;
+        while (int32_t(monotonic_ms() - end) < 0) {
+            coord->step(1);
+            wk->step(0);
+            for (Bot* b : all) b->poll(0);
+            if (done && done()) return true;
+        }
+        return done ? done() : true;
+    };
+    go(1000, nullptr);
+    v[0]->head.x = 9000;  // the leader into the east half: the party goes with it
+    CHECK(go(8000, [&] {
+        return std::all_of(v.begin(), v.end(), [&](auto& b) {
+            Session* t = wk->find_by_key(b->c.key_hash());
+            return t && t->online && !t->redirected;
+        });
+    }));
+    CHECK(go(3000, [&] {
+        auto* e = v[5]->last(ClientEvent::kPartyState);
+        return e && e->party.members.size() == 16 && e->party.leader == v[0]->c.my_id() &&
+               std::all_of(e->party.members.begin(), e->party.members.end(), [](auto& m) { return m.online; });
+    }));
+    std::printf("party of 16: carried across the handover together, leader kept, 16 of 16 online\n");
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     g_dir = argc > 1 ? argv[1] : ".";
@@ -1045,6 +1255,8 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "tcp") test_tcp();
     if (only.empty() || only == "mods") test_mod_rules_server();
     if (only.empty() || only == "block") test_block_mute();
+    if (only.empty() || only == "party16") test_party_16();
+    if (only.empty() || only == "party16ho") test_party_16_handover();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "scalingmass") test_scaling_mass();

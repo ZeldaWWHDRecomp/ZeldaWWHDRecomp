@@ -28,6 +28,7 @@ struct ServerInfo {
     uint8_t pub[32]{};     // the server's identity key (pinned by the client: trust on first use)
     // mod rules (mods.h): flags (bit 0 vanilla only, 1 a whitelist, 2 any rules), how many RULES pages, a digest
     uint8_t mod_flags = 0, rule_pages = 0;
+    uint8_t party_max = 4;  // the largest party this server allows (2..16)
     uint32_t rules_digest = 0;
     ModRules mods;         // filled by the client from the RULES pages
 };
