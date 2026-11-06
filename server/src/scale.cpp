@@ -856,9 +856,35 @@ void Server::link_tick(uint32_t now) {
                     // its regions come back here; its players reconnect to us by themselves
                     for (auto& w : map_.workers)
                         if (w.index == int(i)) w.alive = false;
-                    for (auto& g : map_.regions)
-                        if (g.worker == int(i)) g.worker = 0;
-                    scale_log_.push_back(std::to_string(now) + " worker " + std::to_string(i) + " lost: its regions back on 0");
+                    // its regions (and copies) go to the least loaded live worker, region by region
+                    auto least = [&]() {
+                        int best = 0;
+                        double bl = 1e18;
+                        for (auto& w : map_.workers) {
+                            if (!w.alive || (w.index != 0 && (size_t(w.index) >= peers_.size() || !peers_[size_t(w.index)].up)))
+                                continue;
+                            const LoadReport& l = peers_[size_t(w.index)].load;
+                            double L = std::max(l.cpu_pct / cfg_.split_cpu, double(l.out_Bps) / cfg_.split_bw);
+                            if (L < bl) {
+                                bl = L;
+                                best = w.index;
+                            }
+                        }
+                        return best;
+                    };
+                    std::string where;
+                    for (auto& g : map_.regions) {
+                        if (g.worker == int(i)) {
+                            g.worker = least();
+                            where += " " + std::to_string(g.id) + "->" + std::to_string(g.worker);
+                            // count it on the new owner until its next report
+                            peers_[size_t(g.worker)].load.out_Bps += uint64_t(cfg_.split_bw / 4);
+                        }
+                        for (auto& c : g.copy_worker)
+                            if (c == i) c = uint8_t(g.worker);
+                    }
+                    peers_[i].load = LoadReport();
+                    scale_log_.push_back(std::to_string(now) + " worker " + std::to_string(i) + " lost: its regions" + where);
                     map_changed();
                 }
             }
@@ -1245,6 +1271,14 @@ void Server::coordinate(uint32_t now) {
         if (!p.idle_since) p.idle_since = now;
         if (p.pid && now - p.idle_since >= uint32_t(cfg_.idle_worker_s) * 1000) {
             link_send(w, kLStop, {});
+            // flush the stop now: the link to it is closed here (no "lost" alarm for a worker we stopped)
+            std::vector<Bytes> out;
+            p.chan.flush(now, out, 8, 0);
+            link_.send_many(p.addr, out);
+            p.up = false;
+            p.epoch = 0;
+            p.sub.clear();
+            p.load = LoadReport();
             for (auto& k : map_.workers)
                 if (k.index == w) k.alive = false;
             scale_log_.push_back(std::to_string(now) + " worker " + std::to_string(w) + " stopped (idle)");
@@ -1278,7 +1312,12 @@ void Server::spawn_worker(uint32_t now) {
     std::string join = cfg_.link_bind + ":" + std::to_string(link_.local_port());
     std::string port = std::to_string(cfg_.worker_port_base + idx - 1);
     std::string lport = std::to_string(cfg_.link_port + idx);
-    std::string threads = std::to_string(cfg_.worker_threads);
+    int nthreads = cfg_.worker_threads;
+    if (nthreads <= 0) {
+        int hw = int(std::max(1u, std::thread::hardware_concurrency()));
+        nthreads = std::clamp(hw / std::max(1, cfg_.max_workers), 2, 16);
+    }
+    std::string threads = std::to_string(nthreads);
     std::vector<std::string> args = {exe, "--worker", "--join", join, "--port", port, "--link-port", lport, "--threads", threads};
     if (!cfg_.config_path.empty()) {
         args.push_back("--config");

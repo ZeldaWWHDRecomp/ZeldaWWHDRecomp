@@ -25,6 +25,7 @@ if(NOT TARGET wwhd_online_proto)
     messages.cpp
     protocol.cpp
     sha256.cpp
+    tcp.cpp
     udp.cpp)
   target_include_directories(wwhd_online_proto PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)
   target_compile_features(wwhd_online_proto PUBLIC cxx_std_20)

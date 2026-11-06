@@ -84,6 +84,7 @@ static server::Config base_config(uint16_t port) {
     return c;
 }
 
+static TransportMode g_mode = TransportMode::kAuto;
 static std::unique_ptr<Bot> make_bot(const std::string& name, uint16_t port, uint64_t game = 0x1111,
                                      const crypto::Identity* id = nullptr) {
     auto b = std::make_unique<Bot>();
@@ -92,6 +93,7 @@ static std::unique_ptr<Bot> make_bot(const std::string& name, uint16_t port, uin
     cfg.port = port;
     cfg.game_data = game;
     cfg.identity = id ? *id : crypto::Identity::generate();
+    cfg.transport_mode = g_mode;
     b->id = cfg.identity;
     cfg.name = name;
     std::string why;
@@ -733,6 +735,49 @@ static void test_upload_limit() {
     if (auto* e = a->last(ClientEvent::kNotice)) std::printf("upload limit: \"%s\"\n", e->text.c_str());
 }
 
+// the TCP fallback (C25): a session over TCP only; the automatic fallback when UDP gets no answer; a closed
+// connection resumes
+static void test_tcp() {
+    for (int variant = 0; variant < 2; ++variant) {
+        auto cfg = base_config(0);
+        if (variant == 1) cfg.udp = false;  // UDP "blocked": only TCP gets through
+        server::Server s(cfg);
+        std::string why;
+        CHECK(s.start(why));
+        g_mode = variant == 0 ? TransportMode::kTcpOnly : TransportMode::kAuto;
+        auto a = make_bot("a", s.port()), b = make_bot("b", s.port());
+        g_mode = TransportMode::kAuto;
+        uint32_t t0 = monotonic_ms();
+        CHECK(run(&s, {a.get(), b.get()}, 15000, [&] {
+            return a->players.count(b->c.my_id()) && b->players.count(a->c.my_id()) && a->poses.count(b->c.my_id());
+        }));
+        CHECK(a->c.transport() == Transport::kTcp && b->c.transport() == Transport::kTcp);
+        std::printf("tcp (%s): both online and seeing each other after %u ms, status \"%s\"\n",
+                    variant == 0 ? "TCP only" : "fallback from blocked UDP", monotonic_ms() - t0, a->c.status_line().c_str());
+        // reliable messages and a party over TCP
+        uint64_t code = 0;
+        parse_friend_code(b->c.friend_code(), code);
+        a->c.party_invite(code);
+        CHECK(run(&s, {a.get(), b.get()}, 3000, [&] { return b->saw(ClientEvent::kPartyInvited); }));
+    }
+    // a closed TCP connection: the session is kept and the client resumes it
+    auto cfg = base_config(0);
+    cfg.udp = false;
+    server::Server s(cfg);
+    std::string why;
+    CHECK(s.start(why));
+    g_mode = TransportMode::kTcpOnly;
+    auto a = make_bot("a", s.port());
+    g_mode = TransportMode::kAuto;
+    CHECK(run(&s, {a.get()}, 5000, [&] { return a->online(); }));
+    a->log.clear();
+    s.drop_tcp();
+    CHECK(run(&s, {a.get()}, 10000, [&] { return a->saw(ClientEvent::kWelcome) && a->online(); }));
+    if (auto* e = a->last(ClientEvent::kWelcome)) CHECK(e->resumed);
+    CHECK(a->c.transport() == Transport::kTcp);
+    std::printf("tcp: a dropped connection resumed the session: ok\n");
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     g_dir = argc > 1 ? argv[1] : ".";
@@ -745,6 +790,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "flood") test_flood();
     if (only.empty() || only == "upload") test_upload_limit();
     if (only.empty() || only == "partyrestart") test_party_restart();
+    if (only.empty() || only == "tcp") test_tcp();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "chaos") {

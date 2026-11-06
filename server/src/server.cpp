@@ -60,7 +60,9 @@ bool Server::start(std::string& why) {
     crypto::random_bytes(cookie_key_, sizeof cookie_key_);
     // the IP salt must survive restarts for bans by IP hash: derived from the server key
     crypto::hash(identity_.secret, 32, ip_salt_);
-    workers_ = cfg_.threads > 0 ? cfg_.threads : int(std::min(8u, std::max(1u, std::thread::hardware_concurrency() / 2)));
+    // tick threads: the config's, else half the cores (at most 16; a big machine running one process uses them)
+    workers_ = cfg_.threads > 0 ? std::min(cfg_.threads, 64)
+                                : int(std::min(16u, std::max(1u, std::thread::hardware_concurrency() / 2)));
 #ifdef _WIN32
     bool reuse = false;
 #else
@@ -78,6 +80,7 @@ bool Server::start(std::string& why) {
     }
     load_bans();
     load_team_states();
+    if (cfg_.tcp && !tcp_listen_.open(cfg_.bind, sock_.local_port(), why)) return false;
     if (cfg_.worker) cfg_.admin_socket.clear();  // the coordinator's admin socket runs the workers too
     if (!open_admin(why)) return false;
     if (linked() && !open_link(why)) return false;
@@ -130,6 +133,7 @@ void Server::step(int wait_ms) {
             for (int i = 0; i < 20000; ++i) {
                 int n = u.recv_from(from, buf, sizeof buf);
                 if (n < 0) break;
+                if (!cfg_.udp) continue;  // a TCP-only server (as if UDP were blocked on the way)
                 metrics_.bytes_in += size_t(n);
                 metrics_.packets_in++;
                 on_datagram(buf, size_t(n), from, monotonic_ms());
@@ -139,6 +143,7 @@ void Server::step(int wait_ms) {
         for (auto& u : send_socks_) drain(*u);  // a port shared by several sockets may deliver to any of them
     }
     admin_poll();
+    if (tcp_listen_.is_open()) tcp_poll(monotonic_ms());
     if (linked()) link_poll(monotonic_ms());
     now = monotonic_ms();
     if (int32_t(now - next_tick_) >= 0) {
@@ -170,7 +175,7 @@ void Server::refuse(const Address& to, uint32_t nonce, Refusal r, const std::str
     f.text = text.empty() ? refusal_text(r) : text;
     f.retry_s = retry;
     Bytes b = encode_refuse(f);
-    sock_.send_to(to, b.data(), b.size());
+    send_dg(sock_, to, b.data(), b.size());
     metrics_.bytes_out += b.size();
     metrics_.refused++;
 }
@@ -285,7 +290,7 @@ void Server::on_connect(const uint8_t* d, size_t n, const Address& from, uint32_
     ch.info.capacity = uint16_t(std::min(cfg_.max_players, 65535));
     ch.info.flags = uint8_t((crypto::backend_secure() ? 1 : 0) | (cfg_.invite_only ? 2 : 0) | (cfg_.public_server ? 4 : 0));
     Bytes b = encode_challenge(ch, identity_);
-    sock_.send_to(from, b.data(), b.size());
+    send_dg(sock_, from, b.data(), b.size());
     metrics_.bytes_out += b.size();
 }
 
@@ -311,7 +316,7 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     // a repeated hello (our welcome was lost): the same answer again
     if (Session* old = find_by_key(kh); old && old->online && std::memcmp(old->client_eph, h.eph, 32) == 0) {
         if (old->addr == from) {
-            sock_.send_to(from, old->welcome.data(), old->welcome.size());
+            send_dg(sock_, from, old->welcome.data(), old->welcome.size());
             metrics_.bytes_out += old->welcome.size();
         }
         return;
@@ -371,7 +376,7 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
             if (old->online) notice(*old, kNoticeKick, 0, "signed in from another place");
             std::vector<Bytes> out;
             old->chan.flush(now, out, 2, 0);
-            for (auto& b : out) sock_.send_to(old->addr, b.data(), b.size());
+            for (auto& b : out) send_dg(sock_, old->addr, b.data(), b.size());
             drop(*old, "replaced", false);
         }
         if (int(players()) >= cfg_.max_players) return refuse(from, h.nonce, Refusal::kFull, "", 30);
@@ -473,7 +478,7 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     w.tick_hz = uint8_t(cfg_.tick_hz);
     w.resumed = resumed || had_ticket;  // a handover between workers keeps the client's puppets too
     s->welcome = encode_welcome(w, identity_, h.eph, tx);
-    sock_.send_to(from, s->welcome.data(), s->welcome.size());
+    send_dg(sock_, from, s->welcome.data(), s->welcome.size());
     metrics_.bytes_out += s->welcome.size();
     party_member_online(*s, now);
     if (join_party) {
@@ -509,7 +514,7 @@ void Server::kick(Session& s, uint8_t kind, const std::string& text) {
 void Server::kick_quiet(Session& s, const std::string& text) {
     std::vector<Bytes> out;
     s.chan.flush(monotonic_ms(), out, 4, 0);
-    for (auto& b : out) sock_.send_to(s.addr, b.data(), b.size());
+    for (auto& b : out) send_dg(sock_, s.addr, b.data(), b.size());
     metrics_.kicked++;
     log("kick " + friend_code(s.key_hash) + ": " + text);
     drop(s, text, false);
@@ -1244,10 +1249,22 @@ UdpSocket& Server::out_sock() {
 void Server::flush_one(Session& s, uint32_t now) {
     static thread_local std::vector<Bytes> out;
     out.clear();
+    if (s.addr.tcp_id) {
+        // a backed-up TCP stream: this tick's poses wait (are dropped); reliable messages stay queued
+        auto it = tcp_.find(s.addr.tcp_id);
+        if (it == tcp_.end() || it->second.s->queued() > kTcpBackedUp) {
+            s.chan.drop_unreliable();
+            return;
+        }
+    }
     s.chan.flush(now, out, kMaxDatagramsPerFlush);
     uint64_t bytes = 0;
     UdpSocket& u = out_sock();
-    u.send_many(s.addr, out);
+    if (s.addr.tcp_id) {
+        for (auto& b : out) send_dg(u, s.addr, b.data(), b.size());
+    } else {
+        u.send_many(s.addr, out);
+    }
     for (auto& b : out) bytes += b.size();
     metrics_.bytes_out += bytes;
     metrics_.packets_out += out.size();
@@ -1356,6 +1373,7 @@ void Server::tick(uint32_t now) {
     }
     t0 = monotonic_us();
     flush_all(now);
+    for (auto& [id, c] : tcp_) c.s->pump();  // TCP peers get this tick's datagrams now
     metrics_.send_us.push_back(uint32_t(monotonic_us() - t0));
     if ((tick_no_ % uint32_t(cfg_.tick_hz * 10)) == 0) parties_gc(now);
     // the team-state file (when configured) is written within 2 s of a change, so a crash loses little
@@ -1372,6 +1390,71 @@ void Server::tick(uint32_t now) {
         write_metrics(now);
         last_metrics_ = now;
     }
+}
+
+// ---------------------------------------------------------------- the TCP fallback
+
+void Server::send_dg(UdpSocket& u, const Address& to, const uint8_t* d, size_t n) {
+    if (!to.tcp_id) {
+        u.send_to(to, d, n);
+        return;
+    }
+    auto it = tcp_.find(to.tcp_id);
+    if (it != tcp_.end()) it->second.s->send_frame(d, n);  // written by tcp_poll (main thread)
+}
+
+void Server::tcp_poll(uint32_t now) {
+    // new connections
+    intptr_t fd;
+    Address peer;
+    for (int i = 0; i < 256 && tcp_listen_.accept(fd, peer); ++i) {
+        bool exempt = cfg_.loopback_exempt && peer.is_loopback();
+        std::string ip = peer.ip_bytes();
+        if ((!exempt && tcp_per_ip_[ip] >= cfg_.per_ip * 2) || int(tcp_.size()) >= cfg_.max_players * 2) {
+            TcpStream t;
+            t.adopt(fd, peer);  // closed again at once
+            continue;
+        }
+        uint32_t id = next_tcp_++;
+        if (!next_tcp_) next_tcp_ = 1;
+        TcpConn c;
+        c.s = std::make_unique<TcpStream>();
+        c.s->adopt(fd, peer);
+        c.at = c.heard = now;
+        tcp_[id] = std::move(c);
+        tcp_per_ip_[ip]++;
+    }
+    // what came in, and what is waiting to go out
+    std::vector<uint32_t> gone;
+    uint8_t buf[kMaxTcpFrame];
+    for (auto& [id, c] : tcp_) {
+        c.s->pump();
+        Address from = c.s->peer();
+        from.tcp_id = id;
+        for (int k = 0; k < 256; ++k) {
+            int n = c.s->recv_frame(buf, sizeof buf);
+            if (n < 0) break;
+            c.heard = now;
+            metrics_.bytes_in += size_t(n) + 2;
+            metrics_.packets_in++;
+            on_datagram(buf, size_t(n), from, now);
+        }
+        // closed, or a connection that never got a session going
+        if (c.s->closed() || now - c.heard > uint32_t(cfg_.silence_s) * 1000) gone.push_back(id);
+    }
+    for (uint32_t id : gone) tcp_closed(id, now);
+}
+
+void Server::tcp_closed(uint32_t id, uint32_t now) {
+    (void)now;
+    auto it = tcp_.find(id);
+    if (it == tcp_.end()) return;
+    std::string ip = it->second.s->peer().ip_bytes();
+    if (--tcp_per_ip_[ip] <= 0) tcp_per_ip_.erase(ip);
+    tcp_.erase(it);
+    // its session is lost at once (kept for resume, like a timeout)
+    for (auto& [cid, sp] : sessions_)
+        if (!sp->dead && sp->online && sp->addr.tcp_id == id) drop(*sp, "connection closed", true);
 }
 
 // ---------------------------------------------------------------- sea copies (the safety valve)

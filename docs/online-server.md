@@ -60,8 +60,13 @@ are listed in `server/src/config.h`.
 
 ### Ports and networks
 
-- One UDP port (default 7777) for the players. Forward it on your router if friends join over the
-  internet.
+- One port (default 7777) for the players, UDP and TCP. Forward both on your router if friends join
+  over the internet.
+  - UDP is the normal way.
+  - TCP (`network.tcp = true`, the default) is the fallback for networks that block UDP. A game that
+    gets no answer over UDP for 3 s tries TCP at the same address, and shows "(TCP)" in its status.
+  - TCP carries the same encrypted packets. On a congested connection it holds back other players'
+    poses rather than delaying everything.
 - With `scale.mode = "auto"` the server may start worker processes; they listen on
   `scale.worker_port_base` and up (default 7778, 7779, …). Forward those too, or set
   `scale.max_workers = 1`.
@@ -135,6 +140,13 @@ With `scale.mode = "auto"`, the server scales by itself on one machine:
   players in the cells its own players look into. A player who sails into another worker's region
   is handed over and keeps their id; the switch takes about 0.15 s and nobody disappears from view.
 
+**Threads.** Each process runs its tick on several threads:
+- `interest.threads` sets them for this process (default: half the cores, at most 16);
+- `scale.worker_threads` sets them for the workers it starts (default: the cores shared by
+  `scale.max_workers`, between 2 and 16).
+
+On a big machine, either raise `max_workers` (more processes) or the threads per process.
+
 Several machines: run the coordinator with `scale.mode = "pool"` (or `"auto"`) and
 `scale.link_bind` set to a LAN address. On each extra machine, run:
 
@@ -157,9 +169,12 @@ Bots are headless clients that send a 140-byte pose 15 times a second, with phon
 | 5,000 players in one square (auto) | 6 workers, 9 splits and one copy moved; all 5,000 stayed online; handover p50 132 ms, p99 0.66 s; ping p50 83 ms |
 | 2,000 players sailing into one square within a minute | 1,320 handovers, all players stayed online, 9 brief losses of sight; handover p50 132 ms; ping p50 10 ms |
 | The 1,000-player crowd leaves, then 150 s of calm (auto) | the split halves merged back 20 s after the last player left, and the started worker stopped 30 s later |
-| Pool mode: two workers in their own folders and ports join the coordinator over the link, 1,000 players in one square | both registered; the square split onto one of them; handover p50 132 ms, ping p50 8 ms |
+| Pool mode, two simulated machines (two worker processes each, own folders and ports), 1,200 players in one square, one machine killed after 100 s | splits on both machines, handovers between them (p50 134 ms); the lost machine's regions went to the other machine and the coordinator; 1,197 of 1,200 online at the end, the moved players back within about 6 s |
+| 2,000 players in one square for 150 s, then 30 min with nobody (auto) | 3 workers started, 6 splits and one move; 45 s after the last player left every split had merged back, 30 s later the 3 workers stopped; no worker started again in the rest of the 30 min |
 
-On one Mac the 5,000-player crowd is limited by the machine itself: the bots, all the workers and the
+**Real capacity needs a Linux server, with the bots on another machine.** These numbers come from one
+Mac where the bots and every server process share the same cores. Linux also sends UDP in batches
+(`sendmmsg`), which macOS can't. On one Mac the 5,000-player crowd is limited by the machine itself: the bots, all the workers and the
 sending (macOS has no batched UDP send) share 16 cores, and the workers' ticks reached 55–110 ms
 instead of 66 ms. A Linux server uses batched sends (`sendmmsg`), and a second machine in pool mode
 adds cores.

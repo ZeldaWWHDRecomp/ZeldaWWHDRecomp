@@ -12,6 +12,7 @@ namespace online::proto {
 struct Address {
     uint8_t storage[28]{};  // sockaddr_in or sockaddr_in6
     uint8_t len = 0;
+    uint32_t tcp_id = 0;    // a TCP connection of the server (the fallback transport); 0: UDP
     bool valid() const { return len != 0; }
     bool operator==(const Address& o) const;
     std::string text() const;  // "1.2.3.4:7777" (logs never print it unless asked; see the server)
