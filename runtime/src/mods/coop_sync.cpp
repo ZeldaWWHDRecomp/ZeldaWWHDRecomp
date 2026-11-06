@@ -316,6 +316,7 @@ struct Handler : net::Handler {
         if (type == net::kDoorMove) return progress::door_moved(d, n);
         if (type == net::kRupees) return progress::rupees_received(d, n);
         if (type == net::kSound) return g_sounds_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
+        if (type == net::kOwner && net::via_server()) return;  // (through a server: its runners, X2)
         if (type == net::kOwner) {  // (a guest) the host's table of who runs each place
             g_owners.clear();
             for (size_t o = 0; o + 10 <= n; o += 10) {
@@ -700,7 +701,16 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     // who runs each place's monsters (owner()): the host where it is; elsewhere the player there longest, kept while they
     // stay (Valheim's way: no handing over mid-fight to whoever comes nearer). Sent to the guests as it changes, and every
     // 3 s for those who joined since
-    if (host()) {
+    // (through a server in a party: the server names each place's runner, the same table on every member, X2)
+    std::vector<net::Runner> served;
+    if (net::server_runners(served)) {
+        g_owners.clear();
+        for (const net::Runner& r : served) {
+            Area a{};
+            memcpy(a.stage, r.stage, 8), a.room = r.room, a.owner = (uint8_t)r.slot;
+            g_owners.push_back(a);
+        }
+    } else if (host()) {
         struct Here { char stage[8]; int8_t room; uint32_t since; bool in; };
         static Here here[net::kMaxPlayers];
         const uint32_t now = net::now_ms();

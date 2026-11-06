@@ -25,6 +25,7 @@
 #include <vector>
 
 #include <functional>
+#include <map>
 #include <mutex>
 
 #include "coop_servers.h"
@@ -67,6 +68,8 @@ std::mutex g_ui_mu;
 std::vector<std::function<void(op::Client&)>> g_actions;
 std::string g_auto_invite;     // test aid: a friend code (or @file with it) to invite once online
 Handler* g_h = nullptr;
+// each place's enemy runner as the server names it (X2): its changes, kept; by stage and room
+std::map<std::pair<std::string, int8_t>, uint16_t> g_runner;
 std::string g_end_why;         // why the server ended the session (a refusal, a removal), for the status after it stops
 std::string g_msg;             // the newest answer (a party action's, a warning), shown with the status for a while
 uint32_t g_msg_at = 0;
@@ -222,6 +225,7 @@ bool start(const std::string& server, int port, const std::string& my_name, int 
 void stop(const char* why) {
     if (g_client) g_client->stop(), delete g_client, g_client = nullptr, mods::trace("coop: server session stopped%s%s", why ? ": " : "", why ? why : "");
     g_active = false, g_status = why ? why : "Off", g_me_sid = 0, g_peers.clear(), g_party = {}, g_slot_of_me = 0, g_where_known = false;
+    g_runner.clear();
     {
         std::lock_guard<std::mutex> l(g_ui_mu);
         g_invites.clear(), g_actions.clear();
@@ -331,7 +335,7 @@ void poll(Handler& h) {
             g_end_why.clear();
             if (!e.resumed) {
                 for (int i = 0; i < kMaxPlayers; i++) if (g_slot[i].on && i != g_slot_of_me) h.left(i, "reconnected");
-                g_peers.clear(), g_party = {};
+                g_peers.clear(), g_party = {}, g_runner.clear();
                 for (Peer& p : g_slot) p = Peer{};
             }
             g_status = "Online, friend code " + g_client->friend_code();
@@ -414,6 +418,7 @@ void poll(Handler& h) {
             say(e.player.name + " invites you to their party: accept under Settings > Online (Invitations)", true);
             break;
         case op::ClientEvent::kPartyState:
+            if (e.party.party != g_party.party) g_runner.clear();
             g_party = e.party;
             {
                 std::lock_guard<std::mutex> l(g_ui_mu);
@@ -423,6 +428,14 @@ void poll(Handler& h) {
                         online_members(), e.party.members.size());
             for (Peer& p : g_peers) p.party = member_sid(p.sid);
             remap(h);
+            break;
+        case op::ClientEvent::kRunners:
+            for (const op::RunnerEntry& r : e.runners) {
+                const std::pair<std::string, int8_t> at{std::string((const char*)r.where.stage.data(), strnlen((const char*)r.where.stage.data(), 8)), r.where.room};
+                if (r.runner) g_runner[at] = r.runner;
+                else g_runner.erase(at);
+                mods::trace("coop: server: runner of %s room %d: %u", at.first.c_str(), at.second, r.runner);
+            }
             break;
         case op::ClientEvent::kPartyResult:
             mods::trace("coop: server: party result %u: %s", e.value, e.text.c_str());
@@ -486,6 +499,20 @@ void answer(uint32_t party, bool yes) {
 void leave_party() {
     std::lock_guard<std::mutex> l(g_ui_mu);
     g_actions.push_back([](op::Client& c) { c.party_leave(); });
+}
+
+bool runners(std::vector<Runner>& out) {
+    out.clear();
+    if (!g_client || !in_party()) return false;
+    for (const auto& [at, sid] : g_runner) {
+        const int slot = sid == g_me_sid ? g_slot_of_me : slot_of(sid);
+        if (slot < 0) continue;
+        Runner r{};
+        memcpy(r.stage, at.first.data(), std::min<size_t>(8, at.first.size()));
+        r.room = at.second, r.slot = slot;
+        out.push_back(r);
+    }
+    return true;
 }
 
 std::vector<servers::Server> saved_servers() {

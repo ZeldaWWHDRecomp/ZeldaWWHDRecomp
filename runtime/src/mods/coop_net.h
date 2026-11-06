@@ -108,5 +108,9 @@ void leave_party();
 // pinned key too: the next visit pins the key it shows then)
 std::vector<servers::Server> saved_servers();
 void forget_server(const std::string& addr, int port);
+// each place's enemy runner as the server names it (GAPS X2), as this game's player numbers; false while this game
+// is in no party through a server (then the host's own table, coop_sync, decides)
+struct Runner { char stage[8]; int8_t room; int slot; };
+bool server_runners(std::vector<Runner>& out);
 
 }  // namespace mods::coop::net
