@@ -338,7 +338,7 @@ void Client::handle_message(const Delivered& m) {
             e.seconds = r.u16();
             e.text = r.str8(200);
             if (!r.done()) break;
-            bool out = e.value == kNoticeKick || e.value == kNoticeBan;
+            bool out = e.value == kNoticeKick || e.value == kNoticeBan || e.value == kNoticeKickLimit;
             std::string text = e.text;
             events_.push_back(std::move(e));
             if (out) {
@@ -386,6 +386,27 @@ void Client::handle_message(const Delivered& m) {
             ClientEvent e{ClientEvent::kPartyResult};
             e.value = r.u8();
             e.text = r.str8(200);
+            if (r.done()) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgPartyWhere: {
+            ClientEvent e{ClientEvent::kPartyWhere};
+            auto s24 = [&] {
+                uint32_t u = r.u8();
+                u |= uint32_t(r.u8()) << 8;
+                u |= uint32_t(r.u8()) << 16;
+                if (u & 0x800000) u |= 0xFF000000u;
+                return int32_t(u);
+            };
+            while (r.ok() && r.left() && e.members.size() < size_t(kMaxPartySize)) {
+                ClientEvent::MemberWhere m;
+                m.id = r.u16();
+                m.where = get_where(r);
+                m.square = r.u8();
+                m.x = s24();
+                m.z = s24();
+                if (r.ok()) e.members.push_back(m);
+            }
             if (r.done()) events_.push_back(std::move(e));
             break;
         }

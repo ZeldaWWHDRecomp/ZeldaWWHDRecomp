@@ -61,6 +61,7 @@ struct ClientEvent {
         kRunners,        // runners
         kTeamState,      // version, fields
         kPartyResult,    // value (code), text
+        kPartyWhere,     // members: where every online party member is (1 Hz)
     } kind;
     ClientState state = ClientState::kOff;
     std::string text;
@@ -79,6 +80,13 @@ struct ClientEvent {
     PartyState party;
     std::vector<RunnerEntry> runners;
     std::vector<TeamField> fields;
+    struct MemberWhere {
+        uint16_t id = 0;
+        Where where;
+        uint8_t square = 255;  // 255: not at sea
+        int32_t x = 0, z = 0;
+    };
+    std::vector<MemberWhere> members;
 };
 
 struct ClientStats {

@@ -106,6 +106,8 @@ enum Msg : uint8_t {
     kMsgTeamState = 75,     // reliable (split): u32 version, TeamField list
     kMsgPartyResult = 76,   // reliable: u8 code, text (invite failed, party full...)
     kMsgRedirect = 77,      // reliable: host text, u16 port, u8 ticket[32] (shard handover)
+    kMsgPartyWhere = 78,    // unreliable, 1 Hz: n x {u16 id, Where, u8 square (255: not at sea), s24 x, s24 z}
+                            // where every online party member is, wherever they are
 };
 
 // Where a player is. `stage` is the game's internal stage code (up to 8 bytes, zero padded).
@@ -198,7 +200,24 @@ constexpr uint16_t kPartyDefaults = kPartySharedProgress | kPartyDeckRiding;
 constexpr int kMaxPartySize = 4;
 
 // notices
-enum NoticeKind : uint8_t { kNoticeRestart = 1, kNoticeKick = 2, kNoticeBan = 3, kNoticeInfo = 4, kNoticeThrottle = 5 };
+enum NoticeKind : uint8_t {
+    kNoticeRestart = 1,
+    kNoticeKick = 2,       // removed by the operator or for a protocol error
+    kNoticeBan = 3,
+    kNoticeInfo = 4,
+    kNoticeThrottle = 5,   // a warning: over a limit (`seconds` carries the limit's reason, KickReason)
+    kNoticeKickLimit = 6,  // removed for staying over a limit; `seconds` carries the KickReason
+};
+// why a client was throttled or removed for a limit (in the NOTICE's u16 field)
+enum KickReason : uint16_t {
+    kLimitNone = 0,
+    kLimitUpload = 1,     // bytes per second up (limits.bytes_per_s; the text names the limit)
+    kLimitPackets = 2,    // packets per second
+    kLimitReliable = 3,   // reliable messages per second
+    kLimitApp = 4,        // app messages per second
+    kLimitPose = 5,       // malformed or implausible poses
+    kLimitOther = 6,
+};
 
 // the sea (DESIGN.md 3.3): 7x7 squares of 100,000 units, each split into 8x8 sub-cells of 12,500
 constexpr int kSeaSquares = 7;

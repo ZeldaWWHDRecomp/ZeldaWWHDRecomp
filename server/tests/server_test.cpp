@@ -235,6 +235,23 @@ static void test_party() {
     CHECK(run(&s, {a.get(), b.get(), c.get()}, 3000, [&] {
         return a->players.count(b->c.my_id()) && a->players[b->c.my_id()].name == "beta";
     }));
+    // party members are seen anywhere (at least the mid tier), not only nearby: b sails far away, and a
+    // third member who never was near gets a PLAYER_IN too
+    b->head.x = 250000;
+    b->head.z = 250000;
+    CHECK(run(&s, {a.get(), b.get(), c.get()}, 4000, [&] {
+        return a->poses.count(b->c.my_id()) && std::fabs(a->poses[b->c.my_id()].head.x - 250000) < 2;
+    }));
+    // and every member learns where the others are, once a second
+    CHECK(run(&s, {a.get(), b.get(), c.get()}, 3000, [&] {
+        auto* e = a->last(ClientEvent::kPartyWhere);
+        if (!e || e->members.size() != 2) return false;
+        for (auto& m : e->members)
+            if (m.id == b->c.my_id()) return m.x == 250000 && m.square != 255;
+        return false;
+    }));
+    b->head.x = 0;
+    b->head.z = 0;
     // both in one dungeon room: the first to arrive runs the enemies
     a->head.where = Where::of("dun1", 3);
     a->c.send_stage(a->head.where);
@@ -282,6 +299,11 @@ static void test_party() {
     a.reset();  // destroying it says bye; also cover silence below
     CHECK(run(&s, rest, 3000, [&] { return runner_of(*b) == b->c.my_id(); }));
     std::printf("party: runner handover after the runner left: %u ms\n", monotonic_ms() - t0);
+    // the leader (a) left: the member in the party longest (b) leads now, and the clients are told
+    CHECK(run(&s, rest, 3000, [&] {
+        auto* e = b->last(ClientEvent::kPartyState);
+        return e && e->party.leader == b->c.my_id();
+    }));
     // silence (no bye): the new runner b goes quiet; c joins the party and the room, and takes over within ~3 s
     uint64_t ccode = 0;
     parse_friend_code(c->c.friend_code(), ccode);
@@ -377,6 +399,8 @@ static void test_flood() {
     for (int i = 0; i < 2000; ++i) a->c.send_emote(1);
     CHECK(run(&s, {a.get()}, 5000, [&] { return !a->online(); }));
     CHECK(s.metrics().kicked >= 1);
+    // the reason comes as a code: removed for a limit, which one
+    if (auto* e = a->last(ClientEvent::kNotice)) CHECK(e->value == kNoticeKickLimit && e->seconds == kLimitReliable);
     std::printf("flood kick: ok\n");
 }
 
@@ -602,6 +626,25 @@ static void test_chaos(const char* profile, double loss, double dup, uint32_t de
                 profile, loss * 100, dup * 100, delay, jitter, seen_ms, a->c.ping_ms(), got_all() ? "ok" : "FAILED");
 }
 
+// the fork's full-size poses (~680 B at 30 Hz) are over the default 8 KB/s upload: warned, then removed with
+// the upload reason code
+static void test_upload_limit() {
+    server::Server s(base_config(0));
+    std::string why;
+    CHECK(s.start(why));
+    auto a = make_bot("big", s.port());
+    a->blob = Bytes(680, 1);
+    CHECK(run(&s, {a.get()}, 20000, [&] { return a->c.state() == ClientState::kStopped; }));
+    bool warned = false, removed = false;
+    for (auto& e : a->log)
+        if (e.kind == ClientEvent::kNotice) {
+            if (e.value == kNoticeThrottle && e.seconds == kLimitUpload) warned = true;
+            if (e.value == kNoticeKickLimit && e.seconds == kLimitUpload) removed = true;
+        }
+    CHECK(warned && removed);
+    if (auto* e = a->last(ClientEvent::kNotice)) std::printf("upload limit: \"%s\"\n", e->text.c_str());
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     g_dir = argc > 1 ? argv[1] : ".";
@@ -612,6 +655,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "party") test_party();
     if (only.empty() || only == "copies") test_copies();
     if (only.empty() || only == "flood") test_flood();
+    if (only.empty() || only == "upload") test_upload_limit();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "chaos") {
