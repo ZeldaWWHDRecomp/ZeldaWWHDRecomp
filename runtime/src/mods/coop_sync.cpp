@@ -486,9 +486,11 @@ struct Handler : net::Handler {
             if ((int32_t)(r.poses.back().first - ms) < 2000) return;  // (out of order: dropped)
             r.poses.clear();  // (another clock: this game's for a mid stream without a near pose before)
         }
+        if (!r.heard || now - r.heard > 2000)
+            mods::trace("coop: player %d: a cheap puppet (%s) at %.0f %.0f %.0f", from, emotes::kGaitClips[r.gait], a.x, a.y, a.z);
+        r.heard = now;  // (heard: shown while its poses come, kStale)
         r.poses.emplace_back(ms, std::move(p));
         while (r.poses.size() > 2 && (int32_t)(ms - r.poses.front().first) > 1000) r.poses.pop_front();
-        (void)from;
     }
     void joined(int id) override {
         ss::notice(net::name(id) + " joined (" + kTunics[net::tunic(id)] + ")");
