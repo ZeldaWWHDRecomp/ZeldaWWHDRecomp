@@ -70,6 +70,7 @@ void Client::begin_connect(uint32_t now) {
     if (redirecting_ && transport_ == Transport::kUdp && !direct_hello_) {
         // straight to HELLO with the ticket: no CONNECT / CHALLENGE / proof-of-work round
         direct_hello_ = true;
+        direct_fallback_ = false;
         std::memset(chal_.salt, 0, sizeof chal_.salt);
         chal_.bucket = 0;
         chal_.difficulty = 0;
@@ -273,9 +274,9 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
             if (phase_ != Phase::kHello) break;
             [[fallthrough]];
         case Phase::kHello:
-            if (redirecting_ && direct_hello_ && now - phase_started_ > 1500 && first_connect_sent_ == 0) {
+            if (redirecting_ && direct_hello_ && !direct_fallback_ && now - phase_started_ > 1500) {
                 // no answer to the direct HELLO (an older server?): the normal handshake with the ticket
-                first_connect_sent_ = 1;
+                direct_fallback_ = true;
                 phase_ = Phase::kConnect;
                 phase_at_ = 0;
                 phase_started_ = now;

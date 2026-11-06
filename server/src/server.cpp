@@ -454,7 +454,7 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
         if (ticket) {
             metrics_.handovers_in++;
             if (std::getenv("WWHD_ONLINE_DEBUG_HANDOVER"))
-                log("handover: player " + std::to_string(ticket->who.id) + " arrived on worker " + std::to_string(me_) +
+                log(std::to_string(now) + " handover: player " + std::to_string(ticket->who.id) + " arrived on worker " + std::to_string(me_) +
                     " from worker " + std::to_string(ticket->from) + (h.resume ? "" : " (no ticket?)"));
             // the newest pose known here: the ticket's, or a ghost of the player relayed since (newer, as it kept
             // sending to its old worker until now): viewers never get a pose older than one they already have

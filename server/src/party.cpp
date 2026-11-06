@@ -153,7 +153,10 @@ void Server::party_join(Party& p, Session& s, uint32_t now) {
     p.arrived[s.key_hash] = {PartyPlace{s.where.stage, s.where.room}, now};
     // a party coming back after a restart may have its leader still away: the first member back leads, so no state
     // ever says "leader 0" while someone is online
-    if (!online_member(p.leader))
+    // (not while the leader is on its way here with the party: a handover between workers keeps the leader)
+    bool leader_coming = std::any_of(tickets_.begin(), tickets_.end(),
+                                     [&](const auto& t) { return t.second.who.key_hash == p.leader; });
+    if (!online_member(p.leader) && !leader_coming)
         for (uint64_t kh : p.members)
             if (online_member(kh)) {
                 p.leader = kh;
@@ -505,6 +508,9 @@ void Server::party_elect_leader(Party& p, uint32_t now) {
         return t && now - t->chan.last_heard_ms() <= uint32_t(cfg_.runner_drop_ms);
     };
     if (present(p.leader)) return;
+    // the leader is on its way here (a handover between workers): it stays the leader
+    if (std::any_of(tickets_.begin(), tickets_.end(), [&](const auto& t) { return t.second.who.key_hash == p.leader; }))
+        return;
     for (uint64_t kh : p.members)
         if (kh != p.leader && present(kh)) {
             p.leader = kh;

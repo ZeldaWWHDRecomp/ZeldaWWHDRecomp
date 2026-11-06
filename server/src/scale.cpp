@@ -605,7 +605,7 @@ void Server::redirect(Session& s, int target, const uint8_t ticket[32], uint32_t
     metrics_.handovers_out++;
     static const bool debug = std::getenv("WWHD_ONLINE_DEBUG_HANDOVER") != nullptr;
     if (debug)
-        log("handover: player " + std::to_string(s.id) + " at " + std::to_string(int(s.head.x)) + " " +
+        log(std::to_string(now) + " handover: player " + std::to_string(s.id) + " at " + std::to_string(int(s.head.x)) + " " +
             std::to_string(int(s.head.z)) + " from worker " + std::to_string(me_) + " to worker " + std::to_string(target));
 }
 
