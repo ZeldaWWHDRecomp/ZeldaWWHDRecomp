@@ -11,6 +11,9 @@ what is on `devel` and not released yet (also in the
   patches: All (the original, default), Far 4000, Medium 3000 or Near 2000 units from the camera. In thick grass
   like Forest Haven it saves a lot of render-thread time on slower PCs (46 → 60 fps on an i3 laptop at Near); palms,
   small plants and nearby grass always stay.
+- **Vulkan: less render-thread CPU per draw** (#400, thanks @DaniXK-96). Faster shader lookups, buffers that keep their
+  size between frames and fewer copies for chunked draws: about 3% less render-thread time on a laptop (i3 + 920MX),
+  the same picture.
 - **Fixed: the controller stopped working after clicking the GamePad window** (#406, thanks @KaitoCrisHub for the
   report). Controllers now keep driving the game while the TV window or the GamePad window is in front (on Windows the
   focus could stay empty when it moved between the game's own windows). The existing option is now called
