@@ -4,6 +4,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <ctime>
 
@@ -781,7 +782,10 @@ void Server::on_app(Session& s, const Delivered& m, uint32_t now) {
     w.u16(s.id);
     w.u8(h.type);
     w.bytes(body, bn);
+    static const bool debug = std::getenv("WWHD_ONLINE_DEBUG_APP") != nullptr;
+    if (debug) log("app " + std::to_string(h.type) + " from " + std::to_string(s.id) + " target " + std::to_string(h.target));
     auto deliver = [&](Session& to) {
+        if (debug) log("  to " + std::to_string(to.id) + (to.online ? "" : " (offline)"));
         if (&to == &s || !to.online) return;
         if (m.reliable)
             to.chan.send_reliable(kMsgAppFrom, out);
