@@ -137,6 +137,14 @@ void Server::party_join(Party& p, Session& s, uint32_t now) {
     s.party = p.id;
     p.empty_since = 0;
     p.arrived[s.key_hash] = {PartyPlace{s.where.stage, s.where.room}, now};
+    // a party coming back after a restart may have its leader still away: the first member back leads, so no state
+    // ever says "leader 0" while someone is online
+    if (!online_member(p.leader))
+        for (uint64_t kh : p.members)
+            if (online_member(kh)) {
+                p.leader = kh;
+                break;
+            }
     party_send_state(p);
     party_send_team(p, s);  // joining or loading while in a party: the game takes the team state
     // the runner table so far
