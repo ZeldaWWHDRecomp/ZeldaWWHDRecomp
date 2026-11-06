@@ -75,7 +75,7 @@ struct Link {
     uint32_t next = 1, got = 0, sent_got = ~0u, last_ctrl = 0, heard = 0, their_t = 0, their_t_at = 0;
     int ping = -1;
 };
-struct Player { bool on = false; std::string name; int tunic = 0; };
+struct Player { bool on = false; std::string name; int tunic = 0; sockaddr_in addr{}; };  // addr: where the host reaches it
 
 socket_t g_sock = kNoSocket;
 Role g_role = Role::kOff;
@@ -113,11 +113,17 @@ void control(Link& l) {
 
 void queue(Link& l, Msg type, uint8_t origin, const std::string& body) { l.out.push_back({l.next++, type, origin, body}); }
 
+// a player for the others: {u8 id, u8 tunic, u32 ip, u16 port (network order; 0: the host itself), name}. The
+// addresses let the players take over when the host goes (migrate())
 std::string player_line(int id) {
     std::string b(1, (char)id);
-    b += (char)g_player[id].tunic, b += g_player[id].name;
+    b += (char)g_player[id].tunic;
+    const sockaddr_in& a = id ? g_link[id].addr : sockaddr_in{};
+    b.append((const char*)&a.sin_addr.s_addr, 4), b.append((const char*)&a.sin_port, 2);
+    b += g_player[id].name;
     return b;
 }
+bool g_refused = false;  // guest: the host refused this game (no taking over)
 
 void drop(int id, const char* why, Handler& h) {
     if (!g_link[id].on && !g_player[id].on) return;
@@ -195,8 +201,10 @@ void take(int li, const uint8_t* d, size_t n, Handler& h) {
         } else if (type == kWelcome && len >= 2) {
             g_me = b[0], g_player[g_me] = {true, g_my_name, b[1] % 4}, g_player[0].on = true;
             mods::trace("coop: welcomed as player %d", g_me);
-        } else if (type == kJoined && len >= 2) {
-            g_player[b[0] % kMaxPlayers] = {true, std::string((const char*)b + 2, len - 2), b[1] % 4};
+        } else if (type == kJoined && len >= 8) {
+            Player& p = g_player[b[0] % kMaxPlayers];
+            p = {true, std::string((const char*)b + 8, std::min<size_t>(len - 8, 31)), b[1] % 4};
+            p.addr.sin_family = AF_INET, memcpy(&p.addr.sin_addr.s_addr, b + 2, 4), memcpy(&p.addr.sin_port, b + 6, 2);
             h.joined(b[0] % kMaxPlayers);
         } else if (type == kLeft && len >= 1) {
             drop(b[0] % kMaxPlayers, "left", h);
@@ -206,6 +214,16 @@ void take(int li, const uint8_t* d, size_t n, Handler& h) {
             h.message(origin, type, b, len);
         }
     }
+}
+
+std::string hello_body() {
+    std::string b(10, '\0');
+    // (test aid: WWHD_COOP_PROTO, another protocol in the hello, as an older or newer build would send)
+    const uint16_t proto = getenv("WWHD_COOP_PROTO") ? (uint16_t)atoi(getenv("WWHD_COOP_PROTO")) : (uint16_t)kProto;
+    const uint64_t game = game_hash();
+    memcpy(&b[0], &proto, 2), memcpy(&b[2], &game, 8);
+    b += (char)g_my_tunic, b += g_my_name;
+    return b;
 }
 
 int link_of(const sockaddr_in& a) {
@@ -260,7 +278,7 @@ bool start(Role r, const std::string& addr, int port, const std::string& my_name
         close_socket(g_sock), g_sock = kNoSocket;
         return false;
     }
-    g_role = r, g_me = 0, g_my_name = my_name, g_my_tunic = my_tunic % 4, g_next_tick = now_ms(), g_left_why.clear();
+    g_role = r, g_me = 0, g_my_name = my_name, g_my_tunic = my_tunic % 4, g_next_tick = now_ms(), g_left_why.clear(), g_refused = false;
     for (Player& p : g_player) p = Player{};
     if (r == Role::kHost) {
         g_player[0] = {true, my_name, g_my_tunic};
@@ -276,13 +294,7 @@ bool start(Role r, const std::string& addr, int port, const std::string& my_name
         Link& l = g_link[0];
         l.on = true, memcpy(&l.addr, res->ai_addr, sizeof l.addr), l.heard = now_ms();
         freeaddrinfo(res);
-        std::string b(10, '\0');
-        // (test aid: WWHD_COOP_PROTO, another protocol in the hello, as an older or newer build would send)
-        const uint16_t proto = getenv("WWHD_COOP_PROTO") ? (uint16_t)atoi(getenv("WWHD_COOP_PROTO")) : (uint16_t)kProto;
-        const uint64_t game = game_hash();
-        memcpy(&b[0], &proto, 2), memcpy(&b[2], &game, 8);
-        b += (char)g_my_tunic, b += my_name;
-        queue(l, kHello, 0, b);
+        queue(l, kHello, 0, hello_body());
         g_status = "Joining " + addr + ":" + std::to_string(port);
     }
     mods::trace("coop: %s (protocol %d, game %016llX): %s", r == Role::kHost ? "host" : "guest", kProto, (unsigned long long)game_hash(), g_status.c_str());
@@ -314,6 +326,39 @@ void add_state(uint8_t kind, const std::string& more) {
     if (s.second.size() + more.size() <= 1000) s.second += more;  // (a late tick: the newest dropped, under the packet size)
 }
 
+// the host gone with other guests still there (host migration over the direct transport): the guest with the lowest
+// number becomes the host on its own socket (its port is the one the old host knew); the others join it at the
+// address the old host told them. Each keeps playing where it is; the new host sends the team state as at any join
+bool migrate(Handler& h) {
+    int next = 0;
+    for (int i = 1; i < kMaxPlayers && !next; i++) if (g_player[i].on) next = i;
+    if (!next) return false;
+    const std::string why = g_left_why;
+    const std::string old_name = g_player[0].name;
+    g_left_why.clear();
+    h.left(0, ("host " + old_name + " left: " + why).c_str());  // (the old host's puppet gone; the session stays on)
+    if (next == g_me) {
+        mods::trace("coop: the host (%s) is gone: this game hosts now", why.c_str());
+        g_role = Role::kHost, g_me = 0;
+        for (Link& l : g_link) l = Link{};
+        for (Player& p : g_player) p = Player{};
+        g_player[0] = {true, g_my_name, g_my_tunic};
+        g_status = "Hosting (took over from " + old_name + ")";
+        return true;
+    }
+    const sockaddr_in to = g_player[next].addr;
+    mods::trace("coop: the host (%s) is gone: joining player %d (%s) at %s:%d", why.c_str(), next, g_player[next].name.c_str(),
+                inet_ntoa(to.sin_addr), ntohs(to.sin_port));
+    g_me = 0;
+    for (Link& l : g_link) l = Link{};
+    for (Player& p : g_player) p = Player{};
+    Link& l = g_link[0];
+    l.on = true, l.addr = to, l.heard = now_ms() + 3000;  // (the new host may notice the old one gone up to a few s later)
+    queue(l, kHello, 0, hello_body());
+    g_status = "Joining the new host";
+    return true;
+}
+
 void poll(Handler& h) {
     if (g_sock == kNoSocket) return;
     const uint32_t now = now_ms();
@@ -327,7 +372,7 @@ void poll(Handler& h) {
         const size_t dn = n - sizeof hd;
         if (hd.magic != kMagic) continue;
         if (hd.kind == kRefuse) {
-            g_left_why = std::string((const char*)d, dn);
+            g_left_why = std::string((const char*)d, dn), g_refused = true;
             mods::trace("coop: the host refused: %s", g_left_why.c_str());
             continue;
         }
@@ -356,10 +401,11 @@ void poll(Handler& h) {
     // gone: 5 s of nothing (test aid: WWHD_COOP_TIMEOUT, in ms), or (guest) the host said so
     static const uint32_t kTimeout = getenv("WWHD_COOP_TIMEOUT") ? (uint32_t)strtoul(getenv("WWHD_COOP_TIMEOUT"), nullptr, 10) : 5000;
     for (int i = 0; i < kMaxPlayers; i++)
-        if (g_link[i].on && now - g_link[i].heard > kTimeout) {
+        if (g_link[i].on && (int32_t)(now - g_link[i].heard) > (int32_t)kTimeout) {
             if (g_role == Role::kGuest) g_left_why = g_me ? "Connection lost" : "No answer from the host";
             else drop(i, "Connection lost", h);
         }
+    if (g_role == Role::kGuest && !g_left_why.empty() && !g_refused && g_me && migrate(h)) return;
     if (g_role == Role::kGuest && !g_left_why.empty()) {
         const std::string why = g_left_why;
         stop(why.c_str());

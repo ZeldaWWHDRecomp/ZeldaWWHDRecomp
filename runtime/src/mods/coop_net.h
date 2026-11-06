@@ -13,10 +13,11 @@ struct Cpu;
 
 namespace mods::coop::net {
 
-// kProto: this port's co-op protocol (the fork's 3 plus the game-data check in the hello); a game of another protocol
+// kProto: this port's co-op protocol (the fork's 3, plus the game-data check in the hello (4), plus the players'
+// addresses for host migration (5)); a game of another protocol
 // is refused. Players meet by protocol and game data (ss::game_data_id), not by executable: a recompiled and a decomp
 // build of the same game play together
-constexpr int kProto = 4, kPort = 7777, kMaxPlayers = 4;
+constexpr int kProto = 5, kPort = 7777, kMaxPlayers = 4;
 
 // the reliable messages (the game's side reads them through on_message)
 enum Msg : uint8_t {

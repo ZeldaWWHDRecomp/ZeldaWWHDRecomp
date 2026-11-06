@@ -2828,6 +2828,10 @@ add_executable(cannon_mouse_test runtime/tools/cannon_mouse_test.cpp runtime/src
 target_include_directories(cannon_mouse_test PRIVATE runtime/src runtime/include)
 target_compile_options(cannon_mouse_test PRIVATE -UNDEBUG)
 add_test(NAME cannon_mouse COMMAND cannon_mouse_test)
+# online co-op's direct UDP transport, in several processes on 127.0.0.1 (refusal, host migration, malformed packets)
+add_executable(coop_net_test runtime/tools/coop_net_test.cpp runtime/src/mods/coop_net.cpp)
+target_include_directories(coop_net_test PRIVATE runtime/src runtime/include)
+add_test(NAME coop_net COMMAND coop_net_test)
 
 add_executable(camera_swipe_test runtime/tools/camera_swipe_test.cpp)
 target_include_directories(camera_swipe_test PRIVATE runtime/src)
