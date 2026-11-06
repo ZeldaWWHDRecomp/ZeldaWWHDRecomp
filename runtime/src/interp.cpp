@@ -780,7 +780,20 @@ extern "C" void f_025D4654(Cpu* c);
 // 30 fps game, which did not draw them, does not have. Their memory is saved before such a draw and
 // put back at the start of the next pass (after the pass has been painted), except the links of their
 // packets that a draw list still holds.
+// The same holds for actors the logic pass did draw: their draw runs once per step at 30 fps, on every
+// pass with interpolation, and some draws hand state on to the next execute. The grass cutter
+// (daNpc_Ym1_c::_draw, 022F8F30; Outset) moves mKariFlag (+0xA0B, set through the mass area check
+// after the executes) into +0xA0C and clears it: a second draw in the step cleared +0xA0C, the next
+// execute (kari_1) saw no grass and stopped cutting; the cut sound, its particle and the random
+// numbers after it went missing at 60 fps, and every random number after that differed. Every actor
+// a pass without logic draws is therefore kept and put back, so the next logic step sees what the
+// 30 fps game's single draw left. debug: WWHD_INTERP_KEEP_DRAWN=0 keeps only
+// the actors the logic pass did not draw (as before)
 namespace interp {
+bool keep_drawn_on() {
+    static const bool off = getenv("WWHD_INTERP_KEEP_DRAWN") && !atoi(getenv("WWHD_INTERP_KEEP_DRAWN"));
+    return !off;
+}
 struct ActorKeep { uint32_t actor; std::vector<uint32_t> words; };
 // the process manager's part of an actor (f_pc_base.h, f_op_actor.h): base_process_class (+0 .. +0xB8:
 // state, layer, line, delete and priority tags), leafdraw_class (.. +0xC4: draw method and priority),
@@ -811,7 +824,7 @@ void actor_keep(uint32_t actor) {
         if (k.actor == actor) return;
     const uint32_t prof = ld32(actor + 0x10);
     uint32_t size = prof >= 0x10000000 && prof < 0x50000000 ? ld32(prof + 0x10) : 0;
-    if (size < 0x3AC || size > 0x20000 || g_actor_kept.size() >= 512) return;
+    if (size < 0x3AC || size > 0x20000 || g_actor_kept.size() >= 4096) return;
     g_actor_kept.push_back({actor, std::vector<uint32_t>(size / 4)});
     memcpy(g_actor_kept.back().words.data(), ppc_ptr(actor), size & ~3u);
 }
@@ -2366,7 +2379,7 @@ extern "C" void hook_025499A0(Cpu* c) {
     f_025499A0_orig(c);
 }
 
-namespace interp { bool exact_cull_on(); void edge_draw(const Cpu& call, Cpu* c, uint32_t actor); void actor_keep(uint32_t actor); }
+namespace interp { bool exact_cull_on(); bool keep_drawn_on(); void edge_draw(const Cpu& call, Cpu* c, uint32_t actor); void actor_keep(uint32_t actor); }
 // fopAc_Draw(fopAc_ac_c*): one-shot "not drawn this frame" requests (fopAcStts_NODRAW_e) made by
 // the step's logic hold for all passes of the step (interp_nodraw.h; issue #126: in conversations
 // the talk camera hides Link on logic frames only, so he flickered at 60/120/240 fps).
@@ -2384,12 +2397,14 @@ extern "C" void hook_025D4654(Cpu* c) {
     const bool keep_condition = interp::enabled() && interp::g_hold && interp::exact_cull_on();
     const uint32_t condition = keep_condition ? ld32(actor + 0x2E4) : 0;
     const Cpu saved = *c;
-    const bool kept = keep_condition && (condition & 0x04);
+    // (kept: not drawn by the step's logic pass; or drawn by it, keep_drawn_on: its draw's hand-offs to
+    // the next execute happen once per step, as at 30 fps)
+    const bool kept = keep_condition && ((condition & 0x04) || interp::keep_drawn_on());
     // (saved before the step's one-shot no-draw request is made again, interp_nodraw.h before_draw;
     // issue #283) debug: WWHD_INTERP_NODRAW=0 turns the requests off
     static const bool off = getenv("WWHD_INTERP_NODRAW") && !atoi(getenv("WWHD_INTERP_NODRAW"));
     const uint32_t want = g_nodraw.before_draw(actor, status_in, interp::g_hold, interp::g_logic_steps, interp::enabled() && !off, kept,
-                                               [actor] { interp::actor_keep(actor); });  // (not drawn by the step's logic pass)
+                                               [actor] { interp::actor_keep(actor); });
     if (want != status_in) {
         st32(actor + interp::OneShotNoDraw::kStatus, want);
         static int trace = getenv("WWHD_INTERP_NODRAW_TRACE") ? atoi(getenv("WWHD_INTERP_NODRAW_TRACE")) : 0;
