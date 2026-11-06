@@ -59,6 +59,7 @@
 #include "imgui.h"
 #include "trace.h"
 #include "hostui.h"
+#include "../mods/coop_emotes.h"
 #include "../mods/link_poses.h"
 #include "../mods/game_progress_host.h"
 #include "../mods/achievements_host.h"
@@ -3542,6 +3543,7 @@ void activate_shortcut(int action, KeyOrigin origin) {
     hostui::post([action] {
         if (action >= kSave1 && action <= kSave5) { ss::request_save(action - kSave1 + 1); return; }
         if (action >= kLoad1 && action <= kLoad5) { ss::request_load(action - kLoad1 + 1); return; }
+        if (action >= kEmote1 && action <= kEmote5) { mods::coop::emotes::mine(mods::coop::emotes::kEmotes[action - kEmote1].id); return; }
         switch (action) {
         case kFullscreen: hostui::set_fullscreen(!hostui::fullscreen()); break;
         case kPhoto: screenshot::request(); break;

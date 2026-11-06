@@ -105,10 +105,10 @@ deck), so it works once you have the King of Red Lions.
 
 ## Emotes
 
-While you're online, pick an emote under **Emotes** in Settings > Online, or on the Online page of the pause
-menu: Wave, Cheer, Yes, Surprised or Look around. The other players see your Link do it. Players near you who
+While you're online, press **Alt+1** to **Alt+5** on the keyboard, or pick an emote under **Emotes** in
+Settings > Online or on the Online page of the pause menu: Wave, Cheer, Yes, Surprised or Look around. The other players see your Link do it. Players near you who
 aren't in your party see it too. Your own Link doesn't move. A small bubble over his head shows the emote while
-the others see it. You can play one emote a second. If you walk away, the emote stops. The animations come from
+the others see it. You can change the keys in Settings > Controls, under Online. You can play one emote a second. If you walk away, the emote stops. The animations come from
 your own game files.
 
 ## What stays yours

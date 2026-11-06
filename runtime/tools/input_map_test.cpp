@@ -20,6 +20,7 @@
 #include "file_select_quit.h"
 #include "platform/touch_face.h"
 #include "overlay/settings_shortcut.h"
+#include "mods/coop_emotes.h"
 #include "overlay/binding_capture.h"
 #include "platform/android_controller.h"
 #include "platform/touch_buttons.h"
@@ -1046,6 +1047,36 @@ static void test_settings_shortcut() {
     CHECK(opened == 0.5);
 }
 
+// online co-op's emote keys (GAPS C22): Alt+1..5 by default, one per emote in coop_emotes.h's order, no clash with
+// the game's keys (1-4 are the D-pad: an Alt shortcut takes the key first) or another shortcut, rebindable and saved
+static void test_emote_keys() {
+    auto m = Mapping::defaults();
+    CHECK(kEmote5 - kEmote1 + 1 == mods::coop::emotes::kCount);
+    for (int e = 0; e < mods::coop::emotes::kCount; ++e) {
+        const int a = kEmote1 + e;
+        CHECK(std::string(shortcut_info(a).group) == "Online");
+        CHECK(std::string(shortcut_info(a).name) == std::string("Emote: ") + mods::coop::emotes::kEmotes[e].name);
+        static const int digit[5] = {kVK_ANSI_1, kVK_ANSI_2, kVK_ANSI_3, kVK_ANSI_4, kVK_ANSI_5};
+        CHECK(m.shortcuts[a].keys[0] == (ShortcutKey{digit[e], kModAlt}));
+        CHECK(m.shortcuts[a].keys[0].mods == kModAlt && !m.shortcuts[a].button);
+        CHECK(!shortcut_conflict(m, a));
+        CHECK(shortcut_for_key(m, m.shortcuts[a].keys[0].code, kModAlt) == a);
+    }
+    // the plain digits stay the game's (D-pad 1-4) and 5 nothing's: no emote without Alt
+    CHECK(shortcut_for_key(m, kVK_ANSI_1, 0) != kEmote1 && shortcut_for_key(m, kVK_ANSI_5, 0) != kEmote5);
+    CHECK(m.keys[kDUp][0] == kVK_ANSI_1);
+    // rebound and saved: the new key comes back from controls.json, the old one is free
+    m.shortcuts[kEmote2].keys[0] = {kVK_ANSI_T, 0};
+    CHECK(!shortcut_conflict(m, kEmote2));
+    Mapping out;
+    CHECK(from_json(to_json(m), out));
+    CHECK(out.shortcuts[kEmote2].keys[0] == (ShortcutKey{kVK_ANSI_T, 0}));
+    CHECK(shortcut_for_key(out, kVK_ANSI_T, 0) == kEmote2 && shortcut_for_key(out, kVK_ANSI_2, kModAlt) == -1);
+    // a key a game input uses is reported (plain J is the game's B)
+    m.shortcuts[kEmote3].keys[0] = {kVK_ANSI_J, 0};
+    CHECK(shortcut_conflict(m, kEmote3));
+}
+
 static void test_shortcuts() {
     auto m = Mapping::defaults();
     CHECK(shortcut_for_key(m, kVK_F6, 0) == kLoad1);
@@ -1620,6 +1651,7 @@ int main() {
         }
     }
     test_shortcuts();
+    test_emote_keys();
     for (int mode : {touch_buttons::Automatic, touch_buttons::AlwaysShow, touch_buttons::Hide})
         for (bool controller : {false, true}) {
             CHECK(touch_buttons::visible(mode, controller, false) ==

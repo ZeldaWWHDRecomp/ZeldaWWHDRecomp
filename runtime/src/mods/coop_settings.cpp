@@ -15,6 +15,7 @@
 #include "coop_sync.h"
 #include "game_settings.h"
 #include "imgui.h"
+#include "../input_map.h"
 #include "../overlay/extensions.h"
 #include "../overlay/hostui.h"
 #include "../overlay/text_entry.h"
@@ -206,10 +207,13 @@ void draw_tab() {
                 if (ImGui::Button(("Go to " + net::name(id)).c_str())) hostui::post([id] { sync::go_to(id); });
             }
         // emotes (C22): the others see this player's Link play it; here a bubble over him names it
-        ImGui::TextUnformatted("Emotes");
+        ImGui::TextUnformatted("Emotes (keys: Settings > Controls, Online)");
+        const input_map::Mapping& keys = input_map::current();
         for (int e = 0; e < emotes::kCount; e++) {
             if (e) ImGui::SameLine();
-            if (ImGui::Button(emotes::kEmotes[e].name)) emotes::mine(emotes::kEmotes[e].id);
+            const input_map::ShortcutKey k = e < 5 ? keys.shortcuts[input_map::kEmote1 + e].keys[0] : input_map::ShortcutKey{};
+            const std::string label = std::string(emotes::kEmotes[e].name) + (k.code == input_map::kNoKey ? "" : " (" + input_map::shortcut_key_label(k) + ")");
+            if (ImGui::Button(label.c_str())) emotes::mine(emotes::kEmotes[e].id);
         }
     }
     ImGui::Spacing();
@@ -362,7 +366,7 @@ void register_items() {
         Item it;
         it.id = "online.emote", it.tab = "online", it.label = "Emote", it.kind = Kind::Choice;
         for (const emotes::Emote& e : emotes::kEmotes) it.choices.push_back(e.name);
-        it.help = "Left and right play an emote: the other players see your Link do it.";
+        it.help = "Left and right play an emote: the other players see your Link do it. On a keyboard: Alt+1 to Alt+5 (change them in Settings > Controls, Online).";
         it.get = [] { return (float)g_emote_choice; };
         it.set = [](float v) {
             g_emote_choice = std::clamp((int)(v + 0.5f), 0, emotes::kCount - 1);

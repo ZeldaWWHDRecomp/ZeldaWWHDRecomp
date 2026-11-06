@@ -198,6 +198,13 @@ static const ShortcutInfo kShortcuts[kShortcutCount] = {
     {"Aniso", "Anisotropic filtering", "Graphics", {kVK_ANSI_N}, {}},
     {"Interpolation", "Frame interpolation", "Graphics", {kVK_ANSI_6}, {}},
     {"FXAA", "FXAA", "Graphics", {kVK_ANSI_8}, {}},
+    // online co-op's emotes (mods/coop_emotes.h kEmotes, in its order; the others see your Link play it): Alt+1..5,
+    // which nothing else uses (Alt shortcuts take the key before the game's D-pad on 1-4 sees it)
+    {"Emote1", "Emote: Wave", "Online", {kVK_ANSI_1, kModAlt}, {}},
+    {"Emote2", "Emote: Cheer", "Online", {kVK_ANSI_2, kModAlt}, {}},
+    {"Emote3", "Emote: Yes", "Online", {kVK_ANSI_3, kModAlt}, {}},
+    {"Emote4", "Emote: Surprised", "Online", {kVK_ANSI_4, kModAlt}, {}},
+    {"Emote5", "Emote: Look around", "Online", {kVK_ANSI_5, kModAlt}, {}},
     {"PiP", "GamePad picture-in-picture", "Display and audio", {}, {}},
     {"Performance", "Performance overlay", "Display and audio", {}, {}},
     {"Mute", "Mute", "Display and audio", {}, {}},
