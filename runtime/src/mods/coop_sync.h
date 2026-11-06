@@ -26,6 +26,7 @@ struct Settings {
     int character = 0;                 // who this game plays as (coop_pose.h's own_character)
     bool voice = false;                // proximity voice chat (coop_voice.h); off until chosen, as it asks for the microphone
     bool on = false;                   // online switched on by the player (mod.coop.enabled; WWHD_COOP in tests)
+    int strangers = 0;                 // how players outside the party look (presence): 0 like any Link, 1 see-through
     bool stay_together = false;        // the fork's way (a party option): the guest plays in the host's world, its saves
                                        // off, asked before going where the host isn't, back to the title when the host goes
     bool notice_ok = false;            // the privacy notice accepted (its version, online.notice_accepted)
@@ -37,7 +38,8 @@ constexpr const char* kNotice =
     "which can reveal your approximate location. Only play with people you trust. Nothing is sent until you switch "
     "online co-op on, and it stops when you switch it off.";
 Settings settings();
-void set_settings(const Settings& s);  // the menu (any thread); a running session restarts with them
+void set_settings(const Settings& s);
+void save_settings(const Settings& s);  // the same, and kept (the Settings window, the pause menu's page: main thread)  // the menu (any thread); a running session restarts with them
 const char* status();
 constexpr const char* kTunics[] = {"Green", "Red", "Blue", "Purple"};
 

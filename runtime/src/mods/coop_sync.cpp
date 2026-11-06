@@ -449,6 +449,7 @@ Settings settings() {
         if (hostui::get("mod.coop.voice", v)) g_set.voice = atoi(v.c_str()) != 0;
         if (hostui::get("mod.coop.enabled", v)) g_set.on = atoi(v.c_str()) != 0;
         if (hostui::get("mod.coop.stay_together", v)) g_set.stay_together = atoi(v.c_str()) != 0;
+        if (hostui::get("online.strangers", v)) g_set.strangers = atoi(v.c_str()) == 1;
         if (hostui::get("online.notice_accepted", v)) g_set.notice_ok = v == kNoticeVersion;
         if (hostui::get("mod.coop.character", v)) g_set.character = atoi(v.c_str()) & 3;
         // (tests: WWHD_COOP=host[:port] or join:<address>[:port], WWHD_COOP_NAME, WWHD_COOP_TUNIC 0-3)
@@ -479,6 +480,17 @@ void set_settings(const Settings& s) {
     if (s.role != g_set.role || s.addr != g_set.addr || s.port != g_set.port || s.name != g_set.name || s.tunic != g_set.tunic)
         g_set_gen++;
     g_set = s;
+}
+
+void save_settings(const Settings& s) {
+    set_settings(s);
+    hostui::set("mod.coop.enabled", s.on ? "1" : "0");
+    hostui::set("online.notice_accepted", s.notice_ok ? kNoticeVersion : "");
+    hostui::set("mod.coop.choice", std::to_string(s.role));
+    hostui::set("mod.coop.addr", s.addr), hostui::set("mod.coop.port", std::to_string(s.port));
+    hostui::set("mod.coop.name", s.name), hostui::set("mod.coop.tunic", std::to_string(s.tunic));
+    hostui::set("mod.coop.stay_together", s.stay_together ? "1" : "0");
+    hostui::set("online.strangers", std::to_string(s.strangers));
 }
 
 const char* status() { return g_status.c_str(); }

@@ -31,19 +31,25 @@ when you switch it off.
 - The normal build and the decomp build can play together.
 - A player with another game or another co-op version is refused with a message saying why.
 
-## How to play (this development version)
+## How to play
 
-There is no Settings page for online co-op yet. In this version it is switched on when the game is
-started:
+Open **Settings > Online** (Esc, or hold Select on a controller), or the **Online** tab of the settings page in the
+pause menu.
 
-- **Host:** `WWHD_COOP=host` (UDP port 7777; another port: `WWHD_COOP=host:7800`).
-- **Join:** `WWHD_COOP=join:<the host's address>` (an IP address or a name, e.g. a VPN name;
-  another port: `join:<address>:7800`).
-- `WWHD_COOP_NOTICE_OK=1`: you accept the privacy notice above. Without it nothing is sent.
-- `WWHD_COOP_NAME=<your name>`, `WWHD_COOP_TUNIC=0..3` (green, red, blue, purple).
+1. Read the privacy notice and accept it.
+2. Switch **Online co-op** on.
+3. **Host on this computer**, or **Join a friend** and enter the host's address (an IP address or a name, e.g.
+   a VPN name such as a Tailscale name).
+4. Pick your name and tunic colour.
 
-The host's UDP port must be reachable from the other players. On a VPN such as Tailscale nothing else
-is needed.
+The host's UDP port (7777 unless you change it) must be reachable from the other players. On a VPN such as
+Tailscale nothing else is needed. The status line shows who is connected; **Go to** takes you to a friend.
+
+**Stay together** (off by default) plays the fork's way: you play in the host's world, your own saves are off,
+going somewhere the host isn't asks the host first, and you go back to the title screen when the host leaves.
+
+For scripted tests the environment variables `WWHD_COOP=host[:port]` or `WWHD_COOP=join:<address>[:port]`,
+`WWHD_COOP_NOTICE_OK=1`, `WWHD_COOP_NAME` and `WWHD_COOP_TUNIC=0..3` do the same.
 
 ## What is shared
 
@@ -64,7 +70,8 @@ you. Each player goes where they like.
 
 ## When a player leaves
 
-The others play on. If the host leaves, the other players keep playing in their own Quest Logs.
+The others play on. If the host leaves, one of the other players becomes the host and the rest join them;
+with only two players, the one left keeps playing in their own Quest Log.
 
 ## Limits
 

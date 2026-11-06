@@ -1,5 +1,6 @@
 // The common settings list (game_settings.h).
 #include "game_settings.h"
+#include "coop_settings.h"
 #include "game_progress_host.h"
 #include "achievements_host.h"
 #include "achievements_page.h"
@@ -47,7 +48,7 @@ std::vector<Item>& registry() {
 }
 std::map<std::string, float> g_pending;  // id -> value posted, not yet applied (g_mu)
 
-const char* const kTabOrder[] = {"camera", "controls", "screen", "graphics", "game", "mods"};
+const char* const kTabOrder[] = {"camera", "controls", "screen", "graphics", "game", "online", "mods"};
 
 // a built-in mod's switch (mods/manager.cpp: the same entry the Mods tab switches)
 Item builtin_toggle(const char* tab, const char* mod_id, const char* label, const char* help) {
@@ -116,6 +117,7 @@ std::string tab_label(const std::string& tab) {
     if (tab == "screen") return "Screen";
     if (tab == "graphics") return "Graphics";
     if (tab == "game") return "Game";
+    if (tab == "online") return "Online";
     if (tab == "mods") return "Mods";
     return tab;
 }
@@ -853,6 +855,7 @@ void register_builtin() {
 #endif
     register_graphics();
     register_game();
+    mods::coop::settings_ui::register_page_items();  // the Online tab (coop_settings.cpp)
     register_mod_options();
 }
 
