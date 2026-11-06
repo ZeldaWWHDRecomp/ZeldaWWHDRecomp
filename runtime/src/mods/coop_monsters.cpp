@@ -46,6 +46,20 @@ const uint32_t kPlay = GD(0x1046F0B0), kStage = kPlay + 0x5134, kActorQueue = GD
 // +0xA0 and +0xA4, the way it came +0xC0, where +0xCC, mStts +0x44 (its actor +0xC, damage +0x16), its box +0xF8; a
 // blow's type +0x10, damage +0x14, special +0x6F. Link's body cylinder is at +0x765C
 const uint32_t kCcS = kPlay + 0x26A4;
+// (C18) the same offsets by name, from the WWHD decomp's layouts (wwhd_src include/SSystem/SComponent/c_cc_s.h
+// cCcSState, include/d/d_cc_d.h dCcD_GObjInf / dCcD_Stts, whose WWHD_OFFSET checks hold them; d_com_inf_game.h PLAY_CCS)
+namespace ccs {  // cCcSState
+constexpr uint32_t mpObjTg = 0x400, mObjTgCount = 0x2804, mObjCount = 0x280C, kTgMax = 0x300;
+}
+namespace obj {  // dCcD_GObjInf
+constexpr uint32_t mObjTg_mRPrm = 0x1C, mObjTg_mHitObj = 0x20, mStts = 0x44, mGObjTg = 0x94;
+constexpr uint32_t tg_mRPrm = mGObjTg + 0x04, tg_mApid = mGObjTg + 0x0C, tg_mAc = mGObjTg + 0x10, tg_mRVec = mGObjTg + 0x2C,
+                   tg_mHitPos = mGObjTg + 0x38;
+constexpr uint32_t kShapeAab = 0xF8;  // sizeof(dCcD_GObjInf): the shape attribute's box follows (min, then max +0xC)
+}
+namespace status {  // dCcD_Stts
+constexpr uint32_t mp_actor = 0x0C, m_dmg = 0x16;
+}
 
 struct Rec { float p[3]; int16_t yaw, shape; int8_t hp; };
 struct Copy { int8_t hp = -128; bool dying = false; int dying_steps = 0; };
@@ -129,7 +143,7 @@ void dead_from(const uint8_t* d, size_t n) {
 }
 
 void before(uint32_t a) {
-    g_tg_was = ld32(kCcS + 0x2804), g_hp_was = ld8(a + kHealth);
+    g_tg_was = ld32(kCcS + ccs::mObjTgCount), g_hp_was = ld8(a + kHealth);
     const auto h = g_hits.find(key(a));
     const auto b = g_body.find(ld32(a + 4));
     const uint32_t link = ld32(kPlay + 0x5B34);
@@ -142,23 +156,43 @@ void before(uint32_t a) {
     const int dmg = std::min(h->second.dmg == kKill ? std::max<int>((int8_t)g_hp_was, 1) : h->second.dmg, 126);
     st32(blow + 0x10, 2), st8(blow + 0x14, (uint8_t)dmg), st8(blow + 0x6F, 0);  // AT_TYPE_SWORD, no special
     const uint32_t o = b->second;
-    st32(o + 0x1C, ld32(o + 0x1C) | 1), st32(o + 0x98, ld32(o + 0x98) & ~1u), st32(o + 0x20, blow);
-    st32(o + 0xA0, ld32(link + 4)), st32(o + 0xA4, link);
+    st32(o + obj::mObjTg_mRPrm, ld32(o + obj::mObjTg_mRPrm) | 1), st32(o + obj::tg_mRPrm, ld32(o + obj::tg_mRPrm) & ~1u), st32(o + obj::mObjTg_mHitObj, blow);
+    st32(o + obj::tg_mApid, ld32(link + 4)), st32(o + obj::tg_mAc, link);
     const float dx = f32(a + kPos) - f32(link + kPos), dz = f32(a + kPos + 8) - f32(link + kPos + 8), d = std::hypot(dx, dz) + 0.01f;
-    st32(o + 0xC0, bits(dx / d * 10)), st32(o + 0xC4, 0), st32(o + 0xC8, bits(dz / d * 10));
-    st32(o + 0xCC, ld32(a + kPos)), st32(o + 0xD0, bits(f32(a + kPos + 4) + 50)), st32(o + 0xD4, ld32(a + kPos + 8));
-    if (const uint32_t stts = ld32(o + 0x44)) st8(stts + 0x16, (uint8_t)dmg);
+    st32(o + obj::tg_mRVec, bits(dx / d * 10)), st32(o + obj::tg_mRVec + 4, 0), st32(o + obj::tg_mRVec + 8, bits(dz / d * 10));
+    st32(o + obj::tg_mHitPos, ld32(a + kPos)), st32(o + obj::tg_mHitPos + 4, bits(f32(a + kPos + 4) + 50)), st32(o + obj::tg_mHitPos + 8, ld32(a + kPos + 8));
+    if (const uint32_t stts = ld32(o + obj::mStts)) st8(stts + status::m_dmg, (uint8_t)dmg);
 }
 
 void after(Cpu* c, uint32_t a) {
     // its body: of the colliders taking hits it set as it executed, the one whose box is nearest its place
-    const uint32_t n = std::min<uint32_t>(ld32(kCcS + 0x2804), 0x300);
+    const uint32_t n = std::min<uint32_t>(ld32(kCcS + ccs::mObjTgCount), ccs::kTgMax);
+    // test aid: WWHD_COOP_TEST_CC=1 traces, for each monster's first 3 steps run here, the hit colliders it set and
+    // what their status names as the actor (C18: why no body collider matched)
+    if (static const bool cc = getenv("WWHD_COOP_TEST_CC"); cc) {
+        static std::unordered_map<uint32_t, int> seen;
+        if (seen[a]++ < 3) {
+            std::string l;
+            int mine = 0;
+            for (uint32_t i = 0; i < n; i++) {
+                const uint32_t o = ld32(kCcS + ccs::mpObjTg + 4 * i), stts = o ? ld32(o + obj::mStts) : 0;
+                if (stts && ld32(stts + status::mp_actor) == a) mine++;
+                if (i >= g_tg_was && l.size() < 200) {
+                    char t[48];
+                    snprintf(t, sizeof t, " %08X:%08X:%08X", o, stts, stts ? ld32(stts + status::mp_actor) : 0);
+                    l += t;
+                }
+            }
+            trace("coop: monster test cc: actor %08X proc %d tg %u->%u (all %u objs %u), %d name it:%s", a, (int16_t)ld16(a + kProcName),
+                  g_tg_was, n, ld32(kCcS + ccs::mObjTgCount), ld32(kCcS + ccs::mObjCount), mine, l.c_str());
+        }
+    }
     float best = 1e9f;
     for (uint32_t i = g_tg_was; i < n; i++) {
-        const uint32_t o = ld32(kCcS + 0x400 + 4 * i), stts = ld32(o + 0x44);
-        if (!stts || ld32(stts + 0xC) != a) continue;
+        const uint32_t o = ld32(kCcS + ccs::mpObjTg + 4 * i), stts = ld32(o + obj::mStts);
+        if (!stts || ld32(stts + status::mp_actor) != a) continue;
         float d = 0;
-        for (int e = 0; e < 3; e++) d += std::pow((f32(o + 0xF8 + 4 * e) + f32(o + 0x104 + 4 * e)) / 2 - f32(a + kPos + 4 * e), 2.f);
+        for (int e = 0; e < 3; e++) d += std::pow((f32(o + obj::kShapeAab + 4 * e) + f32(o + obj::kShapeAab + 0xC + 4 * e)) / 2 - f32(a + kPos + 4 * e), 2.f);
         if (d < best) best = d, g_body[ld32(a + 4)] = o;
     }
     // another player's hit: taken once its health went down (a kill once it is gone); else again, at most 30 steps
@@ -281,7 +315,7 @@ void step(Cpu* c, uint32_t link) {
     });
     if (static int n = 0; ++n % 300 == 0) {
         trace("coop: placed monsters here: %zu run here (%zu colliders known, %u hit colliders this step), %zu another's (%zu put in), %zu killed in the players' stages", mine.size(),
-              g_body.size(), ld32(kCcS + 0x2804), g_copies.size(), (size_t)std::count_if(g_copies.begin(), g_copies.end(), [](const auto& e) { return e.second.hp != -128; }), g_dead.size());
+              g_body.size(), ld32(kCcS + ccs::mObjTgCount), g_copies.size(), (size_t)std::count_if(g_copies.begin(), g_copies.end(), [](const auto& e) { return e.second.hp != -128; }), g_dead.size());
         each_monster([](uint32_t a) {
             trace("coop:   %#x room %d set %u at %.0f %.0f %.0f, health %d, run by %d", ld16(a + kProcName), (int8_t)ld8(a + kHomeRoom),
                   ld16(a + kSetId), f32(a + kPos), f32(a + kPos + 4), f32(a + kPos + 8), (int8_t)ld8(a + kHealth), owner_of(a));
