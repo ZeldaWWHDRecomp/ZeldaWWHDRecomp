@@ -236,7 +236,7 @@ void step(uint32_t link) {
     bool on = false;
     if (g_bubble >= 0 && now < g_bubble_until && link >= 0x10000000u && link < 0x50000000u) {
         const uint32_t at = link + names::ac::kPos;
-        const float head[3] = {float(ldf32(at)), float(ldf32(at + 4)) + 170, float(ldf32(at + 8))};
+        const float head[3] = {float(ldf32(at)), float(ldf32(at + 4)) + 140, float(ldf32(at + 8))};
         float x, y;
         if (project(camera(), head, x, y)) g_bubble_x = x, g_bubble_y = y, on = true;
     } else if (g_bubble >= 0 && now >= g_bubble_until) {

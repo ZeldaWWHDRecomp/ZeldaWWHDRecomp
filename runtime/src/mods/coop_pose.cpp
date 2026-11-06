@@ -77,6 +77,7 @@ struct Kit {
     std::vector<std::pair<uint32_t, uint32_t>> models;  // (model data, its copy), in Link's creation order
 } g_kit[kPuppets];
 bool g_in_heap = false;
+int g_body_k = -1;  // Link's body (mpCLModel) among his models
 
 bool g_want = false;  // take a pose at Link's next draw
 bool g_in_draw = false;
@@ -376,6 +377,10 @@ void make_kit(Cpu* c, int i) {
     c->r[3] = r3;
     trace("coop: puppet %d's kit: %d of Link's models copied, %u KB of its %u KB block%s%s", i, made,
           heap ? (room - heap_free(heap)) >> 10 : 0, kSlotBytes >> 10, missed ? ", left out: " : "", missed ? std::to_string(missed).c_str() : "");
+    // (its body's copy and that copy's joint block: interp.cpp's model trace names models by their joint block)
+    if (g_body_k >= 0 && (size_t)g_body_k < g_models.size())
+        if (const uint32_t body = g_models[g_body_k].twin[i])
+            trace("coop: puppet %d's body: model %08X, joints %08X", i, body, ld32(body + kMdlJoints));
 }
 // ... let go: its kit kept on its block for the slot's next player, what it held and its rope given back
 // (mDoExt_destroySolidHeap)
@@ -461,7 +466,6 @@ constexpr const char* kHang[] = {"hair1"};
 int g_own_char = 0;
 float g_idle_w[1 + kPuppets];  // how far each slot (0 this game, 1.. the puppets) shows her own idle
 float g_fly_w[1 + kPuppets];   // and Medli flying
-int g_body_k = -1;  // Link's body (mpCLModel) among his models
 uint32_t g_link_drawing = 0;  // Link in his draw now (his last draw's after it)
 uint64_t g_body_parts = 0;  // his models a character replaces (bits by k): his body, hands, hair; not his gear
 constexpr const char* kBodyParts[] = {"cl", "hands", "katsura", "yamu"};
@@ -1469,14 +1473,16 @@ void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic, bool
     u.tunic = tunic & 3;
     u.pose = *p;
     memcpy(u.pos, pos, sizeof u.pos), u.yaw = yaw;
-    // test aid: WWHD_COOP_TEST_PUPPET_AT=<forward>,<turn degrees>: every puppet shown that far ahead along its heading and
-    // turned (two games started on one save stand on one spot: one faces the other's camera)
-    static float ahead = 0, turn = 0;
-    static const bool moved = [] { const char* e = getenv("WWHD_COOP_TEST_PUPPET_AT"); return e && sscanf(e, "%f,%f", &ahead, &turn) >= 1; }();
+    // test aid: WWHD_COOP_TEST_PUPPET_AT=<forward>,<turn degrees>[,<right>[,<speed>]]: every puppet shown that far ahead
+    // along its heading (and to its right) and turned; with a speed (units a second) it also walks ahead, from where it is
+    // to 4 s on and back again (C23: a puppet moving every step at 60 fps) (two games started on one save stand on one spot: one faces the other's camera)
+    static float ahead = 0, turn = 0, right = 0, speed = 0;
+    static const bool moved = [] { const char* e = getenv("WWHD_COOP_TEST_PUPPET_AT"); return e && sscanf(e, "%f,%f,%f,%f", &ahead, &turn, &right, &speed) >= 1; }();
     if (moved) {
         float s, c;
         rot_y(yaw, s, c);
-        u.pos[0] += s * ahead, u.pos[2] += c * ahead, u.yaw = (int16_t)(yaw + (int)(turn * 32768 / 180));
+        const float walked = speed * (float)(net::now_ms() % 4000) / 1000.f;
+        u.pos[0] += s * (ahead + walked) - c * right, u.pos[2] += c * (ahead + walked) + s * right, u.yaw = (int16_t)(yaw + (int)(turn * 32768 / 180));
     }
     emotes::pose(i, u.pose, u.pos, g_body_k);  // (C22: an emote its player played)
 }
