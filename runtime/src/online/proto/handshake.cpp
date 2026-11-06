@@ -60,6 +60,7 @@ static void put_info(Writer& w, const ServerInfo& i) {
     w.u8(i.mod_flags);
     w.u8(i.rule_pages);
     w.u32(i.rules_digest);
+    w.u8(i.party_max);
 }
 static ServerInfo get_info(Reader& r) {
     ServerInfo i;
@@ -73,6 +74,7 @@ static ServerInfo get_info(Reader& r) {
     i.mod_flags = r.u8();
     i.rule_pages = r.u8();
     i.rules_digest = r.u32();
+    i.party_max = r.u8();
     i.mods.vanilla_only = (i.mod_flags & 1) != 0;
     return i;
 }

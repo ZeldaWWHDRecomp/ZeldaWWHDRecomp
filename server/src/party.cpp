@@ -114,6 +114,7 @@ void Server::party_send_state(Party& p) {
     PartyState st;
     st.party = p.id;
     st.flags = p.flags;
+    st.max = uint8_t(cfg_.party_max);
     for (uint64_t kh : p.members) {
         PartyMember m;
         m.key_hash = kh;
@@ -254,6 +255,9 @@ void Server::party_restore(Session& s, Reader& r, uint32_t now) {
     if (s.party == rec.party) return;  // back already (from the saved team state)
     auto it = parties_.find(rec.party);
     if (it != parties_.end() && it->second.world != s.world) return party_result(s, 9, "your party could not be restored");
+    if (rec.members.size() > size_t(cfg_.party_max)) rec.members.resize(size_t(cfg_.party_max));  // this server's size
+    if (std::find(rec.members.begin(), rec.members.end(), s.key_hash) == rec.members.end())
+        return party_result(s, 9, "your party could not be restored (larger than this server allows)");
     if (it == parties_.end()) {
         if (!by_leader) {
             // a member without a leader-signed record: it waits for the leader's claim
@@ -331,7 +335,7 @@ void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
         p->invites.erase(std::remove_if(p->invites.begin(), p->invites.end(),
                                         [&](const Party::Invite& i) { return now - i.at > kInviteMs; }),
                          p->invites.end());
-        if (p->members.size() + p->invites.size() >= size_t(kMaxPartySize)) return party_result(s, 5, "the party is full");
+        if (p->members.size() + p->invites.size() >= size_t(cfg_.party_max)) return party_result(s, 5, "the party is full");
         p->invites.push_back({code | (uint64_t(1) << 63), now});  // by code: the key is not known here
         Bytes b;
         Writer w(b);
@@ -351,7 +355,7 @@ void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
     p->invites.erase(std::remove_if(p->invites.begin(), p->invites.end(),
                                     [&](const Party::Invite& i) { return now - i.at > kInviteMs || i.to == to->key_hash; }),
                      p->invites.end());
-    if (p->members.size() + p->invites.size() >= size_t(kMaxPartySize)) return party_result(s, 5, "the party is full");
+    if (p->members.size() + p->invites.size() >= size_t(cfg_.party_max)) return party_result(s, 5, "the party is full");
     p->invites.push_back({to->key_hash, now});
     Bytes b;
     Writer w(b);
@@ -384,7 +388,7 @@ void Server::party_accept(Session& s, uint32_t id, uint32_t now) {
     if (inv == p.invites.end()) return party_result(s, 7, "the invite expired");
     if (!party_mods_ok(p, s)) return;  // (the invite stays: the player may switch mods and accept again)
     p.invites.erase(inv);
-    if (p.members.size() >= size_t(kMaxPartySize)) return party_result(s, 5, "the party is full");
+    if (p.members.size() >= size_t(cfg_.party_max)) return party_result(s, 5, "the party is full");
     if (s.party && s.party != id) party_leave(s, now);
     party_join(p, s, now);
     party_result(s, 0, "joined the party");

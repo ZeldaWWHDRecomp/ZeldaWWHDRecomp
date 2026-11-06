@@ -203,6 +203,14 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
         else if (key == "limits.resume_s") integer(c.resume_s);
         else if (key == "limits.keep_ip_hash") boolean(c.keep_ip_hash);
         else if (key == "party.runner_drop_ms") integer(c.runner_drop_ms);
+        else if (key == "party.max_size") {
+            integer(c.party_max);
+            if (ok && (c.party_max < 2 || c.party_max > proto::kMaxPartySize)) {
+                why = "line " + std::to_string(n) + ": party.max_size must be between 2 and " +
+                      std::to_string(proto::kMaxPartySize) + " (it is " + std::to_string(c.party_max) + ")";
+                return false;
+            }
+        }
         else if (key == "party.team_state_keep_h") integer(c.team_state_keep_h);
         else if (key == "scale.mode") {
             str(c.scale_mode);

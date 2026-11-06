@@ -65,6 +65,7 @@ struct PartyState {
     uint32_t party = 0;  // 0: not in a party
     uint16_t leader = 0;
     uint16_t flags = 0;
+    uint8_t max = 0;  // the largest party this server allows
     std::vector<PartyMember> members;
 };
 Bytes encode_party_state(const PartyState& s);

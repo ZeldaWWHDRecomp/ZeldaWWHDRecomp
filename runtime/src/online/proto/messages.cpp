@@ -193,6 +193,7 @@ Bytes encode_party_state(const PartyState& s) {
     w.u32(s.party);
     w.u16(s.leader);
     w.u16(s.flags);
+    w.u8(s.max);
     w.u8(uint8_t(s.members.size()));
     for (auto& m : s.members) {
         w.u16(m.id);
@@ -208,6 +209,7 @@ bool decode_party_state(const uint8_t* d, size_t n, PartyState& s) {
     s.party = r.u32();
     s.leader = r.u16();
     s.flags = r.u16();
+    s.max = r.u8();
     size_t c = r.u8();
     if (c > kMaxPartySize) return false;
     for (size_t i = 0; i < c; ++i) {

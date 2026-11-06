@@ -12,7 +12,7 @@
 namespace online::proto {
 
 // the server protocol version; independent of the direct-UDP co-op protocol of the game's own link
-constexpr uint16_t kProtoVersion = 2;  // 2: gameplay mods in HELLO, server mod rules
+constexpr uint16_t kProtoVersion = 3;  // 2: gameplay mods in HELLO, server mod rules; 3: party size per server
 constexpr uint16_t kDefaultPort = 7777;
 
 // datagram budget: no datagram is larger, so nothing fragments at the IP layer on common paths
@@ -208,7 +208,8 @@ enum PartyFlags : uint16_t {
     kPartyRunnerPinned = 1 << 5,
 };
 constexpr uint16_t kPartyDefaults = kPartySharedProgress | kPartyDeckRiding;
-constexpr int kMaxPartySize = 4;
+constexpr int kMaxPartySize = 16;    // the protocol's cap; each server's own maximum (party.max_size, default 8)
+                                     // comes in ServerInfo::party_max and PartyState::max
 
 // notices
 enum NoticeKind : uint8_t {

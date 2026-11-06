@@ -69,6 +69,7 @@ struct Config {
     bool keep_ip_hash = false;      // bans also keep a salted hash of the IP
 
     // parties
+    int party_max = 8;              // party.max_size: the largest party (2..16)
     int team_state_keep_h = 72;     // the last known team state is kept this long with no member online
     double app_per_s = 120;         // opaque app messages per second
 
