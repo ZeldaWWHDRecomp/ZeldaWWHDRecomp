@@ -393,6 +393,7 @@ void Server::link_datagram(const uint8_t* d, size_t n, const Address& from, uint
             if (me_ == 0) {  // a (re)started worker gets the map at once
                 p.chan.send_reliable(kLMap, map_.encode());
             }
+            if (!my_sub_.empty()) p.chan.send_reliable(kLSub, my_sub_);  // and what we look into
         }
         p.heard = now;
     } else if (d[0] == kLinkRegister && me_ == 0) {
@@ -446,6 +447,7 @@ void Server::link_datagram(const uint8_t* d, size_t n, const Address& from, uint
         peers_[0].epoch = ep;
         setup_peer_channel(peers_[0], key, me_, 0, epoch_, now);
         log("worker " + std::to_string(me_) + " registered with the coordinator");
+        send_subscription(now, true);
     }
 }
 
@@ -488,12 +490,24 @@ int Server::owner_of(const Session& s) const {
 }
 
 void Server::handover_check(Session& s, uint32_t now) {
-    if (!linked() || !registered_ || s.redirected || s.handing || !s.online || s.dead) return;
-    if (handovers_this_tick_ >= 150) return;  // a mass move is spread over ticks (on_pose asks again)
+    // (WWHD_ONLINE_DEBUG_HANDOVER=1: every 5 s, why players who should move did not)
+    static const bool debug = std::getenv("WWHD_ONLINE_DEBUG_HANDOVER") != nullptr;
+    static uint32_t why[8] = {}, last = 0;
+    if (debug && now - last > 5000) {
+        last = now;
+        log("handover debug (worker " + std::to_string(me_) + "): handing " + std::to_string(why[0]) + ", cap " +
+            std::to_string(why[1]) + ", target down " + std::to_string(why[2]) + ", not deep " + std::to_string(why[3]) +
+            ", started " + std::to_string(why[4]) + ", pending " + std::to_string(pending_.size()));
+        std::fill(std::begin(why), std::end(why), 0);
+    }
+    if (!linked() || !registered_ || s.redirected || !s.online || s.dead) return;
     int target = owner_of(s);
     if (target == me_) return;
+    if (s.handing) return void(++why[0]);
+    if (handovers_this_tick_ >= 150) return void(++why[1]);  // a mass move is spread over ticks (on_pose asks again)
     const WorkerInfo* w = map_.worker(target);
-    if (!w || !w->alive || size_t(target) >= peers_.size() || !peers_[size_t(target)].up) return;
+    if (!w || !w->alive || size_t(target) >= peers_.size() || !peers_[size_t(target)].up) return void(++why[2]);
+    ++why[4];
     if (s.where.stage_name() == cfg_.sea_stage) {
         // deep enough inside: the region a little way out on every side is the target's too
         float d = cfg_.handover_depth;
@@ -505,7 +519,10 @@ void Server::handover_check(Session& s, uint32_t now) {
         for (int k = 0; k < 4; ++k) {
             float x = s.head.x + (k == 0 ? d : k == 1 ? -d : 0), z = s.head.z + (k == 2 ? d : k == 3 ? -d : 0);
             cell(x, z, gx, gz);
-            if (map_.owner_at(gx, gz, s.copy) != target) return;
+            if (map_.owner_at(gx, gz, s.copy) != target) {
+                --why[4];
+                return void(++why[3]);
+            }
         }
     }
     // the party stays together, on the worker of its host member (the leader, or the first member online here)
@@ -795,6 +812,31 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
 
 // ---------------------------------------------------------------- the link tick
 
+// my subscription: the cells my players look into. Worked out every tick and sent (reliably) as soon as it changes,
+// every 2 s anyway, and at once to a peer whose link comes up: a viewer never waits a second for the poses of
+// players just across a region border (a newly started worker was missed for up to that long)
+void Server::send_subscription(uint32_t now, bool force) {
+    std::vector<uint8_t> sub(size_t(kGrid * kGrid / 8), 0);
+    int reach = int(std::ceil(cfg_.window_half * (1.0f + cfg_.hysteresis) / kSubCellUnits));
+    for (auto& [cid, sp] : sessions_) {
+        Session& s = *sp;
+        if (s.dead || !s.online || s.redirected || !s.has_pose || s.head.where.stage_name() != cfg_.sea_stage) continue;
+        for (int dz = -reach; dz <= reach; ++dz)
+            for (int dx = -reach; dx <= reach; ++dx) {
+                int x = s.gx + dx, z = s.gz + dz;
+                if (x < 0 || z < 0 || x >= kGrid || z >= kGrid) continue;
+                size_t bit = size_t(z * kGrid + x);
+                sub[bit / 8] |= uint8_t(1u << (bit % 8));
+            }
+    }
+    bool changed = sub != my_sub_;
+    if (!changed && !force && now - last_sub_sent_ < 2000) return;
+    my_sub_ = std::move(sub);
+    last_sub_sent_ = now;
+    for (size_t i = 0; i < peers_.size(); ++i)
+        if (int(i) != me_ && peers_[i].up) peers_[i].chan.send_reliable(kLSub, my_sub_);
+}
+
 void Server::link_tick(uint32_t now) {
     uint8_t key[32];
     link_key(cfg_.link_secret, key);
@@ -888,22 +930,6 @@ void Server::link_tick(uint32_t now) {
                     map_changed();
                 }
             }
-        // my subscription: the cells my players look into
-        my_sub_.assign(size_t(kGrid * kGrid / 8), 0);
-        int reach = int(std::ceil(cfg_.window_half * (1.0f + cfg_.hysteresis) / kSubCellUnits));
-        for (auto& [cid, sp] : sessions_) {
-            Session& s = *sp;
-            if (s.dead || !s.online || s.redirected || !s.has_pose || s.head.where.stage_name() != cfg_.sea_stage) continue;
-            for (int dz = -reach; dz <= reach; ++dz)
-                for (int dx = -reach; dx <= reach; ++dx) {
-                    int x = s.gx + dx, z = s.gz + dz;
-                    if (x < 0 || z < 0 || x >= kGrid || z >= kGrid) continue;
-                    size_t bit = size_t(z * kGrid + x);
-                    my_sub_[bit / 8] |= uint8_t(1u << (bit % 8));
-                }
-        }
-        for (size_t i = 0; i < peers_.size(); ++i)
-            if (int(i) != me_ && peers_[i].up) peers_[i].chan.send_unreliable(kLSub, my_sub_);
         // the load report
         uint64_t cpu = 0, rss = 0;
 #ifndef _WIN32
@@ -990,6 +1016,7 @@ void Server::link_tick(uint32_t now) {
             }
         if (free_ids < 512) id_blocks_.push_back(uint16_t(next_block_++ * kBlock));
     }
+    if (registered_) send_subscription(now, false);
     // ghosts: my players in the cells each peer subscribed
     std::vector<Bytes> per(peers_.size());
     auto ship = [&](size_t i) {
@@ -1022,7 +1049,7 @@ void Server::link_tick(uint32_t now) {
         Peer& p = peers_[i];
         if (int(i) == me_ || !p.up || !p.addr.valid()) continue;
         std::vector<Bytes> out;
-        p.chan.flush(now, out, 8192, 250);
+        p.chan.flush(now, out, 1024, 250);  // paced: a burst over several ticks rather than overflowing the socket buffers
         link_.send_many(p.addr, out);
     }
 }

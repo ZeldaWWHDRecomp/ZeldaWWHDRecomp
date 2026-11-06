@@ -67,7 +67,9 @@ inline uint64_t code40_of(uint64_t key_hash) { return key_hash & 0xFFFFFFFFFFull
 // Body of a data packet: u32 sender ms, u32 echo ms, u16 echo hold ms, then frames:
 //   reliable:   0x01 | u16 seq | u8 type | u16 len | payload   (type bit 0x80: more pieces follow)
 //   unreliable: 0x02 | u8 type | u16 len | payload
-enum FrameKind : uint8_t { kFrameReliable = 1, kFrameUnreliable = 2 };
+//   acks:       0x03 | u8 n | n x {u32 base (a multiple of 64), u64 bits}: packets received beyond the header's 33,
+//               sent (last in a packet) only after a burst of more than 30 packets since the last flush
+enum FrameKind : uint8_t { kFrameReliable = 1, kFrameUnreliable = 2, kFrameAcks = 3 };
 
 enum Msg : uint8_t {
     // ---- client -> server ----

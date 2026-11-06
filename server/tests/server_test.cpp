@@ -538,6 +538,73 @@ static void test_scaling() {
     std::printf("scaling: ok\n");
 }
 
+// many players: a region moves to a worker, then splits with one half back on the coordinator; players on each side
+// end up on the half's worker
+static void test_scaling_mass() {
+    std::string why;
+    auto cc = base_config(0);
+    cc.scale_mode = "pool";
+    cc.link_port = 0;
+    cc.link_secret = "test-link-secret-0123456789";
+    cc.split_cpu = 1e9;
+    cc.split_bw = 1e18;
+    cc.per_ip = 1000;
+    cc.pow_bits = 0;
+    cc.loopback_exempt = true;
+    auto coord = std::make_unique<server::Server>(cc);
+    coord->log = [](const std::string& m) { std::printf("  coord: %s\n", m.c_str()); };
+    CHECK(coord->start(why));
+    auto c = base_config(0);
+    c.worker = true;
+    c.join = "127.0.0.1:" + std::to_string(coord->link_port());
+    c.link_port = 0;
+    c.link_secret = cc.link_secret;
+    c.key_file = cc.key_file;
+    c.per_ip = 1000;
+    c.pow_bits = 0;
+    c.loopback_exempt = true;
+    auto wk = std::make_unique<server::Server>(c);
+    wk->log = [](const std::string& m) { std::printf("  worker: %s\n", m.c_str()); };
+    CHECK(wk->start(why));
+    std::vector<std::unique_ptr<Bot>> bots;
+    std::vector<Bot*> all;
+    auto go = [&](uint32_t ms, std::function<bool()> done) {
+        uint32_t end = monotonic_ms() + ms;
+        while (int32_t(monotonic_ms() - end) < 0) {
+            coord->step(1);
+            wk->step(0);
+            for (Bot* b : all) b->poll(monotonic_ms());
+            if (done && done()) return true;
+        }
+        return done ? done() : true;
+    };
+    CHECK(go(5000, [&] { return wk->worker_index() > 0 && coord->region_map().workers.size() == 2; }));
+    for (int i = 0; i < 60; ++i) {
+        bots.push_back(make_bot("m" + std::to_string(i), coord->port()));
+        bots.back()->head.x = -45000.0f + float(i % 10) * 9500.0f;  // square 24: x in [-50000, 50000)
+        bots.back()->head.z = -40000.0f + float(i / 10) * 13000.0f;
+        all.push_back(bots.back().get());
+    }
+    CHECK(go(15000, [&] { return std::all_of(all.begin(), all.end(), [](Bot* b) { return b->online(); }); }));
+    int w = wk->worker_index();
+    CHECK(coord->admin("move 25 " + std::to_string(w)) == "moved");
+    auto count = [&](server::Server& sv) {
+        int n = 0;
+        for (Bot* b : all)
+            if (Session* t = sv.find_by_key(b->c.key_hash()); t && t->online && !t->redirected) ++n;
+        return n;
+    };
+    CHECK(go(10000, [&] { return count(*wk) == 60; }));
+    std::printf("scaling mass: after the move, worker %d coord %d\n", count(*wk), count(*coord));
+    std::string r = coord->admin("split 25 0");
+    std::printf("scaling mass: %s\n", r.c_str());
+    go(8000, nullptr);
+    int east = 0;
+    for (Bot* b : all) east += b->head.x >= 2000 ? 1 : 0;
+    std::printf("scaling mass: after the split, worker %d coord %d (east of the line, 2000 deep: %d)\n", count(*wk), count(*coord), east);
+    CHECK(count(*coord) >= east - 6);
+}
+
 // a bad network between the clients and the server: loss, duplication, delay with jitter (reordering)
 struct Relay {
     UdpSocket front;  // clients talk to this
@@ -793,6 +860,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "tcp") test_tcp();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
+    if (only.empty() || only == "scalingmass") test_scaling_mass();
     if (only.empty() || only == "chaos") {
         test_chaos("good_wifi", 0.01, 0.0, 5, 10);
         test_chaos("mobile_tether", 0.05, 0.01, 40, 60);

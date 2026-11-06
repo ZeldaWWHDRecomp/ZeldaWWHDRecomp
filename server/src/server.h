@@ -348,6 +348,8 @@ private:
     void redirect(Session& s, int target, const uint8_t ticket[32], uint32_t now);
     int owner_of(const Session& s) const;
     void coordinate(uint32_t now);
+    void send_subscription(uint32_t now, bool force);
+    uint32_t last_sub_sent_ = 0;
     void apply_map(uint32_t now);
     void map_changed();
     void spawn_worker(uint32_t now);
