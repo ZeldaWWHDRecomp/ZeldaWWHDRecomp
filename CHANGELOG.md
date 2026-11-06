@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **60 fps frame interpolation plays exactly like 30 fps** (#PR). Before, some characters behaved differently at 60 or
+  120 fps and every random event drifted from what the game does at 30 fps (on Outset the grass cutter stopped cutting,
+  and from then on enemy behaviour and drops differed). The picture still gets its in-between frames; the game logic
+  behind them is now the same as at 30 fps. No new setting.
 - **GameCube player models** (#432, from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Mods › **Install from a file**
   takes a GameCube model pack you have (a folder or zip with `Link.arc`). The port converts it on your device onto HD Link's
   skeleton, materials and animations, with textures upscaled to HD's sizes. On the model's page in the Mods tab you choose it per save file;
