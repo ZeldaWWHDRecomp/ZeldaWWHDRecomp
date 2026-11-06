@@ -6,10 +6,23 @@
 
 namespace online::proto {
 
+// Measured positions (facts, no game data): each island's centre is the middle of its land in the sea room's
+// collision (the points above the water, the main landmass), as an offset from the square's centre; the radius
+// reaches its farthest land point plus a ring of 5,000 of water, rounded up. One square has no island collision
+// (a structure that rises from the sea): its centre and radius come from the room's object positions. The list
+// with each island's name is in server/server.example.toml; operators can change it ([pvp] zones).
 std::vector<PvpZone> default_pvp_zones() {
-    std::vector<PvpZone> z;
-    for (uint8_t sq : {0, 3, 10, 12, 16, 25, 40, 43, 44}) z.push_back({sq, 0, 0, 15000});
-    return z;
+    return {
+        {10, -300, -100, 12000},
+        {43, -200, 19200, 15500},
+        {12, 3500, -5100, 16000},
+        {40, 15400, -700, 10000},
+        {16, 100, 20100, 10000},   // (the ring reaches the boat's landing point, 9,300 out)
+        {0, 1800, -800, 15500},
+        {25, 0, 0, 18000},         // (from object positions: the boat's arrival point is 14,000 out)
+        {44, 20000, 19400, 11000},
+        {3, 19800, -19600, 12000},
+    };
 }
 
 void put_s24(Writer& w, float f) {

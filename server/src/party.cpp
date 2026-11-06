@@ -303,6 +303,9 @@ void Server::party_restore(Session& s, Reader& r, uint32_t now) {
 }
 
 void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
+    // a full party costs no invite token
+    if (Party* full = party_of(s); full && full->members.size() >= size_t(cfg_.party_max))
+        return party_result(s, 5, "the party is full");
     if (!s.invite.take(1, now)) return party_result(s, 1, "wait a little before the next invite");
     Session* to = nullptr;
     for (auto& [kh, cid] : by_key_)

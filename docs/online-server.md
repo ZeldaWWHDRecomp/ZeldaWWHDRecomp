@@ -53,6 +53,7 @@ Copy `server/server.example.toml` to `server.toml` and edit it. The keys you'll 
 | `limits.pow_bits` | 18 | The join puzzle (about 0.3 s on a phone). Higher slows down mass sign-ups. |
 | `limits.per_ip` | 4 | Players from one address. |
 | `party.max_size` | 8 | The largest party, between 2 and 16. Players see it before they join. |
+| `limits.invite_every_s` | 10 | Party invites: a player may send a whole party's worth at once (`party.max_size` - 1), then one per this many seconds. |
 | `files.team_state` | `team-state.txt` | Parties and their team progress over restarts (`""` keeps them in memory only). |
 | `metrics.file` | none | Writes a line of counts (players, traffic, tick times) every `every_s` seconds. |
 
@@ -125,13 +126,20 @@ cooldown_s = 300            # ... that attacker can't hit that player, or cost t
 - **Safe zones** are circles in sea squares. Squares are numbered row by row from the north-west
   corner, 0 to 48.
   - Entry forms:
-    - `"10"`: the square's centre, radius 15,000;
-    - `"12:r=20000"`: another radius;
+    - `"10"`: square 10's default zone, or for a square without one its centre, radius 15,000;
+    - `"12:r=20000"`: another radius (a default zone keeps its centre);
     - `"3:x=500,z=-200,r=15000"`: a centre offset from the square's centre;
     - `"-16"`: removes square 16's zone;
     - `zones_replace = true`: starts from an empty list.
-  - The default list is squares 0, 3, 10, 12, 16, 25, 40, 43 and 44, the big islands, centred. It is
-    a first approximation until it is measured.
+  - The default list covers the big islands of squares 0, 3, 10, 12, 16, 25, 40, 43 and 44.
+    `server.example.toml` lists them one per line, each with the island's name.
+  - These are measured positions, facts read from the game's sea rooms:
+    - the centre is the middle of the island's land;
+    - the radius is the farthest land point plus a ring of 5,000 of water.
+  - One square has no island collision, only a structure that rises from the sea. Its zone comes from
+    the room's object positions.
+  - Operators may change, add or remove any of them. Small islands stay open for PvP.
+  - An array may span several lines, with a comment on each line.
   - Every place other than the open sea (interiors, dungeons, their entrances) is always safe.
 - **What the server checks** for every hit:
   - both players have PvP on;

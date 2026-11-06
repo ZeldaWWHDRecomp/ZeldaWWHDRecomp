@@ -535,7 +535,8 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     s->reliable.init(cfg_.reliable_per_s, cfg_.reliable_per_s * 2, now);
     s->app.init(cfg_.app_per_s, cfg_.app_per_s * 2, now);
     s->emote.init(cfg_.emote_per_s, 2, now);
-    s->invite.init(1.0 / cfg_.invite_every_s, 2, now);
+    // a leader may fill a whole party at once; repeated invites after that refill one per invite_every_s
+    s->invite.init(1.0 / cfg_.invite_every_s, std::max(2, cfg_.party_max - 1), now);
     s->report.init(1.0 / cfg_.report_every_s, 1, now);
     s->pvp_hits.init(cfg_.pvp_hits_per_s, cfg_.pvp_hits_per_s * 2, now);
     s->pvp_shots.init(cfg_.pvp_shots_per_s, cfg_.pvp_shots_per_s * 2, now);

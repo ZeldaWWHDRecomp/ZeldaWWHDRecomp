@@ -43,3 +43,21 @@ mode = "off"                         # "off": one process; "auto": start worker 
 [metrics]
 file = ""                            # a JSON line of counts every every_s seconds
 every_s = 10
+
+[pvp]
+sea = "opt-in"                       # "off", "opt-in" (each player's toggle) or "on"
+# Safe zones: "square:x=..,z=..,r=..", x and z from the square's centre. These are the measured big islands
+# (positions taken from the game's sea rooms: the middle of the land, radius = farthest land + 5,000 of water).
+# They are facts you may change: edit, add or remove lines. Small islands are left open for PvP.
+zones_replace = true
+zones = [
+  "10:x=-300,z=-100,r=12000",        # Windfall Island
+  "43:x=-200,z=19200,r=15500",       # Outset Island
+  "12:x=3500,z=-5100,r=16000",       # Dragon Roost Island
+  "40:x=15400,z=-700,r=10000",       # Forest Haven
+  "16:x=100,z=20100,r=10000",        # Tingle Island
+  "0:x=1800,z=-800,r=15500",         # Forsaken Fortress
+  "25:x=0,z=0,r=18000",              # Tower of the Gods
+  "44:x=20000,z=19400,r=11000",      # Headstone Island (Earth Temple)
+  "3:x=19800,z=-19600,r=12000",      # Gale Isle (Wind Temple)
+]

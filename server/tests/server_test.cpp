@@ -1077,9 +1077,15 @@ static void test_party_16() {
         server::Config d;
         CHECK(d.party_max == 8);
     }
+    {
+        server::Config c;
+        std::string why;
+        CHECK(server::parse_config_text("[limits]\ninvite_every_s = 30\n", c, why) && c.invite_every_s == 30);
+        CHECK(!server::parse_config_text("[limits]\ninvite_every_s = 0\n", c, why));
+    }
+    // the default invite rate (one per 10 s): the leader fills the party of 16 at once, 15 invites in a row
     auto cfg = base_config(0);
     cfg.party_max = 16;
-    cfg.invite_every_s = 0.01;
     cfg.per_ip = 64;
     server::Server s(cfg);
     s.log = [](const std::string&) {};
@@ -1102,6 +1108,30 @@ static void test_party_16() {
             return e && e->value == 5;
         }));
         all.pop_back();
+    }
+    // the burst is spent: one more invite (after a member leaves) waits for the refill
+    {
+        auto* last = v.back().get();
+        last->c.party_leave();
+        CHECK(go(3000, [&] { auto* e = v[0]->last(ClientEvent::kPartyState); return e && e->party.members.size() == 15; }));
+        uint64_t code = 0;
+        parse_friend_code(last->c.friend_code(), code);
+        last->log.clear();
+        v[0]->log.clear();
+        v[0]->c.party_invite(code);
+        CHECK(go(3000, [&] { auto* e = v[0]->last(ClientEvent::kPartyResult); return e && e->value == 1; }));
+        uint32_t t0 = monotonic_ms(), next = t0 + 1000;
+        CHECK(go(12000, [&] {
+            if (int32_t(monotonic_ms() - next) >= 0 && !last->saw(ClientEvent::kPartyInvited)) {
+                next += 1000;
+                v[0]->c.party_invite(code);
+            }
+            return last->saw(ClientEvent::kPartyInvited);
+        }));
+        std::printf("party of 16: filled with 15 invites in a row; the next invite waited %u ms for the refill\n",
+                    monotonic_ms() - t0);
+        last->c.party_accept(last->last(ClientEvent::kPartyInvited)->party_id);
+        CHECK(go(3000, [&] { auto* e = v[0]->last(ClientEvent::kPartyState); return e && e->party.members.size() == 16; }));
     }
     // all in one dungeon room: p0 (first there) runs the enemies
     for (auto& b : v) {
@@ -1396,6 +1426,83 @@ static void test_pvp() {
                 (unsigned long long)s.metrics().pvp_drops[6], (unsigned long long)s.metrics().pvp_drops[7]);
 }
 
+// the measured island safe zones (the defaults): server.example.toml lists the same zones as the code; a player at
+// each island's landing point is safe, one just outside the ring is not
+static void test_pvp_islands() {
+    auto same = [](const std::vector<PvpZone>& a, const std::vector<PvpZone>& b) {
+        if (a.size() != b.size()) return false;
+        for (size_t i = 0; i < a.size(); ++i)
+            if (a[i].square != b[i].square || a[i].cx != b[i].cx || a[i].cz != b[i].cz || a[i].radius != b[i].radius)
+                return false;
+        return true;
+    };
+    std::string why;
+    {
+        server::Config c;
+        CHECK(server::load_config(WWHD_SERVER_EXAMPLE, c, why));
+        CHECK(same(c.pvp.zones, proto::default_pvp_zones()));
+        CHECK(c.pvp.zones.size() == 9);
+        // an entry with only a radius keeps the measured centre; a square without a default is centred
+        server::Config r;
+        CHECK(server::parse_config_text("[pvp]\nzones = [\"10:r=20000\", \"20\"]\n", r, why));
+        for (auto& z : r.pvp.zones) {
+            if (z.square == 10) CHECK(z.cx == -300 && z.cz == -100 && z.radius == 20000);
+            if (z.square == 20) CHECK(z.cx == 0 && z.cz == 0 && z.radius == 15000);
+        }
+        // an array over several lines, with comments
+        server::Config m;
+        CHECK(server::parse_config_text("[pvp]\nzones_replace = true\nzones = [   # the list\n  \"5\",   # one\n  \"6:r=100\",\n]\nsea = \"on\"\n", m, why));
+        CHECK(m.pvp.zones.size() == 2 && m.pvp.mode == PvpMode::kOn);
+        CHECK(!server::parse_config_text("[pvp]\nzones = [\n  \"5\",\n", m, why) && why.find("not closed") != std::string::npos);
+    }
+    // the landing points (offsets from the square's centre), measured from the rooms' start points
+    struct Dock {
+        uint8_t square;
+        float x, z;
+    };
+    const Dock docks[] = {{10, -1721, 5657}, {43, -1585, 31275}, {12, -4933, 3611}, {40, 17845, -7386}, {16, -8919, 22353},
+                          {0, -1000, 10000}, {25, 0, 14000},     {44, 19900, 23000}, {3, 20000, -17100}};
+    auto cfg = base_config(0);
+    CHECK(cfg.pvp.zones.size() == 9);
+    server::Server s(cfg);
+    s.log = [](const std::string&) {};
+    CHECK(s.start(why));
+    std::vector<std::unique_ptr<Bot>> in, out;
+    std::vector<Bot*> all;
+    for (auto& d : docks) {
+        float sx = cfg.sea_origin_x + proto::kSquareUnits * (d.square % 7 + 0.5f);
+        float sz = cfg.sea_origin_z + proto::kSquareUnits * (d.square / 7 + 0.5f);
+        const PvpZone* z = nullptr;
+        for (auto& k : cfg.pvp.zones)
+            if (k.square == d.square) z = &k;
+        CHECK(z != nullptr);
+        auto a = make_bot("dock" + std::to_string(d.square), s.port());
+        a->head.x = sx + d.x;
+        a->head.z = sz + d.z;
+        auto b = make_bot("ring" + std::to_string(d.square), s.port());
+        b->head.x = sx + z->cx + z->radius + 500;  // just outside the ring
+        b->head.z = sz + z->cz;
+        all.push_back(a.get());
+        all.push_back(b.get());
+        in.push_back(std::move(a));
+        out.push_back(std::move(b));
+    }
+    CHECK(run(&s, all, 8000, [&] { return std::all_of(all.begin(), all.end(), [](Bot* b) { return b->online(); }); }));
+    run(&s, all, 2000);
+    auto state = [&](Bot& x) { auto* e = x.last(ClientEvent::kPvpState); return e ? e->value : 0; };
+    int safe = 0, open = 0;
+    for (size_t i = 0; i < in.size(); ++i) {
+        bool a = (state(*in[i]) & kPvpInSafeZone) != 0, b = (state(*out[i]) & kPvpInSafeZone) == 0;
+        if (!a) std::printf("  square %d: the landing point is not safe\n", docks[i].square);
+        if (!b) std::printf("  square %d: just outside the ring is safe\n", docks[i].square);
+        CHECK(a && b);
+        safe += a;
+        open += b;
+    }
+    std::printf("pvp islands: example config = defaults (9 zones), %d of 9 landing points safe, %d of 9 just outside open\n",
+                safe, open);
+}
+
 // many players hitting each other as fast as they can: the hit rate holds, hits pass only where allowed, nothing
 // breaks (a bot test of the PvP path)
 static void test_pvp_stress() {
@@ -1461,6 +1568,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "party16ho") test_party_16_handover();
     if (only.empty() || only == "pvp") test_pvp();
     if (only.empty() || only == "pvpstress") test_pvp_stress();
+    if (only.empty() || only == "pvpislands") test_pvp_islands();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "scalingmass") test_scaling_mass();
