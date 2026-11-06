@@ -65,6 +65,9 @@ void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic = 0, 
 // puppet i's player left: hidden, and its kit (its copies of Link's models, on a heap of its own) given back at the
 // next step
 void release(int i);
+// a full save state was loaded (savestate.cpp, after the game's memory is put back): what the puppets keep in the game's
+// memory is forgotten; they are drawn again once Link is made again
+void state_loaded();
 // this game's own Link's tunic while a session is on (-1: none, his own clothes)
 void own_tunic(int tunic);
 // who this game plays as (0 Link, 1 Tetra, 2 Medli, 3 Princess Zelda): drawn in Link's place here, and the others see

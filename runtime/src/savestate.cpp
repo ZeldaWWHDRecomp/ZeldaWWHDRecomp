@@ -54,6 +54,7 @@
 // runtime allocations) and guest memory (MEM2, runtime objects, fixed slots, foreground bucket,
 // MEM1; all-zero 64 KiB chunks are left out).
 #include "savestate.h"
+#include "mods/coop_pose.h"
 #include "aspect.h"
 #include "savestate_native_gate.h"
 #include "mods/story_native_restore_resume.h"
@@ -916,6 +917,7 @@ bool do_load(const std::shared_ptr<Snapshot>& s) {
     r = s->section(kSecGx2);
     gx2_ss_load(r);
     guestmods::state_loaded();
+    mods::coop::state_loaded();  // (online co-op's puppets: GAPS C11)
     interp::ss_reset();
     aspect::ss_load_particles(s->section(kSecAspectParticles));
     {  // the calendar clock continues from the state's (os_time::restored_bias)

@@ -32,6 +32,7 @@
 #include "guest_addr.h"
 #include "mods.h"
 #include "runtime.h"
+#include "../savestate.h"
 #include "../j3d_draw_guard.h"
 
 namespace interp {
@@ -344,6 +345,7 @@ void make_kit(Cpu* c, int i) {
         if (same) {
             for (size_t m = 0; m < g_models.size(); m++) g_models[m].twin[i] = k.models[m].second, g_wearer[k.models[m].second] = i;
             k.heap = 1;  // (in use)
+            trace("coop: puppet %d's kit: made before, shown again", i);
             return;
         }
         trace("coop: puppet %d's kit: Link's models changed, a new kit (the old one stays unused)", i);
@@ -454,6 +456,7 @@ int g_own_char = 0;
 float g_idle_w[1 + kPuppets];  // how far each slot (0 this game, 1.. the puppets) shows her own idle
 float g_fly_w[1 + kPuppets];   // and Medli flying
 int g_body_k = -1;  // Link's body (+0x448) among his models
+uint32_t g_link_drawing = 0;  // Link in his draw now (his last draw's after it)
 uint64_t g_body_parts = 0;  // his models a character replaces (bits by k): his body, hands, hair; not his gear
 constexpr const char* kBodyParts[] = {"cl", "hands", "katsura", "yamu"};
 bool body_part(int k) { return k >= 0 && k < 64 && (g_body_parts >> k & 1); }
@@ -1364,6 +1367,34 @@ bool own_pose(Pose& out) {
     return g_have;
 }
 
+void state_loaded() {
+    // A full state put the game's memory back as it was (the port's own, where the kits are, is not in it): Link's
+    // models of then are not known here, and what the puppets held and their ropes were on game heaps that may not be
+    // there now. Those are forgotten, not destroyed (destroying them would free into the state's heaps); the puppets are
+    // not drawn until Link is made again (the next place), when their kits are found again by his models' data.
+    for (int i = 0; i < kPuppets; i++) {
+        g_held[i].clear(), g_rope[i] = Rope{}, g_hook[i] = 0;
+        g_kit[i].heap = 0, g_kit[i].tried = false, g_kit[i].release = false, g_kit[i].hidden = 0;
+    }
+    // Link as he was made before the load, if the state has the same one (a state saved since he was made, here: his
+    // body model where it was and each of his models still made of the same data): his models stay known, and the
+    // puppets' kits are put back at their next show
+    bool same = !g_models.empty() && g_link_drawing && g_body_k >= 0 && (size_t)g_body_k < g_models.size() &&
+                ld32(g_link_drawing + 0x448) == g_models[g_body_k].model;
+    for (const LinkModel& m : g_models) same = same && m.model >= mem::kMem2Start && m.model < mem::kMem2End && ld32(m.model + 0xAC) == m.data;
+    g_wearer.clear(), g_have = false;
+    if (same) {
+        for (LinkModel& m : g_models) {
+            for (uint32_t& t : m.twin) t = 0;
+            g_wearer[m.model] = -1;
+        }
+        trace("coop: a full state was loaded: Link is the one made before; the puppets are shown again");
+        return;
+    }
+    g_models.clear(), g_link_files.clear();
+    trace("coop: a full state was loaded: the puppets wait for Link to be made again");
+}
+
 void release(int i) {
     if (i >= 0 && i < kPuppets) g_puppet[i].shown = false, g_kit[i].release = true;
 }
@@ -1451,6 +1482,14 @@ void step(Cpu* c, uint32_t link, bool on) {
         std::string b;
         pack(g_pose, b);
         fwrite(b.data(), 1, b.size(), g_rec), fflush(g_rec);
+    }
+    // test aid: WWHD_COOP_TEST_STATE=<save step>,<load step>: a portable state saved into slot 5, then loaded, that many
+    // steps after the puppets' step started (save states with puppets shown)
+    // (a third number 1: a full state)
+    if (static int t_save = -1, t_load = -1, t_full = 0, t_n = 0; getenv("WWHD_COOP_TEST_STATE")) {
+        if (t_save < 0 && sscanf(getenv("WWHD_COOP_TEST_STATE"), "%d,%d,%d", &t_save, &t_load, &t_full) < 2) t_save = t_load = 1 << 30;
+        if (++t_n == t_save) (t_full ? ss::request_save_full(5) : ss::request_save_portable(5)), trace("coop: state test: saving");
+        if (t_n == t_load) ss::request_load(5), trace("coop: state test: loading");
     }
     if (!g_ghost.empty()) {  // the recording, step by step beside where it was made, then round again
         const Pose& p = g_ghost[g_ghost_at++ % g_ghost.size()];
@@ -1559,7 +1598,6 @@ extern "C" void f_023D8DF0_orig(Cpu* c);
 extern "C" void f_025E2E5C_orig(Cpu* c);
 
 // puppet i's copy of Link's model k, posed and entered as Link's own, each once a draw
-static uint32_t g_link_drawing = 0;
 static uint64_t g_entered[kPuppets];  // models entered this draw, by bit k
 static void enter(Cpu* c, uint32_t link, int i, const Model& m) {
     const Puppet& u = g_puppet[i];
