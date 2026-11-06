@@ -199,7 +199,7 @@ void register_items() {
     {
         Item it;
         it.id = "online.notice", it.tab = "online", it.label = "Accept the privacy notice", it.kind = Kind::Toggle;
-        it.help = "Other players see your IP address, which can show roughly where you are. Only play with people you trust.";
+        it.help = "Other players or the server see your IP address, which can show roughly where you are. A server keeps your party's player keys and progress for up to 72 hours; whoever runs it controls that data. Only play with people you trust.";
         it.get = [] { return sync::settings().notice_ok ? 1.0f : 0.0f; };
         it.set = [](float v) { change([&](sync::Settings& x) { x.notice_ok = v >= 0.5f, x.on = x.on && x.notice_ok; }); };
         game_settings::add(std::move(it));

@@ -12,8 +12,13 @@ Online co-op connects your game to the other players' games, directly or through
 directly, they see your IP address, and you see theirs; through a server, its operator sees it.** An IP
 address can reveal your approximate location. Only play with people you trust, on servers you trust.
 
+**What a server keeps.** A server keeps your party's player keys (the keys behind your friend codes) and your
+party's shared progress for up to 72 hours after your party last played, so your party survives a server restart.
+The server's operator can set a different length. The server program does not write IP addresses to disk; if you
+are banned, it may keep a scrambled form of yours. Whoever runs a server controls its data.
+
 Nothing is sent over the network until you switch online co-op on and accept this notice. It stops
-when you switch it off.
+when you switch it off. When this notice changes, you are asked to accept it again.
 
 ## Your save
 

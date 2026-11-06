@@ -35,12 +35,16 @@ struct Settings {
     bool notice_ok = false;            // the privacy notice accepted (its version, online.notice_accepted)
 };
 // the privacy notice's version: a changed notice is shown and accepted again
-constexpr const char* kNoticeVersion = "2";
+constexpr const char* kNoticeVersion = "3";  // (3: what a server keeps)
 constexpr const char* kNotice =
     "Online co-op connects your game to other players' games, directly or through a server. Played directly, the "
     "other players see your IP address (and you theirs); through a server, its operator sees it. An IP address can "
-    "reveal your approximate location. Only play with people you trust, on servers you trust. Nothing is sent until "
-    "you switch online co-op on, and it stops when you switch it off.";
+    "reveal your approximate location. A server keeps your party's player keys (behind your friend codes) and your "
+    "party's shared progress for up to 72 hours after your party last played (its operator can change how long), so "
+    "your party survives a server restart. The server program does not write IP addresses to disk; if you are "
+    "banned, it may keep a scrambled form of yours. Whoever runs a server controls its data. Only play with people "
+    "you trust, on servers you trust. Nothing is sent until you switch online co-op on, and it stops when you switch "
+    "it off.";
 Settings settings();
 void set_settings(const Settings& s);
 void save_settings(const Settings& s);  // the same, and kept (the Settings window, the pause menu's page: main thread)  // the menu (any thread); a running session restarts with them
