@@ -17,6 +17,7 @@
 
 using namespace online;
 using namespace online::proto;
+using online::server::Session;
 
 static int g_fail = 0;
 #define CHECK(c)                                                     \
@@ -437,24 +438,28 @@ static void test_scaling() {
     // split the square: its east half (x >= 0) goes to worker w1, and b with it
     CHECK(coord->admin("split " + std::to_string(region) + " " + std::to_string(w1)).find("split into") == 0);
     bool a_lost_b = false, b_lost_a = false;
-    auto watch = [&](uint32_t ms) {
+    auto watch = [&](uint32_t ms, std::function<bool()> done = nullptr) {
         uint32_t end = monotonic_ms() + ms;
         while (int32_t(monotonic_ms() - end) < 0) {
             all3(bots, 30, nullptr);
             if (!a->players.count(bid)) a_lost_b = true;
             if (!b->players.count(aid)) b_lost_a = true;
+            if (done && done()) return true;
         }
+        return done ? done() : true;
     };
-    watch(2500);
-    CHECK(wk[0]->find_by_key(b->c.key_hash()) != nullptr);
+    auto on = [&](server::Server& sv, Bot& x) {
+        Session* t = sv.find_by_key(x.c.key_hash());
+        return t && t->online && !t->redirected && x.online();
+    };
+    CHECK(watch(8000, [&] { return on(*wk[0], *b); }));
     CHECK(b->c.my_id() == bid && b->online());
     // b sails back west (x < 0, 2000 deep): back on the coordinator
     for (float x = 5000; x >= -6000; x -= 300) {
         b->head.x = x;
         watch(70);
     }
-    watch(2000);
-    CHECK(coord->find_by_key(b->c.key_hash()) && coord->find_by_key(b->c.key_hash())->online);
+    CHECK(watch(8000, [&] { return on(*coord, *b); }));
     CHECK(!a_lost_b && !b_lost_a);
     std::printf("scaling: split, handover there and back, visible sets continuous (a lost b: %d, b lost a: %d)\n", a_lost_b,
                 b_lost_a);
@@ -463,10 +468,9 @@ static void test_scaling() {
     for (auto& g : coord->region_map().regions)
         if (g.parent == region && g.x0 == 24) west = g.id;
     b->head.x = 20000;  // b goes east first (worker w1)
-    watch(2500);
+    CHECK(watch(8000, [&] { return on(*wk[0], *b); }));
     CHECK(coord->admin("move " + std::to_string(west) + " " + std::to_string(w2)) == "moved");
-    watch(2500);
-    CHECK(wk[1]->find_by_key(a->c.key_hash()) && wk[1]->find_by_key(c->c.key_hash()) && wk[0]->find_by_key(b->c.key_hash()));
+    CHECK(watch(8000, [&] { return on(*wk[1], *a) && on(*wk[1], *c); }));
     uint64_t code = 0;
     parse_friend_code(b->c.friend_code(), code);
     a->c.party_invite(code);

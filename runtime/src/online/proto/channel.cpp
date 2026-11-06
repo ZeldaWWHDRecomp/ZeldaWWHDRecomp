@@ -252,8 +252,8 @@ bool Channel::receive(const uint8_t* d, size_t n, uint32_t now, std::vector<Deli
         peer_ms_at_ = now;
     }
     if (echo) {
-        int sample = int(now - echo) - int(hold);
-        if (sample >= 0 && sample < 10000) rtt_ms_ = rtt_ms_ < 0 ? sample : (rtt_ms_ * 7 + sample) / 8;
+        int64_t sample = int64_t(int32_t(now - echo)) - int64_t(hold);
+        if (sample >= 0 && sample < 10000) rtt_ms_ = rtt_ms_ < 0 ? int(sample) : (rtt_ms_ * 7 + int(sample)) / 8;
     }
     while (r.ok() && r.left()) {
         uint8_t kind = r.u8();

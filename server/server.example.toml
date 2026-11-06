@@ -1,0 +1,45 @@
+# wwhd-online-server configuration (docs/online-server.md has every key).
+# Copy to server.toml and run:  wwhd-online-server --config server.toml
+
+[server]
+name = "My server"
+contact = "you@example.org"          # shown to players before they connect (privacy notice)
+rules = "Be kind. No griefing."
+public = false                       # true: refuses to start with the insecure crypto backend
+invite_only = false
+# allow = ["KQ7F-9MZ2-XD"]           # with invite_only: the friend codes that may join
+
+[network]
+bind = "0.0.0.0"                     # "127.0.0.1" for this computer only
+port = 7777                          # UDP
+max_players = 1000
+# game_data = ["0x0123456789abcdef"] # only these game versions; empty: any (each version its own world)
+
+[files]
+key = "server.key"                   # the server's identity; keep it, players pin it
+bans = "bans.txt"
+reports = "reports.log"
+admin_socket = "wwhd-online-admin.sock"
+team_state = ""                      # a file to keep parties' last known team state over restarts
+
+[world]
+copy_size = 64                       # players per copy of an interior
+
+[interest]
+threads = 0                          # 0: automatic
+
+[limits]
+pow_bits = 18                        # join proof-of-work (about 0.3 s on a phone)
+per_ip = 4
+
+[scale]
+mode = "off"                         # "off": one process; "auto": start worker processes when busy; "pool"
+# secret = "a long random string"    # needed for auto / pool (or WWHD_ONLINE_LINK_SECRET)
+# max_workers = 8
+# link_port = 7900                   # loopback (auto) or LAN (pool workers on other machines)
+# worker_port_base = 7778            # started workers listen on 7778, 7779, ...: forward these too
+# public_host = "play.example.org"   # what clients are redirected to
+
+[metrics]
+file = ""                            # a JSON line of counts every every_s seconds
+every_s = 10
