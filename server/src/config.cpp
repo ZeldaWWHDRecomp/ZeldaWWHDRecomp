@@ -3,6 +3,7 @@
 // integers, floats, booleans and one-line arrays, and # comments.
 #include "config.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
@@ -230,7 +231,26 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
         else if (key == "scale.area_cap") integer(c.area_cap);
         else if (key == "scale.handover_depth") numf(c.handover_depth);
         else if (key == "scale.join") str(c.join);
-        else if (key == "metrics.file") str(c.metrics_file);
+        else if (key == "mods.vanilla_only") boolean(c.mods.vanilla_only);
+        else if (key == "mods.required" || key == "mods.allowed" || key == "mods.banned") {
+            std::vector<std::string> list;
+            strings(list);
+            proto::ModRuleKind kind = key == "mods.required" ? proto::ModRuleKind::kRequired
+                                      : key == "mods.allowed" ? proto::ModRuleKind::kAllowed
+                                                              : proto::ModRuleKind::kBanned;
+            c.mods.rules.erase(std::remove_if(c.mods.rules.begin(), c.mods.rules.end(),
+                                              [&](const proto::ModRule& r) { return r.kind == kind; }),
+                               c.mods.rules.end());
+            for (auto& t : list) {
+                proto::ModRule r;
+                if (!proto::parse_mod_rule(t, kind, r)) {
+                    ok = false;
+                    break;
+                }
+                c.mods.rules.push_back(r);
+            }
+            ok = ok && c.mods.rules.size() <= proto::kMaxModRules;
+        } else if (key == "metrics.file") str(c.metrics_file);
         else if (key == "metrics.every_s") integer(c.metrics_every_s);
         else if (key == "metrics.log_addresses") boolean(c.log_addresses);
         else {

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // Unit tests of the online protocol library: hashes, friend codes, proof-of-work, codecs, and the reliable layer
 // under loss, duplication and reordering.
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -11,6 +12,7 @@
 #include "proto/channel.h"
 #include "proto/handshake.h"
 #include "proto/messages.h"
+#include "proto/mods.h"
 #include "proto/protocol.h"
 #include "proto/sha256.h"
 #ifdef WWHD_ONLINE_MONOCYPHER
@@ -406,9 +408,85 @@ static void test_channel_burst() {
     CHECK(got == kN && order && a.reliable_queued() == 0);
 }
 
+static ModRef mref(const char* id, const char* ver, uint8_t h) {
+    ModRef m;
+    m.id = id;
+    m.version = ver;
+    m.hash.fill(h);
+    return m;
+}
+
+static void test_mod_rules() {
+    using K = ModProblemKind;
+    auto has = [](const std::vector<ModProblem>& v, K k, const char* id) {
+        return std::any_of(v.begin(), v.end(), [&](const ModProblem& p) { return p.problem == k && p.id == id; });
+    };
+    std::vector<ModRef> mine = {mref("randomizer", "", 7), mref("qol", "1.2", 1)};
+    ModRules none;
+    CHECK(check_mods(none, mine).empty());  // no rules: anything goes
+    ModRules van;
+    van.vanilla_only = true;
+    auto p = check_mods(van, mine);
+    CHECK(p.size() == 2 && has(p, K::kVanillaOnly, "qol"));
+    CHECK(check_mods(van, {}).empty());
+    // required: missing, wrong version, wrong hash
+    ModRule r;
+    ModRules req;
+    CHECK(parse_mod_rule("notebook@0.6.1", ModRuleKind::kRequired, r));
+    req.rules.push_back(r);
+    CHECK(has(check_mods(req, mine), K::kMissing, "notebook"));
+    std::vector<ModRef> nb = {mref("notebook", "0.6.0", 2)};
+    CHECK(has(check_mods(req, nb), K::kWrongVersion, "notebook"));
+    nb[0].version = "0.6.1";
+    CHECK(check_mods(req, nb).empty());
+    std::string hex64(64, 'a');
+    CHECK(parse_mod_rule("randomizer@*#" + hex64, ModRuleKind::kRequired, r) && r.has_hash && r.version.empty());
+    ModRules rh;
+    rh.rules.push_back(r);
+    CHECK(has(check_mods(rh, mine), K::kWrongVersion, "randomizer"));  // the seed (hash) differs
+    std::vector<ModRef> right = {mref("randomizer", "", 0xaa)};
+    CHECK(check_mods(rh, right).empty());
+    // allowed (a whitelist): others are not allowed, a pinned version is checked
+    ModRules al;
+    CHECK(parse_mod_rule("qol@1.3", ModRuleKind::kAllowed, r));
+    al.rules.push_back(r);
+    p = check_mods(al, mine);
+    CHECK(has(p, K::kNotAllowed, "randomizer") && has(p, K::kWrongVersion, "qol"));
+    CHECK(al.has_whitelist() && (al.flags() & 2));
+    // banned: by id, or only one version
+    ModRules ban;
+    CHECK(parse_mod_rule("qol", ModRuleKind::kBanned, r));
+    ban.rules.push_back(r);
+    CHECK(has(check_mods(ban, mine), K::kBanned, "qol"));
+    ModRules ban2;
+    CHECK(parse_mod_rule("qol@1.1", ModRuleKind::kBanned, r));
+    ban2.rules.push_back(r);
+    CHECK(check_mods(ban2, mine).empty());
+    // bad entries
+    CHECK(!parse_mod_rule("Bad Id", ModRuleKind::kAllowed, r));
+    CHECK(!parse_mod_rule("x@1#abc", ModRuleKind::kAllowed, r));
+    CHECK(mod_rule_text(r).size() > 0);
+    // party matching: 6 the party has it, 7 you have it, 8 another version
+    std::vector<ModRef> party = {mref("randomizer", "", 7), mref("notebook", "0.6.1", 3)};
+    std::vector<ModRef> me = {mref("randomizer", "", 8), mref("qol", "1.2", 1)};
+    p = party_mod_problems(party, me);
+    CHECK(has(p, K::kPartyOther, "randomizer") && has(p, K::kPartyHas, "notebook") && has(p, K::kYouHave, "qol"));
+    CHECK(party_mod_problems(party, {party[1], party[0]}).empty());  // the same set in another order
+    // codecs
+    Bytes b;
+    Writer w(b);
+    put_mod_refs(w, me);
+    put_mod_problems(w, p);
+    Reader rd(b);
+    std::vector<ModRef> me2;
+    std::vector<ModProblem> p2;
+    CHECK(get_mod_refs(rd, me2) && get_mod_problems(rd, p2) && rd.done() && me2 == me && p2.size() == p.size());
+}
+
 int main() {
     test_sha256();
     test_crypto();
+    test_mod_rules();
     test_codes();
     test_pow();
     test_handshake();

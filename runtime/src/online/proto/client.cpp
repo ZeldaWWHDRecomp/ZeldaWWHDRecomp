@@ -113,6 +113,22 @@ void Client::lost(uint32_t now, const std::string& why) {
     set_state(ClientState::kReconnecting, why);
 }
 
+// the server's mod rules are known (or not given in time): show them, then join (or stop: the server list)
+void Client::rules_done(uint32_t now) {
+    info_.mods.rules = rules_;
+    ClientEvent e{ClientEvent::kServerRules};
+    e.info = info_;
+    events_.push_back(std::move(e));
+    if (cfg_.query_only) {
+        phase_ = Phase::kNone;
+        set_state(ClientState::kStopped, "query done");
+        return;
+    }
+    phase_ = Phase::kPow;
+    phase_started_ = now;
+    phase_at_ = 0;
+}
+
 void Client::step_pow(uint32_t now) {
     uint64_t t0 = monotonic_us();
     for (;;) {
@@ -140,6 +156,7 @@ void Client::step_pow(uint32_t now) {
     h.resume = have_token_;
     if (have_token_) std::memcpy(h.token, token_, 32);
     h.tag = cfg_.tag;
+    h.mods = cfg_.mods;
     hello_ = encode_hello(h, cfg_.identity);
     phase_ = Phase::kHello;
     phase_started_ = now;
@@ -195,6 +212,22 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
                 send_raw(encode_connect(c));
                 phase_at_ = now;
                 if (!first_connect_sent_) first_connect_sent_ = now;
+            }
+            break;
+        case Phase::kRules:
+            if (now - phase_started_ > 5000) {
+                rules_done(now);  // (a server that does not answer for its rules: join anyway; the hello is checked)
+                break;
+            }
+            if (!phase_at_ || now - phase_at_ >= kResendHandshakeMs) {
+                for (size_t p = 0; p < rules_got_.size(); ++p)
+                    if (!rules_got_[p]) {
+                        RulesReq q;
+                        q.nonce = nonce_;
+                        q.page = uint8_t(p);
+                        send_raw(encode_rules_req(q));
+                    }
+                phase_at_ = now;
             }
             break;
         case Phase::kPow:
@@ -275,9 +308,26 @@ void Client::handle(const uint8_t* d, size_t n, uint32_t now) {
                 e.text = fingerprint(c.info.pub);
                 events_.push_back(std::move(e));
             }
-            phase_ = Phase::kPow;
             crypto::random_bytes(&pow_next_, sizeof pow_next_);
             pow_next_ &= 0xFFFFFFFFull;
+            rules_.clear();
+            rules_got_.assign(c.info.rule_pages, false);
+            phase_ = Phase::kRules;
+            phase_at_ = 0;
+            phase_started_ = now;
+            if (c.info.rule_pages == 0) rules_done(now);
+            break;
+        }
+        case kPktRules: {
+            if (phase_ != Phase::kRules) return;
+            RulesPage pg;
+            if (!decode_rules_page(d, n, info_.pub, pg) || pg.nonce != nonce_ || pg.page >= rules_got_.size() ||
+                rules_got_[pg.page])
+                return;
+            rules_got_[pg.page] = true;
+            info_.mods.vanilla_only = pg.vanilla_only;
+            for (auto& r : pg.rules) rules_.push_back(r);
+            if (std::all_of(rules_got_.begin(), rules_got_.end(), [](bool b) { return b; })) rules_done(now);
             break;
         }
         case kPktWelcome: {
@@ -300,13 +350,14 @@ void Client::handle(const uint8_t* d, size_t n, uint32_t now) {
             break;
         }
         case kPktRefuse: {
-            if (phase_ != Phase::kConnect && phase_ != Phase::kHello) return;
+            if (phase_ != Phase::kConnect && phase_ != Phase::kHello && phase_ != Phase::kRules) return;
             Refuse f;
             if (!decode_refuse(d, n, f) || f.nonce != nonce_) return;
             ClientEvent e{ClientEvent::kRefused};
             e.refusal = f.reason;
             e.text = f.text.empty() ? refusal_text(f.reason) : f.text;
             e.seconds = f.retry_s;
+            e.mod_problems = f.mod_problems;
             events_.push_back(e);
             bool temporary = f.reason == Refusal::kFull || f.reason == Refusal::kRateLimited ||
                              f.reason == Refusal::kShuttingDown;
@@ -410,6 +461,7 @@ void Client::handle_message(const Delivered& m) {
             e.id = r.u16();
             e.player.key_hash = r.u64();
             e.player.name = r.str8(24);
+            if (r.ok() && r.left() && !get_mod_refs(r, e.mods)) break;  // the party's mod set (protocol 2)
             if (r.done()) events_.push_back(std::move(e));
             break;
         }
@@ -433,6 +485,7 @@ void Client::handle_message(const Delivered& m) {
             ClientEvent e{ClientEvent::kPartyResult};
             e.value = r.u8();
             e.text = r.str8(200);
+            if (r.ok() && r.left() && !get_mod_problems(r, e.mod_problems)) break;  // code 10: the mods that differ
             if (r.done()) events_.push_back(std::move(e));
             break;
         }
@@ -516,6 +569,13 @@ void Client::block(uint64_t kh, bool on) {
     Bytes b;
     Writer(b).u64(kh);
     chan_.send_reliable(on ? kMsgBlock : kMsgUnblock, b);
+}
+
+void Client::mute(uint64_t kh, bool on) {
+    if (state_ != ClientState::kOnline) return;
+    Bytes b;
+    Writer(b).u64(kh);
+    chan_.send_reliable(on ? kMsgMute : kMsgUnmute, b);
 }
 
 void Client::report(uint64_t kh, uint8_t reason) {

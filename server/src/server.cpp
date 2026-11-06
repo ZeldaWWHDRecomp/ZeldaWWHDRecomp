@@ -214,6 +214,7 @@ void Server::on_datagram(const uint8_t* d, size_t n, const Address& from, uint32
     switch (d[0]) {
         case kPktConnect: on_connect(d, n, from, now); return;
         case kPktHello: on_hello(d, n, from, now); return;
+        case kPktRulesReq: on_rules_req(d, n, from, now); return;
         case kPktData: break;
         default: metrics_.dropped_bad++; return;
     }
@@ -260,6 +261,29 @@ void Server::on_datagram(const uint8_t* d, size_t n, const Address& from, uint32
     if (s.chan.broken()) kick(s, kNoticeKick, "protocol error");
 }
 
+// a page of the mod rules (the request is padded to a full datagram, so the answer never amplifies)
+void Server::on_rules_req(const uint8_t* d, size_t n, const Address& from, uint32_t now) {
+    RulesReq q;
+    if (!decode_rules_req(d, n, q)) return;
+    bool exempt = cfg_.loopback_exempt && from.is_loopback();
+    if (!exempt) {
+        auto& b = connect_rate_[from.ip_bytes()];
+        if (b.rate == 0) b.init(10, 20, now);
+        if (!b.take(1, now)) return;
+    }
+    auto pages = rule_pages(cfg_.mods);
+    if (q.page >= pages.size()) return;
+    RulesPage p;
+    p.nonce = q.nonce;
+    p.page = q.page;
+    p.pages = uint8_t(pages.size());
+    p.vanilla_only = cfg_.mods.vanilla_only;
+    p.rules = pages[q.page];
+    Bytes b = encode_rules_page(p, identity_);
+    send_dg(sock_, from, b.data(), b.size());
+    metrics_.bytes_out += b.size();
+}
+
 void Server::on_connect(const uint8_t* d, size_t n, const Address& from, uint32_t now) {
     Connect c;
     if (!decode_connect(d, n, c)) return;  // unpadded: no answer
@@ -289,6 +313,9 @@ void Server::on_connect(const uint8_t* d, size_t n, const Address& from, uint32_
     ch.info.players = uint16_t(std::min<size_t>(players(), 65535));
     ch.info.capacity = uint16_t(std::min(cfg_.max_players, 65535));
     ch.info.flags = uint8_t((crypto::backend_secure() ? 1 : 0) | (cfg_.invite_only ? 2 : 0) | (cfg_.public_server ? 4 : 0));
+    ch.info.mod_flags = cfg_.mods.flags();
+    ch.info.rule_pages = cfg_.mods.rules.empty() ? 0 : uint8_t(rule_pages(cfg_.mods).size());
+    ch.info.rules_digest = cfg_.mods.digest();
     Bytes b = encode_challenge(ch, identity_);
     send_dg(sock_, from, b.data(), b.size());
     metrics_.bytes_out += b.size();
@@ -349,6 +376,21 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     if (cfg_.invite_only &&
         std::find(cfg_.allow.begin(), cfg_.allow.end(), code40_of(kh)) == cfg_.allow.end())
         return refuse(from, h.nonce, Refusal::kInviteOnly, "");
+    // the server's gameplay-mod rules: refused with the exact list of what is missing, not allowed or banned
+    if (std::vector<ModProblem> mp = check_mods(cfg_.mods, h.mods); !mp.empty()) {
+        Refuse f;
+        f.nonce = h.nonce;
+        f.reason = Refusal::kMods;
+        f.mod_problems = mp;
+        f.text = "this server's mod rules: " + mp[0].id + " " + mod_problem_text(mp[0].problem) +
+                 (mp.size() > 1 ? " (and " + std::to_string(mp.size() - 1) + " more)" : "");
+        Bytes b = encode_refuse(f);
+        send_dg(sock_, from, b.data(), b.size());
+        metrics_.bytes_out += b.size();
+        metrics_.refused++;
+        metrics_.mod_refusals++;
+        return;
+    }
 
     crypto::Ephemeral eph = crypto::Ephemeral::generate();
     uint8_t tx[32], rx[32];
@@ -413,6 +455,8 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
                     " from worker " + std::to_string(ticket->from) + (h.resume ? "" : " (no ticket?)"));
             ghosts_.erase(s->id);
             s->lent_from = ticket->from == me_ ? -1 : ticket->from;
+            for (uint64_t k : ticket->blocks) lists_[kh].blocks.insert(k);
+            for (uint64_t k : ticket->mutes) lists_[kh].mutes.insert(k);
             // seen at once where the old worker last saw it: no gap until its first pose here
             s->head = ticket->who.head;
             s->blob = ticket->who.blob;
@@ -445,6 +489,15 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     }
     s->addr = from;
     s->name = h.name;
+    s->mods = h.mods;
+    if (!resumed) {
+        // the account's block and mute lists (kept per key hash; a handover brings them along too)
+        auto l = lists_.find(kh);
+        if (l != lists_.end()) {
+            s->blocks = l->second.blocks;
+            s->mutes = l->second.mutes;
+        }
+    }
     s->look = h.look;
     s->device = h.device;
     s->world = h.game_data;
@@ -487,7 +540,7 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     if (join_party) {
         // it came here to accept an invite to a party this worker holds
         auto p = parties_.find(join_party);
-        if (p != parties_.end() && p->second.members.size() < size_t(kMaxPartySize)) {
+        if (p != parties_.end() && p->second.members.size() < size_t(kMaxPartySize) && party_mods_ok(p->second, *s)) {
             p->second.invites.erase(std::remove_if(p->second.invites.begin(), p->second.invites.end(),
                                                    [&](const Party::Invite& i) { return i.to == s->key_hash; }),
                                     p->second.invites.end());
@@ -578,16 +631,29 @@ void Server::on_message(Session& s, const Delivered& m, uint32_t now) {
             w.u16(s.id);
             w.u8(e);
             for_viewers(s, [&](Session& v, uint8_t tier) {
-                if (tier <= kTierMid) v.chan.send_reliable(kMsgEmoteOf, b);
+                if (tier > kTierMid) return;
+                if (v.mutes.count(s.key_hash)) return void(metrics_.muted_drops++);  // muted: no emotes from them
+                v.chan.send_reliable(kMsgEmoteOf, b);
             });
             break;
         }
         case kMsgBlock:
-        case kMsgUnblock: {
+        case kMsgUnblock:
+        case kMsgMute:
+        case kMsgUnmute: {
             uint64_t kh = r.u64();
-            if (!r.done()) break;
-            if (m.type == kMsgBlock && s.blocks.size() < 4096) s.blocks.insert(kh);
-            if (m.type == kMsgUnblock) s.blocks.erase(kh);
+            if (!r.done() || kh == s.key_hash) break;
+            bool block = m.type == kMsgBlock || m.type == kMsgUnblock;
+            bool on = m.type == kMsgBlock || m.type == kMsgMute;
+            auto& set = block ? s.blocks : s.mutes;
+            auto& keep = block ? lists_[s.key_hash].blocks : lists_[s.key_hash].mutes;  // per account
+            if (on && set.size() < 4096) {
+                set.insert(kh);
+                keep.insert(kh);
+            } else if (!on) {
+                set.erase(kh);
+                keep.erase(kh);
+            }
             break;
         }
         case kMsgReport: {
@@ -824,6 +890,9 @@ void Server::on_app(Session& s, const Delivered& m, uint32_t now) {
     auto deliver = [&](Session& to) {
         if (debug) log("  to " + std::to_string(to.id) + (to.online ? "" : " (offline)"));
         if (&to == &s || !to.online) return;
+        // a block stops everything between the two (party members too); a mute stops effects and sounds (near)
+        if (!sees(to, s)) return void(metrics_.blocked_drops++);
+        if (h.target == kToNear && to.mutes.count(s.key_hash)) return void(metrics_.muted_drops++);
         if (m.reliable)
             to.chan.send_reliable(kMsgAppFrom, out);
         else

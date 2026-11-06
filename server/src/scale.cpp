@@ -570,6 +570,16 @@ void Server::hand_over(Session& s, int target, uint32_t now, const Bytes* party_
     put_ghost(wr, ghost_of(s));
     wr.u32(party_blob ? uint32_t(party_blob->size()) : 0);
     if (party_blob) wr.bytes(party_blob->data(), party_blob->size());
+    // the account's blocks and mutes, and its gameplay mods
+    auto put_set = [&](const std::unordered_set<uint64_t>& v) {
+        wr.u16(uint16_t(std::min<size_t>(v.size(), 4096)));
+        size_t k = 0;
+        for (uint64_t x : v)
+            if (k++ < 4096) wr.u64(x);
+    };
+    put_set(s.blocks);
+    put_set(s.mutes);
+    put_mod_refs(wr, s.mods);
     link_send(target, kLHandoff, body);
     if (owner == me_) lent_.insert(s.id);
     // the client is sent over once the target has the ticket (kLHandoffAck); it plays on here until then
@@ -616,6 +626,8 @@ Bytes Server::encode_party(const Party& p) const {
     }
     w.u32(p.team.version);
     put_team_fields(w, p.team.all());
+    w.u8(p.mods_set ? 1 : 0);
+    put_mod_refs(w, p.mods);
     return b;
 }
 
@@ -634,7 +646,12 @@ bool Server::decode_party(const uint8_t* d, size_t n, Party& p) const {
     }
     p.team.version = r.u32();
     std::vector<TeamField> f;
-    if (!get_team_fields(r, f) || !r.done()) return false;
+    if (!get_team_fields(r, f)) return false;
+    if (r.left()) {
+        p.mods_set = r.u8() != 0;
+        if (!get_mod_refs(r, p.mods)) return false;
+    }
+    if (!r.done()) return false;
     for (auto& x : f) p.team.fields[x.offset] = x;
     return true;
 }
@@ -713,6 +730,11 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
                 }
                 r.skip(pn);
             }
+            for (auto* v : {&tk.blocks, &tk.mutes}) {
+                size_t n = r.u16();
+                for (size_t k = 0; k < n && k < 4096 && r.ok(); ++k) v->push_back(r.u64());
+            }
+            if (r.left()) get_mod_refs(r, tk.mods);
             tk.at = now;
             tickets_[t] = std::move(tk);
             link_send(from, kLHandoffAck, Bytes(t.begin(), t.end()));
@@ -761,10 +783,13 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
             uint64_t from_kh = r.u64();
             std::string name = r.str8(24);
             uint64_t world = r.u64();
+            std::vector<ModRef> pmods;
+            if (r.ok() && r.left()) get_mod_refs(r, pmods);
             if (!r.done()) break;
             for (auto& [kh, cid] : by_key_)
                 if (code40_of(kh) == code)
-                    if (Session* t = online_member(kh); t && t->world == world && !t->blocks.count(from_kh)) {
+                    if (Session* t = online_member(kh); t && t->world == world && !t->blocks.count(from_kh) &&
+                                                         !lists_[kh].blocks.count(from_kh)) {
                         remote_invites_[pid] = from;
                         Bytes b;
                         Writer w(b);
@@ -772,6 +797,7 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
                         w.u16(from_id);
                         w.u64(from_kh);
                         w.str8(name);
+                        put_mod_refs(w, pmods);
                         t->chan.send_reliable(kMsgPartyInvited, b);
                     }
             break;

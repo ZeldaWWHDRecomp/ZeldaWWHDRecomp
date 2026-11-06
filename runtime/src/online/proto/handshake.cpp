@@ -57,6 +57,9 @@ static void put_info(Writer& w, const ServerInfo& i) {
     w.u16(i.capacity);
     w.u8(i.flags);
     w.bytes(i.pub, 32);
+    w.u8(i.mod_flags);
+    w.u8(i.rule_pages);
+    w.u32(i.rules_digest);
 }
 static ServerInfo get_info(Reader& r) {
     ServerInfo i;
@@ -67,6 +70,10 @@ static ServerInfo get_info(Reader& r) {
     i.capacity = r.u16();
     i.flags = r.u8();
     r.bytes(i.pub, 32);
+    i.mod_flags = r.u8();
+    i.rule_pages = r.u8();
+    i.rules_digest = r.u32();
+    i.mods.vanilla_only = (i.mod_flags & 1) != 0;
     return i;
 }
 
@@ -123,6 +130,7 @@ Bytes encode_hello(const Hello& h, const crypto::Identity& me) {
     w.u8(h.resume ? 1 : 0);
     if (h.resume) w.bytes(h.token, 32);
     w.str8(h.tag.substr(0, kMaxTag));
+    put_mod_refs(w, h.mods);
     uint8_t sig[64];
     crypto::sign(me, b.data(), b.size(), sig);
     w.bytes(sig, 64);
@@ -148,6 +156,7 @@ bool decode_hello(const uint8_t* d, size_t n, Hello& h, size_t& signed_len) {
     h.resume = r.u8() != 0;
     if (h.resume) r.bytes(h.token, 32);
     h.tag = r.str8(kMaxTag);
+    if (!get_mod_refs(r, h.mods)) return false;
     signed_len = r.pos();
     r.bytes(h.sig, 64);
     if (!r.done() || h.device > kBot || !clean_text(h.name) || !clean_text(h.tag)) return false;
@@ -229,6 +238,7 @@ Bytes encode_refuse(const Refuse& f) {
     w.u8(uint8_t(f.reason));
     w.u16(f.retry_s);
     w.str8(f.text.substr(0, 200));
+    if (f.reason == Refusal::kMods) put_mod_problems(w, f.mod_problems);
     return b;
 }
 
@@ -239,7 +249,82 @@ bool decode_refuse(const uint8_t* d, size_t n, Refuse& f) {
     f.reason = Refusal(r.u8());
     f.retry_s = r.u16();
     f.text = r.str8(200);
+    if (f.reason == Refusal::kMods && !get_mod_problems(r, f.mod_problems)) return false;
     return r.done() && clean_text(f.text);
+}
+
+Bytes encode_rules_req(const RulesReq& q) {
+    Bytes b;
+    Writer w(b);
+    w.u8(kPktRulesReq);
+    w.u16(kProtoVersion);
+    w.u32(q.nonce);
+    w.u8(q.page);
+    b.resize(kMaxDatagram, 0);  // padding: a page is never larger than this
+    return b;
+}
+
+bool decode_rules_req(const uint8_t* d, size_t n, RulesReq& q) {
+    if (n < kMaxDatagram) return false;
+    Reader r(d, n);
+    if (r.u8() != kPktRulesReq) return false;
+    r.u16();
+    q.nonce = r.u32();
+    q.page = r.u8();
+    return r.ok();
+}
+
+std::vector<std::vector<ModRule>> rule_pages(const ModRules& rules) {
+    std::vector<std::vector<ModRule>> pages(1);
+    size_t size = 0;
+    for (auto& r : rules.rules) {
+        Bytes one;
+        Writer w(one);
+        put_mod_rule(w, r);
+        if (size + one.size() > 1000 && !pages.back().empty()) {
+            pages.emplace_back();
+            size = 0;
+        }
+        pages.back().push_back(r);
+        size += one.size();
+    }
+    return pages;
+}
+
+Bytes encode_rules_page(const RulesPage& p, const crypto::Identity& server) {
+    Bytes b;
+    Writer w(b);
+    w.u8(kPktRules);
+    w.u32(p.nonce);
+    w.u8(p.page);
+    w.u8(p.pages);
+    w.u8(p.vanilla_only ? 1 : 0);
+    w.u8(uint8_t(p.rules.size()));
+    for (auto& r : p.rules) put_mod_rule(w, r);
+    uint8_t sig[64];
+    crypto::sign(server, b.data(), b.size(), sig);
+    w.bytes(sig, 64);
+    return b;
+}
+
+bool decode_rules_page(const uint8_t* d, size_t n, const uint8_t server_pub[32], RulesPage& p) {
+    Reader r(d, n);
+    if (r.u8() != kPktRules) return false;
+    p.nonce = r.u32();
+    p.page = r.u8();
+    p.pages = r.u8();
+    p.vanilla_only = r.u8() != 0;
+    size_t c = r.u8();
+    for (size_t i = 0; i < c && r.ok(); ++i) {
+        ModRule m;
+        if (!get_mod_rule(r, m)) return false;
+        p.rules.push_back(std::move(m));
+    }
+    size_t signed_len = r.pos();
+    uint8_t sig[64];
+    r.bytes(sig, 64);
+    if (!r.done()) return false;
+    return crypto::verify(server_pub, d, signed_len, sig);
 }
 
 bool handshake_nonce(const uint8_t* d, size_t n, uint32_t& nonce) {
@@ -247,7 +332,7 @@ bool handshake_nonce(const uint8_t* d, size_t n, uint32_t& nonce) {
     Reader r(d, n);
     uint8_t k = r.u8();
     if (k == kPktChallenge) r.u16();
-    else if (k != kPktWelcome && k != kPktRefuse) return false;
+    else if (k != kPktWelcome && k != kPktRefuse && k != kPktRules) return false;
     nonce = r.u32();
     return r.ok();
 }

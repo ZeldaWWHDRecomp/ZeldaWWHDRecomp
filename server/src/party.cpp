@@ -93,11 +93,20 @@ Session* Server::online_member(uint64_t kh) {
     return s && s->online && !s->dead && !s->redirected ? s : nullptr;
 }
 
-void Server::party_result(Session& s, uint8_t code, const std::string& text) {
+bool Server::party_mods_ok(Party& p, Session& s) {
+    if (!p.mods_set) return true;
+    std::vector<ModProblem> d = party_mod_problems(p.mods, s.mods);
+    if (d.empty()) return true;
+    party_result(s, 10, "your gameplay mods differ from the party's", &d);
+    return false;
+}
+
+void Server::party_result(Session& s, uint8_t code, const std::string& text, const std::vector<ModProblem>* problems) {
     Bytes b;
     Writer w(b);
     w.u8(code);
     w.str8(text);
+    if (problems) put_mod_problems(w, *problems);
     s.chan.send_reliable(kMsgPartyResult, b);
 }
 
@@ -131,6 +140,11 @@ void Server::party_send_team(Party& p, Session& to) {
 
 void Server::party_join(Party& p, Session& s, uint32_t now) {
     team_dirty_ = true;
+    // the party's mod set is its leader's (the first member is the leader of a new party)
+    if (!p.mods_set || s.key_hash == p.leader) {
+        p.mods = s.mods;
+        p.mods_set = true;
+    }
     if (std::find(p.members.begin(), p.members.end(), s.key_hash) == p.members.end()) p.members.push_back(s.key_hash);
     p.names[s.key_hash] = s.name;
     party_by_key_[s.key_hash] = p.id;
@@ -173,6 +187,10 @@ void Server::party_member_online(Session& s, uint32_t now) {
     auto p = parties_.find(it->second);
     if (p == parties_.end() || p->second.world != s.world) {
         s.party = 0;
+        return;
+    }
+    if (s.key_hash != p->second.leader && !party_mods_ok(p->second, s)) {
+        s.party = 0;  // not back in it with other mods (the party stays; the player is told)
         return;
     }
     party_join(p->second, s, now);
@@ -264,6 +282,7 @@ void Server::party_restore(Session& s, Reader& r, uint32_t now) {
         return party_result(s, 9, "your party could not be restored");
     }
     Party& p = it->second;
+    if (s.key_hash != p.leader && !party_mods_ok(p, s)) return;
     if (s.party && s.party != p.id) party_leave(s, now);
     party_join(p, s, now);
     // members who claimed this party before it was rebuilt come in now
@@ -319,6 +338,7 @@ void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
         w.u64(s.key_hash);
         w.str8(s.name);
         w.u64(s.world);
+        put_mod_refs(w, p->mods_set ? p->mods : s.mods);
         for (size_t i = 0; i < peers_.size(); ++i)
             if (int(i) != me_ && peers_[i].up) link_send(int(i), kLInvite, b);
         return party_result(s, 0, "invite sent");
@@ -336,6 +356,7 @@ void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
     w.u16(s.id);
     w.u64(s.key_hash);
     w.str8(s.name);
+    put_mod_refs(w, p->mods);  // the party's mod set, so the invitee can offer to use it
     to->chan.send_reliable(kMsgPartyInvited, b);
     party_result(s, 0, "invite sent");
 }
@@ -358,6 +379,7 @@ void Server::party_accept(Session& s, uint32_t id, uint32_t now) {
         return (i.to == s.key_hash || i.to == (code40_of(s.key_hash) | (uint64_t(1) << 63))) && now - i.at <= kInviteMs;
     });
     if (inv == p.invites.end()) return party_result(s, 7, "the invite expired");
+    if (!party_mods_ok(p, s)) return;  // (the invite stays: the player may switch mods and accept again)
     p.invites.erase(inv);
     if (p.members.size() >= size_t(kMaxPartySize)) return party_result(s, 5, "the party is full");
     if (s.party && s.party != id) party_leave(s, now);

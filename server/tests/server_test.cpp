@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <algorithm>
 #include <functional>
 #include <random>
 #include <map>
@@ -851,6 +852,158 @@ static void test_tcp() {
     std::printf("tcp: a dropped connection resumed the session: ok\n");
 }
 
+// the server's mod rules: the config for each rule type, the rules shown before joining (pages), refusals that
+// name each mod, and party matching
+static ModRef mref(const char* id, const char* ver, uint8_t h) {
+    ModRef m;
+    m.id = id;
+    m.version = ver;
+    m.hash.fill(h);
+    return m;
+}
+
+static void test_mod_rules_server() {
+    // config: each rule type, and a bad entry refused
+    {
+        server::Config c;
+        std::string why;
+        CHECK(server::parse_config_text("[mods]\nrequired = [\"randomizer\"]\nallowed = [\"qol@1.2\"]\n"
+                                        "banned = [\"speed@*\"]\n", c, why));
+        CHECK(c.mods.rules.size() == 3 && !c.mods.vanilla_only);
+        server::Config v;
+        CHECK(server::parse_config_text("[mods]\nvanilla_only = true\n", v, why) && v.mods.vanilla_only);
+        server::Config bad;
+        CHECK(!server::parse_config_text("[mods]\nallowed = [\"Not An Id\"]\n", bad, why));
+    }
+    auto cfg = base_config(0);
+    std::string why;
+    CHECK(server::parse_config_text("[mods]\nrequired = [\"randomizer\"]\nallowed = [\"qol@1.2\"]\n", cfg, why));
+    for (int i = 0; i < 40; ++i) {  // enough rules for more than one page
+        ModRule r;
+        parse_mod_rule("banned-mod-number-" + std::to_string(i) + "@1.0#" + std::string(64, 'b'), ModRuleKind::kBanned, r);
+        cfg.mods.rules.push_back(r);
+    }
+    server::Server s(cfg);
+    CHECK(s.start(why));
+    uint16_t port = s.port();
+    // the server list: the rules before joining, all pages
+    {
+        Bot q;
+        ClientConfig qc;
+        qc.port = port;
+        qc.game_data = 0x1111;
+        qc.identity = crypto::Identity::generate();
+        qc.query_only = true;
+        CHECK(q.c.start(qc, why));
+        CHECK(run(&s, {&q}, 5000, [&] { return q.saw(ClientEvent::kServerRules) && q.c.state() == ClientState::kStopped; }));
+        if (auto* e = q.last(ClientEvent::kServerRules)) {
+            CHECK(e->info.mods.rules.size() == 42 && e->info.rule_pages > 1 && (e->info.mod_flags & 2));
+            std::printf("mod rules: %zu rules in %u pages before joining\n", e->info.mods.rules.size(), unsigned(e->info.rule_pages));
+        }
+    }
+    auto make = [&](const char* name, std::vector<ModRef> mods) {
+        auto b = std::make_unique<Bot>();
+        ClientConfig c;
+        c.port = port;
+        c.game_data = 0x1111;
+        c.identity = crypto::Identity::generate();
+        c.name = name;
+        c.mods = mods;
+        b->id = c.identity;
+        std::string w;
+        CHECK(b->c.start(c, w));
+        return b;
+    };
+    // refused, with every problem named
+    auto bad = make("bad", {mref("qol", "1.1", 1), mref("speed", "2", 2), mref("banned-mod-number-3", "1.0", 0xbb)});
+    CHECK(run(&s, {bad.get()}, 5000, [&] { return bad->saw(ClientEvent::kRefused); }));
+    if (auto* e = bad->last(ClientEvent::kRefused)) {
+        CHECK(e->refusal == Refusal::kMods);
+        auto has = [&](ModProblemKind k, const char* id) {
+            return std::any_of(e->mod_problems.begin(), e->mod_problems.end(),
+                               [&](const ModProblem& p) { return p.problem == k && p.id == id; });
+        };
+        CHECK(has(ModProblemKind::kMissing, "randomizer") && has(ModProblemKind::kWrongVersion, "qol") &&
+              has(ModProblemKind::kNotAllowed, "speed") && has(ModProblemKind::kBanned, "banned-mod-number-3"));
+        std::printf("mod rules: refused: \"%s\", %zu problems\n", e->text.c_str(), e->mod_problems.size());
+    }
+    // allowed in; party matching between two players who pass the rules but differ
+    auto a = make("a", {mref("randomizer", "", 7), mref("qol", "1.2", 1)});
+    auto b = make("b", {mref("randomizer", "", 8)});
+    CHECK(run(&s, {a.get(), b.get()}, 5000, [&] { return a->online() && b->online(); }));
+    uint64_t code = 0;
+    parse_friend_code(b->c.friend_code(), code);
+    a->c.party_invite(code);
+    CHECK(run(&s, {a.get(), b.get()}, 3000, [&] { return b->saw(ClientEvent::kPartyInvited); }));
+    auto* inv = b->last(ClientEvent::kPartyInvited);
+    CHECK(inv && inv->mods.size() == 2);  // the party's mod set comes with the invite
+    b->c.party_accept(inv->party_id);
+    CHECK(run(&s, {a.get(), b.get()}, 3000, [&] {
+        auto* e = b->last(ClientEvent::kPartyResult);
+        return e && e->value == 10;
+    }));
+    if (auto* e = b->last(ClientEvent::kPartyResult)) CHECK(e->mod_problems.size() == 2);  // randomizer seed, qol
+    CHECK(!b->last(ClientEvent::kPartyState) || b->last(ClientEvent::kPartyState)->party.members.size() < 2);
+    std::printf("mod rules: party join refused with %zu differences\n", b->last(ClientEvent::kPartyResult)->mod_problems.size());
+}
+
+// block and mute (C14): what stops reaching whom, per account (it survives a reconnect), and lifting it
+static void test_block_mute() {
+    server::Server s(base_config(0));
+    std::string why;
+    CHECK(s.start(why));
+    uint16_t port = s.port();
+    auto a = make_bot("a", port), b = make_bot("b", port), c = make_bot("c", port);
+    std::vector<Bot*> all = {a.get(), b.get(), c.get()};
+    a->head.x = 1000;
+    b->head.x = 1300;
+    c->head.x = 1600;
+    CHECK(run(&s, all, 5000, [&] { return a->players.count(b->c.my_id()) && a->players.count(c->c.my_id()); }));
+    // a mutes b: b's emotes reach c, not a; b's poses still reach a
+    a->c.mute(b->c.key_hash(), true);
+    run(&s, all, 300);
+    b->c.send_emote(3);
+    CHECK(run(&s, all, 2000, [&] { return c->saw(ClientEvent::kEmote); }));
+    bool a_emote = false;
+    for (auto& e : a->log)
+        if (e.kind == ClientEvent::kEmote) a_emote = true;
+    CHECK(!a_emote && a->players.count(b->c.my_id()));
+    CHECK(s.metrics().muted_drops >= 1);
+    // a blocks c: neither sees the other, and c's party messages to a are dropped
+    uint64_t code = 0;
+    parse_friend_code(a->c.friend_code(), code);
+    c->c.party_invite(code);
+    CHECK(run(&s, all, 3000, [&] { return a->saw(ClientEvent::kPartyInvited); }));
+    a->c.party_accept(a->last(ClientEvent::kPartyInvited)->party_id);
+    CHECK(run(&s, all, 3000, [&] { return c->last(ClientEvent::kPartyState) && c->last(ClientEvent::kPartyState)->party.members.size() == 2; }));
+    a->c.block(c->c.key_hash(), true);
+    CHECK(run(&s, all, 3000, [&] { return !a->players.count(c->c.my_id()) && !c->players.count(a->c.my_id()); }));
+    a->log.clear();
+    AppHeader h;
+    h.type = 50;
+    uint8_t v = 1;
+    c->c.send_app(h, &v, 1, true);
+    run(&s, all, 1000);
+    bool app = false;
+    for (auto& e : a->log)
+        if (e.kind == ClientEvent::kApp) app = true;
+    CHECK(!app && s.metrics().blocked_drops >= 1);
+    // per account: a comes back as a new game (same identity) and the block still holds
+    auto id = a->id;
+    a.reset();
+    a = make_bot("a", port, 0x1111, &id);
+    a->head.x = 1000;
+    all = {a.get(), b.get(), c.get()};
+    CHECK(run(&s, all, 5000, [&] { return a->online() && a->players.count(b->c.my_id()); }));
+    run(&s, all, 1000);
+    CHECK(!a->players.count(c->c.my_id()));
+    // lifted
+    a->c.block(c->c.key_hash(), false);
+    CHECK(run(&s, all, 3000, [&] { return a->players.count(c->c.my_id()) != 0; }));
+    std::printf("block/mute: muted drops %llu, blocked drops %llu: ok\n", (unsigned long long)s.metrics().muted_drops.load(),
+                (unsigned long long)s.metrics().blocked_drops.load());
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     g_dir = argc > 1 ? argv[1] : ".";
@@ -864,6 +1017,8 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "upload") test_upload_limit();
     if (only.empty() || only == "partyrestart") test_party_restart();
     if (only.empty() || only == "tcp") test_tcp();
+    if (only.empty() || only == "mods") test_mod_rules_server();
+    if (only.empty() || only == "block") test_block_mute();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "scalingmass") test_scaling_mass();

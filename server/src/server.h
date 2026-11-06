@@ -108,7 +108,9 @@ struct Session {
     bool hidden = true;   // no pose yet or in transition
     int32_t gx = 0, gz = 0;  // global sub-cell at sea
     std::unordered_map<uint16_t, Seen> seen;
-    std::unordered_set<uint64_t> blocks;  // key hashes this player blocked
+    std::unordered_set<uint64_t> blocks;  // key hashes this player blocked (both stop seeing each other)
+    std::unordered_set<uint64_t> mutes;   // key hashes this player muted (no emotes, effects, sounds, voice from them)
+    std::vector<proto::ModRef> mods;      // its enabled gameplay mods (HELLO)
     uint32_t next_marker_tick = 0;
 
     // limits
@@ -171,6 +173,8 @@ struct Party {
     TeamStore team;
     uint32_t empty_since = 0;          // ms; 0 while a member is online
     uint32_t issued = 0;               // the newest leader record seen (party restore)
+    std::vector<proto::ModRef> mods;   // the party's mod set: its leader's
+    bool mods_set = false;
     struct Invite {
         uint64_t to;
         uint32_t at;
@@ -186,6 +190,7 @@ struct Metrics {
     std::vector<uint32_t> tick_us;  // since the last report
     std::vector<uint32_t> interest_us, send_us;  // the two parallel phases of each tick
     std::atomic<uint64_t> out_churn{0}, out_gone{0};
+    std::atomic<uint64_t> blocked_drops{0}, muted_drops{0}, mod_refusals{0};
     std::atomic<uint64_t> pose_entries_near{0}, pose_entries_mid{0}, pose_entries_far{0}, markers{0};
     uint64_t handovers_out = 0, handovers_in = 0, ghosts = 0, splits = 0, moves = 0, merges = 0;
     uint64_t workers_started = 0, workers_stopped = 0, copies_opened = 0, copy_moves = 0;
@@ -316,7 +321,15 @@ private:
     void party_member_offline(Session& s, uint32_t now);
     void party_place_changed(Session& s, uint32_t now);
     void runners_tick(uint32_t now);
-    void party_result(Session& s, uint8_t code, const std::string& text);
+    void party_result(Session& s, uint8_t code, const std::string& text,
+                      const std::vector<proto::ModProblem>* problems = nullptr);
+    bool party_mods_ok(Party& p, Session& s);  // false: told the player why (PARTY_RESULT 10)
+    void on_rules_req(const uint8_t* d, size_t n, const proto::Address& from, uint32_t now);
+    // block and mute lists per account (key hash): they outlive sessions and travel with handovers
+    struct AccountLists {
+        std::unordered_set<uint64_t> blocks, mutes;
+    };
+    std::unordered_map<uint64_t, AccountLists> lists_;
     Session* online_member(uint64_t key_hash);
     void parties_gc(uint32_t now);
     void save_team_states();
@@ -450,6 +463,8 @@ private:
         uint32_t party;
         bool join;                     // accepting an invite of `party`, which lives on this worker
         int from;
+        std::vector<uint64_t> blocks, mutes;
+        std::vector<proto::ModRef> mods;
     };
     std::map<std::array<uint8_t, 32>, Ticket> tickets_;
     struct Pending {

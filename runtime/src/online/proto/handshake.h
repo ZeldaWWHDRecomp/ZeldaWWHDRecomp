@@ -13,6 +13,7 @@
 #include <string>
 
 #include "crypto.h"
+#include "mods.h"
 #include "protocol.h"
 #include "wire.h"
 
@@ -25,6 +26,10 @@ struct ServerInfo {
     uint16_t players = 0, capacity = 0;
     uint8_t flags = 0;     // bit 0: secure crypto backend, bit 1: invite-only, bit 2: public
     uint8_t pub[32]{};     // the server's identity key (pinned by the client: trust on first use)
+    // mod rules (mods.h): flags (bit 0 vanilla only, 1 a whitelist, 2 any rules), how many RULES pages, a digest
+    uint8_t mod_flags = 0, rule_pages = 0;
+    uint32_t rules_digest = 0;
+    ModRules mods;         // filled by the client from the RULES pages
 };
 
 struct Connect {
@@ -57,6 +62,7 @@ struct Hello {
     bool resume = false;
     uint8_t token[32]{};  // resume token, or a shard handover ticket
     std::string tag;      // client build tag, <= 16 (logs only)
+    std::vector<ModRef> mods;  // the enabled gameplay mods (protocol 2)
     uint8_t sig[64]{};
 };
 struct Welcome {
@@ -75,7 +81,25 @@ struct Refuse {
     Refusal reason = Refusal::kMalformed;
     uint16_t retry_s = 0;
     std::string text;
+    std::vector<ModProblem> mod_problems;  // with Refusal::kMods
 };
+// a page of the server's mod rules: RULES_REQ (padded like CONNECT) asks, RULES answers, signed by the server
+struct RulesReq {
+    uint32_t nonce = 0;
+    uint8_t page = 0;
+};
+struct RulesPage {
+    uint32_t nonce = 0;
+    uint8_t page = 0, pages = 0;
+    bool vanilla_only = false;
+    std::vector<ModRule> rules;
+};
+Bytes encode_rules_req(const RulesReq& r);
+bool decode_rules_req(const uint8_t* d, size_t n, RulesReq& r);
+Bytes encode_rules_page(const RulesPage& p, const crypto::Identity& server);
+bool decode_rules_page(const uint8_t* d, size_t n, const uint8_t server_pub[32], RulesPage& p);
+// the rules in pages of at most ~1,000 bytes
+std::vector<std::vector<ModRule>> rule_pages(const ModRules& rules);
 
 Bytes encode_connect(const Connect& c);
 bool decode_connect(const uint8_t* d, size_t n, Connect& c);

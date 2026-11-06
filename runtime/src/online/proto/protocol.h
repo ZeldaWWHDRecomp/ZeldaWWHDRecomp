@@ -12,7 +12,7 @@
 namespace online::proto {
 
 // the server protocol version; independent of the direct-UDP co-op protocol of the game's own link
-constexpr uint16_t kProtoVersion = 1;
+constexpr uint16_t kProtoVersion = 2;  // 2: gameplay mods in HELLO, server mod rules
 constexpr uint16_t kDefaultPort = 7777;
 
 // datagram budget: no datagram is larger, so nothing fragments at the IP layer on common paths
@@ -32,6 +32,8 @@ enum PacketKind : uint8_t {
     kPktWelcome = 0xA4,    // S->C, sealed with the new session keys
     kPktRefuse = 0xA5,     // S->C, plain: reason code + text
     kPktData = 0xA6,       // either way, sealed: the session's packets
+    kPktRulesReq = 0xA7,   // C->S, plain, padded: a page of the server's mod rules, please
+    kPktRules = 0xA8,      // S->C, plain, signed by the server: that page
 };
 
 enum class Refusal : uint8_t {
@@ -46,6 +48,7 @@ enum class Refusal : uint8_t {
     kMalformed,
     kShuttingDown,
     kKicked,
+    kMods,         // gameplay mods: see the problem list (mods.h)
 };
 const char* refusal_text(Refusal r);
 
@@ -92,6 +95,8 @@ enum Msg : uint8_t {
     kMsgPinRunner = 17,     // reliable: u8 on (leader pins enemy running to themselves)
     kMsgPing = 18,          // unreliable: keep-alive with nothing else to say
     kMsgJoinCopyOf = 19,    // reliable: u64 key hash: go to the copy that player is in (a friend's copy)
+    kMsgMute = 21,          // reliable: u64 key hash (that player's emotes, effects, sounds and voice stop reaching you)
+    kMsgUnmute = 22,        // reliable: u64 key hash
     kMsgPartyRestore = 20,  // reliable: PartyRecord (messages.h): after a fresh WELCOME (the server restarted),
                             // the party this game was in; the leader's own claim, or a record the leader signed,
                             // rebuilds it, and members with the same party id join. Then re-send your progress
