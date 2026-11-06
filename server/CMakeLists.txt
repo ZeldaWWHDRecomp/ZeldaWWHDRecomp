@@ -27,6 +27,7 @@ add_library(wwhd_online_server_core STATIC
   src/admin.cpp
   src/config.cpp
   src/party.cpp
+  src/pvp.cpp
   src/server.cpp
   src/scale.cpp)
 target_include_directories(wwhd_online_server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)

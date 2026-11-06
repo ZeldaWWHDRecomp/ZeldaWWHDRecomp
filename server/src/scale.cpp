@@ -819,6 +819,26 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
             parties_[p.id] = std::move(p);
             break;
         }
+        case kLPvpHit: {
+            // a hit from a player on another worker on one of ours: our side of the checks, then delivered
+            uint16_t aid = r.u16();
+            uint64_t akh = r.u64();
+            uint32_t aparty = r.u32();
+            PvpHit h;
+            if (!get_pvp_hit(r, h) || !r.done()) break;
+            auto it = by_id_.find(h.other);
+            if (it == by_id_.end()) break;
+            auto sp = sessions_.find(it->second);
+            if (sp == sessions_.end() || !sp->second->online || sp->second->dead) break;
+            Session& v = *sp->second;
+            int why = pvp_check_victim(v, akh, aparty, v, now);
+            if (why >= 0) {
+                metrics_.pvp_drops[why]++;
+                break;
+            }
+            pvp_deliver_hit(aid, v, h, now);
+            break;
+        }
         case kLBan: {
             Ban b;
             b.code40 = r.u64();

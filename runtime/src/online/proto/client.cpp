@@ -541,6 +541,49 @@ void Client::handle_message(const Delivered& m) {
             if (r.done()) events_.push_back(std::move(e));
             break;
         }
+        case kMsgPvpRules: {
+            ClientEvent e{ClientEvent::kPvpRules};
+            if (get_pvp_rules(r, e.pvp_rules) && r.done()) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgPvpHitOn: {
+            ClientEvent e{ClientEvent::kPvpHitOn};
+            if (get_pvp_hit(r, e.pvp_hit) && r.done()) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgPvpShotOf: {
+            ClientEvent e{ClientEvent::kPvpShotOf};
+            if (get_pvp_shot(r, e.pvp_shot, true) && r.done()) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgPvpKoOf: {
+            ClientEvent e{ClientEvent::kPvpKoOf};
+            e.id = r.u16();
+            e.value16 = r.u16();
+            if (r.done()) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgPvpRupees: {
+            ClientEvent e{ClientEvent::kPvpRupees};
+            e.value16 = r.u16();
+            if (r.done()) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgPvpState: {
+            ClientEvent e{ClientEvent::kPvpState};
+            e.value = r.u8();
+            e.value16 = r.u16();
+            if (r.done()) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgPvpRespawn: {
+            ClientEvent e{ClientEvent::kPvpRespawn};
+            e.value = r.u8();
+            e.pvp_hit.x = get_s24(r);
+            e.pvp_hit.z = get_s24(r);
+            if (r.done()) events_.push_back(std::move(e));
+            break;
+        }
         case kMsgPartyWhere: {
             ClientEvent e{ClientEvent::kPartyWhere};
             auto s24 = [&] {
@@ -633,6 +676,37 @@ void Client::mute(uint64_t kh, bool on) {
     Bytes b;
     Writer(b).u64(kh);
     chan_.send_reliable(on ? kMsgMute : kMsgUnmute, b);
+}
+
+void Client::pvp_flag(bool on, bool busy) {
+    if (state_ != ClientState::kOnline) return;
+    uint8_t b[2] = {uint8_t(on ? 1 : 0), uint8_t(busy ? 1 : 0)};
+    chan_.send_reliable(kMsgPvpFlag, b, 2);
+}
+
+void Client::pvp_hit(const PvpHit& h) {
+    if (state_ != ClientState::kOnline) return;
+    Bytes b;
+    Writer w(b);
+    put_pvp_hit(w, h);
+    chan_.send_reliable(kMsgPvpHit, b);
+}
+
+void Client::pvp_shot(const PvpShot& s) {
+    if (state_ != ClientState::kOnline) return;
+    Bytes b;
+    Writer w(b);
+    put_pvp_shot(w, s, false);
+    chan_.send_unreliable(kMsgPvpShot, b);
+}
+
+void Client::pvp_ko(uint16_t by, uint16_t wallet) {
+    if (state_ != ClientState::kOnline) return;
+    Bytes b;
+    Writer w(b);
+    w.u16(by);
+    w.u16(wallet);
+    chan_.send_reliable(kMsgPvpKo, b);
 }
 
 void Client::report(uint64_t kh, uint8_t reason) {

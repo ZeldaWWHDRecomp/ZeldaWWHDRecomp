@@ -103,6 +103,49 @@ Example: a vanilla-only server:
 vanilla_only = true
 ```
 
+### PvP at sea
+
+Players can fight each other on the open sea; the server referees.
+
+```toml
+[pvp]
+sea = "opt-in"              # "off", "opt-in" (each player's toggle, on by default) or "on" (everyone, no toggle)
+zones = ["10", "12:r=20000", "3:x=500,z=-200,r=15000", "-16"]   # safe zones, see below
+protect_s = 12              # protection after leaving a safe zone and after a knockout
+enter_delay_s = 10          # fleeing into a safe zone mid-fight: safe only after this long
+hide_band = 8000            # PvP players this far outside a safe zone are hidden from strangers' charts
+ko_rupee_percent = 10       # a knockout costs this share of the wallet (0..50); the rupees vanish
+ko_rupee_max = 100
+max_hit_dist = 3000
+cooldown_kos = 2            # after this many knockouts of one player by the same attacker ...
+cooldown_window_s = 180     # ... within this window,
+cooldown_s = 300            # ... that attacker can't hit that player, or cost them rupees, for this long
+```
+
+- **Safe zones** are circles in sea squares. Squares are numbered row by row from the north-west
+  corner, 0 to 48.
+  - Entry forms:
+    - `"10"`: the square's centre, radius 15,000;
+    - `"12:r=20000"`: another radius;
+    - `"3:x=500,z=-200,r=15000"`: a centre offset from the square's centre;
+    - `"-16"`: removes square 16's zone;
+    - `zones_replace = true`: starts from an empty list.
+  - The default list is squares 0, 3, 10, 12, 16, 25, 40, 43 and 44, the big islands, centred. It is
+    a first approximation until it is measured.
+  - Every place other than the open sea (interiors, dungeons, their entrances) is always safe.
+- **What the server checks** for every hit:
+  - both players have PvP on;
+  - neither is in a safe zone or protected (busy in a cutscene, shop or menu counts as protected);
+  - the distance and the hit rate are plausible;
+  - neither has blocked the other;
+  - not in one party, unless the party's friendly fire is on (then zones and toggles don't matter and
+    a knockout costs no rupees);
+  - not inside the repeat-knockout cooldown.
+
+  Anything else is dropped and counted in the metrics. Attacking ends one's own protection.
+- **A knockout** costs the knocked-out player a share of their rupees. The rupees vanish; the attacker
+  gains nothing. The player comes back at the nearest safe zone's edge, protected for a while.
+
 ### Block and mute
 
 A player can block or mute another player from the game:

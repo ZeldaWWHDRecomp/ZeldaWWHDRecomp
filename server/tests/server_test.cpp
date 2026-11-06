@@ -1240,6 +1240,154 @@ static void test_party_16_handover() {
     std::printf("party of 16: carried across the handover together, leader kept, 16 of 16 online\n");
 }
 
+// PvP at sea (C28): the config, the rules and state after joining, what is passed on and what is dropped, knockouts
+// with the rupee loss and the repeat-knockout cooldown, hiding in the band, the party's friendly fire
+static void test_pvp() {
+    {
+        server::Config c;
+        std::string why;
+        CHECK(server::parse_config_text("[pvp]\nsea = \"on\"\nzones = [\"10\", \"12:r=20000\", \"-16\", \"24:x=500,z=-200,r=900\"]\n", c, why));
+        CHECK(c.pvp.mode == PvpMode::kOn);
+        auto has = [&](int sq) { return std::any_of(c.pvp.zones.begin(), c.pvp.zones.end(), [&](auto& z) { return z.square == sq; }); };
+        CHECK(has(10) && has(12) && !has(16) && has(24) && has(0));
+        server::Config r;
+        CHECK(server::parse_config_text("[pvp]\nzones_replace = true\nzones = [\"5\"]\n", r, why) && r.pvp.zones.size() == 1);
+        CHECK(!server::parse_config_text("[pvp]\nko_rupee_percent = 60\n", r, why) && why.find("between 0 and 50") != std::string::npos);
+        CHECK(!server::parse_config_text("[pvp]\nsea = \"maybe\"\n", r, why));
+    }
+    auto cfg = base_config(0);
+    std::string why;
+    // square 24 is centred on 0,0: a safe zone at 20000,0 with radius 3000 (its band reaches 11000)
+    CHECK(server::parse_config_text("[pvp]\nzones = [\"24:x=20000,r=3000\"]\nprotect_s = 1\nenter_delay_s = 1\nmax_hit_dist = 5000\n", cfg, why));
+    server::Server s(cfg);
+    s.log = [](const std::string&) {};
+    CHECK(s.start(why));
+    auto a = make_bot("a", s.port()), b = make_bot("b", s.port()), c = make_bot("c", s.port());
+    std::vector<Bot*> all = {a.get(), b.get(), c.get()};
+    a->head.x = -1000;
+    b->head.x = -500;
+    c->head.x = -40000;
+    CHECK(run(&s, all, 5000, [&] { return a->online() && b->online() && c->online(); }));
+    CHECK(run(&s, all, 3000, [&] { return b->saw(ClientEvent::kPvpRules) && b->saw(ClientEvent::kPvpState); }));
+    run(&s, all, 1500);  // the protection after "leaving" the start (1 s here) runs out
+    auto state = [&](Bot& x) { auto* e = x.last(ClientEvent::kPvpState); return e ? e->value : 0; };
+    CHECK(state(*b) & kPvpActive);
+    auto hit = [&](Bot& from, Bot& to, float dist_ok = 0) {
+        PvpHit h;
+        h.other = to.c.my_id();
+        h.kind = kPvpSword;
+        h.damage = 4;
+        h.x = to.head.x + dist_ok;
+        h.z = to.head.z;
+        from.c.pvp_hit(h);
+    };
+    auto hits_on = [&](Bot& x) {
+        int n = 0;
+        for (auto& e : x.log)
+            if (e.kind == ClientEvent::kPvpHitOn) ++n;
+        return n;
+    };
+    // a valid hit
+    hit(*a, *b);
+    CHECK(run(&s, all, 2000, [&] { return hits_on(*b) == 1; }));
+    // the victim's toggle off: dropped
+    b->c.pvp_flag(false, false);
+    run(&s, all, 300);
+    hit(*a, *b);
+    run(&s, all, 500);
+    CHECK(hits_on(*b) == 1);
+    b->c.pvp_flag(true, false);
+    run(&s, all, 300);
+    // a hit point not at the victim: dropped; too far: dropped
+    hit(*a, *b, 2000);
+    run(&s, all, 500);
+    CHECK(hits_on(*b) == 1);
+    // a block ends it
+    b->c.block(a->c.key_hash(), true);
+    run(&s, all, 300);
+    hit(*a, *b);
+    run(&s, all, 500);
+    CHECK(hits_on(*b) == 1);
+    b->c.block(a->c.key_hash(), false);
+    run(&s, all, 300);
+    // knockouts: 10% of the wallet (500 -> 50), the respawn at the zone, the cooldown after 2
+    auto rupees = [&](Bot& x) {
+        int sum = 0;
+        for (auto& e : x.log)
+            if (e.kind == ClientEvent::kPvpRupees) sum += e.value16;
+        return sum;
+    };
+    for (int k = 0; k < 3; ++k) {
+        run(&s, all, 1300);  // the victim's protection after a knockout (1 s here)
+        int before = hits_on(*b);
+        hit(*a, *b);
+        bool landed = run(&s, all, 1500, [&] { return hits_on(*b) > before; });
+        if (k < 2) CHECK(landed);
+        else CHECK(!landed);  // the cooldown: a's hits on b are dropped
+        if (landed) {
+            b->c.pvp_ko(a->c.my_id(), 500);
+            CHECK(run(&s, all, 2000, [&] { return rupees(*b) == 50 * (k + 1); }));
+        }
+    }
+    CHECK(b->saw(ClientEvent::kPvpRespawn) && a->saw(ClientEvent::kPvpKoOf));
+    if (auto* e = b->last(ClientEvent::kPvpRespawn)) CHECK(e->value == 24 && std::fabs(e->pvp_hit.x - 17500) < 600);
+    // in the band outside the zone: b is off c's chart (c is a stranger in the same square)
+    b->head.x = 14000;  // 6000 from the zone's centre: in the band
+    run(&s, all, 6000);
+    c->log.clear();
+    run(&s, all, 6000);
+    bool b_marked = false;
+    for (auto& e : c->log)
+        if (e.kind == ClientEvent::kMarkers)
+            for (auto& m : e.markers)
+                if (m.id == b->c.my_id()) b_marked = true;
+    CHECK(!b_marked);
+    // into the safe zone mid-fight: safe only after the entering delay (1 s here)
+    b->head.x = -500;
+    run(&s, all, 1500);
+    c->head.x = 16500;  // outside the zone (3,500 from its centre); c (a and b are in the cooldown)
+    b->head.x = 16900;
+    run(&s, all, 1500);
+    hit(*c, *b);  // a fight starts
+    run(&s, all, 300);
+    b->head.x = 20000;  // b flees into the zone
+    CHECK(run(&s, all, 2500, [&] { return (state(*b) & kPvpEntering) != 0; }));  // (a 3,100-unit jump: held 1 s as implausible first)
+    int fled = hits_on(*b);
+    hit(*c, *b);
+    CHECK(run(&s, all, 800, [&] { return hits_on(*b) > fled; }));  // still hittable while entering
+    CHECK(run(&s, all, 2500, [&] { return (state(*b) & kPvpInSafeZone) != 0; }));
+    fled = hits_on(*b);
+    hit(*c, *b);
+    run(&s, all, 600);
+    CHECK(hits_on(*b) == fled);  // safe now
+    c->head.x = -40000;
+    // the party: hits only with friendly fire, then even with PvP off
+    b->head.x = -500;
+    uint64_t code = 0;
+    parse_friend_code(b->c.friend_code(), code);
+    a->c.party_invite(code);
+    CHECK(run(&s, all, 3000, [&] { return b->saw(ClientEvent::kPartyInvited); }));
+    b->c.party_accept(b->last(ClientEvent::kPartyInvited)->party_id);
+    CHECK(run(&s, all, 3000, [&] { return b->last(ClientEvent::kPartyState) && b->last(ClientEvent::kPartyState)->party.members.size() == 2; }));
+    run(&s, all, 1500);
+    b->c.pvp_flag(false, false);
+    run(&s, all, 300);
+    int before = hits_on(*b);
+    hit(*a, *b);
+    run(&s, all, 800);
+    CHECK(hits_on(*b) == before);  // no friendly fire
+    a->c.party_settings(uint16_t(kPartyDefaults | kPartyFriendlyFire));
+    run(&s, all, 500);
+    hit(*a, *b);
+    CHECK(run(&s, all, 1500, [&] { return hits_on(*b) == before + 1; }));
+    std::printf("pvp: hits %llu, knockouts %llu, rupees %llu, dropped: off %llu safe %llu protected %llu distance %llu blocked %llu party %llu cooldown %llu\n",
+                (unsigned long long)s.metrics().pvp_hits, (unsigned long long)s.metrics().pvp_kos,
+                (unsigned long long)s.metrics().pvp_rupees, (unsigned long long)s.metrics().pvp_drops[0],
+                (unsigned long long)s.metrics().pvp_drops[1], (unsigned long long)s.metrics().pvp_drops[2],
+                (unsigned long long)s.metrics().pvp_drops[3], (unsigned long long)s.metrics().pvp_drops[5],
+                (unsigned long long)s.metrics().pvp_drops[6], (unsigned long long)s.metrics().pvp_drops[7]);
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     g_dir = argc > 1 ? argv[1] : ".";
@@ -1257,6 +1405,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "block") test_block_mute();
     if (only.empty() || only == "party16") test_party_16();
     if (only.empty() || only == "party16ho") test_party_16_handover();
+    if (only.empty() || only == "pvp") test_pvp();
     if (only.empty() || only == "seacopies") test_sea_copies();
     if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "scalingmass") test_scaling_mass();

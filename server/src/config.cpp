@@ -239,7 +239,104 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
         else if (key == "scale.area_cap") integer(c.area_cap);
         else if (key == "scale.handover_depth") numf(c.handover_depth);
         else if (key == "scale.join") str(c.join);
-        else if (key == "mods.vanilla_only") boolean(c.mods.vanilla_only);
+        else if (key == "pvp.sea") {
+            std::string m;
+            str(m);
+            if (m == "off") c.pvp.mode = proto::PvpMode::kOff;
+            else if (m == "opt-in") c.pvp.mode = proto::PvpMode::kOptIn;
+            else if (m == "on") c.pvp.mode = proto::PvpMode::kOn;
+            else ok = false;
+        } else if (key == "pvp.zones_replace") {
+            bool b = false;
+            boolean(b);
+            if (b) c.pvp.zones.clear();
+        } else if (key == "pvp.zones") {
+            // "10" (the default zone of square 10, or a new centred one), "12:r=20000", "3:x=500,z=-200,r=15000",
+            // "-16" (no zone in square 16)
+            std::vector<std::string> list;
+            strings(list);
+            for (auto& t : list) {
+                if (t.empty()) {
+                    ok = false;
+                    break;
+                }
+                bool remove = t[0] == '-';
+                std::string body = remove ? t.substr(1) : t;
+                std::string sq = body.substr(0, body.find(':'));
+                char* e = nullptr;
+                long n = std::strtol(sq.c_str(), &e, 10);
+                if (!e || *e || n < 0 || n >= 49) {
+                    ok = false;
+                    break;
+                }
+                c.pvp.zones.erase(std::remove_if(c.pvp.zones.begin(), c.pvp.zones.end(),
+                                                 [&](const proto::PvpZone& z) { return z.square == n; }),
+                                  c.pvp.zones.end());
+                if (remove) continue;
+                proto::PvpZone z;
+                z.square = uint8_t(n);
+                if (auto colon = body.find(':'); colon != std::string::npos) {
+                    std::string rest = body.substr(colon + 1) + ",";
+                    size_t at = 0;
+                    while (at < rest.size()) {
+                        size_t comma = rest.find(',', at);
+                        std::string kv = rest.substr(at, comma - at);
+                        at = comma + 1;
+                        if (kv.empty()) continue;
+                        auto eq = kv.find('=');
+                        if (eq == std::string::npos) {
+                            ok = false;
+                            break;
+                        }
+                        float v = std::strtof(kv.c_str() + eq + 1, nullptr);
+                        std::string k = kv.substr(0, eq);
+                        if (k == "x") z.cx = v;
+                        else if (k == "z") z.cz = v;
+                        else if (k == "r") z.radius = v;
+                        else ok = false;
+                    }
+                }
+                ok = ok && z.radius > 0 && z.radius <= 1000000;
+                c.pvp.zones.push_back(z);
+            }
+        } else if (key == "pvp.protect_s") {
+            int v = 0;
+            integer(v);
+            c.pvp.protect_ms = uint32_t(std::clamp(v, 0, 65)) * 1000;
+        } else if (key == "pvp.enter_delay_s") {
+            int v = 0;
+            integer(v);
+            c.pvp.enter_delay_ms = uint32_t(std::clamp(v, 0, 65)) * 1000;
+        } else if (key == "pvp.hide_band") numf(c.pvp.hide_band);
+        else if (key == "pvp.ko_rupee_percent") {
+            int v = 0;
+            integer(v);
+            if (ok && (v < 0 || v > 50)) {
+                why = "line " + std::to_string(n) + ": pvp.ko_rupee_percent must be between 0 and 50";
+                return false;
+            }
+            c.pvp.ko_rupee_percent = uint8_t(v);
+        } else if (key == "pvp.ko_rupee_max") {
+            int v = 0;
+            integer(v);
+            ok = ok && v >= 0 && v <= 65535;
+            c.pvp.ko_rupee_max = uint16_t(v);
+        } else if (key == "pvp.max_hit_dist") numf(c.pvp.max_hit_dist);
+        else if (key == "pvp.max_hits_per_s") number(c.pvp_hits_per_s);
+        else if (key == "pvp.max_shots_per_s") number(c.pvp_shots_per_s);
+        else if (key == "pvp.cooldown_kos") {
+            int v = 0;
+            integer(v);
+            c.pvp.cooldown_kos = uint8_t(std::clamp(v, 1, 255));
+        } else if (key == "pvp.cooldown_window_s") {
+            int v = 0;
+            integer(v);
+            c.pvp.cooldown_window_s = uint16_t(std::clamp(v, 0, 65535));
+        } else if (key == "pvp.cooldown_s") {
+            int v = 0;
+            integer(v);
+            c.pvp.cooldown_s = uint16_t(std::clamp(v, 0, 65535));
+        } else if (key == "mods.vanilla_only") boolean(c.mods.vanilla_only);
         else if (key == "mods.required" || key == "mods.allowed" || key == "mods.banned") {
             std::vector<std::string> list;
             strings(list);
