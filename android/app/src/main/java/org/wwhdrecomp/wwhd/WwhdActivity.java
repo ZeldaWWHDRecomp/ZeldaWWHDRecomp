@@ -182,6 +182,34 @@ public class WwhdActivity extends SDLActivity {
     }
 
     private static native boolean supportsSaveProfilePreparation();
+    /** System bars drawn over the game's view, in its pixels, and its size (issue #349). */
+    private static native void publishObscured(int left, int top, int right, int bottom, int viewWidth, int viewHeight);
+    private boolean obscuredUnsupported;  // an on-device game library from before publishObscured
+
+    // Issue #349: some devices (Retroid Pocket Nova, Android 13) keep the navigation bar over the bottom of the
+    // game although full screen asks to hide it; the view still spans the whole screen (1280x960), so with
+    // Match window the picture filled it and the bar covered the rupee counter. The bars actually shown over
+    // the view (getInsets: hidden and swipe-revealed transient bars count as none) go to the TV layout, which
+    // places the pictures and Match window's shape in the rest.
+    private void reportObscured() {
+        if (obscuredUnsupported || mSurface == null) return;
+        WindowInsets insets = mSurface.getRootWindowInsets();
+        int w = mSurface.getWidth(), h = mSurface.getHeight();
+        if (insets == null || w <= 0 || h <= 0) return;
+        android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
+        int[] at = new int[2];
+        mSurface.getLocationInWindow(at);
+        View root = mSurface.getRootView();
+        int left = Math.max(0, bars.left - at[0]), top = Math.max(0, bars.top - at[1]);
+        int right = Math.max(0, bars.right - (root.getWidth() - at[0] - w));
+        int bottom = Math.max(0, bars.bottom - (root.getHeight() - at[1] - h));
+        try {
+            publishObscured(left, top, right, bottom, w, h);
+        } catch (UnsatisfiedLinkError e) {
+            obscuredUnsupported = true;
+            Log.w("wwhd", "system bar area not passed: " + e.getMessage());
+        }
+    }
 
     /** Native main calls this only after freezing the trusted save-profile plan. */
     public static String prepareSelectedGameSave(String directory) {
@@ -348,6 +376,14 @@ public class WwhdActivity extends SDLActivity {
         }
         getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         applyFullScreen();
+        if (!mBrokenLibraries && mSurface != null && mLayout != null) {
+            // the bars over the game: after each insets change (bars shown/hidden) and size change
+            mLayout.setOnApplyWindowInsetsListener((v, insets) -> {
+                v.post(this::reportObscured);
+                return v.onApplyWindowInsets(insets);
+            });
+            mSurface.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> reportObscured());
+        }
         // on-screen controls over the game (the button under the view button shows or hides them)
         if (mLayout != null)
             mLayout.addView(new TouchControls(this), new RelativeLayout.LayoutParams(
