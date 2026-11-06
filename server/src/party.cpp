@@ -175,6 +175,15 @@ void Server::party_member_offline(Session& s, uint32_t now) {
     bool any = false;
     for (uint64_t kh : p->members)
         if (kh != s.key_hash && online_member(kh)) any = true;
+    if (any) {
+        // the leader left: a successor at once (the member in the party longest), not "leader 0"
+        if (p->leader == s.key_hash)
+            for (uint64_t kh : p->members)
+                if (kh != s.key_hash && online_member(kh)) {
+                    p->leader = kh;
+                    break;
+                }
+    }
     if (!any) {
         p->empty_since = now ? now : 1;
         if (linked() && me_ > 0) {
@@ -360,9 +369,58 @@ void Server::party_progress(Session& s, Reader& r) {
         if (Session* t = online_member(kh); t && t != &s) t->chan.send_reliable(kMsgTeamState, b);
 }
 
+// once a second every online member learns where all the others are (stage, room, square, position), however
+// far apart they are: the sea chart and the Online panel never depend on the interest tiers
+void Server::party_where_tick(uint32_t now) {
+    (void)now;
+    for (auto& [pid, p] : parties_) {
+        if (p.empty_since) continue;
+        Bytes b;
+        Writer w(b);
+        int n = 0;
+        for (uint64_t kh : p.members) {
+            Session* t = online_member(kh);
+            if (!t) continue;
+            w.u16(t->id);
+            put_where(w, t->has_pose ? t->head.where : t->where);
+            w.u8(uint8_t(t->square >= 0 && t->has_pose ? t->square : 255));
+            auto s24 = [&](float f) {
+                int32_t v = int32_t(std::lround(f));
+                v = std::clamp(v, -0x800000, 0x7FFFFF);
+                uint32_t u = uint32_t(v) & 0xFFFFFF;
+                w.u8(uint8_t(u));
+                w.u8(uint8_t(u >> 8));
+                w.u8(uint8_t(u >> 16));
+            };
+            s24(t->has_pose ? t->head.x : 0);
+            s24(t->has_pose ? t->head.z : 0);
+            ++n;
+        }
+        if (n < 2) continue;
+        for (uint64_t kh : p.members)
+            if (Session* t = online_member(kh)) t->chan.send_unreliable(kMsgPartyWhere, b);
+    }
+}
+
+// the leader is gone or silent: the member in the party longest (and present) leads now
+void Server::party_elect_leader(Party& p, uint32_t now) {
+    auto present = [&](uint64_t kh) {
+        Session* t = online_member(kh);
+        return t && now - t->chan.last_heard_ms() <= uint32_t(cfg_.runner_drop_ms);
+    };
+    if (present(p.leader)) return;
+    for (uint64_t kh : p.members)
+        if (kh != p.leader && present(kh)) {
+            p.leader = kh;
+            party_send_state(p);
+            return;
+        }
+}
+
 void Server::runners_tick(uint32_t now) {
     for (auto& [pid, p] : parties_) {
         if (p.empty_since) continue;
+        party_elect_leader(p, now);
         // places with present members, in arrival order
         std::map<PartyPlace, std::vector<std::pair<uint32_t, uint64_t>>> places;
         bool runner_anywhere = false;

@@ -269,6 +269,9 @@ private:
     void strike(Session& s, uint32_t now, const char* what);
     void notice(Session& s, uint8_t kind, uint16_t seconds, const std::string& text);
     void kick(Session& s, uint8_t kind, const std::string& text);
+    void kick_quiet(Session& s, const std::string& text);
+    void party_where_tick(uint32_t now);
+    void party_elect_leader(Party& p, uint32_t now);
     bool sees(const Session& viewer, uint64_t other_key) const;
     bool sees(const Session& viewer, const Session& other) const {
         return (viewer.blocks.empty() || !viewer.blocks.count(other.key_hash)) &&

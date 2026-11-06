@@ -224,9 +224,14 @@ void Server::on_datagram(const uint8_t* d, size_t n, const Address& from, uint32
     // rate limits come before any crypto work
     double brate = s.bytes.rate;
     (void)brate;
-    if (!s.packets.take(1, now) || !s.bytes.take(double(n), now)) {
+    if (!s.packets.take(1, now)) {
         metrics_.dropped_rate++;
-        strike(s, now, "rate");
+        strike(s, now, "packets");
+        return;
+    }
+    if (!s.bytes.take(double(n), now)) {
+        metrics_.dropped_rate++;
+        strike(s, now, "upload");
         return;
     }
     std::vector<Delivered> got;
@@ -497,6 +502,11 @@ void Server::notice(Session& s, uint8_t kind, uint16_t seconds, const std::strin
 
 void Server::kick(Session& s, uint8_t kind, const std::string& text) {
     notice(s, kind, 0, text);
+    kick_quiet(s, text);
+}
+
+// the notice is queued already: flush it and drop the session
+void Server::kick_quiet(Session& s, const std::string& text) {
     std::vector<Bytes> out;
     s.chan.flush(monotonic_ms(), out, 4, 0);
     for (auto& b : out) sock_.send_to(s.addr, b.data(), b.size());
@@ -511,8 +521,23 @@ void Server::strike(Session& s, uint32_t now, const char* what) {
         s.strikes_since = now;
     }
     ++s.strikes;
-    if (s.strikes == cfg_.strikes_kick / 2) notice(s, kNoticeThrottle, 0, std::string("slow down (") + what + ")");
-    if (s.strikes >= cfg_.strikes_kick) kick(s, kNoticeKick, std::string("too many messages (") + what + ")");
+    std::string w = what;
+    uint16_t code = w == "upload" ? kLimitUpload : w == "packets" ? kLimitPackets : w == "reliable" ? kLimitReliable
+                  : w == "app" ? kLimitApp : (w == "pose" || w == "speed" || w == "position") ? kLimitPose : kLimitOther;
+    std::string text;
+    char b[160];
+    if (code == kLimitUpload)
+        std::snprintf(b, sizeof b, "upload over this server's limit of %.0f bytes/s", s.bytes.rate);
+    else if (code == kLimitPackets)
+        std::snprintf(b, sizeof b, "more than %.0f packets/s", s.packets.rate);
+    else
+        std::snprintf(b, sizeof b, "too many messages (%s)", what);
+    text = b;
+    if (s.strikes == cfg_.strikes_kick / 2) notice(s, kNoticeThrottle, code, "slow down: " + text);
+    if (s.strikes >= cfg_.strikes_kick) {
+        notice(s, kNoticeKickLimit, code, text);
+        kick_quiet(s, "limit: " + text);
+    }
 }
 
 bool Server::sees(const Session& v, uint64_t other) const {
@@ -1041,8 +1066,9 @@ void Server::interest(Session& s, uint32_t now) {
         for (uint64_t kh : p->members)
             if (kh != s.key_hash && party_n < kMaxPartySize) {
                 party_keys[party_n++] = kh;
+                // party members are always announced, wherever they are (their poses only when they have one)
                 Session* t = online_member(kh);
-                if (t && t->has_pose && !t->hidden && t->world == s.world) around.push_back(t);
+                if (t && t->world == s.world) around.push_back(t);
             }
     const float h = 1.0f + cfg_.hysteresis;
     auto consider = [&](Session* o, Ghost* g) {
@@ -1118,6 +1144,7 @@ void Server::interest(Session& s, uint32_t now) {
         uint32_t oseq = c.s ? c.s->pose_seq : c.g->pose_seq;
         uint32_t oms = c.s ? c.s->pose_ms : c.g->pose_ms;
         size_t before = batch.size();
+        if (tier == kTierNear && c.s && (!c.s->has_pose || c.s->hidden)) tier = kTierMid;
         if (tier == kTierNear) {
             ++near_n;
             if (changed || sn.pose_seq != oseq) {
@@ -1130,7 +1157,9 @@ void Server::interest(Session& s, uint32_t now) {
             }
         } else if (tier == kTierMid) {
             ++mid_n;
-            if (changed || (tick_no_ + id) % uint32_t(cfg_.mid_every) == 0) {
+            if (c.s && (!c.s->has_pose || c.s->hidden)) {
+                // a party member between places: announced, no pose to send
+            } else if (changed || (tick_no_ + id) % uint32_t(cfg_.mid_every) == 0) {
                 if (batch.size() + kMidEntryBytes > kBatchLimit) flush_batch();
                 put_mid(bw, id, oms, oh);
                 metrics_.pose_entries_mid++;
@@ -1314,6 +1343,7 @@ void Server::tick(uint32_t now) {
     parallel(work, &Server::interest, now);
     metrics_.interest_us.push_back(uint32_t(monotonic_us() - t0));
     runners_tick(now);
+    if (tick_no_ % uint32_t(cfg_.tick_hz) == 0) party_where_tick(now);
     if (linked()) link_tick(now);
     if (now - last_areas_ >= 2000) {
         last_areas_ = now;
