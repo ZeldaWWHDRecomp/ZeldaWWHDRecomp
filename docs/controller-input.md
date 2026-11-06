@@ -141,11 +141,17 @@ is **paused** (the game's own short pause, as when a strong hit lands; the music
 **Item button names**: X Y R, A1 A2 A3, or **Automatic** (default: A1, A2, A3 while you play by touch).
 The ring, the game's HUD buttons and the GamePad's item slots show them.
 
-## Controllers while the game isn't focused
+## Controllers and the window focus
 
-Controls → **Controller input when the game isn't focused** keeps your controllers playing the game
-while another window has the focus, for example with the game on a second screen, while streaming
-or with remote play. It is off by default and saved with your controls. The change takes effect at once.
+Controllers play the game while either of the game's own windows is in front: the TV window or the
+separate GamePad window. Clicking the GamePad window (for a touch, or to move it) does not stop the
+controller.
+
+## Controllers in the background
+
+Controls → **Controller input in the background** keeps your controllers playing the game while
+another app is in front, for example with the game on a second screen, while streaming or with
+remote play. It is off by default and saved with your controls. The change takes effect at once.
 
 - Only controllers are affected. Keyboard keys and mouse buttons are still released when the
   game loses the focus, and they reach the game only while it is focused again.
