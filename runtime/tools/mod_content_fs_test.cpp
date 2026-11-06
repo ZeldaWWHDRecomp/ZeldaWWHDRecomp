@@ -24,6 +24,7 @@
 namespace rtl_text { void language_pack_opened(const std::string&) {} }
 namespace game_layouts { void note_open(const std::string&, const std::string&) {} }
 namespace link_poses { void note_open(const std::string&, const std::string&) {} }
+namespace link_masks { void note_open(const std::string&, const std::string&) {} }
 namespace achievements { void note_open(const std::string&, const std::string&) {} }
 namespace fs=std::filesystem;
 namespace {std::map<std::string,PpcFunc>& functions(){static std::map<std::string,PpcFunc> f;return f;}constexpr uint32_t base=0x10000000;}

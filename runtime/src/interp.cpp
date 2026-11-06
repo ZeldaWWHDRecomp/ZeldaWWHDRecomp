@@ -61,6 +61,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "game_hooks.h"
 #include "gx2/gx2.h"
 #include "gfx/renderer.h"
+#include "mods/link_masks.h"
 
 
 extern "C" {
@@ -2335,6 +2336,7 @@ extern "C" void hook_025DE788(Cpu* c) {
         mods::coop::world::step(c);
         c->r[3] = r3;
     }
+    if (!interp::g_hold_frame) link_masks::frame();  // the WWHD_LINK_COLOURS test aid (mods/link_masks.h)
     editor::camera_service(c, !interp::g_hold_frame);  // the fly camera: every logic pass
     if(!interp::g_hold_frame)guestmods::maphud::finish_logic();
     guestmods::draw_frame(c,interp::executed_steps());

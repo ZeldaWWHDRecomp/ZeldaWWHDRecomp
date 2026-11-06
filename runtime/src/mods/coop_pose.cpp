@@ -26,6 +26,7 @@
 #include <unordered_map>
 
 #include "coop_sync.h"
+#include "link_masks.h"
 #include "guest_addr.h"
 #include "mods.h"
 #include "runtime.h"
@@ -730,6 +731,8 @@ struct Clothes {
     uint32_t worn[4] = {};       // its copies, by tunic (0: none), each in memory of its own for good
     uint32_t img[4] = {}, mip[4] = {};
     bool made[4] = {};
+    bool guessed[4] = {};        // made by the hue test (the computed mask was not ready): made again once it is
+    uint32_t retry[4] = {};
     uint32_t made_from = 0;      // the texture they are copies of
     bool fresh = false;          // to be made again (another texture)
 } g_clothes[1] = {{0x5AB24A, 212480, 0x31}};  // (BC1, 640x384 with its mips: HD Link's hero's clothes)
@@ -778,9 +781,13 @@ uint16_t exchange(uint16_t base, uint16_t want, uint16_t cur) {
 // Link's texture object of these clothes as tunic t (0: his own), the copy made the first time
 uint32_t worn(Clothes& k, int t) {
     if (!k.tex || (t == 0 && k.base == kTunicRgb[0])) return k.tex;
-    if (k.fresh) k.fresh = false, std::fill(std::begin(k.made), std::end(k.made), false);
+    if (k.fresh) k.fresh = false, std::fill(std::begin(k.made), std::end(k.made), false), std::fill(std::begin(k.guessed), std::end(k.guessed), false);
+    const uint32_t gx = k.tex + 4;
+    if (k.made[t] && k.guessed[t] && ++k.retry[t] % 30 == 0 &&
+        link_masks::find(mem::ptr(ld32(gx + 0x24)), ld32(gx + 0x20), ld32(gx + 0x28) ? mem::ptr(ld32(gx + 0x2C)) : nullptr, ld32(gx + 0x28)))
+        k.made[t] = false;  // (the mask is ready now: made again from it)
     if (k.made[t]) return k.worn[t];
-    const uint32_t gx = k.tex + 4, size = ld32(gx + 0x20), mips = ld32(gx + 0x28), align = std::max<uint32_t>(ld32(gx + 0x38), 0x100);
+    const uint32_t size = ld32(gx + 0x20), mips = ld32(gx + 0x28), align = std::max<uint32_t>(ld32(gx + 0x38), 0x100);
     if (!k.worn[t]) k.worn[t] = mem::host_alloc(0xC0, 0x20), k.img[t] = mem::host_alloc(size, align), k.mip[t] = mips ? mem::host_alloc(mips, align) : 0;
     k.made[t] = true;
     const uint32_t obj = k.worn[t], img = k.img[t], mip = k.mip[t];
@@ -788,6 +795,15 @@ uint32_t worn(Clothes& k, int t) {
     memcpy(mem::ptr(img), mem::ptr(ld32(gx + 0x24)), size);
     if (mip) memcpy(mem::ptr(mip), mem::ptr(ld32(gx + 0x2C)), mips);
     st32(obj + 4 + 0x24, img), st32(obj + 4 + 0x2C, mip);
+    // the tunic's mask computed from the player's own game (mods/link_masks.h): its tint; until it is ready (or for a
+    // texture it does not know), the hue test below
+    if (const link_masks::Mask* m = link_masks::find(mem::ptr(ld32(gx + 0x24)), size, mips ? mem::ptr(ld32(gx + 0x2C)) : nullptr, mips)) {
+        link_masks::tint(*m, link_masks::Part::kTunic, kTunicRgb[t], mem::ptr(img), mip ? mem::ptr(mip) : nullptr);
+        k.guessed[t] = false;
+        trace("coop: Link's clothes (%06X) in tunic %d made from the computed mask", k.base, t);
+        return obj;
+    }
+    k.guessed[t] = true;
     const uint16_t base = rgb565(k.base), want = rgb565(kTunicRgb[t]);
     const uint32_t block = 8;  // (BC1)
     for (uint32_t n = 0, at = 0; at < size + mips; n++, at += block) {

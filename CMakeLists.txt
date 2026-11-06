@@ -713,6 +713,14 @@ target_include_directories(link_poses_test PRIVATE runtime/include runtime/src r
 target_compile_options(link_poses_test PRIVATE -UNDEBUG)
 target_link_libraries(link_poses_test PRIVATE ZLIB::ZLIB)
 add_test(NAME link_poses COMMAND link_poses_test)
+# Link's colour masks (runtime/src/mods/link_masks.h): classification, endpoint labels, tint and the cache format on
+# synthetic textures made in the test; with WWHD_GAME_DIR set it also makes the masks of the player's own Link
+add_executable(link_masks_test runtime/tools/link_masks_test.cpp runtime/src/mods/link_masks.cpp runtime/src/mods/game_layouts.cpp
+               runtime/src/mods/item_icons.cpp runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp)
+target_include_directories(link_masks_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(link_masks_test PRIVATE -UNDEBUG)
+target_link_libraries(link_masks_test PRIVATE ZLIB::ZLIB)
+add_test(NAME link_masks COMMAND link_masks_test)
 # Game progress (runtime/src/mods/game_progress.h): the count of a save in ten parts, on byte images built in the
 # test; WWHD_PROGRESS_SAVES=<cking.sav,...> also prints the count of real Quest Logs
 add_executable(game_progress_test runtime/tools/game_progress_test.cpp)
