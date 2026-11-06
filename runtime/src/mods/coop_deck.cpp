@@ -9,6 +9,7 @@
 // (cBgS::Release 020087EC). Everything is made once per deck on a heap of the port's own memory (as the puppets'
 // kits, coop_pose.cpp pool_heap), so no game heap is touched and a stage change frees nothing under it.
 #include "coop_deck.h"
+#include "coop_names.h"
 
 #include <algorithm>
 #include <cmath>
@@ -30,9 +31,10 @@ namespace wm = story_world_collision::mesh;
 // the deck: 160 wide, 420 long, its top kTop over the boat's place (the water line; where the riding Link's feet are, the
 // sea_boat state: Link 149 over the boat), the boat's middle at its middle
 constexpr float kWidth = 160, kLength = 420, kThick = 20, kTop = 150, kEdgeX = kWidth / 2 - 30, kEdgeZ = kLength / 2 - 30;
-constexpr uint32_t kPos = 0x314, kOldPos = 0x300, kAngleY = 0x32A;  // fopAc_ac_c (WWHD)
-constexpr uint32_t kGndBg = 0x8F8;   // daPy_lk_c's ground poly (mAcch's m_gnd): its body (story_world_collision_native.h)
-constexpr uint32_t kRegistry = 0x12A0, kHeapBytes = 0x10000;
+using namespace names;  // (C18: the offsets by name, coop_names.h)
+constexpr uint32_t kPos = ac::kPos, kOldPos = ac::kOldPos, kAngleY = ac::kAngleY;  // fopAc_ac_c (WWHD)
+constexpr uint32_t kGndBg = py::kGndBg;  // daPy_lk_c's ground poly (mAcch's m_gnd): its body (story_world_collision_native.h)
+constexpr uint32_t kRegistry = inf::kPlay, kHeapBytes = 0x10000;  // (play.mBgS, the dBgS)
 
 struct Deck {
     uint32_t body = 0, mtx = 0;  // the body (on the deck heap) and its matrix (port memory)
@@ -60,7 +62,7 @@ uint32_t deck_heap(Cpu* c) {
     const uint32_t heap = guest_call(c, GC(0x027549FC), {blk, name, 0, blk, kHeapBytes, 1, 0});
     if (heap) {
         guest_call(c, GC(0x02754AC4), {heap});
-        st32(heap + 0x90, ld32(heap + 0x90) & ~4u);
+        st32(heap + sheap::kFlags, ld32(heap + sheap::kFlags) & ~4u);
     }
     return g_heap = heap;
 }
@@ -101,7 +103,7 @@ bool make(Cpu* c, Deck& d, const Boat& b) {
     guest_call(c, GC(0x027EC220), {was});
     c->r[3] = r3;
     if (!ok) return mods::trace("coop: deck: not set up (%s)", why.c_str()), g_failed = true, false;
-    st32(body + 0xA8, GC(0x024EE708));  // dBgS_MoveBGProc_TypicalRotY: what stands on it goes with it, turning too
+    st32(body + bgw::m_crr_func, GC(0x024EE708));  // dBgS_MoveBGProc_TypicalRotY: what stands on it goes with it, turning too
     d.body = body;
     mods::trace("coop: deck made: body %08X, %zu bytes of collision", body, bytes.size());
     return true;
@@ -175,7 +177,7 @@ void move(Cpu* c) {
     // Link standing on one goes with it (its place and heading), as the game's own ground correction would carry him
     // on a moving platform: his place in the deck's last frame put into its new one. (The game's correction does not
     // move him here, c16m: it needs the body moved by an actor running in that step, which the deck is not.)
-    const uint32_t link = ld32(GD(0x1046F0B0) + 0x5B34);
+    const uint32_t link = ld32(GD(0x1046F0B0) + inf::kLink);
     int on = link >= 0x10000000 ? standing_on(link) : -1;
     // (test aid: WWHD_COOP_DECK_TRACE=2: each step on a deck, Link's procedure, ground body and poly, his place in the
     // deck's frame, the deck's place, this game's own boat)
@@ -184,7 +186,7 @@ void move(Cpu* c) {
         const Deck& d = g_deck[0];
         const double t = d.at.yaw * M_PI / 32768, dx = ldf32(link + kPos) - d.at.pos[0], dz = ldf32(link + kPos + 8) - d.at.pos[2];
         mods::trace("coop: deck step: on %d, proc %u, ground %08X poly %u, local %.0f %.0f %.0f, deck %.0f %.0f %.0f yaw %d, own boat %.0f %.0f", on,
-                    ld32(link + 0x65F0), ld32(link + kGndBg), ld16(link + kGndBg - 4), dx * cos(t) - dz * sin(t), ldf32(link + kPos + 4) - d.at.pos[1],
+                    ld32(link + py::mCurProc), ld32(link + kGndBg), ld16(link + py::kGndPoly), dx * cos(t) - dz * sin(t), ldf32(link + kPos + 4) - d.at.pos[1],
                     dx * sin(t) + dz * cos(t), d.at.pos[0], d.at.pos[1], d.at.pos[2], d.at.yaw, g_owner ? ldf32(g_owner + kPos) : 0.0,
                     g_owner ? ldf32(g_owner + kPos + 8) : 0.0);
     }
@@ -215,7 +217,7 @@ void move(Cpu* c) {
         if (!d.in || !registered(c, d)) { d.moved = false; continue; }
         d.was = d.at, d.moved = true;
         set_mtx(d.mtx, d.at);
-        st16(d.body + 0xB8, (uint16_t)(int16_t)d.at.room), st8(d.body + 0xBB, (uint8_t)d.at.room);  // (the room it is in now)
+        st16(d.body + bgw::mRoomId, (uint16_t)(int16_t)d.at.room), st8(d.body + bgw::mGrpRoomInf, (uint8_t)d.at.room);  // (the room it is in now)
         guest_call(c, GC(0x024F43DC), {d.body});  // dBgW::Move: from its last place to this one
     }
     *c = saved;

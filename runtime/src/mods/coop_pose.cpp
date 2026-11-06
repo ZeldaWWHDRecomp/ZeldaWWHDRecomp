@@ -17,6 +17,7 @@
 // of its own, given back as Link is made again.
 #include "coop_pose.h"
 #include "coop_items.h"
+#include "coop_names.h"
 
 #include <algorithm>
 #include <array>
@@ -43,14 +44,15 @@ void blend_joint(const float* a, const float* b, float* out, float t);
 namespace mods::coop {
 namespace {
 
-constexpr uint32_t kPos = 0x314, kRoom = 0x326, kAngleY = 0x32A, kCurProc = 0x65F0, kEquip = 0x69B0;
+using namespace names;  // (C18: the offsets by name, coop_names.h)
+constexpr uint32_t kPos = ac::kPos, kRoom = ac::kRoom, kAngleY = ac::kAngleY, kCurProc = py::mCurProc, kEquip = py::mEquipItem;
 constexpr uint8_t kFlying = 2, kHurt = 4;  // a pose's flags: Medli flying; Link flashing red (hurt)
 constexpr uint16_t kShipFile = 0x8000;      // a held model's file is of the boat's archive, not Link's
-constexpr uint32_t kMdlJoints = 0x2C, kJntMtx = 0x10, kJntNum = 0x2C, kMdlBase = 0xC8;
+constexpr uint32_t kMdlJoints = j3d::mpMtxBuffer, kJntMtx = j3d::mpAnmMtx, kJntNum = j3d::kJointCount, kMdlBase = j3d::mBaseTransformMtx;
 constexpr int kMaxModels = 64, kMaxJoints = 128;
-constexpr uint32_t kSwBlur = 0x73EC, kTrailPts = 2 * 60 * 3;  // Link's sword trail; its points (base, tip) at +0xBC, +0x38C
+constexpr uint32_t kSwBlur = py::mpSwBlur, kTrailPts = 2 * 60 * 3;  // Link's sword trail; its points mTopPos, mBottomPos
 const uint32_t kPlay = GD(0x1046F0B0);
-const uint32_t kStage = kPlay + 0x5134;
+const uint32_t kStage = kPlay + inf::kCurStage;
 
 struct LinkModel { uint32_t model, data, flags, diff; uint32_t twin[kPuppets]; };
 std::vector<LinkModel> g_models;  // Link's, in the order createHeap made them
@@ -82,7 +84,8 @@ bool g_in_draw = false;
 uint32_t g_drawing = 0;
 // the hookshot's chain and the grappling hook's rope as they drew (daHookshot_c, daHimo2), into his next pose
 constexpr int16_t kHookshot = 0xA9, kHimo2 = 0x1BE;
-constexpr uint32_t kRoot = 0x72F0, kChainN = 0xD504, kChainAngle = 0x328, kRopeLines = 0x21D0, kRopeN = 0x21D4;
+constexpr uint32_t kRoot = py::mHookshotRootPos, kChainN = hookshot::mChainCnt, kChainAngle = ac::shape_angle,
+                   kRopeLines = himo2::m1F30 + linemat::mpLines, kRopeN = himo2::m1F6C;
 Pose g_lines;
 uint32_t g_hook[kPuppets];  // each puppet's own hookshot (its process id), drawn as its player's chain
 struct Rope { uint32_t mat = 0, heap = 0; } g_rope[kPuppets];  // each puppet's own rope line (mDoExt_3DlineMat1_c, 1
@@ -131,16 +134,18 @@ struct SeeThrough {
 uint32_t bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 
 // a material's shown flag: the model data's (shared by Link's model and its copies), Link's draw sets it as he is
-uint32_t shown_flag(uint32_t model, uint32_t i) { return ld32(ld32(ld32(model + 0xAC) + 0x10) + i * 0x39C + 8) + 4; }
-uint32_t materials(uint32_t model) { return std::min<uint32_t>(ld32(ld32(model + 0xAC) + 0xC), 32); }
-// a joint's materials (the joint's +0x10, then each material's +4) of `shown` (a material's index: its place in the
-// model data's materials, +0x10, 0x39C each) hidden around `entry`
+uint32_t shown_flag(uint32_t model, uint32_t i) {
+    return ld32(ld32(ld32(model + j3d::mModelData) + j3d::mMaterials) + i * j3d::kMaterial + j3d::mShape) + j3d::mVisible;
+}
+uint32_t materials(uint32_t model) { return std::min<uint32_t>(ld32(ld32(model + j3d::mModelData) + j3d::mMaterialNum), 32); }
+// a joint's materials (j3d::kJointMaterial, then each material's kMaterialNext) of `shown` (a material's index: its
+// place in the model data's mMaterials) hidden around `entry`
 template <typename F> void joint_without(uint32_t model, uint32_t joint, uint32_t shown, F entry) {
-    const uint32_t mats = ld32(ld32(model + 0xAC) + 0x10);
+    const uint32_t mats = ld32(ld32(model + j3d::mModelData) + j3d::mMaterials);
     uint32_t off = 0;
     uint8_t was[32];
-    for (uint32_t m = ld32(joint + 0x10); m; m = ld32(m + 4))
-        if (const uint32_t i = (m - mats) / 0x39C; i < 32 && shown >> i & 1) was[i] = ld8(shown_flag(model, i)), st8(shown_flag(model, i), 0), off |= 1u << i;
+    for (uint32_t m = ld32(joint + j3d::kJointMaterial); m; m = ld32(m + j3d::kMaterialNext))
+        if (const uint32_t i = (m - mats) / j3d::kMaterial; i < 32 && shown >> i & 1) was[i] = ld8(shown_flag(model, i)), st8(shown_flag(model, i), 0), off |= 1u << i;
     entry();
     for (uint32_t i = 0; i < 32; i++) if (off >> i & 1) st8(shown_flag(model, i), was[i]);
 }
@@ -262,10 +267,10 @@ void load_ghost(const char* spec) {
     trace("coop: ghost %s, %zu steps, offset %.0f %.0f", path.c_str(), g_ghost.size(), g_ghost_off[0], g_ghost_off[2]);
 }
 
-// a solid heap's size (JKRSolidHeap's virtual getHeapSize: its vtable at +0xC, the slot +0x6C)
+// a solid heap's size (JKRSolidHeap's virtual getHeapSize)
 uint32_t heap_size(Cpu* c, uint32_t heap) {
     const uint32_t r3 = c->r[3];
-    const uint32_t n = guest_call(c, ld32(ld32(heap + 0xC) + 0x6C), {heap});
+    const uint32_t n = guest_call(c, ld32(ld32(heap + sheap::kVtable) + sheap::kGetHeapSize), {heap});
     c->r[3] = r3;
     return n;
 }
@@ -276,8 +281,8 @@ uint32_t heap_for_models(Cpu* c, uint32_t need) {
     return heap;
 }
 
-// the heap's free bytes: its head (+0x94) to its tail (+0x98), as its set-up places them
-uint32_t heap_free(uint32_t heap) { return ld32(heap + 0x98) - ld32(heap + 0x94); }
+// the heap's free bytes: its head to its tail, as its set-up places them
+uint32_t heap_free(uint32_t heap) { return ld32(heap + sheap::kTail) - ld32(heap + sheap::kHead); }
 // puppet i's copy of a held model: made from its file of Link's archive (dComIfG_getObjectRes, 026066C4, as initModel
 // asks; the boat's archive for kShipFile) the first time, on a solid heap of its own from the game heap (a file that
 // makes none is not tried again)
@@ -329,7 +334,7 @@ uint32_t pool_heap(Cpu* c, int i) {
     const uint32_t heap = guest_call(c, GC(0x027549FC), {blk, name, 0, blk, kSlotBytes, 1, 0});
     if (heap) {
         guest_call(c, GC(0x02754AC4), {heap});
-        st32(heap + 0x90, ld32(heap + 0x90) & ~4u);  // (as JKRSolidHeap::create leaves it)
+        st32(heap + sheap::kFlags, ld32(heap + sheap::kFlags) & ~4u);  // (as JKRSolidHeap::create leaves it)
     }
     c->r[3] = r3;
     heap_of[i] = heap;
@@ -455,7 +460,7 @@ constexpr const char* kHang[] = {"hair1"};
 int g_own_char = 0;
 float g_idle_w[1 + kPuppets];  // how far each slot (0 this game, 1.. the puppets) shows her own idle
 float g_fly_w[1 + kPuppets];   // and Medli flying
-int g_body_k = -1;  // Link's body (+0x448) among his models
+int g_body_k = -1;  // Link's body (mpCLModel) among his models
 uint32_t g_link_drawing = 0;  // Link in his draw now (his last draw's after it)
 uint64_t g_body_parts = 0;  // his models a character replaces (bits by k): his body, hands, hair; not his gear
 constexpr const char* kBodyParts[] = {"cl", "hands", "katsura", "yamu"};
@@ -484,18 +489,20 @@ struct Bone {
 // the bones of a model file's skeleton with their rest poses (local, and in the model's space)
 std::vector<Bone> skeleton(uint32_t data) {
     std::vector<Bone> out;
-    const uint32_t fmdl = ld32(data), fskl = fmdl + 0xC + ld32(fmdl + 0xC);
-    if (fskl == fmdl + 0xC || ld32(fskl) != 0x46534B4C) return out;  // "FSKL"
-    const uint32_t n = ld16(fskl + 8), bones = fskl + 0x14 + ld32(fskl + 0x14);
+    using namespace bfres;
+    const uint32_t fmdl = ld32(data), fskl = fmdl + fmdl_skeleton + ld32(fmdl + fmdl_skeleton);
+    if (fskl == fmdl + fmdl_skeleton || ld32(fskl) != kFskl) return out;
+    const uint32_t n = ld16(fskl + fskl_bone_count), bones = fskl + fskl_bones + ld32(fskl + fskl_bones);
     uint32_t stride = 0x40;
-    while (n > 1 && stride < 0x80 && ld16(bones + stride + 4) != 1) stride += 0x10;  // (bone i's index, +4, is i)
+    while (n > 1 && stride < 0x80 && ld16(bones + stride + bone_index) != 1) stride += 0x10;  // (bone i's index is i)
     for (uint32_t i = 0; i < n; i++) {
-        const uint32_t b = bones + stride * i, flags = ld32(b + 0x10);
+        const uint32_t b = bones + stride * i, flags = ld32(b + bone_flags);
         Bone o;
-        for (uint32_t s = b + ld32(b); ld8(s); s++) o.key += (char)tolower(ld8(s));
-        o.parent = (int16_t)ld16(b + 6);
+        for (uint32_t s = b + bone_name + ld32(b + bone_name); ld8(s); s++) o.key += (char)tolower(ld8(s));
+        o.parent = (int16_t)ld16(b + bone_parent);
         if (o.parent >= (int)i) o.parent = -1;
-        const float r[4] = {f32(b + 0x20), f32(b + 0x24), f32(b + 0x28), f32(b + 0x2C)};
+        const uint32_t rot = b + bone_rotation, at = b + bone_translation;
+        const float r[4] = {f32(rot), f32(rot + 4), f32(rot + 8), f32(rot + 12)};
         float* m = o.local.data();
         if ((flags >> 12 & 7) == 1) {  // Euler XYZ: Rz Ry Rx
             const float cx = cosf(r[0]), sx = sinf(r[0]), cy = cosf(r[1]), sy = sinf(r[1]), cz = cosf(r[2]), sz = sinf(r[2]);
@@ -509,7 +516,7 @@ std::vector<Bone> skeleton(uint32_t data) {
                                  1 - 2 * (x * x + y * y), 0};
             memcpy(m, q, sizeof q);
         }
-        m[3] = f32(b + 0x30), m[7] = f32(b + 0x34), m[11] = f32(b + 0x38);
+        m[3] = f32(at), m[7] = f32(at + 4), m[11] = f32(at + 8);
         if (o.parent >= 0) mul(out[o.parent].rest.data(), m, o.rest.data());
         else o.rest = o.local;
         out.push_back(std::move(o));
@@ -521,7 +528,7 @@ struct Part {  // one of her models (her body; Medli's arms)
     uint32_t data = 0;
     std::vector<Bone> bones;
     std::vector<int> link_of;  // Link's bone for each of hers (-1: none; -2 - i: her body's bone i, kLocator)
-    // her eye and brow materials (bits), by kind: plain, "damA", "damB" (Link's +0x60C, +0x62C, +0x61C): drawn in
+    // her eye and brow materials (bits), by kind: plain, "damA", "damB" (Link's mpZOffBlendShape, mpZOnShape, mpZOffNoneShape): drawn in
     // Link's face passes, not with her body
     uint32_t face = 0, group[3] = {}, cover = 0;  // cover: drawn over her eyes' place ("zhead", "shadow")
     std::vector<uint32_t> face_joints;  // her joints carrying any of them (a face pass enters a joint's materials)
@@ -554,14 +561,14 @@ uint32_t make_idle(Cpu* c, uint32_t data, const char* clip, uint32_t arc) {
     st32(sp + 8, 0), st32(sp + 0xC, 0), st32(sp + 0x10, 0x80000), st32(sp + 0x14, 0x11020222);
     c->f[1].ps0 = 1.0;
     const uint32_t morf = guest_call(c, GC(0x025E4F64), {0, data, 0, 0, 0, 0xFFFFFFFF, 0, 0xFFFFFFFF});
-    if (morf && ld32(morf + 0x90)) {
+    if (morf && ld32(morf + mca::mpModel)) {
         c->f[1].ps0 = 0, c->f[2].ps0 = 1.0;  // (no morf in, speed 1)
         guest_call(c, GC(0x0259D344), {morf, 2, guest_text(clip), 0, arc});  // (loop)
     }
     guest_call(c, GC(0x027EC220), {was});
     guest_call(c, GC(0x025E3678), {heap});  // mDoExt_adjustSolidHeap
     trace("coop: idle %s: %s", clip, morf ? "made" : "not made");
-    return morf && ld32(morf + 0x90) ? morf : 0;
+    return morf && ld32(morf + mca::mpModel) ? morf : 0;
 }
 
 // character ch's archive loaded and her models made for slot (0 this game, 1.. puppet slot-1), a step at a time
@@ -583,11 +590,13 @@ void need_character(Cpu* c, int ch, int slot) {
             Part& pt = k.part[i];
             pt.data = guest_call(c, GC(0x02606900), {ld32(GD(0x101F4F28)), s, s + 8});
             pt.bones = pt.data ? skeleton(pt.data) : std::vector<Bone>{};
-            if (pt.data) {  // her materials' names (the FMDL's material dict, +0x18)
-                const uint32_t fmdl = ld32(pt.data), md = fmdl + 0x18 + ld32(fmdl + 0x18);
-                for (uint32_t m = 0, n = std::min<uint32_t>(ld32(md + 4), 32); m < n; m++) {
+            if (pt.data) {  // her materials' names (the FMDL's material index group)
+                using namespace bfres;
+                const uint32_t fmdl = ld32(pt.data), md = fmdl + fmdl_materials + ld32(fmdl + fmdl_materials);
+                for (uint32_t m = 0, n = std::min<uint32_t>(ld32(md + group_count), 32); m < n; m++) {
                     std::string name;
-                    for (uint32_t e = md + 8 + 16 * (m + 1), t = e + 8 + ld32(e + 8); ld8(t); t++) name += (char)ld8(t);
+                    for (uint32_t e = md + group_entries + group_entry * (m + 1), t = e + entry_name + ld32(e + entry_name); ld8(t); t++)
+                        name += (char)ld8(t);
                     if (name.find("zhead") != std::string::npos || name.find("shadow") != std::string::npos)
                         pt.cover |= 1u << m;  // (Tetra's zelda_zhead*, Zelda's m_pz_shadowL/R: found with the probe)
                     if (name.find("eye") == std::string::npos && name.find("mayu") == std::string::npos) continue;
@@ -618,17 +627,15 @@ void need_character(Cpu* c, int ch, int slot) {
             return;
         }
         pt.model[slot] = model;
-        // (model data +8: its joints, 0x1C each; a joint's +0x10: its first material, the next at a material's +4;
-        // the materials at data +0x10, 0x39C each)
-        const uint32_t md = ld32(model + 0xAC), joints = ld32(md + 8), mats = ld32(md + 0x10);
+        const uint32_t md = ld32(model + j3d::mModelData), joints = ld32(md + j3d::mJointNodes), mats = ld32(md + j3d::mMaterials);
         pt.face_joints.clear();
         for (uint32_t j = 0; j < pt.bones.size(); j++) {
             bool any = false, all = true;
-            for (uint32_t m = ld32(joints + 0x1C * j + 0x10); m; m = ld32(m + 4)) {
-                const uint32_t i = (m - mats) / 0x39C;
+            for (uint32_t m = ld32(joints + j3d::kJoint * j + j3d::kJointMaterial); m; m = ld32(m + j3d::kMaterialNext)) {
+                const uint32_t i = (m - mats) / j3d::kMaterial;
                 any = true, all &= i < 32 && (pt.face >> i & 1);
             }
-            if (any && all) pt.face_joints.push_back(joints + 0x1C * j);
+            if (any && all) pt.face_joints.push_back(joints + j3d::kJoint * j);
         }
         if (pt.face_joints.empty() && pt.face) pt.face_joints.push_back(joints);  // (Zelda's: all on her root)
     }
@@ -698,7 +705,7 @@ bool pose_character(int ch, int slot, uint32_t src) {
         for (int e = 0; e < 12; e++) st32(model + kMdlBase + 4 * e, bits(base[e]));
         const float x = g_fly_w[slot] > 0 ? g_fly_w[slot] : g_idle_w[slot], iw = x * x * (3 - 2 * x);  // (eased)
         const uint32_t clip = g_fly_w[slot] > 0 ? pt.fly : pt.idle;
-        const uint32_t im = clip && iw > 0 ? ld32(clip + 0x90) : 0, ij = im ? ld32(im + kMdlJoints) : 0;
+        const uint32_t im = clip && iw > 0 ? ld32(clip + mca::mpModel) : 0, ij = im ? ld32(im + kMdlJoints) : 0;
         const uint32_t idle = ij && ld16(ij + kJntNum) == pt.bones.size() ? ld32(ij + kJntMtx) : 0;
         std::vector<M34> w(pt.bones.size());
         std::vector<int> loc(pt.bones.size(), -1);  // the arm model's bone each hangs under (Medli's: kLocator)
@@ -753,9 +760,10 @@ bool pose_character(int ch, int slot, uint32_t src) {
 // create 02303730 makes hers) and her eye and brow joints' materials entered (027F583C) with one kind of them shown:
 // "damB"; the plain ones, then her cover materials ("zhead", "shadow") on her root joint (and not with her body: a
 // material is entered once a frame); "damA"; none. The first two
-// into the game's draw list +0x5D64, the others +0x5D6C (the current lists: 104B4634, 104B4638); her body then into
-// +0x5D68 / +0x5D60. Her view is calculated first (once a draw: interp.cpp skips her entry's own, view_done).
+// into the game's draw list mpOpaListZelda0, the others mpXluListZelda1 (the current lists: 104B4634, 104B4638); her
+// body then into mpOpaListZelda1 / mpOpaListPlayerExtra. Her view is calculated first (once a draw: interp.cpp skips her entry's own, view_done).
 extern "C" void f_027F583C_orig(Cpu* c);
+constexpr uint32_t kPacketVtable = 0xC;  // (measured: where 027F1278 leaves the draw state packet's vtable)
 uint32_t g_face_state[1 + kPuppets][4];  // each slot's own (a packet is entered once a frame: two Tetras on one screen)
 std::vector<uint32_t> g_viewed;  // the characters' models whose view this draw calculated
 bool g_viewing = false;
@@ -766,7 +774,7 @@ void face_states(Cpu* c, int slot) {
         const uint32_t a = g_face_state[slot][k] = mem::host_alloc(0x98, 0x20);
         for (uint32_t o = 0; o < 0x98; o += 4) st32(a + o, 0);
         guest_call(c, GC(0x027F1278), {a});
-        st32(a + 0xC, k % 2 ? GD(0x10058D10) : GD(0x10058D40));
+        st32(a + kPacketVtable, k % 2 ? GD(0x10058D10) : GD(0x10058D40));
     }
 }
 void enter_face(Cpu* c, const Part& pt, uint32_t model, uint32_t src, int slot) {
@@ -776,46 +784,47 @@ void enter_face(Cpu* c, const Part& pt, uint32_t model, uint32_t src, int slot) 
     g_viewing = true, guest_call(c, GC(0x027F55FC), {model}), g_viewing = false;  // J3DModel::viewCalc
     g_viewed.push_back(model);
     const uint32_t game = guest_call(c, GC(0x025200D4)), lists = GD(0x104B4634), n = materials(model);
-    const uint32_t root = ld32(ld32(model + 0xAC) + 8);  // (her joint 0)
+    const uint32_t root = ld32(ld32(model + j3d::mModelData) + j3d::mJointNodes);  // (her joint 0)
     const auto show = [&](uint32_t bits) { for (uint32_t m = 0; m < n; m++) st8(shown_flag(model, m), bits >> m & 1); };
     const auto pass = [&](int k, uint32_t bits) {
         guest_call(c, GC(0x027F0E04), {ld32(lists), state[k], 0});
         show(bits);
         for (const uint32_t j : pt.face_joints) c->r[3] = model, c->r[4] = j, f_027F583C_orig(c);
     };
-    st32(lists, ld32(game + 0x5D64)), st32(lists + 4, ld32(game + 0x5D64));
+    const uint32_t dl = game + inf::kDrawlist;
+    st32(lists, ld32(dl + dlst::mpOpaListZelda0)), st32(lists + 4, ld32(dl + dlst::mpOpaListZelda0));
     pass(0, pt.group[2]);
     pass(1, pt.group[0]);
     show(pt.cover), c->r[3] = model, c->r[4] = root, f_027F583C_orig(c);
-    st32(lists, ld32(game + 0x5D6C)), st32(lists + 4, ld32(game + 0x5D6C));
+    st32(lists, ld32(dl + dlst::mpXluListZelda1)), st32(lists + 4, ld32(dl + dlst::mpXluListZelda1));
     pass(2, pt.group[1]);
     guest_call(c, GC(0x027F0E04), {ld32(lists), state[3], 0});
-    st32(lists, ld32(game + 0x5D68)), st32(lists + 4, ld32(game + 0x5D60));
+    st32(lists, ld32(dl + dlst::mpOpaListZelda1)), st32(lists + 4, ld32(dl + dlst::mpOpaListPlayerExtra));
 }
 // ... and entered as his (lit as Link), her face as hers is (enter_face); once a draw (his body is reported twice:
 // entryDLSetLight and the modelEntryDL in it)
 uint32_t g_char_entered = 0;  // slots entered this draw
-// A hurt player's red flash (daPy_lk_c::draw, 023D9820): while Link's damage timer (+0x3B0) runs, outside his electric
-// shock (procedure 0x6C), his light's fog (tevStr +0xA0, at Link +0x1B0: colour s16 x3, start, end +0x1B8/+0x1BC) is
+// A hurt player's red flash (daPy_lk_c::draw, 023D9820): while Link's damage timer (mDamageWaitTimer) runs, outside his
+// electric shock (procedure 0x6C), his light's fog (tevStr's mFogColor: s16 x3, mFogStartZ, mFogEndZ) is
 // red (0xFF, 0x3C, 0x3C) from 200 in front of him (less a pulse of up to 200) to 300 past that, and each model's
 // entry (entryDLSetLight) copies it into its materials. The puppets are entered in Link's draw with his light: around
 // a puppet's entries Link's fog is that red for its own player's hurt (its pose's kHurt), or as it was before his own
 // red (kept from his last unhurt draw) for one not hurt while he is
-bool flashing(uint32_t link) { return (int16_t)ld16(link + 0x3B0) > 0 && ld32(link + kCurProc) != 0x6C; }
+bool flashing(uint32_t link) { return (int16_t)ld16(link + py::mDamageWaitTimer) > 0 && ld32(link + kCurProc) != 0x6C; }
 struct Red {
     uint32_t link;
-    uint8_t was[16];
+    uint8_t was[16];  // (mFogColor..mFogEndZ)
     bool on = false;
     Red(Cpu* c, uint32_t link, const Puppet* u) : link(link) {  // (u null: this game's own Link, red as he is)
         if (!u) return;
         static uint8_t plain[16];
         static bool have_plain = false;
         const bool mine = flashing(link), hurt = u->pose.flags & kHurt;
-        if (!mine) memcpy(plain, mem::ptr(link + 0x1B0), 16), have_plain = true;
+        if (!mine) memcpy(plain, mem::ptr(link + ac::kFogColor), 16), have_plain = true;
         if (!hurt && !(mine && have_plain)) return;
-        on = true, memcpy(was, mem::ptr(link + 0x1B0), 16);
+        on = true, memcpy(was, mem::ptr(link + ac::kFogColor), 16);
         if (!hurt) {
-            memcpy(mem::ptr(link + 0x1B0), plain, 16);
+            memcpy(mem::ptr(link + ac::kFogColor), plain, 16);
             return;
         }
         static const uint32_t buf = mem::host_alloc(0x20);  // its place, then in the camera's frame (mDoLib_pos2camera)
@@ -826,10 +835,10 @@ struct Red {
         for (int k = 0; k < 8; k++) c->r[3 + k] = r[k];
         const double turn = (uint16_t)(ld32(GD(0x101FF560)) * 0x800) * M_PI / 32768;  // (g_Counter.mTimer)
         const float start = -(float)ldf32(buf + 0x18) - 200 + 200 * (float)std::fabs(std::sin(turn));
-        st16(link + 0x1B0, 0xFF), st16(link + 0x1B2, 0x3C), st16(link + 0x1B4, 0x3C);
-        st32(link + 0x1B8, bits(start)), st32(link + 0x1BC, bits(start + 300));
+        st16(link + ac::kFogColor, 0xFF), st16(link + ac::kFogColor + 2, 0x3C), st16(link + ac::kFogColor + 4, 0x3C);
+        st32(link + ac::kFogStart, bits(start)), st32(link + ac::kFogEnd, bits(start + 300));
     }
-    ~Red() { if (on) memcpy(mem::ptr(link + 0x1B0), was, 16); }
+    ~Red() { if (on) memcpy(mem::ptr(link + ac::kFogColor), was, 16); }
 };
 
 void enter_character(Cpu* c, uint32_t link, int ch, int slot, uint32_t src) {
@@ -932,22 +941,23 @@ uint16_t exchange(uint16_t base, uint16_t want, uint16_t cur) {
 uint32_t worn(Clothes& k, int t) {
     if (!k.tex || (t == 0 && k.base == kTunicRgb[0])) return k.tex;
     if (k.fresh) k.fresh = false, std::fill(std::begin(k.made), std::end(k.made), false), std::fill(std::begin(k.guessed), std::end(k.guessed), false);
-    const uint32_t gx = k.tex + 4;
+    using namespace gx2;
+    const uint32_t gx = k.tex + kTexSurface;
     if (k.made[t] && k.guessed[t] && ++k.retry[t] % 30 == 0 &&
-        link_masks::find(mem::ptr(ld32(gx + 0x24)), ld32(gx + 0x20), ld32(gx + 0x28) ? mem::ptr(ld32(gx + 0x2C)) : nullptr, ld32(gx + 0x28)))
+        link_masks::find(mem::ptr(ld32(gx + image)), ld32(gx + imageSize), ld32(gx + mipmapSize) ? mem::ptr(ld32(gx + mipmaps)) : nullptr, ld32(gx + mipmapSize)))
         k.made[t] = false;  // (the mask is ready now: made again from it)
     if (k.made[t]) return k.worn[t];
-    const uint32_t size = ld32(gx + 0x20), mips = ld32(gx + 0x28), align = std::max<uint32_t>(ld32(gx + 0x38), 0x100);
-    if (!k.worn[t]) k.worn[t] = mem::host_alloc(0xC0, 0x20), k.img[t] = mem::host_alloc(size, align), k.mip[t] = mips ? mem::host_alloc(mips, align) : 0;
+    const uint32_t size = ld32(gx + imageSize), mips = ld32(gx + mipmapSize), align = std::max<uint32_t>(ld32(gx + alignment), 0x100);
+    if (!k.worn[t]) k.worn[t] = mem::host_alloc(kTexObject, 0x20), k.img[t] = mem::host_alloc(size, align), k.mip[t] = mips ? mem::host_alloc(mips, align) : 0;
     k.made[t] = true;
     const uint32_t obj = k.worn[t], img = k.img[t], mip = k.mip[t];
-    memcpy(mem::ptr(obj), mem::ptr(k.tex), 0xC0);
-    memcpy(mem::ptr(img), mem::ptr(ld32(gx + 0x24)), size);
-    if (mip) memcpy(mem::ptr(mip), mem::ptr(ld32(gx + 0x2C)), mips);
-    st32(obj + 4 + 0x24, img), st32(obj + 4 + 0x2C, mip);
+    memcpy(mem::ptr(obj), mem::ptr(k.tex), kTexObject);
+    memcpy(mem::ptr(img), mem::ptr(ld32(gx + image)), size);
+    if (mip) memcpy(mem::ptr(mip), mem::ptr(ld32(gx + mipmaps)), mips);
+    st32(obj + kTexSurface + image, img), st32(obj + kTexSurface + mipmaps, mip);
     // the tunic's mask computed from the player's own game (mods/link_masks.h): its tint; until it is ready (or for a
     // texture it does not know), the hue test below
-    if (const link_masks::Mask* m = link_masks::find(mem::ptr(ld32(gx + 0x24)), size, mips ? mem::ptr(ld32(gx + 0x2C)) : nullptr, mips)) {
+    if (const link_masks::Mask* m = link_masks::find(mem::ptr(ld32(gx + image)), size, mips ? mem::ptr(ld32(gx + mipmaps)) : nullptr, mips)) {
         link_masks::tint(*m, link_masks::Part::kTunic, kTunicRgb[t], mem::ptr(img), mip ? mem::ptr(mip) : nullptr);
         k.guessed[t] = false;
         trace("coop: Link's clothes (%06X) in tunic %d made from the computed mask", k.base, t);
@@ -976,18 +986,17 @@ uint32_t worn(Clothes& k, int t) {
     return obj;
 }
 
-// Link's body texture, found among his models' (each model data's texture table, md +0x30: a u16 count, then 0x24-byte
-// entries from +4 whose +0x20 is the texture object), by size and format. (His island clothes are not
+// Link's body texture, found among his models' (each model data's texture table: j3d::kTexTable), by size and format. (His island clothes are not
 // among them in HD: left as they are.)
 void find_clothes() {
     for (Clothes& k : g_clothes) k.tex = 0;
     for (const LinkModel& lm : g_models) {
-        const uint32_t table = ld32(ld32(lm.model + 0xAC) + 0x30), n = table ? std::min<uint32_t>(ld16(table), 64) : 0;
+        const uint32_t table = ld32(ld32(lm.model + j3d::mModelData) + j3d::kTexTable), n = table ? std::min<uint32_t>(ld16(table), 64) : 0;
         for (uint32_t j = 0; j < n; j++)
-            if (const uint32_t tex = ld32(ld32(table + 4) + j * 0x24 + 0x20))
+            if (const uint32_t tex = ld32(ld32(table + j3d::kTexTableEntries) + j * j3d::kTexEntry + j3d::kTexEntryObj))
                 for (Clothes& k : g_clothes)
-                    if (!k.tex && ld32(tex + 4 + 4) == 640 && ld32(tex + 4 + 8) == 384 && (ld32(tex + 4 + 0x14) & 0x3F) == k.fmt &&
-                        ld32(tex + 4 + 0x20) + ld32(tex + 4 + 0x28) == k.bytes)
+                    if (const uint32_t s = tex + gx2::kTexSurface; !k.tex && ld32(s + gx2::width) == 640 && ld32(s + gx2::height) == 384 &&
+                        (ld32(s + gx2::format) & 0x3F) == k.fmt && ld32(s + gx2::imageSize) + ld32(s + gx2::mipmapSize) == k.bytes)
                         k.tex = tex;
     }
     for (Clothes& k : g_clothes)  // (its copies made from another texture: made again, in the same memory)
@@ -1063,7 +1072,7 @@ void effect_at(Cpu* c, const Effect& e, const float pos[3], int16_t yaw) {
     for (int i = 0; i < 3; i++) st32(buf + 4 * i, bits(w[i]));
     st16(buf + 0xC, (uint16_t)e.angle[0]), st16(buf + 0xE, (uint16_t)(e.angle[1] + yaw)), st16(buf + 0x10, (uint16_t)e.angle[2]);
     st32(c->r[1] - 0x40 + 8, 0xFFFFFFFF), st32(c->r[1] - 0x40 + 0xC, 0), st32(c->r[1] - 0x40 + 0x10, 0), st32(c->r[1] - 0x40 + 0x14, 0);
-    guest_call(c, GC(0x025A847C), {ld32(kPlay + 0x5AB0), 0, e.id, buf, buf + 0xC, 0, 0xFF, 0});
+    guest_call(c, GC(0x025A847C), {ld32(kPlay + inf::kParticle), 0, e.id, buf, buf + 0xC, 0, 0xFF, 0});
 }
 
 // Compact joints (GAPS C10, the pose's flags bit 7): a model's joints in 8 bytes each instead of 15: the rotation as
@@ -1432,8 +1441,8 @@ void state_loaded() {
     // body model where it was and each of his models still made of the same data): his models stay known, and the
     // puppets' kits are put back at their next show
     bool same = !g_models.empty() && g_link_drawing && g_body_k >= 0 && (size_t)g_body_k < g_models.size() &&
-                ld32(g_link_drawing + 0x448) == g_models[g_body_k].model;
-    for (const LinkModel& m : g_models) same = same && m.model >= mem::kMem2Start && m.model < mem::kMem2End && ld32(m.model + 0xAC) == m.data;
+                ld32(g_link_drawing + py::mpCLModel) == g_models[g_body_k].model;
+    for (const LinkModel& m : g_models) same = same && m.model >= mem::kMem2Start && m.model < mem::kMem2End && ld32(m.model + j3d::mModelData) == m.data;
     g_wearer.clear(), g_have = false;
     if (same) {
         for (LinkModel& m : g_models) {
@@ -1462,31 +1471,31 @@ void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic, bool
 }
 
 // Medli flies (Asad's rule: as in the game; daNpc_Md_c::flyPlayerAction, 02294160, when one plays her): in the air
-// (Link's mode +0x6A70 bit 2, in an auto jump or a fall: procedures 0x24, 0x27, 0x29) A takes off, up at 20; then she
-// glides down at most 10 a step (gravity +0x374 at -1, the fall's floor +0x378 at -10); each A, or every 10 steps it is
+// (Link's mModeFlg bit 2, in an auto jump or a fall: procedures 0x24, 0x27, 0x29) A takes off, up at 20; then she
+// glides down at most 10 a step (gravity at -1, maxFallSpeed, the fall's floor, at -10); each A, or every 10 steps it is
 // held, flaps her up (the floor at +10 for 5 steps). 450 steps (15 s), 70 without A, the ground or anything else Link
-// does ends it, as 1500 over where she took off is as high as she goes. No fall damage: the fall's start (+0x6A48,
-// +0x6A4C, +0x7294, as procAutoJump_init sets them) kept at her height
+// does ends it, as 1500 over where she took off is as high as she goes. No fall damage: the fall's start (m35F0,
+// m35F4, m3688.y, as procAutoJump_init sets them) kept at her height
 struct Flight { int left = 0, flap = 0, idle = 0; float top = 0; uint32_t gravity = 0, floor = 0; } g_fly;
 void fly(uint32_t link) {
     Flight& f = g_fly;
     const uint32_t proc = ld32(link + kCurProc);
-    const bool air = ld32(link + 0x6A70) & 2, may = g_own_char == kMedli && air && (proc == 0x24 || proc == 0x27 || proc == 0x29);
-    const bool a = ld8(link + 0x690D) & 1, held = ld8(link + 0x690E) & 1;
+    const bool air = ld32(link + py::mModeFlg) & 2, may = g_own_char == kMedli && air && (proc == 0x24 || proc == 0x27 || proc == 0x29);
+    const bool a = ld8(link + py::mItemTrigger) & 1, held = ld8(link + py::mItemButton) & 1;
     if (!f.left) {
         if (!may || !a) return;
-        f = {450, 0, 70, f32(link + kPos + 4) + 1500, ld32(link + 0x374), ld32(link + 0x378)};
-        st32(link + 0x340, bits(20.f));
+        f = {450, 0, 70, f32(link + kPos + 4) + 1500, ld32(link + ac::gravity), ld32(link + ac::maxFallSpeed)};
+        st32(link + ac::kSpeedY, bits(20.f));
         trace("coop: Medli takes off");
     } else if (a || (held && f.left % 10 == 0)) f.flap = 5, f.idle = 70;
     else if (f.flap) f.flap--;
     if (!may || --f.left <= 0 || --f.idle <= 0) {
-        st32(link + 0x374, f.gravity), st32(link + 0x378, f.floor), f.left = 0;
+        st32(link + ac::gravity, f.gravity), st32(link + ac::maxFallSpeed, f.floor), f.left = 0;
         return trace("coop: Medli lands");
     }
-    st32(link + 0x374, bits(-1.f)), st32(link + 0x378, bits(f.flap ? 10.f : -10.f));
-    if (f32(link + kPos + 4) > f.top) st32(link + kPos + 4, bits(f.top)), st32(link + 0x340, bits(0.f));
-    for (uint32_t o : {0x6A48u, 0x6A4Cu, 0x7294u}) st32(link + o, ld32(link + kPos + 4));
+    st32(link + ac::gravity, bits(-1.f)), st32(link + ac::maxFallSpeed, bits(f.flap ? 10.f : -10.f));
+    if (f32(link + kPos + 4) > f.top) st32(link + kPos + 4, bits(f.top)), st32(link + ac::kSpeedY, bits(0.f));
+    for (uint32_t o : {py::m35F0, py::m35F4, py::kFallStartY}) st32(link + o, ld32(link + kPos + 4));
 }
 
 void step(Cpu* c, uint32_t link, bool on) {
@@ -1515,7 +1524,7 @@ void step(Cpu* c, uint32_t link, bool on) {
         }
         auto play = [&](uint32_t morf) {
             guest_call(c, GC(0x025E535C), {morf, 0, 0, 0});  // mDoExt_McaMorf::play (no sound)
-            const uint32_t m = ld32(morf + 0x90);
+            const uint32_t m = ld32(morf + mca::mpModel);
             for (int e = 0; e < 12; e++) st32(m + kMdlBase + 4 * e, bits(e % 5 == 0 ? 1.f : 0.f));
             guest_call(c, GC(0x025E55A0), {morf});  // its calc
         };
@@ -1667,17 +1676,17 @@ static void enter(Cpu* c, uint32_t link, int i, const Model& m) {
     // its base transform: T(pos) * Ry
     const float base[12] = {co, 0, s, u.pos[0], 0, 1, 0, u.pos[1], -s, 0, co, u.pos[2]};
     for (int e = 0; e < 12; e++) st32(twin + kMdlBase + 4 * e, bits(base[e]));
-    // its packets' draw flags as Link's model has them (027F596C: model +0x74 into each shape packet)
+    // its packets' draw flags as Link's model has them (027F596C: model j3d::kDiffFlag into each shape packet)
     if (m.k != kHeld) {
-        const uint32_t fl = ld32(g_models[m.k].model + 0x74);
-        st32(twin + 0x74, fl), guest_call(c, GC(0x027F596C), {twin, fl});
+        const uint32_t fl = ld32(g_models[m.k].model + j3d::kDiffFlag);
+        st32(twin + j3d::kDiffFlag, fl), guest_call(c, GC(0x027F596C), {twin, fl});
     }
-    // a bomb's fuse warning (its red): Link's bomb brk (+0x44D4, on the bomb's model data, which its copies share) at the
+    // a bomb's fuse warning (its red): Link's bomb brk (py::kBombBrk, on the bomb's model data, which its copies share) at the
     // frame that player's bomb drew with, as daBomb_c::draw_norm (020C4398) sets it (mDoExt_brkAnm::entry 025E83FC)
     if (m.k == kHeld && m.brk >= 0) {
         const uint32_t r3 = c->r[3];
         c->f[1].ps0 = m.brk;
-        guest_call(c, GC(0x025E83FC), {link + 0x44D4, ld32(twin + 0xAC)});
+        guest_call(c, GC(0x025E83FC), {link + py::kBombBrk, ld32(twin + j3d::mModelData)});
         c->r[3] = r3;
     }
     // its materials shown as that player's were (his sword drawn: the blade), Link's put back after
@@ -1727,7 +1736,7 @@ extern "C" void hook_023D8454(Cpu* c) {
 }
 
 static void item_drawn(uint32_t model);
-// mDoExt_modelEntryDL (025E2E5C) / modelUpdateDL (025E2DE0): Link's draw enters his body (+0x448) and a few others
+// mDoExt_modelEntryDL (025E2E5C) / modelUpdateDL (025E2DE0): Link's draw enters his body (mpCLModel) and a few others
 // straight through these, without entryDLSetLight
 extern "C" void hook_025E2E5C(Cpu* c) {
     const uint32_t model = c->r[3];
@@ -1755,8 +1764,9 @@ extern "C" void hook_027F50F8(Cpu* c) {
     if (it == g_wearer.end()) return;
     const int t = it->second < 0 ? g_own_tunic : g_puppet[it->second].tunic;
     if (t < 0) return;
-    for (uint32_t i = 0, n = ld16(model + 0x2A); i < n; i++) {
-        const uint32_t mi = ld32(model + 0x34) + i * 0x3C, list = ld32(mi + 0x2C), count = list ? ld8(ld32(mi) + 0x11) : 0;
+    using namespace j3d;
+    for (uint32_t i = 0, n = ld16(model + kMatPacketNum); i < n; i++) {
+        const uint32_t mi = ld32(model + kMatPackets) + i * kMatPacket, list = ld32(mi + kMatPacketTex), count = list ? ld8(ld32(mi) + kMatTexNum) : 0;
         for (uint32_t j = 0; j < count; j++)
             for (Clothes& k : g_clothes)
                 if (k.tex && ld32(list + 4 * j) == k.tex) st32(list + 4 * j, worn(k, t));
@@ -1786,7 +1796,7 @@ extern "C" void hook_023D9820(Cpu* c) {
     const uint32_t link = c->r[3];
     if (g_want) g_taking = Pose{};
     for (uint64_t& e : g_entered) e = 0;
-    g_in_draw = true, g_link_drawing = link, g_body_k = index_of(ld32(link + 0x448)), g_char_entered = 0;
+    g_in_draw = true, g_link_drawing = link, g_body_k = index_of(ld32(link + py::mpCLModel)), g_char_entered = 0;
     j3d_draw_guard::clear_marks();  // (this frame's see-through entries follow)
     g_viewed.clear();
     f_023D9820_orig(c);
@@ -1798,14 +1808,15 @@ extern "C" void hook_023D9820(Cpu* c) {
         for (int i = 0; i < 3; i++) g_taking.pos[i] = f32(link + kPos + 4 * i);
         g_taking.yaw = (int16_t)ld16(link + kAngleY);
         g_taking.proc = (uint16_t)ld32(link + kCurProc), g_taking.equip = ld16(link + kEquip);
-        if (const uint32_t blur = ld32(link + kSwBlur); blur && (int32_t)ld32(blur + 0x9C) > 0) {
-            g_taking.trail = (int32_t)ld32(blur + 0x9C), g_taking.trail_idx = (int32_t)ld32(blur + 0xA0);
-            g_taking.trail_color = (int32_t)ld32(blur + 0xA4), g_taking.trail_top = f32(blur + 0xA8);
+        using namespace swblur;
+        if (const uint32_t blur = ld32(link + kSwBlur); blur && (int32_t)ld32(blur + mPointCount) > 0) {
+            g_taking.trail = (int32_t)ld32(blur + mPointCount), g_taking.trail_idx = (int32_t)ld32(blur + mSampleIndex);
+            g_taking.trail_color = (int32_t)ld32(blur + mBlurColorType), g_taking.trail_top = f32(blur + mBlurTopRate);
             float s, co;
             rot_y((int16_t)ld16(link + kAngleY), s, co);
             g_taking.trail_pts.resize(kTrailPts);
             for (uint32_t i = 0; i < kTrailPts / 3; i++) {
-                const uint32_t v = blur + 0xBC + 12 * i;  // (base 0..59, then tip 0..59: +0x38C = +0xBC + 60*12)
+                const uint32_t v = blur + mTopPos + 12 * i;  // (mTopPos 0..59, then mBottomPos 0..59 right after)
                 const float d[3] = {f32(v) - g_taking.pos[0], f32(v + 4) - g_taking.pos[1], f32(v + 8) - g_taking.pos[2]};
                 const float l[3] = {co * d[0] - s * d[2], d[1], s * d[0] + co * d[2]};
                 for (int e = 0; e < 3; e++) g_taking.trail_pts[3 * i + e] = (int16_t)std::clamp<long>(std::lround(l[e] * 4), -32768, 32767);
@@ -1841,18 +1852,19 @@ extern "C" void hook_023D9820(Cpu* c) {
         const uint32_t mine = ld32(link + kSwBlur);
         if (!u.shown || u.pose.trail <= 0 || u.pose.trail_pts.size() != kTrailPts || !mine) continue;
         uint32_t& b = blurs[i];
-        if (!b) b = mem::host_alloc(0x1243C, 0x20), guest_call(c, GC(0x0240F564), {b});
-        st32(b + 0x9C, (uint32_t)u.pose.trail), st32(b + 0xA0, (uint32_t)u.pose.trail_idx), st32(b + 0xA4, (uint32_t)u.pose.trail_color);
-        st32(b + 0xA8, bits(u.pose.trail_top)), st32(b + 0xAC, ld32(mine + 0xAC));
+        using namespace swblur;
+        if (!b) b = mem::host_alloc(swblur::kSize, 0x20), guest_call(c, GC(0x0240F564), {b});
+        st32(b + mPointCount, (uint32_t)u.pose.trail), st32(b + mSampleIndex, (uint32_t)u.pose.trail_idx), st32(b + mBlurColorType, (uint32_t)u.pose.trail_color);
+        st32(b + mBlurTopRate, bits(u.pose.trail_top)), st32(b + mpPosBuffer, ld32(mine + mpPosBuffer));
         float s, co;
         rot_y(u.yaw, s, co);
         for (uint32_t k = 0; k < kTrailPts / 3; k++) {
             const float l[3] = {u.pose.trail_pts[3 * k] / 4.f, u.pose.trail_pts[3 * k + 1] / 4.f, u.pose.trail_pts[3 * k + 2] / 4.f};
             const float w[3] = {u.pos[0] + co * l[0] + s * l[2], u.pos[1] + l[1], u.pos[2] - s * l[0] + co * l[2]};
-            for (int e = 0; e < 3; e++) st32(b + 0xBC + 12 * k + 4 * e, bits(w[e]));
+            for (int e = 0; e < 3; e++) st32(b + mTopPos + 12 * k + 4 * e, bits(w[e]));
         }
         const uint32_t gi = guest_call(c, GC(0x025200D4));
-        guest_call(c, GC(0x0252F3B0), {gi + 0x5D30, ld32(gi + 0x5D7C), b, b + 0x38C});
+        guest_call(c, GC(0x0252F3B0), {gi + inf::kDrawlist, ld32(gi + inf::kDrawlist + dlst::mpXluList), b, b + mBottomPos});
     }
     // their ropes: each puppet's own line, its points from the pose, updated and set as daHimo2's draw does (025EC62C
     // with the rope's colour and Link's light; 025EDD04 into the line packet, entered into the actors' list once a draw)
@@ -1860,16 +1872,17 @@ extern "C" void hook_023D9820(Cpu* c) {
         const Puppet& u = g_puppet[i];
         const uint32_t mat = g_rope[i].mat, n = (uint32_t)u.pose.rope_pts.size() / 3;
         if (!u.shown || n < 2 || mat <= 1) continue;
-        const uint32_t pts = ld32(ld32(mat + 0x184));
+        const uint32_t pts = ld32(ld32(mat + linemat::mpLines));
         for (uint32_t k = 0; k < n; k++) from_pose(&u.pose.rope_pts[3 * k], u.pos, u.yaw, pts + 12 * k);
         c->f[1].ps0 = u.pose.rope_width;
-        guest_call(c, GC(0x025EC62C), {mat, n, GD(0x101B6E14), 0, link + 0x110});
-        const uint32_t gi = guest_call(c, GC(0x025200D4)), packet = gi + 0x5FB4 + 0x9C, lists = GD(0x104B4634);
+        guest_call(c, GC(0x025EC62C), {mat, n, GD(0x101B6E14), 0, link + ac::tevStr});
+        const uint32_t gi = guest_call(c, GC(0x025200D4)), dl = gi + inf::kDrawlist, lists = GD(0x104B4634);
+        const uint32_t packet = dl + dlst::m3DlineMatSortPacket + dlst::kLinePacket;
         bool in = false;  // (entered twice, a line would follow itself: the packet's draw would never end)
-        for (uint32_t m = ld32(packet + 0x98); m && !in; m = ld32(m)) in = m == mat;
+        for (uint32_t m = ld32(packet + dlst::kLinePacketFirst); m && !in; m = ld32(m)) in = m == mat;
         if (in) continue;
         const uint32_t was[2] = {ld32(lists), ld32(lists + 4)};
-        st32(lists, ld32(gi + 0x5D58)), st32(lists + 4, ld32(gi + 0x5D60));  // (into the actors' lists, as daHimo2 puts it)
+        st32(lists, ld32(dl + dlst::mpOpaListP1)), st32(lists + 4, ld32(dl + dlst::mpOpaListPlayerExtra));  // (into the actors' lists, as daHimo2 puts it)
         guest_call(c, GC(0x025EDD04), {packet, mat});
         st32(lists, was[0]), st32(lists + 4, was[1]);
     }
@@ -1880,27 +1893,28 @@ extern "C" void hook_023D9820(Cpu* c) {
 // the boat he rides (daPy_lk_c procedures SHIP_READY..SHIP_RESTART but its getting off, as extras.cpp's riding): its
 // models go with his pose as an item's, so each player sails their own boat on the others' screens too
 static bool his_boat(uint32_t a) {
-    const uint32_t link = ld32(kPlay + 0x5B34), proc = link ? ld32(link + kCurProc) : 0;
-    return a && a == ld32(kPlay + 0x5B3C) && proc >= 0x86 && proc <= 0x91 && proc != 0x90;
+    const uint32_t link = ld32(kPlay + inf::kLink), proc = link ? ld32(link + kCurProc) : 0;
+    return a && a == ld32(kPlay + inf::kShip) && proc >= 0x86 && proc <= 0x91 && proc != 0x90;
 }
 static void item_drawn(uint32_t model) {
     if (!g_drawing || (!items::mine(g_drawing) && !his_boat(g_drawing))) return;  // (items draw after Link: kept for his next pose)
-    const uint32_t data = ld32(model + 0xAC), link = ld32(kPlay + 0x5B34);
+    const uint32_t data = ld32(model + j3d::mModelData), link = ld32(kPlay + inf::kLink);
     const auto file = g_link_res.find(data);
     const auto diff = g_diff_of.find(data);
     if (file == g_link_res.end() || diff == g_diff_of.end() || !link) return;
     const Made made{file->second, diff->second};
     std::erase_if(g_item_models, [&](const Model& m) { return m.file == made.file; });
     take(g_item_models, -1, &made, model, link);
-    // a bomb (not a Bomb Flower: daBomb_c mType +0x5C8 1) as its draw_norm left Link's bomb brk: its fuse warning
-    if (items::mine(g_drawing) == 0x126 && ld32(g_drawing + 0x5C8) != 1 && !g_item_models.empty() && g_item_models.back().file == made.file)
-        g_item_models.back().brk = f32(link + 0x44D8);
+    // a bomb (not a Bomb Flower: daBomb_c mType 1) as its draw_norm left Link's bomb brk: its fuse warning
+    if (items::mine(g_drawing) == 0x126 && ld32(g_drawing + bomb::mType) != 1 && !g_item_models.empty() && g_item_models.back().file == made.file)
+        g_item_models.back().brk = f32(link + py::kBombBrk + 4);  // (its frame)
 }
 extern "C" void f_025D4654_orig(Cpu* c);
-// one of Link's items drawn: the hookshot's chain (its links +0xD504, angles +0x328, from his hand: Link +0x72F0) and the
-// grappling hook's rope (its points as its draw left them: count +0x21D4, line +0x21D0) into his next pose
+// one of Link's items drawn: the hookshot's chain (its links mChainCnt, angles shape_angle, from his hand: Link's
+// mHookshotRootPos) and the grappling hook's rope (its points as its draw left them: count m1F6C, line m1F30) into his
+// next pose
 static void item_lines(uint32_t a, int16_t item, uint32_t n_was) {
-    const uint32_t link = ld32(kPlay + 0x5B34);
+    const uint32_t link = ld32(kPlay + inf::kLink);
     if (item == kHookshot && link) {
         g_lines.chain = (uint16_t)std::clamp<int32_t>((int32_t)ld32(a + kChainN), 0, 300);
         to_pose(link, link + kRoot, g_lines.chain_root);
@@ -1920,7 +1934,7 @@ static void item_lines(uint32_t a, int16_t item, uint32_t n_was) {
 // puppet i's hookshot drawn as its player's chain: its links and angles, and Link's hand put where theirs is for it
 static void draw_chain(Cpu* c, int i, uint32_t a) {
     const Puppet& u = g_puppet[i];
-    const uint32_t link = ld32(kPlay + 0x5B34);
+    const uint32_t link = ld32(kPlay + inf::kLink);
     if (!u.shown || !u.pose.chain || !link) { c->r[3] = 1; return; }
     st32(a + kChainN, u.pose.chain);  // (its list draw reads them again: left as they are)
     st16(a + kChainAngle, (uint16_t)u.pose.chain_angle[0]), st16(a + kChainAngle + 2, (uint16_t)(u.pose.chain_angle[1] + u.yaw));

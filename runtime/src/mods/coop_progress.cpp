@@ -15,6 +15,7 @@
 // a locked door has no lock (dDoor_info_c), a ladder is down (kKinds below). The process names are the game's own
 // (its object name table), as the HD game numbers processes its own way.
 #include "coop_progress.h"
+#include "coop_names.h"
 
 #include <algorithm>
 #include <cmath>
@@ -35,17 +36,17 @@ namespace mods::coop::progress {
 namespace {
 
 const uint32_t kSaveInfoPtr = GD(0x101F84DC);  // dComIfGs save area, dSv_info_c at +0x20 (savestate.cpp)
-const uint32_t kNextStage = GD(0x1046F0B0) + 0x5140;  // dStage_nextStage_c, enabled at +12
+const uint32_t kNextStage = GD(0x1046F0B0) + names::inf::kNextStage;  // dStage_nextStage_c, enabled at +12
 constexpr uint32_t kInfo = 0x20, kLive = 0x778, kStageNo = 0x79C, kDataNum = 0x1290;  // dSv_info_c: mMemory, mDan.mStageNo, mDataNum
 constexpr uint16_t kTable = layout::sv::kMemory, kMemSize = layout::sv::kMemSize, kStages = layout::sv::kStages,
                    kSaveSize = layout::kSaveSize;
 constexpr int kReplaced = 40;  // more fields changed in one step than play does: the save data was replaced (a load)
-const uint32_t kEventRun = GD(0x1046F0B0) + 0x5292;  // dComIfGp_event_runCheck (dEvt_control_c mode, savestate.cpp)
+const uint32_t kEventRun = GD(0x1046F0B0) + names::inf::kEvtCtrl + names::evt::mMode;  // dComIfGp_event_runCheck (dEvt_control_c mode, savestate.cpp)
 constexpr int kHoldSteps = 30 * 180;                 // the others' changes wait for this game's event at most 3 minutes
 
 const uint32_t kActorQueue = GD(0x101F3328);  // g_fopAcTg_Queue: node next +8, actor +0xC (turbo.cpp)
 const uint32_t kObjNames = GD(0x101EBFDC);    // the object name table: name[8], s16 process, s8 subtype, u8 (extras.cpp)
-const uint32_t kLinkPtr = GD(0x1046F0B0) + 0x5B34;
+const uint32_t kLinkPtr = GD(0x1046F0B0) + names::inf::kLink;
 // fopAc_ac_c (WWHD): base_process_class process name +8, parameters +0xB0, argument +0xB4 (as on the GameCube); home
 // (pos +0, angle +0xC, room +0x12) +0x2EC, scale +0x330, Link's process layer +0x2C (extras.cpp create_at)
 constexpr uint32_t kProcName = 0x08, kParams = 0xB0, kArgument = 0xB4, kHome = 0x2EC, kScale = 0x330, kLayer = 0x2C;
@@ -57,7 +58,7 @@ std::deque<std::string> g_in;         // the others' changes not put in yet
 // Rupees: the wallet (sv +4) plus the meter's count still to come (play +0x5B48, s32), which a pickup or chest adds to and
 // a shop takes from. A rise is a gain, told to the others; a fall is spending (or a full wallet), this player's own. What
 // comes in goes through the meter too, and the baseline moves past it, so it isn't told again.
-const uint32_t kRupeeCount = GD(0x1046F0B0) + 0x5B48;
+const uint32_t kRupeeCount = GD(0x1046F0B0) + names::inf::kItemRupeeCount;
 constexpr int kMostRupees = 5000;  // the largest wallet
 int g_purse = -1;                  // the wallet as of the last step (-1: none yet)
 int g_rupees_in = 0;               // the others' gains not put in yet
@@ -259,7 +260,7 @@ void move_doors(Cpu* c) {
 }  // namespace
 
 void door_moved(const uint8_t* d, size_t n) {
-    if (n < 8 + 2 + 8 + 1 || memcmp(d, mem::ptr(GD(0x1046F0B0) + 0x5134), 8)) return;
+    if (n < 8 + 2 + 8 + 1 || memcmp(d, mem::ptr(GD(0x1046F0B0) + names::inf::kCurStage), 8)) return;
     DoorMove m{};
     int16_t proc;
     memcpy(&proc, d + 8, 2), memcpy(&m.x, d + 10, 4), memcpy(&m.z, d + 14, 4);
@@ -434,7 +435,7 @@ std::vector<std::string> team_state(bool counts) {
 // opening or closing, to the others
 static void door_told(uint32_t a, bool open, uint8_t way = 0) {
     if (mods::coop::net::role() == mods::coop::net::Role::kOff) return;
-    std::string b((const char*)mem::ptr(GD(0x1046F0B0) + 0x5134), 8);
+    std::string b((const char*)mem::ptr(GD(0x1046F0B0) + mods::coop::names::inf::kCurStage), 8);
     const int16_t proc = (int16_t)ld16(a + 0x08);
     const float x = (float)ldf32(a + 0x2EC), z = (float)ldf32(a + 0x2F4);
     b.append((const char*)&proc, 2), b.append((const char*)&x, 4), b.append((const char*)&z, 4), b += (char)open, b += (char)way;

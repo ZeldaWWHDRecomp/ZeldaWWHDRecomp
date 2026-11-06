@@ -14,6 +14,8 @@
 #include <vector>
 
 #include "coop_items.h"
+#include "coop_layout.h"
+#include "coop_names.h"
 #include "coop_monsters.h"
 #include "coop_net.h"
 #include "coop_pose.h"
@@ -25,19 +27,20 @@
 namespace mods::coop::world {
 namespace {
 
+using namespace names;  // (C18: the offsets by name, coop_names.h)
 const uint32_t kPlay = GD(0x1046F0B0);
-const uint32_t kLinkPtr = kPlay + 0x5B34;  // daPy_lk_c
-const uint32_t kStage = kPlay + 0x5134;    // the current stage's name
-constexpr uint32_t kPos = 0x314, kRoom = 0x326, kAngleY = 0x32A, kCurProc = 0x65F0;
+const uint32_t kLinkPtr = kPlay + inf::kLink;  // daPy_lk_c
+const uint32_t kStage = kPlay + inf::kCurStage;  // the current stage's name
+constexpr uint32_t kPos = ac::kPos, kRoom = ac::kRoom, kAngleY = ac::kAngleY, kCurProc = py::mCurProc;
 
-uint32_t save() { return ld32(GD(0x101F84DC)) + 0x20; }  // dSv_player_c (dSv_info_c::mSavedata)
+uint32_t save() { return ld32(GD(0x101F84DC)) + 0x20; }  // dSv_player_c (dSv_info_c::mSavedata, wwhd_src SAVE_OFF)
 bool in_mem2(uint32_t a) { return a >= 0x10000000 && a < 0x50000000; }
 uint32_t u32_bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 struct V3 { double x, y, z; };
 V3 pos_of(uint32_t a) { return {ldf32(a + kPos), ldf32(a + kPos + 4), ldf32(a + kPos + 8)}; }
 // Link put at a place: his current and old places, his collision's and the camera's (as the fork's mods move him)
 void put_link(uint32_t link, V3 w) {
-    for (uint32_t a : {link + kPos, link + 0x300, link + 0x84C, link + 0x68B0, link + 0x7350, GD(0x1046CD48)})
+    for (uint32_t a : {link + kPos, link + ac::kOldPos, link + py::kAcchLin, link + py::mLightInfluence, link + py::m3748, GD(0x1046CD48)})
         st32(a, u32_bits((float)w.x)), st32(a + 4, u32_bits((float)w.y)), st32(a + 8, u32_bits((float)w.z));
 }
 
@@ -63,7 +66,7 @@ void boat_shot_out() {
     Bytes b;
     for (float v : g_boat_shot.pos) b.put(v);
     for (int16_t v : g_boat_shot.angle) b.put(v);
-    b.put((float)ldf32(ball + 0x370)).put((float)ldf32(ball + 0x340)).put((float)ldf32(ball + 0x374));
+    b.put((float)ldf32(ball + ac::speedF)).put((float)ldf32(ball + ac::kSpeedY)).put((float)ldf32(ball + ac::gravity));
     net::send(-1, net::kBoatShot, b.b);
 }
 void boat_shot_from(Cpu* c, uint32_t link, Reader& r) {
@@ -76,13 +79,13 @@ void boat_shot_from(Cpu* c, uint32_t link, Reader& r) {
     for (float v : {p[0], p[1], p[2], f, y, g}) if (!std::isfinite(v) || std::fabs(v) > 1e6f) return;
     for (int i = 0; i < 3; i++) st32(buf + 4 * i, u32_bits(p[i]));
     const uint32_t layer = guest_call(c, GC(0x025DED64));  // fpcLy_CurrentLayer
-    guest_call(c, GC(0x025DEAB4), {ld32(link + 0x2C)});    // fpcLy_SetCurrentLayer (Link's)
+    guest_call(c, GC(0x025DEAB4), {ld32(link + bpc::kLayer)});  // fpcLy_SetCurrentLayer (Link's)
     st32(c->r[1] - 0x40 + 8, 0);
     const uint32_t ball = guest_call(c, GC(0x025D5928), {0x126, 0x80020004, buf, (uint32_t)(int8_t)ld8(link + kRoom), buf + 0x10, 0, 0xFFFFFFFF, 0});
     guest_call(c, GC(0x025DEAB4), {layer});
     if (!in_mem2(ball)) return;
     guest_call(c, GC(0x020CB89C), {ball, 8});
-    st32(ball + 0x370, u32_bits(f)), st32(ball + 0x340, u32_bits(y)), st32(ball + 0x374, u32_bits(g));
+    st32(ball + ac::speedF, u32_bits(f)), st32(ball + ac::kSpeedY, u32_bits(y)), st32(ball + ac::gravity, u32_bits(g));
     guest_call(c, GC(0x025E1988), {0x2852});
 }
 
@@ -148,7 +151,7 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
 }
 
 // a placed monster this game runs goes for the nearest player: around its execute, Link stands where that player is
-// (every monster reads Link's place through play +0x5B2C / +0x5B34), then is put back
+// (every monster reads Link's place through play's mPlayerInfo / mpPlayerPtr), then is put back
 std::unordered_map<uint32_t, int> g_target;  // by actor id: the player it goes for
 struct StandIn {
     uint32_t link = 0;
@@ -170,22 +173,23 @@ struct StandIn {
 
 }  // namespace
 
-// a friend's blow (kPlayerHit) on this game's Link, taken as a monster's is: a hit on his own body's cylinder (mCyl
-// +0x765C: its TG hit flags +0x1C and +0x98, the way it came +0xC0) with its damage (mStts +0x7620, +0x16), put in just
-// before his execute, where daPy_lk_c::changeDamageProc (023FA578) finds it and plays his damage. Not while he still
-// flinches from the last (+0x3B0, his damage timer; mode +0x6A70 bit 8), as the game's own hits; a friend's blow
+// a friend's blow (kPlayerHit) on this game's Link, taken as a monster's is: a hit on his own body's cylinder (mCyl: its
+// TG hit flags mObjTg.mRPrm and mGObjTg.mRPrm, the way it came mGObjTg.mRVec) with its damage (mStts's m_dmg), put in
+// just before his execute, where daPy_lk_c::changeDamageProc (023FA578) finds it and plays his damage. Not while he still
+// flinches from the last (mDamageWaitTimer; mModeFlg bit 8), as the game's own hits; a friend's blow
 // leaves the last quarter heart
 void before_execute(Cpu* c) {
     mods::coop::deck::move(c);  // (C16: a friend's boat's deck, before Link runs)
     const uint32_t link = ld32(kLinkPtr);
-    if (!g_hurt.quarters || !in_mem2(link) || ld16(link + 0x3B0) || ld32(link + 0x6A70) & 8) return;
-    const int q = std::min<int>(g_hurt.quarters, ld16(save() + 2) - 1);
+    if (!g_hurt.quarters || !in_mem2(link) || ld16(link + py::mDamageWaitTimer) || ld32(link + py::mModeFlg) & 8) return;
+    const int q = std::min<int>(g_hurt.quarters, ld16(save() + layout::sv::kStatusA + layout::sv::kLife) - 1);
     const double a = g_hurt.way * M_PI / 32768;
     g_hurt = {};
     if (q <= 0) return;
-    st32(link + 0x765C + 0x1C, ld32(link + 0x765C + 0x1C) | 1), st32(link + 0x765C + 0x98, ld32(link + 0x765C + 0x98) | 1);
-    st8(link + 0x7620 + 0x16, (uint8_t)q);
-    st32(link + 0x765C + 0xC0, u32_bits((float)(sin(a) * 10))), st32(link + 0x765C + 0xC4, 0), st32(link + 0x765C + 0xC8, u32_bits((float)(cos(a) * 10)));
+    const uint32_t cyl = link + py::mCyl;
+    st32(cyl + cc::mObjTg_mRPrm, ld32(cyl + cc::mObjTg_mRPrm) | 1), st32(cyl + cc::tg_mRPrm, ld32(cyl + cc::tg_mRPrm) | 1);
+    st8(link + py::mStts + cc::stts_m_dmg, (uint8_t)q);
+    st32(cyl + cc::tg_mRVec, u32_bits((float)(sin(a) * 10))), st32(cyl + cc::tg_mRVec + 4, 0), st32(cyl + cc::tg_mRVec + 8, u32_bits((float)(cos(a) * 10)));
 }
 
 void step(Cpu* c) {
@@ -201,8 +205,8 @@ void step(Cpu* c) {
     if (!in_mem2(link) || stage.empty() || stage == "sea_T" || stage == "Name" || stage == "ENDumi") return;  // title, file select
     if (fresh) settle = 60;
     else if (settle > 0) settle--;
-    // nor while the next stage is asked for (dComIfGp's next stage enabled, play +0x514C)
-    const bool settled = !fresh && settle == 0 && !ld8(kPlay + 0x514C);
+    // nor while the next stage is asked for (dComIfGp's next stage enabled)
+    const bool settled = !fresh && settle == 0 && !ld8(kPlay + inf::kNextStageEnabled);
     // riding the boat (daPy_lk_c::mCurProc, SHIP_READY..SHIP_RESTART but not SHIP_GET_OFF)
     const int proc = (int)ld32(link + kCurProc);
     const bool riding = proc >= 0x86 && proc <= 0x91 && proc != 0x90;

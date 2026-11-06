@@ -18,6 +18,7 @@
 // a stage stays dead while anyone is in that stage (ww-multiplayer's kill union, M6.0): the host keeps who was killed
 // where and sends it (kDead); dSv_info_c::isActor answers yes for them, so a newcomer's room does not make them again.
 #include "coop_monsters.h"
+#include "coop_names.h"
 
 #include <algorithm>
 #include <cmath>
@@ -40,12 +41,12 @@ constexpr uint32_t kProcName = 0x08, kSetId = 0x2D8, kGroup = 0x2DA, kHomeRoom =
 constexpr uint8_t kEnemy = 2;  // fopAc_ENEMY_e, the actor's group (fopAc_Create: its profile's +0x2C)
 constexpr size_t kRecord = 4 + 12 + 2 + 2 + 1, kMost = 40;
 constexpr int kKill = 127;  // a hit to put in: killed by another player (as much as its health)
-const uint32_t kPlay = GD(0x1046F0B0), kStage = kPlay + 0x5134, kActorQueue = GD(0x101F3328);
+const uint32_t kPlay = GD(0x1046F0B0), kStage = kPlay + names::inf::kCurStage, kActorQueue = GD(0x101F3328);
 // dCcS (play +0x26A4, cCcS::Set 0200E240): the colliders taking hits this step at +0x400, their count at +0x2804. A
 // collider (dCcD_GObjInf, as the GameCube's): TG hit flags +0x1C and +0x98, the blow +0x20, its hitter's id and actor
 // +0xA0 and +0xA4, the way it came +0xC0, where +0xCC, mStts +0x44 (its actor +0xC, damage +0x16), its box +0xF8; a
 // blow's type +0x10, damage +0x14, special +0x6F. Link's body cylinder is at +0x765C
-const uint32_t kCcS = kPlay + 0x26A4;
+const uint32_t kCcS = kPlay + names::inf::kCcS;
 // (C18) the same offsets by name, from the WWHD decomp's layouts (wwhd_src include/SSystem/SComponent/c_cc_s.h
 // cCcSState, include/d/d_cc_d.h dCcD_GObjInf / dCcD_Stts, whose WWHD_OFFSET checks hold them; d_com_inf_game.h PLAY_CCS)
 namespace ccs {  // cCcSState
@@ -146,7 +147,7 @@ void before(uint32_t a) {
     g_tg_was = ld32(kCcS + ccs::mObjTgCount), g_hp_was = ld8(a + kHealth);
     const auto h = g_hits.find(key(a));
     const auto b = g_body.find(ld32(a + 4));
-    const uint32_t link = ld32(kPlay + 0x5B34);
+    const uint32_t link = ld32(kPlay + names::inf::kLink);
     if (h != g_hits.end() && h->second.steps == 0 && (b == g_body.end() || !link))
         trace("coop: monster %08X: another player's blow waits: %s", h->first, b == g_body.end() ? "its body collider is not known" : "no Link");
     if (h == g_hits.end() || b == g_body.end() || !link) return;

@@ -12,6 +12,7 @@
 // place, up to 170 over it; the puppets have no colliders) hits them as his sword does (net::kPlayerHit, half a heart,
 // the way it flew), and is gone.
 #include "coop_items.h"
+#include "coop_names.h"
 
 #include <algorithm>
 #include <cmath>
@@ -30,7 +31,7 @@ namespace {
 constexpr int16_t kItems[] = {0x126, 0x1B0, 0xA9, 0x1D8, 0x1BE};  // Bomb, Boom, the hookshot, Arrow, Himo2 (the rope)
 constexpr int16_t kBomb = 0x126, kArrow = 0x1D8;
 constexpr uint32_t kPos = 0x314, kRoom = 0x326, kFuse = 0xA7C;  // daBomb_c::mRestTime (GC +0x6FC)
-const uint32_t kStage = GD(0x1046F0B0) + 0x5134;
+const uint32_t kStage = GD(0x1046F0B0) + names::inf::kCurStage;
 struct Mine { uint32_t id; int16_t proc; int unseen = 0; float was[3] = {}; };  // unseen: steps not found yet (still being made)
 std::vector<Mine> g_mine;
 

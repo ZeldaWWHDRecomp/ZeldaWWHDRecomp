@@ -24,6 +24,8 @@
 #include <mutex>
 
 #include "coop_deck.h"
+#include "coop_layout.h"
+#include "coop_names.h"
 #include "coop_monsters.h"
 #include "coop_pose.h"
 #include "coop_progress.h"
@@ -51,8 +53,9 @@ namespace mods::coop::sync {
 bool together();  // (below)
 namespace {
 
-const uint32_t kPlay = GD(0x1046F0B0), kStage = kPlay + 0x5134;
-constexpr uint32_t kPos = 0x314, kRoom = 0x326, kAngleY = 0x32A;
+using namespace names;  // (C18: the offsets by name, coop_names.h)
+const uint32_t kPlay = GD(0x1046F0B0), kStage = kPlay + inf::kCurStage;
+constexpr uint32_t kPos = ac::kPos, kRoom = ac::kRoom, kAngleY = ac::kAngleY;
 constexpr int32_t kBehind = 60, kReach = 250, kStale = 500;  // (kBehind: a pose every 33 ms, and some to spare for a late one)  // a player with no pose for kStale is loading or away
 constexpr size_t kChunk = 1000;
 
@@ -198,7 +201,7 @@ bool g_to_title = false;  // asked for at the play scene's next execute (below)
 void back_to_title(const std::string& why) {
     ss::notice(why);
     mods::trace("coop: back to the title: %s", why.c_str());
-    g_to_title = true, g_hud_hidden = true, g_hud_link = ld32(kPlay + 0x5B34);
+    g_to_title = true, g_hud_hidden = true, g_hud_link = ld32(kPlay + inf::kLink);
 }
 
 // doors (Asad's rule: a guest going into a house, cave or dungeon the host isn't in needs the host's permission): the
@@ -225,19 +228,21 @@ constexpr uint32_t kDoorWait = 30000;
 // started on each guest in the same stage and room, or within 3000 of the host with the host's room loaded (one a room
 // plays as the host walks in starts before a guest following is through the door; a room not loaded here would be
 // a black void), by its name (fopAcM_orderOtherEvent2 025D77DC: r3 actor, r4 name,
-// r5 flag, r6 hind), so its own Link and people play it. dEvt_control_c is at play +0x51D0 (its mode +0xC2, the event
-// +0xD8), dEvent_manager_c at +0x52C4 (getEventData 02544044: r3 it, r4 the event; a 0xB0 entry, its name at +0).
+// r5 flag, r6 hind), so its own Link and people play it. dEvt_control_c is play's mEvtCtrl (its mMode, mEventId),
+// dEvent_manager_c mEvtManager (getEventData 02544044: r3 it, r4 the event; a dEvDtEvent_c, its name first).
 // One a guest's game cannot finish (a person it lacks) would hold it there: still playing 10 s after the host's is
 // over, the guest is brought back beside the host, which ends it (not counting while a text box is open here: each
 // player reads at their own pace)
-constexpr uint32_t kEvMode = 0x5292, kEvId = 0x52A8, kEvManager = 0x52C4;
+constexpr uint32_t kEvMode = inf::kEvtCtrl + evt::mMode, kEvId = inf::kEvtCtrl + evt::mEventId, kEvManager = inf::kEvtManager;
 struct Cut { std::string name; char stage[8]; int8_t room; uint32_t since = 0; bool asked = false; };
 Cut g_cut;            // guest: the host's, to start here
 std::string g_cut_on;  // guest: the host's playing here
 std::atomic<int> g_go_to{-1};  // the menu's "Go to": the player to be taken beside
 uint32_t g_cut_over = 0;  // guest: when the host's was over (0: not yet)
-// a room of the stage is loaded here (its status, 0x1047E8E8 + 0x22C a room, bit 0: as door10's openProc waits for)
-bool room_loaded(int room) { return room >= 0 && room < 64 && (ld8(GD(0x1047E8E8) + 0x22C * (uint32_t)room) & 1); }
+// a room of the stage is loaded here (its status's mFlags bit 0: as door10's openProc waits for)
+bool room_loaded(int room) {
+    return room >= 0 && room < 64 && (ld8(GD(rmc::kStatus + rmc::mFlags) + rmc::kStatusSize * (uint32_t)room) & 1);
+}
 // (a guest) the host stands within 3000 of this game's Link, in its stage (not on a ship's deck: another frame)
 bool host_near(uint32_t link) {
     const Remote& h = g_remote[0];
@@ -260,7 +265,7 @@ std::string event_now(Cpu* c, uint32_t* kind = nullptr) {
     if (!ld8(kPlay + kEvMode) || id < 0) return "";
     const uint32_t ev = guest_call(c, GC(0x02544044), {kPlay + kEvManager, (uint32_t)(int32_t)id});
     if (!ev) return "";
-    if (kind) *kind = ld32(ev + 0x24);
+    if (kind) *kind = ld32(ev + evt::ev_field_0x24);
     return std::string((const char*)mem::ptr(ev), strnlen((const char*)mem::ptr(ev), 32));
 }
 
@@ -574,14 +579,14 @@ bool tact_sound(uint32_t id) {
     return (id >= 0x887 && id <= 0x895) || id == 0x8ED || id == 0x8EE || id == 0x2868 || id == 0x2880 || id == 0x2881;
 }
 bool sound_started(Cpu* c) {
-    const uint32_t link = ld32(kPlay + 0x5B34), pos = c->r[5];
+    const uint32_t link = ld32(kPlay + inf::kLink), pos = c->r[5];
     if (link && !pos && tact_sound(c->r[4]) && net::role() != net::Role::kOff && g_sounds_out.size() < 32) {
         Sound sd{c->r[4], c->r[6], c->r[7], c->r[8], {}, {0, 100, 0}};
         for (int k = 0; k < 4; k++) sd.f[k] = (float)c->f[k + 1].ps0;
         g_sounds_out.push_back(sd);
         return true;
     }
-    if (!link || pos < link || pos >= link + 0x7000) return true;  // (daPy_lk_c is about 0x6A80 bytes in WWHD)
+    if (!link || pos < link || pos >= link + py::kSize) return true;  // (a place in daPy_lk_c)
     if (net::role() != net::Role::kOff && g_sounds_out.size() < 32) {  // (as Link's: each game says it as that player's character)
         Sound sd{c->r[4], c->r[6], c->r[7], c->r[8], {}, {}};
         for (int k = 0; k < 4; k++) sd.f[k] = (float)c->f[k + 1].ps0;
@@ -718,7 +723,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     Pose me;
     const float at[3] = {f32(link + kPos), f32(link + kPos + 4), f32(link + kPos + 8)};
     const bool on_deck = hull && aboard;
-    const uint32_t ship = ld32(kPlay + 0x5B3C), proc = ld32(link + 0x65F0);  // dComIfGp_getShipActor, daPy_lk_c::mCurProc
+    const uint32_t ship = ld32(kPlay + inf::kShip), proc = ld32(link + py::mCurProc);  // dComIfGp_getShipActor, daPy_lk_c::mCurProc
     const bool sailing = ship >= 0x10000000 && proc >= 0x86 && proc <= 0x91 && proc != 0x90;  // (SHIP_READY..SHIP_RESTART)
     const int deck_of = deck::standing_on(link);
     static int deck_was = -1;
@@ -826,9 +831,9 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         static bool ev_was = false;
         static uint32_t ev_steps = 0;
         static std::string ev_bits, ev_stage;
-        const uint32_t sv = ld32(GD(0x101F84DC)) + 0x20;  // dSv_info_c (savestate.cpp); dSv_event_c at +0x624
-        const auto bits = [&] { return std::string((const char*)mem::ptr(sv + 0x624), 0x100); };
-        const bool ev = ld8(kPlay + 0x5292) != 0;          // dEvt_control_c mode (savestate.cpp kEventRun)
+        const uint32_t sv = ld32(GD(0x101F84DC)) + 0x20;  // dSv_info_c (savestate.cpp)
+        const auto bits = [&] { return std::string((const char*)mem::ptr(sv + layout::sv::kEvent), layout::sv::kEventSize); };
+        const bool ev = ld8(kPlay + kEvMode) != 0;  // dEvt_control_c mode (savestate.cpp kEventRun)
         static int16_t ev_seen = -1;  // (the event last looked at: one leads into another without the mode dropping)
         static bool ev_cut = false;
         if (ev && !ev_was) ev_steps = 0, ev_bits = bits(), ev_stage = stage_now(), ev_seen = -1, ev_cut = false;
@@ -882,7 +887,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         else if (r.poses.back().second.flags & kOnDeck) why = "on a ship's deck";
         else if (r.poses.back().second.flags & kOnFriend) why = "on a friend's boat";
         else if ((r.poses.back().second.flags & kSailing) && id < deck::kDecks) {  // (C16: onto their boat, if it is here)
-            const uint32_t proc = ld32(link + 0x65F0);
+            const uint32_t proc = ld32(link + py::mCurProc);
             if (proc >= 0x86 && proc <= 0x91) why = "get off your boat first";
             else if (!deck::hop(link, id)) why = "their boat is not near you";
         } else {
@@ -917,7 +922,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         }
     }
     if (!g_cut_on.empty() && event_now(c) != g_cut_on) g_cut_on.clear();  // (over here too)
-    if (!g_cut_on.empty() && g_cut_over && ld8(kPlay + 0x5BB2)) g_cut_over = net::now_ms();  // (dComIfGp_getMesgStatus)
+    if (!g_cut_on.empty() && g_cut_over && ld8(kPlay + inf::kMesgStatus)) g_cut_over = net::now_ms();  // (dComIfGp_getMesgStatus)
     if (!g_cut_on.empty() && g_cut_over && now_ms_since(g_cut_over) > 10000) {
         mods::trace("coop: the host's cutscene %s is over there, not here: back beside the host", g_cut_on.c_str());
         net::send(0, net::kDown, std::string());
@@ -973,7 +978,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     // Link with no health for 45 steps (a fairy in a bottle revives sooner) tells the host, which sends its world again;
     // the host's own fall: once it plays again (a new Link after the Game Over), every guest is brought to it
     if (together()) {
-        const uint16_t life = ld16(ld32(GD(0x101F84DC)) + 0x20 + 2);  // dSv_player_status_a_c::mLife (quarter hearts)
+        const uint16_t life = ld16(ld32(GD(0x101F84DC)) + 0x20 + layout::sv::kStatusA + layout::sv::kLife);  // (quarter hearts)
         static uint32_t down_steps = 0, down_link = 0;
         down_steps = life ? 0 : down_steps + 1;
         if (guest() && arrived() && down_steps == 45) {
