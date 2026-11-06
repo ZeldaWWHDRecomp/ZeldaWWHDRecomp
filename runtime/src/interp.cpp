@@ -47,6 +47,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "interp_camera.h"
 #include "interp_fade.h"
 #include "interp_joints.h"
+#include "interp_keep.h"
 #include "interp_nodraw.h"
 #include "interp_pacing.h"
 #include "interp_sploosh.h"
@@ -819,6 +820,13 @@ void model_calc_before(uint32_t model) {
     g_model_kept.push_back({mtx, std::vector<uint32_t>(12 * n)});
     memcpy(g_model_kept.back().words.data(), ppc_ptr(mtx), 48 * n);
 }
+// The draws' GPU buffer selectors (interp_keep.h, issue #446): the put-back leaves them as the last
+// draw left them. debug: WWHD_INTERP_KEEP_GPU_SETS=0 puts them back too (as before)
+DrawSideWords g_draw_side;
+void keep_draw_side(uint32_t ea) {
+    static const bool off = getenv("WWHD_INTERP_KEEP_GPU_SETS") && !atoi(getenv("WWHD_INTERP_KEEP_GPU_SETS"));
+    if (!off) g_draw_side.add(ea);
+}
 void actor_keep(uint32_t actor) {
     for (const auto& k : g_actor_kept)
         if (k.actor == actor) return;
@@ -856,8 +864,8 @@ void actors_put_back() {
         // into use. No draw writes them: left alone. debug: WWHD_INTERP_KEEP_PROCESS_TAGS=0 puts them
         // back too, as before)
         static const bool tags_too = getenv("WWHD_INTERP_KEEP_PROCESS_TAGS") && !atoi(getenv("WWHD_INTERP_KEEP_PROCESS_TAGS"));
-        for (uint32_t i = tags_too ? 0 : kProcessTags / 4; i < n; i++)
-            if (cur[i] != it->words[i] && std::find(keep.begin(), keep.end(), i) == keep.end()) cur[i] = it->words[i];
+        g_draw_side.indices_in(actor, n, keep);  // (the draws' GPU buffer selectors: as the last draw left them)
+        put_back_words(cur, it->words.data(), n, tags_too ? 0 : kProcessTags / 4, keep);
     }
     g_actor_kept.clear();
     for (auto it = g_model_kept.rbegin(); it != g_model_kept.rend(); ++it)
@@ -1938,6 +1946,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     if (!g_exact_writes.empty()) put_back_exact();
     if (!g_tev_kept.empty()) tevstr_put_back();
     if (!g_actor_kept.empty() || !g_model_kept.empty()) actors_put_back();
+    g_draw_side.clear();
     clipper_put_back();
     // (the step's camera drawn blended last: exact again before the next step's logic)
     if (g_cam_exact_pending && (!cam_exact_back_on() || !enabled() || !g_hold_next)) {
