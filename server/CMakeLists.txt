@@ -41,6 +41,7 @@ endif()
 
 add_executable(wwhd_online_server_test tests/server_test.cpp)
 target_link_libraries(wwhd_online_server_test PRIVATE wwhd_online_server_core)
+target_compile_definitions(wwhd_online_server_test PRIVATE WWHD_SERVER_EXAMPLE="${CMAKE_CURRENT_SOURCE_DIR}/server.example.toml")
 add_test(NAME online_server COMMAND wwhd_online_server_test ${CMAKE_CURRENT_BINARY_DIR})
 
 # the fuzz target: libFuzzer when WWHD_ONLINE_FUZZ=ON (a clang with libFuzzer), else the built-in random driver

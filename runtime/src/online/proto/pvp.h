@@ -31,7 +31,7 @@ struct PvpRules {
     uint16_t cooldown_s = 300;        // ... and that attacker's hits on that victim are dropped this long
     std::vector<PvpZone> zones;
 };
-// the default safe zones: these squares' centres, radius 15,000 (a server can add, move or remove them)
+// the default safe zones: the big islands, measured (a server can add, move or remove them)
 std::vector<PvpZone> default_pvp_zones();
 
 void put_pvp_rules(Writer& w, const PvpRules& r);

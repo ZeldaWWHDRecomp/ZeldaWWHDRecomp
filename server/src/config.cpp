@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MPL-2.0
 // A small reader for the subset of TOML the server config uses: [section] headers, key = value with strings,
-// integers, floats, booleans and one-line arrays, and # comments.
+// integers, floats, booleans and arrays (also over several lines), and # comments.
 #include "config.h"
 
 #include <algorithm>
@@ -112,6 +112,19 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
         }
         std::string key = trim(line.substr(0, eq)), v = trim(line.substr(eq + 1));
         if (!section.empty()) key = section + "." + key;
+        // an array over several lines (each may end in a comment)
+        if (!v.empty() && v.front() == '[' && v.back() != ']') {
+            int first = n;
+            while (v.back() != ']' && std::getline(in, line)) {
+                ++n;
+                line = trim(uncomment(line));
+                if (!line.empty()) v += (v.back() == '[' || v.back() == ',' ? "" : " ") + line;
+            }
+            if (v.back() != ']') {
+                why = "line " + std::to_string(first) + ": array not closed";
+                return false;
+            }
+        }
         bool ok = true;
         auto str = [&](std::string& dst) { ok = unquote(v, dst); };
         auto boolean = [&](bool& dst) { ok = to_bool(v, dst); };
@@ -202,6 +215,13 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
         else if (key == "limits.silence_s") integer(c.silence_s);
         else if (key == "limits.resume_s") integer(c.resume_s);
         else if (key == "limits.keep_ip_hash") boolean(c.keep_ip_hash);
+        else if (key == "limits.invite_every_s") {
+            number(c.invite_every_s);
+            if (ok && !(c.invite_every_s >= 0.5 && c.invite_every_s <= 3600)) {
+                why = "line " + std::to_string(n) + ": limits.invite_every_s must be between 0.5 and 3600";
+                return false;
+            }
+        }
         else if (key == "party.runner_drop_ms") integer(c.runner_drop_ms);
         else if (key == "party.max_size") {
             integer(c.party_max);
@@ -251,8 +271,8 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
             boolean(b);
             if (b) c.pvp.zones.clear();
         } else if (key == "pvp.zones") {
-            // "10" (the default zone of square 10, or a new centred one), "12:r=20000", "3:x=500,z=-200,r=15000",
-            // "-16" (no zone in square 16)
+            // "10" (the default zone of square 10, or a new centred one), "12:r=20000" (another radius, the default
+            // centre kept), "3:x=500,z=-200,r=15000", "-16" (no zone in square 16)
             std::vector<std::string> list;
             strings(list);
             for (auto& t : list) {
@@ -273,8 +293,11 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
                                                  [&](const proto::PvpZone& z) { return z.square == n; }),
                                   c.pvp.zones.end());
                 if (remove) continue;
+                // starts from the default zone of that square when there is one (a measured island), else centred
                 proto::PvpZone z;
                 z.square = uint8_t(n);
+                for (auto& d : proto::default_pvp_zones())
+                    if (d.square == n) z = d;
                 if (auto colon = body.find(':'); colon != std::string::npos) {
                     std::string rest = body.substr(colon + 1) + ",";
                     size_t at = 0;
