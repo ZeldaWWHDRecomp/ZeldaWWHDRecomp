@@ -827,7 +827,13 @@ void load(Live& item,const Record& record,const Value& configuration){
         e->apply(on);}return;}
     auto path=record.path/record.manifest.binary;
 #ifdef _WIN32
-    item.library=LoadLibraryW(path.wstring().c_str());require(item.library,"Cannot load native mod library");auto init=reinterpret_cast<WWHDModInitV1>(GetProcAddress(static_cast<HMODULE>(item.library),"wwhd_mod_init_v1"));
+    // A file that is not a valid DLL makes the loader raise a "Bad Image" hard-error dialog unless
+    // the error mode suppresses it; with no window (CI, CREATE_NO_WINDOW) nobody can dismiss it and
+    // the load never returns. Fail with an error instead, as dlopen does.
+    DWORD previous_mode=0;const bool quiet=SetThreadErrorMode(SEM_FAILCRITICALERRORS|SEM_NOOPENFILEERRORBOX,&previous_mode);
+    item.library=LoadLibraryW(path.wstring().c_str());const DWORD load_error=GetLastError();
+    if(quiet)SetThreadErrorMode(previous_mode,nullptr);
+    require(item.library,"Cannot load native mod library (Windows error "+std::to_string(load_error)+")");auto init=reinterpret_cast<WWHDModInitV1>(GetProcAddress(static_cast<HMODULE>(item.library),"wwhd_mod_init_v1"));
 #else
     item.library=dlopen(path.c_str(),RTLD_NOW|RTLD_LOCAL);if(!item.library){const char* reason=dlerror();exception_report::raise(reason?reason:"Cannot load native library");}auto init=reinterpret_cast<WWHDModInitV1>(dlsym(item.library,"wwhd_mod_init_v1"));
 #endif

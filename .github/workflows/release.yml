@@ -177,8 +177,10 @@ jobs:
           cmake --build build/rel-decomp --target wwhd
 
       - name: Unit tests
+        # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
+        timeout-minutes: 45
         run: |
-          ctest --test-dir build/rel --output-on-failure
+          ctest --test-dir build/rel --output-on-failure --timeout 600
           python3 tools/installer/test_setup.py
           python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
@@ -358,9 +360,11 @@ jobs:
           cmake --build build/rel
 
       - name: Unit tests
+        # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
+        timeout-minutes: 45
         run: |
           export LD_LIBRARY_PATH="$HOME/sdl3/lib"
-          ctest --test-dir build/rel --output-on-failure
+          ctest --test-dir build/rel --output-on-failure --timeout 600
           python3 tools/installer/test_setup.py
           python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
@@ -546,8 +550,10 @@ jobs:
           ninja -C build/rel -d keeprsp
 
       - name: Unit tests
+        # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
+        timeout-minutes: 45
         run: |
-          ctest --test-dir build/rel --output-on-failure
+          ctest --test-dir build/rel --output-on-failure --timeout 600
           python tools/installer/test_setup.py
 
       - name: Pinned embeddable Python, shipped in the release (tools/installer/toolchains.json)

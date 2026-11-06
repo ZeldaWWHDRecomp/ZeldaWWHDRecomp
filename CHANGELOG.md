@@ -7,6 +7,7 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Windows: a damaged native mod no longer freezes startup** (#437). Loading a broken mod library now fails with an error instead of waiting on a hidden Windows error box.
 - **60 fps frame interpolation plays exactly like 30 fps** (#436). Before, some characters behaved differently at 60 or
   120 fps and every random event drifted from what the game does at 30 fps (on Outset the grass cutter stopped cutting,
   and from then on enemy behaviour and drops differed). The picture still gets its in-between frames; the game logic

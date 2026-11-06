@@ -20,6 +20,10 @@
 #include <iterator>
 #include <string>
 #ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #include <process.h>
 #define wwhd_test_pid _getpid
 #else
@@ -114,6 +118,11 @@ int restart_check(const char* storage) {
 }
 }
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    // Never wait on a dialog: loader, crash and file-error boxes fail the test instead. Children
+    // started with host::run_process inherit this mode.
+    SetErrorMode(SEM_FAILCRITICALERRORS|SEM_NOGPFAULTERRORBOX|SEM_NOOPENFILEERRORBOX);
+#endif
     using namespace mods::packages;
     namespace fs=std::filesystem;
     if(argc==3&&std::string(argv[1])=="--save-profile-disabled-next-start") {
