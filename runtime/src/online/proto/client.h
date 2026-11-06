@@ -44,6 +44,8 @@ struct ClientConfig {
     bool reconnect = true;           // reconnect with backoff after a loss (1, 2, 4 ... 30 s)
     int send_hz = 30;                // packets to the server at most this often (poll may be called more often)
     TransportMode transport_mode = TransportMode::kAuto;
+    std::vector<ModRef> mods;        // the enabled gameplay mods (look-only mods are never listed)
+    bool query_only = false;         // the server list: stop after the server's info and mod rules (no join)
 };
 
 enum class ClientState { kOff, kConnecting, kOnline, kReconnecting, kStopped };
@@ -69,6 +71,7 @@ struct ClientEvent {
         kTeamState,      // version, fields
         kPartyResult,    // value (code), text
         kPartyWhere,     // members: where every online party member is (1 Hz)
+        kServerRules,    // info (with info.mods: the server's mod rules), before joining; query_only stops after it
     } kind;
     ClientState state = ClientState::kOff;
     std::string text;
@@ -94,6 +97,8 @@ struct ClientEvent {
         int32_t x = 0, z = 0;
     };
     std::vector<MemberWhere> members;
+    std::vector<ModProblem> mod_problems;  // kRefused with Refusal::kMods; kPartyResult with value 10
+    std::vector<ModRef> mods;              // kPartyInvited: the party's mod set (its leader's)
 };
 
 struct ClientStats {
@@ -120,6 +125,7 @@ public:
     void send_app(const AppHeader& h, const uint8_t* body, size_t n, bool reliable);
     void send_emote(uint8_t emote);
     void block(uint64_t key_hash, bool on);
+    void mute(uint64_t key_hash, bool on);  // that player's emotes, effects, sounds (and voice) stop reaching you
     void report(uint64_t key_hash, uint8_t reason);
     void switch_copy();
     void join_copy_of(uint64_t key_hash);  // the copy a friend (or anyone visible) is in
@@ -163,14 +169,22 @@ private:
     // the caller's clock (poll's now_ms): every time in here is on it, never on monotonic_ms(), which the game's
     // clock need not match (mixing them made every redirect and the first connect time out at once)
     uint32_t now_ = 0;
-    bool begin_pending_ = false;  // start() and REDIRECT begin at the next poll, on the caller's clock  // the TCP fallback counts from the first CONNECT really sent
+    bool begin_pending_ = false;  // start() and REDIRECT begin at the next poll, on the caller's clock
+    // a REDIRECT (handover between workers): the old session goes on (poses out, the world in) while the new one
+    // is made with a HELLO straight away (the ticket needs no challenge); the game sees no state change
+    bool redirecting_ = false, direct_hello_ = false;
+    Address old_server_;
+    void send_raw_to(const Address& to, const Bytes& b);  // the TCP fallback counts from the first CONNECT really sent
     UdpSocket* sock_ = nullptr;
     Address server_, home_;  // home_: the address start() was given (redirects come back to it after a loss)
     std::string home_host_;
     uint16_t home_port_ = 0;
     ClientConfig cfg_;
     ClientState state_ = ClientState::kOff;
-    enum class Phase { kNone, kConnect, kPow, kHello } phase_ = Phase::kNone;
+    enum class Phase { kNone, kConnect, kRules, kPow, kHello } phase_ = Phase::kNone;
+    std::vector<bool> rules_got_;
+    std::vector<ModRule> rules_;
+    void rules_done(uint32_t now);
     uint32_t nonce_ = 0;
     Challenge chal_;
     ServerInfo info_;

@@ -23,6 +23,7 @@ if(NOT TARGET wwhd_online_proto)
     ${_crypto}
     handshake.cpp
     messages.cpp
+    mods.cpp
     protocol.cpp
     sha256.cpp
     tcp.cpp

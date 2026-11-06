@@ -6,6 +6,8 @@
 #include <string>
 #include <vector>
 
+#include "proto/mods.h"
+
 namespace online::server {
 
 struct Config {
@@ -32,6 +34,9 @@ struct Config {
     std::string report_file = "reports.log";
     std::string admin_socket = "wwhd-online-admin.sock";  // "" disables the admin socket
     std::string team_state_file = "team-state.txt";  // parties and their team progress over restarts ("": memory only)
+
+    // gameplay-mod rules (docs/online-server.md, "Mod rules"): none by default (anything goes)
+    proto::ModRules mods;
 
     // world
     std::string sea_stage = "sea";  // the stage code of the open sea

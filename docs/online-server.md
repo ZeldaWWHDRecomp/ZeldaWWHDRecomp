@@ -58,6 +58,60 @@ Copy `server/server.example.toml` to `server.toml` and edit it. The keys you'll 
 All other keys (interest radii and caps, rate limits, scaling thresholds) have working defaults and
 are listed in `server/src/config.h`.
 
+### Mod rules
+
+Players may use mods. Look-only mods (textures, models, UI, graphics packs) are never checked. Gameplay
+mods are mods whose manifest says they change gameplay; each has an id, a version and a hash of its
+content. A game tells the server which gameplay mods it has enabled, and the server decides who may
+join:
+
+| Key in `[mods]` | Meaning |
+|---|---|
+| `vanilla_only = true` | No gameplay mods at all. |
+| `required = [...]` | Players must have these. |
+| `allowed = [...]` | If given, only these (and the required ones) may be used. |
+| `banned = [...]` | These may not be used. |
+
+Each entry is `"id"`, `"id@version"` or `"id@version#<64 hex digits>"`. `"*"` as the version means any
+version, and the hex is the content hash. With no `[mods]` section there are no rules, and anything
+goes.
+
+- **Before joining.** Players see a server's rules in the server list before they join.
+- **Refusals.** A refused player is told exactly which mods are missing, not allowed, banned or the
+  wrong version.
+- **Parties.** A party plays with one set of gameplay mods: its leader's. Someone with a different set
+  can't join that party; the game names the differences.
+- **No downloads.** A server never sends mods, code or content of any kind. It only states its rules.
+
+Example: a randomizer-only server. Everyone plays the same randomized seed, with the hash standing for
+seed + settings, and no other gameplay mods:
+
+```toml
+[mods]
+required = ["randomizer@*#0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0"]
+allowed = ["randomizer"]
+```
+
+The `allowed` list makes it a whitelist, so any other gameplay mod is refused. Add more ids to it to
+permit a few more.
+
+Example: a vanilla-only server:
+
+```toml
+[mods]
+vanilla_only = true
+```
+
+### Block and mute
+
+A player can block or mute another player from the game:
+- **Block:** both players disappear for each other: poses, emotes, effects and messages, party members
+  included.
+- **Mute:** only stops the other player's emotes, effects and sounds.
+
+The server keeps both lists per player, across reconnects and between server processes. The metrics
+count the traffic they stop.
+
 ### Ports and networks
 
 - One port (default 7777) for the players, UDP and TCP. Forward both on your router if friends join
