@@ -21,6 +21,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <unordered_map>
 #include <unordered_set>
@@ -46,7 +48,7 @@ const uint32_t kPlay = GD(0x1046F0B0), kStage = kPlay + 0x5134, kActorQueue = GD
 const uint32_t kCcS = kPlay + 0x26A4;
 
 struct Rec { float p[3]; int16_t yaw, shape; int8_t hp; };
-struct Copy { int8_t hp = -128; bool dying = false; };
+struct Copy { int8_t hp = -128; bool dying = false; int dying_steps = 0; };
 struct Mine { int8_t hp, room; uint16_t set; };
 struct Dead { char stage[8]; int8_t room; uint16_t set; uint32_t seen; };
 struct Hit { int dmg = 0, steps = 0; };
@@ -58,6 +60,7 @@ std::unordered_map<uint32_t, uint32_t> g_body; // ours, by process id: the colli
 std::unordered_set<uint32_t> g_dropless;       // process ids of ours another player killed: the drop was theirs
 uint32_t g_tg_was, g_hp_was;
 char g_stage[8];
+uint32_t steps_here = 0;  // logic steps in this stage (the test aid)
 
 const char* stage() { return (const char*)mem::ptr(kStage); }
 float f32(uint32_t a) { return (float)ldf32(a); }
@@ -130,6 +133,8 @@ void before(uint32_t a) {
     const auto h = g_hits.find(key(a));
     const auto b = g_body.find(ld32(a + 4));
     const uint32_t link = ld32(kPlay + 0x5B34);
+    if (h != g_hits.end() && h->second.steps == 0 && (b == g_body.end() || !link))
+        trace("coop: monster %08X: another player's blow waits: %s", h->first, b == g_body.end() ? "its body collider is not known" : "no Link");
     if (h == g_hits.end() || b == g_body.end() || !link) return;
     // the blow: Link's body cylinder copied (its kind and his status: the hitter is him), as a sword's of that damage
     static const uint32_t blow = mem::host_alloc(0x140, 0x20);
@@ -163,6 +168,14 @@ void after(Cpu* c, uint32_t a) {
     if (hp < (int8_t)g_hp_was && (h->second.dmg != kKill || hp <= 0)) {
         trace("coop: monster %08X took another player's %s here (health %d)", h->first, h->second.dmg == kKill ? "kill" : "hit", hp);
         g_hits.erase(h);
+    } else if (!g_body.count(ld32(a + 4)) && ++h->second.steps > 10) {
+        // (no body collider seen yet: one far from Link skips its collision; the health is taken directly so both
+        // games agree; a kill is the game's own death where it can, else the monster is taken away)
+        const int left = h->second.dmg == kKill ? 0 : std::max(hp - h->second.dmg, 0);
+        st8(a + kHealth, (uint8_t)left);
+        trace("coop: monster %08X: another player's %s taken without a blow (health %d)", h->first, h->second.dmg == kKill ? "kill" : "hit", left);
+        if (left <= 0) del(c, a);
+        g_hits.erase(h);
     } else if (++h->second.steps > 30) {
         if (h->second.dmg == kKill) del(c, a), trace("coop: monster %08X took no blow: deleted", h->first);
         g_hits.erase(h);
@@ -172,8 +185,32 @@ void after(Cpu* c, uint32_t a) {
 void step(Cpu* c, uint32_t link) {
     if (net::role() == net::Role::kOff || !link) return g_copies.clear(), g_mine.clear();
     if (memcmp(g_stage, stage(), 8))
-        memcpy(g_stage, stage(), 8), g_copies.clear(), g_mine.clear(), g_hits.clear(), g_body.clear(), g_dropless.clear();
+        memcpy(g_stage, stage(), 8), g_copies.clear(), g_mine.clear(), g_hits.clear(), g_body.clear(), g_dropless.clear(), steps_here = 0;
     const int me = net::my_id();
+    // test aid: WWHD_COOP_TEST_MONSTER_HIT=<step>:<damage>[,<step>:<damage>...] (logic steps in this stage): that much
+    // health taken from the first copy here of another player's monster, as a hit landing on it here would (its
+    // owner takes it as this player's blow; as much as its health is a kill)
+    if (static const char* e = getenv("WWHD_COOP_TEST_MONSTER_HIT"); e) {
+        steps_here++;
+        for (const char* p = e; *p;) {
+            unsigned at = 0, dmg = 0;
+            int used = 0;
+            if (sscanf(p, "%u:%u%n", &at, &dmg, &used) != 2) break;
+            if (at == steps_here) {
+                bool hit = false;
+                each_monster([&](uint32_t a) {
+                    const auto cp = g_copies.find(key(a));
+                    if (hit || owner_of(a) == me || owner_of(a) < 0 || cp == g_copies.end() || cp->second.hp == -128 || cp->second.dying) return;
+                    hit = true;
+                    st8(a + kHealth, (uint8_t)std::max<int>((int8_t)ld8(a + kHealth) - (int)dmg, 0));
+                    trace("coop: monster test: %u health taken from %08X here (now %d)", dmg, key(a), (int8_t)ld8(a + kHealth));
+                });
+                if (!hit) trace("coop: monster test: no copy of another player's monster here");
+            }
+            p += used;
+            if (*p == ',') p++;
+        }
+    }
     // ours out: key, place, heading, body heading, health; one killed (its health gone as it went) from everyone
     std::string out(stage(), 8);
     std::unordered_map<uint32_t, Mine> mine;
@@ -210,6 +247,9 @@ void step(Cpu* c, uint32_t link) {
         }
         const auto rb = from_b[o].find(k);
         Copy& cp = g_copies[k];
+        // (dying here: its own death plays; one that does not die by itself within 1.5 s, as one whose health was taken
+        // without a blow, is taken away)
+        if (cp.dying && ++cp.dying_steps == 45 && hp <= 0) del(c, a), trace("coop: monster %08X did not die by itself here: deleted", k);
         if (rb == from_b[o].end() || cp.dying) return;
         const auto ra = from_a[o].find(k);
         const Rec& x = ra == from_a[o].end() ? rb->second : ra->second;
@@ -240,8 +280,8 @@ void step(Cpu* c, uint32_t link) {
         st8(a + kHealth, (uint8_t)y.hp), cp.hp = y.hp;
     });
     if (static int n = 0; ++n % 300 == 0) {
-        trace("coop: placed monsters here: %zu run here, %zu another's (%zu put in), %zu killed in the players' stages", mine.size(),
-              g_copies.size(), (size_t)std::count_if(g_copies.begin(), g_copies.end(), [](const auto& e) { return e.second.hp != -128; }), g_dead.size());
+        trace("coop: placed monsters here: %zu run here (%zu colliders known, %u hit colliders this step), %zu another's (%zu put in), %zu killed in the players' stages", mine.size(),
+              g_body.size(), ld32(kCcS + 0x2804), g_copies.size(), (size_t)std::count_if(g_copies.begin(), g_copies.end(), [](const auto& e) { return e.second.hp != -128; }), g_dead.size());
         each_monster([](uint32_t a) {
             trace("coop:   %#x room %d set %u at %.0f %.0f %.0f, health %d, run by %d", ld16(a + kProcName), (int8_t)ld8(a + kHomeRoom),
                   ld16(a + kSetId), f32(a + kPos), f32(a + kPos + 4), f32(a + kPos + 8), (int8_t)ld8(a + kHealth), owner_of(a));
