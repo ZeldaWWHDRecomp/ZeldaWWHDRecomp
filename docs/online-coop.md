@@ -142,4 +142,7 @@ leaving the party takes you back to the title screen, because you were playing i
   switch, off unless the leader turns it on.
 - **Party switches** (through a server; the party's leader sets them on the Online page, every member sees
   them): shared progress (on), shared rupees (off), friendly fire (off), stay together (off).
+- **Networks that block UDP:** if the server doesn't answer over UDP within about 3 seconds, the game connects to
+  the same address over TCP instead. The status line then says "(TCP)". It works the same, but others may move
+  less smoothly on a slow connection. Playing directly (without a server) needs UDP.
 - Only tested with two copies on one Mac so far.

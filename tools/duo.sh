@@ -13,7 +13,7 @@
 # stopped, never another wwhd. DUO_SERVER=1: through a local wwhd-online-server (build/rel/server, WWHD_ONLINE=ON)
 # on DUO_PORT, each game with its own identity; the host invites the guest by the friend code the guest writes, and the
 # guest accepts (test aids); DUO_PARTY=0 leaves them strangers (presence only). DUO_KILL=host@S or guest@S stops that game S seconds after the guest started (a player
-# leaving). DUO_UPLOAD: the server's upload limit per player (bytes/s); DUO_GAMES: the only games it takes; DUO_PER_IP: connections per address (8; bots on 127.0.0.1 need more); DUO_TEAM_STATE=0: the server keeps no team-state file.
+# leaving). DUO_UPLOAD: the server's upload limit per player (bytes/s); DUO_GAMES: the only games it takes; DUO_PER_IP: connections per address (8; bots on 127.0.0.1 need more); DUO_TEAM_STATE=0: the server keeps no team-state file. DUO_UDP=0: the server answers over TCP only (C25: as on a network that blocks UDP).
 set -u
 root=${0:A:h:h}
 name=$1 secs=${2:-240}
@@ -43,8 +43,8 @@ run() {  # run ROLE COOP-VALUE ENV...
 trap 'for p in $pids; do pkill -9 -P $p 2>/dev/null; kill -9 $p 2>/dev/null; done' EXIT INT TERM HUP
 if [ -n "${DUO_SERVER:-}" ]; then
   mkdir -p "$out/server"
-  printf '[server]\nname = "duo"\n[network]\nbind = "127.0.0.1"\nport = %s\n[files]\nkey = "%s/server/server.key"\nadmin_socket = "%s/server/admin.sock"\nbans = "%s/server/bans.txt"\nteam_state = "%s"\n[limits]\npow_bits = 8\nper_ip = %s\nbytes_per_s = %s\n' \
-    "$port" "$out" "$out" "$out" "$([ "${DUO_TEAM_STATE:-1}" = 1 ] && echo "$out/server/team-state.txt")" "${DUO_PER_IP:-8}" "${DUO_UPLOAD:-8192}" > "$out/server/server.toml"
+  printf '[server]\nname = "duo"\n[network]\nbind = "127.0.0.1"\nudp = %s\nport = %s\n[files]\nkey = "%s/server/server.key"\nadmin_socket = "%s/server/admin.sock"\nbans = "%s/server/bans.txt"\nteam_state = "%s"\n[limits]\npow_bits = 8\nper_ip = %s\nbytes_per_s = %s\n' \
+    "$([ "${DUO_UDP:-1}" = 0 ] && echo false || echo true)" "$port" "$out" "$out" "$out" "$([ "${DUO_TEAM_STATE:-1}" = 1 ] && echo "$out/server/team-state.txt")" "${DUO_PER_IP:-8}" "${DUO_UPLOAD:-8192}" > "$out/server/server.toml"
   # DUO_GAMES="0x..., 0x...": the server takes only these games (else any, each its own world)
   [ -n "${DUO_GAMES:-}" ] && printf '[network]\ngame_data = [%s]\n' "$DUO_GAMES" >> "$out/server/server.toml"
   (exec "$root/build/rel/server/wwhd-online-server" --config "$out/server/server.toml" 2>&1 | head -c 5000000 > "$out/server.log") &

@@ -397,6 +397,8 @@ void poll(Handler& h) {
                 for (Peer& p : g_slot) p = Peer{};
             }
             g_status = "Online, friend code " + g_client->friend_code();
+            // (C25: UDP blocked, the client library went over TCP to the same address)
+            mods::trace("coop: online over %s", g_client->transport() == op::Transport::kTcp ? "TCP" : "UDP");
             {  // kept in the saved servers, most recent first, its key pinned
                 std::lock_guard<std::mutex> l(g_list_mu);
                 servers::remember(list_locked(), {g_seen_name.empty() ? g_client->server().name : g_seen_name, g_addr, g_port, g_seen_key});
@@ -611,7 +613,8 @@ void poll(Handler& h) {
         const int ping = g_client->ping_ms();
         const std::string& srv_name = g_client->server().name;
         g_status = std::string(in_party() ? (role() == Role::kHost ? "Online, leading a party of " : "Online, in a party of ") + std::to_string(n) : "Online") +
-                   (srv_name.empty() ? "" : " on " + srv_name) + (ping >= 0 ? ", ping " + std::to_string(ping) + " ms" : "") +
+                   (srv_name.empty() ? "" : " on " + srv_name) + (g_client->transport() == op::Transport::kTcp ? " (TCP)" : "") +
+                   (ping >= 0 ? ", ping " + std::to_string(ping) + " ms" : "") +
                    ", friend code " + g_client->friend_code();
     }
     if (!g_msg.empty() && now_ms() - g_msg_at < kMsgMs && g_status.find(g_msg) == std::string::npos) g_status += ". " + g_msg;
