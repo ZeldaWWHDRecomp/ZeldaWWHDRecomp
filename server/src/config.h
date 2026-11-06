@@ -21,6 +21,8 @@ struct Config {
     // network
     std::string bind = "127.0.0.1";
     uint16_t port = 7777;
+    bool tcp = true;                // also listen on TCP at the same port (for networks that block UDP)
+    bool udp = true;                // false: UDP datagrams are ignored (TCP only; tests of the fallback)
     int max_players = 1000;
     std::vector<uint64_t> game_data;  // accepted game-data hashes; empty: any (each hash gets its own world)
 

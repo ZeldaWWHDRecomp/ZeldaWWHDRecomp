@@ -44,6 +44,11 @@ public:
 
     // builds the datagrams due now (at most max_datagrams); sends at least a keep-alive every keepalive_ms
     void flush(uint32_t now_ms, std::vector<Bytes>& out, size_t max_datagrams = 8, uint32_t keepalive_ms = 250);
+    // forget the unreliable messages queued for this flush (a backed-up TCP stream skips a flush)
+    void drop_unreliable() {
+        stats_.unreliable_dropped += unreliable_.size();
+        unreliable_.clear();
+    }
 
     // a data datagram from the peer: false if it is not valid for this session (wrong id, tag, replay...)
     bool receive(const uint8_t* d, size_t n, uint32_t now_ms, std::vector<Delivered>& got);

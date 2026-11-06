@@ -160,6 +160,8 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
             ok = ok && p > 0 && p < 65536;
             c.port = uint16_t(p);
         } else if (key == "max_players" || key == "network.max_players") integer(c.max_players);
+        else if (key == "network.tcp") boolean(c.tcp);
+        else if (key == "network.udp") boolean(c.udp);
         else if (key == "game_data" || key == "network.game_data") u64s(c.game_data);
         else if (key == "files.key") str(c.key_file);
         else if (key == "files.bans") str(c.ban_file);

@@ -2,6 +2,7 @@
 #include "client.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
 
 namespace online::proto {
@@ -29,6 +30,13 @@ bool Client::start(const ClientConfig& cfg, std::string& why) {
     }
     have_token_ = false;
     backoff_s_ = 1;
+    mode_ = cfg.transport_mode;
+    if (const char* e = std::getenv("WWHD_ONLINE_TCP")) {
+        if (std::strcmp(e, "1") == 0) mode_ = TransportMode::kTcpOnly;
+        if (std::strcmp(e, "0") == 0) mode_ = TransportMode::kUdpOnly;
+    }
+    if (sock_ != &own_) mode_ = TransportMode::kUdpOnly;  // a shared socket (bots) is UDP only
+    transport_ = mode_ == TransportMode::kTcpOnly ? Transport::kTcp : Transport::kUdp;
     begin_connect(monotonic_ms());
     return true;
 }
@@ -42,6 +50,8 @@ void Client::stop() {
     }
     if (state_ != ClientState::kOff && state_ != ClientState::kStopped) state_ = ClientState::kStopped;
     phase_ = Phase::kNone;
+    if (transport_ == Transport::kTcp) tcp_.pump();  // the goodbye
+    tcp_.close();
     if (sock_ == &own_) own_.close();
 }
 
@@ -61,11 +71,23 @@ void Client::begin_connect(uint32_t now) {
     phase_at_ = 0;
     phase_started_ = now;
     pow_found_ = false;
+    if (transport_ == Transport::kTcp) {
+        std::string why;
+        tcp_.connect(server_, why);  // a fresh connection for each attempt (a failure shows as no answer)
+    }
     ClientState s = have_token_ ? ClientState::kReconnecting : ClientState::kConnecting;
     if (s != state_) set_state(s, "");
 }
 
 void Client::send_raw(const Bytes& b) {
+    if (transport_ == Transport::kTcp) {
+        if (tcp_.send_frame(b.data(), b.size())) {
+            stats_.bytes_up += b.size() + 2;
+            stats_.packets_up++;
+        }
+        tcp_.pump();
+        return;
+    }
     if (sock_->send_to(server_, b.data(), b.size())) {
         stats_.bytes_up += b.size();
         stats_.packets_up++;
@@ -127,7 +149,17 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
     // what on_datagram() produced since the last poll comes first
     out_.clear();
     out_.swap(events_);
-    if (sock_ == &own_) {
+    if (transport_ == Transport::kTcp) {
+        tcp_.pump();
+        uint8_t buf[kMaxTcpFrame];
+        for (int i = 0; i < 512; ++i) {
+            int n = tcp_.recv_frame(buf, sizeof buf);
+            if (n < 0) break;
+            on_datagram(buf, size_t(n), now);
+        }
+        if (tcp_.closed() && state_ == ClientState::kOnline) lost(now, "connection closed");
+        else if (tcp_.closed() && phase_ != Phase::kNone) lost(now, "cannot reach the server over TCP");
+    } else if (sock_ == &own_) {
         uint8_t buf[2048];
         Address from;
         for (int i = 0; i < 512; ++i) {
@@ -139,6 +171,12 @@ const std::vector<ClientEvent>& Client::poll(uint32_t now) {
     }
     switch (phase_) {
         case Phase::kConnect:
+            // no answer over UDP for 3 s: the network may block it; try TCP to the same address
+            if (mode_ == TransportMode::kAuto && transport_ == Transport::kUdp && now - phase_started_ >= 3000) {
+                transport_ = Transport::kTcp;
+                begin_connect(now);
+                break;
+            }
             if (now - phase_started_ > kHandshakeTimeoutMs) {
                 lost(now, "no answer from the server");
                 break;
@@ -557,6 +595,7 @@ std::string Client::status_line() const {
         case ClientState::kReconnecting: return "Online: reconnecting…";
         case ClientState::kOnline: {
             std::string s = "Online · " + (info_.name.empty() ? std::string("server") : info_.name);
+            if (transport_ == Transport::kTcp) s += " (TCP)";
             if (ping_ms() >= 0) s += " · " + std::to_string(ping_ms()) + " ms";
             return s;
         }

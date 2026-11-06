@@ -31,6 +31,7 @@
 #include "proto/messages.h"
 #include "proto/protocol.h"
 #include "proto/sha256.h"
+#include "proto/tcp.h"
 #include "proto/udp.h"
 
 namespace online::server {
@@ -248,6 +249,12 @@ public:
     void fuzz_tick() { tick(proto::monotonic_ms()); }
     // tests: end like a crash (no final save of the team states)
     void abandon() { abandoned_ = true; }
+    // tests: every TCP connection drops (as on a network change)
+    void drop_tcp() {
+        std::vector<uint32_t> ids;
+        for (auto& [id, c] : tcp_) ids.push_back(id);
+        for (uint32_t id : ids) tcp_closed(id, proto::monotonic_ms());
+    }
     Party* party_of(const Session& s);
     std::function<void(const std::string&)> log;
 
@@ -374,6 +381,20 @@ private:
     void pool_start();
     void pool_stop();
     proto::UdpSocket& out_sock();
+    // the TCP fallback: each connection is its own peer address (Address::tcp_id)
+    proto::TcpListener tcp_listen_;
+    struct TcpConn {
+        std::unique_ptr<proto::TcpStream> s;
+        uint32_t at = 0;       // accepted
+        uint32_t heard = 0;
+    };
+    std::unordered_map<uint32_t, TcpConn> tcp_;
+    std::unordered_map<std::string, int> tcp_per_ip_;
+    uint32_t next_tcp_ = 1;
+    void tcp_poll(uint32_t now);
+    void tcp_closed(uint32_t id, uint32_t now);
+    // sends one datagram to a peer, over UDP or its TCP connection
+    void send_dg(proto::UdpSocket& u, const proto::Address& to, const uint8_t* d, size_t n);
     std::atomic<bool> stop_{false};
     std::thread thread_;
 

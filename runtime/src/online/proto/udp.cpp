@@ -45,7 +45,9 @@ void ensure_wsa() {}
 #endif
 }  // namespace
 
-bool Address::operator==(const Address& o) const { return len == o.len && std::memcmp(storage, o.storage, len) == 0; }
+bool Address::operator==(const Address& o) const {
+    return len == o.len && tcp_id == o.tcp_id && std::memcmp(storage, o.storage, len) == 0;
+}
 
 std::string Address::text() const {
     char host[64] = "?";
@@ -97,7 +99,7 @@ bool Address::is_loopback() const {
 uint64_t Address::hash() const {
     uint64_t h = 1469598103934665603ull;
     for (size_t i = 0; i < len; ++i) h = (h ^ storage[i]) * 1099511628211ull;
-    return h;
+    return h ^ (uint64_t(tcp_id) << 32);
 }
 
 bool resolve(const std::string& host, uint16_t port, Address& out, std::string& why) {

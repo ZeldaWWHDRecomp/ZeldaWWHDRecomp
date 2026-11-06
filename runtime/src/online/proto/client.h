@@ -19,9 +19,15 @@
 #include "handshake.h"
 #include "messages.h"
 #include "protocol.h"
+#include "tcp.h"
 #include "udp.h"
 
 namespace online::proto {
+
+enum class Transport { kUdp, kTcp };
+// kAuto: UDP first, then TCP when no handshake answer has come 3 s after the first CONNECT; the environment variable
+// WWHD_ONLINE_TCP=1 forces TCP and =0 forbids it (it wins over the config)
+enum class TransportMode { kAuto, kUdpOnly, kTcpOnly };
 
 struct ClientConfig {
     std::string host = "127.0.0.1";
@@ -37,6 +43,7 @@ struct ClientConfig {
     std::optional<std::array<uint8_t, 32>> pinned_server;
     bool reconnect = true;           // reconnect with backoff after a loss (1, 2, 4 ... 30 s)
     int send_hz = 30;                // packets to the server at most this often (poll may be called more often)
+    TransportMode transport_mode = TransportMode::kAuto;
 };
 
 enum class ClientState { kOff, kConnecting, kOnline, kReconnecting, kStopped };
@@ -137,6 +144,7 @@ public:
     const ClientStats& stats() const { return stats_; }
     uint32_t conn_id() const { return chan_.conn_id(); }
     uint32_t nonce() const { return nonce_; }
+    Transport transport() const { return transport_; }
 
 private:
     void set_state(ClientState s, const std::string& text);
@@ -148,6 +156,9 @@ private:
     void lost(uint32_t now, const std::string& why);
 
     UdpSocket own_;
+    TcpStream tcp_;
+    Transport transport_ = Transport::kUdp;
+    TransportMode mode_ = TransportMode::kAuto;
     UdpSocket* sock_ = nullptr;
     Address server_, home_;  // home_: the address start() was given (redirects come back to it after a loss)
     std::string home_host_;

@@ -60,8 +60,13 @@ are listed in `server/src/config.h`.
 
 ### Ports and networks
 
-- One UDP port (default 7777) for the players. Forward it on your router if friends join over the
-  internet.
+- One port (default 7777) for the players, UDP and TCP. Forward both on your router if friends join
+  over the internet.
+  - UDP is the normal way.
+  - TCP (`network.tcp = true`, the default) is the fallback for networks that block UDP. A game that
+    gets no answer over UDP for 3 s tries TCP at the same address, and shows "(TCP)" in its status.
+  - TCP carries the same encrypted packets. On a congested connection it holds back other players'
+    poses rather than delaying everything.
 - With `scale.mode = "auto"` the server may start worker processes; they listen on
   `scale.worker_port_base` and up (default 7778, 7779, …). Forward those too, or set
   `scale.max_workers = 1`.
