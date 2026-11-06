@@ -70,6 +70,7 @@
 #include "guest_addr.h"
 #include "../input_map.h"
 #include "input.h"
+#include "coop_pose.h"
 #include "mods.h"
 #include "../motion/motion.h"
 #include "runtime.h"
@@ -211,6 +212,8 @@ bool test_mouse() {
     return on;
 }
 }  // namespace
+
+bool first_person() { return in_first_person(); }  // (online co-op: Link hides his head)
 
 void mouse_add(float dx, float dy) {
     if (editor::take_mouse(dx, dy)) return;  // the fly camera looks around with it
@@ -510,6 +513,8 @@ namespace mods { void link_executed(uint32_t link); }  // turbo.cpp: control tra
 extern "C" void hook_0240EBB0(Cpu* c) {
     uint32_t l = c->r[3];
     g_link.store(l, std::memory_order_relaxed);
+    mods::coop::link_executes(l);  // (online co-op: his particles and items, for the other players)
     f_0240EBB0_orig(c);
+    mods::coop::link_executes(0);
     link_executed(l);
 }

@@ -633,6 +633,7 @@ static void trace_gamepad_backdrop_pane(const char* stage, uint32_t pane) {
 // Pane::Draw(this, DrawInfo&): the render thread reports where each layout root is drawn. The
 // game thread can't tell: TV and GamePad layouts share DrawInfos and are recorded on threads that
 // don't bind the targets.
+namespace mods::coop::sync { bool hud_hidden(); }  // online co-op (mods/coop_sync.cpp)
 extern "C" void hook_02877100(Cpu* c) {
     using namespace aspect;
     uint32_t pane = c->r[3];
@@ -665,6 +666,14 @@ extern "C" void hook_02877100(Cpu* c) {
     if (original()) { button_glyphs::draw_pane(c, f_02877100_orig); return; }
     uint32_t parent = ld32(pane + kPaneParent);
     if (!parent) {
+        // online co-op: a guest sent back to the title keeps the HUD's screens (they live until shutdown): not drawn
+        // until it plays again (the HUD's root holds N_TV_00 / N_Default_00 / N_DRC_00)
+        if (mods::coop::sync::hud_hidden()) {
+            const uint32_t end = pane + kPaneChildren;
+            for (uint32_t ch = ld32(end); ch != end; ch = ld32(ch))
+                for (const char* n : {"N_TV_00", "N_Default_00", "N_DRC_00"})
+                    if (!strncmp((const char*)mem::ptr(ch + kPaneName), n, 24)) return;
+        }
         gx2::emit(gx2::OP_LAYOUT_ROOT, {pane});
     } else {
         // Preserve the existing hiding rule for anchored HUD/world markers. Menu containers
@@ -846,7 +855,9 @@ extern "C" void hook_02704D2C(Cpu* c) {
 // The shared 2D/3D particle factory returns pooled emitters. Bind at creation,
 // before later UI queries can reuse the same coordinate for another pane.
 extern "C" void f_025A847C_orig(Cpu*);
+namespace mods::coop { void particle(Cpu* c); }  // online co-op: Link's particles, for the other players
 extern "C" void hook_025A847C(Cpu* c) {
+    mods::coop::particle(c);
     const uint32_t group=c->r[4],position=c->r[6];
     ParticlePane source{};bool found=false;
     if(group>=7 && group<=10 && position) {

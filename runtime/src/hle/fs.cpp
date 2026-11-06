@@ -37,6 +37,8 @@
 #include "os_time.h"
 #include "picto_quest.h"
 
+namespace hlefs { std::atomic<bool> g_block_saves{false}; }  // online co-op's guest (mods/coop_sync.cpp)
+
 namespace hle_fs {
 namespace {
 std::mutex g_save_root_mutex;
@@ -244,6 +246,18 @@ uint64_t game_size(const std::string& gpath, const std::string& hp, const struct
 
 int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t out_handle) {
     std::string hp = read_path(gpath,mode);
+    // online co-op: a guest playing in the host's world writes no save of its own (the host saves): the game's writes
+    // go to a nameless temporary file, as if they were made (mods/coop_sync.cpp)
+    if (hlefs::g_block_saves && gpath.rfind("/vol/save", 0) == 0 && mode.find_first_of("wa+") != std::string::npos) {
+        FILE* f = tmpfile();
+        if (!f) return FS_NOT_FOUND;
+        TRACE("[fs] open %s (%s): co-op guest, not saved", gpath.c_str(), mode.c_str());
+        std::lock_guard<std::mutex> lk(g_fs_mutex);
+        const uint32_t h = g_next_handle++;
+        g_files[h] = {f, gpath, mode};
+        st32(out_handle, h);
+        return FS_OK;
+    }
     if (mode.find_first_of("wa") != std::string::npos) make_parent_dirs(hp);
     std::string m = mode;
     if (m.find('b') == std::string::npos) m += "b";

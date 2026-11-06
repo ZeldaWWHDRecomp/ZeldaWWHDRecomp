@@ -100,3 +100,19 @@
 @026D5D84 # Options values loaded (+0x104..+0x109), before the rows are filled: into the new order
 026D6DD4  # Options values saved (fixed offsets): the game's order around it
 026D87D0  # Options Controller item callback (its value +0x107): the game's order around it
+# Online co-op (mods/coop_*.cpp; from Galvakron/ZeldaWWHDRecompMP, MPL-2.0): Link's pose, puppets drawn from it
+023D5548  # daPy_lk_c::createHeap: a copy of each of Link's models for every puppet, on his heap
+023D4BB8  # daPy_lk_c::initModel: which file each of Link's models is (what he holds, for the puppets)
+025E38E0  # mDoExt_J3DModel__create: the models Link's createHeap makes
+023D8DF0  # daPy_lk_c::entryDLSetLight: each model Link draws (his pose, once a step), the puppets' after it
+023D8454  # daPy_lk_c::updateDLSetLight: the same
+023D9820  # daPy_lk_c::draw: the puppets' models Link did not draw himself, after him
+025E2E5C  # mDoExt_modelEntryDL: Link's body, entered straight (his pose)
+025E2DE0  # mDoExt_modelUpdateDL: the same
+027F583C  # J3DModel entry of one material's shapes: Link's face, the puppets' copies after his
+027F50F8  # J3DModel texture lists (viewCalc): Link's body texture in each wearer's tunic colour
+026066C4  # dComIfG_getObjectRes: which file of Link's archive a model is (his items')
+025D5928  # fopAcM_fastCreate: the boat's own cannon ball and Link's items, for the other players (mods/coop_world.cpp)
+# Online co-op, the session (mods/coop_sync.cpp)
+025202F8  # dComIfG_resetToOpening: a guest's way back to the title
+0252012C  # dComIfGp_setNextStage: a guest going into a stage the host isn't in waits for the host

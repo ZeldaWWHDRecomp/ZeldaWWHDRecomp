@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <functional>
+#include <memory>
 #include <string>
 #include <type_traits>
 #include <vector>
@@ -13,6 +14,8 @@
 #include "ppc.h"
 
 namespace mods::save_profile {struct Selection;struct Paths;}
+
+namespace pstate { struct State; }
 
 namespace ss {
 
@@ -98,6 +101,11 @@ void request_load(int slot);
 void request_load(int slot, std::function<void(bool,const std::string&)> done);
 void request_load_portable_file(const std::string& path, std::function<void(bool,const std::string&)> done);
 void request_load_portable_file(const std::string& path);  // a .wwstate anywhere (WWHD_PORTABLE_LOAD)
+// online co-op's join (mods/coop_sync.cpp): the game as a portable state's text (game thread; false with `why` while
+// Link is not free to have it taken), and a load of one into the Quest Log being played (`done` as above)
+bool capture_portable_text(Cpu* c, std::string& out, std::string& why);
+void request_load_portable_state(std::shared_ptr<pstate::State> s, std::function<void(bool,const std::string&)> done);
+std::string area_name(const char* stage);  // a stage's name for people ("Dragon Roost Cavern"; else the stage's own)
 bool full_states();                     // save button / shortcuts make full states
 void set_full_states(bool on);          // the setting (kept in the states folder)
 SavePath save_path();                   // auto (Android streaming, desktop fast), streaming, fast

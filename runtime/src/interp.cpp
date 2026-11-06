@@ -2,6 +2,9 @@
 #include "mods/game_progress_host.h"
 #include "mods/achievements_host.h"
 #include "interp.h"
+#include "mods/coop_pose.h"
+#include "mods/coop_sync.h"
+#include "mods/coop_world.h"
 #include "dsweep.h"
 #include "mods/story_native_restore_resume.h"
 namespace interp {class NativeResumeBoundaryIssuer {public:static void after_service(Cpu*c){story_native_restore_resume::LoadWindow::service_return(c);}};}
@@ -1257,6 +1260,9 @@ void blend_mtx(const float* a, const float* b, float* out, float t) {
 }
 }  // namespace
 void blend_world_matrix(const float* a, const float* b, float* out, float t) { blend_mtx(a, b, out, t); }
+// online co-op's puppets (mods/coop_pose.cpp): a joint matrix as rotation x scale; two joints blended
+bool mtx_to_quat(const float* m, float* s, float* q) { return to_quat(m, s, q); }
+void blend_joint(const float* a, const float* b, float* out, float t) { blend_mtx(a, b, out, t); }
 }  // namespace interp
 
 // The board assigns its pooled J3D hit/miss models by scanning cells at +0x598
@@ -1296,6 +1302,7 @@ extern "C" void hook_025A4204(Cpu* c) {
 // J3DModel::viewCalc(J3DModel*)
 extern "C" void hook_027F55FC(Cpu* c) {
     using namespace interp;
+    if (mods::coop::view_done(c->r[3])) return;  // (online co-op: a character's model already calculated this draw)
     static const bool off = getenv("WWHD_INTERP_MODELS") && !atoi(getenv("WWHD_INTERP_MODELS"));  // debug
     if (!enabled() || off || g_ptcl_model_draw || (!g_hold && !g_record_logic && g_exact_step)) {
         f_027F55FC_orig(c);
@@ -2317,11 +2324,17 @@ extern "C" void hook_025DE788(Cpu* c) {
     if(!interp::g_hold_frame)guestmods::maphud::begin_logic(c,1.0/30.0);  // one 30 Hz logic step
     if (!interp::g_hold_frame) mods::instant_text_step();  // instant text (mods/instant_text.cpp)
     dsweep::before_execute(c);  // the setup's actor sweep (WWHD_DSWEEP): its actors do not run their logic
+    if (!interp::g_hold_frame) mods::coop::world::before_execute();  // (online co-op: a friend's blow on Link)
     f_025DE788_orig(c);
     dsweep::after_execute(c);
     if (!interp::g_hold_frame) mods::instant_text_step();
     mods::after_execute(c, execute_fn);  // quick doors / fast scene changes: extra steps (full passes only)
     if (!interp::g_hold_frame) {guestmods::frame(interp::g_logic_steps);guestmods::logic_service(c);editor::logic_service(c);mods::packages::frame(interp::g_logic_steps);}
+    if (!interp::g_hold_frame) {  // online co-op (mods/coop_world.cpp): the session, the players; r3 is the handler's result
+        const uint32_t r3 = c->r[3];
+        mods::coop::world::step(c);
+        c->r[3] = r3;
+    }
     editor::camera_service(c, !interp::g_hold_frame);  // the fly camera: every logic pass
     if(!interp::g_hold_frame)guestmods::maphud::finish_logic();
     guestmods::draw_frame(c,interp::executed_steps());
@@ -2400,7 +2413,7 @@ extern "C" void hook_025D4654(Cpu* c) {
     const uint32_t keep_drawing = interp::g_keep_drawing;
     if (kept) interp::g_keep_drawing = actor;  // (its models' matrices too: model_calc_before)
     const uint32_t status_seen = ld32(actor + interp::OneShotNoDraw::kStatus);
-    if (!dsweep::hide_actor_draw(actor)) f_025D4654_orig(c);
+    if (!dsweep::hide_actor_draw(actor)) mods::coop::actor_draw(c);  // (online co-op: the items into Link's pose)
     interp::g_keep_drawing = keep_drawing;
     // debug: WWHD_INTERP_LINK_DRAW_TRACE=path logs every draw of Link: pass, logic step, interpolation on,
     // hold pass, phase, the status the draw saw (fopAcStts_NODRAW_e 0x01000000), the condition it left
@@ -2488,7 +2501,12 @@ static void se_stat(int fn) {
         t0 = t;
     }
 }
-extern "C" void hook_0201EBA0(Cpu* c) { se_stat(0); se_trace(0, c); if (interp::g_hold) { c->r[3] = 0; return; } f_0201EBA0_orig(c); }
+extern "C" void hook_0201EBA0(Cpu* c) {  // (online co-op: Link's sounds to the others; a character's voice in his place)
+    se_stat(0);
+    if (interp::g_hold || !mods::coop::sync::sound_started(c)) { c->r[3] = 0; return; }
+    se_trace(0, c);
+    f_0201EBA0_orig(c);
+}
 extern "C" void hook_025E1988(Cpu* c) { se_stat(1); se_trace(1, c); if (interp::g_hold) { c->r[3] = 0; return; } f_025E1988_orig(c); }
 extern "C" void hook_025E19CC(Cpu* c) { se_stat(2); se_trace(2, c); if (interp::g_hold) { c->r[3] = 0; return; } f_025E19CC_orig(c); }
 extern "C" void hook_025E1A04(Cpu* c) { se_stat(3); se_trace(3, c); if (interp::g_hold) { c->r[3] = 0; return; } f_025E1A04_orig(c); }

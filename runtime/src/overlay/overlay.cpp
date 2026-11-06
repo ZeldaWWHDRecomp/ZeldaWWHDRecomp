@@ -3663,7 +3663,10 @@ bool layer_takes_pointer() {
     return file_select_quit::pointer(g_quit_pointer_x.load(), g_quit_pointer_y.load()) || m == 1 || (m == 2 && g_layer_mouse.load());
 }
 bool pointer_layer_active() { return file_select_quit::visible() || layer_mode() != 0; }
-bool captures() { return is_open() || text_entry::active(); }
+// a small panel over the game (online co-op's host question): drawn by `draw` each frame until it returns true
+std::atomic<bool (*)(const float*)> g_panel{nullptr};
+void show_panel(bool (*draw)(const float*)) { g_panel = draw; }
+bool captures() { return is_open() || text_entry::active() || g_panel.load(); }
 bool dialog_open() { return is_open() && g_dialog_open.load(); }
 bool alive() { return now_s() - g_last_frame.load(std::memory_order_relaxed) < 1.0; }
 bool perf_shown() { return g_perf.load(std::memory_order_relaxed); }
@@ -3913,6 +3916,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
     const bool open = is_open(), perf = perf_shown(), text = !open && text_entry::active();
+    const auto panel = open || text ? nullptr : g_panel.load();
     if (wwhd_trace::enabled()) {
         wwhd_trace::sink = [](const char* line) { LOG("[overlay-trace] %s",line); };
         wwhd_trace::open = open;
@@ -3971,7 +3975,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     // a mod install keeps running (and shows its progress) while the menu is closed
     const bool mods_busy = !setup_run.id.empty() || (U.init && modsui::wants_background()) || modsui::startup_notice_pending();
     if (!open) gfx::g_pip_preview=false;
-    if (!open && !perf && !text && toast.empty() && !guesthud::active() && !file_select_quit::visible() && !mods_busy && !stereoPointer && drawn_layers.empty()) {
+    if (!open && !perf && !text && !panel && toast.empty() && !guesthud::active() && !file_select_quit::visible() && !mods_busy && !stereoPointer && drawn_layers.empty()) {
         if (U.init) {  // forget events and pressed keys while nothing is shown
             std::lock_guard<std::mutex> lk(g_mu);
             g_events.clear();
@@ -4080,6 +4084,14 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         if (g_no_host) test_pad(pad);  // WWHD_TEST_PAD drives the on-screen keyboard in test runs
         if (text_entry::draw(pad)) {
             // answered: the button that confirmed stays from the game until released (release_gate.h)
+            for (auto& k : g_held_keys) k = false;
+        }
+    }
+    if (panel) {
+        float pad[input_map::kPadCount];
+        std::copy(std::begin(U.values), std::end(U.values), pad);
+        if (panel(pad)) {  // answered: the button that closed it stays from the game until released
+            g_panel = nullptr;
             for (auto& k : g_held_keys) k = false;
         }
     }

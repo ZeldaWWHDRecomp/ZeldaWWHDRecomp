@@ -36,6 +36,7 @@ bool mouse_camera();
 void set_mouse_camera(bool on);
 float mouse_sensitivity();  // degrees per mouse point
 void set_mouse_sensitivity(float s);
+bool first_person();  // the subject camera (first person, aiming an item) runs (camera.cpp)
 bool first_person_wheel();
 void set_first_person_wheel(bool on);
 // One press readies and automatically uses an item against a locked enemy.

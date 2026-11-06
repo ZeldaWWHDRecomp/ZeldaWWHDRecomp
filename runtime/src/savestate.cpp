@@ -1716,6 +1716,26 @@ void request_save(int slot) { request_save(slot, nullptr); }
 
 bool in_gameplay() { return quitprompt::gameplay_stage(stage_name()); }
 
+// online co-op's join (mods/coop_sync.cpp): the game as a portable state's text, taken now on the game thread, and a
+// load of one into the Quest Log being played (`done` once Link has arrived in its stage, or refused)
+bool capture_portable_text(Cpu* c, std::string& out, std::string& why) {
+    pstate::State s;
+    bool retry = false;
+    if (!gameplay_ready(why, retry) || !player_has_control(c, why) || !capture_portable(c, s, why)) return false;
+    out = pstate::write(s, why);
+    return !out.empty();
+}
+void request_load_portable_state(std::shared_ptr<pstate::State> s, std::function<void(bool,const std::string&)> done) {
+    LoadResult result(std::move(done)), replaced;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        replaced = g_pload.result;
+        g_pload = PendingPortable{std::move(s), 0, "", result};
+    }
+    replaced.complete(false, "superseded by a newer load request");
+}
+std::string area_name(const char* stage) { return area_label(stage); }
+
 void request_load_portable_file(const std::string& path) { request_load_portable_file(path,{}); }
 
 void request_load_portable_file(const std::string& path, std::function<void(bool,const std::string&)> done) {
