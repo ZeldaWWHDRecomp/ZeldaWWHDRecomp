@@ -10,6 +10,7 @@
 #include <string>
 
 #include "coop_net.h"
+#include "coop_servers.h"
 #include "coop_sync.h"
 #include "game_settings.h"
 #include "imgui.h"
@@ -24,6 +25,7 @@ namespace {
 
 namespace sync = mods::coop::sync;
 namespace net = mods::coop::net;
+namespace servers = mods::coop::servers;
 
 
 // a change from either page (main thread): kept, and the session follows at the game's next step
@@ -84,21 +86,59 @@ void draw_tab() {
         static char srv[128];
         static int sport = 0;
         static bool sfilled = false;
-        if (!sfilled) snprintf(srv, sizeof srv, "%s", s.server_addr.c_str()), sport = s.server_port, sfilled = true;
+        static std::string shown_addr;
+        static int shown_port = 0;
+        // (filled again when the server changes elsewhere: a saved server chosen, the pause page)
+        if (!sfilled || shown_addr != s.server_addr || shown_port != s.server_port)
+            snprintf(srv, sizeof srv, "%s", s.server_addr.c_str()), sport = s.server_port, sfilled = true, shown_addr = s.server_addr, shown_port = s.server_port;
         ImGui::InputText("Server address", srv, sizeof srv);
         if (ImGui::IsItemDeactivatedAfterEdit()) hostui::post([a = std::string(srv)] { change([&](sync::Settings& x) { if (!a.empty()) x.server_addr = a; }); });
         ImGui::InputInt("Server port (UDP)", &sport, 0);
         if (ImGui::IsItemDeactivatedAfterEdit()) hostui::post([p = std::clamp(sport, 1, 65535)] { change([&](sync::Settings& x) { x.server_port = p; }); });
         ImGui::TextDisabled("A server you or a friend runs (wwhd-online-server). Everyone on it sees each other nearby;");
         ImGui::TextDisabled("your party shares enemies and progress.");
+        const std::vector<servers::Server> saved = net::saved_servers();
+        if (!saved.empty()) {
+            ImGui::TextUnformatted("Saved servers");
+            for (const servers::Server& v : saved) {
+                const bool now = v.addr == s.server_addr && v.port == s.server_port;
+                ImGui::PushID((v.addr + ":" + std::to_string(v.port)).c_str());
+                ImGui::BulletText("%s (%s:%d)%s", v.name.c_str(), v.addr.c_str(), v.port, now ? ", chosen" : "");
+                ImGui::SameLine();
+                ImGui::BeginDisabled(now);
+                if (ImGui::SmallButton("Use")) hostui::post([a = v.addr, p = v.port] { change([&](sync::Settings& x) { x.server_addr = a, x.server_port = p; }); });
+                ImGui::EndDisabled();
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Forget")) hostui::post([a = v.addr, p = v.port] { net::forget_server(a, p); });
+                ImGui::PopID();
+            }
+            ImGui::TextDisabled("Servers are saved when you connect. Each server's key is remembered from your first visit, so");
+            ImGui::TextDisabled("another server using its address is noticed. Forget also forgets the key.");
+        }
+        ImGui::Spacing();
         const std::string code = net::friend_code();
-        ImGui::Text("Your friend code: %s", code.empty() ? "(when online)" : code.c_str());
+        ImGui::Text("Your friend code: %s", code.empty() ? "-" : code.c_str());
+        if (!code.empty()) {
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Copy")) hostui::post([code] { hostui::set_clipboard(code); ss::notice("Friend code copied"); });
+        }
+        ImGui::TextDisabled("Tell it to friends: with it they invite you into their party.");
         static char invite[32];
+        static std::string invite_msg;
         ImGui::InputText("Friend's code", invite, sizeof invite);
         ImGui::SameLine();
-        if (ImGui::Button("Invite")) hostui::post([c = std::string(invite)] { std::string why; if (!net::invite(c, why)) ss::notice("Can't invite: " + why); });
-        for (const auto& [party, from] : net::invites()) {
-            ImGui::Text("%s invites you to their party", from.c_str());
+        ImGui::BeginDisabled(!net::via_server());
+        if (ImGui::Button("Invite")) {
+            std::string why;
+            invite_msg = net::invite(invite, why) ? "Sending the invite..." : why;
+        }
+        ImGui::EndDisabled();
+        if (!net::via_server()) ImGui::TextDisabled("Go online through a server to invite.");
+        else if (!invite_msg.empty()) ImGui::TextWrapped("%s", invite_msg.c_str());
+        const auto waiting = net::invites();
+        if (!waiting.empty()) ImGui::TextUnformatted("Invitations");
+        for (const auto& [party, from] : waiting) {
+            ImGui::BulletText("%s invites you to their party", from.c_str());
             ImGui::SameLine();
             if (ImGui::Button(("Join##" + std::to_string(party)).c_str())) hostui::post([p = party] { net::answer(p, true); });
             ImGui::SameLine();
@@ -138,6 +178,7 @@ void draw_tab() {
     ImGui::TextDisabled("Party members always look solid. (Players outside your party come with online servers.)");
     ImGui::Separator();
     ImGui::TextWrapped("Status: %s", sync::status());
+    if (s.on && s.notice_ok && net::role() == net::Role::kOff && ImGui::Button("Connect again")) hostui::post([] { sync::retry(); });
     if (net::role() != net::Role::kOff) {
         bool first = true;
         for (int id = 0; id < net::kMaxPlayers; ++id)
@@ -208,6 +249,45 @@ void register_items() {
         it.enabled = [] { return !net::invites().empty(); };
         game_settings::add(std::move(it));
     }
+    if (net::server_built()) {
+        Item it;
+        it.id = "online.decline", it.tab = "online", it.label = "Decline the invitation", it.kind = Kind::Action;
+        it.help = "A says no to the first invitation waiting.";
+        it.text = [] { const auto v = net::invites(); return v.empty() ? std::string("-") : v.front().second; };
+        it.set = [](float) { const auto v = net::invites(); if (!v.empty()) net::answer(v.front().first, false); };
+        it.enabled = [] { return !net::invites().empty(); };
+        game_settings::add(std::move(it));
+    }
+    if (net::server_built()) {
+        Item it;
+        it.id = "online.leave", it.tab = "online", it.label = "Leave the party", it.kind = Kind::Action;
+        it.help = "You stay online on the server; the others play on.";
+        it.text = [] { return std::string(net::via_server() ? "Leave" : "-"); };
+        it.set = [](float) { net::leave_party(); };
+        it.enabled = [] { return net::via_server(); };
+        game_settings::add(std::move(it));
+    }
+    if (net::server_built()) {
+        Item it;
+        it.id = "online.saved", it.tab = "online", it.label = "Saved servers", it.kind = Kind::Action;
+        it.help = "A goes to the next server you have been on. Forget a server in Settings > Online.";
+        it.text = [] {
+            const sync::Settings s = sync::settings();
+            for (const servers::Server& v : net::saved_servers()) if (v.addr == s.server_addr && v.port == s.server_port) return v.name;
+            return net::saved_servers().empty() ? std::string("-") : std::string("(another)");
+        };
+        it.set = [](float) {
+            const std::vector<servers::Server> v = net::saved_servers();
+            if (v.empty()) return;
+            const sync::Settings s = sync::settings();
+            size_t at = v.size() - 1;
+            for (size_t i = 0; i < v.size(); i++) if (v[i].addr == s.server_addr && v[i].port == s.server_port) at = i;
+            const servers::Server& next = v[(at + 1) % v.size()];
+            change([&](sync::Settings& x) { x.server_addr = next.addr, x.server_port = next.port; });
+        };
+        it.enabled = [] { return sync::settings().server && !net::saved_servers().empty(); };
+        game_settings::add(std::move(it));
+    }
     {
         Item it;
         it.id = "online.role", it.tab = "online", it.label = "Play as", it.kind = Kind::Choice;
@@ -256,9 +336,9 @@ void register_items() {
     {
         Item it;
         it.id = "online.status", it.tab = "online", it.label = "Status", it.kind = Kind::Action;
-        it.help = "More online options are in Settings > Online.";
+        it.help = "A connects again after the session stopped. More online options are in Settings > Online.";
         it.text = [] { return std::string(sync::status()); };
-        it.set = [](float) {};
+        it.set = [](float) { const sync::Settings s = sync::settings(); if (s.on && s.notice_ok && net::role() == net::Role::kOff) sync::retry(); };
         game_settings::add(std::move(it));
     }
 }

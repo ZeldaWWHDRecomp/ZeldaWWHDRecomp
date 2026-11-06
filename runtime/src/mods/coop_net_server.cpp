@@ -24,8 +24,13 @@
 #include <string>
 #include <vector>
 
+#include <functional>
+#include <mutex>
+
+#include "coop_servers.h"
 #include "mods.h"
 #include "proto/client.h"
+#include "../overlay/hostui.h"
 #include "../platform/host.h"
 #include "../savestate.h"
 
@@ -56,9 +61,48 @@ int g_my_tunic = 0;
 op::Where g_where_sent;
 bool g_where_known = false;
 struct Invite { uint32_t party; std::string from; };
-std::vector<Invite> g_invites;
+std::vector<Invite> g_invites;  // (g_ui_mu: the pages read it)
+// the pages' actions (main thread) run at the game's next poll, on its thread, where the client lives
+std::mutex g_ui_mu;
+std::vector<std::function<void(op::Client&)>> g_actions;
 std::string g_auto_invite;     // test aid: a friend code (or @file with it) to invite once online
 Handler* g_h = nullptr;
+std::string g_end_why;         // why the server ended the session (a refusal, a removal), for the status after it stops
+std::string g_msg;             // the newest answer (a party action's, a warning), shown with the status for a while
+uint32_t g_msg_at = 0;
+constexpr uint32_t kMsgMs = 20000;
+// the server this session went to, and what it showed before the welcome (pinned in the saved list once welcomed)
+std::string g_addr;
+int g_port = 0;
+std::string g_seen_name, g_seen_key;
+
+// the saved servers (settings online.servers): read on any thread, saved on the main thread
+std::mutex g_list_mu;
+std::vector<servers::Server> g_list;
+bool g_list_read = false;
+std::vector<servers::Server>& list_locked() {
+    if (!g_list_read) {
+        g_list_read = true;
+        std::string v;
+        if (hostui::get("online.servers", v)) g_list = servers::parse(v);
+    }
+    return g_list;
+}
+void save_list_locked() {
+    const std::string text = servers::format(g_list);
+    hostui::post([text] { hostui::set("online.servers", text); });
+}
+
+void say(const std::string& m, bool toast) {
+    g_msg = m, g_msg_at = now_ms();
+    mods::trace("coop: server: says \"%s\"", m.c_str());
+    if (toast) ss::notice("Online: " + m);
+}
+
+std::string path_of_identity() {
+    if (const char* e = getenv("WWHD_ONLINE_IDENTITY")) return e;  // (tests: one identity per game)
+    return host::config_dir() + "/online-identity.key";
+}
 
 int online_members() {
     int n = 0;
@@ -134,18 +178,24 @@ bool active() { return g_active; }
 
 bool start(const std::string& server, int port, const std::string& my_name, int my_tunic, std::string& why) {
     stop(nullptr);
-    std::string path = host::config_dir() + "/online-identity.key";
-    if (const char* e = getenv("WWHD_ONLINE_IDENTITY")) path = e;  // (tests: one identity per game)
     op::crypto::Identity id;
-    if (!op::crypto::Identity::load_or_create(path, id, why)) return false;
+    if (!op::crypto::Identity::load_or_create(path_of_identity(), id, why)) return false;
     op::ClientConfig cfg;
     cfg.host = server, cfg.port = (uint16_t)port, cfg.game_data = ss::game_data_id(), cfg.identity = id;
     if (const char* e = getenv("WWHD_COOP_GAME")) cfg.game_data = strtoull(e, nullptr, 16);
     cfg.name = my_name.substr(0, 24), cfg.look = (uint32_t)(my_tunic & 3), cfg.tag = "wwhd";
+    {  // a server visited before: its key as pinned then (trust on first use)
+        std::lock_guard<std::mutex> l(g_list_mu);
+        if (const servers::Server* s = servers::find(list_locked(), server, port); s && !s->key.empty()) {
+            std::array<uint8_t, 32> k{};
+            if (servers::from_hex(s->key, k.data(), 32)) cfg.pinned_server = k;
+        }
+    }
     g_client = new op::Client();
     if (!g_client->start(cfg, why)) { delete g_client, g_client = nullptr; return false; }
     g_active = true, g_my_name = my_name, g_my_tunic = my_tunic & 3, g_status = "Connecting to " + server;
     g_auto_invite = getenv("WWHD_ONLINE_INVITE") ? getenv("WWHD_ONLINE_INVITE") : "";
+    g_addr = server, g_port = port, g_seen_name.clear(), g_seen_key.clear(), g_end_why.clear(), g_msg.clear();
     mods::trace("coop: server %s:%d (game %016llX)", server.c_str(), port, (unsigned long long)cfg.game_data);
     return true;
 }
@@ -153,7 +203,10 @@ bool start(const std::string& server, int port, const std::string& my_name, int 
 void stop(const char* why) {
     if (g_client) g_client->stop(), delete g_client, g_client = nullptr, mods::trace("coop: server session stopped%s%s", why ? ": " : "", why ? why : "");
     g_active = false, g_status = why ? why : "Off", g_me_sid = 0, g_peers.clear(), g_party = {}, g_slot_of_me = 0, g_where_known = false;
-    g_invites.clear();
+    {
+        std::lock_guard<std::mutex> l(g_ui_mu);
+        g_invites.clear(), g_actions.clear();
+    }
     for (Peer& p : g_slot) p = Peer{};
 }
 
@@ -183,7 +236,18 @@ int tunic(int id) {
 }
 bool connected(int id) { return id >= 0 && id < kMaxPlayers && g_slot[id].on; }
 bool member(int id) { return connected(id) && (g_slot[id].party || id == g_slot_of_me); }
-std::string friend_code() { return g_client && g_client->state() == op::ClientState::kOnline ? g_client->friend_code() : ""; }
+// this install's code: from its identity (made on first use, kept in the user folder), online or not; any thread
+std::string friend_code() {
+    std::lock_guard<std::mutex> l(g_ui_mu);
+    static std::string code, path;
+    if (code.empty() || path != path_of_identity()) {
+        op::crypto::Identity id;
+        std::string why;
+        path = path_of_identity();
+        code = op::crypto::Identity::load_or_create(path, id, why) ? op::friend_code(op::key_hash(id.pub)) : "";
+    }
+    return code;
+}
 
 void send(int to, Msg type, const std::string& body) {
     if (!g_client || !in_party()) return;
@@ -235,30 +299,47 @@ void poll(Handler& h) {
             g_status = e.text.empty() ? g_status : e.text;
             mods::trace("coop: server: %s", e.text.c_str());
             if (e.state == op::ClientState::kStopped) {
-                const std::string why = e.text.empty() ? "Disconnected" : e.text;
+                const std::string why = !g_end_why.empty() ? g_end_why : e.text.empty() ? "Disconnected from the server" : e.text;
                 for (int i = 0; i < kMaxPlayers; i++) if (g_slot[i].on && i != g_slot_of_me) h.left(i, why.c_str());
                 stop(why.c_str());
+                h.left(0, why.c_str());  // (with the session off: given up until the switch or the settings change)
                 return;
             }
+            if (e.state == op::ClientState::kReconnecting) g_status = "Connection to the server lost (" + e.text + "), connecting again";
             break;
         case op::ClientEvent::kWelcome:
             g_me_sid = e.id;
+            g_end_why.clear();
             if (!e.resumed) {
                 for (int i = 0; i < kMaxPlayers; i++) if (g_slot[i].on && i != g_slot_of_me) h.left(i, "reconnected");
                 g_peers.clear(), g_party = {};
                 for (Peer& p : g_slot) p = Peer{};
             }
             g_status = "Online, friend code " + g_client->friend_code();
+            {  // kept in the saved servers, most recent first, its key pinned
+                std::lock_guard<std::mutex> l(g_list_mu);
+                servers::remember(list_locked(), {g_seen_name.empty() ? g_client->server().name : g_seen_name, g_addr, g_port, g_seen_key});
+                save_list_locked();
+            }
             mods::trace("coop: server: welcomed as %u%s, friend code %s", e.id, e.resumed ? " (resumed)" : "", g_client->friend_code().c_str());
             if (const char* f = getenv("WWHD_ONLINE_CODE_FILE")) std::ofstream(f) << g_client->friend_code() << "\n";  // (tests)
             remap(h);
             break;
         case op::ClientEvent::kRefused:
-            g_status = "Refused: " + e.text;
-            mods::trace("coop: server refused: %s", e.text.c_str());
+            g_end_why = servers::refusal((int)e.refusal, e.text == op::refusal_text(e.refusal) ? std::string() : e.text, e.seconds);
+            g_status = g_end_why;
+            mods::trace("coop: server refused (%d): %s", (int)e.refusal, e.text.c_str());
+            say(g_end_why, false);
+            break;
+        case op::ClientEvent::kServerKey:
+            g_seen_name = e.info.name, g_seen_key = servers::to_hex(e.info.pub, 32);
+            mods::trace("coop: server: \"%s\", key %s", e.info.name.c_str(), e.text.c_str());
             break;
         case op::ClientEvent::kServerKeyChanged:
-            g_status = "The server's key changed: not connected";
+            g_end_why = servers::key_changed(g_addr + ":" + std::to_string(g_port));
+            g_status = g_end_why;
+            mods::trace("coop: server: %s", e.text.c_str());
+            say(g_end_why, false);
             break;
         case op::ClientEvent::kPlayerIn: {
             auto it = std::find_if(g_peers.begin(), g_peers.end(), [&](const Peer& p) { return p.sid == e.player.id; });
@@ -294,36 +375,59 @@ void poll(Handler& h) {
             break;
         }
         case op::ClientEvent::kNotice:
-            mods::trace("coop: server notice %u: %s", e.value, e.text.c_str());
-            if (e.value == op::kNoticeKick || e.value == op::kNoticeBan || e.value == op::kNoticeKickLimit) g_status = "Removed by the server: " + e.text;
-            if (e.value == op::kNoticeThrottle) g_status = "The server asks to slow down: " + e.text;
+        {
+            mods::trace("coop: server notice %u (%u): %s", e.value, e.seconds, e.text.c_str());
+            const std::string m = servers::notice(e.value, e.seconds, e.value == op::kNoticeRestart ? e.seconds : 0, e.text);
+            const bool out = e.value == op::kNoticeKick || e.value == op::kNoticeBan || e.value == op::kNoticeKickLimit;
+            if (out) g_end_why = m;
+            say(m, !out);  // (a removal: told when the session stops)
             break;
+        }
         case op::ClientEvent::kPartyInvited:
+        {
+            std::lock_guard<std::mutex> l(g_ui_mu);
+            g_invites.erase(std::remove_if(g_invites.begin(), g_invites.end(), [&](const Invite& i) { return i.party == e.party_id; }), g_invites.end());
             g_invites.push_back({e.party_id, e.player.name});
-            mods::trace("coop: server: invited to party %u by %s", e.party_id, e.player.name.c_str());
+            if (g_invites.size() > 8) g_invites.erase(g_invites.begin());
             if (getenv("WWHD_ONLINE_ACCEPT")) g_client->party_accept(e.party_id), g_invites.pop_back();  // (tests)
+        }
+            mods::trace("coop: server: invited to party %u by %s", e.party_id, e.player.name.c_str());
+            say(e.player.name + " invites you to their party: accept under Settings > Online (Invitations)", true);
             break;
         case op::ClientEvent::kPartyState:
             g_party = e.party;
+            {
+                std::lock_guard<std::mutex> l(g_ui_mu);
+                g_invites.erase(std::remove_if(g_invites.begin(), g_invites.end(), [&](const Invite& i) { return i.party == e.party.party; }), g_invites.end());
+            }
             mods::trace("coop: server: party %u, leader %u (acting %u), %d of %zu members online", e.party.party, e.party.leader, leader(),
                         online_members(), e.party.members.size());
             for (Peer& p : g_peers) p.party = member_sid(p.sid);
             remap(h);
             break;
         case op::ClientEvent::kPartyResult:
-            mods::trace("coop: server: party: %s", e.text.c_str());
-            if (!e.text.empty()) g_status = e.text;
+            mods::trace("coop: server: party result %u: %s", e.value, e.text.c_str());
+            say(servers::party(e.value, e.text), true);
             break;
         default: break;  // (markers, emotes, copies, runners, team state: later items)
         }
     }
+    {
+        std::vector<std::function<void(op::Client&)>> todo;
+        {
+            std::lock_guard<std::mutex> l(g_ui_mu);
+            todo.swap(g_actions);
+        }
+        if (g_client->state() == op::ClientState::kOnline) for (auto& f : todo) f(*g_client);
+        else if (!todo.empty()) say("Not online yet: try again once the status says Online", false);
+    }
     // test aid: WWHD_ONLINE_INVITE=<friend code> or @<file holding it>: invited once online (the file may come later)
     if (!g_auto_invite.empty() && g_client->state() == op::ClientState::kOnline) {
         const std::string code = read_code(g_auto_invite);
-        uint64_t c40 = 0;
-        if (!code.empty() && op::parse_friend_code(code, c40)) {
-            g_client->party_invite(c40);
-            mods::trace("coop: server: invited %s", code.c_str());
+        if (!code.empty()) {
+            std::string why;
+            if (invite(code, why)) mods::trace("coop: server: invited %s", code.c_str());
+            else say(why, true);
             g_auto_invite.clear();
         }
     }
@@ -331,29 +435,48 @@ void poll(Handler& h) {
         int n = 0;
         for (const Peer& p : g_slot) n += p.on && p.party;
         const int ping = g_client->ping_ms();
+        const std::string& srv_name = g_client->server().name;
         g_status = std::string(in_party() ? (role() == Role::kHost ? "Online, leading a party of " : "Online, in a party of ") + std::to_string(n) : "Online") +
-                   (ping >= 0 ? ", ping " + std::to_string(ping) + " ms" : "") + ", friend code " + g_client->friend_code();
+                   (srv_name.empty() ? "" : " on " + srv_name) + (ping >= 0 ? ", ping " + std::to_string(ping) + " ms" : "") +
+                   ", friend code " + g_client->friend_code();
     }
+    if (!g_msg.empty() && now_ms() - g_msg_at < kMsgMs && g_status.find(g_msg) == std::string::npos) g_status += ". " + g_msg;
 }
 
+// (main thread) checked here, sent at the next poll
 bool invite(const std::string& code, std::string& why) {
-    uint64_t c40 = 0;
-    if (!g_client || g_client->state() != op::ClientState::kOnline) return why = "not online", false;
-    if (!op::parse_friend_code(code, c40)) return why = "that is not a friend code", false;
-    g_client->party_invite(c40);
+    uint64_t c40 = 0, mine = 0;
+    if (!g_active) return why = "go online through a server first", false;
+    if (!op::parse_friend_code(code, c40)) return why = servers::bad_code(), false;
+    if (op::parse_friend_code(friend_code(), mine) && mine == c40) return why = servers::party(3, ""), false;
+    std::lock_guard<std::mutex> l(g_ui_mu);
+    g_actions.push_back([c40](op::Client& c) { c.party_invite(c40); });
     return true;
 }
 std::vector<std::pair<uint32_t, std::string>> invites() {
+    std::lock_guard<std::mutex> l(g_ui_mu);
     std::vector<std::pair<uint32_t, std::string>> out;
     for (const Invite& i : g_invites) out.emplace_back(i.party, i.from);
     return out;
 }
 void answer(uint32_t party, bool yes) {
-    if (!g_client) return;
-    yes ? g_client->party_accept(party) : g_client->party_decline(party);
+    std::lock_guard<std::mutex> l(g_ui_mu);
+    g_actions.push_back([party, yes](op::Client& c) { yes ? c.party_accept(party) : c.party_decline(party); });
     g_invites.erase(std::remove_if(g_invites.begin(), g_invites.end(), [&](const Invite& i) { return i.party == party; }), g_invites.end());
 }
-void leave_party() { if (g_client) g_client->party_leave(); }
+void leave_party() {
+    std::lock_guard<std::mutex> l(g_ui_mu);
+    g_actions.push_back([](op::Client& c) { c.party_leave(); });
+}
+
+std::vector<servers::Server> saved_servers() {
+    std::lock_guard<std::mutex> l(g_list_mu);
+    return list_locked();
+}
+void forget_server(const std::string& addr, int port) {
+    std::lock_guard<std::mutex> l(g_list_mu);
+    if (servers::forget(list_locked(), addr, port)) save_list_locked();
+}
 
 }  // namespace mods::coop::net::srv
 

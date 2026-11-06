@@ -11,6 +11,8 @@
 #include <utility>
 #include <vector>
 
+#include "coop_servers.h"
+
 struct Cpu;
 
 namespace mods::coop::net {
@@ -94,10 +96,15 @@ bool server_built();                    // this build has the server transport
 // start through a server instead of the direct transport (any role: the party decides who leads)
 bool start_server(const std::string& addr, int port, const std::string& my_name, int my_tunic, std::string& why);
 bool via_server();                      // the session runs through a server
-std::string friend_code();              // this player's, once online through a server ("" else)
+std::string friend_code();              // this install's (its identity made on first use; "" without the server transport)
+// (main thread: the pages) the actions go at the session's next poll; invite false + why for a code that cannot be one
 bool invite(const std::string& code, std::string& why);  // into this game's party (made if none)
 std::vector<std::pair<uint32_t, std::string>> invites();  // invitations waiting: party, from whom
 void answer(uint32_t party, bool yes);
 void leave_party();
+// the servers this player has been on (most recent first, each key pinned on the first visit), and forgetting one (its
+// pinned key too: the next visit pins the key it shows then)
+std::vector<servers::Server> saved_servers();
+void forget_server(const std::string& addr, int port);
 
 }  // namespace mods::coop::net

@@ -45,6 +45,8 @@ Settings settings();
 void set_settings(const Settings& s);
 void save_settings(const Settings& s);  // the same, and kept (the Settings window, the pause menu's page: main thread)  // the menu (any thread); a running session restarts with them
 const char* status();
+// (any thread) a session given up on (refused, removed, the host gone) started again with the same settings
+void retry();
 constexpr const char* kTunics[] = {"Green", "Red", "Blue", "Purple"};
 
 // every step, also at the title: the session started or stopped as the toggle says, the socket read and written

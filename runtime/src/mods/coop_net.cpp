@@ -74,6 +74,8 @@ bool invite(const std::string& code, std::string& why);
 std::vector<std::pair<uint32_t, std::string>> invites();
 void answer(uint32_t party, bool yes);
 void leave_party();
+std::vector<servers::Server> saved_servers();
+void forget_server(const std::string& addr, int port);
 }  // namespace srv
 #define VIA_SERVER(call) if (srv::active()) return srv::call
 #else
@@ -513,11 +515,15 @@ bool invite(const std::string& code, std::string& why) { return srv::invite(code
 std::vector<std::pair<uint32_t, std::string>> invites() { return srv::invites(); }
 void answer(uint32_t party, bool yes) { srv::answer(party, yes); }
 void leave_party() { srv::leave_party(); }
+std::vector<servers::Server> saved_servers() { return srv::saved_servers(); }
+void forget_server(const std::string& addr, int port) { srv::forget_server(addr, port); }
 #else
 std::string friend_code() { return ""; }
 bool invite(const std::string&, std::string& why) { why = "this build has no server connection"; return false; }
 std::vector<std::pair<uint32_t, std::string>> invites() { return {}; }
 void answer(uint32_t, bool) {}
 void leave_party() {}
+std::vector<servers::Server> saved_servers() { return {}; }
+void forget_server(const std::string&, int) {}
 #endif
 }  // namespace mods::coop::net

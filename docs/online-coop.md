@@ -47,8 +47,22 @@ Tailscale nothing else is needed. The status line shows who is connected; **Go t
 
 **Through a server** (builds made with `WWHD_ONLINE=ON`): choose **Through a server** and enter the address
 of a `wwhd-online-server` you or a friend runs. Everyone on the server sees the others nearby; to play
-together, enter a friend's code under **Invite** (your own code is shown there) and they join from the
-invitation. If the party's leader leaves, another member takes over.
+together, form a party:
+
+- **Your friend code** (e.g. `KQ7F-9MZ2-XD`) is shown on the Online page, with a **Copy** button. It belongs to
+  this installation (a key file, `online-identity.key`, in your user folder) and stays the same on every server.
+- Enter a friend's code under **Friend's code** and choose **Invite**. They see the invitation in the game and
+  under **Invitations** on their Online page, and choose **Join** or **No** (in the pause menu: **Join an
+  invitation** or **Decline the invitation**). A party has up to 4 players; **Leave the party** keeps you online.
+- If the party's leader leaves, another member takes over.
+- **Saved servers:** every server you connect to is saved (the 10 most recent), with its name. **Use** picks one
+  again (in the pause menu, **Saved servers** steps through them); **Forget** removes it.
+- The game remembers each server's key from your first visit. If a server at the same address later shows
+  another key, the game does not connect and says so: it may be another server using that address. If the
+  server's operator says the key changed, **Forget** the server and connect again.
+- When the server refuses you or removes you, the status line and a message say why (another game version, a
+  full server, invite-only, banned, removed by the operator, or sending too much) and what to do. The game
+  does not try again by itself after such a stop; choose **Connect again** (or switch online off and on).
 
 **Stay together** (off by default) plays the fork's way: you play in the host's world, your own saves are off,
 going somewhere the host isn't asks the host first, and you go back to the title screen when the host leaves.

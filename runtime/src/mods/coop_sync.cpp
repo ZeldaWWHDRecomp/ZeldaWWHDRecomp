@@ -424,7 +424,8 @@ struct Handler : net::Handler {
         g_remote[id] = Remote{};
         show(id < net::my_id() ? id : std::max(0, id - 1), nullptr, nullptr, 0);
         if (id != 0 || net::role() != net::Role::kOff) return ss::notice(net::name(id) + " left");
-        g_failed = g_gen;  // (not joined again until the toggle or the settings change)
+        g_failed = g_gen;  // (not joined again until the toggle, Connect again or the settings change)
+        g_status = std::string("Stopped: ") + why;
         if (g_was_guest && settings().stay_together) g_back = why;  // (the fork's way: the host's world is gone with it)
         else if (g_was_guest) {  // (Anchor's way: this game plays on, alone, in its own Quest Log, which it saves itself)
             hlefs::g_block_saves = false, g_was_guest = false;
@@ -489,9 +490,16 @@ void set_settings(const Settings& s) {
     std::lock_guard<std::mutex> lk(g_mu);
     // (a session restarts only for what it was started with: not the character or voice chat)
     if (s.role != g_set.role || s.addr != g_set.addr || s.port != g_set.port || s.name != g_set.name || s.tunic != g_set.tunic ||
-        s.server != g_set.server || s.server_addr != g_set.server_addr || s.server_port != g_set.server_port)
+        s.server != g_set.server || s.server_addr != g_set.server_addr || s.server_port != g_set.server_port ||
+        s.on != g_set.on)  // (switched on again: a session given up on is tried again)
         g_set_gen++;
     g_set = s;
+}
+
+void retry() {
+    settings();
+    std::lock_guard<std::mutex> lk(g_mu);
+    g_set_gen++;
 }
 
 void save_settings(const Settings& s) {
