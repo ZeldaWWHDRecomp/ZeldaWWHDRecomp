@@ -576,6 +576,16 @@ void Client::handle_message(const Delivered& m) {
             if (r.done()) events_.push_back(std::move(e));
             break;
         }
+        case kMsgPvpMarks: {
+            ClientEvent e{ClientEvent::kPvpMarks};
+            while (r.ok() && r.left() >= 3) {
+                uint16_t id = r.u16();
+                uint8_t f = r.u8();
+                e.pvp_marks.push_back({id, f});
+            }
+            if (r.done()) events_.push_back(std::move(e));
+            break;
+        }
         case kMsgPvpRespawn: {
             ClientEvent e{ClientEvent::kPvpRespawn};
             e.value = r.u8();

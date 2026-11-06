@@ -127,6 +127,8 @@ enum Msg : uint8_t {
     kMsgPvpKoOf = 82,       // reliable: u16 victim, u16 by
     kMsgPvpRupees = 83,     // reliable: u16 amount to remove from the wallet (they vanish)
     kMsgPvpState = 84,      // reliable: u8 PvpStateFlags, u16 protection ms left (after WELCOME and on change)
+    kMsgPvpMarks = 86,      // reliable: n x {u16 id, u8 flags (bit 0 PvP active, bit 1 protected)}: who of those you
+                            // see near or mid can fight now (on change; PLAYER_IN flags bit 3 says it at first)
     kMsgPvpRespawn = 85,    // reliable: u8 square, s24 x, s24 z: after your knockout, the nearest safe zone's edge
     kMsgPartyWhere = 78,    // unreliable, 1 Hz: n x {u16 id, Where, u8 square (255: not at sea), s24 x, s24 z}
                             // where every online party member is, wherever they are

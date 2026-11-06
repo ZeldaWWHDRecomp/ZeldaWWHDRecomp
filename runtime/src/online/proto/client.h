@@ -80,6 +80,7 @@ struct ClientEvent {
         kPvpRupees,      // value16 = rupees to remove (they vanish)
         kPvpState,       // value = PvpStateFlags, value16 = protection ms left
         kPvpRespawn,     // value = square, pvp_hit.x / z = where
+        kPvpMarks,       // pvp_marks: {id, flags (bit 0 PvP active, bit 1 protected)} of players seen near or mid
     } kind;
     ClientState state = ClientState::kOff;
     std::string text;
@@ -111,6 +112,7 @@ struct ClientEvent {
     PvpRules pvp_rules;
     PvpHit pvp_hit;
     PvpShot pvp_shot;
+    std::vector<std::pair<uint16_t, uint8_t>> pvp_marks;
 };
 
 struct ClientStats {

@@ -1272,6 +1272,14 @@ static void test_pvp() {
     run(&s, all, 1500);  // the protection after "leaving" the start (1 s here) runs out
     auto state = [&](Bot& x) { auto* e = x.last(ClientEvent::kPvpState); return e ? e->value : 0; };
     CHECK(state(*b) & kPvpActive);
+    // a sees that b can fight (PvP marks)
+    CHECK(run(&s, all, 2000, [&] {
+        for (auto& e : a->log)
+            if (e.kind == ClientEvent::kPvpMarks)
+                for (auto& [id, f] : e.pvp_marks)
+                    if (id == b->c.my_id() && (f & 1)) return true;
+        return false;
+    }));
     auto hit = [&](Bot& from, Bot& to, float dist_ok = 0) {
         PvpHit h;
         h.other = to.c.my_id();

@@ -1220,7 +1220,8 @@ void Server::interest(Session& s, uint32_t now) {
             pi.id = id;
             pi.key_hash = c.s ? c.s->key_hash : c.g->key_hash;
             pi.look = c.s ? c.s->look : c.g->look;
-            pi.flags = uint8_t((c.party ? 1 : 0) | (c.s && c.s->device == kPhone ? 4 : 0));
+            pi.flags = uint8_t((c.party ? 1 : 0) | (c.s && c.s->device == kPhone ? 4 : 0) |
+                               (c.s && (pvp_flags(*c.s, now) & kPvpActive) ? 8 : 0));
             pi.name = c.party ? (c.s ? c.s->name : c.g->name) : stranger_name(pi.key_hash);
             s.chan.send_reliable(kMsgPlayerIn, encode_player_in(pi));
             it = s.seen.emplace(id, Seen{}).first;
@@ -1266,6 +1267,27 @@ void Server::interest(Session& s, uint32_t now) {
         sn.tick = tick_no_;
     }
     flush_batch();
+    // who of the players seen near or mid can fight now (PvP marks), sent as they change
+    if (cfg_.pvp.mode != PvpMode::kOff) {
+        Bytes marks;
+        Writer mw(marks);
+        for (const Cand& c : cands) {
+            if (!c.s || c.party) continue;  // (party friendly fire needs no marks; other workers' players: none)
+            auto it = s.seen.find(c.s->id);
+            if (it == s.seen.end() || !it->second.marked || it->second.tier > kTierMid) continue;
+            uint8_t f = pvp_flags(*c.s, now);
+            uint8_t m = uint8_t(((f & kPvpActive) ? 1 : 0) | ((f & kPvpProtected) ? 2 : 0));
+            if (it->second.pvp == m) continue;
+            it->second.pvp = m;
+            mw.u16(c.s->id);
+            mw.u8(m);
+            if (marks.size() > 1000) {
+                s.chan.send_reliable(kMsgPvpMarks, marks);
+                marks.clear();
+            }
+        }
+        if (!marks.empty()) s.chan.send_reliable(kMsgPvpMarks, marks);
+    }
     // players no longer visible
     for (auto it = s.seen.begin(); it != s.seen.end();) {
         if (it->second.marked) {

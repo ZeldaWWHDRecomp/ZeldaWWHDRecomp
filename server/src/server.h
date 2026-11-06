@@ -72,6 +72,7 @@ struct Seen {
     uint32_t pose_seq = 0;   // newest pose of theirs sent at the near tier
     uint32_t tick = 0;       // when last sent
     bool marked = false;     // still visible this tick
+    uint8_t pvp = 0xFF;      // the PvP marks last sent for them (kMsgPvpMarks)
 };
 
 struct Session {
