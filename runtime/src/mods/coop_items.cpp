@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "coop_net.h"
+#include "coop_pvp.h"
 #include "coop_sync.h"
 #include "guest_addr.h"
 #include "mods.h"
@@ -110,6 +111,10 @@ void step(Cpu* c) {
             b += (char)ld8(a + kRoom);
             for (int e = 0; e < 3; e++) { const uint32_t v = ld32(a + kPos + 4 * e); b.append((const char*)&v, 4); }
             net::send(-1, net::kBombed, b);
+            float at[3];
+            for (int e = 0; e < 3; e++) at[e] = (float)ldf32(a + kPos + 4 * e);
+            const float still[3] = {};
+            net::pvp_shot(3, at, still);  // (C28: through a server, shown to the players near by outside the party too)
         }
         g_gone.push_back({m.id, m.proc, now});
         g_mine.erase(g_mine.begin() + i);
@@ -121,7 +126,7 @@ void bombed(Cpu* c, uint32_t link, const uint8_t* d, size_t n) {
     float pos[3];
     memcpy(pos, d + 9, 12);
     for (float v : pos) if (!std::isfinite(v) || std::fabs(v) > 1e6f) return;  // (another game's numbers)
-    spawn(c, link, kBomb, 0x80000000, pos);
+    pvp::shown_only(spawn(c, link, kBomb, 0x80000000, pos));  // (C28: its blast hurts nobody here)
     mods::trace("coop: another player's bomb went off here");
 }
 

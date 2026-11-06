@@ -78,7 +78,7 @@ void boat_shot_from(Cpu* c, uint32_t link, Reader& r) {
     int16_t angle[3];
     for (int16_t& a : angle) a = r.get<int16_t>();
     const float f = r.get<float>(), y = r.get<float>(), g = r.get<float>();
-    spawn_ball(c, link, p, angle, f, y, g);
+    mods::coop::pvp::shown_only(spawn_ball(c, link, p, angle, f, y, g));  // (C28: a picture: its blast hurts nobody here)
 }
 }  // namespace
 

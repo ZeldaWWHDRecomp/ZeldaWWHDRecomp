@@ -18,6 +18,8 @@ void before_execute(Cpu* c);                       // before the actors' execute
 void step(Cpu* c, uint32_t link, bool settled);    // after them, in play: the session's PvP, this step's hit areas set
 // this game's boat fired its cannon (coop_world): its ball, where and which way it went, its speeds
 void fired(uint32_t ball, const float pos[3], int16_t yaw, float speed_f, float speed_y);
+// a ball or bomb made here only to show another player's (coop_world, coop_items): its blast hurts no player here
+void shown_only(uint32_t bomb);
 void register_overlay();                           // main (before the overlay seals): the marks over PvP players
 
 }  // namespace mods::coop::pvp

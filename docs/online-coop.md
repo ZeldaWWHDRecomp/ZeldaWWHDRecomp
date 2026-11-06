@@ -130,7 +130,8 @@ other when both have it on. A server can also turn PvP off, or turn it on for ev
   - **Fleeing into a safe zone mid-fight:** you are only safe after about 10 seconds.
   - **Near the borders:** players with PvP on who are just outside a safe zone don't show on other players' radars.
 - **Weapons:** the boat's cannon, arrows, bombs, the boomerang, and the sword up close. The server checks every
-  hit, and your game checks it again before it costs you hearts.
+  hit, and your game checks it again before it costs you hearts. You see other players' cannon shots and bomb
+  blasts, but they can't hurt you by themselves; only a hit the server confirmed costs hearts.
 - **Knockout:** a hit that would take your last heart knocks you out instead. There is no game-over screen.
   - You lose part of your wallet: 10% by default, at most 100 rupees. The rupees are gone; the attacker gets
     nothing. Nothing else in your save changes, and the loss counts once you save.
@@ -206,7 +207,8 @@ leaving the party takes you back to the title screen, because you were playing i
 - Each other player shown takes about 0.5 MB of the port's own memory the first time; the game's memory is not
   used for them.
 - Friendly fire: a sword hit or an arrow on another player costs them half a heart (a heart for spin and
-  jump attacks), but never their last quarter heart. Played directly it is on; through a server it is a party
+  jump attacks), but never their last quarter heart. Party members' cannon shots and bombs are shown but don't
+  hurt you. Played directly it is on; through a server it is a party
   switch, off unless the leader turns it on.
 - **Party switches** (through a server; the party's leader sets them on the Online page, every member sees
   them): shared progress (on), shared rupees (off), friendly fire (off), stay together (off).

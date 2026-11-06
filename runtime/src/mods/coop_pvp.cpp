@@ -2,7 +2,7 @@
 // Online co-op, PvP at sea (coop_pvp.h, GAPS C28).
 //
 // Hit areas. Each other player who can fight now (the server's mark: PvP active, not protected), outside the party and
-// drawn here, gets a cylinder in the game's collision checks (dCcS, play +0x26A4), Link's size (radius 30, height 125),
+// drawn here, gets a cylinder in the game's collision checks (dCcS, play +0x26A4), Link's girth and his height with his cap (radius 30, height 150; 125, his body only, let an aimed boomerang pass over, c28p),
 // set every logic step after the actors' executes (coop_world's step), so the play scene's draw (dScnPly_Draw:
 // dCcS::Move first) checks it against the step's attacks. It is the game's own dCcD_Cyl with a dCcD_Stts of no actor
 // (Init with actor 0 sets the NoActor flag; d_a_bdk does the same), built once on the port's memory (as mod_actor's
@@ -22,8 +22,9 @@
 //
 // The rest: the toggle and "busy" (off the open sea, an event, a message, a menu: protected) to the server on change;
 // notes when the server's state changes (safe zone, PvP zone, protection); the safe zones' borders and PvP players on
-// the sea radar (coop_radar); a small red mark over PvP players' puppets; another player's cannon shot shown here as a
-// ball of this game's (party members' come as before, net::kBoatShot).
+// the sea radar (coop_radar); a small red mark over PvP players' puppets; another player's cannon shot or bomb blast
+// shown here as a ball or bomb of this game's (party members' come as before, net::kBoatShot, kBombed), whose blast is
+// kept from hurting any player here (shown_only): only the server's checked hit costs hearts.
 #include "coop_pvp.h"
 #include "coop_pvp_rules.h"
 
@@ -63,6 +64,7 @@ constexpr float kBallGravity = -2.5f;  // daShip_HIO_c0::cannon_gravity (d_a_shi
 
 // a puppet's hit area on the port's memory: dCcD_Stts (0x3C), dCcD_Cyl (0x130), its dCcD_SrcCyl (0x44)
 constexpr uint32_t kStts = 0, kCyl = 0x40, kSrc = 0x170, kBlock = 0x200;
+constexpr float kAreaHeight = 150;
 struct Area {
     uint32_t mem = 0;     // the block (0: not built)
     bool set = false;     // put in the collision checks last step
@@ -92,7 +94,7 @@ bool build(Cpu* c, Area& a) {
     st32(src + 0x10, kTgTypes);  // TG type
     st32(src + 0x14, 0x0B);      // TG Set | IsEnemy | IsOther (not IsPlayer: no enemy's attack)
     st32(src + 0x28, 0x2);       // TG NoConHit (one hit per attack)
-    put_f(src + 0x3C, 30), put_f(src + 0x40, 125);
+    put_f(src + 0x3C, 30), put_f(src + 0x40, kAreaHeight);
     guest_call(c, GC(0x02516518), {cyl, src});  // dCcD_Cyl::Set
     st32(cyl + 0x44, stts);
     return true;
@@ -179,7 +181,7 @@ void set_areas(Cpu* c, uint32_t link) {
         guest_call(c, GC(0x02515E50), {stts + 0x1C});  // dCcD_GStts::Move (NoConHit's last attacker ids)
         for (int e = 0; e < 3; e++) put_f(place + 4 * e, p[e]);
         guest_call(c, GC(0x020182E0), {cyl + 0x118, place});  // cM3dGCyl::SetC
-        put_f(cyl + 0x124, 30), put_f(cyl + 0x128, 125);
+        put_f(cyl + 0x124, 30), put_f(cyl + 0x128, kAreaHeight);
         st32(cyl + 0x18, 0x0B), st32(cyl + 0x28, kTgTypes), st32(cyl + 0x94, 0x2);
         st32(cyl + 0x2C, ball_flies ? 0x149u : 0u);  // CO: Set | IsOther | VsOther | NoCrr, only for this game's ball
         guest_call(c, GC(0x0200E240), {ccs, cyl});  // cCcS::Set
@@ -244,12 +246,18 @@ void test_fire(Cpu* c, uint32_t link, const std::string& what) {
         mods::trace("coop: PvP test: a cannon ball at player %d (%s): %08X", id, net::name(id).c_str(), ball);
     } else if (what == "bomb") {
         const uint32_t bomb = items::spawn(c, link, kProcBomb, 0x80000000, p);
-        if (bomb) g_shots.push_back({ld32(bomb + 4), kBomb, net::now_ms()});
+        if (bomb) g_shots.push_back({ld32(bomb + 4), kBomb, net::now_ms()}), items::made(kProcBomb, bomb);  // (as his own: its blast goes out)
         mods::trace("coop: PvP test: a bomb at player %d (%s): %08X", id, net::name(id).c_str(), bomb);
     }
 }
 
 }  // namespace
+
+void shown_only(uint32_t bomb) {
+    if (!in_mem2(bomb)) return;
+    g_shown.push_back({ld32(bomb + 4), kBomb, net::now_ms()});
+    st32(bomb + kBombSph, ld32(bomb + kBombSph) & ~4u);
+}
 
 void fired(uint32_t ball, const float pos[3], int16_t yaw, float speed_f, float speed_y) {
     if (!in_mem2(ball) || !net::via_server()) return;
@@ -283,8 +291,8 @@ void step_in(Cpu* c, uint32_t link, bool settled) {
     const uint32_t now = net::now_ms();
     g_shots.erase(std::remove_if(g_shots.begin(), g_shots.end(), [&](const Shot& s) { return now - s.at > 6000; }), g_shots.end());
     g_shown.erase(std::remove_if(g_shown.begin(), g_shown.end(), [&](const Shot& s) { return now - s.at > 6000; }), g_shown.end());
-    // another player's shot shown here is only a picture: its ball's blast (set by its execute, just before) hurts no
-    // player here; the hit itself comes from the server, checked
+    // another player's shot shown here is only a picture: its ball's or bomb's blast (set by its execute, just before)
+    // hurts no player here; the hit itself comes from the server, checked. (Also without PvP: party members' shots)
     for (const Shot& s : g_shown)
         if (const uint32_t ball = guest_call(c, GC(0x025DE50C), {s.pid}); in_mem2(ball)) st32(ball + kBombSph, ld32(ball + kBombSph) & ~4u);
     g_rules = net::pvp_rules();
@@ -368,8 +376,16 @@ void step_in(Cpu* c, uint32_t link, bool settled) {
             if (e.by == net::my_id() && e.from >= 0) note("You knocked out " + net::name(e.from));
             else if (e.from >= 0 && !e.by_name.empty()) note(e.by_name + " knocked out " + net::name(e.from));
             break;
-        case net::PvpEvent::kShotOf: {  // (a cannon ball shown; party members' come as kBoatShot already)
-            if (e.what != kCannon || e.from < 0 || net::member(e.from) || stage_now() != "sea") break;
+        case net::PvpEvent::kShotOf: {  // (a cannon ball or a bomb's blast shown; party members' come as kBoatShot, kBombed)
+            if (e.from < 0 || net::member(e.from) || stage_now() != "sea") break;
+            if (e.what == kBomb) {
+                if (std::any_of(std::begin(e.at), std::end(e.at), [](float v) { return !std::isfinite(v) || std::fabs(v) > 1e6f; })) break;
+                const uint32_t bomb = items::spawn(c, link, kProcBomb, 0x80000000, e.at);  // (state 0: goes off as it is made)
+                shown_only(bomb);
+                mods::trace("coop: PvP: player %d's bomb went off here: %08X", e.from, bomb);
+                break;
+            }
+            if (e.what != kCannon) break;
             const float f = std::hypot(e.v[0], e.v[2]) / 30, y = e.v[1] / 30;
             const int16_t angle[3] = {0, (int16_t)(std::atan2(e.v[0], e.v[2]) * 32768 / M_PI), 0};
             const uint32_t ball = world::spawn_ball(c, link, e.at, angle, f, y, kBallGravity);
@@ -395,6 +411,33 @@ void step_in(Cpu* c, uint32_t link, bool settled) {
                     for (const uint32_t o : {ac::kPos, ac::kOldPos})
                         put_f(ship + o, (float)ldf32(ship + o) + dx), put_f(ship + o + 8, (float)ldf32(ship + o + 8) + dz);
                 mods::trace("coop: PvP test: moved to %.0f %.0f", to[0], to[2]);
+            }
+    // test aid WWHD_COOP_TEST_PVP_EQUIP=<slot>[,<slot>...] (hex item slots, FF keeps: 0C the bow, 05 the boomerang): those
+    // items on the item buttons in the save's order (0 X, 1 Y, 2 R, ...) at the first settled step, as the item menu puts them (the buttons refreshed by SaveMgr's refreshGame)
+    if (static const char* q = getenv("WWHD_COOP_TEST_PVP_EQUIP"); q && settled && in_mem2(link)) {
+        unsigned v[5] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
+        const int n = sscanf(q, "%x,%x,%x,%x,%x", &v[0], &v[1], &v[2], &v[3], &v[4]);
+        for (int i = 0; i < n; i++) {
+            if (v[i] == 0xFF) continue;
+            st8(status(layout::sv::kSelectItem) + i, (uint8_t)v[i]);
+            // (and play's copy of the buttons' items, play.mSelectItem, game info +0x5BBB (item_ring's kPlaySelect), which Link uses: the save's
+            // alone moved only the pictures, c28l)
+            st8(kPlay + 0x5BBB + i, v[i] < 21 ? ld8(save() + layout::sv::kItem + v[i]) : 0xFF);
+            mods::trace("coop: PvP test: button %d: slot %02X (item %02X)", i, v[i], v[i] < 21 ? ld8(save() + layout::sv::kItem + v[i]) : 0xFF);
+        }
+        if (n > 0) guest_call(c, GC(0x02721880), {0});
+        q = nullptr;
+    }
+    // test aid WWHD_COOP_TEST_PVP_AIM=<from s>:<to s>[,...]: in those windows this Link faces the nearest other player
+    // (shape and current heading), so a sword cut, an arrow or the boomerang the presses start (WWHD_PRESS) goes at them
+    if (static std::vector<Planned> aim = planned("WWHD_COOP_TEST_PVP_AIM"); !aim.empty() && in_mem2(link))
+        for (const Planned& p : aim)
+            if (float until = 0; sscanf(p.what.c_str(), "%f", &until) == 1 && now - g_first >= p.at_ms && now - g_first < (uint32_t)(until * 1000)) {
+                float t[3];
+                if (nearest_stranger(link, t) < 0) break;
+                const int16_t yaw = (int16_t)(std::atan2(t[0] - my_pos(link, 0), t[2] - my_pos(link, 2)) * 32768 / M_PI);
+                st16(link + ac::kAngleY, (uint16_t)yaw), st16(link + ac::current + 0xE, (uint16_t)yaw);
+                if (static uint32_t said = 0; now - said > 2000) said = now, mods::trace("coop: PvP test: facing %d at %.0f %.0f", yaw, t[0], t[2]);
             }
     // test aid WWHD_COOP_TEST_WALLET=<n>: the wallet set at the first step (the knockout's rupee loss shows)
     if (static const char* w = getenv("WWHD_COOP_TEST_WALLET"); w && settled) {
