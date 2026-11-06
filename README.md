@@ -1,6 +1,6 @@
 # The Legend of Zelda: The Wind Waker HD — native port (macOS, Linux, Windows, Android)
 
-[![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/zZzkNhWQ)
+[![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/SBdcbnJs)
 
 A static recompilation of the Wii U version (USA or European) that runs natively on **macOS** (Apple Silicon),
 **Linux**, **Windows** and **Android** (arm64; the setup app builds the game on the phone, see
