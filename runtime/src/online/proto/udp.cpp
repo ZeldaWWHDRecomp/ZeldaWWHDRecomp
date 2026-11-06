@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "udp.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -22,6 +23,7 @@
 #include <netinet/in.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/uio.h>
 #include <unistd.h>
 #endif
 
@@ -219,6 +221,37 @@ bool UdpSocket::send_to(const Address& to, const uint8_t* d, size_t n) {
         return false;
     }
     return true;
+}
+
+size_t UdpSocket::send_many(const Address& to, const std::vector<std::vector<uint8_t>>& dgs) {
+#if defined(__linux__)
+    size_t sent = 0;
+    while (sent < dgs.size()) {
+        mmsghdr msgs[64];
+        iovec iov[64];
+        size_t n = std::min<size_t>(64, dgs.size() - sent);
+        for (size_t i = 0; i < n; ++i) {
+            iov[i].iov_base = const_cast<uint8_t*>(dgs[sent + i].data());
+            iov[i].iov_len = dgs[sent + i].size();
+            std::memset(&msgs[i], 0, sizeof msgs[i]);
+            msgs[i].msg_hdr.msg_name = const_cast<uint8_t*>(to.storage);
+            msgs[i].msg_hdr.msg_namelen = to.len;
+            msgs[i].msg_hdr.msg_iov = &iov[i];
+            msgs[i].msg_hdr.msg_iovlen = 1;
+        }
+        int rc = sendmmsg(native(), msgs, unsigned(n), 0);
+        if (rc <= 0) {
+            ++send_errors;
+            break;
+        }
+        sent += size_t(rc);
+    }
+    return sent;
+#else
+    size_t sent = 0;
+    for (auto& d : dgs) sent += send_to(to, d.data(), d.size()) ? 1 : 0;
+    return sent;
+#endif
 }
 
 int UdpSocket::recv_from(Address& from, uint8_t* buf, size_t cap) {

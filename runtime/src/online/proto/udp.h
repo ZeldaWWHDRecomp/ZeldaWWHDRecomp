@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 namespace online::proto {
 
@@ -37,6 +38,8 @@ public:
     uint16_t local_port() const;
 
     bool send_to(const Address& to, const uint8_t* d, size_t n);
+    // several datagrams to one address: one sendmmsg() on Linux, a loop elsewhere; the count sent
+    size_t send_many(const Address& to, const std::vector<std::vector<uint8_t>>& dgs);
     // one datagram, or -1 when none is waiting
     int recv_from(Address& from, uint8_t* buf, size_t cap);
     // waits until readable or timeout (ms); true if readable

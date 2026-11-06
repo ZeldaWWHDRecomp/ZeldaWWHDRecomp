@@ -12,6 +12,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <condition_variable>
 #include <mutex>
 #include <set>
 #include <string>
@@ -172,6 +173,7 @@ struct Metrics {
     uint64_t handshakes = 0, refused = 0, kicked = 0, dropped_rate = 0, dropped_bad = 0, implausible = 0;
     uint64_t ticks = 0;
     std::vector<uint32_t> tick_us;  // since the last report
+    std::vector<uint32_t> interest_us, send_us;  // the two parallel phases of each tick
     std::atomic<uint64_t> pose_entries_near{0}, pose_entries_mid{0}, pose_entries_far{0}, markers{0};
     uint64_t handovers_out = 0, handovers_in = 0, ghosts = 0;
 };
@@ -303,6 +305,18 @@ private:
     proto::UdpSocket sock_;
     std::vector<std::unique_ptr<proto::UdpSocket>> send_socks_;  // more sockets on the same port, one per worker
     int workers_ = 1;
+    // a persistent pool for parallel(): workers wait for the next job (generation counter)
+    struct Pool {
+        std::mutex m;
+        std::condition_variable cv, done_cv;
+        uint64_t gen = 0;
+        int busy = 0;
+        bool quit = false;
+        std::function<void(int)> job;
+        std::vector<std::thread> threads;
+    } pool_;
+    void pool_start();
+    void pool_stop();
     proto::UdpSocket& out_sock();
     std::atomic<bool> stop_{false};
     std::thread thread_;

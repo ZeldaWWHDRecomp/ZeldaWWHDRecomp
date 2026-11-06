@@ -259,9 +259,11 @@ void Server::admin_poll() {
     for (;;) {
         int c = accept(admin_fd_, nullptr, nullptr);
         if (c < 0) break;
-        // one short command per connection; a client gets 200 ms to send it
+        // one short command per connection; a client gets 200 ms to send it and to take the answer
+        fcntl(c, F_SETFL, fcntl(c, F_GETFL, 0) & ~O_NONBLOCK);  // accept() may hand on the listener's O_NONBLOCK
         timeval tv{0, 200000};
         setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+        setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
         char buf[512];
         ssize_t n = recv(c, buf, sizeof buf - 1, 0);
         if (n > 0) {
@@ -270,7 +272,12 @@ void Server::admin_poll() {
             while (!line.empty() && (line.back() == '\n' || line.back() == '\r')) line.pop_back();
             std::string out = admin(line);
             if (out.empty() || out.back() != '\n') out += "\n";
-            (void)send(c, out.data(), out.size(), 0);
+            size_t at = 0;
+            while (at < out.size()) {
+                ssize_t k = send(c, out.data() + at, out.size() - at, 0);
+                if (k <= 0) break;
+                at += size_t(k);
+            }
         }
         ::close(c);
     }

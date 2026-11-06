@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <random>
 #include <map>
 #include <memory>
 #include <set>
@@ -257,7 +258,10 @@ static void test_party() {
     h.target = kToParty;
     h.type = 24;
     c->c.send_app(h, hit, 4, true);  // not in a party: dropped
-    CHECK(run(&s, {a.get(), b.get(), c.get()}, 5000, [&] { return a->saw(ClientEvent::kApp); }));
+    if (!run(&s, {a.get(), b.get(), c.get()}, 5000, [&] { return a->saw(ClientEvent::kApp); })) {
+        CHECK(false);
+        std::printf("debug: a=%u b=%u\n%s%s\n", a->c.my_id(), b->c.my_id(), s.admin("parties").c_str(), s.admin("players").c_str());
+    }
     if (auto* e = a->last(ClientEvent::kApp)) CHECK(e->app_type == 23 && e->id == b->c.my_id() && e->body.size() == 4);
     // team progress: union merge, forwarded live
     std::vector<TeamField> f1 = {{0x100, kFieldBits, std::string("\x01\x00", 2)}, {0x200, kFieldMax, std::string("\x00\x05", 2)},
@@ -318,6 +322,19 @@ static void test_copies() {
     CHECK(c->saw(ClientEvent::kCopy));
     if (auto* e = c->last(ClientEvent::kCopy)) CHECK(e->copy == 1 && e->copies == 2);
     CHECK(a->players.count(b->c.my_id()) && !a->players.count(c->c.my_id()));
+    // a friend of a (party) joins the full copy 0 with a, not the copy with room
+    auto d = make_bot("d", port);
+    all.push_back(d.get());
+    CHECK(run(&s, all, 5000, [&] { return d->online(); }));
+    uint64_t code = 0;
+    parse_friend_code(d->c.friend_code(), code);
+    a->c.party_invite(code);
+    CHECK(run(&s, all, 3000, [&] { return d->saw(ClientEvent::kPartyInvited); }));
+    d->c.party_accept(d->last(ClientEvent::kPartyInvited)->party_id);
+    run(&s, all, 500);
+    d->head.where = Where::of("town", 0);
+    d->c.send_stage(d->head.where);
+    CHECK(run(&s, all, 3000, [&] { return a->players.count(d->c.my_id()) && d->players.count(b->c.my_id()); }));
     std::printf("copies: ok\n");
 }
 
@@ -336,14 +353,188 @@ static void test_flood() {
     std::printf("flood kick: ok\n");
 }
 
+// two shards in one process: rows 0-3 of the sea on shard 0, rows 4-6 on shard 1 (the border at z = 50,000)
+static void test_shards() {
+    std::string why;
+    std::unique_ptr<server::Server> sh[2];
+    for (int i = 0; i < 2; ++i) {
+        auto c = base_config(uint16_t(47811 + i));
+        c.key_file = g_dir + "/shard" + std::to_string(i) + ".key";
+        c.shard_index = i;
+        c.shard_count = 2;
+        c.shard_peers = {"127.0.0.1:47811", "127.0.0.1:47812"};
+        c.shard_links = {"127.0.0.1:47821", "127.0.0.1:47822"};
+        c.link_secret = "test-link-secret-0123456789";
+        sh[i] = std::make_unique<server::Server>(c);
+        sh[i]->log = [](const std::string&) {};
+        CHECK(sh[i]->start(why));
+    }
+    auto both = [&](std::vector<Bot*> bots, uint32_t ms, std::function<bool()> done) {
+        uint32_t end = monotonic_ms() + ms;
+        while (int32_t(monotonic_ms() - end) < 0) {
+            if (sh[0]) sh[0]->step(1);
+            if (sh[1]) sh[1]->step(0);
+            for (Bot* b : bots) b->poll(monotonic_ms());
+            if (done && done()) return true;
+        }
+        return done ? done() : true;
+    };
+    auto a = make_bot("a", 47811), b = make_bot("b", 47812), c = make_bot("c", 47811);
+    std::vector<Bot*> all = {a.get(), b.get(), c.get()};
+    a->head.z = 45000;   // shard 0, near the border
+    c->head.z = 41000;   // shard 0
+    b->head.z = 55000;   // shard 1, near the border
+    CHECK(both(all, 5000, [&] { return a->online() && b->online() && c->online(); }));
+    // across the border: a and b see each other through the shards' ghosts
+    CHECK(both(all, 4000, [&] { return a->players.count(b->c.my_id()) && b->players.count(a->c.my_id()); }));
+    uint16_t aid = a->c.my_id();
+    // a sails into shard 1's square: handed over, same id, and c (on shard 0) never loses sight of it
+    bool c_lost = false, b_lost = false;
+    for (float z = 45000; z <= 58000; z += 400) {
+        a->head.z = z;
+        both(all, 70, nullptr);
+        if (!c->players.count(aid)) c_lost = true;
+        if (!b->players.count(aid)) b_lost = true;
+    }
+    CHECK(both(all, 4000, [&] { return a->online() && a->c.my_id() == aid && sh[1]->find_by_key(a->c.key_hash()); }));
+    for (int i = 0; i < 20; ++i) {
+        both(all, 70, nullptr);
+        if (!c->players.count(aid)) c_lost = true;
+        if (!b->players.count(aid)) b_lost = true;
+    }
+    CHECK(!c_lost);
+    CHECK(!b_lost);
+    CHECK(a->players.count(b->c.my_id()) && a->players.count(c->c.my_id()));
+    CHECK(sh[0]->metrics().handovers_out == 1 && sh[1]->metrics().handovers_in == 1);
+    std::printf("shards: handover kept id %u, visible sets continuous (c lost a: %d, b lost a: %d)\n", aid, c_lost, b_lost);
+    // shard 1 goes down: its players reconnect (retrying), shard 0's players are unaffected
+    sh[1].reset();
+    both({a.get(), c.get()}, 6500, nullptr);
+    CHECK(c->online());
+    CHECK(!a->online());
+    std::printf("shards: ok\n");
+}
+
+// a bad network between the clients and the server: loss, duplication, delay with jitter (reordering)
+struct Relay {
+    UdpSocket front;  // clients talk to this
+    UdpSocket back;   // towards the server
+    Address server, client;
+    double loss, dup;
+    uint32_t delay, jitter;
+    std::mt19937 rng{7};
+    struct Held {
+        uint32_t at;
+        Bytes d;
+        bool up;
+    };
+    std::vector<Held> held;
+    void pump() {
+        uint8_t buf[2048];
+        Address from;
+        std::uniform_real_distribution<double> u(0, 1);
+        auto take = [&](UdpSocket& s, bool up) {
+            for (;;) {
+                int n = s.recv_from(from, buf, sizeof buf);
+                if (n < 0) break;
+                if (up) client = from;
+                int copies = u(rng) < loss ? 0 : (u(rng) < dup ? 2 : 1);
+                for (int i = 0; i < copies; ++i)
+                    held.push_back({monotonic_ms() + delay + uint32_t(rng() % (jitter + 1)), Bytes(buf, buf + n), up});
+            }
+        };
+        take(front, true);
+        take(back, false);
+        uint32_t now = monotonic_ms();
+        for (size_t i = 0; i < held.size();) {
+            if (int32_t(now - held[i].at) >= 0) {
+                if (held[i].up) back.send_to(server, held[i].d.data(), held[i].d.size());
+                else if (client.valid()) front.send_to(client, held[i].d.data(), held[i].d.size());
+                held.erase(held.begin() + long(i));
+            } else {
+                ++i;
+            }
+        }
+    }
+};
+
+static void test_chaos(const char* profile, double loss, double dup, uint32_t delay, uint32_t jitter) {
+    server::Server s(base_config(0));
+    s.log = [](const std::string&) {};
+    std::string why;
+    CHECK(s.start(why));
+    // one relay per client, so each keeps its own address
+    Relay ra, rb;
+    for (Relay* r : {&ra, &rb}) {
+        r->loss = loss;
+        r->dup = dup;
+        r->delay = delay;
+        r->jitter = jitter;
+        CHECK(r->front.open("127.0.0.1", 0, why) && r->back.open("127.0.0.1", 0, why));
+        resolve("127.0.0.1", s.port(), r->server, why);
+    }
+    auto a = make_bot("a", ra.front.local_port()), b = make_bot("b", rb.front.local_port());
+    auto go = [&](uint32_t ms, std::function<bool()> done) {
+        uint32_t end = monotonic_ms() + ms;
+        while (int32_t(monotonic_ms() - end) < 0) {
+            s.step(1);
+            ra.pump();
+            rb.pump();
+            a->poll(monotonic_ms());
+            b->poll(monotonic_ms());
+            if (done()) return true;
+        }
+        return done();
+    };
+    uint32_t t0 = monotonic_ms();
+    CHECK(go(20000, [&] { return a->players.count(b->c.my_id()) && b->players.count(a->c.my_id()); }));
+    uint32_t seen_ms = monotonic_ms() - t0;
+    // party traffic still arrives complete and in order
+    uint64_t code = 0;
+    parse_friend_code(b->c.friend_code(), code);
+    a->c.party_invite(code);
+    CHECK(go(10000, [&] { return b->saw(ClientEvent::kPartyInvited); }));
+    b->c.party_accept(b->last(ClientEvent::kPartyInvited)->party_id);
+    CHECK(go(10000, [&] { return a->last(ClientEvent::kPartyState) && a->last(ClientEvent::kPartyState)->party.members.size() == 2; }));
+    AppHeader h;
+    h.type = 9;
+    for (int i = 0; i < 50; ++i) {
+        uint8_t v = uint8_t(i);
+        a->c.send_app(h, &v, 1, true);
+    }
+    Bytes big(20000);
+    for (size_t i = 0; i < big.size(); ++i) big[i] = uint8_t(i * 13);
+    h.type = 10;
+    a->c.send_app(h, big.data(), big.size(), true);
+    auto got_all = [&] {
+        int n = 0;
+        bool order = true, big_ok = false;
+        for (auto& e : b->log)
+            if (e.kind == ClientEvent::kApp && e.app_type == 9) order = order && e.body.size() == 1 && e.body[0] == n++;
+            else if (e.kind == ClientEvent::kApp && e.app_type == 10) big_ok = e.body == big;
+        return n == 50 && order && big_ok;
+    };
+    CHECK(go(20000, got_all));
+    std::printf("chaos %s (loss %.0f%%, dup %.0f%%, delay %u+%u ms): seen after %u ms, ping %d ms, 50 ordered + 20 KB app "
+                "messages: %s\n",
+                profile, loss * 100, dup * 100, delay, jitter, seen_ms, a->c.ping_ms(), got_all() ? "ok" : "FAILED");
+}
+
 int main(int argc, char** argv) {
     g_dir = argc > 1 ? argv[1] : ".";
-    test_presence_and_stage();
-    test_refusals_and_ban();
-    test_restart_and_resume();
-    test_party();
-    test_copies();
-    test_flood();
+    std::string only = argc > 2 ? argv[2] : "";
+    if (only.empty() || only == "presence") test_presence_and_stage();
+    if (only.empty() || only == "ban") test_refusals_and_ban();
+    if (only.empty() || only == "restart") test_restart_and_resume();
+    if (only.empty() || only == "party") test_party();
+    if (only.empty() || only == "copies") test_copies();
+    if (only.empty() || only == "flood") test_flood();
+    if (only.empty() || only == "shards") test_shards();
+    if (only.empty() || only == "chaos") {
+        test_chaos("good_wifi", 0.01, 0.0, 5, 10);
+        test_chaos("mobile_tether", 0.05, 0.01, 40, 60);
+        test_chaos("bad_wifi", 0.15, 0.03, 30, 120);
+    }
     if (g_fail) {
         std::printf("server_test: %d FAILED\n", g_fail);
         return 1;

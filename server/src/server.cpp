@@ -41,6 +41,7 @@ Server::Server(Config c) : cfg_(std::move(c)) {
 Server::~Server() {
     stop_ = true;
     join();
+    pool_stop();
     save_team_states();
 #ifndef _WIN32
     if (admin_fd_ >= 0 && !cfg_.admin_socket.empty()) std::remove(cfg_.admin_socket.c_str());
@@ -65,6 +66,7 @@ bool Server::start(std::string& why) {
 #endif
     if (!sock_.open(cfg_.bind, cfg_.port, why, reuse)) return false;
     sock_.set_buffers(8 << 20);
+    pool_start();
     for (int i = 1; reuse && i < workers_; ++i) {
         auto extra = std::make_unique<UdpSocket>();
         std::string w;
@@ -1084,35 +1086,68 @@ void Server::flush_one(Session& s, uint32_t now) {
     s.chan.flush(now, out, kMaxDatagramsPerFlush);
     uint64_t bytes = 0;
     UdpSocket& u = out_sock();
-    for (auto& b : out) {
-        u.send_to(s.addr, b.data(), b.size());
-        bytes += b.size();
-    }
+    u.send_many(s.addr, out);
+    for (auto& b : out) bytes += b.size();
     metrics_.bytes_out += bytes;
     metrics_.packets_out += out.size();
+}
+
+void Server::pool_start() {
+    for (int i = 1; i < workers_; ++i)
+        pool_.threads.emplace_back([this, i] {
+            t_worker = i;
+            uint64_t seen = 0;
+            for (;;) {
+                std::function<void(int)> job;
+                {
+                    std::unique_lock<std::mutex> lk(pool_.m);
+                    pool_.cv.wait(lk, [&] { return pool_.quit || pool_.gen != seen; });
+                    if (pool_.quit) return;
+                    seen = pool_.gen;
+                    job = pool_.job;
+                }
+                job(i);
+                std::lock_guard<std::mutex> lk(pool_.m);
+                if (--pool_.busy == 0) pool_.done_cv.notify_one();
+            }
+        });
+}
+
+void Server::pool_stop() {
+    {
+        std::lock_guard<std::mutex> lk(pool_.m);
+        pool_.quit = true;
+    }
+    pool_.cv.notify_all();
+    for (auto& t : pool_.threads) t.join();
+    pool_.threads.clear();
 }
 
 // runs fn over the sessions on the worker threads: each call touches only its own session (its channel and what it
 // has seen) and reads the others, which nothing changes during the tick
 void Server::parallel(const std::vector<Session*>& work, void (Server::*fn)(Session&, uint32_t), uint32_t now) {
-    int n = workers_;
-    if (n <= 1 || work.size() < 64) {
+    if (pool_.threads.empty() || work.size() < 64) {
         for (Session* s : work) (this->*fn)(*s, now);
         return;
     }
     std::atomic<size_t> next{0};
-    auto run = [&](int worker) {
-        t_worker = worker;
+    auto run = [&](int) {
         for (;;) {
-            size_t i = next.fetch_add(32);
+            size_t i = next.fetch_add(16);
             if (i >= work.size()) break;
-            for (size_t k = i; k < std::min(work.size(), i + 32); ++k) (this->*fn)(*work[k], now);
+            for (size_t k = i; k < std::min(work.size(), i + 16); ++k) (this->*fn)(*work[k], now);
         }
     };
-    std::vector<std::thread> pool;
-    for (int i = 1; i < n; ++i) pool.emplace_back(run, i);
+    {
+        std::lock_guard<std::mutex> lk(pool_.m);
+        pool_.job = run;
+        pool_.busy = int(pool_.threads.size());
+        pool_.gen++;
+    }
+    pool_.cv.notify_all();
     run(0);
-    for (auto& t : pool) t.join();
+    std::unique_lock<std::mutex> lk(pool_.m);
+    pool_.done_cv.wait(lk, [&] { return pool_.busy == 0; });
 }
 
 void Server::flush_all(uint32_t now) {
@@ -1147,10 +1182,14 @@ void Server::tick(uint32_t now) {
     std::vector<Session*> work;
     for (auto& [cid, sp] : sessions_)
         if (sp->online && !sp->redirected && !sp->dead) work.push_back(sp.get());
+    uint64_t t0 = monotonic_us();
     parallel(work, &Server::interest, now);
+    metrics_.interest_us.push_back(uint32_t(monotonic_us() - t0));
     runners_tick(now);
     if (cfg_.shard_count > 1) link_tick(now);
+    t0 = monotonic_us();
     flush_all(now);
+    metrics_.send_us.push_back(uint32_t(monotonic_us() - t0));
     if ((tick_no_ % uint32_t(cfg_.tick_hz * 10)) == 0) parties_gc(now);
     if (restart_at_ && int32_t(now - restart_at_) >= 0) {
         log("planned restart: stopping");
@@ -1240,15 +1279,23 @@ void Server::write_metrics(uint32_t now) {
     auto t = metrics_.tick_us;
     std::sort(t.begin(), t.end());
     auto pct = [&](double q) { return t.empty() ? 0u : t[std::min(t.size() - 1, size_t(q * double(t.size())))]; };
+    auto p99 = [](std::vector<uint32_t> v) {
+        std::sort(v.begin(), v.end());
+        return v.empty() ? 0u : v[std::min(v.size() - 1, size_t(0.99 * double(v.size())))];
+    };
+    uint32_t interest_p99 = p99(metrics_.interest_us), send_p99 = p99(metrics_.send_us);
+    metrics_.interest_us.clear();
+    metrics_.send_us.clear();
     size_t n = players();
     double out_s = (metrics_.bytes_out - last_out) / dt, in_s = (metrics_.bytes_in - last_in) / dt;
-    char line[512];
+    char line[768];
     std::snprintf(line, sizeof line,
                   "{\"t\":%u,\"players\":%zu,\"out_Bps\":%.0f,\"in_Bps\":%.0f,\"out_per_player_Bps\":%.0f,"
                   "\"in_per_player_Bps\":%.0f,\"tick_p50_us\":%u,\"tick_p99_us\":%u,\"tick_max_us\":%u,"
+                  "\"interest_p99_us\":%u,\"send_p99_us\":%u,\"threads\":%d,"
                   "\"ticks\":%zu,\"cpu_pct\":%.1f,\"maxrss_mb\":%.1f,\"dropped_rate\":%llu,\"implausible\":%llu}\n",
                   now, n, out_s, in_s, n ? out_s / double(n) : 0, n ? in_s / double(n) : 0, pct(0.5), pct(0.99),
-                  t.empty() ? 0u : t.back(), t.size(), cpu_pct, double(rss) / 1024.0,
+                  t.empty() ? 0u : t.back(), interest_p99, send_p99, workers_, t.size(), cpu_pct, double(rss) / 1024.0,
                   (unsigned long long)metrics_.dropped_rate, (unsigned long long)metrics_.implausible);
     if (std::FILE* f = std::fopen(cfg_.metrics_file.c_str(), "a")) {
         std::fputs(line, f);
