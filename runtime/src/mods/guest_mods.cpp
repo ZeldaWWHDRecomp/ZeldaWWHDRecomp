@@ -1260,7 +1260,11 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
     native_actor_profiles::startup::ImportAttempt profile_import(g_actor_profile_import);
 
 #ifdef _WIN32
+    // No loader "Bad Image" dialog for a damaged module: report the failure instead.
+    DWORD previous_mode = 0;
+    const bool quiet = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &previous_mode);
     void* lib = (void*)LoadLibraryA(path.c_str());
+    if (quiet) SetThreadErrorMode(previous_mode, nullptr);
     auto init = lib ? (WWHDGuestInitV1)(void*)GetProcAddress((HMODULE)lib, WWHD_GUEST_INIT_SYMBOL) : nullptr;
 #else
     void* lib = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);

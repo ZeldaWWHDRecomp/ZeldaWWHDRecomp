@@ -7,6 +7,7 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Windows: a damaged native mod no longer freezes startup** (#437). Loading a broken mod library now fails with an error instead of waiting on a hidden Windows error box.
 - **GameCube player models** (#432, from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Mods › **Install from a file**
   takes a GameCube model pack you have (a folder or zip with `Link.arc`). The port converts it on your device onto HD Link's
   skeleton, materials and animations, with textures upscaled to HD's sizes. On the model's page in the Mods tab you choose it per save file;
