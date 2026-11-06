@@ -484,6 +484,8 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
                 s->pose_rx = now;
             }
             if (ticket->from == me_) lent_.erase(s->id);  // one of our ids comes home
+            apply_pvp_carry(*s, ticket->pvp, now);
+            s->pvp_queued = std::move(ticket->hits);
             join_party = ticket->join ? ticket->party : 0;
             tickets_.erase(tok);
             ticket = nullptr;

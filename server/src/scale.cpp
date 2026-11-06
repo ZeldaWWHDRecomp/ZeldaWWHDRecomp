@@ -580,6 +580,7 @@ void Server::hand_over(Session& s, int target, uint32_t now, const Bytes* party_
     put_set(s.blocks);
     put_set(s.mutes);
     put_mod_refs(wr, s.mods);
+    put_pvp_carry(wr, pvp_carry_of(s, now));  // updated once more at the redirect (kLPvpCarry)
     link_send(target, kLHandoff, body);
     if (owner == me_) lent_.insert(s.id);
     // the client is sent over once the target has the ticket (kLHandoffAck); it plays on here until then
@@ -601,6 +602,14 @@ void Server::redirect(Session& s, int target, const uint8_t ticket[32], uint32_t
     rw.bytes(ticket, 32);
     s.chan.send_reliable(kMsgRedirect, r);
     s.redirected = true;
+    s.redirect_to = target;
+    // the PvP state as it is now (it played on here while the target stored the ticket)
+    Bytes c;
+    Writer cw(c);
+    cw.bytes(ticket, 32);
+    cw.u64(s.key_hash);
+    put_pvp_carry(cw, pvp_carry_of(s, now));
+    link_send(target, kLPvpCarry, c);
     s.redirect_at = now;
     metrics_.handovers_out++;
     static const bool debug = std::getenv("WWHD_ONLINE_DEBUG_HANDOVER") != nullptr;
@@ -735,6 +744,7 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
                 for (size_t k = 0; k < n && k < 4096 && r.ok(); ++k) v->push_back(r.u64());
             }
             if (r.left()) get_mod_refs(r, tk.mods);
+            if (r.left()) get_pvp_carry(r, tk.pvp);
             tk.at = now;
             tickets_[t] = std::move(tk);
             link_send(from, kLHandoffAck, Bytes(t.begin(), t.end()));
@@ -819,24 +829,28 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
             parties_[p.id] = std::move(p);
             break;
         }
-        case kLPvpHit: {
-            // a hit from a player on another worker on one of ours: our side of the checks, then delivered
-            uint16_t aid = r.u16();
-            uint64_t akh = r.u64();
-            uint32_t aparty = r.u32();
-            PvpHit h;
-            if (!get_pvp_hit(r, h) || !r.done()) break;
-            auto it = by_id_.find(h.other);
-            if (it == by_id_.end()) break;
-            auto sp = sessions_.find(it->second);
-            if (sp == sessions_.end() || !sp->second->online || sp->second->dead) break;
-            Session& v = *sp->second;
-            int why = pvp_check_victim(v, akh, aparty, v, now);
-            if (why >= 0) {
-                metrics_.pvp_drops[why]++;
+        case kLPvpHit:
+            pvp_link_hit(m.body, now);
+            break;
+        case kLPvpCarry: {
+            // the PvP state at the redirect: into the ticket, or onto the player that has just arrived
+            std::array<uint8_t, 32> t{};
+            r.bytes(t.data(), 32);
+            uint64_t kh = r.u64();
+            PvpCarry c;
+            if (!get_pvp_carry(r, c) || !r.done()) break;
+            if (auto tk = tickets_.find(t); tk != tickets_.end()) {
+                if (tk->second.who.key_hash == kh) tk->second.pvp = std::move(c);
                 break;
             }
-            pvp_deliver_hit(aid, v, h, now);
+            if (auto k = by_key_.find(kh); k != by_key_.end())
+                if (auto sp = sessions_.find(k->second); sp != sessions_.end()) {
+                    Session& s = *sp->second;
+                    // only just after its arrival, before it fought here
+                    if (s.online && !s.dead && s.pvp_carried_at && now - s.pvp_carried_at < 2000 &&
+                        !(s.fight_at && int32_t(s.fight_at - s.pvp_carried_at) > 0))
+                        apply_pvp_carry(s, c, now);
+                }
             break;
         }
         case kLBan: {

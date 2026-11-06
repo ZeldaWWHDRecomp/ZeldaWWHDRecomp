@@ -102,6 +102,17 @@ void Server::pvp_tick(uint32_t now) {
     for (auto& [cid, sp] : sessions_) {
         Session& s = *sp;
         if (s.dead || !s.online) continue;
+        if (!s.pvp_queued.empty()) {
+            // hits that reached this worker before the player did (a handover): still checked here
+            auto q = std::move(s.pvp_queued);
+            s.pvp_queued.clear();
+            for (auto& x : q) {
+                if (now - x.at > 1000) continue;
+                int why = pvp_check_victim(s, x.akh, x.aparty, s, now);
+                if (why >= 0) metrics_.pvp_drops[why]++;
+                else pvp_deliver_hit(x.aid, s, x.h, now);
+            }
+        }
         bool in_zone = false, band = false;
         int nearest = -1;
         pvp_zone_of(s, in_zone, band, nearest);
@@ -208,6 +219,18 @@ void Server::on_pvp_hit(Session& a, Reader& r, uint32_t now) {
     // attacking ends one's own protection
     a.protected_until = 0;
     a.fight_at = now;
+    if (v && v->redirected) {
+        // the victim is on its way to another worker: the hit follows it there
+        if (v->redirect_to < 0 || v->redirect_to == me_) return drop(kDropUnknown);
+        Bytes b;
+        Writer w(b);
+        w.u16(a.id);
+        w.u64(a.key_hash);
+        w.u32(a.party);
+        put_pvp_hit(w, h);
+        link_send(v->redirect_to, kLPvpHit, b);
+        return;
+    }
     if (v) {
         int why = pvp_check_victim(a, a.key_hash, a.party, *v, now);
         if (why >= 0) return drop(why);
@@ -311,6 +334,143 @@ void Server::on_pvp_ko(Session& v, Reader& r, uint32_t now) {
     for_viewers(v, [&](Session& o, uint8_t tier) {
         if (tier <= kTierMid) o.chan.send_reliable(kMsgPvpKoOf, ko);
     });
+}
+
+// ---------------------------------------------------------------- handovers
+
+// the player's PvP state now, to go with it to another worker
+PvpCarry Server::pvp_carry_of(const Session& s, uint32_t now) const {
+    PvpCarry c;
+    c.valid = true;
+    c.on = s.pvp_on;
+    c.busy = s.pvp_busy;
+    c.in_zone = s.in_zone;
+    c.zone_age = now - s.zone_since;
+    int32_t left = int32_t(s.protected_until - now);
+    c.protect_left = s.protected_until && left > 0 ? uint32_t(left) : 0;
+    c.fighting = s.fight_at != 0;
+    c.fight_age = now - s.fight_at;
+    c.last_hit_by = s.last_hit_by;
+    c.last_hit_age = s.last_hit_by ? now - s.last_hit_at : 0xFFFFFFFF;
+    for (auto& [k, p] : pvp_pairs_) {
+        if (k.second != s.key_hash) continue;
+        PvpCarry::Pair q;
+        q.attacker = k.first;
+        int32_t b = int32_t(p.blocked_until - now);
+        q.blocked_left = p.blocked_until && b > 0 ? uint32_t(b) : 0;
+        for (uint32_t t : p.kos) q.ko_ages.push_back(now - t);
+        c.pairs.push_back(std::move(q));
+        if (c.pairs.size() >= 1024) break;
+    }
+    return c;
+}
+
+// the state that came with a handover, on this worker's clock; replaces what this worker knew of the player
+void Server::apply_pvp_carry(Session& s, const PvpCarry& c, uint32_t now) {
+    if (!c.valid) return;
+    auto at = [&](uint32_t age) {
+        uint32_t t = now - age;
+        return t ? t : 1;
+    };
+    s.pvp_on = c.on;
+    s.pvp_busy = c.busy;
+    s.in_zone = c.in_zone;  // no "left a zone" protection for crossing a worker border
+    s.zone_since = now - c.zone_age;
+    s.protected_until = c.protect_left ? now + c.protect_left : 0;
+    if (c.protect_left && !s.protected_until) s.protected_until = 1;
+    s.fight_at = c.fighting ? at(c.fight_age) : 0;
+    s.last_hit_by = c.last_hit_age != 0xFFFFFFFF ? c.last_hit_by : 0;
+    s.last_hit_at = c.last_hit_age != 0xFFFFFFFF ? now - c.last_hit_age : 0;
+    for (auto it = pvp_pairs_.begin(); it != pvp_pairs_.end();)
+        it = it->first.second == s.key_hash ? pvp_pairs_.erase(it) : std::next(it);
+    for (auto& q : c.pairs) {
+        auto& p = pvp_pairs_[{q.attacker, s.key_hash}];
+        p.blocked_until = q.blocked_left ? now + q.blocked_left : 0;
+        if (q.blocked_left && !p.blocked_until) p.blocked_until = 1;
+        for (uint32_t age : q.ko_ages) p.kos.push_back(now - age);
+    }
+    s.pvp_sent = -1;
+    s.pvp_carried_at = now ? now : 1;
+}
+
+void put_pvp_carry(Writer& w, const PvpCarry& c) {
+    w.u8(uint8_t((c.on ? 1 : 0) | (c.busy ? 2 : 0) | (c.in_zone ? 4 : 0) | (c.fighting ? 8 : 0)));
+    w.u32(c.zone_age);
+    w.u32(c.protect_left);
+    w.u32(c.fight_age);
+    w.u16(c.last_hit_by);
+    w.u32(c.last_hit_age);
+    w.u16(uint16_t(c.pairs.size()));
+    for (auto& q : c.pairs) {
+        w.u64(q.attacker);
+        w.u32(q.blocked_left);
+        size_t n = std::min<size_t>(q.ko_ages.size(), 64);
+        w.u8(uint8_t(n));
+        for (size_t i = 0; i < n; ++i) w.u32(q.ko_ages[q.ko_ages.size() - n + i]);
+    }
+}
+
+bool get_pvp_carry(Reader& r, PvpCarry& c) {
+    c = PvpCarry{};
+    uint8_t f = r.u8();
+    c.on = f & 1;
+    c.busy = f & 2;
+    c.in_zone = f & 4;
+    c.fighting = f & 8;
+    c.zone_age = r.u32();
+    c.protect_left = std::min<uint32_t>(r.u32(), 3600000);
+    c.fight_age = r.u32();
+    c.last_hit_by = r.u16();
+    c.last_hit_age = r.u32();
+    size_t n = r.u16();
+    if (n > 1024) return false;
+    for (size_t i = 0; i < n && r.ok(); ++i) {
+        PvpCarry::Pair q;
+        q.attacker = r.u64();
+        q.blocked_left = std::min<uint32_t>(r.u32(), 3600000);
+        size_t k = r.u8();
+        if (k > 64) return false;
+        for (size_t j = 0; j < k && r.ok(); ++j) q.ko_ages.push_back(r.u32());
+        c.pairs.push_back(std::move(q));
+    }
+    c.valid = r.ok();
+    return c.valid;
+}
+
+// a hit from a player on another worker (kLPvpHit): checked and delivered here, sent on after the victim if it
+// moved on, or held for the victim that is on its way here
+void Server::pvp_link_hit(const Bytes& body, uint32_t now) {
+    Reader r(body);
+    PvpQueuedHit q;
+    q.aid = r.u16();
+    q.akh = r.u64();
+    q.aparty = r.u32();
+    if (!get_pvp_hit(r, q.h) || !r.done()) return;
+    q.at = now;
+    if (auto it = by_id_.find(q.h.other); it != by_id_.end()) {
+        auto sp = sessions_.find(it->second);
+        if (sp != sessions_.end() && sp->second->online && !sp->second->dead) {
+            Session& v = *sp->second;
+            if (v.redirected && v.redirect_to >= 0 && v.redirect_to != me_) {
+                link_send(v.redirect_to, kLPvpHit, body);
+                return;
+            }
+            if (v.redirected) return;
+            int why = pvp_check_victim(v, q.akh, q.aparty, v, now);
+            if (why >= 0) {
+                metrics_.pvp_drops[why]++;
+                return;
+            }
+            pvp_deliver_hit(q.aid, v, q.h, now);
+            return;
+        }
+    }
+    for (auto& [t, tk] : tickets_)
+        if (tk.who.id == q.h.other) {
+            if (tk.hits.size() < 16) tk.hits.push_back(q);
+            return;
+        }
+    metrics_.pvp_drops[kDropUnknown]++;
 }
 
 }  // namespace online::server

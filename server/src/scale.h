@@ -82,6 +82,7 @@ enum LinkMsg : uint8_t {
     kLKick = 14,      // coordinator -> workers: u64 code40, reason
     kLHandoffAck = 15,  // worker -> worker: the ticket is stored; now the client is sent over
     kLPvpHit = 16,    // worker -> worker: u16 attacker id, u64 attacker key hash, u32 attacker party, PvpHit (victim)
+    kLPvpCarry = 17,  // worker -> worker, at the redirect: ticket, u64 key hash, the player's PvP state now (PvpCarry)
 };
 
 
