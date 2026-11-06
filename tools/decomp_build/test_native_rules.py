@@ -160,6 +160,38 @@ class NativeRulesTest(unittest.TestCase):
         self.assertNotIn("0x0300000C", hb)                   # not decompiled: no entry
 
 
+    def test_header_calls(self):
+        """--hcall: a unit's calls by constant address in its sources and the headers they include (gen.py's hinc copy
+        first, the including file's directory, the source's quote directory) get the unit's table rows"""
+        F = self.F
+        inc = self.out + "/hinc/d"
+        os.makedirs(inc)
+        open(inc + "/h.h", "w").write('#include "g.h"\ninline int h6(int a) { return gabi::hcall<0x%08X, int>(a); }\n' % F(6))
+        open(inc + "/g.h", "w").write("inline void g9() { gabi::hcall<0x%08X, void>(); }\n" % F(9))
+        os.makedirs(self.src + "/wwhd_src/include/d")  # the original header: shadowed by the copy
+        open(self.src + "/wwhd_src/include/d/h.h", "w").write("inline void h1() { gabi::call<void>(0x%08X); }\n" % F(1))
+        srcc = self.src + "/c.cpp"
+        open(srcc, "w").write('#include "d/h.h"\nvoid k() { gabi::hcall<0x%08X, void>(); }\n' % F(5))
+        uj = json.load(open(self.out + "/units.json"))
+        uj["units"].append({"name": "c", "sources": [{"path": srcc}]})
+        json.dump(uj, open(self.out + "/units.json", "w"))
+        hc = native_rules.HeaderCalls(self.src, self.out)
+        self.assertEqual(hc.of_source(srcc, None), {F(5), F(6), F(9)})
+        lines = native_rules.rules(self.src, self.out, self.gen)
+        native_rules.unit_headers(self.out, lines, True, hc)
+        h = open(self.out + "/native/2.h").read()
+        for i in (5, 6, 9):
+            self.assertIn("{0x%08Xu, %du," % (F(i), i - 1), h)
+        self.assertNotIn("{0x%08Xu," % F(1), h)
+        native_rules.unit_headers(self.out, lines, True)  # without --hcall: no rows for them
+        self.assertNotIn("{0x%08Xu," % F(9), open(self.out + "/native/2.h").read())
+
+    def test_tail_ptr_ic_reason(self):
+        """gen.py --ptr-ic writes tail_ptr as tail_ptr_ic: the source reason stays"""
+        rx = dict(native_rules.SRCF)["src:tail_ptr"]
+        self.assertTrue(rx.search("gabi::tail_ptr_ic<decltype([]{}), void>(1);"))
+        self.assertTrue(rx.search("gabi::tail_ptr<void>(1);"))
+
     def test_decl_table(self):
         F = self.F
         decl = os.path.join(self.tmp.name, "handoff.tsv")

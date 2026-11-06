@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall]]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -58,7 +58,7 @@ SRCF = [("src:local", re.compile(r"gabi::(Local|Stack|LocalOf|FrameLocal)\b|\bLo
         ("src:nativeframe", re.compile(r"NativeFrame<")),
         ("src:cpu", re.compile(r"\bcpu->|gabi::cpu\b|\bc->(r|f|lr|ctr|cr)\b")),
         ("src:call_site", re.compile(r"call(_ptr)?_site\s*[<(]")),
-        ("src:tail_ptr", re.compile(r"tail_ptr\s*[<(]")),
+        ("src:tail_ptr", re.compile(r"tail_ptr(?:_ic)?\s*[<(]")),  # (_ic: gen.py --ptr-ic)
         ("src:va", re.compile(r"\bva_(list|start|arg)\b|\.\.\.\s*\)")),
         ("src:jmp", re.compile(r"setjmp|longjmp|OSLoadContext|OSSaveContext|__builtin_(frame|return)_address")),
         ("src:autoframe", re.compile(r"\bAutoFrame\b"))]
@@ -66,6 +66,52 @@ SRCF = [("src:local", re.compile(r"gabi::(Local|Stack|LocalOf|FrameLocal)\b|\bLo
 LIFT = {"src:autoframe": "autoframe", "src:local": "local", "src:tail_ptr": "tailptr"}  # (src:wwhd_func: no native form)
 FUNC = re.compile(r"WWHD_(GLUE_)?FUNC(_R)?\(\s*0x([0-9A-Fa-f]{8})\s*,")
 LCALL = re.compile(r"\bgabi::lcall<0x([0-9A-Fa-f]{8}),")
+HCALL = re.compile(r"\bgabi::hcall<0x([0-9A-Fa-f]{8}),")
+INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
+
+
+class HeaderCalls:
+    """--hcall (fast mode, gen.py --hcall): the gabi::hcall addresses a unit's sources reach, their own and those of
+    the headers they include ("..." includes, transitively; searched as the compiler does: the including file's
+    directory, the source's -iquote directory, then the unit include path with gen.py's OUT/hinc copy of
+    wwhd_src/include in its place). Each header is read once."""
+
+    def __init__(self, src, out):
+        root = os.path.abspath(os.path.join(HERE, "..", ".."))
+        self.dirs = [os.path.join(root, "runtime", "include"), os.path.join(src, "tools", "verify", "include"),
+                     os.path.join(src, "tools", "verify", "src"), os.path.join(out, "hinc"),
+                     os.path.join(src, "wwhd_src", "include"), os.path.join(out, "include")]
+        self.memo = {}
+
+    def _file(self, path):
+        if path not in self.memo:
+            try:
+                text = open(path, encoding="utf-8", errors="replace").read()
+            except OSError:
+                text = ""
+            self.memo[path] = ({int(a, 16) for a in HCALL.findall(text)}, INCLUDE.findall(text))
+        return self.memo[path]
+
+    def _find(self, inc, first):
+        for d in first + self.dirs:
+            p = os.path.normpath(os.path.join(d, inc))
+            if os.path.isfile(p):
+                return p
+        return None
+
+    def of_source(self, path, quote):
+        addrs, seen, todo = set(), {path}, [path]
+        while todo:
+            p = todo.pop()
+            a, incs = self._file(p)
+            addrs |= a
+            first = [os.path.dirname(p)] + ([quote] if quote else [])
+            for inc in incs:
+                q = self._find(inc, first)
+                if q and q not in seen:
+                    seen.add(q)
+                    todo.append(q)
+        return addrs
 VERIFY_ADDR = re.compile(r"\bVERIFY(?:_NAMED)?\(\s*(0x[0-9A-F]{8})\b")
 FLOAT_T = re.compile(r"^(?:const\s+)?(?:f32|f64|float|double)$")
 
@@ -499,7 +545,7 @@ def fast_text(own_verify, own_exact, ext_exact):
     return "\n".join(t) + "\n"
 
 
-def unit_headers(out, lines, fast=False):
+def unit_headers(out, lines, fast=False, hcalls=None):
     """OUT/native/K.h for game unit K (units.json order, as glue/K.cpp): its functions' and the decompiled functions
     it calls in other units (lean calls) {address, slot index, flags (1: callee=native, 2: caller=ok, 4: listed)},
     sorted, as gabi.h's GABI_NATIVE_TABLE (pre-included by cmake/Decomp.cmake)"""
@@ -531,6 +577,8 @@ def unit_headers(out, lines, fast=False):
                 ext.update(int(a, 16) for a in LCALL.findall(open(src["path"], encoding="utf-8", errors="replace").read()))
             except OSError:
                 pass
+            if hcalls:  # --hcall: the unit's calls by constant address (gabi.h hcall: native_info and Ne)
+                ext |= hcalls.of_source(src["path"], src.get("quote"))
         rows[k] += [(a, slot_of[a], flags_of[a] & ~2) for a in ext - own if a in slot_of]
     # fast mode: every unit's VERIFY addresses (a function verified in two units is exported by functions.tsv's unit
     # only, the unit its row above belongs to)
@@ -575,6 +623,11 @@ def main():
     fast = "--fast" in args
     if fast:
         args.remove("--fast")
+    hcall = "--hcall" in args
+    if hcall:
+        args.remove("--hcall")
+        if not fast:
+            sys.exit("native_rules.py: --hcall needs --fast")
     if "--lift" in args:
         i = args.index("--lift")
         lift = tuple(x for x in (args[i + 1] if i + 1 < len(args) else "").split(",") if x)
@@ -595,7 +648,7 @@ def main():
     gen.write_if_changed(os.path.join(out, "native.txt"),
                          "# generated by tools/decomp_build/native_rules.py (native-calls rules)\n"
                          + "\n".join(lines) + "\n")
-    unit_headers(out, lines, fast)
+    unit_headers(out, lines, fast, HeaderCalls(src, out) if hcall else None)
     n = sum(1 for x in lines if "callee=native" in x)
     ne = sum(1 for x in lines if "callee=native" in x and DECL_FIELD.search(x.split("#")[0]))
     print("decomp: native-call rules%s: %d of %d functions may be called natively, %d of them register-exact (%s)" % (

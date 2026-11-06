@@ -243,5 +243,24 @@ class GenTest(unittest.TestCase):
         self.assertIn("git submodule update --init decomp", r.stderr)
 
 
+class FastRewriteTest(unittest.TestCase):
+    def test_rewrites(self):
+        sys.path.insert(0, HERE)
+        import gen
+        t = ("a = gabi::call<u8*>(0x02555D0C); b = gabi::call<be<u32>>(0x0273AD10, 4); c = gabi::call<void>(x, 1); "
+             "call_ptr<u32>(t, h); gabi::call_ptr(f, s); o->call_ptr(1); p.tail_ptr(2); gabi::call_ptr_site<R>(1); "
+             "!call_ptr<bool>(a); gabi::tail_ptr<void, u8*>(f, p); n::call_ptr<int>(x);")
+        self.assertEqual(gen.fast_rewrite(t, False, False), (t, 0))
+        got, n = gen.fast_rewrite(t, True, True)
+        self.assertEqual(n, 6)
+        self.assertEqual(got, (
+            "a = gabi::hcall<0x02555D0C, u8*>(); b = gabi::hcall<0x0273AD10, be<u32>>(4); c = gabi::call<void>(x, 1); "
+            "gabi::call_ptr_ic<decltype([]{}), u32>(t, h); gabi::call_ptr_ic<decltype([]{})>(f, s); o->call_ptr(1); "
+            "p.tail_ptr(2); gabi::call_ptr_site<R>(1); !gabi::call_ptr_ic<decltype([]{}), bool>(a); "
+            "gabi::tail_ptr_ic<decltype([]{}), void, u8*>(f, p); n::call_ptr<int>(x);"))
+        self.assertEqual(gen.fast_rewrite(t, True, False)[1], 2)
+        self.assertEqual(gen.fast_rewrite(t, False, True)[1], 4)
+
+
 if __name__ == "__main__":
     unittest.main()

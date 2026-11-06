@@ -27,6 +27,9 @@ never the source tree or the submodule) and is rewritten only when it changes:
   include/assets/   the model data headers of tools/verify/assets.txt (tools/verify/assets.py; a decompilation
                     without assets.py has none)
   verify/image.bin  the loaded sections of the game's code (tools/verify/mkimage.py)
+  hinc/             --hcall / --ptr-ic (fast mode only): wwhd_src/include with every call by constant address
+                    written as gabi::hcall and call_ptr / tail_ptr as call_ptr_ic / tail_ptr_ic (the sources' own
+                    calls too, in their glued copies)
 
 The last three are made from your own copy of the game (--game, cking.rpx of the USA game): the
 decompilation does not contain the game's model data, and autoglue reads the content of the strings
@@ -179,6 +182,60 @@ LEAN_CALL = re.compile(r"\bgabi::call<(.+?)>\(0x([0-9A-Fa-f]{8})(\s*,\s*|\s*\))"
 def lean_call(m):
     """gabi::call<R>(0xADDR, args) -> gabi::lcall<0xADDR, R>(args)"""
     return "gabi::lcall<0x%s, %s>(%s" % (m.group(2), m.group(1), "" if "," in m.group(3) else ")")
+
+
+def header_call(m):
+    """fast mode (--hcall): gabi::call<R>(0xADDR, args) -> gabi::hcall<0xADDR, R>(args) (gabi.h: the callee's exported
+    native entry when it is register-exact in another unit and takes this call's registers, else gabi::call)"""
+    return "gabi::hcall<0x%s, %s>(%s" % (m.group(2), m.group(1), "" if "," in m.group(3) else ")")
+
+
+PTR_CALL = re.compile(r"(?<![\w:.>])(?:gabi::)?(call_ptr|tail_ptr)\s*([<(])")
+
+
+def ptr_call(m):
+    """fast mode (--ptr-ic): call_ptr<R>(fn, args) / tail_ptr<R>(fn, args) -> gabi::call_ptr_ic<decltype([]{}), R>(fn,
+    args): a closure type of its own per call site (gabi.h GABI_PTR_IC: one cached target per site)"""
+    if m.group(2) == "<":
+        return "gabi::%s_ic<decltype([]{}), " % m.group(1)
+    return "gabi::%s_ic<decltype([]{})>(" % m.group(1)
+
+
+def fast_rewrite(text, hcall, ptr_ic):
+    """the fast-mode rewrites of a source or header (--hcall, --ptr-ic) -> (text, count)"""
+    n = 0
+    if hcall:
+        text, k = LEAN_CALL.subn(header_call, text)
+        n += k
+    if ptr_ic:
+        text, k = PTR_CALL.subn(ptr_call, text)
+        n += k
+    return text, n
+
+
+HCALL_DIR = "hinc"  # OUT_DIR/hinc: the decompilation's wwhd_src/include with header_call applied (--hcall)
+
+
+def header_calls(src, out, hcall=True, ptr_ic=False):
+    """--hcall / --ptr-ic (cmake WWHD_DECOMP_FAST_HCALL / _PTR_IC): OUT/hinc mirrors DECOMP_DIR/wwhd_src/include
+    (every file, so "..." includes between headers stay inside the copy) with fast_rewrite applied (calls by constant
+    address as gabi::hcall, call_ptr / tail_ptr as their per-site cached forms); cmake puts it before
+    wwhd_src/include. Returns (files, rewritten files, rewrites)."""
+    base = os.path.join(src, "wwhd_src", "include")
+    n = nfiles = ncalls = 0
+    for d, _, fs in os.walk(base):
+        for f in fs:
+            p = os.path.join(d, f)
+            dst = os.path.join(out, HCALL_DIR, os.path.relpath(p, base))
+            with open(p, encoding="utf-8", errors="surrogateescape") as fh:
+                text = fh.read()
+            new, k = fast_rewrite(text, hcall, ptr_ic)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            write_if_changed(dst, new, errors="surrogateescape")
+            n += 1
+            nfiles += 1 if k else 0
+            ncalls += k
+    return n, nfiles, ncalls
 
 
 STATIC_DECL = re.compile(r"^static\s+[^;(=\n]*?\b(\w+)\s*(?:\[[^\]\n]*\]\s*)*[;=({]", re.M)
@@ -358,15 +415,15 @@ def runtime_hooks():
     return {canon for site, canon, _, _ in entries if not site}
 
 
-def write_if_changed(path, text):
+def write_if_changed(path, text, errors=None):
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8", errors=errors) as fh:
             if fh.read() == text:
                 return
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+    with open(tmp, "w", encoding="utf-8", newline="\n", errors=errors) as fh:
         fh.write(text)
     os.replace(tmp, path)
 
@@ -395,6 +452,10 @@ def main():
     ap.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="parallel autoglue processes")
     ap.add_argument("--hooked-bodies", action="store_true",
                     help="fast mode: functions the runtime hooks run their decompiled body behind the hook")
+    ap.add_argument("--hcall", action="store_true",
+                    help="fast mode: calls by constant address outside the ext stubs as gabi::hcall (OUT_DIR/hinc)")
+    ap.add_argument("--ptr-ic", action="store_true",
+                    help="fast mode: call_ptr / tail_ptr with a cached target per call site (OUT_DIR/hinc)")
     a = ap.parse_args()
     src = os.path.abspath(a.src)
     out = os.path.abspath(a.out)
@@ -453,6 +514,14 @@ def main():
         if keep:
             texts[s] = link_statics(texts[s], keep)
     rewritten = set(glued) | shared_tu_data(comps, texts)
+    # --hcall (fast mode): the sources' own calls by constant address (the ext stubs are lcall already) as gabi::hcall
+    n_hcall = 0
+    if a.hcall or a.ptr_ic:
+        for s in sorted(texts):
+            texts[s], k = fast_rewrite(texts[s], a.hcall, a.ptr_ic)
+            if k:
+                rewritten.add(s)
+                n_hcall += k
     compiled = {}       # source (relative) -> the file that is compiled: itself or its rewritten copy
     for s in texts:
         if s in rewritten:
@@ -561,6 +630,11 @@ def main():
     print("decomp: %d game units, %d functions decompiled, %d excluded (%s); %d of %d sources glued, %d model "
           "data headers" % (len(units_used), len(listed), len(excluded), os.path.join(out, "excluded.txt"),
                             n_glued, len(compiled), n_assets))
+    if a.hcall or a.ptr_ic:
+        nh, nf, nc = header_calls(src, out, a.hcall, a.ptr_ic)
+        print("decomp: fast mode (%s): %d calls rewritten in the sources and %d in %d of %d headers (%s)" % (
+            "+".join(x for x, on in (("hcall", a.hcall), ("ptr-ic", a.ptr_ic)) if on), n_hcall, nc, nf, nh,
+            os.path.join(out, HCALL_DIR)))
     if skipped:
         print("decomp: %d verify units skipped (not game code: %s)" % (len(skipped), os.path.join(out, "skipped.txt")))
 

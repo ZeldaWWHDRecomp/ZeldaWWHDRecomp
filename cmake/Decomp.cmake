@@ -50,9 +50,22 @@ function(wwhd_decomp_configure)
   # fast mode: the functions the runtime hooks run their decompiled bodies behind the hook (gen.py --hooked-bodies;
   # WWHD_DECOMP_FAST_HOOKED=OFF keeps them recompiled as in the default decomp build)
   option(WWHD_DECOMP_FAST_HOOKED "decomp build, fast mode: runtime-hooked functions run decompiled behind their hook" ON)
+  # fast mode: calls by constant address outside the ext stubs (the headers' gabi::call<R>(0xADDR, ...) wrappers and the
+  # sources' own) written as gabi::hcall, which binds a register-exact callee of another unit at link time as lcall does
+  # (gen.py --hcall: OUT/hinc, native_rules.py --hcall; WWHD_DECOMP_FAST_HCALL=OFF: as before)
+  option(WWHD_DECOMP_FAST_HCALL "decomp build, fast mode: header calls by constant address bound at link time" ON)
   set(gen_extra)
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_HOOKED)
-    set(gen_extra --hooked-bodies)
+    list(APPEND gen_extra --hooked-bodies)
+  endif()
+  if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_HCALL)
+    list(APPEND gen_extra --hcall)
+  endif()
+  # fast mode: call_ptr / tail_ptr (function pointers, vtables) keep their last target's native entry per call site
+  # (gen.py --ptr-ic, gabi.h GABI_PTR_IC) instead of probing the address table on every call
+  option(WWHD_DECOMP_FAST_PTR_IC "decomp build, fast mode: per-call-site cache of call_ptr / tail_ptr targets" ON)
+  if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_PTR_IC)
+    list(APPEND gen_extra --ptr-ic)
   endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/gen.py"
                           "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}"
@@ -128,6 +141,9 @@ function(wwhd_decomp_configure)
   set(fast_args)
   if(WWHD_DECOMP_FAST)
     set(fast_args --fast)
+    if(WWHD_DECOMP_FAST_HCALL)
+      list(APPEND fast_args --hcall)
+    endif()
   endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py"
                           "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE} ${decl_args} ${lift_args} ${fast_args}
@@ -172,6 +188,9 @@ function(wwhd_decomp_link target)
   # as the decompilation's verify.py; decomp/include holds the generated assets/ headers
   set(inc "${CMAKE_SOURCE_DIR}/runtime/include" "${WWHD_DECOMP_DIR}/tools/verify/include"
           "${WWHD_DECOMP_DIR}/tools/verify/src" "${WWHD_DECOMP_DIR}/wwhd_src/include" "${WWHD_DECOMP_OUT}/include")
+  if(WWHD_DECOMP_FAST AND (WWHD_DECOMP_FAST_HCALL OR WWHD_DECOMP_FAST_PTR_IC))  # gen.py's copy of wwhd_src/include first
+    list(INSERT inc 3 "${WWHD_DECOMP_OUT}/hinc")
+  endif()
   # as the decompilation's harness compiles them (exact floating point: no contraction, no fast math);
   # these options come after the configuration's, so they win. GABI_GAME_BUILD: gabi.h's game-build forms
   # (its per-thread state in one block, guest memory accessed inline), which the harness never uses;
@@ -198,6 +217,9 @@ function(wwhd_decomp_link target)
     endforeach()
     set(WWHD_DECOMP_NATIVE_AUTOFRAME ON)  # (native_rules.py got --lift autoframe,local,tailptr: GABI_NATIVE_PLACE)
     list(APPEND opts -DGABI_FAST=1 -DGABI_FAST_NE=1)
+    if(WWHD_DECOMP_FAST_PTR_IC)
+      list(APPEND opts -DGABI_PTR_IC=1)
+    endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)
     list(APPEND opts -DGABI_SHARED_TLS=1)
