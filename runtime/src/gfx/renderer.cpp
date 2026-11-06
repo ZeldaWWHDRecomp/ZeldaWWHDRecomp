@@ -60,7 +60,7 @@ std::atomic<float> g_bloom{[] {
 // horizon haze (the sky's haze band): 1 = the original game, 0 = removed; WWHD_HORIZON_HAZE, or the
 // research name WWHD_SKY_HAZE (the amount removed, 0..1)
 std::atomic<float> g_haze{sky::haze_from_env(std::getenv("WWHD_HORIZON_HAZE"), std::getenv("WWHD_SKY_HAZE"))};
-// tall grass draw distance from Link (0 = the original game, every patch drawn); WWHD_GRASS_DISTANCE
+// tall grass draw distance from the camera (0 = the original game, every patch drawn); WWHD_GRASS_DISTANCE
 std::atomic<int> g_grass{[] {
     const char* e = std::getenv("WWHD_GRASS_DISTANCE");
     return e ? std::clamp(std::atoi(e), 0, 100000) : 0;

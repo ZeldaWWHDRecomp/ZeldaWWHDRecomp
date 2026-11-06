@@ -1005,7 +1005,7 @@ void tab_graphics() {
             const int d = dists[i];
             if (radio(gnames[i], gd == d, editable)) post_changed([d] { render::set_grass_distance(d); });
         }
-        help("Tall grass patches farther than this from Link are not drawn. The forest's tall grass is drawn as\n"
+        help("Tall grass patches farther than this from the camera are not drawn. The forest's tall grass is drawn as\n"
              "thousands of separate patches; drawing fewer of them frees the processor where it is the limit.\n"
              "Near: about 60 fps instead of 46 in the thickest grass on a dual-core laptop; distant grass gets\n"
              "thinner. All draws every patch, as the original game. Applies immediately.");

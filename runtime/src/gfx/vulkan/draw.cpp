@@ -26,7 +26,7 @@
 #include "render_prof.h"
 #include "background_shaders.h"
 #include "runtime.h"
-#include "guest_addr.h"
+#include "../../interp.h"
 #include "gx2/gx2.h"
 #include "gx2/gx2_cmd.h"
 #include "shaders.h"
@@ -3096,9 +3096,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     return;
   ((uint32_t *)r)[REGADDR::VGT_PRIMITIVE_TYPE] = prim;
   // Graphics > Grass draw distance (render::grass_distance): drop (before any resolution) the tall grass patches whose
-  // model translation (vertex uniform block 1, a 3x4 row-major matrix) lies farther than that from Link (horizontal).
-  // The grass is told by its vertex program's bytes (kGrassVs). A patch is 108 vertices; the same programs also draw
-  // the small palms and plants (216), which stay.
+  // model translation (vertex uniform block 1, a 3x4 row-major matrix) lies farther than that from the drawn camera's
+  // eye (interp::drawn_eye; horizontal). The grass is told by its vertex program's bytes (kGrassVs). A patch is 108
+  // vertices; the same programs also draw the small palms and plants (216), which stay.
   const int grassDistance = render::grass_distance();
   if (grassDistance > 0 && uint64_t(count) * instances == 108) {
     // a few programs a frame: their answer is kept for the frame (program_hash revalidates once per frame)
@@ -3110,33 +3110,16 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       const uint64_t h = vk::vertex_program_hash(r, R.frame);
       s = {vsAddr, vsSize, R.frame, h && std::find(std::begin(kGrassVs), std::end(kGrassVs), h) != std::end(kGrassVs)};
     }
-    if (s.grass) {
-      static uint64_t linkFrame = ~0ull;
-      static bool haveLink = false;
-      static float lx = 0, lz = 0;
-      auto be32 = [](uint32_t a) { uint32_t v; std::memcpy(&v, mem::ptr(a), 4); return __builtin_bswap32(v); };
-      auto bef = [&](uint32_t a) { const uint32_t v = be32(a); float f; std::memcpy(&f, &v, 4); return f; };
-      auto valid = [](uint32_t a) { return a >= 0x10000000u && a < 0x60000000u && !(a & 3); };
-      if (linkFrame != R.frame) {  // Link: the actor queue's process 0xA8 (herramientas/lector.py)
-        linkFrame = R.frame;
-        haveLink = false;
-        uint32_t n = be32(GD(0x101F3328));  // g_fopAcTg_Queue (touch_talk.cpp), mapped for this build
-        for (int i = 0; i < 4096 && n && valid(n); ++i) {
-          const uint32_t a = be32(n + 0xC);
-          if (valid(a) && (be32(a + 8) >> 16) == 0xA8) { lx = bef(a + 0x314); lz = bef(a + 0x31C); haveLink = true; break; }
-          n = be32(n + 8);
-        }
-      }
-      const uint32_t addr = r[mmSQ_VTX_UNIFORM_BLOCK_START + 7], size = r[mmSQ_VTX_UNIFORM_BLOCK_START + 8] + 1;
-      if (haveLink && addr && size >= 48) {
-        float m[12];
-        std::memcpy(m, mem::ptr(addr), sizeof m);  // uploaded as is (uniform())
-        const float dx = m[3] - lx, dz = m[11] - lz, d = float(grassDistance);
-        if (dx * dx + dz * dz > d * d) {
-          // the next draw continues from the previous drawn one: keep this draw's register changes
-          gx2::g_dirty_groups |= dirtyGroups;
-          return;
-        }
+    float eye[3];
+    const uint32_t addr = r[mmSQ_VTX_UNIFORM_BLOCK_START + 7], size = r[mmSQ_VTX_UNIFORM_BLOCK_START + 8] + 1;
+    if (s.grass && addr && size >= 48 && interp::drawn_eye(eye)) {
+      float m[12];
+      std::memcpy(m, mem::ptr(addr), sizeof m);  // uploaded as is (uniform())
+      const float dx = m[3] - eye[0], dz = m[11] - eye[2], d = float(grassDistance);
+      if (dx * dx + dz * dz > d * d) {
+        // the next draw continues from the previous drawn one: keep this draw's register changes
+        gx2::g_dirty_groups |= dirtyGroups;
+        return;
       }
     }
   }
