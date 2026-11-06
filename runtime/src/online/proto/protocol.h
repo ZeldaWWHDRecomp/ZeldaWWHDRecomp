@@ -89,6 +89,7 @@ enum Msg : uint8_t {
     kMsgTeamStateAsk = 16,  // reliable: please send me the team state
     kMsgPinRunner = 17,     // reliable: u8 on (leader pins enemy running to themselves)
     kMsgPing = 18,          // unreliable: keep-alive with nothing else to say
+    kMsgJoinCopyOf = 19,    // reliable: u64 key hash: go to the copy that player is in (a friend's copy)
 
     // ---- server -> client ----
     kMsgPoseBatch = 64,   // unreliable: n x {u16 id, u8 tier, tier payload}

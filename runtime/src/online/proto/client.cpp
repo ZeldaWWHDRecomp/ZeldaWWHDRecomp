@@ -19,6 +19,9 @@ bool Client::start(const ClientConfig& cfg, std::string& why) {
     stop();
     cfg_ = cfg;
     if (!resolve(cfg.host, cfg.port, server_, why)) return false;
+    home_ = server_;
+    home_host_ = cfg.host;
+    home_port_ = cfg.port;
     if (sock_ == &own_ && !own_.is_open()) {
         // an ephemeral local port on the matching family; "0.0.0.0" so a LAN / self-hosted server can answer
         bool v6 = server_.len > 16;  // sockaddr_in is 16 bytes, sockaddr_in6 28
@@ -72,6 +75,12 @@ void Client::send_raw(const Bytes& b) {
 void Client::lost(uint32_t now, const std::string& why) {
     phase_ = Phase::kNone;
     pose_pending_ = false;
+    // a worker we were redirected to is gone: back to the server's front door (the session resumes there or anew)
+    if (!(server_ == home_)) {
+        server_ = home_;
+        cfg_.host = home_host_;
+        cfg_.port = home_port_;
+    }
     if (!cfg_.reconnect) {
         set_state(ClientState::kStopped, why);
         return;
@@ -452,6 +461,13 @@ void Client::report(uint64_t kh, uint8_t reason) {
 
 void Client::switch_copy() {
     if (state_ == ClientState::kOnline) chan_.send_reliable(kMsgSwitchCopy, nullptr, 0);
+}
+
+void Client::join_copy_of(uint64_t kh) {
+    if (state_ != ClientState::kOnline) return;
+    Bytes b;
+    Writer(b).u64(kh);
+    chan_.send_reliable(kMsgJoinCopyOf, b);
 }
 
 void Client::party_invite(uint64_t code40) {

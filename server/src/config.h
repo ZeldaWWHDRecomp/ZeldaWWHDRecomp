@@ -65,21 +65,39 @@ struct Config {
     int team_state_keep_h = 72;     // the last known team state is kept this long with no member online
     double app_per_s = 120;         // opaque app messages per second
 
-    // shards (P4); count 1: one process runs everything
-    int shard_index = 0, shard_count = 1;
-    std::vector<int> shard_of_square;   // 49 entries; empty: squares split in row bands
-    std::vector<std::string> shard_peers;  // "host:port" of each shard's client port, by index
-    std::vector<std::string> shard_links;  // "host:port" of each shard's link port, by index
-    std::string link_secret;        // shared secret of the shard links
-    float handover_depth = 2000.0f;
-    float border_band = 12500.0f;
+    // scaling (docs/online-server.md, "Scaling"). "off": one process runs everything (small servers, the game's
+    // "Host on this computer"). "auto": this process is the coordinator and worker 0; it starts worker processes
+    // on this machine when the load needs them and accepts workers from other machines. "pool": the same without
+    // starting local processes (only registered workers are used).
+    std::string scale_mode = "off";
+    int max_workers = 8;            // worker processes including the coordinator (at most 15)
+    int worker_threads = 2;         // tick threads of a started worker
+    uint16_t link_port = 7900;      // the coordinator's link port (loopback / LAN); workers: link_port + index
+    uint16_t worker_port_base = 7778;  // client ports of started workers: base + index - 1
+    std::string public_host;        // the host name clients use for redirects ("" : the bind address)
+    std::string link_bind = "127.0.0.1";  // the link socket's address (a LAN address for pool workers)
+    std::string link_secret;        // shared secret of the links (16+ chars; or WWHD_ONLINE_LINK_SECRET)
+    double split_cpu = 120.0;       // worker CPU % (all its threads) above which its load is shed
+    double split_bw = 50e6;         // worker egress bytes/s above which its load is shed
+    double merge_level = 0.35;      // both halves below this share of the thresholds: merge back
+    int scale_hold_s = 3;           // over the threshold this long before a split or move
+    int scale_cooldown_s = 8;       // between two changes of one worker's regions
+    int merge_hold_s = 30;
+    int idle_worker_s = 60;         // a started worker without regions this long is stopped
+    int min_region = 2;             // smallest region side, in sub-cells (2 = 25,000 units)
+    int area_cap = 200;             // players per 2x2 sub-cell area and copy at sea before arrivals go to a copy
+    float handover_depth = 2000.0f; // this far inside another worker's region before the handover
+
+    // worker mode (wwhd-online-server --worker --join host:port)
+    bool worker = false;
+    std::string config_path;        // the file this config came from (started workers read it too)
+    std::string join;               // the coordinator's link address
 
     // metrics
     std::string metrics_file;       // "" none; else a line of counts every metrics_every_s
     int metrics_every_s = 10;
     bool log_addresses = false;     // never print IP addresses unless asked
 
-    int shard_of(int square) const;
 };
 
 // parses TOML-like "key = value" lines with [sections] flattened as "section.key"; false + why on errors

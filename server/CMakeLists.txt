@@ -28,7 +28,7 @@ add_library(wwhd_online_server_core STATIC
   src/config.cpp
   src/party.cpp
   src/server.cpp
-  src/shard.cpp)
+  src/scale.cpp)
 target_include_directories(wwhd_online_server_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(wwhd_online_server_core PUBLIC wwhd_online_proto Threads::Threads)
 

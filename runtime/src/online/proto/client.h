@@ -107,6 +107,7 @@ public:
     void block(uint64_t key_hash, bool on);
     void report(uint64_t key_hash, uint8_t reason);
     void switch_copy();
+    void join_copy_of(uint64_t key_hash);  // the copy a friend (or anyone visible) is in
     void party_invite(uint64_t code40);
     void party_accept(uint32_t party);
     void party_decline(uint32_t party);
@@ -138,7 +139,9 @@ private:
 
     UdpSocket own_;
     UdpSocket* sock_ = nullptr;
-    Address server_;
+    Address server_, home_;  // home_: the address start() was given (redirects come back to it after a loss)
+    std::string home_host_;
+    uint16_t home_port_ = 0;
     ClientConfig cfg_;
     ClientState state_ = ClientState::kOff;
     enum class Phase { kNone, kConnect, kPow, kHello } phase_ = Phase::kNone;

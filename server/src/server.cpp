@@ -42,6 +42,7 @@ Server::~Server() {
     stop_ = true;
     join();
     pool_stop();
+    stop_children();
     save_team_states();
 #ifndef _WIN32
     if (admin_fd_ >= 0 && !cfg_.admin_socket.empty()) std::remove(cfg_.admin_socket.c_str());
@@ -76,14 +77,16 @@ bool Server::start(std::string& why) {
     }
     load_bans();
     load_team_states();
+    if (cfg_.worker) cfg_.admin_socket.clear();  // the coordinator's admin socket runs the workers too
     if (!open_admin(why)) return false;
-    if (cfg_.shard_count > 1 && !open_link(why)) return false;
+    if (linked() && !open_link(why)) return false;
     next_tick_ = monotonic_ms();
     last_metrics_ = next_tick_;
     log("wwhd-online-server: " + cfg_.name + " on " + cfg_.bind + ":" + std::to_string(sock_.local_port()) +
         ", key " + fingerprint() + ", crypto " + crypto::backend_name() +
-        (cfg_.shard_count > 1 ? ", shard " + std::to_string(cfg_.shard_index) + "/" + std::to_string(cfg_.shard_count)
-                              : std::string()));
+        (cfg_.worker ? ", worker of " + cfg_.join
+                     : linked() ? ", scaling " + cfg_.scale_mode + " (link port " + std::to_string(link_.local_port()) + ")"
+                                : std::string()));
     return true;
 }
 
@@ -135,7 +138,7 @@ void Server::step(int wait_ms) {
         for (auto& u : send_socks_) drain(*u);  // a port shared by several sockets may deliver to any of them
     }
     admin_poll();
-    if (cfg_.shard_count > 1) link_poll(monotonic_ms());
+    if (linked()) link_poll(monotonic_ms());
     now = monotonic_ms();
     if (int32_t(now - next_tick_) >= 0) {
         uint64_t t0 = monotonic_us();
@@ -170,17 +173,21 @@ void Server::refuse(const Address& to, uint32_t nonce, Refusal r, const std::str
 }
 
 uint16_t Server::new_id() {
-    bool sharded = cfg_.shard_count > 1;
+    if (linked()) {
+        // ids come in blocks of 256 from the coordinator, so they are unique over all workers
+        for (uint16_t b : id_blocks_)
+            for (int k = 0; k < 256; ++k) {
+                uint16_t id = uint16_t(b + uint16_t((next_id_ + k) % 256));
+                if (id && !by_id_.count(id) && !ghosts_.count(id) && !lent_.count(id)) {
+                    next_id_ = uint16_t(next_id_ + k + 1);
+                    return id;
+                }
+            }
+        return 0;
+    }
     for (int tries = 0; tries < 70000; ++tries) {
-        uint16_t id;
-        if (sharded) {
-            uint16_t n = uint16_t(next_id_++ & 0x0FFF);
-            if (!n) continue;
-            id = uint16_t(((cfg_.shard_index + 1) << 12) | n);
-        } else {
-            id = next_id_++;
-            if (!id) continue;
-        }
+        uint16_t id = next_id_++;
+        if (!id) continue;
         if (!by_id_.count(id) && !ghosts_.count(id)) return id;
     }
     return 0;
@@ -335,7 +342,8 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     if (!crypto::session_keys(eph, h.eph, false, tx, rx)) return refuse(from, h.nonce, Refusal::kMalformed, "");
 
     Session* s = nullptr;
-    bool resumed = false;
+    bool resumed = false, had_ticket = false;
+    uint32_t join_party = 0;
     if (resume) {
         // same player, new keys and connection id; the world sees them again from their next pose
         s = resume;
@@ -380,7 +388,12 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
         if (ticket) {
             metrics_.handovers_in++;
             ghosts_.erase(s->id);
+            s->lent_from = ticket->from == me_ ? -1 : ticket->from;
+            if (ticket->from == me_) lent_.erase(s->id);  // one of our ids comes home
+            join_party = ticket->join ? ticket->party : 0;
             tickets_.erase(tok);
+            ticket = nullptr;
+            had_ticket = true;
         }
     }
     if (s->online && resumed) {
@@ -423,12 +436,22 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     w.id = s->id;
     std::memcpy(w.token, s->token, 32);
     w.tick_hz = uint8_t(cfg_.tick_hz);
-    w.resumed = resumed || ticket;  // a shard handover keeps the client's puppets too
+    w.resumed = resumed || had_ticket;  // a handover between workers keeps the client's puppets too
     s->welcome = encode_welcome(w, identity_, h.eph, tx);
     sock_.send_to(from, s->welcome.data(), s->welcome.size());
     metrics_.bytes_out += s->welcome.size();
-    if (ticket) s->party = ticket->party;
     party_member_online(*s, now);
+    if (join_party) {
+        // it came here to accept an invite to a party this worker holds
+        auto p = parties_.find(join_party);
+        if (p != parties_.end() && p->second.members.size() < size_t(kMaxPartySize)) {
+            p->second.invites.erase(std::remove_if(p->second.invites.begin(), p->second.invites.end(),
+                                                   [&](const Party::Invite& i) { return i.to == s->key_hash; }),
+                                    p->second.invites.end());
+            party_join(p->second, *s, now);
+            party_result(*s, 0, "joined the party");
+        }
+    }
 }
 
 // ---------------------------------------------------------------- session messages
@@ -513,6 +536,18 @@ void Server::on_message(Session& s, const Delivered& m, uint32_t now) {
         case kMsgBye: drop(s, "bye", false); break;
         case kMsgSwitchCopy: {
             // the next copy of this crowded place that has room (a new one when all are full)
+            if (s.where.stage_name() == cfg_.sea_stage && s.area >= 0) {
+                for (uint16_t c = uint16_t(s.copy + 1);; ++c) {
+                    int n = 0;
+                    auto it = area_count_.find((uint64_t(s.area) << 16) | c);
+                    if (it != area_count_.end()) n = it->second;
+                    if (n < cfg_.area_cap || c > 64) {
+                        set_sea_copy(s, c > 64 ? 0 : c);
+                        break;
+                    }
+                }
+                break;
+            }
             if (s.copy_key.empty()) break;
             auto& count = copies_[s.copy_key].count;
             size_t from = s.copy, to = from;
@@ -572,6 +607,42 @@ void Server::on_message(Session& s, const Delivered& m, uint32_t now) {
             break;
         }
         case kMsgPing: break;
+        case kMsgJoinCopyOf: {
+            uint64_t kh = r.u64();
+            if (!r.done()) break;
+            // a friend (anyone the player could see) in the same place: go to their copy
+            uint16_t copy = 0;
+            bool found = false;
+            std::string place;
+            if (Session* f = find_by_key(kh); f && f->online && f->world == s.world && sees(s, *f)) {
+                copy = f->copy;
+                found = f->where.stage == s.where.stage;
+            } else {
+                for (auto& [id, g] : ghosts_)
+                    if (g.key_hash == kh && g.world == s.world) {
+                        copy = g.copy;
+                        found = g.head.where.stage == s.where.stage;
+                    }
+            }
+            if (!found || copy == s.copy) break;
+            if (s.where.stage_name() == cfg_.sea_stage) {
+                set_sea_copy(s, copy);
+            } else if (!s.copy_key.empty()) {
+                auto& count = copies_[s.copy_key].count;
+                if (copy >= count.size()) count.resize(size_t(copy) + 1, 0);
+                if (s.copy < count.size() && count[s.copy] > 0) count[s.copy]--;
+                count[copy]++;
+                s.copy = copy;
+                s.place.copy = copy;
+                Bytes b;
+                Writer w(b);
+                put_where(w, s.where);
+                w.u16(s.copy);
+                w.u16(uint16_t(count.size()));
+                s.chan.send_reliable(kMsgCopy, b);
+            }
+            break;
+        }
         default: break;  // unknown types are dropped
     }
 }
@@ -585,6 +656,11 @@ void Server::on_stage(Session& s, const Where& w, uint32_t now) {
     bool stage_differs = !(w.stage == s.where.stage);
     bool room_differs = w.room != s.where.room;
     if (!stage_differs && !room_differs && !s.stage_changed) return;
+    if (!stage_differs && w.stage_name() == cfg_.sea_stage && !s.stage_changed) {
+        // sailing from one square to the next (the sea's room is the square): same place, same copy
+        s.where.room = w.room;
+        return;
+    }
     // a busy sea square has copies: moving between squares re-places the player
     s.where = w;
     s.stage_changed = true;
@@ -592,6 +668,7 @@ void Server::on_stage(Session& s, const Where& w, uint32_t now) {
     s.freeze_until = 0;
     place_player(s, now);
     party_place_changed(s, now);
+    if (linked()) handover_check(s, now);
 }
 
 void Server::on_pose(Session& s, const uint8_t* d, size_t n, uint32_t now) {
@@ -650,10 +727,15 @@ void Server::on_pose(Session& s, const uint8_t* d, size_t n, uint32_t now) {
         int sx = int(std::floor(gx / double(proto::kSubCells))), sz = int(std::floor(gz / double(proto::kSubCells)));
         int sq = (sx >= 0 && sx < proto::kSeaSquares && sz >= 0 && sz < proto::kSeaSquares) ? sz * proto::kSeaSquares + sx : -1;
         s.square = sq;
+        int area = std::clamp(gz, 0, kGrid - 1) / 2 * (kGrid / 2) + std::clamp(gx, 0, kGrid - 1) / 2;
+        if (area != s.area) {
+            s.area = area;
+            place_at_sea(s, now);
+        }
     } else {
         s.square = -1;
     }
-    if (cfg_.shard_count > 1) handover_check(s, now);
+    if (linked()) handover_check(s, now);
 }
 
 void Server::on_app(Session& s, const Delivered& m, uint32_t now) {
@@ -731,9 +813,9 @@ void Server::place_player(Session& s, uint32_t now) {
     std::string stage = s.where.stage_name();
     bool at_sea = stage == cfg_.sea_stage;
     std::string room_key = stage + ":" + std::to_string(s.where.room);
-    bool busy = std::find(cfg_.busy.begin(), cfg_.busy.end(), stage) != cfg_.busy.end() ||
-                std::find(cfg_.busy.begin(), cfg_.busy.end(), room_key) != cfg_.busy.end();
-    bool has_copies = !stage.empty() && (!at_sea || busy);
+    // interiors always have copies; at sea, copies are per area (place_at_sea)
+    bool has_copies = !stage.empty() && !at_sea;
+    s.area = -1;
     s.place.world = s.world;
     s.place.stage = s.where.stage;
     s.copy = 0;
@@ -814,6 +896,13 @@ void Server::remove(uint32_t conn_id) {
     if (k != by_key_.end() && k->second == conn_id) by_key_.erase(k);
     auto i = by_id_.find(s.id);
     if (i != by_id_.end() && i->second == conn_id) by_id_.erase(i);
+    // an id lent by another worker goes back when the player leaves the server (not when handed on)
+    if (s.lent_from >= 0 && !s.redirected) {
+        Bytes b;
+        Writer(b).u16(s.id);
+        link_send(s.lent_from, kLIdFree, b);
+    }
+    if (s.lent_from < 0 && !s.redirected) lent_.erase(s.id);
     // erased at the next tick: callers may still hold the reference
     s.dead = true;
     s.redirected = false;
@@ -833,6 +922,7 @@ void Server::reap() {
 void Server::rebuild_grid() {
     grid_.clear();
     interiors_.clear();
+    area_count_.clear();
     squares_.clear();
     ghost_grid_.clear();
     for (auto& [cid, sp] : sessions_) {
@@ -840,12 +930,16 @@ void Server::rebuild_grid() {
         if (s.dead || !s.online || !s.has_pose || s.hidden) continue;
         if (s.head.where.stage_name() == cfg_.sea_stage) {
             grid_[grid_key(s.world, s.gx, s.gz, s.copy)].push_back(&s);
+            if (s.area >= 0) area_count_[(uint64_t(s.area) << 16) | s.copy]++;
             if (s.square >= 0) squares_[square_key(s.world, s.square)].push_back(&s);
         } else {
             interiors_[s.place].push_back(&s);
         }
     }
-    for (auto& [id, g] : ghosts_) ghost_grid_[grid_key(g.world, g.gx, g.gz, 0)].push_back(&g);
+    for (auto& [id, g] : ghosts_) {
+        ghost_grid_[grid_key(g.world, g.gx, g.gz, g.copy)].push_back(&g);
+        area_count_[(uint64_t(std::max(0, g.gz) / 2 * 28 + std::max(0, g.gx) / 2) << 16) | g.copy]++;
+    }
 }
 
 void Server::gather(Session& s, std::vector<Session*>& out, std::vector<Ghost*>* ghosts, float extra) {
@@ -857,14 +951,8 @@ void Server::gather(Session& s, std::vector<Session*>& out, std::vector<Ghost*>*
                 auto it = grid_.find(grid_key(s.world, s.gx + dx, s.gz + dz, s.copy));
                 if (it != grid_.end())
                     for (Session* o : it->second) out.push_back(o);
-                if (s.copy) {
-                    // a busy square's copy still sees the plain sea around it
-                    auto it0 = grid_.find(grid_key(s.world, s.gx + dx, s.gz + dz, 0));
-                    if (it0 != grid_.end())
-                        for (Session* o : it0->second) out.push_back(o);
-                }
                 if (ghosts) {
-                    auto g = ghost_grid_.find(grid_key(s.world, s.gx + dx, s.gz + dz, 0));
+                    auto g = ghost_grid_.find(grid_key(s.world, s.gx + dx, s.gz + dz, s.copy));
                     if (g != ghost_grid_.end())
                         for (Ghost* o : g->second) ghosts->push_back(o);
                 }
@@ -1176,7 +1264,7 @@ void Server::tick(uint32_t now) {
     reap();
     // ghosts from other shards expire
     for (auto it = ghosts_.begin(); it != ghosts_.end();)
-        it = now - it->second.at > 1500 ? ghosts_.erase(it) : std::next(it);
+        it = now - it->second.at > 1000 ? ghosts_.erase(it) : std::next(it);
 
     rebuild_grid();
     std::vector<Session*> work;
@@ -1186,7 +1274,12 @@ void Server::tick(uint32_t now) {
     parallel(work, &Server::interest, now);
     metrics_.interest_us.push_back(uint32_t(monotonic_us() - t0));
     runners_tick(now);
-    if (cfg_.shard_count > 1) link_tick(now);
+    if (linked()) link_tick(now);
+    if (now - last_areas_ >= 2000) {
+        last_areas_ = now;
+        area_copies(now);
+        reap_children();
+    }
     t0 = monotonic_us();
     flush_all(now);
     metrics_.send_us.push_back(uint32_t(monotonic_us() - t0));
@@ -1198,6 +1291,86 @@ void Server::tick(uint32_t now) {
     if (!cfg_.metrics_file.empty() && now - last_metrics_ >= uint32_t(cfg_.metrics_every_s) * 1000) {
         write_metrics(now);
         last_metrics_ = now;
+    }
+}
+
+// ---------------------------------------------------------------- sea copies (the safety valve)
+
+void Server::set_sea_copy(Session& s, uint16_t copy) {
+    if (copy == s.copy) return;
+    if (s.area >= 0) {
+        auto it = area_count_.find((uint64_t(s.area) << 16) | s.copy);
+        if (it != area_count_.end() && it->second > 0) it->second--;
+        area_count_[(uint64_t(s.area) << 16) | copy]++;
+    }
+    uint16_t copies = 1;
+    for (auto& [k, n] : area_count_)
+        if (s.area >= 0 && (k >> 16) == uint64_t(s.area) && n > 0) copies = std::max<uint16_t>(copies, uint16_t((k & 0xFFFF) + 1));
+    if (copy + 1 > copies) {
+        copies = uint16_t(copy + 1);
+        metrics_.copies_opened++;
+    }
+    s.copy = copy;
+    s.place.copy = copy;
+    metrics_.copy_moves++;
+    Bytes b;
+    Writer w(b);
+    put_where(w, s.where);
+    w.u16(copy);
+    w.u16(copies);
+    s.chan.send_reliable(kMsgCopy, b);
+}
+
+// a player came into a 2x2 sub-cell area of the sea: keep their copy unless it is full there (or empty while others
+// are around); party members go to their party's copy even when it is full
+void Server::place_at_sea(Session& s, uint32_t now) {
+    (void)now;
+    auto count = [&](uint16_t c) {
+        auto it = area_count_.find((uint64_t(s.area) << 16) | c);
+        return it == area_count_.end() ? 0 : it->second;
+    };
+    if (Party* p = party_of(s))
+        for (uint64_t kh : p->members)
+            if (Session* t = online_member(kh); t && t != &s && t->has_pose && t->where.stage == s.where.stage &&
+                                                 std::abs(t->gx - s.gx) <= 2 && std::abs(t->gz - s.gz) <= 2) {
+                set_sea_copy(s, t->copy);
+                return;
+            }
+    int mine = count(s.copy);
+    if (mine < cfg_.area_cap && (s.copy == 0 || mine > 0)) return;
+    // the fullest copy with room; a new one when all are full
+    int best = -1, bn = -1;
+    uint16_t top = 0;
+    for (auto& [k, n] : area_count_)
+        if ((k >> 16) == uint64_t(s.area)) top = std::max<uint16_t>(top, uint16_t(k & 0xFFFF));
+    for (uint16_t c = 0; c <= top + 1; ++c) {
+        int n = count(c);  // (the player is not counted in an area it just came into)
+        if (n < cfg_.area_cap && n > bn) {
+            bn = n;
+            best = c;
+        }
+    }
+    if (best >= 0) set_sea_copy(s, uint16_t(best));
+}
+
+// copies merge back: when a higher copy of an area and a lower one fit together, the higher one's players move down
+void Server::area_copies(uint32_t now) {
+    (void)now;
+    std::unordered_map<int, std::vector<std::pair<uint16_t, int>>> per_area;
+    for (auto& [k, n] : area_count_)
+        if (n > 0) per_area[int(k >> 16)].push_back({uint16_t(k & 0xFFFF), n});
+    for (auto& [area, list] : per_area) {
+        if (list.size() < 2) continue;
+        std::sort(list.begin(), list.end());
+        auto [hi, hn] = list.back();
+        for (auto& [lo, ln] : list) {
+            if (lo >= hi || (hn + ln) * 10 > cfg_.area_cap * 8) continue;
+            for (auto& [cid, sp] : sessions_)
+                if (!sp->dead && sp->online && !sp->redirected && sp->area == area && sp->copy == hi &&
+                    sp->where.stage_name() == cfg_.sea_stage)
+                    set_sea_copy(*sp, lo);
+            break;
+        }
     }
 }
 
@@ -1290,14 +1463,16 @@ void Server::write_metrics(uint32_t now) {
     double out_s = (metrics_.bytes_out - last_out) / dt, in_s = (metrics_.bytes_in - last_in) / dt;
     char line[768];
     std::snprintf(line, sizeof line,
-                  "{\"t\":%u,\"players\":%zu,\"out_Bps\":%.0f,\"in_Bps\":%.0f,\"out_per_player_Bps\":%.0f,"
+                  "{\"t\":%u,\"worker\":%d,\"players\":%zu,\"out_Bps\":%.0f,\"in_Bps\":%.0f,\"out_per_player_Bps\":%.0f,"
                   "\"in_per_player_Bps\":%.0f,\"tick_p50_us\":%u,\"tick_p99_us\":%u,\"tick_max_us\":%u,"
                   "\"interest_p99_us\":%u,\"send_p99_us\":%u,\"threads\":%d,"
                   "\"ticks\":%zu,\"cpu_pct\":%.1f,\"maxrss_mb\":%.1f,\"dropped_rate\":%llu,\"implausible\":%llu}\n",
-                  now, n, out_s, in_s, n ? out_s / double(n) : 0, n ? in_s / double(n) : 0, pct(0.5), pct(0.99),
+                  now, me_, n, out_s, in_s, n ? out_s / double(n) : 0, n ? in_s / double(n) : 0, pct(0.5), pct(0.99),
                   t.empty() ? 0u : t.back(), interest_p99, send_p99, workers_, t.size(), cpu_pct, double(rss) / 1024.0,
                   (unsigned long long)metrics_.dropped_rate, (unsigned long long)metrics_.implausible);
-    if (std::FILE* f = std::fopen(cfg_.metrics_file.c_str(), "a")) {
+    std::string mf = cfg_.metrics_file;
+    if (cfg_.worker) mf += "." + std::to_string(me_);
+    if (std::FILE* f = std::fopen(mf.c_str(), "a")) {
         std::fputs(line, f);
         std::fclose(f);
     }

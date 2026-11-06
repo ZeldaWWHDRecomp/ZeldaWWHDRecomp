@@ -175,7 +175,18 @@ void Server::party_member_offline(Session& s, uint32_t now) {
     bool any = false;
     for (uint64_t kh : p->members)
         if (kh != s.key_hash && online_member(kh)) any = true;
-    if (!any) p->empty_since = now ? now : 1;
+    if (!any) {
+        p->empty_since = now ? now : 1;
+        if (linked() && me_ > 0) {
+            // nobody online: the coordinator keeps the last known team state (members come back through it)
+            link_send(0, kLPartyPark, encode_party(*p));
+            uint32_t pid = p->id;
+            for (uint64_t kh : p->members) party_by_key_.erase(kh);
+            s.party = 0;
+            parties_.erase(pid);
+            return;
+        }
+    }
     // the runner table is redone by runners_tick; members see who is offline
     party_send_state(*p);
 }
@@ -196,12 +207,15 @@ void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
             Session* t = online_member(kh);
             if (t && t->world == s.world) to = t;
         }
-    if (!to) return party_result(s, 2, "that player is not online on this server");
+    if (!to && !linked()) return party_result(s, 2, "that player is not online on this server");
     if (to == &s) return party_result(s, 3, "that is your own code");
-    if (!sees(s, to->key_hash)) return party_result(s, 2, "that player is not online on this server");
+    if (to && !sees(s, to->key_hash)) return party_result(s, 2, "that player is not online on this server");
     Party* p = party_of(s);
     if (!p) {
-        uint32_t id = next_party_++;
+        // unique over all workers: parties move between them
+        uint32_t id = 0;
+        do id = (uint32_t(std::max(me_, 0)) << 24) | (next_party_++ & 0xFFFFFF);
+        while (parties_.count(id) || !(id & 0xFFFFFF));
         Party np;
         np.id = id;
         np.world = s.world;
@@ -209,6 +223,25 @@ void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
         parties_[id] = std::move(np);
         p = &parties_[id];
         party_join(*p, s, now);
+    }
+    if (!to) {
+        // on another worker, maybe: every worker gets the invite and the one hosting the friend shows it
+        p->invites.erase(std::remove_if(p->invites.begin(), p->invites.end(),
+                                        [&](const Party::Invite& i) { return now - i.at > kInviteMs; }),
+                         p->invites.end());
+        if (p->members.size() + p->invites.size() >= size_t(kMaxPartySize)) return party_result(s, 5, "the party is full");
+        p->invites.push_back({code | (uint64_t(1) << 63), now});  // by code: the key is not known here
+        Bytes b;
+        Writer w(b);
+        w.u32(p->id);
+        w.u64(code);
+        w.u16(s.id);
+        w.u64(s.key_hash);
+        w.str8(s.name);
+        w.u64(s.world);
+        for (size_t i = 0; i < peers_.size(); ++i)
+            if (int(i) != me_ && peers_[i].up) link_send(int(i), kLInvite, b);
+        return party_result(s, 0, "invite sent");
     }
     if (std::find(p->members.begin(), p->members.end(), to->key_hash) != p->members.end())
         return party_result(s, 4, "already in your party");
@@ -229,10 +262,21 @@ void Server::party_invite(Session& s, uint64_t code, uint32_t now) {
 
 void Server::party_accept(Session& s, uint32_t id, uint32_t now) {
     auto it = parties_.find(id);
-    if (it == parties_.end()) return party_result(s, 6, "that party is gone");
+    if (it == parties_.end()) {
+        // a party on another worker: go there to join it (the handover carries the acceptance)
+        auto r = remote_invites_.find(id);
+        if (r == remote_invites_.end() || size_t(r->second) >= peers_.size() || !peers_[size_t(r->second)].up)
+            return party_result(s, 6, "that party is gone");
+        int target = r->second;
+        remote_invites_.erase(r);
+        if (s.party) party_leave(s, now);
+        hand_over(s, target, now, nullptr, id);
+        return;
+    }
     Party& p = it->second;
-    auto inv = std::find_if(p.invites.begin(), p.invites.end(),
-                            [&](const Party::Invite& i) { return i.to == s.key_hash && now - i.at <= kInviteMs; });
+    auto inv = std::find_if(p.invites.begin(), p.invites.end(), [&](const Party::Invite& i) {
+        return (i.to == s.key_hash || i.to == (code40_of(s.key_hash) | (uint64_t(1) << 63))) && now - i.at <= kInviteMs;
+    });
     if (inv == p.invites.end()) return party_result(s, 7, "the invite expired");
     p.invites.erase(inv);
     if (p.members.size() >= size_t(kMaxPartySize)) return party_result(s, 5, "the party is full");
@@ -243,7 +287,19 @@ void Server::party_accept(Session& s, uint32_t id, uint32_t now) {
 
 void Server::party_decline(Session& s, uint32_t id) {
     auto it = parties_.find(id);
-    if (it == parties_.end()) return;
+    if (it == parties_.end()) {
+        auto r = remote_invites_.find(id);
+        if (r == remote_invites_.end()) return;
+        // the leader is not known here by key; the inviting worker tells whoever leads that party
+        Bytes b;
+        Writer w(b);
+        w.u32(id);
+        w.u8(8);
+        w.str8(s.name + " declined");
+        link_send(r->second, kLInviteAnswer, b);
+        remote_invites_.erase(r);
+        return;
+    }
     Party& p = it->second;
     p.invites.erase(std::remove_if(p.invites.begin(), p.invites.end(),
                                    [&](const Party::Invite& i) { return i.to == s.key_hash; }),

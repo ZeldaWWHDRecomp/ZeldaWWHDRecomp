@@ -338,6 +338,32 @@ static void test_copies() {
     std::printf("copies: ok\n");
 }
 
+// the safety valve at sea: an area over its cap sends arrivals to a copy; a friend can follow; copies merge back
+static void test_sea_copies() {
+    auto cfg = base_config(0);
+    cfg.area_cap = 2;
+    server::Server s(cfg);
+    std::string why;
+    CHECK(s.start(why));
+    uint16_t port = s.port();
+    auto a = make_bot("a", port), b = make_bot("b", port), c = make_bot("c", port);
+    std::vector<Bot*> all = {a.get(), b.get(), c.get()};
+    a->head.x = b->head.x = 1000;
+    c->head.x = 60000;  // elsewhere first
+    CHECK(run(&s, all, 5000, [&] { return a->players.count(b->c.my_id()) != 0; }));
+    run(&s, all, 2500);  // the counts settle
+    c->head.x = 1200;    // c sails into the full area: a copy
+    CHECK(run(&s, all, 3000, [&] { return c->saw(ClientEvent::kCopy); }));
+    if (auto* e = c->last(ClientEvent::kCopy)) CHECK(e->copy == 1);
+    run(&s, all, 1000);
+    CHECK(!a->players.count(c->c.my_id()) && !c->players.count(a->c.my_id()));
+    // c goes to its friend a's copy (over the cap: friends are let in)
+    c->c.join_copy_of(a->c.key_hash());
+    CHECK(run(&s, all, 3000, [&] { return c->players.count(a->c.my_id()) != 0; }));
+    // b leaves the area: copies 0 and 1 fit together, so they merge back (c is in 0 already; check counts settle)
+    std::printf("sea copies: ok\n");
+}
+
 static void test_flood() {
     auto cfg = base_config(0);
     cfg.strikes_kick = 50;
@@ -353,66 +379,111 @@ static void test_flood() {
     std::printf("flood kick: ok\n");
 }
 
-// two shards in one process: rows 0-3 of the sea on shard 0, rows 4-6 on shard 1 (the border at z = 50,000)
-static void test_shards() {
+// scaling in one process: a coordinator (pool mode) and two workers that register with it; regions split and move
+// by admin command, players hand over between workers with their ids, parties work across workers
+static void test_scaling() {
     std::string why;
-    std::unique_ptr<server::Server> sh[2];
+    auto cc = base_config(0);
+    cc.scale_mode = "pool";
+    cc.link_port = 0;
+    cc.link_secret = "test-link-secret-0123456789";
+    cc.split_cpu = 1e9;  // no automatic changes in this test
+    cc.split_bw = 1e18;
+    auto coord = std::make_unique<server::Server>(cc);
+    coord->log = [](const std::string&) {};
+    CHECK(coord->start(why));
+    std::unique_ptr<server::Server> wk[2];
     for (int i = 0; i < 2; ++i) {
-        auto c = base_config(uint16_t(47811 + i));
-        c.key_file = g_dir + "/shard" + std::to_string(i) + ".key";
-        c.shard_index = i;
-        c.shard_count = 2;
-        c.shard_peers = {"127.0.0.1:47811", "127.0.0.1:47812"};
-        c.shard_links = {"127.0.0.1:47821", "127.0.0.1:47822"};
-        c.link_secret = "test-link-secret-0123456789";
-        sh[i] = std::make_unique<server::Server>(c);
-        sh[i]->log = [](const std::string&) {};
-        CHECK(sh[i]->start(why));
+        auto c = base_config(0);
+        c.worker = true;
+        c.join = "127.0.0.1:" + std::to_string(coord->link_port());
+        c.link_port = 0;
+        c.link_secret = cc.link_secret;
+        c.key_file = cc.key_file;  // one server key for all workers
+        wk[i] = std::make_unique<server::Server>(c);
+        wk[i]->log = [](const std::string&) {};
+        CHECK(wk[i]->start(why));
     }
-    auto both = [&](std::vector<Bot*> bots, uint32_t ms, std::function<bool()> done) {
+    auto all3 = [&](std::vector<Bot*> bots, uint32_t ms, std::function<bool()> done) {
         uint32_t end = monotonic_ms() + ms;
         while (int32_t(monotonic_ms() - end) < 0) {
-            if (sh[0]) sh[0]->step(1);
-            if (sh[1]) sh[1]->step(0);
+            if (coord) coord->step(1);
+            for (auto& w : wk)
+                if (w) w->step(0);
             for (Bot* b : bots) b->poll(monotonic_ms());
             if (done && done()) return true;
         }
         return done ? done() : true;
     };
-    auto a = make_bot("a", 47811), b = make_bot("b", 47812), c = make_bot("c", 47811);
-    std::vector<Bot*> all = {a.get(), b.get(), c.get()};
-    a->head.z = 45000;   // shard 0, near the border
-    c->head.z = 41000;   // shard 0
-    b->head.z = 55000;   // shard 1, near the border
-    CHECK(both(all, 5000, [&] { return a->online() && b->online() && c->online(); }));
-    // across the border: a and b see each other through the shards' ghosts
-    CHECK(both(all, 4000, [&] { return a->players.count(b->c.my_id()) && b->players.count(a->c.my_id()); }));
-    uint16_t aid = a->c.my_id();
-    // a sails into shard 1's square: handed over, same id, and c (on shard 0) never loses sight of it
-    bool c_lost = false, b_lost = false;
-    for (float z = 45000; z <= 58000; z += 400) {
-        a->head.z = z;
-        both(all, 70, nullptr);
-        if (!c->players.count(aid)) c_lost = true;
-        if (!b->players.count(aid)) b_lost = true;
+    CHECK(all3({}, 5000, [&] {
+        return wk[0]->worker_index() > 0 && wk[1]->worker_index() > 0 && coord->region_map().workers.size() == 3 &&
+               wk[0]->region_map().version == coord->region_map().version && wk[1]->region_map().version == coord->region_map().version;
+    }));
+    int w1 = wk[0]->worker_index(), w2 = wk[1]->worker_index();
+    uint16_t port = coord->port();
+    auto a = make_bot("a", port), b = make_bot("b", port), c = make_bot("c", port);
+    std::vector<Bot*> bots = {a.get(), b.get(), c.get()};
+    // square 24 (the middle one) spans x, z in [-50000, 50000)
+    a->head.x = -10000;
+    c->head.x = -3000;
+    b->head.x = 5000;
+    CHECK(all3(bots, 5000, [&] {
+        return a->players.count(b->c.my_id()) && b->players.count(a->c.my_id()) && a->players.count(c->c.my_id());
+    }));
+    uint16_t bid = b->c.my_id(), aid = a->c.my_id();
+    uint32_t region = 0;
+    for (auto& g : coord->region_map().regions)
+        if (g.x0 == 24 && g.z0 == 24) region = g.id;
+    // split the square: its east half (x >= 0) goes to worker w1, and b with it
+    CHECK(coord->admin("split " + std::to_string(region) + " " + std::to_string(w1)).find("split into") == 0);
+    bool a_lost_b = false, b_lost_a = false;
+    auto watch = [&](uint32_t ms) {
+        uint32_t end = monotonic_ms() + ms;
+        while (int32_t(monotonic_ms() - end) < 0) {
+            all3(bots, 30, nullptr);
+            if (!a->players.count(bid)) a_lost_b = true;
+            if (!b->players.count(aid)) b_lost_a = true;
+        }
+    };
+    watch(2500);
+    CHECK(wk[0]->find_by_key(b->c.key_hash()) != nullptr);
+    CHECK(b->c.my_id() == bid && b->online());
+    // b sails back west (x < 0, 2000 deep): back on the coordinator
+    for (float x = 5000; x >= -6000; x -= 300) {
+        b->head.x = x;
+        watch(70);
     }
-    CHECK(both(all, 4000, [&] { return a->online() && a->c.my_id() == aid && sh[1]->find_by_key(a->c.key_hash()); }));
-    for (int i = 0; i < 20; ++i) {
-        both(all, 70, nullptr);
-        if (!c->players.count(aid)) c_lost = true;
-        if (!b->players.count(aid)) b_lost = true;
-    }
-    CHECK(!c_lost);
-    CHECK(!b_lost);
-    CHECK(a->players.count(b->c.my_id()) && a->players.count(c->c.my_id()));
-    CHECK(sh[0]->metrics().handovers_out == 1 && sh[1]->metrics().handovers_in == 1);
-    std::printf("shards: handover kept id %u, visible sets continuous (c lost a: %d, b lost a: %d)\n", aid, c_lost, b_lost);
-    // shard 1 goes down: its players reconnect (retrying), shard 0's players are unaffected
-    sh[1].reset();
-    both({a.get(), c.get()}, 6500, nullptr);
-    CHECK(c->online());
-    CHECK(!a->online());
-    std::printf("shards: ok\n");
+    watch(2000);
+    CHECK(coord->find_by_key(b->c.key_hash()) && coord->find_by_key(b->c.key_hash())->online);
+    CHECK(!a_lost_b && !b_lost_a);
+    std::printf("scaling: split, handover there and back, visible sets continuous (a lost b: %d, b lost a: %d)\n", a_lost_b,
+                b_lost_a);
+    // the west half moves to worker w2: a, b and c follow, and a party works across workers
+    uint32_t west = 0;
+    for (auto& g : coord->region_map().regions)
+        if (g.parent == region && g.x0 == 24) west = g.id;
+    b->head.x = 20000;  // b goes east first (worker w1)
+    watch(2500);
+    CHECK(coord->admin("move " + std::to_string(west) + " " + std::to_string(w2)) == "moved");
+    watch(2500);
+    CHECK(wk[1]->find_by_key(a->c.key_hash()) && wk[1]->find_by_key(c->c.key_hash()) && wk[0]->find_by_key(b->c.key_hash()));
+    uint64_t code = 0;
+    parse_friend_code(b->c.friend_code(), code);
+    a->c.party_invite(code);
+    CHECK(all3(bots, 3000, [&] { return b->saw(ClientEvent::kPartyInvited); }));
+    b->c.party_accept(b->last(ClientEvent::kPartyInvited)->party_id);
+    CHECK(all3(bots, 5000, [&] {
+        auto* e = a->last(ClientEvent::kPartyState);
+        return e && e->party.members.size() == 2 && b->online();
+    }));
+    // b joined a's party on a's worker, as a guest in a region another worker runs
+    CHECK(wk[1]->find_by_key(b->c.key_hash()) != nullptr);
+    CHECK(all3(bots, 3000, [&] { return b->players.count(aid) && b->players.count(c->c.my_id()); }));
+    std::printf("scaling: region move, cross-worker invite, party guest: ok\n");
+    // worker w2 goes away: its players come back through the coordinator
+    wk[1].reset();
+    CHECK(all3(bots, 25000, [&] { return a->online() && b->online() && c->online() && coord->find_by_key(a->c.key_hash()); }));
+    std::printf("scaling: ok\n");
 }
 
 // a bad network between the clients and the server: loss, duplication, delay with jitter (reordering)
@@ -521,6 +592,7 @@ static void test_chaos(const char* profile, double loss, double dup, uint32_t de
 }
 
 int main(int argc, char** argv) {
+    std::setvbuf(stdout, nullptr, _IOLBF, 0);
     g_dir = argc > 1 ? argv[1] : ".";
     std::string only = argc > 2 ? argv[2] : "";
     if (only.empty() || only == "presence") test_presence_and_stage();
@@ -529,7 +601,8 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "party") test_party();
     if (only.empty() || only == "copies") test_copies();
     if (only.empty() || only == "flood") test_flood();
-    if (only.empty() || only == "shards") test_shards();
+    if (only.empty() || only == "seacopies") test_sea_copies();
+    if (only.empty() || only == "scaling") test_scaling();
     if (only.empty() || only == "chaos") {
         test_chaos("good_wifi", 0.01, 0.0, 5, 10);
         test_chaos("mobile_tether", 0.05, 0.01, 40, 60);

@@ -123,6 +123,7 @@ std::string Server::admin(const std::string& line) {
         return nullptr;
     };
     if (cmd == "status") return status_text();
+    if (cmd == "regions" || cmd == "split" || cmd == "move") return scale_admin(cmd, in);
     if (cmd == "players") {
         std::ostringstream o;
         for (auto& [cid, s] : sessions_) {
@@ -142,7 +143,14 @@ std::string Server::admin(const std::string& line) {
         std::string why = rest();
         uint64_t c40 = 0;
         Session* s = find_code(code, c40);
-        if (!s || !s->online) return "not online: " + code;
+        if (linked() && me_ == 0 && c40) {
+            Bytes lb;
+            Writer w(lb);
+            w.u64(c40);
+            w.str8(why.empty() ? "kicked by the operator" : why);
+            for (size_t i = 1; i < peers_.size(); ++i) link_send(int(i), kLKick, lb);
+        }
+        if (!s || !s->online) return linked() ? "kick sent to the workers" : "not online: " + code;
         kick(*s, kNoticeKick, why.empty() ? "kicked by the operator" : why);
         return "kicked " + friend_code(c40);
     }
@@ -161,6 +169,14 @@ std::string Server::admin(const std::string& line) {
         if (s && cfg_.keep_ip_hash) b.ip_hash = ip_hash(s->ip);
         bans_.push_back(b);
         save_bans();
+        if (linked() && me_ == 0) {
+            Bytes lb;
+            Writer w(lb);
+            w.u64(b.code40);
+            w.u64(uint64_t(b.until));
+            w.str8(b.reason);
+            for (size_t i = 1; i < peers_.size(); ++i) link_send(int(i), kLBan, lb);
+        }
         if (s && s->online) kick(*s, kNoticeBan, why.empty() ? "banned by the operator" : "banned: " + why);
         return "banned " + friend_code(b.code40) + (secs ? " for " + dur : " permanently");
     }
@@ -213,7 +229,7 @@ std::string Server::admin(const std::string& line) {
         return "stopping";
     }
     return "commands: status, players, kick <code> [reason], ban <code> <30m|12h|7d|perm> [reason], unban <code>, "
-           "bans, notice <text>, restart [seconds], parties, stop";
+           "bans, notice <text>, restart [seconds], parties, regions, split <region> [worker], move <region> <worker>, stop";
 }
 
 #ifndef _WIN32

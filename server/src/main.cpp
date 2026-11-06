@@ -61,7 +61,10 @@ static int admin_main(int argc, char** argv) {
 int main(int argc, char** argv) {
     if (argc > 1 && !std::strcmp(argv[1], "admin")) return admin_main(argc, argv);
     server::Config cfg;
-    std::string why, config_path;
+    std::string why, config_path, join, public_host;
+    bool worker = false;
+    int link_port = -1, threads = -1, port = -1;
+    std::string bind;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         auto next = [&]() -> std::string { return i + 1 < argc ? argv[++i] : ""; };
@@ -71,20 +74,48 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr, "%s: %s\n", config_path.c_str(), why.c_str());
                 return 2;
             }
+            cfg.config_path = config_path;
+        } else if (a == "--worker") {
+            worker = true;
+        } else if (a == "--join") {
+            join = next();
+        } else if (a == "--link-port") {
+            link_port = std::atoi(next().c_str());
+        } else if (a == "--threads") {
+            threads = std::atoi(next().c_str());
+        } else if (a == "--public-host") {
+            public_host = next();
         } else if (a == "--bind") {
-            cfg.bind = next();
+            bind = next();
         } else if (a == "--port") {
-            cfg.port = uint16_t(std::atoi(next().c_str()));
+            port = std::atoi(next().c_str());
         } else if (a == "--version") {
             std::printf("wwhd-online-server, protocol %u\n", unsigned(proto::kProtoVersion));
             return 0;
         } else {
             std::fprintf(stderr,
                          "usage: wwhd-online-server [--config server.toml] [--bind addr] [--port n]\n"
+                         "       wwhd-online-server --worker --join <coordinator link host:port> [--config f] [--port n]\n"
+                         "                          [--link-port n] [--threads n] [--public-host h]\n"
                          "       wwhd-online-server admin [--socket path] <status|players|kick|ban|unban|bans|notice|restart|parties|stop> ...\n");
             return 2;
         }
     }
+    // command-line values win over the config file (workers get theirs from the coordinator)
+    if (!bind.empty()) cfg.bind = bind;
+    if (port >= 0) cfg.port = uint16_t(port);
+    if (worker) {
+        cfg.worker = true;
+        cfg.join = join;
+        cfg.link_port = uint16_t(link_port >= 0 ? link_port : 0);
+        if (cfg.join.empty()) {
+            std::fprintf(stderr, "wwhd-online-server: --worker needs --join <coordinator link host:port>\n");
+            return 2;
+        }
+        cfg.team_state_file.clear();
+    }
+    if (threads >= 0) cfg.threads = threads;
+    if (!public_host.empty()) cfg.public_host = public_host;
     server::Server s(cfg);
     if (!s.start(why)) {
         std::fprintf(stderr, "wwhd-online-server: %s\n", why.c_str());

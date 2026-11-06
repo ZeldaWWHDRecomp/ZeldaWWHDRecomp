@@ -15,6 +15,7 @@
 #include <condition_variable>
 #include <mutex>
 #include <set>
+#include <sstream>
 #include <string>
 #include <thread>
 #include <tuple>
@@ -23,6 +24,7 @@
 #include <vector>
 
 #include "config.h"
+#include "scale.h"
 #include "proto/channel.h"
 #include "proto/crypto.h"
 #include "proto/handshake.h"
@@ -117,14 +119,18 @@ struct Session {
     // party
     uint32_t party = 0;
 
-    // shard handover in progress
+    // handover to another worker in progress
     bool redirected = false;
     uint32_t redirect_at = 0;
+    int lent_from = -1;   // the id came with a handover from this worker (told when it is free again)
+    int area = -1;        // at sea: the 2x2 sub-cell area (sea copies are per area)
 };
 
-// a player held by another shard, seen across a border
+// a player hosted by another worker, seen across a region border
 struct Ghost {
     uint16_t id = 0;
+    uint16_t copy = 0;
+    int from = 0;         // the worker hosting it
     uint64_t key_hash = 0, world = 0;
     std::string name;
     uint32_t look = 0;
@@ -175,7 +181,24 @@ struct Metrics {
     std::vector<uint32_t> tick_us;  // since the last report
     std::vector<uint32_t> interest_us, send_us;  // the two parallel phases of each tick
     std::atomic<uint64_t> pose_entries_near{0}, pose_entries_mid{0}, pose_entries_far{0}, markers{0};
-    uint64_t handovers_out = 0, handovers_in = 0, ghosts = 0;
+    uint64_t handovers_out = 0, handovers_in = 0, ghosts = 0, splits = 0, moves = 0, merges = 0;
+    uint64_t workers_started = 0, workers_stopped = 0, copies_opened = 0, copy_moves = 0;
+};
+
+// a link to another worker (scale.cpp)
+struct Peer {
+    proto::Address addr;
+    uint32_t epoch = 0;
+    bool up = false;
+    proto::Channel chan;
+    uint32_t heard = 0;
+    std::vector<uint8_t> sub;      // the cells it subscribed (bitmap)
+    LoadReport load;
+    uint32_t load_at = 0;
+    // coordinator bookkeeping
+    uint32_t over_since = 0, under_since = 0, changed_at = 0, idle_since = 0;
+    int pid = 0;                   // a worker this process started
+    std::vector<uint64_t> keys;    // the players it hosts (kLPlayers)
 };
 
 struct Ban {
@@ -204,6 +227,9 @@ public:
 
     const Config& config() const { return cfg_; }
     uint16_t port() const { return sock_.local_port(); }
+    uint16_t link_port() const { return link_.local_port(); }
+    int worker_index() const { return me_; }
+    const RegionMap& region_map() const { return map_; }
     size_t players() const;
     const Metrics& metrics() const { return metrics_; }
     std::string status_text();
@@ -288,13 +314,28 @@ private:
     uint64_t ip_hash(const std::string& ip) const;
     void append_report(uint64_t from, uint64_t about, uint8_t reason);
 
-    // shards (shard.cpp)
+    // scaling (scale.cpp)
+    bool linked() const { return cfg_.scale_mode != "off" || cfg_.worker; }
     bool open_link(std::string& why);
     void link_poll(uint32_t now);
     void link_tick(uint32_t now);
-    void link_send(int shard, uint8_t type, const Bytes& body);
+    void link_send(int worker, uint8_t type, const Bytes& body, bool reliable = true);
+    void link_datagram(const uint8_t* d, size_t n, const proto::Address& from, uint32_t now);
+    void link_message(int from, const proto::Delivered& m, uint32_t now);
     void handover_check(Session& s, uint32_t now);
-    int shard_of_place(const Session& s) const;
+    void hand_over(Session& s, int target, uint32_t now, const Bytes* party_blob, uint32_t join_party);
+    int owner_of(const Session& s) const;
+    void coordinate(uint32_t now);
+    void apply_map(uint32_t now);
+    void map_changed();
+    void spawn_worker(uint32_t now);
+    void area_copies(uint32_t now);
+    void set_sea_copy(Session& s, uint16_t copy);
+    void place_at_sea(Session& s, uint32_t now);
+    Bytes encode_party(const Party& p) const;
+    bool decode_party(const uint8_t* d, size_t n, Party& p) const;
+    std::string regions_text() const;
+    std::string scale_admin(const std::string& cmd, std::istringstream& in);
 
     void write_metrics(uint32_t now);
 
@@ -351,9 +392,16 @@ private:
     std::vector<int> admin_clients_;
     uint32_t restart_at_ = 0;
 
-    // shards
+    // scaling
+    int me_ = 0;                       // worker index (0: the coordinator, or the only process)
+    uint32_t epoch_ = 0;               // random per process start: a peer's new epoch means it restarted
+    RegionMap map_;
     proto::UdpSocket link_;
-    std::vector<proto::Address> link_addr_;
+    proto::Address coord_addr_;
+    bool registered_ = false;
+    uint32_t register_at_ = 0;
+    std::vector<Peer> peers_;          // by worker index
+    std::vector<uint8_t> my_sub_;
     std::unordered_map<uint16_t, Ghost> ghosts_;
     struct Ticket {
         uint32_t at;
@@ -362,8 +410,28 @@ private:
         uint8_t device;
         int near_cap, mid_cap;
         uint32_t party;
+        bool join;                     // accepting an invite of `party`, which lives on this worker
+        int from;
     };
     std::map<std::array<uint8_t, 32>, Ticket> tickets_;
+    std::vector<uint16_t> id_blocks_;  // first ids of the blocks this worker may hand out
+    std::set<uint16_t> lent_;          // ids of ours still used on another worker
+    uint16_t next_block_ = 1;          // coordinator: the next block to give out (blocks of 256)
+    bool id_asked_ = false;
+    std::unordered_map<uint32_t, int> remote_invites_;
+    std::map<uint32_t, uint32_t> retired_;  // split regions: id -> its parent (for merging back)
+    std::vector<int> spawned_;         // worker processes this process started
+    uint32_t last_spawn_ = 0;
+    std::unordered_map<uint64_t, int> area_count_;  // (area << 16 | copy) -> players, per tick
+    void reap_children();
+    void stop_children();  // party id -> worker that holds it
+    std::vector<std::string> scale_log_;  // splits, moves, merges, started and stopped workers
+    uint32_t last_load_ = 0, last_sub_ = 0, last_coord_ = 0, last_areas_ = 0;
+    uint64_t cpu_at_ = 0;
+    uint32_t cpu_at_ms_ = 0;
+    float cpu_pct_ = 0;
+    uint64_t out_at_ = 0;
+    uint64_t out_Bps_ = 0;
 
     uint32_t tick_no_ = 0, next_tick_ = 0, last_metrics_ = 0;
     uint64_t cpu_us_at_ = 0;

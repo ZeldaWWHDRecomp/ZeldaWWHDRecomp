@@ -11,13 +11,6 @@
 
 namespace online::server {
 
-int Config::shard_of(int square) const {
-    if (shard_count <= 1) return 0;
-    if (square >= 0 && size_t(square) < shard_of_square.size()) return shard_of_square[size_t(square)];
-    int row = square / proto::kSeaSquares;
-    return row * shard_count / proto::kSeaSquares;
-}
-
 namespace {
 
 std::string trim(const std::string& s) {
@@ -208,17 +201,34 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
         else if (key == "limits.keep_ip_hash") boolean(c.keep_ip_hash);
         else if (key == "party.runner_drop_ms") integer(c.runner_drop_ms);
         else if (key == "party.team_state_keep_h") integer(c.team_state_keep_h);
-        else if (key == "shard.index") integer(c.shard_index);
-        else if (key == "shard.count") integer(c.shard_count);
-        else if (key == "shard.peers") strings(c.shard_peers);
-        else if (key == "shard.links") strings(c.shard_links);
-        else if (key == "shard.secret") str(c.link_secret);
-        else if (key == "shard.handover_depth") numf(c.handover_depth);
-        else if (key == "shard.squares") {
-            c.shard_of_square.clear();
-            for (auto& it : split_array(v, ok)) c.shard_of_square.push_back(std::atoi(it.c_str()));
-            ok = ok && c.shard_of_square.size() == size_t(proto::kSeaSquares * proto::kSeaSquares);
-        } else if (key == "metrics.file") str(c.metrics_file);
+        else if (key == "scale.mode") {
+            str(c.scale_mode);
+            ok = ok && (c.scale_mode == "off" || c.scale_mode == "auto" || c.scale_mode == "pool");
+        } else if (key == "scale.max_workers") integer(c.max_workers);
+        else if (key == "scale.worker_threads") integer(c.worker_threads);
+        else if (key == "scale.link_port") {
+            int p = 0;
+            integer(p);
+            c.link_port = uint16_t(p);
+        } else if (key == "scale.worker_port_base") {
+            int p = 0;
+            integer(p);
+            c.worker_port_base = uint16_t(p);
+        } else if (key == "scale.public_host") str(c.public_host);
+        else if (key == "scale.link_bind") str(c.link_bind);
+        else if (key == "scale.secret") str(c.link_secret);
+        else if (key == "scale.split_cpu") number(c.split_cpu);
+        else if (key == "scale.split_bw") number(c.split_bw);
+        else if (key == "scale.merge_level") number(c.merge_level);
+        else if (key == "scale.hold_s") integer(c.scale_hold_s);
+        else if (key == "scale.cooldown_s") integer(c.scale_cooldown_s);
+        else if (key == "scale.merge_hold_s") integer(c.merge_hold_s);
+        else if (key == "scale.idle_worker_s") integer(c.idle_worker_s);
+        else if (key == "scale.min_region") integer(c.min_region);
+        else if (key == "scale.area_cap") integer(c.area_cap);
+        else if (key == "scale.handover_depth") numf(c.handover_depth);
+        else if (key == "scale.join") str(c.join);
+        else if (key == "metrics.file") str(c.metrics_file);
         else if (key == "metrics.every_s") integer(c.metrics_every_s);
         else if (key == "metrics.log_addresses") boolean(c.log_addresses);
         else {
@@ -230,13 +240,8 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
             return false;
         }
     }
-    if (c.shard_count < 1 || c.shard_index < 0 || c.shard_index >= c.shard_count || c.shard_count > 15) {
-        why = "shard.index / shard.count out of range (1..15 shards)";
-        return false;
-    }
-    if (c.shard_count > 1 && (c.shard_peers.size() != size_t(c.shard_count) ||
-                              c.shard_links.size() != size_t(c.shard_count) || c.link_secret.size() < 16)) {
-        why = "a sharded server needs shard.peers and shard.links for every shard and a shard.secret of 16+ chars";
+    if (c.max_workers < 1 || c.max_workers > 15 || c.min_region < 1 || c.min_region > 8) {
+        why = "scale.max_workers (1..15) or scale.min_region (1..8) out of range";
         return false;
     }
     if (c.tick_hz < 5 || c.tick_hz > 60 || c.copy_size < 2 || c.max_players < 1) {
