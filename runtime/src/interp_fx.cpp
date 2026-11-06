@@ -72,6 +72,7 @@ uint64_t record_stamp();
 bool display_record_blended();    // (the pass being drawn or painted)
 uint64_t display_record_stamp();
 void exact_after_pass(uint32_t ea, uint32_t value, int size);  // (blended record pass: put back before the next logic)
+void keep_draw_side(uint32_t ea);  // a draw's GPU buffer selector: a kept actor's put-back leaves it (interp_keep.h)
 }  // namespace interp
 
 extern "C" {
@@ -986,6 +987,17 @@ void cloth_packet_fields(Cpu* c, ClothPacketKind kind, void (*original)(Cpu*), c
 void cloth_packet(Cpu* c, ClothPacketKind kind, void (*original)(Cpu*), std::initializer_list<PacketField> fields) {
     cloth_packet_fields(c, kind, original, fields);
 }
+// The custom cloth packets' GPU buffer sets: two sets of GX2 buffers (0x254 bytes each) and the word
+// after them, flipped by every upload (issue #446, interp_keep.h). Registered on every upload, so
+// that a kept actor's put-back leaves the word as the upload left it. Offsets from the packet (r3),
+// read from each upload's code: the sets' base register + 0x950 (2 x 2 buffers) or + 0x4A8 (2 x 1).
+constexpr uint32_t kGpuSetGridSail = 0xCE8 + 0x950, kGpuSetPirateSail = 0xA4 + 0x950, kGpuSetFortressFlag = 0xA4 + 0x950,
+                   kGpuSetBuoyFlag = 0xD24 + 0x950, kGpuSetBuoyPole = 0x1F1C + 0x4A8, kGpuSetPirateFlag = 0x914 + 0x950,
+                   kGpuSetMantle = 0x8BC + 0x4A8, kGpuSetSandFloor = 0x18CF0 + 0x4A8, kGpuSetTapestry = 0xA4 + 0x950,
+                   kGpuSetGoalFlag = 0xA8 + 0x950;
+void gpu_set(Cpu* c, uint32_t offset) {
+    if (interp::enabled()) interp::keep_draw_side(c->r[3] + offset);
+}
 
 // mDoExt_3DlineMat1 (textured: ropes, grapple, bridges) and mDoExt_3DlineMat0 (plain: Ganondorf's
 // hair, Puppet Ganon's strings, Moblin and Stalfos weapon ropes, chained items) generate their GPU
@@ -1033,11 +1045,13 @@ extern "C" void hook_025EA548(Cpu* c) { line_packet(c, f_025EA548_orig, kLineMat
 extern "C" void hook_025EAF58(Cpu* c) { line_packet(c, f_025EAF58_orig, kLineMat0, kLineMat0Layout); }
 extern "C" void f_021625DC_orig(Cpu*); // daHo_packet_c upload (KoRL sail)
 extern "C" void hook_021625DC(Cpu* c) {
+    gpu_set(c, kGpuSetGridSail);
     const uint32_t p = c->r[3];
     cloth_packet(c, kGridSail, f_021625DC_orig, {{p+0xAC, 12, true}, {p+0xE0, 85*3*3}});
 }
 extern "C" void f_0245F638_orig(Cpu*); // pirate ship sail upload
 extern "C" void hook_0245F638(Cpu* c) {
+    gpu_set(c, kGpuSetPirateSail);
     const uint32_t p = c->r[3], i = ld8(p+0x2EBE);
     if (i > 1 || !on(16)) { f_0245F638_orig(c); return; }
     cloth_packet(c, kPirateSail, f_0245F638_orig, {{p+0x1294, 12, true},
@@ -1045,6 +1059,7 @@ extern "C" void hook_0245F638(Cpu* c) {
 }
 extern "C" void f_021B89B4_orig(Cpu*); // Forsaken Fortress flag upload
 extern "C" void hook_021B89B4(Cpu* c) {
+    gpu_set(c, kGpuSetFortressFlag);
     const uint32_t p = c->r[3], i = ld8(p+0x1A2E);
     if (i > 1 || !on(16)) { f_021B89B4_orig(c); return; }
     cloth_packet(c, kFortressFlag, f_021B89B4_orig, {{p+0x1290, 12, true},
@@ -1052,16 +1067,19 @@ extern "C" void hook_021B89B4(Cpu* c) {
 }
 extern "C" void f_0232B624_orig(Cpu*); // buoy flag upload
 extern "C" void hook_0232B624(Cpu* c) {
+    gpu_set(c, kGpuSetBuoyFlag);
     const uint32_t p = c->r[3], i = ld32(p+0xC18);
     if (i > 1 || !on(16)) { f_0232B624_orig(c); return; }
     cloth_packet(c, kBuoyFlag, f_0232B624_orig, {{p+0xC4C, 12, true}, {p+0x9C+i*0x4EC, 35*3*3}});
 }
 extern "C" void f_0232B984_orig(Cpu*); // buoy pole: keep the flag's attachment at the same fraction
 extern "C" void hook_0232B984(Cpu* c) {
+    gpu_set(c, kGpuSetBuoyPole);
     cloth_packet(c, kBuoyPole, f_0232B984_orig, {{c->r[3]+0xC1C, 12, true}});
 }
 extern "C" void f_023D0E68_orig(Cpu*); // pirate ship skull flag upload
 extern "C" void hook_023D0E68(Cpu* c) {
+    gpu_set(c, kGpuSetPirateFlag);
     const uint32_t p = c->r[3], i = ld8(p+0x906);
     if (i > 1 || !on(16)) { f_023D0E68_orig(c); return; }
     cloth_packet(c, kPirateFlag, f_023D0E68_orig, {{p+0x98, 12, true},
@@ -1069,6 +1087,7 @@ extern "C" void hook_023D0E68(Cpu* c) {
 }
 extern "C" void f_021BBC34_orig(Cpu*); // mantle/cape vertex fill and uniforms
 extern "C" void hook_021BBC34(Cpu* c) {
+    gpu_set(c, kGpuSetMantle);
     const uint32_t p = c->r[3];
     cloth_packet(c, kMantle, f_021BBC34_orig,
         {{p+0x98, 12, true}, {p+0xC8, 12, true}, {p+0xFC, 81*3*2}});
@@ -1078,6 +1097,7 @@ extern "C" void hook_021BBC34(Cpu* c) {
 // 02103FA4) moves once per step
 extern "C" void f_02103B30_orig(Cpu*);
 extern "C" void hook_02103B30(Cpu* c) {
+    gpu_set(c, kGpuSetSandFloor);
     const uint32_t p = c->r[3];
     cloth_packet(c, kSandFloor, f_02103B30_orig, {{p+0xCC, 0x1081*3}, {p+0xC6D8, 0x1081*3}});
 }
@@ -1086,6 +1106,7 @@ extern "C" void hook_02103B30(Cpu* c) {
 // and its world matrix (+0x2390)
 extern "C" void f_0239DD2C_orig(Cpu*);
 extern "C" void hook_0239DD2C(Cpu* c) {
+    gpu_set(c, kGpuSetTapestry);
     const uint32_t p = c->r[3], i = ld32(p+0x20BC);
     if (i > 1 || !on(16)) { f_0239DD2C_orig(c); return; }
     cloth_packet(c, kTapestry, f_0239DD2C_orig, {{p+0x2390, 12, true}, {p+0x106C+i*0x6C0, 48*3*3}});
@@ -1095,6 +1116,7 @@ extern "C" void hook_0239DD2C(Cpu* c) {
 // and the flag's matrix (+0x1318)
 extern "C" void f_0215F9E4_orig(Cpu*);
 extern "C" void hook_0215F9E4(Cpu* c) {
+    gpu_set(c, kGpuSetGoalFlag);
     const uint32_t p = c->r[3], i = ld8(p+0x2648);
     if (i > 1 || !on(16)) { f_0215F9E4_orig(c); return; }
     cloth_packet(c, kGoalFlag, f_0215F9E4_orig, {{p+0x1318, 12, true},

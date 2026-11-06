@@ -8,6 +8,9 @@ uint64_t logic_steps();      // saved/restored 30 Hz scenario clock
 // the camera process camera_draw (024FFC40) drew last (0: none yet): eye +0xDC, center +0xE8, up +0xF4,
 // fovy +0xD4 (touch_talk.cpp projects shop items with it)
 uint32_t last_camera();
+// the eye camera_draw drew last, blended or exact (the position the frame is seen from): false before
+// any camera was drawn. Thread safe (each coordinate on its own; render thread: Grass draw distance).
+bool drawn_eye(float eye[3]);
 bool frame_is_hold();        // this frame's per-frame function runs a hold pass (no logic): for tasks that calc before it
 void record_executed_step(); // game thread; includes built-in turbo passes
 uint64_t executed_steps();    // actual actor logic passes

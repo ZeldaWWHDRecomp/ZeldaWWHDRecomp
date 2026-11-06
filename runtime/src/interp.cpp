@@ -47,6 +47,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "interp_camera.h"
 #include "interp_fade.h"
 #include "interp_joints.h"
+#include "interp_keep.h"
 #include "interp_nodraw.h"
 #include "interp_pacing.h"
 #include "interp_sploosh.h"
@@ -505,6 +506,18 @@ static void camera_draw(Cpu* c);
 // camera_draw(camera_process_class*)
 static std::atomic<uint32_t> g_last_camera{0};
 uint32_t interp::last_camera() { return g_last_camera.load(std::memory_order_relaxed); }
+// the eye camera_draw drew last (interp::drawn_eye), published at each p->drawn
+static std::atomic<float> g_drawn_eye[3];
+static std::atomic<bool> g_drawn_eye_valid{false};
+static void publish_drawn_eye(const interp::camera::CamState& s) {
+    for (int i = 0; i < 3; i++) g_drawn_eye[i].store(s.eye[i], std::memory_order_relaxed);
+    g_drawn_eye_valid.store(true, std::memory_order_release);
+}
+bool interp::drawn_eye(float eye[3]) {
+    if (!g_drawn_eye_valid.load(std::memory_order_acquire)) return false;
+    for (int i = 0; i < 3; i++) eye[i] = g_drawn_eye[i].load(std::memory_order_relaxed);
+    return true;
+}
 extern "C" void hook_024FFC40(Cpu* c) {
     const uint32_t cam = c->r[3];
     g_last_camera.store(cam, std::memory_order_relaxed);
@@ -819,6 +832,10 @@ void model_calc_before(uint32_t model) {
     g_model_kept.push_back({mtx, std::vector<uint32_t>(12 * n)});
     memcpy(g_model_kept.back().words.data(), ppc_ptr(mtx), 48 * n);
 }
+// The draws' GPU buffer selectors (interp_keep.h, issue #446): the put-back leaves them as the last
+// draw left them.
+DrawSideWords g_draw_side;
+void keep_draw_side(uint32_t ea) { g_draw_side.add(ea); }
 void actor_keep(uint32_t actor) {
     for (const auto& k : g_actor_kept)
         if (k.actor == actor) return;
@@ -856,8 +873,8 @@ void actors_put_back() {
         // into use. No draw writes them: left alone. debug: WWHD_INTERP_KEEP_PROCESS_TAGS=0 puts them
         // back too, as before)
         static const bool tags_too = getenv("WWHD_INTERP_KEEP_PROCESS_TAGS") && !atoi(getenv("WWHD_INTERP_KEEP_PROCESS_TAGS"));
-        for (uint32_t i = tags_too ? 0 : kProcessTags / 4; i < n; i++)
-            if (cur[i] != it->words[i] && std::find(keep.begin(), keep.end(), i) == keep.end()) cur[i] = it->words[i];
+        g_draw_side.indices_in(actor, n, keep);  // (the draws' GPU buffer selectors: as the last draw left them)
+        put_back_words(cur, it->words.data(), n, tags_too ? 0 : kProcessTags / 4, keep);
     }
     g_actor_kept.clear();
     for (auto it = g_model_kept.rbegin(); it != g_model_kept.rend(); ++it)
@@ -974,6 +991,7 @@ static void camera_draw_body(Cpu* c) {
         }
         p->drawn = read_cam(cam);
         p->drawn_pass = g_passes;
+        publish_drawn_eye(p->drawn);
         // (also on a snap: the sound listener keeps following only the record pass's camera)
         g_cam_blended = p->valid;
         cam_trace(cam, "blended");
@@ -1006,6 +1024,7 @@ static void camera_draw_body(Cpu* c) {
     p->valid = true;
     p->drawn = p->s;
     p->drawn_pass = g_passes;
+    publish_drawn_eye(p->drawn);
     cam_trace(cam, "exact");
     static const bool dbg = getenv("WWHD_T60_CAMDRAWLOG") != nullptr;  // debug: statics camera_draw writes
     if (dbg && g_hold) {
@@ -1938,6 +1957,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     if (!g_exact_writes.empty()) put_back_exact();
     if (!g_tev_kept.empty()) tevstr_put_back();
     if (!g_actor_kept.empty() || !g_model_kept.empty()) actors_put_back();
+    g_draw_side.clear();
     clipper_put_back();
     // (the step's camera drawn blended last: exact again before the next step's logic)
     if (g_cam_exact_pending && (!cam_exact_back_on() || !enabled() || !g_hold_next)) {

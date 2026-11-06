@@ -232,6 +232,7 @@ void graphics_changed() {
     put("aoHires", {"WWHD_AO_HIRES"}, gfxvk::ao_hires_enabled() ? "1" : "0");
     put("aniso", {"WWHD_ANISO"}, gfxvk::aniso_enabled() ? "1" : "0");
     put("bloomStrength", {"WWHD_BLOOM_STRENGTH"}, std::to_string(render::bloom_strength()));
+    put("grassDistance", {"WWHD_GRASS_DISTANCE"}, std::to_string(render::grass_distance()));
     put("horizonHaze", {"WWHD_HORIZON_HAZE", "WWHD_SKY_HAZE"}, std::to_string(render::horizon_haze()));
     put("cloudShadows", {"WWHD_CLOUD_SHADOWS"}, render::cloud_shadows() ? "1" : "0");
     put("fullLight", {"WWHD_FULL_LIGHT"}, render::full_light() ? "1" : "0");
@@ -307,6 +308,7 @@ void load_saved_options() {
     if (saved("aoHires", {"WWHD_AO_HIRES"})) gfxvk::set_ao_hires(num("aoHires") != 0);
     if (saved("aniso", {"WWHD_ANISO"})) gfxvk::set_aniso(num("aniso") != 0);
     if (saved("bloomStrength", {"WWHD_BLOOM_STRENGTH"})) render::set_bloom_strength((float)num("bloomStrength"));
+    if (saved("grassDistance", {"WWHD_GRASS_DISTANCE"})) render::set_grass_distance((int)num("grassDistance"));
     if (saved("horizonHaze", {"WWHD_HORIZON_HAZE", "WWHD_SKY_HAZE"})) render::set_horizon_haze((float)num("horizonHaze"));
     if (saved("cloudShadows", {"WWHD_CLOUD_SHADOWS"})) render::set_cloud_shadows(num("cloudShadows") != 0);
     if (saved("fullLight", {"WWHD_FULL_LIGHT"})) render::set_full_light(num("fullLight") != 0);

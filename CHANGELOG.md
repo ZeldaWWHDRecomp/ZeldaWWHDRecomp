@@ -7,16 +7,30 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Graphics › Grass draw distance** (#401, thanks @DaniXK-96). A new Vulkan setting that skips far tall grass
+  patches: All (the original, default), Far 4000, Medium 3000 or Near 2000 units from the camera. In thick grass
+  like Forest Haven it saves a lot of render-thread time on slower PCs (46 → 60 fps on an i3 laptop at Near); palms,
+  small plants and nearby grass always stay.
+- **Vulkan: less render-thread CPU per draw** (#400, thanks @DaniXK-96). Faster shader lookups, buffers that keep their
+  size between frames and fewer copies for chunked draws: about 3% less render-thread time on a laptop (i3 + 920MX),
+  the same picture.
 - **Fixed: the controller stopped working after clicking the GamePad window** (#406, thanks @KaitoCrisHub for the
   report). Controllers now keep driving the game while the TV window or the GamePad window is in front (on Windows the
   focus could stay empty when it moved between the game's own windows). The existing option is now called
   **Controller input in the background** (Settings › Controls, off by default): turn it on to keep using the
   controller while another app is in front. Keyboard and mouse still need a game window in front.
+<<<<<<< HEAD
 - **Fixed: the bottom of the picture cut off on Android devices that keep their navigation bar over the game**
   (#349, thanks @plxjammerplx for the report). On the Retroid Pocket Nova, 4:3 / Match window filled the whole
   screen and the system's navigation bar covered the rupee counter. The picture, the view button and Match
   window's shape now leave out the bars the system draws over the game. Desktop and devices that hide the bars
   are unchanged.
+=======
+- **Fixed: the pirate ship's sail flickered with frame interpolation** (#446, thanks @darklinkpower for the report).
+  Above 30 fps the sail and flag off Outset were drawn torn on some frames (dark blotches), a regression in v0.5.1.
+  Cloth that the game draws into two alternating buffers (sails, flags, mantles, the tapestry, Molgera's sand floor)
+  now keeps switching buffers on every drawn frame. 30 fps is unchanged.
+>>>>>>> github/devel
 
 ## v0.5.1
 
