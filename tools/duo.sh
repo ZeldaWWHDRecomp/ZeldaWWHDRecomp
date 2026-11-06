@@ -43,8 +43,8 @@ run() {  # run ROLE COOP-VALUE ENV...
 trap 'for p in $pids; do pkill -9 -P $p 2>/dev/null; kill -9 $p 2>/dev/null; done' EXIT INT TERM HUP
 if [ -n "${DUO_SERVER:-}" ]; then
   mkdir -p "$out/server"
-  printf '[server]\nname = "duo"\n[network]\nbind = "127.0.0.1"\nport = %s\n[files]\nkey = "%s/server/server.key"\nadmin_socket = "%s/server/admin.sock"\n[limits]\npow_bits = 8\nper_ip = 8\nbytes_per_s = %s\n' \
-    "$port" "$out" "$out" "${DUO_UPLOAD:-8192}" > "$out/server/server.toml"
+  printf '[server]\nname = "duo"\n[network]\nbind = "127.0.0.1"\nport = %s\n[files]\nkey = "%s/server/server.key"\nadmin_socket = "%s/server/admin.sock"\nbans = "%s/server/bans.txt"\n[limits]\npow_bits = 8\nper_ip = 8\nbytes_per_s = %s\n' \
+    "$port" "$out" "$out" "$out" "${DUO_UPLOAD:-8192}" > "$out/server/server.toml"
   # DUO_GAMES="0x..., 0x...": the server takes only these games (else any, each its own world)
   [ -n "${DUO_GAMES:-}" ] && printf '[network]\ngame_data = [%s]\n' "$DUO_GAMES" >> "$out/server/server.toml"
   (exec "$root/build/rel/server/wwhd-online-server" --config "$out/server/server.toml" 2>&1 | head -c 5000000 > "$out/server.log") &
