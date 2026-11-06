@@ -1155,6 +1155,35 @@ void local_of(uint32_t rot, const uint32_t* t, const Bone& b, float out[12]) {
     jmtx(j, out);
     if (!t) out[3] = b.local[3], out[7] = b.local[7], out[11] = b.local[11];
 }
+// The smaller local form (mode bit 4, GAPS C10 step 3): a rotation only where it is not the skeleton's own (within
+// rest_deg(), 0.3 degrees: 197 bytes on average, 0.30 degrees off at worst, 238 bytes before; a second mask); a joint without one takes the skeleton's. (24-bit rotations were tried:
+// 1.7 degrees off at worst, and larger poses, as fewer joints then stay at rest.)
+float rest_deg() {
+    static const float d = getenv("WWHD_COOP_REST_DEG") ? (float)atof(getenv("WWHD_COOP_REST_DEG")) : 0.3f;  // (tests)
+    return d;
+}
+// as local_of, the rotation possibly none (the skeleton's own)
+void local_of2(const uint32_t* rot, const uint32_t* t, const Bone& b, float out[12]) {
+    if (rot) {
+        Joint j{};
+        q_unpack(*rot, j.q);
+        jmtx(j, out);
+    } else {
+        for (int r = 0; r < 3; r++) for (int col = 0; col < 3; col++) out[4 * r + col] = b.local[4 * r + col];
+    }
+    if (t) {
+        int16_t tt[3];
+        t_unpack(*t, tt);
+        out[3] = tt[0] / 8.f, out[7] = tt[1] / 8.f, out[11] = tt[2] / 8.f;
+    } else out[3] = b.local[3], out[7] = b.local[7], out[11] = b.local[11];
+}
+double q_angle_deg(const int16_t a[4], const float m[12]) {  // between a rotation and a matrix's
+    float sc[3], q[4] = {1, 0, 0, 0};
+    interp::mtx_to_quat(m, sc, q);
+    double dot = 0, na = 0;
+    for (int e = 0; e < 4; e++) dot += a[e] / 32767.0 * q[e], na += (a[e] / 32767.0) * (a[e] / 32767.0);
+    return 2 * std::acos(std::min(1.0, std::fabs(dot) / std::sqrt(std::max(1e-12, na)))) * 180 / M_PI;
+}
 
 void pack(const Pose& p, std::string& out) {
     static const bool full = getenv("WWHD_COOP_FULL_POSES") != nullptr;  // (test aid: the fork's form, to compare)
@@ -1181,32 +1210,36 @@ void pack(const Pose& p, std::string& out) {
         if (const std::vector<Bone>* sk = unit && m.k != kHeld && !getenv("WWHD_COOP_NO_LOCAL") ? skel_for(m.k, m.j.size()) : nullptr) {
             // local: each joint under the parent as rebuilt (the receiver's), its translation only if not the skeleton's
             std::vector<std::array<float, 12>> built(m.j.size());
-            std::vector<uint32_t> rots(m.j.size()), trs;
-            std::vector<uint8_t> mask((m.j.size() + 7) / 8, 0);
+            std::vector<uint32_t> rots, trs;
+            std::vector<uint8_t> mask((m.j.size() + 7) / 8, 0), rmask((m.j.size() + 7) / 8, 0);
             bool ok = true;
             for (size_t i = 0; i < m.j.size() && ok; i++) {
                 const Bone& b = (*sk)[i];
-                float w[12], l[12], ip[12];
+                float w[12], l[12], ip[12], bl[12];
                 jmtx(m.j[i], w);
                 if (b.parent >= 0) inv_rigid(built[b.parent].data(), ip), mul(ip, w, l);
                 else memcpy(l, w, sizeof l);
                 const Joint lj = jof(l);
-                rots[i] = q_pack(lj.q);
+                for (int e = 0; e < 12; e++) bl[e] = b.local[e];
+                const bool turned = b.parent < 0 || q_angle_deg(lj.q, bl) > rest_deg();
+                uint32_t rw = 0;
+                if (turned) rw = q_pack(lj.q), rmask[i / 8] |= (uint8_t)(1 << (i % 8)), rots.push_back(rw);
                 const bool own = b.parent < 0 || std::fabs(l[3] - b.local[3]) > 0.3f || std::fabs(l[7] - b.local[7]) > 0.3f ||
                                  std::fabs(l[11] - b.local[11]) > 0.3f;
                 uint32_t tw = 0;
                 if (own) ok = t_pack(lj.t, tw), mask[i / 8] |= (uint8_t)(1 << (i % 8)), trs.push_back(tw);
                 float lq[12];
-                local_of(rots[i], own ? &tw : nullptr, b, lq);
+                local_of2(turned ? &rw : nullptr, own ? &tw : nullptr, b, lq);
                 if (b.parent >= 0) mul(built[b.parent].data(), lq, built[i].data());
                 else memcpy(built[i].data(), lq, sizeof lq);
             }
             if (ok) {
-                const uint8_t mode = (uint8_t)((m.shown == ~0u ? 1 : 0) | 8);
+                const uint8_t mode = (uint8_t)((m.shown == ~0u ? 1 : 0) | 8 | 0x10);
                 put_bytes(&m.k, 1), put_bytes(&mode, 1);
                 if (!(mode & 1)) put_bytes(&m.shown, 4);
-                put_bytes(&nj, 1), put_bytes(mask.data(), mask.size());
-                put_bytes(rots.data(), 4 * rots.size()), put_bytes(trs.data(), 4 * trs.size());
+                put_bytes(&nj, 1), put_bytes(mask.data(), mask.size()), put_bytes(rmask.data(), rmask.size());
+                put_bytes(rots.data(), 4 * rots.size());
+                put_bytes(trs.data(), 4 * trs.size());
                 continue;
             }
         }
@@ -1291,17 +1324,23 @@ bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
         m.j.resize(nj);
         if (compact_form && (mode & 8)) {  // local joints: rebuilt as the sender did
             const std::vector<Bone>* sk = skel_for(m.k, nj);
-            std::vector<uint8_t> mask((nj + 7) / 8);
-            std::vector<uint32_t> rots(nj);
-            if (!sk || !get(mask.data(), mask.size()) || !get(rots.data(), 4 * nj)) return false;
+            std::vector<uint8_t> mask((nj + 7) / 8), rmask((nj + 7) / 8, 0xFF);
+            if (!sk || !get(mask.data(), mask.size())) return false;
+            const bool masked = mode & 0x10;
+            if (masked && !get(rmask.data(), rmask.size())) return false;
+            std::vector<uint32_t> rots(nj, 0);
+            for (size_t i = 0; i < nj; i++)
+                if (rmask[i / 8] >> (i % 8) & 1)
+                    if (!get(&rots[i], 4)) return false;
             std::vector<std::array<float, 12>> built(nj);
             for (size_t i = 0; i < nj; i++) {
                 const Bone& b = (*sk)[i];
                 uint32_t tw = 0;
-                const bool own = mask[i / 8] >> (i % 8) & 1;
+                const bool own = mask[i / 8] >> (i % 8) & 1, turned = rmask[i / 8] >> (i % 8) & 1;
                 if (own && !get(&tw, 4)) return false;
                 float lq[12];
-                local_of(rots[i], own ? &tw : nullptr, b, lq);
+                if (masked) local_of2(turned ? &rots[i] : nullptr, own ? &tw : nullptr, b, lq);
+                else local_of(rots[i], own ? &tw : nullptr, b, lq);
                 if (b.parent >= 0) mul(built[b.parent].data(), lq, built[i].data());
                 else memcpy(built[i].data(), lq, sizeof lq);
                 m.j[i] = jof(built[i].data());

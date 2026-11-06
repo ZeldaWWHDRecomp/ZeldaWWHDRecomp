@@ -18,12 +18,12 @@ struct Cpu;
 namespace mods::coop::net {
 
 // kProto: this port's co-op protocol (the fork's 3, plus the game-data check in the hello (4), plus the players'
-// addresses for host migration (5)); a game of another protocol
+// addresses for host migration (5), plus the poses' rest mask (6)); a game of another protocol
 // is refused. Players meet by protocol and game data (ss::game_data_id), not by executable: a recompiled and a decomp
 // build of the same game play together
 // kMaxPlayers: the players' numbers any transport gives (through a server: a party of up to 4 and the strangers shown
 // nearby, GAPS C11: an instance's 32); kMaxDirect: the direct transport's (a host and three guests)
-constexpr int kProto = 5, kPort = 7777, kMaxPlayers = 32, kMaxDirect = 4;
+constexpr int kProto = 6, kPort = 7777, kMaxPlayers = 32, kMaxDirect = 4;
 
 // the reliable messages (the game's side reads them through on_message)
 enum Msg : uint8_t {
