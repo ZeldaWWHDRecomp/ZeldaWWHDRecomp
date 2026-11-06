@@ -39,14 +39,17 @@ constexpr uint32_t kInfo = 0x20, kLive = 0x778, kStageNo = 0x79C, kDataNum = 0x1
 constexpr uint16_t kTable = 0x380, kMemSize = 0x24, kStages = 16, kSaveSize = 0x778;
 constexpr int kReplaced = 40;  // more fields changed in one step than play does: the save data was replaced (a load)
 
-enum Mode : uint8_t { kBits, kSet, kMax, kBottle };  // kBottle: a new bottle is the others' as an empty one
+// the union merge (Anchor's way, DESIGN.md Q6): kBits only set, kMax the larger, kFill only where this game has
+// none (0xFF) or the same kind's better one, kSet as it comes (a shared count: small keys), kBottle a new bottle
+// as an empty one
+enum Mode : uint8_t { kBits, kSet, kMax, kBottle, kFill };
 struct Field { uint16_t off, size; Mode mode; };
 
 std::vector<Field> fields() {
     std::vector<Field> f = {
         {0x000, 2, kMax},      // dSv_player_status_a_c: max life (heart containers and pieces)
-        {0x002, 2, kMax},      //   current life (quarter hearts): the healthier player's count shared
-        {0x00E, 3, kSet},      //   sword, shield, bracelets (mSelectEquip)
+        // (current life +0x002, magic, rupees +0x004: each player's own, Anchor's way; the fork shared the life)
+        {0x00E, 3, kFill},     //   sword, shield, bracelets (mSelectEquip): filled where empty, never taken away
         {0x012, 1, kMax},      //   wallet size
         {0x013, 1, kMax},      //   max magic
         {0x051, 21, kBits},    // dSv_player_get_item_c
@@ -57,7 +60,7 @@ std::vector<Field> fields() {
         {0x624, 0x100, kBits}, // dSv_event_c: the story
     };
     for (uint16_t i = 0; i < 21; i++)  // dSv_player_item_c, dInvSlot_* (bottles 14-17)
-        f.push_back({(uint16_t)(0x03C + i), 1, i >= 14 && i <= 17 ? kBottle : kSet});
+        f.push_back({(uint16_t)(0x03C + i), 1, i >= 14 && i <= 17 ? kBottle : kFill});
     for (uint16_t s = 0; s < kStages; s++) {  // dSv_memBit_c of each stage
         const uint16_t m = kTable + s * kMemSize;
         f.push_back({m, 4, kBits});                 // chests
@@ -89,6 +92,11 @@ const uint32_t kRupeeCount = GD(0x1046F0B0) + 0x5B48;
 constexpr int kMostRupees = 5000;  // the largest wallet
 int g_purse = -1;                  // the wallet as of the last step (-1: none yet)
 int g_rupees_in = 0;               // the others' gains not put in yet
+// rupee sharing: a party option, off by default (each player's own wallet; WWHD_COOP_SHARE_RUPEES=1 turns it on)
+bool share_rupees() {
+    static const bool on = [] { const char* e = getenv("WWHD_COOP_SHARE_RUPEES"); return e && atoi(e); }();
+    return on;
+}
 int wallet(uint32_t info) { return ld16(info + 4) + (int32_t)ld32(kRupeeCount); }
 
 // a byte of dSv_save_c where it is now (a played stage's memory bits: live)
@@ -125,6 +133,12 @@ std::string put_in(uint32_t info, const std::string& m) {
             for (int b = 0; b < size; b++) {
                 const uint32_t a = at(info, off + b);
                 st8(a, (uint8_t)((ld8(a) & ~v[size + b]) | (v[b] & v[size + b])));
+            }
+        } else if (f->mode == kFill) {
+            for (int b = 0; b < size; b++) {
+                const uint32_t a = at(info, off + b);
+                const uint8_t cur = ld8(a);
+                if (v[b] != 0xFF && (cur == 0xFF || cur == 0 || (cur < v[b] && off == 0x00E))) st8(a, v[b]);
             }
         } else if (f->mode == kBottle) {
             if (ld8(at(info, off)) == 0xFF && v[0] != 0xFF) st8(at(info, off), 0x50);  // dItemNo_EMPTY_BOTTLE_e
@@ -372,7 +386,7 @@ void step(Cpu* c, bool live) {
         net::send(-1, net::kProgress, out);
         mods::trace("coop: progress out:%s", said.c_str());
     }
-    if (const int purse = wallet(info); g_purse >= 0 && purse > g_purse) {
+    if (const int purse = wallet(info); share_rupees() && g_purse >= 0 && purse > g_purse) {
         const int32_t gain = purse - g_purse;
         net::send(-1, net::kRupees, std::string((const char*)&gain, sizeof gain));
         mods::trace("coop: rupees out: +%d", gain);
@@ -403,6 +417,31 @@ void step(Cpu* c, bool live) {
             const uint16_t t = kTable + cur * kMemSize + 4 + w * 4;
             if (const uint32_t got = value(&g_was[t], 4) & ~value(&now[t], 4)) g_pend_sw[w] |= got, g_pend_steps = 300;
         }
+}
+
+std::vector<std::string> team_state() {
+    const uint32_t sv = ld32(kSaveInfoPtr);
+    if (!sv) return {};
+    std::vector<uint8_t> now;
+    read(sv + kInfo, now);
+    // every shared field as a change from nothing: bits with their mask (all set bits), the others as they are; in
+    // messages of at most 1000 bytes (a reliable message must fit a packet), cut between fields
+    std::vector<std::string> out(1);
+    auto add = [&](const std::string& rec) {
+        if (out.back().size() + rec.size() > 1000) out.emplace_back();
+        out.back() += rec;
+    };
+    for (const Field& f : kFields) {
+        if (f.mode != kBits) {
+            std::string rec{(char)(f.off & 0xFF), (char)(f.off >> 8), (char)f.size};
+            rec.append((const char*)&now[f.off], f.size);
+            add(rec);
+            continue;
+        }
+        for (uint16_t b = f.off; b < f.off + f.size; b++)
+            if (now[b]) add(std::string{(char)(b & 0xFF), (char)(b >> 8), (char)1, (char)now[b], (char)now[b]});
+    }
+    return out;
 }
 
 }  // namespace mods::coop::progress

@@ -26,6 +26,8 @@ struct Settings {
     int character = 0;                 // who this game plays as (coop_pose.h's own_character)
     bool voice = false;                // proximity voice chat (coop_voice.h); off until chosen, as it asks for the microphone
     bool on = false;                   // online switched on by the player (mod.coop.enabled; WWHD_COOP in tests)
+    bool stay_together = false;        // the fork's way (a party option): the guest plays in the host's world, its saves
+                                       // off, asked before going where the host isn't, back to the title when the host goes
     bool notice_ok = false;            // the privacy notice accepted (its version, online.notice_accepted)
 };
 // the privacy notice's version: a changed notice is shown and accepted again

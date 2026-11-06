@@ -11,6 +11,8 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <string>
+#include <vector>
 
 struct Cpu;
 
@@ -24,6 +26,9 @@ void received(const uint8_t* d, size_t n);
 void step(Cpu* c, bool live);
 // the session ended: the others' changes still kept are dropped
 void stop();
+// this game's shared progress as one message (net::kProgress's format), for a player who joins: put in by the union
+// merge, so nobody loses progress (Anchor's team state)
+std::vector<std::string> team_state();
 // another player's shutter opening or closing (net::kDoorMove), shown here
 void door_moved(const uint8_t* d, size_t n);
 // rupees another player gained (net::kRupees), added here at the next step

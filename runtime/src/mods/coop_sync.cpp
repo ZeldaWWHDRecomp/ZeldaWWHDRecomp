@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <deque>
 #include <memory>
 #include <mutex>
@@ -37,6 +38,11 @@
 #include "../portable_state.h"
 #include "../savestate.h"
 #include "../screenshot.h"
+#include "../hle/save_root.h"
+#include "../platform/host.h"
+
+#include <filesystem>
+#include <fstream>
 
 namespace hlefs { extern std::atomic<bool> g_block_saves; }
 
@@ -138,6 +144,37 @@ bool pose_at(const Remote& r, uint32_t rt, Pose& out) {
         for (int i = 0; i < 3; i++) out.pos[i] += (b.second.pos[i] - a.second.pos[i]) * k;
     }
     return true;
+}
+
+// before the first online session with a save folder: a copy of its Quest Logs (cking.sav) into the user folder's
+// online-backups/, once (a marker beside it); team progress is written into the player's own file (Anchor's way)
+void backup_save() {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    const fs::path root = fs::u8path(hle_fs::save_root());
+    fs::path save;
+    for (const fs::path& p : {root / "cking.sav", root / "user" / "cking.sav"}) if (fs::exists(p, ec)) save = p;
+    if (save.empty()) for (const auto& d : fs::directory_iterator(root, ec)) if (fs::exists(d.path() / "cking.sav", ec)) save = d.path() / "cking.sav";
+    if (save.empty()) return;
+    uint64_t h = 0xcbf29ce484222325ull;  // (the marker: by the save's own path)
+    for (const char ch : fs::absolute(save, ec).string()) h = (h ^ (uint8_t)ch) * 0x100000001b3ull;
+    const fs::path dir = fs::u8path(host::config_dir()) / "online-backups";
+    char name[64];
+    snprintf(name, sizeof name, "%016llx", (unsigned long long)h);
+    const fs::path marker = dir / (std::string(name) + ".done");
+    if (fs::exists(marker, ec)) return;
+    fs::create_directories(dir, ec);
+    const std::time_t t = std::time(nullptr);
+    char when[32];
+    std::strftime(when, sizeof when, "%Y%m%d-%H%M%S", std::localtime(&t));
+    const fs::path to = dir / (std::string(when) + "-" + name + "-cking.sav");
+    if (!fs::copy_file(save, to, fs::copy_options::overwrite_existing, ec) || ec) {
+        mods::trace("coop: the save's backup failed (%s)", ec.message().c_str());
+        return;
+    }
+    std::ofstream(marker) << save.string() << "\n";
+    mods::trace("coop: the save backed up before the first online session: %s", to.string().c_str());
+    ss::notice("Online co-op: your save was backed up first. A new Quest Log just for co-op is recommended.");
 }
 
 std::atomic<bool> g_hud_hidden{false};
@@ -248,7 +285,7 @@ bool door_draw(const float* pad) {
 
 // (the hook) this stage change is held for the host's answer
 bool door_held(Cpu* c) {
-    if (g_door.go || !guest() || !arrived() || !c->r[3]) return false;
+    if (g_door.go || !guest() || !arrived() || !c->r[3] || !settings().stay_together) return false;
     char st[8] = {};
     strncpy(st, (const char*)mem::ptr(c->r[3]), 8);
     const Remote& h = g_remote[0];
@@ -386,7 +423,12 @@ struct Handler : net::Handler {
         show(id < net::my_id() ? id : std::max(0, id - 1), nullptr, nullptr, 0);
         if (id != 0 || net::role() != net::Role::kOff) return ss::notice(net::name(id) + " left");
         g_failed = g_gen;  // (not joined again until the toggle or the settings change)
-        if (g_was_guest) g_back = why;
+        if (g_was_guest && settings().stay_together) g_back = why;  // (the fork's way: the host's world is gone with it)
+        else if (g_was_guest) {  // (Anchor's way: this game plays on, alone, in its own Quest Log, which it saves itself)
+            hlefs::g_block_saves = false, g_was_guest = false;
+            ss::notice(std::string("Online co-op: ") + why + ". You play on alone.");
+            mods::trace("coop: the host is gone (%s): playing on here", why);
+        }
         else ss::notice(std::string("Online co-op: ") + why);
     }
 } g_handler;
@@ -405,6 +447,7 @@ Settings settings() {
         if (hostui::get("mod.coop.tunic", v)) g_set.tunic = atoi(v.c_str()) & 3;
         if (hostui::get("mod.coop.voice", v)) g_set.voice = atoi(v.c_str()) != 0;
         if (hostui::get("mod.coop.enabled", v)) g_set.on = atoi(v.c_str()) != 0;
+        if (hostui::get("mod.coop.stay_together", v)) g_set.stay_together = atoi(v.c_str()) != 0;
         if (hostui::get("online.notice_accepted", v)) g_set.notice_ok = v == kNoticeVersion;
         if (hostui::get("mod.coop.character", v)) g_set.character = atoi(v.c_str()) & 3;
         // (tests: WWHD_COOP=host[:port] or join:<address>[:port], WWHD_COOP_NAME, WWHD_COOP_TUNIC 0-3)
@@ -419,6 +462,7 @@ Settings settings() {
         // (tests: the player's acceptance of the privacy notice, which a test run cannot click)
         if (const char* e = getenv("WWHD_COOP_NOTICE_OK")) g_set.notice_ok = atoi(e) != 0;
         if (const char* e = getenv("WWHD_COOP_NAME")) g_set.name = e;
+        if (const char* e = getenv("WWHD_COOP_STAY_TOGETHER")) g_set.stay_together = atoi(e) != 0;
         if (const char* e = getenv("WWHD_COOP_TUNIC")) g_set.tunic = atoi(e) & 3;
         if (const char* e = getenv("WWHD_COOP_VOICE")) g_set.voice = atoi(e) != 0;
         if (const char* e = getenv("WWHD_CHARACTER")) g_set.character = atoi(e) & 3;
@@ -488,7 +532,7 @@ bool sound_started(Cpu* c) {
 }
 
 // (the host's world arrived: not the Quest Log the guest picked to have it loaded into, whose Link comes first)
-bool arrived() { return host() || (guest() && g_join_load == 2); }
+bool arrived() { return host() || (guest() && (!settings().stay_together || g_join_load == 2)); }
 
 bool take_deck_drop(float local[3]) {
     if (!g_deck_drop || !arrived()) return false;
@@ -550,7 +594,8 @@ void poll(Cpu* c, bool on) {
         net::stop(nullptr);
         for (Remote& r : g_remote) r = Remote{};
         for (int i = 0; i < kPuppets; i++) show(i, nullptr, nullptr, 0);
-        if (was) g_back = "You left the host's game";
+        if (was && settings().stay_together) g_back = "You left the host's game";
+        else if (was) hlefs::g_block_saves = false, g_was_guest = false;
     }
     if (!g_back.empty()) {
         back_to_title(g_back);
@@ -569,7 +614,7 @@ void poll(Cpu* c, bool on) {
             failed = want_gen;
             g_status = "Not started: " + why;
             ss::notice("Online co-op: " + why);
-        }
+        } else backup_save();
     }
     if (!on && net::role() == net::Role::kOff && g_status.rfind("Not started", 0) != 0) g_status = "Off";
     if (net::role() == net::Role::kOff) {
@@ -689,7 +734,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 }
             }
         }
-        if (!ev && ev_was && ev_steps >= 90 && (bits() != ev_bits || stage_now() != ev_stage)) {
+        if (settings().stay_together && !ev && ev_was && ev_steps >= 90 && (bits() != ev_bits || stage_now() != ev_stage)) {
             const std::string here = stage_now();
             const int8_t my_room = (int8_t)ld8(link + kRoom);
             for (int id = 1; id < net::kMaxPlayers; id++) {
@@ -806,7 +851,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     // falling (Asad's rule: a guest comes back beside the host; the host falling is a Game Over for everyone): a guest's
     // Link with no health for 45 steps (a fairy in a bottle revives sooner) tells the host, which sends its world again;
     // the host's own fall: once it plays again (a new Link after the Game Over), every guest is brought to it
-    {
+    if (settings().stay_together) {
         const uint16_t life = ld16(ld32(GD(0x101F84DC)) + 0x20 + 2);  // dSv_player_status_a_c::mLife (quarter hearts)
         static uint32_t down_steps = 0, down_link = 0;
         down_steps = life ? 0 : down_steps + 1;
@@ -823,7 +868,17 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
             mods::trace("coop: the host plays again after falling: every guest brought here");
         }
     }
-    // the host: its world to each guest that has just joined (once Link is free to have it taken)
+    // the host: to each guest that has just joined, the team state (Anchor's way: the shared progress, union-merged into
+    // the guest's own Quest Log, the guest staying where it is); with "stay together" (the fork's way) its world
+    if (!settings().stay_together && host()) {
+        for (const int id : g_send_join) {
+            const std::vector<std::string> team = progress::team_state();
+            size_t bytes = 0;
+            for (const std::string& m : team) if (!m.empty()) net::send(id, net::kProgress, m), bytes += m.size();
+            mods::trace("coop: the team state sent to player %d (%zu messages, %zu bytes)", id, team.size(), bytes);
+        }
+        g_send_join.clear();
+    }
     for (size_t i = 0; i < g_send_join.size();) {
         std::string text, why;
         if (!ss::capture_portable_text(c, text, why)) {
