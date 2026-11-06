@@ -72,6 +72,9 @@ struct Bot {
                     }
                     near_rx[p.id] = now;
                 }
+            if (std::getenv("SCALING_DEBUG") && (e.kind == ClientEvent::kWelcome || e.kind == ClientEvent::kStateChanged))
+                std::printf("  %s: %u event %d resumed %d state %d %s\n", name.c_str(), monotonic_ms(), int(e.kind), e.resumed,
+                            int(e.state), e.text.c_str());
             log.push_back(e);
         }
         if (online()) c.send_pose(head, blob.data(), blob.size());

@@ -172,7 +172,7 @@ private:
     bool begin_pending_ = false;  // start() and REDIRECT begin at the next poll, on the caller's clock
     // a REDIRECT (handover between workers): the old session goes on (poses out, the world in) while the new one
     // is made with a HELLO straight away (the ticket needs no challenge); the game sees no state change
-    bool redirecting_ = false, direct_hello_ = false;
+    bool redirecting_ = false, direct_hello_ = false, direct_fallback_ = false;
     Address old_server_;
     void send_raw_to(const Address& to, const Bytes& b);  // the TCP fallback counts from the first CONNECT really sent
     UdpSocket* sock_ = nullptr;
