@@ -691,6 +691,9 @@ static void test_party_restart() {
             return ea && eb && ea->party.party == st.party && eb->party.party == st.party && ea->party.members.size() == 2;
         });
         CHECK(together);
+        for (Bot* x : both)
+            for (auto& e : x->log)
+                if (e.kind == ClientEvent::kPartyState && e.party.party) CHECK(e.party.leader != 0);  // never "leader 0"
         a->c.ask_team_state();
         bool progress = run(s2.get(), both, 3000, [&] {
             auto* e = a->last(ClientEvent::kTeamState);
