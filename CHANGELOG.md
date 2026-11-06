@@ -7,6 +7,7 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Windows: the in-app randomizer builds again** (#435). A missing include stopped the Windows build since the randomizer landed.
 - **Mod SDK: mirrored HUD images and the game's own layout texts** (#434, from the HD minimap's SDK proposal in
   ZeldaWWHDMods #33, thanks @francosang). For mod authors: a HUD image drawn with reversed UVs now shows mirrored, and
   `wwhd_game_message_get("layout-message:<Layout>/<label>", …)` returns the game's own text for a layout label in the
