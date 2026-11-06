@@ -338,10 +338,11 @@ void step(Cpu* c, bool live) {
     const uint32_t info = sv + kInfo;
     // test aid: WWHD_COOP_TEST_PROGRESS=<offset>:<value>:<mask> (hex, dSv_save_c): those bits set here 300 steps after
     // arriving
-    static unsigned t_off = 0, t_val = 0, t_mask = 0, t_steps = 0;
+    // (a fourth field: that many steps instead of 300, decimal, e.g. to set them while out of a party)
+    static unsigned t_off = 0, t_val = 0, t_mask = 0, t_steps = 0, t_at = 300;
     static const bool t_on = getenv("WWHD_COOP_TEST_PROGRESS") &&
-                             sscanf(getenv("WWHD_COOP_TEST_PROGRESS"), "%x:%x:%x", &t_off, &t_val, &t_mask) == 3 && t_off < kSaveSize;
-    if (t_on && t_steps + 1 == 300) {
+                             sscanf(getenv("WWHD_COOP_TEST_PROGRESS"), "%x:%x:%x:%u", &t_off, &t_val, &t_mask, &t_at) >= 3 && t_off < kSaveSize;
+    if (t_on && t_steps + 1 == t_at) {
         const uint8_t was = ld8(at(info, t_off));
         st8(at(info, t_off), (uint8_t)((was & ~t_mask) | (t_val & t_mask)));
         mods::trace("coop: progress test: byte %03X from %02X to %02X", t_off, was, ld8(at(info, t_off)));
@@ -419,7 +420,7 @@ void step(Cpu* c, bool live) {
         }
 }
 
-std::vector<std::string> team_state() {
+std::vector<std::string> team_state(bool counts) {
     const uint32_t sv = ld32(kSaveInfoPtr);
     if (!sv) return {};
     std::vector<uint8_t> now;
@@ -433,6 +434,7 @@ std::vector<std::string> team_state() {
     };
     for (const Field& f : kFields) {
         if (f.mode != kBits) {
+            if (f.mode == kSet && !counts) continue;  // (a shared count as it comes: only the leader's at a join)
             std::string rec{(char)(f.off & 0xFF), (char)(f.off >> 8), (char)f.size};
             rec.append((const char*)&now[f.off], f.size);
             add(rec);

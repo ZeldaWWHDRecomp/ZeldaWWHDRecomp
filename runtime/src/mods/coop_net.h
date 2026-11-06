@@ -24,6 +24,7 @@ namespace mods::coop::net {
 // kMaxPlayers: the players' numbers any transport gives (through a server: a party of up to 4 and the strangers shown
 // nearby, GAPS C11: an instance's 32); kMaxDirect: the direct transport's (a host and three guests)
 constexpr int kProto = 6, kPort = 7777, kMaxPlayers = 32, kMaxDirect = 4;
+inline constexpr const char* kStrangerGone = "a stranger out of sight";  // (Handler::left: a stranger's puppet, no notice)
 
 // the reliable messages (the game's side reads them through on_message)
 enum Msg : uint8_t {

@@ -28,7 +28,7 @@ void step(Cpu* c, bool live);
 void stop();
 // this game's shared progress as one message (net::kProgress's format), for a player who joins: put in by the union
 // merge, so nobody loses progress (Anchor's team state)
-std::vector<std::string> team_state();
+std::vector<std::string> team_state(bool counts = true);
 // another player's shutter opening or closing (net::kDoorMove), shown here
 void door_moved(const uint8_t* d, size_t n);
 // rupees another player gained (net::kRupees), added here at the next step

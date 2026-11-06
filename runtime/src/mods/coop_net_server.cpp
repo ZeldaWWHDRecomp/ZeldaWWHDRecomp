@@ -18,6 +18,7 @@
 #if WWHD_ONLINE
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <ctime>
@@ -176,12 +177,14 @@ void remap(Handler& h) {
         if (order[i] == g_me_sid) { me = (int)i, s.name = g_my_name, s.look = (uint32_t)g_my_tunic, s.party = in_party(); continue; }
         for (const Peer& p : g_peers) if (p.sid == order[i]) s = p, s.on = true;
         s.party = member_sid(order[i]);
+        if (s.party)  // (a member by the name in the party's list: it comes before its pose, and strangers' names are hidden)
+            for (const op::PartyMember& m : g_party.members) if (m.id == order[i] && !m.name.empty()) s.name = m.name;
     }
     const int was_me = g_slot_of_me;
     for (int i = 0; i < kMaxPlayers; i++) {
         const bool same = g_slot[i].on == next[i].on && g_slot[i].sid == next[i].sid && g_slot[i].party == next[i].party && was_me == me;
         if (same) { g_slot[i].name = next[i].name, g_slot[i].look = next[i].look; continue; }
-        if (g_slot[i].on && i != was_me) h.left(i, "moved");
+        if (g_slot[i].on && i != was_me) h.left(i, g_slot[i].party ? "moved" : kStrangerGone);  // (a stranger's: no notice)
     }
     Peer old[kMaxPlayers];
     std::copy(std::begin(g_slot), std::end(g_slot), old);
@@ -203,6 +206,8 @@ std::string read_code(const std::string& spec) {
 }  // namespace
 
 bool set_party_flags(uint16_t flags, std::string& why);
+bool invite(const std::string& code, std::string& why);
+void leave_party();
 bool active() { return g_active; }
 
 bool start(const std::string& server, int port, const std::string& my_name, int my_tunic, std::string& why) {
@@ -511,6 +516,36 @@ void poll(Handler& h) {
             if (invite(code, why)) mods::trace("coop: server: invited %s", code.c_str());
             else say(why, true);
             g_auto_invite.clear();
+        }
+    }
+    // test aids for drop-in / drop-out (C17), main thread: WWHD_ONLINE_LEAVE_EVERY=<s>,<n>: this game leaves its party
+    // <s> seconds after each time it is in one, <n> times; WWHD_ONLINE_INVITE_AGAIN=<s>,<code or @file>: once this game
+    // has been in a party and is no longer with anyone in it, it invites that code again <s> seconds later
+    if (g_client->state() == op::ClientState::kOnline) {
+        static int leave_s = -1, leave_n = 0, again_s = -1;
+        static std::string again_code;
+        static uint32_t in_since = 0, out_since = 0;
+        static bool was_in = false, ever_in = false, left = false;
+        if (leave_s < 0) {
+            leave_s = 0, again_s = 0;
+            if (const char* e = getenv("WWHD_ONLINE_LEAVE_EVERY")) sscanf(e, "%d,%d", &leave_s, &leave_n);
+            if (const char* e = getenv("WWHD_ONLINE_INVITE_AGAIN"); e && strchr(e, ','))
+                again_s = atoi(e), again_code = strchr(e, ',') + 1;
+        }
+        const uint32_t now = now_ms();
+        const bool in = in_party();
+        if (in != was_in) (in ? in_since : out_since) = now, was_in = in, ever_in |= in, left = false;
+        if (in && !left && leave_s > 0 && leave_n > 0 && now - in_since >= (uint32_t)leave_s * 1000) {
+            leave_n--, left = true;  // (once per stay)
+            mods::trace("coop: test: leaving the party (%d more)", leave_n);
+            leave_party();
+        }
+        if (!in && ever_in && again_s > 0 && !again_code.empty() && out_since && now - out_since >= (uint32_t)again_s * 1000) {
+            out_since = 0;  // (once per absence)
+            std::string why;
+            const std::string code = read_code(again_code);
+            if (invite(code, why)) mods::trace("coop: test: invited %s again", code.c_str());
+            else mods::trace("coop: test: not invited again: %s", why.c_str());
         }
     }
     if (g_client->state() == op::ClientState::kOnline) {

@@ -96,6 +96,7 @@ std::vector<Sound> g_sounds_out;
 std::vector<Effects> g_sounds_in;
 
 std::vector<int> g_send_join;    // host: guests the world is still to go to
+std::vector<int> g_send_team;    // Anchor's way: members this game's team state is still to go to (each who joined)
 std::string g_join;              // guest: the host's portable state as it comes
 uint32_t g_join_total = 0;
 std::atomic<int> g_join_load{0};  // guest: the host's world 0 not asked for, 1 loading, 2 arrived (ss's done)
@@ -420,11 +421,15 @@ struct Handler : net::Handler {
     }
     void joined(int id) override {
         ss::notice(net::name(id) + " joined (" + kTunics[net::tunic(id)] + ")");
-        if (net::role() == net::Role::kHost) g_send_join.push_back(id);
+        // (with "stay together" the host's world goes to a guest; else, Anchor's way, every member's team state goes to
+        // each who joined and the newcomer's to each member, so what anyone did while apart is merged in both ways)
+        if (together()) { if (net::role() == net::Role::kHost) g_send_join.push_back(id); }
+        else if (std::find(g_send_team.begin(), g_send_team.end(), id) == g_send_team.end()) g_send_team.push_back(id);
     }
     void left(int id, const char* why) override {
         g_remote[id] = Remote{};
         release(id < net::my_id() ? id : std::max(0, id - 1));  // (hidden, its kit given back)
+        if (!strcmp(why, net::kStrangerGone)) return;  // (a stranger's puppet: shown and gone without a word)
         if (id != 0 || net::role() != net::Role::kOff) return ss::notice(net::name(id) + " left");
         g_failed = g_gen;  // (not joined again until the toggle, Connect again or the settings change)
         g_status = std::string("Stopped: ") + why;
@@ -666,12 +671,22 @@ void poll(Cpu* c, bool on) {
         g_ask_text.clear(), g_ask_said = -1;  // (a question still up closes)
     }
     net::poll(g_handler);
-    if (static bool told = false; !arrived()) told = false;
-    else if (guest() && !told) told = true, net::send(0, net::kArrived, std::string());
+    if (static bool told = false; !arrived() || !guest()) told = false;  // (told again at each join: drop-in, C17)
+    else if (!told) told = true, net::send(0, net::kArrived, std::string());
     own_tunic(host() ? net::tunic(0) : guest() ? net::tunic(net::my_id()) : -1);
     if (guest() && !g_was_guest && net::tunic(net::my_id()) != s.tunic)
         ss::notice(std::string(kTunics[s.tunic]) + " was taken, you're " + kTunics[net::tunic(net::my_id())]);
     if (guest()) g_was_guest = true;
+    // a guest that left the party (or whose party left it) while the session goes on (drop-out, C17): with "stay
+    // together" it played in the host's world, which is not its own, so back to the title as the fork did; else it plays
+    // on in its own Quest Log, saves its own, and can be invited again
+    else if (g_was_guest && net::role() != net::Role::kOff) {
+        if (g_join_load == 2 && together()) g_back = "You left the host's game";
+        else {
+            hlefs::g_block_saves = false, g_was_guest = false;
+            mods::trace("coop: out of the party: playing on here");
+        }
+    }
     if (net::role() != net::Role::kOff)
         g_status = std::string(net::status()) + (guest() && g_join_total && g_join.size() < g_join_total ? ", loading the host's world" : "");
     else if (!g_back.empty() || failed != want_gen) g_status = net::status();
@@ -921,15 +936,22 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     }
     // the host: to each guest that has just joined, the team state (Anchor's way: the shared progress, union-merged into
     // the guest's own Quest Log, the guest staying where it is); with "stay together" (the fork's way) its world
-    if (!together() && host()) {
-        for (const int id : g_send_join) {
-            const std::vector<std::string> team = progress::team_state();
+    // the team state goes both ways at a join (drop-in, C17): the leader's with the shared counts (small keys), a
+    // member's without them (else two games would swap their counts); bits, maxima and items merge as union either way
+    if (!together()) {
+        for (const int id : g_send_join)  // (a guest that fell, without "stay together": the team state again)
+            if (host() && std::find(g_send_team.begin(), g_send_team.end(), id) == g_send_team.end()) g_send_team.push_back(id);
+        g_send_join.clear();
+        for (const int id : g_send_team) {
+            if (!net::member(id)) continue;
+            const std::vector<std::string> team = progress::team_state(host());
             size_t bytes = 0;
             if (net::party_flag(net::kShareProgress, true))
                 for (const std::string& m : team) if (!m.empty()) net::send(id, net::kProgress, m), bytes += m.size();
-            mods::trace("coop: the team state sent to player %d (%zu messages, %zu bytes)", id, team.size(), bytes);
+            mods::trace("coop: the team state sent to player %d (%zu messages, %zu bytes%s)", id, team.size(), bytes,
+                        host() ? "" : ", without the counts");
         }
-        g_send_join.clear();
+        g_send_team.clear();
     }
     for (size_t i = 0; i < g_send_join.size();) {
         std::string text, why;
