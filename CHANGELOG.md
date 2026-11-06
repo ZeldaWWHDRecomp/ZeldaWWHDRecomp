@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the bottom of the picture cut off on Android devices that keep their navigation bar over the game**
+  (#349, thanks @plxjammerplx for the report). On the Retroid Pocket Nova, 4:3 / Match window filled the whole
+  screen and the system's navigation bar covered the rupee counter. The picture, the view button and Match
+  window's shape now leave out the bars the system draws over the game. Desktop and devices that hide the bars
+  are unchanged.
+
 ## v0.5.1
 
 ### Thanks
