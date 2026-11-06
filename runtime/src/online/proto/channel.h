@@ -55,7 +55,11 @@ public:
     const ChannelStats& stats() const { return stats_; }
     bool broken() const { return broken_; }  // the peer broke the protocol (oversized stream...)
 
-    static size_t max_reliable_queue_bytes() { return 512 * 1024; }
+    size_t max_reliable_queue_bytes() const { return queue_cap_; }
+    void set_queue_cap(size_t bytes, size_t messages) {
+        queue_cap_ = bytes;
+        queue_msgs_ = messages;
+    }
 
 private:
     struct OutMsg {
@@ -102,6 +106,7 @@ private:
 
     ChannelStats stats_;
     bool broken_ = false;
+    size_t queue_cap_ = 512 * 1024, queue_msgs_ = 4096;  // a client session; server links raise them
 };
 
 // header helpers (also used by the handshake packets)

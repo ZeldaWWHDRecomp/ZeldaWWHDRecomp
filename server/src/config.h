@@ -84,7 +84,7 @@ struct Config {
     int scale_cooldown_s = 8;       // between two changes of one worker's regions
     int merge_hold_s = 30;
     int idle_worker_s = 60;         // a started worker without regions this long is stopped
-    int min_region = 2;             // smallest region side, in sub-cells (2 = 25,000 units)
+    int min_region = 1;             // smallest region side, in sub-cells (1 = 12,500 units)
     int area_cap = 200;             // players per 2x2 sub-cell area and copy at sea before arrivals go to a copy
     float handover_depth = 2000.0f; // this far inside another worker's region before the handover
 

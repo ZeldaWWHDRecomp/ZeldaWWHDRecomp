@@ -120,7 +120,7 @@ struct Session {
     uint32_t party = 0;
 
     // handover to another worker in progress
-    bool redirected = false;
+    bool redirected = false, handing = false;  // handing: a handover waits for the target's ack
     uint32_t redirect_at = 0;
     int lent_from = -1;   // the id came with a handover from this worker (told when it is free again)
     int area = -1;        // at sea: the 2x2 sub-cell area (sea copies are per area)
@@ -180,6 +180,7 @@ struct Metrics {
     uint64_t ticks = 0;
     std::vector<uint32_t> tick_us;  // since the last report
     std::vector<uint32_t> interest_us, send_us;  // the two parallel phases of each tick
+    std::atomic<uint64_t> out_churn{0}, out_gone{0};
     std::atomic<uint64_t> pose_entries_near{0}, pose_entries_mid{0}, pose_entries_far{0}, markers{0};
     uint64_t handovers_out = 0, handovers_in = 0, ghosts = 0, splits = 0, moves = 0, merges = 0;
     uint64_t workers_started = 0, workers_stopped = 0, copies_opened = 0, copy_moves = 0;
@@ -324,6 +325,7 @@ private:
     void link_message(int from, const proto::Delivered& m, uint32_t now);
     void handover_check(Session& s, uint32_t now);
     void hand_over(Session& s, int target, uint32_t now, const Bytes* party_blob, uint32_t join_party);
+    void redirect(Session& s, int target, const uint8_t ticket[32], uint32_t now);
     int owner_of(const Session& s) const;
     void coordinate(uint32_t now);
     void apply_map(uint32_t now);
@@ -414,6 +416,14 @@ private:
         int from;
     };
     std::map<std::array<uint8_t, 32>, Ticket> tickets_;
+    struct Pending {
+        uint32_t conn_id;
+        int target;
+        uint32_t at;
+    };
+    std::map<std::array<uint8_t, 32>, Pending> pending_;  // handovers waiting for the target's ack
+    int handovers_this_tick_ = 0;
+    std::deque<uint32_t> recent_ticks_;  // the last second of tick times (load reports)
     std::vector<uint16_t> id_blocks_;  // first ids of the blocks this worker may hand out
     std::set<uint16_t> lent_;          // ids of ours still used on another worker
     uint16_t next_block_ = 1;          // coordinator: the next block to give out (blocks of 256)

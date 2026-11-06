@@ -478,7 +478,14 @@ static void test_scaling() {
     }));
     // b joined a's party on a's worker, as a guest in a region another worker runs
     CHECK(wk[1]->find_by_key(b->c.key_hash()) != nullptr);
-    CHECK(all3(bots, 3000, [&] { return b->players.count(aid) && b->players.count(c->c.my_id()); }));
+    CHECK(all3(bots, 3000, [&] { return b->players.count(aid) != 0; }));  // the party: seen anywhere
+    // c sails east into worker w1's half: b, a guest of w2 there, sees c through w1's ghosts
+    for (float x = -3000; x <= 16000; x += 400) {
+        c->head.x = x;
+        all3(bots, 40, nullptr);
+    }
+    CHECK(all3(bots, 4000, [&] { return wk[0]->find_by_key(c->c.key_hash()) && b->players.count(c->c.my_id()); }));
+    CHECK(wk[1]->find_by_key(b->c.key_hash()) != nullptr);
     std::printf("scaling: region move, cross-worker invite, party guest: ok\n");
     // worker w2 goes away: its players come back through the coordinator
     wk[1].reset();

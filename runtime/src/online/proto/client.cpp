@@ -404,8 +404,7 @@ void Client::handle_message(const Delivered& m) {
             if (!host.empty()) cfg_.host = host;
             std::memcpy(token_, ticket, 32);
             have_token_ = true;
-            state_ = ClientState::kReconnecting;
-            begin_connect(monotonic_ms());
+            begin_connect(monotonic_ms());  // (reports kReconnecting: the handover is under way)
             break;
         }
         default: break;  // unknown types are ignored

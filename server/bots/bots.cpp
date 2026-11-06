@@ -17,6 +17,7 @@
 #include <string>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "proto/client.h"
@@ -29,8 +30,9 @@ using namespace online::proto;
 
 namespace {
 
-enum Scenario { kQuiet = 0, kBusy = 1, kTown = 2 };
-const char* kScenarioName[] = {"quiet", "busy", "town"};
+enum Scenario { kQuiet = 0, kBusy = 1, kTown = 2, kCrowd = 3, kConverge = 4 };
+const char* kScenarioName[] = {"quiet", "busy", "town", "crowd", "converge"};
+constexpr int kScenarios = 5;
 
 struct Options {
     std::string host = "127.0.0.1";
@@ -49,11 +51,13 @@ struct Options {
     int phone_percent = 0;
     int busy_squares = 3;
     float sea_origin = -350000.0f;
+    int square = 24;         // crowd / converge: the square everyone goes to
+    int converge_s = 60;     // converge: everyone arrives within this long after the warm-up
 };
 
 struct Bot {
     std::unique_ptr<Client> c;
-    Scenario sc = kQuiet;
+    Scenario sc = kQuiet, report_sc = kQuiet;
     float x = 0, z = 0, y = 0, heading = 0, speed = 0;
     float cx = 0, cz = 0, radius = 0;  // the area it stays in
     uint32_t next_at = 0;
@@ -61,6 +65,15 @@ struct Bot {
     bool started = false, counted = false;
     int players_seen = 0, near = 0, mid = 0, far = 0;
     uint64_t poses = 0;
+    float tx = 0, tz = 0;    // converge: the target
+    bool converging = false;
+    // handovers and glitches
+    uint32_t reconnect_at = 0;
+    std::vector<uint32_t> handover_ms;
+    int handovers = 0, pops = 0;
+    std::unordered_map<uint16_t, uint32_t> out_at;  // id -> when it went out (a quick come-back is a pop)
+    std::vector<int> pings;
+    std::unordered_set<uint16_t> visible;
 };
 
 uint64_t rss_mb() {
@@ -105,6 +118,8 @@ int main(int argc, char** argv) {
         else if (a == "--phones") o.phone_percent = std::atoi(next().c_str());
         else if (a == "--busy-squares") o.busy_squares = std::atoi(next().c_str());
         else if (a == "--game-data") o.game_data = std::strtoull(next().c_str(), nullptr, 0);
+        else if (a == "--square") o.square = std::atoi(next().c_str());
+        else if (a == "--converge-s") o.converge_s = std::atoi(next().c_str());
         else {
             std::fprintf(stderr,
                          "usage: wwhd-online-bots [--host h] [--port p] [--count n] [--duration s] [--warmup s]\n"
@@ -138,6 +153,8 @@ int main(int argc, char** argv) {
         if (o.scenario == "quiet") b.sc = kQuiet;
         else if (o.scenario == "busy") b.sc = kBusy;
         else if (o.scenario == "town") b.sc = kTown;
+        else if (o.scenario == "crowd") b.sc = kCrowd;
+        else if (o.scenario == "converge") b.sc = kConverge;
         else {
             float r = u(rng);
             b.sc = r < 0.5f ? kQuiet : r < 0.8f ? kBusy : kTown;
@@ -162,6 +179,28 @@ int main(int argc, char** argv) {
                 b.speed = 300 + u(rng) * 900;
                 break;
             }
+            case kCrowd: {
+                // all over one square
+                b.cx = o.sea_origin + (float(o.square % kSeaSquares) + 0.5f) * kSquareUnits;
+                b.cz = o.sea_origin + (float(o.square / kSeaSquares) + 0.5f) * kSquareUnits;
+                b.radius = kSquareUnits * 0.45f;
+                b.x = b.cx + (u(rng) - 0.5f) * kSquareUnits * 0.9f;
+                b.z = b.cz + (u(rng) - 0.5f) * kSquareUnits * 0.9f;
+                b.speed = 300 + u(rng) * 900;
+                break;
+            }
+            case kConverge: {
+                // spread over the sea first; after the warm-up everyone sails to one square
+                b.cx = o.sea_origin + kSea / 2;
+                b.cz = o.sea_origin + kSea / 2;
+                b.radius = kSea / 2 - 1000;
+                b.x = o.sea_origin + 1000 + u(rng) * (kSea - 2000);
+                b.z = o.sea_origin + 1000 + u(rng) * (kSea - 2000);
+                b.speed = 600 + u(rng) * 1000;
+                b.tx = o.sea_origin + (float(o.square % kSeaSquares) + 0.5f) * kSquareUnits + (u(rng) - 0.5f) * kSquareUnits * 0.9f;
+                b.tz = o.sea_origin + (float(o.square / kSeaSquares) + 0.5f) * kSquareUnits + (u(rng) - 0.5f) * kSquareUnits * 0.9f;
+                break;
+            }
             case kTown: {
                 b.cx = 0;
                 b.cz = 0;
@@ -174,6 +213,7 @@ int main(int argc, char** argv) {
             }
         }
         b.heading = u(rng) * 6.2832f;
+        b.report_sc = b.sc;
         b.c = std::make_unique<Client>(&sock);
     }
 
@@ -280,9 +320,30 @@ int main(int argc, char** argv) {
             if (int32_t(now - b.next_at) > int32_t(period) * 4) b.next_at = now + period;
             // move: wander inside the area
             float dt = period / 1000.0f;
-            b.heading += (u(rng) - 0.5f) * 0.3f;
-            float dx = b.x - b.cx, dz = b.z - b.cz;
-            if (dx * dx + dz * dz > b.radius * b.radius) b.heading = std::atan2(-dz, -dx) + (u(rng) - 0.5f);
+            if (b.sc == kConverge && warmed && !b.converging) {
+                // arrive within converge_s, at most 5,000 units/s (under the server's speed limit)
+                b.converging = true;
+                float d = std::sqrt((b.tx - b.x) * (b.tx - b.x) + (b.tz - b.z) * (b.tz - b.z));
+                b.speed = std::min(5000.0f, std::max(300.0f, d / float(std::max(1, o.converge_s)) * (0.5f + u(rng) * 0.5f)));
+            }
+            if (b.converging) {
+                float dx = b.tx - b.x, dz = b.tz - b.z, d = std::sqrt(dx * dx + dz * dz);
+                if (d > b.speed * dt) {
+                    b.heading = std::atan2(dz, dx);
+                } else {
+                    // arrived: wander in the target square
+                    b.converging = false;
+                    b.sc = kCrowd;
+                    b.cx = o.sea_origin + (float(o.square % kSeaSquares) + 0.5f) * kSquareUnits;
+                    b.cz = o.sea_origin + (float(o.square / kSeaSquares) + 0.5f) * kSquareUnits;
+                    b.radius = kSquareUnits * 0.45f;
+                    b.speed = 300 + u(rng) * 900;
+                }
+            } else {
+                b.heading += (u(rng) - 0.5f) * 0.3f;
+                float dx = b.x - b.cx, dz = b.z - b.cz;
+                if (dx * dx + dz * dz > b.radius * b.radius) b.heading = std::atan2(-dz, -dx) + (u(rng) - 0.5f);
+            }
             b.x += std::cos(b.heading) * b.speed * dt;
             b.z += std::sin(b.heading) * b.speed * dt;
             ClientState before = b.c->state();
@@ -296,12 +357,29 @@ int main(int argc, char** argv) {
                     b.poses += e.poses.size();
                     total_poses += e.poses.size();
                 } else if (e.kind == ClientEvent::kPlayerIn) {
-                    ++b.players_seen;
+                    auto it = b.out_at.find(e.id);
+                    if (it != b.out_at.end()) {
+                        if (now - it->second < 3000 && warmed) ++b.pops;  // gone and back within 3 s: a glitch
+                        b.out_at.erase(it);
+                    }
+                    b.visible.insert(e.id);
+                    b.players_seen = int(b.visible.size());
                 } else if (e.kind == ClientEvent::kPlayerOut) {
-                    --b.players_seen;
+                    b.out_at[e.id] = now;
+                    b.visible.erase(e.id);
+                    b.players_seen = int(b.visible.size());
+                } else if (e.kind == ClientEvent::kStateChanged && e.state == ClientState::kReconnecting) {
+                    b.reconnect_at = now;
+                } else if (e.kind == ClientEvent::kWelcome && b.reconnect_at) {
+                    if (warmed) {
+                        b.handover_ms.push_back(now - b.reconnect_at);
+                        ++b.handovers;
+                    }
+                    b.reconnect_at = 0;
                 }
             }
             if (b.c->state() != before) reidx = true;
+            if (warmed && b.c->ping_ms() >= 0 && (b.poses % 15) == 0) b.pings.push_back(b.c->ping_ms());
             if (b.c->state() == ClientState::kOnline) {
                 PoseHeader h;
                 h.where = b.sc == kTown ? Where::of("town", 0) : Where::of("sea", 1);
@@ -325,21 +403,28 @@ int main(int argc, char** argv) {
     }
     // report
     double secs = o.duration_s;
-    std::vector<double> down[3], up[3], seen[3];
+    std::vector<double> down[kScenarios], up[kScenarios], seen[kScenarios], hand_ms, pings;
+    long pops = 0, handovers = 0;
     int online_end = 0;
     for (auto& b : bots) {
         bool on = b.c->state() == ClientState::kOnline;
         online_end += on;
         if (!b.counted || !on) continue;
-        down[b.sc].push_back(double(b.c->stats().bytes_down - b.down_at_warm) / secs);
-        up[b.sc].push_back(double(b.c->stats().bytes_up - b.up_at_warm) / secs);
-        seen[b.sc].push_back(b.players_seen);
+        down[b.report_sc].push_back(double(b.c->stats().bytes_down - b.down_at_warm) / secs);
+        up[b.report_sc].push_back(double(b.c->stats().bytes_up - b.up_at_warm) / secs);
+        seen[b.report_sc].push_back(b.players_seen);
+    }
+    for (auto& b : bots) {
+        pops += b.pops;
+        handovers += b.handovers;
+        for (uint32_t h : b.handover_ms) hand_ms.push_back(h);
+        for (int p : b.pings) pings.push_back(p);
     }
     std::string j = "{\"bots\":" + std::to_string(o.count) + ",\"online_at_end\":" + std::to_string(online_end) +
                     ",\"duration_s\":" + std::to_string(o.duration_s) + ",\"pose_bytes\":" + std::to_string(o.pose_bytes) +
                     ",\"rss_mb\":" + std::to_string(rss_mb()) + ",\"scenarios\":{";
     bool first = true;
-    for (int s = 0; s < 3; ++s) {
+    for (int s = 0; s < kScenarios; ++s) {
         if (down[s].empty()) continue;
         char b[600];
         double sum = 0;
@@ -354,7 +439,12 @@ int main(int argc, char** argv) {
         j += b;
         first = false;
     }
-    j += "}}\n";
+    char tail[400];
+    std::snprintf(tail, sizeof tail,
+                  "},\"handovers\":%ld,\"handover_p50_ms\":%.0f,\"handover_p99_ms\":%.0f,\"handover_max_ms\":%.0f,"
+                  "\"pops\":%ld,\"ping_p50_ms\":%.0f,\"ping_p99_ms\":%.0f}\n",
+                  handovers, pct(hand_ms, 0.5), pct(hand_ms, 0.99), pct(hand_ms, 1.0), pops, pct(pings, 0.5), pct(pings, 0.99));
+    j += tail;
     std::fputs(j.c_str(), stdout);
     if (!o.report.empty())
         if (std::FILE* f = std::fopen(o.report.c_str(), "w")) {

@@ -144,6 +144,8 @@ void Server::step(int wait_ms) {
         uint64_t t0 = monotonic_us();
         tick(now);
         metrics_.tick_us.push_back(uint32_t(monotonic_us() - t0));
+        recent_ticks_.push_back(metrics_.tick_us.back());
+        while (recent_ticks_.size() > size_t(cfg_.tick_hz)) recent_ticks_.pop_front();
         metrics_.ticks++;
         next_tick_ += 1000 / cfg_.tick_hz;
         if (int32_t(now - next_tick_) > 1000) next_tick_ = now;  // fell far behind: don't spin
@@ -372,9 +374,17 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
         auto owned = std::make_unique<Session>();
         s = owned.get();
         s->conn_id = new_conn_id();
+        if (ticket) {
+            // back here soon after leaving: our old (redirected) copy of the player gives way
+            auto old = by_id_.find(ticket->who.id);
+            if (old != by_id_.end()) {
+                auto os = sessions_.find(old->second);
+                if (os != sessions_.end() && os->second->redirected && os->second->key_hash == kh) remove(old->second);
+            }
+        }
         s->id = ticket ? ticket->who.id : new_id();
         if (!s->id || by_id_.count(s->id)) s->id = new_id();
-        if (!s->id) return refuse(from, h.nonce, Refusal::kFull, "", 30);
+        if (!s->id) return refuse(from, h.nonce, Refusal::kFull, "the server is short of player ids; retrying", 2);
         s->key_hash = kh;
         std::memcpy(s->pub, h.pub, 32);
         s->joined_at = now;
@@ -389,6 +399,19 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
             metrics_.handovers_in++;
             ghosts_.erase(s->id);
             s->lent_from = ticket->from == me_ ? -1 : ticket->from;
+            // seen at once where the old worker last saw it: no gap until its first pose here
+            s->head = ticket->who.head;
+            s->blob = ticket->who.blob;
+            s->pose_ms = ticket->who.pose_ms;
+            s->pose_seq = ticket->who.pose_seq;
+            s->where = s->head.where;
+            if (s->where.stage_name() == cfg_.sea_stage) {
+                s->has_pose = true;
+                s->gx = int32_t(std::floor((s->head.x - cfg_.sea_origin_x) / kSubCellUnits));
+                s->gz = int32_t(std::floor((s->head.z - cfg_.sea_origin_z) / kSubCellUnits));
+                s->copy = ticket->who.copy;
+                s->pose_rx = now;
+            }
             if (ticket->from == me_) lent_.erase(s->id);  // one of our ids comes home
             join_party = ticket->join ? ticket->party : 0;
             tickets_.erase(tok);
@@ -417,9 +440,15 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     std::memcpy(s->client_eph, h.eph, 32);
     s->online = true;
     s->redirected = false;
-    s->has_pose = false;
-    s->hidden = true;
-    s->stage_changed = true;
+    s->handing = false;
+    if (!had_ticket) {
+        s->has_pose = false;
+        s->hidden = true;
+        s->stage_changed = true;
+    } else {
+        s->hidden = !s->has_pose;
+        s->stage_changed = !s->has_pose;
+    }
     s->chan.setup(s->conn_id, tx, rx, false, now);
     s->packets.init(cfg_.packets_per_s, cfg_.packets_per_s * 2, now);
     s->bytes.init(cfg_.bytes_per_s, cfg_.bytes_per_s * 2 + 4096, now);
@@ -1034,7 +1063,7 @@ void Server::interest(Session& s, uint32_t now) {
     for (Session* o : around) consider(o, nullptr);
     for (Ghost* g : ghosts)
         if (!by_id_.count(g->id)) consider(nullptr, g);
-    size_t keep = size_t(s.near_cap + s.mid_cap + (at_sea ? cfg_.far_cap : 0));
+    size_t keep = size_t(s.near_cap + s.mid_cap + (at_sea ? cfg_.far_cap : 0)) * 9 / 8;
     if (cands.size() > keep + 8) {
         std::nth_element(cands.begin(), cands.begin() + long(keep), cands.end(),
                          [](const Cand& a, const Cand& b) { return (a.party ? -1.0f : a.key) < (b.party ? -1.0f : b.key); });
@@ -1057,9 +1086,13 @@ void Server::interest(Session& s, uint32_t now) {
         uint8_t prev_tier = was ? it->second.tier : 255;
         uint8_t tier;
         float near_lim = cfg_.near_radius * (prev_tier == kTierNear ? h : 1.0f);
-        if (c.dist < near_lim && near_n < s.near_cap) tier = kTierNear;
-        else if (c.party || mid_n < s.mid_cap) tier = kTierMid;
-        else if (at_sea && far_n < cfg_.far_cap) tier = kTierFar;
+        // caps with slack for who is already shown: a crowd at the cap does not flicker in and out
+        int slack_near = prev_tier == kTierNear ? s.near_cap / 8 : 0;
+        int slack_mid = prev_tier <= kTierMid ? s.mid_cap / 8 : 0;
+        int slack_far = was ? cfg_.far_cap / 8 : 0;
+        if (c.dist < near_lim && near_n < s.near_cap + slack_near) tier = kTierNear;
+        else if (c.party || mid_n < s.mid_cap + slack_mid) tier = kTierMid;
+        else if (at_sea && far_n < cfg_.far_cap + slack_far) tier = kTierFar;
         else continue;
         if (!was) {
             if (in_n >= cfg_.player_in_per_tick) continue;  // the rest next tick
@@ -1117,6 +1150,9 @@ void Server::interest(Session& s, uint32_t now) {
             ++it;
             continue;
         }
+        // why: still around but past the caps or the window (churn), or gone from this worker's view (a gap)
+        if (by_id_.count(it->first) || ghosts_.count(it->first)) metrics_.out_churn++;
+        else metrics_.out_gone++;
         Bytes b;
         Writer(b).u16(it->first);
         s.chan.send_reliable(kMsgPlayerOut, b);
@@ -1461,14 +1497,17 @@ void Server::write_metrics(uint32_t now) {
     metrics_.send_us.clear();
     size_t n = players();
     double out_s = (metrics_.bytes_out - last_out) / dt, in_s = (metrics_.bytes_in - last_in) / dt;
-    char line[768];
+    char line[1024];
     std::snprintf(line, sizeof line,
                   "{\"t\":%u,\"worker\":%d,\"players\":%zu,\"out_Bps\":%.0f,\"in_Bps\":%.0f,\"out_per_player_Bps\":%.0f,"
                   "\"in_per_player_Bps\":%.0f,\"tick_p50_us\":%u,\"tick_p99_us\":%u,\"tick_max_us\":%u,"
+                  "\"out_churn\":%llu,\"out_gone\":%llu,\"handovers_out\":%llu,\"handovers_in\":%llu,"
                   "\"interest_p99_us\":%u,\"send_p99_us\":%u,\"threads\":%d,"
                   "\"ticks\":%zu,\"cpu_pct\":%.1f,\"maxrss_mb\":%.1f,\"dropped_rate\":%llu,\"implausible\":%llu}\n",
                   now, me_, n, out_s, in_s, n ? out_s / double(n) : 0, n ? in_s / double(n) : 0, pct(0.5), pct(0.99),
-                  t.empty() ? 0u : t.back(), interest_p99, send_p99, workers_, t.size(), cpu_pct, double(rss) / 1024.0,
+                  t.empty() ? 0u : t.back(), (unsigned long long)metrics_.out_churn.load(),
+                  (unsigned long long)metrics_.out_gone.load(), (unsigned long long)metrics_.handovers_out,
+                  (unsigned long long)metrics_.handovers_in, interest_p99, send_p99, workers_, t.size(), cpu_pct, double(rss) / 1024.0,
                   (unsigned long long)metrics_.dropped_rate, (unsigned long long)metrics_.implausible);
     std::string mf = cfg_.metrics_file;
     if (cfg_.worker) mf += "." + std::to_string(me_);

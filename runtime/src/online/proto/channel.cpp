@@ -47,7 +47,7 @@ void Channel::setup(uint32_t conn_id, const uint8_t tx[32], const uint8_t rx[32]
 
 bool Channel::send_reliable(uint8_t type, const uint8_t* d, size_t n) {
     if (type & 0x80) return false;
-    if (n > kMaxStream || out_bytes_ + n > max_reliable_queue_bytes() || out_.size() + n / kPieceBytes + 1 > 4 * kWindow)
+    if (n > kMaxStream || out_bytes_ + n > max_reliable_queue_bytes() || out_.size() + n / kPieceBytes + 1 > queue_msgs_)
         return false;
     size_t at = 0;
     do {

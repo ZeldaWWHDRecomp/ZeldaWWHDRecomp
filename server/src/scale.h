@@ -22,6 +22,12 @@ struct Region {
     int16_t x0 = 0, z0 = 0, x1 = 0, z1 = 0;
     std::string stage;
     int worker = 0;
+    // the safety valve beyond the smallest region: copy k of this region runs on copy_worker[k-1] (copy 0 and any
+    // copy past the list run on `worker`)
+    std::vector<uint8_t> copy_worker;
+    int worker_of_copy(int copy) const {
+        return copy >= 1 && size_t(copy) <= copy_worker.size() ? copy_worker[size_t(copy - 1)] : worker;
+    }
     int cells() const { return (x1 - x0) * (z1 - z0); }
     bool contains(int gx, int gz) const { return stage.empty() && gx >= x0 && gx < x1 && gz >= z0 && gz < z1; }
 };
@@ -46,7 +52,7 @@ struct RegionMap {
     void init_squares();
     void rebuild();  // after any change: the cell index
     int region_at(int gx, int gz) const;  // index into regions, -1 outside
-    int owner_at(int gx, int gz) const;
+    int owner_at(int gx, int gz, int copy = 0) const;
     int owner_of_stage(const std::string& stage) const;  // -1: no region, the coordinator (0) runs it
     const WorkerInfo* worker(int index) const;
 
@@ -73,6 +79,7 @@ enum LinkMsg : uint8_t {
     kLPartyPark = 12, // worker -> coordinator: a party with nobody online (its last known team state)
     kLBan = 13,       // coordinator -> workers: u64 code40, u64 until, reason (an operator ban)
     kLKick = 14,      // coordinator -> workers: u64 code40, reason
+    kLHandoffAck = 15,  // worker -> worker: the ticket is stored; now the client is sent over
 };
 
 
@@ -82,9 +89,11 @@ struct RegionLoad {
     uint16_t players = 0;
     uint64_t out_Bps = 0;
     std::vector<uint16_t> hist;  // players per sub-cell, row by row (sea regions only)
+    std::vector<uint16_t> copies;  // players per copy (sea regions only)
 };
 struct LoadReport {
     float cpu_pct = 0;
+    uint32_t tick_p90_us = 0;  // the tick's own time: over the budget means the worker falls behind
     uint64_t out_Bps = 0;
     uint16_t players = 0;
     uint32_t map_version = 0;

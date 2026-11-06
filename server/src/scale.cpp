@@ -146,9 +146,9 @@ int RegionMap::region_at(int gx, int gz) const {
     return cell_[size_t(gz * kGrid + gx)];
 }
 
-int RegionMap::owner_at(int gx, int gz) const {
+int RegionMap::owner_at(int gx, int gz, int copy) const {
     int r = region_at(gx, gz);
-    return r < 0 ? 0 : regions[size_t(r)].worker;
+    return r < 0 ? 0 : regions[size_t(r)].worker_of_copy(copy);
 }
 
 int RegionMap::owner_of_stage(const std::string& stage) const {
@@ -188,6 +188,8 @@ Bytes RegionMap::encode() const {
         w.s16(r.z1);
         w.str8(r.stage);
         w.u8(uint8_t(r.worker));
+        w.u8(uint8_t(std::min<size_t>(r.copy_worker.size(), 64)));
+        for (size_t k = 0; k < r.copy_worker.size() && k < 64; ++k) w.u8(r.copy_worker[k]);
     }
     return b;
 }
@@ -220,6 +222,8 @@ bool RegionMap::decode(const uint8_t* d, size_t n) {
         g.z1 = r.s16();
         g.stage = r.str8(8);
         g.worker = r.u8();
+        size_t nc = r.u8();
+        for (size_t k = 0; k < nc; ++k) g.copy_worker.push_back(r.u8());
         m.regions.push_back(g);
     }
     if (!r.done()) return false;
@@ -232,6 +236,7 @@ Bytes encode_load(const LoadReport& l) {
     Bytes b;
     Writer w(b);
     w.f32(l.cpu_pct);
+    w.u32(l.tick_p90_us);
     w.u64(l.out_Bps);
     w.u16(l.players);
     w.u32(l.map_version);
@@ -242,6 +247,8 @@ Bytes encode_load(const LoadReport& l) {
         w.u64(r.out_Bps);
         w.u16(uint16_t(r.hist.size()));
         for (uint16_t h : r.hist) w.u16(h);
+        w.u8(uint8_t(std::min<size_t>(r.copies.size(), 64)));
+        for (size_t k = 0; k < r.copies.size() && k < 64; ++k) w.u16(r.copies[k]);
     }
     return b;
 }
@@ -250,6 +257,7 @@ bool decode_load(const uint8_t* d, size_t n, LoadReport& l) {
     Reader r(d, n);
     l = LoadReport();
     l.cpu_pct = r.f32();
+    l.tick_p90_us = r.u32();
     l.out_Bps = r.u64();
     l.players = r.u16();
     l.map_version = r.u32();
@@ -262,6 +270,8 @@ bool decode_load(const uint8_t* d, size_t n, LoadReport& l) {
         size_t h = r.u16();
         if (h > size_t(kGrid * kGrid)) return false;
         for (size_t k = 0; k < h; ++k) g.hist.push_back(r.u16());
+        size_t nc = r.u8();
+        for (size_t k = 0; k < nc; ++k) g.copies.push_back(r.u16());
         l.regions.push_back(std::move(g));
     }
     return r.done();
@@ -341,6 +351,7 @@ static void setup_peer_channel(Peer& p, const uint8_t key[32], int me, int other
     uint32_t conn = uint32_t(conn_h[0]) | (uint32_t(conn_h[1]) << 8) | (uint32_t(conn_h[2]) << 16) | (uint32_t(conn_h[3]) << 24);
     bool lo_side = me == lo;
     p.chan.setup(conn ? conn : 1, lo_side ? k_lohi : k_hilo, lo_side ? k_hilo : k_lohi, lo_side, now);
+    p.chan.set_queue_cap(64u << 20, 1u << 20);  // mass handovers queue many messages at once
     p.up = true;
     p.heard = now;
 }
@@ -470,14 +481,15 @@ int Server::owner_of(const Session& s) const {
     if (stage.empty()) return me_;
     if (stage == cfg_.sea_stage) {
         if (!s.has_pose) return me_;
-        return map_.owner_at(s.gx, s.gz);
+        return map_.owner_at(s.gx, s.gz, s.copy);
     }
     int o = map_.owner_of_stage(stage);
     return o < 0 ? 0 : o;
 }
 
 void Server::handover_check(Session& s, uint32_t now) {
-    if (!linked() || !registered_ || s.redirected || !s.online || s.dead) return;
+    if (!linked() || !registered_ || s.redirected || s.handing || !s.online || s.dead) return;
+    if (handovers_this_tick_ >= 150) return;  // a mass move is spread over ticks (on_pose asks again)
     int target = owner_of(s);
     if (target == me_) return;
     const WorkerInfo* w = map_.worker(target);
@@ -493,7 +505,7 @@ void Server::handover_check(Session& s, uint32_t now) {
         for (int k = 0; k < 4; ++k) {
             float x = s.head.x + (k == 0 ? d : k == 1 ? -d : 0), z = s.head.z + (k == 2 ? d : k == 3 ? -d : 0);
             cell(x, z, gx, gz);
-            if (map_.owner_at(gx, gz) != target) return;
+            if (map_.owner_at(gx, gz, s.copy) != target) return;
         }
     }
     // the party stays together, on the worker of its host member (the leader, or the first member online here)
@@ -521,7 +533,7 @@ void Server::handover_check(Session& s, uint32_t now) {
 
 void Server::hand_over(Session& s, int target, uint32_t now, const Bytes* party_blob, uint32_t join_party) {
     const WorkerInfo* w = map_.worker(target);
-    if (!w) return;
+    if (!w || s.handing) return;
     uint8_t ticket[32];
     crypto::random_bytes(ticket, 32);
     Bytes body;
@@ -541,6 +553,18 @@ void Server::hand_over(Session& s, int target, uint32_t now, const Bytes* party_
     if (party_blob) wr.bytes(party_blob->data(), party_blob->size());
     link_send(target, kLHandoff, body);
     if (owner == me_) lent_.insert(s.id);
+    // the client is sent over once the target has the ticket (kLHandoffAck); it plays on here until then
+    std::array<uint8_t, 32> t{};
+    std::memcpy(t.data(), ticket, 32);
+    pending_[t] = {s.conn_id, target, now};
+    s.handing = true;
+    s.party = 0;  // the party moved (or stays) on its own
+    ++handovers_this_tick_;
+}
+
+void Server::redirect(Session& s, int target, const uint8_t ticket[32], uint32_t now) {
+    const WorkerInfo* w = map_.worker(target);
+    if (!w) return;
     Bytes r;
     Writer rw(r);
     rw.str8(w->host);
@@ -549,7 +573,6 @@ void Server::hand_over(Session& s, int target, uint32_t now, const Bytes* party_
     s.chan.send_reliable(kMsgRedirect, r);
     s.redirected = true;
     s.redirect_at = now;
-    s.party = 0;  // the party moved (or stays) on its own
     metrics_.handovers_out++;
 }
 
@@ -669,10 +692,23 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
             }
             tk.at = now;
             tickets_[t] = std::move(tk);
+            link_send(from, kLHandoffAck, Bytes(t.begin(), t.end()));
+            break;
+        }
+        case kLHandoffAck: {
+            if (m.body.size() != 32) break;
+            std::array<uint8_t, 32> t{};
+            std::memcpy(t.data(), m.body.data(), 32);
+            auto it = pending_.find(t);
+            if (it == pending_.end()) break;
+            auto s = sessions_.find(it->second.conn_id);
+            if (s != sessions_.end() && !s->second->dead && s->second->online)
+                redirect(*s->second, it->second.target, t.data(), now);
+            pending_.erase(it);
             break;
         }
         case kLIdAsk:
-            if (me_ == 0 && next_block_ < 255) {
+            for (int k = 0; k < 4 && me_ == 0 && next_block_ < 255; ++k) {
                 Bytes b;
                 Writer(b).u16(uint16_t(next_block_++ * kBlock));
                 link_send(from, kLIdBlock, b);
@@ -763,6 +799,17 @@ void Server::link_tick(uint32_t now) {
     uint8_t key[32];
     link_key(cfg_.link_secret, key);
     for (auto it = tickets_.begin(); it != tickets_.end();) it = now - it->second.at > 30000 ? tickets_.erase(it) : std::next(it);
+    handovers_this_tick_ = 0;
+    for (auto it = pending_.begin(); it != pending_.end();) {
+        if (now - it->second.at < 5000) {
+            ++it;
+            continue;
+        }
+        // no answer: the player stays here and is checked again later
+        auto s = sessions_.find(it->second.conn_id);
+        if (s != sessions_.end()) s->second->handing = false;
+        it = pending_.erase(it);
+    }
 
     // once a second: hellos (and registering), subscriptions, the load report
     if (now - last_sub_ >= 1000) {
@@ -851,6 +898,11 @@ void Server::link_tick(uint32_t now) {
         out_at_ = metrics_.bytes_out;
         LoadReport l;
         l.cpu_pct = cpu_pct_;
+        {
+            std::vector<uint32_t> t(recent_ticks_.begin(), recent_ticks_.end());
+            std::sort(t.begin(), t.end());
+            l.tick_p90_us = t.empty() ? 0 : t[t.size() * 9 / 10];
+        }
         l.out_Bps = out_Bps_;
         l.map_version = map_.version;
         std::unordered_map<int, RegionLoad> per;
@@ -872,6 +924,10 @@ void Server::link_tick(uint32_t now) {
                 if (rl.hist.empty()) rl.hist.assign(size_t(g.cells()), 0);
                 int hx = clampi(s.gx - g.x0, 0, g.x1 - g.x0 - 1), hz = clampi(s.gz - g.z0, 0, g.z1 - g.z0 - 1);
                 rl.hist[size_t(hz * (g.x1 - g.x0) + hx)]++;
+                if (s.copy < 64) {
+                    if (rl.copies.size() <= s.copy) rl.copies.resize(size_t(s.copy) + 1, 0);
+                    rl.copies[s.copy]++;
+                }
             }
         }
         for (auto& [ri, rl] : per) {
@@ -895,18 +951,18 @@ void Server::link_tick(uint32_t now) {
                 uint16_t id = uint16_t(b + k);
                 if (id && !by_id_.count(id) && !lent_.count(id)) ++free_ids;
             }
-        if (free_ids < 64) {
+        if (free_ids < 512) {
             link_send(0, kLIdAsk, {});
             id_asked_ = true;
         }
     } else if (me_ == 0 && next_block_ < 255) {
         size_t free_ids = 0;
         for (uint16_t b : id_blocks_)
-            for (int k = 0; k < kBlock && free_ids < 64; ++k) {
+            for (int k = 0; k < kBlock && free_ids < 512; ++k) {
                 uint16_t id = uint16_t(b + k);
                 if (id && !by_id_.count(id) && !lent_.count(id)) ++free_ids;
             }
-        if (free_ids < 64) id_blocks_.push_back(uint16_t(next_block_++ * kBlock));
+        if (free_ids < 512) id_blocks_.push_back(uint16_t(next_block_++ * kBlock));
     }
     // ghosts: my players in the cells each peer subscribed
     std::vector<Bytes> per(peers_.size());
@@ -917,7 +973,8 @@ void Server::link_tick(uint32_t now) {
     };
     for (auto& [cid, sp] : sessions_) {
         Session& s = *sp;
-        if (s.dead || !s.online || s.redirected || !s.has_pose || s.head.where.stage_name() != cfg_.sea_stage) continue;
+        // (a player being handed over still goes out, with its last pose, until the new worker shows it)
+        if (s.dead || !s.online || !s.has_pose || s.head.where.stage_name() != cfg_.sea_stage) continue;
         if (s.gx < 0 || s.gz < 0 || s.gx >= kGrid || s.gz >= kGrid) continue;
         size_t bit = size_t(s.gz * kGrid + s.gx);
         Bytes one;
@@ -939,7 +996,7 @@ void Server::link_tick(uint32_t now) {
         Peer& p = peers_[i];
         if (int(i) == me_ || !p.up || !p.addr.valid()) continue;
         std::vector<Bytes> out;
-        p.chan.flush(now, out, 512, 250);
+        p.chan.flush(now, out, 8192, 250);
         link_.send_many(p.addr, out);
     }
 }
@@ -951,7 +1008,9 @@ void Server::coordinate(uint32_t now) {
     auto load_of = [&](int w) -> double {
         if (size_t(w) >= peers_.size()) return 0;
         const LoadReport& l = peers_[size_t(w)].load;
-        return std::max(l.cpu_pct / cfg_.split_cpu, double(l.out_Bps) / cfg_.split_bw);
+        // CPU, bandwidth, and whether the tick still fits its budget (80% of 1/tick_hz)
+        double budget_us = 0.8e6 / cfg_.tick_hz;
+        return std::max({l.cpu_pct / cfg_.split_cpu, double(l.out_Bps) / cfg_.split_bw, l.tick_p90_us / budget_us});
     };
     auto alive = [&](int w) {
         const WorkerInfo* k = map_.worker(w);
@@ -1034,7 +1093,8 @@ void Server::coordinate(uint32_t now) {
         bool dominant = mine.front().first * 10 > total * 6;
         int side = std::max(r.x1 - r.x0, r.z1 - r.z0);
         std::string what;
-        if (dominant && r.stage.empty() && side >= 2 * cfg_.min_region) {
+        // (a region's copies split off separately: a region whose copies run elsewhere is moved, not split)
+        if (dominant && r.stage.empty() && side >= 2 * cfg_.min_region && r.copy_worker.empty()) {
             // split at the players' median along the longer side
             bool along_x = (r.x1 - r.x0) >= (r.z1 - r.z0);
             int w = r.x1 - r.x0, h = r.z1 - r.z0, len = along_x ? w : h;
@@ -1089,8 +1149,27 @@ void Server::coordinate(uint32_t now) {
             what = "move region " + std::to_string(m.id) + " (" + std::to_string(players_in(hot, m.id)) + " players) from " +
                    std::to_string(hot) + " to worker " + std::to_string(target);
             metrics_.moves++;
+        } else if (r.stage.empty()) {
+            // one smallest region: its copies (the valve) go to other workers, the most populated one first
+            std::vector<uint16_t> copies;
+            for (auto& rl : peers_[size_t(hot)].load.regions)
+                if (rl.region == r.id) copies = rl.copies;
+            int pick = -1, pn = 0;
+            for (size_t k = 1; k < copies.size(); ++k)
+                if (r.worker_of_copy(int(k)) == hot && copies[k] > pn) {
+                    pn = copies[k];
+                    pick = int(k);
+                }
+            if (pick < 0) return;  // no copies yet: arrivals open them when the area cap is reached
+            if (r.copy_worker.size() < size_t(pick)) {
+                r.copy_worker.resize(size_t(pick), uint8_t(r.worker));
+            }
+            r.copy_worker[size_t(pick - 1)] = uint8_t(target);
+            what = "move copy " + std::to_string(pick) + " of region " + std::to_string(r.id) + " (" + std::to_string(pn) +
+                   " players) from " + std::to_string(hot) + " to worker " + std::to_string(target);
+            metrics_.moves++;
         } else {
-            return;  // one smallest region: the area copies carry it
+            return;
         }
         peers_[size_t(hot)].changed_at = now;
         peers_[size_t(target)].changed_at = now;
