@@ -96,8 +96,29 @@ struct Remote {
     bool far = false;
     float far_at[3] = {};
     uint32_t far_ms = 0;
+    // (C29) a party member drawn as the cheap figure beyond the nearest few (the phone's cap): its speed picks the gait
+    float cheap_at[3] = {};
+    uint32_t cheap_ms = 0;
+    bool cheap = false;
 };
 Remote g_remote[net::kMaxPlayers];
+static_assert(deck::kDecks >= net::kMaxParty, "a deck for every party number (C29)");
+
+// (C29) how many party members, nearest first, are drawn in full; the rest of a big party as the cheap figure (Link's
+// body in a wait, walk or dash clip, as at mid range, C13). Desktop: all (0 = no cap). Phone: provisional 4 (a party as
+// large as before C29) until the C21 phone pass sets it. WWHD_COOP_PARTY_FULL=<n> sets it (tests, the pairwise check)
+int party_full_cap() {
+    static const int cap = [] {
+#ifdef __ANDROID__
+        int n = 4;
+#else
+        int n = 0;
+#endif
+        if (const char* e = getenv("WWHD_COOP_PARTY_FULL")) n = std::max(0, atoi(e));
+        return n;
+    }();
+    return cap;
+}
 std::deque<std::pair<uint32_t, std::string>> g_state[net::kMaxPlayers][kKinds];  // each player's states by kind, by its time
 struct Area { char stage[8]; int8_t room; uint8_t owner; };
 std::vector<Area> g_owners;  // who runs each place's monsters (owner())
@@ -1173,6 +1194,17 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                                      shown[id].stage, shown[id].room, room, shown[id].boat[0], shown[id].boat[1], shown[id].boat[2],
                                      g_remote[id].poses.back().second.boat[0], g_remote[id].poses.back().second.boat[2], g_remote[id].poses.size());
     deck::update(c, boats, ship >= 0x10000000 && !sailing ? ship : 0);  // (riding his own boat: no friend's deck to stand on)
+    // (C29) with a cap on full party members: those beyond the nearest `cap` (by where each was drawn the step before)
+    bool cheap[net::kMaxPlayers] = {};
+    if (const int cap = party_full_cap(); cap > 0) {
+        std::vector<std::pair<float, int>> near;
+        const float me[3] = {f32(link + kPos), f32(link + kPos + 4), f32(link + kPos + 8)};
+        for (int id = 0; id < net::kMaxPlayers; id++)
+            if (id != net::my_id() && has[id] && net::member(id) && g_remote[id].shown)
+                near.push_back({std::hypot(g_remote[id].at[0] - me[0], g_remote[id].at[1] - me[1], g_remote[id].at[2] - me[2]), id});
+        std::sort(near.begin(), near.end());
+        for (size_t i = (size_t)cap; i < near.size(); i++) cheap[near[i].second] = true;
+    }
     for (int id = 0; id < net::kMaxPlayers; id++) {
         if (id == net::my_id()) continue;
         const int slot = id < net::my_id() ? id : id - 1;
@@ -1200,6 +1232,25 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         else if (p.flags & kOnFriend) frame_to_world(deck_at, deck_yaw, p.pos, r.at), yaw = (int16_t)(yaw + deck_yaw);
         else memcpy(r.at, p.pos, 12);
         r.yaw = yaw;
+        if (cheap[id] != r.cheap) {
+            r.cheap = cheap[id], r.cheap_ms = 0;
+            mods::trace("coop: player %d: %s (party cap %d)", id, r.cheap ? "the cheap figure" : "in full again", party_full_cap());
+        }
+        if (cheap[id]) {  // (C29) Link's body only, in a clip by its speed (no gear, trail, chain or rope)
+            const float dt = r.cheap_ms ? (now - r.cheap_ms) / 1000.f : 0;
+            if (dt > 0.05f || !r.cheap_ms) {
+                const float speed = r.cheap_ms && dt < 2 ? std::hypot(r.at[0] - r.cheap_at[0], r.at[2] - r.cheap_at[2]) / dt : 0;
+                r.gait = emotes::gait_for(speed, r.gait);
+                memcpy(r.cheap_at, r.at, 12), r.cheap_ms = now;
+            }
+            Pose q;
+            memcpy(q.stage, p.stage, 8), q.room = p.room, q.flags = 0, q.yaw = 0;
+            memcpy(q.pos, r.at, 12);
+            if (emotes::cheap_pose(r.gait, now / 1000.f, body_model(), q)) {
+                show(slot, &q, r.at, yaw, net::tunic(id), false);
+                continue;
+            }
+        }
         show(slot, &p, r.at, yaw, net::tunic(id), !net::member(id) && settings().strangers == 1);  // (X1b)
     }
     // test aid: WWHD_COOP_TEST_BLOCK=<s>[:mute]: that many seconds into the session, the first player outside the party

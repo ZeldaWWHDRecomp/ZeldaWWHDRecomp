@@ -1,6 +1,7 @@
 # Online co-op (experimental)
 
-Play *The Wind Waker HD* together with up to three friends. Each player runs their own copy of this
+Play *The Wind Waker HD* together with friends: up to three when you play directly, and more through a server
+(each server sets its party size, 8 by default and at most 16). Each player runs their own copy of this
 port with their own copy of the game. One player hosts, the others join.
 
 The online co-op code comes from [Galvakron's ZeldaWWHDRecompMP](https://github.com/Galvakron/ZeldaWWHDRecompMP)
@@ -58,7 +59,9 @@ together, form a party:
   this installation (a key file, `online-identity.key`, in your user folder) and stays the same on every server.
 - Enter a friend's code under **Friend's code** and choose **Invite**. They see the invitation in the game and
   under **Invitations** on their Online page, and choose **Join** or **No** (in the pause menu: **Join an
-  invitation** or **Decline the invitation**). A party has up to 4 players; **Leave the party** keeps you online.
+  invitation** or **Decline the invitation**). How many players a party may have is the server's setting: 8
+  unless its operator changed it (at most 16). The Online page shows it, and lists your party with a **Go to**
+  button for each member. **Leave the party** keeps you online.
 - If the party's leader leaves, another member takes over.
 - **Saved servers:** every server you connect to is saved (the 10 most recent), with its name. **Use** picks one
   again (in the pause menu, **Saved servers** steps through them); **Forget** removes it.
@@ -165,7 +168,8 @@ leaving the party takes you back to the title screen, because you were playing i
 
 ## Limits
 
-- Up to 4 players in a party. Through a server, up to 31 other players nearby are shown on a computer (fewer on
+- Played directly, up to 4 players. Through a server, a party has as many as the server allows (8 by default, at
+  most 16); everyone in it is drawn in full on a computer. Tunic colours repeat after the fourth member. Through a server, up to 31 other players nearby are shown on a computer (fewer on
   a phone). The other players are shown about 60 ms behind, plus the network's delay.
 - **Players outside your party** (Settings > Online): **Like any Link**, or **See-through**: drawn half
   transparent, so you tell them from your party, who always look solid.

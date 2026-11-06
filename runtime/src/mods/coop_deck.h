@@ -13,7 +13,7 @@ struct Cpu;
 
 namespace mods::coop::deck {
 
-constexpr int kDecks = 4;  // one per party number (a party has up to 4)
+constexpr int kDecks = 16;  // one per party number (a party has up to 16, net::kMaxParty; GAPS C29)
 
 // a friend's boat as this game shows it this step (world place, heading); owner: their party number
 struct Boat { bool on = false; float pos[3] = {}; int16_t yaw = 0; int8_t room = 0; };

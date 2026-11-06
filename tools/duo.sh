@@ -10,10 +10,13 @@
 # guest starts GUEST_AFTER seconds (5) after the host. Each game's log (capped at 20 MB) and co-op trace
 # (WWHD_MODS_TRACE) are host.log, host.trace, guest.log, guest.trace; WWHD_DUMP_FRAMES (DUO_FRAMES) writes pictures
 # into host/ and guest/. A game over DUO_RSS_MB (6000) of memory is stopped. Only this script's own games are
-# stopped, never another wwhd. DUO_SERVER=1: through a local wwhd-online-server (build/rel/server, WWHD_ONLINE=ON)
+# stopped, never another wwhd. DUO_SERVER=1: through a local wwhd-online-server (DUO_BIN's build, server/, WWHD_ONLINE=ON)
 # on DUO_PORT, each game with its own identity; the host invites the guest by the friend code the guest writes, and the
 # guest accepts (test aids); DUO_PARTY=0 leaves them strangers (presence only). DUO_KILL=host@S or guest@S stops that game S seconds after the guest started (a player
 # leaving). DUO_UPLOAD: the server's upload limit per player (bytes/s); DUO_GAMES: the only games it takes; DUO_PER_IP: connections per address (8; bots on 127.0.0.1 need more); DUO_TEAM_STATE=0: the server keeps no team-state file. DUO_UDP=0: the server answers over TCP only (C25: as on a network that blocks UDP).
+# DUO_PARTY_MAX: the server's party.max_size (C29). DUO_BOTS=N: N wwhd-online-bots (replaying DUO_BOT_POSES, default
+# ../wt-online-runs/c9-ghost.rec, on a ring of DUO_BOT_RING units, 300) that accept invitations; the host invites the
+# guest and every bot (a party of N + 2). The server is the one next to the game (DUO_BIN's server/).
 set -u
 root=${0:A:h:h}
 name=$1 secs=${2:-240}
@@ -49,10 +52,19 @@ if [ -n "${DUO_SERVER:-}" ]; then
   [ -n "${DUO_GAMES:-}" ] && printf '[network]\ngame_data = [%s]\n' "$DUO_GAMES" >> "$out/server/server.toml"
   # DUO_MODS='vanilla_only = true' or 'required = ["jump-anywhere"]': the server's [mods] rules (C5)
   [ -n "${DUO_MODS:-}" ] && printf '[mods]\n%s\n' "$DUO_MODS" >> "$out/server/server.toml"
-  (exec "$root/build/rel/server/wwhd-online-server" --config "$out/server/server.toml" 2>&1 | head -c 5000000 > "$out/server.log") &
+  [ -n "${DUO_PARTY_MAX:-}" ] && printf '[party]\nmax_size = %s\n' "$DUO_PARTY_MAX" >> "$out/server/server.toml"
+  (exec "${bin:h}/server/wwhd-online-server" --config "$out/server/server.toml" 2>&1 | head -c 5000000 > "$out/server.log") &
   spid=$!
   sleep 1
   invite=; [ "${DUO_PARTY:-1}" = 1 ] && invite="WWHD_ONLINE_INVITE=@$out/guest.code"
+  if [ -n "${DUO_BOTS:-}" ]; then  # (C29) bots that join the host's party: the host invites them with the guest
+    (exec "${bin:h}/server/wwhd-online-bots" --port $port --game-data ${DUO_BOT_GAME:-0x51F3510EA6EE8C1F} --count $DUO_BOTS \
+      --duration $((secs + 30)) --accept-invites --codes-file "$out/bots.code" --pose-file "${DUO_BOT_POSES:-$runs/c9-ghost.rec}" \
+      --pose-hz 30 --ring ${DUO_BOT_RING:-300} 2>&1 | head -c 2000000 > "$out/bots.log") &
+    bpid=$!
+    invite="WWHD_ONLINE_INVITE=@$out/all.code"
+    (for i in $(seq 1 120); do [ -s "$out/guest.code" ] && [ -s "$out/bots.code" ] && { cat "$out/guest.code" "$out/bots.code" > "$out/all.code.new"; mv "$out/all.code.new" "$out/all.code"; exit; }; sleep 1; done) &
+  fi
   run host "" WWHD_ONLINE_SERVER=127.0.0.1:$port WWHD_ONLINE_IDENTITY=$out/host/id.key $invite ${=HOST_ENV:-}
   sleep ${GUEST_AFTER:-5}
   run guest "" WWHD_ONLINE_SERVER=127.0.0.1:$port WWHD_ONLINE_IDENTITY=$out/guest/id.key WWHD_ONLINE_CODE_FILE=$out/guest.code WWHD_ONLINE_ACCEPT=1 ${=GUEST_ENV:-}
@@ -79,6 +91,7 @@ for i in $(seq 1 $secs); do
   sleep 1
 done
 for p in $pids; do for g in $(pgrep -P $p -x wwhd 2>/dev/null); do kill -9 $g; done; done
+[ -n "${bpid:-}" ] && { pkill -P $bpid wwhd-online-bots 2>/dev/null; kill $bpid 2>/dev/null; }
 [ -n "${spid:-}" ] && { pkill -P $spid wwhd-online-server 2>/dev/null; kill $spid 2>/dev/null; }
 wait 2>/dev/null
 rm -rf "$out/host/save" "$out/guest/save"

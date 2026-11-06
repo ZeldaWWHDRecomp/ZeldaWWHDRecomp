@@ -1395,8 +1395,8 @@ bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
     auto finite = [](float v, float most) { return std::isfinite(v) && std::fabs(v) <= most; };
     for (float v : p.pos) if (!finite(v, 1e6f)) return false;
     for (float v : p.boat) if (!finite(v, 1e6f)) return false;
-    if ((p.flags & kOnFriend) && (p.deck_of >= 4 || !finite(p.pos[0], 1000) || !finite(p.pos[1], 1000) || !finite(p.pos[2], 1000)))
-        return false;  // (a friend's deck: a party member's, a few steps across)
+    if ((p.flags & kOnFriend) && (p.deck_of >= 16 || !finite(p.pos[0], 1000) || !finite(p.pos[1], 1000) || !finite(p.pos[2], 1000)))
+        return false;  // (a friend's deck: a party member's (up to 16, deck::kDecks), a few steps across)
     if (p.trail > 0 && (p.trail_idx < 0 || p.trail_idx >= 60 || !finite(p.trail_top, 1e4f))) return false;
     if (p.chain > 300 || p.rope_pts.size() > 3 * 200 || (nr && !finite(p.rope_width, 1e3f))) return false;
     for (const Model& m : p.models) if (m.k == kHeld && !finite(m.brk, 1e5f)) return false;

@@ -34,7 +34,7 @@ constexpr float kWidth = 160, kLength = 420, kThick = 20, kTop = 150, kEdgeX = k
 using namespace names;  // (C18: the offsets by name, coop_names.h)
 constexpr uint32_t kPos = ac::kPos, kOldPos = ac::kOldPos, kAngleY = ac::kAngleY;  // fopAc_ac_c (WWHD)
 constexpr uint32_t kGndBg = py::kGndBg;  // daPy_lk_c's ground poly (mAcch's m_gnd): its body (story_world_collision_native.h)
-constexpr uint32_t kRegistry = inf::kPlay, kHeapBytes = 0x10000;  // (play.mBgS, the dBgS)
+constexpr uint32_t kRegistry = inf::kPlay, kHeapBytes = 0x20000;  // (play.mBgS, the dBgS; the heap: 16 decks, C29)
 
 struct Deck {
     uint32_t body = 0, mtx = 0;  // the body (on the deck heap) and its matrix (port memory)

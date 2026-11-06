@@ -89,6 +89,8 @@ void query_rules(const std::string& addr, int port);
 std::string server_rules(const std::string& addr, int port);
 bool party_flags(uint16_t& flags, bool& leading);
 bool set_party_flags(uint16_t flags, std::string& why);
+int party_max();
+int party_size();
 }  // namespace srv
 #define VIA_SERVER(call) if (srv::active()) return srv::call
 #else
@@ -577,7 +579,20 @@ bool set_party_flags(uint16_t flags, std::string& why) {
     if (!srv::active()) return why = "not through a server", false;
     return srv::set_party_flags(flags, why);
 }
+int party_max() { VIA_SERVER(party_max()); return kMaxDirect; }
+int party_size() {
+    VIA_SERVER(party_size());
+    int n = 0;
+    for (int i = 0; i < kMaxDirect; i++) n += g_player[i].on;
+    return std::max(n, 1);
+}
 #else
+int party_max() { return kMaxDirect; }
+int party_size() {
+    int n = 0;
+    for (int i = 0; i < kMaxDirect; i++) n += g_player[i].on;
+    return std::max(n, 1);
+}
 std::string friend_code() { return ""; }
 bool invite(const std::string&, std::string& why) { why = "this build has no server connection"; return false; }
 std::vector<std::pair<uint32_t, std::string>> invites() { return {}; }

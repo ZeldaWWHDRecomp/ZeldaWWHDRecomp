@@ -120,7 +120,7 @@ void draw_blocks() {
 
 void draw_tab() {
     sync::Settings s = sync::settings();
-    ImGui::TextWrapped("Play together with up to three friends. One of you hosts, the others join.");
+    ImGui::TextWrapped("Play together with friends: up to three directly (one of you hosts, the others join), more through a server.");
     ImGui::Spacing();
     ImGui::TextUnformatted("Privacy");
     ImGui::TextWrapped("%s", sync::kNotice);
@@ -195,6 +195,7 @@ void draw_tab() {
             if (ImGui::SmallButton("Copy")) hostui::post([code] { hostui::set_clipboard(code); ss::notice("Friend code copied"); });
         }
         ImGui::TextDisabled("Tell it to friends: with it they invite you into their party.");
+        if (net::via_server()) ImGui::TextDisabled("Parties on this server: up to %d players.", net::party_max());
         static char invite[32];
         static std::string invite_msg;
         ImGui::InputText("Friend's code", invite, sizeof invite);
@@ -274,12 +275,15 @@ void draw_tab() {
     if (s.on && s.notice_ok && net::role() == net::Role::kOff && ImGui::Button("Connect again")) hostui::post([] { sync::retry(); });
     draw_party_mods();
     if (net::role() != net::Role::kOff) {
-        bool first = true;
+        // (C29) the party, one line each (up to 16 through a server): its name, its tunic, and "Go to"
+        if (net::party_size() > 1) ImGui::Text("Your party: %d of up to %d", net::party_size(), net::party_max());
         for (int id = 0; id < net::kMaxPlayers; ++id)
             if (id != net::my_id() && net::member(id)) {  // (party members: strangers are only shown)
-                if (!first) ImGui::SameLine();
-                first = false;
-                if (ImGui::Button(("Go to " + net::name(id)).c_str())) hostui::post([id] { sync::go_to(id); });
+                ImGui::PushID(id);
+                ImGui::BulletText("%s (%s)", net::name(id).c_str(), sync::kTunics[net::tunic(id) & 3]);
+                ImGui::SameLine();
+                if (ImGui::SmallButton("Go to")) hostui::post([id] { sync::go_to(id); });
+                ImGui::PopID();
             }
         // emotes (C22): the others see this player's Link play it; here a bubble over him names it
         ImGui::TextUnformatted("Emotes (keys: Settings > Controls, Online)");
@@ -312,7 +316,7 @@ void register_items() {
     {
         Item it;
         it.id = "online.enabled", it.tab = "online", it.label = "Online co-op", it.kind = Kind::Toggle;
-        it.help = "Play together with up to three friends. Nothing is sent while this is off.";
+        it.help = "Play together with friends: up to three directly, more through a server. Nothing is sent while this is off.";
         it.get = [] { const sync::Settings s = sync::settings(); return s.on && s.notice_ok ? 1.0f : 0.0f; };
         it.set = [](float v) { change([&](sync::Settings& x) { x.on = v >= 0.5f && x.notice_ok; }); };
         it.enabled = [] { return sync::settings().notice_ok; };

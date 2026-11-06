@@ -2,7 +2,7 @@
 // Online co-op through a server (coop_net.h's second transport; GAPS C7): the same calls as the direct UDP transport,
 // carried by online::proto::Client (runtime/src/online/proto, the server helper's library) to wwhd-online-server.
 //
-// The game side keeps the fork's model of up to four players with local numbers 0..3 (coop_sync.h): here number 0 is
+// The game side keeps the fork's model of players with local numbers (coop_sync.h; a party of up to kMaxParty): here number 0 is
 // the party's leader (or this game while it is in no party), the other party members follow by their server id, and
 // players outside the party (presence: strangers the server shows nearby) take the numbers left, for their puppets
 // only. The leader does what the direct transport's host does (who runs each place's monsters, the team state for
@@ -19,6 +19,7 @@
 #if WWHD_ONLINE
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -45,6 +46,7 @@ namespace mods::coop::net::srv {
 namespace {
 
 namespace op = online::proto;
+static_assert(mods::coop::net::kMaxParty == online::proto::kMaxPartySize, "the game's party cap is the protocol's (C29)");
 
 struct Peer {
     bool on = false;
@@ -153,6 +155,9 @@ int shown_cap() {
     return cap;
 }
 
+std::atomic<int> g_party_max{4};  // (C29) the server's party.max_size, as it says it
+std::atomic<int> g_party_size{1};  // online members of this game's party (itself included), for the pages
+
 int online_members() {
     int n = 0;
     for (const op::PartyMember& m : g_party.members) n += m.online || m.id == g_me_sid;
@@ -210,9 +215,23 @@ void remap(Handler& h) {
     std::copy(std::begin(g_slot), std::end(g_slot), old);
     std::copy(std::begin(next), std::end(next), g_slot);
     g_slot_of_me = me;
+    g_party_size = in_party() ? online_members() : 1;
     for (int i = 0; i < kMaxPlayers; i++)
         if (g_slot[i].on && i != me && g_slot[i].party && (old[i].sid != g_slot[i].sid || !old[i].on || !old[i].party || was_me != me))
             h.joined(i);
+}
+
+// every code of a spec: itself, or each non-empty line of the file after '@'
+std::vector<std::string> read_codes(const std::string& spec) {
+    if (spec.empty()) return {};
+    if (spec[0] != '@') return {spec};
+    std::ifstream f(spec.substr(1));
+    std::vector<std::string> out;
+    for (std::string line; std::getline(f, line);) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        if (!line.empty()) out.push_back(line);
+    }
+    return out;
 }
 
 std::string read_code(const std::string& spec) {
@@ -357,7 +376,7 @@ bool start(const std::string& server, int port, const std::string& my_name, int 
 
 void stop(const char* why) {
     if (g_client) g_client->stop(), delete g_client, g_client = nullptr, mods::trace("coop: server session stopped%s%s", why ? ": " : "", why ? why : "");
-    g_active = false, g_status = why ? why : "Off", g_me_sid = 0, g_peers.clear(), g_party = {}, g_slot_of_me = 0, g_where_known = false;
+    g_active = false, g_status = why ? why : "Off", g_me_sid = 0, g_peers.clear(), g_party = {}, g_party_size = 1, g_slot_of_me = 0, g_where_known = false;
     for (Tiered& t : g_tiered) t = Tiered{};
     { std::lock_guard<std::mutex> l(g_far_mu); g_markers.clear(), g_markers_at = 0; }
     g_runner.clear();
@@ -387,8 +406,9 @@ int tunic(int id) {
     if (id < 0 || id >= kMaxPlayers || !g_slot[id].on) return 0;
     if (!member(id)) return (int)(g_slot[id].look & 3);  // (a stranger: as they chose)
     bool worn[4] = {};
-    for (int i = 0; i <= id; i++) {
+    for (int i = 0, n = 0; i <= id; i++) {
         if (!member(i)) continue;
+        if (n++ % 4 == 0) worn[0] = worn[1] = worn[2] = worn[3] = false;  // (C29: past four, the colours go round again)
         int t = (int)(g_slot[i].look & 3);
         for (int k = 0; k < 4 && worn[t]; k++) t = (t + 1) % 4;
         if (i == id) return t;
@@ -544,7 +564,8 @@ void poll(Handler& h) {
             break;
         case op::ClientEvent::kServerKey:
             g_seen_name = e.info.name, g_seen_key = servers::to_hex(e.info.pub, 32);
-            mods::trace("coop: server: \"%s\", key %s", e.info.name.c_str(), e.text.c_str());
+            g_party_max = e.info.party_max ? std::clamp((int)e.info.party_max, 2, kMaxParty) : 4;  // (C29: 4 from a server that does not say)
+            mods::trace("coop: server: \"%s\", key %s, parties of up to %d", e.info.name.c_str(), e.text.c_str(), g_party_max.load());
             break;
         case op::ClientEvent::kServerKeyChanged:
             g_end_why = servers::key_changed(g_addr + ":" + std::to_string(g_port));
@@ -666,6 +687,7 @@ void poll(Handler& h) {
         case op::ClientEvent::kPartyState:
             if (e.party.party != g_party.party) g_runner.clear();
             g_party = e.party;
+            if (e.party.max) g_party_max = std::clamp((int)e.party.max, 2, kMaxParty);
             {
                 std::lock_guard<std::mutex> l(g_ui_mu);
                 if (e.party.party && e.party.flags != g_flags)
@@ -759,13 +781,23 @@ void poll(Handler& h) {
         static uint32_t last = 0;
         bool alone = true;
         for (const Peer& p : g_slot) alone &= !(p.on && p.party);
-        const std::string code = read_code(g_auto_invite);
-        if (!code.empty() && (!last || (every > 0 && alone && now_ms() - last >= (uint32_t)every * 1000))) {
-            std::string why;
+        // (C29) @file may list many codes, one a line; WWHD_ONLINE_INVITE_GAP=<ms> between them (the server limits invites)
+        static std::vector<std::string> pending;
+        static uint32_t gap_last = 0;
+        static const uint32_t gap = getenv("WWHD_ONLINE_INVITE_GAP") ? (uint32_t)atoi(getenv("WWHD_ONLINE_INVITE_GAP")) : 0;
+        const std::vector<std::string> codes = pending.empty() ? read_codes(g_auto_invite) : std::vector<std::string>{};
+        if (!codes.empty() && (!last || (every > 0 && alone && now_ms() - last >= (uint32_t)every * 1000))) {
             last = now_ms();
+            pending.assign(codes.rbegin(), codes.rend());
+            if (every <= 0) g_auto_invite = "@-";  // (no file: nothing more after these)
+        }
+        while (!pending.empty() && (!gap_last || now_ms() - gap_last >= gap)) {
+            std::string why;
+            const std::string code = pending.back();
+            pending.pop_back(), gap_last = now_ms();
             if (invite(code, why)) mods::trace("coop: server: invited %s", code.c_str());
-            else say(why, true);
-            if (every <= 0) g_auto_invite.clear();
+            else say(why, true), mods::trace("coop: server: not invited %s: %s", code.c_str(), why.c_str());
+            if (gap) break;
         }
     }
     // test aids for drop-in / drop-out (C17), main thread: WWHD_ONLINE_LEAVE_EVERY=<s>,<n>: this game leaves its party
@@ -817,6 +849,8 @@ bool invite(const std::string& code, std::string& why) {
     if (!g_active) return why = "go online through a server first", false;
     if (!op::parse_friend_code(code, c40)) return why = servers::bad_code(), false;
     if (op::parse_friend_code(friend_code(), mine) && mine == c40) return why = servers::party(3, ""), false;
+    if (g_party_size >= g_party_max)  // (C29; the server checks it too, counting invitations still open)
+        return why = "Your party is full (" + std::to_string(g_party_size.load()) + " of up to " + std::to_string(g_party_max.load()) + " on this server)", false;
     std::lock_guard<std::mutex> l(g_ui_mu);
     g_actions.push_back([c40](op::Client& c) { c.party_invite(c40); });
     return true;
@@ -837,6 +871,9 @@ void leave_party() {
     g_actions.push_back([](op::Client&) { g_have_record = false; });  // (left on purpose: not asked back)
     g_actions.push_back([](op::Client& c) { c.party_leave(); });
 }
+
+int party_max() { return g_party_max; }
+int party_size() { return g_party_size; }
 
 bool party_flags(uint16_t& flags, bool& leading) {
     std::lock_guard<std::mutex> l(g_ui_mu);

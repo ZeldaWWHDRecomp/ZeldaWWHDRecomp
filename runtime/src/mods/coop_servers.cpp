@@ -171,7 +171,7 @@ std::string party(int code, const std::string& server_text) {
     case 2: return "That player is not online on this server. Both of you must be on the same server; check the code.";
     case 3: return "That is your own friend code. Enter your friend's code.";
     case 4: return "That player is already in your party.";
-    case 5: return "The party is full (4 players).";
+    case 5: return "The party is full (the server's limit).";
     case 6: return "That party is gone: its players left.";
     case 7: return "The invite expired. Ask your friend to invite you again.";
     case 8: return capital(server_text.empty() ? "your friend declined" : server_text) + ".";

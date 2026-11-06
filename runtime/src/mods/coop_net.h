@@ -22,9 +22,10 @@ namespace mods::coop::net {
 // another protocol
 // is refused. Players meet by protocol and game data (ss::game_data_id), not by executable: a recompiled and a decomp
 // build of the same game play together
-// kMaxPlayers: the players' numbers any transport gives (through a server: a party of up to 4 and the strangers shown
-// nearby, GAPS C11: an instance's 32); kMaxDirect: the direct transport's (a host and three guests)
-constexpr int kProto = 7, kPort = 7777, kMaxPlayers = 32, kMaxDirect = 4;
+// kMaxPlayers: the players' numbers any transport gives (through a server: a party of up to kMaxParty and the strangers
+// shown nearby, GAPS C11: an instance's 32); kMaxDirect: the direct transport's (a host and three guests: its host relays
+// every message to every guest, GAPS C29); kMaxParty: the largest party any server may allow (its party.max_size)
+constexpr int kProto = 7, kPort = 7777, kMaxPlayers = 32, kMaxDirect = 4, kMaxParty = 16;
 inline constexpr const char* kStrangerGone = "a stranger out of sight";  // (Handler::left: a stranger's puppet, no notice)
 
 // the reliable messages (the game's side reads them through on_message)
@@ -148,5 +149,9 @@ enum PartyFlag : uint16_t { kShareProgress = 1, kShareRupees = 2, kFriendlyFire 
 bool party_flag(PartyFlag f, bool otherwise);
 bool party_flags(uint16_t& flags, bool& leading);  // false: in no party through a server
 bool set_party_flags(uint16_t flags, std::string& why);
+// (C29) the largest party here: the server's party.max_size (from its info, then its party state; 4 from a server that
+// does not say), the direct transport's kMaxDirect; and how many are in this game's party now (itself included; 1 alone)
+int party_max();
+int party_size();
 
 }  // namespace mods::coop::net
