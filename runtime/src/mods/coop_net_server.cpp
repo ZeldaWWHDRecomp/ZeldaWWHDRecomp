@@ -20,6 +20,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -70,6 +71,12 @@ std::string g_auto_invite;     // test aid: a friend code (or @file with it) to 
 Handler* g_h = nullptr;
 // each place's enemy runner as the server names it (X2): its changes, kept; by stage and room
 std::map<std::pair<std::string, int8_t>, uint16_t> g_runner;
+// the party's record, signed by its leader (made here while leading, else the leader's newest): sent again after a
+// fresh welcome so the party survives a server restart (DESIGN 2.6 / 3.4; proto/messages.h PartyRecord)
+constexpr uint8_t kAppPartyRecord = 0x7E;
+op::crypto::Identity g_identity;
+op::PartyRecord g_record;
+bool g_have_record = false;
 std::string g_end_why;         // why the server ended the session (a refusal, a removal), for the status after it stops
 std::string g_msg;             // the newest answer (a party action's, a warning), shown with the status for a while
 uint32_t g_msg_at = 0;
@@ -198,6 +205,7 @@ bool start(const std::string& server, int port, const std::string& my_name, int 
     stop(nullptr);
     op::crypto::Identity id;
     if (!op::crypto::Identity::load_or_create(path_of_identity(), id, why)) return false;
+    g_identity = id;
     op::ClientConfig cfg;
     cfg.host = server, cfg.port = (uint16_t)port, cfg.game_data = ss::game_data_id(), cfg.identity = id;
     if (const char* e = getenv("WWHD_COOP_GAME")) cfg.game_data = strtoull(e, nullptr, 16);
@@ -346,6 +354,10 @@ void poll(Handler& h) {
             }
             mods::trace("coop: server: welcomed as %u%s, friend code %s", e.id, e.resumed ? " (resumed)" : "", g_client->friend_code().c_str());
             if (const char* f = getenv("WWHD_ONLINE_CODE_FILE")) std::ofstream(f) << g_client->friend_code() << "\n";  // (tests)
+            if (!e.resumed && g_have_record) {  // (a new session, e.g. the server restarted: the party asked back)
+                g_client->party_restore(g_record);
+                mods::trace("coop: server: party %u asked back (%zu members, issued %u)", g_record.party, g_record.members.size(), g_record.issued);
+            }
             remap(h);
             break;
         case op::ClientEvent::kRefused:
@@ -387,6 +399,13 @@ void poll(Handler& h) {
         case op::ClientEvent::kApp: {
             const int s = slot_of(e.id);
             if (s < 0 || !member_sid(e.id)) break;  // (presence: nothing of a stranger's acts here)
+            if (e.app_type == kAppPartyRecord) {  // (the leader's record: kept if signed by it and newer)
+                op::PartyRecord r;
+                if (op::decode_party_record(e.body.data(), e.body.size(), r) && op::party_record_signed_by_leader(r) &&
+                    r.party == g_party.party && (!g_have_record || r.issued >= g_record.issued))
+                    g_record = r, g_have_record = true;
+                break;
+            }
             if (e.app_type & 0x80) {
                 if (e.body.size() < 4) break;
                 uint32_t ms;
@@ -420,6 +439,13 @@ void poll(Handler& h) {
         case op::ClientEvent::kPartyState:
             if (e.party.party != g_party.party) g_runner.clear();
             g_party = e.party;
+            if (e.party.party && e.party.leader == g_me_sid && e.party.members.size() > 1) {  // (leading: the record made and given out)
+                g_record = op::make_party_record(e.party, g_identity, (uint32_t)time(nullptr)), g_have_record = true;
+                const op::Bytes b = op::encode_party_record(g_record);
+                op::AppHeader h;
+                h.type = kAppPartyRecord;
+                g_client->send_app(h, b.data(), b.size(), true);
+            }
             {
                 std::lock_guard<std::mutex> l(g_ui_mu);
                 g_invites.erase(std::remove_if(g_invites.begin(), g_invites.end(), [&](const Invite& i) { return i.party == e.party.party; }), g_invites.end());
@@ -439,6 +465,7 @@ void poll(Handler& h) {
             break;
         case op::ClientEvent::kPartyResult:
             mods::trace("coop: server: party result %u: %s", e.value, e.text.c_str());
+            if (e.value == 9) g_have_record = false;  // (not restored: invitations again)
             say(servers::party(e.value, e.text), true);
             break;
         default: break;  // (markers, emotes, copies, runners, team state: later items)
@@ -498,6 +525,7 @@ void answer(uint32_t party, bool yes) {
 }
 void leave_party() {
     std::lock_guard<std::mutex> l(g_ui_mu);
+    g_actions.push_back([](op::Client&) { g_have_record = false; });  // (left on purpose: not asked back)
     g_actions.push_back([](op::Client& c) { c.party_leave(); });
 }
 

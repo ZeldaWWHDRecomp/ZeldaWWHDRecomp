@@ -81,7 +81,7 @@ int main() {
     CHECK(sv::notice(op::kNoticeKick, 0, 0, "signed in from another place").find("another game") != std::string::npos);
     // party answers 1..8 each their own; 0 by the server's text
     seen.clear();
-    for (int code = 1; code <= 8; code++) CHECK(seen.insert(sv::party(code, code == 8 ? "Bob declined" : "")).second);
+    for (int code = 1; code <= 9; code++) CHECK(seen.insert(sv::party(code, code == 8 ? "Bob declined" : "")).second);
     CHECK(sv::party(8, "Bob declined") == "Bob declined.");
     CHECK(sv::party(0, "invite sent").find("Invite sent") == 0 && sv::party(0, "joined the party") == "You joined the party.");
     CHECK(sv::key_changed("a:1").find("a:1") != std::string::npos && !sv::bad_code().empty());

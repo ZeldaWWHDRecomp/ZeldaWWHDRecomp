@@ -175,6 +175,7 @@ std::string party(int code, const std::string& server_text) {
     case 6: return "That party is gone: its players left.";
     case 7: return "The invite expired. Ask your friend to invite you again.";
     case 8: return capital(server_text.empty() ? "your friend declined" : server_text) + ".";
+    case 9: return "Your party could not be restored after the server came back. Invite your friends again.";
     }
     return capital(server_text.empty() ? "the party action failed" : server_text) + ".";
 }
