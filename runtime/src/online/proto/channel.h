@@ -50,6 +50,7 @@ public:
 
     int rtt_ms() const { return rtt_ms_; }
     uint32_t last_heard_ms() const { return last_heard_; }
+    uint32_t peer_ms() const { return peer_ms_; }  // the peer's clock in its newest packet
     size_t reliable_queued() const { return out_.size(); }
     size_t reliable_bytes_queued() const { return out_bytes_; }
     const ChannelStats& stats() const { return stats_; }

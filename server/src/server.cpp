@@ -772,6 +772,9 @@ void Server::on_pose(Session& s, const uint8_t* d, size_t n, uint32_t now) {
     s.blob.assign(r.here(), r.here() + r.left());
     s.pose_seq++;
     s.pose_rx = now;
+    // the sender's own clock when it sent this pose (its packet's time stamp): receivers order and space poses
+    // by it; the server's receive time if the client's clock is not known yet
+    s.pose_ms = s.chan.peer_ms() ? s.chan.peer_ms() : now;
     s.has_pose = true;
     s.stage_changed = false;
     s.hidden = false;  // (a player in a cutscene stays visible; the client shows it idle by flag bit 2)

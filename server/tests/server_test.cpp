@@ -129,6 +129,12 @@ static void test_presence_and_stage() {
         auto& p = a->poses[b->c.my_id()];
         CHECK(p.tier == kTierNear && p.blob.size() == 100 && std::fabs(p.head.x - 1500) < 0.01f);
     }
+    // poses carry the sender's time, rising from one pose to the next (receivers drop poses that are not newer)
+    {
+        uint32_t first = a->poses[b->c.my_id()].ms;
+        CHECK(first != 0);
+        CHECK(run(&s, {a.get(), b.get()}, 2000, [&] { return int32_t(a->poses[b->c.my_id()].ms - first) > 100; }));
+    }
     // a stranger is named generically
     if (a->players.count(b->c.my_id())) CHECK(a->players[b->c.my_id()].name.rfind("Sailor ", 0) == 0);
     // mid tier further out, then gone outside the window
