@@ -31,7 +31,7 @@ static int g_fail = 0;
         }                                                                \
     } while (0)
 
-static bool near(double a, double b, double eps = 1e-3) { return std::fabs(a - b) < eps; }
+static bool approx(double a, double b, double eps = 1e-3) { return std::fabs(a - b) < eps; }
 
 static size_t surface_size(uint32_t fmt, int w, int h, uint32_t tm) { return gx2_surface_size(fmt, w, h, tm); }
 
@@ -134,15 +134,15 @@ struct Out {
 static void j3d_reader() {
     const Model m(s::j3d(gc_model()));
     CHECK(m.joints.size() == 2 && m.joints[1].name == "arm" && m.joints[1].parent == 0);
-    CHECK(near(m.joints[1].world[1][3], 10));
+    CHECK(approx(m.joints[1].world[1][3], 10));
     CHECK(m.shapes.size() == 2 && m.shapes[0].tris.size() == 3 && m.shapes[1].material == 1);
     CHECK(m.materialNames.size() == 2 && m.materialNames[0] == "body");
     CHECK(m.textures.count("testtex") && m.textures.at("testtex").rgba[0] == 255);
     // rigid vertex on the arm: (1,0,0) in the arm's space = (1,10,0); weighted one stays as stored
     const Vec3 p = m.position(m.shapes[0].tris[0][0]);
-    CHECK(near(p[0], 1) && near(p[1], 10));
+    CHECK(approx(p[0], 1) && approx(p[1], 10));
     const Vec3 q = m.position(m.shapes[0].tris[1][0]);
-    CHECK(near(q[1], 10));
+    CHECK(approx(q[1], 10));
 }
 
 static void convert_scene() {
@@ -174,14 +174,14 @@ static void convert_scene() {
         CHECK(data >= orig.size() && stride == 12 + 12 + 8 + 8 + 8);
         CHECK(o.u32(bl + 4) == n * stride);
         // first vertex: GameCube (1,10,0) on the arm (10 up) -> HD's arm (20 up): (1,20,0), index arm's smooth 1, weight 1
-        CHECK(near(o.f32(data), 1) && near(o.f32(data + 4), 20) && near(o.f32(data + 8), 0));
-        CHECK(o.u32(data + 32) == 1 && near(o.f32(data + 40), 1) && near(o.f32(data + 44), 0));
+        CHECK(approx(o.f32(data), 1) && approx(o.f32(data + 4), 20) && approx(o.f32(data + 8), 0));
+        CHECK(o.u32(data + 32) == 1 && approx(o.f32(data + 40), 1) && approx(o.f32(data + 44), 0));
         // its UV (0,0)
-        CHECK(near(o.f32(data + 24), 0) && near(o.f32(data + 28), 0));
+        CHECK(approx(o.f32(data + 24), 0) && approx(o.f32(data + 28), 0));
         // the weighted vertex (fourth unique: tri 2's first): 1/4 at (0,10,0) + 3/4 at (0,20,0) = (0,17.5,0), arm first
         const size_t w = data + 3 * stride;
-        CHECK(near(o.f32(w + 4), 17.5));
-        CHECK(o.u32(w + 32) == 1 && o.u32(w + 36) == 0 && near(o.f32(w + 40), 0.75) && near(o.f32(w + 44), 0.25));
+        CHECK(approx(o.f32(w + 4), 17.5));
+        CHECK(o.u32(w + 32) == 1 && o.u32(w + 36) == 0 && approx(o.f32(w + 40), 0.75) && approx(o.f32(w + 44), 0.25));
         // indices: 3 triangles, u32, the winding turned (0,2,1)
         const size_t mesh = o.rel(so + 0x24), ib = o.rel(mesh + 0x14), id = o.rel(ib + 0x14);
         CHECK(o.u32(mesh + 8) == 9 && o.u32(ib + 4) == 36);
@@ -196,7 +196,7 @@ static void convert_scene() {
         const size_t so = o.entry(shapes, 1), vb = vbl + 0x20;
         CHECK(o.u32(vb + 8) == 3);
         const size_t bl = o.rel(vb + 0x18), data = o.rel(bl + 0x14);
-        CHECK(near(o.f32(data), 0) && near(o.f32(data + 4), 1) && near(o.f32(data + 8), 0));
+        CHECK(approx(o.f32(data), 0) && approx(o.f32(data + 4), 1) && approx(o.f32(data + 8), 0));
         const size_t mesh = o.rel(so + 0x24), ib = o.rel(mesh + 0x14);
         CHECK(o.u32(mesh + 8) == 3 && o.u32(ib + 4) == 6);  // u16 indices
     }
