@@ -94,7 +94,10 @@ with only two players, the one left keeps playing in their own Quest Log.
 
 ## Limits
 
-- Up to 4 players. The other players are shown about 60 ms behind, plus the network's delay.
+- Up to 4 players in a party. Through a server, up to 31 other players nearby are shown on a computer (fewer on
+  a phone). The other players are shown about 60 ms behind, plus the network's delay.
+- Each other player shown takes about 0.5 MB of the port's own memory the first time; the game's memory is not
+  used for them.
 - Friendly fire is on: a sword hit or an arrow on another player costs them half a heart (a heart for
   spin and jump attacks), but never their last quarter heart.
 - Only tested with two copies on one Mac so far.
