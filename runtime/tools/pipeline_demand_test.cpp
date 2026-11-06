@@ -352,4 +352,70 @@ int main() {
   trace.close();
   std::filesystem::remove(tracePath);
 
+  // The background lane (the pass subset's masked variants): its own worker and a queue of
+  // kBackgroundQueue jobs, never counted against the ordinary queue nor in pipeline_demand_active(),
+  // and a full lane declines at once instead of waiting.
+  {
+    // stopped by the last checkpoint: the lane declines until an ordinary request restarts the compiler
+    assert(!pipeline_background_has_room() && !begin_pipeline_background(state(), 29, 1, "masked_pipeline"));
+    reset(VK_SUCCESS);
+    auto restarted = build_pipeline_async(state(), 29, 2, "guest_pipeline", release);
+    vkDestroyPipeline(handle<VkDevice>(1), restarted.pipeline, nullptr);
+    reset(VK_SUCCESS);
+    const auto beforeBackground = compileCalls.load();
+    assert(pipeline_background_has_room());
+    std::vector<PipelineDemandTicket> lane;
+    std::atomic<unsigned> backgroundPrepared = 0;
+    const std::function<void(GraphicsPipelineState&)> prepareBackground = [&](GraphicsPipelineState&) {
+      assert(std::this_thread::get_id() != caller); ++backgroundPrepared;
+    };
+    // one compiling (blocked in the driver), then the queue filled
+    auto first = begin_pipeline_background(state(), 30, 1, "masked_pipeline", prepareBackground);
+    assert(first);
+    while (compileCalls == beforeBackground) std::this_thread::yield();
+    assert(!pipeline_demand_active());  // (the ordinary worker's warm-up yields stay unaffected)
+    for (size_t i = 0; i < kBackgroundQueue; ++i) {
+      auto next = begin_pipeline_background(state(), 30, 2 + i, "masked_pipeline", prepareBackground);
+      assert(next); lane.push_back(std::move(*next));
+    }
+    assert(!pipeline_background_has_room());
+    const auto declinedAt = std::chrono::steady_clock::now();
+    assert(!begin_pipeline_background(state(), 30, 99, "masked_pipeline", prepareBackground));
+    assert(std::chrono::steady_clock::now() - declinedAt < std::chrono::milliseconds(100));  // no waiting
+    // the ordinary queue still admits its full 8 (and its worker compiles them) while the lane is full
+    std::vector<PipelineDemandTicket> ordinary;
+    for (unsigned i = 0; i < 8; ++i) {
+      auto next = begin_pipeline_async(state(), 31, 1 + i, "guest_pipeline");
+      assert(next); ordinary.push_back(std::move(*next));
+    }
+    assert(pipeline_demand_active());
+    assert(!first->wait_for(0));  // pending, polled without waiting
+    release();
+    for (auto& t : ordinary) {
+      auto built = t.wait({});
+      assert(built.result == VK_SUCCESS && built.pipeline);
+      vkDestroyPipeline(handle<VkDevice>(1), built.pipeline, nullptr);
+    }
+    auto firstBuilt = first->wait({});
+    assert(firstBuilt.result == VK_SUCCESS && firstBuilt.pipeline);
+    vkDestroyPipeline(handle<VkDevice>(1), firstBuilt.pipeline, nullptr);
+    first.reset();
+    lane.clear();  // abandoned: the worker still finishes and destroys them
+    assert(finish_pipeline_demand(handle<VkPipelineCache>(11)));
+    assert(backgroundPrepared == 1 + kBackgroundQueue);
+    assert(compileCalls == beforeBackground + 1 + kBackgroundQueue + 8);
+    // a stopped compiler is never restarted by the lane: declined, nothing compiled
+    assert(!pipeline_background_has_room());
+    assert(!begin_pipeline_background(state(), 32, 1, "masked_pipeline"));
+    // an ordinary request restarts it; then the lane admits again
+    auto restart = build_pipeline_async(state(), 33, 1, "guest_pipeline", {});
+    vkDestroyPipeline(handle<VkDevice>(1), restart.pipeline, nullptr);
+    auto again = begin_pipeline_background(state(), 33, 2, "masked_pipeline");
+    assert(again);
+    auto againBuilt = again->wait({});
+    assert(againBuilt.pipeline);
+    vkDestroyPipeline(handle<VkDevice>(1), againBuilt.pipeline, nullptr);
+    again.reset();
+    (void)finish_pipeline_demand(handle<VkPipelineCache>(11));
+  }
 }
