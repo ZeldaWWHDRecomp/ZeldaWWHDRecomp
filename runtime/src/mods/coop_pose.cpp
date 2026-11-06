@@ -962,7 +962,15 @@ bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
     p.rope_pts.resize(3 * nr);
     if (nr && (!get(&p.rope_width, 4) || !get(p.rope_pts.data(), 6 * nr))) return false;
     if (used) *used = size;
-    return o == size;
+    if (o != size) return false;
+    // (another game's data, written into this game's objects as it is drawn: what the game itself could not have made
+    // is refused: a place off any stage, numbers that are no numbers, a trail index, chain or rope past their arrays)
+    auto finite = [](float v, float most) { return std::isfinite(v) && std::fabs(v) <= most; };
+    for (float v : p.pos) if (!finite(v, 1e6f)) return false;
+    if (p.trail > 0 && (p.trail_idx < 0 || p.trail_idx >= 60 || !finite(p.trail_top, 1e4f))) return false;
+    if (p.chain > 300 || p.rope_pts.size() > 3 * 200 || (nr && !finite(p.rope_width, 1e3f))) return false;
+    for (const Model& m : p.models) if (m.k == kHeld && !finite(m.brk, 1e5f)) return false;
+    return true;
 }
 
 void blend(const Pose& a, const Pose& b, float t, Pose& out) {

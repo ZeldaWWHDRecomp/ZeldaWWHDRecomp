@@ -112,6 +112,7 @@ void bombed(Cpu* c, uint32_t link, const uint8_t* d, size_t n) {
     if (n < 21 || memcmp(d, mem::ptr(kStage), 8) || (int8_t)d[8] != (int8_t)ld8(link + kRoom)) return;  // (not here)
     float pos[3];
     memcpy(pos, d + 9, 12);
+    for (float v : pos) if (!std::isfinite(v) || std::fabs(v) > 1e6f) return;  // (another game's numbers)
     spawn(c, link, kBomb, 0x80000000, pos);
     mods::trace("coop: another player's bomb went off here");
 }

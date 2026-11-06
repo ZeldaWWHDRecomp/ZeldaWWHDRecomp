@@ -309,6 +309,7 @@ bool door_held(Cpu* c) {
 
 struct Handler : net::Handler {
     void message(int from, net::Msg type, const uint8_t* d, size_t n) override {
+        if ((type == net::kEffect || type == net::kSound) && g_effects_in.size() + g_sounds_in.size() >= 256) return;  // (bounded)
         if (type == net::kEffect) return g_effects_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
         if (type == net::kProgress) return progress::received(d, n);
         if (type == net::kDoorMove) return progress::door_moved(d, n);

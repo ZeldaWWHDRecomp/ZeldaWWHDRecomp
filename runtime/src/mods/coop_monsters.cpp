@@ -80,7 +80,7 @@ bool is_dead(const char* st, int room, uint16_t set) {
     return std::any_of(g_dead.begin(), g_dead.end(), [&](const Dead& d) { return !memcmp(d.stage, st, 8) && d.room == room && d.set == set; });
 }
 void add_dead(const char* st, int room, uint16_t set) {
-    if (is_dead(st, room, set)) return;
+    if (is_dead(st, room, set) || g_dead.size() >= 1024) return;  // (bounded: another game's messages)
     Dead d{{}, (int8_t)room, set, net::now_ms()};
     memcpy(d.stage, st, 8);
     g_dead.push_back(d);
@@ -287,7 +287,7 @@ void message(Cpu* c, net::Msg type, const std::string& b) {
         die(a, k);
         trace("coop: monster %08X killed by another player: dies here", k);
     } else if (type == net::kMonHit && b.size() >= 13 && ours) {
-        if (Hit& h = g_hits[k]; h.dmg != kKill) h.dmg += (uint8_t)b[12], h.steps = 0;
+        if (Hit& h = g_hits[k]; h.dmg != kKill) h.dmg = std::min(h.dmg + (uint8_t)b[12], (int)kKill - 1), h.steps = 0;
     }
 }
 

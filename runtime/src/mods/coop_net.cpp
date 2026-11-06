@@ -111,7 +111,16 @@ void control(Link& l) {
     l.sent_got = l.got, l.last_ctrl = now_ms();
 }
 
-void queue(Link& l, Msg type, uint8_t origin, const std::string& body) { l.out.push_back({l.next++, type, origin, body}); }
+// a reliable message for a link: at most kMostBody bytes (a packet must carry it whole) and kMostQueued waiting (a
+// link that far behind is dropped by the timeout rather than holding memory without bound)
+constexpr size_t kMostBody = kMtu - sizeof(Head) - 8, kMostQueued = 1024;
+void queue(Link& l, Msg type, uint8_t origin, const std::string& body) {
+    if (body.size() > kMostBody || l.out.size() >= kMostQueued) {
+        mods::trace("coop: message %d of %zu bytes not sent (%zu waiting)", (int)type, body.size(), l.out.size());
+        return;
+    }
+    l.out.push_back({l.next++, type, origin, body});
+}
 
 // a player for the others: {u8 id, u8 tunic, u32 ip, u16 port (network order; 0: the host itself), name}. The
 // addresses let the players take over when the host goes (migrate())
@@ -176,6 +185,15 @@ void hello(const sockaddr_in& from, const uint8_t* d, size_t n, Handler& h) {
     (void)h;  // (the hello itself is taken below, as message 1 of the new link)
 }
 
+bool from_guest(Msg t) {
+    switch (t) {
+    case kHello: case kFired: case kHit: case kEffect: case kArrived: case kBoatShot: case kDamage: case kProgress:
+    case kDown: case kSound: case kPlayerHit: case kBombed: case kMonHit: case kMonGone: case kDoorAsk: case kDoorMove:
+    case kRupees: return true;
+    default: return false;
+    }
+}
+
 void take(int li, const uint8_t* d, size_t n, Handler& h) {
     Link& l = g_link[li];
     uint32_t id;
@@ -191,6 +209,9 @@ void take(int li, const uint8_t* d, size_t n, Handler& h) {
         if (o > n) return;
         if (id != l.got + 1) continue;  // taken already, or one before it is missing (it comes again)
         l.got = id;
+        // (the host takes from a guest only what a guest sends: never the host's own messages, a guest's word that a
+        // player left, joined or owns a place)
+        if (g_role == Role::kHost && !from_guest(type)) { mods::trace("coop: player %d sent message %d, a host's: dropped", li, (int)type); continue; }
         if (type == kHello) {  // host: the new guest in, everyone told
             g_link[li].heard = now_ms();
             queue(l, kWelcome, 0, std::string{(char)li, (char)g_player[li].tunic});

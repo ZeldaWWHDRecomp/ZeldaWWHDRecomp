@@ -67,9 +67,13 @@ void boat_shot_out() {
 }
 void boat_shot_from(Cpu* c, uint32_t link, Reader& r) {
     static const uint32_t buf = mem::host_alloc(0x20);  // pos at +0, angle at +0x10
-    for (int i = 0; i < 3; i++) st32(buf + 4 * i, u32_bits(r.get<float>()));
+    float p[3];
+    for (float& v : p) v = r.get<float>();
     for (int i = 0; i < 3; i++) st16(buf + 0x10 + 2 * i, (uint16_t)r.get<int16_t>());
     const float f = r.get<float>(), y = r.get<float>(), g = r.get<float>();
+    // (another game's numbers: a ball off any stage or of no speed would halt the game's checks)
+    for (float v : {p[0], p[1], p[2], f, y, g}) if (!std::isfinite(v) || std::fabs(v) > 1e6f) return;
+    for (int i = 0; i < 3; i++) st32(buf + 4 * i, u32_bits(p[i]));
     const uint32_t layer = guest_call(c, GC(0x025DED64));  // fpcLy_CurrentLayer
     guest_call(c, GC(0x025DEAB4), {ld32(link + 0x2C)});    // fpcLy_SetCurrentLayer (Link's)
     st32(c->r[1] - 0x40 + 8, 0);
@@ -98,7 +102,7 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
         if (m.type == net::kPlayerHit) {  // another player's sword or arrow on this game's Link (friendly fire)
             const uint8_t who = r.get<uint8_t>(), quarters = r.get<uint8_t>();
             const int16_t way = r.get<int16_t>();
-            if (who == net::my_id()) g_hurt = {quarters, way};
+            if (who == net::my_id() && quarters >= 1 && quarters <= 4) g_hurt = {quarters, way};
         } else if (m.type == net::kMonHit || m.type == net::kMonGone) {
             mods::coop::monsters::message(c, m.type, m.body);
         } else if (m.type == net::kBoatShot) {

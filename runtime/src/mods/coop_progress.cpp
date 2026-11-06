@@ -324,7 +324,7 @@ void rupees_received(const uint8_t* d, size_t n) {
     int32_t gain;
     if (n != sizeof gain) return;
     memcpy(&gain, d, sizeof gain);
-    if (gain > 0 && gain <= kMostRupees) g_rupees_in = std::min(g_rupees_in + gain, kMostRupees);
+    if (share_rupees() && gain > 0 && gain <= kMostRupees) g_rupees_in = std::min(g_rupees_in + gain, kMostRupees);
 }
 
 void stop() { g_in.clear(), g_was.clear(), g_doors.clear(), g_purse = -1, g_rupees_in = 0; }
