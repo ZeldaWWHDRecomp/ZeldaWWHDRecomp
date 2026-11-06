@@ -6,6 +6,11 @@ name: windows
 on:
   push:
     branches: ["**"]   # not on tag pushes: a release tag points at a commit CI already tested
+    # Markdown-only pushes (changelog, README, docs) start no build; docs/mod-editor.md is read by a test
+    paths:
+      - "**"
+      - "!**.md"
+      - "docs/mod-editor.md"
   pull_request:
 
 jobs:
@@ -47,6 +52,14 @@ jobs:
       - name: Unit tests
         run: ctest --test-dir build/windows --output-on-failure
 
+      # The in-app randomizer's command (tools/rando: TWWHD Randomizer 1.2.0); no game files
+      - name: Randomizer command
+        run: |
+          cmake -S tools/rando -B build/rando -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/rando
+          python tools/rando/test_rando_cli.py build/rando
+          python tools/rando/test_places.py
+
       # Synthetic fixtures only: no game files, caches or performance runs.
       - name: Shader preparation and benchmark tooling unit tests
         run: |
@@ -56,8 +69,9 @@ jobs:
       # Issue #144: setup unpacks the compiler with \\?\ paths and stops early in a folder too deep for the
       # game. MSYS2's Python joins paths with "/" and keeps ordinary paths (setup.NATIVE_WINDOWS_PATHS);
       # the release's kind of Python (python.org, backslashes) really crosses MAX_PATH in the deep unpack test.
+      # CompilerUnpack (issue #388): the unpack progress and the player-facing errors on Windows.
       - name: Installer long path unit tests (MSYS2 Python)
-        run: python tools/installer/test_setup.py LongPaths
+        run: python tools/installer/test_setup.py LongPaths CompilerUnpack
 
       - uses: actions/setup-python@v6
         with:
@@ -65,7 +79,7 @@ jobs:
 
       - name: Installer long path unit tests (python.org Python, as in the release)
         shell: pwsh
-        run: python tools/installer/test_setup.py LongPaths
+        run: python tools/installer/test_setup.py LongPaths CompilerUnpack
 
       - name: Shader generation and console setup on local UNC share
         shell: pwsh

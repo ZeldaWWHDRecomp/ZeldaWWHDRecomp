@@ -31,7 +31,18 @@ int main() {
     ctxtouch::pack(b, e, names, ctxtouch::kPackLen);
     assert(names[1] == (ctxtouch::kEnabled | ctxtouch::kActive | ctxtouch::kZlLatched | ctxtouch::kItemNamesA));
     e.item_names_a = false;
+    e.link_poses = true;  // Link in the button pictures (link_poses.h): a header flag only
+    int32_t poses[ctxtouch::kPackLen];
+    ctxtouch::pack(b, e, poses, ctxtouch::kPackLen);
+    assert(poses[1] == (ctxtouch::kEnabled | ctxtouch::kActive | ctxtouch::kZlLatched | ctxtouch::kLinkPoses));
+    for (int i = 2; i < ctxtouch::kPackLen; i++) assert(poses[i] == names[i]);
+    e.link_poses = false;
     assert(out[2] == 7 && out[3] == 0);
+    e.startup_scene = startup_touch::kFileSelect;
+    int32_t startup[ctxtouch::kPackLen];
+    ctxtouch::pack(b, e, startup, ctxtouch::kPackLen);
+    assert(startup[3] == startup_touch::pack(startup_touch::kFileSelect));
+    assert(startup[4] == out[4]);  // the header extension never moves the button slots
     auto st = [&](int i) { return out[ctxtouch::kButtons + 3 * i]; };
     auto lb = [&](int i) { return out[ctxtouch::kButtons + 3 * i + 1]; };
     assert(st(ctxbtn::kA) == (ctxtouch::kShown | 1 << ctxtouch::kKindShift) && lb(ctxbtn::kA) == playctx::kActSpeak);
@@ -43,5 +54,16 @@ int main() {
     int32_t small[3];
     ctxtouch::pack(b, e, small, 3);  // a shorter array takes the front
     assert(small[0] == 1 && small[2] == 7);
+    // an action's picture variant rides in the state's bits 8..15
+    {
+        ctxbtn::Buttons v = b;
+        v.b[ctxbtn::kA].variant = 0x19;
+        int32_t pv[ctxtouch::kPackLen];
+        ctxtouch::pack(v, e, pv, ctxtouch::kPackLen);
+        assert(((pv[ctxtouch::kButtons + 3 * ctxbtn::kA] & ctxtouch::kVariantMask) >> ctxtouch::kVariantShift) == 0x19);
+        assert((pv[ctxtouch::kButtons + 3 * ctxbtn::kA] & ~ctxtouch::kVariantMask) == out[ctxtouch::kButtons + 3 * ctxbtn::kA]);
+    }
+    // the Classic style hides no button: the rules (and the game's cluster hiding) are for Flexible only
+    assert(ctxtouch::context_rules(true, 1) && !ctxtouch::context_rules(true, 0) && !ctxtouch::context_rules(false, 1));
     puts("context_touch: pack layout, flags, kinds, held, rings PASS");
 }

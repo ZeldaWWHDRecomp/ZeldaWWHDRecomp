@@ -100,6 +100,8 @@ bool ended(Cpu*, const std::string& anim) { return anim == "Close" && g.close_en
 namespace story_notebook {
 bool portrait_pixels(uint16_t, guestmods::hud::Image&) { return false; }  // no portraits in the tests
 void hide_floating_notebook_icon() {}
+void restore_notebook_icons() {}
+void state_loaded() {}
 }  // namespace story_notebook
 namespace story_lyt_text {
 bool set_text(Cpu*, uint32_t pane, const std::string& utf8, const Options&) {
@@ -596,6 +598,22 @@ int main() {
     test_frame_tabs_turn();
     test_frame_detail_and_back();
     test_frame_close();
+    // Menu closure, stage teardown and state loading may happen without another draw pass.
+    // No closing animation can finish then: cursor coverage must end immediately.
+    for (int cycle = 0; cycle < 6; ++cycle) {
+        Page p;
+        const std::vector<Row> all;
+        open(p, all);
+        CHECK(step(p, all));
+        CHECK(nl::drawing());
+        nl::reset();
+        CHECK(!nl::drawing() && !nl::animating());
+        CHECK(!frame());
+        g.clear_calls();
+        CHECK(nl::update(p, all) && frame());
+        CHECK((g.plays == std::vector<std::string>{"Open", "Breathe"}));
+        close_fully(p);
+    }
     if (g_failures) {
         std::fprintf(stderr, "story_notebook_layout_test: %d check(s) failed\n", g_failures);
         return 1;

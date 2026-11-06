@@ -26,8 +26,7 @@
 //   the ledge (procHangClimb) instead of dropping from the top.
 // - Real ivy behaves exactly as before (no stamina). With the mod off every hook calls the
 //   original code and nothing else.
-// - True 60 (key 7): the climbing procedures (0x3D-0x40) are not in true60's 60 Hz list, so they
-//   stay at 30 Hz; stamina is counted per original step (true60::dt()).
+// - Stamina is counted per 30 Hz logic step.
 #include "guest_addr.h"
 #include "mods/climb.h"
 #include "mods/mod_stages.h"
@@ -40,7 +39,6 @@
 #include "input.h"
 #include "mods/mods.h"
 #include "runtime.h"
-#include "true60.h"
 
 extern "C" {
 void f_023E3850_orig(Cpu* c);  // daPy_lk_c::setFrontWallType
@@ -254,6 +252,7 @@ extern "C" void hook_0240CDD0(Cpu* c) {
     mods::jump_step(c, self, true);
     mod_stages::link_step(c, self, true);
     f_0240CDD0_orig(c);
+    mods::leaf_step(c, self);
     mods::jump_step(c, self, false);
     mods::moon_jump_step(c, self, false);
     if (!g_on) {
@@ -264,8 +263,7 @@ extern "C" void hook_0240CDD0(Cpu* c) {
         g_prev_proc = -1;
         return;
     }
-    const float dt = true60::dt();  // 1 = one 30 Hz step (climbing always runs at 30 Hz)
-    const float step = dt / 30.0f;  // seconds
+    const float step = 1.0f / 30.0f;  // seconds: one 30 Hz logic step
     int proc = (int)ld32(self + kCurProc);
     uint32_t mode = ld32(self + kModeFlg);
     bool midair = (mode & kModeMidair) != 0, swim = (mode & kModeSwim) != 0;

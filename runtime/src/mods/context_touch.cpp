@@ -2,7 +2,7 @@
 // The context buttons' runtime for the touch controls (context_touch.h has the Java pack, touch_play.h the
 // rules): the options, touch play on the game's pad reads (items by tap, aim-only, auto put-away, the ZL
 // latch), the golden rings, hiding the game's own button cluster while the context buttons show, and the
-// export of the game's action words and item icons for the Android side.
+// export of the game's action words, item icons and Link's poses (link_poses.h) for the Android side.
 //
 // Options (settings.ini; tests: the WWHD_* variable named with each, which also keeps it from being saved):
 //   touchContextButtons (WWHD_CONTEXT_BUTTONS)  on: the touch controls show only what does something now
@@ -31,11 +31,13 @@
 #include "game_layouts.h"
 #include "guest_addr.h"
 #include "item_ring_icons.h"
+#include "link_poses.h"
 #include "mods.h"
 #include "msbt_text.h"
 #include "play_context.h"
 #include "touch_play.h"
 #include "../gfx/display_modes.h"
+#include "../platform/touch_options.h"
 #include "../input.h"
 #include "../overlay/hostui.h"
 #include "../runtime.h"
@@ -136,6 +138,9 @@ ctxbtn::Buttons g_buttons;  // as last decided (with aim-only)
 uint32_t g_held = 0;
 std::atomic<bool> g_hide_cluster{false};
 std::atomic<int> g_assets_generation{0};
+std::atomic<startup_touch::Scene> g_startup_scene{startup_touch::kBoot};
+std::atomic<bool> g_title_tapped{false};
+startup_touch::TitlePress g_title_press;  // pad reads, protected by g_mu
 
 void log_buttons(const ctxbtn::Buttons& b) {
     static std::string last;
@@ -231,8 +236,11 @@ int export_assets(const std::string& dir) {
         snprintf(name, sizeof name, "item_%02X.png", item);
         if (write_file(std::filesystem::path(dir) / name, png.data(), png.size())) icons++;
     }
+    // Link in the pose of an action (link_poses.h), drawn from the game's 3D pack: pose_HH.png; without it
+    // (the files can't be read) the buttons keep their words
+    const int poses = link_poses::export_to(dir, screenshot::encode_png_rgba);
     if (!write_file(std::filesystem::path(dir) / "actions.txt", text.data(), text.size())) return -1;
-    LOG("[touchplay] exported %d action words and %d item icons to %s", nwords, icons, dir.c_str());
+    LOG("[touchplay] exported %d action words, %d item icons and %d Link poses to %s", nwords, icons, std::max(poses, 0), dir.c_str());
     return 1;
 }
 }  // namespace
@@ -251,11 +259,14 @@ void set_zl_latch_mode(int m) { g_zl.set(m); }
 
 // ---- the pad reads (VPADRead / KPADReadEx, after the item ring's gate) ----
 void context_touch_pad(input::PadState& p, bool repeat) {
-    if (repeat) return;  // true 60's half passes repeat the full pass's buttons
+    if (repeat) return;  // interpolation's repeated reads repeat the logic pass's buttons
     const bool touch = touch_play();
     if (touch) want_context();
     const PlayContext c = play_context();
     std::lock_guard<std::mutex> lk(g_mu);
+    // Consume the request on actual logic reads. A title touch never carries into the file menu.
+    p.buttons = g_title_press.filter(p.buttons, g_startup_scene.load(std::memory_order_relaxed),
+        g_title_tapped.exchange(false, std::memory_order_relaxed), step());
     const int was_latched = g_machine.latched();
     const bool was_zl = g_machine.zl_latched();
     const uint32_t puts = g_machine.put_aways();
@@ -277,6 +288,14 @@ void context_touch_pad(input::PadState& p, bool repeat) {
 
 // ---- once per logic step, after the PlayContext was read (play_context.cpp) ----
 void context_touch_step(const PlayContext& c) {
+    char stage[9] = {};
+    const uint32_t name = GD(0x1046F0B0) + playctx::kStage;
+    for (int i = 0; i < 8; i++) stage[i] = char(ld8(name + uint32_t(i)));
+    const auto startup_scene = startup_touch::scene(c.has(kInGame), stage);
+    g_startup_scene.store(startup_scene, std::memory_order_relaxed);
+#ifdef __ANDROID__
+    gfx::g_startup_gamepad = startup_scene == startup_touch::kFileSelect;
+#endif
     ctxbtn::Options o;
     o.fast_forward = fast_forward() && fast_forward_button() == input::kZR;
     ctxbtn::Buttons b = ctxbtn::context_buttons(c, o);
@@ -285,7 +304,7 @@ void context_touch_step(const PlayContext& c) {
     g_rings.step(b, c, c.step);
     g_held = (g_machine.zl_latched() ? 1u << ctxbtn::kZL : 0) |
              (g_machine.latched() >= 0 ? 1u << (ctxbtn::kX + g_machine.latched()) : 0);
-    const bool hide = context_buttons_on() && controls_shown() && b.active;
+    const bool hide = ctxtouch::context_rules(context_buttons_on(), touch_options::get().style) && controls_shown() && b.active;
     if (log_on() && hide != g_hide_cluster.load()) LOG("[touchplay] the game's buttons %s", hide ? "hidden" : "shown");
     g_hide_cluster.store(hide, std::memory_order_relaxed);
     if (log_on()) {
@@ -314,11 +333,18 @@ void context_touch_pack(int32_t* out, int n) {
         e.held = g_held;
         e.ring[ctxbtn::kA] = g_rings.count();
     }
-    e.enabled = context_buttons_on();
+    e.enabled = ctxtouch::context_rules(context_buttons_on(), touch_options::get().style);
     e.cluster_hidden = g_hide_cluster.load(std::memory_order_relaxed);
     e.item_names_a = item_names_on_hud();
+    e.link_poses = link_poses::enabled();
     e.assets_generation = g_assets_generation.load(std::memory_order_relaxed);
+    e.startup_scene = g_startup_scene.load(std::memory_order_relaxed);
     ctxtouch::pack(b, e, out, n);
+}
+
+void startup_title_tap() {
+    if (g_startup_scene.load(std::memory_order_relaxed) == startup_touch::kTitle)
+        g_title_tapped.store(true, std::memory_order_relaxed);
 }
 
 // 0 not ready yet, -1 failed, > 0 the generation of the files in dir (re-exported when the dir changes or
@@ -358,6 +384,9 @@ void context_touch_service() {
 
 #ifdef __ANDROID__
 #include <jni.h>
+extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeStartupTitleTap(JNIEnv*, jclass) {
+    mods::startup_title_tap();
+}
 extern "C" JNIEXPORT jint JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeContextButtons(JNIEnv* env, jclass, jintArray out) {
     int32_t v[mods::ctxtouch::kPackLen];
     mods::context_touch_pack(v, mods::ctxtouch::kPackLen);

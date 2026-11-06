@@ -83,7 +83,9 @@ int main(int argc,char** argv) {
     fs::path root=fs::absolute(argv[1]);std::string mode=argv[2],id=getenv("WWHD_TEST_MOD_SETUP");
     bool resumed=fs::weakly_canonical(fs::absolute(argv[0])).parent_path()==fs::weakly_canonical(root/"code-builds/synthetic/bin");
     // exp-*: an experimental mod (the review warns; switching it on backs up the saves once, first)
-    bool experimental=mode.starts_with("exp-"),backup_fails=mode=="exp-backup-fails";
+    // exp-backup-fails: the backups folder can't be created; exp-backup-nospace: not enough free space for a backup
+    bool experimental=mode.starts_with("exp-"),backup_blocked=mode=="exp-backup-fails",backup_nospace=mode=="exp-backup-nospace";
+    bool backup_fails=backup_blocked||backup_nospace;
     bool missing=mode=="missing",broken=mode=="broken",catalogue=mode=="catalogue"||mode=="exp-catalogue"||backup_fails;
     bool tabs=mode=="tabs";  // each mod is listed in its own sub-tab
     bool update_off=mode=="update-off",update_on=mode=="update-on"||mode=="exp-update-on",ids=mode=="ids"||tabs,update=update_off||update_on||ids;
@@ -171,9 +173,14 @@ int main(int argc,char** argv) {
     };
     if(experimental) {
         std::lock_guard guard(mods::saves::mutex());
-        // exp-backup-fails: the backups folder can't be created (a file is in its place)
-        if(backup_fails)std::ofstream(root/"blocked")<<"not a folder";
-        mods::saves::store().configure(root/"save",backup_fails?root/"blocked"/"save-backups":fs::path());
+        // Synthetic saves need a deterministic budget, not 10 GiB on the CI host.
+        // Exercise the production backup check through its existing injectable seam.
+        mods::saves::store().free_space = [backup_nospace](const fs::path&) {
+            return backup_nospace ? uint64_t(0) : UINT64_MAX;
+        };
+        // exp-backup-fails: a file sits where the backups folder would be created
+        if(backup_blocked)std::ofstream(root/"blocked")<<"not a folder";
+        mods::saves::store().configure(root/"save",backup_blocked?root/"blocked"/"save-backups":fs::path());
         hostui::set("mod.showExperimental","1");  // the list shows experimental mods
     }
     if(catalogue||update)set_env("WWHD_MOD_CATALOGUE",(root/"index.json").string());
@@ -209,7 +216,7 @@ int main(int argc,char** argv) {
         for(int i=0;i<400&&!s.loader.snapshot().have_list;i++){listed(ui::kCommunity);std::this_thread::sleep_for(std::chrono::milliseconds(5));}
         auto builtin=listed(ui::kBuiltin),community=listed(ui::kCommunity);
         std::set<std::string> expected_builtin;
-        for(const auto& e:mods::manager::entries())expected_builtin.insert(e.id);
+        for(const auto& e:mods::manager::entries())if(!ui::on_controls_tab(e.id))expected_builtin.insert(e.id);
         assert(builtin==expected_builtin);                                  // every built-in mod, nothing else
         assert(community==(std::set<std::string>{id,"available-fixture"}));  // the installed one and the downloadable one
         for(const auto& b:builtin)fprintf(stderr,"[tabs] Built-in: %s\n",b.c_str());
@@ -340,7 +347,6 @@ int main(int argc,char** argv) {
     const std::string switch_label="##on_"+id;
     auto deadline=std::chrono::steady_clock::now()+std::chrono::seconds(25);
     for(int frame=0;frame<6000&&std::chrono::steady_clock::now()<deadline;++frame) {
-        assert(fs::space(root).available>10ull*1024*1024*1024);
         ImGui_ImplSDLRenderer3_NewFrame();ImGui::NewFrame();setup_run_tick();ui::tick(host,true);
         // the settings window as the overlay sizes it
         ImGui::SetNextWindowPos(ImVec2(width*0.5f,height*0.5f),ImGuiCond_Always,ImVec2(0.5f,0.5f));
@@ -408,6 +414,10 @@ int main(int argc,char** argv) {
             // the reason (no "confirm the warning first"): the review was the confirmation
             assert(f.error.starts_with("Your saves couldn't be backed up")&&f.error.find("confirm")==std::string::npos);
             assert(!view(id).enabled&&pending_setup_runs().empty());
+            if(backup_nospace) {
+                assert(f.error.find("Not enough free disk space for a save backup")!=std::string::npos);
+                assert(fs::is_empty(root/"save-backups"));
+            } else assert(fs::is_regular_file(root/"blocked"));  // nothing was created in place of the file
             saw_failure=true;break;
         }
         if(f.phase==ui::Phase::Failed) {

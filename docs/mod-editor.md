@@ -954,7 +954,7 @@ with Allow and Deny only. Undo works for these changes as in the editor.
 
 ## Frame rates
 
-The editor and its camera work at 30 fps, with 60 or 120 fps interpolation and with True 60. The camera
+The editor and its camera work at 30 fps and with 40/60/120/240 fps interpolation. The camera
 moves at the same speed in every mode.
 
 ## Commands

@@ -151,7 +151,7 @@ jobs:
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
           cmake -S . -B build/rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DWWHD_RENDERER=BOTH \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub" -DWWHD_SETUP_GUI=ON \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub" -DWWHD_SETUP_GUI=ON -DWWHD_RANDO=ON \
             -DWWHD_BUNDLED_DEPS=ON -DWWHD_BUNDLED_ZSTD=ON \
             -DVulkan_INCLUDE_DIR="$RUNNER_TEMP/vk/prefix/include" \
             -DVulkan_LIBRARY="$RUNNER_TEMP/vk/prefix/lib/libvulkan.1.dylib"
@@ -165,8 +165,11 @@ jobs:
         if: needs.version.outputs.devel == 'true'
         run: |
           git submodule update --init decomp
+          # the decomp build's own placeholder: its hooks (decomp-only lists) and decomp tables
+          : > "$RUNNER_TEMP/no-decomp-units.txt"
+          python3 tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks "$RUNNER_TEMP/no-decomp-units.txt"
           cmake -S . -B build/rel-decomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DWWHD_RENDERER=BOTH \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub" \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub-decomp" \
             -DWWHD_BUNDLED_DEPS=ON -DWWHD_BUNDLED_ZSTD=ON \
             -DVulkan_INCLUDE_DIR="$RUNNER_TEMP/vk/prefix/include" \
             -DVulkan_LIBRARY="$RUNNER_TEMP/vk/prefix/lib/libvulkan.1.dylib" \
@@ -174,8 +177,10 @@ jobs:
           cmake --build build/rel-decomp --target wwhd
 
       - name: Unit tests
+        # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
+        timeout-minutes: 45
         run: |
-          ctest --test-dir build/rel --output-on-failure
+          ctest --test-dir build/rel --output-on-failure --timeout 600
           python3 tools/installer/test_setup.py
           python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
@@ -349,15 +354,17 @@ jobs:
           cmake -S . -B build/rel -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DGEN_DIR="$PWD/build/gen-stub" \
             -DCMAKE_C_COMPILER="$ZBIN/zcc" -DCMAKE_CXX_COMPILER="$ZBIN/zcxx" \
             -DCMAKE_AR="$ZBIN/zar" -DCMAKE_RANLIB="$ZBIN/zranlib" \
-            -DWWHD_BUNDLED_DEPS=ON -DCMAKE_PREFIX_PATH="$HOME/sdl3" -DWWHD_SETUP_GUI=ON \
+            -DWWHD_BUNDLED_DEPS=ON -DCMAKE_PREFIX_PATH="$HOME/sdl3" -DWWHD_SETUP_GUI=ON -DWWHD_RANDO=ON \
             -DVulkan_INCLUDE_DIR="$HOME/vulkan/include" \
             -DVulkan_LIBRARY="/usr/lib/$ARCH-linux-gnu/libvulkan.so.1"
           cmake --build build/rel
 
       - name: Unit tests
+        # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
+        timeout-minutes: 45
         run: |
           export LD_LIBRARY_PATH="$HOME/sdl3/lib"
-          ctest --test-dir build/rel --output-on-failure
+          ctest --test-dir build/rel --output-on-failure --timeout 600
           python3 tools/installer/test_setup.py
           python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
@@ -538,13 +545,15 @@ jobs:
             -DCMAKE_C_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang.exe" \
             -DCMAKE_CXX_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang++.exe" \
             -DCMAKE_RC_COMPILER="$LLVM_MINGW/bin/$TRIPLE-windres.exe" \
-            -DCMAKE_EXE_LINKER_FLAGS=-static -DWWHD_BUNDLED_DEPS=ON -DWWHD_SETUP_GUI=ON \
+            -DCMAKE_EXE_LINKER_FLAGS=-static -DWWHD_BUNDLED_DEPS=ON -DWWHD_SETUP_GUI=ON -DWWHD_RANDO=ON \
             -DVulkan_INCLUDE_DIR="$VULKAN_DIR/include" -DVulkan_LIBRARY="$VULKAN_DIR/libvulkan-1.a"
           ninja -C build/rel -d keeprsp
 
       - name: Unit tests
+        # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
+        timeout-minutes: 45
         run: |
-          ctest --test-dir build/rel --output-on-failure
+          ctest --test-dir build/rel --output-on-failure --timeout 600
           python tools/installer/test_setup.py
 
       - name: Pinned embeddable Python, shipped in the release (tools/installer/toolchains.json)
@@ -565,7 +574,10 @@ jobs:
             --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup.exe \
             --windows-python "$WIN_PY_ZIP" \
             --runtime-file build/rel/SDL3.dll \
+            --runtime-file build/rel/libusb-1.0.dll \
             --license "SDL3 (zlib)=$W/build/rel/_deps/sdl3-src/LICENSE.txt" \
+            --license "libusb (LGPL-2.1-or-later)=$W/build/rel/_deps/libusb-src/COPYING" \
+            --license-source "libusb (LGPL-2.1-or-later)=libusb 1.0.30, unmodified; source: https://github.com/libusb/libusb/releases/download/v1.0.30/libusb-1.0.30.tar.bz2" \
             --license "Vulkan-Headers (Apache-2.0)=$VULKAN_DIR/LICENSE.md" \
             --license "glslang (BSD-3-Clause and others)=$W/build/rel/_deps/glslang-src/LICENSE.txt" \
             --license "zlib (zlib)=$W/build/rel/_deps/zlib-src/LICENSE" \
@@ -638,6 +650,7 @@ jobs:
           if (-not (Test-Path (Join-Path $data 'install.json'))) { throw "the console setup did not finish" }
           $exe = Join-Path $data 'bin\wwhd.exe'
           if (-not (Test-Path (Join-Path $data 'bin\SDL3.dll'))) { throw "SDL3.dll was not installed" }
+          if (-not (Test-Path (Join-Path $data 'bin\libusb-1.0.dll'))) { throw "libusb-1.0.dll was not installed" }
           # no game files: the executable must start and stop with "cannot load ..." (abort() may leave
           # an error-reporting process around, so do not wait forever)
           $p = Start-Process -FilePath $exe -ArgumentList '--game', (Join-Path $env:RUNNER_TEMP 'nogame') `
@@ -792,7 +805,10 @@ jobs:
       - name: Runtime, extractor and runtime SDK (placeholder game code, only to build the runtime)
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
-          GEN_DIR="$PWD/build/gen-stub" ANDROID_SDK="$ANDROID_HOME" JOBS=4 android/build_native.sh
+          # the version the app reports and checks catalogue mods against (CI has no tags for git describe;
+          # without it a development build counted as 0.0.0 and every mod was unavailable, mods issue #6)
+          WWHD_VERSION="$VERSION" GEN_DIR="$PWD/build/gen-stub" ANDROID_SDK="$ANDROID_HOME" JOBS=4 android/build_native.sh
+          grep -qF "\"$VERSION\"" android/build/game/generated/build_info.cpp || { echo "libmain.so does not carry version $VERSION"; exit 1; }
           cmake --build android/build/game --target wwhd-extract --parallel 4
           NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
           python3 tools/android/package_extractor.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/extractor-apk

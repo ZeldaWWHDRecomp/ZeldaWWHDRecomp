@@ -60,7 +60,7 @@ def main():
     shutil.copyfile(args.checkpoint, states / "slot2.bin")
     env = {
         "WWHD_RENDERER_RUNTIME": "vulkan", "WWHD_UNCAPPED": "1",
-        "WWHD_INTERP": "0", "WWHD_TRUE60": "0", "WWHD_INTERP_FPS": "60",
+        "WWHD_INTERP": "0", "WWHD_INTERP_FPS": "60",
         "WWHD_INTERP_PACED": "0", "WWHD_DISPLAY_HZ": "0",
         "WWHD_SETTINGS": str(args.work / "settings.ini"),
         "WWHD_DISPLAY_SETTINGS": str(args.work / "display.ini"),

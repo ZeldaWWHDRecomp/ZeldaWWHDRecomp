@@ -16,19 +16,24 @@
 // Infinite rupees / bait and spoils / swimming and "Fill the bags": idea and offsets from
 // GreenNaugahyde/ZeldaWWHDRecompAndroid (MPL-2.0).
 // WWHD_CHEAT_SAVE_ADDR=hex overrides the address (another game version).
+// Explicit story-grant test aid: WWHD_STORY_ITEM=nayru,din,farore,sword requires
+// WWHD_STORY_ITEM_ACK=1; WWHD_STORY_ITEM_AT=logic_step delays it until a portable load settles.
+// It uses the same mandatory backup as the UI and never sets story event/placement flags.
 #include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
 #include <string>
+#include <utility>
+#include <vector>
 
 #include "guest_addr.h"
 #include "input.h"
-#include "true60.h"
 #include "moon_jump_policy.h"
 #include "mods.h"
 #include "runtime.h"
 #include "savestate.h"
+#include "save_backup.h"
 
 namespace mods {
 namespace {
@@ -41,6 +46,7 @@ constexpr uint32_t kItems = 0x3C;       // u8[21] item number per inventory slot
 constexpr uint32_t kGetItems = 0x51;    // u8[21] "got" bits per slot (bow: 1 fire/ice, 2 light)
 constexpr uint32_t kArrowNum = 0x69, kBombNum = 0x6A, kArrowMax = 0x6F, kBombMax = 0x70;
 constexpr uint32_t kCollect = 0xB4;     // u8[8]: [0] swords, [1] shields, [2] bracelets
+constexpr uint32_t kSymbol = 0xBF;  // Nayru, Din, Farore: bits 0, 1, 2 (itemAcquireSymbol, 025B7CC0)
 constexpr uint32_t kTact = 0xBD, kTriforce = 0xBE;  // song bits (6), Triforce shard bits (8)
 constexpr uint32_t kSelectItems = 0x09;  // u8[3]: the item on X / Y / R (inventory slot; bait 36..43)
 // the bags (dSv_player_bag_item_c / _get_bag_item_c / _bag_item_record_c): the items in the spoils /
@@ -256,6 +262,58 @@ std::atomic<int> g_pending{parse_env("WWHD_CHEAT", {{"items", kCheatItems}, {"sw
                                                     {"songs", kCheatSongs}, {"triforce", kCheatTriforce},
                                                     {"dungeon", kCheatDungeon}, {"key", kCheatKey}, {"bags", kCheatBags},
                                                     {"figurines", kCheatFigurines}})};
+// Explicit test/CLI requests use the same backup gate and require a separate acknowledgement.
+std::atomic<int> g_story_pending{parse_env("WWHD_STORY_ITEM", {{"nayru", kStoryNayru}, {"din", kStoryDin},
+                                                          {"farore", kStoryFarore}, {"sword", kStorySword}})};
+std::atomic<bool> g_story_confirmed{[]{const char* e=getenv("WWHD_STORY_ITEM_ACK");return e && !strcmp(e,"1");}()};
+bool g_story_backed_up = false; // game thread, this process only; never saved as an enabled cheat
+
+void story_items(uint32_t s, int items) {
+    if (!g_story_confirmed.load(std::memory_order_acquire)) {
+        ss::notice("This can change or break the story's order. A save backup is made first. Confirm in Mods > More > Cheats.");
+        return;
+    }
+    if (!g_story_backed_up) {
+        std::lock_guard guard(saves::mutex());
+        auto& store = saves::store();
+        std::error_code error;
+        const auto saved_game = store.save_dir()/"user"/"cking.sav";
+        if (!store.configured() || !std::filesystem::is_regular_file(saved_game,error) ||
+            std::filesystem::file_size(saved_game,error)==0 || error) {
+            ss::notice("Save in the game first: story items require a save backup.");
+            return;
+        }
+        auto result = store.create("before-mod", "story-items", "Story item cheats");
+        if (!result.ok || !result.created) {
+            ss::notice(result.ok ? "Save in the game first: story items require a save backup."
+                                 : "Story item not granted: " + result.error);
+            return;
+        }
+        const auto backed_up = store.root()/result.name/"save"/"user"/"cking.sav";
+        if (!std::filesystem::is_regular_file(backed_up,error) ||
+            std::filesystem::file_size(backed_up,error)==0 || error) {
+            ss::notice("Story item not granted: the backup has no in-game save.");
+            return;
+        }
+        g_story_backed_up = true;
+    }
+    // Match the individual native inventory grants; never call cutscenes or set placement events.
+    uint8_t symbols = 0;
+    if (items & kStoryNayru) symbols |= 1;
+    if (items & kStoryDin) symbols |= 2;
+    if (items & kStoryFarore) symbols |= 4;
+    if (symbols) st8(s+kSymbol, ld8(s+kSymbol)|symbols);
+    if (items & kStorySword) {
+        // item_func_master_sword_ex sets only phase 3 (0254EFA8), not earlier phase 2.
+        // Phase 2 is the Medli-removal gate (#85); unrelated ownership and event bits stay intact.
+        st8(s+kCollect, ld8(s+kCollect)|8);
+        st8(s+kSelectEquip, 0x3E);
+    }
+    LOG("[cheats] story item grant %d; symbols=%02X sword ownership=%02X (backup completed)",
+        items, ld8(s+kSymbol), ld8(s+kCollect));
+    ss::notice("Story item granted. Save in game to keep it. Backup: Mods > More > Save backups.");
+}
+
 std::atomic<int> g_infinite{parse_env("WWHD_CHEAT_INFINITE", {{"health", kInfHealth}, {"magic", kInfMagic}, {"ammo", kInfAmmo}, {"moonjump", kMoonJump}, {"nofall", kMoonNoFall},
                                                                {"rupees", kInfRupees}, {"bags", kInfBags}, {"breath", kInfBreath}})};
 std::atomic<uint32_t> moon_buttons{0}, moon_camera{0};
@@ -269,9 +327,8 @@ struct Flight {
     int16_t facing = 0;
     float x = 0, z = 0;
 };
-Flight flight, preview_saved;
-bool preview_saved_valid = false;
-// WWHD daPy_lk_c fields shared with climb.cpp and true60_link.cpp.
+Flight flight;
+// WWHD daPy_lk_c fields shared with climb.cpp.
 constexpr uint32_t moon_proc = 0x65F0, moon_mode = 0x6A70;
 constexpr uint32_t moon_speed_y = 0x340, moon_pos_y = 0x318;
 constexpr uint32_t moon_angle = 0x322, moon_shape_angle = 0x32A;
@@ -279,6 +336,40 @@ constexpr uint32_t moon_ground_flags = 0x834, moon_fall_height = 0x6A48;
 }  // namespace
 
 void request_cheat(int which) { g_pending |= which; }
+
+// what has been used in this run (applied, not only asked for): Achievements pause for the rest of the run
+namespace {
+std::atomic<int> g_used{0}, g_story_used{0};
+}
+std::vector<std::string> cheats_pausing() {
+    std::vector<std::string> out;
+    static const std::pair<int, const char*> kInf[] = {
+        {kInfHealth, "Infinite health"}, {kInfMagic, "Infinite magic"}, {kInfAmmo, "Infinite arrows and bombs"},
+        {kInfRupees, "Infinite rupees"}, {kInfBags, "Infinite bait and spoils"}, {kInfBreath, "Infinite swimming"},
+        {kMoonJump, "Moon jump"}, {kMoonNoFall, "No fall damage"}};
+    for (const auto& [bit, name] : kInf)
+        if (infinite(bit)) out.push_back(std::string(name) + " (on)");
+    static const std::pair<int, const char*> kOnce[] = {
+        {kCheatItems, "Give all items"}, {kCheatSword, "Equip Master Sword and Mirror Shield"},
+        {kCheatStats, "20 hearts, double magic, 5000 rupees"}, {kCheatSongs, "All songs"},
+        {kCheatTriforce, "All Triforce shards"}, {kCheatDungeon, "Map, compass and boss key"}, {kCheatKey, "Add a small key"},
+        {kCheatBags, "Fill the bags"}, {kCheatFigurines, "All Nintendo Gallery figurines"}};
+    const int used = g_used.load(std::memory_order_relaxed);
+    for (const auto& [bit, name] : kOnce)
+        if (used & bit) out.push_back(std::string(name) + " (used)");
+    if (g_story_used.load(std::memory_order_relaxed)) out.push_back("Story items (used)");
+    return out;
+}
+bool story_item_confirmation_needed() { return !g_story_confirmed.load(std::memory_order_acquire); }
+void request_story_item(int which, bool confirmed) {
+    if (!(which & (kStoryNayru|kStoryDin|kStoryFarore|kStorySword))) return;
+    if (confirmed) g_story_confirmed.store(true, std::memory_order_release);
+    if (!g_story_confirmed.load(std::memory_order_acquire)) {
+        ss::notice("This can change or break the story's order. A save backup is made first. Confirm in Mods > More > Cheats.");
+        return;
+    }
+    g_story_pending.fetch_or(which & (kStoryNayru|kStoryDin|kStoryFarore|kStorySword), std::memory_order_release);
+}
 bool infinite(int which) { return g_infinite.load(std::memory_order_relaxed) & which; }
 void set_infinite(int which, bool on) {
     if (on) g_infinite |= which;
@@ -304,7 +395,7 @@ void moon_jump_camera(uint32_t camera) {
 }
 
 void moon_jump_reset() {
-    flight = {}; preview_saved = {}; preview_saved_valid = false;
+    flight = {};
     moon_camera.store(0, std::memory_order_relaxed);
     moon_camera_scene.store(0, std::memory_order_relaxed);
     moon_buttons.store(0, std::memory_order_relaxed);
@@ -312,13 +403,11 @@ void moon_jump_reset() {
 
 void moon_jump_step(Cpu* cpu, uint32_t link, bool before) {
     if (!infinite(kMoonJump)) return; // stock path: no guest reads or writes
-    const bool preview = true60::dt() < 1.f;
     if (before) {
         if (moon_reset_requested.exchange(false, std::memory_order_acquire)) moon_jump_reset();
         // Do not allow a malformed actor or title/file-select input to dereference fields.
         if (link < 0x10000 || link > 0xFFFF9000 || !save_loaded(save_addr())) {
             flight = {};
-            preview_saved_valid = false;
             moon_camera.store(0, std::memory_order_relaxed);
             moon_camera_scene.store(0, std::memory_order_relaxed);
             return;
@@ -330,10 +419,9 @@ void moon_jump_step(Cpu* cpu, uint32_t link, bool before) {
             if (flight.link) moon_camera.store(0, std::memory_order_relaxed);
             flight = {}; flight.link = link; flight.scene = scene;
         }
-        if (preview) { preview_saved = flight; preview_saved_valid = true; }
     } else if (flight.link != link) return;
     const bool held = (moon_buttons.load(std::memory_order_acquire) & input::kVirtMoonJump) != 0;
-    if (before && held && !preview) {
+    if (before && held) {
         if (ld32(link + moon_proc) != 0x27) {
             const Cpu saved = *cpu;
             cpu->f[1].ps0 = cpu->f[1].ps1 = 5.;
@@ -361,15 +449,12 @@ void moon_jump_step(Cpu* cpu, uint32_t link, bool before) {
             }
             auto movement = moon_jump_policy::steer(flight.facing,
                 moon_stick_x.load(std::memory_order_relaxed), moon_stick_y.load(std::memory_order_relaxed),
-                fx, fz, preview ? true60::dt() : 1.f);
+                fx, fz, 1.f);
             flight.facing = movement.facing; flight.x = movement.x; flight.z = movement.z;
         }
         st16(link + moon_angle, uint16_t(flight.facing));
         st16(link + moon_shape_angle, uint16_t(flight.facing));
     }
-    // Guest preview memory is rolled back by true60. Its host steering state must
-    // also be temporary, otherwise every preview would turn the next full step twice.
-    if (!before && preview_saved_valid) { flight = preview_saved; preview_saved_valid = false; }
 }
 
 bool moon_jump_move(uint32_t link, float& x, float& z) {
@@ -384,9 +469,24 @@ void cheats_service() {
     int inf = g_infinite.load(std::memory_order_relaxed) &
               (kInfHealth | kInfMagic | kInfAmmo | kInfRupees | kInfBags | kInfBreath);
     if (!(inf & kInfBags)) bag_memory.s = 0;  // switched on again: start from the bags as they are
-    if (!g_pending.load(std::memory_order_relaxed) && !inf) return;
+    int story = g_story_pending.exchange(0, std::memory_order_acq_rel);
+    if (story && getenv("WWHD_STORY_ITEM")) {
+        if (const char* at = getenv("WWHD_STORY_ITEM_AT"); at && step() < strtoull(at,nullptr,10)) {
+            g_story_pending.fetch_or(story,std::memory_order_relaxed);
+            story = 0;
+        }
+    }
+    if (!g_pending.load(std::memory_order_relaxed) && !inf && !story) return;
     uint32_t s = save_addr();
-    if (!save_loaded(s)) return;  // stays pending until a file is loaded
+    if (!save_loaded(s)) {
+        if (story) {
+            if (getenv("WWHD_STORY_ITEM")) g_story_pending.fetch_or(story, std::memory_order_relaxed);
+            else ss::notice("Load a Quest Log before granting story items.");
+        }
+        return;
+    }
+    if (story) story_items(s, story), g_story_used |= story;
+    // Ordinary cheats keep their existing pending-until-load behavior.
     // ponytail: topped up once per frame, so a single hit bigger than your whole health still kills
     if (inf & kInfHealth) st16(s + kLife, ld16(s + kMaxLife));
     if (inf & kInfMagic) st8(s + kMagic, ld8(s + kMaxMagic));
@@ -399,6 +499,7 @@ void cheats_service() {
     if (inf & kInfBreath) keep_breath();
     if (!g_pending.load(std::memory_order_relaxed)) return;
     int w = g_pending.exchange(0);
+    g_used |= w;
     if (w & kCheatItems) all_items(s);
     if (w & kCheatSword) best_sword(s);
     if (w & kCheatStats) max_stats(s);

@@ -5,7 +5,13 @@
 namespace ss { struct Writer; struct Reader; }
 
 namespace aspect {
-enum Mode : int { kOriginal = 0, kWindow, k16x10, k21x9, k32x9, kCustom, kModes };
+enum Mode : int { kOriginal = 0, kWindow, k16x10, k21x9, k32x9, kCustom, k4x3, kModes };
+// Persisted IDs are stable; display order is independent of their numeric values.
+inline constexpr Mode kPresets[] = {kOriginal, kWindow, k4x3, k16x10, k21x9, k32x9};
+constexpr bool is_preset(int mode) {
+    for (Mode preset : kPresets) if (mode == preset) return true;
+    return false;
+}
 int mode();
 void set_mode(int m);
 const char* mode_name(int m);
@@ -22,6 +28,10 @@ void set_fov_scale(float scale); // 1 = authored gameplay FOV; events keep their
 // camera's view, for the camera's authored fovy (degrees) as drawn now: the aspect's Vert+ and the gameplay FOV scale
 // (outside events), as adjust_projection_args draws it. 0 for a bad fovy.
 float layout_scale(float fovyDeg);
+// game thread: tan(fovy/2) of the main camera's projection for its authored fovy (degrees) as drawn now
+// (the aspect's Vert+ and the gameplay FOV scale, as adjust_projection_args draws it); 0 for a bad
+// fovy. 60 fps (generated) (framegen.cpp) reprojects the scene with it.
+float scene_tan_half_fovy(float fovyDeg);
 uint64_t game_frame();                // swaps so far                      // aspect the game draws with this frame
 // HD layouts: the game thread marks uploads of layout projection matrices and the drawing of layout
 // roots; the render thread, which knows the target, narrows the projection for TV-shaped targets

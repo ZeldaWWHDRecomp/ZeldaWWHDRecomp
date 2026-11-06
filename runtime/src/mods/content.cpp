@@ -53,6 +53,7 @@ std::multimap<std::string,std::string> game_names(){
 }
 }
 void set_game_root(const fs::path& game){game_root=game;}
+fs::path game_root_path(){return game_root;}
 void import_legacy(const fs::path& stage,const std::string& source_name){
     std::vector<fs::path> candidates,loose_packs;
     for(const auto& e:fs::recursive_directory_iterator(stage)){

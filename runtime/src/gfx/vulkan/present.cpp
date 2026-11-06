@@ -1,3 +1,7 @@
+#include "gamepad_backdrop_demand.h"
+#include "gamepad_backdrop.h"
+#include "gamepad_backdrop_present.h"
+#include "../gamepad_backdrop.h"
 #ifdef __ANDROID__
 #include "android_driver.h"
 #endif
@@ -21,14 +25,21 @@
 #include "gfx/display_modes.h"
 #include "platform/dual_display.h"
 #include <algorithm>
+#include <array>
+#include <fstream>
+#include <iterator>
 #include <cmath>
 #include <chrono>
+#include <cstdint>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <limits>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 namespace gfxvk {
 namespace {
 ImDrawData* overlayDraw=nullptr;
@@ -45,7 +56,7 @@ const char* fragmentSource = R"glsl(#version 450
 layout(set=0,binding=0) uniform sampler2D image;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
-layout(push_constant) uniform Params { int aa; int conv; float sharp; float foot; float alpha; float hdrWhite; float hdrPeak; float hdrExposure; float hdrHighlights; int pq; } params;
+layout(push_constant) uniform Params { int aa; int conv; float sharp; float foot; float alpha; float hdrWhite; float hdrPeak; float hdrExposure; float hdrHighlights; int pq; int hdrSdrCurve; float backdrop; } params;
 float luma(vec3 c) { return dot(c,vec3(0.299,0.587,0.114)); }
 vec3 fxaa(vec2 at) {
  vec2 rcp=1.0/vec2(textureSize(image,0));
@@ -81,8 +92,31 @@ void main() {
   c=0.25*(texture(image,at+vec2(-d.x,-d.y)).rgb+texture(image,at+vec2(d.x,-d.y)).rgb+
           texture(image,at+vec2(-d.x,d.y)).rgb+texture(image,at+vec2(d.x,d.y)).rgb);
  }else c=texture(image,at).rgb;
- if(params.conv==1)c=toLinear(clamp(c,0.0,1.0));
+ float coverage=1.0;
+ if(params.backdrop==1.0) {
+  coverage=texture(image,at).a;
+  c=coverage>0.00001?c/coverage:vec3(0.0);
+ } else if(params.backdrop>=2.0) {
+  c=vec3(0.0);
+  for(int i=0;i<4;++i) {
+   float along=(float(i)*2.0+1.0)/8.0;
+   vec2 edge=params.backdrop==2.0?vec2(along,0.5/size.y):
+    params.backdrop==3.0?vec2(along,1.0-0.5/size.y):
+    params.backdrop==4.0?vec2(0.5/size.x,along):vec2(1.0-0.5/size.x,along);
+   c+=texture(image,edge).rgb*0.25;
+  }
+ }
+ if(params.conv==1) {
+  if(params.hdrWhite>0.0 && params.hdrSdrCurve!=2)
+   c=pow(max(c,vec3(0.0)),vec3(params.hdrSdrCurve==1?2.4:2.2));
+  else c=toLinear(clamp(c,0.0,1.0));
+ }
  else if(params.conv==2)c=toSrgb(clamp(c,0.0,1.0));
+ else if(params.hdrWhite>0.0 && params.hdrSdrCurve!=2) {
+  // sRGB texture views (and linear scan buffers) already decoded the SDR
+  // picture. Reconstruct its code values before applying the selected curve.
+  c=pow(max(toSrgb(max(c,vec3(0.0))),vec3(0.0)),vec3(params.hdrSdrCurve==1?2.4:2.2));
+ }
  if(params.hdrWhite>0.0) {
   c=max(c,vec3(0.0))*exp2(params.hdrExposure);
   float m=max(c.r,max(c.g,c.b));
@@ -100,7 +134,7 @@ void main() {
   vec3 y=pow(clamp(bt2020*c*(80.0/10000.0),0.0,1.0),vec3(0.1593017578125));
   c=pow((0.8359375+18.8515625*y)/(1.0+18.6875*y),vec3(78.84375));
  }
- result=vec4(c,params.alpha);
+ result=vec4(c*coverage*(params.backdrop==1.0?params.alpha:1.0),coverage*params.alpha);
 }
 )glsl";
 // a filled rectangle (GamePad overlay frame)
@@ -174,7 +208,7 @@ PresentParams present_params(bool aa,int filter,float scale,bool sourceLinear,bo
   filter==0||scale<=1?1:filter==1?scale:1e4f,scale<1?1/scale:1};
 }
 // pipeline kinds: the scaled picture (opaque / with opacity), a filled rectangle, the mod HUD
-enum Kind : uint32_t { kImage, kImageBlend, kSolid, kHud, kMoveHud };
+enum Kind : uint32_t { kImage, kImageBlend, kSolid, kHud, kMoveHud, kBackdrop };
 struct ScreenResources {
  bool drawable=false,captureTransfer=false; std::vector<VkImageView> views;
  Surface hdrTarget{}; // HDR10 output: the linear FP16 composition before PQ encoding
@@ -254,6 +288,7 @@ struct PresentResources {
  VkDescriptorSetLayout descriptors=VK_NULL_HANDLE;
  VkPipelineLayout layout=VK_NULL_HANDLE;
  VkSampler linear=VK_NULL_HANDLE,nearest=VK_NULL_HANDLE;
+ const char* imageFragmentSource=fragmentSource; // renderer-thread-only diagnostic override
  std::unordered_map<uint64_t,VkPipeline> pipelines; // (format, kind)
  std::unordered_map<Screen*,ScreenResources> screens;
  Surface diagnosticTarget{};
@@ -306,7 +341,7 @@ VkPipeline pipeline(PresentResources& resources,VkFormat format,Kind kind=kImage
  if(auto it=resources.pipelines.find(key);it!=resources.pipelines.end())return it->second;
  VkShaderModule vs=VK_NULL_HANDLE,fs=VK_NULL_HANDLE;VkPipeline result=VK_NULL_HANDLE;
  try {
-  vs=module(resources,vertexSource,true);fs=module(resources,kind==kSolid?solidSource:kind==kHud?hudSource:kind==kMoveHud?moveHudSource:fragmentSource,false);
+  vs=module(resources,vertexSource,true);fs=module(resources,kind==kSolid?solidSource:kind==kHud?hudSource:kind==kMoveHud?moveHudSource:resources.imageFragmentSource,false);
   VkPipelineShaderStageCreateInfo stages[2]{};
   for(int i=0;i<2;++i){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;stages[i].module=i?fs:vs;stages[i].pName="main";}
   VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -320,7 +355,7 @@ VkPipeline pipeline(PresentResources& resources,VkFormat format,Kind kind=kImage
    blend.blendEnable=VK_TRUE;blend.colorBlendOp=blend.alphaBlendOp=VK_BLEND_OP_ADD;
    blend.srcColorBlendFactor=blend.srcAlphaBlendFactor=VK_BLEND_FACTOR_SRC_ALPHA;
    blend.dstColorBlendFactor=blend.dstAlphaBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
-  } else if(kind==kHud||kind==kMoveHud) {
+  } else if(kind==kHud||kind==kMoveHud||kind==kBackdrop) {
    // premultiplied colour; the image keeps its alpha
    blend.blendEnable=VK_TRUE;blend.colorBlendOp=blend.alphaBlendOp=VK_BLEND_OP_ADD;
    blend.srcColorBlendFactor=VK_BLEND_FACTOR_ONE;blend.dstColorBlendFactor=VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
@@ -401,6 +436,7 @@ void reset_present_resources() {
 // ---------------------------------------------------------------- composition
 namespace {
 const gfx::PresentPlan* currentPlan=nullptr;
+GamepadBackdropDemand backdropDemand;
 bool linear_filtering(VkFormat format) {
  const auto& properties=format_properties(format);
  return properties.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
@@ -443,6 +479,16 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
  const float whiteScale=hdrOutput?std::min(hdr::menuWhite.load(),hdr::parameters().peak)/80.0f:1.0f;
  for(auto& q:quads) {
   if(q.box.w<=0||q.box.h<=0)continue;
+  VkRect2D quadScissor{{0,0},extent};
+  if(q.clipped) {
+   const int x=int(std::clamp(std::floor(q.clip.x),0.f,float(extent.width)));
+   const int y=int(std::clamp(std::floor(q.clip.y),0.f,float(extent.height)));
+   const int right=int(std::clamp(std::ceil(q.clip.x+q.clip.w),float(x),float(extent.width)));
+   const int bottom=int(std::clamp(std::ceil(q.clip.y+q.clip.h),float(y),float(extent.height)));
+   quadScissor={{x,y},{uint32_t(right-x),uint32_t(bottom-y)}};
+  }
+  if(!quadScissor.extent.width||!quadScissor.extent.height)continue;
+  record::vkCmdSetScissor(cmd,0,1,&quadScissor);
   VkViewport viewport{q.box.x,q.box.y,q.box.w,q.box.h,0,1};record::vkCmdSetViewport(cmd,0,1,&viewport);
   if(q.solid) {
    record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(format,kSolid));
@@ -454,7 +500,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
   }
   if(!q.image||!q.image->view)continue;
   const bool blend=q.alpha<0.999f;
-  record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(format,blend?kImageBlend:kImage));
+  record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(format,q.backdrop==1?kBackdrop:blend?kImageBlend:kImage));
   VkDescriptorSet set;VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=R.descriptorPool;allocation.descriptorSetCount=1;allocation.pSetLayouts=&resources.descriptors;
   vk_check(vkAllocateDescriptorSets(R.device,&allocation,&set),"presentation descriptor set");
   const bool linear=linear_filtering(q.image->fmt.pixel);
@@ -473,14 +519,16 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
    if(qfilter==2)qfilter=0;
    else if(qfilter==1)qscale=std::min(q.box.w/nominal_width(q.image),q.box.h/nominal_height(q.image));
   }
-  auto params=present_params(fxaa&&linear,qfilter,qscale,sourceLinear,targetLinear);params.alpha=q.alpha;
+  auto params=present_params(!q.backdrop&&fxaa&&linear,q.backdrop?0:qfilter,q.backdrop?1.f:qscale,sourceLinear,targetLinear);params.alpha=q.alpha;params.pad[0]=float(q.backdrop);
   if(hdrOutput) {
    const auto h=hdr::parameters();params.hdrWhite=h.paper;params.hdrPeak=h.peak;
    params.hdrExposure=h.exposure;params.hdrHighlights=h.highlights;
+   params.hdrSdrCurve=hdr::sdrCurve.load();
   }
   params.pq=pqEncode;
   record::vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);record::vkCmdDraw(cmd,3,1,0,0);
  }
+ record::vkCmdSetScissor(cmd,0,1,&scissor);
  if(gamepadOverlay)overlay_draw(gamepadOverlay,cmd,format,extent,targetLinear,-1,whiteScale);
  if(overlay) {
   if (overlay == overlayDraw && overlayFrame.stereo_packed(stereo::frame.mode != stereo::Off, bool(stereoRight.scan))) {
@@ -496,6 +544,13 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
 }  // namespace
 
 void set_present_plan(const gfx::PresentPlan* plan) { currentPlan=plan; }
+void begin_gamepad_backdrop_demand() { backdropDemand.begin(); }
+void cancel_gamepad_backdrop_demand() { backdropDemand.cancel(); }
+void publish_gamepad_backdrop_demand() {
+ bool needed=false;
+ if(backdropDemand.finish(needed))gfx::gamepad_backdrop::set_capture_requested(
+     gfx::gamepad_backdrop::enabled.load(std::memory_order_relaxed)&&needed);
+}
 void set_overlay_draw(overlay::window_target::DrawFrame frame) { overlayDraw=frame.draw; overlayFrame=frame; }
 static ImDrawData* screen_overlay(Screen& screen, uint32_t width, uint32_t height) {
  if(auto* draw=overlayFrame.for_window(&screen==&R.drc))return draw;
@@ -505,30 +560,76 @@ static ImDrawData* screen_overlay(Screen& screen, uint32_t width, uint32_t heigh
 // Exercise the actual presentation shader and read FP32 values so SDR clipping
 // or a missing HDR push constant cannot pass a CPU-only colour test.
 void test_hdr_presentation() {
- Surface source,target;Buffer readback;
+ Surface source,target,pqTarget,linearTarget,sdrTarget;Buffer readback;
+ const int savedCurve=hdr::sdrCurve.load();
  auto init=[](Surface& s,uint32_t f) {
   s.width=s.height=s.pitch=4;s.slices=s.mips=1;s.dim=1;s.format=f;s.fmt=format_info(f,false);
   create_surface_image(&s,true,VkExtent3D{4,4,1});
  };
  try {
-  init(source,0x823);init(target,0x823);readback=create_readback_buffer(4*4*16);
+  init(source,0x823);init(target,0x823);init(pqTarget,0x823);init(linearTarget,0x820);init(sdrTarget,0x41a);readback=create_readback_buffer(4*4*16);
   const auto hp=hdr::parameters();
-  for(auto c:{std::array<float,3>{0,0,0},{0.18f,0.18f,0.18f},{1,1,1},{0.05f,0.4f,1}}) {
+  // An SDR sRGB attachment also requests conv==1. Its decode must remain
+  // piecewise sRGB regardless of the saved HDR curve (the attachment encodes it).
+  for(auto c:{std::array<float,3>{0,0,0},{.05f,.05f,.05f},{.5f,.5f,.5f},{1,1,1},{.05f,.4f,1}}) {
+   std::array<uint8_t,64> baseline{};
+   for(int curve=0;curve<3;++curve) {
+    hdr::sdrCurve=curve;
+    transition_image(&source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkClearColorValue value{{c[0],c[1],c[2],1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+    record::vkCmdClearColorImage(command_buffer(),source.image,source.layout,&value,1,&range);
+    mark_gpu_written(&source);
+    ComposeQuad q;q.image=&source;q.sourceLinear=false;q.box={0,0,4,4};
+    compose(sdrTarget.image,sdrTarget.view,sdrTarget.layout,{4,4},sdrTarget.fmt.pixel,{q},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&sdrTarget.use);
+    transition_image(&sdrTarget,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+    transition_buffer(readback,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={4,4,1};
+    record::vkCmdCopyImageToBuffer(command_buffer(),sdrTarget.image,sdrTarget.layout,readback.buffer,1,&copy);
+    transition_buffer(readback,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);flush();
+    const auto* pixels=static_cast<const uint8_t*>(readback.mapped);
+    for(size_t i=0;i<baseline.size();++i) {
+     if(curve==0)baseline[i]=pixels[i];
+     else if(pixels[i]!=baseline[i])exception_report::raise("HDR curve changed SDR sRGB output bytes");
+     if(i%4<3 && std::abs(int(pixels[i])-int(std::lround(c[i%4]*255)))>1)
+      exception_report::raise("SDR sRGB presentation did not preserve encoded input");
+    }
+   }
+  }
+  for(bool sourceLinear:{false,true})for(int curve=0;curve<3;++curve)for(bool pq:{false,true})
+  for(auto c:{std::array<float,3>{0,0,0},{0.05f,0.05f,0.05f},{0.5f,0.5f,0.5f},{1,1,1},{0.05f,0.4f,1},{1.2f,0.4f,0.05f}}) {
+   if(sourceLinear && c[0]>1)continue; // sRGB scans contain bounded encoded SDR
+   hdr::sdrCurve=curve;
    transition_image(&source,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
-   VkClearColorValue value{{c[0],c[1],c[2],1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
+   const auto sampled=sourceLinear?hdr::decode(c,hdr::SdrCurve::Srgb):c;
+   VkClearColorValue value{{sampled[0],sampled[1],sampled[2],1}};VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
    record::vkCmdClearColorImage(command_buffer(),source.image,source.layout,&value,1,&range);
    mark_gpu_written(&source);
-   ComposeQuad q;q.image=&source;q.sourceLinear=true;q.box={0,0,4,4};
-   compose(target.image,target.view,target.layout,{4,4},target.fmt.pixel,{q},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&target.use,true);
-   transition_image(&target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+   ComposeQuad q;q.image=&source;q.sourceLinear=sourceLinear;q.box={0,0,4,4};
+   auto& mapped=pq?linearTarget:target;
+   compose(mapped.image,mapped.view,mapped.layout,{4,4},mapped.fmt.pixel,{q},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&mapped.use,true);
+   Surface* output=&mapped;
+   if(pq) {
+    ComposeQuad encoded;encoded.image=&mapped;encoded.sourceLinear=true;encoded.box={0,0,4,4};
+    compose(pqTarget.image,pqTarget.view,pqTarget.layout,{4,4},pqTarget.fmt.pixel,{encoded},VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&pqTarget.use,false,true);
+    output=&pqTarget;
+   }
+   transition_image(output,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
    transition_buffer(readback,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
    VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};copy.imageExtent={4,4,1};
-   record::vkCmdCopyImageToBuffer(command_buffer(),target.image,target.layout,readback.buffer,1,&copy);
+   record::vkCmdCopyImageToBuffer(command_buffer(),output->image,output->layout,readback.buffer,1,&copy);
    transition_buffer(readback,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);flush();
-   auto expected=hdr::map(c,hp);auto* pixels=static_cast<const float*>(readback.mapped);
-   for(int i=0;i<16;++i)for(int k=0;k<3;++k)
-    if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>0.002f)
+   auto expected=hdr::map(hdr::decode(c,static_cast<hdr::SdrCurve>(curve)),hp);
+   if(pq)expected=hdr::encode_pq(expected);
+   auto* pixels=static_cast<const float*>(readback.mapped);
+   if(!sourceLinear && !pq && c[0]==c[1] && (c[0]==0.05f || c[0]==0.5f))
+    fprintf(stderr,"[renderer smoke] SDR curve=%d code=%.2f scRGB=%.9f\n",curve,c[0],pixels[0]);
+   const auto metadata=hdr::metadata(hp,hdr::menuWhite.load(),bounded_color_format(source.fmt.pixel));
+   for(int i=0;i<16;++i)for(int k=0;k<3;++k) {
+    if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>(pq?0.0002f:0.00002f))
      exception_report::raise("HDR shader readback differs from calibrated scRGB mapping");
+    if(!pq && pixels[i*4+k]*80>metadata.maxCll+0.01f)
+     exception_report::raise("HDR float scan exceeds advertised Max CLL");
+   }
   }
   // HDR10: the final pass encodes linear scRGB (0, 80, 1000 and 10000+ nits, a hue) to BT.2020 PQ.
   for(auto c:{std::array<float,3>{0,0,0},{1,1,1},{12.5f,12.5f,12.5f},{200,200,200},{0.05f,0.4f,1}}) {
@@ -548,12 +649,118 @@ void test_hdr_presentation() {
     if(!std::isfinite(pixels[i*4+k]) || std::abs(pixels[i*4+k]-expected[k])>0.002f)
      exception_report::raise("HDR10 shader readback differs from the PQ encoding");
   }
-  fprintf(stderr,"[renderer smoke] HDR scRGB black/grey/highlight/hue and HDR10 PQ readback passed\n");
+  fprintf(stderr,"[renderer smoke] HDR three SDR curves: black/near-black/grey/white/hue through scRGB and two-pass HDR10 PQ readback passed\n");
  } catch(...) {
+  hdr::sdrCurve=savedCurve;
+  if(pqTarget.image)destroy_surface_image(&pqTarget);
+  if(linearTarget.image)destroy_surface_image(&linearTarget);
+  if(sdrTarget.image)destroy_surface_image(&sdrTarget);
   if(readback.buffer)defer_buffer(readback);
   if(source.image)destroy_surface_image(&source);if(target.image)destroy_surface_image(&target);throw;
  }
- defer_buffer(readback);destroy_surface_image(&source);destroy_surface_image(&target);
+ hdr::sdrCurve=savedCurve;
+ defer_buffer(readback);destroy_surface_image(&source);destroy_surface_image(&target);destroy_surface_image(&pqTarget);destroy_surface_image(&linearTarget);destroy_surface_image(&sdrTarget);
+}
+
+// Compare the original and current shaders against one captured game frame,
+// avoiding simulation differences between runs. Only the opt-in dump invokes this.
+void compare_sdr_scene(Screen& screen,const std::string& path) {
+ const char* baselinePath=std::getenv("WWHD_HDR_SDR_BASELINE_SHADER");
+ if(!baselinePath || !*baselinePath)return;
+ std::ifstream input(baselinePath);
+ const std::string baseline((std::istreambuf_iterator<char>(input)),std::istreambuf_iterator<char>());
+ if(baseline.empty())exception_report::raise("Cannot read the original SDR presentation shader");
+ const auto extent=scan_display_extent(screen);
+ // Freeze the game's TV scan and AA choice; host menus/PIP can otherwise
+ // advance independently while a diagnostic is compiling its other shader.
+ const bool aa=fxaa_enabled();
+ ComposeQuad quad;quad.image=screen.scan.get();quad.sourceLinear=screen.scanSrgb;
+ quad.box={0,0,float(extent.width),float(extent.height)};
+ auto renderSdr=[&](bool srgb) {
+  Surface target;target.width=extent.width;target.height=extent.height;
+  target.format=srgb?0x41a:0x1a;target.fmt=format_info(target.format,false);
+  create_surface_image(&target,true,extent);
+  std::vector<uint8_t> pixels;
+  try {
+   compose(target.image,target.view,target.layout,{extent.width,extent.height},target.fmt.pixel,{quad},
+           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,aa,nullptr,&target.use);
+   pixels=read_surface_rgba(target,false);
+  } catch(...) {destroy_surface_image(&target);throw;}
+  destroy_surface_image(&target);return pixels;
+ };
+ std::array<std::vector<uint8_t>,2> after;
+ for(int encoding=0;encoding<2;++encoding)
+  after[encoding]=renderSdr(encoding!=0);
+ // Readback drained the submission, so these retained pipelines can safely be
+ // replaced temporarily. Other devices have their own PresentResources object.
+ auto retained=std::move(resources.pipelines);
+ resources.pipelines.clear();
+ const char* currentSource=resources.imageFragmentSource;
+ resources.imageFragmentSource=baseline.c_str();
+ auto restore=[&] {
+  for(auto [key,handle]:resources.pipelines)resources.api.vkDestroyPipeline(resources.device,handle,nullptr);
+  resources.pipelines=std::move(retained);
+  resources.imageFragmentSource=currentSource;
+ };
+ try {
+  for(int encoding=0;encoding<2;++encoding) {
+   const auto before=renderSdr(encoding!=0);
+   const std::string prefix=path+(encoding?".sdr-srgb":".sdr-unorm");
+   write_rgba_png(prefix+".before.png",extent.width,extent.height,before);
+   write_rgba_png(prefix+".after.png",extent.width,extent.height,after[encoding]);
+   if(before!=after[encoding])exception_report::raise("Original and current SDR scene pixels differ");
+   fprintf(stderr,"[SDR scene parity] %s: %ux%u, original/current RGBA bytes identical\n",prefix.c_str(),extent.width,extent.height);
+  }
+ } catch(...) {
+  try {flush();}catch(...) {}
+  restore();throw;
+ }
+ restore();
+}
+
+// WWHD_HDR_CURVE_DUMP accompanies a scheduled scan dump. This offscreen path
+// works without an HDR display and never changes the swapchain or saved setting.
+void dump_hdr_curves(Screen& screen,const std::string& path) {
+ if(!screen.scan || !screen.scan->image)return;
+ Surface target;Buffer readback;
+ const int savedCurve=hdr::sdrCurve.load();
+ try {
+  const auto scanExtent=scan_display_extent(screen);
+  const VkExtent2D extent{scanExtent.width,scanExtent.height};
+  target.width=target.pitch=extent.width;target.height=extent.height;
+  target.slices=target.mips=1;target.dim=1;target.format=0x823;target.fmt=format_info(0x823,false);
+  create_surface_image(&target,true,VkExtent3D{extent.width,extent.height,1});
+  const size_t bytes=size_t(extent.width)*extent.height*4*sizeof(float);
+  readback=create_readback_buffer(bytes);
+  ComposeQuad q;q.image=screen.scan.get();q.sourceLinear=screen.scanSrgb;
+  q.box={0,0,float(extent.width),float(extent.height)};
+  const char* names[]={"gamma22","gamma24","srgb"};
+  for(int curve=0;curve<3;++curve) {
+   hdr::sdrCurve=curve;
+   compose(target.image,target.view,target.layout,extent,target.fmt.pixel,{q},
+           VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,0,false,nullptr,&target.use,true);
+   transition_image(&target,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+   transition_buffer(readback,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+   VkBufferImageCopy copy{};copy.imageSubresource={VK_IMAGE_ASPECT_COLOR_BIT,0,0,1};
+   copy.imageExtent={extent.width,extent.height,1};
+   record::vkCmdCopyImageToBuffer(command_buffer(),target.image,target.layout,readback.buffer,1,&copy);
+   transition_buffer(readback,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);flush();
+   const auto filename=path+"."+names[curve]+".rgba32f";
+   std::ofstream output(filename,std::ios::binary);
+   output.write(static_cast<const char*>(readback.mapped),bytes);
+   output.close();
+   if(!output)exception_report::raise("Cannot save HDR curve diagnostic");
+   fprintf(stderr,"[HDR curve dump] %s: %ux%u RGBA32F scRGB (1 = 80 nits)\n",filename.c_str(),extent.width,extent.height);
+  }
+ } catch(...) {
+  hdr::sdrCurve=savedCurve;
+  if(readback.buffer)defer_buffer(readback);
+  if(target.image)destroy_surface_image(&target);
+  throw;
+ }
+ hdr::sdrCurve=savedCurve;
+ defer_buffer(readback);destroy_surface_image(&target);
+ compare_sdr_scene(screen,path);
 }
 
 Screen& presentation_source_screen(Screen& physical) {
@@ -622,18 +829,54 @@ std::vector<ComposeQuad> screen_quads_mono(Screen& screen,VkExtent2D target,int&
  return quads;
 }
 
+static void add_gamepad_backdrop(std::vector<ComposeQuad>& quads,VkExtent2D target) {
+ if(!gfx::gamepad_backdrop::enabled.load())return;
+ const auto index=gamepad_backdrop_quad(quads,R.drc.scan.get(),currentPlan&&currentPlan->drc_only);
+ if(index==quads.size())return;
+ const auto content=quads[index];
+ const auto box=content.box;
+ if(!gfx::gamepad_backdrop::has_bars(float(target.width),float(target.height),{box.x,box.y,box.w,box.h}))return;
+ backdropDemand.request();
+ ComposeQuad backdrop;
+ if(auto* captured=gamepad_backdrop_image()) {
+  backdrop.alpha=content.alpha;backdrop.image=captured;backdrop.sourceLinear=R.drc.scanSrgb;backdrop.backdrop=1;
+  const auto r=gfx::gamepad_backdrop::cover(float(target.width),float(target.height),float(captured->extent.width),float(captured->extent.height));
+  backdrop.box={r.x,r.y,r.w,r.h};
+ } else {
+  // No recognized pane: fill only bars with edge-derived solid colours.
+  std::vector<ComposeQuad> bars;
+  const auto regions=gfx::gamepad_backdrop::bars(float(target.width),float(target.height),{box.x,box.y,box.w,box.h});
+  for(unsigned edge=0;edge<regions.size();++edge) {
+   const auto r=regions[edge];if(r.w<=0||r.h<=0)continue;
+   auto q=content;q.box={r.x,r.y,r.w,r.h};q.backdrop=2+int(edge);bars.push_back(q);
+  }
+  insert_backdrop_bars(quads,index,bars);return;
+ }
+ std::vector<ComposeQuad> bars;
+ for(const auto& r:gfx::gamepad_backdrop::bars(float(target.width),float(target.height),{box.x,box.y,box.w,box.h})) {
+  if(r.w<=0||r.h<=0)continue;
+  auto q=backdrop;q.clipped=true;q.clip={r.x,r.y,r.w,r.h};bars.push_back(q);
+ }
+ insert_backdrop_bars(quads,index,bars);
+}
 std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filter) {
- if (&screen != &R.tv || stereo::frame.mode == stereo::Off)
-  return screen_quads_mono(screen,target,filter);
+ if (&screen != &R.tv || stereo::frame.mode == stereo::Off) {
+  auto quads=screen_quads_mono(screen,target,filter);add_gamepad_backdrop(quads,target);return quads;
+ }
  // A selected stereo mode must never silently present a mono frame.
  // Wait for both eye scan buffers to be available.
  if (!stereoRight.scan) return {};
  auto logical = target;
  if (stereo::frame.mode == stereo::FullSBS) logical.width = std::max(1u,target.width/2);
  auto mono = screen_quads_mono(screen,logical,filter);
+ add_gamepad_backdrop(mono,logical);
  std::vector<ComposeQuad> result;
  for (int eye=0;eye<2;++eye) for (auto q:mono) {
   if (q.image == screen.scan.get() && (eye != int(stereo::frame.swap))) q.image = stereoRight.scan.get();
+  if (q.clipped) {
+   if(stereo::frame.mode==stereo::FullSBS)q.clip.x+=eye*logical.width;
+   else { auto r=stereo::pack({q.clip.x,q.clip.y,q.clip.w,q.clip.h},float(target.width),float(target.height),stereo::frame.mode,eye);q.clip={r.x,r.y,r.w,r.h}; }
+  }
   if (stereo::frame.mode == stereo::FullSBS) q.box.x += eye * logical.width;
   else {
    auto r=stereo::pack({q.box.x,q.box.y,q.box.w,q.box.h},float(target.width),float(target.height),stereo::frame.mode,eye);
@@ -673,6 +916,12 @@ bool draw_present_screen(Screen& screen,uint32_t imageIndex) {
  }
  if(fxaa_enabled()&&!linear)exception_report::raise("FXAA requires linear scan-buffer filtering");
  int filter=0;auto quads=screen_quads(screen,screen.swapExtent,filter);
+ // Inspect actual guest quads, including GamePad PiP and the second stereo eye, not
+ // the FP16 intermediate used for PQ encoding. Unknown/float formats need Peak metadata.
+ screen.hdrScanBounded=std::all_of(quads.begin(),quads.end(),[](const ComposeQuad& q) {
+  return q.solid || !q.image || q.box.w<=0 || q.box.h<=0 || bounded_color_format(q.image->fmt.pixel);
+ });
+ screen.hdrCompositionReady=true;
  auto* overlay=screen_overlay(screen,screen.swapExtent.width,screen.swapExtent.height);
  if(screen.hdrPq) {
   // HDR10: compose and blend in linear FP16 scRGB exactly as for scRGB output, then

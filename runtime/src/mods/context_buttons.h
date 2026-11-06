@@ -33,7 +33,15 @@ struct ButtonView {
     bool shown = false;
     Kind kind = Kind::kPlain;
     uint8_t label = 0;  // Action code or item number by kind
+    uint8_t variant = 0;  // an action's picture variant: the kind of thing lifted / held (play_context.h ThingKind)
 };
+
+// the thing an action's picture shows in Link's hands: what A would lift (Lift, Pick up), what he holds (Throw, Drop)
+inline uint8_t action_variant(const PlayContext& c, uint8_t action) {
+    if (action == kActLift || action == kActPickUp) return c.lift_kind;
+    if (action == kActThrow || action == kActDrop) return c.held_kind;
+    return 0;
+}
 
 struct Options {
     bool fast_forward = false;  // the event fast forward is on (ZR does it during events)
@@ -92,7 +100,9 @@ inline bool back_word(uint8_t b) { return b == kActReturn || b == kActCancel; }
 
 inline Buttons context_buttons(const PlayContext& c, const Options& o = {}) {
     Buttons r;
-    auto show = [&](Button i, Kind k = Kind::kPlain, uint8_t label = 0) { r.b[i] = {true, k, label}; };
+    auto show = [&](Button i, Kind k = Kind::kPlain, uint8_t label = 0) {
+        r.b[i] = {true, k, label, k == Kind::kAction ? action_variant(c, label) : uint8_t(0)};
+    };
     // no Quest Log, or a game menu (the pause menu and the item screen use every button): the full pad
     if (!c.has(kInGame) || c.has(kMenu)) {
         for (auto& v : r.b) v.shown = true;
@@ -103,6 +113,12 @@ inline Buttons context_buttons(const PlayContext& c, const Options& o = {}) {
     // a fade or a stage change without text: nothing to press
     if ((c.has(kFade) || c.has(kStageChange)) && !talking(c)) {
         if (ff) show(kZR, Kind::kFastForward);
+        return r;
+    }
+    // a system question (the save question after a game over): its buttons are taken by a tap on them
+    // (touch_talk.h); A takes the one the cursor is on. (The GreenNaugahyde fork hides every button there.)
+    if (c.has(kQuestion) && c.question_shown) {
+        show(kA, Kind::kAction, kActChoose);
         return r;
     }
     // a choice, a number entry, a shop's item choice: A takes it; B cancels the number entry and leaves the shop

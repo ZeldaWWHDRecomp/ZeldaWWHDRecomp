@@ -17,10 +17,13 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 // switchable to by-label with input_map::FaceLayout (issue #78).
 #import <AppKit/AppKit.h>
 #import <GameController/GameController.h>
+#import <CoreHaptics/CoreHaptics.h>
 #import <QuartzCore/QuartzCore.h>  // CACurrentMediaTime
 #include <Carbon/Carbon.h>  // kVK_* key codes
 
 #include <cmath>
+#include <atomic>
+#include <cstdlib>
 #include <mutex>
 
 #include "input.h"
@@ -31,7 +34,8 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../runtime.h"
 #include "../savestate.h"
 #include "../screenshot.h"
-#include "../true60.h"
+#include "../game_hooks.h"
+#include "../rumble.h"
 #include "../motion/motion.h"
 #include "../overlay/overlay.h"
 #include "../overlay/release_gate.h"
@@ -40,8 +44,15 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 
 #include <memory>
 #include <set>
+#include <map>
 #include <string>
 #include <vector>
+
+#ifdef WWHD_HAS_IOKIT
+#import <IOKit/hid/IOHIDManager.h>
+#import <IOKit/hid/IOHIDKeys.h>
+#include "platform/hid_gamepad.h"
+#endif
 
 namespace gfx { void request_capture(); bool menu_hotkey(uint16_t keyCode); bool controls_window_is_key(); bool text_input_key(void* event); }
 namespace mods { void filter_pad(input::PadState& s); bool host_key_down(uint16_t code); void update_gyro_mouse(); }  // mods/
@@ -108,6 +119,12 @@ static input_map::AppleFaceLayout controller_face_layout(GCController* c) {
     return input_map::apple_face_layout(c.productCategory.UTF8String, c.vendorName.UTF8String);
 }
 
+static bool gamecube_controller(GCController* c) {
+    NSString* category = c.productCategory.lowercaseString;
+    NSString* vendor = c.vendorName.lowercaseString;
+    return [category containsString:@"gamecube"] || [vendor containsString:@"gamecube"];
+}
+
 // every mappable controller input of one controller, 0..1; false: not a gamepad
 static bool device_values(GCController* c, float* v) {
     using namespace input_map;
@@ -145,16 +162,229 @@ static bool device_values(GCController* c, float* v) {
     return true;
 }
 
+static std::string pad_name(GCController* c);
+#ifdef WWHD_HAS_IOKIT
+// ---- Generic HID gamepads on the AppKit host.
+//
+// GameController.framework only surfaces the pad families Apple supports (MFi, Xbox One/Series,
+// DualShock/DualSense, Switch). Steam Input's virtual pad (a virtual "GamePad-<n>" with the Xbox 360
+// IDs 045E:028E, an Xbox-style HID device) is not among them, so it never reaches the game
+// (SDL ignores Steam's virtual pad too). It is read here through IOKit and folded into the same
+// per-device pad positions as the GCController pads; a pad GameController supports is skipped (see
+// io_add), so nothing is read twice. The mapping lives in platform/hid_gamepad.h so it is testable.
+//
+// Values arrive through the input-value callback, and the whole reader runs on the main run loop
+// (the manager is scheduled there, the pad is polled from the main-thread timer), so no lock is
+// needed for the pads.
+struct IokitPad {
+    IOHIDDeviceRef dev = nullptr;
+    uint16_t vendor = 0, product = 0;
+    hid_gamepad::Layout layout = hid_gamepad::Layout::kStandard;
+    std::string name;                      // the HID product string, for per-controller details
+    uint32_t buttons = 0;                  // usage page 0x09, bit usage-1
+    float lx = 0, ly = 0, rx = 0, ry = 0;  // -1..1; +x right, +y down (the HID axes' convention)
+    float lt = 0, rt = 0;                  // 0..1
+    hid_gamepad::Hat hat;
+    bool input_seen = false;
+    bool virtualPad = false;               // "HIDVirtualDevice": a software pad that may duplicate a real one
+};
+static std::vector<IokitPad*> g_io_pads;
+static IOHIDManagerRef g_io_manager = nullptr;  // process lifetime: the reader lives until the app exits
+static void note_dominant_labels();
+
+// Activity belongs to the virtual device and is discarded when it disconnects.
+static bool steam_controller(GCController* c) {
+    NSString* name = [NSString stringWithFormat:@"%@ %@", c.vendorName ?: @"", c.productCategory ?: @""].lowercaseString;
+    return [name containsString:@"steam controller"];
+}
+
+static void io_value(void* ctx, IOReturn r, void* sender, IOHIDValueRef value) {
+    if (r != kIOReturnSuccess || !value) return;
+    IOHIDElementRef e = IOHIDValueGetElement(value);
+    const IOHIDElementType type = IOHIDElementGetType(e);
+    if (type < kIOHIDElementTypeInput_Misc || type > kIOHIDElementTypeInput_ScanCodes) return;
+    IokitPad* p = (IokitPad*)ctx;
+    const uint32_t page = IOHIDElementGetUsagePage(e), usage = IOHIDElementGetUsage(e);
+    const long v = (long)IOHIDValueGetIntegerValue(value);
+    const long mn = (long)IOHIDElementGetLogicalMin(e), mx = (long)IOHIDElementGetLogicalMax(e);
+    switch (hid_gamepad::classify(page, usage)) {
+        case hid_gamepad::Kind::kButton:
+            if (v) p->buttons |= 1u << (usage - 1); else p->buttons &= ~(1u << (usage - 1));
+            break;
+        case hid_gamepad::Kind::kLeftX: p->lx = hid_gamepad::signed_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kLeftY: p->ly = hid_gamepad::signed_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kRightX: p->rx = hid_gamepad::signed_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kRightY: p->ry = hid_gamepad::signed_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kLeftTrigger: p->lt = hid_gamepad::trigger_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kRightTrigger: p->rt = hid_gamepad::trigger_axis(v, mn, mx); break;
+        case hid_gamepad::Kind::kHat: p->hat = hid_gamepad::hat_directions(v, mn, mx); break;
+        case hid_gamepad::Kind::kNone: return;
+    }
+    if (p->buttons || std::fabs(p->lx) > 0.2f || std::fabs(p->ly) > 0.2f || std::fabs(p->rx) > 0.2f ||
+        std::fabs(p->ry) > 0.2f || p->lt > 0.2f || p->rt > 0.2f || p->hat.up || p->hat.down || p->hat.left || p->hat.right)
+        p->input_seen = true;
+}
+static bool io_xbox_labels() {
+    for (IokitPad* p : g_io_pads) if (hid_gamepad::xbox_labelled(p->layout)) return true;
+    return false;
+}
+static std::string io_string(IOHIDDeviceRef dev, CFStringRef key) {
+    char buf[128] = {0};
+    if (CFTypeRef s = IOHIDDeviceGetProperty(dev, key); s && CFGetTypeID(s) == CFStringGetTypeID())
+        CFStringGetCString((CFStringRef)s, buf, sizeof buf, kCFStringEncodingUTF8);
+    return buf;
+}
+static void io_add(IOHIDDeviceRef dev) {
+    for (const auto* p : g_io_pads) if (p->dev == dev) return;
+    int v = 0, pr = 0;
+    if (CFNumberRef n = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDVendorIDKey))) CFNumberGetValue(n, kCFNumberIntType, &v);
+    if (CFNumberRef n = (CFNumberRef)IOHIDDeviceGetProperty(dev, CFSTR(kIOHIDProductIDKey))) CFNumberGetValue(n, kCFNumberIntType, &pr);
+    const std::string name = io_string(dev, CFSTR(kIOHIDProductKey));
+    const std::string maker = io_string(dev, CFSTR(kIOHIDManufacturerKey));
+    // A virtual HID pad ("HIDVirtualDevice", e.g. Steam Input's) is a software device.
+    const bool virtualPad = IOHIDDeviceGetProperty(dev, CFSTR("HIDVirtualDevice")) == kCFBooleanTrue;
+    hid_gamepad::DeviceIdentity id;
+    id.virtual_device = virtualPad;
+    id.vendor = (uint16_t)v; id.product = (uint16_t)pr;
+    id.product_name = name;
+    // Supported physical HID devices are not necessarily marked synthetic, so the framework is
+    // asked too. Steam's virtual pad is recognised first (hid_gamepad::admit): GameController
+    // claims its Xbox 360 IDs but never surfaces it. Without the support query (before macOS 11)
+    // only that virtual pad is admitted anyway.
+    id.gc_synthetic = IOHIDDeviceGetProperty(dev, CFSTR("GCSyntheticDevice")) == kCFBooleanTrue;
+    if (@available(macOS 11.0, *)) id.gc_supported = [GCController supportsHIDDevice:dev];
+    // A joystick's Z/Rz axes can rest at their midpoint. Reading those as Xbox triggers would
+    // press LT/RT at rest. No mapping is inferred for unknown physical or software devices.
+    const hid_gamepad::Admission adm = hid_gamepad::admit(id);
+    if (adm != hid_gamepad::Admission::kSteamVirtual) {
+        LOG("[input] IOKit HID device ignored: \"%s\" (manufacturer \"%s\", vendor %04X product %04X, %s): %s",
+            name.c_str(), maker.c_str(), v, pr, virtualPad ? "virtual" : "physical", hid_gamepad::ignore_reason(adm));
+        return;
+    }
+    // The layout comes from the pad's own descriptors: the Steam virtual pad carries its D-pad as
+    // buttons 12..15 and no hat switch; a standard pad carries a hat switch.
+    bool has_hat = false, has_dpad_buttons = false;
+    if (CFArrayRef els = IOHIDDeviceCopyMatchingElements(dev, nullptr, 0)) {
+        for (CFIndex i = 0; i < CFArrayGetCount(els); i++) {
+            IOHIDElementRef e = (IOHIDElementRef)CFArrayGetValueAtIndex(els, i);
+            const IOHIDElementType t = IOHIDElementGetType(e);
+            if (t < kIOHIDElementTypeInput_Misc || t > kIOHIDElementTypeInput_ScanCodes) continue;
+            const uint32_t page = IOHIDElementGetUsagePage(e), use = IOHIDElementGetUsage(e);
+            if (page == 0x01 && use == 0x39) has_hat = true;
+            if (page == 0x09 && use >= 12 && use <= 15) has_dpad_buttons = true;
+        }
+        CFRelease(els);
+    }
+    if (const IOReturn o = IOHIDDeviceOpen(dev, kIOHIDOptionsTypeNone); o != kIOReturnSuccess) {
+        LOG("[input] IOKit HID device open failed: \"%s\" (vendor %04X product %04X): 0x%X", name.c_str(), v, pr, (unsigned)o);
+        return;
+    }
+    auto* p = new IokitPad();
+    p->dev = (IOHIDDeviceRef)CFRetain(dev);
+    p->virtualPad = virtualPad;
+    p->vendor = (uint16_t)v; p->product = (uint16_t)pr;
+    p->layout = hid_gamepad::layout_for(has_hat, has_dpad_buttons);
+    IOHIDDeviceRegisterInputValueCallback(dev, io_value, p);
+    p->name = name.empty() ? "HID controller" : name;
+    LOG("[input] IOKit HID controller connected: %s (vendor %04X product %04X, %s layout)", name.c_str(), v, pr,
+        p->layout == hid_gamepad::Layout::kSteamVirtual ? "Steam virtual" : "standard");
+    g_io_pads.push_back(p);
+    note_dominant_labels();
+}
+static void io_remove(IOHIDDeviceRef dev) {
+    for (auto it = g_io_pads.begin(); it != g_io_pads.end(); ++it) {
+        if ((*it)->dev != dev) continue;
+        IOHIDDeviceRegisterInputValueCallback(dev, nullptr, nullptr);
+        IOHIDDeviceClose(dev, kIOHIDOptionsTypeNone);
+        LOG("[input] IOKit HID controller disconnected: %s", (*it)->name.c_str());
+        CFRelease((*it)->dev);
+        delete *it;
+        g_io_pads.erase(it);
+        note_dominant_labels();
+        break;
+    }
+}
+static std::string io_device_name(uintptr_t id) {
+    for (IokitPad* p : g_io_pads) if ((uintptr_t)p->dev == id) return p->name;
+    return "HID controller";
+}
+// every IOKit pad's values, keyed by the device pointer (distinct from a GCController's pointer); a
+// null goes into pads for each, so the per-device loops stay parallel with the GCController ones
+static void io_devices_values(std::vector<std::pair<uintptr_t, overlay::PadValues>>& out, std::vector<GCController*>* pads) {
+    using namespace input_map;
+    for (IokitPad* p : g_io_pads) {
+        overlay::PadValues d;
+        float* v = d.data();
+        for (int i = 0; i < kPadCount; i++) v[i] = 0;
+        auto put = [&](int idx, float x) { if (x > v[idx]) v[idx] = x; };
+        for (uint32_t usage = 1; usage <= 15; usage++) {
+            if (!(p->buttons & (1u << (usage - 1)))) continue;
+            const int pad = hid_gamepad::button_pad(p->layout, 0x09, usage);
+            if (pad != kPadNone) put(pad, 1.f);
+        }
+        if (p->hat.up) put(kPadDUp, 1.f);     if (p->hat.down) put(kPadDDown, 1.f);
+        if (p->hat.left) put(kPadDLeft, 1.f); if (p->hat.right) put(kPadDRight, 1.f);
+        put(kPadLSRight, std::max(p->lx, 0.f)); put(kPadLSLeft, std::max(-p->lx, 0.f));
+        put(kPadLSDown, std::max(p->ly, 0.f));  put(kPadLSUp, std::max(-p->ly, 0.f));
+        put(kPadRSRight, std::max(p->rx, 0.f)); put(kPadRSLeft, std::max(-p->rx, 0.f));
+        put(kPadRSDown, std::max(p->ry, 0.f));  put(kPadRSUp, std::max(-p->ry, 0.f));
+        put(kPadLT, p->lt); put(kPadRT, p->rt);
+        if (!NSApp.isActive && !background_controllers()) d.fill(0.f);
+        out.emplace_back((uintptr_t)p->dev, d);
+        if (pads) pads->push_back(nil);
+    }
+}
+static void io_matched(void*, IOReturn r, void*, IOHIDDeviceRef dev) { if (r == kIOReturnSuccess && dev) io_add(dev); }
+static void io_removed(void*, IOReturn r, void*, IOHIDDeviceRef dev) { if (r == kIOReturnSuccess && dev) io_remove(dev); }
+
+static void iokit_input_init() {
+    if (getenv("WWHD_NO_CONTROLLERS")) return;
+    g_io_manager = IOHIDManagerCreate(kCFAllocatorDefault, kIOHIDOptionsTypeNone);
+    if (!g_io_manager) { LOG("[input] IOHIDManagerCreate failed"); return; }
+    NSArray* match = @[ @{@kIOHIDDeviceUsagePageKey:@(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey:@(kHIDUsage_GD_GamePad)},
+                        @{@kIOHIDDeviceUsagePageKey:@(kHIDPage_GenericDesktop), @kIOHIDDeviceUsageKey:@(kHIDUsage_GD_Joystick)} ];
+    IOHIDManagerSetDeviceMatchingMultiple(g_io_manager, (__bridge CFArrayRef)match);
+    IOHIDManagerRegisterDeviceMatchingCallback(g_io_manager, io_matched, nullptr);
+    IOHIDManagerRegisterDeviceRemovalCallback(g_io_manager, io_removed, nullptr);
+    IOHIDManagerScheduleWithRunLoop(g_io_manager, CFRunLoopGetMain(), kCFRunLoopDefaultMode);
+    const IOReturn o = IOHIDManagerOpen(g_io_manager, kIOHIDOptionsTypeNone);
+    if (o != kIOReturnSuccess) LOG("[input] IOHIDManagerOpen failed: 0x%X", (unsigned)o);
+    LOG("[input] IOKit HID controller input ready");
+}
+#else
+static std::string io_device_name(uintptr_t) { return "HID controller"; }
+#endif
+
 // each connected controller's values, keyed by the controller: a reconnected one is a new object
 static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std::vector<GCController*>* pads = nullptr) {
     std::vector<std::pair<uintptr_t, overlay::PadValues>> out;
+    // Only an unambiguous Steam pair may replace a physical source. A virtual pad must never
+    // disable an unrelated DualSense/Xbox/Switch pad, or arbitrarily claim one of several pads.
+#ifdef WWHD_HAS_IOKIT
+    unsigned steam_count = 0, virtual_count = 0;
+    bool virtual_input = false;
+    for (GCController* c in [GCController controllers]) if (c.extendedGamepad && steam_controller(c)) ++steam_count;
+    for (const auto* p : g_io_pads) if (p->virtualPad && p->layout == hid_gamepad::Layout::kSteamVirtual) {
+        ++virtual_count;
+        virtual_input |= p->input_seen;
+    }
+#endif
     for (GCController* c in [GCController controllers]) {
+#ifdef WWHD_HAS_IOKIT
+        if (hid_gamepad::replace_steam_source(steam_controller(c), steam_count, virtual_count, virtual_input)) continue;
+#endif
         overlay::PadValues d;
         if (device_values(c, d.data())) {
+            auto m = input_map::current();
+            auto view = input_map::view_for(m, input_map::profile_index(m, "", pad_name(c)));
+            if (input_map::gamecube_settings_chord(view, d.data())) d[input_map::kPadHome] = 1;
             out.emplace_back((uintptr_t)(__bridge void*)c, d);
             if (pads) pads->push_back(c);
         }
     }
+#ifdef WWHD_HAS_IOKIT
+    io_devices_values(out, pads);
+#endif
     return out;
 }
 static std::string pad_name(GCController* c) {
@@ -225,7 +455,20 @@ static void note_dominant_labels() {
         input_map::apple_face_labels(controller_face_layout(dominant), labels);
         if (!any) family_letters(dominant, labels);  // nothing printed we can read: guess the family
     }
+#ifdef WWHD_HAS_IOKIT
+    // no GameController pad: claim Xbox labels for the pad we know is Xbox-labelled (Steam's)
+    else if (io_xbox_labels()) {
+        labels[0] = FL::kA; labels[1] = FL::kB; labels[2] = FL::kX; labels[3] = FL::kY;
+    }
+#endif
     input_map::note_face_labels(labels);
+    input_map::note_gamecube(gamecube_controller(dominant));
+    auto mapping = input_map::current();
+    bool changed = false;
+    for (GCController* c in [g_connect_order copy])
+        if (c.extendedGamepad)
+            changed |= input_map::auto_gamecube(mapping, "", pad_name(c), gamecube_controller(c), true);
+    if (changed) input_map::set_current(mapping);
     if (dominant && input_map::apple_face_workaround(input_map::current(), controller_face_layout(dominant)))
         LOG("[input] Nintendo pad with by-label bindings: if these were the old macOS workaround, "
             "select Input > Face buttons > By position (Nintendo) or Automatic (#181). Saved bindings kept.");
@@ -252,10 +495,180 @@ void release_keys() {
     memset(g_keys, 0, sizeof(g_keys));
 }
 
-// Rumble would go to the host game controllers through GameController.framework (GCController
-// haptics); this host has none of its own yet (see platform/input_sdl.cpp for the SDL host, which
-// does rumble). The game's requests are kept by rumble.h all the same.
-bool has_rumble() { return false; }
+// ---- Controller rumble (GameController haptics, through CoreHaptics).
+//
+// Any pad GameController reports haptics for gets a continuous haptic whose intensity follows the
+// strength rumble.h asks for, so this is not tied to one controller: the Steam Controller on
+// macOS 27+, a DualSense and others all work the same way. The game's requests are kept by
+// rumble.h; rumble::host_level is the strength to run at (0 while the Rumble option is off).
+struct HapticPad {
+    __strong GCController* controller = nil;
+    __strong CHHapticEngine* engine = nil;
+    __strong id<CHHapticAdvancedPatternPlayer> player = nil;
+    float last = 0.f;
+    bool ready = false;
+    double retry_after = 0;
+    double log_after = 0;
+};
+static std::vector<HapticPad> g_haptics;  // main thread only
+static std::atomic<bool> g_has_haptics{false};
+static bool g_haptics_shutdown = false;
+
+static void haptic_error(HapticPad& h, const char* operation, NSError* error) {
+    const double now = CACurrentMediaTime();
+    if (now < h.log_after) return;
+    h.log_after = now + 5.0;
+    LOG("[rumble] %s: %s failed: %s", (h.controller.vendorName ?: @"controller").UTF8String,
+        operation, error ? error.description.UTF8String : "no error details returned");
+}
+
+// CoreHaptics invokes these handlers on its own queue. Resolve the controller and engine on
+// the main queue; an old engine's late callback cannot invalidate a reconnected controller.
+static void haptic_invalidated(GCController* controller, CHHapticEngine* engine) {
+    for (auto& h : g_haptics) if (h.controller == controller && h.engine == engine) {
+        if (h.player) [h.player stopAtTime:0 error:nil];
+        h.player = nil;
+        h.last = 0;
+        h.ready = false;
+        h.retry_after = CACurrentMediaTime() + 0.1;
+        break;
+    }
+}
+static void haptic_start(GCController* c) {
+    if (g_haptics_shutdown || !c.haptics) return;
+    for (const auto& h : g_haptics) if (h.controller == c) return;
+    CHHapticEngine* engine = [c.haptics createEngineWithLocality:GCHapticsLocalityDefault];
+    if (!engine) {
+        LOG("[rumble] %s: create engine failed", (c.vendorName ?: @"controller").UTF8String);
+        return;
+    }
+    __weak GCController* weakController = c;
+    __weak CHHapticEngine* weakEngine = engine;
+    engine.resetHandler = ^{
+        dispatch_async(dispatch_get_main_queue(), ^{ haptic_invalidated(weakController, weakEngine); });
+    };
+    engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {
+        dispatch_async(dispatch_get_main_queue(), ^{ haptic_invalidated(weakController, weakEngine); });
+    };
+    g_haptics.push_back({c, engine, nil, 0.f, false, 0, 0});
+    g_has_haptics.store(true, std::memory_order_relaxed);
+    LOG("[rumble] host: %s motors ready", (c.vendorName ?: @"controller").UTF8String);
+}
+static void haptic_stop(GCController* c) {
+    for (auto it = g_haptics.begin(); it != g_haptics.end(); ++it) {
+        if (it->controller != c) continue;
+        it->engine.resetHandler = ^{};
+        it->engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {};
+        NSError* error = nil;
+        if (it->player && ![it->player stopAtTime:0 error:&error]) haptic_error(*it, "stop player", error);
+        [it->engine stopWithCompletionHandler:nil];
+        g_haptics.erase(it);
+        g_has_haptics.store(!g_haptics.empty(), std::memory_order_relaxed);
+        return;
+    }
+}
+// Keep one looping player while rumble is nonzero, and update its intensity in place. Zero
+// always stops immediately, including a final strength change smaller than the update epsilon.
+static void haptic_apply(HapticPad& h, float level) {
+    if (!std::isfinite(level) || level <= 0.f) {
+        NSError* error = nil;
+        if (h.player && ![h.player stopAtTime:0 error:&error]) {
+            haptic_error(h, "stop player", error);
+            [h.engine stopWithCompletionHandler:nil];
+            h.ready = false;
+        }
+        if (h.last != 0 && rumble::log_enabled()) LOG("[rumble] host: %s motor 0", (h.controller.vendorName ?: @"controller").UTF8String);
+        h.player = nil;
+        h.last = 0;
+        return;
+    }
+    const double now = CACurrentMediaTime();
+    if (now < h.retry_after) return;
+    NSError* err = nil;
+    if (!h.ready) {
+        if (![h.engine startAndReturnError:&err]) {
+            haptic_error(h, "start engine", err);
+            h.retry_after = now + 1.0;
+            return;
+        }
+        h.ready = true;
+    }
+    const char* operation = "create pattern";
+    bool created = false;
+    if (!h.player) {
+        CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.f];
+        CHHapticEventParameter* sharpness = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5];
+        CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[intensity, sharpness] relativeTime:0 duration:1.0];
+        CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&err];
+        if (pattern) {
+            operation = "create advanced player";
+            h.player = [h.engine createAdvancedPlayerWithPattern:pattern error:&err];
+        }
+        h.player.loopEnabled = YES;
+        h.player.loopEnd = 1.0;
+        created = true;
+    }
+    if (h.player && (created || std::fabs(level - h.last) >= 0.001f)) {
+        CHHapticDynamicParameter* intensity = [[CHHapticDynamicParameter alloc] initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl value:level relativeTime:0];
+        // CoreHaptics accepts dynamic updates on a running player. Start before the first send.
+        operation = "start player";
+        const bool started = !created || [h.player startAtTime:0 error:&err];
+        if (started) {
+            operation = "send intensity";
+            if ([h.player sendParameters:@[intensity] atTime:0 error:&err]) {
+                if (rumble::log_enabled()) LOG("[rumble] host: %s motor %.3f", (h.controller.vendorName ?: @"controller").UTF8String, level);
+                h.last = level;
+                return;
+            }
+        }
+    } else if (h.player) return;
+    haptic_error(h, operation, err);
+    // A reset can race an API call. Retry at a bounded rate rather than rebuilding every tick.
+    if (h.player) [h.player stopAtTime:0 error:nil];
+    h.player = nil;
+    h.last = 0;
+    h.ready = false;
+    h.retry_after = now + 1.0;
+}
+static void haptic_tick() {
+    if (g_haptics_shutdown || g_haptics.empty()) return;
+    float level = std::max(0.f, std::min(1.f, rumble::host_level(1000000 / 60)));
+    // as on the SDL hosts (input_sdl.cpp): the game cannot stop the motors from there while the
+    // settings overlay holds the input, and they stay still while the app is not focused, unless
+    // "Controller input when the game isn't focused" is on
+    if (overlay::is_open() || !(window_focused() || background_controllers())) level = 0.f;
+    for (auto& h : g_haptics) haptic_apply(h, level);
+}
+bool has_rumble() { return g_has_haptics.load(std::memory_order_relaxed); }
+// Ordinary AppKit termination calls this before its _Exit. std::exit from the guest thread
+// uses the same main-thread cleanup through the atexit hook while the AppKit loop is alive.
+void shutdown_rumble() {
+    if (![NSThread isMainThread]) {
+        dispatch_sync(dispatch_get_main_queue(), ^{ shutdown_rumble(); });
+        return;
+    }
+    g_haptics_shutdown = true;
+    // Submit every motor stop before waiting for engine shutdown. Completion callbacks run on
+    // CoreHaptics' queue; never wait indefinitely for a disconnected or failing device.
+    dispatch_group_t stopped = dispatch_group_create();
+    for (auto& h : g_haptics) {
+        h.engine.resetHandler = ^{};
+        h.engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {};
+        NSError* error = nil;
+        if (h.player && ![h.player stopAtTime:0 error:&error]) haptic_error(h, "stop player on quit", error);
+        dispatch_group_enter(stopped);
+        [h.engine stopWithCompletionHandler:^(NSError* stopError) {
+            if (stopError) LOG("[rumble] stop engine on quit failed: %s", stopError.description.UTF8String);
+            dispatch_group_leave(stopped);
+        }];
+    }
+    if (dispatch_group_wait(stopped, dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC / 2)))
+        LOG("[rumble] timed out waiting for engine shutdown");
+    g_haptics.clear();
+    g_has_haptics.store(false, std::memory_order_relaxed);
+}
+// The crash handler calls this from a signal (main.cpp, issue #35) and must stay async-signal-safe,
+// so it does not touch CoreHaptics; the engines stop with the process.
 void stop_rumble_now() {}
 
 // modifier keys arrive as flagsChanged; the device-dependent bits tell left from right
@@ -413,6 +826,9 @@ void init() {
         LOG("[overlay] diagnostic mouse handoff disabled (WWHD_OVERLAY_MOUSE_HANDOFF=0)");
     input_map::load_startup();
     start_test_keys();
+#ifdef WWHD_HAS_IOKIT
+    iokit_input_init();  // HID gamepads GameController.framework does not surface (Steam Input's pad)
+#endif
     NSEventMask mask = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
         // keep Cmd-Q etc.; in an overlay text field the editing shortcuts (Cmd+A/C/V/X/Z) go to the overlay
@@ -474,20 +890,23 @@ void init() {
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
     g_connect_order = [NSMutableArray array];
-    for (GCController* c in [GCController controllers]) [g_connect_order addObject:c];
+    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); }
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
-    [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:nil usingBlock:^(NSNotification* n) {
+    [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
         GCController* c = n.object;
         if (c && ![g_connect_order containsObject:c]) [g_connect_order addObject:c];
+        haptic_start(c);
         note_dominant_labels();
     }];
-    [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:nil usingBlock:^(NSNotification* n) {
+    [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
+        haptic_stop(n.object);
         [g_connect_order removeObject:n.object];
         note_dominant_labels();
     }];
     note_dominant_labels();
-    // GameController values are polled on the main thread
-    [NSTimer scheduledTimerWithTimeInterval:1.0 / 240 repeats:YES block:^(NSTimer*) {
+    std::atexit(shutdown_rumble);
+    // Common modes keep motor updates running during window/menu tracking.
+    NSTimer* inputTimer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 240 repeats:YES block:^(NSTimer*) {
         float v[input_map::kPadCount], game[input_map::kPadCount];
         // inputs held while the overlay or the text prompt had them stay from the game until released,
         // one gate per controller as on the SDL host (overlay/release_gate.h, issue #153); the overlay
@@ -500,15 +919,26 @@ void init() {
         const auto devices = devices_values(&pads);
         std::vector<overlay::PadValues> gated;
         gates.combine(devices, overlay::captures() || overlay::shortcut_took_input(), v, game, &gated);
+        static uint32_t layout_generation = 0;
+        if (layout_generation != input_map::generation()) {
+            note_dominant_labels(); layout_generation = input_map::generation();
+        }
         const input_map::Mapping current = input_map::current();
         input_map::consume_shortcut_buttons(current, v, game);
         PadState s;
-        if (current.controllers.empty()) {
+        if (current.controllers.empty() && !current.preset.saved && !current.preset.gamecube) {
             s = input_map::controller_state(current, game);
         } else {  // each controller through its own bindings (by name on this host)
+            static std::map<uintptr_t, input_map::StartGate> start_gates;
+            std::erase_if(start_gates, [&](const auto& e) {
+                return std::none_of(devices.begin(), devices.end(), [&](const auto& d) { return d.first == e.first; });
+            });
             for (size_t i = 0; i < gated.size(); i++) {
                 input_map::consume_shortcut_buttons(current, v, gated[i].data());
-                s = input_map::combine(s, input_map::controller_state(current, gated[i].data(), input_map::pads_for(current, "", pad_name(pads[i]))));
+                auto& gate = start_gates[devices[i].first];
+                if (overlay::captures()) gate = {};
+                s = input_map::combine(s, gate.read(input_map::view_for(current,
+                    input_map::profile_index(current, "", pads[i] ? pad_name(pads[i]) : io_device_name(devices[i].first))), gated[i].data()));
             }
         }
         // the one in use, the setup offer on a new controller's first press, Controller details
@@ -517,7 +947,7 @@ void init() {
         std::vector<ControllerInfo> infos;
         for (size_t i = 0; i < devices.size(); i++) {
             GCController* c = pads[i];
-            const std::string name = pad_name(c);
+            const std::string name = c ? pad_name(c) : io_device_name(devices[i].first);
             bool pressed = false;
             for (int p = 1; p < input_map::kPadCount; p++) pressed |= devices[i].second[p] > 0.6f;
             if (pressed && devices[i].first != active) {
@@ -529,27 +959,42 @@ void init() {
             ControllerInfo info;
             info.id = devices[i].first;
             info.name = name;
-            if (c.productCategory) info.type = c.productCategory.UTF8String;
             info.active = devices[i].first == active;
+            info.values.assign(devices[i].second.begin(), devices[i].second.end());
+            if (c && c.productCategory) info.type = c.productCategory.UTF8String;
+            if (c && gamecube_controller(c)) info.type = "gamecube-apple";
+#ifdef WWHD_HAS_IOKIT
+            if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first) {
+                info.type = "HID gamepad";
+                info.vendor = p->vendor;
+                info.product = p->product;
+                break;
+            }
+#endif
             if (@available(macOS 11.0, *)) {
-                info.rumble = c.haptics != nil;
-                if (c.battery) {
+                info.rumble = c && c.haptics != nil;
+                if (c && c.battery) {
                     info.battery = int(std::lround(c.battery.batteryLevel * 100));
                     info.power = c.battery.batteryState == GCDeviceBatteryStateCharging ? "charging"
                                : c.battery.batteryState == GCDeviceBatteryStateFull     ? "charged"
                                : c.battery.batteryState == GCDeviceBatteryStateDischarging ? "on battery" : "unknown";
                 }
-                info.led = c.light != nil;
+                info.led = c && c.light != nil;
             }
-            info.gyro = info.accel = c.motion != nil;
-            info.values.assign(devices[i].second.begin(), devices[i].second.end());
+            info.gyro = info.accel = c && c.motion != nil;
             input_map::FaceLabel labels[4] = {};
-            GCExtendedGamepad* g = c.extendedGamepad;
+            GCExtendedGamepad* g = c ? c.extendedGamepad : nil;
             GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};
             bool any = false;
             for (int k = 0; k < 4; k++) any |= (labels[k] = button_letter(face[k])) != input_map::FaceLabel::kUnknown;
-            input_map::apple_face_labels(controller_face_layout(c), labels);
-            if (!any) family_letters(c, labels);
+            if (c) input_map::apple_face_labels(controller_face_layout(c), labels);
+            if (c && !any) family_letters(c, labels);
+#ifdef WWHD_HAS_IOKIT
+            if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first && hid_gamepad::xbox_labelled(p->layout)) {
+                labels[0] = input_map::FaceLabel::kA; labels[1] = input_map::FaceLabel::kB;
+                labels[2] = input_map::FaceLabel::kX; labels[3] = input_map::FaceLabel::kY;
+            }
+#endif
             for (int k = 0; k < 4; k++) info.labels[k] = uint8_t(labels[k]);
             infos.push_back(std::move(info));
         }
@@ -572,7 +1017,9 @@ void init() {
             screenshot::poll_controller(game);  // a controller input bound to Screenshot
         }
         mods::update_gyro_mouse();
+        haptic_tick();  // controller motors, from rumble.h's requested strength
     }];
+    [[NSRunLoop mainRunLoop] addTimer:inputTimer forMode:NSRunLoopCommonModes];
 }
 
 // debug: WWHD_PRESS=1000-1010:8000,1500-1505:0008 holds VPAD buttons (hex) during TV frame ranges
@@ -641,7 +1088,7 @@ static std::vector<Stick> scripted_stick(const char* var = "WWHD_STICK") {
 //   WWHD_TEST_STICK=2-5:0:1,...   left stick (x, y) from 2 s to 5 s
 //   WWHD_TEST_RSTICK=2-5:1:0,...  right stick
 //   WWHD_TEST_PRESS=3-3.1:8000    buttons (hex)
-//   WWHD_TEST_MODE=2@0.5          60 fps mode at 0.5 s (0 off, 1 interpolation, 2 true 60)
+//   WWHD_TEST_MODE=1@0.5          60 fps mode at 0.5 s (0 off, 1 interpolation; 2, the retired True 60, = 1 at 60 fps)
 //   WWHD_TEST_END=12              writes the file "test_done" at 12 s (the test script stops the game)
 namespace {
 struct TimedStick { double from, to; float x, y; };
@@ -681,7 +1128,7 @@ struct Scenario {
 }  // namespace
 }  // namespace input
 namespace interp { void set_mode(int m); uint64_t logic_steps(); }
-namespace true60_test { void tick(double t, bool ended); void set_origin_step(uint64_t s); }
+namespace test_aids { void tick(double t, bool ended); void set_origin_step(uint64_t s); }
 namespace input {
 // WWHD_TEST_TOUCH=t0-t1:x:y,...: touches the GamePad screen at (x, y) (0..1) during scenario times
 static bool g_test_touch = false;
@@ -692,13 +1139,13 @@ static void apply_scenario(PadState& s) {
     // load completes asynchronously, so a fixed frame can fall a step apart between two runs)
     static const char* ol = getenv("WWHD_TEST_ORIGIN_LOAD");
     uint64_t ol_step = 0;
-    // (the clock is the number of Link's full-pass executes since the load, true60::link_steps: the
+    // (the clock is the number of Link's executes since the load, game_hooks::link_steps: the
     // pass at which a load lands differs between runs, and the steps after it are the game's)
     if (ol) {
-        if (!true60::state_loaded()) return;
+        if (!game_hooks::state_loaded()) return;
         static uint64_t found = 0;
         if (!found) {
-            int64_t past = (int64_t)true60::link_steps() - (int64_t)strtoull(ol, nullptr, 10);
+            int64_t past = (int64_t)game_hooks::link_steps() - (int64_t)strtoull(ol, nullptr, 10);
             if (past < 0) return;
             found = interp::logic_steps() - (uint64_t)past;  // the logic step at which the count reached it
         }
@@ -712,12 +1159,12 @@ static void apply_scenario(PadState& s) {
         if (ol_step) {
             LOG("[test] origin at logic step %llu (load + WWHD_TEST_ORIGIN_LOAD), logic step %llu", (unsigned long long)ol_step,
                 (unsigned long long)ol_step);
-            true60_test::set_origin_step(ol_step);
+            test_aids::set_origin_step(ol_step);
             return ol_step;
         }
         LOG("[test] origin at guest time %.4f s, logic step %llu", (double)timebase::now() / timebase::kTicksPerSec,
             (unsigned long long)interp::logic_steps());
-        true60_test::set_origin_step(interp::logic_steps());
+        test_aids::set_origin_step(interp::logic_steps());
         return interp::logic_steps();
     }();
     // (with WWHD_TEST_ORIGIN_LOAD: the game's own step counter, which the load restores, is the clock)
@@ -729,7 +1176,7 @@ static void apply_scenario(PadState& s) {
         LOG("[test] t=%.3f s: 60 fps mode %d", t, sc.mode);
         interp::set_mode(sc.mode);
     }
-    // WWHD_TEST_MODES=m@t,m@t,...: further mode switches (0 off, 1 interpolation, 2 true 60)
+    // WWHD_TEST_MODES=m@t,m@t,...: further mode switches (0 off, 1 interpolation)
     static std::vector<std::pair<double, int>> modes = [] {
         std::vector<std::pair<double, int>> v;
         for (const char* e = getenv("WWHD_TEST_MODES"); e && *e;) {
@@ -748,7 +1195,7 @@ static void apply_scenario(PadState& s) {
             interp::set_mode(m);
             m = -1;
         }
-    true60_test::tick(t, sc.end > 0 && t >= sc.end);  // test aids (true60_test.cpp)
+    test_aids::tick(t, sc.end > 0 && t >= sc.end);  // test aids (test_aids.cpp)
     if (sc.end > 0 && t >= sc.end && !ended.exchange(true)) {
         LOG("[test] t=%.3f s: end", t);
         #ifdef WWHD_HAS_VULKAN

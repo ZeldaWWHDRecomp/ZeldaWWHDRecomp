@@ -32,7 +32,7 @@ void init();
 uint32_t runtime_alloc(uint32_t size, uint32_t align = 16);
 uint32_t host_alloc(uint32_t size, uint32_t align = 16);
 // fixed 0x100-byte guest buffer number `id` (lazily used features: same address in every session)
-enum FixedSlot : uint32_t { kFixInterpEye = 0, kFixInterpMtx, kFixFxMidPos, kFixLinkScratch, kFixShadowCam, kFixCount };
+enum FixedSlot : uint32_t { kFixInterpEye = 0, kFixInterpMtx, kFixFxMidPos /* unused since True 60 was retired; keeps the slot layout */, kFixLinkScratch, kFixShadowCam, kFixLongNames, kFixCount };
 inline uint32_t fixed_slot(FixedSlot id) { return kFixedStart + 0x100 * id; }
 uint32_t runtime_top();
 void raise_runtime_top(uint32_t top);
@@ -145,9 +145,17 @@ PpcFunc hle_find(const char* lib, const char* name);  // null if not implemented
 PpcFunc hle_find_any(const char* name);
 
 struct GuestExit { uint32_t value; };
+#ifdef WWHD_WRITE_WATCH  // diagnostic build: a raw write made by an import is named by that import (guest_write_watch.cpp)
+void wwhd_ww_after_import(const char* name, uint32_t lr, uint32_t ret, uint32_t a0, uint32_t a1);
+struct WwImportScan { const char* n; uint32_t lr; Cpu* c; uint32_t a0, a1; ~WwImportScan() { wwhd_ww_after_import(n, lr, c->r[3], a0, a1); } };
+#define WWHD_WW_IMPORT_SCAN(name) WwImportScan ww_scan_{#name, c->lr, c, c->r[3], c->r[4]};
+#else
+#define WWHD_WW_IMPORT_SCAN(name)
+#endif
 #define HLE(lib, name)                                                        \
     static void hle_impl_##lib##_##name(Cpu* c);                               \
     extern "C" void imp_##lib##_##name(Cpu* c) {                               \
+        WWHD_WW_IMPORT_SCAN(name)                                             \
         mainprof::Mark main_mark_(c, #name);                                  \
         exception_report::boundary<GuestExit>("HLE " #lib "." #name, [&] {      \
             hle_impl_##lib##_##name(c);                                       \

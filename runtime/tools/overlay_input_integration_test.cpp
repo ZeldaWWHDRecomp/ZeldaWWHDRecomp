@@ -34,8 +34,8 @@ namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&)
 namespace interp { int mode(){return 0;} void toggle_fps(int){} void set_mode(int){} uint64_t logic_steps(){return 0;} }
 namespace dsweep { uint32_t pad_buttons(uint64_t){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
-namespace true60 { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }
-namespace true60_test { void set_origin_step(uint64_t){} void tick(double,bool){} }
+namespace game_hooks { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }
+namespace test_aids { void set_origin_step(uint64_t){} void tick(double,bool){} }
 namespace text_entry { bool active(){return prompt;} void text(const char*){} void preedit(const char*){} void key(int,bool,bool){++promptKeys;} }
 namespace hostui {
  void graphics_changed(){} void post(std::function<void()> fn){fn();}

@@ -40,7 +40,7 @@ OFFICIAL_PTH = b"python314.zip\r\n.\r\n\r\n# Uncomment to run site.main() automa
 # Shipped tools that need a package the embeddable Python doesn't have; the game and setup never start them.
 NEEDS_PACKAGES = {"tools/wudextract.py": "Crypto"}  # manual disc reader: pycryptodome, see its usage text
 # Imports inside functions that put their module's folder on sys.path right before (the probe can't see that).
-PLACED_IMPORTS = {"guard"}  # shaderprep.py guard_template: tools/release
+PLACED_IMPORTS = {"guard", "places"}  # shaderprep.py guard_template: tools/release; randomizer_seeds.py: tools/rando
 
 # Runs inside the release interpreter (no access to this file's folder): loads a tool (a script: it has a main) without
 # running its main, then

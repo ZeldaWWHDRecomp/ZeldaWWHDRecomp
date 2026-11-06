@@ -26,7 +26,15 @@ public class WwhdActivity extends SDLActivity {
         // Only the two concrete gameplay entry points participate in routing.
         if (getClass() != WwhdActivity.class && getClass() != QuestActivity.class) return false;
         Intent selected = QuestActivity.gameIntent(this);
-        if (selected.getComponent().getClassName().equals(getClass().getName())) return false;
+        if (selected.getComponent().getClassName().equals(getClass().getName())) {
+            try { SaveSession.enterGame(this); }
+            catch (java.io.IOException failure) {
+                android.widget.Toast.makeText(this, failure.getMessage(), android.widget.Toast.LENGTH_LONG).show();
+                finish();
+                return true;
+            }
+            return false;
+        }
         // Includes explicit intents and shortcuts created before the theater existed.
         // SDL has not acquired any global state, so finishing this Activity cannot quit it.
         Log.i("wwhd", "redirecting game activity to " + selected.getComponent().getClassName());
@@ -133,6 +141,10 @@ public class WwhdActivity extends SDLActivity {
     @Override protected boolean retainNativeSessionOnRecreation() { return true; }
 
     @Override public void loadLibraries() {
+        if (getClass() == WwhdActivity.class || getClass() == QuestActivity.class) {
+            try { SaveSession.enterGame(this); }
+            catch (java.io.IOException failure) { throw new IllegalStateException(failure.getMessage(), failure); }
+        }
         if (isReusingNativeSession()) {
             // A setup update must not change the loaded engine or assets mid-session.
             selection = sessionSelection;
@@ -154,8 +166,31 @@ public class WwhdActivity extends SDLActivity {
             Log.i("wwhd-game", "Loaded on-device game " + onDeviceGame.getAbsolutePath());
             if (selection.game != null) Log.i("wwhd-game", "Selected game assets " + selection.game.getAbsolutePath());
         }
+        if (getClass() == WwhdActivity.class || getClass() == QuestActivity.class) {
+            boolean deferred;
+            try { deferred = supportsSaveProfilePreparation(); }
+            catch (UnsatisfiedLinkError oldLibrary) { deferred = false; }
+            if (!deferred) {
+                // Older on-device native libraries cannot declare save_profile;
+                // keep their ordinary vanilla import recovery working.
+                try { SaveSession.prepareLegacyGame(); }
+                catch (java.io.IOException failure) { throw new IllegalStateException(failure.getMessage(), failure); }
+            }
+        }
         sessionSelection = selection;
         sessionLibrary = onDeviceGame;
+    }
+
+    private static native boolean supportsSaveProfilePreparation();
+
+    /** Native main calls this only after freezing the trusted save-profile plan. */
+    public static String prepareSelectedGameSave(String directory) {
+        try {
+            SaveSession.prepareSelectedGameSave(directory);
+            return "ok";
+        } catch (java.io.IOException failure) {
+            return "error:" + failure.getMessage();
+        }
     }
 
     private static volatile boolean gameStarted;
@@ -181,6 +216,8 @@ public class WwhdActivity extends SDLActivity {
         if (selection != null && selection.game != null) {
             args.add("--game"); args.add(selection.game.getAbsolutePath());
             args.add("--shader-prebuild-library"); args.add(selection.library.getAbsolutePath());
+            // a randomized game (the in-app randomizer): its changed files over the game
+            if (selection.randomizerFiles != null) { args.add("--randomizer-files"); args.add(selection.randomizerFiles.getAbsolutePath()); }
         }
         // Keep devel's external config folder; no implicit WWHD_USER_DIR override.
         return args.toArray(new String[0]);
@@ -288,7 +325,7 @@ public class WwhdActivity extends SDLActivity {
         File files = getExternalFilesDir(null);
         if (files != null) {
             new File(files, "game").mkdirs();
-            new File(files, "save").mkdirs();
+            // Native startup selects the save root before SaveSession prepares it under the lease.
             Log.i("wwhd", "game folder: " + new File(files, "game"));
         }
         super.onCreate(savedInstanceState);
@@ -319,6 +356,8 @@ public class WwhdActivity extends SDLActivity {
     }
 
     public void shareLog() { runOnUiThread(() -> LogShare.share(this)); }
+    /** Settings > Bug reports > Share log, with "Include my save files" (off by default; names made "Link") */
+    public void shareLogWithSaves(boolean saves) { runOnUiThread(() -> LogShare.share(this, saves)); }
 
     private static final int GPU_DRIVER_REQUEST = 4972;
     private static native String installGpuDriver(String path, boolean select);

@@ -7,7 +7,7 @@
 // the player's game.
 //
 //   Closed  over the item menu's items page: a page arrow at the left edge (the mirror of the game's
-//           own arrow to the right page). A tap / click on it, or ZL, slides the page in from the left.
+//           own arrow to the right page). A tap / click, or A / Left once focused, slides the page in.
 //   Open    the tabs (L / R), one row per setting (Up / Down, the left stick too, with repeat), Left /
 //           Right change the value (a toggle follows the direction, a number steps), A toggles or steps
 //           up, B, + or a tap on the right page arrow slide the page back out to the items. Touch:
@@ -17,6 +17,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -56,7 +58,7 @@ inline std::string bold(const std::string& s) { return kBold + s; }
 // One row as the driver gives it (from game_settings.h)
 struct Row {
     std::string id, label, value, help;
-    bool number = false, toggle = false, choice = false, on = false, enabled = true;
+    bool number = false, toggle = false, choice = false, action = false, on = false, enabled = true;
     bool stepped() const { return number || choice; }  // Left / Right step it (chevrons on its plate)
 };
 
@@ -66,7 +68,7 @@ struct Input {
     bool touch = false;
     float x = 0, y = 0;    // page coordinates
     float dt = 0;          // seconds since the last input
-    bool cursor_left = false;  // the game's cursor is in the items page's left column (Left from there opens the page)
+    bool arrow_focused = false; // reaching the arrow is a separate stop; a fresh A / Left turns the page
 };
 
 enum class Sound : uint8_t { None, Cursor, Change, Decide, Cancel, Tab, Open, Close, Blocked };
@@ -106,11 +108,12 @@ public:
         touch_ = false;
     }
     void hide() { open_ = false; }
+    void set_tab(int tab) { tab_ = tab, selected_ = 0, top_ = 0; }
+    // buttons held now act only after their release (a page opened from a row closed with them)
+    void hold_buttons() { held_ = ~0u; }
 
-    // The closed page's input: true when it should open (the entry arrow tapped, or ZL)
-    // How the closed page opens: ZL; Left (the cross or the stick) while the game's cursor is in the left
-    // column; a tap on the entry arrow; or a swipe that starts on the arrow and pulls the page in (it
-    // follows the finger; let go past a quarter of the screen, or flicked, it opens, else it slides back).
+    // A / Left on the focused arrow turns the page. Reaching it is handled by EntryFocus,
+    // after the game has received Left. Touch and swipes keep their existing behaviour.
     bool entry(const Input& in) {
         uint32_t buttons = in.buttons;
         if (in.lx < -0.5f) buttons |= kPadLeft;  // the stick as the cross
@@ -133,8 +136,9 @@ public:
             if (tap && on_arrow(in_x_, in_y_, true)) return true;
             return false;  // (the page slides back: shown() until it is out)
         }
-        return (pressed & kPadZL) || ((pressed & kPadLeft) && in.cursor_left);
+        return in.arrow_focused && (pressed & (kPadA | kPadLeft));
     }
+    void cancel_entry() { touch_ = swipe_ = false; if (!open_) slide_ = 0; }
     bool swiping() const { return swipe_; }
 
     Action input(const Input& in, const std::vector<Row>& rows, int tabs) {
@@ -174,7 +178,8 @@ public:
         };
         if (fire & kPadUp) move(-1);
         else if (fire & kPadDown) move(+1);
-        else if ((fire & (kPadLeft | kPadRight)) && count) change(act, rows[selected_], (fire & kPadLeft) ? -1 : +1);
+        else if ((fire & (kPadLeft | kPadRight)) && count && !rows[selected_].action)  // (an action takes A only)
+            change(act, rows[selected_], (fire & kPadLeft) ? -1 : +1);
         else if ((pressed & kPadA) && count) change(act, rows[selected_], rows[selected_].stepped() ? +1 : 0);
         if (selected_ < int(top_)) top_ = unsigned(selected_);
         if (selected_ >= int(top_ + kRowsShown)) top_ = unsigned(selected_) - kRowsShown + 1;
@@ -400,6 +405,9 @@ private:
         chevron(out, cx + (left ? -2.0f : 2.0f), cy, r * 0.42f, !left, kWhite, r * 0.22f);
         for (size_t i = from; i < out.size(); i++) out[i].text = "gs:drawn";
     }
+
+public:
+    // the page's drawing pieces (also for the pages opened from a row: Detail below)
     static Command rect(float x, float y, float w, float h, uint32_t rgba) {
         Command c;
         c.kind = Command::Rect, c.x = x, c.y = y, c.w = w, c.h = h, c.rgba = rgba;
@@ -428,10 +436,29 @@ private:
     }
 };
 
+// A page of its own opened from an Action row (Game progress, Achievements): it takes the page's place in the
+// same window until it closes (B), then the rows come back. Pure (input in, draw commands out), like Page.
+class Detail {
+public:
+    virtual ~Detail() = default;
+    // act.closed: back to the rows
+    virtual Action input(const Input& in) = 0;
+    virtual void tick(float dt) { (void)dt; }
+    // in page units; `measure` is the game's font when loaded
+    virtual std::vector<Command> draw(float (*measure)(const std::string&, float)) const = 0;
+};
+// A row's page: open_detail(id) from the row's set() (any thread) opens the page that make() builds at the
+// driver's next read (game thread). make() returns null when there is nothing to show (no file loaded).
+void register_detail(const std::string& id, std::function<std::unique_ptr<Detail>()> make);
+void open_detail(const std::string& id);
+// A picture sheet the pages draw parts of: a picture command whose text is "gs:sheet:<name>" with its UVs (any
+// thread; null removes it). The driver makes its image in the HUD store when it is first drawn.
+void set_sheet(const std::string& name, std::shared_ptr<const guestmods::hud::Image> image);
+
 // The driver (game_settings_page.cpp): pad() runs once per GamePad read (VPADRead, game thread, `c` the
 // reading thread for the game's fonts and sounds); mute() on the Pro Controller's reads
 void pad(input::PadState& p, Cpu* c);
 void mute(input::PadState& p);
-bool page_open();  // the page (or its slide out) has the controller
+bool page_open();  // the entry focus stop, page or slide out has the controller
 
 }  // namespace game_settings_page

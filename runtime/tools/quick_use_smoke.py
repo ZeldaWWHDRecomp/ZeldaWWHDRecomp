@@ -3,7 +3,7 @@
 
 Usage: quick_use_smoke.py BINARY GAME SAVE WORK [--renderer vulkan|metal]
 WORK must not exist. SAVE must contain a playable Quest Log 1 in user/cking.sav.
-Runs the mod off/on in native 30, interpolation and true60 modes. All settings,
+Runs the mod off/on in native 30 and interpolation modes. All settings,
 logs, caches and copied saves stay under WORK; no checkpoints/assets are shipped.
 """
 import argparse
@@ -23,7 +23,7 @@ def run_case(args, enabled, mode):
     work = Path(scenario.prepare(str(args.work), f"enabled-{enabled}-mode-{mode}", str(args.save)))
     env = {
         "WWHD_RENDERER_RUNTIME": args.renderer, "WWHD_UNCAPPED": "1",
-        "WWHD_INTERP": "0", "WWHD_TRUE60": "0", "WWHD_INTERP_FPS": "60",
+        "WWHD_INTERP": "0", "WWHD_INTERP_FPS": "60",
         "WWHD_INTERP_PACED": "0", "WWHD_DISPLAY_HZ": "0",
         "WWHD_SETTINGS": str(work / "settings.ini"),
         "WWHD_DISPLAY_SETTINGS": str(work / "display.ini"),

@@ -33,11 +33,8 @@
 //   same call when the toggle is on. The Swift Sail's sound, sail swap and speed stay its own.
 // Off means identical: every hook checks its switch first and then runs only the original code.
 // 60 fps: all of this runs inside the game's own procedures, once per execute of Link or the ship,
-//   and writes only rates and targets (never per-step amounts), so interpolation (60/120/240) and
-//   true 60 (J3DFrameCtrl::update and cLib_addCalc scale the advance by dt) compose with it. In true
-//   60 the ladder, sidle and ship procedures run at 30 Hz (not in true60.cpp's kLinkGroups; the
-//   ship is not converted). The test setting WWHD_TRUE60_LINK=audited runs the ladder procedures on
-//   every pass; that set is not checked with these mods.
+//   and writes only rates and targets (never per-step amounts), so interpolation (40/60/120/240)
+//   composes with it.
 #include "mods/mods.h"
 #include "mods/traversal.h"
 
@@ -144,14 +141,26 @@ extern "C" void site_0247D4E8(Cpu* c) {
     c->f[10].ps0 = (float)c->f[10].ps0 / factor;
 }
 
+namespace mods {
+void ship_normal_sail_wind(Cpu* c, uint32_t ship) {
+    if (!auto_wind()) return;
+    Cpu local = *c;
+    guest_call(&local, kTactWindSet, {0, (uint32_t)(int32_t)follow_wind_angle((int16_t)ld16(ship + kShapeAngleY))});
+}
+float ship_sail_target(float stock) {
+    // A source consumer owns its restoration token locally. Do not leave a
+    // pending instruction-site restore from an earlier native invocation.
+    g_sail_scaled = false;
+    if (!sail_speed()) return stock;
+    return sail_target(stock, ld8(kPlay + kSwiftSail) != 0,
+                       sail_speed_normal_factor(), sail_speed_swift_factor());
+}
+} // namespace mods
+
 // 0247E988: the normal-sail branch (`lbz r9, 0x63D(r31)`), right after the HD Swift Sail check.
 // Automatic wind: the Swift Sail branch's dKyw_tact_wind_set call (0247E9EC..0247E9FC).
 extern "C" void site_0247E988(Cpu* c) {
-    if (!mods::auto_wind()) return;
-    const uint32_t ship = c->r[31];
-    const Cpu saved = *c;
-    guest_call(c, kTactWindSet, {0, (uint32_t)(int32_t)follow_wind_angle((int16_t)ld16(ship + kShapeAngleY))});
-    *c = saved;
+    mods::ship_normal_sail_wind(c, c->r[31]);
 }
 // 0247EB88: f29 = windPower, the target speed (`fmuls f29, f9, f29` just before)
 extern "C" void site_0247EB88(Cpu* c) {

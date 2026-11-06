@@ -34,7 +34,7 @@ Source builds use Homebrew's loader, MoltenVK and glslang as below.
 Both renderers use the same AppKit host (`gfx/display.mm`, `menu.mm`, `input.mm`,
 `controls_ui.mm`, `mods/mouse.mm`): TV and GamePad windows, full screen, GamePad screen modes
 (separate window, picture-in-picture, automatic), scaling filters, aspect ratio, the Controls window,
-the Gameplay mods including the mouse camera, save states, 60 fps / true 60. Vulkan presents into
+the Gameplay mods including the mouse camera, save states, 40/60/120/240 fps frame interpolation. Vulkan presents into
 the windows' views through a `CAMetalLayer` and `VK_EXT_metal_surface`; `display_plan()` gives it the
 same layout as the Metal composition (picture rectangle, GamePad overlay with frame and opacity,
 filter), and `gfx/vulkan/present.cpp` draws it. The TV window title starts with the renderer in use.
@@ -49,8 +49,8 @@ can also be dragged while placement is open. See [GamePad screen modes](gamepad-
 | Scaling smooth / sharp / integer, FXAA | yes | yes |
 | Internal resolution, AO modes, full-size AO depth, 16x AF | yes | yes |
 | Dynamic resolution (Settings → Graphics: off, down to 75 % or 50 %) | yes | yes |
-| Aspect ratio (16:10, 21:9, 32:9, match window) | yes | yes |
-| 60 fps interpolation, true 60 | yes | yes |
+| Aspect ratio (16:9, 4:3, 16:10, 21:9, 32:9, match window) | yes | yes |
+| 40/60/120/240 fps interpolation | yes | yes |
 | Save states (menu, Shift+F1..F5 / F6, F2..F5) | yes | yes (a state loads with either renderer) |
 | Controls window, keyboard, game controllers, mouse camera, mods | yes | yes |
 | Climb mod stamina wheel | yes | yes (ported shader; not yet seen in a test run) |
@@ -269,10 +269,12 @@ model step also name the object archives whose models use them: those wait until
 one of their archives, then a few compiler threads (one on Android) build them before the models
 first appear, giving way whenever the game needs a pipeline at once. When more unused pipelines are
 ready than the limit allows (1,024; 256 on Android), those of archives no longer loaded go first.
-It owns separate modules, descriptor layouts and a pipeline cache; the render
-thread takes a ready pipeline only after the exact key, both SPIR-V programs and
-descriptor layouts match. `WWHD_VK_PIPELINE_WARMUP=0` disables this recording and
-replay. Missing or unfinished pipelines use a separate demand compiler with an
+It compiles into the demand compiler's driver cache (below; its own cache only until that one exists). When a
+draw needs a pipeline the worker has ready and the exact key, both SPIR-V programs and descriptor layouts match,
+the render thread builds its own pipeline, a driver-cache hit (about 0.25 ms on an Adreno 750), and the worker's
+copy is destroyed: on Qualcomm's driver, frames drawn with the worker's pipeline objects themselves were about
+1.4 times as costly (issue #334, `warm_handover.h`). `WWHD_VK_WARM_HANDOVER=1` hands the worker's pipelines over
+again (measurements). `WWHD_VK_PIPELINE_WARMUP=0` disables this recording and replay. Missing or unfinished pipelines use a separate demand compiler with an
 owned state snapshot and independent native cache. With Shader compile Off, exact guest draws remain at
 the head of the ordered command stream until ready; the renderer can repeat the
 last complete scan image while waiting. It never substitutes state or drops that
@@ -717,8 +719,7 @@ controls remain disabled until the renderer reports support.
 | `M` | Toggle full-size AO depth. A private 1.5× replay of the game's depth-downsample pass supplies the AO pass without changing guest surface metadata. |
 | `N` | Toggle anisotropic filtering up to 16×, bounded by device support, for eligible mipmapped asset textures. |
 | `8` | Toggle FXAA in final screen presentation. This is post-process antialiasing; it does not enable multisampled guest surfaces. |
-| `6` | Toggle 60 FPS interpolation mode. |
-| `7` | Toggle true 60 FPS mode. Selecting either mode does not guarantee its target frame rate. |
+| `6` | Toggle 60 FPS interpolation mode. Selecting it does not guarantee its target frame rate. |
 | Graphics menu: Scaling | Select smooth, sharp, or integer scaling for presentation. |
 
 Startup overrides match Metal: `WWHD_RES_SCALE` selects the initial internal scale
@@ -728,7 +729,8 @@ mode takes precedence over the legacy flag, whose value is ignored.
 `WWHD_AO_HIRES` defaults to on (off on Android, where the phone GPU is the limit in heavy views, issue #56); `0` disables it, `1` enables it. `WWHD_FULL_LIGHT` (Full-size torchlight: the point-light buffer at the screen's resolution) defaults to on (off on Android, like `WWHD_AO_HIRES`); `0` disables it, `1` enables it. `WWHD_ANISO` defaults to off and a
 nonzero value enables it. `WWHD_FXAA` defaults to off and its presence enables it,
 including a value of `0`, matching Metal's existing behavior.
-`WWHD_SCALE_FILTER=smooth|sharp|integer` selects the initial presentation filter;
+`WWHD_SCALE_FILTER=smooth|sharp|integer` selects the initial presentation filter (sharp is pixel perfect:
+each rendered pixel a crisp block of the same size at any scale, only the screen pixels on a block's edge blended);
 smooth is the default. Live settings currently apply to this process.
 
 A full-game Khronos validation run passed internal-scale transitions
@@ -926,7 +928,7 @@ samples over 30 seconds. Its 99th-percentile ready time was 13.558 ms and maximu
 draws per frame; this is not an exact reproduction of the earlier user view of
 roughly 6,600 draws. Character checks are complete.
 
-A separate default-only warm heavy-view run in true 60 FPS mode averaged roughly
+A separate default-only warm heavy-view run in true 60 FPS mode (a mode since retired) averaged roughly
 6,230 draws per frame. Over 30 seconds it covered 1,799 flip intervals across
 1,800 nominal display ticks (99.94% coverage, one missed tick). Its 99th-percentile
 ready time was 15.488 ms and maximum 18.894 ms; every warmed 120-frame reporting
@@ -960,7 +962,7 @@ and reuse after pool reset. Actual Outset Island gameplay and scripted keyboard
 movement render correctly on an Apple M3 Max through MoltenVK. Earlier warm gameplay builds
 ran approximately 29.4–30.0 FPS, with median frame intervals near 33.4 ms and
 95th percentiles around 36–37 ms; occasional longer frames remain. Enabling
-true 60 FPS mode alone does not guarantee sustained 60 FPS. A bounded
+true 60 FPS mode (since retired) alone did not guarantee sustained 60 FPS. A bounded
 20-frame trace measured a median 17.53 ms from vsync wake to the next swap,
 missing the 16.68 ms deadline with one vsync wait per frame in that earlier build.
 At an earlier optimization checkpoint, descriptor/state deduplication, asynchronous
@@ -1161,17 +1163,25 @@ It is **off** by default.
 
 Both renderers (Metal and Vulkan) support it. The idea comes from GreenNaugahyde's Android fork.
 
-## Depth clamp on panvk (Mali)
+## Depth clipping in shaders on panvk (Mali)
 
-Mali GPUs have no geometric depth clipper: panvk implements depth clipping by culling each fragment
-whose depth leaves the viewport's depth range. The game draws parts of the sky (the title screen's
-cloud band, a cylinder around the camera) at the far plane; when such triangles pass beside or behind
-the camera, interpolated depth rounds just above 1.0 and pieces of the band are culled along straight
-edges, which flickers as the camera moves. On panvk every pipeline therefore uses depth clamp, so
-those fragments are clamped instead of culled. Geometry in front of the near plane is then not clipped
-either; the game rarely draws any there. `WWHD_VK_DEPTH_CLAMP_ALL=0` restores normal depth clipping,
-`=1` forces depth clamp on other drivers (both need the device's `depthClamp` feature); the log names
-the choice.
+Mali GPUs have no geometric clipper: panvk clips depth by culling each fragment whose depth leaves the
+viewport's depth range. That cull works on depth interpolated in screen space, which drifts past 1.0 on
+far-plane geometry whose triangles pass beside or behind the camera: the sky's cloud band on the title
+screen and at sea lost pieces along straight edges, flickering as the camera moved. Turning on depth
+clamp avoids the cull but also lets through what only it removes: the game draws primitives on the
+camera plane (w = 0), which clipping discards; with clamp, one of them filled the 16:9 picture with a
+single colour at sea near Outset.
+
+On panvk, draws that don't write depth therefore clamp depth and clip in their shaders: the vertex
+shader passes the clip-space distances to the near and far planes, interpolated like the point on the
+triangle, and the pixel shader discards outside them (and at w = 0). Draws that write depth keep the
+hardware path, so opaque geometry keeps the early depth test; draws whose own state turns off near or
+far clipping are unchanged. A draw with a stage that can't take the change (a graphics-pack shader
+without the decompiler's `SET_POSITION`) keeps the hardware path for both stages and is drawn as before;
+the log names the shader. `WWHD_VK_CLIP_EMULATION=0` turns this off, `=1` turns it on for other
+drivers with the depthClamp feature; the log names the choice. It is part of the shader key, so shader
+caches keep both variants.
 
 ## Choosing the GPU
 

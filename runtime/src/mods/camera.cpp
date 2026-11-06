@@ -30,6 +30,8 @@
 //   are not item aiming: classifying them as aiming consumed the deltas before these sites ran.
 //   In first person (dCamera_c::subjectCamera 025071FC ran) the mouse drives both right-stick axes
 //   instead (rate control), which the game uses to look around / aim.
+//   Boat cannon (Link procedure 0x8E) reads the left stick instead. Captured mouse movement
+//   feeds that stick while aiming the cannon; physical/keyboard left-stick input takes priority.
 //   Left click: while Link aims an item (bow, boomerang, hookshot, rope; procedures 0x76, 0x7D, 0x80-0x81,
 //   0x83-0x84, 0x8A-0x8D, 0x94-0x95) it presses the item's button (daPy_lk_c+0x68D9 mReadyItemBtn: 0 X, 1 Y, 2 R; read
 //   from daPy_lk_c::itemTrigger 023EAB40). Otherwise left click does nothing.
@@ -51,8 +53,7 @@
 //   changing the style's limits or its centre-height, radius and field-of-view input.
 //
 // Logic only runs on logic passes: the sites run inside the camera's execute, and the camera's
-// manual and subject modes run at 30 Hz in both 60 fps modes (true60 converts the follow camera only),
-// so the per-step amounts above hold in all modes; interpolation blends the drawn camera.
+// manual and subject modes run at 30 Hz with frame interpolation, so the per-step amounts above hold in all modes; interpolation blends the drawn camera.
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -96,6 +97,8 @@ uint64_t g_swipe_step = ~0ull;  // logic step of the last swipe movement
 uint64_t g_user_swipe_step = ~0ull, g_user_mouse_step = ~0ull;  // the player's own swipe / mouse (not the swing)
 float g_direct_dx = 0, g_direct_dy = 0;  // this step's movement in degrees, reserved for direct camera sites
 float g_mouse_rx = 0, g_mouse_ry = 0;    // proportional fallback, stable across repeated pad reads
+uint64_t g_cannon_step = ~0ull;
+float g_cannon_x = 0, g_cannon_y = 0;
 uint64_t g_sample_step = ~0ull;
 uint64_t g_move_step = 0;       // logic step of the last mouse movement
 float g_wheel = 0;              // wheel movement not yet used
@@ -246,7 +249,8 @@ void filter_pad(input::PadState& s) {
     if (g_swipe_step != ~0ull && now > g_swipe_step + 8) g_swipe_dx = g_swipe_dy = 0;
     // gyro (motion/motion.h): the game turns its first-person (subject) camera with the GamePad's motion,
     // which every item aim uses too
-    const bool aim = in_first_person() || aiming_item(link_proc());
+    const bool cannon = camera_mouse::cannon_aim(link_proc(), link_in_ship());
+    const bool aim = !cannon && (in_first_person() || aiming_item(link_proc()));
     motion::set_aiming(aim);
     if (aim && trace_on()) {  // gyro measurements (docs/gyro.md): Link heading and body pitch, camera U / V while aiming
         static uint64_t traced = ~0ull;
@@ -281,7 +285,28 @@ void filter_pad(input::PadState& s) {
     if (!mouse_active) g_dx = g_dy = 0;
     bool active = mouse_active || swipe;
     bool stick_free = std::fabs(s.rx) < 0.2f && std::fabs(s.ry) < 0.2f;
-    if (active && stick_free && recent(g_move_step, 8)) {
+    if (cannon && mouse_active) {
+        // The cannon consumes left-stick input, not the camera's right stick or gyro. Consume
+        // mouse deltas once per logic step even when WASD/a physical stick wins, so they cannot
+        // accumulate into a jump when that input is released. Repeated pad reads see one sample.
+        if (g_cannon_step != now) {
+            g_cannon_step = now;
+            const float scale = mouse_sensitivity() / camera_swipe::kNominalSensitivity;
+            g_cannon_x = camera_mouse::fallback_stick(g_dx * scale);
+            g_cannon_y = camera_mouse::fallback_stick(-g_dy * scale) *
+                camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
+            g_dx = g_dy = 0;
+            if (trace_on() && (g_cannon_x != 0 || g_cannon_y != 0))
+                trace("cannon mouse lx=%.3f ly=%.3f", g_cannon_x, g_cannon_y);
+        }
+        if (std::fabs(s.lx) < 0.2f && std::fabs(s.ly) < 0.2f) {
+            s.lx = g_cannon_x;
+            s.ly = g_cannon_y;
+        }
+        g_synth = false;
+        g_direct_dx = g_direct_dy = g_mouse_rx = g_mouse_ry = 0;
+        g_sample_step = ~0ull;
+    } else if (active && stick_free && recent(g_move_step, 8)) {
         // Snapshot once per logic step. Fallback input and direct hooks share the same movement;
         // a fallback pad read must not consume the deltas before manualCamera gets them.
         if (g_sample_step != now) {
@@ -308,6 +333,7 @@ void filter_pad(input::PadState& s) {
     } else {
         g_synth = false;
     }
+    if (!cannon || !mouse_active) g_cannon_step = ~0ull;
     // left click while aiming an item: that item's button
     if (mouse_active && g_left && input_map::key_users(input_map::current(), input_map::kMouse1).empty()) {
         uint32_t p = link_proc();
@@ -330,6 +356,7 @@ void filter_pad(input::PadState& s) {
         }
     }
     if (now >= g_r3_from && now < g_r3_to) s.buttons |= input::kStickR;
+    leaf_filter_pad(s);
     lock_on_filter_pad(s);
     editor::filter_pad(s);  // the world editor's fly camera takes the controller (the game gets nothing)
 }

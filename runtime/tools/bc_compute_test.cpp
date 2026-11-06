@@ -2,7 +2,8 @@
 //  - the CPU decoder (bc_reference.h): byte-exact on the known-answer blocks (every selector in every
 //    pixel position of both channel palette modes, signed and unsigned) and on random blocks;
 //  - the device's own BC sampling where it has BC textures: native decoders interpolate with their
-//    own precision (Apple GPUs use 1/64 weights), so it must agree within 3 steps, which still
+//    own weights (Apple GPUs 1/64; NVIDIA RTX 5070 Ti n/257 for BC4/BC5, up to 7.9 steps off over all
+//    endpoint pairs, and about 80/256 for BC1 green), so it must agree within 8 steps, which still
 //    catches a wrong palette mode, a dropped channel or a wrong selector.
 // The shader always has to compile (glslang). Without a Vulkan device the GPU part is skipped (77).
 // A copy of the shader with the Adreno 750 (Qualcomm v762) miscompilation put in by hand (selector 6 of
@@ -268,6 +269,10 @@ int main() {
             const auto native = gpu.native(fetch, blocks, w, h, f.native);
             for (size_t px = 0; px < size_t(w) * h; ++px) for (unsigned c = 0; c < channels; ++c) {
                 const size_t n = px * 4 + c;
+                // signed endpoints -127, -128: NVIDIA clamps before picking the palette mode (6 values), we and
+                // Apple compare the raw bytes (8 values); the known-answer comparison above covers this block
+                const uint8_t* end = blocks.data() + ((px / w / 4) * (w / 4) + px % w / 4) * bc::block_bytes(type) + 8 * c;
+                if (sign && end[0] == 0x81 && end[1] == 0x80) continue;
                 const double ours = sign ? double(int8_t(cpu[n])) : double(cpu[n]);
                 worst = std::max(worst, std::fabs(native[n] * (sign ? 127.0 : 255.0) - ours));
             }
@@ -276,7 +281,7 @@ int main() {
         std::printf("%-10s compute vs CPU: %zu bytes differ; native BC: %s; fault-injected shader %s\n", f.name, differ,
                     nativeChecked ? (std::to_string(worst).substr(0, 5) + " steps at most").c_str() : "not available",
                     type >= 3 ? (broken ? "NOT caught" : "caught") : "n/a");
-        if (differ || worst > 3.0 || broken) ++failures;
+        if (differ || worst > 8.0 || broken) ++failures;
     }
     gpu.release(decoder); gpu.release(brokenDecoder); gpu.release(fetch);
     vkDestroyDescriptorPool(gpu.device, gpu.descriptors, nullptr); vkDestroyCommandPool(gpu.device, gpu.pool, nullptr);

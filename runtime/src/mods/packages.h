@@ -1,6 +1,7 @@
 #pragma once
 #include "mod_json.h"
 #include "catalogue_schema.h"
+#include "save_profile.h"
 #include <cstdint>
 #include <functional>
 #include <map>
@@ -16,7 +17,7 @@ inline constexpr const char* kLegacyGameId="wwhd-usa";
 inline bool game_id_supported(const std::string& id){return id==kGameId||id==kLegacyGameId;}
 // The game ID native mods (SDK v1) receive in their host table: unchanged, so libraries comparing it keep working.
 inline constexpr const char* kNativeHostGameId="wwhd-usa";
-inline constexpr const char* kManagerVersion="1.6.0"; // 1.4: "experimental" flag; 1.5: game_id "wwhd"; 1.6: Mod SDK wwhd_screen_point, touch pinches, the microphone (wwhd_mic_*, option "permission")
+inline constexpr const char* kManagerVersion="1.10.0"; // 1.10: kind "player-model" (GameCube player models); 1.9: Mod SDK HUD v3 (mirrored images, layout-message texts); 1.8: supported_game_builds; 1.7: declarative guest save profiles; 1.4: "experimental" flag; 1.5: game_id "wwhd"; 1.6: Mod SDK wwhd_screen_point, touch pinches, the microphone (wwhd_mic_*, option "permission")
 struct Option {
     std::string id,name,description,type;
     // The item menu's settings page (game_settings.h): "menu": true shows the option there, in the Mods tab
@@ -38,6 +39,7 @@ struct View {
     bool enabled=false,active=false,compatible=false,restart_required=false,pending_restart=false;
     std::string game_source_warning;
     bool native_confirmed=true; // false: code the player has not confirmed (native library or guest ELF)
+    bool isolated_save_profile=false; // valid guest claim: Android warns before enabling
     bool experimental=false;    // untested: enabling asks first and backs up the saves
     std::vector<Conflict> graphics_conflicts; // currently enabled packs, before enabling
     std::vector<Option> options;
@@ -48,8 +50,15 @@ struct View {
 // Supplied from the running executable marker, never from a saved preference.
 void set_code_mod_support(bool built);
 bool has_code_mod_support(); // this executable was built with code-mod support
+// Startup-only platform capability (Android needs the deferred save-preparation bridge).
+void set_save_profile_support(bool supported,const std::string& reason = {});
 bool needs_code_mod_support(const std::string& id); // includes package dependencies
 void initialize(); // metadata only; before the game starts
+// Freeze eligible/trusted declarative save ownership before recovery, cloud or backups.
+// Throws save_profile::Error for an eligible malformed/conflicting claim.
+save_profile::Selection startup_save_profile();
+// Immutable after startup_save_profile(); safe for state I/O threads.
+const save_profile::Selection& current_save_profile();
 std::string directory();
 std::string package_data_directory(const std::string& id); // configured manager Data/id, empty for unknown packages
 // The configured manager's story/ folder (WWHD_MOD_MANAGER_DIR, else the user folder's ModManager): what the
@@ -65,6 +74,7 @@ bool remove(const std::string& id,std::string& error); // also deletes the files
 uint64_t disk_use(const std::string& id);
 bool enable_after_code_rebuild(const std::string& id,std::string& error); // requires the same trust confirmation
 // switch_conflicts is the confirmed Switch action: disable conflicting Cemu packs atomically.
+// With an active isolated save profile, desired enable/disable changes apply next launch.
 bool enable(const std::string& id,bool on,std::string& error,bool switch_conflicts=false); // refuses unconfirmed native code
 void refresh_guest_startup(); // after a required package was installed or enabled at startup (required.h)
 // Native packages that enabling `id` would newly turn on (itself and disabled dependencies) whose
@@ -116,11 +126,25 @@ std::vector<std::string> take_notices();
 void post_toast(const std::string& text);
 std::vector<std::string> take_toasts();
 void disable_all();
+// GameCube player models (kind "player-model", player_model_packages.h): installed by install() from an archive or
+// folder with a Link.arc, converted on a thread afterwards (the package's status says how far). Each save file 1..3
+// shows one or HD Link (""), in the current profile; the game takes a change over at once.
+std::string player_model(int file);
+bool choose_player_model(int file,const std::string& id,std::string& error);
+std::string player_model_report(const std::string& id);  // what the conversion did ("" none yet)
+bool convert_player_model(const std::string& id,std::string& error);  // convert again (after a failure, a game update)
+// the runtime side (player_models.h, main.cpp): each file's {id, Link.szs}; called after every change and at startup
+using PlayerModelSink=std::function<void(const std::vector<std::pair<std::string,std::string>>& files)>;
+void set_player_model_sink(PlayerModelSink sink);
+std::string player_model_szs(const std::string& id);  // the converted model of an installed package ("" none)
+void player_model_new_game(int file);  // a new game was started in that file (0..2): HD Link, the choice forgotten
 std::vector<std::string> profiles();
 std::string current_profile();
 bool create_profile(const std::string& name,std::string& error);
 bool select_profile(const std::string& name,std::string& error);
 bool delete_profile(const std::string& name,std::string& error);
+// Preflight before applying a built-in setting; posts a toast on refusal.
+bool builtin_change_allowed(const std::string& id,bool on,std::string& error);
 void remember_builtin(const std::string& id,bool on);
 void remember_option(const std::string& id,double value);
 void remember_option(const std::string& id,const std::string& value);

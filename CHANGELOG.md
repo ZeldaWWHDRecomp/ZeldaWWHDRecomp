@@ -7,6 +7,280 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+## v0.5.1
+
+### Thanks
+
+Thanks to everyone who sent code for this release:
+- @itsarahtonin: change Link's name mid-game (#343), sharp settings text at 4K (#345), `%` refused in new-game
+  names (#351), the GameCube adapter on Windows (#357), and two test fixes (#403, #404)
+- @GenissonEmilio: Android touch on the title screen, file select and name entry (#340), safer save import (#339),
+  touch controls on the Poco M8 Pro (#338)
+- @davidsgullick: controller rumble (#347) and Steam Controllers (#348) on macOS
+- @mkopec: HDR metadata (#337) and the Mali (panvk) sky fix (#317)
+- @rhemfur: keep your save in a cloud folder (#238)
+- @RaphaelFakhri: Linux launchers for folders with special characters (#377)
+- @DaniXK-96: a Vulkan colour-target fix (#399)
+- @francosang: the HD minimap's SDK proposal (ZeldaWWHDMods #33), used for #434
+
+Many features in this release come from two Android forks of the port, with their authors' code or ideas:
+- **@GreenNaugahyde's Android fork** ([GreenNaugahyde/ZeldaWWHDRecompAndroid](https://github.com/GreenNaugahyde/ZeldaWWHDRecompAndroid)):
+  the in-app randomizer, GameCube player models, Achievements, Game progress, Walk-through doors, 16-character
+  names, Instant text, Deku Leaf wave to rise, touch button pictures, menu sounds, controller dialogs, frame
+  generation and several Android memory and driver fixes
+- **@Nycolazs' Android fork** ([Nycolazs/WindWakerHD-Android-Plus](https://github.com/Nycolazs/WindWakerHD-Android-Plus)):
+  frame generation, the Turnip, Huawei, storm-picture, Shop Ship, texture-memory and low-memory fixes
+
+And thanks for reports, ideas and testing: @aaronlink127, @AnythingVocaloid, @alexander-beepx,
+@andreasbertram5-alt, @Eggtooth, @findel77, @Froggjarl, @jamesmendel, @KaitoCrisHub, @MattPlays02,
+@plxjammerplx, @Sherisherisherisheri, @SpicyAwesomeSauce and @thejorro.
+
+### New
+
+- **Randomizer built in** (#430, #431, #390, #366, #408, #396, #433, #435, for #117, the in-app approach from the GreenNaugahyde
+  Android fork, thanks @GreenNaugahyde; randomizer: TWWHD Randomizer 1.2.0, MIT). Setup's **Randomized games** page
+  makes a seed from a preset, a seed name or a permalink, checks it against the port and builds it. A game made with
+  the official TWWHD Randomizer is added with **Import seed…** on the same page (or `setup --import-seed PATH`).
+  Every option of 1.2.0 is accepted, including Quiet Swift Sail and entrance shuffle (thanks @KaitoCrisHub for the
+  report, #383); seeds from 1.1.1 and older are refused. In the game, **Settings › Randomizer** shows the seed, its
+  permalink and (after a question) the spoiler log with a sea-chart map. Works for USA and European games and on
+  Android. Every randomized game has its own saves, backups and save states; your normal save is never touched.
+  **Choose your game and `setup --game-dir` no longer accept a randomized game folder**: install the game as it is,
+  then import the seed. Randomized games installed the old way keep updating and keep their saves.
+- **GameCube player models** (#432, from the GreenNaugahyde Android fork, thanks @GreenNaugahyde). Mods › **Install
+  from a file** takes a GameCube model pack you have (a folder or zip with `Link.arc`). The port converts it on your
+  device onto HD Link's skeleton, materials and animations, with textures upscaled to HD's sizes. On the model's page
+  in the Mods tab you choose it per save file; the choice applies live, no restart. No model packs ship with the
+  port.
+- **New built-in mod: Achievements** (#410, goals, texts and points from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). Off by default (Mods › Built-in). 99 goals read from your save data, earned for good, for all
+  save files together and for each one; the record is kept in `achievements.json` in the port's config folder,
+  never in the save. When you earn one, Link turns round and holds it up with the game's item fanfare (its volume is
+  an option). Cheats pause achievements while they're used, unless you turn on **Earn with cheats**; loading a save
+  state never takes one back. Pages on the item menu's settings page (Game tab) and in the Esc settings.
+- **New built-in mod: Game progress** (#409, idea, count and places from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde; chart numbers from TWWHD Randomizer). Off by default (Mods › Built-in). Shows how much of the game
+  your save file has found: a percent, a checklist in ten parts (dungeons, hearts, items, equipment, upgrades, songs,
+  pearls and Triforce, charts, the sea chart, the Nintendo Gallery) and a sea-chart map of where each thing is
+  found. An option shows the percent on screen. Two places (Crescent Moon Island's sunken treasure, Triforce
+  Chart 2) are still to be checked in the game.
+- **60 fps (generated), experimental** (#425, from the GreenNaugahyde and Nycolazs Android forks, thanks
+  @GreenNaugahyde and @Nycolazs). On Vulkan, Graphics › Frame rate › **60 fps (generated, experimental)** keeps the
+  game at 30 fps and generates every other frame on the GPU from the last real one (camera and object movement, with
+  the HUD kept exact). Off by default; not yet checked on a phone. Not available on Metal (on a Mac, use the Vulkan
+  renderer).
+- **Keep your save in a cloud folder** (#238, for #190, thanks @rhemfur). Settings → Saves → **Save folder**
+  (Windows, macOS, Linux) puts your save in a folder you choose, for example in OneDrive, Dropbox, iCloud Drive or
+  Google Drive, so it stays the same on all your computers. The save only replaces the real one once it is fully on
+  disk, a lock warns when the folder is in use on another computer, and cloud conflict copies are offered at the
+  next start. Nothing is replaced or removed without a backup first and without your answer. See the README section
+  "Optional: keep your save in a cloud folder".
+- **Change Link's name mid-game, up to 16 characters** (#343, for #328, thanks @itsarahtonin; #428, idea from the
+  GreenNaugahyde Android fork, thanks @GreenNaugahyde). The settings page in the pause menu (Game tab) and the
+  Settings window's Saves tab can rename Link on the save file being played; the new name shows right away and is
+  kept with your next save. Names can now have up to 16 characters: the game's texts use the whole name, the file
+  select shows the first 8. The whole name travels with the save (backups, exports, randomizer saves). `%` and
+  characters the game's font can't show are refused.
+- **Quick doors: new "Walk through" mode** (#426, from the GreenNaugahyde Android fork, thanks @GreenNaugahyde).
+  Quick doors is now Off, Faster or Walk through. With Walk through, dungeon shutters and house doors open as Link
+  walks up, he walks through without the door scene and the door shuts behind him. Locked doors, boss doors and doors
+  with bars keep their scene, sped up as with Faster. **Walk-through doors open with A** makes them wait for A. The
+  game code is rebuilt once after the update.
+- **Instant text and No pauses in texts** (#411, ideas and code from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). Two new switches under Settings › Game, both off by default: message boxes show their whole
+  text at once (each box still waits for A), and the short waits written into some texts are left out.
+- **Deku Leaf: wave to rise** (#412, ideas and code from the GreenNaugahyde Android fork, thanks @GreenNaugahyde).
+  A new built-in option next to Jump anywhere, off by default: while gliding, each wave of the Deku Leaf lifts Link a
+  little, and holding the button keeps waving. The height of one wave is 50–200 %; the glide still uses magic.
+- **GameCube controllers and button prompts** (#301, thanks @MattPlays02 for the idea; #374, for #355; #392, for
+  #356, thanks @itsarahtonin for the report). Choose **GameCube** in Controls, or let Automatic pick it for a GameCube pad: A acts,
+  B is the sword, X, Y and Z use the item slots, L targets and R shields (from a quarter of their travel or at the
+  click), the C-stick turns the camera and a tap of Start opens the menus. A recognized GameCube controller gets this
+  layout right away. **GameCube** button prompts show the GameCube's own buttons in the HUD, item menu and dialogue:
+  the big green A, the red B, the kidney-shaped X and Y, the purple Z and the shoulder plates. Each controller can
+  keep its own layout, and **Restore previous controller bindings** brings back the old buttons. Details in
+  [docs/gamecube-controller.md](docs/gamecube-controller.md).
+- **Keyboard and mouse button prompts** (#364, for #265, thanks @Eggtooth for the idea). Choose **Keyboard / mouse**
+  under Controls › Button prompts and the game's prompts show the key or mouse button you bound (for example Tab,
+  M1, LShift, Wh+), drawn in the game's own font. The camera mods (mouse camera, direct camera, first person) moved
+  from Mods › Built-in to Controls, with their settings unchanged.
+- **Aim the boat cannon with the mouse** (#360, for #332, thanks @AnythingVocaloid for the idea). With Mouse camera
+  on and the pointer captured, moving the mouse aims the cannon on the King of Red Lions.
+- **Targeting letterbox: On / Off with enemies / Always off** (#395, for #114, thanks @andreasbertram5-alt for the
+  request). The bars that appear while holding target can be kept, hidden only when an enemy is targeted, or hidden
+  always (also for free targeting). Cutscene, event and minigame bars stay.
+- **A 4:3 aspect-ratio preset** (#359). Settings › Graphics (and the macOS Graphics menu) offer 4:3 next to the
+  widescreen presets. `WWHD_ASPECT=4:3` selects it too.
+- **Story-item cheats** (#362, for #289). Mods › More › Cheats › Story items can grant Nayru's, Din's or Farore's
+  Pearl, or the fully powered Master Sword. The first use each session asks for confirmation, because it can change
+  the story's order, and a backup of your save is made first.
+- **HDR: metadata, darker shadows and a choice of format** (#337, thanks @mkopec, and @findel77 for testing; #333,
+  thanks @findel77). With HDR on, the game tells the display its brightness range, so HDR TVs and monitors tone-map
+  it correctly (**Auto Peak**, on by default, reads the display's peak). The picture is turned into HDR with a gamma
+  2.2 curve, so shadows no longer look washed out; **SDR curve in HDR** offers Gamma 2.2 (default), Gamma 2.4 or
+  sRGB (the previous look). **HDR format** picks Auto, scRGB or HDR10 (PQ). See [docs/hdr.md](docs/hdr.md).
+- **Settings plays the game's menu sounds.** Moving, choosing, switching tabs and opening or closing Settings play
+  the game's own menu sounds. Settings → Audio → **Menu sounds** (on by default). Idea from GreenNaugahyde's Android
+  fork, thanks @GreenNaugahyde.
+- **GamePad screen: bars filled with the menu background** (#397). Where the GamePad picture doesn't fill the
+  screen (the Thor's second screen, phones in GamePad-only mode, the GamePad window), the bars around it show the
+  menu's own background instead of black. On by default; **Settings → Display → Fill GamePad bars with background**.
+
+### Improved
+
+- **60 fps frame interpolation plays exactly like 30 fps** (#436). Before, some characters behaved differently at
+  60 or 120 fps and random events drifted from what the game does at 30 fps (on Outset the grass cutter stopped
+  cutting, and from then on enemy behaviour and drops differed). The picture still gets its in-between frames; the
+  game logic behind them is now the same as at 30 fps.
+- **True 60 is retired** (#407). The experimental "True 60" frame rate (Link and the camera at 60 game steps a
+  second) was broken in many places and is gone; key 7 does nothing now. **If you had True 60 selected, the game
+  starts with 60 fps frame interpolation instead.** Nothing to do on your side.
+- **Touch controls: Link in the button pictures, a boat item ring and more taps** (#427, ideas and code from the
+  GreenNaugahyde Android fork, thanks @GreenNaugahyde). Action buttons show a small picture of Link in that action's
+  pose (jump, sword, crouch, roll, lift, talk, defend, grab, throw, the rope, Cruise and more) with the game's word
+  under him, drawn from your own game files (Settings → Display → Touch controls → **Link in the button pictures**,
+  on by default). On the boat, the item ring only shows items you can use there. Letters, stone tablets and signs
+  move on with a tap, and after a game over you can tap Continue or Quit. The Classic style always shows every
+  button. Not yet checked on a phone; reports welcome.
+- **Settings dialogs with a controller** (#413, ideas and code from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). Dialogs open with their default button selected (Cancel where the action can't be undone), the
+  selection shows again when the controller takes over from the mouse, the right stick scrolls long dialog text, and
+  a button still held while the menu opens presses nothing.
+- **The Controls settings are split into pages** (#371). Settings › Controls has five tabs: Bindings, Controller,
+  Prompts, Camera and Gameplay. Every setting keeps its value; only its place changed.
+- **The settings page in the pause menu no longer takes Left from the game.** Left goes to the game's item slots
+  first; only where the game has nothing further left does the cursor move onto the page arrow (A or Left again
+  opens the page). ZL no longer opens it, and **Settings page in the pause menu** in Controls turns the arrow off.
+  The arrow's design follows the GreenNaugahyde Android fork (thanks @GreenNaugahyde).
+- **Picture scaling: Sharp is pixel perfect** (#414, idea from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). The settings now say that **Sharp** shows each rendered pixel as a crisp block. Only the wording
+  changed.
+- **Windows setup: compiler unpacking shows progress** (#394, for #388, thanks @Sherisherisherisheri for the
+  report). Setup shows how many files are unpacked instead of sitting silent for minutes, and if unpacking fails it
+  says why (most often an antivirus program or a full disk) and what to do next.
+
+### Fixed
+
+- **Picto Box at wide and tall screens** (#303, thanks @aaronlink127). Wider than 16:9 or taller (16:10, 4:3,
+  phones), the Picto Box now takes the same 16:9 picture as on the Wii U, and its subject check only counts what is
+  inside that frame. Normal play keeps your full view.
+- **Leaving Beedle's Shop Ship could stop the game** (#416, from the Nycolazs and GreenNaugahyde Android forks,
+  thanks @Nycolazs and @GreenNaugahyde).
+- **The 3D picture could go black for some frames in a storm** (#417, from the Nycolazs and GreenNaugahyde Android
+  forks, thanks @Nycolazs and @GreenNaugahyde). Some GPUs (seen on Adreno 650 phones) produced invalid pixel values
+  near lightning at night, which bloom spread over the whole screen. **Shaders are compiled once more after this
+  update.**
+- **A shader that crashes the GPU driver no longer stops the game from starting** (#418, from the GreenNaugahyde
+  Android fork, thanks @GreenNaugahyde). The next start leaves that one shader out and logs it; it's tried again
+  after a driver, GPU or port update (Linux, macOS and Android).
+- **Loading a portable state made while crawling** (#365, for #361, thanks @thejorro for the report and the state).
+  Link arrives still crawling instead of standing inside the tunnel's ceiling.
+- **Controller dead after switching it in a menu** (for #330, thanks @itsarahtonin). Switching **Keyboard and
+  controllers act as** while the pause menu or file select was open no longer leaves the game ignoring every button.
+- **The rupee sparkle fades out with the rupee counter** (#358, for #353, thanks @thejorro for the report).
+- **Match window keeps exact preset ratios** (#372, for #349, thanks @plxjammerplx for the report). A window shaped
+  exactly like a preset (for example 1280×960) uses that preset's exact ratio instead of a rounded one.
+- **Long help lines no longer make the settings page flicker at high resolutions** (#345, thanks @itsarahtonin).
+- **The new-game name screen refuses `%`** (#351, thanks @itsarahtonin), which the game reads as a format code.
+- **Start-up audio waits like on the console.** At boot the game now waits for its audio threads to finish setting
+  up, as the Wii U does, so the sound system is always ready before the game first uses it.
+- **Windows: a damaged native mod no longer freezes startup** (#437). It now fails with an error instead of waiting
+  on a hidden Windows error box.
+- **Windows: the Wii U GameCube adapter works** (#357, for #354, thanks @itsarahtonin). Install the WinUSB driver
+  for it with Zadig (the same driver Dolphin uses); see the GameCube controller guide.
+- **macOS: Steam Controllers launched through Steam** (#348, for #342, thanks @davidsgullick for the change and
+  @jamesmendel for testing every step on real hardware). The macOS app reads Steam Input's virtual pad, so a Steam
+  Controller started from Steam works and is found again after a reconnect.
+- **macOS: controller rumble** (#347, for #346, thanks @davidsgullick). Any pad macOS reports haptics for rumbles,
+  for example a DualSense.
+- **Linux: NVIDIA on Wayland closing the game** (#309, thanks @Froggjarl). The game turns on NVIDIA's older sync
+  method on Wayland by itself (`__NV_DISABLE_EXPLICIT_SYNC=1`, driver 575 or newer); a value you set yourself is
+  kept. If it still closes, `SDL_VIDEO_DRIVER=x11` runs the game through XWayland.
+- **Linux on Mali (panvk): one colour over the whole picture at sea** (#317, follow-up to #310, thanks @mkopec).
+  v0.5.0's fix for the flickering sky could turn the picture one solid colour near Outset. On panvk, draws that don't
+  write depth now clip in their shaders, as the Wii U does. `WWHD_VK_CLIP_EMULATION=0` turns it off. Details in
+  [docs/vulkan.md](docs/vulkan.md).
+- **Linux: launchers for data folders with special characters** (#377, for #376, thanks @RaphaelFakhri for the
+  report and the fix). A folder name with `$`, `` ` ``, `"`, `\` or `%` (for example `Games 100%`) no longer breaks
+  `play.sh` or the menu entry.
+- **Vulkan: continued draws pick the right colour targets after a scissor change** (#399, thanks @DaniXK-96). A
+  correctness fix; no known visible glitch.
+
+### Android
+
+- **Fixed: Android running at about half speed since v0.5.0** (thanks @SpicyAwesomeSauce, #334). From the second
+  launch on, Snapdragon phones ran much slower (Windfall at 40 fps ran at about 22 fps). It holds 40 fps again, with
+  no extra stutter when new areas load. `WWHD_VK_PIPELINE_WARMUP=0` is no longer needed.
+- **Tap the title screen to start, and touch on file select and name entry** (#340, thanks @GenissonEmilio). Your
+  touches reach the game's own GamePad touchscreen on those screens; with no second display, the GamePad picture
+  shows on the main screen there and your view comes back afterwards.
+- **Safer save import** (#339, thanks @GenissonEmilio; #382). An imported save is checked completely before it
+  replaces yours, and your previous save is kept as a backup. An interrupted import brings your old save back,
+  oversized or damaged archives are refused, and a second import or export can't start while one is running.
+- **Touch controls stay visible on the Poco M8 Pro** (#338, thanks @GenissonEmilio). The phone's built-in key
+  injector no longer counts as a controller.
+- **Turnip on Adreno 6xx GPUs runs without UBWC** (#420, from the Nycolazs and GreenNaugahyde Android forks, thanks
+  @Nycolazs and @GreenNaugahyde). With a custom Turnip driver, Adreno 6xx phones (seen on a Galaxy S20 FE) could
+  restart at the first frame above 1x resolution; now 1.5x runs too. A `TU_DEBUG` you set yourself still wins.
+- **BC textures decoded on the CPU on Huawei GPUs** (#419, from the GreenNaugahyde and Nycolazs Android forks,
+  thanks @GreenNaugahyde and @Nycolazs). Huawei's Maleoon driver crashed compiling the texture decoder shader.
+- **Textures that haven't been used for a while are freed** (#423, from the GreenNaugahyde and Nycolazs Android
+  forks, thanks @GreenNaugahyde and @Nycolazs). Textures not drawn for about four minutes are released (sooner when
+  memory is tight), so long sessions use less memory. `WWHD_VK_TEXTURE_BUDGET=0` turns it off. Not yet measured on
+  a phone.
+- **Dynamic resolution also steps down when memory runs low** (#422, from the GreenNaugahyde and Nycolazs Android
+  forks, thanks @GreenNaugahyde and @Nycolazs). On devices with less than 3.8 GB of RAM it starts at 1× at most.
+- **No save state when memory is about to run out** (#421, from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). Such a save is refused with "not saved (too little free memory, close other apps)", instead of
+  Android closing the game in the middle of it.
+- **Share log can include your save files** (#415, ideas and code from the GreenNaugahyde Android fork, thanks
+  @GreenNaugahyde). A new checkbox, off at every start, adds your save file and Picto Box photos for bug reports.
+  Every name in the save becomes "Link" first. Not yet tested on a phone.
+- **Fixed: code mods "not available" in Android development builds** (mods issue #6, thanks @alexander-beepx).
+  Releases weren't affected.
+
+### Mods and mod SDK
+
+- **Profile mods get their own saves** (#385). A mod can declare its own save profile; its saves, backups, settings
+  and save states are then kept apart from your normal game, so a profile mod can't overwrite an ordinary save.
+  Turning the mod off (or **Switch all mods off**) takes effect on the next launch, which also gives Android players
+  a way back to the normal game without reinstalling.
+- **Fixed: Story Notebook leaving the menu broken** (mods issue #9, thanks @francosang). After the notebook closed,
+  the menu cursor or bait icons could stay hidden; the item button now shows the notebook on the TV and the GamePad.
+- **For mod authors: mirrored HUD images and the game's own layout texts** (#434, from the HD minimap's SDK proposal
+  in ZeldaWWHDMods #33, thanks @francosang). A HUD image drawn with reversed UVs shows mirrored, and
+  `wwhd_game_message_get("layout-message:<Layout>/<label>", …)` returns the game's own text for a layout label. Mods
+  check `hud.mirrored-images.version` / `layout-message.version` first. HUD API 3, mod manager 1.9.0.
+- **For mod authors: boat compasses and chart selection.** Code mods can take over the boat compass corner while
+  sailing (`wwhd_hud_boat_compasses`) and select a sea chart like the GamePad does (`wwhd_map_chart_selected` /
+  `_select` / `_cancel`). See docs/mod-sdk-v2.md. Used by the HD minimap mod.
+- **For mod authors: mods can require an exact game build** (#429). A manifest can list `supported_game_builds` (for
+  example `["USA"]`); the manager refuses the mod on a port built for another game version. Needs
+  `minimum_manager_version` 1.8.0.
+- **For mod authors: native actors, story flags, quick-use and traversal** (#375, #369, #389). C mods can register
+  their own native actors with `wwhd_native_actor_profile_register`; `wwhd/save_flags.h` reads and changes the game's
+  story flags with checked inputs (take a save backup first); and source mods get services for the game's quick-use
+  item actions, ready-item checks, boat sail wind and target calculation.
+- **Fixed for mod authors: C mods and hooks leave the game's state alone** (#367, #384, #387, #391). Hooks no longer
+  change the hooked function's registers; C mods keep the game's paired-single float registers; and mods are built
+  with `-mstackrealign`, since the game can call them with an 8-byte-aligned stack. Rebuild C mods from source to get
+  the stack fix; older mods get a best-effort safeguard.
+- **For mod authors: True 60 is gone** (#407). `render.true60` still exists and always reads 0, and `wwhd_logic_dt`
+  is always one 30 Hz step.
+- **Editor: MCP access starts once the game is ready** (#386). With `--editor --mcp`, the MCP server starts after
+  the game code is loaded and all mods are initialized.
+
+### Decomp build and testing
+
+- **Decomp build (experimental)** (#368, #370, #373). In the `-DWWHD_DECOMP=ON` build, 63 functions of the game's
+  compiler runtime and nn wrappers run as host code, each matched to the original by measurement (`WWHD_HOSTRT=0`
+  runs the originals); the scalable font draws with the game's main font, since the port doesn't provide the Wii U's
+  system font; and the build reads the decompilation's unit specs the way its own checks do. The normal build is
+  unchanged and keeps the game's own code.
+- **Tests** (#403, #404, thanks @itsarahtonin; #379). The Vulkan BC self-test accepts NVIDIA's slightly different
+  BC4/BC5 rounding, the SDL input tests ignore real controllers such as a plugged-in GameCube adapter, and scripted
+  Android runs (`WWHD_NO_HOST_INPUT`) skip the first-start touch-controls question.
+
 ## v0.5.0
 
 - **Fixed: frame interpolation glitches.** With interpolation on (above 30 fps), the hookshot no longer leaves

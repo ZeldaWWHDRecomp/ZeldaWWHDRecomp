@@ -13,16 +13,17 @@
 #include "../motion/motion.h"
 #include "../rumble.h"
 
-namespace interp { bool repeat_input(); bool fresh_sticks(); uint64_t logic_steps(); }
+namespace interp { bool repeat_input(); uint64_t logic_steps(); }
 
 namespace {
 constexpr int32_t kWpadErrNone = 0, kWpadErrNoController = -1;
 constexpr int32_t kKpadErrNone = 0, kKpadErrNoController = -2;
 constexpr uint8_t kDevURCC = 31, kDevNone = 253, kFormatURCC = 22;
 
-// While the game is switched from the Pro Controller to the GamePad after a save-state load, its Pro
-// Controller stays connected but idle, as when a player changes the controller in the game's Options
-// (a missing controller would stop the game at its reconnect prompt before the switch completes).
+// While the game is switched from the Pro Controller to the GamePad (after a save-state load or a change
+// of the host's choice), its Pro Controller stays connected, as when a player changes the controller in
+// the game's Options (a missing controller would stop the game at its reconnect prompt before the
+// switch completes). It is idle unless the game still reads it (controller_reapply::pro_controller_live).
 bool connected(uint32_t chan) { return chan == 0 && (input::pro_controller() || controller_reapply::holds_pro_controller()); }
 
 // VPAD button bits (input::PadState) -> Pro Controller (URCC) bits
@@ -85,29 +86,27 @@ HLE(padscore, KPADReadEx) {
     const bool repeat = interp::repeat_input();
     input::PadState p = repeat ? last_p : crashrec::read(1);  // see interp.cpp; crash recovery records/replays it
     if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
-    uint32_t live_virt = p.virt;  // as VPADRead: the virtual inputs as read now, also on half steps
-    bool live = !repeat;
-    if (repeat && interp::fresh_sticks()) {  // true 60: sticks every pass, buttons on full passes
-        input::PadState f = input::read();
-        p.lx = f.lx; p.ly = f.ly; p.rx = f.rx; p.ry = f.ry;
-        live_virt = f.virt;
-        live = true;
-    }
+    const uint32_t live_virt = p.virt;  // as VPADRead: the virtual inputs as read now
+    const bool live = !repeat;
     if (input::pro_controller() && chan == 0) mods::item_ring_pad(p, repeat);  // X / Y / R: tap, or hold for the item ring
     if (input::pro_controller() && chan == 0) mods::context_touch_pad(p, repeat);  // touch play: items by tap, put-away, ZL latch
     if (input::pro_controller() && chan == 0) mods::touch_talk_pad(p, repeat);  // talks, answers, shops by touch; hold to go on
     if (input::pro_controller() && chan == 0) mods::guest_pad_filter(c, p, repeat);  // code mods: their touches and input filters
     last_p = p;
-    if (!input::pro_controller()) p = input::PadState{};  // held connected for a controller switch: idle
+    // held connected for a controller switch: idle, unless the game still reads it (pause menu)
+    if (!input::pro_controller() && !controller_reapply::pro_controller_live()) p = input::PadState{};
     story_notebook::mute(p);  // the notebook's page has the controller (VPADRead drives it)
     story_scenes::mute(p);
     story_bag::mute(p);       // so do the Delivery Bag's extra pages
     game_settings_page::mute(p);  // and the settings page
-    mods::moon_jump_input(p);
-    mods::move_speed_input(p.buttons);
+    // the host's extras follow the host's choice: while a held Pro Controller is live, VPADRead has them
+    input::PadState idle{};
+    input::PadState& extras = input::pro_controller() ? p : idle;
+    mods::moon_jump_input(extras);
+    mods::move_speed_input(extras.buttons);
     if (live && input::pro_controller()) mods::jump_input(live_virt);
-    mods::fast_forward_input(p.buttons);
-    if (!repeat) motion::right_stick(p.rx, p.ry);  // the Pro Controller's stick decides gyro use too (motion.h)
+    mods::fast_forward_input(extras.buttons);
+    if (!repeat) motion::right_stick(extras.rx, extras.ry);  // the Pro Controller's stick decides gyro use too (motion.h)
     uint32_t hold = pro_buttons(p.buttons);
     memset(mem::ptr(st), 0, 0xF0);
     st8(st + 0x5C, kDevURCC);     // devType

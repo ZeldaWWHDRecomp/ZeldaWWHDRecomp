@@ -1,0 +1,174 @@
+#include "text.hpp"
+
+#include <utility/string.hpp>
+#include <utility/math.hpp>
+#include <filetypes/util/msbtMacros.hpp>
+#include <command/Log.hpp>
+
+#include <unordered_map>
+#include <string_view>
+
+namespace Text {
+
+    std::array<std::string, 6> supported_languages = {"English", "Spanish", "French", "German", "Italian", "Japanese"};
+
+    static const std::unordered_map<Text::Color, std::u16string> nameToColor = {
+        {Text::Color::NONE,    TEXT_COLOR_DEFAULT},
+        {Text::Color::RED,     TEXT_COLOR_RED},
+        {Text::Color::GREEN,   TEXT_COLOR_GREEN},
+        {Text::Color::BLUE,    TEXT_COLOR_BLUE},
+        {Text::Color::YELLOW,  TEXT_COLOR_YELLOW},
+        {Text::Color::CYAN,    TEXT_COLOR_CYAN},
+        {Text::Color::MAGENTA, TEXT_COLOR_MAGENTA},
+        {Text::Color::GRAY,    TEXT_COLOR_GRAY},
+        {Text::Color::ORANGE,  TEXT_COLOR_ORANGE},
+    };
+
+    std::u16string apply_name_color(std::u16string str, const Color& color)
+    {
+        // Return the raw text (bars included)
+        if (color == Color::RAW)
+        {
+            return str;
+        }
+        // If there are no '|'s then just return with the color surrounding the whole string
+        if (str.find('|') == std::string::npos)
+        {
+            const auto& textColor = nameToColor.at(color);
+            return textColor + str + TEXT_COLOR_DEFAULT;
+        }
+
+        // Alternate between the text color and default incase there are multiple
+        // pairs of bars
+        const auto& textColor = nameToColor.at(color);
+        bool insertColor = false;
+        for (size_t pos = 0; pos < str.length(); pos++)
+        {
+            if (str[pos] == '|')
+            {
+                insertColor = !insertColor;
+                str.erase(pos, 1);
+                str.insert(pos, insertColor ? textColor : TEXT_COLOR_DEFAULT);
+            }
+        }
+
+        return str;
+    }
+
+    // Japanese: kana, kanji and full-width characters take two columns and a line can break between them
+    static bool is_wide_char(const char16_t& c) {
+        return (c >= 0x2E80 && c <= 0x9FFF) || (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFF00 && c <= 0xFF60) || (c >= 0xFFE0 && c <= 0xFFE6);
+    }
+
+    // characters that don't start a line in Japanese
+    static bool is_no_break_before(const char16_t& c) {
+        return std::u16string_view(u"、。，．・：；？！ー）」』】〕…～ぁぃぅぇぉっゃゅょァィゥェォッャュョ").find(c) != std::u16string_view::npos;
+    }
+
+    std::u16string word_wrap_string(const std::u16string& string, const size_t& max_line_len) {
+        size_t index_in_str = 0;
+        std::u16string wordwrapped_str;
+        std::u16string current_word;
+        size_t curr_word_len = 0;
+        size_t len_curr_line = 0;
+
+        while (index_in_str < string.length()) {
+            const char16_t& character = string[index_in_str];
+
+            if (character == u'\x0E') {
+                // Text tags have '\x0E' followed by 1 char16_t for group, 1 index, 1 for parameter size (in bytes)
+                // So we need to skip 4 characters + (parameter size / 2)
+                const size_t code_len = 4 + (string[index_in_str + 3] / 2);
+                current_word += string.substr(index_in_str, code_len);
+                index_in_str += code_len;
+            }
+            else if (character == u'\n') {
+                wordwrapped_str += current_word;
+                wordwrapped_str += character;
+                len_curr_line = 0;
+                current_word = u"";
+                curr_word_len = 0;
+                index_in_str += 1;
+            }
+            else if (character == u' ') {
+                wordwrapped_str += current_word;
+                wordwrapped_str += character;
+                len_curr_line += curr_word_len + 1;
+                current_word = u"";
+                curr_word_len = 0;
+                index_in_str += 1;
+            }
+            else if (is_wide_char(character)) {
+                // the word before it ends here; the wide character goes on this line if it fits
+                wordwrapped_str += current_word;
+                len_curr_line += curr_word_len;
+                current_word = u"";
+                curr_word_len = 0;
+                if (len_curr_line + 2 > max_line_len && len_curr_line > 0 && !is_no_break_before(character)) {
+                    wordwrapped_str += u'\n';
+                    len_curr_line = 0;
+                }
+                wordwrapped_str += character;
+                len_curr_line += 2;
+                index_in_str += 1;
+            }
+            else {
+                current_word += character;
+                curr_word_len += 1;
+                index_in_str += 1;
+
+                if (len_curr_line + curr_word_len > max_line_len) {
+                    wordwrapped_str += u'\n';
+                    len_curr_line = 0;
+
+                    if (curr_word_len > max_line_len) {
+                        wordwrapped_str += current_word + u'\n';
+                        current_word = u"";
+                    }
+                }
+            }
+        }
+        wordwrapped_str += current_word;
+
+        return wordwrapped_str;
+    }
+
+    std::string pad_str_4_lines(const std::string& string)
+    {
+        std::vector<std::string> lines = Utility::Str::split(string, '\n');
+
+        lines.resize(roundUp<size_t>(lines.size(), 4), "");
+
+        return Utility::Str::merge(lines, '\n');
+    }
+
+    std::u16string pad_str_4_lines(const std::u16string& string)
+    {
+        std::vector<std::u16string> lines = Utility::Str::split(string, u'\n');
+
+        lines.resize(roundUp<size_t>(lines.size(), 4), u"");
+
+        return Utility::Str::merge(lines, u'\n');
+    }
+
+    Gender string_to_gender(const std::string& str)
+    {
+        std::unordered_map<std::string, Gender> strToGender = {
+            {"Male", Gender::MALE},
+            {"Female", Gender::FEMALE}
+        };
+
+        if (strToGender.contains(str))
+        {
+            return strToGender.at(str);
+        }
+
+        return Gender::NONE;
+    }
+
+    Plurality string_to_plurality(const std::string& str)
+    {
+        if (str == "Plural") return Plurality::PLURAL;
+        return Plurality::SINGULAR;
+    }
+}; // namespace Text

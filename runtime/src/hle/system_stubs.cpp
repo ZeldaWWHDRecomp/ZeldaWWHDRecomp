@@ -4,14 +4,18 @@
 #include "../crashrec.h"
 #include "../runtime.h"
 #include "../input.h"
+#include "../controller_reapply.h"
 #include "../mods/story_notebook.h"
 #include "../mods/story_bag.h"
 #include "../mods/game_settings_page.h"
+#include "../mods/menu_sounds_port.h"
+#include "../mods/player_name.h"
+#include "../mods/long_name.h"
 #include "../mods/story_scenes.h"
 #include "../rumble.h"
 #include "../motion/motion.h"
 
-namespace interp { bool repeat_input(); bool fresh_sticks(); void trace_read(const char*); uint64_t logic_steps(); }
+namespace interp { bool repeat_input(); void trace_read(const char*); uint64_t logic_steps(); }
 
 // nn::Result: bit 31 set = failure
 static constexpr uint32_t kResultOk = 0;
@@ -108,14 +112,8 @@ HLE(vpad, VPADRead) {
     input::PadState p = repeat ? last_p : crashrec::read(0);  // live input, recorded/replayed by crash recovery
     if (!repeat) mods::one_screen_pad(p);  // One screen: Minus pauses as Plus (Off-TV Play has no TV to switch to)
     if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
-    uint32_t live_virt = p.virt;  // the virtual inputs (Jump, moon jump) as read now: not on a stale repeat
-    bool live = !repeat;
-    if (repeat && interp::fresh_sticks()) {  // true 60: sticks every pass, buttons on full passes
-        input::PadState f = input::read();
-        p.lx = f.lx; p.ly = f.ly; p.rx = f.rx; p.ry = f.ry;
-        live_virt = f.virt;  // a jump pressed on a half step reaches the next full step (jump_policy::Latch)
-        live = true;
-    }
+    const uint32_t live_virt = p.virt;  // the virtual inputs (Jump, moon jump) as read now: not on a stale repeat
+    const bool live = !repeat;
     if (!input::pro_controller()) mods::item_ring_pad(p, repeat);  // X / Y / R: tap, or hold for the item ring
     if (!input::pro_controller()) mods::context_touch_pad(p, repeat);  // touch play: items by tap, put-away, ZL latch
     if (!input::pro_controller()) mods::touch_talk_pad(p, repeat);  // talks, answers, shops by touch; hold to go on
@@ -125,13 +123,20 @@ HLE(vpad, VPADRead) {
     story_scenes::mute(p);
     story_bag::pad(p, c);       // then the Delivery Bag's extra pages (mod items), while open
     game_settings_page::pad(p, c);  // the settings page in the item menu (left of the items), while open
+    if (!repeat) menu_sounds::service(c);  // the Settings overlay's menu sounds, through the game (menu_sounds.h)
+    player_name::service(c);  // a new name for Link (settings page or Settings window) goes in here, on the game's thread
+    long_name::service(c);    // save file names over 8 characters (mods/long_name.h)
     if (!input::pro_controller()) mods::moon_jump_input(p);
     if (!input::pro_controller()) mods::move_speed_input(p.buttons);
     if (!input::pro_controller() && live) mods::jump_input(live_virt);
     if (!input::pro_controller()) mods::fast_forward_input(p.buttons);
-    if (input::pro_controller()) {  // GamePad on the table: screen and touch only
-        p.buttons = 0;
-        p.lx = p.ly = p.rx = p.ry = 0;
+    if (input::pro_controller()) {
+        // GamePad on the table: screen and touch only. Not yet while the game still reads it and is
+        // being switched to the Pro Controller (controller_reapply::holds_gamepad, issue #330)
+        if (!controller_reapply::holds_gamepad()) {
+            p.buttons = 0;
+            p.lx = p.ly = p.rx = p.ry = 0;
+        }
     } else if (!repeat) {
         motion::right_stick(p.rx, p.ry);  // the game ignores the gyro while it is pushed (gyro diagnostics)
     }

@@ -46,8 +46,9 @@ typedef struct { u32 kind, target; void* func; u32 flags; } wwhd_hook_desc;
     WWHD__DESC(WWHD_KIND_REPLACE, addr, name); \
     __attribute__((noinline, used)) static ret name params
 
-/* Run before the function (gets its arguments; changes to argument registers are discarded, write
- * through pointers instead) or after it (gets the arguments again; the return value is kept). */
+/* Run before the function (gets its arguments) or after it (gets the original arguments again).
+ * Observer register changes are discarded, including scratch registers and condition bits;
+ * all of the game's return registers are kept. Write through pointers for memory effects. */
 #define WWHD_HOOK(addr, name, params) \
     static void name params;          \
     WWHD__DESC(WWHD_KIND_ENTRY, addr, name); \
@@ -104,6 +105,20 @@ void wwhd_input_read(wwhd_input_state* state);
  * The callback must be this mod's own function. Returns 1 when registered. */
 typedef void (*wwhd_input_filter_fn)(wwhd_input_state* state);
 int wwhd_input_filter_register(wwhd_input_filter_fn filter);
+/* After the native ready-item trigger query, preserve the port's accepted
+ * quick-use intent. Returns only a local predicate; no pad/equipment writes.
+ * Pass the current Link actor and the unmodified native query result. */
+u32 wwhd_item_ready_trigger(u32 actor, u32 native_trigger);
+/* Immediately before the native ready hookshot (2F), rope (25), or boomerang
+ * (2D) action call, preserve the port's quick-use dispatch bookkeeping. Call
+ * only after the original eligibility checks. Other item IDs are ignored. */
+void wwhd_item_action_dispatch(u32 actor, u32 item);
+/* Source-level sailing composition: call wind only on the normal-sail branch,
+ * before reading its transition flag. Scale the completed native wind target
+ * before obstacle/acceleration callbacks. Keep a local original/written pair
+ * and restore only an unchanged scaled target before jump checks. */
+void wwhd_ship_normal_sail_wind(u32 actor);
+f32 wwhd_ship_sail_target(f32 stock);
 /* Touches on the TV picture (the device's touch screen, or the mouse on the desktop): the mod claims rectangles
  * in layout units (1280 x 720 around the picture's centre, +y up; a wider picture extends x) with
  * wwhd_touch_claim; a finger landing in one goes to `callback` (down, moves, up or cancel) and to nothing else
@@ -190,6 +205,22 @@ typedef struct {
     u32 flags;
     char animation[36];
 } wwhd_actor_state_v1; /* size=80, version=1 */
+// Low-level native ACTR profile registration, startup only. Call from a
+// GameMain (028EA120) entry hook before any native process allocation. The
+// runtime copies the profile, five callbacks and name; the module stays loaded.
+// profile points to the 0x30-byte native actor profile, whose method table has
+// five caller-owned functions (create, delete, execute, isDelete, draw).
+// Native base method pointers may be zero (filled by the runtime).
+// IDs 01E4..7FCF only, no remapping/unregister; names 1..8 ASCII alnum/_ bytes.
+// Returns ID, or -1 invalid, -2 collision, -3 closed, -4 unavailable, -5 full.
+typedef struct {
+    u32 size,version; // sizeof(...), 1
+    const void* profile;
+    char name[8];
+    s32 argument; // -1..127
+    u32 gba_name; // 0..255
+} wwhd_native_actor_profile_v1;
+s32 wwhd_native_actor_profile_register(const wwhd_native_actor_profile_v1*);
 u32 wwhd_actor_register(const char* actor_id,const wwhd_actor_behavior_v1* behavior);
 wwhd_actor_handle wwhd_actor_find(const char* actor_id); /* zero until create dispatch */
 u32 wwhd_actor_get(wwhd_actor_handle,wwhd_actor_state_v1* state);
@@ -264,7 +295,7 @@ unsigned long long wwhd_setting_changed(const char* key);
  * per logic step. Its immutable output is held for every presentation until the next
  * step. TV=0 (1280x720), DRC=1 (854x480), both=2 (TV coordinates scaled to each screen).
  * Element/text/path buffers must be static or allocated in this mod's heap. */
-#define WWHD_HUD_API_VERSION 2
+#define WWHD_HUD_API_VERSION 3
 enum { WWHD_HUD_TV=0,WWHD_HUD_DRC=1,WWHD_HUD_BOTH=2 };
 enum { WWHD_HUD_RECT=0,WWHD_HUD_TEXT=1,WWHD_HUD_IMAGE=2,WWHD_HUD_RECT_OUTLINE=3,
        WWHD_HUD_CIRCLE=4,WWHD_HUD_CIRCLE_OUTLINE=5,WWHD_HUD_LINE=6,WWHD_HUD_CLIP_PUSH=7,WWHD_HUD_CLIP_POP=8 };
@@ -282,7 +313,14 @@ typedef struct {
 } wwhd_hud_element;
 /* x/y is the top-left except circles (center). w/h is extent, or signed line delta.
  * size is circle radius / text height. Rotation is radians about image center.
- * UVs are normalized subrect coordinates. rgba is RRGGBBAA. Set thickness>0. */
+ * UVs are normalized subrect coordinates. rgba is RRGGBBAA. Set thickness>0.
+ * v3: an image with u1 < u0 (or v1 < v0) is drawn mirrored on that axis (u0 = 1, u1 = 0: flipped left to
+ * right), as the game mirrors half art. All four stay within 0..1. Older hosts drop the whole list for such an
+ * element: draw mirrored only when wwhd_hud_mirrored_images() is nonzero. */
+static inline u32 wwhd_hud_mirrored_images(void) {
+    static u32 version;
+    return wwhd_setting_get("hud.mirrored-images.version", WWHD_SETTING_U32, &version, 4) == 4 ? version : 0;
+}
 u32 wwhd_hud_register(void (*callback)(u32 list),u32 screen);
 u32 wwhd_hud_emit(u32 list,const wwhd_hud_element* element);
 /* v2: record CLIP_PUSH/CLIP_POP only through this service. PUSH uses x/y/w/h
@@ -438,6 +476,19 @@ _Static_assert(sizeof(wwhd_game_pane) == 64, "wwhd_game_pane layout");
 static inline u32 wwhd_game_pane_get(const char* key, wwhd_game_pane* pane) {
     return wwhd_setting_get(key, 6, pane, sizeof(*pane)) == sizeof(*pane);
 }
+/* The game's own text of a layout (v3): key "layout-message:<Layout>/<label>" (at most 63 bytes), a label of the
+ * layout's message file, e.g. "layout-message:DungeonMapUp_00/T_FloorU_00_2F", in the language the game runs in.
+ * UTF-8 with its NUL; the game's control codes (colours, icons) left out, line breaks kept as '\n'. Returns the
+ * bytes written with the NUL, or 0 (missing label, a text of 4 KiB or more, a buffer too small: then it is unchanged;
+ * older hosts). A null buffer with capacity 0 gives the size. The text doesn't change while the game runs: read
+ * it once and keep it. wwhd_game_messages() is nonzero on hosts with this query. */
+static inline u32 wwhd_game_message_get(const char* key, char* buffer, u32 capacity) {
+    return wwhd_setting_get(key, WWHD_SETTING_STRING, buffer, capacity);
+}
+static inline u32 wwhd_game_messages(void) {
+    static u32 version;
+    return wwhd_setting_get("layout-message.version", WWHD_SETTING_U32, &version, 4) == 4 ? version : 0;
+}
 
 /* Optional current-room map from a mod stage. Returns 1 with a 808-byte output,
  * 0 for no map or an older host. Call in a HUD callback. cached_revision is zero
@@ -451,6 +502,41 @@ typedef struct {
     u32 marker_count, reserved;
     struct { f32 x, z; u32 kind; } markers[64]; /* 1 chest, 2 boss door */
 } wwhd_dungeon_room;
+/* Optional native map/HUD bridge v1. Default helpers return -1 on old hosts,
+ * including with older installers. Query the unsigned capability first. */
+#define WWHD_MAP_HUD_API_VERSION 1
+#define WWHD_MAP_HUD_UNSUPPORTED (-1)
+#define WWHD_MAP_HUD_INVALID (-2)
+#define WWHD_MAP_HUD_BUSY (-3)
+#define WWHD_MAP_HUD_PHASE (-4)
+typedef struct {u32 size,version;f32 x,y,w,h;} wwhd_boat_compasses_rect;
+/* Default helpers use the existing optional query transport, including with
+ * older installers. DIRECT_IMPORTS is for bindings using translator >=0.3. */
+#ifdef WWHD_MAP_HUD_DIRECT_IMPORTS
+s32 wwhd_hud_boat_compasses(u32 replace);
+s32 wwhd_hud_boat_compasses_rect(wwhd_boat_compasses_rect* out);
+s32 wwhd_map_chart_selected(void);
+s32 wwhd_map_chart_select(u32 native_chart_index);
+s32 wwhd_map_chart_cancel(void);
+
+#else
+static inline s32 wwhd_map_hud_request(u32 action,u32 argument,wwhd_boat_compasses_rect* rect) {
+    static struct {u32 size,version,action,argument;s32 result;f32 x,y,w,h;} request;
+    request.size=36;request.version=1;request.action=action;request.argument=argument;
+    if(wwhd_setting_get("native-map-hud.v1",7,&request,36)!=36)return WWHD_MAP_HUD_UNSUPPORTED;
+    if(rect&&request.result==1){rect->x=request.x;rect->y=request.y;rect->w=request.w;rect->h=request.h;}
+    return request.result;
+}
+static inline s32 wwhd_hud_boat_compasses(u32 replace){return wwhd_map_hud_request(1,replace,0);}
+static inline s32 wwhd_hud_boat_compasses_rect(wwhd_boat_compasses_rect* out){
+    if(!out||out->size!=24||out->version!=1)return WWHD_MAP_HUD_INVALID;
+    return wwhd_map_hud_request(2,0,out);
+}
+static inline s32 wwhd_map_chart_selected(void){return wwhd_map_hud_request(3,0,0);}
+static inline s32 wwhd_map_chart_select(u32 index){return wwhd_map_hud_request(4,index,0);}
+static inline s32 wwhd_map_chart_cancel(void){return wwhd_map_hud_request(5,0,0);}
+#endif
+
 #ifdef __cplusplus
 static_assert(sizeof(wwhd_dungeon_room) == 808, "wwhd_dungeon_room layout");
 #else

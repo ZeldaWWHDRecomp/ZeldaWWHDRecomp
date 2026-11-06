@@ -7,12 +7,43 @@
 #include <unistd.h>
 namespace gfx { void show_drc_window(bool){} }
 namespace overlay { void external_binding_capture(bool){} }
+static std::vector<input::ControllerInfo> fixtureControllers;
 namespace input {
+std::vector<ControllerInfo> controllers(){return fixtureControllers;}
 bool pro_controller(){return false;}
 void set_pro_controller(bool){}
 void release_keys(){}
 void held_keys(bool* v){std::fill(v,v+256,false);}
 void controller_values(float* v){std::fill(v,v+input_map::kPadCount,0.f);}
+}
+// The isolated AppKit target uses camera-setting fixtures, like its input/window fixtures.
+// Exercise the actual controls' routing without linking the game or writing player settings.
+namespace {
+bool cameraFlags[3]{};
+float cameraSpeed = 1.f, mouseSensitivity = .15f;
+}
+namespace mods {
+float camera_speed() { return cameraSpeed; }
+float mouse_sensitivity() { return mouseSensitivity; }
+}
+namespace game_settings {
+void set_camera_speed(float v) { cameraSpeed = v; }
+void set_mouse_sensitivity(float v) { mouseSensitivity = v; }
+}
+namespace mods::manager {
+const Entry* find(std::string_view id) {
+    static const Entry entries[] = {
+        {"mouse-camera","Mouse camera","","","",[] { return cameraFlags[0]; },nullptr},
+        {"direct-camera","Direct camera","","","",[] { return cameraFlags[1]; },nullptr},
+        {"first-person","First person","","","",[] { return cameraFlags[2]; },nullptr}};
+    for (const auto& entry : entries) if (id == entry.id) return &entry;
+    return nullptr;
+}
+bool set_enabled(std::string_view id, bool enabled) {
+    const char* ids[] = {"mouse-camera","direct-camera","first-person"};
+    for (int i=0;i<3;++i) if (id == ids[i]) { cameraFlags[i]=enabled; return true; }
+    return false;
+}
 }
 // counts what the menu bar's key equivalents trigger (menu.mm's targets, without the game)
 @interface MenuCounter : NSObject
@@ -107,6 +138,43 @@ int main() {
         CGEventRef cg=CGEventCreateMouseEvent(nullptr,kCGEventLeftMouseDown,CGPointZero,kCGMouseButtonLeft);
         const auto before=current();[g_controls handleMouseEvent:[NSEvent eventWithCGEvent:cg]];
         assert(current()==before);CFRelease(cg);[g_controls cancelCapture];
+        // Actual AppKit controls: apply, persisted restore, and one controller's own bindings.
+        auto presetBefore = current();
+        g_controls.faceLayout.selectedSegment=3;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        assert(current().preset.gamecube && current().preset.saved);
+        Mapping loaded;assert(from_json(to_json(current()),loaded));assert(loaded.preset.previous==presetBefore.pad);
+        g_controls.faceLayout.selectedSegment=4;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        assert(current()==presetBefore);
+        input::ControllerInfo controller;controller.guid="gc-ui";controller.name="GameCube fixture";
+        fixtureControllers={controller,controller};[g_controls syncOptions];
+        assert(g_controls.bindingTarget.numberOfItems==2); // shared +one editable adapter profile
+        [g_controls.bindingTarget selectItemAtIndex:1];[g_controls bindingTargetChanged:g_controls.bindingTarget];
+        assert(g_controls.faceLayout.segmentCount==4);
+        for(NSInteger i=0;i<g_controls.faceLayout.segmentCount;++i)
+            assert(![[g_controls.faceLayout labelForSegment:i] containsString:@"automatic"]);
+        g_controls.faceLayout.selectedSegment=2;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        assert(current().controllers.size()==1 && current().controllers[0].preset.gamecube);
+        assert(current().pad==presetBefore.pad && !current().preset.gamecube);
+        g_controls.faceLayout.selectedSegment=3;[g_controls faceLayoutChanged:g_controls.faceLayout];
+        assert(current().controllers[0].pad==presetBefore.pad);
+        [g_controls.bindingTarget selectItemAtIndex:0];[g_controls bindingTargetChanged:g_controls.bindingTarget];
+        assert(g_controls.faceLayout.segmentCount==5 && [g_controls.faceLayout isEnabledForSegment:3]);
+        input_map::set_current(presetBefore,false);
+        for (int i=0;i<3;++i) {
+            NSButton* button = g_controls.cameraButtons[i];
+            button.state = NSControlStateValueOn;
+            [g_controls cameraChanged:button];
+            for (int j=0;j<3;++j) assert(cameraFlags[j] == (j<=i));
+        }
+        g_controls.cameraSpeed.floatValue=1.75f;
+        [g_controls cameraSpeedChanged:g_controls.cameraSpeed];
+        g_controls.mouseSensitivity.floatValue=.25f;
+        [g_controls mouseSensitivityChanged:g_controls.mouseSensitivity];
+        assert(cameraSpeed==1.75f && mouseSensitivity==.25f);
+        cameraFlags[1]=false; cameraSpeed=1.25f; mouseSensitivity=.125f;
+        [g_controls syncOptions];
+        assert(g_controls.cameraButtons[1].state==NSControlStateValueOff);
+        assert(g_controls.cameraSpeed.floatValue==1.25f && g_controls.mouseSensitivity.floatValue==.125f);
         menu_settings_key_test();
         std::filesystem::remove(path);
         fprintf(stderr,"controls_ui_test: passed (incl. fixed Cmd+, Settings menu key)\n");

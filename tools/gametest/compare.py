@@ -114,8 +114,20 @@ def main():
     if nlr and not nd:
         print("        (caller LR of a sound start differs at %d steps: a swapped caller)" % nlr)
     # digest.txt: step id name size hash [x y z]
-    da = by_step(A, "digest.txt", 0, (), sa, end)
-    db = by_step(B, "digest.txt", 0, (), sb, end)
+    # (the execute column is read through the word at +0xF0, fopAc_ac_c's sub method: for processes that
+    # are not actors but as large as one it is any word, read from memory outside the process. Only an
+    # aligned address in the game's code (02000000.., the code section ends before 03000000) is an
+    # execute function; other values are left out)
+    def exec_col(d):
+        for k, v in d.items():
+            for i, l in enumerate(v):
+                p = l.split()
+                if len(p) > 4 and not (0x02000000 <= int(p[4], 16) < 0x03000000 and int(p[4], 16) % 4 == 0):
+                    p[4] = "-"
+                    v[i] = " ".join(p)
+        return d
+    da = exec_col(by_step(A, "digest.txt", 0, (), sa, end))
+    db = exec_col(by_step(B, "digest.txt", 0, (), sb, end))
     r, nd, det = first_diff(da, db, "procs", show=3)
     print(r + "  (%d / %d process executes)" % (sum(map(len, da.values())), sum(map(len, db.values()))))
     for d in det:

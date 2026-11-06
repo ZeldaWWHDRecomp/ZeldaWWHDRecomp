@@ -1,4 +1,5 @@
-// Aspect ratio of the TV picture: 16:9 (original), the window's shape, 16:10, 21:9 or 32:9.
+#include "mods/map_hud.h"
+// Aspect ratio of the TV picture: 16:9 (original), the window's shape, 4:3, 16:10, 21:9 or 32:9.
 //
 // The game keeps drawing its 1280x720 guest screen. What changes:
 //  - 3D: the camera's projection uses the new aspect with the same vertical field of view (Hor+:
@@ -22,10 +23,13 @@
 // switches its render-target factors at the matching swap (the value travels with the swap
 // command), so a change never lands in the middle of a frame.
 #include "aspect.h"
+#include "framegen.h"
 #include "savestate.h"
 #include "gfx/stereo.h"
+#include "gfx/gamepad_backdrop.h"
 #include "button_glyphs.h"
 #include "aspect_panes.h"
+#include "aspect_picto.h"
 #include "mods/cemu_pack.h"
 #include "mods/play_context.h"
 #include "mods/mods.h"
@@ -52,6 +56,7 @@ int parse_env_mode(float& custom) {
     if (!e || !*e) return kOriginal;
     if (!strcmp(e, "window") || !strcmp(e, "match")) return kWindow;
     if (!strcmp(e, "16:9")) return kOriginal;
+    if (!strcmp(e, "4:3")) return k4x3;
     if (!strcmp(e, "16:10")) return k16x10;
     if (!strcmp(e, "21:9")) return k21x9;
     if (!strcmp(e, "32:9")) return k32x9;
@@ -145,13 +150,26 @@ float layout_scale(float fovyDeg) {
     return t > 0 ? 360.0f * ky / t : 0.0f;
 }
 
+float scene_tan_half_fovy(float fovyDeg) {
+    if (!(fovyDeg > 1.0f && fovyDeg < 170.0f)) return 0.0f;
+    float kx = 1.0f, ky = 1.0f, fov = 1.0f;
+    if (!original() || g_fov_game.load() != 1.0f) {  // (as layout_scale)
+        factors(g_game, kx, ky);
+        fov = gameplay_fov_scale();
+    }
+    float angle = vert_plus_fovy(fovyDeg, ky * fov);
+    if (fov != 1.0f) angle = std::min(angle, 110.0f);
+    return std::tan(angle * (float)M_PI / 360.0f);
+}
+
 const char* mode_name(int m) {
-    static const char* n[kModes] = {"16:9 (original)", "Match window", "16:10", "21:9", "32:9", "custom"};
+    static const char* n[kModes] = {"16:9 (original)", "Match window", "16:10", "21:9", "32:9", "custom", "4:3"};
     return m >= 0 && m < kModes ? n[m] : "?";
 }
 float mode_value(int m) {
     switch (m) {
     case kOriginal: return kBase;
+    case k4x3: return 4.0f / 3.0f;
     case k16x10: return 16.0f / 10.0f;
     case k21x9: return 64.0f / 27.0f;  // 2560x1080 / 3440x1440-class monitors sold as 21:9
     case k32x9: return 32.0f / 9.0f;
@@ -167,8 +185,11 @@ void set_mode(int m) {
 }
 void set_window_aspect(float a) {
     if (!(a > 0.1f && a < 20.0f)) return;
-    // window resizes are continuous; steps of 0.5% keep render targets from being remade every frame
+    // Continuous resizes keep coarse steps, but exact preset-shaped windows must agree with
+    // their presets (1280x960 otherwise rounds 4/3 to 1.335 and loses a target row).
     float q = std::round(a * 200.0f) / 200.0f;
+    for (float preset : {4.0f / 3.0f, 16.0f / 10.0f, 64.0f / 27.0f, 32.0f / 9.0f})
+        if (std::fabs(a - preset) <= 0.0025f) { q = preset; break; }
     if (std::fabs(q - kBase) < 0.006f) q = kBase;  // a 16:9 window (rounded pixel sizes) is 16:9
     g_window.store(q, std::memory_order_relaxed);
 }
@@ -261,6 +282,110 @@ extern "C" void site_024F811C(Cpu* c) { stereo_clipper(c); }
 extern "C" void site_024F8168(Cpu* c) { stereo_clipper(c); }
 // dScnName_c::setView: C_MTXPerspective (file select)
 extern "C" void site_025ADB38(Cpu* c) { adjust_projection_args(c, 1, 2, false, false); }
+
+// ---- The Picto Box (issue #303, aspect_picto.h): the photo and its subjects are the 16:9 part of the
+// wider (taller) picture, as on a Wii U, not the whole picture squeezed into the 800x450 photo.
+//   dSnap_packet::draw 025BF250: copies the finder's frame out of the TV picture (colour, then depth)
+//     with drawColorTexture / drawDepthTexture(renderer, view, viewport, r6 scale, r7 position):
+//     float pairs on the stack, texture coordinates of the 1280x720 screen. The depth copy reuses
+//     the position (sp+0x28), so it is moved once, at the colour copy.
+//   dSnap_packet::DebugDraw 025BFDC0 (the capture: draw, then the subjects): the TV projection, copied
+//     to the stack and narrowed to the finder's frame, goes to matrixProjectionCtor (r4), which the
+//     subjects are drawn with into the photo's alpha channel (their ids, counted by Judge), and,
+//     halved, to setProjectionMtx(mpProjection, r4), which dSnap_project uses for the subjects'
+//     expected areas (CalcArea2D).
+// The factors are the frame's (game()), as the TV picture's targets and projection. The camera's
+// projection is off-centre in the Picto Box (m[1][2] = 0.35: the finder sits above the screen
+// centre), so in a taller picture its 16:9 part sits off the centre too; the rectangle follows it.
+// At 16:9 nothing is touched.
+namespace {
+bool picto_log() {
+    static const bool on = getenv("WWHD_PICTO_LOG") != nullptr;
+    return on;
+}
+// test aid: WWHD_PICTO_FULL_PICTURE=1 keeps the earlier behaviour (the whole wider picture squeezed
+// into the photo, subjects found in all of it), for comparisons
+bool picto_16x9() {
+    static const bool full = getenv("WWHD_PICTO_FULL_PICTURE") != nullptr;
+    return !full;
+}
+void picto_factors(float& kx, float& ky) {
+    factors(game(), kx, ky);
+    if (!picto_16x9()) kx = ky = 1.0f;
+}
+// the off-centre terms m[0][2], m[1][2] of the TV projection the photo is taken from (DebugDraw's
+// context: frame +0x18 the projection, its matrix at +0x44, as getProjectionMtx 0274D83C returns it)
+float g_picto_m02 = 0.0f, g_picto_m12 = 0.0f;
+// the TV copy's scale (and position) pairs at r6 (r7)
+void picto_crop(Cpu* c, bool movePosition) {
+    float kx, ky;
+    picto_factors(kx, ky);
+    const uint32_t scale = c->r[6], position = c->r[7];
+    float sx = (float)ldf32(scale), sy = (float)ldf32(scale + 4);
+    float px = (float)ldf32(position), py = (float)ldf32(position + 4);
+    if (picto_log())
+        LOG("[picto] %s copy: scale %.4f %.4f position %.4f %.4f, picture x%.4f wide x%.4f tall", movePosition ? "colour" : "depth",
+            sx, sy, px, py, kx, ky);
+    if (kx == 1.0f && ky == 1.0f) return;
+    picto::crop_to_16x9(px, sx, kx, -g_picto_m02);
+    picto::crop_to_16x9(py, sy, ky, g_picto_m12);
+    stf32(scale, sx);
+    stf32(scale + 4, sy);
+    if (!movePosition) return;
+    stf32(position, px);
+    stf32(position + 4, py);
+}
+// a row-major 4x4 projection on the stack
+void picto_projection(uint32_t m) {
+    float kx, ky;
+    picto_factors(kx, ky);
+    if (kx == 1.0f && ky == 1.0f && !picto_log()) return;
+    float v[16];
+    for (int i = 0; i < 16; i++) v[i] = (float)ldf32(m + 4 * i);
+    if (picto_log())
+        LOG("[picto] subject projection: x %.5f %.5f %.5f y %.5f %.5f %.5f, picture x%.4f wide x%.4f tall", v[0], v[1],
+            v[2], v[4], v[5], v[6], kx, ky);
+    if (kx == 1.0f && ky == 1.0f) return;
+    picto::narrow_to_16x9(v, kx, ky);
+    stf32(m, v[0]);
+    stf32(m + 20, v[5]);
+}
+}  // namespace
+// DebugDraw: bl draw(packet, r4 context): note the TV projection's off-centre terms
+extern "C" void site_025BFDF8(Cpu* c) {
+    g_picto_m02 = g_picto_m12 = 0.0f;
+    const uint32_t frame = ld32(c->r[4]), projection = frame ? ld32(frame + 0x18) : 0;
+    if (!projection) return;
+    g_picto_m02 = (float)ldf32(projection + 0x44 + 8);
+    g_picto_m12 = (float)ldf32(projection + 0x44 + 24);
+    if (picto_log()) LOG("[picto] TV projection off-centre %.5f %.5f", g_picto_m02, g_picto_m12);
+}
+// draw: bl drawColorTexture (the finder's frame of the TV colour picture)
+extern "C" void site_025BF5D0(Cpu* c) { picto_crop(c, true); }
+// draw: bl drawDepthTexture (the same frame of the TV depth; the position was moved at the colour copy)
+extern "C" void site_025BF7C0(Cpu* c) { picto_crop(c, false); }
+// DebugDraw: bl matrixProjectionCtor(adjusted, r4 matrix, 0): the subjects' projection
+extern "C" void site_025BFFB0(Cpu* c) { picto_projection(c->r[4]); }
+// DebugDraw: bl setProjectionMtx(mpProjection, r4 matrix, 0): dSnap_project's projection
+extern "C" void site_025C0004(Cpu* c) { picto_projection(c->r[4]); }
+
+// dSnap_packet::Execute, after Judge (r31 the packet): debug, WWHD_PICTO_LOG=1 logs each photo's
+// result and its subjects (registered objects with pixels in the photo: id type, pixels, pixels per
+// expected area, bounding box in the 800x450 photo)
+extern "C" void site_025BE898(Cpu* c) {
+    if (!picto_log()) return;
+    const uint32_t snap = c->r[31];
+    LOG("[picto] photo at aspect %.4f: result %u detail %u, %d registered", game(), ld32(snap + 0xF68),
+        ld8(snap + 0xF6C), (int)ld32(snap + 0x9C));
+    for (int i = 0, n = std::min<int>((int)ld32(snap + 0x9C), 63); i < n; i++) {
+        const uint32_t o = snap + 0xA0 + 0x3C * i;
+        const int pixels = (int)ld32(o + 0x20);
+        if (!pixels) continue;
+        LOG("[picto]   subject %d: type 0x%02X pixels %d ratio %.3f box %d,%d-%d,%d", i, ld8(o + 0x18), pixels,
+            (float)ldf32(o + 0x24), (int16_t)ld16(o + 0x28), (int16_t)ld16(o + 0x2A), (int16_t)ld16(o + 0x2C),
+            (int16_t)ld16(o + 0x2E));
+    }
+}
 
 // ---- HD layouts (nw::lyt, WWHD's nw4f): TV draws see the 16:9 layout space centred in the wider
 // screen, panes near the left/right edges move out to the new edges.
@@ -470,12 +595,49 @@ extern "C" void hook_028766CC(Cpu* c) {
     button_glyphs::calculate_pane(c, calculate_aspect_pane);
 }
 
+// Private bounded producer diagnostics: count Draw and DrawSelf separately so an
+// inherited-alpha skip remains visible without changing any selection/render gate.
+static void trace_gamepad_backdrop_pane(const char* stage, uint32_t pane) {
+    using namespace aspect;
+    static const uint64_t first = [] {
+        const char* e = std::getenv("WWHD_GAMEPAD_BACKDROP_LOG");
+        return e && *e ? std::strtoull(e, nullptr, 10) : ~uint64_t{0};
+    }();
+    if (game_frame() < first) return;
+    const auto name = name_of(pane);
+    const bool exact = name == "P_BgPattern_00";
+    char lower[25]{};
+    for (size_t i = 0; i < name.size(); ++i) {
+        const char ch = name[i];
+        lower[i] = ch >= 'A' && ch <= 'Z' ? char(ch + ('a' - 'A')) : ch;
+    }
+    const float width = float(ldf32(pane+kPaneSize));
+    const float height = float(ldf32(pane+kPaneSize+4));
+    const bool candidate = !std::strcmp(stage, "DrawSelf") &&
+        (std::strstr(lower, "bg") || std::strstr(lower, "back") ||
+         (width >= 1200.f && height >= 680.f));
+    if (!exact && !candidate) return;
+    // Separate quotas keep inactive exact-name panes from hiding actual candidates.
+    static std::atomic<unsigned> exactCount{0}, candidateCount{0};
+    auto& count = exact ? exactCount : candidateCount;
+    if (count.fetch_add(1, std::memory_order_relaxed) >= 100) return;
+    LOG("[backdrop producer] stage=%s name=%.*s game_frame=%llu pane=%08X flags=%02X alpha=%u inheritedAlpha=%u enabled=%d requested=%d capture=%d recording=%d size=%.3f,%.3f",
+        stage, int(name.size()), name.data(), (unsigned long long)game_frame(), pane, ld8(pane+0x44),
+        ld8(pane+0x45), ld8(pane+0x46),
+        int(gfx::gamepad_backdrop::enabled.load()),
+        int(gfx::gamepad_backdrop::capture_requested.load()),
+        int(gfx::gamepad_backdrop::capture_enabled()), int(gx2::recording_display_list()),
+        float(ldf32(pane+kPaneSize)), float(ldf32(pane+kPaneSize+4)));
+}
+
 // Pane::Draw(this, DrawInfo&): the render thread reports where each layout root is drawn. The
 // game thread can't tell: TV and GamePad layouts share DrawInfos and are recorded on threads that
 // don't bind the targets.
 extern "C" void hook_02877100(Cpu* c) {
     using namespace aspect;
     uint32_t pane = c->r[3];
+    trace_gamepad_backdrop_pane("Draw", pane);
+    if(guestmods::maphud::hide_pane(pane))return;
     static const uint64_t trace_frame = getenv("WWHD_ASPECT_TRACE_FRAME") ? strtoull(getenv("WWHD_ASPECT_TRACE_FRAME"), nullptr, 10) : 0;
     if (trace_frame && game_frame() == trace_frame) {
         auto trace = [](auto&& self, uint32_t p, int depth) -> void {
@@ -498,6 +660,8 @@ extern "C" void hook_02877100(Cpu* c) {
             if (root != pane && root_on_tv(root)) return;
         }
     }
+    // 60 fps (generated, framegen.h): the first layout on the TV picture ends its scene (only while on)
+    if (framegen::requested() && !ld32(pane + kPaneParent)) gx2::emit(gx2::OP_FRAMEGEN_LAYOUT, {});
     if (original()) { button_glyphs::draw_pane(c, f_02877100_orig); return; }
     uint32_t parent = ld32(pane + kPaneParent);
     if (!parent) {
@@ -555,8 +719,18 @@ void aspect::ss_reset() {
 // Scope clipping to DrawSelf, not the subtree: a background and menu content can be siblings
 // under the same container, and tabs may have an offscreen origin but visible descendants.
 static thread_local std::vector<bool> t_layoutScopes;
+static thread_local std::vector<bool> t_backdropScopes;
 extern "C" void site_0287714C(Cpu* c) {
     using namespace aspect;
+    trace_gamepad_backdrop_pane("DrawSelf", c->r[3]);
+    // Scope only this Picture DrawSelf, never its children or the containing UI.
+    // Record even while disabled: a cached list may later be replayed enabled.
+    const bool backdrop = (gfx::gamepad_backdrop::capture_enabled() ||
+                           gx2::recording_display_list()) &&
+        gfx::gamepad_backdrop::is_background(name_of(c->r[3]),
+            float(ldf32(c->r[3] + kPaneSize)), float(ldf32(c->r[3] + kPaneSize + 4)));
+    if (backdrop || !t_backdropScopes.empty()) t_backdropScopes.push_back(backdrop);
+    if (backdrop) gx2::emit(gx2::OP_GAMEPAD_BACKDROP, {1});
     // Cached prompts/dialogue can be recorded in mono and replayed after 3D is
     // enabled. Keep their 2D identity in the list, independent of the mode at
     // recording time. Immediate original-aspect mono still needs no markers.
@@ -581,6 +755,11 @@ extern "C" void site_0287714C(Cpu* c) {
     gx2::emit(gx2::OP_LAYOUT_CONTENT, {content ? 1u : 0u,1,photograph});
 }
 extern "C" void site_02877150(Cpu*) {
+    if (!t_backdropScopes.empty()) {
+        const bool backdrop = t_backdropScopes.back();
+        t_backdropScopes.pop_back();
+        if (backdrop) gx2::emit(gx2::OP_GAMEPAD_BACKDROP, {0});
+    }
     if(t_layoutScopes.empty())return;
     const bool scoped=t_layoutScopes.back();t_layoutScopes.pop_back();
     if(!scoped)return;
@@ -611,6 +790,14 @@ std::pair<float,float> particle_pane_offset(uint32_t pane) {
         } else { dx+=offset.first;dy+=offset.second; }
     }
     return {dx,dy};
+}
+// HUD particles are separate from the layout draw tree. Follow the source pane's ancestors
+// explicitly so a sparkle emitted by a child inherits the counter/heart/magic fade as well.
+float particle_pane_fade(uint32_t pane) {
+    float alpha=1.f;
+    for(unsigned depth=0;pane && depth<32;++depth,pane=ld32(pane+aspect::kPaneParent))
+        alpha*=mods::hud_fade_alpha_of(pane);
+    return alpha;
 }
 bool particle_pane_follows_aspect(uint32_t pane) {
     for(unsigned depth=0;pane && depth<32;++depth,pane=ld32(pane+aspect::kPaneParent)) {
@@ -686,7 +873,7 @@ extern "C" void hook_0282D9C0(Cpu* c) {
     const uint32_t group=ld8(emitter+0x262);
     if (group<7 || group>10) { f_0282D9C0_orig(c); return; }
     const float x=ldf32(emitter+0x22c), y=ldf32(emitter+0x230);
-    float dx=0,dy=0;
+    float dx=0,dy=0,fade=1.f;
     {
         std::lock_guard<std::mutex> lock(particle_mu);
         const auto key=particle_key(x,y);
@@ -700,14 +887,24 @@ extern "C" void hook_0282D9C0(Cpu* c) {
         if(bound!=particle_bindings.end()) {
             const auto& source=bound->second.source;
             if(aspect::name_of(source.pane)==source.name) {
+                fade=particle_pane_fade(source.pane);
                 const auto offset=particle_pane_offset(source.pane);
                 dx=offset.first-source.dx;
                 dy=source.dy-offset.second;
             }
         }
     }
+    // dPa::set (025A854C) writes the emitter's global primary alpha at +0x247.
+    // Scale only for this draw: do not alter animation, particle simulation or the authored alpha.
+    if(fade<=0.f)return;
+    const auto draw=[&] {
+        const uint8_t alpha=ld8(emitter+0x247);
+        if(fade<1.f)st8(emitter+0x247,uint8_t(std::lround(float(alpha)*fade)));
+        f_0282D9C0_orig(c);
+        if(fade<1.f)st8(emitter+0x247,alpha);
+    };
     float kx,ky; aspect::factors(aspect::game(),kx,ky);
-    if (kx==1 && ky==1 && dx==0 && dy==0) { f_0282D9C0_orig(c); return; }
+    if (kx==1 && ky==1 && dx==0 && dy==0) { draw(); return; }
     uint32_t saved[8];
     for (unsigned i=0;i<8;++i) saved[i]=ld32(projection+4*i);
     stf32(projection+12,float(ldf32(projection+12))+float(ldf32(projection))*dx);
@@ -724,7 +921,7 @@ extern "C" void hook_0282D9C0(Cpu* c) {
             LOG("[effect-draw] frame=%llu aspect=%.6f emitter=%08X group=%u position=%.3f/%.3f shift=%.3f/%.3f scale=%.6f/%.6f",(unsigned long long)frame,aspect::game(),emitter,group,x,y,dx,dy,kx,ky);
         }
     }
-    f_0282D9C0_orig(c);
+    draw();
     for (unsigned i=0;i<8;++i) st32(projection+4*i,saved[i]);
 }
 

@@ -34,8 +34,8 @@ static bool mouseCamera=false, wheelOption=false;
 namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return wheelOption;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} }
 namespace interp { void set_mode(int){} uint64_t logic_steps(){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
-namespace true60 { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }  // test scenario clock (input_sdl.cpp)
-namespace true60_test { void set_origin_step(uint64_t){} void tick(double,bool){} }
+namespace game_hooks { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }  // test scenario clock (input_sdl.cpp)
+namespace test_aids { void set_origin_step(uint64_t){} void tick(double,bool){} }
 static int lockOnResets=0,quickUseResets=0,quickUseFilters=0;static bool quickUsePending=false;
 static input::PadState quickUseSample{};
 namespace mods {
@@ -77,7 +77,7 @@ namespace overlay { void offer_controller_setup(const std::string&,const std::st
     else if (a >= input_map::kLoad1 && a <= input_map::kLoad5) ss::request_load(a-input_map::kLoad1+1);
     else if (a == input_map::kPhoto) screenshot::key_down(code);
     else if (a >= input_map::kResolution && a <= input_map::kFXAA) {
-     const char keys[] = {'R','O','M','N','6','7','8'};
+     const char keys[] = {'R','O','M','N','6','8'};
      gfxvk::graphics_hotkey(keys[a-input_map::kResolution],true);
     }
    }
@@ -225,7 +225,96 @@ static int background_controllers(){
  SDL_Quit();puts("input_sdl_test --background: hint follows the option (default off), background controller presses and rumble only with it on, keyboard and mouse released on focus loss either way: passed");
  return 0;
 }
+static int gamecube_preset() {
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
+ SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
+ assert(SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO));input::init();input::release_keys();
+ auto m=input_map::Mapping::defaults();input_map::apply_gamecube(m);input_map::set_current(m,false);
+ SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
+ d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=6;d.nbuttons=12;d.vendor_id=0x057e;d.product_id=0x0337;
+ d.name="GameCube WUP-028 synthetic";
+ auto id=SDL_AttachVirtualJoystick(&d);assert(id);
+ char guid[33]{};SDL_GUIDToString(SDL_GetGamepadGUIDForID(id),guid,sizeof guid);
+ // SDL HIDAPI WUP-028 physical button order, independent of printed button labels.
+ std::string mapping=std::string(guid)+",GC fixture,a:b0,b:b2,x:b1,y:b3,dpleft:b4,dpright:b5,dpdown:b6,dpup:b7,start:b8,rightshoulder:b9,misc3:b11,misc4:b10,leftx:a0,lefty:a1~,rightx:a2,righty:a3~,lefttrigger:a4,righttrigger:a5,type:gamecube,hint:!SDL_GAMECONTROLLER_USE_GAMECUBE_LABELS:=1,";
+ assert(SDL_AddGamepadMapping(mapping.c_str())>=0);
+ for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+ auto* joy=SDL_OpenJoystick(id);assert(joy);
+ auto poll=[&](){SDL_UpdateJoysticks();for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);input::update();return input::read();};
+ SDL_SetJoystickVirtualAxis(joy,4,-32768);SDL_SetJoystickVirtualAxis(joy,5,-32768);poll();
+ const int buttons[]={0,1,2,3,9,11,10};
+ const uint32_t bits[]={input::kA,input::kB,input::kX,input::kY,input::kR,input::kZL,input::kZR};
+ for(int i=0;i<7;++i){SDL_SetJoystickVirtualButton(joy,buttons[i],true);assert(poll().buttons==bits[i]);SDL_SetJoystickVirtualButton(joy,buttons[i],false);assert(poll().buttons==0);}
+ // The settings keyboard and menu use the exact same physical A/B as gameplay.
+ assert(input_map::face_input(input_map::kA)==input_map::kPadA);
+ assert(input_map::face_input(input_map::kB)==input_map::kPadX);
+ SDL_SetJoystickVirtualAxis(joy,4,-17000);assert(!(poll().buttons&input::kZL));
+ SDL_SetJoystickVirtualAxis(joy,4,-15000);assert(poll().buttons==input::kZL);
+ SDL_SetJoystickVirtualAxis(joy,4,-32768);poll();
+ SDL_SetJoystickVirtualAxis(joy,2,32767);assert(poll().rx>.99f);
+ SDL_SetJoystickVirtualAxis(joy,2,0);poll();
+ SDL_SetJoystickVirtualButton(joy,8,true);assert(poll().buttons==0);
+ SDL_SetJoystickVirtualButton(joy,8,false);assert(poll().buttons==input::kPlus);SDL_Delay(110);assert(poll().buttons==0);
+ SDL_SetJoystickVirtualButton(joy,8,true);poll();SDL_SetJoystickVirtualButton(joy,7,true);
+ assert(poll().buttons==input::kStickR);
+ SDL_SetJoystickVirtualButton(joy,8,false);assert(poll().buttons==0);
+ SDL_SetJoystickVirtualButton(joy,7,false);assert(poll().buttons==0);
+ // Home reaches the host shortcut before gameplay evaluation, even on a pad without Home.
+ SDL_SetJoystickVirtualButton(joy,8,true);poll();SDL_SetJoystickVirtualButton(joy,5,true);
+ poll();assert(overlayOpen);
+ SDL_SetJoystickVirtualButton(joy,8,false);SDL_SetJoystickVirtualButton(joy,5,false);poll();overlayOpen=false;poll();
+ assert(input::read().buttons==0);
+ // Per-pad custom bindings survive polling / Automatic; shared GameCube mapping stays separate.
+ m=input_map::current();int index=input_map::ensure_profile(m,guid,d.name);
+ auto view=input_map::view_for(m,index);input_map::set_pad_binding(view,input_map::kA,input_map::kPadY);
+ input_map::store_view(m,view,index);input_map::set_current(m,false);
+ SDL_SetJoystickVirtualButton(joy,3,true);assert(poll().buttons&input::kA);
+ SDL_SetJoystickVirtualButton(joy,3,false);poll();
+ std::puts("GameCube SDL physical faces, Z, dual triggers, camera, Start/chords, Settings, confirm/back and custom profile passed");
+ return 0;
+}
+
+static int gamecube_auto_prompts() {
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
+ SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,"1");
+ assert(SDL_Init(SDL_INIT_EVENTS|SDL_INIT_VIDEO));input::init();input::release_keys();
+ auto m=input_map::Mapping::defaults();input_map::set_face_auto(m,true);input_map::set_current(m,false);
+ assert(!input_map::gamecube_pad());
+ set_env("WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION","1");
+ SDL_VirtualJoystickDesc d;SDL_INIT_INTERFACE(&d);
+ d.type=SDL_JOYSTICK_TYPE_GAMEPAD;d.naxes=6;d.nbuttons=12;d.vendor_id=0x057e;d.product_id=0x0337;
+ d.name="GameCube WUP-028 automatic fixture";
+ auto id=SDL_AttachVirtualJoystick(&d);assert(id);
+ char guid[33]{};SDL_GUIDToString(SDL_GetGamepadGUIDForID(id),guid,sizeof guid);
+ std::string mapping=std::string(guid)+",GC automatic fixture,a:b0,b:b2,x:b1,y:b3,dpleft:b4,dpright:b5,dpdown:b6,dpup:b7,start:b8,rightshoulder:b9,misc3:b11,misc4:b10,leftx:a0,lefty:a1~,rightx:a2,righty:a3~,lefttrigger:a4,righttrigger:a5,type:gamecube,hint:!SDL_GAMECONTROLLER_USE_GAMECUBE_LABELS:=1,";
+ assert(SDL_AddGamepadMapping(mapping.c_str())>=0);
+ for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+ assert(input_map::gamecube_pad());
+ auto current=input_map::current();
+ assert(current.prompts==input_map::Mapping::Prompts::kAuto&&current.controllers.size()==1);
+ const int profile=input_map::profile_index(current,guid,d.name);assert(profile>=0);
+ const auto view=input_map::view_for(current,profile);
+ assert(view.preset.gamecube);
+ assert(view.pad[input_map::kA]==input_map::kPadA);
+ assert(view.pad[input_map::kB]==input_map::kPadX);
+ assert(view.pad[input_map::kX]==input_map::kPadB);
+ assert(input_map::prompt_style(view,input_map::PadFamily::kNintendo).face==input_map::FaceStyle::kGameCube);
+ SDL_DetachVirtualJoystick(id);
+ for(SDL_Event e;SDL_PollEvent(&e);)input::handle_event(e);
+ set_env("WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION",nullptr);
+ assert(!input_map::gamecube_pad());
+ assert(input_map::prompt_style(input_map::Mapping::defaults(),input_map::PadFamily::kXbox).face==input_map::FaceStyle::kXbox);
+ SDL_Quit();
+ std::puts("SDL GameCube detection selects GameCube prompts under Automatic and creates the matching per-pad layout profile: passed");
+ return 0;
+}
+
 int main(int argc,char** argv){
+ // Physical controllers stay out (a plugged-in WUP-028 reaches SDL through libusb): only the virtual pads count.
+ for(const char* backend:{SDL_HINT_JOYSTICK_HIDAPI,SDL_HINT_JOYSTICK_RAWINPUT,SDL_HINT_XINPUT_ENABLED,SDL_HINT_JOYSTICK_WGI,
+  SDL_HINT_JOYSTICK_GAMEINPUT,SDL_HINT_JOYSTICK_DIRECTINPUT,SDL_HINT_JOYSTICK_MFI,SDL_HINT_JOYSTICK_IOKIT})SDL_SetHint(backend,"0");
+ if(argc>1&&std::string(argv[1])=="--gamecube")return gamecube_preset();
+ if(argc>1&&std::string(argv[1])=="--gamecube-auto")return gamecube_auto_prompts();
  if(argc>1&&std::string(argv[1])=="--menu-matrix")return menu_matrix();
  if(argc>1&&std::string(argv[1])=="--background")return background_controllers();
  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");
@@ -338,11 +427,13 @@ int main(int argc,char** argv){
  input::held_keys(held);
  for(const char* id:{"F1","F2","F3","F4","F5"})assert(!held[input_map::key_from_id(id)]);
  auto graphicsEvent=[&](SDL_Scancode code,SDL_Window* window, bool repeat=false, Uint32 type=SDL_EVENT_KEY_DOWN,SDL_Keymod mod=SDL_KMOD_NONE){SDL_Event e{};e.type=type;e.key.scancode=code;e.key.windowID=SDL_GetWindowID(window);e.key.repeat=repeat;e.key.mod=mod;input::handle_event(e);};
- for(auto code:{SDL_SCANCODE_R,SDL_SCANCODE_O,SDL_SCANCODE_M,SDL_SCANCODE_N,SDL_SCANCODE_8,SDL_SCANCODE_6,SDL_SCANCODE_7}){
+ for(auto code:{SDL_SCANCODE_R,SDL_SCANCODE_O,SDL_SCANCODE_M,SDL_SCANCODE_N,SDL_SCANCODE_8,SDL_SCANCODE_6}){
   int before=graphicsRequests;graphicsEvent(code,game);assert(graphicsRequests==before+1);
   graphicsEvent(code,game,true);graphicsEvent(code,game,false,SDL_EVENT_KEY_UP);graphicsEvent(code,controls);graphicsEvent(code,game,false,SDL_EVENT_KEY_DOWN,SDL_KMOD_CTRL);assert(graphicsRequests==before+1);
  }
- assert(graphicsKey=='7');input::release_keys();
+ assert(graphicsKey=='6');
+ {int before=graphicsRequests;graphicsEvent(SDL_SCANCODE_7,game);assert(graphicsRequests==before);}  // key 7 (True 60) is retired
+ input::release_keys();
  // Screenshot (F10 by default): one per press, never a held game key; rebinding moves it
  graphicsEvent(SDL_SCANCODE_F10,game);graphicsEvent(SDL_SCANCODE_F10,game,true);assert(shots==1);
  input::held_keys(held);assert(!held[input_map::key_from_id("F10")]);
@@ -350,7 +441,7 @@ int main(int argc,char** argv){
  {auto m=input_map::current();m.keys[input_map::kScreenshot]={input_map::key_from_id("F9"),input_map::kNoKey};input_map::set_current(m,false);
   graphicsEvent(SDL_SCANCODE_F10,game);assert(shots==1);graphicsEvent(SDL_SCANCODE_F9,game);assert(shots==2);
   m.keys[input_map::kScreenshot]={input_map::key_from_id("F10"),input_map::kNoKey};input_map::set_current(m,false);input::release_keys();}
- set_env("WWHD_NO_HOST_INPUT","1");graphicsEvent(SDL_SCANCODE_R,game);assert(graphicsRequests==7);set_env("WWHD_NO_HOST_INPUT",nullptr);
+ set_env("WWHD_NO_HOST_INPUT","1");graphicsEvent(SDL_SCANCODE_R,game);assert(graphicsRequests==6);set_env("WWHD_NO_HOST_INPUT",nullptr);
  // the text prompt: typed text goes to it, keys of every game window to overlay::key, none to the game
  promptShown=true;input::update();
  SDL_Event typed{};typed.type=SDL_EVENT_TEXT_INPUT;typed.text.text="Link";input::handle_event(typed);assert(promptText=="Link");

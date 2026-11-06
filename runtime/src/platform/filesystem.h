@@ -40,6 +40,8 @@ inline dirent* readdir(DIR* directory) {
 inline int closedir(DIR* directory) {delete directory;return 0;}
 #else
 #include <dirent.h>
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 namespace host {
 inline int64_t file_tell(FILE* file) {
@@ -47,6 +49,20 @@ inline int64_t file_tell(FILE* file) {
  return _ftelli64(file);
 #else
  return ftello(file);
+#endif
+}
+// Writes a file's buffered data and asks the system to put it on the disk (before a rename makes it
+// the real file). False: the data may not be complete.
+inline bool flush_file(FILE* file) {
+ if(std::fflush(file)!=0)return false;
+#ifdef _WIN32
+ return _commit(_fileno(file))==0;
+#elif defined(__APPLE__)
+ // fsync leaves the data in the drive's cache on macOS; F_FULLFSYNC flushes it (some file systems,
+ // such as network ones, don't support it: then fsync)
+ return fcntl(fileno(file),F_FULLFSYNC)==0||fsync(fileno(file))==0;
+#else
+ return fsync(fileno(file))==0;
 #endif
 }
 inline int file_seek(FILE* file,uint64_t offset,int origin) {

@@ -4,7 +4,8 @@
 CLANG ?= clang
 LLD ?= ld.lld
 SDK ?= ../../runtime/guest/include
-CFLAGS = --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding -fno-builtin -nostdlib \
+# Guest entries can inherit an 8-byte-aligned native stack; Clang needs realignment.
+CFLAGS = --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -ffreestanding -fno-builtin -nostdlib \
          -fno-jump-tables -ffunction-sections -fdata-sections -I$(SDK)
 MODS = addcalc-replace hud-demo button-icons hud-cost live-input
 

@@ -17,6 +17,8 @@
 #include "guest_addr.h"
 #include "mods/guest_mods.h"
 #include "mods/code_mods.h"
+#include "mods/mod_hash.h"
+#include "randomizer_identity.h"
 #include "platform/host.h"
 #include "platform/appimage_notice.h"
 #include "platform/start_folder.h"
@@ -35,6 +37,10 @@
 
 #include "gfx/renderer.h"
 #include "gfx/shader_prebuild.h"
+#include "gfx/gamepad_backdrop_options.h"
+#if defined(__APPLE__) && defined(WWHD_HAS_METAL)
+#include "gfx/player_question.h"
+#endif
 #include "overlay/hostui.h"
 #include "render_prof.h"
 #include "background_shaders.h"
@@ -57,12 +63,21 @@
 #include "mods/mods.h"
 #include "platform/https.h"
 #include "mods/packages.h"
+#include "mods/player_models.h"
+#ifdef __ANDROID__
+#include "platform/android_code_mods.h"
+#endif
 #include "mods/save_backup.h"
+#include "mods/save_folder.h"
 #include "runtime.h"
 #include "mods/story_world_arrival.h"
 #include "overlay/editor_panel.h"
+#include "overlay/randomizer_tab.h"
 #include "editor/editor_game.h"
 #include "editor/mcp_game.h"
+#if defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
+#include <SDL3/SDL_messagebox.h>
+#endif
 #ifdef __ANDROID__
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>  // main() becomes SDL_main, called by SDLActivity
@@ -98,7 +113,11 @@ static void crash_log_raw(int fd, const char* s, size_t n) {
 }
 static void crash_out(int fd, const char* s, size_t n) { crash_context::redact(fd, {s,n}, crash_raw); }
 static void crash_log_only(int fd, const char* s, size_t n) { crash_context::redact(fd, {s,n}, crash_log_raw); }
+extern "C" void wwhd_compile_journal_on_crash() __attribute__((weak));  // gfx/vulkan/compile_journal.cpp
+
 static void crash_handler(int sig, siginfo_t* si, void* uctx) {
+    // a crash while compiling a shader or pipeline: noted so the next start leaves it out (compile_journal.h)
+    if (wwhd_compile_journal_on_crash) wwhd_compile_journal_on_crash();
     uintptr_t a = (uintptr_t)si->si_addr;
     uintptr_t base = (uintptr_t)PPC_MEM_BASE;
     char path[96];
@@ -266,6 +285,27 @@ static void init_data_imports() {
 
 // Portable mode (portable.txt next to the executable, see host::portable_user_dir): the macOS paths
 // that do not go through host::config_dir() get their existing overrides pointed into the folder.
+// save_folder.h asks the player at start-up (two saves, another computer playing): a message box
+// on the SDL host, a native alert on the macOS app (AppKit host, gfx/player_question.mm); elsewhere,
+// and in test runs, each question takes its safe answer.
+static int ask_player(const std::string& title, const std::string& text, const std::vector<std::string>& buttons) {
+#if defined(__APPLE__) && defined(WWHD_HAS_METAL) && !defined(WWHD_SDL_HOST)
+    return gfx::ask_player_alert(title, text, buttons);
+#elif defined(WWHD_SDL_HOST) && !defined(__ANDROID__)
+    const char* hidden = getenv("WWHD_HIDDEN_WINDOWS");
+    if (hidden && *hidden && strcmp(hidden, "0") != 0) return -1;
+    std::vector<SDL_MessageBoxButtonData> data;
+    for (size_t i = 0; i < buttons.size(); i++)
+        data.push_back({i == 0 ? (Uint32)SDL_MESSAGEBOX_BUTTON_RETURNKEY_DEFAULT : 0u, int(i), buttons[i].c_str()});
+    const SDL_MessageBoxData box{SDL_MESSAGEBOX_WARNING, nullptr, title.c_str(), text.c_str(), int(data.size()), data.data(), nullptr};
+    int choice = -1;
+    return SDL_ShowMessageBox(&box, &choice) ? choice : -1;
+#else
+    (void)title; (void)text; (void)buttons;
+    return -1;
+#endif
+}
+
 static void apply_portable_mode() {
     if (!host::portable()) return;
     const std::string u = host::portable_user_dir();
@@ -506,6 +546,8 @@ int main(int argc, char** argv) {
     }
 #endif
     bool warm_shaders = false;
+    bool save_arg = false;  // --save: the command line wins over a save folder chosen in the Saves tab
+    std::string randomizer_files;  // --randomizer-files
     bool install_story_notebook = false;
     bool start_mcp = false;
 #ifdef WWHD_HAS_VULKAN
@@ -516,7 +558,9 @@ int main(int argc, char** argv) {
 #endif
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--game") && i + 1 < argc) config::game_dir = argv[++i];
-        else if (!strcmp(argv[i], "--save") && i + 1 < argc) config::save_dir = argv[++i];
+        else if (!strcmp(argv[i], "--save") && i + 1 < argc) config::save_dir = argv[++i], save_arg = true;
+        // an in-app randomized game's changed files (Android passes its seed folder; the desktop finds it itself)
+        else if (!strcmp(argv[i], "--randomizer-files") && i + 1 < argc) randomizer_files = argv[++i];
         else if (!strcmp(argv[i], "--trace")) g_trace_hle = true;
         else if (!strcmp(argv[i], "--warm-shaders")) warm_shaders = true;
         else if (!strcmp(argv[i], "--install-story-notebook")) install_story_notebook = true;  // setup's step (mods/required.h)
@@ -549,7 +593,7 @@ int main(int argc, char** argv) {
     }
     crash_context::initialize();
     editor_ui::register_tab();  // the world editor's Editor tab (only with --editor)
-    editor_mcp::launch(start_mcp);  // --editor --mcp: Claude / MCP access on now; --mcp alone says it needs --editor
+    randomizer_tab::register_tab();  // Settings > Randomizer (randomized games made in setup)
     index_game_functions();
     install_crash_handler();
     start_log_file();
@@ -557,6 +601,7 @@ int main(int argc, char** argv) {
         // Settings > Graphics > Detailed performance profiling (render_prof.h; WWHD_PROFILE wins)
         std::string saved;
         rprof::start(hostui::get(rprof::kSettingKey, saved) && saved == "1");
+        gfx::gamepad_backdrop::load_options();
         // Settings > Graphics > Shader compile: off (default) / fast (background_shaders.h;
         // WWHD_BG_SHADERS wins)
         bgshaders::start(bgshaders::parse_level(hostui::get(bgshaders::kSettingKey, saved) ? saved.c_str() : nullptr));
@@ -625,18 +670,152 @@ int main(int argc, char** argv) {
         return result;
     }
 #endif
+    if (randomizer::compiled_seed()) {
+        // An in-app seed plays its changed files over the installed game (setup --randomize); a seed
+        // installed as a whole output folder is the game folder itself.
+        // (the install folder: a code-mod build's WWHD_INSTALL_DIR, the macOS app's data folder it starts in,
+        // or the folder holding the game)
+        std::vector<std::filesystem::path> installs;
+        if (const char* install = std::getenv("WWHD_INSTALL_DIR")) installs.emplace_back(install);
+        std::error_code ec;
+        installs.push_back(std::filesystem::current_path(ec));
+        installs.push_back(std::filesystem::absolute(config::game_dir, ec).parent_path());
+        if (!randomizer_files.empty() && std::filesystem::is_regular_file(std::filesystem::path(randomizer_files) / "code" / "cking.rpx", ec)) {
+            randomizer::overlay_root() = randomizer_files;  // (checked against the build's identity below)
+            LOG("[randomizer] seed files: %s over %s", randomizer_files.c_str(), config::game_dir.c_str());
+            installs.clear();
+        }
+        for (const auto& install : installs) {
+            const auto overlay = randomizer::overlay_directory(install);
+            if (!overlay.empty() && std::filesystem::is_regular_file(overlay / "code" / "cking.rpx", ec)) {
+                randomizer::overlay_root() = overlay.string();
+                LOG("[randomizer] seed files: %s over %s", randomizer::overlay_root().c_str(), config::game_dir.c_str());
+                break;
+            }
+        }
+        // The generator can replace a seed in place. Check before touching any save files.
+        const std::string rpx = randomizer::game_rpx(config::game_dir);
+        bool matches = false;
+        try {
+            matches = randomizer::valid_identity() && mods::hash::sha256_file(rpx) == g_guest_build_rpx_sha256;
+        } catch (const std::exception& error) {
+            LOG("[randomizer] cannot check %s: %s", rpx.c_str(), error.what());
+        }
+        if (!matches) {
+            const std::string message = "This randomized game does not match the prepared executable. "
+                                        "Run setup again and select the complete output folder for this seed.";
+            LOG("[randomizer] %s", message.c_str());
+            ask_player("Wind Waker HD: prepare this seed", message, {"Quit"});
+            return 1;
+        }
+    }
+    const std::string seed_namespace = randomizer::compiled_seed() ?
+        std::string("randomizer-") + g_guest_build_rpx_sha256 : std::string();
+    // Freeze declarative package metadata before recovery, cloud choices,
+    // backups or native/guest package activation can touch a save.
+    mods::manager::load_saved();
+    mods::cemu::set_vulkan(render::requested()==render::Api::Vulkan);
+    mods::content::set_game_root(config::game_dir);
+    mods::packages::set_code_mod_support(guestmods::hooks_built() && mods::code::enabled());
+#ifdef __ANDROID__
+    mods::packages::set_save_profile_support(host::android::save_profile_preparation_available(),
+        "Update the Android app before activating a mod with a separate save profile");
+#endif
+
+#ifdef __ANDROID__
+    constexpr const char* mod_recovery = "To recover from a failed launch, return to setup, turn code mods off and rebuild. Then disable the problematic mod in Settings > Mods before turning code mods on again.";
+#else
+    constexpr const char* mod_recovery = "To recover, launch with WWHD_CODE_MODS=0, disable the problematic mod in Settings > Mods, then restart.";
+#endif
+    mods::save_profile::Selection save_profile;
+    mods::save_profile::Paths save_paths;
+    save_folder::Policy save_policy;
+    try {
+        save_profile=mods::packages::startup_save_profile();
+        if (randomizer::compiled_seed() && !save_profile.empty())
+            throw std::runtime_error("A randomized executable cannot also activate a mod with a separate save profile. Use the original game executable for this mod.");
+        if (randomizer_paths::legacy_preflight_required(randomizer::compiled_seed(), warm_shaders)) {
+            std::string why;
+            if (!save_folder::legacy_randomizer_preflight(config::save_dir, host::config_dir(), save_arg, why)) {
+                LOG("[save-folder] %s", why.c_str());
+                ask_player("Wind Waker HD: separate randomized saves", why, {"Quit"});
+                return 1;
+            }
+        }
+        // Setup and launchers pass --save with the install's default folder: that is no
+        // choice of the player, so a randomized game still gets its own per-seed folder.
+        config::save_dir = randomizer::save_directory(config::save_dir, randomizer::explicit_save_folder(save_arg, config::save_dir));
+        save_paths=mods::save_profile::paths(save_profile,config::save_dir,host::config_dir(),save_arg);
+        if (randomizer::compiled_seed()) {
+            save_paths.preferences = randomizer::config_directory(host::config_dir());
+            save_paths.backups = randomizer_paths::backups(config::save_dir, seed_namespace);
+        }
+        save_policy.namespace_key=save_paths.namespace_key;
+        save_policy.backups=save_paths.backups;
+        save_policy.protected_roots=save_paths.protected_roots;
+        if(!save_profile.empty()) {
+            save_policy.actual_save_roots.push_back(config::save_dir);
+            // The ordinary cloud target is an actual save, not a newly chosen
+            // cloud container. Keep profile saves outside that existing tree.
+            if(auto normal=save_folder::read_choice(save_folder::choice_file(host::config_dir()))) {
+                if(!normal->folder.empty()) {
+                    save_policy.protected_roots.push_back(normal->folder);
+                    save_policy.actual_save_roots.push_back(normal->folder);
+                }
+                if(!normal->copy_from.empty())save_policy.protected_roots.push_back(normal->copy_from);
+            }
+#ifdef _WIN32
+            save_policy.windows_budget=true;
+#endif
+            mods::save_profile::check_budget(save_paths,save_policy.windows_budget);
+            // Launchers also pass --save: it selects the ordinary root, never
+            // permission for a profile mod to use the player's normal save.
+            config::save_dir=save_paths.save.string();
+        }
+        save_paths.protected_roots=save_policy.protected_roots;
+        ss::set_save_profile(save_profile,save_paths);
+#ifdef __ANDROID__
+        if(!warm_shaders&&!getenv("WWHD_DSWEEP")&&host::android::save_profile_preparation_available())
+            host::android::prepare_game_save(std::filesystem::absolute(config::save_dir).string());
+#endif
+    } catch(const std::exception& e) {
+        fatal("Cannot select save profile: %s\n%s",e.what(),mod_recovery);
+    }
+
     // Save backups (Mods tab): a restore chosen there is applied now, before the game reads saves.
     // A shader warm-up run (setup, Android's preparation activity) never touches saves.
-    mods::saves::startup(config::save_dir, [](const std::string& line) { LOG("%s", line.c_str()); }, !warm_shaders);
-    mods::manager::load_saved();  // player choices, before the game starts
-    mods::cemu::set_vulkan(render::requested()==render::Api::Vulkan);
-    mods::content::set_game_root(config::game_dir);  // loose imports (fan translations) find their game path
-    mods::packages::set_code_mod_support(guestmods::hooks_built() && mods::code::enabled());
+#ifndef __ANDROID__
+    // A save folder chosen in Settings > Saves (save_folder.h), for example inside a cloud folder:
+    // a change made there is applied now, and the folder is checked before the game reads its save.
+    if (!save_arg && !warm_shaders) {
+        const auto chosen = save_folder::startup(config::save_dir, save_paths.preferences, ask_player,
+                                                 [](const std::string& line) { LOG("%s", line.c_str()); }, save_policy, seed_namespace);
+        if (chosen.quit) {
+            fflush(stderr);
+            _Exit(0);
+        }
+        config::save_dir = chosen.save_dir.string();
+    }
+#endif
+    std::filesystem::path backup_dir = save_folder::safe_writes() ? save_folder::state().backups : std::filesystem::path();
+    if (randomizer::compiled_seed() && backup_dir.empty())
+        backup_dir = randomizer_paths::backups(config::save_dir, seed_namespace);
+    mods::saves::startup(config::save_dir, [](const std::string& line) { LOG("%s", line.c_str()); }, !warm_shaders,
+                         backup_dir.empty() ? save_paths.backups : backup_dir);
     // game code with mod hooks while the code-mod setting is off: guest code mods stay unloaded, the port's own
     // hooked services (story mods, the editor's live edits) still run; without hooks guestmods::init says so
     if (guestmods::hooks_built() && !mods::code::enabled())
         LOG("[code mods] off (setting or WWHD_CODE_MODS): guest code mods are not loaded; the port's own services keep their hooks");
-    mods::packages::initialize();
+    try { mods::packages::initialize(); }
+    catch(const std::exception& e) { fatal("Cannot start mods: %s\n%s",e.what(),mod_recovery); }
+    // GameCube player models: the save files' choices (mod manager) to the runtime, live (mods/player_models.h)
+    player_models::set_resolver([](const std::string& id) { return mods::packages::player_model_szs(id); });
+    player_models::set_new_game_listener([](int file) { mods::packages::player_model_new_game(file); });
+    mods::packages::set_player_model_sink([](const std::vector<std::pair<std::string, std::string>>& files) {
+        std::array<player_models::Choice, player_models::kFiles> c;
+        for (size_t i = 0; i < c.size() && i < files.size(); i++) c[i] = {files[i].first, files[i].second};
+        player_models::set_choices(c);
+    });
     mem::init();
     auto valid_mod_memory = [](uint32_t address, size_t size) {
         if (size > 1024 * 1024) return false;
@@ -658,7 +837,7 @@ int main(int argc, char** argv) {
         });
 
     LoadedModule m{};
-    std::string rpx = config::game_dir + "/code/cking.rpx";
+    std::string rpx = randomizer::game_rpx(config::game_dir);
     if (!load_rpx(rpx, m)) fatal("cannot load %s", rpx.c_str());
     if (m.entry != g_recomp_entry_point) fatal("%s does not match the recompiled code", rpx.c_str());
     LOG("[boot] loaded %s (%s build, title %s): entry %08X sda %08X sda2 %08X data end %08X", rpx.c_str(),
@@ -692,7 +871,12 @@ int main(int argc, char** argv) {
     // the world editor's inspector: only with --editor (or WWHD_EDITOR=1), so a normal start copies no manifest
     // into an editor session; set_launch_mode ran in the argument loop above, before any package loads
     if (editor::enabled()) guestmods::set_package_observer(editor::register_package);
-    guestmods::init();  // trusted manager packages, before guest threads start
+    try { guestmods::init(); }  // trusted manager packages, before guest threads start
+    catch(const std::exception& e) { fatal("Cannot load code mods: %s\n%s",e.what(),mod_recovery); }
+    // MCP reads live game globals. Publish its listener only after the RPX is mapped
+    // and package initialization is finished, so an early read_state cannot access
+    // unmapped memory or observe a partially initialized package registry.
+    editor_mcp::launch(start_mcp);  // --mcp still requires --editor
     // mods skipped because a requirement can't be met (the GameCube game for mods is gone, ...): the rest started
     for (const auto& line : mods::packages::startup_problems()) LOG("[mods] skipped: %s", line.c_str());
     // the island arrival notice (story_world_arrival.h): an overlay layer only when a loaded package

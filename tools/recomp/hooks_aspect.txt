@@ -13,3 +13,11 @@
 
 @0287714C # Pane::Draw: scope native-content clipping around DrawSelf
 @02877150 # Pane::Draw: end DrawSelf clipping before visiting children
+
+# The Picto Box (issue #303): the photo and its subjects are the 16:9 part of a wider (taller) picture
+@025BFDF8 # dSnap_packet::DebugDraw: bl draw (r4 context: the TV projection's off-centre terms)
+@025BF5D0 # dSnap_packet::draw: bl drawColorTexture (r6 scale, r7 position of the finder's frame in the TV picture)
+@025BF7C0 # dSnap_packet::draw: bl drawDepthTexture (r6 scale; the same position)
+@025BFFB0 # dSnap_packet::DebugDraw: bl matrixProjectionCtor (r4 the subjects' projection)
+@025C0004 # dSnap_packet::DebugDraw: bl setProjectionMtx (r4 dSnap_project's projection)
+@025BE898 # dSnap_packet::Execute, after Judge: WWHD_PICTO_LOG=1 logs the photo's subjects

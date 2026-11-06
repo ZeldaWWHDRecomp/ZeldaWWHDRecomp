@@ -66,7 +66,7 @@ inline Xz root_motion(float lx, float lz, int16_t angle) {
 
 enum class Action { kNone, kJump, kGraceJump, kDoubleJump };
 
-// Host state across Link's steps (full 30 Hz steps only; true 60 previews never change it).
+// Host state across Link's steps (30 Hz logic steps only).
 struct State {
     bool own = false;       // the jump under way is ours, not the game's ledge jump
     bool doubled = false;   // the double jump was used in this airtime
@@ -107,10 +107,10 @@ inline Action step(State& s, const Input& in) {
     return Action::kNone;
 }
 
-// The jump inputs between full steps (input::kVirt* bits). Under true 60 the controller is read on
-// every pass, also on the half steps the game only previews; a full step must see a press that began
-// on a half step (also one already let go again: never lost) exactly once (never doubled). see() takes
-// every read, take() runs once per full step.
+// The jump inputs between logic steps (input::kVirt* bits). The controller is read on every pass,
+// also on frame interpolation's in-between passes; a logic step must see a press that began between
+// two steps (also one already let go again: never lost) exactly once (never doubled). see() takes
+// every read, take() runs once per logic step.
 struct Latch {
     uint32_t last = 0;     // the bits as last read
     uint32_t pressed = 0;  // off -> on since the last take()

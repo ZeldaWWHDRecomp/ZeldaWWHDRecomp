@@ -58,9 +58,9 @@ int main() {
     run(kMove, false);
     for (int i = 0; i < kGraceSteps; i++) run(kProcFall, false);
     assert(run(kProcFall, true) == Action::kNone);
-    // True 60: the controller is read on full and half steps; jump decisions run on full steps only.
-    // A press that begins on a half step is neither lost (also when let go before the next full
-    // step) nor doubled (when held on through several full steps).
+    // The controller is read on logic and in-between passes; jump decisions run on logic steps only.
+    // A press that begins between two steps is neither lost (also when let go before the next
+    // step) nor doubled (when held on through several steps).
     {
         constexpr uint32_t kJ = 1;  // input::kVirtJump
         struct Read { bool full; bool held; };

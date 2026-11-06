@@ -13,6 +13,7 @@
 #include <string>
 #include <limits>
 #include <mutex>
+#include <shared_mutex>
 #include <thread>
 
 namespace gfxvk {
@@ -53,12 +54,16 @@ struct Compiler {
   VkDevice device = VK_NULL_HANDLE;
   VkPipelineCache cache = VK_NULL_HANDLE;
   std::vector<uint8_t> seed;
-  std::mutex mutex, cacheMutex;
+  std::mutex mutex;
+  // the driver cache's lifetime and merges: exclusive; compiles into it (the demand compiler's and the warm-up
+  // worker's, compile_in_demand_cache) shared, as a VkPipelineCache is internally synchronized
+  std::shared_mutex cacheMutex;
   std::condition_variable wake;
   std::deque<std::shared_ptr<Job>> queue;
   std::thread thread;
   std::atomic<unsigned> active{0};
-  bool stopped = false, changed = false;
+  bool stopped = false;
+  std::atomic<bool> changed{false};
   ~Compiler() {
     { std::lock_guard lock(mutex); stopped = true; }
     wake.notify_all();
@@ -108,11 +113,11 @@ void run(Compiler& c) {
       const auto cpuStart = stutter::trace().enabled() ? stutter::thread_cpu_now() : 0;
       const auto started = stutter::now();
       {
-        std::lock_guard cacheLock(c.cacheMutex);
+        std::shared_lock cacheLock(c.cacheMutex);
         result.result = cacheResult == VK_SUCCESS
             ? vkCreateGraphicsPipelines(c.device, c.cache, 1, job->state.get(), nullptr, &result.pipeline)
             : cacheResult;
-        c.changed |= result.result == VK_SUCCESS;
+        if (result.result == VK_SUCCESS) c.changed = true;
       }
       const auto ended = stutter::now();
       result.compileNs = ended - started;
@@ -294,12 +299,20 @@ bool finish_pipeline_demand(VkPipelineCache target) {
   if (c.thread.joinable()) c.thread.join();
   return merge_pipeline_demand_cache(target, true);
 }
+VkResult compile_in_demand_cache(VkDevice device, const VkGraphicsPipelineCreateInfo& info, VkPipeline* out) {
+  auto& c = compiler();
+  std::shared_lock lock(c.cacheMutex);
+  if (!c.cache || c.device != device) return VK_INCOMPLETE;
+  const VkResult result = vkCreateGraphicsPipelines(device, c.cache, 1, &info, nullptr, out);
+  if (result == VK_SUCCESS) c.changed = true;
+  return result;
+}
 bool merge_pipeline_demand_cache(VkPipelineCache target, bool wait) {
   auto& c = compiler();
   std::unique_lock lock(c.cacheMutex, std::defer_lock);
   if (wait) lock.lock();
   else if (!lock.try_lock()) return false;
-  if (!target || !c.cache || !c.changed) return false;
+  if (!target || !c.cache || !c.changed.load()) return false;
   const auto result = vkMergePipelineCaches(c.device, target, 1, &c.cache);
   if (result != VK_SUCCESS) return false;
   c.changed = false;

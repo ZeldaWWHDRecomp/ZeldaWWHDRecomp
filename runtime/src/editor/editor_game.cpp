@@ -60,7 +60,6 @@
 #include "../overlay/overlay.h"
 #include "../runtime.h"
 #include "../savestate.h"
-#include "../true60.h"
 #include "guest_addr.h"
 #include "../mods/mod_stages.h"
 #include "stage_files.h"
@@ -2300,8 +2299,7 @@ void logic_service(Cpu* c) {
 
 void camera_service(Cpu* c, bool logic_pass) {
     if (!enabled()) return;
-    const bool t60 = true60::enabled();
-    if (!logic_pass && !t60) return;  // an interpolation-only pass draws between logic steps: no state change
+    if (!logic_pass) return;  // an interpolation-only pass draws between logic steps: no state change
     t_game = c;
     // the launch mode's editor view: the fly camera whenever Link is in the world and free, unless playing
     // (or the fly camera was turned off by hand); it comes back after warps, loads and stage changes
@@ -2317,7 +2315,7 @@ void camera_service(Cpu* c, bool logic_pass) {
         }
     } else
         calm = 0;
-    fly_tick(c, t60 ? 1.0 / 60 : 1.0 / 30);
+    fly_tick(c, 1.0 / 30);
     t_game = nullptr;
 }
 

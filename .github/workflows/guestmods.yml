@@ -3,6 +3,11 @@ name: guestmods
 on:
   push:
     branches: ["**"]   # not on tag pushes: a release tag points at a commit CI already tested
+    # Markdown-only pushes (changelog, README, docs) start no build; docs/mod-editor.md is read by a test
+    paths:
+      - "**"
+      - "!**.md"
+      - "docs/mod-editor.md"
   pull_request:
 jobs:
   public-headers:
@@ -23,7 +28,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, ubuntu-24.04, windows-latest]
+        os: [macos-15, ubuntu-24.04, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5

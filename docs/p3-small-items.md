@@ -1,5 +1,7 @@
 # P3 runtime changes
 
+(Historical note. The True 60 mode mentioned below has since been retired; its code paths are gone.)
+
 Base: GitHub devel `872f17e2efb6733e398178d4ce08934d3fcccc60` (fresh clone, 2026-10-08). Reference ideas:
 GreenNaugahyde/ZeldaWWHDRecompAndroid (MPL-2.0), inspected read-only; no fork builds or scripts run.
 

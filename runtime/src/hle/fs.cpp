@@ -6,9 +6,13 @@
 #include "../mods/story_mail.h"
 #include "../mods/actor_model_cache.h"
 #include "../mods/game_layouts.h"
+#include "../mods/link_poses.h"
+#include "../mods/player_models.h"
+#include "../mods/achievements_host.h"
 #include "../mods/item_icons.h"
 #include "../mods/story_lyt_screen.h"
 #include "../mods/story_store.h"
+#include "../mods/save_folder_writes.h"
 #include "../platform/filesystem.h"
 
 #include <atomic>
@@ -27,6 +31,8 @@
 #include "../mods/content.h"
 #include "../mods/mod_stages_files.h"
 #include "../game_languages.h"
+#include "../randomizer_identity.h"
+#include <filesystem>
 #include "../rtl_text.h"
 #include "save_root.h"
 #include "os_time.h"
@@ -69,6 +75,8 @@ struct OpenFile {
     uint64_t limit = UINT64_MAX;  // the game's part of a save file with the story block (story_store.h)
     bool story = false;           // a save file that carries the story block
     std::string host;
+    std::string final_host;       // written through `host`, a temporary file renamed over this one when closed
+    bool failed = false;          // a write failed: the temporary file never replaces final_host
 };
 struct OpenDir {
     DIR* d;
@@ -154,8 +162,27 @@ std::string host_path(const std::string& guest) {
 #endif
 }
 
+// An in-app randomized game's own file (randomizer_identity.h overlay_root: only the files the randomizer
+// changed) for a /vol/content, /vol/code or /vol/meta path; "" when it has none.
+std::string overlay_path(const std::string& guest) {
+    const std::string& root = randomizer::overlay_root();
+    if (root.empty()) return {};
+    const std::string g = !guest.empty() && guest[0] != '/' ? "/vol/content/" + guest : guest;
+    for (const char* volume : {"/vol/content", "/vol/code", "/vol/meta"}) {
+        const size_t n = strlen(volume);
+        if (g.compare(0, n, volume) != 0 || (g.size() > n && g[n] != '/')) continue;
+        std::string p = root + "/" + (volume + 5) + g.substr(n);
+#ifndef _WIN32
+        p = resolve_case(p);
+#endif
+        std::error_code ec;
+        return std::filesystem::is_regular_file(p, ec) ? p : std::string();
+    }
+    return {};
+}
+
 // Optional content mods affect read-only content access only. A content mod's file comes first, then
-// the pack of the active language source (game_languages.h: the European or Japanese pack the player
+// an in-app randomized game's changed file (overlay_path), then the pack of the active language source (game_languages.h: the European or Japanese pack the player
 // chose, read under the name the game asks for), then the installed game.
 std::string read_path(const std::string& guest,const std::string& mode="rb") {
     if(const char* trace=std::getenv("WWHD_MOD_ACTOR_HEAPS");trace&&std::string(trace)=="1"&&guest.find("/mod")!=std::string::npos)LOG("[mod_actor_fs] %s mode=%s override=%s",guest.c_str(),mode.c_str(),actor_model_cache::archive_for(guest).c_str());
@@ -164,10 +191,14 @@ std::string read_path(const std::string& guest,const std::string& mode="rb") {
     if(mode=="r"||mode=="rb")if(auto lyt=story_lyt_screen::archive_for(guest);!lyt.empty())return lyt;  // a story layout (story_lyt_screen.h)
     if(mode=="r"||mode=="rb")if(auto stage=mod_stages::archive_for(guest);!stage.empty())return stage;  // a mod stage (mod_stages.h)
     auto override=mods::content::replacement(guest,mode);
+    if(override.empty()&&(mode=="r"||mode=="rb"))override=overlay_path(guest);
     if(!override.empty())if(const char* trace=std::getenv("WWHD_TEST_CONTENT_TRACE");trace&&std::string(trace)=="1")LOG("[content-mod] read %s -> %s",guest.c_str(),override.c_str());
     if(override.empty()&&(mode=="r"||mode=="rb"))override=game_lang::redirect(guest);
     const std::string path=override.empty()?host_path(guest):override;
     if(mode=="r"||mode=="rb")game_layouts::note_open(guest,path);  // the game's layout art for mods (game_layouts.h)
+    if(mode=="r"||mode=="rb")link_poses::note_open(guest,path);    // Link's model for the touch buttons' poses (link_poses.h)
+    if(mode=="r"||mode=="rb")player_models::note_open(guest,path);  // the pack whose Link a player model goes over (player_models.h)
+    if(mode=="r"||mode=="rb")achievements::note_open(guest,path);  // the item fanfare for the Achievements pop-up (achievements_host.h)
     // the 2D language pack with the mod items' icons (item_icons.h), built from the file the game would read
     if(mode=="r"||mode=="rb")if(auto icons=item_icons::pack_for(guest,path);!icons.empty())return icons;
     return path;
@@ -218,6 +249,15 @@ int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t ou
     if (mode.find_first_of("wa") != std::string::npos) make_parent_dirs(hp);
     std::string m = mode;
     if (m.find('b') == std::string::npos) m += "b";
+    // a chosen save folder (save_folder.h, often a cloud folder): the game writes a temporary file,
+    // renamed over the save when it is closed, so a cloud app never uploads half a save
+    std::string final_host;
+    if (save_folder::writes_through_temporary() && mode.find_first_of("wa+") != std::string::npos && gpath.rfind("/vol/save/", 0) == 0) {
+        final_host = hp;
+        hp += ".wwhd-part";
+        // updates and appends start from the save's contents; a failed copy fails the open
+        if (!save_folder::prepare_written(final_host, mode[0] != 'w')) return FS_ACCESS_ERROR;
+    }
     FILE* f = fopen(hp.c_str(), m.c_str());
     TRACE("[fs] open %s (%s) -> %s", gpath.c_str(), mode.c_str(), f ? "ok" : "not found");
     if (!f) return FS_NOT_FOUND;
@@ -232,7 +272,7 @@ int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t ou
     }
     std::lock_guard<std::mutex> lk(g_fs_mutex);
     uint32_t h = g_next_handle++;
-    g_files[h] = {f, gpath, m, limit, story, hp};
+    g_files[h] = {f, gpath, m, limit, story, hp, final_host};
     st32(out_handle, h);
     return FS_OK;
 }
@@ -282,17 +322,29 @@ HLE(coreinit, FSOpenFile) {
 }
 
 HLE(coreinit, FSCloseFile) {
-    std::string written_guest, written_host;
+    std::string written_guest, written_host, final_host;
+    bool written = false, complete = true;
     {
         std::lock_guard<std::mutex> lk(g_fs_mutex);
         auto it = g_files.find(arg(c, 2));
         if (it != g_files.end()) {
-            fclose(it->second.f);
-            if (it->second.story && it->second.mode.find_first_of("wa+") != std::string::npos)
-                written_guest = it->second.path, written_host = it->second.host;
+            // a temporary file is on the disk, whole, before it can replace the save
+            if (!it->second.final_host.empty()) complete = !it->second.failed && host::flush_file(it->second.f);
+            if (fclose(it->second.f) != 0) complete = false;
+            written = it->second.story && it->second.mode.find_first_of("wa+") != std::string::npos;
+            written_guest = it->second.path, written_host = it->second.host, final_host = it->second.final_host;
             g_files.erase(it);
         }
     }
+    // a chosen save folder: the temporary file becomes the save (retried while a cloud app holds it;
+    // kept for the next start if that never works), outside the lock
+    if (!final_host.empty()) {
+        BlockingScope b;
+        if (!complete) save_folder::discard_written(final_host);
+        else if (save_folder::commit_written(final_host)) written_host = final_host;
+        if (!complete) written = false;  // the save is unchanged: its story block stays as it is
+    }
+    if (!written) written_guest.clear();
     // a save file the game wrote: the story block goes after it again (story_store.h)
     if (!written_guest.empty()) {
         BlockingScope b;
@@ -343,7 +395,12 @@ HLE(coreinit, FSWriteFile) {
     {
         BlockingScope b;
         n = fwrite(mem::ptr(src), 1, (size_t)size * count, f);
-        fflush(f);
+        const bool flushed = fflush(f) == 0;
+        if (n != (size_t)size * count || !flushed) {  // a full disk or an I/O error
+            std::lock_guard<std::mutex> lk(g_fs_mutex);
+            auto it = g_files.find(arg(c, 5));
+            if (it != g_files.end()) it->second.failed = true;
+        }
     }
     ret(c, (uint32_t)(n / size));
 }
@@ -382,6 +439,7 @@ HLE(coreinit, FSReadDir) {
         struct stat st;
         auto path=it->second.path + "/" + de->d_name;
         auto replacement=mods::content::replacement(it->second.gpath + "/" + de->d_name);
+        if(replacement.empty())replacement=overlay_path(it->second.gpath + "/" + de->d_name);
         if(!replacement.empty())path=std::move(replacement);
         if (stat(path.c_str(), &st) != 0) continue;
         const std::string entry = it->second.gpath + "/" + de->d_name;

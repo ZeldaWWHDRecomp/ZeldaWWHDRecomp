@@ -5,8 +5,10 @@
 //   WWHD_MOD_MOUSE_CAMERA=1    mouse camera (WWHD_MOD_MOUSE_SENS=0.15 degrees per point)
 //   WWHD_MOD_FIRST_PERSON=1    first person on R3 / mouse wheel
 //   WWHD_MOD_QUICK_USE=1       one-press items against locked enemies (quick_use.cpp)
-//   WWHD_MOD_QUICK_DOORS=1     quick doors
+//   WWHD_MOD_QUICK_DOORS=1     quick doors (WWHD_MOD_DOOR_MODE=walk: walk through, WWHD_MOD_WALK_DOORS_A=1 with A)
 //   WWHD_MOD_FAST_SCENES=1     fast scene changes
+//   WWHD_MOD_INSTANT_TEXT=1    instant text (instant_text.cpp)
+//   WWHD_MOD_NO_TEXT_PAUSES=1  no pauses in texts (instant_text.cpp)
 //   WWHD_MODS_TRACE=path       log of mod decisions and timing events (door events, scene changes,
 //                              Link's control), one line per event with the logic step
 #include "mods.h"
@@ -14,7 +16,6 @@
 #include "sprint_pose.h"
 #include "guest_addr.h"
 #include "../input.h"
-#include "../true60.h"  // dt(): the per-step tick must advance once per original 30 Hz step
 
 #include <atomic>
 #include <cstdarg>
@@ -45,6 +46,11 @@ std::atomic<bool> g_mouse{env_on("WWHD_MOD_MOUSE_CAMERA")};
 std::atomic<float> g_sens{env_f("WWHD_MOD_MOUSE_SENS", 0.15f)};
 std::atomic<bool> g_fp{env_on("WWHD_MOD_FIRST_PERSON")};
 std::atomic<bool> g_doors{env_on("WWHD_MOD_QUICK_DOORS")};
+std::atomic<int> g_door_mode{[] {
+    const char* e = getenv("WWHD_MOD_DOOR_MODE");
+    return e && std::string(e) == "walk" ? int(kDoorWalk) : int(kDoorFaster);
+}()};
+std::atomic<bool> g_doors_by_a{env_on("WWHD_MOD_WALK_DOORS_A")};
 std::atomic<bool> g_move{env_on("WWHD_MOD_MOVE_SPEED")};
 std::atomic<int> g_move_mode{(int)MoveMode::kHold};
 // WWHD_MOD_MOVE_ANIM=native|dash|sprint is the animation test aid.
@@ -94,8 +100,7 @@ constexpr float kRampTau = 0.15f;  // seconds; the ramp's time constant
 std::atomic<bool> g_scenes{env_on("WWHD_MOD_FAST_SCENES")};
 
 // ---- the animation cadence follows the boost (daPy_lk_c::setFrameCtrl 023DE788) ----
-// The rate the game stores is the authored one: true60 only scales the advance inside
-// J3DFrameCtrl::update, transiently, so scaling the stored rate composes with true 60. The hook
+// The rate the game stores is the authored one. The hook
 // records what the game asked for, the per-step tick follows the ramp, and the authored rate goes
 // back when the boost ends. An entry the game overwrote itself is dropped, so the mod never fights
 // the game for a field it owns.
@@ -150,6 +155,17 @@ bool first_person_wheel() { return g_fp.load(std::memory_order_relaxed); }
 void set_first_person_wheel(bool on) { g_fp = on; note("first person on R3 / mouse wheel", on); }
 bool quick_doors() { return g_doors.load(std::memory_order_relaxed); }
 void set_quick_doors(bool on) { g_doors = on; note("quick doors", on); }
+DoorMode door_mode() { return DoorMode(g_door_mode.load(std::memory_order_relaxed)); }
+void set_door_mode(DoorMode m) {
+    g_door_mode = int(m);
+    LOG("[mods] quick doors: %s", m == kDoorWalk ? "walk through" : "faster");
+}
+bool walk_doors() { return quick_doors() && door_mode() == kDoorWalk; }
+bool walk_doors_by_a() { return g_doors_by_a.load(std::memory_order_relaxed); }
+void set_walk_doors_by_a(bool on) {
+    g_doors_by_a = on;
+    LOG("[mods] walk-through doors open %s", on ? "with A" : "when Link comes near");
+}
 bool fast_scenes() { return g_scenes.load(std::memory_order_relaxed); }
 void set_fast_scenes(bool on) { g_scenes = on; note("fast scene changes", on); }
 
@@ -192,8 +208,8 @@ MoveHud move_hud() {
             g_move_exhausted.load(std::memory_order_relaxed)};
 }
 
-// One logic step of the boost. Called from the 023FD39C site (true60_link.cpp) on every pass; the
-// state advances once per original 30 Hz step (previews only reuse the ramp). Returns the factor
+// One logic step of the boost. Called from the 023FD39C site (game_hooks.cpp) on each of Link's
+// steps; the state advances once per 30 Hz step. Returns the factor
 // the site multiplies the horizontal speed by, which is exactly 1 whenever the mod is off.
 float link_move_factor(uint32_t link) {
     if (!move_speed() || !link) {
@@ -218,7 +234,7 @@ float link_move_factor(uint32_t link) {
     const uint32_t buttons = g_move_buttons.load(std::memory_order_relaxed);
     const bool roll_a = move_speed_button() == kMoveButtonRollA;
     const uint32_t proc = ld32(link + 0x65F0);
-    if (true60::dt() >= 1.0f) {  // a full step, not a true60 preview
+    {  // one 30 Hz logic step
         const float dt = 1.f / 30.f;
         const float seconds = move_speed_stamina_seconds();
         // "Roll, then hold A" is held by nature (A is the game's own button): the boost is the state
@@ -308,7 +324,7 @@ float link_move_factor(uint32_t link) {
 }
 
 void move_start_effect(Cpu* c, uint32_t link) {
-    if (!c || !link || g_move_dust_pending != link || true60::dt() < 1.f) return;
+    if (!c || !link || g_move_dust_pending != link) return;
     if (move_speed_land_factor() <= 1.f) { g_move_dust_pending = 0; return; }
     // Reuse the native one-shot land-smoke helper, which stops emission after one particle step.
     // Keep the ordinary foot emitters untouched. No dust in water, midair, lock-on or a demo.
@@ -351,7 +367,7 @@ void move_start_effect(Cpu* c, uint32_t link) {
 // few logic steps so it reads as a trail rather than another burst. The game's own foot emitters
 // are left alone; no trail in water, midair, lock-on, demos or during a forward roll.
 void move_trail_effect(Cpu* c, uint32_t link) {
-    if (!c || !link || true60::dt() < 1.f) return;
+    if (!c || !link) return;
     const bool running = g_move_boosted.load(std::memory_order_relaxed) && ld32(link + 0x65F0) == kProcMove;
     if (!running || move_speed_land_factor() <= 1.f) { g_move_trail_step = 0; return; }
     if (++g_move_trail_step < 5) return;
@@ -385,7 +401,7 @@ void move_trail_effect(Cpu* c, uint32_t link) {
 // a light foam trail behind. Uses the native water element (sea-coloured, same one-shot helper the
 // dust uses), so the game's own wake emitters are left alone. No effects in demos or out of water.
 void move_swim_effect(Cpu* c, uint32_t link) {
-    if (!c || !link || true60::dt() < 1.f) return;
+    if (!c || !link) return;
     const bool swimming = g_move_boosted.load(std::memory_order_relaxed) && ld32(link + 0x65F0) == kProcSwimMove;
     if (!swimming || move_speed_swim_factor() <= 1.f) { g_move_swirl_sign = 0; g_move_swim_trail_step = 0; return; }
     const uint32_t play = GD(0x1046F0B0), manager = ld32(play + 0x5AB0);

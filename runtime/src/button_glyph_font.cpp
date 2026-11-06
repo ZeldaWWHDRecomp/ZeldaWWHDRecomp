@@ -146,7 +146,56 @@ std::vector<uint8_t> button_atlas(const std::array<uint32_t,kAtlasGlyphs>& recor
     for (int face = 0; face < 4; face++) for (bool colour : {true, false}) for (int column = 0; column < 2; column++)
         for (int y = 0; y < 64; y++) for (int x = 0; x < 64; x++)
             put(shape_row(face, colour), column, x, y, face_shape(face, colour, column == 0, x, y));
+    for (int face = 0; face < 4; ++face) {
+        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+            put(gamecube_row(face), 0, x, y, gamecube_icon(face, true, x, y));
+            put(gamecube_row(face), 1, x, y, gamecube_icon(face, false, x, y));
+        }
+    }
+    for (int shoulder = 0; shoulder < 4; ++shoulder) {
+        for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+            put(gamecube_shoulder_row(shoulder), 0, x, y, gamecube_shoulder_icon(shoulder, true, x, y));
+            put(gamecube_shoulder_row(shoulder), 1, x, y, gamecube_shoulder_icon(shoulder, false, x, y));
+        }
+    }
+    for (int y = 0; y < 64; ++y) for (int x = 0; x < 64; ++x) {
+        put(gamecube_cstick_row(), 0, x, y, gamecube_cstick_icon(true, x, y));
+        put(gamecube_cstick_row(), 1, x, y, gamecube_cstick_icon(false, x, y));
+        put(gamecube_start_row(), 0, x, y, gamecube_start_icon(true, x, y));
+        put(gamecube_start_row(), 1, x, y, gamecube_start_icon(false, x, y));
+    }
     return atlas;
+}
+
+// Compose a single 64x64 keycap from native glyph records. Preserve aspect ratio so long
+// labels remain words rather than stretched individual characters. No external font assets.
+std::vector<uint8_t> keycap_pixels(std::span<const uint32_t> records) {
+    if (records.empty() || records.size() > 32) return {};
+    std::vector<Glyph> glyphs(records.size());
+    int width = 0, height = 0;
+    for (size_t i = 0; i < records.size(); ++i) {
+        if (!read_glyph(records[i], glyphs[i])) return {};
+        width += std::max(glyphs[i].advance, glyphs[i].width + glyphs[i].left);
+        height = std::max(height, glyphs[i].height);
+    }
+    if (width <= 0 || height <= 0) return {};
+    const float scale = std::min(54.f / width, 32.f / height);
+    const float ox = (64-width*scale)/2, oy = (64-height*scale)/2;
+    std::vector<uint8_t> pixels(64*64*4);
+    for (int y=0; y<64; ++y) for (int x=0; x<64; ++x) {
+        float coverage = 0; int origin = 0;
+        for (const auto& glyph : glyphs) {
+            coverage = std::max(coverage, glyph.sample((x-ox+.5f)/scale-origin-glyph.left-.5f, (y-oy+.5f)/scale-.5f));
+            origin += std::max(glyph.advance, glyph.width+glyph.left);
+        }
+        const uint32_t bg = shoulder_background(x,y);
+        const int alpha = std::clamp<int>(std::lround(coverage),0,255);
+        const int shade = (36*alpha + int(bg>>24)*(255-alpha)+127)/255;
+        const int offset = (y*64+x)*4;
+        pixels[offset]=pixels[offset+1]=pixels[offset+2]=shade;
+        pixels[offset+3]=std::max<int>(bg&255,alpha);
+    }
+    return pixels;
 }
 
 }  // namespace button_glyphs

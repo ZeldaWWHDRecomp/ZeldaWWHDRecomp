@@ -65,6 +65,7 @@ namespace ss {class NativeRestorePipelineIssuer {public:
  static void after_thaw(story_native_restore_resume::LoadWindow&w){w.after_thaw();}
 };}
 #include "guest_addr.h"
+#include "randomizer_identity.h"
 #include "full_state_header.h"
 #include "full_state_stream.h"
 #include "input.h"
@@ -77,6 +78,7 @@ namespace ss {class NativeRestorePipelineIssuer {public:
 #include <lz4.h>
 #endif
 #include "platform/host.h"
+#include "platform/memory_trim.h"
 #include "gfx/renderer.h"
 #include <sys/stat.h>
 #ifndef _WIN32
@@ -89,17 +91,24 @@ namespace ss {class NativeRestorePipelineIssuer {public:
 #include "controller_reapply.h"
 #include "crashrec.h"
 #include "portable_state.h"
+#include "portable_restart.h"
 #include "fixed_seed.h"
 #include "hle/os_time.h"
 #include "state_memory.h"
 #include "state_file_section.h"
 #include "mods/guest_mods.h"
+#include "mods/native_actor_profiles.h"
+#include "mods/guest_profile_state.h"
 #include "mods/mods.h"
 #include "mods/guest_state_section.h"
+#include "mods/save_profile.h"
+#include "mods/save_profile_state.h"
 #include "mods/story_chart.h"
 #include "quit_prompt.h"
 #include "rumble.h"
 #include "save_convenience.h"
+#include "mods/player_models.h"
+#include "mods/player_models_core.h"
 
 // module sections
 bool threads_ss_save(ss::Writer& w, std::string& why);
@@ -131,6 +140,14 @@ namespace interp { uint64_t logic_steps(); }
 namespace ss {
 namespace {
 
+mods::save_profile::Selection g_save_profile;
+mods::save_profile::Paths g_save_profile_paths;
+bool g_save_profile_configured=false,g_profile_state_dir_used=false;
+std::string g_profile_state_directory;
+mods::save_profile::StateIdentity current_profile_identity() {
+    return {g_save_profile.namespace_key(),g_save_profile.owner,g_save_profile.fingerprint};
+}
+
 constexpr char kMagic[8] = {'W', 'W', 'H', 'D', 'S', 'T', 'A', 'T'};
 constexpr uint32_t kVersion = kStreamVersion;
 #ifdef __APPLE__
@@ -153,6 +170,8 @@ enum : uint32_t {
     kSecDispatch = 'DSPT',
     kSecMemory = 'MEM ',
     kSecGuestMods = 'GMOD',
+    kSecGuestProfiles = 'GPRF',
+    kSecSaveProfile = 'SPID',
     kSecAspectParticles = 'APAR',
     kSecOsTime = 'OSTB',  // the calendar clock's bias (hle/os_time.h); absent in older states
 };
@@ -161,12 +180,17 @@ using Region=MemoryRegion;
 
 std::vector<Region> regions() {
     uint32_t top = (mem::runtime_top() + kChunk - 1) & ~(kChunk - 1);
-    return {{mem::kMem2Start, mem::kMem2End - mem::kMem2Start},
+    std::vector<Region> r = {{mem::kMem2Start, mem::kMem2End - mem::kMem2Start},
             {mem::kRuntimeStart, top - mem::kRuntimeStart},
             {mem::kFixedStart, mem::kFixedSize},
             {mem::kFgBucket, mem::kFgBucketSize},
             {mem::kMem1, mem::kMem1Size},
             {guestmods::kRegionStart,guestmods::kRegionSize}};
+    // a GameCube player model's appended data while one is in (mods/player_models.h); states without one are as before
+    uint32_t pmUsed = 0;
+    const uint32_t pm = player_models::area(&pmUsed);
+    if (pmUsed) r.push_back({pm, (pmUsed + kChunk - 1) & ~(kChunk - 1)});
+    return r;
 }
 
 // A snapshot in memory: header + payload (sections); memory chunks point into the payload.
@@ -199,13 +223,16 @@ struct Snapshot {
         std::string fileWhy;
         if(!check_file_section(section(kSecFiles),fileWhy))return false;
         if(!guestmods::read_mod_set(section(kSecGuestMods),guest_mods))return false;
+        mods::save_profile::StateIdentity profile;
+        if(!mods::save_profile::read_state_identity(section(kSecSaveProfile),profile))return false;
+        if(!mods::save_profile::valid_state_requirement(h.reserved,profile))return false;
         Reader m=section(kSecMemory);
         if(!read_regions(m,regs,chunks))return false;
         // Never allow file-provided regions to select host-only/unmapped memory.
         const std::vector<Region> allowed={{mem::kMem2Start,mem::kMem2End-mem::kMem2Start},
             {mem::kRuntimeStart,mem::kHostStart-mem::kRuntimeStart},{mem::kFixedStart,mem::kFixedSize},
             {mem::kFgBucket,mem::kFgBucketSize},{mem::kMem1,mem::kMem1Size},
-            {guestmods::kRegionStart,guestmods::kRegionSize}};
+            {guestmods::kRegionStart,guestmods::kRegionSize},{player_models::kArea,player_models::kAreaSize}};
         for(const auto& region:regs) {
             bool valid=false;
             for(const auto& range:allowed)if(region.base>=range.base && uint64_t(region.base)+region.size<=uint64_t(range.base)+range.size)valid=true;
@@ -270,6 +297,11 @@ std::string state_dir() {
             d=host::config_dir()+"/states";
 #endif
         }
+        // Declarative SDK profiles already selected and validated their owned
+        // state location. Ordinary/translated seeds retain the existing layout.
+        if(!g_save_profile.empty())d=g_profile_state_directory;
+        else d=randomizer::seed_directory(d);
+        g_profile_state_dir_used=true;
         std::error_code ec; std::filesystem::create_directories(d,ec);
         return d;
     }();
@@ -320,7 +352,7 @@ void build_uuid(uint8_t out[16]) {
 uint64_t game_id() {
     static const uint64_t id = [] {
         uint64_t h = 0xcbf29ce484222325ull;
-        FILE* f = fopen((config::game_dir + "/code/cking.rpx").c_str(), "rb");
+        FILE* f = fopen(randomizer::game_rpx(config::game_dir).c_str(), "rb");
         if (!f) return h;
         std::vector<uint8_t> buf(1 << 20);
         size_t n;
@@ -591,6 +623,12 @@ bool do_save_fast(int slot, const std::string& destination, std::function<void(b
     put_section(*payload, kSecDispatch, w);
     w=Writer();guestmods::save_mod_set(w,guestmods::enabled_mods());
     put_section(*payload,kSecGuestMods,w);
+    w=Writer();w.str(native_actor_profiles::guest_identity());
+    put_section(*payload,kSecGuestProfiles,w);
+    if(!g_save_profile.empty()) {
+        w=Writer();mods::save_profile::write_state_identity(w,current_profile_identity());
+        put_section(*payload,kSecSaveProfile,w);
+    }
     w=Writer();aspect::ss_save_particles(w);
     put_section(*payload,kSecAspectParticles,w);
     w=Writer();w.u64((uint64_t)os_time::bias());
@@ -607,6 +645,7 @@ bool do_save_fast(int slot, const std::string& destination, std::function<void(b
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kFastVersion;
+    h.reserved = g_save_profile.empty() ? 0 : kRequiresSaveProfile;
     h.header_size = sizeof(Header);
     h.created = (uint64_t)time(nullptr);
     std::string stage = stage_name();
@@ -717,6 +756,12 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     put_section(*payload, kSecDispatch, w);
     w=Writer();guestmods::save_mod_set(w,guestmods::enabled_mods());
     put_section(*payload,kSecGuestMods,w);
+    w=Writer();w.str(native_actor_profiles::guest_identity());
+    put_section(*payload,kSecGuestProfiles,w);
+    if(!g_save_profile.empty()) {
+        w=Writer();mods::save_profile::write_state_identity(w,current_profile_identity());
+        put_section(*payload,kSecSaveProfile,w);
+    }
     w=Writer();aspect::ss_save_particles(w);
     put_section(*payload,kSecAspectParticles,w);
     w=Writer();w.u64((uint64_t)os_time::bias());
@@ -724,6 +769,7 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kVersion;
+    h.reserved = g_save_profile.empty() ? 0 : kRequiresSaveProfile;
     h.header_size = sizeof(Header);
     h.created = (uint64_t)time(nullptr);
     std::string stage = stage_name();
@@ -766,7 +812,21 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     return true;
 }
 
+// Android about to end the game for lack of memory (memory_trim.h, save_refused): the save is refused with a message
+// instead of being started (GreenNaugahyde/ZeldaWWHDRecompAndroid v0.9.9, issue #51). Automatic states stay quiet.
+int save_min_headroom_mb() {
+    static const int v = getenv("WWHD_STATE_MIN_HEADROOM_MB") ? atoi(getenv("WWHD_STATE_MIN_HEADROOM_MB")) : memory_trim::kSaveMinHeadroomMb;
+    return v;
+}
 bool do_save(int slot,const std::string& destination = {},std::function<void(bool,const std::string&)> done = {}) {
+    if (const int headroom = memory_trim::headroom_mb(); memory_trim::save_refused(headroom, save_min_headroom_mb())) {
+        LOG("[savestate] %s: not saved: %d MB above the system's low-memory line (needs %d)", slot_label(slot).c_str(), headroom,
+            save_min_headroom_mb());
+        if (!is_auto(slot) && slot != -1) message("%s: not saved (too little free memory, close other apps)", slot_label(slot).c_str());
+        const std::string why = "too little free memory";
+        if (done) done(false, why); else report_done(slot, false, why);
+        return true;
+    }
     return use_streaming_save(save_path()) ? do_save_streaming(slot,destination,std::move(done)) : do_save_fast(slot,destination,std::move(done));
 }
 
@@ -774,8 +834,18 @@ void cancel_portable_arrival(const std::string&);
 
 bool do_load(const std::shared_ptr<Snapshot>& s) {
     auto refused=[&](const std::string& why){s->load_result.complete(false,why);return true;};
+    if(!mods::save_profile::compatible_full_state(s->section(kSecSaveProfile),current_profile_identity())) {
+        message("%s: save profile or trusted package differs",slot_label(s->slot).c_str());
+        return refused("save profile or trusted package differs");
+    }
     for(uint32_t tag:{kSecThreads,kSecHeaps,kSecFiles,kSecAudio,kSecGx2,kSecAllocs,kSecDispatch})
         if(!s->sections.count(tag)){message("%s: incomplete state",slot_label(s->slot).c_str());return refused("incomplete state");}
+    {
+        if(!native_actor_profiles::compatible_state(s->section(kSecGuestProfiles),native_actor_profiles::guest_identity())){
+            message("%s: actor profile/code fingerprint differs; use a portable state",slot_label(s->slot).c_str());
+            return refused("actor profile/code fingerprint differs");
+        }
+    }
     // a state made in a mod stage needs the package that makes the stage (its rooms load from the stage cache)
     if(mod_stages::missing(std::string(s->h.area,strnlen(s->h.area,sizeof s->h.area)))){message("%s: made in a mod stage that no installed package makes",slot_label(s->slot).c_str());return refused("made in a mod stage that no installed package makes");}
     mods::fast_forward_reset();
@@ -1117,6 +1187,7 @@ bool capture_portable(Cpu* c, pstate::State& s, std::string& why) {
     s.game_hash = hex64(game_id());
     s.runtime = std::string(build::version()) + " (" + build::commit() + ")";
     s.guest_mods=guestmods::enabled_mods();
+    s.save_profile=g_save_profile.namespace_key();
     s.created = now_text();
     s.file_slot = slot;
     s.controller = input::pro_controller() ? 2 : 1;
@@ -1153,6 +1224,9 @@ void apply_hd_sections(Cpu* c, const pstate::State& s) {
 
 // puts a portable state into the running game; false + retry when the game is not ready yet
 bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retry) {
+    if(!mods::save_profile::portable_compatible(s.save_profile,g_save_profile.namespace_key())) {
+        why="portable state belongs to another save profile";retry=false;return false;
+    }
     mods::quick_use_reset();
     mods::item_ring_reset();
     mods::touch_talk_reset();
@@ -1203,19 +1277,19 @@ bool apply_portable(Cpu* c, const pstate::State& s, std::string& why, bool& retr
     st8(rs + 0, (uint8_t)s.room);
     st16(rs + 0x16, (uint16_t)s.angle_y);
     for (int i = 0; i < 3; i++) stf32(rs + 0x18 + 4 * i, s.pos[i]);
-    // player parameters (daPy_lk_c::setParamData): room, start mode 0 (standing), no start event
-    st32(rs + 0x24, (uint32_t)(s.room & 0x3F) | 0xFF000000u);
-    stf32(rs + 0x28, 0.0);  // last scene speed and mode: a plain start
-    st32(rs + 0x2C, 0);
+    // Native player entry: keep crawl states low enough for their saved tunnel position.
+    st32(rs + 0x24, (uint32_t)(s.room & 0x3F) | (pstate::restore_crawl(s) ? 5u << 12 : 0u) | 0xFF000000u);
+    stf32(rs + 0x28, 0.0);  // no automatic movement through the saved tunnel
+    st32(rs + 0x2C, pstate::restart_scene_mode(s));
     char name[8] = {};
     memcpy(name, s.stage.data(), std::min<size_t>(s.stage.size(), 7));
     for (int i = 0; i < 8; i++) st8(kNextStage + i, (uint8_t)name[i]);
     const uint16_t point = 0xFFFD;  // dStage_playerInit reads the independent turn-restart record
     {
         // daPy_lk_c::getDayNightParamData without the Wind Waker parts (event 0xCC, flag 0x40: the
-        // conducting animation): standing on foot, or mode 2 on a restored boat; no start event.
+        // conducting animation): standing, native crawl entry, or a restored boat; no start event.
         // A foot-player restore must not create or reposition a boat.
-        uint32_t param = (uint32_t)(s.room & 0x3F) | (uint32_t)(s.has_ship && s.on_ship ? 2 : 0) << 12 | 0xFF000000u | (s.has_ship ? 0x100u : 0u);
+        uint32_t param = pstate::restart_parameters(s);
         for (int i = 0; i < 3; i++) {
             stf32(buf + 4 * i, s.pos[i]);
             stf32(buf + 0x10 + 4 * i, s.ship_pos[i]);
@@ -1254,6 +1328,9 @@ bool read_portable(const std::string& path, pstate::State& s, std::string& why) 
     if (!read_text(path, text, why)) return false;
     if (!pstate::read(text, s, why)) return false;
     if (s.title_id != title_id()) { why = "made with another game (title " + s.title_id + ")"; return false; }
+    if(!mods::save_profile::portable_compatible(s.save_profile,g_save_profile.namespace_key())) {
+        why="portable state belongs to another save profile";return false;
+    }
     return true;
 }
 
@@ -1281,7 +1358,7 @@ std::string g_last_portable;      // newest portable state written or loaded (un
 // loads keep their own marker (g_last_load_frame), which crash recovery reads; test aids that count
 // frames after "a load" take the newer of the two (dynres.cpp).
 std::atomic<uint64_t> g_last_arrival_frame{0};
-struct Arrival { std::string stage; float pos[3]; uint64_t frame = 0; uint32_t link_id = 0; int frames = 0; std::shared_ptr<pstate::State> s; LoadResult result; } g_arrival;
+struct Arrival { std::string stage; float pos[3]; uint64_t frame = 0; uint32_t link_id = 0; int frames = 0; std::shared_ptr<pstate::State> s; LoadResult result; bool crawl_stopped = false; } g_arrival;
 
 void cancel_portable_arrival(const std::string&why){
     auto result=g_arrival.result;
@@ -1440,12 +1517,27 @@ void watch_arrival(Cpu* c) {
         CallScope scope(c);
         apply_hd_sections(c, *g_arrival.s);
     }
+    // The new actor can exist before its procedure is initialized. Wait for native
+    // crawl entry, then stop its initial moving cycle once; with no input it would
+    // otherwise coast ~30 units to the next half-cycle on every reload. Native
+    // crawl input restarts the animation normally. HD frame-control rate is +0.
+    if (!g_arrival.crawl_stopped && pstate::restore_crawl(*g_arrival.s) && ld32(link+kLinkProc)==0x10 &&
+        ld16(link+0x420)==4 && ld32(link+0x430)==0x0E) {
+        stf32(link+0x5898,0.0f); // mFrameCtrlUnder[0].mRate
+        g_arrival.crawl_stopped = true;
+        LOG("[savestate] portable load: crawl entry animation stopped at arrival frame %d",g_arrival.frames);
+    }
     if (g_arrival.frames < 30) return;  // let Link settle (start animation, ground check)
     float p[3];
     for (int i = 0; i < 3; i++) p[i] = (float)ldf32(link + kActorPos + 4 * i);
     float dx = p[0] - g_arrival.pos[0], dy = p[1] - g_arrival.pos[1], dz = p[2] - g_arrival.pos[2];
     LOG("[savestate] portable load: arrived in %s room %d at %.1f %.1f %.1f (distance %.1f from the saved position)",
         stage_name().c_str(), (int8_t)ld8(link + kActorRoom), p[0], p[1], p[2], sqrtf(dx * dx + dy * dy + dz * dz));
+    if (pstate::restore_crawl(*g_arrival.s)) {
+        const int proc=(int)ld32(link+kLinkProc);
+        LOG("[savestate] portable load: crawl entry %s (procedure 0x%X)",
+            pstate::crawl_procedure(proc) ? "restored" : "has ended", proc);
+    }
     if (g_arrival.s->has_ship) {
         const uint32_t ship = ld32(kShipPtr);
         const int proc = (int)ld32(link + kLinkProc);
@@ -1568,7 +1660,8 @@ SlotInfo portable_slot_info(int slot) {
     }
     info.used = true;
     pstate::State s;
-    info.compatible = pstate::read(text, s, why) && s.title_id == title_id();
+    info.compatible = pstate::read(text, s, why) && s.title_id == title_id() &&
+        mods::save_profile::portable_compatible(s.save_profile,g_save_profile.namespace_key());
     if (info.compatible) {
         // "2026-10-08 14:03:11" -> "Oct 08 14:03:11" like the full states
         static const char* mon[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
@@ -1811,6 +1904,44 @@ std::atomic<uint32_t> g_seeded_arrival_counter{0};
 uint64_t seeded_arrival_frame() { return g_seeded_arrival_frame.load(); }
 uint64_t seeded_arrival_step() { return g_seeded_arrival_step.load(); }
 uint32_t seeded_arrival_counter() { return g_seeded_arrival_counter.load(); }
+
+void set_save_profile(const mods::save_profile::Selection& selected,const mods::save_profile::Paths& paths) {
+    const mods::save_profile::StateIdentity identity{selected.namespace_key(),selected.owner,selected.fingerprint};
+    if(!identity.valid()||paths.namespace_key!=selected.namespace_key())
+        throw mods::save_profile::Error("Invalid frozen state save-profile identity");
+    if(g_save_profile_configured) {
+        if(selected!=g_save_profile)throw mods::save_profile::Error("State save profile cannot change during a session");
+        return;
+    }
+    if(g_profile_state_dir_used&&!selected.empty())
+        throw mods::save_profile::Error("Save profile must be selected before any state-slot access");
+    if(!selected.empty()) {
+        std::filesystem::path directory;
+        if(const char* configured=getenv("WWHD_STATE_DIR"))directory=configured;
+        else {
+#ifdef __APPLE__
+            directory=std::string(getenv("HOME")?getenv("HOME"):".")+"/Library/Application Support/wwhd/states";
+#else
+            directory=host::config_dir()+"/states";
+#endif
+        }
+        const auto key=selected.namespace_key();
+        if(!mods::save_profile::owned_basename(directory,key))
+            directory=mods::save_profile::sibling(directory,key);
+        auto protected_roots=paths.protected_roots;
+        protected_roots.push_back(paths.save);
+        protected_roots.push_back(paths.backups);
+        std::string why;
+        if(!mods::save_profile::owned_location(directory,key,protected_roots,why))
+            throw mods::save_profile::Error(why);
+#ifdef _WIN32
+        if(!mods::save_profile::windows_budget(mods::save_profile::path_units(directory),32))
+            throw mods::save_profile::Error("The state profile folder is too long for Windows; choose a shorter state location");
+#endif
+        g_profile_state_directory=directory.string();
+    }
+    g_save_profile=selected;g_save_profile_paths=paths;g_save_profile_configured=true;
+}
 
 std::string states_dir() { return state_dir(); }
 

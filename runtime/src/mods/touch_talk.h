@@ -20,6 +20,9 @@
 //   each); a tap on the chosen item asks to buy it (A), and its price text goes on by itself to the question.
 //   Nothing else ever presses A in a shop: buying needs a tap on the question's "yes" line.
 // - Wind compass: a finger points the stick from the compass's centre; a tap takes the direction (A).
+// - A system question (the save question after a game over): a tap on one of its buttons moves the cursor there
+//   and takes it (A); a tap elsewhere does nothing.
+// - Letters, stone tablets and signs (their scroll windows count as the message window): a tap goes on, as in talks.
 // - Game menu on the TV: a swipe sideways turns the page between Items and Map (L: in the TV menu L switches
 //   them, measured; R and ZL / ZR do nothing there).
 // Hold to go on with a controller (option): A held in a talk goes on once as usual; held on, the game no
@@ -49,7 +52,7 @@ struct Options {
     bool pad_hold = false;  // hold A on a controller to go on in talks
 };
 
-enum Mode : int { kModeNone, kModeTalk, kModeChoice, kModeNumber, kModeShop, kModeWind, kModeMenu };
+enum Mode : int { kModeNone, kModeTalk, kModeChoice, kModeNumber, kModeShop, kModeWind, kModeMenu, kModeQuestion };
 
 // ---- geometry and timing (layout units; logic steps, 30 per second) ----
 constexpr float kChoiceLine = 50;         // between a choice's lines (measured: Beedle's question, cursor at -121 / -170)
@@ -70,6 +73,7 @@ constexpr float kWindDead = 30;           // wind compass: no direction this clo
 constexpr float kSwipe = 160;             // menu pages: a swipe moves at least this far sideways ...
 constexpr uint64_t kSwipeSteps = 20;      // ... within this many steps
 constexpr float kViewHalfW = 600, kViewHalfH = 330;  // the picture's safe area (a shop item beyond is out of view)
+constexpr float kQuestionHalfW = 160, kQuestionHalfH = 55;  // a system question's button: a tap this close to its centre
 
 // A finger on the TV picture, as it changed (layout units)
 struct Finger {
@@ -111,6 +115,7 @@ inline Mode mode_of(const PlayContext& c, bool menu_on_tv) {
     if (c.has(kWindCompass)) return kModeWind;
     if (c.has(kNumberEntry)) return kModeNumber;
     if (c.has(kChoice)) return kModeChoice;
+    if (c.has(kQuestion) && c.question_shown) return kModeQuestion;
     if (c.has(kShop)) return kModeShop;
     if (talking(c)) return kModeTalk;
     return kModeNone;
@@ -136,6 +141,21 @@ inline int choice_cursor_line(float box_y, int n, float cursor_y) {
     return std::clamp(int(std::lround((first - cursor_y) / kChoiceLine)), 0, std::max(n - 1, 0));
 }
 
+// A system question (SequenceWindow_00: the save question after a game over and the like; the Wii U took it by
+// touch on the GamePad, the TV shows the same buttons): the button under (x, y), -1 none; and whether the cursor
+// is on it already (the larger one, or the only one of its row: the centre button)
+inline int question_button_at(const PlayContext& c, float x, float y) {
+    int to = -1;
+    for (int i = 0; i < 3; i++)
+        if ((c.question_shown >> i & 1) && std::fabs(x - c.question_x[i]) < kQuestionHalfW && std::fabs(y - c.question_y[i]) < kQuestionHalfH)
+            to = i;
+    return to;
+}
+inline bool question_cursor_on(const PlayContext& c, int to) {
+    const int other = to == 0 ? 1 : 0;
+    return to == 2 || !(c.question_shown >> other & 1) || c.question_scale[to] > c.question_scale[other] + 5;
+}
+
 // the shop item nearest to (x, y) within kShopReach, -1 none
 inline int shop_item_at(const Shop& s, float x, float y) {
     int best = -1;
@@ -150,7 +170,7 @@ inline int shop_item_at(const Shop& s, float x, float y) {
 
 class Machine {
 public:
-    // One pad read on a full logic step (true 60's repeated reads use held()). `pad_a` / `pad_b` in `in` are
+    // One pad read on a logic step (repeated reads between steps use held()). `pad_a` / `pad_b` in `in` are
     // the controller's, as this read has them.
     Out step(const PlayContext& c, const In& in, const Options& o) {
         Out out;
@@ -228,7 +248,7 @@ public:
         last_ = out;
         return out;
     }
-    // true 60's repeated read: the same as the full read (the queue doesn't advance)
+    // a repeated read between logic steps: the same as the step's read (the queue doesn't advance)
     const Out& held() const { return last_; }
 
     bool busy() const { return !pushes_.empty(); }
@@ -321,6 +341,16 @@ private:
             case kModeWind:
                 if (tap && pushes_.empty()) press(kBtnA);
                 return;
+            case kModeQuestion: {
+                // a tap on a button moves the cursor there (a stick push, unless it is on it already) and takes it
+                // (A). From the GreenNaugahyde fork's minigames.cpp sequence_step.
+                if (!tap || !pushes_.empty()) return;
+                const int to = question_button_at(c, f.x, f.y);
+                if (to < 0) return;
+                if (!question_cursor_on(c, to)) stick(to == 0 ? -1.0f : 1.0f, 0);
+                press(kBtnA);
+                return;
+            }
             case kModeMenu: {
                 const float dx = f.x - g.x0, dy = f.y - g.y0;
                 if (std::fabs(dx) >= kSwipe && std::fabs(dx) > 2 * std::fabs(dy) && now - g.t0 <= kSwipeSteps && pushes_.empty())

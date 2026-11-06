@@ -43,7 +43,7 @@ constexpr uint32_t player_addr = 0x11000000, attention = 0x11010000, enemy = 0x1
 constexpr uint32_t buttons[] = {input::kX, input::kY, input::kR};
 constexpr uint32_t release_bits[] = {8, 16, 0x4000};
 uint64_t now = 0;
-bool blocked = false, live = true, preview = false;
+bool blocked = false, live = true;
 unsigned resolves = 0, native_inputs = 0, native_setups = 0, automatic_releases = 0;
 bool reset_during_setup = false;
 uint16_t item;
@@ -164,7 +164,6 @@ uint32_t boomerang_hold(uint32_t native) {
 }
 }
 namespace overlay { bool blocks_input() { return blocked; } }
-namespace true60 { bool preview() { return ::preview; } }
 namespace mods {
 uint64_t step() { return now; }
 void trace(const char* format, ...) {
@@ -276,9 +275,7 @@ int main(int argc, char** argv) {
         setup(0x2D); accepted_equip(); animation(0x105);
         advance_animation(); assert(seen_rate == 1.f); // no acceleration before native key observation
         assert(!key(20.f));
-        preview = true; blocked = true; advance_animation(); assert(seen_rate == 1.f);
-        preview = false; blocked = false; st32(player_addr + 0x58DC, 0); // native preview rollback
-        advance_animation(); assert(seen_rate == 1.5f); // preview did not consume host ownership
+        advance_animation(); assert(seen_rate == 1.5f);
         mods::quick_use_reset(); advance_animation(); assert(seen_rate == 1.f);
         for (unsigned interruption = 0; interruption < 13; ++interruption) {
             setup(0x2D); accepted_equip(); animation(0x105); assert(!key(20.f));
@@ -397,6 +394,27 @@ int main(int argc, char** argv) {
         assert(boomerang_release(0) == release_bits[slot]);
         return 0;
     }
+    // The source bridge and instruction-site observer must produce the same
+    // request lifecycle while preserving every compiler-owned CPU field.
+    for (uint16_t id : {0x2Fu, 0x25u, 0x2Du}) for (unsigned which=0; which<3; ++which)
+    for (bool bridge : {false,true}) {
+        setup(id,which);
+        pad(buttons[slot]); st8(player_addr+0x690D,4u<<slot);
+        Cpu c=cpu(); c.r[3]=0x12345678; c.r[31]=0x87654321;
+        const Cpu before=c;
+        if(bridge) mods::quick_use_item_action_dispatch(&c,player_addr,id);
+        else { c.r[3]=player_addr;
+            (id==0x2F?site_023F0624:id==0x25?site_023F0670:site_023F06AC)(&c);
+            c.r[3]=before.r[3];
+        }
+        assert(!memcmp(&c,&before,sizeof c));
+        st8(player_addr+0x690D,0); pad(0);
+        if(id==0x2D){st16(player_addr+0x69AC,12);assert(boomerang_release(0)==release_bits[slot]);}
+        else {st16(player_addr+0x69AC,0);assert(grappling_tick(false));}
+        c=cpu(); const Cpu ignored=c;
+        mods::quick_use_item_action_dispatch(&c,player_addr,0x33);
+        assert(!memcmp(&c,&ignored,sizeof c));
+    }
     // Hammer replay: first edge equips the model, but native dispatch later lacks that
     // edge. Complete exactly one local trigger only after upper equip104 is finished.
     for (unsigned which = 0; which < 3; ++which) for (bool hold : {false, true}) {
@@ -413,7 +431,10 @@ int main(int argc, char** argv) {
         ++now; input_tick(); c.r[3] = 0; site_023F05EC(&c); assert(c.r[3] == 0);
         st8(player_addr + 0x68D9, slot); ++now; input_tick();
         c = cpu(); c.r[3] = 0; Cpu expected = c; expected.r[3] = 4u << slot;
-        site_023F05EC(&c); assert(!memcmp(&c, &expected, sizeof c));
+        const Cpu before = c;
+        const uint32_t resolved = mods::quick_use_ready_item_trigger(&c, player_addr, 0);
+        assert(resolved == expected.r[3] && !memcmp(&c, &before, sizeof c));
+        c.r[3] = resolved; // native branch consumes only the returned predicate
         assert(automatic_releases == 1);
         // Native getReadyItem equality and side/front choice follow this predicate;
         // the fixture models one accepted branch, not native strike/collision effects.

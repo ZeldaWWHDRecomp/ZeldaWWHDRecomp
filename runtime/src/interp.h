@@ -10,13 +10,13 @@ uint64_t logic_steps();      // saved/restored 30 Hz scenario clock
 uint32_t last_camera();
 bool frame_is_hold();        // this frame's per-frame function runs a hold pass (no logic): for tasks that calc before it
 void record_executed_step(); // game thread; includes built-in turbo passes
-uint64_t executed_steps();    // actual actor logic passes, including true60 half steps
-int mode();                 // 0 off (30 fps), 1 frame interpolation (at fps()), 2 true 60
+uint64_t executed_steps();    // actual actor logic passes
+int mode();                 // 0 off (30 fps), 1 frame interpolation (at fps()); set_mode(2), the retired True 60, = 60 fps interpolation
 void set_mode(int m);
 int fps();                  // frame interpolation's chosen frame rate: 40, 60, 120 or 240
 void set_fps(int f);
 void toggle_fps(int f);     // frame interpolation at f on, or off if it is on at f (menus, the 6 key)
-const char* mode_name();    // "30 fps", "40 fps", "60 fps", "120 fps", "240 fps", "true 60"; "240 fps (120 shown)" when capped
+const char* mode_name();    // "30 fps", "40 fps", "60 fps", "120 fps", "240 fps"; "240 fps (120 shown)" when capped
 int output_fps();           // the rate frame interpolation draws: fps() capped to the display
 int frames_per_step();      // frames drawn per 30 Hz logic step: 1, 2, 4 or 8 (40 fps: at most 2; 4 per 3 steps)
 

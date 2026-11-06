@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MPL-2.0
-// Settings > Controls > Set up controller: a short setup that gives one controller its own bindings
+// Settings > Controls > Bindings > Set up controller: a short setup that gives one controller its own bindings
 // (input_map profiles, controls.json format 2), offered once when a new controller is first used.
 // Idea from the GreenNaugahyde Android fork (ControllerSetup.java), reimplemented as an ImGui dialog so
 // it works with every host and controller (desktop, Steam Deck, Android pads).
@@ -76,6 +76,7 @@ inline Result build(const input_map::Mapping& m, const std::string& guid, const 
     const int i = ensure_profile(r.mapping, guid, name);
     Mapping v = view_for(r.mapping, i);
     v.pad = Mapping::defaults().pad;
+    v.preset = {};  // Generic setup replaces the complete layout and its preset state.
     apply_face(v, face, labels);
     if (layout != Layout::kOriginal && jump_pad > kPadNone && jump_pad < kPadCount) {
         r.jump_on = true;
@@ -237,7 +238,7 @@ inline Answer frame(State& s, const input_map::Mapping& m, const Io& io) {
             ImGui::PushTextWrapPos(popup::wrap_pos(28));
             ImGui::Text("%s", s.name.empty() ? "A new controller" : s.name.c_str());
             note("Set it up now? A short setup chooses its face buttons and where Jump anywhere goes; this "
-                 "controller then keeps its own buttons. Settings > Controls > Set up controller does it any time. "
+                 "controller then keeps its own buttons. Settings > Controls > Bindings > Set up controller does it any time. "
                  "Settings open with Home or by holding Select.");
             ImGui::PopTextWrapPos();
             const float w = detail::footer_width();

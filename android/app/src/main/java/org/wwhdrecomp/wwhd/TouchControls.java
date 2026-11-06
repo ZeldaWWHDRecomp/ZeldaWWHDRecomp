@@ -68,6 +68,10 @@ import android.view.ViewGroup;
 // the auto put-away and the ZL latch are native: the fingers go to the pad as before. A control that
 // hides under a finger lets go. The layout editor shows every control.
 // Context buttons and the golden rings: idea from the GreenNaugahyde Android fork (MPL-2.0); reimplemented.
+// Link in the button pictures (controls plan P8, option "Link in the button pictures"): an action whose pose
+// native code drew from the game's model (pose_HH.png, runtime/src/mods/link_poses.h) shows Link in that pose
+// with the word small under him; the Jump button shows the jump. Without a picture the word shows as before.
+// Idea from the GreenNaugahyde Android fork (MPL-2.0), its "Link in the button icons"; reimplemented.
 //
 // Talks, answers, shops by touch (controls plan P5): while native code says a talk, a choice, the auction's
 // number entry, a shop's item choice or the wind compass claims the TV picture (nativeFreeTouch answers
@@ -102,6 +106,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     // nativeContextAssets(dir) exports the game's words and item icons into dir once (0 not yet, -1 failed,
     // > 0 the files' generation)
     private static native int nativeContextButtons(int[] out);
+    private static native void nativeStartupTitleTap();
+    private static native boolean nativeViewButtonHit(float x, float y);
     private static native int nativeContextAssets(String dir);
     private static native int nativeTouchOptions(int[] out);
     private static native int nativeFreeTouch(float x, float y);
@@ -150,6 +156,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
 
     private final List<Control> controls = new ArrayList<>();
+    private final StartupTouch startup = new StartupTouch();
     private final Control toggle, leftStick, rightStick;
     private final Control swipe = new Control(KIND_SWIPE, 0, "", 0, 0, 0), dead = new Control(KIND_DEAD, 0, "", 0, 0, 0),
             talk = new Control(KIND_TALK, 0, "", 0, 0, 0);
@@ -200,6 +207,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     private File assetDir;
     private Map<Integer, String> words = new HashMap<>();
     private final Map<Integer, Bitmap> icons = new HashMap<>();  // null values: no such file
+    private final Map<Integer, Bitmap> poses = new HashMap<>();  // Link's pose per action code (P8); null: none
     private final Paint ringPaint = new Paint(Paint.ANTI_ALIAS_FLAG), iconPaint = new Paint(Paint.FILTER_BITMAP_FLAG);
     private final RectF iconRect = new RectF();
     private long slowSyncAt;
@@ -348,6 +356,14 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     @Override
     protected void onDraw(Canvas canvas) {
         if (editor.editing() && grid) drawGrid(canvas);
+        if (!editor.editing() && contextPack.startupTouch()) {
+            if (contextPack.startupScene() == ContextPack.STARTUP_TITLE && !settingsOpen) {
+                text.setColor(0xE6F8F4E8);
+                text.setTextSize(getResources().getDisplayMetrics().scaledDensity * 16);
+                canvas.drawText(getContext().getString(R.string.touch_tap_to_start), getWidth() / 2f, getHeight() * .14f, text);
+            }
+            return;
+        }
         if (editor.editing() || active())
             for (Control c : controls) {
                 if (!editor.editing() && !visible(c)) continue;
@@ -382,6 +398,18 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         }
         final String letter = b >= 0 ? ContextPack.letter(b, c.label, contextPack.itemNamesA()) : c.label;
         final int look = editing ? ContextPack.KIND_PLAIN : contextPack.kindFor(k);
+        // Link in the pose of the action (P8), the word under him; the Jump button (P6) as the game's Jump
+        if (!editing && c.kind == KIND_VIRTUAL && c.code == VIRT_JUMP) {
+            final Bitmap jump = contextPack.linkPoses() ? pose(ContextAssets.JUMP_ACTION) : null;
+            if (jump != null) { drawPose(canvas, jump, c.label, x, y, r, op); return; }
+        }
+        final Bitmap posed = look == ContextPack.KIND_ACTION && contextPack.linkPoses() ? pose(contextPack.labelFor(k), contextPack.variantFor(k)) : null;
+        if (ContextAssets.showPose(contextPack.linkPoses(), look, posed != null)) {
+            final String word = ContextPack.word(contextPack.labelFor(k), words);
+            drawPose(canvas, posed, word != null ? word : "", x, y, r, op);
+            drawBadge(canvas, letter, x, y, r, op);
+            return;
+        }
         boolean drawn = false;
         if (look == ContextPack.KIND_ACTION) drawn = drawWord(canvas, ContextPack.word(contextPack.labelFor(k), words), x, y, r, op);
         else if (look == ContextPack.KIND_FAST_FORWARD) drawn = drawWord(canvas, "▶▶", x, y, r, op);
@@ -423,6 +451,18 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         iconPaint.setAlpha(Math.round(255 * op / 100f));
         canvas.drawBitmap(bm, null, iconRect, iconPaint);
         return true;
+    }
+    // Link's pose (P8) in the upper part of the button and the action's word small under him
+    private void drawPose(Canvas canvas, Bitmap bm, String word, float x, float y, float r, int op) {
+        final float h = r * ContextAssets.POSE_HALF, cy = y + r * ContextAssets.POSE_DY;
+        iconRect.set(x - h, cy - h, x + h, cy + h);
+        iconPaint.setAlpha(Math.round(255 * op / 100f));
+        canvas.drawBitmap(bm, null, iconRect, iconPaint);
+        if (word == null || word.isEmpty()) return;
+        text.setColor(alpha(0xF0, op));
+        text.setTextSize(1f);
+        text.setTextSize(Math.min(r * ContextAssets.POSE_WORD_SIZE, r * ContextAssets.POSE_WORD_WIDTH / Math.max(1e-3f, text.measureText(word))));
+        canvas.drawText(word, x + r * ContextAssets.POSE_WORD_DX, y + r * ContextAssets.POSE_WORD_DY, text);
     }
     // the button's own name beside a word or icon: a small disc on its lower right edge
     private void drawBadge(Canvas canvas, String letter, float x, float y, float r, int op) {
@@ -542,7 +582,34 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
             return false;
         }  // mouse and stylus: SDLSurface underneath as before
         syncTouchState();
-        if (settingsOpen) { editor.pointers(0);return false; }
+        if (settingsOpen) { startup.cancel(); editor.pointers(0);return false; }
+        if (action == MotionEvent.ACTION_DOWN) syncContext(SystemClock.uptimeMillis());
+        if (startup.tracking()) {
+            final int i = event.getActionIndex(), id = event.getPointerId(i);
+            final float slop = android.view.ViewConfiguration.get(getContext()).getScaledTouchSlop();
+            if (action == MotionEvent.ACTION_MOVE) {
+                for (int k = 0; k < event.getPointerCount(); k++)
+                    startup.move(event.getPointerId(k), event.getX(k), event.getY(k), slop);
+            } else if (action == MotionEvent.ACTION_UP) {
+                if (startup.up(contextPack.startupScene(), id, event.getX(i), event.getY(i), slop))
+                    try { nativeStartupTitleTap(); } catch (UnsatisfiedLinkError ignored) { }
+            } else if (action == MotionEvent.ACTION_CANCEL || action == MotionEvent.ACTION_POINTER_DOWN || action == MotionEvent.ACTION_POINTER_UP) {
+                startup.cancel();
+            }
+            editor.pointers(0); return true;
+        }
+        if (contextPack.startupTouch()) {
+            editor.pointers(0);
+            if (action == MotionEvent.ACTION_DOWN && contextPack.startupScene() == ContextPack.STARTUP_TITLE) {
+                boolean viewButton = false;
+                try {
+                    viewButton = nativeViewButtonHit(getWidth() > 1 ? event.getX() / (getWidth()-1) : .5f,
+                            getHeight() > 1 ? event.getY() / (getHeight()-1) : .5f);
+                } catch (UnsatisfiedLinkError ignored) { }
+                return startup.down(event.getPointerId(0), event.getX(), event.getY(), viewButton);
+            }
+            return false;  // SDLSurface -> real GamePad touchscreen, including native text entry.
+        }
         if (revealGesture) {
             if (action == MotionEvent.ACTION_UP || action == MotionEvent.ACTION_CANCEL) revealGesture = false;
             return true;
@@ -755,6 +822,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     }
     // fingers that never got their up event: the controls let go, the game's touches are cancelled
     private void releaseFingers() {
+        startup.cancel();
         removeCallbacks(editLongPress);
         try { nativeItemRingFinger(-1, false, 0, 0); } catch (UnsatisfiedLinkError ignored) {}
         resetControls();
@@ -1128,6 +1196,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     // a new generation of the exported files: the words now, the icons when first drawn
     private void loadAssets() {
         icons.clear();
+        poses.clear();
         Map<Integer, String> loaded = new HashMap<>();
         File f = new File(assetDir, ContextAssets.ACTIONS);
         if (f.isFile() && f.length() <= ContextAssets.MAX_TEXT) {
@@ -1146,6 +1215,22 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
         try { if (f.isFile()) bm = BitmapFactory.decodeFile(f.getPath()); }
         catch (RuntimeException | OutOfMemoryError ignored) { /* the letter shows */ }
         icons.put(item, bm);
+        return bm;
+    }
+
+    // Link's pose for an action code (P8), from the exported pose_HH.png; null: none (the word shows)
+    private Bitmap pose(int action) { return pose(action, 0); }
+    // ... with the thing of kind `variant` in his hands (pose_HH_KK.png; the plain pose when there is none)
+    private Bitmap pose(int action, int variant) {
+        if (assetDir == null || assets.generation() <= 0) return null;
+        final int key = (variant & 0xFF) << 8 | (action & 0xFF);
+        if (poses.containsKey(key)) return poses.get(key);
+        File f = new File(assetDir, ContextAssets.poseFile(action, variant));
+        Bitmap bm = null;
+        try { if (f.isFile()) bm = BitmapFactory.decodeFile(f.getPath()); }
+        catch (RuntimeException | OutOfMemoryError ignored) { /* the word shows */ }
+        if (bm == null && variant != 0) bm = pose(action, 0);
+        poses.put(key, bm);
         return bm;
     }
 
@@ -1173,6 +1258,8 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     private static boolean isController(InputDevice d) {
         if (d == null || d.isVirtual()) return false;
         final int s = d.getSources();
+        if (ControllerInputPolicy.internalKeyboard(d.getName(), d.getVendorId(), d.getProductId(),
+                (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK)) return false;
         return (s & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
                 || (s & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
     }

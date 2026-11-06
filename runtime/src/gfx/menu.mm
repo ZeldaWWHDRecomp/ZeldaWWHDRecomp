@@ -13,6 +13,7 @@
 #include <tuple>
 
 #include "../interp.h"
+#include "../framegen.h"
 #include "../savestate.h"
 #include "../screenshot.h"
 #include "../input_map.h"
@@ -119,10 +120,12 @@ static void load_prefs() {
     if (saved(@"fullLight", {"WWHD_FULL_LIGHT"})) render::set_full_light([pref(@"fullLight") boolValue]);
     if (saved(@"cloudStyle", {"WWHD_CLOUD_STYLE"})) render::set_cloud_style([pref(@"cloudStyle") intValue]);
     if (saved(@"fxaa", {"WWHD_FXAA"})) render::set_fxaa([pref(@"fxaa") boolValue]);
-    // frame rate: fps60 is the mode (0 30 fps, 1 frame interpolation, 2 true 60; the key predates
+    // frame rate: fps60 is the mode (0 30 fps, 1 frame interpolation; a saved 2, the retired True 60,
+    // loads as 60 fps interpolation; the key predates
     // 120/240 fps), interpFps the interpolation's rate; "keep game speed" for 60 and for 120/240 fps
     if (saved(@"interpFps", {"WWHD_INTERP_FPS"})) interp::set_fps([pref(@"interpFps") intValue]);
     if (saved(@"fps60", {"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) interp::set_mode([pref(@"fps60") intValue]);
+    if (saved(@"fpsGenerated", {"WWHD_FRAMEGEN"})) framegen::set_chosen([pref(@"fpsGenerated") boolValue]);  // 60 fps (generated)
     if (saved(@"fps60Paced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(60, [pref(@"fps60Paced") boolValue]);
     if (saved(@"fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(120, [pref(@"fpsHighPaced") boolValue]);
 #ifdef WWHD_HAS_VULKAN
@@ -143,6 +146,7 @@ static void save_prefs() {
     if (!env_set({"WWHD_FXAA"})) set_pref(@"fxaa", @(render::fxaa()));
     if (!env_set({"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) set_pref(@"fps60", @(interp::mode()));
     if (!env_set({"WWHD_INTERP_FPS"})) set_pref(@"interpFps", @(interp::fps()));
+    if (!env_set({"WWHD_FRAMEGEN"})) set_pref(@"fpsGenerated", @(framegen::chosen()));
     if (!env_set({"WWHD_INTERP_PACED"})) {
         set_pref(@"fps60Paced", @(interp::paced_interpolation_at(60)));
         set_pref(@"fpsHighPaced", @(interp::paced_interpolation_at(120)));
@@ -315,11 +319,17 @@ static WWStateMenu* g_state_menu;
 - (void)setFaceLayout:(NSMenuItem*)item {
     // issue #78: which host face buttons drive the Wii U's A/B/X/Y (the same as the Controls window)
     input_map::Mapping m = input_map::current();
-    if (item.tag == 2) input_map::set_face_auto(m, true);
+    if (item.tag == 4) input_map::restore_pad_preset(m);
+    else if (item.tag == 3) {
+        bool legacy = false;std::string guid,name;input_map::active_controller(guid,name);
+        for (const auto& pad : input::controllers())
+            if (pad.guid == guid && pad.name == name) legacy = input_map::legacy_gamecube_faces(pad);
+        input_map::apply_gamecube(m,legacy);
+    }
+    else if (item.tag == 2) input_map::set_face_auto(m, true);
     else input_map::apply_face_layout(m, item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
     input_map::set_current(m);
 }
-- (void)toggleInterp:(NSMenuItem*)item { interp::set_mode(interp::mode() == item.tag ? 0 : (int)item.tag); update_title(); }
 - (void)toggleInterpFps:(NSMenuItem*)item { interp::toggle_fps((int)item.tag); update_title(); }
 - (void)toggleDrcWindow:(NSMenuItem*)item { gfx::show_drc_window(!gfx::drc_window_shown()); }
 - (void)toggleFxaa:(NSMenuItem*)item { render::set_fxaa(!render::fxaa()); update_title(); }
@@ -349,11 +359,14 @@ static WWStateMenu* g_state_menu;
     if (item.action == @selector(setController:))
         item.state = (item.tag == 1) == input::pro_controller() ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(setFaceLayout:)) {
-        input_map::FaceLayout fl = input_map::face_layout(input_map::current());
-        bool on = fl == (item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
+        const auto m = input_map::current();
+        input_map::FaceLayout fl = input_map::face_layout(m);
+        bool on = item.tag == 3 ? m.preset.gamecube : item.tag == 2 ? m.face_auto :
+            item.tag < 2 && !m.face_auto && !m.preset.gamecube &&
+            fl == (item.tag == 1 ? input_map::FaceLayout::kLabels : input_map::FaceLayout::kPosition);
+        if (item.tag == 4) return m.preset.saved;
         item.state = on ? NSControlStateValueOn : NSControlStateValueOff;
     }
-    if (item.action == @selector(toggleInterp:)) item.state = interp::mode() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleInterpFps:))
         item.state = interp::mode() == 1 && interp::fps() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleDrcWindow:)) {
@@ -473,6 +486,7 @@ void install_menu(NSWindow* tv) {
     add(g, @"    16:9 (original)", @selector(setAspect:), @"", aspect::kOriginal);
     add(g, @"    Match window", @selector(setAspect:), @"", aspect::kWindow).toolTip =
         @"The picture takes the shape of the TV window (or the screen in full screen): wider shows more to the sides";
+    add(g, @"    4:3", @selector(setAspect:), @"", aspect::k4x3);
     add(g, @"    16:10", @selector(setAspect:), @"", aspect::k16x10);
     add(g, @"    21:9", @selector(setAspect:), @"", aspect::k21x9);
     add(g, @"    32:9", @selector(setAspect:), @"", aspect::k32x9);
@@ -515,7 +529,6 @@ void install_menu(NSWindow* tv) {
     add(g, @"60 fps: frame interpolation (6)", @selector(toggleInterpFps:), @"6", 60);
     add(g, @"120 fps: frame interpolation", @selector(toggleInterpFps:), @"", 120);
     add(g, @"240 fps: frame interpolation", @selector(toggleInterpFps:), @"", 240);
-    add(g, @"60 fps: true 60, game logic at 60 steps/s (7, experimental)", @selector(toggleInterp:), @"7", 2);
     [g addItem:[NSMenuItem separatorItem]];
     add(g, @"Take Screenshot", @selector(screenshot:), @"").toolTip =
         @"Saves the TV picture as a PNG (internal resolution, without the settings overlay) in the screenshots folder. "
@@ -543,6 +556,8 @@ void install_menu(NSWindow* tv) {
     add(in, @"    Automatic", @selector(setFaceLayout:), @"", 2).toolTip =
         @"Follows the labels printed on the pad that was plugged in first: by label on an Xbox pad, "
         @"by position on a Nintendo one";
+    add(in, @"    GameCube", @selector(setFaceLayout:), @"", 3).toolTip = @"GameCube controls; keeps previous bindings for Restore.";
+    add(in, @"    Restore previous controller bindings", @selector(setFaceLayout:), @"", 4);
     [in addItem:[NSMenuItem separatorItem]];
     add(in, @"Show GamePad screen (\u2318G)", @selector(toggleDrcWindow:), @"");
     [in addItem:gfx::controls_menu_item()];
@@ -602,14 +617,26 @@ void install_menu(NSWindow* tv) {
            ^(BOOL on) { mods::manager::set_enabled("auto-wind", on); },
            @"Makes the normal sail behave like the Swift Sail: the wind always blows the way the boat is heading");
     toggle(gp, @"Quick doors", ^BOOL { return mods::quick_doors(); }, ^(BOOL on) { mods::set_quick_doors(on); },
-           @"Door events (walk-in, opening, closing) run at 4x speed");
+           @"Door events (walk-in, opening, closing) run at 4x speed, or Link walks through the doors (below)");
+    toggle(gp, @"        Faster", ^BOOL { return mods::door_mode() == mods::kDoorFaster; },
+           ^(BOOL) { mods::set_door_mode(mods::kDoorFaster); hostui::set("mod.quick-doors.mode", "faster"); });
+    toggle(gp, @"        Walk through", ^BOOL { return mods::door_mode() == mods::kDoorWalk; },
+           ^(BOOL) { mods::set_door_mode(mods::kDoorWalk); hostui::set("mod.quick-doors.mode", "walk"); },
+           @"Dungeon shutters and house doors open as Link walks up; he walks through without the door scene");
     toggle(gp, @"Jump anywhere (L by default)", ^BOOL { return mods::jump_anywhere(); },
            ^(BOOL on) { mods::manager::set_enabled("jump-anywhere", on); },
            @"Choose the button, double jump and automatic ledge jumps in Settings > Mods > Gameplay");
+    toggle(gp, @"Deku Leaf: wave to rise", ^BOOL { return mods::leaf_rise(); },
+           ^(BOOL on) { mods::manager::set_enabled("leaf-rise", on); },
+           @"While gliding, each wave of the leaf lifts Link a little; choose the height in Settings > Mods > Gameplay");
     toggle(gp, @"Fast forward cutscenes and dialogue (hold ZR by default)", ^BOOL { return mods::fast_forward(); },
            ^(BOOL on) { mods::manager::set_enabled("fast-forward", on); }, @"Choose the speed, hold button and audio setting in Settings > Mods > Gameplay");
     toggle(gp, @"Fast scene changes", ^BOOL { return mods::fast_scenes(); }, ^(BOOL on) { mods::set_fast_scenes(on); },
            @"Fades and loading between areas run at 4x speed; the scenes themselves are not sped up");
+    toggle(gp, @"Instant text", ^BOOL { return mods::instant_text(); }, ^(BOOL on) { mods::manager::set_enabled("instant-text", on); },
+           @"Message boxes show their whole text at once instead of letter by letter");
+    toggle(gp, @"No pauses in texts", ^BOOL { return mods::no_text_pauses(); }, ^(BOOL on) { mods::manager::set_enabled("no-text-pauses", on); },
+           @"Leaves out the short pauses written into some texts");
     [gp addItem:[NSMenuItem separatorItem]];
     [gp addItemWithTitle:@"Cheats (save in game to keep them)" action:nil keyEquivalent:@""].enabled = NO;
     toggle(gp, @"    Give all items", ^BOOL { return NO; }, ^(BOOL) { mods::request_cheat(mods::kCheatItems); },

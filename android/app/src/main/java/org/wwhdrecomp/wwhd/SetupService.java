@@ -264,7 +264,9 @@ public class SetupService extends Service {
                 configuration.put("compiler", AndroidToolchain.prepare(this, () -> checkPause(active)));
                 checkPause(active);
                 String kind = configuration.getJSONObject("input").getString("kind");
-                if (!kind.equals("folder")) configuration.put("extractor", AndroidExtractor.prepare(this));
+                boolean seedImport = configuration.getJSONObject("input").has("seed_import");
+                if (kind.equals("installed") || seedImport) configuration.put("randomize", AndroidRandomizer.prepare(this));
+                else if (!kind.equals("folder")) configuration.put("extractor", AndroidExtractor.prepare(this));
                 String revision = EmbeddedPython.checksum(this, "python-source.zip", () -> checkPause(active));
                 // the APK's native Yaz0 decoder for shader preparation (shaderprep.py; android/build_native.sh)
                 File yaz0 = new File(getApplicationInfo().nativeLibraryDir, "libyaz0.so");
@@ -290,8 +292,9 @@ public class SetupService extends Service {
                 if (!active.equals(SetupStore.current(this))) throw new IOException("The selected setup job changed");
                 host("activating", null, null);
                 checkPause(active);
+                JSONObject randomized = ready.optJSONObject("randomizer");
                 AndroidGame.activate(this, new File(ready.getString("library")), new File(ready.getString("game")),
-                    configuration.getBoolean("code_mods"));
+                    configuration.getBoolean("code_mods"), randomized != null ? new File(randomized.getString("files")) : null);
                 JSONObject shaders = ready.optJSONObject("shader_prebuild");
                 String message = null;
                 boolean prepared = shaders != null && shaders.optString("status").equals("ready");

@@ -17,9 +17,12 @@ supported.
 - [Hooks and replacements](#hooks-and-replacements)
 - [Game functions, data and objects](#game-functions-data-and-objects)
 - [Host services](#host-services)
+- [Live options, input filters and touches](#live-options-input-filters-and-touches)
 - [Port settings](#port-settings)
-- [Drawing on screen (HUD API v1)](#drawing-on-screen-hud-api-v1)
+- [Drawing on screen (HUD API v2)](#drawing-on-screen-hud-api-v2)
 - [Letters](#letters)
+- [Native boat compass lease](#native-boat-compass-lease)
+- [Native GamePad chart selection](#native-gamepad-chart-selection)
 - [Charts and markers](#charts-and-markers)
 - [Items](#items)
 - [The story notebook](#the-story-notebook)
@@ -99,7 +102,7 @@ WWHD_HOOK(WWHD_ADDR_daPy_Execute, on_link_step, (void* link)) {
 ### Build
 
 ```sh
-clang --target=powerpc-unknown-eabi -mcpu=750 -O2 -ffreestanding \
+clang --target=powerpc-unknown-eabi -mcpu=750 -mstackrealign -O2 -ffreestanding \
   -fno-builtin -nostdlib -fno-jump-tables -ffunction-sections -fdata-sections \
   -I<sdk>/include -c mod.c -o mod.o
 ld.lld -m elf32ppc -r mod.o -o mod.elf
@@ -109,6 +112,19 @@ ld.lld -m elf32ppc -r mod.o -o mod.elf
 source checkout. `-mcpu=750` keeps to the game CPU's instructions. Link with `-r` only: the
 ELF must stay relocatable (the port picks its address). `-m elf32ppc` is needed on Windows,
 where MSYS2's lld defaults to PE. The same `mod.elf` works on every desktop platform.
+
+`-mstackrealign` is required for every PowerPC guest translation unit, including
+separately compiled helpers. Native game callers can supply an 8-byte-aligned
+stack, while Clang normally assumes 16-byte alignment. Realigning the guest
+callee's frame preserves its local storage and stack-passed arguments at either
+entry alignment. This flag belongs to the PowerPC compile, not the host compiler
+that later builds the translated module.
+
+Recompile and relink existing guest ELFs with this flag. Current translation
+does not add the missing compiler-generated realignment prologue. An entry-time
+runtime wrapper is a possible additional protection for older modules, but it
+must preserve stack-passed arguments and by-reference data; simply rounding the
+stack pointer is not sufficient. This change supplies the compile-time fix.
 
 ### Package and install
 
@@ -188,8 +204,28 @@ with their content:
 | `WWHD_GAME_ORIGINAL(...)` | the game's own code, below all mod hooks |
 
 - Every game function can be hooked, including calls through function pointers.
-- Hooks can't change the arguments or the result. To change them, replace the function and
-  call the original yourself.
+- Calls into a guest module preserve both lanes of nonvolatile FPRs f14–f31,
+  including when native code calls a module function pointer. This bridges the
+  scalar compiler ABI to the game's paired-single calling convention.
+- The runtime also offers a best-effort stack bridge for old mods compiled without
+  `-mstackrealign`. At an 8-modulo-16 entry, it copies the complete ordinary EABI
+  caller frame into a disjoint aligned stack area, preserving original pointer
+  arguments and the parent backchain. It never copies stale frame contents back
+  over writes through pointers into the caller's original frame. Writes to
+  by-value stack-argument slots stay in the shadow; writes through original
+  pointer arguments remain in caller RAM.
+  This requires a host-verified current-thread stack receipt, a valid bounded
+  caller backchain, and at least 64 KiB left below the shadow frame for callees.
+  Missing receipts (including some restored threads), invalid frames, or low
+  headroom retain the original call without stack relocation and log one warning.
+  This is not a guarantee for arbitrary dynamic stack use, custom assembly stack
+  layouts, or nonlocal guest unwinding. Keep using `-mstackrealign` when building
+  mods; the bridge is a second layer for older binaries.
+- Observer hooks preserve the game's register state, including scratch registers, paired
+  floating-point values and condition bits. Return hooks receive the original argument
+  registers, while the game's result (including nonstandard assembly returns) is kept.
+  Memory writes through pointers remain visible. To change arguments or results, replace
+  the function and call the original yourself.
 - Only one mod may replace a function; a second one is an error naming both mods. Any number
   of mods may hook one.
 - Entry hooks run in load order, return hooks in reverse order.
@@ -212,6 +248,8 @@ and target the USA game version; mods work on EU installs too (see below).
 - `wwhd/data.h`: named save/resource pointers, matrix stack and item tables.
 - `actor.h`, `link.h`, `camera.h`, `items.h`, `messages.h`, `save.h`: partial views of game
   objects with checked field offsets; unknown parts are reachable as bytes.
+- `wwhd/save_flags.h`: checked access to native save event bits and masked byte registers,
+  using the game's own methods and the region-mapped save pointer.
 - Functions not in the public decomp can still be hooked by address with
   `WWHD_GAME_FUNC(address, ret, name, (args))`; game variables with
   `WWHD_GAME_DATA(address, type)`.
@@ -222,6 +260,34 @@ references to the EU build. Functions that differ or don't exist in EU are refus
 error naming them. Don't cast integers to pointers (that hard-codes a USA address), and only
 use object fields that are the same in both versions.
 
+### Native save event flags
+
+Include `wwhd/save_flags.h` to access the game's persistent event array. These are
+the game's story flags, separate from a mod's `wwhd_quest_flag` values. Changing
+them can alter story order; take a save backup before applying changes to an
+existing file. The helpers do not run cutscenes or save to disk themselves.
+
+Call on the game thread after save allocation, from an appropriate initialization
+or gameplay hook. A non-null save allocation can also exist before the player has
+selected a file; these helpers do not determine which file should be changed.
+
+| Helper | Result |
+| --- | --- |
+| `wwhd_save_event_test(flag)` | 0 or 1; the selector must have exactly one mask bit. |
+| `wwhd_save_event_set(flag, enabled)` | 0 on success; zero clears the bit, other values set it. |
+| `wwhd_save_event_read(selector)` | The masked byte, without shifting. |
+| `wwhd_save_event_write(selector, bits)` | 0 on success; values outside the mask are rejected. |
+
+All return `WWHD_SAVE_FLAGS_INVALID` (-1) for invalid arguments or
+`WWHD_SAVE_FLAGS_NOT_READY` (-2) if the save allocation is unavailable. A selector
+is a 16-bit value: its high byte indexes the event array and its low byte is a
+nonzero mask. For example, mask `0xF0` uses values `0x00`, `0x10`, … `0xF0`,
+without shifting them down to 0–15. Out-of-mask writes are rejected before calling
+the native setter, which otherwise ORs its value into adjacent flags.
+
+These are header-only adapters over existing game bindings. They add no host
+service requirement and do not change how ordinary saves are loaded.
+
 ## Host services
 
 | Service | What it does |
@@ -231,6 +297,10 @@ use object fields that are the same in both versions.
 | `wwhd_config_changed` | A live option's revision, below |
 | `wwhd_malloc`, `wwhd_free` | Per-mod heap, 16-byte aligned; size from `guest.heap_size` (default 256 KiB, max 8 MiB); null when full |
 | `wwhd_input_read` | Buttons, sticks and touch (read-only) |
+| `wwhd_ship_normal_sail_wind` | Compose the port’s optional normal-sail wind callback before the sail transition flag is read; takes ship actor, preserves CPU context |
+| `wwhd_ship_sail_target` | Scale a completed native wind target using the live sail/settings; caller retains local original/written target and conditionally restores it before jump checks |
+| `wwhd_item_action_dispatch` | Preserve quick-use bookkeeping immediately before an eligible native ready hookshot, rope or boomerang action; takes Link and item ID, preserves CPU context and writes no global input/equipment |
+| `wwhd_item_ready_trigger` | Preserve the port’s local quick-use predicate after a native ready-item query; takes Link and the original result, changes no global pad input |
 | `wwhd_input_filter_register` | Change the controller state the game reads, below |
 | `wwhd_touch_register`, `wwhd_touch_claim` | Touches (or mouse clicks) on parts of the TV picture your mod claims, and pinches there, below |
 | `wwhd_screen_point` | Where the drawn camera shows a point of the world, in the touches' layout units, below |
@@ -343,8 +413,8 @@ settings once per logic step.
 | `game.build` | STRING | `USA`, `EU` |
 | `display.drc_mode` | STRING | `window`, `pip`, `auto`, `off`, `gamepad` |
 | `display.aspect` | F64 | Aspect ratio of the current frame |
-| `render.interp_fps` | U32 | Frame rate shown: 30, the interpolation rate, or 60 in true 60 mode |
-| `render.true60` | BOOL | 0 or 1 |
+| `render.interp_fps` | U32 | Frame rate shown: 30 or the interpolation rate |
+| `render.true60` | BOOL | Always 0: True 60 was retired; kept so older mods still read a value. `wwhd_logic_dt` is one 30 Hz step (1/30 s) in every mode |
 | `settings.<id>` | BOOL, U32 or F64 | A setting of the item menu's Settings page by its ID: switches are BOOL, choices U32 (the choice's index), numbers F64. For example `settings.camera.invert-y`, `settings.direct-camera.speed`, `settings.screen.fov` |
 
 ```c
@@ -405,15 +475,138 @@ an unbalanced callback drops the entire list. Clips belong to one recording list
 and cannot affect another mod. Send ordinary drawing elements through
 `wwhd_hud_emit`; that service rejects clip commands.
 
-`WWHD_HUD_API_VERSION` is 2; the guest module ABI and manifest `guest.api_version`
-remain 1. Importing `wwhd_hud_clip` is the runtime capability check: older hosts
+Importing `wwhd_hud_clip` is the runtime capability check for clips: older hosts
 lack that service and refuse the module during loading. Existing HUD v1 mods
 continue to load without it. Do not emulate clipping by moving or shrinking the
 image, since that changes registration at a map boundary.
 
+**Mirrored images (HUD v3).** An image element whose `u1` is smaller than `u0` is drawn
+mirrored left to right over that part of the picture; `v1` smaller than `v0` mirrors it top
+to bottom. All four values stay within 0..1. The game draws some of its art this way: half
+of a symmetric picture, mirrored into the whole one (the floor-change arrow
+`DungeonMapUp_00/MapFloorUpDown_00^t` is one half of it). Draw such art as two images side by
+side, the second with `u0 = 1, u1 = 0`:
+
+```c
+image.u0 = 0; image.u1 = 1; image.x = x;         wwhd_hud_emit(list, &image);  /* the half as it is */
+image.u0 = 1; image.u1 = 0; image.x = x + half;  wwhd_hud_emit(list, &image);  /* its mirror image */
+```
+
+Older hosts refuse reversed UVs and drop the whole list, so check first:
+`wwhd_hud_mirrored_images()` (the unsigned setting `hud.mirrored-images.version`) is 1 on
+hosts that draw them and 0 before. Rotation, tint, blending and clips work as for any image.
+Other element kinds keep the old rule (`u1 >= u0`, `v1 >= v0`).
+
+`WWHD_HUD_API_VERSION` is 3 (v3: mirrored images and the game's layout texts, see
+[The game's layout art](#the-games-layout-art)); the 72-byte element, the guest module ABI
+and manifest `guest.api_version` stay as they are, and v3 imports no new host service. Hosts
+with v3 have mod manager 1.9.0: give `"minimum_manager_version": "1.9.0"` to refuse older
+ports up front, or check the capability settings at run time and keep a fallback.
+
 It draws on Metal and Vulkan, in the TV picture and the GamePad screen (window or
 picture-in-picture); the settings overlay stays on top. Positions are not interpolated
 between logic steps.
+
+### Native boat compass lease
+
+`WWHD_MAP_HUD_API_VERSION` is 1; module ABI and `guest.api_version` remain 1.
+Read the unsigned capability setting `hud.boat-compasses.version`: missing or 0
+means use the existing above-compasses position. The C helpers use the existing
+optional `wwhd_setting_get` transport (fixed 36-byte versioned request, query type
+7, key `native-map-hud.v1`); older hosts return -1 without performing an action,
+including when an older installer translates the ELF. No installer upgrade is
+needed for the fallback. Direct service imports are also available for bindings:
+define `WWHD_MAP_HUD_DIRECT_IMPORTS` and use translator 0.3 or newer to get optional
+imports; older translators treat those direct imports as mandatory.
+
+`s32 wwhd_hud_boat_compasses(u32 replace)` is a per-mod lease, called from actor
+logic. `(1)` renews for this logic step; 1 means active, 0 means no eligible boat
+HUD. Errors are `WWHD_MAP_HUD_UNSUPPORTED` (-1), `INVALID` (-2, bad argument),
+`BUSY` (-3, another owner including its release delay), and `PHASE` (-4, outside
+actor logic or during drawing). First successful caller owns the lease; load
+order does not let a later mod steal it.
+
+Renew through the minimap's entry, display and 250ms exit, then call `(0)` once.
+The host delays normal return by 200ms. Repeated `(0)` does not restart that delay;
+`(1)` during it cancels release immediately. Keep your own map tween's displayed
+fraction when reversing. A missed renewal without explicit release revokes
+immediately. Disable/unload (currently restart), HUD unregister, state load,
+stage/UI/HUD/layout replacement, a failed HUD callback/list, or loss of boat
+eligibility revokes without delay.
+Hidden-to-hidden handoffs should request no lease.
+
+Native visibility/menu/first-person/cutscene gates still apply. Native compass
+updates, animations and cannon/grappling-hook controls continue; only this exact
+native compass layout's draw is suppressed. Revocation reveals the current native state,
+without saved transforms or pane reparenting. No pane pointers cross the API.
+
+`s32 wwhd_hud_boat_compasses_rect(wwhd_boat_compasses_rect* out)` reports the
+owner's current live rectangle: initialize `size=24`, `version=1`. Return 1 means
+x/y/w/h are filled (TV 1280x720 HUD units, top-left origin, y down; use
+`WWHD_HUD_CENTER` anchoring). Return 0 means no current owned rectangle; -1 means
+unsupported, -2 means a bad output buffer/structure, -4 means an unbound thread. The output must be in static mod storage or its SDK heap, as for other HUD
+services. The rectangle encloses the native compass/clock pictures and follows their layout animations. Read it in logic for placement, and check it again in your draw callback to
+confirm ownership survived any intervening lifecycle change. Do not draw replacement
+contents after lease loss.
+
+```c
+static int replacing;
+static wwhd_boat_compasses_rect where = {24, 1};
+void map_step(int visible_or_exiting, int exit_just_completed) {
+    static u32 version;
+    wwhd_setting_get("hud.boat-compasses.version", WWHD_SETTING_U32, &version, 4);
+    replacing = version && visible_or_exiting && wwhd_hud_boat_compasses(1) == 1;
+    if (replacing) replacing = wwhd_hud_boat_compasses_rect(&where) == 1;
+    if (version && exit_just_completed) wwhd_hud_boat_compasses(0);
+    /* Draw at where only while replacing; otherwise retain the fallback. */
+}
+```
+
+### Native GamePad chart selection
+
+Read unsigned capability `map.chart-selection.version` (1 supported, missing/0
+unsupported). The C helpers use the same optional query transport and older-host
+fallback as the compass lease.
+All three calls require actor logic and reject drawing with `PHASE` (-4).
+
+- `s32 wwhd_map_chart_selected(void)`: current native index 0..60; -1 unsupported,
+  -2 missing/invalid native MenuMap, -4 wrong phase. Cache this for drawing.
+- `s32 wwhd_map_chart_select(u32 native_chart_index)`: 1 queued, 0 already selected;
+  -1 unsupported, -2 invalid/unowned/unopened/undeciphered/wrong-kind chart or
+  unavailable native menu, -3 another mod's pending request, -4 wrong phase.
+  Accepted targets are native treasure-chart indices 0..48, as used by MenuMap,
+  rather than printed chart numbers or raw archive indices.
+- `s32 wwhd_map_chart_cancel(void)`: 1 cancelled this mod's pending request,
+  0 nothing pending; -1 unsupported, -3 another pending owner, -4 wrong phase.
+
+A request binds to the current menu instance and stage generation. At the normal
+native event boundary, real GamePad input runs first. A changed native selection
+cancels the pending request. Otherwise, when the carousel is idle, the host
+commits its outgoing/selected/direction event and lets the native carousel update
+caption/art and finish processing. Busy animations are never reset. A newer
+request from the same mod replaces the uncommitted target; other mods get BUSY.
+If the map screen is inactive the request waits for its native display event path.
+
+Cancel, disable/unload, state load or stage/UI/menu/layout destruction/replacement
+cancels uncommitted requests and leaves native selection unchanged. After commit,
+the choice is an ordinary player choice: later GamePad input changes it, and
+unloading restores nothing. Ownership/deciphering are checked again at commit.
+
+```c
+void choose_chart(u32 native_index) { /* a chart edge in a logic hook */
+    static u32 version;
+    wwhd_setting_get("map.chart-selection.version", WWHD_SETTING_U32, &version, 4);
+    if (version) {
+        s32 result = wwhd_map_chart_select(native_index);
+        /* 1: pending; selected() reports the index once committed. */
+        (void)result;
+    }
+}
+void cancel_choice(void) { wwhd_map_chart_cancel(); }
+```
+
+[Native integration and minimap note](mod-sdk-map-hud.md) records the addresses,
+identification, lifecycle and exact fallback rules.
 
 ### Current-room maps for mod dungeons
 
@@ -460,6 +653,20 @@ player's installed 2D pack, in the language the game uses, while the game runs:
   visible, and, for a picture pane, its texture's name. The result is a 64-byte `wwhd_game_pane`.
   The key `layout-texture:<Layout>/<texture>` checks that a texture exists, without loading it. It
   sets flag 4 and returns the texture's size in `w` and `h`.
+- `wwhd_game_message_get("layout-message:<Layout>/<label>", buffer, capacity)` (HUD v3) copies the
+  game's own text of a label of the layout's message file, in the language the game runs in, so a mod
+  can label its drawing as the game does without carrying translations. For example
+  `"layout-message:DungeonMapUp_00/T_FloorU_00_2F"` is `2F` in English and `P1` in Spanish. The text is
+  UTF-8 with its NUL; the game's control codes (colours, icons, sizes) are left out and line breaks
+  stay `\n`. The call returns the bytes written including the NUL, or 0: a missing layout or label, a
+  text of 4 KiB or more, or a buffer too small (it stays unchanged). A null buffer with capacity 0
+  gives the size. The key is at most 63 bytes. The texts don't change while the game runs: read each
+  once and keep it. `wwhd_game_messages()` (the unsigned setting `layout-message.version`) is 1 on
+  hosts with this query and 0 before.
+
+  The port reads these texts from the message files of the player's installed 2D pack, never from
+  game memory: the key names a layout and a label, nothing else, and the text is copied whole into the
+  mod's own memory or not at all.
 
 Names may contain letters, digits and `_ ^ + - .` only. A missing layout, texture or pane returns 0,
 with the reason in the Mods tab. Older hosts return 0 for both: the texture source and the query key
@@ -1263,7 +1470,7 @@ normal save and extracted HD game, the ZIP, source `catalogue.json`, an explicit
 private game-source JSON and a private output folder. The JSON maps declared game
 IDs to the player's local paths (for example `gc_wind_waker` to an RVZ); use `{}`
 for a mod without a game-source step. Run separately with `--region USA`/`EU` and
-`--renderer metal`/`vulkan`; `--mode` accepts `30`, `interp60` and `true60`.
+`--renderer metal`/`vulkan`; `--mode` accepts `30` and `interp60`.
 
 Before launching, the driver invokes the real installer with
 `--rebuild-code-mods --code-mods 0 --jobs N` and verifies its completed off cache.
@@ -1371,3 +1578,52 @@ those of the existing output backend.
 
 For bounded service-call diagnostics, `WWHD_AUDIO_STREAM_TRACE=1` logs open/submit/close
 results and epochs, never sample payloads. Leave it unset for normal operation.
+
+### Native ACTR profiles (startup only)
+
+`wwhd_native_actor_profile_register` adds a native actor process and an eight-byte
+stage ACTR name without replacing `fpcPf_Get` or the stage name lookup functions.
+It shares the port's profile registry with the higher-level `wwhd_actor_register`
+API; that existing manifest/behavior API is unchanged.
+
+Call this API from a `WWHD_HOOK(0x028EA120, ..., (void))` GameMain entry hook.
+Registration from other hooks is refused. The window also closes before the
+first native process allocation, including an allocation triggered by another
+entry hook. Register all profiles before creating any actor. Modules and their
+callbacks remain resident until the game exits. There is no hot unregister or
+callback unloading; changing the enabled code-mod set requires restarting.
+
+Set the descriptor's `size` to `sizeof(wwhd_native_actor_profile_v1)` and `version`
+to 1. `profile` points to a module-owned 0x30-byte native actor profile, with a
+module-owned five-word create/delete/execute/isDelete/draw method table at
+profile offset 0x24. Each callback must be an exact function entry in the calling
+module. The native process and actor base-method pointers at offsets 0x0C and
+0x1C can be zero: the runtime fills these from its region's retail actor template.
+Nonzero values must match that template. Actor class size must be at least
+0x3AC; class size plus extra allocation must not exceed 1 MiB.
+
+The runtime copies the profile, method table and name into its snapshot-owned
+pool (64 registrations). Later changes to the source descriptor do not change
+registration. Unused native profile padding is zeroed for deterministic snapshots. Requested IDs are 0x01E4 through 0x7FCF. Retail IDs and the port's
+0x7FD0–0x7FFE reservation cannot be claimed, even if currently unused. A duplicate
+ID or name is refused rather than remapped. Choose a unique name of one to eight
+ASCII letters, digits or underscores; zero-pad shorter names. `argument` is -1
+through 127 and `gba_name` is 0 through 255. Name lookup and reverse lookup use
+the copied entry; reverse lookup retains the native same-process fallback when
+the requested subtype differs. The retail tables remain immutable. All native
+code/data addresses pass through the regional address maps; an unexpected retail
+profile-table boundary disables this bridge.
+
+Success returns the requested positive process ID. Negative results are invalid
+input (-1), collision (-2), registration closed/outside GameMain entry (-3),
+bridge unavailable (-4), and capacity exhausted (-5). Refusals are logged with
+the caller and cause. Check the result before requesting actor creation.
+
+Full save states contain a bounded exact identity of the registered snapshots,
+owner IDs and owning ELF SHA-256 fingerprints. A different callback/profile/name
+or changed ELF refuses a full-state restore before memory is changed, even when
+the package version is unchanged. Legacy full states are accepted only when no
+guest profiles are registered. Restoring a compatible full state republishes the
+immutable snapshots. Portable states retain the existing mod-set warning and
+rebuild actors from the current modules; use those to transfer progress across
+code changes.

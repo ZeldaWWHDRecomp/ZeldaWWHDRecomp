@@ -24,6 +24,26 @@ constexpr int needed_category(int game_mode, bool host_pro) {
     return -1;
 }
 
+// The game reads the GamePad (VPAD) in modes 1 and 2 and the Pro Controller (KPAD) in mode 0.
+constexpr bool reads_gamepad(int game_mode) { return game_mode == 1 || game_mode == 2; }
+
+// While the game is being moved from the GamePad to the Pro Controller (switching: a re-apply is under
+// way), the GamePad keeps its buttons and sticks until the game's mode has followed. The game only
+// follows in play: in a menu (pause menu, file select) it needs a press to get back there, and a
+// GamePad it no longer hears would leave it waiting forever (issue #330). category: the Options
+// category the switch is running with (0 Pro Controller, -1 not decided yet); while the menu path
+// switches the game (its own steps, no player input) the GamePad is idle, as before.
+constexpr bool keeps_gamepad(bool switching, int game_mode, bool host_pro, int category) {
+    return switching && host_pro && reads_gamepad(game_mode) && category != 0;
+}
+
+// Without an in-game UI (title, file select, a stage change) the re-apply gives up after a while:
+// there is nothing to switch. Not while the GamePad is kept for the game: the file select reaches
+// play only by a press on it, however long the player waits there.
+constexpr bool may_give_up(bool keeps_gamepad, int frames_without_ui, int give_up_frames) {
+    return !keeps_gamepad && frames_without_ui > give_up_frames;
+}
+
 // a state was loaded (any thread): check the game's controller once it is playing again. A change of
 // the host's choice (input::set_pro_controller) requests the same by itself. While the game's mode does
 // not match, it waits for the play state (cutscenes and menus finish first).
@@ -31,6 +51,12 @@ void request(const char* kind);
 // at the frame boundary (ss::service)
 void service(Cpu* c);
 // the game is being switched from the Pro Controller to the GamePad: its Pro Controller stays
-// connected (idle) until the switch is done (padscore)
+// connected until the switch is done (padscore)
 bool holds_pro_controller();
+// ... and keeps its buttons and sticks while the game still reads it (mode 0): in the pause menu the
+// press that leads back to play must reach the game. Idle while the menu path switches it.
+bool pro_controller_live();
+// the game is being switched from the GamePad to the Pro Controller: its GamePad buttons and sticks
+// stay live (VPADRead) until the switch is done (keeps_gamepad)
+bool holds_gamepad();
 }  // namespace controller_reapply

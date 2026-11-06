@@ -39,8 +39,8 @@ mod's page), the *Experimental* tag where it applies and a one-word status (*On*
 
 - **Built-in** ("Included with the game. Switch on or off any time."): the mods compiled
   into the game: direct camera, mouse camera, camera-directed items, first-person shortcut, extended enemy lock-on, wall climbing,
-  run/swim speed, faster ladders, faster sidling, faster ivy climbing, faster ledge hanging, sailing speed, automatic wind, jump anywhere,
-  quick doors, fast forward and fast scene changes; all off by default.
+  run/swim speed, faster ladders, faster sidling, faster ivy climbing, faster ledge hanging, sailing speed, automatic wind, jump anywhere, Deku Leaf: wave to rise,
+  quick doors, fast forward, fast scene changes, instant text and no pauses in texts; all off by default.
 - **Community** ("Made by players. Downloaded from the mod catalogue."): every installed
   package (from the catalogue, from a file or folder, graphics packs and content packs),
   then **Available to download**: the catalogue's mods that aren't downloaded yet (see
@@ -52,6 +52,26 @@ mod's page), the *Experimental* tag where it applies and a one-word status (*On*
   support, Save backups, Mod list (its source and the automatic check), Cheats
   and the Mods folder. Notices from the manager (for example a graphics pack that
   was switched off) appear at the top of the tab until OK.
+
+### Story items
+
+**Mods › More › Cheats › Story items** contains separate one-shot grants for Nayru's,
+Din's and Farore's Pearls, and real ownership of the fully upgraded Master Sword.
+They are unused by default and are separate from **Give all items** and the temporary
+sword-equipping cheat.
+
+The first use each session asks for confirmation: “This can change or break the
+story's order. A save backup is made first.” A complete backup of the last in-game
+save must succeed before any story item is granted. Save in the game first if no
+save exists yet. The backup appears under **Mods › More › Save backups** and can be
+staged for restoration at the next start.
+
+These grants change inventory only. Pearl placement and the Tower of the Gods still
+follow the game's statue interactions. The sword grant records only its final native
+ownership phase and equips it; it does not grant the intermediate ownership phase
+that hid Medli in #85, or change the shield. Ownership itself can still affect story
+checks and character availability. Save in the game to keep a grant; loading a save
+state restores the item flags recorded in that state.
 
 **Switching a mod on is the one way to get it running.** A built-in mod or a mod
 that needs nothing switches on at once. Otherwise one review opens with
@@ -96,7 +116,7 @@ now** (on Android: close and reopen the app). There is one restart offer at a ti
 the end of an install and the page of a mod that is off but still loaded offer
 their own instead, and switching mods does not open a popup.
 
-**Letterbox while targeting** is on by default in **Mods > Built-in > Camera**; switch it off to remove bars during normal targeting while keeping cutscenes and special cameras unchanged.
+**Letterbox while targeting** in **Mods > Built-in > Camera** offers **On** (the default), **Off with enemies** (remove bars only while locked on to a selected enemy), and **Always off** (also remove bars during free targeting without an enemy). Cutscenes and scripted cameras keep their original bars. Existing saved On/Off choices retain their behavior.
 
 ### Camera-directed items (prototype)
 
@@ -194,8 +214,8 @@ sounds. On the macOS menu bar the same switches and a few speed presets are unde
 `WWHD_MOD_SAIL_SPEED` and `WWHD_MOD_AUTO_WIND` (`=1`) switch them on at startup, with the factors
 `WWHD_MOD_LADDER_FACTOR`, `WWHD_MOD_SIDLE_FACTOR`, `WWHD_MOD_IVY_FACTOR`, `WWHD_MOD_HANG_FACTOR`,
 `WWHD_MOD_SAIL_FACTOR` and `WWHD_MOD_SWIFT_SAIL_FACTOR`. With a mod off,
-the game runs its original code. These mods work the same at 30 fps, with 60/120/240 fps
-interpolation and with true 60: they change animation rates and speed targets inside the game's
+the game runs its original code. These mods work the same at 30 fps and with 40/60/120/240 fps
+interpolation: they change animation rates and speed targets inside the game's
 own steps, never amounts added per frame.
 
 Jump anywhere makes Link jump from standing or running with an input of its own (L1 and Q by
@@ -315,7 +335,8 @@ not ask.
 
 **Mods > More > Save backups** lists every backup with its date, reason and size.
 **Back up now** makes a manual backup. Backups live in `save-backups` next to the
-save folder (on Android in the app's files folder, next to `save`), one folder
+save folder (on Android in the app's files folder, next to `save`; with a save folder chosen in
+the Saves tab, for example a cloud folder, they stay in the usual local `save-backups`), one folder
 per backup named after its date and reason (for example
 `2026-10-11_14-03-12-mod-dragon` before a mod, with its id cut to 7 characters,
 `…-restore` or `…-manual`), with the copied files under `save/` and
@@ -405,8 +426,10 @@ Package manifest fields:
 | `game_id` | `wwhd`: this game, any region (manager 1.5; give `"minimum_manager_version": "1.5.0"` with it). `wwhd-usa` from older manifests is still accepted. Region checks stay where they apply: the title ID of Cemu and SDCafiine packs and the game build of code mods; the runtime also verifies its exact RPX entry |
 | `author`, `description` | Optional display metadata |
 | `minimum_manager_version` | Optional three-part minimum |
+| `supported_game_builds` | Optional array of 1–16 exact compiled build names, such as `["USA"]`; requires manager 1.8.0. Checked before content or code activation; `game_id: "wwhd-usa"` alone remains an any-region legacy alias |
+| `save_profile` | Guest-only declarative save ownership; requires manager 1.7.0 (below) |
 | `experimental` | Optional `true` for untested mods: hidden by default, enabling backs up the saves first (manager 1.4) |
-| `kind` | `native`, `settings`, `content` or `cemu` |
+| `kind` | `native`, `settings`, `content`, `cemu` or `player-model` (made by the import, below; manager 1.9) |
 | `abi_version`, `binaries` | Native ABI `1`; platform-to-relative-library map |
 | `content_dir` | Content package: relative folder holding game-relative replacement files. A content package that only declares story content (letters, charts, items, quests, models, actors, scenes) can leave it out |
 | `cemu_dir` | Cemu package: relative folder holding `rules.txt` and shader files (empty for the package root) |
@@ -420,6 +443,68 @@ Platform keys include `macos-arm64`, `macos-x86_64`, `windows-x86_64`,
 Unsupported platform binaries remain visible as incompatible. The desktop
 folder/file install workflow is the current supported UI; Android document URIs
 need a separate import bridge. Online downloads/catalogues are outside v1.
+
+## A separate save for a guest mod
+
+A seed-producing guest mod can declare its save identity in `manifest.json`:
+
+```json
+"minimum_manager_version": "1.7.0",
+"save_profile": {
+  "version": 1,
+  "provider": "my-randomizer",
+  "identity": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+```
+
+`provider` is 1–24 lowercase ASCII letters, digits or hyphens, starting with a
+letter. `identity` is exactly 64 lowercase hexadecimal digits. Producers must
+hash the complete gameplay seed, including assets and options that can change
+the world; an executable hash alone may describe several different seeds.
+The minimum-manager guard is mandatory so older ports cannot ignore this field
+and activate the mod against the normal save.
+
+Before save recovery, cloud selection or backups, the runtime selects at most
+one enabled, trusted and eligible guest owner from the startup dependency plan.
+Disabled, unconfirmed and unavailable packages do not select a profile. Invalid
+or conflicting eligible claims stop startup before save I/O. Package activation
+happens after path selection; dependency changes or load failures stop the owner
+instead of running it against a different save.
+
+The namespace is `mod-<provider>-<identity>`. A normal `save` folder becomes the
+sibling `save-mod-…`; backups use sibling `save-backups-mod-…`. Save-folder
+preferences live under `save-profiles/<namespace>` in the configuration folder.
+Choosing a new cloud container puts a dedicated save inside it. Choosing an
+existing actual save puts the new profile save beside that save. Normal saves
+and backups are never copied or migrated automatically. `--save DIR` selects the ordinary root; a profile mod always uses its
+namespaced sibling, including launches through official desktop launchers.
+Its backups are namespaced beside it. A launch without a profile mod keeps
+the exact selected directory.
+
+State slots, automatic states and last-session/editor states use a sibling state
+directory with the same namespace, including when `WWHD_STATE_DIR` is supplied.
+Portable restores require the same provider/seed. Full restores additionally
+require the same owner and trusted dependency fingerprints, before changing
+files, guest memory or threads. Profile full states carry a required header flag
+that older runtimes reject. Ordinary states retain their existing paths and
+legacy compatibility. The current save paths and loaded packages remain fixed until exit.
+
+You can switch off the profile mod, one of its dependencies, or **Switch all mods off**
+while playing. These choices are saved for the next launch and shown as requiring
+a restart; they do not unload the running mod or redirect its saves. Disabling a
+required dependency also disables its dependent mods for the next launch. Quit
+through **Settings > Quit Game**, then start again to apply the change. This
+works on Android without a code-mod rebuild. Package files and active-profile
+options stay protected until that restart.
+
+Android takes its app-wide game lease before native startup but defers save
+creation/import recovery until native metadata selects the directory. Import
+and export remain vanilla-only; profile saves are not migrated. Android warns
+before enabling an installed profile mod and on its details page: these saves
+cannot currently be imported/exported and are deleted when the app is uninstalled. The matching
+app/native save-preparation bridge is required for profile activation. Windows
+rejects locations whose complete namespace and save/backup suffixes exceed the
+supported path budget; select a shorter installation or save root.
 
 ## Packaging a mod
 
@@ -570,6 +655,28 @@ does not record an asset fingerprint yet. Import/staging limits are 4096
 entries, 128 MiB per file and 512 MiB per package. Symlinks and path traversal
 are rejected. Content mods are copied into manager storage; the original game
 files are not changed, and game assets stay outside Git.
+
+## GameCube player models (manager 1.9)
+
+Install from a file also takes a GameCube player model pack you have: an archive
+or folder with a `Link.arc` (a model made for the GameCube game). Each `Link.arc`
+becomes a package of kind `player-model`, named after its folder (the author from
+the pack's `metadata.txt` line `author:`). The package keeps the `Link.arc` in
+`source/`; right after the install it is converted on your device onto HD Link
+(`model/Link.szs`, with `model/conversion.txt` saying what was converted): HD's
+skeleton, materials and animations stay, the pack's meshes are moved onto HD's
+joints and its textures upscaled to HD's sizes and formats. Nothing is
+downloaded; the port ships only the converter.
+
+A player model is not switched on like other mods. Its page has a switch per
+save file: each save file shows one model or HD Link, and the game changes at
+once, no restart. The choices are kept in the current mod profile. A new game in
+a save file starts with HD Link and forgets that file's choice; removing a model
+puts its save files back to HD Link. **Convert again** redoes the conversion
+(after a game update, say). After loading a save state the save file's choice applies again.
+
+The converter and the live switch come from the GreenNaugahyde Android fork
+(v0.9.9, MPL-2.0): `runtime/src/gcmodel`, `runtime/src/mods/player_models.cpp`.
 
 ## Cemu graphics packs (manager 1.2)
 

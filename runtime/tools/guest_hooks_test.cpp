@@ -1,3 +1,4 @@
+#include "mods/hud_visibility.h"
 #include "mods/story_game_pieces.h"
 #include "mods/story_kit_models.h"
 #include "mods/mod_stages.h"
@@ -29,6 +30,40 @@
 #define WWHD_GUEST_HOOKS_STARTUP_FIXTURE 1
 // This entire harness constructs synthetic startup registries; production has no unseal.
 #include "mods/guest_mods.cpp"
+// These hook-runner fixtures have no native actor-profile lookup entries and
+// never import the actor-profile service. The real registry has its own
+// guest_actor_profiles_test; only its empty-state lifecycle belongs here.
+namespace native_actor_profiles {
+static unsigned configure_calls=0,install_calls=0,register_calls=0,restore_calls=0;
+void configure(void(*)(Cpu*,uint32_t),uint32_t(*)(Cpu*,uint32_t,std::initializer_list<uint32_t>)) {
+    ++configure_calls;
+    assert(false && "hook fixture unexpectedly configured native actor profiles");
+}
+bool install_guest(const Allocate&,const Owner&,const Replace&,std::string* why) {
+    ++install_calls;
+    assert(false && "hook fixture unexpectedly installed native actor profiles");
+    if(why)*why="synthetic hook fixture has no native profile lookup";
+    return false;
+}
+int32_t register_guest(const std::string&,const std::string&,uint32_t,const OwnRange&,const OwnFunction&,std::string*) {
+    ++register_calls;
+    assert(false && "hook fixture unexpectedly called actor-profile registration");
+    return -4; // unavailable, never pretend that a profile was admitted
+}
+void restore_guest_snapshots() {
+    ++restore_calls;
+    // Restoring an unconfigured, empty registry has no guest-memory effects.
+    assert(!configure_calls&&!install_calls&&!register_calls&&!guestmods::g_actor_profile_import);
+}
+}
+namespace mods {
+// Service dispatch must link on every platform even though these tests exercise
+// hooks, not traversal/quick-use gameplay. Any unexpected invocation is a failure.
+void ship_normal_sail_wind(Cpu*,uint32_t) {assert(false && "unexpected sail-wind service in hook fixture");}
+float ship_sail_target(float stock) {assert(false && "unexpected sail-target service in hook fixture");return stock;}
+void quick_use_item_action_dispatch(Cpu*,uint32_t,uint32_t) {assert(false && "unexpected item-action service in hook fixture");}
+uint32_t quick_use_ready_item_trigger(Cpu*,uint32_t,uint32_t trigger) {assert(false && "unexpected item-trigger service in hook fixture");return trigger;}
+}
 namespace story_native_wait_runtime {
 static unsigned startups=0;
 void startup(bool,LogicStep) {++startups;assert(story_native_scene_request::startup_window_current());}
@@ -126,7 +161,8 @@ namespace input {PadState read() {return {};}}
 // live options and scripted test options (QoL M0): the fixtures run no renderer or host UI
 namespace render {uint64_t frame_count() {return 0;}}
 namespace hostui {void post(std::function<void()> fn) {fn();}}
-namespace true60 {float dt() {return 0.5f;}}
+// guest module entry alignment: no emulated threads here, so the stack bounds are unknown (call kept as is)
+namespace threads {bool current_stack_bounds(const Cpu*, uint32_t&, uint32_t&) {return false;}}
 namespace interp { uint32_t last_camera() { return 0; } }  // screen points (QoL M2): no camera here
 namespace aspect { float layout_scale(float) { return 1.0f; } }
 namespace mic {  // microphone (QoL M2): never opened by these fixtures
@@ -446,6 +482,13 @@ namespace game_layouts {
 bool texture(const std::string&,Image&,std::string& error) {error="no game layouts in this test";return false;}
 bool texture_size(const std::string&,uint32_t&,uint32_t&) {return false;}
 bool pane(const std::string&,Pane&) {return false;}
+// one label in two sizes, a text at the size limit, everything else missing
+bool message(const std::string& spec,std::string& out) {
+    if(spec=="DungeonMapUp_00/T_FloorU_00_2F"){out="P1";return true;}
+    if(spec=="Big_00/T_Long"){out.assign(kMaxMessageBytes,'x');return true;}
+    if(spec=="Big_00/T_Edge"){out.assign(kMaxMessageBytes-1,'y');return true;}
+    return false;
+}
 }
 namespace story_mail { void set_item_get_next(void (*)(Cpu*)) {} }
 namespace story_notebook {
@@ -823,6 +866,73 @@ bool guest_hooks_run_query(Cpu*c,const guestmods::NativeWaitNext&next){auto&t=*n
  assert(guestmods::native_camera_run_original_current(c,t));return true;
 }
 
+namespace observer_register_test {
+Cpu incoming{}, returned{};
+unsigned side_effects=0;
+void same_registers(const Cpu& actual,const Cpu& reference) {
+    Cpu expected=reference;
+    // Scheduler identity, LL/SC reservation and mod-skip bookkeeping are not
+    // architectural observer outputs; callbacks can advance that runtime state.
+    expected.core=actual.core;expected.thread=actual.thread;expected.main_thread=actual.main_thread;
+    expected.res_addr=actual.res_addr;expected.res_val=actual.res_val;expected.mod_skip=actual.mod_skip;
+    assert(!std::memcmp(&actual,&expected,sizeof(Cpu)));
+}
+void clobber(Cpu* c) {
+    ++side_effects;
+    for(unsigned i=0;i<32;++i){c->r[i]=0xBAD00000+i;c->f[i].ps0=-77.;c->f[i].ps1=-88.;c->cr[i]=1;}
+    c->lr=1;c->ctr=2;c->pc=3;c->fpscr=4;
+    c->xer_so=1;c->xer_ov=1;c->xer_ca=1;c->xer_bc=1;
+    for(auto& g:c->gqr)g=0xFFFFFFFF;
+    c->core=(c->core+1)%3;++c->res_val;
+}
+void before(Cpu* c){same_registers(*c,incoming);clobber(c);}
+void throwing(Cpu* c){clobber(c);throw std::runtime_error("observer register test");}
+void body(Cpu* c){
+    same_registers(*c,incoming);
+    c->mod_skip=0; // the original path consumes its one-shot skip, as generated code does
+    c->r[3]=11;c->r[4]=12;c->r[12]=0x10200000; // randomizer's non-EABI helper return
+    c->f[0].ps0=13.5;c->f[2].ps1=-0.;c->cr[2]=1;c->gqr[3]=0x1234;
+    c->lr=0x12345678;c->ctr=0xABCDEF00;c->fpscr=0x9988;c->xer_ca=1;
+    returned=*c;
+}
+void after(Cpu* c){
+    Cpu expected=returned;
+    // Return observers receive the original arguments, not r3/f1 return values.
+    for(unsigned i=0;i<8;++i){expected.r[3+i]=incoming.r[3+i];expected.f[1+i]=incoming.f[1+i];}
+    same_registers(*c,expected);
+    clobber(c);
+}
+void run(){
+    const auto chains=guestmods::g_chains;
+    std::array<PpcFunc,33>bodies{};std::copy_n(test_mod_bodies,bodies.size(),bodies.begin());bodies[0]=body;
+    ppc_mod_register(33,test_mod_flags,bodies.data());
+    auto& chain=guestmods::g_chains[0x02000000];chain={};chain.addr=0x02000000;chain.ordinal=0;
+    chain.entry={before,before};chain.ret={after,after};
+    for(bool replacement:{false,true}){
+        chain.replace=replacement?body:nullptr;
+        Cpu c{};c.pc=0x02000000;c.core=1;c.res_val=7;
+        for(unsigned i=0;i<32;++i){c.r[i]=0xCA000000+i;c.f[i].ps0=i+.25;c.f[i].ps1=i+.5;}
+        const uint64_t nan_payload=0x7FF0000000001234ull;
+        std::memcpy(&c.f[7].ps1,&nan_payload,sizeof nan_payload);
+        incoming=c;side_effects=0;
+        ppc_mod_run(&c);
+        same_registers(c,returned);
+        assert(side_effects==4&&c.core==2&&c.res_val==11); // callback effects outside registers remain
+    }
+    for(bool at_return:{false,true}){
+        chain.replace=nullptr;chain.entry.clear();chain.ret.clear();
+        (at_return?chain.ret:chain.entry).push_back(throwing);
+        Cpu c{};c.pc=0x02000000;c.r[12]=99;c.f[2].ps1=17.5;
+        incoming=c;side_effects=0;bool caught=false;
+        try{ppc_mod_run(&c);}catch(const std::runtime_error&){caught=true;}
+        assert(caught&&side_effects==1);
+        same_registers(c,at_return?returned:incoming);
+    }
+    guestmods::g_chains=chains;
+    ppc_mod_register(33,test_mod_flags,test_mod_bodies);
+}
+}
+
 #ifdef GUEST_HOOKS_TEST_NO_HOOKS
 // Game code translated without --mod-hooks (setup with code mods off): nothing calls ppc_mod_register, so the
 // hook-flag table stays null. An --editor start must not claim game functions (that wrote through the null
@@ -837,6 +947,7 @@ int main() {
 #endif
     guestmods::init();
     assert(mods::packages::inspected);       // the package start still ran (a guest package is refused, not run)
+    assert(!native_actor_profiles::configure_calls&&!native_actor_profiles::install_calls&&!native_actor_profiles::register_calls&&!native_actor_profiles::restore_calls);
     assert(story_actors::installs==0);        // no port service claimed a game function
     assert(story_actors::live_kinds==0);      // so the editor has no live kinds
     assert(!g_mod_hook_flags&&guestmods::g_chains.empty()&&!guestmods::hooks_built());
@@ -860,6 +971,7 @@ int main() {
     setenv("WWHD_GUEST_BUILD_CONFIG",missing,1);
 #endif
     guestmods::init();
+    assert(!native_actor_profiles::configure_calls&&!native_actor_profiles::install_calls&&!native_actor_profiles::register_calls&&!native_actor_profiles::restore_calls);
     assert(story_scenes::scene_editor);                 // editor previews on
     assert(story_scenes::scene_scratch!=0);             // with the scene player's scratch
     assert(story_scenes::scene_installs==2);            // the declared-scenes install, then the editor's
@@ -887,6 +999,7 @@ int main() {
     guestmods::init();
     assert(!story_native_scene_request::startup_window_current());
     assert(mods::packages::inspected);
+    assert(!native_actor_profiles::configure_calls&&!native_actor_profiles::install_calls&&!native_actor_profiles::register_calls&&!native_actor_profiles::restore_calls);
     // Inert without mods: no guest runtime memory (the save-state layout of a start without mods), no
     // particle or held-model setup, no native scene startup, no game-thread binding and no package observer.
     assert(mem::fixture_runtime_allocs==0&&story_particles::configured==0&&story_item_models::configured==0);
@@ -910,6 +1023,7 @@ int main() {
     // ORIGINAL bypasses both mods and the port wrapper, and consumes the skip token.
     calls.clear(); c.r[3] = 20; guestmods::call_original(&c, 0x02000000);
     assert((calls == std::vector<int>{3})); assert(c.r[3] == 21); assert(c.mod_skip == 0);
+    observer_register_test::run();
     native_observer_test::run();
     stage_owner_pass_through_test();
     stage_owner_observer_test::run();
@@ -934,7 +1048,7 @@ int main() {
     guestmods::g_loaded[0].options["option"]=2.5;c.r[3]=1;c.f[1].ps0=8;
     guestmods::svc_config_float(&c);assert(c.f[1].ps0==2.5);
     c.r[3]=1;c.r[4]=9;guestmods::svc_config_int(&c);assert(c.r[3]==9); // non-integral numeric option
-    guestmods::svc_logic_dt(&c);assert(c.f[1].ps0==1.0/60.0);
+    guestmods::svc_logic_dt(&c);assert(c.f[1].ps0==1.0/30.0);  // one 30 Hz logic step in every mode
     guestmods::frame(0x100000002ull);guestmods::svc_logic_step(&c);assert(c.r[3]==1&&c.r[4]==2);
     guestmods::g_loaded[0].region_size=0x10000;
     auto read_setting=[&](const char* key,uint32_t type,uint32_t destination,uint32_t capacity) {
@@ -979,6 +1093,26 @@ int main() {
     assert(guestmods::hud::store().release("first",first_corner_image));
     assert(guestmods::hud::store().release("first",ld32(target+4)));
     mod_stages::fixture_has_corner_map=false;corner={};
+    // HUD v3 capabilities and the game's layout texts: string type only, exact sizes, a short or foreign buffer
+    // left unchanged, a text at the limit refused, nothing but the named label reaches the mod.
+    assert(read_setting("hud.mirrored-images.version",3,0,0)==4);
+    assert(read_setting("hud.mirrored-images.version",3,target,4)==4&&ld32(target)==1);
+    assert(read_setting("layout-message.version",3,target,4)==4&&ld32(target)==1);
+    assert(read_setting("layout-message.version",1,target,4)==0&&read_setting("layout-message.version",3,target,3)==0);
+    assert(read_setting("hud.mirrored-images.version",3,data_base+0xFFFE,4)==0);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,0,0)==3);
+    std::memset(mem::ptr(target),0x5A,8);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,target,2)==0&&ld8(target)==0x5A);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",3,target,8)==0&&ld8(target)==0x5A);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,data_base+0xFFFE,8)==0);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,0x10000000,8)==0);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_FloorU_00_2F",1,target,8)==3);
+    assert(std::string(reinterpret_cast<char*>(mem::ptr(target)))=="P1"&&ld8(target+3)==0x5A);
+    assert(read_setting("layout-message:DungeonMapUp_00/T_Missing",1,target,8)==0);
+    assert(read_setting("layout-message:Big_00/T_Long",1,0,0)==0);
+    assert(read_setting("layout-message:Big_00/T_Edge",1,0,0)==game_layouts::kMaxMessageBytes);
+    assert(read_setting("layout-message:Big_00/T_Edge",1,target,game_layouts::kMaxMessageBytes)==game_layouts::kMaxMessageBytes);
+    assert(ld8(target)=='y'&&ld8(target+game_layouts::kMaxMessageBytes-1)==0);
     std::strcpy(reinterpret_cast<char*>(mem::ptr(data_base+0x400)),"input.face_layout");
     c.r[3]=data_base+0x400;guestmods::svc_setting_changed(&c);assert(c.r[3]==0&&c.r[4]==7);
     WWHDGuestModuleV1 second{};second.mem_base=0x7F010000;second.mem_size=4096;
@@ -1007,7 +1141,9 @@ int main() {
     assert(tv[0]->commands[0].rgba==0x12345678&&tv[0]->commands[0].w==20);
     guestmods::draw_frame(&c,4);assert(hud_calls==1);
     guestmods::draw_frame(&c,5);assert(hud_calls==2);
-    auto epoch=guestmods::hud::store().state_generation();guestmods::state_loaded();
+    auto epoch=guestmods::hud::store().state_generation();
+    const auto empty_profile_restores=native_actor_profiles::restore_calls;guestmods::state_loaded();
+    assert(native_actor_profiles::restore_calls==empty_profile_restores+1);
     assert(!guestmods::hud::store().active()&&guestmods::hud::store().state_generation()!=epoch);
     guestmods::draw_frame(&c,5);assert(hud_calls==3); // rebuilt even if restored clock repeats
     c.r[3]=0;c.r[4]=2;guestmods::svc_hud_register(&c);assert(c.r[3]==1);
@@ -1158,3 +1294,5 @@ int main() {
     std::puts("guest hook ordering and original passed");
 }
 #endif
+
+namespace mods { GameUi game_ui_now(){return {};} }

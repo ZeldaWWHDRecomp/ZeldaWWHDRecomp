@@ -6,6 +6,11 @@ name: linux
 on:
   push:
     branches: ["**"]   # not on tag pushes: a release tag points at a commit CI already tested
+    # Markdown-only pushes (changelog, README, docs) start no build; docs/mod-editor.md is read by a test
+    paths:
+      - "**"
+      - "!**.md"
+      - "docs/mod-editor.md"
   pull_request:
 
 jobs:
@@ -20,16 +25,17 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config python3-pil zlib1g-dev liblz4-dev \
-            libcurl4-openssl-dev libvulkan-dev glslang-dev glslang-tools mesa-vulkan-drivers vulkan-validationlayers xvfb \
+            libcurl4-openssl-dev libvulkan-dev glslang-dev glslang-tools mesa-vulkan-drivers vulkan-validationlayers xvfb weston \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
-            libxkbcommon-dev libwayland-dev libasound2-dev libpulse-dev libudev-dev libdbus-1-dev
+            libxkbcommon-dev libwayland-dev wayland-protocols libegl1-mesa-dev libdecor-0-dev xcursor-themes \
+            libasound2-dev libpulse-dev libudev-dev libdbus-1-dev
 
       - name: Cache SDL3
         id: sdl3
         uses: actions/cache@v5
         with:
           path: ~/sdl3
-          key: sdl3-${{ env.SDL3_VERSION }}-ubuntu-24.04
+          key: sdl3-${{ env.SDL3_VERSION }}-ubuntu-24.04-wayland-v1
 
       - name: Build SDL3
         if: steps.sdl3.outputs.cache-hit != 'true'
@@ -37,7 +43,7 @@ jobs:
           git clone --depth 1 --branch "$SDL3_VERSION" https://github.com/libsdl-org/SDL.git sdl3-src
           cmake -S sdl3-src -B sdl3-build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSDL_TESTS=OFF \
             -DSDL_EXAMPLES=OFF -DCMAKE_INSTALL_PREFIX="$HOME/sdl3"
-          cmake --build sdl3-build
+          cmake --build sdl3-build -j 8
           cmake --install sdl3-build
 
       - name: Configure
@@ -47,19 +53,50 @@ jobs:
             -DGEN_DIR="$PWD/build/gen-stub" -DCMAKE_PREFIX_PATH="$HOME/sdl3" -DWWHD_SETUP_GUI=ON
 
       - name: Build
-        run: cmake --build build/linux
+        run: cmake --build build/linux -j 8
 
       - name: Unit tests
         run: |
           ctest --test-dir build/linux --output-on-failure
           python3 tools/installer/test_setup.py
-          python3 tools/recomp/test_builds.py
+          python3 tools/installer/test_randomizer_setup.py
+          python3 tools/installer/test_randomizer_seeds.py
+          python3 tools/installer/test_object_cache.py
+          # Every translator test (synthetic inputs only, no game files); new test files run automatically.
+          python3 -m unittest discover -s tools/recomp -p "test_*.py"
+
+      # The in-app randomizer's command (tools/rando: TWWHD Randomizer 1.2.0); no game files
+      - name: Randomizer command
+        run: |
+          cmake -S tools/rando -B build/rando -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release
+          cmake --build build/rando -j 8
+          python3 tools/rando/test_rando_cli.py build/rando
+          python3 tools/rando/test_places.py
 
       # Synthetic fixtures only: no game files, caches or performance runs.
       - name: Shader preparation and benchmark tooling unit tests
         run: |
           python3 tools/test_shaderprep.py
           python3 -m unittest discover -s tools/bench -p "test_*.py"
+
+      - name: Native Wayland startup (headless Weston, no GPU required)
+        run: |
+          export XDG_RUNTIME_DIR="$RUNNER_TEMP/wayland-issue309"
+          export LD_LIBRARY_PATH="$HOME/sdl3/lib"
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless --renderer=pixman --shell=kiosk-shell.so --no-config --socket=wayland-issue309 \
+            --idle-time=0 --log="$RUNNER_TEMP/wayland-issue309.log" &
+          weston_pid=$!
+          trap 'kill "$weston_pid" 2>/dev/null || true' EXIT
+          for attempt in {1..100}; do
+            test ! -S "$XDG_RUNTIME_DIR/wayland-issue309" || break
+            kill -0 "$weston_pid"
+            sleep 0.1
+          done
+          test -S "$XDG_RUNTIME_DIR/wayland-issue309"
+          SDL_VIDEO_DRIVER=wayland SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=0 WAYLAND_DISPLAY=wayland-issue309 \
+            ./build/linux/wayland_startup_test wayland no
 
       - name: Configure synchronization validation coverage
         run: |

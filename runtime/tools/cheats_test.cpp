@@ -2,6 +2,10 @@
 #include "runtime.h"
 #include "mods/mods.h"
 #include "input.h"
+#include "mods/save_backup.h"
+#include <chrono>
+#include <filesystem>
+#include <fstream>
 #include <array>
 #include <cassert>
 #include <cstring>
@@ -11,8 +15,9 @@
 #include <sys/mman.h>
 #endif
 void log_msg(const char*, ...) {}
-namespace ss { void notice(const std::string&) {} }
-namespace true60 { float test_dt = 1; float dt() { return test_dt; } }
+namespace mods { uint64_t step() { return 1000; } }
+static std::string last_notice;
+namespace ss { void notice(const std::string& text) { last_notice=text; } }
 uint32_t guest_call(Cpu* cpu, uint32_t address, std::initializer_list<uint32_t> args) {
     assert(address == 0x023F6564 && args.size() == 2);
     const uint32_t link = *args.begin();
@@ -171,16 +176,7 @@ int main() {
     assert(ldf32(link + 0x6A48) == 999); // optional fall protection is off
     assert(mods::moon_jump_move(link, x, z) && ld16(link + 0x322) == 3000);
     mods::moon_jump_step(&cpu, link, false);
-    std::array<uint8_t, 0x7000> full_actor;
-    std::memcpy(full_actor.data(), mem::ptr(link), full_actor.size());
-    true60::test_dt = .5f;
-    mods::moon_jump_step(&cpu, link, true);
-    assert(mods::moon_jump_move(link, x, z) && ld16(link + 0x322) == 4500);
-    mods::moon_jump_step(&cpu, link, false);
-    // Simulate true60's guest actor rollback; the host turn must also roll back.
-    std::memcpy(mem::ptr(link), full_actor.data(), full_actor.size());
-    true60::test_dt = 1;
-    mods::moon_jump_step(&cpu, link, true);
+    mods::moon_jump_step(&cpu, link, true);  // the next logic step turns on
     assert(mods::moon_jump_move(link, x, z) && ld16(link + 0x322) == 6000);
     mods::moon_jump_step(&cpu, link, false);
     mods::set_infinite(mods::kMoonNoFall, true);
@@ -233,4 +229,64 @@ int main() {
     mods::moon_jump_step(&cpu, link, false);
     mods::set_infinite(mods::kMoonJump, false);
     mods::moon_jump_step(&cpu, 0x18000000, true);
+    // Story grants are off by default, require consent, and fail closed without a complete backup.
+    std::memset(mem::ptr(base),0xA5,0x2000);
+    st16(player,14);st16(player+2,14);st16(player+4,158);st8(player+0x12,0);
+    std::memcpy(mem::ptr(player+0x30),"sea\0\0\0\0\0",8);
+    std::memcpy(mem::ptr(0x104741E4),"Atorizk",8);
+    st8(player+0xB4,1);st8(player+0xBF,0x80);
+    std::array<uint8_t,0x2000> before;
+    std::memcpy(before.data(),mem::ptr(base),before.size());
+    assert(mods::story_item_confirmation_needed());
+    mods::request_story_item(mods::kStoryDin);mods::cheats_service();
+    assert(mods::story_item_confirmation_needed() && last_notice.find("story's order")!=std::string::npos);
+    assert(!std::memcmp(before.data(),mem::ptr(base),before.size()));
+    namespace fs=std::filesystem;
+    const fs::path temp=fs::temp_directory_path()/("wwhd-story-cheats-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+    fs::create_directories(temp/"save/user");
+    auto& backups=mods::saves::store();backups.configure(temp/"save",temp/"backups");backups.log=[](const std::string&){};
+    mods::request_story_item(mods::kStoryDin,true);mods::cheats_service();
+    assert(!std::memcmp(before.data(),mem::ptr(base),before.size())); // an empty save is not a backup
+    assert(last_notice.find("Save in the game first")!=std::string::npos);
+    {std::ofstream f(temp/"save/user/photo.sav");f<<"only a photo";}
+    mods::request_story_item(mods::kStoryDin);mods::cheats_service();
+    assert(!std::memcmp(before.data(),mem::ptr(base),before.size())); // photos alone are not a Quest Log backup
+    fs::remove(temp/"save/user/photo.sav");
+    {std::ofstream f(temp/"save/user/cking.sav");f<<"before story cheats";}
+    backups.free_space=[](const fs::path&){return uint64_t(0);};
+    mods::request_story_item(mods::kStoryDin);mods::cheats_service();
+    assert(!std::memcmp(before.data(),mem::ptr(base),before.size()));
+    assert(last_notice.find("not granted")!=std::string::npos);
+    backups.free_space=[](const fs::path&){return UINT64_MAX;};
+    backups.copy_file=[&](const fs::path& from,const fs::path& to){
+        assert(!std::memcmp(before.data(),mem::ptr(base),before.size()));
+        fs::copy_file(from,to);
+    };
+    mods::request_story_item(mods::kStoryDin);mods::cheats_service();
+    auto expected=before;expected[0x20+0xBF]|=2;
+    assert(!std::memcmp(expected.data(),mem::ptr(base),expected.size()));
+    assert(backups.list().size()==1 && !mods::story_item_confirmation_needed());
+    const auto backup_file=backups.root()/backups.list()[0].name/"save/user/cking.sav";
+    std::string text;
+    {std::ifstream backup(backup_file);text.assign(std::istreambuf_iterator<char>(backup),{});} // closed before remove_all (Windows)
+    assert(text=="before story cheats");
+    for(auto [item,bit]:{std::pair{mods::kStoryNayru,1},std::pair{mods::kStoryFarore,4}}){
+        mods::request_story_item(item);mods::cheats_service();expected[0x20+0xBF]|=bit;
+        assert(!std::memcmp(expected.data(),mem::ptr(base),expected.size()));
+    }
+    assert(ld8(player+0xBF)==0x87); // all three pearls; unrelated bits and all placement events preserved
+    mods::request_story_item(mods::kStorySword);mods::cheats_service();
+    expected[0x20+0xB4]|=8;expected[0x20+0x0E]=0x3E;
+    assert(!std::memcmp(expected.data(),mem::ptr(base),expected.size()));
+    assert(ld8(player+0xB4)==9 && !(ld8(player+0xB4)&4)); // real phase-3 ownership; no new Medli-removal bit
+    assert(backups.list().size()==1); // first grant only; never overwrite the original backup
+    mods::cheats_service();assert(!std::memcmp(expected.data(),mem::ptr(base),expected.size()));
+    // A title-screen request is refused, rather than silently applying to the next Quest Log.
+    std::memcpy(mem::ptr(0x104741E4),"Name\0\0\0\0",8);
+    mods::request_story_item(mods::kStoryDin);mods::cheats_service();
+    assert(last_notice.find("Load a Quest Log")!=std::string::npos);
+    std::memcpy(mem::ptr(0x104741E4),"Atorizk",8);
+    mods::cheats_service();assert(!std::memcmp(expected.data(),mem::ptr(base),expected.size()));
+    fs::remove_all(temp);
+
 }

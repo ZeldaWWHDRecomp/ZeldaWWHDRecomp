@@ -84,8 +84,31 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             adapter = adapter_factory(package, root / "checkpoints", job["port_revision"], publish, paused)
             adapter.boundary()
             source = job["input"]
-            path = private_input(root, source["path"])
-            if source["kind"] == "folder":
+            # a seed made with the official randomizer (the setup screen's Import a seed...): its output folder was
+            # copied privately like a game folder; it goes beside the installed game, which stays where it is
+            seed_import, installed, imported = source.get("seed_import"), None, root / "seed-import.json"
+            if seed_import is not None:
+                if source["kind"] != "folder" or not job.get("randomize") or not isinstance(seed_import, dict):
+                    raise ValueError("A seed is imported from a folder, beside the installed game")
+                storage = Path(job["randomize"]["storage"]).resolve()
+                installed = Path(seed_import["installed"]).resolve()
+                if not installed.is_relative_to(storage) or not adapter.setup.valid_game_folder(str(installed)):
+                    raise ValueError("The installed game is missing or outside setup storage")
+            if source["kind"] == "installed":
+                # a randomized game made from the installed game: that game stays where setup put it
+                if not job.get("randomize"):
+                    raise ValueError("Only a randomized game is made from the installed game")
+                storage = Path(job["randomize"]["storage"]).resolve()
+                path = Path(source["path"]).resolve()
+                if not path.is_relative_to(storage) or not adapter.setup.valid_game_folder(str(path)):
+                    raise ValueError("The installed game is missing or outside setup storage")
+            else:
+                path = private_input(root, source["path"])
+            if source["kind"] == "installed":
+                game = path
+            elif source["kind"] == "folder" and imported.is_file():
+                game = None  # (resumed after the import: the private copy of the output folder is gone)
+            elif source["kind"] == "folder":
                 if not adapter.setup.valid_game_folder(str(path)):
                     missing = [name for name, present in (
                         ("code/cking.rpx", (path / "code" / "cking.rpx").is_file()),
@@ -93,6 +116,9 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
                         ("meta/meta.xml", (path / "meta" / "meta.xml").is_file())) if not present]
                     raise ValueError("Imported game folder is incomplete (missing " + ", ".join(missing) +
                                      "). Choose the folder that contains code, content and meta.")
+                if seed_import is None and adapter.setup.is_randomized_folder(str(path)):
+                    raise ValueError("This is a randomized game. Set up the game as it is first, then add this seed "
+                                     "with Randomized game... > Import a seed...")
                 game = path
             elif source["kind"] in ("archive", "image"):
                 extractor = job["extractor"]
@@ -133,7 +159,29 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
                         key_files.clear()
             else:
                 raise ValueError("Unsupported imported input kind")
-            generated = adapter.translate(game, hooks=code_mods)
+            # the in-app randomizer: a randomized game made from this game, its code built instead (its changed files
+            # are played over the game: --randomizer-files, WwhdActivity)
+            overlay = None
+            if seed_import is not None:
+                import randomizer_seeds
+                if imported.is_file():
+                    seed = json.loads(imported.read_text())
+                    overlay = randomizer_seeds.seed_dir(storage, seed["id"]) / "out"
+                    if not (overlay / "code" / "cking.rpx").is_file():
+                        raise ValueError("The imported seed's files are missing: import it again")
+                else:
+                    overlay, seed = adapter.import_seed(game, installed, job["randomize"])
+                    atomic_json(imported, seed)
+                    # the job's own private copy of the output folder: its changed files are in setup storage now
+                    import shutil
+                    shutil.rmtree(path, ignore_errors=True)
+                game = installed
+            elif job.get("randomize"):
+                if native_run is None:
+                    import wwhd_native
+                    native_run = wwhd_native.run
+                overlay, seed = adapter.randomize(game, job["randomize"], native_run)
+            generated = adapter.translate(overlay or game, hooks=code_mods)
             compiler = job["compiler"]
             toolchain = SimpleNamespace(cc=compiler["cc"], cxx=compiler["cxx"], ar=compiler["ar"],
                                         env=compiler.get("env"), rsp=compiler.get("rsp", True))
@@ -147,6 +195,9 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             result = {"schema": 1, "library": str(library), "game": str(game),
                       "port_revision": job["port_revision"], "compiler_identity": compiler["identity"],
                       "code_mods": code_mods}
+            if overlay:
+                result["randomizer"] = {"files": str(overlay), "seed": seed["id"], "hash": seed.get("hash", ""),
+                                        "permalink": seed.get("permalink", "")}
             # Android cannot execute the guest shared library as a subprocess.
             # Assemble privately here; renderer startup owns native GPU warming.
             import importlib.util

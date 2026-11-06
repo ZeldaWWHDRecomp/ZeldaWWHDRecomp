@@ -1,0 +1,232 @@
+# mathsurvey: recompiled originals vs host candidates (Apple clang/libm, macOS arm64), 2026-11-03
+# 20M random inputs + edge set per function (all 2^32 for floorf/ceilf below; 1e9 for floor)
+sqrtf   vs sqrtf   inputs     20015924  differ     13906818  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x zero: 956
+    differ with x denormal: 75763
+    differ with x normal: 13746791
+    differ with x inf: 1811
+    differ with x nan: 81497
+    largest difference on normal inputs (non-NaN results): 3 ulp
+sinf    vs sinf    inputs     20015924  differ     10142919  nan-payload-only      40564  max-ulp (nan vs number) 0
+    differ with x normal: 10141108
+    differ with x inf: 1811
+    largest difference on normal inputs (non-NaN results): 3204448256 ulp
+cosf    vs cosf    inputs     20015924  differ     10831936  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x normal: 10748628
+    differ with x inf: 1811
+    differ with x nan: 81497
+    largest difference on normal inputs (non-NaN results): 2130706432 ulp
+tanf    vs tanf    inputs     20015924  differ      9686421  nan-payload-only      81495  max-ulp 1813885024
+    differ with x normal: 9686421
+    largest difference on normal inputs (non-NaN results): 1813885024 ulp
+floorf  vs floorf  inputs     20015924  differ            0  nan-payload-only      40564  max-ulp 0  EXACT
+floorf  vs ceilf   inputs     20015924  differ     11648465  nan-payload-only      40564  max-ulp 1065353216
+    differ with x denormal: 80250
+    differ with x normal: 11568215
+    largest difference on normal inputs (non-NaN results): 1065353216 ulp
+floorf  vs truncf  inputs     20015924  differ      5819889  nan-payload-only      40564  max-ulp 1065353216
+    differ with x denormal: 38998
+    differ with x normal: 5780891
+    largest difference on normal inputs (non-NaN results): 1065353216 ulp
+ceilf   vs ceilf   inputs     20015924  differ            0  nan-payload-only      40564  max-ulp 0  EXACT
+ceilf   vs floorf  inputs     20015924  differ     11648465  nan-payload-only      40564  max-ulp 1065353216
+    differ with x denormal: 80250
+    differ with x normal: 11568215
+    largest difference on normal inputs (non-NaN results): 1065353216 ulp
+ceilf   vs truncf  inputs     20015924  differ      5828576  nan-payload-only      40564  max-ulp 1065353216
+    differ with x denormal: 41252
+    differ with x normal: 5787324
+    largest difference on normal inputs (non-NaN results): 1065353216 ulp
+truncf  vs truncf  inputs     20015924  differ     19932513  nan-payload-only      40564  max-ulp 2139095040
+    differ with x denormal: 80250
+    differ with x normal: 19850452
+    differ with x inf: 1811
+    largest difference on normal inputs (non-NaN results): 2139095039 ulp
+truncf  vs roundf  inputs     20015924  differ     19932513  nan-payload-only      40564  max-ulp 2139095040
+    differ with x denormal: 80250
+    differ with x normal: 19850452
+    differ with x inf: 1811
+    largest difference on normal inputs (non-NaN results): 2139095039 ulp
+truncf  vs floorf  inputs     20015924  differ     19932513  nan-payload-only      40564  max-ulp 2139095040
+    differ with x denormal: 80250
+    differ with x normal: 19850452
+    differ with x inf: 1811
+    largest difference on normal inputs (non-NaN results): 2139095039 ulp
+atanf   vs atanf   inputs     20015924  differ      9856656  nan-payload-only      40564  max-ulp 2048
+    differ with x normal: 9854845
+    differ with x inf: 1811
+    largest difference on normal inputs (non-NaN results): 2048 ulp
+asinf   vs asinf   inputs     20015924  differ     10880008  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x normal: 10796700
+    differ with x inf: 1811
+    differ with x nan: 81497
+    largest difference on normal inputs (non-NaN results): 132 ulp
+asinf   vs acosf   inputs     20015924  differ     20015924  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x zero: 1914
+    differ with x denormal: 80250
+    differ with x normal: 19850452
+    differ with x inf: 1811
+    differ with x nan: 81497
+    largest difference on normal inputs (non-NaN results): 2148671413 ulp
+acosf   vs acosf   inputs     20015924  differ     10864204  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x normal: 10780896
+    differ with x inf: 1811
+    differ with x nan: 81497
+    largest difference on normal inputs (non-NaN results): 1434 ulp
+acosf   vs asinf   inputs     20015924  differ     20015924  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x zero: 1914
+    differ with x denormal: 80250
+    differ with x normal: 19850452
+    differ with x inf: 1811
+    differ with x nan: 81497
+    largest difference on normal inputs (non-NaN results): 2148671413 ulp
+fmodf   vs fmodf   inputs     39506900  differ      7568845  nan-payload-only    2643398  max-ulp (nan vs number) 0
+    differ with x zero, y zero: 283272
+    differ with x zero, y denormal: 151048
+    differ with x zero, y nan: 551232
+    differ with x denormal, y zero: 303548
+    differ with x denormal, y denormal: 99568
+    differ with x denormal, y nan: 590966
+    differ with x normal, y zero: 949272
+    differ with x normal, y denormal: 387009
+    differ with x normal, y inf: 891546
+    differ with x inf, y zero: 268028
+    differ with x inf, y denormal: 286138
+    differ with x inf, y normal: 891012
+    differ with x inf, y inf: 251729
+    differ with x inf, y nan: 521568
+    differ with x nan, y zero: 552632
+    differ with x nan, y denormal: 590277
+    largest difference on normal inputs (non-NaN results): 0 ulp
+powf    vs powf    inputs     39506900  differ     17608981  nan-payload-only    2362753  max-ulp (nan vs number) 0
+    differ with x zero, y normal: 13384
+    differ with x zero, y nan: 551232
+    differ with x denormal, y denormal: 324405
+    differ with x denormal, y normal: 178121
+    differ with x denormal, y inf: 1610
+    differ with x denormal, y nan: 6756
+    differ with x normal, y denormal: 1085630
+    differ with x normal, y normal: 13479138
+    differ with x normal, y inf: 124140
+    differ with x normal, y nan: 557194
+    differ with x inf, y denormal: 141180
+    differ with x inf, y normal: 304080
+    differ with x inf, y inf: 62445
+    differ with x inf, y nan: 260640
+    differ with x nan, y inf: 519026
+    largest difference on normal inputs (non-NaN results): 2139095040 ulp
+atan2f  vs atan2f  inputs     39506900  differ      9348045  nan-payload-only     268591  max-ulp (nan vs number) 0
+    differ with x zero, y zero: 212380
+    differ with x zero, y denormal: 3828
+    differ with x zero, y normal: 262218
+    differ with x zero, y inf: 133980
+    differ with x denormal, y denormal: 159255
+    differ with x denormal, y normal: 318421
+    differ with x denormal, y inf: 143570
+    differ with x normal, y denormal: 8499
+    differ with x normal, y normal: 6586140
+    differ with x normal, y inf: 448980
+    differ with x inf, y inf: 251729
+    differ with x nan, y denormal: 7623
+    differ with x nan, y normal: 550042
+    differ with x nan, y inf: 261380
+    largest difference on normal inputs (non-NaN results): 2157060021 ulp
+sqrt    vs sqrt    inputs     20015923  differ     13861933  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x zero: 31
+    differ with x denormal: 10003
+    differ with x normal: 13841934
+    differ with x inf: 17
+    differ with x nan: 9948
+    largest difference on normal inputs (non-NaN results): 5 ulp
+sin     vs sin     inputs     20015923  differ      9997487  nan-payload-only       4985  max-ulp (nan vs number) 0
+    differ with x normal: 9997470
+    differ with x inf: 17
+    largest difference on normal inputs (non-NaN results): 9163748707558288590 ulp
+cos     vs cos     inputs     20015923  differ     10011913  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x normal: 10001948
+    differ with x inf: 17
+    differ with x nan: 9948
+    largest difference on normal inputs (non-NaN results): 9214364837600034606 ulp
+atan    vs atan    inputs     20015923  differ       401341  nan-payload-only       4985  max-ulp 262144
+    differ with x normal: 401341
+    largest difference on normal inputs (non-NaN results): 262144 ulp
+asin    vs asin    inputs     20015923  differ     10251167  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x normal: 10241202
+    differ with x inf: 17
+    differ with x nan: 9948
+    largest difference on normal inputs (non-NaN results): 10 ulp
+asin    vs acos    inputs     20015923  differ     20015923  nan-payload-only          0  max-ulp (nan vs number) 0
+    differ with x zero: 64
+    differ with x denormal: 10071
+    differ with x normal: 19995823
+    differ with x inf: 17
+    differ with x nan: 9948
+    largest difference on normal inputs (non-NaN results): 9224009713476721200 ulp
+floor   vs floor   inputs     20015923  differ            0  nan-payload-only       4985  max-ulp 0  EXACT
+floor   vs ceil    inputs     20015923  differ     10498649  nan-payload-only       4985  max-ulp 4607182418800017408
+    differ with x denormal: 10071
+    differ with x normal: 10488578
+    largest difference on normal inputs (non-NaN results): 4607182418800017408 ulp
+floor   vs trunc   inputs     20015923  differ      5251477  nan-payload-only       4985  max-ulp 4607182418800017408
+    differ with x denormal: 4861
+    differ with x normal: 5246616
+    largest difference on normal inputs (non-NaN results): 4607182418800017408 ulp
+fmod    vs fmod    inputs     39505675  differ       434503  nan-payload-only      64574  max-ulp (nan vs number) 0
+    differ with x zero, y zero: 320
+    differ with x zero, y denormal: 930
+    differ with x zero, y nan: 512
+    differ with x denormal, y zero: 1875
+    differ with x denormal, y denormal: 9506
+    differ with x denormal, y nan: 3006
+    differ with x normal, y zero: 76890
+    differ with x normal, y denormal: 302138
+    differ with x normal, y inf: 15378
+    differ with x inf, y zero: 85
+    differ with x inf, y denormal: 510
+    differ with x inf, y normal: 20077
+    differ with x inf, y inf: 17
+    differ with x inf, y nan: 136
+    differ with x nan, y zero: 445
+    differ with x nan, y denormal: 2678
+    largest difference on normal inputs (non-NaN results): 0 ulp
+
+# full sweeps
+floorf  original f1.ps1 after the call: = ps0 2516588415, = unchanged 1778394805, other 0
+floorf  ps1 rule (argument kept exactly when the result is the argument) broken 16777646 times
+floorf  vs floorf  inputs   4294983220  differ            0  nan-payload-only    8390421  max-ulp 0  EXACT
+floorf  vs floorf+nan-unchanged inputs   4294983220  differ            0  nan-payload-only          0  max-ulp 0  EXACT
+floorf  vs floorf+nan-unchanged+lane inputs   4294983220  differ            0  nan-payload-only          0  max-ulp 0  EXACT
+floorf  vs ceilf   inputs   4294983220  differ   2499810769  nan-payload-only    8390421  max-ulp 1065353216
+    differ with x denormal: 16779265
+    differ with x normal: 2483031504
+    largest difference on normal inputs (non-NaN results): 1065353216 ulp
+floorf  vs truncf  inputs   4294983220  differ   1249904085  nan-payload-only    8390421  max-ulp 1065353216
+    differ with x denormal: 8388630
+    differ with x normal: 1241515455
+    largest difference on normal inputs (non-NaN results): 1065353216 ulp
+ceilf   original f1.ps1 after the call: = ps0 2516589372, = unchanged 1778393848, other 0
+ceilf   ps1 rule (argument kept exactly when the result is the argument) broken 16778603 times
+ceilf   vs ceilf   inputs   4294983220  differ            0  nan-payload-only    8390421  max-ulp 0  EXACT
+ceilf   vs ceilf+nan-unchanged inputs   4294983220  differ            0  nan-payload-only          0  max-ulp 0  EXACT
+ceilf   vs ceilf+nan-unchanged+lane inputs   4294983220  differ            0  nan-payload-only          0  max-ulp 0  EXACT
+ceilf   vs floorf  inputs   4294983220  differ   2499810769  nan-payload-only    8390421  max-ulp 1065353216
+    differ with x denormal: 16779265
+    differ with x normal: 2483031504
+    largest difference on normal inputs (non-NaN results): 1065353216 ulp
+ceilf   vs truncf  inputs   4294983220  differ   1249906684  nan-payload-only    8390421  max-ulp 1065353216
+    differ with x denormal: 8390635
+    differ with x normal: 1241516049
+    largest difference on normal inputs (non-NaN results): 1065353216 ulp
+floor   original f1.ps1 after the call: = ps0 0, = unchanged 1000015923, other 0
+floor   ps1 rule (argument kept exactly when the result is the argument) broken 524411996 times
+floor   vs floor   inputs   1000015923  differ            0  nan-payload-only     243944  max-ulp 0  EXACT
+floor   vs floor+nan-unchanged inputs   1000015923  differ            0  nan-payload-only          0  max-ulp 0  EXACT
+floor   vs floor+nan-unchanged+lane inputs   1000015923  differ            0  nan-payload-only          0  max-ulp 0  EXACT
+floor   vs ceil    inputs   1000015923  differ    524411996  nan-payload-only     243944  max-ulp 4607182418800017408
+    differ with x denormal: 489358
+    differ with x normal: 523922638
+    largest difference on normal inputs (non-NaN results): 4607182418800017408 ulp
+floor   vs trunc   inputs   1000015923  differ    262217090  nan-payload-only     243944  max-ulp 4607182418800017408
+    differ with x denormal: 245007
+    differ with x normal: 261972083
+    largest difference on normal inputs (non-NaN results): 4607182418800017408 ulp

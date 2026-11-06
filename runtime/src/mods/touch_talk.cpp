@@ -354,7 +354,7 @@ bool touch_talk_claims_at(float x, float y) { return g_claims.load(std::memory_o
 // ---- the pad reads (VPADRead / KPADReadEx, after the touch controls' rules)
 void touch_talk_pad(input::PadState& p, bool repeat) {
     const talktouch::Options o = options();
-    if (repeat) {  // true 60's half pass: the full pass's decision again (its sticks are fresh: the pushed stick stays)
+    if (repeat) {  // interpolation's repeated read: the logic pass's decision again (the pushed stick stays)
         const talktouch::Out& out = g_machine.held();
         if (out.stick) p.lx = out.lx, p.ly = out.ly;
         return;

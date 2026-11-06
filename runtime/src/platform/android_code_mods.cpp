@@ -24,6 +24,42 @@ bool call(const char* name,const char* signature,const jvalue* args,std::string&
     return ok;
 }
 }
+bool save_profile_preparation_available() {
+    auto env=static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    if(!env||env->PushLocalFrame(4)!=0) {if(env)env->ExceptionClear();return false;}
+    auto activity=static_cast<jobject>(SDL_GetAndroidActivity());
+    auto cls=activity?env->GetObjectClass(activity):nullptr;
+    const auto method=cls?env->GetStaticMethodID(cls,"prepareSelectedGameSave","(Ljava/lang/String;)Ljava/lang/String;"):nullptr;
+    const bool supported=method&&!env->ExceptionCheck();
+    if(env->ExceptionCheck())env->ExceptionClear();
+    env->PopLocalFrame(nullptr);
+    return supported;
+}
+void prepare_game_save(const std::string& directory) {
+    auto env=static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    if(!env||env->PushLocalFrame(8)!=0) {
+        if(env)env->ExceptionClear();
+        exception_report::raise("The game save session is unavailable");
+    }
+    // Filesystem paths are UTF-8, not JNI's modified UTF-8 (notably for emoji).
+    jstring text=nullptr;
+    if(directory.size()<4096) {
+        const auto bytes=env->NewByteArray(jsize(directory.size()));
+        if(bytes)env->SetByteArrayRegion(bytes,0,jsize(directory.size()),reinterpret_cast<const jbyte*>(directory.data()));
+        const auto cls=env->FindClass("java/lang/String");
+        const auto constructor=cls?env->GetMethodID(cls,"<init>","([BLjava/lang/String;)V"):nullptr;
+        const auto encoding=env->NewStringUTF("UTF-8");
+        if(bytes&&constructor&&encoding&&!env->ExceptionCheck())
+            text=static_cast<jstring>(env->NewObject(cls,constructor,bytes,encoding));
+    }
+    jvalue argument{};argument.l=text;
+    std::string result;
+    const bool ok=text&&!env->ExceptionCheck()&&call("prepareSelectedGameSave","(Ljava/lang/String;)Ljava/lang/String;",&argument,result);
+    if(env->ExceptionCheck())env->ExceptionClear();
+    env->PopLocalFrame(nullptr);
+    if(!ok)exception_report::raise("Save preparation is unavailable; update the Android app");
+    if(result!="ok")exception_report::raise(result.starts_with("error:")?result.substr(6):"The selected save could not be prepared");
+}
 std::string guest_build_tools() {
     std::string result;
     if(!call("guestBuildTools","()Ljava/lang/String;",nullptr,result))exception_report::raise("Code-mod tools are unavailable in this app");
@@ -45,4 +81,11 @@ std::string code_mod_build_status() {
     if(!call("codeModBuildStatus","()Ljava/lang/String;",nullptr,result))return "{\"state\":\"failed\",\"error\":\"Cannot read setup progress\"}";
     return result;
 }
+}
+
+// New APKs use this capability query to preserve recovery for older on-device
+// libraries while deferring new libraries until their native profile selection.
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_wwhdrecomp_wwhd_WwhdActivity_supportsSaveProfilePreparation(JNIEnv*,jclass) {
+    return JNI_TRUE;
 }

@@ -38,7 +38,7 @@ std::atomic<bool> g_chosen{true};
 std::atomic<int> g_set{-1};
 void sync_choice() {
     const int mode = interp::mode();
-    if (mode != 2 && mode != g_set.load()) {  // (true 60 is left alone)
+    if (mode != g_set.load()) {
         g_chosen = mode == 1;
         g_set = mode;
     }
@@ -311,6 +311,12 @@ extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_MemoryPressure_native
     if (level <= memory_trim::kNone) return;
     LOG("[memory] trim requested: %s (Android level %d)", level >= memory_trim::kFull ? "full" : "light", int(source));
     memory_trim::request(level >= memory_trim::kFull ? memory_trim::kFull : memory_trim::kLight, source);
+}
+
+// Memory above the system's low-memory line and the line itself, in MB (MemoryPressure.java, every 2 s in the
+// foreground; memory_trim.h): save states check it, dynamic resolution follows it
+extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_MemoryPressure_nativeHeadroom(JNIEnv*, jclass, jint headroomMb, jint thresholdMb) {
+    memory_trim::set_headroom(headroomMb, thresholdMb);
 }
 
 #else

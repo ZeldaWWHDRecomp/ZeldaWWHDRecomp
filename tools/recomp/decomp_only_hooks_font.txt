@@ -1,0 +1,28 @@
+# DECOMP BUILD ONLY (recomp.py --decomp-hooks; the normal build runs the game's own font module).
+# The game's scalable font (font #5, "CafeStd.bffnt"), replaced by the port's stand-in that draws with
+# the game's own CKingMain bitmap font (runtime/src/scalable_font.h, scalable_font_hooks.cpp).
+# The functions the game's scalable-font manager calls (d/hd_scalable_font_mgr):
+028B2204  # font constructor
+028B229C  # font destructor (also vtable slot 2)
+028B28F8  # glyph cache constructor
+028B2A40  # glyph cache destructor
+028B4230  # glyph cache initialize-argument defaults
+028B2B64  # glyph cache initialize
+028B289C  # font initialize-argument defaults
+028B239C  # font initialize
+028B3540  # glyph cache per-frame update A
+028B3804  # glyph cache per-frame update B
+028B3E8C  # glyph cache per-frame update C
+028B3124  # glyph cache finalize
+# The font's vtable slots (nw::lyt FontInterface):
+028B24C0  # slot 3: width
+028B24C8  # slot 4: height
+028B24D0  # slot 5: ascent
+028B24D8  # slot 10: line feed
+028B24E0  # slot 15: character advance
+028B25C4  # slot 17: glyph record
+028B2840  # slot 19: kerning pair
+028B28EC  # slot 20: encoding
+028B2864  # slot 21: sheet line top
+028B28F4  # slot 29: set components
+028B286C  # slot 30: glyph kind flag

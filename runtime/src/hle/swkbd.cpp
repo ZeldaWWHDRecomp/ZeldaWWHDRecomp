@@ -6,6 +6,7 @@
 #include <chrono>
 #include <thread>
 
+#include "../game_name_text.h"
 #include "../input.h"
 #include "../overlay/text_entry.h"
 #include "../runtime.h"
@@ -14,6 +15,10 @@ namespace {
 
 constexpr int kMaxForm = 4096;      // 16-bit characters
 constexpr uint32_t kStateBlank = 0, kStateDisplayed = 2;
+// "%" is refused on every request (game_name_text.h): the game only asks this keyboard for names (its
+// SwkbdMgr). A caller that needs "%" has to tell the name apart.
+using game_name::kRefused;
+using game_name::without_refused;
 
 struct State {
     std::mutex mu;
@@ -92,14 +97,14 @@ void read_config(uint32_t a) {
 void start_prompt() {
     S.decided = S.cancelled = S.pending = S.live_pending = false;
     if (const char* t = getenv("WWHD_SWKBD_TEXT")) {
-        S.pending_text = utf8_to_u16(t);  // "Łódź", "Größe": characters, not bytes
+        S.pending_text = without_refused(utf8_to_u16(t));  // "Łódź", "Größe": characters, not bytes
         if ((int)S.pending_text.size() > S.max_len) S.pending_text.resize(S.max_len);
         S.pending_ok = S.pending = true;
         return;
     }
     auto done = [](bool ok, std::u16string text) {
         std::lock_guard<std::mutex> lk(S.mu);
-        S.pending_text = std::move(text);
+        S.pending_text = without_refused(std::move(text));  // (the host's own prompt takes any character)
         S.pending_ok = ok;
         S.pending = true;
     };
@@ -109,9 +114,10 @@ void start_prompt() {
     r.max_len = S.max_len;
     r.mode = S.mode;
     r.language = S.language;
+    r.refused = kRefused;
     r.changed = [](const std::u16string& text) {
         std::lock_guard<std::mutex> lk(S.mu);
-        S.live_text = text;
+        S.live_text = without_refused(text);
         S.live_pending = true;
     };
     // the overlay's prompt; the host's own (window title, macOS sheet) where the overlay can't show

@@ -32,7 +32,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../rumble.h"
 #include "../runtime.h"
 #include "../savestate.h"
-#include "../true60.h"
+#include "../game_hooks.h"
 #include "../screenshot.h"
 #include "../gfx/renderer.h"
 #include "../gfx/vulkan/settings.h"
@@ -103,8 +103,15 @@ static std::map<SDL_JoystickID,SDL_Gamepad*> g_controllers;
 static overlay::DeviceGates<SDL_JoystickID> g_gates;  // update(): one per device, see overlay/release_gate.h
 static std::vector<SDL_JoystickID> g_order;  // connect order: the oldest still present is dominant
 static std::set<SDL_JoystickID> g_rumble_controllers;  // the ones that have a rumble motor
+// Only the integration fixture opts synthetic WUP-028 identity in; touch pads stay excluded.
+#ifdef WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION
+static bool test_virtual_gamepad_detection(){return getenv("WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION")!=nullptr;}
+#else
+static bool test_virtual_gamepad_detection(){return false;}
+#endif
 // per-controller bindings (input_map profiles) and Controller details: what identifies each pad
 struct PadIdentity { std::string guid, name; bool is_virtual = false; input::ControllerInfo info; };
+static std::map<SDL_JoystickID,input_map::StartGate> g_start_gates;
 static std::map<SDL_JoystickID,PadIdentity> g_ident;  // under g_pads_mu
 static std::vector<input::ControllerInfo> g_infos;    // the latest poll, under g_mu
 static std::atomic<uint32_t> g_touch_virt{0};         // the on-screen Jump / Moon jump buttons
@@ -551,7 +558,7 @@ static void dominant_labels(input_map::FaceLabel out[4]){
  for(int i=0;i<4;i++)out[i]=FL::kUnknown;
  std::lock_guard lk(g_pads_mu);
  for(SDL_JoystickID id:g_order){
-  if(SDL_IsJoystickVirtual(id))continue;  // #88's on-screen pad is not a pad to follow for labels
+  if(SDL_IsJoystickVirtual(id)&&!test_virtual_gamepad_detection())continue;  // #88's on-screen pad is not a pad to follow for labels
   auto i=g_controllers.find(id);if(i==g_controllers.end())continue;
   SDL_Gamepad* pad=i->second;
 #ifdef __ANDROID__
@@ -579,6 +586,27 @@ static void dominant_labels(input_map::FaceLabel out[4]){
 // outside g_pads_mu: input_map may write controls.json
 static void note_dominant_labels(){
  input_map::FaceLabel labels[4];dominant_labels(labels);input_map::note_face_labels(labels);
+ struct Candidate {std::string guid,name;bool detected,pc;};
+ std::vector<Candidate> candidates;bool detected=false;
+ {
+  std::lock_guard lk(g_pads_mu);
+  for(auto id:g_order){
+   if(SDL_IsJoystickVirtual(id)&&!test_virtual_gamepad_detection())continue;
+   auto it=g_controllers.find(id);if(it==g_controllers.end())continue;
+   auto* pad=it->second;
+   const bool type=SDL_GetGamepadType(pad)==SDL_GAMEPAD_TYPE_GAMECUBE;
+   const bool gc=input_map::is_gamecube(type,SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad));
+   if(candidates.empty())detected=gc;
+   // SDL's GameCube type uses AXBY positions. Older PC database entries use ABXY.
+   const bool pc=!type && !(SDL_GetGamepadVendor(pad)==0x057e && SDL_GetGamepadProduct(pad)==0x0337);
+   if(auto who=g_ident.find(id);who!=g_ident.end())candidates.push_back({who->second.guid,who->second.name,gc,pc});
+  }
+ }
+ input_map::note_gamecube(detected);
+ auto m=input_map::current();
+ bool changed=false;
+ for(const auto& c:candidates)changed|=input_map::auto_gamecube(m,c.guid,c.name,c.detected,c.pc);
+ if(changed)input_map::set_current(m);
 }
 static void open_controller(SDL_JoystickID id){
 #ifdef __ANDROID__
@@ -652,7 +680,7 @@ static void close_controller(SDL_JoystickID id){
  {std::lock_guard lk(g_pads_mu);
   auto i=g_controllers.find(id);if(i!=g_controllers.end()){SDL_CloseGamepad(i->second);g_controllers.erase(i);LOG("[input] controller disconnected: id %u",(unsigned)id);}
   std::erase(g_order,id);
-  g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);g_ident.erase(id);g_offer_pending.erase(id);
+  g_rumble_controllers.erase(id);g_rumble_sent.erase(id);g_accel.erase(id);g_start_gates.erase(id);g_ident.erase(id);g_offer_pending.erase(id);
   g_sensor_seen.erase(id);g_sensor_kick.erase(id);}
  motion::controller_gone(id);
  note_dominant_labels();  // the dominant pad may have changed
@@ -1006,6 +1034,9 @@ void update(){
  // v: every device combined (strongest input wins), as the settings overlay reads it; game: the same with
  // each device's inputs that the overlay or the text prompt had and that are still held left out
  // (overlay/release_gate.h, issue #153)
+ static uint32_t layout_generation=0;
+ if(layout_generation!=input_map::generation()){note_dominant_labels();layout_generation=input_map::generation();}
+ const input_map::Mapping current=input_map::current();
  float v[kPadCount]={},game[kPadCount]={};
  const bool captured_before=overlay::captures();
  std::vector<std::pair<SDL_JoystickID,overlay::PadValues>> devices;
@@ -1028,6 +1059,10 @@ void update(){
   put(kPadLT,std::max(0.f,SDL_GetGamepadAxis(pad,SDL_GAMEPAD_AXIS_LEFT_TRIGGER)/32767.f));put(kPadRT,std::max(0.f,SDL_GetGamepadAxis(pad,SDL_GAMEPAD_AXIS_RIGHT_TRIGGER)/32767.f));
   auto stick=[&](SDL_GamepadAxis ax,SDL_GamepadAxis ay,int up,int down,int left,int right){float x=SDL_GetGamepadAxis(pad,ax)/32768.f,y=SDL_GetGamepadAxis(pad,ay)/32768.f;put(right,std::max(x,0.f));put(left,std::max(-x,0.f));put(up,std::max(-y,0.f));put(down,std::max(y,0.f));};
   stick(SDL_GAMEPAD_AXIS_LEFTX,SDL_GAMEPAD_AXIS_LEFTY,kPadLSUp,kPadLSDown,kPadLSLeft,kPadLSRight);stick(SDL_GAMEPAD_AXIS_RIGHTX,SDL_GAMEPAD_AXIS_RIGHTY,kPadRSUp,kPadRSDown,kPadRSLeft,kPadRSRight);
+  PadIdentity identity;
+  {std::lock_guard lk(g_pads_mu);if(auto who=g_ident.find(id);who!=g_ident.end())identity=who->second;}
+  auto view=input_map::view_for(current,input_map::profile_index(current,identity.guid,identity.name));
+  if(input_map::gamecube_settings_chord(view,d.data()))d[kPadHome]=1;
   for(int p=0;p<kPadCount;p++)v[p]=std::max(v[p],d[p]);  // the shortcut below reads them ungated
   devices.emplace_back(id,d);
  }
@@ -1042,16 +1077,17 @@ void update(){
  const bool captured=captured_before||overlay::captures()||overlay::shortcut_took_input();
  std::vector<overlay::PadValues> gated;
  g_gates.combine(devices,captured,v,game,&gated);  // a reconnected pad (new id) gets a new gate
- const input_map::Mapping current=input_map::current();
  input_map::consume_shortcut_buttons(current,v,game);
  input::PadState state;
- if(current.controllers.empty()){
+ if(current.controllers.empty()&&!current.preset.saved&&!current.preset.gamecube){
   state=input_map::controller_state(current,game);  // one set of bindings for all: as before
  }else{
   // each controller through its own bindings (a profile for its GUID / name, else the shared ones)
   for(size_t i=0;i<gated.size();i++){
    input_map::consume_shortcut_buttons(current,v,gated[i].data());
-   state=input_map::combine(state,input_map::controller_state(current,gated[i].data(),input_map::pads_for(current,idents[i].guid,idents[i].name)));
+   auto& gate=g_start_gates[devices[i].first];
+   if(captured)gate={};
+   state=input_map::combine(state,gate.read(input_map::view_for(current,input_map::profile_index(current,idents[i].guid,idents[i].name)),gated[i].data()));
   }
  }
  // the controller in use (the overlay's confirm / back buttons follow its bindings), the setup offer on
@@ -1169,7 +1205,7 @@ static std::vector<Stick> scripted_stick(const char* var = "WWHD_STICK") {
 //   WWHD_TEST_STICK=2-5:0:1,...   left stick (x, y) from 2 s to 5 s
 //   WWHD_TEST_RSTICK=2-5:1:0,...  right stick
 //   WWHD_TEST_PRESS=3-3.1:8000    buttons (hex)
-//   WWHD_TEST_MODE=2@0.5          60 fps mode at 0.5 s (0 off, 1 interpolation, 2 true 60)
+//   WWHD_TEST_MODE=1@0.5          60 fps mode at 0.5 s (0 off, 1 interpolation; 2, the retired True 60, = 1 at 60 fps)
 //   WWHD_TEST_END=12              writes the file "test_done" at 12 s (the test script stops the game)
 namespace {
 struct TimedStick { double from, to; float x, y; };
@@ -1209,7 +1245,7 @@ struct Scenario {
 }  // namespace
 }  // namespace input
 namespace interp { void set_mode(int m); uint64_t logic_steps(); }
-namespace true60_test { void set_origin_step(uint64_t s); void tick(double t, bool ended); }
+namespace test_aids { void set_origin_step(uint64_t s); void tick(double t, bool ended); }
 namespace input {
 static void apply_scenario(PadState& s) {
     static Scenario sc;
@@ -1217,13 +1253,13 @@ static void apply_scenario(PadState& s) {
     // load completes asynchronously, so a fixed frame can fall a step apart between two runs)
     static const char* ol = getenv("WWHD_TEST_ORIGIN_LOAD");
     uint64_t ol_step = 0;
-    // (the clock is the number of Link's full-pass executes since the load, true60::link_steps: the
+    // (the clock is the number of Link's executes since the load, game_hooks::link_steps: the
     // pass at which a load lands differs between runs, and the steps after it are the game's)
     if (ol) {
-        if (!true60::state_loaded()) return;
+        if (!game_hooks::state_loaded()) return;
         static uint64_t found = 0;
         if (!found) {
-            int64_t past = (int64_t)true60::link_steps() - (int64_t)strtoull(ol, nullptr, 10);
+            int64_t past = (int64_t)game_hooks::link_steps() - (int64_t)strtoull(ol, nullptr, 10);
             if (past < 0) return;
             found = interp::logic_steps() - (uint64_t)past;  // the logic step at which the count reached it
         }
@@ -1237,12 +1273,12 @@ static void apply_scenario(PadState& s) {
         if (ol_step) {
             LOG("[test] origin at logic step %llu (load + WWHD_TEST_ORIGIN_LOAD), logic step %llu", (unsigned long long)ol_step,
                 (unsigned long long)ol_step);
-            true60_test::set_origin_step(ol_step);
+            test_aids::set_origin_step(ol_step);
             return ol_step;
         }
         LOG("[test] origin at guest time %.4f s, logic step %llu", (double)timebase::now() / timebase::kTicksPerSec,
             (unsigned long long)interp::logic_steps());
-        true60_test::set_origin_step(interp::logic_steps());
+        test_aids::set_origin_step(interp::logic_steps());
         return interp::logic_steps();
     }();
     double t = (double)(interp::logic_steps() - s0) / 30.0;
@@ -1269,7 +1305,7 @@ static void apply_scenario(PadState& s) {
         fflush(nullptr);
         if (FILE* f = fopen("test_done", "w")) fclose(f);
     }
-    true60_test::tick(t, sc.end > 0 && t >= sc.end);
+    test_aids::tick(t, sc.end > 0 && t >= sc.end);
     // Opt-in raw controller fixture: exercise bindings and the dead zone before guest delivery.
     static const bool controller_stick = getenv("WWHD_TEST_CONTROLLER_STICK") != nullptr;
     for (auto& p : sc.sticks)

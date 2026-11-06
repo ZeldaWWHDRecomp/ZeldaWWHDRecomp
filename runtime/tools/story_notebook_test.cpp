@@ -3,6 +3,9 @@
 // the tracked quest's marker on the sea chart, and the item menu hooks on synthetic menu objects.
 // The game's own functions are stubbed; no game files are needed.
 #include "mods/story_notebook.h"
+#include "mods/story_notebook_layout.h"
+#include "mods/guest_hud.h"
+namespace story_notebook_layout { extern bool test_layout_ready; }
 #include "mods/story_notebook_list.h"
 #include "mods/story_notebook_page.h"
 #include "mods/story_notebook_font.h"
@@ -26,6 +29,7 @@
 #include <cmath>
 #include <cstdio>
 #include <chrono>
+#include <thread>
 #include <cstring>
 #include <cstdarg>
 #include <cstdlib>
@@ -433,7 +437,12 @@ void original(Cpu* c, uint32_t fn) {
     case 0x026302B8: calls.push_back("float"); break;
     case 0x026333F0: {  // setVisible: the icon pane follows the item's visibility
         const uint32_t icon = ld32(ld32(c->r[3] + 0x8C + 4));
-        st8(icon + 0x44, uint8_t((ld8(icon + 0x44) & ~1u) | (c->r[4] & 1)));
+        // The real function (0263340C..0263343C) only updates the pane when its
+        // cached mVisible changes. A second setVisible(true) cannot repair a hidden pane.
+        if (ld8(c->r[3] + 0xFC) != c->r[4]) {
+            st8(c->r[3] + 0xFC, uint8_t(c->r[4]));
+            st8(icon + 0x44, uint8_t((ld8(icon + 0x44) & ~1u) | (c->r[4] & 1)));
+        }
         calls.push_back("visible");
         break;
     }
@@ -546,7 +555,83 @@ void test_hooks() {
     close_page();
     p = {};
     pad(p);
-    // setVisible: a game item's icon pane shows, the notebook's stays hidden (the port draws its own)
+    // A ready layout must not suppress gameplay rendering when the item screen isn't drawn.
+    story_notebook_layout::test_layout_ready = true;
+    for (bool pro : {false, true}) {
+        input::g_pro = pro;
+        for (int cycle = 0; cycle < 6; ++cycle) {
+            assert(open_page_from_button(0));
+            input::PadState held;
+            held.buttons = input::kX;
+            pad(held);
+            assert(page_open() && held.buttons == 0);  // opening press isn't a toggle
+            if (pro) {  // no item screen is drawn on the TV during gameplay
+                auto lists = guestmods::hud::store().snapshot(0);
+                bool visible = false;
+                for (const auto& list : lists)
+                    visible |= list->owner == "port:story-notebook" && !list->commands.empty();
+                assert(visible);
+            } else {
+                // The GamePad item screen is always drawn, including GamePad-only presentation.
+                assert(story_notebook_layout::drawing());
+            }
+            held = {};
+            pad(held);
+            if (cycle == 5) {
+                held.buttons = input::kA;
+                pad(held); // the toggle must also close from a quest's detail page
+                assert(page_open());
+                held = {};
+                pad(held);
+            }
+            held.buttons = cycle % 2 ? input::kX : input::kB;
+            pad(held);
+            assert(!page_open() && held.buttons == 0);
+            held.buttons = input::kA;
+            pad(held);
+            assert(held.buttons == input::kA);  // gameplay gets input again
+        }
+    }
+    // Close without any layout draw: coverage must still end (otherwise the game cursor
+    // stays missing when the Pro Controller's menu is opened afterwards).
+    assert(open_page());
+    p = {};
+    pad(p);
+    assert(story_notebook_layout::drawing());
+    p.buttons = input::kB;
+    pad(p);
+    assert(!page_open());
+    for (int i = 0; i < 10; ++i) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        p = {}; pad(p);
+    }
+    assert(!story_notebook_layout::drawing());
+    input::g_pro = false;
+    story_notebook_layout::test_layout_ready = false;
+    close_page();
+    // Without a native layout, GamePad fallback also belongs to the GamePad picture.
+    assert(open_page_from_button(0));
+    p = {};
+    pad(p);
+    bool gamepad_visible = false;
+    for (const auto& list : guestmods::hud::store().snapshot(1))
+        gamepad_visible |= list->owner == "port:story-notebook" && !list->commands.empty();
+    assert(gamepad_visible);
+    close_page();
+    // With only the HUD available, a stage transition still releases input before another draw.
+    assert(open_page_from_button(0));
+    Cpu context_cpu{};
+    p = {};
+    pad(p, &context_cpu);
+    assert(page_open());
+    st32(kPlayObj + 0x5134, 0x73656100); // a new start-stage record
+    pad(p, &context_cpu);
+    assert(!page_open());
+    st32(kPlayObj + 0x5134, 0);
+    p.buttons = input::kA;
+    pad(p);
+    assert(p.buttons == input::kA);
+    // setVisible preserves the game's icon state; hiding lasts only for a draw pass.
     const uint32_t kGroups = kArena + 0x5000, kIconA = kArena + 0x5100, kIconB = kArena + 0x5200;
     st32(kChild + 0x8C + 4, kGroups);
     st32(kGroups, kIconA);
@@ -555,7 +640,7 @@ void test_hooks() {
     calls.clear();
     call(0x026333F0, kChild, 1);
     call(0x026333F0, kChild + 0x200, 1);
-    assert(calls.size() == 2 && !(ld8(kIconA + 0x44) & 1) && (ld8(kIconB + 0x44) & 1));
+    assert(calls.size() == 2 && (ld8(kIconA + 0x44) & 1) && (ld8(kIconB + 0x44) & 1));
     // the notebook goes on X/Y/R in the story block (record 15), never in the save's key; a game item
     // put on the same button takes it back
     calls.clear();
@@ -614,7 +699,54 @@ void test_hooks() {
         IconPlace at = icon_place();
         // (640 + 216, 360 - 38) in the 1280 x 720 layout, on the 854 x 480 GamePad picture
         assert(at.shown && std::fabs(at.x - 856.0f * 854 / 1280) < 0.01f && std::fabs(at.y - 322.0f * 854 / 1280) < 0.01f &&
-               std::fabs(at.size - 90.0f * 854 / 1280) < 0.01f && !(ld8(kIconA + 0x44) & 1));
+               std::fabs(at.size - 90.0f * 854 / 1280) < 0.01f && (ld8(kIconA + 0x44) & 1));
+        // Repeated draw passes must restore every byte, including unrelated flag bits and alpha.
+        // The floating icon is then reused for bait without another setVisible call.
+        const uint32_t floating_pane = kArena + 0x7100;
+        st32(0x101F5578, kFloat);
+        for (int cycle = 0; cycle < 6; ++cycle) {
+            st8(kIconA + 0x44, 0xA5);
+            st8(floating_pane + 0x44, 0xB1);
+            st8(floating_pane + 0x45, 123);
+            std::vector<uint8_t> before(mem::ptr(kIconA), mem::ptr(kIconA) + 0x100);
+            hide_floating_notebook_icon();
+            assert(ld8(kIconA + 0x44) == 0xA4 && ld8(floating_pane + 0x44) == 0xB0);
+            restore_notebook_icons();
+            assert(!memcmp(before.data(), mem::ptr(kIconA), before.size()));
+            assert(ld8(floating_pane + 0x44) == 0xB1 && ld8(floating_pane + 0x45) == 123);
+            st32(kFloat + 0xEC, 0x8C); // bait reuses the floating icon
+            hide_floating_notebook_icon();
+            assert(ld8(floating_pane + 0x44) == 0xB1);
+            restore_notebook_icons();
+            st32(kFloat + 0xEC, 0xA0);
+            // The real #9 reproduction: a Delivery Bag notebook place is reused for a
+            // Hyoi Pear when switching to the bait bag. mVisible stays true, so the
+            // game's setVisible(true) skips its pane write. Our draw must have restored it.
+            assert(ld8(kChild + 0xFC) == 1);
+            st32(kChild + 0xEC, 0x83);
+            st32(kMenu + 0x54, 1);
+            call(0x0268FF50, kMenu);
+            call(0x026333F0, kChild, 1);
+            hide_floating_notebook_icon();
+            assert(ld8(kIconA + 0x44) == 0xA5);
+            restore_notebook_icons();
+            assert(ld8(kIconA + 0x44) == 0xA5 && ld8(kChild + 0xFC) == 1);
+            st32(kChild + 0xEC, 0xA0);
+            st32(kMenu + 0x54, 2);
+            call(0x0268FF50, kMenu);
+            std::vector<uint8_t> menu_before(mem::ptr(kMenu), mem::ptr(kMenu) + 0x100);
+            std::vector<uint8_t> item_before(mem::ptr(kChild), mem::ptr(kChild) + 0x400);
+            call(0x0268F060, kMenu, 0x15);
+            assert(page_open());
+            input::PadState idle;
+            pad(idle);
+            idle.buttons = input::kB;
+            pad(idle);
+            assert(!page_open());
+            assert(!memcmp(menu_before.data(), mem::ptr(kMenu), menu_before.size()));
+            assert(!memcmp(item_before.data(), mem::ptr(kChild), item_before.size()));
+            assert(ld8(kIconA + 0x44) == 0xA5 && (ld8(kIconB + 0x44) & 1));
+        }
         for (int i = 0; i < 4; i++) assert(icon_place().shown);  // frames drawn within the step (60/120 fps) keep it
         // the notebook page open over the menu: no bag icon over it
         call(0x0268F060, kMenu, 0x15);
@@ -633,9 +765,16 @@ void test_hooks() {
             st32(kUiObj + 0x14, 0x1049ECDC);  // MenuSubWindow: the bag window is shown
             call(0x0268FF50, kMenu);
             assert(icon_place().shown);
+            call(0x0268F060, kMenu, 0x15);
+            assert(page_open());
             st32(kUiObj + 0x14, 0x1049EC00);  // Play: the menu was closed with +
             call(0x0268FF50, kMenu);
             assert(!icon_place().shown && std::string(icon_reason()) == "the menu is closed (Pro Controller)");
+            assert(!page_open());  // an external close must release notebook input too
+            assert(open_page_from_button(0));
+            call(0x0268FF50, kMenu);
+            assert(page_open());  // gameplay entry does not depend on the hidden menu
+            close_page();
             input::g_pro = false;
             call(0x0268FF50, kMenu);
             assert(icon_place().shown);  // the GamePad: the menu is always shown
@@ -646,8 +785,17 @@ void test_hooks() {
         // the window closes (Back, B, the menu closes, a tab switch): its state no longer runs, the icon goes
         next_frame();
         assert(!icon_place().shown && std::string(icon_reason()) == "the bag window is closed");
-        // another bag's window: no icon
+        // An outside close can stop executeWindow entirely. The next input read must
+        // release the notebook even when that hook never gets a chance to run again.
+        st32(kMenu + 0x54, 2);
+        call(0x0268FF50, kMenu);
+        call(0x0268F060, kMenu, 0x15);
+        assert(page_open());
         st32(kMenu + 0x54, 0);
+        input::PadState outside_close;
+        pad(outside_close);
+        assert(!page_open());
+        // another bag's window: no icon
         call(0x0268FF50, kMenu);
         next_frame();
         assert(!icon_place().shown);
@@ -758,7 +906,7 @@ void test_game_font() {
     const font::Atlas::Cell* button = atlas.cell(font::line_key(font::kGlyphA, 0xFFFFFFFF));
     assert(button && button->width == 20);  // no icon font: the port's own disc
     auto img = atlas.image();
-    assert(img && img->width == font::Atlas::kWidth && img->height >= 20);
+    assert(img && img->width <= font::Atlas::kWidth && img->height >= 20);  // sized to what it holds
     // a pixel of 'a' in the atlas: the line's colour, opaque
     const size_t at = (size_t(abc->v0 * img->height + 5) * img->width + size_t(abc->u0 * img->width) + 3) * 4;
     assert(img->rgba[at] == 0x00 && img->rgba[at + 1] == 0x38 && img->rgba[at + 3] == 255);
@@ -810,6 +958,115 @@ void test_game_font() {
         assert(pics.size() == 1 && pics[0].kind == Command::Picture && pics[0].h == 40 && pics[0].x < 0 && pics[0].x > -1);  // the border room left of the line
         assert((font::lines_of({st}, 1.0f, 0.25f) == std::vector<std::string>{key}));
     }
+    {
+        // a line wider than a page (a long help line on a 4K screen) is cut into segments at its full
+        // height, side by side, their widths adding up to the line's; each keeps its neighbour's column
+        // beside its cell, so a cut samples the same pixels as the rest of the line
+        Command w;
+        w.kind = Command::Text, w.size = 20, w.rgba = ink, w.text = std::string(300, 'a');
+        const std::string wide = font::key_of(w, 1.0f, 1.0f);  // 21 pixels tall: 3150 wide and its border room
+        const std::string endless = font::line_key(std::string(5000, 'b'), ink);  // 50000 pixels wide
+        const std::string abc = font::line_key("abc", ink);
+        font::Atlas atlas2;
+        atlas2.build({wide, endless, abc}, main, nullptr, nullptr, {}, 1);
+        const int wide_width = font::Atlas::line_width(w.text, main, nullptr, 21) + 2;
+        auto check_segments = [&](const std::string& key, int width, size_t count) {
+            const std::vector<font::Atlas::Cell>* s = atlas2.segments(key);
+            assert(s && s->size() == count);
+            int at = 0;
+            for (const font::Atlas::Cell& c : *s) {
+                assert(c.height == atlas2.cell(key)->height && c.offset == at && c.width + 2 * font::Atlas::kPad <= font::Atlas::kWidth);
+                at += c.width;
+            }
+            assert(at == width);
+        };
+        check_segments(wide, wide_width, 2);
+        assert(atlas2.cell(wide)->height == 21);
+        check_segments(endless, 50000, 25);
+        assert(atlas2.cell(endless)->height == 20 && atlas2.cell(abc)->height == 20);
+        // at a cut: the column right of the first segment is the second's first, and the other way round
+        const font::Atlas::Cell& s0 = (*atlas2.segments(wide))[0];
+        const font::Atlas::Cell& s1 = (*atlas2.segments(wide))[1];
+        auto texel = [&](const font::Atlas::Cell& c, int x, int y) {
+            const auto im = atlas2.image(size_t(c.page));
+            return &im->rgba[((size_t(c.v0 * im->height + 0.5f) + y) * im->width + size_t(c.u0 * im->width + 0.5f) + x) * 4];
+        };
+        bool any_ink = false;
+        for (int y = 0; y < 21; y++) {
+            assert(std::memcmp(texel(s0, s0.width, y), texel(s1, 0, y), 4) == 0);
+            assert(std::memcmp(texel(s1, -1, y), texel(s0, s0.width - 1, y), 4) == 0);
+            any_ink |= texel(s1, 0, y)[3] != 0 || texel(s1, -1, y)[3] != 0;
+        }
+        assert(any_ink);  // (the cut goes through the letters)
+        // drawn: one picture per segment at the line's height, each ending where the next starts, from its page
+        auto pics = font::to_pictures({w}, &atlas2, 1.0f, 1.0f);
+        assert(pics.size() == 2 && pics[0].kind == Command::Picture && pics[1].kind == Command::Picture);
+        assert(pics[0].h == 20 && pics[1].h == 20 && pics[0].x + pics[0].w == pics[1].x);
+        assert(std::fabs(pics[0].w + pics[1].w - wide_width * 20.0f / 21.0f) < 0.01f);
+        assert(pics[0].image == atlas2.image(size_t(s0.page)) && pics[1].image == atlas2.image(size_t(s1.page)));
+        // nothing falls back: every line is a picture
+        Command e = w;
+        e.text = std::string(5000, 'b');
+        pics = font::to_pictures({e}, &atlas2);
+        assert(pics.size() == 25);
+        for (const Command& p : pics) assert(p.kind == Command::Picture && p.h == 20);
+    }
+    {
+        // a page full: the lines go onto the next page, its own image sized to what it holds, and are
+        // drawn from that page's image
+        Command last;
+        last.kind = Command::Text, last.size = 900, last.rgba = ink, last.text = "ac";
+        const std::string last_key = font::key_of(last, 1.0f, 1.0f);
+        const std::vector<std::string> tall = {font::sized_key("aa", ink, 1000), font::sized_key("bb", ink, 1000), font::sized_key("cc", ink, 1000),
+                                               font::sized_key("ab", ink, 1000), last_key};
+        font::Atlas pages;
+        pages.build(tall, main, nullptr, nullptr, {}, 1);
+        for (size_t i = 0; i < 4; i++) assert(pages.cell(tall[i]) && pages.cell(tall[i])->page == 0);
+        const font::Atlas::Cell* on_two = pages.cell(last_key);
+        assert(on_two && on_two->page == 1 && on_two->height == font::pixel_height(900.0f) && pages.pages() == 2);
+        const auto first = pages.image(0), second = pages.image(1);
+        assert(first && second && first != second && first->height <= font::Atlas::kMaxHeight);
+        assert(second->height == uint32_t(on_two->height + 2 * font::Atlas::kPad) && second->width == uint32_t(on_two->width + 2 * font::Atlas::kPad));
+        auto pics = font::to_pictures({last}, &pages, 1.0f, 1.0f);
+        assert(pics.size() == 1 && pics[0].kind == Command::Picture && pics[0].image == second &&
+               std::fabs(pics[0].u1 - (1.0f - 2.0f / float(second->width))) < 1e-6f);
+        // a page the screen can't have: its lines in the overlay font (only then)
+        pics = font::to_pictures({last}, &pages, 1.0f, 1.0f, [](int page) { return page != 1; });
+        assert(pics.size() == 1 && pics[0].kind == Command::Text);
+        // the same lines again: held, nothing composed, the pages as they were
+        assert(pages.holds(tall, {}, 1));
+        const size_t bytes = pages.bytes();
+        for (int i = 0; i < 3; i++) pages.update(tall, main, nullptr, nullptr, {}, 1);
+        assert(pages.pages() == 2 && pages.image(0) == first && pages.image(1) == second && pages.bytes() == bytes);
+        // a new line: not held, and added on a page of its own (the pages the screen has stay as they are)
+        const std::vector<std::string> more = {tall[0], font::line_key("new", ink)};
+        assert(!pages.holds(more, {}, 1));
+        pages.update(more, main, nullptr, nullptr, {}, 1);
+        assert(pages.holds(more, {}, 1) && pages.pages() == 3 && pages.image(0) == first && pages.image(1) == second);
+        assert(pages.cell(more[1])->page == 2 && pages.image(2)->height == 24 && pages.image(2)->width < 64);
+        // over the budget: the page unused the longest goes first (page 1: none of these lines), and
+        // with nothing unused left, the shown lines of a page under half used move onto a new page
+        pages.update(more, main, nullptr, nullptr, {}, 1, 1.0f, pages.bytes() - 1);
+        assert(!pages.image(1) && !pages.cell(last_key) && pages.image(0) == first && pages.cell(more[1]));
+        const size_t one_line = size_t(pages.cell(tall[0])->width + 4) * (pages.cell(tall[0])->height + 4) * 4;
+        // (over the budget with no new line: nothing is composed, however often it is asked)
+        for (int i = 0; i < 3; i++) pages.update(more, main, nullptr, nullptr, {}, 1, 1.0f, one_line * 2);
+        assert(pages.image(0) == first && pages.cell(tall[1]) && pages.holds(more, {}, 1));
+        const std::vector<std::string> moving = {tall[0], more[1], font::line_key("abc", ink)};
+        pages.update(moving, main, nullptr, nullptr, {}, 1, 1.0f, one_line * 2);
+        assert(pages.image(0) != first && pages.cell(tall[0]) && pages.cell(more[1]) && !pages.cell(tall[1]) && pages.bytes() <= one_line * 2);
+        assert(pages.holds(moving, {}, 1));
+        // (the moved lines' page stays as it is from then on)
+        const auto settled = pages.image(size_t(pages.cell(tall[0])->page));
+        for (int i = 0; i < 3; i++) pages.update(moving, main, nullptr, nullptr, {}, 1, 1.0f, 1);
+        assert(pages.image(size_t(pages.cell(tall[0])->page)) == settled);
+        // another look or fonts: composed again
+        pages.update(more, main, nullptr, nullptr, {}, 2);
+        assert(pages.holds(more, {}, 2) && !pages.holds(more, {}, 1));
+        // a line taller than a page: at a page's height (drawn scaled up), counted for the log
+        pages.build({font::sized_key("a", ink, 3000)}, main, nullptr, nullptr, {}, 1);
+        assert(pages.too_tall() == 1 && pages.cell(font::sized_key("a", ink, 3000))->height == font::Atlas::kMaxHeight - 2 * font::Atlas::kPad);
+    }
     // Text commands become pictures of their lines, scaled to the text size, faded by their alpha
     Command t;
     t.kind = Command::Text, t.x = 100, t.y = 50, t.size = 40, t.rgba = 0x00380080, t.text = "abc";
@@ -834,6 +1091,10 @@ void test_game_font() {
     font::Prompts ps;
     ps.face = font::Prompts::PlayStation;
     assert(font::button_picture(&icon, 0, ps, 20).width == 64);
+    font::Prompts gc;
+    gc.face = font::Prompts::GameCube;
+    const game_glyph::Bitmap gamecube = font::button_picture(&icon, 0, gc, 20);
+    assert(gamecube.width == 64 && gamecube.rgba[(48 * 64 + 32) * 4] == 0x58); // GC A art overrides font icon
     font::Prompts xbox;
     xbox.face = font::Prompts::Xbox, xbox.colours = true;
     const game_glyph::Bitmap green = font::button_picture(&icon, 0, xbox, 20);

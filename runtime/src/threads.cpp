@@ -35,6 +35,7 @@
 #include "savestate.h"
 #include "state_metadata_validation.h"
 #include "scheduler_tick.h"
+#include "rendezvous.h"
 #include "render_prof.h"
 #include "hle/os_time.h"
 #include "fixed_seed.h"
@@ -1160,27 +1161,54 @@ void os_wakeup_thread_queue(uint32_t queue) {
     q->cv.notify_all();
 }
 
-// OSRendezvous
+// OSRendezvous: one arrival flag per core (rendezvous.h). A waiter marks the core it runs on (the
+// core OSGetCoreId reports) and waits until every core in its mask has arrived. WWHD's sound
+// start-up depends on it: the main thread (core 1) starts a thread on core 0 and waits with mask 1
+// until that thread has finished its set-up; the started thread waits with mask 3.
+// WWHD_TRACE_RDV=1 logs every wait (caller core, mask, arrived cores, time waited).
 struct HRendezvous {
     std::mutex m;
     std::condition_variable cv;
-    uint32_t arrived = 0;
+    threads::RendezvousCores cores;
 };
 static ObjTable<HRendezvous> g_rdv;
+static const bool g_trace_rdv = getenv("WWHD_TRACE_RDV") != nullptr;
 HLE(coreinit, OSInitRendezvous) {
     HRendezvous* r = g_rdv.get(arg(c, 0));
     std::lock_guard<std::mutex> lk(r->m);
-    r->arrived = 0;
+    r->cores.reset();
+}
+// timeout_ns < 0: no timeout. False on timeout (the caller's core stays marked, as on Cafe OS).
+static bool rendezvous_wait(Cpu* c, uint32_t addr, uint32_t mask, int64_t timeout_ns) {
+    HRendezvous* r = g_rdv.get(addr);
+    const uint32_t core = t_self ? t_self->core : 1u;  // as OSGetCoreId
+    const auto t0 = std::chrono::steady_clock::now();
+    std::unique_lock<std::mutex> lk(r->m);
+    if (g_trace_rdv) LOG("[rdv] wait %08X core %u mask %X arrived %X lr %08X", addr, core, mask, r->cores.arrived, c->lr);
+    r->cores.arrive(core);
+    r->cv.notify_all();
+    auto done = [&] { return r->cores.complete(mask); };
+    bool ok;
+    if (timeout_ns < 0) ok = park_wait(lk, r->cv, done, W_RDV, addr);
+    else {
+        const auto deadline = t0 + std::chrono::nanoseconds(timeout_ns);
+        const uint64_t simulation_deadline =
+            timebase::simulation_now() + (uint64_t)((unsigned __int128)timeout_ns * timebase::kTicksPerSec / 1000000000ull);
+        ok = park_wait(lk, r->cv, done, W_RDV, addr, &deadline, &simulation_deadline);
+    }
+    if (g_trace_rdv)
+        LOG("[rdv] %s %08X core %u mask %X arrived %X after %.3f ms lr %08X", ok ? "pass" : "timeout", addr, core, mask, r->cores.arrived,
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count(), c->lr);
+    return ok;
 }
 HLE(coreinit, OSWaitRendezvous) {
-    // arg1 is a core mask; we treat each set bit as one participant
-    HRendezvous* r = g_rdv.get(arg(c, 0));
-    uint32_t need = __builtin_popcount(arg(c, 1) & 7);
-    std::unique_lock<std::mutex> lk(r->m);
-    r->arrived++;
-    r->cv.notify_all();
-    park_wait(lk, r->cv, [&] { return r->arrived >= need; }, W_RDV, arg(c, 0));
+    rendezvous_wait(c, arg(c, 0), arg(c, 1), -1);
     ret(c, 1);
+}
+// OSWaitRendezvousWithTimeout(rendezvous, coreMask, OSTimeNanoseconds timeout); -1 waits forever
+HLE(coreinit, OSWaitRendezvousWithTimeout) {
+    const int64_t timeout = (int64_t)arg64(c, 5);
+    ret(c, rendezvous_wait(c, arg(c, 0), arg(c, 1), timeout == -1 ? -1 : std::max<int64_t>(timeout, 0)) ? 1 : 0);
 }
 
 // ---------------------------------------------------------------- alarms
@@ -1662,7 +1690,7 @@ bool threads_ss_save(ss::Writer& w, std::string& why) {
     for (auto& [a, r] : rv) {
         std::lock_guard<std::mutex> l(r->m);
         w.u32(a);
-        w.u32(r->arrived);
+        w.u32(r->cores.arrived);  // core mask (bit n = core n arrived)
     }
     {
         std::lock_guard<std::mutex> l(g_alarm_mutex);
@@ -1856,13 +1884,13 @@ void threads_ss_load(ss::Reader& r) {
     cnt = r.u32();
     for (auto& [a, x] : sorted<HRendezvous>(g_rdv)) {
         std::lock_guard<std::mutex> l(x->m);
-        x->arrived = 0;
+        x->cores.reset();
     }
     for (uint32_t i = 0; i < cnt; i++) {
         uint32_t a = r.u32(), arrived = r.u32();
         HRendezvous* x = g_rdv.get(a);
         std::lock_guard<std::mutex> l(x->m);
-        x->arrived = arrived;
+        x->cores.arrived = arrived & threads::RendezvousCores::kCoreMask;
     }
     // alarms; the guest clock continues from the saved time
     uint64_t saved_now;

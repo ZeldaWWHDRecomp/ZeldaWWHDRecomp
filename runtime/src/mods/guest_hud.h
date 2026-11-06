@@ -16,6 +16,10 @@ namespace guestmods::hud {
 using Handle = uint32_t;
 inline constexpr uint32_t kMaxCommands=1024, kMaxImages=32, kMaxLists=2, kMaxVertices=32768, kMaxClipDepth=16;
 inline constexpr size_t kMaxPixels=16*1024*1024, kMaxText=64*1024;
+inline constexpr size_t kMaxPortPixels=48*1024*1024;  // the port's own pages at most (Store::raise_pixel_quota)
+// Optional HUD features a mod finds with an unsigned setting (wwhd_setting_get, guest_mods.cpp); 0 / missing on
+// older hosts. "hud.mirrored-images.version" 1: an image's reversed UVs (u1 < u0, v1 < v0) sample it mirrored.
+inline constexpr uint32_t kMirroredImagesVersion=1;
 struct Image { uint32_t width,height; std::vector<uint8_t> rgba; };
 enum class Anchor : uint32_t { Center,TopLeft,Top,TopRight,Left,Right,BottomLeft,Bottom,BottomRight };
 enum class Blend : uint32_t { Alpha,Additive };
@@ -84,6 +88,7 @@ class Store {
     std::map<Handle,List> pending;
     std::map<Handle,OwnedImage> images;
     std::map<std::string,std::vector<std::weak_ptr<const Image>>> allocations;
+    std::map<std::string,size_t> raised_pixels;  // (raise_pixel_quota)
     std::map<std::pair<std::string,uint32_t>,std::shared_ptr<const List>> published;
     std::map<std::pair<std::string,uint32_t>,std::shared_ptr<const List>> previous;  // (the one it replaced)
     std::atomic<uint64_t> step_{0};
@@ -92,6 +97,7 @@ class Store {
     std::atomic<float> pixel_scale[2]{0.f,0.f};
     std::map<std::string,std::string> errors;
     Handle handle() {return next<=UINT32_MAX?uint32_t(next++):0;}
+    static bool uv(float v) {return v>=0&&v<=1;}
     static bool geometry(const Command& c) {
         return std::isfinite(c.x)&&std::isfinite(c.y)&&std::isfinite(c.w)&&std::isfinite(c.h)&&
                std::isfinite(c.size)&&std::abs(c.x)<=65536&&std::abs(c.y)<=65536&&
@@ -100,7 +106,9 @@ class Store {
                std::isfinite(c.thickness)&&c.thickness>0&&c.thickness<=1024&&
                std::isfinite(c.rotation)&&std::abs(c.rotation)<=65536&&
                std::isfinite(c.u0)&&std::isfinite(c.v0)&&std::isfinite(c.u1)&&std::isfinite(c.v1)&&
-               c.u0>=0&&c.v0>=0&&c.u1<=1&&c.v1<=1&&c.u1>=c.u0&&c.v1>=c.v0&&
+               uv(c.u0)&&uv(c.v0)&&uv(c.u1)&&uv(c.v1)&&
+               // an image with u1 < u0 (or v1 < v0) is drawn mirrored on that axis (HUD v3)
+               (c.kind==Command::Picture||(c.u1>=c.u0&&c.v1>=c.v0))&&
                uint32_t(c.anchor)<=uint32_t(Anchor::BottomRight)&&uint32_t(c.blend)<=uint32_t(Blend::Additive);
     }
     static bool utf8(const std::string& text) {
@@ -167,11 +175,20 @@ public:
         auto& live=allocations[owner];size_t used=0,count=0;
         std::erase_if(live,[](const auto& weak){return weak.expired();});
         for(const auto& weak:live)if(auto image=weak.lock()){used+=image->rgba.size();++count;}
-        if(count>=kMaxImages||used>kMaxPixels-size)return 0;
+        auto raised=raised_pixels.find(owner);
+        const size_t limit=raised==raised_pixels.end()?kMaxPixels:raised->second;
+        if(count>=kMaxImages||used>limit-size)return 0;
         Handle h=handle();if(!h)return 0;
         auto image=std::make_shared<Image>();image->width=width;image->height=height;image->rgba.resize(size);
         for(uint32_t y=0;y<height;++y)std::copy_n(source+size_t(y)*stride,size_t(width)*4,image->rgba.data()+size_t(y)*width*4);
         images.emplace(h,OwnedImage{owner,image});live.push_back(image);return h;
+    }
+    // The port's own pages only (host code; a mod has no call that reaches this, and mods keep
+    // kMaxPixels): a higher limit for an owner's images, for text that needs it on a large screen,
+    // between kMaxPixels and kMaxPortPixels. It only ever rises.
+    void raise_pixel_quota(const std::string& owner,size_t bytes) {
+        std::lock_guard lock(mutex);auto& limit=raised_pixels[owner];
+        limit=std::max(limit,std::clamp(bytes,kMaxPixels,kMaxPortPixels));
     }
     bool picture(const std::string& owner,Handle list,Handle image,Command command) {
         std::lock_guard lock(mutex);auto it=images.find(image);

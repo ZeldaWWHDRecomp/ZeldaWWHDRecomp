@@ -21,6 +21,16 @@ Master volume also applies. Off-TV Play keeps its normal sound and volume.
 
 With Surround 5.1, these added sounds use the front left and right speakers.
 
+## Menu sounds
+
+**Menu sounds** (on by default, **Settings → Audio**) plays the game's own menu sounds in
+Settings: moving the cursor, choosing, changing an option, switching tabs, going back, and
+opening or closing Settings. The game plays them itself, the way it plays its pause menu's
+sounds, so Master volume applies. In TV play the game sends these sounds to the GamePad: you
+hear them when **GamePad sounds through main speakers** is on, at **GamePad sounds volume**.
+In Off-TV Play you hear them as usual. They never play while the game is in the background or
+Master volume is at 0.
+
 ## Check your speakers in one minute
 
 1. Select Surround 5.1, restart, and confirm **Current output: Surround 5.1**.

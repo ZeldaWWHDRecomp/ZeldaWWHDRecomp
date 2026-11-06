@@ -12,13 +12,21 @@ import java.util.Map;
  *  Idea from the GreenNaugahyde Android fork (MPL-2.0), ControlsView's context buttons; reimplemented. */
 final class ContextPack {
     static final int VERSION = 1, LEN = 40;
+    // Optional extension in reserved header slot 3; zero keeps older runtimes' behaviour.
+    static final int STARTUP_MAGIC = 0x57570100;
+    static final int STARTUP_UNKNOWN = 0, STARTUP_BOOT = 1, STARTUP_TITLE = 2, STARTUP_FILES = 3, STARTUP_GAME = 4;
     // header flags (raw[1])
     static final int ENABLED = 1, ACTIVE = 1 << 1, TAP_CONTINUES = 1 << 2, AIM_LATCHED = 1 << 3,
             ZL_LATCHED = 1 << 4, CLUSTER_HIDDEN = 1 << 5,
             // requested from native code (P3-REQUESTS.md): the HUD names the item buttons A1 A2 A3
-            ITEM_NAMES_A = 1 << 6;
+            ITEM_NAMES_A = 1 << 6,
+            // Link in the button pictures (controls plan P8, link_poses.h): an action with a pose picture
+            // (ContextAssets.poseFile) shows Link in that pose above its word
+            LINK_POSES = 1 << 7;
     // per-button state
     static final int SHOWN = 1, KIND_SHIFT = 1, KIND_MASK = 3 << 1, HELD = 1 << 3;
+    // an action's picture variant: the kind of thing Link lifts or holds (play_context.h ThingKind), pose_HH_KK.png
+    static final int VARIANT_SHIFT = 8, VARIANT_MASK = 0xFF << 8;
     static final int KIND_PLAIN = 0, KIND_ACTION = 1, KIND_ITEM = 2, KIND_FAST_FORWARD = 3;
     // ctxbtn::Button
     static final int A = 0, B = 1, X = 2, Y = 3, R = 4, ZR = 5, ZL = 6, PLUS = 7, R3 = 8, UP = 9, LEFT_RIGHT = 10,
@@ -52,7 +60,14 @@ final class ContextPack {
     /** the rules apply now: only the controls that do something show */
     boolean on() { return enabled() && (raw[1] & ACTIVE) != 0; }
     int assetsGeneration() { return raw[2]; }
+    int startupScene() {
+        int scene = raw[3] & 255;
+        return valid && (raw[3] & 0xFFFFFF00) == STARTUP_MAGIC && scene >= STARTUP_BOOT && scene <= STARTUP_GAME
+                ? scene : STARTUP_UNKNOWN;
+    }
+    boolean startupTouch() { int scene = startupScene(); return scene >= STARTUP_BOOT && scene <= STARTUP_FILES; }
     boolean itemNamesA() { return valid && (raw[1] & ITEM_NAMES_A) != 0; }
+    boolean linkPoses() { return valid && (raw[1] & LINK_POSES) != 0; }
 
     private static boolean inRange(int b) { return b >= 0 && b < COUNT; }
     int state(int b) { return inRange(b) ? raw[FIRST + 3 * b] : 0; }
@@ -97,6 +112,11 @@ final class ContextPack {
     int kindFor(String key) {
         final int b = buttonFor(key);
         return on() && b >= 0 && shown(b) ? kind(b) : KIND_PLAIN;
+    }
+    /** The picture variant of an action button (0 none): the kind of thing in Link's hands. */
+    int variantFor(String key) {
+        final int b = buttonFor(key);
+        return b >= 0 ? (state(b) & VARIANT_MASK) >>> VARIANT_SHIFT : 0;
     }
     /** kindFor's label: the action code or item number. */
     int labelFor(String key) {

@@ -19,6 +19,11 @@
 #include "story_native_canonical_code_id.h"
 #include "../exception_report.h"
 #include "guest_mods.h"
+#include "mods.h"
+#include "../guest_module_entry.h"
+#include "native_actor_profiles.h"
+#include "native_actor_profile_startup.h"
+#include "../guest_module_call.h"
 #include "../model_probe.h"
 #include "story_native_refresh_dispatch_audit.h"
 #include "story_native_manager_cancel_dispatch_audit.h"
@@ -42,6 +47,7 @@
 #include "guest_settings.h"
 #include "guest_hud.h"
 #include "guest_live.h"
+#include "map_hud.h"
 #include "../aspect.h"
 #include "../interp.h"
 #include "../mic.h"
@@ -91,7 +97,6 @@
 #include "story_treasure_chest.h"
 #include "mod_json.h"
 #include "input.h"
-#include "true60.h"
 #include "guest_addr.h"
 #include <atomic>
 #include <limits>
@@ -165,7 +170,7 @@ struct Chain {
 };
 std::unordered_map<uint32_t, Chain> g_chains;  // built before the game starts, read-only afterwards
 struct Loaded {
-    std::string path,id,version,package_path,data_path,name;
+    std::string path,id,version,package_path,data_path,name,elf_fingerprint;
     uint32_t hud_callback=0,hud_screen=0;
     uint64_t hud_step=0;
     bool hud_called=false;
@@ -182,8 +187,12 @@ std::atomic<uint64_t> g_logic_step{0};
 std::atomic<bool> g_hud_callbacks{false};
 bool g_world_scenes=false;
 bool g_native_scenes=false;  // native scene playback can run (set once in init): the game-thread binding
+bool g_actor_profile_import=false;
+thread_local bool g_actor_profile_entry=false;
 bool g_particle_import=false;  // a loaded code mod imports wwhd_actor_particle or wwhd_particle_at
 std::mutex g_hud_mutex;
+thread_local bool g_map_hud_draw=false;
+uint32_t map_hud_owner(const Loaded& mod){return uint32_t(&mod-g_loaded.data())+1;}
 Loaded& owner(Cpu* c) {
     for(auto& mod:g_loaded)
         if(c->pc>=mod.m->mem_base&&c->pc-mod.m->mem_base<mod.m->mem_size)return mod;
@@ -642,6 +651,18 @@ bool exchange_area(Loaded& mod) {
     if(!mod.scratch)mod.scratch=mod.heap->allocate(32);
     return mod.scratch!=0;
 }
+void svc_ship_normal_sail_wind(Cpu* c) {
+    mods::ship_normal_sail_wind(c, c->r[3]);
+}
+void svc_ship_sail_target(Cpu* c) {
+    c->f[1].ps0 = c->f[1].ps1 = mods::ship_sail_target((float)c->f[1].ps0);
+}
+void svc_item_action_dispatch(Cpu* c) {
+    mods::quick_use_item_action_dispatch(c, c->r[3], c->r[4]);
+}
+void svc_item_ready_trigger(Cpu* c) {
+    c->r[3] = mods::quick_use_ready_item_trigger(c, c->r[3], c->r[4]);
+}
 void svc_input_filter_register(Cpu* c) {
     auto& mod=owner(c);uint32_t fn=c->r[3];c->r[3]=0;
     if(fn&&(!own_function(mod,fn)||!exchange_area(mod))){LOG("[guestmod:%s] input filter refused: the callback must be the mod's own",mod.id.c_str());return;}
@@ -729,7 +750,7 @@ void svc_input(Cpu* c) {
     st32(a,p.buttons);stf32(a+4,p.lx);stf32(a+8,p.ly);stf32(a+12,p.rx);stf32(a+16,p.ry);
     st32(a+20,p.touch);stf32(a+24,p.tx);stf32(a+28,p.ty);
 }
-void svc_logic_dt(Cpu* c) {c->f[1].ps0=double(true60::dt())/30.0;}
+void svc_logic_dt(Cpu* c) {c->f[1].ps0=1.0/30.0;}  // one 30 Hz logic step (every mode)
 void svc_logic_step(Cpu* c) {uint64_t step=g_logic_step.load(std::memory_order_relaxed);c->r[3]=uint32_t(step>>32);c->r[4]=uint32_t(step);}
 bool setting_buffer(const Loaded& mod,uint32_t address,uint32_t bytes) {
     return address>=mod.m->mem_base&&uint64_t(address)+bytes<=uint64_t(mod.m->mem_base)+mod.region_size;
@@ -784,6 +805,44 @@ void svc_setting_get(Cpu* c) {
         if (capacity >= 64) query_layout_pane(c, key, destination);
         return;
     }
+    if(key=="native-map-hud.v1"&&expected==7){
+        c->r[3]=0;
+        if(capacity<36||!setting_buffer(mod,destination,36)||ld32(destination)!=36||ld32(destination+4)!=1)return;
+        uint32_t action=ld32(destination+8),argument=ld32(destination+12),id=map_hud_owner(mod);
+        int result=-2;maphud::Rect rect{};
+        switch(action){
+        case 1:result=maphud::compasses(c,id,argument,g_map_hud_draw);break;
+        case 2:result=maphud::rectangle(id,rect);if(result==1){st32(destination+20,f32_as_u32(rect.x));st32(destination+24,f32_as_u32(rect.y));st32(destination+28,f32_as_u32(rect.w));st32(destination+32,f32_as_u32(rect.h));}break;
+        case 3:result=maphud::selected(c,g_map_hud_draw);break;
+        case 4:result=maphud::select(c,id,argument,g_map_hud_draw);break;
+        case 5:result=maphud::cancel(c,id,g_map_hud_draw);break;
+        }
+        st32(destination+16,uint32_t(result));c->r[3]=36;return;
+    }
+    if(key=="hud.boat-compasses.version"||key=="map.chart-selection.version"){
+        c->r[3]=0;if(expected!=3)return;
+        if(!destination&&!capacity){c->r[3]=4;return;}
+        if(capacity<4||!setting_buffer(mod,destination,4))return;
+        st32(destination,maphud::capability());c->r[3]=4;return;
+    }
+    if(key=="hud.mirrored-images.version"||key=="layout-message.version"){  // HUD v3 (wwhd_guest.h)
+        c->r[3]=0;if(expected!=settings::Unsigned)return;
+        if(!destination&&!capacity){c->r[3]=4;return;}
+        if(capacity<4||!setting_buffer(mod,destination,4))return;
+        st32(destination,key[0]=='h'?hud::kMirroredImagesVersion:game_layouts::kMessageVersion);c->r[3]=4;return;
+    }
+    // "layout-message:<Layout>/<label>": the game's own text of a label of a layout's message file, in the
+    // language the game runs in (game_layouts::message). Only names reach the pack reader; the text is copied
+    // whole (with its NUL) into the mod's own memory or not at all.
+    if(key.rfind("layout-message:",0)==0){
+        c->r[3]=0;if(expected!=settings::String)return;
+        std::string text;
+        if(!game_layouts::message(key.substr(15),text)||text.size()>=game_layouts::kMaxMessageBytes)return;
+        const uint32_t bytes=uint32_t(text.size()+1);
+        if(!destination&&!capacity){c->r[3]=bytes;return;}
+        if(capacity<bytes||!setting_buffer(mod,destination,bytes))return;
+        memcpy(mem::ptr(destination),text.c_str(),bytes);c->r[3]=bytes;return;
+    }
     auto value=settings::read(key);c->r[3]=0;
     if(!value||value->type()!=expected)return;
     uint32_t bytes=value->type()==settings::String?uint32_t(std::get<std::string>(value->data).size()+1):value->type()==settings::Number?8:4;
@@ -831,8 +890,22 @@ std::string hud_path(const Loaded& mod,uint32_t address) {
     }
     return {};
 }
+void svc_boat_compasses(Cpu* c){auto& m=owner(c);c->r[3]=maphud::compasses(c,map_hud_owner(m),c->r[3],g_map_hud_draw);}
+void svc_boat_compasses_rect(Cpu* c){
+    auto& m=owner(c);uint32_t out=c->r[3];c->r[3]=uint32_t(-2);
+    if(!setting_buffer(m,out,24)||ld32(out)!=24||ld32(out+4)!=1)return;
+    maphud::Rect r{};int result=maphud::rectangle(map_hud_owner(m),r);
+    if(result==1){st32(out+8,f32_as_u32(r.x));st32(out+12,f32_as_u32(r.y));st32(out+16,f32_as_u32(r.w));st32(out+20,f32_as_u32(r.h));}
+    c->r[3]=uint32_t(result);
+}
+void svc_map_chart_selected(Cpu* c){c->r[3]=maphud::selected(c,g_map_hud_draw);}
+void svc_map_chart_select(Cpu* c){auto& m=owner(c);c->r[3]=maphud::select(c,map_hud_owner(m),c->r[3],g_map_hud_draw);}
+void svc_map_chart_cancel(Cpu* c){auto& m=owner(c);c->r[3]=maphud::cancel(c,map_hud_owner(m),g_map_hud_draw);}
 void svc_hud_register(Cpu* c) {
     auto& mod=owner(c);uint32_t callback=c->r[3],screen=c->r[4];c->r[3]=0;
+    // Map/UI hooks may call HUD services: never acquire their mutex while
+    // holding g_hud_mutex (native event dispatch takes them in the other order).
+    if(!callback&&screen<=2)maphud::revoke(map_hud_owner(mod));
     std::lock_guard lock(g_hud_mutex);
     if(screen>2){hud::store().note(mod.id,"HUD registration failed: invalid screen");return;}
     if(callback) {
@@ -1048,7 +1121,18 @@ void svc_item_used(Cpu* c) {
     c->r[3]=uint32_t(mod_string(mod,c->r[3],story_mail::kMaxIdBytes,id)?story_items::used(mod.id,id):story_items::kResultInvalid);
 }
 #include "guest_actor_services.inc"
+void svc_native_actor_profile_register(Cpu*c){
+    if(!g_actor_profile_entry){c->r[3]=uint32_t(-3);LOG("[guestmods] native actor profiles register only from a GameMain entry hook");return;}
+    auto& mod=owner(c);std::string why;
+    const int32_t result=native_actor_profiles::register_guest(mod.id,mod.elf_fingerprint,c->r[3],
+        [&](uint32_t a,uint32_t n){return setting_buffer(mod,a,n);},
+        [&](uint32_t fn){return own_function(mod,fn);},&why);
+    if(result<0)LOG("[guestmods] %s: native actor profile refused: %s",mod.id.c_str(),why.c_str());
+    else LOG("[guestmods] %s: registered native actor profile %04X from GameMain entry",mod.id.c_str(),unsigned(result));
+    c->r[3]=uint32_t(result);
+}
 const std::unordered_map<std::string, PpcFunc> kServices = {
+    {"wwhd_native_actor_profile_register",svc_native_actor_profile_register},
     {"wwhd_actor_register",svc_actor_register},{"wwhd_actor_find",svc_actor_find},{"wwhd_actor_get",svc_actor_get},
     {"wwhd_actor_combat_get",svc_actor_combat_get},{"wwhd_actor_attack_begin",svc_actor_attack_begin},{"wwhd_actor_attack_cancel",svc_actor_attack_cancel},
     {"wwhd_actor_userdata",svc_actor_userdata},{"wwhd_actor_set_position",svc_actor_set_position},{"wwhd_actor_set_rotation",svc_actor_set_rotation},
@@ -1061,9 +1145,11 @@ const std::unordered_map<std::string, PpcFunc> kServices = {
     {"wwhd_log", svc_log},       {"wwhd_log_int", svc_log_int}, {"wwhd_log_hex", svc_log_hex},
     {"wwhd_log_float", svc_log_float}, {"wwhd_config_int", svc_config_int},
     {"wwhd_config_bool",svc_config_bool},{"wwhd_config_changed",svc_config_changed},
-    {"wwhd_input_filter_register",svc_input_filter_register},{"wwhd_touch_register",svc_touch_register},{"wwhd_touch_claim",svc_touch_claim},{"wwhd_screen_point",svc_project},{"wwhd_mic_open",svc_mic_open},{"wwhd_mic_close",svc_mic_close},{"wwhd_mic_state",svc_mic_state},{"wwhd_mic_pitch",svc_mic_pitch},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
+    {"wwhd_ship_normal_sail_wind",svc_ship_normal_sail_wind},{"wwhd_ship_sail_target",svc_ship_sail_target},{"wwhd_item_action_dispatch",svc_item_action_dispatch},{"wwhd_item_ready_trigger",svc_item_ready_trigger},{"wwhd_input_filter_register",svc_input_filter_register},{"wwhd_touch_register",svc_touch_register},{"wwhd_touch_claim",svc_touch_claim},{"wwhd_screen_point",svc_project},{"wwhd_mic_open",svc_mic_open},{"wwhd_mic_close",svc_mic_close},{"wwhd_mic_state",svc_mic_state},{"wwhd_mic_pitch",svc_mic_pitch},{"wwhd_config_float",svc_config_float},{"wwhd_config_string",svc_config_string},
     {"wwhd_malloc",svc_malloc},{"wwhd_free",svc_free},{"wwhd_input_read",svc_input},
     {"wwhd_file_read",svc_file_read},{"wwhd_file_write",svc_file_write},
+    {"wwhd_hud_boat_compasses",svc_boat_compasses},{"wwhd_hud_boat_compasses_rect",svc_boat_compasses_rect},
+    {"wwhd_map_chart_selected",svc_map_chart_selected},{"wwhd_map_chart_select",svc_map_chart_select},{"wwhd_map_chart_cancel",svc_map_chart_cancel},
     {"wwhd_hud_register",svc_hud_register},{"wwhd_hud_texture",svc_hud_texture},
     {"wwhd_hud_clip",svc_hud_clip},{"wwhd_hud_release",svc_hud_release},{"wwhd_hud_epoch",svc_hud_epoch},{"wwhd_hud_emit",svc_hud_emit},
     {"wwhd_setting_get",svc_setting_get},{"wwhd_setting_changed",svc_setting_changed},
@@ -1087,6 +1173,7 @@ PpcFunc service(const char* name) {
         if (g_missing_service.empty()) g_missing_service = name ? name : "?";
         return nullptr;
     }
+    if (!strcmp(name,"wwhd_native_actor_profile_register")) g_actor_profile_import=true;
     if (!strcmp(name, "wwhd_actor_particle") || !strcmp(name, "wwhd_particle_at")) g_particle_import = true;  // particle scratch
     if (!strncmp(name, "wwhd_mail_", 10)) story_mail::note_import();  // the postbox hooks are needed
     if (!strncmp(name, "wwhd_chart_", 11)) {  // the sea chart hooks are needed, and the chart list's captions
@@ -1170,8 +1257,14 @@ std::string notebook_model(const std::filesystem::path& glb,const std::string& d
 }
 
 bool load_one(const std::string& path, std::string& err,const mods::packages::GuestPackage& pkg,uint32_t base,uint32_t reserved) {
+    native_actor_profiles::startup::ImportAttempt profile_import(g_actor_profile_import);
+
 #ifdef _WIN32
+    // No loader "Bad Image" dialog for a damaged module: report the failure instead.
+    DWORD previous_mode = 0;
+    const bool quiet = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &previous_mode);
     void* lib = (void*)LoadLibraryA(path.c_str());
+    if (quiet) SetThreadErrorMode(previous_mode, nullptr);
     auto init = lib ? (WWHDGuestInitV1)(void*)GetProcAddress((HMODULE)lib, WWHD_GUEST_INIT_SYMBOL) : nullptr;
 #else
     void* lib = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
@@ -1213,7 +1306,7 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
             return false;
         }
     Loaded loaded;
-    loaded.path=path;loaded.package_path=pkg.path;loaded.data_path=pkg.data_path;loaded.id=pkg.id;loaded.name=pkg.name;loaded.version=pkg.version;loaded.m=m;loaded.region_size=reserved;loaded.options=pkg.options;loaded.mic_options=pkg.mic_options;
+    loaded.elf_fingerprint=pkg.fingerprint;loaded.path=path;loaded.package_path=pkg.path;loaded.data_path=pkg.data_path;loaded.id=pkg.id;loaded.name=pkg.name;loaded.version=pkg.version;loaded.m=m;loaded.region_size=reserved;loaded.options=pkg.options;loaded.mic_options=pkg.mic_options;
     {std::lock_guard lock(g_options_mutex);for(const auto& [key,value]:pkg.options.object)g_revisions.declare(pkg.id,key);}
     loaded.files=std::make_unique<Files>(pkg.data_path);
     uint32_t heap_base=(m->mem_base+m->mem_size+15)&~15u;
@@ -1275,10 +1368,35 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
     } catch(const std::exception& e) {LOG("[guestmods] %s: manifest quests not read: %s",loaded.id.c_str(),e.what());}
     g_loaded.push_back(std::move(loaded));
     guard.handle = nullptr; // module functions remain resident for the process lifetime
+    profile_import.accept();
     LOG("[guestmods] loaded %s (translator %s): %u functions, %u hooks, guest memory %08X-%08X", path.c_str(),
         m->translator, m->func_count, m->hook_count, m->mem_base, m->mem_base + m->mem_size);
     return true;
 }
+
+// Observer callbacks may themselves call guest functions and clobber any EABI
+// scratch register. None of that is an output of an entry/return observer: in
+// patched assembly even r12, f0 or CR0 may carry a value across the boundary.
+// Restore register bits, including on exceptions, but keep memory effects,
+// reservation changes and scheduler/dispatch bookkeeping from callback work.
+class ObserverRegisters {
+    Cpu* cpu;
+    Cpu saved;
+public:
+    explicit ObserverRegisters(Cpu* c) : cpu(c), saved(*c) {}
+    ObserverRegisters(const ObserverRegisters&) = delete;
+    ObserverRegisters& operator=(const ObserverRegisters&) = delete;
+    ~ObserverRegisters() {
+        std::memcpy(cpu->r,saved.r,sizeof saved.r);
+        std::memcpy(cpu->f,saved.f,sizeof saved.f);
+        std::memcpy(cpu->cr,saved.cr,sizeof saved.cr);
+        std::memcpy(cpu->gqr,saved.gqr,sizeof saved.gqr);
+        cpu->lr=saved.lr;cpu->ctr=saved.ctr;cpu->pc=saved.pc;
+        cpu->fpscr=saved.fpscr;
+        cpu->xer_so=saved.xer_so;cpu->xer_ov=saved.xer_ov;
+        cpu->xer_ca=saved.xer_ca;cpu->xer_bc=saved.xer_bc;
+    }
+};
 
 struct Args {
     uint32_t r[8];
@@ -1766,6 +1884,24 @@ void init() {
         NativeSceneRequestIssuer::startup(stage_pass_through,[]() -> uint64_t {
             return g_logic_step.load(std::memory_order_relaxed);
         });
+    if(!g_loaded.empty())maphud::install(call_original,[](uint32_t fn,bool replacing){
+        auto it=g_chains.find(fn);return ordinal_of(fn)>=0&&(!replacing||it==g_chains.end()||!it->second.replace);
+    },[](uint32_t fn,PpcFunc hook){
+        int ordinal=ordinal_of(fn);auto& ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(ordinal);
+        ch.replace=hook;ch.replace_mod="the port's map/HUD bridge";g_mod_hook_flags[ordinal]=1;
+    });
+    // Existing port actor services configure their before-delete listeners
+    // before the central registry becomes immutable. Extend its lookup only
+    // after those services and every guest module have finished installation.
+    if(g_actor_profile_import){
+        native_actor_profiles::configure(call_original,[](Cpu*c,uint32_t f,std::initializer_list<uint32_t>a){return guest_call(c,f,a);});
+        std::string why;
+        const bool ok=native_actor_profiles::install_guest([]{return mem::runtime_alloc(native_actor_profiles::kGuestCapacity*native_actor_profiles::kGuestSlotBytes,16);},
+            [](uint32_t a){auto it=g_chains.find(a);return it==g_chains.end()?std::string():it->second.replace_mod;},
+            [](uint32_t a,PpcFunc fn){const int ordinal=ordinal_of(a);if(ordinal<0)fatal("[guestmods] native actor profile hook missing: %08X",a);
+                auto&ch=g_chains[a];ch.addr=a;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's native actor profiles";g_mod_hook_flags[ordinal]=1;},&why);
+        if(!ok)LOG("[guestmods] native actor profiles unavailable: %s",why.c_str());
+    }
     seal_startup();
 }
 
@@ -1999,10 +2135,12 @@ void draw_frame(Cpu* c,uint64_t step) {
             mod.hud_step=step;mod.hud_called=true;callback=mod.hud_callback;screen=mod.hud_screen;
         }
         auto list=hud::store().begin(mod.id,screen);
-        if(!list){hud::store().drop(mod.id);continue;}
+        if(!list){maphud::revoke(map_hud_owner(mod));hud::store().drop(mod.id);continue;}
         Cpu saved=*c;
-        try {guest_call(c,callback,{list});hud::store().commit(mod.id,list);}
-        catch(...) {hud::store().fail(mod.id,list,"HUD callback failed; draw list dropped");hud::store().commit(mod.id,list);}
+        g_map_hud_draw=true;
+        try {guest_call(c,callback,{list});if(!hud::store().commit(mod.id,list))maphud::revoke(map_hud_owner(mod));}
+        catch(...) {maphud::revoke(map_hud_owner(mod));hud::store().fail(mod.id,list,"HUD callback failed; draw list dropped");hud::store().commit(mod.id,list);}
+        g_map_hud_draw=false;
         *c=saved;
     }
 }
@@ -2032,6 +2170,8 @@ void logic_service(Cpu* c) {
 }
 void service(Cpu* c) { story_lyt_screen::service(c); }
 void state_loaded() {
+    native_actor_profiles::restore_guest_snapshots();
+    maphud::state_loaded();
     story_native_event_game_thread::state_loaded();
     story_native_wait_runtime::state_loaded();
     std::lock_guard lock(g_hud_mutex);
@@ -2062,7 +2202,8 @@ using namespace guestmods;
 
 // A hooked or replaced game function. The calling convention is the game's: hooks get the function's
 // arguments (r3..r10, f1..f8 are restored for every hook), a return hook also leaves the return value
-// (r3, r4, f1) as the function produced it. r1/r2/r13 are preserved by every callee (ABI).
+// as the function produced it, including non-EABI assembly returns. Observer
+// register writes are discarded; their memory and runtime scheduling effects remain.
 extern "C" void ppc_mod_run(Cpu* c) {
     uint32_t addr = c->pc;
     auto it = g_chains.find(addr);
@@ -2073,19 +2214,16 @@ extern "C" void ppc_mod_run(Cpu* c) {
     Args a;
     a.save(c);
     for (PpcFunc h : ch.entry) {
-        h(c);
-        a.load(c);
+        native_actor_profiles::startup::EntryScope profile_entry(g_actor_profile_entry,addr==GC(0x028EA120));
+        ObserverRegisters preserve(c);
+        guestmods::invoke_module_entry(c, h);
     }
-    if (ch.replace) ch.replace(c);
+    if (ch.replace) guestmods::invoke_module_entry(c, ch.replace);
     else { c->mod_skip = addr; story_native_stage_owner_hooks::invoke_original(c,addr,[&]{guestmods::original_started(c,addr);g_mod_bodies[ch.ordinal](c);guestmods::original_completed(c,addr);}); }
-    if (!ch.ret.empty()) {
-        uint32_t r3 = c->r[3], r4 = c->r[4];
-        double f1a = c->f[1].ps0, f1b = c->f[1].ps1;
-        for (PpcFunc h : ch.ret) {
-            a.load(c);
-            h(c);
-        }
-        c->r[3] = r3; c->r[4] = r4; c->f[1].ps0 = f1a; c->f[1].ps1 = f1b;
+    for (PpcFunc h : ch.ret) {
+        ObserverRegisters preserve(c); // save the body's result before restoring arguments
+        a.load(c);
+        guestmods::invoke_module_entry(c, h);
     }
     });
     });

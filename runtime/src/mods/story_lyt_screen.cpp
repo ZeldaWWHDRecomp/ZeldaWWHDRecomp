@@ -364,6 +364,11 @@ void before_all() {
         if (s.part && s.client.before) s.client.before();
 }
 
+void after_all() {
+    for (auto it = g_slots.rbegin(); it != g_slots.rend(); ++it)
+        if (it->part && it->client.after) it->client.after();
+}
+
 // The item menu on the GamePad: its screens (item screen, sub window, menu buttons, cursor, messages) are
 // drawn by drawPrimaryScreens; ours right after them.
 void draw_primary(Cpu* c) {
@@ -371,6 +376,7 @@ void draw_primary(Cpu* c) {
     before_all();
     g_viewport = 0;
     g_original(c, kDrawPrimary);
+    after_all();
     if (input::pro_controller()) g_viewport = 0;  // the menu is the TV's
     draw_after(c);
 }
@@ -383,6 +389,7 @@ void draw_hud(Cpu* c) {
     before_all();
     g_viewport = 0;
     g_original(c, kDrawHud);
+    after_all();
     if (!input::pro_controller()) g_viewport = 0;  // the menu is the GamePad's
     draw_after(c);
 }
@@ -393,6 +400,8 @@ void finalize_screens(Cpu* c) {
         for (auto it = g_order.rbegin(); it != g_order.rend(); ++it) destroy(c, g_slots[size_t(*it)]);
         heap_report(c, "screen gone");
     }
+    for (Slot& s : g_slots) if (s.client.finalized) s.client.finalized();
+    g_covered = 0;
     g_original(c, kFinalizeScreens);
 }
 }  // namespace hooks

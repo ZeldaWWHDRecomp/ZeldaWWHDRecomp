@@ -71,6 +71,10 @@ extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeD
 #endif
 
 #ifdef __ANDROID__
+// Match the SDL routing: the view button belongs to the host only on a single display.
+extern "C" JNIEXPORT jboolean JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeViewButtonHit(JNIEnv*, jclass, jfloat x, jfloat y) {
+    return !gfx::g_has_drc_window && gfx::view_button_hit(x, y);
+}
 extern "C" JNIEXPORT jint JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeTouchState(JNIEnv*, jclass) {
     return (gfx::touch_buttons_visible() ? 1 : 0) | (gfx::g_touch_controls ? 2 : 0) | (overlay::captures() ? 4 : 0);
 }

@@ -66,6 +66,8 @@ extern const char* const kFilterNames[3];             // smooth, sharp, integer
 
 // the options (read from any thread; changed on the host's main thread)
 extern std::atomic<int> g_mode;
+// Android startup menus temporarily require the GamePad picture. Presentation only; never saved.
+extern std::atomic<bool> g_startup_gamepad;
 extern std::atomic<int> g_pip_anchor;
 extern std::atomic<float> g_pip_x, g_pip_y;
 extern std::atomic<bool> g_pip_preview;
