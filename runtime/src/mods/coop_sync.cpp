@@ -23,6 +23,7 @@
 #include <mutex>
 
 #include "coop_pose.h"
+#include "coop_progress.h"
 #include "guest_addr.h"
 #include "mods.h"
 #include "runtime.h"
@@ -271,6 +272,9 @@ bool door_held(Cpu* c) {
 struct Handler : net::Handler {
     void message(int from, net::Msg type, const uint8_t* d, size_t n) override {
         if (type == net::kEffect) return g_effects_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
+        if (type == net::kProgress) return progress::received(d, n);
+        if (type == net::kDoorMove) return progress::door_moved(d, n);
+        if (type == net::kRupees) return progress::rupees_received(d, n);
         if (type == net::kSound) return g_sounds_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
         if (type == net::kOwner) {  // (a guest) the host's table of who runs each place
             g_owners.clear();
@@ -567,6 +571,7 @@ void poll(Cpu* c, bool on) {
     }
     if (!on && net::role() == net::Role::kOff && g_status.rfind("Not started", 0) != 0) g_status = "Off";
     if (net::role() == net::Role::kOff) {
+        progress::stop();
         g_asks.clear(), g_cut = Cut{}, g_cut_on.clear();
         std::lock_guard<std::mutex> l(g_mu);
         g_ask_text.clear(), g_ask_said = -1;  // (a question still up closes)
@@ -607,6 +612,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         net::send(-1, net::kEffect, std::string((const char*)fx.data(), fx.size() * sizeof(Effect)));
     if (!g_sounds_out.empty())
         net::send(-1, net::kSound, std::string((const char*)g_sounds_out.data(), g_sounds_out.size() * sizeof(Sound))), g_sounds_out.clear();
+    progress::step(c, arrived());
     // who runs each place's monsters (owner()): the host where it is; elsewhere the player there longest, kept while they
     // stay (Valheim's way: no handing over mid-fight to whoever comes nearer). Sent to the guests as it changes, and every
     // 3 s for those who joined since

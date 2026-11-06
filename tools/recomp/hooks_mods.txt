@@ -116,3 +116,9 @@
 # Online co-op, the session (mods/coop_sync.cpp)
 025202F8  # dComIfG_resetToOpening: a guest's way back to the title
 0252012C  # dComIfGp_setNextStage: a guest going into a stage the host isn't in waits for the host
+# Online co-op, shared progress (mods/coop_progress.cpp): another player's doors moving, shown here
+021262D8  # door10 openInit: a player's shutter opening, shown on the others
+02126334  # door10 closeInit: closing
+02128430  # door12 openInit
+0212848C  # door12 closeInit
+021A3AA0  # daKnob00 openInit: a player's knob door swinging, shown on the others

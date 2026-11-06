@@ -10,7 +10,8 @@
 # guest starts GUEST_AFTER seconds (5) after the host. Each game's log (capped at 20 MB) and co-op trace
 # (WWHD_MODS_TRACE) are host.log, host.trace, guest.log, guest.trace; WWHD_DUMP_FRAMES (DUO_FRAMES) writes pictures
 # into host/ and guest/. A game over DUO_RSS_MB (6000) of memory is stopped. Only this script's own games are
-# stopped, never another wwhd.
+# stopped, never another wwhd. DUO_KILL=host@S or guest@S stops that game S seconds after the guest started (a player
+# leaving).
 set -u
 root=${0:A:h:h}
 name=$1 secs=${2:-240}
@@ -49,6 +50,10 @@ for i in $(seq 1 $secs); do
       [ -n "$rss" ] && [ $((rss / 1024)) -gt $limit ] && { echo "$name: game $g over ${limit} MB, stopped"; kill -9 $g; }
     done
   done
+  if [ -n "${DUO_KILL:-}" ] && [ $i = ${DUO_KILL#*@} ]; then
+    k=${DUO_KILL%@*}; [ $k = host ] && kp=${pids[1]} || kp=${pids[2]}
+    for g in $(pgrep -P $kp -x wwhd 2>/dev/null); do echo "$name: $k stopped at ${i}s"; kill -9 $g; done
+  fi
   [ $alive = 0 ] && [ $i -gt 10 ] && break
   sleep 1
 done
