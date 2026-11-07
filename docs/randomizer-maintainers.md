@@ -5,7 +5,10 @@ maintainers reviewing a new randomizer variant for the compatibility check.
 
 Setup checks the section/import layout, every port hook instruction and the complete containing
 functions of a randomized RPX against a shipped profile (`tools/recomp/randomizer-usa.json`,
-`randomizer-eu.json`; hashes and addresses only). Unreviewed changes are rejected; a matching
+`randomizer-eu.json`; hashes and addresses only). It checks the code as the system loader leaves it,
+with the RPX's relocations to its own symbols applied: the randomizer redirects some pointers by
+changing only relocation entries (an item-function table, float constants), and the port loads and
+translates the relocated code and data too (`runtime/src/rpx_relocs.h`, `tools/rpx.py`). Unreviewed changes are rejected; a matching
 randomizer title alone never bypasses these checks. Randomized builds preserve assembly
 scratch-register returns and use translated randomizer code throughout; decompiled replacements
 are disabled. An executable checks its exact RPX hash before accessing saves.
@@ -38,6 +41,10 @@ that skips the original function could skip the randomizer patch too. The tool
 refuses to generate if a hook instruction changed or text lies outside the
 reference function map. Such cases need a port change and another audit.
 
+A hooked function below 64 bytes has no digest of its own. All of them, with every hook word, form
+one aggregate. When a reviewed function of that kind changes (for 1.2.0: `02417FF4`, through a
+relocation), the profile accepts this input's whole aggregate as a variant. Hook words never change.
+
 After that review, maintainers can regenerate the shipped hash-only profile:
 
 ```sh
@@ -58,8 +65,9 @@ and reviewed; `test_randomizer_compat.py` checks that it matches the current hoo
 ## Generate and build
 
 After reviewing the reported overlaps, pass their exact function entries. For
-default-option 1.2.0 seeds these are `0216F7FC,023EFF20,025499A0`; Quiet Swift Sail adds
-`0247E854` and any entrance shuffle adds `025217F8`. Do not copy that list for
+default-option 1.2.0 seeds these are `0216F7FC,023EFF20,025499A0`, plus `02417FF4,0242A218`
+(float constants redirected through relocations; the port's hooks there wrap the translated original);
+Quiet Swift Sail adds `0247E854` and any entrance shuffle adds `025217F8`. Do not copy that list for
 another output without reading its report.
 
 ```sh
@@ -112,6 +120,11 @@ European game:
   mapped USA function. These are the five reviewed USA functions: 0216F7FC, 023EFF20->023EFF24,
   0247E854->0247E858, 025217F8->025217FC, 025499A0->025499A4.
 - The same seed and settings give the same hash words on both releases.
+
+Both profiles were regenerated for the relocated check (format 3) from one seed each with Quiet
+Swift Sail and dungeon entrance shuffle, made by the in-app randomizer. With the earlier raw-byte
+rule, those seeds give exactly the earlier profiles. The relocations add the same changes on both
+releases: 0242A218->0242A21C and the tiny 02417FF4->02417FF8.
 
 On macOS, European seeds with the standard and the everything preset reached the Outset pier
 from a fresh file.

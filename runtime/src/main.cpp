@@ -842,6 +842,7 @@ int main(int argc, char** argv) {
     if (m.entry != g_recomp_entry_point) fatal("%s does not match the recompiled code", rpx.c_str());
     LOG("[boot] loaded %s (%s build, title %s): entry %08X sda %08X sda2 %08X data end %08X", rpx.c_str(),
         g_guest_build_name, g_guest_build_title_id, m.entry, m.sda_base, m.sda2_base, m.data_end);
+    if (m.relocated) LOG("[boot] relocations changed %u places of the loaded game code and data", m.relocated);
 
     dispatch::init();
     // the story system's required package (mods/required.h): what is installed, no network at the start.

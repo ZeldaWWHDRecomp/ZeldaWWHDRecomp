@@ -4,6 +4,10 @@
 The shipped profile contains hashes and layout facts, never game instructions. It
 covers the port's hook sites and their containing functions. It is a hook-clash
 check, not a claim that every seed has been played through.
+
+The check reads the code as the system loader leaves it: with the RPX's relocations to its own
+symbols applied (rpx.py apply_internal_relocations). The randomizer changes some pointers through
+relocation addends only (issue #383); the port loads and translates those relocated bytes too.
 """
 import hashlib
 import json
@@ -86,8 +90,12 @@ def base_build(profile):
     return builds.by_sha256(profile.get('base_sha256', ''))
 
 
+PROFILE_FORMAT = 3  # 3: relocated text, guard_sha256 lists reviewed aggregate variants (original first)
+
+
 def check(rpx, profile, hooks, entry):
-    if profile.get('format') != 2 or base_build(profile) is None:
+    """`rpx` with its internal relocations applied (identify does it)"""
+    if profile.get('format') != PROFILE_FORMAT or base_build(profile) is None:
         raise CompatibilityError('randomizer compatibility profile does not match a supported build')
     if hook_digest(hooks) != profile['hooks_sha256']:
         raise CompatibilityError('randomizer compatibility profile needs updating for this port hook set')
@@ -116,7 +124,13 @@ def check(rpx, profile, hooks, entry):
         raise CompatibilityError('randomizer compatibility profile has an invalid tiny-function range')
     if any(f['end']-f['start'] < MIN_FUNCTION_HASH_BYTES for f in profile['functions']):
         raise CompatibilityError('randomizer compatibility profile exposes a tiny-function digest')
-    if guard_digest(rpx, profile['points'], profile['tiny_functions']) != profile['guard_sha256']:
+    guards = profile['guard_sha256']
+    if not isinstance(guards, list) or not guards:
+        raise CompatibilityError('randomizer compatibility profile has an invalid hook/tiny aggregate')
+    # each entry is one aggregate of every hook word and tiny hooked body: the original, then reviewed variants
+    # whose hook words are unchanged (mk_randomizer_profile.py); no per-body digest is published
+    guard = guard_digest(rpx, profile['points'], profile['tiny_functions'])
+    if guard not in guards:
         raise CompatibilityError('randomizer clash: hook instruction or tiny hooked function changed')
     changed = []
     for function in profile['functions']:
@@ -126,6 +140,7 @@ def check(rpx, profile, hooks, entry):
         if actual != function['sha256'][0]:
             changed.append('%08X' % function['start'])
     return dict(profile=profile['id'], title_id=TITLE_ID, reviewed_changed_functions=changed,
+                reviewed_tiny_variant=guard != guards[0],
                 hook_points_checked=len(profile['points']), functions_checked=len(profile['functions'])+len(profile['tiny_functions']))
 
 
@@ -173,6 +188,10 @@ def identify(path, profile=None, expected_sha256=None):
         rpx = Rpx(str(path), limits=RPX_LIMITS)
         if rpx.buffer_sha256 != actual:
             raise CompatibilityError('randomized RPX changed while parsing its input buffer')
+        try:
+            rpx.apply_internal_relocations()  # what the port loads and translates
+        except ValueError as error:
+            raise CompatibilityError('randomizer input has an invalid relocation') from error
         original_text = next(section for section in profile['sections'] if section['name']=='.text')
         if actual == profile['base_sha256'] or rpx.by_name['.text'].size <= original_text['size']:
             raise CompatibilityError('randomizer folder does not contain the expected extended randomized game code')

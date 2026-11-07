@@ -9,6 +9,7 @@ SHT_RPL_IMPORTS = 0x80000002
 SHF_RPL_ZLIB = 0x08000000
 
 R_PPC_ADDR32, R_PPC_ADDR16_LO, R_PPC_ADDR16_HI, R_PPC_ADDR16_HA, R_PPC_REL24 = 1, 4, 5, 6, 10
+SHF_ALLOC = 2
 
 
 class Section:
@@ -135,6 +136,45 @@ class Rpx:
             for k in range(len(s.data) // 12):
                 off, info, addend = struct.unpack_from(">IIi", s.data, k * 12)
                 self.relocs.append((target, off, info & 0xFF, self.symbols[info >> 8], addend))
+
+
+    def apply_internal_relocations(self):
+        """Write what the system loader writes for relocations to the module's own (defined, not imported)
+        symbols: R_PPC_ADDR32 and R_PPC_ADDR16_LO/HI/HA into allocated sections. The game is linked at its load
+        address, so for an unmodified RPX the section bytes already hold these values. TWWHD Randomizer 1.2.0
+        redirects function-table entries and data pointers by editing only the relocation addends, so its
+        section bytes keep the vanilla pointers (issue #383). The runtime loader (runtime/src/core.cpp
+        load_rpx) does the same. Returns {address: (old bytes, new bytes)} of every place that changed."""
+        changed = {}
+        buffers = {}
+        for sec, off, typ, sym, addend in self.relocs:
+            if typ not in (R_PPC_ADDR32, R_PPC_ADDR16_LO, R_PPC_ADDR16_HI, R_PPC_ADDR16_HA):
+                continue
+            if sym.import_lib or sym.shndx == 0 or sym.section is None:
+                continue  # imports are resolved by the recompiler/runtime; undefined symbols stay as linked
+            if not sec.flags & SHF_ALLOC or sec.type == SHT_NOBITS or not sec.data:
+                continue
+            value = (sym.value + addend) & 0xFFFFFFFF
+            if typ == R_PPC_ADDR32:
+                new, n = struct.pack(">I", value), 4
+            else:
+                n = 2
+                new = struct.pack(">H", {R_PPC_ADDR16_LO: value & 0xFFFF, R_PPC_ADDR16_HI: value >> 16,
+                                         R_PPC_ADDR16_HA: ((value + 0x8000) >> 16) & 0xFFFF}[typ])
+            pos = off - sec.addr
+            if pos < 0 or pos + n > len(sec.data):
+                raise ValueError("RPX relocation at %08X lies outside section %s" % (off, sec.name))
+            buf = buffers.get(sec.index)
+            old = bytes(buf[pos:pos + n]) if buf is not None else sec.data[pos:pos + n]
+            if old == new:
+                continue
+            if buf is None:
+                buf = buffers[sec.index] = bytearray(sec.data)
+            buf[pos:pos + n] = new
+            changed[off] = (changed.get(off, (old,))[0], new)
+        for index, buf in buffers.items():
+            self.sections[index].data = bytes(buf)
+        return changed
 
 
 def _cstr(buf, off):
