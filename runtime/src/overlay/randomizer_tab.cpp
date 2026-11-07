@@ -276,6 +276,21 @@ void draw() {
         ImGui::TextUnformatted("The game as it is (not randomized).");
     }
 
+    if (S.seeds.empty() && !randomizer::compiled_seed()) {
+        ImGui::SeparatorText("Make a randomized game");
+#ifdef __ANDROID__
+        ImGui::TextWrapped("The randomizer (TWWHD Randomizer 1.2.0) is built in. Close the game and open the setup screen: "
+                           "Randomized game... makes a game from a preset, a seed name or a permalink, or imports a seed made "
+                           "with the official randomizer (Import a seed...).");
+#else
+        ImGui::TextWrapped("The randomizer (TWWHD Randomizer 1.2.0) is built in. In the setup window, choose Randomized games "
+                           "(TWWHD Randomizer): New game makes a game from a preset, a seed name or a permalink; Import seed... "
+                           "adds a seed made with the official randomizer.");
+#endif
+        overlay::widgets::note("Each randomized game has its own saves and save states; your normal save is never touched.");
+        return;
+    }
+
     ImGui::SeparatorText("The game the next start plays");
 #ifdef __ANDROID__
     // (the phone's setup screen keeps the builds and chooses: Randomized game...)
@@ -329,15 +344,8 @@ void draw() {
 }  // namespace
 
 void register_tab() {
+    // always shown: with no randomized game yet it tells where setup makes one
     overlay::ext::Tab tab{"randomizer", "Randomizer", [] { draw(); }, nullptr};
-    // in a randomized game, or once setup has made one
-    tab.shown = [] {
-        static const bool any = [] {
-            std::error_code ec;
-            return randomizer::compiled_seed() || fs::is_regular_file(install_dir() / "randomizer" / "seeds.json", ec);
-        }();
-        return any;
-    };
     overlay::ext::add_tab(std::move(tab), "about");
 }
 
