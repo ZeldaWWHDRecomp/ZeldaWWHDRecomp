@@ -34,6 +34,10 @@ what is on `devel` and not released yet (also in the
 - **Fixed: tapping the game-over question did nothing on Android** (#455, for #427). After a game over, Cancel/Save
   and To Title Screen/Continue now take a tap on the Flexible touch style, which shows only A (Choose) there. The
   game runs this question as a menu, so the touch controls had treated it as one.
+- **The log now notes a pause menu without its selection cursor** (#454, for #336). If the item menu's cursor is gone
+  (the menu can then only be used with the mouse), `captures/wwhd.log` gets a `[menu-cursor]` line saying which of
+  the game's conditions for the cursor is missing. Nothing changes in play. If this happens to you, please send the
+  log with the issue.
 
 ## v0.5.1
 
