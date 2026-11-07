@@ -41,6 +41,11 @@ what is on `devel` and not released yet (also in the
   (the menu can then only be used with the mouse), `captures/wwhd.log` gets a `[menu-cursor]` line saying which of
   the game's conditions for the cursor is missing. Nothing changes in play. If this happens to you, please send the
   log with the issue.
+- **Fixed: loading a full save state in a new session could crash the Vulkan renderer** (#456, thanks @itsarahtonin
+  for the report and fix, #451). A state saved while restyled button prompts were shown kept text that pointed at
+  their button pictures, which full states don't carry; in a later session that hadn't shown restyled prompts, the
+  game drew that text against an empty picture and the renderer stopped with "missing sampled texture". Such text
+  is now rebuilt from the game's own font after the load.
 
 ## v0.5.1
 
