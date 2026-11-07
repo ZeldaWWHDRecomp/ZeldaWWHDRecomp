@@ -300,36 +300,16 @@ public class SetupActivity extends Activity {
         importSeed.setOnClickListener(view -> { shownDialog.dismiss(); pick(SEED); });
     }
 
-    /** Import a seed: the chosen output folder is checked like a game folder, then a setup job copies it privately,
-     *  and the setup worker keeps only its files that differ from the installed game (tools/android/ondevice_setup.py
-     *  seed_import), checks and builds it; the game plays it from its next start, with its own saves. */
+    /** Import a seed: the chosen output folder of the official randomizer (AndroidRandomizer.importJob, the same job the
+     *  game's Settings > Randomizer starts); the game plays it from its next start, with its own saves. */
     private void importSeed(Uri uri) {
         if (checkingFolder) return;
         checkingFolder = true;
         android.content.Context context = getApplicationContext();
         new Thread(() -> {
             String refusal = null;
-            try {
-                AndroidGame.Selection current = AndroidGame.selected(context);
-                if (current == null || current.game == null) throw new java.io.IOException("No installed game");
-                SetupFolderCheck.Result found = SetupImport.checkFolder(context, uri,
-                    android.provider.DocumentsContract.getTreeDocumentId(uri));
-                if (!found.usable()) refusal = folderMessage(found);
-                else {
-                    if (!replaceable(SetupStore.current(context))) throw new Exception("Pause setup before changing input");
-                    context.getContentResolver().takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                    synchronized (SetupJobCleanup.CREATION) {
-                        String id = UUID.randomUUID().toString().replace("-", "");
-                        File job = SetupStore.job(context, id);
-                        JSONObject source = new JSONObject().put("schema", 1).put("kind", "folder").put("uri", uri.toString())
-                            .put("seed_import", new JSONObject().put("installed", current.game.getAbsolutePath()));
-                        if (found.kind == SetupFolderCheck.Kind.SUBFOLDER) source.put("document", found.document);
-                        SetupStore.write(new File(job, "source.json"), source);
-                        SetupStore.write(new File(job, "host.json"), new JSONObject().put("schema", 1).put("state", "selected"));
-                        SetupStore.select(context, id);
-                    }
-                }
-            } catch (Exception failure) { refusal = "Import a seed: " + failure.getMessage(); }
+            try { AndroidRandomizer.importJob(context, uri); }
+            catch (Exception failure) { refusal = "Import a seed: " + failure.getMessage(); }
             String refused = refusal;
             runOnUiThread(() -> {
                 checkingFolder = false;
@@ -339,27 +319,12 @@ public class SetupActivity extends Activity {
         }, "wwhd-rando-import").start();
     }
 
+    /** Make it: AndroidRandomizer.makeJob (the same job the game's Settings > Randomizer starts). */
     private void makeRandomized(String preset, String seed, String permalink) {
         new Thread(() -> {
             String message = null;
-            try {
-                AndroidGame.Selection current = AndroidGame.selected(this);
-                if (current == null || current.game == null) throw new java.io.IOException("No installed game");
-                if (!permalink.isEmpty()) AndroidRandomizer.run(this, "load-permalink", permalink);
-                else {
-                    AndroidRandomizer.run(this, "preset", preset);
-                    if (seed.isEmpty()) AndroidRandomizer.run(this, "new-seed");
-                    else AndroidRandomizer.run(this, "set-seed", seed);
-                }
-                synchronized (SetupJobCleanup.CREATION) {
-                    String id = UUID.randomUUID().toString().replace("-", "");
-                    File job = SetupStore.job(this, id);
-                    SetupStore.write(new File(job, "source.json"), new org.json.JSONObject().put("schema", 1)
-                        .put("kind", "installed").put("path", current.game.getAbsolutePath()));
-                    SetupStore.write(new File(job, "host.json"), new org.json.JSONObject().put("schema", 1).put("state", "selected"));
-                    SetupStore.select(this, id);
-                }
-            } catch (Exception failure) { message = failure.getMessage(); }
+            try { AndroidRandomizer.makeJob(this, preset, seed, permalink); }
+            catch (Exception failure) { message = failure.getMessage(); }
             String shown = message;
             runOnUiThread(() -> {
                 if (shown != null) android.widget.Toast.makeText(this, "Randomized game: " + shown, android.widget.Toast.LENGTH_LONG).show();
@@ -474,14 +439,7 @@ public class SetupActivity extends Activity {
         else if (progress >= 0) { bar.setIndeterminate(false); bar.setProgress(progress); }
     }
 
-    private boolean replaceable(File job) throws Exception {
-        if (job == null) return true;
-        File host = new File(job, "host.json");
-        if (!host.isFile()) return true;
-        String state = SetupStore.read(host).optString("state");
-        return state.equals("selected") || state.equals("failed") || state.equals("complete") ||
-            (state.equals("paused") && new File(job, "manual-pause.json").isFile());
-    }
+    private boolean replaceable(File job) throws Exception { return AndroidRandomizer.replaceable(job); }
 
     private void pick(int request) {
         try {
@@ -607,16 +565,7 @@ public class SetupActivity extends Activity {
         }, "wwhd-setup-folder-check").start();
     }
 
-    private String folderMessage(SetupFolderCheck.Result found) {
-        switch (found.kind) {
-            case SUBFOLDER: return getString(R.string.setup_folder_subfolder, found.path);
-            case INSIDE_GAME: return getString(R.string.setup_folder_inside, found.path);
-            case NOT_THIS_GAME: return found.path.isEmpty() ? getString(R.string.setup_folder_not_game_here) :
-                getString(R.string.setup_folder_not_game, found.path);
-            case SEVERAL: return getString(R.string.setup_folder_several, found.path);
-            default: return getString(R.string.setup_folder_none);
-        }
-    }
+    private String folderMessage(SetupFolderCheck.Result found) { return AndroidRandomizer.folderMessage(this, found); }
 
     @Override protected void onSaveInstanceState(Bundle state) {
         state.putString("picker_job", pickerJob);

@@ -23,6 +23,17 @@ bool call(const char* name,const char* signature,const jvalue* args,std::string&
     env->PopLocalFrame(nullptr);
     return ok;
 }
+// A Java String of UTF-8 text (JNI's NewStringUTF takes modified UTF-8, which differs for emoji); null on failure.
+jstring java_string(JNIEnv* env,const std::string& text) {
+    if(text.size()>=65536)return nullptr;
+    const auto bytes=env->NewByteArray(jsize(text.size()));
+    if(bytes)env->SetByteArrayRegion(bytes,0,jsize(text.size()),reinterpret_cast<const jbyte*>(text.data()));
+    const auto cls=env->FindClass("java/lang/String");
+    const auto constructor=cls?env->GetMethodID(cls,"<init>","([BLjava/lang/String;)V"):nullptr;
+    const auto encoding=env->NewStringUTF("UTF-8");
+    if(!bytes||!constructor||!encoding||env->ExceptionCheck())return nullptr;
+    return static_cast<jstring>(env->NewObject(cls,constructor,bytes,encoding));
+}
 }
 bool save_profile_preparation_available() {
     auto env=static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
@@ -74,6 +85,26 @@ std::string guest_module_cache() {
 std::string request_code_mod_build(bool enabled) {
     std::string result;jvalue arg;arg.z=enabled?JNI_TRUE:JNI_FALSE;
     if(!call("requestCodeModBuild","(Z)Ljava/lang/String;",&arg,result))return "Setup could not start from the game";
+    return result;
+}
+std::string randomizer_unavailable() {
+    std::string result;
+    if(!call("randomizerUnavailable","()Ljava/lang/String;",nullptr,result))return "Update the app to make randomized games in the game";
+    return result;
+}
+std::string request_randomizer(const std::string& request) {
+    auto env=static_cast<JNIEnv*>(SDL_GetAndroidJNIEnv());
+    if(!env||env->PushLocalFrame(8)!=0){if(env)env->ExceptionClear();return "Setup could not start from the game";}
+    std::string result;
+    jvalue arg{};arg.l=java_string(env,request);
+    const bool ok=arg.l&&!env->ExceptionCheck()&&call("requestRandomizer","(Ljava/lang/String;)Ljava/lang/String;",&arg,result);
+    if(env->ExceptionCheck())env->ExceptionClear();
+    env->PopLocalFrame(nullptr);
+    return ok?result:"Setup could not start from the game";
+}
+std::string randomizer_status() {
+    std::string result;
+    if(!call("randomizerStatus","()Ljava/lang/String;",nullptr,result))return "{\"state\":\"failed\",\"error\":\"Cannot read setup progress\"}";
     return result;
 }
 std::string code_mod_build_status() {

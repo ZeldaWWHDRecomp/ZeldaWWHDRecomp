@@ -1,47 +1,64 @@
 # Randomized games
 
-The port includes TWWHD Randomizer 1.2.0 by SuperDude88 and its contributors (MIT). Setup makes
-randomized games from your installed game and builds them; you don't need the PC randomizer or a
-full copy of the game per seed. A seed made with the official TWWHD Randomizer 1.2.0 can be played
+The port includes TWWHD Randomizer 1.2.0 by SuperDude88 and its contributors (MIT). The game
+(Settings > Randomizer) and setup make randomized games from your installed game and build them; you
+don't need the PC randomizer or a full copy of the game per seed. A seed made with the official TWWHD Randomizer 1.2.0 can be played
 too (see [A seed from the official randomizer](#a-seed-from-the-official-randomizer)).
 
 Install the game as it is (the USA or the European release) first. The Japanese release can't be
 randomized: the port has no Japanese build.
 
-## Make a randomized game
+## Make a randomized game in the game
 
-In the setup window, choose **Randomized games (TWWHD Randomizer)**:
-- **New game** has the presets (beginner, standard, everything), the seed name, the permalink
-  (copy, or paste one), and every setting on six pages. **Make this game** makes and builds it;
-  the game plays it from its next start.
-- **Games** lists the game as it is and every randomized game made or imported, each with
-  **Play this**, **Copy permalink**, **Spoiler log...** (it asks first) and **Delete...** (asks
-  first; the saves stay). **Import seed...** adds a seed made with the official randomizer (see
-  below).
+In the game, open **Settings > Randomizer** (Esc opens Settings on a computer):
+- **New randomized game**: choose **Beginner**, **Standard** or **Everything**, type a seed name
+  (or leave it empty for a new random one), or paste a **Permalink** instead (its settings and seed).
+- **Make this game**: setup makes it from your installed game in the background while you keep
+  playing, checks it and builds it. The page shows what it is doing; **Cancel** stops it (on a
+  computer). If it can't be made, the page says why; the game you play stays as it is.
+- **Import seed...** adds a seed made with the official randomizer (see below) the same way.
+- When it is ready: **Restart now** plays it (on Android: close the app and open it again). It has
+  its own saves; **Later** keeps playing what you play now, and the next start plays the new game.
+
+The same page shows:
+- this game's seed hash words and permalink;
+- the games already built, to play from the next start (on a computer), including the game as it is;
+- the spoiler log, after a question: the way to the end, every location, entrances, hints,
+  charts, and a map of the sea chart's squares with the places of the locations. Setup reads
+  those places from your own game files.
 
 Making a seed takes about 10 s. The first seed's build takes about as long as the game's first
 build; later seeds build much faster (on a Mac: 94 s for the first seed, 24 s for the next).
 Switching between games that were built before needs no new build. Each seed takes about 500 MB.
 
-## In the game: Settings > Randomizer
+The decomp version can't make randomized games; start the normal game for them.
 
-The page is always there. Before any randomized game is made it says where setup makes one;
-after that it shows:
-- this game's seed hash words and permalink;
-- the games already built, to play from the next start;
-- the spoiler log, after a question: the way to the end, every location, entrances, hints,
-  charts, and a map of the sea chart's squares with the places of the locations. Setup reads
-  those places from your own game files.
+## In the setup window
+
+**Randomized games (TWWHD Randomizer)** has the same, and more:
+- **New game** has the presets, the seed name, the permalink (copy, or paste one), and every
+  setting on six pages. **Make this game** makes and builds it; the game plays it from its next
+  start.
+- **Games** lists the game as it is and every randomized game made or imported, each with
+  **Play this**, **Copy permalink**, **Spoiler log...** (it asks first) and **Delete...** (asks
+  first; the saves stay). **Import seed...** adds a seed made with the official randomizer.
 
 ## Android
 
-The setup screen has **Randomized game...** once the game is set up:
+The game's **Settings > Randomizer** works the same on a game set up on the phone: the phone's
+setup makes and builds the randomized game in the background while you play (its notification
+shows the progress and can pause it, for example when the phone gets hot). The first randomized
+game takes about as long as the first setup. When it is ready, close the app and open it again.
+
+The setup screen has **Randomized game...** too, once the game is set up:
 - choose a preset and a seed name, or paste a permalink;
 - **Make it**: setup makes the randomized game from the installed one, checks it and builds it,
   and the game plays it from its next start;
 - **Import a seed...** in the same dialog adds a seed made with the official randomizer (see
   below);
 - **Play the game as it is** in the same dialog goes back to the normal game.
+
+A game built on a computer and copied to the phone makes its randomized games on the computer.
 
 ## Saves
 
@@ -62,9 +79,12 @@ while the game is closed; never merge or overwrite an existing folder.
 
 Make a USA game with the official TWWHD Randomizer 1.2.0 (the official randomizer supports the
 USA release only), then:
+- in the game: **Settings > Randomizer**, **Import seed...**, and choose its output folder (the
+  one with `code`, `content` and `meta`);
 - in the setup window: **Randomized games (TWWHD Randomizer)**, **Games**, **Import seed...**,
-  and choose its output folder (the one with `code`, `content` and `meta`);
-- on Android: **Randomized game...**, **Import a seed...**, and choose that folder.
+  and choose that folder;
+- on Android: the game's **Import seed...**, or the setup screen's **Randomized game...**,
+  **Import a seed...**, and choose that folder.
 
 Setup runs the same check as for every randomized game, keeps only the seed's files that differ
 from your installed game (the installed game must be the USA one, as it is) and builds it. The
