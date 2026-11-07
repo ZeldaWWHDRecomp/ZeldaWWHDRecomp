@@ -461,6 +461,47 @@ int main() {
         v = g.run(q, 12);
         assert(count_press(v, kBtnA) == 0);
     }
+    // ---- the game over's question as the game runs it: dGameover_c sets dMenu_flag while it asks (kMenu), in a
+    // stage (kInGame), and the phone check saw no claim (the menu rule came first). The question wins, whether
+    // a game menu would show on the TV (Pro Controller) or not; and Link isn't the player there
+    {
+        PlayContext q;
+        q.flags = kInGame | kMenu | kQuestion;
+        q.question_shown = 3;
+        q.question_x[0] = -250, q.question_y[0] = -170, q.question_x[1] = 250, q.question_y[1] = -170;
+        q.question_scale[0] = 1000, q.question_scale[1] = 1100;  // the cursor on the right one ("Save" / "Continue")
+        Options o;
+        for (bool tv : {false, true}) {
+            assert(claims(q, o, tv) && mode_of(q, tv) == kModeQuestion);
+            // a tap on the left one ("Cancel" / "To Title Screen"): the stick left, then A
+            Driver d;
+            d.in.menu_on_tv = tv;
+            d.down(-250, -170);
+            d.read(q);
+            d.up(-250, -170);
+            std::vector<Out> v = d.run(q, 16);
+            assert(count_stick(v, -1, 0) == 1 && count_stick(v, 1, 0) == 0 && count_press(v, kBtnA) == 1 && count_press(v, kBtnL) == 0);
+            // a tap on the right one: A only
+            Driver e;
+            e.in.menu_on_tv = tv;
+            e.down(250, -170);
+            e.read(q);
+            e.up(250, -170);
+            v = e.run(q, 12);
+            assert(count_press(v, kBtnA) == 1 && count_stick(v, -1, 0) == 0 && count_stick(v, 1, 0) == 0);
+        }
+        // the buttons gone (the window closes; the menu flag alone): the menu rules again
+        q.question_shown = 0;
+        assert(mode_of(q, false) == kModeNone && !claims(q, o, false) && mode_of(q, true) == kModeMenu);
+        // with touch off nothing is claimed
+        o.touch = false;
+        q.question_shown = 3;
+        assert(!claims(q, o, false));
+        // no Quest Log (title screen, file select): never the question's
+        q.flags = kMenu | kQuestion;
+        o.touch = true;
+        assert(mode_of(q, false) == kModeNone && !claims(q, o, true));
+    }
     // ---- a letter / stone tablet / sign: its scroll window is the message window, so a tap goes on (A)
     {
         PlayContext letter;
