@@ -117,6 +117,8 @@ void load() {
     for (const auto& [k, b] : v.get("vanilla_builds").object) S.vanilla_builds[k] = b.string();
 }
 
+const Seed* this_seed();
+
 void start_job(randomizer_job::Request r) {
     std::string why;
     set_message(randomizer_job::start(r, why) ? std::string() : why);
@@ -209,8 +211,19 @@ void draw_new_game() {
         if (!F.seen_ready) F.seen_ready = true, S.loaded = false;  // the new game in the list below (next frame)
         if (job.imported) ImGui::TextWrapped("The imported seed %s is ready.", job.seed.c_str());
         else ImGui::TextWrapped("Randomized game %s is ready.", job.hash.empty() ? job.seed.c_str() : job.hash.c_str());
+        if (const Seed* me = this_seed(); me && me->id == job.seed) {
+            // (the same settings and seed again: setup found the game made before)
+            overlay::widgets::note("It is the game you play now.");
+            if (ImGui::Button("OK")) randomizer_job::dismiss();
+            return;
+        }
+#ifdef __ANDROID__
+        overlay::widgets::note("The next start plays it, with its own saves and save states. Your normal saves stay as "
+                               "they are; the setup screen's Randomized game... switches back to them.");
+#else
         overlay::widgets::note("The next start plays it, with its own saves and save states. Your normal saves stay as "
                                "they are; this page can switch back to them.");
+#endif
 #ifdef __ANDROID__
         ImGui::TextWrapped("Close the app and open it again to play it.");
         if (ImGui::Button("OK")) randomizer_job::dismiss();
@@ -250,7 +263,8 @@ void draw_new_game() {
                            "with code, content and meta.");
     if (const std::string m = message(); !m.empty()) overlay::widgets::note("%s", m.c_str());
     overlay::widgets::note("%s Setup makes it from your installed game while you play, checks it and builds it; the "
-                           "next start plays it. Each randomized game has its own saves.",
+                           "next start plays it. Each randomized game has its own saves and save states; your normal save is never "
+                           "touched.",
                            permalink ? "The permalink's settings and seed." : "A preset and a seed name.");
 }
 
@@ -448,10 +462,7 @@ void draw() {
     }
 
     draw_new_game();
-    if (S.seeds.empty() && !randomizer::compiled_seed()) {
-        overlay::widgets::note("Each randomized game has its own saves and save states; your normal save is never touched.");
-        return;
-    }
+    if (S.seeds.empty() && !randomizer::compiled_seed()) return;
 
     ImGui::SeparatorText("The game the next start plays");
 #ifdef __ANDROID__
