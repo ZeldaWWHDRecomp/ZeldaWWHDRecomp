@@ -40,8 +40,24 @@ using input_map::ShoulderStyle;
 // once, the hooks must not write game memory at all (no glyph markers, no composed texture).
 // Players who never use it then run exactly the stock path. The first activation latches this
 // flag; marking then works as in any restyled session, so later changes still reach text cached
-// in either mode.
+// in either mode. The one exception is a text a full state brought from another process
+// (binds_host_sheet).
 std::atomic<bool> labels_used{false};
+
+// A full state was loaded in this process (ss_reset).
+std::atomic<bool> state_loaded{false};
+
+// A cached text whose batches bind a sheet in host-only memory (shoulder_atlas, keycap_sheet). Full
+// states don't carry that memory, and only a restyled look makes these sheets: in a process that
+// never had one, such a sheet came with a state from another process.
+bool binds_host_sheet(uint32_t list) {
+    const uint32_t batches = ld32(list + 0xA0);
+    for (uint32_t batch = 0; batch < batches && batch < 8; batch++) {
+        const uint32_t sheet = ld32(list + 0x20 + batch*0x10);
+        if (sheet >= mem::kHostStart && sheet < mem::kFixedStart) return true;
+    }
+    return false;
+}
 
 PromptStyle style();
 void forget_rebuilt();
@@ -779,7 +795,14 @@ void button_glyphs::prepare_text_box(uint32_t text_box, Cpu* cpu) {
 }
 
 void button_glyphs::draw_text_box(Cpu* c, PpcFunc draw) {
-    if (!marking()) return draw(c);  // no pane recognition or writes in a never-restyled session
+    if (!marking()) {  // no pane recognition or writes in a never-restyled session
+        // except for a text from another process's state: the game rebuilds it from its own font
+        if (state_loaded.load(std::memory_order_relaxed)) {
+            const uint32_t list = ld32(c->r[3] + 0xFC);
+            if (list && ld8(list + 6) && binds_host_sheet(list)) st8(list + 6, 0);
+        }
+        return draw(c);
+    }
     const int previous = hud_shoulder;
     const uint32_t previous_box = hud_box;
     const int previous_face = hud_face;
@@ -1104,6 +1127,10 @@ extern "C" void hook_02874D54(Cpu* c) {
 
 namespace button_glyphs {
 // A loaded save state brings back text boxes cached at addresses that may already be in the
-// one-shot rebuild set: forget it, so each is rebuilt (and marked) again when first drawn.
-void ss_reset() { forget_rebuilt(); }
+// one-shot rebuild set: forget it, so each is rebuilt (and marked) again when first drawn. A
+// never-restyled session rebuilds those that bind another process's sheets (draw_text_box).
+void ss_reset() {
+    state_loaded.store(true, std::memory_order_relaxed);
+    forget_rebuilt();
+}
 }  // namespace button_glyphs
