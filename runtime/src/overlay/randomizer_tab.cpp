@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
-// Settings > Randomizer: the randomized games made in setup (setup --randomize, tools/installer/randomizer_seeds.py).
-// What this game is (seed hash words, permalink), which game the next start plays (a game already built: the same
-// selection setup makes, code-mods-active.json), and the spoiler log behind a question: the playthrough, every
+// Settings > Randomizer: randomized games (tools/installer/randomizer_seeds.py). What this game is (seed hash words,
+// permalink); a new randomized game made or a seed from the official randomizer imported while the game runs (setup's
+// own work in the background: mods/randomizer_job.h); which game the next start plays (a game already built: the
+// same selection setup makes, code-mods-active.json); and the spoiler log behind a question: the playthrough, every
 // location, entrances, hints, charts and a map of the sea chart's squares with the places of the locations
 // (randomizer/places.tsv, read from the player's own stage files by setup).
 #include "randomizer_tab.h"
@@ -9,14 +10,17 @@
 #include "../mods/code_mods.h"
 #include "../mods/code_mods_io.h"
 #include "../mods/mod_json.h"
+#include "../mods/randomizer_job.h"
 #include "../randomizer_identity.h"
 #include "../randomizer_spoiler.h"
 #include "extensions.h"
 #include "hostui.h"
 #include "imgui.h"
+#include "text_entry.h"
 #include "widgets.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -63,7 +67,35 @@ struct State {
     std::map<std::string, rando_spoiler::Place> places;
     std::map<int, std::string> square_names;
     int square = 0;
+    std::string unavailable;  // why this game can't make randomized games itself ("" it can)
 } S;
+
+// the New randomized game form (kept when the page reloads its list)
+struct Form {
+    int preset = 1;  // beginner, standard, everything
+    char seed[128] = "", permalink[512] = "";
+    bool seen_ready = false;
+} F;
+// a start that was refused, a restart that failed: set on the main thread too (folder chooser, restart)
+std::mutex g_message_mutex;
+std::string g_message;
+void set_message(std::string m) {
+    std::lock_guard lock(g_message_mutex);
+    g_message = std::move(m);
+}
+std::string message() {
+    std::lock_guard lock(g_message_mutex);
+    return g_message;
+}
+void clear_env(const char* name) {
+#ifdef _WIN32
+    _putenv_s(name, "");
+#else
+    unsetenv(name);
+#endif
+}
+constexpr const char* kPresets[] = {"beginner", "standard", "everything"};
+constexpr const char* kPresetLabels[] = {"Beginner", "Standard", "Everything"};
 
 void load() {
     S = State{};
@@ -83,6 +115,157 @@ void load() {
         if (x.id.size() == 16) S.seeds.push_back(x);
     }
     for (const auto& [k, b] : v.get("vanilla_builds").object) S.vanilla_builds[k] = b.string();
+}
+
+const Seed* this_seed();
+
+void start_job(randomizer_job::Request r) {
+    std::string why;
+    set_message(randomizer_job::start(r, why) ? std::string() : why);
+}
+
+// the official randomizer's output folder (desktop: a folder chooser; Android: the phone's folder picker, opened by
+// the setup job's request itself)
+void import_seed() {
+    randomizer_job::Request r;
+    r.import = true;
+#ifdef __ANDROID__
+    start_job(r);
+#else
+    hostui::choose_file("Choose the official randomizer's output folder", "", true, [r](std::string folder) mutable {
+        r.folder = std::move(folder);
+        start_job(r);  // (the main thread: the job's own lock orders it with the page)
+    });
+#endif
+}
+
+void restart_into_new_game() {
+    hostui::post([] {
+        std::string error;
+        if (!mods::code::restart(error)) set_message(error);
+    });
+}
+
+// test aid (WWHD_NO_HOST_INPUT runs): WWHD_TEST_RANDOMIZER_MAKE=<preset>[:<seed name>] | permalink:<link> |
+// import:<folder> starts that job when the page first shows; WWHD_TEST_RANDOMIZER_RESTART=1 then chooses Restart now
+// once it is ready. Both are taken out of the environment first, so the restarted game does not start them again.
+void test_aid() {
+    const char* make = std::getenv("WWHD_TEST_RANDOMIZER_MAKE");
+    if (!make || !std::getenv("WWHD_NO_HOST_INPUT")) return;
+    const std::string spec = make;
+    clear_env("WWHD_TEST_RANDOMIZER_MAKE");
+    randomizer_job::Request r;
+    if (spec.rfind("import:", 0) == 0) r.import = true, r.folder = spec.substr(7);
+    else if (spec.rfind("permalink:", 0) == 0) r.permalink = spec.substr(10);
+    else {
+        const auto colon = spec.find(':');
+        r.preset = spec.substr(0, colon);
+        if (colon != std::string::npos) r.seed = spec.substr(colon + 1);
+    }
+    fprintf(stderr, "[randomizer test] %s\n", spec.c_str());
+    start_job(r);
+}
+
+void test_restart(const randomizer_job::Status& job) {
+    static bool done = false;
+    if (done || !job.ready || !std::getenv("WWHD_NO_HOST_INPUT") || !std::getenv("WWHD_TEST_RANDOMIZER_RESTART")) return;
+    done = true;
+    clear_env("WWHD_TEST_RANDOMIZER_RESTART");
+    fprintf(stderr, "[randomizer test] restart into %s\n", job.seed.c_str());
+    restart_into_new_game();
+}
+
+// New randomized game / Import seed...: the form, the job's progress, its end
+void draw_new_game() {
+    ImGui::SeparatorText("New randomized game");
+    if (!S.unavailable.empty()) {
+        ImGui::TextWrapped("%s", S.unavailable.c_str());
+#ifdef __ANDROID__
+        overlay::widgets::note("A game set up on the phone can make randomized games here, or in the setup screen "
+                               "(Randomized game...).");
+#else
+        overlay::widgets::note("The setup window makes them too: Randomized games (TWWHD Randomizer).");
+#endif
+        return;
+    }
+    const randomizer_job::Status job = randomizer_job::status();
+    test_restart(job);
+    if (!job.ready) F.seen_ready = false;
+    if (job.running) {
+        ImGui::TextWrapped("%s", job.stage.c_str());
+        if (job.total) ImGui::ProgressBar(float(job.done) / float(job.total), ImVec2(-FLT_MIN, 0));
+        else ImGui::ProgressBar(-1.0f * float(ImGui::GetTime()), ImVec2(-FLT_MIN, 0), "Working");
+#ifdef __ANDROID__
+        overlay::widgets::note("The phone's setup makes it in the background: you can keep playing. Its notification "
+                               "shows the progress and can pause it. The first randomized game takes about as long as "
+                               "the first setup.");
+        if (ImGui::Button("Hide")) randomizer_job::dismiss();
+#else
+        overlay::widgets::note("Setup makes it in the background: you can keep playing. The first randomized game takes "
+                               "a few minutes, later ones less. Your game and its saves are not changed.");
+        if (ImGui::Button("Cancel")) randomizer_job::cancel();
+#endif
+        return;
+    }
+    if (job.ready) {
+        if (!F.seen_ready) F.seen_ready = true, S.loaded = false;  // the new game in the list below (next frame)
+        if (job.imported) ImGui::TextWrapped("The imported seed %s is ready.", job.seed.c_str());
+        else ImGui::TextWrapped("Randomized game %s is ready.", job.hash.empty() ? job.seed.c_str() : job.hash.c_str());
+        if (const Seed* me = this_seed(); me && me->id == job.seed) {
+            // (the same settings and seed again: setup found the game made before)
+            overlay::widgets::note("It is the game you play now.");
+            if (ImGui::Button("OK")) randomizer_job::dismiss();
+            return;
+        }
+#ifdef __ANDROID__
+        overlay::widgets::note("The next start plays it, with its own saves and save states. Your normal saves stay as "
+                               "they are; the setup screen's Randomized game... switches back to them.");
+#else
+        overlay::widgets::note("The next start plays it, with its own saves and save states. Your normal saves stay as "
+                               "they are; this page can switch back to them.");
+#endif
+#ifdef __ANDROID__
+        ImGui::TextWrapped("Close the app and open it again to play it.");
+        if (ImGui::Button("OK")) randomizer_job::dismiss();
+#else
+        if (ImGui::Button("Restart now")) restart_into_new_game();
+        ImGui::SameLine();
+        if (ImGui::Button("Later")) randomizer_job::dismiss();
+#endif
+        if (const std::string m = message(); !m.empty()) overlay::widgets::note("%s", m.c_str());
+        return;
+    }
+    if (!job.error.empty()) {
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.55f, 0.45f, 1.0f));
+        ImGui::TextWrapped("The randomized game was not made: %s", job.error.c_str());
+        ImGui::PopStyleColor();
+        overlay::widgets::note("The game the next start plays is unchanged.");
+        if (ImGui::Button("OK")) randomizer_job::dismiss();
+        return;
+    }
+    ImGui::TextUnformatted("Settings");
+    for (int i = 0; i < 3; i++) {
+        ImGui::SameLine();
+        if (overlay::widgets::radio(kPresetLabels[i], F.preset == i)) F.preset = i;
+    }
+    text_entry::field("Seed name", F.seed, sizeof F.seed, 0, "empty: a new random one");
+    text_entry::field("Permalink", F.permalink, sizeof F.permalink, 0, "or paste one: its settings and seed");
+    const bool permalink = F.permalink[0] != 0;
+    if (ImGui::Button("Make this game")) {
+        randomizer_job::Request r;
+        if (permalink) r.permalink = F.permalink;
+        else r.preset = kPresets[F.preset], r.seed = F.seed;
+        start_job(r);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Import seed...")) import_seed();
+    overlay::widgets::help("A seed made with the official TWWHD Randomizer 1.2.0 (USA): choose its output folder, the one "
+                           "with code, content and meta.");
+    if (const std::string m = message(); !m.empty()) overlay::widgets::note("%s", m.c_str());
+    overlay::widgets::note("%s Setup makes it from your installed game while you play, checks it and builds it; the "
+                           "next start plays it. Each randomized game has its own saves and save states; your normal save is never "
+                           "touched.",
+                           permalink ? "The permalink's settings and seed." : "A preset and a seed name.");
 }
 
 const Seed* this_seed() {
@@ -244,6 +427,8 @@ void draw_spoilers() {
 void draw() {
     if (!S.loaded) {
         load();
+        S.unavailable = randomizer_job::unavailable();
+        test_aid();
         // test aid: WWHD_TEST_RANDOMIZER_SPOILER=<square> opens this game's spoiler log on its map with that square
         // chosen (0: none), without the question
         if (const char* t = std::getenv("WWHD_TEST_RANDOMIZER_SPOILER"); t && this_seed()) {
@@ -276,31 +461,19 @@ void draw() {
         ImGui::TextUnformatted("The game as it is (not randomized).");
     }
 
-    if (S.seeds.empty() && !randomizer::compiled_seed()) {
-        ImGui::SeparatorText("Make a randomized game");
-#ifdef __ANDROID__
-        ImGui::TextWrapped("The randomizer (TWWHD Randomizer 1.2.0) is built in. Close the game and open the setup screen: "
-                           "Randomized game... makes a game from a preset, a seed name or a permalink, or imports a seed made "
-                           "with the official randomizer (Import a seed...).");
-#else
-        ImGui::TextWrapped("The randomizer (TWWHD Randomizer 1.2.0) is built in. In the setup window, choose Randomized games "
-                           "(TWWHD Randomizer): New game makes a game from a preset, a seed name or a permalink; Import seed... "
-                           "adds a seed made with the official randomizer.");
-#endif
-        overlay::widgets::note("Each randomized game has its own saves and save states; your normal save is never touched.");
-        return;
-    }
+    draw_new_game();
+    if (S.seeds.empty() && !randomizer::compiled_seed()) return;
 
     ImGui::SeparatorText("The game the next start plays");
 #ifdef __ANDROID__
     // (the phone's setup screen keeps the builds and chooses: Randomized game...)
     constexpr bool switchable = false;
-    overlay::widgets::note("Randomized games are made, imported and chosen in the setup screen (Randomized game...). Each "
-                           "has its own saves and save states.");
+    overlay::widgets::note("The game as it is comes back in the setup screen (Randomized game..., Play the game as it "
+                           "is). Each randomized game has its own saves and save states.");
 #else
     constexpr bool switchable = true;
-    overlay::widgets::note("Randomized games are made, imported (Import seed...) and built in setup (Randomized games). Each "
-                           "has its own saves and save states.");
+    overlay::widgets::note("Each game has its own saves and save states. Deleting a randomized game is in the setup "
+                           "window (Randomized games).");
 #endif
     if (switchable) {
     auto row = [&](const std::string& label, const std::map<std::string, std::string>& builds, bool current) {
@@ -315,7 +488,7 @@ void draw() {
                 S.message = select_build(fp, why) ? label + " starts next time. Restart the game to play it." : why;
             }
         } else {
-            overlay::widgets::note("(not built: prepare it in setup)");
+            overlay::widgets::note("(not built: choose it in the setup window)");
         }
         ImGui::PopID();
     };
@@ -344,7 +517,7 @@ void draw() {
 }  // namespace
 
 void register_tab() {
-    // always shown: with no randomized game yet it tells where setup makes one
+    // always shown: it makes randomized games itself
     overlay::ext::Tab tab{"randomizer", "Randomizer", [] { draw(); }, nullptr};
     overlay::ext::add_tab(std::move(tab), "about");
 }

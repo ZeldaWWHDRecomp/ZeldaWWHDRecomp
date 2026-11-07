@@ -109,6 +109,159 @@ public final class AndroidRandomizer {
         return result;
     }
 
+    /** Whether the setup can start a new job now: none runs (a finished, failed, chosen or paused-by-the-player job). */
+    public static boolean replaceable(File job) throws Exception {
+        if (job == null) return true;
+        File host = new File(job, "host.json");
+        if (!host.isFile()) return true;
+        String state = SetupStore.read(host).optString("state");
+        return state.equals("selected") || state.equals("failed") || state.equals("complete") ||
+            (state.equals("paused") && new File(job, "manual-pause.json").isFile());
+    }
+
+    /** A randomized game from the installed game (the setup screen's Randomized game... > Make it, and the game's
+     *  Settings > Randomizer): the settings for the next seed (a permalink, else a preset and a seed name, a new random
+     *  one when empty), then a setup job that makes it, checks it and builds it; the game plays it from its next start.
+     *  Off the UI thread; returns the new job's id (selected; SetupService.start runs it). */
+    public static String makeJob(Context context, String preset, String seed, String permalink) throws Exception {
+        AndroidGame.Selection current = AndroidGame.selected(context);
+        if (current == null || current.game == null) throw new IOException("No installed game");
+        if (!replaceable(SetupStore.current(context))) throw new IOException("Setup is running: wait for it, or pause it in the setup screen");
+        if (!permalink.isEmpty()) run(context, "load-permalink", permalink);
+        else {
+            run(context, "preset", preset);
+            if (seed.isEmpty()) run(context, "new-seed");
+            else run(context, "set-seed", seed);
+        }
+        synchronized (SetupJobCleanup.CREATION) {
+            String id = java.util.UUID.randomUUID().toString().replace("-", "");
+            File job = SetupStore.job(context, id);
+            SetupStore.write(new File(job, "source.json"), new JSONObject().put("schema", 1)
+                .put("kind", "installed").put("path", current.game.getAbsolutePath()));
+            SetupStore.write(new File(job, "host.json"), new JSONObject().put("schema", 1).put("state", "selected"));
+            SetupStore.select(context, id);
+            return id;
+        }
+    }
+
+    /** Import a seed: the chosen output folder of the official randomizer, checked like a game folder; a setup job then
+     *  copies it privately, keeps only its files that differ from the installed game (tools/android/ondevice_setup.py
+     *  seed_import), checks and builds it. Off the UI thread; returns the new job's id, or throws with the message for
+     *  the player (a folder that is no game says which folder to choose). */
+    public static String importJob(Context context, android.net.Uri uri) throws Exception {
+        AndroidGame.Selection current = AndroidGame.selected(context);
+        if (current == null || current.game == null) throw new IOException("No installed game");
+        SetupFolderCheck.Result found = SetupImport.checkFolder(context, uri,
+            android.provider.DocumentsContract.getTreeDocumentId(uri));
+        if (!found.usable()) throw new IOException(folderMessage(context, found));
+        if (!replaceable(SetupStore.current(context))) throw new IOException("Pause setup before changing input");
+        context.getContentResolver().takePersistableUriPermission(uri, android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION);
+        synchronized (SetupJobCleanup.CREATION) {
+            String id = java.util.UUID.randomUUID().toString().replace("-", "");
+            File job = SetupStore.job(context, id);
+            JSONObject source = new JSONObject().put("schema", 1).put("kind", "folder").put("uri", uri.toString())
+                .put("seed_import", new JSONObject().put("installed", current.game.getAbsolutePath()));
+            if (found.kind == SetupFolderCheck.Kind.SUBFOLDER) source.put("document", found.document);
+            SetupStore.write(new File(job, "source.json"), source);
+            SetupStore.write(new File(job, "host.json"), new JSONObject().put("schema", 1).put("state", "selected"));
+            SetupStore.select(context, id);
+            return id;
+        }
+    }
+
+    /** The setup screen's words for a folder that is not a game folder. */
+    public static String folderMessage(Context context, SetupFolderCheck.Result found) {
+        switch (found.kind) {
+            case SUBFOLDER: return context.getString(R.string.setup_folder_subfolder, found.path);
+            case INSIDE_GAME: return context.getString(R.string.setup_folder_inside, found.path);
+            case NOT_THIS_GAME: return found.path.isEmpty() ? context.getString(R.string.setup_folder_not_game_here) :
+                context.getString(R.string.setup_folder_not_game, found.path);
+            case SEVERAL: return context.getString(R.string.setup_folder_several, found.path);
+            default: return context.getString(R.string.setup_folder_none);
+        }
+    }
+
+    // ---- the game's Settings > Randomizer (WwhdActivity.requestRandomizer / randomizerStatus; RandomizerProgress)
+    private static final Object REQUEST = new Object();
+    private static RandomizerProgress.Request request;  // the page's last request (REQUEST)
+
+    /** The game page's request: the folder picker opens (Import seed...). */
+    static void picking() {
+        synchronized (REQUEST) { request = new RandomizerProgress.Request(); request.picking = true; request.importing = true; }
+    }
+
+    /** The game page's new game: its settings and job are being made. */
+    static void starting() {
+        synchronized (REQUEST) { request = new RandomizerProgress.Request(); request.starting = true; }
+    }
+
+    /** A failure's message for the player (never empty). */
+    static String message(Exception failure) {
+        String text = failure.getMessage();
+        return text == null || text.isEmpty() ? failure.getClass().getSimpleName() : text;
+    }
+
+    /** The page's request has its job, or was refused or cancelled (refusal "" and job null: closed without a folder). */
+    static void requested(String job, String refusal, boolean importing) {
+        synchronized (REQUEST) {
+            request = new RandomizerProgress.Request();
+            request.job = job == null ? "" : job;
+            request.refusal = refusal == null ? "" : refusal;
+            request.cancelled = job == null && (refusal == null || refusal.isEmpty());
+            request.importing = importing;
+            request.since = System.currentTimeMillis() - 1000;  // (host.json's clock: the same, at millisecond steps)
+        }
+    }
+
+    /** The page's request as JSON: state, stage, done, total, error, and the seed when ready. */
+    static String status(Context context) {
+        RandomizerProgress.Request asked;
+        synchronized (REQUEST) { asked = request; }
+        JSONObject out = new JSONObject();
+        try {
+            if (asked == null) return out.put("state", "cancelled").toString();
+            RandomizerProgress.Job job = new RandomizerProgress.Job();
+            JSONObject ready = null;
+            if (asked.job != null && !asked.job.isEmpty()) {
+                File current = SetupStore.current(context);
+                File dir = SetupStore.job(context, asked.job);
+                job.selected = current != null && current.getName().equals(asked.job);
+                File host = new File(dir, "host.json");
+                if (host.isFile()) {
+                    JSONObject h = SetupStore.read(host);
+                    job.host = h.optString("state");
+                    job.reason = h.optString("reason");
+                    job.hostError = h.optString("error");
+                    job.updated = h.optLong("updated");
+                }
+                File progress = new File(dir, "state.json");
+                JSONObject event = progress.isFile() ? SetupStore.read(progress).optJSONObject("last_event") : null;
+                if (event != null) {
+                    job.event = event.optString("stage");
+                    job.compiled = event.optInt("compiled");
+                    job.reused = event.optInt("reused");
+                    job.eventTotal = event.optInt("total");
+                }
+                File record = new File(dir, "ready.json");
+                ready = record.isFile() ? SetupStore.read(record) : null;
+                JSONObject randomized = ready == null ? null : ready.optJSONObject("randomizer");
+                AndroidGame.Selection selected = randomized == null ? null : AndroidGame.selected(context);
+                job.active = selected != null && selected.randomizerFiles != null &&
+                    selected.randomizerFiles.getCanonicalFile().equals(new File(randomized.getString("files")).getCanonicalFile());
+            }
+            RandomizerProgress p = RandomizerProgress.of(asked, job);
+            out.put("state", p.state).put("stage", p.stage).put("error", p.error).put("done", p.done).put("total", p.total);
+            if (p.state.equals("ready")) {
+                JSONObject randomized = ready.getJSONObject("randomizer");
+                out.put("seed", randomized.optString("seed")).put("hash", randomized.optString("hash"))
+                    .put("imported", asked.importing);
+            }
+        } catch (Exception failure) {
+            try { out.put("state", "building").put("stage", "Reading setup progress"); } catch (Exception ignored) { }
+        }
+        return out.toString();
+    }
+
     private static void copyAssets(AssetManager assets, String path, File to) throws IOException {
         String[] names = assets.list(path);
         if (names == null || names.length == 0) {

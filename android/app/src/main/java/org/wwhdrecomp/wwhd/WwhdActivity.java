@@ -118,6 +118,93 @@ public class WwhdActivity extends SDLActivity {
     }
 
 
+    // ---- Settings > Randomizer (runtime/src/mods/randomizer_job.cpp; JNI from game threads): randomized games made
+    // or imported by the phone's setup while the game runs, the same jobs as the setup screen's Randomized game...
+    /** "" when this game can make randomized games, else why not (for the player). */
+    public static String randomizerUnavailable() {
+        try {
+            android.content.Context context = mSingleton.getApplicationContext();
+            if (!AndroidRandomizer.available(context)) return "This app has no randomizer.";
+            File job = SetupStore.current(context);
+            if (job == null || !new File(job, "host.json").isFile() || !new File(AndroidGame.storage(context), "active.json").isFile())
+                return "This game was built on a computer: make randomized games there (setup's Randomized games).";
+            AndroidGame.Selection current = AndroidGame.selected(context);
+            if (current == null || current.game == null) return "Set up the game first.";
+            return "";
+        } catch (Exception failure) {
+            return "The randomizer is unavailable: " + failure.getMessage();
+        }
+    }
+
+    private static final int RANDOMIZER_SEED_REQUEST = 4973;
+
+    /** {import, preset, seed, permalink}: a new game (its settings, then a setup job) or the folder picker for a seed
+     *  from the official randomizer. "" when it started (randomizerStatus follows it), else a message. */
+    public static String requestRandomizer(String text) {
+        try {
+            org.json.JSONObject request = new org.json.JSONObject(text);
+            WwhdActivity activity = mSingleton instanceof WwhdActivity ? (WwhdActivity)mSingleton : null;
+            android.content.Context context = mSingleton.getApplicationContext();
+            if (!AndroidRandomizer.replaceable(SetupStore.current(context)))
+                return "Setup is running: wait for it, or pause it in the setup screen.";
+            if (request.optBoolean("import")) {
+                if (activity == null) return "The folder picker is unavailable here.";
+                AndroidRandomizer.picking();
+                activity.runOnUiThread(() -> {
+                    Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                    for (java.util.Map.Entry<String, Object> extra : SetupPicker.extras(true).entrySet()) {
+                        if (extra.getValue() instanceof Boolean) intent.putExtra(extra.getKey(), (Boolean)extra.getValue());
+                        else intent.putExtra(extra.getKey(), android.net.Uri.parse((String)extra.getValue()));
+                    }
+                    intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+                    try { activity.startActivityForResult(intent, RANDOMIZER_SEED_REQUEST); }
+                    catch (Exception failure) { AndroidRandomizer.requested(null, "No folder picker: " + failure.getMessage(), true); }
+                });
+                return "";
+            }
+            String preset = request.optString("preset", "standard"), seed = request.optString("seed"), permalink = request.optString("permalink");
+            // (the settings commands and the job: off the game thread, which draws the page meanwhile)
+            AndroidRandomizer.starting();  // (until the job exists)
+            new Thread(() -> {
+                try {
+                    String id = AndroidRandomizer.makeJob(context, preset, seed.trim(), permalink.trim());
+                    AndroidRandomizer.requested(id, "", false);
+                    SetupService.start(context, SetupService.RESUME);
+                } catch (Exception failure) {
+                    Log.e("wwhd-game", "randomized game not started", failure);
+                    AndroidRandomizer.requested(null, AndroidRandomizer.message(failure), false);
+                }
+            }, "wwhd-rando-make").start();
+            return "";
+        } catch (Exception failure) {
+            Log.e("wwhd-game", "randomizer request refused", failure);
+            return "Setup could not start: " + failure.getMessage();
+        }
+    }
+
+    /** The page's request as JSON (AndroidRandomizer.status, RandomizerProgress): state, stage, done, total, error,
+     *  seed, hash, imported. */
+    public static String randomizerStatus() { return AndroidRandomizer.status(mSingleton.getApplicationContext()); }
+
+    private void randomizerSeedChosen(int result, Intent data) {
+        if (result != RESULT_OK || data == null || data.getData() == null) {
+            AndroidRandomizer.requested(null, "", true);  // closed without a folder
+            return;
+        }
+        final android.net.Uri uri = data.getData();
+        final android.content.Context context = getApplicationContext();
+        new Thread(() -> {
+            try {
+                String id = AndroidRandomizer.importJob(context, uri);
+                AndroidRandomizer.requested(id, "", true);
+                SetupService.start(context, SetupService.RESUME);
+            } catch (Exception failure) {
+                Log.e("wwhd-game", "seed import not started", failure);
+                AndroidRandomizer.requested(null, AndroidRandomizer.message(failure), true);
+            }
+        }, "wwhd-rando-import").start();
+    }
+
     @Override protected void onDestroy() {
         if (phoneRumble != null) phoneRumble.setActive(false);
         super.onDestroy();
@@ -412,6 +499,7 @@ public class WwhdActivity extends SDLActivity {
             if (touchControls != null) touchControls.layoutFile(request, result == RESULT_OK && data != null ? data.getData() : null);
             return;
         }
+        if (request == RANDOMIZER_SEED_REQUEST) { randomizerSeedChosen(result, data); return; }
         if (request != GPU_DRIVER_REQUEST) return;
         final boolean afterFailure = driverAfterFailure;
         if (result != RESULT_OK || data == null || data.getData() == null) {

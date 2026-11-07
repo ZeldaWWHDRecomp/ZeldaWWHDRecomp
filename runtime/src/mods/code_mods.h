@@ -1,5 +1,7 @@
 #pragma once
+#include <filesystem>
 #include <string>
+#include <vector>
 namespace mods::code {
 struct Status {
     bool requested=false, target=false, building=false, ready=false;
@@ -20,4 +22,10 @@ Status status();
 void begin();
 void cancel();
 void dismiss();
+// startup(..., true): the decomp version (no code-mod builds, no randomized games)
+bool fixed_build();
+// The installed setup as a command (desktop): the Python and setup.py of guest-sdk.json with --data-dir; data_dir
+// is set to the install folder (script: to setup.py). Raises with a message for the player when setup's tools
+// are missing.
+std::vector<std::string> setup_command(std::filesystem::path& data_dir, std::filesystem::path* script = nullptr);
 }

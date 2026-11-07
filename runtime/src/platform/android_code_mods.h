@@ -16,4 +16,12 @@ std::string guest_module_cache();
 std::string request_code_mod_build(bool enabled);
 // the rebuild's progress as JSON: state ("building", "ready", "failed"), stage, done, total, error
 std::string code_mod_build_status();
+// Settings > Randomizer (randomizer_job.cpp): "" when the phone's setup can make randomized games, else why not
+std::string randomizer_unavailable();
+// a randomized game made or imported by the phone's setup, request as JSON ({import, preset, seed, permalink}; an
+// import opens the folder picker first): "" when it started, else a message for the player
+std::string request_randomizer(const std::string& request);
+// its progress as JSON: state ("picking", "building", "ready", "failed", "cancelled"), stage, done, total, error,
+// seed, hash, imported
+std::string randomizer_status();
 }

@@ -3036,8 +3036,10 @@ def main():
     ap.add_argument("--app-dir", help="macOS: where the app goes (default: ~/Applications)")
     ap.add_argument("--code-mods", choices=("0", "1"), help="build PowerPC mod support (new installs default off; skips the question; overrides WWHD_CODE_MODS)")
     ap.add_argument("--rebuild-code-mods", action="store_true", help="stage a cached game-code variant for the next restart")
-    ap.add_argument("--code-mods-status", help="atomic rebuild progress/result JSON")
-    ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists")
+    ap.add_argument("--code-mods-status", help="atomic rebuild progress/result JSON (also of --randomize, --import-seed "
+                    "and --play-seed: the game's Settings > Randomizer follows it)")
+    ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists (also --randomize, --import-seed, "
+                    "--play-seed)")
     ap.add_argument("--decomp", dest="decomp", action="store_const", const=True, default=None,
                     help="development builds, macOS: also build the decomp version of the game (experimental; "
                          "docs/decomp-build.md); remembered for repairs and updates")
@@ -3120,12 +3122,43 @@ def main():
     return rc
 
 
+CANCELLED = "Cancelled; the game the next start plays is unchanged"
+
+
 def run_randomizer(args, ctx):
-    """--randomize, --import-seed, --list-seeds, --play-seed, --delete-seed (randomizer_seeds.py)"""
+    """--randomize, --import-seed, --list-seeds, --play-seed, --delete-seed (randomizer_seeds.py)
+
+    With --code-mods-status, a randomized game made, imported or chosen reports its progress and its end in that file
+    (code_mods.rebuild's format: state "building" with stage/done/total, then "ready" with the build and the seed, or
+    "error" with the message): the game's Settings > Randomizer runs setup this way and follows it.
+    --code-mods-cancel stops it at the next step (a seed already made stays)."""
     import randomizer_seeds
     if args.list_seeds:
         print(json.dumps(randomizer_seeds.listing(ctx.data_dir), indent=1, sort_keys=True))
         return 0
+    status_file, cancel_file = getattr(args, "code_mods_status", None), getattr(args, "code_mods_cancel", None)
+
+    def progress(stage):
+        if status_file:
+            code_mods.atomic_json(status_file, {"state": "building", "stage": stage, "done": 0, "total": 0})
+
+    def check_cancel():
+        if cancel_file and os.path.exists(cancel_file):
+            raise SetupError(CANCELLED)
+
+    try:
+        return randomizer_steps(args, ctx, progress, check_cancel, status_file, cancel_file)
+    except BaseException as e:
+        if status_file:
+            message = str(e) if isinstance(e, Exception) else "Cancelled"
+            if cancel_file and os.path.exists(cancel_file):  # (also the build's own "Code-mod rebuild cancelled")
+                message = CANCELLED
+            code_mods.atomic_json(status_file, {"state": "error", "message": message or e.__class__.__name__})
+        raise
+
+
+def randomizer_steps(args, ctx, progress, check_cancel, status_file, cancel_file):
+    import randomizer_seeds
     if not ctx.installed():
         raise SetupError("No installed game: run setup with your game first")
     hooks = (code_mods.hooks_option(args.code_mods) if args.code_mods is not None
@@ -3137,9 +3170,10 @@ def run_randomizer(args, ctx):
         say("Removed randomized game %s (%s). Its saves stay in the save-randomizer-%s folders." % (
             s["id"], s.get("hash", ""), s["rpx_sha256"]))
         return 0
-    which = args.play_seed
+    which, entry = args.play_seed, None
     if args.randomize:
         say("Making a randomized game from %s" % ctx.game_dir)
+        progress("Making the randomized game (TWWHD Randomizer)")
         entry = randomizer_seeds.make(sys.modules[__name__], ctx, say, preset=args.rando_preset,
                                       permalink=args.rando_permalink, settings_file=args.rando_settings,
                                       seed=args.rando_seed, new_seed=args.rando_new_seed)
@@ -3149,15 +3183,23 @@ def run_randomizer(args, ctx):
         which = entry["id"]
     if getattr(args, "import_seed", None):
         say("Importing a seed made with the official TWWHD Randomizer")
+        progress("Importing the seed")
         entry = randomizer_seeds.import_seed(sys.modules[__name__], ctx, os.path.abspath(clean_path(args.import_seed)), say)
         if args.rando_no_build:
             return 0
         which = entry["id"]
+    check_cancel()
     say("Preparing %s (game code %s)" % ("the game as it is" if which == "vanilla" else "randomized game " + which,
                                          "with code-mod support" if hooks else "without code-mod support"))
-    result = randomizer_seeds.select(sys.modules[__name__], ctx, which, hooks)
+    result = randomizer_seeds.select(sys.modules[__name__], ctx, which, hooks, status_file, cancel_file)
     say("  Ready%s: the game plays it from its next start." % (" (built before)" if result.get("cached") else
                                                                " in %d s" % result.get("seconds", 0)))
+    if status_file:
+        if entry is None and which != "vanilla":
+            entry = randomizer_seeds.find(ctx.data_dir, which)
+        seed = {} if entry is None else {"seed": entry["id"], "hash": entry.get("hash", ""),
+                                         "imported": bool(entry.get("imported"))}
+        code_mods.atomic_json(status_file, dict(result, **seed))
     return 0
 
 

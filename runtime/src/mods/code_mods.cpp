@@ -182,6 +182,22 @@ void begin_android(){
     });
 }
 #endif
+bool fixed_build(){return g_fixed_build;}
+std::vector<std::string> setup_command(fs::path& data_dir,fs::path* script){
+    const char* override=std::getenv("WWHD_GUEST_BUILD_CONFIG");
+    fs::path config=override?fs::path(override):fs::path("guest-sdk.json");
+    auto cfg=read(config);auto base=fs::absolute(config).parent_path();
+    // the same rules as the guest build bridge: $RELEASE/ (AppImage), relative paths, stale AppImage mounts
+    const auto release=guestmods::release_root();
+    auto resolve=[&](const std::string& name){auto p=guestmods::resolve_path(cfg.get(name.c_str()).string(),base,release);if(p.empty())exception_report::raise("Code-mod setup tools are missing; run setup again");return fs::path(p);};
+    auto python=guestmods::BuildBridge::arguments(cfg.get("python"));
+    if(python.empty())exception_report::raise("Code-mod setup tools are missing; run setup again");
+    python.front()=guestmods::resolve_path(python.front(),base,release,true);
+    data_dir=resolve("data_dir");auto setup=resolve("setup");
+    if(script)*script=setup;
+    python.insert(python.end(),{setup.string(),"--data-dir",data_dir.string()});
+    return python;
+}
 void begin(){
     std::lock_guard guard(mutex);if(state.building||!state.requested)return;
     if(worker.thread.joinable())worker.thread.join();
@@ -189,18 +205,10 @@ void begin(){
     begin_android();return;
 #endif
     try {
-        const char* override=std::getenv("WWHD_GUEST_BUILD_CONFIG");
-        fs::path config=override?fs::path(override):fs::path("guest-sdk.json");
-        auto cfg=read(config);auto base=fs::absolute(config).parent_path();
-        // the same rules as the guest build bridge: $RELEASE/ (AppImage), relative paths, stale AppImage mounts
-        const auto release=guestmods::release_root();
-        auto resolve=[&](const std::string& name){auto p=guestmods::resolve_path(cfg.get(name.c_str()).string(),base,release);if(p.empty())exception_report::raise("Code-mod setup tools are missing; run setup again");return fs::path(p);};
-        auto python=guestmods::BuildBridge::arguments(cfg.get("python"));
-        python.front()=guestmods::resolve_path(python.front(),base,release,true);
-        auto data=resolve("data_dir");auto setup=resolve("setup");
+        fs::path data;auto python=setup_command(data);
         status_path=data/"code-mods-status.json";cancel_path=data/"code-mods-cancel";
         std::error_code ec;fs::remove(status_path,ec);fs::remove(cancel_path,ec);
-        python.insert(python.end(),{setup.string(),"--data-dir",data.string(),"--rebuild-code-mods","--code-mods",state.target?"1":"0","--code-mods-status",status_path.string(),"--code-mods-cancel",cancel_path.string(),"--jobs","4"});
+        python.insert(python.end(),{"--rebuild-code-mods","--code-mods",state.target?"1":"0","--code-mods-status",status_path.string(),"--code-mods-cancel",cancel_path.string(),"--jobs","4"});
         state.building=true;state.error.clear();state.ready=false;state.stage="Starting setup";
         bool target=state.target;auto mod=pending_mod;
         worker.thread=std::thread([command=std::move(python),target,mod]{

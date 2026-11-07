@@ -68,6 +68,8 @@ jobs:
           java -cp build/setup-policy-test SetupPolicyTest
           javac -d build/models-step-test android/app/src/main/java/org/wwhdrecomp/wwhd/ModelsStep.java tools/android/ModelsStepTest.java
           java -cp build/models-step-test ModelsStepTest
+          javac -d build/randomizer-progress-test android/app/src/main/java/org/wwhdrecomp/wwhd/RandomizerProgress.java android/app/src/main/java/org/wwhdrecomp/wwhd/SetupPresentation.java tools/android/RandomizerProgressTest.java
+          java -cp build/randomizer-progress-test RandomizerProgressTest
           javac -d build/tga-image-test android/app/src/main/java/org/wwhdrecomp/wwhd/TgaImage.java tools/android/TgaImageTest.java
           java -cp build/tga-image-test TgaImageTest
           javac -d build/resource-verifier-test android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceVerifier.java tools/android/ResourceVerifierTest.java
