@@ -59,6 +59,13 @@ what is on `devel` and not released yet (also in the
   size from the hint's frame instead of the button picture. The HUD's own buttons are unchanged.
 - **Android touch: no "Tap to start" text on the title screen** (#466, thanks @FabricioArroy0 for the request, #465).
   Tapping still starts the game; only the text over the title is gone.
+- **Fixed: randomized games crashed at start or ran the original item functions** (#467, thanks @KaitoCrisHub for the
+  report, #383). TWWHD Randomizer 1.2.0 points some of the game's tables at its own code through the game file's
+  relocation entries, which the console applies when it loads the game. The port now applies them too, when it
+  translates and when it loads the game: every 1.2.0 seed now runs the randomizer's own item functions (before,
+  the original ones ran in places, and some seeds crashed right after name entry). The randomizer compatibility
+  check reads the relocated code as well. Unmodified games are byte for byte unchanged. Seeds already made are
+  rebuilt the next time setup prepares them.
 
 ## v0.5.1
 
