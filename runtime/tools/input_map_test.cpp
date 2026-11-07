@@ -1440,6 +1440,75 @@ static void test_active_prompts() {
     set_current(previous, false);
 }
 
+// Automatic prompts follow the controller in use, not the first connected one (issue #459)
+static void test_auto_prompts_follow_pad_in_use() {
+    using FL = FaceLabel;
+    const FL xbox[4] = {FL::kA, FL::kB, FL::kX, FL::kY};
+    const FL ps[4] = {FL::kCross, FL::kCircle, FL::kSquare, FL::kTriangle};
+    const FL gc[4] = {FL::kA, FL::kX, FL::kB, FL::kY};
+    const Mapping previous = current();
+    Mapping m = Mapping::defaults();
+    apply_face_layout(m, FaceLayout::kLabels);  // the Xbox pad plays with the shared bindings
+    const std::string gc_guid = "030042717e0500003703000000016800", gc_name = "Nintendo GameCube Controller";
+    const std::string xbox_guid = "0300fa67c82d00000b31000014017801", xbox_name = "XInput Controller #1";
+    CHECK(auto_gamecube(m, gc_guid, gc_name, true));  // the adapter's pads get their GameCube layout
+    CHECK(m.prompts == Mapping::Prompts::kAuto);
+    set_current(m, false);
+
+    // the adapter connected first: GameCube prompts until something is pressed
+    note_face_labels(gc);
+    note_gamecube(true);
+    set_active_controller("", "");
+    CHECK(active_prompt_style().face == FaceStyle::kGameCube);
+
+    uint32_t gen = generation();
+    set_active_controller(xbox_guid, xbox_name, pad_family_from_labels(xbox), false);
+    CHECK(generation() != gen);
+    CHECK(!gamecube_pad() && pad_family() == PadFamily::kXbox);
+    CHECK(active_prompt_style().face == FaceStyle::kXbox);
+    gen = generation();
+    set_active_controller(gc_guid, gc_name, pad_family_from_labels(gc), true);
+    CHECK(generation() != gen);
+    CHECK(active_prompt_style().face == FaceStyle::kGameCube);
+
+    // the Xbox pad connected first: a GameCube press still gives GameCube prompts, not the original ones
+    note_face_labels(xbox);
+    note_gamecube(false);
+    CHECK(active_prompt_style().face == FaceStyle::kGameCube);
+    set_active_controller(xbox_guid, xbox_name, PadFamily::kXbox, false);
+    CHECK(active_prompt_style().face == FaceStyle::kXbox);
+
+    // a pad in use with unknown labels takes the first pad's family, but not its GameCube identity
+    note_face_labels(ps);
+    note_gamecube(true);
+    set_active_controller("03000000000000000000000000000003", "Pad Three", PadFamily::kUnknown, false);
+    CHECK(!gamecube_pad() && pad_family() == PadFamily::kPlayStation);
+    CHECK(active_prompt_style().face == FaceStyle::kPlayStation);
+
+    // the Controls tab's button names follow the pad in use too
+    set_active_controller("03000000000000000000000000000004", "Pad Four", PadFamily::kNintendo, false);
+    CHECK(std::string(pad_label(kPadA)) == "B (bottom)");
+    set_active_controller(xbox_guid, xbox_name, PadFamily::kXbox, false);
+    CHECK(std::string(pad_label(kPadA)) != "B (bottom)");
+
+    // an explicit choice ignores the pad in use
+    Mapping fixed = m;
+    fixed.prompts = Mapping::Prompts::kXbox;
+    set_current(fixed, false);
+    set_active_controller(gc_guid, gc_name, pad_family_from_labels(gc), true);
+    CHECK(active_prompt_style().face == FaceStyle::kXbox);
+
+    // switching pads never rewrites the bindings (the Automatic face preset follows the first pad)
+    CHECK(current() == fixed);
+
+    // nothing in use again: the first connected pad decides
+    set_active_controller("", "");
+    CHECK(gamecube_pad() && pad_family() == PadFamily::kPlayStation);
+    note_gamecube(false);
+    note_face_labels(xbox);
+    set_current(previous, false);
+}
+
 static void test_v1_migration() {
     // a format 1 file: no profiles; Jump and the moon jump on whatever pressed the Wii U's L
     const char* v1 = R"({"version":1,"keyboard":{"L":["U"]},"controller":{"L":"LeftTrigger","ZL":"LeftShoulder"},"options":{"format":2}})";
@@ -1704,6 +1773,7 @@ int main() {
     test_displace_rules();
     test_profiles();
     test_active_prompts();
+    test_auto_prompts_follow_pad_in_use();
     test_v1_migration();
     printf("input_map_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

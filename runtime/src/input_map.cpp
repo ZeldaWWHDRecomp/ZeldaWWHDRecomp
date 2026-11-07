@@ -1549,6 +1549,8 @@ static bool g_loaded = false, g_legacy = true;
 static uint32_t g_legacy_bit = 0;
 static std::mutex g_active_mu;
 static std::string g_active_guid, g_active_name;
+static std::atomic<int> g_active_family{(int)PadFamily::kUnknown};
+static std::atomic<int> g_active_gamecube{-1};  // -1: no controller in use
 
 // the dominant pad's labels as note_face_labels last reported them (its own lock: set_current
 // takes g_mu)
@@ -1559,12 +1561,18 @@ static FaceLabel g_labels[4] = {FaceLabel::kUnknown, FaceLabel::kUnknown, FaceLa
 static std::atomic<int> g_family{(int)PadFamily::kUnknown};
 static std::atomic<bool> g_gamecube_pad{false};
 
-PadFamily pad_family() { return (PadFamily)g_family.load(std::memory_order_relaxed); }
+PadFamily pad_family() {
+    const int active = g_active_family.load(std::memory_order_relaxed);
+    return (PadFamily)(active != (int)PadFamily::kUnknown ? active : g_family.load(std::memory_order_relaxed));
+}
 void note_gamecube(bool detected) {
     if (g_gamecube_pad.exchange(detected, std::memory_order_relaxed) != detected)
         g_gen.fetch_add(1, std::memory_order_relaxed);
 }
-bool gamecube_pad() { return g_gamecube_pad.load(std::memory_order_relaxed); }
+bool gamecube_pad() {
+    const int active = g_active_gamecube.load(std::memory_order_relaxed);
+    return active >= 0 ? active != 0 : g_gamecube_pad.load(std::memory_order_relaxed);
+}
 
 void note_face_labels(const FaceLabel labels[4]) {
     Mapping m = current();
@@ -1574,10 +1582,9 @@ void note_face_labels(const FaceLabel labels[4]) {
     }
     // the prompts follow the family (button_glyphs re-reads the style on a new generation). An
     // unplugged pad (all unknown) keeps the last family, as the Automatic face preset keeps its choice.
-    if (const PadFamily f = pad_family_from_labels(labels); f != PadFamily::kUnknown && f != pad_family()) {
-        g_family.store((int)f, std::memory_order_relaxed);
+    if (const PadFamily f = pad_family_from_labels(labels);
+        f != PadFamily::kUnknown && g_family.exchange((int)f, std::memory_order_relaxed) != (int)f)
         g_gen++;
-    }
     if (!m.face_auto) return;
     int out[4];
     if (!face_bindings_from_labels(labels, out)) return;
@@ -1649,12 +1656,18 @@ void adopt_legacy_jump_button(uint32_t vpad_bit) {
     }
 }
 
-void set_active_controller(const std::string& guid, const std::string& name) {
+void set_active_controller(const std::string& guid, const std::string& name, PadFamily family, bool gamecube) {
+    const bool none = guid.empty() && name.empty();
+    const int f = none ? (int)PadFamily::kUnknown : (int)family, gc = none ? -1 : (int)gamecube;
     std::lock_guard<std::mutex> lk(g_active_mu);
-    if (g_active_guid == guid && g_active_name == name) return;
+    if (g_active_guid == guid && g_active_name == name && g_active_family.load(std::memory_order_relaxed) == f &&
+        g_active_gamecube.load(std::memory_order_relaxed) == gc)
+        return;
     g_active_guid = guid;
     g_active_name = name;
-    g_gen++;  // the game's prompts follow the bindings of the controller in use (button_glyphs::style)
+    g_active_family.store(f, std::memory_order_relaxed);
+    g_active_gamecube.store(gc, std::memory_order_relaxed);
+    g_gen++;  // the game's prompts follow the controller in use (button_glyphs::style)
 }
 void active_controller(std::string& guid, std::string& name) {
     std::lock_guard<std::mutex> lk(g_active_mu);

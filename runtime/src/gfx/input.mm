@@ -438,6 +438,20 @@ static void family_letters(GCController* c, input_map::FaceLabel out[4]) {
 // Automatic preset follows the first pad still connected.
 static NSMutableArray<GCController*>* g_connect_order;
 
+// What an extended gamepad has printed on its face buttons, in the order kPadA, kPadB, kPadX, kPadY
+static void controller_labels(GCController* c, input_map::FaceLabel labels[4]) {
+    using FL = input_map::FaceLabel;
+    GCExtendedGamepad* g = c.extendedGamepad;
+    GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};  // framework element order
+    bool any = false;
+    for (int i = 0; i < 4; i++) {
+        labels[i] = button_letter(face[i]);
+        any |= labels[i] != FL::kUnknown;
+    }
+    input_map::apple_face_labels(controller_face_layout(c), labels);
+    if (!any) family_letters(c, labels);  // nothing printed we can read: guess the family
+}
+
 static void note_dominant_labels() {
     using FL = input_map::FaceLabel;
     FL labels[4] = {FL::kUnknown, FL::kUnknown, FL::kUnknown, FL::kUnknown};
@@ -445,17 +459,7 @@ static void note_dominant_labels() {
     for (GCController* c in [g_connect_order copy]) {
         if (c.extendedGamepad) { dominant = c; break; }
     }
-    if (dominant) {
-        GCExtendedGamepad* g = dominant.extendedGamepad;
-        GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};  // framework element order
-        bool any = false;
-        for (int i = 0; i < 4; i++) {
-            labels[i] = button_letter(face[i]);
-            any |= labels[i] != FL::kUnknown;
-        }
-        input_map::apple_face_labels(controller_face_layout(dominant), labels);
-        if (!any) family_letters(dominant, labels);  // nothing printed we can read: guess the family
-    }
+    if (dominant) controller_labels(dominant, labels);
 #ifdef WWHD_HAS_IOKIT
     // no GameController pad: claim Xbox labels for the pad we know is Xbox-labelled (Steam's)
     else if (io_xbox_labels()) {
@@ -953,7 +957,11 @@ void init() {
             for (int p = 1; p < input_map::kPadCount; p++) pressed |= devices[i].second[p] > 0.6f;
             if (pressed && devices[i].first != active) {
                 active = devices[i].first;
-                input_map::set_active_controller("", name);
+                // Automatic prompts follow this pad's labels and GameCube identity (issue #459)
+                input_map::FaceLabel labels[4] = {};
+                if (c && c.extendedGamepad) controller_labels(c, labels);
+                input_map::set_active_controller("", name, input_map::pad_family_from_labels(labels),
+                                                 c && gamecube_controller(c));
             }
             if (pressed && known.insert(devices[i].first).second && input_map::setup_offer_due(current, "", name, false))
                 overlay::offer_controller_setup("", name);
