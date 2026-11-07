@@ -57,6 +57,8 @@ what is on `devel` and not released yet (also in the
 - **Fixed: the GameCube A in the floating action hint was drawn about four times too large** (#460, thanks
   @itsarahtonin for the report and fix, #458). With GameCube button prompts, "A Speak" and similar hints took their
   size from the hint's frame instead of the button picture. The HUD's own buttons are unchanged.
+- **Android touch: no "Tap to start" text on the title screen** (#466, thanks @FabricioArroy0 for the request, #465).
+  Tapping still starts the game; only the text over the title is gone.
 
 ## v0.5.1
 
