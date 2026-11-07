@@ -1671,6 +1671,34 @@ void gamecube_hud_plate_test() {
     layout(input_map::FaceLayout::kPosition);
 }
 
+// A never-restyled session (run before any restyled test latches marking): a full state from a restyled
+// process brings cached texts whose batches bind that process's host-only sheets. Those are rebuilt;
+// the session's own texts, and every text before a load, stay untouched.
+void foreign_sheet_test() {
+    static unsigned drawn = 0;
+    const auto draw_box = [] {
+        Cpu c{};c.r[3] = text_box;
+        button_glyphs::draw_text_box(&c, [](Cpu*) { ++drawn; });
+    };
+    const auto cached = [](uint32_t sheet) {
+        std::memset(mem::ptr(list), 0, 0xA4);
+        st32(text_box + 0xFC, list);
+        st8(list + 6, 1);  // valid cached vertices
+        st32(list + 0xA0, 1);
+        st32(list + 0x20, sheet);
+    };
+    const uint32_t foreign = mem::kHostStart + 0x43800, stock = base + 0xD000;
+    cached(foreign); draw_box();
+    assert(drawn == 1 && ld8(list + 6) == 1);  // no load yet: the stock path writes nothing
+    button_glyphs::ss_reset();
+    cached(stock); draw_box();
+    assert(drawn == 2 && ld8(list + 6) == 1);
+    cached(foreign); draw_box();
+    assert(drawn == 3 && ld8(list + 6) == 0);  // the game rebuilds it from its own font
+    st32(text_box + 0xFC, 0);
+    std::memset(mem::ptr(list), 0, 0xA4);
+}
+
 int main() {
     {
         const auto gc = button_glyphs::gamecube_cluster({10,0},{0,-10},{10,10},{0,0});
@@ -1709,6 +1737,7 @@ int main() {
     auto memory = map_guest_region(base, kArena);
 #endif
     assert(memory == mem::ptr(base));
+    foreign_sheet_test();
     // Prompts/dialogue cached before 3D is enabled must still replay as flat
     // layout draws. Exercise the production scope hooks, including mode changes
     // between entry and exit; immediate mono must remain marker-free.
