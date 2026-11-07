@@ -15,7 +15,12 @@
 #        release or development version, else it comes from git describe),
 #        QUEST_THEATER (default ON; OFF also needs Gradle -PwwhdQuestTheater=false),
 #        CPU (default generic: any arm64 phone. CPU=oryon-1 tunes for the Snapdragon 8 Elite, e.g.
-#        Galaxy S25, where the port was measured; the APK then runs only on that CPU family)
+#        Galaxy S25, where the port was measured; the APK then runs only on that CPU family),
+#        DECOMP=1: the decomp build (docs/decomp-build.md; WWHD_DECOMP=ON) into OUT (default
+#        android/build-decomp) and android/app/libs-decomp, for Gradle -PwwhdLibsDir=libs-decomp (with
+#        -PwwhdDebugSuffix=.decomp it installs next to the normal build); GEN_DIR must then come from
+#        recomp.py --decomp-hooks; DECOMP_DIR (default decomp, the submodule) and DECOMP_GAME (default
+#        game: your USA game) as WWHD_DECOMP_DIR and WWHD_DECOMP_GAME
 # The game code in build/gen is generated from your own game (tools/recomp/recomp.py) and stays on
 # your machine; the APK built from it contains it and must not be distributed. CI builds this with
 # placeholder code (tools/recomp/stubgen.py) only to check that it compiles.
@@ -44,13 +49,22 @@ cmake="$(command -v cmake || true)"
 [ -n "$cmake" ] || cmake="$(ls -d "$sdk"/cmake/*/bin 2>/dev/null | tail -1)/cmake$exe"
 ninja="$(command -v ninja || true)"
 [ -n "$ninja" ] || ninja="$(dirname "$cmake")/ninja$exe"
-out="${OUT:-$here/build}/game"
+decomp="${DECOMP:-0}"
+libdir=libs
+if [ "$decomp" = 1 ]; then
+    out="${OUT:-$here/build-decomp}/game"; libdir=libs-decomp
+else
+    out="${OUT:-$here/build}/game"
+fi
 cpu="${CPU:-generic}"
 flags=()
 if [ "$cpu" != generic ]; then flags=("-DCMAKE_C_FLAGS=-mcpu=$cpu" "-DCMAKE_CXX_FLAGS=-mcpu=$cpu"); fi
 if [ -n "${WWHD_VERSION:-}" ]; then flags+=("-DWWHD_VERSION=$WWHD_VERSION"); fi
+if [ "$decomp" = 1 ]; then
+    flags+=(-DWWHD_DECOMP=ON "-DWWHD_DECOMP_DIR=${DECOMP_DIR:-$root/decomp}" "-DWWHD_DECOMP_GAME=${DECOMP_GAME:-$root/game}")
+fi
 
-echo "== game (libmain.so), NDK $(basename "$ndk"), CPU $cpu"
+echo "== game (libmain.so$([ "$decomp" = 1 ] && echo ', decomp build')), NDK $(basename "$ndk"), CPU $cpu"
 mkdir -p "$out"
 "$cmake" -S "$root" -B "$out" -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" \
     "-DCMAKE_TOOLCHAIN_FILE=$ndk/build/cmake/android.toolchain.cmake" "-DANDROID_ABI=$abi" \
@@ -58,7 +72,7 @@ mkdir -p "$out"
     -DWWHD_BUNDLED_DEPS=ON "-DWWHD_QUEST_THEATER=${QUEST_THEATER:-ON}" \
     "-DGEN_DIR=${GEN_DIR:-$root/build/gen}" ${flags[@]+"${flags[@]}"} > "$out.log"
 "$cmake" --build "$out" -j "$jobs" --target wwhd wwhd_yaz0 >> "$out.log" 2>&1 || { tail -40 "$out.log"; exit 1; }
-libs="$here/app/libs/$abi"
+libs="$here/app/$libdir/$abi"
 mkdir -p "$libs"
 bin="$ndk/toolchains/llvm/prebuilt/$host"
 "$bin/bin/llvm-strip$exe" --strip-unneeded "$out/libmain.so" -o "$libs/libmain.so"  # 400 MB -> 52 MB

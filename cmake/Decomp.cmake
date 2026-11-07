@@ -10,7 +10,9 @@
 # wwhd_decomp_link(target): every game unit becomes one object file: its sources compiled with hidden
 #   visibility and merged with `ld -r`, which turns hidden symbols into local ones. Units then never see
 #   each other's classes, inline helpers or gabi state, as in the decompilation's verification harness,
-#   where each unit is its own program. These objects, the runtime part (runtime/src/decomp) and
+#   where each unit is its own program. On Android (ELF) ld.lld's `ld -r` keeps hidden symbols global, so
+#   llvm-objcopy --localize-hidden then makes them local (the merged object's COMDAT groups are dropped
+#   with them: each unit keeps its own copy of an inline function, as with ld64). These objects, the runtime part (runtime/src/decomp) and
 #   hooks.cpp go into the target.
 set(WWHD_DECOMP_DIR "${CMAKE_SOURCE_DIR}/decomp" CACHE PATH "decomp build: the decompilation (git submodule decomp)")
 set(WWHD_DECOMP_GAME "${CMAKE_SOURCE_DIR}/game" CACHE PATH
@@ -25,9 +27,10 @@ option(WWHD_DECOMP_THINLTO "decomp build: ThinLTO inside each game unit (experim
 option(WWHD_DECOMP_RUNTIME_ONLY "decomp build: the runtime only, for packaging (no units, no game)" OFF)
 
 function(wwhd_decomp_configure)
-  if(NOT APPLE)
-    # the unit isolation needs ld64's `ld -r` (hidden -> local); other platforms need their own step
-    message(FATAL_ERROR "WWHD_DECOMP: the decomp build is available on macOS only so far")
+  if(NOT APPLE AND NOT ANDROID)
+    # the unit isolation needs ld64's `ld -r` (hidden -> local), or on Android ld.lld -r + llvm-objcopy
+    # --localize-hidden (wwhd_decomp_link); other platforms need their own step
+    message(FATAL_ERROR "WWHD_DECOMP: the decomp build is available on macOS and Android only so far")
   endif()
   if(NOT EXISTS "${WWHD_DECOMP_DIR}/tools/verify/include/gabi.h")
     message(FATAL_ERROR "WWHD_DECOMP: no decompilation in ${WWHD_DECOMP_DIR}; run: git submodule update --init decomp")
@@ -93,6 +96,9 @@ function(wwhd_decomp_link target)
   # (its per-thread state in one block, guest memory accessed inline), which the harness never uses.
   set(opts -O2 -g0 -w -fvisibility=hidden -fvisibility-inlines-hidden -ffp-contract=off -fno-fast-math -fwrapv
            -fno-strict-aliasing -DGABI_GAME_BUILD=1 -include "${CMAKE_SOURCE_DIR}/tools/decomp_build/frames_vis.h")
+  if(ANDROID)  # bionic's libc macros that clash with the decompilation's names (android_compat.h)
+    list(APPEND opts "SHELL:-include ${CMAKE_SOURCE_DIR}/tools/decomp_build/android_compat.h")
+  endif()
   if(WWHD_DECOMP_RUNTIME_ONLY)
     add_library(wwhd_decomp_flags OBJECT "${CMAKE_SOURCE_DIR}/tools/decomp_build/flags_probe.cpp")
     target_include_directories(wwhd_decomp_flags PRIVATE ${inc})
@@ -114,6 +120,14 @@ function(wwhd_decomp_link target)
   endif()
   set(objs)
   file(MAKE_DIRECTORY "${WWHD_DECOMP_OUT}/units")
+  set(merge "${CMAKE_LINKER}" -r)
+  set(localize)
+  if(ANDROID)  # ELF: ld.lld -r, then hidden -> local with llvm-objcopy (the NDK's)
+    find_program(WWHD_DECOMP_LLD ld.lld HINTS "${ANDROID_TOOLCHAIN_ROOT}/bin" NO_DEFAULT_PATH REQUIRED)
+    find_program(WWHD_DECOMP_OBJCOPY llvm-objcopy HINTS "${ANDROID_TOOLCHAIN_ROOT}/bin" NO_DEFAULT_PATH REQUIRED)
+    set(merge "${WWHD_DECOMP_LLD}" -r)
+    set(unit_link ${merge})  # (WWHD_DECOMP_THINLTO is not supported on Android)
+  endif()
   foreach(i RANGE 1 ${WWHD_DECOMP_UNIT_COUNT})
     math(EXPR k "${i} - 1")
     set(lib wwhd_decomp_unit_${k})
@@ -126,8 +140,13 @@ function(wwhd_decomp_link target)
     endif()
     set_target_properties(${lib} PROPERTIES CXX_EXTENSIONS OFF EXCLUDE_FROM_ALL ON)
     set(o "${WWHD_DECOMP_OUT}/units/${WWHD_DECOMP_UNIT_${k}_NAME}.o")
+    if(ANDROID)
+      set_target_properties(${lib} PROPERTIES POSITION_INDEPENDENT_CODE ON)  # linked into libmain.so
+      set(localize COMMAND "${WWHD_DECOMP_OBJCOPY}" --localize-hidden "${o}")
+    endif()
     add_custom_command(OUTPUT "${o}"
       COMMAND ${unit_link} -o "${o}" "$<TARGET_OBJECTS:${lib}>"
+      ${localize}
       DEPENDS ${lib} "$<TARGET_OBJECTS:${lib}>"
       COMMAND_EXPAND_LISTS VERBATIM)
     list(APPEND objs "${o}")

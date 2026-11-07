@@ -74,7 +74,7 @@ if(WWHD_WRITE_WATCH)
   add_compile_definitions(WWHD_WRITE_WATCH=1)
 endif()
 
-option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS; experimental)" OFF)
+option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; experimental)" OFF)
 include(cmake/Decomp.cmake)
 if(WWHD_DECOMP)
   wwhd_decomp_configure()
