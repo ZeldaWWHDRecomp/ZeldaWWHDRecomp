@@ -7,58 +7,6 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
-- **Graphics › Grass draw distance** (#401, thanks @DaniXK-96). A new Vulkan setting that skips far tall grass
-  patches: All (the original, default), Far 4000, Medium 3000 or Near 2000 units from the camera. In thick grass
-  like Forest Haven it saves a lot of render-thread time on slower PCs (46 → 60 fps on an i3 laptop at Near); palms,
-  small plants and nearby grass always stay.
-- **Vulkan: less render-thread CPU per draw** (#400, thanks @DaniXK-96). Faster shader lookups, buffers that keep their
-  size between frames and fewer copies for chunked draws: about 3% less render-thread time on a laptop (i3 + 920MX),
-  the same picture.
-- **Fixed: the controller stopped working after clicking the GamePad window** (#406, thanks @KaitoCrisHub for the
-  report). Controllers now keep driving the game while the TV window or the GamePad window is in front (on Windows the
-  focus could stay empty when it moved between the game's own windows). The existing option is now called
-  **Controller input in the background** (Settings › Controls, off by default): turn it on to keep using the
-  controller while another app is in front. Keyboard and mouse still need a game window in front.
-- **Fixed: the pirate ship's sail flickered with frame interpolation** (#446, thanks @darklinkpower for the report).
-  Above 30 fps the sail and flag off Outset were drawn torn on some frames (dark blotches), a regression in v0.5.1.
-  Cloth that the game draws into two alternating buffers (sails, flags, mantles, the tapestry, Molgera's sand floor)
-  now keeps switching buffers on every drawn frame. 30 fps is unchanged.
-- **Fixed: the bottom of the picture cut off on Android devices that keep their navigation bar over the game**
-  (#349, thanks @plxjammerplx for the report). On the Retroid Pocket Nova, 4:3 / Match window filled the whole
-  screen and the system's navigation bar covered the rupee counter. The picture, the view button and Match
-  window's shape now leave out the bars the system draws over the game. Desktop and devices that hide the bars
-  are unchanged.
-- **Make randomized games in the game** (#457, #452). **Settings › Randomizer** is now always there and makes and
-  imports randomized games itself, so setup isn't needed for them: choose Beginner, Standard or Everything, a seed
-  name or a permalink and **Make this game**, or **Import seed...** for the official randomizer's output. Setup makes
-  and builds it in the background while you keep playing (with progress, Cancel and setup's message if it fails);
-  then **Restart now** or later. On Android the phone's setup service builds it (it pauses when the phone gets hot)
-  and the next start of the app plays it. The full option pages stay in the setup window.
-- **Fixed: tapping the game-over question did nothing on Android** (#455, for #427). After a game over, Cancel/Save
-  and To Title Screen/Continue now take a tap on the Flexible touch style, which shows only A (Choose) there. The
-  game runs this question as a menu, so the touch controls had treated it as one.
-- **The log now notes a pause menu without its selection cursor** (#454, for #336). If the item menu's cursor is gone
-  (the menu can then only be used with the mouse), `captures/wwhd.log` gets a `[menu-cursor]` line saying which of
-  the game's conditions for the cursor is missing. Nothing changes in play. If this happens to you, please send the
-  log with the issue.
-- **Fixed: loading a full save state in a new session could crash the Vulkan renderer** (#456, thanks @itsarahtonin
-  for the report and fix, #451). A state saved while restyled button prompts were shown kept text that pointed at
-  their button pictures, which full states don't carry; in a later session that hadn't shown restyled prompts, the
-  game drew that text against an empty picture and the renderer stopped with "missing sampled texture". Such text
-  is now rebuilt from the game's own font after the load.
-- **Fixed: controller rumble on macOS stopped working again** (#464, thanks @davidsgullick, #346). A change made while
-  #347 was reviewed switched to a looping haptic player that controllers reject, so the motors never ran. Rumble now
-  uses one long haptic event whose strength changes live, as in #347's first version, and keeps the recovery when
-  macOS resets the haptics engine.
-- **Fixed: opening the item menu's settings page with the stick turned "Invert camera up/down" off** (#463, thanks
-  @itsarahtonin for the report and fix, #461). You reach the page by pushing Left, so the stick was still held when it
-  opened and changed the first row. Stick directions held when the page opens (or when a row's own page closes) now
-  act only after they are released, like held buttons.
-- **Fixed: the GameCube A in the floating action hint was drawn about four times too large** (#460, thanks
-  @itsarahtonin for the report and fix, #458). With GameCube button prompts, "A Speak" and similar hints took their
-  size from the hint's frame instead of the button picture. The HUD's own buttons are unchanged.
-- **Android touch: no "Tap to start" text on the title screen** (#466, thanks @FabricioArroy0 for the request, #465).
-  Tapping still starts the game; only the text over the title is gone.
 - **Fixed: randomized games crashed at start or ran the original item functions** (#467, thanks @KaitoCrisHub for the
   report, #383). TWWHD Randomizer 1.2.0 points some of the game's tables at its own code through the game file's
   relocation entries, which the console applies when it loads the game. The port now applies them too, when it
@@ -66,6 +14,58 @@ what is on `devel` and not released yet (also in the
   the original ones ran in places, and some seeds crashed right after name entry). The randomizer compatibility
   check reads the relocated code as well. Unmodified games are byte for byte unchanged. Seeds already made are
   rebuilt the next time setup prepares them.
+- **Android touch: no "Tap to start" text on the title screen** (#466, thanks @FabricioArroy0 for the request, #465).
+  Tapping still starts the game; only the text over the title is gone.
+- **Fixed: the GameCube A in the floating action hint was drawn about four times too large** (#460, thanks
+  @itsarahtonin for the report and fix, #458). With GameCube button prompts, "A Speak" and similar hints took their
+  size from the hint's frame instead of the button picture. The HUD's own buttons are unchanged.
+- **Fixed: opening the item menu's settings page with the stick turned "Invert camera up/down" off** (#463, thanks
+  @itsarahtonin for the report and fix, #461). You reach the page by pushing Left, so the stick was still held when it
+  opened and changed the first row. Stick directions held when the page opens (or when a row's own page closes) now
+  act only after they are released, like held buttons.
+- **Fixed: controller rumble on macOS stopped working again** (#464, thanks @davidsgullick, #346). A change made while
+  #347 was reviewed switched to a looping haptic player that controllers reject, so the motors never ran. Rumble now
+  uses one long haptic event whose strength changes live, as in #347's first version, and keeps the recovery when
+  macOS resets the haptics engine.
+- **Fixed: loading a full save state in a new session could crash the Vulkan renderer** (#456, thanks @itsarahtonin
+  for the report and fix, #451). A state saved while restyled button prompts were shown kept text that pointed at
+  their button pictures, which full states don't carry; in a later session that hadn't shown restyled prompts, the
+  game drew that text against an empty picture and the renderer stopped with "missing sampled texture". Such text
+  is now rebuilt from the game's own font after the load.
+- **The log now notes a pause menu without its selection cursor** (#454, for #336). If the item menu's cursor is gone
+  (the menu can then only be used with the mouse), `captures/wwhd.log` gets a `[menu-cursor]` line saying which of
+  the game's conditions for the cursor is missing. Nothing changes in play. If this happens to you, please send the
+  log with the issue.
+- **Fixed: tapping the game-over question did nothing on Android** (#455, for #427). After a game over, Cancel/Save
+  and To Title Screen/Continue now take a tap on the Flexible touch style, which shows only A (Choose) there. The
+  game runs this question as a menu, so the touch controls had treated it as one.
+- **Make randomized games in the game** (#457, #452). **Settings › Randomizer** is now always there and makes and
+  imports randomized games itself, so setup isn't needed for them: choose Beginner, Standard or Everything, a seed
+  name or a permalink and **Make this game**, or **Import seed...** for the official randomizer's output. Setup makes
+  and builds it in the background while you keep playing (with progress, Cancel and setup's message if it fails);
+  then **Restart now** or later. On Android the phone's setup service builds it (it pauses when the phone gets hot)
+  and the next start of the app plays it. The full option pages stay in the setup window.
+- **Fixed: the bottom of the picture cut off on Android devices that keep their navigation bar over the game**
+  (#349, thanks @plxjammerplx for the report). On the Retroid Pocket Nova, 4:3 / Match window filled the whole
+  screen and the system's navigation bar covered the rupee counter. The picture, the view button and Match
+  window's shape now leave out the bars the system draws over the game. Desktop and devices that hide the bars
+  are unchanged.
+- **Fixed: the pirate ship's sail flickered with frame interpolation** (#446, thanks @darklinkpower for the report).
+  Above 30 fps the sail and flag off Outset were drawn torn on some frames (dark blotches), a regression in v0.5.1.
+  Cloth that the game draws into two alternating buffers (sails, flags, mantles, the tapestry, Molgera's sand floor)
+  now keeps switching buffers on every drawn frame. 30 fps is unchanged.
+- **Fixed: the controller stopped working after clicking the GamePad window** (#406, thanks @KaitoCrisHub for the
+  report). Controllers now keep driving the game while the TV window or the GamePad window is in front (on Windows the
+  focus could stay empty when it moved between the game's own windows). The existing option is now called
+  **Controller input in the background** (Settings › Controls, off by default): turn it on to keep using the
+  controller while another app is in front. Keyboard and mouse still need a game window in front.
+- **Vulkan: less render-thread CPU per draw** (#400, thanks @DaniXK-96). Faster shader lookups, buffers that keep their
+  size between frames and fewer copies for chunked draws: about 3% less render-thread time on a laptop (i3 + 920MX),
+  the same picture.
+- **Graphics › Grass draw distance** (#401, thanks @DaniXK-96). A new Vulkan setting that skips far tall grass
+  patches: All (the original, default), Far 4000, Medium 3000 or Near 2000 units from the camera. In thick grass
+  like Forest Haven it saves a lot of render-thread time on slower PCs (46 → 60 fps on an i3 laptop at Near); palms,
+  small plants and nearby grass always stay.
 
 ## v0.5.1
 
