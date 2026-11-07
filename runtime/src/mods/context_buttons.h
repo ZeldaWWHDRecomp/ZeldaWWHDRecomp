@@ -103,6 +103,14 @@ inline Buttons context_buttons(const PlayContext& c, const Options& o = {}) {
     auto show = [&](Button i, Kind k = Kind::kPlain, uint8_t label = 0) {
         r.b[i] = {true, k, label, k == Kind::kAction ? action_variant(c, label) : uint8_t(0)};
     };
+    // a system question (the save question after a game over, which runs as a menu: dMenu_flag is set): its
+    // buttons are taken by a tap on them (touch_talk.h); A takes the one the cursor is on. (The GreenNaugahyde
+    // fork hides every button there.)
+    if (c.has(kInGame) && c.has(kQuestion) && c.question_shown) {
+        r.active = true;
+        show(kA, Kind::kAction, kActChoose);
+        return r;
+    }
     // no Quest Log, or a game menu (the pause menu and the item screen use every button): the full pad
     if (!c.has(kInGame) || c.has(kMenu)) {
         for (auto& v : r.b) v.shown = true;
@@ -113,12 +121,6 @@ inline Buttons context_buttons(const PlayContext& c, const Options& o = {}) {
     // a fade or a stage change without text: nothing to press
     if ((c.has(kFade) || c.has(kStageChange)) && !talking(c)) {
         if (ff) show(kZR, Kind::kFastForward);
-        return r;
-    }
-    // a system question (the save question after a game over): its buttons are taken by a tap on them
-    // (touch_talk.h); A takes the one the cursor is on. (The GreenNaugahyde fork hides every button there.)
-    if (c.has(kQuestion) && c.question_shown) {
-        show(kA, Kind::kAction, kActChoose);
         return r;
     }
     // a choice, a number entry, a shop's item choice: A takes it; B cancels the number entry and leaves the shop

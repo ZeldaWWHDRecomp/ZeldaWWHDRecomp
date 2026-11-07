@@ -111,11 +111,13 @@ struct Out {
 
 inline Mode mode_of(const PlayContext& c, bool menu_on_tv) {
     if (!c.has(kInGame)) return kModeNone;
+    // a system question first: the game over's save question runs as a menu (dGameover_c sets dMenu_flag
+    // while its dMenu_save_c asks), and nothing else takes a finger while its buttons are drawn
+    if (c.has(kQuestion) && c.question_shown) return kModeQuestion;
     if (c.has(kMenu)) return menu_on_tv ? kModeMenu : kModeNone;
     if (c.has(kWindCompass)) return kModeWind;
     if (c.has(kNumberEntry)) return kModeNumber;
     if (c.has(kChoice)) return kModeChoice;
-    if (c.has(kQuestion) && c.question_shown) return kModeQuestion;
     if (c.has(kShop)) return kModeShop;
     if (talking(c)) return kModeTalk;
     return kModeNone;
