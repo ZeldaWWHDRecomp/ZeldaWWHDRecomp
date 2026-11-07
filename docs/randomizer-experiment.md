@@ -25,6 +25,8 @@ Switching between games that were built before needs no new build. Each seed tak
 
 ## In the game: Settings > Randomizer
 
+The page is always there. Before any randomized game is made it says where setup makes one;
+after that it shows:
 - this game's seed hash words and permalink;
 - the games already built, to play from the next start;
 - the spoiler log, after a question: the way to the end, every location, entrances, hints,
