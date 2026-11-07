@@ -77,7 +77,11 @@ uint32_t g_tg_was, g_hp_was;
 char g_stage[8];
 uint32_t steps_here = 0;  // logic steps in this stage (the test aid)
 
-const char* stage() { return (const char*)mem::ptr(kStage); }
+const char* stage() {  // (the clean code: names.h clean_stage; the game's own bytes can carry an older name's after it)
+    static char code[8];
+    names::clean_stage(mem::ptr(kStage), code);
+    return code;
+}
 float f32(uint32_t a) { return (float)ldf32(a); }
 uint32_t bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
 bool placed(uint32_t a) { return ld8(a + kGroup) == kEnemy && ld16(a + kSetId) != 0xFFFF; }
