@@ -38,6 +38,14 @@ constexpr uint64_t kBootFrame = 96;              // the TV frame the first gamep
 bool enabled();
 void set_boot_frame(uint64_t tv);    // the TV frame of the first gameplay frame
 uint64_t script_frame(uint64_t tv);  // the TV frame scripted test aids compare with
+// WWHD_TEST_STEP_CLOCK=1 (with WWHD_TEST_FIXED_SEED): scripted test aids count logic steps instead of TV frames
+// (from the first gameplay frame on, again as kBootFrame): presses, sticks, keys, state saves/loads, warps, the
+// scenario origin and frame dumps then act after the same number of game steps however fast the host is. With TV
+// frames, a build that misses a step under host load gets every later input and load a step early in game time
+// (2026-11-06: the cliff check's fake divergences). The game runtime gives the step counter (set_step_source;
+// interp::logic_steps); without one, TV frames as before.
+void set_step_source(uint64_t (*steps)());
+bool step_clock();
 
 // WWHD_TEST_FIXED_SEED: on for any value other than empty or "0"
 inline bool enabled_value(const char* v) { return v && *v && !(v[0] == '0' && v[1] == 0); }
