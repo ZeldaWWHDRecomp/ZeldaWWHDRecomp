@@ -24,6 +24,9 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <string>
+
+namespace interp { uint64_t logic_steps(); }
 
 namespace mods {
 namespace {
@@ -61,7 +64,66 @@ GameUi read_game_ui() {
 // the same reading for other host features (play_context.cpp), so the signals are read in one place
 GameUi game_ui_now() { return read_game_ui(); }
 
+// Issue #336 (the pause menu's selection cursor gone until the title screen; not reproduced here): with the
+// item menu up for 1.5 s, the game's own conditions for drawing its selection cursor (hdIngameUi_c::
+// drawPrimaryScreens, hdScreenCursor_c::blankExecute / loopAllExecute) are read once per opening; when that
+// changes from shown to missing or back, one line says so and which condition is missing. A player's log then
+// tells a lost game state (the line) from a cursor the game drew but the picture lost (no line). Reads only;
+// at most 20 lines a session.
+//   sInputOptions (*101F8378) +0x14   directional input on (the cursor shown, the menu moved by buttons)
+//   sEventMgr (*101F4FF0) +0x70       the focused receiver; its +0xC must be that event manager
+//   sCursorMgrInstance (*101F5A44)    +0x18 the active cursor (0 focus, 1 fixed), +0x10 its cursors; the
+//                                     cursor's +0x14 its state id, whose +4 is the name (::StateID_LoopAll)
+//   sIngameUi +0x23D                  mMenuRequested (set by Game Over; the TV cursor is drawn only at 0)
+static void menu_cursor_watch() {
+    static int lines = 0;
+    static uint64_t since = 0;  // the logic step the item menu was found up (0: not up)
+    static bool checked = false, missing_before = false;
+    const uint32_t scene = ld32(kIngameUi);
+    bool menu = false;
+    if (object(scene, 0x24c)) {
+        const uint32_t current = ld32(scene + 0x18);
+        const uint32_t descriptor = object(current, 12) ? ld32(current + 8) : ld32(scene + 0x14);
+        menu = descriptor == GD(0x1049ECB0);  // l_ingameMenuState
+    }
+    if (!menu) { since = 0, checked = false; return; }
+    const uint64_t step = interp::logic_steps();
+    if (!since) since = step ? step : 1;
+    if (checked || step < since + 45) return;
+    checked = true;
+    auto text = [](uint32_t a) {
+        std::string s;
+        for (uint32_t i = 0; i < 40 && a >= mem::kMem2Start && a + i < mem::kMem2End; i++) {
+            const char ch = char(ld8(a + i));
+            if (!ch) break;
+            s += ch;
+        }
+        return s;
+    };
+    const uint32_t options = ld32(GD(0x101F8378)), events = ld32(GD(0x101F4FF0)), mgr = ld32(GD(0x101F5A44));
+    const int directional = object(options, 0x18) ? ld8(options + 0x14) : -1;
+    const uint32_t focus = object(events, 0x74) ? ld32(events + 0x70) : 0;
+    const bool focus_ok = object(focus, 0x60) && ld32(focus + 0xC) == events;
+    const uint32_t active = object(mgr, 0x20) ? ld32(mgr + 0x18) : ~0u;
+    const uint32_t cursor = active < 2 ? ld32(mgr + 0x10 + 4 * active) : 0;
+    const uint32_t id = object(cursor, 0x54) ? ld32(cursor + 0x14) : 0;
+    const std::string state = object(id, 8) ? text(ld32(id + 4)) : "none";
+    const int requested = ld8(scene + 0x23D);
+    const bool shown = directional == 1 && focus_ok && active == 0 && requested == 0 &&
+                       (state == "::StateID_LoopAll" || state == "::StateID_InAll");
+    if (shown != missing_before) return;  // as at the last check: nothing new to say
+    missing_before = !shown;
+    if (lines >= 20) return;
+    lines++;
+    if (shown) LOG("[menu-cursor] the item menu's selection cursor is back");
+    else
+        LOG("[menu-cursor] the item menu is up without its selection cursor (issue #336): directional input %d, focus %s, "
+            "cursor %d %s, menu requested %d", directional, focus_ok ? "ok" : focus ? "another event manager's" : "none",
+            int(active), state.c_str(), requested);
+}
+
 void hud_service() {
+    menu_cursor_watch();
     const auto now = std::chrono::steady_clock::now();
     const float seconds = g_last.time_since_epoch().count() ? std::min(0.25f, std::chrono::duration<float>(now - g_last).count()) : 0.f;
     g_last = now;
