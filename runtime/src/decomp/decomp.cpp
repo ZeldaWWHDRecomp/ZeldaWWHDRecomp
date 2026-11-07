@@ -52,7 +52,9 @@
 #include <set>
 #include <sstream>
 #include <string>
+#include <map>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -84,7 +86,25 @@ void gmem_stack_fresh(uint32_t ea, uint32_t n, uint32_t) { memset(ppc_ptr(ea), 0
 // the harness's stack guard hooks (gabi.h do_call); the game has WWHD_DECOMP_GUARD instead
 void gmem_stack_args(int) {}
 void gmem_call_top(uint32_t) {}
+#ifdef WWHD_DECOMP_FAST
+extern "C" unsigned hostrt_fast_entries(void (*add)(uint32_t addr, uint32_t sig, void* fn));  // hostrt_fast.cpp
+extern "C" PpcFunc hostrt_fast_direct(uint32_t addr);  // hostrt_fast.cpp
+// fast mode diagnostics (WWHD_DECOMP_FAST_STATS=PATH): every guest call that still leaves a decompiled body (gmem_call,
+// decomp_lcall), counted by (caller slot, target, kind), written to PATH every 2 s. Off: one predictable branch.
+static bool g_fstats = false;
+static std::mutex g_fstats_mu;
+static std::map<std::tuple<uint32_t, uint32_t, int>, uint64_t>* g_fstats_map = nullptr;
+static void fstat(uint32_t f, uint32_t target, int kind) {
+    std::lock_guard<std::mutex> l(g_fstats_mu);
+    (*g_fstats_map)[{f, target, kind}]++;
+}
+static void fstats_write(const std::string& path);
+#define WWHD_FSTAT(f, t, k) do { if (__builtin_expect(g_fstats, 0)) fstat(f, t, k); } while (0)
+#else
+#define WWHD_FSTAT(f, t, k) do { } while (0)
+#endif
 void gmem_call(Cpu* c, uint32_t target, int kind, int, int) {
+    WWHD_FSTAT(c->decomp_running, target, kind);
 #ifdef WWHD_DECOMP_SITE_LR
     // kind | 4 (game build, gabi.h site_take): LR already holds the return address of the call site (site-exact LR)
     const bool site = kind & 4;
@@ -96,6 +116,23 @@ void gmem_call(Cpu* c, uint32_t target, int kind, int, int) {
     // callers apart by LR (story_mail's text-length check, true60's call-site checks) sees the same
     // caller as in the normal build (before, LR still held the return address into the decompiled
     // function's own caller)
+#ifdef WWHD_DECOMP_FAST
+    // fast mode: an import stub (HLE: the core's slot table 0xC0000000..0xC0040000) needs no call_lr answer; LR is
+    // read there only by log lines, debug tools and the save-state park check, which fast mode does not keep
+    if (target - 0xC0000000u < 0x40000u) {
+        c->pc = target;
+        ppc_dispatch(c);
+        return;
+    }
+    // a host runtime root (hostrt_fast.cpp): its f_X straight away (the two address ranges of the roots)
+    if (target - 0x028EA000u < 0xC000u || target - 0x0286C000u < 0x2000u) {
+        if (const PpcFunc hf = hostrt_fast_direct(target)) {
+            c->pc = target;
+            hf(c);
+            return;
+        }
+    }
+#endif
     const uint32_t f = c->decomp_running;
     // a decompiled function that runs decompiled: straight into its unit's entry, as decomp::call does
     // (decomp.h direct_slot; the guest state is the same as through the dispatch table); not from a
@@ -153,6 +190,7 @@ extern "C" __attribute__((visibility("default"))) uint32_t decomp_native_lr(Cpu*
 // cache null: LR already holds the return address of the call site (gabi.h site_take, site-exact LR)
 extern "C" __attribute__((visibility("default"))) void decomp_lcall(Cpu* c, uint32_t slot, uint32_t addr, uint64_t* cache) {
     const uint32_t f = c->decomp_running;
+    WWHD_FSTAT(f, addr, 2);
 #ifdef WWHD_DECOMP_SITE_LR
     if (f && cache) cached_lr(c, f, addr, cache);
 #else
@@ -212,6 +250,12 @@ void decomp_register(const char* unit, uint32_t addr, const char* name, void (*f
 
 uint8_t* g_decomp_native_ok = nullptr;
 GabiNativeEntry* g_decomp_native_entry = nullptr;
+#ifdef WWHD_DECOMP_FAST
+const PpcFunc* g_decomp_hle_tab = nullptr;  // gabi.h: the HLE import stubs' host functions (direct_init)
+const GabiPtrEntry* g_decomp_ptr_tab = nullptr;
+const GabiPtrEntry* g_decomp_call_tab = nullptr;
+uint32_t g_decomp_ptr_mask = 0;
+#endif
 uint8_t g_decomp_exact = 0;
 
 // the native entries the units register (gabi.h NativeReg, glue.cpp), per slot; enabled into g_decomp_native_entry by
@@ -252,7 +296,7 @@ std::vector<std::string> split_list(const char* e);  // below
 void direct_init() {
     const char* e = getenv("WWHD_DECOMP_DIRECT");
     if (e && !strcmp(e, "0")) { LOG("[decomp] WWHD_DECOMP_DIRECT=0: decompiled calls go through the dispatch table"); return; }
-    if (g_debug) return;
+    if (g_debug & 1) return;  // stats / guard runs: no direct calls (entry stats alone keep them)
     // frame-exact functions: entered and left through the dispatch table (measurement switch: =all)
     const bool all = e && !strcmp(e, "all");
     unsigned nfx = 0;
@@ -274,7 +318,7 @@ void direct_init() {
     unsigned n = 0;
     for (unsigned i = 0; i < kNumSlots; i++) {
         Slot& s = g_slots[i];
-        if (!s.on || !s.run || !s.cand || s.frame_exact) continue;
+        if (!s.on || !s.run || !s.cand || s.frame_exact || s.hooked) continue;  // hooked: only behind hook_X
         const RecompEntry* r = std::lower_bound(b, end, s.addr, [](const RecompEntry& x, uint32_t a) { return x.addr < a; });
         if (r == end || r->addr != s.addr || dispatch::lookup(s.addr) != r->fn) continue;
         uint32_t h = direct_hash(s.addr);
@@ -326,12 +370,81 @@ void direct_init() {
                 continue;
             }
             if (!(ok[i] & 1) || (ex && !strcmp(ex, "n"))) continue;
+#ifdef WWHD_DECOMP_FAST
+            // WWHD_DECOMP_FAST_NX=0: no entries for callees that are not register-exact (gabi.h bit 14; bisecting)
+            static const bool nx_off = [] { const char* e = getenv("WWHD_DECOMP_FAST_NX"); return e && !strcmp(e, "0"); }();
+            if (nx_off && (r.sig & 0x4000u)) continue;
+#endif
             ne[i] = GabiNativeEntry{r.fn, r.sig, 0};
             nen++;
         }
         g_decomp_exact = (ex && !strcmp(ex, "l") ? 0 : 1) | (poison && !strcmp(poison, "1") ? 6 : 0) |
                          (poison && !strcmp(poison, "args") ? 2 : 0);
         __atomic_store_n(&g_decomp_native_entry, ne, __ATOMIC_RELEASE);
+#ifdef WWHD_DECOMP_FAST
+        {  // fast mode: the same entries by address for calls through function pointers and vtables (gabi.h call_ptr)
+            uint32_t size = 1024;
+            while (size < 4 * (nen + 64)) size <<= 1;
+            GabiPtrEntry* pt = new GabiPtrEntry[size]();
+            const uint32_t mask = size - 1;
+            for (unsigned i = 0; i < kNumSlots; i++) {
+                if (!ne[i].sig || !g_slots[i].addr) continue;
+                const uint32_t a = g_slots[i].addr;
+                uint32_t h = ((a >> 2) * 0x9E3779B1u >> 7) & mask;  // gabi.h gabi_ptr_hash
+                while (pt[h].addr) h = (h + 1) & mask;
+                pt[h] = GabiPtrEntry{a, ne[i].sig, ne[i].fn};
+            }
+            // the host runtime roots' native entries (hostrt_fast.cpp): decompiled callers call the host functions
+            // directly (WWHD_HOSTRT=0 / _CHECK / WWHD_HOSTRT_FAST=0: none, the guest path to hook_X as before)
+            static GabiPtrEntry* s_pt;
+            static uint32_t s_mask;
+            s_pt = pt, s_mask = mask;
+            const unsigned nhr = hostrt_fast_entries([](uint32_t a, uint32_t sig, void* fn) {
+                uint32_t h = ((a >> 2) * 0x9E3779B1u >> 7) & s_mask;
+                while (s_pt[h].addr && s_pt[h].addr != a) h = (h + 1) & s_mask;
+                if (!s_pt[h].addr) s_pt[h] = GabiPtrEntry{a, sig, fn};  // a decompiled body of the same address wins
+            });
+            LOG("[decomp] fast mode: %u host runtime roots called directly (native entries)", nhr);
+            // HLE import stubs: their host functions by slot, for gabi::call's direct path (WWHD_DECOMP_FAST_HLE=0: none)
+            const char* fh = getenv("WWHD_DECOMP_FAST_HLE");
+            if (!(fh && !strcmp(fh, "0"))) {
+                PpcFunc* ht = new PpcFunc[0x40000 / 4]();
+                unsigned nh = 0;
+                for (uint32_t i = 0; i < 0x40000 / 4; i++)
+                    if ((ht[i] = dispatch::lookup(0xC0000000u + 4 * i))) nh++;
+                __atomic_store_n(&g_decomp_hle_tab, ht, __ATOMIC_RELEASE);
+                LOG("[decomp] fast mode: %u HLE import stubs called directly", nh);
+            } else {
+                LOG("[decomp] fast mode: WWHD_DECOMP_FAST_HLE=0, HLE imports through gmem_call");
+            }
+            g_decomp_ptr_mask = mask;
+            __atomic_store_n(&g_decomp_ptr_tab, pt, __ATOMIC_RELEASE);
+            // gabi::call by address: the same entries; bisecting: WWHD_DECOMP_FAST_CALL=0 (none) / _CALL_ONLY /
+            // _CALL_EXCLUDE=ADDR,...|@file
+            const char* cf = getenv("WWHD_DECOMP_FAST_CALL");
+            std::set<uint32_t> conly, cexcl;
+            for (auto& w : split_list(getenv("WWHD_DECOMP_FAST_CALL_ONLY"))) conly.insert((uint32_t)strtoul(w.c_str(), nullptr, 16));
+            for (auto& w : split_list(getenv("WWHD_DECOMP_FAST_CALL_EXCLUDE"))) cexcl.insert((uint32_t)strtoul(w.c_str(), nullptr, 16));
+            if (cf && !strcmp(cf, "0")) {
+                LOG("[decomp] fast mode: WWHD_DECOMP_FAST_CALL=0, gabi::call by address takes no native entries");
+            } else if (conly.empty() && cexcl.empty()) {
+                g_decomp_call_tab = pt;
+            } else {
+                GabiPtrEntry* ct = new GabiPtrEntry[size]();
+                unsigned nc = 0;
+                for (uint32_t h = 0; h < size; h++)
+                    if (pt[h].addr && (conly.empty() || conly.count(pt[h].addr)) && !cexcl.count(pt[h].addr)) {
+                        uint32_t k = ((pt[h].addr >> 2) * 0x9E3779B1u >> 7) & mask;
+                        while (ct[k].addr) k = (k + 1) & mask;
+                        ct[k] = pt[h];
+                        nc++;
+                    }
+                g_decomp_call_tab = ct;
+                LOG("[decomp] fast mode: gabi::call by address with %u native entries (bisecting)", nc);
+            }
+            LOG("[decomp] fast mode: %u native entries for calls through pointers (table %u)", nen, size);
+        }
+#endif
         LOG("[decomp] real native calls: %u register-exact functions, %u native entries on, %u signature mismatches, %u "
             "without an entry (argument types)%s%s%s", nreg, nen, nbad, ntypes, ex && *ex ? " WWHD_DECOMP_NATIVE_EXACT=" : "", ex ? ex : "", (g_decomp_exact & 4) ? " (WWHD_DECOMP_POISON=1: argument/result registers poisoned)" : (g_decomp_exact & 2) ? " (WWHD_DECOMP_POISON=args: argument registers poisoned)" : "");
     } else {
@@ -522,6 +635,15 @@ int g_debug = 0;
 namespace {
 int g_guard = 0;  // 1 log, 2 restore
 bool g_stats = false;
+// WWHD_DECOMP_ENTRY_STATS=PATH (diagnostics, any decomp build): every entry into a decompiled body through its
+// guest entry (f_X -> hook_X -> decomp::call: recompiled callers, the kept recompiled functions, HLE callbacks,
+// thread starts, dispatch-table calls), counted by (LR, callee slot); written to PATH every 2 s as
+// count, caller function (the recompiled-table entry at or below LR), its kind (kept = recompiler-kept, decomp =
+// decompiled, recomp = recompiled, hle = LR outside the code), LR, callee address, callee name
+bool g_estats = false;
+std::mutex g_estats_mu;
+std::map<std::pair<uint32_t, uint32_t>, uint64_t>* g_estats_map = nullptr;
+void estats_write(const std::string& path);
 std::unique_ptr<std::atomic<uint64_t>[]> g_ncand, g_norig;
 
 std::vector<std::string> split_list(const char* e) {
@@ -574,6 +696,52 @@ void write_stats(const std::string& path) {
     rename(tmp.c_str(), path.c_str());
 }
 
+void estats_write(const std::string& path) {
+    std::vector<std::pair<std::pair<uint32_t, uint32_t>, uint64_t>> v;
+    {
+        std::lock_guard<std::mutex> l(g_estats_mu);
+        v.assign(g_estats_map->begin(), g_estats_map->end());
+    }
+    static const std::set<uint32_t> kept(g_recomp_decomp_kept, g_recomp_decomp_kept + g_recomp_decomp_kept_count);
+    // per (caller function, callee): the LRs merged
+    std::map<std::pair<uint32_t, uint32_t>, std::pair<uint64_t, uint32_t>> m;
+    for (auto& [k, n] : v) {
+        const uint32_t lr = k.first;
+        uint32_t fn = 0;
+        if (lr >= 0x02000000u && lr < 0x10000000u) {
+            unsigned lo = 0, hi = g_recomp_func_count;
+            while (lo < hi) {
+                unsigned mid = (lo + hi) / 2;
+                if (g_recomp_funcs[mid].addr <= lr) lo = mid + 1; else hi = mid;
+            }
+            if (lo) fn = g_recomp_funcs[lo - 1].addr;
+        }
+        auto& e = m[{fn, k.second}];
+        e.first += n;
+        e.second = lr;
+    }
+    std::vector<std::pair<std::pair<uint32_t, uint32_t>, std::pair<uint64_t, uint32_t>>> w(m.begin(), m.end());
+    std::sort(w.begin(), w.end(), [](const auto& a, const auto& b) { return a.second.first > b.second.first; });
+    FILE* fp = fopen((path + ".tmp").c_str(), "w");
+    if (!fp) return;
+    for (auto& [k, e] : w) {
+        const uint32_t fn = k.first;
+        const Slot* cs = fn ? direct_slot(fn) : nullptr;
+        const char* kind = !fn ? "hle" : kept.count(fn) ? "kept" : cs ? "decomp" : "recomp";
+        const Slot* cs2 = nullptr;
+        if (fn && !cs) {  // a decompiled caller that is not in the direct table (frame-exact, off): by slot address
+            const Slot* b = std::lower_bound(g_slots, g_slots + kNumSlots, fn, [](const Slot& a, uint32_t x) { return a.addr < x; });
+            if (b != g_slots + kNumSlots && b->addr == fn) cs2 = b;
+        }
+        if (cs2 && !kept.count(fn)) kind = "decomp";
+        const Slot& t = g_slots[k.second];
+        fprintf(fp, "%llu\t%08X\t%s\t%s\t%08X\t%08X\t%s\n", (unsigned long long)e.first, fn, kind,
+                cs ? cs->name : cs2 ? cs2->name : "-", e.second, t.addr, t.name);
+    }
+    fclose(fp);
+    rename((path + ".tmp").c_str(), path.c_str());
+}
+
 // WWHD_DECOMP_GUARD: the caller's back chain word at the entry SP must not change across a decompiled
 // function (no function writes it); a change is a function writing past its topmost stack object
 // (a gabi::Local smaller than what a real callee writes into it). The report lists the other changed
@@ -603,6 +771,20 @@ void guard_report(Cpu* c, const Slot& s, const uint8_t* before) {
 
 void call_debug(Cpu* c, Slot& s) {
     size_t i = &s - g_slots;
+    if (g_estats) {
+        {
+            std::lock_guard<std::mutex> l(g_estats_mu);
+            (*g_estats_map)[{c->lr, (uint32_t)i}]++;
+        }
+        if (!(g_debug & 1)) {  // entry stats only: the entry as decomp::call makes it
+            if (!s.on) return s.orig(c);
+            const uint16_t outer = c->decomp_running;
+            c->decomp_running = uint16_t(i + 1);
+            s.cand(c);
+            c->decomp_running = outer;
+            return;
+        }
+    }
     if (!s.on) {
         if (g_stats) g_norig[i].fetch_add(1, std::memory_order_relaxed);
         s.orig(c);
@@ -682,7 +864,33 @@ void init() {
         }).detach();
         atexit([] { write_stats(path); });
     }
-    g_debug = g_stats || g_guard;
+    if (const char* p = getenv("WWHD_DECOMP_ENTRY_STATS")) {
+        g_estats_map = new std::map<std::pair<uint32_t, uint32_t>, uint64_t>();
+        g_estats = true;
+        static std::string path = p;
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                estats_write(path);
+            }
+        }).detach();
+        LOG("[decomp] guest-entry stats: %s", p);
+    }
+    g_debug = (g_stats || g_guard ? 1 : 0) | (g_estats ? 2 : 0);
+#ifdef WWHD_DECOMP_FAST
+    if (const char* p = getenv("WWHD_DECOMP_FAST_STATS")) {
+        g_fstats_map = new std::map<std::tuple<uint32_t, uint32_t, int>, uint64_t>();
+        g_fstats = true;
+        static std::string path = p;
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                fstats_write(path);
+            }
+        }).detach();
+        LOG("[decomp] fast mode stats: %s", p);
+    }
+#endif
     direct_init();
     sites_init();
 #ifdef WWHD_DECOMP_EDGE_LCALL
@@ -693,3 +901,24 @@ void init() {
 #endif
 }
 }  // namespace decomp
+
+#ifdef WWHD_DECOMP_FAST
+static void fstats_write(const std::string& path) {
+    std::vector<std::pair<std::tuple<uint32_t, uint32_t, int>, uint64_t>> v;
+    {
+        std::lock_guard<std::mutex> l(g_fstats_mu);
+        v.assign(g_fstats_map->begin(), g_fstats_map->end());
+    }
+    std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.second > b.second; });
+    FILE* fp = fopen((path + ".tmp").c_str(), "w");
+    if (!fp) return;
+    for (auto& [k, n] : v) {
+        const auto [f, t, kind] = k;
+        const decomp::Slot* ts = decomp::direct_slot(t);
+        fprintf(fp, "%llu\t%s\t%08X\t%d\t%s\n", (unsigned long long)n, f ? decomp::g_slots[f - 1].name : "-", t, kind,
+                ts ? ts->name : "-");
+    }
+    fclose(fp);
+    rename((path + ".tmp").c_str(), path.c_str());
+}
+#endif

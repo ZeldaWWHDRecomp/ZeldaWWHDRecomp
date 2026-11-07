@@ -64,6 +64,19 @@ extern "C" __attribute__((visibility("default"))) gabi::ThreadState* gabi_tp_mis
 }
 #endif
 
+#if defined(GABI_FAST) && defined(GABI_TLS_OWNER)
+/* fast mode (runtime/src/hostrt/hostrt_cxx.cpp): may host code running for decompiled code on Cpu C (a host runtime
+ * root it called) call a decompiled function's native entry now: this thread's block is inside a decompiled body on C
+ * whose own calls may go native (the conditions a native call from that body itself would check) */
+extern "C" __attribute__((visibility("default"))) int gabi_fast_native_ctx(Cpu* c) {
+    const gabi::ThreadState& t = GABI_TLS_;
+    return t.cpu == c && t.depth > 0 && t.caller_ok;
+}
+/* fast mode (runtime/src/hostrt/hostrt_fast.cpp): the Cpu the calling decompiled body runs on (its native call of a
+ * host runtime root leaves the root's result registers there, as the guest call does) */
+extern "C" __attribute__((visibility("default"))) Cpu* gabi_fast_cpu() { return GABI_TLS_.cpu; }
+#endif
+
 #ifdef GABI_GAME_BUILD
 /* a register-exact function's native entry (gabi.h NativeReg; runtime/src/decomp/decomp.cpp) */
 #ifdef GABI_SHARED_TLS

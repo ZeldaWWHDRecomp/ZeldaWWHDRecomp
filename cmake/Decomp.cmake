@@ -24,6 +24,13 @@ set(WWHD_DECOMP_OUT "${CMAKE_BINARY_DIR}/decomp")
 # (tools/decomp_build/hooks_none.cpp, which setup replaces with its own hooks and units); the object library
 # wwhd_decomp_flags (never built) records in compile_commands.json how setup compiles a game unit.
 option(WWHD_DECOMP_THINLTO "decomp build: ThinLTO inside each game unit (experimental)" OFF)
+# Fast mode (2026-11-06, decomp build level 1): speed only. Verifier isolation of the call path, save-state compatibility
+# and guest-mod hooking are dropped (the game must still play as the normal build); units stay isolated (ld -r, hidden
+# symbols local), but a register-exact function is exported by address (extern "C" wwhd_ne_XXXXXXXX, native_rules.py
+# --fast) and a call from another unit binds to it at link time (gabi.h GABI_FAST_NE). Forces the level-1 switches it
+# builds on (below); WWHD_DECOMP_FAST_LTO: ThinLTO inside each unit (as WWHD_DECOMP_THINLTO, also on Android).
+option(WWHD_DECOMP_FAST "decomp build: fast mode (calls between units bound by address; no isolation, no full states)" OFF)
+option(WWHD_DECOMP_FAST_LTO "decomp build: fast mode with ThinLTO inside each game unit" ON)
 option(WWHD_DECOMP_RUNTIME_ONLY "decomp build: the runtime only, for packaging (no units, no game)" OFF)
 
 function(wwhd_decomp_configure)
@@ -40,9 +47,16 @@ function(wwhd_decomp_configure)
     return()
   endif()
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  # fast mode: the functions the runtime hooks run their decompiled bodies behind the hook (gen.py --hooked-bodies;
+  # WWHD_DECOMP_FAST_HOOKED=OFF keeps them recompiled as in the default decomp build)
+  option(WWHD_DECOMP_FAST_HOOKED "decomp build, fast mode: runtime-hooked functions run decompiled behind their hook" ON)
+  set(gen_extra)
+  if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_HOOKED)
+    set(gen_extra --hooked-bodies)
+  endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/gen.py"
                           "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}"
-                          --game "${WWHD_DECOMP_GAME}/code/cking.rpx"
+                          --game "${WWHD_DECOMP_GAME}/code/cking.rpx" ${gen_extra}
                   RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err OUTPUT_STRIP_TRAILING_WHITESPACE)
   if(NOT rc EQUAL 0)
     message(FATAL_ERROR "WWHD_DECOMP: tools/decomp_build/gen.py failed:\n${out}\n${err}")
@@ -76,7 +90,7 @@ function(wwhd_decomp_configure)
   option(WWHD_DECOMP_NATIVE_TAILPTR "decomp build: tail_ptr callees native (level 1 step 2)" OFF)
   set(lift)
   foreach(k AUTOFRAME LOCAL TAILPTR)
-    if(WWHD_DECOMP_NATIVE_${k})
+    if(WWHD_DECOMP_NATIVE_${k} OR WWHD_DECOMP_FAST)  # fast mode: all step-2 categories
       string(TOLOWER "${k}" l)
       list(APPEND lift "${l}")
     endif()
@@ -92,9 +106,31 @@ function(wwhd_decomp_configure)
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WWHD_DECOMP_DECL_TABLE}")
   elseif(EXISTS "${WWHD_DECOMP_DIR}/tools/verify/decl_handoff.tsv")
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WWHD_DECOMP_DIR}/tools/verify/decl_handoff.tsv")
+  elseif(WWHD_DECOMP_FAST)
+    # fast mode needs the declaration table: without it no function is register-exact, and fast mode's shape-matched
+    # entries of the other functions (gabi.h bit 14) are only safe for the few calls the table leaves to them (a fast
+    # build without a table crashed at start, 2026-11-07). Made here from this build's own translation with the
+    # decompilation's decl_lint.py (port mode; tools/decomp_build/decl_table.py, cached by a hash of its inputs: a few
+    # minutes when the decompilation or the translation changed, nothing otherwise). WWHD_DECOMP_DECL_TABLE overrides it.
+    cmake_host_system_information(RESULT ncpu QUERY NUMBER_OF_LOGICAL_CORES)
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/decl_table.py"
+                            "${WWHD_DECOMP_DIR}" "${GEN_DIR}" "${WWHD_DECOMP_OUT}/verify/image.bin"
+                            "${WWHD_DECOMP_GAME}/code/cking.rpx" "${WWHD_DECOMP_OUT}/decl" --jobs ${ncpu}
+                    RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT rc EQUAL 0)
+      message(FATAL_ERROR "WWHD_DECOMP_FAST needs the decompilation's declaration table and could not make it:\n${out}\n${err}\n"
+              "(or give one: WWHD_DECOMP_DECL_TABLE=<decl_lint.py --handoff table>)")
+    endif()
+    message(STATUS "${out}")
+    set(decl_args --decl "${WWHD_DECOMP_OUT}/decl/handoff.tsv")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/decl_table.py")
+  endif()
+  set(fast_args)
+  if(WWHD_DECOMP_FAST)
+    set(fast_args --fast)
   endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py"
-                          "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE} ${decl_args} ${lift_args}
+                          "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE} ${decl_args} ${lift_args} ${fast_args}
                   RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err OUTPUT_STRIP_TRAILING_WHITESPACE)
   if(NOT rc EQUAL 0)
     message(FATAL_ERROR "WWHD_DECOMP: tools/decomp_build/native_rules.py failed:\n${out}\n${err}")
@@ -104,6 +140,9 @@ function(wwhd_decomp_configure)
   # site-exact LR (tools/decomp_build/site_lr.py): the original's bl lists per unit and the sited sources' list
   # default OFF (2026-11-04: about 3 ms per logic pass on the phone, ladder step 2); level 1 sets LR only at the edges
 option(WWHD_DECOMP_SITE_LR "decomp build: each guest call of a decompiled function gets its own bl's return address where it can be matched" OFF)
+  if(WWHD_DECOMP_FAST AND WWHD_DECOMP_SITE_LR)
+    message(FATAL_ERROR "WWHD_DECOMP_FAST needs WWHD_DECOMP_SITE_LR off")
+  endif()
   if(WWHD_DECOMP_SITE_LR)
     execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/site_lr.py" prepare
                             "${WWHD_DECOMP_OUT}" "${GEN_DIR}" "${WWHD_DECOMP_DIR}"
@@ -143,6 +182,23 @@ function(wwhd_decomp_link target)
   # between units (both on by default; off only to measure what they cost)
   option(WWHD_DECOMP_SHARED_TLS "decomp build: one gabi thread-local block for all game units" ON)
   option(WWHD_DECOMP_NATIVE_ENTRIES "decomp build: native entries for calls between game units (NativeReg)" ON)
+  # fast mode forces the level-1 switches it builds on (gabi.h GABI_FAST checks them) and keeps the others off; these
+  # are function-scope variables, the cache entries stay as the user set them
+  set(fast_on SHARED_TLS NATIVE_ENTRIES LEAN_ENTRY SLIM_SCOPE TP_CACHE TP_ENTRY GUEST_LCALL)
+  set(fast_off TP_CACHE_CHECK EDGE_LCALL SITE_LR THINLTO)
+  if(WWHD_DECOMP_FAST)
+    if(WWHD_DECOMP_EDGE_LCALL)
+      message(FATAL_ERROR "WWHD_DECOMP_FAST keeps WWHD_DECOMP_EDGE_LCALL off (no gain on the phone, 2026-11-06)")
+    endif()
+    foreach(k ${fast_on})
+      set(WWHD_DECOMP_${k} ON)
+    endforeach()
+    foreach(k ${fast_off})
+      set(WWHD_DECOMP_${k} OFF)
+    endforeach()
+    set(WWHD_DECOMP_NATIVE_AUTOFRAME ON)  # (native_rules.py got --lift autoframe,local,tailptr: GABI_NATIVE_PLACE)
+    list(APPEND opts -DGABI_FAST=1 -DGABI_FAST_NE=1)
+  endif()
   if(WWHD_DECOMP_SHARED_TLS)
     list(APPEND opts -DGABI_SHARED_TLS=1)
   endif()
@@ -220,9 +276,11 @@ function(wwhd_decomp_link target)
   # WWHD_DECOMP_THINLTO: ThinLTO inside each unit (its sources and glue are optimised together when `ld -r` merges
   # them; units stay isolated, so nothing is inlined across units or into the runtime)
   set(unit_link "${CMAKE_LINKER}" -r)
-  if(WWHD_DECOMP_THINLTO)
+  set(unit_lto OFF)
+  if(WWHD_DECOMP_THINLTO OR (WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_LTO))
+    set(unit_lto ON)
     list(APPEND opts -flto=thin)
-    set(unit_link "${CMAKE_CXX_COMPILER}" -r -flto=thin)
+    set(unit_link "${CMAKE_CXX_COMPILER}" -r -nostdlib -flto=thin)  # (no libraries in a relocatable link)
   endif()
   set(objs)
   file(MAKE_DIRECTORY "${WWHD_DECOMP_OUT}/units")
@@ -232,7 +290,13 @@ function(wwhd_decomp_link target)
     find_program(WWHD_DECOMP_LLD ld.lld HINTS "${ANDROID_TOOLCHAIN_ROOT}/bin" NO_DEFAULT_PATH REQUIRED)
     find_program(WWHD_DECOMP_OBJCOPY llvm-objcopy HINTS "${ANDROID_TOOLCHAIN_ROOT}/bin" NO_DEFAULT_PATH REQUIRED)
     set(merge "${WWHD_DECOMP_LLD}" -r)
-    set(unit_link ${merge})  # (WWHD_DECOMP_THINLTO is not supported on Android)
+    set(unit_link ${merge})
+    if(unit_lto)  # ld.lld -r runs the (Thin)LTO backend on the unit's bitcode and writes one relocatable object
+      if(WWHD_DECOMP_THINLTO AND NOT WWHD_DECOMP_FAST)
+        message(FATAL_ERROR "WWHD_DECOMP_THINLTO is not supported on Android (use WWHD_DECOMP_FAST, ThinLTO per unit)")
+      endif()
+      set(unit_link ${merge} --lto-O2 --thinlto-jobs=1)  # one backend thread per unit link (ninja runs several)
+    endif()
   endif()
   if(WWHD_DECOMP_SITE_LR)
     find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -288,6 +352,9 @@ function(wwhd_decomp_link target)
   target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
     "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${WWHD_DECOMP_OUT}/hooks.cpp" ${objs})
   target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
+  if(WWHD_DECOMP_FAST)  # the runtime's fast-mode parts (runtime/src/decomp)
+    target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST=1)
+  endif()
   if(WWHD_DECOMP_SITE_LR)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_SITE_LR=1)
   endif()

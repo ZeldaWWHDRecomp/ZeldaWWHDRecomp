@@ -25,6 +25,8 @@ struct Slot {
     uint8_t on = 0;
     uint8_t frame_exact = 0;               // 1: kFrameExact lists it (no direct calls into or from it)
     uint32_t ordinal = 0;                  // in the direct table (direct_init): its DirectEntry::ordinal
+    uint8_t hooked = 0;                    // fast mode (gen.py --hooked-bodies): the runtime hooks it; entered only
+                                           // behind its hook_X (hookorig_X), never directly or natively
 };
 struct UnitAlias {
     const char* name;  // a verify unit
@@ -65,6 +67,18 @@ struct GabiNativeEntry {
     uint32_t reserved;
 };
 extern "C" __attribute__((visibility("default"))) GabiNativeEntry* g_decomp_native_entry;
+#ifdef WWHD_DECOMP_FAST
+// fast mode (gabi.h GABI_FAST, the same layout): the enabled native entries by guest address, for call_ptr / vtables
+struct GabiPtrEntry {
+    uint32_t addr;
+    uint32_t sig;
+    void* fn;
+};
+extern "C" __attribute__((visibility("default"))) const GabiPtrEntry* g_decomp_ptr_tab;
+extern "C" __attribute__((visibility("default"))) uint32_t g_decomp_ptr_mask;
+extern "C" __attribute__((visibility("default"))) const GabiPtrEntry* g_decomp_call_tab;
+extern "C" __attribute__((visibility("default"))) const PpcFunc* g_decomp_hle_tab;
+#endif
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_exact;
 // a guest mod or the port hooks the function with recompiled-table ordinal `ordinal` (every g_mod_hook_flags
 // write that sets a flag): it is no longer entered natively

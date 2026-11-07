@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -66,6 +66,7 @@ SRCF = [("src:local", re.compile(r"gabi::(Local|Stack|LocalOf|FrameLocal)\b|\bLo
 LIFT = {"src:autoframe": "autoframe", "src:local": "local", "src:tail_ptr": "tailptr"}  # (src:wwhd_func: no native form)
 FUNC = re.compile(r"WWHD_(GLUE_)?FUNC(_R)?\(\s*0x([0-9A-Fa-f]{8})\s*,")
 LCALL = re.compile(r"\bgabi::lcall<0x([0-9A-Fa-f]{8}),")
+VERIFY_ADDR = re.compile(r"\bVERIFY(?:_NAMED)?\(\s*(0x[0-9A-F]{8})\b")
 FLOAT_T = re.compile(r"^(?:const\s+)?(?:f32|f64|float|double)$")
 
 
@@ -399,11 +400,19 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
             print("decomp: native-call rules: %s: ext %08X %s (the file's "
                   "functions keep guest calls%s)" % (os.path.relpath(p, out), a, what,
                                                      ", the callee its registers" if st == "exact" and r != (-1, -1) else ""))
+    # gen.py --hooked-bodies (fast mode): functions the runtime hooks, listed so their bodies run decompiled behind
+    # the hook; never entered natively (callers reach hook_X)
+    hooked = set()
+    hp = os.path.join(out, "hooked.txt")
+    if os.path.isfile(hp):
+        hooked = {int(x, 16) for x in open(hp, encoding="utf-8").read().split()}
     lines = []
     for a in sorted(dec):
         r = []
         if a in kept:
             r.append("kept")
+        if a in hooked:
+            r.append("runtime hook")
         if a in fx:
             r.append("framexact")
         note = []
@@ -447,7 +456,50 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
     return lines
 
 
-def unit_headers(out, lines):
+def fast_shape(flags):
+    """the native entry shape of a register-exact function (gabi.h NEntryT Thunk::run): result type, parameter list,
+    argument names (NativeInfo flags: bits 8-11 integer registers, `this` included, 12-15 float, 16-17 result)"""
+    ni, nf, rk = flags >> 8 & 15, flags >> 12 & 15, flags >> 16 & 3
+    cr = ("void", "uint32_t", "uint64_t", "double")[rk]
+    params = ["uint32_t a%d" % i for i in range(ni)] + ["double f%d" % i for i in range(nf)]
+    names = ["a%d" % i for i in range(ni)] + ["f%d" % i for i in range(nf)]
+    return cr, ", ".join(params), ", ".join(names)
+
+
+def fast_text(own_verify, own_exact, ext_exact):
+    """fast mode (cmake WWHD_DECOMP_FAST, gabi.h GABI_FAST_NE): calls between units bound by address at link time.
+    Each register-exact function of the unit is exported as extern "C" wwhd_ne_XXXXXXXX (its native entry shape)
+    through VERIFY's GABI_NE_<addr>(F) (empty for every other VERIFY address of the unit), and each register-exact
+    callee in another unit is declared with gabi_native::Ne<ADDR> {ok, fn} for gabi.h's lcall"""
+    t = ["#define GABI_FAST_NE_TABLE 1",
+         "#ifndef GABI_NE_VIS",
+         "#if defined(__APPLE__)",
+         '#define GABI_NE_VIS __attribute__((visibility("default")))  /* kept global by ld -r; executables bind directly */',
+         "#else",
+         '#define GABI_NE_VIS __attribute__((visibility("protected")))  /* kept by --localize-hidden; no PLT */',
+         "#endif",
+         "#endif",
+         "#define GABI_NE_TABLE 1",
+         "namespace gabi_native {",
+         "template <uint32_t A> struct Ne { static constexpr bool ok = false; };"]
+    for a, flags in sorted(ext_exact.items()):
+        cr, params, _ = fast_shape(flags)
+        t.append('extern "C" GABI_NE_VIS %s wwhd_ne_%08X(%s);' % (cr, a, params or "void"))
+        t.append("template <> struct Ne<0x%08Xu> { static constexpr bool ok = true; static constexpr auto fn = "
+                 "&wwhd_ne_%08X; };" % (a, a))
+    t.append("}  /* namespace gabi_native */")
+    for tok in sorted(own_verify):
+        a = int(tok, 16)
+        if a in own_exact:
+            cr, params, names = fast_shape(own_exact[a])
+            t.append('#define GABI_NE_%s(F) extern "C" GABI_NE_VIS %s wwhd_ne_%08X(%s) { return gabi::ne_body<%su, F, '
+                     '%s>(%s); }' % (tok, cr, a, params or "void", tok, cr, names))
+        else:
+            t.append("#define GABI_NE_%s(F)" % tok)
+    return "\n".join(t) + "\n"
+
+
+def unit_headers(out, lines, fast=False):
     """OUT/native/K.h for game unit K (units.json order, as glue/K.cpp): its functions' and the decompiled functions
     it calls in other units (lean calls) {address, slot index, flags (1: callee=native, 2: caller=ok, 4: listed)},
     sorted, as gabi.h's GABI_NATIVE_TABLE (pre-included by cmake/Decomp.cmake)"""
@@ -480,20 +532,49 @@ def unit_headers(out, lines):
             except OSError:
                 pass
         rows[k] += [(a, slot_of[a], flags_of[a] & ~2) for a in ext - own if a in slot_of]
+    # fast mode: every unit's VERIFY addresses (a function verified in two units is exported by functions.tsv's unit
+    # only, the unit its row above belongs to)
+    verify = collections.defaultdict(set)
+    if fast:
+        for u in uj["units"]:
+            for src in u["sources"]:
+                try:
+                    verify[index[u["name"]]].update(
+                        VERIFY_ADDR.findall(open(src["path"], encoding="utf-8", errors="replace").read()))
+                except OSError:
+                    pass
+    # the exported functions: register-exact, with a VERIFY in their own unit (a callee without one keeps lcall's path)
+    unit_of = {a: index[lines[s].split("#")[1].split()[0]] for a, s in slot_of.items()}
+    exported = {a for a, f in flags_of.items() if f & 9 == 9 and "0x%08X" % a in verify[unit_of[a]]}
     os.makedirs(os.path.join(out, "native"), exist_ok=True)
+    nexp = next_ = 0
     for name, k in index.items():
         r = sorted(rows.get(k, [])) or [(0, 0, 0)]
+        extra = ""
+        if fast:
+            exact = {a: f for a, _, f in rows.get(k, []) if a in exported}
+            own = {a: f for a, f in exact.items() if unit_of[a] == k}
+            ext = {a: f for a, f in exact.items() if unit_of[a] != k}
+            nexp += len(own)
+            next_ += len(ext)
+            extra = fast_text(verify[k], own, ext)
         gen.write_if_changed(os.path.join(out, "native", "%d.h" % k), (
             "// generated by tools/decomp_build/native_rules.py: native calls of game unit %s (decomp/native.txt)\n"
             "#pragma once\n#include <cstdint>\n#define GABI_NATIVE_TABLE 1\n"
-            "namespace gabi_native {\ninline constexpr uint32_t kTab[][3] = {\n%s};\n}\n") % (
-            name, "".join("    {0x%08Xu, %du, %du},\n" % x for x in r)))
+            "namespace gabi_native {\ninline constexpr uint32_t kTab[][3] = {\n%s};\n}\n%s") % (
+            name, "".join("    {0x%08Xu, %du, %du},\n" % x for x in r), extra))
+    if fast:
+        print("decomp: fast mode: %d register-exact functions exported by address (wwhd_ne_*), %d declarations of "
+              "callees in other units" % (nexp, next_))
 
 
 def main():
     args = sys.argv[1:]
     decl_path = None
     lift = ()
+    fast = "--fast" in args
+    if fast:
+        args.remove("--fast")
     if "--lift" in args:
         i = args.index("--lift")
         lift = tuple(x for x in (args[i + 1] if i + 1 < len(args) else "").split(",") if x)
@@ -514,7 +595,7 @@ def main():
     gen.write_if_changed(os.path.join(out, "native.txt"),
                          "# generated by tools/decomp_build/native_rules.py (native-calls rules)\n"
                          + "\n".join(lines) + "\n")
-    unit_headers(out, lines)
+    unit_headers(out, lines, fast)
     n = sum(1 for x in lines if "callee=native" in x)
     ne = sum(1 for x in lines if "callee=native" in x and DECL_FIELD.search(x.split("#")[0]))
     print("decomp: native-call rules%s: %d of %d functions may be called natively, %d of them register-exact (%s)" % (

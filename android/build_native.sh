@@ -20,7 +20,8 @@
 #        android/build-decomp) and android/app/libs-decomp, for Gradle -PwwhdLibsDir=libs-decomp (with
 #        -PwwhdDebugSuffix=.decomp it installs next to the normal build); GEN_DIR must then come from
 #        recomp.py --decomp-hooks; DECOMP_DIR (default decomp, the submodule) and DECOMP_GAME (default
-#        game: your USA game) as WWHD_DECOMP_DIR and WWHD_DECOMP_GAME
+#        game: your USA game) as WWHD_DECOMP_DIR and WWHD_DECOMP_GAME; DECOMP_FAST=1 with DECOMP=1: the decomp
+#        build's fast mode (WWHD_DECOMP_FAST, cmake/Decomp.cmake)
 # The game code in build/gen is generated from your own game (tools/recomp/recomp.py) and stays on
 # your machine; the APK built from it contains it and must not be distributed. CI builds this with
 # placeholder code (tools/recomp/stubgen.py) only to check that it compiles.
@@ -62,6 +63,7 @@ if [ "$cpu" != generic ]; then flags=("-DCMAKE_C_FLAGS=-mcpu=$cpu" "-DCMAKE_CXX_
 if [ -n "${WWHD_VERSION:-}" ]; then flags+=("-DWWHD_VERSION=$WWHD_VERSION"); fi
 if [ "$decomp" = 1 ]; then
     flags+=(-DWWHD_DECOMP=ON "-DWWHD_DECOMP_DIR=${DECOMP_DIR:-$root/decomp}" "-DWWHD_DECOMP_GAME=${DECOMP_GAME:-$root/game}")
+    if [ "${DECOMP_FAST:-0}" = 1 ]; then flags+=(-DWWHD_DECOMP_FAST=ON); else flags+=(-DWWHD_DECOMP_FAST=OFF); fi
 fi
 
 echo "== game (libmain.so$([ "$decomp" = 1 ] && echo ', decomp build')), NDK $(basename "$ndk"), CPU $cpu"

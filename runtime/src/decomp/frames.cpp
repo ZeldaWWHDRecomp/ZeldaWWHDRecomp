@@ -506,6 +506,17 @@ void frames_init() {
         g_fslots[i] = make_fslot(i);
         nfast += g_fslots[i].kind == DECOMP_FS_FRAME;
     }
+#ifdef WWHD_DECOMP_FAST
+    // fast mode (gabi.h GABI_FAST): only the frame-exact functions replay the original's prologue stores
+    // (DecompFrameSlot::reserved bit 0); every other automatic frame keeps its place without them
+    for (unsigned k = 0; k < kNumFrameExact; k++) {
+        const Slot* end = g_slots + kNumSlots;
+        const Slot* s = std::lower_bound(static_cast<const Slot*>(g_slots), end, kFrameExact[k],
+                                         [](const Slot& a, uint32_t v) { return a.addr < v; });
+        if (s != end && s->addr == kFrameExact[k]) g_fslots[s - g_slots].reserved |= 1;
+    }
+    LOG("[decomp] fast mode: %u frame-exact functions keep their prologue stores", kNumFrameExact);
+#endif
     g_decomp_frame_slots = g_fslots.data();
     LOG("[decomp] automatic frames by slot: %u of %u frames replayed without the item loop", nfast, n);
     const char* check = getenv("WWHD_DECOMP_AUTOFRAME_CHECK");
