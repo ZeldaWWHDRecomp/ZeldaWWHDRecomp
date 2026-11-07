@@ -81,6 +81,8 @@ function(wwhd_decomp_configure)
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_PTR_IC)
     list(APPEND gen_extra --ptr-ic)
   endif()
+  # ... with the last two targets per site (gabi.h GABI_PTR_IC2; for sites whose target alternates)
+  option(WWHD_DECOMP_FAST_PTR_IC2 "decomp build, fast mode: two cached call_ptr / tail_ptr targets per call site" OFF)
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/gen.py"
                           "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}"
                           --game "${WWHD_DECOMP_GAME}/code/cking.rpx" ${gen_extra}
@@ -233,6 +235,9 @@ function(wwhd_decomp_link target)
     list(APPEND opts -DGABI_FAST=1 -DGABI_FAST_NE=1)
     if(WWHD_DECOMP_FAST_PTR_IC)
       list(APPEND opts -DGABI_PTR_IC=1)
+      if(WWHD_DECOMP_FAST_PTR_IC2)
+        list(APPEND opts -DGABI_PTR_IC2=1)
+      endif()
     endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)
