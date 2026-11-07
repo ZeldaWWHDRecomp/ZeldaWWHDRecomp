@@ -31,6 +31,9 @@ what is on `devel` and not released yet (also in the
 - **Settings › Randomizer is always there** (#452). It used to appear only after setup had made a randomized game,
   so the built-in randomizer was hard to find. Before the first randomized game the page says where setup makes one
   (the setup window's Randomized games page; on Android, Randomized game... on the setup screen).
+- **Fixed: tapping the game-over question did nothing on Android** (#455, for #427). After a game over, Cancel/Save
+  and To Title Screen/Continue now take a tap on the Flexible touch style, which shows only A (Choose) there. The
+  game runs this question as a menu, so the touch controls had treated it as one.
 
 ## v0.5.1
 
