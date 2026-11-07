@@ -1,6 +1,6 @@
 {
-  "format": 2,
-  "id": "twwhd-randomizer-eu-v0-1",
+  "format": 3,
+  "id": "twwhd-randomizer-eu-v0-2",
   "base_sha256": "f9f461738949a09481dc1a31c01ad27db813c4c6058fdd7d015624a4146bbf0b",
   "hooks_sha256": "6cbf14b068a8ed92dfdfb2349afab5ebcdf6f8134e0974a85d05ecf9487c0fc5",
   "entry_point": 42904032,
@@ -1045,7 +1045,7 @@
       "end": 35071712,
       "sha256": [
         "49b6db7ebd04ac4c0396f55f0c06c5543e61ed16ede893f53d8b2680eb1bbfff",
-        "6c41ae04369079971c2ceaac92daa87802e87d9c4e834bce957f0f178ba03c26"
+        "e918c3267da3dbe3e1921fa80d1b19ccdd5ce8fd8c0c477a8c0f25026075f395"
       ]
     },
     {
@@ -1487,7 +1487,8 @@
       "start": 37921308,
       "end": 37921916,
       "sha256": [
-        "1e71dd3338eead1af7151128926e0c9acf6ef562a713b054615270f621e2a959"
+        "1e71dd3338eead1af7151128926e0c9acf6ef562a713b054615270f621e2a959",
+        "8802b1f23cb8a9d532c9b38ff1b8504186566ccfd22f33386a1b0d71fdc1be4c"
       ]
     },
     {
@@ -2832,5 +2833,8 @@
     }
   ],
   "minimum_function_hash_bytes": 64,
-  "guard_sha256": "cba32f857eebb8eda83a1c9b2b7a1a1296ecfc759fb8fb9b84d405a27bec2ff9"
+  "guard_sha256": [
+    "cba32f857eebb8eda83a1c9b2b7a1a1296ecfc759fb8fb9b84d405a27bec2ff9",
+    "ec6d27eb0afedbbd4b884d66203bfc22b8fe2adf8183858d3cc2a0c1f6172b45"
+  ]
 }

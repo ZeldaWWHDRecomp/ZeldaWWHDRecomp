@@ -151,7 +151,7 @@ class RpxLimits(unittest.TestCase):
             # The first header is valid but a replacement before hashing has a
             # different entry. All subsequent hashes match that replacement.
             parsed=SimpleNamespace(buffer_sha256='b'*64,entry=0x2000004,
-                                   by_name={'.text':SimpleNamespace(size=2)})
+                                   by_name={'.text':SimpleNamespace(size=2)},apply_internal_relocations=lambda:{})
             profile={'base_sha256':'a'*64,'sections':[{'name':'.text','size':1}]}
             def changed_hash(selected):
                 new=bytearray(header);struct.pack_into('>I',new,24,parsed.entry);path.write_bytes(new)

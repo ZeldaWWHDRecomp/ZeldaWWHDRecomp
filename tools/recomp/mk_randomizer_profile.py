@@ -8,32 +8,48 @@ from pathlib import Path
 
 import builds
 from recomp import Recompiler
-from randomizer_compat import digest, hook_digest, import_digest, text_slice, check, range_profile
+from randomizer_compat import (digest, guard_digest, hook_digest, import_digest, text_slice, check, range_profile,
+                               CompatibilityError, PROFILE_FORMAT)
 from rpx import Rpx
 
 # the profile of each build (randomizer_compat.PROFILES); EU seeds come from the in-app randomizer's port of the patches
-PROFILE_IDS = {'USA': 'twwhd-randomizer-usa-v0-2', 'EU': 'twwhd-randomizer-eu-v0-1'}
+PROFILE_IDS = {'USA': 'twwhd-randomizer-usa-v0-3', 'EU': 'twwhd-randomizer-eu-v0-2'}
 
 
 def make(base_path, reviewed_paths, reviewed_functions):
-    reference = Recompiler(str(base_path))  # exact supported-build SHA check
+    reference = Recompiler(str(base_path))  # exact supported-build SHA check (its text: relocations applied)
     if reference.build.name not in PROFILE_IDS:
         raise ValueError('profile reference must be the original USA or EU RPX')
     rpx = reference.p.rpx
     hooks, _ = builds.read_hooks(builds.hook_files(), reference.build)
     starts = sorted({reference.func_of(address) for _, _, address, _ in hooks})
     points = sorted({address for _, _, address, _ in hooks})
-    profile = dict(format=2, id=PROFILE_IDS[reference.build.name], base_sha256=reference.build.sha256,
+    profile = dict(format=PROFILE_FORMAT, id=PROFILE_IDS[reference.build.name], base_sha256=reference.build.sha256,
                    hooks_sha256=hook_digest(hooks), entry_point=reference.p.entry,
                    imports_sha256=import_digest(rpx),
                    sections=[dict(name=s.name, address=s.addr, size=s.size, type=s.type, flags=s.flags & 7)
                              for s in rpx.sections if s.flags & 2 and s.size],
                    **range_profile(rpx, points, [(a, reference.func_end(a)) for a in starts]))
+    profile['guard_sha256'] = [profile['guard_sha256']]
     seen = set()
     for path in reviewed_paths:
         patched = Rpx(str(path))
-        # Always require canonical hook words and tiny bodies as one aggregate.
-        # Only bodies of at least 64 bytes can gain explicitly reviewed variants.
+        patched.apply_internal_relocations()  # what the port loads and translates (issue #383)
+        # Hook words must stay canonical. A tiny hooked body (below 64 bytes) can change only when its
+        # function is on the review list; the profile then accepts the whole hook-word/tiny-body aggregate
+        # of this input as a variant, never a digest of one tiny body.
+        for address in profile['points']:
+            if text_slice(patched, address, address+4) != text_slice(rpx, address, address+4):
+                raise CompatibilityError('randomizer clash: %s changes the hook instruction at %08X' % (path, address))
+        for function in profile['tiny_functions']:
+            start, end = function['start'], function['end']
+            if text_slice(patched, start, end) != text_slice(rpx, start, end):
+                if start not in reviewed_functions:
+                    raise CompatibilityError('randomizer clash: %s changes the tiny hooked function %08X' % (path, start))
+                seen.add(start)
+        guard = guard_digest(patched, profile['points'], profile['tiny_functions'])
+        if guard not in profile['guard_sha256']:
+            profile['guard_sha256'].append(guard)
         layout = dict(profile, functions=[])
         check(patched, layout, hooks, struct.unpack_from('>I', path.read_bytes(), 24)[0])
         for function in profile['functions']:
