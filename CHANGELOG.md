@@ -50,6 +50,13 @@ what is on `devel` and not released yet (also in the
   #347 was reviewed switched to a looping haptic player that controllers reject, so the motors never ran. Rumble now
   uses one long haptic event whose strength changes live, as in #347's first version, and keeps the recovery when
   macOS resets the haptics engine.
+- **Fixed: opening the item menu's settings page with the stick turned "Invert camera up/down" off** (#463, thanks
+  @itsarahtonin for the report and fix, #461). You reach the page by pushing Left, so the stick was still held when it
+  opened and changed the first row. Stick directions held when the page opens (or when a row's own page closes) now
+  act only after they are released, like held buttons.
+- **Fixed: the GameCube A in the floating action hint was drawn about four times too large** (#460, thanks
+  @itsarahtonin for the report and fix, #458). With GameCube button prompts, "A Speak" and similar hints took their
+  size from the hint's frame instead of the button picture. The HUD's own buttons are unchanged.
 
 ## v0.5.1
 
