@@ -269,6 +269,10 @@ class Glue:
                 sys.exit("gen.py: mkimage.py failed:\n%s%s" % (r.stdout, r.stderr))
             os.replace(self.image + ".tmp", self.image)
         sys.path.insert(0, os.path.join(self.src, "tools", "verify"))
+        # autoglue reads the game's sections with rpx.py: the decompilation's own tools/rpx.py where it has one, else
+        # this repository's (the public decompilation does not carry it)
+        if os.path.join(ROOT, "tools") not in sys.path:
+            sys.path.append(os.path.join(ROOT, "tools"))
         # the public snapshot has tools/verify/assets.py (model data headers from the game); a decompilation
         # without it keeps that data in its sources and needs no headers
         assets = None
