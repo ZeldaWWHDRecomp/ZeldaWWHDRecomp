@@ -1706,7 +1706,26 @@ extern "C" void f_025E2E5C_orig(Cpu* c);
 
 // puppet i's copy of Link's model k, posed and entered as Link's own, each once a draw
 static uint64_t g_entered[kPuppets];  // models entered this draw, by bit k
-static void enter(Cpu* c, uint32_t link, int i, const Model& m) {
+// The animations a model data carries for viewCalc (027F55FC calls each one's calc, its vtable +0x34, slot +0x3C):
+// mDoExt_brkAnm::entry (025E83FC) sets +0x48, 025E7FC4 +0x44; an actor sets them on its model data before its draw and
+// leaves them there. A copy shares its model's data: entered when the game did not just draw that model (a held item,
+// a model Link does not draw now), a slot may still point at an animation of an actor gone since (a thrown bomb, an
+// item put away), whose calc is garbage (2026-11-07: "indirect branch to 00000000" in viewCalc under enter). Such a
+// copy is entered with none of them (but its own bomb brk), and the slots are put back after.
+constexpr uint32_t kAnmSlots[] = {0x38, 0x3C, 0x40, 0x44, 0x48};
+struct NoStaleAnims {
+    uint32_t data, was[std::size(kAnmSlots)];
+    bool on;
+    NoStaleAnims(uint32_t data, bool on) : data(data), on(on) {
+        if (!on) return;
+        for (size_t k = 0; k < std::size(kAnmSlots); k++) was[k] = ld32(data + kAnmSlots[k]), st32(data + kAnmSlots[k], 0);
+    }
+    ~NoStaleAnims() {
+        if (on) for (size_t k = 0; k < std::size(kAnmSlots); k++) st32(data + kAnmSlots[k], was[k]);
+    }
+};
+// (game_drew: Link's own model of this copy was entered just now, its data's animations his, set for this draw)
+static void enter(Cpu* c, uint32_t link, int i, const Model& m, bool game_drew) {
     const Puppet& u = g_puppet[i];
     uint32_t twin = 0;
     if (m.k == kHeld) {
@@ -1727,6 +1746,7 @@ static void enter(Cpu* c, uint32_t link, int i, const Model& m) {
         const uint32_t fl = ld32(g_models[m.k].model + j3d::kDiffFlag);
         st32(twin + j3d::kDiffFlag, fl), guest_call(c, GC(0x027F596C), {twin, fl});
     }
+    NoStaleAnims no_stale(ld32(twin + j3d::mModelData), !game_drew);
     // a bomb's fuse warning (its red): Link's bomb brk (py::kBombBrk, on the bomb's model data, which its copies share) at the
     // frame that player's bomb drew with, as daBomb_c::draw_norm (020C4398) sets it (mDoExt_brkAnm::entry 025E83FC)
     if (m.k == kHeld && m.brk >= 0) {
@@ -1765,7 +1785,7 @@ static void entered(Cpu* c, uint32_t link, uint32_t model) {
     if (k == g_body_k) enter_character(c, link, g_own_char, 0, model);
     for (int i = 0; i < kPuppets; i++)
         if (g_puppet[i].shown)
-            for (const Model& m : g_puppet[i].pose.models) if (m.k == k) enter(c, link, i, m);
+            for (const Model& m : g_puppet[i].pose.models) if (m.k == k) enter(c, link, i, m, true);
 }
 extern "C" void hook_023D8DF0(Cpu* c) {
     const uint32_t link = c->r[3], model = c->r[4];
@@ -1894,7 +1914,7 @@ extern "C" void hook_023D9820(Cpu* c) {
     }
     for (int i = 0; i < kPuppets; i++)
         if (g_puppet[i].shown)
-            for (const Model& m : g_puppet[i].pose.models) enter(c, link, i, m);
+            for (const Model& m : g_puppet[i].pose.models) enter(c, link, i, m, false);
     // their sword trails: each puppet's own trail object (made once as the game makes Link's: 0240F564 on 0x1243C bytes),
     // its points from the pose, entered as Link's draw enters his (0252F3B0 into the z-sorted translucent list)
     static uint32_t blurs[kPuppets];
