@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <set>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -454,6 +455,30 @@ static void park_gate(HostThread* t) {
     t->wst.store(kRunning);
 }
 
+#ifdef WWHD_DECOMP
+#ifdef __APPLE__
+#include <execinfo.h>
+#endif
+// WWHD_DECOMP_PARK_GUARD=abort: stop at the first event (tests); otherwise one log line per (kind, LR)
+[[gnu::cold, gnu::noinline]] static void native_park_report(Cpu* c, uint8_t kind, uint32_t obj) {
+    static std::mutex m;
+    static std::set<uint64_t> seen;
+    std::lock_guard lk(m);
+    if (seen.insert((uint64_t)kind << 32 | c->lr).second) {
+        LOG("[decomp] PARK GUARD: a thread parks inside %u native call(s) (wait kind %u, object %08X, lr %08X, sp %08X)",
+            c->native_depth, kind, obj, c->lr, c->r[1]);
+#ifdef __APPLE__
+        // the host stack names the native callers (diagnosis of the rule that missed the path)
+        void* bt[64];
+        int n = backtrace(bt, 64);
+        backtrace_symbols_fd(bt, n, 2);
+#endif
+    }
+    static const bool stop = [] { const char* e = getenv("WWHD_DECOMP_PARK_GUARD"); return e && !strcmp(e, "abort"); }();
+    if (stop) fatal("[decomp] park guard (WWHD_DECOMP_PARK_GUARD=abort)");
+}
+#endif
+
 // wait on a host condition with the core given up; `lk` is held on entry and exit. The predicate is
 // re-checked after every wakeup (also after a save state was loaded). False on timeout.
 template <class Pred>
@@ -472,6 +497,11 @@ static bool park_wait(std::unique_lock<std::mutex>& lk, std::condition_variable&
             t->wait_kind = kind;
             t->wait_obj = obj;
             t->wst.store(kParked);
+#ifdef WWHD_DECOMP
+            // the decomp build's park guard: a thread parks inside a native call between decompiled functions
+            // (no guest frame for it on the parked chain); the native-call rules missed a path to a wait
+            if (__builtin_expect(t->cpu.native_depth != 0, 0)) native_park_report(&t->cpu, kind, obj);
+#endif
         }
         lk.unlock();
         threads::block_begin();
@@ -1637,6 +1667,13 @@ bool threads_ss_save(ss::Writer& w, std::string& why) {
         r.wait_obj = t->wait_obj;
         r.cpu = t->cpu;
         r.cpu.thread = nullptr;
+#ifdef WWHD_DECOMP
+        // the decomp build's native calls: which waits a state holds, and how many native calls each thread is in
+        // (cross-build state tests)
+        if (r.started && !r.exited && r.wst == kParked && r.wait_kind >= 1 && r.wait_kind <= 7)
+            LOG("[decomp] state: thread \"%s\" parked (wait kind %u, object %08X, lr %08X) inside %u native call(s)",
+                threads::thread_name(t).c_str(), r.wait_kind, r.wait_obj, t->cpu.lr, t->cpu.native_depth);
+#endif
         if (r.started && !r.exited && r.irq_off) {
             why = "thread " + threads::thread_name(t) + " has interrupts disabled";
             return false;

@@ -13,9 +13,12 @@
 extern "C" void decomp_register(const char* unit, uint32_t addr, const char* name, void (*fn)(Cpu*),
                                 void (*run)(Cpu*, void (*)(Cpu*)));
 
+/* gabi.h with GABI_GAME_BUILD has its per-thread state in one inline block (GABI_TLS_BLOCK) */
+#ifndef GABI_TLS_BLOCK
 namespace gabi {
 thread_local Cpu* cpu;
 }
+#endif
 
 /* Runs one candidate entry (gabi Entry::run). Entry::run keeps the caller's gabi::cpu, Activation
  * depth and LR itself (gabi.h EntryScope): a candidate's guest call can reach another candidate of

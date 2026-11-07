@@ -120,6 +120,21 @@ class GenTest(unittest.TestCase):
         self.assertEqual(sorted(os.path.basename(x["path"]) for x in units["units"][0]["sources"]), ["a.cpp", "a2.cpp"])
         self.assertTrue(units["units"][0]["glue"].endswith(os.path.join("glue", "0.cpp")))
 
+    def test_frame_exact(self):
+        # `framexact FUNC RET` lines of a unit spec: listed functions only (0x02000700 is not decompiled)
+        with open(os.path.join(self.src, "tools/verify/units/bunit.txt"), "a") as f:
+            f.write("framexact 02000600 02000650\nframexact 02000700 0BADC0DE  # not listed\n")
+        self.run_gen()
+        self.assertEqual([l.split()[0] for l in self.read("frame_exact.txt").splitlines()], ["02000600"])
+        hooks = self.read("hooks.cpp")
+        self.assertIn("const uint32_t kFrameExact[] = {0x02000600u};", hooks)
+        self.assertIn("const unsigned kNumFrameExact = 1;", hooks)
+
+    def test_no_frame_exact(self):
+        self.run_gen()
+        self.assertEqual(self.read("frame_exact.txt"), "")
+        self.assertIn("const uint32_t kFrameExact[] = {0u};\nconst unsigned kNumFrameExact = 0;", self.read("hooks.cpp"))
+
     def test_unchanged_outputs_keep_their_time(self):
         self.run_gen()
         p = os.path.join(self.out, "hooks.cpp")

@@ -332,6 +332,15 @@ void dump(const char* path) {
 std::vector<std::vector<GabiFrameItem>> g_items;
 std::vector<GabiFrameInfo> g_info;
 std::vector<uint8_t> g_has;
+// gmem_frame_info's lookup (every decompiled entry, gabi AutoFrame): open addressing over the functions with a
+// frame, power of two, under 1/2 full
+struct FrameEntry {
+    uint32_t addr;  // 0: empty
+    const GabiFrameInfo* info;
+};
+std::vector<FrameEntry> g_lookup;
+uint32_t g_lookup_mask = 0;
+inline uint32_t frame_hash(uint32_t addr) { return (addr >> 2) * 0x9E3779B1u; }
 }  // namespace
 
 void frames_init() {
@@ -361,16 +370,26 @@ void frames_init() {
         g_has[i] = 1;
         n++;
     }
+    uint32_t size = 64;
+    while (size < 2 * n + 2) size *= 2;
+    g_lookup.assign(size, FrameEntry{0, nullptr});
+    g_lookup_mask = size - 1;
+    for (unsigned i = 0; i < kNumSlots; i++) {
+        if (!g_has[i]) continue;
+        uint32_t h = frame_hash(g_slots[i].addr) & g_lookup_mask;
+        while (g_lookup[h].addr) h = (h + 1) & g_lookup_mask;
+        g_lookup[h] = FrameEntry{g_slots[i].addr, &g_info[i]};
+    }
     LOG("[decomp] native frames: %u of %u decompiled functions", n, kNumSlots);
 }
 }  // namespace decomp
 
 extern "C" const GabiFrameInfo* gmem_frame_info(uint32_t addr) {
     using namespace decomp;
-    if (g_has.empty()) return nullptr;
-    Slot* end = g_slots + kNumSlots;
-    Slot* s = std::lower_bound(g_slots, end, addr, [](const Slot& a, uint32_t v) { return a.addr < v; });
-    if (s == end || s->addr != addr) return nullptr;
-    size_t i = s - g_slots;
-    return g_has[i] ? &g_info[i] : nullptr;
+    if (g_lookup.empty() || !addr) return nullptr;
+    for (uint32_t h = frame_hash(addr) & g_lookup_mask;; h = (h + 1) & g_lookup_mask) {
+        const FrameEntry& e = g_lookup[h];
+        if (e.addr == addr) return e.info;
+        if (!e.addr) return nullptr;
+    }
 }

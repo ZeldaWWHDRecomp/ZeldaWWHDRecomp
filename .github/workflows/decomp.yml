@@ -27,5 +27,7 @@ jobs:
       - name: Decomp build tests
         run: |
           python3 tools/decomp_build/test_gen.py
+          python3 tools/decomp_build/test_native_rules.py
+          python3 tools/decomp_build/test_native_returns.py
           python3 tools/installer/test_setup.py DecompRelease
           python3 tools/release/test_sdk_package.py DecompVariant

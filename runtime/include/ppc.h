@@ -29,6 +29,10 @@ typedef struct Cpu {
     /* the game's main thread (main_profile.h reads it on every runtime call); in what was padding,
        so sizeof(Cpu) and save states keep their layout */
     uint8_t main_thread;
+    uint8_t pad_173;
+    /* decomp build: native calls of decompiled code now running on this thread (the park guard: a thread must not
+       park inside one); in what was padding, so sizeof(Cpu) and save states keep their layout */
+    uint16_t native_depth;
     struct { double ps0, ps1; } f[32];
     uint32_t fpscr;
     uint32_t gqr[8];

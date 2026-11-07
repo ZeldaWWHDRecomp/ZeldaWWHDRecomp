@@ -16,6 +16,8 @@ never the source tree or the submodule) and is rewritten only when it changes:
   units.json        the same for setup (tools/installer/setup.py builds the decomp version)
   glue/N.cpp        per unit: tools/decomp_build/glue.cpp with the unit's name
   functions.tsv     address, unit, name of every listed function
+  frame_exact.txt   the listed functions a unit spec marks frame-exact (`framexact FUNC RET`): the runtime
+                    keeps the dispatch table for calls into and from them (runtime/src/decomp/decomp.h)
   excluded.txt      decompiled functions that stay recompiled, with the reason
   skipped.txt       verify units that are not game code (a harness control/companion source, or a source
                     that is not in the tree), with the reason
@@ -56,6 +58,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
+import native_returns  # noqa: E402
 
 
 def unit_specs(src):
@@ -86,6 +89,16 @@ def spec_files(src):
 
 
 VERIFY_ONLY = "tools/verify/units/"  # sources of the harness's control and companion variants
+
+
+FRAMEXACT = re.compile(r"^\s*framexact\s+([0-9A-Fa-f]{8})\b")
+
+
+def frame_exact(src):
+    """the functions any gated unit spec marks frame-exact (`framexact FUNC RET`, the harness checks the
+    original's frame bytes, LR and callee-saved registers for them) -> {addr}"""
+    return {int(m.group(1), 16) for _, lines in unit_specs(src) for line in lines
+            for m in [FRAMEXACT.match(line.split("#")[0])] if m}
 
 
 def read_units(src):
@@ -160,6 +173,14 @@ FILE_SCOPE_VIEW = re.compile(r"^((?:const\s+)?[A-Za-z_][^\n=;]*?(?:&\s*(\w+)|\(&
                              r"gabi::(?:object_at|local_static)<)", re.M)
 EXT_STUB = re.compile(r"^(?!static\b|inline\b)(\S[^\n]*/\* other unit \(ext\) \*/)$", re.M)
 EXTERN_NAME = re.compile(r"\bextern\s+[^;{]*?(\w+)\s*\)?\s*(?:\[[^\]]*\]\s*)*;")
+LEAN_CALL = re.compile(r"\bgabi::call<(.+?)>\(0x([0-9A-Fa-f]{8})(\s*,\s*|\s*\))")
+
+
+def lean_call(m):
+    """gabi::call<R>(0xADDR, args) -> gabi::lcall<0xADDR, R>(args)"""
+    return "gabi::lcall<0x%s, %s>(%s" % (m.group(2), m.group(1), "" if "," in m.group(3) else ")")
+
+
 STATIC_DECL = re.compile(r"^static\s+[^;(=\n]*?\b(\w+)\s*(?:\[[^\]\n]*\]\s*)*[;=({]", re.M)
 
 
@@ -253,6 +274,11 @@ class Glue:
                     return m.group(1)
             return "__attribute__((weak)) " + m.group(1)
         res = EXT_STUB.sub(weak_stub, res)
+        # native calls (form N): results reach the guest registers as on the guest path (native_returns.py)
+        res = native_returns.rewrite(res)[0]
+        # lean calls (form L): an ext stub enters a decompiled callee by its slot (gabi.h lcall; a callee that is not
+        # decompiled in this build keeps gabi::call there)
+        res = EXT_STUB.sub(lambda m: LEAN_CALL.sub(lean_call, m.group(0)), res)
         return res, set(STATIC_DECL.findall(text)), externs
 
 
@@ -463,7 +489,11 @@ def main():
     h += ["    {%s, %d}," % (c_string(u), uidx[c]) for u, c in al]
     h += ["};", "const unsigned kNumAliases = %d;" % len(al), "Slot g_slots[] = {"]
     h += ["    {0x%08Xu, %d, %s, f_%08X_orig}," % (x, uidx[owner[x][0]], c_string(owner[x][1]), x) for x in listed]
-    h += ["};", "const unsigned kNumSlots = %d;" % len(listed), "}  // namespace decomp", "", 'extern "C" {']
+    fx = sorted(frame_exact(src) & set(listed))
+    write_if_changed(os.path.join(out, "frame_exact.txt"), "".join("%08X  # %s %s\n" % (x, owner[x][0], owner[x][1]) for x in fx))
+    h += ["};", "const unsigned kNumSlots = %d;" % len(listed)]
+    h += ["const uint32_t kFrameExact[] = {%s};" % ", ".join(["0x%08Xu" % x for x in fx] or ["0u"]),
+          "const unsigned kNumFrameExact = %d;" % len(fx), "}  // namespace decomp", "", 'extern "C" {']
     h += ["void hook_%08X(Cpu* c) { decomp::call(c, %d); }" % (x, i) for i, x in enumerate(listed)]
     h += ["}", ""]
     write_if_changed(os.path.join(out, "hooks.cpp"), "\n".join(h))
@@ -496,6 +526,7 @@ def main():
     deps.update(cmake_path(p) for p in game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")))
     deps.update(cmake_path(p) for p in game_builds.decomp_only_hook_files(os.path.join(ROOT, "tools", "recomp")))
     deps.add(cmake_path(os.path.abspath(__file__)))
+    deps.add(cmake_path(os.path.join(HERE, "native_returns.py")))
     if n_glued:
         deps.update(cmake_path(os.path.join(src, "tools", "verify", f)) for f in ("autoglue.py", "assets.py", "assets.txt")
                     if os.path.isfile(os.path.join(src, "tools", "verify", f)))

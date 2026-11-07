@@ -110,6 +110,10 @@ Switches (decomp build only; the normal build ignores them):
 
 A function that a guest mod hooks keeps its original in any case.
 
+Option `-DWWHD_DECOMP_THINLTO=ON` (default off) compiles each game unit with ThinLTO, optimised as a whole when
+`ld -r` merges it (units stay isolated, so nothing is inlined across units); measured on a Mac it gave no clear
+gain (game thread 12.6 to 11.9 core-seconds per 25 s, median, inside the run-to-run noise).
+
 ## In setup (development builds, macOS)
 
 The development builds for macOS (the rolling "Development build" pre-release) can build the decomp

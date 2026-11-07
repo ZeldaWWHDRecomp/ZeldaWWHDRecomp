@@ -3,6 +3,7 @@
 #include "decomp/call_lr.h"
 
 #include <cstdio>
+#include <vector>
 
 static int failures = 0;
 static void expect(const char* what, uint32_t got, uint32_t want) {
@@ -51,6 +52,42 @@ int main() {
     expect("other import", call_lr_scan(w, lo, 16, 0xC0004F50, 0, stale, imports, 4), lo + 44);
     expect("import call of another function", call_lr_scan(w, lo, 16, 0xC0000004, 0, stale, imports, 4), stale);
     expect("raw target of an import call is no call", call_lr_scan(w, lo, 16, lo + 32 + 0x8BB180, 0, stale, imports, 4), stale);
+    // call_lr_sites / call_lr_find (the start-up table) answer as call_lr_scan for every target and kind: here w holds
+    // two calls of 02100000, a tail call only (b 02200000), two bctrl, imports, one import called twice
+    w[12] = 0x488BB181u;  // a second call of import C0004F20 (site lo + 48)
+    const uint32_t imports2[][2] = {{0x02000000, 0xC0000004}, {lo + 32, 0xC0004F20}, {lo + 40, 0xC0004F50},
+                                    {lo + 48, 0xC0004F20}, {0x02100000, 0xC0004F20}};
+    for (int variant = 0; variant < 4; variant++) {
+        if (variant == 2) w[2] = 0x60000000u;   // one bctrl left
+        if (variant == 3) w[14] = 0x4E800420u;  // no bctrl, only bctr
+        for (int with_imports = 0; with_imports < 2; with_imports++) {
+            const uint32_t (*imp)[2] = with_imports ? imports2 : nullptr;
+            const uint32_t nimp = with_imports ? 5 : 0;
+            auto sites = decomp::call_lr_sites(w, lo, 16, imp, nimp);
+            std::vector<uint32_t> keys, rets;
+            for (auto& [k, r] : sites) keys.push_back(k), rets.push_back(r);
+            const uint32_t targets[] = {0x02000000, 0x02050000, 0x02100000, 0x02200000, 0x02300000, 0x00001000, 0xC0004F20,
+                                        0xC0004F50, 0xC0000004, lo + 32 + 0x8BB180, lo + 48 + 0x8BB180, 1, 0x12345678};
+            for (uint32_t t : targets)
+                for (int kind = 0; kind < 2; kind++) {
+                    char what[96];
+                    snprintf(what, sizeof what, "table = scan: variant %d imports %d target %08X kind %d", variant, with_imports, t, kind);
+                    expect(what, decomp::call_lr_find(keys.data(), rets.data(), (uint32_t)keys.size(), t, kind, stale),
+                           call_lr_scan(w, lo, 16, t, kind, stale, imp, nimp));
+                }
+        }
+    }
+    {
+        auto sites = decomp::call_lr_sites(w, lo, 16, imports2, 5);
+        std::vector<uint32_t> keys, rets;
+        for (auto& [k, r] : sites) keys.push_back(k), rets.push_back(r);
+        const uint32_t n = (uint32_t)keys.size();
+        expect("table: two calls unchanged", decomp::call_lr_find(keys.data(), rets.data(), n, 0x02100000, 0, stale), stale);
+        expect("table: tail call unchanged", decomp::call_lr_find(keys.data(), rets.data(), n, 0x02200000, 0, stale), stale);
+        expect("table: import called twice unchanged", decomp::call_lr_find(keys.data(), rets.data(), n, 0xC0004F20, 0, stale), stale);
+        expect("table: bctr only unchanged", decomp::call_lr_find(keys.data(), rets.data(), n, 0x12345678, 1, stale), stale);
+        expect("table: one import call", decomp::call_lr_find(keys.data(), rets.data(), n, 0xC0004F50, 0, stale), lo + 44);
+    }
     if (!failures) printf("decomp_call_lr: ok\n");
     return failures ? 1 : 0;
 }

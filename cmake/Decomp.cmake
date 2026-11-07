@@ -21,6 +21,7 @@ set(WWHD_DECOMP_OUT "${CMAKE_BINARY_DIR}/decomp")
 # the game units and without reading the game. The generated hooks.cpp is replaced by an empty table
 # (tools/decomp_build/hooks_none.cpp, which setup replaces with its own hooks and units); the object library
 # wwhd_decomp_flags (never built) records in compile_commands.json how setup compiles a game unit.
+option(WWHD_DECOMP_THINLTO "decomp build: ThinLTO inside each game unit (experimental)" OFF)
 option(WWHD_DECOMP_RUNTIME_ONLY "decomp build: the runtime only, for packaging (no units, no game)" OFF)
 
 function(wwhd_decomp_configure)
@@ -59,6 +60,17 @@ function(wwhd_decomp_configure)
     message(FATAL_ERROR "WWHD_DECOMP: ${GEN_DIR} was made with another decomp function list.\n${fix}")
   endif()
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${GEN_DIR}/decomp_hooks.txt")
+  # the native-call rules (tools/decomp_build/native_rules.py: decomp/native.txt and the units' native tables).
+  # WWHD_DECOMP_PARK_RULE=strict: callees that may park (C4, indirect calls included) stay guest calls (comparison)
+  set(WWHD_DECOMP_PARK_RULE "" CACHE STRING "decomp build: native-call park rule (empty: none, strict: C4)")
+  execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py"
+                          "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE}
+                  RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err OUTPUT_STRIP_TRAILING_WHITESPACE)
+  if(NOT rc EQUAL 0)
+    message(FATAL_ERROR "WWHD_DECOMP: tools/decomp_build/native_rules.py failed:\n${out}\n${err}")
+  endif()
+  message(STATUS "${out}")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py")
   set(WWHD_DECOMP_UNIT_COUNT ${WWHD_DECOMP_UNIT_COUNT} PARENT_SCOPE)
   foreach(i RANGE 1 ${WWHD_DECOMP_UNIT_COUNT})
     math(EXPR k "${i} - 1")
@@ -77,9 +89,10 @@ function(wwhd_decomp_link target)
   set(inc "${CMAKE_SOURCE_DIR}/runtime/include" "${WWHD_DECOMP_DIR}/tools/verify/include"
           "${WWHD_DECOMP_DIR}/tools/verify/src" "${WWHD_DECOMP_DIR}/wwhd_src/include" "${WWHD_DECOMP_OUT}/include")
   # as the decompilation's harness compiles them (exact floating point: no contraction, no fast math);
-  # these options come after the configuration's, so they win
+  # these options come after the configuration's, so they win. GABI_GAME_BUILD: gabi.h's game-build forms
+  # (its per-thread state in one block, guest memory accessed inline), which the harness never uses.
   set(opts -O2 -g0 -w -fvisibility=hidden -fvisibility-inlines-hidden -ffp-contract=off -fno-fast-math -fwrapv
-           -fno-strict-aliasing -include "${CMAKE_SOURCE_DIR}/tools/decomp_build/frames_vis.h")
+           -fno-strict-aliasing -DGABI_GAME_BUILD=1 -include "${CMAKE_SOURCE_DIR}/tools/decomp_build/frames_vis.h")
   if(WWHD_DECOMP_RUNTIME_ONLY)
     add_library(wwhd_decomp_flags OBJECT "${CMAKE_SOURCE_DIR}/tools/decomp_build/flags_probe.cpp")
     target_include_directories(wwhd_decomp_flags PRIVATE ${inc})
@@ -92,6 +105,13 @@ function(wwhd_decomp_link target)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
     return()
   endif()
+  # WWHD_DECOMP_THINLTO: ThinLTO inside each unit (its sources and glue are optimised together when `ld -r` merges
+  # them; units stay isolated, so nothing is inlined across units or into the runtime)
+  set(unit_link "${CMAKE_LINKER}" -r)
+  if(WWHD_DECOMP_THINLTO)
+    list(APPEND opts -flto=thin)
+    set(unit_link "${CMAKE_CXX_COMPILER}" -r -flto=thin)
+  endif()
   set(objs)
   file(MAKE_DIRECTORY "${WWHD_DECOMP_OUT}/units")
   foreach(i RANGE 1 ${WWHD_DECOMP_UNIT_COUNT})
@@ -100,10 +120,14 @@ function(wwhd_decomp_link target)
     add_library(${lib} OBJECT ${WWHD_DECOMP_UNIT_${k}_SOURCES} "${WWHD_DECOMP_OUT}/glue/${k}.cpp")
     target_include_directories(${lib} PRIVATE ${inc})
     target_compile_options(${lib} PRIVATE ${opts})
+    # the unit's native-call table (tools/decomp_build/native_rules.py; gabi.h GABI_NATIVE_TABLE)
+    if(EXISTS "${WWHD_DECOMP_OUT}/native/${k}.h")
+      target_compile_options(${lib} PRIVATE "SHELL:-include \"${WWHD_DECOMP_OUT}/native/${k}.h\"")
+    endif()
     set_target_properties(${lib} PROPERTIES CXX_EXTENSIONS OFF EXCLUDE_FROM_ALL ON)
     set(o "${WWHD_DECOMP_OUT}/units/${WWHD_DECOMP_UNIT_${k}_NAME}.o")
     add_custom_command(OUTPUT "${o}"
-      COMMAND "${CMAKE_LINKER}" -r -o "${o}" "$<TARGET_OBJECTS:${lib}>"
+      COMMAND ${unit_link} -o "${o}" "$<TARGET_OBJECTS:${lib}>"
       DEPENDS ${lib} "$<TARGET_OBJECTS:${lib}>"
       COMMAND_EXPAND_LISTS VERBATIM)
     list(APPEND objs "${o}")
