@@ -104,12 +104,12 @@ public:
     int selected() const { return selected_; }
 
     void show(int tabs) {
-        open_ = true, tab_ = std::clamp(tab_, 0, std::max(0, tabs - 1)), held_ = ~0u;  // a button held now acts only after its release
+        open_ = true, tab_ = std::clamp(tab_, 0, std::max(0, tabs - 1)), held_ = ~0u;  // a button or stick direction held now acts only after its release
         touch_ = false;
     }
     void hide() { open_ = false; }
     void set_tab(int tab) { tab_ = tab, selected_ = 0, top_ = 0; }
-    // buttons held now act only after their release (a page opened from a row closed with them)
+    // buttons and stick directions held now act only after their release (a page opened from a row closed with them)
     void hold_buttons() { held_ = ~0u; }
 
     // A / Left on the focused arrow turns the page. Reaching it is handled by EntryFocus,
@@ -143,18 +143,19 @@ public:
 
     Action input(const Input& in, const std::vector<Row>& rows, int tabs) {
         Action act;
-        held_ &= in.buttons;  // buttons held at the opening are ignored until released
+        uint32_t stick = 0;  // the stick as the cross
+        if (in.ly > 0.5f) stick |= kPadUp;
+        if (in.ly < -0.5f) stick |= kPadDown;
+        if (in.lx < -0.5f) stick |= kPadLeft;
+        if (in.lx > 0.5f) stick |= kPadRight;
+        held_ &= in.buttons | stick;  // buttons and stick directions held at the opening are ignored until released
         const uint32_t live = in.buttons & ~held_;
         const uint32_t pressed = live & ~prev_;
         prev_ = live;
         const int count = int(rows.size());
         selected_ = count ? std::clamp(selected_, 0, count - 1) : 0;
-        // the stick as the cross, with the menus' repeat (0.35 s, then every 0.12 s)
-        uint32_t dirs = live & (kPadUp | kPadDown | kPadLeft | kPadRight);
-        if (in.ly > 0.5f) dirs |= kPadUp;
-        if (in.ly < -0.5f) dirs |= kPadDown;
-        if (in.lx < -0.5f) dirs |= kPadLeft;
-        if (in.lx > 0.5f) dirs |= kPadRight;
+        // the cross and the stick, with the menus' repeat (0.35 s, then every 0.12 s)
+        uint32_t dirs = (live | (stick & ~held_)) & (kPadUp | kPadDown | kPadLeft | kPadRight);
         uint32_t fire = dirs & ~dirs_;
         if (dirs && dirs == dirs_) {
             repeat_ += in.dt;
