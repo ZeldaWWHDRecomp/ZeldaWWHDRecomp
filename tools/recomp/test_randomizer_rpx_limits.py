@@ -73,7 +73,7 @@ class RpxLimits(unittest.TestCase):
         from types import SimpleNamespace
         import analyze
         text=SimpleNamespace(addr=0x2000000,size=4,data=b'\x4e\x80\x00\x20')
-        parsed=SimpleNamespace(by_name={'.text':text},entry=0x2000000,relocs=[])
+        parsed=SimpleNamespace(by_name={'.text':text},entry=0x2000000,relocs=[],apply_internal_relocations=lambda:{})
         with mock.patch.object(analyze,'Rpx',return_value=parsed), \
              mock.patch('builtins.open',side_effect=AssertionError('input must not be reopened')):
             program=analyze.Program('could-grow-after-parse.rpx',rpx_limits=compat.RPX_LIMITS)
