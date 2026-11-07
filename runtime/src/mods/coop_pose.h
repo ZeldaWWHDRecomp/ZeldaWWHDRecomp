@@ -16,6 +16,7 @@ namespace mods::coop {
 
 // puppets: other players drawn (the direct transport and a party use 3; strangers more, GAPS C11); each made only
 // when shown (its kit on a heap of its own over the port's memory)
+constexpr size_t kPoseBudget = 1100;  // a packed pose's most bytes: the server's (online/proto kMaxPoseBlob)
 constexpr int kPuppets = 31;  // (32 players an instance: GAPS C11)
 
 struct Joint { int16_t q[4], t[3]; uint8_t s; };  // rotation (x32767), translation (x8), uniform scale (x64)

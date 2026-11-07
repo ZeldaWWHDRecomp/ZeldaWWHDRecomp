@@ -1300,16 +1300,38 @@ void pack(const Pose& p, std::string& out) {
             if (!unit) put_bytes(&j.s, 1);
         }
     }
-    put_bytes(&p.trail, 4);
-    if (p.trail > 0) {
+    // A pose fits the server's limit (kPoseBudget, online/proto kMaxPoseBlob): one over it is not sent at all (the
+    // player stands still on the others' screens), and the sword trail (720 bytes) or the grappling hook's rope (up to
+    // 1200) can take it over, on top of the models. What does not fit is left out of this pose: the trail first, then
+    // every other rope point (its ends kept) until the rest fits.
+    const size_t nr_all = p.rope_pts.size() / 3;
+    const size_t tail = 2 + (p.chain ? 10 : 0) + 1 + ((p.flags & kSailing) ? 14 : 0) + ((p.flags & kOnFriend) ? 1 : 0);
+    const size_t used = out.size() - start, trail_bytes = p.trail > 0 ? 12 + 2 * p.trail_pts.size() : 0;
+    const auto rope_bytes = [](size_t n) { return n ? 4 + 6 * n : 0; };
+    const bool trail = p.trail > 0 && used + 4 + trail_bytes + tail + rope_bytes(nr_all) <= kPoseBudget;
+    size_t step = 1;
+    while (nr_all > 2 && used + 4 + (trail ? trail_bytes : 0) + tail + rope_bytes((nr_all - 1 + step - 1) / step + 1) > kPoseBudget) step++;
+    const int32_t trail_n = trail ? p.trail : 0;
+    put_bytes(&trail_n, 4);
+    if (trail) {
         put_bytes(&p.trail_idx, 4), put_bytes(&p.trail_color, 4), put_bytes(&p.trail_top, 4);
         put_bytes(p.trail_pts.data(), 2 * p.trail_pts.size());
     }
     put_bytes(&p.chain, 2);
     if (p.chain) put_bytes(p.chain_root, 6), put_bytes(p.chain_angle, 4);
-    const uint8_t nr = (uint8_t)(p.rope_pts.size() / 3);
+    std::vector<size_t> keep;  // (the rope's points sent: every step-th, and its last)
+    for (size_t i = 0; i < nr_all; i += step) keep.push_back(i);
+    if (nr_all && keep.back() != nr_all - 1) keep.push_back(nr_all - 1);
+    const uint8_t nr = (uint8_t)keep.size();
     put_bytes(&nr, 1);
-    if (nr) put_bytes(&p.rope_width, 4), put_bytes(p.rope_pts.data(), 6 * nr);
+    if (nr) {
+        put_bytes(&p.rope_width, 4);
+        for (size_t i : keep) put_bytes(&p.rope_pts[3 * i], 6);
+    }
+    if ((p.trail > 0 && !trail) || step > 1)
+        if (static uint32_t n = 0; n++ % 300 == 0)
+            trace("coop: a pose over %zu bytes: %s%s (%u so far)", kPoseBudget, p.trail > 0 && !trail ? "its sword trail left out" : "",
+                  step > 1 ? ", its rope thinned" : "", n);
     if (p.flags & kSailing) put_bytes(p.boat, 12), put_bytes(&p.boat_yaw, 2);  // (C16: his boat, for a friend's deck)
     if (p.flags & kOnFriend) put_bytes(&p.deck_of, 1);
     size = (uint32_t)(out.size() - start);
