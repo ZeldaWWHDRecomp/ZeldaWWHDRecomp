@@ -28,9 +28,12 @@ what is on `devel` and not released yet (also in the
   screen and the system's navigation bar covered the rupee counter. The picture, the view button and Match
   window's shape now leave out the bars the system draws over the game. Desktop and devices that hide the bars
   are unchanged.
-- **Settings › Randomizer is always there** (#452). It used to appear only after setup had made a randomized game,
-  so the built-in randomizer was hard to find. Before the first randomized game the page says where setup makes one
-  (the setup window's Randomized games page; on Android, Randomized game... on the setup screen).
+- **Make randomized games in the game** (#457, #452). **Settings › Randomizer** is now always there and makes and
+  imports randomized games itself, so setup isn't needed for them: choose Beginner, Standard or Everything, a seed
+  name or a permalink and **Make this game**, or **Import seed...** for the official randomizer's output. Setup makes
+  and builds it in the background while you keep playing (with progress, Cancel and setup's message if it fails);
+  then **Restart now** or later. On Android the phone's setup service builds it (it pauses when the phone gets hot)
+  and the next start of the app plays it. The full option pages stay in the setup window.
 - **Fixed: tapping the game-over question did nothing on Android** (#455, for #427). After a game over, Cancel/Save
   and To Title Screen/Continue now take a tap on the Flexible touch style, which shows only A (Choose) there. The
   game runs this question as a menu, so the touch controls had treated it as one.
