@@ -881,16 +881,18 @@ template <typename F> void hidden(uint32_t model, F entry) {
     for (uint32_t k = 0; k < n; k++) st8(shown_flag(model, k), was[k]);
 }
 
-// The tunics (docs/online-coop.md): Link's body texture (hero's clothes, linktexS3TC) recoloured where it is the
-// tunic's and hat's green, one copy a colour, made the first time it is worn; a model's texture list (written by
-// viewCalc, 027F50F8) then points at its wearer's. Which colour blocks are the tunic's is found at run time from the
+// The tunics (docs/online-coop.md): Link's body texture (hero's clothes, linktexS3TC, or his island clothes,
+// linktexbci4, which the game swaps in for it: before he has the hero's clothes and in a second quest) recoloured where
+// it is the tunic's and hat's green (the island shirt's blue), one copy a colour, made the first time it is worn; a
+// model's texture list (written by viewCalc, 027F50F8) then points at its wearer's. Which colour blocks are the tunic's is found at run time from the
 // player's own loaded texture (no mask ships with the port): an endpoint (RGB565) of the base green's hue and
 // saturation (tunic_green()). Each such endpoint takes the wanted colour's hue, its saturation and value moved as much
 // as the base colour's are; a BC1 block whose endpoints swap order has its index 3 (transparent) made 2.
 int g_own_tunic = -1;
 struct Clothes {
     uint32_t base;  // the tunic's own colour, 0xRRGGBB
-    uint32_t bytes, fmt;
+    uint32_t fmt, image_bytes;  // its GX2 format (without the sRGB bit) and level-0 size (640x384)
+    bool hue_test;  // the hue test below may stand in until the computed mask is ready (BC1 green only)
     uint32_t tex = 0;            // Link's texture object (its GX2Texture at +4)
     uint32_t worn[4] = {};       // its copies, by tunic (0: none), each in memory of its own for good
     uint32_t img[4] = {}, mip[4] = {};
@@ -899,7 +901,8 @@ struct Clothes {
     uint32_t retry[4] = {};
     uint32_t made_from = 0;      // the texture they are copies of
     bool fresh = false;          // to be made again (another texture)
-} g_clothes[1] = {{0x5AB24A, 212480, 0x31}};  // (BC1, 640x384 with its mips: HD Link's hero's clothes)
+} g_clothes[2] = {{0x5AB24A, 0x31, 640 * 384 / 2, true},    // (BC1: HD Link's hero's clothes)
+                  {0x4A75AD, 0x33, 640 * 384, false}};       // (BC3: his island clothes; the shirt's blue)
 constexpr uint32_t kTunicRgb[4] = {0x5AB24A, 0xE52B36, 0x698DB9, 0x9A4F9F};  // green; the randomizer's Red/Blue/Purple Link
 
 void hsv(uint16_t c, double& h, double& s, double& v) {
@@ -944,7 +947,7 @@ uint16_t exchange(uint16_t base, uint16_t want, uint16_t cur) {
 
 // Link's texture object of these clothes as tunic t (0: his own), the copy made the first time
 uint32_t worn(Clothes& k, int t) {
-    if (!k.tex || (t == 0 && k.base == kTunicRgb[0])) return k.tex;
+    if (!k.tex || kTunicRgb[t] == k.base) return k.tex;  // (the clothes' own colour: as they are)
     if (k.fresh) k.fresh = false, std::fill(std::begin(k.made), std::end(k.made), false), std::fill(std::begin(k.guessed), std::end(k.guessed), false);
     using namespace gx2;
     const uint32_t gx = k.tex + kTexSurface;
@@ -952,6 +955,10 @@ uint32_t worn(Clothes& k, int t) {
         link_masks::find(mem::ptr(ld32(gx + image)), ld32(gx + imageSize), ld32(gx + mipmapSize) ? mem::ptr(ld32(gx + mipmaps)) : nullptr, ld32(gx + mipmapSize)))
         k.made[t] = false;  // (the mask is ready now: made again from it)
     if (k.made[t]) return k.worn[t];
+    // (no hue test for these clothes: as they are until the mask is ready, asked again every 30 draws)
+    if (!k.hue_test && (++k.retry[t] % 30 != 1 ||
+                        !link_masks::find(mem::ptr(ld32(gx + image)), ld32(gx + imageSize), ld32(gx + mipmapSize) ? mem::ptr(ld32(gx + mipmaps)) : nullptr, ld32(gx + mipmapSize))))
+        return k.tex;
     const uint32_t size = ld32(gx + imageSize), mips = ld32(gx + mipmapSize), align = std::max<uint32_t>(ld32(gx + alignment), 0x100);
     if (!k.worn[t]) k.worn[t] = mem::host_alloc(kTexObject, 0x20), k.img[t] = mem::host_alloc(size, align), k.mip[t] = mips ? mem::host_alloc(mips, align) : 0;
     k.made[t] = true;
@@ -991,8 +998,30 @@ uint32_t worn(Clothes& k, int t) {
     return obj;
 }
 
-// Link's body texture, found among his models' (each model data's texture table: j3d::kTexTable), by size and format. (His island clothes are not
-// among them in HD: left as they are.)
+// a texture object that is these clothes: 640x384 in their format and size
+bool is_clothes(const Clothes& k, uint32_t tex) {
+    const uint32_t s = tex + gx2::kTexSurface;
+    return tex >= mem::kMem2Start && tex < mem::kMem2End && ld32(s + gx2::width) == 640 && ld32(s + gx2::height) == 384 &&
+           (ld32(s + gx2::format) & 0x3F) == k.fmt && ld32(s + gx2::imageSize) == k.image_bytes;
+}
+// the clothes a model's texture list entry is, or null: a known texture object, or (the game swaps the island clothes'
+// texture into the list in viewCalc, so they need not be in a model's table) a new one taken on (its copies made again)
+Clothes* clothes_of(uint32_t tex) {
+    for (Clothes& k : g_clothes) {
+        if (!tex || tex == k.tex) return tex ? &k : nullptr;
+        for (uint32_t w : k.worn) if (w && tex == w) return nullptr;  // (one of the copies)
+    }
+    for (Clothes& k : g_clothes)
+        if (is_clothes(k, tex)) {
+            k.tex = tex;
+            if (k.tex != k.made_from) k.made_from = k.tex, k.fresh = true;
+            trace("coop: Link's clothes (%06X): %08X", k.base, tex);
+            return &k;
+        }
+    return nullptr;
+}
+
+// Link's body textures, found among his models' (each model data's texture table: j3d::kTexTable), by size and format
 void find_clothes() {
     for (Clothes& k : g_clothes) k.tex = 0;
     for (const LinkModel& lm : g_models) {
@@ -1000,13 +1029,11 @@ void find_clothes() {
         for (uint32_t j = 0; j < n; j++)
             if (const uint32_t tex = ld32(ld32(table + j3d::kTexTableEntries) + j * j3d::kTexEntry + j3d::kTexEntryObj))
                 for (Clothes& k : g_clothes)
-                    if (const uint32_t s = tex + gx2::kTexSurface; !k.tex && ld32(s + gx2::width) == 640 && ld32(s + gx2::height) == 384 &&
-                        (ld32(s + gx2::format) & 0x3F) == k.fmt && ld32(s + gx2::imageSize) + ld32(s + gx2::mipmapSize) == k.bytes)
-                        k.tex = tex;
+                    if (!k.tex && is_clothes(k, tex)) k.tex = tex;
     }
     for (Clothes& k : g_clothes)  // (its copies made from another texture: made again, in the same memory)
         if (k.tex != k.made_from) k.made_from = k.tex, k.fresh = true;
-    trace("coop: Link's clothes: %08X", g_clothes[0].tex);
+    trace("coop: Link's clothes: %08X, island clothes %08X", g_clothes[0].tex, g_clothes[1].tex);
 }
 
 }  // namespace
@@ -1787,8 +1814,7 @@ extern "C" void hook_027F50F8(Cpu* c) {
     for (uint32_t i = 0, n = ld16(model + kMatPacketNum); i < n; i++) {
         const uint32_t mi = ld32(model + kMatPackets) + i * kMatPacket, list = ld32(mi + kMatPacketTex), count = list ? ld8(ld32(mi) + kMatTexNum) : 0;
         for (uint32_t j = 0; j < count; j++)
-            for (Clothes& k : g_clothes)
-                if (k.tex && ld32(list + 4 * j) == k.tex) st32(list + 4 * j, worn(k, t));
+            if (Clothes* k = clothes_of(ld32(list + 4 * j))) st32(list + 4 * j, worn(*k, t));
     }
 }
 
