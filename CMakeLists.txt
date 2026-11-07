@@ -124,6 +124,43 @@ add_library(gamecode STATIC ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/imports
 target_include_directories(gamecode PUBLIC runtime/include ${GEN_DIR})
 # exact FP semantics: no contraction into FMA, no fast-math; PowerPC integer arithmetic wraps
 target_compile_options(gamecode PRIVATE -O3 -ffp-contract=off -fno-strict-aliasing -fwrapv -w)
+option(WWHD_PPC_TRACE "game code checks the function-entry trace switch (WWHD_TRACE_FUNCS and friends)" ON)
+if(NOT WWHD_PPC_TRACE)
+  target_compile_definitions(gamecode PRIVATE PPC_NO_TRACE=1)
+endif()
+# Profile-guided optimization of the runtime (the render thread): WWHD_PGO_GENERATE=<dir> builds an
+# instrumented runtime that writes profiles there; WWHD_PGO_USE=<file.profdata> optimizes with them.
+# WWHD_PGO_GAMECODE=ON also profiles the recompiled game code (the logic thread).
+# WWHD_PGO_CS_GENERATE=<dir> with WWHD_PGO_USE builds a context-sensitive (post-inline) instrumented
+# binary on top of that profile; merge its profiles with the WWHD_PGO_USE one for the final build.
+set(WWHD_PGO_GENERATE "" CACHE PATH "write runtime PGO profiles to this folder")
+set(WWHD_PGO_USE "" CACHE FILEPATH "optimize the runtime with this merged .profdata")
+set(WWHD_PGO_CS_GENERATE "" CACHE PATH "write context-sensitive PGO profiles to this folder")
+option(WWHD_PGO_GAMECODE "apply PGO to the game code too" OFF)
+if(WWHD_PGO_CS_GENERATE AND WWHD_PGO_USE)
+  add_compile_options(-fprofile-use=${WWHD_PGO_USE} -fcs-profile-generate=${WWHD_PGO_CS_GENERATE}
+                      -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+  add_link_options(-fcs-profile-generate=${WWHD_PGO_CS_GENERATE})
+  add_compile_definitions(WWHD_PGO_GENERATE_BUILD=1)
+  target_compile_options(gamecode PRIVATE -fprofile-use=${WWHD_PGO_USE}
+                         -fcs-profile-generate=${WWHD_PGO_CS_GENERATE})
+elseif(WWHD_PGO_GENERATE)
+  add_compile_options($<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-fprofile-generate=${WWHD_PGO_GENERATE}>)
+  add_link_options(-fprofile-generate=${WWHD_PGO_GENERATE})
+  add_compile_definitions(WWHD_PGO_GENERATE_BUILD=1)
+  if(WWHD_PGO_GAMECODE)
+    target_compile_options(gamecode PRIVATE -fprofile-generate=${WWHD_PGO_GENERATE})
+  endif()
+elseif(WWHD_PGO_USE)
+  add_compile_options($<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-fprofile-use=${WWHD_PGO_USE}>
+                      $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-Wno-profile-instr-unprofiled>
+                      $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-Wno-profile-instr-out-of-date>)
+  add_link_options(-fprofile-use=${WWHD_PGO_USE})  # LTO backend: applies a context-sensitive profile
+  if(WWHD_PGO_GAMECODE)
+    target_compile_options(gamecode PRIVATE -fprofile-use=${WWHD_PGO_USE} -Wno-profile-instr-unprofiled
+                                            -Wno-profile-instr-out-of-date)
+  endif()
+endif()
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
   target_compile_options(gamecode PRIVATE -mcpu=apple-m1)
 endif()
@@ -169,9 +206,10 @@ target_compile_options(imgui PRIVATE -w -O2)
 # ---- build identification (runtime/src/build_info.h): version and commit, rewritten by
 # cmake/BuildInfo.cmake on every build when they change. Release builds pass the tag.
 set(WWHD_VERSION "" CACHE STRING "release version shown in reports and logs (default: from git describe)")
+set(WWHD_COMMIT "" CACHE STRING "commit reported by the build (default: from git, -dirty with local changes)")
 set(WWHD_BUILD_INFO ${CMAKE_BINARY_DIR}/generated/build_info.cpp)
 add_custom_target(wwhd_build_info
-  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${WWHD_BUILD_INFO} "-DVERSION=${WWHD_VERSION}"
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${WWHD_BUILD_INFO} "-DVERSION=${WWHD_VERSION}" "-DCOMMIT=${WWHD_COMMIT}"
           "-DVARIANT=$<IF:$<BOOL:${WWHD_DECOMP}>,decomp,>"
           -P ${CMAKE_SOURCE_DIR}/cmake/BuildInfo.cmake
   BYPRODUCTS ${WWHD_BUILD_INFO}
@@ -365,6 +403,12 @@ endif()
 if(WWHD_HAS_VULKAN)
   include(cmake/PipelineRuntimeIdentity.cmake)
   wwhd_pipeline_runtime_identity("${CMAKE_SOURCE_DIR}" WWHD_PIPELINE_RUNTIME_ID)
+  # A build whose changes leave the renderer as released can keep the release's identity, so the
+  # installer's pipeline head start and the player's saved recipes stay usable.
+  set(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE "" CACHE STRING "pipeline runtime identity to report instead of the source hash")
+  if(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE)
+    set(WWHD_PIPELINE_RUNTIME_ID "${WWHD_PIPELINE_RUNTIME_ID_OVERRIDE}")
+  endif()
   set_property(SOURCE runtime/src/gfx/vulkan/backend.cpp APPEND PROPERTY
     COMPILE_DEFINITIONS "WWHD_PIPELINE_RUNTIME_ID=\"${WWHD_PIPELINE_RUNTIME_ID}\"")
   # VK_NO_PROTOTYPES: the renderer loads every Vulkan function at run time (gfx/vulkan/loader.h), so the

@@ -3,6 +3,9 @@
 #include "background_shaders.h"
 #include "vertex_cpu_policy.h"
 #include "dynres.h"
+#ifdef WWHD_PGO_GENERATE_BUILD
+extern "C" int __llvm_profile_write_file(void);
+#endif
 #include "platform/keycodes.h"
 #include "input_map.h"
 #include "atomic_temporary.h"
@@ -5852,6 +5855,9 @@ static void quit_game() {
     LOG("[quit] closing the app");
     for (int i = 0; i < 50; i++) SDL_Delay(100);  // the activity ends the process; this is a fallback
   }
+#endif
+#ifdef WWHD_PGO_GENERATE_BUILD
+  __llvm_profile_write_file();  // instrumented build (CMake WWHD_PGO_GENERATE): _Exit skips the profile's atexit writer
 #endif
   std::_Exit(0);
 }

@@ -31,6 +31,17 @@ static void breaking(uint32_t first, uint32_t count, const char* what) {
             ++failures;
         }
 }
+// a register whose change must keep a partial continuation from reusing a piece (mask: its groups)
+static void covered(uint32_t first, uint32_t count, uint32_t mask, const char* what, uint32_t old = 0, uint32_t value = 1) {
+    for (uint32_t r = first; r < first + count; ++r) {
+        const uint8_t g = state_group_change(state_group(r), old, value);
+        if (g >= kSgCount || !((mask >> g) & 1)) {
+            std::printf("%s: register %04X (%s) does not keep the piece from being reused\n", what, r,
+                        state_group_name(g));
+            ++failures;
+        }
+    }
+}
 static void continues(uint32_t first, uint32_t count, const char* what) {
     for (uint32_t r = first; r < first + count; ++r)
         if (!continued(r)) {
@@ -94,6 +105,38 @@ int main() {
     for (uint32_t reg : {uint32_t(mmDB_DEPTH_BASE), uint32_t(mmDB_DEPTH_SIZE), uint32_t(mmDB_DEPTH_VIEW),
                          uint32_t(mmDB_DEPTH_INFO), uint32_t(mmDB_HTILE_DATA_BASE), uint32_t(kDepthSlicesReg)})
         breaking(reg, 1, "depth target");
+
+    // partial continuation (state_groups.h kSgPartial*Mask): the readers of each reused piece
+    // render targets: color_target, depth_target, GetActiveColorBufferMask, GetActiveDepthBufferMask
+    for (uint32_t base : {uint32_t(mmCB_COLOR0_BASE), uint32_t(mmCB_COLOR0_SIZE), uint32_t(mmCB_COLOR0_VIEW),
+                          uint32_t(mmCB_COLOR0_INFO), uint32_t(mmCB_COLOR0_TILE), uint32_t(mmCB_COLOR0_FRAG)})
+        covered(base, 8, kSgPartialTargetsMask, "partial targets: colour target");
+    for (uint32_t reg : {uint32_t(mmDB_DEPTH_BASE), uint32_t(mmDB_DEPTH_SIZE), uint32_t(mmDB_DEPTH_VIEW),
+                         uint32_t(mmDB_DEPTH_INFO), uint32_t(mmDB_HTILE_DATA_BASE), uint32_t(kDepthSlicesReg)})
+        covered(reg, 1, kSgPartialTargetsMask, "partial targets: depth target");
+    covered(REGADDR::CB_COLOR_CONTROL, 1, kSgPartialTargetsMask, "partial targets: CB_COLOR_CONTROL");
+    covered(REGADDR::CB_TARGET_MASK, 1, kSgPartialTargetsMask, "partial targets: CB_TARGET_MASK");
+    covered(REGADDR::DB_DEPTH_CONTROL, 1, kSgPartialTargetsMask, "partial targets: DB_DEPTH_CONTROL");
+    // pipeline key (draw.cpp pipeline_key)
+    covered(REGADDR::CB_COLOR_CONTROL, 1, kSgPartialPipelineMask, "partial pipeline: CB_COLOR_CONTROL");
+    covered(REGADDR::CB_BLEND0_CONTROL, 8, kSgPartialPipelineMask, "partial pipeline: CB_BLENDn_CONTROL");
+    covered(REGADDR::CB_TARGET_MASK, 1, kSgPartialPipelineMask, "partial pipeline: CB_TARGET_MASK");
+    covered(REGADDR::DB_DEPTH_CONTROL, 1, kSgPartialPipelineMask, "partial pipeline: DB_DEPTH_CONTROL");
+    for (uint32_t reg : {uint32_t(REGADDR::DB_STENCILREFMASK), uint32_t(REGADDR::DB_STENCILREFMASK_BF)})
+        for (uint32_t bit = 8; bit < 24; ++bit)
+            covered(reg, 1, kSgPartialPipelineMask, "partial pipeline: stencil mask", 0x12, 0x12 | (1u << bit));
+    covered(REGADDR::PA_SU_SC_MODE_CNTL, 1, kSgPartialPipelineMask, "partial pipeline: PA_SU_SC_MODE_CNTL");
+    covered(REGADDR::PA_SU_POLY_OFFSET_FRONT_SCALE, 1, kSgPartialPipelineMask, "partial pipeline: poly offset");
+    covered(REGADDR::PA_SU_POLY_OFFSET_FRONT_OFFSET, 1, kSgPartialPipelineMask, "partial pipeline: poly offset");
+    covered(REGADDR::PA_SU_POLY_OFFSET_CLAMP, 1, kSgPartialPipelineMask, "partial pipeline: poly offset");
+    covered(REGADDR::PA_CL_CLIP_CNTL, 1, kSgPartialPipelineMask, "partial pipeline: PA_CL_CLIP_CNTL");
+    for (uint32_t b = 0; b < 16; ++b)
+        covered(mmSQ_VTX_ATTRIBUTE_BLOCK_START + b * 7 + 2, 1, kSgPartialPipelineMask, "partial pipeline: vertex stride");
+    // textures and samplers of both stages (resolve_texture, sampled_texture_view, resolve_sampler)
+    for (uint32_t base : {uint32_t(REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS), uint32_t(REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS),
+                          uint32_t(REGADDR::SQ_TEX_RESOURCE_WORD0_N_GS)})
+        covered(base, 7 * LATTE_NUM_MAX_TEX_UNITS, kSgPartialTexturesMask, "partial textures: texture unit");
+    covered(REGADDR::SQ_TEX_SAMPLER_WORD0_0, 3 * 3 * LATTE_NUM_MAX_TEX_UNITS, kSgPartialTexturesMask, "partial textures: sampler");
 
     // re-read by every draw
     continues(mmSQ_ALU_CONSTANT0_0, 0x1000, "ALU constants");
