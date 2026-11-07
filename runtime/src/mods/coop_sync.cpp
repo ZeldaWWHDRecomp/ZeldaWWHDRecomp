@@ -923,7 +923,8 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
             Here& h = here[id];
             if (id && !p) { h.in = false; continue; }
             char st[8];
-            memcpy(st, p ? p->stage : (const char*)mem::ptr(kStage), 8);
+            if (p) memcpy(st, p->stage, 8);
+            else clean_stage(mem::ptr(kStage), st);
             const int8_t rm = p ? p->room : (int8_t)ld8(link + kRoom);
             if (!h.in || memcmp(h.stage, st, 8) || h.room != rm) memcpy(h.stage, st, 8), h.room = rm, h.since = now;
             h.in = true;
@@ -977,7 +978,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 if (kind == 3 || !generic(name)) {
                     ev_cut = true;
                     std::string b(8, '\0');
-                    memcpy(&b[0], mem::ptr(kStage), 8);
+                    clean_stage(mem::ptr(kStage), &b[0]);
                     b += (char)ld8(link + kRoom), b += name;
                     net::send(-1, net::kCutscene, b);
                     mods::trace("coop: the host's cutscene %s: to the guests", name.c_str());

@@ -10,6 +10,19 @@
 
 namespace mods::coop::names {
 
+// The current stage's name as a clean 8-byte code: the name, then zeros. The game keeps it in a char[8] it fills with
+// strcpy (dStage_nextStage_c::set), so after a longer name (M_NewD2, then sea) the old name's bytes stay after the
+// NUL. The co-op messages compare and send all 8 bytes, and the server refuses a stage code with anything but zeros
+// after its end (a pose with one is a protocol strike: 2026-11-07, a player kicked for "too many messages (pose)").
+inline void clean_stage(const uint8_t* raw, char out[8]) {
+    bool end = false;
+    for (int i = 0; i < 8; i++) {
+        const uint8_t ch = end ? 0 : raw[i];
+        end = end || ch < 0x21 || ch > 0x7E;
+        out[i] = end ? 0 : (char)ch;
+    }
+}
+
 // dComIfG_inf_c (g_dComIfG_gameInfo, GD(0x1046F0B0) and dComIfGp_get 025200D4): offsets from its start
 // (wwhd_src include/d/d_com_inf_game.h: dComIfG_play_c at 0x12A0, the PLAY_* enum)
 namespace inf {

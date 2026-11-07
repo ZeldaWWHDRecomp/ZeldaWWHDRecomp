@@ -107,7 +107,8 @@ void step(Cpu* c) {
         if (a && m.proc == kArrow && arrow_hit(c, a, m)) { g_mine.erase(g_mine.begin() + i); continue; }
         if (a && !(m.proc == kBomb && ld16(a + kFuse) == 0)) { i++; continue; }
         if (a) {  // (gone off: its stage, room and place out)
-            std::string b((const char*)mem::ptr(kStage), 8);
+            std::string b(8, '\0');
+            names::clean_stage(mem::ptr(kStage), &b[0]);
             b += (char)ld8(a + kRoom);
             for (int e = 0; e < 3; e++) { const uint32_t v = ld32(a + kPos + 4 * e); b.append((const char*)&v, 4); }
             net::send(-1, net::kBombed, b);
@@ -122,7 +123,9 @@ void step(Cpu* c) {
 }
 
 void bombed(Cpu* c, uint32_t link, const uint8_t* d, size_t n) {
-    if (n < 21 || memcmp(d, mem::ptr(kStage), 8) || (int8_t)d[8] != (int8_t)ld8(link + kRoom)) return;  // (not here)
+    char here[8];
+    names::clean_stage(mem::ptr(kStage), here);
+    if (n < 21 || memcmp(d, here, 8) || (int8_t)d[8] != (int8_t)ld8(link + kRoom)) return;  // (not here)
     float pos[3];
     memcpy(pos, d + 9, 12);
     for (float v : pos) if (!std::isfinite(v) || std::fabs(v) > 1e6f) return;  // (another game's numbers)

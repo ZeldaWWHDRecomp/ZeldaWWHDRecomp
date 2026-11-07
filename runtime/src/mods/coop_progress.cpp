@@ -260,7 +260,9 @@ void move_doors(Cpu* c) {
 }  // namespace
 
 void door_moved(const uint8_t* d, size_t n) {
-    if (n < 8 + 2 + 8 + 1 || memcmp(d, mem::ptr(GD(0x1046F0B0) + names::inf::kCurStage), 8)) return;
+    char here[8];
+    names::clean_stage(mem::ptr(GD(0x1046F0B0) + names::inf::kCurStage), here);
+    if (n < 8 + 2 + 8 + 1 || memcmp(d, here, 8)) return;
     DoorMove m{};
     int16_t proc;
     memcpy(&proc, d + 8, 2), memcpy(&m.x, d + 10, 4), memcpy(&m.z, d + 14, 4);
@@ -435,7 +437,8 @@ std::vector<std::string> team_state(bool counts) {
 // opening or closing, to the others
 static void door_told(uint32_t a, bool open, uint8_t way = 0) {
     if (mods::coop::net::role() == mods::coop::net::Role::kOff) return;
-    std::string b((const char*)mem::ptr(GD(0x1046F0B0) + mods::coop::names::inf::kCurStage), 8);
+    std::string b(8, '\0');
+    mods::coop::names::clean_stage(mem::ptr(GD(0x1046F0B0) + mods::coop::names::inf::kCurStage), &b[0]);
     const int16_t proc = (int16_t)ld16(a + 0x08);
     const float x = (float)ldf32(a + 0x2EC), z = (float)ldf32(a + 0x2F4);
     b.append((const char*)&proc, 2), b.append((const char*)&x, 4), b.append((const char*)&z, 4), b += (char)open, b += (char)way;

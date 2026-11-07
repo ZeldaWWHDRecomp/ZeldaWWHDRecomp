@@ -1848,7 +1848,13 @@ extern "C" void hook_023D9820(Cpu* c) {
     g_in_draw = false;
     const uint32_t ret = c->r[3];
     if (g_want && !g_taking.models.empty()) {
-        memcpy(g_taking.stage, mem::ptr(kStage), 8);
+        clean_stage(mem::ptr(kStage), g_taking.stage);  // (names.h: the name, then zeros)
+        if (static char told[8]; memcmp(g_taking.stage, mem::ptr(kStage), 8) && memcmp(told, g_taking.stage, 8)) {
+            memcpy(told, g_taking.stage, 8);
+            const uint8_t* r = mem::ptr(kStage);
+            mods::trace("coop: stage %.8s kept with other bytes after its name (%02X %02X %02X %02X %02X %02X %02X %02X): sent without them",
+                  g_taking.stage, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7]);
+        }
         g_taking.room = (int8_t)ld8(link + kRoom);
         for (int i = 0; i < 3; i++) g_taking.pos[i] = f32(link + kPos + 4 * i);
         g_taking.yaw = (int16_t)ld16(link + kAngleY);

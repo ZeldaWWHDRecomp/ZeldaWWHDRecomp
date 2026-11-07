@@ -2882,6 +2882,13 @@ if(WWHD_ONLINE)  # the saved servers and the words for the server's answers (GAP
   add_test(NAME coop_servers COMMAND coop_servers_test)
 endif()
 
+if(WWHD_ONLINE)  # the stage codes the co-op messages send, as the server takes them (the game's strcpy'd char[8])
+  add_executable(coop_names_test runtime/tools/coop_names_test.cpp)
+  target_include_directories(coop_names_test PRIVATE runtime/src)
+  target_link_libraries(coop_names_test PRIVATE wwhd_online_proto)
+  add_test(NAME coop_names COMMAND coop_names_test)
+endif()
+
 add_executable(camera_swipe_test runtime/tools/camera_swipe_test.cpp)
 target_include_directories(camera_swipe_test PRIVATE runtime/src)
 target_compile_options(camera_swipe_test PRIVATE -UNDEBUG)

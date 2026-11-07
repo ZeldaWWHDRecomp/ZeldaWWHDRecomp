@@ -503,6 +503,20 @@ void put_state(uint8_t kind, const std::string& body) {
         h.x = p[0], h.y = p[1], h.z = p[2], h.yaw = (uint16_t)yaw;
         if (g_place_set) h.x = g_place[0], h.y = g_place[1], h.z = g_place[2];  // (a pose in a deck's frame: its world place)
         if (body[13] & 1) h.flags |= 1;  // (on a deck: its frame)
+        {  // (a pose the server would refuse is a protocol strike, and enough of them a kick: never sent, told once)
+            op::Bytes t;
+            op::Writer w(t);
+            op::put_pose_header(w, h);
+            op::Reader r(t.data(), t.size());
+            (void)op::get_pose_header(r);
+            if (!r.ok() || body.size() > op::kMaxPoseBlob) {
+                if (static uint32_t told = 0; told++ % 300 == 0)
+                    mods::trace("coop: server: a pose not sent (%u so far): stage %.8s room %d at %f %f %f, %zu bytes", told, h.where.stage.data(),
+                                h.where.room, h.x, h.y, h.z, body.size());
+                g_place_set = false;
+                return;
+            }
+        }
         if (!g_where_known || !(h.where == g_where_sent)) g_client->send_stage(h.where), g_where_sent = h.where, g_where_known = true;
         g_client->send_pose(h, (const uint8_t*)body.data(), body.size());
         g_place_set = false;
