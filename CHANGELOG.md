@@ -46,6 +46,10 @@ what is on `devel` and not released yet (also in the
   their button pictures, which full states don't carry; in a later session that hadn't shown restyled prompts, the
   game drew that text against an empty picture and the renderer stopped with "missing sampled texture". Such text
   is now rebuilt from the game's own font after the load.
+- **Fixed: controller rumble on macOS stopped working again** (#464, thanks @davidsgullick, #346). A change made while
+  #347 was reviewed switched to a looping haptic player that controllers reject, so the motors never ran. Rumble now
+  uses one long haptic event whose strength changes live, as in #347's first version, and keeps the recovery when
+  macOS resets the haptics engine.
 
 ## v0.5.1
 
