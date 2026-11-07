@@ -129,6 +129,24 @@ class NativeRulesTest(unittest.TestCase):
         ok(15, "guest", "ok", "no body")            # C11
         ok(17, "guest", "ok", "src:ret")            # C12: a result native_returns.py did not rewrite
 
+    def test_lift(self):
+        """level 1 step 2 (--lift): the category's reason no longer keeps the guest call; the line says (place) and the
+        unit table sets bit 18; other reasons still decide"""
+        F = self.F
+        lines = native_rules.rules(self.src, self.out, self.gen, False, None, ("local", "tailptr"))
+        got = {int(l.split()[0], 16): l.split("#")[0] for l in lines}
+        for i in (8, 10):
+            self.assertIn("callee=native", got[F(i)], i)
+            self.assertIn("(place)", got[F(i)], i)
+        self.assertIn("callee=guest", got[F(12)])  # footprint stays
+        self.assertNotIn("(place)", got[F(6)])
+        native_rules.unit_headers(self.out, lines)
+        h = open(self.out + "/native/0.h").read()
+        row = next(l for l in h.splitlines() if "0x%08X" % F(8) in l or "0x%08x" % F(8) in l)
+        flags = int(row.replace("}", "").split(",")[-2 if row.rstrip().endswith(",") else -1].strip().rstrip("u"), 0)
+        self.assertTrue(flags & (1 << 18), row)
+        self.assertEqual(native_rules.rules(self.src, self.out, self.gen), native_rules.rules(self.src, self.out, self.gen, False, None, ()))
+
     def test_unit_header(self):
         lines = native_rules.rules(self.src, self.out, self.gen)
         native_rules.unit_headers(self.out, lines)

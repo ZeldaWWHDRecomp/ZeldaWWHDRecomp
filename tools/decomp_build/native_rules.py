@@ -62,6 +62,8 @@ SRCF = [("src:local", re.compile(r"gabi::(Local|Stack|LocalOf|FrameLocal)\b|\bLo
         ("src:va", re.compile(r"\bva_(list|start|arg)\b|\.\.\.\s*\)")),
         ("src:jmp", re.compile(r"setjmp|longjmp|OSLoadContext|OSSaveContext|__builtin_(frame|return)_address")),
         ("src:autoframe", re.compile(r"\bAutoFrame\b"))]
+# --lift CATEGORY,...: the source reasons each step-2 category lifts (WWHD_DECOMP_NATIVE_AUTOFRAME / _LOCAL / _TAILPTR)
+LIFT = {"src:autoframe": "autoframe", "src:local": "local", "src:tail_ptr": "tailptr"}  # (src:wwhd_func: no native form)
 FUNC = re.compile(r"WWHD_(GLUE_)?FUNC(_R)?\(\s*0x([0-9A-Fa-f]{8})\s*,")
 LCALL = re.compile(r"\bgabi::lcall<0x([0-9A-Fa-f]{8}),")
 FLOAT_T = re.compile(r"^(?:const\s+)?(?:f32|f64|float|double)$")
@@ -361,7 +363,7 @@ def spec_values(src, directive):
     return out
 
 
-def rules(src, out, gen_dir, strict=False, decl_path=None):
+def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
     if decl_path is None:
         decl_path = os.path.join(src, "tools", "verify", "decl_handoff.tsv")
     decl = read_decl(decl_path)
@@ -419,6 +421,12 @@ def rules(src, out, gen_dir, strict=False, decl_path=None):
         if ni > 8 or nf > 8:
             r.append("stack args")
         r += sorted(x for x in feat.get(a, ()) if x != "orig:bctrl")
+        # level 1 step 2 (--lift): these source reasons no longer keep the guest call; the native entry then places r1
+        # as do_call does (gabi.h GABI_NATIVE_PLACE, NativeInfo bit 18: "(place)")
+        lifted = [x for x in r if LIFT.get(x) in lift]
+        if lifted:
+            r = [x for x in r if x not in lifted]
+            note.append("place")
         caller = []
         if a in fx:
             caller.append("A1 framexact")
@@ -426,7 +434,7 @@ def rules(src, out, gen_dir, strict=False, decl_path=None):
             caller.append("A1 footprint")
         if fs and "src:cpu" in fs:
             caller.append("A2 cpu")
-        if fs and ("src:autoframe" in fs or "src:wwhd_func" in fs):
+        if fs and (("src:autoframe" in fs and "autoframe" not in lift) or "src:wwhd_func" in fs):
             caller.append("A1 frame")
         if a in under_funcs:
             caller.append("A3 decl")
@@ -452,6 +460,8 @@ def unit_headers(out, lines):
         f = line.split("#")[0].split()
         unit = line.split("#")[1].split()[0]
         flags = 4 | (1 if f[1] == "callee=native" else 0) | (2 if f[2] == "caller=ok" else 0)
+        if "(place)" in line.split("#")[0]:  # a lifted step-2 reason: the native entry places r1 (gabi.h bit 18)
+            flags |= 1 << 18
         m = DECL_FIELD.search(line.split("#")[0])
         if m:  # register-exact: flags 8, its registers and result (gabi.h NativeInfo)
             flags |= 8 | int(m.group(1)) << 8 | int(m.group(2)) << 12 | int(m.group(3)) << 16
@@ -483,6 +493,11 @@ def unit_headers(out, lines):
 def main():
     args = sys.argv[1:]
     decl_path = None
+    lift = ()
+    if "--lift" in args:
+        i = args.index("--lift")
+        lift = tuple(x for x in (args[i + 1] if i + 1 < len(args) else "").split(",") if x)
+        del args[i:i + 2]
     if "--decl" in args:
         i = args.index("--decl")
         decl_path = args[i + 1] if i + 1 < len(args) else ""
@@ -491,7 +506,7 @@ def main():
         sys.exit(__doc__.strip().splitlines()[4])
     src, out, gen_dir = (os.path.abspath(x) for x in args[:3])
     strict = len(args) == 4
-    lines = rules(src, out, gen_dir, strict, decl_path or None)
+    lines = rules(src, out, gen_dir, strict, decl_path or None, lift)
     if RULE_ERRORS:  # an exact callee with an under-declared call (rules() printed each): the decl table is wrong
         sys.exit("native_rules.py: %d ext declaration(s) pass fewer registers than their exact callee takes; fix the "
                  "decompilation's declarations (decl_lint.py) or its table" % len(RULE_ERRORS))

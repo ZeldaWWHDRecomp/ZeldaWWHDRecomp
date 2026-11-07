@@ -45,6 +45,25 @@ __attribute__((visibility("default"))) thread_local constinit ThreadState tls{nu
 }
 #endif
 
+/* GABI_TP_CACHE (gabi.h, gabi_tp_cache.h; level 1 step 1a): the thread-pointer table and its miss path, once (unit 0) */
+#if defined(GABI_TP_CACHE) && defined(GABI_TLS_OWNER)
+extern "C" __attribute__((visibility("protected"))) GabiTpSlot g_gabi_tp_slots[GABI_TP_SLOTS] = {};
+namespace {
+thread_local bool tp_dead = false; /* trivially destructible: still readable after the guard ran */
+thread_local GabiTpGuard tp_guard;  /* clears this thread's slot at thread exit */
+void tp_fork_child() { gabi_tp_fork_child(g_gabi_tp_slots); }
+}
+extern "C" __attribute__((visibility("default"))) gabi::ThreadState* gabi_tp_miss() {
+    static const int atfork = pthread_atfork(nullptr, nullptr, tp_fork_child);
+    (void)atfork;
+    gabi::ThreadState* p = &gabi::tls;
+    /* live blocks only (gabi_tp_cache.h): a thread inside a guest entry; a block handed out again during thread exit
+     * is zero */
+    if (p->cpu) gabi_tp_claim(g_gabi_tp_slots, gabi_tp_key(), p, tp_guard, tp_dead);
+    return p;
+}
+#endif
+
 #ifdef GABI_GAME_BUILD
 /* a register-exact function's native entry (gabi.h NativeReg; runtime/src/decomp/decomp.cpp) */
 #ifdef GABI_SHARED_TLS

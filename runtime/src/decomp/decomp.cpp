@@ -168,6 +168,35 @@ extern "C" __attribute__((visibility("default"))) void decomp_lcall(Cpu* c, uint
     c->decomp_running = uint16_t(f);
 }
 
+#ifdef WWHD_DECOMP_EDGE_LCALL
+// edges (gabi.h edge_lcall, level 1 step 3; cmake WWHD_DECOMP_EDGE_LCALL): a decompiled function's guest call to a
+// constant address that is no decompiled function (recompiled code, an import stub). The guest state is gmem_call's
+// for kind 0: pc, LR = call_lr's answer for the running caller (call_lr_by_site, through the call site's one-word
+// cache instead of call_to's lookup in the caller's site table per call), and no direct slot (the target has none:
+// direct_slot answers null), so the dispatch table. WWHD_DECOMP_EDGE_CHECK=1: compare each answer with call_to's
+// (log, first 20 differences).
+static bool g_edge_check = false;
+static std::atomic<unsigned> g_edge_bad{0};
+static std::atomic<uint64_t> g_edge_n{0};
+extern "C" __attribute__((visibility("default"))) void decomp_edge_call(Cpu* c, uint32_t addr, uint64_t* cache) {
+    const uint32_t f = c->decomp_running;
+    if (__builtin_expect(g_edge_check, 0)) {
+        const uint64_t n = g_edge_n.fetch_add(1, std::memory_order_relaxed) + 1;
+        if (!(n & (n - 1)) && n >= 4096) LOG("[decomp] edge check: %llu edge calls, %u differ", (unsigned long long)n, g_edge_bad.load());
+        const uint32_t lr0 = c->lr;
+        const decomp::CallTo want = f ? decomp::call_to(f - 1, addr, 0, lr0) : decomp::CallTo{lr0, decomp::direct_slot(addr)};
+        if (f) cached_lr(c, f, addr, cache);
+        if ((want.lr != c->lr || want.s) && g_edge_bad.fetch_add(1) < 20)
+            LOG("[decomp] edge check: caller slot %u -> %08X: lr %08X, call_to %08X, slot %s", f, addr, c->lr, want.lr,
+                want.s ? want.s->name : "-");
+    } else if (f) {
+        cached_lr(c, f, addr, cache);
+    }
+    c->pc = addr;
+    ppc_dispatch(c);
+}
+#endif
+
 // called by each decompiled unit's static constructors (tools/decomp_build/glue.cpp)
 void decomp_register(const char* unit, uint32_t addr, const char* name, void (*fn)(Cpu*), void (*run)(Cpu*, void (*)(Cpu*))) {
     using decomp::g_slots;
@@ -656,5 +685,11 @@ void init() {
     g_debug = g_stats || g_guard;
     direct_init();
     sites_init();
+#ifdef WWHD_DECOMP_EDGE_LCALL
+    if (const char* e = getenv("WWHD_DECOMP_EDGE_CHECK"); e && *e == '1') {
+        g_edge_check = true;
+        LOG("[decomp] WWHD_DECOMP_EDGE_CHECK=1: every edge call compared with call_to");
+    }
+#endif
 }
 }  // namespace decomp
