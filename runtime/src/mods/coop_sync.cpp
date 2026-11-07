@@ -742,6 +742,22 @@ void poll(Cpu* c, bool on) {
     const bool title = stage.empty() || stage == "sea_T" || stage == "Name";
     if (static bool was = true; title != was && (was = title)) mods::trace("coop: at the title");
     if (title && net::role() == net::Role::kOff) hlefs::g_block_saves = false;  // the guest's own Quest Logs again
+    // test aid WWHD_COOP_TEST_RECONNECT=<every s>[:<away s>]: every so often this game goes offline (the session stopped
+    // as switching online off stops it) and, <away s> (5) later, online again (soak tests: disconnect and reconnect)
+    if (static float every = -1, away = 5; every != 0 && on) {
+        if (every < 0) {
+            every = 0;
+            if (const char* e = getenv("WWHD_COOP_TEST_RECONNECT")) sscanf(e, "%f:%f", &every, &away);
+        }
+        static uint32_t since = 0, gone = 0;
+        const uint32_t t = net::now_ms();
+        if (every > 0 && !gone && net::role() != net::Role::kOff) {
+            if (!since) since = t;
+            if (t - since >= (uint32_t)(every * 1000)) gone = t, mods::trace("coop: test: offline");
+        }
+        if (gone && t - gone < (uint32_t)(away * 1000)) on = false;
+        else if (gone) gone = 0, since = t, mods::trace("coop: test: online again");
+    }
     if (net::role() != net::Role::kOff && (!on || gen != want_gen)) {  // switched off, or other settings
         const bool was = guest();
         net::stop(nullptr);

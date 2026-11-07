@@ -34,6 +34,8 @@ pids=()
 run() {  # run ROLE COOP-VALUE ENV...
   local role=$1 coop=$2; shift 2
   cp -R "$save" "$out/$role/save"
+  # DUO_STATES: a folder of portable states (slotN.wwstate) put in each game's state folder (WWHD_PORTABLE_LOAD_AT)
+  [ -n "${DUO_STATES:-}" ] && mkdir -p "$out/$role/states" && cp "$DUO_STATES"/*.wwstate "$out/$role/states/"
   # (the shader prebuild, ~80 MB, is kept once per role for all runs, not in each run's user folder)
   mkdir -p "$out/$role/user" "$runs/duo-shader-prebuild-$role" && ln -s "$runs/duo-shader-prebuild-$role" "$out/$role/user/shader-prebuild"
   (cd "$out/$role" && exec env WWHD_HIDDEN_WINDOWS=1 WWHD_NO_HOST_INPUT=1 WWHD_NO_AUDIO=1 WWHD_NO_GAMEPAD=1 \

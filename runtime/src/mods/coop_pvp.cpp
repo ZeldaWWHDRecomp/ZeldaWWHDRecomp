@@ -445,11 +445,18 @@ void step_in(Cpu* c, uint32_t link, bool settled) {
         mods::trace("coop: PvP test: wallet %d", atoi(w));
         w = nullptr;
     }
-    // test aid WWHD_COOP_TEST_LIFE=<quarters>: this Link's hearts set at the first settled step (a knockout comes sooner)
+    // test aid WWHD_COOP_TEST_LIFE=<quarters>[@<every s>]: this Link's hearts set at the first settled step (a knockout
+    // comes sooner); with a period, again that often while settled (soak tests: one death after another)
     if (static const char* q = getenv("WWHD_COOP_TEST_LIFE"); q && settled && in_mem2(link)) {
-        st16(status(layout::sv::kLife), (uint16_t)atoi(q));
-        mods::trace("coop: PvP test: hearts %d quarters", atoi(q));
-        q = nullptr;
+        static float every = -1;
+        static uint32_t last = 0;
+        if (every < 0) every = strchr(q, '@') ? (float)atof(strchr(q, '@') + 1) : 0;
+        if (!last || (every > 0 && now - last >= (uint32_t)(every * 1000))) {
+            st16(status(layout::sv::kLife), (uint16_t)atoi(q));
+            mods::trace("coop: PvP test: hearts %d quarters", atoi(q));
+            last = now ? now : 1;
+        }
+        if (every <= 0) q = nullptr;
     }
     if (static int was = -1; in_mem2(link) && settled && (int)ld16(status(layout::sv::kLife)) != was) {  // (the trace: hearts)
         const int now_life = (int)ld16(status(layout::sv::kLife));
