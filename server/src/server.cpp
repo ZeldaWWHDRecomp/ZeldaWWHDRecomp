@@ -601,6 +601,9 @@ void Server::strike(Session& s, uint32_t now, const char* what) {
         s.strikes_since = now;
     }
     ++s.strikes;
+    // (the operator sees why: a session's first strike in its minute, and every 50th)
+    if (s.strikes == 1 || s.strikes % 50 == 0)
+        log("strike " + friend_code(s.key_hash) + ": " + what + " (" + std::to_string(s.strikes) + " in this minute)");
     std::string w = what;
     uint16_t code = w == "upload" ? kLimitUpload : w == "packets" ? kLimitPackets : w == "reliable" ? kLimitReliable
                   : w == "app" ? kLimitApp : (w == "pose" || w == "speed" || w == "position") ? kLimitPose : kLimitOther;
@@ -857,9 +860,10 @@ void Server::on_pose(Session& s, const uint8_t* d, size_t n, uint32_t now) {
         double dt = std::max<uint32_t>(now - s.pose_rx, 33) / 1000.0;
         double allowed = cfg_.max_speed * dt + 1500.0;
         if (dist > allowed && s.freeze_until == 0) {
-            // implausible: hold the old pose a second, then take the new place as a teleport (warps, respawns)
+            // implausible: hold the old pose a second, then take the new place as a teleport (warps, respawns, a
+            // sea square warped to: the same stage). No strike: every warp and game-over Continue is one, and the
+            // hold already limits a speed cheat to one jump a second (counted in the metrics)
             metrics_.implausible++;
-            strike(s, now, "speed");
             s.freeze_until = now + 1000;
             return;
         }
