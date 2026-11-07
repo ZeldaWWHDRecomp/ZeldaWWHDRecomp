@@ -31,6 +31,20 @@ option(WWHD_DECOMP_THINLTO "decomp build: ThinLTO inside each game unit (experim
 # builds on (below); WWHD_DECOMP_FAST_LTO: ThinLTO inside each unit (as WWHD_DECOMP_THINLTO, also on Android).
 option(WWHD_DECOMP_FAST "decomp build: fast mode (calls between units bound by address; no isolation, no full states)" OFF)
 option(WWHD_DECOMP_FAST_LTO "decomp build: fast mode with ThinLTO inside each game unit" ON)
+# Fast mode, unit isolation in the IR (tools/decomp_build/unit_ir.py: llvm-link of the unit's bitcode, hidden definitions
+# internal) instead of `ld -r` + hidden -> local. WWHD_DECOMP_FAST_UNIT_IR: each unit still optimised alone (native
+# object; the baseline of the next one, e.g. for a toolchain without `ld -r` such as ld64.lld); WWHD_DECOMP_FAST_WHOLE_LTO
+# (implies it): the units stay ThinLTO bitcode and the final link optimises across them (cross-unit inlining through
+# the exported wwhd_ne_* entries). Needs llvm-link / llvm-dis / llvm-as of the compiler's LLVM (the NDK's on Android).
+option(WWHD_DECOMP_FAST_UNIT_IR "decomp build, fast mode: units isolated in the IR (unit_ir.py), each optimised alone" OFF)
+# WWHD_DECOMP_FAST_WHOLE_LTO: ON / OFF force it; AUTO (default, lead/user decision 2026-11-07, phone -1.69 ms per logic
+# pass): ON when the building machine has at least WWHD_DECOMP_FAST_WHOLE_LTO_MIN_RAM_GB of memory (the final link peaks
+# at ~5.5 GB on Android, ~3.4 GB on macOS; a phone building for itself usually has less) and the compiler's LLVM tools
+# are there (Xcode has no llvm-link), else the per-unit link; one configure line says which and why.
+set(WWHD_DECOMP_FAST_WHOLE_LTO "AUTO" CACHE STRING "decomp build, fast mode: ThinLTO across all game units at the final link (AUTO / ON / OFF)")
+set_property(CACHE WWHD_DECOMP_FAST_WHOLE_LTO PROPERTY STRINGS AUTO ON OFF)
+set(WWHD_DECOMP_FAST_WHOLE_LTO_MIN_RAM_GB "12" CACHE STRING "decomp build, fast mode: memory (GB) WWHD_DECOMP_FAST_WHOLE_LTO=AUTO needs for the whole-image link")
+set(WWHD_DECOMP_FAST_LTO_JOBS "8" CACHE STRING "decomp build, fast mode: ThinLTO backend jobs of the final link (WWHD_DECOMP_FAST_WHOLE_LTO)")
 option(WWHD_DECOMP_RUNTIME_ONLY "decomp build: the runtime only, for packaging (no units, no game)" OFF)
 
 function(wwhd_decomp_configure)
@@ -304,6 +318,54 @@ function(wwhd_decomp_link target)
     list(APPEND opts -flto=thin)
     set(unit_link "${CMAKE_CXX_COMPILER}" -r -nostdlib -flto=thin)  # (no libraries in a relocatable link)
   endif()
+  set(unit_ir OFF)
+  # WWHD_DECOMP_FAST_WHOLE_LTO: AUTO / ON / OFF -> whole_lto (see the option)
+  set(whole_lto OFF)
+  if(WWHD_DECOMP_FAST AND unit_lto)
+    string(TOUPPER "${WWHD_DECOMP_FAST_WHOLE_LTO}" wl)
+    if(ANDROID)
+      set(wl_hints "${ANDROID_TOOLCHAIN_ROOT}/bin")
+    else()
+      get_filename_component(wl_hints "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    endif()
+    if(wl STREQUAL "AUTO")
+      cmake_host_system_information(RESULT ram_mb QUERY TOTAL_PHYSICAL_MEMORY)
+      math(EXPR need_mb "${WWHD_DECOMP_FAST_WHOLE_LTO_MIN_RAM_GB} * 1024")
+      find_program(WWHD_DECOMP_LLVM_LINK_PROBE llvm-link HINTS "${wl_hints}" NO_DEFAULT_PATH)
+      if(ram_mb LESS need_mb)
+        message(STATUS "decomp fast mode: per-unit link (WWHD_DECOMP_FAST_WHOLE_LTO=AUTO: ${ram_mb} MB of memory, the whole-image link needs ${need_mb})")
+      elseif(NOT WWHD_DECOMP_LLVM_LINK_PROBE)
+        message(STATUS "decomp fast mode: per-unit link (WWHD_DECOMP_FAST_WHOLE_LTO=AUTO: no llvm-link next to the compiler)")
+      else()
+        set(whole_lto ON)
+        message(STATUS "decomp fast mode: whole-image ThinLTO link (WWHD_DECOMP_FAST_WHOLE_LTO=AUTO: ${ram_mb} MB of memory)")
+      endif()
+    elseif(wl)
+      set(whole_lto ON)
+      message(STATUS "decomp fast mode: whole-image ThinLTO link (WWHD_DECOMP_FAST_WHOLE_LTO=${WWHD_DECOMP_FAST_WHOLE_LTO})")
+    else()
+      message(STATUS "decomp fast mode: per-unit link (WWHD_DECOMP_FAST_WHOLE_LTO=${WWHD_DECOMP_FAST_WHOLE_LTO})")
+    endif()
+  endif()
+  if(WWHD_DECOMP_FAST AND (WWHD_DECOMP_FAST_UNIT_IR OR whole_lto))
+    if(NOT unit_lto)
+      message(FATAL_ERROR "WWHD_DECOMP_FAST_UNIT_IR needs WWHD_DECOMP_FAST_LTO (bitcode units)")
+    endif()
+    set(unit_ir ON)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+    if(ANDROID)
+      set(ir_hints "${ANDROID_TOOLCHAIN_ROOT}/bin")
+    else()
+      get_filename_component(ir_hints "${CMAKE_CXX_COMPILER}" DIRECTORY)
+    endif()
+    find_program(WWHD_DECOMP_LLVM_LINK llvm-link HINTS "${ir_hints}" NO_DEFAULT_PATH REQUIRED)
+    get_filename_component(ir_tools "${WWHD_DECOMP_LLVM_LINK}" DIRECTORY)
+    set(ir_cc "${CMAKE_CXX_COMPILER}")
+    set(ir_args --tools "${ir_tools}" --cc "${ir_cc}")
+    if(NOT whole_lto)
+      list(APPEND ir_args --native)
+    endif()
+  endif()
   set(objs)
   file(MAKE_DIRECTORY "${WWHD_DECOMP_OUT}/units")
   set(merge "${CMAKE_LINKER}" -r)
@@ -361,11 +423,19 @@ function(wwhd_decomp_link target)
       set_target_properties(${lib} PROPERTIES POSITION_INDEPENDENT_CODE ON)  # linked into libmain.so
       set(localize COMMAND "${WWHD_DECOMP_OBJCOPY}" --localize-hidden "${o}")
     endif()
+    if(unit_ir)  # the unit isolated in the IR (unit_ir.py) instead of ld -r + localize
+      add_custom_command(OUTPUT "${o}"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/unit_ir.py" "${o}" ${ir_args}
+                "$<TARGET_OBJECTS:${lib}>"
+        DEPENDS ${lib} "$<TARGET_OBJECTS:${lib}>" "${CMAKE_SOURCE_DIR}/tools/decomp_build/unit_ir.py"
+        COMMAND_EXPAND_LISTS VERBATIM)
+    else()
     add_custom_command(OUTPUT "${o}"
       COMMAND ${unit_link} -o "${o}" "$<TARGET_OBJECTS:${lib}>"
       ${localize}
       DEPENDS ${lib} "$<TARGET_OBJECTS:${lib}>"
       COMMAND_EXPAND_LISTS VERBATIM)
+    endif()
     list(APPEND objs "${o}")
   endforeach()
   set_source_files_properties(${objs} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
@@ -376,6 +446,15 @@ function(wwhd_decomp_link target)
   target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
   if(WWHD_DECOMP_FAST)  # the runtime's fast-mode parts (runtime/src/decomp)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST=1)
+  endif()
+  if(unit_ir AND whole_lto)  # the final link runs ThinLTO over the units' bitcode
+    if(APPLE)
+      target_link_options(${target} PRIVATE -flto=thin "LINKER:--thinlto-jobs=${WWHD_DECOMP_FAST_LTO_JOBS}"
+                          "LINKER:-cache_path_lto,${WWHD_DECOMP_OUT}/ltocache")  # (ld64.lld: Mach-O option names)
+    else()
+      target_link_options(${target} PRIVATE -flto=thin "LINKER:--thinlto-jobs=${WWHD_DECOMP_FAST_LTO_JOBS}" "LINKER:--lto-O2"
+                          "LINKER:--thinlto-cache-dir=${WWHD_DECOMP_OUT}/ltocache")
+    endif()
   endif()
   if(WWHD_DECOMP_SITE_LR)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_SITE_LR=1)
