@@ -28,6 +28,9 @@ what is on `devel` and not released yet (also in the
   screen and the system's navigation bar covered the rupee counter. The picture, the view button and Match
   window's shape now leave out the bars the system draws over the game. Desktop and devices that hide the bars
   are unchanged.
+- **Settings › Randomizer is always there** (#452). It used to appear only after setup had made a randomized game,
+  so the built-in randomizer was hard to find. Before the first randomized game the page says where setup makes one
+  (the setup window's Randomized games page; on Android, Randomized game... on the setup screen).
 
 ## v0.5.1
 
