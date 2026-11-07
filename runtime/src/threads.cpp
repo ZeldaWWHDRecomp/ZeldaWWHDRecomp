@@ -1668,6 +1668,9 @@ bool threads_ss_save(ss::Writer& w, std::string& why) {
         r.cpu = t->cpu;
         r.cpu.thread = nullptr;
 #ifdef WWHD_DECOMP
+        // host-side (they describe this thread's host stack, not guest state): saved as 0, as the normal build has them
+        r.cpu.native_depth = 0;
+        r.cpu.decomp_running = 0;
         // the decomp build's native calls: which waits a state holds, and how many native calls each thread is in
         // (cross-build state tests)
         if (r.started && !r.exited && r.wst == kParked && r.wait_kind >= 1 && r.wait_kind <= 7)
@@ -1840,8 +1843,17 @@ void threads_ss_load(ss::Reader& r) {
             }
             std::lock_guard<std::mutex> l(t->m);
             void* self = t->cpu.thread;
+#ifdef WWHD_DECOMP
+            // host-side: a parked thread's host stack keeps its native calls and running decompiled function
+            const uint8_t native_depth = t->cpu.native_depth;
+            const uint16_t decomp_running = t->cpu.decomp_running;
+#endif
             t->cpu = s.cpu;
             t->cpu.thread = t;
+#ifdef WWHD_DECOMP
+            t->cpu.native_depth = native_depth;
+            t->cpu.decomp_running = decomp_running;
+#endif
             t->cpu.main_thread = t->is_main ? 1 : 0;  // (not the saved byte)
             t->cpu.core = t->holds_core ? t->held_core : s.core;
             t->suspend = s.suspend;

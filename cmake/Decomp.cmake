@@ -66,19 +66,44 @@ function(wwhd_decomp_configure)
   # the native-call rules (tools/decomp_build/native_rules.py: decomp/native.txt and the units' native tables).
   # WWHD_DECOMP_PARK_RULE=strict: callees that may park (C4, indirect calls included) stay guest calls (comparison)
   set(WWHD_DECOMP_PARK_RULE "" CACHE STRING "decomp build: native-call park rule (empty: none, strict: C4)")
+  # the decompilation's declaration table (decl_lint.py --handoff): register-exact functions get real native calls
+  # (C++ arguments and result, no guest registers). Empty: the decompilation's tools/verify/decl_handoff.tsv if any.
+  set(WWHD_DECOMP_DECL_TABLE "$ENV{WWHD_DECOMP_DECL_TABLE}" CACHE FILEPATH "decomp build: decl_lint.py --handoff table (development override; default: the environment variable of that name)")
+  set(decl_args)
+  if(WWHD_DECOMP_DECL_TABLE)
+    set(decl_args --decl "${WWHD_DECOMP_DECL_TABLE}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WWHD_DECOMP_DECL_TABLE}")
+  elseif(EXISTS "${WWHD_DECOMP_DIR}/tools/verify/decl_handoff.tsv")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WWHD_DECOMP_DIR}/tools/verify/decl_handoff.tsv")
+  endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py"
-                          "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE}
+                          "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE} ${decl_args}
                   RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err OUTPUT_STRIP_TRAILING_WHITESPACE)
   if(NOT rc EQUAL 0)
     message(FATAL_ERROR "WWHD_DECOMP: tools/decomp_build/native_rules.py failed:\n${out}\n${err}")
   endif()
   message(STATUS "${out}")
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py")
+  # site-exact LR (tools/decomp_build/site_lr.py): the original's bl lists per unit and the sited sources' list
+  # default OFF (2026-11-04: about 3 ms per logic pass on the phone, ladder step 2); level 1 sets LR only at the edges
+option(WWHD_DECOMP_SITE_LR "decomp build: each guest call of a decompiled function gets its own bl's return address where it can be matched" OFF)
+  if(WWHD_DECOMP_SITE_LR)
+    execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/site_lr.py" prepare
+                            "${WWHD_DECOMP_OUT}" "${GEN_DIR}" "${WWHD_DECOMP_DIR}"
+                    RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err OUTPUT_STRIP_TRAILING_WHITESPACE)
+    if(NOT rc EQUAL 0)
+      message(FATAL_ERROR "WWHD_DECOMP: tools/decomp_build/site_lr.py prepare failed:\n${out}\n${err}")
+    endif()
+    message(STATUS "${out}")
+    include("${WWHD_DECOMP_OUT}/sites/sites.cmake")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/site_lr.py")
+  endif()
   set(WWHD_DECOMP_UNIT_COUNT ${WWHD_DECOMP_UNIT_COUNT} PARENT_SCOPE)
   foreach(i RANGE 1 ${WWHD_DECOMP_UNIT_COUNT})
     math(EXPR k "${i} - 1")
     set(WWHD_DECOMP_UNIT_${k}_NAME "${WWHD_DECOMP_UNIT_${k}_NAME}" PARENT_SCOPE)
     set(WWHD_DECOMP_UNIT_${k}_SOURCES "${WWHD_DECOMP_UNIT_${k}_SOURCES}" PARENT_SCOPE)
+    set(WWHD_DECOMP_UNIT_${k}_SITED "${WWHD_DECOMP_UNIT_${k}_SITED}" PARENT_SCOPE)
   endforeach()
 endfunction()
 
@@ -93,9 +118,21 @@ function(wwhd_decomp_link target)
           "${WWHD_DECOMP_DIR}/tools/verify/src" "${WWHD_DECOMP_DIR}/wwhd_src/include" "${WWHD_DECOMP_OUT}/include")
   # as the decompilation's harness compiles them (exact floating point: no contraction, no fast math);
   # these options come after the configuration's, so they win. GABI_GAME_BUILD: gabi.h's game-build forms
-  # (its per-thread state in one block, guest memory accessed inline), which the harness never uses.
+  # (its per-thread state in one block, guest memory accessed inline), which the harness never uses;
+  # GABI_SHARED_TLS: that block is one for all units (glue/0.cpp defines it; real native calls between units).
   set(opts -O2 -g0 -w -fvisibility=hidden -fvisibility-inlines-hidden -ffp-contract=off -fno-fast-math -fwrapv
            -fno-strict-aliasing -DGABI_GAME_BUILD=1 -include "${CMAKE_SOURCE_DIR}/tools/decomp_build/frames_vis.h")
+  # real native calls (gabi.h): one thread-local block for all units, and the units' native entries for calls
+  # between units (both on by default; off only to measure what they cost)
+  option(WWHD_DECOMP_SHARED_TLS "decomp build: one gabi thread-local block for all game units" ON)
+  option(WWHD_DECOMP_NATIVE_ENTRIES "decomp build: native entries for calls between game units (NativeReg)" ON)
+  if(WWHD_DECOMP_SHARED_TLS)
+    list(APPEND opts -DGABI_SHARED_TLS=1)
+  endif()
+  if(WWHD_DECOMP_NATIVE_ENTRIES)
+    # (without the shared block the units register no entry: glue.cpp)
+    list(APPEND opts -DGABI_NATIVE_ENTRIES=1)
+  endif()
   if(ANDROID)  # bionic's libc macros that clash with the decompilation's names (android_compat.h)
     list(APPEND opts "SHELL:-include ${CMAKE_SOURCE_DIR}/tools/decomp_build/android_compat.h")
   endif()
@@ -128,16 +165,41 @@ function(wwhd_decomp_link target)
     set(merge "${WWHD_DECOMP_LLD}" -r)
     set(unit_link ${merge})  # (WWHD_DECOMP_THINLTO is not supported on Android)
   endif()
+  if(WWHD_DECOMP_SITE_LR)
+    find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  endif()
   foreach(i RANGE 1 ${WWHD_DECOMP_UNIT_COUNT})
     math(EXPR k "${i} - 1")
     set(lib wwhd_decomp_unit_${k})
-    add_library(${lib} OBJECT ${WWHD_DECOMP_UNIT_${k}_SOURCES} "${WWHD_DECOMP_OUT}/glue/${k}.cpp")
-    target_include_directories(${lib} PRIVATE ${inc})
-    target_compile_options(${lib} PRIVATE ${opts})
+    set(unit_opts ${opts})
     # the unit's native-call table (tools/decomp_build/native_rules.py; gabi.h GABI_NATIVE_TABLE)
     if(EXISTS "${WWHD_DECOMP_OUT}/native/${k}.h")
-      target_compile_options(${lib} PRIVATE "SHELL:-include \"${WWHD_DECOMP_OUT}/native/${k}.h\"")
+      list(APPEND unit_opts "SHELL:-include \"${WWHD_DECOMP_OUT}/native/${k}.h\"")
     endif()
+    set(unit_srcs ${WWHD_DECOMP_UNIT_${k}_SOURCES})
+    if(WWHD_DECOMP_SITE_LR)
+      list(APPEND unit_opts -DGABI_SITE_LR=1)  # gabi.h: calls look for the sites' marks
+      # site-exact LR: the unit's sources compiled once more, as LLVM IR scanned for the guest calls of each call
+      # expression (the object files are the scans), then the sited copies (tools/decomp_build/site_lr.py)
+      add_library(${lib}_scan OBJECT ${WWHD_DECOMP_UNIT_${k}_SOURCES})
+      target_include_directories(${lib}_scan PRIVATE ${inc})
+      target_compile_options(${lib}_scan PRIVATE ${unit_opts})
+      set_target_properties(${lib}_scan PROPERTIES CXX_EXTENSIONS OFF EXCLUDE_FROM_ALL ON
+        CXX_COMPILER_LAUNCHER "${Python3_EXECUTABLE};${CMAKE_SOURCE_DIR}/tools/decomp_build/site_lr.py;cc")
+      if(ANDROID)
+        set_target_properties(${lib}_scan PROPERTIES POSITION_INDEPENDENT_CODE ON)
+      endif()
+      add_custom_command(OUTPUT ${WWHD_DECOMP_UNIT_${k}_SITED} "${WWHD_DECOMP_OUT}/sites/${k}.txt"
+        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/site_lr.py" unit "${WWHD_DECOMP_OUT}" ${k}
+                "$<TARGET_OBJECTS:${lib}_scan>"
+        DEPENDS ${lib}_scan "$<TARGET_OBJECTS:${lib}_scan>" "${CMAKE_SOURCE_DIR}/tools/decomp_build/site_lr.py"
+                "${WWHD_DECOMP_OUT}/sites/bl_${k}.json" "${WWHD_DECOMP_OUT}/sites/macros.txt" "${WWHD_DECOMP_OUT}/sites/noscope.txt"
+        COMMAND_EXPAND_LISTS VERBATIM)
+      set(unit_srcs ${WWHD_DECOMP_UNIT_${k}_SITED})
+    endif()
+    add_library(${lib} OBJECT ${unit_srcs} "${WWHD_DECOMP_OUT}/glue/${k}.cpp")
+    target_include_directories(${lib} PRIVATE ${inc})
+    target_compile_options(${lib} PRIVATE ${unit_opts})
     set_target_properties(${lib} PROPERTIES CXX_EXTENSIONS OFF EXCLUDE_FROM_ALL ON)
     set(o "${WWHD_DECOMP_OUT}/units/${WWHD_DECOMP_UNIT_${k}_NAME}.o")
     if(ANDROID)
@@ -157,4 +219,7 @@ function(wwhd_decomp_link target)
   target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
     "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${WWHD_DECOMP_OUT}/hooks.cpp" ${objs})
   target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
+  if(WWHD_DECOMP_SITE_LR)
+    target_compile_definitions(${target} PRIVATE WWHD_DECOMP_SITE_LR=1)
+  endif()
 endfunction()

@@ -33,6 +33,27 @@ static void decomp_run(Cpu* c, void (*fn)(Cpu*)) {
     if (c->r[1] != sp) c->r[1] = sp; /* cannot happen (gabi::Local/do_call restore r1); kept as a guard */
 }
 
+/* real native calls (gabi.h GABI_SHARED_TLS): one thread-local block for every game unit, defined by unit 0's glue
+ * (gen.py: GABI_TLS_OWNER), with default visibility so that `ld -r` keeps it global */
+#if defined(GABI_SHARED_TLS) && defined(GABI_TLS_OWNER)
+namespace gabi {
+#ifdef GABI_SITE_LR
+__attribute__((visibility("default"))) thread_local constinit ThreadState tls{nullptr, 0, 0, nullptr, 0, {}};
+#else
+__attribute__((visibility("default"))) thread_local constinit ThreadState tls{nullptr, 0, 0, nullptr, 0};
+#endif
+}
+#endif
+
+#ifdef GABI_GAME_BUILD
+/* a register-exact function's native entry (gabi.h NativeReg; runtime/src/decomp/decomp.cpp) */
+#ifdef GABI_SHARED_TLS
+void gabi::native_register(u32 a, void* fn, u32 sig, u32 table_sig) { decomp_register_native(DECOMP_UNIT, a, fn, sig, table_sig); }
+#else  /* a unit's own thread-local block: a call from another unit would not find its Cpu (no entry; measurement only) */
+void gabi::native_register(u32 a, void*, u32 sig, u32 table_sig) { decomp_register_native(DECOMP_UNIT, a, nullptr, sig, table_sig); }
+#endif
+#endif
+
 gabi::Candidate::Candidate(u32 a, const char* n, EntryFn f, RetKind r) : addr(a), name(n), fn(f), ret(r), next(nullptr) {
     decomp_register(DECOMP_UNIT, a, n, f, decomp_run);
 }

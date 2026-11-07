@@ -24,6 +24,7 @@ struct Slot {
     void (*run)(Cpu*, PpcFunc) = nullptr;  // the unit's wrapper (tools/decomp_build/glue.cpp)
     uint8_t on = 0;
     uint8_t frame_exact = 0;               // 1: kFrameExact lists it (no direct calls into or from it)
+    uint32_t ordinal = 0;                  // in the direct table (direct_init): its DirectEntry::ordinal
 };
 struct UnitAlias {
     const char* name;  // a verify unit
@@ -46,15 +47,25 @@ extern const unsigned kNumFrameExact;
 void init();
 
 }  // namespace decomp
-// the decompiled function whose code runs on this thread: its slot index + 1 (0: none; its Slot::frame_exact:
-// its guest calls take the dispatch table). gmem_call sets LR for a guest call from it to the return address of
-// the original's call instruction (decomp.cpp call_lr). constinit: a plain thread-local access, no wrapper
-// function. C linkage, default visibility: decompiled code's native calls (gabi.h NativeScope) set it too.
-extern "C" __attribute__((visibility("default"))) thread_local constinit uint32_t g_decomp_running;
+// the decompiled function whose code runs on a Cpu is Cpu::decomp_running (ppc.h): its slot index + 1 (0: none; its
+// Slot::frame_exact: its guest calls take the dispatch table). gmem_call sets LR for a guest call from it to the return
+// address of the original's call instruction (decomp.cpp call_lr). Every entry into a decompiled body sets it on the
+// Cpu that body then runs on (decomp::call, call_debug, gmem_call's direct slot, decomp_lcall, gabi.h NativeScope) and
+// restores the caller's value from a local on exit; it is read only inside such a body, through that same Cpu.
 // native calls (gabi.h WWHD_GLUE_FUNC, game build): per slot, 1 while the slot may be entered natively (on,
 // routed to its f_X, not frame-exact, not hooked by a guest mod, no debug switch, WWHD_DECOMP_NATIVE not 0);
 // null: no native calls. Cleared, never set again, while the game runs (decomp::mod_hooked).
 extern "C" __attribute__((visibility("default"))) uint8_t* g_decomp_native_ok;
+// real native calls (gabi.h NativeReg / lcall): per slot a register-exact function's native entry and its signature
+// (0: not entered that way; cleared by decomp_mod_hooked); null: none. g_decomp_exact bit 0: register-exact native
+// entries pass no guest registers, bit 1: they poison them (WWHD_DECOMP_POISON=1).
+struct GabiNativeEntry {
+    void* fn;
+    uint32_t sig;
+    uint32_t reserved;
+};
+extern "C" __attribute__((visibility("default"))) GabiNativeEntry* g_decomp_native_entry;
+extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_exact;
 // a guest mod or the port hooks the function with recompiled-table ordinal `ordinal` (every g_mod_hook_flags
 // write that sets a flag): it is no longer entered natively
 extern "C" void decomp_mod_hooked(uint32_t ordinal);
@@ -68,10 +79,10 @@ inline void call(Cpu* c, int i) {
     Slot& s = g_slots[i];
     if (__builtin_expect(g_debug, 0)) return call_debug(c, s);
     if (s.on) {
-        const uint32_t outer = g_decomp_running;
-        g_decomp_running = uint32_t(&s - g_slots) + 1;
-        s.run(c, s.cand);
-        g_decomp_running = outer;
+        const uint16_t outer = c->decomp_running;
+        c->decomp_running = uint16_t(&s - g_slots + 1);
+        s.cand(c);  // the gabi entry (Entry::run: EntryScope keeps cpu, depth, LR and Activation::current itself)
+        c->decomp_running = outer;
     } else {
         s.orig(c);
     }
@@ -93,6 +104,14 @@ struct DirectEntry {
 constexpr uint32_t kDirectSize = 1u << 17;  // open addressing, power of two, > 3x the slot count
 extern DirectEntry* g_direct;                // null: no direct calls
 inline uint32_t direct_hash(uint32_t addr) { return ((addr >> 2) * 0x9E3779B1u) >> (32 - 17); }
+inline const DirectEntry* direct_entry(uint32_t addr) {  // direct_slot's entry, whatever the mod flags say
+    const DirectEntry* t = g_direct;
+    if (!t) return nullptr;
+    for (uint32_t h = direct_hash(addr);; h = (h + 1) & (kDirectSize - 1)) {
+        if (t[h].addr == addr) return t[h].addr ? &t[h] : nullptr;
+        if (!t[h].addr) return nullptr;
+    }
+}
 inline Slot* direct_slot(uint32_t addr) {
     const DirectEntry* t = g_direct;
     if (!t) return nullptr;
@@ -118,5 +137,51 @@ extern LrSites* g_lr_sites;  // per slot (g_slots order)
 inline uint32_t call_lr(uint32_t caller, uint32_t target, int kind, uint32_t lr) {  // caller: slot index
     const LrSites& l = g_lr_sites[caller];
     return call_lr_find(l.keys, l.rets, l.n, target, kind, lr);
+}
+
+// call_lr and direct_slot by call site (call_lr.h CallSite; decomp.cpp sites_init): per slot, the targets of the
+// original's calls with both answers, made once at init after direct_init; null: none (WWHD_DECOMP_SITES=0, or
+// before init), every guest call asks call_lr and direct_slot
+extern CallerSites* g_callers;
+// a guest call from slot index `caller` to `target` (kind 1: through CTR): the LR it gets (`lr` when call_lr leaves it
+// unchanged) and the slot it enters directly (null: the dispatch table), as gmem_call takes them
+struct CallTo {
+    uint32_t lr;
+    Slot* s;
+};
+inline CallTo call_to_lookup(uint32_t caller, uint32_t target, int kind, uint32_t lr) {  // call_lr + direct_slot
+    return {call_lr(caller, target, kind, lr), g_slots[caller].frame_exact ? nullptr : direct_slot(target)};
+}
+inline CallTo call_to(uint32_t caller, uint32_t target, int kind, uint32_t lr) {
+    CallerSites* cs = g_callers;
+    if (!cs) return call_to_lookup(caller, target, kind, lr);
+    const CallerSites& k = cs[caller];
+    if (kind == 1) {
+        // the direct table's answer for the caller's last bctrl target ({target, slot + 1}; one relaxed word: threads
+        // that race only miss); the mod flag through the slot's ordinal, as direct_slot checks the entry's
+        if (k.frame_exact) return {k.bctrl_lr != 1u ? k.bctrl_lr : lr, nullptr};
+        const uint64_t m = __atomic_load_n(&cs[caller].ind, __ATOMIC_RELAXED);
+        uint32_t s1;
+        if (uint32_t(m >> 32) == target && m) {
+            s1 = uint32_t(m);
+        } else {
+            const DirectEntry* d = direct_entry(target);
+            s1 = d ? uint32_t(d->slot - g_slots) + 1 : 0;
+            __atomic_store_n(&cs[caller].ind, uint64_t(target) << 32 | s1, __ATOMIC_RELAXED);
+        }
+        Slot* s = s1 && !(g_mod_hook_flags && g_mod_hook_flags[g_slots[s1 - 1].ordinal]) ? g_slots + (s1 - 1) : nullptr;
+        return {k.bctrl_lr != 1u ? k.bctrl_lr : lr, s};
+    }
+    const CallSite* e = site_find(k, target);
+    if (!e) return call_to_lookup(caller, target, kind, lr);
+    Slot* s = nullptr;
+    if (e->slot1 && !k.frame_exact && !(g_mod_hook_flags && g_mod_hook_flags[e->ordinal])) s = g_slots + (e->slot1 - 1);
+    return {e->lr != 1u ? e->lr : lr, s};
+}
+inline uint32_t call_lr_by_site(uint32_t caller, uint32_t target, uint32_t lr) {  // call_lr(caller, target, 0, lr)
+    const CallerSites* cs = g_callers;
+    const CallSite* e = cs ? site_find(cs[caller], target) : nullptr;
+    if (!e) return call_lr(caller, target, 0, lr);
+    return e->lr != 1u ? e->lr : lr;
 }
 }  // namespace decomp

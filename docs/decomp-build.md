@@ -114,6 +114,13 @@ Option `-DWWHD_DECOMP_THINLTO=ON` (default off) compiles each game unit with Thi
 `ld -r` merges it (units stay isolated, so nothing is inlined across units); measured on a Mac it gave no clear
 gain (game thread 12.6 to 11.9 core-seconds per 25 s, median, inside the run-to-run noise).
 
+Option `-DWWHD_DECOMP_SITE_LR=OFF` (default on) turns off site-exact LR. With it on, each unit source is compiled
+once more as LLVM IR (`tools/decomp_build/site_lr.py`, about one second per source) to find which call expression of
+a decompiled function reaches which game function, and the k-th call to a function is given the return address of
+the k-th `bl` to it in the original, where both have the same number of calls. Runtime hooks, imports and mods that
+read LR then see the caller's exact call site there; elsewhere LR stays as before (the per-unit report is
+`decomp/sites/K.txt` in the build directory).
+
 ## In setup (development builds, macOS)
 
 The development builds for macOS (the rolling "Development build" pre-release) can build the decomp
@@ -167,6 +174,7 @@ None of these is needed to play; all are off by default.
 | `WWHD_DECOMP_STATS=path` | per-function call counts (decompiled / recompiled), rewritten every 2 s |
 | `WWHD_DECOMP_GUARD=log\|restore` | report decompiled functions that write into their caller's stack frame (`restore` also undoes it) |
 | `WWHD_DECOMP_FRAMES=0` | no native stack frames |
+| `WWHD_DECOMP_AUTOFRAME_FAST=0` | the original's stack frame of a decompiled function is looked up on every entry instead of read from a per-function table made at start-up (same frames; a check switch) |
 | `WWHD_DECOMP_FRAMES_DUMP=path` | write the stack frame layout of every game function (to compare with the decompilation's `tools/verify/frames_all.py`) |
 
 `tools/gametest/run_scenario.sh` runs one scripted, headless session (muted, own save copy) and

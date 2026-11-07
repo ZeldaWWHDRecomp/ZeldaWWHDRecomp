@@ -21,12 +21,22 @@
 //   WWHD_DECOMP_GUARD=log|restore                 report decompiled functions that write into their
 //                                                 caller's frame (restore: and undo it)
 //   WWHD_DECOMP_FRAMES=0                          no native frames (frames.cpp)
+//   WWHD_DECOMP_AUTOFRAME_FAST=0                  automatic frames looked up per entry (gmem_frame_info), not by slot
+//   WWHD_DECOMP_AUTOFRAME_CHECK=1                 compare the per-slot frame table with gmem_frame_info (log)
 //   WWHD_DECOMP_DIRECT=0 | all                    0: no direct calls between decompiled functions (decomp.h);
 //                                                 all: frame-exact functions get them too (measurement)
 //   WWHD_DECOMP_FRAME_EXACT=ADDR,... | @file      more frame-exact functions (no direct calls into or from them)
 //   WWHD_DECOMP_NATIVE=0                          no native calls between decompiled functions (gabi.h form N)
 //   WWHD_DECOMP_NATIVE_FUNCS / _EXCLUDE=ADDR,...|@file  only / not these callees natively (bisecting)
+//   WWHD_DECOMP_NATIVE_EXACT=0                    native calls keep the guest registers (ArgPack / store_ret) for
+//                                                 register-exact functions too, and no real native calls between units
+//   WWHD_DECOMP_NATIVE_EXACT=n | l                bisecting: n only inside units (no native entries between units),
+//                                                 l only the native entries (registers still packed / stored)
+//   WWHD_DECOMP_POISON=1 | args                   test aid: a register-exact native entry poisons the argument
+//                                                 registers, its exit the result registers (args: entry only)
 //   WWHD_DECOMP_CALL_LR_CHECK=1                   compare call_lr's start-up table with call_lr_scan (log)
+//   WWHD_DECOMP_SITES=0                           guest calls ask call_lr and the direct table per call (decomp.h call_to)
+//   WWHD_DECOMP_SITES_CHECK=1                     compare the call-site tables with call_lr + direct_slot (log)
 #include "decomp/decomp.h"
 #include "decomp/call_lr.h"
 
@@ -75,23 +85,38 @@ void gmem_stack_fresh(uint32_t ea, uint32_t n, uint32_t) { memset(ppc_ptr(ea), 0
 void gmem_stack_args(int) {}
 void gmem_call_top(uint32_t) {}
 void gmem_call(Cpu* c, uint32_t target, int kind, int, int) {
+#ifdef WWHD_DECOMP_SITE_LR
+    // kind | 4 (game build, gabi.h site_take): LR already holds the return address of the call site (site-exact LR)
+    const bool site = kind & 4;
+    kind &= 3;
+#endif
     // kind 1: through a function pointer (bctrl: CTR holds the target)
     if (kind == 1) c->ctr = target;
     // LR as the original's bl/bctrl leaves it: a runtime hook, an HLE import or a mod that tells its
     // callers apart by LR (story_mail's text-length check, true60's call-site checks) sees the same
     // caller as in the normal build (before, LR still held the return address into the decompiled
     // function's own caller)
-    const uint32_t f = g_decomp_running;
-    if (f) c->lr = decomp::call_lr(f - 1, target, kind, c->lr);
-    c->pc = target;
+    const uint32_t f = c->decomp_running;
     // a decompiled function that runs decompiled: straight into its unit's entry, as decomp::call does
     // (decomp.h direct_slot; the guest state is the same as through the dispatch table); not from a
-    // frame-exact function
+    // frame-exact function. Both answers by call site (decomp.h call_to)
     decomp::Slot* s;
-    if (!(f && decomp::g_slots[f - 1].frame_exact) && (s = decomp::direct_slot(target))) {
-        g_decomp_running = uint32_t(s - decomp::g_slots) + 1;
-        s->run(c, s->cand);
-        g_decomp_running = f;
+    if (f) {
+        const decomp::CallTo t = decomp::call_to(f - 1, target, kind, c->lr);
+#ifdef WWHD_DECOMP_SITE_LR
+        if (!site) c->lr = t.lr;
+#else
+        c->lr = t.lr;
+#endif
+        s = t.s;
+    } else {
+        s = decomp::direct_slot(target);
+    }
+    c->pc = target;
+    if (s) {
+        c->decomp_running = uint16_t(s - decomp::g_slots + 1);
+        s->cand(c);
+        c->decomp_running = uint16_t(f);
         return;
     }
     ppc_dispatch(c);
@@ -100,27 +125,47 @@ void gmem_call(Cpu* c, uint32_t target, int kind, int, int) {
 // native calls (gabi.h NativeScope): what gmem_call does to the guest state for a direct guest call from the running
 // decompiled function to `target` (pc, and LR as the original's bl leaves it), so a native entry leaves the same LR
 // (the callee's guest calls whose LR call_lr cannot name, and its caller after the return, see it)
-extern "C" __attribute__((visibility("default"))) uint32_t decomp_native_lr(Cpu* c, uint32_t target) {
+// call_lr through a one-entry cache that belongs to one call target in one unit (gabi.h: a static of lcall<ADDR> or
+// of the callee's WWHD_GLUE_FUNC): {running slot + 1 : answer, 1 = LR unchanged}. One relaxed 64-bit word: threads
+// that race only miss; no thread-local, no table walk while the same caller calls again.
+static inline void cached_lr(Cpu* c, uint32_t f, uint32_t target, uint64_t* cache) {
+    const uint64_t e = __atomic_load_n(cache, __ATOMIC_RELAXED);
+    uint32_t ret;
+    if (uint32_t(e >> 32) == f) {
+        ret = uint32_t(e);
+    } else {
+        ret = decomp::call_lr_by_site(f - 1, target, 1u);  // a return address is never odd: 1 = not found
+        __atomic_store_n(cache, uint64_t(f) << 32 | ret, __ATOMIC_RELAXED);
+    }
+    if (ret != 1u) c->lr = ret;
+}
+extern "C" __attribute__((visibility("default"))) uint32_t decomp_native_lr(Cpu* c, uint32_t target, uint64_t* cache) {
     c->pc = target;
-    const uint32_t f = g_decomp_running;
-    return f ? decomp::call_lr(f - 1, target, 0, c->lr) : c->lr;
+    const uint32_t f = c->decomp_running;
+    if (f) cached_lr(c, f, target, cache);
+    return c->lr;
 }
 
 // lean calls (gabi.h lcall, native-calls form L): a decompiled function's guest call to the decompiled function in
 // slot `slot` (a call to another game unit). The guest state is gmem_call's for a direct call (pc, LR from call_lr,
 // the running function; a frame-exact caller takes the dispatch table); the callee's gabi entry runs straight away
 // (Entry::run keeps cpu, depth, LR and Activation::current itself, as decomp_run would have)
-extern "C" __attribute__((visibility("default"))) void decomp_lcall(Cpu* c, uint32_t slot, uint32_t addr) {
-    const uint32_t f = g_decomp_running;
-    if (f) c->lr = decomp::call_lr(f - 1, addr, 0, c->lr);
+// cache null: LR already holds the return address of the call site (gabi.h site_take, site-exact LR)
+extern "C" __attribute__((visibility("default"))) void decomp_lcall(Cpu* c, uint32_t slot, uint32_t addr, uint64_t* cache) {
+    const uint32_t f = c->decomp_running;
+#ifdef WWHD_DECOMP_SITE_LR
+    if (f && cache) cached_lr(c, f, addr, cache);
+#else
+    if (f) cached_lr(c, f, addr, cache);
+#endif
     c->pc = addr;
     if (__builtin_expect(f && decomp::g_slots[f - 1].frame_exact, 0)) {
         ppc_dispatch(c);
         return;
     }
-    g_decomp_running = slot + 1;
+    c->decomp_running = uint16_t(slot + 1);
     decomp::g_slots[slot].cand(c);
-    g_decomp_running = f;
+    c->decomp_running = uint16_t(f);
 }
 
 // called by each decompiled unit's static constructors (tools/decomp_build/glue.cpp)
@@ -136,8 +181,28 @@ void decomp_register(const char* unit, uint32_t addr, const char* name, void (*f
 }
 }
 
-thread_local constinit uint32_t g_decomp_running = 0;
 uint8_t* g_decomp_native_ok = nullptr;
+GabiNativeEntry* g_decomp_native_entry = nullptr;
+uint8_t g_decomp_exact = 0;
+
+// the native entries the units register (gabi.h NativeReg, glue.cpp), per slot; enabled into g_decomp_native_entry by
+// direct_init. Filled by static constructors, so a constant-initialised pointer allocated on first use.
+namespace {
+struct NativeReg {
+    void* fn;
+    uint32_t sig, table_sig;
+};
+NativeReg* g_native_reg = nullptr;
+}
+extern "C" void decomp_register_native(const char* unit, uint32_t addr, void* fn, uint32_t sig, uint32_t table_sig) {
+    using decomp::g_slots;
+    decomp::Slot* end = g_slots + decomp::kNumSlots;
+    decomp::Slot* s = std::lower_bound(g_slots, end, addr, [](const decomp::Slot& a, uint32_t v) { return a.addr < v; });
+    if (s == end || s->addr != addr) return;
+    if (strcmp(decomp::kUnits[s->unit], unit) != 0) return;  // as decomp_register
+    if (!g_native_reg) g_native_reg = new NativeReg[decomp::kNumSlots]();
+    g_native_reg[s - g_slots] = NativeReg{fn, sig, table_sig};
+}
 
 namespace decomp {
 void frames_init();  // frames.cpp
@@ -145,6 +210,7 @@ void frames_init();  // frames.cpp
 LrSites* g_lr_sites = nullptr;
 
 DirectEntry* g_direct = nullptr;
+CallerSites* g_callers = nullptr;
 
 namespace {
 std::vector<std::string> split_list(const char* e);  // below
@@ -187,6 +253,7 @@ void direct_init() {
         t[h].addr = s.addr;
         t[h].slot = &s;
         t[h].ordinal = (uint32_t)(r - b);
+        s.ordinal = t[h].ordinal;
         n++;
     }
     g_direct = t;
@@ -212,6 +279,35 @@ void direct_init() {
     }
     LOG("[decomp] native calls: %u decompiled functions may be entered natively%s, %u by lean calls%s", nn,
         nat && !strcmp(nat, "0") ? " (WWHD_DECOMP_NATIVE=0: none)" : "", nl, lean_on ? "" : " (WWHD_DECOMP_LEAN=0: none)");
+    // real native calls (gabi.h: register-exact functions pass no guest registers; lcall's native entries). Off with
+    // WWHD_DECOMP_NATIVE=0 or WWHD_DECOMP_NATIVE_EXACT=0.
+    const char* ex = getenv("WWHD_DECOMP_NATIVE_EXACT");
+    const char* poison = getenv("WWHD_DECOMP_POISON");
+    if (!(nat && !strcmp(nat, "0")) && !(ex && !strcmp(ex, "0"))) {
+        unsigned nreg = 0, nen = 0, nbad = 0, ntypes = 0;
+        GabiNativeEntry* ne = new GabiNativeEntry[kNumSlots]();
+        for (unsigned i = 0; i < kNumSlots && g_native_reg; i++) {
+            const NativeReg& r = g_native_reg[i];
+            if (!r.table_sig) continue;
+            nreg++;
+            if (!r.fn) { ntypes++; continue; }  // its C++ argument or result types have no native entry
+            if (r.sig != r.table_sig) {
+                if (nbad++ < 10) LOG("[decomp] native entry %08X %s: signature %04X, table %04X (not entered natively)",
+                                     g_slots[i].addr, g_slots[i].name, r.sig, r.table_sig);
+                continue;
+            }
+            if (!(ok[i] & 1) || (ex && !strcmp(ex, "n"))) continue;
+            ne[i] = GabiNativeEntry{r.fn, r.sig, 0};
+            nen++;
+        }
+        g_decomp_exact = (ex && !strcmp(ex, "l") ? 0 : 1) | (poison && !strcmp(poison, "1") ? 6 : 0) |
+                         (poison && !strcmp(poison, "args") ? 2 : 0);
+        __atomic_store_n(&g_decomp_native_entry, ne, __ATOMIC_RELEASE);
+        LOG("[decomp] real native calls: %u register-exact functions, %u native entries on, %u signature mismatches, %u "
+            "without an entry (argument types)%s%s%s", nreg, nen, nbad, ntypes, ex && *ex ? " WWHD_DECOMP_NATIVE_EXACT=" : "", ex ? ex : "", (g_decomp_exact & 4) ? " (WWHD_DECOMP_POISON=1: argument/result registers poisoned)" : (g_decomp_exact & 2) ? " (WWHD_DECOMP_POISON=args: argument registers poisoned)" : "");
+    } else {
+        LOG("[decomp] real native calls: off (%s)", ex && !strcmp(ex, "0") ? "WWHD_DECOMP_NATIVE_EXACT=0" : "WWHD_DECOMP_NATIVE=0");
+    }
     LOG("[decomp] direct calls between decompiled functions: %u of %u; %u frame-exact functions keep the dispatch "
         "table%s", n, kNumSlots, nfx, all ? " (WWHD_DECOMP_DIRECT=all: none)" : "");
 }
@@ -282,6 +378,101 @@ void lr_init() {
         LOG("[decomp] call_lr check: %llu answers, %llu differ", (unsigned long long)checked, (unsigned long long)bad);
     }
 }
+
+// call sites (decomp.h call_to): per slot, the targets of the original's calls (call_lr.h call_site_targets) with
+// call_lr's answer and the direct table's entry, after direct_init (the direct table and frame-exact marks are final
+// then; mod hooks are still checked per call through the entry's ordinal, as direct_slot does). Read-only afterwards.
+// WWHD_DECOMP_SITES=0: none (call_lr + direct_slot per call). WWHD_DECOMP_SITES_CHECK=1: compare call_to with
+// call_lr + direct_slot (call_to_lookup) for every slot, every listed target and others, both kinds (log).
+std::vector<CallSite> g_site_pool;
+std::vector<CallerSites> g_caller_table;
+
+void sites_init() {
+    if (const char* e = getenv("WWHD_DECOMP_SITES"); e && !strcmp(e, "0")) {
+        LOG("[decomp] WWHD_DECOMP_SITES=0: guest calls look up call_lr and the direct table per call");
+        return;
+    }
+    const RecompEntry* b = g_recomp_funcs;
+    const RecompEntry* e = g_recomp_funcs + g_recomp_func_count;
+    std::vector<std::vector<uint32_t>> targets(kNumSlots);
+    std::vector<uint32_t> words;
+    size_t listed = 0;
+    for (unsigned i = 0; i < kNumSlots; i++) {
+        const uint32_t caller = g_slots[i].addr;
+        const RecompEntry* f = std::lower_bound(b, e, caller, [](const RecompEntry& r, uint32_t a) { return r.addr < a; });
+        if (f == e || f->addr != caller || f + 1 == e) continue;  // no body (call_lr: none listed either)
+        const uint32_t n = (f[1].addr - caller) / 4;
+        words.resize(n);
+        for (uint32_t k = 0; k < n; k++) words[k] = ld32(caller + 4 * k);
+        targets[i] = call_site_targets(words.data(), caller, n, g_recomp_decomp_import_calls, g_recomp_decomp_import_call_count);
+        listed += targets[i].size();
+    }
+    std::vector<uint32_t> bits(kNumSlots, 0);
+    g_site_pool.reserve(4 * listed + 2 * kNumSlots);
+    std::vector<size_t> base(kNumSlots, 0);
+    for (unsigned i = 0; i < kNumSlots; i++) {
+        if (targets[i].empty()) continue;
+        base[i] = g_site_pool.size();
+        bits[i] = site_table(targets[i], g_site_pool, [&](uint32_t t) {
+            CallSite c{};
+            c.lr = call_lr(i, t, 0, 1u);
+            if (const DirectEntry* d = direct_entry(t)) { c.slot1 = uint32_t(d->slot - g_slots) + 1; c.ordinal = d->ordinal; }
+            return c;
+        });
+    }
+    g_caller_table.resize(kNumSlots);
+    for (unsigned i = 0; i < kNumSlots; i++) {
+        CallerSites& c = g_caller_table[i];
+        c.t = targets[i].empty() ? nullptr : g_site_pool.data() + base[i];
+        c.bits = (uint8_t)bits[i];
+        c.bctrl_lr = call_lr(i, 0, 1, 1u);
+        c.frame_exact = g_slots[i].frame_exact;
+    }
+    LOG("[decomp] call sites: %zu targets in %zu table entries (%zu KB)", listed, g_site_pool.size(),
+        g_site_pool.size() * sizeof(CallSite) / 1024);
+    if (const char* chk = getenv("WWHD_DECOMP_SITES_CHECK"); chk && *chk == '1') {
+        // the same questions to both: listed targets, their neighbours, bctrl, the caller itself, every 97th slot's
+        // address, an odd target and 0; kind 0 and 1 (twice); LR in: a stale value
+        uint64_t checked = 0, bad = 0, found = 0;
+        const uint32_t kStale = 0xDEADBEE0u;
+        g_callers = g_caller_table.data();
+        for (unsigned i = 0; i < kNumSlots; i++) {
+            std::vector<uint32_t> ts = targets[i];
+            for (uint32_t t : targets[i]) ts.push_back(t + 4), ts.push_back(t - 4);
+            ts.push_back(g_slots[i].addr);
+            ts.push_back(0);
+            ts.push_back(0x02000001u);
+            ts.push_back(0x12345678u);
+            for (unsigned k = i % 97; k < kNumSlots; k += 97) ts.push_back(g_slots[k].addr);
+            for (uint32_t t : ts)
+                for (int kind : {0, 1, 1}) {  // bctrl twice: the caller's last-target word missed, then hit
+                    const CallTo want = call_to_lookup(i, t, kind, kStale);
+                    const CallTo got = call_to(i, t, kind, kStale);
+                    checked++;
+                    if (kind == 0 && site_find(g_caller_table[i], t)) {
+                        found++;
+                        // the entry's ordinal is direct_slot's: a mod hook set later turns both off alike
+                        const CallSite* s = site_find(g_caller_table[i], t);
+                        const DirectEntry* d = direct_entry(t);
+                        if (d ? (s->slot1 != uint32_t(d->slot - g_slots) + 1 || s->ordinal != d->ordinal) : s->slot1 != 0) {
+                            if (bad++ < 20) LOG("[decomp] sites check: %08X -> %08X: direct entry differs", g_slots[i].addr, t);
+                        }
+                    }
+                    if (kind == 0 && call_lr_by_site(i, t, kStale) != want.lr && bad++ < 20)
+                        LOG("[decomp] sites check: %08X -> %08X: call_lr_by_site differs", g_slots[i].addr, t);
+                    if ((got.lr != want.lr || got.s != want.s) && bad++ < 20)
+                        LOG("[decomp] sites check: %08X -> %08X kind %d: sites %08X/%d, lookup %08X/%d", g_slots[i].addr, t, kind,
+                            got.lr, got.s ? int(got.s - g_slots) : -1, want.lr, want.s ? int(want.s - g_slots) : -1);
+                }
+        }
+        for (uint32_t h = 0; g_direct && h < kDirectSize; h++)  // the slots' ordinals (bctrl's mod-flag check)
+            if (g_direct[h].addr && g_direct[h].slot->ordinal != g_direct[h].ordinal && bad++ < 20)
+                LOG("[decomp] sites check: %08X: slot ordinal differs", g_direct[h].addr);
+        LOG("[decomp] sites check: %llu answers (%llu from a call-site entry), %llu differ", (unsigned long long)checked,
+            (unsigned long long)found, (unsigned long long)bad);
+    }
+    g_callers = g_caller_table.data();
+}
 }  // namespace
 
 }  // namespace decomp
@@ -291,7 +482,10 @@ extern "C" void decomp_mod_hooked(uint32_t ordinal) {
     if (!ok || ordinal >= g_recomp_func_count) return;
     const uint32_t addr = g_recomp_funcs[ordinal].addr;
     Slot* s = std::lower_bound(g_slots, g_slots + kNumSlots, addr, [](const Slot& x, uint32_t v) { return x.addr < v; });
-    if (s != g_slots + kNumSlots && s->addr == addr) __atomic_store_n(&ok[s - g_slots], 0, __ATOMIC_RELAXED);
+    if (s != g_slots + kNumSlots && s->addr == addr) {
+        __atomic_store_n(&ok[s - g_slots], 0, __ATOMIC_RELAXED);
+        if (GabiNativeEntry* ne = g_decomp_native_entry) __atomic_store_n(&ne[s - g_slots].sig, 0u, __ATOMIC_RELAXED);
+    }
 }
 namespace decomp {
 
@@ -386,21 +580,25 @@ void call_debug(Cpu* c, Slot& s) {
         return;
     }
     if (g_stats) g_ncand[i].fetch_add(1, std::memory_order_relaxed);
-    const uint32_t outer = g_decomp_running;
-    g_decomp_running = uint32_t(&s - g_slots) + 1;
+    const uint16_t outer = c->decomp_running;
+    c->decomp_running = uint16_t(&s - g_slots + 1);
     if (!g_guard) {
         s.run(c, s.cand);
-        g_decomp_running = outer;
+        c->decomp_running = outer;
         return;
     }
     uint8_t before[0x40];
     memcpy(before, ppc_ptr(c->r[1]), sizeof before);
     s.run(c, s.cand);
-    g_decomp_running = outer;
+    c->decomp_running = outer;
     if (memcmp(before, ppc_ptr(c->r[1]), 4)) guard_report(c, s, before);
 }
 
 void init() {
+    if (kNumSlots >= 0xFFFF) {  // Cpu::decomp_running holds slot + 1 in 16 bits
+        fprintf(stderr, "[decomp] %u slots do not fit Cpu::decomp_running\n", kNumSlots);
+        abort();
+    }
     if (const char* g = getenv("WWHD_DECOMP_GUARD")) g_guard = !strcmp(g, "restore") ? 2 : !strcmp(g, "log") || atoi(g) ? 1 : 0;
     std::vector<char> unit_on(kNumUnits, 1);
     if (const char* e = getenv("WWHD_DECOMP")) {
@@ -457,5 +655,6 @@ void init() {
     }
     g_debug = g_stats || g_guard;
     direct_init();
+    sites_init();
 }
 }  // namespace decomp

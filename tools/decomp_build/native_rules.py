@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -30,10 +30,16 @@ keeps the guest call (the reasons say which):
   C11 no body     its WWHD_FUNC / WWHD_GLUE_FUNC was not found in the compiled sources
   C12 src:ret     a result that tools/decomp_build/native_returns.py did not rewrite (not a scalar or pointer, or a
                   lambda / local class in the body): the guest registers would miss it
+decl=STATUS:NIrNFf:RK (at the end of the reasons): the decompilation's declaration table (decl_lint.py --handoff;
+TABLE, else DECOMP_DIR/tools/verify/decl_handoff.tsv when it exists): exact / shim functions are register-exact (every
+decompiled call passes exactly the registers the definition reads, NI integer and NF float registers; RK its result:
+0 none, 1 r3, 2 r3+r4, 3 f1): a native call passes C++ arguments only (gabi.h NativeInfo flags 8, real native
+calls). decl=- : not in the table, or guest there: native calls keep the guest registers.
 caller=guest: its own calls must stay guest calls (A1: framexact or footprint; A2: src:cpu). Per call site rules
 (A3: stack arguments at that call) are decided where the call is compiled.
 """
 import bisect
+import glob
 import collections
 import json
 import os
@@ -208,8 +214,138 @@ def source_features(paths):
             # parameter types from the function head: floats by type, the rest (this, pointers, integers) by count
             params = split_args(head[head.rfind("(", 0, head.rfind(")")) + 1:head.rfind(")")]) if "(" in head else []
             nf = sum(1 for x in params if FLOAT_T.match(" ".join(x.split()[:-1]) if len(x.split()) > 1 else x))
-            out.setdefault(addr, (fs, (max(0, len(margs) - nf), nf)))
+            out.setdefault(addr, (fs, (max(0, len(margs) - nf), nf), ret_kind(allargs[1] if len(allargs) > 1 else "")))
     return out
+
+
+def ret_kind(r):
+    """a WWHD_(GLUE_)FUNC result type -> 0 none, 1 r3, 2 r3+r4 (Pair32), 3 f1; None when it is not a scalar result"""
+    t = " ".join(r.replace("const ", " ").split())
+    if t == "void":
+        return 0
+    if t in ("Pair32", "gabi::Pair32"):
+        return 2
+    if FLOAT_T.match(t):
+        return 3
+    if t.endswith("&") or "Ret<" in t:
+        return None
+    return 1
+
+
+FUNC_ADDR = re.compile(r"WWHD_(?:GLUE_)?FUNC(?:_R)?\(\s*0x([0-9A-Fa-f]{8})\s*,")
+RULE_ERRORS = []  # exact callees with an under-declared ext line (main: a configure error)
+DECL_FIELD = re.compile(r"\bdecl=(?:exact|shim):(\d)r(\d)f:(\d)\b")
+DECL_REGS = re.compile(r"^(\d+)r(\d+)f$")
+
+
+def read_decl(path):
+    """decl_lint.py --handoff table -> {addr: (status, int registers, float registers)}"""
+    out = {}
+    if not path or not os.path.isfile(path):
+        return out
+    for line in open(path, encoding="utf-8"):
+        if line.startswith("#") or not line.strip():
+            continue
+        f = line.rstrip("\n").split("\t")
+        m = DECL_REGS.match(f[2]) if len(f) > 2 else None
+        if m:
+            st = f[1]  # a callee with e? sites an indirect call may read is `guest` in the table (decl_lint e?i)
+            out[int(f[0], 16)] = (st, int(m.group(1)), int(m.group(2)))
+    return out
+
+
+EXT_GLUE = re.compile(r"^ext\s+([0-9A-Fa-f]{8})\s+(.*?)\s*(?:#.*)?$")
+EXT_PROTO = re.compile(r"^(.*?)\s*((?:\w+::)*~?\w+)\s*\((.*)\)\s*(?:const)?\s*(?:in\s+\S+)?$")
+FLOAT_SCALARS = ("f32", "f64", "float", "double", "Vec_f32")
+
+
+def ext_regs(proto):
+    """(int registers, float registers) an `ext` glue line's declaration passes (`this` for a qualified name that is
+    not static), None when it cannot be counted (variadic, unparsed)"""
+    m = EXT_PROTO.match(proto)
+    if not m or "..." in m.group(3):
+        return None
+    gi = 1 if "::" in m.group(2) and not m.group(1).startswith("static") else 0
+    fi = 0
+    for p in split_args(m.group(3)):
+        p = re.sub(r"/\*.*?\*/", "", p).split("=")[0].strip()
+        if p in ("", "void"):
+            continue
+        t = re.sub(r"\b(const|volatile|struct|class|enum)\b", " ", p)
+        if "*" in t or "&" in t or "[" in t:
+            gi += 1
+            continue
+        w = t.split()
+        if any(x in FLOAT_SCALARS for x in w[-2:]):
+            fi += 1
+        else:
+            gi += 1
+    return gi, fi
+
+
+PROTO_LINE = re.compile(r"^\s*(?:extern\s+|static\s+|inline\s+|virtual\s+)*[\w:<>,*&\s]+?[\s*&]~?\w+\s*\([^;{}]*\)\s*(?:const\s*)?;\s*$")
+CALL_NAME = re.compile(r"(?<![\w&])(~?\w+)\s*\(")
+
+
+def called_names(text):
+    """names written as a call (`NAME(`) in code: comments, glue blocks, ext stub definitions and prototypes left out"""
+    text = re.sub(r"/\*.*?\*/", " ", text, flags=re.S)
+    text = re.sub(r"//[^\n]*", "", text)
+    out = set()
+    for ln in text.splitlines():
+        if PROTO_LINE.match(ln):
+            continue
+        out.update(CALL_NAME.findall(ln))
+    return out
+
+
+def under_declared(paths, decl, rks=None):
+    """{source path: [(callee, passes, takes)]}: `ext` glue lines that pass fewer registers than a register-exact
+    (exact / shim) callee's definition takes, except stubs the source only takes the address of (gabi::guest_fn, a HostFn
+    binding: no call; a stub called through a header wrapper counts as called). The declaration table (decl_lint.py) should never let these
+    through; a caller that relies on a register an earlier call left must keep the guest registers (its calls store
+    their results), so such sources' functions keep their calls as guest calls (A3 decl) and an exact callee loses its
+    native entry (rules(): an exact callee here is a configure error)."""
+    out = {}
+    for p in paths:
+        try:
+            t = open(p, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        m = re.search(r"/\* WWHD glue(.*?)\*/", t, re.S)
+        if not m:
+            continue
+        calls = None
+        for line in m.group(1).splitlines():
+            e = EXT_GLUE.match(line.strip())
+            if not e or "callback" in e.group(2).split():
+                continue
+            a = int(e.group(1), 16)
+            d = decl.get(a)
+            if not d or d[0] not in ("exact", "shim"):
+                continue
+            r = ext_regs(e.group(2))
+            pm0 = EXT_PROTO.match(e.group(2))
+            if pm0 and rks is not None and rks.get(a) == 0 and ret_kind(pm0.group(1).replace("static ", "")) not in (0, None):
+                # the declaration reads a result the callee's definition never sets: the caller relies on r3/f1 as an
+                # earlier call left it (d_s_logo: finishDrawCommands' "result" is ResMgr_getArchiveFile's r3)
+                r = (-1, -1)
+            if r and (r[0] < d[1] or r[1] < d[2]):
+                pm = EXT_PROTO.match(e.group(2))
+                name = pm.group(2).split("::")[-1] if pm else None
+                if calls is None:
+                    calls = called_names("\n".join(x for x in t.splitlines() if "/* other unit (ext) */" not in x))
+                if name and name not in calls and re.search(r"&\s*%s\b" % re.escape(name), t):
+                    continue  # used by its address only (taken in the source and never called there)
+                out.setdefault(p, []).append((a, r, (d[1], d[2]), d[0]))
+    return out
+
+
+def decl_token(d, rk):
+    """the decl= field of a native.txt line"""
+    if not d or d[0] not in ("exact", "shim") or rk is None or d[1] > 8 or d[2] > 8:
+        return "decl=-"
+    return "decl=%s:%dr%df:%d" % (d[0], d[1], d[2], rk)
 
 
 def spec_values(src, directive):
@@ -225,7 +361,10 @@ def spec_values(src, directive):
     return out
 
 
-def rules(src, out, gen_dir, strict=False):
+def rules(src, out, gen_dir, strict=False, decl_path=None):
+    if decl_path is None:
+        decl_path = os.path.join(src, "tools", "verify", "decl_handoff.tsv")
+    decl = read_decl(decl_path)
     dec = {}
     for line in open(os.path.join(out, "functions.tsv"), encoding="utf-8"):
         a, u, n = line.rstrip("\n").split("\t")
@@ -238,7 +377,26 @@ def rules(src, out, gen_dir, strict=False):
     fx = set(spec_values(src, "framexact"))
     fp = spec_values(src, "footprint")
     uj = json.load(open(os.path.join(out, "units.json"), encoding="utf-8"))
-    srcf = source_features([s["path"] for u in uj["units"] for s in u["sources"]])
+    paths = [s["path"] for u in uj["units"] for s in u["sources"]]
+    srcf = source_features(paths)
+    under = under_declared(paths, decl, {a: v[2] for a, v in srcf.items()})
+    # an exact callee an ext line under-declares loses its native entry (configure error); a result declared for a callee
+    # that returns nothing only needs the caller's guest calls (A3 decl: every earlier call stores its result)
+    under_callees = {a for v in under.values() for a, r, _, st in v if st == "exact" and r != (-1, -1)}
+    RULE_ERRORS[:] = sorted(under_callees)
+    under_funcs = set()
+    for p in under:
+        try:
+            under_funcs.update(int(x, 16) for x in FUNC_ADDR.findall(open(p, encoding="utf-8", errors="replace").read()))
+        except OSError:
+            pass
+    for p, v in sorted(under.items()):
+        for a, r, tk, st in v:
+            what = ("declares a result its %s definition never sets" % st if r == (-1, -1) else
+                    "passes %dr%df, its %s definition takes %dr%df" % (r[0], r[1], st, tk[0], tk[1]))
+            print("decomp: native-call rules: %s: ext %08X %s (the file's "
+                  "functions keep guest calls%s)" % (os.path.relpath(p, out), a, what,
+                                                     ", the callee its registers" if st == "exact" and r != (-1, -1) else ""))
     lines = []
     for a in sorted(dec):
         r = []
@@ -253,7 +411,7 @@ def rules(src, out, gen_dir, strict=False):
             (r if strict else note).append("may park")
         if fp.get(a, 0):
             r.append("footprint")
-        fs, (ni, nf) = srcf.get(a, (None, (0, 0)))
+        fs, (ni, nf), rk = srcf.get(a, (None, (0, 0), None))
         if fs is None:
             r.append("no body")
         else:
@@ -270,9 +428,14 @@ def rules(src, out, gen_dir, strict=False):
             caller.append("A2 cpu")
         if fs and ("src:autoframe" in fs or "src:wwhd_func" in fs):
             caller.append("A1 frame")
-        lines.append("%08X  callee=%s caller=%s  %s  # %s %s" % (
+        if a in under_funcs:
+            caller.append("A3 decl")
+        d = decl.get(a)
+        if a in under_callees:
+            d = None
+        lines.append("%08X  callee=%s caller=%s  %s %s  # %s %s" % (
             a, "guest" if r else "native", "guest" if caller else "ok",
-            ",".join(r + caller + ["(%s)" % x for x in note]) or "-", dec[a][0], dec[a][1]))
+            ",".join(r + caller + ["(%s)" % x for x in note]) or "-", decl_token(d, rk), dec[a][0], dec[a][1]))
     return lines
 
 
@@ -284,14 +447,19 @@ def unit_headers(out, lines):
     uj = json.load(open(os.path.join(out, "units.json"), encoding="utf-8"))
     index = {u["name"]: k for k, u in enumerate(uj["units"])}
     rows = collections.defaultdict(list)
-    slot_of = {}
+    slot_of, flags_of = {}, {}
     for slot, line in enumerate(lines):
         f = line.split("#")[0].split()
         unit = line.split("#")[1].split()[0]
         flags = 4 | (1 if f[1] == "callee=native" else 0) | (2 if f[2] == "caller=ok" else 0)
+        m = DECL_FIELD.search(line.split("#")[0])
+        if m:  # register-exact: flags 8, its registers and result (gabi.h NativeInfo)
+            flags |= 8 | int(m.group(1)) << 8 | int(m.group(2)) << 12 | int(m.group(3)) << 16
         rows[index[unit]].append((int(f[0], 16), slot, flags))
         slot_of[int(f[0], 16)] = slot
-    # the decompiled functions of other units that a unit calls (lean calls, gabi.h lcall): their slots, flags 4
+        flags_of[int(f[0], 16)] = flags
+    # the decompiled functions of other units that a unit calls (lean calls, gabi.h lcall): their slots and flags
+    # (4; 1 and 8 with the registers: lcall's real native call; 2 is the callee's own and not used there)
     for u in uj["units"]:
         k = index[u["name"]]
         own = {r[0] for r in rows[k]}
@@ -301,7 +469,7 @@ def unit_headers(out, lines):
                 ext.update(int(a, 16) for a in LCALL.findall(open(src["path"], encoding="utf-8", errors="replace").read()))
             except OSError:
                 pass
-        rows[k] += [(a, slot_of[a], 4) for a in ext - own if a in slot_of]
+        rows[k] += [(a, slot_of[a], flags_of[a] & ~2) for a in ext - own if a in slot_of]
     os.makedirs(os.path.join(out, "native"), exist_ok=True)
     for name, k in index.items():
         r = sorted(rows.get(k, [])) or [(0, 0, 0)]
@@ -313,19 +481,29 @@ def unit_headers(out, lines):
 
 
 def main():
-    if len(sys.argv) not in (4, 5) or (len(sys.argv) == 5 and sys.argv[4] != "strict"):
+    args = sys.argv[1:]
+    decl_path = None
+    if "--decl" in args:
+        i = args.index("--decl")
+        decl_path = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
+    if len(args) not in (3, 4) or (len(args) == 4 and args[3] != "strict"):
         sys.exit(__doc__.strip().splitlines()[4])
-    src, out, gen_dir = (os.path.abspath(x) for x in sys.argv[1:4])
-    strict = len(sys.argv) == 5
-    lines = rules(src, out, gen_dir, strict)
+    src, out, gen_dir = (os.path.abspath(x) for x in args[:3])
+    strict = len(args) == 4
+    lines = rules(src, out, gen_dir, strict, decl_path or None)
+    if RULE_ERRORS:  # an exact callee with an under-declared call (rules() printed each): the decl table is wrong
+        sys.exit("native_rules.py: %d ext declaration(s) pass fewer registers than their exact callee takes; fix the "
+                 "decompilation's declarations (decl_lint.py) or its table" % len(RULE_ERRORS))
     import gen
     gen.write_if_changed(os.path.join(out, "native.txt"),
                          "# generated by tools/decomp_build/native_rules.py (native-calls rules)\n"
                          + "\n".join(lines) + "\n")
     unit_headers(out, lines)
     n = sum(1 for x in lines if "callee=native" in x)
-    print("decomp: native-call rules%s: %d of %d functions may be called natively (%s)" % (
-        " (strict park rule)" if strict else "", n, len(lines), os.path.join(out, "native.txt")))
+    ne = sum(1 for x in lines if "callee=native" in x and DECL_FIELD.search(x.split("#")[0]))
+    print("decomp: native-call rules%s: %d of %d functions may be called natively, %d of them register-exact (%s)" % (
+        " (strict park rule)" if strict else "", n, len(lines), ne, os.path.join(out, "native.txt")))
 
 
 if __name__ == "__main__":

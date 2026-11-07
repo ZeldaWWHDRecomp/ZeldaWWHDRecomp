@@ -128,16 +128,17 @@ uint8_t*sealed_mod_flags=nullptr;const PpcFunc*sealed_mod_bodies=nullptr;unsigne
 extern "C" {
 unsigned g_mod_hook_count = 0;  // initialized only by a hook-enabled game-code build
 uint8_t* g_mod_hook_flags = nullptr;
+// every write that sets a hook flag: the decomp build stops entering that function natively (the normal build: the
+// plain store, as before)
 #ifdef WWHD_DECOMP
 extern "C" void decomp_mod_hooked(uint32_t ordinal);  // runtime/src/decomp/decomp.h
-#endif
-// every write that sets a hook flag: the decomp build stops entering that function natively
 static inline void set_mod_hook_flag(uint32_t ordinal) {
     g_mod_hook_flags[ordinal] = 1;
-#ifdef WWHD_DECOMP
     decomp_mod_hooked(ordinal);
-#endif
 }
+#else
+#define set_mod_hook_flag(ordinal) (g_mod_hook_flags[ordinal] = 1)
+#endif
 const PpcFunc* g_mod_bodies = nullptr;
 void ppc_mod_register(unsigned count, uint8_t* flags, const PpcFunc* bodies) {
     std::lock_guard mutation(native_hook_mutex());
@@ -261,7 +262,7 @@ bool install_stage_owner_pass_through() {
         for(unsigned n=0;n<inserted;++n)g_chains.erase(addresses[n]);
         return false;
     }
-    for(unsigned n=0;n<addresses.size();++n)g_mod_hook_flags[ordinals[n]]=1;
+    for(unsigned n=0;n<addresses.size();++n)set_mod_hook_flag(ordinals[n]);
     installed=true;
     return true;
 }
@@ -397,7 +398,7 @@ bool install_native_wait_routes_impl(NativeWaitDispatch route) {
     }
     native_wait_prior=prior;
     native_wait_dispatch=route;
-    for(size_t n=0;n<addresses.size();++n)g_mod_hook_flags[ordinals[n]]=1;
+    for(size_t n=0;n<addresses.size();++n)set_mod_hook_flag(ordinals[n]);
     native_wait_installed=true;
     return true;
 }

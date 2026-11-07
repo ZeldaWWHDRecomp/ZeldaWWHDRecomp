@@ -89,7 +89,7 @@ class NativeRulesTest(unittest.TestCase):
         got = {}
         for line in native_rules.rules(self.src, self.out, self.gen, strict):
             a, callee, caller, why = line.split("#")[0].split(None, 3) if len(line.split("#")[0].split()) >= 4 else (None,) * 4
-            got[int(a, 16)] = (callee, caller, why.strip())
+            got[int(a, 16)] = (callee, caller, " ".join(x for x in why.split() if not x.startswith("decl=")))
         return got
 
     def test_park_rule(self):
@@ -138,8 +138,54 @@ class NativeRulesTest(unittest.TestCase):
         self.assertIn("{0x%08Xu, 8u, 4u}," % self.F(9), h)   # Cpu access: neither (listed: 4)
         self.assertIn("{0x%08Xu, 4u, 5u}," % self.F(5), h)   # footprint 0: callee native, its calls stay guest
         hb = open(self.out + "/native/1.h").read()
-        self.assertIn("{0x%08Xu, 5u, 4u}," % self.F(6), hb)  # unit b's lean call into unit a: slot only
+        self.assertIn("{0x%08Xu, 5u, 5u}," % self.F(6), hb)  # unit b's lean call into unit a: its slot, native callee
         self.assertNotIn("0x0300000C", hb)                   # not decompiled: no entry
+
+
+    def test_decl_table(self):
+        F = self.F
+        decl = os.path.join(self.tmp.name, "handoff.tsv")
+        open(decl, "w").write("# decl_lint.py hand-off table\n"
+                              "%08X\texact\t1r0f\ta.cpp\tf6\t-\n" % F(6) +
+                              "%08X\tshim\t0r8f\ta.cpp\tf14\te 1\n" % F(14) +
+                              "%08X\tguest\t0r0f\ta.cpp\tf5\td? callee (1 sites)\n" % F(5) +
+                              "%08X\texact\t9r0f\ta.cpp\tf13\t-\n" % F(13) +
+                              "%08X\tshim\t0r0f\ta.cpp\tf1\te? 2\n" % F(1))
+        lines = native_rules.rules(self.src, self.out, self.gen, False, decl)
+        tok = {int(x.split()[0], 16): [w for w in x.split("#")[0].split() if w.startswith("decl=")][0] for x in lines}
+        self.assertEqual(tok[F(6)], "decl=exact:1r0f:1")     # int result in r3
+        self.assertEqual(tok[F(14)], "decl=shim:0r8f:0")     # extra arguments dropped, no result
+        self.assertEqual(tok[F(5)], "decl=-")                # guest in the table: keeps the registers
+        self.assertEqual(tok[F(13)], "decl=-")               # more than 8 integer registers
+        self.assertEqual(tok[F(1)], "decl=shim:0r0f:0")      # extra arguments nothing reads (the table's own ruling)
+        self.assertEqual(tok[F(2)], "decl=-")                # not in the table
+        native_rules.unit_headers(self.out, lines)
+        h = open(self.out + "/native/0.h").read()
+        self.assertIn("{0x%08Xu, 5u, %du}," % (F(6), 7 | 8 | 1 << 8 | 1 << 16), h)
+        self.assertIn("{0x%08Xu, 13u, %du}," % (F(14), 7 | 8 | 8 << 12), h)
+        self.assertIn("{0x%08Xu, 4u, 5u}," % F(5), h)
+        hb = open(self.out + "/native/1.h").read()
+        self.assertIn("{0x%08Xu, 5u, %du}," % (F(6), 5 | 8 | 1 << 8 | 1 << 16), hb)  # the lean call's native entry
+
+
+    def test_under_declared(self):
+        """an ext line that passes fewer registers than a register-exact definition takes (a gap in the decl table)"""
+        p = os.path.join(self.tmp.name, "u.cpp")
+        open(p, "w").write("/* WWHD glue\next 02019424 void cMl_initFromHeapReturnRegister()\n"
+                           "ext 02000100 void C::f(f32 x)\next 02000200 void g(int, ...)\n*/\n")
+        decl = {0x02019424: ("exact", 1, 0), 0x02000100: ("exact", 1, 1), 0x02000200: ("exact", 2, 0)}
+        q = os.path.join(self.tmp.name, "v.cpp")  # a stub only used by its address makes no call
+        open(q, "w").write("void cb(int, int);\nstatic gabi::HostFn h(reinterpret_cast<const void*>(&cb), 0x02000300);\n"
+                           "/* WWHD glue\next 02000300 void cb(int, int)\n*/\n")
+        decl[0x02000300] = ("exact", 7, 0)
+        self.assertEqual(native_rules.under_declared([q], decl), {})
+        r = os.path.join(self.tmp.name, "r.cpp")  # a result the callee's definition never sets
+        open(r, "w").write("void f() { u32 x = getRes(); }\n/* WWHD glue\next 02000400 u32 getRes()\n*/\n")
+        decl[0x02000400] = ("shim", 0, 0)
+        self.assertEqual(native_rules.under_declared([r], decl, {0x02000400: 0}), {r: [(0x02000400, (-1, -1), (0, 0), "shim")]})
+        self.assertEqual(native_rules.under_declared([r], decl, {0x02000400: 1}), {})
+        got = native_rules.under_declared([p], decl)
+        self.assertEqual(got, {p: [(0x02019424, (0, 0), (1, 0), "exact")]})  # C::f passes this + f1; variadic: not counted
 
 
 if __name__ == "__main__":
