@@ -1012,10 +1012,14 @@ extern "C" void hook_028F7C7C(Cpu* c) {
         const float x = shared_patch::authored_float(quad + 8), y = shared_patch::authored_float(quad + 0x0C);
         float side = h * 0.8f;
         if (gc_face) {
-            const uint32_t parent = ld32(hud_box + 0x0C);
-            if (parent) {
-                const float pw = shared_patch::authored_float(parent + 0x3C);
-                const float ph = shared_patch::authored_float(parent + 0x40);
+            // The face picture: the letter's parent, or its sibling under CommandA_00's N_Center_01.
+            constexpr std::string_view pictures[] = {"P_A_00", "P_B_00", "P_X_00", "P_Y_00"};
+            uint32_t picture = ld32(hud_box + 0x0C);
+            if (picture && button_glyphs::face_picture(pane_name(picture)) != hud_face)
+                picture = child_named(picture, pictures[hud_face]);
+            if (picture) {
+                const float pw = shared_patch::authored_float(picture + 0x3C);
+                const float ph = shared_patch::authored_float(picture + 0x40);
                 if (std::isfinite(pw) && pw > 0) side = pw;
                 if (std::isfinite(ph) && ph > side) side = ph;
             }
