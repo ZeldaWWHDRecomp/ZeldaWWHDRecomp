@@ -32,6 +32,7 @@ namespace {
 constexpr int16_t kItems[] = {0x126, 0x1B0, 0xA9, 0x1D8, 0x1BE};  // Bomb, Boom, the hookshot, Arrow, Himo2 (the rope)
 constexpr int16_t kBomb = 0x126, kArrow = 0x1D8;
 constexpr uint32_t kPos = 0x314, kRoom = 0x326, kFuse = 0xA7C;  // daBomb_c::mRestTime (GC +0x6FC)
+constexpr float kBombSight = 6000;  // (another player's bomb in another room of this stage: shown within this of Link)
 const uint32_t kStage = GD(0x1046F0B0) + names::inf::kCurStage;
 struct Mine { uint32_t id; int16_t proc; int unseen = 0; float was[3] = {}; };  // unseen: steps not found yet (still being made)
 std::vector<Mine> g_mine;
@@ -71,8 +72,10 @@ bool arrow_hit(Cpu* c, uint32_t a, Mine& m) {
 }  // namespace
 
 void made(int16_t proc, uint32_t actor) {
-    if (actor && net::role() != net::Role::kOff && std::find(std::begin(kItems), std::end(kItems), proc) != std::end(kItems))
+    if (actor && net::role() != net::Role::kOff && std::find(std::begin(kItems), std::end(kItems), proc) != std::end(kItems)) {
         g_mine.push_back({ld32(actor + 4), proc});
+        if (proc == kBomb) mods::trace("coop: this game's Link made a bomb (%u of his items followed)", (unsigned)g_mine.size());
+    }
 }
 
 int16_t mine(uint32_t actor) { return mine_id(ld32(actor + 4)); }
@@ -112,6 +115,8 @@ void step(Cpu* c) {
             b += (char)ld8(a + kRoom);
             for (int e = 0; e < 3; e++) { const uint32_t v = ld32(a + kPos + 4 * e); b.append((const char*)&v, 4); }
             net::send(-1, net::kBombed, b);
+            mods::trace("coop: this game's bomb went off: room %d at %.0f %.0f %.0f", (int8_t)ld8(a + kRoom), (float)ldf32(a + kPos),
+                        (float)ldf32(a + kPos + 4), (float)ldf32(a + kPos + 8));
             float at[3];
             for (int e = 0; e < 3; e++) at[e] = (float)ldf32(a + kPos + 4 * e);
             const float still[3] = {};
@@ -125,12 +130,21 @@ void step(Cpu* c) {
 void bombed(Cpu* c, uint32_t link, const uint8_t* d, size_t n) {
     char here[8];
     names::clean_stage(mem::ptr(kStage), here);
-    if (n < 21 || memcmp(d, here, 8) || (int8_t)d[8] != (int8_t)ld8(link + kRoom)) return;  // (not here)
+    if (n < 21) return;
     float pos[3];
     memcpy(pos, d + 9, 12);
     for (float v : pos) if (!std::isfinite(v) || std::fabs(v) > 1e6f) return;  // (another game's numbers)
+    // here: in this stage, in Link's room or in sight of him (a bomb thrown across a room's border, or one in the next
+    // room seen through a doorway, goes off on both sides; it is made in Link's room here)
+    const float d2 = std::hypot(pos[0] - (float)ldf32(link + kPos), pos[2] - (float)ldf32(link + kPos + 8));
+    if (memcmp(d, here, 8) || ((int8_t)d[8] != (int8_t)ld8(link + kRoom) && d2 > kBombSight)) {
+        if (static uint32_t told = 0; told++ % 20 == 0)
+            mods::trace("coop: another player's bomb went off elsewhere: %.8s room %d, %.0f away (here %.8s room %d)", (const char*)d, (int8_t)d[8], d2,
+                        here, (int8_t)ld8(link + kRoom));
+        return;
+    }
     pvp::shown_only(spawn(c, link, kBomb, 0x80000000, pos));  // (C28: its blast hurts nobody here)
-    mods::trace("coop: another player's bomb went off here");
+    mods::trace("coop: another player's bomb went off here (room %d, %.0f away)", (int8_t)d[8], d2);
 }
 
 }  // namespace mods::coop::items

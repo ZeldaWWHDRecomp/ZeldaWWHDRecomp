@@ -14,6 +14,7 @@
 #     time; with DUO_STATES holding slot7.wwstate (a portable state on the boat) both load it every 4th place and sail
 #     (WWHD_COOP_TEST_DRIFT);
 #   - emotes every 50 s;
+#   - SOAK_BOMB_EVERY=<s>: the host pulls out and throws a bomb (Y) that often; the guest must show some of them;
 #   - disconnect/reconnect: the guest drops its connection every SOAK_GUEST_RECONNECT s (600), the host every
 #     SOAK_HOST_RECONNECT s (1500), each back after 8 s ("Connect again");
 #   - both games run hidden, so neither has the focus (as a game in the background).
@@ -29,7 +30,7 @@ stages=${SOAK_STAGES:-sea:44:0 M_NewD2:0:0 sea:11:0 Adanmae:0:0 sea:13:0 LinkRM:
 warp_every=${SOAK_WARP_EVERY:-240}
 gen() {  # gen ROLE: the schedule variables for one game
   python3 - "$1" "$secs" "$seed" "$warp_every" "${SOAK_LIFE_EVERY:-90}" "${DUO_STATES:+1}" ${=stages} <<'EOF'
-import random, sys
+import os, random, sys
 role, secs, seed, warp_every, life_every, boat = sys.argv[1], float(sys.argv[2]), int(sys.argv[3]), float(sys.argv[4]), sys.argv[5], sys.argv[6] == "1"
 stages = sys.argv[7:]
 rnd = random.Random(seed * 2 + (role == "guest"))
@@ -37,6 +38,11 @@ press, stick, warps, loads, emotes = [], [], [], [], []
 t = 20.0
 while t < secs:  # A every 3 s: dialogs, the game over menu's Continue
     press.append("%.2f-%.2f:8000" % (t, t + 0.15)); t += 3
+bomb_every = float(os.environ.get("SOAK_BOMB_EVERY", "0") or 0)
+if role == "host" and bomb_every > 0:  # Y twice: a bomb pulled out and thrown (bombs on Y in the save), for the guest to see
+    t = 75.0
+    while t < secs:
+        press.append("%.2f-%.2f:1000" % (t, t + 0.15)); press.append("%.2f-%.2f:1000" % (t + 1, t + 1.15)); t += bomb_every
 cut = 1.5 if role == "host" else 7.0
 t = 70.0
 while t < secs:  # B: sword cuts (the host's at the guest: friendly fire)
@@ -89,5 +95,11 @@ for r in host guest; do
     "$(grep -c 'coop: test: online again' "$out/$r.trace")" "$(grep -c 'coop: sailing' "$out/$r.trace")" \
     "$(grep -c 'a pose not sent' "$out/$r.trace")" "$(grep -c 'kept with other bytes' "$out/$r.trace")"
 done
+# (SOAK_BOMB_EVERY) the host's bombs that went off, and how many of them the guest showed (the guest leaves now and then)
+if [ -n "${SOAK_BOMB_EVERY:-}" ]; then
+  out_n=$(grep -c "this game's bomb went off" "$out/host.trace"); in_n=$(grep -c "another player's bomb went off here" "$out/guest.trace")
+  echo "bombs: host's went off $out_n, shown in the guest's game $in_n"
+  [ $out_n -gt 0 ] && [ $in_n = 0 ] && fail+=("bombs: none of the host's $out_n shown in the guest's game")
+fi
 [ $ran -lt $((secs - 30)) ] && fail+=("ended after ${ran}s of ${secs}s")
 if [ ${#fail} = 0 ]; then echo "$name: PASS (${ran}s)"; else echo "$name: FAIL (${ran}s): ${(j:; :)fail}"; fi
