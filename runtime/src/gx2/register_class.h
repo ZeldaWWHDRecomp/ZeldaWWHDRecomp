@@ -40,6 +40,13 @@ inline bool shader_irrelevant_reg(uint32_t reg, bool addressMemo) {
     return false;
 }
 
+// The draw classifier's buffer/constant class (kRcProfFast): the profiler's own words (baseFast,
+// rprof::fast_class_reg) and the per-draw dynamic words (state_groups.h kSgDynamic: viewport, scissor,
+// blend colour, alpha reference...), which a continued draw re-reads as well. Only the render-thread
+// profiler reads kRcProfFast; the state group and shader relevance bits do not depend on it
+// (register_class_test compares the tables built with and without the dynamic words).
+inline bool prof_fast_or_dynamic(bool baseFast, uint32_t reg) { return baseFast || state_group(reg) == kSgDynamic; }
+
 enum : uint8_t {
     kRcGroup = 0x0F,             // state group (state_groups.h; kSgStencilRefMask included)
     kRcShaderIrrelevant = 0x10,  // shader_irrelevant_reg()
