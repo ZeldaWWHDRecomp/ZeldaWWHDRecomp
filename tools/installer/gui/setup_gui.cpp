@@ -1207,6 +1207,7 @@ static bool update_choice() {
         ImGui::TextWrapped("An update from %s (%s) was interrupted.", A.pending_release.version.c_str(),
                            A.pending_release.root.c_str());
         if (button("Finish the update", ImVec2(520, 0), true)) start_install("update");
+        ImGui::SetItemDefaultFocus();  // the one primary action of the page (Quit and the footer stay neutral)
         muted("Brings over the rest of your data and builds the game; what was done already is kept.");
         return true;
     }
@@ -1227,6 +1228,7 @@ static bool update_choice() {
     if (button(label.c_str(), ImVec2(520, 0), true,
                r.mode != "move" || A.confirm_move))
         start_install("update");
+    ImGui::SetItemDefaultFocus();  // the one primary action of the page (Quit and the footer stay neutral)
     if (button("Choose another earlier release folder...", ImVec2(520, 0))) choose_folder("release");
     if (!A.release_msg.empty()) muted(A.release_msg);
     ImGui::EndChild();
