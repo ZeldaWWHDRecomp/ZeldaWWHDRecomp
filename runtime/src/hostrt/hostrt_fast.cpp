@@ -131,7 +131,33 @@ void f_0286DACC(Cpu* __restrict c);
 void f_0286DB18(Cpu* __restrict c);
 void f_028F2EE8(Cpu* __restrict c);
 void f_028F3090(Cpu* __restrict c);
+#ifdef WWHD_DECOMP_FAST_LIBM
+void f_028F4384(Cpu* __restrict c);
+void f_028F43F8(Cpu* __restrict c);
+void f_028F37F0(Cpu* __restrict c);
+void f_028F4BE0(Cpu* __restrict c);
+void f_028F4034(Cpu* __restrict c);
+#endif
 }
+
+#ifdef WWHD_DECOMP_FAST_LIBM
+// cmake WWHD_DECOMP_FAST_LIBM (fast mode only; OFF: none of this is compiled): the GHS libm functions decompiled code
+// calls most (cliff, Mac fast stats: sqrtf 8.9M, sinf 5.1M, sqrt 4.4M, cosf 4.0M, fmodf 2.5M generic guest calls per
+// run, ~23% of all) go from gmem_call straight to their recompiled originals f_X (hostrt_fast_direct), skipping
+// decomp::call_to, call_lr and the dispatch table. The guest call's own set-up stays (ArgPack, do_call_g: the stack
+// pointer the callee gets below the caller's frame and Locals; these functions build a stack frame, so a native entry
+// on the caller's r1 would overwrite live Locals: tried, the title sequence broke). Same code on the same registers
+// and stack as before: exact by construction. (Not host runtime roots: their results differ from every host libm,
+// tools/host_runtime/difftest/results/math_survey.txt.) Where a native port is proven bit-exact on every input
+// (hostrt_libm.cpp, tools/host_runtime/difftest/libmport.cpp), the port runs instead of the original.
+// WWHD_DECOMP_FAST_LIBM (env): 0 the guest path as before, 1 the originals only, unset / 2 the ports where there are.
+namespace hostrt { void sqrtf_028F4384(Cpu* c); }  // hostrt_libm.cpp
+static int fast_libm_level() {
+    static const int level = [] { const char* e = getenv("WWHD_DECOMP_FAST_LIBM"); return e && *e ? atoi(e) : 2; }();
+    return level;
+}
+static bool fast_libm_on() { return fast_libm_level() != 0; }
+#endif
 
 // the roots without a native entry that decompiled code calls often (decomp.cpp gmem_call, fast mode): their f_X
 // directly (-> ppc_host_call -> hook_X, which still decides between the replacement and the original), without
@@ -155,6 +181,14 @@ extern "C" PpcFunc hostrt_fast_direct(uint32_t addr) {
     case 0x0286DB18u: return f_0286DB18;
     case 0x028F2EE8u: return f_028F2EE8;
     case 0x028F3090u: return f_028F3090;
+#ifdef WWHD_DECOMP_FAST_LIBM
+    // GHS libm (WWHD_DECOMP_FAST_LIBM): their f_X directly, as the roots above
+    case 0x028F4384u: return fast_libm_on() ? (fast_libm_level() >= 2 ? hostrt::sqrtf_028F4384 : f_028F4384) : nullptr;
+    case 0x028F43F8u: return fast_libm_on() ? f_028F43F8 : nullptr;
+    case 0x028F37F0u: return fast_libm_on() ? f_028F37F0 : nullptr;
+    case 0x028F4BE0u: return fast_libm_on() ? f_028F4BE0 : nullptr;
+    case 0x028F4034u: return fast_libm_on() ? f_028F4034 : nullptr;
+#endif
     // roots with a native entry, for callers whose shape does not match it (their guest call)
     case 0x028F4114u: return f_028F4114;
     case 0x028F41B0u: return f_028F41B0;
