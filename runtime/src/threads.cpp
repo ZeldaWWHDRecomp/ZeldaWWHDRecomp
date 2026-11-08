@@ -1170,13 +1170,14 @@ struct HQueue {
 static ObjTable<HQueue> g_queues;
 
 #ifdef WWHD_DECOMP_FAST
-// Fast decomp build only (step d, WWHD_DECOMP_FAST_SPIN_US, default WWHD_DECOMP_FAST_SPIN_US_DEFAULT = 0 = off; a
-// build sets another default with -DWWHD_DECOMP_FAST_SPIN_US_DEFAULT=N, e.g. for a phone pair): a guest thread about to block in
+// Fast decomp build only (step d, WWHD_DECOMP_FAST_SPIN_US, default WWHD_DECOMP_FAST_SPIN_US_DEFAULT = 30 us since the
+// phone pairs of 2026-11-07/08: logic -1.07 ms with every thread spinning, the default scope as fast with better frame
+// pacing and less CPU; 0 = off; a build may set another default with -DWWHD_DECOMP_FAST_SPIN_US_DEFAULT=N): a guest thread about to block in
 // OSReceiveMessage on an empty queue first gives up its core and polls the queue for up to that many microseconds;
 // a message sent meanwhile needs no futex wake (nobody is counted asleep) and is taken without a sleep/wake round
 // trip. Afterwards the receive goes on exactly as before (the queue is re-checked under its mutex, then park_wait).
 #ifndef WWHD_DECOMP_FAST_SPIN_US_DEFAULT
-#define WWHD_DECOMP_FAST_SPIN_US_DEFAULT 0
+#define WWHD_DECOMP_FAST_SPIN_US_DEFAULT 30
 #endif
 static uint64_t fast_spin_ns() {
     static const uint64_t ns = [] {
