@@ -202,7 +202,8 @@ def build(s, ctx, tc, jobs, step=None):
     t0 = time.time()
     s.say("  Preparing the decompiled source (decomp %s) with your game..." % (rev[:7] or "?"))
     s.run_logged([sys.executable, os.path.join(s.PKG, "tools", "decomp_build", "gen.py"), src,
-                  out, "--game", rpx, "--jobs", str(jobs)], what="preparing the decompiled source (gen.py)")
+                  out, "--game", rpx, "--jobs", str(jobs), "--game-build"],  # (units: -DGABI_GAME_BUILD, as cmake/Decomp.cmake)
+                 what="preparing the decompiled source (gen.py)")
     with open(os.path.join(out, "units.json")) as f:
         units = json.load(f)["units"]
     times["gen"] = time.time() - t0

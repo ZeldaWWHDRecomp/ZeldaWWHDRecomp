@@ -265,7 +265,8 @@ def decomp_variant(build):
 # The decomp version setup can build (development builds, macOS; tools/installer/decomp_setup.py,
 # docs/decomp-build.md): the tools that prepare the decompilation's source. The source is not in the
 # release: setup downloads the pinned commit and checks it against the SHA-256 written here.
-DECOMP_TOOLS = ["tools/decomp_build/gen.py", "tools/decomp_build/glue.cpp", "tools/decomp_build/frames_vis.h"]
+DECOMP_TOOLS = ["tools/decomp_build/gen.py", "tools/decomp_build/port_sites.py", "tools/decomp_build/glue.cpp",
+                "tools/decomp_build/frames_vis.h"]
 DECOMP_HOOKS_NONE = "tools_decomp_build_hooks_none.cpp.o"  # flattened like the other runtime objects
 
 

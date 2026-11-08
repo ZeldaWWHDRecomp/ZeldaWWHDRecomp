@@ -15,6 +15,8 @@
 //  - @023F22B4 is the beq after `cmpwi r30, 0` (023F22B0), reached only for procedures other than 201. On: taken, so
 //    the code jumps to 023F22E4 as the randomizer's branch does (r30 is reloaded from the stack there; cr0 is volatile).
 // Off, both sites return at once: the game's own code runs, and they run only while Link conducts or a demo ends.
+// Decomp build: the decompiled procTactWait and endDemoMode ask wwhd_classic_wind_waker() at the same two points
+// (the decompilation's port_hooks.h, WWHD_PORT_HOOKS), so both stay decompiled (tools/decomp_build/port_sites.py).
 // Start-up / test switch: WWHD_MOD_CLASSIC_TACT=1. Saved as mod.classic-wind-waker.enabled (mods/manager.cpp).
 #include <atomic>
 #include <cstdlib>
@@ -34,6 +36,9 @@ std::atomic<bool> g_classic_tact{env_on("WWHD_MOD_CLASSIC_TACT")};
 bool classic_wind_waker() { return g_classic_tact.load(std::memory_order_relaxed); }
 void set_classic_wind_waker(bool on) { g_classic_tact.store(on, std::memory_order_relaxed); }
 }  // namespace mods
+
+// the decompiled procTactWait / endDemoMode (decomp build: the decompilation's port_hooks.h)
+extern "C" int wwhd_classic_wind_waker(void) { return mods::classic_wind_waker() ? 1 : 0; }
 
 // daPy_lk_c::procTactWait, just after HD's falling check (see above)
 extern "C" void site_0243A294(Cpu* c) {

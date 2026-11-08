@@ -2,5 +2,6 @@
 # Classic Wind Waker (issue #405): the TWWHD Randomizer's Classic mode (classic_features.asm) patches two words that
 # HD added; these sites do the same while the switch is on and nothing while it is off. Neither site sits on a word
 # the randomizer patches, so Classic-mode seeds keep canonical hook words (docs/randomizer-maintainers.md).
+# The decomp build moves both into the decompiled source (tools/decomp_build/port_sites.py).
 @0243A294 # daPy_lk_c::procTactWait: after the HD falling check (beq at 0243A28C); on: r30 = 0 when r3 = 0 (dive)
 @023F22B4 # daPy_lk_c::endDemoMode: beq after cmpwi r30,0 (HD's 023F22B0); on: taken, no wait-state reset (dry storage)
