@@ -15,6 +15,13 @@
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
+#if defined(__APPLE__)
+#include <pthread.h>
+#elif defined(__linux__)
+#include <sys/resource.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#endif
 
 namespace gfxvk {
 namespace {
@@ -61,6 +68,10 @@ struct Compiler {
   std::condition_variable wake;
   std::deque<std::shared_ptr<Job>> queue;
   std::thread thread;
+  // the background lane (begin_pipeline_background): its own worker and queue, never counted against
+  // the ordinary queue's limit nor in `active`, so it never delays or displaces ordinary work
+  std::deque<std::shared_ptr<Job>> background;
+  std::thread backgroundThread;
   std::atomic<unsigned> active{0};
   bool stopped = false;
   std::atomic<bool> changed{false};
@@ -68,10 +79,50 @@ struct Compiler {
     { std::lock_guard lock(mutex); stopped = true; }
     wake.notify_all();
     if (thread.joinable()) thread.join();
+    if (backgroundThread.joinable()) backgroundThread.join();
     if (cache) vkDestroyPipelineCache(device, cache, nullptr);
   }
 };
 Compiler& compiler() { static Compiler value; return value; }
+// one job's preparation and compile on a compiler thread; the result is published to the job
+void execute(Compiler& c, Job& job, VkResult cacheResult) {
+  PipelineBuildResult result;
+  try {
+    if(job.prepare) {
+      const bool tracing=stutter::trace().enabled();
+      const auto started=tracing?stutter::now():0;
+      const auto cpu=tracing?stutter::thread_cpu_now():0;
+      try { job.prepare(job.state); }
+      catch(...) {
+        if(tracing)trace_event("pipeline_prerequisites",job.frame,job.key,started,stutter::now(),int(VK_ERROR_UNKNOWN),stutter::cpu_elapsed(cpu));
+        throw;
+      }
+      if(tracing)trace_event("pipeline_prerequisites",job.frame,job.key,started,stutter::now(),int(VK_SUCCESS),stutter::cpu_elapsed(cpu));
+    }
+    const auto cpuStart = stutter::trace().enabled() ? stutter::thread_cpu_now() : 0;
+    const auto started = stutter::now();
+    {
+      std::shared_lock cacheLock(c.cacheMutex);
+      // (the background lane may run before the ordinary worker made the cache: then without one)
+      result.result = cacheResult == VK_SUCCESS
+          ? vkCreateGraphicsPipelines(c.device, c.cache, 1, job.state.get(), nullptr, &result.pipeline)
+          : cacheResult;
+      if (result.result == VK_SUCCESS && c.cache) c.changed = true;
+    }
+    const auto ended = stutter::now();
+    result.compileNs = ended - started;
+    if (stutter::trace().enabled()) trace_event(job.kind.c_str(), job.frame, job.key, started, ended, int(result.result), stutter::cpu_elapsed(cpuStart));
+    if (result.result != VK_SUCCESS && result.pipeline) {
+      vkDestroyPipeline(c.device, result.pipeline, nullptr);
+      result.pipeline = VK_NULL_HANDLE;
+    }
+    { std::lock_guard lock(job.mutex); job.result = result; job.ready = true; }
+    result.pipeline = VK_NULL_HANDLE; // Ownership transferred to the job.
+  } catch (...) {
+    if (result.pipeline) vkDestroyPipeline(c.device, result.pipeline, nullptr);
+    { std::lock_guard lock(job.mutex); job.error = std::current_exception(); job.ready = true; }
+  }
+}
 void run(Compiler& c) {
   host::set_thread_name("Vulkan demand");
   // Live checkpoints take cacheMutex; queue admission never holds it.
@@ -97,42 +148,29 @@ void run(Compiler& c) {
       if (c.queue.empty()) return;
       job = std::move(c.queue.front()); c.queue.pop_front();
     }
-    PipelineBuildResult result;
-    try {
-      if(job->prepare) {
-        const bool tracing=stutter::trace().enabled();
-        const auto started=tracing?stutter::now():0;
-        const auto cpu=tracing?stutter::thread_cpu_now():0;
-        try { job->prepare(job->state); }
-        catch(...) {
-          if(tracing)trace_event("pipeline_prerequisites",job->frame,job->key,started,stutter::now(),int(VK_ERROR_UNKNOWN),stutter::cpu_elapsed(cpu));
-          throw;
-        }
-        if(tracing)trace_event("pipeline_prerequisites",job->frame,job->key,started,stutter::now(),int(VK_SUCCESS),stutter::cpu_elapsed(cpu));
-      }
-      const auto cpuStart = stutter::trace().enabled() ? stutter::thread_cpu_now() : 0;
-      const auto started = stutter::now();
-      {
-        std::shared_lock cacheLock(c.cacheMutex);
-        result.result = cacheResult == VK_SUCCESS
-            ? vkCreateGraphicsPipelines(c.device, c.cache, 1, job->state.get(), nullptr, &result.pipeline)
-            : cacheResult;
-        if (result.result == VK_SUCCESS) c.changed = true;
-      }
-      const auto ended = stutter::now();
-      result.compileNs = ended - started;
-      if (stutter::trace().enabled()) trace_event(job->kind.c_str(), job->frame, job->key, started, ended, int(result.result), stutter::cpu_elapsed(cpuStart));
-      if (result.result != VK_SUCCESS && result.pipeline) {
-        vkDestroyPipeline(c.device, result.pipeline, nullptr);
-        result.pipeline = VK_NULL_HANDLE;
-      }
-      { std::lock_guard lock(job->mutex); job->result = result; job->ready = true; }
-      result.pipeline = VK_NULL_HANDLE; // Ownership transferred to the job.
-    } catch (...) {
-      if (result.pipeline) vkDestroyPipeline(c.device, result.pipeline, nullptr);
-      { std::lock_guard lock(job->mutex); job->error = std::current_exception(); job->ready = true; }
-    }
+    execute(c, *job, cacheResult);
     c.active.fetch_sub(1, std::memory_order_release);
+    job->wake.notify_all();
+    c.wake.notify_all();
+  }
+}
+// the background lane's worker: lower priority, drains its queue, never touches `active`
+void run_background(Compiler& c) {
+  host::set_thread_name("Vulkan background");
+#if defined(__APPLE__)
+  pthread_set_qos_class_self_np(QOS_CLASS_UTILITY, 0);
+#elif defined(__linux__)
+  (void)setpriority(PRIO_PROCESS, (id_t)syscall(SYS_gettid), 10);
+#endif
+  for (;;) {
+    std::shared_ptr<Job> job;
+    {
+      std::unique_lock lock(c.mutex);
+      c.wake.wait(lock, [&] { return c.stopped || !c.background.empty(); });
+      if (c.background.empty()) return;
+      job = std::move(c.background.front()); c.background.pop_front();
+    }
+    execute(c, *job, VK_SUCCESS);
     job->wake.notify_all();
     c.wake.notify_all();
   }
@@ -247,7 +285,32 @@ std::optional<PipelineDemandTicket> begin_pipeline_async(const GraphicsPipelineS
   c.queue.push_back(job); c.active.fetch_add(1, std::memory_order_release);
   if (job->requested) trace_event("pipeline_request", frame, key,
       job->requested, job->requested, int(c.queue.size()));
-  c.wake.notify_one();
+  c.wake.notify_all();  // (all: the background worker waits on the same condition)
+  return PipelineDemandTicket(std::move(job));
+}
+bool pipeline_background_has_room() {
+  auto& c = compiler();
+  if (!c.device) return false;
+  std::lock_guard lock(c.mutex);
+  return !c.stopped && c.background.size() < kBackgroundQueue;
+}
+std::optional<PipelineDemandTicket> begin_pipeline_background(const GraphicsPipelineState& state,
+    uint64_t frame, uint64_t key, const char* kind,
+    const std::function<void(GraphicsPipelineState&)>& prepare) {
+  auto& c = compiler();
+  if (!c.device) return std::nullopt;
+  std::lock_guard lock(c.mutex);
+  // never restarts a stopped compiler (an ordinary request does), never waits for room
+  if (c.stopped || c.background.size() >= kBackgroundQueue) return std::nullopt;
+  if (!c.backgroundThread.joinable()) {
+    try { c.backgroundThread = std::thread(run_background, std::ref(c)); }
+    catch (...) { return std::nullopt; }
+  }
+  auto job = std::make_shared<Job>(state, frame, key, kind, c.device, prepare);
+  c.background.push_back(job);
+  if (job->requested) trace_event("pipeline_background_request", frame, key,
+      job->requested, job->requested, int(c.background.size()));
+  c.wake.notify_all();
   return PipelineDemandTicket(std::move(job));
 }
 PipelineBuildResult build_pipeline_async(const GraphicsPipelineState& state,
@@ -297,6 +360,7 @@ bool finish_pipeline_demand(VkPipelineCache target) {
   { std::lock_guard lock(c.mutex); c.stopped = true; }
   c.wake.notify_all();
   if (c.thread.joinable()) c.thread.join();
+  if (c.backgroundThread.joinable()) c.backgroundThread.join();
   return merge_pipeline_demand_cache(target, true);
 }
 VkResult compile_in_demand_cache(VkDevice device, const VkGraphicsPipelineCreateInfo& info, VkPipeline* out) {

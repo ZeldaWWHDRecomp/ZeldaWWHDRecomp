@@ -911,4 +911,51 @@ void clouds_before_draw(const uint32_t* r, const vk::Shader* ps, Surface* color0
     }
 }
 
+// draw.cpp, pass subset (pass_reuse.h): may a draw keep the open pass with the wider colour set `colors`
+// (the pass's) instead of its own? The horizon haze (grade_pipeline) and the toon clouds (cloud_pipeline)
+// are drawn into the open pass with a pipeline made for its exact target set, on the render thread. Not
+// when they may be drawn into this pass next (the sky buffer, the composite's picture, or either while
+// not seen yet) and their pipeline for this set isn't made yet: the subset must never be the reason a
+// pipeline is compiled on the render thread.
+bool clouds_pass_subset_ok(const std::array<Surface*, 8>& colors, const Surface* depth) {
+    const bool haze = 1.0f - render::horizon_haze() > 0.0f;
+    const bool toon = cloud_proto::mode() == cloud_proto::kSdf;
+    if (!haze && !toon) return true;
+    const uint32_t addr = colors[0] ? colors[0]->addr : 0;
+    const bool intoSky = !g_skyAddr || addr == g_skyAddr;
+    const bool intoPicture = toon && (!g_cloudsPicture || addr == g_cloudsPicture);
+    if (!intoSky && !intoPicture) return true;
+    // the same question as last time (a pass's draws ask it one after another): the same answer while
+    // no pipeline was made since; by the attachments' formats, as the pipelines are keyed
+    std::array<int, 10> shape{};
+    for (int i = 0; i < 8; i++) shape[i] = colors[i] ? int(colors[i]->fmt.pixel) : -1;
+    shape[8] = depth ? int(depth->fmt.pixel) : -1;
+    shape[9] = depth && depth->fmt.stencil;
+    static struct {
+        std::array<int, 10> shape{};
+        VkDevice device = VK_NULL_HANDLE;
+        size_t made = ~size_t(0);
+        bool haze = false, toon = false, intoSky = false, intoPicture = false, ok = false;
+    } last;
+    const size_t made = res.pipelines.size() + cres.pipelines.size();
+    if (last.shape == shape && last.device == R.device && last.made == made &&
+        last.haze == haze && last.toon == toon && last.intoSky == intoSky && last.intoPicture == intoPicture)
+        return last.ok;
+    std::string formats;  // as grade_pipeline / cloud_pipeline build their keys
+    uint32_t ncolor = 0;
+    for (uint32_t i = 0; i < 8; i++)
+        if (colors[i]) ncolor = i + 1;
+    for (uint32_t i = 0; i < ncolor; i++) formats += "/" + std::to_string(colors[i] ? int(colors[i]->fmt.pixel) : 0);
+    if (depth) formats += "/d" + std::to_string(int(depth->fmt.pixel)) + (depth->fmt.stencil ? "s" : "");
+    auto cached = [&](const auto& cache, const std::string& key) {
+        return cache.device == R.device && cache.pipelines.count(key) != 0;
+    };
+    const bool ok = !(intoSky && haze && !cached(res, "grade" + formats)) &&
+                    !(intoSky && toon && !cached(cres, "cs" + formats)) &&
+                    !(intoPicture && !cached(cres, "c" + formats));
+    last.shape = shape, last.device = R.device, last.made = made;
+    last.haze = haze, last.toon = toon, last.intoSky = intoSky, last.intoPicture = intoPicture, last.ok = ok;
+    return ok;
+}
+
 }  // namespace gfxvk
