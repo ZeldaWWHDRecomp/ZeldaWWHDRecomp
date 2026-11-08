@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Button prompts: Automatic follows the controller you're using** (#462, thanks @itsarahtonin; #459). With several
+  controllers connected, the on-screen button prompts now switch to the style of whichever controller you last
+  pressed something on, instead of always using the first one. The Steam Input virtual pad now shows Xbox prompts.
+  The Face buttons preset still uses the first controller.
+
 - **Android: faster game logic and rendering** (#473). The game library now calls its own functions directly instead
   of through link stubs (`-Bsymbolic-functions`). On the test phone the normal build's game logic got about 0.65 ms
   faster per step and the render thread about 1.25 ms, with smoother 1% lows. Desktop builds are unchanged.
