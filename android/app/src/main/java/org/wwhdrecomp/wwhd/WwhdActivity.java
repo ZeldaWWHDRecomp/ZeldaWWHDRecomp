@@ -269,32 +269,92 @@ public class WwhdActivity extends SDLActivity {
     }
 
     private static native boolean supportsSaveProfilePreparation();
-    /** System bars drawn over the game's view, in its pixels, and its size (issue #349). */
+    /** The parts of the game's view the system does not show (ScreenCover), in its pixels, and its size (issue #349). */
     private static native void publishObscured(int left, int top, int right, int bottom, int viewWidth, int viewHeight);
+    /** One line for the game's log: what the system reports about the screen around the game's view (issue #349). */
+    private static native void publishScreenReport(String report);
     private boolean obscuredUnsupported;  // an on-device game library from before publishObscured
+    private boolean screenReportUnsupported;  // ... from before publishScreenReport
+    private String lastScreenReport;
 
-    // Issue #349: some devices (Retroid Pocket Nova, Android 13) keep the navigation bar over the bottom of the
-    // game although full screen asks to hide it; the view still spans the whole screen (1280x960), so with
-    // Match window the picture filled it and the bar covered the rupee counter. The bars actually shown over
-    // the view (getInsets: hidden and swipe-revealed transient bars count as none) go to the TV layout, which
-    // places the pictures and Match window's shape in the rest.
+    // Issue #349: on a Retroid Pocket Nova (Android 13, 1280x960) the bottom 48 rows of the screen stay black over
+    // the game; with Match window or 4:3 the picture fills the screen and the rupee counter sits in those rows.
+    // The game draws them (the same picture on the Mac shows the counter at rows 911-927), so the part the system
+    // does not show goes to the TV layout, which places the pictures and Match window's shape in the rest
+    // (ScreenCover): the system bars actually shown over the view (getInsets: hidden and swipe-revealed transient
+    // bars count as none), a display cutout along a whole edge, and the window's bounds ending before the view.
+    // Everything the system reports about it goes to the game's log once per change, for devices that still
+    // cover part of the game without reporting it.
     private void reportObscured() {
         if (obscuredUnsupported || mSurface == null) return;
         WindowInsets insets = mSurface.getRootWindowInsets();
         int w = mSurface.getWidth(), h = mSurface.getHeight();
         if (insets == null || w <= 0 || h <= 0) return;
         android.graphics.Insets bars = insets.getInsets(WindowInsets.Type.systemBars());
-        int[] at = new int[2];
+        int[] at = new int[2], onScreen = new int[2];
         mSurface.getLocationInWindow(at);
+        mSurface.getLocationOnScreen(onScreen);
         View root = mSurface.getRootView();
-        int left = Math.max(0, bars.left - at[0]), top = Math.max(0, bars.top - at[1]);
-        int right = Math.max(0, bars.right - (root.getWidth() - at[0] - w));
-        int bottom = Math.max(0, bars.bottom - (root.getHeight() - at[1] - h));
+        int[] shown = {Math.max(0, bars.left - at[0]), Math.max(0, bars.top - at[1]),
+                Math.max(0, bars.right - (root.getWidth() - at[0] - w)),
+                Math.max(0, bars.bottom - (root.getHeight() - at[1] - h))};
+        // the cutout's rects come in window coordinates: moved into the view's
+        android.view.DisplayCutout cutout = insets.getDisplayCutout();
+        java.util.List<android.graphics.Rect> rects = cutout != null ? cutout.getBoundingRects() : java.util.Collections.emptyList();
+        int[][] cut = new int[rects.size()][];
+        for (int i = 0; i < cut.length; i++) {
+            android.graphics.Rect r = rects.get(i);
+            cut[i] = new int[] {r.left - at[0], r.top - at[1], r.right - at[0], r.bottom - at[1]};
+        }
+        android.graphics.Rect bounds = null;
+        try { bounds = getWindowManager().getCurrentWindowMetrics().getBounds(); } catch (RuntimeException ignored) { }
+        int[] window = bounds != null ? new int[] {bounds.left, bounds.top, bounds.right, bounds.bottom} : null;
+        int[] c = ScreenCover.covered(w, h, shown, cut, onScreen, window);
+        reportScreen(insets, w, h, onScreen, root, rects, bounds, c);
         try {
-            publishObscured(left, top, right, bottom, w, h);
+            publishObscured(c[0], c[1], c[2], c[3], w, h);
         } catch (UnsatisfiedLinkError e) {
             obscuredUnsupported = true;
             Log.w("wwhd", "system bar area not passed: " + e.getMessage());
+        }
+    }
+    private static String box(android.graphics.Insets i) { return i.left + "," + i.top + "," + i.right + "," + i.bottom; }
+    private void reportScreen(WindowInsets insets, int w, int h, int[] onScreen, View root,
+            java.util.List<android.graphics.Rect> cutouts, android.graphics.Rect window, int[] covered) {
+        StringBuilder s = new StringBuilder();
+        s.append("view ").append(w).append('x').append(h).append(" at ").append(onScreen[0]).append(',').append(onScreen[1])
+         .append(", root ").append(root.getWidth()).append('x').append(root.getHeight())
+         .append(", window ").append(window != null ? window.toShortString() : "?");
+        try {
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            s.append(" (cutout mode ").append(lp.layoutInDisplayCutoutMode).append(')');
+            Display d = getWindow().getDecorView().getDisplay();
+            if (d != null) {
+                Display.Mode m = d.getMode();
+                s.append(", display mode ").append(m.getPhysicalWidth()).append('x').append(m.getPhysicalHeight());
+                android.graphics.Rect max = getWindowManager().getMaximumWindowMetrics().getBounds();
+                s.append(", largest window ").append(max.toShortString());
+            }
+        } catch (RuntimeException ignored) { }
+        s.append("; bars shown ").append(box(insets.getInsets(WindowInsets.Type.systemBars())))
+         .append(", bars when shown ").append(box(insets.getInsetsIgnoringVisibility(WindowInsets.Type.systemBars())))
+         .append(", tappable ").append(box(insets.getInsets(WindowInsets.Type.tappableElement())))
+         .append(", gestures ").append(box(insets.getInsets(WindowInsets.Type.mandatorySystemGestures())))
+         .append(", cutout ").append(box(insets.getInsets(WindowInsets.Type.displayCutout())));
+        for (android.graphics.Rect r : cutouts) s.append(' ').append(r.toShortString());
+        android.view.DisplayCutout cut = insets.getDisplayCutout();
+        if (cut != null) s.append(", waterfall ").append(box(cut.getWaterfallInsets()));
+        s.append("; left out ").append(covered[0]).append(',').append(covered[1]).append(',').append(covered[2])
+         .append(',').append(covered[3]);
+        String line = s.toString();
+        if (line.equals(lastScreenReport)) return;
+        lastScreenReport = line;
+        Log.i("wwhd", "screen: " + line);
+        if (screenReportUnsupported) return;
+        try {
+            publishScreenReport(line);
+        } catch (UnsatisfiedLinkError e) {
+            screenReportUnsupported = true;
         }
     }
 
