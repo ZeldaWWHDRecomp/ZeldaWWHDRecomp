@@ -2173,11 +2173,22 @@ extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_seedSavedOff(JNIEnv*, jclass, jboolean off) {
   gfx::seed_second_screen_off(off);
 }
-// System bars the platform draws over the game's view (WwhdActivity, issue #349): the TV layout uses the rest.
+// The parts of the game's view the platform does not show (WwhdActivity, ScreenCover, issue #349): the TV layout
+// uses the rest.
 extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_WwhdActivity_publishObscured(JNIEnv*, jclass, jint left, jint top, jint right, jint bottom,
                                                       jint viewWidth, jint viewHeight) {
   gfx::display_set_obscured(float(left), float(top), float(right), float(bottom), float(viewWidth), float(viewHeight));
+}
+// What the system reports about the screen around the game's view (WwhdActivity, issue #349), once per change: the
+// log then shows why part of a screen stays covered.
+extern "C" JNIEXPORT void JNICALL
+Java_org_wwhdrecomp_wwhd_WwhdActivity_publishScreenReport(JNIEnv* env, jclass, jstring report) {
+  if (!report) return;
+  const char* s = env->GetStringUTFChars(report, nullptr);
+  if (!s) return;
+  LOG("[display] Android screen: %s", s);
+  env->ReleaseStringUTFChars(report, s);
 }
 extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_publishSurface(
