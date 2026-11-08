@@ -192,6 +192,15 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             objects = adapter.compile(toolchain, manifest, generated, compiler["identity"], native_run, jobs=jobs)
             library = adapter.link(toolchain, manifest, objects, compiler["identity"], native_run)
             adapter.boundary()
+            # earlier updates' stages go (this run's, and the builds the selection records name, stay): the
+            # records are in the setup storage above jobs/<id>
+            records = root.parent.parent if root.parent.name == "jobs" else None
+            if hasattr(adapter, "cleanup_stages"):
+                try:
+                    adapter.cleanup_stages([Path(generated).parent, Path(objects[0]).parent.parent, Path(library).parent],
+                                           records, log=lambda text: print(text, file=sys.stderr))
+                except OSError as error:
+                    print("old setup stages kept: %s" % error, file=sys.stderr)
             result = {"schema": 1, "library": str(library), "game": str(game),
                       "port_revision": job["port_revision"], "compiler_identity": compiler["identity"],
                       "code_mods": code_mods}

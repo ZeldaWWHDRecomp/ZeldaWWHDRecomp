@@ -444,6 +444,13 @@ struct App {
     std::string version, data_dir, app_dir, log_path, platform;
     bool installed = false, game_files = false, save_exists = false;
     std::string installed_version;
+    // updating from an earlier release folder (setup.py: earlier_releases, update_pending; release_update.py)
+    struct Release { std::string root, version, mode, text; };
+    std::vector<Release> releases;   // found next to this release; [0] is offered
+    Release chosen_release;          // the one picked with "Choose another..." (probe_release)
+    std::string release_msg;
+    bool update_pending = false, confirm_move = false;
+    Release pending_release;
 
     // requests
     int next_id = 1, pending_id = 0;
@@ -834,6 +841,7 @@ static void apply_dialog(const std::string& target, const std::string& path) {
     else if (target == "common_key") set_common_key_file(path);
     else if (target == "save") set_save_path(path);
     else if (target == "rando_import") rando_import(path);
+    else if (target == "release") A.release_msg = "Checking...", request("probe_release", "\"path\":" + jstr(path));
 }
 
 static void start_install(const std::string& source) {
@@ -844,7 +852,10 @@ static void start_install(const std::string& source) {
     std::string f = "\"source\":" + jstr(source);
     f += std::string(",\"code_mods\":") + (A.code_mods ? "true" : "false");
     if (A.decomp_offered) f += std::string(",\"decomp\":") + (A.decomp ? "true" : "false");
-    if (source != "installed") f += ",\"path\":" + jstr(A.source_path);
+    if (source == "update") {
+        f += ",\"path\":" + jstr(A.chosen_release.root);
+        f += std::string(",\"allow_move\":") + (A.chosen_release.mode == "move" ? "true" : "false");
+    } else if (source != "installed") f += ",\"path\":" + jstr(A.source_path);
     f += std::string(",\"skip_shader_prebuild\":") + (A.prepare_shaders ? "false" : "true");
     f += std::string(",\"model_sweep\":") + (A.prepare_shaders && A.model_sweep ? "true" : "false");
     f += ",\"shader_prebuild_cancel\":" + jstr(A.data_dir + "/shader-prebuild-cancel");
@@ -899,6 +910,10 @@ static void handle_reply(const J& ev) {
                           (ev.boolean("in_place") ? ". It is used where it is; nothing is copied." : "");
         else
             A.probe_msg = "Wii U disc image. The game files are extracted from it into this folder (about 1.7 GB).";
+    } else if (cmd == "probe_release") {
+        if (ok) A.chosen_release = {ev.str("root"), ev.str("version"), ev.str("mode"), ev.str("text")}, A.release_msg.clear();
+        else A.release_msg = ev.str("message");
+        A.confirm_move = false;
     } else if (cmd == "check_keys") {
         if (ok) {
             A.keys_msg = ev.str("message");
@@ -982,6 +997,13 @@ static void handle_event(const J& ev) {
             g_exe_normal_path = g_exe;
             if (A.start_decomp) g_exe = A.decomp_exe;
         }
+        A.releases.clear();
+        if (const J* rs = ev.get("earlier_releases"))
+            for (auto& r : rs->a)
+                A.releases.push_back({r.str("root"), r.str("version"), r.str("mode"), r.str("text")});
+        const J* up = ev.get("update_pending");
+        A.update_pending = up && up->t == J::Obj;
+        if (A.update_pending) A.pending_release = {up->str("root"), up->str("version"), up->str("mode"), ""};
         go(A.installed ? Screen::Menu : Screen::Welcome);
     } else if (e == "log") {
         addlog(ev.str("text"));
@@ -1178,8 +1200,51 @@ static void screen_clt() {
 
 static std::string home_folder() { return A.portable && !A.package.empty() ? A.package : A.data_dir; }
 
+// Updating from an earlier release folder: the player's choice on the Welcome screen, never automatic. A move
+// (no copy-on-write clones on this drive) is said plainly and confirmed before it starts.
+static bool update_choice() {
+    if (A.update_pending) {
+        ImGui::TextWrapped("An update from %s (%s) was interrupted.", A.pending_release.version.c_str(),
+                           A.pending_release.root.c_str());
+        if (button("Finish the update", ImVec2(520, 0), true)) start_install("update");
+        ImGui::SetItemDefaultFocus();  // the one primary action of the page (Quit and the footer stay neutral)
+        muted("Brings over the rest of your data and builds the game; what was done already is kept.");
+        return true;
+    }
+    if (A.chosen_release.root.empty() && !A.releases.empty()) A.chosen_release = A.releases[0];
+    if (A.chosen_release.root.empty()) {
+        if (A.portable && button("Update from an earlier release folder...", ImVec2(520, 0))) choose_folder("release");
+        if (!A.release_msg.empty()) muted(A.release_msg);
+        return false;
+    }
+    const auto& r = A.chosen_release;
+    ImGui::BeginChild("update", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+    ImGui::TextWrapped("Earlier release %s in %s", r.version.c_str(), r.root.c_str());
+    ImGui::TextWrapped("%s", r.text.c_str());
+    if (r.mode == "move") {
+        checkbox("I understand: the earlier release will not start the game after this update", &A.confirm_move);
+    }
+    const std::string label = "Update from " + r.version + " (keeps everything, builds only what changed)";
+    if (button(label.c_str(), ImVec2(520, 0), true,
+               r.mode != "move" || A.confirm_move))
+        start_install("update");
+    ImGui::SetItemDefaultFocus();  // the one primary action of the page (Quit and the footer stay neutral)
+    if (button("Choose another earlier release folder...", ImVec2(520, 0))) choose_folder("release");
+    if (!A.release_msg.empty()) muted(A.release_msg);
+    ImGui::EndChild();
+    ImGui::Spacing();
+    return true;
+}
+
 static void screen_welcome() {
     page_header("Welcome", "The Legend of Zelda: The Wind Waker HD, native PC port " + A.version);
+    if (update_choice()) {
+        // (the earlier release's choices — code mods, shader preparation — are kept: setup.py takes them from it)
+        int b = footer({"Quit", "Set up from scratch instead"});
+        if (b == 0) A.exit_code = 0;
+        if (b == 1) go(Screen::Source);
+        return;
+    }
     if (A.portable) {
         ImGui::TextWrapped("The first start prepares the game once: it reads your own dump of the game and builds it for "
                            "this computer (about two minutes). Releases never contain game code, so this happens here, "

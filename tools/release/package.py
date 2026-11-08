@@ -78,6 +78,8 @@ INSTALLER_FILES = [
     "tools/installer/code_mods.py",
     "tools/installer/randomizer_seeds.py",
     "tools/installer/object_cache.py",
+    "tools/installer/build_cache.py",
+    "tools/installer/release_update.py",
     "tools/installer/decomp_setup.py",
     "tools/installer/shader_prebuild.py",
     "tools/installer/model_sweep.py",
@@ -604,6 +606,9 @@ def main():
         "gamecode_cflags": cflags,
         "link": link,
         "runtime_files": runtime_files,
+        # the game answers --build-identity (runtime/src/main.cpp): setup checks a new build with it before it
+        # replaces the one before, and keys the prepared shaders by its pipeline identity
+        "build_identity": 1,
     }
     if a.decomp_build:
         if variant or not a.platform.startswith("macos"):

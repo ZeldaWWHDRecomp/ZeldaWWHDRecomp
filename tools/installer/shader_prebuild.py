@@ -78,13 +78,40 @@ def metadata(path):
             'mtime_ns': stat.st_mtime_ns % 1_000_000_000}
 
 
+PIPELINE_MARKER = b'WWHD-PIPELINE-IDENTITY:'
+
+
+def pipeline_identity_of(runtime):
+    """The pipeline identity a game binary was built with (runtime/src/pipeline_runtime_identity.cpp: the hash of
+    the code that interprets prepared shaders and recipes), read from the binary; None for one without it."""
+    try:
+        data = Path(runtime).read_bytes()
+    except (OSError, TypeError):
+        return None
+    at = data.find(PIPELINE_MARKER)
+    while at >= 0:
+        value = data[at + len(PIPELINE_MARKER):at + len(PIPELINE_MARKER) + 64]
+        if len(value) == 64 and all(c in b'0123456789abcdef' for c in value):
+            return value.decode()
+        at = data.find(PIPELINE_MARKER, at + 1)
+    return None
+
+
 def launch_identity(game, template, package, runtime):
+    """What the game checks at each start (cheap: sizes and times). A runtime with a pipeline identity is checked by
+    that instead of its file: another build of the same renderer (an update, a randomized game, the code-mod
+    variant) keeps the prepared generation."""
     game = Path(game)
-    return dict(game={p.relative_to(game).as_posix(): metadata(p) for p in sorted(game.rglob('*'))
-                      if p.is_file() and p.suffix.lower() in ('.sharcfb', '.rpx', '.szs', '.pack', '.sarc')},
-                template=metadata(template), translator=metadata(Path(package) / 'tools/shaderprep.py'),
-                format=metadata(Path(package) / 'tools/shaderprep_format.py') if (Path(package) / 'tools/shaderprep_format.py').is_file() else None,
-                runtime=metadata(runtime) if runtime and Path(runtime).is_file() else None)
+    pipeline = pipeline_identity_of(runtime) if runtime else None
+    value = dict(game={p.relative_to(game).as_posix(): metadata(p) for p in sorted(game.rglob('*'))
+                       if p.is_file() and p.suffix.lower() in ('.sharcfb', '.rpx', '.szs', '.pack', '.sarc')},
+                 template=metadata(template), translator=metadata(Path(package) / 'tools/shaderprep.py'),
+                 format=metadata(Path(package) / 'tools/shaderprep_format.py') if (Path(package) / 'tools/shaderprep_format.py').is_file() else None)
+    if pipeline:
+        value['pipeline'] = pipeline
+    else:
+        value['runtime'] = metadata(runtime) if runtime and Path(runtime).is_file() else None
+    return value
 
 
 def read_marker(path):
@@ -576,7 +603,10 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             wanted['mod_templates'] = sorted(file_hash(p) for p in extras)
         runtime = runtime_identity or executable
         if runtime and Path(runtime).is_file():
-            wanted['runtime'] = file_hash(runtime)
+            # the renderer's identity, not the binary's: an update that leaves the renderer as it was keeps the
+            # prepared generation and its model sweep (cmake/pipeline_identity_inputs.txt)
+            pipeline = pipeline_identity_of(runtime)
+            wanted['runtime'] = ('pipeline:' + pipeline) if pipeline else file_hash(runtime)
         launch = launch_identity(game, template, package, runtime)
         if skip or cancel():
             with activation_lock(root):
@@ -598,6 +628,13 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
                     and name.startswith('generation-') and Path(name).name == name
                     and generation.parent == root and (generation / 'headstart.bin').is_file()):
                 states = renderer_states(previous)
+                if previous.get('launch') != launch:
+                    # the same inputs by content (identity), in other places or with other times (a new release
+                    # folder, the files brought over by an update): the game's start check follows them
+                    previous = dict(previous, launch=launch)
+                    with activation_lock(root):
+                        atomic_json(generation / 'manifest.json', previous)
+                        atomic_json(active, previous)
                 missing = [r for r in renderers if r not in states] if executable else []
                 if missing:
                     try:
@@ -634,6 +671,26 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             assembled = staging / 'template.bin'
             used = merge_templates(package, template, extras, assembled, reporter.message, game)
             reporter.message('Including the shaders of %d mod stage template(s)' % len(used))
+        # The head start depends on the game files, the template(s) and the shader translator only (the identity
+        # without "runtime"): when only the renderer changed (an update), the previous generation's head start is
+        # what this one would assemble, and only the native warm below runs again.
+        reused_headstart = False
+        if active.is_file() and not (root / 'rebuild.request').exists():
+            previous = read_marker(active)
+            name = previous.get('generation', '')
+            source = root / name if isinstance(name, str) and name.startswith('generation-') and Path(name).name == name else None
+            same = lambda a: {k: v for k, v in (a or {}).items() if k != 'runtime'}
+            if (source is not None and source != staging and previous.get('status') == 'ready'
+                    and isinstance(previous.get('identity'), dict) and same(previous['identity']) == same(wanted)
+                    and (source / 'headstart.bin').is_file()):
+                try:
+                    import build_cache
+                    build_cache.copy_tree(source / 'headstart.bin', staging / 'headstart.bin')
+                    reused_headstart = True
+                    reporter.message('Your game\'s shaders are unchanged since the last preparation; '
+                                     'only the pipelines are compiled again')
+                except (ImportError, OSError):
+                    reused_headstart = False
         import sys
         command = [python or sys.executable, str(Path(package) / 'tools/shaderprep.py'),
                    'build', str(staging / 'headstart.bin'), '--game', str(game), '--template', str(assembled),
@@ -642,7 +699,9 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
         for key in list(env):
             if key.startswith('WWHD_VK_TEST_') or key == 'WWHD_VK_GRAPH_DIAGNOSTICS':
                 env.pop(key)
-        if builder:
+        if reused_headstart:
+            pass
+        elif builder:
             if _accepts_keyword(builder, 'progress'):
                 builder(game, staging / 'headstart.bin', assembled, progress=reporter.update)
             else:
@@ -672,7 +731,7 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             (root / 'failed.json').unlink(missing_ok=True)
             if status == 'ready':
                 cleanup_generations(root, staging.name)
-        done = dict(status=status, generation=str(staging), reused=False)
+        done = dict(status=status, generation=str(staging), reused=False, headstart_reused=reused_headstart)
         if states is not None:
             done['renderers'] = states
             if models:

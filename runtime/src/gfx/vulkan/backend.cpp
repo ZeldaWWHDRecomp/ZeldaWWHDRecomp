@@ -403,8 +403,8 @@ void open_compile_journal() {
     dir = host::config_dir() + "/shadercache/journal";
 #endif
   char key[256];
-  std::snprintf(key, sizeof key, "%08X %08X %08X %s %s %s", R.properties.vendorID, R.properties.deviceID,
-                R.properties.driverVersion, build::version(), build::commit(), WWHD_PIPELINE_RUNTIME_ID);
+  std::snprintf(key, sizeof key, "%08X %08X %08X %s", R.properties.vendorID, R.properties.deviceID,
+                R.properties.driverVersion, WWHD_PIPELINE_RUNTIME_ID);
   compile_journal::set_logger([](const char* line) { LOG("%s", line); });
   try { compile_journal::open(dir, key); }
   catch (const std::exception& e) { LOG("[vulkan] compile journal not opened: %s", e.what()); }
@@ -511,16 +511,18 @@ void init_pipeline_cache() try {
     put(8, R.properties.driverVersion);
     std::memcpy(fingerprint.data() + 12, R.properties.pipelineCacheUUID, VK_UUID_SIZE);
     uint64_t features = pipeline_cache_checksum(reinterpret_cast<const uint8_t*>(&R.enabledFeatures), sizeof R.enabledFeatures);
-    // Local recipes are runtime-build-specific as well as device-specific.
-    // The full current fixed state is independently checked at handoff.
-    for (const char* tag : {build::commit(), build::version(), WWHD_PIPELINE_RUNTIME_ID}) {
+    // Local recipes are specific to the code that interprets them (WWHD_PIPELINE_RUNTIME_ID: the renderer's
+    // sources, cmake/pipeline_identity_inputs.txt) as well as to the device; not to the release or commit, so an
+    // update that leaves the renderer as it was keeps them. The full current fixed state is independently
+    // checked at handoff.
+    for (const char* tag : {WWHD_PIPELINE_RUNTIME_ID}) {
       for (const unsigned char* c = reinterpret_cast<const unsigned char*>(tag); *c; ++c)
         features = (features ^ *c) * 1099511628211ull;
       features = (features ^ 0xffu) * 1099511628211ull;
     }
     for (int i = 0; i < 8; ++i) fingerprint[28 + i] = uint8_t(features >> (8 * i));
     put(36, R.properties.limits.maxDescriptorSetUniformBuffersDynamic);
-    put(40, 3); // Runtime-build identity, portable content IDs, exact descriptors and fixed-state recipe schema.
+    put(40, 4); // Pipeline runtime identity (4: without release and commit), portable content IDs, exact descriptors and fixed-state recipe schema.
     put(44, (R.portabilitySubset ? 1u : 0u) | (R.separateStencilMaskRef ? 2u : 0u) |
         (R.constantAlphaColorBlendFactors ? 4u : 0u) | (R.vertexAttributeAccessBeyondStride ? 8u : 0u) |
         (R.vertexFormats.fallbackMask << 4) | (R.vertexDiagnostics.cpuVertices ? 0x100u : 0u) |

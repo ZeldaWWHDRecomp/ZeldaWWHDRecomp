@@ -406,15 +406,19 @@ if(WWHD_HAS_METAL)
   target_compile_definitions(wwhd PRIVATE WWHD_HAS_METAL=1)
   target_link_libraries(wwhd PRIVATE "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework Foundation" "-framework ImageIO" "-framework UniformTypeIdentifiers" "-framework GameController" "-framework CoreHaptics" "-framework Carbon" "-framework AudioToolbox" "-framework CoreAudio" "-framework AVFoundation" compression)
 endif()
+# the identity of the code that interprets saved pipeline recipes and prepared shaders (every renderer:
+# the setup's shader preparation and the launch check use it too; runtime/src/pipeline_runtime_identity.h)
+include(cmake/PipelineRuntimeIdentity.cmake)
+wwhd_pipeline_runtime_identity("${CMAKE_SOURCE_DIR}" WWHD_PIPELINE_RUNTIME_ID)
+# A build whose changes leave the renderer as released can keep the release's identity, so the
+# installer's pipeline head start and the player's saved recipes stay usable.
+set(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE "" CACHE STRING "pipeline runtime identity to report instead of the source hash")
+if(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE)
+  set(WWHD_PIPELINE_RUNTIME_ID "${WWHD_PIPELINE_RUNTIME_ID_OVERRIDE}")
+endif()
+set_property(SOURCE runtime/src/pipeline_runtime_identity.cpp APPEND PROPERTY
+  COMPILE_DEFINITIONS "WWHD_PIPELINE_RUNTIME_ID=\"${WWHD_PIPELINE_RUNTIME_ID}\"")
 if(WWHD_HAS_VULKAN)
-  include(cmake/PipelineRuntimeIdentity.cmake)
-  wwhd_pipeline_runtime_identity("${CMAKE_SOURCE_DIR}" WWHD_PIPELINE_RUNTIME_ID)
-  # A build whose changes leave the renderer as released can keep the release's identity, so the
-  # installer's pipeline head start and the player's saved recipes stay usable.
-  set(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE "" CACHE STRING "pipeline runtime identity to report instead of the source hash")
-  if(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE)
-    set(WWHD_PIPELINE_RUNTIME_ID "${WWHD_PIPELINE_RUNTIME_ID_OVERRIDE}")
-  endif()
   set_property(SOURCE runtime/src/gfx/vulkan/backend.cpp APPEND PROPERTY
     COMPILE_DEFINITIONS "WWHD_PIPELINE_RUNTIME_ID=\"${WWHD_PIPELINE_RUNTIME_ID}\"")
   # VK_NO_PROTOTYPES: the renderer loads every Vulkan function at run time (gfx/vulkan/loader.h), so the
@@ -1034,7 +1038,7 @@ target_link_libraries(shader_source_test PRIVATE ZLIB::ZLIB)
 target_compile_options(shader_source_test PRIVATE -UNDEBUG)
 add_test(NAME shader_source_cache COMMAND shader_source_test)
 
-add_executable(shader_prebuild_test runtime/tools/shader_prebuild_test.cpp)
+add_executable(shader_prebuild_test runtime/tools/shader_prebuild_test.cpp runtime/src/pipeline_runtime_identity.cpp)
 target_include_directories(shader_prebuild_test PRIVATE runtime/src)
 target_compile_options(shader_prebuild_test PRIVATE -UNDEBUG)
 add_test(NAME shader_prebuild_activation COMMAND shader_prebuild_test)
@@ -2154,6 +2158,11 @@ if(Python3_Interpreter_FOUND)
   # the shipped story_mods tools start in the isolated mode of the Windows embeddable Python (issue #280)
   add_test(NAME release_shipped_tools COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_shipped_tools.py")
   add_test(NAME release_gamecode_flags COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_gamecode_flags.py" "${CMAKE_BINARY_DIR}")
+  # incremental updates: the translation cache, the earlier-release transfer, staged builds (tools/installer)
+  add_test(NAME incremental_updates COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/installer/test_release_update.py")
+  # the pipeline identity's inputs cover every runtime source and header that pipeline/shader code uses
+  add_test(NAME pipeline_identity_inputs COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_pipeline_identity_inputs.py")
+  set_tests_properties(pipeline_identity_inputs PROPERTIES ENVIRONMENT "WWHD_BUILD_DIR=${CMAKE_BINARY_DIR}")
   add_test(NAME shoreline_actor_model COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_shoreline_model.py")
   add_test(NAME island_texture COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_island_texture.py")
   add_test(NAME static_actor_model COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_actor_model.py")

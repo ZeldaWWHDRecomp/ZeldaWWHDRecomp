@@ -58,10 +58,44 @@ no-op without the marker).
 | `install-macos.command` | setup in Terminal, macOS (shipped as `tools/Setup in Terminal.command`) |
 | `install-windows.bat` | setup in a console window, Windows (`tools/Setup in a console window.bat`): runs `Wind Waker HD.exe --console-setup`, which runs `setup.py` in that console with the bundled Python (`tools/python`) |
 | `install-linux.sh` | setup in a terminal, Linux (`tools/setup-in-terminal.sh`; falls back to a pinned standalone Python) |
+| `build_cache.py` | kept translations (`data/code-translations`) and copy-on-write copies (updates, below) |
+| `release_update.py` | updating from an earlier release folder (below) |
 | `test_setup.py` | unit tests of the helpers (`python3 tools/installer/test_setup.py`) |
+| `test_release_update.py` | unit tests of the update pieces |
 
 In a release folder the program is `Wind Waker HD.app` (macOS), `Wind Waker HD.exe` (Windows) or
 `wind-waker-hd` plus `Wind Waker HD.desktop` (Linux); the terminal setup in `tools/` is the fallback.
+
+## Updating to a new release
+
+A new release keeps everything the player has and builds only what changed.
+
+- **What is reused.** The translated game code is kept by its inputs in `data/code-translations/`
+  (`build_cache.py`: the game's code, the shipped translator, its arguments; two kept, compressed): an
+  update whose translator is unchanged translates nothing. Compiled objects are kept in
+  `data/code-objects/` by their preprocessed source, flags and compiler (`object_cache.py`; the release
+  folder's own path does not count), so a changed translator or runtime header recompiles only the files
+  whose text changed. Shaders: the prepared generation is keyed by the renderer's identity
+  (`cmake/pipeline_identity_inputs.txt`), not by the game binary, so an update that leaves the renderer
+  as it was keeps it as it is; when only the renderer changed, the head start is reused and only the
+  pipelines are compiled again (the driver's own caches keep what still matches).
+- **Staged.** The new game is linked into `data/bin.staging`, started once (`wwhd --build-identity`) and
+  only then swapped in. The game before it stays as `data/bin.previous` (one previous build; an older
+  one goes once the new build has passed its check). An interruption leaves the game before it in
+  place; one between the two renames is finished at the next start.
+- **From an earlier release folder.** The Welcome screen of a new release that has nothing prepared
+  offers *Update from <version>* when an earlier release folder with a prepared game is next to it (or
+  one the player chooses). The game is built from that folder's game files and caches first; then its
+  data comes over: game files, saves, settings, controls, mods, randomized games, shader caches, the
+  compiler and the caches. Where the drive has copy-on-write clones (APFS on macOS, Btrfs or XFS on
+  Linux) everything is cloned, which takes no extra space, and the earlier release keeps working on its
+  own copy. Elsewhere (NTFS, ext4) it is moved; the screen says before the player confirms that the
+  earlier release will not start the game afterwards, its game is kept as `data/bin.previous` and a
+  `DATA-MOVED.txt` in its folder says where the data went. The transfer is journaled
+  (`data/update-from.json`); an interrupted one is finished from the Welcome screen (*Finish the
+  update*). Console: the same question, or `setup.py --update-from <folder> [--allow-move]`.
+- **Not brought over:** the earlier release's game binary, its code-mod and randomized-game builds
+  (`code-builds/`: they belong to that release; this one builds its own when they are played) and its logs.
 
 ## Wind Waker HD (the program a release starts)
 
