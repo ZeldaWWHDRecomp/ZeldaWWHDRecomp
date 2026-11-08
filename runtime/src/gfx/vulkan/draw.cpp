@@ -49,6 +49,7 @@
 #include "index_conversion.h"
 #include "vertex_history.h"
 #include "vertex_snapshot_history.h"
+#include "pass_reuse.h"
 #include "hud_coverage.h"
 #include "reproj.h"
 #include <algorithm>
@@ -711,7 +712,10 @@ std::unordered_map<PipelineKey, Pipeline, PipelineKeyHash> pipelines;
 // never hold such a pipeline) keeps its size; that attachment's blend and mask are the coverage's own.
 PipelineKey pipeline_key(const uint32_t* r, const vk::Shader* vs, const vk::Shader* ps,
                          const LatteFetchShader* fs, VkPrimitiveTopology topology,
-                         const std::array<Surface*, 8>& colors, const Surface* depth, uint32_t covSlot = 0) {
+                         const std::array<Surface*, 8>& colors, const Surface* depth,
+                         uint32_t clearMask = 0, uint32_t covSlot = 0) {
+  // clearMask: CB_TARGET_MASK nibbles of colour slots a draw keeps from the open pass without writing
+  // them (pass_reuse.h subset); 0 everywhere else
   PipelineKey key;
   key.vs = vs->key; // process-local canonical variant; portable identity is separate
   key.ps = ps->key;
@@ -726,15 +730,16 @@ PipelineKey pipeline_key(const uint32_t* r, const vk::Shader* vs, const vk::Shad
   const uint32_t colorControl = r[REGADDR::CB_COLOR_CONTROL];
   uint32_t blending = 0;
   for (uint32_t i = 0; i < ncolor; ++i)
-    if (colors[i] && colors[i]->fmt.kind == FormatInfo::FLOAT && ((colorControl >> (8 + i)) & 1)) {
+    if (colors[i] && colors[i]->fmt.kind == FormatInfo::FLOAT && ((colorControl >> (8 + i)) & 1) &&
+        !((clearMask >> (4 * i)) & 15)) {
       blending |= 1u << i;
       // without SEPARATE_ALPHA_BLEND the alpha factors are the color ones
       const uint32_t raw = r[REGADDR::CB_BLEND0_CONTROL + i];
       key.blend[i] = raw & (raw & (1u << 29) ? 0x3FFF1FFFu : 0x00001FFFu);
     }
   key.colorControl = (colorControl & 0x00FF0000u) | (blending << 8);  // ROP, blend enables
-  key.targetMask = ncolor >= 8 ? r[REGADDR::CB_TARGET_MASK]
-                               : r[REGADDR::CB_TARGET_MASK] & ((1u << (4 * ncolor)) - 1);
+  const uint32_t targetMask = r[REGADDR::CB_TARGET_MASK] & ~clearMask;
+  key.targetMask = ncolor >= 8 ? targetMask : targetMask & ((1u << (4 * ncolor)) - 1);
   if (depth) {
     key.depthFormat = uint32_t(depth->fmt.pixel);
     const uint32_t dc = r[REGADDR::DB_DEPTH_CONTROL];
@@ -872,25 +877,29 @@ Pipeline& resolve_pending_pipeline(Pipeline& pipeline, bool wait = true, bool pr
   }
 }
 // Shader compile (background_shaders.h): the targets a draw writes
-static bool writes_color(const uint32_t* r, int i) { return (r[REGADDR::CB_TARGET_MASK] >> (4 * i)) & 15; }
+static bool writes_color(const uint32_t* r, int i, uint32_t clearMask = 0) {
+  return ((r[REGADDR::CB_TARGET_MASK] & ~clearMask) >> (4 * i)) & 15;
+}
 static bool writes_depth(const uint32_t* r, const Surface* depth) {
   const uint32_t dc = r[REGADDR::DB_DEPTH_CONTROL];  // bit 0 stencil, bit 2 depth write
   return depth && ((dc & 4) || ((dc & 1) && depth->fmt.stencil));
 }
-static void track_drawn(const uint32_t* r, const std::array<Surface*, 8>& colors, Surface* depth) {
+static void track_drawn(const uint32_t* r, const std::array<Surface*, 8>& colors, Surface* depth,
+                        uint32_t clearMask = 0) {
   auto& t = bgshaders::tracker();
   for (int i = 0; i < 8; i++)
-    if (colors[i] && writes_color(r, i)) t.drawn(colors[i]->addr, R.frame);
+    if (colors[i] && writes_color(r, i, clearMask)) t.drawn(colors[i]->addr, R.frame);
   if (writes_depth(r, depth)) t.drawn(depth->addr, R.frame);
 }
 // The pipeline is still compiling: wait the frame's budget if this draw may be left out (true: draw
 // it now, ready or with the exact wait that follows), false: left out of this frame.
-static bool background_wait(const uint32_t* r, Pipeline& p, const std::array<Surface*, 8>& colors, Surface* depth) {
+static bool background_wait(const uint32_t* r, Pipeline& p, const std::array<Surface*, 8>& colors, Surface* depth,
+                            uint32_t clearMask = 0) {
   auto& t = bgshaders::tracker();
   bgshaders::TargetFacts written[8], depthFacts;
   int count = 0;
   for (int i = 0; i < 8; i++)
-    if (colors[i] && writes_color(r, i)) written[count++] = t.facts(colors[i]->addr, R.frame);
+    if (colors[i] && writes_color(r, i, clearMask)) written[count++] = t.facts(colors[i]->addr, R.frame);
   const bool depthWritten = writes_depth(r, depth);
   if (depthWritten) depthFacts = t.facts(depth->addr, R.frame);
   // the depth buffer the game's sun check peeks (peek_z) waits even before the first peek
@@ -906,7 +915,7 @@ static bool background_wait(const uint32_t* r, Pipeline& p, const std::array<Sur
   if (ready) return true;
   bgshaders::skipped(R.frame);
   for (int i = 0; i < 8; i++)
-    if (colors[i] && writes_color(r, i)) t.left_out(colors[i]->addr, R.frame);
+    if (colors[i] && writes_color(r, i, clearMask)) t.left_out(colors[i]->addr, R.frame);
   if (depthWritten) t.left_out(depth->addr, R.frame);
   return false;
 }
@@ -963,12 +972,23 @@ VkPipelineColorBlendAttachmentState coverage_blend(const VkPipelineColorBlendAtt
 // Setup's Vulkan preparation (derive_guest_pipeline_recipe): pipeline() hands the recipe it would compile to this
 // sink instead of compiling it or taking a warmed pipeline. Render thread only.
 std::vector<std::shared_ptr<PipelineRecipe>>* g_recipeSink = nullptr;
+// What pipeline() makes besides a draw's ordinary pipeline (distinct names: both can be asked for).
+struct PipelineVariant {
+  // pass subset (pass_reuse.h): CB_TARGET_MASK nibbles of the colour slots a draw keeps from the open
+  // pass without writing them (blending off there too)
+  uint32_t clearMask = 0;
+  // 60 fps (generated), hud_coverage.h: the colour slot the pixel shader's HUD coverage variant writes
+  uint32_t covSlot = 0;
+};
 Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
                    LatteFetchShader *fs, VkPrimitiveTopology topology,
-                   const std::array<Surface *, 8> &colors, Surface *depth, uint32_t covSlot = 0) {
+                   const std::array<Surface *, 8> &colors, Surface *depth,
+                   const PipelineVariant& variant = {}) {
   if(preparation_stats_enabled())++R.cpuPreparation.pipelineLookups;
-  if (g_recipeSink) covSlot = 0;  // (the setup's preparation: never a coverage variant)
-  const PipelineKey key = pipeline_key(r, vs, ps, fs, topology, colors, depth, covSlot);
+  const uint32_t clearMask = variant.clearMask;
+  // (the setup's preparation: never a coverage variant)
+  const uint32_t covSlot = g_recipeSink ? 0 : variant.covSlot;
+  const PipelineKey key = pipeline_key(r, vs, ps, fs, topology, colors, depth, clearMask, covSlot);
   // the setup's model sweep: every pipeline a swept archive's models use is filed under that archive (once each)
   if (!covSlot && pipeline_groups::sweeping() && !pipeline_groups::sweeping_new_only()) {
     static std::unordered_set<uint64_t> noted;
@@ -1299,9 +1319,9 @@ Pipeline &pipeline(const uint32_t *r, vk::Shader *vs, vk::Shader *ps,
   std::array<VkPipelineColorBlendAttachmentState, 8> cb{};
   for (uint32_t i = 0; i < ncolor; i++) {
     auto &b = cb[i];
-    b.colorWriteMask = (r[REGADDR::CB_TARGET_MASK] >> (4 * i)) & 15;
+    b.colorWriteMask = ((r[REGADDR::CB_TARGET_MASK] & ~clearMask) >> (4 * i)) & 15;
     b.blendEnable = colors[i] && colors[i]->fmt.kind == FormatInfo::FLOAT &&
-                    ((r[REGADDR::CB_COLOR_CONTROL] >> (8 + i)) & 1);
+                    ((r[REGADDR::CB_COLOR_CONTROL] >> (8 + i)) & 1) && !((clearMask >> (4 * i)) & 15);
     LATTE_CB_BLENDN_CONTROL raw;
     std::memcpy(&raw, r + REGADDR::CB_BLEND0_CONTROL + i, 4);
     b.srcColorBlendFactor =
@@ -2279,6 +2299,10 @@ struct ContinuedDraw {
   uint32_t scissorBR = 0;  // PA_SC_GENERIC_SCISSOR_BR that targets.activeColors was resolved with
   Pipeline* pipeline = nullptr;
   ContinuedStage stages[2];
+  // pass subset (pass_reuse.h): the colour slots taken over from the open pass, and the colours the
+  // pipeline was made for; targets stays the draw's own
+  uint32_t subsetAbsent = 0;
+  std::array<Surface*, 8> subsetColors{};
 };
 // Stereo: each eye's command stream continues its own previous draw (stereo.h).
 std::array<ContinuedDraw, 2> continuedEyes;
@@ -2652,6 +2676,134 @@ VkSampler resolve_sampler(const uint32_t* r, vk::Shader* sh, uint32_t unit, cons
                  !s->gpuWritten && s->mips > 1 && !s->artisticMips, s->linearFiltering,
                  s->artisticMips && R.samplerMipLodBias ? g_artisticBias : 0.0f);
 }
+// ------------------------------------------------------------- textures ready before the pass
+// From Nycolazs/WindWakerHD-Android-Plus 4595260 / fc5ddee via GreenNaugahyde/ZeldaWWHDRecompAndroid
+// v0.9.9 (db65d60), MPL-2.0 (pass_reuse.h (b)). A sampled texture's transition that ends the open pass
+// (a layout change or barrier) is remembered for that pass; the next time the pass begins, the texture
+// is made ready first (prefetch_pass_reads). Nothing else writes it while the pass is open (it isn't an
+// attachment; copies and uploads end passes themselves), so the early barrier is the same one the draw
+// would record; a guess that doesn't come true costs one barrier. Off with stereo (per-eye passes and
+// textures held by eye 1, stereo.h). WWHD_PASS_PREFETCH=0: off.
+pass_reuse::PassReadTable passReads;  // render thread
+bool pass_trace_enabled() {  // WWHD_VK_TRACE_PASSES=1 (trace_pass): also the reads that end a pass
+  static const bool on = [] { const char* e = getenv("WWHD_VK_TRACE_PASSES"); return e && *e == '1'; }();
+  return on;
+}
+uint64_t pass_read_signature(const std::array<Surface*, 8>& colors, const Surface* depth, uint32_t width,
+                             uint32_t height) {
+  std::array<uint32_t, 8> keys{};
+  for (int i = 0; i < 8; i++)
+    if (colors[i]) keys[i] = pass_reuse::color_key(colors[i]->addr, colors[i]->format);
+  return pass_reuse::signature(keys, depth ? depth->addr : 0, width, height);
+}
+// the surface a texture was found as (not a private copy: feedback, mip chain, AO)
+bool primary_surface(const Surface* s) {
+  if (!s || !s->addr) return false;
+  auto range = R.surfaces.equal_range(s->addr);
+  for (auto it = range.first; it != range.second; ++it)
+    if (it->second.get() == s) return true;
+  return false;
+}
+bool pass_attachment(const Surface* s) {
+  if (s == R.passDepth) return true;
+  for (auto* c : R.passColors)
+    if (c == s) return true;
+  return false;
+}
+// a draw samples s (bind_stage): its shader-read transition, which may end the open pass
+void sample_transition(Surface* s, VkPipelineStageFlags stages) {
+  if (!pass_reuse::prefetch_on() || !R.rendering || !R.passTracked || stereo::frame.mode != stereo::Off) {
+    transition_image(s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, stages, VK_ACCESS_SHADER_READ_BIT);
+    return;
+  }
+  const bool readied = s->passReadyFor && s->passReadyFor == R.renderPassCount;
+  transition_image(s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, stages, VK_ACCESS_SHADER_READ_BIT);
+  if (!R.rendering) {
+    // the transition ended the pass (R.pass* still describe it): ready before it next time
+    if (pass_attachment(s) || !primary_surface(s)) return;
+    passReads.note(pass_read_signature(R.passColors, R.passDepth, R.passWidth, R.passHeight),
+                   {s->addr, s->width, s->height, s->format}, stages, R.frame);
+    ++R.passSplitsSeen;
+    if (pass_trace_enabled())
+      LOG("[vulkan pass] texture %08X %ux%u fmt %u first read inside pass %llu (ended it): ready before it next time",
+          s->addr, s->width, s->height, s->format, (unsigned long long)R.renderPassCount);
+  } else if (readied) {
+    // made ready before this pass and read in it: the guess came true, keep it
+    s->passReadyFor = 0;
+    passReads.note(pass_read_signature(R.passColors, R.passDepth, R.passWidth, R.passHeight),
+                   {s->addr, s->width, s->height, s->format}, stages, R.frame);
+    ++R.passPrefetchUsed;
+  }
+}
+// the pass about to begin (draw, after end_encoder): the textures it read last time, made ready now
+void prefetch_pass_reads(const std::array<Surface*, 8>& colors, Surface* depth, uint32_t width, uint32_t height) {
+  if (passReads.empty()) return;
+  const uint64_t serial = R.renderPassCount + 1;  // the pass's number once begun
+  passReads.begin(pass_read_signature(colors, depth, width, height), R.frame, [&](const pass_reuse::PassRead& pr) {
+    auto range = R.surfaces.equal_range(pr.tex.addr);
+    for (auto it = range.first; it != range.second; ++it) {
+      Surface* s = it->second.get();
+      if (s->width != pr.tex.width || s->height != pr.tex.height || s->format != pr.tex.format) continue;
+      if (!s->image || s->evicted || s->layout == VK_IMAGE_LAYOUT_UNDEFINED || s == depth) continue;
+      bool attached = false;
+      for (auto* c : colors) attached |= c == s;
+      if (attached) continue;
+      if (!narrow_barriers() && s->layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) continue;  // ready
+      transition_image(s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, pr.stages, VK_ACCESS_SHADER_READ_BIT);
+      s->passReadyFor = serial;
+      ++R.passPrefetched;
+    }
+  });
+}
+// ------------------------------------------------------------------------------------- pass subset
+// From Nycolazs/WindWakerHD-Android-Plus 4595260 / fc5ddee via GreenNaugahyde/ZeldaWWHDRecompAndroid
+// v0.9.9 (db65d60), MPL-2.0 (pass_reuse.h (a)). A draw that binds a subset of the open pass's colour
+// targets (the game switches between colour only and colour + a second target) takes the pass's other
+// targets with their writes masked (pipeline(): CB_TARGET_MASK nibble 0, no blending), so the reuse
+// test below keeps the pass. Not when the draw samples one of those targets (it would need the pass
+// ended), with stereo (per-eye passes and eye 1's pipeline replay) or in the AO replay.
+// Returns the slots taken over (targets updated); 0: none. WWHD_PASS_SUBSET=0: off.
+uint32_t take_pass_subset(const uint32_t* r, const vk::Shader* vs, const vk::Shader* ps, DrawTargets& t) {
+  pass_reuse::Targets pass, draw;
+  for (int i = 0; i < 8; i++) {
+    Surface* c = R.passColors[i];
+    pass.colors[i] = c;
+    pass.slices[i] = R.passSlices[i];
+    if (c) {
+      if (c->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) return 0;
+      pass.addr[i] = c->addr;
+      pass.bytes[i] = c->dataSize;
+    }
+    draw.colors[i] = t.colors[i];
+    draw.slices[i] = t.slices[i];
+  }
+  pass.depth = R.passDepth;
+  pass.depthSlice = R.passDepthSlice;
+  pass.width = R.passWidth;
+  pass.height = R.passHeight;
+  draw.depth = t.depth;
+  draw.depthSlice = t.depthSlice;
+  draw.width = t.width;
+  draw.height = t.height;
+  // the base addresses of the textures both stages sample
+  uint32_t sampled[2 * LATTE_NUM_MAX_TEX_UNITS];
+  size_t count = 0;
+  for (const vk::Shader* sh : {vs, ps}) {
+    const uint32_t texbase = sh->vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
+    for (int i = 0; i < sh->dec->textureUnitListCount && count < std::size(sampled); i++) {
+      const uint32_t unit = sh->dec->textureUnitList[i];
+      if (unit >= LATTE_NUM_MAX_TEX_UNITS) return 0;
+      sampled[count++] = r[texbase + unit * 7 + 2] << 8;
+    }
+  }
+  const uint32_t absent = pass_reuse::subset_absent(pass, draw, sampled, count);
+  for (int i = 0; i < 8; i++)
+    if ((absent >> i) & 1) {
+      t.colors[i] = R.passColors[i];
+      t.slices[i] = R.passSlices[i];
+    }
+  return absent;
+}
 StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                           VkDescriptorSetLayout layout, bool dynamicUniforms, float sx, float sy,
                           const std::array<Surface *, 8> &colors,
@@ -2937,13 +3089,12 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     // continued draw: the previous draw's textures (upload_surface already ran for this draw)
     for (uint32_t i = 0; i < reuse->count; ++i) {
       const auto& t = reuse->textures[i];
-      transition_image(t.surface, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                       narrow_barriers()
-                           ? (sh->vertex ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
-                                         : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
-                           : (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
-                       VK_ACCESS_SHADER_READ_BIT);
+      sample_transition(t.surface,
+                        narrow_barriers()
+                            ? (sh->vertex ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+                                          : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+                            : (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT));
       bindTexture(t.unit, t.binding, t.surface, t.view, t.sampler);
       replayTexture(t.surface, t.unit, t.binding, false);  // continued: neither feedback nor AO
     }
@@ -2971,13 +3122,12 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
         aliases ? feedback_view(s, r + texbase + unit * 7, sh->vertex, unit, feedbackProbe)
                 : sampled_texture_view(s, r + texbase + unit * 7);
     if (!aliases)
-      transition_image(s, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
-                       narrow_barriers()
-                           ? (sh->vertex ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
-                                         : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
-                           : (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
-                              VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT),
-                       VK_ACCESS_SHADER_READ_BIT);
+      sample_transition(s,
+                        narrow_barriers()
+                            ? (sh->vertex ? VK_PIPELINE_STAGE_VERTEX_SHADER_BIT
+                                          : VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT)
+                            : (VK_PIPELINE_STAGE_VERTEX_SHADER_BIT |
+                               VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT));
     VkSampler samplerValue = resolve_sampler(r, sh, unit, s);
     bindTexture(unit, binding, s, sampledView, samplerValue);
     replayTexture(s, unit, binding, aliases || substituted);
@@ -3147,7 +3297,8 @@ bool verify_continued(const uint32_t* r, uint32_t prim, bool partial = false, bo
   else if (ps != c.ps || !ps || !ps->ready()) kind = 2;
   else if (primitive_topology(prim) != c.topology) kind = 7;
   else if (!resolve_targets(r, ps, t) || !t.same(c.targets)) kind = 3;
-  else if (&pipeline(r, vs, ps, fs, c.topology, t.colors, t.depth) != c.pipeline) kind = 4;
+  else if (&pipeline(r, vs, ps, fs, c.topology, c.subsetAbsent ? c.subsetColors : t.colors, t.depth,
+                     {.clearMask = pass_reuse::clear_mask(c.subsetAbsent)}) != c.pipeline) kind = 4;
   else if (textures)
     for (int stage = 0; stage < 2 && kind < 0; ++stage) {
       vk::Shader* sh = stage ? ps : vs;
@@ -3687,7 +3838,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   clouds_before_draw(r, ps, colors[0], slices[0], depth);  // clouds.cpp: cloud shadows
   rprof::mark(rprof::kTargets);
   // 60 fps (generated): a HUD draw into the TV picture writes its coverage too (only while it runs;
-  // a continued draw keeps the targets and pipeline it was resolved with)
+  // a continued draw keeps the targets and pipeline it was resolved with). Decided on the draw's own
+  // colours, before the pass subset (which is then not taken).
   uint32_t covSlot = 0;
   if (!fast && !replay && !aoPrivateReplay && !backdropReplay && reproj::hud_coverage_wanted())
     if (Surface* cov = reproj::hud_coverage_target(colors[0])) {
@@ -3703,13 +3855,44 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
         reproj::hud_coverage_failed();  // this frame's in-between one: the HUD found by comparing pictures
       }
     }
-  // partial: the same pipeline key (same shaders, topology and targets, no key register changed)
+  // partial: the same pipeline key (same shaders, topology and targets, no key register changed); the
+  // draw's own targets, before a pass subset takes over the open pass's (the state keeps its own too)
   const bool partialSameTargets = partial && targets.same(continued.targets);
   const bool partialPipeline = partialSameTargets && topology == continued.topology &&
                                !(partialChanged & gx2::kSgPartialPipelineMask);
-  Pipeline* pp = fast || partialPipeline ? continued.pipeline
+  // pass subset (take_pass_subset): colour slots taken over from the open pass, written by nothing
+  uint32_t subsetAbsent = 0;
+  std::array<Surface*, 8> ownColors{};  // the draw's own colour targets, when it took over others
+  std::array<uint32_t, 8> ownSlices{};
+  if (pass_reuse::subset_on() && R.rendering && R.passTracked && !aoPrivateReplay && !replay && !backdropReplay &&
+      !covSlot && stereo::frame.mode == stereo::Off) {
+    ownColors = colors;
+    ownSlices = slices;
+    subsetAbsent = take_pass_subset(r, vs, ps, targets);
+    if (subsetAbsent) ++R.passSubsetKept;
+  }
+  uint32_t subsetClear = pass_reuse::clear_mask(subsetAbsent);
+  Pipeline* subsetPipeline = nullptr;
+  if (subsetAbsent) {
+    subsetPipeline = (fast || partialPipeline) && subsetAbsent == continued.subsetAbsent && continued.subsetColors == colors
+        ? continued.pipeline : &pipeline(r, vs, ps, fs, topology, colors, depth, {.clearMask = subsetClear});
+    // a compile in the background: taken if it has finished, never waited for
+    if (!subsetPipeline->pipeline && subsetPipeline->pendingCompile && !subsetPipeline->compileError) {
+      try { resolve_pending_pipeline(*subsetPipeline, false); } catch (...) {}
+    }
+    if (!subsetPipeline->pipeline) {
+      // its variant isn't ready (compiling, or failed): drawn as before, in a pass of its own targets
+      subsetPipeline = nullptr;
+      colors = ownColors;
+      slices = ownSlices;
+      subsetAbsent = subsetClear = 0;
+      --R.passSubsetKept;
+    }
+  }
+  Pipeline* pp = subsetPipeline ? subsetPipeline
+      : (fast || partialPipeline) && !continued.subsetAbsent ? continued.pipeline
       : !backdropReplay && replay && replay->formats == target_formats(colors, depth) ? replay->pipeline
-      : &pipeline(r, vs, ps, fs, topology, colors, depth, covSlot);
+      : &pipeline(r, vs, ps, fs, topology, colors, depth, {.covSlot = covSlot});
   if (covSlot) {  // its coverage variant still compiling (or failed): drawn as usual, the frame generated the old way
     if (pp->pendingCompile) resolve_pending_pipeline(*pp, false);
     if (!pp->pipeline || pp->pendingCompile) {
@@ -3725,7 +3908,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   // Shader compile Fast (background_shaders.h): a draw that may be left out only waits the frame's
   // budget and is left out of this frame if its pipeline is not ready by then
   const bool trackTargets = bgshaders::enabled() && !aoPrivateReplay && !gamepad_backdrop_replaying();
-  if (p.pendingCompile && trackTargets && !background_wait(r, p, colors, depth)) return;
+  if (p.pendingCompile && trackTargets && !background_wait(r, p, colors, depth, subsetClear)) return;
   if (p.pendingCompile && !bgshaders::enabled()) bgshaders::exact(bgshaders::kOff);  // (the AO pass's private
                                                                                       // copy of a draw waits)
   // A capture is published only after its private pipeline is actually ready.
@@ -3739,7 +3922,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     if (p.pendingCompile) { gamepad_backdrop_debug("pipeline-pending", R.frame); return; }
   }
   if (p.pendingCompile && !begin_exact_preparation()) resolve_pending_pipeline(p);
-  if (trackTargets) track_drawn(r, colors, depth);
+  if (trackTargets) track_drawn(r, colors, depth, subsetClear);
   if (!p.pipeline && !p.pendingCompile) return; // terminal driver failure, not pending
   if(feedback_stats_enabled()) report_feedback_stats();
   if(vertex_window_stats_enabled()) report_vertex_window_stats();
@@ -3828,6 +4011,12 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       c.targets = targets;
       c.scissorBR = r[REGADDR::PA_SC_GENERIC_SCISSOR_BR];
       c.pipeline = &p;
+      c.subsetAbsent = subsetAbsent;
+      c.subsetColors = colors;
+      if (subsetAbsent) {  // the continued state keeps the draw's own targets (verify_continued)
+        c.targets.colors = ownColors;
+        c.targets.slices = ownSlices;
+      }
       partialGroups[stereoEye] = 0;  // the groups changed since this state
       if (partial) {
         auto& st = continuedStats;
@@ -3950,6 +4139,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     ri.pColorAttachments = attachments.data();
     ri.pDepthAttachment = depth ? &da : nullptr;
     ri.pStencilAttachment = depth && depth->fmt.stencil ? &da : nullptr;
+    // textures this pass read last time it ended for (sample_transition): ready before it begins
+    if (pass_reuse::prefetch_on() && stereo::frame.mode == stereo::Off) prefetch_pass_reads(colors, depth, width, height);
     if(R.gpuPassTimestampsEnabled) gpu_begin_render_scope(colors,depth,slices.data(),depthSlice,width,height);
     trace_pass(colors, ncolor, depth, depthSlice, width, height);
     begin_pass(cmd, ri, [&] {
@@ -4318,8 +4509,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   }
   if(R.gpuPassTimestampsEnabled) gpu_count_render_draw();
-  for (auto *color : colors)
-    if (color) mark_draw_target_written(color);
+  for (int i = 0; i < 8; i++)  // (slots taken over by a pass subset aren't written)
+    if (colors[i] && !((subsetAbsent >> i) & 1)) mark_draw_target_written(colors[i]);
   if (depth) mark_draw_target_written(depth);
   R.drawCount++;
   if (aoPrivateReplay) {
