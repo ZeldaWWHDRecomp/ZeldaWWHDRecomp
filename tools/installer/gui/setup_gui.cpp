@@ -1200,7 +1200,6 @@ static void screen_clt() {
 
 static std::string home_folder() { return A.portable && !A.package.empty() ? A.package : A.data_dir; }
 
-static void code_mods_choice();
 // Updating from an earlier release folder: the player's choice on the Welcome screen, never automatic. A move
 // (no copy-on-write clones on this drive) is said plainly and confirmed before it starts.
 static bool update_choice() {
@@ -1238,8 +1237,8 @@ static bool update_choice() {
 static void screen_welcome() {
     page_header("Welcome", "The Legend of Zelda: The Wind Waker HD, native PC port " + A.version);
     if (update_choice()) {
-        code_mods_choice();
-        int b = footer({"Quit", "Set up from scratch instead"}, 0);
+        // (the earlier release's choices — code mods, shader preparation — are kept: setup.py takes them from it)
+        int b = footer({"Quit", "Set up from scratch instead"});
         if (b == 0) A.exit_code = 0;
         if (b == 1) go(Screen::Source);
         return;
