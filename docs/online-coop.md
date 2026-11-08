@@ -83,7 +83,8 @@ For scripted tests the environment variables `WWHD_COOP=host[:port]` or `WWHD_CO
 - **The other players** are shown as Link in their own tunic, with their animations, sword and items,
   in the same room as you. You hear their sword, steps and voice where they are. Players push each
   other.
-- **Their items:** you see what they hold, throw and fire. Their bombs go off in your game too.
+- **Their items:** you see what they hold, throw and fire. Their bombs, and the Bomb Flowers they throw, go off in
+  your game too. The flower plants themselves are your own: one they pick still grows in your game.
 - **The story and items:** story events, chests, switches, pickups, small keys and dungeon items,
   sunken treasure, items, songs, pearls, the Triforce, charts and maps, heart containers and bag
   sizes. A chest or door another player opens in a room you are in opens for you too.

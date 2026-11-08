@@ -251,9 +251,11 @@ extern "C" void hook_025D5928(Cpu* c) {
         for (int i = 0; i < 3; i++) b.pos[i] = (float)ldf32(pos + 4 * i), b.angle[i] = (int16_t)ld16(angle + 2 * i);
     }
     const int16_t proc = (int16_t)c->r[3];
+    const uint32_t param = c->r[4];
     const bool his = coop && executing() != 0;  // (Link's items: coop_items.h)
     f_025D5928_orig(c);
     if (his) items::made(proc, c->r[3]);
+    if (coop) items::flower(proc, c->r[3], param);  // (a Bomb Flower's plant makes it: not while Link executes)
     if (boat) world::g_boat_shot.ball = c->r[3];
 }
 

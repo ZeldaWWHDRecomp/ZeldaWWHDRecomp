@@ -32,6 +32,8 @@ namespace {
 constexpr int16_t kItems[] = {0x126, 0x1B0, 0xA9, 0x1D8, 0x1BE};  // Bomb, Boom, the hookshot, Arrow, Himo2 (the rope)
 constexpr int16_t kBomb = 0x126, kArrow = 0x1D8;
 constexpr uint32_t kPos = 0x314, kRoom = 0x326, kFuse = 0xA7C;  // daBomb_c::mRestTime (GC +0x6FC)
+constexpr int16_t kBomb2 = 0x127;  // daBomb2::Act_c, a Bomb Flower's bomb (GC fpcNm_Bomb2_e 0x129, after the bomb's: 0x128 there, 0x126 here)
+constexpr uint32_t kBomb2State = 0x88C;  // daBomb2::Act_c::mState (wwhd_src d_a_bomb2.h): 2 Mode_EXPLODE
 constexpr float kBombSight = 6000;  // (another player's bomb in another room of this stage: shown within this of Link)
 const uint32_t kStage = GD(0x1046F0B0) + names::inf::kCurStage;
 struct Mine { uint32_t id; int16_t proc; int unseen = 0; float was[3] = {}; };  // unseen: steps not found yet (still being made)
@@ -78,6 +80,15 @@ void made(int16_t proc, uint32_t actor) {
     }
 }
 
+// a Bomb Flower picked here (daBFlower_c: carried, it makes its bomb with start 2, Start_UNK2, and hands it to Link;
+// started 0 or 1 a blast or a blow set it off where it grows): his from then on, so its blast goes out as his bombs'
+// do. The plant and its regrowing stay each game's own; the others are shown a bomb's blast where it went off
+void flower(int16_t proc, uint32_t actor, uint32_t param) {
+    if (!actor || proc != kBomb2 || net::role() == net::Role::kOff || (param & 3) != 2) return;
+    g_mine.push_back({ld32(actor + 4), kBomb2});
+    mods::trace("coop: this game's Link picked a Bomb Flower");
+}
+
 int16_t mine(uint32_t actor) { return mine_id(ld32(actor + 4)); }
 int16_t mine_id(uint32_t id) {
     const auto it = std::find_if(g_mine.begin(), g_mine.end(), [&](const Mine& m) { return m.id == id; });
@@ -102,13 +113,27 @@ void step(Cpu* c) {
     if (net::role() == net::Role::kOff) return g_mine.clear(), g_gone.clear();
     const uint32_t now = net::now_ms();
     g_gone.erase(std::remove_if(g_gone.begin(), g_gone.end(), [&](const Gone& g) { return now - g.at > 3000; }), g_gone.end());
+    // test aid: WWHD_COOP_TEST_FLOWERS=1 traces the Bomb Flower plants loaded here (once each), to stand Link at one
+    if (static const bool flowers = getenv("WWHD_COOP_TEST_FLOWERS"); flowers && now % 3000 < 40) {
+        static const int16_t plant = [] {
+            const uint32_t names = GD(0x101EBFDC);  // the object name table (coop_progress.cpp kObjNames)
+            for (uint32_t e = names; e < names + 12 * 2000 && ld8(e); e += 12)
+                if (!strncmp((const char*)mem::ptr(e), "BFlower", 8)) return (int16_t)ld16(e + 8);
+            return (int16_t)-1;
+        }();
+        static std::vector<uint32_t> told;
+        for (uint32_t q = ld32(GD(0x101F3328)), k = 0; q >= 0x10000000 && q < 0x50000000 && k < 4096; k++, q = ld32(q + 8))
+            if (const uint32_t a = ld32(q + 0xC); a && (int16_t)ld16(a + 8) == plant && std::find(told.begin(), told.end(), ld32(a + 4)) == told.end())
+                told.push_back(ld32(a + 4)), mods::trace("coop: test: a Bomb Flower plant at %.0f %.0f %.0f (room %d)", (float)ldf32(a + kPos),
+                                                         (float)ldf32(a + kPos + 4), (float)ldf32(a + kPos + 8), (int8_t)ld8(a + kRoom));
+    }
     for (size_t i = 0; i < g_mine.size();) {
         Mine& m = g_mine[i];
         const uint32_t a = actor_of(c, m.id);
         if (!a && m.unseen >= 0 && ++m.unseen < 30) { i++; continue; }
         if (a) m.unseen = -1;
         if (a && m.proc == kArrow && arrow_hit(c, a, m)) { g_mine.erase(g_mine.begin() + i); continue; }
-        if (a && !(m.proc == kBomb && ld16(a + kFuse) == 0)) { i++; continue; }
+        if (a && !(m.proc == kBomb && ld16(a + kFuse) == 0) && !(m.proc == kBomb2 && ld32(a + kBomb2State) == 2)) { i++; continue; }
         if (a) {  // (gone off: its stage, room and place out)
             std::string b(8, '\0');
             names::clean_stage(mem::ptr(kStage), &b[0]);

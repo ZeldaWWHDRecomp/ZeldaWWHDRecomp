@@ -14,6 +14,7 @@ namespace mods::coop::items {
 
 void made(int16_t proc, uint32_t actor);  // extras.cpp's fopAcM_fastCreate hook, while Link executes
 int16_t mine(uint32_t actor);             // one of them: its kind (0: not his)
+void flower(int16_t proc, uint32_t actor, uint32_t param);  // fopAcM_fastCreate's hook, any actor: a Bomb Flower picked here
 int16_t mine_id(uint32_t process_id);     // the same by its process id, also for 3 s after it is gone (C28: a blast)
 void step(Cpu* c);                        // each step in play: his bombs that went off, to the others
 // an actor made at a place in Link's process layer and room (fopAcM_fastCreate), as it is made here
