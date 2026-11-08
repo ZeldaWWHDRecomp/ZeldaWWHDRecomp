@@ -154,7 +154,7 @@ class PythonPending(unittest.TestCase):
                               exe=str(data / "bin/fixture"), exe_dir=str(data / "bin"),
                               version="test", state=lambda: {})
 
-        def translate(game, gen, hooks=False):
+        def translate(game, gen, hooks=False, cache_root=None):
             Path(gen).mkdir()
             return 1
 
