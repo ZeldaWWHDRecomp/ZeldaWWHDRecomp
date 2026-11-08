@@ -447,8 +447,9 @@ add_executable(gcmodel_tool runtime/tools/gcmodel_tool.cpp)
 target_include_directories(gcmodel_tool PRIVATE runtime/src runtime/tools)
 target_link_libraries(gcmodel_tool PRIVATE wwhd_gcmodel)
 
-add_executable(mod_manager_test runtime/tools/mod_manager_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp)
-target_include_directories(mod_manager_test PRIVATE runtime/src)
+add_executable(mod_manager_test runtime/tools/mod_manager_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp
+               runtime/src/mods/speedrun.cpp)
+target_include_directories(mod_manager_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_manager_test PRIVATE -UNDEBUG)
 
 # External native package fixture and isolated lifecycle/integration tests.
@@ -1770,6 +1771,11 @@ add_executable(moon_jump_movement_test runtime/tools/moon_jump_movement_test.cpp
 target_include_directories(moon_jump_movement_test PRIVATE runtime/src runtime/include)
 target_compile_options(moon_jump_movement_test PRIVATE -UNDEBUG)
 add_test(NAME moon_jump_movement COMMAND moon_jump_movement_test)
+# Classic Wind Waker (Speedrun, issue #405): the two sites against the TWWHD Randomizer's Classic-mode words
+add_executable(classic_tact_test runtime/tools/classic_tact_test.cpp runtime/src/mods/speedrun.cpp)
+target_include_directories(classic_tact_test PRIVATE runtime/src runtime/include)
+target_compile_options(classic_tact_test PRIVATE -UNDEBUG)
+add_test(NAME classic_tact COMMAND classic_tact_test)
 if(Python3_Interpreter_FOUND)
   add_test(NAME repair_medli COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/savegame/repair_medli_test.py")
   add_test(NAME medli_scenario_evidence COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/runtime/tools/medli_scenario_test.py")

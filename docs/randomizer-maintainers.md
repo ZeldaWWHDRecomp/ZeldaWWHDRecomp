@@ -56,7 +56,7 @@ python3 tools/recomp/mk_randomizer_profile.py /private/original-usa/code/cking.r
 
 Repeat `--reviewed-rpx` for independently reviewed variants. The profile is rebuilt
 from scratch, so pass outputs that together cover every reviewed variant (for 1.2.0:
-one seed with Quiet Swift Sail and any entrance shuffle on, or one seed for each),
+one seed with Quiet Swift Sail, any entrance shuffle and Classic mode on, or one seed for each),
 or earlier variants are dropped. The tool refuses a
 changed hook instruction or a changed function missing from the explicit review
 list. Adding a port hook also invalidates the profile until it is regenerated
@@ -67,7 +67,9 @@ and reviewed; `test_randomizer_compat.py` checks that it matches the current hoo
 After reviewing the reported overlaps, pass their exact function entries. For
 default-option 1.2.0 seeds these are `0216F7FC,023EFF20,025499A0`, plus `02417FF4,0242A218`
 (float constants redirected through relocations; the port's hooks there wrap the translated original);
-Quiet Swift Sail adds `0247E854` and any entrance shuffle adds `025217F8`. Do not copy that list for
+Quiet Swift Sail adds `0247E854`, any entrance shuffle adds `025217F8`, and Classic mode adds `0243A094,023F2048`
+(procTactWait and endDemoMode: the port's Classic Wind Waker sites `@0243A294` and `@023F22B4` stand next to the two
+words Classic mode patches, never on them, and do the same thing, so both together change nothing). Do not copy that list for
 another output without reading its report.
 
 ```sh
