@@ -9,7 +9,55 @@
 
 using namespace gfxvk::pass_reuse;
 
+static void set_env(const char* n, const char* v) {
+#ifdef _WIN32
+  _putenv_s(n, v ? v : "");
+#else
+  if (v) setenv(n, v, 1); else unsetenv(n);
+#endif
+}
+
+// per-GPU default and the env overrides in both directions
+static void gpu_defaults() {
+  const char* why = nullptr;
+  assert(gpu_default(0x13B5u, "Mali-G715", &why) && why && *why);  // ARM
+  assert(gpu_default(0x1010u, "PowerVR B-Series BXM-8-256"));      // Imagination
+  assert(gpu_default(0x1234u, "Mali-G78 MC24"));                   // by name
+  assert(gpu_default(0x1234u, "PowerVR Rogue GE8320"));
+  assert(!gpu_default(0x5143u, "Adreno (TM) 750", &why) && why && *why);  // Qualcomm
+  assert(!gpu_default(0x106Bu, "Apple M2 Pro"));                    // MoltenVK
+  assert(!gpu_default(0x10DEu, "NVIDIA GeForce RTX 4070"));
+  assert(!gpu_default(0x1002u, "AMD Radeon RX 7800 XT"));
+  assert(!gpu_default(0x8086u, "Intel(R) UHD Graphics 770"));
+  assert(!gpu_default(0x144Du, "Samsung Xclipse 940"));
+  assert(!gpu_default(0, nullptr));
+  // env unset / empty: the default
+  set_env("WWHD_PASS_SUBSET", nullptr);
+  set_env("WWHD_PASS_PREFETCH", nullptr);
+  assert(configure(0x13B5u, "Mali-G715") && subset_on() && prefetch_on());
+  assert(!configure(0x5143u, "Adreno (TM) 750") && !subset_on() && !prefetch_on());
+  assert(!configure(0x106Bu, "Apple M2 Pro") && !subset_on() && !prefetch_on());
+#ifndef _WIN32
+  set_env("WWHD_PASS_SUBSET", "");
+  assert(!configure(0x5143u, "Adreno") && !subset_on());
+#endif
+  // =1 forces on where the default is off, each switch on its own
+  set_env("WWHD_PASS_SUBSET", "1");
+  configure(0x106Bu, "Apple M2 Pro");
+  assert(subset_on() && !prefetch_on());
+  set_env("WWHD_PASS_PREFETCH", "1");
+  configure(0x5143u, "Adreno (TM) 750");
+  assert(subset_on() && prefetch_on());
+  // =0 forces off where the default is on
+  set_env("WWHD_PASS_SUBSET", "0");
+  set_env("WWHD_PASS_PREFETCH", "0");
+  assert(configure(0x13B5u, "Mali-G715") && !subset_on() && !prefetch_on());
+  set_env("WWHD_PASS_SUBSET", nullptr);
+  set_env("WWHD_PASS_PREFETCH", nullptr);
+}
+
 int main() {
+  gpu_defaults();
   int a, b, c, d, z;  // surface identities
   // the open pass: colour 0 (0x10000000) + R8 second target (0x20000000), depth
   Targets pass;
@@ -198,14 +246,15 @@ int main() {
   t.forget(800);
   assert(t.empty());
 
-  // env switches: default on, =0 off
+  // env_on: unset follows the default, =0 off, =1 on
 #ifndef _WIN32
   unsetenv("WWHD_PASS_SUBSET");
-  assert(env_on("WWHD_PASS_SUBSET"));
+  assert(env_on("WWHD_PASS_SUBSET", true) && !env_on("WWHD_PASS_SUBSET", false));
   setenv("WWHD_PASS_SUBSET", "0", 1);
-  assert(!env_on("WWHD_PASS_SUBSET"));
+  assert(!env_on("WWHD_PASS_SUBSET", true));
   setenv("WWHD_PASS_SUBSET", "1", 1);
-  assert(env_on("WWHD_PASS_SUBSET"));
+  assert(env_on("WWHD_PASS_SUBSET", false));
+  unsetenv("WWHD_PASS_SUBSET");
 #endif
   std::puts("pass_reuse_test: ok");
   return 0;

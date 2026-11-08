@@ -4730,6 +4730,14 @@ static void init_device(std::vector<const char *> extensions,
   drivers::set_vulkan_identity(std::string(R.properties.deviceName)+"; Vulkan driver "+driver_version_text(R.properties));
 #endif
   const uint32_t deviceApi = device_api_version(R.properties);
+  {
+    const char* why = "";
+    const bool def = pass_reuse::configure(R.properties.vendorID, R.properties.deviceName, &why);
+    auto src = [](const char* n) { const char* e = getenv(n); return e && *e ? "env" : "GPU default"; };
+    LOG("[vulkan] pass reduction: subset %s (%s), prefetch %s (%s); GPU default %s: %s (vendor 0x%04X)",
+        pass_reuse::subset_on() ? "on" : "off", src("WWHD_PASS_SUBSET"), pass_reuse::prefetch_on() ? "on" : "off",
+        src("WWHD_PASS_PREFETCH"), def ? "on" : "off", why, R.properties.vendorID);
+  }
   LOG("[vulkan] device: %s (Vulkan %s, driver %s%s)", R.properties.deviceName,
       version_text(R.properties.apiVersion).c_str(), driver_version_text(R.properties).c_str(),
       R.dynamicRenderingKHR ? "; dynamic rendering through VK_KHR_dynamic_rendering" : "");

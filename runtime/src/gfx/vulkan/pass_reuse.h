@@ -10,14 +10,16 @@
 //     attachments (same colour 0 and slice, the same depth buffer or none on both, the same size) stays
 //     in that pass. The slots it doesn't bind get the pass's own surfaces, and its pipeline's write mask
 //     for them is cleared (CB_TARGET_MASK nibble 0, blending off), so it writes nothing there. Not when
-//     the draw samples one of those targets (that needs the pass ended). WWHD_PASS_SUBSET=0: off.
+//     the draw samples one of those targets (that needs the pass ended). WWHD_PASS_SUBSET=0/1: off/on (default per GPU, gpu_default).
 // (b) Textures ready before the pass (fc5ddee): a texture first read in the middle of a pass needs a
 //     layout change or barrier, which ends the pass (a store and reload of every attachment on a tiled
 //     GPU). The frame has the same shape from one frame to the next, so each pass (by its attachments)
 //     remembers up to 16 textures whose first read ended it, with the stages reading them, and the next
 //     time that pass begins they are made ready first. Entries not seen for 120 frames are forgotten.
-//     WWHD_PASS_PREFETCH=0: off.
+//     WWHD_PASS_PREFETCH=0/1: off/on (default per GPU).
 #include <array>
+#include <atomic>
+#include <cstring>
 #include <cstdint>
 #include <cstdlib>
 #include <iterator>
@@ -26,17 +28,41 @@
 
 namespace gfxvk::pass_reuse {
 
-inline bool env_on(const char* name) {
+// Default per GPU (PR #476 phone check: no gain on Adreno, render-thread CPU +0.67 ms; the forks wrote
+// both for Mali). On for tile-based GPUs where the forks saw gains: ARM Mali (vendor 0x13B5) and
+// Imagination PowerVR (0x1010); also by device name ("Mali", "PowerVR") for drivers reporting another
+// vendor ID. Off for Qualcomm Adreno, desktop GPUs and Apple/MoltenVK. why: the reason, for the log.
+inline bool gpu_default(uint32_t vendorID, const char* deviceName, const char** why = nullptr) {
+  auto has = [&](const char* w) { return deviceName && std::strstr(deviceName, w); };
+  const char* r;
+  bool on;
+  if (vendorID == 0x13B5u) on = true, r = "ARM Mali (tile-based, fewer passes save attachment stores)";
+  else if (vendorID == 0x1010u) on = true, r = "Imagination PowerVR (tile-based)";
+  else if (has("Mali")) on = true, r = "Mali by device name (tile-based)";
+  else if (has("PowerVR")) on = true, r = "PowerVR by device name (tile-based)";
+  else if (vendorID == 0x5143u) on = false, r = "Qualcomm Adreno (no gain measured, render-thread cost)";
+  else if (vendorID == 0x106Bu) on = false, r = "Apple GPU / MoltenVK";
+  else on = false, r = "not Mali/PowerVR (desktop or other GPU)";
+  if (why) *why = r;
+  return on;
+}
+// env override: "1"/non-zero forces on, "0" forces off; unset or empty: def
+inline bool env_on(const char* name, bool def) {
   const char* e = std::getenv(name);
-  return !e || !*e || std::atoi(e) != 0;
+  if (!e || !*e) return def;
+  return std::atoi(e) != 0;
 }
-inline bool subset_on() {
-  static const bool on = env_on("WWHD_PASS_SUBSET");
-  return on;
-}
-inline bool prefetch_on() {
-  static const bool on = env_on("WWHD_PASS_PREFETCH");
-  return on;
+// set once by the backend when the device is known (configure); off until then
+inline std::atomic<bool>& subset_flag() { static std::atomic<bool> f{false}; return f; }
+inline std::atomic<bool>& prefetch_flag() { static std::atomic<bool> f{false}; return f; }
+inline bool subset_on() { return subset_flag().load(std::memory_order_relaxed); }
+inline bool prefetch_on() { return prefetch_flag().load(std::memory_order_relaxed); }
+// decides both switches for the device; returns the GPU default, why its reason
+inline bool configure(uint32_t vendorID, const char* deviceName, const char** why = nullptr) {
+  const bool def = gpu_default(vendorID, deviceName, why);
+  subset_flag().store(env_on("WWHD_PASS_SUBSET", def), std::memory_order_relaxed);
+  prefetch_flag().store(env_on("WWHD_PASS_PREFETCH", def), std::memory_order_relaxed);
+  return def;
 }
 
 // ------------------------------------------------------------------------------------- (a) subset
