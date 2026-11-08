@@ -223,6 +223,7 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
             }
         }
         else if (key == "party.runner_drop_ms") integer(c.runner_drop_ms);
+        else if (key == "party.leader_drop_ms") integer(c.leader_drop_ms);
         else if (key == "party.max_size") {
             integer(c.party_max);
             if (ok && (c.party_max < 2 || c.party_max > proto::kMaxPartySize)) {

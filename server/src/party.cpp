@@ -514,7 +514,8 @@ void Server::party_elect_leader(Party& p, uint32_t now) {
         Session* t = online_member(kh);
         return t && now - t->chan.last_heard_ms() <= uint32_t(cfg_.runner_drop_ms);
     };
-    if (present(p.leader)) return;
+    // (the leader itself keeps the lead while online and heard within leader_drop_ms: a stage load is no handover)
+    if (Session* l = online_member(p.leader); l && now - l->chan.last_heard_ms() <= uint32_t(std::max(cfg_.leader_drop_ms, cfg_.runner_drop_ms))) return;
     // the leader is on its way here (a handover between workers): it stays the leader
     if (std::any_of(tickets_.begin(), tickets_.end(), [&](const auto& t) { return t.second.who.key_hash == p.leader; }))
         return;

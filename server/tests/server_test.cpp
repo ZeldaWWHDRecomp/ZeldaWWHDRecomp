@@ -356,6 +356,13 @@ static void test_party() {
     CHECK(run(&s, {c.get()}, 6000, [&] { return runner_of(*c) == c->c.my_id(); }));
     std::printf("party: runner handover after the runner went silent: %u ms (limit %d ms)\n", monotonic_ms() - t0,
                 s.config().runner_drop_ms);
+    // ... but the silent leader (b, a game loading a stage for seconds) keeps the lead: no handover under leader_drop_ms
+    {
+        auto* e = c->last(ClientEvent::kPartyState);
+        CHECK(e && e->party.leader == b->c.my_id());
+        std::printf("party: the leader kept the lead through %u ms of silence (limit %d ms)\n", monotonic_ms() - t0,
+                    s.config().leader_drop_ms);
+    }
     // c (a fresh game, same identity) asks for the team state: the last known state is there
     c->c.ask_team_state();
     CHECK(run(&s, {c.get()}, 3000, [&] {

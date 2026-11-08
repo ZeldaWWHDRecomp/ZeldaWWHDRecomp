@@ -76,6 +76,9 @@ struct Config {
     int silence_s = 10;             // no packets: the session is lost (kept for resume)
     int resume_s = 60;              // a lost session can resume this long
     int runner_drop_ms = 3000;      // a runner silent this long is replaced
+    // a party leader silent this long is replaced (one gone is replaced at once): longer than a runner's, as a game
+    // loading a stage (its first shaders compiled, an archive read) is silent for seconds and must not lose the lead
+    int leader_drop_ms = 15000;
     bool keep_ip_hash = false;      // bans also keep a salted hash of the IP
 
     // parties
