@@ -1837,16 +1837,23 @@ def gamecode_compile_flags(manifest):
     return debug_info_flags(manifest["gamecode_cflags"])
 
 
-def object_cache(tc, data_dir, flags, gen_dir):
-    """the compiled-object cache of this install (object_cache.py), or None when the compiler can't say its version"""
+def object_cache(tc, data_dir, flags, gen_dir, extra=None):
+    """the compiled-object cache of this install (object_cache.py), or None when the compiler can't say its version.
+    extra: more {folder: name} replacements (folders in the flags that differ between installs)"""
     import object_cache as oc
     try:
         version = subprocess.run(tc.cc + ["--version"], env=tc.env, stdout=subprocess.PIPE,
                                  stderr=subprocess.STDOUT).stdout.decode("utf-8", "replace")
     except OSError:
         return None
-    return oc.Cache(os.path.join(data_dir, "code-objects"), " ".join(tc.cc) + "\n" + version, flags,
-                    {fwd(gen_dir): "<gen>"})
+    # the folders in the flags that differ between builds: the generated code's, and the release's own (a new
+    # release is another folder: without this no object of the build before it would ever be reused). With debug
+    # information the objects hold these paths, so only the generated code's is replaced then, as before.
+    replacements = {fwd(gen_dir): "<gen>"}
+    if not any(f.startswith("-g") and f != "-g0" for f in flags):
+        replacements[fwd(PKG)] = "<release>"
+        replacements.update({fwd(k): v for k, v in (extra or {}).items()})
+    return oc.Cache(os.path.join(data_dir, "code-objects"), " ".join(tc.cc) + "\n" + version, flags, replacements)
 
 
 def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress=None, cache_dir=None):

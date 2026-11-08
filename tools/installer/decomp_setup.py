@@ -197,6 +197,7 @@ def build(s, ctx, tc, jobs, step=None):
     # 0. the decompilation's source (downloaded once per pin, checked against the release's SHA-256)
     t0 = time.time()
     src = fetch_source(s, data_dir, d)
+    decomp_root = src
     times["source"] = time.time() - t0
 
     # 1. function list, glue and units: gen.py, reading the game for the model data and the source glue
@@ -249,7 +250,7 @@ def build(s, ctx, tc, jobs, step=None):
 
     ucache = None
     if hasattr(s, "object_cache"):
-        ucache = s.object_cache(SimpleNamespace(cc=tc.cxx, env=tc.env), data_dir, unit_flags, work)
+        ucache = s.object_cache(SimpleNamespace(cc=tc.cxx, env=tc.env), data_dir, unit_flags, work, {decomp_root: "<decomp>"})
     hits = [0]
 
     def one(job):

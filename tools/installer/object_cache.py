@@ -29,7 +29,7 @@ class Cache:
         self.root = Path(root)
         norm = []
         for f in flags:
-            for path, name in replacements.items():
+            for path, name in sorted(replacements.items(), key=lambda r: -len(r[0])):  # (a folder inside another)
                 f = f.replace(path, name)
             norm.append(f)
         self.base = hashlib.sha256(("wwhd object cache 1\0" + compiler_id + "\0" + "\0".join(norm)).encode()).digest()

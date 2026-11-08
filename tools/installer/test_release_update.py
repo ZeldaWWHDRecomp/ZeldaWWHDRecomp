@@ -88,6 +88,22 @@ class TranslationCacheTests(unittest.TestCase):
         self.assertTrue(foreign.is_file())
 
 
+class ObjectCacheAcrossReleases(unittest.TestCase):
+    def test_another_release_folder_reuses_objects_unless_debug_information_holds_paths(self):
+        import setup
+        from types import SimpleNamespace
+        tc = SimpleNamespace(cc=[sys.executable], env=None)
+
+        def base(pkg, extra=()):
+            with mock.patch.object(setup, "PKG", pkg):
+                flags = ["-I%s/sdk/include" % pkg, "-I/data/work/gen", "-O3"] + list(extra)
+                return setup.object_cache(tc, "/data", flags, "/data/work/gen").base
+
+        self.assertEqual(base("/a/WindWakerHD-v1"), base("/b/WindWakerHD-v2"))
+        self.assertNotEqual(base("/a/WindWakerHD-v1", ["-g"]), base("/b/WindWakerHD-v2", ["-g"]))
+        self.assertNotEqual(base("/a/WindWakerHD-v1"), base("/a/WindWakerHD-v1", ["-O2"]))
+
+
 class TransferTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
