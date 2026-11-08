@@ -466,7 +466,12 @@ void store_progress(const std::string& sealed) {
     if (!fields.empty()) g_client->send_progress(fields);
 }
 
+// what this game uploads, by kind (0x000-0x0FF: an app message's type, 0x100 + kind: a state, 0x200 the pose), for
+// the upload trace in poll(): the server strikes a game over its upload limit (bytes_per_s, 8 KB/s by default)
+uint64_t g_up[0x201];
+double g_up_limit = 8192;  // the server's upload limit (bytes/s): its default, or as its throttle notice names it
 void send(int to, Msg type, const std::string& body) {
+    g_up[(uint8_t)type] += body.size();
     if (type == kProgress) store_progress(body);  // (a member's changes, and its whole team state at a join: the store has all)
     if (type == kEmote) {  // (the server's EMOTE: to everyone near who sees this player, party or not; rate-limited there)
         if (g_client && body.size() == 1) g_client->send_emote((uint8_t)body[0]);
@@ -492,6 +497,27 @@ void put_state(uint8_t kind, const std::string& body) {
     static uint32_t calls[256];
     const uint32_t n = calls[kind]++;
     if (kind == 1 ? n % 2 : n % 3) { if (kind == 1) g_place_set = false; return; }
+    // The server strikes a game over its upload limit (limits.bytes_per_s, 8 KB/s unless its throttle named another):
+    // poses are the bulk (sailing, the boat's models with Link's: ~530 bytes at 15 Hz, ~8 KB/s), so while this game's
+    // upload of the last 2 s is over 3/4 of the limit a pose is left out, as long as one went in the last 200 ms
+    // (5 a second at least)
+    if (kind == 1) {
+        static uint32_t last_pose = 0;
+        static std::pair<uint32_t, uint64_t> mark[2] = {};  // (ms, bytes up) a second apart: the rate over 1-2 s
+        const uint32_t t = now_ms();
+        const uint64_t up = g_client->stats().bytes_up;
+        if (up < mark[1].second) mark[0] = mark[1] = {};  // (a new connection: its own count)
+        if (t - mark[1].first >= 1000) mark[0] = mark[1], mark[1] = {t, up};
+        const double rate = mark[0].first && t > mark[0].first ? (double)(up - mark[0].second) * 1000.0 / (t - mark[0].first) : 0;
+        if (rate > 0.75 * g_up_limit && t - last_pose < 200) {
+            static uint32_t left_out = 0;
+            if (left_out++ % 300 == 0) mods::trace("coop: server: upload %.0f B/s: poses thinned (%u left out so far)", rate, left_out);
+            g_place_set = false;
+            return;
+        }
+        last_pose = t;
+    }
+    g_up[kind == 1 ? 0x200 : 0x100 + kind] += body.size();
     if (kind == 1 && body.size() >= 28) {  // a pose (coop_pose.h pack: u32 size, stage[8], room, flags, pos[3], s16 yaw)
         op::PoseHeader h;
         memcpy(h.where.stage.data(), body.data() + 4, 8);
@@ -534,6 +560,25 @@ void put_state(uint8_t kind, const std::string& body) {
 void poll(Handler& h) {
     if (!g_client) return;
     g_h = &h;
+    // the upload of the last 10 s, traced when over 5 KB/s: the client's bytes (with the protocol's own) and the
+    // biggest kinds
+    if (static uint32_t since = 0; mods::trace_on() && now_ms() - since >= 10000) {
+        static uint64_t was_up = 0, was[0x201];
+        const uint64_t up = g_client->stats().bytes_up;
+        if (since && up >= was_up && up - was_up > 50000) {
+            std::vector<std::pair<uint64_t, int>> top;
+            for (int k = 0; k <= 0x200; k++) if (g_up[k] > was[k]) top.push_back({g_up[k] - was[k], k});
+            std::sort(top.rbegin(), top.rend());
+            std::string list;
+            for (size_t i = 0; i < top.size() && i < 5; i++)
+                list += " " + std::string(top[i].second == 0x200 ? "pose" : top[i].second >= 0x100 ? "state " + std::to_string(top[i].second - 0x100)
+                                                                                                    : "app " + std::to_string(top[i].second)) +
+                        " " + std::to_string(top[i].first / 10) + " B/s";
+            mods::trace("coop: server: upload %llu B/s:%s", (unsigned long long)(up - was_up) / 10, list.c_str());
+        }
+        was_up = up, since = now_ms();
+        memcpy(was, g_up, sizeof was);
+    }
     for (const op::ClientEvent& e : g_client->poll(now_ms())) {
         switch (e.kind) {
         case op::ClientEvent::kStateChanged:
@@ -692,6 +737,10 @@ void poll(Handler& h) {
         case op::ClientEvent::kNotice:
         {
             mods::trace("coop: server notice %u (%u): %s", e.value, e.seconds, e.text.c_str());
+            // (the server's upload limit, as its throttle names it: the poses keep under it from now on)
+            if (e.seconds == op::kLimitUpload)
+                if (const size_t at = e.text.find("limit of "); at != std::string::npos)
+                    if (const double lim = atof(e.text.c_str() + at + 9); lim >= 1024) g_up_limit = lim, mods::trace("coop: server: upload limit %.0f B/s", lim);
             const std::string m = servers::notice(e.value, e.seconds, e.value == op::kNoticeRestart ? e.seconds : 0, e.text);
             const bool out = e.value == op::kNoticeKick || e.value == op::kNoticeBan || e.value == op::kNoticeKickLimit;
             if (out) g_end_why = m;
