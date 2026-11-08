@@ -205,8 +205,8 @@ class Recompiler:
         if not entries:
             raise SystemExit("--decomp-hooks: %s lists no functions" % path)
         self._bounds()
-        # `# moved-site ADDR` (fast mode, tools/decomp_build/fast_hooks.py): the decompiled function calls that port hook
-        # itself, so the site does not keep its function recompiled (the recompiled original still has it)
+        # `# moved-site ADDR` (fast mode, tools/decomp_build/fast_hooks.py; game build, tools/decomp_build/port_sites.py):
+        # the decompiled function calls that port hook itself, so the site does not keep its function recompiled (the recompiled original still has it)
         moved = {int(m.group(1), 16) for m in (re.match(r"#\s*moved-site\s+([0-9A-Fa-f]{8})\b", l)
                                                for l in open(path, encoding="utf-8")) if m}
         if moved - self.sites:

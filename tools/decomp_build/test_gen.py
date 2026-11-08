@@ -11,6 +11,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
+sys.path.insert(0, HERE)
 
 
 def runtime_hook():
@@ -69,8 +70,9 @@ class GenTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_gen(self):
-        r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), self.src, self.out], capture_output=True, text=True)
+    def run_gen(self, *extra):
+        r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), self.src, self.out, *extra],
+                           capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -235,6 +237,29 @@ class GenTest(unittest.TestCase):
         with open(os.path.join(self.out, "glued/wwhd_src/b.cpp")) as f:
             self.assertIn("// glued", f.read())
         self.assertNotIn("assets.py", self.read("units.cmake"))  # no configure dependency on a missing file
+
+    def test_port_sites_moved_in_game_build_only(self):
+        """port_sites.py: a decompiled function whose source carries the port hook lists its instruction hook as moved
+        (recomp.py then keeps no function for it), only with --game-build; without the marker, never"""
+        import port_sites
+        site = port_sites.SITES[0]
+        os.makedirs(os.path.join(self.src, os.path.dirname(site["path"])), exist_ok=True)
+        with open(os.path.join(self.src, site["path"]), "w") as f:
+            f.write("VERIFY(0x%08X, procTactWait)\nif (x %s) {}\n" % (site["func"], site["marker"]))
+        with open(os.path.join(self.src, "tools/verify/units/tact.txt"), "w") as f:
+            f.write("src %s\n" % site["path"])
+        moved = "# moved-site %08X" % site["site"]
+        self.run_gen()
+        self.assertIn("%08X" % site["func"], self.read("decomp_hooks.txt"))
+        self.assertNotIn(moved, self.read("decomp_hooks.txt"))
+        self.run_gen("--game-build")
+        self.assertIn(moved, self.read("decomp_hooks.txt"))
+        entries, _ = game_builds.read_hooks([os.path.join(self.out, "decomp_hooks.txt")], game_builds.canonical_build())
+        self.assertNotIn(site["site"], {canon for _, canon, _, _ in entries})  # a comment for the hook reader
+        with open(os.path.join(self.src, site["path"]), "w") as f:
+            f.write("VERIFY(0x%08X, procTactWait)\n" % site["func"])
+        self.run_gen("--game-build")
+        self.assertNotIn(moved, self.read("decomp_hooks.txt"))
 
     def test_missing_tree(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), os.path.join(self.tmp.name, "nothing"), self.out],

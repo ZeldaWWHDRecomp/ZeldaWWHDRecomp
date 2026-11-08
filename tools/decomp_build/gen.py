@@ -2,7 +2,7 @@
 """Decomp build (CMake WWHD_DECOMP=ON, docs/decomp-build.md): which game functions run as compiled
 decompiled source, and the generated glue for them.
 
-usage: gen.py DECOMP_DIR OUT_DIR [--game RPX] [--jobs N]
+usage: gen.py DECOMP_DIR OUT_DIR [--game RPX] [--jobs N] [--game-build]
 
 DECOMP_DIR is the decompilation (the `decomp` submodule): DECOMP_DIR/wwhd_src (the source),
 DECOMP_DIR/tools/verify/{include,src,units}. Every output goes to OUT_DIR (the CMake build directory,
@@ -62,6 +62,8 @@ ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
 import native_returns  # noqa: E402
+sys.path.insert(0, HERE)
+import port_sites  # noqa: E402
 
 
 def unit_specs(src):
@@ -460,6 +462,9 @@ def main():
                     help="fast mode: calls by constant address outside the ext stubs as gabi::hcall (OUT_DIR/hinc)")
     ap.add_argument("--ptr-ic", action="store_true",
                     help="fast mode: call_ptr / tail_ptr with a cached target per call site (OUT_DIR/hinc)")
+    ap.add_argument("--game-build", action="store_true",
+                    help="the units are compiled with GABI_GAME_BUILD (the decompilation's port_hooks.h points call the "
+                         "port): list their sites as moved (port_sites.py)")
     a = ap.parse_args()
     src = os.path.abspath(a.src)
     out = os.path.abspath(a.out)
@@ -564,6 +569,11 @@ def main():
     lines += ["%08X  # %s %s" % (x, owner[x][0], owner[x][1]) for x in listed if x not in hooks]
     lines += ["# hooked-body %08X  # %s %s" % (x, owner[x][0], owner[x][1]) for x in hooked]
     lines += ["# moved-site %08X  # in %08X (tools/decomp_build/fast_hooks.py)" % x for x in sorted(moved_sites)]
+    # port hooks the decompiled source carries itself (port_sites.py; game build only): recomp.py keeps no function for
+    # these sites
+    if a.game_build:
+        lines += ["# moved-site %08X  # in %08X (%s)" % (m["site"], m["func"], m["path"])
+                  for m in port_sites.moved(set(listed), texts)]
     write_if_changed(os.path.join(out, "decomp_hooks.txt"), "\n".join(lines) + "\n")
     write_if_changed(os.path.join(out, "excluded.txt"), "".join(
         "%08X %-28s %-40s %s\n" % e for e in sorted(excluded)))
@@ -623,6 +633,7 @@ def main():
     deps.add(cmake_path(os.path.abspath(__file__)))
     deps.add(cmake_path(os.path.join(HERE, "native_returns.py")))
     deps.add(cmake_path(os.path.join(HERE, "fast_hooks.py")))
+    deps.add(cmake_path(os.path.join(HERE, "port_sites.py")))
     if n_glued:
         deps.update(cmake_path(os.path.join(src, "tools", "verify", f)) for f in ("autoglue.py", "assets.py", "assets.txt")
                     if os.path.isfile(os.path.join(src, "tools", "verify", f)))

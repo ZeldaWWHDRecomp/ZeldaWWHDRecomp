@@ -83,6 +83,9 @@ function(wwhd_decomp_configure)
   endif()
   # ... with the last two targets per site (gabi.h GABI_PTR_IC2; for sites whose target alternates)
   option(WWHD_DECOMP_FAST_PTR_IC2 "decomp build, fast mode: two cached call_ptr / tail_ptr targets per call site" OFF)
+  # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
+  # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
+  list(APPEND gen_extra --game-build)
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/gen.py"
                           "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}"
                           --game "${WWHD_DECOMP_GAME}/code/cking.rpx" ${gen_extra}
