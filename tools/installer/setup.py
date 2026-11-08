@@ -63,6 +63,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 # Windows embeddable Python runs in isolated mode: it does not add the script
 # directory to sys.path. Resolve shipped sibling modules explicitly.
 sys.path.insert(0, HERE)
+import build_cache  # noqa: E402
 import code_mods  # noqa: E402
 from code_mods import atomic_replace  # noqa: E402
 import decomp_setup  # noqa: E402
@@ -1696,7 +1697,9 @@ def decomp_hooks_file():
     return p if os.path.isfile(p) else None
 
 
-def recompile(game_dir, gen_dir, hooks=False):
+def recompile(game_dir, gen_dir, hooks=False, cache_root=None):
+    """Translates the game code into gen_dir; returns the number of code_*.c files. cache_root (the install
+    folder): a translation of the same inputs kept there (build_cache.py) is reused instead, and a new one is kept."""
     shutil.rmtree(longpath(gen_dir), ignore_errors=True)
     rpx = os.path.join(game_dir, "code", "cking.rpx")
     randomized = game_folder_title(game_dir) == RANDOMIZER_TITLE or code_title_version(game_dir)[0] == RANDOMIZER_TITLE
@@ -1707,13 +1710,34 @@ def recompile(game_dir, gen_dir, hooks=False):
         if build is not None and not build.canonical:
             raise SetupError("this is the decomp build of the port, which works with the USA game only (yours is the %s "
                              "build); use the regular release" % build.name)
-    out = run_logged([sys.executable, os.path.join(PKG, "tools", "recomp", "recomp.py"), rpx, gen_dir] +
-                     (["--mod-hooks"] if hooks else []) + (["--decomp-hooks", decomp] if decomp else []) +
-                     (["--randomizer", "--expected-rpx-sha256", build.sha256] if randomized else []),
-                     env=dict(os.environ, WWHD_RECOMP_MOD_HOOKS="0"), what="translating the game code")
+    extra = (["--mod-hooks"] if hooks else []) + (["--decomp-hooks", decomp] if decomp else []) + \
+        (["--randomizer", "--expected-rpx-sha256", build.sha256] if randomized else [])
+    return translate_cached([sys.executable, os.path.join(PKG, "tools", "recomp", "recomp.py"), rpx, gen_dir] + extra,
+                            rpx, gen_dir, extra, [decomp] if decomp else [], cache_root,
+                            env=dict(os.environ, WWHD_RECOMP_MOD_HOOKS="0"), what="translating the game code")
+
+
+TRANSLATION_STATS = {}  # the last translate_cached: {"reused": bool, "seconds": float} (setup's log and tests)
+
+
+def translate_cached(cmd, rpx, gen_dir, args, files, cache_root, env, what):
+    """Runs the translator cmd into gen_dir, or takes its output from the translation cache (build_cache.py)."""
+    t0 = time.time()
+    cache = key = None
+    if cache_root:
+        cache = build_cache.TranslationCache(os.path.join(cache_root, "code-translations"))
+        key = build_cache.translation_key(PKG, rpx, args, gen_dir, files, env)
+        if cache.fetch(key, gen_dir):
+            LOG.write("translation cache: reused %s" % key[:16])
+            TRANSLATION_STATS.update(reused=True, seconds=time.time() - t0)
+            return len(glob.glob(os.path.join(glob.escape(gen_dir), "code_*.c")))
+    run_logged(cmd, env=env, what=what)
     n = len(glob.glob(os.path.join(glob.escape(gen_dir), "code_*.c")))
     if n == 0:
         raise SetupError("the recompiler wrote no code")
+    if cache:
+        cache.store(key, gen_dir)
+    TRANSLATION_STATS.update(reused=False, seconds=time.time() - t0)
     return n
 
 
@@ -1985,6 +2009,154 @@ def link_game(tc, manifest, objs, work, out_exe, recipe=None, glue=()):
     link_with_sdk_fallback(cmd, tc.env)
     if not os.path.isfile(out_exe):
         raise SetupError("the linker produced no executable")
+
+
+# ---------------------------------------------------------------------------------------------
+# staged builds: the new game is linked and checked in bin.staging, then swapped in; the game before it is
+# kept as bin.previous (one previous build, no more)
+
+STAGING_DIR = "bin.staging"
+PREVIOUS_DIR = "bin.previous"
+STAGING_MARK = ".wwhd-staging.json"
+PREVIOUS_MARK = ".wwhd-previous-build.json"
+
+
+def _json_file(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            v = json.load(f)
+        return v if isinstance(v, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def build_identity(exe, manifest):
+    """The new game's own report (wwhd --build-identity: version, commit, pipeline identity), which also proves
+    that it starts here (its libraries load); {} for a release whose game has no such option."""
+    if not manifest.get("build_identity"):
+        return {}
+    try:
+        p = subprocess.run([exe, "--build-identity"], stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=120,
+                           cwd=os.path.dirname(exe), env=dict(os.environ, WWHD_HIDDEN_WINDOWS="1", WWHD_NO_AUDIO="1"))
+    except (OSError, subprocess.TimeoutExpired) as e:
+        raise SetupError("the new game build does not start (%s); the game before it is kept" % e)
+    out = p.stdout.decode("utf-8", "replace")
+    line = next((l for l in out.splitlines() if l.startswith("{") and '"pipeline"' in l), "")
+    try:
+        ident = json.loads(line)
+    except ValueError:
+        ident = None
+    if p.returncode != 0 or not isinstance(ident, dict) or ident.get("version") != manifest.get("version"):
+        LOG.write("build identity check: exit %s\n%s" % (p.returncode, out[-4000:]))
+        raise SetupError("the new game build did not pass its start check (exit %s); the game before it is kept"
+                         % p.returncode)
+    return ident
+
+
+def stage_build(tc, manifest, objs, work, data_dir, placeholder=False):
+    """Links the game into DATA/bin.staging with its runtime files and checks it; returns the folder."""
+    staging = os.path.join(data_dir, STAGING_DIR)
+    if os.path.isdir(staging) and os.path.isfile(os.path.join(staging, STAGING_MARK)):
+        shutil.rmtree(longpath(staging))  # an earlier, unfinished staging of this setup
+    elif os.path.lexists(staging):
+        raise SetupError("%s is in the way (not made by setup); move it elsewhere and run setup again" % staging)
+    os.makedirs(staging)
+    with open(os.path.join(staging, STAGING_MARK), "w") as f:
+        json.dump({"version": manifest.get("version"), "state": "linking"}, f)
+    exe = os.path.join(staging, manifest["exe"])
+    link_game(tc, manifest, objs, work, exe)
+    for rf in manifest.get("runtime_files", []):
+        # the data only (copy2 would also copy a downloaded file's "mark of the web" on Windows)
+        shutil.copyfile(os.path.join(PKG, "sdk", "runtime", rf), os.path.join(staging, rf))
+        shutil.copymode(os.path.join(PKG, "sdk", "runtime", rf), os.path.join(staging, rf))
+    ident = {} if placeholder else build_identity(exe, manifest)
+    with open(exe, "rb") as f:
+        digest = code_mods.file_sha256(f)
+    code_mods.atomic_json(os.path.join(staging, STAGING_MARK),
+                          {"version": manifest.get("version"), "state": "verified", "sha256": digest, "identity": ident})
+    LOG.write("staged build: %s sha256 %s identity %s" % (exe, digest, json.dumps(ident)))
+    return staging
+
+
+def publish_build(staging, exe_dir, data_dir):
+    """bin.staging becomes bin; the bin before it becomes bin.previous (the one previous build kept: an older
+    bin.previous, made by an earlier setup, goes now that the new build is checked). Two renames; an
+    interruption between them is finished by recover_build_swap."""
+    previous = os.path.join(data_dir, PREVIOUS_DIR)
+    try:
+        if os.path.isdir(exe_dir):
+            if os.path.lexists(previous):
+                if not os.path.isfile(os.path.join(previous, PREVIOUS_MARK)):
+                    aside = previous + time.strftime(".%Y%m%d-%H%M%S")
+                    os.replace(previous, aside)  # not made by setup: kept, out of the way
+                    say("  Kept %s (not made by setup)" % aside)
+                else:
+                    shutil.rmtree(longpath(previous))
+            st = read_state(data_dir)
+            os.replace(exe_dir, previous)
+            with open(os.path.join(previous, PREVIOUS_MARK), "w") as f:
+                json.dump({"version": st.get("version", "?"), "kept": time.strftime("%Y-%m-%d %H:%M:%S")}, f)
+        os.replace(staging, exe_dir)
+    except PermissionError as e:
+        raise SetupError("the game folder %s is in use: close the game and run setup again (%s); the game before "
+                         "this update is unchanged" % (exe_dir, e))
+    mark = os.path.join(exe_dir, STAGING_MARK)
+    if os.path.isfile(mark):
+        os.replace(mark, os.path.join(exe_dir, ".wwhd-build.json"))
+
+
+def recover_build_swap(data_dir, exe_dir):
+    """An update interrupted between publish_build's renames: the checked new build is put in place."""
+    staging = os.path.join(data_dir, STAGING_DIR)
+    if not os.path.isdir(exe_dir) and _json_file(os.path.join(staging, STAGING_MARK)).get("state") == "verified":
+        os.replace(staging, exe_dir)
+        mark = os.path.join(exe_dir, STAGING_MARK)
+        if os.path.isfile(mark):
+            os.replace(mark, os.path.join(exe_dir, ".wwhd-build.json"))
+        LOG.write("finished an interrupted build swap: %s" % exe_dir)
+
+
+def clean_old_code_builds(data_dir, version):
+    """After the new build is in place: the code-mod variants and randomized-game builds of earlier releases go
+    (code-builds/<fingerprint>, made by code_mods.py; their fingerprints include the release, so this release
+    never uses them and builds its own when needed). Only folders whose ready.json names their own fingerprint."""
+    root = os.path.join(data_dir, "code-builds")
+    if not os.path.isdir(root):
+        return
+    for name in sorted(os.listdir(root)):
+        d = os.path.join(root, name)
+        if os.path.islink(d) or not os.path.isdir(d) or len(name) not in (16, 64):
+            continue
+        record = _json_file(os.path.join(d, "ready.json"))
+        key = record.get("fingerprint")
+        if not isinstance(key, str) or name not in (key, code_mods.cache_name(key)) or record.get("release") == version:
+            continue
+        shutil.rmtree(longpath(d), ignore_errors=True)
+        LOG.write("removed the earlier release's code build %s" % d)
+
+
+def transfer_earlier_release(ctx, info):
+    """Brings the earlier release's data over (release_update.py) and points ctx at the game files here."""
+    import release_update
+    journal = release_update.pending(ctx.data_dir)
+    if not journal:
+        journal = release_update.start(info, ctx.data_dir, info["mode"], ctx.version, LOG.write)
+        journal["game_dir"] = info["game_dir"]
+        journal["game_inside"] = info["game_inside"]
+        release_update._write(ctx.data_dir, journal)
+    t0 = time.time()
+    release_update.transfer(journal, ctx.data_dir, LOG.write)
+    finish_transfer_paths(ctx, journal)
+    say("  %s %d items from %s (%d s)" % ("Cloned" if journal["mode"] == "clone" else "Moved", len(journal["entries"]),
+                                         journal["from"], time.time() - t0))
+
+
+def finish_transfer_paths(ctx, journal):
+    if journal.get("game_inside"):
+        rel = os.path.relpath(journal["game_dir"], journal["from_data"])
+        ctx.game_dir = os.path.join(ctx.data_dir, rel)
+    else:
+        ctx.game_dir = journal["game_dir"]
 
 
 # ---------------------------------------------------------------------------------------------
@@ -2567,10 +2739,17 @@ class Ctx:
         if problem:  # before anything is downloaded or built (issue #144)
             LOG.write("data folder %s: %s" % (self.data_dir, problem))
             raise SetupError(problem)
+        try:
+            recover_build_swap(self.data_dir, self.exe_dir)
+        except OSError as e:
+            LOG.write("interrupted build swap not finished: %s" % e)
         self.game_dir = self.state().get("game_dir") or os.path.join(self.data_dir, "game")
 
     def state(self):
         return read_state(self.data_dir)
+
+    def defaults(self):
+        return install_defaults(self)
 
     def installed(self):
         st = self.state()
@@ -2586,6 +2765,7 @@ STEP_TITLES = {
     "copy": "Copying the game files",
     "translate": "Translating the game code to C",
     "compile": "Compiling the game code (the longest step: several minutes)",
+    "transfer": "Bringing over your game files, saves, settings and caches",
     "app": "Building the game",
     "shaders": "Preparing shaders",
     "decomp": "Building the decomp version (experimental)",
@@ -2597,6 +2777,7 @@ def plan_steps(kind, decomp=False):
             "archive": ["archive", "compiler", "extract", "translate", "compile", "app"],
             "folder": ["folder", "compiler"] + ([] if PORTABLE else ["copy"]) + ["translate", "compile", "app"],
             "installed": ["compiler", "translate", "compile", "app"],
+            "update": ["compiler", "translate", "compile", "transfer", "app"],
             "gen": ["compiler", "compile", "app"]}[kind]
     return result + ([] if kind == "gen" else ["shaders"]) + (["decomp"] if decomp else [])
 
@@ -2611,7 +2792,7 @@ def decomp_wanted(ctx):
     if not decomp_offered(ctx.manifest):
         return False
     choice = getattr(ctx.args, "decomp", None)
-    return bool(ctx.state().get("decomp", False) if choice is None else choice)
+    return bool(install_defaults(ctx)[1].get("decomp", False) if choice is None else choice)
 
 
 MODEL_SWEEP_TEXT = (
@@ -2630,7 +2811,7 @@ def model_sweep_wanted(ctx, ui=None):
     choice = getattr(ctx.args, "model_sweep", None)
     if choice is not None:
         return bool(choice)
-    default = bool(ctx.state().get("model_sweep", False))
+    default = bool(install_defaults(ctx)[1].get("model_sweep", False))
     if ui and ui.interactive and not getattr(ctx.args, "skip_shader_prebuild", False):
         say(MODEL_SWEEP_TEXT)
         return ui.yesno("Also prepare model shaders (experimental)?", default)
@@ -2644,16 +2825,25 @@ CODE_MODS_TEXT = (
     "Settings > Mods; that requires another rebuild.")
 
 
+def install_defaults(ctx):
+    """The install whose choices (code mods, models step, decomp version) are the defaults: this one, or the
+    earlier release being updated from (ctx.defaults_dir): (folder, its install.json)."""
+    d = getattr(ctx, "defaults_dir", None)
+    if isinstance(d, str) and d:
+        return d, read_state(d)
+    return getattr(ctx, "data_dir", None), ctx.state()
+
+
 def setup_code_mods(ctx, ui=None):
     explicit = getattr(ctx.args, "code_mods", None)
     if explicit is not None or "WWHD_CODE_MODS" in os.environ:
         return code_mods.hooks_option(explicit)
     try:
-        active = json.loads(Path(ctx.data_dir, "code-mods-active.json").read_text(encoding="utf-8"))
+        active = json.loads(Path(install_defaults(ctx)[0], "code-mods-active.json").read_text(encoding="utf-8"))
         remembered = active["hooks"] if active.get("state") == "ready" else None
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         remembered = None
-    default = remembered if isinstance(remembered, bool) else bool(ctx.state().get("code_mods", False))
+    default = remembered if isinstance(remembered, bool) else bool(install_defaults(ctx)[1].get("code_mods", False))
     if ui and ui.interactive:
         say(CODE_MODS_TEXT)
         return ui.yesno("Build with code-mod support?", default)
@@ -2722,9 +2912,11 @@ def prepare_shaders_nonfatal(*args, **kwargs):
         return dict(status="failed", message=str(error))
 
 
-def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
+def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_from=None):
     """The whole build for one source: ("image", path) | ("archive", path) | ("folder", path) |
     ("installed", game_dir) | ("gen", generated C). check_keys(image) -> (keys, info) is called for an image without keys.
+    update_from (with "installed"): an earlier release folder (release_update.release_info, plus "mode": clone|move):
+    the game is built from its game files and caches, verified, and only then is its data brought over.
     Returns the new install state."""
     ui = ui or UI(False)
     args, manifest, data_dir = ctx.args, ctx.manifest, ctx.data_dir
@@ -2738,7 +2930,10 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         if problem:
             raise SetupError(problem)
     old_state = ctx.state()
-    steps = plan_steps(kind, want_decomp)
+    if update_from:
+        old_state = dict(update_from["state"])
+        old_state.pop("decomp_exe", None)  # (the earlier release's decomp version stays with it)
+    steps = plan_steps("update" if update_from else kind, want_decomp)
     total = len(steps)
     counter = iter(range(1, total + 1))
 
@@ -2785,6 +2980,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         build = check_game_version(source[1])
         say("  OK: %s (%s, version 0)" % (source[1], build.name))
     elif kind == "installed":
+        if update_from:
+            ctx.game_dir = update_from["game_dir"]  # built from the earlier release's game files, where they are
         if not valid_game_folder(ctx.game_dir):
             raise SetupError("no installed game files in %s; run setup with your disc image" % ctx.game_dir)
         tid = game_folder_title(ctx.game_dir)
@@ -2792,8 +2989,13 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
             check_title(tid)
         check_game_version(ctx.game_dir)
 
+    # the caches the build reads and adds to (translations, objects): the earlier release's when updating from one
+    # (its data comes over after the build, caches included), else this install's
+    cache_root = update_from["data"] if update_from else data_dir
     begin("compiler")
-    tc = get_toolchain(manifest["toolchain"], data_dir, ui)
+    # an earlier release's downloaded compiler is used where it is (it comes over with its data)
+    tc_root = update_from["data"] if update_from and os.path.isdir(toolchain_dir(update_from["data"])) else data_dir
+    tc = get_toolchain(manifest["toolchain"], tc_root, ui)
     say("  Using %s." % tc.desc)
 
     game_dir = ctx.game_dir
@@ -2836,8 +3038,10 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         begin("translate")
         t0 = time.time()
         gen_dir = os.path.join(work, "gen")
-        nfiles = recompile(ctx.game_dir, gen_dir, hooks=code_mods.hooks_option(getattr(args, "code_mods", None)))
-        say("  %d source files (%d s)" % (nfiles, time.time() - t0))
+        nfiles = recompile(ctx.game_dir, gen_dir, hooks=code_mods.hooks_option(getattr(args, "code_mods", None)),
+                           cache_root=cache_root)
+        say("  %d source files (%d s%s)" % (nfiles, time.time() - t0,
+                                           ", unchanged since the last build" if TRANSLATION_STATS.get("reused") else ""))
 
     compiled_randomizer = translated_randomizer_identity(gen_dir)
     if getattr(source_build, "randomizer", False) is True and not compiled_randomizer:
@@ -2849,20 +3053,22 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
     begin("compile")
     jobs = args.jobs or default_jobs()
     t0 = time.time()
-    objs = compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs, cache_dir=data_dir)
+    objs = compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs, cache_dir=cache_root)
     say("  compiled in %d s" % (time.time() - t0))
 
-    begin("app")
+    if not update_from:
+        begin("app")
     say("  Linking...")
     exe, exe_dir = ctx.exe, ctx.exe_dir
-    os.makedirs(exe_dir, exist_ok=True)
-    new_exe = exe + ".new" + EXE_SUFFIX
-    link_game(tc, manifest, objs, work, new_exe)
-    for rf in manifest.get("runtime_files", []):
-        # the data only (copy2 would also copy a downloaded file's "mark of the web" on Windows)
-        shutil.copyfile(os.path.join(PKG, "sdk", "runtime", rf), os.path.join(exe_dir, rf))
-        shutil.copymode(os.path.join(PKG, "sdk", "runtime", rf), os.path.join(exe_dir, rf))
-    os.replace(new_exe, exe)
+    # the new game goes to bin.staging first and is checked there; the game in bin stays as it is until then
+    staging = stage_build(tc, manifest, objs, work, data_dir, kind == "gen")
+    if update_from:
+        begin("transfer")
+        transfer_earlier_release(ctx, update_from)
+        tc = get_toolchain(manifest["toolchain"], data_dir, ui)  # (now here: its paths go into guest-sdk.json)
+        game_dir = ctx.game_dir
+        begin("app")
+    publish_build(staging, exe_dir, data_dir)
     say("  Built %s" % exe)
 
     state = {"version": ctx.version, "platform": manifest["platform"], "exe": exe, "data_dir": data_dir,
@@ -2906,6 +3112,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
             windows_shortcuts(data_dir, exe)
             say("  Shortcuts: Start menu and desktop (\"%s\")" % APP_NAME)
     if kind != "gen":
+        if old_state.get("version") != ctx.version:  # (an update; a repair keeps this release's variants)
+            clean_old_code_builds(data_dir, ctx.version)
         try:
             code_mods.remember_installed(sys.modules[__name__], ctx, tc, state["code_mods"], state["exe"], gen_dir, objs)
         except (OSError, SetupError) as e:
@@ -3073,6 +3281,10 @@ def main():
                     help="do not prepare model shaders (the default)")
     ap.add_argument("--shader-prebuild-cancel", help="skip shader preparation when this file exists")
     ap.add_argument("--repair", action="store_true", help="rebuild the game code from the installed game files")
+    ap.add_argument("--update-from", metavar="FOLDER", help="portable release: update from this earlier release folder "
+                    "(its game files, saves, settings, mods, seeds and caches come here; built and checked first)")
+    ap.add_argument("--allow-move", action="store_true", help="--update-from where cloning is unavailable: move the "
+                    "earlier release's data here (that release does not start the game afterwards)")
     ap.add_argument("--jobs", type=int, help="parallel compiler processes")
     ap.add_argument("--yes", action="store_true", help="non-interactive (also WWHD_SETUP_NONINTERACTIVE=1)")
     ap.add_argument("--no-launch", action="store_true", help="do not start the game at the end")
@@ -3250,7 +3462,22 @@ def run(args, ui):
         return 0
 
     source = None  # ("image", path) | ("archive", path) | ("folder", path) | ("installed", game_dir) | ("gen", dir)
-    if args.gen_dir:
+    update_from = None
+    unfinished = update_journal(ctx) if not installed else None
+    if unfinished:
+        say("Finishing the update from %s (%s)." % (unfinished["from"], unfinished["from_version"]))
+        state = finish_update(ctx, unfinished, ui)
+        return after_install(ctx, args, ui, state, ("installed", ctx.game_dir))
+    if isinstance(getattr(args, "update_from", None), str) and not installed:
+        update_from = earlier_release(ctx, args.update_from, getattr(args, "allow_move", False) is True)
+        source = ("installed", update_from["game_dir"])
+    elif not installed and PORTABLE and ui.interactive and not (args.gen_dir or args.image or args.archive or args.game_dir):
+        update_from = offer_earlier_release(ctx, ui)
+        if update_from:
+            source = ("installed", update_from["game_dir"])
+    if source:
+        pass
+    elif args.gen_dir:
         source = ("gen", os.path.abspath(args.gen_dir))
     elif args.archive or (args.image and args.image.lower().endswith(".wua")):
         source = ("archive", os.path.abspath(args.archive or args.image))
@@ -3328,7 +3555,88 @@ def run(args, ui):
                     say("  That folder does not contain code/cking.rpx, content and meta/meta.xml.")
                 source = ("folder", p)
 
-    state = install(ctx, source, ui=ui, check_keys=lambda image: get_disc_keys(image, ui, args))
+    state = install(ctx, source, ui=ui, check_keys=lambda image: get_disc_keys(image, ui, args), update_from=update_from)
+    if update_from:
+        say("  Updated from %s: your game files, saves, settings, mods and caches are here now." % update_from["root"])
+        if update_from["mode"] == "move":
+            say("  The earlier release in %s does not start the game any more; you can delete that folder." % update_from["root"])
+        else:
+            say("  The earlier release in %s still works on its own copy; you can delete it when you no longer need it."
+                % update_from["root"])
+        return after_install(ctx, args, ui, state, source)
+    return after_install(ctx, args, ui, state, source)
+
+
+def update_journal(ctx):
+    """An update from an earlier release that started here and has not finished (release_update.py): its journal."""
+    import release_update
+    journal = release_update._read_json(os.path.join(ctx.data_dir, release_update.JOURNAL))
+    if journal and (not journal.get("complete") or not ctx.installed()):
+        return journal
+    return None
+
+
+def finish_update(ctx, journal, ui=None):
+    """Finishes an interrupted update: the rest of the transfer, then the build here (its caches came over, so it
+    reuses what the interrupted run made)."""
+    import release_update
+    if not journal.get("complete"):
+        release_update.transfer(journal, ctx.data_dir, LOG.write)
+    finish_transfer_paths(ctx, journal)
+    ctx.defaults_dir = ctx.data_dir
+    return install(ctx, ("installed", ctx.game_dir), ui=ui)
+
+
+def earlier_release(ctx, folder, allow_move=False):
+    """The earlier release folder to update from (release_update.release_info) with its transfer mode; SetupError
+    when it has no prepared game, or when its data could only be moved and allow_move is not given."""
+    import release_update
+    folder = os.path.abspath(folder)
+    if os.path.basename(folder) == "data" and os.path.isfile(os.path.join(folder, "install.json")):
+        folder = os.path.dirname(folder)
+    if os.path.realpath(folder) == os.path.realpath(PKG):
+        raise SetupError("that is this release's own folder")
+    info = release_update.release_info(folder, ctx.manifest["platform"])
+    if not info:
+        raise SetupError("%s has no prepared game of an earlier release for %s (data/install.json)"
+                         % (folder, ctx.manifest["platform"]))
+    info["mode"] = release_update.transfer_mode(info["data"], ctx.data_dir)
+    if info["mode"] == "move" and not allow_move:
+        raise SetupError("this file system cannot clone, so updating moves the data of %s here and that release will "
+                         "not start the game any more: run setup again with --allow-move to do that" % folder)
+    ctx.defaults_dir = info["data"]
+    return info
+
+
+UPDATE_CLONE_TEXT = ("Your game files, saves, settings, controls, mods, randomized games, shader caches and the "
+                     "compiler are copied here as clones (no extra space). The earlier release keeps working.")
+UPDATE_MOVE_TEXT = ("Your game files, saves, settings, controls, mods, randomized games, shader caches and the "
+                    "compiler are moved here (this drive cannot clone them). The earlier release in %s will NOT start "
+                    "the game afterwards; its game binary is kept here as bin.previous.")
+
+
+def offer_earlier_release(ctx, ui):
+    """Interactive: offers to update from an earlier release folder next to this one. None when there is none or
+    the player prefers a new setup."""
+    import release_update
+    found = release_update.earlier_releases(PKG, ctx.manifest["platform"])
+    if not found:
+        return None
+    info = found[0]
+    info["mode"] = release_update.transfer_mode(info["data"], ctx.data_dir)
+    say("")
+    say("Found the earlier release %s in %s." % (info["version"], info["root"]))
+    say("  " + (UPDATE_CLONE_TEXT if info["mode"] == "clone" else UPDATE_MOVE_TEXT % info["root"]))
+    i = ui.choose("Update from it?", ["update from %s (keeps everything; builds only what changed)" % info["version"],
+                                      "set up from scratch instead"])
+    if i != 0:
+        return None
+    ctx.defaults_dir = info["data"]
+    return info
+
+
+def after_install(ctx, args, ui, state, source):
+    data_dir = ctx.data_dir
     if source[0] != "gen":
         maybe_import_save(ui, data_dir)
         write_code_mods_setting(data_dir, state["code_mods"])
@@ -3366,8 +3674,12 @@ def run(args, ui):
 #                                           archive: title, folder, bytes, message (which title, why)
 #   check_keys   {image, disc_key_file?, disc_key_hex?, common_key_file?, common_key_hex?}
 #                                        -> title_id, files, bytes  (keys stay in memory for install)
-#   install      {source: image|archive|folder|installed, path?, jobs?}  -> streams step/progress/log, then
-#                                           reply {app, exe, data_dir}
+#   install      {source: image|archive|folder|installed|update, path?, jobs?, allow_move?}  -> streams
+#                                           step/progress/log, then reply {app, exe, data_dir}. update: from the
+#                                           earlier release folder `path` (hello: earlier_releases, each with its
+#                                           mode clone|move and the text to show); a move needs allow_move. With
+#                                           hello's update_pending it finishes that interrupted update instead.
+#   probe_release {path}                 -> root, version, mode, text of an earlier release folder
 #   import_save  {kind: hd|gc, path, replace?}  -> message; problem "exists" if a save is there
 #   language_sources {}                  -> sources: [{region, title_id, source, packs: [{file, language, bytes}]}]
 #   add_language_source {path, disc_key_file?, disc_key_hex?, common_key_file?, common_key_hex?}
@@ -3492,8 +3804,29 @@ def gui_main(args):
         return 1
     session = {"keys": None, "info": None, "image": None}
 
+    def release_reply(info):
+        return {"root": info["root"], "version": info["version"], "mode": info["mode"],
+                "text": UPDATE_CLONE_TEXT if info["mode"] == "clone" else UPDATE_MOVE_TEXT % info["root"]}
+
+    def earlier():
+        """hello's earlier_releases (portable, nothing prepared here yet) and update_pending (an interrupted update)"""
+        import release_update
+        if ctx.installed() or not PORTABLE:
+            return [], None
+        journal = update_journal(ctx)
+        if journal:
+            return [], {"root": journal["from"], "version": journal["from_version"], "mode": journal["mode"]}
+        out = []
+        for info in release_update.earlier_releases(PKG, ctx.manifest["platform"])[:3]:
+            info["mode"] = release_update.transfer_mode(info["data"], ctx.data_dir)
+            out.append(release_reply(info))
+        if out:
+            ctx.defaults_dir = release_update.release_info(out[0]["root"], ctx.manifest["platform"])["data"]
+        return out, None
+
     def hello():
         st = ctx.state()
+        releases, pending_update = earlier()
         legacy_save, legacy_items = import_sources() if PORTABLE else (None, [])
         GUI.emit({"event": "hello", "version": ctx.version, "platform": ctx.manifest["platform"],
                   "data_dir": ctx.data_dir, "app_dir": ctx.app_dir if IS_MAC else "",
@@ -3508,7 +3841,9 @@ def gui_main(args):
                   # the decomp version (decomp_setup.py): offered on macOS in development builds only
                   "decomp_offered": decomp_offered(ctx.manifest), "decomp": decomp_wanted(ctx),
                   "decomp_text": decomp_setup.DECOMP_TEXT, "decomp_docs": decomp_setup.DOCS_URL,
-                  "toolchain": ctx.manifest["toolchain"]})
+                  "toolchain": ctx.manifest["toolchain"],
+                  # updating from an earlier release folder (release_update.py): offered, never automatic
+                  "earlier_releases": releases, "update_pending": pending_update})
 
     def reply(req, ok=True, **kw):
         kw.update({"event": "reply", "id": req.get("id"), "cmd": req.get("cmd"), "ok": ok})
@@ -3641,12 +3976,23 @@ def gui_main(args):
             source = ("folder", req.get("path") or "")
         elif kind == "installed":
             source = ("installed", ctx.game_dir)
+        elif kind == "update":
+            journal = update_journal(ctx)
+            try:
+                update_from = None if journal else earlier_release(ctx, req.get("path") or "", bool(req.get("allow_move")))
+            except SetupError as e:
+                return fail(req, "update", str(e))
+            source = ("installed", update_from["game_dir"] if update_from else ctx.game_dir)
         else:
             return fail(req, "bad_request", "unknown source")
-        steps = plan_steps(kind, decomp_wanted(ctx))
+        steps = plan_steps(kind if kind != "update" or not journal else "installed", decomp_wanted(ctx))
         GUI.emit({"event": "plan", "id": req.get("id"), "steps": [{"id": s, "title": STEP_TITLES[s]} for s in steps]})
         try:
-            state = install(ctx, source, session["keys"], session["info"])
+            if kind == "update" and journal:
+                state = finish_update(ctx, journal)
+            else:
+                state = install(ctx, source, session["keys"], session["info"],
+                                update_from=update_from if kind == "update" else None)
         except SetupError as e:
             LOG.write("setup stopped: %s" % e)
             return fail(req, "install", str(e))
@@ -3803,7 +4149,15 @@ def gui_main(args):
             return fail(req, "refused", str(e))
         rando_reply(req)
 
+    def probe_release(req):
+        try:
+            info = earlier_release(ctx, req.get("path") or "", allow_move=True)
+        except SetupError as e:
+            return fail(req, "invalid", str(e))
+        reply(req, **release_reply(info))
+
     handlers = {"probe": probe, "check_keys": check, "install": do_install, "import_save": save,
+                "probe_release": probe_release,
                 "import_existing": do_import_existing, "remove_toolchain": do_remove_toolchain,
                 "shortcut": do_shortcut, "launch": do_launch, "hello": lambda req: hello(),
                 "start_decomp": do_start_decomp,

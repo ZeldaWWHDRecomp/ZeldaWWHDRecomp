@@ -1,6 +1,7 @@
 // Private setup-generated cache generations. The release template contains no
 // code; these files are resolved from the player's game and stay on this device.
 #pragma once
+#include "../pipeline_runtime_identity.h"
 #include "shader_setup_hint.h"
 #include "platform/host.h"
 #include "platform/process.h"
@@ -154,7 +155,13 @@ inline bool identity_matches(const mods::json::Value& active, const fs::path& ga
     const auto launcher = read(root() / "launcher.json");
     const fs::path package = fs::u8path(launcher.get("package").string());
     if (!(launch.get("template") == metadata(fs::u8path(launcher.get("template").string())))) return false;
-    if (!optOut && (!(launch.get("runtime") == metadata(runtime_path())) ||
+    // a generation prepared by a setup that knows the pipeline identity is checked by it (another build of the same
+    // renderer keeps it: an update, a randomized game, the code-mod variant); an older one by the binary's file
+    const auto& pipeline = launch.get("pipeline");
+    const bool runtimeMatches = pipeline.type == mods::json::Value::String
+        ? pipeline.string() == wwhd::pipeline_runtime_identity()
+        : launch.get("runtime") == metadata(runtime_path());
+    if (!optOut && (!runtimeMatches ||
         !(launch.get("translator") == metadata(package / "tools/shaderprep.py")) ||
         !(launch.get("format") == metadata(package / "tools/shaderprep_format.py")))) return false;
     const auto& inventory = launch.get("game");

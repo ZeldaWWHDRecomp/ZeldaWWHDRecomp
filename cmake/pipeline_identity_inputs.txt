@@ -1,0 +1,91 @@
+# The sources whose code can change what a saved pipeline recipe or prepared shader means
+# (cmake/PipelineRuntimeIdentity.cmake hashes them into WWHD_PIPELINE_RUNTIME_ID). A change to any of
+# them makes earlier recipes, head starts and model sweeps unusable; a change anywhere else keeps them.
+#
+# Why these: a Vulkan recipe is (vertex shader identity, pixel shader identity, fixed state, descriptor
+# layouts, SPIR-V). A shader's identity is the hash of its generated GLSL text and resource mapping
+# (gfx/vulkan/shaders.cpp portable_output_identity), so code that only changes which shaders or states
+# the game asks for makes new identities and never matches an old recipe. What has to be covered is code
+# that turns the same identity or state into a different pipeline: the renderers (gfx), the GX2 state and
+# shader keys (gx2), the shader decompiler (third_party/cemu), the guest ABI headers, and everything that
+# rewrites, replaces or adds shaders and pipelines outside gfx (graphics packs and shader overrides, the
+# HUD, clouds, background shaders, recipe groups). tools/release/test_pipeline_identity_inputs.py fails
+# when a translation unit listed here includes a runtime header that is not, or when a source outside
+# the list creates pipelines or shaders.
+#
+# One path per line, relative to the source root: a folder (every source file below it) or a file.
+runtime/src/gfx
+runtime/src/gx2
+runtime/include
+runtime/third_party/cemu
+runtime/src/mods/cemu_pack.cpp
+runtime/src/mods/cemu_pack.h
+runtime/src/mods/shader_interface.h
+runtime/src/mods/mod_hud.mm
+runtime/src/mods/packages.cpp
+runtime/src/mods/packages.h
+runtime/src/background_shaders.cpp
+runtime/src/background_shaders.h
+runtime/src/cloud_noise.h
+runtime/src/cloud_proto.cpp
+runtime/src/cloud_proto.h
+runtime/src/cloud_scene.cpp
+runtime/src/cloud_scene.h
+runtime/src/pipeline_groups.h
+runtime/src/pipeline_runtime_identity.cpp
+runtime/src/pipeline_runtime_identity.h
+runtime/src/platform/quest_theater_controllers.h
+# the runtime headers the units above that create pipelines or shaders include (the guard's -MM check)
+runtime/src/aspect.h
+runtime/src/aspect_panes.h
+runtime/src/audio_out.h
+runtime/src/build_info.h
+runtime/src/dsweep.h
+runtime/src/dynres.h
+runtime/src/exception_report.h
+runtime/src/fixed_seed.h
+runtime/src/framegen.h
+runtime/src/input.h
+runtime/src/input_map.h
+runtime/src/interp.h
+runtime/src/interp_pacing.h
+runtime/src/main_profile.h
+runtime/src/mods/camera_swipe.h
+runtime/src/mods/climb.h
+runtime/src/mods/fast_forward.h
+runtime/src/mods/mod_archive.h
+runtime/src/mods/mod_json.h
+runtime/src/mods/mods.h
+runtime/src/mods/move_speed.h
+runtime/src/mods/save_folder_writes.h
+runtime/src/one_screen.h
+runtime/src/overlay/guest_hud.h
+runtime/src/overlay/hostui.h
+runtime/src/overlay/overlay.h
+runtime/src/overlay/startup_notices.h
+runtime/src/overlay/window_target.h
+runtime/src/perf_metrics.h
+runtime/src/platform/display_rate.h
+runtime/src/platform/dual_display.h
+runtime/src/platform/gamepad_touch.h
+runtime/src/platform/gaming_mode.h
+runtime/src/platform/host.h
+runtime/src/platform/keycodes.h
+runtime/src/platform/memory_trim.h
+runtime/src/platform/perf_hint.h
+runtime/src/platform/present_observer.h
+runtime/src/platform/process_peak_rss.h
+runtime/src/platform/touch_options.h
+runtime/src/platform/touch_style.h
+runtime/src/render_objects.h
+runtime/src/render_prof.h
+runtime/src/report_header.h
+runtime/src/runtime.h
+runtime/src/save_path.h
+runtime/src/savestate.h
+runtime/src/screenshot.h
+runtime/src/sky_frame.h
+runtime/src/tv_pointer.h
+runtime/src/write_watch.h
+cmake/pipeline_identity_inputs.txt
+cmake/PipelineRuntimeIdentity.cmake

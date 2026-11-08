@@ -287,7 +287,7 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
             work.mkdir(parents=True)
             make_build_space(setup, data)
             progress('Translating game code')
-            setup.recompile(ctx.game_dir, str(work / 'gen'), hooks=hooks)
+            setup.recompile(ctx.game_dir, str(work / 'gen'), hooks=hooks, cache_root=ctx.data_dir)
             check()
             progress('Compiling game code')
             objs = setup.compile_gamecode(tc, ctx.manifest, str(work / 'gen'), str(work / 'obj'),
@@ -305,7 +305,7 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
                 (target.parent / 'portable.txt').write_text('')
             with target.open('rb') as f:
                 digest = file_sha256(f)
-            record = {'fingerprint': key, 'hooks': bool(hooks), 'sha256': digest,
+            record = {'fingerprint': key, 'hooks': bool(hooks), 'sha256': digest, 'release': ctx.manifest.get('version'),
                       'gamecode_objects': file_hashes(objs),
                       'generated': file_hashes(sorted(p for p in (work / 'gen').rglob('*') if p.is_file()), work / 'gen')}
 
@@ -367,7 +367,7 @@ def remember_installed(setup, ctx, tc, hooks, exe, gen, objs):
         with source.open('rb') as stream:
             digest = file_sha256(stream)
         atomic_json(stage / 'ready.json', {
-            'fingerprint': key, 'hooks': bool(hooks), 'sha256': digest,
+            'fingerprint': key, 'hooks': bool(hooks), 'sha256': digest, 'release': ctx.manifest.get('version'),
             'gamecode_objects': file_hashes(objs),
             'generated': file_hashes(sorted(p for p in Path(gen).rglob('*') if p.is_file()), Path(gen))})
         cache.parent.mkdir(parents=True, exist_ok=True)
