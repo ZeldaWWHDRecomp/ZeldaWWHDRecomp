@@ -212,8 +212,8 @@ leaving the party takes you back to the title screen, because you were playing i
 - Each other player shown takes about 0.5 MB of the port's own memory the first time; the game's memory is not
   used for them.
 - Friendly fire: a sword hit or an arrow on another player costs them half a heart (a heart for spin and
-  jump attacks), but never their last quarter heart. Party members' cannon shots and bombs are shown but don't
-  hurt you. Played directly it is on; through a server it is a party
+  jump attacks), a bomb's or a cannon shot's blast a heart, but never their last quarter heart. Played directly it
+  is on; through a server it is a party
   switch, off unless the leader turns it on.
 - **Party switches** (through a server; the party's leader sets them on the Online page, every member sees
   them): shared progress (on), shared rupees (off), friendly fire (off), stay together (off).

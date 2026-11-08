@@ -124,7 +124,8 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
         if (m.type == net::kPlayerHit) {  // another player's sword or arrow on this game's Link (friendly fire)
             const uint8_t who = r.get<uint8_t>(), quarters = r.get<uint8_t>();
             const int16_t way = r.get<int16_t>();
-            if (who == net::my_id() && quarters >= 1 && quarters <= 4) g_hurt = {quarters, way};
+            if (who == net::my_id() && quarters >= 1 && quarters <= 4)
+                g_hurt = {quarters, way}, mods::trace("coop: player %d's blow on this game's Link: %u quarter hearts", m.from, quarters);
         } else if (m.type == net::kMonHit || m.type == net::kMonGone) {
             mods::coop::monsters::message(c, m.type, m.body);
         } else if (m.type == net::kBoatShot) {
@@ -134,6 +135,48 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
         }
     }
     if (settled) held.clear();
+    // test aid: WWHD_COOP_TEST_FF_FIRE=<s>:cannon|bomb[,...]: that long after arriving, a cannon ball of this game's at the
+    // nearest party member shown (from 200 off, level, as fast as the boat's), or a bomb of its own going off at their
+    // feet; each counts as this game's own (friendly fire: its blast)
+    if (static const char* e = getenv("WWHD_COOP_TEST_FF_FIRE"); e && settled && sync::arrived()) {
+        static uint32_t since = net::now_ms();
+        static size_t next = 0;
+        static std::vector<std::pair<uint32_t, std::string>> plan = [] {
+            std::vector<std::pair<uint32_t, std::string>> v;
+            for (const char* p = getenv("WWHD_COOP_TEST_FF_FIRE"); p && *p;) {
+                char* end = nullptr;
+                const double sec = strtod(p, &end);
+                if (end == p || *end != ':') break;
+                const char* q = end + 1;
+                const char* stop = strchr(q, ',');
+                v.push_back({(uint32_t)(sec * 1000), std::string(q, stop ? size_t(stop - q) : strlen(q))});
+                p = stop ? stop + 1 : nullptr;
+            }
+            return v;
+        }();
+        if (next < plan.size() && net::now_ms() - since >= plan[next].first) {
+            const std::string what = plan[next++].second;
+            int target = -1;
+            float p[3], best = 1e9f;
+            for (int id = 0; id < net::kMaxPlayers; id++)
+                if (float q[3]; id != net::my_id() && net::member(id) && sync::place(id, q))
+                    if (const float d = std::hypot(q[0] - (float)ldf32(link + ac::kPos), q[2] - (float)ldf32(link + ac::kPos + 8)); d < best)
+                        best = d, target = id, memcpy(p, q, sizeof p);
+            if (target < 0) mods::trace("coop: test: %s: no party member to aim at", what.c_str());
+            else if (what == "cannon") {
+                const float dx = p[0] - (float)ldf32(link + ac::kPos), dz = p[2] - (float)ldf32(link + ac::kPos + 8), d = std::max(1.f, std::hypot(dx, dz));
+                const float from[3] = {p[0] - dx / d * 200, p[1] + 60, p[2] - dz / d * 200};
+                const int16_t angle[3] = {0, (int16_t)(std::atan2(dx, dz) * 32768 / M_PI), 0};
+                const uint32_t ball = spawn_ball(c, link, from, angle, 40, 2, -2.5f);
+                mods::coop::items::fired_ball(ball);
+                mods::trace("coop: test: a cannon ball at player %d: %08X", target, ball);
+            } else if (what == "bomb") {
+                const uint32_t bomb = mods::coop::items::spawn(c, link, 0x126, 0x80000000, p);
+                if (bomb) mods::coop::items::made(0x126, bomb);
+                mods::trace("coop: test: a bomb at player %d: %08X", target, bomb);
+            }
+        }
+    }
     if (settled) mods::coop::monsters::step(c, link);  // the placed monsters: ours out, the others' put in
     mods::coop::pvp::step(c, link, settled);  // (C28: PvP at sea, through a server)
     // friendly fire (the fork's rule: always on): a sword attack of this game's Link (as it starts: daPy_lk_c::mCurProc
@@ -256,7 +299,7 @@ extern "C" void hook_025D5928(Cpu* c) {
     f_025D5928_orig(c);
     if (his) items::made(proc, c->r[3]);
     if (coop) items::flower(proc, c->r[3], param);  // (a Bomb Flower's plant makes it: not while Link executes)
-    if (boat) world::g_boat_shot.ball = c->r[3];
+    if (boat) world::g_boat_shot.ball = c->r[3], items::fired_ball(c->r[3]);
 }
 
 // fopAc_Execute (025D475C): a placed monster this game runs goes for the nearest player, and takes the other players'

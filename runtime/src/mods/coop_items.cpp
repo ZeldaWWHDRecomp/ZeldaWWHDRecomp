@@ -109,8 +109,43 @@ uint32_t spawn(Cpu* c, uint32_t link, int16_t proc, uint32_t param, const float 
     return a;
 }
 
+namespace {
+// friendly fire (the party's switch): a blast of this game's (its bomb, a Bomb Flower, the boat's cannon ball) costs each
+// other player shown within the game's own blast (daBomb_c / daBomb2: a sphere of 200 at its place, Link's middle 50 over
+// his feet) a heart, as a spin attack does: this game decides, as for the sword; the receiver never takes the last
+// quarter heart (coop_world's hurt)
+constexpr float kBlast = 200, kLinkMid = 50;
+std::vector<uint32_t> g_balls;  // the boat's cannon balls this game fired, by process id, until they go off
+void blast(const float at[3], const char* what) {
+    if (!net::party_flag(net::kFriendlyFire, true)) return;
+    for (int id = 0; id < net::kMaxPlayers; id++) {
+        float p[3];
+        if (id == net::my_id() || !net::member(id) || !sync::place(id, p)) continue;
+        const float d = std::hypot(p[0] - at[0], p[1] + kLinkMid - at[1], p[2] - at[2]);
+        if (d > kBlast) continue;
+        const int16_t way = (int16_t)(std::atan2(p[0] - at[0], p[2] - at[2]) * 32768 / M_PI);
+        net::send(-1, net::kPlayerHit, std::string{(char)id, (char)4} + std::string((const char*)&way, 2));
+        mods::trace("coop: this game's %s hits player %d (%.0f from the blast): a heart", what, id, d);
+    }
+}
+}  // namespace
+
+void fired_ball(uint32_t ball) {
+    if (ball && net::role() != net::Role::kOff) g_balls.push_back(ld32(ball + 4));
+}
+
 void step(Cpu* c) {
-    if (net::role() == net::Role::kOff) return g_mine.clear(), g_gone.clear();
+    if (net::role() == net::Role::kOff) return g_mine.clear(), g_gone.clear(), g_balls.clear();
+    for (size_t i = 0; i < g_balls.size();) {  // (the boat's cannon balls: a blast where one goes off, as a bomb's)
+        const uint32_t a = actor_of(c, g_balls[i]);
+        if (a && ld16(a + kFuse) != 0) { i++; continue; }
+        if (a) {
+            float at[3];
+            for (int e = 0; e < 3; e++) at[e] = (float)ldf32(a + kPos + 4 * e);
+            blast(at, "cannon shot");
+        }
+        g_balls.erase(g_balls.begin() + i);
+    }
     const uint32_t now = net::now_ms();
     g_gone.erase(std::remove_if(g_gone.begin(), g_gone.end(), [&](const Gone& g) { return now - g.at > 3000; }), g_gone.end());
     // test aid: WWHD_COOP_TEST_FLOWERS=1 traces the Bomb Flower plants loaded here (once each), to stand Link at one
@@ -146,6 +181,7 @@ void step(Cpu* c) {
             for (int e = 0; e < 3; e++) at[e] = (float)ldf32(a + kPos + 4 * e);
             const float still[3] = {};
             net::pvp_shot(3, at, still);  // (C28: through a server, shown to the players near by outside the party too)
+            blast(at, m.proc == kBomb2 ? "Bomb Flower" : "bomb");
         }
         g_gone.push_back({m.id, m.proc, now});
         g_mine.erase(g_mine.begin() + i);
