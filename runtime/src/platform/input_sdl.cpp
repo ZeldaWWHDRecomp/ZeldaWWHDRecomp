@@ -575,8 +575,29 @@ static void device_sensor_event(const SDL_SensorEvent& e){
  motion::device_sample(e.sensor_timestamp,gyro,accel);
 }
 #endif
-// What the dominant pad (first connected still present) has printed on its face buttons, in the
-// order kPadA, kPadB, kPadX, kPadY: south, east, west, north (issue #78's Automatic preset).
+// What a pad has printed on its face buttons, in the order kPadA, kPadB, kPadX, kPadY: south, east,
+// west, north
+static void pad_labels(SDL_Gamepad* pad,input_map::FaceLabel out[4]){
+ using FL=input_map::FaceLabel;
+ auto label=[&](SDL_GamepadButton b)->FL{
+  switch(SDL_GetGamepadButtonLabel(pad,b)){
+  case SDL_GAMEPAD_BUTTON_LABEL_A:return FL::kA;
+  case SDL_GAMEPAD_BUTTON_LABEL_B:return FL::kB;
+  case SDL_GAMEPAD_BUTTON_LABEL_X:return FL::kX;
+  case SDL_GAMEPAD_BUTTON_LABEL_Y:return FL::kY;
+  case SDL_GAMEPAD_BUTTON_LABEL_CROSS:return FL::kCross;
+  case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE:return FL::kCircle;
+  case SDL_GAMEPAD_BUTTON_LABEL_SQUARE:return FL::kSquare;
+  case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE:return FL::kTriangle;
+  default:return FL::kUnknown;}};
+ out[0]=label(SDL_GAMEPAD_BUTTON_SOUTH);out[1]=label(SDL_GAMEPAD_BUTTON_EAST);
+ out[2]=label(SDL_GAMEPAD_BUTTON_WEST);out[3]=label(SDL_GAMEPAD_BUTTON_NORTH);
+}
+static bool pad_gamecube(SDL_Gamepad* pad){
+ return input_map::is_gamecube(SDL_GetGamepadType(pad)==SDL_GAMEPAD_TYPE_GAMECUBE,SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad));
+}
+// What the dominant pad (first connected still present) has printed on its face buttons (issue #78's
+// Automatic preset)
 static void dominant_labels(input_map::FaceLabel out[4]){
  using FL=input_map::FaceLabel;
  for(int i=0;i<4;i++)out[i]=FL::kUnknown;
@@ -591,19 +612,7 @@ static void dominant_labels(input_map::FaceLabel out[4]){
   if(!SDL_GamepadHasButton(pad,SDL_GAMEPAD_BUTTON_SOUTH) || !SDL_GamepadHasButton(pad,SDL_GAMEPAD_BUTTON_EAST) ||
      !SDL_GamepadHasButton(pad,SDL_GAMEPAD_BUTTON_WEST) || !SDL_GamepadHasButton(pad,SDL_GAMEPAD_BUTTON_NORTH))continue;
 #endif
-  auto label=[&](SDL_GamepadButton b)->input_map::FaceLabel{
-   switch(SDL_GetGamepadButtonLabel(pad,b)){
-   case SDL_GAMEPAD_BUTTON_LABEL_A:return FL::kA;
-   case SDL_GAMEPAD_BUTTON_LABEL_B:return FL::kB;
-   case SDL_GAMEPAD_BUTTON_LABEL_X:return FL::kX;
-   case SDL_GAMEPAD_BUTTON_LABEL_Y:return FL::kY;
-   case SDL_GAMEPAD_BUTTON_LABEL_CROSS:return FL::kCross;
-   case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE:return FL::kCircle;
-   case SDL_GAMEPAD_BUTTON_LABEL_SQUARE:return FL::kSquare;
-   case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE:return FL::kTriangle;
-   default:return FL::kUnknown;}};
-  out[0]=label(SDL_GAMEPAD_BUTTON_SOUTH);out[1]=label(SDL_GAMEPAD_BUTTON_EAST);
-  out[2]=label(SDL_GAMEPAD_BUTTON_WEST);out[3]=label(SDL_GAMEPAD_BUTTON_NORTH);
+  pad_labels(pad,out);
   return;  // one pad decides, the first connected
  }
 }
@@ -619,7 +628,7 @@ static void note_dominant_labels(){
    auto it=g_controllers.find(id);if(it==g_controllers.end())continue;
    auto* pad=it->second;
    const bool type=SDL_GetGamepadType(pad)==SDL_GAMEPAD_TYPE_GAMECUBE;
-   const bool gc=input_map::is_gamecube(type,SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad));
+   const bool gc=pad_gamecube(pad);
    if(candidates.empty())detected=gc;
    // SDL's GameCube type uses AXBY positions. Older PC database entries use ABXY.
    const bool pc=!type && !(SDL_GetGamepadVendor(pad)==0x057e && SDL_GetGamepadProduct(pad)==0x0337);
@@ -1127,7 +1136,13 @@ void update(){
   const SDL_JoystickID id=devices[i].first;
   bool pressed=false;
   for(int p=1;p<kPadCount;p++)pressed|=devices[i].second[p]>0.6f;
-  if(pressed&&!idents[i].is_virtual&&id!=active){active=id;input_map::set_active_controller(idents[i].guid,idents[i].name);}
+  if(pressed&&!idents[i].is_virtual&&id!=active){
+   active=id;
+   // Automatic prompts follow this pad's labels and GameCube identity (issue #459)
+   input_map::FaceLabel labels[4]={};bool gc=false;
+   {std::lock_guard lk(g_pads_mu);if(auto it=g_controllers.find(id);it!=g_controllers.end()){pad_labels(it->second,labels);gc=pad_gamecube(it->second);}}
+   input_map::set_active_controller(idents[i].guid,idents[i].name,input_map::pad_family_from_labels(labels),gc);
+  }
   if(pressed){
    bool offer=false;
    {std::lock_guard lk(g_pads_mu);offer=g_offer_pending.erase(id)>0;}

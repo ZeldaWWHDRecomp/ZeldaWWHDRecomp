@@ -229,13 +229,16 @@ void note_face_labels(const FaceLabel labels[4]);
 // reported the bindings stay as they are. apply_face_layout turns it off: a preset is a choice.
 void set_face_auto(Mapping& m, bool on);
 
-// The dominant pad's family, from the labels note_face_labels last reported: PlayStation when it
-// names Cross/Circle/Square/Triangle, Xbox when its bottom button is A, Nintendo when it is B.
+// A pad's family, from its face labels: PlayStation when it names Cross/Circle/Square/Triangle,
+// Xbox when its bottom button is A, Nintendo when it is B.
 enum class PadFamily { kUnknown, kXbox, kPlayStation, kNintendo };
 // The dominant device GameCube-adapter identity, separate from its face labels.
 void note_gamecube(bool detected);
-bool gamecube_pad();
 PadFamily pad_family_from_labels(const FaceLabel labels[4]);
+// The pad Automatic prompts describe: the controller in use (set_active_controller), else the
+// dominant pad (note_gamecube, note_face_labels). A pad in use with unknown labels takes the
+// dominant pad's family.
+bool gamecube_pad();
 PadFamily pad_family();
 
 // What the in-game button prompts look like (button_glyphs.cpp draws it). Resolved from the
@@ -392,8 +395,10 @@ bool l_turns_page();     // current().l_turns_page, any thread
 // controls.json; a format 2 file has its own Jump bindings and ignores it.
 void adopt_legacy_jump_button(uint32_t vpad_bit);
 // The controller in use (hosts: the one that pressed something last), for the overlay's confirm and
-// back buttons (face_input) and the Controls tab's first choice. Empty: none.
-void set_active_controller(const std::string& guid, const std::string& name);
+// back buttons (face_input), the Controls tab's first choice and Automatic prompts (`family` and
+// `gamecube` describe it). Empty: none.
+void set_active_controller(const std::string& guid, const std::string& name,
+                           PadFamily family = PadFamily::kUnknown, bool gamecube = false);
 void active_controller(std::string& guid, std::string& name);
 
 }  // namespace input_map
