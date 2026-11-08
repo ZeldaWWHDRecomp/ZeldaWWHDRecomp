@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Pause menu: the selection cursor no longer gets stuck after the settings arrow** (#484, thanks @XAlboX for the
+  report and logs, #336). The arrow at the menu's left edge (Left from ITEMS) now only takes over from the menu's
+  own cursor and always gives it back; a safety net restores the cursor if anything is left pointing at the arrow,
+  and the log records why the arrow gave up the focus.
+
 - **Vulkan on Mali and PowerVR: fewer render passes** (#476, ported from the Android forks by GreenNaugahyde and
   Nycolazs). Draws that use part of an open pass's targets keep that pass, and textures are made ready before their
   pass instead of ending it: about 3 fewer render passes per frame, which saves memory traffic on tile-based phone
