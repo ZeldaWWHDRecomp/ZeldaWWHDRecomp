@@ -81,6 +81,10 @@ def earlier_releases(pkg, platform):
 
 
 def transfer_mode(old_data, new_data):
+    """clone where the file system can, else move. Test aid: WWHD_UPDATE_TRANSFER=move takes the move path on a
+    file system that could clone (never the other way round)."""
+    if os.environ.get("WWHD_UPDATE_TRANSFER") == "move":
+        return "move"
     return "clone" if build_cache.can_clone(old_data, new_data) else "move"
 
 
