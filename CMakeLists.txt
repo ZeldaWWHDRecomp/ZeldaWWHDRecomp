@@ -447,14 +447,15 @@ add_executable(gcmodel_tool runtime/tools/gcmodel_tool.cpp)
 target_include_directories(gcmodel_tool PRIVATE runtime/src runtime/tools)
 target_link_libraries(gcmodel_tool PRIVATE wwhd_gcmodel)
 
-add_executable(mod_manager_test runtime/tools/mod_manager_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp)
-target_include_directories(mod_manager_test PRIVATE runtime/src)
+add_executable(mod_manager_test runtime/tools/mod_manager_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp
+               runtime/src/mods/speedrun.cpp)
+target_include_directories(mod_manager_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_manager_test PRIVATE -UNDEBUG)
 
 # External native package fixture and isolated lifecycle/integration tests.
 add_library(mod_fixture MODULE runtime/tools/mod_fixture.cpp)
 target_include_directories(mod_fixture PRIVATE runtime/include)
-add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/required.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/required.cpp runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_package_test PRIVATE runtime/src runtime/include runtime/tools)
 target_compile_options(mod_package_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_package_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
@@ -1770,6 +1771,11 @@ add_executable(moon_jump_movement_test runtime/tools/moon_jump_movement_test.cpp
 target_include_directories(moon_jump_movement_test PRIVATE runtime/src runtime/include)
 target_compile_options(moon_jump_movement_test PRIVATE -UNDEBUG)
 add_test(NAME moon_jump_movement COMMAND moon_jump_movement_test)
+# Classic Wind Waker (Speedrun, issue #405): the two sites against the TWWHD Randomizer's Classic-mode words
+add_executable(classic_tact_test runtime/tools/classic_tact_test.cpp runtime/src/mods/speedrun.cpp)
+target_include_directories(classic_tact_test PRIVATE runtime/src runtime/include)
+target_compile_options(classic_tact_test PRIVATE -UNDEBUG)
+add_test(NAME classic_tact COMMAND classic_tact_test)
 if(Python3_Interpreter_FOUND)
   add_test(NAME repair_medli COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/savegame/repair_medli_test.py")
   add_test(NAME medli_scenario_evidence COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/runtime/tools/medli_scenario_test.py")
@@ -2625,7 +2631,7 @@ endif()
 if(NOT ANDROID AND SDL3_FOUND AND Python3_Interpreter_FOUND)
   add_executable(mod_oneclick_flow_test runtime/tools/mod_oneclick_flow_test.cpp
     runtime/third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp runtime/src/mods/code_mods.cpp
-    runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp
+    runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp
     runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c
     runtime/src/overlay/extensions.cpp runtime/src/overlay/text_field.cpp runtime/src/mods/required.cpp ${WWHD_BUILD_INFO})
   target_include_directories(mod_oneclick_flow_test PRIVATE runtime/src runtime/include)
@@ -2638,7 +2644,7 @@ add_test(NAME mod_setup_acceptance COMMAND mod_package_test --setup-acceptance)
 add_test(NAME mod_player_models COMMAND mod_package_test --player-models)
 
 # Experimental mods: flag, list filter, save backup before enabling, retention, staged restore.
-add_executable(mod_experimental_test runtime/tools/mod_experimental_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_experimental_test runtime/tools/mod_experimental_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_experimental_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_experimental_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_experimental_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})

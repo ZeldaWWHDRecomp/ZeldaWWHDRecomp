@@ -100,6 +100,12 @@ const Entry catalogue[] = {
     {"no-text-pauses", "No pauses in texts", "Gameplay",
      "Leaves out the short pauses written into some texts, so the rest of the line follows at once.",
      "WWHD_MOD_NO_TEXT_PAUSES", no_text_pauses, set_no_text_pauses},
+    // shown in Mods > More > Speedrun (overlay/mods_tab.h), not in the built-in list
+    {"classic-wind-waker", "Classic Wind Waker (dive and storage)", "Speedrun",
+     "Brings back the original GameCube Wind Waker behaviour that speedrun tricks use: the dive out of a ledge climb "
+     "and dry storage. HD normally cancels the Wind Waker as soon as Link starts to fall, and puts him back into his "
+     "waiting state when it ends. Takes effect at once.",
+     "WWHD_MOD_CLASSIC_TACT", classic_wind_waker, set_classic_wind_waker},
 };
 std::string key(const Entry& entry) { return std::string("mod.")+entry.id+".enabled"; }
 bool player_preferences() { return !std::getenv("WWHD_NO_HOST_INPUT"); }
@@ -138,6 +144,14 @@ void load_saved() {
         std::string value;
         if (hostui::get(key(entry).c_str(), value) && (value == "0" || value == "1"))
             if (entry.enabled() != (value == "1")) entry.apply(value == "1");
+    }
+    // Test aid for the settings round trip (a run that saves player preferences): WWHD_TEST_BUILTIN_SET=<id>=<0|1>
+    // switches one built-in mod as its switch in the Settings window does, saved for the next start.
+    if (const char* t = std::getenv("WWHD_TEST_BUILTIN_SET")) {
+        const std::string_view v = t;
+        const size_t eq = v.rfind('=');
+        if (eq != std::string_view::npos && (v.substr(eq + 1) == "0" || v.substr(eq + 1) == "1"))
+            set_enabled(v.substr(0, eq), v.substr(eq + 1) == "1");
     }
     auto number = [](const char* key, const char* env, float lo, float hi, void (*apply)(float)) {
         if (std::getenv(env)) return;

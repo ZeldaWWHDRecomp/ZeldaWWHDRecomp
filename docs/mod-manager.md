@@ -49,9 +49,23 @@ mod's page), the *Experimental* tag where it applies and a one-word status (*On*
   "Loading the mod list…" (or why it couldn't be loaded, with Retry).
 - **More**: what a player rarely needs, in collapsed sections: Switch all mods
   off, Profiles, Install from a file or folder, GameCube game for mods, Code-mod
-  support, Save backups, Mod list (its source and the automatic check), Cheats
-  and the Mods folder. Notices from the manager (for example a graphics pack that
+  support, Save backups, Mod list (its source and the automatic check), Speedrun,
+  Cheats and the Mods folder. Notices from the manager (for example a graphics pack that
   was switched off) appear at the top of the tab until OK.
+
+### Speedrun
+
+**Mods › More › Speedrun › Classic Wind Waker (dive and storage)** (off by default)
+brings back the original GameCube Wind Waker behaviour that speedrun tricks use. HD
+cancels the Wind Waker as soon as Link starts to fall, which stops the dive out of a
+ledge climb, and puts Link back into his waiting state when the Wind Waker ends, which
+stops dry storage. The switch removes both checks, exactly as the TWWHD Randomizer's
+Classic mode does (issue #405), and takes effect at once. It is saved like a built-in
+mod (also in mod profiles; **Switch all mods off** includes it). Off, the game's own
+code runs. A randomized game made with Classic mode already has this; the switch
+changes nothing there. Test switch: `WWHD_MOD_CLASSIC_TACT=1`; in a run that saves player
+preferences (without `WWHD_NO_HOST_INPUT`), `WWHD_TEST_BUILTIN_SET=classic-wind-waker=1` (or `=0`)
+switches it at start as the Settings window does, saved for the next start.
 
 ### Story items
 
@@ -385,7 +399,7 @@ for); `WWHD_TEST_CATALOGUE_INSTALL=<id>` switches on that catalogue mod once the
 list is loaded; `WWHD_TEST_MOD_SETUP=<id>` accepts that mod's review;
 `WWHD_TEST_MOD_DISABLE`, `WWHD_TEST_MOD_REMOVE` (accepts the confirmation) and
 `WWHD_TEST_MOD_INSTALL=<path>` (More > Install from a file) do the same for those
-actions; `WWHD_TEST_MODS_VIEW=more|page:<id>` opens that area or page. The log
+actions; `WWHD_TEST_MODS_VIEW=more|more:<section>|page:<id>` opens that area (with that section of More open) or page. The log
 says `[catalogue] installed <id>`, `[mods] <id> is on` and `[setup test] ready <id>`.
 
 ## Native mod SDK v1

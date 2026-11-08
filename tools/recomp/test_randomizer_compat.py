@@ -229,10 +229,13 @@ class Compatibility(unittest.TestCase):
                 self.assertRegex(value, r'^[0-9a-f]{64}$')
         # Reviewed 1.2.0 variants (docs/randomizer-maintainers.md): every seed (grapple/block speed,
         # vanilla-bug fixes, misc features); Quiet Swift Sail (procSteerMove); any entrance shuffle
-        # (setGameStartStage). Every seed also redirects float constants through relocation addends only
-        # (issue #383): in 0216F7FC, 0242A218 (setBlendWHideMoveAnime) and the tiny 02417FF4. The port's hooks of
-        # those two wrap the translated original. One reviewed variant each: the patches do not depend on the seed.
-        reviewed = {0x0216F7FC: 2, 0x023EFF20: 2, 0x025499A0: 2, 0x0247E854: 2, 0x025217F8: 2, 0x0242A218: 2}
+        # (setGameStartStage); Classic mode (procTactWait 0243A094, endDemoMode 023F2048: the words the port's
+        # Classic Wind Waker sites stand next to, mods/speedrun.cpp). Every seed also redirects float constants
+        # through relocation addends only (issue #383): in 0216F7FC, 0242A218 (setBlendWHideMoveAnime) and the tiny
+        # 02417FF4. The port's hooks of those two wrap the translated original. One reviewed variant each: the
+        # patches do not depend on the seed.
+        reviewed = {0x0216F7FC: 2, 0x023EFF20: 2, 0x025499A0: 2, 0x0247E854: 2, 0x025217F8: 2, 0x0242A218: 2,
+                    0x0243A094: 2, 0x023F2048: 2}
         self.assertEqual({f['start']: len(f['sha256']) for f in profile['functions'] if len(f['sha256']) > 1},
                          reviewed)
         self.assertIsNone(builds.by_title(C.TITLE_ID))  # not a normal immutable build hash
@@ -247,7 +250,8 @@ class Compatibility(unittest.TestCase):
         self.assertEqual(profile['hooks_sha256'], C.hook_digest(hooks))
         self.assertEqual(set(profile['points']), {a for _, _, a, _ in hooks})
         self.assertNotEqual(profile['entry_point'], json.loads(C.PROFILE.read_text())['entry_point'])
-        reviewed = {eu.code(a): 2 for a in (0x0216F7FC, 0x023EFF20, 0x025499A0, 0x0247E854, 0x025217F8, 0x0242A218)}
+        reviewed = {eu.code(a): 2 for a in (0x0216F7FC, 0x023EFF20, 0x025499A0, 0x0247E854, 0x025217F8, 0x0242A218,
+                                            0x0243A094, 0x023F2048)}
         self.assertEqual(profile['format'], C.PROFILE_FORMAT)
         self.assertEqual(len(profile['guard_sha256']), 2)  # the tiny 02417FF4 (EU 02417FF8), as in the USA profile
         self.assertEqual({f['start']: len(f['sha256']) for f in profile['functions'] if len(f['sha256']) > 1},

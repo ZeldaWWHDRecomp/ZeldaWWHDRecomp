@@ -146,6 +146,9 @@ void set_sail_speed_normal_factor(float factor);
 float sail_speed_swift_factor();          // the HD Swift Sail
 void set_sail_speed_swift_factor(float factor);
 bool auto_wind();                         // the wind follows the boat with the normal sail too
+// ---- speedrun (speedrun.cpp; Settings > Mods > More > Speedrun) ----
+bool classic_wind_waker();                // HD's two Wind Waker checks off: the dive and dry storage work again
+void set_classic_wind_waker(bool on);
 // ---- jump anywhere (jump.cpp; settings in traversal_settings.cpp) ----
 bool jump_anywhere();                     // the jump button jumps from standing or running
 void set_jump_anywhere(bool on);
