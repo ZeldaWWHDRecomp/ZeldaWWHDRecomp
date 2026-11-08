@@ -36,6 +36,7 @@
 namespace mods::coop::monsters {
 namespace {
 
+constexpr uint32_t kHomePos = 0x2EC;  // fopAc_ac_c::home.pos (coop_progress.cpp kHome)
 constexpr uint32_t kProcName = 0x08, kSetId = 0x2D8, kGroup = 0x2DA, kHomeRoom = 0x2FE, kOldPos = 0x300, kPos = 0x314,
                    kAngleY = 0x322, kShapeY = 0x32A, kHealth = 0x3A1;
 constexpr uint8_t kEnemy = 2;  // fopAc_ENEMY_e, the actor's group (fopAc_Create: its profile's +0x2C)
@@ -84,8 +85,17 @@ const char* stage() {  // (the clean code: names.h clean_stage; the game's own b
 }
 float f32(uint32_t a) { return (float)ldf32(a); }
 uint32_t bits(float f) { uint32_t u; memcpy(&u, &f, 4); return u; }
-bool placed(uint32_t a) { return ld8(a + kGroup) == kEnemy && ld16(a + kSetId) != 0xFFFF; }
-uint32_t key(uint32_t a) { return ld16(a + kProcName) * 0x9E3779B1u ^ ld8(a + kHomeRoom) * 0x85EBCA6Bu ^ ld16(a + kSetId); }
+// a monster's set id; at sea, where the rooms' data gives none (every sea room's actors have 0xFFFF: the enemy ships,
+// the islands' Bokoblins, Kargarocs, Gyorgs), one from its home place, the same in every game for one the room placed
+// (0x8000 and up, above the set ids rooms give); one made at run time elsewhere in each game matches no other's
+uint16_t set_of(uint32_t a) {
+    const uint16_t set = ld16(a + kSetId);
+    if (set != 0xFFFF || strncmp(stage(), "sea", 8)) return set;
+    const int32_t x = (int32_t)std::lround(f32(a + kHomePos)), z = (int32_t)std::lround(f32(a + kHomePos + 8));
+    return (uint16_t)(0x8000 | (((uint32_t)x * 0x9E3779B1u ^ (uint32_t)z * 0x85EBCA6Bu) >> 17));
+}
+bool placed(uint32_t a) { return ld8(a + kGroup) == kEnemy && set_of(a) != 0xFFFF; }
+uint32_t key(uint32_t a) { return ld16(a + kProcName) * 0x9E3779B1u ^ ld8(a + kHomeRoom) * 0x85EBCA6Bu ^ set_of(a); }
 int owner_of(uint32_t a) { return sync::owner(stage(), (int8_t)ld8(a + kHomeRoom)); }
 
 template <class F> void each_monster(F f) {  // g_fopAcTg_Queue: node next +8, actor +0xC (coop_progress.cpp)
@@ -259,7 +269,7 @@ void step(Cpu* c, uint32_t link) {
         const int o = owner_of(a);
         const uint32_t k = key(a);
         const int8_t room = (int8_t)ld8(a + kHomeRoom), hp = (int8_t)ld8(a + kHealth);
-        const uint16_t set = ld16(a + kSetId);
+        const uint16_t set = set_of(a);
         // killed before it was made here (the dead came after its room): gone
         if (const auto cp = g_copies.find(k); hp > 0 && !g_hits.count(k) && (cp == g_copies.end() || !cp->second.dying) && is_dead(stage(), room, set)) {
             g_copies[k].dying = true;
@@ -323,7 +333,7 @@ void step(Cpu* c, uint32_t link) {
               g_body.size(), ld32(kCcS + ccs::mObjTgCount), g_copies.size(), (size_t)std::count_if(g_copies.begin(), g_copies.end(), [](const auto& e) { return e.second.hp != -128; }), g_dead.size());
         each_monster([](uint32_t a) {
             trace("coop:   %#x room %d set %u at %.0f %.0f %.0f, health %d, run by %d", ld16(a + kProcName), (int8_t)ld8(a + kHomeRoom),
-                  ld16(a + kSetId), f32(a + kPos), f32(a + kPos + 4), f32(a + kPos + 8), (int8_t)ld8(a + kHealth), owner_of(a));
+                  set_of(a), f32(a + kPos), f32(a + kPos + 4), f32(a + kPos + 8), (int8_t)ld8(a + kHealth), owner_of(a));
         });
     }
     for (const auto& [k, m] : g_mine)
