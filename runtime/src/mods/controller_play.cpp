@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MPL-2.0
 // Controls that depend on whether Link plays (P6 of the controls plan; idea from the GreenNaugahyde
 // Android fork, reimplemented):
-//   - pad_play_rules: L and d-pad down by the game's state (input_map::play_buttons): in play the
-//     game gets no L unless "L turns the GamePad page" is on, and an input shared by a game button
-//     and L or d-pad down presses only one of them;
+//   - pad_play_rules: L and d-pad down by the game's state (input_map::play_buttons): in play an
+//     input that jumps (Jump anywhere or the moon jump on) presses no L unless "L turns the GamePad
+//     page" is on, and an input shared by a game button and L or d-pad down presses only one of them;
 //   - the on-screen Jump and Moon jump buttons (context_buttons.h jump_buttons): which show, and
 //     their presses (input::set_touch_virtual), for android/.../TouchControls.java.
 // Both read the PlayContext (play_context.h), which this file therefore always wants.
@@ -41,7 +41,10 @@ void pad_play_rules(input::PadState& p) {
         gen = g;
     }
     const uint32_t before = p.buttons;
-    p.buttons = input_map::play_buttons(m, p.buttons, in_play);
+    // the virtual inputs that act: Jump while Jump anywhere is on, the moon jump while its cheat is on
+    const uint32_t acting = (jump_anywhere() ? p.virt & input::kVirtJump : 0) |
+                            (infinite(kMoonJump) ? p.virt & input::kVirtMoonJump : 0);
+    p.buttons = input_map::play_buttons(m, p.buttons, in_play, acting);
     // debug: WWHD_PLAY_RULES_LOG=1 logs each change of what the rules hold back
     static const bool log = getenv("WWHD_PLAY_RULES_LOG") != nullptr;
     static uint32_t last = 0;

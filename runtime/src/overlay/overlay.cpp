@@ -2946,9 +2946,8 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
             m.l_turns_page = v;
             input_map::set_current(m);
         }
-        help("In play the game reads L only to turn the GamePad screen between Items and Map. Off (default): L "
-             "reaches the game only in menus, so L1 can jump without turning the page. On: as on the Wii U (for a "
-             "GamePad picture on a second screen).");
+        help("L turns the GamePad screen between Items and Map. With Jump anywhere or the moon jump on, the input "
+             "they share with L (L1 by default) only jumps in play. On: it jumps and turns the page.");
     }
     if (check("File select Quit button", m.file_select_quit, &v)) {
         m.file_select_quit = v;

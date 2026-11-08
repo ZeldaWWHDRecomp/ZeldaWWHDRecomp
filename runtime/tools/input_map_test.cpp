@@ -115,7 +115,7 @@ static void test_defaults() {
     CHECK(press(m, {kVK_F10}).buttons == 0 && press(m, {kVK_F10}).lx == 0);
     CHECK(action_bit(kScreenshot) == 0 && action_from_id("Screenshot") == kScreenshot);
     // no default key is reserved; no key is used twice, except Q / L1 by L, Jump and the moon jump
-    // (virtual inputs share the Wii U's L: in play L leaves, play_buttons)
+    // (virtual inputs share the Wii U's L: in play L leaves while they act, play_buttons)
     for (int a = 0; a < kActionCount; a++)
         for (int k : m.keys[a]) {
             CHECK(k == kNoKey || !reserved_key(k));
@@ -1251,12 +1251,33 @@ static void test_virtual_actions() {
 
 static void test_play_buttons() {
     Mapping m = Mapping::defaults();
-    // L leaves the game in play (option off), stays in menus; with the option it always reaches it
-    CHECK(play_buttons(m, input::kL | input::kA, true) == input::kA);
-    CHECK(play_buttons(m, input::kL | input::kA, false) == (input::kL | input::kA));
+    const uint32_t J = input::kVirtJump, M = input::kVirtMoonJump;
+    // issue #406: with nothing jumping (Jump anywhere and the moon jump off, the defaults) L turns the
+    // GamePad page in play too, as on the Wii U
+    CHECK(play_buttons(m, input::kL | input::kA, true, 0) == (input::kL | input::kA));
+    // L1 / Q also jump (the default bindings): in play that input jumps only (option off), in menus it is L
+    CHECK(play_buttons(m, input::kL | input::kA, true, J) == input::kA);
+    CHECK(play_buttons(m, input::kL | input::kA, true, M) == input::kA);
+    CHECK(play_buttons(m, input::kL | input::kA, false, J) == (input::kL | input::kA));
     m.l_turns_page = true;
-    CHECK(play_buttons(m, input::kL, true) == input::kL);
+    CHECK(play_buttons(m, input::kL, true, J) == input::kL);
     m.l_turns_page = false;
+    {
+        // Jump on another input than L: L and the jump held together both act
+        Mapping o = Mapping::defaults();
+        o.pad[kJump] = o.pad[kMoonJump] = kPadR3;
+        o.keys[kJump] = o.keys[kMoonJump] = {kVK_ANSI_G, kNoKey};
+        CHECK(play_buttons(o, input::kL, true, J) == input::kL);
+        CHECK(play_buttons(o, input::kL, true, J | M) == input::kL);
+        // a controller's own bindings that put Jump on L1 count
+        Mapping c = o;
+        Mapping::Controller pc;
+        pc.pad = o.pad;
+        pc.pad[kJump] = pc.pad[kL];
+        c.controllers.push_back(pc);
+        CHECK(play_buttons(c, input::kL, true, J) == 0);
+        CHECK(play_buttons(c, input::kL, true, M) == input::kL);
+    }
     // an item button moved to d-pad down: the item in play, d-pad down in menus
     CHECK(bind_virtual(m, kJump, m.pad[kY], Displace::kMoveToDDown));
     CHECK(m.pad[kY] == kPadDDown && m.pad[kDDown] == kPadDDown && !has_conflict(m, kY) && !has_conflict(m, kDDown));
@@ -1264,13 +1285,13 @@ static void test_play_buttons() {
     v[kPadDDown] = 1;
     const uint32_t both = controller_state(m, v).buttons;
     CHECK(both == (input::kY | input::kDown));
-    CHECK(play_buttons(m, both, true) == input::kY);
-    CHECK(play_buttons(m, both, false) == input::kDown);
+    CHECK(play_buttons(m, both, true, 0) == input::kY);
+    CHECK(play_buttons(m, both, false, 0) == input::kDown);
     // d-pad down pressed on its own (another input of the same bindings is not shared): kept
-    CHECK(play_buttons(m, input::kDown, true) == input::kDown);
+    CHECK(play_buttons(m, input::kDown, true, 0) == input::kDown);
     // unrelated buttons held together are not filtered
     Mapping d = Mapping::defaults();
-    CHECK(play_buttons(d, input::kDown | input::kY, true) == (input::kDown | input::kY));
+    CHECK(play_buttons(d, input::kDown | input::kY, true, J) == (input::kDown | input::kY));
 }
 
 static void test_displace_rules() {
