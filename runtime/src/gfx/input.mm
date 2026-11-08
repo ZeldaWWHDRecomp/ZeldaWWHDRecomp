@@ -438,7 +438,7 @@ static void family_letters(GCController* c, input_map::FaceLabel out[4]) {
 // Automatic preset follows the first pad still connected.
 static NSMutableArray<GCController*>* g_connect_order;
 
-// What an extended gamepad has printed on its face buttons, in the order kPadA, kPadB, kPadX, kPadY
+// What a controller has printed on its face buttons, in the order kPadA, kPadB, kPadX, kPadY
 static void controller_labels(GCController* c, input_map::FaceLabel labels[4]) {
     using FL = input_map::FaceLabel;
     GCExtendedGamepad* g = c.extendedGamepad;
@@ -956,11 +956,17 @@ void init() {
             const std::string name = c ? pad_name(c) : io_device_name(devices[i].first);
             bool pressed = false;
             for (int p = 1; p < input_map::kPadCount; p++) pressed |= devices[i].second[p] > 0.6f;
+            // its face labels, for Controller details and Automatic prompts (issue #459)
+            input_map::FaceLabel labels[4] = {};
+            if (c) controller_labels(c, labels);
+#ifdef WWHD_HAS_IOKIT
+            if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first && hid_gamepad::xbox_labelled(p->layout)) {
+                labels[0] = input_map::FaceLabel::kA; labels[1] = input_map::FaceLabel::kB;
+                labels[2] = input_map::FaceLabel::kX; labels[3] = input_map::FaceLabel::kY;
+            }
+#endif
             if (pressed && devices[i].first != active) {
                 active = devices[i].first;
-                // Automatic prompts follow this pad's labels and GameCube identity (issue #459)
-                input_map::FaceLabel labels[4] = {};
-                if (c && c.extendedGamepad) controller_labels(c, labels);
                 input_map::set_active_controller("", name, input_map::pad_family_from_labels(labels),
                                                  c && gamecube_controller(c));
             }
@@ -992,19 +998,6 @@ void init() {
                 info.led = c && c.light != nil;
             }
             info.gyro = info.accel = c && c.motion != nil;
-            input_map::FaceLabel labels[4] = {};
-            GCExtendedGamepad* g = c ? c.extendedGamepad : nil;
-            GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};
-            bool any = false;
-            for (int k = 0; k < 4; k++) any |= (labels[k] = button_letter(face[k])) != input_map::FaceLabel::kUnknown;
-            if (c) input_map::apple_face_labels(controller_face_layout(c), labels);
-            if (c && !any) family_letters(c, labels);
-#ifdef WWHD_HAS_IOKIT
-            if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first && hid_gamepad::xbox_labelled(p->layout)) {
-                labels[0] = input_map::FaceLabel::kA; labels[1] = input_map::FaceLabel::kB;
-                labels[2] = input_map::FaceLabel::kX; labels[3] = input_map::FaceLabel::kY;
-            }
-#endif
             for (int k = 0; k < 4; k++) info.labels[k] = uint8_t(labels[k]);
             infos.push_back(std::move(info));
         }
