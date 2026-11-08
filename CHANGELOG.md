@@ -7,6 +7,18 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: Settings › Mods › More › Speedrun** with **Classic Wind Waker (dive and storage)**, off by default (#470,
+  thanks @KaitoCrisHub for the request in #405). HD cancels the Wind Waker as soon as Link starts to fall and puts
+  him back into his waiting state when a demo ends, which removed the dive out of a ledge climb and dry storage.
+  The switch brings back the original GameCube behaviour for speedrun tricks, the same change the TWWHD
+  Randomizer's Classic mode makes, now for the normal game too. It takes effect at once; with it off the game runs
+  exactly as before.
+- **Decomp build: native calls, Android decomp build and a faster mode** (#471). Decompiled functions now call each
+  other natively, the decomp build can be built for Android, and an optional fast mode (`WWHD_DECOMP_FAST`, off by
+  default) binds calls at link time, links the whole game with ThinLTO where the machine allows, and wakes waiting
+  threads less often. On the test phone the fast mode's game logic went from about 17.2 to 15.1 ms per step. Only
+  the decomp build is affected; the normal build is unchanged.
+
 - **Fixed: randomized games crashed at start or ran the original item functions** (#467, thanks @KaitoCrisHub for the
   report, #383). TWWHD Randomizer 1.2.0 points some of the game's tables at its own code through the game file's
   relocation entries, which the console applies when it loads the game. The port now applies them too, when it
