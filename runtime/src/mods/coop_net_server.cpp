@@ -76,6 +76,8 @@ uint32_t g_markers_at = 0;
 // each party member's place from the server's PARTY_WHERE (1 Hz), by server id: what a mid pose lacks
 struct Placed { op::Where where; uint32_t at = 0, since = 0; uint8_t square = 255; int32_t x = 0, z = 0; };
 std::map<uint16_t, Placed> g_places;
+std::vector<SeaMark> g_sea;  // (g_far_mu) the server's other players at sea, for the Sea Chart
+uint32_t g_sea_at = 0;
 op::Client* g_client = nullptr;
 bool g_active = false;
 std::string g_status = "Off";
@@ -390,7 +392,7 @@ void stop(const char* why) {
     if (g_client) g_client->stop(), delete g_client, g_client = nullptr, mods::trace("coop: server session stopped%s%s", why ? ": " : "", why ? why : "");
     g_active = false, g_status = why ? why : "Off", g_me_sid = 0, g_peers.clear(), g_party = {}, g_party_size = 1, g_slot_of_me = 0, g_where_known = false;
     for (Tiered& t : g_tiered) t = Tiered{};
-    { std::lock_guard<std::mutex> l(g_far_mu); g_markers.clear(), g_markers_at = 0; }
+    { std::lock_guard<std::mutex> l(g_far_mu); g_markers.clear(), g_markers_at = 0, g_sea.clear(), g_sea_at = 0; }
     { std::lock_guard<std::mutex> l(g_pvp_mu); g_pvp_rules = {}, g_pvp_flags = 0, g_pvp_marks.clear(), g_pvp_events.clear(), g_pvp_sent = -1; }
     g_runner.clear(), g_places.clear();
     {
@@ -716,6 +718,16 @@ void poll(Handler& h) {
                 pl.at = now_ms(), pl.square = m.square, pl.x = m.x, pl.z = m.z;
             }
             break;
+        case op::ClientEvent::kSeaPlayers: {  // every other player at sea (the Sea Chart): their names and places
+            std::lock_guard<std::mutex> l(g_far_mu);
+            g_sea.clear();
+            for (const op::SeaPlayer& p : e.sea_players) {
+                const float sx = kSeaOrigin + float(p.square % op::kSeaSquares) * op::kSquareUnits, sz = kSeaOrigin + float(p.square / op::kSeaSquares) * op::kSquareUnits;
+                g_sea.push_back({p.name, sx + (p.x + 0.5f) / 256.f * op::kSquareUnits, sz + (p.z + 0.5f) / 256.f * op::kSquareUnits});
+            }
+            g_sea_at = now_ms();
+            break;
+        }
         case op::ClientEvent::kMarkers: {  // (C13) the rest of the square: dots on the radar
             std::lock_guard<std::mutex> l(g_far_mu);
             g_markers.clear();
@@ -1093,6 +1105,12 @@ std::vector<Marker> markers() {
     if (!g_markers_at || now_ms() - g_markers_at > 10000) return {};
     return g_markers;
 }
+std::vector<SeaMark> sea_players() {
+    std::lock_guard<std::mutex> l(g_far_mu);
+    if (!g_sea_at || now_ms() - g_sea_at > 5000) return {};
+    return g_sea;
+}
+
 bool member_place(int id, Place& out) {
     if (!g_client || id < 0 || id >= kMaxPlayers || id == g_slot_of_me || !member(id)) return false;
     const auto it = g_places.find(g_slot[id].sid);

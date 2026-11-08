@@ -9,6 +9,8 @@
 #include "coop_radar.h"
 
 #include <atomic>
+#include <cfloat>
+#include <memory>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -16,11 +18,13 @@
 #include <vector>
 
 #include "coop_block.h"
+#include "game_look.h"
 #include "coop_names.h"
 #include "coop_net.h"
 #include "coop_sync.h"
 #include "guest_addr.h"
 #include "imgui.h"
+#include "imgui_internal.h"
 #include "mods.h"
 #include "runtime.h"
 #include "../aspect.h"
@@ -40,6 +44,7 @@ std::atomic<bool> g_on{false};
 void set_zones(const std::vector<Far>& centres, const std::vector<float>& radii) { g_zone_at = centres, g_zone_r = radii; }
 
 void step(uint32_t link, const std::vector<Far>& far) {
+    chart_step();
     const bool sea = link >= 0x10000000u && !strncmp((const char*)mem::ptr(GD(0x1046F0B0) + names::inf::kCurStage), "sea", 4);
     if (!sea || (far.empty() && g_zone_at.empty()) || !sync::settings().radar) { g_on = false; return; }
     const uint32_t at = link + names::ac::kPos;
@@ -92,45 +97,117 @@ void register_overlay() {
 }
 
 
-// ---- party members on the Sea Chart (the MAP screen's whole sea): a mark in each member's tunic colour and their
-// name, where they are. Drawn over the picture like the radar, nothing of the game's chart touched. The chart area is
-// the sea chart menu's main pane (hdSeaChartMenu_c +0x70: the 7 x 7 squares, square D4 at its origin, one square its
-// size / 7, y up; story_chart.cpp); its global matrix (the layout's, +0x48) puts a point of it on the picture. Each
-// time the game updates the chart (updateProgressIcons, hooked: it runs while the chart is open and settled, not while
-// it opens, zooms or closes) the matrix and the members' places are taken; the marks show while that keeps coming.
-// Party members only, at sea (the server's place report, once a second), never a blocked one; Settings > Online's
-// radar switch turns them off too.
+// ---- players on the Sea Chart (the menu's MAP page: its 7 x 7 grid of the Great Sea): each party member at sea as the
+// chart's own Link icon (its picture read from this game's menu, the hat in the member's tunic colour) with their name
+// over it; every other player at sea the server shows (coop_net's sea_players) as a small grey diamond with their name.
+// Drawn over the picture as the radar is, nothing of the game's chart touched; this game's own Link is the game's.
+// Only while the chart is on the TV, open and settled: the in-game menu open (hdIngameUi_c's state, +0x0C) on its MAP
+// page (mMenuSelection +0x224 == 1), and the chart updated (updateProgressIcons, hooked: not while it opens, zooms or
+// closes) in the last 200 ms. Never in play, on the HUD's mini-map or the GamePad's own chart (the GamePad screen is
+// not where the overlay draws). The chart area is the menu's main pane (+0x70: the 7 x 7 squares, square D4 at its
+// origin, a square its size / 7, y up); its global matrix (+0x48) puts a sea place on the picture. Settings > Online:
+// a switch for party members, one for the others; blocked players are never sent or shown.
 namespace {
-struct ChartMark { float x, z; ImU32 col; std::string name; };
-struct Chart { float m[12] = {}; float w = 0, h = 0; uint32_t at = 0; std::vector<ChartMark> marks; };
-Chart g_chart;  // (g_mu)
-ImU32 tunic_colour(int t) {
-    static const ImU32 c[] = {IM_COL32(70, 200, 90, 255), IM_COL32(230, 70, 60, 255), IM_COL32(70, 130, 240, 255), IM_COL32(170, 90, 220, 255)};
-    return c[(t % 4 + 4) % 4];
+struct ChartMark { float x, z; int tunic; std::string name; bool party; };
+struct Chart { float m[12] = {}; float w = 0, h = 0, icon = 0; uint32_t at = 0; std::vector<ChartMark> marks; };
+Chart g_chart;                   // (g_mu)
+game_glyph::Bitmap g_face;        // (g_mu) the chart's Link icon (P_MapLinkFace_00), read once
+std::unique_ptr<ImTextureData> g_faces[4];  // (render thread) the icon in each tunic colour
+const uint32_t kIngameUi = GD(0x101F8344);
+const ImU32 kTunicRgb[] = {IM_COL32(70, 200, 90, 255), IM_COL32(230, 70, 60, 255), IM_COL32(70, 130, 240, 255), IM_COL32(170, 90, 220, 255)};
+
+// the in-game menu open on its MAP page (game thread)
+bool menu_on_map() {
+    const uint32_t ui = ld32(kIngameUi);
+    return ui >= 0x10000000u && ui < 0x50000000u && ld32(ui + 0x0C) == GD(0x1049ECB0) && ld32(ui + 0x224) == 1;
+}
+// the icon with its green (the hat) turned to a tunic's colour, each pixel's brightness kept
+std::unique_ptr<ImTextureData> tinted(const game_glyph::Bitmap& b, int tunic) {
+    auto t = std::make_unique<ImTextureData>();
+    t->Create(ImTextureFormat_RGBA32, b.width, b.height);
+    t->UseColors = true;
+    uint8_t* px = (uint8_t*)t->GetPixels();
+    memcpy(px, b.rgba.data(), b.rgba.size());
+    const ImU32 c = kTunicRgb[tunic & 3];
+    const float tr = (c & 0xFF) / 255.f, tg = (c >> 8 & 0xFF) / 255.f, tb = (c >> 16 & 0xFF) / 255.f;
+    for (size_t i = 0; i + 3 < b.rgba.size(); i += 4) {
+        const int r = px[i], g = px[i + 1], bl = px[i + 2];
+        if (tunic == 0 || !(g > r + 25 && g > bl + 25)) continue;  // (green, his own tunic: as the game's)
+        const float l = std::min(1.3f, g / 180.f);
+        px[i] = (uint8_t)std::min(255.f, tr * 255 * l), px[i + 1] = (uint8_t)std::min(255.f, tg * 255 * l), px[i + 2] = (uint8_t)std::min(255.f, tb * 255 * l);
+    }
+    ImGui::RegisterUserTexture(t.get());
+    return t;
 }
 }  // namespace
 
 void chart_updated(uint32_t menu) {
     const uint32_t main = menu ? ld32(menu + 0x70) : 0;
-    if (!main || net::role() == net::Role::kOff || !sync::settings().radar) return;
+    const sync::Settings set = sync::settings();
+    if (!main || net::role() == net::Role::kOff || !menu_on_map() || !(set.chart_party || set.chart_others)) {
+        std::lock_guard<std::mutex> l(g_mu);
+        g_chart.at = 0;
+        return;
+    }
     Chart c;
     for (int i = 0; i < 12; i++) c.m[i] = (float)ldf32(main + 0x48 + 4 * i);
     c.w = (float)ldf32(main + 0x3C), c.h = (float)ldf32(main + 0x40);
     c.at = net::now_ms();
-    for (int id = 0; id < net::kMaxPlayers; id++) {
-        net::Place pl;
-        if (id == net::my_id() || !net::member(id) || block::blocked_id(id) || !net::member_place(id, pl) || !pl.at_sea || pl.age_ms > 5000) continue;
-        c.marks.push_back({pl.x, pl.z, tunic_colour(net::tunic(id)), net::name(id)});
+    // the game's own Link icon: its picture (once) and its size on the chart (its pane's size through its global matrix)
+    const uint32_t face = game_look::find_pane(game_look::layout_root(menu), "P_MapLinkFace_00");
+    if (face) c.icon = (float)ldf32(face + 0x3C) * std::hypot((float)ldf32(face + 0x48), (float)ldf32(face + 0x48 + 16));
+    bool need_face = false;
+    {
+        std::lock_guard<std::mutex> l(g_mu);
+        need_face = g_face.width == 0;
     }
-    // test aid: WWHD_COOP_TEST_CHART_SELF=1 marks this game's own Link too (to line the marks up with the game's own
-    // Link mark)
+    if (need_face && face) {
+        game_glyph::Bitmap b;
+        if (game_look::texture(face, {0xF4, 0x28}, b) && b.width > 0) {
+            std::lock_guard<std::mutex> l(g_mu);
+            g_face = std::move(b);
+            mods::trace("coop: sea chart: the game's Link icon read (%dx%d)", g_face.width, g_face.height);
+        }
+    }
+    if (set.chart_party)
+        for (int id = 0; id < net::kMaxPlayers; id++) {
+            net::Place pl;
+            if (id == net::my_id() || !net::member(id) || block::blocked_id(id) || !net::member_place(id, pl) || !pl.at_sea || pl.age_ms > 5000) continue;
+            c.marks.push_back({pl.x, pl.z, net::tunic(id), net::name(id), true});
+        }
+    if (set.chart_others)
+        for (const net::SeaMark& o : net::sea_players()) c.marks.push_back({o.x, o.z, -1, o.name, false});
+    // test aid: WWHD_COOP_TEST_CHART_SELF=1 marks this game's own Link too, as a party member in red (to line the marks
+    // up with the game's own Link icon)
     if (static const bool self = getenv("WWHD_COOP_TEST_CHART_SELF"); self)
         if (const uint32_t link = ld32(GD(0x1046F0B0) + names::inf::kLink); link >= 0x10000000u)
-            c.marks.push_back({(float)ldf32(link + names::ac::kPos), (float)ldf32(link + names::ac::kPos + 8), IM_COL32(255, 255, 255, 255), "(you)"});
-    if (static uint32_t n = 0; ++n % 300 == 1)
-        mods::trace("coop: sea chart open: %zu party marks (area %.0f x %.0f, at %.1f %.1f)", c.marks.size(), c.w, c.h, c.m[3], c.m[7]);
+            c.marks.push_back({(float)ldf32(link + names::ac::kPos), (float)ldf32(link + names::ac::kPos + 8), 1, "(you)", true});
+    if (static uint32_t n = 0; ++n % 300 == 1) {
+        size_t party = 0;
+        for (const ChartMark& k : c.marks) party += k.party;
+        mods::trace("coop: sea chart open: %zu party marks, %zu others", party, c.marks.size() - party);
+    }
     std::lock_guard<std::mutex> l(g_mu);
     g_chart = std::move(c);
+}
+
+void chart_step() {  // (each step: the chart gone from the screen, its marks at once)
+    if (menu_on_map()) return;
+    std::lock_guard<std::mutex> l(g_mu);
+    g_chart.at = 0;
+}
+
+void chart_backend_destroyed() {
+    for (auto& t : g_faces)
+        if (t) {
+            if (ImGui::GetCurrentContext()) ImGui::GetPlatformIO().Textures.find_erase(t.get()), ImGui::UnregisterUserTexture(t.get());
+            t.reset();
+        }
+}
+bool chart_texture(uint64_t id) {
+    for (const auto& t : g_faces)
+        if (t && uint64_t(t->GetTexID()) == id) return true;
+    return false;
 }
 
 void register_chart_overlay() {
@@ -143,21 +220,55 @@ void register_chart_overlay() {
                                        {
                                            std::lock_guard<std::mutex> l(g_mu);
                                            c = g_chart;
+                                           if (g_face.width && !g_faces[0])
+                                               for (int t = 0; t < 4; t++) g_faces[t] = tinted(g_face, t);
                                        }
                                        const float a = aspect::game() > 0 ? aspect::game() : 16.f / 9.f;
                                        const float s = std::min(h / 720.f, w / (720.f * a));  // (layout units: the TV's 1280 x 720)
                                        ImDrawList* d = ImGui::GetForegroundDrawList();
-                                       for (const ChartMark& k : c.marks) {
-                                           // the point in the chart area (square D4 at its origin, y up), through its global matrix
+                                       ImFont* font = ImGui::GetFont();
+                                       const float icon = (c.icon > 8 && c.icon < 200 ? c.icon : 48) * s;
+                                       auto label = [&](ImVec2 at, float size, const std::string& t) {  // (centred on at.x)
+                                           const ImVec2 sz = font->CalcTextSizeA(size, FLT_MAX, 0, t.c_str());
+                                           const ImVec2 p(at.x - sz.x / 2, at.y);
+                                           d->AddText(font, size, ImVec2(p.x + 2 * s, p.y + 2 * s), IM_COL32(0, 0, 0, 190), t.c_str());
+                                           d->AddText(font, size, p, IM_COL32(255, 255, 255, 255), t.c_str());
+                                       };
+                                       auto diamond = [&](ImVec2 p, float r) {
+                                           const ImVec2 q[4] = {{p.x, p.y - r}, {p.x + r, p.y}, {p.x, p.y + r}, {p.x - r, p.y}};
+                                           d->AddConvexPolyFilled(q, 4, IM_COL32(215, 215, 205, 240));
+                                           d->AddQuad(q[0], q[1], q[2], q[3], IM_COL32(60, 60, 60, 230), 2 * s);
+                                       };
+                                       bool any_party = false, any_other = false;
+                                       for (const ChartMark& k : c.marks) {  // (the others first: party members over them)
+                                           if (k.party) { any_party = true; continue; }
+                                           any_other = true;
                                            const float px = k.x / 100000.f * c.w / 7.f, py = -k.z / 100000.f * c.h / 7.f;
-                                           const float gx = c.m[0] * px + c.m[1] * py + c.m[3], gy = c.m[4] * px + c.m[5] * py + c.m[7];
-                                           const ImVec2 p(w / 2 + gx * s, h / 2 - gy * s);
-                                           d->AddCircleFilled(p, 8 * s, k.col, 16);
-                                           d->AddCircle(p, 8 * s, IM_COL32(255, 255, 255, 230), 16, 2 * s);
-                                           const float size = 22 * s;  // (the name: about the chart's own small print)
-                                           const ImVec2 t(p.x + 12 * s, p.y - size / 2);
-                                           d->AddText(ImGui::GetFont(), size, ImVec2(t.x + 2 * s, t.y + 2 * s), IM_COL32(0, 0, 0, 200), k.name.c_str());
-                                           d->AddText(ImGui::GetFont(), size, t, IM_COL32(255, 255, 255, 255), k.name.c_str());
+                                           const ImVec2 p(w / 2 + (c.m[0] * px + c.m[1] * py + c.m[3]) * s, h / 2 - (c.m[4] * px + c.m[5] * py + c.m[7]) * s);
+                                           diamond(p, 7 * s);
+                                           label(ImVec2(p.x, p.y + 9 * s), 18 * s, k.name);
+                                       }
+                                       for (const ChartMark& k : c.marks) {
+                                           if (!k.party) continue;
+                                           const float px = k.x / 100000.f * c.w / 7.f, py = -k.z / 100000.f * c.h / 7.f;
+                                           const ImVec2 p(w / 2 + (c.m[0] * px + c.m[1] * py + c.m[3]) * s, h / 2 - (c.m[4] * px + c.m[5] * py + c.m[7]) * s);
+                                           if (ImTextureData* t = g_faces[k.tunic & 3].get())
+                                               d->AddImage(t->GetTexRef(), ImVec2(p.x - icon / 2, p.y - icon / 2), ImVec2(p.x + icon / 2, p.y + icon / 2));
+                                           else
+                                               d->AddCircleFilled(p, icon / 3, kTunicRgb[k.tunic & 3], 16);
+                                           label(ImVec2(p.x, p.y - icon / 2 - 22 * s), 22 * s, k.name);
+                                       }
+                                       // the legend, under the chart's bottom left corner
+                                       const float lx = w / 2 + (c.m[0] * (-c.w / 2) + c.m[3]) * s, ly = h / 2 - (c.m[5] * (-c.h / 2) + c.m[7]) * s + 6 * s;
+                                       float x = lx;
+                                       if (any_party) {
+                                           if (ImTextureData* t = g_faces[1].get()) d->AddImage(t->GetTexRef(), ImVec2(x, ly), ImVec2(x + 22 * s, ly + 22 * s));
+                                           d->AddText(font, 18 * s, ImVec2(x + 26 * s, ly + 2 * s), IM_COL32(60, 45, 30, 255), "party");
+                                           x += 90 * s;
+                                       }
+                                       if (any_other) {
+                                           diamond(ImVec2(x + 8 * s, ly + 11 * s), 7 * s);
+                                           d->AddText(font, 18 * s, ImVec2(x + 22 * s, ly + 2 * s), IM_COL32(60, 45, 30, 255), "other players");
                                        }
                                        return false;
                                    }});

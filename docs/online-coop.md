@@ -118,9 +118,13 @@ Through a server, players close to you are drawn in full detail. Players further
 simpler Link, standing, walking or running. At sea, party members are drawn in full detail, with their boat, about as
 far as the game draws a ship, also when they sail in the next square; further off, a sailing party member is still
 shown on their boat. At sea, players too far away to draw show as dots on a small radar in
-the lower left corner, with party members in green. On the Sea Chart, each party member out at sea has a mark in
-their tunic colour with their name, in the square where they are. You can turn both off in Settings > Online
-(**Sea radar and party on the Sea Chart**).
+the lower left corner, with party members in green. On the Sea Chart (the
+MAP page of the menu, with its grid of the Great Sea), each party member out at sea is shown as Link in their tunic
+colour with their name, in the square where they are; every other player at sea is a small grey diamond with their
+name, and a legend under the chart tells them apart. A player who has PvP on and is close to a safe zone's edge is
+not shown to players outside their party, and blocked players never are. The marks are only on that chart, never in
+the game view. Settings > Online has a switch for the radar and one each for party members and other players on the
+Sea Chart.
 
 ## PvP at sea
 

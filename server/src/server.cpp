@@ -1317,6 +1317,37 @@ void Server::interest(Session& s, uint32_t now) {
         s.next_marker_tick = tick_no_ + uint32_t(cfg_.marker_every);
         send_markers(s);
     }
+    if (cfg_.sea_players && int32_t(tick_no_ - s.next_sea_tick) >= 0) {
+        s.next_sea_tick = tick_no_ + uint32_t(std::max(1, cfg_.sea_players_every));
+        send_sea_players(s);
+    }
+}
+
+// every other player at sea, for the Sea Chart: wherever they are (not only this square), named as the player-in
+// message names strangers; not the party (its members' places come with PARTY_WHERE), not who either blocked, and not a
+// PvP player in the band by a safe zone (as the radar's markers: the chart can't be used to hunt)
+void Server::send_sea_players(Session& s) {
+    Bytes b;
+    Writer w(b);
+    int n = 0;
+    for (auto& [cid, up] : sessions_) {
+        const Session* o = up.get();
+        if (!o || o == &s || !o->online || o->dead || o->world != s.world || o->square < 0 || !o->has_pose || o->hidden) continue;
+        if (n >= cfg_.sea_players_cap || !sees(s, *o) || o->pvp_band || (o->party && o->party == s.party)) continue;
+        if (o->head.where.stage_name() != cfg_.sea_stage) continue;
+        const float sx = cfg_.sea_origin_x + float(o->square % proto::kSeaSquares) * proto::kSquareUnits;
+        const float sz = cfg_.sea_origin_z + float(o->square / proto::kSeaSquares) * proto::kSquareUnits;
+        std::string name = stranger_name(o->key_hash);
+        if (name.size() > 24) name.resize(24);
+        w.u16(o->id);
+        w.u8(uint8_t(o->square));
+        w.u8(uint8_t(std::clamp((o->head.x - sx) / proto::kSquareUnits * 256.0f, 0.0f, 255.0f)));
+        w.u8(uint8_t(std::clamp((o->head.z - sz) / proto::kSquareUnits * 256.0f, 0.0f, 255.0f)));
+        w.str8(name);
+        ++n;
+        if (b.size() + 40 > kBatchLimit) s.chan.send_unreliable(kMsgSeaPlayers, b), b.clear();
+    }
+    if (!b.empty()) s.chan.send_unreliable(kMsgSeaPlayers, b);
 }
 
 void Server::send_markers(Session& s) {

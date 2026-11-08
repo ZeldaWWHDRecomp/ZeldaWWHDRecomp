@@ -46,5 +46,8 @@ void register_overlay();
 // party members on the Sea Chart (coop_radar.cpp): the chart updated (its menu), and the overlay layer drawing them
 void chart_updated(uint32_t menu);
 void register_chart_overlay();
+void chart_step();               // each step: the chart closed, its marks gone at once
+void chart_backend_destroyed();  // the renderer's textures released (guest_hud's)
+bool chart_texture(uint64_t id); // one of the chart's icons (display-encoded game art)
 
 }  // namespace mods::coop::radar

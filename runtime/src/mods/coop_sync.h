@@ -30,6 +30,8 @@ struct Settings {
     std::string server_addr = "127.0.0.1";
     int server_port = 7777;
     bool radar = true;                 // (C13) far players as dots on a small sea radar (through a server, at sea)
+    bool chart_party = true;           // party members on the Sea Chart (coop_radar.cpp)
+    bool chart_others = true;          // other players at sea on the Sea Chart (through a server that sends them)
     bool pvp_sea = true;               // (C28) PvP at sea: this player can fight others who have it on (a server's opt-in)
     int strangers = 0;                 // how players outside the party look (presence): 0 like any Link, 1 see-through
     bool stay_together = false;        // the fork's way (a party option): the guest plays in the host's world, its saves

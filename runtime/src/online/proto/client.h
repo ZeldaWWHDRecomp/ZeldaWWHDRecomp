@@ -62,6 +62,7 @@ struct ClientEvent {
         kPlayerOut,      // id
         kPoses,          // poses (a POSE_BATCH)
         kMarkers,        // markers
+        kSeaPlayers,     // sea_players: every other player at sea the server shows on the Sea Chart
         kEmote,          // id, value
         kApp,            // id (sender), app_type, body, reliable
         kNotice,         // value (NoticeKind), seconds, text
@@ -95,6 +96,7 @@ struct ClientEvent {
     PlayerIn player;
     std::vector<PoseEntry> poses;
     std::vector<Marker> markers;
+    std::vector<SeaPlayer> sea_players;
     Bytes body;
     PartyState party;
     std::vector<RunnerEntry> runners;

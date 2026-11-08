@@ -465,6 +465,17 @@ void Client::handle_message(const Delivered& m) {
             if (get_markers(d, n, e.markers)) events_.push_back(std::move(e));
             break;
         }
+        case kMsgSeaPlayers: {
+            ClientEvent e{ClientEvent::kSeaPlayers};
+            while (r.ok() && r.left() && e.sea_players.size() < 1024) {
+                SeaPlayer p;
+                p.id = r.u16(), p.square = r.u8(), p.x = r.u8(), p.z = r.u8();
+                p.name = r.str8(24);
+                if (r.ok()) e.sea_players.push_back(std::move(p));
+            }
+            if (r.done()) events_.push_back(std::move(e));
+            break;
+        }
         case kMsgEmoteOf: {
             ClientEvent e{ClientEvent::kEmote};
             e.id = r.u16();

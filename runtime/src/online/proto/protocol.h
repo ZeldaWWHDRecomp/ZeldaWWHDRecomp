@@ -131,6 +131,8 @@ enum Msg : uint8_t {
                             // see near or mid can fight now (on change; PLAYER_IN flags bit 3 says it at first)
     kMsgPvpRespawn = 85,    // reliable: u8 square, s24 x, s24 z: after your knockout, the nearest safe zone's edge
     kMsgPartyWhere = 78,    // unreliable, 1 Hz: n x {u16 id, Where, u8 square (255: not at sea), s24 x, s24 z}
+    kMsgSeaPlayers = 87,    // unreliable, every world.sea_players_every ticks: n x SeaPlayer, every other player at sea
+                            // (not the party, not blocked, not PvP players near a zone's border) for the Sea Chart
                             // where every online party member is, wherever they are
 };
 
@@ -181,6 +183,13 @@ struct FarPose {
 struct Marker {
     uint16_t id = 0;
     uint8_t square = 0, x = 0, z = 0, flags = 0;
+};
+// a player on the Sea Chart (5 B + name): u16 id, u8 square, u8 cell x, u8 cell z (0..255 within the square), u8 name
+// length (at most 24), name
+struct SeaPlayer {
+    uint16_t id = 0;
+    uint8_t square = 0, x = 0, z = 0;
+    std::string name;
 };
 
 // app messages: the game's own vocabulary (opaque to the server), routed to a target

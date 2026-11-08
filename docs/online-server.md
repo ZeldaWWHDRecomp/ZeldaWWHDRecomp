@@ -55,6 +55,7 @@ Copy `server/server.example.toml` to `server.toml` and edit it. The keys you'll 
 | `party.max_size` | 8 | The largest party, between 2 and 16. Players see it before they join. |
 | `party.leader_drop_ms` | 15000 | A party leader not heard from this long hands the lead to another member (one who leaves hands it on at once). Loading a place can take seconds, so keep it well above that. |
 | `interest.party_sea_near_radius` | 30000 | At sea, party members are shown in full (their boat too) out to this distance. |
+| `world.sea_players` | on | Sends every player's place at sea (their square, where in it, and the name shown to strangers) to everyone, for the Sea Chart. Turn it off to keep where players are private; party members still see each other. `world.sea_players_every` (30 ticks, 2 s) and `world.sea_players_cap` (256) limit it. |
 | `limits.invite_every_s` | 10 | Party invites: a player may send a whole party's worth at once (`party.max_size` - 1), then one per this many seconds. |
 | `files.team_state` | `team-state.txt` | Parties and their team progress over restarts (`""` keeps them in memory only). |
 | `metrics.file` | none | Writes a line of counts (players, traffic, tick times) every `every_s` seconds. |

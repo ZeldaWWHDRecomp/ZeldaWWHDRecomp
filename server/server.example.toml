@@ -24,6 +24,7 @@ team_state = ""                      # a file to keep parties' last known team s
 
 [world]
 copy_size = 64                       # players per copy of an interior
+# sea_players = true                 # every player at sea on everyone's Sea Chart (false: kept private)
 
 [interest]
 threads = 0                          # 0: automatic

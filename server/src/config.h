@@ -66,6 +66,10 @@ struct Config {
     float hysteresis = 0.15f;
     int near_cap_desktop = 32, near_cap_phone = 16, mid_cap = 48, far_cap = 128, marker_cap = 512;
     int mid_every = 4, far_every = 15, marker_every = 75;  // in ticks
+    // every player at sea to everyone for the Sea Chart (name, square, place in it): off for a server that keeps
+    // where players are private; how often (ticks) and how many at most
+    bool sea_players = true;
+    int sea_players_every = 30, sea_players_cap = 256;
     int player_in_per_tick = 64;
 
     // abuse protection

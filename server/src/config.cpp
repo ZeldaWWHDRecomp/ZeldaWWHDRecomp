@@ -199,6 +199,9 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
         else if (key == "interest.mid_cap") integer(c.mid_cap);
         else if (key == "interest.far_cap") integer(c.far_cap);
         else if (key == "interest.marker_cap") integer(c.marker_cap);
+        else if (key == "world.sea_players") boolean(c.sea_players);
+        else if (key == "world.sea_players_every") integer(c.sea_players_every);
+        else if (key == "world.sea_players_cap") integer(c.sea_players_cap);
         else if (key == "limits.pow_bits") {
             int b = 0;
             integer(b);

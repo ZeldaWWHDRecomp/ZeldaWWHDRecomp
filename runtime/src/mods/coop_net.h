@@ -138,6 +138,10 @@ std::vector<Marker> server_markers();
 // stranger, or before the first report. A mid-range pose carries no stage or room: this is its place (coop_sync)
 struct Place { char stage[8]; int8_t room; uint32_t age_ms, settled_ms; bool at_sea; float x, z; };  // (at_sea: x, z its place on the sea)
 bool member_place(int id, Place& out);
+// (through a server) the other players at sea it shows on the Sea Chart (not the party, not blocked): their names as
+// shown to strangers and their places; empty without a server, a server that doesn't send them, or none for 5 s
+struct SeaMark { std::string name; float x, z; };
+std::vector<SeaMark> sea_players();
 // (C14, through a server) a player's key hash (0: none, or the direct transport), and telling the server a block
 uint64_t player_key(int id);
 void tell_block(uint64_t key, bool on);

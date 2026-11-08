@@ -1,3 +1,4 @@
+#include "../mods/coop_radar.h"
 #include "guest_hud.h"
 #include "../file_select_quit.h"
 #include "../mods/guest_hud.h"
@@ -66,7 +67,7 @@ void draw(const std::vector<std::shared_ptr<const List>>& lists,ImDrawList* outp
 void blend_callback(const ImDrawList*,const ImDrawCmd*) {}
 bool image_texture(uint64_t id) {
     if(id==uint64_t(ImTextureID_Invalid))return false;
-    if(file_select_quit::image_texture(id))return true;
+    if(file_select_quit::image_texture(id)||mods::coop::radar::chart_texture(id))return true;
     for(const auto& [image,texture]:textures)if(uint64_t(texture->data.GetTexID())==id)return true;
     return false;
 }
@@ -77,6 +78,7 @@ void set_regions(float tx,float ty,float tw,float th,bool tv_shown,float x,float
 }
 void backend_destroyed() {
     file_select_quit::backend_destroyed();
+    mods::coop::radar::chart_backend_destroyed();
     if(ImGui::GetCurrentContext())for(auto& [image,texture]:textures) {
         ImGui::GetPlatformIO().Textures.find_erase(&texture->data);
         ImGui::UnregisterUserTexture(&texture->data);

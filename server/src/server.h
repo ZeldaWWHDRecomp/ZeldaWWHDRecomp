@@ -142,6 +142,7 @@ struct Session {
     std::unordered_set<uint64_t> mutes;   // key hashes this player muted (no emotes, effects, sounds, voice from them)
     std::vector<proto::ModRef> mods;      // its enabled gameplay mods (HELLO)
     uint32_t next_marker_tick = 0;
+    uint32_t next_sea_tick = 0;
 
     // limits
     Bucket packets, bytes, reliable, emote, invite, report, app;
@@ -371,6 +372,7 @@ private:
     void tick(uint32_t now);
     void interest(Session& s, uint32_t now);
     void send_markers(Session& s);
+    void send_sea_players(Session& s);
     void flush_all(uint32_t now);
     void rebuild_grid();
     template <class F> void for_viewers(Session& s, F&& fn);

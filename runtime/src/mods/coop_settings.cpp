@@ -267,9 +267,14 @@ void draw_tab() {
     ImGui::TextDisabled("Party members always look solid. (Players outside your party come with online servers.)");
     {
         bool radar = s.radar;
-        if (ImGui::Checkbox("Sea radar and party on the Sea Chart", &radar)) hostui::post([radar] { change([&](sync::Settings& x) { x.radar = radar; }); });
-        ImGui::TextDisabled("At sea, through a server: players too far to be drawn show as dots, party members in green.\n"
-                            "On the Sea Chart, party members at sea are marked in their tunic colour, with their name.");
+        if (ImGui::Checkbox("Far players on a sea radar", &radar)) hostui::post([radar] { change([&](sync::Settings& x) { x.radar = radar; }); });
+        ImGui::TextDisabled("At sea, through a server: players too far to be drawn show as dots, party members in green.");
+        bool party = s.chart_party;
+        if (ImGui::Checkbox("Party members on the Sea Chart", &party)) hostui::post([party] { change([&](sync::Settings& x) { x.chart_party = party; }); });
+        bool others = s.chart_others;
+        if (ImGui::Checkbox("Other players on the Sea Chart", &others)) hostui::post([others] { change([&](sync::Settings& x) { x.chart_others = others; }); });
+        ImGui::TextDisabled("On the Sea Chart (the menu's map grid): party members at sea as Link in their tunic colour,\n"
+                            "other players at sea as small grey marks, each with their name.");
     }
     {  // (C28) PvP at sea: the toggle (hidden when the server has everyone fight), the server's rule, this player's state
         const net::PvpRules r = net::pvp_rules();

@@ -619,7 +619,11 @@ Settings settings() {
         if (hostui::get("mod.coop.stay_together", v)) g_set.stay_together = atoi(v.c_str()) != 0;
         if (hostui::get("online.strangers", v)) g_set.strangers = atoi(v.c_str()) == 1;
         if (hostui::get("online.radar", v)) g_set.radar = atoi(v.c_str()) != 0;
-        if (const char* e = getenv("WWHD_COOP_RADAR")) g_set.radar = atoi(e) != 0;  // (tests: the radar and Sea Chart marks)
+        if (const char* e = getenv("WWHD_COOP_RADAR")) g_set.radar = atoi(e) != 0;  // (tests: the radar)
+        if (hostui::get("online.chart_party", v)) g_set.chart_party = atoi(v.c_str()) != 0;
+        if (hostui::get("online.chart_others", v)) g_set.chart_others = atoi(v.c_str()) != 0;
+        if (const char* e = getenv("WWHD_COOP_CHART_PARTY")) g_set.chart_party = atoi(e) != 0;    // (tests: the Sea Chart's marks)
+        if (const char* e = getenv("WWHD_COOP_CHART_OTHERS")) g_set.chart_others = atoi(e) != 0;
         if (hostui::get("online.pvp_sea", v)) g_set.pvp_sea = atoi(v.c_str()) != 0;
         if (hostui::get("online.server", v)) g_set.server = atoi(v.c_str()) != 0;
         if (hostui::get("online.server_addr", v) && !v.empty()) g_set.server_addr = v;
@@ -685,6 +689,8 @@ void save_settings(const Settings& s) {
     hostui::set("mod.coop.stay_together", s.stay_together ? "1" : "0");
     hostui::set("online.strangers", std::to_string(s.strangers));
     hostui::set("online.radar", s.radar ? "1" : "0");
+    hostui::set("online.chart_party", s.chart_party ? "1" : "0");
+    hostui::set("online.chart_others", s.chart_others ? "1" : "0");
     hostui::set("online.pvp_sea", s.pvp_sea ? "1" : "0");
     hostui::set("online.server", s.server ? "1" : "0");
     hostui::set("online.server_addr", s.server_addr), hostui::set("online.server_port", std::to_string(s.server_port));

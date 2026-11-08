@@ -80,6 +80,7 @@ void forget_server(const std::string& addr, int port);
 bool runners(std::vector<Runner>& out);
 std::vector<Marker> markers();
 bool member_place(int id, Place& out);
+std::vector<SeaMark> sea_players();
 uint64_t player_key(int id);
 void tell_block(uint64_t key, bool on);
 void tell_mute(uint64_t key, bool on);
@@ -578,6 +579,7 @@ void forget_server(const std::string& addr, int port) { srv::forget_server(addr,
 bool server_runners(std::vector<Runner>& out) { return srv::active() && srv::runners(out); }
 std::vector<Marker> server_markers() { return srv::active() ? srv::markers() : std::vector<Marker>{}; }
 bool member_place(int id, Place& out) { return srv::active() && srv::member_place(id, out); }
+std::vector<SeaMark> sea_players() { return srv::active() ? srv::sea_players() : std::vector<SeaMark>{}; }
 uint64_t player_key(int id) { return srv::active() ? srv::player_key(id) : 0; }
 void tell_block(uint64_t key, bool on) { if (srv::active()) srv::tell_block(key, on); }
 void tell_mute(uint64_t key, bool on) { if (srv::active()) srv::tell_mute(key, on); }
@@ -629,6 +631,7 @@ void forget_server(const std::string&, int) {}
 bool server_runners(std::vector<Runner>& out) { out.clear(); return false; }
 std::vector<Marker> server_markers() { return {}; }
 bool member_place(int, Place&) { return false; }
+std::vector<SeaMark> sea_players() { return {}; }
 uint64_t player_key(int) { return 0; }
 void tell_block(uint64_t, bool) {}
 void tell_mute(uint64_t, bool) {}
