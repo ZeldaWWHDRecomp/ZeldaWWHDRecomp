@@ -176,6 +176,7 @@ class TransferTests(unittest.TestCase):
         self.assertEqual((self.new / "data/bin.previous/wwhd").read_text(), "old game")
         self.assertTrue((self.new / "data/bin.previous/.wwhd-previous-build.json").is_file())
         self.assertTrue((self.old / release_update.NOTE).is_file())
+        self.assertEqual(release_update.earlier_releases(self.new, "macos-arm64"), [])  # not offered again
         self.assertTrue((self.old / "data/setup.log").is_file())  # nothing deleted, only taken
         self.assertTrue((self.old / "data/code-builds/0123456789abcdef/ready.json").is_file())
 

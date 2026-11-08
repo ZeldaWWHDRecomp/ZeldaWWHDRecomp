@@ -72,7 +72,8 @@ def earlier_releases(pkg, platform):
         return []
     for name in names:
         root = os.path.join(parent, name)
-        if os.path.abspath(root) == pkg or not os.path.isdir(root) or not os.path.isfile(os.path.join(root, "portable.txt")):
+        if (os.path.abspath(root) == pkg or not os.path.isdir(root) or not os.path.isfile(os.path.join(root, "portable.txt"))
+                or os.path.isfile(os.path.join(root, NOTE))):  # (its data went to a newer release already)
             continue
         info = release_info(root, platform)
         if info:
