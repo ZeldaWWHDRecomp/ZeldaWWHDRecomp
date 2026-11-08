@@ -126,3 +126,5 @@
 025D475C  # fopAc_Execute: a placed monster a co-op game runs goes for the nearest player, takes the others' hits
 025BA6A4  # dSv_info_c::isActor: a placed monster killed while a co-op player was in its stage is not made again
 025D99E8  # fopAcM_createDisappear: a co-op monster another player killed drops nothing on its owner's game
+# Online co-op: party members on the Sea Chart (mods/coop_radar.cpp)
+02678B74  # hdSeaChartMenu_c::updateProgressIcons: the chart open and settled, its area's matrix taken

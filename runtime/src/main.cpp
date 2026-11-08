@@ -600,6 +600,7 @@ int main(int argc, char** argv) {
     mods::coop::settings_ui::register_tab();  // Settings > Online (online co-op)
     mods::coop::emotes::register_overlay();
     mods::coop::radar::register_overlay();  // (far players at sea, C13)
+    mods::coop::radar::register_chart_overlay();  // (party members on the Sea Chart)
     mods::coop::pvp::register_overlay();    // (C28: the marks over PvP players)
     index_game_functions();
     install_crash_handler();

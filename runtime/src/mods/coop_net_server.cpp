@@ -74,7 +74,7 @@ std::mutex g_far_mu;
 std::vector<Marker> g_markers;
 uint32_t g_markers_at = 0;
 // each party member's place from the server's PARTY_WHERE (1 Hz), by server id: what a mid pose lacks
-struct Placed { op::Where where; uint32_t at = 0, since = 0; };
+struct Placed { op::Where where; uint32_t at = 0, since = 0; uint8_t square = 255; int32_t x = 0, z = 0; };
 std::map<uint16_t, Placed> g_places;
 op::Client* g_client = nullptr;
 bool g_active = false;
@@ -713,7 +713,7 @@ void poll(Handler& h) {
                     if (pl.at) mods::trace("coop: server: player %u now in %.8s room %d", m.id, m.where.stage.data(), m.where.room);
                     pl.where = m.where, pl.since = now_ms();
                 }
-                pl.at = now_ms();
+                pl.at = now_ms(), pl.square = m.square, pl.x = m.x, pl.z = m.z;
             }
             break;
         case op::ClientEvent::kMarkers: {  // (C13) the rest of the square: dots on the radar
@@ -1100,6 +1100,7 @@ bool member_place(int id, Place& out) {
     memcpy(out.stage, it->second.where.stage.data(), 8);
     out.room = it->second.where.room;
     out.age_ms = now_ms() - it->second.at, out.settled_ms = now_ms() - it->second.since;
+    out.at_sea = it->second.square != 255, out.x = (float)it->second.x, out.z = (float)it->second.z;
     return true;
 }
 

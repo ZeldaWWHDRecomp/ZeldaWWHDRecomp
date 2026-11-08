@@ -15,6 +15,7 @@
 #include <string>
 #include <vector>
 
+#include "coop_block.h"
 #include "coop_names.h"
 #include "coop_net.h"
 #include "coop_sync.h"
@@ -90,4 +91,84 @@ void register_overlay() {
                                    }});
 }
 
+
+// ---- party members on the Sea Chart (the MAP screen's whole sea): a mark in each member's tunic colour and their
+// name, where they are. Drawn over the picture like the radar, nothing of the game's chart touched. The chart area is
+// the sea chart menu's main pane (hdSeaChartMenu_c +0x70: the 7 x 7 squares, square D4 at its origin, one square its
+// size / 7, y up; story_chart.cpp); its global matrix (the layout's, +0x48) puts a point of it on the picture. Each
+// time the game updates the chart (updateProgressIcons, hooked: it runs while the chart is open and settled, not while
+// it opens, zooms or closes) the matrix and the members' places are taken; the marks show while that keeps coming.
+// Party members only, at sea (the server's place report, once a second), never a blocked one; Settings > Online's
+// radar switch turns them off too.
+namespace {
+struct ChartMark { float x, z; ImU32 col; std::string name; };
+struct Chart { float m[12] = {}; float w = 0, h = 0; uint32_t at = 0; std::vector<ChartMark> marks; };
+Chart g_chart;  // (g_mu)
+ImU32 tunic_colour(int t) {
+    static const ImU32 c[] = {IM_COL32(70, 200, 90, 255), IM_COL32(230, 70, 60, 255), IM_COL32(70, 130, 240, 255), IM_COL32(170, 90, 220, 255)};
+    return c[(t % 4 + 4) % 4];
+}
+}  // namespace
+
+void chart_updated(uint32_t menu) {
+    const uint32_t main = menu ? ld32(menu + 0x70) : 0;
+    if (!main || net::role() == net::Role::kOff || !sync::settings().radar) return;
+    Chart c;
+    for (int i = 0; i < 12; i++) c.m[i] = (float)ldf32(main + 0x48 + 4 * i);
+    c.w = (float)ldf32(main + 0x3C), c.h = (float)ldf32(main + 0x40);
+    c.at = net::now_ms();
+    for (int id = 0; id < net::kMaxPlayers; id++) {
+        net::Place pl;
+        if (id == net::my_id() || !net::member(id) || block::blocked_id(id) || !net::member_place(id, pl) || !pl.at_sea || pl.age_ms > 5000) continue;
+        c.marks.push_back({pl.x, pl.z, tunic_colour(net::tunic(id)), net::name(id)});
+    }
+    // test aid: WWHD_COOP_TEST_CHART_SELF=1 marks this game's own Link too (to line the marks up with the game's own
+    // Link mark)
+    if (static const bool self = getenv("WWHD_COOP_TEST_CHART_SELF"); self)
+        if (const uint32_t link = ld32(GD(0x1046F0B0) + names::inf::kLink); link >= 0x10000000u)
+            c.marks.push_back({(float)ldf32(link + names::ac::kPos), (float)ldf32(link + names::ac::kPos + 8), IM_COL32(255, 255, 255, 255), "(you)"});
+    if (static uint32_t n = 0; ++n % 300 == 1)
+        mods::trace("coop: sea chart open: %zu party marks (area %.0f x %.0f, at %.1f %.1f)", c.marks.size(), c.w, c.h, c.m[3], c.m[7]);
+    std::lock_guard<std::mutex> l(g_mu);
+    g_chart = std::move(c);
+}
+
+void register_chart_overlay() {
+    overlay::ext::add_frame_layer({[](std::string&) {
+                                       std::lock_guard<std::mutex> l(g_mu);
+                                       return g_chart.at && net::now_ms() - g_chart.at < 200 && !g_chart.marks.empty();
+                                   },
+                                   [](float w, float h) {
+                                       Chart c;
+                                       {
+                                           std::lock_guard<std::mutex> l(g_mu);
+                                           c = g_chart;
+                                       }
+                                       const float a = aspect::game() > 0 ? aspect::game() : 16.f / 9.f;
+                                       const float s = std::min(h / 720.f, w / (720.f * a));  // (layout units: the TV's 1280 x 720)
+                                       ImDrawList* d = ImGui::GetForegroundDrawList();
+                                       for (const ChartMark& k : c.marks) {
+                                           // the point in the chart area (square D4 at its origin, y up), through its global matrix
+                                           const float px = k.x / 100000.f * c.w / 7.f, py = -k.z / 100000.f * c.h / 7.f;
+                                           const float gx = c.m[0] * px + c.m[1] * py + c.m[3], gy = c.m[4] * px + c.m[5] * py + c.m[7];
+                                           const ImVec2 p(w / 2 + gx * s, h / 2 - gy * s);
+                                           d->AddCircleFilled(p, 8 * s, k.col, 16);
+                                           d->AddCircle(p, 8 * s, IM_COL32(255, 255, 255, 230), 16, 2 * s);
+                                           const float size = 22 * s;  // (the name: about the chart's own small print)
+                                           const ImVec2 t(p.x + 12 * s, p.y - size / 2);
+                                           d->AddText(ImGui::GetFont(), size, ImVec2(t.x + 2 * s, t.y + 2 * s), IM_COL32(0, 0, 0, 200), k.name.c_str());
+                                           d->AddText(ImGui::GetFont(), size, t, IM_COL32(255, 255, 255, 255), k.name.c_str());
+                                       }
+                                       return false;
+                                   }});
+}
+
 }  // namespace mods::coop::radar
+
+// hdSeaChartMenu_c::updateProgressIcons (02678B74): the game updating its sea chart, open and settled
+extern "C" void f_02678B74_orig(Cpu* c);
+extern "C" void hook_02678B74(Cpu* c) {
+    const uint32_t menu = c->r[3];
+    f_02678B74_orig(c);
+    mods::coop::radar::chart_updated(menu);
+}

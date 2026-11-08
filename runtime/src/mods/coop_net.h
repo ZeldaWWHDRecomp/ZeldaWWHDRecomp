@@ -133,7 +133,7 @@ std::vector<Marker> server_markers();
 // (through a server) where a party member is, as the server reports every member once a second (PARTY_WHERE): its
 // stage and room, how old that report is and how long it has stayed in that place; false without a server, for a
 // stranger, or before the first report. A mid-range pose carries no stage or room: this is its place (coop_sync)
-struct Place { char stage[8]; int8_t room; uint32_t age_ms, settled_ms; };
+struct Place { char stage[8]; int8_t room; uint32_t age_ms, settled_ms; bool at_sea; float x, z; };  // (at_sea: x, z its place on the sea)
 bool member_place(int id, Place& out);
 // (C14, through a server) a player's key hash (0: none, or the direct transport), and telling the server a block
 uint64_t player_key(int id);

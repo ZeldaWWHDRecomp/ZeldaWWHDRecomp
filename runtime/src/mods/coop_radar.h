@@ -43,5 +43,8 @@ void step(uint32_t link, const std::vector<Far>& far);
 void set_zones(const std::vector<Far>& centres, const std::vector<float>& radii);
 // main (before the overlay seals)
 void register_overlay();
+// party members on the Sea Chart (coop_radar.cpp): the chart updated (its menu), and the overlay layer drawing them
+void chart_updated(uint32_t menu);
+void register_chart_overlay();
 
 }  // namespace mods::coop::radar

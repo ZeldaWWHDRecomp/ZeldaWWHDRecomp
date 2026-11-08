@@ -595,6 +595,7 @@ Settings settings() {
         if (hostui::get("mod.coop.stay_together", v)) g_set.stay_together = atoi(v.c_str()) != 0;
         if (hostui::get("online.strangers", v)) g_set.strangers = atoi(v.c_str()) == 1;
         if (hostui::get("online.radar", v)) g_set.radar = atoi(v.c_str()) != 0;
+        if (const char* e = getenv("WWHD_COOP_RADAR")) g_set.radar = atoi(e) != 0;  // (tests: the radar and Sea Chart marks)
         if (hostui::get("online.pvp_sea", v)) g_set.pvp_sea = atoi(v.c_str()) != 0;
         if (hostui::get("online.server", v)) g_set.server = atoi(v.c_str()) != 0;
         if (hostui::get("online.server_addr", v) && !v.empty()) g_set.server_addr = v;
