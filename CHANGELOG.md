@@ -7,6 +7,16 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Renderer and build options for experiments** (#402, thanks @DaniXK-96). All off by default:
+  - **Partial fast path** (`WWHD_VK_FASTPATH_PARTIAL=1`): a draw whose shaders resolve unchanged reuses the previous
+    draw's targets, pipeline and textures. It was verified with 0 mismatches over millions of draws, and the author
+    measured up to 1.4 ms less render-thread time in busy scenes.
+  - **Diagnostics:** a fast path oracle (`WWHD_VK_FASTPATH_ORACLE=1`) and a split of the draw cost
+    (`WWHD_VK_PROF_SPLIT=1`).
+  - **Build options:** `WWHD_PPC_TRACE=OFF` and profile-guided optimisation (`WWHD_PGO_*`).
+  - **Input recording:** `WWHD_TEST_INPUT_LOG` records live input as a replayable test scenario.
+  - Normal builds are unchanged (no difference on the test phone).
+
 - **New: Settings › Mods › More › Speedrun** with **Classic Wind Waker (dive and storage)**, off by default (#470,
   thanks @KaitoCrisHub for the request in #405). HD cancels the Wind Waker as soon as Link starts to fall and puts
   him back into his waiting state when a demo ends, which removed the dive out of a ledge climb and dry storage.
