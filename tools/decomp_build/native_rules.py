@@ -54,9 +54,21 @@ BLOCKING = re.compile(r"^(OSReceiveMessage|OSSendMessage|OSJamMessage|OSWaitEven
                       r"OSWaitCond|OSSleepThread|OSSleepTicks|OSJoinThread|OSWaitRendezvous|OSWaitRendezvousWithTimeout|"
                       r"OSSuspendThread|OSWaitSemaphore|OSWaitAlarm|OSFastMutex_Lock|OSFastCond_Wait|GX2WaitForVsync|"
                       r"GX2WaitForFlip|GX2DrawDone|GX2WaitTimeStamp|OSYieldThread|OSExitThread)$")
+# a read of the guest stack pointer (`const u32 sp = gabi::cpu->r[1];`), not an assignment. A body whose only Cpu
+# access is such reads AND that is listed in STACK_ARG_READERS keeps caller=ok (no A2): it reads its stack-passed
+# arguments (entry SP + 8 and up, the caller's outgoing-argument area) or writes them back, which no callee touches in
+# either form: a native callee leaves r1 and the guest stack as it found them, a guest callee runs below the body's SP
+# (gabi.h do_call: fc->sp or SP - 16) and restores r1 (NativeScope / native entry restore saved_r1; gabi::Local moves r1
+# the same way in either case). Listed only after reading the body: an SP-relative read BELOW the entry SP (stale
+# bytes a guest callee's frame may have left, e.g. daNpc_Ko1_c::CreateHeap 02273F48) must keep A2. Callee rule C7 is
+# unchanged. (2026-11-07, helper G: the 15 bodies found by the regex at decomp 00e6040fe, each read checked.)
+CPU_SP_READ = re.compile(r"(?:gabi::)?cpu->r\[1\](?!\s*(?:[-+*/|&^]?=(?!=)|\+\+|--))")
+STACK_ARG_READERS = {0x02011D2C, 0x024F06B4, 0x0253EC0C, 0x025580FC, 0x02561E14, 0x0258E1E8, 0x0259E08C, 0x025A847C,
+                     0x025D5928, 0x025D5A20, 0x025D5B20, 0x025E4F64, 0x025E6220, 0x027EB5F4, 0x027EFBCC}
+SRCF_CPU = re.compile(r"\bcpu->|gabi::cpu\b|\bc->(r|f|lr|ctr|cr)\b")
 SRCF = [("src:local", re.compile(r"gabi::(Local|Stack|LocalOf|FrameLocal)\b|\bLocalOf<|\bStack<")),
         ("src:nativeframe", re.compile(r"NativeFrame<")),
-        ("src:cpu", re.compile(r"\bcpu->|gabi::cpu\b|\bc->(r|f|lr|ctr|cr)\b")),
+        ("src:cpu", SRCF_CPU),
         ("src:call_site", re.compile(r"call(_ptr)?_site\s*[<(]")),
         ("src:tail_ptr", re.compile(r"tail_ptr(?:_ic)?\s*[<(]")),  # (_ic: gen.py --ptr-ic)
         ("src:va", re.compile(r"\bva_(list|start|arg)\b|\.\.\.\s*\)")),
@@ -256,6 +268,8 @@ def source_features(paths):
             head = t[t.rfind("\n", 0, max(0, t.rfind(")", 0, o))) + 1:o]
             body = t[k:j]
             fs = set(nm for nm, rx in SRCF if rx.search(body) or (nm == "src:va" and rx.search(head)))
+            if "src:cpu" in fs and not SRCF_CPU.search(CPU_SP_READ.sub("", body)):
+                fs.add("src:cpu_sp")  # the only Cpu access: reads of the stack pointer (see CPU_SP_READ)
             if m.group(1) and not m.group(2) and len(allargs) > 1 and allargs[1].strip() != "void":
                 fs.add("src:ret")  # a result native_returns.py did not hand to NativeScope (gabi.h: guest calls only)
             if not m.group(1):
@@ -472,7 +486,7 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
         if fs is None:
             r.append("no body")
         else:
-            r += sorted(fs)
+            r += sorted(fs - {"src:cpu_sp"})
         if ni > 8 or nf > 8:
             r.append("stack args")
         r += sorted(x for x in feat.get(a, ()) if x != "orig:bctrl")
@@ -487,7 +501,7 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
             caller.append("A1 framexact")
         if a in fp:
             caller.append("A1 footprint")
-        if fs and "src:cpu" in fs:
+        if fs and "src:cpu" in fs and not ("src:cpu_sp" in fs and a in STACK_ARG_READERS):
             caller.append("A2 cpu")
         if fs and (("src:autoframe" in fs and "autoframe" not in lift) or "src:wwhd_func" in fs):
             caller.append("A1 frame")

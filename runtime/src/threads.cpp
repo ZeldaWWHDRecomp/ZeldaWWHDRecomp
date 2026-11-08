@@ -133,6 +133,9 @@ struct HostThread {
     uint8_t wait_kind = 0;     // WaitKind of the park
     uint32_t wait_obj = 0;     // guest address of the object waited on
     bool woken = false;        // wakeup token of OSWaitEvent / OSSleepThread (guarded by the object's mutex)
+#ifdef WWHD_DECOMP_FAST
+    int8_t spin_ok = -1;       // WWHD_DECOMP_FAST_SPIN_THREADS: this thread may spin before a receive sleeps (-1: not decided yet)
+#endif
     // loading a save state: park at this function entry (thread saved there, see try_entry_park)
     bool has_target = false;
     uint32_t tgt_fn = 0, tgt_r1 = 0, tgt_lr = 0;
@@ -1167,13 +1170,14 @@ struct HQueue {
 static ObjTable<HQueue> g_queues;
 
 #ifdef WWHD_DECOMP_FAST
-// Fast decomp build only (step d, WWHD_DECOMP_FAST_SPIN_US, default WWHD_DECOMP_FAST_SPIN_US_DEFAULT = 0 = off; a
-// build sets another default with -DWWHD_DECOMP_FAST_SPIN_US_DEFAULT=N, e.g. for a phone pair): a guest thread about to block in
+// Fast decomp build only (step d, WWHD_DECOMP_FAST_SPIN_US, default WWHD_DECOMP_FAST_SPIN_US_DEFAULT = 30 us since the
+// phone pairs of 2026-11-07/08: logic -1.07 ms with every thread spinning, the default scope as fast with better frame
+// pacing and less CPU; 0 = off; a build may set another default with -DWWHD_DECOMP_FAST_SPIN_US_DEFAULT=N): a guest thread about to block in
 // OSReceiveMessage on an empty queue first gives up its core and polls the queue for up to that many microseconds;
 // a message sent meanwhile needs no futex wake (nobody is counted asleep) and is taken without a sleep/wake round
 // trip. Afterwards the receive goes on exactly as before (the queue is re-checked under its mutex, then park_wait).
 #ifndef WWHD_DECOMP_FAST_SPIN_US_DEFAULT
-#define WWHD_DECOMP_FAST_SPIN_US_DEFAULT 0
+#define WWHD_DECOMP_FAST_SPIN_US_DEFAULT 30
 #endif
 static uint64_t fast_spin_ns() {
     static const uint64_t ns = [] {
@@ -1181,6 +1185,32 @@ static uint64_t fast_spin_ns() {
         return (e ? strtoull(e, nullptr, 10) : (uint64_t)WWHD_DECOMP_FAST_SPIN_US_DEFAULT) * 1000;
     }();
     return ns;
+}
+// WWHD_DECOMP_FAST_SPIN_THREADS (env): which guest threads spin, as comma-separated name prefixes; default the ones
+// that receive per-frame work the game thread then waits for: the sead workers (drainWorkerQueues spins until they are
+// done) and the PipelineFrameQueue receiver (the game thread's ~2.4k OSSendMessage per logic step at the cliff wake it).
+// "*": every guest thread. Audio and other receivers keep sleeping. Decided once per thread, when it has a name.
+static bool spin_thread_ok(HostThread* t) {
+    if (t->spin_ok >= 0) return t->spin_ok != 0;
+    static const std::vector<std::string> prefixes = [] {
+        std::vector<std::string> v;
+        const char* e = getenv("WWHD_DECOMP_FAST_SPIN_THREADS");
+        std::string list = e ? e : "WorkerMgr/Worker,update_ubo";
+        for (size_t a = 0; a <= list.size();) {
+            size_t b = list.find(',', a);
+            if (b == std::string::npos) b = list.size();
+            if (b > a) v.push_back(list.substr(a, b - a));
+            a = b + 1;
+        }
+        return v;
+    }();
+    const uint32_t n = ld32(t->guest + osthread::kName);
+    if (n < 0x10000) return false;  // no name yet: decided later
+    const std::string name = mem::read_cstr(n);
+    bool ok = false;
+    for (const std::string& p : prefixes) ok = ok || p == "*" || name.compare(0, p.size(), p) == 0;
+    t->spin_ok = ok ? 1 : 0;
+    return ok;
 }
 static void spin_for_message(HQueue* q, uint64_t ns) {
     threads::block_begin();
@@ -1260,7 +1290,7 @@ HLE(coreinit, OSReceiveMessage) {
         if (q->msgs.empty()) {
             if (!(flags & 1)) { ret(c, 0); return; }
 #ifdef WWHD_DECOMP_FAST
-            if (const uint64_t spin = fast_spin_ns(); spin && t_self) {
+            if (const uint64_t spin = fast_spin_ns(); spin && t_self && spin_thread_ok(t_self)) {
                 lk.unlock();
                 spin_for_message(q, spin);
                 lk.lock();
