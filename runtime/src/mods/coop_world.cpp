@@ -105,6 +105,44 @@ uint32_t spawn_ball(Cpu* c, uint32_t link, const float p[3], const int16_t angle
 void put_link_at(uint32_t link, const float w[3]) { put_link(link, {w[0], w[1], w[2]}); }
 void hurt(uint8_t quarters, int16_t way) { g_hurt = {quarters, way}; }
 
+// The Deku Leaf's gust (daPy_lk_c's fan swing, daPyProc_FAN_SWING 0x92: its wind capsule, mFanWindCps, reaches up to
+// about 700 ahead) pushes other players' Links as it pushes things in its path: the fanning game sends it (kGust: where
+// it starts, its heading, its reach); a game whose Link is in it pushes its own Link with the game's own outer push
+// (daPy_lk_c::setOutPower, the wind fans' and bosses' push: the vtable's +0xEC), a little for about half a second,
+// stronger near the fan. No damage. Only party members, and only with the party's friendly fire on (a gust can knock
+// a friend off a ledge); never strangers (PvP has no gusts). The gust's particles are Link's own and shown as his.
+namespace {
+struct Gust { int16_t yaw = 0; float power = 0; int steps = 0; V3 from{}; } g_gust;
+constexpr float kGustReach = 700, kGustWidth = 150;
+constexpr uint32_t kFanSwing = 0x92;
+void gust_from(uint32_t link, int from, Reader& r) {
+    if (!in_mem2(link) || !mods::coop::net::party_flag(mods::coop::net::kFriendlyFire, true) || !mods::coop::net::member(from)) return;
+    float at[3];
+    for (float& v : at) v = r.get<float>();
+    const int16_t yaw = r.get<int16_t>();
+    const float reach = std::min(r.get<float>(), kGustReach);
+    if (!std::isfinite(at[0]) || !std::isfinite(at[1]) || !std::isfinite(at[2]) || !std::isfinite(reach)) return;
+    const V3 me = pos_of(link);
+    const double a = yaw * M_PI / 32768, fx = std::sin(a), fz = std::cos(a);
+    const double dx = me.x - at[0], dz = me.z - at[2], along = dx * fx + dz * fz, side = std::fabs(dx * fz - dz * fx);
+    if (along < 0 || along > reach || side > kGustWidth || std::fabs(me.y + 50 - at[1]) > 150) return;
+    g_gust = {yaw, (float)(4 + 10 * (1 - along / reach)), 15, me};
+    trace("coop: player %d's gust reaches this game's Link (%.0f ahead of the fan, %.0f aside): pushed", from, along, side);
+}
+void gust_step(Cpu* c, uint32_t link) {
+    if (g_gust.steps <= 0 || !in_mem2(link)) return;
+    if (--g_gust.steps == 0) {
+        const V3 now = pos_of(link);
+        trace("coop: the gust's push is over: this game's Link moved %.0f", std::hypot(now.x - g_gust.from.x, now.z - g_gust.from.z));
+    }
+    const uint32_t fn = ld32(ld32(link + 0xB4) + 0xEC);  // (daPy_lk_c::setOutPower(power, angle, 0), as the wind fans call it)
+    const double f1 = c->f[1].ps0;
+    c->f[1].ps0 = g_gust.power;
+    guest_call(c, fn, {link, (uint32_t)(uint16_t)g_gust.yaw, 0});
+    c->f[1].ps0 = f1;
+}
+}  // namespace
+
 namespace {
 
 // each step in play: the world's messages put in once this game is settled in its stage, its own shots and bombs out,
@@ -133,6 +171,8 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
             boat_shot_from(c, link, r);
         } else if (m.type == net::kBombed) {
             mods::coop::items::bombed(c, link, (const uint8_t*)m.body.data(), m.body.size());
+        } else if (m.type == net::kGust) {
+            gust_from(link, m.from, r);
         } else if (m.type == net::kClock || m.type == net::kClockJump) {
             mods::coop::clock::message(m.from, m.type, (const uint8_t*)m.body.data(), m.body.size());
         }
@@ -205,6 +245,17 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
                 }
         }
         was = proc;
+    }
+    {  // the Deku Leaf's gust: out as the fan swing starts; another's on this Link, pushed each step it lasts
+        static uint32_t fan_was = 0;
+        const uint32_t proc = ld32(link + kCurProc);
+        if (proc == kFanSwing && fan_was != kFanSwing) {
+            const int16_t yaw = (int16_t)ld16(link + kAngleY);
+            net::send(-1, net::kGust, Bytes{}.put((float)me.x).put((float)(me.y + 60)).put((float)me.z).put(yaw).put(kGustReach).b);
+            trace("coop: this game's Link fans the Deku Leaf (heading %d)", yaw);
+        }
+        fan_was = proc;
+        if (settled) gust_step(c, link);
     }
     // the players push each other: this game moves only its own Link out of the others' room (radius 35 each)
     if (riding) return;

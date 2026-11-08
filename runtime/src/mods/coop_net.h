@@ -63,6 +63,7 @@ enum Msg : uint8_t {
     kEmote,       // any -> host -> others: {u8 emote} (coop_emotes.h; through a server its EMOTE, strangers near by too)
     kClock,       // leader -> party: its time of day, day and sea weather (coop_clock.h)
     kClockJump,   // member -> leader: its own new time (the Song of Passing), for the party
+    kGust,        // any -> host -> others: {f32 pos[3], s16 yaw, f32 reach}: a Deku Leaf's gust (coop_world.cpp)
 };
 
 enum class Role { kOff, kHost, kGuest };
