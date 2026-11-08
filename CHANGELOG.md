@@ -7,6 +7,17 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: faster game logic and rendering** (#473). The game library now calls its own functions directly instead
+  of through link stubs (`-Bsymbolic-functions`). On the test phone the normal build's game logic got about 0.65 ms
+  faster per step and the render thread about 1.25 ms, with smoother 1% lows. Desktop builds are unchanged.
+- **Decomp build fast mode: more speed-ups, on by default in fast mode** (#474). Math library calls (sqrtf, sinf,
+  cosf, sqrt, fmodf) take a direct path, and sqrtf is a native port checked against the original on all 2^32
+  inputs. 15 more functions keep native calls. Worker threads now wait briefly before sleeping, which saved about
+  1 ms per logic step on the test phone. The normal build and the default decomp build are unchanged.
+- **Decomp build: Classic Wind Waker checked in the decompiled code** (#475, follow-up to #470). The decomp build
+  no longer has to keep the two affected game functions recompiled for the Speedrun switch. This takes effect with
+  the next decomp update.
+
 - **Renderer and build options for experiments** (#402, thanks @DaniXK-96). All off by default:
   - **Partial fast path** (`WWHD_VK_FASTPATH_PARTIAL=1`): a draw whose shaders resolve unchanged reuses the previous
     draw's targets, pipeline and textures. It was verified with 0 mismatches over millions of draws, and the author
