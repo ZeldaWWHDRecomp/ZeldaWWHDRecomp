@@ -70,6 +70,7 @@ runtime/src/platform/dual_display.h
 runtime/src/platform/gamepad_touch.h
 runtime/src/platform/gaming_mode.h
 runtime/src/platform/host.h
+runtime/src/platform/input_sdl.h
 runtime/src/platform/keycodes.h
 runtime/src/platform/memory_trim.h
 runtime/src/platform/perf_hint.h
@@ -77,6 +78,7 @@ runtime/src/platform/present_observer.h
 runtime/src/platform/process_peak_rss.h
 runtime/src/platform/touch_options.h
 runtime/src/platform/touch_style.h
+runtime/src/platform/wayland_startup.h
 runtime/src/render_objects.h
 runtime/src/render_prof.h
 runtime/src/report_header.h
