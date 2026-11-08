@@ -73,6 +73,9 @@ constexpr float kSeaOrigin = -350000.0f;  // the corner of square 0 (the server'
 std::mutex g_far_mu;
 std::vector<Marker> g_markers;
 uint32_t g_markers_at = 0;
+// each party member's place from the server's PARTY_WHERE (1 Hz), by server id: what a mid pose lacks
+struct Placed { op::Where where; uint32_t at = 0, since = 0; };
+std::map<uint16_t, Placed> g_places;
 op::Client* g_client = nullptr;
 bool g_active = false;
 std::string g_status = "Off";
@@ -389,7 +392,7 @@ void stop(const char* why) {
     for (Tiered& t : g_tiered) t = Tiered{};
     { std::lock_guard<std::mutex> l(g_far_mu); g_markers.clear(), g_markers_at = 0; }
     { std::lock_guard<std::mutex> l(g_pvp_mu); g_pvp_rules = {}, g_pvp_flags = 0, g_pvp_marks.clear(), g_pvp_events.clear(), g_pvp_sent = -1; }
-    g_runner.clear();
+    g_runner.clear(), g_places.clear();
     {
         std::lock_guard<std::mutex> l(g_ui_mu);
         g_flags = 0, g_flags_known = g_leading = false;
@@ -529,6 +532,7 @@ void put_state(uint8_t kind, const std::string& body) {
         h.x = p[0], h.y = p[1], h.z = p[2], h.yaw = (uint16_t)yaw;
         if (g_place_set) h.x = g_place[0], h.y = g_place[1], h.z = g_place[2];  // (a pose in a deck's frame: its world place)
         if (body[13] & 1) h.flags |= 1;  // (on a deck: its frame)
+        if (body[13] & 0x08) h.flags |= 2;  // (sailing, coop_pose.h kSailing: a mid pose says so, protocol.h PoseHeader bit 1)
         {  // (a pose the server would refuse is a protocol strike, and enough of them a kick: never sent, told once)
             op::Bytes t;
             op::Writer w(t);
@@ -700,6 +704,16 @@ void poll(Handler& h) {
                 for (int i = 0; i < kMaxPlayers; i++)
                     if (g_slot[i].on && i != g_slot_of_me && g_tiered[i].shown_at && now_ms() - g_tiered[i].shown_at < 2000) n[g_tiered[i].shown]++, sw += g_tiered[i].switches;
                 mods::trace("coop: tiers: %d near, %d at mid range, %d far; %d tier changes so far", n[0], n[1], n[2], sw);
+            }
+            break;
+        case op::ClientEvent::kPartyWhere:  // where each party member is (the stage and room a mid pose does not carry)
+            for (const op::ClientEvent::MemberWhere& m : e.members) {
+                Placed& pl = g_places[m.id];
+                if (!pl.at || !(pl.where == m.where)) {
+                    if (pl.at) mods::trace("coop: server: player %u now in %.8s room %d", m.id, m.where.stage.data(), m.where.room);
+                    pl.where = m.where, pl.since = now_ms();
+                }
+                pl.at = now_ms();
             }
             break;
         case op::ClientEvent::kMarkers: {  // (C13) the rest of the square: dots on the radar
@@ -1079,6 +1093,16 @@ std::vector<Marker> markers() {
     if (!g_markers_at || now_ms() - g_markers_at > 10000) return {};
     return g_markers;
 }
+bool member_place(int id, Place& out) {
+    if (!g_client || id < 0 || id >= kMaxPlayers || id == g_slot_of_me || !member(id)) return false;
+    const auto it = g_places.find(g_slot[id].sid);
+    if (it == g_places.end() || !it->second.at) return false;
+    memcpy(out.stage, it->second.where.stage.data(), 8);
+    out.room = it->second.where.room;
+    out.age_ms = now_ms() - it->second.at, out.settled_ms = now_ms() - it->second.since;
+    return true;
+}
+
 bool runners(std::vector<Runner>& out) {
     out.clear();
     if (!g_client || !in_party()) return false;

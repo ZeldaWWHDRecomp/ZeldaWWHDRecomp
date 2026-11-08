@@ -2104,7 +2104,7 @@ void service(Cpu* c) {
     track_events();
     service_at_start();
     service_auto_save();
-    // test aid: WWHD_TEST_WARP_AT=frame:stage:room:point[,...] enters that stage (the world editor's warp, the game's
+    // test aid: WWHD_TEST_WARP_AT=frame:stage:room:point[:x:y:z][,...] enters that stage (the world editor's warp, the game's
     // own stage change at a spawn point) at each TV frame; a warp the game refuses then (no control yet) is retried
     // every 30 frames until the next one is due
     static std::vector<std::pair<uint64_t, Warp>> warps = [] {
@@ -2117,9 +2117,12 @@ void service(Cpu* c) {
             unsigned long long frame = 0;
             char stage[16] = {};
             int room = 0, point = 0;
-            if (sscanf(item.c_str(), "%llu:%15[^:]:%d:%d", &frame, stage, &room, &point) == 4) {
+            float x, y, z;
+            const int n = sscanf(item.c_str(), "%llu:%15[^:]:%d:%d:%f:%f:%f", &frame, stage, &room, &point, &x, &y, &z);
+            if (n == 4 || n == 7) {  // (frame:stage:room:point:x:y:z: at that place, point ignored, as "go to" warps)
                 Warp w;
                 w.stage = stage, w.room = room, w.point = point;
+                if (n == 7) w.at_position = true, w.pos[0] = x, w.pos[1] = y, w.pos[2] = z;
                 v.push_back({frame, w});
             }
         }

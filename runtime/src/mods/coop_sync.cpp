@@ -100,6 +100,10 @@ struct Remote {
     float cheap_at[3] = {};
     uint32_t cheap_ms = 0;
     bool cheap = false;
+    // the newest pose a mid one (its stage and room the party report's, not its own), and when its place last jumped
+    // far (a stage change the once-a-second report may not tell yet)
+    bool mid_last = false;
+    uint32_t jump_ms = 0;
 };
 Remote g_remote[net::kMaxPlayers];
 static_assert(deck::kDecks >= net::kMaxParty, "a deck for every party number (C29)");
@@ -469,6 +473,7 @@ struct Handler : net::Handler {
                 if (now_at == mine) ss::notice(net::name(from) + " is back");
                 else if (was == mine) ss::notice(net::name(from) + (now_at == "sea" ? " went out to sea" : " went inside"));
             }
+            r.mid_last = false;
             r.poses.emplace_back(ms, std::move(p));
             while (r.poses.size() > 2 && (int32_t)(ms - r.poses.front().first) > 1000) r.poses.pop_front();
         } else if (kind < kKinds) {
@@ -493,18 +498,30 @@ struct Handler : net::Handler {
         r.far = false;
         r.clock.seen(ms, now);
         const float dt = r.mid_ms ? (now - r.mid_ms) / 1000.f : 0;
+        if (r.mid_ms && dt < 2 && std::hypot(a.x - r.mid_at[0], a.z - r.mid_at[2]) > 3000) r.jump_ms = now;  // (a warp, a stage change)
         if (dt > 0.05f || !r.mid_ms) {
             const float speed = r.mid_ms && dt < 2 ? std::hypot(a.x - r.mid_at[0], a.z - r.mid_at[2]) / dt : 0;
             r.gait = emotes::gait_for(speed, r.gait);
             r.mid_at[0] = a.x, r.mid_at[1] = a.y, r.mid_at[2] = a.z, r.mid_ms = now;
         }
         Pose p;
-        // (mid poses carry no stage or room: the server shows them within this game's instance; the room this game's)
-        const std::string st = stage_now();
-        memcpy(p.stage, st.data(), std::min<size_t>(st.size(), 8));
-        const uint32_t link = ld32(kPlay + inf::kLink);
-        p.room = link >= 0x10000000u ? (int8_t)ld8(link + kRoom) : 0;
+        // (mid poses carry no stage or room. A party member's come wherever it is, its place from the server's party
+        // report; a stranger's only from this game's instance: this game's stage and room)
+        if (net::member(from)) {
+            net::Place pl;
+            if (!net::member_place(from, pl)) return;  // (not shown before its place is known: never in this game's stage by mistake)
+            memcpy(p.stage, pl.stage, 8), p.room = pl.room;
+        } else {
+            const std::string st = stage_now();
+            memcpy(p.stage, st.data(), std::min<size_t>(st.size(), 8));
+            const uint32_t link = ld32(kPlay + inf::kLink);
+            p.room = link >= 0x10000000u ? (int8_t)ld8(link + kRoom) : 0;
+        }
         p.pos[0] = a.x, p.pos[1] = a.y, p.pos[2] = a.z, p.yaw = (int16_t)a.yaw;
+        if (a.flags & 2) {  // (sailing: his boat where he is; "go to" then asks for the boat near, never the water at his place)
+            p.flags |= kSailing, p.boat_yaw = p.yaw;
+            memcpy(p.boat, p.pos, sizeof p.boat);
+        }
         if (!emotes::cheap_pose(r.gait, now / 1000.f, body_model(), p)) return;
         if (!r.poses.empty() && (int32_t)(ms - r.poses.back().first) <= 0) {
             if ((int32_t)(r.poses.back().first - ms) < 2000) return;  // (out of order: dropped)
@@ -513,6 +530,7 @@ struct Handler : net::Handler {
         if (!r.heard || now - r.heard > 2000)
             mods::trace("coop: player %d: a cheap puppet (%s) at %.0f %.0f %.0f", from, emotes::kGaitClips[r.gait], a.x, a.y, a.z);
         r.heard = now;  // (heard: shown while its poses come, kStale)
+        r.mid_last = true;
         r.poses.emplace_back(ms, std::move(p));
         while (r.poses.size() > 2 && (int32_t)(ms - r.poses.front().first) > 1000) r.poses.pop_front();
     }
@@ -1017,7 +1035,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         }
         ev_was = ev;
     }
-    // "Go to" a player: beside them (100 to their left), facing as they do, by a warp; one on a ship's deck is in her
+    // "Go to" a player: on their spot, facing as they do, by a warp; one on a ship's deck is in her
     // frame, not taken to
     // (test aid: WWHD_COOP_GOTO=<player>@<seconds>: the menu's button, that long after joining)
     if (static const char* e = getenv("WWHD_COOP_GOTO"); e && arrived()) {
@@ -1029,7 +1047,15 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     if (const int id = g_go_to.exchange(-1); id >= 0 && id < net::kMaxPlayers && id != net::my_id() && net::member(id)) {
         const Remote& r = g_remote[id];
         std::string why;
+        net::Place pl;
         if (!net::connected(id) || r.poses.empty()) why = "not playing yet";
+        // (a mid pose: its stage and room from the party report. The warp needs the place the position is in: a stage
+        // or room that is not the position's never finishes loading, the screen dark; so only a place known, fresh and
+        // settled, with no far jump since it came)
+        else if (r.mid_last && (!net::member_place(id, pl) || pl.age_ms > 3000 || pl.settled_ms < 1500 ||
+                                strncmp(pl.stage, r.poses.back().second.stage, 8) ||
+                                (r.jump_ms && now_ms_since(r.jump_ms) < 2500 && pl.settled_ms > now_ms_since(r.jump_ms))))
+            why = "they are on their way somewhere; try again in a moment";
         else if (r.poses.back().second.flags & kOnDeck) why = "on a ship's deck";
         else if (r.poses.back().second.flags & kOnFriend) why = "on a friend's boat";
         else if ((r.poses.back().second.flags & kSailing) && id < deck::kDecks) {  // (C16: onto their boat, if it is here)
@@ -1038,10 +1064,19 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
             else if (!deck::hop(link, id)) why = "their boat is not near you";
         } else {
             const Pose& p = r.poses.back().second;
-            const double t = p.yaw * M_PI / 32768;
-            const float at[3] = {p.pos[0] + 100 * (float)cos(t), p.pos[1], p.pos[2] - 100 * (float)sin(t)};
+            // (on their own spot, a little over it: a spot beside them can be water or a drop, off a pier or a ledge, and
+            // a mid pose's height is rounded to 4 units; the two Links push each other apart as they land)
+            const float at[3] = {p.pos[0], p.pos[1] + 10, p.pos[2]};
             ss::Warp w;
             w.stage = std::string(p.stage, strnlen(p.stage, 8)), w.room = p.room, w.angle = (uint16_t)p.yaw, w.at_position = true;
+            // (at sea the room is the square the place is in, 7 x 7 of 100000 units from -350000, room 1 the first: a
+            // room told by a pose can lag or be 0 between squares, and a room that is not the place's never loads)
+            if (w.stage == "sea") {
+                const int col = (int)std::floor((at[0] + 350000.f) / 100000.f), row = (int)std::floor((at[2] + 350000.f) / 100000.f);
+                if (col >= 0 && col < 7 && row >= 0 && row < 7) w.room = 1 + col + 7 * row;
+            }
+            mods::trace("coop: go to player %d: %s room %d at %.0f %.0f %.0f (%s pose)", id, w.stage.c_str(), w.room, at[0], at[1], at[2],
+                        r.mid_last ? "mid" : "near");
             memcpy(w.pos, at, sizeof w.pos);
             ss::request_warp(w, [id](bool ok, const std::string& no) {
                 if (!ok) ss::notice("Can't go to " + net::name(id) + ": " + no);
