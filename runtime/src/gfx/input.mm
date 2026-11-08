@@ -509,7 +509,7 @@ void release_keys() {
 struct HapticPad {
     __strong GCController* controller = nil;
     __strong CHHapticEngine* engine = nil;
-    __strong id<CHHapticAdvancedPatternPlayer> player = nil;
+    __strong id<CHHapticPatternPlayer> player = nil;
     float last = 0.f;
     bool ready = false;
     double retry_after = 0;
@@ -572,8 +572,11 @@ static void haptic_stop(GCController* c) {
         return;
     }
 }
-// Keep one looping player while rumble is nonzero, and update its intensity in place. Zero
-// always stops immediately, including a final strength change smaller than the update epsilon.
+// Keep one player while rumble is nonzero, and update its intensity in place. Zero always stops
+// immediately, including a final strength change smaller than the update epsilon.
+// N.B. A controller's haptics rejects the loopable advanced player
+// (createAdvancedPlayerWithPattern fails with ServerInitFailed), so a long continuous event
+// stands in for its loop and the plain player is used.
 static void haptic_apply(HapticPad& h, float level) {
     if (!std::isfinite(level) || level <= 0.f) {
         NSError* error = nil;
@@ -603,14 +606,12 @@ static void haptic_apply(HapticPad& h, float level) {
     if (!h.player) {
         CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.f];
         CHHapticEventParameter* sharpness = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5];
-        CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[intensity, sharpness] relativeTime:0 duration:1.0];
+        CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[intensity, sharpness] relativeTime:0 duration:3600.0];
         CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&err];
         if (pattern) {
-            operation = "create advanced player";
-            h.player = [h.engine createAdvancedPlayerWithPattern:pattern error:&err];
+            operation = "create player";
+            h.player = [h.engine createPlayerWithPattern:pattern error:&err];
         }
-        h.player.loopEnabled = YES;
-        h.player.loopEnd = 1.0;
         created = true;
     }
     if (h.player && (created || std::fabs(level - h.last) >= 0.001f)) {

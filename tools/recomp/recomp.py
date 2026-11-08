@@ -191,6 +191,7 @@ class Recompiler:
         self._check_hooks(hook_entries)
         self.decomp_hooks_file = decomp_hooks
         self.decomp, self.decomp_kept = set(), []
+        self.hooked_rc = set()  # decomp build, `# hooked-body ADDR`: runtime-hooked functions whose original is decompiled
         if decomp_hooks:
             self._decomp_hooks(decomp_hooks)
 
@@ -204,7 +205,14 @@ class Recompiler:
         if not entries:
             raise SystemExit("--decomp-hooks: %s lists no functions" % path)
         self._bounds()
-        sites = sorted(self.sites)
+        # `# moved-site ADDR` (fast mode, tools/decomp_build/fast_hooks.py): the decompiled function calls that port hook
+        # itself, so the site does not keep its function recompiled (the recompiled original still has it)
+        moved = {int(m.group(1), 16) for m in (re.match(r"#\s*moved-site\s+([0-9A-Fa-f]{8})\b", l)
+                                               for l in open(path, encoding="utf-8")) if m}
+        if moved - self.sites:
+            raise SystemExit("%s: moved-site %s is not an instruction hook" % (
+                path, " ".join("%08X" % x for x in sorted(moved - self.sites))))
+        sites = sorted(self.sites - moved)
         for site, canon, addr, where in entries:
             if site:
                 raise SystemExit("%s: instruction-level entries are not allowed in a decomp hook list" % where)
@@ -219,6 +227,21 @@ class Recompiler:
                 self.decomp_kept.append((addr, "contains instruction hook @%08X" % sites[i]))
                 continue
             self.decomp.add(addr)
+        # `# hooked-body ADDR` (gen.py --hooked-bodies, the decomp build's fast mode): a function the runtime hooks keeps
+        # hook_X; its f_X_orig enters the decompiled body (hookorig_X, the runtime's slot), the recompiled code becomes
+        # f_X_orig_rc (the slot's original). One with an instruction hook inside stays as it is (kept).
+        for line in open(path, encoding="utf-8"):
+            m = re.match(r"#\s*hooked-body\s+([0-9A-Fa-f]{8})\b", line)
+            if not m:
+                continue
+            addr = int(m.group(1), 16)
+            if addr not in self.hooks:
+                raise SystemExit("%s: hooked-body %08X is not a runtime hook" % (path, addr))
+            i = bisect.bisect_left(sites, addr)
+            if i < len(sites) and sites[i] < self.func_end(addr):
+                self.decomp_kept.append((addr, "hooked body contains instruction hook @%08X" % sites[i]))
+                continue
+            self.hooked_rc.add(addr)
         self.hooks |= self.decomp
 
     def _check_hooks(self, hook_entries):
@@ -381,11 +404,14 @@ class Recompiler:
         # restrict: guest memory never aliases the register file, so the compiler may keep
         # registers in host registers across guest loads/stores
         name = self.sym(start)
-        fname = "f_%08X_orig" % name if hooked else "f_%08X" % name
+        fname = ("f_%08X_orig_rc" if start in self.hooked_rc else "f_%08X_orig") % name if hooked else "f_%08X" % name
         out = []
         if hooked:
             # runtime hook: callers reach hook_X, which may call the original code (f_X_orig)
             out.append("void f_%08X(Cpu* __restrict c) { ppc_host_call(c, hook_%08X); }\n" % (name, name))
+        if start in self.hooked_rc:
+            # decomp build (hooked-body): the hook's original is the decompiled body (or this code, the slot's original)
+            out.append("void f_%08X_orig(Cpu* __restrict c) { hookorig_%08X(c); }\n" % (name, name))
         out += ["void %s(Cpu* __restrict c) {" % fname, "    PPC_ENTER(0x%08Xu);" % start]
         if self.mod_hooks:
             # guest mods: the check sits in the game's code (f_X, or f_X_orig behind a port hook), so the
@@ -488,6 +514,10 @@ class Recompiler:
             f.write("\n/* hooked functions: hook_X is implemented in the runtime, f_X_orig is the game's code */\n")
             for e in sorted(self.sym(a) for a in self.hooks):
                 f.write("void f_%08X_orig(Cpu* __restrict c);\nvoid hook_%08X(Cpu* c);\n" % (e, e))
+            if self.hooked_rc:
+                f.write("\n/* decomp build: hooked functions whose original is decompiled (hookorig_X: runtime) */\n")
+                for e in sorted(self.sym(a) for a in self.hooked_rc):
+                    f.write("void f_%08X_orig_rc(Cpu* __restrict c);\nvoid hookorig_%08X(Cpu* c);\n" % (e, e))
             if self.decomp_kept:
                 f.write("\n/* decomp build: listed functions kept as they are (table.c g_recomp_decomp_kept) */\n")
                 for a, _ in self.decomp_kept:
@@ -544,7 +574,9 @@ class Recompiler:
         f.write("\n/* decomp build (--decomp-hooks): %d functions decompiled, %d kept */\n" % (
             len(self.decomp), len(self.decomp_kept)))
         for a, why in self.decomp_kept:
-            if a in self.entries:
+            if a in self.hooks and a not in self.decomp:  # a hooked body kept: the slot's original is f_X_orig itself
+                f.write("void f_%08X_orig_rc(Cpu* __restrict c) { f_%08X_orig(c); }  /* %s */\n" % (self.sym(a), self.sym(a), why))
+            elif a in self.entries:
                 f.write("void f_%08X_orig(Cpu* __restrict c) { f_%08X(c); }  /* %s */\n" % (self.sym(a), self.sym(a), why))
             else:
                 f.write("void f_%08X_orig(Cpu* __restrict c) { ppc_unimplemented(c, 0x%08Xu, 0); }  /* %s */\n" % (

@@ -136,7 +136,7 @@ namespace aspect { void ss_reset(); }
 namespace button_glyphs { void ss_reset(); }
 namespace dispatch { std::vector<std::pair<uint32_t, std::string>> host_functions(); }
 
-namespace interp { uint64_t logic_steps(); }
+namespace interp { uint64_t logic_steps(); bool hold_pass(); }
 namespace ss {
 namespace {
 
@@ -1587,16 +1587,22 @@ bool newer_is_portable(int slot) {
     return port;
 }
 
-// test aid: WWHD_STATE_SAVE_AT=frame:slot,...  WWHD_STATE_LOAD_AT=frame:slot,... (TV frames)
-struct Timed { uint64_t frame; int slot; };
+// test aid: WWHD_STATE_SAVE_AT=frame:slot,...  WWHD_STATE_LOAD_AT=frame:slot,... (TV frames; with WWHD_TEST_FIXED_SEED
+// counted from the first gameplay frame). Game time instead of TV frames: an entry sN:slot is due once the logic
+// step count (interp::logic_steps) reaches N, an entry tN:slot once g_Counter.mTimer (the game's gameplay step
+// counter: no loading frames) does. A build slower than the TV clock (a step the game thread misses under host
+// load) then still acts after the same number of steps. Each such entry fires once.
+struct Timed { uint64_t frame; int slot; char clock; };  // clock: 0 = script/TV frame, 's' = logic step, 't' = mTimer
 std::vector<Timed> parse_timed(const char* var) {
     std::vector<Timed> v;
     const char* e = getenv(var);
     unsigned long long f;
     int s, n;
-    while (e && sscanf(e, "%llu:%d%n", &f, &s, &n) == 2) {
-        v.push_back({f, s});
-        e += n;
+    while (e) {
+        const char clock = *e == 't' || *e == 's' ? *e : 0;
+        if (sscanf(e + (clock != 0), "%llu:%d%n", &f, &s, &n) != 2) break;
+        v.push_back({f, s, clock});
+        e += (clock != 0) + n;
         if (*e != ',') break;
         e++;
     }
@@ -2056,10 +2062,13 @@ void service_file_save(Cpu* c);
 
 void service(Cpu* c) {
     crashrec::service();
+    static const bool step_source = (fixed_seed::set_step_source(&interp::logic_steps), true);  // WWHD_TEST_STEP_CLOCK
+    (void)step_source;
     if (g_fixed_seed && g_fixed_seed_boot.due(ld32(GD(0x101FF560)))) {
         fixed_seed::set_boot_frame(render::frame_count());
-        LOG("[test] WWHD_TEST_FIXED_SEED: TV frame %llu counts as frame %llu for scripted test aids",
-            (unsigned long long)render::frame_count(), (unsigned long long)fixed_seed::kBootFrame);
+        LOG("[test] WWHD_TEST_FIXED_SEED: TV frame %llu (logic step %llu) counts as frame %llu for scripted test aids%s",
+            (unsigned long long)render::frame_count(), (unsigned long long)interp::logic_steps(),
+            (unsigned long long)fixed_seed::kBootFrame, fixed_seed::step_clock() ? " (WWHD_TEST_STEP_CLOCK: logic steps)" : "");
         apply_fixed_seed("first gameplay frame");
     }
     // test aids (TV frames): WWHD_STATE_SAVE_AT / WWHD_STATE_LOAD_AT for full states,
@@ -2070,14 +2079,31 @@ void service(Cpu* c) {
     if (!save_at.empty() || !load_at.empty() || !psave_at.empty() || !pload_at.empty()) {
         static uint64_t last = 0;
         uint64_t f = fixed_seed::script_frame(render::frame_count());
+        // sN / tN entries: once each, when the logic step count / mTimer first reaches N (mTimer is guest state: a
+        // load moves it)
+        static std::set<const Timed*> clock_done;
+        const uint32_t timer = ld32(GD(0x101FF560));  // g_Counter.mTimer
+        const uint64_t step = interp::logic_steps();
+        auto due = [&](const Timed& t) {
+            if (!t.clock) {
+                if (!(t.frame > last && t.frame <= f)) return false;
+            } else {
+                if ((t.clock == 's' ? step : timer) < t.frame || clock_done.count(&t)) return false;
+                clock_done.insert(&t);
+            }
+            LOG("[test] timed test aid due: entry %s%llu, script frame %llu (TV %llu), mTimer %u, logic step %llu%s",
+                t.clock == 's' ? "s" : t.clock == 't' ? "t" : "", (unsigned long long)t.frame, (unsigned long long)f, (unsigned long long)render::frame_count(),
+                timer, (unsigned long long)step, interp::hold_pass() ? " (hold pass)" : "");
+            return true;
+        };
         for (auto& t : save_at)
-            if (t.frame > last && t.frame <= f) request_save_full(t.slot);
+            if (due(t)) request_save_full(t.slot);
         for (auto& t : load_at)
-            if (t.frame > last && t.frame <= f) request_load(t.slot);
+            if (due(t)) request_load(t.slot);
         for (auto& t : psave_at)
-            if (t.frame > last && t.frame <= f) request_save_portable(t.slot);
+            if (due(t)) request_save_portable(t.slot);
         for (auto& t : pload_at)
-            if (t.frame > last && t.frame <= f) request_load_portable_file(slot_path(t.slot, pstate::kExtension));
+            if (due(t)) request_load_portable_file(slot_path(t.slot, pstate::kExtension));
         last = f;
     }
     static bool env_load = [] {

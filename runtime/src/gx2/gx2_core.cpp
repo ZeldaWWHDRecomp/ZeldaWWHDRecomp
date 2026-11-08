@@ -114,7 +114,9 @@ static bool g_collect_stats = false;  // WWHD_VK_STATS (Vulkan)
 static bool g_classify = false;       // render-thread profiler on (rprof::enabled(); updated at each swap)
 
 static void build_reg_tables() {
-    g_reg_classes.build(shader_address_memo(), [](uint32 r) { return rprof::fast_class_reg(r); });
+    // the draw classifier's buffer/constant class also takes the dynamic words (prof_fast_or_dynamic)
+    g_reg_classes.build(shader_address_memo(),
+                        [](uint32 r) { return prof_fast_or_dynamic(rprof::fast_class_reg(r), r); });
     g_classify = rprof::enabled();
 #ifdef WWHD_HAS_VULKAN
     {

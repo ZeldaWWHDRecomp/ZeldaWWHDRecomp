@@ -4,7 +4,7 @@
 // call in 64 (and the phases inside those sampled draws), rare ops (clears, copies, flushes, swaps)
 // on every call. Upload bytes are split by kind; "unique guest bytes" (the union of the guest ranges
 // that vertex, index and uniform copies read) is measured on one frame in 16. A classifier counts
-// draws whose registers changed only in buffer pointers / ALU constants since the previous draw
+// draws whose registers changed only in buffer pointers / ALU constants / dynamic words since the previous draw
 // (candidates for a continued-draw fast path).
 //
 // Every 120 swaps the counters are turned into a text report: logged with WWHD_PROFILE=1,
@@ -61,6 +61,15 @@ void sub_end_slow(SubPhase p, uint64_t started);
 inline void sub_end(SubPhase p, uint64_t started) {
     if (started) sub_end_slow(p, started);
 }
+// WWHD_VK_PROF_SPLIT=1 (Vulkan): the phases of sampled draws are also summed by fast-path class
+// (draw.cpp sets the class of each top-level draw before its first phase mark)
+enum DrawClass : int { kClassNone, kClassContinued, kClassFullRegisters, kDrawClasses };
+extern int g_draw_class;
+void count_class_draw();
+inline void set_draw_class(int c) {
+    g_draw_class = c;
+    if (g_draw_sampled && c) count_class_draw();
+}
 
 // op timing around execute_one: begin() returns 0 when this call is not timed
 uint64_t op_begin(Op op);
@@ -89,7 +98,8 @@ void add_idle(uint64_t ns);                 // render thread waiting for command
 extern uint32_t g_reg_dirty;  // bit 0: buffer/constant registers changed, bit 1: other registers changed
 void note_other_reg(uint32_t reg);          // a non-buffer register changed value
 void classify_draw();                       // at each draw: count its class, clear g_reg_dirty
-// ALU constants, uniform-block and vertex-buffer words (gx2 looks this up in its register class table)
+// ALU constants, uniform-block and vertex-buffer words (gx2 looks this up in its register class table,
+// together with the per-draw dynamic words of state_groups.h kSgDynamic)
 inline bool fast_class_reg(uint32_t reg) {
     // RegDefines.h: mmSQ_ALU_CONSTANT0_0 0xC000; mmSQ_TEX_RESOURCE_WORD0 0xE000 + 0x7E0 (VS uniform
     // blocks), + 0x250 (PS), + 0xCB0 (GS), + 0x8C0 (vertex attribute buffers), 7 words each

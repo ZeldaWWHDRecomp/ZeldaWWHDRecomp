@@ -1367,6 +1367,23 @@ static void apply_scenario(PadState& s) {
         if (t >= p.from && t < p.to) { s.rx = p.x; s.ry = p.y; }
     for (auto& p : sc.presses)
         if (t >= p.from && t < p.to) s.buttons |= p.bits;
+    // debug: WWHD_TEST_INPUT_LOG=<file> writes every change of the input the game reads, at scenario
+    // time, as "t buttons lx ly rx ry": played live, it becomes a WWHD_TEST_* scenario that repeats it
+    static FILE* input_log = [] {
+        const char* path = getenv("WWHD_TEST_INPUT_LOG");
+        return path ? fopen(path, "w") : nullptr;
+    }();
+    if (input_log) {
+        static uint32_t last_buttons = 0;
+        static float last[4] = {};
+        const float now[4] = {s.lx, s.ly, s.rx, s.ry};
+        if (s.buttons != last_buttons || memcmp(now, last, sizeof now) != 0) {
+            fprintf(input_log, "%.4f %x %.9g %.9g %.9g %.9g\n", t, s.buttons, s.lx, s.ly, s.rx, s.ry);  // exact floats
+            fflush(input_log);
+            last_buttons = s.buttons;
+            memcpy(last, now, sizeof now);
+        }
+    }
 }
 
 static std::atomic<bool> g_pro{getenv("WWHD_PRO_CONTROLLER") != nullptr};

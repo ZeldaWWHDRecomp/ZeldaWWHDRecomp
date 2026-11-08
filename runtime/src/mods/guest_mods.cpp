@@ -128,6 +128,17 @@ uint8_t*sealed_mod_flags=nullptr;const PpcFunc*sealed_mod_bodies=nullptr;unsigne
 extern "C" {
 unsigned g_mod_hook_count = 0;  // initialized only by a hook-enabled game-code build
 uint8_t* g_mod_hook_flags = nullptr;
+// every write that sets a hook flag: the decomp build stops entering that function natively (the normal build: the
+// plain store, as before)
+#ifdef WWHD_DECOMP
+extern "C" void decomp_mod_hooked(uint32_t ordinal);  // runtime/src/decomp/decomp.h
+static inline void set_mod_hook_flag(uint32_t ordinal) {
+    g_mod_hook_flags[ordinal] = 1;
+    decomp_mod_hooked(ordinal);
+}
+#else
+#define set_mod_hook_flag(ordinal) (g_mod_hook_flags[ordinal] = 1)
+#endif
 const PpcFunc* g_mod_bodies = nullptr;
 void ppc_mod_register(unsigned count, uint8_t* flags, const PpcFunc* bodies) {
     std::lock_guard mutation(native_hook_mutex());
@@ -251,7 +262,7 @@ bool install_stage_owner_pass_through() {
         for(unsigned n=0;n<inserted;++n)g_chains.erase(addresses[n]);
         return false;
     }
-    for(unsigned n=0;n<addresses.size();++n)g_mod_hook_flags[ordinals[n]]=1;
+    for(unsigned n=0;n<addresses.size();++n)set_mod_hook_flag(ordinals[n]);
     installed=true;
     return true;
 }
@@ -387,7 +398,7 @@ bool install_native_wait_routes_impl(NativeWaitDispatch route) {
     }
     native_wait_prior=prior;
     native_wait_dispatch=route;
-    for(size_t n=0;n<addresses.size();++n)g_mod_hook_flags[ordinals[n]]=1;
+    for(size_t n=0;n<addresses.size();++n)set_mod_hook_flag(ordinals[n]);
     native_wait_installed=true;
     return true;
 }
@@ -1323,7 +1334,7 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
         if (h.kind == WWHD_GUEST_REPLACE) { ch.replace = h.fn; ch.replace_mod = pkg.id; }
         else if (h.kind == WWHD_GUEST_HOOK_ENTRY) ch.entry.push_back(h.fn);
         else ch.ret.insert(ch.ret.begin(), h.fn);  // return hooks run in reverse load order
-        g_mod_hook_flags[ch.ordinal] = 1;
+        set_mod_hook_flag(ch.ordinal);
         LOG("[guestmods] %s %08X", h.kind == WWHD_GUEST_REPLACE ? "replace" : h.kind == WWHD_GUEST_HOOK_ENTRY ? "entry hook" : "return hook",
             h.target);
     }
@@ -1614,7 +1625,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] letters: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's letter service";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Mod charts: host replacements of the sea chart menu's story marks, only when a loaded mod uses
     // the chart services (story_chart.h).
@@ -1630,7 +1641,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] charts: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's chart service";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Mod treasure charts (story_treasure.h): the game's salvage point, light ring, crane and chest for a
     // declared mod chart, only when a loaded mod declares charts.
@@ -1644,7 +1655,7 @@ void init() {
             if(ordinal<0)fatal("[guestmods] treasure charts: %08X is not a game function",addr);
             Chain& ch=g_chains[addr];
             ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's treasure charts";
-            g_mod_hook_flags[ordinal]=1;
+            set_mod_hook_flag(ordinal);
         });
     }
     // Placed chests (SDK v3 "chest") that hold a mod's item: the chest item hook of the treasure charts, on its
@@ -1662,7 +1673,7 @@ void init() {
                 if(ordinal<0)fatal("[guestmods] placed chests: %08X is not a game function",addr);
                 Chain& ch=g_chains[addr];
                 ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's placed chests";
-                g_mod_hook_flags[ordinal]=1;
+                set_mod_hook_flag(ordinal);
             }
         }
         story_treasure_chest::set_item_hook_ready(ready);
@@ -1680,7 +1691,7 @@ void init() {
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's story notebook";
         if(addr==native_wait_addresses()[0])native_wait_known_notebook_people=fn;
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // World actors: with declared actors, and in the --editor launch mode always (the editor places
     // residents, props, switches, doors and enemies live even when no package declares one at start-up).
@@ -1729,7 +1740,7 @@ void init() {
             const auto& wait_addresses=native_wait_addresses();
             for(size_t n=0;n<wait_addresses.size();++n)
                 if(world_actor_overlap(n)&&addr==wait_addresses[n])native_wait_known_world_actor[n]=fn;
-            g_mod_hook_flags[ordinal]=1;
+            set_mod_hook_flag(ordinal);
         });
     }
     if(story_actor_textures::declared()&&!story_actor_textures::allocate_session())exception_report::raise("Owned prop texture snapshot cache allocation failed");
@@ -1765,7 +1776,7 @@ void init() {
         int ordinal=ordinal_of(addr);
         if(ordinal<0)fatal("[guestmods] scenes: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's scene player";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     };
     story_scenes::install(call_original,scenes_replaced_by,scenes_replace);
     // The King of Red Lions' one-time line for the tracked quest (story_sail.h): the boat's execute,
@@ -1777,7 +1788,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] notebook: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's story notebook (King of Red Lions)";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Story layouts (story_lyt_screen.h): a layout of our own with the item screen. Its client: the layout
     // test harness (WWHD_STORY_LYT, story_lyt_proto.cpp); nothing is hooked without one.
@@ -1796,7 +1807,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] story layout: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's story layout";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Mod items (story_items.h): the game's item tables answer for the port's item numbers, only when a
     // loaded mod declares items.
@@ -1816,7 +1827,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] items: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's mod items";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Mod items and the notebook on X/Y/R (story_item_buttons.h): the item use in play and the HUD's
     // button read, with the story notebook's item menu hooks.
@@ -1829,7 +1840,7 @@ void init() {
     story_items::set_hold_up_presenter(story_item_models::hold_up,story_item_models::chest_hold_up);
     story_items::set_get_text(story_mail::item_get_text);
     story_item_models::set_text(story_items::arm_get_text);
-    if(!story_item_models::install([](uint32_t fn){auto it=g_chains.find(fn);return it==g_chains.end()?std::string():it->second.replace_mod;},[](uint32_t fn,PpcFunc hook){int i=ordinal_of(fn);if(i<0)fatal("item model hook missing");auto&ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(i);ch.replace=hook;ch.replace_mod="the port's item models";g_mod_hook_flags[i]=1;}))exception_report::raise("Item model hook conflict");
+    if(!story_item_models::install([](uint32_t fn){auto it=g_chains.find(fn);return it==g_chains.end()?std::string():it->second.replace_mod;},[](uint32_t fn,PpcFunc hook){int i=ordinal_of(fn);if(i<0)fatal("item model hook missing");auto&ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(i);ch.replace=hook;ch.replace_mod="the port's item models";set_mod_hook_flag(i);}))exception_report::raise("Item model hook conflict");
     // a mod item's get moment from a chest (story_item_get_icon.h): its icon over Link's head in the place of
     // the stand-in's card; the demo item's draw hook also asks the held models first. With mod items, chests
     // of them, or in the editor launch mode (an item added there gets its chest at once).
@@ -1840,7 +1851,7 @@ void init() {
     },item_icons::picture);
     story_treasure_chest::set_icon_presenter([](uint16_t key,const std::string& png,bool on){if(on)story_item_get_icon::show(key,png);else story_item_get_icon::hide();});
     if(story_items::imported()||story_treasure_chest::placed_chests()||story_item_models::declared()||editor::launch_mode())
-        story_item_get_icon::install([](uint32_t fn){auto it=g_chains.find(fn);return it==g_chains.end()?std::string():it->second.replace_mod;},[](uint32_t fn,PpcFunc hook){int i=ordinal_of(fn);if(i<0)fatal("[guestmods] item get: %08X is not a game function",fn);auto&ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(i);ch.replace=hook;ch.replace_mod="the port's item get";g_mod_hook_flags[i]=1;});
+        story_item_get_icon::install([](uint32_t fn){auto it=g_chains.find(fn);return it==g_chains.end()?std::string():it->second.replace_mod;},[](uint32_t fn,PpcFunc hook){int i=ordinal_of(fn);if(i<0)fatal("[guestmods] item get: %08X is not a game function",fn);auto&ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(i);ch.replace=hook;ch.replace_mod="the port's item get";set_mod_hook_flag(i);});
     story_item_buttons::set_game_calls(call_original,[](Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);});
     story_item_buttons::install([](uint32_t addr) {
         auto it=g_chains.find(addr);return it==g_chains.end()?std::string():it->second.replace_mod;
@@ -1849,7 +1860,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] item buttons: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's item buttons";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     story_store::set_game_calls(call_original);
     story_store::set_progress_loaded(story_item_models::progress_loaded);
@@ -1860,7 +1871,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] story store: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's story progress";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     if(getenv("WWHD_GUEST_MODS"))LOG("[guestmods] WWHD_GUEST_MODS is retired; install and trust guest packages in the mod manager");
     // The world editor's scene previews: in the --editor launch mode the scene player (its scratch, the
@@ -1888,7 +1899,7 @@ void init() {
         auto it=g_chains.find(fn);return ordinal_of(fn)>=0&&(!replacing||it==g_chains.end()||!it->second.replace);
     },[](uint32_t fn,PpcFunc hook){
         int ordinal=ordinal_of(fn);auto& ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(ordinal);
-        ch.replace=hook;ch.replace_mod="the port's map/HUD bridge";g_mod_hook_flags[ordinal]=1;
+        ch.replace=hook;ch.replace_mod="the port's map/HUD bridge";set_mod_hook_flag(ordinal);
     });
     // Existing port actor services configure their before-delete listeners
     // before the central registry becomes immutable. Extend its lookup only

@@ -74,7 +74,7 @@ if(WWHD_WRITE_WATCH)
   add_compile_definitions(WWHD_WRITE_WATCH=1)
 endif()
 
-option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS; experimental)" OFF)
+option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; experimental)" OFF)
 include(cmake/Decomp.cmake)
 if(WWHD_DECOMP)
   wwhd_decomp_configure()
@@ -124,6 +124,43 @@ add_library(gamecode STATIC ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/imports
 target_include_directories(gamecode PUBLIC runtime/include ${GEN_DIR})
 # exact FP semantics: no contraction into FMA, no fast-math; PowerPC integer arithmetic wraps
 target_compile_options(gamecode PRIVATE -O3 -ffp-contract=off -fno-strict-aliasing -fwrapv -w)
+option(WWHD_PPC_TRACE "game code checks the function-entry trace switch (WWHD_TRACE_FUNCS and friends)" ON)
+if(NOT WWHD_PPC_TRACE)
+  target_compile_definitions(gamecode PRIVATE PPC_NO_TRACE=1)
+endif()
+# Profile-guided optimization of the runtime (the render thread): WWHD_PGO_GENERATE=<dir> builds an
+# instrumented runtime that writes profiles there; WWHD_PGO_USE=<file.profdata> optimizes with them.
+# WWHD_PGO_GAMECODE=ON also profiles the recompiled game code (the logic thread).
+# WWHD_PGO_CS_GENERATE=<dir> with WWHD_PGO_USE builds a context-sensitive (post-inline) instrumented
+# binary on top of that profile; merge its profiles with the WWHD_PGO_USE one for the final build.
+set(WWHD_PGO_GENERATE "" CACHE PATH "write runtime PGO profiles to this folder")
+set(WWHD_PGO_USE "" CACHE FILEPATH "optimize the runtime with this merged .profdata")
+set(WWHD_PGO_CS_GENERATE "" CACHE PATH "write context-sensitive PGO profiles to this folder")
+option(WWHD_PGO_GAMECODE "apply PGO to the game code too" OFF)
+if(WWHD_PGO_CS_GENERATE AND WWHD_PGO_USE)
+  add_compile_options(-fprofile-use=${WWHD_PGO_USE} -fcs-profile-generate=${WWHD_PGO_CS_GENERATE}
+                      -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+  add_link_options(-fcs-profile-generate=${WWHD_PGO_CS_GENERATE})
+  add_compile_definitions(WWHD_PGO_GENERATE_BUILD=1)
+  target_compile_options(gamecode PRIVATE -fprofile-use=${WWHD_PGO_USE}
+                         -fcs-profile-generate=${WWHD_PGO_CS_GENERATE})
+elseif(WWHD_PGO_GENERATE)
+  add_compile_options($<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-fprofile-generate=${WWHD_PGO_GENERATE}>)
+  add_link_options(-fprofile-generate=${WWHD_PGO_GENERATE})
+  add_compile_definitions(WWHD_PGO_GENERATE_BUILD=1)
+  if(WWHD_PGO_GAMECODE)
+    target_compile_options(gamecode PRIVATE -fprofile-generate=${WWHD_PGO_GENERATE})
+  endif()
+elseif(WWHD_PGO_USE)
+  add_compile_options($<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-fprofile-use=${WWHD_PGO_USE}>
+                      $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-Wno-profile-instr-unprofiled>
+                      $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-Wno-profile-instr-out-of-date>)
+  add_link_options(-fprofile-use=${WWHD_PGO_USE})  # LTO backend: applies a context-sensitive profile
+  if(WWHD_PGO_GAMECODE)
+    target_compile_options(gamecode PRIVATE -fprofile-use=${WWHD_PGO_USE} -Wno-profile-instr-unprofiled
+                                            -Wno-profile-instr-out-of-date)
+  endif()
+endif()
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
   target_compile_options(gamecode PRIVATE -mcpu=apple-m1)
 endif()
@@ -169,9 +206,10 @@ target_compile_options(imgui PRIVATE -w -O2)
 # ---- build identification (runtime/src/build_info.h): version and commit, rewritten by
 # cmake/BuildInfo.cmake on every build when they change. Release builds pass the tag.
 set(WWHD_VERSION "" CACHE STRING "release version shown in reports and logs (default: from git describe)")
+set(WWHD_COMMIT "" CACHE STRING "commit reported by the build (default: from git, -dirty with local changes)")
 set(WWHD_BUILD_INFO ${CMAKE_BINARY_DIR}/generated/build_info.cpp)
 add_custom_target(wwhd_build_info
-  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${WWHD_BUILD_INFO} "-DVERSION=${WWHD_VERSION}"
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${WWHD_BUILD_INFO} "-DVERSION=${WWHD_VERSION}" "-DCOMMIT=${WWHD_COMMIT}"
           "-DVARIANT=$<IF:$<BOOL:${WWHD_DECOMP}>,decomp,>"
           -P ${CMAKE_SOURCE_DIR}/cmake/BuildInfo.cmake
   BYPRODUCTS ${WWHD_BUILD_INFO}
@@ -365,6 +403,12 @@ endif()
 if(WWHD_HAS_VULKAN)
   include(cmake/PipelineRuntimeIdentity.cmake)
   wwhd_pipeline_runtime_identity("${CMAKE_SOURCE_DIR}" WWHD_PIPELINE_RUNTIME_ID)
+  # A build whose changes leave the renderer as released can keep the release's identity, so the
+  # installer's pipeline head start and the player's saved recipes stay usable.
+  set(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE "" CACHE STRING "pipeline runtime identity to report instead of the source hash")
+  if(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE)
+    set(WWHD_PIPELINE_RUNTIME_ID "${WWHD_PIPELINE_RUNTIME_ID_OVERRIDE}")
+  endif()
   set_property(SOURCE runtime/src/gfx/vulkan/backend.cpp APPEND PROPERTY
     COMPILE_DEFINITIONS "WWHD_PIPELINE_RUNTIME_ID=\"${WWHD_PIPELINE_RUNTIME_ID}\"")
   # VK_NO_PROTOTYPES: the renderer loads every Vulkan function at run time (gfx/vulkan/loader.h), so the
@@ -447,14 +491,15 @@ add_executable(gcmodel_tool runtime/tools/gcmodel_tool.cpp)
 target_include_directories(gcmodel_tool PRIVATE runtime/src runtime/tools)
 target_link_libraries(gcmodel_tool PRIVATE wwhd_gcmodel)
 
-add_executable(mod_manager_test runtime/tools/mod_manager_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp)
-target_include_directories(mod_manager_test PRIVATE runtime/src)
+add_executable(mod_manager_test runtime/tools/mod_manager_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp
+               runtime/src/mods/speedrun.cpp)
+target_include_directories(mod_manager_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_manager_test PRIVATE -UNDEBUG)
 
 # External native package fixture and isolated lifecycle/integration tests.
 add_library(mod_fixture MODULE runtime/tools/mod_fixture.cpp)
 target_include_directories(mod_fixture PRIVATE runtime/include)
-add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/required.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/required.cpp runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_package_test PRIVATE runtime/src runtime/include runtime/tools)
 target_compile_options(mod_package_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_package_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
@@ -621,6 +666,11 @@ add_executable(area_sample_test runtime/tools/area_sample_test.cpp)
 target_include_directories(area_sample_test PRIVATE runtime/src)
 target_compile_options(area_sample_test PRIVATE -UNDEBUG)
 add_test(NAME area_sample COMMAND area_sample_test)
+# the loader's relocations to the game module's own symbols (runtime/src/rpx_relocs.h, issue #383)
+add_executable(rpx_relocs_test runtime/tools/rpx_relocs_test.cpp)
+target_include_directories(rpx_relocs_test PRIVATE runtime/src)
+target_compile_options(rpx_relocs_test PRIVATE -UNDEBUG)
+add_test(NAME rpx_relocs COMMAND rpx_relocs_test)
 
 # guest addresses and swizzles of sampled texture levels (runtime/src/gfx/texture_levels.h, issue #297)
 add_executable(texture_levels_test runtime/tools/texture_levels_test.cpp)
@@ -1765,6 +1815,11 @@ add_executable(moon_jump_movement_test runtime/tools/moon_jump_movement_test.cpp
 target_include_directories(moon_jump_movement_test PRIVATE runtime/src runtime/include)
 target_compile_options(moon_jump_movement_test PRIVATE -UNDEBUG)
 add_test(NAME moon_jump_movement COMMAND moon_jump_movement_test)
+# Classic Wind Waker (Speedrun, issue #405): the two sites against the TWWHD Randomizer's Classic-mode words
+add_executable(classic_tact_test runtime/tools/classic_tact_test.cpp runtime/src/mods/speedrun.cpp)
+target_include_directories(classic_tact_test PRIVATE runtime/src runtime/include)
+target_compile_options(classic_tact_test PRIVATE -UNDEBUG)
+add_test(NAME classic_tact COMMAND classic_tact_test)
 if(Python3_Interpreter_FOUND)
   add_test(NAME repair_medli COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/savegame/repair_medli_test.py")
   add_test(NAME medli_scenario_evidence COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/runtime/tools/medli_scenario_test.py")
@@ -2103,6 +2158,9 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME story_notebook_model COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_notebook_model.py")
   add_test(NAME stage_builder COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_stage_builder.py")
   add_test(NAME decomp_build_gen COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_gen.py")
+  add_test(NAME decomp_build_native_rules COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_native_rules.py")
+  add_test(NAME decomp_build_native_returns COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_native_returns.py")
+  add_test(NAME decomp_build_site_lr COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_site_lr.py")
   add_test(NAME release_appimage_apprun COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_appimage_apprun.py")
   add_test(NAME release_appimage_runtime COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_appimage_runtime.py")
   add_test(NAME release_appimage_licenses COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_appimage_licenses.py")
@@ -2617,7 +2675,7 @@ endif()
 if(NOT ANDROID AND SDL3_FOUND AND Python3_Interpreter_FOUND)
   add_executable(mod_oneclick_flow_test runtime/tools/mod_oneclick_flow_test.cpp
     runtime/third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp runtime/src/mods/code_mods.cpp
-    runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp
+    runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp
     runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c
     runtime/src/overlay/extensions.cpp runtime/src/overlay/text_field.cpp runtime/src/mods/required.cpp ${WWHD_BUILD_INFO})
   target_include_directories(mod_oneclick_flow_test PRIVATE runtime/src runtime/include)
@@ -2630,7 +2688,7 @@ add_test(NAME mod_setup_acceptance COMMAND mod_package_test --setup-acceptance)
 add_test(NAME mod_player_models COMMAND mod_package_test --player-models)
 
 # Experimental mods: flag, list filter, save backup before enabling, retention, staged restore.
-add_executable(mod_experimental_test runtime/tools/mod_experimental_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_experimental_test runtime/tools/mod_experimental_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_experimental_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_experimental_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_experimental_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})

@@ -1623,6 +1623,17 @@ void gamecube_hud_plate_test() {
         hud_letter=false;
         assert(drawn_quad[0]==80 && drawn_quad[1]==80 && drawn_sheet==atlas);
         assert(ldf32(first_quad)==20 && ldf32(first_quad+4)==40);
+        // CommandA_00's floating hint: the letter sits beside its picture under a much larger
+        // N_Center_01, and the disc still takes the picture's size, not the container's.
+        constexpr uint32_t center=base+0x6000;
+        pane(center,"N_Center_01",0,0); stf32(center+0x3C,196); stf32(center+0x40,101);
+        child(center,picture); child(center,text_box);
+        st32(text_box+0xFC,list);st32(text_box+0xA4,base+0xB000);st16(text_box+0xCE,1);
+        st16(list+4,0);st8(list+6,0);print("ABXY"[face]);stf32(first_quad,20);stf32(first_quad+4,40);
+        hud_letter=true;
+        c=Cpu{};c.r[3]=text_box;button_glyphs::draw_text_box(&c,[](Cpu*) { draw(); });
+        hud_letter=false;
+        assert(drawn_quad[0]==80 && drawn_quad[1]==80 && drawn_sheet==atlas);
     }
     // Keep the Y bean visible when a large telescope picture follows its letter.
     constexpr uint32_t root=base+0x6000, ygroup=base+0x6800, ypic=base+0x7000,

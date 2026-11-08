@@ -173,6 +173,28 @@ int main() {
     const auto cmds = q.draw(rows, {"Camera"});
     assert(cmds.size() > 10 && cmds[1].text.rfind("nb:window@", 0) == 0);
     assert(!q.draw_entry().empty());
+    // a stick held at the opening (it pushed Left onto the arrow) acts only after it centres, as held buttons;
+    // another direction pushed meanwhile still acts
+    {
+        std::vector<Row> t(2);
+        t[0].id = "invert", t[0].toggle = true;
+        t[1].id = "other", t[1].toggle = true;
+        Input left = pad(0), right = pad(0), down_left = pad(0);
+        left.lx = -1, right.lx = 1, down_left.lx = -1, down_left.ly = -1;
+        Page sp;
+        sp.show(1);
+        for (int i = 0; i < 20; i++) assert(sp.input(left, t, 1).id.empty());  // past the repeat delay too
+        Action sa = sp.input(down_left, t, 1);
+        assert(sa.id.empty() && sp.selected() == 1 && sa.sound == Sound::Cursor);
+        sp.input(pad(0), t, 1);
+        sa = sp.input(left, t, 1);
+        assert(sa.id == "other" && sa.direction == -1);  // a fresh push acts
+        // a row's page closed with the stick held: the row behind it does not change
+        sp.hold_buttons();
+        for (int i = 0; i < 20; i++) assert(sp.input(right, t, 1).id.empty());
+        sp.input(pad(0), t, 1);
+        assert(sp.input(right, t, 1).direction == +1);
+    }
     // choices step like numbers; a long help is cut to two lines (valid UTF-8 kept)
     {
         std::vector<Row> c(1);

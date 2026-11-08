@@ -202,6 +202,7 @@ class NativeBoundaries(unittest.TestCase):
             compiler.func_end = lambda _: address + 4
             compiler.hooks = {address}
             compiler.sites = {address}
+            compiler.hooked_rc = set()
             compiler.mod_hooks = False
             compiler.preserve_registers = False
             compiler.imm_override = {}

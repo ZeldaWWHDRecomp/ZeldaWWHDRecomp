@@ -21,12 +21,14 @@ def fixture():
     original = bytes(range(64))
     reviewed = original[:-4]+b'1234'
     section = SimpleNamespace(name='.text', addr=START, type=1, flags=6, size=64, data=original)
-    rpx = SimpleNamespace(by_name={'.text': section}, sections=[section], symbols=[])
-    profile = dict(format=2, id='synthetic', base_sha256=builds.canonical_build().sha256,
+    rpx = SimpleNamespace(by_name={'.text': section}, sections=[section], symbols=[],
+                          apply_internal_relocations=lambda: {})
+    profile = dict(format=3, id='synthetic', base_sha256=builds.canonical_build().sha256,
                    hooks_sha256=C.hook_digest(HOOKS), entry_point=START,
                    imports_sha256=C.import_digest(rpx), sections=[dict(name='.text', address=START, size=64, type=1, flags=6)],
                    **C.range_profile(rpx, [START, START+4], [(START, START+64)]))
     profile['functions'][0]['sha256'].append(C.digest(reviewed))
+    profile['guard_sha256'] = [profile['guard_sha256']]
     return rpx, profile, reviewed
 
 
@@ -94,6 +96,7 @@ class Compatibility(unittest.TestCase):
         rpx.by_name['.text'].size = 168
         ranges = [(START, START+4), (START+4, START+12), (START+12, START+44), (START+44, START+104), (START+104, START+168)]
         profile.update(C.range_profile(rpx, [START, START+4], ranges))
+        profile['guard_sha256'] = [profile['guard_sha256']]
         self.assertEqual([f['end']-f['start'] for f in profile['tiny_functions']], [4, 8, 32, 60])
         self.assertEqual([f['end']-f['start'] for f in profile['functions']], [64])
         C.check(rpx, profile, HOOKS, START)
@@ -131,7 +134,7 @@ class Compatibility(unittest.TestCase):
                 data = bytearray(reviewed);data[4] ^= 1;changed.by_name['.text'].data = bytes(data)
                 with self.assertRaisesRegex(C.CompatibilityError, 'hook instruction'):M.make(path, [path], {START})
 
-    def test_generator_does_not_publish_or_waive_tiny_body_hashes(self):
+    def test_generator_reviews_tiny_bodies_only_as_an_aggregate(self):
         rpx, _, _ = fixture()
         reference = SimpleNamespace(build=builds.canonical_build(), p=SimpleNamespace(rpx=rpx, entry=START),
                                     func_of=lambda address: START, func_end=lambda address: START+20)
@@ -144,8 +147,50 @@ class Compatibility(unittest.TestCase):
                 profile = M.make(path, [], set())
                 self.assertEqual(profile['functions'], [])
                 self.assertEqual(profile['tiny_functions'], [dict(start=START, end=START+20)])
+                self.assertEqual(len(profile['guard_sha256']), 1)
                 with self.assertRaisesRegex(C.CompatibilityError, 'tiny hooked function'):
+                    M.make(path, [path], set())
+                # an explicitly reviewed tiny body: one more accepted aggregate, still no per-body digest
+                reviewed = M.make(path, [path], {START})
+                self.assertEqual(reviewed['tiny_functions'], [dict(start=START, end=START+20)])
+                self.assertEqual(reviewed['guard_sha256'][0], profile['guard_sha256'][0])
+                self.assertEqual(len(reviewed['guard_sha256']), 2)
+                self.assertTrue(C.check(changed, reviewed, HOOKS, START)['reviewed_tiny_variant'])
+                with self.assertRaisesRegex(C.CompatibilityError, 'tiny hooked function'):
+                    C.check(changed, profile, HOOKS, START)
+                # a hook word never: also not on the review list
+                data[4] ^= 1;changed.by_name['.text'].data = bytes(data)
+                with self.assertRaisesRegex(C.CompatibilityError, 'hook instruction'):
                     M.make(path, [path], {START})
+
+    def test_relocation_only_change_in_a_hooked_function_is_seen(self):
+        """issue #383: the randomizer redirects pointers through relocation addends only; the section bytes
+        stay as they were. The check reads the relocated text, as the port loads and translates it."""
+        from test_rpx_relocations import build_rpx, TEXT
+        from rpx import Rpx, R_PPC_ADDR16_HA, R_PPC_ADDR16_LO
+        hooks = [(False, TEXT, TEXT, 'test:1')]
+        words = [0x4E800020] * 3 + [0x3C601000, 0x38630000] + [0x60000000] * 10 + [0x4E800020]
+        relocs = lambda lo: [('text', TEXT + 14, R_PPC_ADDR16_HA, 2, lo), ('text', TEXT + 18, R_PPC_ADDR16_LO, 2, lo)]
+        with tempfile.TemporaryDirectory() as tmp:
+            base, seed = Path(tmp)/'base.rpx', Path(tmp)/'seed.rpx'
+            build_rpx(base, [0], relocs(0), words)
+            build_rpx(seed, [0], relocs(0x40), words + [0x4E800020])  # appended helper, same raw function bytes
+            original = Rpx(str(base))
+            profile = dict(format=3, id='synthetic', base_sha256=builds.canonical_build().sha256,
+                           hooks_sha256=C.hook_digest(hooks), entry_point=TEXT, imports_sha256=C.import_digest(original),
+                           sections=[dict(name=s.name, address=s.addr, size=s.size, type=s.type, flags=s.flags & 7)
+                                     for s in original.sections if s.flags & 2 and s.size],
+                           **C.range_profile(original, [TEXT], [(TEXT, TEXT+64)]))
+            profile['guard_sha256'] = [profile['guard_sha256']]
+            raw = Rpx(str(seed))
+            self.assertEqual(C.check(raw, profile, hooks, TEXT)['reviewed_changed_functions'], [])  # raw bytes: unchanged
+            with patch.object(C.builds, 'read_hooks', return_value=(hooks, None)):
+                with self.assertRaisesRegex(C.CompatibilityError, 'unreviewed change in hooked function 02000000'):
+                    C.identify(seed, profile=profile)
+                relocated = Rpx(str(seed));relocated.apply_internal_relocations()
+                profile['functions'][0]['sha256'].append(C.digest(C.text_slice(relocated, TEXT, TEXT+64)))
+                self.assertEqual(C.identify(seed, profile=profile).randomizer_report['reviewed_changed_functions'],
+                                 ['02000000'])
 
     def test_unknown_file_and_hash_mismatch_are_rejected_before_parse(self):
         with self.assertRaisesRegex(C.CompatibilityError, 'PowerPC RPX'):
@@ -166,9 +211,12 @@ class Compatibility(unittest.TestCase):
         self.assertEqual(profile['base_sha256'], builds.canonical_build().sha256)
         self.assertEqual(set(profile['points']), {a for _, _, a, _ in hooks})
         self.assertEqual(len({f['start'] for f in profile['functions']}), len(profile['functions']))
-        self.assertEqual(profile['format'], 2)
+        self.assertEqual(profile['format'], C.PROFILE_FORMAT)
         self.assertEqual(profile['minimum_function_hash_bytes'], C.MIN_FUNCTION_HASH_BYTES)
-        self.assertRegex(profile['guard_sha256'], r'^[0-9a-f]{64}$')
+        # the original aggregate and every seed's: the relocated tiny body of 02417FF4 (getLadderMoveAnmSpeed)
+        self.assertEqual(len(profile['guard_sha256']), 2)
+        for value in profile['guard_sha256']:
+            self.assertRegex(value, r'^[0-9a-f]{64}$')
         self.assertTrue(all(isinstance(p, int) for p in profile['points']))
         self.assertTrue(profile['tiny_functions'])
         for function in profile['tiny_functions']:
@@ -181,8 +229,13 @@ class Compatibility(unittest.TestCase):
                 self.assertRegex(value, r'^[0-9a-f]{64}$')
         # Reviewed 1.2.0 variants (docs/randomizer-maintainers.md): every seed (grapple/block speed,
         # vanilla-bug fixes, misc features); Quiet Swift Sail (procSteerMove); any entrance shuffle
-        # (setGameStartStage). One reviewed variant each: the patches do not depend on the seed.
-        reviewed = {0x0216F7FC: 2, 0x023EFF20: 2, 0x025499A0: 2, 0x0247E854: 2, 0x025217F8: 2}
+        # (setGameStartStage); Classic mode (procTactWait 0243A094, endDemoMode 023F2048: the words the port's
+        # Classic Wind Waker sites stand next to, mods/speedrun.cpp). Every seed also redirects float constants
+        # through relocation addends only (issue #383): in 0216F7FC, 0242A218 (setBlendWHideMoveAnime) and the tiny
+        # 02417FF4. The port's hooks of those two wrap the translated original. One reviewed variant each: the
+        # patches do not depend on the seed.
+        reviewed = {0x0216F7FC: 2, 0x023EFF20: 2, 0x025499A0: 2, 0x0247E854: 2, 0x025217F8: 2, 0x0242A218: 2,
+                    0x0243A094: 2, 0x023F2048: 2}
         self.assertEqual({f['start']: len(f['sha256']) for f in profile['functions'] if len(f['sha256']) > 1},
                          reviewed)
         self.assertIsNone(builds.by_title(C.TITLE_ID))  # not a normal immutable build hash
@@ -197,7 +250,10 @@ class Compatibility(unittest.TestCase):
         self.assertEqual(profile['hooks_sha256'], C.hook_digest(hooks))
         self.assertEqual(set(profile['points']), {a for _, _, a, _ in hooks})
         self.assertNotEqual(profile['entry_point'], json.loads(C.PROFILE.read_text())['entry_point'])
-        reviewed = {eu.code(a): 2 for a in (0x0216F7FC, 0x023EFF20, 0x025499A0, 0x0247E854, 0x025217F8)}
+        reviewed = {eu.code(a): 2 for a in (0x0216F7FC, 0x023EFF20, 0x025499A0, 0x0247E854, 0x025217F8, 0x0242A218,
+                                            0x0243A094, 0x023F2048)}
+        self.assertEqual(profile['format'], C.PROFILE_FORMAT)
+        self.assertEqual(len(profile['guard_sha256']), 2)  # the tiny 02417FF4 (EU 02417FF8), as in the USA profile
         self.assertEqual({f['start']: len(f['sha256']) for f in profile['functions'] if len(f['sha256']) > 1},
                          reviewed)
         for function in profile['functions']:

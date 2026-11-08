@@ -73,7 +73,7 @@ class RpxLimits(unittest.TestCase):
         from types import SimpleNamespace
         import analyze
         text=SimpleNamespace(addr=0x2000000,size=4,data=b'\x4e\x80\x00\x20')
-        parsed=SimpleNamespace(by_name={'.text':text},entry=0x2000000,relocs=[])
+        parsed=SimpleNamespace(by_name={'.text':text},entry=0x2000000,relocs=[],apply_internal_relocations=lambda:{})
         with mock.patch.object(analyze,'Rpx',return_value=parsed), \
              mock.patch('builtins.open',side_effect=AssertionError('input must not be reopened')):
             program=analyze.Program('could-grow-after-parse.rpx',rpx_limits=compat.RPX_LIMITS)
@@ -151,7 +151,7 @@ class RpxLimits(unittest.TestCase):
             # The first header is valid but a replacement before hashing has a
             # different entry. All subsequent hashes match that replacement.
             parsed=SimpleNamespace(buffer_sha256='b'*64,entry=0x2000004,
-                                   by_name={'.text':SimpleNamespace(size=2)})
+                                   by_name={'.text':SimpleNamespace(size=2)},apply_internal_relocations=lambda:{})
             profile={'base_sha256':'a'*64,'sections':[{'name':'.text','size':1}]}
             def changed_hash(selected):
                 new=bytearray(header);struct.pack_into('>I',new,24,parsed.entry);path.write_bytes(new)

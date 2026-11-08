@@ -120,6 +120,21 @@ class GenTest(unittest.TestCase):
         self.assertEqual(sorted(os.path.basename(x["path"]) for x in units["units"][0]["sources"]), ["a.cpp", "a2.cpp"])
         self.assertTrue(units["units"][0]["glue"].endswith(os.path.join("glue", "0.cpp")))
 
+    def test_frame_exact(self):
+        # `framexact FUNC RET` lines of a unit spec: listed functions only (0x02000700 is not decompiled)
+        with open(os.path.join(self.src, "tools/verify/units/bunit.txt"), "a") as f:
+            f.write("framexact 02000600 02000650\nframexact 02000700 0BADC0DE  # not listed\n")
+        self.run_gen()
+        self.assertEqual([l.split()[0] for l in self.read("frame_exact.txt").splitlines()], ["02000600"])
+        hooks = self.read("hooks.cpp")
+        self.assertIn("const uint32_t kFrameExact[] = {0x02000600u};", hooks)
+        self.assertIn("const unsigned kNumFrameExact = 1;", hooks)
+
+    def test_no_frame_exact(self):
+        self.run_gen()
+        self.assertEqual(self.read("frame_exact.txt"), "")
+        self.assertIn("const uint32_t kFrameExact[] = {0u};\nconst unsigned kNumFrameExact = 0;", self.read("hooks.cpp"))
+
     def test_unchanged_outputs_keep_their_time(self):
         self.run_gen()
         p = os.path.join(self.out, "hooks.cpp")
@@ -226,6 +241,25 @@ class GenTest(unittest.TestCase):
                            capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("git submodule update --init decomp", r.stderr)
+
+
+class FastRewriteTest(unittest.TestCase):
+    def test_rewrites(self):
+        sys.path.insert(0, HERE)
+        import gen
+        t = ("a = gabi::call<u8*>(0x02555D0C); b = gabi::call<be<u32>>(0x0273AD10, 4); c = gabi::call<void>(x, 1); "
+             "call_ptr<u32>(t, h); gabi::call_ptr(f, s); o->call_ptr(1); p.tail_ptr(2); gabi::call_ptr_site<R>(1); "
+             "!call_ptr<bool>(a); gabi::tail_ptr<void, u8*>(f, p); n::call_ptr<int>(x);")
+        self.assertEqual(gen.fast_rewrite(t, False, False), (t, 0))
+        got, n = gen.fast_rewrite(t, True, True)
+        self.assertEqual(n, 6)
+        self.assertEqual(got, (
+            "a = gabi::hcall<0x02555D0C, u8*>(); b = gabi::hcall<0x0273AD10, be<u32>>(4); c = gabi::call<void>(x, 1); "
+            "gabi::call_ptr_ic<decltype([]{}), u32>(t, h); gabi::call_ptr_ic<decltype([]{})>(f, s); o->call_ptr(1); "
+            "p.tail_ptr(2); gabi::call_ptr_site<R>(1); !gabi::call_ptr_ic<decltype([]{}), bool>(a); "
+            "gabi::tail_ptr_ic<decltype([]{}), void, u8*>(f, p); n::call_ptr<int>(x);"))
+        self.assertEqual(gen.fast_rewrite(t, True, False)[1], 2)
+        self.assertEqual(gen.fast_rewrite(t, False, True)[1], 4)
 
 
 if __name__ == "__main__":

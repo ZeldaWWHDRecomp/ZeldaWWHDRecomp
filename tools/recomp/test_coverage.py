@@ -32,6 +32,9 @@ NON_ADDRESS.update({("espresso_fp.c", value): "frsqrte mantissa lookup table"
 TRIVIA = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
 LITERAL = re.compile(r'\b0[xX]([0-9a-fA-F]{1,8})(?![0-9a-fA-F])[uUlL]*\b')
 WRAPPED = re.compile(r'\b(GC|GD|GC_OPTIONAL|CANONICAL_CODE_ID)\s*\([^;]*?\)', re.S)
+# Built only into the decomp build (cmake/Decomp.cmake), which runs the USA game only: its guest
+# addresses are USA addresses by definition and have no EUR counterpart to map.
+DECOMP_BUILD_ONLY = ("decomp/", "hostrt/")
 FIXED_GAME_ALLOCATIONS = {0x145AC92C, 0x3BB9DE00, 0x44BDF900, 0x44BDFD00}
 
 
@@ -95,6 +98,8 @@ class CoverageTests(unittest.TestCase):
             if path.suffix not in (".cpp", ".h", ".c", ".mm"):
                 continue
             name = path.relative_to(root).as_posix()
+            if name.startswith(DECOMP_BUILD_ONLY):
+                continue
             errors.extend(address_errors(path.read_text(encoding="utf-8"), name, self.mapping))
         self.assertEqual(errors, [], "\n".join(errors))
 
