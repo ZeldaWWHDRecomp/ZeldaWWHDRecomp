@@ -104,10 +104,12 @@ more; for an item button, that item can't be used from the controller). An item 
 in menus too (L1 no longer turns the GamePad page); on d-pad down it is the item button only while
 you play, d-pad down in menus.
 
-**L turns the GamePad page** (Controls, off by default): in play the game reads L only to turn its
-GamePad screen between Items and Map. Off, L reaches the game only outside play, so L1 can jump
-without turning the page. Turn it on for a GamePad picture on a second screen. It applies the same
-way with **Wii U Pro Controller** chosen in Controls.
+L turns the game's GamePad screen between Items and Map, in play too, as on the Wii U, whichever
+game window (TV or GamePad) is in front. Only while Jump anywhere or the moon jump is on does an input
+they share with L (L1 / Q by default) jump in play without turning the page.
+
+**L turns the GamePad page** (Controls, off by default): on, that shared input jumps **and** turns the
+page in play. It applies the same way with **Wii U Pro Controller** chosen in Controls.
 
 Controls files from before these options (format 1) keep working: Jump anywhere and the moon jump
 take the inputs that pressed the Wii U's L, and the old Jump anywhere button choice (R, ZL, ZR, L3,
