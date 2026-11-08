@@ -14,6 +14,7 @@
 // analysis looks at, an instruction that writes no register by those rules (stores, compares, moves to
 // special registers, cache and sync instructions, traps), or which GPR / FPR its first operand names.
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -22,6 +23,7 @@
 
 #include "decomp/decomp.h"
 #include "native_frames.h"
+#include "../../../tools/decomp_build/frames_vis.h"  // DecompFrameSlot (gabi.h AutoFrame in the game units)
 #include "../runtime.h"
 #include "recomp_table.h"
 
@@ -332,6 +334,126 @@ void dump(const char* path) {
 std::vector<std::vector<GabiFrameItem>> g_items;
 std::vector<GabiFrameInfo> g_info;
 std::vector<uint8_t> g_has;
+// gmem_frame_info's lookup (every decompiled entry, gabi AutoFrame): open addressing over the functions with a
+// frame, power of two, under 1/2 full
+struct FrameEntry {
+    uint32_t addr;  // 0: empty
+    const GabiFrameInfo* info;
+};
+std::vector<FrameEntry> g_lookup;
+uint32_t g_lookup_mask = 0;
+inline uint32_t frame_hash(uint32_t addr) { return (addr >> 2) * 0x9E3779B1u; }
+
+// AutoFrame's per-slot table (frames_vis.h DecompFrameSlot); g_decomp_frame_slots points at it unless
+// WWHD_DECOMP_AUTOFRAME_FAST=0
+std::vector<DecompFrameSlot> g_fslots;
+std::vector<std::vector<GabiFrameItem>> g_fgpr;  // per slot: DecompFrameSlot::gpr
+// FrameCtx hi / lo of a frame, from sp: as gabi.h AutoFrame computes them from fi after its replay
+void frame_bounds(const GabiFrameInfo& fi, uint32_t& hi, uint32_t& lo) {
+    uint32_t low = fi.size;  // lowest offset of the register save area
+    for (uint32_t i = 0; i < fi.n; i++) {
+        const GabiFrameItem& it = fi.items[i];
+        if (it.kind == GABI_FI_BACKCHAIN) continue;
+        if (it.off >= 8 && it.off < low) low = it.off;
+    }
+    hi = low & ~3u;
+    lo = fi.objects_lo >= 8 && fi.objects_lo < low ? fi.objects_lo : 8;
+    if (hi < lo) hi = lo;
+}
+// the entry of slot i (g_info[i], g_has[i]), see DecompFrameSlot
+DecompFrameSlot make_fslot(unsigned i) {
+    DecompFrameSlot e{};
+    e.addr = g_slots[i].addr;
+    if (!g_has[i]) return e;  // gmem_frame_info: null
+    const GabiFrameInfo& fi = g_info[i];
+    e.fi = &fi;
+    e.size = fi.size;
+    if (!fi.size) {  // frames_init keeps a size-0 row only with GABI_FF_TAIL
+        e.kind = (fi.flags & GABI_FF_TAIL) ? DECOMP_FS_TAIL : DECOMP_FS_NONE;
+        if (e.kind == DECOMP_FS_NONE) e.fi = nullptr;
+        return e;
+    }
+    uint32_t hi, lo;
+    frame_bounds(fi, hi, lo);
+    e.kind = DECOMP_FS_ITEMS;
+    // both below the frame size (stwu: at most 0x8000)
+    e.hi_off = uint16_t(hi);
+    e.lo_off = uint16_t(lo);
+    // the switch-free form: back chain (at most one), LR (at most one) and GPRs, no two stores overlapping, so the
+    // order of the stores does not matter
+    std::vector<GabiFrameItem>& gpr = g_fgpr[i];
+    std::vector<std::pair<uint32_t, uint32_t>> spans;  // [off, off + 4)
+    uint8_t flags = 0;
+    uint32_t lr_off = 0;
+    for (uint32_t k = 0; k < fi.n; k++) {
+        const GabiFrameItem& it = fi.items[k];
+        if (it.kind == GABI_FI_BACKCHAIN) {
+            if (flags & DECOMP_FS_BACKCHAIN) return e;
+            flags |= DECOMP_FS_BACKCHAIN;
+            spans.push_back({0, 4});
+        } else if (it.kind == GABI_FI_LR) {
+            if (flags & DECOMP_FS_LR) return e;
+            flags |= DECOMP_FS_LR;
+            lr_off = it.off;
+            spans.push_back({it.off, it.off + 4u});
+        } else if (it.kind == GABI_FI_GPR && it.reg < 32) {
+            gpr.push_back(it);
+            spans.push_back({it.off, it.off + 4u});
+        } else {
+            gpr.clear();
+            return e;  // FPR saves: the generic replay
+        }
+    }
+    std::sort(spans.begin(), spans.end());
+    for (size_t k = 1; k < spans.size(); k++)
+        if (spans[k].first < spans[k - 1].second) { gpr.clear(); return e; }
+    if (gpr.size() > 255) { gpr.clear(); return e; }
+    e.kind = DECOMP_FS_FRAME;
+    e.flags = flags;
+    e.lr_off = uint16_t(lr_off);
+    e.ngpr = uint8_t(gpr.size());
+    e.gpr = gpr.data();
+    return e;
+}
+const DecompFrameSlot kNoFrame{};
+
+// WWHD_DECOMP_AUTOFRAME_CHECK=1: every slot's entry against what gabi.h's AutoFrame does with gmem_frame_info(addr):
+// the same kind, FrameCtx fields and the same set of stores (address from sp, value source)
+unsigned check_fslots() {
+    unsigned bad = 0;
+    for (unsigned i = 0; i < kNumSlots; i++) {
+        const DecompFrameSlot& e = g_fslots[i];
+        const GabiFrameInfo* fi = gmem_frame_info(g_slots[i].addr);
+        const int want = !fi ? DECOMP_FS_NONE : !fi->size ? ((fi->flags & GABI_FF_TAIL) ? DECOMP_FS_TAIL : DECOMP_FS_NONE) : -1;
+        bool ok = e.addr == g_slots[i].addr;
+        if (want >= 0) {
+            ok = ok && e.kind == want;
+        } else {
+            ok = ok && (e.kind == DECOMP_FS_FRAME || e.kind == DECOMP_FS_ITEMS) && e.fi == fi && e.size == fi->size;
+            uint32_t hi, lo;
+            frame_bounds(*fi, hi, lo);
+            ok = ok && e.hi_off == hi && e.lo_off == lo;
+            if (ok && e.kind == DECOMP_FS_FRAME) {  // (offset, source): source 0 back chain, 1 LR, 2+N rN
+                std::vector<std::pair<uint32_t, int>> a, b;
+                for (uint32_t k = 0; k < fi->n; k++) {
+                    const GabiFrameItem& it = fi->items[k];
+                    if (it.kind == GABI_FI_BACKCHAIN) a.push_back({0, 0});
+                    else if (it.kind == GABI_FI_LR) a.push_back({it.off, 1});
+                    else if (it.kind == GABI_FI_GPR) a.push_back({it.off, 2 + it.reg});
+                    else a.push_back({it.off, -1});
+                }
+                if (e.flags & DECOMP_FS_BACKCHAIN) b.push_back({0, 0});
+                if (e.flags & DECOMP_FS_LR) b.push_back({e.lr_off, 1});
+                for (unsigned k = 0; k < e.ngpr; k++) b.push_back({e.gpr[k].off, 2 + e.gpr[k].reg});
+                std::sort(a.begin(), a.end());
+                std::sort(b.begin(), b.end());
+                ok = a == b;
+            }
+        }
+        if (!ok && bad++ < 10) LOG("[decomp] AUTOFRAME CHECK: slot %u %08X differs (kind %u)", i, g_slots[i].addr, e.kind);
+    }
+    return bad;
+}
 }  // namespace
 
 void frames_init() {
@@ -361,16 +483,67 @@ void frames_init() {
         g_has[i] = 1;
         n++;
     }
+    uint32_t size = 64;
+    while (size < 2 * n + 2) size *= 2;
+    g_lookup.assign(size, FrameEntry{0, nullptr});
+    g_lookup_mask = size - 1;
+    for (unsigned i = 0; i < kNumSlots; i++) {
+        if (!g_has[i]) continue;
+        uint32_t h = frame_hash(g_slots[i].addr) & g_lookup_mask;
+        while (g_lookup[h].addr) h = (h + 1) & g_lookup_mask;
+        g_lookup[h] = FrameEntry{g_slots[i].addr, &g_info[i]};
+    }
     LOG("[decomp] native frames: %u of %u decompiled functions", n, kNumSlots);
+    const char* fast = getenv("WWHD_DECOMP_AUTOFRAME_FAST");
+    if (fast && !strcmp(fast, "0")) {
+        LOG("[decomp] WWHD_DECOMP_AUTOFRAME_FAST=0: automatic frames looked up per call (gmem_frame_info)");
+        return;
+    }
+    g_fgpr.assign(kNumSlots, {});
+    g_fslots.resize(kNumSlots);
+    unsigned nfast = 0;
+    for (unsigned i = 0; i < kNumSlots; i++) {
+        g_fslots[i] = make_fslot(i);
+        nfast += g_fslots[i].kind == DECOMP_FS_FRAME;
+    }
+#ifdef WWHD_DECOMP_FAST
+    // fast mode (gabi.h GABI_FAST): only the frame-exact functions replay the original's prologue stores
+    // (DecompFrameSlot::reserved bit 0); every other automatic frame keeps its place without them
+    for (unsigned k = 0; k < kNumFrameExact; k++) {
+        const Slot* end = g_slots + kNumSlots;
+        const Slot* s = std::lower_bound(static_cast<const Slot*>(g_slots), end, kFrameExact[k],
+                                         [](const Slot& a, uint32_t v) { return a.addr < v; });
+        if (s != end && s->addr == kFrameExact[k]) g_fslots[s - g_slots].reserved |= 1;
+    }
+    LOG("[decomp] fast mode: %u frame-exact functions keep their prologue stores", kNumFrameExact);
+#endif
+    g_decomp_frame_slots = g_fslots.data();
+    LOG("[decomp] automatic frames by slot: %u of %u frames replayed without the item loop", nfast, n);
+    const char* check = getenv("WWHD_DECOMP_AUTOFRAME_CHECK");
+    if (check && !strcmp(check, "1")) LOG("[decomp] automatic frames by slot: check, %u differences", check_fslots());
 }
 }  // namespace decomp
 
+extern "C" const DecompFrameSlot* g_decomp_frame_slots = nullptr;
+// AutoFrame for an address that is not the running slot's function (rare: a helper's AutoFrame of its caller, an entry
+// path that does not set Cpu::decomp_running): the slot by address, as gmem_frame_info finds it
+extern "C" const DecompFrameSlot* decomp_frame_slot_find(uint32_t addr) {
+    using namespace decomp;
+    static std::atomic<unsigned> logged{0};
+    if (logged.load(std::memory_order_relaxed) < 5 && logged.fetch_add(1, std::memory_order_relaxed) < 5)
+        LOG("[decomp] AutoFrame of %08X outside its own slot (a lookup by address)", addr);
+    const Slot* end = g_slots + kNumSlots;
+    const Slot* s = std::lower_bound(static_cast<const Slot*>(g_slots), end, addr, [](const Slot& a, uint32_t v) { return a.addr < v; });
+    if (s == end || s->addr != addr || g_fslots.empty()) return &kNoFrame;
+    return &g_fslots[s - g_slots];
+}
+
 extern "C" const GabiFrameInfo* gmem_frame_info(uint32_t addr) {
     using namespace decomp;
-    if (g_has.empty()) return nullptr;
-    Slot* end = g_slots + kNumSlots;
-    Slot* s = std::lower_bound(g_slots, end, addr, [](const Slot& a, uint32_t v) { return a.addr < v; });
-    if (s == end || s->addr != addr) return nullptr;
-    size_t i = s - g_slots;
-    return g_has[i] ? &g_info[i] : nullptr;
+    if (g_lookup.empty() || !addr) return nullptr;
+    for (uint32_t h = frame_hash(addr) & g_lookup_mask;; h = (h + 1) & g_lookup_mask) {
+        const FrameEntry& e = g_lookup[h];
+        if (e.addr == addr) return e.info;
+        if (!e.addr) return nullptr;
+    }
 }

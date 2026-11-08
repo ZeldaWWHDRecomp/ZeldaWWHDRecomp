@@ -29,6 +29,18 @@ typedef struct Cpu {
     /* the game's main thread (main_profile.h reads it on every runtime call); in what was padding,
        so sizeof(Cpu) and save states keep their layout */
     uint8_t main_thread;
+    /* decomp build, host-side (a state save writes 0, a load keeps the live value; both in what was padding, so
+       sizeof(Cpu) and save states keep their layout):
+       native_depth: native calls of decompiled code now running on this Cpu (the park guard: a thread must not park
+       inside one), saturating at 255 (gabi.h NativeScope restores the caller's value on exit);
+       decomp_running: the decompiled function whose code runs on this Cpu, slot index + 1 (0: none): the LR of its
+       guest calls (decomp.cpp call_lr). On the Cpu instead of a thread_local: Android dlopens libmain.so, where
+       every thread_local access goes through bionic's dynamic TLSDESC resolver. Declared in the decomp build only
+       (the runtime's WWHD_DECOMP, the game units' GABI_GAME_BUILD): the normal build compiles the struct as before. */
+#if defined(WWHD_DECOMP) || defined(GABI_GAME_BUILD)
+    uint8_t native_depth;
+    uint16_t decomp_running;
+#endif
     struct { double ps0, ps1; } f[32];
     uint32_t fpscr;
     uint32_t gqr[8];

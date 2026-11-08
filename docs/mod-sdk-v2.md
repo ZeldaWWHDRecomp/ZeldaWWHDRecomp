@@ -234,6 +234,10 @@ with their content:
   runs once per displayed frame. Use `wwhd_logic_dt()` for anything time-based, and don't
   count displayed frames as game steps.
 - Calling convention is the game's: arguments in r3–r10 / f1–f8, results in r3/r4/f1.
+- Don't rely on the guest stack layout of a hooked function's callers, and don't walk the back
+  chain through them. In the decomp build, decompiled functions call each other natively and
+  leave no guest frame (`WWHD_DECOMP_NATIVE=0` turns this off). Hooking any function, at start-up
+  or later, is unaffected.
 
 ## Game functions, data and objects
 

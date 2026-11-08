@@ -22,6 +22,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <set>
 #include <deque>
 #include <map>
 #include <mutex>
@@ -188,6 +189,41 @@ struct CoreSched {
 static CoreSched g_sched[3];
 static threads::SchedulerTick g_tick;
 
+#ifdef WWHD_DECOMP_FAST
+// Fast decomp build only (step d, WWHD_DECOMP_FAST_WAKES; the normal and the default decomp build keep the code
+// below the #else branches): a notify is sent only when a thread may be asleep on that condition. Android's bionic
+// makes every notify_one / notify_all a futex syscall, sleeper or not; the game thread sent ~2.9k per logic step
+// at the cliff (OSSendMessage to the update_ubo queue, OSUnlockMutex), ~2.6k with nobody to wake.
+// `unsignaled` (guarded by the object's mutex) counts the times a waiter's predicate failed right before it went to
+// sleep, since the last notify_all; it is never below the number of threads in the condition's wait set (spurious
+// wakeups and other notifiers only lower that number), so skipping the notify at 0 never strands a waiter. Message
+// order, blocking and every result stay as before. WWHD_DECOMP_FAST_WAKES=0 (env): notify always, as before.
+// (read at first use: Android sets the app's variables after the library's static initialisation)
+static bool fast_wakes() {
+    static const bool on = [] { const char* e = getenv("WWHD_DECOMP_FAST_WAKES"); return !(e && e[0] == '0'); }();
+    return on;
+}
+// the predicate a waiter sleeps on, counting each failed check (made with the object's mutex held, right before
+// the wait releases it)
+template <class O, class P> static auto counted_pred(O* o, P pred) {
+    return [o, pred]() mutable { if (pred()) return true; o->unsignaled++; return false; };
+}
+// with the object's mutex held: whether a notify_all is needed (and the waiters counted so far are then signaled)
+template <class O> static bool take_wake_all(O* o) {
+    if (!fast_wakes()) return true;
+    const bool w = o->unsignaled != 0;
+    o->unsignaled = 0;
+    return w;
+}
+// with the object's mutex held: whether a notify_one is needed
+template <class O> static bool take_wake_one(O* o) {
+    if (!fast_wakes()) return true;
+    if (!o->unsignaled) return false;
+    o->unsignaled--;
+    return true;
+}
+#endif
+
 static HostThread* best_ready(CoreSched& k) {  // k.m held
     HostThread* b = nullptr;
     for (HostThread* t : k.ready)  // priority, then FIFO
@@ -243,8 +279,14 @@ static void core_acquire(HostThread* t) {
 static void core_release(HostThread* t) {
     if (!g_sched_on || !t->holds_core) return;
     CoreSched& k = g_sched[t->held_core];
+#ifdef WWHD_DECOMP_FAST
+    bool wake = true;
+#endif
     {
         std::lock_guard<std::mutex> lk(k.m);
+#ifdef WWHD_DECOMP_FAST
+        wake = !fast_wakes() || !k.ready.empty();  // a core waiter stays in k.ready until it takes the core
+#endif
         if (k.owner == t) k.owner = nullptr;
         t->holds_core = false;
         const uint64_t held = (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - t->acquired).count();
@@ -252,6 +294,9 @@ static void core_release(HostThread* t) {
         if (mainprof::on(&t->cpu)) mainprof::note_release(held);
         g_core_preempt[t->held_core] = 0;
     }
+#ifdef WWHD_DECOMP_FAST
+    if (wake)
+#endif
     k.cv.notify_all();
 }
 
@@ -454,6 +499,30 @@ static void park_gate(HostThread* t) {
     t->wst.store(kRunning);
 }
 
+#ifdef WWHD_DECOMP
+#ifdef __APPLE__
+#include <execinfo.h>
+#endif
+// WWHD_DECOMP_PARK_GUARD=abort: stop at the first event (tests); otherwise one log line per (kind, LR)
+[[gnu::cold, gnu::noinline]] static void native_park_report(Cpu* c, uint8_t kind, uint32_t obj) {
+    static std::mutex m;
+    static std::set<uint64_t> seen;
+    std::lock_guard lk(m);
+    if (seen.insert((uint64_t)kind << 32 | c->lr).second) {
+        LOG("[decomp] PARK GUARD: a thread parks inside %u native call(s) (wait kind %u, object %08X, lr %08X, sp %08X)",
+            c->native_depth, kind, obj, c->lr, c->r[1]);
+#ifdef __APPLE__
+        // the host stack names the native callers (diagnosis of the rule that missed the path)
+        void* bt[64];
+        int n = backtrace(bt, 64);
+        backtrace_symbols_fd(bt, n, 2);
+#endif
+    }
+    static const bool stop = [] { const char* e = getenv("WWHD_DECOMP_PARK_GUARD"); return e && !strcmp(e, "abort"); }();
+    if (stop) fatal("[decomp] park guard (WWHD_DECOMP_PARK_GUARD=abort)");
+}
+#endif
+
 // wait on a host condition with the core given up; `lk` is held on entry and exit. The predicate is
 // re-checked after every wakeup (also after a save state was loaded). False on timeout.
 template <class Pred>
@@ -472,6 +541,11 @@ static bool park_wait(std::unique_lock<std::mutex>& lk, std::condition_variable&
             t->wait_kind = kind;
             t->wait_obj = obj;
             t->wst.store(kParked);
+#ifdef WWHD_DECOMP
+            // the decomp build's park guard: a thread parks inside a native call between decompiled functions
+            // (no guest frame for it on the parked chain); the native-call rules missed a path to a wait
+            if (__builtin_expect(t->cpu.native_depth != 0, 0)) native_park_report(&t->cpu, kind, obj);
+#endif
         }
         lk.unlock();
         threads::block_begin();
@@ -917,6 +991,9 @@ struct HMutex {
     std::condition_variable cv;
     const void* owner = nullptr;
     int count = 0;
+#ifdef WWHD_DECOMP_FAST
+    uint32_t unsignaled = 0;
+#endif
 };
 static ObjTable<HMutex> g_mutexes;
 
@@ -925,7 +1002,11 @@ static void mutex_lock(uint32_t addr) {
     const void* self = t_self ? (const void*)t_self : (const void*)&t_cpu;
     std::unique_lock<std::mutex> lk(mx->m);
     if (mx->owner == self) { mx->count++; return; }
+#ifdef WWHD_DECOMP_FAST
+    park_wait(lk, mx->cv, counted_pred(mx, [&] { return mx->owner == nullptr; }), W_MUTEX, addr);
+#else
     park_wait(lk, mx->cv, [&] { return mx->owner == nullptr; }, W_MUTEX, addr);
+#endif
     mx->owner = self;
     mx->count = 1;
 }
@@ -941,12 +1022,21 @@ static bool mutex_trylock(uint32_t addr) {
 }
 static void mutex_unlock(uint32_t addr) {
     HMutex* mx = g_mutexes.get(addr);
+#ifdef WWHD_DECOMP_FAST
+    bool wake;
+#endif
     {
         std::lock_guard<std::mutex> lk(mx->m);
         if (--mx->count > 0) return;
         mx->owner = nullptr;
         mx->count = 0;
+#ifdef WWHD_DECOMP_FAST
+        wake = take_wake_one(mx);
+#endif
     }
+#ifdef WWHD_DECOMP_FAST
+    if (wake)
+#endif
     mx->cv.notify_one();
 }
 
@@ -1069,8 +1159,43 @@ struct HQueue {
     std::condition_variable cv;
     std::deque<std::array<uint32_t, 4>> msgs;
     uint32_t capacity = 0;
+#ifdef WWHD_DECOMP_FAST
+    uint32_t unsignaled = 0;  // senders waiting for space and receivers waiting for a message share cv
+    std::atomic<uint32_t> count{0};  // msgs.size() for a spinning receiver; only a hint (re-checked under m)
+#endif
 };
 static ObjTable<HQueue> g_queues;
+
+#ifdef WWHD_DECOMP_FAST
+// Fast decomp build only (step d, WWHD_DECOMP_FAST_SPIN_US, default WWHD_DECOMP_FAST_SPIN_US_DEFAULT = 0 = off; a
+// build sets another default with -DWWHD_DECOMP_FAST_SPIN_US_DEFAULT=N, e.g. for a phone pair): a guest thread about to block in
+// OSReceiveMessage on an empty queue first gives up its core and polls the queue for up to that many microseconds;
+// a message sent meanwhile needs no futex wake (nobody is counted asleep) and is taken without a sleep/wake round
+// trip. Afterwards the receive goes on exactly as before (the queue is re-checked under its mutex, then park_wait).
+#ifndef WWHD_DECOMP_FAST_SPIN_US_DEFAULT
+#define WWHD_DECOMP_FAST_SPIN_US_DEFAULT 0
+#endif
+static uint64_t fast_spin_ns() {
+    static const uint64_t ns = [] {
+        const char* e = getenv("WWHD_DECOMP_FAST_SPIN_US");
+        return (e ? strtoull(e, nullptr, 10) : (uint64_t)WWHD_DECOMP_FAST_SPIN_US_DEFAULT) * 1000;
+    }();
+    return ns;
+}
+static void spin_for_message(HQueue* q, uint64_t ns) {
+    threads::block_begin();
+    const auto end = std::chrono::steady_clock::now() + std::chrono::nanoseconds(ns);
+    for (unsigned i = 1; q->count.load(std::memory_order_acquire) == 0; i++) {
+#if defined(__aarch64__)
+        __asm__ __volatile__("yield");
+#elif defined(__x86_64__)
+        __builtin_ia32_pause();
+#endif
+        if ((i & 31) == 0 && std::chrono::steady_clock::now() >= end) break;
+    }
+    threads::block_end();
+}
+#endif
 
 HLE(coreinit, OSInitMessageQueue) {
     uint32_t q = arg(c, 0);
@@ -1089,6 +1214,9 @@ HLE(coreinit, OSSendMessage) {
     uint32_t m = arg(c, 1), flags = arg(c, 2);
     std::array<uint32_t, 4> msg{ld32(m), ld32(m + 4), ld32(m + 8), ld32(m + 12)};
     if (g_trace_msg) LOG("[msg] send q=%08X msg=%08X %08X flags=%X lr=%08X", arg(c, 0), msg[0], msg[1], flags, c->lr);
+#ifdef WWHD_DECOMP_FAST
+    bool wake;
+#endif
     {
         std::unique_lock<std::mutex> lk(q->m);
         const bool profiled = mainprof::on(c);
@@ -1096,7 +1224,11 @@ HLE(coreinit, OSSendMessage) {
         if (q->msgs.size() >= q->capacity) {
             if (!(flags & 1)) { ret(c, 0); return; }
             const auto full_since = profiled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+#ifdef WWHD_DECOMP_FAST
+            park_wait(lk, q->cv, counted_pred(q, [&] { return q->msgs.size() < q->capacity; }), W_MSG_SEND, arg(c, 0));
+#else
             park_wait(lk, q->cv, [&] { return q->msgs.size() < q->capacity; }, W_MSG_SEND, arg(c, 0));
+#endif
             if (profiled) {
                 mainprof::bump(mainprof::g_send_full);
                 mainprof::bump(mainprof::g_send_full_ns, (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -1104,7 +1236,14 @@ HLE(coreinit, OSSendMessage) {
             }
         }
         if (flags & 2) q->msgs.push_front(msg); else q->msgs.push_back(msg);  // OS_MESSAGE_FLAG_HIGH_PRIORITY
+#ifdef WWHD_DECOMP_FAST
+        q->count.store((uint32_t)q->msgs.size(), std::memory_order_release);
+        wake = take_wake_all(q);
+#endif
     }
+#ifdef WWHD_DECOMP_FAST
+    if (wake)
+#endif
     q->cv.notify_all();
     ret(c, 1);
 }
@@ -1113,15 +1252,35 @@ HLE(coreinit, OSReceiveMessage) {
     uint32_t m = arg(c, 1), flags = arg(c, 2);
     std::array<uint32_t, 4> msg;
     if (g_trace_msg) LOG("[msg] recv q=%08X flags=%X lr=%08X thread=%08X", arg(c, 0), flags, c->lr, threads::current_thread());
+#ifdef WWHD_DECOMP_FAST
+    bool wake;
+#endif
     {
         std::unique_lock<std::mutex> lk(q->m);
         if (q->msgs.empty()) {
             if (!(flags & 1)) { ret(c, 0); return; }
+#ifdef WWHD_DECOMP_FAST
+            if (const uint64_t spin = fast_spin_ns(); spin && t_self) {
+                lk.unlock();
+                spin_for_message(q, spin);
+                lk.lock();
+            }
+            if (q->msgs.empty())
+                park_wait(lk, q->cv, counted_pred(q, [&] { return !q->msgs.empty(); }), W_MSG_RECV, arg(c, 0));
+#else
             park_wait(lk, q->cv, [&] { return !q->msgs.empty(); }, W_MSG_RECV, arg(c, 0));
+#endif
         }
         msg = q->msgs.front();
         q->msgs.pop_front();
+#ifdef WWHD_DECOMP_FAST
+        q->count.store((uint32_t)q->msgs.size(), std::memory_order_release);
+        wake = take_wake_all(q);
+#endif
     }
+#ifdef WWHD_DECOMP_FAST
+    if (wake)
+#endif
     q->cv.notify_all();
     for (int i = 0; i < 4; i++) st32(m + 4 * i, msg[i]);
     ret(c, 1);
@@ -1637,6 +1796,16 @@ bool threads_ss_save(ss::Writer& w, std::string& why) {
         r.wait_obj = t->wait_obj;
         r.cpu = t->cpu;
         r.cpu.thread = nullptr;
+#ifdef WWHD_DECOMP
+        // host-side (they describe this thread's host stack, not guest state): saved as 0, as the normal build has them
+        r.cpu.native_depth = 0;
+        r.cpu.decomp_running = 0;
+        // the decomp build's native calls: which waits a state holds, and how many native calls each thread is in
+        // (cross-build state tests)
+        if (r.started && !r.exited && r.wst == kParked && r.wait_kind >= 1 && r.wait_kind <= 7)
+            LOG("[decomp] state: thread \"%s\" parked (wait kind %u, object %08X, lr %08X) inside %u native call(s)",
+                threads::thread_name(t).c_str(), r.wait_kind, r.wait_obj, t->cpu.lr, t->cpu.native_depth);
+#endif
         if (r.started && !r.exited && r.irq_off) {
             why = "thread " + threads::thread_name(t) + " has interrupts disabled";
             return false;
@@ -1803,8 +1972,17 @@ void threads_ss_load(ss::Reader& r) {
             }
             std::lock_guard<std::mutex> l(t->m);
             void* self = t->cpu.thread;
+#ifdef WWHD_DECOMP
+            // host-side: a parked thread's host stack keeps its native calls and running decompiled function
+            const uint8_t native_depth = t->cpu.native_depth;
+            const uint16_t decomp_running = t->cpu.decomp_running;
+#endif
             t->cpu = s.cpu;
             t->cpu.thread = t;
+#ifdef WWHD_DECOMP
+            t->cpu.native_depth = native_depth;
+            t->cpu.decomp_running = decomp_running;
+#endif
             t->cpu.main_thread = t->is_main ? 1 : 0;  // (not the saved byte)
             t->cpu.core = t->holds_core ? t->held_core : s.core;
             t->suspend = s.suspend;

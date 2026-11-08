@@ -19,4 +19,6 @@ const UnitAlias kAliases[] = {{"", 0}};
 const unsigned kNumAliases = 0;
 Slot g_slots[] = {{0u, 0, "", nullptr}};
 const unsigned kNumSlots = 0;
+const uint32_t kFrameExact[] = {0u};
+const unsigned kNumFrameExact = 0;
 }  // namespace decomp

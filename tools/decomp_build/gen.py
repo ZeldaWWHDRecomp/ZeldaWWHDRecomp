@@ -16,6 +16,8 @@ never the source tree or the submodule) and is rewritten only when it changes:
   units.json        the same for setup (tools/installer/setup.py builds the decomp version)
   glue/N.cpp        per unit: tools/decomp_build/glue.cpp with the unit's name
   functions.tsv     address, unit, name of every listed function
+  frame_exact.txt   the listed functions a unit spec marks frame-exact (`framexact FUNC RET`): the runtime
+                    keeps the dispatch table for calls into and from them (runtime/src/decomp/decomp.h)
   excluded.txt      decompiled functions that stay recompiled, with the reason
   skipped.txt       verify units that are not game code (a harness control/companion source, or a source
                     that is not in the tree), with the reason
@@ -25,6 +27,9 @@ never the source tree or the submodule) and is rewritten only when it changes:
   include/assets/   the model data headers of tools/verify/assets.txt (tools/verify/assets.py; a decompilation
                     without assets.py has none)
   verify/image.bin  the loaded sections of the game's code (tools/verify/mkimage.py)
+  hinc/             --hcall / --ptr-ic (fast mode only): wwhd_src/include with every call by constant address
+                    written as gabi::hcall and call_ptr / tail_ptr as call_ptr_ic / tail_ptr_ic (the sources' own
+                    calls too, in their glued copies)
 
 The last three are made from your own copy of the game (--game, cking.rpx of the USA game): the
 decompilation does not contain the game's model data, and autoglue reads the content of the strings
@@ -56,6 +61,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
+import native_returns  # noqa: E402
 
 
 def unit_specs(src):
@@ -86,6 +92,16 @@ def spec_files(src):
 
 
 VERIFY_ONLY = "tools/verify/units/"  # sources of the harness's control and companion variants
+
+
+FRAMEXACT = re.compile(r"^\s*framexact\s+([0-9A-Fa-f]{8})\b")
+
+
+def frame_exact(src):
+    """the functions any gated unit spec marks frame-exact (`framexact FUNC RET`, the harness checks the
+    original's frame bytes, LR and callee-saved registers for them) -> {addr}"""
+    return {int(m.group(1), 16) for _, lines in unit_specs(src) for line in lines
+            for m in [FRAMEXACT.match(line.split("#")[0])] if m}
 
 
 def read_units(src):
@@ -160,6 +176,68 @@ FILE_SCOPE_VIEW = re.compile(r"^((?:const\s+)?[A-Za-z_][^\n=;]*?(?:&\s*(\w+)|\(&
                              r"gabi::(?:object_at|local_static)<)", re.M)
 EXT_STUB = re.compile(r"^(?!static\b|inline\b)(\S[^\n]*/\* other unit \(ext\) \*/)$", re.M)
 EXTERN_NAME = re.compile(r"\bextern\s+[^;{]*?(\w+)\s*\)?\s*(?:\[[^\]]*\]\s*)*;")
+LEAN_CALL = re.compile(r"\bgabi::call<(.+?)>\(0x([0-9A-Fa-f]{8})(\s*,\s*|\s*\))")
+
+
+def lean_call(m):
+    """gabi::call<R>(0xADDR, args) -> gabi::lcall<0xADDR, R>(args)"""
+    return "gabi::lcall<0x%s, %s>(%s" % (m.group(2), m.group(1), "" if "," in m.group(3) else ")")
+
+
+def header_call(m):
+    """fast mode (--hcall): gabi::call<R>(0xADDR, args) -> gabi::hcall<0xADDR, R>(args) (gabi.h: the callee's exported
+    native entry when it is register-exact in another unit and takes this call's registers, else gabi::call)"""
+    return "gabi::hcall<0x%s, %s>(%s" % (m.group(2), m.group(1), "" if "," in m.group(3) else ")")
+
+
+PTR_CALL = re.compile(r"(?<![\w:.>])(?:gabi::)?(call_ptr|tail_ptr)\s*([<(])")
+
+
+def ptr_call(m):
+    """fast mode (--ptr-ic): call_ptr<R>(fn, args) / tail_ptr<R>(fn, args) -> gabi::call_ptr_ic<decltype([]{}), R>(fn,
+    args): a closure type of its own per call site (gabi.h GABI_PTR_IC: one cached target per site)"""
+    if m.group(2) == "<":
+        return "gabi::%s_ic<decltype([]{}), " % m.group(1)
+    return "gabi::%s_ic<decltype([]{})>(" % m.group(1)
+
+
+def fast_rewrite(text, hcall, ptr_ic):
+    """the fast-mode rewrites of a source or header (--hcall, --ptr-ic) -> (text, count)"""
+    n = 0
+    if hcall:
+        text, k = LEAN_CALL.subn(header_call, text)
+        n += k
+    if ptr_ic:
+        text, k = PTR_CALL.subn(ptr_call, text)
+        n += k
+    return text, n
+
+
+HCALL_DIR = "hinc"  # OUT_DIR/hinc: the decompilation's wwhd_src/include with header_call applied (--hcall)
+
+
+def header_calls(src, out, hcall=True, ptr_ic=False):
+    """--hcall / --ptr-ic (cmake WWHD_DECOMP_FAST_HCALL / _PTR_IC): OUT/hinc mirrors DECOMP_DIR/wwhd_src/include
+    (every file, so "..." includes between headers stay inside the copy) with fast_rewrite applied (calls by constant
+    address as gabi::hcall, call_ptr / tail_ptr as their per-site cached forms); cmake puts it before
+    wwhd_src/include. Returns (files, rewritten files, rewrites)."""
+    base = os.path.join(src, "wwhd_src", "include")
+    n = nfiles = ncalls = 0
+    for d, _, fs in os.walk(base):
+        for f in fs:
+            p = os.path.join(d, f)
+            dst = os.path.join(out, HCALL_DIR, os.path.relpath(p, base))
+            with open(p, encoding="utf-8", errors="surrogateescape") as fh:
+                text = fh.read()
+            new, k = fast_rewrite(text, hcall, ptr_ic)
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            write_if_changed(dst, new, errors="surrogateescape")
+            n += 1
+            nfiles += 1 if k else 0
+            ncalls += k
+    return n, nfiles, ncalls
+
+
 STATIC_DECL = re.compile(r"^static\s+[^;(=\n]*?\b(\w+)\s*(?:\[[^\]\n]*\]\s*)*[;=({]", re.M)
 
 
@@ -191,6 +269,10 @@ class Glue:
                 sys.exit("gen.py: mkimage.py failed:\n%s%s" % (r.stdout, r.stderr))
             os.replace(self.image + ".tmp", self.image)
         sys.path.insert(0, os.path.join(self.src, "tools", "verify"))
+        # autoglue reads the game's sections with rpx.py: the decompilation's own tools/rpx.py where it has one, else
+        # this repository's (the public decompilation does not carry it)
+        if os.path.join(ROOT, "tools") not in sys.path:
+            sys.path.append(os.path.join(ROOT, "tools"))
         # the public snapshot has tools/verify/assets.py (model data headers from the game); a decompilation
         # without it keeps that data in its sources and needs no headers
         assets = None
@@ -253,6 +335,11 @@ class Glue:
                     return m.group(1)
             return "__attribute__((weak)) " + m.group(1)
         res = EXT_STUB.sub(weak_stub, res)
+        # native calls (form N): results reach the guest registers as on the guest path (native_returns.py)
+        res = native_returns.rewrite(res)[0]
+        # lean calls (form L): an ext stub enters a decompiled callee by its slot (gabi.h lcall; a callee that is not
+        # decompiled in this build keeps gabi::call there)
+        res = EXT_STUB.sub(lambda m: LEAN_CALL.sub(lean_call, m.group(0)), res)
         return res, set(STATIC_DECL.findall(text)), externs
 
 
@@ -332,15 +419,15 @@ def runtime_hooks():
     return {canon for site, canon, _, _ in entries if not site}
 
 
-def write_if_changed(path, text):
+def write_if_changed(path, text, errors=None):
     try:
-        with open(path, encoding="utf-8") as fh:
+        with open(path, encoding="utf-8", errors=errors) as fh:
             if fh.read() == text:
                 return
-    except OSError:
+    except (OSError, UnicodeDecodeError):
         pass
     tmp = path + ".tmp"
-    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+    with open(tmp, "w", encoding="utf-8", newline="\n", errors=errors) as fh:
         fh.write(text)
     os.replace(tmp, path)
 
@@ -367,6 +454,12 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--game", help="cking.rpx of your own copy of the game (USA)")
     ap.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="parallel autoglue processes")
+    ap.add_argument("--hooked-bodies", action="store_true",
+                    help="fast mode: functions the runtime hooks run their decompiled body behind the hook")
+    ap.add_argument("--hcall", action="store_true",
+                    help="fast mode: calls by constant address outside the ext stubs as gabi::hcall (OUT_DIR/hinc)")
+    ap.add_argument("--ptr-ic", action="store_true",
+                    help="fast mode: call_ptr / tail_ptr with a cached target per call site (OUT_DIR/hinc)")
     a = ap.parse_args()
     src = os.path.abspath(a.src)
     out = os.path.abspath(a.out)
@@ -396,6 +489,15 @@ def main():
             for s, (text, statics, externs) in zip(to_glue, ex.map(_glue_worker, to_glue, chunksize=8)):
                 texts[s] = text
                 glued[s] = (statics, externs)
+    # fast mode: port instruction hooks moved into the decompiled source (fast_hooks.py)
+    moved_sites = []
+    if a.hooked_bodies:
+        import fast_hooks
+        for s in list(texts):
+            texts[s], done = fast_hooks.apply(s, texts[s])
+            if done:
+                glued.setdefault(s, (set(), set()))
+                moved_sites += [(h["site"], h["func"]) for h in done]
     marked = {s for s, t in texts.items() if verify_marks_text(t)}
     comps = components(units, marked)
     alias = {u: c for c, (us, _) in comps.items() for u in us}
@@ -416,6 +518,14 @@ def main():
         if keep:
             texts[s] = link_statics(texts[s], keep)
     rewritten = set(glued) | shared_tu_data(comps, texts)
+    # --hcall (fast mode): the sources' own calls by constant address (the ext stubs are lcall already) as gabi::hcall
+    n_hcall = 0
+    if a.hcall or a.ptr_ic:
+        for s in sorted(texts):
+            texts[s], k = fast_rewrite(texts[s], a.hcall, a.ptr_ic)
+            if k:
+                rewritten.add(s)
+                n_hcall += k
     compiled = {}       # source (relative) -> the file that is compiled: itself or its rewritten copy
     for s in texts:
         if s in rewritten:
@@ -435,7 +545,7 @@ def main():
                     if owner[addr][0] != c:
                         excluded.append((addr, c, name, "also verified in %s (kept there)" % owner[addr][0]))
                     continue
-                if addr in hooks:
+                if addr in hooks and not a.hooked_bodies:
                     excluded.append((addr, c, name, "already a runtime hook"))
                     owner[addr] = (c, name, False)
                 else:
@@ -445,26 +555,40 @@ def main():
     uidx = {u: i for i, u in enumerate(units_used)}
     rev = decomp_revision(src)
 
+    # --hooked-bodies (cmake WWHD_DECOMP_FAST): a function the runtime hooks (hooks*.txt) keeps its hook_X; the hook's
+    # f_X_orig runs the decompiled body (recomp.py renames the recompiled one f_X_orig_rc, the slot's original). Listed
+    # as `# hooked-body ADDR` comment lines, which only recomp.py reads (the runtime's hook stays the guest entry).
+    hooked = sorted(x for x in listed if x in hooks)
     lines = ["# generated by tools/decomp_build/gen.py: the decompiled functions of the decomp build",
              "# (canonical addresses; recomp.py --decomp-hooks)%s" % (" from decomp %s" % rev if rev else "")]
-    lines += ["%08X  # %s %s" % (x, owner[x][0], owner[x][1]) for x in listed]
+    lines += ["%08X  # %s %s" % (x, owner[x][0], owner[x][1]) for x in listed if x not in hooks]
+    lines += ["# hooked-body %08X  # %s %s" % (x, owner[x][0], owner[x][1]) for x in hooked]
+    lines += ["# moved-site %08X  # in %08X (tools/decomp_build/fast_hooks.py)" % x for x in sorted(moved_sites)]
     write_if_changed(os.path.join(out, "decomp_hooks.txt"), "\n".join(lines) + "\n")
     write_if_changed(os.path.join(out, "excluded.txt"), "".join(
         "%08X %-28s %-40s %s\n" % e for e in sorted(excluded)))
+    write_if_changed(os.path.join(out, "hooked.txt"), "".join("%08X\n" % x for x in hooked))
     write_if_changed(os.path.join(out, "functions.tsv"), "".join(
         "%08X\t%s\t%s\n" % (x, owner[x][0], owner[x][1]) for x in listed))
 
     h = ["// generated by tools/decomp_build/gen.py", '#include "decomp/decomp.h"', "", 'extern "C" {']
-    h += ["void f_%08X_orig(Cpu*);" % x for x in listed]
+    h += ["void f_%08X_orig%s(Cpu*);" % (x, "_rc" if x in hooks else "") for x in listed]
     h += ["}", "", "namespace decomp {", "const char* const kUnits[] = {"]
     h += ["    %s," % c_string(u) for u in units_used]
     h += ["};", "const unsigned kNumUnits = %d;" % len(units_used), "const UnitAlias kAliases[] = {"]
     al = sorted((u, c) for u, c in alias.items() if c in uidx)
     h += ["    {%s, %d}," % (c_string(u), uidx[c]) for u, c in al]
     h += ["};", "const unsigned kNumAliases = %d;" % len(al), "Slot g_slots[] = {"]
-    h += ["    {0x%08Xu, %d, %s, f_%08X_orig}," % (x, uidx[owner[x][0]], c_string(owner[x][1]), x) for x in listed]
-    h += ["};", "const unsigned kNumSlots = %d;" % len(listed), "}  // namespace decomp", "", 'extern "C" {']
-    h += ["void hook_%08X(Cpu* c) { decomp::call(c, %d); }" % (x, i) for i, x in enumerate(listed)]
+    h += ["    {0x%08Xu, %d, %s, f_%08X_orig%s%s}," % (x, uidx[owner[x][0]], c_string(owner[x][1]), x,
+          "_rc, nullptr, nullptr, 0, 0, 0, 1" if x in hooks else "", "") for x in listed]
+    fx = sorted(frame_exact(src) & set(listed))
+    write_if_changed(os.path.join(out, "frame_exact.txt"), "".join("%08X  # %s %s\n" % (x, owner[x][0], owner[x][1]) for x in fx))
+    h += ["};", "const unsigned kNumSlots = %d;" % len(listed)]
+    h += ["const uint32_t kFrameExact[] = {%s};" % ", ".join(["0x%08Xu" % x for x in fx] or ["0u"]),
+          "const unsigned kNumFrameExact = %d;" % len(fx), "}  // namespace decomp", "", 'extern "C" {']
+    h += ["void hook_%08X(Cpu* c) { decomp::call(c, %d); }" % (x, i) for i, x in enumerate(listed) if x not in hooks]
+    # a hooked function's original (recomp.py: f_X_orig calls hookorig_X): the decompiled body, else f_X_orig_rc
+    h += ["void hookorig_%08X(Cpu* c) { decomp::call(c, %d); }" % (x, i) for i, x in enumerate(listed) if x in hooks]
     h += ["}", ""]
     write_if_changed(os.path.join(out, "hooks.cpp"), "\n".join(h))
 
@@ -477,8 +601,9 @@ def main():
             {"path": compiled[s], "quote": os.path.dirname(os.path.join(src, s))
              if compiled[s] != os.path.join(src, s) else None} for s in comps[u][1]]})
         gp = os.path.join(out, "glue", "%d.cpp" % i)
-        write_if_changed(gp, "// generated by tools/decomp_build/gen.py\n#define DECOMP_UNIT %s\n#include \"%s\"\n"
-                         % (c_string(u), glue))
+        # unit 0's glue defines the game units' shared thread-local block (glue.cpp, gabi.h GABI_SHARED_TLS)
+        write_if_changed(gp, "// generated by tools/decomp_build/gen.py\n#define DECOMP_UNIT %s\n%s#include \"%s\"\n"
+                         % (c_string(u), "#define GABI_TLS_OWNER 1\n" if i == 0 else "", glue))
         srcs = [cmake_path(compiled[s]) for s in comps[u][1]]
         deps.update(cmake_path(os.path.join(src, s)) for s in comps[u][1])
         cm.append('set(WWHD_DECOMP_UNIT_%d_NAME "%s")' % (i, u))
@@ -496,6 +621,8 @@ def main():
     deps.update(cmake_path(p) for p in game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")))
     deps.update(cmake_path(p) for p in game_builds.decomp_only_hook_files(os.path.join(ROOT, "tools", "recomp")))
     deps.add(cmake_path(os.path.abspath(__file__)))
+    deps.add(cmake_path(os.path.join(HERE, "native_returns.py")))
+    deps.add(cmake_path(os.path.join(HERE, "fast_hooks.py")))
     if n_glued:
         deps.update(cmake_path(os.path.join(src, "tools", "verify", f)) for f in ("autoglue.py", "assets.py", "assets.txt")
                     if os.path.isfile(os.path.join(src, "tools", "verify", f)))
@@ -507,6 +634,11 @@ def main():
     print("decomp: %d game units, %d functions decompiled, %d excluded (%s); %d of %d sources glued, %d model "
           "data headers" % (len(units_used), len(listed), len(excluded), os.path.join(out, "excluded.txt"),
                             n_glued, len(compiled), n_assets))
+    if a.hcall or a.ptr_ic:
+        nh, nf, nc = header_calls(src, out, a.hcall, a.ptr_ic)
+        print("decomp: fast mode (%s): %d calls rewritten in the sources and %d in %d of %d headers (%s)" % (
+            "+".join(x for x, on in (("hcall", a.hcall), ("ptr-ic", a.ptr_ic)) if on), n_hcall, nc, nf, nh,
+            os.path.join(out, HCALL_DIR)))
     if skipped:
         print("decomp: %d verify units skipped (not game code: %s)" % (len(skipped), os.path.join(out, "skipped.txt")))
 
