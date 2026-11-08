@@ -359,7 +359,9 @@ def remember_installed(setup, ctx, tc, hooks, exe, gen, objs):
         shutil.rmtree(setup.longpath(stage), ignore_errors=True)
         (stage / 'bin').mkdir(parents=True)
         source = Path(exe)
-        shutil.copy2(source, stage / 'bin' / ctx.manifest['exe'])
+        # a copy-on-write clone where the file system has them (build_cache.copy_tree): no second 70 MB
+        import build_cache
+        build_cache.copy_tree(source, stage / 'bin' / ctx.manifest['exe'])
         for name in ctx.manifest.get('runtime_files', []):
             shutil.copy2(source.parent / name, stage / 'bin' / name)
         if setup.PORTABLE:
