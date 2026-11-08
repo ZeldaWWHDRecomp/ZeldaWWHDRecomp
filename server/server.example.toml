@@ -27,6 +27,7 @@ copy_size = 64                       # players per copy of an interior
 
 [interest]
 threads = 0                          # 0: automatic
+# party_sea_near_radius = 30000      # party members at sea shown in full (boat, sail) out to this
 
 [limits]
 pow_bits = 18                        # join proof-of-work (about 0.3 s on a phone)

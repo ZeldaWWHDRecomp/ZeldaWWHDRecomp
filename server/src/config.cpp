@@ -191,6 +191,7 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
         else if (key == "interest.tick_hz") integer(c.tick_hz);
         else if (key == "interest.threads" || key == "threads") integer(c.threads);
         else if (key == "interest.near_radius") numf(c.near_radius);
+        else if (key == "interest.party_sea_near_radius") numf(c.party_sea_near_radius);
         else if (key == "interest.window_half") numf(c.window_half);
         else if (key == "interest.hysteresis") numf(c.hysteresis);
         else if (key == "interest.near_cap_desktop") integer(c.near_cap_desktop);

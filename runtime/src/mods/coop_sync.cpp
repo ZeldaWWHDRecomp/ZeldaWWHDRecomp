@@ -104,6 +104,8 @@ struct Remote {
     // far (a stage change the once-a-second report may not tell yet)
     bool mid_last = false;
     uint32_t jump_ms = 0;
+    // sailing: the newest full pose's models (Link at the helm, his boat), for a mid pose while he sails on
+    std::vector<Model> sail_models;
 };
 Remote g_remote[net::kMaxPlayers];
 static_assert(deck::kDecks >= net::kMaxParty, "a deck for every party number (C29)");
@@ -484,6 +486,8 @@ struct Handler : net::Handler {
                 else if (was == mine) ss::notice(net::name(from) + (now_at == "sea" ? " went out to sea" : " went inside"));
             }
             r.mid_last = false;
+            if (!(p.flags & kSailing)) r.sail_models.clear();
+            else if (!p.models.empty()) r.sail_models = p.models;
             r.poses.emplace_back(ms, std::move(p));
             while (r.poses.size() > 2 && (int32_t)(ms - r.poses.front().first) > 1000) r.poses.pop_front();
         } else if (kind < kKinds) {
@@ -532,7 +536,13 @@ struct Handler : net::Handler {
             p.flags |= kSailing, p.boat_yaw = p.yaw;
             memcpy(p.boat, p.pos, sizeof p.boat);
         }
-        if (!emotes::cheap_pose(r.gait, now / 1000.f, body_model(), p)) return;
+        // (sailing: Link at the helm on his boat as his last full pose had them, moved with this place and heading; the
+        // walking figure without a boat otherwise)
+        if ((a.flags & 2) && !r.sail_models.empty()) {
+            p.models = r.sail_models;
+            if (!r.heard || now - r.heard > 2000) mods::trace("coop: player %d at mid range on his boat (%zu models)", from, p.models.size());
+        }
+        else if (!emotes::cheap_pose(r.gait, now / 1000.f, body_model(), p)) return;
         if (!r.poses.empty() && (int32_t)(ms - r.poses.back().first) <= 0) {
             if ((int32_t)(r.poses.back().first - ms) < 2000) return;  // (out of order: dropped)
             r.poses.clear();  // (another clock: this game's for a mid stream without a near pose before)
@@ -1292,7 +1302,8 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 memcpy(deck_at, shown[p.deck_of].boat, 12), deck_yaw = shown[p.deck_of].boat_yaw, deck_known = true;
         }
         r.shown = has[id] && !block::blocked_id(id) && !strncmp(p.stage, stage.c_str(), 8) &&
-                  ((p.flags & 1) ? hull != 0 : (p.flags & kOnFriend) ? deck_known : p.room == room || (deck_of == id && (p.flags & kSailing)));
+                  ((p.flags & 1) ? hull != 0 : (p.flags & kOnFriend) ? deck_known
+                                             : p.room == room || stage == "sea" || (deck_of == id && (p.flags & kSailing)));  // (at sea: any square)
         if (!r.shown) {
             if (was) show(slot, nullptr, nullptr, 0);  // (only the ones it showed: the ghost test aid has slot 0 to itself)
             continue;

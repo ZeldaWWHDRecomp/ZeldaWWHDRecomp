@@ -1181,7 +1181,8 @@ void Server::interest(Session& s, uint32_t now) {
         if (!s.has_pose || s.hidden) dist = 1e9f;  // a receiver between places sees only its party (markers)
         float key = was ? dist / h : dist;
         // party members within the near radius come before strangers: a crowd never pushes them down to mid
-        if (party && dist < cfg_.near_radius * h) key = -1e9f + dist;
+        const bool sea_pair = party && at_sea && oh.where.stage_name() == cfg_.sea_stage;
+        if (party && dist < std::max(cfg_.near_radius, sea_pair ? cfg_.party_sea_near_radius : 0.0f) * h) key = -1e9f + dist;
         cands.push_back({key, dist, o, g, party});
     };
     std::sort(around.begin(), around.end());
@@ -1211,7 +1212,10 @@ void Server::interest(Session& s, uint32_t now) {
         bool was = it != s.seen.end();
         uint8_t prev_tier = was ? it->second.tier : 255;
         uint8_t tier;
-        float near_lim = cfg_.near_radius * (prev_tier == kTierNear ? h : 1.0f);
+        // (party members both on the open sea: their boats seen as far as the game draws a ship)
+        const PoseHeader& ch = c.s ? c.s->head : c.g->head;
+        const bool sea_pair = c.party && at_sea && ch.where.stage_name() == cfg_.sea_stage;
+        float near_lim = std::max(cfg_.near_radius, sea_pair ? cfg_.party_sea_near_radius : 0.0f) * (prev_tier == kTierNear ? h : 1.0f);
         // caps with slack for who is already shown: a crowd at the cap does not flicker in and out
         int slack_near = prev_tier == kTierNear ? s.near_cap / 8 : 0;
         int slack_mid = prev_tier <= kTierMid ? s.mid_cap / 8 : 0;

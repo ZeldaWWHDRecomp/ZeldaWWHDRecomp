@@ -54,6 +54,7 @@ Copy `server/server.example.toml` to `server.toml` and edit it. The keys you'll 
 | `limits.per_ip` | 4 | Players from one address. |
 | `party.max_size` | 8 | The largest party, between 2 and 16. Players see it before they join. |
 | `party.leader_drop_ms` | 15000 | A party leader not heard from this long hands the lead to another member (one who leaves hands it on at once). Loading a place can take seconds, so keep it well above that. |
+| `interest.party_sea_near_radius` | 30000 | At sea, party members are shown in full (their boat too) out to this distance. |
 | `limits.invite_every_s` | 10 | Party invites: a player may send a whole party's worth at once (`party.max_size` - 1), then one per this many seconds. |
 | `files.team_state` | `team-state.txt` | Parties and their team progress over restarts (`""` keeps them in memory only). |
 | `metrics.file` | none | Writes a line of counts (players, traffic, tick times) every `every_s` seconds. |

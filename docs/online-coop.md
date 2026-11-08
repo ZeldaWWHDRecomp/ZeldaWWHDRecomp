@@ -110,7 +110,9 @@ deck), so it works once you have the King of Red Lions.
 ## Players further away
 
 Through a server, players close to you are drawn in full detail. Players further off in the same area are drawn as a
-simpler Link, standing, walking or running. At sea, players too far away to draw show as dots on a small radar in
+simpler Link, standing, walking or running. At sea, party members are drawn in full detail, with their boat, about as
+far as the game draws a ship, also when they sail in the next square; further off, a sailing party member is still
+shown on their boat. At sea, players too far away to draw show as dots on a small radar in
 the lower left corner, with party members in green. You can turn the radar off in Settings > Online.
 
 ## PvP at sea

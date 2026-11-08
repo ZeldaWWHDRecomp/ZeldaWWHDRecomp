@@ -59,6 +59,9 @@ struct Config {
     int tick_hz = 15;
     int threads = 0;                // worker threads for the tick (interest, sending); 0: automatic (up to 8)
     float near_radius = 3000.0f;
+    // party members both on the open sea are near (full poses: their boat, its sail) out to this: about as far as
+    // the game draws a ship (the enemy ships' far cull, practically the camera's far plane over the sea)
+    float party_sea_near_radius = 30000.0f;
     float window_half = 18750.0f;   // the 3x3 sub-cell window as a box around the receiver
     float hysteresis = 0.15f;
     int near_cap_desktop = 32, near_cap_phone = 16, mid_cap = 48, far_cap = 128, marker_cap = 512;
