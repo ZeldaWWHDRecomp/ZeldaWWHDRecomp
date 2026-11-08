@@ -140,21 +140,27 @@ constexpr Kind kKinds[] = {
 constexpr int kKindCount = sizeof kKinds / sizeof kKinds[0];
 
 // what came in and is still to be shown here: chest bits per stage, the played stage's switches; each object made again
-// once (by its kind and home), not while Link is within 400 of it (he may be going through that door), for 300 steps
+// once (by its kind and home), for 300 steps. Not while Link is within 400 of a door (he may be going through it), nor
+// within 120 of anything else (he may be holding or standing on it): one waiting for that keeps the catch-up going for
+// up to 2 minutes, so a boulder another player broke next to a Link standing still goes once he steps back
 uint32_t g_pend_tbox[kStages], g_pend_sw[4];
 int g_pend_stage = -1, g_pend_steps = 0;
 std::vector<uint64_t> g_done;
 
 uint64_t ident(int16_t proc, uint32_t a) { return (uint64_t)(uint16_t)proc << 48 ^ (uint64_t)ld32(a + kHome) << 16 ^ ld32(a + kHome + 8); }
 
+constexpr int kDoorKindsN = 6;  // kKinds' first six: the doors (Link within 400: wait)
+constexpr int kWaitMax = 3600;  // (steps an object waiting for Link to step back keeps the catch-up going)
 // the loaded objects the others' bits change, made again where they stand (fopAcM_delete, fopAcM_create with their own
-// parameters, home, scale and argument), so their create decides as for a room entered with those bits
-void catch_up(Cpu* c, int cur) {
+// parameters, home, scale and argument), so their create decides as for a room entered with those bits; true while one
+// waits for Link to step back
+bool catch_up(Cpu* c, int cur) {
     static int16_t procs[kKindCount];
     static const bool looked = [] { for (int i = 0; i < kKindCount; i++) procs[i] = proc_of(kKinds[i].name); return true; }();
     (void)looked;
     const uint32_t link = ld32(kLinkPtr);
-    if (!link) return;
+    if (!link) return false;
+    bool waiting = false;
     const float lx = (float)ldf32(link + 0x314), lz = (float)ldf32(link + 0x31C);
     struct Remake { uint32_t a; int16_t proc; const char* what; };
     std::vector<Remake> todo;
@@ -165,6 +171,7 @@ void catch_up(Cpu* c, int cur) {
         const int16_t proc = (int16_t)ld16(a + kProcName);
         const uint32_t prm = ld32(a + kParams);
         const char* what = nullptr;
+        bool door = false;
         if (proc >= 0 && proc == tbox_proc()) {
             const uint32_t type = prm & 0x7F, no = prm >> 7 & 0x1F;
             const int stage = type == 7 || type == 8 ? 1 : cur;  // FUNC_TYPE_EXTRA_SAVE_INFO(_SPAWN): STAGE_SEA2's bits
@@ -174,10 +181,13 @@ void catch_up(Cpu* c, int cur) {
                 if (procs[i] == proc)
                     for (const int8_t sh : kKinds[i].sw)
                         if (const uint32_t sw = prm >> (sh < 0 ? 0 : sh) & 0xFF; sh >= 0 && sw < 128 && g_pend_sw[sw / 32] >> (sw % 32) & 1)
-                            what = kKinds[i].name;
+                            what = kKinds[i].name, door = i < kDoorKindsN;
         }
         if (!what || std::find(g_done.begin(), g_done.end(), ident(proc, a)) != g_done.end()) continue;
-        if (std::hypot((float)ldf32(a + kHome) - lx, (float)ldf32(a + kHome + 8) - lz) < 400) continue;  // (later)
+        if (std::hypot((float)ldf32(a + kHome) - lx, (float)ldf32(a + kHome + 8) - lz) < (door ? 400 : 120)) {  // (later)
+            waiting = true;
+            continue;
+        }
         todo.push_back({a, proc, what});
     }
     static const uint32_t buf = mem::host_alloc(0x30);  // pos +0, angle +0x10, scale +0x20
@@ -194,6 +204,7 @@ void catch_up(Cpu* c, int cur) {
         mods::trace("coop: progress: %s (parameters %08X, room %d) changed by another player: made again (%#x)", r.what, prm,
                     (int)(int32_t)room, id);
     }
+    return waiting;
 }
 
 // The others' doors (Asad: only the one opening a door saw it open): a shutter's opening (door10: stone, rising 300;
@@ -393,7 +404,9 @@ void step(Cpu* c, bool live) {
     const int cur = (int8_t)ld8(info + kStageNo);
     if (cur != g_pend_stage || (g_pend_steps > 0 && --g_pend_steps == 0))
         memset(g_pend_tbox, 0, sizeof g_pend_tbox), memset(g_pend_sw, 0, sizeof g_pend_sw), g_done.clear(), g_pend_stage = cur, g_pend_steps = 0;
-    if (g_pend_steps > 0) catch_up(c, cur);
+    static int waited = 0;
+    if (g_pend_steps == 0) waited = 0;
+    if (g_pend_steps > 0 && catch_up(c, cur) && g_pend_steps == 1 && waited < kWaitMax) g_pend_steps = 2, waited++;  // (one still waits)
     move_doors(c);
     // (the others' changes wait while this game plays an event or cutscene: its own story bits and layers are not
     // changed under it; at most kHoldSteps)
