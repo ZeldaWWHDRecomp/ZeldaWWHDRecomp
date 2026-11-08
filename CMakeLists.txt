@@ -455,7 +455,7 @@ target_compile_options(mod_manager_test PRIVATE -UNDEBUG)
 # External native package fixture and isolated lifecycle/integration tests.
 add_library(mod_fixture MODULE runtime/tools/mod_fixture.cpp)
 target_include_directories(mod_fixture PRIVATE runtime/include)
-add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/required.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/required.cpp runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_package_test PRIVATE runtime/src runtime/include runtime/tools)
 target_compile_options(mod_package_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_package_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
@@ -2628,7 +2628,7 @@ endif()
 if(NOT ANDROID AND SDL3_FOUND AND Python3_Interpreter_FOUND)
   add_executable(mod_oneclick_flow_test runtime/tools/mod_oneclick_flow_test.cpp
     runtime/third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp runtime/src/mods/code_mods.cpp
-    runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp
+    runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp
     runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c
     runtime/src/overlay/extensions.cpp runtime/src/overlay/text_field.cpp runtime/src/mods/required.cpp ${WWHD_BUILD_INFO})
   target_include_directories(mod_oneclick_flow_test PRIVATE runtime/src runtime/include)
@@ -2641,7 +2641,7 @@ add_test(NAME mod_setup_acceptance COMMAND mod_package_test --setup-acceptance)
 add_test(NAME mod_player_models COMMAND mod_package_test --player-models)
 
 # Experimental mods: flag, list filter, save backup before enabling, retention, staged restore.
-add_executable(mod_experimental_test runtime/tools/mod_experimental_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_experimental_test runtime/tools/mod_experimental_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_experimental_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_experimental_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_experimental_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
