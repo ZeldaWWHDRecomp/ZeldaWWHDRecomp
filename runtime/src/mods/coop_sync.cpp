@@ -289,7 +289,17 @@ bool host_near(uint32_t link) {
 }
 // an everyday event: its own player's alone (Dragon Roost Cavern's list: DEFAULT_TALK, KNOB_START, SHUTTER_START,
 // MAGMA_COMEBACK, TACT_WINDOW...)
+// a warp a player steps into is theirs alone: a boss room's way out (daWarpf: WARP_WIND, WARP_WIND_AFTER), the warps to
+// Hyrule and Ganon's tower, the Tower of the Gods' lifts, the sea's warps. Started in another player's game too, the
+// warp's actor there plays its staff part (its light put out) while that Link goes nowhere: that player's way out stays
+// dark until the event is over. Never sent, whatever its kind
+bool personal(const std::string& n) {
+    for (const char* p : {"WARP_WIND", "TO_HYRULE_WARP", "TO_MAJYUU_WARP", "TO_SEA_WARP", "TOWER_WARP"})
+        if (!n.compare(0, strlen(p), p)) return true;
+    return false;
+}
 bool generic(const std::string& n) {
+    if (personal(n)) return true;
     for (const char* p : {"DEFAULT_", "KNOB", "SHUTTER", "BS_SHUTTER", "TACT_WINDOW", "OPTION_CHAR", "TIMEWARP", "RiddleSound",
                           "MapToolCamera", "FALL_START", "DUNGEON_WARP", "WARPT_OPEN", "fire_", "zenfire_", "magma_cam"})
         if (!n.compare(0, strlen(p), p)) return true;
@@ -1009,7 +1019,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
             if (!name.empty()) {
                 ev_seen = (int16_t)ld16(kPlay + kEvId);
                 mods::trace("coop: the host plays event %s (kind %u)", name.c_str(), kind);
-                if (kind == 3 || !generic(name)) {
+                if (!personal(name) && (kind == 3 || !generic(name))) {
                     ev_cut = true;
                     std::string b(8, '\0');
                     clean_stage(mem::ptr(kStage), &b[0]);
