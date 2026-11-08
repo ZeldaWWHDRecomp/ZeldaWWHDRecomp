@@ -76,12 +76,23 @@ struct Clock {  // another game's clock: ours less theirs
         const int32_t gap = (int32_t)(ours - theirs);
         offset = !known || gap < offset ? gap : offset + 1, known = true;
     }
-    // their time we show now (through a server, poses come at 15 Hz: 100 ms behind, as the design's buffer)
-    uint32_t shown(uint32_t ours) const { return ours - offset - (net::via_server() ? 100 : kBehind); }
+    // how far behind their poses are shown: through a server, poses come at 15 Hz (100 ms, the design's buffer), but
+    // the server's tick and the upload limit's thinning space them 67 to 270 ms apart, and a pose shown past the
+    // newest one is guessed (Link on along his last move, what he holds held still): a thrown bomb stood still for a
+    // gap, then jumped. The buffer follows the gaps lately seen (the longest, fading 2 ms a pose), 25 ms over it, up
+    // to 250 ms, so the next pose is nearly always there
+    int32_t jitter = 0;
+    void gap(uint32_t g) { jitter = std::max<int32_t>((int32_t)std::min<uint32_t>(g, 1000), jitter - 2); }
+    int32_t behind() const {
+        const int32_t base = net::via_server() ? 100 : kBehind;
+        return std::clamp<int32_t>(jitter + 25, base, std::max<int32_t>(base, 250));
+    }
+    uint32_t shown(uint32_t ours) const { return ours - offset - behind(); }
 };
 struct Remote {
     Clock clock;
     uint32_t heard = 0, gaps = 0, gap_sum = 0, gap_max = 0;  // poses' arrivals (the trace)
+    mutable uint32_t late = 0;  // steps shown past the newest pose (the trace)
     size_t size = 0;
     std::deque<std::pair<uint32_t, Pose>> poses;  // by their time
     bool shown = false;
@@ -198,6 +209,19 @@ bool pose_at(const Remote& r, uint32_t rt, Pose& out) {
         const auto &a = q[q.size() - 2], &b = q.back();
         const float k = (float)std::min<int32_t>((int32_t)(rt - b.first), kReach) / (float)std::max<int32_t>(1, (int32_t)(b.first - a.first));
         for (int i = 0; i < 3; i++) out.pos[i] += (b.second.pos[i] - a.second.pos[i]) * k;
+        // (and his other models, what he holds or threw (a bomb in flight), on along their last move too: not still
+        // until the next pose)
+        for (Model& m : out.models) {
+            if (m.k != kHeld && (int)m.k == body_model()) continue;  // (his body: his place moves it)
+            for (const Model& n : a.second.models)
+                if (n.k == m.k && n.file == m.file && n.j.size() == m.j.size()) {
+                    for (size_t j = 0; j < m.j.size(); j++)
+                        for (int e = 0; e < 3; e++)
+                            m.j[j].t[e] = (int16_t)std::clamp<long>(std::lround(m.j[j].t[e] + (m.j[j].t[e] - n.j[j].t[e]) * k), -32767, 32767);
+                    break;
+                }
+        }
+        if (k > 0) r.late++;
     }
     return true;
 }
@@ -469,7 +493,7 @@ struct Handler : net::Handler {
             Pose p;
             if (!unpack(d, n, p)) return;
             if (const uint32_t now = net::now_ms(), gap = now - r.heard; r.heard)
-                r.gaps++, r.gap_sum += gap, r.gap_max = std::max(r.gap_max, gap), r.heard = now;
+                r.gaps++, r.gap_sum += gap, r.gap_max = std::max(r.gap_max, gap), r.heard = now, r.clock.gap(gap);
             else r.heard = now;
             r.size = n;
             if (static uint32_t k = 0; getenv("WWHD_COOP_DECK_TRACE") && ++k % 40 == 0)
@@ -1334,9 +1358,9 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         traced = net::now_ms();
         for (int id = 0; id < net::kMaxPlayers; id++)
             if (Remote& r = g_remote[id]; id != net::my_id() && r.gaps) {
-                mods::trace("coop: player %d: ping %d ms, a pose every %u ms (longest gap %u), %zu bytes, shown %d ms behind, %u sounds, %u voice frames", id,
-                            net::ping_ms(id), r.gap_sum / r.gaps, r.gap_max, r.size, kBehind, r.sounds, r.voice);
-                r.gaps = r.gap_sum = r.gap_max = r.sounds = r.voice = 0;
+                mods::trace("coop: player %d: ping %d ms, a pose every %u ms (longest gap %u), %zu bytes, shown %d ms behind (%u steps past the newest), %u sounds, %u voice frames", id,
+                            net::ping_ms(id), r.gap_sum / r.gaps, r.gap_max, r.size, r.clock.behind(), r.late, r.sounds, r.voice);
+                r.gaps = r.gap_sum = r.gap_max = r.sounds = r.voice = r.late = 0;
             }
     }
     // the others, each where its pose was taken (in the same stage and room; on the ship's deck, wherever she is here)
@@ -1415,6 +1439,13 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         else memcpy(r.at, p.pos, 12);
         r.yaw = yaw;
         sail_show(c, id, link, (p.flags & kSailing) && !(p.flags & (1 | kOnFriend)) ? &p : nullptr);
+        // test aid: WWHD_COOP_TEST_HELD=1 traces, each step, where a puppet's model away from him (over 60 units: a bomb
+        // in flight) is shown: its root joint from Link's place, in units (how smoothly it moves)
+        if (static const bool held = getenv("WWHD_COOP_TEST_HELD"); held)
+            for (const Model& m : p.models)
+                if (!m.j.empty() && std::hypot(m.j[0].t[0] / 8.f, m.j[0].t[1] / 8.f, m.j[0].t[2] / 8.f) > 60)
+                    mods::trace("coop: test: player %d holds %04X at %.1f %.1f %.1f (Link %.0f %.0f %.0f)", id, m.file, m.j[0].t[0] / 8.f, m.j[0].t[1] / 8.f,
+                                m.j[0].t[2] / 8.f, r.at[0], r.at[1], r.at[2]);
         if (cheap[id] != r.cheap) {
             r.cheap = cheap[id], r.cheap_ms = 0;
             mods::trace("coop: player %d: %s (party cap %d)", id, r.cheap ? "the cheap figure" : "in full again", party_full_cap());
