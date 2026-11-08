@@ -1305,7 +1305,7 @@ void pack(const Pose& p, std::string& out) {
     // 1200) can take it over, on top of the models. What does not fit is left out of this pose: the trail first, then
     // every other rope point (its ends kept) until the rest fits.
     const size_t nr_all = p.rope_pts.size() / 3;
-    const size_t tail = 2 + (p.chain ? 10 : 0) + 1 + ((p.flags & kSailing) ? 14 : 0) + ((p.flags & kOnFriend) ? 1 : 0);
+    const size_t tail = 2 + (p.chain ? 10 : 0) + 1 + ((p.flags & kSailing) ? 14 + 17 : 0) + ((p.flags & kOnFriend) ? 1 : 0);
     const size_t used = out.size() - start, trail_bytes = p.trail > 0 ? 12 + 2 * p.trail_pts.size() : 0;
     const auto rope_bytes = [](size_t n) { return n ? 4 + 6 * n : 0; };
     const bool trail = p.trail > 0 && used + 4 + trail_bytes + tail + rope_bytes(nr_all) <= kPoseBudget;
@@ -1332,7 +1332,11 @@ void pack(const Pose& p, std::string& out) {
         if (static uint32_t n = 0; n++ % 300 == 0)
             trace("coop: a pose over %zu bytes: %s%s (%u so far)", kPoseBudget, p.trail > 0 && !trail ? "its sword trail left out" : "",
                   step > 1 ? ", its rope thinned" : "", n);
-    if (p.flags & kSailing) put_bytes(p.boat, 12), put_bytes(&p.boat_yaw, 2);  // (C16: his boat, for a friend's deck)
+    if (p.flags & kSailing) {
+        put_bytes(p.boat, 12), put_bytes(&p.boat_yaw, 2);  // (C16: his boat, for a friend's deck)
+        const Pose::Sail& sl = p.sail;  // (his sail, 17 bytes)
+        put_bytes(sl.rel, 6), put_bytes(sl.angle, 6), put_bytes(&sl.scale_y, 1), put_bytes(&sl.furl, 1), put_bytes(&sl.sail_angle, 2), put_bytes(&sl.on, 1);
+    }
     if (p.flags & kOnFriend) put_bytes(&p.deck_of, 1);
     size = (uint32_t)(out.size() - start);
     memcpy(&out[start], &size, 4);
@@ -1435,7 +1439,9 @@ bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
     if (!get(&p.chain, 2) || (p.chain && (!get(p.chain_root, 6) || !get(p.chain_angle, 4))) || !get(&nr, 1)) return false;
     p.rope_pts.resize(3 * nr);
     if (nr && (!get(&p.rope_width, 4) || !get(p.rope_pts.data(), 6 * nr))) return false;
-    if ((p.flags & kSailing) && (!get(p.boat, 12) || !get(&p.boat_yaw, 2))) return false;
+    if ((p.flags & kSailing) && (!get(p.boat, 12) || !get(&p.boat_yaw, 2) || !get(p.sail.rel, 6) || !get(p.sail.angle, 6) ||
+                                 !get(&p.sail.scale_y, 1) || !get(&p.sail.furl, 1) || !get(&p.sail.sail_angle, 2) || !get(&p.sail.on, 1)))
+        return false;
     if ((p.flags & kOnFriend) && !get(&p.deck_of, 1)) return false;
     if (used) *used = size;
     if (o != size) return false;
@@ -2045,7 +2051,9 @@ void mods::coop::actor_draw(Cpu* c) {  // fopAc_Draw(actor), from interp.cpp's h
     const uint32_t n_was = item == kHimo2 ? ld32(a + kRopeN) : 0;
     if (item == kHimo2) st32(a + kRopeN, ~0u);  // (its draw sets it, if it draws)
     g_drawing = a;
+    const bool sail = sync::sail_swap(a, true);  // (a friend's sail: their boat's sail values, coop_sync.cpp)
     f_025D4654_orig(c);
+    if (sail) sync::sail_swap(a, false);
     g_drawing = 0;
     if (item) item_lines(a, item, n_was);
 }

@@ -269,7 +269,9 @@ extern "C" void hook_025D475C(Cpu* c) {
     const bool takes = monsters::takes(a);
     world::StandIn s(a, monsters::runs(a));
     if (takes) monsters::before(a);
+    const bool sail = sync::sail_swap(a, true);  // (a friend's sail: their boat's sail values, coop_sync.cpp)
     f_025D475C_orig(c);
+    if (sail) sync::sail_swap(a, false);
     if (const uint32_t r = c->r[3]; takes) monsters::after(c, a), c->r[3] = r;
 }
 // dSv_info_c::isActor (025BA6A4, r4 set id, r5 room): a placed monster killed in this stage while a player was in it is

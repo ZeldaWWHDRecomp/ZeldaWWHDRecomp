@@ -53,6 +53,16 @@ struct Pose {
     float boat[3] = {};
     int16_t boat_yaw = 0;
     uint8_t deck_of = 0xFF;
+    // (kSailing) his boat's sail (daGrid_c, the cloth: an actor of its own, drawn by its own packet, not a model in the
+    // pose): its place in the boat's frame, its angles, height scale and furl (as the boat sets them each step), the
+    // boat's sail angle and whether the sail is up (daShip_c mSailAngle, daSFLG_SAIL_ON) (coop_sync.cpp, sails)
+    struct Sail {
+        int16_t rel[3] = {}, angle[3] = {};
+        uint8_t scale_y = 0, furl = 255;  // (x100, x255)
+        int16_t sail_angle = 0;
+        uint8_t on = 0;
+    } sail;
+    static_assert(sizeof(Sail) == 18, "packed as 17 bytes, its fields one by one");
 };
 // a pose's flags beside kOnDeck (1, Tetra's ship) and the pose's own (coop_pose.cpp): riding his boat; standing on a
 // friend's boat

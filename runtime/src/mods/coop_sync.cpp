@@ -899,9 +899,107 @@ int nearest_stranger() {
     return best;
 }
 
+
+// ---- sails (the boat's cloth, daGrid_c): a friend's sail on their boat here
+// The King of Red Lions' sail is an actor of its own (daGrid_c, made by the boat), a cloth the boat places at its mast
+// each step and draws through its own packet: no model, so a pose's models never carried it and a friend's boat sailed
+// here bare. Each sailing puppet now gets a sail of its own, placed each step as the friend's boat places theirs (its
+// place in the boat's frame, angles, height and furl come with the pose). The cloth reads the one boat it knows (its
+// l_ship: this game's own) for the sail's angle and whether it is up, in its execute and its draw; around those two,
+// for a friend's sail, this game's boat carries the friend's values (put back right after).
+namespace {
+constexpr uint32_t kShipStateFlag = 0x644, kShipSailOn = 0x200, kShipSailAngle = 0x64C, kShipGridId = 0x6F8;  // daShip_c (wwhd_src)
+constexpr uint32_t kGridAngle = 0x320, kGridScaleY = 0x334, kGridFurl = 0x2B78;  // fopAc_ac_c current.angle, scale.y; daGrid_c::furl
+const uint32_t kLShip = GD(0x1046438C);  // d_a_grid's l_ship (gridCreate sets it: this game's boat)
+uint32_t g_sail[net::kMaxPlayers];        // each puppet's sail (process id; 0 none)
+Pose::Sail g_sail_state[net::kMaxPlayers];
+int16_t g_grid_proc = -1;                 // daGrid_c's process name here (from this game's own sail)
+uint32_t by_id(Cpu* c, uint32_t id) { return id && id != ~0u ? guest_call(c, GC(0x025DE50C), {id}) : 0; }  // fopAcM_SearchByID
+
+void sail_out(Cpu* c, uint32_t ship, Pose& me) {
+    const uint32_t grid = by_id(c, ld32(ship + kShipGridId));
+    if (!grid) return;
+    g_grid_proc = (int16_t)ld16(grid + 8);
+    const double t = (int16_t)ld16(ship + kAngleY) * M_PI / 32768;
+    const float dx = f32(grid + kPos) - f32(ship + kPos), dy = f32(grid + kPos + 4) - f32(ship + kPos + 4), dz = f32(grid + kPos + 8) - f32(ship + kPos + 8);
+    const float lx = dx * (float)cos(t) - dz * (float)sin(t), lz = dx * (float)sin(t) + dz * (float)cos(t);
+    auto s16 = [](float v) { return (int16_t)std::clamp(std::lround(v), -32767l, 32767l); };
+    Pose::Sail& sl = me.sail;
+    sl.rel[0] = s16(lx), sl.rel[1] = s16(dy), sl.rel[2] = s16(lz);
+    sl.angle[0] = (int16_t)ld16(grid + kGridAngle), sl.angle[1] = (int16_t)(ld16(grid + kGridAngle + 2) - ld16(ship + kAngleY));
+    sl.angle[2] = (int16_t)ld16(grid + kGridAngle + 4);
+    sl.scale_y = (uint8_t)std::clamp(std::lround(f32(grid + kGridScaleY) * 100), 0l, 255l);
+    sl.furl = (uint8_t)std::clamp(std::lround(f32(grid + kGridFurl) * 255), 0l, 255l);
+    sl.sail_angle = (int16_t)ld16(ship + kShipSailAngle), sl.on = (ld32(ship + kShipStateFlag) & kShipSailOn) ? 1 : 0;
+}
+
+void sail_drop(Cpu* c, int id) {
+    if (const uint32_t a = by_id(c, g_sail[id])) guest_call(c, GC(0x025D57E4), {ld32(a + 4)});  // fopAcM_delete
+    if (g_sail[id]) mods::trace("coop: player %d's sail taken away", id);
+    g_sail[id] = 0;
+}
+
+// puppet id's sail this step: p its pose as shown (sailing), or none (no sail)
+void sail_show(Cpu* c, int id, uint32_t link, const Pose* p) {
+    if (!p || !ld32(kLShip) || g_grid_proc < 0) {
+        if (g_grid_proc < 0)
+            if (const uint32_t ship = ld32(kPlay + inf::kShip); ship >= 0x10000000u)
+                if (const uint32_t grid = by_id(c, ld32(ship + kShipGridId))) g_grid_proc = (int16_t)ld16(grid + 8);
+        if (g_sail[id] && (!p || !ld32(kLShip))) sail_drop(c, id);
+        if (!p || !ld32(kLShip) || g_grid_proc < 0) return;
+    }
+    const double t = p->boat_yaw * M_PI / 32768;
+    const Pose::Sail& sl = p->sail;
+    const float at[3] = {p->boat[0] + sl.rel[0] * (float)cos(t) + sl.rel[2] * (float)sin(t), p->boat[1] + sl.rel[1],
+                         p->boat[2] - sl.rel[0] * (float)sin(t) + sl.rel[2] * (float)cos(t)};
+    uint32_t a = by_id(c, g_sail[id]);
+    if (!a && g_sail[id] == 0) {
+        static const uint32_t buf = mem::host_alloc(0x30);  // pos +0, angle +0x10, scale +0x20
+        for (int e = 0; e < 3; e++) stf32(buf + 4 * e, at[e]), stf32(buf + 0x20 + 4 * e, 1.f);
+        for (int e = 0; e < 3; e++) st16(buf + 0x10 + 2 * e, 0);
+        const uint32_t layer = guest_call(c, GC(0x025DED64));  // (made in Link's process layer, as the others' items)
+        guest_call(c, GC(0x025DEAB4), {ld32(link + 0x2C)});
+        g_sail[id] = guest_call(c, GC(0x025D5834), {(uint32_t)(uint16_t)g_grid_proc, 1, buf, 0xFFFFFFFF, buf + 0x10, buf + 0x20, 0, 0});
+        guest_call(c, GC(0x025DEAB4), {layer});
+        mods::trace("coop: player %d's sail made (%08X)", id, g_sail[id]);
+        return;
+    }
+    if (!a) return;  // (being made)
+    g_sail_state[id] = sl;
+    for (int e = 0; e < 3; e++) stf32(a + kPos + 4 * e, at[e]);
+    st16(a + kGridAngle, (uint16_t)sl.angle[0]), st16(a + kGridAngle + 2, (uint16_t)(sl.angle[1] + p->boat_yaw)), st16(a + kGridAngle + 4, (uint16_t)sl.angle[2]);
+    stf32(a + kGridScaleY, sl.scale_y / 100.f), stf32(a + kGridFurl, sl.furl / 255.f);
+}
+}  // namespace
+
+bool sail_swap(uint32_t actor, bool begin) {
+    static uint32_t saved_flag = 0;
+    static uint16_t saved_angle = 0;
+    static int on = -1;
+    const uint32_t ship = ld32(kLShip);
+    if (!ship || net::role() == net::Role::kOff) return false;
+    if (!begin) {
+        if (on < 0) return false;
+        st32(ship + kShipStateFlag, saved_flag), st16(ship + kShipSailAngle, saved_angle), on = -1;
+        return true;
+    }
+    const uint32_t id = ld32(actor + 4);
+    for (int i = 0; i < net::kMaxPlayers; i++)
+        if (g_sail[i] && g_sail[i] == id) {
+            saved_flag = ld32(ship + kShipStateFlag), saved_angle = ld16(ship + kShipSailAngle), on = i;
+            st32(ship + kShipStateFlag, (saved_flag & ~kShipSailOn) | (g_sail_state[i].on ? kShipSailOn : 0));
+            st16(ship + kShipSailAngle, (uint16_t)g_sail_state[i].sail_angle);
+            return true;
+        }
+    return false;
+}
+
 void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     if (link != g_hud_link) g_hud_hidden = false;  // (playing again)
-    if (net::role() == net::Role::kOff) return deck::clear(c);  // (C16: no friend's deck without the session)
+    if (net::role() == net::Role::kOff) {  // (C16: no friend's deck without the session; no friend's sail)
+        for (int id = 0; id < net::kMaxPlayers; id++) if (g_sail[id]) sail_drop(c, id);
+        return deck::clear(c);
+    }
     // this game's pose out (on Tetra's ship's deck, or the craft's: in its frame)
     Pose me;
     const float at[3] = {f32(link + kPos), f32(link + kPos + 4), f32(link + kPos + 8)};
@@ -918,6 +1016,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         if (sailing) {  // (C16: his boat's place, for a friend standing on it)
             for (int e = 0; e < 3; e++) me.boat[e] = f32(ship + kPos + 4 * e);
             me.boat_yaw = (int16_t)ld16(ship + kAngleY), me.flags |= kSailing;
+            sail_out(c, ship, me);
         }
         float at[3];
         int16_t yaw;
@@ -1305,6 +1404,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                   ((p.flags & 1) ? hull != 0 : (p.flags & kOnFriend) ? deck_known
                                              : p.room == room || stage == "sea" || (deck_of == id && (p.flags & kSailing)));  // (at sea: any square)
         if (!r.shown) {
+            if (g_sail[id]) sail_drop(c, id);
             if (was) show(slot, nullptr, nullptr, 0);  // (only the ones it showed: the ghost test aid has slot 0 to itself)
             continue;
         }
@@ -1313,6 +1413,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
         else if (p.flags & kOnFriend) frame_to_world(deck_at, deck_yaw, p.pos, r.at), yaw = (int16_t)(yaw + deck_yaw);
         else memcpy(r.at, p.pos, 12);
         r.yaw = yaw;
+        sail_show(c, id, link, (p.flags & kSailing) && !(p.flags & (1 | kOnFriend)) ? &p : nullptr);
         if (cheap[id] != r.cheap) {
             r.cheap = cheap[id], r.cheap_ms = 0;
             mods::trace("coop: player %d: %s (party cap %d)", id, r.cheap ? "the cheap figure" : "in full again", party_full_cap());

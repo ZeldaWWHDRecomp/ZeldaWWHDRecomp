@@ -100,6 +100,9 @@ bool anyone_in(const char stage[8]);
 // (the menu, any thread) this game's Link taken beside player id, where their newest pose is (a warp, as the mods'
 // warps go: their stage, room and place)
 void go_to(int id);
+// a friend's sail (a puppet's daGrid_c): around its execute and draw (begin, then end) this game's boat carries that
+// friend's sail angle and sail-up flag, as the cloth reads them from the one boat it knows; true when it did
+bool sail_swap(uint32_t actor, bool begin);
 // (C14) the player outside the party whose puppet stands nearest this game's Link (-1: none shown)
 int nearest_stranger();
 
