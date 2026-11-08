@@ -21,6 +21,7 @@
 #include "coop_net.h"
 #include "coop_pose.h"
 #include "coop_pvp.h"
+#include "coop_clock.h"
 #include "coop_sync.h"
 #include "guest_addr.h"
 #include "mods.h"
@@ -132,9 +133,12 @@ void coop_world(Cpu* c, uint32_t link, bool settled, bool riding) {
             boat_shot_from(c, link, r);
         } else if (m.type == net::kBombed) {
             mods::coop::items::bombed(c, link, (const uint8_t*)m.body.data(), m.body.size());
+        } else if (m.type == net::kClock || m.type == net::kClockJump) {
+            mods::coop::clock::message(m.from, m.type, (const uint8_t*)m.body.data(), m.body.size());
         }
     }
     if (settled) held.clear();
+    mods::coop::clock::step(settled);  // (the party's time of day and sea weather: the leader's)
     // test aid: WWHD_COOP_TEST_FF_FIRE=<s>:cannon|bomb[,...]: that long after arriving, a cannon ball of this game's at the
     // nearest party member shown (from 200 off, level, as fast as the boat's), or a bomb of its own going off at their
     // feet; each counts as this game's own (friendly fire: its blast)

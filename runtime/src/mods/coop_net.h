@@ -61,6 +61,8 @@ enum Msg : uint8_t {
     kDoorMove,    // any -> host -> others: {stage[8], s16 proc, f32 home x, z, u8 open, u8 way}: a player's door moving
     kRupees,      // any -> host -> others: {s32 rupees}: what a player just gained, gained by everyone
     kEmote,       // any -> host -> others: {u8 emote} (coop_emotes.h; through a server its EMOTE, strangers near by too)
+    kClock,       // leader -> party: its time of day, day and sea weather (coop_clock.h)
+    kClockJump,   // member -> leader: its own new time (the Song of Passing), for the party
 };
 
 enum class Role { kOff, kHost, kGuest };

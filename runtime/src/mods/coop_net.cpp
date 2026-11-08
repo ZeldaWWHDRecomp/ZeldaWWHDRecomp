@@ -253,7 +253,7 @@ bool from_guest(Msg t) {
     switch (t) {
     case kHello: case kFired: case kHit: case kEffect: case kArrived: case kBoatShot: case kDamage: case kProgress:
     case kDown: case kSound: case kPlayerHit: case kBombed: case kMonHit: case kMonGone: case kDoorAsk: case kDoorMove:
-    case kRupees: case kEmote: return true;
+    case kRupees: case kEmote: case kClockJump: return true;
     default: return false;
     }
 }
@@ -294,7 +294,7 @@ void take(int li, const uint8_t* d, size_t n, Handler& h) {
         } else if (type == kLeft && len >= 1) {
             drop(b[0] % kMaxDirect, "left", h);
         } else {
-            if (g_role == Role::kHost && (type == kFired || type == kEffect || type == kBoatShot || type == kProgress || type == kSound || type == kPlayerHit || type == kBombed || type == kMonHit || type == kMonGone || type == kDoorMove || type == kRupees || type == kEmote))  // passed on to the other guests
+            if (g_role == Role::kHost && (type == kFired || type == kEffect || type == kBoatShot || type == kProgress || type == kSound || type == kPlayerHit || type == kBombed || type == kMonHit || type == kMonGone || type == kDoorMove || type == kRupees || type == kEmote || type == kClockJump))  // passed on to the other guests
                 for (int i = 1; i < kMaxDirect; i++) if (i != li && g_link[i].on) queue(g_link[i], type, origin, std::string((const char*)b, len));
             h.message(origin, type, b, len);
         }

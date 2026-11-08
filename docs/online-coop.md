@@ -90,9 +90,14 @@ For scripted tests the environment variables `WWHD_COOP=host[:port]` or `WWHD_CO
   sizes. A chest or door another player opens in a room you are in opens for you too.
 - **Monsters:** the monsters placed in a place are run by one player's game; everyone's hits count,
   and a monster killed stays dead while someone is in that place.
+- **The time of day and the weather at sea** follow your party's leader. When you are somewhere the game lets
+  time pass, your clock moves toward the leader's over a few seconds; at sea, rain and storms come and go with
+  the leader's. If anyone in the party plays the Song of Passing, the time changes for the whole party. Where the
+  game holds the time or the weather (dungeons, houses, cutscenes, story nights and storms), it stays as the game
+  has it. Players outside your party keep their own.
 
 **What stays your own:** your hearts and magic, your rupees (unless the party shares gains), arrows, bombs,
-bottle contents, bags, item buttons, the time of day, where you start after loading, your name and options,
+bottle contents, bags, item buttons, where you start after loading, your name and options,
 side-quest counters and minigame records, a dungeon's or room's temporary state (moving platforms, water,
 blocks you pushed), and things the game resets on its own (what happened today or this week, one visit to a
 place). Story changes another player makes while you are in a cutscene or talking to someone reach you when it
