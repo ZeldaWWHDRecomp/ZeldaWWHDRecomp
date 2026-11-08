@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Vulkan on Mali and PowerVR: fewer render passes** (#476, ported from the Android forks by GreenNaugahyde and
+  Nycolazs). Draws that use part of an open pass's targets keep that pass, and textures are made ready before their
+  pass instead of ending it: about 3 fewer render passes per frame, which saves memory traffic on tile-based phone
+  GPUs. On by default only on Mali and PowerVR; elsewhere (Adreno, desktop, Mac) it measured no gain and stays off.
+  `WWHD_PASS_SUBSET` / `WWHD_PASS_PREFETCH` turn it on (1) or off (0) on any GPU.
+
 - **Updates keep what you have** (#479). A new release offers to update from your earlier release folder, cloned
   where your drive allows (the old release keeps working), otherwise moved after you confirm. It brings over your
   game files, saves, settings, controls, mods, randomized games and shader caches, and only recompiles the parts
