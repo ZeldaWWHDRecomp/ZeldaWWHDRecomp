@@ -342,6 +342,12 @@ if(WWHD_DECOMP)
 endif()
 if(ANDROID)
   target_link_libraries(wwhd PRIVATE log android nativewindow)
+  # libmain's calls to its own exported functions bind directly at link time instead of going through PLT stubs
+  # (normal build: 29,178 -> 637 PLT entries; phone pairs 2026-11-08, Xiaomi 14 cliff: logic -0.65 ms, render
+  # thread -1.25 ms in the normal build, logic -0.56 / render -1.68 ms in the fast decomp build). Exports stay (JNI,
+  # dlopen'ed native mods); nothing interposes libmain's functions (an app's libraries are not in bionic's global
+  # group, the bundled zlib already binds to libmain's own copy, native mods are dlopen'ed RTLD_LOCAL).
+  target_link_options(wwhd PRIVATE "LINKER:-Bsymbolic-functions")
   option(WWHD_QUEST_THEATER "Build the Quest OpenXR presentation host (inactive on other devices)" ON)
   if(WWHD_QUEST_THEATER)
     include(cmake/OpenXR.cmake)
