@@ -291,6 +291,14 @@ Python pinned in `toolchains.json`, verifies its SHA-256, and installs it privat
 Python is unchanged. Downloads remain installer operations; mod setup tools retain their
 reviewed local file capabilities and cannot download or launch programs.
 
+If that download fails after its retries (issue #472: GitHub answering HTTP 504), setup
+still finishes and the game starts. `guest-sdk.json` then names the private Python's
+future path in `python`, the reason in `python_pending`, and the interpreter that ran
+setup in `setup_python`; `install.json` records `setup_python_missing`. The first mod tool
+that needs the Python starts `setup.py --repair-guest-python` with `setup_python` in the
+background and shows that it is downloading; a failure is shown once and the next use
+retries. A code-mod rebuild or randomizer build first downloads it the same way.
+
 Existing installations can update only this interpreter, preserving the compiler and
 other bridge settings, by passing `--repair-guest-python` to their release's terminal
 setup launcher (plus `--data-dir PATH` for a nondefault installation). This does not rebuild

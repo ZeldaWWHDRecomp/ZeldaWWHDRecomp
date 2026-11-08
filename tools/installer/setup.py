@@ -741,12 +741,17 @@ def download_error(url, e):
     else:
         why = "%s." % text.rstrip(".")
     name = os.path.basename(url.split("?")[0])
-    return SetupError("download failed: %s\nRun setup again (it resumes where it stopped). If it keeps failing, "
+    return DownloadFailed("download failed: %s\nRun setup again (it resumes where it stopped). If it keeps failing, "
                       "download %s in your browser, put %s in the Wind Waker HD folder and run setup again."
                       % (why, url, name))
 
 
-DOWNLOAD_ATTEMPTS = 6
+DOWNLOAD_ATTEMPTS = 6  # 5 retries, waiting 2, 4, 8, 16 and 32 s: about a minute for a server to come back
+
+
+class DownloadFailed(SetupError):
+    """A download that failed after all retries (network or server trouble, e.g. GitHub's HTTP 504 in
+    issue #472). Optional steps catch it and continue; required ones let it stop setup."""
 
 
 def windows_curl():
@@ -822,8 +827,9 @@ def download(url, dst, sha256, size_hint, label, attempts=DOWNLOAD_ATTEMPTS, wai
                 raise download_error(url, e)
             if attempt == attempts - 1:
                 raise download_error(url, e)
-            say("  Download interrupted (%s); retrying..." % e)
-            time.sleep(wait * (2 ** attempt))
+            pause = wait * (2 ** attempt)
+            say("  Download interrupted (%s); retrying in %g s (attempt %d of %d)..." % (e, pause, attempt + 2, attempts))
+            time.sleep(pause)
     pr.done(human(os.path.getsize(tmp)))
     if sha256 and file_sha256(tmp) != sha256:
         os.remove(tmp)
@@ -870,7 +876,7 @@ def ensure_setup_python(data_dir, prefer_system=True):
         raise SetupError("No private setup Python is available for this platform/architecture")
     pin = load_toolchains()["python"][key]
     root = os.path.join(data_dir, "setup-python")
-    executable = os.path.join(root, "python", "bin", "python3")
+    executable = private_python_path(data_dir)
     marker = os.path.join(root, ".wwhd-python")
     try:
         with open(marker) as f:
@@ -907,6 +913,50 @@ def ensure_setup_python(data_dir, prefer_system=True):
     return executable
 
 
+def private_python_path(data_dir):
+    """Where ensure_setup_python installs the private Python on macOS and Linux."""
+    return os.path.join(data_dir, "setup-python", "python", "bin", "python3")
+
+
+def setup_python_or_pending(data_dir):
+    """(python, None) when the setup Python is ready; (the private Python's future path, reason) when only
+    its download failed (issue #472): setup continues, the game starts, and the download is tried again
+    when a mod needs it (pending_python_retry, and the game's guest build bridge)."""
+    try:
+        return ensure_setup_python(data_dir), None
+    except DownloadFailed as e:
+        reason = str(e).split("\n")[0]
+        say("")
+        say("  The Python that mods need could not be downloaded (%s)." % reason)
+        say("  The game is ready anyway. The download is tried again when a mod needs it; or run setup's Repair.")
+        LOG.write("setup Python pending: %s" % e)
+        return private_python_path(data_dir), reason
+
+
+def pending_python(data_dir):
+    """The reason guest-sdk.json records for a private Python that is still to be downloaded, or None."""
+    try:
+        with open(os.path.join(data_dir, "guest-sdk.json"), encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return config.get("python_pending") if isinstance(config, dict) else None
+
+
+def pending_python_retry(data_dir):
+    """Before a feature that needs the private Python (code-mod rebuild, randomizer build): download it
+    now when setup could not. Raises DownloadFailed with a message for the game's UI when it fails again."""
+    if not pending_python(data_dir):
+        return
+    say("The Python that mods need is still missing: downloading it now.")
+    try:
+        repair_guest_python(data_dir)
+    except DownloadFailed as e:
+        raise DownloadFailed("The Python that mods need could not be downloaded (%s). Try again later; "
+                             "it is downloaded the next time a mod needs it, or run setup's Repair."
+                             % str(e).split("\n")[0])
+
+
 def repair_guest_python(data_dir):
     """Upgrade an existing guest bridge without rebuilding game code or changing its compiler."""
     path = os.path.join(data_dir, "guest-sdk.json")
@@ -924,6 +974,7 @@ def repair_guest_python(data_dir):
             # issue #230: an AppImage setup up to format 2 stored the paths of that start's mount
             config.update(guest_release_paths(data_dir), format_version=3)
     config["python"] = [executable]
+    config.pop("python_pending", None)  # issue #472: setup's failed download is done now
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(config, f)
     atomic_replace(path + ".tmp", path)
@@ -2096,16 +2147,21 @@ def write_guest_build_config(data_dir, tc):
     def stored_path(path):
         return guest_stored_path(path, data_dir)
 
-    config = {"format_version": 3, "python": [stored_path(ensure_setup_python(data_dir))],
+    python, pending = setup_python_or_pending(data_dir)
+    config = {"format_version": 3, "python": [stored_path(python)],
               "compiler": [stored_path(tc.cc[0])] + tc.cc[1:],
               "data_dir": stored_path(os.path.abspath(data_dir))}
     config.update(guest_release_paths(data_dir))
+    if pending:
+        # issue #472: the game runs setup with this Python (setup.py needs no 3.14) to download it later
+        config.update(python_pending=pending, setup_python=[stored_path(sys.executable)])
     if tc.env and tc.env.get("ZIG_GLOBAL_CACHE_DIR"):
         config["zig_cache"] = stored_path(tc.env["ZIG_GLOBAL_CACHE_DIR"])
     path = os.path.join(data_dir, "guest-sdk.json")
     with open(path + ".tmp", "w", encoding="utf-8") as f:
         json.dump(config, f)
     atomic_replace(path + ".tmp", path)
+    return pending
 
 
 def game_icon_png(data_dir):
@@ -2948,7 +3004,11 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None):
         shutil.rmtree(longpath(work), ignore_errors=True)
     if kind != "gen":
         os.makedirs(os.path.join(data_dir, "save"), exist_ok=True)
-    write_guest_build_config(data_dir, tc)
+    python_pending = write_guest_build_config(data_dir, tc)
+    if isinstance(python_pending, str):
+        state["setup_python_missing"] = python_pending  # issue #472: downloaded when a mod needs it
+    else:
+        state.pop("setup_python_missing", None)
     if decomp_offered(manifest) and kind != "gen":
         state["decomp"] = want_decomp  # remembered: a repair or update builds it again
         state["start_decomp"] = bool(old_state.get("start_decomp")) and want_decomp
@@ -3208,6 +3268,13 @@ def run(args, ui):
     if getattr(args, "repair_guest_python", False):
         repair_guest_python(ctx.data_dir)
         return 0
+    if getattr(args, "rebuild_code_mods", False) or getattr(args, "randomize", False) or getattr(args, "play_seed", None):
+        try:
+            pending_python_retry(ctx.data_dir)  # issue #472: setup could not download it
+        except SetupError as e:
+            if getattr(args, "code_mods_status", None):
+                code_mods.atomic_json(args.code_mods_status, {"state": "error", "message": str(e)})
+            raise
     if getattr(args, "rebuild_code_mods", False):
         if not valid_game_folder(ctx.game_dir):
             raise SetupError("No installed game files to rebuild from; run setup first")

@@ -193,6 +193,13 @@ std::vector<std::string> setup_command(fs::path& data_dir,fs::path* script){
     auto python=guestmods::BuildBridge::arguments(cfg.get("python"));
     if(python.empty())exception_report::raise("Code-mod setup tools are missing; run setup again");
     python.front()=guestmods::resolve_path(python.front(),base,release,true);
+    // issue #472: the private Python is still to be downloaded; the Python that ran setup runs setup.py,
+    // which downloads it first (pending_python_retry) for the steps that need it
+    if(std::error_code ec;fs::path(python.front()).has_parent_path()&&!fs::is_regular_file(python.front(),ec)
+       &&cfg.get("python_pending").type==mods::json::Value::String&&cfg.get("setup_python").type==mods::json::Value::Array){
+        python=guestmods::BuildBridge::arguments(cfg.get("setup_python"));
+        python.front()=guestmods::resolve_path(python.front(),base,release,true);
+    }
     data_dir=resolve("data_dir");auto setup=resolve("setup");
     if(script)*script=setup;
     python.insert(python.end(),{setup.string(),"--data-dir",data_dir.string()});

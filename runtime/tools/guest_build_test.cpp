@@ -151,6 +151,41 @@ int main(int argc,char** argv) {
         std::ofstream(rel/"sdk"/"include"/"x.py")<<"";
         assert(guestmods::BuildBridge::read((rel/"names.json").string(),"cache","").missing()==Missing::None);
     }
+#ifndef _WIN32
+    // issue #472: setup's Python download failed. The first mod that needs it starts the download through
+    // `setup_python setup.py --repair-guest-python`; a failure is reported once, the next use retries.
+    {
+        const auto rel=fixture/"pending";
+        fs::create_directories(rel/"tools"/"guestmod");fs::create_directories(rel/"sdk"/"include");
+        fs::create_directories(rel/"py");
+        std::ofstream(rel/"tools"/"guestmod"/"build_guest_mod.py")<<"";
+        // stand-in for setup.py: fails while "offline" exists, else installs the Python
+        {std::ofstream out(rel/"setup.sh");
+         out<<"[ \"$3\" = --repair-guest-python ] || exit 3\n[ -e \"$2/offline\" ] && exit 1\n: > \"$2/py/python3\"\n";}
+        std::ofstream(rel/"offline")<<"";
+        {std::ofstream out(rel/"guest-sdk.json");
+         out<<R"({"format_version":3,"python":["./py/python3"],"compiler":["cc"],"builder":"./tools/guestmod/build_guest_mod.py",)"
+              R"("include":"./sdk/include","setup":"./setup.sh","data_dir":".","python_pending":"HTTP Error 504","setup_python":["/bin/sh"]})";}
+        const auto config=(rel/"guest-sdk.json").string();
+        setenv("WWHD_GUEST_BUILD_CONFIG",config.c_str(),1);
+        auto attempt=[]{std::string why;try{guestmods::BuildBridge::installed(std::string(),false);}catch(const std::exception& e){why=e.what();}return why;};
+        auto settle=[]{for(int i=0;i<500;i++){{std::lock_guard l(guestmods::PythonRepair::get().mutex);if(!guestmods::PythonRepair::get().running)return;}
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));}assert(!"repair did not finish");};
+        assert(attempt()==guestmods::kPythonDownloading);
+        settle();
+        assert(attempt().rfind(guestmods::kPythonDownloadFailed,0)==0);  // reported once
+        fs::remove(rel/"offline");                                         // the server works again
+        assert(attempt()==guestmods::kPythonDownloading);                  // the next use retries
+        settle();
+        assert(attempt().empty());
+        assert(fs::is_regular_file(rel/"py"/"python3"));
+        // without "setup_python" (older setups, Android) the plain message stays
+        fs::remove(rel/"py"/"python3");
+        {std::ofstream out(rel/"guest-sdk.json");
+         out<<R"({"format_version":3,"python":["./py/python3"],"compiler":["cc"],"builder":"./tools/guestmod/build_guest_mod.py","include":"./sdk/include"})";}
+        assert(attempt()==guestmods::kPythonMissing);
+    }
+#endif
     // the notice: once per start, naming the mods the missing compiler stops
     assert(guestmods::compiler_notice({}).empty());
     assert(guestmods::compiler_notice({"Story Notebook"})==
