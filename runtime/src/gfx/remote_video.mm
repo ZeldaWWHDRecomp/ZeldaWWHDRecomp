@@ -184,7 +184,7 @@ id<MTLTexture> begin_frame(id<MTLDevice> device, bool srgb, float drc_w, float d
     return CVMetalTextureGetTexture(g_texture);
 }
 
-void end_frame(id<MTLCommandBuffer> cb) {
+void end_frame(id<MTLCommandBuffer> cb, uint64_t time_ns) {
     if (!g_pixels) return;
     CVPixelBufferRef pixels = g_pixels;
     CVMetalTextureRef texture = g_texture;
@@ -193,7 +193,7 @@ void end_frame(id<MTLCommandBuffer> cb) {
     VTCompressionSessionRef session = g_enc.session;
     CFRetain(session);
     const int64_t size = int64_t(g_enc.width) << 16 | g_enc.height;
-    const uint64_t t = remote_pad::clock_ns();
+    const uint64_t t = time_ns;
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         bool sent = false;
         if (done.status == MTLCommandBufferStatusCompleted) {

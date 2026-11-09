@@ -162,7 +162,7 @@ static bool present(float r, float g, float b, float w = 854, float h = 480) {
         rp.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, 1);
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
         [[cb renderCommandEncoderWithDescriptor:rp] endEncoding];
-        remote_video::end_frame(cb);
+        remote_video::end_frame(cb, remote_pad::clock_ns());
     }
     [cb commit];
     [cb waitUntilCompleted];
