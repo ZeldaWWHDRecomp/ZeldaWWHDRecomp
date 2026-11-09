@@ -18,7 +18,7 @@ final class ProtocolTests: XCTestCase {
 
     func testHello() {
         XCTAssertEqual(WWGP.hello(nonce: 0x0102_0304, device: "Test iPhone", controller: "Backbone One"),
-                       hex("575747500100010000000000040302010b54657374206950686f6e650c4261636b626f6e65204f6e65"))
+                       hex("575747500100010000000000040302010b54657374206950686f6e650c4261636b626f6e65204f6e650000000000000000000000000000000000000000000000000000000000000000"))
     }
 
     func testInput() {
@@ -32,6 +32,24 @@ final class ProtocolTests: XCTestCase {
         let bytes = WWGP.input(session: 0xA1B2_C3D4, i)
         XCTAssertEqual(bytes.count, WWGP.inputSize)
         XCTAssertEqual(bytes, hex("5757475001000300d4c3b2a10701070000000807060504030201212400000180004000200000ffff00800040ffbf15cd5b07000000000000c03f000080be00004040000000000ae81cc10000003f"))
+    }
+
+    func testPairingPacketsMatchTheGame() {
+        // the bytes runtime/src/remote_pad/protocol.cpp writes for the same values
+        let id = (0..<16).map { UInt8($0) }, token = (0..<16).map { UInt8(0xF0 + $0) }
+        XCTAssertEqual(WWGP.hello(nonce: 1, device: "P", controller: "", video: true, audio: true, id: id, token: token),
+                       hex("57574750010001030000000001000000015000000102030405060708090a0b0c0d0e0ff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"))
+        XCTAssertEqual(WWGP.pair(nonce: 0x0102_0304, id: id, code: 123_456),
+                       hex("5757475001000a000000000004030201000102030405060708090a0b0c0d0e0f40e20100"))
+        let p = WWGP.pairing(hex("575747500100090000000000040302010202"))
+        XCTAssertEqual(p?.nonce, 0x0102_0304)
+        XCTAssertEqual(p?.state, .wrongCode)
+        XCTAssertEqual(p?.attempts, 2)
+        let q = WWGP.paired(hex("5757475001000b000000000004030201f0f1f2f3f4f5f6f7f8f9fafbfcfdfeff"))
+        XCTAssertEqual(q?.nonce, 0x0102_0304)
+        XCTAssertEqual(q?.token, token)
+        XCTAssertNil(WWGP.paired(hex("5757475001000b000000000004030201f0f1")))  // short
+        XCTAssertEqual(Pairing.bytes(Pairing.hex(token)), token)
     }
 
     func testBye() {

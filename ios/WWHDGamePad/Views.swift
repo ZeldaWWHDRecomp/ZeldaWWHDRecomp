@@ -47,6 +47,10 @@ struct ConnectView: View {
     var body: some View {
         NavigationStack {
             List {
+                // first, above the keyboard: the game asks for the code it shows on the computer
+                if case let .pairing(name, prompt) = link.status {
+                    PairingSection(game: name, prompt: prompt)
+                }
                 Section {
                     if link.games.isEmpty {
                         HStack(spacing: 12) {
@@ -64,7 +68,7 @@ struct ConnectView: View {
                 } footer: {
                     VStack(alignment: .leading, spacing: 6) {
                         if let problem = link.browseProblem { Text(problem).foregroundStyle(.orange) }
-                        Text("Start the game on your Mac with WWHD_REMOTE_PAD=1 (see ios/README.md), on the same Wi-Fi network as this phone.")
+                        Text("On the Mac: Settings > Controls > iPhone GamePad > Use an iPhone as the GamePad. The Mac and this phone must be on the same Wi-Fi network.")
                     }
                 }
 
@@ -120,6 +124,52 @@ struct ConnectView: View {
                 if let a = UserDefaults.standard.string(forKey: "connect") { link.connect(address: a) }
                 else if let name = UserDefaults.standard.string(forKey: "join") { link.join(name) }  // `-join <name>`
             }
+        }
+    }
+}
+
+/// The game shows a code on the computer (Settings opens with it): typed here once, the phone is paired.
+struct PairingSection: View {
+    @EnvironmentObject private var link: GamePadLink
+    let game: String
+    let prompt: GamePadLink.PairPrompt
+    @State private var code = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        Section {
+            switch prompt {
+            case .expired:
+                Text("The code expired or was refused on the computer.")
+                Button("Show a new code") { link.requestNewPairingCode() }
+            default:
+                TextField("6-digit code", text: $code)
+                    .keyboardType(.numberPad)
+                    .textContentType(.oneTimeCode)
+                    .font(.title2.monospacedDigit())
+                    .focused($focused)
+                    .onChange(of: code) { _, new in
+                        let digits = String(new.filter(\.isNumber).prefix(6))
+                        if digits != new { code = digits }
+                        if digits.count == 6 { link.submitPairingCode(digits) }  // no extra tap
+                    }
+                    .disabled(prompt == .checking)
+                if case let .wrongCode(left) = prompt {
+                    Text("That code was wrong: \(left) \(left == 1 ? "try" : "tries") left.").foregroundStyle(.orange)
+                }
+                if prompt == .checking {
+                    HStack(spacing: 8) { ProgressView(); Text("Checking…") }
+                }
+            }
+            Button("Cancel", role: .cancel) { link.disconnect() }
+        } header: {
+            Text("Pair with \(game)")
+        } footer: {
+            Text("The first time, the game shows a code on the computer (Settings opens with it). Type it here; after that, this phone connects by itself.")
+        }
+        .onAppear { focused = true }
+        .onChange(of: prompt) { _, new in
+            if case .wrongCode = new { code = ""; focused = true }
         }
     }
 }

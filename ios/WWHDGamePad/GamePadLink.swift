@@ -21,7 +21,14 @@ final class GamePadLink: ObservableObject {
         case connecting(String)       // to this game
         case connected(String)        // the computer's name
         case lost(String)             // was connected; saying Hello again
+        case pairing(String, PairPrompt)  // this game shows a code to type in (protocol.h kPairing)
         case failed(String)
+    }
+    enum PairPrompt: Equatable {
+        case enterCode                // the computer shows it now
+        case wrongCode(Int)           // tries left
+        case expired                  // no code pending (expired, refused, tries used up): ask for a new one
+        case checking                 // sent; waiting for the answer
     }
 
     struct Game: Identifiable, Hashable {
@@ -86,6 +93,16 @@ final class GamePadLink: ObservableObject {
     nonisolated(unsafe) private var target = ""
     nonisolated(unsafe) private var helloDevice = "", helloController = ""
     nonisolated(unsafe) private var wantsAudio = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true
+    nonisolated(unsafe) private var pairingWait = false   // a code is asked for: no Hellos until it is typed
+    nonisolated(unsafe) private var token: [UInt8] = []   // this game's pairing token (Pairing.token(for:))
+    /// this phone's id for pairing (pairing.h): random, kept for good
+    nonisolated static let phoneID: [UInt8] = {
+        if let hex = UserDefaults.standard.string(forKey: "phoneID"), let b = Pairing.bytes(hex), b.count == 16 { return b }
+        var b = [UInt8](repeating: 0, count: 16)
+        _ = SecRandomCopyBytes(kSecRandomDefault, 16, &b)
+        UserDefaults.standard.set(Pairing.hex(b), forKey: "phoneID")
+        return b
+    }()
 
     private var isActive: Bool {
         switch status { case .connecting, .connected, .lost: return true; default: return false }
@@ -205,6 +222,8 @@ final class GamePadLink: ObservableObject {
             seq = 0
             nonce = UInt32.random(in: 1...UInt32.max)
             target = label
+            token = Pairing.token(for: label)
+            pairingWait = false
             helloDevice = device
             helloController = controllerName
             lastWelcome = .distantPast
@@ -332,6 +351,23 @@ final class GamePadLink: ObservableObject {
                 if session == self.session, c === self.connection, self.wantsAudio { self.speaker.push(piece) }
             } else if let (session, seq, level) = WWGP.rumble(bytes) {
                 if session == self.session, c === self.connection { self.rumble.set(seq: seq, level: level) }
+            } else if let p = WWGP.pairing(bytes), p.nonce == self.nonce, c === self.connection {
+                // not paired (or the token is no longer known there): ask the player for the code
+                self.pairingWait = true
+                let label = self.target
+                let prompt: PairPrompt = switch p.state {
+                case .enterCode: .enterCode
+                case .wrongCode: .wrongCode(p.attempts)
+                case .noCode: .expired
+                }
+                Task { @MainActor in self.status = .pairing(label, prompt) }
+            } else if let p = WWGP.paired(bytes), p.nonce == self.nonce, c === self.connection {
+                let label = self.target
+                Pairing.save(token: p.token, for: label)
+                self.token = p.token
+                self.pairingWait = false
+                self.lastHello = .distantPast  // Hello with the token at once
+                Task { @MainActor in self.status = .connecting(label) }
             } else if let w = WWGP.welcome(bytes), w.nonce == self.nonce, c === self.connection {
                 let wasConnected = self.session != 0 && Date().timeIntervalSince(self.lastWelcome) < 3
                 if w.session != self.session {  // a new session: from its first keyframe, motor still
@@ -351,7 +387,30 @@ final class GamePadLink: ObservableObject {
     nonisolated private func sendHello() {
         guard let c = connection else { return }
         c.send(content: Data(WWGP.hello(nonce: nonce, device: helloDevice, controller: helloController,
-                                        video: true, audio: wantsAudio)), completion: .idempotent)
+                                        video: true, audio: wantsAudio, id: Self.phoneID, token: token)),
+               completion: .idempotent)
+    }
+
+    // MARK: pairing
+
+    /// the code shown on the computer (6 digits)
+    func submitPairingCode(_ code: String) {
+        guard let n = UInt32(code.filter(\.isNumber)), n < 1_000_000, case let .pairing(label, _) = status else { return }
+        status = .pairing(label, .checking)
+        queue.async { [self] in
+            guard let c = connection else { return }
+            c.send(content: Data(WWGP.pair(nonce: nonce, id: Self.phoneID, code: n)), completion: .idempotent)
+        }
+    }
+
+    /// after an expired or refused code: say Hello again, and the computer shows a new one
+    func requestNewPairingCode() {
+        guard case let .pairing(label, _) = status else { return }
+        status = .connecting(label)
+        queue.async { [self] in
+            pairingWait = false
+            lastHello = .distantPast
+        }
     }
 
     nonisolated private func tick(_ c: NWConnection, device: String, controller name: String) {
@@ -366,7 +425,7 @@ final class GamePadLink: ObservableObject {
             Task { @MainActor in self.status = .lost(label) }
         }
         if session == 0 {
-            if now.timeIntervalSince(lastHello) >= 0.5 {
+            if !pairingWait, now.timeIntervalSince(lastHello) >= 0.5 {
                 lastHello = now
                 sendHello()
             }

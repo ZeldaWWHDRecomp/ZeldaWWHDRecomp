@@ -17,26 +17,26 @@ from the phone. Turn off *GamePad sound* in the app to hear them from the Mac ag
 
 ## Use it
 
-1. **The game, on the Mac:** set `WWHD_REMOTE_PAD=1` for apps you open, then start Wind Waker HD as
-   usual:
-   ```sh
-   launchctl setenv WWHD_REMOTE_PAD 1      # later: launchctl unsetenv WWHD_REMOTE_PAD
-   ```
-   (A build of your own: `WWHD_REMOTE_PAD=1 build/wwhd`.) The log says `[remote pad] waiting for the
-   iPhone GamePad on UDP port 26770`. Allow incoming connections if macOS asks.
-   `WWHD_REMOTE_PAD=<port>` picks another port.
+1. **The game, on the Mac:** Settings > Controls > iPhone GamePad > **Use an iPhone as the GamePad**
+   (remembered). The status line below it says *Waiting for the phone*. Allow incoming connections if
+   macOS asks. (`WWHD_REMOTE_PAD=1`, or `=<port>` for another UDP port, keeps it on for one launch.)
 2. **Gyro:** Settings > Controls > Gyro... > **Device gyro (phone/tablet)**.
 3. **The phone,** on the same Wi-Fi network: open GamePad, allow local network access, and tap the Mac
    under *Games on this network*. If it doesn't appear, enter the Mac's address (System Settings >
    Wi-Fi > Details) under *Or enter the computer's address*.
-4. Hold the phone in landscape in the controller. The status line shows the Mac's name. **Disconnect**
+4. **Pair, the first time:** Settings opens on the Mac with a 6-digit code; type it on the phone. The
+   code works for 2 minutes and 3 tries; **Don't pair** on the Mac refuses the phone. After that the
+   phone connects by itself. **Forget paired phones** (same section) makes every phone pair again.
+5. Hold the phone in landscape in the controller. The status line shows the Mac's name. **Disconnect**
    (or leaving the app) gives the GamePad back to the Mac's keyboard and controllers.
-5. Leaving the app and coming back rejoins the game by itself if it is still there: a game from the
+6. Leaving the app and coming back rejoins the game by itself if it is still there: a game from the
    list must be listed again, a typed address must answer, within 5 seconds. After **Disconnect** the
    app stays on the list.
 
-Only one phone can be the GamePad at a time. While the game listens, anyone on the local network can
-send it GamePad input, so set `WWHD_REMOTE_PAD` only on networks you trust.
+Only one phone can be the GamePad at a time, and only a paired one. Pairing keeps other devices on the
+network from taking the GamePad; it is not encryption: the phone's pairing token and its input travel
+in the clear, so someone capturing your Wi-Fi traffic could copy them. Turn the option off on networks
+you don't trust.
 
 ## Build it
 
@@ -101,4 +101,4 @@ controller axes the same way it does the Android device gyro (`motion::device_to
 1. ~~Input: controller, touch, gyro~~
 2. ~~The GamePad picture on the phone~~ (Metal renderer; the Vulkan renderer later)
 3. ~~Rumble~~ (Core Haptics on the controller, else the phone); ~~GamePad sound~~ (48 kHz PCM, 40 ms jitter buffer)
-4. A setting in the game instead of `WWHD_REMOTE_PAD`, a pairing code, the SDL host (Linux, Windows)
+4. ~~A setting in the game, pairing with a code~~; the SDL host (Linux, Windows), video on Vulkan

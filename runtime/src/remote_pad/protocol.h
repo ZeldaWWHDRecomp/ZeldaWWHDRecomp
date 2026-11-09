@@ -8,7 +8,8 @@
 // sending input at about 120 Hz even when nothing changes, so a lost datagram costs one sample and
 // silence means the phone is gone.
 //
-//   phone -> computer   kHello      header (session 0), nonce u32, device name, controller name
+//   phone -> computer   kHello      header (session 0), nonce u32, device name, controller name,
+//                                   phone id [16], token [16] (all zero before pairing; pairing.h)
 //   computer -> phone   kWelcome    header (session), nonce u32 (the Hello's), computer name
 //                                   (also sent about once a second as a keepalive)
 //   phone -> computer   kInput      header (session), Input (kInputSize bytes)
@@ -26,6 +27,12 @@
 //                                   Only after a Hello with kWantsAudio; the computer then plays the TV
 //                                   mix alone, as a Wii U does with its GamePad speaker.
 //
+// Pairing (pairing.h), all with session 0, answering the Hello's nonce:
+//   computer -> phone   kPairing    header, nonce u32, state u8 (PairState), attempts left u8: the
+//                                   computer shows a code (or the last one was wrong, or none is pending)
+//   phone -> computer   kPair       header, nonce u32, phone id [16], code u32: the code typed in
+//   computer -> phone   kPaired     header, nonce u32, token [16]: trusted; say Hello with this token
+//
 // A Hello repeated with the same nonce keeps the session and updates kWantsVideo / kWantsAudio (the
 // phone's switches).
 //
@@ -42,6 +49,7 @@
 #pragma once
 #include <cstddef>
 #include <cstdint>
+#include <array>
 #include <optional>
 #include <string>
 #include <vector>
@@ -56,7 +64,10 @@ constexpr size_t kHeaderSize = 12;
 constexpr size_t kMaxName = 63;
 constexpr size_t kMaxDatagram = 1400;  // below the Wi-Fi MTU with IPv6 and UDP headers
 
-enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7, kAudio = 8 };
+enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7, kAudio = 8,
+                      kPairing = 9, kPair = 10, kPaired = 11 };
+enum PairState : uint8_t { kEnterCode = 1, kWrongCode = 2, kNoCode = 3 };
+using Bytes16 = std::array<uint8_t, 16>;
 constexpr uint32_t kRumbleStaleMs = 250;
 enum HelloFlag : uint8_t { kWantsVideo = 1, kWantsAudio = 2 };  // a Hello's header flags
 
@@ -103,6 +114,7 @@ struct Hello {
     std::string device, controller;
     bool video = false;  // kWantsVideo
     bool audio = false;  // kWantsAudio
+    Bytes16 id{}, token{};  // the phone's (pairing.h); zero from a phone that never paired
     bool operator==(const Hello&) const = default;
 };
 struct Welcome { uint32_t nonce = 0; std::string host; bool operator==(const Welcome&) const = default; };
@@ -115,6 +127,16 @@ std::vector<uint8_t> encode_keyframe_request(uint32_t session);
 std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level);
 struct Rumble { uint32_t seq = 0; uint8_t level = 0; };
 std::optional<Rumble> parse_rumble(const uint8_t* data, size_t size);
+
+struct PairingReply { uint32_t nonce = 0; uint8_t state = 0; uint8_t attempts = 0; };
+struct PairRequest { uint32_t nonce = 0; Bytes16 id{}; uint32_t code = 0; };
+struct Paired { uint32_t nonce = 0; Bytes16 token{}; };
+std::vector<uint8_t> encode_pairing(const PairingReply& p);
+std::vector<uint8_t> encode_pair(const PairRequest& p);
+std::vector<uint8_t> encode_paired(const Paired& p);
+std::optional<PairingReply> parse_pairing(const uint8_t* data, size_t size);
+std::optional<PairRequest> parse_pair(const uint8_t* data, size_t size);
+std::optional<Paired> parse_paired(const uint8_t* data, size_t size);
 
 constexpr size_t kAudioHeaderSize = kHeaderSize + 4 + 1 + 1 + 2;
 constexpr uint16_t kMaxAudioFrames = (kMaxDatagram - kAudioHeaderSize) / 4;

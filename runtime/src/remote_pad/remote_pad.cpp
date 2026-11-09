@@ -1,6 +1,7 @@
 // The remote GamePad in the game (remote_pad.h): the server, its Bonjour advertisement and the motion feed.
 #include "remote_pad.h"
 
+#include "pairing.h"
 #include "server.h"
 #include "../input_map.h"
 #include "../motion/motion.h"
@@ -36,6 +37,10 @@ RumbleSender g_rumble;          // the host's input thread
 std::atomic<bool> g_rumble_reset{false};  // a new phone: start from still
 std::atomic<bool> g_connected{false};
 std::atomic<bool> g_audio{false};
+Pairing g_pairing;                                 // who may connect (pairing.h)
+std::atomic<bool> g_pair_request{false}, g_paired_changed{false};
+std::atomic<bool> g_enabled{false}, g_env{false}, g_host{false};
+uint16_t g_port = kDefaultPort;                    // g_mu
 #ifdef __APPLE__
 DNSServiceRef g_bonjour = nullptr;
 #endif
@@ -59,14 +64,72 @@ void on_input(const Input& in) {
     motion::remote_sample(in.motion_ns, in.gyro, in.accel, in.quarter_turns);
 }
 
+uint64_t now_ms() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+
+void start_locked(uint16_t port);  // g_mu held
+void stop_locked();
+
 }  // namespace
 
 void start_from_env() {
     const char* e = getenv("WWHD_REMOTE_PAD");
     if (!e || !*e || !strcmp(e, "0")) return;
     const long want = strtol(e, nullptr, 10);
-    const uint16_t port = want > 1 && want < 65536 ? uint16_t(want) : kDefaultPort;
     std::lock_guard lk(g_mu);
+    g_port = want > 1 && want < 65536 ? uint16_t(want) : kDefaultPort;
+    g_env = true;
+    start_locked(g_port);
+}
+
+void set_enabled(bool on) {
+    g_enabled = on;
+    std::lock_guard lk(g_mu);
+    if (on || g_env) start_locked(g_port);
+    else stop_locked();
+}
+bool enabled() { return g_enabled || g_env; }
+bool env_forced() { return g_env; }
+void set_host_supported() { g_host = true; }
+bool host_supported() { return g_host; }
+
+Status status() {
+    std::lock_guard lk(g_mu);
+    Status st;
+    if (!g_server) return st;
+    st.listening = true;
+    st.port = g_server->port();
+    const Server::Snapshot s = g_server->snapshot();
+    st.connected = s.connected;
+    st.device = s.device;
+    st.controller = s.controller;
+    st.video = s.video;
+    st.audio = s.audio;
+    return st;
+}
+
+std::optional<PairingCode> pairing_code() {
+    if (auto p = g_pairing.pending(now_ms())) return PairingCode{p->name, p->code};
+    return std::nullopt;
+}
+bool take_pairing_request() { return g_pair_request.exchange(false); }
+void refuse_pairing() { g_pairing.refuse(); }
+size_t paired_phones() { return g_pairing.size(); }
+void forget_paired_phones() {
+    g_pairing.forget_all();
+    g_paired_changed = true;
+}
+void load_paired(const std::string& saved) { g_pairing.load(saved); }
+bool take_paired_changed(std::string& saved) {
+    if (!g_paired_changed.exchange(false)) return false;
+    saved = g_pairing.save();
+    return true;
+}
+
+namespace {
+void start_locked(uint16_t port) {
     if (g_server) return;
     const std::string name = host_name();
     g_server = std::make_unique<Server>(Server::Callbacks{
@@ -79,9 +142,12 @@ void start_from_env() {
             g_video = s.video;
             g_audio = s.audio;
         },
-    }, name);
+        [](const std::string&, uint32_t) { g_pair_request = true; },  // Settings opens with the code
+        [](const std::string&) { g_paired_changed = true; },         // saved by Settings
+    }, name, &g_pairing);
     if (!g_server->start(port)) { g_server.reset(); return; }
-    log_msg("[remote pad] waiting for the iPhone GamePad on UDP port %u (WWHD_REMOTE_PAD)", (unsigned)g_server->port());
+    log_msg("[remote pad] waiting for the iPhone GamePad on UDP port %u (%s)", (unsigned)g_server->port(),
+            g_env ? "WWHD_REMOTE_PAD" : "Settings > Controls > iPhone GamePad");
 #ifdef __APPLE__
     // Registration needs no reply processing: mDNSResponder keeps the record while the ref is open.
     const DNSServiceErrorType err = DNSServiceRegister(&g_bonjour, 0, 0, name.c_str(), kBonjourType, nullptr, nullptr,
@@ -93,13 +159,21 @@ void start_from_env() {
 #endif
 }
 
-void stop() {
-    std::lock_guard lk(g_mu);
+void stop_locked() {
 #ifdef __APPLE__
     if (g_bonjour) { DNSServiceRefDeallocate(g_bonjour); g_bonjour = nullptr; }
 #endif
-    if (g_server) g_server->stop();
+    if (!g_server) return;
+    g_server->stop();
     g_server.reset();
+    g_connected = g_video = g_audio = false;
+    log_msg("[remote pad] stopped listening for the iPhone GamePad");
+}
+}  // namespace
+
+void stop() {
+    std::lock_guard lk(g_mu);
+    stop_locked();
 }
 
 Pad pad() {

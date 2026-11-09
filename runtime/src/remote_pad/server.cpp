@@ -44,7 +44,12 @@ std::string address_text(const sockaddr_storage& a) {
 #endif
 }  // namespace
 
-Server::Server(Callbacks cb, std::string host_name) : cb_(std::move(cb)), host_(std::move(host_name)) {}
+Server::Server(Callbacks cb, std::string host_name, Pairing* pairing)
+    : cb_(std::move(cb)), host_(std::move(host_name)), pairing_(pairing) {}
+
+static uint64_t now_ms() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(Clock::now().time_since_epoch()).count());
+}
 Server::~Server() { stop(); }
 
 #ifdef _WIN32
@@ -178,12 +183,24 @@ void Server::run() {
         auto reply = [&](const std::vector<uint8_t>& p) {
             sendto(sock_, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(peer_), peer_len_);
         };
+        auto reply_to_sender = [&](const std::vector<uint8_t>& p) {
+            sendto(sock_, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(&from), from_len);
+        };
         if (n > 0) {
             const auto h = parse_header(buf, (size_t)n);
             if (h && h->type == kHello) {
                 const auto hello = parse_hello(buf, (size_t)n);
                 const bool free = !state_.connected || same_peer || now - seen_ > kTimeout;
-                if (hello && free) {
+                if (hello && free && pairing_ && !pairing_->trusted(hello->id, hello->token)) {
+                    // not paired: the computer shows a code for it, the phone asks the player for it
+                    const auto req = pairing_->request(hello->id, hello->device.empty() ? "iPhone" : hello->device, now_ms());
+                    if (req.fresh) {
+                        log_msg("[remote pad] %s (%s) asks to pair: code shown on this computer", hello->device.c_str(),
+                                address_text(from).c_str());
+                        if (cb_.pairing) cb_.pairing(hello->device, req.code);
+                    }
+                    reply_to_sender(encode_pairing({hello->nonce, kEnterCode, uint8_t(req.attempts)}));
+                } else if (hello && free) {
                     // a repeated Hello (its Welcome was lost) keeps the session; a new one starts afresh
                     if (!same_peer || hello->nonce != hello_nonce_) {
                         if (state_.connected) end_session(same_peer ? "it reconnected" : "another phone took the GamePad");
@@ -212,6 +229,27 @@ void Server::run() {
                     }
                     seen_ = keepalive_ = now;
                     reply(encode_welcome(state_.session, {hello->nonce, host_}));
+                }
+            } else if (h && h->type == kPair && pairing_) {
+                if (auto req = parse_pair(buf, (size_t)n)) {
+                    Key token{};
+                    int left = 0;
+                    switch (pairing_->answer(req->id, req->code, now_ms(), &token, &left)) {
+                    case Pairing::kPaired: {
+                        const auto names = pairing_->names();
+                        log_msg("[remote pad] %s paired", names.empty() ? "a phone" : names.back().c_str());
+                        reply_to_sender(encode_paired({req->nonce, token}));
+                        if (cb_.paired) cb_.paired(names.empty() ? std::string() : names.back());
+                        break;
+                    }
+                    case Pairing::kWrong:
+                        log_msg("[remote pad] wrong pairing code (%d tries left)", left);
+                        reply_to_sender(encode_pairing({req->nonce, uint8_t(left > 0 ? kWrongCode : kNoCode), uint8_t(left)}));
+                        break;
+                    case Pairing::kNone:
+                        reply_to_sender(encode_pairing({req->nonce, kNoCode, 0}));
+                        break;
+                    }
                 }
             } else if (h && same_peer && h->session == state_.session) {
                 if (h->type == kInput) {

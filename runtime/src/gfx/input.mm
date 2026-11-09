@@ -848,7 +848,8 @@ void init() {
 #ifdef WWHD_HAS_IOKIT
     iokit_input_init();  // HID gamepads GameController.framework does not surface (Steam Input's pad)
 #endif
-    remote_pad::start_from_env();  // the iPhone GamePad (WWHD_REMOTE_PAD=1)
+    remote_pad::set_host_supported();  // Settings > Controls offers the iPhone GamePad
+    remote_pad::start_from_env();      // WWHD_REMOTE_PAD=1 keeps it on (else the setting decides)
     NSEventMask mask = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
         // keep Cmd-Q etc.; in an overlay text field the editing shortcuts (Cmd+A/C/V/X/Z) go to the overlay

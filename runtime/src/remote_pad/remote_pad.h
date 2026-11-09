@@ -6,21 +6,47 @@
 //   - it shows the GamePad screen: the renderer encodes the picture it draws for the GamePad window
 //     (gfx/remote_video.mm, Metal) and sends it here.
 //
-// Off by default. WWHD_REMOTE_PAD=1 (or =<port>) starts it at launch: the game then listens on UDP
-// port 26770 (remote_pad::kDefaultPort) and advertises itself over Bonjour so the phone finds it.
-// Anyone on the local network can then send GamePad input to the game.
+// Off by default: Settings > Controls > iPhone GamePad (saved as "remotePad"), or WWHD_REMOTE_PAD=1
+// (or =<port>), which keeps it on whatever the setting says. While on, the game listens on UDP port 26770
+// (remote_pad::kDefaultPort) and advertises itself over Bonjour so the phone finds it. A phone must be
+// paired first: Settings opens with a code to type on the phone (pairing.h).
 //
 // Host: the macOS AppKit host (gfx/input.mm) reads it. Threads: all functions are safe from any thread.
 #pragma once
 #include "protocol.h"
 
 #include <cstdint>
+#include <optional>
 #include <string>
 
 namespace remote_pad {
 
 void start_from_env();  // once at startup (input::init); does nothing unless WWHD_REMOTE_PAD is set
 void stop();
+
+// ---- Settings > Controls > iPhone GamePad ----
+void set_enabled(bool on);   // the setting: listen or stop (WWHD_REMOTE_PAD keeps it listening)
+bool enabled();              // the setting, or WWHD_REMOTE_PAD
+bool env_forced();
+void set_host_supported();   // the host reads the phone (gfx/input.mm): Settings offers the option
+bool host_supported();
+struct Status {
+    bool listening = false;
+    uint16_t port = 0;
+    bool connected = false, video = false, audio = false;
+    std::string device, controller;
+};
+Status status();
+// pairing (pairing.h): the code Settings shows while a phone waits for it
+struct PairingCode { std::string device; uint32_t code = 0; };
+std::optional<PairingCode> pairing_code();
+bool take_pairing_request();  // a phone asked for a new code: Settings opens
+void refuse_pairing();        // "Don't pair"
+size_t paired_phones();
+void forget_paired_phones();
+// the paired phones as one settings value ("remotePadPhones"): loaded at startup, saved when changed
+void load_paired(const std::string& saved);
+bool take_paired_changed(std::string& saved);
 
 // the id the host lists the phone's controller under (distinct from any real device pointer or id)
 constexpr uint64_t kDeviceId = 0x5757'4750'0000'0001ull;  // "WWGP"

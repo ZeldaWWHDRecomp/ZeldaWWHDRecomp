@@ -17,7 +17,7 @@ final class SpeakerTests: XCTestCase {
 
     func testPacketsMatchTheGame() {
         XCTAssertEqual(WWGP.hello(nonce: 1, device: "P", controller: "", video: true, audio: true),
-                       hex("57574750010001030000000001000000015000"))
+                       hex("575747500100010300000000010000000150000000000000000000000000000000000000000000000000000000000000000000"))
         let a = WWGP.audio(hex("5757475001000800d4c3b2a109000000000002000100feff2c0170fe"))
         XCTAssertEqual(a?.session, 0xA1B2_C3D4)
         XCTAssertEqual(a?.piece.seq, 9)

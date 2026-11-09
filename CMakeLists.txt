@@ -1199,7 +1199,7 @@ endif()
 # the iPhone GamePad (runtime/src/remote_pad/, ios/): packets, controller mapping, loopback server
 if(NOT WIN32)
   add_executable(remote_pad_test runtime/tools/remote_pad_test.cpp runtime/src/remote_pad/protocol.cpp
-                 runtime/src/remote_pad/server.cpp runtime/src/remote_pad/remote_pad.cpp ${MOTION_SOURCES})
+                 runtime/src/remote_pad/server.cpp runtime/src/remote_pad/remote_pad.cpp runtime/src/remote_pad/pairing.cpp ${MOTION_SOURCES})
   target_include_directories(remote_pad_test PRIVATE runtime/src)
   target_compile_options(remote_pad_test PRIVATE -UNDEBUG)
   target_link_libraries(remote_pad_test PRIVATE Threads::Threads)
@@ -1209,7 +1209,7 @@ endif()
 if(WWHD_HAS_METAL)
   # the iPhone GamePad's screen end to end: Metal frames -> H.264 -> loopback UDP -> decoded colours
   add_executable(remote_video_test runtime/tools/remote_video_test.mm runtime/src/gfx/remote_video.mm
-                 runtime/src/remote_pad/protocol.cpp runtime/src/remote_pad/server.cpp runtime/src/remote_pad/remote_pad.cpp
+                 runtime/src/remote_pad/protocol.cpp runtime/src/remote_pad/server.cpp runtime/src/remote_pad/remote_pad.cpp runtime/src/remote_pad/pairing.cpp
                  ${MOTION_SOURCES})
   set_source_files_properties(runtime/tools/remote_video_test.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   # (remote_video.mm is a renderer source: it is compiled with the cemu shim, see GFX_SOURCES)

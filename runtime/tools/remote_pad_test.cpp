@@ -1,5 +1,6 @@
 // The iPhone GamePad (runtime/src/remote_pad/): packet round trips and rejects, the controller mapping, and
 // the server over loopback UDP (connect, inputs in order, one phone at a time, reconnect, goodbye, silence).
+#include "remote_pad/pairing.h"
 #include "remote_pad/protocol.h"
 #include "remote_pad/remote_pad.h"
 #include "remote_pad/server.h"
@@ -81,7 +82,10 @@ static void test_packets() {
     bad = p; bad[4] = 2;
     assert(!parse_header(bad.data(), bad.size()));
     auto hp = encode_hello(h);
-    assert(!parse_hello(hp.data(), hp.size() - 1));
+    assert(!parse_hello(hp.data(), hp.size() - 33));  // cut inside the names
+    // a Hello without the phone id and token (none sent) still parses, as never paired
+    auto short_hello = parse_hello(hp.data(), hp.size() - 32);
+    assert(short_hello && short_hello->id == Bytes16{} && short_hello->token == Bytes16{});
     // sequence numbers wrap
     assert(newer(1, 0) && !newer(0, 0) && !newer(0, 1) && newer(0, 0xFFFFFFFF));
 }
@@ -166,6 +170,58 @@ static void test_audio_packets() {
     // a short packet is rejected
     p = encode_audio(3, 44, lr, 144);
     assert(!parse_audio(p.data(), p.size() - 2));
+}
+
+static void test_pairing() {
+    // a predictable generator: each call's bytes count up
+    uint8_t next = 1;
+    Pairing pr([&](uint8_t* p, size_t n) { for (size_t i = 0; i < n; i++) p[i] = next++; });
+    Key phone{}; phone[0] = 9;
+    Key none{};
+    assert(!pr.trusted(phone, none) && pr.size() == 0);
+    auto r = pr.request(phone, "Test iPhone", 1000);
+    assert(r.fresh && r.code < 1'000'000 && r.attempts == Pairing::kAttempts);
+    auto again = pr.request(phone, "Test iPhone", 2000);  // asked again: the same code, not shown anew
+    assert(!again.fresh && again.code == r.code);
+    assert(pr.pending(2000)->name == "Test iPhone" && pr.pending(2000)->code == r.code);
+    // wrong codes use up the tries; then the code is gone
+    int left = -1;
+    Key token{};
+    assert(pr.answer(phone, (r.code + 1) % 1'000'000, 3000, &token, &left) == Pairing::kWrong && left == 2);
+    assert(pr.answer(phone, (r.code + 2) % 1'000'000, 3000, &token, &left) == Pairing::kWrong && left == 1);
+    assert(pr.answer(phone, (r.code + 3) % 1'000'000, 3000, &token, &left) == Pairing::kWrong && left == 0);
+    assert(pr.answer(phone, r.code, 3000, &token, &left) == Pairing::kNone && !pr.pending(3000));
+    // a new code; the right one pairs, with a token only this phone knows
+    r = pr.request(phone, "Test iPhone", 4000);
+    assert(r.fresh);
+    Key other{}; other[0] = 7;
+    assert(pr.answer(other, r.code, 4000, &token, &left) == Pairing::kNone);  // another phone's code
+    assert(pr.answer(phone, r.code, 5000, &token, &left) == Pairing::kPaired);
+    assert(token != Key{} && pr.trusted(phone, token) && !pr.trusted(phone, none) && !pr.trusted(other, token));
+    assert(pr.size() == 1 && pr.names()[0] == "Test iPhone" && !pr.pending(5000));
+    // a code expires; "Don't pair" removes it
+    r = pr.request(other, "Other", 10'000);
+    assert(pr.answer(other, r.code, 10'000 + Pairing::kCodeLifetimeMs, &token, &left) == Pairing::kNone);
+    r = pr.request(other, "Other", 200'000);
+    pr.refuse();
+    assert(!pr.pending(200'000) && pr.answer(other, r.code, 200'000, &token, &left) == Pairing::kNone);
+    // saved and loaded: the same phones trusted (a name loses its line breaks)
+    Key t2{};
+    r = pr.request(other, "Line\nbre;ak", 300'000);
+    assert(pr.answer(other, r.code, 300'000, &t2, &left) == Pairing::kPaired);
+    const std::string saved = pr.save();
+    Pairing loaded;
+    assert(saved.find('\n') == std::string::npos);
+    loaded.load(saved + ";garbage");
+    assert(loaded.size() == 2 && loaded.trusted(phone, token) && loaded.trusted(other, t2));
+    assert(loaded.names()[1] == "Linebreak");
+    loaded.forget_all();
+    assert(loaded.size() == 0 && !loaded.trusted(phone, token));
+    // hex
+    Key k{}; k[0] = 0xAB; k[15] = 0x01;
+    Key back{};
+    assert(hex(k) == "ab000000000000000000000000000001" && parse_hex(hex(k), back) && back == k);
+    assert(!parse_hex("xyz", back));
 }
 
 static void test_pad_values() {
@@ -373,13 +429,71 @@ static void test_server_video() {
     assert(!server.send_audio(lr, 144));
 }
 
+static void test_server_pairing() {
+    Pairing pr;
+    std::atomic<int> shown{0}, saved{0}, connects{0};
+    std::atomic<uint32_t> shown_code{0};
+    Server::Callbacks cb;
+    cb.connected = [&](const Server::Snapshot&) { connects++; };
+    cb.pairing = [&](const std::string&, uint32_t code) { shown_code = code; shown++; };
+    cb.paired = [&](const std::string&) { saved++; };
+    Server server(cb, "Test-Mac", &pr);
+    assert(server.start(0));
+    Phone phone(server.port());
+    Hello h{11, "New iPhone", ""};
+    h.id[3] = 0x55;
+    // unknown: a code is shown on the computer, the phone is asked for it, no session
+    phone.send(encode_hello(h));
+    uint8_t buf[2048];
+    ssize_t n = recv(phone.s, buf, sizeof buf, 0);
+    auto pairing = parse_pairing(buf, size_t(n));
+    assert(pairing && pairing->nonce == 11 && pairing->state == kEnterCode && pairing->attempts == 3);
+    assert(shown == 1 && !server.snapshot().connected && connects == 0);
+    phone.send(encode_hello(h));  // Hello again: the same code, not shown again
+    n = recv(phone.s, buf, sizeof buf, 0);
+    assert(parse_pairing(buf, size_t(n)) && shown == 1);
+    // a wrong code
+    phone.send(encode_pair({11, h.id, (shown_code + 1) % 1'000'000}));
+    n = recv(phone.s, buf, sizeof buf, 0);
+    pairing = parse_pairing(buf, size_t(n));
+    assert(pairing && pairing->state == kWrongCode && pairing->attempts == 2);
+    // the right one: a token, and the computer saves the list
+    phone.send(encode_pair({11, h.id, shown_code}));
+    n = recv(phone.s, buf, sizeof buf, 0);
+    auto paired = parse_paired(buf, size_t(n));
+    assert(paired && paired->nonce == 11 && saved == 1 && pr.size() == 1);
+    // with the token it connects
+    h.token = paired->token;
+    phone.send(encode_hello(h));
+    auto w = phone.welcome();
+    assert(w && server.snapshot().connected && connects == 1);
+    phone.send(encode_bye(w->first));
+    assert(wait_for([&] { return !server.snapshot().connected; }));
+    // a copied id with another token is not let in
+    Hello impostor = h;
+    impostor.token[0] ^= 1;
+    impostor.nonce = 12;
+    phone.send(encode_hello(impostor));
+    n = recv(phone.s, buf, sizeof buf, 0);
+    assert(parse_pairing(buf, size_t(n)) && !server.snapshot().connected);
+    // a code typed with nothing pending
+    pr.refuse();
+    phone.send(encode_pair({12, h.id, shown_code}));
+    n = recv(phone.s, buf, sizeof buf, 0);
+    pairing = parse_pairing(buf, size_t(n));
+    assert(pairing && pairing->state == kNoCode);
+    server.stop();
+}
+
 int main() {
     test_packets();
     test_video_packets();
     test_rumble();
     test_audio_packets();
+    test_pairing();
     test_pad_values();
     test_server();
     test_server_video();
-    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets passed");
+    test_server_pairing();
+    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets, pairing (codes, tries, expiry, refusal, saved list; over loopback) passed");
 }

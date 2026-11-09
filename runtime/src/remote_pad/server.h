@@ -8,6 +8,7 @@
 // Threads: the callbacks run on the server thread and must be short (they only store a sample).
 // snapshot() is safe from any thread. stop() joins the thread.
 #pragma once
+#include "pairing.h"
 #include "protocol.h"
 
 #include <atomic>
@@ -39,9 +40,12 @@ public:
         std::function<void(const std::string& why)> disconnected;
         std::function<void()> keyframe;                  // the phone lost a piece of video
         std::function<void(const Snapshot&)> flags;      // a repeated Hello changed what the phone wants
+        std::function<void(const std::string& name, uint32_t code)> pairing;  // show this code (a new one)
+        std::function<void(const std::string& name)> paired;                 // trusted now (save the list)
     };
 
-    explicit Server(Callbacks cb, std::string host_name = {});
+    // pairing: who may connect (pairing.h); nullptr lets every phone in (the tests)
+    explicit Server(Callbacks cb, std::string host_name = {}, Pairing* pairing = nullptr);
     ~Server();
     Server(const Server&) = delete;
     Server& operator=(const Server&) = delete;
@@ -66,6 +70,7 @@ private:
 
     Callbacks cb_;
     std::string host_;
+    Pairing* pairing_ = nullptr;
     int sock_ = -1;
     uint16_t port_ = 0;
     std::atomic<bool> running_{false};

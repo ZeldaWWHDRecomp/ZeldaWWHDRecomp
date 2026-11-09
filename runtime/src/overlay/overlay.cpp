@@ -97,6 +97,7 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "../motion/motion.h"
 #include "../platform/keycodes.h"
 #include "../rumble.h"
+#include "../remote_pad/remote_pad.h"
 #ifdef __ANDROID__
 #include "../platform/phone_rumble.h"
 #include "../platform/heat_guard.h"
@@ -2520,6 +2521,75 @@ void touch_question_frame() {
     if (g_question_opened_menu.exchange(false)) set_open(false, OpenReason::API);
 }
 
+// ---- the iPhone GamePad (remote_pad.h): its section in Controls and the pairing dialog
+std::atomic<bool> g_pairing_opened_menu{false};  // the dialog opened the menu: it closes it again
+
+// Settings' frame, over any tab: a phone waits for its code. Closes by itself once the phone paired
+// (or the code expired); "Don't pair" (or the X, a tap outside, Esc, B) refuses it.
+void remote_pad_pairing_frame() {
+    constexpr const char* kTitle = "Pair an iPhone##remotepad";
+    const auto code = remote_pad::pairing_code();
+    const bool open_now = ImGui::IsPopupOpen(kTitle);
+    if (!code && !open_now) {
+        if (g_pairing_opened_menu.exchange(false)) set_open(false, OpenReason::API);  // paired: back to the game
+        return;
+    }
+    if (!popup::begin(kTitle, code && !open_now)) return;
+    const bool back = navigation_pressed(input_map::face_input(input_map::kB));
+    const bool dismissed = popup::dismissed(back);
+    if (dismissed && back) g_pad_b_used = true;
+    if (!code) {
+        ImGui::CloseCurrentPopup();
+        popup::end();
+        return;
+    }
+    ImGui::PushTextWrapPos(popup::wrap_pos(28));
+    ImGui::TextWrapped("%s wants to be the GamePad. Type this code in the GamePad app on the phone:",
+                       code->device.empty() ? "An iPhone" : code->device.c_str());
+    ImGui::Spacing();
+    ImGui::PushFont(nullptr, ImGui::GetFontSize() * 2.4f);  // the code, large enough to read from the couch
+    ImGui::Text("%03u %03u", code->code / 1000, code->code % 1000);
+    ImGui::PopFont();
+    ImGui::Spacing();
+    note("Pair only a phone you know: it will play the game. The code works for 2 minutes and 3 tries.");
+    ImGui::PopTextWrapPos();
+    if (ImGui::Button("Don't pair") || dismissed) {
+        LOG("[remote pad] pairing refused");
+        remote_pad::refuse_pairing();
+        ImGui::CloseCurrentPopup();
+    }
+    popup::end();
+}
+
+// Controls > iPhone GamePad
+void remote_pad_section() {
+    heading("iPhone GamePad");
+    bool v;
+    if (check("Use an iPhone as the GamePad", remote_pad::enabled(), &v, !remote_pad::env_forced())) {
+        remote_pad::set_enabled(v);
+        hostui::post([v] { hostui::set("remotePad", v ? "1" : "0"); });
+    }
+    help("The GamePad app on an iPhone on this Wi-Fi network shows the GamePad screen and plays its sound; "
+         "the controller attached to the phone, its touch screen and its gyro (Gyro: Device gyro) play the "
+         "game. The first time, the phone pairs with a code shown here.");
+    if (remote_pad::env_forced()) note("WWHD_REMOTE_PAD keeps it on.");
+    const remote_pad::Status st = remote_pad::status();
+    if (st.connected) {
+        std::string what = st.video ? "the GamePad screen" : "no picture";
+        what += st.audio ? " and sound" : "";
+        note("Connected: %s%s%s (%s).", st.device.c_str(), st.controller.empty() ? "" : " with ",
+             st.controller.c_str(), what.c_str());
+    } else if (st.listening) {
+        note("Waiting for the phone: open GamePad on the iPhone (UDP port %u).", (unsigned)st.port);
+    }
+    if (const size_t n = remote_pad::paired_phones()) {
+        note("%zu paired phone%s.", n, n == 1 ? "" : "s");
+        flow::next(flow::button("Forget paired phones"));
+        if (ImGui::Button("Forget paired phones")) remote_pad::forget_paired_phones();
+        help("Every phone pairs again with a code. A connected phone stays connected until it leaves.");
+    }
+}
+
 void start_controller_setup(const std::string& guid, const std::string& name) {
     setup_state().begin(guid, name, false);
 }
@@ -2931,6 +3001,7 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
             note("%s", why.c_str());
     }
 #endif
+    if (remote_pad::host_supported()) remote_pad_section();
     heading("Menus and background input");
     {
         const auto cur = input_map::current();
@@ -3536,6 +3607,7 @@ void settings_window() {
         }
         quit_row(open);
         controller_setup_frame();  // the controller setup and its offer, over any tab
+        remote_pad_pairing_frame();  // a phone waits for its pairing code
         touch_question_frame();    // the first-start touch controls question (P8)
     }
     ImGui::End();
@@ -3852,6 +3924,9 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         // the saved controller choice (WWHD_PRO_CONTROLLER wins); it also hides or shows the GamePad screen
         if (!getenv("WWHD_PRO_CONTROLLER") && hostui::get("proController", v))
             hostui::post([pro = v == "1"] { hostui::set_pro_controller(pro); });
+        // the iPhone GamePad: its paired phones, and on if it was (WWHD_REMOTE_PAD starts it anyway)
+        if (hostui::get("remotePadPhones", v)) remote_pad::load_paired(v);
+        if (hostui::get("remotePad", v) && v == "1") remote_pad::set_enabled(true);
         // the saved rumble choice (WWHD_RUMBLE wins)
         if (!rumble::env_override() && hostui::get("rumble", v)) rumble::set_enabled(v != "0");
 #ifdef __ANDROID__
@@ -3925,6 +4000,13 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             tbg = nullptr;
         }
     }
+    // the iPhone GamePad: a phone asks to pair (Settings opens with the code); a changed list is saved
+    if (remote_pad::take_pairing_request() && !is_open()) {
+        g_pairing_opened_menu = true;
+        set_open(true, OpenReason::API);
+    }
+    if (std::string phones; remote_pad::take_paired_changed(phones))
+        hostui::post([phones] { hostui::set("remotePadPhones", phones); });
     const double t = now_s();
     if (U.last_present > 0) {
         U.frame_ms[U.frame_i] = (float)((t - U.last_present) * 1000.0);

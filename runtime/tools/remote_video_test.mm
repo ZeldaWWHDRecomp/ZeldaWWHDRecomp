@@ -65,6 +65,7 @@ struct Phone {
             if (!h) continue;
             if (h->type == kWelcome) { session = h->session; continue; }
             auto v = parse_video(buf, size_t(n));
+            if (!v) fprintf(stderr, "unexpected packet type %d\n", h->type);
             assert(v && h->session == session);
             auto& f = parts[v->frame];
             f[v->index] = std::vector<uint8_t>(v->data, v->data + v->size);
@@ -180,7 +181,26 @@ int main() {
         assert(!present(1, 0, 0));  // nobody wants video: no target, no encoder
 
         Phone phone(26991);
-        phone.send(encode_hello({7, "Test iPhone", "", true}));
+        // an unknown phone must pair first: the code Settings would show, typed on the phone
+        Hello hello{7, "Test iPhone", "", true};
+        hello.id[0] = 0x42;
+        phone.send(encode_hello(hello));
+        std::optional<PairingCode> code;
+        for (int i = 0; i < 100 && !code; i++) { code = pairing_code(); std::this_thread::sleep_for(std::chrono::milliseconds(10)); }
+        assert(code && code->device == "Test iPhone" && take_pairing_request());
+        assert(!video_wanted() && phone.session == 0);
+        phone.send(encode_pair({7, hello.id, code->code}));
+        std::optional<Paired> paired;
+        for (int i = 0; i < 20 && !paired; i++) {
+            uint8_t buf[2048];
+            const ssize_t n = recv(phone.s, buf, sizeof buf, 0);
+            if (n > 0) paired = parse_paired(buf, size_t(n));
+        }
+        assert(paired && paired->nonce == 7 && paired_phones() == 1);
+        std::string saved;
+        assert(take_paired_changed(saved) && saved.find("Test iPhone") != std::string::npos);
+        hello.token = paired->token;
+        phone.send(encode_hello(hello));
         assert(phone.frame() == std::nullopt && phone.session != 0);  // (the Welcome)
         assert(video_wanted());
 

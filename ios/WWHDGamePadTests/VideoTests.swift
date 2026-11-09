@@ -17,7 +17,7 @@ final class VideoTests: XCTestCase {
 
     func testPacketsMatchTheGame() {
         XCTAssertEqual(WWGP.hello(nonce: 0x0102_0304, device: "Test iPhone", controller: "Backbone One", video: true),
-                       hex("575747500100010100000000040302010b54657374206950686f6e650c4261636b626f6e65204f6e65"))
+                       hex("575747500100010100000000040302010b54657374206950686f6e650c4261636b626f6e65204f6e650000000000000000000000000000000000000000000000000000000000000000"))
         XCTAssertEqual(WWGP.keyframeRequest(session: 0xA1B2_C3D4), hex("5757475001000600d4c3b2a1"))
         let v = WWGP.video(hex("5757475001000500d4c3b2a14433221100000100010008070605040302015603e001000000026588"))
         XCTAssertEqual(v?.session, 0xA1B2_C3D4)

@@ -17,6 +17,7 @@ struct Writer {
     void u32(uint32_t v) { u16(uint16_t(v)); u16(uint16_t(v >> 16)); }
     void u64(uint64_t v) { u32(uint32_t(v)); u32(uint32_t(v >> 32)); }
     void f32(float v) { uint32_t b; memcpy(&b, &v, 4); u32(b); }
+    void bytes(const Bytes16& b) { out.insert(out.end(), b.begin(), b.end()); }
     void name(const std::string& s) {
         // cut at kMaxName bytes, never inside a UTF-8 sequence
         size_t n = std::min(s.size(), kMaxName);
@@ -40,6 +41,11 @@ struct Reader {
     uint32_t u32() { uint32_t lo = u16(); return lo | uint32_t(u16()) << 16; }
     uint64_t u64() { uint64_t lo = u32(); return lo | uint64_t(u32()) << 32; }
     float f32() { uint32_t b = u32(); float v; memcpy(&v, &b, 4); return std::isfinite(v) ? v : 0.0f; }
+    Bytes16 bytes() {
+        Bytes16 b{};
+        if (need(16)) { memcpy(b.data(), p + at, 16); at += 16; }
+        return b;
+    }
     std::string name() {
         const size_t len = u8();
         if (len > kMaxName || !need(len)) { ok = false; return {}; }
@@ -69,6 +75,7 @@ std::vector<uint8_t> encode_hello(const Hello& h) {
     Writer w;
     w.header(kHello, 0, uint8_t((h.video ? kWantsVideo : 0) | (h.audio ? kWantsAudio : 0)));
     w.u32(h.nonce); w.name(h.device); w.name(h.controller);
+    w.bytes(h.id); w.bytes(h.token);
     return std::move(w.out);
 }
 std::vector<uint8_t> encode_welcome(uint32_t session, const Welcome& v) {
@@ -105,6 +112,24 @@ std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level
     Writer w;
     w.header(kRumble, session);
     w.u32(seq); w.u8(level);
+    return std::move(w.out);
+}
+std::vector<uint8_t> encode_pairing(const PairingReply& p) {
+    Writer w;
+    w.header(kPairing, 0);
+    w.u32(p.nonce); w.u8(p.state); w.u8(p.attempts);
+    return std::move(w.out);
+}
+std::vector<uint8_t> encode_pair(const PairRequest& p) {
+    Writer w;
+    w.header(kPair, 0);
+    w.u32(p.nonce); w.bytes(p.id); w.u32(p.code);
+    return std::move(w.out);
+}
+std::vector<uint8_t> encode_paired(const Paired& p) {
+    Writer w;
+    w.header(kPaired, 0);
+    w.u32(p.nonce); w.bytes(p.token);
     return std::move(w.out);
 }
 std::vector<uint8_t> encode_audio(uint32_t session, uint32_t seq, const int16_t* lr, uint16_t frames) {
@@ -158,6 +183,7 @@ std::optional<Hello> parse_hello(const uint8_t* data, size_t size) {
     h.audio = parse_header(data, size)->flags & kWantsAudio;
     h.nonce = r->u32(); h.device = r->name(); h.controller = r->name();
     if (!r->ok) return std::nullopt;
+    if (size - r->at >= 32) { h.id = r->bytes(); h.token = r->bytes(); }  // (absent: a phone before pairing existed)
     return h;
 }
 std::optional<Welcome> parse_welcome(const uint8_t* data, size_t size) {
@@ -196,6 +222,30 @@ std::optional<Input> parse_input(const uint8_t* data, size_t size) {
 }  // namespace remote_pad
 
 namespace remote_pad {
+std::optional<PairingReply> parse_pairing(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kPairing);
+    if (!r) return std::nullopt;
+    PairingReply p;
+    p.nonce = r->u32(); p.state = r->u8(); p.attempts = r->u8();
+    if (!r->ok) return std::nullopt;
+    return p;
+}
+std::optional<PairRequest> parse_pair(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kPair);
+    if (!r) return std::nullopt;
+    PairRequest p;
+    p.nonce = r->u32(); p.id = r->bytes(); p.code = r->u32();
+    if (!r->ok) return std::nullopt;
+    return p;
+}
+std::optional<Paired> parse_paired(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kPaired);
+    if (!r) return std::nullopt;
+    Paired p;
+    p.nonce = r->u32(); p.token = r->bytes();
+    if (!r->ok) return std::nullopt;
+    return p;
+}
 std::optional<AudioPiece> parse_audio(const uint8_t* data, size_t size) {
     if (size < kAudioHeaderSize) return std::nullopt;
     auto r = body(data, size, kAudio);

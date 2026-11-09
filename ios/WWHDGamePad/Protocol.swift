@@ -12,7 +12,12 @@ enum WWGP {
     static let inputSize = 78
     static let maxName = 63
 
-    enum PacketType: UInt8 { case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7, audio = 8 }
+    enum PacketType: UInt8 {
+        case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7, audio = 8
+        case pairing = 9, pair = 10, paired = 11
+    }
+    /// protocol.h PairState: what the computer says about pairing
+    enum PairState: UInt8 { case enterCode = 1, wrongCode = 2, noCode = 3 }
     static let wantsAudio: UInt8 = 2          // a Hello's header flags
     static let audioHeaderSize = headerSize + 8
     static let rumbleStale: TimeInterval = 0.25   // protocol.h kRumbleStaleMs
@@ -68,11 +73,37 @@ enum WWGP {
         var payload: ArraySlice<UInt8>
     }
 
-    static func hello(nonce: UInt32, device: String, controller: String, video: Bool = false, audio: Bool = false) -> [UInt8] {
+    static func hello(nonce: UInt32, device: String, controller: String, video: Bool = false, audio: Bool = false,
+                      id: [UInt8] = [UInt8](repeating: 0, count: 16), token: [UInt8] = [UInt8](repeating: 0, count: 16)) -> [UInt8] {
         var w = Writer()
         w.header(.hello, session: 0, flags: (video ? wantsVideo : 0) | (audio ? wantsAudio : 0))
         w.u32(nonce); w.name(device); w.name(controller)
+        w.bytes16(id); w.bytes16(token)
         return w.bytes
+    }
+
+    /// the code typed in (protocol.h kPair)
+    static func pair(nonce: UInt32, id: [UInt8], code: UInt32) -> [UInt8] {
+        var w = Writer()
+        w.header(.pair, session: 0)
+        w.u32(nonce); w.bytes16(id); w.u32(code)
+        return w.bytes
+    }
+
+    static func pairing(_ b: [UInt8]) -> (nonce: UInt32, state: PairState, attempts: Int)? {
+        guard let (type, _) = header(b), type == .pairing else { return nil }
+        var r = Reader(bytes: b, at: headerSize)
+        let nonce = r.u32(), state = r.u8(), attempts = r.u8()
+        guard r.ok, let s = PairState(rawValue: state) else { return nil }
+        return (nonce, s, Int(attempts))
+    }
+
+    static func paired(_ b: [UInt8]) -> (nonce: UInt32, token: [UInt8])? {
+        guard let (type, _) = header(b), type == .paired else { return nil }
+        var r = Reader(bytes: b, at: headerSize)
+        let nonce = r.u32()
+        let token = r.bytes16()
+        return r.ok ? (nonce, token) : nil
     }
 
     static func input(session: UInt32, _ i: Input) -> [UInt8] {
@@ -185,6 +216,7 @@ enum WWGP {
         mutating func u32(_ v: UInt32) { u16(UInt16(v & 0xFFFF)); u16(UInt16(v >> 16)) }
         mutating func u64(_ v: UInt64) { u32(UInt32(v & 0xFFFF_FFFF)); u32(UInt32(v >> 32)) }
         mutating func f32(_ v: Float) { u32(v.bitPattern) }
+        mutating func bytes16(_ b: [UInt8]) { bytes.append(contentsOf: (b + [UInt8](repeating: 0, count: 16)).prefix(16)) }
         /// at most maxName bytes, never cut inside a UTF-8 sequence
         mutating func name(_ s: String) {
             let utf8 = Array(s.utf8)
@@ -211,6 +243,11 @@ enum WWGP {
         mutating func u16() -> UInt16 { let lo = UInt16(u8()); return lo | UInt16(u8()) << 8 }
         mutating func u32() -> UInt32 { let lo = UInt32(u16()); return lo | UInt32(u16()) << 16 }
         mutating func u64() -> UInt64 { let lo = UInt64(u32()); return lo | UInt64(u32()) << 32 }
+        mutating func bytes16() -> [UInt8] {
+            guard at + 16 <= bytes.count else { ok = false; return [] }
+            defer { at += 16 }
+            return Array(bytes[at..<at + 16])
+        }
         mutating func name() -> String {
             let n = Int(u8())
             guard ok, n <= WWGP.maxName, at + n <= bytes.count else { ok = false; return "" }
