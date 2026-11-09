@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall]]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf]]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -35,8 +35,10 @@ TABLE, else DECOMP_DIR/tools/verify/decl_handoff.tsv when it exists): exact / sh
 decompiled call passes exactly the registers the definition reads, NI integer and NF float registers; RK its result:
 0 none, 1 r3, 2 r3+r4, 3 f1): a native call passes C++ arguments only (gabi.h NativeInfo flags 8, real native
 calls). decl=- : not in the table, or guest there: native calls keep the guest registers.
-caller=guest: its own calls must stay guest calls (A1: framexact or footprint; A2: src:cpu). Per call site rules
-(A3: stack arguments at that call) are decided where the call is compiled.
+caller=guest: its own calls must stay guest calls (A1: framexact or footprint; A2: src:cpu; A3 decl: its source has an
+`ext` line that passes fewer registers than the callee's definition takes, under_declared; with --a3-fn only where a
+caller may depend on the registers left out, a3_precise, the others noted `(a3fn)`). Per call site rules (A3: stack
+arguments at that call) are decided where the call is compiled.
 """
 import bisect
 import glob
@@ -75,7 +77,14 @@ SRCF = [("src:local", re.compile(r"gabi::(Local|Stack|LocalOf|FrameLocal)\b|\bLo
         ("src:jmp", re.compile(r"setjmp|longjmp|OSLoadContext|OSSaveContext|__builtin_(frame|return)_address")),
         ("src:autoframe", re.compile(r"\bAutoFrame\b"))]
 # --lift CATEGORY,...: the source reasons each step-2 category lifts (WWHD_DECOMP_NATIVE_AUTOFRAME / _LOCAL / _TAILPTR)
-LIFT = {"src:autoframe": "autoframe", "src:local": "local", "src:tail_ptr": "tailptr"}  # (src:wwhd_func: no native form)
+LIFT = {"src:autoframe": "autoframe", "src:local": "local", "src:tail_ptr": "tailptr"}
+# --leaf (fast mode, gabi.h GABI_LEAF): what keeps a body that otherwise qualifies from being a leaf: any guest call form,
+# a gabi helper that reads or writes call state (cpu, frames, Activation, the string registry, traps, reservations)
+LEAF_BAD = re.compile(r"\b(?:call|call_ptr|tail_ptr|call_site|call_ptr_site|lcall|hcall|edge_lcall|guest_lcall|call_ptr_ic|tail_ptr_ic|"
+                      r"ptr_ic_call|call_ptr_g|tail_ptr_g|guest_str|guest_addr|guest_fn|HostFn|GuestStr|trap|sync|load_reserved|"
+                      r"store_conditional|local_static|Activation|ActivationT|frame_ctx|native_sp|cpu|tls|tls_fast|"
+                      r"current_function|NativeFrame|FrameLocal|Local|Stack|LocalOf|AutoFrame|gmem_\w+|do_call\w*)\b")
+LEAF_CALLS = {}  # addr -> (source path, names the body calls): --leaf's check  # (src:wwhd_func: no native form)
 FUNC = re.compile(r"WWHD_(GLUE_)?FUNC(_R)?\(\s*0x([0-9A-Fa-f]{8})\s*,")
 LCALL = re.compile(r"\bgabi::lcall<0x([0-9A-Fa-f]{8}),")
 HCALL = re.compile(r"\bgabi::hcall<0x([0-9A-Fa-f]{8}),")
@@ -268,6 +277,9 @@ def source_features(paths):
             head = t[t.rfind("\n", 0, max(0, t.rfind(")", 0, o))) + 1:o]
             body = t[k:j]
             fs = set(nm for nm, rx in SRCF if rx.search(body) or (nm == "src:va" and rx.search(head)))
+            if LEAF_BAD.search(a3_blank(body)) or '"' in body:
+                fs.add("src:nonleaf")  # --leaf: a guest call form, string literal or gabi state use (never a reason)
+            LEAF_CALLS.setdefault(addr, (p, set(CALL_NAME.findall(a3_blank(body)))))
             if "src:cpu" in fs and not SRCF_CPU.search(CPU_SP_READ.sub("", body)):
                 fs.add("src:cpu_sp")  # the only Cpu access: reads of the stack pointer (see CPU_SP_READ)
             if m.group(1) and not m.group(2) and len(allargs) > 1 and allargs[1].strip() != "void":
@@ -297,6 +309,7 @@ def ret_kind(r):
 
 FUNC_ADDR = re.compile(r"WWHD_(?:GLUE_)?FUNC(?:_R)?\(\s*0x([0-9A-Fa-f]{8})\s*,")
 RULE_ERRORS = []  # exact callees with an under-declared ext line (main: a configure error)
+LEAF_ERRORS = []  # --leaf: leaves that call a non-leaf decompiled function (main: a configure error)
 DECL_FIELD = re.compile(r"\bdecl=(?:exact|shim):(\d)r(\d)f:(\d)\b")
 DECL_REGS = re.compile(r"^(\d+)r(\d+)f$")
 
@@ -424,7 +437,56 @@ def spec_values(src, directive):
     return out
 
 
-def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
+A3_SKIP_LINE = re.compile(r"/\* other unit \(ext\) \*/|^\s*(?:static\s+)?gabi::(?:HostFn|Candidate)\b|^\s*VERIFY(?:_NAMED)?\(")
+
+
+def a3_blank(t):
+    """T with comments, string literals and the lines leaf_rules ignores (ext stub definitions, VERIFY / HostFn
+    registrations) blanked to spaces, offsets kept"""
+    t = "\n".join(" " * len(ln) if A3_SKIP_LINE.search(ln) else ln for ln in t.split("\n"))
+    return re.sub(r"/\*.*?\*/|//[^\n]*|\"(?:\\.|[^\"\\\n])*\"|'(?:\\.|[^'\\\n])*'", lambda m: re.sub(r"[^\n]", " ", m.group(0)), t,
+                  flags=re.S)
+
+
+def a3_bodies(t):
+    """[(addr, short name, body start, body end)] of the WWHD_(GLUE_)FUNC functions of source text T (the body from the
+    last '{' before the macro to its matching '}', as source_features finds it; the name: the identifier before the
+    head's parameter list)"""
+    out = []
+    for m in FUNC.finditer(t):
+        o = t.rfind("{", 0, m.start())
+        depth, j = 0, o
+        while j < len(t):
+            depth += {"{": 1, "}": -1}.get(t[j], 0)
+            if depth == 0:
+                break
+            j += 1
+        head = t[t.rfind("\n", 0, max(0, t.rfind(")", 0, o))) + 1:o]
+        k = head.rfind(")")
+        depth, i = 0, k
+        while i >= 0:  # the head's parameter list: back to its '('
+            depth += {")": 1, "(": -1}.get(head[i], 0)
+            if depth == 0:
+                break
+            i -= 1
+        nm = re.search(r"(~?\w+)\s*$", head[:max(i, 0)])
+        out.append((int(m.group(3), 16), nm.group(1) if nm else None, o, j))
+    return out
+
+
+def a3_precise(path, entries):
+    """--a3-fn: the functions of source PATH that need A3 (caller=guest) for its under-declared ext lines ENTRIES
+    (under_declared's (callee, passes, takes, status)), or None for the whole source (the rule without --a3-fn).
+    Only shim callees passed fewer registers are narrowed: decl_lint gives a callee status shim only when every
+    decompiled call that leaves registers out leaves out parameters the callee's original never reads (class d, "pass
+    anything"; a site that may matter makes the callee guest), so no caller depends on what those registers hold and
+    none of the source's functions needs A3 for them (lcall's native path passes 0 there). Any other entry (a result
+    declared for a callee that never sets one: the caller reads r3/f1 as an earlier guest call left them; an exact callee
+    under-declared, a configure error) keeps the whole source."""
+    return set() if all(st == "shim" and r != (-1, -1) for _, r, _, st in entries) else None
+
+
+def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False, leaf=False):
     if decl_path is None:
         decl_path = os.path.join(src, "tools", "verify", "decl_handoff.tsv")
     decl = read_decl(decl_path)
@@ -448,11 +510,24 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
     under_callees = {a for v in under.values() for a, r, _, st in v if st == "exact" and r != (-1, -1)}
     RULE_ERRORS[:] = sorted(under_callees)
     under_funcs = set()
+    a3_fn_set = set()  # --a3-fn: functions of such sources that keep caller=ok (NativeInfo bit 19, "(a3fn)")
+    a3_whole = a3_fn_n = 0
     for p in under:
         try:
-            under_funcs.update(int(x, 16) for x in FUNC_ADDR.findall(open(p, encoding="utf-8", errors="replace").read()))
+            whole = {int(x, 16) for x in FUNC_ADDR.findall(open(p, encoding="utf-8", errors="replace").read())}
         except OSError:
-            pass
+            continue
+        got = a3_precise(p, under[p]) if a3_fn else None
+        if got is None:
+            under_funcs |= whole
+            a3_whole += 1
+        else:
+            under_funcs |= got
+            a3_fn_set |= whole - got
+            a3_fn_n += 1
+    if a3_fn:
+        print("decomp: native-call rules (--a3-fn): A3 by function in %d sources (%d functions no longer A3), by "
+              "source in %d" % (a3_fn_n, len(a3_fn_set), a3_whole))
     for p, v in sorted(under.items()):
         for a, r, tk, st in v:
             what = ("declares a result its %s definition never sets" % st if r == (-1, -1) else
@@ -466,7 +541,7 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
     hp = os.path.join(out, "hooked.txt")
     if os.path.isfile(hp):
         hooked = {int(x, 16) for x in open(hp, encoding="utf-8").read().split()}
-    lines = []
+    lines, rows = [], []
     for a in sorted(dec):
         r = []
         if a in kept:
@@ -486,7 +561,7 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
         if fs is None:
             r.append("no body")
         else:
-            r += sorted(fs - {"src:cpu_sp"})
+            r += sorted(fs - {"src:cpu_sp", "src:nonleaf"})
         if ni > 8 or nf > 8:
             r.append("stack args")
         r += sorted(x for x in feat.get(a, ()) if x != "orig:bctrl")
@@ -507,13 +582,86 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=()):
             caller.append("A1 frame")
         if a in under_funcs:
             caller.append("A3 decl")
+        elif a in a3_fn_set:
+            note.append("a3fn")  # --a3-fn: caller=ok only by the per-function A3 rule (NativeInfo bit 19)
         d = decl.get(a)
         if a in under_callees:
             d = None
+        rows.append((a, r, caller, note, d, rk, fs))
+    if leaf:
+        leaf_rules(rows, calls, tails, feat)
+    for a, r, caller, note, d, rk, fs in rows:
         lines.append("%08X  callee=%s caller=%s  %s %s  # %s %s" % (
             a, "guest" if r else "native", "guest" if caller else "ok",
             ",".join(r + caller + ["(%s)" % x for x in note]) or "-", decl_token(d, rk), dec[a][0], dec[a][1]))
     return lines
+
+
+def leaf_rules(rows, calls, tails, feat):
+    """--leaf (fast mode, gabi.h GABI_LEAF, NativeInfo bit 20 "(leaf)"): bodies that keep no call state on a native entry.
+    A leaf is a callee=native, register-exact function (decl= exact/shim) whose original makes no call at all (no bl, no
+    tail branch into another function or an import, no bctrl: scan_code) and whose body has no source feature (no Local,
+    AutoFrame, Cpu access, ...: source_features) and no guest call form, string literal or gabi call-state helper
+    (LEAF_BAD: src:nonleaf), and that calls (by name) no decompiled function or ext stub of its own source that is not a
+    leaf itself (such a call would read the state a leaf does not keep; a match demotes the candidate). The check
+    afterwards (LEAF_ERRORS, a configure error) asserts that no leaf calls a non-leaf by name.""" 
+    cand = set()
+    for a, r, caller, note, d, rk, fs in rows:
+        if (not r and decl_token(d, rk) != "decl=-" and not calls.get(a) and not tails.get(a)
+                and "orig:bctrl" not in feat.get(a, ()) and fs is not None and not fs and not note_has(note, "place")):
+            cand.add(a)
+    # the decompiled functions and ext stubs of each source by name
+    names = collections.defaultdict(lambda: collections.defaultdict(set))
+    for a, (p, _) in LEAF_CALLS.items():
+        names[p]
+    for p in names:
+        try:
+            t = open(p, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        for a, nm, _, _ in a3_bodies(t):
+            if nm:
+                names[p][nm].add(a)
+        m = re.search(r"/\* WWHD glue(.*?)\*/", t, re.S)
+        for line in (m.group(1).splitlines() if m else ()):
+            e = EXT_GLUE.match(line.strip())
+            pm = EXT_PROTO.match(e.group(2)) if e else None
+            if pm:
+                names[p][pm.group(2).split("::")[-1]].add(int(e.group(1), 16))
+    # a candidate whose body calls a name that is a decompiled function or ext stub of its source which is not a leaf is
+    # no leaf (by name: an inline method of another class with the same name counts too, e.g. a pane's hide() inside a
+    # function whose original makes no call); to a fixed point, since a demoted callee demotes its callers
+    demoted = []
+    changed = True
+    while changed:
+        changed = False
+        for a in sorted(cand):
+            p, called = LEAF_CALLS.get(a, (None, set()))
+            hit = next(((nm, t) for nm in sorted(called) for t in sorted(names[p].get(nm, ())) if p and t != a and t not in cand), None)
+            if hit:
+                cand.discard(a)
+                demoted.append((a,) + hit)
+                changed = True
+    for a, nm, t in demoted:
+        print("decomp: native-call rules (--leaf): %08X calls %s (%08X, not a leaf): not a leaf" % (a, nm, t))
+    # the check (a rules error, never expected): every leaf's calls by name reach leaves only
+    for a in sorted(cand):
+        p, called = LEAF_CALLS.get(a, (None, set()))
+        for nm in sorted(called):
+            for t in sorted(names[p].get(nm, ())) if p else ():
+                if t != a and t not in cand:
+                    print("decomp: native-call rules (--leaf): leaf %08X calls %s (%08X, not a leaf)" % (a, nm, t))
+                    LEAF_ERRORS.append(a)
+    n = 0
+    for a, r, caller, note, d, rk, fs in rows:
+        if a in cand:
+            note.append("leaf")
+            n += 1
+    print("decomp: native-call rules (--leaf): %d leaf functions" % n)
+
+
+def note_has(note, x):
+    return x in note
 
 
 def fast_shape(flags):
@@ -574,6 +722,10 @@ def unit_headers(out, lines, fast=False, hcalls=None):
         flags = 4 | (1 if f[1] == "callee=native" else 0) | (2 if f[2] == "caller=ok" else 0)
         if "(place)" in line.split("#")[0]:  # a lifted step-2 reason: the native entry places r1 (gabi.h bit 18)
             flags |= 1 << 18
+        if "(a3fn)" in line.split("#")[0] and f[2] == "caller=ok":  # --a3-fn (gabi.h GABI_A3_FN: bit 19)
+            flags |= 1 << 19
+        if "(leaf)" in line.split("#")[0]:  # --leaf (gabi.h GABI_LEAF: bit 20)
+            flags |= 1 << 20
         m = DECL_FIELD.search(line.split("#")[0])
         if m:  # register-exact: flags 8, its registers and result (gabi.h NativeInfo)
             flags |= 8 | int(m.group(1)) << 8 | int(m.group(2)) << 12 | int(m.group(3)) << 16
@@ -642,6 +794,16 @@ def main():
         args.remove("--hcall")
         if not fast:
             sys.exit("native_rules.py: --hcall needs --fast")
+    leaf = "--leaf" in args  # fast mode (cmake WWHD_DECOMP_FAST_LEAF): leaf bodies (leaf_rules)
+    if leaf:
+        args.remove("--leaf")
+        if not fast:
+            sys.exit("native_rules.py: --leaf needs --fast")
+    a3_fn = "--a3-fn" in args  # fast mode (cmake WWHD_DECOMP_FAST_A3_FN): A3 by function (a3_precise)
+    if a3_fn:
+        args.remove("--a3-fn")
+        if not fast:
+            sys.exit("native_rules.py: --a3-fn needs --fast")
     if "--lift" in args:
         i = args.index("--lift")
         lift = tuple(x for x in (args[i + 1] if i + 1 < len(args) else "").split(",") if x)
@@ -654,7 +816,10 @@ def main():
         sys.exit(__doc__.strip().splitlines()[4])
     src, out, gen_dir = (os.path.abspath(x) for x in args[:3])
     strict = len(args) == 4
-    lines = rules(src, out, gen_dir, strict, decl_path or None, lift)
+    lines = rules(src, out, gen_dir, strict, decl_path or None, lift, a3_fn, leaf)
+    if LEAF_ERRORS:  # --leaf: leaf_rules printed each
+        sys.exit("native_rules.py: %d leaf function(s) call a decompiled function that is not a leaf (--leaf); a leaf "
+                 "keeps no call state, so this is a rules error" % len(LEAF_ERRORS))
     if RULE_ERRORS:  # an exact callee with an under-declared call (rules() printed each): the decl table is wrong
         sys.exit("native_rules.py: %d ext declaration(s) pass fewer registers than their exact callee takes; fix the "
                  "decompilation's declarations (decl_lint.py) or its table" % len(RULE_ERRORS))

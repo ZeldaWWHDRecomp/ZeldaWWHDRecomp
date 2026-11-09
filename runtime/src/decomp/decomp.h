@@ -80,6 +80,18 @@ extern "C" __attribute__((visibility("default"))) const GabiPtrEntry* g_decomp_c
 extern "C" __attribute__((visibility("default"))) const PpcFunc* g_decomp_hle_tab;
 #endif
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_exact;
+#ifdef WWHD_DECOMP_FAST_A3_FN
+extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_a3_off;  // gabi.h GABI_A3_FN (decomp.cpp)
+#endif
+#ifdef WWHD_DECOMP_FAST_LEAF
+extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_leaf_off;  // gabi.h GABI_LEAF (decomp.cpp)
+#endif
+#ifdef WWHD_DECOMP_FAST_NSTATS
+extern "C" __attribute__((visibility("default"))) uint64_t* g_decomp_nstats;  // gabi.h GABI_NSTATS (decomp.cpp)
+#endif
+#ifdef WWHD_DECOMP_FAST_PTR_SUB
+extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_ptr_sub;  // gabi.h GABI_PTR_SUB (decomp.cpp)
+#endif
 // a guest mod or the port hooks the function with recompiled-table ordinal `ordinal` (every g_mod_hook_flags
 // write that sets a flag): it is no longer entered natively
 extern "C" void decomp_mod_hooked(uint32_t ordinal);

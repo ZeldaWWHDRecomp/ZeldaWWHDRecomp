@@ -106,7 +106,14 @@ static void fstats_write(const std::string& path);
 #else
 #define WWHD_FSTAT(f, t, k) do { } while (0)
 #endif
+#ifdef WWHD_DECOMP_FAST_LEAF_CHECK
+// GABI_LEAF_CHECK: a leaf body runs with Cpu::decomp_running poisoned to 0xFFFF; any guest call or LR answer from it traps
+#define WWHD_LEAF_TRAP(f) do { if (__builtin_expect((f) == 0xFFFF, 0)) { LOG("[decomp] leaf check: a call from a leaf body"); __builtin_trap(); } } while (0)
+#else
+#define WWHD_LEAF_TRAP(f) do { } while (0)
+#endif
 void gmem_call(Cpu* c, uint32_t target, int kind, int, int) {
+    WWHD_LEAF_TRAP(c->decomp_running);
     WWHD_FSTAT(c->decomp_running, target, kind);
 #ifdef WWHD_DECOMP_SITE_LR
     // kind | 4 (game build, gabi.h site_take): LR already holds the return address of the call site (site-exact LR)
@@ -182,6 +189,7 @@ static inline void cached_lr(Cpu* c, uint32_t f, uint32_t target, uint64_t* cach
 extern "C" __attribute__((visibility("default"))) uint32_t decomp_native_lr(Cpu* c, uint32_t target, uint64_t* cache) {
     c->pc = target;
     const uint32_t f = c->decomp_running;
+    WWHD_LEAF_TRAP(f);
     if (f) cached_lr(c, f, target, cache);
     return c->lr;
 }
@@ -193,6 +201,7 @@ extern "C" __attribute__((visibility("default"))) uint32_t decomp_native_lr(Cpu*
 // cache null: LR already holds the return address of the call site (gabi.h site_take, site-exact LR)
 extern "C" __attribute__((visibility("default"))) void decomp_lcall(Cpu* c, uint32_t slot, uint32_t addr, uint64_t* cache) {
     const uint32_t f = c->decomp_running;
+    WWHD_LEAF_TRAP(f);
     WWHD_FSTAT(f, addr, 2);
 #ifdef WWHD_DECOMP_SITE_LR
     if (f && cache) cached_lr(c, f, addr, cache);
@@ -268,6 +277,24 @@ extern "C" __attribute__((visibility("default"))) uint64_t g_decomp_fast_count[4
 #endif
 #ifdef WWHD_DECOMP_FAST_STR
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_fast_str = 0;  // gabi.h GABI_FAST_STR: 1 = guest_str's per-call-site cache (init below)
+#endif
+#ifdef WWHD_DECOMP_FAST_A3_FN
+// gabi.h GABI_A3_FN (cmake WWHD_DECOMP_FAST_A3_FN): 1 = bodies that are caller=ok only by native_rules.py --a3-fn keep their
+// calls guest calls (WWHD_DECOMP_FAST_A3_FN=0, bisecting); read by every such body's native-call scope
+uint8_t g_decomp_a3_off = 0;
+#endif
+#ifdef WWHD_DECOMP_FAST_LEAF
+// gabi.h GABI_LEAF (cmake WWHD_DECOMP_FAST_LEAF): 1 = leaf bodies take the full native-call scope (WWHD_DECOMP_FAST_LEAF=0)
+uint8_t g_decomp_leaf_off = 0;
+#endif
+#ifdef WWHD_DECOMP_FAST_NSTATS
+// gabi.h GABI_NSTATS (cmake WWHD_DECOMP_FAST_NSTATS, diagnostics): native entries per slot (WWHD_DECOMP_FAST_NSTATS=PATH)
+uint64_t* g_decomp_nstats = nullptr;
+#endif
+#ifdef WWHD_DECOMP_FAST_PTR_SUB
+// gabi.h GABI_PTR_SUB (cmake WWHD_DECOMP_FAST_PTR_SUB): 1 = pointer calls may take a native entry that takes fewer
+// registers than they pass (WWHD_DECOMP_FAST_PTR_SUB=0: equal shapes only, bisecting)
+uint8_t g_decomp_ptr_sub = 1;
 #endif
 
 // the native entries the units register (gabi.h NativeReg, glue.cpp), per slot; enabled into g_decomp_native_entry by
@@ -921,6 +948,46 @@ void init() {
     }
 #endif
 #ifdef WWHD_DECOMP_FAST
+#ifdef WWHD_DECOMP_FAST_LEAF
+    if (const char* e = getenv("WWHD_DECOMP_FAST_LEAF"); e && !strcmp(e, "0")) {
+        g_decomp_leaf_off = 1;
+        LOG("[decomp] fast mode: WWHD_DECOMP_FAST_LEAF=0, leaf bodies take the full native-call scope");
+    }
+#ifdef WWHD_DECOMP_FAST_LEAF_CHECK
+    LOG("[decomp] fast mode: leaf check build (a call or frame use from a leaf body traps)");
+#endif
+#endif
+#ifdef WWHD_DECOMP_FAST_NSTATS
+    if (const char* p = getenv("WWHD_DECOMP_FAST_NSTATS")) {
+        g_decomp_nstats = new uint64_t[kNumSlots]();
+        static std::string path = p;
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(2));
+                FILE* fp = fopen((path + ".tmp").c_str(), "w");
+                if (!fp) continue;
+                for (unsigned i = 0; i < kNumSlots; i++)
+                    if (const uint64_t n = __atomic_load_n(&g_decomp_nstats[i], __ATOMIC_RELAXED))
+                        fprintf(fp, "%llu\t%08X\t%s\n", (unsigned long long)n, g_slots[i].addr, g_slots[i].name);
+                fclose(fp);
+                rename((path + ".tmp").c_str(), path.c_str());
+            }
+        }).detach();
+        LOG("[decomp] fast mode native-entry stats: %s", p);
+    }
+#endif
+#ifdef WWHD_DECOMP_FAST_PTR_SUB
+    if (const char* e = getenv("WWHD_DECOMP_FAST_PTR_SUB"); e && !strcmp(e, "0")) {
+        g_decomp_ptr_sub = 0;
+        LOG("[decomp] fast mode: WWHD_DECOMP_FAST_PTR_SUB=0, pointer calls take native entries of their own shape only");
+    }
+#endif
+#ifdef WWHD_DECOMP_FAST_A3_FN
+    if (const char* e = getenv("WWHD_DECOMP_FAST_A3_FN"); e && !strcmp(e, "0")) {
+        g_decomp_a3_off = 1;
+        LOG("[decomp] fast mode: WWHD_DECOMP_FAST_A3_FN=0, A3 by source again (the per-function rule's bodies make guest calls)");
+    }
+#endif
     if (const char* p = getenv("WWHD_DECOMP_FAST_STATS")) {
         g_fstats_map = new std::map<std::tuple<uint32_t, uint32_t, int>, uint64_t>();
         g_fstats = true;

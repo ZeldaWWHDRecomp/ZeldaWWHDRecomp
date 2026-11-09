@@ -93,6 +93,23 @@ function(wwhd_decomp_configure)
   # (GABI_FAST_COUNT); the runtime appends "logic_steps local_fast local_general str_hit str_miss" every second to the
   # file WWHD_DECOMP_FAST_COUNT names
   option(WWHD_DECOMP_FAST_COUNT "decomp build, fast mode: Local / guest_str counters (statistics, not for play)" OFF)
+  # fast mode: A3 (an under-declared ext line keeps the calls of its source's functions guest calls) only where a caller
+  # may depend on the registers left out: a source whose under-declared lines are all shim callees (decl_lint class d,
+  # parameters the original never reads) keeps caller=ok (native_rules.py --a3-fn, gabi.h GABI_A3_FN, NativeInfo bit 19;
+  # WWHD_DECOMP_FAST_A3_FN=0 at run time: those bodies' calls are guest calls again); OFF: every such source as before
+  option(WWHD_DECOMP_FAST_A3_FN "decomp build, fast mode: A3 decl only for sources a caller may depend on" OFF)
+  # fast mode: a call through a pointer that passes more registers than its target's definition takes uses the target's
+  # native entry too (gabi.h GABI_PTR_SUB; a target that is not register-exact gets the guest registers as the guest call
+  # gives them; WWHD_DECOMP_FAST_PTR_SUB=0 at run time: equal shapes only); OFF: equal shapes only, as before
+  option(WWHD_DECOMP_FAST_PTR_SUB "decomp build, fast mode: pointer calls to targets that take fewer registers natively" OFF)
+  # fast mode: leaf bodies (register-exact, no call of any kind in the original or the body, no Local / frame / Cpu access /
+  # string literal: native_rules.py --leaf) keep no call state on a native entry (gabi.h GABI_LEAF, NativeInfo bit 20;
+  # WWHD_DECOMP_FAST_LEAF=0 at run time: the full scope); _CHECK (diagnostics): the state is poisoned for the body
+  # instead and any use traps
+  option(WWHD_DECOMP_FAST_LEAF "decomp build, fast mode: leaf bodies keep no call state" OFF)
+  option(WWHD_DECOMP_FAST_LEAF_CHECK "decomp build, fast mode: trap on any use of call state in a leaf body (diagnostics)" OFF)
+  # diagnostics build only: native entries counted per decompiled function (gabi.h GABI_NSTATS; WWHD_DECOMP_FAST_NSTATS=PATH)
+  option(WWHD_DECOMP_FAST_NSTATS "decomp build, fast mode: count native entries per function (diagnostics, not for release)" OFF)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -173,6 +190,12 @@ function(wwhd_decomp_configure)
     if(WWHD_DECOMP_FAST_HCALL)
       list(APPEND fast_args --hcall)
     endif()
+    if(WWHD_DECOMP_FAST_A3_FN)
+      list(APPEND fast_args --a3-fn)
+    endif()
+    if(WWHD_DECOMP_FAST_LEAF)
+      list(APPEND fast_args --leaf)
+    endif()
   endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py"
                           "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE} ${decl_args} ${lift_args} ${fast_args}
@@ -246,6 +269,21 @@ function(wwhd_decomp_link target)
     endforeach()
     set(WWHD_DECOMP_NATIVE_AUTOFRAME ON)  # (native_rules.py got --lift autoframe,local,tailptr: GABI_NATIVE_PLACE)
     list(APPEND opts -DGABI_FAST=1 -DGABI_FAST_NE=1)
+    if(WWHD_DECOMP_FAST_A3_FN)
+      list(APPEND opts -DGABI_A3_FN=1)
+    endif()
+    if(WWHD_DECOMP_FAST_PTR_SUB)
+      list(APPEND opts -DGABI_PTR_SUB=1)
+    endif()
+    if(WWHD_DECOMP_FAST_NSTATS)
+      list(APPEND opts -DGABI_NSTATS=1)
+    endif()
+    if(WWHD_DECOMP_FAST_LEAF)
+      list(APPEND opts -DGABI_LEAF=1)
+      if(WWHD_DECOMP_FAST_LEAF_CHECK)
+        list(APPEND opts -DGABI_LEAF_CHECK=1)
+      endif()
+    endif()
     if(WWHD_DECOMP_FAST_PTR_IC)
       list(APPEND opts -DGABI_PTR_IC=1)
       if(WWHD_DECOMP_FAST_PTR_IC2)
@@ -481,6 +519,21 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_COUNT)
       target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST_COUNT=1)  # (decomp.cpp: g_decomp_fast_count)
+    endif()
+    if(WWHD_DECOMP_FAST_A3_FN)  # (only decomp.cpp reads it: g_decomp_a3_off)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_A3_FN=1)
+    endif()
+    if(WWHD_DECOMP_FAST_PTR_SUB)  # (only decomp.cpp reads it: g_decomp_ptr_sub)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_PTR_SUB=1)
+    endif()
+    if(WWHD_DECOMP_FAST_LEAF)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_LEAF=1)
+      if(WWHD_DECOMP_FAST_LEAF_CHECK)
+        set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_LEAF_CHECK=1)
+      endif()
+    endif()
+    if(WWHD_DECOMP_FAST_NSTATS)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_NSTATS=1)
     endif()
   endif()
   # fast mode: the GHS libm functions decompiled code calls most (sqrtf, sinf, sqrt, cosf, fmodf) go from gmem_call

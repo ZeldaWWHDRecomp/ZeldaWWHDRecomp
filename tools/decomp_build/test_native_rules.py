@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """tools/decomp_build/native_rules.py on a synthetic decomp build output (no game files)."""
 import json
+import re
 import os
 import struct
 import sys
@@ -236,6 +237,54 @@ class NativeRulesTest(unittest.TestCase):
         self.assertEqual(native_rules.under_declared([r], decl, {0x02000400: 1}), {})
         got = native_rules.under_declared([p], decl)
         self.assertEqual(got, {p: [(0x02019424, (0, 0), (1, 0), "exact")]})  # C::f passes this + f1; variadic: not counted
+
+    def test_a3_precise(self):
+        """--a3-fn: a source whose under-declared ext lines are all shim callees passed fewer registers keeps caller=ok"""
+        p = os.path.join(self.tmp.name, "a3.cpp")
+        open(p, "w").write("/* x */\n")
+        self.assertEqual(native_rules.a3_precise(p, [(0x02000100, (3, 0), (4, 0), "shim")]), set())
+        self.assertEqual(native_rules.a3_precise(p, [(0x02000100, (3, 0), (4, 0), "shim"), (0x02000200, (1, 0), (1, 8), "shim")]), set())
+        # a result its definition never sets (the caller reads what an earlier call left): the whole source
+        self.assertIsNone(native_rules.a3_precise(p, [(0x02000100, (3, 0), (4, 0), "shim"), (0x02000400, (-1, -1), (0, 0), "shim")]))
+        self.assertIsNone(native_rules.a3_precise(p, [(0x02000400, (-1, -1), (0, 0), "exact")]))
+        self.assertIsNone(native_rules.a3_precise(p, [(0x02000100, (0, 0), (1, 0), "exact")]))
+
+    def test_a3_fn_flag(self):
+        """unit_headers: "(a3fn)" on a caller=ok line sets NativeInfo bit 19 (gabi.h GABI_A3_FN), not on a caller=guest one"""
+        lines = native_rules.rules(self.src, self.out, self.gen, False, None)
+        a = int(lines[0].split()[0], 16)
+        lines[0] = "%08X  callee=native caller=ok  (a3fn) decl=-  # %s" % (a, lines[0].split("#")[1].strip())
+        lines[1] = lines[1].replace("caller=ok", "caller=guest", 1).replace("  -", "  (a3fn)", 1) if "caller=ok" in lines[1] else lines[1]
+        native_rules.unit_headers(self.out, lines)
+        h = "".join(open(os.path.join(self.out, "native", x)).read() for x in sorted(os.listdir(os.path.join(self.out, "native"))))
+        self.assertIn("{0x%08Xu, 0u, %du}," % (a, 7 | 1 << 19), h)
+        b = int(lines[1].split()[0], 16)
+        for row in re.findall(r"\{0x%08Xu, \d+u, (\d+)u\}" % b, h):
+            self.assertFalse(int(row) & (1 << 19))
+
+    def test_leaf_rules(self):
+        """--leaf: register-exact callee=native functions whose original makes no call and whose body has no call form;
+        a candidate that calls (by name) a non-leaf decompiled function of its source is demoted, transitively"""
+        p = os.path.join(self.tmp.name, "leaf.cpp")
+        open(p, "w").write(
+            "/* 02000100 */\nu32 A::get() { WWHD_GLUE_FUNC_R(0x02000100, u32, this); return wwhd_native_scope_.ret<wwhd_ret_t_>(mX); }\n"
+            "/* 02000200 */\nvoid A::big() { WWHD_GLUE_FUNC(0x02000200, void, this); mX = 1; }\n"
+            "/* 02000300 */\nvoid A::uses() { WWHD_GLUE_FUNC(0x02000300, void, this); big(); }\n"
+            "/* 02000400 */\nvoid A::uses2() { WWHD_GLUE_FUNC(0x02000400, void, this); uses(); }\n"
+            "/* 02000500 */\nvoid A::lit() { WWHD_GLUE_FUNC(0x02000500, void, this); f(\"x\"); }\n"
+            "/* 02000600 */\nvoid A::gc() { WWHD_GLUE_FUNC(0x02000600, void, this); gabi::call<void>(0x02001000); }\n")
+        native_rules.LEAF_CALLS.clear()
+        srcf = native_rules.source_features([p])
+        self.assertIn("src:nonleaf", srcf[0x02000500][0])
+        self.assertIn("src:nonleaf", srcf[0x02000600][0])
+        self.assertNotIn("src:nonleaf", srcf[0x02000300][0])
+        exact = ("exact", 1, 0)
+        rows = [(a, [], [], [], exact, 0, srcf[a][0]) for a in (0x02000100, 0x02000200, 0x02000300, 0x02000400, 0x02000500, 0x02000600)]
+        calls = {0x02000200: [0x02001000]}  # big's original calls something: no leaf; uses/uses2 call it by name
+        native_rules.leaf_rules(rows, calls, {}, {})
+        leaves = {a for a, r, c, note, d, rk, fs in rows if "leaf" in note}
+        self.assertEqual(leaves, {0x02000100})
+        self.assertEqual(native_rules.LEAF_ERRORS, [])
 
 
 if __name__ == "__main__":
