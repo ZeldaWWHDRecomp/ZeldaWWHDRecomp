@@ -9,6 +9,7 @@
 #include "../mods/story_notebook.h"
 #include "../mods/story_bag.h"
 #include "../mods/game_settings_page.h"
+#include "../mods/link_appearance.h"
 #include "../mods/story_scenes.h"
 #include "../motion/motion.h"
 #include "../rumble.h"
@@ -99,6 +100,7 @@ HLE(padscore, KPADReadEx) {
     story_scenes::mute(p);
     story_bag::mute(p);       // so do the Delivery Bag's extra pages
     game_settings_page::mute(p);  // and the settings page
+    link_appearance::mute(p);     // and the colour page of Link's look
     // the host's extras follow the host's choice: while a held Pro Controller is live, VPADRead has them
     input::PadState idle{};
     input::PadState& extras = input::pro_controller() ? p : idle;

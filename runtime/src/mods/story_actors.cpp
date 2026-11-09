@@ -69,6 +69,7 @@ uint32_t(*g_call)(Cpu*,uint32_t,std::initializer_list<uint32_t>)=nullptr;
 uint32_t g_scratch=0; bool g_installed=false,g_resident_hooks=false,g_ym1_hooks=false,g_goron_hooks=false;
 std::function<bool(const std::string&,const std::string&)> g_scene;
 std::function<bool(const std::string&,const std::string&,unsigned,unsigned)> g_stage;  // mod_stages::enter_stage
+std::function<bool(const std::string&)> g_appearance;  // link_appearance::request_page
 const uint32_t kRoom=GC(0x025C2E8C),kCreate=GC(0x025D5834),kSearch=GC(0x025D54C4),kSearchName=GC(0x025C109C);
 const uint32_t kPlay=GC(0x025200D4),kDelete=GC(0x025D57E0),kCreateChild=GC(0x025D5A20);
 const uint32_t kStage=GD(0x1046F0B0)+0x5134,kSave=GD(0x101F84DC);
@@ -688,6 +689,7 @@ void set_game_calls(void(*original)(Cpu*,uint32_t),uint32_t(*call)(Cpu*,uint32_t
 void set_scratch_memory(uint32_t guest){g_scratch=guest;story_mail::set_say_restore_record(guest?guest+0x320:0,128);for(size_t i=0;i<g_actors.size();++i)st32(g_scratch+128+uint32_t(i)*4,0xFFFFFFFFu);std::memset(mem::ptr(g_scratch+0x300),0,28);std::memset(mem::ptr(g_scratch+0x400),0,256);std::memset(mem::ptr(g_scratch+kIdentityScratchOffset),0,128*identity::kRecordBytes);std::memset(mem::ptr(g_scratch+kEnemyProfilesScratchOffset),0,kScratchBytes-kEnemyProfilesScratchOffset);for(size_t i=0;i<g_actors.size();++i)if(g_actors[i].enemy_token)st32(g_scratch+kEnemyEpochScratchOffset+uint32_t(i)*4,1);}
 void set_scene_start(std::function<bool(const std::string&,const std::string&)> start){g_scene=std::move(start);}
 void set_stage_enter(std::function<bool(const std::string&,const std::string&,unsigned,unsigned)> enter){g_stage=std::move(enter);}
+void set_appearance_open(std::function<bool(const std::string&)> open){g_appearance=std::move(open);}
 void native_room_loaded(Cpu* c,int room){
     if(!g_scratch||room<0||room>63)return;
     const uint32_t stage_process=ld32(GD(0x1047E6C4));
@@ -1521,7 +1523,7 @@ bool actions(const std::string& mod,const std::vector<story_notebook::StoryActio
     using Kind=story_notebook::StoryAction::Kind;
     const bool story_off=story_scene_needs::story_off().count(mod)>0;  // optional story content without the notebook
     for(const auto& a:list){bool ok=false;
-        if(story_off&&a.kind!=Kind::EnterStage&&a.kind!=Kind::StartScene){LOG("[actors] %s: story action on %s skipped (the Story Notebook isn't installed)",mod.c_str(),a.id.c_str());continue;}
+        if(story_off&&a.kind!=Kind::EnterStage&&a.kind!=Kind::StartScene&&a.kind!=Kind::Appearance){LOG("[actors] %s: story action on %s skipped (the Story Notebook isn't installed)",mod.c_str(),a.id.c_str());continue;}
         switch(a.kind){
         case Kind::Give:ok=story_items::give(mod,a.id.substr(5),a.value,"actor dialogue")>=0;break;
         case Kind::Take:ok=story_items::take(mod,a.id.substr(5),a.value)>=0;break;
@@ -1531,6 +1533,7 @@ bool actions(const std::string& mod,const std::vector<story_notebook::StoryActio
         case Kind::Flag:ok=set_flag(story_store::book(),mod,a.id,a.value!=0);break;
         case Kind::StartScene:ok=g_scene&&g_scene(mod,a.id);break;
         case Kind::EnterStage:ok=g_stage&&g_stage(mod,a.id,a.value>>8,a.value&0xFF);break;
+        case Kind::Appearance:ok=g_appearance&&g_appearance(mod);break;  // the colour page of Link's look
     }if(!ok){LOG("[actors] %s: action failed (%s)",mod.c_str(),a.id.c_str());return false;}}return true;
 }
 bool people_message(Cpu* c){Actor* a=people(c->r[3]);if(!a||a->spec.actor!="resident")return false;

@@ -687,6 +687,14 @@ int main(int argc,char** argv){
         story_actors::set_stage_enter(nullptr);
         // a chart from dialogue: given once; a second give (or a finished chart) changes nothing
         assert(story_actors::actions("test",{{story_notebook::StoryAction::Kind::GiveChart,"chart:keeper-map",1}})&&story_chart::given_charts.at("test:keeper-map")==story_chart::kResultOwned);
+        {   // the appearance action: the colour page asked for through the port's callback (none set: it fails)
+            std::string asked;
+            story_actors::set_appearance_open(nullptr);
+            assert(!story_actors::actions("test",{{story_notebook::StoryAction::Kind::Appearance,"",1}}));
+            story_actors::set_appearance_open([&](const std::string& mod){asked=mod;return true;});
+            assert(story_actors::actions("test",{{story_notebook::StoryAction::Kind::Appearance,"",1}})&&asked=="test");
+            story_actors::set_appearance_open(nullptr);
+        }
         story_chart::given_charts["test:keeper-map"]=story_chart::kResultDone;
         assert(story_actors::actions("test",{{story_notebook::StoryAction::Kind::GiveChart,"chart:keeper-map",1}})&&story_chart::given_charts.at("test:keeper-map")==story_chart::kResultDone);
         return 0;

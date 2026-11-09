@@ -30,6 +30,14 @@ int main() {
         action.array[0]["id"]="delivery";action.array[0]["step"]=1;
         assert(!world_manifest::actions(m,action,parsed,why));
     }
+    { // "appearance": the colour page of Link's look, no fields
+        auto m=mods::json::parse(R"({})");
+        std::vector<StoryAction> parsed;
+        assert(world_manifest::actions(m,mods::json::parse(R"([{"action":"appearance"}])"),parsed,why));
+        assert(parsed.size()==1&&parsed[0].kind==StoryAction::Kind::Appearance&&parsed[0].id.empty());
+        parsed.clear();
+        assert(!world_manifest::actions(m,mods::json::parse(R"([{"action":"appearance","id":"x"}])"),parsed,why));
+    }
     { // "stage": into one of the package's own stages (mod_stages), room and point packed into value
         auto m=mods::json::parse(R"({"stages":[{"id":"sky"}]})");
         std::vector<StoryAction> parsed;
