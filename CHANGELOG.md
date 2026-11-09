@@ -7,6 +7,19 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Link's look** (#492). Players can change the colours of Link's hair, skin, eyes, tunic and hat, undershirt,
+  trousers, boots and belt buckle: Link's own textures are recoloured in memory, nothing of the game is stored except
+  the chosen colours, and with no colours chosen nothing changes. The look is kept per save file. The colour page shows
+  Link in a close camera with the menu on the right in the game's menu style (right stick or L/R turn the camera, A
+  keeps, B puts the old look back). Mods open it with `wwhd_appearance_open` or the story action `{"action":
+  "appearance"}` (mod manager 1.11.0); a dyer on Windfall who opens it comes as the `link-appearance` package.
+- **21:9 fills 3440×1440 screens** (#495, #490, thanks @thejorro). The 4:3, 16:10, 21:9 and 32:9 presets now use the
+  window's exact shape when it is within 1 % of the preset, so a 3440×1440 monitor (43:18) no longer keeps a thin
+  border on each side with 21:9 (64:27, the 2560×1080 shape). Other window shapes keep the exact preset.
+- **One-screen mode: no slowdown with the GamePad menu open on Vulkan** (#497, #493, thanks @thejorro). The GamePad
+  bar background was also captured from the TV's "playing on the GamePad" screen, which at higher resolution
+  scales reallocated a large video-memory image every frame. Only the GamePad picture is captured now; the bars
+  look the same.
 - **Controller bindings follow the controller in use** (#491). A controller with bindings of its own ("Bindings
   for: <controller> – its own") plays with those, but the Bindings page always opened on the shared set, so changes
   there never reached it (seen on an AYN Odin, where only A worked). The page now opens on the controller in use, and
