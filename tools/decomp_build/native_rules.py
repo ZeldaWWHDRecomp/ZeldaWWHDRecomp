@@ -180,6 +180,9 @@ def scan_code(secs, funcs, icalls):
         cl, tl, frame, mflr = [], [], 0, 0
         if any(w >> 26 == 19 and ((w >> 1) & 0x3FF) == 528 and w & 1 for w in code_words(secs, a, e)):
             feat[a].add("orig:bctrl")
+        # --leaf: any branch through CTR (a bctr tail call through a function pointer, cMl::memalignB) or a bclrl
+        if any(w >> 26 == 19 and (((w >> 1) & 0x3FF) == 528 or (((w >> 1) & 0x3FF) == 16 and w & 1)) for w in ws):
+            feat[a].add("orig:ctr")
         for k, w in enumerate(ws):
             ea = a + 4 * k
             op = w >> 26
@@ -564,7 +567,7 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
             r += sorted(fs - {"src:cpu_sp", "src:nonleaf"})
         if ni > 8 or nf > 8:
             r.append("stack args")
-        r += sorted(x for x in feat.get(a, ()) if x != "orig:bctrl")
+        r += sorted(x for x in feat.get(a, ()) if x not in ("orig:bctrl", "orig:ctr"))
         # level 1 step 2 (--lift): these source reasons no longer keep the guest call; the native entry then places r1
         # as do_call does (gabi.h GABI_NATIVE_PLACE, NativeInfo bit 18: "(place)")
         lifted = [x for x in r if LIFT.get(x) in lift]
@@ -600,7 +603,7 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
 def leaf_rules(rows, calls, tails, feat):
     """--leaf (fast mode, gabi.h GABI_LEAF, NativeInfo bit 20 "(leaf)"): bodies that keep no call state on a native entry.
     A leaf is a callee=native, register-exact function (decl= exact/shim) whose original makes no call at all (no bl, no
-    tail branch into another function or an import, no bctrl: scan_code) and whose body has no source feature (no Local,
+    tail branch into another function or an import, no branch through CTR or a bclrl: scan_code) and whose body has no source feature (no Local,
     AutoFrame, Cpu access, ...: source_features) and no guest call form, string literal or gabi call-state helper
     (LEAF_BAD: src:nonleaf), and that calls (by name) no decompiled function or ext stub of its own source that is not a
     leaf itself (such a call would read the state a leaf does not keep; a match demotes the candidate). The check
@@ -608,7 +611,7 @@ def leaf_rules(rows, calls, tails, feat):
     cand = set()
     for a, r, caller, note, d, rk, fs in rows:
         if (not r and decl_token(d, rk) != "decl=-" and not calls.get(a) and not tails.get(a)
-                and "orig:bctrl" not in feat.get(a, ()) and fs is not None and not fs and not note_has(note, "place")):
+                and "orig:bctrl" not in feat.get(a, ()) and "orig:ctr" not in feat.get(a, ()) and fs is not None and not fs and not note_has(note, "place")):
             cand.add(a)
     # the decompiled functions and ext stubs of each source by name
     names = collections.defaultdict(lambda: collections.defaultdict(set))
