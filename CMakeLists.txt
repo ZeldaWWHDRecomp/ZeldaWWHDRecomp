@@ -2885,6 +2885,10 @@ add_executable(coop_block_test runtime/tools/coop_block_test.cpp)
 target_include_directories(coop_block_test PRIVATE runtime/src)
 add_test(NAME coop_block COMMAND coop_block_test)
 
+add_executable(coop_looks_test runtime/tools/coop_looks_test.cpp)
+target_include_directories(coop_looks_test PRIVATE runtime/src)
+add_test(NAME coop_looks COMMAND coop_looks_test)
+
 add_executable(coop_chat_test runtime/tools/coop_chat_test.cpp)
 target_include_directories(coop_chat_test PRIVATE runtime/src)
 add_test(NAME coop_chat COMMAND coop_chat_test)

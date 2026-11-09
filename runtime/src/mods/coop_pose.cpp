@@ -18,6 +18,7 @@
 #include "coop_pose.h"
 #include "coop_emotes.h"
 #include "coop_items.h"
+#include "coop_looks.h"
 #include "coop_names.h"
 
 #include <algorithm>
@@ -895,17 +896,21 @@ template <typename F> void hidden(uint32_t model, F entry) {
 // which the appearance service finds in the game's Link.bfres (link_appearance.h), are drawn for a puppet from a copy
 // of the game's own bytes in its player's look: the look the player chose (link_appearance, sent as kLook, coop_sync)
 // and, where it leaves the tunic as it is, the player's co-op tunic colour. Each texture keeps a copy per look worn
-// (made the first time, at most kLooks; a look past them shows the game's colours), each with a texture object of its
-// own in the port's memory; a model's texture list (written by viewCalc, 027F50F8) then points at its wearer's. This
-// game's own Link shows the look the appearance service gives him (on the game's texture itself), with this game's
-// co-op tunic where his look leaves the tunic; nothing is changed for him outside a session.
+// (made the first time, at most kLooks; a copy whose look no shown player wears any more is tinted again for a new
+// look, the least recently drawn first: coop_looks.h; only a look past kLooks worn at once shows the game's colours),
+// each with a texture object of its own in the port's memory; a model's texture list (written by viewCalc, 027F50F8)
+// then points at its wearer's. This game's own Link shows the look the appearance service gives him (on the game's
+// texture itself), with this game's co-op tunic where his look leaves the tunic; nothing is changed for him outside a
+// session.
 int g_own_tunic = -1;
 constexpr uint32_t kTunicRgb[4] = {0x5AB24A, 0xE52B36, 0x698DB9, 0x9A4F9F};  // green; the randomizer's Red/Blue/Purple Link
 constexpr size_t kLooks = 8;
 struct Worn {
     std::vector<uint8_t> key;  // the look (link_appearance::encode)
     uint32_t obj = 0, img = 0, mip = 0;
+    uint64_t used = 0;  // when last drawn (g_look_clock)
 };
+uint64_t g_look_clock = 0;
 struct LinkTex {
     link_appearance::GameTexture game;
     std::vector<Worn> worn;
@@ -952,28 +957,44 @@ LinkTex* link_tex(uint32_t tex) {
     return nullptr;
 }
 
-// the texture object of a texture in a look (copied from the game's own bytes, the first time)
+// the looks shown players wear now (this game's Link's too, while a session is on), encoded: their copies are kept
+const std::vector<std::vector<uint8_t>>& worn_looks() {
+    static uint64_t frame = ~0ull;  // (once a frame)
+    static std::vector<std::vector<uint8_t>> keys;
+    if (render::frame_count() == frame) return keys;
+    frame = render::frame_count();
+    keys.clear();
+    if (g_own_tunic >= 0) keys.push_back(link_appearance::encode(wearer_look(-1)));
+    for (int i = 0; i < kPuppets; i++)
+        if (g_puppet[i].shown) keys.push_back(link_appearance::encode(wearer_look(i)));
+    return keys;
+}
+
+// the texture object of a texture in a look (copied from the game's own bytes, the first time; a copy no shown player
+// wears any more is tinted again in place: coop_looks.h)
 uint32_t worn(LinkTex& k, const link_appearance::Look& look) {
     using namespace gx2;
     const link_masks::Mask& m = *k.game.mask;
     std::vector<uint8_t> key = link_appearance::encode(look);
+    const auto& on = worn_looks();
+    const auto worn_now = [&](const std::vector<uint8_t>& x) {
+        for (const auto& o : on)
+            if (o == x) return true;
+        return false;
+    };
+    const looks::Choice c = looks::pick(k.worn, key, kLooks, worn_now, link_appearance::encode({}));
+    if (c.pick == looks::Pick::kFallback && k.worn.empty()) return k.game.tex;
+    if (c.pick == looks::Pick::kHit || c.pick == looks::Pick::kFallback) return k.worn[c.index].used = ++g_look_clock, k.worn[c.index].obj;
     Worn* w = nullptr;
-    for (Worn& x : k.worn)
-        if (x.key == key) return x.obj;
-    for (Worn& x : k.worn)
-        if (x.key.empty() && x.obj) { w = &x; break; }  // (a copy of a texture found before: its memory again)
-    if (!w) {
-        if (k.worn.size() >= kLooks) {  // (more looks than copies: the game's own colours)
-            for (Worn& x : k.worn)
-                if (x.key == link_appearance::encode({})) return x.obj;
-            return k.worn.front().obj;
-        }
+    if (c.pick == looks::Pick::kRetint) w = &k.worn[c.index];
+    else {
         const uint32_t align = std::max<uint32_t>(ld32(k.game.tex + kTexSurface + alignment), 0x100);
         Worn x;
         x.obj = mem::host_alloc(kTexObject, 0x20), x.img = mem::host_alloc(m.image_size, align), x.mip = m.mip_size ? mem::host_alloc(m.mip_size, align) : 0;
         k.worn.push_back(x);
         w = &k.worn.back();
     }
+    w->used = ++g_look_clock;
     w->key = key;
     memcpy(mem::ptr(w->obj), mem::ptr(k.game.tex), kTexObject);
     uint32_t img = k.game.image, mip = k.game.mips;
