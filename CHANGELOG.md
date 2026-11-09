@@ -7,6 +7,14 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build (fast mode): about 0.5–0.7 ms less game logic per frame on a phone.** Two sets of steps, all on
+  by default in fast mode: decompiled code sets up its local variables with fewer lookups and caches its text strings
+  per call site, and calls between decompiled functions avoid the guest call path more often (functions whose
+  declarations allow it, pointer calls to functions that take fewer registers, and leaf functions without call
+  bookkeeping). Measured on a Xiaomi 14 (cliff scene); play is unchanged. Each step has an off switch
+  (`WWHD_DECOMP_FAST_LOCAL`, `_STR`, `_A3_FN`, `_PTR_SUB`, `_LEAF`). The decompilation submodule now points to its
+  latest public version.
+
 - **Saves: a save folder chosen in Settings → Saves now also applies when you start the game from a launcher**
   (#485, thanks @rhemfur; #487). The launchers, shortcuts and setup always pass the install's own `save` folder,
   which the game took as your own choice, so a folder chosen in the Saves tab (for example inside a cloud folder)
