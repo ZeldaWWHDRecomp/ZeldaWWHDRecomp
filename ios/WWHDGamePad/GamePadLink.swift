@@ -34,6 +34,15 @@ final class GamePadLink: ObservableObject {
     @Published private(set) var games: [Game] = []
     /// why nothing is found, when Bonjour says (nil while it browses normally)
     @Published private(set) var browseProblem: String?
+    /// the game being rejoined after the app came back to the front (resumeIfNeeded)
+    @Published private(set) var resuming: String?
+
+    /// what a connection was made to: a game found over Bonjour (by name) or a typed address
+    enum Target: Equatable { case game(String), address(String) }
+    private var lastTarget: Target?      // the latest connect()
+    private var resumeTarget: Target?    // left for the background while connected: rejoin on return
+    private var resumeAttempt = 0        // a newer attempt or a cancel makes an older one's timeout moot
+    static let resumeTimeout: TimeInterval = 5
     @Published private(set) var controllerName: String?
     @Published var gyro = UserDefaults.standard.object(forKey: "gyro") as? Bool ?? true {
         didSet {
@@ -110,7 +119,10 @@ final class GamePadLink: ObservableObject {
                 return nil
             }.sorted { $0.name < $1.name }
             note("browser: found \(found.map(\.name))")
-            Task { @MainActor in self?.games = found }
+            Task { @MainActor in
+                self?.games = found
+                self?.resumeIfFound()
+            }
         }
         b.start(queue: .main)
         browser = b
@@ -134,7 +146,10 @@ final class GamePadLink: ObservableObject {
 
     // MARK: connecting
 
-    func connect(_ game: Game) { connect(to: game.endpoint, label: game.name) }
+    func connect(_ game: Game) {
+        lastTarget = .game(game.name)
+        connect(to: game.endpoint, label: game.name)
+    }
 
     /// "192.168.1.20", "Mac-mini.local" or either with ":port"
     func connect(address: String) {
@@ -151,11 +166,12 @@ final class GamePadLink: ObservableObject {
             status = .failed("Enter the computer's address.")
             return
         }
+        lastTarget = .address(address)
         connect(to: .hostPort(host: NWEndpoint.Host(host), port: nwPort), label: host)
     }
 
     private func connect(to endpoint: NWEndpoint, label: String) {
-        disconnect()
+        drop()
         status = .connecting(label)
         UIApplication.shared.isIdleTimerDisabled = true
         if gyro { motion.start() }
@@ -188,7 +204,73 @@ final class GamePadLink: ObservableObject {
         }
     }
 
+    /// The player's Disconnect (or Cancel): no rejoining later.
     func disconnect() {
+        cancelResume()
+        drop()
+    }
+
+    // MARK: leaving and coming back
+
+    /// The app goes to the background: iOS stops the network and the sensors, so say goodbye now (the
+    /// game gives the GamePad back to the keyboard and its own controllers at once) and remember what to
+    /// rejoin if this phone was connected, connecting or reconnecting.
+    func suspend() {
+        if isActive, let t = lastTarget {
+            resumeTarget = t
+            note("background: will rejoin \(t) on return")
+        }
+        resuming = nil
+        games = []  // only what Bonjour lists after the return counts as still there
+        drop()
+    }
+
+    /// The app is in front again: rejoin what it left, if that is still there. A game found over Bonjour
+    /// must be listed again (resumeIfFound); a typed address must answer. Either gets resumeTimeout.
+    func resumeIfNeeded() {
+        guard let t = resumeTarget else { return }
+        resumeAttempt += 1
+        let attempt = resumeAttempt
+        switch t {
+        case let .game(name):
+            resuming = name
+            resumeIfFound()
+        case let .address(address):
+            resumeTarget = nil
+            resuming = nil
+            connect(address: address)
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.resumeTimeout) { [weak self] in
+            guard let self, attempt == self.resumeAttempt else { return }
+            if case let .game(name) = t, self.resumeTarget == t {
+                // never listed again: the game was closed (or its Mac left the network)
+                self.cancelResume()
+                self.status = .failed("\(name) is no longer on the network.")
+            } else if case let .connecting(label) = self.status {
+                // listed or typed, but no Welcome: nothing answers there any more
+                self.drop()
+                self.status = .failed("\(label) did not answer.")
+            }
+        }
+    }
+
+    /// a listed game is the one to rejoin: connect to it (its endpoint as Bonjour lists it now)
+    private func resumeIfFound() {
+        guard case let .game(name)? = resumeTarget, let game = games.first(where: { $0.name == name }) else { return }
+        note("rejoining \(name)")
+        resumeTarget = nil
+        resuming = nil
+        connect(game)
+    }
+
+    func cancelResume() {
+        resumeTarget = nil
+        resuming = nil
+        resumeAttempt += 1
+    }
+
+    /// closes the connection (saying goodbye); what to rejoin is left alone
+    private func drop() {
         UIApplication.shared.isIdleTimerDisabled = false
         motion.stop()
         status = .idle

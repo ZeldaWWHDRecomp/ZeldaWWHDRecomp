@@ -15,9 +15,13 @@ struct WWHDGamePadApp: App {
         .onChange(of: phase) { _, now in
             // in the background iOS stops the sensors and the network: say goodbye, so the game
             // lets the keyboard and its own controllers be the GamePad again at once
-            if now == .background { link.disconnect(); link.stopBrowsing() }
-            // back in front (maybe after allowing Local Network access, or on another Wi-Fi): look again
-            if now == .active { link.browse(restart: true) }
+            if now == .background { link.suspend(); link.stopBrowsing() }
+            // back in front (maybe after allowing Local Network access, or on another Wi-Fi): look again,
+            // and rejoin the game it was connected to if that is still there
+            if now == .active {
+                link.browse(restart: true)
+                link.resumeIfNeeded()
+            }
         }
     }
 }
@@ -37,6 +41,7 @@ struct RootView: View {
 
 struct ConnectView: View {
     @EnvironmentObject private var link: GamePadLink
+    @MainActor private static var launchConnectDone = false
     @AppStorage("address") private var address = ""
 
     var body: some View {
@@ -79,6 +84,16 @@ struct ConnectView: View {
                     Toggle("Gyro aiming", isOn: $link.gyro)
                 }
 
+                if let name = link.resuming {
+                    Section {
+                        HStack(spacing: 12) {
+                            ProgressView()
+                            Text("Rejoining \(name)…")
+                            Spacer()
+                            Button("Cancel") { link.cancelResume() }
+                        }
+                    }
+                }
                 if case let .connecting(name) = link.status {
                     Section {
                         HStack(spacing: 12) {
@@ -97,8 +112,12 @@ struct ConnectView: View {
         }
         .onAppear {
             link.browse()
-            // `-connect <address>` at launch (Xcode scheme arguments, simctl launch): connect at once
-            if let a = UserDefaults.standard.string(forKey: "connect"), case .idle = link.status { link.connect(address: a) }
+            // `-connect <address>` at launch (Xcode scheme arguments, simctl launch): connect at once, once
+            // (the argument stays for the whole launch; coming back from the background rejoins by itself)
+            if !Self.launchConnectDone, let a = UserDefaults.standard.string(forKey: "connect"), case .idle = link.status {
+                Self.launchConnectDone = true
+                link.connect(address: a)
+            }
         }
     }
 }

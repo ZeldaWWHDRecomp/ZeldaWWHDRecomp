@@ -28,6 +28,9 @@ Sound and rumble come next (see Roadmap). The picture needs the Metal renderer (
    Wi-Fi > Details) under *Or enter the computer's address*.
 4. Hold the phone in landscape in the controller. The status line shows the Mac's name. **Disconnect**
    (or leaving the app) gives the GamePad back to the Mac's keyboard and controllers.
+5. Leaving the app and coming back rejoins the game by itself if it is still there: a game from the
+   list must be listed again, a typed address must answer, within 5 seconds. After **Disconnect** the
+   app stays on the list.
 
 Only one phone can be the GamePad at a time. While the game listens, anyone on the local network can
 send it GamePad input, so set `WWHD_REMOTE_PAD` only on networks you trust.
