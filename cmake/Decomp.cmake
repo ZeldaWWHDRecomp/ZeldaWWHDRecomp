@@ -89,6 +89,10 @@ function(wwhd_decomp_configure)
   # fast mode: the source's guest_str / guest_addr calls with one cache entry per call site, no thread-local access
   # (gabi.h GABI_FAST_STR; the runtime's WWHD_DECOMP_FAST_STR=0 keeps guest_str's per-thread cache)
   option(WWHD_DECOMP_FAST_STR "decomp build, fast mode: per-call-site cache of host string literals' guest copies" OFF)
+  # fast mode, statistics only (Mac): gabi.h counts the fast/general Local constructions and guest_str site hits/misses
+  # (GABI_FAST_COUNT); the runtime appends "logic_steps local_fast local_general str_hit str_miss" every second to the
+  # file WWHD_DECOMP_FAST_COUNT names
+  option(WWHD_DECOMP_FAST_COUNT "decomp build, fast mode: Local / guest_str counters (statistics, not for play)" OFF)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -253,6 +257,9 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_STR)
       list(APPEND opts -DGABI_FAST_STR=1)
+    endif()
+    if(WWHD_DECOMP_FAST_COUNT)
+      list(APPEND opts -DGABI_FAST_COUNT=1)
     endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)
@@ -471,6 +478,9 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_STR)
       target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST_STR=1)  # (decomp.cpp: g_decomp_fast_str)
+    endif()
+    if(WWHD_DECOMP_FAST_COUNT)
+      target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST_COUNT=1)  # (decomp.cpp: g_decomp_fast_count)
     endif()
   endif()
   # fast mode: the GHS libm functions decompiled code calls most (sqrtf, sinf, sqrt, cosf, fmodf) go from gmem_call

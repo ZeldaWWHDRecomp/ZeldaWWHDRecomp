@@ -59,6 +59,9 @@
 #include <vector>
 
 #include "../runtime.h"
+#ifdef WWHD_DECOMP_FAST_COUNT
+#include "../interp.h"
+#endif
 #include "recomp_table.h"
 
 extern "C" {
@@ -259,6 +262,9 @@ uint32_t g_decomp_ptr_mask = 0;
 uint8_t g_decomp_exact = 0;
 #ifdef WWHD_DECOMP_FAST_LOCAL
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_fast_local = 0;  // gabi.h GABI_FAST_LOCAL: 1 = the lean Local / FrameLocal form (init below)
+#endif
+#ifdef WWHD_DECOMP_FAST_COUNT
+extern "C" __attribute__((visibility("default"))) uint64_t g_decomp_fast_count[4] = {};
 #endif
 #ifdef WWHD_DECOMP_FAST_STR
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_fast_str = 0;  // gabi.h GABI_FAST_STR: 1 = guest_str's per-call-site cache (init below)
@@ -889,6 +895,22 @@ void init() {
         const char* nl = getenv("WWHD_NATIVE_LOCALS");
         g_decomp_fast_local = (e && !strcmp(e, "0")) || (nl && *nl == '1') ? 0 : 1;
         LOG("[decomp] fast Local form: %s", g_decomp_fast_local ? "on" : "off");
+    }
+#endif
+#ifdef WWHD_DECOMP_FAST_COUNT
+    if (const char* p = getenv("WWHD_DECOMP_FAST_COUNT")) {  // Mac statistics: logic steps and the gabi.h counters
+        static std::string path = p;
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(1));
+                if (FILE* fp = fopen(path.c_str(), "a")) {
+                    fprintf(fp, "%llu", (unsigned long long)interp::logic_steps());
+                    for (auto& n : g_decomp_fast_count) fprintf(fp, " %llu", (unsigned long long)__atomic_load_n(&n, __ATOMIC_RELAXED));
+                    fprintf(fp, "\n");
+                    fclose(fp);
+                }
+            }
+        }).detach();
     }
 #endif
 #ifdef WWHD_DECOMP_FAST_STR
