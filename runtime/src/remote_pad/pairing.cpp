@@ -45,26 +45,34 @@ bool Pairing::trusted(const Key& id, const Key& token) const {
     return std::any_of(phones_.begin(), phones_.end(), [&](const Phone& p) { return p.id == id && p.token == token; });
 }
 
+void Pairing::end_pending(uint64_t now) {
+    pending_.reset();
+    next_code_ = now + kCooldownMs;
+}
+
 Pairing::Request Pairing::request(const Key& id, const std::string& name, uint64_t now) {
     std::lock_guard lk(mu_);
-    if (pending_ && pending_->id == id && now < pending_->until) return {pending_->code, pending_->attempts, false};
+    if (pending_ && now >= pending_->until) end_pending(pending_->until);
+    if (pending_) {
+        if (pending_->id == id) return {pending_->code, pending_->attempts, false, false};
+        return {0, 0, false, true};
+    }
+    if (now < next_code_) return {0, 0, false, true};
     uint8_t r[4];
     random_(r, 4);
     const uint32_t code = (uint32_t(r[0]) | uint32_t(r[1]) << 8 | uint32_t(r[2]) << 16 | uint32_t(r[3]) << 24) % 1'000'000;
     pending_ = Pending{id, name, code, kAttempts, now + kCodeLifetimeMs};
-    return {code, kAttempts, true};
+    return {code, kAttempts, true, false};
 }
 
 Pairing::Result Pairing::answer(const Key& id, uint32_t code, uint64_t now, Key* token, int* attempts_left) {
     std::lock_guard lk(mu_);
-    if (!pending_ || pending_->id != id || now >= pending_->until) {
-        if (pending_ && now >= pending_->until) pending_.reset();
-        return kNone;
-    }
+    if (pending_ && now >= pending_->until) end_pending(pending_->until);
+    if (!pending_ || pending_->id != id) return kNone;
     if (code != pending_->code) {
         const int left = --pending_->attempts;
         if (attempts_left) *attempts_left = left;
-        if (left <= 0) pending_.reset();
+        if (left <= 0) end_pending(now);
         return kWrong;
     }
     Phone p{id, random_key(), pending_->name};
@@ -81,9 +89,9 @@ std::optional<Pairing::Pending> Pairing::pending(uint64_t now) const {
     if (pending_ && now < pending_->until) return pending_;
     return std::nullopt;
 }
-void Pairing::refuse() {
+void Pairing::refuse(uint64_t now) {
     std::lock_guard lk(mu_);
-    pending_.reset();
+    if (pending_) end_pending(now);
 }
 
 size_t Pairing::size() const {

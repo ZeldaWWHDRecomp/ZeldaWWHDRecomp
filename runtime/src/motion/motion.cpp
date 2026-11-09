@@ -512,7 +512,7 @@ std::string status() {
         if (source == kDevice)
             return g_device_sensors_available ? "Device gyro ready; no motion yet (or app is in the background)."
 #ifdef __APPLE__
-                                              : "No device gyro on this host: connect the iPhone GamePad (WWHD_REMOTE_PAD=1).";
+                                              : "No device gyro on this host: connect the iPhone GamePad (Controls > iPhone GamePad).";
 #else
                                               : "No device gyro and accelerometer available on this host.";
 #endif

@@ -12,16 +12,16 @@ enum WWGP {
     static let inputSize = 78
     static let maxName = 63
 
+    static let wantsVideo: UInt8 = 1, wantsAudio: UInt8 = 2   // a Hello's header flags
+    static let rumbleStale: TimeInterval = 0.25               // protocol.h kRumbleStaleMs
+
     enum PacketType: UInt8 {
         case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7, audio = 8
         case pairing = 9, pair = 10, paired = 11
     }
     /// protocol.h PairState: what the computer says about pairing
     enum PairState: UInt8 { case enterCode = 1, wrongCode = 2, noCode = 3 }
-    static let wantsAudio: UInt8 = 2          // a Hello's header flags
     static let audioHeaderSize = headerSize + 8
-    static let rumbleStale: TimeInterval = 0.25   // protocol.h kRumbleStaleMs
-    static let wantsVideo: UInt8 = 1          // a Hello's header flags
     static let videoHeaderSize = headerSize + 22
     static let maxDatagram = 1400
 

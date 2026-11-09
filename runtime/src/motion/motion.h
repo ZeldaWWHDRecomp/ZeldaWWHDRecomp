@@ -91,9 +91,8 @@ void controller_gone(uint64_t device);
 // Device samples are already in SDL controller axes (screen rotation and flat-table pose applied).
 void device_sample(uint64_t timestamp_ns, const float gyro[3], const float accel[3]);
 void device_reset();  // discard pending motion/bias on rotation, background or source shutdown
-// The iPhone GamePad (remote_pad/): its sensors in the phone's natural axes as device_to_sdl takes them,
-// the screen rotation, counter-clockwise quarter turns (device_to_sdl's). It is "the device" the GamePad
-// is held as: used under kDevice (and kAuto) like this device's own sensors, under its own id.
+// The iPhone GamePad (remote_pad/): sensors in the phone's natural axes plus device_to_sdl's screen
+// rotation. Used under kDevice and kAuto like this device's own sensors, as a device of its own.
 void remote_sample(uint64_t timestamp_ns, const float gyro[3], const float accel[3], int quarter_turns);
 void remote_reset();  // the phone disconnected or rotated: discard its pending motion and bias
 bool wants_device_sensors();

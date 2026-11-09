@@ -54,7 +54,7 @@ constexpr const char* kControllerName = "iPhone GamePad";
 
 struct Pad {
     bool connected = false;  // a phone has the GamePad
-    std::string device;      // the phone's name, e.g. "Test iPhone"
+    std::string device;      // the phone's name
     std::string controller;  // the controller attached to it ("" for none)
     Input input;             // the latest input
 };

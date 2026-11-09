@@ -191,24 +191,36 @@ static void test_pairing() {
     assert(pr.answer(phone, (r.code + 2) % 1'000'000, 3000, &token, &left) == Pairing::kWrong && left == 1);
     assert(pr.answer(phone, (r.code + 3) % 1'000'000, 3000, &token, &left) == Pairing::kWrong && left == 0);
     assert(pr.answer(phone, r.code, 3000, &token, &left) == Pairing::kNone && !pr.pending(3000));
+    // no new code before the cooldown has passed (guessing must not run at network speed)
+    assert(pr.request(phone, "Test iPhone", 3000 + Pairing::kCooldownMs - 1).busy);
     // a new code; the right one pairs, with a token only this phone knows
-    r = pr.request(phone, "Test iPhone", 4000);
-    assert(r.fresh);
+    uint64_t t = 3000 + Pairing::kCooldownMs;
+    r = pr.request(phone, "Test iPhone", t);
+    assert(r.fresh && !r.busy);
     Key other{}; other[0] = 7;
-    assert(pr.answer(other, r.code, 4000, &token, &left) == Pairing::kNone);  // another phone's code
-    assert(pr.answer(phone, r.code, 5000, &token, &left) == Pairing::kPaired);
+    assert(pr.request(other, "Other", t).busy);  // one phone pairs at a time
+    assert(pr.answer(other, r.code, t, &token, &left) == Pairing::kNone);  // another phone's code
+    assert(pr.answer(phone, r.code, t + 1000, &token, &left) == Pairing::kPaired);
     assert(token != Key{} && pr.trusted(phone, token) && !pr.trusted(phone, none) && !pr.trusted(other, token));
-    assert(pr.size() == 1 && pr.names()[0] == "Test iPhone" && !pr.pending(5000));
-    // a code expires; "Don't pair" removes it
-    r = pr.request(other, "Other", 10'000);
-    assert(pr.answer(other, r.code, 10'000 + Pairing::kCodeLifetimeMs, &token, &left) == Pairing::kNone);
-    r = pr.request(other, "Other", 200'000);
-    pr.refuse();
-    assert(!pr.pending(200'000) && pr.answer(other, r.code, 200'000, &token, &left) == Pairing::kNone);
+    assert(pr.size() == 1 && pr.names()[0] == "Test iPhone" && !pr.pending(t + 1000));
+    // pairing leaves no cooldown; a code that expires does
+    t += 1000;
+    r = pr.request(other, "Other", t);
+    assert(r.fresh);
+    t += Pairing::kCodeLifetimeMs;
+    assert(pr.answer(other, r.code, t, &token, &left) == Pairing::kNone && pr.request(other, "Other", t).busy);
+    // "Don't pair" removes the code, with a cooldown too
+    t += Pairing::kCooldownMs;
+    r = pr.request(other, "Other", t);
+    assert(r.fresh);
+    pr.refuse(t);
+    assert(!pr.pending(t) && pr.answer(other, r.code, t, &token, &left) == Pairing::kNone);
+    assert(pr.request(other, "Other", t).busy);
+    t += Pairing::kCooldownMs;
     // saved and loaded: the same phones trusted (a name loses its line breaks)
     Key t2{};
-    r = pr.request(other, "Line\nbre;ak", 300'000);
-    assert(pr.answer(other, r.code, 300'000, &t2, &left) == Pairing::kPaired);
+    r = pr.request(other, "Line\nbre;ak", t);
+    assert(r.fresh && pr.answer(other, r.code, t, &t2, &left) == Pairing::kPaired);
     const std::string saved = pr.save();
     Pairing loaded;
     assert(saved.find('\n') == std::string::npos);
@@ -477,7 +489,7 @@ static void test_server_pairing() {
     n = recv(phone.s, buf, sizeof buf, 0);
     assert(parse_pairing(buf, size_t(n)) && !server.snapshot().connected);
     // a code typed with nothing pending
-    pr.refuse();
+    pr.refuse(0);
     phone.send(encode_pair({12, h.id, shown_code}));
     n = recv(phone.s, buf, sizeof buf, 0);
     pairing = parse_pairing(buf, size_t(n));

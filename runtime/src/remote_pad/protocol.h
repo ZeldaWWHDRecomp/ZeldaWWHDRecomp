@@ -44,8 +44,8 @@
 //
 // Names are a u8 byte length then UTF-8, at most kMaxName bytes.
 //
-// This file is plain C++ without sockets so the packets are unit-tested (runtime/tools/remote_pad_test.cpp).
-// The Swift side (ios/WWHDGamePad/Protocol.swift) mirrors it; change both together and bump kVersion.
+// Tested in runtime/tools/remote_pad_test.cpp. ios/WWHDGamePad/Protocol.swift mirrors this file: change
+// both together and bump kVersion.
 #pragma once
 #include <cstddef>
 #include <cstdint>
@@ -66,10 +66,10 @@ constexpr size_t kMaxDatagram = 1400;  // below the Wi-Fi MTU with IPv6 and UDP 
 
 enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7, kAudio = 8,
                       kPairing = 9, kPair = 10, kPaired = 11 };
-enum PairState : uint8_t { kEnterCode = 1, kWrongCode = 2, kNoCode = 3 };
-using Bytes16 = std::array<uint8_t, 16>;
-constexpr uint32_t kRumbleStaleMs = 250;
 enum HelloFlag : uint8_t { kWantsVideo = 1, kWantsAudio = 2 };  // a Hello's header flags
+enum PairState : uint8_t { kEnterCode = 1, kWrongCode = 2, kNoCode = 3 };
+constexpr uint32_t kRumbleStaleMs = 250;
+using Bytes16 = std::array<uint8_t, 16>;
 
 struct Header {
     uint16_t version = kVersion;
@@ -124,8 +124,9 @@ std::vector<uint8_t> encode_welcome(uint32_t session, const Welcome& w);
 std::vector<uint8_t> encode_input(uint32_t session, const Input& in);
 std::vector<uint8_t> encode_bye(uint32_t session);
 std::vector<uint8_t> encode_keyframe_request(uint32_t session);
-std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level);
+
 struct Rumble { uint32_t seq = 0; uint8_t level = 0; };
+std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level);
 std::optional<Rumble> parse_rumble(const uint8_t* data, size_t size);
 
 struct PairingReply { uint32_t nonce = 0; uint8_t state = 0; uint8_t attempts = 0; };

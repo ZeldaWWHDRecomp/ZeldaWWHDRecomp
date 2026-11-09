@@ -3926,7 +3926,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             hostui::post([pro = v == "1"] { hostui::set_pro_controller(pro); });
         // the iPhone GamePad: its paired phones, and on if it was (WWHD_REMOTE_PAD starts it anyway)
         if (hostui::get("remotePadPhones", v)) remote_pad::load_paired(v);
-        if (hostui::get("remotePad", v) && v == "1") remote_pad::set_enabled(true);
+        if (remote_pad::host_supported() && hostui::get("remotePad", v) && v == "1") remote_pad::set_enabled(true);
         // the saved rumble choice (WWHD_RUMBLE wins)
         if (!rumble::env_override() && hostui::get("rumble", v)) rumble::set_enabled(v != "0");
 #ifdef __ANDROID__

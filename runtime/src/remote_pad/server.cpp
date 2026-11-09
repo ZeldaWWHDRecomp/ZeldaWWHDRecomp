@@ -1,5 +1,4 @@
-// Remote GamePad server (server.h). POSIX sockets: macOS, Linux and Android; on Windows start() fails
-// (the iPhone client is the only one so far, and it pairs with the Mac).
+// Remote GamePad server (server.h). POSIX sockets; on Windows start() fails.
 #include "server.h"
 
 #include <cerrno>
@@ -63,27 +62,39 @@ void Server::end_session(const char*) {}
 #else
 bool Server::start(uint16_t port) {
     if (running_) return true;
-    sock_ = socket(AF_INET6, SOCK_DGRAM, 0);
+    // dual-stack IPv6 (IPv4 phones arrive mapped); plain IPv4 where IPv6 is off
+    const bool v6 = (sock_ = socket(AF_INET6, SOCK_DGRAM, 0)) >= 0;
+    if (!v6) sock_ = socket(AF_INET, SOCK_DGRAM, 0);
     if (sock_ < 0) { log_msg("[remote pad] socket: %s", strerror(errno)); return false; }
     int no = 0, yes = 1;
-    setsockopt(sock_, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof no);  // IPv4 phones too
+    if (v6) setsockopt(sock_, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof no);
     setsockopt(sock_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof yes);
     int sndbuf = 4 << 20;  // a keyframe leaves as one burst of pieces (macOS's UDP default is 9 KB)
     setsockopt(sock_, SOL_SOCKET, SO_SNDBUF, &sndbuf, sizeof sndbuf);
     timeval tv{0, 100 * 1000};  // wake up to send keepalives and notice silence
     setsockopt(sock_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
-    sockaddr_in6 addr{};
-    addr.sin6_family = AF_INET6;
-    addr.sin6_addr = in6addr_any;
-    addr.sin6_port = htons(port);
-    if (bind(sock_, reinterpret_cast<sockaddr*>(&addr), sizeof addr) != 0) {
+    sockaddr_storage addr{};
+    socklen_t len;
+    if (v6) {
+        auto& a = reinterpret_cast<sockaddr_in6&>(addr);
+        a.sin6_family = AF_INET6;
+        a.sin6_addr = in6addr_any;
+        a.sin6_port = htons(port);
+        len = sizeof a;
+    } else {
+        auto& a = reinterpret_cast<sockaddr_in&>(addr);
+        a.sin_family = AF_INET;
+        a.sin_addr.s_addr = htonl(INADDR_ANY);
+        a.sin_port = htons(port);
+        len = sizeof a;
+    }
+    if (bind(sock_, reinterpret_cast<sockaddr*>(&addr), len) != 0) {
         log_msg("[remote pad] port %u: %s", (unsigned)port, strerror(errno));
         close(sock_); sock_ = -1;
         return false;
     }
-    socklen_t len = sizeof addr;
     getsockname(sock_, reinterpret_cast<sockaddr*>(&addr), &len);
-    port_ = ntohs(addr.sin6_port);
+    port_ = ntohs(v6 ? reinterpret_cast<sockaddr_in6&>(addr).sin6_port : reinterpret_cast<sockaddr_in&>(addr).sin_port);
     running_ = true;
     thread_ = std::thread([this] { run(); });
     return true;
@@ -199,7 +210,8 @@ void Server::run() {
                                 address_text(from).c_str());
                         if (cb_.pairing) cb_.pairing(hello->device, req.code);
                     }
-                    reply_to_sender(encode_pairing({hello->nonce, kEnterCode, uint8_t(req.attempts)}));
+                    reply_to_sender(req.busy ? encode_pairing({hello->nonce, kNoCode, 0})
+                                             : encode_pairing({hello->nonce, kEnterCode, uint8_t(req.attempts)}));
                 } else if (hello && free) {
                     // a repeated Hello (its Welcome was lost) keeps the session; a new one starts afresh
                     if (!same_peer || hello->nonce != hello_nonce_) {

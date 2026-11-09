@@ -13,14 +13,11 @@ struct WWHDGamePadApp: App {
                 .preferredColorScheme(.dark)
         }
         .onChange(of: phase) { _, now in
-            // in the background iOS stops the sensors and the network: say goodbye, so the game
-            // lets the keyboard and its own controllers be the GamePad again at once
+            if now != .active { link.screen.setTouch(false) }  // a drag cut off by Control Center never ends
             if now == .background { link.suspend(); link.stopBrowsing() }
-            // back in front (maybe after allowing Local Network access, or on another Wi-Fi): look again,
-            // and rejoin the game it was connected to if that is still there
             if now == .active {
-                link.resumeIfNeeded()        // (first: the app is in front again)
-                link.browse(restart: true)   // its results rejoin a listed game
+                link.resumeIfNeeded()        // first: browsing only runs in front
+                link.browse(restart: true)
             }
         }
     }
@@ -117,12 +114,12 @@ struct ConnectView: View {
         }
         .onAppear {
             link.browse()
-            // `-connect <address>` at launch (Xcode scheme arguments, simctl launch): connect at once, once
-            // (the argument stays for the whole launch; coming back from the background rejoins by itself)
+            // test aids: `-connect <address>` / `-join <name>` launch arguments, once per launch (they stay set
+            // for the whole launch, and coming back from the background rejoins by itself)
             if !Self.launchConnectDone, case .idle = link.status {
                 Self.launchConnectDone = true
                 if let a = UserDefaults.standard.string(forKey: "connect") { link.connect(address: a) }
-                else if let name = UserDefaults.standard.string(forKey: "join") { link.join(name) }  // `-join <name>`
+                else if let name = UserDefaults.standard.string(forKey: "join") { link.join(name) }
             }
         }
     }
@@ -140,7 +137,7 @@ struct PairingSection: View {
         Section {
             switch prompt {
             case .expired:
-                Text("The code expired or was refused on the computer.")
+                Text("No code right now: it expired or was refused on the computer, or another phone is pairing. A new code can take up to 30 seconds.")
                 Button("Show a new code") { link.requestNewPairingCode() }
             default:
                 TextField("6-digit code", text: $code)
@@ -151,7 +148,7 @@ struct PairingSection: View {
                     .onChange(of: code) { _, new in
                         let digits = String(new.filter(\.isNumber).prefix(6))
                         if digits != new { code = digits }
-                        if digits.count == 6 { link.submitPairingCode(digits) }  // no extra tap
+                        if digits.count == 6 { link.submitPairingCode(digits) }
                     }
                     .disabled(prompt == .checking)
                 if case let .wrongCode(left) = prompt {
@@ -232,6 +229,7 @@ struct GamePadView: View {
                 .onChanged { touch($0.location, in: area) }
                 .onEnded { _ in release() })
             .onAppear { updateTurns() }
+            .onDisappear { release() }
             .onChange(of: geo.size) { _, _ in updateTurns() }
         }
         .ignoresSafeArea()

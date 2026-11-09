@@ -175,6 +175,16 @@ int main() {
     @autoreleasepool {
         g_dev = MTLCreateSystemDefaultDevice();
         if (!g_dev) { puts("remote_video_test: no Metal device, skipped"); return 0; }
+        // a virtual machine (CI) may have no hardware H.264 encoder, which remote_video requires
+        NSDictionary* hw = @{(id)kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: @YES};
+        VTCompressionSessionRef probe = nullptr;
+        if (VTCompressionSessionCreate(nullptr, 854, 480, kCMVideoCodecType_H264, (__bridge CFDictionaryRef)hw, nullptr,
+                                       nullptr, nullptr, nullptr, &probe) != noErr) {
+            puts("remote_video_test: no hardware H.264 encoder, skipped");
+            return 0;
+        }
+        VTCompressionSessionInvalidate(probe);
+        CFRelease(probe);
         g_queue = [g_dev newCommandQueue];
         setenv("WWHD_REMOTE_PAD", "26991", 1);
         start_from_env();

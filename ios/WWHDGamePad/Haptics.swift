@@ -10,6 +10,7 @@ import Foundation
 import GameController
 
 final class RumblePlayer: @unchecked Sendable {
+    private let queue: DispatchQueue
     private var engine: CHHapticEngine?
     private var player: CHHapticAdvancedPatternPlayer?
     private var playing = false
@@ -21,7 +22,8 @@ final class RumblePlayer: @unchecked Sendable {
     /// the controller to vibrate if it has rumble; set on the link queue
     weak var controller: GCController?
 
-    /// a new strength from the game
+    init(queue: DispatchQueue) { self.queue = queue }
+
     func set(seq: UInt32, level: Float) {
         if let last = lastSeq, Int32(bitPattern: seq &- last) <= 0 { return }  // older or repeated
         lastSeq = seq
@@ -78,8 +80,9 @@ final class RumblePlayer: @unchecked Sendable {
             e.playsHapticsOnly = true
             e.isAutoShutdownEnabled = false
             // the system stops an engine (another app, an audio interruption); start again next time
-            e.stoppedHandler = { [weak self] _ in self?.playing = false }
-            e.resetHandler = { [weak self] in self?.drop() }
+            // (Core Haptics calls these on its own queue)
+            e.stoppedHandler = { [weak self] _ in self?.queue.async { self?.playing = false } }
+            e.resetHandler = { [weak self] in self?.queue.async { self?.drop() } }
             // full strength and a low sharpness: a motor's rumble, not a tap; the game's strength scales it
             let event = CHHapticEvent(eventType: .hapticContinuous, parameters: [
                 CHHapticEventParameter(parameterID: .hapticIntensity, value: 1),

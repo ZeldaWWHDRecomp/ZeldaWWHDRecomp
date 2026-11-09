@@ -8,7 +8,7 @@ import AVFoundation
 import Foundation
 import os
 
-/// The samples waiting to be played. Plain logic, tested in VideoTests.
+/// The samples waiting to be played (tested in SpeakerTests).
 struct JitterBuffer {
     static let rate = 48_000
     let target: Int          // frames buffered before playing starts
@@ -77,17 +77,20 @@ final class Speaker: @unchecked Sendable {
     private let buffer = OSAllocatedUnfairLock(initialState: JitterBuffer())
     private var engine: AVAudioEngine?    // link queue
     private var lastPiece = Date.distantPast
+    private var retryAfter = Date.distantPast  // a failed start is not tried again on every piece
 
     /// link queue: a piece from the game (starts the output on the first one)
     func push(_ p: WWGP.AudioPiece) {
         buffer.withLock { $0.push(p) }
         lastPiece = Date()
-        if engine == nil { start() }
+        if engine == nil, lastPiece >= retryAfter { start() }
     }
 
-    /// link queue: every tick; the output stops after a while without pieces (saves power)
+    /// link queue: every tick. The output stops after a while without pieces (saves power), and when iOS
+    /// stopped the engine (a call, Siri, headphones connected) the next piece starts it again.
     func tick() {
-        if engine != nil, Date().timeIntervalSince(lastPiece) > 2 { stop() }
+        guard let e = engine else { return }
+        if !e.isRunning || Date().timeIntervalSince(lastPiece) > 2 { stop() }
     }
 
     /// link queue: disconnected, a new session, the background
@@ -124,6 +127,7 @@ final class Speaker: @unchecked Sendable {
             print("[speaker] playing the GamePad speaker (\(Int(session.ioBufferDuration * 1000)) ms output buffer)")
         } catch {
             print("[speaker] cannot start: \(error.localizedDescription)")
+            retryAfter = Date() + 2
         }
     }
 

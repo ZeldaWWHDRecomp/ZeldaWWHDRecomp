@@ -29,8 +29,10 @@ void log_msg(const char* fmt, ...);
 namespace remote_pad {
 namespace {
 
+// g_mu guards g_server itself only: callers copy the pointer and send (or stop and join) outside it,
+// so the audio thread never waits for a keyframe burst or a shutdown
 std::mutex g_mu;
-std::unique_ptr<Server> g_server;
+std::shared_ptr<Server> g_server;
 int g_turns = -1;  // the phone's screen rotation of the previous motion sample (server thread)
 std::atomic<bool> g_video{false}, g_keyframe{false};
 RumbleSender g_rumble;          // the host's input thread
@@ -69,8 +71,13 @@ uint64_t now_ms() {
         std::chrono::steady_clock::now().time_since_epoch()).count());
 }
 
-void start_locked(uint16_t port);  // g_mu held
-void stop_locked();
+void start_locked(uint16_t port);       // g_mu held
+std::shared_ptr<Server> take_locked();  // g_mu held: the server to stop (outside g_mu) with stopped()
+void stopped(std::shared_ptr<Server> s);
+std::shared_ptr<Server> server() {
+    std::lock_guard lk(g_mu);
+    return g_server;
+}
 
 }  // namespace
 
@@ -86,9 +93,13 @@ void start_from_env() {
 
 void set_enabled(bool on) {
     g_enabled = on;
-    std::lock_guard lk(g_mu);
-    if (on || g_env) start_locked(g_port);
-    else stop_locked();
+    std::shared_ptr<Server> old;
+    {
+        std::lock_guard lk(g_mu);
+        if (on || g_env) start_locked(g_port);
+        else old = take_locked();
+    }
+    stopped(std::move(old));
 }
 bool enabled() { return g_enabled || g_env; }
 bool env_forced() { return g_env; }
@@ -96,12 +107,12 @@ void set_host_supported() { g_host = true; }
 bool host_supported() { return g_host; }
 
 Status status() {
-    std::lock_guard lk(g_mu);
     Status st;
-    if (!g_server) return st;
+    const auto srv = server();
+    if (!srv) return st;
     st.listening = true;
-    st.port = g_server->port();
-    const Server::Snapshot s = g_server->snapshot();
+    st.port = srv->port();
+    const Server::Snapshot s = srv->snapshot();
     st.connected = s.connected;
     st.device = s.device;
     st.controller = s.controller;
@@ -115,7 +126,7 @@ std::optional<PairingCode> pairing_code() {
     return std::nullopt;
 }
 bool take_pairing_request() { return g_pair_request.exchange(false); }
-void refuse_pairing() { g_pairing.refuse(); }
+void refuse_pairing() { g_pairing.refuse(now_ms()); }
 size_t paired_phones() { return g_pairing.size(); }
 void forget_paired_phones() {
     g_pairing.forget_all();
@@ -132,7 +143,7 @@ namespace {
 void start_locked(uint16_t port) {
     if (g_server) return;
     const std::string name = host_name();
-    g_server = std::make_unique<Server>(Server::Callbacks{
+    g_server = std::make_shared<Server>(Server::Callbacks{
         [](const Server::Snapshot& s) { g_turns = -1; g_keyframe = true; g_video = s.video; g_audio = s.audio; g_rumble_reset = true; g_connected = true; },
         on_input,
         [](const std::string&) { motion::remote_reset(); g_turns = -1; g_video = false; g_audio = false; g_connected = false; },
@@ -159,28 +170,34 @@ void start_locked(uint16_t port) {
 #endif
 }
 
-void stop_locked() {
+std::shared_ptr<Server> take_locked() {
 #ifdef __APPLE__
     if (g_bonjour) { DNSServiceRefDeallocate(g_bonjour); g_bonjour = nullptr; }
 #endif
-    if (!g_server) return;
-    g_server->stop();
-    g_server.reset();
+    return std::move(g_server);
+}
+void stopped(std::shared_ptr<Server> s) {
+    if (!s) return;
+    s->stop();
     g_connected = g_video = g_audio = false;
     log_msg("[remote pad] stopped listening for the iPhone GamePad");
 }
 }  // namespace
 
 void stop() {
-    std::lock_guard lk(g_mu);
-    stop_locked();
+    std::shared_ptr<Server> old;
+    {
+        std::lock_guard lk(g_mu);
+        old = take_locked();
+    }
+    stopped(std::move(old));
 }
 
 Pad pad() {
-    std::lock_guard lk(g_mu);
     Pad p;
-    if (!g_server) return p;
-    const Server::Snapshot s = g_server->snapshot();
+    const auto srv = server();
+    if (!srv) return p;
+    const Server::Snapshot s = srv->snapshot();
     p.connected = s.connected;
     p.device = s.device;
     p.controller = s.controller;
@@ -191,8 +208,7 @@ Pad pad() {
 bool video_wanted() { return g_video.load(std::memory_order_relaxed); }
 bool take_keyframe_request() { return g_keyframe.exchange(false); }
 void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height) {
-    std::lock_guard lk(g_mu);
-    if (g_server) g_server->send_video(data, size, key, time_ns, width, height);
+    if (const auto srv = server()) srv->send_video(data, size, key, time_ns, width, height);
 }
 
 bool audio_wanted() { return g_audio.load(std::memory_order_relaxed); }
@@ -204,8 +220,7 @@ void send_audio(const int32_t* left, const int32_t* right, int frames) {
         lr[2 * i] = int16_t(std::clamp<int32_t>(left[i], -32768, 32767));
         lr[2 * i + 1] = int16_t(std::clamp<int32_t>(right[i], -32768, 32767));
     }
-    std::lock_guard lk(g_mu);
-    if (g_server) g_server->send_audio(lr, uint16_t(frames));
+    if (const auto srv = server()) srv->send_audio(lr, uint16_t(frames));
 }
 
 int RumbleSender::update(float level, uint64_t now) {
@@ -219,8 +234,7 @@ int RumbleSender::update(float level, uint64_t now) {
         send = 0;
     }
     if (send < 0) return -1;
-    if (send == 0 && (sent_ != 0 || !any_)) stops_left_ = kStopRepeats - 1;
-    if (!any_ && send == 0) stops_left_ = 0;  // nothing ran: one still is enough
+    if (send == 0 && any_ && sent_ != 0) stops_left_ = kStopRepeats - 1;  // (nothing ran yet: one still is enough)
     sent_ = send;
     at_ = now;
     any_ = true;
@@ -230,12 +244,10 @@ int RumbleSender::update(float level, uint64_t now) {
 void rumble(float level) {
     if (!g_connected.load(std::memory_order_relaxed)) return;  // (cheap: called every input update)
     if (g_rumble_reset.exchange(false)) g_rumble.reset();
-    const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now().time_since_epoch()).count());
-    const int send = g_rumble.update(level, now);
+    const int send = g_rumble.update(level, now_ms());
     if (send < 0) return;
-    std::lock_guard lk(g_mu);
-    if (!g_server || !g_server->send_rumble(uint8_t(send))) g_rumble.reset();  // nobody connected: from still next time
+    const auto srv = server();
+    if (!srv || !srv->send_rumble(uint8_t(send))) g_rumble.reset();  // nobody connected: from still next time
 }
 
 void pad_values(const Input& in, float* v) {

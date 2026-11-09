@@ -5,8 +5,8 @@
 // reconnected), or when the phone that has it stopped sending (kTimeout). Inputs are kept only from the
 // phone with the session and only when newer. Silence for kTimeout or a Bye ends the session.
 //
-// Threads: the callbacks run on the server thread and must be short (they only store a sample).
-// snapshot() is safe from any thread. stop() joins the thread.
+// Threads: the callbacks run on the server thread with its lock held: they must be short and must not
+// call back into the Server. Everything else is safe from any thread; stop() joins the thread.
 #pragma once
 #include "pairing.h"
 #include "protocol.h"
@@ -76,9 +76,9 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     mutable std::mutex mu_;
-    std::mutex send_mu_;             // held while sending video: stop() closes the socket under it
+    std::mutex send_mu_;             // held while sending from another thread: stop() closes the socket under it
     Snapshot state_;
-    uint8_t peer_[128] = {};         // sockaddr_storage of the phone with the session
+    uint8_t peer_[128] = {};         // the phone's sockaddr_storage (no socket headers here: Windows builds this)
     uint32_t peer_len_ = 0;
     std::chrono::steady_clock::time_point seen_{}, keepalive_{};
     uint32_t hello_nonce_ = 0;

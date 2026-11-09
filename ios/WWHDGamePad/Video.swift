@@ -9,7 +9,7 @@ import CoreMedia
 import SwiftUI
 import UIKit
 
-/// Puts frames back together from their pieces. Plain logic, tested in VideoTests.
+/// Puts frames back together from their pieces (tested in VideoTests).
 struct FrameAssembler {
     struct Frame: Equatable {
         var id: UInt32

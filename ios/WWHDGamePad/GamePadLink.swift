@@ -76,7 +76,7 @@ final class GamePadLink: ObservableObject {
     nonisolated let queue = DispatchQueue(label: "org.wwhdrecomp.gamepad.link", qos: .userInteractive)
     nonisolated let screen = TouchAndScreen()
     nonisolated let video = VideoReceiver()
-    nonisolated let rumble = RumblePlayer()   // (link queue)
+    nonisolated let rumble: RumblePlayer      // (link queue)
     nonisolated let speaker = Speaker()       // (link queue)
     nonisolated private let controller: ControllerReader
     nonisolated private let motion: MotionReader
@@ -109,6 +109,7 @@ final class GamePadLink: ObservableObject {
     }
 
     init() {
+        rumble = RumblePlayer(queue: queue)
         controller = ControllerReader(queue: queue)
         motion = MotionReader(queue: queue)
         controller.onChange = { [weak self] name in self?.controllerName = name }
@@ -182,13 +183,24 @@ final class GamePadLink: ObservableObject {
 
     // MARK: connecting
 
+    /// The player's choice: it replaces a pending rejoin.
     func connect(_ game: Game) {
-        lastTarget = .game(game.name)
-        connect(to: game.endpoint, label: game.name)
+        cancelResume()
+        open(game)
     }
 
     /// "192.168.1.20", "Mac-mini.local" or either with ":port"
     func connect(address: String) {
+        cancelResume()
+        open(address: address)
+    }
+
+    private func open(_ game: Game) {
+        lastTarget = .game(game.name)
+        connect(to: game.endpoint, label: game.name)
+    }
+
+    private func open(address: String) {
         var host = address.trimmingCharacters(in: .whitespaces)
         var port = WWGP.defaultPort
         // "host:port" (one colon) or "[IPv6]:port"; a bare IPv6 address keeps its colons
@@ -231,7 +243,7 @@ final class GamePadLink: ObservableObject {
             c.stateUpdateHandler = { [weak self] state in
                 guard let self else { return }
                 if case let .failed(error) = state {
-                    Task { @MainActor in self.status = .failed("\(label): \(error.localizedDescription)") }
+                    Task { @MainActor in self.linkStatus(.failed("\(label): \(error.localizedDescription)")) }
                 }
             }
             c.start(queue: queue)
@@ -257,6 +269,7 @@ final class GamePadLink: ObservableObject {
     /// rejoin if this phone was connected, connecting or reconnecting.
     func suspend() {
         foreground = false
+        screen.setTouch(false)
         note("background: status \(status), last target \(String(describing: lastTarget))")
         if isActive, let t = lastTarget {
             resumeTarget = t
@@ -282,7 +295,7 @@ final class GamePadLink: ObservableObject {
         case let .address(address):
             resumeTarget = nil
             resuming = nil
-            connect(address: address)
+            open(address: address)
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.resumeTimeout) { [weak self] in
             guard let self, attempt == self.resumeAttempt else { return }
@@ -304,7 +317,7 @@ final class GamePadLink: ObservableObject {
         note("rejoining \(name)")
         resumeTarget = nil
         resuming = nil
-        connect(game)
+        open(game)
     }
 
     /// `-join <name>` at launch: connect to the listed game of that name as soon as it is found
@@ -339,11 +352,27 @@ final class GamePadLink: ObservableObject {
         }
     }
 
+    /// A status from the link queue. It arrives late, so it is dropped once the link was closed (idle) or
+    /// given up (failed) in the meantime.
+    private func linkStatus(_ s: Status) {
+        switch status {
+        case .idle, .failed: return
+        default: status = s
+        }
+    }
+
     // MARK: link queue
 
     nonisolated private func receive(on c: NWConnection) {
         c.receiveMessage { [weak self] data, _, _, error in
-            guard let self, error == nil else { return }
+            guard let self else { return }
+            if error != nil {
+                switch c.state {
+                case .failed, .cancelled: return
+                default: self.queue.asyncAfter(deadline: .now() + 0.1) { self.receive(on: c) }
+                }
+                return
+            }
             let bytes = data.map { Array($0) } ?? []
             if let (session, piece) = WWGP.video(bytes) {
                 if session == self.session, c === self.connection { self.video.add(piece) }
@@ -360,14 +389,14 @@ final class GamePadLink: ObservableObject {
                 case .wrongCode: .wrongCode(p.attempts)
                 case .noCode: .expired
                 }
-                Task { @MainActor in self.status = .pairing(label, prompt) }
+                Task { @MainActor in self.linkStatus(.pairing(label, prompt)) }
             } else if let p = WWGP.paired(bytes), p.nonce == self.nonce, c === self.connection {
                 let label = self.target
                 Pairing.save(token: p.token, for: label)
                 self.token = p.token
                 self.pairingWait = false
                 self.lastHello = .distantPast  // Hello with the token at once
-                Task { @MainActor in self.status = .connecting(label) }
+                Task { @MainActor in self.linkStatus(.connecting(label)) }
             } else if let w = WWGP.welcome(bytes), w.nonce == self.nonce, c === self.connection {
                 let wasConnected = self.session != 0 && Date().timeIntervalSince(self.lastWelcome) < 3
                 if w.session != self.session {  // a new session: from its first keyframe, motor still
@@ -377,7 +406,10 @@ final class GamePadLink: ObservableObject {
                 }
                 self.session = w.session
                 self.lastWelcome = Date()
-                if !wasConnected { Task { @MainActor in self.status = .connected(w.host.isEmpty ? self.target : w.host) } }
+                if !wasConnected {
+                    let host = w.host.isEmpty ? self.target : w.host
+                    Task { @MainActor in self.linkStatus(.connected(host)) }
+                }
             }
             self.receive(on: c)
         }
@@ -422,7 +454,7 @@ final class GamePadLink: ObservableObject {
         if session != 0 && now.timeIntervalSince(lastWelcome) > 3 {
             session = 0
             let label = target
-            Task { @MainActor in self.status = .lost(label) }
+            Task { @MainActor in self.linkStatus(.lost(label)) }
         }
         if session == 0 {
             if !pairingWait, now.timeIntervalSince(lastHello) >= 0.5 {
