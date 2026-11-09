@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android full screen on handheld systems** (#489, #349, thanks @plxjammerplx for the logs and screenshots). With
+  Full screen on, the game window now also uses the calls some handheld systems need to give an app the navigation
+  bar's space (seen on a Retroid Pocket Nova, where the bottom 48 rows stayed black), and the log's `[display] Android
+  screen:` line now shows which part of the screen the game's picture really gets and the navigation mode.
+
 - **Decomp build (fast mode): about 0.5–0.7 ms less game logic per frame on a phone.** Two sets of steps, all on
   by default in fast mode: decompiled code sets up its local variables with fewer lookups and caches its text strings
   per call site, and calls between decompiled functions avoid the guest call path more often (functions whose
