@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "proto/client.h"
 #include "proto/chat.h"
 #include "proto/channel.h"
 #include "proto/handshake.h"
@@ -200,6 +201,22 @@ static void test_messages() {
         size_t sl;
         decode_hello(r.data(), r.size(), hh, sl);
     }
+}
+
+// the look messages: ids of their own (no other message has 29 or 91), a record fits one reliable frame
+static void test_look_messages() {
+    const int all[] = {kMsgPose,kMsgStage,kMsgApp,kMsgEmote,kMsgBlock,kMsgUnblock,kMsgReport,kMsgBye,kMsgSwitchCopy,kMsgPartyInvite,kMsgPartyAccept,kMsgPartyDecline,kMsgPartyLeave,kMsgPartySettings,kMsgProgress,kMsgTeamStateAsk,kMsgPinRunner,kMsgPing,kMsgJoinCopyOf,kMsgPvpFlag,kMsgPvpHit,kMsgPvpShot,kMsgPvpKo,kMsgChat,kMsgChatPrefs,kMsgLook,kMsgMute,kMsgUnmute,kMsgPartyRestore,kMsgPoseBatch,kMsgPlayerIn,kMsgPlayerOut,kMsgMarkers,kMsgEmoteOf,kMsgAppFrom,kMsgNotice,kMsgCopy,kMsgPartyInvited,kMsgPartyState,kMsgRunner,kMsgTeamState,kMsgPartyResult,kMsgRedirect,kMsgPvpRules,kMsgPvpHitOn,kMsgPvpShotOf,kMsgPvpKoOf,kMsgPvpRupees,kMsgPvpState,kMsgPvpMarks,kMsgPvpRespawn,kMsgPartyWhere,kMsgSeaPlayers,kMsgChatRules,kMsgChatFrom,kMsgChatResult,kMsgLookOf};
+    int look = 0, look_of = 0;
+    for (int m : all) look += m == kMsgLook, look_of += m == kMsgLookOf;
+    CHECK(look == 1 && look_of == 1 && kMsgLook == 29 && kMsgLookOf == 91);
+    CHECK(kMaxLook >= 27 && 2 + kMaxLook < kPieceBytes);  // (link_appearance's largest record, with the id)
+    // a client that is not online keeps the look for its WELCOME; one too long is refused
+    Client c;
+    const uint8_t look_bytes[3] = {1, 0, 0};
+    c.send_look(look_bytes, sizeof look_bytes);
+    Bytes big(kMaxLook + 1, 0);
+    c.send_look(big.data(), big.size());
+    CHECK(c.state() == ClientState::kOff);
 }
 
 // two channels joined by a lossy, duplicating, reordering link
@@ -536,6 +553,7 @@ int main() {
     test_pow();
     test_handshake();
     test_messages();
+    test_look_messages();
     test_chat();
     test_channel_burst();
     test_channel(0, 0, 0, 1);

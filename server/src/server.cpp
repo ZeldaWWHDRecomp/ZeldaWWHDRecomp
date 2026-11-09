@@ -538,6 +538,7 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     s->reliable.init(cfg_.reliable_per_s, cfg_.reliable_per_s * 2, now);
     s->app.init(cfg_.app_per_s, cfg_.app_per_s * 2, now);
     s->emote.init(cfg_.emote_per_s, 2, now);
+    s->look_rate.init(2, 4, now);  // looks: 2 a second, 4 at once (the game sends one at a join and on a change)
     // a leader may fill a whole party at once; repeated invites after that refill one per invite_every_s
     s->invite.init(1.0 / cfg_.invite_every_s, std::max(2, cfg_.party_max - 1), now);
     s->report.init(1.0 / cfg_.report_every_s, 1, now);
@@ -659,6 +660,11 @@ void Server::on_message(Session& s, const Delivered& m, uint32_t now) {
                 if (v.mutes.count(s.key_hash)) return void(metrics_.muted_drops++);  // muted: no emotes from them
                 v.chan.send_reliable(kMsgEmoteOf, b);
             });
+            break;
+        }
+        case kMsgLook: {  // the newest is kept; the tick passes it to everyone who sees this player (near or mid)
+            if (m.body.size() > kMaxLook || !s.look_rate.take(1, now)) break;
+            s.look_record = m.body;
             break;
         }
         case kMsgBlock:
@@ -1250,6 +1256,19 @@ void Server::interest(Session& s, uint32_t now) {
         uint32_t oms = c.s ? c.s->pose_ms : c.g->pose_ms;
         size_t before = batch.size();
         if (tier == kTierNear && c.s && (!c.s->has_pose || c.s->hidden)) tier = kTierMid;
+        // their look, to anyone who sees them near or mid: when they come into sight and when it changes
+        if (tier <= kTierMid) {
+            const Bytes& look = c.s ? c.s->look_record : c.g->look_record;
+            if (!sn.look_sent ? !look.empty() : sn.look != look) {
+                Bytes lb;
+                Writer lw(lb);
+                lw.u16(id);
+                lw.bytes(look.data(), look.size());
+                s.chan.send_reliable(kMsgLookOf, lb);
+                metrics_.looks_sent++;
+            }
+            sn.look_sent = true, sn.look = look;
+        }
         if (tier == kTierNear) {
             ++near_n;
             if (changed || sn.pose_seq != oseq) {

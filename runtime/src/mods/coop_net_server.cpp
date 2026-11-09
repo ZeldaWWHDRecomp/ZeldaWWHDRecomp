@@ -496,6 +496,11 @@ void send(int to, Msg type, const std::string& body) {
         if (g_client && body.size() == 1) g_client->send_emote((uint8_t)body[0]);
         return;
     }
+    if (type == kLook) {  // (the server's LOOK: kept there and passed to everyone who sees this player, party or not,
+        // now and when they come into sight later)
+        if (g_client && body.size() <= op::kMaxLook) g_client->send_look((const uint8_t*)body.data(), body.size());
+        return;
+    }
     if (!g_client || !in_party()) return;
     op::AppHeader h;
     h.type = (uint8_t)type;
@@ -878,6 +883,11 @@ void poll(Handler& h) {
             const int s = slot_of(e.id);
             const uint8_t id = (uint8_t)e.value;
             if (s >= 0) h.message(s, kEmote, &id, 1);
+            break;
+        }
+        case op::ClientEvent::kLookOf: {  // a player in sight, in the party or not: its puppet in its look
+            const int s = slot_of(e.id);
+            if (s >= 0) h.message(s, kLook, e.body.data(), e.body.size());
             break;
         }
         case op::ClientEvent::kChatRules:  // the server's chat (coop_chat.h); none came: no chat

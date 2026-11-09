@@ -399,6 +399,7 @@ void Client::handle(const uint8_t* d, size_t n, uint32_t now) {
             e.id = w.id;
             e.resumed = w.resumed;
             events_.push_back(std::move(e));
+            if (have_look_) chan_.send_reliable(kMsgLook, look_);  // (a new session on this or another worker: the look again)
             break;
         }
         case kPktRefuse: {
@@ -473,6 +474,15 @@ void Client::handle_message(const Delivered& m) {
                 p.name = r.str8(24);
                 if (r.ok()) e.sea_players.push_back(std::move(p));
             }
+            if (r.done()) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgLookOf: {
+            ClientEvent e{ClientEvent::kLookOf};
+            e.id = r.u16();
+            if (!r.ok() || r.left() > kMaxLook) break;
+            e.body.resize(r.left());
+            r.bytes(e.body.data(), e.body.size());
             if (r.done()) events_.push_back(std::move(e));
             break;
         }
@@ -706,6 +716,13 @@ void Client::send_chat(uint8_t channel, const std::string& text) {
     say.channel = channel;
     say.text = text;
     chan_.send_reliable(kMsgChat, encode_chat_say(say));
+}
+
+void Client::send_look(const uint8_t* look, size_t n) {
+    if (n > kMaxLook) return;
+    look_.assign(look, look + n);
+    have_look_ = true;
+    if (state_ == ClientState::kOnline) chan_.send_reliable(kMsgLook, look_);
 }
 
 void Client::chat_prefs(uint8_t off_bits) {

@@ -21,6 +21,7 @@ constexpr size_t kHeaderBytes = 17;        // kind 1, connection id 4, packet nu
 constexpr size_t kTagBytes = 16;
 constexpr size_t kMaxPoseBlob = 1100;      // the game's opaque pose payload (the client caps it)
 constexpr size_t kMaxAppBody = 1100;       // one opaque app message
+constexpr size_t kMaxLook = 32;            // a player's look record (the game: link_appearance::encode, 3..27 bytes)
 constexpr size_t kMaxStream = 64 * 1024;   // one reliable message split in pieces (join / team state)
 constexpr size_t kPieceBytes = 1000;       // piece size of a split reliable message
 
@@ -101,6 +102,10 @@ enum Msg : uint8_t {
     kMsgPvpKo = 26,         // reliable: u16 by, u16 wallet (the victim's game: knocked out by that player)
     kMsgChat = 27,          // reliable: ChatSay (chat.h): a line for the party or the global channel
     kMsgChatPrefs = 28,     // reliable: u8 bit per ChatChannel the player turned off (its lines are not sent to them)
+    kMsgLook = 29,          // reliable: the player's look record (opaque, <= kMaxLook; empty: none). The server keeps the
+                            // newest and passes it to everyone who sees the player near or mid, now and whenever they come
+                            // into sight (kMsgLookOf); at most 2 a second (more are dropped). The client sends it again after
+                            // each WELCOME.
     kMsgMute = 21,          // reliable: u64 key hash (that player's emotes, effects, sounds and voice stop reaching you)
     kMsgUnmute = 22,        // reliable: u64 key hash
     kMsgPartyRestore = 20,  // reliable: PartyRecord (messages.h): after a fresh WELCOME (the server restarted),
@@ -139,6 +144,7 @@ enum Msg : uint8_t {
     kMsgChatRules = 88,     // reliable: ChatRules (chat.h), after WELCOME (none: the server has no chat)
     kMsgChatFrom = 89,      // reliable: ChatLine (chat.h): a line of the party's or the global channel (yours too)
     kMsgChatResult = 90,    // reliable: u8 ChatResult, u8 channel, str8 text: a line of yours not passed on, and why
+    kMsgLookOf = 91,        // reliable: u16 id, the look record (the rest of the body): that player's look (empty: none)
 };
 
 // Where a player is. `stage` is the game's internal stage code (up to 8 bytes, zero padded).

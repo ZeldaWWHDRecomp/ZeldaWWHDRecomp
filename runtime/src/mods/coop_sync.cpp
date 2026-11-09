@@ -401,7 +401,9 @@ bool door_held(Cpu* c) {
     return true;
 }
 
-// each player's look (kLook: link_appearance::encode, empty: none heard), and this game's look as last sent
+// each player's look (kLook: link_appearance::encode, empty: none heard), and this game's look as last sent. Played
+// directly, the look goes to everyone at each join; through a server it goes to the server, which keeps it and passes it
+// to every player who sees this one (party or not), also to those who come into sight later
 std::vector<uint8_t> g_looks[net::kMaxPlayers];
 std::vector<uint8_t> g_look_sent;
 bool g_look_due = false;
@@ -606,7 +608,7 @@ struct Handler : net::Handler {
     }
     void joined(int id) override {
         if (id >= 0 && id < net::kMaxPlayers) g_looks[id].clear();
-        g_look_due = true;  // (the newcomer gets this game's look)
+        if (!net::via_server()) g_look_due = true;  // (the newcomer gets this game's look; a server keeps it and passes it on)
         ss::notice(net::name(id) + " joined (" + kTunics[net::tunic(id)] + ")");
         // (with "stay together" the host's world goes to a guest; else, Anchor's way, every member's team state goes to
         // each who joined and the newcomer's to each member, so what anyone did while apart is merged in both ways)

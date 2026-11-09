@@ -85,8 +85,8 @@ For scripted tests the environment variables `WWHD_COOP=host[:port]` or `WWHD_CO
   other.
 - **Their look:** a player who chose Link's colours (hair, skin, eyes, tunic and details: the dyer on Windfall,
   the `link-appearance` mod) is shown in them, also while they try colours on her page. Where their look leaves
-  the tunic as it is, their co-op tunic colour shows. Players outside your party (through a server) are shown in
-  their co-op tunic colour only.
+  the tunic as it is, their co-op tunic colour shows. Through a server everyone you can see shows their look, in your
+  party or not, also players who arrive later.
 - **Their items:** you see what they hold, throw and fire. Their bombs, and the Bomb Flowers they throw, go off in
   your game too. The flower plants themselves are your own: one they pick still grows in your game.
 - **The story and items:** story events, chests, switches, pickups, small keys and dungeon items,
