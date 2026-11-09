@@ -64,6 +64,20 @@ int main() {
     }
     aspect::set_window_aspect(1281.f/960.f);assert(close_enough(aspect::requested(),4.f/3));
     aspect::set_window_aspect(1.431f);assert(close_enough(aspect::requested(),1.43f));
+    // #490: presets within 1 % of the window take the window's shape; others stay exact.
+    auto preset_in=[](int m,float w,float h){aspect::set_mode(m);aspect::set_window_aspect(w/h);return aspect::requested();};
+    assert(close_enough(preset_in(aspect::k21x9,3440,1440),2.39f));  // stored window value (43:18 = 2.389)
+    assert(close_enough(preset_in(aspect::k21x9,2560,1080),64.f/27));
+    assert(close_enough(preset_in(aspect::k21x9,1920,1080),64.f/27));
+    assert(close_enough(preset_in(aspect::k32x9,5120,1440),32.f/9));
+    assert(close_enough(preset_in(aspect::k16x10,1920,1200),1.6f));
+    assert(close_enough(preset_in(aspect::k4x3,1.34f,1),1.34f));
+    assert(close_enough(preset_in(aspect::k4x3,1.35f,1),4.f/3));  // 1.25 % away: stays exact
+    assert(close_enough(preset_in(aspect::kOriginal,1.77f*1.005f,1),16.f/9));
+    assert(close_enough(preset_in(aspect::kOriginal,3440,1440),16.f/9));
+    assert(close_enough(preset_in(aspect::kCustom,3440,1440),aspect::mode_value(aspect::kCustom)));
+    assert(close_enough(preset_in(aspect::kWindow,3440,1440),2.39f));
+    aspect::set_mode(aspect::kWindow);aspect::set_window_aspect(1.431f);
     for(uint32_t base:{0x101E0000u,0x10460000u}) {
         void* address=mem::ptr(base);
 #ifdef _WIN32

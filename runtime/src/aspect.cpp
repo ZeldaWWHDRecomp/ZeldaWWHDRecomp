@@ -196,8 +196,16 @@ void set_window_aspect(float a) {
 float requested() {
     if(float pack=mods::cemu::aspect_ratio())return pack;
     int m = mode();
-    return clamp_aspect(m == kWindow ? g_window.load(std::memory_order_relaxed) /
-        (stereo::requestedMode == stereo::FullSBS ? 2.0f : 1.0f) : mode_value(m));
+    const float window = g_window.load(std::memory_order_relaxed) /
+        (stereo::requestedMode == stereo::FullSBS ? 2.0f : 1.0f);
+    if (m == kWindow) return clamp_aspect(window);
+    float v = mode_value(m);
+    // Monitors sold under one name differ (21:9 is 2560x1080 = 64:27 but 3440x1440 = 43:18),
+    // so a preset within 1 % of the window fills it instead of leaving thin bars. g_window is
+    // quantised by set_window_aspect, so the choice is stable while a window is resized.
+    if ((m == k4x3 || m == k16x10 || m == k21x9 || m == k32x9) && std::fabs(window - v) <= 0.01f * v)
+        v = window;
+    return clamp_aspect(v);
 }
 float game() { return g_game; }
 float fov_scale() { return g_fov_requested.load(); }
