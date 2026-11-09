@@ -17,4 +17,13 @@ bool backdrop_reuse_resources(const Snapshot& original,const PipelineType& pipel
     p.dynamicOffsetCount>p.dynamicOffsets.size())return false;
  vertex=v;pixel=p;return true;
 }
+// A capture smaller than the pane's target (gfx::gamepad_backdrop::capture_extent):
+// the render area becomes the capture's, and the guest-to-pixel factors shrink
+// with it, so viewport and scissor (derived from sx/sy) draw the same pane scaled.
+template<class Targets>
+void backdrop_scale_targets(Targets& t,uint32_t width,uint32_t height) {
+ if(!t.width||!t.height||!width||!height||(width==t.width&&height==t.height))return;
+ t.sx*=float(width)/float(t.width);t.sy*=float(height)/float(t.height);
+ t.width=width;t.height=height;
+}
 }

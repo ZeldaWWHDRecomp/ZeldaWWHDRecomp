@@ -33,6 +33,14 @@ int main() {
     assert(content.y == 4.78125f && content.h == 17.4375f);
     assert(!has_bars(0, 27, content));
     assert(cover(31, 0, 1280, 720).w == 0);
+    // capture size: at most 1920x1080, aspect kept, never scaled up
+    const auto e1 = capture_extent(1280, 720), e2 = capture_extent(2560, 1440), e3 = capture_extent(3840, 2160);
+    assert(e1.width == 1280 && e1.height == 720 && e2.width == 1920 && e2.height == 1080);
+    assert(e3.width == 1920 && e3.height == 1080);
+    const auto e4 = capture_extent(5120, 2880), wide = capture_extent(5120, 1440), tall = capture_extent(1440, 2560);
+    assert(e4.width == 1920 && e4.height == 1080 && wide.width == 1920 && wide.height == 540);
+    assert(tall.width == 608 && tall.height == 1080);
+    assert(capture_extent(1920, 1080).width == 1920 && capture_extent(0, 720).width == 0);
     assert(cover(std::numeric_limits<float>::infinity(), 27, 1280, 720).w == 0);
     const auto check_bars = [](float w, float h, Rect c) {
         const auto output = bars(w, h, c);
