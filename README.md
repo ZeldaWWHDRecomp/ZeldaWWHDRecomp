@@ -594,7 +594,7 @@ shared non-face bindings are unchanged. Existing custom profiles win. This does 
 | Start (tap, then release) | Plus: items, collection and maps; use the GamePad window for touch pages |
 | D-pad up / down / left / right | HD up (baton) / down / left (ship cannon) / right (salvage) |
 | Hold Start + D-pad up | Right stick click: first-person view (Picto Box uses its assigned item button) |
-| Hold Start + D-pad down / left / right | Minus (Off-TV Play) / L (GamePad page option) / Home (Settings by default) |
+| Hold Start + D-pad down / left / right | Minus (Off-TV Play) / L (GamePad page) / Home (Settings by default) |
 | Left stick click; screenshot; Jump / Moon jump | Unbound on the pad; existing keyboard shortcuts remain |
 
 L and R activate at **25% travel**, or at their digital click. Light L already locks on: HD has no

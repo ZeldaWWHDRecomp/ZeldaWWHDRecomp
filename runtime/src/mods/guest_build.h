@@ -10,6 +10,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <mutex>
+#include <thread>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -59,9 +61,44 @@ inline constexpr const char* tool_bootstrap=
 inline constexpr const char* tool_bootstrap_in_folder=
     "import os,runpy,sys;s=os.path.abspath(sys.argv[2]);os.chdir(sys.argv[1]);sys.path.insert(0,os.path.dirname(s));"
     "sys.argv=sys.argv[2:];runpy.run_path(s,run_name='__main__')";
+// Issue #472: setup finished although the private Python's download failed. guest-sdk.json then names
+// where that Python goes ("python", absent) and records "python_pending"; "setup_python" is the Python
+// that ran setup, which runs `setup.py --repair-guest-python` to download it. The first mod that needs
+// it starts that download in the background (it retries for about a minute) and the mod reports
+// kPythonDownloading; a failure is reported once and the next use tries again.
+inline constexpr const char* kPythonDownloading="The Python that mods need is downloading now (setup could not download it). The mod starts once it is ready: switch it on again in a minute, or restart the game.";
+inline constexpr const char* kPythonDownloadFailed="The Python that mods need could not be downloaded. Check the internet connection and switch the mod on again to retry, or run setup and choose Repair.";
+struct PythonRepair {
+    std::mutex mutex;
+    bool running=false, failed=false;
+    std::string error;
+    static PythonRepair& get(){static PythonRepair r;return r;}
+};
+// Starts the download (once at a time); returns the message for the mod that asked.
+inline std::string request_python_repair(const std::vector<std::string>& setup_python,const std::string& setup,const std::string& data_dir) {
+    auto& r=PythonRepair::get();
+    std::lock_guard lock(r.mutex);
+    if(r.running)return kPythonDownloading;
+    if(r.failed){r.failed=false;return kPythonDownloadFailed+(r.error.empty()?std::string():" ("+r.error+")");}
+    if(setup_python.empty()||setup.empty()||data_dir.empty())return kPythonMissing;
+    auto command=setup_python;
+    command.insert(command.end(),{setup,"--data-dir",data_dir,"--repair-guest-python"});
+    r.running=true;r.error.clear();
+    std::thread([command]{
+        auto result=host::run_process(command);
+        auto& r=PythonRepair::get();
+        std::lock_guard lock(r.mutex);
+        r.running=false;
+        if(result.code||!result.error.empty()){
+            r.failed=true;r.error=result.error;
+            fprintf(stderr,"[code mods] downloading the mods' Python failed (exit %d)\n",result.code);
+        }else fprintf(stderr,"[code mods] the mods' Python is ready\n");
+    }).detach();
+    return kPythonDownloading;
+}
 struct BuildBridge {
-    std::vector<std::string> python, compiler;
-    std::string builder, include, cache, zig_cache;
+    std::vector<std::string> python, compiler, setup_python;
+    std::string builder, include, cache, zig_cache, setup, data_dir;
     static std::vector<std::string> arguments(const mods::json::Value& value) {
         if(value.type!=mods::json::Value::Array||value.array.empty())exception_report::raise("Invalid guest build tool command");
         std::vector<std::string> out;
@@ -80,10 +117,14 @@ struct BuildBridge {
         BuildBridge b;b.python=arguments(config.get("python"));b.compiler=arguments(config.get("compiler"));
         b.builder=config.get("builder").string();b.include=config.get("include").string();b.cache=cache;
         b.zig_cache=config.get("zig_cache").string();
+        if(config.get("python_pending").type==mods::json::Value::String&&config.get("setup_python").type==mods::json::Value::Array)
+            b.setup_python=arguments(config.get("setup_python"));
+        b.setup=config.get("setup").string();b.data_dir=config.get("data_dir").string();
         // format 1 stored only absolute paths and program names: relative ones stay as they are
         const auto base=version.number>=2?std::filesystem::absolute(path).parent_path():std::filesystem::path();
         for(auto* command:{&b.python[0],&b.compiler[0]})*command=resolve_path(*command,base,release,true);
-        for(auto* value:{&b.builder,&b.include,&b.zig_cache})*value=resolve_path(*value,base,release);
+        if(!b.setup_python.empty())b.setup_python[0]=resolve_path(b.setup_python[0],base,release,true);
+        for(auto* value:{&b.builder,&b.include,&b.zig_cache,&b.setup,&b.data_dir})*value=resolve_path(*value,base,release);
         if(b.builder.empty()||b.include.empty())exception_report::raise("Incomplete guest build configuration; run setup again");
         return b;
     }
@@ -122,7 +163,9 @@ struct BuildBridge {
             if(b.builder.rfind(release_marker,0)==0||b.include.rfind(release_marker,0)==0)
                 exception_report::raise("Guest mod build tools come with the AppImage; start the game from the AppImage");
             exception_report::raise("Guest mod build tools are missing; run setup again from a complete release folder");
-        case Missing::Python:exception_report::raise(kPythonMissing);
+        case Missing::Python:
+            if(!b.setup_python.empty())exception_report::raise(request_python_repair(b.setup_python,b.setup,b.data_dir));
+            exception_report::raise(kPythonMissing);
         case Missing::Compiler:exception_report::raise(kCompilerMissing);
         case Missing::None:break;
         }

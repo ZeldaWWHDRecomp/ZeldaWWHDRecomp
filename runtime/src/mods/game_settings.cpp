@@ -351,7 +351,7 @@ void register_controls() {
     {
         Item it;
         it.id = "controls.l-turns-page", it.tab = "controls", it.label = "L turns the GamePad page", it.kind = Kind::Toggle;
-        it.help = "On: in play L turns the GamePad screen between Items and Map, as on the Wii U. Off: only in menus, so L1 can jump.";
+        it.help = "L turns the GamePad screen between Items and Map. With Jump anywhere on, L1 only jumps in play; on: it jumps and turns the page.";
         it.get = [] { return input_map::current().l_turns_page ? 1.0f : 0.0f; };
         it.set = [](float v) { change_mapping([v](M& m) { m.l_turns_page = v >= 0.5f; }); };
         add(std::move(it));

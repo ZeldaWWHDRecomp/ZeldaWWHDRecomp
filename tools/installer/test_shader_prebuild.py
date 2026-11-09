@@ -188,6 +188,47 @@ class ShaderPrebuildTests(unittest.TestCase):
         executable.write_text('synthetic version two')
         self.assertFalse(prepare()['reused'])
 
+    def test_pipeline_identity_keys_the_generation_not_the_binary(self):
+        # incremental updates: another binary of the same renderer (an update, a randomized game, the code-mod
+        # variant) keeps the generation; another renderer warms again on the head start assembled before
+        executable = self.root / 'synthetic-executable'
+        marker = lambda digit: b'binary bytes WWHD-PIPELINE-IDENTITY:' + digit * 64 + b' more'
+        executable.write_bytes(marker(b'a') + b' build one')
+        def prepare():
+            return prebuild.prepare(self.game, self.template, executable, self.cache,
+                                    self.package, runner=self.runner)
+        prepare()
+        self.assertEqual(prebuild.pipeline_identity_of(executable), 'a' * 64)
+        active = json.loads((self.cache / 'active.json').read_text())
+        self.assertEqual(active['identity']['runtime'], 'pipeline:' + 'a' * 64)
+        self.assertEqual(active['launch']['pipeline'], 'a' * 64)
+        self.assertNotIn('runtime', active['launch'])
+        executable.write_bytes(marker(b'a') + b' build two, other game code')
+        self.assertTrue(prepare()['reused'])
+        assembled = sum(1 for c, _ in self.calls if c[1] == str(self.package / 'tools/shaderprep.py'))
+        executable.write_bytes(marker(b'b') + b' build three, another renderer')
+        result = prepare()
+        self.assertFalse(result['reused'])
+        self.assertTrue(result['headstart_reused'])
+        self.assertEqual(assembled, sum(1 for c, _ in self.calls if c[1] == str(self.package / 'tools/shaderprep.py')))
+        self.assertTrue(any('--warm-shaders' in c for c, _ in self.calls))
+        # a changed game assembles again
+        (self.game / 'synthetic.pack').write_text('synthetic packed archive')
+        self.assertFalse(prepare()['headstart_reused'])
+
+    def test_moved_inputs_refresh_the_launch_record(self):
+        executable = self.root / 'synthetic-executable'
+        executable.write_bytes(b'WWHD-PIPELINE-IDENTITY:' + b'c' * 64)
+        prebuild.prepare(self.game, self.template, executable, self.cache, self.package, runner=self.runner)
+        before = json.loads((self.cache / 'active.json').read_text())['launch']
+        time.sleep(0.01)
+        self.template.write_text('synthetic template identity')  # same content, new time (a new release folder)
+        self.assertTrue(prebuild.prepare(self.game, self.template, executable, self.cache, self.package,
+                                         runner=self.runner)['reused'])
+        after = json.loads((self.cache / 'active.json').read_text())['launch']
+        self.assertNotEqual(before['template'], after['template'])
+        self.assertEqual(after['template'], prebuild.metadata(self.template))
+
     def test_failed_rebuild_keeps_previous_active_and_cleans_staging(self):
         self.prepare()
         active = (self.cache / 'active.json').read_bytes()

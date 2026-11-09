@@ -58,6 +58,7 @@ extern "C" int __llvm_profile_write_file(void);
 #include "deferred_dispatch.h"
 #include "pipeline_cache_path.h"
 #include "bc_decode.h"
+#include "pass_reuse.h"
 #include "shader_compiler.h"
 #include "android_driver.h"
 #include "stutter_trace.h"
@@ -403,8 +404,8 @@ void open_compile_journal() {
     dir = host::config_dir() + "/shadercache/journal";
 #endif
   char key[256];
-  std::snprintf(key, sizeof key, "%08X %08X %08X %s %s %s", R.properties.vendorID, R.properties.deviceID,
-                R.properties.driverVersion, build::version(), build::commit(), WWHD_PIPELINE_RUNTIME_ID);
+  std::snprintf(key, sizeof key, "%08X %08X %08X %s", R.properties.vendorID, R.properties.deviceID,
+                R.properties.driverVersion, WWHD_PIPELINE_RUNTIME_ID);
   compile_journal::set_logger([](const char* line) { LOG("%s", line); });
   try { compile_journal::open(dir, key); }
   catch (const std::exception& e) { LOG("[vulkan] compile journal not opened: %s", e.what()); }
@@ -511,16 +512,18 @@ void init_pipeline_cache() try {
     put(8, R.properties.driverVersion);
     std::memcpy(fingerprint.data() + 12, R.properties.pipelineCacheUUID, VK_UUID_SIZE);
     uint64_t features = pipeline_cache_checksum(reinterpret_cast<const uint8_t*>(&R.enabledFeatures), sizeof R.enabledFeatures);
-    // Local recipes are runtime-build-specific as well as device-specific.
-    // The full current fixed state is independently checked at handoff.
-    for (const char* tag : {build::commit(), build::version(), WWHD_PIPELINE_RUNTIME_ID}) {
+    // Local recipes are specific to the code that interprets them (WWHD_PIPELINE_RUNTIME_ID: the renderer's
+    // sources, cmake/pipeline_identity_inputs.txt) as well as to the device; not to the release or commit, so an
+    // update that leaves the renderer as it was keeps them. The full current fixed state is independently
+    // checked at handoff.
+    for (const char* tag : {WWHD_PIPELINE_RUNTIME_ID}) {
       for (const unsigned char* c = reinterpret_cast<const unsigned char*>(tag); *c; ++c)
         features = (features ^ *c) * 1099511628211ull;
       features = (features ^ 0xffu) * 1099511628211ull;
     }
     for (int i = 0; i < 8; ++i) fingerprint[28 + i] = uint8_t(features >> (8 * i));
     put(36, R.properties.limits.maxDescriptorSetUniformBuffersDynamic);
-    put(40, 3); // Runtime-build identity, portable content IDs, exact descriptors and fixed-state recipe schema.
+    put(40, 4); // Pipeline runtime identity (4: without release and commit), portable content IDs, exact descriptors and fixed-state recipe schema.
     put(44, (R.portabilitySubset ? 1u : 0u) | (R.separateStencilMaskRef ? 2u : 0u) |
         (R.constantAlphaColorBlendFactors ? 4u : 0u) | (R.vertexAttributeAccessBeyondStride ? 8u : 0u) |
         (R.vertexFormats.fallbackMask << 4) | (R.vertexDiagnostics.cpuVertices ? 0x100u : 0u) |
@@ -1233,7 +1236,7 @@ void transition_buffer(Buffer& buffer, VkPipelineStageFlags stage, VkAccessFlags
   b.size = VK_WHOLE_SIZE;
   record::vkCmdPipelineBarrier(command_buffer(), d.source, d.destination, 0, 0, nullptr, 1, &b, 0, nullptr);
 }
-void transition_image(Surface *s, VkImageLayout layout,
+bool transition_image(Surface *s, VkImageLayout layout,
                       VkPipelineStageFlags stage, VkAccessFlags access) {
   const bool conservativePassBreak = s->layout != layout ||
       layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || access != VK_ACCESS_SHADER_READ_BIT;
@@ -1250,10 +1253,10 @@ void transition_image(Surface *s, VkImageLayout layout,
     if (!dependency.needed) {
       // Barrier elision must not also change dynamic-rendering pass boundaries.
       if (conservativePassBreak) end_encoder();
-      return;
+      return false;
     }
   } else if (!changed && layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
-             access == VK_ACCESS_SHADER_READ_BIT) return;
+             access == VK_ACCESS_SHADER_READ_BIT) return false;
   end_encoder();
   VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   b.oldLayout = s->layout;
@@ -1268,6 +1271,7 @@ void transition_image(Surface *s, VkImageLayout layout,
       (s->layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
       stage, 0, 0, nullptr, 0, nullptr, 1, &b);
   s->layout = layout;
+  return true;
 }
 static VkResult initialize_submission_queries(Renderer::Submission& slot,bool passes) {
   VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -2173,11 +2177,22 @@ extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_seedSavedOff(JNIEnv*, jclass, jboolean off) {
   gfx::seed_second_screen_off(off);
 }
-// System bars the platform draws over the game's view (WwhdActivity, issue #349): the TV layout uses the rest.
+// The parts of the game's view the platform does not show (WwhdActivity, ScreenCover, issue #349): the TV layout
+// uses the rest.
 extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_WwhdActivity_publishObscured(JNIEnv*, jclass, jint left, jint top, jint right, jint bottom,
                                                       jint viewWidth, jint viewHeight) {
   gfx::display_set_obscured(float(left), float(top), float(right), float(bottom), float(viewWidth), float(viewHeight));
+}
+// What the system reports about the screen around the game's view (WwhdActivity, issue #349), once per change: the
+// log then shows why part of a screen stays covered.
+extern "C" JNIEXPORT void JNICALL
+Java_org_wwhdrecomp_wwhd_WwhdActivity_publishScreenReport(JNIEnv* env, jclass, jstring report) {
+  if (!report) return;
+  const char* s = env->GetStringUTFChars(report, nullptr);
+  if (!s) return;
+  LOG("[display] Android screen: %s", s);
+  env->ReleaseStringUTFChars(report, s);
 }
 extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_publishSurface(
@@ -4086,6 +4101,7 @@ void swap() {
     static std::array<double, 120> swapIntervals{};
     static size_t intervalCount = 0, slowIntervals = 0;
     static uint64_t frame=0,draws=0,bytes=0,allocs=0,passes=0,framebuffers=0;
+    static uint64_t subsetKept=0,prefetched=0,prefetchUsed=0,splitsSeen=0;  // pass_reuse.h
     static uint64_t descriptorLookups=0,descriptorHits=0,descriptorAllocations=0,descriptorFastHits=0;
     static uint64_t vertexDeclaredBytes=0,vertexCopiedBytes=0;
     static uint64_t vertexReuseChecks=0,vertexReuseHits=0,vertexReuseBytes=0,vertexReuseCompareNs=0;
@@ -4122,11 +4138,30 @@ void swap() {
             double(currentThreadCpu - previousThreadCpu) / 1e6 / (R.frame - frame));
       previousThreadCpu = currentThreadCpu;
 #endif
-      LOG("[vulkan perf] frame %llu %.2f fps, %.1f draws/frame, %.2f MiB uploads/frame, %llu new upload blocks, %.1f passes/frame",
+      // pass_reuse.h (WWHD_PASS_SUBSET, WWHD_PASS_PREFETCH): appended while either is on
+      char passReuse[256]="";
+      if (pass_reuse::subset_on() || pass_reuse::prefetch_on())
+        std::snprintf(passReuse,sizeof passReuse,"; pass subset %s %.1f kept/frame; textures ready before their pass %s %.1f/frame "
+                      "(%.1f read there), %.1f first reads inside one",
+                      pass_reuse::subset_on() ? "on" : "off", double(R.passSubsetKept-subsetKept)/(R.frame-frame),
+                      pass_reuse::prefetch_on() ? "on" : "off", double(R.passPrefetched-prefetched)/(R.frame-frame),
+                      double(R.passPrefetchUsed-prefetchUsed)/(R.frame-frame), double(R.passSplitsSeen-splitsSeen)/(R.frame-frame));
+      LOG("[vulkan perf] frame %llu %.2f fps, %.1f draws/frame, %.2f MiB uploads/frame, %llu new upload blocks, %.1f passes/frame%s",
           (unsigned long long)R.frame,(R.frame-frame)/seconds,
           double(R.drawCount-draws)/(R.frame-frame),double(R.uploadBytes-bytes)/(R.frame-frame)/(1<<20),
-          (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame));
+          (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame), passReuse);
       if (reproj::enabled()) LOG("[vulkan perf] framegen %s", reproj::perf_line().c_str());
+      {  // draw.cpp: totals since the start (the pass subset's no-stutter check compares them ON vs OFF)
+        extern uint64_t g_pipelineSyncCompiles, g_pipelineRenderWaits, g_pipelineBudgetWaits;
+        extern uint64_t g_backgroundRequests, g_backgroundAdmitted, g_backgroundDeclined, g_backgroundWaits;
+        LOG("[vulkan pipeline stalls] %llu compiled on the render thread, %llu render-thread waits for a compile, "
+            "%llu bounded waits (Shader compile Fast); background lane: %llu requests, %llu admitted, %llu declined, "
+            "%llu waited for",
+            (unsigned long long)g_pipelineSyncCompiles, (unsigned long long)g_pipelineRenderWaits,
+            (unsigned long long)g_pipelineBudgetWaits,
+            (unsigned long long)g_backgroundRequests, (unsigned long long)g_backgroundAdmitted,
+            (unsigned long long)g_backgroundDeclined, (unsigned long long)g_backgroundWaits);
+      }
       if (R.renderPasses) {
         const auto created = pass_caches().framebuffers_created();
         LOG("[vulkan render passes] %.3f framebuffers created/frame, %zu cached",
@@ -4325,6 +4360,7 @@ void swap() {
       submitWait = {}; presentSubmitWait = {}; queueSubmitTiming = {};
       }
       start=now;frame=R.frame;draws=R.drawCount;bytes=R.uploadBytes;allocs=R.uploadAllocations;passes=R.renderPassCount;
+      subsetKept=R.passSubsetKept;prefetched=R.passPrefetched;prefetchUsed=R.passPrefetchUsed;splitsSeen=R.passSplitsSeen;
     }
   }
 }
@@ -4707,6 +4743,14 @@ static void init_device(std::vector<const char *> extensions,
   drivers::set_vulkan_identity(std::string(R.properties.deviceName)+"; Vulkan driver "+driver_version_text(R.properties));
 #endif
   const uint32_t deviceApi = device_api_version(R.properties);
+  {
+    const char* why = "";
+    const bool def = pass_reuse::configure(R.properties.vendorID, R.properties.deviceName, &why);
+    auto src = [](const char* n) { const char* e = getenv(n); return e && *e ? "env" : "GPU default"; };
+    LOG("[vulkan] pass reduction: subset %s (%s), prefetch %s (%s); GPU default %s: %s (vendor 0x%04X)",
+        pass_reuse::subset_on() ? "on" : "off", src("WWHD_PASS_SUBSET"), pass_reuse::prefetch_on() ? "on" : "off",
+        src("WWHD_PASS_PREFETCH"), def ? "on" : "off", why, R.properties.vendorID);
+  }
   LOG("[vulkan] device: %s (Vulkan %s, driver %s%s)", R.properties.deviceName,
       version_text(R.properties.apiVersion).c_str(), driver_version_text(R.properties).c_str(),
       R.dynamicRenderingKHR ? "; dynamic rendering through VK_KHR_dynamic_rendering" : "");

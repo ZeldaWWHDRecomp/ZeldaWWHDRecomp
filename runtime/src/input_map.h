@@ -141,8 +141,9 @@ struct Mapping {
     ShoulderNames shoulder_names = ShoulderNames::kAuto;
     bool prompt_colours = true;                  // coloured face buttons (Xbox / PlayStation colours)
     // Controls > Controller > "L turns the GamePad page" (off): in play the game reads L only to turn
-    // its GamePad screen between Items and Map; off, L reaches the game only outside play, so L1 can
-    // jump without turning the page (play_buttons)
+    // its GamePad screen between Items and Map; off, an input that presses L and a Jump / moon jump
+    // that acts (its mod or cheat on) only jumps in play; L on its own always reaches the game
+    // (play_buttons, issue #406)
     bool l_turns_page = false;
     bool settings_pause_page = true; // offer the settings page in the pause menu
     // per-controller bindings (format 2): see profile_index()
@@ -353,10 +354,11 @@ std::vector<int> displaced_by(const Mapping& m, int pad);
 int move_target(const Mapping& m, int a);
 // bind virtual action `v` to `pad`, doing `d` with the displaced game actions; false: nothing changed
 bool bind_virtual(Mapping& m, int v, int pad, Displace d);
-// The buttons the game gets in play or outside it: L leaves in play unless l_turns_page; an input
-// shared by a game button and L or d-pad down presses, in play, the game button only and, outside
-// play, L or d-pad down only.
-uint32_t play_buttons(const Mapping& m, uint32_t buttons, bool in_play);
+// The buttons the game gets in play or outside it: in play L leaves while it shares an input with a
+// virtual action that acts now (acting_virt: input::kVirt* bits held this poll whose mod / cheat is on),
+// unless l_turns_page; an input shared by a game button and L or d-pad down presses, in play, the game
+// button only and, outside play, L or d-pad down only.
+uint32_t play_buttons(const Mapping& m, uint32_t buttons, bool in_play, uint32_t acting_virt);
 // Format 1 migration: Jump on the inputs of the Wii U button `vpad_bit` (the old Jump anywhere button
 // choice, one of L, R, ZL, ZR, L3, R3). The game button keeps them too, as it did.
 void jump_from_legacy(Mapping& m, uint32_t vpad_bit);

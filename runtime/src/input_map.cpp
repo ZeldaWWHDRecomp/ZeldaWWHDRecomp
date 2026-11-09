@@ -289,8 +289,8 @@ Mapping Mapping::defaults() {
     key(kLUp, kVK_ANSI_W); key(kLDown, kVK_ANSI_S); key(kLLeft, kVK_ANSI_A); key(kLRight, kVK_ANSI_D);
     key(kRUp, kVK_UpArrow); key(kRDown, kVK_DownArrow); key(kRLeft, kVK_LeftArrow); key(kRRight, kVK_RightArrow);
     key(kScreenshot, kVK_F10);  // free on every host (F11: SDL full screen, F12/P: debug frame capture)
-    // Jump anywhere and the moon jump where they always were, on the L inputs: in play the game gets no
-    // L from them (play_buttons), so L1 / Q jump without turning the GamePad page
+    // Jump anywhere and the moon jump where they always were, on the L inputs: in play, while one of them
+    // is on, the game gets no L from them (play_buttons), so L1 / Q jump without turning the GamePad page
     key(kJump, kVK_ANSI_Q); key(kMoonJump, kVK_ANSI_Q);
     // controllers map by position: the bottom face button (Xbox A) is the Wii U's B (face_layout)
     const int pads[kActionCount] = {
@@ -1052,8 +1052,7 @@ bool bind_virtual(Mapping& m, int v, int pad, Displace d) {
     return true;
 }
 
-uint32_t play_buttons(const Mapping& m, uint32_t b, bool in_play) {
-    if (in_play && !m.l_turns_page) b &= ~input::kL;
+uint32_t play_buttons(const Mapping& m, uint32_t b, bool in_play, uint32_t acting_virt) {
     auto shares = [&](int f, int g) {
         if (m.pad[f] != kPadNone && m.pad[f] == m.pad[g]) return true;
         for (const auto& c : m.controllers)  // a controller's own bindings count as well
@@ -1062,6 +1061,15 @@ uint32_t play_buttons(const Mapping& m, uint32_t b, bool in_play) {
             if (k != kNoKey && (m.keys[g][0] == k || m.keys[g][1] == k)) return true;
         return false;
     };
+    // L leaves in play only while it would also jump: a Jump / moon jump input that acts now (its mod or
+    // cheat on, held this poll) and shares an input with L. Otherwise L turns the GamePad page as on the
+    // Wii U, whichever game window is in front (issue #406).
+    if (in_play && !m.l_turns_page && (b & input::kL))
+        for (int v = kFirstVirtual; v < kActionCount; v++)
+            if ((acting_virt & action_virtual(v)) && shares(kL, v)) {
+                b &= ~input::kL;
+                break;
+            }
     for (int f : {(int)kL, (int)kDDown}) {
         const uint32_t fb = action_bit(f);
         if (!(b & fb)) continue;

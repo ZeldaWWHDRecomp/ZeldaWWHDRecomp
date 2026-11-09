@@ -35,6 +35,7 @@ import tarfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from types import SimpleNamespace
 
 DECOMP_TEXT = (
     "Builds a second version of the game in which the game functions of the public decompilation "
@@ -196,6 +197,7 @@ def build(s, ctx, tc, jobs, step=None):
     # 0. the decompilation's source (downloaded once per pin, checked against the release's SHA-256)
     t0 = time.time()
     src = fetch_source(s, data_dir, d)
+    decomp_root = src
     times["source"] = time.time() - t0
 
     # 1. function list, glue and units: gen.py, reading the game for the model data and the source glue
@@ -212,14 +214,21 @@ def build(s, ctx, tc, jobs, step=None):
     t0 = time.time()
     s.say("  Translating the game code for the decomp version...")
     gen_dir = os.path.join(work, "code")
-    s.run_logged([sys.executable, os.path.join(s.PKG, "tools", "recomp", "recomp.py"), rpx, gen_dir,
-                  "--decomp-hooks", os.path.join(out, "decomp_hooks.txt")],
-                 env=dict(os.environ, WWHD_RECOMP_MOD_HOOKS="0"), what="translating the game code (decomp version)")
+    hooks_list = os.path.join(out, "decomp_hooks.txt")
+    extra = ["--decomp-hooks", hooks_list]
+    cmd = [sys.executable, os.path.join(s.PKG, "tools", "recomp", "recomp.py"), rpx, gen_dir] + extra
+    env = dict(os.environ, WWHD_RECOMP_MOD_HOOKS="0")
+    what = "translating the game code (decomp version)"
+    if hasattr(s, "translate_cached"):  # kept by its inputs (build_cache.py): an update with the same translator reuses it
+        s.translate_cached(cmd, rpx, gen_dir, extra, [hooks_list], data_dir, env=env, what=what)
+    else:
+        s.run_logged(cmd, env=env, what=what)
     times["translate"] = time.time() - t0
 
-    # 3. compile: the game code, the game units, hooks.cpp
+    # 3. compile: the game code, the game units, hooks.cpp; objects whose preprocessed source, flags and compiler
+    # are unchanged come from the install's object cache (object_cache.py), as for the normal game
     t0 = time.time()
-    objs = s.compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs)
+    objs = s.compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs, cache_dir=data_dir)
     times["gamecode"] = time.time() - t0
     t0 = time.time()
     m = {"sdk": fwd(os.path.join(s.PKG, "sdk")), "decomp": fwd(src),
@@ -239,10 +248,22 @@ def build(s, ctx, tc, jobs, step=None):
     pr = s.Progress("compiling the decompiled game")
     done, failures, lock = [0], [], threading.Lock()
 
+    ucache = None
+    if hasattr(s, "object_cache"):
+        ucache = s.object_cache(SimpleNamespace(cc=tc.cxx, env=tc.env), data_dir, unit_flags, work, {decomp_root: "<decomp>"})
+    hits = [0]
+
     def one(job):
         _, src, obj, extra = job
-        cmd = tc.cxx + unit_flags + extra + ["-c", fwd(src), "-o", fwd(obj)]
-        p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        key = ucache.key(tc.cxx, unit_flags + extra, fwd(src), tc.env) if ucache else None
+        if key and ucache.fetch(key, obj):
+            p = SimpleNamespace(returncode=0, stdout=b"")
+            hits[0] += 1
+        else:
+            cmd = tc.cxx + unit_flags + extra + ["-c", fwd(src), "-o", fwd(obj)]
+            p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            if p.returncode == 0 and key:
+                ucache.store(key, obj)
         with lock:
             if p.returncode:
                 failures.append((src, p.stdout.decode("utf-8", "replace")))
@@ -258,7 +279,10 @@ def build(s, ctx, tc, jobs, step=None):
     if failures:
         src, text = failures[0]
         raise s.SetupError("compiling %s failed:\n%s" % (os.path.basename(src), "\n".join(text.strip().splitlines()[-20:])))
-    pr.done("%d files" % total)
+    if ucache:
+        ucache.trim()
+        s.LOG.write("decomp object cache: %d of %d unit files from the cache" % (hits[0], total))
+    pr.done("%d files, %d unchanged from an earlier build" % (total, hits[0]) if ucache else "%d files" % total)
     # each unit becomes one object: hidden symbols turn local (`ld -r`), so units never see each other
     glue = []
     by_unit = {}

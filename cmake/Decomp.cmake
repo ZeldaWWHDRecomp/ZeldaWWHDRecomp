@@ -457,8 +457,8 @@ function(wwhd_decomp_link target)
   endif()
   # fast mode: the GHS libm functions decompiled code calls most (sqrtf, sinf, sqrt, cosf, fmodf) go from gmem_call
   # straight to their recompiled originals, without call_to and the dispatch table (runtime/src/hostrt/hostrt_fast.cpp);
-  # OFF (default until the phone pair): the guest path as before
-  option(WWHD_DECOMP_FAST_LIBM "decomp build, fast mode: GHS libm calls straight to their recompiled originals" OFF)
+  # ON by default (phone pairs 2026-11-08: neutral on logic, no regression); OFF: the guest path as before
+  option(WWHD_DECOMP_FAST_LIBM "decomp build, fast mode: GHS libm calls straight to their recompiled originals" ON)
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_LIBM)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST_LIBM=1)  # (only hostrt_fast.cpp reads it)
   endif()

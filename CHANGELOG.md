@@ -7,6 +7,34 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Pause menu: the selection cursor no longer gets stuck after the settings arrow** (#484, thanks @XAlboX for the
+  report and logs, #336). The arrow at the menu's left edge (Left from ITEMS) now only takes over from the menu's
+  own cursor and always gives it back; a safety net restores the cursor if anything is left pointing at the arrow,
+  and the log records why the arrow gave up the focus.
+
+- **Vulkan on Mali and PowerVR: fewer render passes** (#476, ported from the Android forks by GreenNaugahyde and
+  Nycolazs). Draws that use part of an open pass's targets keep that pass, and textures are made ready before their
+  pass instead of ending it: about 3 fewer render passes per frame, which saves memory traffic on tile-based phone
+  GPUs. On by default only on Mali and PowerVR; elsewhere (Adreno, desktop, Mac) it measured no gain and stays off.
+  `WWHD_PASS_SUBSET` / `WWHD_PASS_PREFETCH` turn it on (1) or off (0) on any GPU.
+
+- **Updates keep what you have** (#479). A new release offers to update from your earlier release folder, cloned
+  where your drive allows (the old release keeps working), otherwise moved after you confirm. It brings over your
+  game files, saves, settings, controls, mods, randomized games and shader caches, and only recompiles the parts
+  of the game code that changed: on a Mac about 4 s when the game code is unchanged, instead of a full setup.
+  Prepared shaders survive updates that leave the renderer unchanged. Android app updates recompile only changed
+  files and clean up old builds.
+- **Fixed: L didn't turn the GamePad page during play** (#483, thanks @KaitoCrisHub for the report, #406). The
+  port held back L whenever Link was in play, to leave L1 free for the optional Jump anywhere mod, even with that
+  mod off. L now switches the GamePad screen between Items and Map during play again, whichever window is in
+  front; only with a jump mod on does a shared L1 jump instead.
+- **Setup no longer stops when the Python for mods can't be downloaded** (#478, thanks @sebar25 for the report,
+  #472). The game is built and starts anyway; the download is retried the first time a mod needs it.
+- **Android: the picture avoids screen strips the system doesn't report** (#480, thanks @plxjammerplx, #349): a
+  display cutout along a whole edge, or rows outside the window. The log now records what Android reports about
+  the screen, to find why the bottom of the screen stays black on the Retroid Pocket Nova.
+- **Decomp build fast mode: the libm speed-up is on by default** (#482), as #474 intended.
+
 - **Button prompts: Automatic follows the controller you're using** (#462, thanks @itsarahtonin; #459). With several
   controllers connected, the on-screen button prompts now switch to the style of whichever controller you last
   pressed something on, instead of always using the first one. The Steam Input virtual pad now shows Xbox prompts.

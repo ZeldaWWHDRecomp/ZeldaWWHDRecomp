@@ -539,7 +539,7 @@ class AtomicReplace(unittest.TestCase):
                  mock.patch.object(setup, "get_toolchain", return_value=tc), \
                  mock.patch.object(setup, "run_logged", return_value="fixture compiler version"), \
                  mock.patch.object(setup, "free_space", return_value=20 << 30), \
-                 mock.patch.object(setup, "recompile", side_effect=lambda game, gen, hooks=False: Path(gen).mkdir()), \
+                 mock.patch.object(setup, "recompile", side_effect=lambda game, gen, hooks=False, cache_root=None: Path(gen).mkdir()), \
                  mock.patch.object(setup, "compile_gamecode", side_effect=compile_code), \
                  mock.patch.object(setup, "link_game", side_effect=lambda *a: Path(a[-1]).write_bytes(b"exe")), \
                  mock.patch.object(self.cm, "atomic_json", side_effect=contended):
@@ -1329,7 +1329,7 @@ class CodeModsBuild(unittest.TestCase):
                                   manifest={"platform": "fixture", "toolchain": {}, "exe": "fixture"},
                                   exe=str(data / "bin/fixture"), exe_dir=str(data / "bin"),
                                   version="test", state=lambda: {})
-            def translate(game, gen, hooks=False):
+            def translate(game, gen, hooks=False, cache_root=None):
                 Path(gen).mkdir()
                 Path(gen, "mode.txt").write_text("on" if hooks else "off")
                 return 1
@@ -1409,7 +1409,7 @@ class CodeModsBuild(unittest.TestCase):
                                   manifest={"toolchain": {}, "exe": "fixture"},
                                   args=SimpleNamespace(jobs=4))
             mode = []
-            def translate(game, gen, hooks=False):
+            def translate(game, gen, hooks=False, cache_root=None):
                 Path(gen).mkdir(); mode[:] = [hooks]
             def compile_code(tc, manifest, gen, obj, jobs, **kwargs):
                 Path(obj).mkdir(); kwargs["cancel"](); kwargs["progress"](1, 1)

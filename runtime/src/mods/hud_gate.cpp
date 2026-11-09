@@ -27,6 +27,7 @@
 #include <string>
 
 namespace interp { uint64_t logic_steps(); }
+namespace game_settings_page { bool page_open(); }  // (mods/game_settings_page.h)
 
 namespace mods {
 namespace {
@@ -109,6 +110,10 @@ static void menu_cursor_watch() {
     const uint32_t id = object(cursor, 0x54) ? ld32(cursor + 0x14) : 0;
     const std::string state = object(id, 8) ? text(ld32(id + 4)) : "none";
     const int requested = ld8(scene + 0x23D);
+    // the menu's tab (sIngameUi +0x17C, the item screen hdMenuMain_c; its mSelectedChild +0x58): on the map
+    // tab the chart grid has its own elements and the fixed cursor, so a line there is no lost cursor
+    const uint32_t items = ld32(scene + 0x17C);
+    const int page = object(items, 0x64) ? int(ld32(items + 0x58)) : -1;
     const bool shown = directional == 1 && focus_ok && active == 0 && requested == 0 &&
                        (state == "::StateID_LoopAll" || state == "::StateID_InAll");
     if (shown != missing_before) return;  // as at the last check: nothing new to say
@@ -118,8 +123,9 @@ static void menu_cursor_watch() {
     if (shown) LOG("[menu-cursor] the item menu's selection cursor is back");
     else
         LOG("[menu-cursor] the item menu is up without its selection cursor (issue #336): directional input %d, focus %s, "
-            "cursor %d %s, menu requested %d", directional, focus_ok ? "ok" : focus ? "another event manager's" : "none",
-            int(active), state.c_str(), requested);
+            "cursor %d %s, menu requested %d, menu tab %d, settings arrow or page %d", directional,
+            focus_ok ? "ok" : focus ? "another event manager's" : "none", int(active), state.c_str(), requested, page,
+            int(game_settings_page::page_open()));
 }
 
 void hud_service() {

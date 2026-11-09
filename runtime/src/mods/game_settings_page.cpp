@@ -69,7 +69,10 @@ struct Menu {
     // The game enables menu input once its transitions have finished.
     bool still = false;
     bool cursor = false;
-    uint32_t receiver = 0, cursor_pane = 0;
+    // The game's focus cursor (hdCursorMgr_c::mActive 0) is the one drawn. The fixed cursor (1) belongs to
+    // the chart grid on the MAP page, whose elements are another event manager's (issue #336).
+    bool focus_cursor = false;
+    uint32_t receiver = 0, cursor_pane = 0;  // the focused element: only one of the menu's event manager
     bool right_target = false, left_target = false, back_target = false;
     bool left_neighbour = true; // fail closed unless the game's focus links are readable
     bool items_page = false;  // the + menu stands still with no bag window
@@ -112,7 +115,8 @@ Menu read_menu() {
                     m.back_target |= kind == "back";
                 }
             }
-            if (object(m.receiver, 0x60)) {
+            // (an element of another event manager has other fields at these offsets: never ours to read or borrow)
+            if (object(m.receiver, 0x60) && ld32(m.receiver + 0xC) == events) {
                 m.left_neighbour = ld32(m.receiver + 0x38 + 6 * 4) != 0;
                 m.cursor_pane = game_look::find_pane(root, "L_MenuArrowR_00");
             } else m.receiver = 0;
@@ -122,6 +126,7 @@ Menu read_menu() {
         const uint32_t active = object(mgr, 0x20) ? ld32(mgr + 0x18) : ~0u;
         const uint32_t cursor = active < 2 ? ld32(mgr + 0x10 + 4 * active) : 0, croot = game_look::layout_root(cursor);
         if (croot) m.cursor = true;
+        m.focus_cursor = active == 0;
 
     }
     return m;
@@ -314,40 +319,66 @@ EntryFocus g_entry;
 // override is borrowed; its navigation links and the game's layouts remain intact.
 // The pane and restoration receipt live in state-serialized runtime guest memory, so
 // loading a state taken on the arrow can restore the original target even in a new process.
+//
+// Giving the focus back must not depend on the menu still being the one the arrow was entered from
+// (issue #336): every receiver of the menu's event manager that still points at our pane gets its own
+// cursor pane back from the receipt, whenever the arrow does not have the focus.
+constexpr uint32_t kPaneMagic = 0x47534541, kPaneBytes = 0xB0;
+bool our_pane(uint32_t p) {
+    return p >= mem::kRuntimeStart && p <= mem::runtime_top() - kPaneBytes &&
+           p < mem::kHostStart - kPaneBytes && ld32(p + 0xA0) == kPaneMagic;
+}
+// the receiver's own cursor pane back, if it points at ours (true: it did)
+bool give_back(uint32_t receiver) {
+    if (!object(receiver, 0x60)) return false;
+    const uint32_t current = ld32(receiver + 0x5C);
+    if (!our_pane(current) || ld32(current + 0xA8) != receiver) return false;
+    st32(receiver + 0x5C, ld32(current + 0xAC));
+    return true;
+}
+// every receiver of the menu's event manager (sEventMgr) still pointing at our pane: its own back
+int give_back_all() {
+    const uint32_t events = ld32(GD(0x101F4FF0));
+    if (!object(events, 0xE4)) return 0;
+    int n = 0;
+    for (uint32_t r = ld32(events + 4), guard = 0; r && r != events && guard < 256 && object(r, 0x60); r = ld32(r + 4), ++guard)
+        if (ld32(r + 0xC) == events && give_back(r)) n++;
+    return n;
+}
 void entry_cursor(const Menu& m, bool focus) {
-    constexpr uint32_t magic = 0x47534541, bytes = 0xB0;
-    static uint32_t pane = 0, borrowed = 0, menu = 0, old_cursor = 0;
+    static uint32_t pane = 0, borrowed = 0;
+    static bool check = true;  // an override may be left somewhere (borrowed before, or a loaded state)
     static uint64_t generation = 0;
     const uint64_t now = guestmods::hud::store().state_generation();
-    auto ours = [&](uint32_t p) {
-        return p >= mem::kRuntimeStart && p <= mem::runtime_top() - bytes &&
-               p < mem::kHostStart - bytes && ld32(p + 0xA0) == magic;
-    };
-    if (generation != now) borrowed = menu = 0, generation = now;
-    if (pane && !ours(pane)) pane = 0;
-    // A state may contain an override from this or a previous host session.
-    if (m.receiver && !borrowed) {
-        const uint32_t current = ld32(m.receiver + 0x5C);
-        if (ours(current) && ld32(current + 0xA4) == m.items && ld32(current + 0xA8) == m.receiver)
-            st32(m.receiver + 0x5C, ld32(current + 0xAC));
+    if (generation != now) borrowed = 0, check = true, generation = now;
+    if (pane && !our_pane(pane)) pane = 0;
+    if (borrowed && (!focus || borrowed != m.receiver)) {
+        give_back(borrowed);
+        borrowed = 0;
+        check = true;
     }
-    if (borrowed && (!focus || menu != m.items || borrowed != m.receiver)) {
-        if (menu == m.items && object(borrowed, 0x60) && ld32(borrowed + 0x5C) == pane)
-            st32(borrowed + 0x5C, old_cursor);
-        borrowed = menu = 0;
+    if (!focus || !m.receiver || !m.cursor_pane) {
+        // the safety net: the arrow has no focus, so no receiver may keep our pane
+        if (check) {
+            if (const int n = give_back_all()) LOG("[game-settings] %d menu element%s pointed at the entry arrow: given back", n, n == 1 ? "" : "s");
+            check = false;
+        }
+        return;
     }
-    if (!focus || !m.receiver || !m.cursor_pane) return;
-    if (!pane) pane = mem::runtime_alloc(bytes, 16);
+    if (!pane) pane = mem::runtime_alloc(kPaneBytes, 16);
     if (!pane) return;
     if (!borrowed) {
-        borrowed = m.receiver; menu = m.items; old_cursor = ld32(borrowed + 0x5C);
+        give_back(m.receiver);  // (a stale override of a loaded state: the receiver's own pane first)
+        borrowed = m.receiver;
+        check = true;
+        const uint32_t old_cursor = ld32(borrowed + 0x5C);
         std::memcpy(mem::ptr(pane), mem::ptr(m.cursor_pane), 0xA0);
         st32(pane + 0xC, 0); // detached: never traversed or drawn as a game layout
         st32(pane + 0x14, pane + 0x14); st32(pane + 0x18, pane + 0x14);
         std::memset(mem::ptr(pane + 0x48), 0, 0x30);
         st32(pane + 0x48, f32_as_u32(1)); st32(pane + 0x5C, f32_as_u32(1)); st32(pane + 0x70, f32_as_u32(1));
         st8(pane + 0x47, 0); // centre anchor
-        st32(pane + 0xA0, magic); st32(pane + 0xA4, menu);
+        st32(pane + 0xA0, kPaneMagic); st32(pane + 0xA4, m.items);
         st32(pane + 0xA8, borrowed); st32(pane + 0xAC, old_cursor);
     }
     st32(pane + 0x54, f32_as_u32(640.0f - g_arrow.x));
@@ -479,10 +510,23 @@ void open_detail(const std::string& id) {
 
 bool page_open() { return g_has_controller.load(std::memory_order_relaxed); }
 
+// The Pro Controller's reads (KPADReadEx) are muted on the strength of the last GamePad read (VPADRead, pad()),
+// which is where the arrow and the page see the buttons that give the controller back. Should the GamePad
+// reads stop while the arrow or the page has the controller, the game must not be left without input
+// (issue #336): after this many Pro Controller reads without one, the mute lets go.
+constexpr uint32_t kReadsWithoutPad = 90;
+std::atomic<uint32_t> g_reads_without_pad{0};
+std::atomic<bool> g_pad_lost{false};  // the mute let go: pad() gives the arrow / page up at its next read
+
 void mute(input::PadState& p) {
     if (g_has_controller.load(std::memory_order_relaxed)) {
-        p = input::PadState{};
-        return;
+        if (g_reads_without_pad.fetch_add(1, std::memory_order_relaxed) < kReadsWithoutPad) {
+            p = input::PadState{};
+            return;
+        }
+        if (!g_pad_lost.exchange(true, std::memory_order_relaxed))
+            LOG("[game-settings] no GamePad reads while the settings arrow or page had the controller: the controller goes back to the game");
+        g_has_controller.store(false, std::memory_order_relaxed);
     }
     if (const uint32_t s = g_swallow.load(std::memory_order_relaxed)) p.buttons &= ~s;
     if (g_swallow_x.load(std::memory_order_relaxed)) p.lx = 0;
@@ -499,6 +543,7 @@ void pad(input::PadState& p, Cpu* c) {
     g_page.measure = g_look.font_ready() ? game_measure : nullptr;
     const float dt = frame_seconds();
     shot_after(0);
+    g_reads_without_pad.store(0, std::memory_order_relaxed);
     const Menu m = read_menu();
     if (trace()) {
         static uint32_t last_descriptor = ~0u, last_window = ~1u;
@@ -569,6 +614,13 @@ void pad(input::PadState& p, Cpu* c) {
             tv_pointer::to_page(s, in.x, in.y);
         }
     }
+    if (g_pad_lost.exchange(false, std::memory_order_relaxed)) {  // (see mute)
+        g_entry.clear();
+        if (g_page.open()) g_page.hide();
+    }
+    static bool arrow_drawn = false;  // the entry arrow was drawn at the last read
+    const bool arrow_was_drawn = arrow_drawn;
+    arrow_drawn = false;
     if (!g_page.open()) {
         if (!enabled) g_page.cancel_entry();
         g_page.tick(dt);
@@ -601,9 +653,16 @@ void pad(input::PadState& p, Cpu* c) {
             position.x = u32_as_f32(ld32(source + 0x1C));
             position.y = u32_as_f32(ld32(source + 0x20));
         }
+        // The arrow is a stop only while it is drawn over the items page and the game's own focus cursor
+        // is on an element of the menu's event manager: never with the chart grid's fixed cursor, nor while
+        // the page slides out (issue #336)
+        const bool can_focus = eligible && m.cursor && m.focus_cursor && m.receiver && m.cursor_pane && !in.touch && !g_page.shown();
+        if (g_entry.focused() && !arrow_was_drawn) {
+            g_entry.clear();
+            LOG("[game-settings] entry arrow returned the focus to the game (the arrow was not drawn)");
+        }
         const bool focused_before = g_entry.focused();
-        if (g_entry.update(eligible && m.cursor && m.cursor_pane && !in.touch, left,
-                           m.left_neighbour, position, render::frame_count())) {
+        if (g_entry.update(can_focus, left, m.left_neighbour, position, render::frame_count())) {
             LOG("[game-settings] entry arrow highlighted after dead Left");
             play(c, Sound::Cursor);
             shot_after(20);
@@ -612,6 +671,8 @@ void pad(input::PadState& p, Cpu* c) {
             ((in.buttons & (kPadRight | kPadB | kPadUp | kPadDown | kPadPlus | kPadL | kPadR)) || in.lx > 0.5f || std::fabs(in.ly) > 0.5f)) {
             const bool back = (in.buttons & (kPadRight | kPadB)) || in.lx > 0.5f;
             g_entry.clear();
+            if (!back) LOG("[game-settings] entry arrow returned the focus to the game (%s)",
+                           (in.buttons & kPadPlus) ? "+" : (in.buttons & (kPadL | kPadR)) ? "L / R" : "Up / Down");
             if (back) {
                 g_swallow.store(in.buttons, std::memory_order_relaxed);
                 if (in.lx > 0.5f) g_swallow_x.store(true, std::memory_order_relaxed);
@@ -619,6 +680,8 @@ void pad(input::PadState& p, Cpu* c) {
                 play(c, Sound::Cursor);
                 LOG("[game-settings] entry arrow returned to the game's focus");
             }
+        } else if (focused_before && !g_entry.focused()) {
+            LOG("[game-settings] entry arrow returned the focus to the game (the menu changed)");
         }
         entry_cursor(m, g_entry.focused());
         // ZL is deliberately not an entry: the shared menu event dispatcher does not
@@ -671,6 +734,7 @@ void pad(input::PadState& p, Cpu* c) {
         static bool shown_once = false;
         if (!shown_once) shown_once = true, shot_after(20);
         publish(g_page.draw_entry(), c);
+        arrow_drawn = true;
         return;
     }
     // open: the page has the controller

@@ -51,6 +51,7 @@
 #include "report_header.h"
 #include "crash_addr.h"
 #include "build_info.h"
+#include "pipeline_runtime_identity.h"
 #ifdef WWHD_DECOMP
 #include "decomp/decomp.h"
 #endif
@@ -473,6 +474,16 @@ static void enter_data_folder(int argc, char** argv) {
 extern "C" void synthetic_game_frame(Cpu*, PpcFunc);
 
 int main(int argc, char** argv) {
+    // setup's start check of a newly built game, before it replaces the one before (tools/installer/setup.py
+    // build_identity): proves the binary starts here (its libraries load) and says what it is, then exits.
+    // The pipeline identity keys the prepared shaders (pipeline_runtime_identity.h).
+    for (int i = 1; i < argc; ++i)
+        if (!strcmp(argv[i], "--build-identity")) {
+            std::printf("{\"version\": \"%s\", \"commit\": \"%s\", \"variant\": \"%s\", \"pipeline\": \"%s\"}\n",
+                        build::version(), build::commit(), build::variant(), wwhd::pipeline_runtime_identity());
+            std::fflush(stdout);
+            return 0;
+        }
     enter_data_folder(argc, argv);  // before anything reads a relative path
     std::string shader_prebuild_root;
     // Android's isolated preparation activity and normal SDL startup share the

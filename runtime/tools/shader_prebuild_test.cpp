@@ -203,6 +203,19 @@ int main(int argc, char** argv) {
         assert(shaderprebuild::identity_matches(both, game, "vulkan"));
         json(shaderprebuild::root() / "active.json", active);
     }
+    {
+        // A generation keyed by the pipeline identity (setup since incremental updates) survives another binary of
+        // the same renderer, and is refused by a renderer whose identity differs
+        auto keyed = active;
+        keyed["launch"].object.erase("runtime");
+        keyed["launch"]["pipeline"] = std::string(wwhd::pipeline_runtime_identity());
+        assert(shaderprebuild::identity_matches(keyed, game, "vulkan"));
+        keyed["launch"]["pipeline"] = std::string(64, '0');
+        assert(!shaderprebuild::identity_matches(keyed, game, "vulkan"));
+        auto stale = active;
+        stale["launch"]["runtime"]["size"] = 1.0;  // an older generation: still checked by the binary's file
+        assert(!shaderprebuild::identity_matches(stale, game, "vulkan"));
+    }
     // Selected external templates participate in identity; bundled changes do not.
     const auto externalTemplate = temporary / "external-template.bin";
     write(externalTemplate, "synthetic state fixture");
