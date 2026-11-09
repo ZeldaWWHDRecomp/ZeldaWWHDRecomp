@@ -30,11 +30,13 @@
 #include <unordered_map>
 
 #include "coop_sync.h"
+#include "link_appearance.h"
 #include "link_masks.h"
 #include "guest_addr.h"
 #include "mods.h"
 #include "runtime.h"
 #include "../savestate.h"
+#include "../gfx/renderer.h"
 #include "../j3d_draw_guard.h"
 
 namespace interp {
@@ -101,6 +103,7 @@ struct Puppet {
     bool shown = false;
     bool see = false;  // drawn see-through (a player outside the party, the player's choice: GAPS X1b)
     int tunic = 0;
+    link_appearance::Look look;  // its player's look (kLook; empty: the game's colours, with the tunic)
     Pose pose;
     float pos[3] = {};
     int16_t yaw = 0;
@@ -887,164 +890,116 @@ template <typename F> void hidden(uint32_t model, F entry) {
     for (uint32_t k = 0; k < n; k++) st8(shown_flag(model, k), was[k]);
 }
 
-// The tunics (docs/online-coop.md): Link's body texture (hero's clothes, linktexS3TC, or his island clothes,
-// linktexbci4, which the game swaps in for it: before he has the hero's clothes and in a second quest) recoloured where
-// it is the tunic's and hat's green (the island shirt's blue), one copy a colour, made the first time it is worn; a
-// model's texture list (written by viewCalc, 027F50F8) then points at its wearer's. Which colour blocks are the tunic's is found at run time from the
-// player's own loaded texture (no mask ships with the port): an endpoint (RGB565) of the base green's hue and
-// saturation (tunic_green()). Each such endpoint takes the wanted colour's hue, its saturation and value moved as much
-// as the base colour's are; a BC1 block whose endpoints swap order has its index 3 (transparent) made 2.
+// The looks (docs/online-coop.md): each player's Link in his own colours. Link's textures with colour masks
+// (link_masks.h: his clothes, his island clothes, which the game swaps in for them, his hair piece and his irises),
+// which the appearance service finds in the game's Link.bfres (link_appearance.h), are drawn for a puppet from a copy
+// of the game's own bytes in its player's look: the look the player chose (link_appearance, sent as kLook, coop_sync)
+// and, where it leaves the tunic as it is, the player's co-op tunic colour. Each texture keeps a copy per look worn
+// (made the first time, at most kLooks; a look past them shows the game's colours), each with a texture object of its
+// own in the port's memory; a model's texture list (written by viewCalc, 027F50F8) then points at its wearer's. This
+// game's own Link shows the look the appearance service gives him (on the game's texture itself), with this game's
+// co-op tunic where his look leaves the tunic; nothing is changed for him outside a session.
 int g_own_tunic = -1;
-struct Clothes {
-    uint32_t base;  // the tunic's own colour, 0xRRGGBB
-    uint32_t fmt, image_bytes;  // its GX2 format (without the sRGB bit) and level-0 size (640x384)
-    bool hue_test;  // the hue test below may stand in until the computed mask is ready (BC1 green only)
-    uint32_t tex = 0;            // Link's texture object (its GX2Texture at +4)
-    uint32_t worn[4] = {};       // its copies, by tunic (0: none), each in memory of its own for good
-    uint32_t img[4] = {}, mip[4] = {};
-    bool made[4] = {};
-    bool guessed[4] = {};        // made by the hue test (the computed mask was not ready): made again once it is
-    uint32_t retry[4] = {};
-    uint32_t made_from = 0;      // the texture they are copies of
-    bool fresh = false;          // to be made again (another texture)
-} g_clothes[2] = {{0x5AB24A, 0x31, 640 * 384 / 2, true},    // (BC1: HD Link's hero's clothes)
-                  {0x4A75AD, 0x33, 640 * 384, false}};       // (BC3: his island clothes; the shirt's blue)
 constexpr uint32_t kTunicRgb[4] = {0x5AB24A, 0xE52B36, 0x698DB9, 0x9A4F9F};  // green; the randomizer's Red/Blue/Purple Link
+constexpr size_t kLooks = 8;
+struct Worn {
+    std::vector<uint8_t> key;  // the look (link_appearance::encode)
+    uint32_t obj = 0, img = 0, mip = 0;
+};
+struct LinkTex {
+    link_appearance::GameTexture game;
+    std::vector<Worn> worn;
+};
+std::vector<LinkTex> g_ltex;  // Link's textures, as game_textures() gives them
 
-void hsv(uint16_t c, double& h, double& s, double& v) {
-    const double r = (c >> 11) / 31.0, g = (c >> 5 & 63) / 63.0, b = (c & 31) / 31.0;
-    const double mx = std::max({r, g, b}), d = mx - std::min({r, g, b});
-    v = mx, s = mx > 0 ? d / mx : 0, h = 0;
-    if (d < 0.001) return;
-    h = 60 * (r >= mx ? (g - b) / d : g >= mx ? 2 + (b - r) / d : 4 + (r - g) / d);
-    if (h < 0) h += 360;
-}
-uint16_t rgb565(double h, double s, double v) {
-    double r = v, g = v, b = v;
-    if (s > 0) {
-        const double hh = (h >= 360 ? 0 : h) / 60, f = hh - (int)hh, p = v * (1 - s), q = v * (1 - s * f), t = v * (1 - s * (1 - f));
-        switch ((int)hh) {
-        case 0: r = v, g = t, b = p; break;
-        case 1: r = q, g = v, b = p; break;
-        case 2: r = p, g = v, b = t; break;
-        case 3: r = p, g = q, b = v; break;
-        case 4: r = t, g = p, b = v; break;
-        default: r = v, g = p, b = q; break;
-        }
-    }
-    return (uint16_t)(std::lround(r * 31) << 11 | std::lround(g * 63) << 5 | std::lround(b * 31));
-}
-uint16_t rgb565(uint32_t rgb) {
-    return (uint16_t)(std::lround((rgb >> 16) / 255.0 * 31) << 11 | std::lround((rgb >> 8 & 255) / 255.0 * 63) << 5 | std::lround((rgb & 255) / 255.0 * 31));
-}
-// an endpoint that is the tunic's green (the hat and tunic; not his skin, hair, belt, boots or eyes): a hue around
-// the base green's (about 110 degrees), clearly coloured and not too dark
-bool tunic_green(uint16_t c) {
-    double h, s, v;
-    hsv(c, h, s, v);
-    return h >= 80 && h <= 150 && s >= 0.3 && v >= 0.12;
-}
-uint16_t exchange(uint16_t base, uint16_t want, uint16_t cur) {
-    double bh, bs, bv, wh, ws, wv, ch, cs, cv;
-    hsv(base, bh, bs, bv), hsv(want, wh, ws, wv), hsv(cur, ch, cs, cv);
-    if (cs == 0) cs = bs;
-    return rgb565(wh, std::clamp(cs + ws - bs, 0.0, 1.0), std::clamp(cv + wv - bv, 0.0, 1.0));
+// a wearer's look: the player's own choice, with the co-op tunic where it leaves the tunic (-1: this game's Link)
+link_appearance::Look wearer_look(int w) {
+    using link_appearance::Slot;
+    link_appearance::Look l = w < 0 ? link_appearance::shown() : g_puppet[w].look;
+    const int t = w < 0 ? g_own_tunic : g_puppet[w].tunic;
+    if (t > 0 && t < 4 && !l.has(Slot::kTunic)) l.put(Slot::kTunic, kTunicRgb[t]);
+    return l;
 }
 
-// Link's texture object of these clothes as tunic t (0: his own), the copy made the first time
-uint32_t worn(Clothes& k, int t) {
-    if (!k.tex || kTunicRgb[t] == k.base) return k.tex;  // (the clothes' own colour: as they are)
-    if (k.fresh) k.fresh = false, std::fill(std::begin(k.made), std::end(k.made), false), std::fill(std::begin(k.guessed), std::end(k.guessed), false);
-    using namespace gx2;
-    const uint32_t gx = k.tex + kTexSurface;
-    if (k.made[t] && k.guessed[t] && ++k.retry[t] % 30 == 0 &&
-        link_masks::find(mem::ptr(ld32(gx + image)), ld32(gx + imageSize), ld32(gx + mipmapSize) ? mem::ptr(ld32(gx + mipmaps)) : nullptr, ld32(gx + mipmapSize)))
-        k.made[t] = false;  // (the mask is ready now: made again from it)
-    if (k.made[t]) return k.worn[t];
-    // (no hue test for these clothes: as they are until the mask is ready, asked again every 30 draws)
-    if (!k.hue_test && (++k.retry[t] % 30 != 1 ||
-                        !link_masks::find(mem::ptr(ld32(gx + image)), ld32(gx + imageSize), ld32(gx + mipmapSize) ? mem::ptr(ld32(gx + mipmaps)) : nullptr, ld32(gx + mipmapSize))))
-        return k.tex;
-    const uint32_t size = ld32(gx + imageSize), mips = ld32(gx + mipmapSize), align = std::max<uint32_t>(ld32(gx + alignment), 0x100);
-    if (!k.worn[t]) k.worn[t] = mem::host_alloc(kTexObject, 0x20), k.img[t] = mem::host_alloc(size, align), k.mip[t] = mips ? mem::host_alloc(mips, align) : 0;
-    k.made[t] = true;
-    const uint32_t obj = k.worn[t], img = k.img[t], mip = k.mip[t];
-    memcpy(mem::ptr(obj), mem::ptr(k.tex), kTexObject);
-    memcpy(mem::ptr(img), mem::ptr(ld32(gx + image)), size);
-    if (mip) memcpy(mem::ptr(mip), mem::ptr(ld32(gx + mipmaps)), mips);
-    st32(obj + kTexSurface + image, img), st32(obj + kTexSurface + mipmaps, mip);
-    // the tunic's mask computed from the player's own game (mods/link_masks.h): its tint; until it is ready (or for a
-    // texture it does not know), the hue test below
-    if (const link_masks::Mask* m = link_masks::find(mem::ptr(ld32(gx + image)), size, mips ? mem::ptr(ld32(gx + mipmaps)) : nullptr, mips)) {
-        link_masks::tint(*m, link_masks::Part::kTunic, kTunicRgb[t], mem::ptr(img), mip ? mem::ptr(mip) : nullptr);
-        k.guessed[t] = false;
-        trace("coop: Link's clothes (%06X) in tunic %d made from the computed mask", k.base, t);
-        return obj;
+// Link's textures as the appearance service knows them; a texture found again elsewhere (a stage or a state load
+// gave the game another Link.bfres) has its copies made again
+void refresh_textures() {
+    static uint64_t frame = ~0ull;  // (once a frame)
+    if (render::frame_count() == frame) return;
+    frame = render::frame_count();
+    link_appearance::want_textures();
+    const auto now = link_appearance::game_textures();
+    bool same = now.size() == g_ltex.size();
+    for (size_t i = 0; same && i < now.size(); i++)
+        same = now[i].tex == g_ltex[i].game.tex && now[i].image == g_ltex[i].game.image && now[i].mask == g_ltex[i].game.mask;
+    if (same) return;
+    std::vector<LinkTex> next;
+    for (const auto& g : now) {
+        LinkTex k;
+        k.game = g;
+        for (const LinkTex& o : g_ltex)  // (the port's memory of the copies is used again)
+            if (o.game.mask == g.mask) k.worn = o.worn;
+        for (Worn& w : k.worn) w.key.clear();
+        next.push_back(std::move(k));
     }
-    k.guessed[t] = true;
-    const uint16_t base = rgb565(k.base), want = rgb565(kTunicRgb[t]);
-    const uint32_t block = 8;  // (BC1)
-    for (uint32_t n = 0, at = 0; at < size + mips; n++, at += block) {
-        uint8_t* b = mem::ptr(at < size ? img + at : mip + at - size) + block - 8;
-        uint16_t c[2];
-        memcpy(c, b, 4);  // (little-endian: the GPU's)
-        const uint8_t bits = (uint8_t)(tunic_green(c[0]) | tunic_green(c[1]) << 1);
-        if (!bits) continue;
-        const bool before = c[0] > c[1];
-        for (int e = 0; e < 2; e++) if (bits >> e & 1) c[e] = exchange(base, want, c[e]);
-        memcpy(b, c, 4);
-        if (before && c[0] <= c[1]) {  // (BC1: no transparent texels where there were none)
-            uint32_t idx;
-            memcpy(&idx, b + 4, 4);
-            for (int i = 0; i < 32; i += 2) if ((idx >> i & 3) == 3) idx &= ~(1u << i);
-            memcpy(b + 4, &idx, 4);
-        }
-    }
-    trace("coop: Link's clothes (%06X) in tunic %d made", k.base, t);
-    return obj;
+    g_ltex = std::move(next);
+    trace("coop: Link's textures with masks: %zu", g_ltex.size());
 }
 
-// a texture object that is these clothes: 640x384 in their format and size
-bool is_clothes(const Clothes& k, uint32_t tex) {
-    const uint32_t s = tex + gx2::kTexSurface;
-    return tex >= mem::kMem2Start && tex < mem::kMem2End && ld32(s + gx2::width) == 640 && ld32(s + gx2::height) == 384 &&
-           (ld32(s + gx2::format) & 0x3F) == k.fmt && ld32(s + gx2::imageSize) == k.image_bytes;
-}
-// the clothes a model's texture list entry is, or null: a known texture object, or (the game swaps the island clothes'
-// texture into the list in viewCalc, so they need not be in a model's table) a new one taken on (its copies made again)
-Clothes* clothes_of(uint32_t tex) {
-    for (Clothes& k : g_clothes) {
-        if (!tex || tex == k.tex) return tex ? &k : nullptr;
-        for (uint32_t w : k.worn) if (w && tex == w) return nullptr;  // (one of the copies)
-    }
-    for (Clothes& k : g_clothes)
-        if (is_clothes(k, tex)) {
-            k.tex = tex;
-            if (k.tex != k.made_from) k.made_from = k.tex, k.fresh = true;
-            trace("coop: Link's clothes (%06X): %08X", k.base, tex);
-            return &k;
-        }
+LinkTex* link_tex(uint32_t tex) {
+    for (LinkTex& k : g_ltex)
+        if (k.game.tex == tex) return &k;
     return nullptr;
 }
 
-// Link's body textures, found among his models' (each model data's texture table: j3d::kTexTable), by size and format
-void find_clothes() {
-    for (Clothes& k : g_clothes) k.tex = 0;
-    for (const LinkModel& lm : g_models) {
-        const uint32_t table = ld32(ld32(lm.model + j3d::mModelData) + j3d::kTexTable), n = table ? std::min<uint32_t>(ld16(table), 64) : 0;
-        for (uint32_t j = 0; j < n; j++)
-            if (const uint32_t tex = ld32(ld32(table + j3d::kTexTableEntries) + j * j3d::kTexEntry + j3d::kTexEntryObj))
-                for (Clothes& k : g_clothes)
-                    if (!k.tex && is_clothes(k, tex)) k.tex = tex;
+// the texture object of a texture in a look (copied from the game's own bytes, the first time)
+uint32_t worn(LinkTex& k, const link_appearance::Look& look) {
+    using namespace gx2;
+    const link_masks::Mask& m = *k.game.mask;
+    std::vector<uint8_t> key = link_appearance::encode(look);
+    Worn* w = nullptr;
+    for (Worn& x : k.worn)
+        if (x.key == key) return x.obj;
+    for (Worn& x : k.worn)
+        if (x.key.empty() && x.obj) { w = &x; break; }  // (a copy of a texture found before: its memory again)
+    if (!w) {
+        if (k.worn.size() >= kLooks) {  // (more looks than copies: the game's own colours)
+            for (Worn& x : k.worn)
+                if (x.key == link_appearance::encode({})) return x.obj;
+            return k.worn.front().obj;
+        }
+        const uint32_t align = std::max<uint32_t>(ld32(k.game.tex + kTexSurface + alignment), 0x100);
+        Worn x;
+        x.obj = mem::host_alloc(kTexObject, 0x20), x.img = mem::host_alloc(m.image_size, align), x.mip = m.mip_size ? mem::host_alloc(m.mip_size, align) : 0;
+        k.worn.push_back(x);
+        w = &k.worn.back();
     }
-    for (Clothes& k : g_clothes)  // (its copies made from another texture: made again, in the same memory)
-        if (k.tex != k.made_from) k.made_from = k.tex, k.fresh = true;
-    trace("coop: Link's clothes: %08X, island clothes %08X", g_clothes[0].tex, g_clothes[1].tex);
+    w->key = key;
+    memcpy(mem::ptr(w->obj), mem::ptr(k.game.tex), kTexObject);
+    uint32_t img = k.game.image, mip = k.game.mips;
+    if (!look.empty()) {  // (the game's own colours: the game's bytes, no copy)
+        memcpy(mem::ptr(w->img), mem::ptr(k.game.image), m.image_size);
+        if (m.mip_size) memcpy(mem::ptr(w->mip), mem::ptr(k.game.mips), m.mip_size);
+        for (int i = 0; i < link_appearance::kSlots; i++)
+            if (look.has(link_appearance::Slot(i)))
+                for (uint8_t part : link_appearance::parts_of(link_appearance::Slot(i)))
+                    link_masks::tint(m, link_masks::Part(part), look.colour(link_appearance::Slot(i)), mem::ptr(w->img), m.mip_size ? mem::ptr(w->mip) : nullptr);
+        img = w->img, mip = w->mip;
+    }
+    st32(w->obj + kTexSurface + image, img), st32(w->obj + kTexSurface + mipmaps, mip);
+    trace("coop: %s in look %s made", m.texture.c_str(), look.empty() ? "(the game's)" : link_appearance::to_text(look).c_str());
+    return w->obj;
 }
 
 }  // namespace
 
 void own_tunic(int t) { g_own_tunic = t; }
+void puppet_look(int i, const std::vector<uint8_t>& record) {
+    if (i < 0 || i >= kPuppets) return;
+    link_appearance::Look l;
+    if (!record.empty() && !link_appearance::decode(record.data(), record.size(), l)) l = {};
+    g_puppet[i].look = l;
+}
 void own_character(int ch) { g_own_char = ch & 3; }
 int own_char() { return g_own_char; }
 
@@ -1724,7 +1679,6 @@ extern "C" void hook_023D5548(Cpu* c) {
     g_in_heap = false;
     g_wearer.clear();
     for (const LinkModel& m : g_models) g_wearer[m.model] = -1;
-    find_clothes();
     g_body_parts = 0;
     for (size_t k = 0; k < g_models.size() && k < 64; k++) {  // (by his model files' names: cl, hands, katsura, ...)
         const uint32_t fmdl = ld32(g_models[k].data);
@@ -1871,7 +1825,7 @@ extern "C" void hook_025E2DE0(Cpu* c) {
     else item_drawn(model);
 }
 
-// J3DModel's texture list of each material (027F50F8, in viewCalc): a puppet's copies in its player's tunic, Link's
+// J3DModel's texture list of each material (027F50F8, in viewCalc): a puppet's copies in its player's look, Link's
 // in this game's while a session is on
 extern "C" void f_027F50F8_orig(Cpu* c);
 extern "C" void hook_027F50F8(Cpu* c) {
@@ -1879,13 +1833,16 @@ extern "C" void hook_027F50F8(Cpu* c) {
     f_027F50F8_orig(c);
     const auto it = g_wearer.find(model);
     if (it == g_wearer.end()) return;
-    const int t = it->second < 0 ? g_own_tunic : g_puppet[it->second].tunic;
-    if (t < 0) return;
+    if (it->second < 0 && g_own_tunic < 0) return;  // (no session: this game's Link as he is)
+    refresh_textures();
+    if (g_ltex.empty()) return;
+    const link_appearance::Look look = wearer_look(it->second);
+    if (it->second < 0 && look == link_appearance::shown()) return;  // (the game's texture already shows it)
     using namespace j3d;
     for (uint32_t i = 0, n = ld16(model + kMatPacketNum); i < n; i++) {
         const uint32_t mi = ld32(model + kMatPackets) + i * kMatPacket, list = ld32(mi + kMatPacketTex), count = list ? ld8(ld32(mi) + kMatTexNum) : 0;
         for (uint32_t j = 0; j < count; j++)
-            if (Clothes* k = clothes_of(ld32(list + 4 * j))) st32(list + 4 * j, worn(*k, t));
+            if (LinkTex* k = link_tex(ld32(list + 4 * j))) st32(list + 4 * j, worn(*k, look));
     }
 }
 

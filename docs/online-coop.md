@@ -83,6 +83,10 @@ For scripted tests the environment variables `WWHD_COOP=host[:port]` or `WWHD_CO
 - **The other players** are shown as Link in their own tunic, with their animations, sword and items,
   in the same room as you. You hear their sword, steps and voice where they are. Players push each
   other.
+- **Their look:** a player who chose Link's colours (hair, skin, eyes, tunic and details: the dyer on Windfall,
+  the `link-appearance` mod) is shown in them, also while they try colours on her page. Where their look leaves
+  the tunic as it is, their co-op tunic colour shows. Players outside your party (through a server) are shown in
+  their co-op tunic colour only.
 - **Their items:** you see what they hold, throw and fire. Their bombs, and the Bomb Flowers they throw, go off in
   your game too. The flower plants themselves are your own: one they pick still grows in your game.
 - **The story and items:** story events, chests, switches, pickups, small keys and dungeon items,
@@ -278,7 +282,7 @@ leaving the party takes you back to the title screen, because you were playing i
 - **Players outside your party** (Settings > Online): **Like any Link**, or **See-through**: drawn half
   transparent, so you tell them from your party, who always look solid.
 - Each other player shown takes about 0.5 MB of the port's own memory the first time; the game's memory is not
-  used for them.
+  used for them. Up to 8 different looks are drawn at once; more show the game's colours (with the tunic).
 - Friendly fire: a sword hit or an arrow on another player costs them half a heart (a heart for spin and
   jump attacks), a bomb's or a cannon shot's blast a heart, but never their last quarter heart. A Deku Leaf's gust
   pushes them, as it pushes things in its way, without damage. Played directly it is on; through a server it is a party

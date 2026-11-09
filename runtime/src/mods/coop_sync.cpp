@@ -34,6 +34,7 @@
 #include "coop_monsters.h"
 #include "coop_pose.h"
 #include "coop_progress.h"
+#include "link_appearance.h"
 #include "guest_addr.h"
 #include "mods.h"
 #include "runtime.h"
@@ -400,6 +401,23 @@ bool door_held(Cpu* c) {
     return true;
 }
 
+// each player's look (kLook: link_appearance::encode, empty: none heard), and this game's look as last sent
+std::vector<uint8_t> g_looks[net::kMaxPlayers];
+std::vector<uint8_t> g_look_sent;
+bool g_look_due = false;
+uint32_t g_look_ms = 0;
+// this game's look to the others: at a join (anyone's) and when it changes (the colour page's preview too), at most
+// twice a second
+void send_look() {
+    if (net::role() == net::Role::kOff) return g_look_sent.clear();
+    const std::vector<uint8_t> now = link_appearance::encode(link_appearance::shown());
+    const uint32_t ms = net::now_ms();
+    if ((now == g_look_sent && !g_look_due) || ms - g_look_ms < 500) return;
+    net::send(-1, net::kLook, std::string(now.begin(), now.end()));
+    g_look_sent = now, g_look_due = false, g_look_ms = ms;
+    mods::trace("coop: my look sent: %s", link_appearance::to_text(link_appearance::shown()).c_str());
+}
+
 struct Handler : net::Handler {
     void message(int from, net::Msg type, const uint8_t* d, size_t n) override {
         // (C14) nothing heard from a blocked or muted player
@@ -410,6 +428,12 @@ struct Handler : net::Handler {
         if (type == net::kDoorMove) return progress::door_moved(d, n);
         if (type == net::kRupees) return progress::rupees_received(d, n);
         if (type == net::kEmote) return n == 1 ? emotes::play(from, d[0]) : void();  // (traced: its poses carry it, C22)
+        if (type == net::kLook) {  // (a look this port can't read: the game's colours)
+            link_appearance::Look l;
+            if (from < 0 || from >= net::kMaxPlayers) return;
+            g_looks[from] = link_appearance::decode(d, n, l) ? std::vector<uint8_t>(d, d + n) : std::vector<uint8_t>();
+            return mods::trace("coop: player %d's look: %s", from, link_appearance::to_text(l).c_str());
+        }
         if (type == net::kSound) return g_sounds_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
         if (type == net::kOwner && net::via_server()) return;  // (through a server: its runners, X2)
         if (type == net::kOwner) {  // (a guest) the host's table of who runs each place
@@ -581,6 +605,8 @@ struct Handler : net::Handler {
         while (r.poses.size() > 2 && (int32_t)(ms - r.poses.front().first) > 1000) r.poses.pop_front();
     }
     void joined(int id) override {
+        if (id >= 0 && id < net::kMaxPlayers) g_looks[id].clear();
+        g_look_due = true;  // (the newcomer gets this game's look)
         ss::notice(net::name(id) + " joined (" + kTunics[net::tunic(id)] + ")");
         // (with "stay together" the host's world goes to a guest; else, Anchor's way, every member's team state goes to
         // each who joined and the newcomer's to each member, so what anyone did while apart is merged in both ways)
@@ -589,6 +615,7 @@ struct Handler : net::Handler {
     }
     void left(int id, const char* why) override {
         g_remote[id] = Remote{};
+        if (id >= 0 && id < net::kMaxPlayers) g_looks[id].clear();
         release(id < net::my_id() ? id : std::max(0, id - 1));  // (hidden, its kit given back)
         if (!strcmp(why, net::kStrangerGone)) return;  // (a stranger's puppet: shown and gone without a word)
         if (id != 0 || net::role() != net::Role::kOff) return ss::notice(net::name(id) + " left");
@@ -904,6 +931,7 @@ void poll(Cpu* c, bool on) {
     if (static bool told = false; !arrived() || !guest()) told = false;  // (told again at each join: drop-in, C17)
     else if (!told) told = true, net::send(0, net::kArrived, std::string());
     own_tunic(host() ? net::tunic(0) : guest() ? net::tunic(net::my_id()) : -1);
+    send_look();
     if (guest() && !g_was_guest && net::tunic(net::my_id()) != s.tunic)
         ss::notice(std::string(kTunics[s.tunic]) + " was taken, you're " + kTunics[net::tunic(net::my_id())]);
     if (guest()) g_was_guest = true;
@@ -1478,11 +1506,13 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
             memcpy(q.pos, r.at, 12);
             q.emote = p.emote, q.emote_s = p.emote_s, q.emote_w = p.emote_w;
             if (emotes::cheap_pose(r.gait, now / 1000.f, body_model(), q)) {
+                puppet_look(slot, g_looks[id]);
                 show(slot, &q, r.at, yaw, net::tunic(id), false);
                 continue;
             }
         }
         if (block::silent_id(id)) p.emote = 0;  // (muted or blocked: no emotes from them, C22)
+        puppet_look(slot, g_looks[id]);
         show(slot, &p, r.at, yaw, net::tunic(id), !net::member(id) && settings().strangers == 1);  // (X1b)
     }
     // test aid: WWHD_COOP_TEST_BLOCK=<s>[:mute]: that many seconds into the session, the first player outside the party
