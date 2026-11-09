@@ -278,13 +278,19 @@ static void test_game() {
     const auto masks = compute_from_szs(sarc_member(path, "Link.szs"));  // as the port reads it
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     printf("the player's Link: %zu masks in %.0f ms\n", masks.size(), ms);
-    CHECK(masks.size() == 3);
+    CHECK(masks.size() == 4);  // the clothes, the island clothes, the hair piece, the irises
     for (const Mask& m : masks) {
         printf("  %s %ux%u:", m.texture.c_str(), m.width, m.height);
         for (int p = 1; p < kParts; p++)
             if (m.count(Part(p))) printf(" %s %u (%06X)", part_name(Part(p)), m.count(Part(p)), m.base_rgb[p]);
         printf("\n");
-        CHECK(m.count(Part::kHair) > 0);
+        CHECK(m.ftex > 0 && memcmp(m.file_head, "FRES", 4) == 0);
+        if (m.texture == "hitomi") {  // the irises only (by colour), around a tenth of the eyes' picture
+            CHECK(m.count(Part::kEyes) > 2000 && m.count(Part::kEyes) < m.texels.size() / 4 && m.base_rgb[int(Part::kEyes)]);
+            CHECK(m.count(Part::kEyes) + m.count(Part::kNone) == m.texels.size());
+            continue;
+        }
+        CHECK(m.count(Part::kHair) > 0 && m.count(Part::kEyes) == 0);
         if (m.texture == "linktexS3TC") CHECK(m.count(Part::kBuckle) > 10000 && m.count(Part::kHair) < 100);  // hair: a flat patch
         if (m.texture != "katsuraS3TC") CHECK(m.count(Part::kTunic) > m.texels.size() / 4);
     }

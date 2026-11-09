@@ -14,6 +14,7 @@
 //   linktexS3TC  BC1 640x384, the hero's clothes (hair, skin, tunic with the hat, undershirt, pants, boots, buckle)
 //   linktexbci4  BC3 640x384, the island clothes (the game swaps it in for linktexS3TC; same UV layout)
 //   katsuraS3TC  BC1 32x32,   the hair piece worn with the island clothes (all hair)
+//   hitomi       BC3 384x384, the eyes' irises and pupils on white (both eyes; the irises a dark teal)
 //
 // How a mask is made (classify(), from the texture alone):
 //  1. level 0 decoded to sRGB colours, each texel in CIELAB;
@@ -26,6 +27,8 @@
 //     (the ear's pink mark in the skin, the boots' dark strokes, the buckle swirl's highlights);
 //  6. the hero's belt buckle has his hair's yellow: compute() tells it apart by the shape whose UVs draw it
 //     (reassign()).
+// The irises are not classified by regions: a texel or BC endpoint of clear colour that is neither the white
+// around them nor the black pupil is the iris (iris_colour()); so the pupil stays black whatever colour is chosen.
 // Endpoints: on level 0 each endpoint takes the part of the texels that use it (BC index weights; the block's
 // place found by untiling an index surface); on the mip levels (no texel places needed) the part of the
 // nearest level-0 endpoint colour.
@@ -40,11 +43,12 @@ using Bytes = std::vector<uint8_t>;
 
 // A part of Link's look. kTunic: the hero's tunic and hat, or the island shirt; kBoots: also the island shoes and
 // their armbands (the same grey, next to them in the texture); kEmblem, kSoles: the island clothes'; kBuckle: the
-// hero's belt buckle (his hair's yellow). His belt is not in the texture (vertex colours).
-enum class Part : uint8_t { kNone, kHair, kSkin, kTunic, kUndershirt, kPants, kBoots, kEmblem, kSoles, kBuckle, kCount };
+// hero's belt buckle (his hair's yellow); kEyes: the irises (hitomi, the eyes' coloured ring around the black pupil).
+// His belt is not in the texture (vertex colours); his eyebrows are a grey texture the material colours.
+enum class Part : uint8_t { kNone, kHair, kSkin, kTunic, kUndershirt, kPants, kBoots, kEmblem, kSoles, kBuckle, kEyes, kCount };
 const char* part_name(Part p);
 inline constexpr int kParts = int(Part::kCount);
-inline constexpr uint32_t kAlgorithm = 1;  // bump when the classification changes (old caches are recomputed)
+inline constexpr uint32_t kAlgorithm = 2;  // 2: the irises (hitomi), each texture's place in Link.bfres  // bump when the classification changes (old caches are recomputed)
 
 struct Mask {
     std::string texture;                  // e.g. "linktexS3TC"
@@ -55,6 +59,8 @@ struct Mask {
     std::vector<uint8_t> texels;          // level 0, row-major width x height, a Part per texel
     std::vector<uint8_t> endpoints;       // 2 per BC block in the raw (tiled) order, image then mips: Part of colour 0, colour 1
     uint32_t base_rgb[kParts] = {};       // each part's own colour (its commonest texel colour), 0xRRGGBB; 0: not in the texture
+    uint32_t ftex = 0;                    // the texture's FTEX object in Link.bfres (its offset from the file's start)
+    uint8_t file_head[64] = {};           // Link.bfres's first 64 bytes (to find the file in the game's memory)
     uint32_t count(Part p) const;         // texels of a part
 };
 
@@ -96,6 +102,11 @@ Bytes decode(int kind, const uint8_t* blocks, uint32_t w, uint32_t h);
 // turned by (want - base), saturation and value scaled towards the wanted colour's. BC1 blocks keep their
 // colour mode (endpoints swapped with their indices when the order would flip). Pure, thread-agnostic.
 void tint(const Mask& m, Part part, uint32_t want_rgb, uint8_t* image, uint8_t* mips);
+// Whether a colour (0..255 each) is an iris's (hitomi): coloured, neither near-white nor near-black.
+bool iris_colour(int r, int g, int b);
+// The endpoints of raw BC blocks labelled by colour alone: `part` where iris_colour(), else kNone (the irises).
+std::vector<uint8_t> label_endpoints_by_colour(int kind, const uint8_t* image, uint32_t image_size, const uint8_t* mips, uint32_t mip_size,
+                                               Part part);
 // One RGB565 colour as tint() moves it (base, want: 0xRRGGBB).
 uint16_t exchange(uint16_t cur, uint32_t base_rgb, uint32_t want_rgb);
 

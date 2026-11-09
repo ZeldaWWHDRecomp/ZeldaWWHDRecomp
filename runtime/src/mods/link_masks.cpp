@@ -22,7 +22,7 @@ namespace link_masks {
 namespace wc = story_resident_walk_clip;
 
 const char* part_name(Part p) {
-    static constexpr const char* kNames[] = {"none", "hair", "skin", "tunic", "undershirt", "pants", "boots", "emblem", "soles", "buckle"};
+    static constexpr const char* kNames[] = {"none", "hair", "skin", "tunic", "undershirt", "pants", "boots", "emblem", "soles", "buckle", "eyes"};
     return unsigned(p) < unsigned(kParts) ? kNames[unsigned(p)] : "?";
 }
 
@@ -372,6 +372,26 @@ std::vector<uint8_t> label_endpoints(int kind, const uint8_t* image, uint32_t im
     return out;
 }
 
+bool iris_colour(int r, int g, int b) {
+    const Hsv c = hsv(r / 255.0, g / 255.0, b / 255.0);
+    return c.s >= 0.25 && c.v >= 0.05 && c.v <= 0.85;
+}
+
+std::vector<uint8_t> label_endpoints_by_colour(int kind, const uint8_t* image, uint32_t image_size, const uint8_t* mips, uint32_t mip_size,
+                                               Part part) {
+    const uint32_t bs = kind == 1 ? 8 : 16, n0 = image_size / bs, n = n0 + (mips ? mip_size / bs : 0);
+    std::vector<uint8_t> out(2 * size_t(n), uint8_t(Part::kNone));
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t* b = (i < n0 ? image + size_t(i) * bs : mips + size_t(i - n0) * bs) + (bs - 8);
+        for (int e = 0; e < 2; e++) {
+            int r, g, bb;
+            rgb565_to8(uint16_t(b[2 * e] | b[2 * e + 1] << 8), r, g, bb);
+            if (iris_colour(r, g, bb)) out[2 * size_t(i) + size_t(e)] = uint8_t(part);
+        }
+    }
+    return out;
+}
+
 uint16_t exchange(uint16_t cur, uint32_t base_rgb, uint32_t want_rgb) {
     int r, g, b;
     rgb565_to8(cur, r, g, b);
@@ -443,6 +463,7 @@ struct Known {
     // the hero's belt buckle: the same yellow as his hair, told apart by the shape drawing it (model "cl",
     // the shape of bone cl_back); the hair's own texels (another shape's) stay hair
     const char* buckle_shape = nullptr;
+    bool by_colour = false;  // parts by iris_colour() alone (the irises), not by regions
 };
 // The parts' base colours (the default colours of Link's outfits; used only to name regions found in the
 // texture, the regions' own colours are measured).
@@ -456,6 +477,7 @@ const std::vector<Known>& known() {
          {{Part::kHair, 0xFFEF10}, {Part::kSkin, 0xF7DB9C}, {Part::kTunic, 0x4A75AD}, {Part::kEmblem, 0xFFFFD6},
           {Part::kBoots, 0x63696B}, {Part::kPants, 0xFFA608}, {Part::kSoles, 0xD6BA39}}},
         {"katsuraS3TC", {{Part::kHair, 0xFFEF10}}},
+        {"hitomi", {{Part::kEyes, 0x1A5A4A}}, nullptr, true},
     };
     return k;
 }
@@ -615,6 +637,14 @@ std::vector<Mask> compute(const Bytes& bfres) {
         const Bytes lin = lyt_build::untile(Bytes(img, img + m.image_size), bw, bh, bpp, int(mode), (swizzle >> 8) & 7);
         if (lin.size() < size_t(bw) * bh * (bpp / 8)) continue;
         const Bytes rgba = decode(kind, lin.data(), m.width, m.height);
+        m.ftex = uint32_t(ftex);
+        memcpy(m.file_head, bfres.data(), std::min<size_t>(sizeof m.file_head, bfres.size()));
+        if (k.by_colour) {  // the irises: by colour, texels and endpoints alike
+            m.texels.assign(size_t(m.width) * m.height, uint8_t(Part::kNone));
+            for (size_t i = 0; i < m.texels.size(); i++)
+                if (iris_colour(rgba[4 * i], rgba[4 * i + 1], rgba[4 * i + 2])) m.texels[i] = uint8_t(k.palette[0].part);
+            m.endpoints = label_endpoints_by_colour(kind, img, m.image_size, mip, m.mip_size, k.palette[0].part);
+        } else
         m.texels = classify(rgba.data(), m.width, m.height, k.palette);
         if (k.buckle_shape) {
             // the buckle: the hair-coloured areas its shape draws, outside what the other shapes draw (with 2 texels
@@ -624,7 +654,7 @@ std::vector<Mask> compute(const Bytes& bfres) {
             reassign(m.texels, m.width, m.height, Part::kHair, Part::kBuckle, buckle, rest);
         }
         const std::vector<uint32_t> order = block_order(bw, bh, bpp, int(mode), (swizzle >> 8) & 7, m.image_size / (bpp / 8));
-        m.endpoints = label_endpoints(kind, img, m.image_size, mip, m.mip_size, order, m.width, m.height, m.texels);
+        if (!k.by_colour) m.endpoints = label_endpoints(kind, img, m.image_size, mip, m.mip_size, order, m.width, m.height, m.texels);
         // each part's own colour: its commonest texel colour
         std::vector<std::unordered_map<uint32_t, uint32_t>> counts(kParts);
         for (size_t i = 0; i < m.texels.size(); i++)
@@ -733,6 +763,7 @@ Bytes serialize(const std::vector<Mask>& masks) {
         put32(body, m.width), put32(body, m.height), put32(body, m.format), put32(body, m.image_size), put32(body, m.mip_size);
         put64(body, m.hash);
         for (uint32_t c : m.base_rgb) put32(body, c);
+        put32(body, m.ftex), put_bytes(body, std::vector<uint8_t>(std::begin(m.file_head), std::end(m.file_head)));
         put_bytes(body, m.texels), put_bytes(body, m.endpoints);
     }
     uLongf packed_n = compressBound(uLong(body.size()));
@@ -765,6 +796,10 @@ bool deserialize(const Bytes& data, std::vector<Mask>& out) {
         m.width = in.u32(), m.height = in.u32(), m.format = in.u32(), m.image_size = in.u32(), m.mip_size = in.u32();
         m.hash = in.u64();
         for (uint32_t& c : m.base_rgb) c = in.u32();
+        m.ftex = in.u32();
+        const auto head = in.bytes(sizeof m.file_head);
+        if (head.size() != sizeof m.file_head) return false;
+        memcpy(m.file_head, head.data(), sizeof m.file_head);
         m.texels = in.bytes(size_t(m.width) * m.height);
         m.endpoints = in.bytes(size_t(m.image_size + m.mip_size) / 4);
         if (!in.ok || m.width > 2048 || m.height > 2048 || m.texels.size() != size_t(m.width) * m.height) return out.clear(), false;
