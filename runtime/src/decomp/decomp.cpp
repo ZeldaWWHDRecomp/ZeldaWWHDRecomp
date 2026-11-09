@@ -59,7 +59,7 @@
 #include <vector>
 
 #include "../runtime.h"
-#ifdef WWHD_DECOMP_FAST_COUNT
+#if defined(WWHD_DECOMP_FAST_COUNT) || defined(WWHD_DECOMP_FAST_CHECKCOUNT)
 #include "../interp.h"
 #endif
 #include "recomp_table.h"
@@ -294,6 +294,46 @@ uint8_t g_decomp_leaf_off = 0;
 #ifdef WWHD_DECOMP_FAST_NSTATS
 // gabi.h GABI_NSTATS (cmake WWHD_DECOMP_FAST_NSTATS, diagnostics): native entries per slot (WWHD_DECOMP_FAST_NSTATS=PATH)
 uint64_t* g_decomp_nstats = nullptr;
+#endif
+#ifdef WWHD_DECOMP_FAST_CHECKCOUNT
+// gabi.h GABI_CHECKCOUNT (cmake WWHD_DECOMP_FAST_CHECKCOUNT, diagnostics): per slot the runs and refusals of each of
+// native_enter_ok's checks (kCcKinds run counters, then kCcKinds refusal counters; WWHD_DECOMP_FAST_CHECKCOUNT=PATH)
+uint64_t* g_decomp_checkcount = nullptr;
+namespace {
+constexpr unsigned kCcKinds = 7;  // gabi.h GABI_CC_KINDS
+const char* const kCcName[kCcKinds] = {"guest", "nested", "static", "rule", "caller", "nbyte", "arg"};
+// refusals by (callee slot, check, caller address, argument index): open addressing, key 0 = empty, filled lock-free
+constexpr uint32_t kCcFailSize = 1u << 16;
+struct CcFail {
+    std::atomic<uint64_t> key{0};
+    std::atomic<uint64_t> n{0};
+    std::atomic<uint64_t> value{0};  // the first refused argument's value (arg), the native byte (nbyte), the flags (rule)
+};
+CcFail* g_cc_fail = nullptr;
+std::atomic<uint64_t> g_cc_fail_lost{0};
+}  // namespace
+extern "C" void decomp_checkcount_fail(uint32_t slot, uint32_t kind, uint32_t caller, uint32_t arg, uint64_t value) {
+    const uint64_t key = (uint64_t)caller << 32 | (uint64_t)(slot + 1) << 8 | kind << 4 | (arg & 15);
+    uint32_t h = (uint32_t)((key * 0x9E3779B97F4A7C15ull) >> 48) & (kCcFailSize - 1);
+    for (uint32_t i = 0; i < kCcFailSize; i++, h = (h + 1) & (kCcFailSize - 1)) {
+        CcFail& e = g_cc_fail[h];
+        uint64_t k = e.key.load(std::memory_order_acquire);
+        if (k == 0) {
+            uint64_t z = 0;
+            if (e.key.compare_exchange_strong(z, key, std::memory_order_acq_rel)) {
+                e.value.store(value, std::memory_order_relaxed);
+                k = key;
+            } else {
+                k = z;
+            }
+        }
+        if (k == key) {
+            e.n.fetch_add(1, std::memory_order_relaxed);
+            return;
+        }
+    }
+    g_cc_fail_lost.fetch_add(1, std::memory_order_relaxed);
+}
 #endif
 #ifdef WWHD_DECOMP_FAST_PTR_SUB
 // gabi.h GABI_PTR_SUB (cmake WWHD_DECOMP_FAST_PTR_SUB): 1 = pointer calls may take a native entry that takes fewer
@@ -1001,6 +1041,72 @@ void init() {
             }
         }).detach();
         LOG("[decomp] fast mode native-entry stats: %s", p);
+    }
+#endif
+#ifdef WWHD_DECOMP_FAST_CHECKCOUNT
+    if (const char* p = getenv("WWHD_DECOMP_FAST_CHECKCOUNT")) {
+        // diagnostics: native_enter_ok's checks counted per callee, written every WWHD_DECOMP_FAST_CHECKCOUNT_EVERY seconds
+        // (default 10) and at exit: totals per check, per callee runs/refusals, every refusal by (callee, check, caller, arg)
+        g_cc_fail = new CcFail[kCcFailSize];
+        g_decomp_checkcount = new uint64_t[(size_t)kNumSlots * 2 * kCcKinds]();
+        static std::string path = p;
+        static int every = 10;
+        if (const char* e = getenv("WWHD_DECOMP_FAST_CHECKCOUNT_EVERY"); e && atoi(e) > 0) every = atoi(e);
+        static auto write = [] {
+            static std::mutex m;
+            std::lock_guard<std::mutex> lk(m);
+            const std::string tmp = path + ".tmp";
+            FILE* fp = fopen(tmp.c_str(), "w");
+            if (!fp) return;
+            uint64_t tot[2 * kCcKinds] = {};
+            for (unsigned i = 0; i < kNumSlots; i++)
+                for (unsigned k = 0; k < 2 * kCcKinds; k++) tot[k] += __atomic_load_n(&g_decomp_checkcount[(size_t)i * 2 * kCcKinds + k], __ATOMIC_RELAXED);
+            fprintf(fp, "# checkcount v1 logic_steps %llu lost_fail_records %llu\n# totals: check runs refusals\n",
+                    (unsigned long long)interp::logic_steps(), (unsigned long long)g_cc_fail_lost.load());
+            for (unsigned k = 0; k < kCcKinds; k++)
+                fprintf(fp, "T\t%s\t%llu\t%llu\n", kCcName[k], (unsigned long long)tot[k], (unsigned long long)tot[kCcKinds + k]);
+            fprintf(fp, "# per callee: S addr name then runs/refusals per check (guest nested static rule caller nbyte arg); "
+                        "slot state on fx hooked modhook nok\n");
+            for (unsigned i = 0; i < kNumSlots; i++) {
+                const uint64_t* c = g_decomp_checkcount + (size_t)i * 2 * kCcKinds;
+                bool any = false;
+                for (unsigned k = 0; k < 2 * kCcKinds; k++) any |= __atomic_load_n(&c[k], __ATOMIC_RELAXED) != 0;
+                if (!any) continue;
+                const Slot& s = g_slots[i];
+                fprintf(fp, "S\t%08X\t%s", s.addr, s.name);
+                for (unsigned k = 0; k < kCcKinds; k++)
+                    fprintf(fp, "\t%llu/%llu", (unsigned long long)__atomic_load_n(&c[k], __ATOMIC_RELAXED),
+                            (unsigned long long)__atomic_load_n(&c[kCcKinds + k], __ATOMIC_RELAXED));
+                fprintf(fp, "\t%u %u %u %u %u\n", s.on, s.frame_exact, s.hooked,
+                        g_mod_hook_flags && s.ordinal ? (unsigned)g_mod_hook_flags[s.ordinal] : 0u,
+                        g_decomp_native_ok ? (unsigned)g_decomp_native_ok[i] : 256u);
+            }
+            fprintf(fp, "# refusals: F count check callee_addr callee caller_addr caller arg value\n");
+            auto name_of = [](uint32_t a) -> const char* {
+                const Slot* b = g_slots;
+                const Slot* e = b + kNumSlots;
+                const Slot* s = std::lower_bound(b, e, a, [](const Slot& x, uint32_t v) { return x.addr < v; });
+                return s != e && s->addr == a ? s->name : "-";
+            };
+            for (uint32_t h = 0; h < kCcFailSize; h++) {
+                const uint64_t key = g_cc_fail[h].key.load(std::memory_order_acquire);
+                if (!key) continue;
+                const uint32_t slot = (uint32_t)(key >> 8 & 0xFFFFFF) - 1, caller = (uint32_t)(key >> 32);
+                fprintf(fp, "F\t%llu\t%s\t%08X\t%s\t%08X\t%s\t%u\t%llx\n", (unsigned long long)g_cc_fail[h].n.load(),
+                        kCcName[key >> 4 & 15], g_slots[slot].addr, g_slots[slot].name, caller, name_of(caller),
+                        (unsigned)(key & 15), (unsigned long long)g_cc_fail[h].value.load());
+            }
+            fclose(fp);
+            rename(tmp.c_str(), path.c_str());
+        };
+        std::thread([] {
+            for (;;) {
+                std::this_thread::sleep_for(std::chrono::seconds(every));
+                write();
+            }
+        }).detach();
+        atexit([] { write(); });
+        LOG("[decomp] fast mode check counts: %s (every %d s)", p, every);
     }
 #endif
 #ifdef WWHD_DECOMP_FAST_PTR_SUB

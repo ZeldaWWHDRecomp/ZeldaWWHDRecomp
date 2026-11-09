@@ -93,6 +93,9 @@ extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_leaf_off;  //
 #ifdef WWHD_DECOMP_FAST_NSTATS
 extern "C" __attribute__((visibility("default"))) uint64_t* g_decomp_nstats;  // gabi.h GABI_NSTATS (decomp.cpp)
 #endif
+#ifdef WWHD_DECOMP_FAST_CHECKCOUNT
+extern "C" __attribute__((visibility("default"))) uint64_t* g_decomp_checkcount;  // gabi.h GABI_CHECKCOUNT (decomp.cpp)
+#endif
 #ifdef WWHD_DECOMP_FAST_PTR_SUB
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_ptr_sub;  // gabi.h GABI_PTR_SUB (decomp.cpp)
 #endif

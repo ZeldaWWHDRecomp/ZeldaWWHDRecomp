@@ -110,6 +110,10 @@ function(wwhd_decomp_configure)
   option(WWHD_DECOMP_FAST_LEAF_CHECK "decomp build, fast mode: trap on any use of call state in a leaf body (diagnostics)" OFF)
   # diagnostics build only: native entries counted per decompiled function (gabi.h GABI_NSTATS; WWHD_DECOMP_FAST_NSTATS=PATH)
   option(WWHD_DECOMP_FAST_NSTATS "decomp build, fast mode: count native entries per function (diagnostics, not for release)" OFF)
+  # diagnostics build only: native_enter_ok's checks (depth, caller_ok, the callee's native byte, each pointer argument's
+  # guest window) counted per callee with every refusal by caller (gabi.h GABI_CHECKCOUNT; WWHD_DECOMP_FAST_CHECKCOUNT=PATH,
+  # written every WWHD_DECOMP_FAST_CHECKCOUNT_EVERY seconds and at exit)
+  option(WWHD_DECOMP_FAST_CHECKCOUNT "decomp build, fast mode: count native-entry checks and refusals (diagnostics, not for release)" OFF)
   # fast mode: the guest halves of gabi::call / call_ptr / lcall and a body's own guest call (WWHD_GLUE_FUNC's, taken
   # when native_enter_ok refuses a nested call) out of line, one function per target / shape, the body's own one cold
   # (gabi.h GABI_COLD_FALLBACK): no ArgPack on a body's stack (no stack-protector canary for it), smaller hot code; the
@@ -293,6 +297,9 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_NSTATS)
       list(APPEND opts -DGABI_NSTATS=1)
+    endif()
+    if(WWHD_DECOMP_FAST_CHECKCOUNT)
+      list(APPEND opts -DGABI_CHECKCOUNT=1)
     endif()
     if(WWHD_DECOMP_FAST_LEAF)
       list(APPEND opts -DGABI_LEAF=1)
@@ -566,6 +573,9 @@ function(wwhd_decomp_link target)
     if(WWHD_DECOMP_FAST_MUTEX)  # (decomp.cpp: g_decomp_hle_direct; threads.cpp: the mutex cache and direct entries)
       set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/threads.cpp"
                    APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_MUTEX=1)
+    endif()
+    if(WWHD_DECOMP_FAST_CHECKCOUNT)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_CHECKCOUNT=1)
     endif()
   endif()
   # fast mode: the GHS libm functions decompiled code calls most (sqrtf, sinf, sqrt, cosf, fmodf) go from gmem_call
