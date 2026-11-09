@@ -3965,6 +3965,30 @@ target_sources(native_quiescence_test PRIVATE runtime/src/game_clock.cpp)
 # Windows' linker keeps those references, so link their sources.
 target_sources(native_quiescence_test PRIVATE runtime/src/hle/os_time.cpp runtime/src/fixed_seed.cpp)
 
+# Decomp build fast mode, WWHD_DECOMP_FAST_MUTEX: the actual threads.cpp OSMutex code with its lock-free address cache
+# and the imports' direct host entries (built like native_quiescence_test, which includes threads.cpp the same way)
+add_executable(fast_mutex_test
+    runtime/tools/fast_mutex_test.cpp
+    runtime/tools/native_quiescence_test_stubs.cpp
+    runtime/src/native_quiescence.cpp
+    runtime/src/mods/story_native_event_game_thread.cpp
+    runtime/src/mods/story_native_stage_owner.cpp
+    runtime/src/game_clock.cpp
+    runtime/src/hle/os_time.cpp
+    runtime/src/fixed_seed.cpp)
+target_include_directories(fast_mutex_test PRIVATE
+    runtime/src runtime/include runtime/src/gx2
+    runtime/third_party/cemu runtime/third_party/cemu/Cafe
+    runtime/third_party/fmt/include runtime/third_party/imgui)
+target_compile_options(fast_mutex_test PRIVATE -UNDEBUG -O1 -ffunction-sections -fdata-sections)
+if(APPLE)
+    target_link_options(fast_mutex_test PRIVATE -Wl,-dead_strip)
+else()
+    target_link_options(fast_mutex_test PRIVATE -Wl,--gc-sections)
+endif()
+target_link_libraries(fast_mutex_test PRIVATE Threads::Threads)
+add_test(NAME decomp_fast_mutex COMMAND fast_mutex_test)
+
 # Genuine model/native-observation-backed Stage renewal; no native ticks/writes.
 get_target_property(STORY_NATIVE_STAGE_RENEW_SOURCES story_native_wait_saved_turn_model_test SOURCES)
 list(REMOVE_ITEM STORY_NATIVE_STAGE_RENEW_SOURCES runtime/tools/story_native_wait_saved_turn_model_test.cpp)

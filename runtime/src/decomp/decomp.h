@@ -78,6 +78,10 @@ extern "C" __attribute__((visibility("default"))) const GabiPtrEntry* g_decomp_p
 extern "C" __attribute__((visibility("default"))) uint32_t g_decomp_ptr_mask;
 extern "C" __attribute__((visibility("default"))) const GabiPtrEntry* g_decomp_call_tab;
 extern "C" __attribute__((visibility("default"))) const PpcFunc* g_decomp_hle_tab;
+#ifdef WWHD_DECOMP_FAST_MUTEX
+using GabiHleDirect = uint32_t (*)(Cpu* c, uint32_t r3);  // gabi.h GABI_FAST_MUTEX
+extern "C" __attribute__((visibility("default"))) const GabiHleDirect* g_decomp_hle_direct;
+#endif
 #endif
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_exact;
 #ifdef WWHD_DECOMP_FAST_A3_FN

@@ -264,6 +264,10 @@ uint8_t* g_decomp_native_ok = nullptr;
 GabiNativeEntry* g_decomp_native_entry = nullptr;
 #ifdef WWHD_DECOMP_FAST
 const PpcFunc* g_decomp_hle_tab = nullptr;  // gabi.h: the HLE import stubs' host functions (direct_init)
+#ifdef WWHD_DECOMP_FAST_MUTEX
+const GabiHleDirect* g_decomp_hle_direct = nullptr;  // gabi.h GABI_FAST_MUTEX: direct entries of the OS mutex imports
+namespace threads { unsigned fast_mutex_entries(void (*add)(PpcFunc imp, uint32_t (*direct)(Cpu*, uint32_t))); }
+#endif
 const GabiPtrEntry* g_decomp_ptr_tab = nullptr;
 const GabiPtrEntry* g_decomp_call_tab = nullptr;
 uint32_t g_decomp_ptr_mask = 0;
@@ -453,6 +457,29 @@ void direct_init() {
                     if ((ht[i] = dispatch::lookup(0xC0000000u + 4 * i))) nh++;
                 __atomic_store_n(&g_decomp_hle_tab, ht, __ATOMIC_RELEASE);
                 LOG("[decomp] fast mode: %u HLE import stubs called directly", nh);
+#ifdef WWHD_DECOMP_FAST_MUTEX
+                // the OS mutex imports' direct entries, for stubs the dispatch table still routes to the import itself
+                // (WWHD_DECOMP_FAST_MUTEX=0: none, the HLE path above)
+                const char* fm = getenv("WWHD_DECOMP_FAST_MUTEX");
+                if (!(fm && !strcmp(fm, "0"))) {
+#ifndef WWHD_WRITE_WATCH
+                    static GabiHleDirect* s_hd;
+                    static const PpcFunc* s_ht;
+                    static unsigned s_nd;
+                    s_hd = new GabiHleDirect[0x40000 / 4]();
+                    s_ht = ht;
+                    s_nd = 0;
+                    threads::fast_mutex_entries([](PpcFunc imp, uint32_t (*direct)(Cpu*, uint32_t)) {
+                        for (uint32_t i = 0; i < 0x40000 / 4; i++)
+                            if (s_ht[i] == imp) { s_hd[i] = direct; s_nd++; }
+                    });
+                    __atomic_store_n(&g_decomp_hle_direct, s_hd, __ATOMIC_RELEASE);
+                    LOG("[decomp] fast mode: %u OS mutex import stubs with direct host entries", s_nd);
+#endif
+                } else {
+                    LOG("[decomp] fast mode: WWHD_DECOMP_FAST_MUTEX=0, OS mutex imports through the HLE path");
+                }
+#endif
             } else {
                 LOG("[decomp] fast mode: WWHD_DECOMP_FAST_HLE=0, HLE imports through gmem_call");
             }

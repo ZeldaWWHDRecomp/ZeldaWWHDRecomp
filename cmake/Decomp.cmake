@@ -120,6 +120,12 @@ function(wwhd_decomp_configure)
   # use (gabi.h GABI_PASS_TS: the unchanged lookup out of line in unit 0, declared const so the compiler keeps one
   # answer per function). The table, its order and its miss path stay as they are. Code only, so no run-time switch
   option(WWHD_DECOMP_FAST_PASS_TS "decomp build, fast mode: one thread-block lookup per function, passed on (needs TP_CACHE)" OFF)
+  # fast mode: sead::CriticalSection's OSLockMutex / OSUnlockMutex / OSTryLockMutex from decompiled code straight to
+  # the host mutex: gabi::call's HLE branch calls the imports' direct host entries (gabi.h GABI_FAST_MUTEX; r3, pc and
+  # result as the HLE path leaves them) and the host mutex is found through a lock-free address cache instead of the
+  # process-wide table lock (runtime/src/addr_cache.h). Same objects, owner, recursion count and wait order.
+  # Run-time off switch: WWHD_DECOMP_FAST_MUTEX=0 (the HLE path; the cache stays)
+  option(WWHD_DECOMP_FAST_MUTEX "decomp build, fast mode: OS mutex imports straight to the host mutex (lock-free lookup)" OFF)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -311,6 +317,9 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_COLD_FALLBACK)
       list(APPEND opts -DGABI_COLD_FALLBACK=1)
+    endif()
+    if(WWHD_DECOMP_FAST_MUTEX)
+      list(APPEND opts -DGABI_FAST_MUTEX=1)
     endif()
     if(WWHD_DECOMP_FAST_PASS_TS)
       if(NOT WWHD_DECOMP_TP_CACHE)
@@ -553,6 +562,10 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_NSTATS)
       set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_NSTATS=1)
+    endif()
+    if(WWHD_DECOMP_FAST_MUTEX)  # (decomp.cpp: g_decomp_hle_direct; threads.cpp: the mutex cache and direct entries)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/threads.cpp"
+                   APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_MUTEX=1)
     endif()
   endif()
   # fast mode: the GHS libm functions decompiled code calls most (sqrtf, sinf, sqrt, cosf, fmodf) go from gmem_call
