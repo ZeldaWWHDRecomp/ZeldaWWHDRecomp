@@ -116,6 +116,11 @@ SITES = [
     _p(0x02510DEC, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the latitude step
     _p(0x02510EA0, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the V smoothing factor
     _p(0x02510EE4, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the U smoothing factor
+    # Enemy lock-on range (runtime/src/mods/lock_on.cpp): the attention's distance limits
+    _p(0x024EB4A8, 0x024EB2D4, "wwhd_src/d/d_attention.cpp", "PORT_LOCK_ON_DISTANCE"),    # calcWeight
+    _p(0x024EB868, 0x024EB7F0, "wwhd_src/d/d_attention.cpp", "PORT_LOCK_ON"),             # EnemyDistance
+    _p(0x024ECC70, 0x024ECB08, "wwhd_src/d/d_attention_2.cpp", "PORT_LOCK_ON_DISTANCE"),  # chaseAttention
+    _p(0x024EE574, 0x024EE49C, "wwhd_src/d/d_attention_3.cpp", "PORT_LOCK_ON"),           # LockonReleaseDistanse
 ]
 
 EMPTY = [
