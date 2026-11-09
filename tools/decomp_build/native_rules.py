@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf]]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf] [--unbased]]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -489,7 +489,48 @@ def a3_precise(path, entries):
     return set() if all(st == "shim" and r != (-1, -1) for _, r, _, st in entries) else None
 
 
-def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False, leaf=False):
+# --unbased (fast mode, gabi.h GABI_NOCHECK, NativeInfo bit 21 "(unbased)"): a source that turns integers into pointers
+# without the guest window's base, `reinterpret_cast<T *>((uintptr_t)x)` (d_wood.cpp, hd_input_eventmgr.cpp, actors), in
+# its own text or in a project header it includes: its functions may pass such pointers (outside the guest window) to
+# decompiled callees, so their native calls keep native_enter_ok's per-argument window check (the 2026-11-09 check counts:
+# every argument refusal came from such a caller)
+UNBASED = re.compile(r"\(\s*uintptr_t\s*\)")
+INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
+
+
+def unbased_sources(src, paths):
+    """the sources (paths) whose text, or a project header they include (recursively), has an UNBASED cast"""
+    roots = [os.path.join(src, "wwhd_src", "include"), os.path.join(src, "wwhd_src")]
+    memo = {}
+
+    def has(path, seen):
+        if path in memo:
+            return memo[path]
+        if path in seen:
+            return False
+        seen.add(path)
+        try:
+            t = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            memo[path] = False
+            return False
+        r = bool(UNBASED.search(t))
+        if not r:
+            for inc in INCLUDE.findall(t):
+                for d in [os.path.dirname(path)] + roots:
+                    q = os.path.normpath(os.path.join(d, inc))
+                    if os.path.isfile(q):
+                        if has(q, seen):
+                            r = True
+                        break
+                if r:
+                    break
+        memo[path] = r
+        return r
+    return {p for p in paths if has(p, set())}
+
+
+def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False, leaf=False, unbased=False):
     if decl_path is None:
         decl_path = os.path.join(src, "tools", "verify", "decl_handoff.tsv")
     decl = read_decl(decl_path)
@@ -593,6 +634,17 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
         rows.append((a, r, caller, note, d, rk, fs))
     if leaf:
         leaf_rules(rows, calls, tails, feat)
+    if unbased:
+        ub = set()
+        srcs = unbased_sources(src, paths)
+        for p in srcs:
+            ub |= {int(x, 16) for x in FUNC_ADDR.findall(open(p, encoding="utf-8", errors="replace").read())}
+        n = 0
+        for a, r, caller, note, d, rk, fs in rows:
+            if a in ub:
+                note.append("unbased")
+                n += 1
+        print("decomp: native-call rules (--unbased): %d functions in %d sources keep the argument check" % (n, len(srcs)))
     for a, r, caller, note, d, rk, fs in rows:
         lines.append("%08X  callee=%s caller=%s  %s %s  # %s %s" % (
             a, "guest" if r else "native", "guest" if caller else "ok",
@@ -729,6 +781,8 @@ def unit_headers(out, lines, fast=False, hcalls=None):
             flags |= 1 << 19
         if "(leaf)" in line.split("#")[0]:  # --leaf (gabi.h GABI_LEAF: bit 20)
             flags |= 1 << 20
+        if "(unbased)" in line.split("#")[0]:  # --unbased (gabi.h GABI_NOCHECK: bit 21)
+            flags |= 1 << 21
         m = DECL_FIELD.search(line.split("#")[0])
         if m:  # register-exact: flags 8, its registers and result (gabi.h NativeInfo)
             flags |= 8 | int(m.group(1)) << 8 | int(m.group(2)) << 12 | int(m.group(3)) << 16
@@ -802,6 +856,11 @@ def main():
         args.remove("--leaf")
         if not fast:
             sys.exit("native_rules.py: --leaf needs --fast")
+    unbased = "--unbased" in args  # fast mode (cmake WWHD_DECOMP_FAST_NOCHECK): sources with unbased casts
+    if unbased:
+        args.remove("--unbased")
+        if not fast:
+            sys.exit("native_rules.py: --unbased needs --fast")
     a3_fn = "--a3-fn" in args  # fast mode (cmake WWHD_DECOMP_FAST_A3_FN): A3 by function (a3_precise)
     if a3_fn:
         args.remove("--a3-fn")
@@ -819,7 +878,7 @@ def main():
         sys.exit(__doc__.strip().splitlines()[4])
     src, out, gen_dir = (os.path.abspath(x) for x in args[:3])
     strict = len(args) == 4
-    lines = rules(src, out, gen_dir, strict, decl_path or None, lift, a3_fn, leaf)
+    lines = rules(src, out, gen_dir, strict, decl_path or None, lift, a3_fn, leaf, unbased)
     if LEAF_ERRORS:  # --leaf: leaf_rules printed each
         sys.exit("native_rules.py: %d leaf function(s) call a decompiled function that is not a leaf (--leaf); a leaf "
                  "keeps no call state, so this is a rules error" % len(LEAF_ERRORS))

@@ -295,6 +295,11 @@ uint8_t g_decomp_leaf_off = 0;
 // gabi.h GABI_NSTATS (cmake WWHD_DECOMP_FAST_NSTATS, diagnostics): native entries per slot (WWHD_DECOMP_FAST_NSTATS=PATH)
 uint64_t* g_decomp_nstats = nullptr;
 #endif
+#ifdef WWHD_DECOMP_FAST_NOCHECK
+// gabi.h GABI_NOCHECK (cmake WWHD_DECOMP_FAST_NOCHECK): 1 = nested native calls run every native_enter_ok check again
+// (WWHD_DECOMP_FAST_NOCHECK=0, debugging); read by every decompiled body's entry
+uint8_t g_decomp_nocheck_off = 0;
+#endif
 #ifdef WWHD_DECOMP_FAST_CHECKCOUNT
 // gabi.h GABI_CHECKCOUNT (cmake WWHD_DECOMP_FAST_CHECKCOUNT, diagnostics): per slot the runs and refusals of each of
 // native_enter_ok's checks (kCcKinds run counters, then kCcKinds refusal counters; WWHD_DECOMP_FAST_CHECKCOUNT=PATH)
@@ -1043,6 +1048,12 @@ void init() {
         LOG("[decomp] fast mode native-entry stats: %s", p);
     }
 #endif
+#ifdef WWHD_DECOMP_FAST_NOCHECK
+    if (const char* e = getenv("WWHD_DECOMP_FAST_NOCHECK"); e && !strcmp(e, "0")) {
+        g_decomp_nocheck_off = 1;
+        LOG("[decomp] fast mode: WWHD_DECOMP_FAST_NOCHECK=0, nested native calls run every entry check again");
+    }
+#endif
 #ifdef WWHD_DECOMP_FAST_CHECKCOUNT
     if (const char* p = getenv("WWHD_DECOMP_FAST_CHECKCOUNT")) {
         // diagnostics: native_enter_ok's checks counted per callee, written every WWHD_DECOMP_FAST_CHECKCOUNT_EVERY seconds
@@ -1078,6 +1089,15 @@ void init() {
                     fprintf(fp, "\t%llu/%llu", (unsigned long long)__atomic_load_n(&c[k], __ATOMIC_RELAXED),
                             (unsigned long long)__atomic_load_n(&c[kCcKinds + k], __ATOMIC_RELAXED));
                 fprintf(fp, "\t%u %u %u %u %u\n", s.on, s.frame_exact, s.hooked,
+                        g_mod_hook_flags && s.ordinal ? (unsigned)g_mod_hook_flags[s.ordinal] : 0u,
+                        g_decomp_native_ok ? (unsigned)g_decomp_native_ok[i] : 256u);
+            }
+            fprintf(fp, "# slots the runtime does not let callers enter natively (native byte bit 0 clear): X addr name on fx hooked "
+                        "modhook nok\n");
+            for (unsigned i = 0; i < kNumSlots; i++) {
+                const Slot& s = g_slots[i];
+                if (g_decomp_native_ok && (g_decomp_native_ok[i] & 1)) continue;
+                fprintf(fp, "X\t%08X\t%s\t%u %u %u %u %u\n", s.addr, s.name, s.on, s.frame_exact, s.hooked,
                         g_mod_hook_flags && s.ordinal ? (unsigned)g_mod_hook_flags[s.ordinal] : 0u,
                         g_decomp_native_ok ? (unsigned)g_decomp_native_ok[i] : 256u);
             }

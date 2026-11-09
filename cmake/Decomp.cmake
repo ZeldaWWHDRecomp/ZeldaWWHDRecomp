@@ -114,6 +114,11 @@ function(wwhd_decomp_configure)
   # guest window) counted per callee with every refusal by caller (gabi.h GABI_CHECKCOUNT; WWHD_DECOMP_FAST_CHECKCOUNT=PATH,
   # written every WWHD_DECOMP_FAST_CHECKCOUNT_EVERY seconds and at exit)
   option(WWHD_DECOMP_FAST_CHECKCOUNT "decomp build, fast mode: count native-entry checks and refusals (diagnostics, not for release)" OFF)
+  # fast mode: a nested native call between decompiled bodies skips the callee's native byte and, unless its caller may
+  # pass pointers outside the guest window (native_rules.py --unbased, NativeInfo bit 21) or the argument is a char /
+  # void / function pointer, the per-argument window check (gabi.h GABI_NOCHECK; both never refused in the 2026-11-09
+  # check counts). caller_ok and the compile-time checks stay. WWHD_DECOMP_FAST_NOCHECK=0 at run time: every check again
+  option(WWHD_DECOMP_FAST_NOCHECK "decomp build, fast mode: fewer native-entry checks on calls between decompiled bodies" OFF)
   # fast mode: the guest halves of gabi::call / call_ptr / lcall and a body's own guest call (WWHD_GLUE_FUNC's, taken
   # when native_enter_ok refuses a nested call) out of line, one function per target / shape, the body's own one cold
   # (gabi.h GABI_COLD_FALLBACK): no ArgPack on a body's stack (no stack-protector canary for it), smaller hot code; the
@@ -216,6 +221,9 @@ function(wwhd_decomp_configure)
     if(WWHD_DECOMP_FAST_LEAF)
       list(APPEND fast_args --leaf)
     endif()
+    if(WWHD_DECOMP_FAST_NOCHECK)
+      list(APPEND fast_args --unbased)
+    endif()
   endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py"
                           "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE} ${decl_args} ${lift_args} ${fast_args}
@@ -300,6 +308,12 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_CHECKCOUNT)
       list(APPEND opts -DGABI_CHECKCOUNT=1)
+    endif()
+    if(WWHD_DECOMP_FAST_NOCHECK)
+      if(WWHD_DECOMP_FAST_CHECKCOUNT)
+        message(FATAL_ERROR "WWHD_DECOMP_FAST_NOCHECK and WWHD_DECOMP_FAST_CHECKCOUNT: one at a time (the counts are of the full checks)")
+      endif()
+      list(APPEND opts -DGABI_NOCHECK=1)
     endif()
     if(WWHD_DECOMP_FAST_LEAF)
       list(APPEND opts -DGABI_LEAF=1)
@@ -576,6 +590,9 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_CHECKCOUNT)
       set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_CHECKCOUNT=1)
+    endif()
+    if(WWHD_DECOMP_FAST_NOCHECK)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_NOCHECK=1)
     endif()
   endif()
   # fast mode: the GHS libm functions decompiled code calls most (sqrtf, sinf, sqrt, cosf, fmodf) go from gmem_call
