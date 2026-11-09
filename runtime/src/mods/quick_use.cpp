@@ -6,6 +6,7 @@
 #include "guest_addr.h"
 #include "input.h"
 #include "overlay/overlay.h"
+#include "port_points.h"
 #include <atomic>
 #include <cstdlib>
 #include <cmath>
@@ -539,3 +540,45 @@ extern "C" void site_023EAE84(Cpu* c) { mods::release_predicate(c, 0x2F, 11); }
 extern "C" void site_023EC184(Cpu* c) { mods::release_predicate(c, 0x25, 0); }
 extern "C" void site_023EB548(Cpu* c) { mods::boomerang_release(c); }
 extern "C" void site_023EB614(Cpu* c) { mods::boomerang_held(c); }
+
+// Decomp build: the decompiled item checks ask the mod at the same instructions (the decompilation's port_hooks.h
+// PORT_QUICK_USE; tools/decomp_build/port_sites.py). Each site's handler above runs with Link (or, for the launch
+// traces, the thrown actor) in the register it reads there, and the value it may replace in the register it writes.
+namespace {
+struct QuickUsePoint {
+    uint32_t site;
+    void (*handler)(Cpu*);
+    int8_t link, value;  // registers; -1: none
+    bool trace;          // a launch trace (observation only): it traces with the mod off too, as the hook does
+};
+constexpr QuickUsePoint kQuickUsePoints[] = {
+    {0x023E88B0, site_023E88B0, 3, -1, false},  {0x023F0624, site_023F0624, 3, -1, false},
+    {0x023F0670, site_023F0670, 3, -1, false},  {0x023F06AC, site_023F06AC, 3, -1, false},
+    {0x023F1728, site_023F1728, 3, -1, false},  {0x023F1764, site_023F1764, 3, -1, false},
+    {0x023F1784, site_023F1784, 3, -1, false},  {0x023EFB44, site_023EFB44, 3, -1, false},
+    {0x023EAE30, site_023EAE30, 31, 3, false},  {0x023EAE78, site_023EAE78, 31, 3, false},
+    {0x023EC12C, site_023EC12C, 31, 3, false},  {0x023EC178, site_023EC178, 31, 3, false},
+    {0x023EAE84, site_023EAE84, 31, 11, false}, {0x023EC184, site_023EC184, 31, 0, false},
+    {0x023EB548, site_023EB548, 31, 8, false},  {0x023EB614, site_023EB614, 31, 3, false},
+    {0x023EB2B0, site_023EB2B0, 31, 3, false},  {0x023EB434, site_023EB434, 31, 3, false},
+    {0x023F05EC, site_023F05EC, 31, 3, false},  {0x023DF7C0, site_023DF7C0, 31, -1, false},
+    {0x023EA474, site_023EA474, 30, 3, false},
+    {0x023EB2C4, site_023EB2C4, 31, -1, true},  {0x0242E14C, site_0242E14C, 27, -1, true},
+    {0x0242E198, site_0242E198, 27, -1, true},  {0x023FB49C, site_023FB49C, -1, -1, true},
+    {0x0243CB70, site_0243CB70, 30, -1, true},  {0x0243C6F4, site_0243C6F4, -1, -1, true},
+};
+}  // namespace
+extern "C" unsigned wwhd_quick_use(Cpu* c, unsigned sp, unsigned site, unsigned link, unsigned value) {
+    for (const QuickUsePoint& p : kQuickUsePoints) {
+        if (p.site != site) continue;
+        if (!p.trace && !mods::quick_use()) return value;  // every other handler returns at once with the mod off
+        port_points::run(c, sp, p.handler,
+                         [&](Cpu& r) {
+                             if (p.link >= 0) r.r[p.link] = link;
+                             if (p.value >= 0) r.r[p.value] = value;
+                         },
+                         [&](Cpu& r) { if (p.value >= 0) value = r.r[p.value]; });
+        return value;
+    }
+    port_points::unknown("quick use", site);
+}

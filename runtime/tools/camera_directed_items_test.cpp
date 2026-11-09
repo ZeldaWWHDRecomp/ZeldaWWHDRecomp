@@ -77,11 +77,20 @@ extern "C" void f_024076CC_orig(Cpu* c) {
 }
 extern "C" void hook_024076CC(Cpu*);
 extern "C" void site_023E7A70(Cpu*);
+extern "C" void ppc_host_call(Cpu* c, PpcFunc fn) { fn(c); }  // (the decomp build's port points run the sites through it)
+extern "C" void wwhd_item_facing(Cpu*, unsigned, unsigned, unsigned, unsigned);
 void start(bool aligned,uint16_t yaw=0x4000,uint32_t actor_link=player_addr) {
     Cpu c;std::memset(&c,0xA5,sizeof(c));c.r[30]=actor_link;
     Cpu expected;std::memcpy(&expected,&c,sizeof(c));
     unsigned char actor[65536];std::memcpy(actor,mem::ptr(player_addr),sizeof(actor));
     if(aligned){actor[0x322]=actor[0x32A]=yaw>>8;actor[0x323]=actor[0x32B]=yaw&255;}
+    {   // the decomp build's port point (port_hooks.h PORT_ITEM_FACING): the same writes, the Cpu unchanged
+        static unsigned char before[65536];std::memcpy(before,mem::ptr(player_addr),sizeof(before));
+        Cpu p;std::memcpy(&p,&c,sizeof(c));
+        wwhd_item_facing(&p,c.r[1],0x023E7A70,actor_link,0);
+        assert(!std::memcmp(&p,&c,sizeof(c))&&!std::memcmp(mem::ptr(player_addr),actor,sizeof(actor)));
+        std::memcpy(mem::ptr(player_addr),before,sizeof(before));
+    }
     site_023E7A70(&c);
     assert(!std::memcmp(&c,&expected,sizeof(c)));
     assert(!std::memcmp(mem::ptr(player_addr),actor,sizeof(actor)));

@@ -30,6 +30,7 @@
 #include "guest_addr.h"
 #include "mods/climb.h"
 #include "mods/mod_stages.h"
+#include "port_points.h"
 
 #include <algorithm>
 #include <atomic>
@@ -165,13 +166,13 @@ bool ground_ok(Cpu* c, uint32_t self, uint32_t bgs, float g, float min_y) {
     uint32_t pla = guest_call(c, kGetTriPla, {bgs, ld16(self + kGndPoly + 2), ld16(self + kGndPoly)});
     return pla && u32_as_f32(ld32(pla + 4)) >= 0.5f;  // cBgW_CheckBGround
 }
-}  // namespace
 
-extern "C" void site_02429C04(Cpu* c) {
+// PROBE, TOP: the game's two stack vectors (the ground probe point at sp+8, the top of the wall at sp+0x14)
+void ledge(Cpu* c, uint32_t probe, uint32_t top_vec) {
     if (!g_on || !g_fake) return;
-    const uint32_t self = c->r[30], sp = c->r[1];
+    const uint32_t self = c->r[30];
     const float feet = u32_as_f32(ld32(self + kPos + 4));
-    const float top = u32_as_f32(ld32(sp + 0x18));  // feet + 125
+    const float top = u32_as_f32(ld32(top_vec + 4));  // feet + 125
     const float s = (float)c->f[28].ps0, co = (float)c->f[29].ps0;  // sin / cos of shape_angle.y
     const Cpu saved = *c;
     uint32_t bgs = guest_call(c, kBgsAccess) + 0x12A0;
@@ -189,9 +190,9 @@ extern "C" void site_02429C04(Cpu* c) {
         float g = (float)c->f[1].ps0;
         if (ground_ok(c, self, bgs, g, feet + 40.0f)) {
             *c = saved;
-            st32(sp + 0x8, f32_as_u32(x));
-            st32(sp + 0x10, f32_as_u32(z));
-            if (g < top - 30.0f) st32(sp + 0x18, f32_as_u32(g + 30.0f));  // passes the game's height check
+            st32(probe, f32_as_u32(x));
+            st32(probe + 8, f32_as_u32(z));
+            if (g < top - 30.0f) st32(top_vec + 4, f32_as_u32(g + 30.0f));  // passes the game's height check
             c->f[1].ps0 = c->f[1].ps1 = g;
             if (debug()) LOG("[climb] debug: ledge found %.0f units in, %.1f above the feet", d, g - feet);
             return;
@@ -200,6 +201,9 @@ extern "C" void site_02429C04(Cpu* c) {
     if (debug()) LOG("[climb] debug: no ledge at the top (game's probe: %.1f above the feet)", (float)saved.f[1].ps0 - feet);
     *c = saved;  // the game lets go
 }
+}  // namespace
+
+extern "C" void site_02429C04(Cpu* c) { ledge(c, c->r[1] + 8, c->r[1] + 0x14); }
 
 // ---- daPy_lk_c::setFrontWallType (023E3850): the game's pass first; plain walls as ivy only if
 // it found nothing to do with the wall ----
@@ -328,4 +332,36 @@ extern "C" void hook_0240CDD0(Cpu* c) {
     if (target == 0 && a < 0.01f) a = 0;
     g_alpha = a;
     g_prev_proc = proc;
+}
+
+// Decomp build: the decompiled setFrontWallType / setMoveBGCorrectClimb compares and checkBgClimbMove's ledge search ask
+// at the same instructions (the decompilation's port_hooks.h PORT_CLIMB_STEEP / PORT_CLIMB_LEDGE;
+// tools/decomp_build/port_sites.py), with the values the handlers above read there.
+extern "C" float wwhd_climb_steep(Cpu* c, unsigned sp, unsigned site, unsigned plane, float value) {
+    const int freg = site == 0x023E39EC ? 6 : site == 0x02429570 ? 8 : -1, preg = site == 0x023E39EC ? 28 : 3;
+    if (freg < 0) port_points::unknown("climbing", site);
+    if (!g_convert) return value;  // relax() returns at once
+    port_points::run(c, sp, site == 0x023E39EC ? site_023E39EC : site_02429570,
+                     [&](Cpu& r) { r.r[preg] = plane; r.f[freg].ps0 = value; },
+                     [&](Cpu& r) { value = (float)r.f[freg].ps0; });
+    return value;
+}
+namespace {
+thread_local uint32_t t_probe, t_top;  // wwhd_climb_ledge's two vectors, for ledge_point
+void ledge_point(Cpu* c) { ledge(c, t_probe, t_top); }
+}  // namespace
+extern "C" double wwhd_climb_ledge(Cpu* c, unsigned sp, unsigned link, double ground, unsigned probe, unsigned top,
+                                   float s, float co) {
+    if (!g_on || !g_fake) return ground;  // ledge() returns at once
+    t_probe = probe;
+    t_top = top;
+    port_points::run(c, sp, ledge_point,
+                     [&](Cpu& r) {
+                         r.r[30] = link;
+                         r.f[1].ps0 = r.f[1].ps1 = ground;
+                         r.f[28].ps0 = r.f[28].ps1 = s;
+                         r.f[29].ps0 = r.f[29].ps1 = co;
+                     },
+                     [&](Cpu& r) { ground = r.f[1].ps0; });
+    return ground;
 }

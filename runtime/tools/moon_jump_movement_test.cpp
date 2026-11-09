@@ -18,6 +18,8 @@ SidleScope sidle_scope_begin(Cpu*,bool){return {};} void sidle_scope_end(const S
 bool moon_jump_move(uint32_t link,float& x,float& z){if(!flying || link!=actor)return false;x=40;z=-10;return true;}
 }
 extern "C" void site_023FD39C(Cpu*);
+extern "C" void ppc_host_call(Cpu* c, PpcFunc fn) { fn(c); }  // (the decomp build's port point runs the site through it)
+extern "C" unsigned wwhd_link_move(Cpu*, unsigned, unsigned);
 extern "C" void f_02416230_orig(Cpu*){}
 static void map(uint32_t address,size_t size){
 #ifdef _WIN32
@@ -39,4 +41,12 @@ int main(){
  assert(ldf32(cpu.r[4])==6 && ldf32(cpu.r[4]+4)==12 && ldf32(cpu.r[4]+8)==8);
  // Off again: the stock argument.
  cpu.r[4]=actor+0x33C;factor=1;site_023FD39C(&cpu);assert(cpu.r[4]==actor+0x33C);
+ // The decomp build's port point (port_hooks.h PORT_LINK_MOVE): the same results for the vector the decompiled
+ // posMoveFromFootPos passes, and the Cpu as it was (its r4 and r1 included)
+ Cpu c{};c.r[1]=0x1234560;c.r[4]=0xAAAA;c.f[31].ps0=10;const Cpu before=c;
+ assert(wwhd_link_move(&c,0x1234000,actor+0x33C)==actor+0x33C && !memcmp(&c,&before,sizeof c));
+ flying=true;const uint32_t moon=wwhd_link_move(&c,0x1234000,actor+0x33C);
+ assert(moon!=actor+0x33C && ldf32(moon)==40 && ldf32(moon+4)==12 && ldf32(moon+8)==-10 && !memcmp(&c,&before,sizeof c));
+ flying=false;factor=2;const uint32_t boost=wwhd_link_move(&c,0x1234000,actor+0x33C);
+ assert(ldf32(boost)==6 && ldf32(boost+4)==12 && ldf32(boost+8)==8 && !memcmp(&c,&before,sizeof c));
 }

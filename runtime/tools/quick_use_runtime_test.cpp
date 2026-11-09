@@ -37,6 +37,8 @@ void site_023EB548(Cpu*); void site_023EB614(Cpu*);
 void site_023E88B0(Cpu*); void site_023EB2B0(Cpu*); void site_023EB434(Cpu*);
 void site_023DF7C0(Cpu*); void site_023EA474(Cpu*);
 void site_023F05EC(Cpu*);
+void ppc_host_call(Cpu* c, PpcFunc fn) { fn(c); }  // (the decomp build's port points run the sites through it)
+unsigned wwhd_quick_use(Cpu*, unsigned, unsigned, unsigned, unsigned);
 }
 namespace {
 constexpr uint32_t player_addr = 0x11000000, attention = 0x11010000, enemy = 0x11020000, actor = 0x11030000;
@@ -58,6 +60,44 @@ void map(uint32_t address) {
 #endif
     assert(p == mem::ptr(address));
 }
+#ifdef QUICK_USE_PORT_POINTS
+// The decomp build's port points (the decompilation's port_hooks.h PORT_QUICK_USE): every site the replays call goes
+// through wwhd_quick_use as the decompiled source calls it (Link, and the value of the register the hooked instruction
+// reads); the result lands in that register, and the rest of the Cpu must come back unchanged.
+void via(uint32_t site, int value_reg, Cpu* c) {
+    const Cpu before = *c;
+    const uint32_t v = wwhd_quick_use(c, c->r[1], site, player_addr, value_reg >= 0 ? c->r[value_reg] : 0);
+    assert(!memcmp(c, &before, sizeof *c));
+    if (value_reg >= 0) c->r[value_reg] = v;
+}
+#define POINT(addr, reg) void point_##addr(Cpu* c) { via(0x##addr, reg, c); }
+POINT(023EFB44, -1) POINT(023F0624, -1) POINT(023F0670, -1) POINT(023F06AC, -1) POINT(023F1764, -1)
+POINT(023F1784, -1) POINT(023F1728, -1) POINT(023E88B0, -1) POINT(023DF7C0, -1)
+POINT(023EAE30, 3) POINT(023EAE78, 3) POINT(023EC12C, 3) POINT(023EC178, 3) POINT(023EAE84, 11) POINT(023EC184, 0)
+POINT(023EB548, 8) POINT(023EB614, 3) POINT(023EB2B0, 3) POINT(023EB434, 3) POINT(023EA474, 3) POINT(023F05EC, 3)
+#undef POINT
+#define site_023EFB44 point_023EFB44
+#define site_023F0624 point_023F0624
+#define site_023F0670 point_023F0670
+#define site_023F06AC point_023F06AC
+#define site_023F1764 point_023F1764
+#define site_023F1784 point_023F1784
+#define site_023F1728 point_023F1728
+#define site_023E88B0 point_023E88B0
+#define site_023DF7C0 point_023DF7C0
+#define site_023EAE30 point_023EAE30
+#define site_023EAE78 point_023EAE78
+#define site_023EC12C point_023EC12C
+#define site_023EC178 point_023EC178
+#define site_023EAE84 point_023EAE84
+#define site_023EC184 point_023EC184
+#define site_023EB548 point_023EB548
+#define site_023EB614 point_023EB614
+#define site_023EB2B0 point_023EB2B0
+#define site_023EB434 point_023EB434
+#define site_023EA474 point_023EA474
+#define site_023F05EC point_023F05EC
+#endif
 Cpu cpu() {
     Cpu c{};
     c.r[0] = 0xABCDEF; c.r[1] = player_addr + 0xF000; c.r[3] = player_addr; c.r[31] = player_addr;
