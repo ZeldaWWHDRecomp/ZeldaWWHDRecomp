@@ -43,10 +43,10 @@ std::atomic<bool> g_on{false};
 
 void set_zones(const std::vector<Far>& centres, const std::vector<float>& radii) { g_zone_at = centres, g_zone_r = radii; }
 
-void step(uint32_t link, const std::vector<Far>& far) {
+void step(uint32_t link, const std::vector<Far>& far_players) {
     chart_step();
     const bool sea = link >= 0x10000000u && !strncmp((const char*)mem::ptr(GD(0x1046F0B0) + names::inf::kCurStage), "sea", 4);
-    if (!sea || (far.empty() && g_zone_at.empty()) || !sync::settings().radar) { g_on = false; return; }
+    if (!sea || (far_players.empty() && g_zone_at.empty()) || !sync::settings().radar) { g_on = false; return; }
     const uint32_t at = link + names::ac::kPos;
     const float me[3] = {(float)ldf32(at), (float)ldf32(at + 4), (float)ldf32(at + 8)};
     float yaw = 0;  // the drawn camera's heading (eye to centre), else Link's
@@ -57,7 +57,7 @@ void step(uint32_t link, const std::vector<Far>& far) {
         yaw = (int16_t)ld16(link + names::ac::kAngleY) * 3.14159265f / 32768;
     }
     std::lock_guard<std::mutex> l(g_mu);
-    g_dots = place(me, yaw, far);
+    g_dots = place(me, yaw, far_players);
     g_rings = rings(me, yaw, g_zone_at, g_zone_r);
     g_on = !g_dots.empty() || !g_rings.empty();
     if (static uint32_t n = 0; ++n % 300 == 0) mods::trace("coop: radar: %zu far players", g_dots.size());

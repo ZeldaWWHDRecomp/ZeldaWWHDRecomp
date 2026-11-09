@@ -64,6 +64,8 @@ void put_ghost(Writer& w, const Ghost& g) {
     put_pose_header(w, g.head);
     w.u16(uint16_t(g.blob.size()));
     w.bytes(g.blob.data(), g.blob.size());
+    w.u8(uint8_t(g.look_record.size()));
+    w.bytes(g.look_record.data(), g.look_record.size());
 }
 
 bool get_ghost(Reader& r, Ghost& g) {
@@ -79,6 +81,10 @@ bool get_ghost(Reader& r, Ghost& g) {
     if (n > kMaxPoseBlob) return false;
     g.blob.resize(n);
     r.bytes(g.blob.data(), n);
+    const size_t ln = r.u8();
+    if (ln > kMaxLook) return false;
+    g.look_record.resize(ln);
+    r.bytes(g.look_record.data(), ln);
     return r.ok();
 }
 
@@ -89,6 +95,7 @@ Ghost ghost_of(const Session& s) {
     g.key_hash = s.key_hash;
     g.world = s.world;
     g.look = s.look;
+    g.look_record = s.look_record;
     g.name = s.name;
     g.head = s.head;
     g.blob = s.blob;

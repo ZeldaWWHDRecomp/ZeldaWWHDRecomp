@@ -100,6 +100,9 @@ void release(int i);
 void state_loaded();
 // this game's own Link's tunic while a session is on (-1: none, his own clothes)
 void own_tunic(int tunic);
+// puppet i's player's look (link_appearance::encode; empty: the game's colours): drawn with its tunic where the look
+// leaves the tunic as it is
+void puppet_look(int i, const std::vector<uint8_t>& record);
 // who this game plays as (0 Link, 1 Tetra, 2 Medli, 3 Princess Zelda): drawn in Link's place here, and the others see
 // it (a pose's flags, bits 6-7: char_of)
 constexpr int kCharacters = 4;

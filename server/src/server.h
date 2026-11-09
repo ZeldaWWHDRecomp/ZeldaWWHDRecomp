@@ -74,6 +74,8 @@ struct Seen {
     uint32_t tick = 0;       // when last sent
     bool marked = false;     // still visible this tick
     uint8_t pvp = 0xFF;      // the PvP marks last sent for them (kMsgPvpMarks)
+    bool look_sent = false;  // their look was sent (kMsgLookOf) ...
+    Bytes look;              // ... as this record
 };
 
 // a hit on a player on another worker, held until the player arrives (a handover in flight)
@@ -117,6 +119,7 @@ struct Session {
     uint8_t token[32]{};
     std::string name;
     uint32_t look = 0;
+    Bytes look_record;    // the player's look (kMsgLook, opaque, <= kMaxLook; empty: none)
     uint8_t device = 0;
     int near_cap = 32, mid_cap = 48;
     uint64_t world = 0;   // game data hash
@@ -151,7 +154,7 @@ struct Session {
     uint32_t chat_fast_logged = 0;
 
     // limits
-    Bucket packets, bytes, reliable, emote, invite, report, app;
+    Bucket packets, bytes, reliable, emote, invite, report, app, look_rate;
     int strikes = 0;
     uint32_t strikes_since = 0;
     uint32_t freeze_until = 0;  // an implausible move: poses held until then (or a stage change)
@@ -190,6 +193,7 @@ struct Ghost {
     uint64_t key_hash = 0, world = 0;
     std::string name;
     uint32_t look = 0;
+    Bytes look_record;    // (as the session's)
     proto::PoseHeader head;
     Bytes blob;
     uint32_t pose_ms = 0, pose_seq = 0, at = 0;
@@ -240,7 +244,7 @@ struct Metrics {
     std::vector<uint32_t> tick_us;  // since the last report
     std::vector<uint32_t> interest_us, send_us;  // the two parallel phases of each tick
     std::atomic<uint64_t> out_churn{0}, out_gone{0};
-    std::atomic<uint64_t> blocked_drops{0}, muted_drops{0}, mod_refusals{0};
+    std::atomic<uint64_t> blocked_drops{0}, muted_drops{0}, mod_refusals{0}, looks_sent{0};
     // chat: lines passed on, lines delivered, lines dropped by reason (proto::ChatResult), words filtered
     uint64_t chat_lines = 0, chat_delivered = 0, chat_filtered = 0;
     uint64_t chat_drops[10] = {};

@@ -84,6 +84,17 @@ struct Bot {
             if (e.kind == k) return true;
         return false;
     }
+    // the newest look of player `id` this bot was given (nullptr: none)
+    const Bytes* look_of(uint16_t id) const {
+        for (auto it = log.rbegin(); it != log.rend(); ++it)
+            if (it->kind == ClientEvent::kLookOf && it->id == id) return &it->body;
+        return nullptr;
+    }
+    int looks_of(uint16_t id) const {
+        int n = 0;
+        for (auto& e : log) n += e.kind == ClientEvent::kLookOf && e.id == id;
+        return n;
+    }
     const ClientEvent* last(ClientEvent::Kind k) const {
         for (auto it = log.rbegin(); it != log.rend(); ++it)
             if (it->kind == k) return &*it;
@@ -564,12 +575,16 @@ static void test_scaling() {
     // b joined a's party on a's worker, as a guest in a region another worker runs
     CHECK(wk[1]->find_by_key(b->c.key_hash()) != nullptr);
     CHECK(all3(bots, 3000, [&] { return b->players.count(aid) != 0; }));  // the party: seen anywhere
-    // c sails east into worker w1's half: b, a guest of w2 there, sees c through w1's ghosts
+    // c sails east into worker w1's half: b, a guest of w2 there, sees c through w1's ghosts (and c's look with them,
+    // which c sends again to each worker it is handed to)
+    const Bytes clook = {1, 0x00, 0x08, 0x9A, 0x4F, 0x9F};
+    c->c.send_look(clook.data(), clook.size());
     for (float x = -3000; x <= 16000; x += 400) {
         c->head.x = x;
         all3(bots, 40, nullptr);
     }
     CHECK(all3(bots, 8000, [&] { return wk[0]->find_by_key(c->c.key_hash()) && b->players.count(c->c.my_id()); }));
+    CHECK(all3(bots, 5000, [&] { return b->look_of(c->c.my_id()) && *b->look_of(c->c.my_id()) == clook; }));
     CHECK(wk[1]->find_by_key(b->c.key_hash()) != nullptr);
     std::printf("scaling: region move, cross-worker invite, party guest: ok\n");
     // worker w2 goes away: its players come back through the coordinator
@@ -981,6 +996,66 @@ static void test_mod_rules_server() {
 }
 
 // block and mute (C14): what stops reaching whom, per account (it survives a reconnect), and lifting it
+// Looks (kMsgLook / kMsgLookOf): everyone who sees a player gets its look, party or not, also players who come
+// into sight later; a change goes to them all; the server takes at most 2 a second (4 at once)
+static void test_looks() {
+    server::Server s(base_config(0));
+    std::string why;
+    CHECK(s.start(why));
+    uint16_t port = s.port();
+    auto a = make_bot("a", port), b = make_bot("b", port), c = make_bot("c", port);
+    std::vector<Bot*> all = {a.get(), b.get(), c.get()};
+    a->head.x = 1000, b->head.x = 1200, c->head.x = 1400;
+    CHECK(run(&s, all, 5000, [&] { return c->players.count(a->c.my_id()) && b->players.count(a->c.my_id()); }));
+    // a and b form a party; c stays outside it
+    uint64_t code = 0;
+    parse_friend_code(b->c.friend_code(), code);
+    a->c.party_invite(code);
+    CHECK(run(&s, all, 3000, [&] { return b->saw(ClientEvent::kPartyInvited); }));
+    b->c.party_accept(b->last(ClientEvent::kPartyInvited)->party_id);
+    CHECK(run(&s, all, 3000, [&] { auto* e = a->last(ClientEvent::kPartyState); return e && e->party.members.size() == 2; }));
+    const uint16_t aid = a->c.my_id();
+    CHECK(!c->look_of(aid));  // (no look yet: nothing sent)
+    const Bytes l1 = {1, 0x00, 0x09, 0x2B, 0x2A, 0x30, 0xE5, 0x2B, 0x36};  // hair and tunic
+    a->c.send_look(l1.data(), l1.size());
+    CHECK(run(&s, all, 3000, [&] { return b->look_of(aid) && c->look_of(aid) && *c->look_of(aid) == l1 && *b->look_of(aid) == l1; }));
+    std::printf("looks: party member and non-party player in sight: ok\n");
+    // d comes into sight later: it gets the look at once (the server keeps it)
+    auto d = make_bot("d", port);
+    d->head.x = 1300;
+    all.push_back(d.get());
+    CHECK(run(&s, all, 5000, [&] { return d->players.count(aid) && d->look_of(aid) && *d->look_of(aid) == l1; }));
+    CHECK(d->looks_of(aid) == 1);
+    std::printf("looks: late joiner: ok\n");
+    // a change reaches everyone in sight; nothing is sent again while it stays the same
+    const Bytes l2 = {1, 0x00, 0x04, 0x2F, 0x6F, 0xD8};  // eyes only
+    run(&s, all, 600);  // (the bucket refills)
+    a->c.send_look(l2.data(), l2.size());
+    CHECK(run(&s, all, 3000, [&] { return c->look_of(aid) && *c->look_of(aid) == l2 && d->look_of(aid) && *d->look_of(aid) == l2; }));
+    const int c_before = c->looks_of(aid);
+    run(&s, all, 1000);
+    CHECK(c->looks_of(aid) == c_before);
+    // a flood: at most 4 at once and 2 a second are taken; the last one taken is what the others end up with
+    run(&s, all, 2100);
+    for (uint8_t i = 0; i < 20; i++) {
+        const Bytes li = {1, 0x00, 0x08, i, i, i};
+        a->c.send_look(li.data(), li.size());
+    }
+    run(&s, all, 1500);
+    CHECK(c->looks_of(aid) - c_before <= 6);
+    CHECK(c->look_of(aid) && (*c->look_of(aid))[3] < 6);  // (the first ones taken, the rest dropped)
+    // too long a record is not sent; an empty one clears the look for everyone
+    const Bytes big(kMaxLook + 1, 1);
+    run(&s, all, 2100);
+    a->c.send_look(big.data(), big.size());
+    run(&s, all, 500);
+    CHECK(c->look_of(aid) && c->look_of(aid)->size() == 6);
+    a->c.send_look(nullptr, 0);
+    CHECK(run(&s, all, 3000, [&] { return c->look_of(aid) && c->look_of(aid)->empty() && b->look_of(aid) && b->look_of(aid)->empty(); }));
+    CHECK(s.metrics().looks_sent >= 8);
+    std::printf("looks: changes, flood, size and clearing: ok\n");
+}
+
 static void test_block_mute() {
     server::Server s(base_config(0));
     std::string why;
@@ -1924,6 +1999,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "tcp") test_tcp();
     if (only.empty() || only == "mods") test_mod_rules_server();
     if (only.empty() || only == "block") test_block_mute();
+    if (only.empty() || only == "looks") test_looks();
     if (only.empty() || only == "chat") test_chat();
     if (only.empty() || only == "party16") test_party_16();
     if (only.empty() || only == "party16ho") test_party_16_handover();

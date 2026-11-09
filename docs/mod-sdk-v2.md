@@ -26,6 +26,7 @@ supported.
 - [Charts and markers](#charts-and-markers)
 - [Items](#items)
 - [The story notebook](#the-story-notebook)
+- [Link's appearance](#links-appearance)
 - [Packages with content and images](#packages-with-content-and-images)
 - [Trust](#trust)
 - [Save states](#save-states)
@@ -313,6 +314,7 @@ service requirement and do not change how ordinary saves are loaded.
 | `wwhd_mail_send`, `wwhd_mail_state` | A letter from your mod, delivered by the Rito postbox, below |
 | `wwhd_chart_*` | A chart from your mod that marks places on Link's sea chart, below |
 | `wwhd_quest_*` | Your mod's quests in the story notebook, below |
+| `wwhd_appearance_get`, `_set`, `_open` | Link's look in the save file played, and the port's colour page, below |
 | `memcpy`, `memmove`, `memset` | As usual |
 
 Your mod can also call any game function. Original synthesized audio can use the PCM stream service below.
@@ -1375,6 +1377,29 @@ save on Windfall: letter, notebook, page, tracking and the sea chart, and checks
 **Players without story mods.** The item menu functions are only hooked while a loaded mod uses
 `wwhd_quest_*`. If another mod replaces one of them, the notebook is not in the item menu that
 session and the log says so.
+
+## Link's appearance
+
+The player's choice of colours for Link (hair, skin, eyes, tunic and hat, undershirt, trousers, boots, belt
+buckle) belongs to each save file and is kept in it when the game saves (manager version 1.11.0). Only colours
+change: the port recolours Link's own textures from the player's game in memory; nothing is shipped or stored
+but the colours. A mod reads or sets the look as a record of 3 to 27 bytes (`wwhd_guest.h` has the layout and
+the slot numbers), or opens the port's colour page:
+
+```c
+u8 look[WWHD_APPEARANCE_MAX];
+s32 n = wwhd_appearance_get(look, sizeof look);           /* 3..27, or -2 with no save file played */
+static const u8 red_tunic[] = {1, 0x00, 0x08, 0xE5, 0x2B, 0x36};  /* slot 3 (tunic) set */
+wwhd_appearance_set(red_tunic, sizeof red_tunic);          /* 0, -1 a bad record, -2 no save file */
+wwhd_appearance_open();                                   /* the colour page, once Link can stand still */
+```
+
+The colour page holds Link still in a close camera with the page on the right of the screen; the player
+steps through each area's colours (the first is "Original", the game's own) and sees them on Link at once,
+turns the camera around him with the right stick or L / R, and keeps the look with Done or puts it back with B.
+A character's talk can open it with no code: the story action `{"action": "appearance"}` in a talk's `then`
+([SDK v3](mod-sdk-v3.md#dialogue-and-actions)). Buffers must be in your module's memory. Declare
+`"minimum_manager_version": "1.11.0"` in a mod that uses these.
 
 ## Packages with content and images
 

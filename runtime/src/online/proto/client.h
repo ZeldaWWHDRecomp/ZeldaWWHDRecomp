@@ -86,6 +86,7 @@ struct ClientEvent {
         kChatRules,      // chat_rules: the server's chat (none came: it has none)
         kChatFrom,       // chat: a chat line (chat.flags kChatYours: one of yours, as passed on)
         kChatResult,     // value = ChatResult, chat.channel, text: a line of yours the server did not pass on
+        kLookOf,         // id, body: that player's look record (empty: none), when they come into sight and on a change
     } kind;
     ClientState state = ClientState::kOff;
     std::string text;
@@ -146,6 +147,8 @@ public:
     void send_stage(const Where& w);
     void send_app(const AppHeader& h, const uint8_t* body, size_t n, bool reliable);
     void send_emote(uint8_t emote);
+    // this player's look record (<= kMaxLook bytes): sent now and again after each WELCOME (a reconnect, a handover)
+    void send_look(const uint8_t* look, size_t n);
     void send_chat(uint8_t channel, const std::string& text);  // ChatChannel; the server checks and passes it on
     void chat_prefs(uint8_t off_bits);  // bit per ChatChannel turned off: the server sends nothing of it (after each WELCOME)
     void block(uint64_t key_hash, bool on);
@@ -227,6 +230,8 @@ private:
     bool have_token_ = false;
     uint8_t token_[32]{};
     uint16_t my_id_ = 0;
+    Bytes look_;
+    bool have_look_ = false;
     Channel chan_;
     bool pose_pending_ = false;
     Bytes pose_;
