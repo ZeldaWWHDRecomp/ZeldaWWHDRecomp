@@ -85,10 +85,10 @@ function(wwhd_decomp_configure)
   option(WWHD_DECOMP_FAST_PTR_IC2 "decomp build, fast mode: two cached call_ptr / tail_ptr targets per call site" OFF)
   # fast mode: gabi::Local / FrameLocal with one thread-block lookup, one r1 read and the slot zeroed inline (gabi.h
   # GABI_FAST_LOCAL; the runtime's WWHD_DECOMP_FAST_LOCAL=0, or WWHD_NATIVE_LOCALS=1, keeps the general form)
-  option(WWHD_DECOMP_FAST_LOCAL "decomp build, fast mode: lean gabi::Local / FrameLocal construction" OFF)
+  option(WWHD_DECOMP_FAST_LOCAL "decomp build, fast mode: lean gabi::Local / FrameLocal construction" ON)
   # fast mode: the source's guest_str / guest_addr calls with one cache entry per call site, no thread-local access
   # (gabi.h GABI_FAST_STR; the runtime's WWHD_DECOMP_FAST_STR=0 keeps guest_str's per-thread cache)
-  option(WWHD_DECOMP_FAST_STR "decomp build, fast mode: per-call-site cache of host string literals' guest copies" OFF)
+  option(WWHD_DECOMP_FAST_STR "decomp build, fast mode: per-call-site cache of host string literals' guest copies" ON)
   # fast mode, statistics only (Mac): gabi.h counts the fast/general Local constructions and guest_str site hits/misses
   # (GABI_FAST_COUNT); the runtime appends "logic_steps local_fast local_general str_hit str_miss" every second to the
   # file WWHD_DECOMP_FAST_COUNT names
@@ -97,16 +97,16 @@ function(wwhd_decomp_configure)
   # may depend on the registers left out: a source whose under-declared lines are all shim callees (decl_lint class d,
   # parameters the original never reads) keeps caller=ok (native_rules.py --a3-fn, gabi.h GABI_A3_FN, NativeInfo bit 19;
   # WWHD_DECOMP_FAST_A3_FN=0 at run time: those bodies' calls are guest calls again); OFF: every such source as before
-  option(WWHD_DECOMP_FAST_A3_FN "decomp build, fast mode: A3 decl only for sources a caller may depend on" OFF)
+  option(WWHD_DECOMP_FAST_A3_FN "decomp build, fast mode: A3 decl only for sources a caller may depend on" ON)
   # fast mode: a call through a pointer that passes more registers than its target's definition takes uses the target's
   # native entry too (gabi.h GABI_PTR_SUB; a target that is not register-exact gets the guest registers as the guest call
   # gives them; WWHD_DECOMP_FAST_PTR_SUB=0 at run time: equal shapes only); OFF: equal shapes only, as before
-  option(WWHD_DECOMP_FAST_PTR_SUB "decomp build, fast mode: pointer calls to targets that take fewer registers natively" OFF)
+  option(WWHD_DECOMP_FAST_PTR_SUB "decomp build, fast mode: pointer calls to targets that take fewer registers natively" ON)
   # fast mode: leaf bodies (register-exact, no call of any kind in the original or the body, no Local / frame / Cpu access /
   # string literal: native_rules.py --leaf) keep no call state on a native entry (gabi.h GABI_LEAF, NativeInfo bit 20;
   # WWHD_DECOMP_FAST_LEAF=0 at run time: the full scope); _CHECK (diagnostics): the state is poisoned for the body
   # instead and any use traps
-  option(WWHD_DECOMP_FAST_LEAF "decomp build, fast mode: leaf bodies keep no call state" OFF)
+  option(WWHD_DECOMP_FAST_LEAF "decomp build, fast mode: leaf bodies keep no call state" ON)
   option(WWHD_DECOMP_FAST_LEAF_CHECK "decomp build, fast mode: trap on any use of call state in a leaf body (diagnostics)" OFF)
   # diagnostics build only: native entries counted per decompiled function (gabi.h GABI_NSTATS; WWHD_DECOMP_FAST_NSTATS=PATH)
   option(WWHD_DECOMP_FAST_NSTATS "decomp build, fast mode: count native entries per function (diagnostics, not for release)" OFF)
