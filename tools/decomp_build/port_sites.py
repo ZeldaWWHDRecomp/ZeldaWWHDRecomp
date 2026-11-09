@@ -23,6 +23,9 @@ P02 = "wwhd_src/d/actor/d_a_player_main_02.cpp"
 P03 = "wwhd_src/d/actor/d_a_player_main_03.cpp"
 P06 = "wwhd_src/d/actor/d_a_player_main_06.cpp"
 P07 = "wwhd_src/d/actor/d_a_player_main_07.cpp"
+CU = "wwhd_src/d/d_camera_util.cpp"
+CS = "wwhd_src/d/d_camera_subject.cpp"
+CP = "wwhd_src/d/d_camera_proc.cpp"
 
 
 def _p(site, func, path, macro):
@@ -87,6 +90,24 @@ SITES = [
     # compiled code has twice (both sites)
     _p(0x023F35BC, 0x023F32E4, P03, "PORT_STEER_WALK"),
     dict(site=0x023F3610, func=0x023F32E4, path=P03, marker="PORT_STEER_WALK(0x023F35BC"),
+    # Camera (runtime/src/mods/camera_points.cpp): the right stick's y (Invert camera up/down), the stored aspect, the
+    # targeting letterbox, the projection calls (aspect, field of view, stereo culling)
+    _p(0x02171B1C, 0x0216F7FC, "wwhd_src/d/actor/d_a_himo2_move.cpp", "PORT_CAMERA_F"),  # new_himo2_move
+    _p(0x024F9DA4, 0x024F9BF4, CU, "PORT_CAMERA_F"),     # dCamera_c::updatePad
+    _p(0x0250074C, 0x025006D8, CU, "PORT_CAMERA_F"),     # dCamera_c::initPad
+    _p(0x02506C68, 0x02506964, CS, "PORT_CAMERA_F"),     # dCamera_c::CalcSubjectAngle: one statement, compiled twice
+    dict(site=0x02506C80, func=0x02506964, path=CS, marker="PORT_CAMERA_F(0x02506C68"),
+    _p(0x024F811C, 0x024F8068, CP, "PORT_PROJECTION"),   # view_setup: mDoLib_clipper::setup (both branches)
+    _p(0x024F8168, 0x024F8068, CP, "PORT_PROJECTION"),
+    _p(0x024FFA98, 0x024FFA3C, CP, "PORT_CAMERA_F"),     # camera_execute: the aspect stored
+    _p(0x025020E0, 0x02501F98, CP, "PORT_CAMERA_F"),     # init_phase2: the same
+    _p(0x024FF8C0, 0x024FF8A0, CP, "PORT_CAMERA_AT"),    # CalcTrimSize: trace
+    _p(0x024FF980, 0x024FF8A0, CP, "PORT_CAMERA_F"),     # CalcTrimSize: the Vista bars' height
+    _p(0x024FFD60, 0x024FFC40, CP, "PORT_PROJECTION_ARG"),  # camera_draw: C_MTXPerspective
+    _p(0x0250007C, 0x024FFC40, CP, "PORT_PROJECTION_ARG"),  # camera_draw: sead PerspectiveProjection::set
+    _p(0x024FF4C0, 0x024FF164, "wwhd_src/d/d_camera_run.cpp", "PORT_CAMERA_W"),  # eventCamera: one statement, twice
+    dict(site=0x024FF4E4, func=0x024FF164, path="wwhd_src/d/d_camera_run.cpp", marker="PORT_CAMERA_W(0x024FF4C0"),
+    _p(0x024FC080, 0x024FBF9C, "wwhd_src/d/d_camera_bg.cpp", "PORT_CAMERA_W"),  # defaultTriming: the table's size
 ]
 
 EMPTY = [
@@ -95,6 +116,31 @@ EMPTY = [
     dict(site=0x023FD35C, func=0x023FCB9C),
     # (daPy_lk_c::execute's three empty sites stay, fast mode: its decompiled body, never run in the game before, crashes
     # after the file select with the TV-frame clock (a read at guest address 8); to be looked at in the decompilation first)
+    # (camera_run 024FE3E8's two empty sites stay: its decompiled body, never run in the game before, does not play as the
+    # recompiled one with the 21:9 aspect and the letterbox on; to be looked at in the decompilation first)
+    # the chase camera's step-length sites (025028B8; retired True 60)
+    dict(site=0x02502CCC, func=0x025028B8), dict(site=0x02502CD0, func=0x025028B8), dict(site=0x02502E44, func=0x025028B8),
+    dict(site=0x02502E48, func=0x025028B8), dict(site=0x02502E8C, func=0x025028B8), dict(site=0x02502E90, func=0x025028B8),
+    dict(site=0x02502ECC, func=0x025028B8), dict(site=0x02502ED0, func=0x025028B8), dict(site=0x0250329C, func=0x025028B8),
+    dict(site=0x025032CC, func=0x025028B8), dict(site=0x025034AC, func=0x025028B8), dict(site=0x025034B0, func=0x025028B8),
+    dict(site=0x025034D0, func=0x025028B8), dict(site=0x02503540, func=0x025028B8), dict(site=0x02503544, func=0x025028B8),
+    dict(site=0x02503564, func=0x025028B8), dict(site=0x025035BC, func=0x025028B8), dict(site=0x02503670, func=0x025028B8),
+    dict(site=0x02503674, func=0x025028B8), dict(site=0x025037B0, func=0x025028B8), dict(site=0x025037B4, func=0x025028B8),
+    dict(site=0x02503E20, func=0x025028B8), dict(site=0x02503E24, func=0x025028B8), dict(site=0x02503EC8, func=0x025028B8),
+    dict(site=0x02503ECC, func=0x025028B8), dict(site=0x025042F8, func=0x025028B8), dict(site=0x025043C8, func=0x025028B8),
+    dict(site=0x0250447C, func=0x025028B8), dict(site=0x02504620, func=0x025028B8), dict(site=0x02504624, func=0x025028B8),
+    dict(site=0x02504660, func=0x025028B8), dict(site=0x02504664, func=0x025028B8), dict(site=0x025046C0, func=0x025028B8),
+    dict(site=0x025046C4, func=0x025028B8), dict(site=0x025046FC, func=0x025028B8), dict(site=0x02504700, func=0x025028B8),
+    dict(site=0x025047B8, func=0x025028B8), dict(site=0x025047BC, func=0x025028B8), dict(site=0x02504808, func=0x025028B8),
+    dict(site=0x0250480C, func=0x025028B8), dict(site=0x025049CC, func=0x025028B8), dict(site=0x025049D0, func=0x025028B8),
+    dict(site=0x02504B1C, func=0x025028B8), dict(site=0x02504B70, func=0x025028B8), dict(site=0x02504B74, func=0x025028B8),
+    dict(site=0x02504B78, func=0x025028B8), dict(site=0x02504B7C, func=0x025028B8), dict(site=0x02504B94, func=0x025028B8),
+    dict(site=0x02504B98, func=0x025028B8), dict(site=0x02504BA8, func=0x025028B8), dict(site=0x02504BAC, func=0x025028B8),
+    dict(site=0x02504C00, func=0x025028B8), dict(site=0x02504C04, func=0x025028B8), dict(site=0x02504C14, func=0x025028B8),
+    dict(site=0x02504C18, func=0x025028B8), dict(site=0x02504C68, func=0x025028B8), dict(site=0x02504C6C, func=0x025028B8),
+    dict(site=0x02504D50, func=0x025028B8), dict(site=0x02504DA0, func=0x025028B8), dict(site=0x02504DA4, func=0x025028B8),
+    dict(site=0x02504DB0, func=0x025028B8), dict(site=0x02504DB4, func=0x025028B8), dict(site=0x02504ECC, func=0x025028B8),
+    dict(site=0x02504F5C, func=0x025028B8),
 ]
 
 
