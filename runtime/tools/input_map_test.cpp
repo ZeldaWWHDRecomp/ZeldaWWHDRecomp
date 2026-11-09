@@ -1080,6 +1080,39 @@ static void test_binding_capture_resting_inputs() {
     }
 }
 
+// The Controls page opens on the bindings the controller in use plays with; a set the user picks wins
+// while that controller stays in use; the shared view says when its edits don't reach that controller.
+static void test_binding_choice() {
+    Mapping m = Mapping::defaults();
+    const std::string og = "odin-guid", on = "Odin Controller", xg = "xbox-guid", xn = "Xbox Controller";
+    ensure_profile(m, og, on);
+    BindingChoice choice;
+    bool own = false;
+    std::string guid, name;
+    // the Odin (its own bindings) in use: the page starts on them, the shared view shows the notice
+    CHECK(choice.open(m, og, on, own, guid, name) && own && guid == og && name == on);
+    CHECK(shared_view_notice(m, og, on) == "Odin Controller uses its own bindings, so changes here don't apply to it.");
+    // the user picks the shared set: it stays on reopening while the Odin is in use
+    choice.choose(og, on);
+    CHECK(!choice.open(m, og, on, own, guid, name));
+    CHECK(!choice.open(m, og, on, own, guid, name));
+    // another controller in use (no profile of its own): the page follows it to the shared set, no notice
+    CHECK(choice.open(m, xg, xn, own, guid, name) && !own && guid.empty() && name.empty());
+    CHECK(shared_view_notice(m, xg, xn).empty());
+    // the Odin again: its own bindings again (the earlier pick was for the Odin then, and was left)
+    CHECK(choice.open(m, og, on, own, guid, name) && own && name == on);
+    // keyboard only / no controller in use: the shared set, no notice
+    CHECK(choice.open(m, "", "", own, guid, name) && !own);
+    CHECK(shared_view_notice(m, "", "").empty());
+    // the GUID-only and name-only fallbacks the game uses (profile_index) count as its own
+    CHECK(shared_view_notice(m, og, "Odin Controller (USB)").find("Odin Controller (USB) uses its own") == 0);
+    CHECK(shared_view_notice(m, og, "").find("The controller in use uses its own") == 0);
+    // a normal setup (no profiles): always the shared set, never a notice
+    BindingChoice plain;
+    CHECK(plain.open(Mapping::defaults(), xg, xn, own, guid, name) && !own);
+    CHECK(shared_view_notice(Mapping::defaults(), xg, xn).empty());
+}
+
 static void test_android_odin_mapping() {
     const std::string old = "03000000,name,a:b0,b:b1,back:b4,start:b6,leftx:a0,lefty:a1,face:abxy,";
     CHECK(android_controller::mapping(0x045e, 0x111, old) == old);
@@ -1871,6 +1904,7 @@ int main() {
     test_displace_rules();
     test_profiles();
     test_binding_capture_resting_inputs();
+    test_binding_choice();
     test_active_prompts();
     test_auto_prompts_follow_pad_in_use();
     test_v1_migration();

@@ -980,6 +980,28 @@ void store_view(Mapping& m, const Mapping& view, int index) {
     m.setup_declined = declined;
 }
 
+void BindingChoice::choose(const std::string& active_guid, const std::string& active_name) {
+    chosen = true;
+    by_guid = active_guid;
+    by_name = active_name;
+}
+
+bool BindingChoice::open(const Mapping& m, const std::string& active_guid, const std::string& active_name, bool& own,
+                         std::string& guid, std::string& name) {
+    if (chosen && by_guid == active_guid && by_name == active_name) return false;
+    chosen = false;  // another controller is in use: the page follows it again
+    own = !(active_guid.empty() && active_name.empty()) && profile_index(m, active_guid, active_name) >= 0;
+    guid = own ? active_guid : std::string();
+    name = own ? active_name : std::string();
+    return true;
+}
+
+std::string shared_view_notice(const Mapping& m, const std::string& active_guid, const std::string& active_name) {
+    if ((active_guid.empty() && active_name.empty()) || profile_index(m, active_guid, active_name) < 0) return "";
+    return (active_name.empty() ? std::string("The controller in use") : active_name) +
+           " uses its own bindings, so changes here don't apply to it.";
+}
+
 bool setup_offer_due(const Mapping& m, const std::string& guid, const std::string& name, bool is_virtual) {
     if (is_virtual || (guid.empty() && name.empty())) return false;
     if (profile_index(m, guid, name) >= 0) return false;

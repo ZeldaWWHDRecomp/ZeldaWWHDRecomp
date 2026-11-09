@@ -332,6 +332,22 @@ Mapping view_for(const Mapping& m, int index);
 // shared ones; no controller in use (keyboard only) or none of its own: `m`'s shared bindings
 Mapping active_view(const Mapping& m);
 void store_view(Mapping& m, const Mapping& view, int index);
+// The Controls page's "Bindings for" choice (the overlay's Controls tab and the Mac Controls window).
+// The page opens on the bindings the controller in use plays with: its own when it has a profile, else
+// the shared ones. A set the user picks there wins over that while the same controller stays in use.
+struct BindingChoice {
+    bool chosen = false;          // the user picked a set (choose)
+    std::string by_guid, by_name; // the controller in use then
+    // the user picked a set while (guid, name) was in use (both empty: keyboard only / none)
+    void choose(const std::string& active_guid, const std::string& active_name);
+    // the page opens with (active_guid, active_name) in use: false keeps the user's choice; true sets
+    // own / guid / name to the set to show (own: that controller's profile; else the shared ones)
+    bool open(const Mapping& m, const std::string& active_guid, const std::string& active_name, bool& own,
+              std::string& guid, std::string& name);
+};
+// The line the shared bindings show when the controller in use plays with bindings of its own (edits
+// there do not reach it); "" when it plays with the shared ones (or none is in use).
+std::string shared_view_notice(const Mapping& m, const std::string& active_guid, const std::string& active_name);
 // controller setup offer (controller_setup.h): a new controller (no profile, not declined, not virtual)
 bool setup_offer_due(const Mapping& m, const std::string& guid, const std::string& name, bool is_virtual);
 
