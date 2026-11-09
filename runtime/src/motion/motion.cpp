@@ -51,7 +51,7 @@ struct Device {
     Aim logged_aim;             // aim since the last log line
     Vec3 last_gyro, last_acc;
 };
-constexpr uint64_t kNone = ~0ull, kDsuDevice = ~1ull, kPhoneDevice = ~2ull;
+constexpr uint64_t kNone = ~0ull, kDsuDevice = ~1ull, kPhoneDevice = ~2ull, kRemoteDevice = ~3ull;
 std::map<uint64_t, Device> g_devices;   // controllers, DSU slot and this device (distinct reserved ids)
 uint64_t g_active = kNone;              // the device that turns the virtual GamePad
 Aim g_pending;                          // the active device's aim not yet read by the game
@@ -69,7 +69,7 @@ Clock::time_point g_stick_since{};
 
 double secs(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
 std::string device_name(uint64_t id) {
-    return id == kPhoneDevice ? "this device" : id == kDsuDevice ? "the Cemuhook server" : "controller " + std::to_string((unsigned long long)id);
+    return id == kPhoneDevice ? "this device" : id == kRemoteDevice ? "the iPhone GamePad" : id == kDsuDevice ? "the Cemuhook server" : "controller " + std::to_string((unsigned long long)id);
 }
 
 // a sample from `id` (g_mu held). The device the player moves turns the virtual GamePad: the active one
@@ -305,6 +305,20 @@ void device_sample(uint64_t t_ns, const float gyro[3], const float accel[3]) {
     std::lock_guard lk(g_mu);
     if (g_settings.source == kDevice || (g_settings.source == kAuto && touch_play())) feed(kPhoneDevice, t_ns, g, a);
 }
+void remote_sample(uint64_t t_ns, const float gyro[3], const float accel[3], int quarter_turns) {
+    const Vec3 gs = device_to_sdl({gyro[0], gyro[1], gyro[2]}, quarter_turns);
+    const Vec3 as = device_to_sdl({accel[0], accel[1], accel[2]}, quarter_turns);
+    const float g3[3] = {gs.x, gs.y, gs.z}, a3[3] = {as.x, as.y, as.z};
+    Vec3 g, a;
+    from_sdl(g3, a3, g, a);
+    std::lock_guard lk(g_mu);
+    if (g_settings.source == kDevice || g_settings.source == kAuto) feed(kRemoteDevice, t_ns, g, a);
+}
+void remote_reset() {
+    std::lock_guard lk(g_mu);
+    g_devices.erase(kRemoteDevice);
+    if (g_active == kRemoteDevice) { g_active = kNone; g_pending = {}; }
+}
 namespace {
 std::atomic<bool> g_touch_play{false};
 }
@@ -497,7 +511,11 @@ std::string status() {
             return "Close settings to start this device’s motion sensors.";
         if (source == kDevice)
             return g_device_sensors_available ? "Device gyro ready; no motion yet (or app is in the background)."
+#ifdef __APPLE__
+                                              : "No device gyro on this host: connect the iPhone GamePad (WWHD_REMOTE_PAD=1).";
+#else
                                               : "No device gyro and accelerometer available on this host.";
+#endif
         return g_gyro_controllers ? "A controller with a gyro is connected, no motion yet."
                                   : "No connected controller has a gyro (or this host cannot read it).";
     }

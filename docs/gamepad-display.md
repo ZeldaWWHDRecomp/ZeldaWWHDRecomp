@@ -20,6 +20,9 @@ the full-size GamePad picture takes precedence until the game returns to TV. In 
 shortcut keeps its usual show/hide behavior. PiP corner, size, opacity and touch mapping are shared
 with manual PiP.
 
+An iPhone with a controller attached can also be the GamePad (its controller, touch screen and
+gyro; the picture stays on the computer for now): see [ios/README.md](../ios/README.md).
+
 ## Picture-in-picture placement
 
 Settings → Display → **Picture-in-picture placement** sets where the GamePad picture sits and how it

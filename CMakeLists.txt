@@ -260,7 +260,7 @@ endif()
 # GX2 sources are compiled into the executable (not a static library) so their
 # strong HLE definitions replace the generated weak import stubs.
 file(GLOB RUNTIME_SOURCES CONFIGURE_DEPENDS runtime/src/*.cpp runtime/src/*.c runtime/src/hle/*.cpp runtime/src/mods/*.cpp runtime/src/motion/*.cpp
-                                            runtime/src/overlay/*.cpp runtime/src/editor/*.cpp)
+                                            runtime/src/overlay/*.cpp runtime/src/editor/*.cpp runtime/src/remote_pad/*.cpp)
 list(REMOVE_ITEM RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/src/mods/player_model_packages.cpp)  # (in wwhd_gcmodel)
 # the world editor's MCP interface for Claude and other tool clients (runtime/src/editor/mcp.h): only in the
 # --editor launch mode of desktop builds, off until turned on in Settings -> Editor
@@ -1193,6 +1193,16 @@ target_compile_options(motion_test PRIVATE -UNDEBUG)
 target_link_libraries(motion_test PRIVATE Threads::Threads)
 if(WIN32)
   target_link_libraries(motion_test PRIVATE ws2_32)
+endif()
+# the iPhone GamePad (runtime/src/remote_pad/, ios/): packets, controller mapping, loopback server
+if(NOT WIN32)
+  add_executable(remote_pad_test runtime/tools/remote_pad_test.cpp runtime/src/remote_pad/protocol.cpp
+                 runtime/src/remote_pad/server.cpp runtime/src/remote_pad/remote_pad.cpp ${MOTION_SOURCES})
+  target_include_directories(remote_pad_test PRIVATE runtime/src)
+  target_compile_options(remote_pad_test PRIVATE -UNDEBUG)
+  target_link_libraries(remote_pad_test PRIVATE Threads::Threads)
+  add_test(NAME remote_pad COMMAND remote_pad_test)
+  set_tests_properties(remote_pad PROPERTIES TIMEOUT 30)
 endif()
 # controller packets: actual VPAD/KPAD writers, without a game or renderer
 add_executable(pad_delivery_test runtime/tools/pad_delivery_test.cpp runtime/src/hle/padscore.cpp runtime/src/hle/system_stubs.cpp runtime/src/rumble.cpp runtime/src/guest_addr_identity.c)

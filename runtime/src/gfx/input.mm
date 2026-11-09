@@ -37,6 +37,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../game_hooks.h"
 #include "../rumble.h"
 #include "../motion/motion.h"
+#include "../remote_pad/remote_pad.h"
 #include "../overlay/overlay.h"
 #include "../overlay/release_gate.h"
 #include "../fixed_seed.h"
@@ -386,7 +387,19 @@ static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std:
 #ifdef WWHD_HAS_IOKIT
     io_devices_values(out, pads);
 #endif
+    // the iPhone GamePad's controller (remote_pad.h): kept while the game is in the background, since
+    // the phone is played away from this computer's keyboard and window
+    if (const remote_pad::Pad r = remote_pad::pad(); r.connected && r.input.controller) {
+        overlay::PadValues d;
+        remote_pad::pad_values(r.input, d.data());
+        out.emplace_back((uintptr_t)remote_pad::kDeviceId, d);
+        if (pads) pads->push_back(nil);
+    }
     return out;
+}
+// the name a controller's bindings are kept under (Controls), for the pads without a GCController
+static std::string other_device_name(uintptr_t id) {
+    return id == (uintptr_t)remote_pad::kDeviceId ? std::string(remote_pad::kControllerName) : io_device_name(id);
 }
 static std::string pad_name(GCController* c) {
     NSString* n = c.vendorName ?: c.productCategory;
@@ -835,6 +848,7 @@ void init() {
 #ifdef WWHD_HAS_IOKIT
     iokit_input_init();  // HID gamepads GameController.framework does not surface (Steam Input's pad)
 #endif
+    remote_pad::start_from_env();  // the iPhone GamePad (WWHD_REMOTE_PAD=1)
     NSEventMask mask = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
         // keep Cmd-Q etc.; in an overlay text field the editing shortcuts (Cmd+A/C/V/X/Z) go to the overlay
@@ -944,7 +958,7 @@ void init() {
                 auto& gate = start_gates[devices[i].first];
                 if (overlay::captures()) gate = {};
                 s = input_map::combine(s, gate.read(input_map::view_for(current,
-                    input_map::profile_index(current, "", pads[i] ? pad_name(pads[i]) : io_device_name(devices[i].first))), gated[i].data()));
+                    input_map::profile_index(current, "", pads[i] ? pad_name(pads[i]) : other_device_name(devices[i].first))), gated[i].data()));
             }
         }
         // the one in use, the setup offer on a new controller's first press, Controller details
@@ -953,7 +967,7 @@ void init() {
         std::vector<ControllerInfo> infos;
         for (size_t i = 0; i < devices.size(); i++) {
             GCController* c = pads[i];
-            const std::string name = c ? pad_name(c) : io_device_name(devices[i].first);
+            const std::string name = c ? pad_name(c) : other_device_name(devices[i].first);
             bool pressed = false;
             for (int p = 1; p < input_map::kPadCount; p++) pressed |= devices[i].second[p] > 0.6f;
             // its face labels, for Controller details and Automatic prompts (issue #459)
@@ -979,6 +993,12 @@ void init() {
             info.values.assign(devices[i].second.begin(), devices[i].second.end());
             if (c && c.productCategory) info.type = c.productCategory.UTF8String;
             if (c && gamecube_controller(c)) info.type = "gamecube-apple";
+            if (devices[i].first == (uintptr_t)remote_pad::kDeviceId) {
+                const remote_pad::Pad r = remote_pad::pad();
+                info.type = r.controller.empty() ? "iPhone" : r.controller;
+                info.connection = "wireless";
+                info.gyro = info.accel = true;
+            }
 #ifdef WWHD_HAS_IOKIT
             if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first) {
                 info.type = "HID gamepad";
@@ -997,7 +1017,7 @@ void init() {
                 }
                 info.led = c && c.light != nil;
             }
-            info.gyro = info.accel = c && c.motion != nil;
+            if (c) info.gyro = info.accel = c.motion != nil;
             for (int k = 0; k < 4; k++) info.labels[k] = uint8_t(labels[k]);
             infos.push_back(std::move(info));
         }
@@ -1292,6 +1312,12 @@ PadState read() {
     s.touch = g_touch;
     s.tx = g_tx;
     s.ty = g_ty;
+    // a finger on the iPhone GamePad's screen, unless the mouse holds the GamePad window's touch
+    if (!s.touch && !no_host) if (const remote_pad::Pad r = remote_pad::pad(); r.connected && r.input.touch) {
+        s.touch = true;
+        s.tx = r.input.tx;
+        s.ty = r.input.ty;
+    }
     if (g_test_touch) s.touch = true, s.tx = g_test_tx, s.ty = g_test_ty;
     // debug: WWHD_LOG_BUTTONS=1 logs every change of the merged button bits
     static const bool log_buttons = getenv("WWHD_LOG_BUTTONS") != nullptr;

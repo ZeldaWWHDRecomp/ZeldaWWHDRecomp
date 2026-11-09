@@ -1,0 +1,62 @@
+# XcodeGen spec for the iPhone GamePad app (ios/README.md). Generate the Xcode project with
+#   cd ios && xcodegen
+# The generated WWHDGamePad.xcodeproj is not committed.
+name: WWHDGamePad
+options:
+  bundleIdPrefix: org.wwhdrecomp
+  deploymentTarget:
+    iOS: "17.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    # your Apple developer team (Xcode > Signing & Capabilities), or pass DEVELOPMENT_TEAM=... to xcodebuild
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGN_STYLE: Automatic
+targets:
+  WWHDGamePad:
+    type: application
+    platform: iOS
+    sources: [WWHDGamePad]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.wwhdrecomp.gamepad
+        PRODUCT_NAME: WWHD GamePad
+        PRODUCT_MODULE_NAME: WWHDGamePad
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: GamePad
+        INFOPLIST_KEY_UIApplicationSceneManifest_Generation: YES
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        INFOPLIST_KEY_UIRequiresFullScreen: YES
+        INFOPLIST_KEY_UIStatusBarHidden: YES
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait"
+        INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad: "UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown"
+        INFOPLIST_KEY_NSLocalNetworkUsageDescription: "The GamePad connects to Wind Waker HD on your computer over the local network."
+    info:
+      path: WWHDGamePad/Info.plist
+      properties:
+        NSBonjourServices: [_wwhd-gamepad._udp]
+        GCSupportsGameMode: true
+  WWHDGamePadTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [WWHDGamePadTests]
+    dependencies:
+      - target: WWHDGamePad
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.wwhdrecomp.gamepad.tests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_HOST: "$(BUILT_PRODUCTS_DIR)/WWHD GamePad.app/WWHD GamePad"
+        BUNDLE_LOADER: "$(TEST_HOST)"
+schemes:
+  WWHDGamePad:
+    build:
+      targets:
+        WWHDGamePad: all
+        WWHDGamePadTests: [test]
+    test:
+      targets: [WWHDGamePadTests]
