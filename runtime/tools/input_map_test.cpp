@@ -1003,6 +1003,83 @@ static void test_binding_capture_faces() {
     }
 }
 
+// Capture against each input's resting value (issue: AYN Odin, nothing recorded). A trigger resting
+// half-way and a stick axis drifting at 0.35 never read below 0.3, which the old "everything released
+// first" rule needed before it took anything: the capture timed out or took the wrong input.
+static void test_binding_capture_resting_inputs() {
+    // the Odin-like pad: LT rests at 0.5, the left stick drifts down at 0.35 (+-0.1 noise)
+    {
+        overlay::BindingCapture capture;
+        float values[kPadCount] = {};
+        values[kPadLT] = 0.5f;
+        values[kPadLSDown] = 0.35f;
+        values[kPadB] = 1;  // the confirm that opened the capture, still held
+        CHECK(capture.poll(values) == -1);
+        for (int i = 0; i < 120; ++i) {  // two seconds of drift: nothing recorded
+            values[kPadLSDown] = 0.35f + 0.1f * std::sin(i * 0.7f);
+            values[kPadLT] = 0.5f + 0.05f * std::cos(i * 0.3f);
+            if (i == 10) values[kPadB] = 0;  // the confirm is let go
+            CHECK(capture.poll(values) == -1);
+        }
+        CHECK(capture.rest(kPadB) == 0.f && capture.rest(kPadLT) == 0.5f);
+        values[kPadX] = 1;  // a real press while LT and the stick still rest off 0
+        CHECK(capture.poll(values) == kPadX);
+        CHECK(capture.down(values, kPadX) && !capture.down(values, kPadLT) && !capture.down(values, kPadLSDown));
+        values[kPadX] = 0;
+        // the resting trigger pulled all the way, the drifting stick pushed fully: real presses
+        values[kPadLT] = 1;
+        CHECK(capture.poll(values) == kPadLT);
+        values[kPadLT] = 0.5f;
+        values[kPadLSDown] = 1;
+        CHECK(capture.poll(values) == kPadLSDown);
+        values[kPadLSDown] = 0.35f;
+        // the button held at the start counts once let go and pressed again
+        capture.reset();
+        values[kPadA] = 1;
+        CHECK(capture.poll(values) == -1);
+        CHECK(capture.poll(values) == -1 && !capture.down(values, kPadA));
+        values[kPadA] = 0;
+        CHECK(capture.poll(values) == -1);
+        values[kPadA] = 1;
+        CHECK(capture.poll(values) == kPadA);
+    }
+    // a stick that wanders up to 0.61 from a 0.35 rest is drift, not a press (the old Mac window's rule
+    // took it); a held input does not wait for the others: B while A is still held counts
+    {
+        overlay::BindingCapture capture;
+        float values[kPadCount] = {};
+        values[kPadRSLeft] = 0.35f;
+        values[kPadA] = 1;
+        CHECK(capture.poll(values) == -1);
+        values[kPadRSLeft] = 0.61f;
+        CHECK(capture.poll(values) == -1);
+        values[kPadB] = 1;
+        CHECK(capture.poll(values) == kPadB);
+    }
+    // a normal controller (everything resting at 0): exactly as before - the first input above 0.6
+    // after the one held at the start is let go, in pad order; half presses are not taken
+    {
+        overlay::BindingCapture capture;
+        float values[kPadCount] = {};
+        CHECK(capture.poll(values) == -1);
+        values[kPadRT] = 0.55f;
+        CHECK(capture.poll(values) == -1 && capture.down(values, kPadRT));  // held (> 0.5), not pressed (> 0.6)
+        values[kPadRT] = 0.61f;
+        CHECK(capture.poll(values) == kPadRT);
+        values[kPadRT] = 0;
+        values[kPadDUp] = values[kPadY] = 1;
+        CHECK(capture.poll(values) == kPadY);  // two at once: the first in pad order, as before
+        values[kPadDUp] = values[kPadY] = 0;
+        for (int p = 1; p < kPadCount; ++p) {
+            capture.reset();
+            float v[kPadCount] = {};
+            CHECK(capture.poll(v) == -1);
+            v[p] = 1;
+            CHECK(capture.poll(v) == p && capture.down(v, p));
+        }
+    }
+}
+
 static void test_android_odin_mapping() {
     const std::string old = "03000000,name,a:b0,b:b1,back:b4,start:b6,leftx:a0,lefty:a1,face:abxy,";
     CHECK(android_controller::mapping(0x045e, 0x111, old) == old);
@@ -1793,6 +1870,7 @@ int main() {
     test_play_buttons();
     test_displace_rules();
     test_profiles();
+    test_binding_capture_resting_inputs();
     test_active_prompts();
     test_auto_prompts_follow_pad_in_use();
     test_v1_migration();

@@ -30,6 +30,7 @@
 #include "../runtime.h"
 #include "../platform/host.h"
 #include "../overlay/overlay.h"
+#include "../overlay/binding_capture.h"
 
 namespace gfx { void show_drc_window(bool on); }
 
@@ -997,7 +998,7 @@ static NSRect x_rect(NSRect chip) { return NSMakeRect(NSMaxX(chip) - 7, chip.ori
     UIState _st;
     uint32_t _gen;
     bool _localKeys[256];  // keys held while this window has the keyboard (not seen by the game)
-    float _padBase[kPadCount];
+    overlay::BindingCapture _padCapture;  // controller capture: each input against its resting value
     NSString* _message;
     int _messageLevel;
     double _messageTime;
@@ -1402,16 +1403,10 @@ static NSTextField* label(NSString* s) {
     NSArray<GCController*>* pads = no_host ? @[] : GCController.controllers;
     if (!no_host) input::controller_values(v);
     _st.padConnected = pads.count > 0;
-    // capture from a controller: a new press (held inputs count once released)
+    // capture from a controller: a press clearly above the input's resting value (held inputs count
+    // once let go and pressed again; a resting trigger or a drifting stick never counts)
     if (_st.capAction >= 0 && (_st.capMode == kCapAny || _st.capMode == kCapPad)) {
-        for (int p = 1; p < kPadCount; p++) {
-            if (_padBase[p] > 0.5f) { _padBase[p] = v[p]; continue; }
-            _padBase[p] = v[p];
-            if (v[p] > 0.6f) {
-                [self assignPad:p];
-                break;
-            }
-        }
+        if (const int p = _padCapture.poll(v); p > kPadNone) [self assignPad:p];
     }
     // pressed state per action, stick deflection (as the game sees it; the camera applies the inversion)
     float act[kActionCount];
@@ -1459,7 +1454,13 @@ static NSTextField* label(NSString* s) {
     _st.capAction = a;
     _st.capMode = mode;
     _message = nil;
-    if (mode == kCapAny || mode == kCapPad) input::controller_values(_padBase);  // held now: not until released
+    if (mode == kCapAny || mode == kCapPad) {  // the resting values now (held inputs: not until let go)
+        static const bool no_host = getenv("WWHD_NO_HOST_INPUT") != nullptr;
+        float v[kPadCount] = {};
+        if (!no_host) input::controller_values(v);
+        _padCapture.reset();
+        _padCapture.poll(v);
+    }
     [self refreshStatus];
     self.padView.needsDisplay = YES;
 }

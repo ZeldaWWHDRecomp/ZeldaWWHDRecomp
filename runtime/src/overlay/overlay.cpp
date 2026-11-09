@@ -2186,15 +2186,17 @@ void tab_shortcuts() {
         }
         if (U.cap_col == 2 && !done) {
             // Wait for the button that activated the UI to be released before capturing a hold.
+            // (BindingCapture: each input against its resting value; one held at the start counts
+            // once let go and pressed again)
             int& hold = capture_hold;
-            if (U.binding_capture.poll(U.values) > 0 && !hold)
-                for (int p = 1; p < kPadCount; ++p) if (U.values[p] > 0.5f) { hold = p; break; }
-            if (hold && U.values[hold] <= 0.5f) {
+            const int pressed = U.binding_capture.poll(U.values);
+            if (pressed > 0 && !hold) hold = pressed;
+            if (hold && !U.binding_capture.down(U.values, hold)) {
                 m.shortcuts[a].hold = kPadNone; m.shortcuts[a].button = hold;
                 if (a == kPhoto) m.pad[kScreenshot] = kPadNone;
                 set_current(m); done = true; hold = 0;
             }
-            if (hold) for (int p = 1; p < kPadCount; ++p) if (p != hold && U.values[p] > 0.5f) {
+            if (hold) for (int p = 1; p < kPadCount; ++p) if (p != hold && U.binding_capture.down(U.values, p)) {
                 m.shortcuts[a].hold = hold; m.shortcuts[a].button = p;
                 if (a == kPhoto) m.pad[kScreenshot] = kPadNone;
                 set_current(m); done = true; hold = 0; break;
@@ -2309,8 +2311,9 @@ void apply_capture() {
         }
     }
     if (!done) {
-        // controller: wait for all inputs to be released, then take the first one pressed (controller
-        // slots); for a key slot, B cancels
+        // controller: the first input pressed clearly above its resting value (BindingCapture; one held
+        // at the start counts once let go and pressed again) (controller slots); for a key slot, any
+        // controller input (B too) cancels
         const int pressed = U.binding_capture.poll(U.values);
         if (pressed > 0) {
             if ((colm == kColPad || colm == kColAny) && is_virtual(a)) {
