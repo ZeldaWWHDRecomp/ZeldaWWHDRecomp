@@ -15,7 +15,9 @@ struct WWHDGamePadApp: App {
         .onChange(of: phase) { _, now in
             // in the background iOS stops the sensors and the network: say goodbye, so the game
             // lets the keyboard and its own controllers be the GamePad again at once
-            if now == .background { link.disconnect() }
+            if now == .background { link.disconnect(); link.stopBrowsing() }
+            // back in front (maybe after allowing Local Network access, or on another Wi-Fi): look again
+            if now == .active { link.browse(restart: true) }
         }
     }
 }
@@ -55,7 +57,10 @@ struct ConnectView: View {
                 } header: {
                     Text("Games on this network")
                 } footer: {
-                    Text("Start the game on your Mac with WWHD_REMOTE_PAD=1 (see ios/README.md), on the same Wi-Fi network as this phone.")
+                    VStack(alignment: .leading, spacing: 6) {
+                        if let problem = link.browseProblem { Text(problem).foregroundStyle(.orange) }
+                        Text("Start the game on your Mac with WWHD_REMOTE_PAD=1 (see ios/README.md), on the same Wi-Fi network as this phone.")
+                    }
                 }
 
                 Section("Or enter the computer's address") {

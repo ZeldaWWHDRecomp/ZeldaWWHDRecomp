@@ -5,6 +5,14 @@
 import Foundation
 import Network
 import UIKit
+import os
+
+private let logger = Logger(subsystem: "org.wwhdrecomp.gamepad", category: "link")
+/// the unified log, and stdout (Xcode's console, `devicectl device process launch --console`)
+private func note(_ s: String) {
+    logger.info("\(s, privacy: .public)")
+    print("[link] \(s)")
+}
 
 @MainActor
 final class GamePadLink: ObservableObject {
@@ -24,6 +32,8 @@ final class GamePadLink: ObservableObject {
 
     @Published private(set) var status: Status = .idle
     @Published private(set) var games: [Game] = []
+    /// why nothing is found, when Bonjour says (nil while it browses normally)
+    @Published private(set) var browseProblem: String?
     @Published private(set) var controllerName: String?
     @Published var gyro = UserDefaults.standard.object(forKey: "gyro") as? Bool ?? true {
         didSet {
@@ -65,18 +75,56 @@ final class GamePadLink: ObservableObject {
 
     // MARK: finding the game
 
-    func browse() {
+    /// Starts looking for games; `restart` starts over (the app came to the front, the browser failed or
+    /// waited: a browser that began before Local Network access was allowed, or before Wi-Fi was up, can
+    /// stay waiting and never report anything)
+    func browse(restart: Bool = false) {
+        if restart { stopBrowsing() }
         guard browser == nil else { return }
         let b = NWBrowser(for: .bonjour(type: WWGP.bonjourType, domain: nil), using: .udp)
+        b.stateUpdateHandler = { [weak self, weak b] state in
+            note("browser: \(state)")
+            MainActor.assumeIsolated {  // (the browser runs on the main queue)
+                guard let self, let b, b === self.browser else { return }
+                switch state {
+                case .ready:
+                    self.browseProblem = nil
+                case let .waiting(error):
+                    self.browseProblem = Self.describe(error)
+                    // try again shortly: waiting browsers do not always recover on their own
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self, weak b] in
+                        guard let self, let b, b === self.browser, case .waiting = b.state else { return }
+                        self.browse(restart: true)
+                    }
+                case let .failed(error):
+                    self.browseProblem = Self.describe(error)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in self?.browse(restart: true) }
+                default:
+                    break
+                }
+            }
+        }
         b.browseResultsChangedHandler = { [weak self] results, _ in
             let found = results.compactMap { r -> Game? in
                 if case let .service(name, _, _, _) = r.endpoint { return Game(name: name, endpoint: r.endpoint) }
                 return nil
             }.sorted { $0.name < $1.name }
+            note("browser: found \(found.map(\.name))")
             Task { @MainActor in self?.games = found }
         }
         b.start(queue: .main)
         browser = b
+    }
+
+    nonisolated private static func describe(_ error: NWError) -> String {
+        if case let .dns(code) = error {
+            switch Int(code) {
+            case -65570: return "Local Network access is off for GamePad: Settings > Privacy & Security > Local Network."  // PolicyDenied
+            case -65555: return "Bonjour refused the search (NoAuth). Enter the address below."
+            default: break
+            }
+        }
+        return "Bonjour: \(error.localizedDescription). Enter the address below."
     }
 
     func stopBrowsing() {
