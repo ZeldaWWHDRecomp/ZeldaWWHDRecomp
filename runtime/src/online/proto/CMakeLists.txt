@@ -26,6 +26,7 @@ if(NOT TARGET wwhd_online_proto)
     mods.cpp
     protocol.cpp
     pvp.cpp
+    chat.cpp
     sha256.cpp
     tcp.cpp
     udp.cpp)

@@ -865,6 +865,15 @@ void Server::link_message(int from, const Delivered& m, uint32_t now) {
                     kick(*sp, kNoticeBan, b.reason.empty() ? "banned by the operator" : "banned: " + b.reason);
             break;
         }
+        case kLChat: chat_link(m.body); break;
+        case kLChatMute: {
+            const uint64_t c40 = r.u64();
+            const bool on = r.u8() != 0;
+            const int64_t until = int64_t(r.u64());
+            const std::string why = r.str8(200);
+            if (r.done()) chat_mute_set(c40, on, until, why);
+            break;
+        }
         case kLKick: {
             uint64_t code = r.u64();
             std::string why = r.str8(200);

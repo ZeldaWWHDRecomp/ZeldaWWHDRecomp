@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "channel.h"
+#include "chat.h"
 #include "crypto.h"
 #include "handshake.h"
 #include "messages.h"
@@ -82,6 +83,9 @@ struct ClientEvent {
         kPvpState,       // value = PvpStateFlags, value16 = protection ms left
         kPvpRespawn,     // value = square, pvp_hit.x / z = where
         kPvpMarks,       // pvp_marks: {id, flags (bit 0 PvP active, bit 1 protected)} of players seen near or mid
+        kChatRules,      // chat_rules: the server's chat (none came: it has none)
+        kChatFrom,       // chat: a chat line (chat.flags kChatYours: one of yours, as passed on)
+        kChatResult,     // value = ChatResult, chat.channel, text: a line of yours the server did not pass on
     } kind;
     ClientState state = ClientState::kOff;
     std::string text;
@@ -115,6 +119,8 @@ struct ClientEvent {
     PvpHit pvp_hit;
     PvpShot pvp_shot;
     std::vector<std::pair<uint16_t, uint8_t>> pvp_marks;
+    ChatRules chat_rules;
+    ChatLine chat;
 };
 
 struct ClientStats {
@@ -140,6 +146,8 @@ public:
     void send_stage(const Where& w);
     void send_app(const AppHeader& h, const uint8_t* body, size_t n, bool reliable);
     void send_emote(uint8_t emote);
+    void send_chat(uint8_t channel, const std::string& text);  // ChatChannel; the server checks and passes it on
+    void chat_prefs(uint8_t off_bits);  // bit per ChatChannel turned off: the server sends nothing of it (after each WELCOME)
     void block(uint64_t key_hash, bool on);
     void mute(uint64_t key_hash, bool on);
     // PvP at sea (pvp.h): the player's toggle and whether it is busy (protected); a hit, a shot, a knockout

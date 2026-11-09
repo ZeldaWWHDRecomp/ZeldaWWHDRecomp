@@ -79,6 +79,7 @@ bool Server::start(std::string& why) {
         send_socks_.push_back(std::move(extra));
     }
     load_bans();
+    load_chat_mutes();
     load_team_states();
     if (cfg_.tcp && !tcp_listen_.open(cfg_.bind, sock_.local_port(), why)) return false;
     if (cfg_.worker) cfg_.admin_socket.clear();  // the coordinator's admin socket runs the workers too
@@ -555,6 +556,7 @@ void Server::on_hello(const uint8_t* d, size_t n, const Address& from, uint32_t 
     send_dg(sock_, from, s->welcome.data(), s->welcome.size());
     metrics_.bytes_out += s->welcome.size();
     pvp_welcome(*s, now);  // the PvP rules and, at the next tick, the player's PvP state
+    chat_welcome(*s);      // the chat rules (the game shows no chat without them)
     party_member_online(*s, now);
     if (join_party) {
         // it came here to accept an invite to a party this worker holds
@@ -753,6 +755,8 @@ void Server::on_message(Session& s, const Delivered& m, uint32_t now) {
         case kMsgPvpHit: on_pvp_hit(s, r, now); break;
         case kMsgPvpShot: on_pvp_shot(s, r, now); break;
         case kMsgPvpKo: on_pvp_ko(s, r, now); break;
+        case kMsgChat: on_chat(s, r, now); break;
+        case kMsgChatPrefs: on_chat_prefs(s, r); break;
         case kMsgPinRunner: {
             uint8_t on = r.u8();
             Party* p = party_of(s);
@@ -1770,18 +1774,23 @@ void Server::write_metrics(uint32_t now) {
     metrics_.send_us.clear();
     size_t n = players();
     double out_s = (metrics_.bytes_out - last_out) / dt, in_s = (metrics_.bytes_in - last_in) / dt;
-    char line[1024];
+    uint64_t chat_dropped = 0;
+    for (uint64_t d : metrics_.chat_drops) chat_dropped += d;
+    char line[1280];
     std::snprintf(line, sizeof line,
                   "{\"t\":%u,\"worker\":%d,\"players\":%zu,\"out_Bps\":%.0f,\"in_Bps\":%.0f,\"out_per_player_Bps\":%.0f,"
                   "\"in_per_player_Bps\":%.0f,\"tick_p50_us\":%u,\"tick_p99_us\":%u,\"tick_max_us\":%u,"
                   "\"out_churn\":%llu,\"out_gone\":%llu,\"handovers_out\":%llu,\"handovers_in\":%llu,"
                   "\"interest_p99_us\":%u,\"send_p99_us\":%u,\"threads\":%d,"
-                  "\"ticks\":%zu,\"cpu_pct\":%.1f,\"maxrss_mb\":%.1f,\"dropped_rate\":%llu,\"implausible\":%llu}\n",
+                  "\"ticks\":%zu,\"cpu_pct\":%.1f,\"maxrss_mb\":%.1f,\"dropped_rate\":%llu,\"implausible\":%llu,"
+                  "\"chat_lines\":%llu,\"chat_delivered\":%llu,\"chat_dropped\":%llu,\"chat_filtered\":%llu}\n",
                   now, me_, n, out_s, in_s, n ? out_s / double(n) : 0, n ? in_s / double(n) : 0, pct(0.5), pct(0.99),
                   t.empty() ? 0u : t.back(), (unsigned long long)metrics_.out_churn.load(),
                   (unsigned long long)metrics_.out_gone.load(), (unsigned long long)metrics_.handovers_out,
                   (unsigned long long)metrics_.handovers_in, interest_p99, send_p99, workers_, t.size(), cpu_pct, double(rss) / 1024.0,
-                  (unsigned long long)metrics_.dropped_rate, (unsigned long long)metrics_.implausible);
+                  (unsigned long long)metrics_.dropped_rate, (unsigned long long)metrics_.implausible,
+                  (unsigned long long)metrics_.chat_lines, (unsigned long long)metrics_.chat_delivered, (unsigned long long)chat_dropped,
+                  (unsigned long long)metrics_.chat_filtered);
     std::string mf = cfg_.metrics_file;
     if (cfg_.worker) mf += "." + std::to_string(me_);
     if (std::FILE* f = std::fopen(mf.c_str(), "a")) {

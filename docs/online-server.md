@@ -10,7 +10,7 @@ run your own, on your computer ("Host on this computer" in the game) or on a box
 
 ## What the server does and doesn't do
 
-- It relays poses, emotes and party messages between players. It never runs game logic and ships
+- It relays poses, emotes, party messages and chat between players. It never runs game logic and ships
   no game data.
 - Players only ever see the server, never each other's IP addresses.
 - **What it keeps on disk:**
@@ -18,6 +18,9 @@ run your own, on your computer ("Host on this computer" in the game) or on a box
   - the parties' last known team state (`team-state.txt`, on by default): the party members' key hashes and
     their shared game progress, so a party survives a restart. A party nobody has played in for
     `party.team_state_keep_h` hours (72) is dropped. Set `files.team_state = ""` to keep it in memory only.
+  - the players you muted for chat (`chat-mutes.txt`, by friend code), if you mute anyone.
+
+  Chat lines are never kept, unless you turn on the chat log (`chat.log`, off by default).
 
   Nothing else is kept: IP addresses stay in memory for the session.
 - **Compatibility:** players need the same protocol version and the same game data. Different game
@@ -58,6 +61,13 @@ Copy `server/server.example.toml` to `server.toml` and edit it. The keys you'll 
 | `world.sea_players` | on | Sends every player's place at sea (their square, where in it, and the name shown to strangers) to everyone, for the Sea Chart. Turn it off to keep where players are private; party members still see each other. `world.sea_players_every` (30 ticks, 2 s) and `world.sea_players_cap` (256) limit it. |
 | `limits.invite_every_s` | 10 | Party invites: a player may send a whole party's worth at once (`party.max_size` - 1), then one per this many seconds. |
 | `files.team_state` | `team-state.txt` | Parties and their team progress over restarts (`""` keeps them in memory only). |
+| `chat.enabled` | on | Text chat. Off: the games show no chat at all. |
+| `chat.global` | off | A Global channel to everyone on the server, besides the party's own. |
+| `chat.max_length` | 120 | Characters per line, at most 200. |
+| `chat.rate_count`, `chat.rate_window_s` | 5, 10 | A player may send this many lines in this many seconds. |
+| `chat.filter_file` | none | Your word filter: matching words are shown as `***`. See [Chat](#chat). |
+| `chat.log` | none | A file where every chat line is written. Off by default: nothing is kept. |
+| `files.chat_mutes` | `chat-mutes.txt` | The players you muted for chat (`""` keeps them in memory only). |
 | `metrics.file` | none | Writes a line of counts (players, traffic, tick times) every `every_s` seconds. |
 
 All other keys (interest radii and caps, rate limits, scaling thresholds) have working defaults and
@@ -177,6 +187,44 @@ A player can block or mute another player from the game:
 The server keeps both lists per player, across reconnects and between server processes. The metrics
 count the traffic they stop.
 
+### Chat
+
+Players can write to each other. There are two channels, each a tab of the game's chat box:
+- **Party:** the sender's party members. On whenever chat is on.
+- **Global:** everyone on the server. Off unless you set `chat.global = true`.
+
+```toml
+[chat]
+enabled = true          # false: no chat at all
+global = false          # true: the Global channel too
+max_length = 120        # characters per line (at most 200)
+rate_count = 5          # lines a player may send ...
+rate_window_s = 10      # ... in this many seconds
+filter_file = "chat-filter.txt"
+# log = "chat.log"      # off by default
+```
+
+- **What the server checks** for every line: chat is on, the channel is allowed (Global only with `chat.global`), the
+  sender is in a party (for Party), the length, the rate, and that you haven't muted the player. Anything else is
+  dropped. The server log says why (for example `chat: dropped a party line from KQ7F-9MZ2-XD: too long (130 > 120
+  characters)`), the metrics count it, and the sender's game shows "Not sent" with the reason.
+- **Cleaning.** Control characters, invisible characters (zero-width ones, text-direction overrides) and the
+  game's button pictures are taken out, and runs of spaces become one. Lines are plain text: nothing in them is a
+  link or markup.
+- **Word filter.** `chat.filter_file` lists one word or phrase per line; lines starting with `#` are comments. A word
+  ending in `*` also matches longer words (`dumb*` matches "dumbest"). Matches ignore upper and lower case and only
+  take whole words. Each match is shown to everyone as `***`. Edit the file while the server runs: it is read
+  again within 5 seconds.
+- **Blocks.** Players who blocked each other never see each other's lines. Players can also turn a channel off in
+  their game; the server then sends them nothing of it.
+- **Names.** Party members see the sender's name. Players outside the party see the generated name ("Sailor 7Q2F"),
+  as they do everywhere else.
+- **Nothing is kept.** Lines only pass through the server, unless you set `chat.log`. The log is then a plain text
+  file with the time, the channel, the friend code, the name and the line.
+- **Muting a player** (admin commands, below): their lines are dropped and they are told they are muted. It holds
+  across reconnects and restarts until it runs out or you lift it.
+- **Scaling.** With worker processes, Global lines reach the players on every worker.
+
 ### Ports and networks
 
 - One port (default 7777) for the players, UDP and TCP. Forward both on your router if friends join
@@ -205,6 +253,9 @@ wwhd-online-server admin kick KQ7F-9MZ2-XD "reason"
 wwhd-online-server admin ban KQ7F-9MZ2-XD 7d "reason"     # 30m, 12h, 7d or perm
 wwhd-online-server admin unban KQ7F-9MZ2-XD
 wwhd-online-server admin bans
+wwhd-online-server admin chat-mute KQ7F-9MZ2-XD 12h "spam"  # 30m, 12h, 7d or perm (the default); the reason is shown to them
+wwhd-online-server admin chat-unmute KQ7F-9MZ2-XD
+wwhd-online-server admin chat-mutes
 wwhd-online-server admin notice "text for everyone"
 wwhd-online-server admin restart 30                         # a 30 s notice, then the server stops
 wwhd-online-server admin parties
@@ -310,6 +361,7 @@ adds cores.
   - `party.cpp`: parties, runners, team state;
   - `scale.cpp`: regions, links, the coordinator;
   - `admin.cpp`: admin commands and bans;
+  - `chat.cpp`: chat (checks, word filter, chat mutes);
   - `config.cpp`: the config file.
 - `server/bots/`: the load-test bots.
 - `server/tests/`: unit and end-to-end tests and the fuzz target.

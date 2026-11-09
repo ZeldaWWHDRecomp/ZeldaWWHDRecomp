@@ -97,7 +97,7 @@ int main(int argc, char** argv) {
                          "usage: wwhd-online-server [--config server.toml] [--bind addr] [--port n]\n"
                          "       wwhd-online-server --worker --join <coordinator link host:port> [--config f] [--port n]\n"
                          "                          [--link-port n] [--threads n] [--public-host h]\n"
-                         "       wwhd-online-server admin [--socket path] <status|players|kick|ban|unban|bans|notice|restart|parties|stop> ...\n");
+                         "       wwhd-online-server admin [--socket path] <status|players|kick|ban|unban|bans|chat-mute|chat-unmute|chat-mutes|notice|restart|parties|stop> ...\n");
             return 2;
         }
     }

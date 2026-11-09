@@ -8,6 +8,7 @@
 #include <fstream>
 #include <sstream>
 
+#include "proto/chat.h"
 #include "proto/protocol.h"
 
 namespace online::server {
@@ -182,6 +183,20 @@ bool parse_config_text(const std::string& text, Config& c, std::string& why) {
         else if (key == "files.reports") str(c.report_file);
         else if (key == "files.admin_socket") str(c.admin_socket);
         else if (key == "files.team_state") str(c.team_state_file);
+        else if (key == "files.chat_mutes") str(c.chat_mutes_file);
+        else if (key == "chat.enabled") boolean(c.chat_enabled);
+        else if (key == "chat.global") boolean(c.chat_global);
+        else if (key == "chat.max_length" || key == "chat.rate_count" || key == "chat.rate_window_s") {
+            int& dst = key == "chat.max_length" ? c.chat_max_length : key == "chat.rate_count" ? c.chat_rate_count : c.chat_rate_window_s;
+            const int hi = key == "chat.max_length" ? proto::kChatMaxLength : key == "chat.rate_count" ? 100 : 3600;
+            integer(dst);
+            if (ok && (dst < 1 || dst > hi)) {
+                why = "line " + std::to_string(n) + ": " + key + " must be between 1 and " + std::to_string(hi);
+                return false;
+            }
+        }
+        else if (key == "chat.filter_file") str(c.chat_filter_file);
+        else if (key == "chat.log") str(c.chat_log_file);
         else if (key == "world.sea_stage") str(c.sea_stage);
         else if (key == "world.sea_origin_x") numf(c.sea_origin_x);
         else if (key == "world.sea_origin_z") numf(c.sea_origin_z);

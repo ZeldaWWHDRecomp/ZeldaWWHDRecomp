@@ -45,6 +45,16 @@ struct Config {
     double pvp_hits_per_s = 8, pvp_shots_per_s = 4;
     uint8_t pvp_max_damage = 16;  // quarter hearts in one hit
 
+    // text chat (docs/online-server.md, "Chat"): the party channel, and a global one only where the operator allows it
+    bool chat_enabled = true;
+    bool chat_global = false;
+    int chat_max_length = 120;          // code points (1..200)
+    int chat_rate_count = 5;            // lines per player ...
+    int chat_rate_window_s = 10;        // ... in this many seconds
+    std::string chat_filter_file;       // "" none; words or phrases replaced by "***" (read again when it changes)
+    std::string chat_log_file;          // "" (the default): no chat line is ever written down
+    std::string chat_mutes_file = "chat-mutes.txt";  // the operator's chat mutes (files.chat_mutes; "": memory only)
+
     // gameplay-mod rules (docs/online-server.md, "Mod rules"): none by default (anything goes)
     proto::ModRules mods;
 

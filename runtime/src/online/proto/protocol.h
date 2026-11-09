@@ -99,6 +99,8 @@ enum Msg : uint8_t {
     kMsgPvpHit = 24,        // reliable: PvpHit (victim; pvp.h)
     kMsgPvpShot = 25,       // unreliable: PvpShot (a projectile fired, to show it)
     kMsgPvpKo = 26,         // reliable: u16 by, u16 wallet (the victim's game: knocked out by that player)
+    kMsgChat = 27,          // reliable: ChatSay (chat.h): a line for the party or the global channel
+    kMsgChatPrefs = 28,     // reliable: u8 bit per ChatChannel the player turned off (its lines are not sent to them)
     kMsgMute = 21,          // reliable: u64 key hash (that player's emotes, effects, sounds and voice stop reaching you)
     kMsgUnmute = 22,        // reliable: u64 key hash
     kMsgPartyRestore = 20,  // reliable: PartyRecord (messages.h): after a fresh WELCOME (the server restarted),
@@ -130,10 +132,13 @@ enum Msg : uint8_t {
     kMsgPvpMarks = 86,      // reliable: n x {u16 id, u8 flags (bit 0 PvP active, bit 1 protected)}: who of those you
                             // see near or mid can fight now (on change; PLAYER_IN flags bit 3 says it at first)
     kMsgPvpRespawn = 85,    // reliable: u8 square, s24 x, s24 z: after your knockout, the nearest safe zone's edge
-    kMsgPartyWhere = 78,    // unreliable, 1 Hz: n x {u16 id, Where, u8 square (255: not at sea), s24 x, s24 z}
+    kMsgPartyWhere = 78,    // unreliable, 1 Hz: n x {u16 id, Where, u8 square (255: not at sea), s24 x, s24 z}:
+                            // where every online party member is, wherever they are
     kMsgSeaPlayers = 87,    // unreliable, every world.sea_players_every ticks: n x SeaPlayer, every other player at sea
                             // (not the party, not blocked, not PvP players near a zone's border) for the Sea Chart
-                            // where every online party member is, wherever they are
+    kMsgChatRules = 88,     // reliable: ChatRules (chat.h), after WELCOME (none: the server has no chat)
+    kMsgChatFrom = 89,      // reliable: ChatLine (chat.h): a line of the party's or the global channel (yours too)
+    kMsgChatResult = 90,    // reliable: u8 ChatResult, u8 channel, str8 text: a line of yours not passed on, and why
 };
 
 // Where a player is. `stage` is the game's internal stage code (up to 8 bytes, zero padded).

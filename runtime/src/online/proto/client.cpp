@@ -552,6 +552,21 @@ void Client::handle_message(const Delivered& m) {
             if (r.done()) events_.push_back(std::move(e));
             break;
         }
+        case kMsgChatRules: {
+            ClientEvent e{ClientEvent::kChatRules};
+            if (get_chat_rules(r, e.chat_rules) && r.done()) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgChatFrom: {
+            ClientEvent e{ClientEvent::kChatFrom};
+            if (decode_chat_line(d, n, e.chat)) events_.push_back(std::move(e));
+            break;
+        }
+        case kMsgChatResult: {
+            ClientEvent e{ClientEvent::kChatResult};
+            if (decode_chat_result(d, n, e.value, e.chat.channel, e.text)) events_.push_back(std::move(e));
+            break;
+        }
         case kMsgPvpRules: {
             ClientEvent e{ClientEvent::kPvpRules};
             if (get_pvp_rules(r, e.pvp_rules) && r.done()) events_.push_back(std::move(e));
@@ -683,6 +698,18 @@ void Client::send_app(const AppHeader& h, const uint8_t* body, size_t n, bool re
 
 void Client::send_emote(uint8_t emote) {
     if (state_ == ClientState::kOnline) chan_.send_reliable(kMsgEmote, &emote, 1);
+}
+
+void Client::send_chat(uint8_t channel, const std::string& text) {
+    if (state_ != ClientState::kOnline) return;
+    ChatSay say;
+    say.channel = channel;
+    say.text = text;
+    chan_.send_reliable(kMsgChat, encode_chat_say(say));
+}
+
+void Client::chat_prefs(uint8_t off_bits) {
+    if (state_ == ClientState::kOnline) chan_.send_reliable(kMsgChatPrefs, &off_bits, 1);
 }
 
 void Client::block(uint64_t kh, bool on) {

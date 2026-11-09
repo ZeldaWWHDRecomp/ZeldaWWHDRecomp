@@ -83,6 +83,8 @@ enum LinkMsg : uint8_t {
     kLHandoffAck = 15,  // worker -> worker: the ticket is stored; now the client is sent over
     kLPvpHit = 16,    // worker -> worker: u16 attacker id, u64 attacker key hash, u32 attacker party, PvpHit (victim)
     kLPvpCarry = 17,  // worker -> worker, at the redirect: ticket, u64 key hash, the player's PvP state now (PvpCarry)
+    kLChat = 18,      // worker -> workers: a global chat line (u64 world, u64 sender key, u16 id, u32 party, str8 name, u16 n, text)
+    kLChatMute = 19,  // coordinator -> workers: u64 code40, u8 on, u64 until, str8 reason (an operator's chat mute)
 };
 
 

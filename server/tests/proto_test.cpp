@@ -9,6 +9,7 @@
 #include <string>
 #include <vector>
 
+#include "proto/chat.h"
 #include "proto/channel.h"
 #include "proto/handshake.h"
 #include "proto/messages.h"
@@ -483,6 +484,50 @@ static void test_mod_rules() {
     CHECK(get_mod_refs(rd, me2) && get_mod_problems(rd, p2) && rd.done() && me2 == me && p2.size() == p.size());
 }
 
+// chat (chat.h): the line cleaning, the length in characters, the word filter, the codecs
+static void test_chat() {
+    std::string o;
+    CHECK(chat_clean("  hello   world  ", o) == 11 && o == "hello world");
+    CHECK(chat_clean("a\tb\nc\r\nd", o) == 7 && o == "a b c d");
+    CHECK(chat_clean("bell\x07 esc\x1b[31m del\x7f", o) && o == "bell esc[31m del");          // C0 and DEL
+    CHECK(chat_clean("x\xc2\x85y", o) == 2 && o == "xy");                                     // C1 (NEL)
+    CHECK(chat_clean("ab\xe2\x80\xae" "cd\xe2\x80\x8b" "e\xef\xbb\xbf", o) == 5 && o == "abcde");  // RLO, ZWSP, BOM
+    CHECK(chat_clean("A\xee\x80\x80" "B", o) == 2 && o == "AB");                               // private use (U+E000)
+    CHECK(chat_clean("caf\xc3\xa9 \xe3\x81\x82 \xf0\x9f\x98\x80", o) == 8 && o == "caf\xc3\xa9 \xe3\x81\x82 \xf0\x9f\x98\x80");
+    CHECK(chat_clean("bad\xff\xfe" "x\xc0\xaf" "y\xed\xa0\x80" "z\xe3\x81", o) == 6 && o == "badxyz");  // invalid, overlong, surrogate, cut
+    CHECK(chat_clean("\x01\x02 \t ", o) == 0 && o.empty());
+    CHECK(utf8_length("caf\xc3\xa9") == 4 && utf8_length("") == 0);
+    ChatFilter f;
+    f.set_words("# comment\n Darn \nfoo*\nbad word\n\n");
+    CHECK(f.size() == 3);
+    std::string t = "darn it, DARN! foolish food, darned and bad word, badword";
+    CHECK(f.apply(t) == 5);
+    CHECK(t == "*** it, ***! *** ***, darned and ***, badword");
+    t = "nothing here";
+    CHECK(f.apply(t) == 0 && t == "nothing here");
+    t = "\xc3\xa9" "darn";  // a non-ASCII letter before it: part of one word
+    CHECK(f.apply(t) == 0);
+    ChatRules r{true, true, 150, 7, 20}, r2;
+    Bytes b;
+    Writer w(b);
+    put_chat_rules(w, r);
+    Reader rd(b);
+    CHECK(get_chat_rules(rd, r2) && rd.done() && r2 == r);
+    ChatSay say{kChatGlobal, "hi there"}, say2;
+    Bytes sb = encode_chat_say(say);
+    CHECK(decode_chat_say(sb.data(), sb.size(), say2) && say2.channel == kChatGlobal && say2.text == "hi there");
+    CHECK(!decode_chat_say(sb.data(), sb.size() - 1, say2));
+    ChatLine l{7, 0x1234567890ull, kChatParty, kChatFromParty, "Tetra", "Follow me"}, l2;
+    Bytes lb = encode_chat_line(l);
+    CHECK(decode_chat_line(lb.data(), lb.size(), l2) && l2.from == 7 && l2.key_hash == l.key_hash && l2.flags == kChatFromParty &&
+          l2.name == "Tetra" && l2.text == "Follow me");
+    uint8_t code = 0, ch = 0;
+    std::string txt;
+    Bytes rb = encode_chat_result(kChatTooFast, kChatParty, chat_result_text(kChatTooFast));
+    CHECK(decode_chat_result(rb.data(), rb.size(), code, ch, txt) && code == kChatTooFast && txt == chat_result_text(kChatTooFast));
+    std::printf("chat codecs and checks: ok\n");
+}
+
 int main() {
     test_sha256();
     test_crypto();
@@ -491,6 +536,7 @@ int main() {
     test_pow();
     test_handshake();
     test_messages();
+    test_chat();
     test_channel_burst();
     test_channel(0, 0, 0, 1);
     test_channel(0.2, 0.1, 0.3, 2);

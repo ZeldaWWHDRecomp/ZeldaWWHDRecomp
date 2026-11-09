@@ -25,6 +25,7 @@ add_test(NAME online_proto COMMAND wwhd_online_proto_test)
 
 add_library(wwhd_online_server_core STATIC
   src/admin.cpp
+  src/chat.cpp
   src/config.cpp
   src/party.cpp
   src/pvp.cpp

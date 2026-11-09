@@ -10,6 +10,7 @@
 #include <random>
 #include <vector>
 
+#include "proto/chat.h"
 #include "proto/channel.h"
 #include "proto/client.h"
 #include "proto/handshake.h"
@@ -29,6 +30,8 @@ static server::Server* server_once() {
         c.report_file = "";
         c.team_state_file = "";
         c.admin_socket = "";
+        c.chat_mutes_file = "";
+        c.chat_global = true;  // (both chat channels reached)
         c.pow_bits = 0;
         c.loopback_exempt = true;
         s = std::make_unique<server::Server>(c);
@@ -93,6 +96,12 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* d, size_t n) {
             decode_party_state(p, pn, ps);
             std::vector<RunnerEntry> re;
             decode_runners(p, pn, re);
+            ChatLine cl;
+            decode_chat_line(p, pn, cl);
+            ChatSay cs;
+            decode_chat_say(p, pn, cs);
+            std::string ct;
+            chat_clean(std::string_view(reinterpret_cast<const char*>(p), pn), ct);
             Reader r(p, pn);
             std::vector<TeamField> tf;
             get_team_fields(r, tf);
@@ -120,7 +129,12 @@ int main(int argc, char** argv) {
     Bytes cb = encode_connect(c);
     cb.insert(cb.begin(), 0);
     seeds.push_back(cb);
-    for (uint8_t t = 0; t < 20; ++t) seeds.push_back({1, t, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+    for (uint8_t t = 0; t < 30; ++t) seeds.push_back({1, t, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0});
+    for (const char* text : {"Follow me", "caf\xc3\xa9 \xe2\x80\xae x", ""}) {  // (chat lines: fuzz_message's type 27)
+        Bytes say = encode_chat_say({uint8_t(text[0] ? kChatParty : kChatGlobal), text});
+        say.insert(say.begin(), {1, kMsgChat, 1});
+        seeds.push_back(say);
+    }
     Bytes pose = {1, kMsgPose, 0};
     {
         Writer w(pose);

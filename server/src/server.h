@@ -26,6 +26,7 @@
 #include "config.h"
 #include "scale.h"
 #include "proto/channel.h"
+#include "proto/chat.h"
 #include "proto/crypto.h"
 #include "proto/handshake.h"
 #include "proto/messages.h"
@@ -143,6 +144,11 @@ struct Session {
     std::vector<proto::ModRef> mods;      // its enabled gameplay mods (HELLO)
     uint32_t next_marker_tick = 0;
     uint32_t next_sea_tick = 0;
+    // chat (chat.cpp): the times of its recent lines (the rate limit), the channels it turned off, the last "too
+    // fast" written to the log (once per window)
+    std::deque<uint32_t> chat_times;
+    uint8_t chat_off = 0;  // bit per ChatChannel: the player turned it off (nothing of it is sent to them)
+    uint32_t chat_fast_logged = 0;
 
     // limits
     Bucket packets, bytes, reliable, emote, invite, report, app;
@@ -235,6 +241,9 @@ struct Metrics {
     std::vector<uint32_t> interest_us, send_us;  // the two parallel phases of each tick
     std::atomic<uint64_t> out_churn{0}, out_gone{0};
     std::atomic<uint64_t> blocked_drops{0}, muted_drops{0}, mod_refusals{0};
+    // chat: lines passed on, lines delivered, lines dropped by reason (proto::ChatResult), words filtered
+    uint64_t chat_lines = 0, chat_delivered = 0, chat_filtered = 0;
+    uint64_t chat_drops[10] = {};
     // PvP: hits passed on, and the ones dropped by reason (pvp.cpp: PvpDrop)
     uint64_t pvp_hits = 0, pvp_kos = 0, pvp_rupees = 0;
     uint64_t pvp_drops[12] = {};
@@ -257,6 +266,12 @@ struct Peer {
     uint32_t over_since = 0, under_since = 0, changed_at = 0, idle_since = 0;
     int pid = 0;                   // a worker this process started
     std::vector<uint64_t> keys;    // the players it hosts (kLPlayers)
+};
+
+// the operator's chat mute of one player (admin chat-mute): their lines are dropped
+struct ChatMute {
+    int64_t until = 0;  // unix seconds; 0: until unmuted
+    std::string reason;
 };
 
 struct Ban {
@@ -409,6 +424,26 @@ private:
     bool team_dirty_ = false;
     bool abandoned_ = false;  // a party or its progress changed since the last save
     void load_team_states();
+
+    // chat (chat.cpp)
+    void chat_welcome(Session& s);
+    void on_chat(Session& s, proto::Reader& r, uint32_t now);
+    void on_chat_prefs(Session& s, proto::Reader& r);
+    void chat_drop(Session& s, uint8_t channel, uint8_t code, const std::string& detail, uint32_t now);
+    // one line to one receiver (the name and flags as that receiver sees the sender); false: not delivered
+    bool chat_deliver(Session& to, uint16_t from_id, uint64_t from_key, uint32_t from_party, const std::string& from_name,
+                      uint8_t channel, const std::string& text, bool yours);
+    void chat_link(const proto::Bytes& body);  // a global line from another worker
+    bool chat_muted(uint64_t key_hash, std::string* reason = nullptr);
+    void load_chat_mutes();
+    void save_chat_mutes();
+    void chat_filter_check(uint32_t now);
+    std::string chat_admin(const std::string& cmd, std::istringstream& in);
+    void chat_mute_set(uint64_t code40, bool on, int64_t until, const std::string& reason);
+    proto::ChatFilter chat_filter_;
+    int64_t chat_filter_mtime_ = -1;
+    uint32_t chat_filter_at_ = 0;
+    std::map<uint64_t, ChatMute> chat_mutes_;  // by code40
 
     // admin (admin.cpp)
     bool open_admin(std::string& why);

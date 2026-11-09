@@ -124,6 +124,7 @@ std::string Server::admin(const std::string& line) {
     };
     if (cmd == "status") return status_text();
     if (cmd == "regions" || cmd == "split" || cmd == "move") return scale_admin(cmd, in);
+    if (cmd == "chat-mute" || cmd == "chat-unmute" || cmd == "chat-mutes") return chat_admin(cmd, in);
     if (cmd == "players") {
         std::ostringstream o;
         for (auto& [cid, s] : sessions_) {
@@ -229,7 +230,7 @@ std::string Server::admin(const std::string& line) {
         return "stopping";
     }
     return "commands: status, players, kick <code> [reason], ban <code> <30m|12h|7d|perm> [reason], unban <code>, "
-           "bans, notice <text>, restart [seconds], parties, regions, split <region> [worker], move <region> <worker>, stop";
+           "bans, chat-mute <code> [30m|12h|7d|perm] [reason], chat-unmute <code>, chat-mutes, notice <text>, restart [seconds], parties, regions, split <region> [worker], move <region> <worker>, stop";
 }
 
 #ifndef _WIN32

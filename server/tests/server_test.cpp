@@ -1752,6 +1752,163 @@ static void test_pvp_stress() {
     CHECK(std::all_of(v.begin(), v.end(), [](auto& b) { return b->online(); }));
 }
 
+// text chat: the party channel and the global one, and every check the server makes (on, global allowed, length,
+// rate, the word filter, the operator's mute, blocks, a player's channel turned off), with the reason told
+static void test_chat() {
+    auto lines = [](const Bot& b, uint8_t channel) {
+        std::vector<ChatLine> v;
+        for (auto& e : b.log)
+            if (e.kind == ClientEvent::kChatFrom && e.chat.channel == channel) v.push_back(e.chat);
+        return v;
+    };
+    auto results = [](const Bot& b) {
+        std::vector<uint8_t> v;
+        for (auto& e : b.log)
+            if (e.kind == ClientEvent::kChatResult) v.push_back(e.value);
+        return v;
+    };
+    std::vector<std::string> logged;
+    const std::string filter = g_dir + "/chat-filter.txt", mutes = g_dir + "/chat-mutes.txt";
+    std::remove(mutes.c_str());
+    if (std::FILE* f = std::fopen(filter.c_str(), "w")) std::fputs("darn\nfoo*\n", f), std::fclose(f);
+    {
+        // global off (the default), a filter, 5 lines per 10 s
+        server::Config cfg = base_config(0);
+        cfg.chat_filter_file = filter;
+        cfg.chat_mutes_file = mutes;
+        server::Server s(cfg);
+        s.log = [&](const std::string& t) { logged.push_back(t); };
+        std::string why;
+        CHECK(s.start(why));
+        uint16_t port = s.port();
+        auto a = make_bot("alpha", port), b = make_bot("beta", port), c = make_bot("gamma", port);
+        std::vector<Bot*> all = {a.get(), b.get(), c.get()};
+        CHECK(run(&s, all, 5000, [&] { return a->online() && b->online() && c->online() && c->saw(ClientEvent::kChatRules); }));
+        if (auto* e = c->last(ClientEvent::kChatRules))
+            CHECK(e->chat_rules.enabled && !e->chat_rules.global && e->chat_rules.max_length == 120 && e->chat_rules.rate_count == 5);
+        // no party yet: a party line is refused
+        a->c.send_chat(kChatParty, "anyone?");
+        CHECK(run(&s, all, 2000, [&] { return !results(*a).empty(); }));
+        CHECK(results(*a) == std::vector<uint8_t>{kChatNoParty});
+        uint64_t code = 0;
+        parse_friend_code(b->c.friend_code(), code);
+        a->c.party_invite(code);
+        CHECK(run(&s, all, 3000, [&] { return b->saw(ClientEvent::kPartyInvited); }));
+        b->c.party_accept(b->last(ClientEvent::kPartyInvited)->party_id);
+        CHECK(run(&s, all, 3000, [&] { auto* e = a->last(ClientEvent::kPartyState); return e && e->party.members.size() == 2; }));
+        // a party line, cleaned and filtered: to b (named, a party member) and back to a (yours); never to c
+        a->c.send_chat(kChatParty, "  Follow\x07 me,\tdarn  it!  ");
+        CHECK(run(&s, all, 2000, [&] { return lines(*b, kChatParty).size() == 1 && lines(*a, kChatParty).size() == 1; }));
+        if (!lines(*b, kChatParty).empty()) {
+            const ChatLine l = lines(*b, kChatParty)[0];
+            CHECK(l.text == "Follow me, *** it!" && l.name == "alpha" && (l.flags & kChatFromParty) && !(l.flags & kChatYours) &&
+                  l.from == a->c.my_id() && l.key_hash == a->c.key_hash());
+            CHECK((lines(*a, kChatParty)[0].flags & kChatYours) && lines(*a, kChatParty)[0].text == l.text);
+        }
+        b->c.send_chat(kChatParty, "Thanks!");
+        CHECK(run(&s, all, 2000, [&] { return lines(*a, kChatParty).size() == 2; }));
+        // global is off here: refused, nobody gets it
+        a->c.send_chat(kChatGlobal, "hello world");
+        CHECK(run(&s, all, 2000, [&] { return results(*a).size() == 2; }));
+        CHECK(results(*a).back() == kChatNoGlobal && lines(*c, kChatGlobal).empty() && lines(*b, kChatGlobal).empty());
+        // too long (121 characters; multi-byte ones count once)
+        std::string longer;
+        for (int i = 0; i < 121; i++) longer += "\xc3\xa9";
+        a->c.send_chat(kChatParty, longer);
+        CHECK(run(&s, all, 2000, [&] { return results(*a).size() == 3; }));
+        CHECK(results(*a).back() == kChatTooLong);
+        longer.resize(240);  // 120: fine
+        a->c.send_chat(kChatParty, longer);
+        CHECK(run(&s, all, 2000, [&] { return lines(*b, kChatParty).size() == 2; }));
+        // the rate: 5 in 10 s; a has sent 2 lines that counted, so 3 more pass and the 4th is refused
+        for (int i = 0; i < 4; i++) a->c.send_chat(kChatParty, "spam " + std::to_string(i));
+        CHECK(run(&s, all, 2000, [&] { return results(*a).size() == 4; }));
+        CHECK(results(*a).back() == kChatTooFast && lines(*b, kChatParty).size() == 6);  // (b's own "Thanks!" too)
+        // the operator mutes a: refused; c sees nothing anyway; unmuted later
+        CHECK(s.admin("chat-mute " + a->c.friend_code() + " 30m spamming").find("chat muted") == 0);
+        CHECK(s.admin("chat-mutes").find(a->c.friend_code()) != std::string::npos);
+        b->c.send_chat(kChatParty, "and you?");
+        CHECK(run(&s, all, 2000, [&] { return lines(*a, kChatParty).size() == 7; }));  // (a's 5 own + b's 2)
+        CHECK(s.admin("chat-unmute " + a->c.friend_code()).find("chat unmuted") == 0);
+        CHECK(s.admin("chat-mute " + a->c.friend_code() + " perm").find("until unmuted") != std::string::npos);
+        a->c.send_chat(kChatParty, "muted?");
+        CHECK(run(&s, all, 2000, [&] {
+            auto r = results(*a);
+            return std::find(r.begin(), r.end(), uint8_t(kChatMuted)) != r.end();
+        }));
+        // kept in the file, for a restart
+        std::FILE* mf = std::fopen(mutes.c_str(), "r");
+        CHECK(mf != nullptr);
+        if (mf) std::fclose(mf);
+        CHECK(s.admin("chat-unmute " + a->c.friend_code()).find("chat unmuted") == 0);
+        CHECK(s.admin("chat-unmute " + a->c.friend_code()).find("no chat mute") == 0);
+        // the reasons in the log
+        auto in_log = [&](const char* what) {
+            for (auto& l : logged)
+                if (l.find("chat: dropped") == 0 && l.find(what) != std::string::npos) return true;
+            return false;
+        };
+        if (std::getenv("CHAT_DEBUG"))
+            for (auto& l : logged) std::printf("  log: %s\n", l.c_str());
+        CHECK(in_log("not in a party") && in_log("no global chat") && in_log("too long (121 > 120 characters)") &&
+              in_log("too many messages: wait a moment (5 lines per 10 s)") && in_log("operator muted your chat"));
+        CHECK(s.metrics().chat_filtered >= 1 && s.metrics().chat_drops[kChatTooFast] >= 1);
+        std::printf("chat: party lines %zu at the member, drops %llu too long, %llu too fast, %llu muted: ok\n",
+                    lines(*b, kChatParty).size(), (unsigned long long)s.metrics().chat_drops[kChatTooLong],
+                    (unsigned long long)s.metrics().chat_drops[kChatTooFast], (unsigned long long)s.metrics().chat_drops[kChatMuted]);
+    }
+    {
+        // global on: everyone on the server (strangers named as strangers), not who turned it off, not across a block
+        server::Config cfg = base_config(0);
+        cfg.chat_global = true;
+        cfg.chat_mutes_file = mutes;
+        server::Server s(cfg);
+        s.log = [](const std::string&) {};
+        std::string why;
+        CHECK(s.start(why));
+        CHECK(s.admin("chat-mutes").find("no chat mutes") == 0);  // (the earlier mutes were lifted and saved)
+        uint16_t port = s.port();
+        auto a = make_bot("alpha", port), b = make_bot("beta", port), c = make_bot("gamma", port);
+        auto d = make_bot("delta", port, 0x2222);  // another game: another world, never reached
+        std::vector<Bot*> all = {a.get(), b.get(), c.get(), d.get()};
+        CHECK(run(&s, all, 5000, [&] { return a->online() && b->online() && c->online() && c->saw(ClientEvent::kChatRules); }));
+        if (auto* e = c->last(ClientEvent::kChatRules)) CHECK(e->chat_rules.global);
+        a->c.send_chat(kChatGlobal, "Over here");
+        CHECK(run(&s, all, 2000, [&] { return lines(*b, kChatGlobal).size() == 1 && lines(*c, kChatGlobal).size() == 1; }));
+        if (!lines(*c, kChatGlobal).empty()) {
+            CHECK(lines(*c, kChatGlobal)[0].name.rfind("Sailor ", 0) == 0 && !(lines(*c, kChatGlobal)[0].flags & kChatFromParty));
+            CHECK(lines(*c, kChatGlobal)[0].text == "Over here");
+        }
+        // c turns global off; b blocks a
+        c->c.chat_prefs(1 << kChatGlobal);
+        b->c.block(a->c.key_hash(), true);
+        run(&s, all, 300);
+        a->c.send_chat(kChatGlobal, "Let's go");
+        CHECK(run(&s, all, 2000, [&] { return lines(*a, kChatGlobal).size() == 2; }));
+        run(&s, all, 300);
+        CHECK(lines(*b, kChatGlobal).size() == 1 && lines(*c, kChatGlobal).size() == 1 && lines(*d, kChatGlobal).empty());
+        std::printf("chat: global lines reach strangers, not a channel turned off, a block or another game: ok\n");
+    }
+    {
+        server::Config cfg = base_config(0);
+        cfg.chat_enabled = false;
+        cfg.chat_mutes_file = "";
+        server::Server s(cfg);
+        s.log = [](const std::string&) {};
+        std::string why;
+        CHECK(s.start(why));
+        auto a = make_bot("alpha", s.port()), b = make_bot("beta", s.port());
+        CHECK(run(&s, {a.get(), b.get()}, 5000, [&] { return a->online() && b->online() && a->saw(ClientEvent::kChatRules); }));
+        if (auto* e = a->last(ClientEvent::kChatRules)) CHECK(!e->chat_rules.enabled && !e->chat_rules.global);
+        a->c.send_chat(kChatGlobal, "hello?");
+        CHECK(run(&s, {a.get(), b.get()}, 2000, [&] { return !results(*a).empty(); }));
+        CHECK(results(*a) == std::vector<uint8_t>{kChatOff} && lines(*b, kChatGlobal).empty());
+        std::printf("chat: off on the server: refused: ok\n");
+    }
+    std::remove(filter.c_str());
+    std::remove(mutes.c_str());
+}
+
 int main(int argc, char** argv) {
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     g_dir = argc > 1 ? argv[1] : ".";
@@ -1767,6 +1924,7 @@ int main(int argc, char** argv) {
     if (only.empty() || only == "tcp") test_tcp();
     if (only.empty() || only == "mods") test_mod_rules_server();
     if (only.empty() || only == "block") test_block_mute();
+    if (only.empty() || only == "chat") test_chat();
     if (only.empty() || only == "party16") test_party_16();
     if (only.empty() || only == "party16ho") test_party_16_handover();
     if (only.empty() || only == "pvp") test_pvp();

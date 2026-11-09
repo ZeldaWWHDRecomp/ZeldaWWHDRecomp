@@ -21,6 +21,7 @@ bans = "bans.txt"
 reports = "reports.log"
 admin_socket = "wwhd-online-admin.sock"
 team_state = ""                      # a file to keep parties' last known team state over restarts
+# chat_mutes = "chat-mutes.txt"      # the operator's chat mutes (admin chat-mute); "" keeps them in memory only
 
 [world]
 copy_size = 64                       # players per copy of an interior
@@ -33,6 +34,15 @@ threads = 0                          # 0: automatic
 [limits]
 pow_bits = 18                        # join proof-of-work (about 0.3 s on a phone)
 per_ip = 4
+
+[chat]
+enabled = true                       # false: no chat at all (the games show none)
+global = false                       # true: also a Global channel to everyone on the server (default: party only)
+max_length = 120                     # characters per line (at most 200)
+rate_count = 5                       # lines a player may send ...
+rate_window_s = 10                   # ... in this many seconds
+# filter_file = "chat-filter.txt"    # one word or phrase per line ("word*" also matches longer words): shown as ***
+# log = "chat.log"                   # off by default: no chat line is written anywhere
 
 [scale]
 mode = "off"                         # "off": one process; "auto": start worker processes when busy; "pool"
