@@ -64,6 +64,14 @@ extern "C" __attribute__((visibility("default"))) gabi::ThreadState* gabi_tp_mis
 }
 #endif
 
+#if defined(GABI_PASS_TS) && defined(GABI_TLS_OWNER)
+/* gabi.h GABI_PASS_TS (the port's WWHD_DECOMP_FAST_PASS_TS): the lookup the bodies share, once per function (declared
+ * const there); tls_fast unchanged, out of line. Never inlined: an inlined copy would be one lookup per use again (the
+ * inliner runs before the calls are merged), and after link-time inlining of one body into another the two bodies' calls
+ * still merge into one; the hit path is a leaf without a frame (13 instructions on arm64) */
+extern "C" __attribute__((visibility("default"), noinline)) gabi::ThreadState* gabi_ts_pass() { return &gabi::tls_fast(); }
+#endif
+
 #if defined(GABI_FAST) && defined(GABI_TLS_OWNER)
 /* fast mode (runtime/src/hostrt/hostrt_cxx.cpp): may host code running for decompiled code on Cpu C (a host runtime
  * root it called) call a decompiled function's native entry now: this thread's block is inside a decompiled body on C

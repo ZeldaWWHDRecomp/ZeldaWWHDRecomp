@@ -115,6 +115,11 @@ function(wwhd_decomp_configure)
   # (gabi.h GABI_COLD_FALLBACK): no ArgPack on a body's stack (no stack-protector canary for it), smaller hot code; the
   # same registers, r1, LR and guest calls. Code layout only, so no run-time switch (OFF: the inline forms, as before)
   option(WWHD_DECOMP_FAST_COLD_FALLBACK "decomp build, fast mode: guest call paths out of line (no ArgPack in hot bodies)" OFF)
+  # fast mode: a body looks gabi's thread block up once and passes it on to everything that runs in it (its scope,
+  # frame, Locals, guest and native calls, and the bodies and ext stubs inlined into it) instead of a table lookup per
+  # use (gabi.h GABI_PASS_TS: the unchanged lookup out of line in unit 0, declared const so the compiler keeps one
+  # answer per function). The table, its order and its miss path stay as they are. Code only, so no run-time switch
+  option(WWHD_DECOMP_FAST_PASS_TS "decomp build, fast mode: one thread-block lookup per function, passed on (needs TP_CACHE)" OFF)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -306,6 +311,12 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_COLD_FALLBACK)
       list(APPEND opts -DGABI_COLD_FALLBACK=1)
+    endif()
+    if(WWHD_DECOMP_FAST_PASS_TS)
+      if(NOT WWHD_DECOMP_TP_CACHE)
+        message(FATAL_ERROR "WWHD_DECOMP_FAST_PASS_TS needs WWHD_DECOMP_TP_CACHE (the thread-pointer table it passes on)")
+      endif()
+      list(APPEND opts -DGABI_PASS_TS=1)
     endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)
