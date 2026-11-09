@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "guest_addr.h"
+#include "link_appearance.h"
 #include "long_name.h"
 #include "runtime.h"
 
@@ -137,6 +138,8 @@ uint64_t opened_for_read(const std::string& guest_path, const std::string& host_
     }
     if (base_name(guest_path) == "cking.sav")  // save file names over 8 characters (long_name.h)
         long_name::loaded(s.found == story_block::Found::Valid ? s.payload : nullptr);
+    if (base_name(guest_path) == "cking.sav")  // Link's look per save file (link_appearance.h)
+        link_appearance::loaded(s.found == story_block::Found::Valid ? s.payload : nullptr);
     if (base_name(guest_path) == "cking.sav" && s.found == story_block::Found::Valid) {
         std::lock_guard lock(g_mu);
         if (g_memory) memcpy(saved_copy(0), s.payload, story_block::kPayloadSize);
@@ -171,6 +174,7 @@ void written(const std::string& guest_path, const std::string& host_path) {
         else if (!g_unplaced.empty()) areas = g_unplaced;
         // save file names over 8 characters (long_name.h): their records, and the game's names cut back to 8
         game_part_changed = long_name::written(file.data(), s.game_size, areas.data());
+        link_appearance::written(areas.data());  // Link's look per save file (link_appearance.h)
         if (g_memory) memcpy(saved_copy(0), areas.data(), story_block::kPayloadSize);
         else if (!g_unplaced.empty() || !story_block::all_zero(areas.data(), areas.size())) g_unplaced = areas;
         if (!story_block::all_zero(areas.data(), areas.size())) block = story_block::build(areas.data());

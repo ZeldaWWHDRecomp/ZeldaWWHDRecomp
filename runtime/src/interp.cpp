@@ -61,6 +61,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "game_hooks.h"
 #include "gx2/gx2.h"
 #include "gfx/renderer.h"
+#include "mods/link_appearance.h"
 #include "mods/link_masks.h"
 
 
@@ -1993,6 +1994,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     interp::NativeResumeBoundaryIssuer::after_service(c); // before any resumed native/game service
     mods::cheats_service();
     mods::shop_ship_service();  // the ships' way back to the sea (mods/shop_ship.h)
+    link_appearance::service();  // Link's colours for the save file played, nothing when none are chosen (mods/link_appearance.h)
     // the item ring: its equip, the game's pace while open (full logic passes), the ring drawn
     mods::item_ring_service(c, !enabled() || !g_hold_next);
     mods::context_touch_service();  // tests: the context buttons' assets export (WWHD_CONTEXT_ASSETS)
@@ -2374,6 +2376,7 @@ extern "C" void hook_025DE788(Cpu* c) {
     }
     if (!interp::g_hold_frame) link_masks::frame();  // the WWHD_LINK_COLOURS test aid (mods/link_masks.h)
     editor::camera_service(c, !interp::g_hold_frame);  // the fly camera: every logic pass
+    link_appearance::logic_service(c, !interp::g_hold_frame);  // the colour page's close camera (mods/link_appearance.h)
     if(!interp::g_hold_frame)guestmods::maphud::finish_logic();
     guestmods::draw_frame(c,interp::executed_steps());
     g_in_execute = false;

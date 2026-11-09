@@ -374,6 +374,32 @@ unsigned long long wwhd_audio_epoch(void);
 s32 wwhd_mail_send(const char* letter_id, const char* sender, const char* text);
 s32 wwhd_mail_state(const char* letter_id);
 
+/* Link's appearance v1: the colours of Link's hair, skin, eyes, tunic and its details in the save file played
+ * (kept in that file's save when the game saves). A look is a record of 3..27 bytes:
+ *   [1][slots: u16 big-endian, bit per slot][R G B for each slot set, in slot order]
+ * slots: 0 hair, 1 skin, 2 eyes, 3 tunic and hat (also the island shirt), 4 undershirt, 5 trousers, 6 boots,
+ * 7 belt buckle; a slot not set has the game's own colour, {1, 0, 0} is Link as the game has him.
+ * get: copies the record into `out` (size at least WWHD_APPEARANCE_MAX) and returns its length.
+ * set: takes a record; 0 done. open: asks for the port's colour page (Link in a close camera, the player
+ * chooses each area's colour from presets with a live preview); it opens once Link can stand still (after a
+ * talk has ended) and returns 0 when asked. All: WWHD_APPEARANCE_INVALID (-1) for a bad record or buffer,
+ * WWHD_APPEARANCE_NOT_NOW (-2) with no save file played (or the page already open). */
+#define WWHD_APPEARANCE_API_VERSION 1
+#define WWHD_APPEARANCE_MAX 27
+#define WWHD_APPEARANCE_INVALID (-1)
+#define WWHD_APPEARANCE_NOT_NOW (-2)
+#define WWHD_APPEARANCE_HAIR 0
+#define WWHD_APPEARANCE_SKIN 1
+#define WWHD_APPEARANCE_EYES 2
+#define WWHD_APPEARANCE_TUNIC 3
+#define WWHD_APPEARANCE_UNDERSHIRT 4
+#define WWHD_APPEARANCE_TROUSERS 5
+#define WWHD_APPEARANCE_BOOTS 6
+#define WWHD_APPEARANCE_BUCKLE 7
+s32 wwhd_appearance_get(u8* out, u32 size);
+s32 wwhd_appearance_set(const u8* record, u32 size);
+s32 wwhd_appearance_open(void);
+
 /* Charts and markers v1: a chart from the mod with marked places, treated like the game's treasure
  * charts. The save file records whether Link owns the chart (give) and whether it is finished
  * (finish). The markers are session state: the mod places them (mark adds or moves). While the chart
