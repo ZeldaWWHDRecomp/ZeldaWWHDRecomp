@@ -41,7 +41,6 @@
 #include "link_appearance.h"
 #include "link_appearance_page.h"
 #include "link_masks.h"
-#include "player_models_core.h"
 #include "../screenshot.h"
 #include "../gfx/renderer.h"
 #include "../aspect.h"
@@ -66,6 +65,14 @@ uint32_t be32(uint32_t ea) { return ld32(ea); }
 // ---------------------------------------------------------------- the save file played
 constexpr uint32_t kDataNum = 0x1290;  // dSv_info_c::mDataNum (as player_models.cpp)
 constexpr uint32_t kEvents = 0x624;    // the save's event bits
+constexpr uint32_t kScanStep = 0x100;  // Link.bfres starts on a 256-byte boundary in the heap (as player_models_core.h scans)
+// a new game in the save file played: no event of the story done yet (the game's two set from the start excepted),
+// as player_models_core.h tells it
+bool new_game(const uint8_t* events /* save + kEvents, 0x100 bytes */) {
+    for (int i = 0; i < 0x100; i++)
+        if (events[i] && i != 0x7E && i != 0xBE) return false;
+    return true;
+}
 
 int read_file() {
     const uint32_t save = game_progress::save_address();
@@ -92,7 +99,7 @@ uint64_t g_loads = ~0ull;
 
 void scan(std::array<uint8_t, 64> head) {
     uint32_t found = 0;
-    for (uint32_t a = mem::kMem2Start; a + head.size() <= mem::kMem2End; a += player_models::kStep) {
+    for (uint32_t a = mem::kMem2Start; a + head.size() <= mem::kMem2End; a += kScanStep) {
         const uint8_t* p = mem::ptr(a);
         if (p[0] != 'F' || memcmp(p, head.data(), head.size()) != 0) continue;
         found = a;
@@ -550,7 +557,7 @@ void service() {
     bool fresh = false;
     if (f >= 0)
         if (const uint32_t save = game_progress::save_address())
-            fresh = player_models::new_game(static_cast<const uint8_t*>(mem::ptr(save + kEvents)));
+            fresh = new_game(static_cast<const uint8_t*>(mem::ptr(save + kEvents)));
     const Look look = store::frame(f, fresh);
     if (g_wanted) g_wanted--;
     if (look.empty() && !g_worn_any && !g_wanted) return;
