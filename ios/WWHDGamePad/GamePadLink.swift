@@ -34,6 +34,7 @@ final class GamePadLink: ObservableObject {
 
     nonisolated let queue = DispatchQueue(label: "org.wwhdrecomp.gamepad.link", qos: .userInteractive)
     nonisolated let screen = TouchAndScreen()
+    nonisolated let video = VideoReceiver()
     nonisolated private let controller: ControllerReader
     nonisolated private let motion: MotionReader
     private var browser: NWBrowser?
@@ -56,6 +57,10 @@ final class GamePadLink: ObservableObject {
         controller = ControllerReader(queue: queue)
         motion = MotionReader(queue: queue)
         controller.onChange = { [weak self] name in self?.controllerName = name }
+        video.requestKeyframe = { [weak self] in
+            guard let self, let c = self.connection, self.session != 0 else { return }
+            c.send(content: Data(WWGP.keyframeRequest(session: self.session)), completion: .idempotent)
+        }
     }
 
     // MARK: finding the game
@@ -157,8 +162,12 @@ final class GamePadLink: ObservableObject {
     nonisolated private func receive(on c: NWConnection) {
         c.receiveMessage { [weak self] data, _, _, error in
             guard let self, error == nil else { return }
-            if let data, let w = WWGP.welcome(Array(data)), w.nonce == self.nonce, c === self.connection {
+            let bytes = data.map { Array($0) } ?? []
+            if let (session, piece) = WWGP.video(bytes) {
+                if session == self.session, c === self.connection { self.video.add(piece) }
+            } else if let w = WWGP.welcome(bytes), w.nonce == self.nonce, c === self.connection {
                 let wasConnected = self.session != 0 && Date().timeIntervalSince(self.lastWelcome) < 3
+                if w.session != self.session { self.video.reset() }  // a new session: from its first keyframe
                 self.session = w.session
                 self.lastWelcome = Date()
                 if !wasConnected { Task { @MainActor in self.status = .connected(w.host.isEmpty ? self.target : w.host) } }
@@ -178,7 +187,7 @@ final class GamePadLink: ObservableObject {
         if session == 0 {
             if now.timeIntervalSince(lastHello) >= 0.5 {
                 lastHello = now
-                c.send(content: Data(WWGP.hello(nonce: nonce, device: device, controller: name)), completion: .idempotent)
+                c.send(content: Data(WWGP.hello(nonce: nonce, device: device, controller: name, video: true)), completion: .idempotent)
             }
             return
         }

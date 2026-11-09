@@ -100,6 +100,34 @@ struct ConnectView: View {
 
 // MARK: - the GamePad
 
+/// The GamePad screen: the game's picture, or a note until the first one arrives.
+struct ScreenArea: View {
+    @ObservedObject var video: VideoReceiver
+
+    var body: some View {
+        ZStack {
+            VideoView(video: video)
+            if !video.showing {
+                RoundedRectangle(cornerRadius: 12)
+                    .fill(Color(white: 0.08))
+                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.25), lineWidth: 1))
+                    .overlay {
+                        VStack(spacing: 8) {
+                            ProgressView()
+                            Text("Waiting for the GamePad screen…").font(.headline)
+                            Text("Touch works already. The picture needs a game build with video (ios branch, step 2).")
+                                .font(.footnote)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 360)
+                        }
+                        .foregroundStyle(Color(white: 0.5))
+                    }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: video.showing ? 0 : 12))
+    }
+}
+
 struct GamePadView: View {
     @EnvironmentObject private var link: GamePadLink
     @State private var dragging = false
@@ -113,21 +141,7 @@ struct GamePadView: View {
             let area = screenRect(in: geo.size)
             ZStack(alignment: .topLeading) {
                 Color.black
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color(white: 0.08))
-                    .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color(white: 0.25), lineWidth: 1))
-                    .overlay {
-                        VStack(spacing: 8) {
-                            Image(systemName: "hand.tap").font(.largeTitle)
-                            Text("GamePad touch screen")
-                                .font(.headline)
-                            Text("Watch the GamePad window on the Mac; its picture comes to this screen in a later version.")
-                                .font(.footnote)
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: 360)
-                        }
-                        .foregroundStyle(Color(white: 0.45))
-                    }
+                ScreenArea(video: link.video)
                     .frame(width: area.width, height: area.height)
                     .offset(x: area.minX, y: area.minY)
                 if let p = finger {

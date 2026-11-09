@@ -86,6 +86,37 @@ static void test_packets() {
     assert(newer(1, 0) && !newer(0, 0) && !newer(0, 1) && newer(0, 0xFFFFFFFF));
 }
 
+static void test_video_packets() {
+    // a Hello asks for video in its header flags
+    auto hp = encode_hello({5, "Phone", "", true});
+    assert(parse_header(hp.data(), hp.size())->flags == kWantsVideo && parse_hello(hp.data(), hp.size())->video);
+    assert(!parse_hello(encode_hello({5, "Phone", ""}).data(), encode_hello({5, "Phone", ""}).size())->video);
+    // a frame cut into pieces of at most kMaxDatagram bytes, put back together in order
+    std::vector<uint8_t> frame(kMaxVideoPayload * 2 + 17);
+    for (size_t i = 0; i < frame.size(); i++) frame[i] = uint8_t(i * 7);
+    auto pieces = encode_video(9, 1234, true, 777, 854, 480, frame.data(), frame.size());
+    assert(pieces.size() == 3);
+    std::vector<uint8_t> back;
+    for (size_t i = 0; i < pieces.size(); i++) {
+        assert(pieces[i].size() <= kMaxDatagram);
+        auto h = parse_header(pieces[i].data(), pieces[i].size());
+        assert(h && h->type == kVideo && h->session == 9);
+        auto v = parse_video(pieces[i].data(), pieces[i].size());
+        assert(v && v->frame == 1234 && v->index == i && v->count == 3 && v->key && v->time_ns == 777);
+        assert(v->width == 854 && v->height == 480);
+        back.insert(back.end(), v->data, v->data + v->size);
+    }
+    assert(back == frame);
+    // an empty frame is one piece; a bad index or count is rejected
+    pieces = encode_video(9, 1, false, 0, 2, 2, nullptr, 0);
+    assert(pieces.size() == 1 && parse_video(pieces[0].data(), pieces[0].size())->size == 0);
+    auto bad = pieces[0];
+    bad[kHeaderSize + 4] = 1;  // index 1 of 1
+    assert(!parse_video(bad.data(), bad.size()));
+    auto k = encode_keyframe_request(3);
+    assert(parse_header(k.data(), k.size())->type == kKeyframe);
+}
+
 static void test_pad_values() {
     using namespace input_map;
     Input in;
@@ -210,9 +241,58 @@ static void test_server() {
     assert(!server.running());
 }
 
+static void test_server_video() {
+    std::atomic<int> keyframes{0};
+    Server server({nullptr, nullptr, nullptr, [&] { keyframes++; }}, "Test-Mac");
+    assert(server.start(0));
+    std::vector<uint8_t> frame(5000, 0xAB);
+    assert(!server.send_video(frame.data(), frame.size(), true, 1, 854, 480));  // nobody connected
+    // a phone without the video flag gets no video
+    {
+        Phone phone(server.port());
+        phone.send(encode_hello({1, "Input only", ""}));
+        auto w = phone.welcome();
+        assert(w && !server.snapshot().video);
+        assert(!server.send_video(frame.data(), frame.size(), true, 1, 854, 480));
+        phone.send(encode_bye(w->first));
+        assert(wait_for([&] { return !server.snapshot().connected; }));
+    }
+    Phone phone(server.port());
+    phone.send(encode_hello({2, "Video phone", "", true}));
+    auto w = phone.welcome();
+    assert(w && server.snapshot().video);
+    assert(server.send_video(frame.data(), frame.size(), true, 42, 854, 480));
+    assert(server.send_video(frame.data(), 10, false, 43, 854, 480));
+    // the pieces arrive in order: frame 1 in 4 pieces (5000 bytes), then frame 2 in one
+    std::vector<uint8_t> got;
+    uint32_t frames_seen = 0;
+    for (int i = 0; i < 5; i++) {
+        uint8_t buf[2048];
+        const ssize_t n = recv(phone.s, buf, sizeof buf, 0);
+        assert(n > 0);
+        auto h = parse_header(buf, size_t(n));
+        if (h->type == kWelcome) { i--; continue; }  // a keepalive in between
+        auto v = parse_video(buf, size_t(n));
+        assert(v && h->session == w->first);
+        if (v->frame == 1) { assert(v->key && v->count == 4 && v->time_ns == 42); got.insert(got.end(), v->data, v->data + v->size); }
+        else { assert(v->frame == 2 && !v->key && v->count == 1 && v->size == 10); frames_seen = 2; }
+    }
+    assert(got == frame && frames_seen == 2);
+    // a lost piece: the phone asks for a keyframe
+    phone.send(encode_keyframe_request(w->first));
+    assert(wait_for([&] { return keyframes == 1; }));
+    phone.send(encode_keyframe_request(w->first + 1));  // not its session: ignored
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    assert(keyframes == 1);
+    server.stop();
+    assert(!server.send_video(frame.data(), frame.size(), true, 1, 854, 480));
+}
+
 int main() {
     test_packets();
+    test_video_packets();
     test_pad_values();
     test_server();
-    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence) passed");
+    test_server_video();
+    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests) passed");
 }

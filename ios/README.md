@@ -8,9 +8,9 @@ phone (Backbone, Kishi, Razer, or a paired DualSense or Xbox controller). The ph
 - touches on its screen: the GamePad's touch screen (items, map, sea chart);
 - its gyro: GamePad aiming (bow, hookshot, telescope, Picto Box).
 
-This first version does not show the GamePad picture on the phone yet. Keep the game's GamePad window
-(or picture-in-picture) on the Mac or TV and touch the matching spot on the phone. Video, sound and
-rumble come next (see Roadmap).
+The game sends the phone the GamePad screen, so you touch the picture itself, as on a real GamePad.
+The GamePad screen on the Mac can stay in any mode (even *off*); the phone gets the picture either way.
+Sound and rumble come next (see Roadmap). The picture needs the Metal renderer (the default on macOS).
 
 ## Use it
 
@@ -74,15 +74,21 @@ game, 3 s on the phone, which then says Hello again.
 | --- | --- |
 | `GamePadLink.swift`: Bonjour, connection, 125 Hz sender | `remote_pad/server.cpp`: one phone at a time, sessions, newest input only |
 | `Inputs.swift`: GameController, CoreMotion, touch | `remote_pad/remote_pad.cpp`: Bonjour record, controller values, gyro feed |
+| `Video.swift`: frames from their pieces, `AVSampleBufferDisplayLayer` | `gfx/remote_video.mm`: the GamePad picture into IOSurfaces, H.264 (VideoToolbox, low latency) |
 | `Protocol.swift` (mirrors `protocol.h`) | `gfx/input.mm`: the phone as a controller and the touch screen; `motion/motion.cpp`: its gyro under *Device gyro* |
+
+Video: each present, the game draws the GamePad picture as it does for its GamePad window into an
+IOSurface (854 x 480, or that shape up to 1280 wide when the picture is rendered larger), and the
+hardware encoder turns it into H.264 without frame reordering (about 6 Mbit/s). Frames go out in pieces
+of at most 1400 bytes; a keyframe carries its SPS and PPS. The phone shows a frame as soon as it has all
+of it, and after a lost piece it drops frames and asks for a keyframe (at most every 250 ms).
 
 Motion is sent in the phone's natural axes with the screen's rotation. The game turns it into
 controller axes the same way it does the Android device gyro (`motion::device_to_sdl`).
 
 ## Roadmap
 
-1. ~~Input: controller, touch, gyro~~ (this version)
-2. The GamePad picture on the phone: hardware H.264/HEVC from the GamePad screen (VideoToolbox),
-   shown with `AVSampleBufferDisplayLayer`
+1. ~~Input: controller, touch, gyro~~
+2. ~~The GamePad picture on the phone~~ (Metal renderer; the Vulkan renderer later)
 3. GamePad sound on the phone's speaker, rumble through Core Haptics or the controller
 4. A setting in the game instead of `WWHD_REMOTE_PAD`, a pairing code, the SDL host (Linux, Windows)

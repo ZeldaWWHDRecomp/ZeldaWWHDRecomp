@@ -2,7 +2,9 @@
 //   - the controller attached to it is one more host controller (input::controllers(), its own
 //     bindings in Controls by its name, "iPhone GamePad"), so remapping and prompts work as for any pad;
 //   - a finger on its screen is the GamePad's touch screen;
-//   - its motion sensors are the GamePad's gyro under Settings > Controls > Gyro > "Device gyro".
+//   - its motion sensors are the GamePad's gyro under Settings > Controls > Gyro > "Device gyro";
+//   - it shows the GamePad screen: the renderer encodes the picture it draws for the GamePad window
+//     (gfx/remote_video.mm, Metal) and sends it here.
 //
 // Off by default. WWHD_REMOTE_PAD=1 (or =<port>) starts it at launch: the game then listens on UDP
 // port 26770 (remote_pad::kDefaultPort) and advertises itself over Bonjour so the phone finds it.
@@ -34,5 +36,11 @@ Pad pad();
 
 // the controller part of `in` as input_map::kPadCount host-controller values 0..1 (v is cleared first)
 void pad_values(const Input& in, float* v);
+
+// ---- the GamePad screen (protocol.h kVideo) ----
+bool video_wanted();         // a connected phone asked for the picture (cheap: once per frame)
+bool take_keyframe_request();  // the next frame must be a keyframe (a new phone, or one lost a piece)
+// one encoded frame (AVCC, see protocol.h); any thread
+void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height);
 
 }  // namespace remote_pad

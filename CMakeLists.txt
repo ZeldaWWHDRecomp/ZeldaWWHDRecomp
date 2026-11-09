@@ -405,6 +405,8 @@ endif()
 if(WWHD_HAS_METAL)
   target_compile_definitions(wwhd PRIVATE WWHD_HAS_METAL=1)
   target_link_libraries(wwhd PRIVATE "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework Foundation" "-framework ImageIO" "-framework UniformTypeIdentifiers" "-framework GameController" "-framework CoreHaptics" "-framework Carbon" "-framework AudioToolbox" "-framework CoreAudio" "-framework AVFoundation" compression)
+  # the iPhone GamePad's screen (gfx/remote_video.mm): H.264 from the GamePad picture
+  target_link_libraries(wwhd PRIVATE "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo")
 endif()
 # the identity of the code that interprets saved pipeline recipes and prepared shaders (every renderer:
 # the setup's shader preparation and the launch check use it too; runtime/src/pipeline_runtime_identity.h)
@@ -1203,6 +1205,20 @@ if(NOT WIN32)
   target_link_libraries(remote_pad_test PRIVATE Threads::Threads)
   add_test(NAME remote_pad COMMAND remote_pad_test)
   set_tests_properties(remote_pad PROPERTIES TIMEOUT 30)
+endif()
+if(WWHD_HAS_METAL)
+  # the iPhone GamePad's screen end to end: Metal frames -> H.264 -> loopback UDP -> decoded colours
+  add_executable(remote_video_test runtime/tools/remote_video_test.mm runtime/src/gfx/remote_video.mm
+                 runtime/src/remote_pad/protocol.cpp runtime/src/remote_pad/server.cpp runtime/src/remote_pad/remote_pad.cpp
+                 ${MOTION_SOURCES})
+  set_source_files_properties(runtime/tools/remote_video_test.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  # (remote_video.mm is a renderer source: it is compiled with the cemu shim, see GFX_SOURCES)
+  target_include_directories(remote_video_test PRIVATE runtime/src runtime/include ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
+  target_compile_options(remote_video_test PRIVATE -UNDEBUG)
+  target_link_libraries(remote_video_test PRIVATE Threads::Threads "-framework Metal" "-framework Foundation"
+                        "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo")
+  add_test(NAME remote_video COMMAND remote_video_test)
+  set_tests_properties(remote_video PROPERTIES TIMEOUT 60)
 endif()
 # controller packets: actual VPAD/KPAD writers, without a game or renderer
 add_executable(pad_delivery_test runtime/tools/pad_delivery_test.cpp runtime/src/hle/padscore.cpp runtime/src/hle/system_stubs.cpp runtime/src/rumble.cpp runtime/src/guest_addr_identity.c)

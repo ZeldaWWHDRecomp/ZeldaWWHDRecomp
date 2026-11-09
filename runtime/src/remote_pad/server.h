@@ -28,6 +28,7 @@ public:
         bool connected = false;
         uint32_t session = 0;
         std::string device, controller, address;
+        bool video = false;          // the phone asked for the GamePad screen (kWantsVideo)
         Input input;                 // the latest (all zero until the first Input)
         uint64_t inputs = 0;         // Inputs taken this session
     };
@@ -35,6 +36,7 @@ public:
         std::function<void(const Snapshot&)> connected;  // a phone took the GamePad
         std::function<void(const Input&)> input;         // a newer Input from it
         std::function<void(const std::string& why)> disconnected;
+        std::function<void()> keyframe;                  // the phone lost a piece of video
     };
 
     explicit Server(Callbacks cb, std::string host_name = {});
@@ -48,6 +50,9 @@ public:
     bool running() const { return running_.load(); }
     uint16_t port() const { return port_; }
     Snapshot snapshot() const;
+    // Any thread: one encoded frame to the phone (protocol.h kVideo) if it asked for video; false when
+    // nobody takes it. Sent from the caller's thread, outside the server's lock.
+    bool send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height);
 
 private:
     void run();
@@ -60,11 +65,13 @@ private:
     std::atomic<bool> running_{false};
     std::thread thread_;
     mutable std::mutex mu_;
+    std::mutex send_mu_;             // held while sending video: stop() closes the socket under it
     Snapshot state_;
     uint8_t peer_[128] = {};         // sockaddr_storage of the phone with the session
     uint32_t peer_len_ = 0;
     std::chrono::steady_clock::time_point seen_{}, keepalive_{};
     uint32_t hello_nonce_ = 0;
+    uint32_t video_frame_ = 0;       // mu_
 };
 
 }  // namespace remote_pad

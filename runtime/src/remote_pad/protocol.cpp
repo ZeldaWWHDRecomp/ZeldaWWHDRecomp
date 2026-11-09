@@ -24,9 +24,9 @@ struct Writer {
         u8(uint8_t(n));
         out.insert(out.end(), s.begin(), s.begin() + n);
     }
-    void header(Type type, uint32_t session) {
+    void header(Type type, uint32_t session, uint8_t flags = 0) {
         out.insert(out.end(), kMagic, kMagic + 4);
-        u16(kVersion); u8(type); u8(0); u32(session);
+        u16(kVersion); u8(type); u8(flags); u32(session);
     }
 };
 
@@ -67,7 +67,7 @@ std::optional<Reader> body(const uint8_t* data, size_t size, Type type) {
 
 std::vector<uint8_t> encode_hello(const Hello& h) {
     Writer w;
-    w.header(kHello, 0);
+    w.header(kHello, 0, h.video ? kWantsVideo : 0);
     w.u32(h.nonce); w.name(h.device); w.name(h.controller);
     return std::move(w.out);
 }
@@ -96,6 +96,29 @@ std::vector<uint8_t> encode_bye(uint32_t session) {
     w.header(kBye, session);
     return std::move(w.out);
 }
+std::vector<uint8_t> encode_keyframe_request(uint32_t session) {
+    Writer w;
+    w.header(kKeyframe, session);
+    return std::move(w.out);
+}
+std::vector<std::vector<uint8_t>> encode_video(uint32_t session, uint32_t frame, bool key, uint64_t time_ns,
+                                               uint16_t width, uint16_t height, const uint8_t* data, size_t size) {
+    const size_t count = std::max<size_t>(1, (size + kMaxVideoPayload - 1) / kMaxVideoPayload);
+    std::vector<std::vector<uint8_t>> out;
+    if (count > 0xFFFF) return out;  // (over 89 MB: never a GamePad frame)
+    out.reserve(count);
+    for (size_t i = 0; i < count; i++) {
+        Writer w;
+        w.out.reserve(kMaxDatagram);
+        w.header(kVideo, session);
+        w.u32(frame); w.u16(uint16_t(i)); w.u16(uint16_t(count));
+        w.u8(key ? 1 : 0); w.u8(0); w.u64(time_ns); w.u16(width); w.u16(height);
+        const size_t at = i * kMaxVideoPayload, n = std::min(kMaxVideoPayload, size - std::min(size, at));
+        if (n) w.out.insert(w.out.end(), data + at, data + at + n);
+        out.push_back(std::move(w.out));
+    }
+    return out;
+}
 
 std::optional<Header> parse_header(const uint8_t* data, size_t size) {
     if (!data || size < kHeaderSize || memcmp(data, kMagic, 4) != 0) return std::nullopt;
@@ -110,6 +133,7 @@ std::optional<Hello> parse_hello(const uint8_t* data, size_t size) {
     auto r = body(data, size, kHello);
     if (!r) return std::nullopt;
     Hello h;
+    h.video = parse_header(data, size)->flags & kWantsVideo;
     h.nonce = r->u32(); h.device = r->name(); h.controller = r->name();
     if (!r->ok) return std::nullopt;
     return h;
@@ -147,4 +171,20 @@ std::optional<Input> parse_input(const uint8_t* data, size_t size) {
     return in;
 }
 
+}  // namespace remote_pad
+
+namespace remote_pad {
+std::optional<VideoPiece> parse_video(const uint8_t* data, size_t size) {
+    if (size < kVideoHeaderSize) return std::nullopt;
+    auto r = body(data, size, kVideo);
+    if (!r) return std::nullopt;
+    VideoPiece v;
+    v.frame = r->u32(); v.index = r->u16(); v.count = r->u16();
+    v.key = r->u8() & 1; r->u8();
+    v.time_ns = r->u64(); v.width = r->u16(); v.height = r->u16();
+    if (!r->ok || v.count == 0 || v.index >= v.count) return std::nullopt;
+    v.data = data + kVideoHeaderSize;
+    v.size = size - kVideoHeaderSize;
+    return v;
+}
 }  // namespace remote_pad

@@ -12,7 +12,10 @@ enum WWGP {
     static let inputSize = 78
     static let maxName = 63
 
-    enum PacketType: UInt8 { case hello = 1, welcome = 2, input = 3, bye = 4 }
+    enum PacketType: UInt8 { case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6 }
+    static let wantsVideo: UInt8 = 1          // a Hello's header flags
+    static let videoHeaderSize = headerSize + 22
+    static let maxDatagram = 1400
 
     /// Buttons by position (Xbox names, as GCExtendedGamepad: A is the bottom face button).
     struct Buttons: OptionSet {
@@ -52,9 +55,19 @@ enum WWGP {
 
     // MARK: encoding
 
-    static func hello(nonce: UInt32, device: String, controller: String) -> [UInt8] {
+    /// One piece of an encoded frame (H.264, AVCC; protocol.h kVideo).
+    struct VideoPiece {
+        var frame: UInt32
+        var index: Int, count: Int
+        var key: Bool
+        var timeNs: UInt64
+        var width: Int, height: Int
+        var payload: ArraySlice<UInt8>
+    }
+
+    static func hello(nonce: UInt32, device: String, controller: String, video: Bool = false) -> [UInt8] {
         var w = Writer()
-        w.header(.hello, session: 0)
+        w.header(.hello, session: 0, flags: video ? wantsVideo : 0)
         w.u32(nonce); w.name(device); w.name(controller)
         return w.bytes
     }
@@ -80,6 +93,12 @@ enum WWGP {
         return w.bytes
     }
 
+    static func keyframeRequest(session: UInt32) -> [UInt8] {
+        var w = Writer()
+        w.header(.keyframe, session: session)
+        return w.bytes
+    }
+
     // MARK: decoding
 
     /// (type, session) of one of our packets; nil for anything else.
@@ -97,6 +116,19 @@ enum WWGP {
         let nonce = r.u32()
         let host = r.name()
         return r.ok ? Welcome(session: session, nonce: nonce, host: host) : nil
+    }
+
+    static func video(_ b: [UInt8]) -> (session: UInt32, piece: VideoPiece)? {
+        guard b.count >= videoHeaderSize, let (type, session) = header(b), type == .video else { return nil }
+        var r = Reader(bytes: b, at: headerSize)
+        let frame = r.u32(), index = Int(r.u16()), count = Int(r.u16())
+        let key = r.u8() & 1 != 0
+        _ = r.u8()
+        let time = r.u64()
+        let width = Int(r.u16()), height = Int(r.u16())
+        guard r.ok, count > 0, index < count else { return nil }
+        return (session, VideoPiece(frame: frame, index: index, count: count, key: key, timeNs: time,
+                                    width: width, height: height, payload: b[videoHeaderSize...]))
     }
 
     // MARK: helpers
@@ -125,9 +157,9 @@ enum WWGP {
             u8(UInt8(n))
             bytes.append(contentsOf: utf8[0..<n])
         }
-        mutating func header(_ type: PacketType, session: UInt32) {
+        mutating func header(_ type: PacketType, session: UInt32, flags: UInt8 = 0) {
             bytes.append(contentsOf: WWGP.magic)
-            u16(WWGP.version); u8(type.rawValue); u8(0); u32(session)
+            u16(WWGP.version); u8(type.rawValue); u8(flags); u32(session)
         }
     }
 
@@ -142,6 +174,7 @@ enum WWGP {
         }
         mutating func u16() -> UInt16 { let lo = UInt16(u8()); return lo | UInt16(u8()) << 8 }
         mutating func u32() -> UInt32 { let lo = UInt32(u16()); return lo | UInt32(u16()) << 16 }
+        mutating func u64() -> UInt64 { let lo = UInt64(u32()); return lo | UInt64(u32()) << 32 }
         mutating func name() -> String {
             let n = Int(u8())
             guard ok, n <= WWGP.maxName, at + n <= bytes.count else { ok = false; return "" }

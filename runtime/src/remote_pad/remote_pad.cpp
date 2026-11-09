@@ -6,6 +6,7 @@
 #include "../motion/motion.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -28,6 +29,7 @@ namespace {
 std::mutex g_mu;
 std::unique_ptr<Server> g_server;
 int g_turns = -1;  // the phone's screen rotation of the previous motion sample (server thread)
+std::atomic<bool> g_video{false}, g_keyframe{false};
 #ifdef __APPLE__
 DNSServiceRef g_bonjour = nullptr;
 #endif
@@ -62,9 +64,10 @@ void start_from_env() {
     if (g_server) return;
     const std::string name = host_name();
     g_server = std::make_unique<Server>(Server::Callbacks{
-        [](const Server::Snapshot&) { g_turns = -1; },
+        [](const Server::Snapshot& s) { g_turns = -1; g_keyframe = true; g_video = s.video; },
         on_input,
-        [](const std::string&) { motion::remote_reset(); g_turns = -1; },
+        [](const std::string&) { motion::remote_reset(); g_turns = -1; g_video = false; },
+        [] { g_keyframe = true; },
     }, name);
     if (!g_server->start(port)) { g_server.reset(); return; }
     log_msg("[remote pad] waiting for the iPhone GamePad on UDP port %u (WWHD_REMOTE_PAD)", (unsigned)g_server->port());
@@ -98,6 +101,13 @@ Pad pad() {
     p.controller = s.controller;
     p.input = s.input;
     return p;
+}
+
+bool video_wanted() { return g_video.load(std::memory_order_relaxed); }
+bool take_keyframe_request() { return g_keyframe.exchange(false); }
+void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height) {
+    std::lock_guard lk(g_mu);
+    if (g_server) g_server->send_video(data, size, key, time_ns, width, height);
 }
 
 void pad_values(const Input& in, float* v) {

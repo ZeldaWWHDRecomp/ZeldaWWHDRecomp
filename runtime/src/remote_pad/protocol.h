@@ -1,7 +1,7 @@
 // Remote GamePad protocol: an iPhone (ios/) acts as the Wii U GamePad of the game running on this
 // computer. The phone sends its controller's buttons and sticks, touches on its screen and its motion
-// sensors; the computer answers so the phone knows it is connected. (Video of the GamePad screen is a
-// later version of this protocol.)
+// sensors; the computer answers so the phone knows it is connected and, when the phone asks for it,
+// sends it the GamePad screen as H.264 video.
 //
 // Transport: UDP, default port 26770, advertised over Bonjour as _wwhd-gamepad._udp. Every datagram
 // starts with the 12-byte header below. All integers and floats are little-endian. The phone keeps
@@ -13,6 +13,15 @@
 //                                   (also sent about once a second as a keepalive)
 //   phone -> computer   kInput      header (session), Input (kInputSize bytes)
 //   either              kBye        header (session): the other side may forget the session now
+//   computer -> phone   kVideo      header (session), video fields, one piece of an encoded frame
+//                                   (only after a Hello with kWantsVideo in its header flags)
+//   phone -> computer   kKeyframe   header (session): a piece was lost; make the next frame a keyframe
+//
+// Video: H.264, no frame reordering. A frame is its NAL units, each with a 4-byte big-endian length
+// (AVCC); a keyframe starts with its SPS and PPS. A frame is cut into pieces of at most kMaxVideoPayload
+// bytes, sent in order; the phone shows a frame once it has all its pieces and drops the rest until the
+// next keyframe after a loss. width/height: the picture's size, which is the GamePad screen (854 x 480)
+// or that shape at a higher resolution.
 //
 // Names are a u8 byte length then UTF-8, at most kMaxName bytes.
 //
@@ -34,12 +43,13 @@ constexpr const char* kBonjourType = "_wwhd-gamepad._udp";
 constexpr size_t kHeaderSize = 12;
 constexpr size_t kMaxName = 63;
 
-enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4 };
+enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6 };
+enum HelloFlag : uint8_t { kWantsVideo = 1 };  // a Hello's header flags
 
 struct Header {
     uint16_t version = kVersion;
     uint8_t type = 0;
-    uint8_t flags = 0;      // none defined yet: 0
+    uint8_t flags = 0;      // a Hello: HelloFlag bits; others: 0
     uint32_t session = 0;   // 0 in a Hello; the Welcome's afterwards
 };
 
@@ -74,13 +84,37 @@ struct Input {
 // 2 x u16 touch + motion time u64 + 6 x f32
 constexpr size_t kInputSize = kHeaderSize + 1 + 1 + 4 + 8 + 4 + 8 + 4 + 4 + 8 + 24;
 
-struct Hello { uint32_t nonce = 0; std::string device, controller; bool operator==(const Hello&) const = default; };
+struct Hello {
+    uint32_t nonce = 0;
+    std::string device, controller;
+    bool video = false;  // kWantsVideo
+    bool operator==(const Hello&) const = default;
+};
 struct Welcome { uint32_t nonce = 0; std::string host; bool operator==(const Welcome&) const = default; };
 
 std::vector<uint8_t> encode_hello(const Hello& h);
 std::vector<uint8_t> encode_welcome(uint32_t session, const Welcome& w);
 std::vector<uint8_t> encode_input(uint32_t session, const Input& in);
 std::vector<uint8_t> encode_bye(uint32_t session);
+std::vector<uint8_t> encode_keyframe_request(uint32_t session);
+
+// header + frame u32 + index u16 + count u16 + flags u8 (1: keyframe) + 0 u8 + time u64 + width u16 + height u16
+constexpr size_t kVideoHeaderSize = kHeaderSize + 4 + 2 + 2 + 1 + 1 + 8 + 2 + 2;
+constexpr size_t kMaxDatagram = 1400;  // below the Wi-Fi MTU with IPv6 and UDP headers
+constexpr size_t kMaxVideoPayload = kMaxDatagram - kVideoHeaderSize;
+struct VideoPiece {
+    uint32_t frame = 0;         // +1 per frame (wraps)
+    uint16_t index = 0, count = 1;
+    bool key = false;
+    uint64_t time_ns = 0;       // the computer's clock when the frame was drawn
+    uint16_t width = 0, height = 0;
+    const uint8_t* data = nullptr;  // into the parsed datagram
+    size_t size = 0;
+};
+// the datagrams for one encoded frame (at least one; count <= 65535 pieces)
+std::vector<std::vector<uint8_t>> encode_video(uint32_t session, uint32_t frame, bool key, uint64_t time_ns,
+                                               uint16_t width, uint16_t height, const uint8_t* data, size_t size);
+std::optional<VideoPiece> parse_video(const uint8_t* data, size_t size);
 
 // nullopt: not one of ours (wrong magic, version, size)
 std::optional<Header> parse_header(const uint8_t* data, size_t size);

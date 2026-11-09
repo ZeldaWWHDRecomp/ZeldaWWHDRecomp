@@ -1,4 +1,5 @@
 #include "metal_gamepad_backdrop.h"
+#include "remote_video.h"
 #include "platform/present_observer.h"
 // Display: the TV and GamePad windows, full screen, and the final composition of the TV and GamePad
 // images onto the screen (scale to fit with letterbox/pillarbox, scaling filter, GamePad screen as a
@@ -1076,6 +1077,12 @@ void present_screens() {
     }
     bool drc_win = P.drc_window;
     if (drc_win) present_to_layer(R.drc, ^(id<MTLTexture> t) { compose_drc(t); });
+    // the iPhone GamePad's screen (remote_video.h): the same picture, whatever the GamePad screen mode here
+    if (R.drc.tex)
+        if (id<MTLTexture> t = remote_video::begin_frame(R.device, R.drc.srgb, nominal_w(R.drc), nominal_h(R.drc))) {
+            compose_drc(t);
+            remote_video::end_frame(command_buffer());
+        }
 
     for (auto& path : display_take_present_dumps()) {
         if (!R.tv.tex || dw < 1 || dh < 1) continue;
