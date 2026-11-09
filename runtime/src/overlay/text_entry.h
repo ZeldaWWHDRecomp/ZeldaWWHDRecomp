@@ -42,6 +42,13 @@ struct Request {
     // as it is typed, in the game's font (the real keyboard tells the game's receiver the same way)
     std::function<void(const std::u16string&)> changed;
     std::shared_ptr<const game_font::Glyphs> glyphs;  // set by start(): the name font's characters
+    // A one-line form (online co-op's chat box, typed on a keyboard): only the hint and the field, its top left at
+    // (x, y) and `width` wide, as fractions of the picture; no on-screen keyboard. Enter OK, Esc Cancel; a
+    // controller's Start OK and B Cancel.
+    bool compact = false;
+    float x = 0, y = 0, width = 0.4f;
+    // (render thread) host keys are offered here first; true takes one (the chat's Tab: the other channel)
+    std::function<bool(int code)> key;
 };
 using Done = std::function<void(bool ok, std::u16string text)>;
 

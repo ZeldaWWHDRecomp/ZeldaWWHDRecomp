@@ -1066,12 +1066,17 @@ static void test_emote_keys() {
     CHECK(shortcut_for_key(m, kVK_ANSI_1, 0) != kEmote1 && shortcut_for_key(m, kVK_ANSI_5, 0) != kEmote5);
     CHECK(m.keys[kDUp][0] == kVK_ANSI_1);
     // rebound and saved: the new key comes back from controls.json, the old one is free
-    m.shortcuts[kEmote2].keys[0] = {kVK_ANSI_T, 0};
+    m.shortcuts[kEmote2].keys[0] = {kVK_ANSI_U, 0};
     CHECK(!shortcut_conflict(m, kEmote2));
     Mapping out;
     CHECK(from_json(to_json(m), out));
-    CHECK(out.shortcuts[kEmote2].keys[0] == (ShortcutKey{kVK_ANSI_T, 0}));
-    CHECK(shortcut_for_key(out, kVK_ANSI_T, 0) == kEmote2 && shortcut_for_key(out, kVK_ANSI_2, kModAlt) == -1);
+    CHECK(out.shortcuts[kEmote2].keys[0] == (ShortcutKey{kVK_ANSI_U, 0}));
+    CHECK(shortcut_for_key(out, kVK_ANSI_U, 0) == kEmote2 && shortcut_for_key(out, kVK_ANSI_2, kModAlt) == -1);
+    // the chat (coop_chat.h): T, which no game input or other shortcut uses (Enter is the game's Plus); no button
+    const auto d = Mapping::defaults();
+    CHECK(d.shortcuts[kChat].keys[0] == (ShortcutKey{kVK_ANSI_T, 0}) && !d.shortcuts[kChat].button);
+    CHECK(std::string(shortcut_info(kChat).group) == "Online" && !shortcut_conflict(d, kChat));
+    CHECK(shortcut_for_key(d, kVK_ANSI_T, 0) == kChat && d.keys[kPlus][0] == kVK_Return);
     // a key a game input uses is reported (plain J is the game's B)
     m.shortcuts[kEmote3].keys[0] = {kVK_ANSI_J, 0};
     CHECK(shortcut_conflict(m, kEmote3));

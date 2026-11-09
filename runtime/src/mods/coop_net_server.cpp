@@ -15,6 +15,7 @@
 // bring poses alone (presence: nothing of theirs acts on this game).
 #include "coop_net.h"
 #include "coop_block.h"
+#include "coop_chat.h"
 
 #if WWHD_ONLINE
 
@@ -264,6 +265,17 @@ void leave_party();
 bool active() { return g_active; }
 
 void tell_mute(uint64_t key, bool on) { if (g_client && key) g_client->mute(key, on); }
+// text chat (coop_chat.h): the channels turned off, told at each welcome and on a change
+std::atomic<uint8_t> g_chat_off{0};
+void chat_send(int channel, const std::string& text) {
+    std::lock_guard<std::mutex> l(g_ui_mu);
+    g_actions.push_back([channel, text](op::Client& c) { c.send_chat(uint8_t(channel), text); });
+}
+void chat_prefs(uint8_t off) {
+    if (g_chat_off.exchange(off) == off) return;
+    std::lock_guard<std::mutex> l(g_ui_mu);
+    g_actions.push_back([](op::Client& c) { c.chat_prefs(g_chat_off.load()); });
+}
 // (C5 through a server) the problems a server or a party named, and the party's set from its invitation
 std::mutex g_mods_mu;
 std::vector<ModIssue> g_mod_issues;
@@ -392,6 +404,7 @@ void stop(const char* why) {
     if (g_client) g_client->stop(), delete g_client, g_client = nullptr, mods::trace("coop: server session stopped%s%s", why ? ": " : "", why ? why : "");
     g_active = false, g_status = why ? why : "Off", g_me_sid = 0, g_peers.clear(), g_party = {}, g_party_size = 1, g_slot_of_me = 0, g_where_known = false;
     for (Tiered& t : g_tiered) t = Tiered{};
+    chat::session_ended();
     { std::lock_guard<std::mutex> l(g_far_mu); g_markers.clear(), g_markers_at = 0, g_sea.clear(), g_sea_at = 0; }
     { std::lock_guard<std::mutex> l(g_pvp_mu); g_pvp_rules = {}, g_pvp_flags = 0, g_pvp_marks.clear(), g_pvp_events.clear(), g_pvp_sent = -1; }
     g_runner.clear(), g_places.clear();
@@ -609,6 +622,7 @@ void poll(Handler& h) {
             }
             g_status = "Online, friend code " + g_client->friend_code();
             if (!e.resumed) block::resend();  // (C14: the server keeps blocks in memory only)
+            g_client->chat_prefs(g_chat_off.load());  // (a handover's new worker too: it knows only what it is told)
             // (C25: UDP blocked, the client library went over TCP to the same address)
             mods::trace("coop: online over %s", g_client->transport() == op::Transport::kTcp ? "TCP" : "UDP");
             {  // kept in the saved servers, most recent first, its key pinned
@@ -859,6 +873,22 @@ void poll(Handler& h) {
             if (s >= 0) h.message(s, kEmote, &id, 1);
             break;
         }
+        case op::ClientEvent::kChatRules:  // the server's chat (coop_chat.h); none came: no chat
+            chat::server_rules({e.chat_rules.enabled, e.chat_rules.global, (int)e.chat_rules.max_length});
+            mods::trace("coop: server: chat %s, global %s, up to %u characters, %u lines per %u s", e.chat_rules.enabled ? "on" : "off",
+                        e.chat_rules.global ? "on" : "off", e.chat_rules.max_length, e.chat_rules.rate_count, e.chat_rules.rate_window_s);
+            break;
+        case op::ClientEvent::kChatFrom: {
+            chat::Line l;
+            l.channel = e.chat.channel, l.key = e.chat.key_hash, l.name = e.chat.name, l.text = e.chat.text;
+            l.party = (e.chat.flags & op::kChatFromParty) != 0, l.yours = (e.chat.flags & op::kChatYours) != 0;
+            chat::server_line(l);
+            break;
+        }
+        case op::ClientEvent::kChatResult:
+            chat::server_result(e.chat.channel, e.text);
+            mods::trace("coop: server: chat line not sent (%s line): %s", e.chat.channel ? "global" : "party", e.text.c_str());
+            break;
         case op::ClientEvent::kPvpRules: {
             PvpRules r;
             r.mode = (int)e.pvp_rules.mode, r.protect_ms = e.pvp_rules.protect_ms, r.enter_delay_ms = e.pvp_rules.enter_delay_ms;

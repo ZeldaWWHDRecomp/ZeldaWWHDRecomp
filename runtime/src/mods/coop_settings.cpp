@@ -10,6 +10,7 @@
 #include <string>
 
 #include "coop_block.h"
+#include "coop_chat.h"
 #include "coop_emotes.h"
 #include "coop_modset.h"
 #include "coop_net.h"
@@ -116,6 +117,45 @@ void draw_blocks() {
         if (ImGui::SmallButton(("Undo##u" + std::to_string(key)).c_str())) hostui::post([key] { block::undo(key); });
     }
     ImGui::TextDisabled("Blocked: you and they don't see each other. Muted: seen, but no sounds or emotes from them.");
+}
+
+// text chat (coop_chat.h): the two channels, the keys, the players whose chat is muted here
+void draw_chat(const sync::Settings& s) {
+    ImGui::TextUnformatted("Chat (through a server that has it)");
+    bool party = s.chat_party, global = s.chat_global;
+    if (ImGui::Checkbox("Party chat", &party)) hostui::post([party] { change([&](sync::Settings& x) { x.chat_party = party; }); });
+    ImGui::SameLine();
+    if (ImGui::Checkbox("Global chat", &global)) hostui::post([global] { change([&](sync::Settings& x) { x.chat_global = global; }); });
+    const input_map::ShortcutKey k = input_map::current().shortcuts[input_map::kChat].keys[0];
+    ImGui::TextDisabled("Each is a tab of the chat box; off: its tab goes and nothing is sent on it. Global is only there where the");
+    ImGui::TextDisabled("server allows it. %s opens the chat (Enter sends, Esc cancels, Tab switches); with a controller, the",
+                        k.code == input_map::kNoKey ? "The Chat key" : input_map::shortcut_key_label(k).c_str());
+    ImGui::TextDisabled("pause menu's Online page (Chat) or a button bound in Settings > Controls, Online.");
+    if (chat::available()) {
+        const auto senders = chat::senders();
+        bool any = false;
+        for (const chat::Box::Mute& m : senders) {
+            if (chat::muted(m.key)) continue;
+            if (!any) ImGui::TextUnformatted("Recent in the chat"), any = true;
+            ImGui::PushID((int)(m.key & 0x7FFFFFFF));
+            ImGui::BulletText("%s", m.name.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Mute chat")) chat::mute(m.key, m.name, true);
+            ImGui::PopID();
+        }
+    }
+    const auto muted = chat::mutes();
+    if (!muted.empty()) {
+        ImGui::TextUnformatted("Chat muted");
+        for (const chat::Box::Mute& m : muted) {
+            ImGui::PushID((int)(m.key & 0x7FFFFFFF) ^ 0x5000);
+            ImGui::BulletText("%s", m.name.empty() ? "someone" : m.name.c_str());
+            ImGui::SameLine();
+            if (ImGui::SmallButton("Unmute")) chat::mute(m.key, m.name, false);
+            ImGui::PopID();
+        }
+        ImGui::TextDisabled("Their lines are never shown here (kept between sessions).");
+    }
 }
 
 void draw_tab() {
@@ -308,6 +348,11 @@ void draw_tab() {
                 ImGui::BulletText("%s (%s)", net::name(id).c_str(), sync::kTunics[net::tunic(id) & 3]);
                 ImGui::SameLine();
                 if (ImGui::SmallButton("Go to")) hostui::post([id] { sync::go_to(id); });
+                if (const uint64_t key = net::player_key(id); key && chat::available()) {  // (the chat: a party member muted here)
+                    ImGui::SameLine();
+                    const bool m = chat::muted(key);
+                    if (ImGui::SmallButton(m ? "Unmute chat" : "Mute chat")) chat::mute(key, net::name(id), !m);
+                }
                 ImGui::PopID();
             }
         // emotes (C22): the others see this player's Link play it; here a bubble over him names it
@@ -320,6 +365,7 @@ void draw_tab() {
             if (ImGui::Button(label.c_str())) emotes::mine(emotes::kEmotes[e].id);
         }
     }
+    draw_chat(s);
     draw_blocks();
     ImGui::Spacing();
     ImGui::TextDisabled("Before your first session your save is backed up. A new Quest Log just for co-op is recommended.");
@@ -487,6 +533,25 @@ void register_items() {
             emotes::mine(emotes::kEmotes[g_emote_choice].id);
         };
         it.enabled = [] { return net::role() != net::Role::kOff; };
+        game_settings::add(std::move(it));
+    }
+    {
+        Item it;
+        it.id = "online.chat", it.tab = "online", it.label = "Chat", it.kind = Kind::Action;
+        it.help = "Opens the chat: quick phrases, or type a message with the on-screen keyboard. L and R switch between the Party and Global tabs. On a keyboard: T.";
+        it.text = [] { return std::string(chat::available() ? "Open" : "-"); };
+        it.set = [](float) { chat::open_menu(); };
+        it.enabled = [] { return chat::available(); };
+        game_settings::add(std::move(it));
+    }
+    for (int c = 0; c < 2; c++) {
+        Item it;
+        it.id = c ? "online.chat_global" : "online.chat_party", it.tab = "online", it.label = c ? "Global chat" : "Party chat";
+        it.kind = Kind::Toggle;
+        it.help = c ? "Everyone on the server, where the server allows it: a tab of the chat box. Off: the tab goes and nothing is sent on it."
+                    : "Your party members: a tab of the chat box. Off: the tab goes and nothing is sent on it.";
+        it.get = [c] { const sync::Settings s = sync::settings(); return (c ? s.chat_global : s.chat_party) ? 1.0f : 0.0f; };
+        it.set = [c](float v) { change([&](sync::Settings& x) { (c ? x.chat_global : x.chat_party) = v >= 0.5f; }); };
         game_settings::add(std::move(it));
     }
     {

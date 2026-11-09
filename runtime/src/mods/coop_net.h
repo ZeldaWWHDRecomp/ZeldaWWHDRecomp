@@ -146,6 +146,11 @@ std::vector<SeaMark> sea_players();
 uint64_t player_key(int id);
 void tell_block(uint64_t key, bool on);
 void tell_mute(uint64_t key, bool on);
+// (through a server) text chat (coop_chat.h): a line on a channel (0 the party, 1 global; the server checks it and
+// passes it on, the answer comes to coop_chat), and the channels this player turned off (a bit each: the server sends
+// nothing of them; sent again at each welcome)
+void chat_send(int channel, const std::string& text);
+void chat_prefs(uint8_t off_bits);
 // (server mod rules, GAPS C5) why the server or a party turned this game away for its gameplay mods (the problems'
 // codes as coop_modset.h's); empty otherwise
 struct ModIssue { uint8_t code; std::string id, wanted, have; };

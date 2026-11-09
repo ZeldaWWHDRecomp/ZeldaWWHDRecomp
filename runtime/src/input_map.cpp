@@ -205,6 +205,9 @@ static const ShortcutInfo kShortcuts[kShortcutCount] = {
     {"Emote3", "Emote: Yes", "Online", {kVK_ANSI_3, kModAlt}, {}},
     {"Emote4", "Emote: Surprised", "Online", {kVK_ANSI_4, kModAlt}, {}},
     {"Emote5", "Emote: Look around", "Online", {kVK_ANSI_5, kModAlt}, {}},
+    // online co-op's text chat (mods/coop_chat.h): T opens the line to type (Enter, the usual chat key, is the game's
+    // Plus, its pause menu); a controller button bound here opens the chat menu with the quick phrases
+    {"Chat", "Chat", "Online", {kVK_ANSI_T}, {}},
     {"PiP", "GamePad picture-in-picture", "Display and audio", {}, {}},
     {"Performance", "Performance overlay", "Display and audio", {}, {}},
     {"Mute", "Mute", "Display and audio", {}, {}},

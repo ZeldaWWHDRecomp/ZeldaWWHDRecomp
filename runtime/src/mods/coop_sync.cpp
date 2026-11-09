@@ -24,6 +24,7 @@
 #include <mutex>
 
 #include "coop_deck.h"
+#include "coop_chat.h"
 #include "coop_emotes.h"
 #include "coop_block.h"
 #include "coop_modset.h"
@@ -624,6 +625,10 @@ Settings settings() {
         if (hostui::get("online.chart_others", v)) g_set.chart_others = atoi(v.c_str()) != 0;
         if (const char* e = getenv("WWHD_COOP_CHART_PARTY")) g_set.chart_party = atoi(e) != 0;    // (tests: the Sea Chart's marks)
         if (const char* e = getenv("WWHD_COOP_CHART_OTHERS")) g_set.chart_others = atoi(e) != 0;
+        if (hostui::get("online.chat_party", v)) g_set.chat_party = atoi(v.c_str()) != 0;
+        if (hostui::get("online.chat_global", v)) g_set.chat_global = atoi(v.c_str()) != 0;
+        if (const char* e = getenv("WWHD_COOP_CHAT_PARTY")) g_set.chat_party = atoi(e) != 0;    // (tests: the chat's channels)
+        if (const char* e = getenv("WWHD_COOP_CHAT_GLOBAL")) g_set.chat_global = atoi(e) != 0;
         if (hostui::get("online.pvp_sea", v)) g_set.pvp_sea = atoi(v.c_str()) != 0;
         if (hostui::get("online.server", v)) g_set.server = atoi(v.c_str()) != 0;
         if (hostui::get("online.server_addr", v) && !v.empty()) g_set.server_addr = v;
@@ -691,6 +696,8 @@ void save_settings(const Settings& s) {
     hostui::set("online.radar", s.radar ? "1" : "0");
     hostui::set("online.chart_party", s.chart_party ? "1" : "0");
     hostui::set("online.chart_others", s.chart_others ? "1" : "0");
+    hostui::set("online.chat_party", s.chat_party ? "1" : "0");
+    hostui::set("online.chat_global", s.chat_global ? "1" : "0");
     hostui::set("online.pvp_sea", s.pvp_sea ? "1" : "0");
     hostui::set("online.server", s.server ? "1" : "0");
     hostui::set("online.server_addr", s.server_addr), hostui::set("online.server_port", std::to_string(s.server_port));
@@ -892,6 +899,7 @@ void poll(Cpu* c, bool on) {
         g_ask_text.clear(), g_ask_said = -1;  // (a question still up closes)
     }
     net::poll(g_handler);
+    chat::step();  // (text chat: the settings followed, its test aids)
     if (static bool told = false; !arrived() || !guest()) told = false;  // (told again at each join: drop-in, C17)
     else if (!told) told = true, net::send(0, net::kArrived, std::string());
     own_tunic(host() ? net::tunic(0) : guest() ? net::tunic(net::my_id()) : -1);

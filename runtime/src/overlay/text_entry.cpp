@@ -287,6 +287,7 @@ void press(const Cell& c) {
 }
 
 void host_key(int code) {
+    if (U.req.key && U.req.key(code)) return;
     switch (code) {
     case kVK_Delete: backspace(); break;
     case kVK_ForwardDelete: delete_forward(); break;
@@ -351,6 +352,12 @@ void controller(const float* pad) {
     if (U.first) {  // buttons held when the prompt opened (the press that chose the file) do nothing
         std::copy(pad, pad + kPadCount, U.prev);
         std::fill(std::begin(U.next_repeat), std::end(U.next_repeat), 1e300);  // no repeats either
+        return;
+    }
+    if (U.req.compact) {  // (the one-line form has no keys to choose: Start sends, B cancels)
+        if (pressed(pad, kPadMenu, false)) U.result = 1;
+        else if (pressed(pad, face_input(kB), false)) U.result = 2;
+        std::copy(pad, pad + kPadCount, U.prev);
         return;
     }
     auto dir = [&](int dpad, int stick) {
@@ -490,7 +497,39 @@ void keyboard(float unit, float key_h, float sp) {
 // even that is too tall (small windows) it moves up over the field.
 constexpr float kBelowField = 0.40f;
 
+// the one-line form (Request::compact): the hint, the field and the counter, where the caller put it
+void compact_window() {
+    const ImVec2 ds = ImGui::GetIO().DisplaySize;
+    float px = 0, py = 0, pw = ds.x, ph = ds.y;
+    if (float x, y, w, h; gfx::main_picture(&x, &y, &w, &h) && w > 0 && h > 0)
+        px = x * ds.x, py = y * ds.y, pw = w * ds.x, ph = h * ds.y;
+    const float inner = std::max(120.0f, pw * U.req.width);
+    ImGui::SetNextWindowPos(ImVec2(px + pw * U.req.x, py + ph * U.req.y), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(inner + 20, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.82f);
+    if (U.first) ImGui::SetNextWindowFocus();
+    const ImGuiWindowFlags fl = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoNav |
+                                ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_AlwaysAutoResize;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 6));
+    if (ImGui::Begin("##text_entry_line", nullptr, fl)) {
+        if (!U.req.hint.empty()) ImGui::TextColored(kAccent, "%s", utf8(U.req.hint).c_str());
+        field(inner);
+        if (U.note_since >= 0 && now_s() - U.note_since < 2.5) ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.45f, 1.0f), "%s", U.note.c_str());
+        const bool flash = U.full_since >= 0 && now_s() - U.full_since < 0.6;
+        char count[32];
+        snprintf(count, sizeof count, "%d / %d", (int)U.text.size(), U.req.max_len);
+        if (flash || (int)U.text.size() * 5 >= U.req.max_len * 4) {  // (shown near the end only)
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + inner - ImGui::CalcTextSize(count).x);
+            ImGui::TextColored(flash ? ImVec4(1.0f, 0.45f, 0.40f, 1.0f) : ImVec4(0.70f, 0.78f, 0.84f, 1.0f), "%s", count);
+        }
+    }
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
 void window() {
+    if (U.req.compact) return compact_window();
     const ImVec2 ds = ImGui::GetIO().DisplaySize;
     float px = 0, py = 0, pw = ds.x, ph = ds.y;
     if (float x, y, w, h; gfx::main_picture(&x, &y, &w, &h) && w > 0 && h > 0)
@@ -578,8 +617,9 @@ bool start(const Request& r, Done done) {
     }
     input::release_keys();  // keys held now belong to the prompt
     hostui::post([] { mods::mouse_release(); });  // the pointer clicks keys (mouse camera: not captured)
-    LOG("[text] the game asks for text (up to %d characters): on-screen text entry shown; type, or use the "
-        "on-screen keyboard with a controller or the mouse", r.max_len);
+    if (r.compact) LOG("[text] a text line (up to %d characters): type, Enter OK, Esc Cancel", r.max_len);
+    else LOG("[text] the game asks for text (up to %d characters): on-screen text entry shown; type, or use the "
+             "on-screen keyboard with a controller or the mouse", r.max_len);
     return true;
 }
 
@@ -653,7 +693,8 @@ bool draw(const float* pad) {
         g_done = nullptr;
     }
     const bool ok = U.result == 1;
-    if (ok) LOG("[text] OK: \"%s\"", utf8(U.text).c_str());
+    if (ok && U.req.compact) LOG("[text] OK (%zu characters)", U.text.size());  // (a chat line: not written down)
+    else if (ok) LOG("[text] OK: \"%s\"", utf8(U.text).c_str());
     else LOG("[text] cancelled");
     if (done) done(ok, ok ? U.text : std::u16string());
     return true;

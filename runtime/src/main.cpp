@@ -73,6 +73,7 @@
 #include "overlay/editor_panel.h"
 #include "overlay/randomizer_tab.h"
 #include "mods/coop_settings.h"
+#include "mods/coop_chat.h"
 #include "mods/coop_emotes.h"
 #include "mods/coop_radar.h"
 #include "mods/coop_pvp.h"
@@ -602,6 +603,7 @@ int main(int argc, char** argv) {
     mods::coop::radar::register_overlay();  // (far players at sea, C13)
     mods::coop::radar::register_chart_overlay();  // (party members on the Sea Chart)
     mods::coop::pvp::register_overlay();    // (C28: the marks over PvP players)
+    mods::coop::chat::register_overlay();   // (text chat through a server: the chat box)
     index_game_functions();
     install_crash_handler();
     start_log_file();

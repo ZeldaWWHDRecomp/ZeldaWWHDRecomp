@@ -165,7 +165,7 @@ menu.
 
 - **Blocked:** you and they don't see each other any more. No Link, sounds, effects, emotes or radar dot, and
   the server stops passing their messages to you.
-- **Muted:** you still see them, but hear no sounds and see no emotes from them.
+- **Muted:** you still see them, but hear no sounds and see no emotes or chat lines from them.
 
 The list is kept between sessions and on every server. Undo an entry in Settings > Online. Party members can't be
 blocked; leave the party instead.
@@ -177,6 +177,43 @@ Settings > Online or on the Online page of the pause menu: Wave, Cheer, Yes, Sur
 aren't in your party see it too. Your own Link doesn't move. A small bubble over his head shows the emote while
 the others see it. You can change the keys in Settings > Controls, under Online. You can play one emote a second. If you walk away, the emote stops. The animations come from
 your own game files.
+
+## Chat
+
+Through a server that has chat, you can write to the other players. The chat box sits on the left of the picture,
+between your hearts and the sea radar. It has a tab for each channel:
+
+- **Party:** your party members. This is the tab you start on.
+- **Global:** everyone on the server. Only there if the server allows it.
+
+New lines in the open tab show in the box for a few seconds, then fade. Party members' names are green. Lines for the
+other tab don't show in the box: that tab shows how many are unread until you switch to it.
+
+**Writing:**
+
+| | Open the chat | Switch tabs | Send | Cancel |
+|---|---|---|---|---|
+| Keyboard | **T** | **Tab**, or click the tab | **Enter** | **Esc** |
+| Controller and touch | **Chat** on the Online page of the pause menu, or a button you bind | **L** / **R**, or tap the tab | **A** on a line | **B** |
+
+With a controller or on a phone, the chat menu offers quick phrases (Follow me, Wait for me, Thanks!, Over here,
+Let's go, Need help) and **Type a message...**, which opens the on-screen keyboard. A line goes to the tab that is
+open. Change the keyboard key, or bind a controller button, in Settings > Controls under Online (Chat). Enter isn't
+used to open the chat because it is the game's pause button.
+
+- A line can have as many characters as the server allows (120 unless its operator changed it). You can type the
+  characters the game's font has, as in the game's own name entry.
+- The server limits how fast you can write (5 lines in 10 seconds by default) and may filter words (shown as
+  `***`). A line it doesn't pass on shows in your box as "Not sent", with the reason.
+- **Settings > Online** (and the Online page of the pause menu) has a switch for each channel, both on by default.
+  **Off** removes that tab: you get nothing on it and can't send on it.
+- **Mute a player's chat:** **Mute chat** next to a party member, or next to a name under "Recent in the chat" in
+  Settings > Online. Their lines are never shown to you again; **Unmute** under "Chat muted" undoes it. The list is
+  kept between sessions and on every server. Players you muted or blocked in "Blocking and muting" are not shown
+  either.
+- The server never keeps chat lines unless its operator turned on a chat log; ask the operator. It may also mute
+  a player's chat.
+- Played directly (without a server) there is no chat.
 
 ## Mods
 

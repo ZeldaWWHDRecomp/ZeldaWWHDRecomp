@@ -84,6 +84,8 @@ std::vector<SeaMark> sea_players();
 uint64_t player_key(int id);
 void tell_block(uint64_t key, bool on);
 void tell_mute(uint64_t key, bool on);
+void chat_send(int channel, const std::string& text);
+void chat_prefs(uint8_t off_bits);
 std::vector<ModIssue> mod_issues();
 std::string refused_mods();
 void poll_query();
@@ -583,6 +585,8 @@ std::vector<SeaMark> sea_players() { return srv::active() ? srv::sea_players() :
 uint64_t player_key(int id) { return srv::active() ? srv::player_key(id) : 0; }
 void tell_block(uint64_t key, bool on) { if (srv::active()) srv::tell_block(key, on); }
 void tell_mute(uint64_t key, bool on) { if (srv::active()) srv::tell_mute(key, on); }
+void chat_send(int channel, const std::string& text) { if (srv::active()) srv::chat_send(channel, text); }
+void chat_prefs(uint8_t off_bits) { srv::chat_prefs(off_bits); }
 std::vector<ModIssue> mod_issues() { return srv::mod_issues(); }
 void query_rules(const std::string& addr, int port) { srv::query_rules(addr, port); }
 std::string server_rules(const std::string& addr, int port) { return srv::server_rules(addr, port); }
@@ -635,6 +639,8 @@ std::vector<SeaMark> sea_players() { return {}; }
 uint64_t player_key(int) { return 0; }
 void tell_block(uint64_t, bool) {}
 void tell_mute(uint64_t, bool) {}
+void chat_send(int, const std::string&) {}
+void chat_prefs(uint8_t) {}
 std::vector<ModIssue> mod_issues() { return {}; }
 void query_rules(const std::string&, int) {}
 std::string server_rules(const std::string&, int) { return ""; }
