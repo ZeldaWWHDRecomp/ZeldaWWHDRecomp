@@ -257,6 +257,12 @@ const GabiPtrEntry* g_decomp_call_tab = nullptr;
 uint32_t g_decomp_ptr_mask = 0;
 #endif
 uint8_t g_decomp_exact = 0;
+#ifdef WWHD_DECOMP_FAST_LOCAL
+extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_fast_local = 0;  // gabi.h GABI_FAST_LOCAL: 1 = the lean Local / FrameLocal form (init below)
+#endif
+#ifdef WWHD_DECOMP_FAST_STR
+extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_fast_str = 0;  // gabi.h GABI_FAST_STR: 1 = guest_str's per-call-site cache (init below)
+#endif
 
 // the native entries the units register (gabi.h NativeReg, glue.cpp), per slot; enabled into g_decomp_native_entry by
 // direct_init. Filled by static constructors, so a constant-initialised pointer allocated on first use.
@@ -877,6 +883,21 @@ void init() {
         LOG("[decomp] guest-entry stats: %s", p);
     }
     g_debug = (g_stats || g_guard ? 1 : 0) | (g_estats ? 2 : 0);
+#ifdef WWHD_DECOMP_FAST_LOCAL
+    {  // WWHD_DECOMP_FAST_LOCAL=0: the general Local form; WWHD_NATIVE_LOCALS=1 (in-frame placement) needs it too
+        const char* e = getenv("WWHD_DECOMP_FAST_LOCAL");
+        const char* nl = getenv("WWHD_NATIVE_LOCALS");
+        g_decomp_fast_local = (e && !strcmp(e, "0")) || (nl && *nl == '1') ? 0 : 1;
+        LOG("[decomp] fast Local form: %s", g_decomp_fast_local ? "on" : "off");
+    }
+#endif
+#ifdef WWHD_DECOMP_FAST_STR
+    {  // WWHD_DECOMP_FAST_STR=0: guest_str's per-thread cache at every call site
+        const char* e = getenv("WWHD_DECOMP_FAST_STR");
+        g_decomp_fast_str = e && !strcmp(e, "0") ? 0 : 1;
+        LOG("[decomp] per-site guest strings: %s", g_decomp_fast_str ? "on" : "off");
+    }
+#endif
 #ifdef WWHD_DECOMP_FAST
     if (const char* p = getenv("WWHD_DECOMP_FAST_STATS")) {
         g_fstats_map = new std::map<std::tuple<uint32_t, uint32_t, int>, uint64_t>();
