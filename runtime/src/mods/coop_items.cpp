@@ -54,14 +54,14 @@ bool arrow_hit(Cpu* c, uint32_t a, Mine& m) {
     // (its whole way this step: an arrow flies further in a step than a player is wide)
     float from[3];
     for (int e = 0; e < 3; e++) from[e] = at[e] - (e == 0 ? dx : e == 2 ? dz : at[1] - y_was);
-    const auto near = [&](const float p[3]) {
+    const auto is_near = [&](const float p[3]) {
         const float vx = at[0] - from[0], vz = at[2] - from[2], len = vx * vx + vz * vz;
         const float t = len > 0 ? std::clamp(((p[0] - from[0]) * vx + (p[2] - from[2]) * vz) / len, 0.f, 1.f) : 1.f;
         const float y = from[1] + (at[1] - from[1]) * t;
         return std::hypot(from[0] + vx * t - p[0], from[2] + vz * t - p[2]) < 70 && y > p[1] && y < p[1] + 170;
     };
     for (int id = 0; id < net::kMaxPlayers; id++)
-        if (float p[3]; id != net::my_id() && net::party_flag(net::kFriendlyFire, true) && sync::place(id, p) && near(p)) {
+        if (float p[3]; id != net::my_id() && net::party_flag(net::kFriendlyFire, true) && sync::place(id, p) && is_near(p)) {
             const int16_t way = (int16_t)(std::atan2(dx, dz) * 32768 / M_PI);
             net::send(-1, net::kPlayerHit, std::string{(char)id, (char)2} + std::string((const char*)&way, 2));
             guest_call(c, GC(0x025D57E4), {ld32(a + 4)});  // fopAcM_delete
