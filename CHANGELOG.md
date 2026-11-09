@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Saves: a save folder chosen in Settings → Saves now also applies when you start the game from a launcher**
+  (#485, thanks @rhemfur; #487). The launchers, shortcuts and setup always pass the install's own `save` folder,
+  which the game took as your own choice, so a folder chosen in the Saves tab (for example inside a cloud folder)
+  only worked when `wwhd` was started directly. That default folder no longer counts as a choice, also for
+  randomized games and save profiles; any other `--save` on the command line still wins.
+
 - **Pause menu: the selection cursor no longer gets stuck after the settings arrow** (#484, thanks @XAlboX for the
   report and logs, #336). The arrow at the menu's left edge (Left from ITEMS) now only takes over from the menu's
   own cursor and always gives it back; a safety net restores the cursor if anything is left pointing at the arrow,
