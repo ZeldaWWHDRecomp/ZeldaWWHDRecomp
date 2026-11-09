@@ -2214,6 +2214,18 @@ std::shared_ptr<BackdropCapture> backdropCapture;
 uint64_t backdropTicket = 0, lastBackdropFrame = 0;
 unsigned backdropExpected = 0, backdropFinished = 0;
 bool backdropScope = false, backdropFailed = false, backdropReplay = false, backdropEncoded = false;
+// The textures last scanned out to the GamePad (gamepad_backdrop_scan). Only a
+// pane drawn into one of them can be selected; the same menu background drawn
+// into other targets (in Off-TV Play the TV's "Currently playing on Wii U
+// GamePad" screen, twice per frame) is neither captured nor allowed to cancel
+// the GamePad's pending capture (backdropForeign). As on Vulkan (#493).
+std::array<uint64_t, 4> backdropScanned{};
+unsigned backdropScannedNext = 0;
+bool backdropForeign = false;
+bool backdrop_gamepad_target(id<MTLTexture> texture) {
+    const auto key = metal_backdrop_source_key(texture);
+    return key && std::find(backdropScanned.begin(), backdropScanned.end(), key) != backdropScanned.end();
+}
 void backdrop_trace(const char* phase, uint64_t a=0, uint64_t b=0, uint64_t c=0) {
     static const uint64_t first=[] { const char* e=std::getenv("WWHD_GAMEPAD_BACKDROP_LOG"); return e&&*e?std::strtoull(e,nullptr,10):~uint64_t{0}; }();
     if(aspect::game_frame()<first)return;
@@ -2261,6 +2273,13 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
     capture->source.texture = source->tex; capture->ticket = ++backdropTicket; capture->coverage = coverage;
     capture->surface = std::make_unique<Surface>(*source);
     auto& surface = *capture->surface;
+    // At most about 1920x1080 (gamepad_backdrop::capture_extent): the replay draws
+    // the same pane scaled (its guest-to-pixel factors shrink with the texture),
+    // the bars cover-scale it like a full-size one.
+    const auto size = gamepad_backdrop::capture_extent(unsigned(source->tex.width), unsigned(source->tex.height));
+    if (!size.width || !size.height) {backdrop_trace("texture-reject",pixel,source->tex.width,source->tex.height);return false;}
+    surface.sx *= float(size.width) / float(source->tex.width);
+    surface.sy *= float(size.height) / float(source->tex.height);
     // Only the private Surface changes format. Pipeline metadata must match its
     // promoted texture; source identity and scanout colour encoding stay native.
     if(capturePixel != pixel) {
@@ -2268,7 +2287,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
         surface.fmt = format_info(surface.format, false);
     }
     surface.addr = surface.mipAddr = 0; surface.mipChain.reset(); surface.spares.clear(); surface.levelRanges.clear();
-    MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:capturePixel width:source->tex.width height:source->tex.height mipmapped:NO];
+    MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:capturePixel width:size.width height:size.height mipmapped:NO];
     d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     d.storageMode = MTLStorageModePrivate;
     // Bounded, nonblocking reuse. A slot is fenced by command completion and
@@ -2318,7 +2337,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
 void gamepad_backdrop_scope(const uint32_t*, bool begin) {
     if (begin) {
         backdrop_trace("begin",gamepad_backdrop::capture_enabled(),pendingBackdrops.size());
-        backdropCapture.reset(); backdropExpected = backdropFinished = 0; backdropFailed = false;
+        backdropCapture.reset(); backdropExpected = backdropFinished = 0; backdropFailed = backdropForeign = false;
         backdropScope = gamepad_backdrop::capture_enabled();
     } else {
         if (backdropCapture) {
@@ -2331,7 +2350,7 @@ void gamepad_backdrop_scope(const uint32_t*, bool begin) {
         }
         const bool complete = backdropScope && gamepad_backdrop::capture_enabled() && !backdropFailed && backdropExpected && backdropExpected == backdropFinished && backdropCapture && backdropCapture->source.valid;
         backdrop_trace("end",complete,(uint64_t(backdropExpected)<<32)|backdropFinished, (uint64_t(backdropFailed)<<1)|bool(backdropCapture));
-        metal_backdrop_finish_scope(complete,backdropScans,pendingBackdrops);
+        if (!backdropForeign || backdropCapture) metal_backdrop_finish_scope(complete,backdropScans,pendingBackdrops);
         if (complete) {
             if (pendingBackdrops.size() >= 16) { pendingBackdrops.clear(); backdropScans.reset(); }
             backdropScans.capture(backdropCapture->source.key(), backdropCapture->ticket);
@@ -2342,6 +2361,8 @@ void gamepad_backdrop_scope(const uint32_t*, bool begin) {
     }
 }
 void gamepad_backdrop_scan(Surface* source) {
+    if (const auto key = metal_backdrop_source_key(source->tex); key && !backdrop_gamepad_target(source->tex))
+        backdropScanned[backdropScannedNext++ % backdropScanned.size()] = key;
     const auto selection = backdropScans.scan(metal_backdrop_source_key(source->tex));
     backdrop_trace("scan",metal_backdrop_source_key(source->tex),selection.ticket,pendingBackdrops.size());
     R.drc.backdrop = nil;
@@ -2375,6 +2396,7 @@ void gamepad_backdrop_reset() {
     lastBackdropFrame = 0;
     backdropScope = backdropReplay = false; backdropCapture.reset(); pendingBackdrops.clear(); backdropPool.clear();
     backdropScans.reset(); R.drc.backdrop = nil;
+    backdropScanned = {}; backdropScannedNext = 0; backdropForeign = false;
     gamepad_backdrop::set_capture_requested(false);
 }
 void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexType, uint32_t indexAddr, uint32_t baseVertex,
@@ -2802,7 +2824,10 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
             colors[0]?metal_backdrop_source_key(colors[0]->tex):0);
         backdrop_trace("blend",regs[REGADDR::CB_COLOR_CONTROL],regs[REGADDR::CB_BLEND0_CONTROL],
             (uint64_t(colorSlices[0])<<32)|uint32_t(cloud_proto::g_active_seq));
-        if (!colors[0] || mask != 1 || colorSlices[0] || cloud_proto::g_active_seq || !coverage ||
+        // Not a GamePad picture: no clear, no replay, no capture texture (the first
+        // scan of a new target uses the edge-colour fallback for that presentation).
+        if (colors[0] && !backdrop_gamepad_target(colors[0]->tex)) backdropForeign = backdropFailed = true;
+        else if (!colors[0] || mask != 1 || colorSlices[0] || cloud_proto::g_active_seq || !coverage ||
             !prepare_backdrop(colors[0], coverage)) backdropFailed = true;
         if (!backdropFailed) {
             backdropReplay = true; backdropEncoded = false;

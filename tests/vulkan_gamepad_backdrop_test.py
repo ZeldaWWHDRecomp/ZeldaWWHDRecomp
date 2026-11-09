@@ -361,6 +361,23 @@ int main() {
         self.assertIn('gamepad_backdrop::fits_pool(backdrop_pool_bytes(), backdrop_bytes(storage->texture), wanted)',metalDraw)
         self.assertIn('gamepad_backdrop::release_idle(on, R.frame, lastBackdropFrame)',metalDraw)
 
+    def test_metal_gamepad_targets_and_capture_cap(self):
+        # Metal follows the Vulkan policy (#493): only textures scanned out to the
+        # GamePad are captured, another target's pane cancels nothing, and the
+        # capture texture is at most capture_extent with the replay scaled.
+        metalDraw=(CPP.parent.parent/'metal_draw.mm').read_text()
+        scan=metalDraw[metalDraw.index('void gamepad_backdrop_scan(Surface* source) {'):metalDraw.index('void gamepad_backdrop_clear(')]
+        self.assertIn('backdropScanned[backdropScannedNext++ % backdropScanned.size()] = key;',scan)
+        self.assertIn('if (colors[0] && !backdrop_gamepad_target(colors[0]->tex)) backdropForeign = backdropFailed = true;',metalDraw)
+        self.assertIn('if (!backdropForeign || backdropCapture) metal_backdrop_finish_scope(',metalDraw)
+        prepare=metalDraw[metalDraw.index('bool prepare_backdrop(Surface* source, unsigned coverage) {'):metalDraw.index('void gamepad_backdrop_scope(')]
+        self.assertIn('gamepad_backdrop::capture_extent(unsigned(source->tex.width), unsigned(source->tex.height))',prepare)
+        self.assertIn('surface.sx *= float(size.width) / float(source->tex.width);',prepare)
+        self.assertIn('width:size.width height:size.height',prepare)
+        self.assertNotIn('width:source->tex.width height:source->tex.height',prepare)
+        reset=metalDraw[metalDraw.index('void gamepad_backdrop_reset() {'):]
+        self.assertIn('backdropScanned = {};',reset[:reset.index('\n}')])
+
     def test_bars_after_pip_frame(self):
         present=(CPP.parent/'present.cpp').read_text()
         body=present[present.index('static void add_gamepad_backdrop('):present.index('std::vector<ComposeQuad> screen_quads(')]
