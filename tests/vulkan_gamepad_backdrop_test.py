@@ -68,6 +68,8 @@ int main() {
  assert(!gamepad_backdrop_begin_replay(&a,true)&&created==0);
  gamepad_backdrop_scope(nullptr,false);
  policy::set_capture_requested(true);
+ // Only targets scanned out to the GamePad are captured: these two have been.
+ gamepad_backdrop_scan(&a);gamepad_backdrop_scan(&b);gamepad_backdrop_publish();
  auto capture=[&](Surface* source) {
   gamepad_backdrop_scope(nullptr,true);
   assert(gamepad_backdrop_begin_replay(source,true));assert(gamepad_backdrop_replaying());
@@ -115,7 +117,7 @@ int main() {
  gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&huge,true));gamepad_backdrop_scope(nullptr,false);
  assert(allocationAttempts==attempts);
  gamepad_backdrop_scan(&huge);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
- gamepad_backdrop_reset();policy::set_capture_requested(true);failAllocation=true;
+ gamepad_backdrop_reset();policy::set_capture_requested(true);gamepad_backdrop_scan(&a);failAllocation=true;
  attempts=allocationAttempts;
  gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&a,true));gamepad_backdrop_scope(nullptr,false);
  assert(allocationAttempts==attempts+1);
@@ -131,6 +133,8 @@ int main() {
  // source keeps its format. Eight-bit sources keep theirs.
  policy::set_capture_requested(true);
  Surface ten=a;ten.image=300;ten.format=0x19;ten.fmt={VK_FORMAT_A2B10G10R10_UNORM_PACK32,4,4};
+ Surface ten2=ten;ten2.image=301;ten2.fmt.pixel=VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+ gamepad_backdrop_scan(&a);gamepad_backdrop_scan(&ten);gamepad_backdrop_scan(&ten2);
  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&ten,true));
  auto* promoted=gamepad_backdrop_replay_target();
  assert(promoted->fmt.pixel==VK_FORMAT_R16G16B16A16_SFLOAT&&promoted->format==0x20&&promoted->allocationBytes==1280ull*720*8);
@@ -139,12 +143,11 @@ int main() {
  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&a,true));
  assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_R8G8B8A8_UNORM&&gamepad_backdrop_replay_target()->format==0x1a);
  gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
- Surface ten2=ten;ten2.image=301;ten2.fmt.pixel=VK_FORMAT_A2R10G10B10_UNORM_PACK32;
  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&ten2,true));
  assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_R16G16B16A16_SFLOAT);
  gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
  // Without blendable colour-attachment support the capture keeps the source format.
- gamepad_backdrop_reset();policy::set_capture_requested(true);
+ gamepad_backdrop_reset();policy::set_capture_requested(true);gamepad_backdrop_scan(&ten);
  promotedFeatures=~0u&~VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&ten,true));
  assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_A2B10G10R10_UNORM_PACK32&&gamepad_backdrop_replay_target()->format==0x19);
@@ -152,7 +155,7 @@ int main() {
  gamepad_backdrop_reset();assert(imageCount==0&&imageBytes==0&&retired==created);
  // Video memory: captures stop (menu closed), images move to the spare pool and
  // go after kIdleFrames presentations without a capture.
- policy::set_capture_requested(true);R.frame=1000;
+ policy::set_capture_requested(true);gamepad_backdrop_scan(&a);R.frame=1000;
  for(unsigned frame=0;frame<4;++frame){capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();gamepad_backdrop_maintain();++R.frame;}
  assert(gamepad_backdrop_image()&&imageCount>0);
  const uint64_t closed=R.frame;
@@ -179,6 +182,35 @@ int main() {
  uint32_t file[4]{};gamepad_backdrop_scope(file,true);
  assert(gamepad_backdrop_scope_registers(file)&&!gamepad_backdrop_scope_registers(file+1));
  gamepad_backdrop_scope(nullptr,false);assert(!gamepad_backdrop_scope_registers(file));
+ // Issue #493, one screen (Off-TV Play) with the item menu open: per frame the
+ // menu background is drawn twice into the TV's "Currently playing on Wii U
+ // GamePad" screen, a larger target never scanned out to the GamePad, and once
+ // into the GamePad's own. Only the GamePad's is captured (one clear per frame),
+ // the TV target never gets a private image, and after the first frames no
+ // capture image is allocated or retired (sizes as at resolution scale 2, where
+ // the TV captures made the pool reallocate an image every frame).
+ gamepad_backdrop_reset();policy::set_capture_requested(true);
+ Surface tv;tv.image=900;tv.extent={3840,2160,1};Surface pad;pad.image=901;pad.extent={2560,1440,1};
+ auto menuFrame=[&] {
+  for(Surface* s:{&tv,&tv,&pad}) {
+   gamepad_backdrop_scope(nullptr,true);
+   if(gamepad_backdrop_begin_replay(s,true)) { assert(s==&pad);gamepad_backdrop_end_replay(true); }
+   gamepad_backdrop_scope(nullptr,false);
+  }
+  gamepad_backdrop_scan(&pad);gamepad_backdrop_publish();gamepad_backdrop_maintain();++R.frame;
+ };
+ const auto startClears=clears;
+ menuFrame();assert(clears==startClears&&!gamepad_backdrop_image()); // first scan of this target: fallback
+ for(unsigned frame=0;frame<4;++frame)menuFrame();
+ assert(gamepad_backdrop_image()&&gamepad_backdrop_image()->extent.width==2560);
+ const auto warmCreated=created,warmRetired=retired,warmAttempts=allocationAttempts,warmClears=clears;
+ for(unsigned frame=0;frame<120;++frame) { menuFrame();assert(gamepad_backdrop_image()); }
+ assert(clears==warmClears+120);
+ assert(created==warmCreated&&retired==warmRetired&&allocationAttempts==warmAttempts);
+ assert(imageCount<=3&&imageBytes<=3ull*2560*1440*4);
+ // A reset forgets the GamePad targets (device reset, state load).
+ gamepad_backdrop_reset();policy::set_capture_requested(true);
+ gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&pad,true));gamepad_backdrop_scope(nullptr,false);
  gamepad_backdrop_reset();assert(retired==created);
 }
 '''
