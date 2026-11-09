@@ -36,6 +36,25 @@ inline bool fits_pool(uint64_t used, uint64_t replaced, uint64_t wanted) {
     return wanted && wanted <= kPoolBytes && kept <= kPoolBytes - wanted;
 }
 
+// Capture size: the bars show a cover-scaled, mostly hidden background, so a
+// capture never needs more than about 1920x1080. Larger sources (resolution
+// scale 2 and up) are captured scaled down, keeping their aspect; smaller ones at
+// their own size, never scaled up. The three RGBA16F captures alive at once (the
+// shown one, the one waiting for presentation, the one being drawn; 16.6 MB each)
+// always fit kPoolBytes. At a source's full size they did not from scale 3 on, and
+// the bars showed the edge colour on two of three presentations (scale 3) or
+// always (scale 4).
+inline constexpr unsigned kCaptureMaxWidth = 1920, kCaptureMaxHeight = 1080;
+static_assert(3ull * kCaptureMaxWidth * kCaptureMaxHeight * 8 <= kPoolBytes);
+struct Extent { unsigned width = 0, height = 0; };
+inline Extent capture_extent(unsigned width, unsigned height) {
+    if (!width || !height) return {};
+    if (width <= kCaptureMaxWidth && height <= kCaptureMaxHeight) return {width, height};
+    const double k = std::min(double(kCaptureMaxWidth) / width, double(kCaptureMaxHeight) / height);
+    return {std::clamp(unsigned(std::lround(width * k)), 1u, kCaptureMaxWidth),
+            std::clamp(unsigned(std::lround(height * k)), 1u, kCaptureMaxHeight)};
+}
+
 // Canonical item/map menu layouts both own this 1280x720 picture. Other similarly
 // named panes and containers must never duplicate their children or foreground.
 inline bool is_background(std::string_view name, float width, float height) {

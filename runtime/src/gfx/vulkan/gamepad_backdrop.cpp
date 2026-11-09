@@ -68,19 +68,22 @@ CaptureFormat capture_format(const Surface* source) {
 }
 std::unique_ptr<Image> acquire(Surface* source) {
  const auto wanted=capture_format(source);
+ // At most about 1920x1080 (gfx::gamepad_backdrop::capture_extent); the replay
+ // draws into it scaled (draw.cpp), the bars cover-scale it like a full-size one.
+ const auto size=gfx::gamepad_backdrop::capture_extent(source->extent.width,source->extent.height);
  for(auto& slot:spare)if(slot && slot->surface->format==wanted.format &&
      slot->surface->fmt.pixel==wanted.fmt.pixel &&
-     slot->surface->extent.width==source->extent.width && slot->surface->extent.height==source->extent.height)
+     slot->surface->extent.width==size.width && slot->surface->extent.height==size.height)
   return std::move(slot);
  // Only idle images may be retired for a format/extent change. Pending,
  // building and published images retain exclusive ownership throughout use.
  for(auto& slot:spare)slot.reset();
- const uint64_t estimate=uint64_t(source->extent.width)*source->extent.height*
+ const uint64_t estimate=uint64_t(size.width)*size.height*
      std::max(1u,wanted.fmt.hostBytesPerBlock?wanted.fmt.hostBytesPerBlock:wanted.fmt.bytesPerBlock);
  if(!estimate||estimate>kCaptureBytes||imageCount>=kCaptureImages||estimate>kCaptureBytes-imageBytes)return {};
  try {
   auto image=std::make_unique<Image>();image->surface=std::make_unique<Surface>();
-  auto* s=image->surface.get();s->width=source->extent.width;s->height=source->extent.height;
+  auto* s=image->surface.get();s->width=size.width;s->height=size.height;
   s->format=wanted.format;s->fmt=wanted.fmt;s->scale=1;
   create_surface_image(s,false);
   const uint64_t bytes=s->allocationBytes;
