@@ -93,9 +93,8 @@ EMPTY = [
     # posMoveFromFootPos: foot movement, gravity (retired True 60)
     dict(site=0x023FCEB0, func=0x023FCB9C), dict(site=0x023FD338, func=0x023FCB9C),
     dict(site=0x023FD35C, func=0x023FCB9C),
-    # daPy_lk_c::execute: the procedure call (retired True 60)
-    dict(site=0x0240D6D8, func=0x0240CDD0), dict(site=0x0240D6F8, func=0x0240CDD0),
-    dict(site=0x0240D6FC, func=0x0240CDD0),
+    # (daPy_lk_c::execute's three empty sites stay, fast mode: its decompiled body, never run in the game before, crashes
+    # after the file select with the TV-frame clock (a read at guest address 8); to be looked at in the decompilation first)
 ]
 
 
