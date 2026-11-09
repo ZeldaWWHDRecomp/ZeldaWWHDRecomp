@@ -219,6 +219,9 @@ struct GamePadView: View {
             pad(insets: safe.safeAreaInsets)
                 .ignoresSafeArea()
         }
+        .overlay {
+            if let prompt = link.textPrompt { TextPromptCard(prompt: prompt) }
+        }
         .statusBarHidden()
         .persistentSystemOverlays(.hidden)
     }
@@ -335,6 +338,67 @@ struct GamePadView: View {
         default: turns = 0
         }
         link.screen.setQuarterTurns(turns)
+    }
+}
+
+/// The game asks for text (the name of a new file): the phone's keyboard, as on a Wii U GamePad. The
+/// prompt on the TV works too; both show the same text.
+struct TextPromptCard: View {
+    @EnvironmentObject private var link: GamePadLink
+    let prompt: GamePadLink.TextPromptState
+    @State private var text = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.6)
+                .ignoresSafeArea()
+                .onTapGesture { focused = true }
+            VStack(alignment: .leading, spacing: 12) {
+                Text(prompt.hint.isEmpty ? "Enter text" : prompt.hint)
+                    .font(.headline)
+                HStack {
+                    TextField("", text: $text)
+                        .textFieldStyle(.roundedBorder)
+                        .focused($focused)
+                        .autocorrectionDisabled()
+                        .textInputAutocapitalization(.words)
+                        .submitLabel(.done)
+                        .onSubmit { link.textFinished(ok: true) }
+                    if prompt.maxLen > 0 {
+                        Text("\(text.utf16.count)/\(prompt.maxLen)")
+                            .monospacedDigit()
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Cancel", role: .cancel) { link.textFinished(ok: false) }
+                        .buttonStyle(.bordered)
+                    Button("OK") { link.textFinished(ok: true) }
+                        .buttonStyle(.borderedProminent)
+                }
+            }
+            .padding(16)
+            .frame(maxWidth: 520)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 14))
+            .padding(.horizontal)
+            .padding(.top, 12)
+        }
+        .onAppear {
+            text = prompt.text
+            focused = true
+        }
+        .onChange(of: text) { _, new in
+            // the game counts UTF-16 units
+            var t = new
+            while prompt.maxLen > 0, t.utf16.count > prompt.maxLen { t.removeLast() }
+            if t != new { text = t; return }
+            link.textEdited(t)
+        }
+        // the game's text: a new prompt, or characters its font lacks left out (not its echo of the
+        // typing, which can be behind)
+        .onChange(of: prompt.gameEdits) { _, _ in text = prompt.text }
     }
 }
 

@@ -56,6 +56,8 @@ bool Server::start(uint16_t) { log_msg("[remote pad] not available on this host"
 bool Server::send_video(const uint8_t*, size_t, bool, uint64_t, uint16_t, uint16_t) { return false; }
 bool Server::send_rumble(uint8_t) { return false; }
 bool Server::send_audio(const int16_t*, uint16_t) { return false; }
+void Server::set_text(const TextPrompt&) {}
+void Server::send_text_locked() {}
 void Server::stop() {}
 void Server::run() {}
 void Server::end_session(const char*) {}
@@ -161,6 +163,23 @@ bool Server::send_audio(const int16_t* lr, uint16_t frames) {
     return sock_ >= 0 && sendto(sock_, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(&to), to_len) >= 0;
 }
 
+void Server::send_text_locked() {
+    text_sent_ = Clock::now();
+    if (!state_.connected || (!text_.open && text_closes_ <= 0)) return;
+    if (!text_.open) text_closes_--;
+    const auto p = encode_text(state_.session, text_);
+    std::lock_guard send(send_mu_);
+    if (sock_ >= 0) sendto(sock_, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(peer_), peer_len_);
+}
+
+void Server::set_text(const TextPrompt& t) {
+    std::lock_guard lk(mu_);
+    if (t == text_) return;
+    if (text_.open && !t.open) text_closes_ = kTextCloses;
+    text_ = t;
+    if (running_) send_text_locked();
+}
+
 bool Server::send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height) {
     sockaddr_storage to{};
     socklen_t to_len = 0;
@@ -213,6 +232,7 @@ void Server::run() {
                     reply_to_sender(req.busy ? encode_pairing({hello->nonce, kNoCode, 0})
                                              : encode_pairing({hello->nonce, kEnterCode, uint8_t(req.attempts)}));
                 } else if (hello && free) {
+                    bool fresh = false;
                     // a repeated Hello (its Welcome was lost) keeps the session; a new one starts afresh
                     if (!same_peer || hello->nonce != hello_nonce_) {
                         if (state_.connected) end_session(same_peer ? "it reconnected" : "another phone took the GamePad");
@@ -231,6 +251,7 @@ void Server::run() {
                                 state_.video ? ", showing the GamePad screen" : "");
                         if (state_.audio) log_msg("[remote pad] the GamePad speaker plays on the phone");
                         if (cb_.connected) cb_.connected(state_);
+                        fresh = true;
                     } else if (hello->video != state_.video || hello->audio != state_.audio) {
                         // the same session; the phone switched the picture or the sound on or off
                         state_.video = hello->video;
@@ -241,6 +262,7 @@ void Server::run() {
                     }
                     seen_ = keepalive_ = now;
                     reply(encode_welcome(state_.session, {hello->nonce, host_}));
+                    if (fresh && text_.open) send_text_locked();  // a prompt already showing
                 }
             } else if (h && h->type == kPair && pairing_) {
                 if (auto req = parse_pair(buf, (size_t)n)) {
@@ -276,6 +298,11 @@ void Server::run() {
                         seen_ = now;
                         reply(encode_pong(state_.session, {*t, clock_ns()}));
                     }
+                } else if (h->type == kTextInput) {
+                    if (const auto t = parse_text_input(buf, (size_t)n)) {
+                        seen_ = now;
+                        if (cb_.text_input) cb_.text_input(*t);
+                    }
                 } else if (h->type == kKeyframe) {
                     seen_ = now;
                     if (cb_.keyframe) cb_.keyframe();
@@ -285,6 +312,8 @@ void Server::run() {
             }
         }
         if (state_.connected && now - seen_ > kTimeout) end_session("nothing received for 1.5 s");
+        if ((text_.open && now - text_sent_ >= kTextRepeat) || (!text_.open && text_closes_ > 0 && now - text_sent_ >= kTextCloseGap))
+            send_text_locked();
         if (state_.connected && now - keepalive_ >= std::chrono::seconds(1)) {
             keepalive_ = now;
             reply(encode_welcome(state_.session, {hello_nonce_, host_}));

@@ -18,9 +18,9 @@ struct Writer {
     void u64(uint64_t v) { u32(uint32_t(v)); u32(uint32_t(v >> 32)); }
     void f32(float v) { uint32_t b; memcpy(&b, &v, 4); u32(b); }
     void bytes(const Bytes16& b) { out.insert(out.end(), b.begin(), b.end()); }
-    void name(const std::string& s) {
-        // cut at kMaxName bytes, never inside a UTF-8 sequence
-        size_t n = std::min(s.size(), kMaxName);
+    void name(const std::string& s, size_t max = kMaxName) {
+        // cut at `max` bytes, never inside a UTF-8 sequence
+        size_t n = std::min(s.size(), max);
         while (n > 0 && n < s.size() && (uint8_t(s[n]) & 0xC0) == 0x80) n--;
         u8(uint8_t(n));
         out.insert(out.end(), s.begin(), s.begin() + n);
@@ -46,9 +46,9 @@ struct Reader {
         if (need(16)) { memcpy(b.data(), p + at, 16); at += 16; }
         return b;
     }
-    std::string name() {
+    std::string name(size_t max = kMaxName) {
         const size_t len = u8();
-        if (len > kMaxName || !need(len)) { ok = false; return {}; }
+        if (len > max || !need(len)) { ok = false; return {}; }
         std::string s(reinterpret_cast<const char*>(p + at), len);
         at += len;
         return s;
@@ -114,6 +114,22 @@ std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level
     w.u32(seq); w.u8(level);
     return std::move(w.out);
 }
+std::vector<uint8_t> encode_text(uint32_t session, const TextPrompt& t) {
+    Writer w;
+    w.header(kText, session);
+    w.u32(t.serial); w.u32(t.ack); w.u16(t.max_len); w.u8(t.open ? 1 : 0); w.u8(0);
+    w.name(t.hint, kMaxText); w.name(t.text, kMaxText);
+    return std::move(w.out);
+}
+
+std::vector<uint8_t> encode_text_input(uint32_t session, const TextInput& t) {
+    Writer w;
+    w.header(kTextInput, session);
+    w.u32(t.serial); w.u32(t.seq); w.u8(t.action); w.u8(0);
+    w.name(t.text, kMaxText);
+    return std::move(w.out);
+}
+
 std::vector<uint8_t> encode_ping(uint32_t session, uint64_t phone_ns) {
     Writer w;
     w.header(kPing, session);
@@ -282,6 +298,29 @@ std::optional<Rumble> parse_rumble(const uint8_t* data, size_t size) {
     if (!r->ok) return std::nullopt;
     return m;
 }
+std::optional<TextPrompt> parse_text(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kText);
+    if (!r) return std::nullopt;
+    TextPrompt t;
+    t.serial = r->u32(); t.ack = r->u32(); t.max_len = r->u16();
+    t.open = r->u8() & 1;
+    r->u8();
+    t.hint = r->name(kMaxText); t.text = r->name(kMaxText);
+    if (!r->ok) return std::nullopt;
+    return t;
+}
+
+std::optional<TextInput> parse_text_input(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kTextInput);
+    if (!r) return std::nullopt;
+    TextInput t;
+    t.serial = r->u32(); t.seq = r->u32(); t.action = r->u8();
+    r->u8();
+    t.text = r->name(kMaxText);
+    if (!r->ok || t.action > kTextCancel) return std::nullopt;
+    return t;
+}
+
 std::optional<uint64_t> parse_ping(const uint8_t* data, size_t size) {
     auto r = body(data, size, kPing);
     if (!r) return std::nullopt;

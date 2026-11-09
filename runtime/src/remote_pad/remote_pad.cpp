@@ -43,6 +43,9 @@ Pairing g_pairing;                                 // who may connect (pairing.h
 std::atomic<bool> g_pair_request{false}, g_paired_changed{false};
 std::atomic<bool> g_enabled{false}, g_env{false}, g_host{false};
 uint16_t g_port = kDefaultPort;                    // g_mu
+TextPrompt g_text;                                 // g_mu: the prompt now (a restarted server gets it too)
+std::mutex g_text_mu;
+std::vector<TextInput> g_text_inputs;              // g_text_mu
 #ifdef __APPLE__
 DNSServiceRef g_bonjour = nullptr;
 #endif
@@ -155,8 +158,13 @@ void start_locked(uint16_t port) {
         },
         [](const std::string&, uint32_t) { g_pair_request = true; },  // Settings opens with the code
         [](const std::string&) { g_paired_changed = true; },         // saved by Settings
+        [](const TextInput& t) {
+            std::lock_guard lk(g_text_mu);
+            if (g_text_inputs.size() < 64) g_text_inputs.push_back(t);
+        },
     }, name, &g_pairing);
     if (!g_server->start(port)) { g_server.reset(); return; }
+    g_server->set_text(g_text);
     log_msg("[remote pad] waiting for the iPhone GamePad on UDP port %u (%s)", (unsigned)g_server->port(),
             g_env ? "WWHD_REMOTE_PAD" : "Settings > Controls > iPhone GamePad");
 #ifdef __APPLE__
@@ -221,6 +229,26 @@ void send_audio(const int32_t* left, const int32_t* right, int frames) {
         lr[2 * i + 1] = int16_t(std::clamp<int32_t>(right[i], -32768, 32767));
     }
     if (const auto srv = server()) srv->send_audio(lr, uint16_t(frames));
+}
+
+void text_prompt(const TextPrompt& t) {
+    std::shared_ptr<Server> srv;
+    {
+        std::lock_guard lk(g_mu);
+        if (t == g_text) return;
+        if (!t.open || t.serial != g_text.serial) {
+            std::lock_guard tk(g_text_mu);
+            g_text_inputs.clear();  // anything for an earlier prompt
+        }
+        g_text = t;
+        srv = g_server;
+    }
+    if (srv) srv->set_text(t);
+}
+
+std::vector<TextInput> take_text_inputs() {
+    std::lock_guard lk(g_text_mu);
+    return std::exchange(g_text_inputs, {});
 }
 
 int RumbleSender::update(float level, uint64_t now) {

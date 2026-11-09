@@ -68,6 +68,16 @@ final class ProtocolTests: XCTestCase {
         XCTAssertNil(WWGP.pong(WWGP.ping(session: 1, phoneNs: 2)))
     }
 
+    func testTextPromptAndInput() {
+        // bytes from the C++ encoder (encode_text, encode_text_input)
+        let p = WWGP.text(hex("5757475001000e00050000000700000003000000080001000f456e74657220796f7572206e616d65044c696e6b"))
+        XCTAssertEqual(p?.session, 5)
+        XCTAssertEqual(p?.prompt, WWGP.TextPrompt(serial: 7, ack: 3, maxLen: 8, open: true, hint: "Enter your name", text: "Link"))
+        XCTAssertNil(WWGP.text(hex("5757475001000e0005000000070000000300000008000100")))  // truncated
+        XCTAssertEqual(WWGP.textInput(session: 5, serial: 7, seq: 4, action: .ok, text: "Tetra"),
+                       hex("5757475001000f000500000007000000040000000100055465747261"))
+    }
+
     func testWelcome() {
         let w = WWGP.welcome(hex("5757475001000200d4c3b2a10403020108546573742d4d6163"))
         XCTAssertEqual(w, WWGP.Welcome(session: 0xA1B2_C3D4, nonce: 0x0102_0304, host: "Test-Mac"))

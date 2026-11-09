@@ -55,6 +55,15 @@ final class GamePadLink: ObservableObject {
     static let resumeTimeout: TimeInterval = 5
     @Published private(set) var controllerName: String?
     @Published private(set) var latency: LatencyMeter.Reading?
+    /// the game asks for text (the name of a new file): the GamePad screen shows a keyboard
+    @Published private(set) var textPrompt: TextPromptState?
+    struct TextPromptState: Equatable {
+        var serial: UInt32
+        var hint: String
+        var maxLen: Int      // UTF-16 units
+        var text: String     // the game's field as the phone last knew it
+        var gameEdits: Int   // +1 when the game set `text`: the field shows it then
+    }
     let batteries = Batteries()
     /// the GamePad speaker plays here (the Mac then plays the TV sound alone); sent as a Hello flag
     @Published var sound = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true {
@@ -94,6 +103,7 @@ final class GamePadLink: ObservableObject {
     nonisolated(unsafe) private var lastHello = Date.distantPast
     nonisolated(unsafe) private var lastPing = Date.distantPast
     nonisolated(unsafe) private var meter = LatencyMeter()
+    nonisolated(unsafe) private var textSync = TextEntrySync()
     nonisolated(unsafe) private var target = ""
     nonisolated(unsafe) private var helloDevice = "", helloController = ""
     nonisolated(unsafe) private var wantsAudio = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true
@@ -360,8 +370,40 @@ final class GamePadLink: ObservableObject {
             rumble.reset()
             speaker.reset()
             meter = LatencyMeter()
+            textSync.reset()
         }
         latency = nil
+        textPrompt = nil
+    }
+
+    // MARK: the game's text prompt
+
+    /// the player changed the field
+    func textEdited(_ text: String) {
+        queue.async { [self] in
+            if let p = textSync.edit(text, now: ProcessInfo.processInfo.systemUptime) { sendText(p) }
+        }
+    }
+
+    /// OK (true) or Cancel
+    func textFinished(ok: Bool) {
+        queue.async { [self] in
+            if let p = textSync.finish(ok ? .ok : .cancel, now: ProcessInfo.processInfo.systemUptime) { sendText(p) }
+        }
+    }
+
+    nonisolated private func sendText(_ p: TextEntrySync.Send) {
+        guard let c = connection, session != 0 else { return }
+        c.send(content: Data(WWGP.textInput(session: session, serial: p.serial, seq: p.seq, action: p.action, text: p.text)),
+               completion: .idempotent)
+    }
+
+    nonisolated private func publishText() {
+        let state = textSync.prompt.map {
+            TextPromptState(serial: $0.serial, hint: $0.hint, maxLen: $0.maxLen, text: textSync.field,
+                            gameEdits: textSync.gameEdits)
+        }
+        Task { @MainActor in self.textPrompt = state }
     }
 
     /// A status from the link queue. It arrives late, so it is dropped once the link was closed (idle) or
@@ -394,6 +436,8 @@ final class GamePadLink: ObservableObject {
                 if session == self.session, c === self.connection {
                     self.meter.pong(sentNs: sent, computerNs: computer, receivedNs: DispatchTime.now().uptimeNanoseconds)
                 }
+            } else if let (session, prompt) = WWGP.text(bytes) {
+                if session == self.session, c === self.connection, self.textSync.received(prompt) { self.publishText() }
             } else if let (session, seq, level) = WWGP.rumble(bytes) {
                 if session == self.session, c === self.connection { self.rumble.set(seq: seq, level: level) }
             } else if let p = WWGP.pairing(bytes), p.nonce == self.nonce, c === self.connection {
@@ -480,6 +524,7 @@ final class GamePadLink: ObservableObject {
             }
             return
         }
+        if let p = textSync.resend(now: ProcessInfo.processInfo.systemUptime) { sendText(p) }
         if now.timeIntervalSince(lastPing) >= 0.5 {
             lastPing = now
             c.send(content: Data(WWGP.ping(session: session, phoneNs: DispatchTime.now().uptimeNanoseconds)),

@@ -3,6 +3,7 @@
 //     bindings in Controls by its name, "iPhone GamePad"), so remapping and prompts work as for any pad;
 //   - a finger on its screen is the GamePad's touch screen;
 //   - its motion sensors are the GamePad's gyro under Settings > Controls > Gyro > "Device gyro";
+//   - its keyboard answers the game's text prompts (the name of a new file; overlay/text_entry.cpp);
 //   - it shows the GamePad screen: the renderer encodes the picture it draws for the GamePad window
 //     (gfx/remote_video.mm, Metal) and sends it here.
 //
@@ -18,6 +19,7 @@
 #include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 namespace remote_pad {
 
@@ -74,6 +76,12 @@ void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, ui
 bool audio_wanted();
 // the AX frame thread, every frame: the GamePad mix after the game's final mix, 48 kHz, s16 range
 void send_audio(const int32_t* left, const int32_t* right, int frames);
+
+// ---- the game's text prompt on the phone (protocol.h kText / kTextInput) ----
+// The prompt (overlay/text_entry.cpp, render thread): how it is now, sent whenever it changes (cheap
+// when it did not). The phone's edits and OK / Cancel queue up until the prompt takes them.
+void text_prompt(const TextPrompt& t);
+std::vector<TextInput> take_text_inputs();
 
 // ---- rumble (protocol.h kRumble) ----
 // The host, every input update (any rate, one thread): the GamePad motor's strength now, 0..1

@@ -30,6 +30,16 @@
 //   computer -> phone   kPong       header (session), the ping's phone time u64, computer time u64
 //                                   (clock_ns(), the clock of the video times): the phone's round trip,
 //                                   and its estimate of the computer's clock for the picture's age
+//   computer -> phone   kText       header (session), serial u32, ack u32, max length u16, open u8, 0 u8,
+//                                   hint (text), text (text): the game asks for text (the name of a new
+//                                   file), so the phone shows its keyboard as a GamePad would. serial: +1
+//                                   per prompt; ack: the last kTextInput seq the prompt took; max length
+//                                   in UTF-16 units, as the game counts. Sent on every change, every 500 ms
+//                                   while open, and closed (open 0) three times when the prompt ends.
+//   phone -> computer   kTextInput  header (session), serial u32, seq u32 (+1 per packet), action u8
+//                                   (TextAction), 0 u8, text (text): the whole field. The prompt takes
+//                                   it through its own rules (the game font's characters, the length),
+//                                   so the phone shows the text of the next kText that acks it.
 //
 // Pairing (pairing.h), all with session 0, answering the Hello's nonce:
 //   computer -> phone   kPairing    header, nonce u32, state u8 (PairState), attempts left u8: the
@@ -46,7 +56,7 @@
 // next keyframe after a loss. width/height: the picture's size, which is the GamePad screen (854 x 480)
 // or that shape at a higher resolution.
 //
-// Names are a u8 byte length then UTF-8, at most kMaxName bytes.
+// Names are a u8 byte length then UTF-8, at most kMaxName bytes; texts the same with at most kMaxText.
 //
 // Tested in runtime/tools/remote_pad_test.cpp. ios/WWHDGamePad/Protocol.swift mirrors this file: change
 // both together. Both sides ignore packet types they don't know, so a new type needs no new version; bump
@@ -68,10 +78,11 @@ constexpr uint16_t kDefaultPort = 26770;
 constexpr const char* kBonjourType = "_wwhd-gamepad._udp";
 constexpr size_t kHeaderSize = 12;
 constexpr size_t kMaxName = 63;
+constexpr size_t kMaxText = 255;
 constexpr size_t kMaxDatagram = 1400;  // below the Wi-Fi MTU with IPv6 and UDP headers
 
 enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7, kAudio = 8,
-                      kPairing = 9, kPair = 10, kPaired = 11, kPing = 12, kPong = 13 };
+                      kPairing = 9, kPair = 10, kPaired = 11, kPing = 12, kPong = 13, kText = 14, kTextInput = 15 };
 enum HelloFlag : uint8_t { kWantsVideo = 1, kWantsAudio = 2 };  // a Hello's header flags
 enum PairState : uint8_t { kEnterCode = 1, kWrongCode = 2, kNoCode = 3 };
 constexpr uint32_t kRumbleStaleMs = 250;
@@ -145,6 +156,25 @@ std::vector<uint8_t> encode_ping(uint32_t session, uint64_t phone_ns);
 std::optional<uint64_t> parse_ping(const uint8_t* data, size_t size);
 std::vector<uint8_t> encode_pong(uint32_t session, const Pong& p);
 std::optional<Pong> parse_pong(const uint8_t* data, size_t size);
+
+enum TextAction : uint8_t { kTextEdit = 0, kTextOk = 1, kTextCancel = 2 };
+struct TextPrompt {
+    uint32_t serial = 0, ack = 0;
+    uint16_t max_len = 0;
+    bool open = false;
+    std::string hint, text;  // UTF-8
+    bool operator==(const TextPrompt&) const = default;
+};
+struct TextInput {
+    uint32_t serial = 0, seq = 0;
+    uint8_t action = kTextEdit;
+    std::string text;  // UTF-8
+    bool operator==(const TextInput&) const = default;
+};
+std::vector<uint8_t> encode_text(uint32_t session, const TextPrompt& t);
+std::optional<TextPrompt> parse_text(const uint8_t* data, size_t size);
+std::vector<uint8_t> encode_text_input(uint32_t session, const TextInput& t);
+std::optional<TextInput> parse_text_input(const uint8_t* data, size_t size);
 
 struct PairingReply { uint32_t nonce = 0; uint8_t state = 0; uint8_t attempts = 0; };
 struct PairRequest { uint32_t nonce = 0; Bytes16 id{}; uint32_t code = 0; };

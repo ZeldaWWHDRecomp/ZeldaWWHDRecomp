@@ -42,6 +42,7 @@ public:
         std::function<void(const Snapshot&)> flags;      // a repeated Hello changed what the phone wants
         std::function<void(const std::string& name, uint32_t code)> pairing;  // show this code (a new one)
         std::function<void(const std::string& name)> paired;                 // trusted now (save the list)
+        std::function<void(const TextInput&)> text_input;                    // the phone's text for a prompt
     };
 
     // pairing: who may connect (pairing.h); nullptr lets every phone in (the tests)
@@ -63,10 +64,16 @@ public:
     bool send_rumble(uint8_t level);
     // Any thread: one audio frame of the GamePad speaker (protocol.h kAudio), if the phone asked for it
     bool send_audio(const int16_t* lr, uint16_t frames);
+    // Any thread: the game's text prompt as it is now (protocol.h kText). Sent at once when it changed,
+    // every kTextRepeat while open, and kTextCloses times once it closes; a new phone gets it too.
+    void set_text(const TextPrompt& t);
+    static constexpr std::chrono::milliseconds kTextRepeat{500}, kTextCloseGap{150};
+    static constexpr int kTextCloses = 3;
 
 private:
     void run();
     void end_session(const char* why);  // mu_ held
+    void send_text_locked();            // mu_ held: text_ to the phone now
 
     Callbacks cb_;
     std::string host_;
@@ -85,6 +92,9 @@ private:
     uint32_t video_frame_ = 0;       // mu_
     uint32_t rumble_seq_ = 0;        // mu_
     uint32_t audio_seq_ = 0;         // mu_
+    TextPrompt text_;                // mu_
+    int text_closes_ = 0;            // mu_: closed repeats still due
+    std::chrono::steady_clock::time_point text_sent_{};  // mu_
 };
 
 }  // namespace remote_pad

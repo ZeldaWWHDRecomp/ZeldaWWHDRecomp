@@ -31,7 +31,10 @@ from the phone. Turn off *GamePad sound* in the app to hear them from the Mac ag
    picture: the phone's battery (and the controller's, if it has its own) on the left; on the right, how
    old the picture is when it arrives (*picture*) and the network round trip (*ping*). **Disconnect**
    (or leaving the app) gives the GamePad back to the Mac's keyboard and controllers.
-6. Leaving the app and coming back rejoins the game by itself if it is still there: a game from the
+6. **Text:** when the game asks for text (the name of a new file), the phone shows the game's hint and
+   its own keyboard, as a Wii U GamePad does. The name appears in the game as you type; **Done** or
+   **OK** confirms. The prompt on the TV keeps working too.
+7. Leaving the app and coming back rejoins the game by itself if it is still there: a game from the
    list must be listed again, a typed address must answer, within 5 seconds. After **Disconnect** the
    app stays on the list.
 
@@ -97,6 +100,7 @@ game, 3 s on the phone, which then says Hello again.
 | `Speaker.swift`: GamePad speaker, 40 ms jitter buffer, `AVAudioSourceNode` | `hle/ax.cpp`: the GamePad mix after the game's final mix, to the phone; the host keeps the TV mix |
 | `Haptics.swift`: the motor's strength as a continuous haptic (controller, else phone) | `remote_pad.cpp` `RumbleSender`: rumble.h's level on change, refreshed while it runs |
 | `Video.swift`: frames from their pieces, `AVSampleBufferDisplayLayer` | `gfx/remote_video.mm`: the GamePad picture into IOSurfaces, H.264 (VideoToolbox, low latency) |
+| `TextEntry.swift`: the game's text prompt kept in step (numbered edits, resent until acked) | `overlay/text_entry.cpp`: the phone's text through the prompt's own rules, acked back |
 | `Protocol.swift` (mirrors `protocol.h`) | `gfx/input.mm`: the phone as a controller and the touch screen; `motion/motion.cpp`: its gyro under *Device gyro* |
 
 Video: each present, the game draws the GamePad picture as it does for its GamePad window into an
@@ -113,7 +117,7 @@ controller axes the same way it does the Android device gyro (`motion::device_to
 1. ~~Input: controller, touch, gyro~~
 2. ~~The GamePad picture on the phone~~ (Metal renderer; the Vulkan renderer later)
 3. ~~Rumble~~ (Core Haptics on the controller, else the phone); ~~GamePad sound~~ (48 kHz PCM, 40 ms jitter buffer)
-4. ~~A setting in the game, pairing with a code~~, ~~an app icon~~
+4. ~~A setting in the game, pairing with a code~~, ~~an app icon~~, ~~the phone's keyboard for the game's text~~
 5. Not planned: the picture from Linux and Windows (the SDL host). They have no system video encoder
    like VideoToolbox, so it would need a third-party encoder library. Input, rumble and sound could
    follow there without one.

@@ -18,6 +18,7 @@
 #include "../input_map.h"
 #include "../mods/mods.h"
 #include "../platform/keycodes.h"
+#include "../remote_pad/remote_pad.h"
 #include "../runtime.h"
 
 namespace gfx { bool main_picture(float* x, float* y, float* w, float* h); }  // display_modes.h
@@ -160,6 +161,8 @@ struct Ui {
     std::u16string reported; // the text the game was last told (Request::changed)
     float scale = 1.0f;      // window scale that fits below the game's name field
     float win_h = 0;         // the window's height last frame
+    uint32_t phone_seq = 0;  // the last iPhone GamePad text taken (remote_pad kTextInput)
+    bool phone_any = false;
 };
 Ui U;
 
@@ -225,6 +228,8 @@ void begin(const Request& r) {
     U.first = true;
     U.full_since = -1;
     U.result = 0;
+    U.phone_seq = 0;
+    U.phone_any = false;
 }
 
 // ---------------------------------------------------------------- editing
@@ -298,6 +303,35 @@ void host_key(int code) {
     case kVK_Escape: U.result = 2; break;
     default: break;
     }
+}
+
+// The iPhone GamePad's keyboard (remote_pad): the phone sends its whole field; it goes in through the
+// same rules as typing, and the phone then shows what the prompt kept (the next text_prompt acks it).
+void phone_inputs() {
+    for (const remote_pad::TextInput& t : remote_pad::take_text_inputs()) {
+        if (U.result || t.serial != uint32_t(U.serial)) continue;
+        if (U.phone_any && !remote_pad::newer(t.seq, U.phone_seq)) continue;
+        U.phone_seq = t.seq;
+        U.phone_any = true;
+        U.text.clear();
+        U.caret = 0;
+        U.preedit.clear();
+        for (uint32_t c : code_points(t.text.c_str())) insert(c);
+        if (!U.text.empty()) U.shift = 0;
+        if (t.action == remote_pad::kTextOk) U.result = 1;
+        else if (t.action == remote_pad::kTextCancel) U.result = 2;
+    }
+}
+
+void phone_prompt() {
+    remote_pad::TextPrompt t;
+    t.serial = uint32_t(U.serial);
+    t.ack = U.phone_seq;
+    t.max_len = uint16_t(std::clamp(U.req.max_len, 0, 0xFFFF));
+    t.open = !U.result;
+    t.hint = utf8(U.req.hint);
+    t.text = utf8(U.text);
+    remote_pad::text_prompt(t);
 }
 
 // ---------------------------------------------------------------- controller
@@ -588,6 +622,9 @@ void dismiss() {
     if (!g_active) return;
     g_active = false;
     g_done = nullptr;
+    remote_pad::TextPrompt closed;  // on the phone too
+    closed.serial = uint32_t(g_serial);
+    remote_pad::text_prompt(closed);
     LOG("[text] the game closed its keyboard");
 }
 
@@ -636,8 +673,10 @@ bool draw(const float* pad) {
     // back from the settings menu (opened over the prompt): the button that closed it is no press here
     if (now_s() - U.last_draw > 0.25) U.first = true;
     U.last_draw = now_s();
+    phone_inputs();
     if (!U.result) controller(pad);
     window();
+    phone_prompt();
     U.first = false;
     if (U.text != U.reported && !U.result) {  // the game's own field follows the typing
         U.reported = U.text;

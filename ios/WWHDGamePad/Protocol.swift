@@ -12,13 +12,14 @@ enum WWGP {
     static let headerSize = 12
     static let inputSize = 78
     static let maxName = 63
+    static let maxText = 255
 
     static let wantsVideo: UInt8 = 1, wantsAudio: UInt8 = 2   // a Hello's header flags
     static let rumbleStale: TimeInterval = 0.25               // protocol.h kRumbleStaleMs
 
     enum PacketType: UInt8 {
         case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7, audio = 8
-        case pairing = 9, pair = 10, paired = 11, ping = 12, pong = 13
+        case pairing = 9, pair = 10, paired = 11, ping = 12, pong = 13, text = 14, textInput = 15
     }
     /// protocol.h PairState: what the computer says about pairing
     enum PairState: UInt8 { case enterCode = 1, wrongCode = 2, noCode = 3 }
@@ -54,6 +55,19 @@ enum WWGP {
         var motionNs: UInt64 = 0
         var gyro: SIMD3<Float> = .zero        // rad/s, natural phone axes
         var accel: SIMD3<Float> = .zero       // m/s^2, specific force (+9.81 on z lying face up)
+    }
+
+    /// protocol.h TextAction: what a textInput packet does with the prompt
+    enum TextAction: UInt8 { case edit = 0, ok = 1, cancel = 2 }
+
+    /// The game asks for text (protocol.h kText): the phone shows its keyboard while `open`.
+    struct TextPrompt: Equatable {
+        var serial: UInt32 = 0
+        var ack: UInt32 = 0       // the last textInput seq the prompt took
+        var maxLen = 0            // UTF-16 units, as the game counts
+        var open = false
+        var hint = ""
+        var text = ""
     }
 
     struct Welcome: Equatable {
@@ -142,6 +156,15 @@ enum WWGP {
         return w.bytes
     }
 
+    /// the whole field for prompt `serial` (protocol.h kTextInput); `seq` +1 per packet
+    static func textInput(session: UInt32, serial: UInt32, seq: UInt32, action: TextAction, text: String) -> [UInt8] {
+        var w = Writer()
+        w.header(.textInput, session: session)
+        w.u32(serial); w.u32(seq); w.u8(action.rawValue); w.u8(0)
+        w.name(text, max: maxText)
+        return w.bytes
+    }
+
     // MARK: decoding
 
     /// (type, session) of one of our packets; nil for anything else.
@@ -202,6 +225,17 @@ enum WWGP {
         return r.ok ? (session, phone, computer) : nil
     }
 
+    static func text(_ b: [UInt8]) -> (session: UInt32, prompt: TextPrompt)? {
+        guard let (type, session) = header(b), type == .text else { return nil }
+        var r = Reader(bytes: b, at: headerSize)
+        var t = TextPrompt()
+        t.serial = r.u32(); t.ack = r.u32(); t.maxLen = Int(r.u16())
+        t.open = r.u8() & 1 != 0
+        _ = r.u8()
+        t.hint = r.name(max: maxText); t.text = r.name(max: maxText)
+        return r.ok ? (session, t) : nil
+    }
+
     static func video(_ b: [UInt8]) -> (session: UInt32, piece: VideoPiece)? {
         guard b.count >= videoHeaderSize, let (type, session) = header(b), type == .video else { return nil }
         var r = Reader(bytes: b, at: headerSize)
@@ -234,10 +268,10 @@ enum WWGP {
         mutating func u64(_ v: UInt64) { u32(UInt32(v & 0xFFFF_FFFF)); u32(UInt32(v >> 32)) }
         mutating func f32(_ v: Float) { u32(v.bitPattern) }
         mutating func bytes16(_ b: [UInt8]) { bytes.append(contentsOf: (b + [UInt8](repeating: 0, count: 16)).prefix(16)) }
-        /// at most maxName bytes, never cut inside a UTF-8 sequence
-        mutating func name(_ s: String) {
+        /// at most `max` bytes, never cut inside a UTF-8 sequence
+        mutating func name(_ s: String, max: Int = WWGP.maxName) {
             let utf8 = Array(s.utf8)
-            var n = min(utf8.count, WWGP.maxName)
+            var n = min(utf8.count, max)
             while n > 0 && n < utf8.count && (utf8[n] & 0xC0) == 0x80 { n -= 1 }
             u8(UInt8(n))
             bytes.append(contentsOf: utf8[0..<n])
@@ -265,9 +299,9 @@ enum WWGP {
             defer { at += 16 }
             return Array(bytes[at..<at + 16])
         }
-        mutating func name() -> String {
+        mutating func name(max: Int = WWGP.maxName) -> String {
             let n = Int(u8())
-            guard ok, n <= WWGP.maxName, at + n <= bytes.count else { ok = false; return "" }
+            guard ok, n <= max, at + n <= bytes.count else { ok = false; return "" }
             defer { at += n }
             return String(decoding: bytes[at..<at + n], as: UTF8.self)
         }

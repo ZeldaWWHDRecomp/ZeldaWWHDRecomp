@@ -19,7 +19,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <thread>
+#include <vector>
 
 void log_msg(const char* fmt, ...) {
     va_list ap;
@@ -156,6 +158,27 @@ static void test_ping_packets() {
     auto r = parse_pong(q.data(), q.size());
     assert(r && r->phone_ns == 11 && r->computer_ns == 22);
     assert(!parse_pong(q.data(), q.size() - 1));
+}
+
+static void test_text_packets() {
+    TextPrompt t{7, 3, 8, true, "Enter your name", "Link"};
+    auto p = encode_text(5, t);
+    assert(parse_header(p.data(), p.size())->type == kText);
+    assert(parse_text(p.data(), p.size()) == t);
+    assert(!parse_text(p.data(), p.size() - 1) && !parse_text_input(p.data(), p.size()));
+    TextInput in{7, 4, kTextOk, "Tetra"};
+    auto q = encode_text_input(5, in);
+    assert(parse_text_input(q.data(), q.size()) == in);
+    assert(!parse_text_input(q.data(), q.size() - 1));
+    q[kHeaderSize + 8] = 3;  // no such action
+    assert(!parse_text_input(q.data(), q.size()));
+    // texts are cut at kMaxText bytes, never inside a character
+    std::string long_text;
+    for (int i = 0; i < 200; i++) long_text += "\u00e9";  // 2 bytes each
+    t.text = long_text;
+    p = encode_text(5, t);
+    auto back = parse_text(p.data(), p.size());
+    assert(back && back->text.size() == 254 && long_text.compare(0, 254, back->text) == 0);
 }
 
 static void test_audio_packets() {
@@ -383,6 +406,60 @@ static void test_server() {
     assert(!server.running());
 }
 
+static void test_server_text() {
+    std::vector<TextInput> got;
+    std::mutex got_mu;
+    Server::Callbacks cb;
+    cb.text_input = [&](const TextInput& t) { std::lock_guard lk(got_mu); got.push_back(t); };
+    Server server(cb, "Test-Mac");
+    // a prompt already open when the phone connects reaches it with the Welcome
+    server.set_text({1, 0, 8, true, "Name", ""});
+    assert(server.start(0));
+    Phone phone(server.port());
+    phone.send(encode_hello({42, "Test iPhone", ""}));
+    const auto w = phone.welcome();
+    assert(w);
+    const uint32_t session = w->first;
+    auto next_text = [&]() -> std::optional<TextPrompt> {
+        for (int i = 0; i < 40; i++) {
+            uint8_t buf[512];
+            const ssize_t n = recv(phone.s, buf, sizeof buf, 0);
+            if (n <= 0) return std::nullopt;
+            if (parse_header(buf, size_t(n))->type == kText) return parse_text(buf, size_t(n));
+        }
+        return std::nullopt;
+    };
+    auto t = next_text();
+    assert(t && t->open && t->serial == 1 && t->hint == "Name" && t->max_len == 8);
+    // the phone's text goes to the callback; the prompt's answer comes back acked
+    phone.send(encode_text_input(session, {1, 1, kTextEdit, "Li"}));
+    assert(wait_for([&] { std::lock_guard lk(got_mu); return got.size() == 1 && got[0].text == "Li"; }));
+    server.set_text({1, 1, 8, true, "Name", "Li"});
+    t = next_text();
+    assert(t && t->ack == 1 && t->text == "Li");
+    // repeated while open
+    t = next_text();
+    assert(t && t->open && t->text == "Li");
+    // closed: sent kTextCloses times, then no more
+    server.set_text({1, 1, 8, false, "Name", "Li"});
+    int closes = 0;
+    const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+    while (std::chrono::steady_clock::now() < until) {
+        uint8_t buf[512];
+        const ssize_t n = recv(phone.s, buf, sizeof buf, 0);
+        if (n > 0 && parse_header(buf, size_t(n))->type == kText) {
+            assert(!parse_text(buf, size_t(n))->open);
+            closes++;
+        }
+    }
+    assert(closes == Server::kTextCloses);
+    // another session's text is not taken
+    phone.send(encode_text_input(session + 1, {1, 2, kTextOk, "X"}));
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    { std::lock_guard lk(got_mu); assert(got.size() == 1); }
+    server.stop();
+}
+
 static void test_server_video() {
     std::atomic<int> keyframes{0};
     Server server({nullptr, nullptr, nullptr, [&] { keyframes++; }}, "Test-Mac");
@@ -523,11 +600,13 @@ int main() {
     test_video_packets();
     test_rumble();
     test_ping_packets();
+    test_text_packets();
     test_audio_packets();
     test_pairing();
     test_pad_values();
     test_server();
     test_server_video();
+    test_server_text();
     test_server_pairing();
-    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets, pairing (codes, tries, expiry, refusal, saved list; over loopback) passed");
+    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets, text prompts (packets; over loopback), pairing (codes, tries, expiry, refusal, saved list; over loopback) passed");
 }
