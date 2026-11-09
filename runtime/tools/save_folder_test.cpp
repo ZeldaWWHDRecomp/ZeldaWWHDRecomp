@@ -47,6 +47,18 @@ int main() {
     const fs::path def = root / "data" / "save", config = root / "config", cloud = root / "OneDrive" / "Wind Waker HD";
     const fs::path backups = root / "data" / "save-backups";
 
+    // the launchers' --save <install>/save is the default folder, not an override
+    assert(install_default(def, {root / "elsewhere", root / "data"}));
+    assert(install_default(root / "data" / "save" / "", {root / "data"}));
+    assert(install_default(root / "data" / "bin" / ".." / "save", {root / "data"}));
+#if defined(_WIN32) || defined(__APPLE__)
+    assert(install_default(root / "DATA" / "Save", {root / "data"}));
+#endif
+    assert(!install_default(root / "data" / "save" / "user", {root / "data"}));
+    assert(!install_default(root / "my-saves", {root / "data"}));
+    assert(!install_default(def, {fs::path(), root / "other"}));
+    assert(!install_default(def, {}));
+
     // the game's own files and the copies cloud apps make
     assert(game_file("cking.sav") && game_file("CKING_PLAYLOG.sav") && game_file("cking_pic0_11.sav") && game_file("cking_pic_order2.sav"));
     assert(!game_file("cking-DESKTOP.sav") && !game_file("cking_pic0_0-DESKTOP.sav") && !game_file("cking_pic.sav"));

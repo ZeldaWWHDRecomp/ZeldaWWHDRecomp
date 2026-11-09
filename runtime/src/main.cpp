@@ -558,6 +558,7 @@ int main(int argc, char** argv) {
 #endif
     bool warm_shaders = false;
     bool save_arg = false;  // --save: the command line wins over a save folder chosen in the Saves tab
+                            // (except the install's own folder, below)
     std::string randomizer_files;  // --randomizer-files
     bool install_story_notebook = false;
     bool start_mcp = false;
@@ -798,7 +799,16 @@ int main(int argc, char** argv) {
 #ifndef __ANDROID__
     // A save folder chosen in Settings > Saves (save_folder.h), for example inside a cloud folder:
     // a change made there is applied now, and the folder is checked before the game reads its save.
-    if (!save_arg && !warm_shaders) {
+    // (--save with the install's own folder is how every launcher starts the game: no override)
+    bool save_override = save_arg;
+    if (save_arg) {
+        std::error_code ec;
+        std::vector<std::filesystem::path> installs{std::filesystem::path(host::exe_dir()).parent_path(),
+                                                    std::filesystem::current_path(ec)};
+        if (const char* install = std::getenv("WWHD_INSTALL_DIR")) installs.emplace_back(install);
+        save_override = !save_folder::install_default(config::save_dir, installs);
+    }
+    if (!save_override && !warm_shaders) {
         const auto chosen = save_folder::startup(config::save_dir, save_paths.preferences, ask_player,
                                                  [](const std::string& line) { LOG("%s", line.c_str()); }, save_policy, seed_namespace);
         if (chosen.quit) {

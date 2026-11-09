@@ -745,7 +745,8 @@ keeps it the same on all your computers. Choose the same folder on each computer
 - A folder inside the current save folder (or the other way round) can't be chosen. Choosing a
   folder that already holds other files (such as the OneDrive folder itself) puts the save in a
   `Wind Waker HD` folder inside it.
-- `--save DIR` on the command line still wins over the choice.
+- `--save DIR` on the command line still wins over the choice, unless it is the install's own `save`
+  folder, which the launchers and shortcuts always pass.
 
 ## Optional: bring your GameCube save to HD
 

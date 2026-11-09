@@ -825,6 +825,13 @@ inline bool inside(const fs::path& a, const fs::path& b) {
 // folders whose names differ only in case count as the same one: choosing the other is treated as no
 // change, and a folder inside it is refused as nested.
 inline bool same_folder(const fs::path& a, const fs::path& b) { return inside(a, b) && inside(b, a); }
+// Setup, the launchers and the shortcuts start the game with --save <install>/save: that is the
+// default folder, not one the player gave, so a folder chosen in the Saves tab still applies.
+inline bool install_default(const fs::path& save, const std::vector<fs::path>& installs) {
+    for (const auto& install : installs)
+        if (!install.empty() && same_folder(save, install / "save")) return true;
+    return false;
+}
 // A folder that already holds other things (for example the cloud folder itself) gets the save in a
 // "Wind Waker HD" folder inside it, so backups copy only the save. Empty folders and save folders
 // (with a user folder) are used as they are.
