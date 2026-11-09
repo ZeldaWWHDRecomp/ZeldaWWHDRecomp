@@ -37,6 +37,7 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 #include "cloud_proto.h"
 #include "runtime.h"
 #include "util/helpers/StringBuf.h"
+#include <compression.h>
 
 #include <condition_variable>
 #include <mutex>
@@ -383,6 +384,8 @@ struct Shader {
     std::atomic<int> state{CS_PENDING};
     int attempts = 0;                         // Metal compiles started (render thread)
     uint64_t retryFrame = 0;                  // a failed compile is retried from this frame on (0: not scheduled)
+    std::vector<uint8_t> packed;              // a deferred compile's MSL, LZ4 (pack_source); empty: none
+    uint32_t packedLen = 0;                   // its length unpacked
 };
 
 // A Metal compile or pipeline build can fail for reasons that have nothing to do with the source:
@@ -489,6 +492,55 @@ static std::string snap_texcoords(const char* src) {
     return out;
 }
 
+// A shader's MSL (dec->strBuf_shaderSource, 5-25 KB) is the only copy of its translation: it stays while a
+// compile may still need it (a deferred compile, a retry after a failure, WWHD_MTL_SHADER_KEY_VERIFY's
+// comparisons) and goes once the compile succeeded. The cache replay translates every known shader at
+// startup and compiles them a few per frame afterwards: their texts waiting meanwhile (over 100 MB) left
+// holes all over the heap that it could not hand back once freed, so a deferred compile's text waits
+// LZ4-packed (pack_source; shader text packs several times smaller) and is unpacked for the compile.
+// Completion handlers queue a compiled shader; the render thread frees its source
+// (release_compiled_sources, from cache_warm_step), as only it reads the source.
+static bool key_verify();
+static std::mutex g_compiled_mu;
+static std::vector<Shader*> g_compiled;  // g_compiled_mu
+static void release_source(Shader* s) {
+    if (!s->dec || key_verify()) return;
+    delete s->dec->strBuf_shaderSource;
+    s->dec->strBuf_shaderSource = nullptr;
+    std::vector<uint8_t>().swap(s->packed);
+}
+static void pack_source(Shader* s) {
+    if (!s->dec || !s->dec->strBuf_shaderSource || key_verify()) return;
+    const char* src = s->dec->strBuf_shaderSource->c_str();
+    const size_t n = strlen(src);
+    static std::vector<uint8_t> scratch;  // render thread
+    scratch.resize(n + 64);
+    const size_t m = compression_encode_buffer(scratch.data(), scratch.size(), (const uint8_t*)src, n, nullptr, COMPRESSION_LZ4);
+    if (!m || m >= n) return;  // kept as text
+    s->packed.assign(scratch.begin(), scratch.begin() + m);
+    s->packedLen = uint32_t(n);
+    delete s->dec->strBuf_shaderSource;
+    s->dec->strBuf_shaderSource = nullptr;
+}
+// the MSL to compile: the text, or the packed text unpacked ("" if neither is there)
+static std::string shader_source(const Shader* s) {
+    if (s->dec && s->dec->strBuf_shaderSource) return s->dec->strBuf_shaderSource->c_str();
+    if (s->packed.empty()) return {};
+    std::string t(s->packedLen, '\0');
+    if (compression_decode_buffer((uint8_t*)t.data(), t.size(), s->packed.data(), s->packed.size(), nullptr, COMPRESSION_LZ4) != t.size())
+        return {};
+    return t;
+}
+static void release_compiled_sources() {
+    std::vector<Shader*> done;
+    {
+        std::lock_guard<std::mutex> lk(g_compiled_mu);
+        done.swap(g_compiled);
+    }
+    for (Shader* s : done)
+        if (s->state.load(std::memory_order_acquire) == CS_READY) release_source(s);
+}
+
 static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
     const int attempt = ++sh->attempts;
     const bool injectFailure = attempt <= g_test_fail_compiles;
@@ -523,6 +575,7 @@ static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
         if (!fn) { report_compile_error(src, key, err, attempt, lib != nil); sh->state = CS_FAILED; return; }
         sh->fn = fn;
         sh->state = CS_READY;
+        release_source(sh);
         return;
     }
     std::string copy = src;
@@ -532,6 +585,10 @@ static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:entry] : nil;
         if (!fn) { report_compile_error(copy.c_str(), key, err, attempt, lib != nil); compile_done(sh->state, CS_FAILED); g_compiles_in_flight--; return; }
         sh->fn = fn;
+        {
+            std::lock_guard<std::mutex> lk(g_compiled_mu);
+            g_compiled.push_back(sh);
+        }
         compile_done(sh->state, CS_READY);
         g_compiles_in_flight--;
     }];
@@ -576,7 +633,8 @@ static std::vector<Shader*> g_deferred_shaders;
 static void compile_deferred(Shader* s) {
     if (s->state != CS_DEFERRED) return;
     s->state = CS_PENDING;
-    compile_msl(s, s->dec->strBuf_shaderSource->c_str(), s->key);
+    const std::string src = shader_source(s);
+    compile_msl(s, src.c_str(), s->key);
 }
 
 // render thread: start the retry of a failed Metal compile when it is due (see kCompileAttempts).
@@ -585,7 +643,8 @@ static void retry_failed_compile(Shader* s, bool now = false) {
     if (!s || !s->dec || s->state.load(std::memory_order_acquire) != CS_FAILED || !retry_due(s, now)) return;
     LOG("[gfx] retrying shader %016llx compile (attempt %d of %d)", (unsigned long long)s->key, s->attempts + 1, kCompileAttempts);
     s->state = CS_PENDING;
-    compile_msl(s, s->dec->strBuf_shaderSource->c_str(), s->key);
+    const std::string src = shader_source(s);
+    compile_msl(s, src.c_str(), s->key);
 }
 
 // ---------------------------------------------------------------- shader keys
@@ -854,6 +913,7 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
     if (g_defer_compiles) {
         s->state = CS_DEFERRED;  // cache replay: compile on first use or gradually in the background
         g_deferred_shaders.push_back(s);
+        pack_source(s);
     } else {
         compile_msl(s, s->dec->strBuf_shaderSource->c_str(), key);
     }
@@ -2105,6 +2165,7 @@ static void build_pending_pipelines(int budget, int maxInFlight) {
 
 // build cached pipelines whose shaders have finished compiling; a few per frame
 void cache_warm_step() {
+    release_compiled_sources();
     // a few background compiles per frame keep the startup burst from starving the game, and none
     // start while the game's own compiles keep the compiler busy (WWHD_BG_COMPILES, default 8 in flight)
     static const int maxInFlight = getenv("WWHD_BG_COMPILES") ? atoi(getenv("WWHD_BG_COMPILES")) : 8;
