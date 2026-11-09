@@ -33,15 +33,16 @@ class SaveNamespaceStartup(unittest.TestCase):
         # #408: setup/launchers pass "--save save"; that is no player choice, so a
         # randomized game must still get its per-seed folder. The profile paths
         # are derived from the result afterwards (ordinary_base strips suffixes).
+        # save_override is save_arg minus the install's own folder (#485/#487).
         source=(Path(__file__).resolve().parents[1]/'src/main.cpp').read_text()
         selected=source.index('save_profile=mods::packages::startup_save_profile();')
         line=re.search(
             r'config::save_dir = randomizer::save_directory\(\s*config::save_dir,\s*'
-            r'randomizer::explicit_save_folder\(\s*save_arg,\s*config::save_dir\s*\)\s*\);',
+            r'randomizer::explicit_save_folder\(\s*save_override,\s*config::save_dir\s*\)\s*\);',
             source[selected:])
         self.assertIsNotNone(line)
+        self.assertLess(source.index('bool save_override = save_arg;'),at:=selected+line.start())
         self.assertNotRegex(source, r'randomizer::save_directory\(\s*config::save_dir,\s*save_arg\s*\)')
-        at=selected+line.start()
         self.assertLess(source.index('save_folder::legacy_randomizer_preflight(',selected),at)
         self.assertLess(at,source.index('save_paths=mods::save_profile::paths(save_profile,config::save_dir,',selected))
         self.assertEqual(source.count('randomizer::save_directory('),1)
