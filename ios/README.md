@@ -55,6 +55,16 @@ days), pick your iPhone and press Run. From the command line:
 xcodebuild -project WWHDGamePad.xcodeproj -scheme WWHDGamePad -destination 'generic/platform=iOS' DEVELOPMENT_TEAM=<team id>
 ```
 
+**The icon:** the project's own icon (the sailing boat, `android/icon/app_icon_1024.png`) by default. To
+give the app the game's own icon, as the Mac app has, make it from your game files before building:
+
+```sh
+python3 ios/make_icon.py [game_dir | path/to/iconTex.tga]   # default: game; needs Pillow
+```
+
+It writes `GameIcon` and `ios/local.xcconfig`, which selects it. Both are git-ignored, since the
+picture is the game's. Delete them to go back to the boat.
+
 Tests: the protocol tests compare the phone's packets with the game's own encoder byte for byte.
 
 ```sh
@@ -101,4 +111,7 @@ controller axes the same way it does the Android device gyro (`motion::device_to
 1. ~~Input: controller, touch, gyro~~
 2. ~~The GamePad picture on the phone~~ (Metal renderer; the Vulkan renderer later)
 3. ~~Rumble~~ (Core Haptics on the controller, else the phone); ~~GamePad sound~~ (48 kHz PCM, 40 ms jitter buffer)
-4. ~~A setting in the game, pairing with a code~~; the SDL host (Linux, Windows), video on Vulkan
+4. ~~A setting in the game, pairing with a code~~, ~~an app icon~~
+5. Not planned: the picture from Linux and Windows (the SDL host). They have no system video encoder
+   like VideoToolbox, so it would need a third-party encoder library. Input, rumble and sound could
+   follow there without one.
