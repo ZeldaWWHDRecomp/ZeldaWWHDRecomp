@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **GamePad bars: no flicker at high resolution scales** (#498, #493 follow-up, thanks @thejorro). The menu background
+  in the bars around the GamePad picture is captured at most at 1920×1080 and scaled up, so it shows on every frame at
+  resolution scale 3 and 4 too (before, the bars switched between the background and a plain colour). Metal now also
+  captures only the GamePad picture, like Vulkan since #497. The bars look the same.
 - **Link's look** (#492). Players can change the colours of Link's hair, skin, eyes, tunic and hat, undershirt,
   trousers, boots and belt buckle: Link's own textures are recoloured in memory, nothing of the game is stored except
   the chosen colours, and with no colours chosen nothing changes. The look is kept per save file. The colour page shows
