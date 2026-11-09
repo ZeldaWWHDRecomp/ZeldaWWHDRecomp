@@ -30,6 +30,7 @@
 #include "../runtime.h"
 #include "../platform/host.h"
 #include "../overlay/overlay.h"
+#include "../overlay/binding_capture.h"
 
 namespace gfx { void show_drc_window(bool on); }
 
@@ -225,6 +226,7 @@ struct UIState {
 @property(strong) NSSegmentedControl* which;
 @property(strong) NSSegmentedControl* faceLayout;
 @property(strong) NSPopUpButton* bindingTarget;
+@property(strong) NSTextField* sharedNotice;  // the shared bindings while the controller in use has its own
 @property(strong) NSSlider* deadzone;
 @property(strong) NSTextField* deadzoneValue;
 @property(strong) NSSlider* leftRange;     // issue #40: per-stick range, tag 0 = left, 1 = right
@@ -242,6 +244,7 @@ struct UIState {
 @property(strong) NSButton* promptTextColours;
 @property(strong) NSTimer* timer;
 - (Mapping)bindingView;
+- (void)followActiveController;
 - (BOOL)handleKeyEvent:(NSEvent*)e;
 - (BOOL)handleMouseEvent:(NSEvent*)e;
 - (void)beginCapture:(int)a mode:(int)mode;
@@ -997,7 +1000,7 @@ static NSRect x_rect(NSRect chip) { return NSMakeRect(NSMaxX(chip) - 7, chip.ori
     UIState _st;
     uint32_t _gen;
     bool _localKeys[256];  // keys held while this window has the keyboard (not seen by the game)
-    float _padBase[kPadCount];
+    overlay::BindingCapture _padCapture;  // controller capture: each input against its resting value
     NSString* _message;
     int _messageLevel;
     double _messageTime;
@@ -1005,6 +1008,7 @@ static NSRect x_rect(NSRect chip) { return NSMakeRect(NSMaxX(chip) - 7, chip.ori
     NSString* _lastPadInfo;
     std::string _bindingGuid, _bindingName;
     bool _ownBindings;
+    BindingChoice _bindingChoice;  // the window opens on the controller in use; the user's pick wins
 }
 
 - (instancetype)init {
@@ -1064,6 +1068,12 @@ static NSTextField* label(NSString* s) {
     bt.target = self; bt.action = @selector(bindingTargetChanged:);
     bt.toolTip = @"Bindings for one controller, or the shared defaults. Keyboard and options are shared.";
     self.bindingTarget = bt;
+    NSTextField* sn0 = label(@"");
+    sn0.textColor = NSColor.systemOrangeColor;
+    sn0.alignment = NSTextAlignmentRight;
+    sn0.lineBreakMode = NSLineBreakByTruncatingTail;
+    [sn0 setContentCompressionResistancePriority:NSLayoutPriorityDefaultLow forOrientation:NSLayoutConstraintOrientationHorizontal];
+    self.sharedNotice = sn0;
     NSTextField* pi = label(@"");
     pi.textColor = NSColor.secondaryLabelColor;
     pi.alignment = NSTextAlignmentRight;
@@ -1191,19 +1201,19 @@ static NSTextField* label(NSString* s) {
     NSStackView* cameraOptions = [NSStackView stackViewWithViews:@[label(@"Camera speed:"),cameraSpeed,label(@"Mouse sensitivity:"),mouseSensitivity]];
     cameraOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameraOptions.spacing = 12;
-    for (NSView* v in @[bt, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions]) {
+    for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:v];
     }
 
-    NSDictionary* v = NSDictionaryOfVariableBindings(bt, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh,
+    NSDictionary* v = NSDictionaryOfVariableBindings(bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh,
                                                      ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions);
     auto C = [&](NSString* f, NSLayoutFormatOptions o = 0) {
         [root addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:f options:o metrics:nil views:v]];
     };
     C(@"H:|-14-[which]-(>=12)-[pi]-14-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-14-[fl]-(>=14)-|");
-    C(@"H:|-14-[skip]-(>=14)-[bt(300)]-14-|", NSLayoutFormatAlignAllCenterY);
+    C(@"H:|-14-[skip]-(>=14)-[sn0]-10-[bt(300)]-14-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-0-[pv]-0-|");
     C(@"H:|-0-[sep]-0-|");
     C(@"H:|-16-[st]-16-|");
@@ -1243,6 +1253,12 @@ static NSTextField* label(NSString* s) {
         self.bindingTarget.lastItem.representedObject = @{@"guid":ns(guid), @"name":ns(name)};
         if (_ownBindings && guid == _bindingGuid && name == _bindingName)
             [self.bindingTarget selectItem:self.bindingTarget.lastItem];
+    }
+    // the shared bindings while the controller in use plays with its own: edits here don't reach it
+    {
+        std::string guid, name;
+        active_controller(guid, name);
+        self.sharedNotice.stringValue = _ownBindings ? @"" : ns(shared_view_notice(all, guid, name));
     }
     // Automatic belongs to shared defaults, not fixed per-controller bindings.
     const bool automatic = automatic_face_available(_ownBindings);
@@ -1294,6 +1310,11 @@ static NSTextField* label(NSString* s) {
 
 - (void)bindingTargetChanged:(NSPopUpButton*)button {
     [self cancelCapture];
+    {
+        std::string guid, name;
+        active_controller(guid, name);
+        _bindingChoice.choose(guid, name);
+    }
     _ownBindings = button.indexOfSelectedItem > 0;
     if (_ownBindings) {
         NSDictionary* target = button.selectedItem.representedObject;
@@ -1402,16 +1423,10 @@ static NSTextField* label(NSString* s) {
     NSArray<GCController*>* pads = no_host ? @[] : GCController.controllers;
     if (!no_host) input::controller_values(v);
     _st.padConnected = pads.count > 0;
-    // capture from a controller: a new press (held inputs count once released)
+    // capture from a controller: a press clearly above the input's resting value (held inputs count
+    // once let go and pressed again; a resting trigger or a drifting stick never counts)
     if (_st.capAction >= 0 && (_st.capMode == kCapAny || _st.capMode == kCapPad)) {
-        for (int p = 1; p < kPadCount; p++) {
-            if (_padBase[p] > 0.5f) { _padBase[p] = v[p]; continue; }
-            _padBase[p] = v[p];
-            if (v[p] > 0.6f) {
-                [self assignPad:p];
-                break;
-            }
-        }
+        if (const int p = _padCapture.poll(v); p > kPadNone) [self assignPad:p];
     }
     // pressed state per action, stick deflection (as the game sees it; the camera applies the inversion)
     float act[kActionCount];
@@ -1459,7 +1474,13 @@ static NSTextField* label(NSString* s) {
     _st.capAction = a;
     _st.capMode = mode;
     _message = nil;
-    if (mode == kCapAny || mode == kCapPad) input::controller_values(_padBase);  // held now: not until released
+    if (mode == kCapAny || mode == kCapPad) {  // the resting values now (held inputs: not until let go)
+        static const bool no_host = getenv("WWHD_NO_HOST_INPUT") != nullptr;
+        float v[kPadCount] = {};
+        if (!no_host) input::controller_values(v);
+        _padCapture.reset();
+        _padCapture.poll(v);
+    }
     [self refreshStatus];
     self.padView.needsDisplay = YES;
 }
@@ -1732,7 +1753,25 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
             }
 }
 
+// The window opens on the controller in use: its own bindings when it has them, else the shared ones,
+// unless the user picked a set while the same controller was in use (BindingChoice).
+- (void)followActiveController {
+    if (_st.capAction >= 0) return;
+    std::string active_guid, active_name, guid, name;
+    active_controller(active_guid, active_name);
+    bool own = false;
+    if (!_bindingChoice.open(current(), active_guid, active_name, own, guid, name)) return;
+    if (own == _ownBindings && (!own || (guid == _bindingGuid && name == _bindingName))) return;
+    _ownBindings = own;
+    _bindingGuid = guid;
+    _bindingName = name;
+    _st.m = [self bindingView];
+    _gen = generation();
+    [self.padView invalidateGeo];
+}
+
 - (void)show:(bool)takeFocus {
+    [self followActiveController];
     [self reloadFromModel];
     [self startTimer];
     [self poll];

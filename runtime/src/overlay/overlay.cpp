@@ -2186,15 +2186,17 @@ void tab_shortcuts() {
         }
         if (U.cap_col == 2 && !done) {
             // Wait for the button that activated the UI to be released before capturing a hold.
+            // (BindingCapture: each input against its resting value; one held at the start counts
+            // once let go and pressed again)
             int& hold = capture_hold;
-            if (U.binding_capture.poll(U.values) > 0 && !hold)
-                for (int p = 1; p < kPadCount; ++p) if (U.values[p] > 0.5f) { hold = p; break; }
-            if (hold && U.values[hold] <= 0.5f) {
+            const int pressed = U.binding_capture.poll(U.values);
+            if (pressed > 0 && !hold) hold = pressed;
+            if (hold && !U.binding_capture.down(U.values, hold)) {
                 m.shortcuts[a].hold = kPadNone; m.shortcuts[a].button = hold;
                 if (a == kPhoto) m.pad[kScreenshot] = kPadNone;
                 set_current(m); done = true; hold = 0;
             }
-            if (hold) for (int p = 1; p < kPadCount; ++p) if (p != hold && U.values[p] > 0.5f) {
+            if (hold) for (int p = 1; p < kPadCount; ++p) if (p != hold && U.binding_capture.down(U.values, p)) {
                 m.shortcuts[a].hold = hold; m.shortcuts[a].button = p;
                 if (a == kPhoto) m.pad[kScreenshot] = kPadNone;
                 set_current(m); done = true; hold = 0; break;
@@ -2260,6 +2262,11 @@ controller_setup::Displacing g_displace;
 bool g_details_open = false;
 bool g_edit_controller = false;  // the Controls tab edits g_edit_guid / g_edit_name's bindings
 std::string g_edit_guid, g_edit_name;
+// "Bindings for" opens on the controller in use (its own bindings when it has them, input_map::
+// BindingChoice); a set the user picks wins while that controller stays in use. Due again each time
+// the menu opens.
+input_map::BindingChoice g_binding_choice;
+std::atomic<bool> g_binding_choice_due{true};  // (set where the menu opens: any thread)
 
 int edit_index(const input_map::Mapping& m) {
     return g_edit_controller ? input_map::profile_index(m, g_edit_guid, g_edit_name) : -1;
@@ -2309,8 +2316,9 @@ void apply_capture() {
         }
     }
     if (!done) {
-        // controller: wait for all inputs to be released, then take the first one pressed (controller
-        // slots); for a key slot, B cancels
+        // controller: the first input pressed clearly above its resting value (BindingCapture; one held
+        // at the start counts once let go and pressed again) (controller slots); for a key slot, any
+        // controller input (B too) cancels
         const int pressed = U.binding_capture.poll(U.values);
         if (pressed > 0) {
             if ((colm == kColPad || colm == kColAny) && is_virtual(a)) {
@@ -2467,6 +2475,7 @@ void controller_setup_frame() {
         g_edit_controller = true;  // the Controls tab shows what was made
         g_edit_guid = setup_state().guid;
         g_edit_name = setup_state().name;
+        g_binding_choice_due = false;
     } else if (a == Answer::kNeverAsk) {
         input_map::Mapping m = input_map::current();
         m.setup_declined.push_back(input_map::controller_key(setup_state().guid, setup_state().name));
@@ -2529,6 +2538,17 @@ void controller_row(bool tools = true) {
     const input_map::Mapping cur = input_map::current();
     const auto connected = controller_details::ordered(input::controllers());
     const auto entries = input_map::binding_targets(cur, connected);
+    std::string active_guid, active_name;
+    input_map::active_controller(active_guid, active_name);
+    if (U.cap_action < 0 && g_binding_choice_due.exchange(false)) {  // the page opens on the controller in use
+        bool own = false;
+        std::string guid, name;
+        if (g_binding_choice.open(cur, active_guid, active_name, own, guid, name)) {
+            g_edit_controller = own;
+            g_edit_guid = guid;
+            g_edit_name = name;
+        }
+    }
     if (g_edit_controller) { // still listed (connected or with bindings of its own)?
         bool listed = false;
         for (const auto& e : entries)
@@ -2545,8 +2565,10 @@ void controller_row(bool tools = true) {
     ImGui::SetNextItemWidth(
         std::min(ImGui::GetFontSize() * 16, std::max(ImGui::GetFontSize() * 8, ImGui::GetContentRegionAvail().x)));
     if (ImGui::BeginCombo("##bindings_for", preview.c_str())) {
-        if (selectable("All controllers (shared)", !g_edit_controller))
+        if (selectable("All controllers (shared)", !g_edit_controller)) {
             g_edit_controller = false;
+            g_binding_choice.choose(active_guid, active_name);
+        }
         for (size_t i = 0; i < entries.size(); i++) {
             const auto& e = entries[i];
             const bool has = input_map::profile_index(cur, e.guid, e.name) >= 0;
@@ -2556,6 +2578,7 @@ void controller_row(bool tools = true) {
                 g_edit_controller = true;
                 g_edit_guid = e.guid;
                 g_edit_name = e.name;
+                g_binding_choice.choose(active_guid, active_name);
             }
         }
         ImGui::EndCombo();
@@ -2588,6 +2611,15 @@ void controller_row(bool tools = true) {
         if (ImGui::Button("Controller details..."))
             g_details_open = true;
         help("What the system reports about each connected controller: IDs, battery, motors, sensors, buttons, axes.");
+    }
+    // the shared bindings while the controller in use plays with its own: edits here don't reach it
+    if (!own) {
+        const std::string notice = input_map::shared_view_notice(cur, active_guid, active_name);
+        if (!notice.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.62f, 0.20f, 1.0f));
+            ImGui::TextWrapped("%s", notice.c_str());
+            ImGui::PopStyleColor();
+        }
     }
 }
 
@@ -3660,6 +3692,7 @@ void set_open(bool open, OpenReason reason, KeyOrigin origin) {
         mods::mouse_release();
         U.just_opened = true;
         U.slots_time = -1;
+        g_binding_choice_due = true;  // Controls opens on the controller in use again
     }
     const auto message = open_message(open, reason, origin, render::frame_count());
     LOG("%s", message.c_str());

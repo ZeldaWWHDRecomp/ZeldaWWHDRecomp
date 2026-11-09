@@ -8,6 +8,7 @@
 #include "platform/mouse_sdl.h"
 #include "platform/keycodes.h"
 #include <cassert>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
@@ -30,7 +31,7 @@ namespace render { const Backend* g_backend = nullptr; uint64_t frame_count(){re
 namespace gx2 { void checkpoint_vulkan_caches(){} void checkpoint_present_observer(){} }
 namespace gfxvk { bool graphics_hotkey(char,bool){return false;} }
 namespace aspect { void set_window_aspect(float){} }
-namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} void quick_use_reset(){} void quick_use_filter_pad(input::PadState&){} }
+namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} void quick_use_reset(){} void quick_use_filter_pad(input::PadState&){} bool jump_anywhere(){return false;} bool infinite(int){return false;} }
 namespace interp { int mode(){return 0;} void toggle_fps(int){} void set_mode(int){} uint64_t logic_steps(){return 0;} }
 namespace dsweep { uint32_t pad_buttons(uint64_t){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
@@ -195,6 +196,86 @@ static int shortcut_ui_test() {
  return 0;
 }
 
+// The actual Controls > Bindings page (overlay.cpp, which Android uses): "Bindings for" opens on the
+// controller in use when it has bindings of its own, the shared view says its edits don't reach it, and
+// a controller capture records a real press although a trigger rests half-way and a stick drifts
+// (issue: AYN Odin, only A worked and nothing could be bound). No game, renderer or audio.
+static int bindings_for_test() {
+ using namespace input_map;
+ using namespace overlay;
+ const auto file = std::filesystem::temp_directory_path() / ("wwhd-bindings-for-" + std::to_string(getpid()) + ".json");
+ setenv("WWHD_CONTROLS", file.c_str(), 1);
+ const std::string og = "odin-guid", on = "Odin Controller";
+ Mapping withOdin = Mapping::defaults();
+ ensure_profile(withOdin, og, on);
+ set_current(withOdin, false);
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy"); assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+ ImGui::CreateContext();
+ auto& io = ImGui::GetIO();
+ io.IniFilename = nullptr;
+ io.DisplaySize = ImVec2(1280,720); io.DeltaTime = 1.0f/60;
+ io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+ io.BackendFlags |= ImGuiBackendFlags_HasGamepad | ImGuiBackendFlags_RendererHasTextures;
+ io.Fonts->AddFontDefault();
+ U.cap_action = -1; U.list_view = true;
+ std::fill(std::begin(U.values), std::end(U.values), 0.0f);
+ std::string shown;  // the page's text this frame (ImGui's log)
+ auto frame = [&]() {
+  prepare_menu_input(io, is_open(), false); // the production capture path (apply_capture)
+  ImGui::NewFrame();
+  ImGui::SetNextWindowPos(ImVec2(10,10), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(1200,690), ImGuiCond_Always);
+  ImGui::Begin("Bindings for regression");
+  ImGui::LogToBuffer();
+  Mapping m = edit_current();
+  controls_bindings_page(m, false);
+  shown = ImGui::GetCurrentContext()->LogBuffer.c_str();
+  ImGui::LogFinish();
+  ImGui::End(); ImGui::Render();
+  std::copy(std::begin(U.values),std::end(U.values),std::begin(U.prev));
+ };
+ const char* notice = "Odin Controller uses its own bindings, so changes here don't apply to it.";
+ auto reopen = [&]() { set_open(false); set_open(true); frame(); frame(); };
+ // 1. the Odin (its own bindings) in use: the page opens on its bindings, no notice there
+ set_active_controller(og, on);
+ reopen();
+ assert(g_edit_controller && g_edit_guid == og && g_edit_name == on && edit_index(current()) == 0);
+ assert(shown.find("Odin Controller (its own)") != std::string::npos && shown.find(notice) == std::string::npos);
+ // 2. the user picks the shared set: the notice shows, and the pick stays on reopening
+ g_edit_controller = false; g_binding_choice.choose(og, on);
+ frame();
+ assert(shown.find(notice) != std::string::npos);
+ reopen();
+ assert(!g_edit_controller && shown.find(notice) != std::string::npos);
+ // 3. an edit there is shared (the Odin keeps its own), as the notice says
+ // the Odin-like device: LT rests at 0.5, the left stick drifts at 0.35; B (the confirm) still held
+ // when the capture starts
+ U.values[kPadLT] = 0.5f; U.values[kPadLSDown] = 0.35f; frame();
+ U.values[kPadB] = 1;
+ start_capture(kZR, kColPad); frame();
+ for (int i = 0; i < 30; ++i) { U.values[kPadLSDown] = 0.35f + 0.08f * std::sin(i * 0.9f); if (i == 5) U.values[kPadB] = 0; frame(); }
+ assert(U.cap_action == kZR);  // the resting / drifting inputs and the released B recorded nothing
+ U.values[kPadX] = 1; frame();
+ assert(U.cap_action < 0 && current().pad[kZR] == kPadX && current().controllers[0].pad[kZR] == withOdin.pad[kZR]);
+ U.values[kPadX] = 0; frame();
+ // 4. a normal controller (no profile, everything resting at 0) in use: shared set, no notice; capture as before
+ set_active_controller("xbox-guid", "Xbox Controller");
+ std::fill(std::begin(U.values), std::end(U.values), 0.0f);
+ reopen();
+ assert(!g_edit_controller && shown.find("uses its own bindings") == std::string::npos);
+ start_capture(kZL, kColPad); frame();
+ U.values[kPadRB] = 1; frame();
+ assert(U.cap_action < 0 && current().pad[kZL] == kPadRB);
+ U.values[kPadRB] = 0; frame();
+ // 5. the Odin again: its own bindings (the shared pick was made while it was in use, and it was left)
+ set_active_controller(og, on);
+ reopen();
+ assert(g_edit_controller && g_edit_name == on);
+ set_open(false); ImGui::DestroyContext(); std::filesystem::remove(file); SDL_Quit();
+ puts("Bindings for: opens on the controller in use, shared-view notice, capture against resting inputs passed");
+ return 0;
+}
+
 static int window_target_test() {
  using namespace overlay::window_target;
  unsetenv("GAMESCOPE_WAYLAND_DISPLAY");unsetenv("WAYLAND_DISPLAY");
@@ -323,6 +404,7 @@ static int window_target_test() {
 int main(int argc,char** argv){
  if(argc>1&&std::string(argv[1])=="--shortcuts-ui")return shortcut_ui_test();
  if(argc>1&&std::string(argv[1])=="--window-target")return window_target_test();
+ if(argc>1&&std::string(argv[1])=="--bindings-for")return bindings_for_test();
  const auto controlsFile=std::filesystem::temp_directory_path()/("wwhd-overlay-mouse-165-"+std::to_string(getpid())+".json");
  setenv("WWHD_CONTROLS",controlsFile.c_str(),1);
  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
