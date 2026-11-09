@@ -42,6 +42,9 @@ final class GamePadLink: ObservableObject {
     private var lastTarget: Target?      // the latest connect()
     private var resumeTarget: Target?    // left for the background while connected: rejoin on return
     private var resumeAttempt = 0        // a newer attempt or a cancel makes an older one's timeout moot
+    /// the app is in front: only then does it look for games or rejoin one (a connection made in the
+    /// background dies when iOS suspends the app, moments later)
+    private var foreground = true
     static let resumeTimeout: TimeInterval = 5
     @Published private(set) var controllerName: String?
     @Published var gyro = UserDefaults.standard.object(forKey: "gyro") as? Bool ?? true {
@@ -89,7 +92,7 @@ final class GamePadLink: ObservableObject {
     /// stay waiting and never report anything)
     func browse(restart: Bool = false) {
         if restart { stopBrowsing() }
-        guard browser == nil else { return }
+        guard browser == nil, foreground else { return }
         let b = NWBrowser(for: .bonjour(type: WWGP.bonjourType, domain: nil), using: .udp)
         b.stateUpdateHandler = { [weak self, weak b] state in
             note("browser: \(state)")
@@ -216,6 +219,8 @@ final class GamePadLink: ObservableObject {
     /// game gives the GamePad back to the keyboard and its own controllers at once) and remember what to
     /// rejoin if this phone was connected, connecting or reconnecting.
     func suspend() {
+        foreground = false
+        note("background: status \(status), last target \(String(describing: lastTarget))")
         if isActive, let t = lastTarget {
             resumeTarget = t
             note("background: will rejoin \(t) on return")
@@ -228,6 +233,8 @@ final class GamePadLink: ObservableObject {
     /// The app is in front again: rejoin what it left, if that is still there. A game found over Bonjour
     /// must be listed again (resumeIfFound); a typed address must answer. Either gets resumeTimeout.
     func resumeIfNeeded() {
+        foreground = true
+        note("front: rejoin \(String(describing: resumeTarget)), status \(status), listed \(games.map(\.name))")
         guard let t = resumeTarget else { return }
         resumeAttempt += 1
         let attempt = resumeAttempt
@@ -256,11 +263,17 @@ final class GamePadLink: ObservableObject {
 
     /// a listed game is the one to rejoin: connect to it (its endpoint as Bonjour lists it now)
     private func resumeIfFound() {
-        guard case let .game(name)? = resumeTarget, let game = games.first(where: { $0.name == name }) else { return }
+        guard foreground, case let .game(name)? = resumeTarget, let game = games.first(where: { $0.name == name }) else { return }
         note("rejoining \(name)")
         resumeTarget = nil
         resuming = nil
         connect(game)
+    }
+
+    /// `-join <name>` at launch: connect to the listed game of that name as soon as it is found
+    func join(_ name: String) {
+        resumeTarget = .game(name)
+        resumeIfNeeded()
     }
 
     func cancelResume() {

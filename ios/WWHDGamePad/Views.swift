@@ -19,8 +19,8 @@ struct WWHDGamePadApp: App {
             // back in front (maybe after allowing Local Network access, or on another Wi-Fi): look again,
             // and rejoin the game it was connected to if that is still there
             if now == .active {
-                link.browse(restart: true)
-                link.resumeIfNeeded()
+                link.resumeIfNeeded()        // (first: the app is in front again)
+                link.browse(restart: true)   // its results rejoin a listed game
             }
         }
     }
@@ -114,9 +114,10 @@ struct ConnectView: View {
             link.browse()
             // `-connect <address>` at launch (Xcode scheme arguments, simctl launch): connect at once, once
             // (the argument stays for the whole launch; coming back from the background rejoins by itself)
-            if !Self.launchConnectDone, let a = UserDefaults.standard.string(forKey: "connect"), case .idle = link.status {
+            if !Self.launchConnectDone, case .idle = link.status {
                 Self.launchConnectDone = true
-                link.connect(address: a)
+                if let a = UserDefaults.standard.string(forKey: "connect") { link.connect(address: a) }
+                else if let name = UserDefaults.standard.string(forKey: "join") { link.join(name) }  // `-join <name>`
             }
         }
     }

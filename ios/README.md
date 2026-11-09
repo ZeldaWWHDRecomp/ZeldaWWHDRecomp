@@ -61,9 +61,11 @@ xcodebuild test -project WWHDGamePad.xcodeproj -scheme WWHDGamePad -destination 
 On the game side, `remote_pad_test` (packets, controller mapping, the server over loopback) and
 `motion_test` (the phone's gyro) are CTest tests.
 
-For testing, `-connect <address>` as a launch argument connects at once (Xcode: Product > Scheme >
+For testing, `-join <name>` as a launch argument joins the listed game of that name (for example
+`-join Mac-mini`), and `-connect <address>` connects at once (Xcode: Product > Scheme >
 Edit Scheme > Arguments; `xcrun simctl launch <device> org.wwhdrecomp.gamepad -connect 127.0.0.1`
-in the Simulator, against a game on the same Mac).
+in the Simulator, against a game on the same Mac; on a phone, `xcrun devicectl device process launch
+--console --device <id> org.wwhdrecomp.gamepad -- -join Mac-mini` also shows the app's `[link]` log).
 
 ## How it works
 
