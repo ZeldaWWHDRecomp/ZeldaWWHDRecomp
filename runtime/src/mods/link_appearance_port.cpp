@@ -291,7 +291,7 @@ struct Stage {
     bool camera_was_active = false, hud = false;
     float link[3] = {};
     int16_t heading = 0;
-    float orbit = 0;      // the camera's turn around Link (radians)
+    float orbit = 0;      // the camera's turn around Link from his heading (radians)
     float turn = 0;       // the page's turn input
 } g_stage;
 std::mutex g_page_mu;  // g_page between the controller reads and the logic passes
@@ -356,12 +356,18 @@ void publish(Cpu* c, std::vector<Command> cmds) {
     store.commit(kOwner, list);
 }
 
-// the close camera: in front of Link (turned by the orbit), looking at his chest from a little above, the
-// look point moved to the camera's right so Link stands left of the window
+// the close camera: in front of Link, a little to his side at first (the character he just talked to stands right in
+// front of him), looking at his chest from a little above; the look point moved to the camera's right so Link stands
+// left of the window. The right stick or L / R turn it around him (front and back); near his front it comes closer, so
+// it passes between him and that character rather than behind her.
+constexpr float kStartOrbit = 0.9f;  // radians from his heading
+constexpr double kPi = 3.14159265358979;
 void place_camera(Cpu* c) {
-    const double a = double(g_stage.heading) * 3.14159265358979 / 32768.0 + g_stage.orbit;
+    const double a = double(g_stage.heading) * kPi / 32768.0 + g_stage.orbit;
     const double fx = std::sin(a), fz = std::cos(a);
-    const double dist = 235, eye_up = 72, look_up = 46, shift = 56;
+    const double off = std::fabs(std::remainder(double(g_stage.orbit), 2 * kPi));  // 0: straight in front of him
+    const double dist = off >= 1.0 ? 205 : 95 + 110 * off;
+    const double eye_up = 66, look_up = 44, shift = 50 * dist / 205;
     const double rx = fz, rz = -fx;  // the camera's right (it looks along -f)
     const double eye[3] = {g_stage.link[0] + fx * dist, g_stage.link[1] + eye_up, g_stage.link[2] + fz * dist};
     const double ctr[3] = {g_stage.link[0] + rx * shift, g_stage.link[1] + look_up, g_stage.link[2] + rz * shift};
@@ -392,7 +398,7 @@ bool stage_start(Cpu* c, std::string& why) {
     g_stage.hud = ld8(play + kHudShown) != 0;
     for (int i = 0; i < 3; i++) g_stage.link[i] = float(ldf32(link + kPos + 4 * uint32_t(i)));
     g_stage.heading = int16_t(ld16(link + kAngleY));
-    g_stage.orbit = 0, g_stage.turn = 0;
+    g_stage.orbit = kStartOrbit, g_stage.turn = 0;
     call(c, kStopCamera, {camera});
     call(c, kHideHud);
     place_camera(c);
@@ -624,7 +630,7 @@ void logic_service(Cpu* c, bool logic_pass) {
         close_page(c, false, false);
         return;
     }
-    g_stage.orbit += g_stage.turn * 2.6f / 30.0f;  // a turn in about 2.4 s
+    g_stage.orbit = std::fmod(g_stage.orbit + g_stage.turn * 2.6f / 30.0f, float(2 * kPi));  // a full turn in about 2.4 s
     place_camera(c);
 }
 
