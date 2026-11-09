@@ -68,9 +68,17 @@ struct Pose {
     uint8_t emote = 0, emote_w = 0;
     float emote_s = 0;
 };
-// a pose's flags beside kOnDeck (1, Tetra's ship) and the pose's own (coop_pose.cpp): riding his boat; standing on a
-// friend's boat
-constexpr uint8_t kOnDeck = 0x01, kSailing = 0x08, kOnFriend = 0x10;
+// a pose's flags: on Tetra's ship's deck; Medli flying; Link flashing red (hurt); riding his boat; standing on a
+// friend's boat. Bits 5 and 6-7 hold no flag: the character (below) lives in bits 6-7, apart from every flag (it was
+// bits 4-5 once, where Tetra and Zelda read as kOnFriend); an older game reads bits 4-5 and sees Link there
+constexpr uint8_t kOnDeck = 0x01, kFlying = 0x02, kHurt = 0x04, kSailing = 0x08, kOnFriend = 0x10;
+constexpr uint8_t kAllFlags = kOnDeck | kFlying | kHurt | kSailing | kOnFriend;
+constexpr int kCharShift = 6;
+constexpr uint8_t kCharMask = 3 << kCharShift;
+// the character a pose's flags carry, and flags with one put in (0 Link .. 3 Zelda, below)
+constexpr int char_of(uint8_t flags) { return flags >> kCharShift & 3; }
+constexpr uint8_t with_char(uint8_t flags, int ch) { return (uint8_t)((flags & ~kCharMask) | (ch & 3) << kCharShift); }
+static_assert(!(kCharMask & kAllFlags), "a pose's character bits overlap a flag");
 
 // the bytes of a pose (the recorder's frame and the network's), and back
 void pack(const Pose& p, std::string& out);
@@ -93,7 +101,7 @@ void state_loaded();
 // this game's own Link's tunic while a session is on (-1: none, his own clothes)
 void own_tunic(int tunic);
 // who this game plays as (0 Link, 1 Tetra, 2 Medli, 3 Princess Zelda): drawn in Link's place here, and the others see
-// it (a pose's flags, bits 4-5)
+// it (a pose's flags, bits 6-7: char_of)
 constexpr int kCharacters = 4;
 constexpr const char* kCharacterNames[kCharacters] = {"Link", "Tetra", "Medli", "Zelda"};
 void own_character(int ch);

@@ -228,7 +228,7 @@ void pose(Pose& p, int body_k) {
     ready();
     std::vector<Mx> joints;
     // (a character in Link's place, Tetra, Medli, Zelda: their own models, no emote; the emoting game refuses it too)
-    if (!p.emote_w || (p.flags >> 4 & 3) || !clip_at(index_of(p.emote), p.emote_s, joints)) return;
+    if (!p.emote_w || char_of(p.flags) || !clip_at(index_of(p.emote), p.emote_s, joints)) return;
     const bool on = apply(p, body_k, joints, p.emote_w / 255.f);
     static float was = 1e9f;  // (test aids: its time as the last pose showed it; what it was put on)
     shots(was, p.emote_s, "a puppet");

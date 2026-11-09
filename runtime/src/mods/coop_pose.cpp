@@ -47,7 +47,6 @@ namespace {
 
 using namespace names;  // (C18: the offsets by name, coop_names.h)
 constexpr uint32_t kPos = ac::kPos, kRoom = ac::kRoom, kAngleY = ac::kAngleY, kCurProc = py::mCurProc, kEquip = py::mEquipItem;
-constexpr uint8_t kFlying = 2, kHurt = 4;  // a pose's flags: Medli flying; Link flashing red (hurt)
 constexpr uint16_t kShipFile = 0x8000;      // a held model's file is of the boat's archive, not Link's
 constexpr uint32_t kMdlJoints = j3d::mpMtxBuffer, kJntMtx = j3d::mpAnmMtx, kJntNum = j3d::kJointCount, kMdlBase = j3d::mBaseTransformMtx;
 constexpr int kMaxModels = 64, kMaxJoints = 128;
@@ -1605,7 +1604,7 @@ void step(Cpu* c, uint32_t link, bool on) {
     }
     if (link) {
         need_character(c, g_own_char, 0);
-        for (int i = 0; i < kPuppets; i++) if (g_puppet[i].shown) need_character(c, g_puppet[i].pose.flags >> 4 & 3, i + 1);
+        for (int i = 0; i < kPuppets; i++) if (g_puppet[i].shown) need_character(c, char_of(g_puppet[i].pose.flags), i + 1);
         // her idle while Link waits (procedures 3-5: waiting, his idle fidget), eased in and out over 0.3 s; each clip
         // played a step, its pose worked out (its model at the origin: her idle in her model's space)
         // Medli flying the same, over 0.2 s
@@ -1613,7 +1612,7 @@ void step(Cpu* c, uint32_t link, bool on) {
         bool playing[kCharacters] = {}, flying[kCharacters] = {};
         for (int s = 0; s <= kPuppets; s++) {
             const bool shown = s == 0 || g_puppet[s - 1].shown;
-            const int ch = s == 0 ? g_own_char : g_puppet[s - 1].pose.flags >> 4 & 3;
+            const int ch = s == 0 ? g_own_char : char_of(g_puppet[s - 1].pose.flags);
             const uint32_t proc = s == 0 ? ld32(link + kCurProc) : g_puppet[s - 1].pose.proc;
             const bool fl = s == 0 ? g_fly.left > 0 : g_puppet[s - 1].pose.flags & kFlying;
             g_idle_w[s] = std::clamp(g_idle_w[s] + (shown && ch && proc >= 3 && proc <= 5 ? 1 : -1) / 9.f, 0.f, 1.f);
@@ -1810,7 +1809,7 @@ static void enter(Cpu* c, uint32_t link, int i, const Model& m, bool game_drew) 
     // its materials shown as that player's were (his sword drawn: the blade), Link's put back after
     const uint32_t n = materials(twin);
     uint8_t was[32];
-    const int ch = u.pose.flags >> 4 & 3;  // (that player's character: Link's models hidden)
+    const int ch = char_of(u.pose.flags);  // (that player's character: Link's models hidden)
     const uint32_t shown = ch && m.k != kHeld && body_part(m.k) ? 0 : m.shown;
     for (uint32_t k = 0; k < n; k++) was[k] = ld8(shown_flag(twin, k)), st8(shown_flag(twin, k), shown >> k & 1);
     // entryDLSetLight(Link, twin, 0): lit as Link, entered into the draw buffers current now, Link's. (Its other way,
@@ -1901,7 +1900,7 @@ extern "C" void hook_027F583C(Cpu* c) {
     if (k < 0 || k >= 64) return;
     const uint32_t r3 = c->r[3], r4 = c->r[4];
     for (int i = 0; i < kPuppets; i++)
-        if (g_puppet[i].shown && g_models[k].twin[i] && !((g_puppet[i].pose.flags >> 4 & 3) && body_part(k)))
+        if (g_puppet[i].shown && g_models[k].twin[i] && !(char_of(g_puppet[i].pose.flags) && body_part(k)))
             for (const Model& m : g_puppet[i].pose.models)
                 if (m.k == k) joint_without(model, joint, m.shown, [&] { SeeThrough see(i); c->r[3] = g_models[k].twin[i], c->r[4] = joint, f_027F583C_orig(c); });
     c->r[3] = r3, c->r[4] = r4;
@@ -1987,7 +1986,7 @@ extern "C" void hook_023D9820(Cpu* c) {
                 for (int e = 0; e < 3; e++) g_taking.trail_pts[3 * i + e] = (int16_t)std::clamp<long>(std::lround(l[e] * 4), -32768, 32767);
             }
         }
-        g_taking.flags = (uint8_t)(g_own_char << 4 | (g_fly.left ? kFlying : 0) | (flashing(link) ? kHurt : 0));
+        g_taking.flags = (uint8_t)(with_char((g_fly.left ? kFlying : 0) | (flashing(link) ? kHurt : 0), g_own_char));
         emotes::own_state(g_taking.emote, g_taking.emote_s, g_taking.emote_w);  // (C22: the emote he was drawn with)
         // in first person Link draws no head (nor what his head holds): the others see the models he drew before, as
         // they are now (their joints are worked out all the same)

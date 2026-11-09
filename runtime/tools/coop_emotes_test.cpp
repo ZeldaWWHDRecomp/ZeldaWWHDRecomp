@@ -41,6 +41,22 @@ static Joint joint(const Mx& m) {
 }
 
 int main() {
+    // a pose's character (coop_pose.h char_of/with_char): every one round-trips over every flag set, and never sets or
+    // clears a flag (Tetra and Zelda once read as kOnFriend); an older game (bits 4-5) sees Link
+    for (int ch = 0; ch < kCharacters; ch++) {
+        CHECK(char_of(with_char(0, ch)) == ch);
+        CHECK(!(with_char(0, ch) & kAllFlags));
+        CHECK(!(with_char(0, ch) & kOnFriend));
+        CHECK((with_char(0, ch) >> 4 & 3) == 0);
+        for (int f = 0; f < 256; f++) {
+            const uint8_t flags = (uint8_t)(f & kAllFlags), w = with_char(flags, ch);
+            CHECK(char_of(w) == ch);
+            CHECK((w & kAllFlags) == flags);
+            CHECK(char_of(with_char(w, 0)) == 0 && (with_char(w, 0) & kAllFlags) == flags);
+        }
+    }
+    CHECK((kOnDeck | kFlying | kHurt | kSailing | kOnFriend) == kAllFlags);
+    CHECK(__builtin_popcount(kAllFlags) == 5);
     // the catalogue: ids unique and not 0, each with a clip and a name, played at least once
     std::set<int> ids;
     for (const Emote& e : kEmotes) {

@@ -1524,7 +1524,7 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 for (int k = 0; k < 3; k++) st32(pos + 4 * k, std::bit_cast<uint32_t>(g_remote[e.from].at[k] + sd.off[k]));
                 double keep[4];
                 for (int k = 0; k < 4; k++) keep[k] = c->f[k + 1].ps0, c->f[k + 1].ps0 = sd.f[k];
-                const uint32_t id = char_voice(sd.id, g_remote[e.from].poses.empty() ? 0 : g_remote[e.from].poses.back().second.flags >> 4 & 3);
+                const uint32_t id = char_voice(sd.id, g_remote[e.from].poses.empty() ? 0 : char_of(g_remote[e.from].poses.back().second.flags));
                 if (id) guest_call(c, GC(0x0201EBA0), {ld32(GD(0x101FFC78)), id, pos, sd.r6, sd.r7, sd.r8});  // (JAIZelBasic)
                 g_remote[e.from].sounds++;
                 for (int k = 0; k < 4; k++) c->f[k + 1].ps0 = keep[k];
