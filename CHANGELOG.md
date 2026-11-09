@@ -7,6 +7,14 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Controller bindings follow the controller in use** (#491). A controller with bindings of its own ("Bindings
+  for: <controller> – its own") plays with those, but the Bindings page always opened on the shared set, so changes
+  there never reached it (seen on an AYN Odin, where only A worked). The page now opens on the controller in use, and
+  the shared set says when the controller in use has its own bindings. Recording a new controller binding also no
+  longer waits for every input to read zero: each input is measured against where it rests, so a trigger resting
+  half-way or a drifting stick no longer blocks the recording or gets recorded instead of the button you press
+  (bindings, controller setup, Shortcuts and the Mac Controls window). If your controller's own bindings are broken:
+  Bindings for → your controller → **Use the shared buttons**, or Reset to defaults.
 - **Android full screen on handheld systems** (#489, #349, thanks @plxjammerplx for the logs and screenshots). With
   Full screen on, the game window now also uses the calls some handheld systems need to give an app the navigation
   bar's space (seen on a Retroid Pocket Nova, where the bottom 48 rows stayed black), and the log's `[display] Android
