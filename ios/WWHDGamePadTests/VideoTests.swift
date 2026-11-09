@@ -36,6 +36,16 @@ final class VideoTests: XCTestCase {
         XCTAssertNil(WWGP.video(WWGP.bye(session: 1)))
     }
 
+    func testRumblePacketMatchesTheGame() {
+        // encode_rumble(0xA1B2C3D4, 77, 200) in runtime/src/remote_pad/protocol.cpp
+        let r = WWGP.rumble(hex("5757475001000700d4c3b2a14d000000c8"))
+        XCTAssertEqual(r?.session, 0xA1B2_C3D4)
+        XCTAssertEqual(r?.seq, 77)
+        XCTAssertEqual(r?.level ?? -1, 200.0 / 255, accuracy: 1e-6)
+        XCTAssertNil(WWGP.rumble(hex("5757475001000700d4c3b2a14d000000")))  // short
+        XCTAssertNil(WWGP.rumble(WWGP.bye(session: 1)))
+    }
+
     private func piece(_ frame: UInt32, _ index: Int, _ count: Int, key: Bool = false, _ bytes: [UInt8] = [1]) -> WWGP.VideoPiece {
         WWGP.VideoPiece(frame: frame, index: index, count: count, key: key, timeNs: 0, width: 854, height: 480,
                         payload: bytes[...])

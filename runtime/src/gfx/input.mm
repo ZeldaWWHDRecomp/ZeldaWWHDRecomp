@@ -1041,6 +1041,9 @@ void init() {
         }
         mods::update_gyro_mouse();
         haptic_tick();  // controller motors, from rumble.h's requested strength
+        // the iPhone GamePad's motor (remote_pad.h): the phone is played away from this window, so
+        // window focus does not matter; the settings overlay holds the input, as for the motors above
+        remote_pad::rumble(overlay::is_open() ? 0.f : std::clamp(rumble::host_level(1000000 / 60), 0.f, 1.f));
     }];
     [[NSRunLoop mainRunLoop] addTimer:inputTimer forMode:NSRunLoopCommonModes];
 }

@@ -43,4 +43,26 @@ bool take_keyframe_request();  // the next frame must be a keyframe (a new phone
 // one encoded frame (AVCC, see protocol.h); any thread
 void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height);
 
+// ---- rumble (protocol.h kRumble) ----
+// The host, every input update (any rate, one thread): the GamePad motor's strength now, 0..1
+// (rumble::host_level). Sent to the phone when it changes, repeated while it runs (RumbleSender).
+void rumble(float level);
+
+// When to send the strength (plain logic, tested): on a change (at most every kMinGapMs), every
+// kRefreshMs while not 0, and a stop kStopRepeats times kStopGapMs apart (a lost stop must not
+// leave the phone rumbling until its own stale timeout).
+class RumbleSender {
+public:
+    static constexpr uint64_t kMinGapMs = 8, kRefreshMs = 100, kStopGapMs = 40;
+    static constexpr int kStopRepeats = 2;
+    // the level to send now, or -1
+    int update(float level, uint64_t now_ms);
+    void reset() { *this = RumbleSender{}; }
+private:
+    int sent_ = 0;           // last sent, 0..255
+    uint64_t at_ = 0;        // when
+    int stops_left_ = 0;     // repeats of a 0 still due
+    bool any_ = false;
+};
+
 }  // namespace remote_pad

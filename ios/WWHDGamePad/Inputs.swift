@@ -26,6 +26,9 @@ final class ControllerReader: @unchecked Sendable {  // (its state lives on the 
 
     deinit { for o in observers { NotificationCenter.default.removeObserver(o) } }
 
+    /// on `queue`: the controller in use (rumble goes to it when it has a motor)
+    var current: GCController? { controller }
+
     /// main thread: use the current controller (the one pressed last), else any with a full layout
     private func pick() {
         let c = GCController.current?.extendedGamepad != nil ? GCController.current

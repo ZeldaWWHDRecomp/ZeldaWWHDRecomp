@@ -16,6 +16,10 @@
 //   computer -> phone   kVideo      header (session), video fields, one piece of an encoded frame
 //                                   (only after a Hello with kWantsVideo in its header flags)
 //   phone -> computer   kKeyframe   header (session): a piece was lost; make the next frame a keyframe
+//   computer -> phone   kRumble     header (session), seq u32, level u8: the GamePad motor's strength
+//                                   (0 = still, 255 = full; rumble.h's host level). Sent when it changes
+//                                   (at most 120 a second), again every 100 ms while it is not 0, and a
+//                                   stop twice; the phone stops by itself after kRumbleStaleMs without one.
 //
 // Video: H.264, no frame reordering. A frame is its NAL units, each with a 4-byte big-endian length
 // (AVCC); a keyframe starts with its SPS and PPS. A frame is cut into pieces of at most kMaxVideoPayload
@@ -43,7 +47,8 @@ constexpr const char* kBonjourType = "_wwhd-gamepad._udp";
 constexpr size_t kHeaderSize = 12;
 constexpr size_t kMaxName = 63;
 
-enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6 };
+enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7 };
+constexpr uint32_t kRumbleStaleMs = 250;
 enum HelloFlag : uint8_t { kWantsVideo = 1 };  // a Hello's header flags
 
 struct Header {
@@ -97,6 +102,9 @@ std::vector<uint8_t> encode_welcome(uint32_t session, const Welcome& w);
 std::vector<uint8_t> encode_input(uint32_t session, const Input& in);
 std::vector<uint8_t> encode_bye(uint32_t session);
 std::vector<uint8_t> encode_keyframe_request(uint32_t session);
+std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level);
+struct Rumble { uint32_t seq = 0; uint8_t level = 0; };
+std::optional<Rumble> parse_rumble(const uint8_t* data, size_t size);
 
 // header + frame u32 + index u16 + count u16 + flags u8 (1: keyframe) + 0 u8 + time u64 + width u16 + height u16
 constexpr size_t kVideoHeaderSize = kHeaderSize + 4 + 2 + 2 + 1 + 1 + 8 + 2 + 2;

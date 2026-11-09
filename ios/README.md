@@ -10,7 +10,8 @@ phone (Backbone, Kishi, Razer, or a paired DualSense or Xbox controller). The ph
 
 The game sends the phone the GamePad screen, so you touch the picture itself, as on a real GamePad.
 The GamePad screen on the Mac can stay in any mode (even *off*); the phone gets the picture either way.
-Sound and rumble come next (see Roadmap). The picture needs the Metal renderer (the default on macOS).
+Rumble works too: the game's GamePad motor runs on the controller when it has one (the Backbone One
+PlayStation Edition does), else on the phone. Sound comes next (see Roadmap). The picture needs the Metal renderer (the default on macOS).
 
 ## Use it
 
@@ -79,6 +80,7 @@ game, 3 s on the phone, which then says Hello again.
 | --- | --- |
 | `GamePadLink.swift`: Bonjour, connection, 125 Hz sender | `remote_pad/server.cpp`: one phone at a time, sessions, newest input only |
 | `Inputs.swift`: GameController, CoreMotion, touch | `remote_pad/remote_pad.cpp`: Bonjour record, controller values, gyro feed |
+| `Haptics.swift`: the motor's strength as a continuous haptic (controller, else phone) | `remote_pad.cpp` `RumbleSender`: rumble.h's level on change, refreshed while it runs |
 | `Video.swift`: frames from their pieces, `AVSampleBufferDisplayLayer` | `gfx/remote_video.mm`: the GamePad picture into IOSurfaces, H.264 (VideoToolbox, low latency) |
 | `Protocol.swift` (mirrors `protocol.h`) | `gfx/input.mm`: the phone as a controller and the touch screen; `motion/motion.cpp`: its gyro under *Device gyro* |
 
@@ -95,5 +97,5 @@ controller axes the same way it does the Android device gyro (`motion::device_to
 
 1. ~~Input: controller, touch, gyro~~
 2. ~~The GamePad picture on the phone~~ (Metal renderer; the Vulkan renderer later)
-3. GamePad sound on the phone's speaker, rumble through Core Haptics or the controller
+3. ~~Rumble~~ (Core Haptics on the controller, else the phone); GamePad sound on the phone's speaker
 4. A setting in the game instead of `WWHD_REMOTE_PAD`, a pairing code, the SDL host (Linux, Windows)

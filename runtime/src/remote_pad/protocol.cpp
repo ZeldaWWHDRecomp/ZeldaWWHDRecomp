@@ -101,6 +101,12 @@ std::vector<uint8_t> encode_keyframe_request(uint32_t session) {
     w.header(kKeyframe, session);
     return std::move(w.out);
 }
+std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level) {
+    Writer w;
+    w.header(kRumble, session);
+    w.u32(seq); w.u8(level);
+    return std::move(w.out);
+}
 std::vector<std::vector<uint8_t>> encode_video(uint32_t session, uint32_t frame, bool key, uint64_t time_ns,
                                                uint16_t width, uint16_t height, const uint8_t* data, size_t size) {
     const size_t count = std::max<size_t>(1, (size + kMaxVideoPayload - 1) / kMaxVideoPayload);
@@ -174,6 +180,14 @@ std::optional<Input> parse_input(const uint8_t* data, size_t size) {
 }  // namespace remote_pad
 
 namespace remote_pad {
+std::optional<Rumble> parse_rumble(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kRumble);
+    if (!r) return std::nullopt;
+    Rumble m;
+    m.seq = r->u32(); m.level = r->u8();
+    if (!r->ok) return std::nullopt;
+    return m;
+}
 std::optional<VideoPiece> parse_video(const uint8_t* data, size_t size) {
     if (size < kVideoHeaderSize) return std::nullopt;
     auto r = body(data, size, kVideo);

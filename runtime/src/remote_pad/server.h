@@ -53,6 +53,8 @@ public:
     // Any thread: one encoded frame to the phone (protocol.h kVideo) if it asked for video; false when
     // nobody takes it. Sent from the caller's thread, outside the server's lock.
     bool send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height);
+    // Any thread: the GamePad motor's strength (protocol.h kRumble) to the connected phone
+    bool send_rumble(uint8_t level);
 
 private:
     void run();
@@ -72,6 +74,7 @@ private:
     std::chrono::steady_clock::time_point seen_{}, keepalive_{};
     uint32_t hello_nonce_ = 0;
     uint32_t video_frame_ = 0;       // mu_
+    uint32_t rumble_seq_ = 0;        // mu_
 };
 
 }  // namespace remote_pad

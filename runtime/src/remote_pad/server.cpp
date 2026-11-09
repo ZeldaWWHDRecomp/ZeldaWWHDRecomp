@@ -50,6 +50,7 @@ Server::~Server() { stop(); }
 #ifdef _WIN32
 bool Server::start(uint16_t) { log_msg("[remote pad] not available on this host"); return false; }
 bool Server::send_video(const uint8_t*, size_t, bool, uint64_t, uint16_t, uint16_t) { return false; }
+bool Server::send_rumble(uint8_t) { return false; }
 void Server::stop() {}
 void Server::run() {}
 void Server::end_session(const char*) {}
@@ -109,6 +110,21 @@ void Server::end_session(const char* why) {
 Server::Snapshot Server::snapshot() const {
     std::lock_guard lk(mu_);
     return state_;
+}
+
+bool Server::send_rumble(uint8_t level) {
+    sockaddr_storage to{};
+    socklen_t to_len = 0;
+    std::vector<uint8_t> p;
+    {
+        std::lock_guard lk(mu_);
+        if (!running_ || !state_.connected) return false;
+        memcpy(&to, peer_, peer_len_);
+        to_len = peer_len_;
+        p = encode_rumble(state_.session, ++rumble_seq_, level);
+    }
+    std::lock_guard send(send_mu_);
+    return sock_ >= 0 && sendto(sock_, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(&to), to_len) >= 0;
 }
 
 bool Server::send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height) {

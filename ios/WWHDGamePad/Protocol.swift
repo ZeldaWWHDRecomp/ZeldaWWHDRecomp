@@ -12,7 +12,8 @@ enum WWGP {
     static let inputSize = 78
     static let maxName = 63
 
-    enum PacketType: UInt8 { case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6 }
+    enum PacketType: UInt8 { case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7 }
+    static let rumbleStale: TimeInterval = 0.25   // protocol.h kRumbleStaleMs
     static let wantsVideo: UInt8 = 1          // a Hello's header flags
     static let videoHeaderSize = headerSize + 22
     static let maxDatagram = 1400
@@ -116,6 +117,14 @@ enum WWGP {
         let nonce = r.u32()
         let host = r.name()
         return r.ok ? Welcome(session: session, nonce: nonce, host: host) : nil
+    }
+
+    /// the GamePad motor's strength (protocol.h kRumble): (session, seq, level 0...1)
+    static func rumble(_ b: [UInt8]) -> (session: UInt32, seq: UInt32, level: Float)? {
+        guard let (type, session) = header(b), type == .rumble else { return nil }
+        var r = Reader(bytes: b, at: headerSize)
+        let seq = r.u32(), level = r.u8()
+        return r.ok ? (session, seq, Float(level) / 255) : nil
     }
 
     static func video(_ b: [UInt8]) -> (session: UInt32, piece: VideoPiece)? {

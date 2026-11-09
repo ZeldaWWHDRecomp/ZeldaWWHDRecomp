@@ -57,6 +57,7 @@ final class GamePadLink: ObservableObject {
     nonisolated let queue = DispatchQueue(label: "org.wwhdrecomp.gamepad.link", qos: .userInteractive)
     nonisolated let screen = TouchAndScreen()
     nonisolated let video = VideoReceiver()
+    nonisolated let rumble = RumblePlayer()   // (link queue)
     nonisolated private let controller: ControllerReader
     nonisolated private let motion: MotionReader
     private var browser: NWBrowser?
@@ -297,6 +298,7 @@ final class GamePadLink: ObservableObject {
             }
             connection = nil
             session = 0
+            rumble.reset()
         }
     }
 
@@ -308,9 +310,14 @@ final class GamePadLink: ObservableObject {
             let bytes = data.map { Array($0) } ?? []
             if let (session, piece) = WWGP.video(bytes) {
                 if session == self.session, c === self.connection { self.video.add(piece) }
+            } else if let (session, seq, level) = WWGP.rumble(bytes) {
+                if session == self.session, c === self.connection { self.rumble.set(seq: seq, level: level) }
             } else if let w = WWGP.welcome(bytes), w.nonce == self.nonce, c === self.connection {
                 let wasConnected = self.session != 0 && Date().timeIntervalSince(self.lastWelcome) < 3
-                if w.session != self.session { self.video.reset() }  // a new session: from its first keyframe
+                if w.session != self.session {  // a new session: from its first keyframe, motor still
+                    self.video.reset()
+                    self.rumble.reset()
+                }
                 self.session = w.session
                 self.lastWelcome = Date()
                 if !wasConnected { Task { @MainActor in self.status = .connected(w.host.isEmpty ? self.target : w.host) } }
@@ -320,6 +327,8 @@ final class GamePadLink: ObservableObject {
     }
 
     nonisolated private func tick(_ c: NWConnection, device: String, controller name: String) {
+        rumble.controller = controller.current
+        rumble.tick()
         guard c === connection, c.state == .ready else { return }
         let now = Date()
         if session != 0 && now.timeIntervalSince(lastWelcome) > 3 {

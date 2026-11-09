@@ -117,6 +117,32 @@ static void test_video_packets() {
     assert(parse_header(k.data(), k.size())->type == kKeyframe);
 }
 
+static void test_rumble() {
+    // the packet
+    auto p = encode_rumble(5, 77, 200);
+    assert(parse_header(p.data(), p.size())->type == kRumble);
+    auto r = parse_rumble(p.data(), p.size());
+    assert(r && r->seq == 77 && r->level == 200);
+    assert(!parse_rumble(p.data(), p.size() - 1));
+    // when to send
+    RumbleSender s;
+    assert(s.update(0, 1000) == 0);       // the first update says where it stands
+    assert(s.update(0, 1100) == -1);      // still: nothing more (no stop repeats: nothing ran)
+    assert(s.update(0.5f, 1200) == 128);  // a change: at once
+    assert(s.update(0.5f, 1250) == -1);   // unchanged
+    assert(s.update(0.5f, 1300) == 128);  // still running: again after kRefreshMs
+    assert(s.update(1.0f, 1304) == -1);   // a change within kMinGapMs waits ...
+    assert(s.update(1.0f, 1308) == 255);  // ... until it has passed
+    assert(s.update(0, 1320) == 0);       // the stop
+    assert(s.update(0, 1340) == -1);
+    assert(s.update(0, 1360) == 0);       // and once more, kStopGapMs later
+    assert(s.update(0, 1500) == -1);      // then nothing
+    assert(s.update(0, 9000) == -1);
+    assert(s.update(2.0f, 9100) == 255 && s.update(std::nanf(""), 9200) == 0);  // clamped; NaN = still
+    s.reset();
+    assert(s.update(0.25f, 10) == 64);
+}
+
 static void test_pad_values() {
     using namespace input_map;
     Input in;
@@ -278,6 +304,18 @@ static void test_server_video() {
         else { assert(v->frame == 2 && !v->key && v->count == 1 && v->size == 10); frames_seen = 2; }
     }
     assert(got == frame && frames_seen == 2);
+    // rumble reaches the phone in the session (video or not)
+    assert(server.send_rumble(180));
+    for (;;) {
+        uint8_t buf[2048];
+        const ssize_t n = recv(phone.s, buf, sizeof buf, 0);
+        assert(n > 0);
+        auto h = parse_header(buf, size_t(n));
+        if (h->type != kRumble) continue;
+        auto r = parse_rumble(buf, size_t(n));
+        assert(r && r->level == 180 && r->seq == 1 && h->session == w->first);
+        break;
+    }
     // a lost piece: the phone asks for a keyframe
     phone.send(encode_keyframe_request(w->first));
     assert(wait_for([&] { return keyframes == 1; }));
@@ -286,13 +324,15 @@ static void test_server_video() {
     assert(keyframes == 1);
     server.stop();
     assert(!server.send_video(frame.data(), frame.size(), true, 1, 854, 480));
+    assert(!server.send_rumble(1));
 }
 
 int main() {
     test_packets();
     test_video_packets();
+    test_rumble();
     test_pad_values();
     test_server();
     test_server_video();
-    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests) passed");
+    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests), rumble passed");
 }

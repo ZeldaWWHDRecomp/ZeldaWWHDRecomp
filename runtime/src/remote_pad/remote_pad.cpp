@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <memory>
@@ -30,6 +32,9 @@ std::mutex g_mu;
 std::unique_ptr<Server> g_server;
 int g_turns = -1;  // the phone's screen rotation of the previous motion sample (server thread)
 std::atomic<bool> g_video{false}, g_keyframe{false};
+RumbleSender g_rumble;          // the host's input thread
+std::atomic<bool> g_rumble_reset{false};  // a new phone: start from still
+std::atomic<bool> g_connected{false};
 #ifdef __APPLE__
 DNSServiceRef g_bonjour = nullptr;
 #endif
@@ -64,9 +69,9 @@ void start_from_env() {
     if (g_server) return;
     const std::string name = host_name();
     g_server = std::make_unique<Server>(Server::Callbacks{
-        [](const Server::Snapshot& s) { g_turns = -1; g_keyframe = true; g_video = s.video; },
+        [](const Server::Snapshot& s) { g_turns = -1; g_keyframe = true; g_video = s.video; g_rumble_reset = true; g_connected = true; },
         on_input,
-        [](const std::string&) { motion::remote_reset(); g_turns = -1; g_video = false; },
+        [](const std::string&) { motion::remote_reset(); g_turns = -1; g_video = false; g_connected = false; },
         [] { g_keyframe = true; },
     }, name);
     if (!g_server->start(port)) { g_server.reset(); return; }
@@ -108,6 +113,36 @@ bool take_keyframe_request() { return g_keyframe.exchange(false); }
 void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height) {
     std::lock_guard lk(g_mu);
     if (g_server) g_server->send_video(data, size, key, time_ns, width, height);
+}
+
+int RumbleSender::update(float level, uint64_t now) {
+    const int want = std::isfinite(level) ? int(std::lround(std::clamp(level, 0.0f, 1.0f) * 255)) : 0;
+    const uint64_t since = now - at_;
+    int send = -1;
+    if (!any_ || (want != sent_ && since >= kMinGapMs)) send = want;           // a change
+    else if (want != 0 && want == sent_ && since >= kRefreshMs) send = want;   // still running
+    else if (want == 0 && sent_ == 0 && stops_left_ > 0 && since >= kStopGapMs) {  // the stop again
+        stops_left_--;
+        send = 0;
+    }
+    if (send < 0) return -1;
+    if (send == 0 && (sent_ != 0 || !any_)) stops_left_ = kStopRepeats - 1;
+    if (!any_ && send == 0) stops_left_ = 0;  // nothing ran: one still is enough
+    sent_ = send;
+    at_ = now;
+    any_ = true;
+    return send;
+}
+
+void rumble(float level) {
+    if (!g_connected.load(std::memory_order_relaxed)) return;  // (cheap: called every input update)
+    if (g_rumble_reset.exchange(false)) g_rumble.reset();
+    const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+    const int send = g_rumble.update(level, now);
+    if (send < 0) return;
+    std::lock_guard lk(g_mu);
+    if (!g_server || !g_server->send_rumble(uint8_t(send))) g_rumble.reset();  // nobody connected: from still next time
 }
 
 void pad_values(const Input& in, float* v) {
