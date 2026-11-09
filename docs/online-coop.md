@@ -173,10 +173,32 @@ blocked; leave the party instead.
 ## Emotes
 
 While you're online, press **Alt+1** to **Alt+5** on the keyboard, or pick an emote under **Emotes** in
-Settings > Online or on the Online page of the pause menu: Wave, Cheer, Yes, Surprised or Look around. The other players see your Link do it. Players near you who
-aren't in your party see it too. Your own Link doesn't move. A small bubble over his head shows the emote while
-the others see it. You can change the keys in Settings > Controls, under Online. You can play one emote a second. If you walk away, the emote stops. The animations come from
-your own game files.
+Settings > Online or on the Online page of the pause menu: Wave, Cheer, Yes, Surprised or Look around. Your own Link
+does it, and the other players see him do it at the same time: players near you who aren't in your party see it too.
+A small bubble over his head names the emote while it plays. An emote you pick in a menu plays when you close the
+menu. You can change the keys in Settings > Controls, under Online. You can play one emote a second. The animations
+come from your own game files.
+
+Link only emotes while he stands still on the ground with nothing in his hands. When he can't, nothing plays (for
+the others either) and a short notice says why:
+
+| Notice "Can't emote now: ..." | When |
+|---|---|
+| a menu is open | Settings or a game menu is open (a key pressed there; the menu's own Emote button waits until you close it) |
+| a cutscene or a talk is on, a text box is open | during cutscenes, talks, item scenes and text boxes |
+| on the way to another place | while the next area loads |
+| on the boat | riding or steering the boat |
+| swimming, climbing, in the air | in the water; on a ladder, a wall, a ledge or a rope; jumping or falling |
+| hurt | right after he was hit |
+| something is in his hands | sword drawn, an item or something he carries in his hands |
+| aiming, crouching | first person, aiming an item; crouching or crawling |
+| Link isn't standing still | walking, rolling, attacking or anything else |
+| only as Link | while you play as another character |
+
+Moving the stick or pressing any button (attack, item, target, A) ends the emote at once and you have full control
+right away; the others see it end too. It also ends if anything from the table above happens. The emote is only the
+picture: where Link is, what he does and what he hits stay the game's own, and nothing of it goes into your save.
+Players you muted or blocked don't show their emotes on your screen.
 
 ## Chat
 

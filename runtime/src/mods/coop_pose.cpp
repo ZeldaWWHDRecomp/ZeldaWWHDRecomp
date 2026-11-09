@@ -157,23 +157,15 @@ void rot_y(int16_t yaw, float& s, float& c) {
     s = std::sin(a), c = std::cos(a);
 }
 
-// a model's joints, relative to Link's place and heading (inverse of T(pos) * Ry(yaw), then the world matrix), into
-// `into` (none if a joint is further than a pose holds: an arrow flown off)
-void take(std::vector<Model>& into, int k, const Made* held, uint32_t model, uint32_t link) {
+// a model's joints, relative to Link's place and heading (inverse of T(pos) * Ry(yaw), then the world matrix); false
+// if a joint is further than a pose holds (an arrow flown off)
+bool joints_of(uint32_t model, uint32_t link, std::vector<Joint>& out) {
     const uint32_t jnt = ld32(model + kMdlJoints), mtx = jnt ? ld32(jnt + kJntMtx) : 0, n = jnt ? ld16(jnt + kJntNum) : 0;
-    if (!mtx || !n || n > kMaxJoints) return;
-    for (const Model& m : into) if (held ? m.k == kHeld && m.file == held->file : m.k == k) return;  // (entered twice in one draw)
+    if (!mtx || !n || n > kMaxJoints) return false;
     float s, c;
     rot_y((int16_t)ld16(link + kAngleY), s, c);
     const float p[3] = {f32(link + kPos), f32(link + kPos + 4), f32(link + kPos + 8)};
-    Model out;
-    out.k = held ? kHeld : (uint8_t)k;
-    if (held) out.file = held->file, out.diff = held->diff;
-    for (uint32_t i = 0; i < materials(model); i++) if (!ld8(shown_flag(model, i))) out.shown &= ~(1u << i);
-    // (in first person Link hides his head: the others see it as it was before)
-    static auto shown_before = [] { std::array<uint32_t, kMaxModels> a; a.fill(~0u); return a; }();
-    if (k >= 0 && k < kMaxModels) mods::first_person() ? (void)(out.shown = shown_before[k]) : (void)(shown_before[k] = out.shown);
-    out.j.resize(n);
+    out.resize(n);
     for (uint32_t i = 0; i < n; i++) {
         float w[12], r[12];
         for (int e = 0; e < 12; e++) w[e] = f32(mtx + 48 * i + 4 * e);
@@ -183,16 +175,31 @@ void take(std::vector<Model>& into, int k, const Made* held, uint32_t model, uin
             r[col] = c * x - s * z, r[4 + col] = y, r[8 + col] = s * x + c * z;
         }
         float sc[3], q[4] = {1, 0, 0, 0};
-        Joint& j = out.j[i];
+        Joint& j = out[i];
         const bool ok = interp::mtx_to_quat(r, sc, q);
         const float us = ok ? (sc[0] + sc[1] + sc[2]) / 3 : 0;
         for (int e = 0; e < 4; e++) j.q[e] = (int16_t)std::lround(std::clamp(q[e], -1.f, 1.f) * 32767);
         for (int e = 0; e < 3; e++) {
-            if (std::fabs(r[4 * e + 3] * 8) > 32767) return;
+            if (std::fabs(r[4 * e + 3] * 8) > 32767) return false;
             j.t[e] = (int16_t)std::lround(r[4 * e + 3] * 8);
         }
         j.s = (uint8_t)std::clamp<long>(std::lround(us * 64), 0, 255);
     }
+    return true;
+}
+// a model's joints into `into` (none if a joint is further than a pose holds)
+void take(std::vector<Model>& into, int k, const Made* held, uint32_t model, uint32_t link) {
+    const uint32_t jnt = ld32(model + kMdlJoints), n = jnt ? ld16(jnt + kJntNum) : 0;
+    if (!jnt || !ld32(jnt + kJntMtx) || !n || n > kMaxJoints) return;
+    for (const Model& m : into) if (held ? m.k == kHeld && m.file == held->file : m.k == k) return;  // (entered twice in one draw)
+    Model out;
+    out.k = held ? kHeld : (uint8_t)k;
+    if (held) out.file = held->file, out.diff = held->diff;
+    for (uint32_t i = 0; i < materials(model); i++) if (!ld8(shown_flag(model, i))) out.shown &= ~(1u << i);
+    // (in first person Link hides his head: the others see it as it was before)
+    static auto shown_before = [] { std::array<uint32_t, kMaxModels> a; a.fill(~0u); return a; }();
+    if (k >= 0 && k < kMaxModels) mods::first_person() ? (void)(out.shown = shown_before[k]) : (void)(shown_before[k] = out.shown);
+    if (!joints_of(model, link, out.j)) return;
     into.push_back(std::move(out));
 }
 
@@ -1305,7 +1312,7 @@ void pack(const Pose& p, std::string& out) {
     // 1200) can take it over, on top of the models. What does not fit is left out of this pose: the trail first, then
     // every other rope point (its ends kept) until the rest fits.
     const size_t nr_all = p.rope_pts.size() / 3;
-    const size_t tail = 2 + (p.chain ? 10 : 0) + 1 + ((p.flags & kSailing) ? 14 + 17 : 0) + ((p.flags & kOnFriend) ? 1 : 0);
+    const size_t tail = 2 + (p.chain ? 10 : 0) + 1 + ((p.flags & kSailing) ? 14 + 17 : 0) + ((p.flags & kOnFriend) ? 1 : 0) + 1 + (p.emote ? 3 : 0);
     const size_t used = out.size() - start, trail_bytes = p.trail > 0 ? 12 + 2 * p.trail_pts.size() : 0;
     const auto rope_bytes = [](size_t n) { return n ? 4 + 6 * n : 0; };
     const bool trail = p.trail > 0 && used + 4 + trail_bytes + tail + rope_bytes(nr_all) <= kPoseBudget;
@@ -1338,6 +1345,11 @@ void pack(const Pose& p, std::string& out) {
         put_bytes(sl.rel, 6), put_bytes(sl.angle, 6), put_bytes(&sl.scale_y, 1), put_bytes(&sl.furl, 1), put_bytes(&sl.sail_angle, 2), put_bytes(&sl.on, 1);
     }
     if (p.flags & kOnFriend) put_bytes(&p.deck_of, 1);
+    put_bytes(&p.emote, 1);  // (C22: his emote, its time in 60ths of a second and its weight)
+    if (p.emote) {
+        const uint16_t t = (uint16_t)std::clamp<long>(std::lround(p.emote_s * 60), 0, 0xFFFF);
+        put_bytes(&t, 2), put_bytes(&p.emote_w, 1);
+    }
     size = (uint32_t)(out.size() - start);
     memcpy(&out[start], &size, 4);
     // test aid WWHD_COOP_POSE_CHECK=1: each compact pose read back and compared with what was packed (largest joint
@@ -1443,6 +1455,13 @@ bool unpack(const uint8_t* d, size_t n, Pose& p, size_t* used) {
                                  !get(&p.sail.scale_y, 1) || !get(&p.sail.furl, 1) || !get(&p.sail.sail_angle, 2) || !get(&p.sail.on, 1)))
         return false;
     if ((p.flags & kOnFriend) && !get(&p.deck_of, 1)) return false;
+    if (!get(&p.emote, 1)) return false;
+    if (p.emote) {
+        uint16_t t = 0;
+        if (!get(&t, 2) || !get(&p.emote_w, 1)) return false;
+        p.emote_s = t / 60.f;
+        if (!emotes::find(p.emote)) p.emote = 0, p.emote_w = 0, p.emote_s = 0;  // (one this game doesn't have: none)
+    }
     if (used) *used = size;
     if (o != size) return false;
     // (another game's data, written into this game's objects as it is drawn: what the game itself could not have made
@@ -1468,6 +1487,11 @@ void blend(const Pose& a, const Pose& b, float t, Pose& out) {
         for (int i = 0; i < 3; i++) out.boat[i] = a.boat[i] + (b.boat[i] - a.boat[i]) * t;
         out.boat_yaw = (int16_t)(a.boat_yaw + (int16_t)(b.boat_yaw - a.boat_yaw) * t);
     }
+    // (an emote both carry: its time and weight between them; one starting or ending: from or to none)
+    if (a.emote == b.emote && b.emote) out.emote_s = a.emote_s + (b.emote_s - a.emote_s) * t;
+    if (a.emote == b.emote || !a.emote || !b.emote)
+        out.emote_w = (uint8_t)std::lround((a.emote == b.emote ? a.emote_w : 0) * (1 - t) + b.emote_w * t);
+    if (!b.emote && a.emote) out.emote = a.emote, out.emote_s = a.emote_s, out.emote_w = (uint8_t)std::lround(a.emote_w * (1 - t));
     for (Model& m : out.models)
         for (const Model& n : a.models) {
             if (n.k != m.k || n.file != m.file || n.j.size() != m.j.size()) continue;
@@ -1519,7 +1543,7 @@ void state_loaded() {
 int body_model() { return g_body_k; }
 
 void release(int i) {
-    if (i >= 0 && i < kPuppets) g_puppet[i].shown = false, g_kit[i].release = true, emotes::stop(i);
+    if (i >= 0 && i < kPuppets) g_puppet[i].shown = false, g_kit[i].release = true;
 }
 
 void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic, bool see_through) {
@@ -1541,7 +1565,7 @@ void show(int i, const Pose* p, const float pos[3], int16_t yaw, int tunic, bool
         const float walked = speed * (float)(net::now_ms() % 4000) / 1000.f;
         u.pos[0] += s * (ahead + walked) - c * right, u.pos[2] += c * (ahead + walked) + s * right, u.yaw = (int16_t)(yaw + (int)(turn * 32768 / 180));
     }
-    emotes::pose(i, u.pose, u.pos, g_body_k);  // (C22: an emote its player played)
+    emotes::pose(u.pose, g_body_k);  // (C22: the emote its player's Link plays)
 }
 
 // Medli flies (Asad's rule: as in the game; daNpc_Md_c::flyPlayerAction, 02294160, when one plays her): in the air
@@ -1883,6 +1907,48 @@ extern "C" void hook_027F583C(Cpu* c) {
     c->r[3] = r3, c->r[4] = r4;
 }
 
+// (C22) this game's Link's emote: each of his models' joints posed for its view calculation only (interp.cpp's
+// J3DModel::viewCalc hook) and put back right after, so his logic, the items in his hands and his pose for the others
+// read his own. The clip goes on as on his puppets (emotes::apply on his body and that model, in his place and heading).
+static uint32_t g_own_mtx = 0;
+static std::vector<uint32_t> g_own_saved;
+bool mods::coop::own_view_begin(uint32_t model) {
+    if (!g_in_draw || !g_link_drawing || g_body_k < 0 || g_own_mtx) return false;
+    const int k = index_of(model);
+    if (k < 0 && !g_link_files.count(model)) return false;
+    std::vector<emotes::Mx> clip;
+    float w = 0;
+    if (!emotes::own_frame(clip, w)) return false;
+    const uint32_t link = g_link_drawing, body = ld32(link + py::mpCLModel);
+    if (index_of(body) != g_body_k) return false;
+    Pose tmp;
+    tmp.models.emplace_back();
+    tmp.models[0].k = (uint8_t)g_body_k;
+    if (!joints_of(body, link, tmp.models[0].j)) return false;
+    if (model != body) {
+        tmp.models.emplace_back();
+        tmp.models[1].k = k >= 0 ? (uint8_t)k : kHeld;
+        if (!joints_of(model, link, tmp.models[1].j)) return false;
+    }
+    if (!emotes::apply(tmp, g_body_k, clip, w)) return false;
+    const Model& m = tmp.models.back();
+    const uint32_t jnt = ld32(model + kMdlJoints), mtx = jnt ? ld32(jnt + kJntMtx) : 0;
+    if (!mtx || ld16(jnt + kJntNum) != m.j.size()) return false;
+    g_own_saved.resize(12 * m.j.size());
+    for (size_t i = 0; i < g_own_saved.size(); i++) g_own_saved[i] = ld32(mtx + 4 * (uint32_t)i);
+    g_own_mtx = mtx;
+    float sn, co;
+    rot_y((int16_t)ld16(link + kAngleY), sn, co);
+    const float at[3] = {f32(link + kPos), f32(link + kPos + 4), f32(link + kPos + 8)};
+    for (size_t j = 0; j < m.j.size(); j++) put(m.j[j], at, sn, co, mtx + 48 * (uint32_t)j);
+    return true;
+}
+void mods::coop::own_view_end() {
+    if (!g_own_mtx) return;
+    for (size_t i = 0; i < g_own_saved.size(); i++) st32(g_own_mtx + 4 * (uint32_t)i, g_own_saved[i]);
+    g_own_mtx = 0;
+}
+
 // daPy_lk_c::draw: the pose taken; the puppets' models Link did not draw himself this time entered after him
 extern "C" void f_023D9820_orig(Cpu* c);
 extern "C" void hook_023D9820(Cpu* c) {
@@ -1922,6 +1988,7 @@ extern "C" void hook_023D9820(Cpu* c) {
             }
         }
         g_taking.flags = (uint8_t)(g_own_char << 4 | (g_fly.left ? kFlying : 0) | (flashing(link) ? kHurt : 0));
+        emotes::own_state(g_taking.emote, g_taking.emote_s, g_taking.emote_w);  // (C22: the emote he was drawn with)
         // in first person Link draws no head (nor what his head holds): the others see the models he drew before, as
         // they are now (their joints are worked out all the same)
         static uint64_t drawn_before = 0;

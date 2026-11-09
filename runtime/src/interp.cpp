@@ -1158,6 +1158,11 @@ bool joint_hidden(uint32_t data, uint32_t j) {
 // update_ubo job skips that many of its updates
 std::mutex g_ubo_mu;
 std::unordered_map<uint32_t, uint32_t> g_ubo_done;
+// (online co-op, C22) Link's models posed with his emote for their view calculation: their UBO update runs in the
+// viewCalc hook too, on the posed joints (the job would read his own, put back by then), in either mode; cleared each
+// pass. g_posing: such a model's viewCalc runs; g_posed_ubo: its update was done (on the blended joints)
+std::unordered_map<uint32_t, uint32_t> g_own_ubo;
+bool g_posing = false, g_posed_ubo = false;
 
 float wf(uint32_t w) { return u32_as_f32(__builtin_bswap32(w)); }
 uint32_t fw(float f) { return __builtin_bswap32(f32_as_u32(f)); }
@@ -1301,9 +1306,31 @@ extern "C" void hook_025A4204(Cpu* c) {
     interp::g_ptcl_model_draw = saved;
 }
 // J3DModel::viewCalc(J3DModel*)
+static void view_calc(Cpu* c);
 extern "C" void hook_027F55FC(Cpu* c) {
     using namespace interp;
     if (mods::coop::view_done(c->r[3])) return;  // (online co-op: a character's model already calculated this draw)
+    // (online co-op, C22: one of Link's models while his emote plays: posed for this calculation and its UBO update
+    // only, then his own joints back)
+    const uint32_t model = c->r[3];
+    if (!mods::coop::own_view_begin(model)) return view_calc(c);
+    {
+        std::lock_guard<std::mutex> lk(g_ubo_mu);
+        g_own_ubo[model]++;  // (before viewCalc queues the model for the job)
+    }
+    g_posing = true, g_posed_ubo = false;
+    view_calc(c);
+    g_posing = false;
+    if (!g_posed_ubo) {
+        const uint32_t r3 = c->r[3];
+        c->r[3] = model;
+        f_027F5018_orig(c);
+        c->r[3] = r3;
+    }
+    mods::coop::own_view_end();
+}
+static void view_calc(Cpu* c) {
+    using namespace interp;
     static const bool off = getenv("WWHD_INTERP_MODELS") && !atoi(getenv("WWHD_INTERP_MODELS"));  // debug
     if (!enabled() || off || g_ptcl_model_draw || (!g_hold && !g_record_logic && g_exact_step)) {
         f_027F55FC_orig(c);
@@ -1419,7 +1446,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
     trace_model("blended", jnt, n, mid.data());
     {
         std::lock_guard<std::mutex> lk(g_ubo_mu);
-        g_ubo_done[model]++;  // (before viewCalc queues the model for the job)
+        if (!g_posing) g_ubo_done[model]++;  // (before viewCalc queues the model for the job; a posed one: counted already)
     }
     memcpy(ppc_ptr(mtx), mid.data(), 4 * words);
     f_027F55FC_orig(c);
@@ -1427,6 +1454,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
     c->r[3] = model;
     f_027F5018_orig(c);  // the model's UBO update, here and now on the blended matrices
     c->r[3] = r3;
+    g_posed_ubo = g_posing;
     memcpy(ppc_ptr(mtx), saved.data(), 4 * words);
 }
 
@@ -1438,6 +1466,10 @@ extern "C" void hook_027F5018(Cpu* c) {
     const uint32_t model = c->r[3];
     {
         std::lock_guard<std::mutex> lk(g_ubo_mu);
+        if (auto own = g_own_ubo.find(model); own != g_own_ubo.end()) {  // (Link's, posed with his emote: done)
+            if (--own->second == 0) g_own_ubo.erase(own);
+            return;
+        }
         if (!enabled()) g_ubo_done.clear();  // switched off since viewCalc
         auto it = g_ubo_done.find(model);
         if (it != g_ubo_done.end()) {
@@ -1977,6 +2009,10 @@ extern "C" void hook_0203593C(Cpu* c) {
     log_paced_start();
     paced_pass_start();
     game_hooks::new_pass();
+    {
+        std::lock_guard<std::mutex> lk(g_ubo_mu);
+        g_own_ubo.clear();  // (an update of the last pass the job never got to)
+    }
     if (ff_transition) {
         for (auto& p : g_prev) p = Prev{};
         g_models.clear();

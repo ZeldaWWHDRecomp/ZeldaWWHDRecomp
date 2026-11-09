@@ -16,6 +16,7 @@
 #include "coop_net.h"
 #include "coop_block.h"
 #include "coop_chat.h"
+#include "coop_emotes.h"
 
 #if WWHD_ONLINE
 
@@ -68,7 +69,7 @@ struct Tiered {
 };
 Tiered g_tiered[kMaxPlayers];
 #pragma pack(push, 1)
-struct Afar { float x, y, z; uint16_t yaw, anim; uint8_t flags; };  // a mid or far pose to coop_sync (kMid, kFar)
+struct Afar { float x, y, z; uint16_t yaw, anim; uint8_t flags, frame; };  // a mid or far pose to coop_sync (kMid, kFar)
 #pragma pack(pop)
 constexpr float kSeaOrigin = -350000.0f;  // the corner of square 0 (the server's default world.sea_origin)
 std::mutex g_far_mu;
@@ -548,6 +549,12 @@ void put_state(uint8_t kind, const std::string& body) {
         if (g_place_set) h.x = g_place[0], h.y = g_place[1], h.z = g_place[2];  // (a pose in a deck's frame: its world place)
         if (body[13] & 1) h.flags |= 1;  // (on a deck: its frame)
         if (body[13] & 0x08) h.flags |= 2;  // (sailing, coop_pose.h kSailing: a mid pose says so, protocol.h PoseHeader bit 1)
+        {  // (C22: the emote this game's Link plays, for a cheap puppet at mid range: coop_emotes.h header_anim)
+            uint8_t id, w;
+            float t;
+            emotes::own_state(id, t, w);
+            h.anim = emotes::header_anim(id, t), h.frame = h.anim ? w : 0;
+        }
         {  // (a pose the server would refuse is a protocol strike, and enough of them a kick: never sent, told once)
             op::Bytes t;
             op::Writer w(t);
@@ -710,7 +717,7 @@ void poll(Handler& h) {
                         if ((int32_t)(ms - guess) > 32768) ms -= 0x10000;
                         else if ((int32_t)(guess - ms) > 32768) ms += 0x10000;
                     }
-                    Afar a{p.head.x, p.head.y, p.head.z, p.head.yaw, p.head.anim, p.head.flags};
+                    Afar a{p.head.x, p.head.y, p.head.z, p.head.yaw, p.head.anim, p.head.flags, p.head.frame};
                     h.state(s, p.tier == op::kTierMid ? 6 : 7, ms, (const uint8_t*)&a, sizeof a);
                 }
             }

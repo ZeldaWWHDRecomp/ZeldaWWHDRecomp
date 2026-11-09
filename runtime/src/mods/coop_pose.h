@@ -63,6 +63,10 @@ struct Pose {
         uint8_t on = 0;
     } sail;
     static_assert(sizeof(Sail) == 18, "packed as 17 bytes, its fields one by one");
+    // (C22) the emote his Link plays (coop_emotes.h): its id (0 none), how far it is (seconds) and its weight over his
+    // own pose (x255). The models' joints above are without it: each game puts the clip on as it draws him
+    uint8_t emote = 0, emote_w = 0;
+    float emote_s = 0;
 };
 // a pose's flags beside kOnDeck (1, Tetra's ship) and the pose's own (coop_pose.cpp): riding his boat; standing on a
 // friend's boat
@@ -102,6 +106,11 @@ uint32_t char_voice(uint32_t id, int ch);
 // a character's model whose view this draw already calculated (for her face, before her entry): its entry's view
 // calc is skipped (interp.cpp's J3DModel::viewCalc hook)
 bool view_done(uint32_t model);
+
+// (C22) J3DModel::viewCalc (interp.cpp's hook) of a model: if it is one of this game's Link's while his emote plays,
+// its joints are posed with the emote (true) until own_view_end() puts his own back, right after the calculation
+bool own_view_begin(uint32_t model);
+void own_view_end();
 
 // a particle effect Link started (dPa_control_c::set while he executes), relative to his place and heading
 struct Effect { uint16_t id; int16_t at[3], angle[3]; };

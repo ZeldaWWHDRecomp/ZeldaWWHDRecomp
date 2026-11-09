@@ -409,7 +409,7 @@ struct Handler : net::Handler {
         if (type == net::kProgress) return net::party_flag(net::kShareProgress, true) ? progress::received(d, n) : void();
         if (type == net::kDoorMove) return progress::door_moved(d, n);
         if (type == net::kRupees) return progress::rupees_received(d, n);
-        if (type == net::kEmote) return n == 1 ? emotes::play(from < net::my_id() ? from : from - 1, d[0]) : void();  // (its puppet)
+        if (type == net::kEmote) return n == 1 ? emotes::play(from, d[0]) : void();  // (traced: its poses carry it, C22)
         if (type == net::kSound) return g_sounds_in.push_back({from, net::now_ms(), std::string((const char*)d, n)});
         if (type == net::kOwner && net::via_server()) return;  // (through a server: its runners, X2)
         if (type == net::kOwner) {  // (a guest) the host's table of who runs each place
@@ -525,7 +525,7 @@ struct Handler : net::Handler {
     // (C13) a player at mid range: a cheap puppet (Link's body in a wait, walk or dash clip by its speed) at its place,
     // shown like a near pose; far: a dot on the radar only (its puppet goes once no pose comes, kStale)
     void far_pose(Remote& r, int from, uint8_t kind, uint32_t ms, const uint8_t* d, size_t n) {
-        struct __attribute__((packed)) Afar { float x, y, z; uint16_t yaw, anim; uint8_t flags; } a;
+        struct __attribute__((packed)) Afar { float x, y, z; uint16_t yaw, anim; uint8_t flags, frame; } a;  // (coop_net_server.cpp's)
         if (n < sizeof a) return;
         memcpy(&a, d, sizeof a);
         if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z)) return;
@@ -557,6 +557,7 @@ struct Handler : net::Handler {
             p.room = link >= 0x10000000u ? (int8_t)ld8(link + kRoom) : 0;
         }
         p.pos[0] = a.x, p.pos[1] = a.y, p.pos[2] = a.z, p.yaw = (int16_t)a.yaw;
+        emotes::from_header(a.anim, a.frame, p.emote, p.emote_s, p.emote_w);  // (C22: the emote his Link plays)
         if (a.flags & 2) {  // (sailing: his boat where he is; "go to" then asks for the boat near, never the water at his place)
             p.flags |= kSailing, p.boat_yaw = p.yaw;
             memcpy(p.boat, p.pos, sizeof p.boat);
@@ -1471,14 +1472,17 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 r.gait = emotes::gait_for(speed, r.gait);
                 memcpy(r.cheap_at, r.at, 12), r.cheap_ms = now;
             }
+            if (block::silent_id(id)) p.emote = 0;  // (muted or blocked: no emotes from them, C22)
             Pose q;
             memcpy(q.stage, p.stage, 8), q.room = p.room, q.flags = 0, q.yaw = 0;
             memcpy(q.pos, r.at, 12);
+            q.emote = p.emote, q.emote_s = p.emote_s, q.emote_w = p.emote_w;
             if (emotes::cheap_pose(r.gait, now / 1000.f, body_model(), q)) {
                 show(slot, &q, r.at, yaw, net::tunic(id), false);
                 continue;
             }
         }
+        if (block::silent_id(id)) p.emote = 0;  // (muted or blocked: no emotes from them, C22)
         show(slot, &p, r.at, yaw, net::tunic(id), !net::member(id) && settings().strangers == 1);  // (X1b)
     }
     // test aid: WWHD_COOP_TEST_BLOCK=<s>[:mute]: that many seconds into the session, the first player outside the party

@@ -102,6 +102,74 @@ int main() {
     CHECK(apply(r, 2, clip, 0.5f));
     CHECK(near(from_joint(r.models[1].j[0]).m[3], 5, 0.2f));
 
+    // ended early: faded out over kCancelOut from where it was, then over
+    CHECK(near(weight(1, 2, -1), weight(1, 2)));
+    CHECK(near(weight(1, 2, 1), 1) && near(weight(1 + kCancelOut / 2, 2, 1), 0.5f) && weight(1 + kCancelOut, 2, 1) == 0);
+    CHECK(near(weight(0.1f, 2, 0.1f), weight(0.1f, 2)) && weight(0.1f + kCancelOut / 2, 2, 0.1f) < weight(0.1f, 2));
+    CHECK(!over(1, 2, -1) && over(2, 2, -1) && !over(1.05f, 2, 1) && over(1 + kCancelOut, 2, 1));
+
+    // when one may start: Link standing with nothing in his hands and nothing over him
+    const Link stand;  // (the defaults: the clips read, the WAIT procedure, no mode flag, no item)
+    CHECK(stand.proc == kProcWait && stand.equip == kNoItem);
+    CHECK(refused(stand) == nullptr && ends(stand) == nullptr);
+    CHECK(refused(Link{.proc = kProcFreeWait}) == nullptr);  // (standing a while: his idle fidgets)
+    auto with = [&](auto f) { Link s = stand; f(s); return s; };
+    struct Case { Link s; const char* why; };
+    const Case refusals[] = {
+        {with([](Link& s) { s.clips = false; }), "the emotes aren't loaded yet"},
+        {with([](Link& s) { s.character = 1; }), "only as Link"},
+        {with([](Link& s) { s.menu = true; }), "a menu is open"},
+        {with([](Link& s) { s.overlay = true; }), "a menu is open"},
+        {with([](Link& s) { s.event = true; }), "a cutscene or a talk is on"},
+        {with([](Link& s) { s.message = true; }), "a text box is open"},
+        {with([](Link& s) { s.next_stage = true; }), "on the way to another place"},
+        {with([](Link& s) { s.proc = 0x88; }), "on the boat"},  // (a SHIP_* procedure)
+        {with([](Link& s) { s.mode = kInShip; }), "on the boat"},
+        {with([](Link& s) { s.mode = kSwim, s.proc = 0x37; }), "swimming"},
+        {with([](Link& s) { s.mode = kSwim; }), "swimming"},  // (a swimming Link in a procedure that doesn't say so)
+        {with([](Link& s) { s.mode = kLadder; }), "climbing"},
+        {with([](Link& s) { s.mode = kClimb; }), "climbing"},
+        {with([](Link& s) { s.mode = kHang, s.proc = 0x2E; }), "climbing"},
+        {with([](Link& s) { s.mode = kRope; }), "climbing"},
+        {with([](Link& s) { s.mode = kMidair; }), "in the air"},
+        {with([](Link& s) { s.damage = 20; }), "hurt"},
+        {with([](Link& s) { s.mode = kDamage; }), "hurt"},
+        {with([](Link& s) { s.equip = 0x103; }), "something is in his hands"},  // (his sword drawn)
+        {with([](Link& s) { s.mode = kGrab, s.proc = 0x73; }), "something is in his hands"},  // (a pot over his head)
+        {with([](Link& s) { s.first_person = true; }), "aiming"},
+        {with([](Link& s) { s.mode = kCrouch; }), "crouching"},
+        {with([](Link& s) { s.proc = 0x06; }), "Link isn't standing still"},  // (MOVE: walking)
+        {with([](Link& s) { s.proc = 0x42; }), "Link isn't standing still"},  // (CUT_F: a sword swing)
+    };
+    for (const Case& c : refusals) {
+        const char* why = refused(c.s);
+        CHECK(why && std::string(why) == c.why);
+        if (!why || std::string(why) != c.why) std::printf("  (got %s, wanted %s)\n", why ? why : "nothing", c.why);
+        CHECK(ends(c.s) != nullptr);  // (and what refuses one ends the one playing)
+    }
+    // what ends one playing beside them: the stick past its dead zone, any button
+    CHECK(ends(with([](Link& s) { s.stick = 0.01f; })) == nullptr);
+    CHECK(ends(with([](Link& s) { s.stick = 0.5f; })) != nullptr && refused(with([](Link& s) { s.stick = 0.5f; })) == nullptr);
+    CHECK(ends(with([](Link& s) { s.trigger = 1; })) != nullptr);  // (A)
+    CHECK(ends(with([](Link& s) { s.trigger = 0x40; })) != nullptr);  // (another button)
+
+    // the emote in a pose header (a cheap puppet's): its id and steps, and back
+    for (const Emote& e : kEmotes) {
+        uint8_t id = 0, w = 0;
+        float t = 0;
+        from_header(header_anim(e.id, 1.5f), 200, id, t, w);
+        CHECK(id == e.id && near(t, 1.5f) && w == 200);
+    }
+    {
+        uint8_t id = 9, w = 9;
+        float t = 9;
+        from_header(header_anim(0, 1), 200, id, t, w);
+        CHECK(id == 0 && w == 0);
+        from_header(uint16_t(7 << 13 | 30), 200, id, t, w);  // (an id this game doesn't have)
+        CHECK(id == 0 && w == 0);
+        CHECK((header_anim(1, 1000) & 0x1FFF) == 0x1FFF);  // (held at its most)
+    }
+
     std::printf(g_fail ? "coop_emotes: %d failed\n" : "coop_emotes: all passed\n", g_fail);
     return g_fail ? 1 : 0;
 }

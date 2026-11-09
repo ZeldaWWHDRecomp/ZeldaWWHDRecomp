@@ -1,16 +1,21 @@
 // SPDX-License-Identifier: MPL-2.0
-// Online co-op: emotes (GAPS C22, DESIGN.md 2.2; Q10 provisional: puppet-only plus an icon over your own Link).
+// Online co-op: emotes (GAPS C22, DESIGN.md 2.2).
 //
 // An emote is a short animation of Link's own (LkAnm.bfres, read from the player's game files at run time, as the
-// pose icons are: link_poses.h), played on a player's puppet on the others' screens. Nothing drives the player's own
-// Link: on their own screen a small bubble over his head names the emote while it plays for the others.
+// pose icons are: link_poses.h). The player's own Link plays it as he is drawn, and so does his puppet on the others'
+// screens: the pose this game sends carries the emote (its id, how far it is, its weight), and each game puts the same
+// clip on Link's joints the same way (apply() below), on his own Link here and on his puppet there. Nothing in the
+// game's logic changes: Link's own joints are posed only for his draw (his models' view calculation) and put back
+// right after, so what his logic, his items and the camera read stays the game's.
 //
-// On the puppet the clip's pose of Link's body ("cl", the model daPy_lk_c's mpCLModel draws) is blended over the pose
-// the player sent, in and out; every other model of the pose (his hair, hands, sword and shield, what he holds) follows
-// the body joint it hangs nearest to, so it moves with the body. Only a puppet standing still plays one: once its
-// player moves away the emote ends.
+// The clip's pose of Link's body ("cl", the model daPy_lk_c's mpCLModel draws) is blended over his own pose, in and
+// out; every other model of his (his hair, hands, sword and shield) follows the body joint it hangs nearest to, so it
+// moves with the body. An emote starts only while Link stands still with nothing in his hands and nothing else going
+// on (refused() below); the stick, a button or anything that takes him out of standing ends it (ends()), on his screen
+// and, with the pose, on everyone's. A cheap puppet (C13, C29: far, or beyond a party's full figures) gets the emote's
+// state with its place (the pose header's anim and frame) and plays it the same way.
 //
-// The pure part here (the catalogue, the matrices, the blend) is checked by coop_emotes_test without the game.
+// The pure part here (the catalogue, the matrices, the blend, the rules) is checked by coop_emotes_test without the game.
 #pragma once
 #include <algorithm>
 #include <cmath>
@@ -40,6 +45,7 @@ inline constexpr float kFps = 30;        // LkAnm's frames a second (the game's 
 inline constexpr float kBlendIn = 0.2f, kBlendOut = 0.25f;  // seconds
 inline constexpr float kMoveAway = 40;   // units a puppet may move from where its emote began
 inline constexpr uint32_t kMinGapMs = 1000;  // one a second at most (the server's limit too)
+inline constexpr float kCancelOut = 0.1f;    // seconds an emote fades out when it is ended early
 
 inline const Emote* find(uint8_t id) {
     for (const Emote& e : kEmotes)
@@ -64,6 +70,65 @@ inline float weight(float t, float len) {
     if (!(t >= 0) || !(t < len)) return 0;
     const float x = std::clamp(std::min(t / kBlendIn, (len - t) / kBlendOut), 0.f, 1.f);
     return x * x * (3 - 2 * x);
+}
+
+// the emote's weight at `t` seconds of `len` when it was ended early at `ended` seconds (-1: not ended): faded out
+// over kCancelOut from where it was
+inline float weight(float t, float len, float ended) {
+    float w = weight(t, len);
+    if (ended >= 0) w *= std::clamp(1 - (t - ended) / kCancelOut, 0.f, 1.f);
+    return w;
+}
+// over: played to its end, or faded out after it was ended
+inline bool over(float t, float len, float ended) { return t >= len || (ended >= 0 && t - ended >= kCancelOut); }
+
+// ---- when this player's own Link may emote, and what ends it
+// Link as one logic step leaves him (daPy_lk_c, coop_names.h py::), and what the game shows over him
+inline constexpr int kProcWait = 0x04;      // daPyProc_WAIT_e: standing
+inline constexpr int kProcFreeWait = 0x05;  // daPyProc_FREE_WAIT_e: standing a while (his idle fidgets)
+inline constexpr uint16_t kNoItem = 0x100;  // daPyItem_NONE_e
+struct Link {
+    int proc = kProcWait;    // mCurProc
+    uint32_t mode = 0;       // mModeFlg
+    int damage = 0;          // mDamageWaitTimer (s16)
+    uint16_t equip = kNoItem;  // mEquipItem (daPyItem_NONE_e: nothing in his hands)
+    float stick = 0;         // mStickDistance (0..1)
+    uint8_t trigger = 0;     // mItemTrigger: a button pressed this step (A, B, X, Y, Z, L, R)
+    bool event = false, message = false, menu = false;  // mods::GameUi: a cutscene or talk, a text box, a game menu
+    bool overlay = false;    // the port's Settings window is open
+    bool first_person = false, next_stage = false;
+    int character = 0;       // coop_pose.h own_char(): 0 Link (Tetra, Medli, Zelda: the puppets don't emote either)
+    bool clips = true;       // the emotes' clips are read (else the others' screens could not show it)
+};
+// daPy_lk_c's mode flags (d_a_player_main.h ModeFlg_*)
+inline constexpr uint32_t kMidair = 0x2, kDamage = 0x8, kHang = 0x20, kHookshot = 0x200, kRope = 0x800, kInShip = 0x2000,
+                          kClimb = 0x10000, kSwim = 0x40000, kGrab = 0x100000, kPushPull = 0x200000, kLadder = 0x400000,
+                          kCrouch = 0x800000, kCrawl = 0x1000000, kCaught = 0x10000000, kSubject = 0x20000000;
+inline constexpr float kStickDead = 0.02f;  // a tilt of the stick past this ends an emote
+// why an emote can't start now (shown to the player: "Can't emote: <why>"), nullptr: it may
+inline const char* refused(const Link& s) {
+    if (!s.clips) return "the emotes aren't loaded yet";
+    if (s.character) return "only as Link";
+    if (s.overlay || s.menu) return "a menu is open";
+    if (s.event) return "a cutscene or a talk is on";
+    if (s.message) return "a text box is open";
+    if (s.next_stage) return "on the way to another place";
+    if ((s.mode & kInShip) || (s.proc >= 0x86 && s.proc <= 0x91)) return "on the boat";
+    if (s.mode & kSwim) return "swimming";
+    if (s.mode & (kClimb | kLadder | kHang | kRope)) return "climbing";
+    if (s.mode & kMidair) return "in the air";
+    if ((s.mode & (kDamage | kCaught)) || s.damage > 0) return "hurt";
+    if ((s.mode & (kGrab | kPushPull)) || s.equip != kNoItem) return "something is in his hands";
+    if (s.first_person || (s.mode & (kSubject | kHookshot))) return "aiming";
+    if (s.mode & (kCrouch | kCrawl)) return "crouching";
+    if (s.proc != kProcWait && s.proc != kProcFreeWait) return "Link isn't standing still";
+    return nullptr;
+}
+// why an emote playing ends now (nullptr: it plays on): any input that moves him or acts, or anything refused() names
+inline const char* ends(const Link& s) {
+    if (s.stick > kStickDead) return "the stick";
+    if (s.trigger) return "a button";
+    return refused(s);
 }
 
 // ---- 3 x 4 matrices (rows; the 4th column the translation), rotation with a uniform scale
@@ -198,18 +263,33 @@ inline bool apply(Pose& p, int body_k, const std::vector<Mx>& e, float w) {
 }
 
 // ---- the port (coop_emotes.cpp)
-// a player's emote came (the network: net::kEmote or the server's EMOTE), for the puppet in `slot`
-void play(int slot, uint8_t id);
-// the puppet in `slot` is let go (its player left)
-void stop(int slot);
-// coop_pose's show(): the emote playing on the puppet in `slot` put on its pose (at its place `pos`); `body_k` Link's
-// body model (his creation order)
-void pose(int slot, Pose& p, const float pos[3], int body_k);
-// this player's own emote (the Online page, any thread): sent at the next step, the bubble over Link meanwhile
-void mine(uint8_t id);
-// each logic step of a session (game thread): an emote asked for sent, the bubble's place over Link (0: none);
+// a player's emote came (the network: net::kEmote or the server's EMOTE): traced only, its pose carries it
+void play(int from, uint8_t id);
+// coop_pose's show(): the emote a pose carries (Pose::emote) put on it; `body_k` Link's body model (his creation
+// order). The same as own_frame() does for this game's Link
+void pose(Pose& p, int body_k);
+// this player's own emote (the Online page, a key; any thread): tried at the next logic step. One asked from a menu
+// (the Online page in Settings or in the pause menu) waits until the menu is closed
+void mine(uint8_t id, bool from_menu = false);
+// each logic step of a session (game thread): an emote asked for started (or refused, with a notice) and sent, the
+// one playing ended by the stick, a button or what refused() names, the bubble's place over Link (0: none);
 // the test aid WWHD_COOP_TEST_EMOTE=<s>:<id>[,<s>:<id>...] (seconds after the first step)
 void step(uint32_t link);
+// this game's Link as he is drawn now (game thread, coop_pose.cpp): the clip's joints in his model space and the weight
+// to put them on with; false: no emote now
+bool own_frame(std::vector<Mx>& joints, float& w);
+// the emote his pose carries now (Pose::emote, emote_s, emote_w)
+void own_state(uint8_t& id, float& seconds, uint8_t& w);
+// the same as a pose header's anim and frame (protocol.h PoseHeader, for a cheap puppet at mid range): anim the id in
+// its top 3 bits, its time in logic steps below; frame the weight (x255)
+inline uint16_t header_anim(uint8_t id, float seconds) {
+    const long steps = std::clamp<long>(std::lround(seconds * kFps), 0, 0x1FFF);
+    return id && id < 8 ? uint16_t(id << 13 | steps) : 0;
+}
+inline void from_header(uint16_t anim, uint8_t frame, uint8_t& id, float& seconds, uint8_t& w) {
+    id = uint8_t(anim >> 13), seconds = float(anim & 0x1FFF) / kFps, w = id ? frame : 0;
+    if (!find(id)) id = 0, w = 0;
+}
 // main (before the overlay seals): the bubble's layer
 void register_overlay();
 

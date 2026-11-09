@@ -98,6 +98,7 @@ constexpr uint32_t kBombBrk = 0x44D4;
 constexpr uint32_t mCurProc = 0x65F0, mLightInfluence = 0x68B0, mItemTrigger = 0x690D, mItemButton = 0x690E,
                    mEquipItem = 0x69B0, m35F0 = 0x6A48, m35F4 = 0x6A4C, mModeFlg = 0x6A70, m3688 = 0x7290,
                    mHookshotRootPos = 0x72F0, m3748 = 0x7350, mpSwBlur = 0x73EC, mStts = 0x7620, mCyl = 0x765C;
+constexpr uint32_t mStickDistance = 0x6A08;  // (the stick's tilt as Link's execute took it, 0..1: setStickData)
 constexpr uint32_t kFallStartY = m3688 + 4;  // m3688.y, with m35F0 and m35F4 as procAutoJump_init sets them
 constexpr uint32_t kSize = 0x8284;           // WWHD_SIZE(daPy_lk_c)
 }  // namespace py
