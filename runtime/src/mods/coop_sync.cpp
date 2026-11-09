@@ -106,7 +106,7 @@ struct Remote {
     float mid_at[3] = {};
     uint32_t mid_ms = 0;
     emotes::Gait gait = emotes::kWait;
-    bool far = false;
+    bool is_far = false;
     float far_at[3] = {};
     uint32_t far_ms = 0;
     // (C29) a party member drawn as the cheap figure beyond the nearest few (the phone's cap): its speed picks the gait
@@ -514,7 +514,7 @@ struct Handler : net::Handler {
         Remote& r = g_remote[from];
         if (kind == kVoice) return;  // (voice chat: not in this build yet)
         if (kind == kMid || kind == kFar) return far_pose(r, from, kind, ms, d, n);
-        r.far = false;
+        r.is_far = false;
         r.clock.seen(ms, net::now_ms());
         if (kind == kPose) {
             Pose p;
@@ -557,10 +557,10 @@ struct Handler : net::Handler {
         if (!std::isfinite(a.x) || !std::isfinite(a.y) || !std::isfinite(a.z)) return;
         const uint32_t now = net::now_ms();
         if (kind == kFar) {
-            r.far = true, r.far_at[0] = a.x, r.far_at[1] = a.y, r.far_at[2] = a.z, r.far_ms = now;
+            r.is_far = true, r.far_at[0] = a.x, r.far_at[1] = a.y, r.far_at[2] = a.z, r.far_ms = now;
             return;
         }
-        r.far = false;
+        r.is_far = false;
         r.clock.seen(ms, now);
         const float dt = r.mid_ms ? (now - r.mid_ms) / 1000.f : 0;
         if (r.mid_ms && dt < 2 && std::hypot(a.x - r.mid_at[0], a.z - r.mid_at[2]) > 3000) r.jump_ms = now;  // (a warp, a stage change)
@@ -1215,9 +1215,9 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 if (!net::member(id) || std::find(g_send_join.begin(), g_send_join.end(), id) != g_send_join.end()) continue;
                 const Remote& r = g_remote[id];
                 const Pose* p = r.poses.empty() ? nullptr : &r.poses.back().second;
-                const bool near = p && !strncmp(p->stage, here.c_str(), 8) && p->room == my_room && !(p->flags & (kOnDeck | kOnFriend)) &&
+                const bool here_near = p && !strncmp(p->stage, here.c_str(), 8) && p->room == my_room && !(p->flags & (kOnDeck | kOnFriend)) &&
                                   std::hypot(p->pos[0] - at[0], p->pos[2] - at[2]) < 1500;
-                if (near) continue;
+                if (here_near) continue;
                 g_send_join.push_back(id);
                 mods::trace("coop: a story moment (%u steps) over: player %d brought here", ev_steps, id);
             }
@@ -1446,13 +1446,13 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
     // (C29) with a cap on full party members: those beyond the nearest `cap` (by where each was drawn the step before)
     bool cheap[net::kMaxPlayers] = {};
     if (const int cap = party_full_cap(); cap > 0) {
-        std::vector<std::pair<float, int>> near;
+        std::vector<std::pair<float, int>> nearby;
         const float me[3] = {f32(link + kPos), f32(link + kPos + 4), f32(link + kPos + 8)};
         for (int id = 0; id < net::kMaxPlayers; id++)
             if (id != net::my_id() && has[id] && net::member(id) && g_remote[id].shown)
-                near.push_back({std::hypot(g_remote[id].at[0] - me[0], g_remote[id].at[1] - me[1], g_remote[id].at[2] - me[2]), id});
-        std::sort(near.begin(), near.end());
-        for (size_t i = (size_t)cap; i < near.size(); i++) cheap[near[i].second] = true;
+                nearby.push_back({std::hypot(g_remote[id].at[0] - me[0], g_remote[id].at[1] - me[1], g_remote[id].at[2] - me[2]), id});
+        std::sort(nearby.begin(), nearby.end());
+        for (size_t i = (size_t)cap; i < nearby.size(); i++) cheap[nearby[i].second] = true;
     }
     for (int id = 0; id < net::kMaxPlayers; id++) {
         if (id == net::my_id()) continue;
@@ -1533,14 +1533,14 @@ void step(Cpu* c, uint32_t link, uint32_t hull, bool aboard) {
                 }
     }
     {  // (C13) the far players (no puppet): the far tier's places, else the server's markers, on the sea radar
-        std::vector<radar::Far> far;
+        std::vector<radar::Far> far_players;
         bool known[net::kMaxPlayers] = {};
         for (int id = 0; id < net::kMaxPlayers; id++)
-            if (Remote& r = g_remote[id]; id != net::my_id() && r.far && !r.shown && now - r.far_ms < 3000 && !block::blocked_id(id))
-                far.push_back({r.far_at[0], r.far_at[2], net::member(id), (net::pvp_mark(id) & 1) != 0}), known[id] = true;
+            if (Remote& r = g_remote[id]; id != net::my_id() && r.is_far && !r.shown && now - r.far_ms < 3000 && !block::blocked_id(id))
+                far_players.push_back({r.far_at[0], r.far_at[2], net::member(id), (net::pvp_mark(id) & 1) != 0}), known[id] = true;
         for (const net::Marker& m : net::server_markers())
-            if (m.slot >= 0 && m.slot < net::kMaxPlayers && !known[m.slot] && !g_remote[m.slot].shown && !block::blocked_id(m.slot)) far.push_back({m.x, m.z, m.party, (net::pvp_mark(m.slot) & 1) != 0}), known[m.slot] = true;
-        radar::step(link, far);
+            if (m.slot >= 0 && m.slot < net::kMaxPlayers && !known[m.slot] && !g_remote[m.slot].shown && !block::blocked_id(m.slot)) far_players.push_back({m.x, m.z, m.party, (net::pvp_mark(m.slot) & 1) != 0}), known[m.slot] = true;
+        radar::step(link, far_players);
     }
     // their sounds, at their puppets as those are shown (each player's place kept for the sound engine, which keeps reading
     // it while the sound plays)
