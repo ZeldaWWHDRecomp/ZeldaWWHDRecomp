@@ -273,10 +273,16 @@ public class WwhdActivity extends SDLActivity {
     private static native void publishObscured(int left, int top, int right, int bottom, int viewWidth, int viewHeight);
     /** One line for the game's log: what the system reports about the screen around the game's view (issue #349). */
     private static native void publishScreenReport(String report);
+    /** Whether the game already presents to its surface (a picture was presented; issue #349). */
+    private static native boolean presentationStarted();
     private boolean obscuredUnsupported;  // an on-device game library from before publishObscured
     private boolean screenReportUnsupported;  // ... from before publishScreenReport
     private String lastScreenReport;
     private int surfaceBufferWidth, surfaceBufferHeight;  // the game surface's buffer (surfaceChanged), 0 before
+    // the game's surface grew past the size it was made at: a new one, as after the background (SurfaceRegrow, #349)
+    private final SurfaceRegrow surfaceRegrow = new SurfaceRegrow();
+    private final Runnable renewGrownSurface = this::renewGrownSurface;
+    private int surfaceRenewalWaits;  // times renewGrownSurface waited for the game's first picture
 
     // Issue #349: on a Retroid Pocket Nova (Android 13, 1280x960) the bottom 48 rows of the screen stay black over
     // the game; with Match window or 4:3 the picture fills the screen and the rupee counter sits in those rows.
@@ -499,6 +505,40 @@ public class WwhdActivity extends SDLActivity {
         if (isRedirectedActivity()) return;
         if (hasFocus) applyFullScreen();  // also after a dialog, the file picker or another app had the screen
         if (hasFocus && gamePadDisplay != null) gamePadDisplay.focusChanged();
+        if (hasFocus && surfaceRegrow.due()) scheduleSurfaceRenewal();  // put off while a dialog had the focus
+    }
+
+    // Issue #349: the game's surface grew past the size it was made at (SurfaceRegrow). Once the size has settled,
+    // the game view hides and shows its surface again: the system destroys the surface and makes a new one at the
+    // view's size, and the game follows exactly as when the app comes back from the background (SDL's pause and
+    // resume, then backend.cpp's new presentation surface and swapchain). Only with the window focused, as SDL
+    // resumes the game only then; otherwise when the focus comes back.
+    private void scheduleSurfaceRenewal() {
+        if (mSurface == null) return;
+        mSurface.removeCallbacks(renewGrownSurface);
+        mSurface.postDelayed(renewGrownSurface, SurfaceRegrow.SETTLE_MS);
+    }
+
+    private void renewGrownSurface() {
+        final View view = mSurface;
+        if (view == null || isFinishing() || !surfaceRegrow.due() || !hasWindowFocus()) return;
+        // not while the game still sets up its window and Vulkan with this surface (the full-screen growth comes as
+        // its window is made): once it presents
+        boolean started;
+        try { started = presentationStarted(); } catch (UnsatisfiedLinkError e) { return; }  // an older game library
+        if (!started) {
+            // asked again a little later (for at most two minutes: a hidden run never presents)
+            if (++surfaceRenewalWaits <= SurfaceRegrow.MAX_WAITS) view.postDelayed(renewGrownSurface, SurfaceRegrow.SETTLE_MS);
+            return;
+        }
+        String grown = "game surface " + surfaceRegrow.describe() + ": a new surface for the larger view";
+        Log.i("wwhd", grown);
+        if (!screenReportUnsupported) {
+            try { publishScreenReport(grown); } catch (UnsatisfiedLinkError e) { screenReportUnsupported = true; }
+        }
+        surfaceRegrow.renewing();
+        view.setVisibility(View.INVISIBLE);                // surfaceDestroyed: the old surface goes
+        view.post(() -> view.setVisibility(View.VISIBLE));  // surfaceCreated/Changed: a new one at the view's size
     }
 
     // SDL changes the window style when the Full screen setting changes (setSystemUiVisibility, which calls
@@ -593,13 +633,19 @@ public class WwhdActivity extends SDLActivity {
             mSurface.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> reportObscured());
             // ... and its buffer's size (the swapchain's) in the game's log after each change (#349)
             mSurface.getHolder().addCallback(new android.view.SurfaceHolder.Callback() {
-                @Override public void surfaceCreated(android.view.SurfaceHolder holder) { }
+                @Override public void surfaceCreated(android.view.SurfaceHolder holder) { surfaceRegrow.created(); }
                 @Override public void surfaceChanged(android.view.SurfaceHolder holder, int format, int width, int height) {
                     surfaceBufferWidth = width;
                     surfaceBufferHeight = height;
                     if (mSurface != null) mSurface.post(WwhdActivity.this::reportObscured);
+                    // grown past the size it was made at (#349): a new surface once the size settles
+                    if (surfaceRegrow.changed(width, height)) scheduleSurfaceRenewal();
+                    else if (mSurface != null) mSurface.removeCallbacks(renewGrownSurface);
                 }
-                @Override public void surfaceDestroyed(android.view.SurfaceHolder holder) { }
+                @Override public void surfaceDestroyed(android.view.SurfaceHolder holder) {
+                    surfaceRegrow.destroyed();
+                    if (mSurface != null) mSurface.removeCallbacks(renewGrownSurface);
+                }
             });
         }
         // on-screen controls over the game (the button under the view button shows or hides them)

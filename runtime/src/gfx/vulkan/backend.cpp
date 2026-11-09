@@ -1710,6 +1710,12 @@ static bool display_hdr_enabled() {
 #endif
 }
 #endif
+#ifdef __ANDROID__
+// The game presents to its surface (a TV picture was presented once): from then on WwhdActivity may replace the
+// surface (#349, a view grown past its surface's size), which the game follows as after the background. Before,
+// window and Vulkan setup still read the surface it has.
+static std::atomic<bool> primaryPresented{false};
+#endif
 static void make_swapchain(Screen &s) {
   if (&s == &R.tv) present_held(true);  // even frame delivery: a held frame goes out first
   if(active_deferred_commands)active_deferred_commands->finish_exact();
@@ -2193,6 +2199,11 @@ Java_org_wwhdrecomp_wwhd_WwhdActivity_publishScreenReport(JNIEnv* env, jclass, j
   if (!s) return;
   LOG("[display] Android screen: %s", s);
   env->ReleaseStringUTFChars(report, s);
+}
+// Whether the game already presents to its surface (WwhdActivity.renewGrownSurface, issue #349, waits for it).
+extern "C" JNIEXPORT jboolean JNICALL
+Java_org_wwhdrecomp_wwhd_WwhdActivity_presentationStarted(JNIEnv*, jclass) {
+  return primaryPresented.load() ? JNI_TRUE : JNI_FALSE;
 }
 extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_publishSurface(
@@ -2774,6 +2785,8 @@ static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t inde
     ++s.presented;
 #ifndef __ANDROID__
     if (firstPicture.armed) first_picture_shown();
+#else
+    if (&s == &R.tv && !primaryPresented.load(std::memory_order_relaxed)) primaryPresented = true;
 #endif
   }
 #ifdef __ANDROID__
