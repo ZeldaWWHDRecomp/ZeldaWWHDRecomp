@@ -226,6 +226,13 @@ public class WwhdActivity extends SDLActivity {
     private static File sessionLibrary;
 
     @Override protected boolean retainNativeSessionOnRecreation() { return true; }
+    // Issue #349: the game's TV window is always made full screen on Android (backend.cpp, SDL_WINDOW_FULLSCREEN),
+    // so the full-screen window style (SDL's) and Full screen's own settings (applyFullScreen in onCreate: edge to
+    // edge, cutout mode, no navigation bar space, bars hidden) are in place before the window is first laid out. The
+    // game view and its first surface then have the full-screen size from the start. Before, the window was laid
+    // out with the bars first (SDL's setWindowStyle(false) in onCreate) and only grew once the native window asked
+    // for full screen; on a Retroid Pocket Nova the screen kept showing the first surface's 912 of 960 rows.
+    @Override protected boolean startsFullscreen() { return true; }
 
     @Override public void loadLibraries() {
         if (getClass() == WwhdActivity.class || getClass() == QuestActivity.class) {
@@ -277,6 +284,7 @@ public class WwhdActivity extends SDLActivity {
     private boolean screenReportUnsupported;  // ... from before publishScreenReport
     private String lastScreenReport;
     private int surfaceBufferWidth, surfaceBufferHeight;  // the game surface's buffer (surfaceChanged), 0 before
+    private int surfaceMadeWidth, surfaceMadeHeight;  // ... its size when the system made it (its first surfaceChanged)
 
     // Issue #349: on a Retroid Pocket Nova (Android 13, 1280x960) the bottom 48 rows of the screen stay black over
     // the game; with Match window or 4:3 the picture fills the screen and the rupee counter sits in those rows.
@@ -355,7 +363,8 @@ public class WwhdActivity extends SDLActivity {
         // buttons, 2 gestures; not a public setting, -1 when unknown).
         s.append("; surface on screen [").append(onScreen[0]).append(',').append(onScreen[1]).append("][")
          .append(onScreen[0] + w).append(',').append(onScreen[1] + h).append("], buffer ")
-         .append(surfaceBufferWidth).append('x').append(surfaceBufferHeight);
+         .append(surfaceBufferWidth).append('x').append(surfaceBufferHeight)
+         .append(" (made at ").append(surfaceMadeWidth).append('x').append(surfaceMadeHeight).append(')');
         android.graphics.Rect visible = new android.graphics.Rect();
         mSurface.getWindowVisibleDisplayFrame(visible);
         s.append(", visible frame ").append(visible.toShortString())
@@ -593,10 +602,17 @@ public class WwhdActivity extends SDLActivity {
             mSurface.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> reportObscured());
             // ... and its buffer's size (the swapchain's) in the game's log after each change (#349)
             mSurface.getHolder().addCallback(new android.view.SurfaceHolder.Callback() {
-                @Override public void surfaceCreated(android.view.SurfaceHolder holder) { }
+                @Override public void surfaceCreated(android.view.SurfaceHolder holder) {
+                    surfaceMadeWidth = surfaceMadeHeight = 0;
+                }
                 @Override public void surfaceChanged(android.view.SurfaceHolder holder, int format, int width, int height) {
                     surfaceBufferWidth = width;
                     surfaceBufferHeight = height;
+                    // the size the surface was made at (#349: a surface made before full screen applied is smaller)
+                    if (surfaceMadeWidth <= 0 || surfaceMadeHeight <= 0) {
+                        surfaceMadeWidth = width;
+                        surfaceMadeHeight = height;
+                    }
                     if (mSurface != null) mSurface.post(WwhdActivity.this::reportObscured);
                 }
                 @Override public void surfaceDestroyed(android.view.SurfaceHolder holder) { }
