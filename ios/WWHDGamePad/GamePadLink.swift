@@ -54,6 +54,8 @@ final class GamePadLink: ObservableObject {
     private var foreground = true
     static let resumeTimeout: TimeInterval = 5
     @Published private(set) var controllerName: String?
+    @Published private(set) var latency: LatencyMeter.Reading?
+    let batteries = Batteries()
     /// the GamePad speaker plays here (the Mac then plays the TV sound alone); sent as a Hello flag
     @Published var sound = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true {
         didSet {
@@ -90,6 +92,8 @@ final class GamePadLink: ObservableObject {
     nonisolated(unsafe) private var seq: UInt32 = 0
     nonisolated(unsafe) private var lastWelcome = Date.distantPast
     nonisolated(unsafe) private var lastHello = Date.distantPast
+    nonisolated(unsafe) private var lastPing = Date.distantPast
+    nonisolated(unsafe) private var meter = LatencyMeter()
     nonisolated(unsafe) private var target = ""
     nonisolated(unsafe) private var helloDevice = "", helloController = ""
     nonisolated(unsafe) private var wantsAudio = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true
@@ -112,7 +116,13 @@ final class GamePadLink: ObservableObject {
         rumble = RumblePlayer(queue: queue)
         controller = ControllerReader(queue: queue)
         motion = MotionReader(queue: queue)
-        controller.onChange = { [weak self] name in self?.controllerName = name }
+        controller.onChange = { [weak self] c in
+            self?.controllerName = c.map { $0.vendorName ?? $0.productCategory }
+            self?.batteries.gamepad = c
+        }
+        video.frameShown = { [weak self] frame in
+            self?.meter.frame(computerNs: frame.timeNs, receivedNs: DispatchTime.now().uptimeNanoseconds)
+        }
         video.requestKeyframe = { [weak self] in
             guard let self, let c = self.connection, self.session != 0 else { return }
             c.send(content: Data(WWGP.keyframeRequest(session: self.session)), completion: .idempotent)
@@ -349,7 +359,9 @@ final class GamePadLink: ObservableObject {
             session = 0
             rumble.reset()
             speaker.reset()
+            meter = LatencyMeter()
         }
+        latency = nil
     }
 
     /// A status from the link queue. It arrives late, so it is dropped once the link was closed (idle) or
@@ -378,6 +390,10 @@ final class GamePadLink: ObservableObject {
                 if session == self.session, c === self.connection { self.video.add(piece) }
             } else if let (session, piece) = WWGP.audio(bytes) {
                 if session == self.session, c === self.connection, self.wantsAudio { self.speaker.push(piece) }
+            } else if let (session, sent, computer) = WWGP.pong(bytes) {
+                if session == self.session, c === self.connection {
+                    self.meter.pong(sentNs: sent, computerNs: computer, receivedNs: DispatchTime.now().uptimeNanoseconds)
+                }
             } else if let (session, seq, level) = WWGP.rumble(bytes) {
                 if session == self.session, c === self.connection { self.rumble.set(seq: seq, level: level) }
             } else if let p = WWGP.pairing(bytes), p.nonce == self.nonce, c === self.connection {
@@ -403,6 +419,7 @@ final class GamePadLink: ObservableObject {
                     self.video.reset()
                     self.rumble.reset()
                     self.speaker.reset()
+                    self.meter = LatencyMeter()
                 }
                 self.session = w.session
                 self.lastWelcome = Date()
@@ -462,6 +479,13 @@ final class GamePadLink: ObservableObject {
                 sendHello()
             }
             return
+        }
+        if now.timeIntervalSince(lastPing) >= 0.5 {
+            lastPing = now
+            c.send(content: Data(WWGP.ping(session: session, phoneNs: DispatchTime.now().uptimeNanoseconds)),
+                   completion: .idempotent)
+            let reading = meter.reading()
+            Task { @MainActor in if self.isActive { self.latency = reading } }
         }
         var i = WWGP.Input()
         seq &+= 1

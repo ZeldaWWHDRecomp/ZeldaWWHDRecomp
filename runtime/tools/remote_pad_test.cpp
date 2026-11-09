@@ -147,6 +147,17 @@ static void test_rumble() {
     assert(s.update(0.25f, 10) == 64);
 }
 
+static void test_ping_packets() {
+    auto p = encode_ping(5, 0x0102030405060708ull);
+    assert(parse_header(p.data(), p.size())->type == kPing && p.size() == kHeaderSize + 8);
+    assert(parse_ping(p.data(), p.size()) == 0x0102030405060708ull);
+    assert(!parse_ping(p.data(), p.size() - 1) && !parse_pong(p.data(), p.size()));
+    auto q = encode_pong(5, {11, 22});
+    auto r = parse_pong(q.data(), q.size());
+    assert(r && r->phone_ns == 11 && r->computer_ns == 22);
+    assert(!parse_pong(q.data(), q.size() - 1));
+}
+
 static void test_audio_packets() {
     auto hp = encode_hello({5, "Phone", "", true, true});
     assert(parse_header(hp.data(), hp.size())->flags == (kWantsVideo | kWantsAudio));
@@ -347,6 +358,18 @@ static void test_server() {
     assert(wait_for([&] { return inputs == 3; }));
     // keepalive Welcomes about once a second
     assert(phone.welcome());
+    // a ping comes back with the phone's time and the computer's clock
+    const uint64_t before = clock_ns();
+    phone.send(encode_ping(session2, 1234));
+    for (;;) {
+        uint8_t buf[512];
+        const ssize_t n = recv(phone.s, buf, sizeof buf, 0);
+        assert(n > 0);
+        if (parse_header(buf, size_t(n))->type != kPong) continue;
+        auto r = parse_pong(buf, size_t(n));
+        assert(r && r->phone_ns == 1234 && r->computer_ns >= before && r->computer_ns <= clock_ns());
+        break;
+    }
     // goodbye
     phone.send(encode_bye(session2));
     assert(wait_for([&] { return disconnects == 2 && !server.snapshot().connected; }));
@@ -499,6 +522,7 @@ int main() {
     test_packets();
     test_video_packets();
     test_rumble();
+    test_ping_packets();
     test_audio_packets();
     test_pairing();
     test_pad_values();

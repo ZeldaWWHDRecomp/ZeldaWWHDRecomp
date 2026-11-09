@@ -1,5 +1,6 @@
 // The remote GamePad protocol, phone side. Mirrors runtime/src/remote_pad/protocol.h (the reference:
-// layout, units and conventions are documented there). Change both together and bump `version`.
+// layout, units and conventions are documented there). Change both together; protocol.h says when to
+// bump `version`.
 // ProtocolTests checks these bytes against packets encoded by the C++ side.
 import Foundation
 
@@ -17,7 +18,7 @@ enum WWGP {
 
     enum PacketType: UInt8 {
         case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7, audio = 8
-        case pairing = 9, pair = 10, paired = 11
+        case pairing = 9, pair = 10, paired = 11, ping = 12, pong = 13
     }
     /// protocol.h PairState: what the computer says about pairing
     enum PairState: UInt8 { case enterCode = 1, wrongCode = 2, noCode = 3 }
@@ -133,6 +134,14 @@ enum WWGP {
         return w.bytes
     }
 
+    /// `phoneNs`: this phone's clock (DispatchTime uptime), returned in the pong
+    static func ping(session: UInt32, phoneNs: UInt64) -> [UInt8] {
+        var w = Writer()
+        w.header(.ping, session: session)
+        w.u64(phoneNs)
+        return w.bytes
+    }
+
     // MARK: decoding
 
     /// (type, session) of one of our packets; nil for anything else.
@@ -183,6 +192,14 @@ enum WWGP {
         var r = Reader(bytes: b, at: headerSize)
         let seq = r.u32(), level = r.u8()
         return r.ok ? (session, seq, Float(level) / 255) : nil
+    }
+
+    /// (session, the ping's phone time, the computer's clock: that of VideoPiece.timeNs)
+    static func pong(_ b: [UInt8]) -> (session: UInt32, phoneNs: UInt64, computerNs: UInt64)? {
+        guard let (type, session) = header(b), type == .pong else { return nil }
+        var r = Reader(bytes: b, at: headerSize)
+        let phone = r.u64(), computer = r.u64()
+        return r.ok ? (session, phone, computer) : nil
     }
 
     static func video(_ b: [UInt8]) -> (session: UInt32, piece: VideoPiece)? {

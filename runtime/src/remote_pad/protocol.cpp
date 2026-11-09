@@ -114,6 +114,18 @@ std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level
     w.u32(seq); w.u8(level);
     return std::move(w.out);
 }
+std::vector<uint8_t> encode_ping(uint32_t session, uint64_t phone_ns) {
+    Writer w;
+    w.header(kPing, session);
+    w.u64(phone_ns);
+    return std::move(w.out);
+}
+std::vector<uint8_t> encode_pong(uint32_t session, const Pong& p) {
+    Writer w;
+    w.header(kPong, session);
+    w.u64(p.phone_ns); w.u64(p.computer_ns);
+    return std::move(w.out);
+}
 std::vector<uint8_t> encode_pairing(const PairingReply& p) {
     Writer w;
     w.header(kPairing, 0);
@@ -269,6 +281,21 @@ std::optional<Rumble> parse_rumble(const uint8_t* data, size_t size) {
     m.seq = r->u32(); m.level = r->u8();
     if (!r->ok) return std::nullopt;
     return m;
+}
+std::optional<uint64_t> parse_ping(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kPing);
+    if (!r) return std::nullopt;
+    const uint64_t t = r->u64();
+    if (!r->ok) return std::nullopt;
+    return t;
+}
+std::optional<Pong> parse_pong(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kPong);
+    if (!r) return std::nullopt;
+    Pong p;
+    p.phone_ns = r->u64(); p.computer_ns = r->u64();
+    if (!r->ok) return std::nullopt;
+    return p;
 }
 std::optional<VideoPiece> parse_video(const uint8_t* data, size_t size) {
     if (size < kVideoHeaderSize) return std::nullopt;

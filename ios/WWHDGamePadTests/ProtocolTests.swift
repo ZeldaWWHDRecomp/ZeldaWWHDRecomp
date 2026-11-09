@@ -56,6 +56,18 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(WWGP.bye(session: 0xA1B2_C3D4), hex("5757475001000400d4c3b2a1"))
     }
 
+    func testPingAndPong() {
+        XCTAssertEqual(WWGP.ping(session: 0xA1B2_C3D4, phoneNs: 0x0102_0304_0506_0708),
+                       hex("5757475001000c00d4c3b2a10807060504030201"))
+        let pong = hex("5757475001000d00d4c3b2a108070605040302011817161514131211")
+        let p = WWGP.pong(pong)
+        XCTAssertEqual(p?.session, 0xA1B2_C3D4)
+        XCTAssertEqual(p?.phoneNs, 0x0102_0304_0506_0708)
+        XCTAssertEqual(p?.computerNs, 0x1112_1314_1516_1718)
+        XCTAssertNil(WWGP.pong(Array(pong.dropLast())))
+        XCTAssertNil(WWGP.pong(WWGP.ping(session: 1, phoneNs: 2)))
+    }
+
     func testWelcome() {
         let w = WWGP.welcome(hex("5757475001000200d4c3b2a10403020108546573742d4d6163"))
         XCTAssertEqual(w, WWGP.Welcome(session: 0xA1B2_C3D4, nonce: 0x0102_0304, host: "Test-Mac"))

@@ -188,7 +188,7 @@ struct ScreenArea: View {
                         VStack(spacing: 8) {
                             ProgressView()
                             Text("Waiting for the GamePad screen…").font(.headline)
-                            Text("Touch works already. The picture needs a game build with video (ios branch, step 2).")
+                            Text("Touch works already. The picture needs the Metal renderer on the computer.")
                                 .font(.footnote)
                                 .multilineTextAlignment(.center)
                                 .frame(maxWidth: 360)
@@ -208,10 +208,26 @@ struct GamePadView: View {
 
     /// the GamePad picture's aspect (854 x 480)
     private static let aspect: CGFloat = 854.0 / 480.0
+    /// the black bars beside the picture take the battery and latency columns from this width outside
+    /// the safe area (landscape)
+    private static let sideBarWidth: CGFloat = 56
 
     var body: some View {
+        // the picture may use the whole display; the columns and the top line stay clear of the camera
+        // cutout (beside the picture in landscape, above it in portrait)
+        GeometryReader { safe in
+            pad(insets: safe.safeAreaInsets)
+                .ignoresSafeArea()
+        }
+        .statusBarHidden()
+        .persistentSystemOverlays(.hidden)
+    }
+
+    private func pad(insets: EdgeInsets) -> some View {
         GeometryReader { geo in
-            let area = screenRect(in: geo.size)
+            let area = screenRect(in: geo.size, below: insets.top)
+            let column = (left: area.minX - insets.leading, right: geo.size.width - insets.trailing - area.maxX)
+            let sideBars = min(column.left, column.right) >= Self.sideBarWidth
             ZStack(alignment: .topLeading) {
                 Color.black
                 ScreenArea(video: link.video)
@@ -222,22 +238,34 @@ struct GamePadView: View {
                         .position(p)
                         .allowsHitTesting(false)
                 }
-                statusBar
+                statusBar(sideBars: sideBars)
+                    .padding(EdgeInsets(top: insets.top, leading: insets.leading, bottom: 0, trailing: insets.trailing))
+                if sideBars {
+                    BatteryColumn(batteries: link.batteries, controller: link.controllerName)
+                        .frame(width: column.left, height: geo.size.height)
+                        .offset(x: insets.leading)
+                    LatencyColumn(reading: link.latency)
+                        .frame(width: column.right, height: geo.size.height)
+                        .offset(x: area.maxX)
+                }
             }
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .local)
                 .onChanged { touch($0.location, in: area) }
                 .onEnded { _ in release() })
-            .onAppear { updateTurns() }
-            .onDisappear { release() }
+            .onAppear {
+                updateTurns()
+                link.batteries.start()
+            }
+            .onDisappear {
+                release()
+                link.batteries.stop()
+            }
             .onChange(of: geo.size) { _, _ in updateTurns() }
         }
-        .ignoresSafeArea()
-        .statusBarHidden()
-        .persistentSystemOverlays(.hidden)
     }
 
-    private var statusBar: some View {
+    private func statusBar(sideBars: Bool) -> some View {
         HStack(spacing: 10) {
             switch link.status {
             case let .connected(host):
@@ -253,6 +281,12 @@ struct GamePadView: View {
                 Text("· no controller").foregroundStyle(.orange)
             }
             Spacer()
+            if !sideBars {
+                if let l = link.latency {
+                    Text("picture \(LatencyColumn.ms(l.pictureMs)) · ping \(LatencyColumn.ms(l.pingMs))").monospacedDigit()
+                }
+                PhoneBatteryLabel(batteries: link.batteries)
+            }
             Button("Disconnect") { link.disconnect() }
                 .buttonStyle(.bordered)
                 .controlSize(.small)
@@ -263,9 +297,9 @@ struct GamePadView: View {
         .padding(.top, 10)
     }
 
-    /// the largest GamePad-shaped rectangle below the status line
-    private func screenRect(in size: CGSize) -> CGRect {
-        let top: CGFloat = 44, margin: CGFloat = 16
+    /// the largest GamePad-shaped rectangle below the status line (which starts at `inset`)
+    private func screenRect(in size: CGSize, below inset: CGFloat) -> CGRect {
+        let top: CGFloat = inset + 44, margin: CGFloat = 16
         let w = size.width - margin * 2, h = size.height - top - margin
         let fit = w / h > Self.aspect ? CGSize(width: h * Self.aspect, height: h) : CGSize(width: w, height: w / Self.aspect)
         return CGRect(x: (size.width - fit.width) / 2, y: top + (h - fit.height) / 2, width: fit.width, height: fit.height)
@@ -301,5 +335,62 @@ struct GamePadView: View {
         default: turns = 0
         }
         link.screen.setQuarterTurns(turns)
+    }
+}
+
+/// Left of the GamePad screen: the phone's battery, and the controller's when it has its own.
+struct BatteryColumn: View {
+    @ObservedObject var batteries: Batteries
+    let controller: String?
+
+    var body: some View {
+        VStack(spacing: 24) {
+            if let b = batteries.phone { item(b, name: "iPhone") }
+            if let b = batteries.controller { item(b, name: controller ?? "Controller") }
+        }
+        .padding(.horizontal, 6)
+        .allowsHitTesting(false)
+    }
+
+    private func item(_ b: Batteries.Level, name: String) -> some View {
+        VStack(spacing: 4) {
+            Image(systemName: b.symbol).font(.title3).foregroundStyle(b.low ? .red : .secondary)
+            Text(b.percent).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            Text(name).font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center).lineLimit(2)
+        }
+    }
+}
+
+/// the phone's battery in the top line (portrait: no side bars)
+struct PhoneBatteryLabel: View {
+    @ObservedObject var batteries: Batteries
+
+    var body: some View {
+        if let b = batteries.phone {
+            Label(b.percent, systemImage: b.symbol).foregroundStyle(b.low ? .red : .secondary)
+        }
+    }
+}
+
+/// Right of the GamePad screen: how old the picture is when it arrives, and the network round trip.
+struct LatencyColumn: View {
+    let reading: LatencyMeter.Reading?
+
+    static func ms(_ v: Double?) -> String { v.map { "\(Int($0.rounded())) ms" } ?? "–" }
+
+    var body: some View {
+        VStack(spacing: 24) {
+            item(Self.ms(reading?.pictureMs), name: "picture")
+            item(Self.ms(reading?.pingMs), name: "ping")
+        }
+        .padding(.horizontal, 6)
+        .allowsHitTesting(false)
+    }
+
+    private func item(_ value: String, name: String) -> some View {
+        VStack(spacing: 4) {
+            Text(value).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+            Text(name).font(.caption2).foregroundStyle(.tertiary)
+        }
     }
 }

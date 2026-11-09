@@ -38,8 +38,6 @@ std::atomic<int> g_in_flight{0};
 std::atomic<bool> g_force_key{false};
 bool g_was_wanted = false;           // render thread
 
-uint64_t now_ns() { return clock_gettime_nsec_np(CLOCK_UPTIME_RAW); }
-
 void put_be32(std::vector<uint8_t>& out, uint32_t v) {
     out.push_back(uint8_t(v >> 24)); out.push_back(uint8_t(v >> 16)); out.push_back(uint8_t(v >> 8)); out.push_back(uint8_t(v));
 }
@@ -86,7 +84,7 @@ void encoded(void*, void* frame_ctx, OSStatus status, VTEncodeInfoFlags flags, C
         at += n;
     }
     const CMTime pts = CMSampleBufferGetPresentationTimeStamp(sample);
-    const uint64_t t = pts.timescale ? uint64_t(double(pts.value) * 1e9 / pts.timescale) : now_ns();
+    const uint64_t t = pts.timescale ? uint64_t(double(pts.value) * 1e9 / pts.timescale) : remote_pad::clock_ns();
     remote_pad::send_video(out.data(), out.size(), key, t, uint16_t(size >> 16), uint16_t(size & 0xFFFF));
 }
 
@@ -195,7 +193,7 @@ void end_frame(id<MTLCommandBuffer> cb) {
     VTCompressionSessionRef session = g_enc.session;
     CFRetain(session);
     const int64_t size = int64_t(g_enc.width) << 16 | g_enc.height;
-    const uint64_t t = now_ns();
+    const uint64_t t = remote_pad::clock_ns();
     [cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
         bool sent = false;
         if (done.status == MTLCommandBufferStatusCompleted) {

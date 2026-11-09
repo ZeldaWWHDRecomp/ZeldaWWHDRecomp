@@ -27,7 +27,9 @@ from the phone. Turn off *GamePad sound* in the app to hear them from the Mac ag
 4. **Pair, the first time:** Settings opens on the Mac with a 6-digit code; type it on the phone. The
    code works for 2 minutes and 3 tries; **Don't pair** on the Mac refuses the phone. After that the
    phone connects by itself. **Forget paired phones** (same section) makes every phone pair again.
-5. Hold the phone in landscape in the controller. The status line shows the Mac's name. **Disconnect**
+5. Hold the phone in landscape in the controller. The status line shows the Mac's name. Beside the
+   picture: the phone's battery (and the controller's, if it has its own) on the left; on the right, how
+   old the picture is when it arrives (*picture*) and the network round trip (*ping*). **Disconnect**
    (or leaving the app) gives the GamePad back to the Mac's keyboard and controllers.
 6. Leaving the app and coming back rejoins the game by itself if it is still there: a game from the
    list must be listed again, a typed address must answer, within 5 seconds. After **Disconnect** the

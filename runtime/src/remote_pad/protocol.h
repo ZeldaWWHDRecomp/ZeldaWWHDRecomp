@@ -26,6 +26,10 @@
 //                                   48 kHz stereo, one game audio frame (3 ms, 144 frames) per packet.
 //                                   Only after a Hello with kWantsAudio; the computer then plays the TV
 //                                   mix alone, as a Wii U does with its GamePad speaker.
+//   phone -> computer   kPing       header (session), phone time u64 (the phone's clock, ns)
+//   computer -> phone   kPong       header (session), the ping's phone time u64, computer time u64
+//                                   (clock_ns(), the clock of the video times): the phone's round trip,
+//                                   and its estimate of the computer's clock for the picture's age
 //
 // Pairing (pairing.h), all with session 0, answering the Hello's nonce:
 //   computer -> phone   kPairing    header, nonce u32, state u8 (PairState), attempts left u8: the
@@ -45,11 +49,13 @@
 // Names are a u8 byte length then UTF-8, at most kMaxName bytes.
 //
 // Tested in runtime/tools/remote_pad_test.cpp. ios/WWHDGamePad/Protocol.swift mirrors this file: change
-// both together and bump kVersion.
+// both together. Both sides ignore packet types they don't know, so a new type needs no new version; bump
+// kVersion when a packet's layout changes.
 #pragma once
 #include <cstddef>
 #include <cstdint>
 #include <array>
+#include <chrono>
 #include <optional>
 #include <string>
 #include <vector>
@@ -65,7 +71,7 @@ constexpr size_t kMaxName = 63;
 constexpr size_t kMaxDatagram = 1400;  // below the Wi-Fi MTU with IPv6 and UDP headers
 
 enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7, kAudio = 8,
-                      kPairing = 9, kPair = 10, kPaired = 11 };
+                      kPairing = 9, kPair = 10, kPaired = 11, kPing = 12, kPong = 13 };
 enum HelloFlag : uint8_t { kWantsVideo = 1, kWantsAudio = 2 };  // a Hello's header flags
 enum PairState : uint8_t { kEnterCode = 1, kWrongCode = 2, kNoCode = 3 };
 constexpr uint32_t kRumbleStaleMs = 250;
@@ -128,6 +134,17 @@ std::vector<uint8_t> encode_keyframe_request(uint32_t session);
 struct Rumble { uint32_t seq = 0; uint8_t level = 0; };
 std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level);
 std::optional<Rumble> parse_rumble(const uint8_t* data, size_t size);
+
+// the computer's clock in kPong and kVideo
+inline uint64_t clock_ns() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+struct Pong { uint64_t phone_ns = 0, computer_ns = 0; };
+std::vector<uint8_t> encode_ping(uint32_t session, uint64_t phone_ns);
+std::optional<uint64_t> parse_ping(const uint8_t* data, size_t size);
+std::vector<uint8_t> encode_pong(uint32_t session, const Pong& p);
+std::optional<Pong> parse_pong(const uint8_t* data, size_t size);
 
 struct PairingReply { uint32_t nonce = 0; uint8_t state = 0; uint8_t attempts = 0; };
 struct PairRequest { uint32_t nonce = 0; Bytes16 id{}; uint32_t code = 0; };

@@ -14,6 +14,7 @@ struct FrameAssembler {
     struct Frame: Equatable {
         var id: UInt32
         var key: Bool
+        var timeNs: UInt64      // the computer's clock when it was drawn
         var width: Int, height: Int
         var data: [UInt8]
     }
@@ -23,6 +24,7 @@ struct FrameAssembler {
     private var have = 0
     private var key = false
     private var size = (0, 0)
+    private var time: UInt64 = 0
     private var lastDone: UInt32?
     /// a frame was lost: nothing is shown until the next keyframe
     private(set) var broken = true
@@ -44,6 +46,7 @@ struct FrameAssembler {
             have = 0
             key = p.key
             size = (p.width, p.height)
+            time = p.timeNs
         }
         guard p.count == pieces.count, pieces[p.index] == nil else { return (nil, needKey) }
         pieces[p.index] = p.payload
@@ -57,7 +60,7 @@ struct FrameAssembler {
         data.reserveCapacity(pieces.reduce(0) { $0 + ($1?.count ?? 0) })
         for piece in pieces { data.append(contentsOf: piece!) }
         pieces = []
-        return (Frame(id: p.frame, key: key, width: size.0, height: size.1, data: data), needKey)
+        return (Frame(id: p.frame, key: key, timeNs: time, width: size.0, height: size.1, data: data), needKey)
     }
 }
 
@@ -165,6 +168,7 @@ final class VideoReceiver: ObservableObject, @unchecked Sendable {
     private let layerLock = NSLock()
     private var layer: AVSampleBufferDisplayLayer?
     var requestKeyframe: (() -> Void)?          // link queue
+    var frameShown: ((FrameAssembler.Frame) -> Void)?  // link queue, as it goes to the display layer
 
     func attach(_ l: AVSampleBufferDisplayLayer) {
         layerLock.withLock { layer = l }
@@ -192,6 +196,7 @@ final class VideoReceiver: ObservableObject, @unchecked Sendable {
             return
         }
         renderer.enqueue(sample)
+        frameShown?(frame)
         if !shown {
             shown = true
             DispatchQueue.main.async { self.showing = true }

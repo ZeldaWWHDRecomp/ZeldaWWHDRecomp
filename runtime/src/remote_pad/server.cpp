@@ -271,6 +271,11 @@ void Server::run() {
                         seen_ = now;
                         if (cb_.input) cb_.input(*in);
                     }
+                } else if (h->type == kPing) {
+                    if (const auto t = parse_ping(buf, (size_t)n)) {
+                        seen_ = now;
+                        reply(encode_pong(state_.session, {*t, clock_ns()}));
+                    }
                 } else if (h->type == kKeyframe) {
                     seen_ = now;
                     if (cb_.keyframe) cb_.keyframe();

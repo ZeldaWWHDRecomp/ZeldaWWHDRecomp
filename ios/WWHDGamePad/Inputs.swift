@@ -11,8 +11,8 @@ final class ControllerReader: @unchecked Sendable {  // (its state lives on the 
     private let queue: DispatchQueue
     private var controller: GCController?          // touched on `queue` only
     private var observers: [NSObjectProtocol] = []
-    /// main thread: the attached controller's name, nil without one
-    var onChange: ((String?) -> Void)?
+    /// main thread: the attached controller, nil without one
+    var onChange: ((GCController?) -> Void)?
 
     init(queue: DispatchQueue) {
         self.queue = queue
@@ -39,7 +39,7 @@ final class ControllerReader: @unchecked Sendable {  // (its state lives on the 
             for b in [g.buttonHome, g.buttonOptions, g.buttonMenu] { b?.preferredSystemGestureState = .disabled }
         }
         queue.async { self.controller = c }
-        onChange?(c.map { $0.vendorName ?? $0.productCategory })
+        onChange?(c)
     }
 
     /// on `queue`: the controller part of the Input
