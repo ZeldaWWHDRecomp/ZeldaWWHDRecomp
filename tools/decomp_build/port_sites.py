@@ -26,6 +26,7 @@ P07 = "wwhd_src/d/actor/d_a_player_main_07.cpp"
 CU = "wwhd_src/d/d_camera_util.cpp"
 CS = "wwhd_src/d/d_camera_subject.cpp"
 CP = "wwhd_src/d/d_camera_proc.cpp"
+CE2 = "wwhd_src/d/d_camera_engine2.cpp"
 
 
 def _p(site, func, path, macro):
@@ -108,6 +109,13 @@ SITES = [
     _p(0x024FF4C0, 0x024FF164, "wwhd_src/d/d_camera_run.cpp", "PORT_CAMERA_W"),  # eventCamera: one statement, twice
     dict(site=0x024FF4E4, func=0x024FF164, path="wwhd_src/d/d_camera_run.cpp", marker="PORT_CAMERA_W(0x024FF4C0"),
     _p(0x024FC080, 0x024FBF9C, "wwhd_src/d/d_camera_bg.cpp", "PORT_CAMERA_W"),  # defaultTriming: the table's size
+    # dCamera_c::manualCamera (fast mode): the direct / mouse / swipe camera, Invert camera up/down (mods/camera.cpp)
+    _p(0x02510448, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL_AT"),  # after each turning-speed chase (both branches)
+    _p(0x025104A0, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL_AT"),
+    _p(0x0251053C, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the vertical stick rate
+    _p(0x02510DEC, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the latitude step
+    _p(0x02510EA0, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the V smoothing factor
+    _p(0x02510EE4, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the U smoothing factor
 ]
 
 EMPTY = [

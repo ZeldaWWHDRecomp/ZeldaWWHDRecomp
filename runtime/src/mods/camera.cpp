@@ -430,8 +430,10 @@ extern "C" void hook_024FA9C8(Cpu* c) {
     }
 }
 
-// f28: vertical stick rate (+1 = stick up = V decreases by [sp+0x14] degrees per step)
-extern "C" void site_0251053C(Cpu* c) {
+// f28: vertical stick rate (+1 = stick up = V decreases by PER degrees per step: the latitude step, [sp+0x14] at the
+// hook; the decomp build's point passes it, mods/camera_points.cpp)
+namespace mods {
+void manual_pitch_rate(Cpu* c, double per) {
     if (!mouse_step()) return;
     float dy;
     {
@@ -439,11 +441,12 @@ extern "C" void site_0251053C(Cpu* c) {
         dy = g_direct_dy;
         g_direct_dy = 0;
     }
-    double per = ldf32(c->r[1] + 0x14);
     if (!(std::fabs(per) > 0.01)) return;
     // mouse down (dy > 0) looks down: V grows, so f28 < 0 (the other way with Invert camera up/down)
     c->f[28].ps0 = -dy / per * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
 }
+}  // namespace mods
+extern "C" void site_0251053C(Cpu* c) { mods::manual_pitch_rate(c, ldf32(c->r[1] + 0x14)); }
 // V smoothing (cSAngle * f1, f1 = [sp+0x18]) and U smoothing (f1 = [sp+0x1C])
 extern "C" void site_02510EA0(Cpu* c) {
     if (mouse_step()) c->f[1].ps0 = 1.0;

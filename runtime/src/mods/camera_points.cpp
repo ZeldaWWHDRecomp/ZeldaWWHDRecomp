@@ -1,7 +1,7 @@
 // Decomp build: the port points of the decompiled camera code (the decompilation's port_hooks.h PORT_CAMERA_F,
-// PORT_CAMERA_W, PORT_CAMERA_AT, PORT_PROJECTION; tools/decomp_build/port_sites.py). Each runs its instruction hook's
-// handler (mods/camera.cpp, mods/targeting_letterbox.cpp, aspect.cpp) through port_points::run. In a file of its own so
-// that the tests that link one of those files alone do not need the others.
+// PORT_CAMERA_W, PORT_CAMERA_AT, PORT_PROJECTION, PORT_CAMERA_MANUAL; tools/decomp_build/port_sites.py). Each runs its
+// instruction hook's handler (mods/camera.cpp, mods/targeting_letterbox.cpp, aspect.cpp) through port_points::run. In a
+// file of its own so that the tests that link one of those files alone do not need the others.
 #include <cstdint>
 
 #include "port_points.h"
@@ -63,4 +63,40 @@ extern "C" void wwhd_projection(Cpu* c, unsigned sp, unsigned site, float* f) {
     port_points::run(c, sp, h,
                      [&](Cpu& r) { for (int i = 0; i < 4; i++) r.f[1 + i].ps0 = r.f[1 + i].ps1 = f[i]; },
                      [&](Cpu& r) { for (int i = 0; i < 4; i++) f[i] = (float)r.f[1 + i].ps0; });
+}
+
+// dCamera_c::manualCamera (fast mode: the runtime hooks the function, hook_0250FDC8, and runs its decompiled body):
+// the direct / mouse / swipe camera and Invert camera up/down (mods/camera.cpp)
+extern "C" {
+void site_02510448(Cpu*); void site_025104A0(Cpu*);  // after the turning-speed chase: r31 the camera, f25 the yaw step
+void site_02510DEC(Cpu*);                            // the latitude step f1, the style's limits f2, f3
+void site_02510EA0(Cpu*); void site_02510EE4(Cpu*);  // the V and U smoothing factors f1
+}
+namespace mods { void manual_pitch_rate(Cpu* c, double per); }  // site_0251053C, [sp+0x14] (the latitude step) passed
+extern "C" float wwhd_camera_manual(Cpu* c, unsigned sp, unsigned site, unsigned obj, float value, float a, float b) {
+    auto f = [](Cpu& r, int i, float v) { r.f[i].ps0 = r.f[i].ps1 = v; };
+    switch (site) {
+    case 0x02510448: case 0x025104A0:
+        port_points::run(c, sp, site == 0x02510448 ? site_02510448 : site_025104A0,
+                         [&](Cpu& r) { r.r[31] = obj; f(r, 25, value); }, [](Cpu&) {});
+        return value;
+    case 0x0251053C: {  // f28 the vertical stick rate
+        const Cpu saved = *c;
+        c->r[1] = sp;
+        f(*c, 28, value);
+        mods::manual_pitch_rate(c, a);
+        value = (float)c->f[28].ps0;
+        *c = saved;
+        return value;
+    }
+    case 0x02510DEC:
+        port_points::run(c, sp, site_02510DEC, [&](Cpu& r) { f(r, 1, value); f(r, 2, a); f(r, 3, b); },
+                         [&](Cpu& r) { value = (float)r.f[1].ps0; });
+        return value;
+    case 0x02510EA0: case 0x02510EE4:
+        port_points::run(c, sp, site == 0x02510EA0 ? site_02510EA0 : site_02510EE4, [&](Cpu& r) { f(r, 1, value); },
+                         [&](Cpu& r) { value = (float)r.f[1].ps0; });
+        return value;
+    }
+    port_points::unknown("manual camera", site);
 }
