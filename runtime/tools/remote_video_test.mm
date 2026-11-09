@@ -192,6 +192,16 @@ int main() {
         assert(dec.decode(*f));
         printf("red frame: %zu bytes, decoded B%d G%d R%d\n", f->data.size(), dec.bgra[0], dec.bgra[1], dec.bgra[2]);
         assert(near(dec.bgra[2], 255) && near(dec.bgra[1], 0) && near(dec.bgra[0], 0));
+        // the stream says what the pixels are: sRGB, as the TV window shows them (a BT.709 tag makes the
+        // phone show the picture darker than the TV)
+        CFTypeRef transfer = CMFormatDescriptionGetExtension(dec.fmt, kCMFormatDescriptionExtension_TransferFunction);
+        assert(transfer && CFEqual(transfer, kCVImageBufferTransferFunction_sRGB));
+        // mid-grey keeps its value through the encoder
+        phone.send(encode_keyframe_request(phone.session));
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        assert(present(0.5f, 0.5f, 0.5f));
+        f = phone.frame();
+        assert(f && dec.decode(*f) && near(dec.bgra[1], 128) && std::abs(dec.bgra[1] - 128) <= 3);
         assert(present(0, 1, 0));
         f = phone.frame();
         assert(f && !f->key && dec.decode(*f));
@@ -221,5 +231,5 @@ int main() {
         stop();
     }
     puts("remote_video_test: Metal frames encoded, sent in pieces, put back together and decoded; keyframes first, "
-         "on request and on a new size; no video without a phone that asks passed");
+         "on request and on a new size; sRGB tag and grey levels; no video without a phone that asks passed");
 }

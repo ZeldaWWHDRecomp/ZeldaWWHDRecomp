@@ -138,8 +138,10 @@ bool setup(id<MTLDevice> device, int w, int h) {
     set_int(s, kVTCompressionPropertyKey_ExpectedFrameRate, 60);
     set_int(s, kVTCompressionPropertyKey_MaxKeyFrameInterval, 600);
     set_int(s, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 10);
+    // The pixels are sRGB, as the TV window shows them: tag the stream so (H.264 VUI transfer 13). Tagged
+    // BT.709, the phone colour-manages it as video (BT.1886, gamma 2.4) and the picture looks darker.
     set(s, kVTCompressionPropertyKey_ColorPrimaries, kCVImageBufferColorPrimaries_ITU_R_709_2);
-    set(s, kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_ITU_R_709_2);
+    set(s, kVTCompressionPropertyKey_TransferFunction, kCVImageBufferTransferFunction_sRGB);
     set(s, kVTCompressionPropertyKey_YCbCrMatrix, kCVImageBufferYCbCrMatrix_ITU_R_709_2);
     VTCompressionSessionPrepareToEncodeFrames(s);
     if (CVMetalTextureCacheCreate(nullptr, nullptr, device, nullptr, &g_enc.cache) != kCVReturnSuccess) {
