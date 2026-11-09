@@ -243,13 +243,13 @@ inline bool apply(Pose& p, int body_k, const std::vector<Mx>& e, float w) {
     for (Model& m : p.models) {
         if (&m == body || m.j.empty()) continue;
         const Mx root = from_joint(m.j[0]);
-        size_t near = 0;
+        size_t nearest = 0;
         float best = 1e30f;
         for (size_t j = 0; j < n; j++) {
             const float dx = was[j].m[3] - root.m[3], dy = was[j].m[7] - root.m[7], dz = was[j].m[11] - root.m[11];
-            if (const float d = dx * dx + dy * dy + dz * dz; d < best) best = d, near = j;
+            if (const float d = dx * dx + dy * dy + dz * dz; d < best) best = d, nearest = j;
         }
-        const Mx move = mul(now[near], inverse(was[near]));
+        const Mx move = mul(now[nearest], inverse(was[nearest]));
         for (Joint& jt : m.j) {
             Joint out = jt;
             if (to_joint(mul(move, from_joint(jt)), out)) jt = out;

@@ -11,10 +11,10 @@ constexpr float kRange = 25000;  // units from Link to the radar's rim
 struct Far { float x, z; bool party; bool pvp = false; };  // pvp: a player who can fight now (C28: red)
 struct Dot { float x, y; bool party, rim; bool pvp = false; };  // -1..1 from the radar's centre, +y up (the camera's view); rim: further out
 // the dots for these far players, seen from `me` with the camera's heading `view_yaw` (radians, atan2 of its forward x, z)
-inline std::vector<Dot> place(const float me[3], float view_yaw, const std::vector<Far>& far) {
+inline std::vector<Dot> place(const float me[3], float view_yaw, const std::vector<Far>& far_players) {
     std::vector<Dot> out;
     const float s = std::sin(view_yaw), c = std::cos(view_yaw);
-    for (const Far& f : far) {
+    for (const Far& f : far_players) {
         const float dx = f.x - me[0], dz = f.z - me[2];
         // up: the camera's forward (s, c on x, z); right: its right (-c, s), as cross(forward, up)
         float rx = -dx * c + dz * s, ry = dx * s + dz * c;
@@ -39,7 +39,7 @@ inline std::vector<Ring> rings(const float me[3], float view_yaw, const std::vec
 }
 // each step (game thread): the far players now (none: the radar hides); at sea only, as the settings say. With PvP
 // (C28) also the safe zones' borders (`zones`: centres and radii), which keep the radar shown
-void step(uint32_t link, const std::vector<Far>& far);
+void step(uint32_t link, const std::vector<Far>& far_players);
 void set_zones(const std::vector<Far>& centres, const std::vector<float>& radii);
 // main (before the overlay seals)
 void register_overlay();
