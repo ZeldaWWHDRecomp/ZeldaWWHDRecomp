@@ -110,6 +110,11 @@ function(wwhd_decomp_configure)
   option(WWHD_DECOMP_FAST_LEAF_CHECK "decomp build, fast mode: trap on any use of call state in a leaf body (diagnostics)" OFF)
   # diagnostics build only: native entries counted per decompiled function (gabi.h GABI_NSTATS; WWHD_DECOMP_FAST_NSTATS=PATH)
   option(WWHD_DECOMP_FAST_NSTATS "decomp build, fast mode: count native entries per function (diagnostics, not for release)" OFF)
+  # fast mode: the guest halves of gabi::call / call_ptr / lcall and a body's own guest call (WWHD_GLUE_FUNC's, taken
+  # when native_enter_ok refuses a nested call) out of line, one function per target / shape, the body's own one cold
+  # (gabi.h GABI_COLD_FALLBACK): no ArgPack on a body's stack (no stack-protector canary for it), smaller hot code; the
+  # same registers, r1, LR and guest calls. Code layout only, so no run-time switch (OFF: the inline forms, as before)
+  option(WWHD_DECOMP_FAST_COLD_FALLBACK "decomp build, fast mode: guest call paths out of line (no ArgPack in hot bodies)" OFF)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -298,6 +303,9 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_COUNT)
       list(APPEND opts -DGABI_FAST_COUNT=1)
+    endif()
+    if(WWHD_DECOMP_FAST_COLD_FALLBACK)
+      list(APPEND opts -DGABI_COLD_FALLBACK=1)
     endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)
