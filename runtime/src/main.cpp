@@ -558,7 +558,7 @@ int main(int argc, char** argv) {
 #endif
     bool warm_shaders = false;
     bool save_arg = false;  // --save: the command line wins over a save folder chosen in the Saves tab
-                            // (except the install's own folder, below)
+                            // (except the install's own folder: save_override below)
     std::string randomizer_files;  // --randomizer-files
     bool install_story_notebook = false;
     bool start_mcp = false;
@@ -739,6 +739,19 @@ int main(int argc, char** argv) {
 #else
     constexpr const char* mod_recovery = "To recover, launch with WWHD_CODE_MODS=0, disable the problematic mod in Settings > Mods, then restart.";
 #endif
+    // --save with the install's own folder is how every launcher starts the game: that is the default
+    // folder, not an override. Decided on the folder as given, before a randomized game or a save
+    // profile moves it, so those start the same way from a launcher as without --save.
+    bool save_override = save_arg;
+#ifndef __ANDROID__
+    if (save_arg) {
+        std::error_code ec;
+        std::vector<std::filesystem::path> installs{std::filesystem::path(host::exe_dir()).parent_path(),
+                                                    std::filesystem::current_path(ec)};
+        if (const char* install = std::getenv("WWHD_INSTALL_DIR")) installs.emplace_back(install);
+        save_override = !save_folder::install_default(config::save_dir, installs);
+    }
+#endif
     mods::save_profile::Selection save_profile;
     mods::save_profile::Paths save_paths;
     save_folder::Policy save_policy;
@@ -748,7 +761,7 @@ int main(int argc, char** argv) {
             throw std::runtime_error("A randomized executable cannot also activate a mod with a separate save profile. Use the original game executable for this mod.");
         if (randomizer_paths::legacy_preflight_required(randomizer::compiled_seed(), warm_shaders)) {
             std::string why;
-            if (!save_folder::legacy_randomizer_preflight(config::save_dir, host::config_dir(), save_arg, why)) {
+            if (!save_folder::legacy_randomizer_preflight(config::save_dir, host::config_dir(), save_override, why)) {
                 LOG("[save-folder] %s", why.c_str());
                 ask_player("Wind Waker HD: separate randomized saves", why, {"Quit"});
                 return 1;
@@ -756,8 +769,8 @@ int main(int argc, char** argv) {
         }
         // Setup and launchers pass --save with the install's default folder: that is no
         // choice of the player, so a randomized game still gets its own per-seed folder.
-        config::save_dir = randomizer::save_directory(config::save_dir, randomizer::explicit_save_folder(save_arg, config::save_dir));
-        save_paths=mods::save_profile::paths(save_profile,config::save_dir,host::config_dir(),save_arg);
+        config::save_dir = randomizer::save_directory(config::save_dir, randomizer::explicit_save_folder(save_override, config::save_dir));
+        save_paths=mods::save_profile::paths(save_profile,config::save_dir,host::config_dir(),save_override);
         if (randomizer::compiled_seed()) {
             save_paths.preferences = randomizer::config_directory(host::config_dir());
             save_paths.backups = randomizer_paths::backups(config::save_dir, seed_namespace);
@@ -799,15 +812,6 @@ int main(int argc, char** argv) {
 #ifndef __ANDROID__
     // A save folder chosen in Settings > Saves (save_folder.h), for example inside a cloud folder:
     // a change made there is applied now, and the folder is checked before the game reads its save.
-    // (--save with the install's own folder is how every launcher starts the game: no override)
-    bool save_override = save_arg;
-    if (save_arg) {
-        std::error_code ec;
-        std::vector<std::filesystem::path> installs{std::filesystem::path(host::exe_dir()).parent_path(),
-                                                    std::filesystem::current_path(ec)};
-        if (const char* install = std::getenv("WWHD_INSTALL_DIR")) installs.emplace_back(install);
-        save_override = !save_folder::install_default(config::save_dir, installs);
-    }
     if (!save_override && !warm_shaders) {
         const auto chosen = save_folder::startup(config::save_dir, save_paths.preferences, ask_player,
                                                  [](const std::string& line) { LOG("%s", line.c_str()); }, save_policy, seed_namespace);
