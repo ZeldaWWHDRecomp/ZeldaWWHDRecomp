@@ -27,6 +27,7 @@ CU = "wwhd_src/d/d_camera_util.cpp"
 CS = "wwhd_src/d/d_camera_subject.cpp"
 CP = "wwhd_src/d/d_camera_proc.cpp"
 CE2 = "wwhd_src/d/d_camera_engine2.cpp"
+SN = "wwhd_src/d/d_snap.cpp"
 
 
 def _p(site, func, path, macro):
@@ -121,6 +122,13 @@ SITES = [
     _p(0x024EB868, 0x024EB7F0, "wwhd_src/d/d_attention.cpp", "PORT_LOCK_ON"),             # EnemyDistance
     _p(0x024ECC70, 0x024ECB08, "wwhd_src/d/d_attention_2.cpp", "PORT_LOCK_ON_DISTANCE"),  # chaseAttention
     _p(0x024EE574, 0x024EE49C, "wwhd_src/d/d_attention_3.cpp", "PORT_LOCK_ON"),           # LockonReleaseDistanse
+    # The Picto Box at wider aspects (runtime/src/aspect.cpp, issue #303)
+    _p(0x025BE898, 0x025BE870, SN, "PORT_PICTO"),  # Execute: after Judge (WWHD_PICTO_LOG)
+    _p(0x025BF5D0, 0x025BF250, SN, "PORT_PICTO"),  # draw: the colour copy
+    _p(0x025BF7C0, 0x025BF250, SN, "PORT_PICTO"),  # draw: the depth copy
+    _p(0x025BFDF8, 0x025BFDC0, SN, "PORT_PICTO"),  # DebugDraw: the TV projection's off-centre terms
+    _p(0x025BFFB0, 0x025BFDC0, SN, "PORT_PICTO"),  # DebugDraw: the subjects' projection
+    _p(0x025C0004, 0x025BFDC0, SN, "PORT_PICTO"),  # DebugDraw: dSnap_project's projection
 ]
 
 EMPTY = [
