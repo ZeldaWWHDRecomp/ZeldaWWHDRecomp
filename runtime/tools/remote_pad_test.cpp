@@ -1,5 +1,5 @@
-// The iPhone GamePad (runtime/src/remote_pad/): packet round trips and rejects, the controller mapping, and
-// the server over loopback UDP (connect, inputs in order, one phone at a time, reconnect, goodbye, silence).
+// The iPhone GamePad (runtime/src/remote_pad/): the packets, rumble timing, pairing, the controller mapping,
+// and the server over loopback UDP.
 #include "remote_pad/pairing.h"
 #include "remote_pad/protocol.h"
 #include "remote_pad/remote_pad.h"
@@ -413,7 +413,6 @@ static void test_server_video() {
     int16_t lr[2 * 144] = {1, 2};
     assert(!server.send_audio(lr, 144));
     // the phone switches the sound on: the same Hello with kWantsAudio keeps the session
-    std::atomic<int> flags_changes{0};
     phone.send(encode_hello({2, "Video phone", "", true, true}));
     auto w2 = phone.welcome();
     assert(w2 && w2->first == w->first);
@@ -428,7 +427,6 @@ static void test_server_video() {
         assert(a && a->frames == 144 && !a->silent && a->seq == 1 && a->data[0] == 1 && a->data[2] == 2);
         break;
     }
-    (void)flags_changes;
     // a lost piece: the phone asks for a keyframe
     phone.send(encode_keyframe_request(w->first));
     assert(wait_for([&] { return keyframes == 1; }));
