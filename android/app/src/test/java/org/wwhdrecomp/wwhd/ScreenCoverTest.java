@@ -9,6 +9,12 @@ public final class ScreenCoverTest {
         if (!Arrays.equals(got, new int[] {l, t, r, b}))
             throw new AssertionError("expected " + l + "," + t + "," + r + "," + b + " got " + Arrays.toString(got));
     }
+    /** -1,-1,-1,-1: null expected */
+    static void expectBox(int[] got, int l, int t, int r, int b) {
+        int[] want = l == -1 && t == -1 && r == -1 && b == -1 ? null : new int[] {l, t, r, b};
+        if (!Arrays.equals(got, want))
+            throw new AssertionError("expected " + Arrays.toString(want) + " got " + Arrays.toString(got));
+    }
     public static void main(String[] args) {
         final int[] none = {0, 0, 0, 0}, origin = {0, 0}, screen = {0, 0, 1280, 960};
         // nothing reported: nothing covered (the layout as before)
@@ -40,6 +46,18 @@ public final class ScreenCoverTest {
                 0, 24, 0, 48);
         // a size not known yet: nothing
         expect(ScreenCover.covered(0, 0, new int[] {0, 0, 0, 48}, null, origin, screen), 0, 0, 0, 0);
-        System.out.println("Screen cover: shown bars, cutout strips (not notches), window bounds PASS");
+        // the window on the display (FLAG_LAYOUT_NO_LIMITS may lay it out past the display's edge)
+        expectBox(ScreenCover.onDisplay(screen, screen), 0, 0, 1280, 960);
+        expectBox(ScreenCover.onDisplay(new int[] {0, 0, 1280, 1008}, screen), 0, 0, 1280, 960);
+        expectBox(ScreenCover.onDisplay(new int[] {0, -48, 1280, 960}, screen), 0, 0, 1280, 960);
+        expectBox(ScreenCover.onDisplay(new int[] {100, 50, 900, 650}, screen), 100, 50, 900, 650);  // a smaller window
+        expectBox(ScreenCover.onDisplay(null, screen), 0, 0, 1280, 960);
+        expectBox(ScreenCover.onDisplay(new int[] {0, 0, 1280, 912}, null), 0, 0, 1280, 912);
+        expectBox(ScreenCover.onDisplay(new int[] {0, 0, 0, 0}, new int[] {0, 0, 0, 0}), -1, -1, -1, -1);
+        expectBox(ScreenCover.onDisplay(new int[] {2000, 0, 2400, 960}, screen), 2000, 0, 2400, 960);  // no overlap
+        // ... and so a view 48 rows taller than the display (laid out past it): those rows are not shown
+        expect(ScreenCover.covered(1280, 1008, none, null, origin, ScreenCover.onDisplay(new int[] {0, 0, 1280, 1008}, screen)),
+                0, 0, 0, 48);
+        System.out.println("Screen cover: shown bars, cutout strips (not notches), window bounds, window on the display PASS");
     }
 }

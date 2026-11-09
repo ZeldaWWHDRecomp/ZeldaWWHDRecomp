@@ -54,4 +54,19 @@ public final class ScreenCover {
         for (int i = 0; i < 4; i++) c[i] = Math.max(0, Math.min(c[i], i % 2 == 0 ? w : h));
         return c;
     }
+
+    /**
+     * The part of the screen the window can show: its bounds within the display's (left, top, right, bottom each).
+     * With FLAG_LAYOUT_NO_LIMITS (Full screen) a window may be laid out past the display's edge; rows there are
+     * not shown either. Either one unknown or empty: the other; no overlap: the window's bounds (nothing to go by).
+     */
+    public static int[] onDisplay(int[] window, int[] display) {
+        boolean hasWindow = window != null && window.length >= 4 && window[2] > window[0] && window[3] > window[1];
+        boolean hasDisplay = display != null && display.length >= 4 && display[2] > display[0] && display[3] > display[1];
+        if (!hasWindow) return hasDisplay ? display.clone() : null;
+        if (!hasDisplay) return window.clone();
+        int[] r = {Math.max(window[0], display[0]), Math.max(window[1], display[1]),
+                Math.min(window[2], display[2]), Math.min(window[3], display[3])};
+        return r[2] > r[0] && r[3] > r[1] ? r : window.clone();
+    }
 }

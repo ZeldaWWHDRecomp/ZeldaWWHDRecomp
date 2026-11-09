@@ -276,6 +276,7 @@ public class WwhdActivity extends SDLActivity {
     private boolean obscuredUnsupported;  // an on-device game library from before publishObscured
     private boolean screenReportUnsupported;  // ... from before publishScreenReport
     private String lastScreenReport;
+    private int surfaceBufferWidth, surfaceBufferHeight;  // the game surface's buffer (surfaceChanged), 0 before
 
     // Issue #349: on a Retroid Pocket Nova (Android 13, 1280x960) the bottom 48 rows of the screen stay black over
     // the game; with Match window or 4:3 the picture fills the screen and the rupee counter sits in those rows.
@@ -306,9 +307,12 @@ public class WwhdActivity extends SDLActivity {
             android.graphics.Rect r = rects.get(i);
             cut[i] = new int[] {r.left - at[0], r.top - at[1], r.right - at[0], r.bottom - at[1]};
         }
-        android.graphics.Rect bounds = null;
+        android.graphics.Rect bounds = null, display = null;
         try { bounds = getWindowManager().getCurrentWindowMetrics().getBounds(); } catch (RuntimeException ignored) { }
-        int[] window = bounds != null ? new int[] {bounds.left, bounds.top, bounds.right, bounds.bottom} : null;
+        try { display = getWindowManager().getMaximumWindowMetrics().getBounds(); } catch (RuntimeException ignored) { }
+        // the window's part of the display: with FLAG_LAYOUT_NO_LIMITS (Full screen) it may reach past the edge
+        int[] window = ScreenCover.onDisplay(bounds != null ? new int[] {bounds.left, bounds.top, bounds.right, bounds.bottom} : null,
+                display != null ? new int[] {display.left, display.top, display.right, display.bottom} : null);
         int[] c = ScreenCover.covered(w, h, shown, cut, onScreen, window);
         reportScreen(insets, w, h, onScreen, root, rects, bounds, c);
         try {
@@ -344,6 +348,27 @@ public class WwhdActivity extends SDLActivity {
         for (android.graphics.Rect r : cutouts) s.append(' ').append(r.toShortString());
         android.view.DisplayCutout cut = insets.getDisplayCutout();
         if (cut != null) s.append(", waterfall ").append(box(cut.getWaterfallInsets()));
+        // What the game really gets (#349: does the surface reach rows 912-959 of the Nova's screen?): the surface
+        // view's rectangle on the screen and its buffer's size (the swapchain's), the part of the screen the system
+        // says the window can be seen in, the stable insets (the bars' space whether shown or not), and the
+        // full-screen state with the flags it set and the system's navigation mode (0 three buttons, 1 two
+        // buttons, 2 gestures; not a public setting, -1 when unknown).
+        s.append("; surface on screen [").append(onScreen[0]).append(',').append(onScreen[1]).append("][")
+         .append(onScreen[0] + w).append(',').append(onScreen[1] + h).append("], buffer ")
+         .append(surfaceBufferWidth).append('x').append(surfaceBufferHeight);
+        android.graphics.Rect visible = new android.graphics.Rect();
+        mSurface.getWindowVisibleDisplayFrame(visible);
+        s.append(", visible frame ").append(visible.toShortString())
+         .append(", stable ").append(insets.getStableInsetLeft()).append(',').append(insets.getStableInsetTop()).append(',')
+         .append(insets.getStableInsetRight()).append(',').append(insets.getStableInsetBottom());
+        Window win = getWindow();
+        s.append(", full screen ").append(mFullscreenModeActive ? "on" : "off")
+         .append(" (ui flags 0x").append(Integer.toHexString(win.getDecorView().getSystemUiVisibility()))
+         .append(", window flags 0x").append(Integer.toHexString(win.getAttributes().flags)).append(')');
+        int navigationMode = -1;
+        try { navigationMode = android.provider.Settings.Secure.getInt(getContentResolver(), "navigation_mode", -1); }
+        catch (RuntimeException ignored) { }
+        s.append(", navigation mode ").append(navigationMode);
         s.append("; left out ").append(covered[0]).append(',').append(covered[1]).append(',').append(covered[2])
          .append(',').append(covered[3]);
         String line = s.toString();
@@ -414,6 +439,16 @@ public class WwhdActivity extends SDLActivity {
         }
     }
 
+    // SDL's full-screen window style (SDLActivity COMMAND_CHANGE_WINDOW_STYLE and its rehideSystemUi): the same
+    // flags, so neither side sees a change the other made and starts hiding the bars again
+    private static final int IMMERSIVE_UI_FLAGS = View.SYSTEM_UI_FLAG_FULLSCREEN | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+            View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+            View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | View.SYSTEM_UI_FLAG_LAYOUT_STABLE | View.INVISIBLE;
+    // the window as it was before Full screen's additions below (put back when the setting is turned off)
+    private boolean fullScreenWindowStyled;
+    private int windowNavigationBarColor;
+    private boolean windowNavigationBarContrast;
+
     private void applyFullScreen() {
         Window w = getWindow();
         if (w == null) return;
@@ -426,9 +461,35 @@ public class WwhdActivity extends SDLActivity {
                 lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
                 w.setAttributes(lp);
             }
+            // Issue #349: on a Retroid Pocket Nova (Android 13, likely three-button navigation) the navigation bar
+            // reports as hidden and the view spans all 960 rows, yet the bottom 48 (the bar's height) stay black.
+            // Some handheld ROMs keep the bar's space unless the window asks for it the ways emulators do:
+            if (!fullScreenWindowStyled) {
+                windowNavigationBarColor = w.getNavigationBarColor();
+                windowNavigationBarContrast = w.isNavigationBarContrastEnforced();
+                fullScreenWindowStyled = true;
+            }
+            // the window may be laid out over the whole display, the navigation bar's space included
+            w.addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+            // nothing drawn for the bar's space: no bar colour and no contrast scrim (API 29+) over the game
+            w.setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+            w.setNavigationBarContrastEnforced(false);
+            // the old full-screen flags besides the WindowInsetsController (syncSystemBars): systems that still go
+            // by them hide and give up the bars only then. Only while one of them is missing (the system clears
+            // them when it shows the bars; onSystemUiVisibilityChange follows a change, so no set-and-follow loop)
+            View decor = w.getDecorView();
+            if ((decor.getSystemUiVisibility() & IMMERSIVE_UI_FLAGS) != IMMERSIVE_UI_FLAGS) decor.setSystemUiVisibility(IMMERSIVE_UI_FLAGS);
+        } else if (fullScreenWindowStyled) {
+            // Full screen turned off: the window as before (SDL already set its own flags for a window with bars)
+            fullScreenWindowStyled = false;
+            w.clearFlags(WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS);
+            w.setNavigationBarColor(windowNavigationBarColor);
+            w.setNavigationBarContrastEnforced(windowNavigationBarContrast);
         }
         syncSystemBars(w);
         if (gamePadDisplay != null) gamePadDisplay.syncSystemBars();
+        // the game's log: what the screen looks like with this applied (once per change, reportScreen)
+        if (mSurface != null && !mBrokenLibraries) w.getDecorView().post(this::reportObscured);
     }
 
     private final Runnable reapplyFullScreen = this::applyFullScreen;
@@ -530,6 +591,16 @@ public class WwhdActivity extends SDLActivity {
                 return v.onApplyWindowInsets(insets);
             });
             mSurface.addOnLayoutChangeListener((v, l, t, r, b, ol, ot, or, ob) -> reportObscured());
+            // ... and its buffer's size (the swapchain's) in the game's log after each change (#349)
+            mSurface.getHolder().addCallback(new android.view.SurfaceHolder.Callback() {
+                @Override public void surfaceCreated(android.view.SurfaceHolder holder) { }
+                @Override public void surfaceChanged(android.view.SurfaceHolder holder, int format, int width, int height) {
+                    surfaceBufferWidth = width;
+                    surfaceBufferHeight = height;
+                    if (mSurface != null) mSurface.post(WwhdActivity.this::reportObscured);
+                }
+                @Override public void surfaceDestroyed(android.view.SurfaceHolder holder) { }
+            });
         }
         // on-screen controls over the game (the button under the view button shows or hides them)
         if (mLayout != null)
