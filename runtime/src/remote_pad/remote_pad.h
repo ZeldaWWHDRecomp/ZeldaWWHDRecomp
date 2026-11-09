@@ -43,6 +43,12 @@ bool take_keyframe_request();  // the next frame must be a keyframe (a new phone
 // one encoded frame (AVCC, see protocol.h); any thread
 void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height);
 
+// ---- the GamePad speaker (protocol.h kAudio) ----
+// The phone plays the GamePad mix: the host then plays the TV mix alone (hle/ax.cpp). Cheap.
+bool audio_wanted();
+// the AX frame thread, every frame: the GamePad mix after the game's final mix, 48 kHz, s16 range
+void send_audio(const int32_t* left, const int32_t* right, int frames);
+
 // ---- rumble (protocol.h kRumble) ----
 // The host, every input update (any rate, one thread): the GamePad motor's strength now, 0..1
 // (rumble::host_level). Sent to the phone when it changes, repeated while it runs (RumbleSender).

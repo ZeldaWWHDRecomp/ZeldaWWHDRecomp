@@ -82,6 +82,7 @@ struct ConnectView: View {
                 Section("GamePad") {
                     LabeledContent("Controller", value: link.controllerName ?? "None: attach or pair one")
                     Toggle("Gyro aiming", isOn: $link.gyro)
+                    Toggle("GamePad sound", isOn: $link.sound)
                 }
 
                 if let name = link.resuming {

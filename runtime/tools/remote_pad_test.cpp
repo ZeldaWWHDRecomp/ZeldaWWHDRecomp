@@ -143,6 +143,31 @@ static void test_rumble() {
     assert(s.update(0.25f, 10) == 64);
 }
 
+static void test_audio_packets() {
+    auto hp = encode_hello({5, "Phone", "", true, true});
+    assert(parse_header(hp.data(), hp.size())->flags == (kWantsVideo | kWantsAudio));
+    auto h = parse_hello(hp.data(), hp.size());
+    assert(h->video && h->audio);
+    // one game audio frame: 144 stereo frames, little-endian int16 left/right
+    int16_t lr[2 * 144];
+    for (int i = 0; i < 144; i++) { lr[2 * i] = int16_t(i * 100 - 7000); lr[2 * i + 1] = int16_t(-i); }
+    auto p = encode_audio(3, 41, lr, 144);
+    assert(p.size() == kAudioHeaderSize + 144 * 4 && p.size() <= kMaxDatagram);
+    auto a = parse_audio(p.data(), p.size());
+    assert(a && a->seq == 41 && a->frames == 144 && !a->silent);
+    for (int i = 0; i < 2 * 144; i++) assert(int16_t(a->data[2 * i] | a->data[2 * i + 1] << 8) == lr[i]);
+    // silence travels as its length alone
+    int16_t zero[2 * 144] = {};
+    p = encode_audio(3, 42, zero, 144);
+    assert(p.size() == kAudioHeaderSize);
+    a = parse_audio(p.data(), p.size());
+    assert(a && a->silent && a->frames == 144 && !a->data);
+    assert(encode_audio(3, 43, nullptr, 144).size() == kAudioHeaderSize);
+    // a short packet is rejected
+    p = encode_audio(3, 44, lr, 144);
+    assert(!parse_audio(p.data(), p.size() - 2));
+}
+
 static void test_pad_values() {
     using namespace input_map;
     Input in;
@@ -316,6 +341,26 @@ static void test_server_video() {
         assert(r && r->level == 180 && r->seq == 1 && h->session == w->first);
         break;
     }
+    // no sound asked for: none sent
+    int16_t lr[2 * 144] = {1, 2};
+    assert(!server.send_audio(lr, 144));
+    // the phone switches the sound on: the same Hello with kWantsAudio keeps the session
+    std::atomic<int> flags_changes{0};
+    phone.send(encode_hello({2, "Video phone", "", true, true}));
+    auto w2 = phone.welcome();
+    assert(w2 && w2->first == w->first);
+    assert(wait_for([&] { return server.snapshot().audio; }));
+    assert(server.send_audio(lr, 144));
+    for (;;) {
+        uint8_t buf[2048];
+        const ssize_t n = recv(phone.s, buf, sizeof buf, 0);
+        assert(n > 0);
+        if (parse_header(buf, size_t(n))->type != kAudio) continue;
+        auto a = parse_audio(buf, size_t(n));
+        assert(a && a->frames == 144 && !a->silent && a->seq == 1 && a->data[0] == 1 && a->data[2] == 2);
+        break;
+    }
+    (void)flags_changes;
     // a lost piece: the phone asks for a keyframe
     phone.send(encode_keyframe_request(w->first));
     assert(wait_for([&] { return keyframes == 1; }));
@@ -325,14 +370,16 @@ static void test_server_video() {
     server.stop();
     assert(!server.send_video(frame.data(), frame.size(), true, 1, 854, 480));
     assert(!server.send_rumble(1));
+    assert(!server.send_audio(lr, 144));
 }
 
 int main() {
     test_packets();
     test_video_packets();
     test_rumble();
+    test_audio_packets();
     test_pad_values();
     test_server();
     test_server_video();
-    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests), rumble passed");
+    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets passed");
 }

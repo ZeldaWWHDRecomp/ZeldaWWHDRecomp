@@ -67,7 +67,7 @@ std::optional<Reader> body(const uint8_t* data, size_t size, Type type) {
 
 std::vector<uint8_t> encode_hello(const Hello& h) {
     Writer w;
-    w.header(kHello, 0, h.video ? kWantsVideo : 0);
+    w.header(kHello, 0, uint8_t((h.video ? kWantsVideo : 0) | (h.audio ? kWantsAudio : 0)));
     w.u32(h.nonce); w.name(h.device); w.name(h.controller);
     return std::move(w.out);
 }
@@ -107,6 +107,21 @@ std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level
     w.u32(seq); w.u8(level);
     return std::move(w.out);
 }
+std::vector<uint8_t> encode_audio(uint32_t session, uint32_t seq, const int16_t* lr, uint16_t frames) {
+    frames = std::min(frames, kMaxAudioFrames);
+    bool silent = !lr;
+    if (lr) {
+        silent = true;
+        for (size_t i = 0; i < size_t(frames) * 2 && silent; i++) silent = lr[i] == 0;
+    }
+    Writer w;
+    w.out.reserve(kAudioHeaderSize + (silent ? 0 : size_t(frames) * 4));
+    w.header(kAudio, session);
+    w.u32(seq); w.u8(silent ? 1 : 0); w.u8(0); w.u16(frames);
+    if (!silent)
+        for (size_t i = 0; i < size_t(frames) * 2; i++) w.u16(uint16_t(lr[i]));
+    return std::move(w.out);
+}
 std::vector<std::vector<uint8_t>> encode_video(uint32_t session, uint32_t frame, bool key, uint64_t time_ns,
                                                uint16_t width, uint16_t height, const uint8_t* data, size_t size) {
     const size_t count = std::max<size_t>(1, (size + kMaxVideoPayload - 1) / kMaxVideoPayload);
@@ -140,6 +155,7 @@ std::optional<Hello> parse_hello(const uint8_t* data, size_t size) {
     if (!r) return std::nullopt;
     Hello h;
     h.video = parse_header(data, size)->flags & kWantsVideo;
+    h.audio = parse_header(data, size)->flags & kWantsAudio;
     h.nonce = r->u32(); h.device = r->name(); h.controller = r->name();
     if (!r->ok) return std::nullopt;
     return h;
@@ -180,6 +196,22 @@ std::optional<Input> parse_input(const uint8_t* data, size_t size) {
 }  // namespace remote_pad
 
 namespace remote_pad {
+std::optional<AudioPiece> parse_audio(const uint8_t* data, size_t size) {
+    if (size < kAudioHeaderSize) return std::nullopt;
+    auto r = body(data, size, kAudio);
+    if (!r) return std::nullopt;
+    AudioPiece a;
+    a.seq = r->u32();
+    a.silent = r->u8() & 1;
+    r->u8();
+    a.frames = r->u16();
+    if (!r->ok || a.frames > kMaxAudioFrames) return std::nullopt;
+    if (!a.silent) {
+        if (size - kAudioHeaderSize < size_t(a.frames) * 4) return std::nullopt;
+        a.data = data + kAudioHeaderSize;
+    }
+    return a;
+}
 std::optional<Rumble> parse_rumble(const uint8_t* data, size_t size) {
     auto r = body(data, size, kRumble);
     if (!r) return std::nullopt;

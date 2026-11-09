@@ -35,6 +35,7 @@ std::atomic<bool> g_video{false}, g_keyframe{false};
 RumbleSender g_rumble;          // the host's input thread
 std::atomic<bool> g_rumble_reset{false};  // a new phone: start from still
 std::atomic<bool> g_connected{false};
+std::atomic<bool> g_audio{false};
 #ifdef __APPLE__
 DNSServiceRef g_bonjour = nullptr;
 #endif
@@ -69,10 +70,15 @@ void start_from_env() {
     if (g_server) return;
     const std::string name = host_name();
     g_server = std::make_unique<Server>(Server::Callbacks{
-        [](const Server::Snapshot& s) { g_turns = -1; g_keyframe = true; g_video = s.video; g_rumble_reset = true; g_connected = true; },
+        [](const Server::Snapshot& s) { g_turns = -1; g_keyframe = true; g_video = s.video; g_audio = s.audio; g_rumble_reset = true; g_connected = true; },
         on_input,
-        [](const std::string&) { motion::remote_reset(); g_turns = -1; g_video = false; g_connected = false; },
+        [](const std::string&) { motion::remote_reset(); g_turns = -1; g_video = false; g_audio = false; g_connected = false; },
         [] { g_keyframe = true; },
+        [](const Server::Snapshot& s) {
+            if (s.video && !g_video) g_keyframe = true;  // the picture back on: from a keyframe
+            g_video = s.video;
+            g_audio = s.audio;
+        },
     }, name);
     if (!g_server->start(port)) { g_server.reset(); return; }
     log_msg("[remote pad] waiting for the iPhone GamePad on UDP port %u (WWHD_REMOTE_PAD)", (unsigned)g_server->port());
@@ -113,6 +119,19 @@ bool take_keyframe_request() { return g_keyframe.exchange(false); }
 void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height) {
     std::lock_guard lk(g_mu);
     if (g_server) g_server->send_video(data, size, key, time_ns, width, height);
+}
+
+bool audio_wanted() { return g_audio.load(std::memory_order_relaxed); }
+void send_audio(const int32_t* left, const int32_t* right, int frames) {
+    if (!g_audio.load(std::memory_order_relaxed)) return;
+    int16_t lr[2 * kMaxAudioFrames];
+    frames = std::clamp(frames, 0, int(kMaxAudioFrames));
+    for (int i = 0; i < frames; i++) {
+        lr[2 * i] = int16_t(std::clamp<int32_t>(left[i], -32768, 32767));
+        lr[2 * i + 1] = int16_t(std::clamp<int32_t>(right[i], -32768, 32767));
+    }
+    std::lock_guard lk(g_mu);
+    if (g_server) g_server->send_audio(lr, uint16_t(frames));
 }
 
 int RumbleSender::update(float level, uint64_t now) {

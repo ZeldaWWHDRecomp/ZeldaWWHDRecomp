@@ -20,6 +20,14 @@
 //                                   (0 = still, 255 = full; rumble.h's host level). Sent when it changes
 //                                   (at most 120 a second), again every 100 ms while it is not 0, and a
 //                                   stop twice; the phone stops by itself after kRumbleStaleMs without one.
+//   computer -> phone   kAudio      header (session), seq u32, flags u8 (1: silent), 0 u8, frames u16,
+//                                   then frames x (left, right) int16 unless silent: the GamePad speaker,
+//                                   48 kHz stereo, one game audio frame (3 ms, 144 frames) per packet.
+//                                   Only after a Hello with kWantsAudio; the computer then plays the TV
+//                                   mix alone, as a Wii U does with its GamePad speaker.
+//
+// A Hello repeated with the same nonce keeps the session and updates kWantsVideo / kWantsAudio (the
+// phone's switches).
 //
 // Video: H.264, no frame reordering. A frame is its NAL units, each with a 4-byte big-endian length
 // (AVCC); a keyframe starts with its SPS and PPS. A frame is cut into pieces of at most kMaxVideoPayload
@@ -46,10 +54,11 @@ constexpr uint16_t kDefaultPort = 26770;
 constexpr const char* kBonjourType = "_wwhd-gamepad._udp";
 constexpr size_t kHeaderSize = 12;
 constexpr size_t kMaxName = 63;
+constexpr size_t kMaxDatagram = 1400;  // below the Wi-Fi MTU with IPv6 and UDP headers
 
-enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7 };
+enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7, kAudio = 8 };
 constexpr uint32_t kRumbleStaleMs = 250;
-enum HelloFlag : uint8_t { kWantsVideo = 1 };  // a Hello's header flags
+enum HelloFlag : uint8_t { kWantsVideo = 1, kWantsAudio = 2 };  // a Hello's header flags
 
 struct Header {
     uint16_t version = kVersion;
@@ -93,6 +102,7 @@ struct Hello {
     uint32_t nonce = 0;
     std::string device, controller;
     bool video = false;  // kWantsVideo
+    bool audio = false;  // kWantsAudio
     bool operator==(const Hello&) const = default;
 };
 struct Welcome { uint32_t nonce = 0; std::string host; bool operator==(const Welcome&) const = default; };
@@ -106,9 +116,20 @@ std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level
 struct Rumble { uint32_t seq = 0; uint8_t level = 0; };
 std::optional<Rumble> parse_rumble(const uint8_t* data, size_t size);
 
+constexpr size_t kAudioHeaderSize = kHeaderSize + 4 + 1 + 1 + 2;
+constexpr uint16_t kMaxAudioFrames = (kMaxDatagram - kAudioHeaderSize) / 4;
+// interleaved left/right samples; nullptr (or all zero) sends a silent packet
+std::vector<uint8_t> encode_audio(uint32_t session, uint32_t seq, const int16_t* lr, uint16_t frames);
+struct AudioPiece {
+    uint32_t seq = 0;
+    uint16_t frames = 0;
+    bool silent = false;
+    const uint8_t* data = nullptr;  // frames x 4 bytes (little-endian int16 L, R) unless silent
+};
+std::optional<AudioPiece> parse_audio(const uint8_t* data, size_t size);
+
 // header + frame u32 + index u16 + count u16 + flags u8 (1: keyframe) + 0 u8 + time u64 + width u16 + height u16
 constexpr size_t kVideoHeaderSize = kHeaderSize + 4 + 2 + 2 + 1 + 1 + 8 + 2 + 2;
-constexpr size_t kMaxDatagram = 1400;  // below the Wi-Fi MTU with IPv6 and UDP headers
 constexpr size_t kMaxVideoPayload = kMaxDatagram - kVideoHeaderSize;
 struct VideoPiece {
     uint32_t frame = 0;         // +1 per frame (wraps)

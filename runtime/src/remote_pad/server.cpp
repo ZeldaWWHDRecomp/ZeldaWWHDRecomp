@@ -51,6 +51,7 @@ Server::~Server() { stop(); }
 bool Server::start(uint16_t) { log_msg("[remote pad] not available on this host"); return false; }
 bool Server::send_video(const uint8_t*, size_t, bool, uint64_t, uint16_t, uint16_t) { return false; }
 bool Server::send_rumble(uint8_t) { return false; }
+bool Server::send_audio(const int16_t*, uint16_t) { return false; }
 void Server::stop() {}
 void Server::run() {}
 void Server::end_session(const char*) {}
@@ -127,6 +128,23 @@ bool Server::send_rumble(uint8_t level) {
     return sock_ >= 0 && sendto(sock_, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(&to), to_len) >= 0;
 }
 
+bool Server::send_audio(const int16_t* lr, uint16_t frames) {
+    sockaddr_storage to{};
+    socklen_t to_len = 0;
+    uint32_t session = 0, seq = 0;
+    {
+        std::lock_guard lk(mu_);
+        if (!running_ || !state_.connected || !state_.audio) return false;
+        memcpy(&to, peer_, peer_len_);
+        to_len = peer_len_;
+        session = state_.session;
+        seq = ++audio_seq_;
+    }
+    const auto p = encode_audio(session, seq, lr, frames);
+    std::lock_guard send(send_mu_);
+    return sock_ >= 0 && sendto(sock_, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(&to), to_len) >= 0;
+}
+
 bool Server::send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height) {
     sockaddr_storage to{};
     socklen_t to_len = 0;
@@ -174,6 +192,7 @@ void Server::run() {
                         state_.device = hello->device.empty() ? "iPhone" : hello->device;
                         state_.controller = hello->controller;
                         state_.video = hello->video;
+                        state_.audio = hello->audio;
                         state_.address = address_text(from);
                         memcpy(peer_, &from, from_len);
                         peer_len_ = from_len;
@@ -181,7 +200,15 @@ void Server::run() {
                         log_msg("[remote pad] %s (%s) connected%s%s%s", state_.device.c_str(), state_.address.c_str(),
                                 state_.controller.empty() ? "" : " with ", state_.controller.c_str(),
                                 state_.video ? ", showing the GamePad screen" : "");
+                        if (state_.audio) log_msg("[remote pad] the GamePad speaker plays on the phone");
                         if (cb_.connected) cb_.connected(state_);
+                    } else if (hello->video != state_.video || hello->audio != state_.audio) {
+                        // the same session; the phone switched the picture or the sound on or off
+                        state_.video = hello->video;
+                        state_.audio = hello->audio;
+                        log_msg("[remote pad] %s: GamePad screen %s, GamePad speaker %s", state_.device.c_str(),
+                                state_.video ? "on" : "off", state_.audio ? "on the phone" : "here");
+                        if (cb_.flags) cb_.flags(state_);
                     }
                     seen_ = keepalive_ = now;
                     reply(encode_welcome(state_.session, {hello->nonce, host_}));

@@ -29,6 +29,7 @@ public:
         uint32_t session = 0;
         std::string device, controller, address;
         bool video = false;          // the phone asked for the GamePad screen (kWantsVideo)
+        bool audio = false;          // ... and for the GamePad speaker (kWantsAudio)
         Input input;                 // the latest (all zero until the first Input)
         uint64_t inputs = 0;         // Inputs taken this session
     };
@@ -37,6 +38,7 @@ public:
         std::function<void(const Input&)> input;         // a newer Input from it
         std::function<void(const std::string& why)> disconnected;
         std::function<void()> keyframe;                  // the phone lost a piece of video
+        std::function<void(const Snapshot&)> flags;      // a repeated Hello changed what the phone wants
     };
 
     explicit Server(Callbacks cb, std::string host_name = {});
@@ -55,6 +57,8 @@ public:
     bool send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height);
     // Any thread: the GamePad motor's strength (protocol.h kRumble) to the connected phone
     bool send_rumble(uint8_t level);
+    // Any thread: one audio frame of the GamePad speaker (protocol.h kAudio), if the phone asked for it
+    bool send_audio(const int16_t* lr, uint16_t frames);
 
 private:
     void run();
@@ -75,6 +79,7 @@ private:
     uint32_t hello_nonce_ = 0;
     uint32_t video_frame_ = 0;       // mu_
     uint32_t rumble_seq_ = 0;        // mu_
+    uint32_t audio_seq_ = 0;         // mu_
 };
 
 }  // namespace remote_pad

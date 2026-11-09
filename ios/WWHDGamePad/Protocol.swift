@@ -12,7 +12,9 @@ enum WWGP {
     static let inputSize = 78
     static let maxName = 63
 
-    enum PacketType: UInt8 { case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7 }
+    enum PacketType: UInt8 { case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7, audio = 8 }
+    static let wantsAudio: UInt8 = 2          // a Hello's header flags
+    static let audioHeaderSize = headerSize + 8
     static let rumbleStale: TimeInterval = 0.25   // protocol.h kRumbleStaleMs
     static let wantsVideo: UInt8 = 1          // a Hello's header flags
     static let videoHeaderSize = headerSize + 22
@@ -66,9 +68,9 @@ enum WWGP {
         var payload: ArraySlice<UInt8>
     }
 
-    static func hello(nonce: UInt32, device: String, controller: String, video: Bool = false) -> [UInt8] {
+    static func hello(nonce: UInt32, device: String, controller: String, video: Bool = false, audio: Bool = false) -> [UInt8] {
         var w = Writer()
-        w.header(.hello, session: 0, flags: video ? wantsVideo : 0)
+        w.header(.hello, session: 0, flags: (video ? wantsVideo : 0) | (audio ? wantsAudio : 0))
         w.u32(nonce); w.name(device); w.name(controller)
         return w.bytes
     }
@@ -117,6 +119,31 @@ enum WWGP {
         let nonce = r.u32()
         let host = r.name()
         return r.ok ? Welcome(session: session, nonce: nonce, host: host) : nil
+    }
+
+    /// One game audio frame of the GamePad speaker (protocol.h kAudio): 48 kHz stereo.
+    struct AudioPiece {
+        var seq: UInt32
+        var frames: Int
+        var samples: [Int16]?   // interleaved left/right; nil: silence
+    }
+
+    static func audio(_ b: [UInt8]) -> (session: UInt32, piece: AudioPiece)? {
+        guard b.count >= audioHeaderSize, let (type, session) = header(b), type == .audio else { return nil }
+        var r = Reader(bytes: b, at: headerSize)
+        let seq = r.u32()
+        let silent = r.u8() & 1 != 0
+        _ = r.u8()
+        let frames = Int(r.u16())
+        guard r.ok else { return nil }
+        if silent { return (session, AudioPiece(seq: seq, frames: frames, samples: nil)) }
+        guard b.count - audioHeaderSize >= frames * 4 else { return nil }
+        var samples = [Int16](repeating: 0, count: frames * 2)
+        for i in 0..<frames * 2 {
+            let at = audioHeaderSize + 2 * i
+            samples[i] = Int16(bitPattern: UInt16(b[at]) | UInt16(b[at + 1]) << 8)
+        }
+        return (session, AudioPiece(seq: seq, frames: frames, samples: samples))
     }
 
     /// the GamePad motor's strength (protocol.h kRumble): (session, seq, level 0...1)

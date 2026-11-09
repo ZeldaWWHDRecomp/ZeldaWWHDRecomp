@@ -47,6 +47,18 @@ final class GamePadLink: ObservableObject {
     private var foreground = true
     static let resumeTimeout: TimeInterval = 5
     @Published private(set) var controllerName: String?
+    /// the GamePad speaker plays here (the Mac then plays the TV sound alone); sent as a Hello flag
+    @Published var sound = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(sound, forKey: "sound")
+            let on = sound
+            queue.async { [self] in
+                wantsAudio = on
+                if !on { speaker.reset() }
+                sendHello()  // the same session: the game switches its speaker at once
+            }
+        }
+    }
     @Published var gyro = UserDefaults.standard.object(forKey: "gyro") as? Bool ?? true {
         didSet {
             UserDefaults.standard.set(gyro, forKey: "gyro")
@@ -58,6 +70,7 @@ final class GamePadLink: ObservableObject {
     nonisolated let screen = TouchAndScreen()
     nonisolated let video = VideoReceiver()
     nonisolated let rumble = RumblePlayer()   // (link queue)
+    nonisolated let speaker = Speaker()       // (link queue)
     nonisolated private let controller: ControllerReader
     nonisolated private let motion: MotionReader
     private var browser: NWBrowser?
@@ -71,6 +84,8 @@ final class GamePadLink: ObservableObject {
     nonisolated(unsafe) private var lastWelcome = Date.distantPast
     nonisolated(unsafe) private var lastHello = Date.distantPast
     nonisolated(unsafe) private var target = ""
+    nonisolated(unsafe) private var helloDevice = "", helloController = ""
+    nonisolated(unsafe) private var wantsAudio = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true
 
     private var isActive: Bool {
         switch status { case .connecting, .connected, .lost: return true; default: return false }
@@ -190,6 +205,8 @@ final class GamePadLink: ObservableObject {
             seq = 0
             nonce = UInt32.random(in: 1...UInt32.max)
             target = label
+            helloDevice = device
+            helloController = controllerName
             lastWelcome = .distantPast
             lastHello = .distantPast
             c.stateUpdateHandler = { [weak self] state in
@@ -299,6 +316,7 @@ final class GamePadLink: ObservableObject {
             connection = nil
             session = 0
             rumble.reset()
+            speaker.reset()
         }
     }
 
@@ -310,6 +328,8 @@ final class GamePadLink: ObservableObject {
             let bytes = data.map { Array($0) } ?? []
             if let (session, piece) = WWGP.video(bytes) {
                 if session == self.session, c === self.connection { self.video.add(piece) }
+            } else if let (session, piece) = WWGP.audio(bytes) {
+                if session == self.session, c === self.connection, self.wantsAudio { self.speaker.push(piece) }
             } else if let (session, seq, level) = WWGP.rumble(bytes) {
                 if session == self.session, c === self.connection { self.rumble.set(seq: seq, level: level) }
             } else if let w = WWGP.welcome(bytes), w.nonce == self.nonce, c === self.connection {
@@ -317,6 +337,7 @@ final class GamePadLink: ObservableObject {
                 if w.session != self.session {  // a new session: from its first keyframe, motor still
                     self.video.reset()
                     self.rumble.reset()
+                    self.speaker.reset()
                 }
                 self.session = w.session
                 self.lastWelcome = Date()
@@ -326,9 +347,17 @@ final class GamePadLink: ObservableObject {
         }
     }
 
+    /// link queue: Hello with what this phone wants (the picture; the speaker if `sound` is on)
+    nonisolated private func sendHello() {
+        guard let c = connection else { return }
+        c.send(content: Data(WWGP.hello(nonce: nonce, device: helloDevice, controller: helloController,
+                                        video: true, audio: wantsAudio)), completion: .idempotent)
+    }
+
     nonisolated private func tick(_ c: NWConnection, device: String, controller name: String) {
         rumble.controller = controller.current
         rumble.tick()
+        speaker.tick()
         guard c === connection, c.state == .ready else { return }
         let now = Date()
         if session != 0 && now.timeIntervalSince(lastWelcome) > 3 {
@@ -339,7 +368,7 @@ final class GamePadLink: ObservableObject {
         if session == 0 {
             if now.timeIntervalSince(lastHello) >= 0.5 {
                 lastHello = now
-                c.send(content: Data(WWGP.hello(nonce: nonce, device: device, controller: name, video: true)), completion: .idempotent)
+                sendHello()
             }
             return
         }
