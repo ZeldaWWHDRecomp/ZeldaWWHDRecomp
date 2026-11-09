@@ -29,6 +29,7 @@ namespace story_notebook { void pad(input::PadState&, Cpu*){} void mute(input::P
 namespace story_scenes {void mute(input::PadState&){} }
 namespace story_bag { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the bag pages (not under test)
 namespace game_settings_page { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the settings page (not under test)
+namespace link_appearance { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the colour page of Link's look (not under test)
 namespace menu_sounds { void service(Cpu*){} }  // the Settings overlay's menu sounds (not under test)
 namespace player_name { void service(Cpu*){} }  // a new name for Link (not under test)
 namespace long_name { void service(Cpu*){} }    // save file names over 8 characters (not under test)

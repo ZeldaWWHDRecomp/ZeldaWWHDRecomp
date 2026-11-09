@@ -15,6 +15,7 @@
 // start of every game function body (PPC_MOD_HOOK in ppc.h).
 //
 // The mod manager builds and loads its frozen, trusted guest set before guest code runs.
+#include "link_appearance.h"
 #include "../editor/editor_game.h"
 #include "story_native_canonical_code_id.h"
 #include "../exception_report.h"
@@ -1142,7 +1143,30 @@ void svc_native_actor_profile_register(Cpu*c){
     else LOG("[guestmods] %s: registered native actor profile %04X from GameMain entry",mod.id.c_str(),unsigned(result));
     c->r[3]=uint32_t(result);
 }
+// Link's appearance v1 (link_appearance.h): the look of the save file played as its record (3..27 bytes)
+void svc_appearance_get(Cpu* c) {
+    auto& mod=owner(c);const uint32_t a=c->r[3],n=c->r[4];
+    if(link_appearance::current_file()<0){c->r[3]=uint32_t(-2);return;}
+    const std::vector<uint8_t> r=link_appearance::encode(link_appearance::current());
+    if(!a||n<r.size()||!setting_buffer(mod,a,uint32_t(r.size()))){c->r[3]=UINT32_MAX;return;}
+    memcpy(mem::ptr(a),r.data(),r.size());c->r[3]=uint32_t(r.size());
+}
+void svc_appearance_set(Cpu* c) {
+    auto& mod=owner(c);const uint32_t a=c->r[3],n=c->r[4];
+    link_appearance::Look l;
+    if(!a||n>link_appearance::kMaxRecord||!setting_buffer(mod,a,n)||!link_appearance::decode(mem::ptr(a),n,l)){c->r[3]=UINT32_MAX;return;}
+    std::string why;
+    if(!link_appearance::set_current(l,why)){c->r[3]=uint32_t(-2);return;}
+    LOG("[guestmods] %s: Link's look %s",mod.id.c_str(),l.empty()?"back to his own colours":link_appearance::to_text(l).c_str());
+    c->r[3]=0;
+}
+void svc_appearance_open(Cpu* c) {
+    auto& mod=owner(c);std::string why;
+    if(!link_appearance::request_page(why)){LOG("[guestmods] %s: colour page not asked for: %s",mod.id.c_str(),why.c_str());c->r[3]=uint32_t(-2);return;}
+    LOG("[guestmods] %s: colour page asked for",mod.id.c_str());c->r[3]=0;
+}
 const std::unordered_map<std::string, PpcFunc> kServices = {
+    {"wwhd_appearance_get",svc_appearance_get},{"wwhd_appearance_set",svc_appearance_set},{"wwhd_appearance_open",svc_appearance_open},
     {"wwhd_native_actor_profile_register",svc_native_actor_profile_register},
     {"wwhd_actor_register",svc_actor_register},{"wwhd_actor_find",svc_actor_find},{"wwhd_actor_get",svc_actor_get},
     {"wwhd_actor_combat_get",svc_actor_combat_get},{"wwhd_actor_attack_begin",svc_actor_attack_begin},{"wwhd_actor_attack_cancel",svc_actor_attack_cancel},
@@ -1729,6 +1753,9 @@ void init() {
            else LOG("[actors] borrowed walk %s: %s's %s on %s, %u frames, stride %.1f, %zu bytes",w.name,w.lender,w.clip,w.target,clip.frames,clip.stride,clip.fska.size());}}}
         story_actors::set_scene_start(story_scenes::request);
         story_actors::set_stage_enter(mod_stages::enter_stage);
+        story_actors::set_appearance_open([](const std::string& mod){std::string why;
+            if(!link_appearance::request_page(why)){LOG("[actors] %s: the colour page can't open: %s",mod.c_str(),why.c_str());return false;}
+            LOG("[actors] %s: the colour page of Link's look asked for",mod.c_str());return true;});
         mod_stages::set_story_actions(story_actors::actions);
         if(editor::launch_mode())story_actors::editor_live_kinds();  // --editor: native props, switches, doors and enemies placed live
         story_actors::install([](uint32_t addr) {

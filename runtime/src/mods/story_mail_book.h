@@ -58,6 +58,9 @@ inline constexpr uint8_t kRecordStageGroup = 25, kRecordStageMemory = 26;
 // the save file's whole name when it is longer than the game's 8 characters (long_name.h): key index * 2 + 0 / 1
 // the character's high / low byte, key 0x100 the length
 inline constexpr uint8_t kRecordLongName = 27;
+// Link's appearance for the save file (link_appearance.h): key i the record's byte i (link_appearance::encode), key
+// 0x100 its length
+inline constexpr uint8_t kRecordAppearance = 28;
 
 inline constexpr uint16_t kItemNotebook = 1;  // the story notebook
 

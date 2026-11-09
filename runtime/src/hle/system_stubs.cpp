@@ -8,6 +8,7 @@
 #include "../mods/story_notebook.h"
 #include "../mods/story_bag.h"
 #include "../mods/game_settings_page.h"
+#include "../mods/link_appearance.h"
 #include "../mods/menu_sounds_port.h"
 #include "../mods/player_name.h"
 #include "../mods/long_name.h"
@@ -123,6 +124,7 @@ HLE(vpad, VPADRead) {
     story_scenes::mute(p);
     story_bag::pad(p, c);       // then the Delivery Bag's extra pages (mod items), while open
     game_settings_page::pad(p, c);  // the settings page in the item menu (left of the items), while open
+    link_appearance::pad(p, c);     // the colour page of Link's look (mods/link_appearance.h), while open
     if (!repeat) menu_sounds::service(c);  // the Settings overlay's menu sounds, through the game (menu_sounds.h)
     player_name::service(c);  // a new name for Link (settings page or Settings window) goes in here, on the game's thread
     long_name::service(c);    // save file names over 8 characters (mods/long_name.h)

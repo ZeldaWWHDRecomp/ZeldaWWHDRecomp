@@ -600,13 +600,13 @@ target_link_libraries(guest_png_test PRIVATE ZLIB::ZLIB)
 add_test(NAME guest_png COMMAND guest_png_test "${CMAKE_SOURCE_DIR}/examples/guest-mods")
 
 # Synthetic integration tests call the real guest filesystem HLE handlers.
-add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_content_fs_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_content_fs_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_content_fs_test PRIVATE ZLIB::ZLIB Threads::Threads)
 
 # language sources: synthetic European/Japanese packs read through the guest file system (game_languages.h)
-add_executable(language_source_test runtime/tools/language_source_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
+add_executable(language_source_test runtime/tools/language_source_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(language_source_test PRIVATE runtime/src runtime/include)
 target_compile_options(language_source_test PRIVATE -UNDEBUG)
 target_link_libraries(language_source_test PRIVATE ZLIB::ZLIB Threads::Threads)
@@ -793,6 +793,23 @@ target_include_directories(link_poses_test PRIVATE runtime/include runtime/src r
 target_compile_options(link_poses_test PRIVATE -UNDEBUG)
 target_link_libraries(link_poses_test PRIVATE ZLIB::ZLIB)
 add_test(NAME link_poses COMMAND link_poses_test)
+# Link's colour masks (runtime/src/mods/link_masks.h): classification, endpoint labels, tint and the cache format on
+# synthetic textures made in the test; with WWHD_GAME_DIR set it also makes the masks of the player's own Link
+add_executable(link_masks_test runtime/tools/link_masks_test.cpp runtime/src/mods/link_masks.cpp runtime/src/mods/game_layouts.cpp
+               runtime/src/mods/item_icons.cpp runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp)
+target_include_directories(link_masks_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(link_masks_test PRIVATE -UNDEBUG)
+target_link_libraries(link_masks_test PRIVATE ZLIB::ZLIB)
+add_test(NAME link_masks COMMAND link_masks_test)
+# Link's appearance (runtime/src/mods/link_appearance.h): the record, presets, the save's story block records, each
+# save file's look (load, change, save, new game, preview), the colour page's input, the irises' endpoint labels
+add_executable(link_appearance_test runtime/tools/link_appearance_test.cpp runtime/src/mods/link_appearance.cpp
+               runtime/src/mods/link_appearance_store.cpp runtime/src/mods/link_masks.cpp runtime/src/mods/game_layouts.cpp
+               runtime/src/mods/item_icons.cpp runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp)
+target_include_directories(link_appearance_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(link_appearance_test PRIVATE -UNDEBUG)
+target_link_libraries(link_appearance_test PRIVATE ZLIB::ZLIB)
+add_test(NAME link_appearance COMMAND link_appearance_test)
 # Game progress (runtime/src/mods/game_progress.h): the count of a save in ten parts, on byte images built in the
 # test; WWHD_PROGRESS_SAVES=<cking.sav,...> also prints the count of real Quest Logs
 add_executable(game_progress_test runtime/tools/game_progress_test.cpp)
@@ -2089,30 +2106,30 @@ target_compile_options(guest_hooks_test PRIVATE -UNDEBUG)
 target_link_libraries(guest_hooks_test PRIVATE ZLIB::ZLIB ${CMAKE_DL_LIBS} Threads::Threads)
 add_test(NAME guest_hooks COMMAND guest_hooks_test)
 # letters from story mods: save record, text, services and postbox hooks on synthetic guest objects
-add_executable(story_mail_test runtime/tools/story_mail_test.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
+add_executable(story_mail_test runtime/tools/story_mail_test.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_mail_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_mail_test PRIVATE -UNDEBUG)
 add_test(NAME story_mail COMMAND story_mail_test)
 # mod charts: shared save record, services and sea chart menu hooks on synthetic guest objects
-add_executable(story_chart_test runtime/tools/story_chart_test.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
+add_executable(story_chart_test runtime/tools/story_chart_test.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_chart_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_chart_test PRIVATE -UNDEBUG)
 add_test(NAME story_chart COMMAND story_chart_test)
 # mod treasure charts (a): reserved save numbers, salvage points, spawn and registration on a synthetic registry
 add_executable(story_treasure_salvage_test runtime/tools/story_treasure_salvage_test.cpp runtime/src/mods/story_treasure_salvage.cpp
-               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
+               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_treasure_salvage_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_treasure_salvage_test PRIVATE -UNDEBUG)
 add_test(NAME story_treasure_salvage COMMAND story_treasure_salvage_test)
 # mod treasure charts, chart state: the salvage code's collect-map questions for reserved save numbers
 add_executable(story_treasure_state_test runtime/tools/story_treasure_state_test.cpp runtime/src/mods/story_treasure_state.cpp
-               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
+               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_treasure_state_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_treasure_state_test PRIVATE -UNDEBUG)
 add_test(NAME story_treasure_state COMMAND story_treasure_state_test)
 # the story notebook: quest list, save record, page navigation, services and item menu hooks
 add_executable(story_notebook_test runtime/tools/story_notebook_test.cpp runtime/src/mods/story_notebook.cpp runtime/src/mods/game_look.cpp
-               runtime/tools/story_notebook_layout_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp
+               runtime/tools/story_notebook_layout_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp
                runtime/src/mods/story_chart.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_item_buttons.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c
                ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_notebook_test PRIVATE runtime/include runtime/src runtime/src/mods)
@@ -2120,7 +2137,7 @@ target_compile_options(story_notebook_test PRIVATE -UNDEBUG)
 target_link_libraries(story_notebook_test PRIVATE ZLIB::ZLIB)
 add_test(NAME story_notebook COMMAND story_notebook_test)
 # mod items: save record, manifest items, registry, services, bag actions and the item table hooks
-add_executable(story_items_test runtime/tools/story_items_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
+add_executable(story_items_test runtime/tools/story_items_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_items_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_items_test PRIVATE -UNDEBUG)
 add_test(NAME story_items COMMAND story_items_test)
@@ -2128,14 +2145,14 @@ add_executable(story_prop_rewards_test runtime/tools/story_prop_rewards_test.cpp
 target_include_directories(story_prop_rewards_test PRIVATE runtime/src)
 target_compile_options(story_prop_rewards_test PRIVATE -UNDEBUG)
 add_test(NAME story_prop_rewards COMMAND story_prop_rewards_test)
-add_executable(story_prop_rewards_runtime_test runtime/tools/story_prop_rewards_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
+add_executable(story_prop_rewards_runtime_test runtime/tools/story_prop_rewards_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_prop_rewards_runtime_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_prop_rewards_runtime_test PRIVATE -UNDEBUG)
 target_compile_definitions(story_prop_rewards_runtime_test PRIVATE STORY_PROP_REWARDS_RUNTIME_TEST)
 add_test(NAME story_prop_rewards_runtime COMMAND story_prop_rewards_runtime_test)
 # mod items and the notebook on X/Y/R: the decisions, the menu assignment, the game's reads and the item use
 add_executable(story_item_buttons_test runtime/tools/story_item_buttons_test.cpp runtime/src/mods/story_item_buttons.cpp runtime/src/mods/story_notebook.cpp runtime/src/mods/game_look.cpp runtime/tools/story_notebook_layout_stub.cpp
-               runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_items.cpp
+               runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_items.cpp
                runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_item_buttons_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_item_buttons_test PRIVATE -UNDEBUG)
@@ -2143,7 +2160,7 @@ target_link_libraries(story_item_buttons_test PRIVATE ZLIB::ZLIB)
 add_test(NAME story_item_buttons COMMAND story_item_buttons_test)
 # mod treasure charts, the chest's item: game items, the mod item's stand-in and its get, on a synthetic save
 add_executable(story_treasure_chest_test runtime/tools/story_treasure_chest_test.cpp runtime/src/mods/story_treasure_chest.cpp
-               runtime/src/mods/story_items.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp
+               runtime/src/mods/story_items.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp
                runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_treasure_chest_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_treasure_chest_test PRIVATE -UNDEBUG)
@@ -4216,6 +4233,8 @@ add_test(NAME state_load_result COMMAND state_load_result_test)
 # off): the hook-flag table stays null and an --editor start must still come up (last: after every source
 # the targets above add to guest_hooks_test).
 target_sources(guest_hooks_test PRIVATE runtime/src/mods/map_hud.cpp)
+# Link's look: the save's records and the record format behind wwhd_appearance_* (the colour page is stubbed in the test)
+target_sources(guest_hooks_test PRIVATE runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp)
 get_target_property(GUEST_HOOKS_TEST_SOURCES guest_hooks_test SOURCES)
 add_executable(guest_mods_no_hooks_test ${GUEST_HOOKS_TEST_SOURCES})
 target_compile_definitions(guest_mods_no_hooks_test PRIVATE GUEST_HOOKS_TEST_NO_HOOKS=1)
