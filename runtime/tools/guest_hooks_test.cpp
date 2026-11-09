@@ -315,6 +315,7 @@ void set_game_calls(void (*)(Cpu*,uint32_t),uint32_t (*)(Cpu*,uint32_t,std::init
 void set_scratch_memory(uint32_t){}
 void set_scene_start(std::function<bool(const std::string&,const std::string&)>){}
 void set_stage_enter(std::function<bool(const std::string&,const std::string&,unsigned,unsigned)>){}
+void set_appearance_open(std::function<bool(const std::string&)>){}
 // like the real install: claims a game function, which marks its byte in the hook-flag table
 static unsigned installs=0;
 void install(const std::function<std::string(uint32_t)>&,const std::function<void(uint32_t,void(*)(Cpu*))>& replace){++installs;replace(0x02000000,[](Cpu*){});}
