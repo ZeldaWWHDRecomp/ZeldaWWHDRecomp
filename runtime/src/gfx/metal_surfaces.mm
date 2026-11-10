@@ -1,3 +1,4 @@
+#include "vulkan/bc_reference.h"  // (the CPU decoder; no Vulkan in it)
 #include "background_shaders.h"
 #include "gfx/render_mips.h"
 #include "gfx/renderer.h"
@@ -779,6 +780,39 @@ static void check_texture(Surface* s) {
 }
 
 // ---------------------------------------------------------------- upload (detile + convert)
+#ifdef WWHD_ETCPAK
+}  // namespace gfx
+#include "ProcessRGB.hpp"  // etcpak
+namespace gfx {
+// BC1-3 blocks (bw x bh per slice, detiled) re-encoded as EAC_RGBA8 blocks (formats.h etc2): each decoded to BGRA
+// (etcpak's order), the slice encoded as one image of whole blocks. Empty when the blocks do not add up.
+static std::vector<uint8_t> etc2_from_bc(const std::vector<uint8_t>& blocks, uint32_t bw, uint32_t bh, uint32_t slices,
+                                         uint16_t mode) {
+    const unsigned type = mode & 7;
+    const size_t bcBytes = gfxvk::bc::block_bytes(type), perSlice = size_t(bw) * bh;
+    if (!bw || !bh || blocks.size() != perSlice * slices * bcBytes) return {};
+    const uint32_t width = bw * 4;
+    std::vector<uint32_t> image(size_t(width) * bh * 4);
+    std::vector<uint8_t> out(perSlice * slices * 16);
+    uint8_t texels[64];
+    for (uint32_t z = 0; z < slices; z++) {
+        for (uint32_t by = 0; by < bh; by++)
+            for (uint32_t bx = 0; bx < bw; bx++) {
+                gfxvk::bc::decode_block(blocks.data() + ((size_t)z * perSlice + (size_t)by * bw + bx) * bcBytes, type,
+                                        (mode & 256) != 0, texels);
+                for (uint32_t n = 0; n < 16; n++) {
+                    const uint8_t* p = texels + n * 4;
+                    image[(size_t)(by * 4 + n / 4) * width + bx * 4 + n % 4] =
+                        uint32_t(p[2]) | uint32_t(p[1]) << 8 | uint32_t(p[0]) << 16 | uint32_t(p[3]) << 24;
+                }
+            }
+        CompressEtc2Rgba(image.data(), reinterpret_cast<uint64_t*>(out.data() + (size_t)z * perSlice * 16),
+                         uint32_t(perSlice), width, true);
+    }
+    return out;
+}
+#endif
+
 static void decode_level(Surface* s, uint32_t level, uint32_t base, std::vector<uint8_t>& out, uint32_t& outW,
                          uint32_t& outH, uint32_t& outSlices) {
     const FormatInfo& f = s->fmt;
@@ -877,6 +911,28 @@ void upload_surface(Surface* s) {
         decode_level(s, level, base, data, w, h, slices);
         if (checkMips) levelsForCheck.push_back(data);
         uint32_t bw = f.compressed ? (w + 3) / 4 : w, bh = f.compressed ? (h + 3) / 4 : h;
+        // rows of the copy below: blocks, or the decoded texels of a BC format the GPU cannot sample (formats.h)
+        uint32_t rowBytes = bw * f.hostBytesPerBlock, rows = bh, copyW = f.compressed ? bw * 4 : w, copyH = f.compressed ? bh * 4 : h;
+        if (f.decodeBC && f.etc2) {
+            data = etc2_from_bc(data, bw, bh, slices, f.bcMode);
+            if (data.empty()) continue;
+            rowBytes = bw * 16;  // (copyW / copyH: whole blocks, as BC)
+        } else if (f.decodeBC) {
+            try {
+                data = gfxvk::bc::decode(data, w, h, slices, f.bcMode);
+            } catch (const std::exception&) {
+                continue;  // (a level whose blocks do not add up: left as it was)
+            }
+            // BC4 / BC5: the decoder's RGBA packed to the R8 / RG8 texture's channels
+            const uint32_t channels = (f.bcMode & 7) == 4 ? 1 : (f.bcMode & 7) == 5 ? 2 : 4;
+            if (channels < 4) {
+                const size_t n = data.size() / 4;
+                for (size_t i = 0; i < n; i++)
+                    for (uint32_t c = 0; c < channels; c++) data[i * channels + c] = data[i * 4 + c];
+                data.resize(n * channels);
+            }
+            rowBytes = w * channels, rows = h, copyW = w, copyH = h;
+        }
         NSUInteger stagingOffset = 0;
         if (!texture_staging(data.data(), data.size(), &staging, &stagingOffset)) {
             staging = [R.device newBufferWithBytes:data.data() length:data.size() options:MTLResourceStorageModeShared];
@@ -884,13 +940,13 @@ void upload_surface(Surface* s) {
         }
         bool is3D = s->tex.textureType == MTLTextureType3D;
         uint32_t layers = is3D ? 1 : (s->tex.textureType == MTLTextureTypeCube ? 6 : (uint32_t)s->tex.arrayLength);
-        uint32_t perSlice = bw * bh * f.hostBytesPerBlock;
+        uint32_t perSlice = rowBytes * rows;
         for (uint32_t z = 0; z < (is3D ? 1 : std::min(slices, layers)); z++) {
             [blit copyFromBuffer:staging
                      sourceOffset:stagingOffset + (NSUInteger)z * perSlice
-                sourceBytesPerRow:bw * f.hostBytesPerBlock
+                sourceBytesPerRow:rowBytes
               sourceBytesPerImage:perSlice
-                       sourceSize:MTLSizeMake(f.compressed ? bw * 4 : w, f.compressed ? bh * 4 : h, is3D ? slices : 1)
+                       sourceSize:MTLSizeMake(copyW, copyH, is3D ? slices : 1)
                         toTexture:s->tex
                  destinationSlice:z
                  destinationLevel:level

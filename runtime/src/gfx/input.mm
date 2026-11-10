@@ -15,11 +15,17 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 // Q = L, E = R, Left Shift = ZL, C = ZR, Enter = +, Tab = -, H = Home, 1-4 = D-pad up/down/left/right,
 // X = L-stick click, V = R-stick click; controllers use button positions (Xbox "A" = Wii U B),
 // switchable to by-label with input_map::FaceLayout (issue #78).
+#ifdef WWHD_TVOS
+// Apple TV: controllers, haptics and motion as on the Mac; no keyboard monitor, the app counts as active
+#import <UIKit/UIKit.h>
+#include "../platform/keycodes.h"
+#else
 #import <AppKit/AppKit.h>
+#include <Carbon/Carbon.h>  // kVK_* key codes
+#endif
 #import <GameController/GameController.h>
 #import <CoreHaptics/CoreHaptics.h>
 #import <QuartzCore/QuartzCore.h>  // CACurrentMediaTime
-#include <Carbon/Carbon.h>  // kVK_* key codes
 
 #include <cmath>
 #include <atomic>
@@ -472,8 +478,12 @@ static std::string pad_name(GCController* c) {
 
 // every mappable controller input, 0..1, the strongest over all connected controllers
 void controller_values(float* v) {
+#ifdef WWHD_TVOS
+    g_gameplay_focus.store(true, std::memory_order_relaxed);
+#else
     g_gameplay_focus.store(NSApp.isActive && NSApp.keyWindow && !NSApp.modalWindow &&
                           !NSApp.keyWindow.sheetParent, std::memory_order_relaxed);
+#endif
     using namespace input_map;
     for (int i = 0; i < kPadCount; i++) v[i] = 0;
     for (const auto& [id, d] : devices_values())
@@ -736,6 +746,7 @@ void shutdown_rumble() {
 // so it does not touch CoreHaptics; the engines stop with the process.
 void stop_rumble_now() {}
 
+#ifndef WWHD_TVOS
 // modifier keys arrive as flagsChanged; the device-dependent bits tell left from right
 static bool modifier_down(uint16_t code, NSEventModifierFlags f) {
     switch (code) {
@@ -823,6 +834,10 @@ static void start_test_keys() {
     }];
 }
 
+#else
+static void start_test_keys() {}
+#endif
+
 // ---- motion sensors (motion/motion.h) ----
 // GameController.framework reports the gyro and accelerometer of DualSense, DualShock 4, Switch Pro and
 // Joy-Con controllers (macOS 11+). Its frame (as CoreMotion's, for a controller lying flat): x right, y
@@ -896,6 +911,7 @@ void init() {
 #endif
     remote_pad::set_host_supported();  // Settings > Controls offers the iPhone GamePad
     remote_pad::start_from_env();      // WWHD_REMOTE_PAD=1 keeps it on (else the setting decides)
+#ifndef WWHD_TVOS
     NSEventMask mask = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
         // keep Cmd-Q etc.; in an overlay text field the editing shortcuts (Cmd+A/C/V/X/Z) go to the overlay
@@ -953,6 +969,7 @@ void init() {
                                                       object:nil queue:nil usingBlock:^(NSNotification*) {
         release_keys();
     }];
+#endif
     apply_background_controllers();  // before discovery; the poll below follows later changes
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
@@ -980,7 +997,11 @@ void init() {
         // one gate per controller as on the SDL host (overlay/release_gate.h, issue #153); the overlay
         // polls the Home / Select shortcut on its frame (and the platform shortcuts: an input one took
         // counts as captured, overlay/extensions.h)
+#ifdef WWHD_TVOS
+        g_window_focus.store(true, std::memory_order_relaxed);
+#else
         g_window_focus.store(NSApp.isActive, std::memory_order_relaxed);
+#endif
         apply_background_controllers();
         static overlay::DeviceGates<uintptr_t> gates;
         std::vector<GCController*> pads;
@@ -1403,6 +1424,12 @@ PadState read() {
     return s;
 }
 
+#ifdef WWHD_TVOS
+// (the in-game text prompt of the settings overlay is the normal path; this fallback declines)
+void prompt_text(const std::u16string&, int, std::function<void(bool ok, std::u16string text)> done) {
+    done(false, std::u16string());
+}
+#else
 void prompt_text(const std::u16string& initial, int max_len,
                  std::function<void(bool ok, std::u16string text)> done) {
     NSString* init = [NSString stringWithCharacters:(const unichar*)initial.data() length:initial.size()];
@@ -1433,5 +1460,6 @@ void prompt_text(const std::u16string& initial, int max_len,
         else finish([alert runModal]);
     });
 }
+#endif
 
 }  // namespace input

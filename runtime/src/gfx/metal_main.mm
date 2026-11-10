@@ -5,7 +5,12 @@
 #include "interp.h"
 #include "gfx/depth_peek.h"
 // Metal renderer: device, window, presentation, clears and copies.
+#ifdef WWHD_TVOS
+#import <Foundation/Foundation.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#else
 #import <AppKit/AppKit.h>
+#endif
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
@@ -276,7 +281,9 @@ void init() {
     LOG("[gfx] Metal device: %s", R.device.name.UTF8String);
 }
 
+#ifndef WWHD_TVOS  // (tvOS: display.mm's run_appkit_loop is the main loop, as here)
 void run_main_loop() { [NSApp run]; }
+#endif
 
 // the MTLDevice's name, for reports (renderer.h Backend::device); "" before init
 std::string device_name() { return R.device ? std::string(R.device.name.UTF8String) : std::string(); }

@@ -2041,6 +2041,21 @@ static CacheScan cache_scan(const std::string& path) {
 }
 
 // load and replay the recipes; runs once on the render thread before the first draw
+// Known pipelines are built in the background after the replay, a few per frame, so none stalls a draw. On an
+// Apple TV that is every recorded pipeline (about 12,000 with a full shader prebuild, some 150 MB) under a
+// fixed memory limit: there they are built when first drawn. WWHD_BG_PIPELINES=1 / 0 decides elsewhere.
+static bool background_pipelines() {
+    static const bool on = [] {
+        if (const char* e = getenv("WWHD_BG_PIPELINES"); e && *e) return strcmp(e, "0") != 0;
+#ifdef WWHD_TVOS
+        return false;
+#else
+        return true;
+#endif
+    }();
+    return on;
+}
+
 static void cache_load();
 static void cache_load_once() {
     static bool loaded = (cache_load(), true);
@@ -2112,7 +2127,7 @@ static void cache_load() {
                 if (repeated()) continue;
                 PipelineRecipe r;
                 g_user_pipelines.insert(h);
-                if (get(p, end, r) && g_known_pipelines.insert(h).second && !recordOnly) {
+                if (get(p, end, r) && g_known_pipelines.insert(h).second && !recordOnly && background_pipelines()) {
                     g_pending_pipelines.push_back(r);
                     pipelines++;
                 }
@@ -2322,6 +2337,18 @@ void report_skips() {
         (unsigned long long)g_stat_staging_buffers, g_stat_staging_buffer_bytes / 1048576.0);
     g_stat_staging_pool = g_stat_staging_pool_bytes = g_stat_staging_buffers = g_stat_staging_buffer_bytes = 0;
     g_stat_full_checks = g_stat_uploads = g_stat_invalidates = g_stat_invalidated_surfaces = g_stat_hashed_bytes = 0;
+    if (!bc_textures_supported()) {
+        // a GPU without BC textures (formats.h decodeBC): what the decoded ones take, by BC type, of all surfaces
+        double bc[6] = {}, all = 0;
+        for (const auto& [addr, surf] : R.surfaces) {
+            if (!surf->tex) continue;
+            const double mb = surf->tex.allocatedSize / 1048576.0;
+            all += mb;
+            if (surf->fmt.decodeBC) bc[surf->fmt.bcMode & 7] += mb;
+        }
+        LOG("[gfx] decoded BC textures: BC1 %.0f MiB, BC2 %.0f, BC3 %.0f, BC4 %.0f, BC5 %.0f; all surfaces %.0f MiB",
+            bc[1], bc[2], bc[3], bc[4], bc[5], all);
+    }
     for (int k = 0; k < kRangeKinds; k++) {
         size_t dynamicRanges = 0;
         for (auto& [key, r] : g_guest_ranges[k]) dynamicRanges += r.dynamic;
@@ -3051,7 +3078,7 @@ bool headstart_queue_pipeline(const uint8_t* raw, size_t size) {
     if (size != sizeof(PipelineRecipe)) return false;
     PipelineRecipe r;
     memcpy(&r, raw, size);
-    if (g_known_pipelines.insert(hash_bytes(raw, size)).second) g_pending_pipelines.push_back(r);
+    if (g_known_pipelines.insert(hash_bytes(raw, size)).second && background_pipelines()) g_pending_pipelines.push_back(r);
     return true;
 }
 

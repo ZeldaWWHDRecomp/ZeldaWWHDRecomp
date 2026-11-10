@@ -132,6 +132,11 @@ void Server::end_session(const char* why) {
     if (cb_.disconnected) cb_.disconnected(why);
 }
 
+void Server::set_host(const std::string& name) {
+    std::lock_guard lk(mu_);
+    host_ = name;
+}
+
 bool Server::send_rumble(uint8_t level) {
     sockaddr_storage to{};
     socklen_t to_len = 0;

@@ -204,7 +204,9 @@ static void install_crash_handler() {
     stack_t ss{};
     ss.ss_sp = altstack;
     ss.ss_size = sizeof altstack;
+#ifndef WWHD_TVOS  // (not on tvOS: the handlers run on the faulting thread's stack)
     sigaltstack(&ss, nullptr);
+#endif
     struct sigaction sa{};
     sa.sa_sigaction = crash_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
@@ -477,7 +479,12 @@ static void enter_data_folder(int argc, char** argv) {
 
 extern "C" void synthetic_game_frame(Cpu*, PpcFunc);
 
+#ifdef WWHD_TVOS
+// Apple TV: UIKit owns the main thread; gfx/host_tvos.mm's main() starts this on a thread of its own
+int wwhd_main(int argc, char** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
     // setup's start check of a newly built game, before it replaces the one before (tools/installer/setup.py
     // build_identity): proves the binary starts here (its libraries load) and says what it is, then exits.
     // The pipeline identity keys the prepared shaders (pipeline_runtime_identity.h).

@@ -50,6 +50,8 @@ bool replace(const std::string& executable,std::string& error){
     STARTUPINFOW si{};si.cb=sizeof(si);PROCESS_INFORMATION pi{};
     if(!CreateProcessW(nullptr,command.data(),nullptr,nullptr,FALSE,0,nullptr,nullptr,&si,&pi)){error="Cannot restart the game";return false;}
     CloseHandle(pi.hThread);CloseHandle(pi.hProcess);std::_Exit(0);
+#elif defined(WWHD_TVOS)
+    (void)args;error="Code mods need a restart, which Apple TV apps cannot do";return false;
 #else
     std::vector<char*> argv;for(auto& a:args)argv.push_back(a.data());argv.push_back(nullptr);
     execv(executable.c_str(),argv.data());error="Cannot restart the game (error "+std::to_string(errno)+")";return false;

@@ -30,7 +30,11 @@
 //   WWHD_TEST_DRC_KEY=3500,3700          frames at which Cmd+G (show/hide GamePad screen) is simulated
 //   WWHD_HIDDEN_WINDOWS=1                test runs: the windows are never put on screen (nothing pops up;
 //                                        frame / present dumps still work, the drawables are not presented)
+#ifdef WWHD_TVOS
+#import <UIKit/UIKit.h>  // Apple TV: one full-screen view (host_tvos.mm); no windows, menus or Dock icon
+#else
 #import <AppKit/AppKit.h>
+#endif
 #import <QuartzCore/QuartzCore.h>
 
 #include "../exception_report.h"
@@ -67,6 +71,7 @@
 #include "../dsweep.h"
 #include "hidden_presentation.h"
 
+#ifndef WWHD_TVOS
 // The game's own icon in the Dock: meta/iconTex.tga of the game folder (uncompressed 32-bit TGA,
 // 128x128 in Wind Waker HD), as the SDL host does for its windows. Nothing happens without it.
 static void set_dock_icon() {
@@ -92,6 +97,7 @@ static void set_dock_icon() {
     [image addRepresentation:rep];
     NSApp.applicationIconImage = image;
 }
+#endif
 
 namespace mods { bool mouse_captured(); bool mouse_camera(); }
 
@@ -100,9 +106,11 @@ namespace gfx {
 static float nominal_w(const Screen& s) { return s.tex ? float(s.tex.width) / s.dyn : 0.0f; }
 static float nominal_h(const Screen& s) { return s.tex ? float(s.tex.height) / s.dyn : 0.0f; }
 extern Renderer R;
+#ifndef WWHD_TVOS
 void install_menu(NSWindow* tv);  // menu.mm
 Class tv_window_class();           // quit_prompt.mm: closing the TV window quits (after asking)
 void install_quit_prompt(NSWindow* tv);
+#endif
 bool fxaa_enabled();
 void dump_texture(id<MTLTexture> src, const char* name, bool async, bool srgbEncode);
 
@@ -121,7 +129,12 @@ static NSMutableDictionary* g_settings;
 static NSString* settings_path() {
     if (const char* e = getenv("WWHD_DISPLAY_SETTINGS")) return @(e);
     if (getenv("WWHD_NO_HOST_INPUT")) return nil;  // test runs leave the user's choices alone
+#ifdef WWHD_TVOS  // (an Apple TV app keeps its files in its Caches folder)
+    return [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
+        stringByAppendingPathComponent:@"wwhd/display.plist"];
+#else
     return [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Application Support/wwhd/display.plist"];
+#endif
 }
 static void load_settings() {
     NSString* p = settings_path();
@@ -177,6 +190,7 @@ static void load_options() {
 
 }  // namespace gfx
 
+#ifndef WWHD_TVOS
 // ---------------------------------------------------------------- views
 // GamePad window: the mouse stands in for the touch panel
 @interface WWDrcView : NSView
@@ -321,9 +335,11 @@ static void load_options() {
     input::set_touch(false, x, y);
 }
 @end
+#endif  // !WWHD_TVOS
 
 namespace gfx {
 
+#ifndef WWHD_TVOS
 // ---------------------------------------------------------------- windows
 static NSWindow* g_tv_window = nil;
 static NSWindow* g_drc_window = nil;
@@ -630,6 +646,69 @@ static void create_windows() {
     }
 }
 
+#else  // WWHD_TVOS
+// ---------------------------------------------------------------- the Apple TV's screen
+// One full-screen view, made by the UIKit host (host_tvos.mm), which also keeps its layer's drawable at the
+// screen's pixel size. The GamePad picture has no window of its own: picture-in-picture or GamePad only.
+CAMetalLayer* host_tvos_layer();  // host_tvos.mm (main thread)
+static CAMetalLayer* g_layers[2];
+
+bool tv_fullscreen() { return true; }
+
+static CAMetalLayer* attach_layer(int i) {
+    if (i != 0) return nil;
+    __block CAMetalLayer* layer = nil;
+    void (^get)(void) = ^{ layer = host_tvos_layer(); };
+    if ([NSThread isMainThread]) get();
+    else dispatch_sync(dispatch_get_main_queue(), get);
+    g_layers[0] = layer;
+    return layer;
+}
+
+static void attach_metal_layers() {
+    R.drc.layer = nil;
+    R.drc.visible = false;
+    CAMetalLayer* layer = attach_layer(0);
+    R.tv.layer = layer;
+    if (!layer) return;
+    void (^setup)(void) = ^{
+        layer.device = R.device;
+        layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+        layer.framebufferOnly = YES;
+        layer.maximumDrawableCount = 3;
+    };
+    if ([NSThread isMainThread]) setup();
+    else dispatch_sync(dispatch_get_main_queue(), setup);
+    R.tv.visible = true;
+}
+
+static void apply_drc_window() {}
+bool drc_window_available() { return g_mode == kDrcPip || g_mode == kDrcAuto || g_mode == kDrcGamePad; }
+bool drc_window_shown() { return drc_screen_shown(false); }
+void show_drc_window(bool on) {
+    display_show_drc(on);
+    LOG("[display] GamePad screen %s (%s)", on ? "shown" : "hidden", kModeNames[g_mode]);
+}
+void toggle_drc_screen() { show_drc_window(!drc_window_shown()); }
+void set_drc_mode(int m) {
+    display_set_mode(m);
+    save_options();
+    LOG("[display] GamePad screen mode: %s", kModeNames[m]);
+}
+
+static void create_windows() {
+    static bool done = false;
+    if (done) return;
+    done = true;
+    load_settings();
+    load_options();
+    void host_tvos_load_graphics();  // host_tvos.mm: the graphics options saved in the same file
+    host_tvos_load_graphics();
+    if (g_mode == kDrcWindow) g_mode = kDrcAuto;  // (no second window on a TV: automatic picture-in-picture)
+    g_shown = !input::pro_controller();
+}
+#endif  // WWHD_TVOS
+
 // ---------------------------------------------------------------- presentation shader
 static const char* kPresentShader = R"(
 #include <metal_stdlib>
@@ -741,6 +820,13 @@ void display_start_input() {
     static bool done = false;
     if (done) return;
     done = true;
+#ifdef WWHD_TVOS
+    // (its controller poll is a main run loop timer: tvOS starts the game on another thread, host_tvos.mm)
+    if (![NSThread isMainThread]) {
+        dispatch_sync(dispatch_get_main_queue(), ^{ input::init(); });
+        return;
+    }
+#endif
     input::init();
 }
 
@@ -771,13 +857,21 @@ void display_vulkan_started() {
 }
 void display_detach() {
     for (int i = 0; i < 2; i++) {
+#ifndef WWHD_TVOS
         if (g_windows[i]) [g_windows[i].contentView setLayer:nil];
+#endif
         g_layers[i] = nil;
     }
 }
 CAMetalLayer* display_layer(int i) { return g_layers[i]; }
 
 // the main thread's event loop, for either renderer
+#ifdef WWHD_TVOS
+// Apple TV: UIKit runs the main thread (host_tvos.mm); the thread that started the game waits here
+void run_appkit_loop() {
+    for (;;) pause();
+}
+#else
 void run_appkit_loop() {
     // orderly exit (Quit, Cmd+Q): the renderer writes its caches (Vulkan pipeline / SPIR-V caches)
     [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationWillTerminateNotification object:nil queue:nil
@@ -826,10 +920,12 @@ void run_appkit_loop() {
     }
     [NSApp run];
 }
+#endif
 
 // a message on the TV window that does not stop the game (renderer fallback); test runs only log it
 void show_startup_notice(const std::string& title, const std::string& text) {
     LOG("[display] %s: %s", title.c_str(), text.c_str());
+#ifndef WWHD_TVOS
     if (getenv("WWHD_NO_HOST_INPUT")) return;
     NSString* t = @(title.c_str()), *m = @(text.c_str());
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -841,6 +937,7 @@ void show_startup_notice(const std::string& title, const std::string& text) {
         if (g_tv_window) [a beginSheetModalForWindow:g_tv_window completionHandler:nil];
         else [a runModal];
     });
+#endif
 }
 
 // ---------------------------------------------------------------- composition
@@ -957,11 +1054,13 @@ static void present_to_layer(Screen& scr, void (^draw)(id<MTLTexture>)) {
     if (scr.layer.pixelFormat != want) scr.layer.pixelFormat = want;
     // Fast Forward retains the accelerated guest-vsync schedule, but must not also
     // wait for the physical display (90/120 logic frames/s on a 60 Hz display).
+#ifndef WWHD_TVOS  // (tvOS layers always wait for the display)
     const bool sync = !gx2::uncapped() && !mods::fast_forward_active();
     if (scr.layer.displaySyncEnabled != sync) {
         scr.layer.displaySyncEnabled = sync;
         if (&scr == &R.tv) interp::set_present_vsync(sync);
     }
+#endif
     id<CAMetalDrawable> drawable = scr.visible ? [scr.layer nextDrawable] : nil;
     if (!drawable) return;
     draw(drawable.texture);
@@ -1133,6 +1232,11 @@ void display_set_pip(int anchor, float size, float opacity) {
     g_pip_opacity = pip_clamp_opacity(opacity);
     save_options();
 }
+#ifdef WWHD_TVOS
+void display_set_tv_fullscreen(bool) {}
+void* display_tv_window() { return nullptr; }
+bool drc_overlay_hit(void*, double, double) { return false; }
+#else
 void display_set_tv_fullscreen(bool on) {
     if (g_tv_window && is_fullscreen(g_tv_window) != on) [g_tv_window toggleFullScreen:nil];
 }
@@ -1153,9 +1257,11 @@ bool drc_overlay_hit(void* window, double wx, double wy) {
     return g_one_screen_off_tv.load() && tv_pointer::wanted(tv_pointer::kOwnerTalk) &&
            tv_pointer::picture_takes_click(tv_pointer::left_button_bound(), mods::mouse_camera()) && game_picture_hit(nx, ny, &tx, &ty, &aspect);
 }
+#endif
 
 // ---------------------------------------------------------------- Display menu
 }  // namespace gfx
+#ifndef WWHD_TVOS
 
 @interface WWDisplayMenu : NSObject <NSMenuItemValidation, NSMenuDelegate>
 @end
@@ -1280,3 +1386,4 @@ void install_display_menu(NSMenu* bar) {
 }
 
 }  // namespace gfx
+#endif  // !WWHD_TVOS

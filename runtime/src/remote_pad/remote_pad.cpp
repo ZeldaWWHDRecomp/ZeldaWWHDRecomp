@@ -22,6 +22,7 @@
 #ifdef __APPLE__
 #include <arpa/inet.h>
 #include <dns_sd.h>
+#include <sys/select.h>
 #endif
 
 void log_msg(const char* fmt, ...);
@@ -53,16 +54,18 @@ std::vector<TextInput> g_text_inputs;              // g_text_mu
 DNSServiceRef g_bonjour = nullptr;
 #endif
 
+// "" when the system has no useful host name (an Apple TV's is "localhost"): Bonjour then registers the
+// device's own name ("Apple TV"), and the server takes it from the registration
 std::string host_name() {
 #ifndef _WIN32
     char buf[256] = {};
-    if (gethostname(buf, sizeof buf - 1) == 0 && buf[0]) {
+    if (gethostname(buf, sizeof buf - 1) == 0 && buf[0] && strncmp(buf, "localhost", 9) != 0) {
         std::string s = buf;
         if (const size_t dot = s.find('.'); dot != std::string::npos) s.resize(dot);  // "Mac-mini.local" -> "Mac-mini"
         return s;
     }
 #endif
-    return "Wind Waker HD";
+    return "";
 }
 
 void on_input(const Input& in) {
@@ -146,6 +149,14 @@ bool take_paired_changed(std::string& saved) {
 }
 
 namespace {
+#ifdef __APPLE__
+void DNSSD_API registered(DNSServiceRef, DNSServiceFlags, DNSServiceErrorType e, const char* name, const char*, const char*, void*) {
+    if (e != kDNSServiceErr_NoError || !name || !*name || !g_server) return;
+    g_server->set_host(name);  // (g_mu held: start_locked)
+    log_msg("[remote pad] advertised as %s", name);
+}
+#endif
+
 void start_locked(uint16_t port) {
     if (g_server) return;
     const std::string name = host_name();
@@ -165,19 +176,28 @@ void start_locked(uint16_t port) {
             std::lock_guard lk(g_text_mu);
             if (g_text_inputs.size() < 64) g_text_inputs.push_back(t);
         },
-    }, name, &g_pairing);
+    }, name.empty() ? "Wind Waker HD" : name, &g_pairing);
     if (!g_server->start(port)) { g_server.reset(); return; }
     g_server->set_text(g_text);
     g_server->set_boot_image(g_boot_image);
     log_msg("[remote pad] waiting for the iPhone GamePad on UDP port %u (%s)", (unsigned)g_server->port(),
             g_env ? "WWHD_REMOTE_PAD" : "Settings > Controls > iPhone GamePad");
 #ifdef __APPLE__
-    // Registration needs no reply processing: mDNSResponder keeps the record while the ref is open.
-    const DNSServiceErrorType err = DNSServiceRegister(&g_bonjour, 0, 0, name.c_str(), kBonjourType, nullptr, nullptr,
-                                                       htons(g_server->port()), 0, nullptr, nullptr, nullptr);
+    // mDNSResponder keeps the record while the ref is open. Without a name of our own (an Apple TV) it
+    // registers the device's, and its one reply says which: the Welcome then carries it too.
+    const DNSServiceErrorType err = DNSServiceRegister(&g_bonjour, 0, 0, name.empty() ? nullptr : name.c_str(), kBonjourType,
+                                                       nullptr, nullptr, htons(g_server->port()), 0, nullptr,
+                                                       name.empty() ? DNSServiceRegisterReply(&registered) : nullptr, nullptr);
     if (err != kDNSServiceErr_NoError) {
         g_bonjour = nullptr;
         log_msg("[remote pad] Bonjour advertisement failed (%d): enter this computer's address on the phone", (int)err);
+    } else if (name.empty()) {
+        const int fd = DNSServiceRefSockFD(g_bonjour);
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        timeval wait{2, 0};
+        if (select(fd + 1, &fds, nullptr, nullptr, &wait) > 0) DNSServiceProcessResult(g_bonjour);
     }
 #endif
 }
