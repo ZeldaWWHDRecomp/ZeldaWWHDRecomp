@@ -13,9 +13,19 @@ on:
       - "docs/mod-editor.md"
   pull_request:
 
+# A new push to a pull request cancels its older run; pushes to branches (devel's saves the compiler cache)
+# always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: windows-latest
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}   # paths relative to the checkout: hits wherever it is
+      CCACHE_MAXSIZE: 2G
     defaults:
       run:
         shell: msys2 {0}
@@ -39,23 +49,45 @@ jobs:
             mingw-w64-clang-x86_64-sdl3
             mingw-w64-clang-x86_64-lz4
             mingw-w64-clang-x86_64-zlib
+            mingw-w64-clang-x86_64-ccache
+
+      # Compiled objects from earlier runs: this branch's newest, else devel's (a pull request reads its base
+      # branch's caches). Only pushes to devel and main save one (below), so pull requests cannot evict them.
+      - name: Restore compiler cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .ccache
+          key: ccache-windows-${{ github.sha }}
+          restore-keys: ccache-windows-
 
       - name: Configure
         run: |
           python tools/recomp/stubgen.py build/gen-stub
           cmake -S . -B build/windows -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DGEN_DIR="$PWD/build/gen-stub"
 
       - name: Build
-        run: cmake --build build/windows
+        run: |
+          ccache --zero-stats
+          cmake --build build/windows
+          ccache --show-stats
+
+      - name: Save compiler cache
+        if: always() && github.event_name == 'push' && (github.ref == 'refs/heads/devel' || github.ref == 'refs/heads/main')
+        uses: actions/cache/save@v5
+        with:
+          path: .ccache
+          key: ccache-windows-${{ github.sha }}
 
       - name: Unit tests
-        run: ctest --test-dir build/windows --output-on-failure
+        run: ctest --test-dir build/windows --output-on-failure -j "$(nproc)"
 
       # The in-app randomizer's command (tools/rando: TWWHD Randomizer 1.2.0); no game files
       - name: Randomizer command
         run: |
-          cmake -S tools/rando -B build/rando -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release
+          cmake -S tools/rando -B build/rando -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/rando
           python tools/rando/test_rando_cli.py build/rando
           python tools/rando/test_places.py

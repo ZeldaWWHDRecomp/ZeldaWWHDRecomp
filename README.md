@@ -336,6 +336,32 @@ libxml2 and embeds an application manifest Windows refuses to start ("side-by-si
 incorrect"); Microsoft's `link.exe` merges it correctly. CMake links clang's compiler-rt builtins on
 the MSVC ABI (128-bit division, `__udivti3`, which no MSVC library provides on ARM64).
 
+### Unit tests and faster rebuilds
+
+The unit tests can run in parallel, as CI runs them (use your core count; `-j 8` here):
+
+```sh
+ctest --test-dir build/linux --output-on-failure -j 8
+```
+
+Each test gets its own user folder. A test's temporary files need names no other test or process
+uses: a fixed name in the temp folder breaks under `-j`. A test that checks timing (a wake-up or a
+stop within some milliseconds, a sleep against a deadline) fails on a busy CPU without a bug, so
+add it to `wwhd_serial_timing_tests` in `CMakeLists.txt` and it runs alone. A test that takes
+minutes goes in `wwhd_slow_tests_first`, so it starts first rather than holding up the end of the run.
+
+Most of a build is compiling, and the generated game code is large. With
+[ccache](https://ccache.dev) installed, add these to the first `cmake` command to reuse earlier
+compiles, including from other build folders:
+
+```sh
+-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+```
+
+With several checkouts, set ccache's `base_dir` to a folder above them all
+(`ccache --set-config base_dir=$HOME/src`) so they share compiles. In CI, a full Linux build went
+from about an hour to under a minute with a filled cache.
+
 ### Android (build it yourself)
 
 The Android port is by [rhemfur](https://github.com/rhemfur) (issue #23): the Vulkan renderer on

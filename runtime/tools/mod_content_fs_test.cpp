@@ -17,8 +17,11 @@
 #include "mods/content.h"
 #ifdef _WIN32
 #include <windows.h>
+#define wwhd_test_pid GetCurrentProcessId
 #else
 #include <sys/mman.h>
+#include <unistd.h>
+#define wwhd_test_pid getpid
 #endif
 // hle/fs.cpp reports opened language packs to the right-to-left text support (not under test)
 namespace rtl_text { void language_pack_opened(const std::string&) {} }
@@ -56,7 +59,8 @@ int main(int argc,char** argv){
  auto memory=mmap(address,memory_size,PROT_READ|PROT_WRITE,MAP_PRIVATE|MAP_ANONYMOUS|MAP_FIXED,-1,0);
 #endif
  assert(memory==address);
- auto root=fs::temp_directory_path()/("wwhd-fs-content-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+ // the process ID too: ctest -j starts mod_content_fs_off and _on at the same moment
+ auto root=fs::temp_directory_path()/("wwhd-fs-content-"+std::to_string(wwhd_test_pid())+"-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
  config::game_dir=(root/"game").string();config::save_dir=(root/"save").string();
  auto original=root/"game"/"content"/"Common"/"model.bin",replacement=root/"mod"/"Common"/"model.bin";
  fs::create_directories(original.parent_path());fs::create_directories(replacement.parent_path());fs::create_directories(root/"game"/"code");fs::create_directories(root/"game"/"meta");fs::create_directories(root/"save"/"user");
