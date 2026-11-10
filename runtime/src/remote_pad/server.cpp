@@ -51,6 +51,11 @@ static uint64_t now_ms() {
 }
 Server::~Server() { stop(); }
 
+Server::Snapshot Server::snapshot() const {
+    std::lock_guard lk(mu_);
+    return state_;
+}
+
 #ifdef _WIN32
 bool Server::start(uint16_t) { log_msg("[remote pad] not available on this host"); return false; }
 bool Server::send_video(const uint8_t*, size_t, bool, uint64_t, uint16_t, uint16_t) { return false; }
@@ -124,11 +129,6 @@ void Server::end_session(const char* why) {
     state_ = {};
     peer_len_ = 0;
     if (cb_.disconnected) cb_.disconnected(why);
-}
-
-Server::Snapshot Server::snapshot() const {
-    std::lock_guard lk(mu_);
-    return state_;
 }
 
 bool Server::send_rumble(uint8_t level) {
