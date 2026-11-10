@@ -58,6 +58,7 @@ struct Pad {
     bool connected = false;  // a phone has the GamePad
     std::string device;      // the phone's name
     std::string controller;  // the controller attached to it ("" for none)
+    ControllerInfo info;     // ... as GameController describes it (protocol.h kControllerInfo)
     Input input;             // the latest input
 };
 Pad pad();
