@@ -7,6 +7,8 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Achievements: Grandma's Secret unlocks when the chest under Grandma's house is opened** (#511). The check looked
+  at two Windfall chests instead of the basement chest, so the achievement almost never unlocked.
 - **Controller prompts: PlayStation shapes for PlayStation controllers on the Mac and on the iPhone GamePad** (#509,
   thanks @fayep). A DualSense or other PlayStation controller on the Mac used to get Xbox-style prompts; the game now
   shows ✕ ○ □ △. The iPhone GamePad app tells the game which controller is attached to the phone, so its prompts match
