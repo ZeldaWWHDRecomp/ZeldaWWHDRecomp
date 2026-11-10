@@ -3206,6 +3206,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
             renderers=["metal", "vulkan"] if IS_MAC else ["vulkan"],
             # "Preparing shaders: models (experimental)" (model_sweep.py): opt-in, off by default everywhere
             models=want_models,
+            # macOS: every shader compiled ahead of time into the generation's Metal library (shader_library.py)
+            library=IS_MAC,
             skip=bool(getattr(args, "skip_shader_prebuild", False)),
             cancel=lambda: bool(getattr(args, "shader_prebuild_cancel", None) and
                                 Path(args.shader_prebuild_cancel).exists()))
@@ -3214,7 +3216,9 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
         states = prepared.get("renderers") or {}
         ready = [name.capitalize() for name, value in sorted(states.items()) if value == "ready"]
         # macOS: "ready (Metal, Vulkan)", or "ready (Metal)" when MoltenVK is unavailable
-        shader_progress.done(prepared["status"] + (" (%s)" % ", ".join(ready) if len(states) > 1 and ready else ""))
+        if prepared.get("library") == "ready":
+            ready.append("Metal shader library")
+        shader_progress.done(prepared["status"] + (" (%s)" % ", ".join(ready) if (len(states) > 1 or prepared.get("library") == "ready") and ready else ""))
     if not args.keep_work:
         shutil.rmtree(longpath(work), ignore_errors=True)
     if kind != "gen":

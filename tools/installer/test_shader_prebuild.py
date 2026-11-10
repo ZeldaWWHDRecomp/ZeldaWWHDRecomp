@@ -605,6 +605,114 @@ class TwoRendererTests(unittest.TestCase):
         self.assertFalse((self.cache / 'skip.json').exists())
 
 
+class ShaderLibraryTests(unittest.TestCase):
+    """macOS: the Metal warm writes every shader's source; shader_library builds shaders.metallib from them.
+    (TwoRendererTests' fixture, without running its tests again.)"""
+    def setUp(self):
+        TwoRendererTests.setUp(self)
+        self.toolchain = True
+        self.built = []
+        self.build_error = None
+        self.exports = {}
+
+    def runner(self, command, env, cancel, progress):
+        if command[1] != str(self.package / 'tools/shaderprep.py'):
+            renderer = env['WWHD_RENDERER_RUNTIME']
+            self.exports[renderer] = (env.get('WWHD_SHADERLIB_EXPORT'), env.get('WWHD_SHADERLIB'))
+            if env.get('WWHD_SHADERLIB_EXPORT'):
+                Path(env['WWHD_SHADERLIB_EXPORT'], 'w1_2.metal').write_text('synthetic shader source')
+        TwoRendererTests.runner(self, command, env, cancel, progress)
+
+    def builder(self, sources, out, progress=None, cancel=None):
+        self.built.append(sorted(p.name for p in Path(sources).iterdir()))
+        if self.build_error:
+            raise self.build_error
+        progress(1, 1)
+        Path(out).write_text('synthetic library')
+        return 1, 0
+
+    def prepare(self, **kwargs):
+        kwargs.setdefault('library', True)
+        return TwoRendererTests.prepare(self, library_toolchain=lambda: self.toolchain, library_builder=self.builder, **kwargs)
+
+    def manifest(self):
+        return json.loads((self.cache / 'active.json').read_text())
+
+    def test_metal_warm_writes_the_sources_and_the_library_lands_in_the_generation(self):
+        result = self.prepare()
+        self.assertEqual(result['library'], 'ready')
+        generation = Path(result['generation'])
+        export, library = self.exports['metal']
+        self.assertEqual(Path(export), generation / 'shader-sources')
+        self.assertEqual(library, '0')  # every shader translated, none taken from an older library
+        self.assertEqual(self.exports['vulkan'], (None, None))
+        self.assertEqual(self.built, [['w1_2.metal']])
+        self.assertTrue((generation / 'shaders.metallib').is_file())
+        self.assertFalse((generation / 'shader-sources').exists())  # the sources are not kept
+        self.assertEqual(self.manifest()['library'], 'ready')
+
+    def test_without_the_toolchain_the_preparation_is_ready_without_a_library(self):
+        self.toolchain = False
+        result = self.prepare()
+        self.assertEqual((result['status'], result['library']), ('ready', 'unavailable'))
+        self.assertEqual(self.exports['metal'], (None, None))
+        self.assertEqual(self.built, [])
+
+    def test_a_failed_build_leaves_the_preparation_ready(self):
+        self.build_error = RuntimeError('metallib: synthetic failure')
+        result = self.prepare()
+        self.assertEqual((result['status'], result['library']), ('ready', 'failed'))
+        self.assertFalse((Path(result['generation']) / 'shaders.metallib').exists())
+        # a failed library is not retried on every setup run (Rebuild shader cache does)
+        self.calls.clear()
+        self.assertEqual(self.prepare()['library'], 'failed')
+        self.assertEqual(self.calls, [])
+
+    def test_a_generation_without_its_library_gets_one_once_the_toolchain_is_there(self):
+        self.toolchain = False
+        first = self.prepare()
+        self.toolchain = True
+        self.calls.clear()
+        second = self.prepare()
+        self.assertTrue(second['reused'])
+        self.assertEqual(self.calls, ['metal'])  # the Metal warm again, for the sources; Vulkan stays
+        self.assertEqual(second['library'], 'ready')
+        self.assertTrue((Path(first['generation']) / 'shaders.metallib').is_file())
+        self.assertEqual(self.manifest()['library'], 'ready')
+        self.calls.clear()
+        self.assertEqual(self.prepare()['library'], 'ready')
+        self.assertEqual(self.calls, [])
+
+    def test_the_library_comes_after_the_model_sweep(self):
+        order = []
+
+        def sweeper(executable, game, root, name, identity, env, line=None, cancel=None, log=None, **kwargs):
+            order.append('sweep ' + name)
+            return 'done'
+
+        def builder(sources, out, progress=None, cancel=None):
+            order.append('library')
+            return self.builder(sources, out, progress, cancel)
+
+        events = []
+        result = TwoRendererTests.prepare(self, library=True, models=True, sweeper=sweeper, events=events,
+                                          library_toolchain=lambda: True, library_builder=builder)
+        self.assertEqual(result['library'], 'ready')
+        self.assertEqual(order[-1], 'library')
+        self.assertIn('sweep metal', order)
+        fractions = [f for _, f in events if f is not None]
+        self.assertEqual(fractions, sorted(fractions))  # one bar, never backwards
+        self.assertEqual(fractions[-1], 1.0)
+
+    def test_off_by_default_and_for_vulkan_only(self):
+        self.prepare(library=False)
+        self.assertEqual(self.exports['metal'], (None, None))
+        self.assertNotIn('library', self.manifest())
+        self.cache = self.root / 'other-cache'
+        result = self.prepare(renderers=('vulkan',))
+        self.assertNotIn('library', result)
+
+
 if __name__ == '__main__':
     unittest.main()
 

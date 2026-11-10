@@ -211,6 +211,8 @@ int headstart_warm() {
     LOG("[warm] distinct: %zu shaders, %zu pipelines (from %zu shader records, %zu pipeline records)", distinctShaders,
         distinctPipelines, st.records, st.pipelines);
     LOG("[warm] done in %.1f s (%zu failed shader/pipeline compiles)", ms_since(t0) / 1000.0, compileFailures);
+    void shaderlib_export_cache();  // metal_draw.mm: the live cache's shaders for the packaged library
+    shaderlib_export_cache();
     return st.failed || compileFailures ? 1 : 0;
 }
 

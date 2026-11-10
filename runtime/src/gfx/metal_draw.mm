@@ -541,6 +541,84 @@ static void release_compiled_sources() {
         if (s->state.load(std::memory_order_acquire) == CS_READY) release_source(s);
 }
 
+// ---------------------------------------------------------------- packaged shader library
+// A metallib built ahead of time from this game's shaders: setup's shader preparation runs the Metal warm
+// (--warm-shaders) with WWHD_SHADERLIB_EXPORT=<folder>, which writes every translated shader's source
+// there, and tools/installer/shader_library.py compiles them into shaders.metallib next to the
+// generation's headstart.bin. Each function is named after a hash of the exact MSL it was built from
+// (library_name): not the shader's key, which depends on the order the records are replayed in (the warm
+// and a launch differ), while equal sources are one function. A shader whose source differs here
+// (another setting, a mod, a game update) finds nothing and compiles as before. A shader found in it needs no compile, and its
+// text goes at once. WWHD_SHADERLIB=<path> overrides the location (else next to WWHD_HEADSTART, then
+// the app's resources: an Apple TV or iPhone build); WWHD_SHADERLIB=0: none.
+static id<MTLLibrary> g_shaderlib = nil;
+static size_t g_shaderlib_hits = 0, g_shaderlib_misses = 0;
+static const char* g_shaderlib_export = getenv("WWHD_SHADERLIB_EXPORT");
+static size_t g_shaderlib_exported = 0;
+
+static std::string library_name(const std::string& msl) {
+    char name[24];
+    snprintf(name, sizeof name, "w%016llx", (unsigned long long)hash_bytes(msl.data(), msl.size()));
+    return name;
+}
+
+// the source as the library holds it: compile_msl's own (snapped) with the entry point renamed
+static std::string library_source(const std::string& msl, const std::string& name) {
+    std::string out = msl;
+    const size_t at = out.find(" main0(");
+    if (at != std::string::npos) out.replace(at + 1, 5, name);
+    return out;
+}
+
+static void shaderlib_load() {
+    const char* env = getenv("WWHD_SHADERLIB");
+    if (env && !strcmp(env, "0")) return;
+    NSString* path = env && *env ? [NSString stringWithUTF8String:env] : nil;
+    if (!path) {
+        if (const char* headstart = getenv("WWHD_HEADSTART"); headstart && *headstart && strcmp(headstart, "0")) {
+            NSString* next = [[[NSString stringWithUTF8String:headstart] stringByDeletingLastPathComponent]
+                                 stringByAppendingPathComponent:@"shaders.metallib"];
+            if ([[NSFileManager defaultManager] fileExistsAtPath:next]) path = next;
+        }
+    }
+    if (!path) path = [[NSBundle mainBundle] pathForResource:@"shaders" ofType:@"metallib"];
+    if (!path || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+        if (env && *env) LOG("[gfx] shader library %s: not found", env);
+        return;
+    }
+    NSError* err = nil;
+    g_shaderlib = [R.device newLibraryWithURL:[NSURL fileURLWithPath:path] error:&err];
+    if (!g_shaderlib) LOG("[gfx] shader library %s: %s", path.UTF8String, err.localizedDescription.UTF8String ?: "failed");
+    else LOG("[gfx] shader library %s: %zu functions", path.UTF8String, (size_t)g_shaderlib.functionNames.count);
+}
+
+// a translated shader from the library (true: ready, its text gone), or written out for one
+static bool shaderlib_take(Shader* s) {
+    if ((!g_shaderlib && !g_shaderlib_export) || !s->dec || !s->dec->strBuf_shaderSource) return false;
+    const std::string msl = snap_texcoords(s->dec->strBuf_shaderSource->c_str());
+    const std::string name = library_name(msl);
+    if (g_shaderlib_export) {
+        const std::string path = std::string(g_shaderlib_export) + "/" + name + ".metal";
+        struct stat st;
+        if (stat(path.c_str(), &st) == 0) {
+            // the same source again (another key): one function
+        } else if (FILE* f = fopen(path.c_str(), "w")) {
+            const std::string src = library_source(msl, name);
+            fwrite(src.data(), 1, src.size(), f);
+            fclose(f);
+            g_shaderlib_exported++;
+        }
+    }
+    if (!g_shaderlib) return false;
+    id<MTLFunction> fn = [g_shaderlib newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]];
+    if (!fn) { g_shaderlib_misses++; return false; }
+    g_shaderlib_hits++;
+    s->fn = fn;
+    s->state = CS_READY;
+    release_source(s);
+    return true;
+}
+
 static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
     const int attempt = ++sh->attempts;
     const bool injectFailure = attempt <= g_test_fail_compiles;
@@ -910,7 +988,9 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         snprintf(name, sizeof name, "shaders/%s_%08X_%016llx.metal", vertex ? "vs" : "ps", addr, (unsigned long long)key);
         if (FILE* f = fopen(name, "w")) { fputs(s->dec->strBuf_shaderSource->c_str(), f); fclose(f); }
     }
-    if (g_defer_compiles) {
+    if (shaderlib_take(s)) {
+        // ready from the packaged library
+    } else if (g_defer_compiles) {
         s->state = CS_DEFERRED;  // cache replay: compile on first use or gradually in the background
         g_deferred_shaders.push_back(s);
         pack_source(s);
@@ -1952,7 +2032,22 @@ static CacheScan cache_scan(const std::string& path) {
 }
 
 // load and replay the recipes; runs once on the render thread before the first draw
+static void cache_load();
+static void cache_load_once() {
+    static bool loaded = (cache_load(), true);
+    (void)loaded;
+}
+
+// `wwhd --warm-shaders` with WWHD_SHADERLIB_EXPORT (shader_headstart.mm): after the warm, the live cache's
+// shaders too (recorded in play and by setup's model sweep; most of the game's), so the packaged library
+// holds every shader a launch replays
+void shaderlib_export_cache() {
+    if (g_shaderlib_export) cache_load_once();
+}
+
 static void cache_load() {
+    shaderlib_load();
+    if (g_shaderlib_export) mkdir(g_shaderlib_export, 0755);
     std::string path = cache_path();
     if (path == "0") { g_cache_disabled = true; return; }
     double t0 = now_ms();
@@ -2057,6 +2152,9 @@ static void cache_load() {
     }
     void headstart_load();  // shader_headstart.mm
     headstart_load();
+    if (g_shaderlib) LOG("[gfx] shader library: %zu shaders from it, %zu compiled here", g_shaderlib_hits, g_shaderlib_misses);
+    if (g_shaderlib_export)
+        LOG("[gfx] shader library export: %zu sources written to %s", g_shaderlib_exported, g_shaderlib_export);
     if (versioned && policy.writable && !recordOnly) {
         struct stat st {};
         const bool exists = stat(path.c_str(), &st) == 0 && st.st_size > 0;
@@ -2466,8 +2564,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     if (captureDraw) ++backdropExpected;
     std::optional<BackdropDrawReplay> capturedBindings;
     if (captureDraw) capturedBindings.emplace();
-    static bool cacheLoaded = (cache_load(), true);
-    (void)cacheLoaded;
+    cache_load_once();
     R.drawCount++;
     extern uint32_t g_draws_since_commit;
     g_draws_since_commit++;
