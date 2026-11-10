@@ -6,6 +6,7 @@
 // nothing or decline.
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
+#import <AVFoundation/AVFoundation.h>
 
 #include <csignal>
 #include <mach/mach.h>
@@ -25,8 +26,11 @@
 #include "remote_video.h"
 #include "../mods/save_folder.h"
 #include "../remote_pad/remote_pad.h"
+#include "../audio_out.h"
 #include "../platform/host.h"
 #include <filesystem>
+#include <thread>
+#include <cmath>
 
 int wwhd_main(int argc, char** argv);  // main.cpp
 void log_msg(const char* fmt, ...);
@@ -234,6 +238,142 @@ static void use_icloud_save_folder(NSString* save) {
     if (save_folder::write_choice(file, c)) log_msg("[icloud] the save moves to iCloud Drive (%s)", chosen.c_str());
 }
 #endif
+
+// The audio session (audio_out.cpp, at its start): playback, so the game is heard with an iPhone's silent switch on.
+// Surround 5.1 (Settings > Audio > Speakers) says the app plays multichannel content and asks for six channels:
+// AirPods with spatial audio and a 5.1 receiver on an Apple TV take them. -> the route's output channels.
+int uikit_audio_session(bool surround) {
+    AVAudioSession* session = [AVAudioSession sharedInstance];
+    NSError* err = nil;
+    if (![session setCategory:AVAudioSessionCategoryPlayback error:&err])
+        log_msg("[audio] session category: %s", err.localizedDescription.UTF8String ?: "?");
+    if (surround) {
+        // declared while the session is inactive: the route's channels are worked out when it is activated
+        [session setActive:NO error:nil];
+        if (@available(iOS 15.0, tvOS 15.0, *)) [session setSupportsMultichannelContent:YES error:nil];
+    }
+    [session setActive:YES error:nil];
+    if (surround && session.maximumOutputNumberOfChannels >= 6) [session setPreferredOutputNumberOfChannels:6 error:nil];
+    AVAudioSessionPortDescription* out = session.currentRoute.outputs.firstObject;
+    bool spatial = false;
+    if (@available(iOS 15.0, tvOS 15.0, *)) spatial = out.spatialAudioEnabled;
+    log_msg("[audio] output %s (%s): %ld of at most %ld channels%s", out.portName.UTF8String ?: "?", out.portType.UTF8String ?: "?",
+            (long)session.outputNumberOfChannels, (long)session.maximumOutputNumberOfChannels, spatial ? ", spatial audio" : "");
+    return int(session.outputNumberOfChannels);
+}
+
+// Surround 5.1 where the route takes two channels (AirPods, the device's speakers): the six go to the system as
+// multichannel content (AVSampleBufferAudioRenderer, allowed to spatialize it), so the system's Spatial Audio
+// renders them, with the listener's personalized profile and head tracking. A thread queues the game's mix
+// (audio_out.cpp, L R C LFE Ls Rs) in 5 ms buffers. The renderer's clock is the time being heard, so a buffer has to
+// reach it the route's output latency ahead (AirPods: about 160 ms), plus a margin (10 ms; WWHD_SPATIAL_MARGIN_MS),
+// or it is dropped as late; it is kept no further ahead than that.
+// The system pauses the renderer (the app in the background, an interruption): the feed then starts again with a
+// new renderer and clock, from fresh audio, as soon as the audio session can be activated (it can't until the app is
+// active again; tried every second). WWHD_AUDIO_TRACE=1 logs the feed every 2 s.
+bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
+    if (@available(iOS 15.0, tvOS 15.0, *)) {
+    } else {
+        return false;
+    }
+    static AVSampleBufferAudioRenderer* renderer = nil;
+    static AVSampleBufferRenderSynchronizer* clock = nil;
+    static auto fresh = [] {
+        if (clock && renderer) [clock removeRenderer:renderer atTime:kCMTimeZero completionHandler:nil];
+        renderer = [AVSampleBufferAudioRenderer new];
+        renderer.allowedAudioSpatializationFormats = AVAudioSpatializationFormatMultichannel | AVAudioSpatializationFormatMonoAndStereo;
+        clock = [AVSampleBufferRenderSynchronizer new];
+        [clock addRenderer:renderer];
+    };
+    fresh();
+    AudioStreamBasicDescription asbd{};
+    asbd.mSampleRate = 48000;
+    asbd.mFormatID = kAudioFormatLinearPCM;
+    asbd.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+    asbd.mChannelsPerFrame = 6;
+    asbd.mBitsPerChannel = 16;
+    asbd.mFramesPerPacket = 1;
+    asbd.mBytesPerFrame = asbd.mBytesPerPacket = 12;
+    AudioChannelLayout layout{};
+    layout.mChannelLayoutTag = kAudioChannelLayoutTag_WAVE_5_1_A;  // L R C LFE Ls Rs
+    static CMAudioFormatDescriptionRef format = nullptr;
+    if (CMAudioFormatDescriptionCreate(kCFAllocatorDefault, &asbd, sizeof layout, &layout, 0, nullptr, nullptr, &format) != noErr) {
+        log_msg("[audio] spatial 5.1: no format description");
+        return false;
+    }
+    static auto feed = pull;
+    std::thread([] {
+        constexpr uint32_t kChunk = 240;  // 5 ms
+        static const double margin = getenv("WWHD_SPATIAL_MARGIN_MS") ? atof(getenv("WWHD_SPATIAL_MARGIN_MS")) : 10;
+        static const bool trace = getenv("WWHD_AUDIO_TRACE") != nullptr;
+        static int16_t mix[kChunk * 6];
+        double leadMs = [AVAudioSession sharedInstance].outputLatency * 1000 + margin;
+        int64_t queued = 0;  // frames
+        bool started = false;
+        double lastReport = 0, clockSeen = -1, clockSince = 0;
+        for (;;) {
+            // paused by the system, fallen behind its clock, or a clock that should run but stands still (a restart
+            // before the app was active again): start again from fresh audio
+            const double clockNow = started ? CMTimeGetSeconds(clock.currentTime) : -1;
+            if (clockNow != clockSeen) { clockSeen = clockNow; clockSince = CACurrentMediaTime(); }
+            const bool behind = started && queued / 48000.0 < clockNow;
+            const bool stuck = started && clock.rate != 0 && CACurrentMediaTime() - clockSince > 1;
+            if (started && (clock.rate == 0 || behind || stuck)) {
+                NSError* activation = nil;
+                if (![[AVAudioSession sharedInstance] setActive:YES error:&activation])
+                    log_msg("[audio] spatial feed: the audio session can't be activated yet: %s",
+                            activation.localizedDescription.UTF8String ?: "?");
+                clockSince = CACurrentMediaTime();
+                [clock setRate:0 time:kCMTimeZero];
+                [renderer flush];
+                fresh();
+                queued = 0;
+                started = false;
+                log_msg("[audio] spatial feed: started again (%s)",
+                        behind ? "it fell behind" : stuck ? "its clock stood still" : "the renderer was paused");
+            }
+            if (CACurrentMediaTime() - lastReport > 2) {
+                lastReport = CACurrentMediaTime();
+                leadMs = [AVAudioSession sharedInstance].outputLatency * 1000 + margin;  // (the route may change)
+                if (trace) {
+                    uint64_t underrun = 0, dropped = 0;
+                    audio::stats(underrun, dropped);
+                    log_msg("[audio] spatial feed: lead %.0f ms, underrun %llu dropped %llu frames, clock %.2f s, queued %.2f s",
+                            leadMs, (unsigned long long)underrun, (unsigned long long)dropped, std::max(0.0, clockNow),
+                            queued / 48000.0);
+                }
+            }
+            const double lead = queued / 48000.0 - std::max(0.0, clockNow);
+            if (lead * 1000 >= leadMs || !renderer.isReadyForMoreMediaData) {
+                usleep(1000);
+                continue;
+            }
+            feed(mix, kChunk);
+            CMBlockBufferRef block = nullptr;
+            if (CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, nullptr, sizeof mix, kCFAllocatorDefault, nullptr, 0,
+                                                   sizeof mix, kCMBlockBufferAssureMemoryNowFlag, &block) != noErr)
+                continue;
+            CMBlockBufferReplaceDataBytes(mix, block, 0, sizeof mix);
+            CMSampleBufferRef sample = nullptr;
+            CMAudioSampleBufferCreateReadyWithPacketDescriptions(kCFAllocatorDefault, block, format, kChunk,
+                                                                 CMTimeMake(queued, 48000), nullptr, &sample);
+            CFRelease(block);
+            if (!sample) continue;
+            [renderer enqueueSampleBuffer:sample];
+            CFRelease(sample);
+            queued += kChunk;
+            if (!started && queued >= 2 * kChunk) {
+                [clock setRate:1 time:kCMTimeZero];
+                started = true;
+            }
+        }
+    }).detach();
+    AVAudioSession* session = [AVAudioSession sharedInstance];
+    AVAudioSessionPortDescription* out = session.currentRoute.outputs.firstObject;
+    log_msg("[audio] 5.1 as multichannel content to %s, for the system's Spatial Audio (output latency %.0f ms)",
+            out.portName.UTF8String ?: "the output", session.outputLatency * 1000);
+    return true;
+}
 
 static void* run_game(void*) {
     NSString* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;

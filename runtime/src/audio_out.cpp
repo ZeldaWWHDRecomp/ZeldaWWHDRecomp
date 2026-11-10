@@ -11,6 +11,11 @@
 
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
 #include <AudioToolbox/AudioToolbox.h>
+#ifdef WWHD_TVOS
+int uikit_audio_session(bool surround);  // gfx/host_tvos.mm: the audio session; the route's output channels
+// gfx/host_tvos.mm: 5.1 spatialized for headphones (AVAudioEngine), pulling the game's six channels through `pull`
+bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames));
+#endif
 #ifndef WWHD_TVOS  // (tvOS: the RemoteIO unit, without the HAL's device queries; stereo)
 #include <CoreAudio/CoreAudio.h>
 #endif
@@ -32,7 +37,7 @@ namespace audio {
 namespace {
 
 constexpr int kCapacity = 1 << 15; // frames (~680 ms)
-constexpr int kTarget = kRate * 40 / 1000;
+constexpr int kTarget = kRate * 40 / 1000;  // queued ahead of the output (the mixer paces itself to it)
 
 int16_t g_ring[kCapacity * 6];
 std::atomic<uint32_t> g_read{0}, g_write{0};
@@ -54,6 +59,15 @@ std::atomic<bool> g_gamepad_sounds{true};
 std::atomic<float> g_gamepad_gain{1};
 std::atomic<float> g_gain{1};  // master volume (issue #124), read by the producer mix
 std::atomic<int> g_channels{2};
+std::atomic<bool> g_host_output{false};  // the host renders the mix itself (pull_interleaved), without g_unit
+// With the host rendering the mix itself (its own queue covers the output), only the mixer's jitter needs room
+// here: 8 ms (with the spatial feed's margin, the game's own share of the latency is about one 60 fps frame).
+// WWHD_AUDIO_TARGET_MS sets either (while measuring underruns).
+int target() {
+    static const int env = [] { const char* e = getenv("WWHD_AUDIO_TARGET_MS"); return e && *e ? kRate * atoi(e) / 1000 : 0; }();
+    if (env > 0) return env;
+    return g_host_output ? kRate * 8 / 1000 : kTarget;
+}
 std::atomic<bool> g_requested{false}, g_fallback{false}, g_device_changed{false};
 std::atomic<int> g_test{-1};     // sample position; only producer advances, UI starts/stops
 constexpr int kTestSlot = kRate; // 0.65 s tone + 0.35 s silence per speaker
@@ -165,6 +179,9 @@ void SDLCALL render(void *, SDL_AudioStream *stream, int additional, int) {
 
 } // namespace
 
+// the mix as the output reads it, for a host that renders it itself (interleaved, channels())
+void pull_interleaved(int16_t* out, uint32_t frames) { pull(out, frames); }
+
 void init() {
     std::call_once(g_start, [] {
         std::string saved;
@@ -243,8 +260,17 @@ void init() {
             return;
         }
 #ifdef WWHD_TVOS
-        if (g_channels == 6)
+        // the audio session (gfx/host_tvos.mm): surround needs a route that takes six channels (AirPods with
+        // spatial audio, an Apple TV on a 5.1 receiver)
+        if (::uikit_audio_session(g_channels == 6) < 6 && g_channels == 6) {
+            // headphones (AirPods) take two channels: the host spatializes the six instead
+            if (::uikit_spatial_start(pull_interleaved)) {
+                g_host_output = true;
+                open_dump();
+                return;
+            }
             fallback();
+        }
 #else
         if (g_channels == 6) {
             AudioDeviceID device = 0;
@@ -295,6 +321,11 @@ void init() {
                 layout->mChannelDescriptions[i].mChannelLabel = labels[i];
             OSStatus layout_status = AudioUnitSetProperty(g_unit, kAudioUnitProperty_AudioChannelLayout,
                                                           kAudioUnitScope_Input, 0, layout, sizeof storage);
+#ifdef WWHD_TVOS
+            // RemoteIO takes no layout: the session's six channels are in this order already
+            if (layout_status != noErr) LOG("[audio] 5.1 in the session's channel order (no layout on this output: %d)", (int)layout_status);
+            layout_status = noErr;
+#endif
             if (format_status != noErr || layout_status != noErr) {
                 fallback();
                 fmt.mChannelsPerFrame = 2;
@@ -472,7 +503,7 @@ void push(const int16_t *stereo, int frames) {
                 write_wav_header();
         }
     }
-    if (!g_unit || g_device_changed)
+    if ((!g_unit && !g_host_output) || g_device_changed)
         return;
     uint32_t w = g_write.load(std::memory_order_relaxed), r = g_read.load(std::memory_order_acquire);
     if (w - r + frames > kCapacity) { // device stalled: drop rather than overwrite
@@ -549,13 +580,13 @@ const char *speaker_test_channel() {
 }
 
 int buffered_frames() {
-    if (!g_unit || g_device_changed)
-        return kTarget;
+    if ((!g_unit && !g_host_output) || g_device_changed)
+        return target();
     return (int)(g_write.load(std::memory_order_acquire) - g_read.load(std::memory_order_acquire));
 }
 
 int target_frames() {
-    return kTarget;
+    return target();
 }
 
 void flush() {

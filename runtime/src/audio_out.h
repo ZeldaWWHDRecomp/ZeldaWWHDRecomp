@@ -8,7 +8,8 @@ constexpr int kRate = 48000;
 
 void init();                                    // opens the default output device (safe to call twice)
 // Frozen at startup; the game must restart after changing the saved preference.
-int channels();                                // 2 or 6, effective device mode
+int channels();                                 // 2 or 6, effective device mode
+void pull_interleaved(int16_t* out, uint32_t frames);  // the mix (channels() per frame), for a host that renders it itself
 bool requested_surround();
 void set_requested_surround(bool enabled);      // save for next start
 // Master volume 0..1 for the game and mod mix (issue #124). Applied live; saved for the next start
