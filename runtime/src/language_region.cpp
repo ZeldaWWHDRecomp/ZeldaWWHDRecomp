@@ -65,13 +65,13 @@ bool german_europe() {
 
 extern "C" void site_025F8618(Cpu* c) { t_name_message = c->r[5]; }
 
-extern "C" void site_025F8720(Cpu* c) {
+// BUF the name's bytes (r30 at the hook), CAP their capacity (sp+0x18 at the hook); the decomp build's point passes both
+// (text_points.cpp)
+void german_genitive_name(uint32_t buf, int32_t cap) {
     const uint32_t id = t_name_message;
     t_name_message = 0;
     if (id != 0xC8B && id != 0x1D21 && id != 0x31D7) return;
     if (!german_europe()) return;
-    const uint32_t buf = c->r[30];
-    const int32_t cap = (int32_t)ld32(c->r[1] + 0x18);
     int32_t len = 0;
     while (len < cap && ld8(buf + len)) len++;
     std::string name;
@@ -83,19 +83,19 @@ extern "C" void site_025F8720(Cpu* c) {
     for (int32_t i = 0; i < n; i++) st8(buf + len + i, (uint8_t)suffix[i]);
     st8(buf + len + n, 0);
 }
+extern "C" void site_025F8720(Cpu* c) { german_genitive_name(c->r[30], (int32_t)ld32(c->r[1] + 0x18)); }
 
 // The same in the message text itself: putPlayerName (0x025FC444; the European 0x025FC700 reads the
 // message id at *(self)+0x11C and appends the wide "s" / "'" to the name before it is put). Here after
 // the USA code has the name (or the default name) in its 32-character buffer (sp+0x10, capacity at
 // sp+0x18), before it measures and puts it (0x025FC668).
-extern "C" void site_025FC668(Cpu* c) {
-    const uint32_t self = c->r[25];
+// SELF the text unit (r25 at the hook), BUF / CAP the wide name's buffer and capacity (sp+0x10 / sp+0x18 at the hook);
+// the decomp build's point passes them (text_points.cpp)
+void german_genitive_wide_name(uint32_t self, uint32_t buf, int32_t cap) {
     const uint32_t obj = self ? ld32(self) : 0;
     const uint32_t id = obj ? ld32(obj + 0x11C) : 0;
     if (id != 0xC8B && id != 0x1D21 && id != 0x31D7) return;
     if (!german_europe()) return;
-    const uint32_t buf = ld32(c->r[1] + 0x10);
-    const int32_t cap = (int32_t)ld32(c->r[1] + 0x18);
     if (!buf || cap <= 0) return;
     int32_t len = 0;
     while (len < cap && ld16(buf + len * 2)) len++;
@@ -108,4 +108,7 @@ extern "C" void site_025FC668(Cpu* c) {
     if (n <= 0) return;
     for (int32_t i = 0; i < n; i++) st16(buf + (len + i) * 2, (uint16_t)(uint8_t)suffix[i]);
     st16(buf + (len + n) * 2, 0);
+}
+extern "C" void site_025FC668(Cpu* c) {
+    german_genitive_wide_name(c->r[25], ld32(c->r[1] + 0x10), (int32_t)ld32(c->r[1] + 0x18));
 }

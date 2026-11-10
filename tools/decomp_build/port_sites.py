@@ -31,6 +31,7 @@ SN = "wwhd_src/d/d_snap.cpp"
 SH = "wwhd_src/d/actor/d_a_ship.cpp"
 SO = "wwhd_src/d/hd_screen_sequence_option.cpp"
 SD = "wwhd_src/d/hd_scene_save_data.cpp"
+TM = "wwhd_src/nw/lyt/TextMeasureCore.cpp"
 
 
 def _p(site, func, path, macro):
@@ -145,6 +146,25 @@ SITES = [
     _p(0x026D8514, 0x026D83F0, SO, "PORT_UI_W"),   # hdSequenceOption_c::open: the item count
     _p(0x0270AC04, 0x0270AB10, SD, "PORT_UI_STATE"),  # updateControllerChoice: the picker's state
     _p(0x0270ADD0, 0x0270ADA0, SD, "PORT_UI_STATE"),  # updateSaveSelection: Back
+    # Text: the interpolated timer digits (countdown.cpp), the German genitive of the player's name (language_region.cpp)
+    _p(0x026277A8, 0x02627734, "wwhd_src/d/hd_screen_boat_race_result_parts.cpp", "PORT_TEXT_W"),  # boat race
+    _p(0x026E9C24, 0x026E9BC4, "wwhd_src/d/hd_screen_time.cpp", "PORT_TEXT_W"),                    # HUD timer
+    # playerName's entry hook (the message id in r5): its point sits at the only call, in expandTagged
+    _p(0x025F8618, 0x025F8618, "wwhd_src/d/d_mesg_state.cpp", "PORT_TEXT_NAME"),
+    _p(0x025F8720, 0x025F8618, "wwhd_src/d/d_mesg_state.cpp", "PORT_TEXT_NAME"),  # playerName: the name copied
+    _p(0x025FC668, 0x025FC444, "wwhd_src/d/hd_text_unit_line.cpp", "PORT_TEXT_NAME"),  # putPlayerName
+    # Single functions: the file select's projection (aspect.cpp)
+    _p(0x025ADB38, 0x025ADB04, "wwhd_src/d/d_s_name.cpp", "PORT_PROJECTION_ARG"),  # dScnName_c::setView
+    _p(0x025B00B0, 0x025AF8A0, "wwhd_src/d/d_s_play_8.cpp", "PORT_PLAY_W"),  # dScnPly_Draw: the world-system hold
+    _p(0x0287714C, 0x02877100, "wwhd_src/nw/lyt/PaneText.cpp", "PORT_PANE_AT"),  # Pane::Draw: around DrawSelf
+    _p(0x02877150, 0x02877100, "wwhd_src/nw/lyt/PaneText.cpp", "PORT_PANE_AT"),
+    # Right-to-left text and line breaks after a space (rtl_text_hooks.cpp)
+    _p(0x02870028, 0x0286FFCC, TM, "PORT_RTL_AT"),  # CalcLineRectImpl: a new line
+    _p(0x028704CC, 0x0286FFCC, TM, "PORT_RTL"),     # CalcLineRectImpl: the break position
+    _p(0x02870A50, 0x028709E0, TM, "PORT_RTL_AT"),  # PrintImpl: its frame
+    _p(0x02870CC8, 0x028709E0, TM, "PORT_RTL"),     # PrintImpl: before the tag processor
+    _p(0x02870CCC, 0x028709E0, TM, "PORT_RTL_AT"),  # PrintImpl: after it
+    _p(0x02870FC8, 0x028709E0, TM, "PORT_RTL"),     # PrintImpl: the break position
 ]
 
 EMPTY = [

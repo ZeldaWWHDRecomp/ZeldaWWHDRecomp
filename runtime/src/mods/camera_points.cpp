@@ -52,13 +52,16 @@ extern "C" unsigned wwhd_camera_word(Cpu* c, unsigned sp, unsigned site, unsigne
     port_points::unknown("camera", site);
 }
 
-// view_setup / camera_draw: the projection call's four float arguments (f1..f4)
+// view_setup / camera_draw, and the file select's dScnName_c::setView (aspect.cpp): the projection call's four float
+// arguments (f1..f4)
 extern "C" {
 void site_024F811C(Cpu*); void site_024F8168(Cpu*); void site_024FFD60(Cpu*); void site_0250007C(Cpu*);
+void site_025ADB38(Cpu*);
 }
 extern "C" void wwhd_projection(Cpu* c, unsigned sp, unsigned site, float* f) {
     PpcFunc h = site == 0x024F811C ? site_024F811C : site == 0x024F8168 ? site_024F8168 :
-                site == 0x024FFD60 ? site_024FFD60 : site == 0x0250007C ? site_0250007C : nullptr;
+                site == 0x024FFD60 ? site_024FFD60 : site == 0x0250007C ? site_0250007C :
+                site == 0x025ADB38 ? site_025ADB38 : nullptr;
     if (!h) port_points::unknown("projection", site);
     port_points::run(c, sp, h,
                      [&](Cpu& r) { for (int i = 0; i < 4; i++) r.f[1 + i].ps0 = r.f[1 + i].ps1 = f[i]; },
