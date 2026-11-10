@@ -477,6 +477,94 @@ def a3_bodies(t):
     return out
 
 
+_A3_HEADERS = {}
+
+
+def a3_header_calls(path, rx):
+    """whether a header of the include trees next to source PATH (its wwhd_src/include and the fast rewrite's hinc)
+    has a line matching RX that is not a declaration (a prototype ending in ');' without '=' or 'return'); True when
+    the trees cannot be found"""
+    i = path.rfind("/wwhd_src/")
+    if i < 0:
+        return True
+    for root in (path[:i] + "/wwhd_src/include", os.path.join(os.path.dirname(path[:i]), "hinc")):
+        if root not in _A3_HEADERS:
+            texts = []
+            for dp, _, fs in os.walk(root):
+                for f in fs:
+                    if f.endswith((".h", ".hpp", ".inc")):
+                        try:
+                            texts.append(a3_blank(open(os.path.join(dp, f), encoding="utf-8", errors="replace").read()))
+                        except OSError:
+                            pass
+            _A3_HEADERS[root] = texts
+        for txt in _A3_HEADERS[root]:
+            for ln in txt.split("\n"):
+                if rx.search(ln):
+                    st = ln.strip()
+                    if not (st.endswith(");") and "=" not in st and "return" not in st):
+                        return True
+    return False
+
+
+def result_stub_callers(under, units):
+    """A3 for an ext line that declares a result its callee's definition never sets ((-1, -1): the caller reads r3/f1
+    as an earlier guest call left them, d_s_play_7's `r = dScnPlyAPI_removeDemo(r)` chain): decided per call, from the
+    stub, not from the file that holds the ext line. The stub (a weak definition next to its ext line) is called by name
+    from any source of the same unit (its header declares it), so every body of that unit that calls one of the unit's
+    such stubs by name (a member call too: over-approximated, never missed) keeps its calls guest calls. A stub name
+    that cannot be read, or one a header's inline code calls (a wrapper the bodies would call instead), keeps every
+    function of the unit. -> (functions that need A3, units taken whole, {stub addr: [caller addrs]})"""
+    unit_of = {p: u for u, ps in units.items() for p in ps}
+    names = collections.defaultdict(dict)  # unit -> {stub name: addr}
+    whole_units = set()
+    for p, v in under.items():
+        stubs = {a for a, r, _, _ in v if r == (-1, -1)}
+        if not stubs:
+            continue
+        u = unit_of.get(p)
+        try:
+            t = open(p, encoding="utf-8", errors="replace").read()
+        except OSError:
+            t = ""
+        m = re.search(r"/\* WWHD glue(.*?)\*/", t, re.S)
+        found = set()
+        for line in (m.group(1).splitlines() if m else ()):
+            e = EXT_GLUE.match(line.strip())
+            if e and int(e.group(1), 16) in stubs:
+                pm = EXT_PROTO.match(e.group(2))
+                if pm:
+                    names[u][pm.group(2).split("::")[-1]] = int(e.group(1), 16)
+                    found.add(int(e.group(1), 16))
+        if u is None or found != stubs:
+            whole_units.add(u)
+    need, callers = set(), collections.defaultdict(list)
+    for u, nm in names.items():
+        if u in whole_units:
+            continue
+        rxs = {n: re.compile(r"(?<!\w)%s\s*\(" % re.escape(n)) for n in nm}
+        if any(a3_header_calls(p, rx) for p in units.get(u, ()) for rx in rxs.values()):
+            whole_units.add(u)
+            continue
+        for p in units.get(u, ()):
+            try:
+                bt = a3_blank(open(p, encoding="utf-8", errors="replace").read())
+            except OSError:
+                continue
+            for a, _, o, j in a3_bodies(bt):
+                for n, rx in rxs.items():
+                    if rx.search(bt, o, j):
+                        need.add(a)
+                        callers[nm[n]].append(a)
+    for u in whole_units:
+        for p in units.get(u, ()):
+            try:
+                need |= {int(x, 16) for x in FUNC_ADDR.findall(open(p, encoding="utf-8", errors="replace").read())}
+            except OSError:
+                pass
+    return need, whole_units, callers
+
+
 def a3_precise(path, entries):
     """--a3-fn: the functions of source PATH that need A3 (caller=guest) for its under-declared ext lines ENTRIES
     (under_declared's (callee, passes, takes, status)), or None for the whole source (the rule without --a3-fn).
@@ -556,29 +644,42 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
     under_funcs = set()
     a3_fn_set = set()  # --a3-fn: functions of such sources that keep caller=ok (NativeInfo bit 19, "(a3fn)")
     a3_whole = a3_fn_n = 0
+    # a result its callee never sets: A3 for the bodies that call the stub (result_stub_callers), not the ext line's file
+    units = collections.defaultdict(list)
+    for un in uj["units"]:
+        for sp in un["sources"]:
+            units[un["name"]].append(sp["path"])
+    res_need, res_whole, _ = result_stub_callers(under, units)
+    under_funcs |= res_need
     for p in under:
+        other = [e for e in under[p] if e[1] != (-1, -1)]
+        if not other:
+            continue
         try:
             whole = {int(x, 16) for x in FUNC_ADDR.findall(open(p, encoding="utf-8", errors="replace").read())}
         except OSError:
             continue
-        got = a3_precise(p, under[p]) if a3_fn else None
+        got = a3_precise(p, other) if a3_fn else None
         if got is None:
             under_funcs |= whole
             a3_whole += 1
         else:
             under_funcs |= got
-            a3_fn_set |= whole - got
+            a3_fn_set |= (whole - got) - res_need
             a3_fn_n += 1
     if a3_fn:
         print("decomp: native-call rules (--a3-fn): A3 by function in %d sources (%d functions no longer A3), by "
               "source in %d" % (a3_fn_n, len(a3_fn_set), a3_whole))
+    print("decomp: native-call rules: A3 for %d functions that call a stub declaring a result its definition never sets"
+          "%s" % (len(res_need), " (whole units: %s)" % ", ".join(sorted(str(u) for u in res_whole)) if res_whole else ""))
     for p, v in sorted(under.items()):
         for a, r, tk, st in v:
             what = ("declares a result its %s definition never sets" % st if r == (-1, -1) else
                     "passes %dr%df, its %s definition takes %dr%df" % (r[0], r[1], st, tk[0], tk[1]))
-            print("decomp: native-call rules: %s: ext %08X %s (the file's "
-                  "functions keep guest calls%s)" % (os.path.relpath(p, out), a, what,
-                                                     ", the callee its registers" if st == "exact" and r != (-1, -1) else ""))
+            print("decomp: native-call rules: %s: ext %08X %s (%s%s)" % (
+                os.path.relpath(p, out), a, what,
+                "its callers keep guest calls" if r == (-1, -1) else "the file's functions keep guest calls",
+                ", the callee its registers" if st == "exact" and r != (-1, -1) else ""))
     # gen.py --hooked-bodies (fast mode): functions the runtime hooks, listed so their bodies run decompiled behind
     # the hook; never entered natively (callers reach hook_X)
     hooked = set()

@@ -249,6 +249,75 @@ class NativeRulesTest(unittest.TestCase):
         self.assertIsNone(native_rules.a3_precise(p, [(0x02000400, (-1, -1), (0, 0), "exact")]))
         self.assertIsNone(native_rules.a3_precise(p, [(0x02000100, (0, 0), (1, 0), "exact")]))
 
+    def test_result_stub_callers(self):
+        """A3 for a stub that declares a result its definition never sets goes to the bodies that call it, in any source
+        of the unit (d_s_play_7's dScnPly_Delete chaining r3 through dScnPlyAPI_removeDemo), not to the ext line's file:
+        this fails if such a caller is marked caller=ok"""
+        F = self.F
+        img = open(self.out + "/verify/image.bin", "rb").read()
+        n = (len(img) - 8) // 4 + 0x40 * 2 // 4
+        open(self.out + "/verify/image.bin", "wb").write(struct.pack("<II", BASE, n * 4) + img[8:] + struct.pack(">I", 0x60000000) * (0x40 * 2 // 4))
+        open(self.gen + "/table.c", "a").write("".join("{0x%08Xu, f_%08X}," % (F(i), F(i)) for i in (19, 20)))
+        open(self.out + "/functions.tsv", "a").write("%08X\tc\town\n%08X\tc\tchain\n" % (F(19), F(20)))
+        os.makedirs(self.src + "/wwhd_src/include")  # (no header calls the stub: result_stub_callers looks there)
+        os.makedirs(self.src + "/wwhd_src/c")
+        c1, c2 = self.src + "/wwhd_src/c/c_ext.cpp", self.src + "/wwhd_src/c/c_chain.cpp"
+        open(c1, "w").write("/* x */\nvoid own() { WWHD_GLUE_FUNC(0x%08X, void); other(); }\n"
+                            "u32 stubRes(u32 wwhd_p0) { return gabi::lcall<0x%08X, u32>(wwhd_p0); } /* other unit (ext) */\n"
+                            "/* WWHD glue\next %08X u32 stubRes(u32)\n*/\n" % (F(19), F(1), F(1)))
+        open(c2, "w").write("u32 chain(u32 r) { WWHD_GLUE_FUNC_R(0x%08X, u32, r); r = stubRes(r); "
+                            "return wwhd_native_scope_.ret<wwhd_ret_t_>(r); }\n" % F(20))
+        uj = json.load(open(self.out + "/units.json"))
+        uj["units"].append({"name": "c", "sources": [{"path": c1}, {"path": c2}]})
+        json.dump(uj, open(self.out + "/units.json", "w"))
+        decl = os.path.join(self.tmp.name, "handoff.tsv")
+        open(decl, "w").write("%08X\texact\t0r0f\ta.cpp\tf1\t-\n" % F(1))
+        for a3_fn in (False, True):
+            lines = native_rules.rules(self.src, self.out, self.gen, False, decl, (), a3_fn)
+            got = {int(l.split()[0], 16): l.split("#")[0].split() for l in lines}
+            self.assertEqual(got[F(20)][2], "caller=guest", (a3_fn, got[F(20)]))  # chains r3 through the stub
+            self.assertIn("A3", " ".join(got[F(20)][3:]), got[F(20)])
+            self.assertEqual(got[F(19)][2], "caller=ok", (a3_fn, got[F(19)]))     # the ext line's file, no such call
+        need, whole, callers = native_rules.result_stub_callers(
+            {c1: [(F(1), (-1, -1), (0, 0), "exact")]}, {"c": [c1, c2]})
+        self.assertEqual((need, whole, dict(callers)), ({F(20)}, set(), {F(1): [F(20)]}))
+        # a header's inline code that calls the stub (a wrapper): every function of the unit keeps guest calls
+        open(self.src + "/wwhd_src/include/c.h", "w").write("u32 stubRes(u32);\ninline u32 wrap(u32 x) { return stubRes(x); }\n")
+        native_rules._A3_HEADERS.clear()
+        need, whole, _ = native_rules.result_stub_callers({c1: [(F(1), (-1, -1), (0, 0), "exact")]}, {"c": [c1, c2]})
+        self.assertEqual((need, whole), ({F(19), F(20)}, {"c"}))
+        native_rules._A3_HEADERS.clear()
+
+    def test_lcall_result_shape(self):
+        """gabi.h lcall: a call that declares a u32 result of an exact callee that sets none (dScnPlyAPI_removeDemo ->
+        dDemo_delete) never takes the callee's native entry (neither the exact entry nor the bit-14 / sub-shape one), so
+        such a stub's call stays a guest call whatever its caller's rule"""
+        root = os.path.dirname(os.path.dirname(HERE))
+        inc = [os.path.join(root, "runtime", "include"), os.path.join(root, "decomp", "tools", "verify", "include")]
+        if not all(os.path.isdir(d) for d in inc) or not os.path.isfile(os.path.join(inc[1], "gabi.h")):
+            self.skipTest("no decomp submodule")
+        import shutil
+        import subprocess
+        cxx = shutil.which("c++") or shutil.which("clang++")
+        if not cxx:
+            self.skipTest("no C++ compiler")
+        src = os.path.join(self.tmp.name, "lcall_shape.cpp")
+        open(src, "w").write(
+            '#include "gabi.h"\n'
+            "void ppc_trap(Cpu*, uint32_t) {} /* (gmem_trap needs it; nothing here traps) */\n"
+            "using namespace gabi;\n"
+            "constexpr u32 F = 1u | 2u | 4u | 8u | (1u << 8); /* native, listed, exact: 1 integer register, no result */\n"
+            "static_assert(!lcall_native_ok<F, u32, u32>(), \"a u32 result its definition never sets: no exact entry\");\n"
+            "static_assert(lcall_native_ok<F, void, u32>(), \"declared void: the exact entry\");\n"
+            "static_assert(native_sig(F) != (ptr_call_sig<u32, u32>() | 0x4000u), \"no bit-14 entry of the call's shape\");\n"
+            "int main() { return lcall_sub_shape<u32, u32>(native_sig(F)) ? 1 : 0; /* nor a sub-shape entry */ }\n")
+        exe = os.path.join(self.tmp.name, "lcall_shape")
+        r = subprocess.run([cxx, "-std=c++20", "-O1", "-w", "-I" + inc[0], "-I" + inc[1], "-DGABI_GAME_BUILD=1", "-DGABI_FAST=1",
+                            "-DGABI_SHARED_TLS=1", "-DGABI_SLIM_SCOPE=1", "-DGABI_LEAN_ENTRY=1", "-DGABI_NATIVE_ENTRIES=1",
+                            src, "-o", exe], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr[-2000:])
+        self.assertEqual(subprocess.run([exe]).returncode, 0)
+
     def test_a3_fn_flag(self):
         """unit_headers: "(a3fn)" on a caller=ok line sets NativeInfo bit 19 (gabi.h GABI_A3_FN), not on a caller=guest one"""
         lines = native_rules.rules(self.src, self.out, self.gen, False, None)
