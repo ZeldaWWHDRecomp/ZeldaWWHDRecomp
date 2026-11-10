@@ -13,6 +13,12 @@ on:
       - "docs/mod-editor.md"
   pull_request:
 
+# A new push to a pull request cancels its older run; pushes to branches (devel's saves the compiler cache)
+# always finish.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ubuntu-24.04
@@ -80,7 +86,7 @@ jobs:
 
       - name: Unit tests
         run: |
-          ctest --test-dir build/linux --output-on-failure
+          ctest --test-dir build/linux --output-on-failure -j "$(nproc)"
           python3 tools/installer/test_setup.py
           python3 tools/installer/test_randomizer_setup.py
           python3 tools/installer/test_python_pending.py
@@ -92,7 +98,8 @@ jobs:
       # The in-app randomizer's command (tools/rando: TWWHD Randomizer 1.2.0); no game files
       - name: Randomizer command
         run: |
-          cmake -S tools/rando -B build/rando -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release
+          cmake -S tools/rando -B build/rando -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
           cmake --build build/rando -j 8
           python3 tools/rando/test_rando_cli.py build/rando
           python3 tools/rando/test_places.py
