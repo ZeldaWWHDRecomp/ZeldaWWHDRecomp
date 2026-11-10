@@ -18,6 +18,9 @@ jobs:
     runs-on: ubuntu-24.04
     env:
       SDL3_VERSION: release-3.4.18
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_BASEDIR: ${{ github.workspace }}   # paths relative to the checkout: hits wherever it is
+      CCACHE_MAXSIZE: 2G
     steps:
       - uses: actions/checkout@v5
 
@@ -28,7 +31,7 @@ jobs:
             libcurl4-openssl-dev libvulkan-dev glslang-dev glslang-tools mesa-vulkan-drivers vulkan-validationlayers xvfb weston \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev libxss-dev libxfixes-dev libxtst-dev \
             libxkbcommon-dev libwayland-dev wayland-protocols libegl1-mesa-dev libdecor-0-dev xcursor-themes \
-            libasound2-dev libpulse-dev libudev-dev libdbus-1-dev
+            libasound2-dev libpulse-dev libudev-dev libdbus-1-dev ccache
 
       - name: Cache SDL3
         id: sdl3
@@ -46,14 +49,34 @@ jobs:
           cmake --build sdl3-build -j 8
           cmake --install sdl3-build
 
+      # Compiled objects from earlier runs: this branch's newest, else devel's (a pull request reads its base
+      # branch's caches). Only pushes to devel and main save one (below), so pull requests cannot evict them.
+      - name: Restore compiler cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .ccache
+          key: ccache-linux-${{ github.sha }}
+          restore-keys: ccache-linux-
+
       - name: Configure
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
           cmake -S . -B build/linux -G Ninja -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ \
+            -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             -DGEN_DIR="$PWD/build/gen-stub" -DCMAKE_PREFIX_PATH="$HOME/sdl3" -DWWHD_SETUP_GUI=ON
 
       - name: Build
-        run: cmake --build build/linux -j 8
+        run: |
+          ccache --zero-stats
+          cmake --build build/linux -j 8
+          ccache --show-stats
+
+      - name: Save compiler cache
+        if: always() && github.event_name == 'push' && (github.ref == 'refs/heads/devel' || github.ref == 'refs/heads/main')
+        uses: actions/cache/save@v5
+        with:
+          path: .ccache
+          key: ccache-linux-${{ github.sha }}
 
       - name: Unit tests
         run: |
