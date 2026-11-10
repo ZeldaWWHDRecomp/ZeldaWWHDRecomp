@@ -83,6 +83,14 @@ function(wwhd_decomp_configure)
   endif()
   # ... with the last two targets per site (gabi.h GABI_PTR_IC2; for sites whose target alternates)
   option(WWHD_DECOMP_FAST_PTR_IC2 "decomp build, fast mode: two cached call_ptr / tail_ptr targets per call site" OFF)
+  # ... with the native entry itself in the site's word (no table read on a hit) and a small per-shape front cache
+  # before the address table on a miss (gabi.h GABI_PTR_FRONT; sites whose target changes on most calls, e.g.
+  # fpcMtd_Method for every actor's method, missed into the ~4 MB table each time). Same entries and guest calls
+  option(WWHD_DECOMP_FAST_PTR_FRONT "decomp build, fast mode: call_ptr site cache holds the native entry, front cache on a miss" OFF)
+  # ... and gabi::call by address / call_ptr outside the site caches check that front cache before the address table
+  # (gabi.h GABI_CALL_FRONT; they probed the ~4 MB table on every call). WWHD_DECOMP_FAST_PTR_FRONT=0 /
+  # WWHD_DECOMP_FAST_CALL_FRONT=0 at run time: the table on every lookup, as before
+  option(WWHD_DECOMP_FAST_CALL_FRONT "decomp build, fast mode: gabi::call by address checks a front cache before the address table" OFF)
   # fast mode: gabi::Local / FrameLocal with one thread-block lookup, one r1 read and the slot zeroed inline (gabi.h
   # GABI_FAST_LOCAL; the runtime's WWHD_DECOMP_FAST_LOCAL=0, or WWHD_NATIVE_LOCALS=1, keeps the general form)
   option(WWHD_DECOMP_FAST_LOCAL "decomp build, fast mode: lean gabi::Local / FrameLocal construction" ON)
@@ -326,6 +334,12 @@ function(wwhd_decomp_link target)
       if(WWHD_DECOMP_FAST_PTR_IC2)
         list(APPEND opts -DGABI_PTR_IC2=1)
       endif()
+      if(WWHD_DECOMP_FAST_PTR_FRONT)
+        list(APPEND opts -DGABI_PTR_FRONT=1)
+      endif()
+    endif()
+    if(WWHD_DECOMP_FAST_CALL_FRONT)
+      list(APPEND opts -DGABI_CALL_FRONT=1)
     endif()
     if(WWHD_DECOMP_FAST_LOCAL)
       list(APPEND opts -DGABI_FAST_LOCAL=1)
@@ -594,6 +608,11 @@ function(wwhd_decomp_link target)
     if(WWHD_DECOMP_FAST_NOCHECK)
       set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_NOCHECK=1)
     endif()
+    foreach(sw PTR_FRONT CALL_FRONT)  # (only decomp.cpp reads them: g_decomp_front_off)
+      if(WWHD_DECOMP_FAST_${sw} AND (NOT sw STREQUAL "PTR_FRONT" OR WWHD_DECOMP_FAST_PTR_IC))
+        set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_${sw}=1)
+      endif()
+    endforeach()
   endif()
   # fast mode: the GHS libm functions decompiled code calls most (sqrtf, sinf, sqrt, cosf, fmodf) go from gmem_call
   # straight to their recompiled originals, without call_to and the dispatch table (runtime/src/hostrt/hostrt_fast.cpp);

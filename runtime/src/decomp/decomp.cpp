@@ -291,6 +291,11 @@ uint8_t g_decomp_a3_off = 0;
 // gabi.h GABI_LEAF (cmake WWHD_DECOMP_FAST_LEAF): 1 = leaf bodies take the full native-call scope (WWHD_DECOMP_FAST_LEAF=0)
 uint8_t g_decomp_leaf_off = 0;
 #endif
+#if defined(WWHD_DECOMP_FAST_PTR_FRONT) || defined(WWHD_DECOMP_FAST_CALL_FRONT)
+// gabi.h GABI_PTR_FRONT / GABI_CALL_FRONT (cmake WWHD_DECOMP_FAST_PTR_FRONT / _CALL_FRONT): bit 0 / 1 = call_ptr's / gabi::call's
+// front cache not used, every lookup in the address table (WWHD_DECOMP_FAST_PTR_FRONT=0 / WWHD_DECOMP_FAST_CALL_FRONT=0)
+uint8_t g_decomp_front_off = 0;
+#endif
 #ifdef WWHD_DECOMP_FAST_NSTATS
 // gabi.h GABI_NSTATS (cmake WWHD_DECOMP_FAST_NSTATS, diagnostics): native entries per slot (WWHD_DECOMP_FAST_NSTATS=PATH)
 uint64_t* g_decomp_nstats = nullptr;
@@ -1127,6 +1132,18 @@ void init() {
         }).detach();
         atexit([] { write(); });
         LOG("[decomp] fast mode check counts: %s (every %d s)", p, every);
+    }
+#endif
+#ifdef WWHD_DECOMP_FAST_PTR_FRONT
+    if (const char* e = getenv("WWHD_DECOMP_FAST_PTR_FRONT"); e && !strcmp(e, "0")) {
+        g_decomp_front_off |= 1;
+        LOG("[decomp] fast mode: WWHD_DECOMP_FAST_PTR_FRONT=0, call_ptr misses take the address table, no front cache");
+    }
+#endif
+#ifdef WWHD_DECOMP_FAST_CALL_FRONT
+    if (const char* e = getenv("WWHD_DECOMP_FAST_CALL_FRONT"); e && !strcmp(e, "0")) {
+        g_decomp_front_off |= 2;
+        LOG("[decomp] fast mode: WWHD_DECOMP_FAST_CALL_FRONT=0, gabi::call by address takes the address table, no front cache");
     }
 #endif
 #ifdef WWHD_DECOMP_FAST_PTR_SUB
