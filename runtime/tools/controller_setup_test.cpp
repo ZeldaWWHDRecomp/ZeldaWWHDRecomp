@@ -77,6 +77,14 @@ struct Ui {
         ImGui::NewFrame();
         draw();
         ImGui::Render();
+        // the font atlas still goes to the renderer each frame; the pixels are drawn only for a picture
+        // (save), as the software renderer spends minutes on them over a run
+        if (ImVector<ImTextureData*>* textures = ImGui::GetDrawData()->Textures)
+            for (ImTextureData* tex : *textures)
+                if (tex->Status != ImTextureStatus_OK) ImGui_ImplSDLRenderer3_UpdateTexture(tex);
+    }
+    // the latest frame's pixels into the surface
+    void draw_pixels() {
         SDL_SetRenderDrawColor(renderer, 20, 23, 29, 255);
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
@@ -84,6 +92,7 @@ struct Ui {
     }
     void save(const char* dir, const std::string& what) {
         if (!dir) return;
+        draw_pixels();
         std::filesystem::create_directories(dir);
         assert(SDL_SaveBMP(surface, (std::filesystem::path(dir) / (std::string(c.name) + "-" + what + ".bmp")).string().c_str()));
     }
