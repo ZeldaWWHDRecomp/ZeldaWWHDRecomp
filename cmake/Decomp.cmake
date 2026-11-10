@@ -663,6 +663,15 @@ function(wwhd_decomp_link target)
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_LIBM)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST_LIBM=1)  # (only hostrt_fast.cpp reads it)
   endif()
+  # fast mode: those libm functions as bit-exact native C++ ports (runtime/src/hostrt/hostrt_native_math.cpp, proven
+  # against the recompiled originals by tools/host_runtime/difftest/nativemath.cpp); needs WWHD_DECOMP_FAST_LIBM.
+  # OFF by default until the phone pair; ON: env WWHD_DECOMP_FAST_NATIVE_MATH=0 runs the originals, =check both + compare
+  option(WWHD_DECOMP_FAST_NATIVE_MATH "decomp build, fast mode: GHS libm hot functions as native bit-exact ports" OFF)
+  if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_LIBM AND WWHD_DECOMP_FAST_NATIVE_MATH)
+    target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST_NATIVE_MATH=1)
+    set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/hostrt/hostrt_native_math.cpp"
+                 APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off -fno-fast-math)
+  endif()
   if(unit_ir AND whole_lto)  # the final link runs ThinLTO over the units' bitcode
     if(APPLE)
       target_link_options(${target} PRIVATE -flto=thin "LINKER:--thinlto-jobs=${WWHD_DECOMP_FAST_LTO_JOBS}"
