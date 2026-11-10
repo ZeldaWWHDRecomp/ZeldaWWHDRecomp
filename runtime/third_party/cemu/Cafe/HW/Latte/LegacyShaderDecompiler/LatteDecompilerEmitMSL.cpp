@@ -643,11 +643,25 @@ static void _emitUniformAccessCode(LatteDecompilerShaderContext* shaderContext, 
 	}
 	else if( shaderContext->shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE )
 	{
-		// uniform registers are accessed with unpredictable (dynamic) offset
+		// uniform registers are accessed with unpredictable (dynamic) offset. A relative index outside the 256
+		// registers reads zero: Metal does not bound the read, and an older Apple GPU (A12Z) takes a page fault on
+		// what lies past the buffer, which stops all rendering (an index computed from vertex data on a menu change).
+		// The read itself is clamped into the buffer (a conditional read may still be made before the condition).
 		_emitTypeConversionPrefixMSL(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, requiredType);
-		src->add("supportBuffer.uniformRegister[");
-		_emitUniformAccessIndexCode(shaderContext, aluInstruction, operandIndex);
-		src->add("]");
+		if (aluInstruction->sourceOperand[operandIndex].rel != 0)
+		{
+			src->add("select(int4(0), supportBuffer.uniformRegister[min((uint)(");
+			_emitUniformAccessIndexCode(shaderContext, aluInstruction, operandIndex);
+			src->add("), 255u)], (uint)(");
+			_emitUniformAccessIndexCode(shaderContext, aluInstruction, operandIndex);
+			src->add(") < 256u)");
+		}
+		else
+		{
+			src->add("supportBuffer.uniformRegister[");
+			_emitUniformAccessIndexCode(shaderContext, aluInstruction, operandIndex);
+			src->add("]");
+		}
 
 		_appendChannelAccess(src, aluInstruction->sourceOperand[operandIndex].chan);
 		_emitTypeConversionSuffixMSL(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, requiredType);
