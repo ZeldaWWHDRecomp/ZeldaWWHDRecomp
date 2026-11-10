@@ -158,6 +158,11 @@ function(wwhd_decomp_configure)
   # no prologue stores) set inline in the body instead of in the out-of-line AutoFrame::enter (gabi.h GABI_AF_INLINE);
   # frame-exact functions keep enter(). The same FrameCtx; no run-time switch (OFF: as before)
   option(WWHD_DECOMP_FAST_AF_INLINE "decomp build, fast mode: AutoFrame's place-only frame inline" OFF)
+  # fast mode: a leaf body (WWHD_DECOMP_FAST_LEAF, NativeInfo bit 20: small, no calls) is inlined into its native-entry
+  # thunk (gabi.h GABI_THUNK_INL: NEntryT run_inl), so a call through a function pointer, by address or from another
+  # unit runs one function instead of thunk + body. Same conversions and body; the body keeps its own copy for its other
+  # callers. No run-time switch (OFF: as before)
+  option(WWHD_DECOMP_FAST_THUNK_INL "decomp build, fast mode: leaf bodies inlined into their native-entry thunks" OFF)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -385,6 +390,12 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_AF_INLINE)
       list(APPEND opts -DGABI_AF_INLINE=1)
+    endif()
+    if(WWHD_DECOMP_FAST_THUNK_INL)
+      if(NOT WWHD_DECOMP_FAST_LEAF)
+        message(FATAL_ERROR "WWHD_DECOMP_FAST_THUNK_INL needs WWHD_DECOMP_FAST_LEAF")
+      endif()
+      list(APPEND opts -DGABI_THUNK_INL=1)
     endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)
