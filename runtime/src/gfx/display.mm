@@ -1,6 +1,5 @@
 #include "metal_gamepad_backdrop.h"
 #include "remote_video.h"
-#include "../remote_pad/protocol.h"
 #include "platform/present_observer.h"
 // Display: the TV and GamePad windows, full screen, and the final composition of the TV and GamePad
 // images onto the screen (scale to fit with letterbox/pillarbox, scaling filter, GamePad screen as a
@@ -37,6 +36,7 @@
 #include "../exception_report.h"
 #include "../tv_pointer.h"
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <map>
 #include <mutex>
@@ -1015,7 +1015,10 @@ static void take_screenshot(const PresentPlan& P) {
 
 // Metal, called from swap(): compose and present the TV window (with the GamePad overlay) and the GamePad window
 void present_screens() {
-    const uint64_t present_ns = remote_pad::clock_ns();  // the iPhone GamePad picture's time
+    // the iPhone GamePad picture's time: remote_pad::clock_ns's clock (not its header: this file is one of the
+    // inputs of the prepared shaders' identity, cmake/pipeline_identity_inputs.txt)
+    const uint64_t present_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
     CGSize ls = R.tv.layer ? R.tv.layer.drawableSize : CGSizeMake(0, 0);
     PresentPlan P = display_plan(R.tv.tex != nil, nominal_w(R.tv), nominal_h(R.tv), R.drc.tex != nil, nominal_w(R.drc), nominal_h(R.drc),
                                  ls.width, ls.height, R.frame);

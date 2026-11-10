@@ -188,6 +188,7 @@ int main() {
         g_queue = [g_dev newCommandQueue];
         setenv("WWHD_REMOTE_PAD", "26991", 1);
         start_from_env();
+        load_paired("");  // (the game's settings, read on the overlay's first frame: no phone paired yet)
         assert(!present(1, 0, 0));  // nobody wants video: no target, no encoder
 
         Phone phone(26991);
