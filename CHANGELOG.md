@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Game pages: the game font stays while scrolling, and the cursor reaches the Settings tabs** (#506). Lines that
+  scrolled into view on the in-game pages could fall back to the overlay font; they now always use the game font. On
+  the Settings page, Up from the first row moves the cursor onto the tab row (Camera, Controls, ...), so the tabs are
+  reachable without L/R.
 - **Metal: about 160 MB less memory with the full shader prebuild** (#503, thanks @fayep). Each shader's generated
   Metal source is freed once it has compiled, and shaders still waiting to compile keep theirs compressed. Startup
   shader replay takes about 0.1 s longer.
