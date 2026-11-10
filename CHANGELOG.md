@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Metal: about 160 MB less memory with the full shader prebuild** (#503, thanks @fayep). Each shader's generated
+  Metal source is freed once it has compiled, and shaders still waiting to compile keep theirs compressed. Startup
+  shader replay takes about 0.1 s longer.
 - **Metal: a memory leak that grew with play time is fixed** (#501, thanks @fayep). Each sun-glare depth check kept
   its frame's command buffer (and everything that frame used) alive for the rest of the session, about 23 a minute;
   finished ones are now let go. Measured on an M1 Mac mini: 4,788 leftover command buffers after 3.5 h before, 4 after.
