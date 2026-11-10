@@ -10,8 +10,12 @@ divergences, such as A/B runs of one scenario on two paths).
   start_check.py RUN                          prints the start
   start_check.py RUN --timer N [--were "a b c"]  exit 3 (BADSTART) unless the start is that one
   start_check.py RUN_A RUN_B                  exit 3 unless both runs started the same way
+  (any form: exit 4 when a run had frame interpolation on)
 
 Exit 2: no start line (no portable load, or the run did not get there).
+Exit 4 (INTERP): a run had frame interpolation on. Comparison runs play at 30 fps: with interpolation on, how many logic
+steps a stage change takes follows the audio threads' wall-clock frames (the new play scene waits for the audio
+system's first dynamic wave), so the stage entry can move by a step and the runs are not comparable.
 Used by cliff_check.sh and compare.py.
 """
 import os
@@ -30,6 +34,23 @@ def start(run):
     return (int(m.group(2)), m.group(1).strip()) if m else None
 
 
+_INTERP_ON = re.compile(r"\[interp\] frame interpolation on.*|\[test\] t=[\d.]+ s: 60 fps mode [12]")
+
+
+def interp_on(run):
+    """the log line that shows frame interpolation switched on in the run, or None (30 fps throughout)"""
+    log = os.path.join(run, "log")
+    if not os.path.exists(log):
+        return None
+    m = _INTERP_ON.search(open(log, errors="replace").read())
+    return m.group(0) if m else None
+
+
+def interp_message(run, line):
+    return ("INTERP: %s had frame interpolation on (%s): comparison runs play at 30 fps (WWHD_INTERP=0, no "
+            "WWHD_INTERP_AT_STEP / WWHD_INTERP_FPS / scenario 60 fps mode); not a valid comparison" % (run, line.strip()))
+
+
 def describe(s):
     return "mTimer %d, old-stage seeds %s" % s if s else "no portable-state start"
 
@@ -44,6 +65,11 @@ def main(argv):
     if len(args) not in (1, 2):
         print(__doc__)
         return 2
+    for r in args:
+        line = interp_on(r)
+        if line:
+            print("start: " + interp_message(r, line))
+            return 4
     a = start(args[0])
     if len(args) == 2:
         b = start(args[1])

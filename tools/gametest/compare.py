@@ -94,7 +94,15 @@ def main():
         return 2
     # runs that load a portable state must have reached it the same way (start_check.py); START_CHECK=0 compares anyway
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from start_check import start, describe
+    from start_check import start, describe, interp_on, interp_message
+    # comparison runs play at 30 fps (start_check.py); INTERP_OK=1 is for comparisons of interpolation itself
+    # (interp_logic_identity.sh)
+    if os.environ.get("INTERP_OK") != "1":
+        for run in (A, B):
+            line = interp_on(run)
+            if line:
+                print("start: " + interp_message(run, line))
+                return 4
     st_a, st_b = start(A), start(B)
     if (st_a or st_b) and st_a != st_b:
         print("start: BADSTART: the runs started differently (%s / %s): not a valid comparison" % (describe(st_a), describe(st_b)))

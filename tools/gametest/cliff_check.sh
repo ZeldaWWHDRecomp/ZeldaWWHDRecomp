@@ -35,13 +35,12 @@ cd $root
 DIGEST= ORIGIN=3460 SHADER_CACHE=$iso/shader.bin VK_SHADER_CACHE=$iso/vk.bin VK_PIPELINE_CACHE_DIR=$iso/vkp \
   timeout 900 tools/gametest/run_scenario.sh $exe ${CLIFF_GAME:-game} ${CLIFF_SAVE:-../gametest/saves/savage} $out 16 \
   WWHD_USER_DIR=$iso/user WWHD_STATE_DIR=$iso/state WWHD_STATE_LOAD_AT=3400:$slot WWHD_TEST_FIXED_SEED=1 WWHD_TEST_STEP_CLOCK=$clock \
-  WWHD_DUMP_FRAMES=999999 WWHD_INTERP=0 WWHD_INTERP_AT_STEP=3460 "$@" > /dev/null 2>&1
+  WWHD_DUMP_FRAMES=999999 WWHD_INTERP=0 WWHD_INTERP_AT_STEP=0 "$@" > /dev/null 2>&1
 rm -rf $iso
-[ -f $out/log ] && head -c 300000 $out/log > $out/log.cap && mv $out/log.cap $out/log
 python3 -I - $here $out $expect "$were" ${=CLIFF_REFS} <<'PY'
 import re, sys
 sys.path.insert(0, sys.argv[1])
-from start_check import start as run_start
+from start_check import start as run_start, interp_on, interp_message
 out, expect, were, refs = sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5:]
 # the trace up to the scenario's end step (origin + 16 s * 30): the harness stops the game when it sees test_done, and
 # how many steps it still runs before that (up to ~35 under host load) is not the game's doing
@@ -60,9 +59,15 @@ for ref in refs:
     a = load(ref)
     for off in range(-15, 16):
         best = max(best, sum(1 for i in range(len(a)) if 0 <= i + off < len(b) and a[i] == b[i + off]))
+line = interp_on(out)
+if line:
+    print("cliff trace: %d of 3000 lines as the normal build -> %s" % (best, interp_message(out, line))); sys.exit(3)
 if start != expect or w != were:
     print("cliff trace: %d of 3000 lines as the normal build -> BADSTART (the load started at mTimer %s, old-stage seeds "
           "%s; expected %d, %s: not a valid comparison)" % (best, start, w, expect, were)); sys.exit(3)
 print("cliff trace: %d of 3000 lines as the normal build -> %s (load start mTimer %d)" % (best, "PASS" if best >= 2990 else "FAIL", start))
 sys.exit(0 if best >= 2990 else 1)
 PY
+rc=$?
+[ -f $out/log ] && head -c 300000 $out/log > $out/log.cap && mv $out/log.cap $out/log
+exit $rc

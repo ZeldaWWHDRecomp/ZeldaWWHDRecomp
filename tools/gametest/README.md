@@ -20,6 +20,14 @@ ALIGN=link python3 tools/gametest/compare.py runs/normal runs/decomp 20
   is robust against a different boot length). Exit status 0 when everything is identical. Runs that load
   a portable state with `WWHD_TEST_FIXED_SEED` must have started that load the same way
   (`start_check.py`); otherwise it prints `BADSTART` and exits 3 (`START_CHECK=0` compares anyway).
+- Comparison runs play at 30 fps, with frame interpolation off from the start (`run_scenario.sh` and
+  `cliff_check.sh` set `WWHD_INTERP=0`). With interpolation on, a stage change's length in logic steps
+  follows the audio threads, which run on the wall clock (the new play scene waits for the audio system's
+  first dynamic wave), so the stage entry can come a step earlier and two runs with the same inputs are
+  not comparable. `start_check.py`, `compare.py` and `cliff_check.sh` refuse such runs (`INTERP`);
+  `interp_logic_identity.sh`, which compares interpolation itself, passes `INTERP_OK=1` to compare.py.
+  The same holds for a host that cannot keep 30 fps (the game thread busier than 33 ms a step): the boot
+  and the title screen then take another course, and the start check reports `BADSTART`.
 - `start_check.py RUN [--timer N] [--were "a b c"]` or `start_check.py RUN_A RUN_B`: the start of a
   run's portable-state load (mTimer when the old stage's loading frames began, the old stage's random
   seeds just before the reset). Two runs that differ here reached the load on different paths (e.g. a
