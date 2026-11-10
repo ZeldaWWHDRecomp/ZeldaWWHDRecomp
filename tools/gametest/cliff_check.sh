@@ -38,9 +38,11 @@ DIGEST= ORIGIN=3460 SHADER_CACHE=$iso/shader.bin VK_SHADER_CACHE=$iso/vk.bin VK_
   WWHD_DUMP_FRAMES=999999 WWHD_INTERP=0 WWHD_INTERP_AT_STEP=3460 "$@" > /dev/null 2>&1
 rm -rf $iso
 [ -f $out/log ] && head -c 300000 $out/log > $out/log.cap && mv $out/log.cap $out/log
-python3 -I - $out $expect "$were" ${=CLIFF_REFS} <<'PY'
+python3 -I - $here $out $expect "$were" ${=CLIFF_REFS} <<'PY'
 import re, sys
-out, expect, were, refs = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4:]
+sys.path.insert(0, sys.argv[1])
+from start_check import start as run_start
+out, expect, were, refs = sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5:]
 # the trace up to the scenario's end step (origin + 16 s * 30): the harness stops the game when it sees test_done, and
 # how many steps it still runs before that (up to ~35 under host load) is not the game's doing
 def load(r):
@@ -48,9 +50,7 @@ def load(r):
     end = int(o.group(1)) + 16 * 30 if o else 1 << 62
     rows = [l.split() for l in open(r + "/trace.txt")]
     return [x[3:] for x in rows if len(x) > 3 and x[1].isdigit() and int(x[1]) <= end][-3000:]
-log = open(out + "/log", errors="replace").read()
-m = re.search(r"portable state: loading the new stage: cM_rnd seeds [\d ]+\(were ([\d ]+)\).*?mTimer (\d+)", log)
-start, w = (int(m.group(2)), m.group(1).strip()) if m else (None, None)
+start, w = run_start(out) or (None, None)  # (start_check.py: the same check for any A/B pair)
 try:
     b = load(out)
 except OSError:

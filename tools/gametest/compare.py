@@ -92,6 +92,14 @@ def main():
     if sa is None or sb is None:
         print("no origin (scenario did not start)")
         return 2
+    # runs that load a portable state must have reached it the same way (start_check.py); START_CHECK=0 compares anyway
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from start_check import start, describe
+    st_a, st_b = start(A), start(B)
+    if (st_a or st_b) and st_a != st_b:
+        print("start: BADSTART: the runs started differently (%s / %s): not a valid comparison" % (describe(st_a), describe(st_b)))
+        if os.environ.get("START_CHECK", "1") != "0":
+            return 3
     bad = 0
     # trace.txt: pass step realtime full dt proc ...  (drop the pass counter and real time)
     for name, label, stepcol, drop in (("trace.txt", "link", 1, (0, 2)), ("cam.txt", "camera", 1, (0, 2)), ("rng.txt", "rng", 0, ())):
