@@ -57,7 +57,11 @@ enum Op : uint32_t {
     // a layout root pane is about to be drawn into the target bound now (aspect.cpp hook_02877100, as
     // OP_LAYOUT_ROOT, also with the original aspect): the first one on the TV picture ends the scene
     OP_FRAMEGEN_LAYOUT,
-    OP_COUNT
+    OP_COUNT,
+    // native draw packets (native_draw.h): emitted and executed only by WWHD_NATIVE_DRAW=ON builds (decomp build, fast
+    // mode); declared in every build, after OP_COUNT, so that no other value or OP_COUNT changes. Recorded like any command:
+    OP_PACKET_DEFINE = 0x40,  // native_draw::Packet (kPacketWords): a site's packet for this pass
+    OP_PACKET_DRAW = 0x41,    // packet id, kind, uniform block address, uniform block size: one instance
 };
 
 // debug draw provenance (WWHD_VK_PIPELINE_WHO): a provider (set by dsweep.cpp) describes the guest code issuing a

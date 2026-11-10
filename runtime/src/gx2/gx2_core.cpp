@@ -52,6 +52,9 @@
 #include "platform/perf_hint.h"
 #include "platform/thread_sampler.h"
 #include "render_prof.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "native_draw.h"
+#endif
 
 using namespace Latte;
 
@@ -181,6 +184,9 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
     // Shadow can differ even when registers already match: draw mutates
     // primitive type directly, and context setup initializes only shadow.
     if (g_shadow) copy_words(&g_shadow[first], v, n);
+#ifdef WWHD_NATIVE_DRAW
+    native_draw::g_epoch += changed;
+#endif
     if (actualBump) ++g_shader_state_gen;
     if (changed && collectStats) {
         ++shaderKeyDirtyStats.changedBatches;
@@ -202,6 +208,9 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
     if (first >= mmSQ_ALU_CONSTANT0_0 && first + n <= mmSQ_ALU_CONSTANT0_0 + 0x1000 && !g_collect_stats) {
         uint32* d = &g_regs[first];
         if (memcmp(d, v, n * 4) != 0) {
+#ifdef WWHD_NATIVE_DRAW
+            ++native_draw::g_epoch;
+#endif
             g_dirty_groups |= 1u << kSgAluConst;
             if (g_classify) rprof::g_reg_dirty |= 1;
             copy_words(d, v, n);
@@ -217,6 +226,9 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
     }
 #endif
     if (memcmp(&g_regs[first], v, n * 4) != 0) {
+#ifdef WWHD_NATIVE_DRAW
+        ++native_draw::g_epoch;
+#endif
         const bool classify = g_classify;
         for (uint32 i = 0; i < n; i++)
             if (g_regs[first + i] != v[i]) {
@@ -688,7 +700,11 @@ void execute(const uint32* words, uint32 count) {
         uint32 hdr = words[i];
         Op op = (Op)(hdr & 0xFF);
         uint32 n = hdr >> 8;
+#ifdef WWHD_NATIVE_DRAW
+        if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW) || i + 1 + n > count) {
+#else
         if (op >= OP_COUNT || i + 1 + n > count) {
+#endif
             LOG("[gx2] corrupt display list command %08X", hdr);
             return;
         }
@@ -748,11 +764,17 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     switch (op) {
     case OP_DEBUG_CONTEXT: g_draw_context.store(n ? p[0] : 0, std::memory_order_relaxed); return;
     case OP_SUBMITTED_UNIFORMS:
+#ifdef WWHD_NATIVE_DRAW
+        ++native_draw::g_epoch;
+#endif
         set_active_snapshot(n >= 2 ? (submitted::Snapshot*)(uintptr_t(p[0]) | (uint64_t(p[1]) << 32)) : nullptr);
         return;
     case OP_CALL: execute_op(op, p, n); return;
     case OP_SET_REGS: case OP_SET_PROJ_REGS: kind = rprof::kOpRegs; break;
     case OP_DRAW: case OP_DRAW_INDEXED: kind = rprof::kOpDraw; rprof::classify_draw(); break;
+#ifdef WWHD_NATIVE_DRAW
+    case OP_PACKET_DRAW: kind = rprof::kOpDraw; rprof::classify_draw(); break;
+#endif
     case OP_CLEAR_COLOR: case OP_CLEAR_DEPTH: case OP_CLEAR_BUFFERS: kind = rprof::kOpClear; break;
     case OP_COPY_SURFACE: kind = rprof::kOpCopy; break;
     case OP_COPY_TO_SCAN: kind = rprof::kOpScan; break;
@@ -793,6 +815,11 @@ static void test_frame_load(const char* name, bool hold = false) {
 }
 
 static void execute_op(Op op, const uint32* p, uint32 n) {
+#ifdef WWHD_NATIVE_DRAW
+    // a packet's lowered state holds while only register writes that change nothing and its own instances come
+    // (native_draw.h); any other command may change what the full draw would resolve
+    if (op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_PACKET_DRAW) ++native_draw::g_epoch;
+#endif
     switch (op) {
     case OP_NOP: break;
     case OP_SET_REGS: apply_regs(p[0], p + 1, n - 1); break;
@@ -854,6 +881,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             present_observer::render_swap(uint64_t(p[3]) | (uint64_t(p[4]) << 32), render::frame_count());
         render::set_present_interval(n >= 6 ? p[5] : 0u, n >= 2 && p[1]);
         render::swap();
+#ifdef WWHD_NATIVE_DRAW
+        native_draw::frame_end();
+#endif
         break;
     }
     case OP_SET_PROJ_REGS: {
@@ -907,6 +937,23 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             render::g_backend->framegen_layout(g_regs[mmCB_COLOR0_BASE], g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG],
                                                g_regs[mmDB_DEPTH_BASE]);
         break;
+#ifdef WWHD_NATIVE_DRAW
+    case OP_PACKET_DEFINE: native_draw::define(p, n); break;
+    case OP_PACKET_DRAW: {
+        const native_draw::Packet* pk = n == native_draw::kDrawWords ? native_draw::packet(p[0]) : nullptr;
+        if (!pk) break;
+        // the instance's register writes, exactly as the site's GX2SetPixel/Vertex/GeometryUniformBlock calls make
+        // them (gx2_resources.cpp uniform_block); they belong to the instance, so they keep the packet's state valid
+        const uint64_t epoch = native_draw::g_epoch;
+        const uint32 w[7] = {p[2], p[3] - 1, 0, 1, 0, 0, 0xC0000000};
+        if (pk->location[1] != -1) apply_regs(mmSQ_PS_UNIFORM_BLOCK_START + uint32(pk->location[1]) * 7, w, 7);
+        if (pk->location[0] != -1) apply_regs(mmSQ_VTX_UNIFORM_BLOCK_START + uint32(pk->location[0]) * 7, w, 7);
+        if (pk->location[2] != -1) apply_regs(mmSQ_GS_UNIFORM_BLOCK_START + uint32(pk->location[2]) * 7, w, 7);
+        native_draw::g_epoch = epoch;
+        native_draw::draw(g_regs, *pk, p[1], p[2], p[3]);
+        break;
+    }
+#endif
     case OP_SETUP_CONTEXT:
         g_contexts[p[0]].assign(kNumRegs, 0);
         g_shadow = g_contexts[p[0]].data();
