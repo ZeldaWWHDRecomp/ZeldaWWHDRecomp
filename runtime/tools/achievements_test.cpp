@@ -65,6 +65,16 @@ int main() {
     d[GP_STAGES + 3 * GP_STAGE_SIZE + 3] = 0xDF & ~0x20;
     assert(met("chests_drc"));
     d[GP_STAGE_NO] = 0xFF;
+    // Grandma's basement chest: chest 5 of stage table 0x0B (LinkUG's takara2), not the Windfall jail maze's (0) and
+    // the House of Wealth's (3) the fork's check needed; also while still in the basement (the working copy)
+    d[GP_STAGES + 0x0B * GP_STAGE_SIZE + 3] = 0x09;
+    assert(!met("grandma_chest"));
+    d[GP_STAGES + 0x0B * GP_STAGE_SIZE + 3] = 0x20;
+    assert(met("grandma_chest"));
+    d[GP_STAGES + 0x0B * GP_STAGE_SIZE + 3] = 0;
+    d[GP_STAGE_NO] = 0x0B, d[GP_STAGE_COPY + 3] = 0x20;
+    assert(met("grandma_chest"));
+    d[GP_STAGE_NO] = 0xFF, d[GP_STAGE_COPY + 3] = 0;
     d[GP_INFO + 0x58] = 1;
     assert(met("the_end") && !met("the_end_hero"));
     {
