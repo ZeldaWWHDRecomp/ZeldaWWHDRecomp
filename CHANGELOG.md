@@ -7,6 +7,8 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **macOS: Metal-only builds link again** (#508, thanks @fayep). A build with `-DWWHD_RENDERER=METAL` failed to link
+  because of the Vulkan crash hook; it is now compiled only into builds with Vulkan.
 - **Game pages: the game font stays while scrolling, and the cursor reaches the Settings tabs** (#506). Lines that
   scrolled into view on the in-game pages could fall back to the overlay font; they now always use the game font. On
   the Settings page, Up from the first row moves the cursor onto the tab row (Camera, Controls, ...), so the tabs are
