@@ -148,6 +148,12 @@ function(wwhd_decomp_configure)
   # process-wide table lock (runtime/src/addr_cache.h). Same objects, owner, recursion count and wait order.
   # Run-time off switch: WWHD_DECOMP_FAST_MUTEX=0 (the HLE path; the cache stays)
   option(WWHD_DECOMP_FAST_MUTEX "decomp build, fast mode: OS mutex imports straight to the host mutex (lock-free lookup)" OFF)
+  # fast mode: a native entry of a body that is not register-exact (its NativeScope puts the arguments into the guest
+  # registers, places r1 and hands the result back in the result registers) sets no LR / pc (decomp_native_lr), as a
+  # register-exact entry does (LEAN_ENTRY), and does that register work inline instead of in the cold enter_regs /
+  # exit_regs / native_args_slow (gabi.h GABI_NX_LEAN). The body's own guest calls get their LR by call site as before.
+  # No run-time switch (OFF: as before)
+  option(WWHD_DECOMP_FAST_NX_LEAN "decomp build, fast mode: non-register-exact native entries without LR / pc, inline" OFF)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -369,6 +375,9 @@ function(wwhd_decomp_link target)
         message(FATAL_ERROR "WWHD_DECOMP_FAST_PASS_TS needs WWHD_DECOMP_TP_CACHE (the thread-pointer table it passes on)")
       endif()
       list(APPEND opts -DGABI_PASS_TS=1)
+    endif()
+    if(WWHD_DECOMP_FAST_NX_LEAN)
+      list(APPEND opts -DGABI_NX_LEAN=1)
     endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)
