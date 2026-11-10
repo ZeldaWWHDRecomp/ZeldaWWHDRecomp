@@ -160,6 +160,30 @@ static void test_ping_packets() {
     assert(!parse_pong(q.data(), q.size() - 1));
 }
 
+static void test_boot_image_packets() {
+    std::vector<uint8_t> jpeg(3000);
+    for (size_t i = 0; i < jpeg.size(); i++) jpeg[i] = uint8_t(i * 7);
+    const uint32_t id = boot_image_id(jpeg.data(), jpeg.size());
+    assert(id != 0 && id == boot_image_id(jpeg.data(), jpeg.size()));
+    const auto pieces = encode_boot_image(5, id, jpeg.data(), jpeg.size());
+    assert(pieces.size() == (jpeg.size() + kMaxBootImagePiece - 1) / kMaxBootImagePiece);
+    std::vector<uint8_t> back(jpeg.size());
+    size_t got = 0;
+    for (const auto& p : pieces) {
+        assert(p.size() <= kMaxDatagram);
+        auto b = parse_boot_image(p.data(), p.size());
+        assert(b && b->id == id && b->total == jpeg.size());
+        memcpy(back.data() + b->offset, b->data, b->size);
+        got += b->size;
+    }
+    assert(got == jpeg.size() && back == jpeg);
+    auto bad = pieces[0];
+    bad[kHeaderSize + 11] = 0x7F;  // an offset past the end
+    assert(!parse_boot_image(bad.data(), bad.size()));
+    const auto want = encode_boot_image_want(5, id);
+    assert(parse_boot_image_want(want.data(), want.size()) == id && !parse_boot_image(want.data(), want.size()));
+}
+
 static void test_text_packets() {
     TextPrompt t{7, 3, 8, true, "Enter your name", "Link"};
     auto p = encode_text(5, t);
@@ -460,6 +484,40 @@ static void test_server_text() {
     server.stop();
 }
 
+static void test_server_boot_image() {
+    Server server({}, "Test-Mac");
+    std::vector<uint8_t> jpeg(5000, 0x42);
+    const uint32_t id = boot_image_id(jpeg.data(), jpeg.size());
+    server.set_boot_image(jpeg);
+    assert(server.start(0));
+    Phone phone(server.port());
+    phone.send(encode_hello({42, "Test iPhone", ""}));
+    const auto w = phone.welcome();
+    assert(w);
+    const uint32_t session = w->first;
+    auto pieces_after = [&](uint32_t shown) {
+        phone.send(encode_boot_image_want(session, shown));
+        size_t bytes = 0;
+        const auto until = std::chrono::steady_clock::now() + std::chrono::milliseconds(400);
+        while (std::chrono::steady_clock::now() < until) {
+            uint8_t buf[2048];
+            timeval tv{0, 100 * 1000};
+            setsockopt(phone.s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+            const ssize_t n = recv(phone.s, buf, sizeof buf, 0);
+            if (n > 0 && parse_header(buf, size_t(n))->type == kBootImage) {
+                const auto p = parse_boot_image(buf, size_t(n));
+                assert(p && p->id == id);
+                bytes += p->size;
+            }
+        }
+        return bytes;
+    };
+    assert(pieces_after(0) == jpeg.size());   // a phone without it: every piece
+    assert(pieces_after(7) == 0);             // asked again within kBootImageGapMs: nothing yet
+    assert(pieces_after(id) == 0);            // a phone that shows it: nothing
+    server.stop();
+}
+
 static void test_server_video() {
     std::atomic<int> keyframes{0};
     Server server({nullptr, nullptr, nullptr, [&] { keyframes++; }}, "Test-Mac");
@@ -640,13 +698,15 @@ int main() {
     test_rumble();
     test_ping_packets();
     test_text_packets();
+    test_boot_image_packets();
     test_audio_packets();
     test_pairing();
     test_pad_values();
     test_server();
     test_server_video();
     test_server_text();
+    test_server_boot_image();
     test_server_pairing();
     test_pairing_waits_for_saved();
-    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets, text prompts (packets; over loopback), pairing (codes, tries, expiry, refusal, saved list; over loopback) passed");
+    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets, text prompts and the boot image (packets; over loopback), pairing (codes, tries, expiry, refusal, saved list; over loopback) passed");
 }

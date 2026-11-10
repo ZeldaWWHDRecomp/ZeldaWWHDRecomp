@@ -46,6 +46,7 @@ std::atomic<bool> g_pair_request{false}, g_paired_changed{false};
 std::atomic<bool> g_enabled{false}, g_env{false}, g_host{false};
 uint16_t g_port = kDefaultPort;                    // g_mu
 TextPrompt g_text;                                 // g_mu: the prompt now (a restarted server gets it too)
+std::vector<uint8_t> g_boot_image;                 // g_mu: the game's GamePad boot image (JPEG)
 std::mutex g_text_mu;
 std::vector<TextInput> g_text_inputs;              // g_text_mu
 #ifdef __APPLE__
@@ -167,6 +168,7 @@ void start_locked(uint16_t port) {
     }, name, &g_pairing);
     if (!g_server->start(port)) { g_server.reset(); return; }
     g_server->set_text(g_text);
+    g_server->set_boot_image(g_boot_image);
     log_msg("[remote pad] waiting for the iPhone GamePad on UDP port %u (%s)", (unsigned)g_server->port(),
             g_env ? "WWHD_REMOTE_PAD" : "Settings > Controls > iPhone GamePad");
 #ifdef __APPLE__
@@ -231,6 +233,16 @@ void send_audio(const int32_t* left, const int32_t* right, int frames) {
         lr[2 * i + 1] = int16_t(std::clamp<int32_t>(right[i], -32768, 32767));
     }
     if (const auto srv = server()) srv->send_audio(lr, uint16_t(frames));
+}
+
+void set_boot_image(std::vector<uint8_t> jpeg) {
+    std::shared_ptr<Server> srv;
+    {
+        std::lock_guard lk(g_mu);
+        g_boot_image = jpeg;
+        srv = g_server;
+    }
+    if (srv) srv->set_boot_image(std::move(jpeg));
 }
 
 void text_prompt(const TextPrompt& t) {

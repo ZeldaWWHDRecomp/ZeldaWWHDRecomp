@@ -67,6 +67,9 @@ public:
     // Any thread: the game's text prompt as it is now (protocol.h kText). Sent at once when it changed,
     // every kTextRepeat while open, and kTextCloses times once it closes; a new phone gets it too.
     void set_text(const TextPrompt& t);
+    // Any thread: the running game's GamePad boot image (protocol.h kBootImage), JPEG; sent to a phone that
+    // shows another (kBootImageWant). Empty: none.
+    void set_boot_image(std::vector<uint8_t> jpeg);
     static constexpr std::chrono::milliseconds kTextRepeat{500}, kTextCloseGap{150};
     static constexpr int kTextCloses = 3;
 
@@ -93,6 +96,9 @@ private:
     uint32_t rumble_seq_ = 0;        // mu_
     uint32_t audio_seq_ = 0;         // mu_
     TextPrompt text_;                // mu_
+    std::vector<uint8_t> boot_image_;  // mu_
+    uint32_t boot_image_id_ = 0;     // mu_
+    std::chrono::steady_clock::time_point boot_image_sent_{};  // mu_
     int text_closes_ = 0;            // mu_: closed repeats still due
     std::chrono::steady_clock::time_point text_sent_{};  // mu_
 };

@@ -1215,7 +1215,7 @@ if(WWHD_HAS_METAL)
   # (remote_video.mm is a renderer source: it is compiled with the cemu shim, see GFX_SOURCES)
   target_include_directories(remote_video_test PRIVATE runtime/src runtime/include ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
   target_compile_options(remote_video_test PRIVATE -UNDEBUG)
-  target_link_libraries(remote_video_test PRIVATE Threads::Threads "-framework Metal" "-framework Foundation"
+  target_link_libraries(remote_video_test PRIVATE Threads::Threads "-framework Metal" "-framework Foundation" "-framework CoreGraphics" "-framework ImageIO"
                         "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo")
   add_test(NAME remote_video COMMAND remote_video_test)
   set_tests_properties(remote_video PROPERTIES TIMEOUT 60)

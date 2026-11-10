@@ -83,6 +83,10 @@ void send_audio(const int32_t* left, const int32_t* right, int frames);
 void text_prompt(const TextPrompt& t);
 std::vector<TextInput> take_text_inputs();
 
+// ---- the running game's GamePad boot image (protocol.h kBootImage): the phone's background ----
+// any thread, once the game's files are known: JPEG bytes (empty: none)
+void set_boot_image(std::vector<uint8_t> jpeg);
+
 // ---- rumble (protocol.h kRumble) ----
 // The host, every input update (any rate, one thread): the GamePad motor's strength now, 0..1
 // (rumble::host_level). Sent to the phone when it changes, repeated while it runs (RumbleSender).

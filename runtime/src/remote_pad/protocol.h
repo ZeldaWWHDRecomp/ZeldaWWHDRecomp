@@ -40,6 +40,13 @@
 //                                   (TextAction), 0 u8, text (text): the whole field. The prompt takes
 //                                   it through its own rules (the game font's characters, the length),
 //                                   so the phone shows the text of the next kText that acks it.
+//   computer -> phone   kBootImage  header (session), id u32, total u32, offset u32, then bytes: one piece of
+//                                   the running game's GamePad boot image (meta/bootDrcTex.tga) as a JPEG,
+//                                   for the phone's background. id: a hash of the JPEG (never 0), so a phone
+//                                   keeps each game's image and asks for it no more.
+//   phone -> computer   kBootImageWant header (session), id u32: the boot image the phone shows (0: none);
+//                                   about every 2 s while connected. Another id than the computer's: it
+//                                   sends every piece again (at most every kBootImageGapMs).
 //
 // Pairing (pairing.h), all with session 0, answering the Hello's nonce:
 //   computer -> phone   kPairing    header, nonce u32, state u8 (PairState), attempts left u8: the
@@ -82,7 +89,8 @@ constexpr size_t kMaxText = 255;
 constexpr size_t kMaxDatagram = 1400;  // below the Wi-Fi MTU with IPv6 and UDP headers
 
 enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7, kAudio = 8,
-                      kPairing = 9, kPair = 10, kPaired = 11, kPing = 12, kPong = 13, kText = 14, kTextInput = 15 };
+                      kPairing = 9, kPair = 10, kPaired = 11, kPing = 12, kPong = 13, kText = 14, kTextInput = 15,
+                      kBootImage = 16, kBootImageWant = 17 };
 enum HelloFlag : uint8_t { kWantsVideo = 1, kWantsAudio = 2 };  // a Hello's header flags
 enum PairState : uint8_t { kEnterCode = 1, kWrongCode = 2, kNoCode = 3 };
 constexpr uint32_t kRumbleStaleMs = 250;
@@ -171,6 +179,22 @@ struct TextInput {
     std::string text;  // UTF-8
     bool operator==(const TextInput&) const = default;
 };
+constexpr size_t kBootImageHeaderSize = kHeaderSize + 12;
+constexpr size_t kMaxBootImagePiece = kMaxDatagram - kBootImageHeaderSize;
+constexpr uint32_t kMaxBootImage = 4u << 20;  // (a phone ignores larger)
+constexpr uint32_t kBootImageGapMs = 2000;
+struct BootImagePiece {
+    uint32_t id = 0, total = 0, offset = 0;
+    const uint8_t* data = nullptr;  // into the parsed datagram
+    size_t size = 0;
+};
+uint32_t boot_image_id(const uint8_t* data, size_t size);  // FNV-1a, never 0
+// every piece of one image (at least one)
+std::vector<std::vector<uint8_t>> encode_boot_image(uint32_t session, uint32_t id, const uint8_t* data, size_t size);
+std::optional<BootImagePiece> parse_boot_image(const uint8_t* data, size_t size);
+std::vector<uint8_t> encode_boot_image_want(uint32_t session, uint32_t id);
+std::optional<uint32_t> parse_boot_image_want(const uint8_t* data, size_t size);
+
 std::vector<uint8_t> encode_text(uint32_t session, const TextPrompt& t);
 std::optional<TextPrompt> parse_text(const uint8_t* data, size_t size);
 std::vector<uint8_t> encode_text_input(uint32_t session, const TextInput& t);

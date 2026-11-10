@@ -114,6 +114,54 @@ std::vector<uint8_t> encode_rumble(uint32_t session, uint32_t seq, uint8_t level
     w.u32(seq); w.u8(level);
     return std::move(w.out);
 }
+uint32_t boot_image_id(const uint8_t* data, size_t size) {
+    uint32_t h = 2166136261u;
+    for (size_t i = 0; i < size; i++) h = (h ^ data[i]) * 16777619u;
+    return h ? h : 1;
+}
+
+std::vector<std::vector<uint8_t>> encode_boot_image(uint32_t session, uint32_t id, const uint8_t* data, size_t size) {
+    std::vector<std::vector<uint8_t>> out;
+    size_t at = 0;
+    do {
+        const size_t n = std::min(size - at, kMaxBootImagePiece);
+        Writer w;
+        w.header(kBootImage, session);
+        w.u32(id); w.u32(uint32_t(size)); w.u32(uint32_t(at));
+        w.out.insert(w.out.end(), data + at, data + at + n);
+        out.push_back(std::move(w.out));
+        at += n;
+    } while (at < size);
+    return out;
+}
+
+std::optional<BootImagePiece> parse_boot_image(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kBootImage);
+    if (!r) return std::nullopt;
+    BootImagePiece p;
+    p.id = r->u32(); p.total = r->u32(); p.offset = r->u32();
+    if (!r->ok || !p.id || p.total > kMaxBootImage || p.offset > p.total) return std::nullopt;
+    p.data = data + r->at;
+    p.size = size - r->at;
+    if (p.size > p.total - p.offset) return std::nullopt;
+    return p;
+}
+
+std::vector<uint8_t> encode_boot_image_want(uint32_t session, uint32_t id) {
+    Writer w;
+    w.header(kBootImageWant, session);
+    w.u32(id);
+    return std::move(w.out);
+}
+
+std::optional<uint32_t> parse_boot_image_want(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kBootImageWant);
+    if (!r) return std::nullopt;
+    const uint32_t id = r->u32();
+    if (!r->ok) return std::nullopt;
+    return id;
+}
+
 std::vector<uint8_t> encode_text(uint32_t session, const TextPrompt& t) {
     Writer w;
     w.header(kText, session);
