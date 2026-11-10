@@ -1,4 +1,5 @@
 #include "metal_gamepad_backdrop.h"
+#include "remote_video.h"
 #include "platform/present_observer.h"
 // Display: the TV and GamePad windows, full screen, and the final composition of the TV and GamePad
 // images onto the screen (scale to fit with letterbox/pillarbox, scaling filter, GamePad screen as a
@@ -35,6 +36,7 @@
 #include "../exception_report.h"
 #include "../tv_pointer.h"
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <map>
 #include <mutex>
@@ -1013,6 +1015,10 @@ static void take_screenshot(const PresentPlan& P) {
 
 // Metal, called from swap(): compose and present the TV window (with the GamePad overlay) and the GamePad window
 void present_screens() {
+    // the iPhone GamePad picture's time: remote_pad::clock_ns's clock (not its header: this file is one of the
+    // inputs of the prepared shaders' identity, cmake/pipeline_identity_inputs.txt)
+    const uint64_t present_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
     CGSize ls = R.tv.layer ? R.tv.layer.drawableSize : CGSizeMake(0, 0);
     PresentPlan P = display_plan(R.tv.tex != nil, nominal_w(R.tv), nominal_h(R.tv), R.drc.tex != nil, nominal_w(R.drc), nominal_h(R.drc),
                                  ls.width, ls.height, R.frame);
@@ -1044,6 +1050,16 @@ void present_screens() {
     const bool game_shown = game_picture_box(P, &game_box);
     overlay::guesthud::set_regions(P.tv.x,P.tv.y,P.tv.w,P.tv.h,!P.drc_only,game_box.x,game_box.y,game_box.w,game_box.h,game_shown);
     g_overlay_draw = overlay::frame(dw, dh, overlay_metal_init);  // settings overlay, drawn by compose_tv
+    // The iPhone GamePad's screen (remote_video.h), the same picture whatever the GamePad screen mode here,
+    // before anything for the windows and in a command buffer of its own: the encoder starts as soon as
+    // it is drawn, not after the TV's composition and its wait for a drawable.
+    if (R.drc.tex)
+        if (id<MTLTexture> t = remote_video::begin_frame(R.device, R.drc.srgb, nominal_w(R.drc), nominal_h(R.drc))) {
+            flush();  // the frame so far (the GamePad picture among it)
+            compose_drc(t);
+            remote_video::end_frame(command_buffer(), present_ns);
+            flush();
+        }
     // Hidden test-only composition: one reused GPU target, no drawable/readback/disk.
     // Like Metal's other resources this target is process-lifetime; replace on device/format change.
     const auto& diagnostic=headless_compose::policy();

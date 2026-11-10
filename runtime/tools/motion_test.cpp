@@ -626,6 +626,49 @@ static void test_device_source() {
     assert(close_to(camera.yaw,before,1e-4f));
 }
 
+// The iPhone GamePad (remote_pad/): natural phone axes and screen rotation, turned by device_to_sdl like
+// this device's own sensors, used under the device source only, under its own id.
+static void test_remote_source() {
+    using namespace motion;
+    Settings s;
+    s.source=kDevice;
+    set_settings(s);
+    // lying face up (z out of the screen = up) and turning right about the screen's normal: as the
+    // device source's flat pose (test_device_source)
+    const float acc[3]={0,0,9.80665f},right[3]={0,0,-kPi/2},left[3]={0,0,kPi/2},still[3]={};
+    uint64_t t=50000000000ull;
+    Game camera;
+    camera.frame(vpad(false));
+    float initial=camera.yaw;
+    for(int i=0;i<100;i++)remote_sample(t+=4000000,right,acc,0);
+    camera.frame(vpad(false));
+    const float turned=camera.yaw-initial;
+    assert(close_to(turned,game_units_one_frame(17.82f),0.02f));
+    assert(status().find("Receiving motion")!=std::string::npos);
+    // in landscape (the phone in a controller) the screen's normal is the same axis: turning back left
+    // by as much mirrors the turn
+    remote_reset();
+    for(int i=0;i<100;i++)remote_sample(t+=4000000,still,acc,1);
+    camera.frame(vpad(false));
+    initial=camera.yaw;
+    for(int i=0;i<100;i++)remote_sample(t+=4000000,left,acc,1);
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw-initial,-turned,0.15f));
+    // a reset discards unread motion
+    remote_sample(t+=4000000,right,acc,1);
+    remote_reset();
+    const float before=camera.yaw;
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw,before,1e-4f));
+    // other sources ignore the phone
+    s.source=kController;
+    set_settings(s);
+    for(int i=0;i<100;i++)remote_sample(t+=4000000,right,acc,0);
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw,before,1e-4f));
+    set_settings(Settings{});
+}
+
 int main() {
     test_aim_conventions();
     test_game_reading();
@@ -634,6 +677,7 @@ int main() {
     test_dsu_loopback();
     test_settings_and_sources();
     test_device_source();
+    test_remote_source();
     puts("motion_test: aim conventions (player space, yaw, roll; SDL and Cemuhook), game reading, bias, sensitivity/invert, "
-         "mouse, device switching, phone sensor rotation/reset, timestamps, DSU packets and loopback, settings passed");
+         "mouse, device switching, phone sensor rotation/reset, the iPhone GamePad, timestamps, DSU packets and loopback, settings passed");
 }
