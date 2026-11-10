@@ -20,7 +20,7 @@ enum WWGP {
     enum PacketType: UInt8 {
         case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7, audio = 8
         case pairing = 9, pair = 10, paired = 11, ping = 12, pong = 13, text = 14, textInput = 15
-        case bootImage = 16, bootImageWant = 17
+        case bootImage = 16, bootImageWant = 17, controllerInfo = 18
     }
     /// protocol.h PairState: what the computer says about pairing
     enum PairState: UInt8 { case enterCode = 1, wrongCode = 2, noCode = 3 }
@@ -171,6 +171,21 @@ enum WWGP {
         var w = Writer()
         w.header(.bootImageWant, session: session)
         w.u32(id)
+        return w.bytes
+    }
+
+    /// The attached controller as GameController describes it (protocol.h kControllerInfo): the game reads
+    /// its button labels from these names. All empty: none.
+    struct ControllerInfo: Equatable {
+        var name = "", vendor = "", category = ""
+        var faces = ["", "", "", ""]  // buttonA, buttonB, buttonX, buttonY
+    }
+
+    static func controllerInfo(session: UInt32, _ c: ControllerInfo) -> [UInt8] {
+        var w = Writer()
+        w.header(.controllerInfo, session: session)
+        w.name(c.name); w.name(c.vendor); w.name(c.category)
+        for f in c.faces { w.name(f) }
         return w.bytes
     }
 

@@ -29,6 +29,7 @@ public:
         bool connected = false;
         uint32_t session = 0;
         std::string device, controller, address;
+        ControllerInfo info;         // the phone's controller as its kControllerInfo says (empty until then)
         bool video = false;          // the phone asked for the GamePad screen (kWantsVideo)
         bool audio = false;          // ... and for the GamePad speaker (kWantsAudio)
         Input input;                 // the latest (all zero until the first Input)

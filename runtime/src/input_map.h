@@ -210,6 +210,14 @@ enum class AppleFaceLayout { kStandard, kNintendo, kJoyConSingle };
 AppleFaceLayout apple_face_layout(const char* product_category, const char* vendor_name);
 int apple_face_input(AppleFaceLayout layout, int pad);  // non-face inputs pass through
 void apple_face_labels(AppleFaceLayout layout, FaceLabel labels[4]);  // raw A/B/X/Y -> positions
+// A pad whose buttons do not name themselves (older MFi, some HID): its family's letters by position
+// (south, east, west, north) guessed from what it says it is; `out` untouched when that says nothing.
+void family_face_labels(const char* vendor_name, const char* product_category, FaceLabel out[4]);
+bool gamecube_named(const char* vendor_name, const char* product_category);
+// A GameController pad known only by its names (the iPhone GamePad's controller, remote_pad.h): the
+// letters by position from its buttonA/B/X/Y names, else its family's.
+void named_face_labels(const char* vendor_name, const char* product_category, const char* const faces[4],
+                       FaceLabel labels[4]);
 // A possible pre-#181 manual workaround; report it, never silently overwrite an intentional
 // by-label choice (or a shared mapping used with another controller).
 bool apple_face_workaround(const Mapping& m, AppleFaceLayout layout);

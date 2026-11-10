@@ -250,6 +250,7 @@ void Server::run() {
                         state_.session = new_session();
                         state_.device = hello->device.empty() ? "iPhone" : hello->device;
                         state_.controller = hello->controller;
+                        state_.info = {};
                         state_.video = hello->video;
                         state_.audio = hello->audio;
                         state_.address = address_text(from);
@@ -312,6 +313,14 @@ void Server::run() {
                     if (const auto t = parse_text_input(buf, (size_t)n)) {
                         seen_ = now;
                         if (cb_.text_input) cb_.text_input(*t);
+                    }
+                } else if (h->type == kControllerInfo) {
+                    if (const auto info = parse_controller_info(buf, (size_t)n)) {
+                        seen_ = now;
+                        if (*info != state_.info) {
+                            state_.info = *info;
+                            state_.controller = info->name;  // (the Hello's is the connection's first)
+                        }
                     }
                 } else if (h->type == kBootImageWant) {
                     if (const auto want = parse_boot_image_want(buf, (size_t)n)) {

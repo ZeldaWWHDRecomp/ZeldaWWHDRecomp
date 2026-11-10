@@ -4,7 +4,9 @@ Play Wind Waker HD on your Mac and TV with an iPhone as the Wii U GamePad. Attac
 phone (Backbone, Kishi, Razer, or a paired DualSense or Xbox controller). The phone sends the game:
 
 - the controller's buttons and sticks: a controller in the game's Controls, named **iPhone GamePad**,
-  with its own bindings like any other controller;
+  with its own bindings like any other controller. The phone also sends what its buttons are called, so
+  the game's prompts show that controller's buttons (✕ ○ □ △ on a PlayStation-style one) and by-label
+  bindings work as for a controller on the Mac;
 - touches on its screen: the GamePad's touch screen (items, map, sea chart);
 - its gyro: GamePad aiming (bow, hookshot, telescope, Picto Box).
 

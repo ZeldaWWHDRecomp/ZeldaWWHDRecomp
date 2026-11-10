@@ -44,6 +44,12 @@
 //                                   the running game's GamePad boot image (meta/bootDrcTex.tga) as a JPEG,
 //                                   for the phone's background. id: a hash of the JPEG (never 0), so a phone
 //                                   keeps each game's image and asks for it no more.
+//   phone -> computer   kControllerInfo header (session), the controller attached to the phone: name, vendor
+//                                   name, product category, then the names of its south, east, west and north
+//                                   face buttons (GameController's buttonA/B/X/Y: SF Symbol name, else
+//                                   localized name; empty when it does not say). All empty: none. On a
+//                                   change and about every 2 s, so the game's prompts and its by-label
+//                                   bindings follow the controller as for one on the computer.
 //   phone -> computer   kBootImageWant header (session), id u32: the boot image the phone shows (0: none);
 //                                   about every 2 s while connected. Another id than the computer's: it
 //                                   sends every piece again (at most every kBootImageGapMs).
@@ -90,7 +96,7 @@ constexpr size_t kMaxDatagram = 1400;  // below the Wi-Fi MTU with IPv6 and UDP 
 
 enum Type : uint8_t { kHello = 1, kWelcome = 2, kInput = 3, kBye = 4, kVideo = 5, kKeyframe = 6, kRumble = 7, kAudio = 8,
                       kPairing = 9, kPair = 10, kPaired = 11, kPing = 12, kPong = 13, kText = 14, kTextInput = 15,
-                      kBootImage = 16, kBootImageWant = 17 };
+                      kBootImage = 16, kBootImageWant = 17, kControllerInfo = 18 };
 enum HelloFlag : uint8_t { kWantsVideo = 1, kWantsAudio = 2 };  // a Hello's header flags
 enum PairState : uint8_t { kEnterCode = 1, kWrongCode = 2, kNoCode = 3 };
 constexpr uint32_t kRumbleStaleMs = 250;
@@ -141,6 +147,11 @@ struct Hello {
     bool audio = false;  // kWantsAudio
     Bytes16 id{}, token{};  // the phone's (pairing.h); zero from a phone that never paired
     bool operator==(const Hello&) const = default;
+};
+struct ControllerInfo {
+    std::string name, vendor, category;
+    std::array<std::string, 4> faces;  // GameController's buttonA, buttonB, buttonX, buttonY
+    bool operator==(const ControllerInfo&) const = default;
 };
 struct Welcome { uint32_t nonce = 0; std::string host; bool operator==(const Welcome&) const = default; };
 
@@ -193,6 +204,8 @@ uint32_t boot_image_id(const uint8_t* data, size_t size);  // FNV-1a, never 0
 std::vector<std::vector<uint8_t>> encode_boot_image(uint32_t session, uint32_t id, const uint8_t* data, size_t size);
 std::optional<BootImagePiece> parse_boot_image(const uint8_t* data, size_t size);
 std::vector<uint8_t> encode_boot_image_want(uint32_t session, uint32_t id);
+std::vector<uint8_t> encode_controller_info(uint32_t session, const ControllerInfo& c);
+std::optional<ControllerInfo> parse_controller_info(const uint8_t* data, size_t size);
 std::optional<uint32_t> parse_boot_image_want(const uint8_t* data, size_t size);
 
 std::vector<uint8_t> encode_text(uint32_t session, const TextPrompt& t);

@@ -213,6 +213,7 @@ Pad pad() {
     p.connected = s.connected;
     p.device = s.device;
     p.controller = s.controller;
+    p.info = s.info;
     p.input = s.input;
     return p;
 }

@@ -122,9 +122,7 @@ static input_map::AppleFaceLayout controller_face_layout(GCController* c) {
 }
 
 static bool gamecube_controller(GCController* c) {
-    NSString* category = c.productCategory.lowercaseString;
-    NSString* vendor = c.vendorName.lowercaseString;
-    return [category containsString:@"gamecube"] || [vendor containsString:@"gamecube"];
+    return input_map::gamecube_named(c.vendorName.UTF8String, c.productCategory.UTF8String);
 }
 
 // every mappable controller input of one controller, 0..1; false: not a gamepad
@@ -392,6 +390,12 @@ static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std:
     if (const remote_pad::Pad r = remote_pad::pad(); r.connected && r.input.controller) {
         overlay::PadValues d;
         remote_pad::pad_values(r.input, d.data());
+        // the phone sends GameController's buttonA..Y as they are; positions as for a pad on this computer
+        if (const auto layout = input_map::apple_face_layout(r.info.category.c_str(), r.info.vendor.c_str());
+            layout != input_map::AppleFaceLayout::kStandard) {
+            const overlay::PadValues raw = d;
+            for (int p = input_map::kPadA; p <= input_map::kPadY; p++) d[input_map::apple_face_input(layout, p)] = raw[p];
+        }
         out.emplace_back((uintptr_t)remote_pad::kDeviceId, d);
         if (pads) pads->push_back(nil);
     }
@@ -428,25 +432,6 @@ static input_map::FaceLabel button_letter(GCControllerButtonInput* in) {
     return input_map::face_label_from_text(s.UTF8String);
 }
 
-// A pad whose buttons do not name themselves (older MFi, some HID): guess the family from what it
-// says it is. Xbox/PlayStation letters sit where the letters are; Nintendo's are the other way.
-static void family_letters(GCController* c, input_map::FaceLabel out[4]) {
-    using FL = input_map::FaceLabel;
-    NSString* who = [NSString stringWithFormat:@"%@ %@", c.vendorName ?: @"", c.productCategory ?: @""].lowercaseString;
-    const bool nintendo = controller_face_layout(c) == input_map::AppleFaceLayout::kNintendo;
-    BOOL playstation = [who containsString:@"sony"] || [who containsString:@"dualsense"] ||
-                       [who containsString:@"dualshock"] || [who containsString:@"playstation"];
-    BOOL xboxish = [who containsString:@"xbox"] || [who containsString:@"microsoft"] ||
-                   [who containsString:@"steam"] || [who containsString:@"stadia"] || [who containsString:@"luna"];
-    if (nintendo) {
-        out[0] = FL::kB; out[1] = FL::kA; out[2] = FL::kY; out[3] = FL::kX;  // south, east, west, north
-    } else if (playstation) {  // the Xbox letters' places; the in-game prompts show the shapes (#143)
-        out[0] = FL::kCross; out[1] = FL::kCircle; out[2] = FL::kSquare; out[3] = FL::kTriangle;
-    } else if (xboxish) {
-        out[0] = FL::kA; out[1] = FL::kB; out[2] = FL::kX; out[3] = FL::kY;
-    }
-}
-
 // Connect order of the pads we have seen: GameController's own list is not that order, and the
 // Automatic preset follows the first pad still connected.
 static NSMutableArray<GCController*>* g_connect_order;
@@ -462,7 +447,8 @@ static void controller_labels(GCController* c, input_map::FaceLabel labels[4]) {
         any |= labels[i] != FL::kUnknown;
     }
     input_map::apple_face_labels(controller_face_layout(c), labels);
-    if (!any) family_letters(c, labels);  // nothing printed we can read: guess the family
+    // nothing printed we can read: guess the family
+    if (!any) input_map::family_face_labels(c.vendorName.UTF8String, c.productCategory.UTF8String, labels);
 }
 
 static void note_dominant_labels() {
@@ -973,17 +959,27 @@ void init() {
             for (int p = 1; p < input_map::kPadCount; p++) pressed |= devices[i].second[p] > 0.6f;
             // its face labels, for Controller details and Automatic prompts (issue #459)
             input_map::FaceLabel labels[4] = {};
+            bool gamecube = c && gamecube_controller(c);
             if (c) controller_labels(c, labels);
+            const bool phone = devices[i].first == (uintptr_t)remote_pad::kDeviceId;
+            if (phone) {  // the controller on the iPhone GamePad, as the phone describes it
+                const remote_pad::Pad r = remote_pad::pad();
+                const char* faces[4] = {r.info.faces[0].c_str(), r.info.faces[1].c_str(), r.info.faces[2].c_str(),
+                                        r.info.faces[3].c_str()};
+                if (!r.info.name.empty())
+                    input_map::named_face_labels(r.info.vendor.c_str(), r.info.category.c_str(), faces, labels);
+                gamecube = input_map::gamecube_named(r.info.vendor.c_str(), r.info.category.c_str());
+            }
 #ifdef WWHD_HAS_IOKIT
             if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first && hid_gamepad::xbox_labelled(p->layout)) {
                 labels[0] = input_map::FaceLabel::kA; labels[1] = input_map::FaceLabel::kB;
                 labels[2] = input_map::FaceLabel::kX; labels[3] = input_map::FaceLabel::kY;
             }
 #endif
-            if (pressed && devices[i].first != active) {
+            // (the phone's labels may arrive or change while it is in use: unchanged values are no-ops)
+            if ((pressed && devices[i].first != active) || (phone && devices[i].first == active)) {
                 active = devices[i].first;
-                input_map::set_active_controller("", name, input_map::pad_family_from_labels(labels),
-                                                 c && gamecube_controller(c));
+                input_map::set_active_controller("", name, input_map::pad_family_from_labels(labels), gamecube);
             }
             if (pressed && known.insert(devices[i].first).second && input_map::setup_offer_due(current, "", name, false))
                 overlay::offer_controller_setup("", name);
@@ -993,7 +989,7 @@ void init() {
             info.active = devices[i].first == active;
             info.values.assign(devices[i].second.begin(), devices[i].second.end());
             if (c && c.productCategory) info.type = c.productCategory.UTF8String;
-            if (c && gamecube_controller(c)) info.type = "gamecube-apple";
+            if (gamecube) info.type = "gamecube-apple";
             if (devices[i].first == (uintptr_t)remote_pad::kDeviceId) {
                 const remote_pad::Pad r = remote_pad::pad();
                 info.type = r.controller.empty() ? "iPhone" : r.controller;

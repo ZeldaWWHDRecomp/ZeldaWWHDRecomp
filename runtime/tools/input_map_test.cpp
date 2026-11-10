@@ -141,6 +141,31 @@ static void test_defaults() {
     CHECK(std::fabs(s.lx + 0.6f) < 1e-6 && std::fabs(s.ry - 0.3f) < 1e-6);
 }
 
+// a controller known only by its names (the iPhone GamePad's: remote_pad kControllerInfo)
+static void test_named_face_labels() {
+    using FL = FaceLabel;
+    FL l[4];
+    // PlayStation shapes from GameController's SF Symbol names: the PlayStation family
+    const char* ps[4] = {"xmark.circle", "circle.circle", "square.circle", "triangle.circle"};
+    named_face_labels("Backbone One - PlayStation Edition", "Backbone", ps, l);
+    CHECK(l[0] == FL::kCross && l[1] == FL::kCircle && l[2] == FL::kSquare && l[3] == FL::kTriangle);
+    CHECK(pad_family_from_labels(l) == PadFamily::kPlayStation);
+    // localized names
+    const char* xbox[4] = {"Button A", "Button B", "Button X", "Button Y"};
+    named_face_labels("Xbox Wireless Controller", "Xbox One", xbox, l);
+    CHECK(l[0] == FL::kA && l[3] == FL::kY && pad_family_from_labels(l) == PadFamily::kXbox);
+    // Nintendo's buttonA is its east button: letters by position
+    const char* nin[4] = {"a.circle", "b.circle", "x.circle", "y.circle"};
+    named_face_labels("Pro Controller", "Switch Pro Controller", nin, l);
+    CHECK(l[0] == FL::kB && l[1] == FL::kA && l[2] == FL::kY && l[3] == FL::kX);
+    CHECK(pad_family_from_labels(l) == PadFamily::kNintendo);
+    // no button names: the family from what it says it is
+    const char* none[4] = {"", "", "", nullptr};
+    named_face_labels("DualSense Wireless Controller", "DualSense", none, l);
+    CHECK(l[0] == FL::kCross && pad_family_from_labels(l) == PadFamily::kPlayStation);
+    CHECK(gamecube_named("Nintendo", "GameCube Controller") && !gamecube_named("Sony", "DualSense"));
+}
+
 static void test_apple_face_normalization() {
     using AL = AppleFaceLayout;
     using FL = FaceLabel;
@@ -603,24 +628,33 @@ static void test_face_label_text() {
     CHECK(face_label_from_text("x.circle") == FL::kX);
     CHECK(face_label_from_text("y.circle") == FL::kY);
     CHECK(face_label_from_text("a.circle.fill") == FL::kA);
-    CHECK(face_label_from_text("xmark.circle") == FL::kA);       // PlayStation Cross
-    CHECK(face_label_from_text("xmark.circle.fill") == FL::kA);
-    CHECK(face_label_from_text("circle.circle") == FL::kB);      // PlayStation Circle
-    CHECK(face_label_from_text("circle") == FL::kB);
-    CHECK(face_label_from_text("square.circle") == FL::kX);      // PlayStation Square, not Circle
-    CHECK(face_label_from_text("square.circle.fill") == FL::kX);
-    CHECK(face_label_from_text("square.fill") == FL::kX);
-    CHECK(face_label_from_text("triangle.circle") == FL::kY);
-    CHECK(face_label_from_text("triangle") == FL::kY);
+    CHECK(face_label_from_text("xmark.circle") == FL::kCross);   // PlayStation: the shapes stay shapes
+    CHECK(face_label_from_text("xmark.circle.fill") == FL::kCross);
+    CHECK(face_label_from_text("circle.circle") == FL::kCircle);
+    CHECK(face_label_from_text("circle") == FL::kCircle);
+    CHECK(face_label_from_text("square.circle") == FL::kSquare);  // Square, not Circle
+    CHECK(face_label_from_text("square.circle.fill") == FL::kSquare);
+    CHECK(face_label_from_text("square.fill") == FL::kSquare);
+    CHECK(face_label_from_text("triangle.circle") == FL::kTriangle);
+    CHECK(face_label_from_text("triangle") == FL::kTriangle);
     CHECK(face_label_from_text("x.square.fill") == FL::kX);      // letter in a square, not Square
     // localized names and vendor-style names: the one word that is a letter
     CHECK(face_label_from_text("Button A") == FL::kA);
     CHECK(face_label_from_text("Button B") == FL::kB);
-    CHECK(face_label_from_text("Cross Button") == FL::kA);
-    CHECK(face_label_from_text("Circle Button") == FL::kB);
+    CHECK(face_label_from_text("Cross Button") == FL::kCross);
+    CHECK(face_label_from_text("Circle Button") == FL::kCircle);
     CHECK(face_label_from_text("xbox.button.a") == FL::kA);
     CHECK(face_label_from_text("xbox.button.y") == FL::kY);
     CHECK(face_label_from_text("X Button") == FL::kX);
+    // a PlayStation pad's shapes: the PlayStation family, bound as the letters in their places
+    {
+        const FL ps[4] = {face_label_from_text("xmark.circle"), face_label_from_text("circle.circle"),
+                          face_label_from_text("square.circle"), face_label_from_text("triangle.circle")};
+        CHECK(pad_family_from_labels(ps) == PadFamily::kPlayStation);
+        int bind[4];
+        CHECK(face_bindings_from_labels(ps, bind) && bind[0] == kPadA && bind[1] == kPadB && bind[2] == kPadX &&
+              bind[3] == kPadY);
+    }
     // nothing a name can say: unknown
     CHECK(face_label_from_text(nullptr) == FL::kUnknown);
     CHECK(face_label_from_text("") == FL::kUnknown);
@@ -1842,6 +1876,7 @@ int main() {
     test_mouse();
     test_defaults();
     test_apple_face_normalization();
+    test_named_face_labels();
     test_face_layout();
     test_face_auto();
     test_prompts();

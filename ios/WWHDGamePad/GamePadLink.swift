@@ -109,6 +109,8 @@ final class GamePadLink: ObservableObject {
     nonisolated(unsafe) private var bootImageId: UInt32 = 0          // the one shown (0: none)
     nonisolated(unsafe) private var bootPieces = BootImageAssembler()
     nonisolated(unsafe) private var lastBootWant = Date.distantPast
+    nonisolated(unsafe) private var sentInfo: WWGP.ControllerInfo?     // the controller info last sent
+    nonisolated(unsafe) private var lastInfo = Date.distantPast
     nonisolated(unsafe) private var target = ""
     nonisolated(unsafe) private var helloDevice = "", helloController = ""
     nonisolated(unsafe) private var wantsAudio = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true
@@ -264,6 +266,7 @@ final class GamePadLink: ObservableObject {
             bootImageId = 0
             showBootImage(BootImageCache.remembered(for: label), BootImageCache.load(BootImageCache.remembered(for: label)))
             lastBootWant = .distantPast
+            sentInfo = nil
             pairingWait = false
             helloDevice = device
             helloController = controllerName
@@ -552,6 +555,13 @@ final class GamePadLink: ObservableObject {
             return
         }
         if let p = textSync.resend(now: ProcessInfo.processInfo.systemUptime) { sendText(p) }
+        // the controller's names for the game's button labels: on a change, and every 2 s (a lost one)
+        let info = controller.info
+        if info != sentInfo || now.timeIntervalSince(lastInfo) >= 2 {
+            sentInfo = info
+            lastInfo = now
+            c.send(content: Data(WWGP.controllerInfo(session: session, info)), completion: .idempotent)
+        }
         if now.timeIntervalSince(lastBootWant) >= 2 {  // (protocol.h kBootImageWant)
             lastBootWant = now
             c.send(content: Data(WWGP.bootImageWant(session: session, id: bootImageId)), completion: .idempotent)

@@ -361,10 +361,15 @@ int label_letter(FaceLabel l) {
 }
 
 FaceLabel word_letter(const std::string& w) {
-    if (w == "a" || w == "xmark" || w == "cross") return FaceLabel::kA;
-    if (w == "b" || w == "circle") return FaceLabel::kB;
-    if (w == "x" || w == "square") return FaceLabel::kX;
-    if (w == "y" || w == "triangle") return FaceLabel::kY;
+    // PlayStation's shapes stay shapes (the PlayStation prompts); they bind as the letters in their places
+    if (w == "a") return FaceLabel::kA;
+    if (w == "b") return FaceLabel::kB;
+    if (w == "x") return FaceLabel::kX;
+    if (w == "y") return FaceLabel::kY;
+    if (w == "xmark" || w == "cross") return FaceLabel::kCross;
+    if (w == "circle") return FaceLabel::kCircle;
+    if (w == "square") return FaceLabel::kSquare;
+    if (w == "triangle") return FaceLabel::kTriangle;
     return FaceLabel::kUnknown;
 }
 }  // namespace
@@ -431,6 +436,41 @@ int apple_face_input(AppleFaceLayout layout, int pad) {
 void apple_face_labels(AppleFaceLayout layout, FaceLabel labels[4]) {
     const std::array<FaceLabel, 4> raw = {labels[0], labels[1], labels[2], labels[3]};
     for (int i = 0; i < 4; ++i) labels[apple_face_input(layout, kPadA + i) - kPadA] = raw[i];
+}
+
+static std::string lower(const char* a, const char* b) {
+    std::string s = std::string(a ? a : "") + " " + (b ? b : "");
+    for (char& c : s) c = (char)tolower((unsigned char)c);
+    return s;
+}
+
+void family_face_labels(const char* vendor_name, const char* product_category, FaceLabel out[4]) {
+    using FL = FaceLabel;
+    const std::string who = lower(vendor_name, product_category);
+    auto has = [&](const char* w) { return who.find(w) != std::string::npos; };
+    if (apple_face_layout(product_category, vendor_name) == AppleFaceLayout::kNintendo) {
+        out[0] = FL::kB; out[1] = FL::kA; out[2] = FL::kY; out[3] = FL::kX;
+    } else if (has("sony") || has("dualsense") || has("dualshock") || has("playstation")) {
+        // the Xbox letters' places; the in-game prompts show the shapes (#143)
+        out[0] = FL::kCross; out[1] = FL::kCircle; out[2] = FL::kSquare; out[3] = FL::kTriangle;
+    } else if (has("xbox") || has("microsoft") || has("steam") || has("stadia") || has("luna")) {
+        out[0] = FL::kA; out[1] = FL::kB; out[2] = FL::kX; out[3] = FL::kY;
+    }
+}
+
+bool gamecube_named(const char* vendor_name, const char* product_category) {
+    return lower(vendor_name, product_category).find("gamecube") != std::string::npos;
+}
+
+void named_face_labels(const char* vendor_name, const char* product_category, const char* const faces[4],
+                       FaceLabel labels[4]) {
+    bool any = false;
+    for (int i = 0; i < 4; i++) {
+        labels[i] = face_label_from_text(faces[i]);
+        any |= labels[i] != FaceLabel::kUnknown;
+    }
+    apple_face_labels(apple_face_layout(product_category, vendor_name), labels);
+    if (!any) family_face_labels(vendor_name, product_category, labels);
 }
 
 bool apple_face_workaround(const Mapping& m, AppleFaceLayout layout) {

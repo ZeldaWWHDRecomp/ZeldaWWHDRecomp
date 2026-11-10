@@ -162,6 +162,24 @@ std::optional<uint32_t> parse_boot_image_want(const uint8_t* data, size_t size) 
     return id;
 }
 
+std::vector<uint8_t> encode_controller_info(uint32_t session, const ControllerInfo& c) {
+    Writer w;
+    w.header(kControllerInfo, session);
+    w.name(c.name); w.name(c.vendor); w.name(c.category);
+    for (const auto& f : c.faces) w.name(f);
+    return std::move(w.out);
+}
+
+std::optional<ControllerInfo> parse_controller_info(const uint8_t* data, size_t size) {
+    auto r = body(data, size, kControllerInfo);
+    if (!r) return std::nullopt;
+    ControllerInfo c;
+    c.name = r->name(); c.vendor = r->name(); c.category = r->name();
+    for (auto& f : c.faces) f = r->name();
+    if (!r->ok) return std::nullopt;
+    return c;
+}
+
 std::vector<uint8_t> encode_text(uint32_t session, const TextPrompt& t) {
     Writer w;
     w.header(kText, session);

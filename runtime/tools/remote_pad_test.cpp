@@ -184,6 +184,16 @@ static void test_boot_image_packets() {
     assert(parse_boot_image_want(want.data(), want.size()) == id && !parse_boot_image(want.data(), want.size()));
 }
 
+static void test_controller_info_packets() {
+    const ControllerInfo c{"Backbone One", "Backbone", "Backbone One - PlayStation Edition",
+                           {"xmark.circle", "circle.circle", "square.circle", "triangle.circle"}};
+    const auto p = encode_controller_info(9, c);
+    assert(parse_controller_info(p.data(), p.size()) == c);
+    assert(!parse_controller_info(p.data(), p.size() - 1));
+    const auto none = encode_controller_info(9, {});
+    assert(parse_controller_info(none.data(), none.size()) == ControllerInfo{});
+}
+
 static void test_text_packets() {
     TextPrompt t{7, 3, 8, true, "Enter your name", "Link"};
     auto p = encode_text(5, t);
@@ -428,6 +438,26 @@ static void test_server() {
     assert(!server.snapshot().connected);
     server.stop();
     assert(!server.running());
+}
+
+static void test_server_controller_info() {
+    Server server({}, "Test-Mac");
+    assert(server.start(0));
+    Phone phone(server.port());
+    phone.send(encode_hello({42, "Test iPhone", "Old name"}));
+    const auto w = phone.welcome();
+    assert(w);
+    const ControllerInfo c{"Backbone One", "Backbone", "Backbone One - PlayStation Edition",
+                           {"xmark.circle", "circle.circle", "square.circle", "triangle.circle"}};
+    phone.send(encode_controller_info(w->first + 1, c));  // another session's: ignored
+    phone.send(encode_controller_info(w->first, c));
+    assert(wait_for([&] { return server.snapshot().info == c; }));
+    assert(server.snapshot().controller == "Backbone One");
+    // a new connection starts without it
+    phone.send(encode_hello({43, "Test iPhone", ""}));
+    assert(wait_for([&] { return server.snapshot().session != w->first; }));
+    assert(server.snapshot().info == ControllerInfo{});
+    server.stop();
 }
 
 static void test_server_text() {
@@ -699,6 +729,7 @@ int main() {
     test_ping_packets();
     test_text_packets();
     test_boot_image_packets();
+    test_controller_info_packets();
     test_audio_packets();
     test_pairing();
     test_pad_values();
@@ -706,7 +737,8 @@ int main() {
     test_server_video();
     test_server_text();
     test_server_boot_image();
+    test_server_controller_info();
     test_server_pairing();
     test_pairing_waits_for_saved();
-    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets, text prompts and the boot image (packets; over loopback), pairing (codes, tries, expiry, refusal, saved list; over loopback) passed");
+    puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets, text prompts, the boot image and the controller's names (packets; over loopback), pairing (codes, tries, expiry, refusal, saved list; over loopback) passed");
 }

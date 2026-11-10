@@ -42,6 +42,15 @@ final class ControllerReader: @unchecked Sendable {  // (its state lives on the 
         onChange?(c)
     }
 
+    /// on `queue`: what the game needs to label the controller's buttons (protocol.h kControllerInfo)
+    var info: WWGP.ControllerInfo {
+        guard let c = controller, let g = c.extendedGamepad else { return WWGP.ControllerInfo() }
+        func label(_ b: GCControllerButtonInput) -> String { b.sfSymbolsName ?? b.localizedName ?? "" }
+        return WWGP.ControllerInfo(name: c.vendorName ?? c.productCategory, vendor: c.vendorName ?? "",
+                                   category: c.productCategory,
+                                   faces: [label(g.buttonA), label(g.buttonB), label(g.buttonX), label(g.buttonY)])
+    }
+
     /// on `queue`: the controller part of the Input
     func read(into i: inout WWGP.Input) {
         guard let g = controller?.extendedGamepad else { i.controller = false; return }

@@ -78,6 +78,13 @@ final class ProtocolTests: XCTestCase {
                        hex("5757475001000f000500000007000000040000000100055465747261"))
     }
 
+    func testControllerInfo() {
+        // bytes from the C++ encoder (encode_controller_info)
+        let info = WWGP.ControllerInfo(name: "Pad", vendor: "V", category: "C", faces: ["a.circle", "", "x", "y"])
+        XCTAssertEqual(WWGP.controllerInfo(session: 5, info),
+                       hex("575747500100120005000000035061640156014308612e636972636c650001780179"))
+    }
+
     func testBootImage() {
         // bytes from the C++ encoder (encode_boot_image, encode_boot_image_want)
         let p = WWGP.bootImage(hex("575747500100100005000000040302010300000000000000aabbcc"))
