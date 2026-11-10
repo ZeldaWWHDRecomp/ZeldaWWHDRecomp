@@ -110,6 +110,13 @@ int main() {
     ceiling.raise_pixel_quota("port:b",SIZE_MAX);
     for(size_t i=0;i<kMaxPortPixels/kMaxPixels;++i)assert(ceiling.create_image("port:b",2048,2048,2048*4,full.data(),full.size()));
     assert(!ceiling.create_image("port:b",1,1,4,pixel,4));
+    // the number of images likewise: a raised count is its owner's alone, at most kMaxPortImages; mods keep kMaxImages
+    Store counted;
+    counted.raise_image_quota("port:c",UINT32_MAX);counted.raise_image_quota("port:c",1);
+    for(unsigned i=0;i<kMaxPortImages;++i)assert(counted.create_image("port:c",1,1,4,pixel,4));
+    assert(!counted.create_image("port:c",1,1,4,pixel,4));
+    for(unsigned i=0;i<kMaxImages;++i)assert(counted.create_image("mod",1,1,4,pixel,4));
+    assert(!counted.create_image("mod",1,1,4,pixel,4));
     auto capped=store.begin("caps",0);command=Command{};
     for(unsigned i=0;i<kMaxCommands;++i)assert(store.append("caps",capped,command));
     assert(!store.append("caps",capped,command)&&!store.commit("caps",capped));
