@@ -29,6 +29,8 @@ CP = "wwhd_src/d/d_camera_proc.cpp"
 CE2 = "wwhd_src/d/d_camera_engine2.cpp"
 SN = "wwhd_src/d/d_snap.cpp"
 SH = "wwhd_src/d/actor/d_a_ship.cpp"
+SO = "wwhd_src/d/hd_screen_sequence_option.cpp"
+SD = "wwhd_src/d/hd_scene_save_data.cpp"
 
 
 def _p(site, func, path, macro):
@@ -135,6 +137,14 @@ SITES = [
     _p(0x0247E988, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the normal-sail branch (automatic wind)
     _p(0x0247EB88, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the target speed
     _p(0x0247ED24, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the stock target again before the jump code
+    # Title, file select, Options and input (mods/one_screen.cpp, motion/game_hooks.cpp, controller_selection.cpp)
+    _p(0x02617874, 0x02617858, "wwhd_src/d/hd_input_ctrl.cpp", "PORT_UI_W"),  # hdInputManager::init: the mode
+    _p(0x0261864C, 0x02618604, "wwhd_src/d/hd_input_ctrl.cpp", "PORT_UI_W"),  # orientation: isTvMode()
+    _p(0x026D44A8, 0x026D440C, "wwhd_src/d/hd_title_controller_selection.cpp", "PORT_UI_EVENT"),  # updateSelection
+    _p(0x026D5D84, 0x026D5CE4, SO, "PORT_UI_AT"),  # hdSequenceOption_c::loadSettings: the values loaded
+    _p(0x026D8514, 0x026D83F0, SO, "PORT_UI_W"),   # hdSequenceOption_c::open: the item count
+    _p(0x0270AC04, 0x0270AB10, SD, "PORT_UI_STATE"),  # updateControllerChoice: the picker's state
+    _p(0x0270ADD0, 0x0270ADA0, SD, "PORT_UI_STATE"),  # updateSaveSelection: Back
 ]
 
 EMPTY = [

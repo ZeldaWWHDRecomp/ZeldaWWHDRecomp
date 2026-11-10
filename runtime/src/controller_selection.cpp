@@ -53,9 +53,10 @@ int option(Cpu* c, uint32_t screen, bool background_transition = false) {
 // After updateSelection copied the current input event into its local frame,
 // before it reads the event kind. The original code consumes this exactly as a
 // button's SPECIAL (17) event. No game flags, mode or selection state are written.
-extern "C" void site_026D44A8(Cpu* c) {
+// SCREEN the selection screen (r28 at the hook), EVENT the copied event (sp+0x30 at the hook; the decomp build's point
+// passes both, ui_points.cpp)
+void controller_select_event(Cpu* c, uint32_t screen, uint32_t event) {
     Cpu saved = *c;
-    uint32_t screen = c->r[28];
     int selected = option(c, screen);
     if (selected >= 0) {
         uint32_t index = ld32(GD(0x10102B80) + selected * 4);
@@ -65,11 +66,12 @@ extern "C" void site_026D44A8(Cpu* c) {
         // updateSelection also accepts the focused receiver. Move focus using
         // the game's own setter, or its previous focus could win before this id.
         guest_call(c, GC(0x02615154), {ld32(GD(0x101F4FF0)), receiver});
-        guest_call(c, GC(0x02001338), {saved.r[1] + 0x30, 17, id, 0});
+        guest_call(c, GC(0x02001338), {event, 17, id, 0});
         LOG("[controller-select] title: automatic %s", selected ? "Pro Controller" : "GamePad");
     }
     *c = saved;
 }
+extern "C" void site_026D44A8(Cpu* c) { controller_select_event(c, c->r[28], c->r[1] + 0x30); }
 
 // Keep the title prompt invisible while its own in/out animations finish.
 extern "C" void f_026D50C4_orig(Cpu*);
