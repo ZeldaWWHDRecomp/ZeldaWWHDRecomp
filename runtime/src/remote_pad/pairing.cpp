@@ -123,6 +123,7 @@ std::string Pairing::save() const {
 }
 void Pairing::load(const std::string& saved) {
     std::lock_guard lk(mu_);
+    awaiting_ = false;
     phones_.clear();
     size_t at = 0;
     while (at < saved.size()) {

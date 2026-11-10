@@ -221,7 +221,9 @@ void Server::run() {
             if (h && h->type == kHello) {
                 const auto hello = parse_hello(buf, (size_t)n);
                 const bool free = !state_.connected || same_peer || now - seen_ > kTimeout;
-                if (hello && free && pairing_ && !pairing_->trusted(hello->id, hello->token)) {
+                if (hello && free && pairing_ && !pairing_->trusted(hello->id, hello->token) && pairing_->awaiting_saved()) {
+                    // the saved paired phones are not read yet (pairing.h await_saved): no answer for now
+                } else if (hello && free && pairing_ && !pairing_->trusted(hello->id, hello->token)) {
                     // not paired: the computer shows a code for it, the phone asks the player for it
                     const auto req = pairing_->request(hello->id, hello->device.empty() ? "iPhone" : hello->device, now_ms());
                     if (req.fresh) {

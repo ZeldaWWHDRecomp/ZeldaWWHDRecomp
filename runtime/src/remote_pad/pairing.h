@@ -63,6 +63,11 @@ public:
     // lose control characters and ';'); load() skips anything malformed
     std::string save() const;
     void load(const std::string& saved);
+    // The saved list is read later than the server may start (the game reads its settings on the first
+    // frame; WWHD_REMOTE_PAD starts the server before): until load() a phone that is not known yet gets no
+    // answer, rather than a pairing code it would not need. The phone says Hello again soon.
+    void await_saved() { std::lock_guard lk(mu_); awaiting_ = true; }
+    bool awaiting_saved() const { std::lock_guard lk(mu_); return awaiting_; }
 
 private:
     Key random_key();
@@ -72,6 +77,7 @@ private:
     std::vector<Phone> phones_;  // oldest first
     std::optional<Pending> pending_;
     uint64_t next_code_ = 0;     // no new code before this
+    bool awaiting_ = false;      // the saved list is still to come (await_saved)
 };
 
 std::string hex(const Key& k);

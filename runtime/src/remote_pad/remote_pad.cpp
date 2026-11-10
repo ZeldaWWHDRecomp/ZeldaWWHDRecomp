@@ -39,7 +39,9 @@ RumbleSender g_rumble;          // the host's input thread
 std::atomic<bool> g_rumble_reset{false};  // a new phone: start from still
 std::atomic<bool> g_connected{false};
 std::atomic<bool> g_audio{false};
-Pairing g_pairing;                                 // who may connect (pairing.h)
+Pairing g_pairing;                                 // who may connect (pairing.h; its saved list: load_paired)
+// (the game's settings come later than the server may start: no codes for phones before they are read)
+const bool g_pairing_awaits = (g_pairing.await_saved(), true);
 std::atomic<bool> g_pair_request{false}, g_paired_changed{false};
 std::atomic<bool> g_enabled{false}, g_env{false}, g_host{false};
 uint16_t g_port = kDefaultPort;                    // g_mu

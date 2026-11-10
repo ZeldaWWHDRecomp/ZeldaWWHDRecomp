@@ -539,6 +539,45 @@ static void test_server_video() {
     assert(!server.send_audio(lr, 144));
 }
 
+// The saved paired phones are read after the server may start: until then a phone it does not know gets no
+// answer (no pairing code it would not need), and once they are read it is welcomed with its token
+static void test_pairing_waits_for_saved() {
+    Pairing pr;
+    pr.await_saved();
+    std::atomic<int> shown{0};
+    Server::Callbacks cb;
+    cb.pairing = [&](const std::string&, uint32_t) { shown++; };
+    Server server(cb, "Test-Mac", &pr);
+    assert(server.start(0));
+    Phone phone(server.port());
+    Hello h{21, "Paired iPhone", ""};
+    h.id[0] = 0x11;
+    h.token[0] = 0x22;
+    phone.send(encode_hello(h));
+    assert(phone.silent(300) && shown == 0 && !server.snapshot().connected);
+    pr.load(hex(h.id) + ":" + hex(h.token) + ":Paired iPhone");
+    phone.send(encode_hello(h));
+    const auto w = phone.welcome();
+    assert(w && w->second.nonce == 21 && server.snapshot().connected && shown == 0);
+    server.stop();
+    // nothing saved: load("") ends the wait, and a new phone is asked for a code as usual
+    Pairing fresh;
+    fresh.await_saved();
+    Server second(cb, "Test-Mac", &fresh);
+    assert(second.start(0));
+    Phone other(second.port());
+    Hello n{22, "New iPhone", ""};
+    n.id[0] = 0x33;
+    other.send(encode_hello(n));
+    assert(other.silent(300));
+    fresh.load("");
+    other.send(encode_hello(n));
+    uint8_t buf[256];
+    const ssize_t got = recv(other.s, buf, sizeof buf, 0);
+    assert(got > 0 && parse_pairing(buf, size_t(got)) && shown == 1);
+    second.stop();
+}
+
 static void test_server_pairing() {
     Pairing pr;
     std::atomic<int> shown{0}, saved{0}, connects{0};
@@ -608,5 +647,6 @@ int main() {
     test_server_video();
     test_server_text();
     test_server_pairing();
+    test_pairing_waits_for_saved();
     puts("remote_pad_test: packets, controller mapping, loopback server (sessions, order, one phone, reconnect, bye, silence, video, keyframe requests, sound switched on), rumble, audio packets, text prompts (packets; over loopback), pairing (codes, tries, expiry, refusal, saved list; over loopback) passed");
 }
