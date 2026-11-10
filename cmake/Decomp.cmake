@@ -111,6 +111,10 @@ function(wwhd_decomp_configure)
   # parameters the original never reads) keeps caller=ok (native_rules.py --a3-fn, gabi.h GABI_A3_FN, NativeInfo bit 19;
   # WWHD_DECOMP_FAST_A3_FN=0 at run time: those bodies' calls are guest calls again); OFF: every such source as before
   option(WWHD_DECOMP_FAST_A3_FN "decomp build, fast mode: A3 decl only for sources a caller may depend on" ON)
+  # fast mode: an ext line declaring a result its callee's definition never sets makes the bodies that call that stub
+  # keep guest calls (native_rules.py --a3-stub: result_stub_callers, by unit), not every function of the ext line's
+  # source. OFF: the whole source, as before
+  option(WWHD_DECOMP_FAST_A3_STUB "decomp build, fast mode: A3 from result stubs for their callers, not the ext line's source" OFF)
   # fast mode: a call through a pointer that passes more registers than its target's definition takes uses the target's
   # native entry too (gabi.h GABI_PTR_SUB; a target that is not register-exact gets the guest registers as the guest call
   # gives them; WWHD_DECOMP_FAST_PTR_SUB=0 at run time: equal shapes only); OFF: equal shapes only, as before
@@ -245,6 +249,9 @@ function(wwhd_decomp_configure)
     endif()
     if(WWHD_DECOMP_FAST_A3_FN)
       list(APPEND fast_args --a3-fn)
+    endif()
+    if(WWHD_DECOMP_FAST_A3_STUB)
+      list(APPEND fast_args --a3-stub)
     endif()
     if(WWHD_DECOMP_FAST_LEAF)
       list(APPEND fast_args --leaf)

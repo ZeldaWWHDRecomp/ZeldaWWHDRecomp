@@ -618,7 +618,7 @@ def unbased_sources(src, paths):
     return {p for p in paths if has(p, set())}
 
 
-def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False, leaf=False, unbased=False):
+def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False, leaf=False, unbased=False, a3_stub=False):
     if decl_path is None:
         decl_path = os.path.join(src, "tools", "verify", "decl_handoff.tsv")
     decl = read_decl(decl_path)
@@ -644,15 +644,18 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
     under_funcs = set()
     a3_fn_set = set()  # --a3-fn: functions of such sources that keep caller=ok (NativeInfo bit 19, "(a3fn)")
     a3_whole = a3_fn_n = 0
-    # a result its callee never sets: A3 for the bodies that call the stub (result_stub_callers), not the ext line's file
-    units = collections.defaultdict(list)
-    for un in uj["units"]:
-        for sp in un["sources"]:
-            units[un["name"]].append(sp["path"])
-    res_need, res_whole, _ = result_stub_callers(under, units)
-    under_funcs |= res_need
+    # --a3-stub (cmake WWHD_DECOMP_FAST_A3_STUB): a result its callee never sets: A3 for the bodies that call the stub
+    # (result_stub_callers), not the ext line's file. Without it: the ext line's whole source, as before
+    res_need, res_whole = set(), set()
+    if a3_stub:
+        units = collections.defaultdict(list)
+        for un in uj["units"]:
+            for sp in un["sources"]:
+                units[un["name"]].append(sp["path"])
+        res_need, res_whole, _ = result_stub_callers(under, units)
+        under_funcs |= res_need
     for p in under:
-        other = [e for e in under[p] if e[1] != (-1, -1)]
+        other = [e for e in under[p] if e[1] != (-1, -1)] if a3_stub else under[p]
         if not other:
             continue
         try:
@@ -670,15 +673,16 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
     if a3_fn:
         print("decomp: native-call rules (--a3-fn): A3 by function in %d sources (%d functions no longer A3), by "
               "source in %d" % (a3_fn_n, len(a3_fn_set), a3_whole))
-    print("decomp: native-call rules: A3 for %d functions that call a stub declaring a result its definition never sets"
-          "%s" % (len(res_need), " (whole units: %s)" % ", ".join(sorted(str(u) for u in res_whole)) if res_whole else ""))
+    if a3_stub:
+        print("decomp: native-call rules (--a3-stub): A3 for %d functions that call a stub declaring a result its definition "
+              "never sets%s" % (len(res_need), " (whole units: %s)" % ", ".join(sorted(str(u) for u in res_whole)) if res_whole else ""))
     for p, v in sorted(under.items()):
         for a, r, tk, st in v:
             what = ("declares a result its %s definition never sets" % st if r == (-1, -1) else
                     "passes %dr%df, its %s definition takes %dr%df" % (r[0], r[1], st, tk[0], tk[1]))
             print("decomp: native-call rules: %s: ext %08X %s (%s%s)" % (
                 os.path.relpath(p, out), a, what,
-                "its callers keep guest calls" if r == (-1, -1) else "the file's functions keep guest calls",
+                "its callers keep guest calls" if r == (-1, -1) and a3_stub else "the file's functions keep guest calls",
                 ", the callee its registers" if st == "exact" and r != (-1, -1) else ""))
     # gen.py --hooked-bodies (fast mode): functions the runtime hooks, listed so their bodies run decompiled behind
     # the hook; never entered natively (callers reach hook_X)
@@ -962,6 +966,11 @@ def main():
         args.remove("--unbased")
         if not fast:
             sys.exit("native_rules.py: --unbased needs --fast")
+    a3_stub = "--a3-stub" in args  # fast mode (cmake WWHD_DECOMP_FAST_A3_STUB): A3 from result stubs by caller
+    if a3_stub:
+        args.remove("--a3-stub")
+        if not fast:
+            sys.exit("native_rules.py: --a3-stub needs --fast")
     a3_fn = "--a3-fn" in args  # fast mode (cmake WWHD_DECOMP_FAST_A3_FN): A3 by function (a3_precise)
     if a3_fn:
         args.remove("--a3-fn")
@@ -979,7 +988,7 @@ def main():
         sys.exit(__doc__.strip().splitlines()[4])
     src, out, gen_dir = (os.path.abspath(x) for x in args[:3])
     strict = len(args) == 4
-    lines = rules(src, out, gen_dir, strict, decl_path or None, lift, a3_fn, leaf, unbased)
+    lines = rules(src, out, gen_dir, strict, decl_path or None, lift, a3_fn, leaf, unbased, a3_stub)
     if LEAF_ERRORS:  # --leaf: leaf_rules printed each
         sys.exit("native_rules.py: %d leaf function(s) call a decompiled function that is not a leaf (--leaf); a leaf "
                  "keeps no call state, so this is a rules error" % len(LEAF_ERRORS))

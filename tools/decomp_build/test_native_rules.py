@@ -273,11 +273,17 @@ class NativeRulesTest(unittest.TestCase):
         decl = os.path.join(self.tmp.name, "handoff.tsv")
         open(decl, "w").write("%08X\texact\t0r0f\ta.cpp\tf1\t-\n" % F(1))
         for a3_fn in (False, True):
-            lines = native_rules.rules(self.src, self.out, self.gen, False, decl, (), a3_fn)
+            lines = native_rules.rules(self.src, self.out, self.gen, False, decl, (), a3_fn, a3_stub=True)
             got = {int(l.split()[0], 16): l.split("#")[0].split() for l in lines}
             self.assertEqual(got[F(20)][2], "caller=guest", (a3_fn, got[F(20)]))  # chains r3 through the stub
             self.assertIn("A3", " ".join(got[F(20)][3:]), got[F(20)])
             self.assertEqual(got[F(19)][2], "caller=ok", (a3_fn, got[F(19)]))     # the ext line's file, no such call
+            # without --a3-stub (WWHD_DECOMP_FAST_A3_STUB OFF): the rule as before, the ext line's whole source keeps
+            # guest calls and the other source's caller is not marked
+            lines = native_rules.rules(self.src, self.out, self.gen, False, decl, (), a3_fn)
+            got = {int(l.split()[0], 16): l.split("#")[0].split() for l in lines}
+            self.assertEqual(got[F(19)][2], "caller=guest", (a3_fn, got[F(19)]))
+            self.assertEqual(got[F(20)][2], "caller=ok", (a3_fn, got[F(20)]))
         need, whole, callers = native_rules.result_stub_callers(
             {c1: [(F(1), (-1, -1), (0, 0), "exact")]}, {"c": [c1, c2]})
         self.assertEqual((need, whole, dict(callers)), ({F(20)}, set(), {F(1): [F(20)]}))
