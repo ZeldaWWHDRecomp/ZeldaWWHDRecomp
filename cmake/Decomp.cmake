@@ -86,16 +86,16 @@ function(wwhd_decomp_configure)
   # ... with the native entry itself in the site's word (no table read on a hit) and a small per-shape front cache
   # before the address table on a miss (gabi.h GABI_PTR_FRONT; sites whose target changes on most calls, e.g.
   # fpcMtd_Method for every actor's method, missed into the ~4 MB table each time). Same entries and guest calls
-  option(WWHD_DECOMP_FAST_PTR_FRONT "decomp build, fast mode: call_ptr site cache holds the native entry, front cache on a miss" OFF)
+  option(WWHD_DECOMP_FAST_PTR_FRONT "decomp build, fast mode: call_ptr site cache holds the native entry, front cache on a miss" ON)
   # ... and gabi::call by address / call_ptr outside the site caches check that front cache before the address table
   # (gabi.h GABI_CALL_FRONT; they probed the ~4 MB table on every call). WWHD_DECOMP_FAST_PTR_FRONT=0 /
   # WWHD_DECOMP_FAST_CALL_FRONT=0 at run time: the table on every lookup, as before
-  option(WWHD_DECOMP_FAST_CALL_FRONT "decomp build, fast mode: gabi::call by address checks a front cache before the address table" OFF)
+  option(WWHD_DECOMP_FAST_CALL_FRONT "decomp build, fast mode: gabi::call by address checks a front cache before the address table" ON)
   # fast mode: gabi::call by address to a host runtime root or GHS libm function the runtime enters directly
   # (hostrt_fast_direct: their f_X, or sqrtf's bit-exact port) sets up the guest state do_call_g and gmem_call give it and
   # calls that function itself (gabi.h GABI_HOSTRT_DIRECT): no call_g / do_call_g / gmem_call / switch on the way.
   # WWHD_DECOMP_FAST_HOSTRT_DIRECT=0 at run time: the guest call as before
-  option(WWHD_DECOMP_FAST_HOSTRT_DIRECT "decomp build, fast mode: gabi::call to directly entered host runtime / libm functions without the guest call path" OFF)
+  option(WWHD_DECOMP_FAST_HOSTRT_DIRECT "decomp build, fast mode: gabi::call to directly entered host runtime / libm functions without the guest call path" ON)
   # fast mode: gabi::Local / FrameLocal with one thread-block lookup, one r1 read and the slot zeroed inline (gabi.h
   # GABI_FAST_LOCAL; the runtime's WWHD_DECOMP_FAST_LOCAL=0, or WWHD_NATIVE_LOCALS=1, keeps the general form)
   option(WWHD_DECOMP_FAST_LOCAL "decomp build, fast mode: lean gabi::Local / FrameLocal construction" ON)
@@ -114,7 +114,7 @@ function(wwhd_decomp_configure)
   # fast mode: an ext line declaring a result its callee's definition never sets makes the bodies that call that stub
   # keep guest calls (native_rules.py --a3-stub: result_stub_callers, by unit), not every function of the ext line's
   # source. OFF: the whole source, as before
-  option(WWHD_DECOMP_FAST_A3_STUB "decomp build, fast mode: A3 from result stubs for their callers, not the ext line's source" OFF)
+  option(WWHD_DECOMP_FAST_A3_STUB "decomp build, fast mode: A3 from result stubs for their callers, not the ext line's source" ON)
   # fast mode: a call through a pointer that passes more registers than its target's definition takes uses the target's
   # native entry too (gabi.h GABI_PTR_SUB; a target that is not register-exact gets the guest registers as the guest call
   # gives them; WWHD_DECOMP_FAST_PTR_SUB=0 at run time: equal shapes only); OFF: equal shapes only, as before
@@ -135,38 +135,38 @@ function(wwhd_decomp_configure)
   # pass pointers outside the guest window (native_rules.py --unbased, NativeInfo bit 21) or the argument is a char /
   # void / function pointer, the per-argument window check (gabi.h GABI_NOCHECK; both never refused in the 2026-11-09
   # check counts). caller_ok and the compile-time checks stay. WWHD_DECOMP_FAST_NOCHECK=0 at run time: every check again
-  option(WWHD_DECOMP_FAST_NOCHECK "decomp build, fast mode: fewer native-entry checks on calls between decompiled bodies" OFF)
+  option(WWHD_DECOMP_FAST_NOCHECK "decomp build, fast mode: fewer native-entry checks on calls between decompiled bodies" ON)
   # fast mode: the guest halves of gabi::call / call_ptr / lcall and a body's own guest call (WWHD_GLUE_FUNC's, taken
   # when native_enter_ok refuses a nested call) out of line, one function per target / shape, the body's own one cold
   # (gabi.h GABI_COLD_FALLBACK): no ArgPack on a body's stack (no stack-protector canary for it), smaller hot code; the
   # same registers, r1, LR and guest calls. Code layout only, so no run-time switch (OFF: the inline forms, as before)
-  option(WWHD_DECOMP_FAST_COLD_FALLBACK "decomp build, fast mode: guest call paths out of line (no ArgPack in hot bodies)" OFF)
+  option(WWHD_DECOMP_FAST_COLD_FALLBACK "decomp build, fast mode: guest call paths out of line (no ArgPack in hot bodies)" ON)
   # fast mode: a body looks gabi's thread block up once and passes it on to everything that runs in it (its scope,
   # frame, Locals, guest and native calls, and the bodies and ext stubs inlined into it) instead of a table lookup per
   # use (gabi.h GABI_PASS_TS: the unchanged lookup out of line in unit 0, declared const so the compiler keeps one
   # answer per function). The table, its order and its miss path stay as they are. Code only, so no run-time switch
-  option(WWHD_DECOMP_FAST_PASS_TS "decomp build, fast mode: one thread-block lookup per function, passed on (needs TP_CACHE)" OFF)
+  option(WWHD_DECOMP_FAST_PASS_TS "decomp build, fast mode: one thread-block lookup per function, passed on (needs TP_CACHE)" ON)
   # fast mode: sead::CriticalSection's OSLockMutex / OSUnlockMutex / OSTryLockMutex from decompiled code straight to
   # the host mutex: gabi::call's HLE branch calls the imports' direct host entries (gabi.h GABI_FAST_MUTEX; r3, pc and
   # result as the HLE path leaves them) and the host mutex is found through a lock-free address cache instead of the
   # process-wide table lock (runtime/src/addr_cache.h). Same objects, owner, recursion count and wait order.
   # Run-time off switch: WWHD_DECOMP_FAST_MUTEX=0 (the HLE path; the cache stays)
-  option(WWHD_DECOMP_FAST_MUTEX "decomp build, fast mode: OS mutex imports straight to the host mutex (lock-free lookup)" OFF)
+  option(WWHD_DECOMP_FAST_MUTEX "decomp build, fast mode: OS mutex imports straight to the host mutex (lock-free lookup)" ON)
   # fast mode: a native entry of a body that is not register-exact (its NativeScope puts the arguments into the guest
   # registers, places r1 and hands the result back in the result registers) sets no LR / pc (decomp_native_lr), as a
   # register-exact entry does (LEAN_ENTRY), and does that register work inline instead of in the cold enter_regs /
   # exit_regs / native_args_slow (gabi.h GABI_NX_LEAN). The body's own guest calls get their LR by call site as before.
   # No run-time switch (OFF: as before)
-  option(WWHD_DECOMP_FAST_NX_LEAN "decomp build, fast mode: non-register-exact native entries without LR / pc, inline" OFF)
+  option(WWHD_DECOMP_FAST_NX_LEAN "decomp build, fast mode: non-register-exact native entries without LR / pc, inline" ON)
   # fast mode: AutoFrame's frame of a function that is not frame-exact (the place-only "nostore" frame: FrameCtx fields,
   # no prologue stores) set inline in the body instead of in the out-of-line AutoFrame::enter (gabi.h GABI_AF_INLINE);
   # frame-exact functions keep enter(). The same FrameCtx; no run-time switch (OFF: as before)
-  option(WWHD_DECOMP_FAST_AF_INLINE "decomp build, fast mode: AutoFrame's place-only frame inline" OFF)
+  option(WWHD_DECOMP_FAST_AF_INLINE "decomp build, fast mode: AutoFrame's place-only frame inline" ON)
   # fast mode: a leaf body (WWHD_DECOMP_FAST_LEAF, NativeInfo bit 20: small, no calls) is inlined into its native-entry
   # thunk (gabi.h GABI_THUNK_INL: NEntryT run_inl), so a call through a function pointer, by address or from another
   # unit runs one function instead of thunk + body. Same conversions and body; the body keeps its own copy for its other
   # callers. No run-time switch (OFF: as before)
-  option(WWHD_DECOMP_FAST_THUNK_INL "decomp build, fast mode: leaf bodies inlined into their native-entry thunks" OFF)
+  option(WWHD_DECOMP_FAST_THUNK_INL "decomp build, fast mode: leaf bodies inlined into their native-entry thunks" ON)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -666,7 +666,7 @@ function(wwhd_decomp_link target)
   # fast mode: those libm functions as bit-exact native C++ ports (runtime/src/hostrt/hostrt_native_math.cpp, proven
   # against the recompiled originals by tools/host_runtime/difftest/nativemath.cpp); needs WWHD_DECOMP_FAST_LIBM.
   # OFF by default until the phone pair; ON: env WWHD_DECOMP_FAST_NATIVE_MATH=0 runs the originals, =check both + compare
-  option(WWHD_DECOMP_FAST_NATIVE_MATH "decomp build, fast mode: GHS libm hot functions as native bit-exact ports" OFF)
+  option(WWHD_DECOMP_FAST_NATIVE_MATH "decomp build, fast mode: GHS libm hot functions as native bit-exact ports" ON)
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_LIBM AND WWHD_DECOMP_FAST_NATIVE_MATH)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST_NATIVE_MATH=1)
     set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/hostrt/hostrt_native_math.cpp"
