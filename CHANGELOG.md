@@ -7,9 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
-- **An iPhone as the Wii U GamePad** (#488, thanks @fayep). A free iPhone app pairs with the game on the same Wi-Fi
-  (a pairing code shown in the game, one phone at a time) and works as the GamePad: it shows the GamePad picture and
-  sends touch, gyro and buttons, with rumble and the GamePad speaker. Not available on Windows yet.
+- **macOS: an iPhone as the Wii U GamePad** (#488, thanks @fayep). An iPhone app (built from `ios/`, see
+  `ios/README.md`) shows the GamePad picture over Wi-Fi and sends touch, gyro and the buttons of a controller attached
+  to the phone, with rumble and the GamePad speaker. A new phone pairs with a 6-digit code shown on the Mac. Needs the
+  Metal renderer; Linux and Windows don't offer it.
 - **macOS: Metal-only builds link again** (#508, thanks @fayep). A build with `-DWWHD_RENDERER=METAL` failed to link
   because of the Vulkan crash hook; it is now compiled only into builds with Vulkan.
 - **Game pages: the game font stays while scrolling, and the cursor reaches the Settings tabs** (#506). Lines that
