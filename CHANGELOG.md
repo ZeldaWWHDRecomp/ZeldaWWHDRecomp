@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Metal: a memory leak that grew with play time is fixed** (#501, thanks @fayep). Each sun-glare depth check kept
+  its frame's command buffer (and everything that frame used) alive for the rest of the session, about 23 a minute;
+  finished ones are now let go. Measured on an M1 Mac mini: 4,788 leftover command buffers after 3.5 h before, 4 after.
 - **GamePad bars: no flicker at high resolution scales** (#498, #493 follow-up, thanks @thejorro). The menu background
   in the bars around the GamePad picture is captured at most at 1920×1080 and scaled up, so it shows on every frame at
   resolution scale 3 and 4 too (before, the bars switched between the background and a plain colour). Metal now also
