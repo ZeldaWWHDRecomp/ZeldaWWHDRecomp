@@ -291,7 +291,7 @@ MoveHud move_hud();
 // ---- the gameplay HUDs and the game's own screens (hud_gate.cpp) ----
 // once per frame on the game thread (interp.cpp, frame start): reads whether a game menu, an event
 // or a message is up and advances the HUDs' fade over it
-void hud_service();
+void hud_service(Cpu* c);
 // what the game shows over gameplay now: an event, a message, a menu (hud_visibility.h GameUi); game thread
 struct GameUi;
 GameUi game_ui_now();

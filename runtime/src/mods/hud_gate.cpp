@@ -12,6 +12,7 @@
 //            GamePad (routing 2) or one of the item menu's bag windows open (gamepad_ui_state.cpp)
 // Test aid: WWHD_TEST_HUD_TRACE=1 logs each change of the three signals.
 // Test aid: WWHD_TEST_MENU_FOCUS_TRACE=1 logs each change of the menu event manager's focus (issue #336).
+// Test aid: WWHD_TEST_MENU_FOCUS_FORCE=<logic step>:<element hex> puts the menu's focus on that element (#336 stop-gap check).
 #include "mods.h"
 #include "climb.h"
 #include "hud_visibility.h"
@@ -32,6 +33,7 @@
 namespace interp { uint64_t logic_steps(); }
 namespace game_settings_page { bool page_open(); bool arrow_pane(uint32_t p); }  // (mods/game_settings_page.h)
 namespace game_look { std::string pane_name(uint32_t pane); bool guest_pointer(uint32_t a); }  // (mods/game_look.h)
+namespace overlay { bool is_open(); }  // (overlay/overlay.h)
 
 namespace mods {
 namespace {
@@ -116,9 +118,28 @@ static std::string guest_text(uint32_t a) {
     return s;
 }
 
-static void menu_cursor_watch() {
+// Issue #336 stop-gap, until the trigger is found (menu_cursor.h Restore): the item menu up for a second with
+// its focus on an element that isn't linked into the menu's event manager gets the focus back on the menu's
+// default element, through the game's own setter cking::ui::input::EventMgr::setModeDefault (02615154:
+// (manager, element) sets the focus and the next focus, as the menu's screens do when a window slides in).
+// The [menu-cursor] lines before it name the element the focus was on: that is what is to find the trigger.
+//   hdMenuMain_c (sIngameUi +0x17C): +0x50 mSelectionMode (0 the item window, 1 the other one), +0x48 its
+//   children (count, data); a child (hdButtonPart_c) +0x50 its element
+static uint32_t menu_default_focus(uint32_t scene) {
+    const uint32_t items = ld32(scene + 0x17C);
+    if (!object(items, 0x60)) return 0;
+    const uint32_t mode = ld32(items + 0x50), count = ld32(items + 0x48), data = ld32(items + 0x4C);
+    const uint32_t index = mode == 0 ? 0x11 : mode == 1 ? 0x28 : ~0u;
+    if (index >= count || !object(data, 4 * (index + 1))) return 0;
+    const uint32_t child = ld32(data + 4 * index);
+    return object(child, 0x54) ? ld32(child + 0x50) : 0;
+}
+
+static void menu_cursor_watch(Cpu* c) {
     static int lines = 0;
     static menu_cursor::Watch watch;
+    static menu_cursor::Restore restore;
+    static uint32_t last_good = 0;  // the element the focus was last on in this opening, linked
     static const bool trace = getenv("WWHD_TEST_MENU_FOCUS_TRACE") != nullptr;  // test aid: every focus change
     static std::string traced;
     const uint32_t scene = ld32(kIngameUi);
@@ -129,10 +150,27 @@ static void menu_cursor_watch() {
         menu = descriptor == GD(0x1049ECB0);  // l_ingameMenuState
     }
     const uint32_t options = ld32(GD(0x101F8378)), events = ld32(GD(0x101F4FF0)), mgr = ld32(GD(0x101F5A44));
+    // test aid: WWHD_TEST_MENU_FOCUS_FORCE=<logic step>:<element hex> puts the focus on that element (an unlinked
+    // chart-grid cell gives the #336 state) through the game's setter, once, at that step with the item menu up
+    static uint64_t force_step = 0;
+    static uint32_t force_element = 0;
+    static const bool force = [] {
+        const char* e = getenv("WWHD_TEST_MENU_FOCUS_FORCE");
+        return e && sscanf(e, "%llu:%x", (unsigned long long*)&force_step, &force_element) == 2;
+    }();
+    if (force && menu && c && force_step && interp::logic_steps() >= force_step && object(events, 0xE4)) {
+        force_step = 0;
+        const Cpu saved = *c;
+        guest_call(c, GC(0x02615154), {events, force_element});
+        *c = saved;
+        LOG("[menu-focus] test: focus forced to %s", describe_receiver(force_element, events).c_str());
+    }
     const uint32_t focus = object(events, 0xE4) ? ld32(events + 0x70) : 0;
     menu_cursor::Reading r;
     r.focus_linked = object(focus, 0x60) && ld32(focus + 0xC) == events;
     r.active = object(mgr, 0x20) ? int(ld32(mgr + 0x18)) : -1;
+    r.focus = focus;
+    r.focus_on_arrow = object(focus, 0x60) && game_settings_page::arrow_pane(ld32(focus + 0x5C));
     if (trace && object(events, 0xE4)) {
         const std::string now = describe_receiver(focus, events) + ", next " + describe_receiver(ld32(events + 0x74), events);
         if (now + (menu ? "+" : "") != traced) {
@@ -141,7 +179,8 @@ static void menu_cursor_watch() {
                 menu ? "" : " (item menu not up)", now.c_str(), r.active);
         }
     }
-    if (!menu) { watch.reset(); return; }
+    if (!menu) { watch.reset(), restore.reset(), last_good = 0; return; }
+    if (r.focus_linked && r.active == 0) last_good = focus;
     r.directional = object(options, 0x18) ? ld8(options + 0x14) : -1;
     const uint32_t cursor = r.active == 0 || r.active == 1 ? ld32(mgr + 0x10 + 4 * r.active) : 0;
     const uint32_t id = object(cursor, 0x54) ? ld32(cursor + 0x14) : 0;
@@ -149,19 +188,39 @@ static void menu_cursor_watch() {
     r.requested = ld8(scene + 0x23D);
     const uint64_t step = interp::logic_steps();
     const auto change = watch.update(menu_cursor::shown(r), step);
-    if (change == menu_cursor::Watch::Change::None || lines >= 20) return;
-    lines++;
-    if (change == menu_cursor::Watch::Change::Back) LOG("[menu-cursor] the item menu's selection cursor is back");
-    else
-        LOG("[menu-cursor] the item menu is up without its selection cursor since logic step %llu (issue #336): directional "
-            "input %d, cursor %d %s, menu requested %d, settings arrow or page %d; focus %s, next %s",
-            (unsigned long long)watch.since(), r.directional, r.active, r.state.c_str(), r.requested,
-            int(game_settings_page::page_open()), describe_receiver(focus, events).c_str(),
-            describe_receiver(object(events, 0xE4) ? ld32(events + 0x74) : 0, events).c_str());
+    const auto lost_line = [&] {
+        return "[menu-cursor] the item menu is up without its selection cursor since logic step " +
+               std::to_string(watch.since()) + " (issue #336): directional input " + std::to_string(r.directional) +
+               ", cursor " + std::to_string(r.active) + " " + r.state + ", menu requested " + std::to_string(r.requested) +
+               ", settings arrow or page " + std::to_string(int(game_settings_page::page_open())) + "; focus " +
+               describe_receiver(focus, events) + ", next " +
+               describe_receiver(object(events, 0xE4) ? ld32(events + 0x74) : 0, events);
+    };
+    bool logged = false;
+    if (change != menu_cursor::Watch::Change::None && lines < 20) {
+        lines++;
+        if (change == menu_cursor::Watch::Change::Back) LOG("[menu-cursor] the item menu's selection cursor is back");
+        else LOG("%s", lost_line().c_str()), logged = true;
+    }
+    const menu_cursor::Context context{overlay::is_open(), game_settings_page::page_open()};
+    if (!c || !restore.update(r, context, step)) return;
+    const uint32_t fallback = menu_default_focus(scene);
+    const uint32_t target = menu_cursor::restore_target(fallback, object(fallback, 0x60) && ld32(fallback + 0xC) == events,
+                                                        last_good, object(last_good, 0x60) && ld32(last_good + 0xC) == events);
+    if (!logged) LOG("%s", lost_line().c_str());  // the line that names the element, before every restore
+    if (!target) {
+        LOG("[menu-cursor] focus not restored (issue #336 stop-gap): no element of the menu to give it to");
+        return;
+    }
+    const Cpu saved = *c;
+    guest_call(c, GC(0x02615154), {events, target});  // cking::ui::input::EventMgr::setModeDefault
+    *c = saved;
+    LOG("[menu-cursor] focus restored to %s (issue #336 stop-gap, %s)", describe_receiver(target, events).c_str(),
+        target == fallback ? "the menu's default element" : "the element it was last on");
 }
 
-void hud_service() {
-    menu_cursor_watch();
+void hud_service(Cpu* c) {
+    menu_cursor_watch(c);
     const auto now = std::chrono::steady_clock::now();
     const float seconds = g_last.time_since_epoch().count() ? std::min(0.25f, std::chrono::duration<float>(now - g_last).count()) : 0.f;
     g_last = now;

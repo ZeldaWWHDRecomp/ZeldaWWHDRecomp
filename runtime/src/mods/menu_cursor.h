@@ -19,6 +19,8 @@ struct Reading {
     int active = -1;           // the active cursor: 0 focus, 1 fixed
     std::string state;         // that cursor's state name
     int requested = 0;         // mMenuRequested (Game Over)
+    uint32_t focus = 0;        // the focused element (sEventMgr +0x70), 0 none
+    bool focus_on_arrow = false;  // its cursor pane is the settings entry arrow's (game_settings_page.cpp)
 };
 
 inline bool shown(const Reading& r) {
@@ -56,5 +58,58 @@ private:
     uint64_t since_ = 0;
     bool lost_ = false;
 };
+
+// Issue #336 stop-gap, until the trigger is found: the item menu up with its focus on an element that isn't
+// linked into the menu's event manager (so the focus cursor stays in ::StateID_Blank and the menu doesn't
+// move) is the stuck state players report. After a second of it, hud_gate.cpp logs the [menu-cursor] line
+// naming the element (that line is what is to find the trigger) and then gives the focus back to the menu's
+// default element through the game's own setter. Never in the normal cases:
+//   the chart grid (map tab): the fixed cursor (active 1) on a grid cell, never linked: shown() is true
+//   no focus at all (a sub window or an opening/closing menu clears it): not this state, left alone
+//   the settings entry arrow focused, or its page or slide out (game_settings_page.cpp)
+//   the overlay open
+//   tab switches, opening and closing: their focus is unlinked for a step or two, and the element must be
+//   the same one for the whole second
+struct Context {
+    bool overlay_open = false;   // the port's overlay (Settings, Esc)
+    bool settings_page = false;  // game_settings_page::page_open(): the entry arrow, page or slide has the controller
+};
+
+// The reading is the stuck state the safety net acts on (the context aside).
+inline bool focus_stuck(const Reading& r) {
+    return r.directional == 1 && r.requested == 0 && r.active == 0 && r.focus != 0 && !r.focus_linked &&
+           !r.focus_on_arrow;
+}
+
+// Feeds one reading per logic step of an open item menu; says when to give the focus back (true once per
+// stuck element: should the game's state take it again, the next second gives it back again, at most
+// kMaxRestores a session). reset() when the menu is not up.
+class Restore {
+public:
+    static constexpr int kMaxRestores = 20;
+    bool update(const Reading& r, const Context& c, uint64_t step) {
+        if (!focus_stuck(r) || c.overlay_open || c.settings_page) { reset(); return false; }
+        if (r.focus != focus_ || !since_) focus_ = r.focus, since_ = step ? step : 1;
+        if (step < since_ + kMissingSteps || restores_ >= kMaxRestores) return false;
+        restores_++;
+        since_ = step ? step : 1;  // another second before the next one
+        return true;
+    }
+    void reset() { since_ = 0, focus_ = 0; }
+    int restores() const { return restores_; }
+private:
+    uint64_t since_ = 0;
+    uint32_t focus_ = 0;
+    int restores_ = 0;
+};
+
+// The element the focus goes back to: the menu's default for its window (hdMenuMain_c mChildren[0x11] on the
+// item window, mChildren[0x28] on the other one, as the game focuses them when a window slides in), else the
+// element the focus was last on in this opening; 0 (none) unless it is linked into the menu's event manager.
+inline uint32_t restore_target(uint32_t default_focus, bool default_linked, uint32_t last_good, bool last_linked) {
+    if (default_focus && default_linked) return default_focus;
+    if (last_good && last_linked) return last_good;
+    return 0;
+}
 
 }  // namespace mods::menu_cursor
