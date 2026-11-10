@@ -1994,7 +1994,8 @@ extern "C" void hook_0203593C(Cpu* c) {
     // the item ring: its equip, the game's pace while open (full logic passes), the ring drawn
     mods::item_ring_service(c, !enabled() || !g_hold_next);
     mods::context_touch_service();  // tests: the context buttons' assets export (WWHD_CONTEXT_ASSETS)
-    mods::hud_service();  // the boost bar and climb wheel fade out over the game's menus, events, messages
+    mods::hud_service(c);  // the boost bar and climb wheel fade out over the game's menus, events, messages; the
+                           // item menu's focus watch and #336 stop-gap (hud_gate.cpp)
     const bool was_fast_forward = mods::fast_forward_active();
     mods::fast_forward_service();
     const bool ff_transition = was_fast_forward != mods::fast_forward_active();
