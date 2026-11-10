@@ -148,22 +148,22 @@ static void test_named_face_labels() {
     // PlayStation shapes from GameController's SF Symbol names: the PlayStation family
     const char* ps[4] = {"xmark.circle", "circle.circle", "square.circle", "triangle.circle"};
     named_face_labels("Backbone One - PlayStation Edition", "Backbone", ps, l);
-    assert(l[0] == FL::kCross && l[1] == FL::kCircle && l[2] == FL::kSquare && l[3] == FL::kTriangle);
-    assert(pad_family_from_labels(l) == PadFamily::kPlayStation);
+    CHECK(l[0] == FL::kCross && l[1] == FL::kCircle && l[2] == FL::kSquare && l[3] == FL::kTriangle);
+    CHECK(pad_family_from_labels(l) == PadFamily::kPlayStation);
     // localized names
     const char* xbox[4] = {"Button A", "Button B", "Button X", "Button Y"};
     named_face_labels("Xbox Wireless Controller", "Xbox One", xbox, l);
-    assert(l[0] == FL::kA && l[3] == FL::kY && pad_family_from_labels(l) == PadFamily::kXbox);
+    CHECK(l[0] == FL::kA && l[3] == FL::kY && pad_family_from_labels(l) == PadFamily::kXbox);
     // Nintendo's buttonA is its east button: letters by position
     const char* nin[4] = {"a.circle", "b.circle", "x.circle", "y.circle"};
     named_face_labels("Pro Controller", "Switch Pro Controller", nin, l);
-    assert(l[0] == FL::kB && l[1] == FL::kA && l[2] == FL::kY && l[3] == FL::kX);
-    assert(pad_family_from_labels(l) == PadFamily::kNintendo);
+    CHECK(l[0] == FL::kB && l[1] == FL::kA && l[2] == FL::kY && l[3] == FL::kX);
+    CHECK(pad_family_from_labels(l) == PadFamily::kNintendo);
     // no button names: the family from what it says it is
     const char* none[4] = {"", "", "", nullptr};
     named_face_labels("DualSense Wireless Controller", "DualSense", none, l);
-    assert(l[0] == FL::kCross && pad_family_from_labels(l) == PadFamily::kPlayStation);
-    assert(gamecube_named("Nintendo", "GameCube Controller") && !gamecube_named("Sony", "DualSense"));
+    CHECK(l[0] == FL::kCross && pad_family_from_labels(l) == PadFamily::kPlayStation);
+    CHECK(gamecube_named("Nintendo", "GameCube Controller") && !gamecube_named("Sony", "DualSense"));
 }
 
 static void test_apple_face_normalization() {
