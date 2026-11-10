@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Controller prompts: PlayStation shapes for PlayStation controllers on the Mac and on the iPhone GamePad** (#509,
+  thanks @fayep). A DualSense or other PlayStation controller on the Mac used to get Xbox-style prompts; the game now
+  shows ✕ ○ □ △. The iPhone GamePad app tells the game which controller is attached to the phone, so its prompts match
+  it too. Button bindings don't change.
+- **iPhone GamePad: the game's GamePad boot image as the phone's background** (#507, thanks @fayep). The picture also
+  uses the phone's full height in landscape, and the status text is white.
 - **Pause menu: the cursor comes back if the menu loses its focus** (#510, refs #336, thanks @XAlboX for the logs).
   After long play the pause menu could stay open without its cursor until the controller was switched. The cursor
   now comes back by itself after about a second. The cause isn't found yet: the log names what held the focus, so
