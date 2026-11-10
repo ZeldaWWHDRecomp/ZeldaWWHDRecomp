@@ -91,6 +91,11 @@ function(wwhd_decomp_configure)
   # (gabi.h GABI_CALL_FRONT; they probed the ~4 MB table on every call). WWHD_DECOMP_FAST_PTR_FRONT=0 /
   # WWHD_DECOMP_FAST_CALL_FRONT=0 at run time: the table on every lookup, as before
   option(WWHD_DECOMP_FAST_CALL_FRONT "decomp build, fast mode: gabi::call by address checks a front cache before the address table" OFF)
+  # fast mode: gabi::call by address to a host runtime root or GHS libm function the runtime enters directly
+  # (hostrt_fast_direct: their f_X, or sqrtf's bit-exact port) sets up the guest state do_call_g and gmem_call give it and
+  # calls that function itself (gabi.h GABI_HOSTRT_DIRECT): no call_g / do_call_g / gmem_call / switch on the way.
+  # WWHD_DECOMP_FAST_HOSTRT_DIRECT=0 at run time: the guest call as before
+  option(WWHD_DECOMP_FAST_HOSTRT_DIRECT "decomp build, fast mode: gabi::call to directly entered host runtime / libm functions without the guest call path" OFF)
   # fast mode: gabi::Local / FrameLocal with one thread-block lookup, one r1 read and the slot zeroed inline (gabi.h
   # GABI_FAST_LOCAL; the runtime's WWHD_DECOMP_FAST_LOCAL=0, or WWHD_NATIVE_LOCALS=1, keeps the general form)
   option(WWHD_DECOMP_FAST_LOCAL "decomp build, fast mode: lean gabi::Local / FrameLocal construction" ON)
@@ -340,6 +345,9 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_CALL_FRONT)
       list(APPEND opts -DGABI_CALL_FRONT=1)
+    endif()
+    if(WWHD_DECOMP_FAST_HOSTRT_DIRECT)
+      list(APPEND opts -DGABI_HOSTRT_DIRECT=1)
     endif()
     if(WWHD_DECOMP_FAST_LOCAL)
       list(APPEND opts -DGABI_FAST_LOCAL=1)
@@ -608,7 +616,7 @@ function(wwhd_decomp_link target)
     if(WWHD_DECOMP_FAST_NOCHECK)
       set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_NOCHECK=1)
     endif()
-    foreach(sw PTR_FRONT CALL_FRONT)  # (only decomp.cpp reads them: g_decomp_front_off)
+    foreach(sw PTR_FRONT CALL_FRONT HOSTRT_DIRECT)  # (only decomp.cpp reads them: g_decomp_front_off, g_decomp_hostrt_tab)
       if(WWHD_DECOMP_FAST_${sw} AND (NOT sw STREQUAL "PTR_FRONT" OR WWHD_DECOMP_FAST_PTR_IC))
         set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_${sw}=1)
       endif()

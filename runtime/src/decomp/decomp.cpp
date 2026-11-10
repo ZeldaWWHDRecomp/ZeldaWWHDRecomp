@@ -296,6 +296,11 @@ uint8_t g_decomp_leaf_off = 0;
 // front cache not used, every lookup in the address table (WWHD_DECOMP_FAST_PTR_FRONT=0 / WWHD_DECOMP_FAST_CALL_FRONT=0)
 uint8_t g_decomp_front_off = 0;
 #endif
+#ifdef WWHD_DECOMP_FAST_HOSTRT_DIRECT
+// gabi.h GABI_HOSTRT_DIRECT (cmake WWHD_DECOMP_FAST_HOSTRT_DIRECT): hostrt_fast_direct's answers for 028EA000..028F6000 by
+// (addr - 028EA000) >> 2 (direct_init; null: none, WWHD_DECOMP_FAST_HOSTRT_DIRECT=0)
+const PpcFunc* g_decomp_hostrt_tab = nullptr;
+#endif
 #ifdef WWHD_DECOMP_FAST_NSTATS
 // gabi.h GABI_NSTATS (cmake WWHD_DECOMP_FAST_NSTATS, diagnostics): native entries per slot (WWHD_DECOMP_FAST_NSTATS=PATH)
 uint64_t* g_decomp_nstats = nullptr;
@@ -533,6 +538,20 @@ void direct_init() {
             } else {
                 LOG("[decomp] fast mode: WWHD_DECOMP_FAST_HLE=0, HLE imports through gmem_call");
             }
+#ifdef WWHD_DECOMP_FAST_HOSTRT_DIRECT
+            // gabi::call to the roots and GHS libm functions gmem_call enters directly: their functions by address, so
+            // the call sets up the same guest state and calls it itself (gabi.h call_hostrt_d)
+            if (const char* hd = getenv("WWHD_DECOMP_FAST_HOSTRT_DIRECT"); !(hd && !strcmp(hd, "0"))) {
+                PpcFunc* dt = new PpcFunc[0xC000 / 4]();
+                unsigned nd = 0;
+                for (uint32_t i = 0; i < 0xC000 / 4; i++)
+                    if ((dt[i] = hostrt_fast_direct(0x028EA000u + 4 * i))) nd++;
+                __atomic_store_n(&g_decomp_hostrt_tab, dt, __ATOMIC_RELEASE);
+                LOG("[decomp] fast mode: %u host runtime / libm functions entered directly by gabi::call", nd);
+            } else {
+                LOG("[decomp] fast mode: WWHD_DECOMP_FAST_HOSTRT_DIRECT=0, host runtime / libm calls through gmem_call");
+            }
+#endif
             g_decomp_ptr_mask = mask;
             __atomic_store_n(&g_decomp_ptr_tab, pt, __ATOMIC_RELEASE);
             // gabi::call by address: the same entries; bisecting: WWHD_DECOMP_FAST_CALL=0 (none) / _CALL_ONLY /

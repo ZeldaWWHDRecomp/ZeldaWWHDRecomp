@@ -105,6 +105,9 @@ extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_ptr_sub;  // 
 #if defined(WWHD_DECOMP_FAST_PTR_FRONT) || defined(WWHD_DECOMP_FAST_CALL_FRONT)
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_front_off;  // gabi.h GABI_PTR_FRONT / _CALL_FRONT (decomp.cpp)
 #endif
+#ifdef WWHD_DECOMP_FAST_HOSTRT_DIRECT
+extern "C" __attribute__((visibility("default"))) const PpcFunc* g_decomp_hostrt_tab;  // gabi.h GABI_HOSTRT_DIRECT (decomp.cpp)
+#endif
 // a guest mod or the port hooks the function with recompiled-table ordinal `ordinal` (every g_mod_hook_flags
 // write that sets a flag): it is no longer entered natively
 extern "C" void decomp_mod_hooked(uint32_t ordinal);
