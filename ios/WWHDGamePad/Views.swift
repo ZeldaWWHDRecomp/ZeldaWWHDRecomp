@@ -333,7 +333,7 @@ struct GamePadView: View {
                 .controlSize(.small)
         }
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.white)
         .padding(.horizontal, 20)
         .padding(.top, 10)
     }
@@ -356,7 +356,7 @@ struct GamePadView: View {
             }
         }
         .font(.caption2)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.white)
         .padding(.horizontal, 6)
     }
 
@@ -486,9 +486,9 @@ struct BatteryColumn: View {
 
     private func item(_ b: Batteries.Level, name: String) -> some View {
         VStack(spacing: 4) {
-            Image(systemName: b.symbol).font(.title3).foregroundStyle(b.low ? .red : .secondary)
-            Text(b.percent).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-            Text(name).font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center).lineLimit(2)
+            Image(systemName: b.symbol).font(.title3).foregroundStyle(b.low ? .red : .white)
+            Text(b.percent).font(.callout.monospacedDigit()).foregroundStyle(.white)
+            Text(name).font(.caption2).foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(2)
         }
     }
 }
@@ -499,7 +499,7 @@ struct PhoneBatteryLabel: View {
 
     var body: some View {
         if let b = batteries.phone {
-            Label(b.percent, systemImage: b.symbol).foregroundStyle(b.low ? .red : .secondary)
+            Label(b.percent, systemImage: b.symbol).foregroundStyle(b.low ? .red : .white)
         }
     }
 }
@@ -521,8 +521,8 @@ struct LatencyColumn: View {
 
     private func item(_ value: String, name: String) -> some View {
         VStack(spacing: 4) {
-            Text(value).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-            Text(name).font(.caption2).foregroundStyle(.tertiary)
+            Text(value).font(.callout.monospacedDigit()).foregroundStyle(.white)
+            Text(name).font(.caption2).foregroundStyle(.white)
         }
     }
 }
