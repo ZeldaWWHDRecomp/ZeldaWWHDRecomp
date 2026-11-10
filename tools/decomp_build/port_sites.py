@@ -28,6 +28,7 @@ CS = "wwhd_src/d/d_camera_subject.cpp"
 CP = "wwhd_src/d/d_camera_proc.cpp"
 CE2 = "wwhd_src/d/d_camera_engine2.cpp"
 SN = "wwhd_src/d/d_snap.cpp"
+SH = "wwhd_src/d/actor/d_a_ship.cpp"
 
 
 def _p(site, func, path, macro):
@@ -129,6 +130,11 @@ SITES = [
     _p(0x025BFDF8, 0x025BFDC0, SN, "PORT_PICTO"),  # DebugDraw: the TV projection's off-centre terms
     _p(0x025BFFB0, 0x025BFDC0, SN, "PORT_PICTO"),  # DebugDraw: the subjects' projection
     _p(0x025C0004, 0x025BFDC0, SN, "PORT_PICTO"),  # DebugDraw: dSnap_project's projection
+    # Sailing (runtime/src/mods/traversal.cpp): sail speed, automatic wind
+    _p(0x0247D4E8, 0x0247D4B0, SH, "PORT_SHIP"),  # setMoveAngle: the speed for the turn rate
+    _p(0x0247E988, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the normal-sail branch (automatic wind)
+    _p(0x0247EB88, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the target speed
+    _p(0x0247ED24, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the stock target again before the jump code
 ]
 
 EMPTY = [
