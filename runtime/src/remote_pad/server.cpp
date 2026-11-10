@@ -1,5 +1,6 @@
 // Remote GamePad server (server.h). POSIX sockets; on Windows start() fails.
 #include "server.h"
+#include <cstdlib>
 
 #include <cerrno>
 #include <cstdio>
@@ -243,6 +244,8 @@ void Server::run() {
                         log_msg("[remote pad] %s (%s) asks to pair: code shown on this computer", hello->device.c_str(),
                                 address_text(from).c_str());
                         if (cb_.pairing) cb_.pairing(hello->device, req.code);
+                        // (test aid: an automated client reads the code from the log)
+                        if (getenv("WWHD_PAD_LOG_CODE")) log_msg("[remote pad] pairing code %06u", req.code);
                     }
                     reply_to_sender(req.busy ? encode_pairing({hello->nonce, kNoCode, 0})
                                              : encode_pairing({hello->nonce, kEnterCode, uint8_t(req.attempts)}));
