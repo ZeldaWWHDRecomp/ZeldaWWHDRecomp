@@ -1475,7 +1475,7 @@ void service_portable_load(Cpu* c) {
             p.s->stage.c_str(), p.s->room, p.s->layer, p.s->pos[0], p.s->pos[1], p.s->pos[2]);
         if (g_fixed_seed) {
             g_fixed_seed_boot.mark();
-            g_fixed_seed_load.start(ld32(GD(0x101FF560)));  // written once the old stage is gone (service)
+            g_fixed_seed_load.start(ld32(GD(0x101FF560)), interp::logic_steps());  // written once the old stage is gone (service)
         }
         if (current_log >= 0 && current_log <= 2 && current_log != p.s->file_slot) {
             // decision: loading goes into the Quest Log being played; say so when the state is from another one
@@ -2161,7 +2161,7 @@ void service(Cpu* c) {
     service_file_save(c);  // world editor test states
     if (int slot = g_psave_req.exchange(0)) do_portable_save(c, slot);
     if (g_fixed_seed) {  // (before service_portable_load: a load applied now is followed from the next boundary on)
-        switch (g_fixed_seed_load.step(ld32(GD(0x101FF560)))) {
+        switch (g_fixed_seed_load.step(ld32(GD(0x101FF560)), interp::logic_steps())) {
         case fixed_seed::LoadGate::kLoading: apply_fixed_seed("portable state: loading the new stage"); break;
         case fixed_seed::LoadGate::kArrived:
             apply_fixed_seed("portable state: first frame in the new stage");

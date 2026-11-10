@@ -91,17 +91,23 @@ struct BootGate {
     void mark() { done = true; }
 };
 
-// After a portable state is applied (start), once per frame boundary with mTimer: kLoading when
-// the scene change's loading frames begin, kArrived at the new stage's first gameplay frame;
-// gives up (kTimedOut) when either takes longer than kMaxFrames.
+// After a portable state is applied (start), once per frame boundary with mTimer and the logic step count
+// (interp::logic_steps): kLoading when the scene change's loading frames begin, kArrived at the new stage's first
+// gameplay frame; gives up (kTimedOut) when either takes longer than kMaxFrames. Only boundaries after a logic pass
+// count: a frame interpolation hold pass runs no game logic, so mTimer is unchanged after it while the old stage is
+// still fading out; taken as "loading", the seeds and mCounter0 were written in the old stage's fade and
+// never at the new stage, and a scenario's stage entry started a step early whenever interpolation was already on.
 struct LoadGate {
     enum Event { kNone, kLoading, kArrived, kTimedOut };
     static constexpr uint32_t kMaxFrames = 1800;
     int phase = 0;  // 0 idle, 1 old stage fading out, 2 loading
     uint32_t last = 0, frames = 0;
-    void start(uint32_t timer) { phase = 1, last = timer, frames = 0; }
-    Event step(uint32_t timer) {
+    uint64_t last_steps = 0;
+    void start(uint32_t timer, uint64_t steps) { phase = 1, last = timer, frames = 0, last_steps = steps; }
+    Event step(uint32_t timer, uint64_t steps) {
         if (!phase) return kNone;
+        if (steps == last_steps) return kNone;  // no logic pass since the last boundary (a hold pass)
+        last_steps = steps;
         if (++frames > kMaxFrames) {
             phase = 0;
             return kTimedOut;
