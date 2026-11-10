@@ -62,6 +62,7 @@ bool Server::send_video(const uint8_t*, size_t, bool, uint64_t, uint16_t, uint16
 bool Server::send_rumble(uint8_t) { return false; }
 bool Server::send_audio(const int16_t*, uint16_t) { return false; }
 void Server::set_text(const TextPrompt&) {}
+void Server::set_boot_image(std::vector<uint8_t>) {}
 void Server::send_text_locked() {}
 void Server::stop() {}
 void Server::run() {}
@@ -170,6 +171,13 @@ void Server::send_text_locked() {
     const auto p = encode_text(state_.session, text_);
     std::lock_guard send(send_mu_);
     if (sock_ >= 0) sendto(sock_, p.data(), p.size(), 0, reinterpret_cast<const sockaddr*>(peer_), peer_len_);
+}
+
+void Server::set_boot_image(std::vector<uint8_t> jpeg) {
+    std::lock_guard lk(mu_);
+    boot_image_id_ = jpeg.empty() ? 0 : boot_image_id(jpeg.data(), jpeg.size());
+    boot_image_ = std::move(jpeg);
+    boot_image_sent_ = {};
 }
 
 void Server::set_text(const TextPrompt& t) {
@@ -304,6 +312,16 @@ void Server::run() {
                     if (const auto t = parse_text_input(buf, (size_t)n)) {
                         seen_ = now;
                         if (cb_.text_input) cb_.text_input(*t);
+                    }
+                } else if (h->type == kBootImageWant) {
+                    if (const auto want = parse_boot_image_want(buf, (size_t)n)) {
+                        seen_ = now;
+                        if (boot_image_id_ && *want != boot_image_id_ &&
+                            now - boot_image_sent_ >= std::chrono::milliseconds(kBootImageGapMs)) {
+                            boot_image_sent_ = now;
+                            for (const auto& p : encode_boot_image(state_.session, boot_image_id_, boot_image_.data(), boot_image_.size()))
+                                reply(p);
+                        }
                     }
                 } else if (h->type == kKeyframe) {
                     seen_ = now;

@@ -743,6 +743,7 @@ void display_init() {
     attach_metal_layers();
     display_start_input();
     create_present_pipeline();
+    remote_video::load_boot_image(config::game_dir + "/meta/bootDrcTex.tga");  // (the iPhone GamePad's background)
 }
 
 // Vulkan renderer start-up (gfx/vulkan/backend_table.cpp): windows, then a layer per view for its

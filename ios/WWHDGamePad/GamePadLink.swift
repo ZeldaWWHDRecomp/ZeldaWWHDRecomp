@@ -57,6 +57,8 @@ final class GamePadLink: ObservableObject {
     @Published private(set) var latency: LatencyMeter.Reading?
     /// the game asks for text (the name of a new file): the GamePad screen shows a keyboard
     @Published private(set) var textPrompt: TextPromptState?
+    /// the running game's GamePad boot image (BootImage.swift): the GamePad screen's background
+    @Published private(set) var bootImage: UIImage?
     struct TextPromptState: Equatable {
         var serial: UInt32
         var hint: String
@@ -104,6 +106,9 @@ final class GamePadLink: ObservableObject {
     nonisolated(unsafe) private var lastPing = Date.distantPast
     nonisolated(unsafe) private var meter = LatencyMeter()
     nonisolated(unsafe) private var textSync = TextEntrySync()
+    nonisolated(unsafe) private var bootImageId: UInt32 = 0          // the one shown (0: none)
+    nonisolated(unsafe) private var bootPieces = BootImageAssembler()
+    nonisolated(unsafe) private var lastBootWant = Date.distantPast
     nonisolated(unsafe) private var target = ""
     nonisolated(unsafe) private var helloDevice = "", helloController = ""
     nonisolated(unsafe) private var wantsAudio = UserDefaults.standard.object(forKey: "sound") as? Bool ?? true
@@ -255,6 +260,10 @@ final class GamePadLink: ObservableObject {
             nonce = UInt32.random(in: 1...UInt32.max)
             target = label
             token = Pairing.token(for: label)
+            // the image this computer's game showed last time, at once (it says so if its game has another)
+            bootImageId = 0
+            showBootImage(BootImageCache.remembered(for: label), BootImageCache.load(BootImageCache.remembered(for: label)))
+            lastBootWant = .distantPast
             pairingWait = false
             helloDevice = device
             helloController = controllerName
@@ -398,6 +407,14 @@ final class GamePadLink: ObservableObject {
                completion: .idempotent)
     }
 
+    /// link queue: show this boot image (data nil: none known) and remember it for this computer
+    nonisolated private func showBootImage(_ id: UInt32, _ data: Data?) {
+        guard let data, let image = UIImage(data: data) else { return }
+        bootImageId = id
+        BootImageCache.remember(id, for: target)
+        Task { @MainActor in self.bootImage = image }
+    }
+
     nonisolated private func publishText() {
         let state = textSync.prompt.map {
             TextPromptState(serial: $0.serial, hint: $0.hint, maxLen: $0.maxLen, text: textSync.field,
@@ -435,6 +452,16 @@ final class GamePadLink: ObservableObject {
             } else if let (session, sent, computer) = WWGP.pong(bytes) {
                 if session == self.session, c === self.connection {
                     self.meter.pong(sentNs: sent, computerNs: computer, receivedNs: DispatchTime.now().uptimeNanoseconds)
+                }
+            } else if let (session, piece) = WWGP.bootImage(bytes) {
+                if session == self.session, c === self.connection, piece.id != self.bootImageId {
+                    if let cached = BootImageCache.load(piece.id) {
+                        self.showBootImage(piece.id, cached)
+                    } else if let whole = self.bootPieces.add(piece) {
+                        let data = Data(whole)
+                        BootImageCache.save(piece.id, data)
+                        self.showBootImage(piece.id, data)
+                    }
                 }
             } else if let (session, prompt) = WWGP.text(bytes) {
                 if session == self.session, c === self.connection, self.textSync.received(prompt) { self.publishText() }
@@ -525,6 +552,10 @@ final class GamePadLink: ObservableObject {
             return
         }
         if let p = textSync.resend(now: ProcessInfo.processInfo.systemUptime) { sendText(p) }
+        if now.timeIntervalSince(lastBootWant) >= 2 {  // (protocol.h kBootImageWant)
+            lastBootWant = now
+            c.send(content: Data(WWGP.bootImageWant(session: session, id: bootImageId)), completion: .idempotent)
+        }
         if now.timeIntervalSince(lastPing) >= 0.5 {
             lastPing = now
             c.send(content: Data(WWGP.ping(session: session, phoneNs: DispatchTime.now().uptimeNanoseconds)),

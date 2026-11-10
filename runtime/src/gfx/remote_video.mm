@@ -10,6 +10,7 @@
 #import <CoreMedia/CoreMedia.h>
 #import <CoreVideo/CoreVideo.h>
 #import <VideoToolbox/VideoToolbox.h>
+#import <ImageIO/ImageIO.h>
 
 #include <atomic>
 #include <cmath>
@@ -159,6 +160,44 @@ CVPixelBufferRef g_pixels = nullptr;
 CVMetalTextureRef g_texture = nullptr;
 
 }  // namespace
+
+void load_boot_image(const std::string& tga) {
+    @autoreleasepool {
+        NSData* data = [NSData dataWithContentsOfFile:@(tga.c_str())];
+        const uint8_t* d = (const uint8_t*)data.bytes;
+        // no colour map, uncompressed true colour, 24 or 32 bits a pixel (Wind Waker HD's is 24)
+        if (data.length < 18 || d[1] != 0 || d[2] != 2 || (d[16] != 24 && d[16] != 32)) return;
+        const size_t w = d[12] | d[13] << 8, h = d[14] | d[15] << 8, start = 18 + d[0], bpp = d[16] / 8;
+        if (!w || !h || w > 4096 || h > 4096 || data.length < start + w * h * bpp) return;
+        const bool topDown = d[17] & 0x20;  // otherwise the first row is the bottom one
+        std::vector<uint8_t> rgba(w * h * 4);
+        for (size_t y = 0; y < h; y++) {
+            const uint8_t* src = d + start + (topDown ? y : h - 1 - y) * w * bpp;
+            uint8_t* dst = rgba.data() + y * w * 4;
+            for (size_t x = 0; x < w; x++) {  // BGR(A) -> RGBA, opaque
+                const uint8_t* p = src + x * bpp;
+                dst[x * 4] = p[2]; dst[x * 4 + 1] = p[1]; dst[x * 4 + 2] = p[0]; dst[x * 4 + 3] = 255;
+            }
+        }
+        CGColorSpaceRef cs = CGColorSpaceCreateWithName(kCGColorSpaceSRGB);
+        CGContextRef ctx = CGBitmapContextCreate(rgba.data(), w, h, 8, w * 4, cs, kCGImageAlphaNoneSkipLast);
+        CGImageRef img = ctx ? CGBitmapContextCreateImage(ctx) : nullptr;
+        NSMutableData* jpeg = [NSMutableData data];
+        CGImageDestinationRef dest = img ? CGImageDestinationCreateWithData((__bridge CFMutableDataRef)jpeg, CFSTR("public.jpeg"), 1, nullptr) : nullptr;
+        if (dest) {
+            CGImageDestinationAddImage(dest, img, (__bridge CFDictionaryRef)@{(id)kCGImageDestinationLossyCompressionQuality: @0.85});
+            if (CGImageDestinationFinalize(dest) && jpeg.length) {
+                const uint8_t* b = (const uint8_t*)jpeg.bytes;
+                remote_pad::set_boot_image(std::vector<uint8_t>(b, b + jpeg.length));
+                log_msg("[remote video] the GamePad boot image for the phone: %zux%zu, %lu KB", w, h, (unsigned long)(jpeg.length >> 10));
+            }
+            CFRelease(dest);
+        }
+        if (img) CGImageRelease(img);
+        if (ctx) CGContextRelease(ctx);
+        CGColorSpaceRelease(cs);
+    }
+}
 
 id<MTLTexture> begin_frame(id<MTLDevice> device, bool srgb, float drc_w, float drc_h) {
     const bool wanted = remote_pad::video_wanted() && drc_w >= 2 && drc_h >= 2;

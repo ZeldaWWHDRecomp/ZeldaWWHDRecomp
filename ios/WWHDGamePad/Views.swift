@@ -228,11 +228,25 @@ struct GamePadView: View {
 
     private func pad(insets: EdgeInsets) -> some View {
         GeometryReader { geo in
-            let area = screenRect(in: geo.size, below: insets.top)
-            let column = (left: area.minX - insets.leading, right: geo.size.width - insets.trailing - area.maxX)
-            let sideBars = min(column.left, column.right) >= Self.sideBarWidth
+            let full = fullHeight(geo.size)
+            let area = full ?? screenRect(in: geo.size, below: insets.top)
+            // full height: the strips beside the picture, whole (the camera cutout sits mid-height on one
+            // side, so their contents go to the top and bottom); otherwise inside the safe area
+            let column = full != nil ? (left: area.minX, right: geo.size.width - area.maxX)
+                : (left: area.minX - insets.leading, right: geo.size.width - insets.trailing - area.maxX)
+            let sideBars = full != nil || min(column.left, column.right) >= Self.sideBarWidth
             ZStack(alignment: .topLeading) {
                 Color.black
+                // the game's GamePad boot image fills what the picture leaves, a little darker so the
+                // status and the columns beside the picture stay readable
+                if let image = link.bootImage {
+                    Image(uiImage: image)
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: geo.size.width, height: geo.size.height)
+                        .clipped()
+                        .overlay(Color.black.opacity(0.35))
+                }
                 ScreenArea(video: link.video)
                     .frame(width: area.width, height: area.height)
                     .offset(x: area.minX, y: area.minY)
@@ -241,13 +255,37 @@ struct GamePadView: View {
                         .position(p)
                         .allowsHitTesting(false)
                 }
-                statusBar(sideBars: sideBars)
-                    .padding(EdgeInsets(top: insets.top, leading: insets.leading, bottom: 0, trailing: insets.trailing))
-                if sideBars {
+                if full != nil {
+                    VStack {
+                        connectionLabel.outlined()
+                        Spacer()
+                        BatteryColumn(batteries: link.batteries, controller: link.controllerName).outlined()
+                    }
+                    .padding(.vertical, 18)
+                    .frame(width: column.left, height: geo.size.height)
+                    VStack {
+                        Button { link.disconnect() } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                            .accessibilityLabel("Disconnect")
+                        Spacer()
+                        LatencyColumn(reading: link.latency).outlined()
+                    }
+                    .padding(.vertical, 18)
+                    .frame(width: column.right, height: geo.size.height)
+                    .offset(x: area.maxX)
+                } else {
+                    statusBar(sideBars: sideBars)
+                        .outlined()
+                        .padding(EdgeInsets(top: insets.top, leading: insets.leading, bottom: 0, trailing: insets.trailing))
+                }
+                if sideBars && full == nil {
                     BatteryColumn(batteries: link.batteries, controller: link.controllerName)
+                        .outlined()
                         .frame(width: column.left, height: geo.size.height)
                         .offset(x: insets.leading)
                     LatencyColumn(reading: link.latency)
+                        .outlined()
                         .frame(width: column.right, height: geo.size.height)
                         .offset(x: area.maxX)
                 }
@@ -295,9 +333,39 @@ struct GamePadView: View {
                 .controlSize(.small)
         }
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.white)
         .padding(.horizontal, 20)
         .padding(.top, 10)
+    }
+
+    /// the connection in a side strip (full height): its state, the computer and a missing controller
+    private var connectionLabel: some View {
+        VStack(spacing: 4) {
+            switch link.status {
+            case let .connected(host):
+                Circle().fill(.green).frame(width: 8, height: 8)
+                Text(host).lineLimit(2).multilineTextAlignment(.center)
+            case let .lost(host):
+                ProgressView().controlSize(.small)
+                Text(host).lineLimit(2).multilineTextAlignment(.center)
+            default:
+                EmptyView()
+            }
+            if link.controllerName == nil {
+                Text("no controller").foregroundStyle(.orange).multilineTextAlignment(.center)
+            }
+        }
+        .font(.caption2)
+        .foregroundStyle(.white)
+        .padding(.horizontal, 6)
+    }
+
+    /// Landscape on a display wider than the picture: the picture the display's whole height, centred, when
+    /// the strips beside it can take the columns (the status line moves into them); nil otherwise.
+    private func fullHeight(_ size: CGSize) -> CGRect? {
+        let w = size.height * Self.aspect
+        guard (size.width - w) / 2 >= Self.sideBarWidth else { return nil }
+        return CGRect(x: (size.width - w) / 2, y: 0, width: w, height: size.height)
     }
 
     /// the largest GamePad-shaped rectangle below the status line (which starts at `inset`)
@@ -418,9 +486,9 @@ struct BatteryColumn: View {
 
     private func item(_ b: Batteries.Level, name: String) -> some View {
         VStack(spacing: 4) {
-            Image(systemName: b.symbol).font(.title3).foregroundStyle(b.low ? .red : .secondary)
-            Text(b.percent).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-            Text(name).font(.caption2).foregroundStyle(.tertiary).multilineTextAlignment(.center).lineLimit(2)
+            Image(systemName: b.symbol).font(.title3).foregroundStyle(b.low ? .red : .white)
+            Text(b.percent).font(.callout.monospacedDigit()).foregroundStyle(.white)
+            Text(name).font(.caption2).foregroundStyle(.white).multilineTextAlignment(.center).lineLimit(2)
         }
     }
 }
@@ -431,7 +499,7 @@ struct PhoneBatteryLabel: View {
 
     var body: some View {
         if let b = batteries.phone {
-            Label(b.percent, systemImage: b.symbol).foregroundStyle(b.low ? .red : .secondary)
+            Label(b.percent, systemImage: b.symbol).foregroundStyle(b.low ? .red : .white)
         }
     }
 }
@@ -453,8 +521,15 @@ struct LatencyColumn: View {
 
     private func item(_ value: String, name: String) -> some View {
         VStack(spacing: 4) {
-            Text(value).font(.callout.monospacedDigit()).foregroundStyle(.secondary)
-            Text(name).font(.caption2).foregroundStyle(.tertiary)
+            Text(value).font(.callout.monospacedDigit()).foregroundStyle(.white)
+            Text(name).font(.caption2).foregroundStyle(.white)
         }
+    }
+}
+
+extension View {
+    /// a thin black outline (stacked tight shadows), so text stays readable on the game's boot image
+    func outlined() -> some View {
+        shadow(color: .black, radius: 0.6).shadow(color: .black, radius: 0.6).shadow(color: .black, radius: 1)
     }
 }
