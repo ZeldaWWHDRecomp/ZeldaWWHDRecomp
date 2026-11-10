@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Metal: no more frozen picture from a GPU fault on older iPads** (#520, thanks @fayep). A few shaders read their
+  uniform registers at an index computed at run time, and on Metal that read could run past the buffer. On an A12Z
+  iPad Pro this caused a GPU page fault on the title screen, and the picture stayed frozen while the game kept
+  running; newer Apple GPUs could show stray pixels instead. Out-of-range reads now return zero, and the read stays
+  inside the buffer. Prepared shaders are rebuilt once after this update.
 - **Achievements: Grandma's Secret unlocks when the chest under Grandma's house is opened** (#511). The check looked
   at two Windfall chests instead of the basement chest, so the achievement almost never unlocked.
 - **Controller prompts: PlayStation shapes for PlayStation controllers on the Mac and on the iPhone GamePad** (#509,
