@@ -10,8 +10,11 @@
 //           own arrow to the right page). A tap / click, or A / Left once focused, slides the page in.
 //   Open    the tabs (L / R), one row per setting (Up / Down, the left stick too, with repeat), Left /
 //           Right change the value (a toggle follows the direction, a number steps), A toggles or steps
-//           up, B, + or a tap on the right page arrow slide the page back out to the items. Touch:
-//           a tap on a row selects it, a tap on its value changes it (left half of a number: down).
+//           up, B, + or a tap on the right page arrow slide the page back out to the items. Up from the
+//           first row puts the cursor on the tab row (as on the game's pages with a row of plates above
+//           a list): Left / Right there go from tab to tab, Down or A back to the tab's rows. Touch:
+//           a tap on a tab shows it, a tap on a row selects it, a tap on its value changes it (left
+//           half of a number: down).
 // Coordinates: a 1280 x 720 page (fit_to_screen scales it to the GamePad's 854 x 480).
 #pragma once
 #include <algorithm>
@@ -40,6 +43,7 @@ inline constexpr uint32_t kPadA = 0x8000, kPadB = 0x4000, kPadUp = 0x0200, kPadD
 inline constexpr float kWinX = 70, kWinY = 34, kWinW = 1060, kWinH = 652;
 inline constexpr float kRowX = kWinX + 60, kRowY = kWinY + 122, kRowW = kWinW - 120, kRowH = 56;
 inline constexpr unsigned kRowsShown = 7;
+inline constexpr float kTabY = kWinY + 30, kTabH = 50;  // the tab row
 inline constexpr float kValueW = 300, kValueX = kRowX + kRowW - kValueW - 10;
 // The page arrows: the game's own right arrow (its place and size; the driver reads them from the item
 // screen, these are the USA layout's), ours its mirror at the left edge (closed), and while the page is
@@ -102,13 +106,14 @@ public:
     bool shown() const { return open_ || slide_ > 0.0f; }
     int tab() const { return tab_; }
     int selected() const { return selected_; }
+    bool on_tabs() const { return on_tabs_; }  // the cursor is on the tab row (Up from the first row)
 
     void show(int tabs) {
         open_ = true, tab_ = std::clamp(tab_, 0, std::max(0, tabs - 1)), held_ = ~0u;  // a button or stick direction held now acts only after its release
-        touch_ = false;
+        touch_ = false, on_tabs_ = false;
     }
     void hide() { open_ = false; }
-    void set_tab(int tab) { tab_ = tab, selected_ = 0, top_ = 0; }
+    void set_tab(int tab) { tab_ = tab, selected_ = 0, top_ = 0, on_tabs_ = false; }
     // buttons and stick directions held now act only after their release (a page opened from a row closed with them)
     void hold_buttons() { held_ = ~0u; }
 
@@ -157,6 +162,7 @@ public:
         // the cross and the stick, with the menus' repeat (0.35 s, then every 0.12 s)
         uint32_t dirs = (live | (stick & ~held_)) & (kPadUp | kPadDown | kPadLeft | kPadRight);
         uint32_t fire = dirs & ~dirs_;
+        const uint32_t dirs_before = dirs_;
         if (dirs && dirs == dirs_) {
             repeat_ += in.dt;
             if (repeat_ >= 0.35f) fire = dirs, repeat_ -= 0.12f;
@@ -170,6 +176,15 @@ public:
             act.sound = Sound::Tab;
             return act;
         }
+        if (tabs <= 1) on_tabs_ = false;
+        if (on_tabs_) {  // the tab row: Left / Right the tabs (no wrap, as a cursor), Down or A the tab's rows
+            if ((fire & kPadLeft) && tab_ > 0) tab_--, selected_ = 0, top_ = 0, turn_ = 0, act.sound = Sound::Tab;
+            else if ((fire & kPadRight) && tab_ + 1 < tabs) tab_++, selected_ = 0, top_ = 0, turn_ = 0, act.sound = Sound::Tab;
+            else if (((fire & kPadDown) || (pressed & kPadA)) && count) {
+                on_tabs_ = false, selected_ = 0, top_ = 0, glide_ = 1;
+                act.sound = (pressed & kPadA) ? Sound::Decide : Sound::Cursor;
+            }
+        }
         auto move = [&](int d) {
             if (!count) return;
             const int next = std::clamp(selected_ + d, 0, count - 1);
@@ -177,11 +192,16 @@ public:
                 glide_from_ = row_y(selected_), glide_ = 0, selected_ = next, act.sound = Sound::Cursor;
             }
         };
-        if (fire & kPadUp) move(-1);
-        else if (fire & kPadDown) move(+1);
-        else if ((fire & (kPadLeft | kPadRight)) && count && !rows[selected_].action)  // (an action takes A only)
-            change(act, rows[selected_], (fire & kPadLeft) ? -1 : +1);
-        else if ((pressed & kPadA) && count) change(act, rows[selected_], rows[selected_].stepped() ? +1 : 0);
+        if (!on_tabs_ && act.sound == Sound::None) {  // the rows (not when the tab row took this read's push)
+            if ((fire & kPadUp) && selected_ == 0 && tabs > 1) {
+                // Up from the first row: the tab row (a fresh push; a held Up's repeat stops at the first row)
+                if (!(dirs_before & kPadUp)) on_tabs_ = true, act.sound = Sound::Cursor;
+            } else if (fire & kPadUp) move(-1);
+            else if (fire & kPadDown) move(+1);
+            else if ((fire & (kPadLeft | kPadRight)) && count && !rows[selected_].action)  // (an action takes A only)
+                change(act, rows[selected_], (fire & kPadLeft) ? -1 : +1);
+            else if ((pressed & kPadA) && count) change(act, rows[selected_], rows[selected_].stepped() ? +1 : 0);
+        }
         if (selected_ < int(top_)) top_ = unsigned(selected_);
         if (selected_ >= int(top_ + kRowsShown)) top_ = unsigned(selected_) - kRowsShown + 1;
         // touch: a tap (released near where it began)
@@ -194,14 +214,25 @@ public:
             const float py = kWinY + kWinH - 66 - 10, ph = 56;
             if (inside(in_x_, in_y_, pr.back_x - 10, py, pr.back_w + 20, ph)) return close(act);
             if (inside(in_x_, in_y_, pr.change_x - 10, py, pr.change_w + 20, ph) && !rows.empty()) {
+                if (on_tabs_) {  // (A on the tab row: its rows)
+                    on_tabs_ = false, selected_ = 0, top_ = 0, act.sound = Sound::Decide;
+                    return act;
+                }
                 change(act, rows[selected_], rows[selected_].stepped() ? +1 : 0);
                 return act;
             }
+            for (int i = 0; i < tabs && size_t(i) < tab_x_.size(); i++)  // a tab: its rows
+                if (inside(in_x_, in_y_, tab_x_[size_t(i)], kTabY, tab_w_[size_t(i)], kTabH)) {
+                    if (i != tab_) tab_ = i, selected_ = 0, top_ = 0, turn_ = 0, act.sound = Sound::Tab;
+                    on_tabs_ = false;
+                    return act;
+                }
             for (unsigned i = 0; i < kRowsShown && top_ + i < rows.size(); i++) {
                 const float y = kRowY + kRowH * float(i);
                 if (!inside(in_x_, in_y_, kRowX, y, kRowW, kRowH)) continue;
                 const int index = int(top_ + i);
-                const bool on_value = in_x_ >= kValueX, was_selected = index == selected_;
+                const bool on_value = in_x_ >= kValueX, was_selected = index == selected_ && !on_tabs_;
+                on_tabs_ = false;
                 if (!was_selected) glide_from_ = row_y(selected_), glide_ = 0, selected_ = index, act.sound = Sound::Cursor;
                 if (on_value || was_selected) {
                     const Row& r = rows[index];
@@ -241,12 +272,14 @@ public:
         // the tabs right of the title: as wide as their names (at least 110), narrower when many
         const float room = kWinW - 112 - width(bold(texts.title), 42) - 24;
         const float most = tab_labels.empty() ? room : room / float(tab_labels.size()) - 10;
+        tab_x_.assign(tab_labels.size(), 0), tab_w_.assign(tab_labels.size(), 0);
         for (int i = int(tab_labels.size()) - 1; i >= 0; i--) {
             const float w = std::min(most, std::max(110.0f, width(bold(tab_labels[i]), 26) + 40));
             tx -= w;
+            tab_x_[size_t(i)] = tx, tab_w_[size_t(i)] = w;
             const bool on = i == tab_;
-            out.push_back(box(on ? "nb:tab-on" : "nb:tab", tx, kWinY + 30, w, 50));
-            out.push_back(text(tx + (w - width(bold(tab_labels[i]), 26)) / 2, kWinY + 42, 26, on ? kInk : kInkSoft, bold(tab_labels[i])));
+            out.push_back(box(on ? "nb:tab-on" : "nb:tab", tx, kTabY, w, kTabH));
+            out.push_back(text(tx + (w - width(bold(tab_labels[i]), 26)) / 2, kTabY + 12, 26, on ? kInk : kInkSoft, bold(tab_labels[i])));
             tx -= 10;
         }
         if (tab_labels.size() > 1) out.push_back(text(kWinX + 56, kWinY + 82, 19, kInkSoft, texts.tabs));
@@ -254,8 +287,8 @@ public:
         for (unsigned i = 0; i < kRowsShown && top_ + i < rows.size(); i++) {
             const Row& r = rows[top_ + i];
             const float y = kRowY + kRowH * float(i);
-            const bool sel = int(top_ + i) == selected_;
-            if (i && !sel && int(top_ + i) != selected_ + 1) out.push_back(line(kRowX + 10, y, kRowX + kRowW - 10, y, kRule, 2));
+            const bool sel = int(top_ + i) == selected_ && !on_tabs_;
+            if (i && !sel && (on_tabs_ || int(top_ + i) != selected_ + 1)) out.push_back(line(kRowX + 10, y, kRowX + kRowW - 10, y, kRule, 2));
             const uint32_t ink = r.enabled ? kInk : kInkDim;
             out.push_back(text(kRowX + 20, y + 15, 28, ink, sel ? bold(r.label) : r.label));
             // the value: a plate (lit when on), with step marks on numbers
@@ -270,10 +303,12 @@ public:
                 chevron(out, kValueX + kValueW - 26, y + kRowH / 2, 9, true, kInk);
             }
         }
-        if (!rows.empty()) {  // the cursor: the game's four brackets around the selected row, gliding there
+        const float b = 4 + 2.0f + 2.0f * std::sin(time_ * 6.2831853f * 0.9f);
+        if (on_tabs_ && size_t(tab_) < tab_x_.size()) {  // the cursor on the tab row: the brackets around the shown tab
+            out.push_back(box("nb:cursor", tab_x_[size_t(tab_)] - b, kTabY - b, tab_w_[size_t(tab_)] + 2 * b, kTabH + 2 * b));
+        } else if (!rows.empty()) {  // the cursor: the game's four brackets around the selected row, gliding there
             float y = row_y(selected_);
             if (glide_ < 1.0f) y = glide_from_ + (y - glide_from_) * ease_out(glide_);
-            const float b = 4 + 2.0f + 2.0f * std::sin(time_ * 6.2831853f * 0.9f);
             out.push_back(box("nb:cursor", kRowX - b, y - b, kRowW + 2 * b, kRowH + 2 * b));
         }
         if (rows.size() > kRowsShown) {  // a scroll bar at the list's right edge
@@ -285,7 +320,7 @@ public:
         }
         // the selected row's help, and the prompts along the bottom
         const float hy = kWinY + kWinH - 66;
-        if (!rows.empty()) {  // (two lines at most; a longer help ends with "...")
+        if (!rows.empty() && !on_tabs_) {  // (two lines at most; a longer help ends with "...")
             const std::vector<std::string> lines = wrap(rows[size_t(selected_)].help, 21, kWinW - 120, 2);
             for (size_t i = 0; i < lines.size(); i++)
                 out.push_back(text(kWinX + 60, hy - 44 + 24 * float(i) - (lines.size() > 1 ? 12 : 0), 21, kInkSoft, lines[i]));
@@ -309,8 +344,9 @@ private:
     unsigned top_ = 0;
     uint32_t prev_ = 0, held_ = 0, dirs_ = 0;
     float repeat_ = 0, time_ = 0, slide_ = 0, glide_ = 1, glide_from_ = 0, bump_ = 1, turn_ = 1;
-    bool touch_ = false, swipe_ = false;
+    bool touch_ = false, swipe_ = false, on_tabs_ = false;
     float swipe_dx_ = 0, swipe_v_ = 0;
+    mutable std::vector<float> tab_x_, tab_w_;  // the tabs' places as last drawn (taps)
     float down_x_ = 0, down_y_ = 0, in_x_ = 0, in_y_ = 0;
 
     Action& close(Action& act) {

@@ -423,7 +423,8 @@ std::vector<Row> rows_of(const std::string& tab) {
 }
 
 // Test aid WWHD_TEST_GAME_SETTINGS_SHOTS=1: a screenshot (screenshot.h; the GamePad picture too with
-// WWHD_SCREENSHOT_GAMEPAD=1) a few reads after the entry arrow first shows, the page opens and each change
+// WWHD_SCREENSHOT_GAMEPAD=1) a few reads after the entry arrow first shows, the page opens, each change and
+// each move of the cursor onto, along or off the tab row
 void shot_after(int reads) {
     static const bool on = getenv("WWHD_TEST_GAME_SETTINGS_SHOTS") && *getenv("WWHD_TEST_GAME_SETTINGS_SHOTS");
     static int countdown = -1;
@@ -788,8 +789,13 @@ void pad(input::PadState& p, Cpu* c) {
     auto tab_name = [&] { return tabs.empty() ? std::string() : tabs[size_t(std::min<int>(g_page.tab(), int(tabs.size()) - 1))]; };
     std::string tab = tab_name();
     std::vector<Row> rows = rows_of(tab);
+    const bool was_on_tabs = g_page.on_tabs();
     const Action act = g_page.input(in, rows, int(tabs.size()));
     g_page.tick(dt);
+    if (g_page.on_tabs() != was_on_tabs || (g_page.on_tabs() && tab_name() != tab)) {
+        if (trace()) LOG("[game-settings] cursor %s (tab %s)", g_page.on_tabs() ? "on the tab row" : "on the rows", tab_name().c_str());
+        shot_after(10);
+    }
     if (tab_name() != tab) rows = rows_of(tab = tab_name());  // L / R: the new tab's rows at once (not the old tab's for a read)
     if (!act.id.empty())
         if (const game_settings::Item* it = game_settings::find(act.id)) {

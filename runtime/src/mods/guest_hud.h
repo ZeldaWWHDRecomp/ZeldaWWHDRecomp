@@ -17,6 +17,7 @@ using Handle = uint32_t;
 inline constexpr uint32_t kMaxCommands=1024, kMaxImages=32, kMaxLists=2, kMaxVertices=32768, kMaxClipDepth=16;
 inline constexpr size_t kMaxPixels=16*1024*1024, kMaxText=64*1024;
 inline constexpr size_t kMaxPortPixels=48*1024*1024;  // the port's own pages at most (Store::raise_pixel_quota)
+inline constexpr uint32_t kMaxPortImages=96;  // the port's own pages at most (Store::raise_image_quota)
 // Optional HUD features a mod finds with an unsigned setting (wwhd_setting_get, guest_mods.cpp); 0 / missing on
 // older hosts. "hud.mirrored-images.version" 1: an image's reversed UVs (u1 < u0, v1 < v0) sample it mirrored.
 inline constexpr uint32_t kMirroredImagesVersion=1;
@@ -89,6 +90,7 @@ class Store {
     std::map<Handle,OwnedImage> images;
     std::map<std::string,std::vector<std::weak_ptr<const Image>>> allocations;
     std::map<std::string,size_t> raised_pixels;  // (raise_pixel_quota)
+    std::map<std::string,uint32_t> raised_images;  // (raise_image_quota)
     std::map<std::pair<std::string,uint32_t>,std::shared_ptr<const List>> published;
     std::map<std::pair<std::string,uint32_t>,std::shared_ptr<const List>> previous;  // (the one it replaced)
     std::atomic<uint64_t> step_{0};
@@ -177,7 +179,9 @@ public:
         for(const auto& weak:live)if(auto image=weak.lock()){used+=image->rgba.size();++count;}
         auto raised=raised_pixels.find(owner);
         const size_t limit=raised==raised_pixels.end()?kMaxPixels:raised->second;
-        if(count>=kMaxImages||used>limit-size)return 0;
+        auto raised_count=raised_images.find(owner);
+        const uint32_t most=raised_count==raised_images.end()?kMaxImages:raised_count->second;
+        if(count>=most||used>limit-size)return 0;
         Handle h=handle();if(!h)return 0;
         auto image=std::make_shared<Image>();image->width=width;image->height=height;image->rgba.resize(size);
         for(uint32_t y=0;y<height;++y)std::copy_n(source+size_t(y)*stride,size_t(width)*4,image->rgba.data()+size_t(y)*width*4);
@@ -189,6 +193,12 @@ public:
     void raise_pixel_quota(const std::string& owner,size_t bytes) {
         std::lock_guard lock(mutex);auto& limit=raised_pixels[owner];
         limit=std::max(limit,std::clamp(bytes,kMaxPixels,kMaxPortPixels));
+    }
+    // Likewise for the number of an owner's images (kMaxImages), between kMaxImages and kMaxPortImages:
+    // a port page's text pages, its boxes and those it released that a list still draws.
+    void raise_image_quota(const std::string& owner,uint32_t count) {
+        std::lock_guard lock(mutex);auto& limit=raised_images[owner];
+        limit=std::max(limit,std::clamp(count,kMaxImages,kMaxPortImages));
     }
     bool picture(const std::string& owner,Handle list,Handle image,Command command) {
         std::lock_guard lock(mutex);auto it=images.find(image);

@@ -821,6 +821,11 @@ add_executable(game_progress_page_test runtime/tools/game_progress_page_test.cpp
 target_include_directories(game_progress_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(game_progress_page_test PRIVATE -UNDEBUG)
 add_test(NAME game_progress_page COMMAND game_progress_page_test)
+# the item menu's pages through the game's look and the HUD store: every line in the game's font while scrolling
+add_executable(game_pages_font_test runtime/tools/game_pages_font_test.cpp runtime/src/mods/game_look.cpp)
+target_include_directories(game_pages_font_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(game_pages_font_test PRIVATE -UNDEBUG)
+add_test(NAME game_pages_font COMMAND game_pages_font_test)
 # Achievements (achievements_goals.h, achievements_store.h): the goals, the record, the two-read rule, the pause;
 # WWHD_PROGRESS_SAVES=<cking.sav,...> prints the goals real Quest Logs meet
 add_executable(achievements_test runtime/tools/achievements_test.cpp)

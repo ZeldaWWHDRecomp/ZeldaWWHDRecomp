@@ -217,6 +217,123 @@ int main() {
                 }
             }
     }
+    // the tab row: Up from the first row puts the cursor on the tabs, Left / Right there go from tab to tab
+    // (no wrap), Down or A back to the shown tab's first row; L / R still turn the tabs from anywhere
+    {
+        std::vector<Row> r(3);
+        r[0].id = "r0", r[0].toggle = true, r[0].label = "First";
+        r[1].id = "r1", r[1].number = true, r[1].label = "Second";
+        r[2].id = "r2", r[2].toggle = true, r[2].label = "Third";
+        const std::vector<std::string> labels = {"Camera", "Controls", "Graphics"};
+        auto push = [&](Page& pg, uint32_t b) {  // one push: down, then up
+            Action got = pg.input(pad(b), r, 3);
+            pg.input(pad(0), r, 3);
+            return got;
+        };
+        auto cursor_on = [&](const Page& pg, float& x, float& y) {  // the brackets' place (the cursor box)
+            for (const Command& k : pg.draw(r, labels))
+                if (k.kind == Command::Picture && k.text.rfind("nb:cursor@", 0) == 0) x = k.x, y = k.y;
+        };
+        Page tp;
+        tp.show(3);
+        for (int i = 0; i < 20; i++) tp.tick(1.0f / 30);
+        tp.input(pad(0), r, 3);
+        push(tp, kPadDown);
+        assert(tp.selected() == 1 && !tp.on_tabs());
+        Action ta = push(tp, kPadUp);  // the second row: Up is the first row, as before
+        assert(tp.selected() == 0 && !tp.on_tabs() && ta.sound == Sound::Cursor);
+        ta = push(tp, kPadUp);  // the first row: the tab row
+        assert(tp.on_tabs() && tp.tab() == 0 && ta.sound == Sound::Cursor && ta.id.empty());
+        float cx = 0, cy = 0;
+        cursor_on(tp, cx, cy);
+        assert(cy < kWinY + 30 && cx > kWinX + kWinW / 2);  // the brackets around the shown tab (top right of the window)
+        for (const Command& k : tp.draw(r, labels))  // no row is marked while the cursor is on the tabs
+            assert(!(k.kind == Command::Text && k.text == bold("First")));
+        {
+            size_t marked = 0;  // (on the rows the selected row's label is bold)
+            push(tp, kPadDown);
+            for (const Command& k : tp.draw(r, labels)) marked += k.kind == Command::Text && k.text == bold("First");
+            assert(marked == 1 && !tp.on_tabs());
+            push(tp, kPadUp);
+            assert(tp.on_tabs());
+        }
+        assert(push(tp, kPadUp).sound == Sound::None && tp.on_tabs());  // nothing above the tabs
+        assert(push(tp, kPadLeft).sound == Sound::None && tp.tab() == 0);  // the first tab: no wrap
+        ta = push(tp, kPadRight);
+        assert(tp.on_tabs() && tp.tab() == 1 && ta.sound == Sound::Tab && ta.id.empty());  // Right: the next tab, no value changed
+        push(tp, kPadRight);
+        assert(tp.tab() == 2 && push(tp, kPadRight).sound == Sound::None && tp.tab() == 2);
+        float nx = 0, ny = 0;
+        cursor_on(tp, nx, ny);
+        assert(nx > cx && ny == cy);  // (the last tab is the rightmost)
+        ta = push(tp, kPadLeft);
+        assert(tp.tab() == 1 && tp.on_tabs());
+        ta = push(tp, kPadDown);  // Down: the tab's first row
+        assert(!tp.on_tabs() && tp.tab() == 1 && tp.selected() == 0 && ta.sound == Sound::Cursor && ta.id.empty());
+        push(tp, kPadUp);
+        assert(tp.on_tabs());
+        ta = push(tp, kPadA);  // A: the same, and no value changes
+        assert(!tp.on_tabs() && tp.selected() == 0 && ta.sound == Sound::Decide && ta.id.empty());
+        ta = push(tp, kPadA);  // then A changes the first row as before
+        assert(ta.id == "r0");
+        // L / R from the tab row and from the rows, as before
+        push(tp, kPadUp);
+        ta = push(tp, kPadR);
+        assert(tp.tab() == 2 && ta.sound == Sound::Tab && tp.on_tabs());
+        ta = push(tp, kPadR);
+        assert(tp.tab() == 0);  // (L / R wrap, as before)
+        push(tp, kPadDown);
+        push(tp, kPadDown);
+        ta = push(tp, kPadL);
+        assert(tp.tab() == 2 && !tp.on_tabs() && tp.selected() == 0);
+        // a held Up's repeat stops at the first row; a fresh push goes on to the tabs
+        push(tp, kPadDown), push(tp, kPadDown);
+        assert(tp.selected() == 2);
+        for (int i = 0; i < 40; i++) tp.input(pad(kPadUp), r, 3);
+        assert(tp.selected() == 0 && !tp.on_tabs());
+        tp.input(pad(0), r, 3);
+        Input stick_up = pad(0);
+        stick_up.ly = 1;
+        tp.input(stick_up, r, 3);
+        assert(tp.on_tabs());  // (the stick too)
+        tp.input(pad(0), r, 3);
+        // touch: a tap on a tab shows it (from the rows or from the tab row), a tap on a row goes back to the rows
+        float tx = 0, ty = 0;
+        tp.draw(r, labels);
+        cursor_on(tp, tx, ty);
+        push(tp, kPadDown);
+        assert(!tp.on_tabs());
+        const auto tap = [&](float x, float y) {
+            Action got = tp.input(touch(true, x, y), r, 3);
+            Action up = tp.input(touch(false, x, y), r, 3);
+            return up.sound != Sound::None ? up : got;
+        };
+        // the first tab's middle: the window's tab row starts right of the title; find it from the plates drawn
+        float first_x = 0, first_w = 0;
+        for (const Command& k : tp.draw(r, labels))
+            if (k.kind == Command::Picture && (k.text.rfind("nb:tab@", 0) == 0 || k.text.rfind("nb:tab-on@", 0) == 0) && k.y < kWinY + 40 &&
+                (first_w == 0 || k.x < first_x))
+                first_x = k.x, first_w = k.w;
+        ta = tap(first_x + first_w / 2, kWinY + 55);
+        assert(tp.tab() == 0 && ta.sound == Sound::Tab && !tp.on_tabs());
+        push(tp, kPadUp);
+        assert(tp.on_tabs());
+        tap(kRowX + 40, kRowY + kRowH * 1.5f);
+        assert(!tp.on_tabs() && tp.selected() == 1);
+        // one tab only: Up from the first row stays there
+        Page one;
+        one.show(1);
+        one.input(pad(0), r, 1);
+        one.input(pad(kPadUp), r, 1);
+        assert(!one.on_tabs() && one.selected() == 0);
+        // the page opened again: on the rows
+        tp.input(pad(0), r, 3);
+        push(tp, kPadUp), push(tp, kPadUp);
+        assert(tp.on_tabs());
+        tp.hide();
+        tp.show(3);
+        assert(!tp.on_tabs());
+    }
     // the Graphics tab's choices map onto the Settings window's options (game_settings_graphics.h)
     {
         namespace g = game_settings_graphics;
