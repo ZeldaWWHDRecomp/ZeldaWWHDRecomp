@@ -3,20 +3,23 @@
 metallib, so the game compiles none at run time and keeps no shader text (gfx/metal_draw.mm,
 "packaged shader library").
 
-Setup builds it as part of shader preparation (shader_prebuild.py) when Xcode is installed; it
-downloads Xcode's Metal toolchain itself the first time (`xcodebuild -downloadComponent
-MetalToolchain`, a separate download since Xcode 26). The Metal warm writes every
-shader's MSL (WWHD_SHADERLIB_EXPORT), this compiles them as the game does at run time (Metal 3.0,
+Setup builds it as part of shader preparation (shader_prebuild.py) when Xcode 26 or newer is
+installed; it downloads Xcode's Metal toolchain itself the first time (`xcodebuild -downloadComponent
+MetalToolchain`, a separate download since Xcode 26). An older Xcode's compiler lacks the safe math
+mode the game compiles with (-fmetal-math-mode=safe), so without Xcode 26 setup makes Metal binary
+archives with the game's own compiler instead (shader_prebuild.py). The Metal warm writes every
+shader's MSL (WWHD_SHADERLIB_SOURCES), this compiles them as the game does at run time (Metal 3.0,
 safe math) and links shaders.metallib into the generation, next to headstart.bin, where the game
 finds it. Built from your own game's shaders, it stays on your devices.
 
 By hand (an Apple TV or iPhone build's resources):
-  shader_library.py <export folder> <out.metallib> [--sdk macosx|appletvos|iphoneos] [-j N]
+  shader_library.py <sources folder> <out.metallib> [--sdk macosx|appletvos|iphoneos] [-j N]
 """
 import argparse
 import concurrent.futures
 import glob
 import os
+import plistlib
 import re
 import subprocess
 import sys
@@ -60,6 +63,18 @@ def xcode_dir():
         return active
     found = sorted(glob.glob("/Applications/Xcode*.app/Contents/Developer"))
     return found[-1] if found else None
+
+
+def xcode_major():
+    """Xcode's major version (26 for Xcode 26.1), or 0 without Xcode"""
+    xcode = xcode_dir()
+    if not xcode:
+        return 0
+    try:
+        with open(os.path.join(os.path.dirname(xcode), "version.plist"), "rb") as f:
+            return int(str(plistlib.load(f).get("CFBundleShortVersionString", "0")).split(".")[0])
+    except (OSError, ValueError, plistlib.InvalidFileException):
+        return 0
 
 
 def _env():

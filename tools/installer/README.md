@@ -79,11 +79,14 @@ A new release keeps everything the player has and builds only what changed.
   (`cmake/pipeline_identity_inputs.txt`), not by the game binary, so an update that leaves the renderer
   as it was keeps it as it is; when only the renderer changed, the head start is reused and only the
   pipelines are compiled again (the driver's own caches keep what still matches).
-  macOS with Xcode: the last step builds the **Metal shader library** (`shader_library.py`). One more
-  Metal warm writes the source of every shader a launch replays (`WWHD_SHADERLIB_EXPORT`), and they are
-  compiled into `shaders.metallib` in the generation, where the game takes them instead of compiling
-  (and keeps no shader text). Xcode's Metal toolchain is downloaded once if it is missing; without Xcode
-  the step is skipped and shaders compile during play as before. The manifest records it (`library`).
+  macOS: the last step compiles every shader a launch replays ahead of time into the generation, where
+  the game takes them instead of compiling (and keeps no shader text). One more Metal warm writes them:
+  with Xcode's Metal compiler (Xcode 26 and later: its Metal toolchain is downloaded once if missing),
+  every shader's source (`WWHD_SHADERLIB_SOURCES`), compiled by `shader_library.py` into
+  `shaders.metallib`; otherwise, or if that fails, compiled by the game with the system's own Metal
+  compiler into Metal binary archives in the `shader-archive` folder (`WWHD_SHADERLIB_EXPORT`), which
+  the game opens as libraries. The manifest records it (`library`, `library_kind`); without it, shaders
+  compile during play as before.
 - **Staged.** The new game is linked into `data/bin.staging`, started once (`wwhd --build-identity`) and
   only then swapped in. The game before it stays as `data/bin.previous` (one previous build; an older
   one goes once the new build has passed its check). An interruption leaves the game before it in

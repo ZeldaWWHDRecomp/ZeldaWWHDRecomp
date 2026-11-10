@@ -41,6 +41,7 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 
 #include <condition_variable>
 #include <mutex>
+#include <thread>
 #include <set>
 #include <cstdarg>
 #include <ctime>
@@ -542,19 +543,80 @@ static void release_compiled_sources() {
 }
 
 // ---------------------------------------------------------------- packaged shader library
-// A metallib built ahead of time from this game's shaders: setup's shader preparation runs the Metal warm
-// (--warm-shaders) with WWHD_SHADERLIB_EXPORT=<folder>, which writes every translated shader's source
-// there, and tools/installer/shader_library.py compiles them into shaders.metallib next to the
-// generation's headstart.bin. Each function is named after a hash of the exact MSL it was built from
-// (library_name): not the shader's key, which depends on the order the records are replayed in (the warm
-// and a launch differ), while equal sources are one function. A shader whose source differs here
-// (another setting, a mod, a game update) finds nothing and compiles as before. A shader found in it needs no compile, and its
-// text goes at once. WWHD_SHADERLIB=<path> overrides the location (else next to WWHD_HEADSTART, then
-// the app's resources: an Apple TV or iPhone build); WWHD_SHADERLIB=0: none.
-static id<MTLLibrary> g_shaderlib = nil;
+// Every shader a launch replays, compiled once by setup, so the game compiles none and keeps no shader text.
+// Each function is named after a hash of the exact MSL it was built from (library_name): not the shader's key,
+// which depends on the order records are replayed in, while equal sources are one function. A shader whose
+// source differs (another setting, a mod, a game update) finds nothing and compiles as before.
+// Setup makes it in one of two ways, next to the generation's headstart.bin:
+//  - shaders.metallib, with Xcode 26 or newer (its Metal compiler): the Metal warm (--warm-shaders) with
+//    WWHD_SHADERLIB_SOURCES=<folder> writes every shader's source, and tools/installer/shader_library.py
+//    compiles them into one library.
+//  - otherwise the folder shader-archive: the Metal warm with WWHD_SHADERLIB_EXPORT=<folder> compiles every
+//    shader with the system's own compiler and adds every pipeline to Metal binary archives, which keep the
+//    shaders in their intermediate form. The game opens each archive only as a library: opened as a binary
+//    archive, each pipeline's description is rebuilt in memory (this game's set took the footprint from
+//    1.3 GB to 6.9 GB, and minutes), and macOS's own shader cache already keeps the pipelines' GPU code.
+//    Opening an archive as a library is not documented by Apple: if none opens, everything compiles as
+//    before.
+// WWHD_SHADERLIB=<path> overrides the location (else next to WWHD_HEADSTART, then the app's resources): a
+// .metallib, a folder of .binarchive files or one .binarchive; WWHD_SHADERLIB=0: none.
+static NSDictionary<NSString*, id<MTLLibrary>>* g_shaderlibs = nil;  // function name -> its library
 static size_t g_shaderlib_hits = 0, g_shaderlib_misses = 0;
-static const char* g_shaderlib_export = getenv("WWHD_SHADERLIB_EXPORT");
-static size_t g_shaderlib_exported = 0;
+static const char* g_shaderlib_export = [] { const char* e = getenv("WWHD_SHADERLIB_EXPORT"); return e && *e ? e : nullptr; }();
+static const char* g_shaderlib_sources = [] { const char* e = getenv("WWHD_SHADERLIB_SOURCES"); return e && *e ? e : nullptr; }();
+static size_t g_shaderlib_sources_written = 0;
+static std::atomic<size_t> g_export_added{0}, g_export_failed{0}, g_export_files{0};
+static std::atomic<bool> g_export_write_failed{false};
+
+// The export adds its pipelines to Metal binary archives, a few at a time, each written as its own file.
+//  - An archive's working database (the system's gpuarchiver folder) has a fixed size: about 5,500 of this
+//    game's pipelines overflow it, and writing the archive then crashed in Metal (M1: a null dispatch
+//    object in materializeAirNTFromOnlineForSlice; Metal 4's serializer says MDB_MAP_FULL instead). So an
+//    archive takes at most kExportChunk pipelines and then the next one starts (also kept small for anyone
+//    opening one as a binary archive: that takes time growing with the square of its size).
+//  - Two adds to one archive at the same time crashed its write too, so each archive is filled on a serial
+//    queue of its own (an export shard); the warm's threads only hand the work over.
+static constexpr int kExportChunk = 250;  // pipelines per archive (about 10 MB here)
+struct ExportShard {
+    dispatch_queue_t queue;
+    id<MTLBinaryArchive> archive;  // (on the queue only)
+    int count = 0;                 // pipelines in it
+};
+static id<MTLBinaryArchive> export_new_archive() {
+    NSError* err = nil;
+    id<MTLBinaryArchive> a = [R.device newBinaryArchiveWithDescriptor:[MTLBinaryArchiveDescriptor new] error:&err];
+    if (!a) LOG("[gfx] shader archive export: %s", err.localizedDescription.UTF8String ?: "failed");
+    return a;
+}
+// the archive filled so far, written as the next file in the folder, and a new one for the next (queue)
+static void export_flush(ExportShard& sh) {
+    if (!sh.archive || !sh.count) return;
+    char name[32];
+    snprintf(name, sizeof name, "/%03zu.binarchive", g_export_files++);
+    const std::string out = std::string(g_shaderlib_export) + name, tmp = out + ".tmp";
+    NSError* err = nil;
+    if (![sh.archive serializeToURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:tmp.c_str()]] error:&err] ||
+        rename(tmp.c_str(), out.c_str()) != 0) {
+        LOG("[warm] shader archive %s: %s", out.c_str(), err ? err.localizedDescription.UTF8String : strerror(errno));
+        unlink(tmp.c_str());
+        g_export_write_failed = true;
+    }
+    sh.archive = export_new_archive();
+    sh.count = 0;
+}
+static std::vector<ExportShard>& export_shards() {
+    static std::vector<ExportShard> shards = [] {
+        mkdir(g_shaderlib_export, 0755);
+        const int n = std::clamp<int>(int([NSProcessInfo processInfo].activeProcessorCount) / 2, 1, 6);
+        std::vector<ExportShard> v(n);
+        for (auto& sh : v) {
+            sh.queue = dispatch_queue_create("wwhd.shader-archive", DISPATCH_QUEUE_SERIAL);
+            sh.archive = export_new_archive();
+        }
+        return v;
+    }();
+    return shards;
+}
 
 static std::string library_name(const std::string& msl) {
     char name[24];
@@ -562,60 +624,108 @@ static std::string library_name(const std::string& msl) {
     return name;
 }
 
-// the source as the library holds it: compile_msl's own (snapped) with the entry point renamed
-static std::string library_source(const std::string& msl, const std::string& name) {
-    std::string out = msl;
-    const size_t at = out.find(" main0(");
-    if (at != std::string::npos) out.replace(at + 1, 5, name);
-    return out;
-}
-
 static void shaderlib_load() {
+    if (g_shaderlib_export || g_shaderlib_sources) return;  // every shader compiled or written, none taken from an older one
     const char* env = getenv("WWHD_SHADERLIB");
     if (env && !strcmp(env, "0")) return;
+    NSFileManager* fm = [NSFileManager defaultManager];
     NSString* path = env && *env ? [NSString stringWithUTF8String:env] : nil;
     if (!path) {
         if (const char* headstart = getenv("WWHD_HEADSTART"); headstart && *headstart && strcmp(headstart, "0")) {
-            NSString* next = [[[NSString stringWithUTF8String:headstart] stringByDeletingLastPathComponent]
-                                 stringByAppendingPathComponent:@"shaders.metallib"];
-            if ([[NSFileManager defaultManager] fileExistsAtPath:next]) path = next;
+            NSString* dir = [[NSString stringWithUTF8String:headstart] stringByDeletingLastPathComponent];
+            for (NSString* name in @[@"shaders.metallib", @"shader-archive"]) {
+                NSString* next = [dir stringByAppendingPathComponent:name];
+                if ([fm fileExistsAtPath:next]) { path = next; break; }
+            }
         }
     }
+    if (!path) path = [[NSBundle mainBundle] pathForResource:@"shader-archive" ofType:nil];
     if (!path) path = [[NSBundle mainBundle] pathForResource:@"shaders" ofType:@"metallib"];
-    if (!path || ![[NSFileManager defaultManager] fileExistsAtPath:path]) {
+    BOOL folder = NO;
+    if (!path || ![fm fileExistsAtPath:path isDirectory:&folder]) {
         if (env && *env) LOG("[gfx] shader library %s: not found", env);
         return;
     }
-    NSError* err = nil;
-    g_shaderlib = [R.device newLibraryWithURL:[NSURL fileURLWithPath:path] error:&err];
-    if (!g_shaderlib) LOG("[gfx] shader library %s: %s", path.UTF8String, err.localizedDescription.UTF8String ?: "failed");
-    else LOG("[gfx] shader library %s: %zu functions", path.UTF8String, (size_t)g_shaderlib.functionNames.count);
+    NSMutableArray<NSString*>* files = [NSMutableArray array];
+    if (folder) {
+        for (NSString* f in [[fm contentsOfDirectoryAtPath:path error:nil] sortedArrayUsingSelector:@selector(compare:)])
+            if ([f.pathExtension isEqualToString:@"binarchive"]) [files addObject:[path stringByAppendingPathComponent:f]];
+    } else {
+        [files addObject:path];
+    }
+    // the libraries now (milliseconds each); each function's name finds its library
+    NSMutableDictionary<NSString*, id<MTLLibrary>>* names = [NSMutableDictionary dictionary];
+    size_t opened = 0;
+    for (NSString* f in files) {
+        NSError* err = nil;
+        id<MTLLibrary> lib = [R.device newLibraryWithURL:[NSURL fileURLWithPath:f] error:&err];
+        if (!lib) {
+            LOG("[gfx] shader library %s: %s", f.UTF8String, err.localizedDescription.UTF8String ?: "failed");
+            continue;
+        }
+        opened++;
+        for (NSString* name in lib.functionNames) names[name] = lib;
+    }
+    if (!names.count) return;
+    g_shaderlibs = names;
+    LOG("[gfx] shader library %s: %zu files, %zu functions", path.UTF8String, opened, (size_t)names.count);
 }
 
-// a translated shader from the library (true: ready, its text gone), or written out for one
+// a translated shader from the library (true: ready, its text gone)
 static bool shaderlib_take(Shader* s) {
-    if ((!g_shaderlib && !g_shaderlib_export) || !s->dec || !s->dec->strBuf_shaderSource) return false;
+    if ((!g_shaderlibs && !g_shaderlib_sources) || !s->dec || !s->dec->strBuf_shaderSource) return false;
     const std::string msl = snap_texcoords(s->dec->strBuf_shaderSource->c_str());
-    const std::string name = library_name(msl);
-    if (g_shaderlib_export) {
-        const std::string path = std::string(g_shaderlib_export) + "/" + name + ".metal";
+    const std::string lname = library_name(msl);
+    if (g_shaderlib_sources) {
+        // the source as shader_library.py compiles it: compile_msl's own with the entry point renamed (the
+        // same source again, from another key, is already there: one function)
+        static const bool made = (mkdir(g_shaderlib_sources, 0755), true);
+        (void)made;
+        const std::string path = std::string(g_shaderlib_sources) + "/" + lname + ".metal";
         struct stat st;
-        if (stat(path.c_str(), &st) == 0) {
-            // the same source again (another key): one function
-        } else if (FILE* f = fopen(path.c_str(), "w")) {
-            const std::string src = library_source(msl, name);
-            fwrite(src.data(), 1, src.size(), f);
-            fclose(f);
-            g_shaderlib_exported++;
-        }
+        if (stat(path.c_str(), &st) != 0)
+            if (FILE* f = fopen(path.c_str(), "w")) {
+                std::string out = msl;
+                if (const size_t at = out.find(" main0("); at != std::string::npos) out.replace(at + 1, 5, lname);
+                fwrite(out.data(), 1, out.size(), f);
+                fclose(f);
+                g_shaderlib_sources_written++;
+            }
+        return false;
     }
-    if (!g_shaderlib) return false;
-    id<MTLFunction> fn = [g_shaderlib newFunctionWithName:[NSString stringWithUTF8String:name.c_str()]];
+    NSString* name = [NSString stringWithUTF8String:lname.c_str()];
+    id<MTLFunction> fn = [g_shaderlibs[name] newFunctionWithName:name];
     if (!fn) { g_shaderlib_misses++; return false; }
     g_shaderlib_hits++;
     s->fn = fn;
     s->state = CS_READY;
     release_source(s);
+    return true;
+}
+
+// the export: a pipeline the warm builds goes to an export shard, which adds it to the archive it is filling
+// (adding compiles it), instead of being created here. It is marked ready (or failed) without a state: an
+// export run draws nothing. Counted in flight, so the warm waits for it.
+static bool shaderlib_export_pipeline(MTLRenderPipelineDescriptor* d, std::atomic<int>& status) {
+    if (!g_shaderlib_export) return false;
+    auto& shards = export_shards();
+    static size_t next = 0;  // (render thread)
+    ExportShard* sh = &shards[next++ % shards.size()];
+    MTLRenderPipelineDescriptor* copy = [d copy];
+    std::atomic<int>* st = &status;
+    g_compiles_in_flight++;
+    dispatch_async(sh->queue, ^{
+        NSError* err = nil;
+        const bool added = sh->archive && [sh->archive addRenderPipelineFunctionsWithDescriptor:copy error:&err];
+        if (added) {
+            g_export_added++;
+            if (++sh->count >= kExportChunk) export_flush(*sh);
+        } else if (g_export_failed++ < 5) {
+            LOG("[gfx] shader archive: a pipeline not added: %s", err.localizedDescription.UTF8String ?: "no archive");
+        }
+        compile_done(*st, added ? CS_READY : CS_FAILED);
+        g_compiles_in_flight--;
+    });
     return true;
 }
 
@@ -639,7 +749,17 @@ static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
     // The entry point is renamed too: the GPU-code cache behind pipeline creation is keyed by the compiled
     // function, which a comment doesn't change.
     NSString* entry = @"main0";
-    if (const char* nonce = getenv("WWHD_MSL_NONCE")) {
+    if (g_shaderlib_export) {
+        // the archive's name for this source (shaderlib_take looks it up by it)
+        const std::string name = library_name(snapped);
+        const size_t at = snapped.find(" main0(");
+        if (at != std::string::npos) {
+            snapped.replace(at + 1, 5, name);
+            src = snapped.c_str();
+            source = [NSString stringWithUTF8String:src];
+            entry = [NSString stringWithUTF8String:name.c_str()];
+        }
+    } else if (const char* nonce = getenv("WWHD_MSL_NONCE")) {
         std::string name = "main0_";
         for (const char* c = nonce; *c; c++) name += isalnum((unsigned char)*c) ? *c : '_';
         entry = [NSString stringWithUTF8String:name.c_str()];
@@ -1276,6 +1396,7 @@ static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs,
         d.depthAttachmentPixelFormat = dfmt.pixel;
         if (dfmt.stencil) d.stencilAttachmentPixelFormat = dfmt.pixel;
     }
+    if (shaderlib_export_pipeline(d, pl->status)) return nil;
     if (g_sync_shaders) {
         NSError* err = nil;
         double t0 = now_ms();
@@ -2038,16 +2159,9 @@ static void cache_load_once() {
     (void)loaded;
 }
 
-// `wwhd --warm-shaders` with WWHD_SHADERLIB_EXPORT (shader_headstart.mm): after the warm, the live cache's
-// shaders too (recorded in play and by setup's model sweep; most of the game's), so the packaged library
-// holds every shader a launch replays
-void shaderlib_export_cache() {
-    if (g_shaderlib_export) cache_load_once();
-}
 
 static void cache_load() {
     shaderlib_load();
-    if (g_shaderlib_export) mkdir(g_shaderlib_export, 0755);
     std::string path = cache_path();
     if (path == "0") { g_cache_disabled = true; return; }
     double t0 = now_ms();
@@ -2152,9 +2266,7 @@ static void cache_load() {
     }
     void headstart_load();  // shader_headstart.mm
     headstart_load();
-    if (g_shaderlib) LOG("[gfx] shader library: %zu shaders from it, %zu compiled here", g_shaderlib_hits, g_shaderlib_misses);
-    if (g_shaderlib_export)
-        LOG("[gfx] shader library export: %zu sources written to %s", g_shaderlib_exported, g_shaderlib_export);
+    if (g_shaderlibs) LOG("[gfx] shader library: %zu shaders from it, %zu compiled here", g_shaderlib_hits, g_shaderlib_misses);
     if (versioned && policy.writable && !recordOnly) {
         struct stat st {};
         const bool exists = stat(path.c_str(), &st) == 0 && st.st_size > 0;
@@ -3062,6 +3174,53 @@ size_t headstart_build_pipelines(int maxInFlight, size_t& built, size_t& dropped
     built = g_recipes_built;
     dropped = g_recipes_dropped;
     return g_pending_pipelines.size();
+}
+
+// `wwhd --warm-shaders` with WWHD_SHADERLIB_EXPORT, after the warm: the live cache's shaders and pipelines
+// too (recorded in play and by setup's model sweep; most of the game's), so the archive holds what a
+// launch replays; then the archive is written. Returns false if it could not be.
+bool shaderlib_export_finish() {
+    if (g_shaderlib_sources) {
+        cache_load_once();  // the live cache's shaders, translated: their sources written too
+        LOG("[warm] shader library: %zu sources written to %s", g_shaderlib_sources_written, g_shaderlib_sources);
+        return g_shaderlib_sources_written > 0;
+    }
+    if (!g_shaderlib_export) return true;
+    const double t0 = now_ms();
+    cache_load_once();
+    LOG("[warm] shader archive: %zu shaders and %zu pipelines from the live cache", g_deferred_shaders.size(),
+        g_pending_pipelines.size());
+    double last = t0;
+    while (!g_deferred_shaders.empty() || !g_pending_pipelines.empty() || g_compiles_in_flight > 0) {
+        while (!g_deferred_shaders.empty() && g_compiles_in_flight < 128) {
+            Shader* s = g_deferred_shaders.back();
+            g_deferred_shaders.pop_back();
+            compile_deferred(s);
+        }
+        build_pending_pipelines(INT_MAX, 128);
+        release_compiled_sources();
+        if (now_ms() - last > 5000) {
+            last = now_ms();
+            LOG("[warm] shader archive: %zu shaders and %zu pipelines left, %d in flight, %zu added",
+                g_deferred_shaders.size(), g_pending_pipelines.size(), g_compiles_in_flight.load(), g_export_added.load());
+        }
+        // the pipelines left wait for shaders that failed for good (dropped by the next pass) or still compile
+        if (g_deferred_shaders.empty() && g_compiles_in_flight == 0 && !g_pending_pipelines.empty()) {
+            const size_t before = g_pending_pipelines.size();
+            build_pending_pipelines(INT_MAX, 128);
+            if (g_pending_pipelines.size() == before && g_compiles_in_flight == 0) break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    // the archives being filled, written
+    for (auto& sh : export_shards()) {
+        ExportShard* p = &sh;
+        dispatch_sync(sh.queue, ^{ export_flush(*p); });
+    }
+    if (g_export_write_failed || !g_export_files) return false;
+    LOG("[warm] shader archive: %zu pipelines (%zu not built) in %zu files, written in %.1f s to %s", g_export_added.load(),
+        g_export_failed.load(), g_export_files.load(), (now_ms() - t0) / 1000.0, g_shaderlib_export);
+    return true;
 }
 
 }  // namespace gfx

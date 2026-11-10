@@ -174,7 +174,9 @@ int headstart_warm() {
     Stats st;
     if (!replay(true, true, st, warm_shader_progress)) {
         LOG("[warm] no shader head start at %s (build it with tools/shaderprep.py build)", headstart_path().c_str());
-        return 1;
+        // the shader library's export still covers the live cache (an Apple TV app carries no head start)
+        bool shaderlib_export_finish();
+        return getenv("WWHD_SHADERLIB_EXPORT") || getenv("WWHD_SHADERLIB_SOURCES") ? !shaderlib_export_finish() : 1;
     }
     // records the counting pass saw but the replay did not reach count as done
     g_warm_shaders = std::min(g_warm_shaders, st.records);
@@ -211,9 +213,9 @@ int headstart_warm() {
     LOG("[warm] distinct: %zu shaders, %zu pipelines (from %zu shader records, %zu pipeline records)", distinctShaders,
         distinctPipelines, st.records, st.pipelines);
     LOG("[warm] done in %.1f s (%zu failed shader/pipeline compiles)", ms_since(t0) / 1000.0, compileFailures);
-    void shaderlib_export_cache();  // metal_draw.mm: the live cache's shaders for the packaged library
-    shaderlib_export_cache();
-    return st.failed || compileFailures ? 1 : 0;
+    bool shaderlib_export_finish();  // metal_draw.mm: the shader library's export (archive or sources), with the live cache
+    const bool exported = shaderlib_export_finish();
+    return st.failed || compileFailures || !exported ? 1 : 0;
 }
 
 }  // namespace gfx
