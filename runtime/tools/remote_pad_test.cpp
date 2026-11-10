@@ -698,6 +698,8 @@ static void test_server_pairing() {
     phone.send(encode_pair({11, h.id, shown_code}));
     n = recv(phone.s, buf, sizeof buf, 0);
     auto paired = parse_paired(buf, size_t(n));
+    // the server replies first and calls `paired` (which saves the list) right after: wait for it
+    for (int i = 0; i < 200 && saved == 0; i++) std::this_thread::sleep_for(std::chrono::milliseconds(5));
     assert(paired && paired->nonce == 11 && saved == 1 && pr.size() == 1);
     // with the token it connects
     h.token = paired->token;
