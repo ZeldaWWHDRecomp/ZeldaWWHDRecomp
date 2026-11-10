@@ -113,7 +113,7 @@ SITES = [
     # dCamera_c::manualCamera (fast mode): the direct / mouse / swipe camera, Invert camera up/down (mods/camera.cpp)
     _p(0x02510448, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL_AT"),  # after each turning-speed chase (both branches)
     _p(0x025104A0, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL_AT"),
-    _p(0x0251053C, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the vertical stick rate
+    _p(0x0251053C, 0x0250FDC8, CE2, "PORT_CAMERA_RATE"),       # the vertical stick rate
     _p(0x02510DEC, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the latitude step
     _p(0x02510EA0, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the V smoothing factor
     _p(0x02510EE4, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the U smoothing factor

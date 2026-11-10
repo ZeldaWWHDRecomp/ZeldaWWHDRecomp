@@ -1,5 +1,5 @@
 // Decomp build: the port points of the decompiled camera code (the decompilation's port_hooks.h PORT_CAMERA_F,
-// PORT_CAMERA_W, PORT_CAMERA_AT, PORT_PROJECTION, PORT_CAMERA_MANUAL; tools/decomp_build/port_sites.py). Each runs its
+// PORT_CAMERA_W, PORT_CAMERA_AT, PORT_PROJECTION, PORT_CAMERA_MANUAL, PORT_CAMERA_RATE; port_sites.py). Each runs its
 // instruction hook's handler (mods/camera.cpp, mods/targeting_letterbox.cpp, aspect.cpp) through port_points::run. In a
 // file of its own so that the tests that link one of those files alone do not need the others.
 #include <cstdint>
@@ -80,15 +80,6 @@ extern "C" float wwhd_camera_manual(Cpu* c, unsigned sp, unsigned site, unsigned
         port_points::run(c, sp, site == 0x02510448 ? site_02510448 : site_025104A0,
                          [&](Cpu& r) { r.r[31] = obj; f(r, 25, value); }, [](Cpu&) {});
         return value;
-    case 0x0251053C: {  // f28 the vertical stick rate
-        const Cpu saved = *c;
-        c->r[1] = sp;
-        f(*c, 28, value);
-        mods::manual_pitch_rate(c, a);
-        value = (float)c->f[28].ps0;
-        *c = saved;
-        return value;
-    }
     case 0x02510DEC:
         port_points::run(c, sp, site_02510DEC, [&](Cpu& r) { f(r, 1, value); f(r, 2, a); f(r, 3, b); },
                          [&](Cpu& r) { value = (float)r.f[1].ps0; });
@@ -99,4 +90,16 @@ extern "C" float wwhd_camera_manual(Cpu* c, unsigned sp, unsigned site, unsigned
         return value;
     }
     port_points::unknown("manual camera", site);
+}
+// @0251053C: f28 the vertical stick rate, a double as the handler leaves it (mouse pitch); PER the latitude step
+extern "C" double wwhd_camera_rate(Cpu* c, unsigned sp, unsigned site, unsigned obj, double value, float per) {
+    if (site != 0x0251053C) port_points::unknown("manual camera rate", site);
+    const Cpu saved = *c;
+    c->r[1] = sp;
+    c->r[31] = obj;
+    c->f[28].ps0 = c->f[28].ps1 = value;
+    mods::manual_pitch_rate(c, per);
+    value = c->f[28].ps0;
+    *c = saved;
+    return value;
 }

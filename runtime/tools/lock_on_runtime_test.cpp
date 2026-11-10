@@ -158,6 +158,14 @@ int main(int argc, char** argv) {
         st32(attention + 0x54 + 7*16 + 8, 0);
         v[0] = 700; assert(wwhd_lock_on(&p, 0x1234000, 0x024EE574, attention, 0, v) == 700);
         assert(!std::memcmp(&p, &before, sizeof p));
+        // a factor whose products are not exact in single precision: the points give the sites' doubles bit for bit
+        set_lock_on_range(2.7f);
+        Cpu s = arguments(); site_024EB4A8(&s);
+        v[0] = 600; v[1] = 100; wwhd_lock_on(&p, 0x1234000, 0x024EB4A8, rule, actor, v);
+        assert(v[0] == s.f[1].ps0 && v[1] == s.f[2].ps0 && v[0] != (double)(float)v[0]);
+        s = {}; s.r[31] = actor; s.f[13].ps0 = 700.1f; site_024EB868(&s);
+        v[0] = 700.1f; assert(wwhd_lock_on(&p, 0x1234000, 0x024EB868, actor, 0, v) == s.f[13].ps0);
+        set_lock_on_range(2.f);
     }
     for (float value : {0.f, -1.f, 0.5f}) { set_lock_on_range(value); assert(lock_on_range() == 1.f); }
     set_lock_on_range(99.f); assert(lock_on_range() == 3.f);

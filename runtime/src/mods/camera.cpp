@@ -83,6 +83,7 @@ void f_025071FC_orig(Cpu* c);  // dCamera_c::subjectCamera
 void f_0240EBB0_orig(Cpu* c);  // daPy_Execute
 }
 
+namespace test_aids { uint64_t origin_step(); }  // test_aids.cpp: the scenario origin (0 before it)
 namespace mods {
 namespace {
 constexpr uint32_t kCamSpeed = 0x154;   // dCamera_c: eased turning speed (manual camera)
@@ -127,7 +128,8 @@ bool link_in_ship() {
 }
 
 // test aid: WWHD_TEST_MOUSE=2-3:5:0,... moves the mouse by (dx, dy) points per logic step from 2 s
-// to 3 s of game time (full logic steps / 30, from boot);
+// to 3 s of game time (full logic steps / 30, from boot; with WWHD_TEST_MOUSE_ORIGIN=1 from the scenario's origin, as
+// WWHD_TEST_STICK: two runs whose boots differ by a few steps then get the movement at the same scenario step);
 // WWHD_TEST_WHEEL=4.0:1,... scrolls by dy at that time.
 struct TimedMouse { double from, to; float dx, dy; };
 std::vector<TimedMouse> parse_mouse(const char* var, bool range) {
@@ -153,7 +155,13 @@ void inject_test_mouse() {
     uint64_t s = step();
     if (s == last) return;
     last = s;
+    static const bool from_origin = getenv("WWHD_TEST_MOUSE_ORIGIN") != nullptr;
     double t = game_time();
+    if (from_origin) {
+        const uint64_t o = ::test_aids::origin_step();  // a logic step, as game_time() counts
+        if (!o) return;                                 // before the scenario starts
+        t -= (double)o / 30.0;
+    }
     for (auto& m : moves)
         if (t >= m.from && t < m.to) mouse_add(m.dx, m.dy);
     for (auto& w : wheels)
