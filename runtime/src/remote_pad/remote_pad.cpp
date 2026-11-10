@@ -150,16 +150,42 @@ bool take_paired_changed(std::string& saved) {
 
 namespace {
 #ifdef __APPLE__
-void DNSSD_API registered(DNSServiceRef, DNSServiceFlags, DNSServiceErrorType e, const char* name, const char*, const char*, void*) {
-    if (e != kDNSServiceErr_NoError || !name || !*name || !g_server) return;
-    g_server->set_host(name);  // (g_mu held: start_locked)
+void DNSSD_API registered(DNSServiceRef, DNSServiceFlags, DNSServiceErrorType e, const char* name, const char*, const char*, void* out) {
+    if (e != kDNSServiceErr_NoError || !name || !*name) return;
+    *static_cast<std::string*>(out) = name;
     log_msg("[remote pad] advertised as %s", name);
+}
+
+// mDNSResponder keeps the record while the ref is open. With no `name` (an Apple TV has no host name) it
+// registers the device's and its one reply, waited for here, puts it in `name`.
+void advertise(uint16_t port, std::string& name) {
+    const bool ask = name.empty();
+    const DNSServiceErrorType err = DNSServiceRegister(&g_bonjour, 0, 0, ask ? nullptr : name.c_str(), kBonjourType,
+                                                       nullptr, nullptr, htons(port), 0, nullptr,
+                                                       ask ? DNSServiceRegisterReply(&registered) : nullptr, &name);
+    if (err != kDNSServiceErr_NoError) {
+        g_bonjour = nullptr;
+        log_msg("[remote pad] Bonjour advertisement failed (%d): enter this computer's address on the phone", (int)err);
+    } else if (ask) {
+        const int fd = DNSServiceRefSockFD(g_bonjour);
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        timeval wait{2, 0};
+        if (select(fd + 1, &fds, nullptr, nullptr, &wait) > 0) DNSServiceProcessResult(g_bonjour);
+    }
 }
 #endif
 
 void start_locked(uint16_t port) {
     if (g_server) return;
-    const std::string name = host_name();
+    std::string name = host_name();
+#ifdef __APPLE__
+    // the device's name before the server starts, so the first Welcome carries it (a waiting phone
+    // rejoins at once). Port 0 (tests) is only known once bound: those advertise after.
+    const bool named_first = name.empty() && port != 0;
+    if (named_first) advertise(port, name);
+#endif
     g_server = std::make_shared<Server>(Server::Callbacks{
         [](const Server::Snapshot& s) { g_turns = -1; g_keyframe = true; g_video = s.video; g_audio = s.audio; g_rumble_reset = true; g_connected = true; },
         on_input,
@@ -177,27 +203,22 @@ void start_locked(uint16_t port) {
             if (g_text_inputs.size() < 64) g_text_inputs.push_back(t);
         },
     }, name.empty() ? "Wind Waker HD" : name, &g_pairing);
-    if (!g_server->start(port)) { g_server.reset(); return; }
+    if (!g_server->start(port)) {
+        g_server.reset();
+#ifdef __APPLE__
+        if (g_bonjour) { DNSServiceRefDeallocate(g_bonjour); g_bonjour = nullptr; }
+#endif
+        return;
+    }
     g_server->set_text(g_text);
     g_server->set_boot_image(g_boot_image);
     log_msg("[remote pad] waiting for the iPhone GamePad on UDP port %u (%s)", (unsigned)g_server->port(),
             g_env ? "WWHD_REMOTE_PAD" : "Settings > Controls > iPhone GamePad");
 #ifdef __APPLE__
-    // mDNSResponder keeps the record while the ref is open. Without a name of our own (an Apple TV) it
-    // registers the device's, and its one reply says which: the Welcome then carries it too.
-    const DNSServiceErrorType err = DNSServiceRegister(&g_bonjour, 0, 0, name.empty() ? nullptr : name.c_str(), kBonjourType,
-                                                       nullptr, nullptr, htons(g_server->port()), 0, nullptr,
-                                                       name.empty() ? DNSServiceRegisterReply(&registered) : nullptr, nullptr);
-    if (err != kDNSServiceErr_NoError) {
-        g_bonjour = nullptr;
-        log_msg("[remote pad] Bonjour advertisement failed (%d): enter this computer's address on the phone", (int)err);
-    } else if (name.empty()) {
-        const int fd = DNSServiceRefSockFD(g_bonjour);
-        fd_set fds;
-        FD_ZERO(&fds);
-        FD_SET(fd, &fds);
-        timeval wait{2, 0};
-        if (select(fd + 1, &fds, nullptr, nullptr, &wait) > 0) DNSServiceProcessResult(g_bonjour);
+    if (!named_first) {
+        std::string bonjour = name;
+        advertise(g_server->port(), bonjour);
+        if (!bonjour.empty()) g_server->set_host(bonjour);
     }
 #endif
 }

@@ -913,11 +913,14 @@ void upload_surface(Surface* s) {
         uint32_t bw = f.compressed ? (w + 3) / 4 : w, bh = f.compressed ? (h + 3) / 4 : h;
         // rows of the copy below: blocks, or the decoded texels of a BC format the GPU cannot sample (formats.h)
         uint32_t rowBytes = bw * f.hostBytesPerBlock, rows = bh, copyW = f.compressed ? bw * 4 : w, copyH = f.compressed ? bh * 4 : h;
+#ifdef WWHD_ETCPAK
         if (f.decodeBC && f.etc2) {
             data = etc2_from_bc(data, bw, bh, slices, f.bcMode);
             if (data.empty()) continue;
             rowBytes = bw * 16;  // (copyW / copyH: whole blocks, as BC)
-        } else if (f.decodeBC) {
+        } else
+#endif
+        if (f.decodeBC) {
             try {
                 data = gfxvk::bc::decode(data, w, h, slices, f.bcMode);
             } catch (const std::exception&) {

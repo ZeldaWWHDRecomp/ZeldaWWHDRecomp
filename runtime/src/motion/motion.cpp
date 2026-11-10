@@ -238,6 +238,9 @@ void upgrade_from_first_release(Settings& s) {
 float default_sensitivity(int source) { return source == kDevice ? 1.0f : Tuning::kDefaultSensitivity; }
 Settings from_saved(const std::vector<std::pair<std::string, std::string>>& saved) {
     Settings s;
+#ifdef WWHD_TVOS
+    s.source = kDevice;  // an Apple TV has no sensors of its own: the iPhone GamePad's, until changed
+#endif
     bool format = false, axis = false, x = false, y = false;
     for (const auto& [k, v] : saved) {
         from_kv(s, k, v);

@@ -10,8 +10,10 @@
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || defined(WWHD_TVOS)
 #include "guest_mods.h"
+#endif
+#ifdef __ANDROID__
 #include "../platform/android_code_mods.h"
 #include <chrono>
 #endif
@@ -129,8 +131,8 @@ bool enabled(){
     // A recovery override disables guest loading even in an Android build that
     // contains the hooks. It never changes the compiled game or save paths.
     if(const char* value=std::getenv("WWHD_CODE_MODS"))return std::string(value)=="1";
-#ifdef __ANDROID__
-    // the phone's build is the choice: the setup builds the game code with or without mod support
+#if defined(__ANDROID__) || defined(WWHD_TVOS)
+    // the phone's or the Apple TV app's build is the choice: its game code is built with or without mod support
     return guestmods::hooks_built();
 #endif
     std::string value;return hostui::get("code-mods",value)&&value=="1";

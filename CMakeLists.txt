@@ -392,6 +392,12 @@ elseif(WWHD_TVOS)
     MACOSX_BUNDLE_INFO_PLIST ${CMAKE_SOURCE_DIR}/tvos/Info.plist.in
     MACOSX_BUNDLE_GUI_IDENTIFIER org.wwhdrecomp.tv
     MACOSX_BUNDLE_BUNDLE_NAME "Wind Waker HD")
+  # its icon and Top Shelf images: the game's TV boot image once the game files are in the bundle, else
+  # the project's icon (tvos/make_icon.py; sips and actool)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_custom_command(TARGET wwhd POST_BUILD
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tvos/make_icon.py $<TARGET_BUNDLE_DIR:wwhd>
+    VERBATIM)
 else()
   add_executable(wwhd ${RUNTIME_SOURCES} ${GX2_SOURCES} ${GFX_SOURCES} ${MOD_GFX_SOURCES} ${IMGUI_METAL})
 endif()

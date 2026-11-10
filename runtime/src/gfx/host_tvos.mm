@@ -7,6 +7,7 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 
+#include <csignal>
 #include <mach/mach.h>
 #include <os/proc.h>
 #include <pthread.h>
@@ -137,6 +138,40 @@ static void start_memory_log() {
     dispatch_resume(timer);
 }
 
+// Code mods on an Apple TV come built into the app (tvos/README.md, tvos/bundle_mods.py): GuestMods holds each
+// module built for tvOS (guest_mods.cpp bundled_module), ModManager the mod manager's storage the Mac prepared
+// (the packages, on and trusted). A new app with another seed (its seed.txt) replaces the profile and those
+// packages; the player's choices made on the TV last until then.
+static void install_bundled_mods(NSString* user) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* app = [NSBundle mainBundle].bundlePath;
+    NSString* modules = [app stringByAppendingPathComponent:@"GuestMods"];
+    if ([fm fileExistsAtPath:modules]) setenv("WWHD_BUNDLED_GUEST_MODS", modules.fileSystemRepresentation, 1);
+    NSString* seed = [app stringByAppendingPathComponent:@"ModManager"];
+    NSString* stamp = [NSString stringWithContentsOfFile:[seed stringByAppendingPathComponent:@"seed.txt"]
+                                                encoding:NSUTF8StringEncoding error:nil];
+    if (!stamp.length) return;
+    NSString* storage = [user stringByAppendingPathComponent:@"ModManager"];
+    NSString* copied = [storage stringByAppendingPathComponent:@"seed.txt"];
+    if ([stamp isEqualToString:[NSString stringWithContentsOfFile:copied encoding:NSUTF8StringEncoding error:nil]])
+        return;
+    NSString* mods = [storage stringByAppendingPathComponent:@"Mods"];
+    [fm createDirectoryAtPath:mods withIntermediateDirectories:YES attributes:nil error:nil];
+    NSError* error = nil;
+    for (NSString* id in [fm contentsOfDirectoryAtPath:[seed stringByAppendingPathComponent:@"Mods"] error:nil]) {
+        if ([id hasPrefix:@"."] || [id containsString:@"/"]) continue;
+        NSString* to = [mods stringByAppendingPathComponent:id];
+        [fm removeItemAtPath:to error:nil];
+        if (![fm copyItemAtPath:[[seed stringByAppendingPathComponent:@"Mods"] stringByAppendingPathComponent:id] toPath:to error:&error])
+            NSLog(@"[mods] bundled %@ not installed: %@", id, error);
+    }
+    NSString* profiles = [storage stringByAppendingPathComponent:@"profiles.json"];
+    [fm removeItemAtPath:profiles error:nil];
+    [fm copyItemAtPath:[seed stringByAppendingPathComponent:@"profiles.json"] toPath:profiles error:nil];
+    [stamp writeToFile:copied atomically:YES encoding:NSUTF8StringEncoding error:nil];
+    NSLog(@"[mods] the app's mods installed (seed %@)", stamp);
+}
+
 static void* run_game(void*) {
     NSString* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
     install_shader_cache(caches);
@@ -147,6 +182,7 @@ static void* run_game(void*) {
         [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
     chdir(caches.fileSystemRepresentation);
     setenv("WWHD_USER_DIR", user.fileSystemRepresentation, 0);
+    install_bundled_mods(user);
     const std::string game = std::string([NSBundle mainBundle].bundlePath.fileSystemRepresentation) + "/game";
     std::vector<std::string> args = {g_argc ? g_argv[0] : "WindWakerHD", "--game", game, "--save", save.fileSystemRepresentation};
     for (int i = 1; i < g_argc; i++) args.push_back(g_argv[i]);  // (devicectl launch arguments come after)
@@ -306,6 +342,9 @@ void quit() {}
 }  // namespace hostui
 
 int main(int argc, char** argv) {
+    // a closed pipe must not end the game: the console of a Mac that started it (xcrun devicectl
+    // --console) goes when that Mac lets go of the Apple TV, and the next log line would raise SIGPIPE
+    signal(SIGPIPE, SIG_IGN);
     g_argc = argc;
     g_argv = argv;
     @autoreleasepool {

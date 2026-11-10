@@ -7,7 +7,7 @@
 //   - it shows the GamePad screen: the renderer encodes the picture it draws for the GamePad window
 //     (gfx/remote_video.mm, Metal) and sends it here.
 //
-// Off by default: Settings > Controls > iPhone GamePad (saved as "remotePad"), or WWHD_REMOTE_PAD=1
+// Off by default (on on an Apple TV): Settings > Controls > iPhone GamePad (saved as "remotePad"), or WWHD_REMOTE_PAD=1
 // (or =<port>), which keeps it on whatever the setting says. While on, the game listens on UDP port 26770
 // (remote_pad::kDefaultPort) and advertises itself over Bonjour so the phone finds it. A phone must be
 // paired first: Settings opens with a code to type on the phone (pairing.h).
