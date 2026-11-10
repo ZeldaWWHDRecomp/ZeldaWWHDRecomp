@@ -226,7 +226,9 @@ int main() {
         size_t vm_len = sizeof vm;
         if (!f && sysctlbyname("kern.hv_vmm_present", &vm, &vm_len, nullptr, 0) == 0 && vm) {
             puts("remote_video_test: virtual machine without a working encoder path, skipped");
-            return 0;
+            // the remote pad's threads are still running: leave without static destructors (a destroyed mutex they lock)
+            fflush(stdout);
+            _exit(0);
         }
         assert(f && f->key && f->w == 854 && f->h == 480);
         assert(dec.decode(*f));
