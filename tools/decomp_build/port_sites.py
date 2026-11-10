@@ -171,10 +171,14 @@ EMPTY = [
     # posMoveFromFootPos: foot movement, gravity (retired True 60)
     dict(site=0x023FCEB0, func=0x023FCB9C), dict(site=0x023FD338, func=0x023FCB9C),
     dict(site=0x023FD35C, func=0x023FCB9C),
-    # (daPy_lk_c::execute's three empty sites stay, fast mode: its decompiled body, never run in the game before, crashes
-    # after the file select with the TV-frame clock (a read at guest address 8); to be looked at in the decompilation first)
-    # (camera_run 024FE3E8's two empty sites stay: its decompiled body, never run in the game before, does not play as the
-    # recompiled one with the 21:9 aspect and the letterbox on; to be looked at in the decompilation first)
+    # daPy_lk_c::execute: procedure call (retired True 60). Its decompiled body once crashed after the file select (a
+    # read at guest address 8): TODO 77, fixed in the decompilation (the sound name from mAnmRatioUnder[0]'s animation,
+    # Link+0x57FC, not 0x77FC)
+    dict(site=0x0240D6D8, func=0x0240CDD0), dict(site=0x0240D6F8, func=0x0240CDD0),
+    dict(site=0x0240D6FC, func=0x0240CDD0),
+    # dCamera_c::Run 024FE3E8 (retired True 60). TODO 78 (21:9 + letterbox) was not a decompilation difference: the
+    # stage entry is not deterministic with interpolation on; compared at 30 fps (interpolation off) the bodies agree
+    dict(site=0x024FE89C, func=0x024FE3E8), dict(site=0x024FEB00, func=0x024FE3E8),
     # the chase camera's step-length sites (025028B8; retired True 60)
     dict(site=0x02502CCC, func=0x025028B8), dict(site=0x02502CD0, func=0x025028B8), dict(site=0x02502E44, func=0x025028B8),
     dict(site=0x02502E48, func=0x025028B8), dict(site=0x02502E8C, func=0x025028B8), dict(site=0x02502E90, func=0x025028B8),
