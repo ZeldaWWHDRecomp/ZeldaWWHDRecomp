@@ -11,9 +11,11 @@
 //            (the GamePad auto picture-in-picture's table, gfx/auto_pip.h), the menu routed to the
 //            GamePad (routing 2) or one of the item menu's bag windows open (gamepad_ui_state.cpp)
 // Test aid: WWHD_TEST_HUD_TRACE=1 logs each change of the three signals.
+// Test aid: WWHD_TEST_MENU_FOCUS_TRACE=1 logs each change of the menu event manager's focus (issue #336).
 #include "mods.h"
 #include "climb.h"
 #include "hud_visibility.h"
+#include "menu_cursor.h"
 #include "guest_hud.h"
 #include "../gfx/auto_pip.h"
 #include "runtime.h"
@@ -23,11 +25,13 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 
 namespace interp { uint64_t logic_steps(); }
-namespace game_settings_page { bool page_open(); }  // (mods/game_settings_page.h)
+namespace game_settings_page { bool page_open(); bool arrow_pane(uint32_t p); }  // (mods/game_settings_page.h)
+namespace game_look { std::string pane_name(uint32_t pane); bool guest_pointer(uint32_t a); }  // (mods/game_look.h)
 
 namespace mods {
 namespace {
@@ -65,21 +69,58 @@ GameUi read_game_ui() {
 // the same reading for other host features (play_context.cpp), so the signals are read in one place
 GameUi game_ui_now() { return read_game_ui(); }
 
-// Issue #336 (the pause menu's selection cursor gone until the title screen; not reproduced here): with the
-// item menu up for 1.5 s, the game's own conditions for drawing its selection cursor (hdIngameUi_c::
-// drawPrimaryScreens, hdScreenCursor_c::blankExecute / loopAllExecute) are read once per opening; when that
-// changes from shown to missing or back, one line says so and which condition is missing. A player's log then
-// tells a lost game state (the line) from a cursor the game drew but the picture lost (no line). Reads only;
-// at most 20 lines a session.
+// Issue #336 (the pause menu's selection cursor gone until the title screen): while the item menu is up, the
+// game's own conditions for drawing its selection cursor (menu_cursor.h) are read every logic step; when the
+// cursor has been missing for a second, one line says so, which condition is missing and which element holds
+// the menu's focus; when it is drawn again (in that opening or a later one), one line says it is back. A
+// player's log then tells a lost game state (the line) from a cursor the game drew but the picture lost (no
+// line), and names the element the focus was left on. Reads only; at most 20 lines a session.
 //   sInputOptions (*101F8378) +0x14   directional input on (the cursor shown, the menu moved by buttons)
-//   sEventMgr (*101F4FF0) +0x70       the focused receiver; its +0xC must be that event manager
+//   sEventMgr (*101F4FF0) +0x70       the focused receiver (+0x74 the next one); its +0xC must be that
+//                                     event manager (the element is linked into it)
 //   sCursorMgrInstance (*101F5A44)    +0x18 the active cursor (0 focus, 1 fixed), +0x10 its cursors; the
 //                                     cursor's +0x14 its state id, whose +4 is the name (::StateID_LoopAll)
 //   sIngameUi +0x23D                  mMenuRequested (set by Game Over; the TV cursor is drawn only at 0)
+// A receiver (cking::ui::input::Receiver, the menu's elements) as the line names it: its address, the list it
+// is linked into (+0xC: "the menu's" when it is the event manager, "unlinked" at 0), its id (+0x10), its
+// receiver vtable (+0x14), its pane's name with two parents (+0x18), and "cursor on the settings arrow" when its
+// cursor pane (+0x5C) is the settings entry arrow's (game_settings_page.cpp).
+static std::string describe_receiver(uint32_t r, uint32_t events) {
+    char buf[96];
+    if (!r) return "none";
+    if (!object(r, 0x60)) return snprintf(buf, sizeof buf, "%08X (not a receiver)", r), buf;
+    const uint32_t owner = ld32(r + 0xC);
+    if (owner == events || !owner) snprintf(buf, sizeof buf, "%08X (%s", r, owner ? "the menu's" : "unlinked");
+    else snprintf(buf, sizeof buf, "%08X (linked to %08X", r, owner);
+    std::string s = buf;
+    snprintf(buf, sizeof buf, ", id %u, vtable %08X", ld32(r + 0x10), ld32(r + 0x14));
+    s += buf;
+    std::string panes;
+    for (uint32_t pane = ld32(r + 0x18), depth = 0; pane && game_look::guest_pointer(pane) && depth < 3; pane = ld32(pane + 0xC), ++depth) {
+        const std::string name = game_look::pane_name(pane);
+        if (name.empty()) break;
+        panes += (depth ? "<" : "") + name;
+    }
+    if (!panes.empty()) s += ", pane " + panes;
+    if (game_settings_page::arrow_pane(ld32(r + 0x5C))) s += ", cursor on the settings arrow";
+    return s + ")";
+}
+
+static std::string guest_text(uint32_t a) {
+    std::string s;
+    for (uint32_t i = 0; i < 40 && a >= mem::kMem2Start && a + i < mem::kMem2End; i++) {
+        const char ch = char(ld8(a + i));
+        if (!ch) break;
+        s += ch;
+    }
+    return s;
+}
+
 static void menu_cursor_watch() {
     static int lines = 0;
-    static uint64_t since = 0;  // the logic step the item menu was found up (0: not up)
-    static bool checked = false, missing_before = false;
+    static menu_cursor::Watch watch;
+    static const bool trace = getenv("WWHD_TEST_MENU_FOCUS_TRACE") != nullptr;  // test aid: every focus change
+    static std::string traced;
     const uint32_t scene = ld32(kIngameUi);
     bool menu = false;
     if (object(scene, 0x24c)) {
@@ -87,45 +128,36 @@ static void menu_cursor_watch() {
         const uint32_t descriptor = object(current, 12) ? ld32(current + 8) : ld32(scene + 0x14);
         menu = descriptor == GD(0x1049ECB0);  // l_ingameMenuState
     }
-    if (!menu) { since = 0, checked = false; return; }
-    const uint64_t step = interp::logic_steps();
-    if (!since) since = step ? step : 1;
-    if (checked || step < since + 45) return;
-    checked = true;
-    auto text = [](uint32_t a) {
-        std::string s;
-        for (uint32_t i = 0; i < 40 && a >= mem::kMem2Start && a + i < mem::kMem2End; i++) {
-            const char ch = char(ld8(a + i));
-            if (!ch) break;
-            s += ch;
-        }
-        return s;
-    };
     const uint32_t options = ld32(GD(0x101F8378)), events = ld32(GD(0x101F4FF0)), mgr = ld32(GD(0x101F5A44));
-    const int directional = object(options, 0x18) ? ld8(options + 0x14) : -1;
-    const uint32_t focus = object(events, 0x74) ? ld32(events + 0x70) : 0;
-    const bool focus_ok = object(focus, 0x60) && ld32(focus + 0xC) == events;
-    const uint32_t active = object(mgr, 0x20) ? ld32(mgr + 0x18) : ~0u;
-    const uint32_t cursor = active < 2 ? ld32(mgr + 0x10 + 4 * active) : 0;
+    const uint32_t focus = object(events, 0xE4) ? ld32(events + 0x70) : 0;
+    menu_cursor::Reading r;
+    r.focus_linked = object(focus, 0x60) && ld32(focus + 0xC) == events;
+    r.active = object(mgr, 0x20) ? int(ld32(mgr + 0x18)) : -1;
+    if (trace && object(events, 0xE4)) {
+        const std::string now = describe_receiver(focus, events) + ", next " + describe_receiver(ld32(events + 0x74), events);
+        if (now + (menu ? "+" : "") != traced) {
+            traced = now + (menu ? "+" : "");
+            LOG("[menu-focus] logic step %llu%s: focus %s; cursor %d", (unsigned long long)interp::logic_steps(),
+                menu ? "" : " (item menu not up)", now.c_str(), r.active);
+        }
+    }
+    if (!menu) { watch.reset(); return; }
+    r.directional = object(options, 0x18) ? ld8(options + 0x14) : -1;
+    const uint32_t cursor = r.active == 0 || r.active == 1 ? ld32(mgr + 0x10 + 4 * r.active) : 0;
     const uint32_t id = object(cursor, 0x54) ? ld32(cursor + 0x14) : 0;
-    const std::string state = object(id, 8) ? text(ld32(id + 4)) : "none";
-    const int requested = ld8(scene + 0x23D);
-    // the menu's tab (sIngameUi +0x17C, the item screen hdMenuMain_c; its mSelectedChild +0x58): on the map
-    // tab the chart grid has its own elements and the fixed cursor, so a line there is no lost cursor
-    const uint32_t items = ld32(scene + 0x17C);
-    const int page = object(items, 0x64) ? int(ld32(items + 0x58)) : -1;
-    const bool shown = directional == 1 && focus_ok && active == 0 && requested == 0 &&
-                       (state == "::StateID_LoopAll" || state == "::StateID_InAll");
-    if (shown != missing_before) return;  // as at the last check: nothing new to say
-    missing_before = !shown;
-    if (lines >= 20) return;
+    r.state = object(id, 8) ? guest_text(ld32(id + 4)) : "none";
+    r.requested = ld8(scene + 0x23D);
+    const uint64_t step = interp::logic_steps();
+    const auto change = watch.update(menu_cursor::shown(r), step);
+    if (change == menu_cursor::Watch::Change::None || lines >= 20) return;
     lines++;
-    if (shown) LOG("[menu-cursor] the item menu's selection cursor is back");
+    if (change == menu_cursor::Watch::Change::Back) LOG("[menu-cursor] the item menu's selection cursor is back");
     else
-        LOG("[menu-cursor] the item menu is up without its selection cursor (issue #336): directional input %d, focus %s, "
-            "cursor %d %s, menu requested %d, menu tab %d, settings arrow or page %d", directional,
-            focus_ok ? "ok" : focus ? "another event manager's" : "none", int(active), state.c_str(), requested, page,
-            int(game_settings_page::page_open()));
+        LOG("[menu-cursor] the item menu is up without its selection cursor since logic step %llu (issue #336): directional "
+            "input %d, cursor %d %s, menu requested %d, settings arrow or page %d; focus %s, next %s",
+            (unsigned long long)watch.since(), r.directional, r.active, r.state.c_str(), r.requested,
+            int(game_settings_page::page_open()), describe_receiver(focus, events).c_str(),
+            describe_receiver(object(events, 0xE4) ? ld32(events + 0x74) : 0, events).c_str());
 }
 
 void hud_service() {

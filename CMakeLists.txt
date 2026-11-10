@@ -771,6 +771,11 @@ add_executable(game_settings_page_test runtime/tools/game_settings_page_test.cpp
 target_include_directories(game_settings_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(game_settings_page_test PRIVATE -UNDEBUG)
 add_test(NAME game_settings_page COMMAND game_settings_page_test)
+# the item menu's selection cursor watch (issue #336, runtime/src/mods/menu_cursor.h)
+add_executable(menu_cursor_test runtime/tools/menu_cursor_test.cpp)
+target_include_directories(menu_cursor_test PRIVATE runtime/src)
+target_compile_options(menu_cursor_test PRIVATE -UNDEBUG)
+add_test(NAME menu_cursor COMMAND menu_cursor_test)
 # the port's layout writer (runtime/src/mods/lyt_build.cpp); tools/story_mods/test_lyt.py compares its
 # output with the reference generator's
 add_executable(lyt_build_test runtime/tools/lyt_build_test.cpp runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp
