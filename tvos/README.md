@@ -62,3 +62,26 @@ then `python3 tvos/bundle_mods.py --app build/tvos/WindWakerHD.app --manager <th
 
 Still to do: setup building and installing it; saves kept in iCloud (CloudKit), in step with the Mac; a
 settings panel for the Siri Remote.
+
+## iPad (experimental)
+
+The same port builds for iPadOS (`-DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=iphoneos`, otherwise as above): the
+app is the TV's, with an iPad `Info.plist` (`ipados/Info.plist.in`, landscape, full screen). On an 11-inch iPad
+Pro (2nd generation, A12Z) it holds 30 fps in play. A controller or the iPhone GamePad plays it; there are no
+touch controls yet.
+
+- **Your identifiers.** An App ID and an iCloud container belong to one developer team, so the build takes yours:
+  `-DWWHD_APPLE_ID_PREFIX=<prefix>` names the apps `<prefix>.tv` and `<prefix>.ipad` (default `org.wwhdrecomp`).
+- **The save in iCloud Drive.** With `-DWWHD_ICLOUD_CONTAINER=iCloud.<...>` (a container of your team, which the
+  iPad app's profile and entitlements must carry: iCloud Documents), the iPad keeps its save in that container's
+  iCloud Drive folder, shown as "Wind Waker HD". It goes through the save folder choice (the Mac's Settings >
+  Saves > Save folder): the first start copies the save there, or asks which to keep if one is there already;
+  files iCloud hasn't brought to the iPad yet are downloaded first. A Mac chooses the same folder
+  (`~/Library/Mobile Documents/iCloud~<...>/Documents/Wind Waker HD`) to share the save. While the game runs,
+  its lock names the device ("iPad (83A7)"); in the background the iPad gives the lock back. Signed out of
+  iCloud, the save stays on the iPad.
+- **Testing without anyone at the iPad.** `remote_pad_drive` (`runtime/tools/remote_pad_drive.cpp`) pairs like
+  the iPhone GamePad app and presses buttons from a script; start the game with `WWHD_PAD_LOG_CODE=1` so it can
+  read the pairing code from the console. `WWHD_GPU_ERRORS=1` names the encoder of a failed command buffer, and
+  `WWHD_GPU_SYNC_FRAMES=<from>-<to>` waits for every draw of those frames and describes the first one the GPU
+  fails.

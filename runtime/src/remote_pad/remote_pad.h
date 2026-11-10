@@ -25,6 +25,9 @@ namespace remote_pad {
 
 void start_from_env();  // once at startup (input::init); does nothing unless WWHD_REMOTE_PAD is set
 void stop();
+// stop and listen again (an iPad or iPhone app back from the background, where its socket and its Bonjour
+// advertisement were torn down); nothing when the GamePad is off
+void restart();
 
 // ---- Settings > Controls > iPhone GamePad ----
 void set_enabled(bool on);   // the setting: listen or stop (WWHD_REMOTE_PAD keeps it listening)

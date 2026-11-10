@@ -246,6 +246,12 @@ void stop() {
     stopped(std::move(old));
 }
 
+void restart() {
+    if (!enabled()) return;
+    stop();
+    set_enabled(g_enabled);
+}
+
 Pad pad() {
     Pad p;
     const auto srv = server();

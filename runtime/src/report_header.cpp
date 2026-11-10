@@ -135,7 +135,10 @@ std::string os_description() {
 #if TARGET_OS_TV
     const char* name = "tvOS ";
 #elif TARGET_OS_IPHONE
-    const char* name = "iOS ";
+    char machine[64] = "";  // "iPad8,10", "iPhone19,2"
+    n = sizeof machine;
+    if (sysctlbyname("hw.machine", machine, &n, nullptr, 0) != 0) machine[0] = 0;
+    const char* name = strncmp(machine, "iPad", 4) == 0 ? "iPadOS " : "iOS ";
 #else
     const char* name = "macOS ";
 #endif

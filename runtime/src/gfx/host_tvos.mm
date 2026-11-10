@@ -23,6 +23,10 @@
 #include "renderer.h"
 #include "../interp.h"
 #include "remote_video.h"
+#include "../mods/save_folder.h"
+#include "../remote_pad/remote_pad.h"
+#include "../platform/host.h"
+#include <filesystem>
 
 int wwhd_main(int argc, char** argv);  // main.cpp
 void log_msg(const char* fmt, ...);
@@ -185,6 +189,52 @@ static void install_bundled_mods(NSString* user) {
     NSLog(@"[mods] the app's mods installed (seed %@)", stamp);
 }
 
+#if defined(WWHD_ICLOUD_CONTAINER) && !TARGET_OS_TV
+// iPad: the save in the app's iCloud Drive folder (WWHD_ICLOUD_CONTAINER, a build setting), "Wind Waker HD" in
+// it, so it is the same on every device signed in to the same iCloud (a Mac chooses that folder in Settings >
+// Saves). Through the save folder choice (mods/save_folder.h): the first time, the save here is copied there
+// (or, if one is there already, the player picks which to keep); every start checks the folder before the game
+// reads it. Files iCloud has not put on this iPad yet are downloaded first. Signed out of iCloud: the save stays
+// in the Caches folder, as without iCloud.
+static void use_icloud_save_folder(NSString* save) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSURL* container = [fm URLForUbiquityContainerIdentifier:@WWHD_ICLOUD_CONTAINER];  // (blocks: not the main thread)
+    if (!container) {
+        log_msg("[icloud] iCloud Drive is off or signed out: the save stays on this device");
+        return;
+    }
+    NSURL* folder = [[container URLByAppendingPathComponent:@"Documents"] URLByAppendingPathComponent:@"Wind Waker HD"];
+    [fm createDirectoryAtURL:folder withIntermediateDirectories:YES attributes:nil error:nil];
+    // files only in iCloud so far show as ".<name>.icloud": ask for them, and wait (at most 30 s)
+    auto pending = [&] {
+        NSMutableArray<NSURL*>* missing = [NSMutableArray array];
+        NSDirectoryEnumerator* e = [fm enumeratorAtURL:folder includingPropertiesForKeys:nil options:0 errorHandler:nil];
+        for (NSURL* u in e) {
+            NSString* name = u.lastPathComponent;
+            if ([name hasPrefix:@"."] && [name hasSuffix:@".icloud"])
+                [missing addObject:[[u URLByDeletingLastPathComponent]
+                                       URLByAppendingPathComponent:[name substringWithRange:NSMakeRange(1, name.length - 8)]]];
+        }
+        return missing;
+    };
+    NSArray<NSURL*>* missing = pending();
+    if (missing.count) {
+        log_msg("[icloud] %lu save files not on this device yet: downloading", (unsigned long)missing.count);
+        for (NSURL* u in missing) [fm startDownloadingUbiquitousItemAtURL:u error:nil];
+        for (int i = 0; i < 300 && pending().count; i++) usleep(100000);
+        if (NSUInteger left = pending().count) log_msg("[icloud] %lu save files still downloading", (unsigned long)left);
+    }
+    const auto file = save_folder::choice_file(host::config_dir());
+    const std::string chosen = folder.path.fileSystemRepresentation;
+    const auto current = save_folder::read_choice(file);
+    if (current && current->folder == chosen) return;
+    save_folder::Choice c;
+    c.folder = chosen;
+    c.copy_from = std::filesystem::absolute(save.fileSystemRepresentation).string();
+    if (save_folder::write_choice(file, c)) log_msg("[icloud] the save moves to iCloud Drive (%s)", chosen.c_str());
+}
+#endif
+
 static void* run_game(void*) {
     NSString* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
     install_shader_cache(caches);
@@ -196,6 +246,17 @@ static void* run_game(void*) {
     chdir(caches.fileSystemRepresentation);
     setenv("WWHD_USER_DIR", user.fileSystemRepresentation, 0);
     install_bundled_mods(user);
+    // a name of this device for the save folder's lock: every iPad and iPhone's host name is "localhost". The
+    // model and part of the id this app has on this device (the owner's own device name needs an entitlement).
+    {
+        NSString* id = [UIDevice currentDevice].identifierForVendor.UUIDString ?: @"";
+        NSString* name = [NSString stringWithFormat:@"%@ (%@)", [UIDevice currentDevice].model,
+                                                    id.length >= 4 ? [id substringToIndex:4] : @"?"];
+        setenv("WWHD_MACHINE_NAME", name.UTF8String, 0);
+    }
+#if defined(WWHD_ICLOUD_CONTAINER) && !TARGET_OS_TV
+    use_icloud_save_folder(save);
+#endif
     const std::string game = std::string([NSBundle mainBundle].bundlePath.fileSystemRepresentation) + "/game";
     std::vector<std::string> args = {g_argc ? g_argv[0] : "WindWakerHD", "--game", game, "--save", save.fileSystemRepresentation};
     for (int i = 1; i < g_argc; i++) args.push_back(g_argv[i]);  // (devicectl launch arguments come after)
@@ -210,6 +271,14 @@ static void* run_game(void*) {
 @property (strong, nonatomic) UIWindow* window;
 @end
 @implementation WWSceneDelegate
+// suspended in the background, the game can't keep its save folder's lock fresh: it gives it back meanwhile
+// (mods/save_folder.h pause_lock)
+- (void)sceneDidEnterBackground:(UIScene*)scene { save_folder::pause_lock(); }
+- (void)sceneWillEnterForeground:(UIScene*)scene {
+    save_folder::resume_lock();
+    // the iPhone GamePad: the system took the server's socket and its Bonjour advertisement in the background
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ remote_pad::restart(); });
+}
 - (void)scene:(UIScene*)scene willConnectToSession:(UISceneSession*)session options:(UISceneConnectionOptions*)options {
     UIWindowScene* ws = (UIWindowScene*)scene;
     self.window = [[UIWindow alloc] initWithWindowScene:ws];
@@ -291,8 +360,35 @@ bool drc_window_available();
 bool drc_window_shown();
 void show_drc_window(bool on);
 
-// player_question.h: no native alert here; main.cpp's ask_player takes its default
-int ask_player_alert(const std::string&, const std::string&, const std::vector<std::string>&) { return -1; }
+// player_question.h: a question before the game runs (the save folder's choices, mods/save_folder.h) as a system
+// alert on the main thread; the game thread waits for the answer. -1: no way to ask (called on the main thread,
+// no window yet).
+int ask_player_alert(const std::string& title, const std::string& text, const std::vector<std::string>& buttons) {
+    if ([NSThread isMainThread] || buttons.empty()) return -1;
+    __block int answer = -1;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    NSString* t = [NSString stringWithUTF8String:title.c_str()];
+    NSString* m = [NSString stringWithUTF8String:text.c_str()];
+    std::vector<std::string> labels = buttons;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController* top = nil;
+        for (UIScene* scene in UIApplication.sharedApplication.connectedScenes)
+            if ([scene isKindOfClass:UIWindowScene.class])
+                for (UIWindow* w in ((UIWindowScene*)scene).windows)
+                    if (w.isKeyWindow) top = w.rootViewController;
+        while (top.presentedViewController) top = top.presentedViewController;
+        if (!top) { dispatch_semaphore_signal(done); return; }
+        UIAlertController* alert = [UIAlertController alertControllerWithTitle:t message:m
+                                                                 preferredStyle:UIAlertControllerStyleAlert];
+        for (size_t i = 0; i < labels.size(); i++)
+            [alert addAction:[UIAlertAction actionWithTitle:[NSString stringWithUTF8String:labels[i].c_str()]
+                                                      style:UIAlertActionStyleDefault
+                                                    handler:^(UIAlertAction*) { answer = int(i); dispatch_semaphore_signal(done); }]];
+        [top presentViewController:alert animated:YES completion:nil];
+    });
+    dispatch_semaphore_wait(done, DISPATCH_TIME_FOREVER);
+    return answer;
+}
 }  // namespace gfx
 
 // mods/mouse.mm: no mouse on an Apple TV

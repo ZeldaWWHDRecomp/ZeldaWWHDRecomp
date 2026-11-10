@@ -105,7 +105,7 @@ inline bool FormatIsRenderable(Latte::E_GX2SURFFMT format)
 }
 
 #include <TargetConditionals.h>
-#if !TARGET_OS_TV  // (unused here; tvOS has no system())
+#if !TARGET_OS_TV && !TARGET_OS_IPHONE  // (unused here; tvOS and iOS have no system())
 template <typename... T>
 inline bool executeCommand(fmt::format_string<T...> fmt, T&&... args) {
     std::string command = fmt::format(fmt, std::forward<T>(args)...);
