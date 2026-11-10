@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Pause menu: the cursor comes back if the menu loses its focus** (#510, refs #336, thanks @XAlboX for the logs).
+  After long play the pause menu could stay open without its cursor until the controller was switched. The cursor
+  now comes back by itself after about a second. The cause isn't found yet: the log names what held the focus, so
+  please attach it if this happens.
 - **macOS: an iPhone as the Wii U GamePad** (#488, thanks @fayep). An iPhone app (built from `ios/`, see
   `ios/README.md`) shows the GamePad picture over Wi-Fi and sends touch, gyro and the buttons of a controller attached
   to the phone, with rumble and the GamePad speaker. A new phone pairs with a 6-digit code shown on the Mac. Needs the
