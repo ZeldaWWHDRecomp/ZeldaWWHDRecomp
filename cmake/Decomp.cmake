@@ -154,6 +154,10 @@ function(wwhd_decomp_configure)
   # exit_regs / native_args_slow (gabi.h GABI_NX_LEAN). The body's own guest calls get their LR by call site as before.
   # No run-time switch (OFF: as before)
   option(WWHD_DECOMP_FAST_NX_LEAN "decomp build, fast mode: non-register-exact native entries without LR / pc, inline" OFF)
+  # fast mode: AutoFrame's frame of a function that is not frame-exact (the place-only "nostore" frame: FrameCtx fields,
+  # no prologue stores) set inline in the body instead of in the out-of-line AutoFrame::enter (gabi.h GABI_AF_INLINE);
+  # frame-exact functions keep enter(). The same FrameCtx; no run-time switch (OFF: as before)
+  option(WWHD_DECOMP_FAST_AF_INLINE "decomp build, fast mode: AutoFrame's place-only frame inline" OFF)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -378,6 +382,9 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_NX_LEAN)
       list(APPEND opts -DGABI_NX_LEAN=1)
+    endif()
+    if(WWHD_DECOMP_FAST_AF_INLINE)
+      list(APPEND opts -DGABI_AF_INLINE=1)
     endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)
