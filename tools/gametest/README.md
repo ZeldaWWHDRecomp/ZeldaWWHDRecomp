@@ -17,7 +17,14 @@ ALIGN=link python3 tools/gametest/compare.py runs/normal runs/decomp 20
   to the game (scripted input `WWHD_TEST_STICK`, `WWHD_TEST_PRESS`, or the decomp build's debug
   switches). `OUT/perf.txt` has the process CPU time and wall time.
 - `compare.py A B [END]`: aligned at the scenario origin (`ALIGN=link`: at Link's first update, which
-  is robust against a different boot length). Exit status 0 when everything is identical.
+  is robust against a different boot length). Exit status 0 when everything is identical. Runs that load
+  a portable state with `WWHD_TEST_FIXED_SEED` must have started that load the same way
+  (`start_check.py`); otherwise it prints `BADSTART` and exits 3 (`START_CHECK=0` compares anyway).
+- `start_check.py RUN [--timer N] [--were "a b c"]` or `start_check.py RUN_A RUN_B`: the start of a
+  run's portable-state load (mTimer when the old stage's loading frames began, the old stage's random
+  seeds just before the reset). Two runs that differ here reached the load on different paths (e.g. a
+  slow boot under host load), so their later differences are not the build's doing. `cliff_check.sh`
+  uses the same check against fixed expected values; use it in any A/B script of your own.
 
 ## World editor MCP smoke test
 
