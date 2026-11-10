@@ -27,10 +27,11 @@ from the phone. Turn off *GamePad sound* in the app to hear them from the Mac ag
 4. **Pair, the first time:** Settings opens on the Mac with a 6-digit code; type it on the phone. The
    code works for 2 minutes and 3 tries; **Don't pair** on the Mac refuses the phone. After that the
    phone connects by itself. **Forget paired phones** (same section) makes every phone pair again.
-5. Hold the phone in landscape in the controller. The status line shows the Mac's name. Beside the
-   picture: the phone's battery (and the controller's, if it has its own) on the left; on the right, how
-   old the picture is when it arrives (*picture*) and the network round trip (*ping*). **Disconnect**
-   (or leaving the app) gives the GamePad back to the Mac's keyboard and controllers.
+5. Hold the phone in landscape in the controller. The picture takes the screen's whole height, over the
+   game's own GamePad boot image. Beside it, on the left: the Mac's name, and the phone's battery (and the
+   controller's, if it has its own); on the right, how old the picture is when it arrives (*picture*) and
+   the network round trip (*ping*). **✕** (Disconnect), or leaving the app, gives the GamePad back to the
+   Mac's keyboard and controllers. In portrait and on an iPad the status line sits above the picture.
 6. **Text:** when the game asks for text (the name of a new file), the phone shows the game's hint and
    its own keyboard, as a Wii U GamePad does. The name appears in the game as you type; **Done** or
    **OK** confirms. The prompt on the TV keeps working too.
@@ -101,6 +102,7 @@ game, 3 s on the phone, which then says Hello again.
 | `Haptics.swift`: the motor's strength as a continuous haptic (controller, else phone) | `remote_pad.cpp` `RumbleSender`: rumble.h's level on change, refreshed while it runs |
 | `Video.swift`: frames from their pieces, `AVSampleBufferDisplayLayer` | `gfx/remote_video.mm`: the GamePad picture into IOSurfaces, H.264 (VideoToolbox, low latency) |
 | `TextEntry.swift`: the game's text prompt kept in step (numbered edits, resent until acked) | `overlay/text_entry.cpp`: the phone's text through the prompt's own rules, acked back |
+| `BootImage.swift`: the game's GamePad boot image from its pieces, kept per game | `gfx/remote_video.mm` `load_boot_image`: `meta/bootDrcTex.tga` as a JPEG, sent to a phone that shows another |
 | `Protocol.swift` (mirrors `protocol.h`) | `gfx/input.mm`: the phone as a controller and the touch screen; `motion/motion.cpp`: its gyro under *Device gyro* |
 
 Video: each present, the game draws the GamePad picture as it does for its GamePad window into an

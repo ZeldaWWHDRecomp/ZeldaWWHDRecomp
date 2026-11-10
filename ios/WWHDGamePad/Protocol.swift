@@ -20,6 +20,7 @@ enum WWGP {
     enum PacketType: UInt8 {
         case hello = 1, welcome = 2, input = 3, bye = 4, video = 5, keyframe = 6, rumble = 7, audio = 8
         case pairing = 9, pair = 10, paired = 11, ping = 12, pong = 13, text = 14, textInput = 15
+        case bootImage = 16, bootImageWant = 17
     }
     /// protocol.h PairState: what the computer says about pairing
     enum PairState: UInt8 { case enterCode = 1, wrongCode = 2, noCode = 3 }
@@ -165,6 +166,14 @@ enum WWGP {
         return w.bytes
     }
 
+    /// the boot image this phone shows (protocol.h kBootImageWant; 0: none)
+    static func bootImageWant(session: UInt32, id: UInt32) -> [UInt8] {
+        var w = Writer()
+        w.header(.bootImageWant, session: session)
+        w.u32(id)
+        return w.bytes
+    }
+
     // MARK: decoding
 
     /// (type, session) of one of our packets; nil for anything else.
@@ -234,6 +243,22 @@ enum WWGP {
         _ = r.u8()
         t.hint = r.name(max: maxText); t.text = r.name(max: maxText)
         return r.ok ? (session, t) : nil
+    }
+
+    /// One piece of the running game's GamePad boot image, a JPEG (protocol.h kBootImage).
+    struct BootImagePiece {
+        var id: UInt32
+        var total: Int, offset: Int
+        var data: ArraySlice<UInt8>
+    }
+    static let maxBootImage = 4 << 20
+
+    static func bootImage(_ b: [UInt8]) -> (session: UInt32, piece: BootImagePiece)? {
+        guard let (type, session) = header(b), type == .bootImage else { return nil }
+        var r = Reader(bytes: b, at: headerSize)
+        let id = r.u32(), total = Int(r.u32()), offset = Int(r.u32())
+        guard r.ok, id != 0, total <= maxBootImage, offset <= total, b.count - r.at <= total - offset else { return nil }
+        return (session, BootImagePiece(id: id, total: total, offset: offset, data: b[r.at...]))
     }
 
     static func video(_ b: [UInt8]) -> (session: UInt32, piece: VideoPiece)? {

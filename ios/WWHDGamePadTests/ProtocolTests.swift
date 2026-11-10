@@ -78,6 +78,18 @@ final class ProtocolTests: XCTestCase {
                        hex("5757475001000f000500000007000000040000000100055465747261"))
     }
 
+    func testBootImage() {
+        // bytes from the C++ encoder (encode_boot_image, encode_boot_image_want)
+        let p = WWGP.bootImage(hex("575747500100100005000000040302010300000000000000aabbcc"))
+        XCTAssertEqual(p?.session, 5)
+        XCTAssertEqual(p?.piece.id, 0x0102_0304)
+        XCTAssertEqual(p?.piece.total, 3)
+        XCTAssertEqual(p?.piece.offset, 0)
+        XCTAssertEqual(p.map { Array($0.piece.data) }, [0xAA, 0xBB, 0xCC])
+        XCTAssertNil(WWGP.bootImage(hex("575747500100100005000000040302010200000000000000aabbcc")))  // more than its total
+        XCTAssertEqual(WWGP.bootImageWant(session: 5, id: 0x0102_0304), hex("57574750010011000500000004030201"))
+    }
+
     func testWelcome() {
         let w = WWGP.welcome(hex("5757475001000200d4c3b2a10403020108546573742d4d6163"))
         XCTAssertEqual(w, WWGP.Welcome(session: 0xA1B2_C3D4, nonce: 0x0102_0304, host: "Test-Mac"))
