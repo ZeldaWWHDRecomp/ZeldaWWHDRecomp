@@ -777,6 +777,18 @@ Buffer create_readback_buffer(VkDeviceSize size) {
 // copies only add time, so R.uploadReadsDirect lets the reuse caches and the native index scan read the
 // slices. CACHED without COHERENT never counts: the arena requires COHERENT (no flush/invalidate).
 // WWHD_VK_UPLOAD_READS=auto (default) | shadow (always keep CPU copies) | direct (always read slices).
+#ifdef WWHD_NATIVE_DRAW
+// WWHD_NATIVE_DRAW=1 and WWHD_NATIVE_DRAW_MDI=1 (gx2/native_draw.h): the device and upload buffers get what the packets'
+// multi-draw batches need
+static bool packet_mdi_requested() {
+  static const bool on = [] {
+    const char* a = std::getenv("WWHD_NATIVE_DRAW");
+    const char* b = std::getenv("WWHD_NATIVE_DRAW_MDI");
+    return a && std::atoi(a) && b && std::atoi(b);
+  }();
+  return on;
+}
+#endif
 namespace {
 enum class UploadReads { Auto, Shadow, Direct };
 UploadReads upload_reads_mode() {
@@ -829,8 +841,11 @@ static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, boo
   if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowBegin, 0, R.frame, size, R.uploadBlocks.size());
   auto buffer = create_buffer(std::max<VkDeviceSize>(32ull<<20,size),
       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+#ifdef WWHD_NATIVE_DRAW
+      | (packet_mdi_requested() ? VkBufferUsageFlags(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) : 0)  // (multi-draw batches' commands)
+#endif
+      , VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
   if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowEnd, 0, R.frame, buffer.size, R.uploadBlocks.size());
   note_upload_block(buffer);
   R.uploadBlocks.push_back({buffer,0});
@@ -4923,6 +4938,16 @@ static void init_device(std::vector<const char *> extensions,
   enabled.largePoints = available.largePoints;
   enabled.dualSrcBlend = available.dualSrcBlend;
   enabled.logicOp = available.logicOp;
+#ifdef WWHD_NATIVE_DRAW
+  // native draw packets' multi-draw batches (gx2/native_draw.h, WWHD_NATIVE_DRAW=1 WWHD_NATIVE_DRAW_MDI=1): the
+  // feature only when they are asked for (the enabled features are part of the pipeline cache's checksum); without it
+  // the batches draw one vkCmdDrawIndexed per instance
+  if (packet_mdi_requested()) {
+    enabled.multiDrawIndirect = available.multiDrawIndirect;
+    LOG("[native-draw] multi-draw batches: multiDrawIndirect supported/enabled=%u/%u", available.multiDrawIndirect,
+        enabled.multiDrawIndirect);
+  }
+#endif
   R.enabledFeatures = enabled;
   LOG("[vulkan diagnostics] features supported/enabled: robustBufferAccess=%u/%u shaderInt16=%u/%u shaderInt64=%u/%u shaderFloat64=%u/%u geometryShader=%u/%u",
       available.robustBufferAccess, enabled.robustBufferAccess, available.shaderInt16, enabled.shaderInt16,

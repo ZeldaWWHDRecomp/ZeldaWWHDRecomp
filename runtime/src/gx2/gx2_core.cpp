@@ -471,7 +471,12 @@ static void render_thread_main() {
         }
         {
             std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
-            render::with_autorelease_pool([] { execute(g_q_work.data(), (uint32)g_q_work.size()); });
+            render::with_autorelease_pool([] {
+                execute(g_q_work.data(), (uint32)g_q_work.size());
+#ifdef WWHD_NATIVE_DRAW
+                native_draw::flush_mdi();  // (the chunk's collected multi-draw batch: nothing outside the commands records it)
+#endif
+            });
         }
         g_q_work.clear();
     }
@@ -761,6 +766,10 @@ static void execute_op(Op op, const uint32* p, uint32 n);
 // calls are not timed themselves: their ops are
 static void execute_one(Op op, const uint32* p, uint32 n) {
     rprof::Op kind;
+#ifdef WWHD_NATIVE_DRAW
+    // a collected multi-draw batch is drawn before any other command (native_draw.h)
+    if (native_draw::g_mdiPending && op != OP_PACKET_DRAW) native_draw::flush_mdi();
+#endif
     switch (op) {
     case OP_DEBUG_CONTEXT: g_draw_context.store(n ? p[0] : 0, std::memory_order_relaxed); return;
     case OP_SUBMITTED_UNIFORMS:

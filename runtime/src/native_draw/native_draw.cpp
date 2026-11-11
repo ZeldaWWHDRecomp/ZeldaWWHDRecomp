@@ -318,6 +318,29 @@ void define(const uint32_t* p, uint32_t n) {
 }
 
 static uint64_t g_counts[kSites][kReasons], g_instances[kSites], g_mismatches = 0, g_frames = 0;
+bool mdi_on() {
+    static const bool on = [] {
+        const bool v = master_on() && env_int("WWHD_NATIVE_DRAW_MDI", 0) != 0;
+        if (master_on()) LOG("[native-draw] multi-draw batches %s (WWHD_NATIVE_DRAW_MDI=%d)", v ? "on" : "off", v ? 1 : 0);
+        return v;
+    }();
+    return on;
+}
+bool g_mdiPending = false;
+void flush_mdi() {
+#ifdef WWHD_HAS_VULKAN
+    if (g_mdiPending) gfxvk::packet_mdi_flush();
+#endif
+    g_mdiPending = false;
+}
+static uint64_t g_mdiDraws[kSites], g_mdiIndirect[kSites], g_mdiMax[kSites];
+void count_mdi(uint32_t site, uint32_t instances, bool indirect) {
+    site = site < kSites ? site : 0;
+    ++g_mdiDraws[site];
+    g_mdiIndirect[site] += indirect;
+    g_counts[site][kMdi] += instances;
+    g_mdiMax[site] = std::max<uint64_t>(g_mdiMax[site], instances);
+}
 void count(uint32_t site, Reason r) { ++g_counts[site < kSites ? site : 0][r]; }
 void verify_mismatch(const char* what) {
     if (g_mismatches++ < 32) LOG("[native-draw] VERIFY MISMATCH: %s", what);
@@ -379,7 +402,7 @@ void frame_end() {
     g_lastId = ~0u;
     static const char* const names[kReasons] = {"replayed", "lowered", "verified", "not Vulkan", "stereo", "framegen",
                                                 "grass distance", "backdrop", "clouds", "refused", "buffer change",
-                                                "block size", "fetch change", "stride change"};
+                                                "block size", "fetch change", "stride change", "in multi-draw batches"};
     for (uint32_t site = 0; site < kSites; ++site) {
         if (!g_instances[site]) continue;
         char buf[700];
@@ -390,6 +413,10 @@ void frame_end() {
                 k += std::snprintf(buf + k, sizeof buf - k, ", %s %.1f", names[r], g_counts[site][r] / 300.0);
         k += std::snprintf(buf + k, sizeof buf - k, "; runs %.1f (in order, same kind), kind-split draws %.1f",
                            g_runs[site] / 300.0, g_chainKinds[site] / 300.0);
+        if (g_mdiDraws[site])
+            k += std::snprintf(buf + k, sizeof buf - k, "; multi-draw batches %.1f/frame (%.1f indirect), %.1f instances each (max %llu)",
+                               g_mdiDraws[site] / 300.0, g_mdiIndirect[site] / 300.0,
+                               double(g_counts[site][kMdi]) / double(g_mdiDraws[site]), (unsigned long long)g_mdiMax[site]);
         if (verify_every())
             std::snprintf(buf + k, sizeof buf - k, ", verify mismatches %llu", (unsigned long long)g_mismatches);
         LOG("%s", buf);
@@ -398,6 +425,9 @@ void frame_end() {
     std::memset(g_runs, 0, sizeof g_runs);
     std::memset(g_chainKinds, 0, sizeof g_chainKinds);
     std::memset(g_counts, 0, sizeof g_counts);
+    std::memset(g_mdiDraws, 0, sizeof g_mdiDraws);
+    std::memset(g_mdiIndirect, 0, sizeof g_mdiIndirect);
+    std::memset(g_mdiMax, 0, sizeof g_mdiMax);
 }
 
 }  // namespace native_draw

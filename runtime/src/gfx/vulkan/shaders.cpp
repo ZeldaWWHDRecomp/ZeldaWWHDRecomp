@@ -545,6 +545,12 @@ uint32_t key_verify_rate() {
 bool retain_shader_source() {
     static const bool retain = [] {
         const char* value = getenv("WWHD_VK_SHADER_SOURCE_VERIFY");
+#ifdef WWHD_NATIVE_DRAW
+        // native draw packets' multi-draw batches (gx2/native_draw.h) check the final text for the vertex index
+        const char* native = getenv("WWHD_NATIVE_DRAW");
+        const char* mdi = getenv("WWHD_NATIVE_DRAW_MDI");
+        if (native && atoi(native) != 0 && mdi && atoi(mdi) != 0) return true;
+#endif
         return (value && !strcmp(value, "1")) || key_verify_rate() != 0;
     }();
     return retain;

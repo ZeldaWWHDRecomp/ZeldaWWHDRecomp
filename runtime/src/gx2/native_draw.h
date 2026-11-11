@@ -89,9 +89,18 @@ void frame_end();  // render thread, at each swap: the periodic counter line
 enum Reason : uint32_t {
     kReplayed, kLowered, kVerified,
     kNotVulkan, kStereo, kFramegen, kGrassDistance, kBackdrop, kClouds, kRefused, kBufferChange,
-    kBlockSize, kFetchChange, kStrideChange, kReasons
+    kBlockSize, kFetchChange, kStrideChange, kMdi, kReasons
 };
 void count(uint32_t site, Reason r);
+// Multi-draw batches (WWHD_NATIVE_DRAW_MDI=1 with packets on; off by default; Vulkan): consecutive replayable instances
+// of one packet kind that bind the same blocks and differ only in their own vertex stream are drawn as one indirect
+// multi-draw (gfxvk::packet_mdi_flush): same pipeline, shaders, descriptors and bytes as replaying them one by one.
+// The collected batch is drawn before any other command, at the end of each command chunk, and before an instance
+// that cannot join it.
+bool mdi_on();
+extern bool g_mdiPending;  // render thread: a multi-draw batch is collected
+void flush_mdi();
+void count_mdi(uint32_t site, uint32_t instances, bool indirect);  // one batch draw of INSTANCES instances
 void verify_mismatch(const char* what);
 uint32_t verify_every();  // WWHD_NATIVE_DRAW_VERIFY (0: off)
 
