@@ -59,6 +59,8 @@ std::atomic<bool> g_gamepad_sounds{true};
 std::atomic<float> g_gamepad_gain{1};
 std::atomic<float> g_gain{1};  // master volume (issue #124), read by the producer mix
 std::atomic<int> g_channels{2};
+std::atomic<int> g_host_target_ms{8};  // the host path's mixer queue (set_host_target_ms)
+std::atomic<bool> g_rear_surrounds{false};  // the spatial feed's 5.1 layout: rear surrounds (Rls Rrs), else side (Ls Rs)
 std::atomic<bool> g_host_output{false};  // the host renders the mix itself (pull_interleaved), without g_unit
 // With the host rendering the mix itself (its own queue covers the output), only the mixer's jitter needs room
 // here: 8 ms (with the spatial feed's margin, the game's own share of the latency is about one 60 fps frame).
@@ -66,7 +68,7 @@ std::atomic<bool> g_host_output{false};  // the host renders the mix itself (pul
 int target() {
     static const int env = [] { const char* e = getenv("WWHD_AUDIO_TARGET_MS"); return e && *e ? kRate * atoi(e) / 1000 : 0; }();
     if (env > 0) return env;
-    return g_host_output ? kRate * 8 / 1000 : kTarget;
+    return g_host_output ? kRate * g_host_target_ms / 1000 : kTarget;
 }
 std::atomic<bool> g_requested{false}, g_fallback{false}, g_device_changed{false};
 std::atomic<int> g_test{-1};     // sample position; only producer advances, UI starts/stops
@@ -260,10 +262,10 @@ void init() {
             return;
         }
 #ifdef WWHD_TVOS
-        // the audio session (gfx/host_tvos.mm): surround needs a route that takes six channels (AirPods with
-        // spatial audio, an Apple TV on a 5.1 receiver)
-        if (::uikit_audio_session(g_channels == 6) < 6 && g_channels == 6) {
-            // headphones (AirPods) take two channels: the host spatializes the six instead
+        // the audio session (gfx/host_tvos.mm). Surround: the host's feed hands the six to whatever the route is (a
+        // 5.1 receiver, AirPods with Spatial Audio, a device's speaker folded to stereo) and follows it as it changes
+        ::uikit_audio_session(g_channels == 6);
+        if (g_channels == 6) {
             if (::uikit_spatial_start(pull_interleaved)) {
                 g_host_output = true;
                 open_dump();
@@ -534,6 +536,42 @@ bool requested_surround() {
 void set_requested_surround(bool enabled) {
     g_requested = enabled;
     hostui::set("audioSpeakers", enabled ? "surround" : "stereo");
+}
+void set_host_target_ms(int ms) { g_host_target_ms = ms; }
+static std::atomic<int> g_output_latency_frames{0};
+int output_latency_frames() { return g_output_latency_frames; }
+static std::atomic<int> g_pad_extra_ms{0};
+int pad_audio_extra_ms() {
+    static const bool loaded = [] {
+        if (const char* e = getenv("WWHD_PAD_AUDIO_EXTRA_MS")) g_pad_extra_ms = atoi(e);
+        else if (std::string v; hostui::get("audioPadExtraMs", v) && !v.empty()) g_pad_extra_ms = atoi(v.c_str());
+        return true;
+    }();
+    (void)loaded;
+    return g_pad_extra_ms;
+}
+void set_pad_audio_extra_ms(int ms, bool save) {
+    pad_audio_extra_ms();  // (the saved value first, so it can't overwrite this one later)
+    g_pad_extra_ms = ms;
+    if (save && !getenv("WWHD_PAD_AUDIO_EXTRA_MS")) hostui::set("audioPadExtraMs", std::to_string(ms));
+}
+void set_output_latency_ms(float ms) { g_output_latency_frames = int(ms * kRate / 1000); }
+bool spatial_surround() {
+    return g_host_output && g_channels == 6;
+}
+bool rear_surrounds() {
+    static const bool loaded = [] {
+        std::string v;
+        if (hostui::get("audioSurroundPlacement", v)) g_rear_surrounds = v == "rear";
+        return true;
+    }();
+    (void)loaded;
+    return g_rear_surrounds;
+}
+void set_rear_surrounds(bool rear) {
+    rear_surrounds();  // (the saved value first, so it can't overwrite this one later)
+    g_rear_surrounds = rear;
+    hostui::set("audioSurroundPlacement", rear ? "rear" : "side");
 }
 float master_volume() {
     return g_gain.load();

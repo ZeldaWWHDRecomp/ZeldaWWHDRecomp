@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <deque>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -272,7 +273,7 @@ void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, ui
 }
 
 bool audio_wanted() { return g_audio.load(std::memory_order_relaxed); }
-void send_audio(const int32_t* left, const int32_t* right, int frames) {
+void send_audio(const int32_t* left, const int32_t* right, int frames, int delay) {
     if (!g_audio.load(std::memory_order_relaxed)) return;
     int16_t lr[2 * kMaxAudioFrames];
     frames = std::clamp(frames, 0, int(kMaxAudioFrames));
@@ -280,7 +281,22 @@ void send_audio(const int32_t* left, const int32_t* right, int frames) {
         lr[2 * i] = int16_t(std::clamp<int32_t>(left[i], -32768, 32767));
         lr[2 * i + 1] = int16_t(std::clamp<int32_t>(right[i], -32768, 32767));
     }
-    if (const auto srv = server()) srv->send_audio(lr, uint16_t(frames));
+    const auto srv = server();
+    // the delay line (AX frame thread only): what comes out is `delay` frames old. A longer delay waits (a short
+    // gap); a shorter one drops the oldest
+    static std::deque<int16_t> held;
+    if (delay <= 0) {
+        held.clear();
+        if (srv) srv->send_audio(lr, uint16_t(frames));
+        return;
+    }
+    held.insert(held.end(), lr, lr + 2 * frames);
+    const size_t want = size_t(delay + frames) * 2;
+    if (held.size() > want + size_t(frames) * 2) held.erase(held.begin(), held.end() - want);
+    if (held.size() < want) return;
+    std::copy(held.begin(), held.begin() + 2 * frames, lr);
+    held.erase(held.begin(), held.begin() + 2 * frames);
+    if (srv) srv->send_audio(lr, uint16_t(frames));
 }
 
 void set_boot_image(std::vector<uint8_t> jpeg) {

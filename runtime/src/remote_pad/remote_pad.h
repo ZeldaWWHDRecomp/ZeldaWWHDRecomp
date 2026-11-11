@@ -78,8 +78,10 @@ void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, ui
 // ---- the GamePad speaker (protocol.h kAudio) ----
 // The phone plays the GamePad mix: the host then plays the TV mix alone (hle/ax.cpp). Cheap.
 bool audio_wanted();
-// the AX frame thread, every frame: the GamePad mix after the game's final mix, 48 kHz, s16 range
-void send_audio(const int32_t* left, const int32_t* right, int frames);
+// the AX frame thread, every frame: the GamePad mix after the game's final mix, 48 kHz, s16 range. It is held
+// back by `delay` frames first, so the phone plays it with the host's own sound (the host's queue and output,
+// less the phone's: hle/ax.cpp)
+void send_audio(const int32_t* left, const int32_t* right, int frames, int delay = 0);
 
 // ---- the game's text prompt on the phone (protocol.h kText / kTextInput) ----
 // The prompt (overlay/text_entry.cpp, render thread): how it is now, sent whenever it changes (cheap

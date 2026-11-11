@@ -7,6 +7,7 @@
 #import <UIKit/UIKit.h>
 #import <QuartzCore/QuartzCore.h>
 #import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
 
 #include <csignal>
 #include <mach/mach.h>
@@ -20,15 +21,15 @@
 
 #include "../input.h"
 #include "../overlay/hostui.h"
-#include "display_modes.h"
 #include "../overlay/overlay.h"
 #include "../platform/keycodes.h"
+#include "display_modes.h"
 #include "renderer.h"
 #include "../interp.h"
 #include "remote_video.h"
 #include "../mods/save_folder.h"
-#include "../remote_pad/remote_pad.h"
 #include "../mods/mods.h"
+#include "../remote_pad/remote_pad.h"
 #include "../audio_out.h"
 #include "../platform/host.h"
 #include <filesystem>
@@ -38,14 +39,14 @@
 int wwhd_main(int argc, char** argv);  // main.cpp
 void log_msg(const char* fmt, ...);
 
-@interface WWMetalView : UIView
 #if TARGET_OS_TV
+@interface WWMetalView : UIView
 @end
-@implementation WWMetalView
 #else
 @interface WWMetalView : UIView <UIKeyInput>
 @end
 #endif
+@implementation WWMetalView
 + (Class)layerClass { return [CAMetalLayer class]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
@@ -54,7 +55,6 @@ void log_msg(const char* fmt, ...);
     layer.contentsScale = scale;
     layer.drawableSize = CGSizeMake(MAX(1.0, self.bounds.size.width * scale), MAX(1.0, self.bounds.size.height * scale));
 }
-@end
 #if !TARGET_OS_TV
 // The touch screen (iPhone, iPad): one finger at a time. While Settings or the text prompt is up it is the
 // overlay's pointer; otherwise a finger on the GamePad picture (in One screen mode, the whole picture) touches
@@ -124,6 +124,7 @@ static bool g_finger_overlay = false;
     else if (!want && self.isFirstResponder) [self resignFirstResponder];
 }
 #endif
+@end
 
 @interface WWViewController : UIViewController
 @end
@@ -348,11 +349,91 @@ int uikit_audio_session(bool surround) {
 // The system pauses the renderer (the app in the background, an interruption): the feed then starts again with a
 // new renderer and clock, from fresh audio, as soon as the audio session can be activated (it can't until the app is
 // active again; tried every second). WWHD_AUDIO_TRACE=1 logs the feed every 2 s.
+// The renderer suits a route of two channels (AirPods, headphones), where the system spatializes the six. Elsewhere
+// a RemoteIO unit plays the mix instead: on a route of six channels or more (HDMI to a 5.1 receiver; the renderer
+// plays its content there very quietly, spatialized for the TV) the six as they are, in the session's channel
+// order; on the device's own speaker (the renderer plays nothing there, though it says it renders) folded to stereo.
+// The game's stereo mix is its 5.1 front pair, 1.9 dB louder (measured: the start recorded both ways), its surrounds
+// 5.1's own; they are folded in at -3 dB, the centre too. The feed follows the route as it changes (headphones in or
+// out, AirPods connecting).
+enum Route : int { kRenderer, kFolded, kDiscrete };
+static std::atomic<int> g_route{kRenderer};
+static void (*g_pull)(int16_t*, uint32_t) = nullptr;
+static AudioUnit g_units[3] = {};  // [kFolded], [kDiscrete]
+void uikit_audio_route_check() {
+    AVAudioSession* session = [AVAudioSession sharedInstance];
+    audio::set_output_latency_ms(float((session.outputLatency + session.IOBufferDuration) * 1000));
+    if (session.maximumOutputNumberOfChannels >= 6) {
+        [session setPreferredOutputNumberOfChannels:6 error:nil];
+        g_route = kDiscrete;
+    } else if ([session.currentRoute.outputs.firstObject.portType isEqualToString:AVAudioSessionPortBuiltInSpeaker]) {
+        g_route = kFolded;
+    } else {
+        g_route = kRenderer;
+    }
+}
+static OSStatus folded_render(void*, AudioUnitRenderActionFlags*, const AudioTimeStamp*, UInt32, UInt32 frames,
+                              AudioBufferList* io) {
+    static int16_t six[4096 * 6];
+    int16_t* out = (int16_t*)io->mBuffers[0].mData;
+    for (UInt32 done = 0; done < frames;) {
+        const UInt32 n = std::min<UInt32>(frames - done, 4096);
+        g_pull(six, n);
+        for (UInt32 i = 0; i < n; i++) {
+            const int16_t* f = six + i * 6;  // L R C LFE Ls Rs
+            const float c = 0.71f * f[2];
+            out[(done + i) * 2] = int16_t(std::clamp(1.25f * (f[0] + c + 0.71f * f[4]), -32768.0f, 32767.0f));
+            out[(done + i) * 2 + 1] = int16_t(std::clamp(1.25f * (f[1] + c + 0.71f * f[5]), -32768.0f, 32767.0f));
+        }
+        done += n;
+    }
+    return noErr;
+}
+static OSStatus discrete_render(void*, AudioUnitRenderActionFlags*, const AudioTimeStamp*, UInt32, UInt32 frames,
+                                AudioBufferList* io) {
+    g_pull((int16_t*)io->mBuffers[0].mData, frames);
+    return noErr;
+}
+// start (on) or stop the unit of a route
+static bool route_unit(int route, bool on) {
+    if (route == kRenderer) return true;
+    AudioUnit& unit = g_units[route];
+    if (!unit) {
+        AudioComponentDescription d{kAudioUnitType_Output, kAudioUnitSubType_RemoteIO, kAudioUnitManufacturer_Apple, 0, 0};
+        AudioComponent comp = AudioComponentFindNext(nullptr, &d);
+        if (!comp || AudioComponentInstanceNew(comp, &unit) != noErr) return false;
+        const UInt32 ch = route == kDiscrete ? 6 : 2;
+        AudioStreamBasicDescription f{};
+        f.mSampleRate = 48000;
+        f.mFormatID = kAudioFormatLinearPCM;
+        f.mFormatFlags = kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked;
+        f.mChannelsPerFrame = ch;
+        f.mBitsPerChannel = 16;
+        f.mFramesPerPacket = 1;
+        f.mBytesPerFrame = f.mBytesPerPacket = 2 * ch;
+        AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat, kAudioUnitScope_Input, 0, &f, sizeof f);
+        AURenderCallbackStruct cb{route == kDiscrete ? discrete_render : folded_render, nullptr};
+        AudioUnitSetProperty(unit, kAudioUnitProperty_SetRenderCallback, kAudioUnitScope_Input, 0, &cb, sizeof cb);
+        if (AudioUnitInitialize(unit) != noErr) return false;
+    }
+    if (on) {
+        [[AVAudioSession sharedInstance] setPreferredIOBufferDuration:0.005 error:nil];
+        audio::set_host_target_ms(20);  // (a unit takes 5 ms or more at a time)
+        return AudioOutputUnitStart(unit) == noErr;
+    }
+    AudioOutputUnitStop(unit);
+    audio::set_host_target_ms(8);
+    return true;
+}
 bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
     if (@available(iOS 15.0, tvOS 15.0, *)) {
     } else {
         return false;
     }
+    g_pull = pull;
+    uikit_audio_route_check();
+    [[NSNotificationCenter defaultCenter] addObserverForName:AVAudioSessionRouteChangeNotification object:nil queue:nil
+                                                  usingBlock:^(NSNotification*) { uikit_audio_route_check(); }];
     static AVSampleBufferAudioRenderer* renderer = nil;
     static AVSampleBufferRenderSynchronizer* clock = nil;
     static auto fresh = [] {
@@ -371,12 +452,16 @@ bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
     asbd.mBitsPerChannel = 16;
     asbd.mFramesPerPacket = 1;
     asbd.mBytesPerFrame = asbd.mBytesPerPacket = 12;
-    AudioChannelLayout layout{};
-    layout.mChannelLayoutTag = kAudioChannelLayoutTag_WAVE_5_1_A;  // L R C LFE Ls Rs
-    static CMAudioFormatDescriptionRef format = nullptr;
-    if (CMAudioFormatDescriptionCreate(kCFAllocatorDefault, &asbd, sizeof layout, &layout, 0, nullptr, nullptr, &format) != noErr) {
-        log_msg("[audio] spatial 5.1: no format description");
-        return false;
+    // the two named 5.1 layouts, the same channel order: L R C LFE, then side surrounds (Ls Rs) or rear (Rls Rrs)
+    static CMAudioFormatDescriptionRef formats[2] = {};
+    const AudioChannelLayoutTag tags[2] = {kAudioChannelLayoutTag_WAVE_5_1_A, kAudioChannelLayoutTag_WAVE_5_1_B};
+    for (int i = 0; i < 2; i++) {
+        AudioChannelLayout layout{};
+        layout.mChannelLayoutTag = tags[i];
+        if (CMAudioFormatDescriptionCreate(kCFAllocatorDefault, &asbd, sizeof layout, &layout, 0, nullptr, nullptr, &formats[i]) != noErr) {
+            log_msg("[audio] spatial 5.1: no format description");
+            return false;
+        }
     }
     static auto feed = pull;
     std::thread([] {
@@ -384,18 +469,54 @@ bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
         static const double margin = getenv("WWHD_SPATIAL_MARGIN_MS") ? atof(getenv("WWHD_SPATIAL_MARGIN_MS")) : 10;
         static const bool trace = getenv("WWHD_AUDIO_TRACE") != nullptr;
         static int16_t mix[kChunk * 6];
+        double energy[6] = {};  // (the trace: each channel's level since the last line)
+        uint64_t measured = 0;
         double leadMs = [AVAudioSession sharedInstance].outputLatency * 1000 + margin;
         int64_t queued = 0;  // frames
-        bool started = false;
+        bool started = false, rear = audio::rear_surrounds();
+        int route = kRenderer;
         double lastReport = 0, clockSeen = -1, clockSince = 0;
         for (;;) {
+            // (the latency settles after a route change: again every second)
+            static double latencyAt = 0;
+            if (CACurrentMediaTime() - latencyAt > 1) {
+                latencyAt = CACurrentMediaTime();
+                AVAudioSession* session = [AVAudioSession sharedInstance];
+                audio::set_output_latency_ms(float((session.outputLatency + session.IOBufferDuration) * 1000 +
+                                                   (route == kRenderer ? margin : 0)));
+            }
+            // the route: a unit pulls the mix (the six as they are, or folded to stereo), or this thread feeds the renderer
+            if (g_route != route) {
+                const int to = g_route;
+                if (route == kRenderer) {
+                    [clock setRate:0 time:kCMTimeZero];
+                    [renderer flush];
+                    started = false;
+                    queued = 0;
+                }
+                route_unit(route, false);
+                const bool ok = route_unit(to, true);
+                if (to == kRenderer) fresh();
+                route = to;
+                AVAudioSessionPortDescription* out = [AVAudioSession sharedInstance].currentRoute.outputs.firstObject;
+                log_msg("[audio] 5.1 now %s to %s%s", to == kDiscrete ? "as six channels" : to == kFolded ? "folded to stereo"
+                        : "as multichannel content, for the system's Spatial Audio", out.portName.UTF8String ?: "the output",
+                        ok ? "" : " (no output unit)");
+            }
+            if (route != kRenderer) {
+                usleep(20000);
+                continue;
+            }
             // paused by the system, fallen behind its clock, or a clock that should run but stands still (a restart
             // before the app was active again): start again from fresh audio
             const double clockNow = started ? CMTimeGetSeconds(clock.currentTime) : -1;
             if (clockNow != clockSeen) { clockSeen = clockNow; clockSince = CACurrentMediaTime(); }
             const bool behind = started && queued / 48000.0 < clockNow;
             const bool stuck = started && clock.rate != 0 && CACurrentMediaTime() - clockSince > 1;
-            if (started && (clock.rate == 0 || behind || stuck)) {
+            // a new surround placement (Settings): from fresh audio in the other layout
+            const bool placed = audio::rear_surrounds() != rear;
+            if (placed) rear = !rear;
+            if (started && (clock.rate == 0 || behind || stuck || placed)) {
                 NSError* activation = nil;
                 if (![[AVAudioSession sharedInstance] setActive:YES error:&activation])
                     log_msg("[audio] spatial feed: the audio session can't be activated yet: %s",
@@ -406,8 +527,8 @@ bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
                 fresh();
                 queued = 0;
                 started = false;
-                log_msg("[audio] spatial feed: started again (%s)",
-                        behind ? "it fell behind" : stuck ? "its clock stood still" : "the renderer was paused");
+                log_msg("[audio] spatial feed: started again (%s)", placed ? (rear ? "rear surrounds" : "side surrounds")
+                        : behind ? "it fell behind" : stuck ? "its clock stood still" : "the renderer was paused");
             }
             if (CACurrentMediaTime() - lastReport > 2) {
                 lastReport = CACurrentMediaTime();
@@ -415,9 +536,18 @@ bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
                 if (trace) {
                     uint64_t underrun = 0, dropped = 0;
                     audio::stats(underrun, dropped);
-                    log_msg("[audio] spatial feed: lead %.0f ms, underrun %llu dropped %llu frames, clock %.2f s, queued %.2f s",
+                    double db[6];
+                    for (int ch = 0; ch < 6; ch++)
+                        db[ch] = measured ? 10 * std::log10(energy[ch] / measured / (32768.0 * 32768.0) + 1e-12) : -120;
+                    log_msg("[audio] spatial feed: lead %.0f ms, underrun %llu dropped %llu frames, clock %.2f s, queued %.2f s; "
+                            "dBFS L %.0f R %.0f C %.0f LFE %.0f Ls %.0f Rs %.0f; renderer status %ld%s%s, volume %.2f%s, "
+                            "session output volume %.2f",
                             leadMs, (unsigned long long)underrun, (unsigned long long)dropped, std::max(0.0, clockNow),
-                            queued / 48000.0);
+                            queued / 48000.0, db[0], db[1], db[2], db[3], db[4], db[5], (long)renderer.status,
+                            renderer.error ? " " : "", renderer.error ? renderer.error.localizedDescription.UTF8String : "",
+                            renderer.volume, renderer.muted ? " muted" : "", [AVAudioSession sharedInstance].outputVolume);
+                    std::fill(energy, energy + 6, 0.0);
+                    measured = 0;
                 }
             }
             const double lead = queued / 48000.0 - std::max(0.0, clockNow);
@@ -426,13 +556,18 @@ bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
                 continue;
             }
             feed(mix, kChunk);
+            if (trace) {
+                for (uint32_t i = 0; i < kChunk; i++)
+                    for (int ch = 0; ch < 6; ch++) energy[ch] += double(mix[i * 6 + ch]) * mix[i * 6 + ch];
+                measured += kChunk;
+            }
             CMBlockBufferRef block = nullptr;
             if (CMBlockBufferCreateWithMemoryBlock(kCFAllocatorDefault, nullptr, sizeof mix, kCFAllocatorDefault, nullptr, 0,
                                                    sizeof mix, kCMBlockBufferAssureMemoryNowFlag, &block) != noErr)
                 continue;
             CMBlockBufferReplaceDataBytes(mix, block, 0, sizeof mix);
             CMSampleBufferRef sample = nullptr;
-            CMAudioSampleBufferCreateReadyWithPacketDescriptions(kCFAllocatorDefault, block, format, kChunk,
+            CMAudioSampleBufferCreateReadyWithPacketDescriptions(kCFAllocatorDefault, block, formats[rear], kChunk,
                                                                  CMTimeMake(queued, 48000), nullptr, &sample);
             CFRelease(block);
             if (!sample) continue;
@@ -493,6 +628,7 @@ static void* run_game(void*) {
 - (void)sceneDidEnterBackground:(UIScene*)scene { save_folder::pause_lock(); }
 - (void)sceneWillEnterForeground:(UIScene*)scene {
     save_folder::resume_lock();
+    uikit_audio_route_check();  // (the output may have changed meanwhile)
     // the iPhone GamePad: the system took the server's socket and its Bonjour advertisement in the background
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ remote_pad::restart(); });
 }
@@ -504,6 +640,9 @@ static void* run_game(void*) {
     [self.window makeKeyAndVisible];
     g_view = (WWMetalView*)vc.view;
     [g_view layoutIfNeeded];
+#if !TARGET_OS_TV
+    [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer*) { [g_view followTextInput]; }];
+#endif
     static bool started = false;
     if (started) return;
     started = true;
@@ -631,9 +770,6 @@ void choose_file(const char*, const char*, bool, std::function<void(std::string)
 bool get(const char* key, std::string& value) { return gfx::host_setting(key, value); }
 void set(const char* key, const std::string& value) { gfx::set_host_setting(key, value); }
 float res_scale() { return render::res_scale(); }
-#if !TARGET_OS_TV
-    [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer*) { [g_view followTextInput]; }];
-#endif
 void set_res_scale(float s) {
     render::set_res_scale(s);
     gfx::set_host_setting("resScale", std::to_string(s));
