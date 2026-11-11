@@ -30,8 +30,9 @@
 //
 // Run-time switches (ON builds): WWHD_NATIVE_DRAW=1 turns packets on (off by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
 // one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE, JPA);
-// WWHD_NATIVE_DRAW_VERIFY=N draws every Nth replayable instance through the full path and compares what it resolved
-// with the packet (mismatches logged, "[native-draw] VERIFY MISMATCH").
+// WWHD_NATIVE_DRAW_JOURNAL=0 turns the register journal's check off (draw.cpp); WWHD_NATIVE_DRAW_VERIFY=N draws
+// every Nth replayable instance through the full path and compares what it resolved with the packet (mismatches
+// logged, "[native-draw] VERIFY MISMATCH").
 //
 // Shader-rewrite batches (WWHD_NATIVE_DRAW_BATCH; Vulkan; on by default in this build (cmake WWHD_NATIVE_DRAW_BATCH,
 // ON), WWHD_NATIVE_DRAW_BATCH=0 turns them off): the replayable instances of a kind with the kind's own vertex input and
@@ -98,9 +99,24 @@ constexpr uint32_t kMaxDrawWords =
 // render thread: bumped by every register change and every command other than register writes and packet draws
 // (gx2_core.cpp); a packet's lowered state is valid only while it is unchanged
 extern uint64_t g_epoch;
+// render thread: the register journal. Every register write that changes a register (gx2_core.cpp apply_regs, the
+// ALU constants excepted) records the register and its old value; g_journalBumps counts the epoch bumps those writes
+// made. A lowered state whose epoch moved only by journalled writes is still valid when every register those writes
+// changed holds its value from the lowering again (draw.cpp packet_draw: the register file is the same; a site that
+// sets per-object state and resets it after each object, magma balls and 3D line objects, keeps its lowered state).
+// A ring: entries older than kJournal writes are gone (the check then fails).
+struct RegChange {
+    uint32_t reg, old;
+};
+constexpr uint32_t kJournal = 4096;
+extern RegChange g_journal[kJournal];
+extern uint64_t g_journalPos, g_journalBumps;
+inline void journal(uint32_t reg, uint32_t old) { g_journal[g_journalPos++ % kJournal] = {reg, old}; }
 
 const Packet* packet(uint32_t id);  // render thread: the defined packet, or nullptr
-void define(const uint32_t* p, uint32_t n);  // render thread: OP_PACKET_DEFINE
+// render thread: OP_PACKET_DEFINE. A definition the same as the packet's current one, word for word, changes nothing:
+// the packet's lowered state stays valid (g_epoch and a collected multi-draw batch stay as they are)
+void define(const uint32_t* p, uint32_t n);
 // render thread: OP_PACKET_DRAW (kind < meshCount) after its register effects were applied: the packet path, or the
 // full draw. RANGE: the instance's own index range (the kind's primitive and index type), or null: the kind's mesh
 void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, const Mesh* range);
@@ -116,7 +132,9 @@ void count_batch(uint32_t site, uint32_t instances);  // one batch draw of INSTA
 enum Reason : uint32_t {
     kReplayed, kLowered, kVerified,
     kNotVulkan, kStereo, kFramegen, kGrassDistance, kBackdrop, kClouds, kRefused, kBufferChange,
-    kBlockSize, kFetchChange, kStrideChange, kRangeChange, kMdi, kBatched, kReasons
+    kBlockSize, kFetchChange, kStrideChange, kRangeChange, kMdi, kBatched,
+    kRestored,  // (not a fallback) the lowered state kept by the register journal (registers changed and set back)
+    kReasons
 };
 void count(uint32_t site, Reason r);
 // Multi-draw batches (WWHD_NATIVE_DRAW_MDI=1 with packets on; off by default; Vulkan): consecutive replayable instances

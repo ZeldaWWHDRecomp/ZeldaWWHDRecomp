@@ -27,6 +27,8 @@ bool gamepad_backdrop_capture_active();
 namespace native_draw {
 
 uint64_t g_epoch = 1;
+RegChange g_journal[kJournal];
+uint64_t g_journalPos = 0, g_journalBumps = 0;
 
 // ---------------------------------------------------------------- switches
 static int env_int(const char* name, int fallback) {
@@ -218,6 +220,13 @@ extern "C" unsigned wwhd_native_pair_slot(unsigned site, unsigned locations, uns
     s->locations = locations;
     return 1;
 }
+// the instance blocks of uniform pair PAIR's bind (its vtable +0x2C) with the location table LOCATIONS: the slot its
+// bind function binds. Zero: not declared (another bind function, or as wwhd_native_pair_slot)
+extern "C" unsigned wwhd_native_declare_pair(unsigned site, unsigned pair, unsigned locations) {
+    const uint32_t vt = pair ? ld32(pair + 0xC) : 0;
+    const int slot = vt ? pair_slot(ld32(vt + 0x2C)) : -1;
+    return slot >= 0 ? wwhd_native_pair_slot(site, locations, uint32_t(slot)) : 0;
+}
 // an instance block bound by a direct GX2Set{Vertex,Pixel,Geometry}UniformBlock call (stage 0, 1, 2)
 extern "C" unsigned wwhd_native_declare_block(unsigned site, unsigned stage, unsigned location) {
     SiteState* s = site_state(site);
@@ -371,6 +380,9 @@ const Packet* packet(uint32_t id) { return id < kMaxPackets && g_defined[id] ? &
 
 void define(const uint32_t* p, uint32_t n) {
     if (n != kPacketWords || p[0] >= kMaxPackets) return;
+    if (g_defined[p[0]] && std::memcmp(&g_packets[p[0]], p, sizeof(Packet)) == 0) return;  // (unchanged)
+    flush_mdi();
+    ++g_epoch;
     std::memcpy(&g_packets[p[0]], p, sizeof(Packet));
     g_defined[p[0]] = true;
 }
@@ -475,7 +487,8 @@ void frame_end() {
     static const char* const names[kReasons] = {"replayed", "lowered", "verified", "not Vulkan", "stereo", "framegen",
                                                 "grass distance", "backdrop", "clouds", "refused", "buffer change",
                                                 "block size", "fetch change", "stride change", "range change",
-                                                "in multi-draw batches", "in shader-rewrite batches"};
+                                                "in multi-draw batches", "in shader-rewrite batches",
+                                                "kept by the register journal"};
     for (uint32_t site = 0; site < kSites; ++site) {
         if (!g_instances[site]) continue;
         char buf[700];

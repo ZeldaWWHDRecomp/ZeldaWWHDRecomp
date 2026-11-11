@@ -170,6 +170,9 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
         if (old != value) {
             const uint8 cls = g_reg_class[reg];
             changed = true;
+#ifdef WWHD_NATIVE_DRAW
+            native_draw::journal(reg, old);
+#endif
             note_state_change(cls, old, value);
             if (classify) classify_reg(cls, reg);
             if ((collectStats || !actualBump) && !(cls & kRcShaderIrrelevant)) {
@@ -186,6 +189,7 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
     if (g_shadow) copy_words(&g_shadow[first], v, n);
 #ifdef WWHD_NATIVE_DRAW
     native_draw::g_epoch += changed;
+    native_draw::g_journalBumps += changed;
 #endif
     if (actualBump) ++g_shader_state_gen;
     if (changed && collectStats) {
@@ -228,11 +232,15 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
     if (memcmp(&g_regs[first], v, n * 4) != 0) {
 #ifdef WWHD_NATIVE_DRAW
         ++native_draw::g_epoch;
+        ++native_draw::g_journalBumps;
 #endif
         const bool classify = g_classify;
         for (uint32 i = 0; i < n; i++)
             if (g_regs[first + i] != v[i]) {
                 const uint8 cls = g_reg_class[first + i];
+#ifdef WWHD_NATIVE_DRAW
+                native_draw::journal(first + i, g_regs[first + i]);
+#endif
                 note_state_change(cls, g_regs[first + i], v[i]);
                 if (classify) classify_reg(cls, first + i);
             }
@@ -768,9 +776,10 @@ static void execute_op(Op op, const uint32* p, uint32 n);
 static void execute_one(Op op, const uint32* p, uint32 n) {
     rprof::Op kind;
 #ifdef WWHD_NATIVE_DRAW
-    // a collected multi-draw batch is drawn before any other command but register writes; a collected shader-rewrite
-    // batch before any other command (native_draw.h)
-    if (native_draw::g_mdiPending && op != OP_PACKET_DRAW && op != OP_SET_REGS && op != OP_NOP) native_draw::flush_mdi();
+    // a collected multi-draw batch is drawn before any other command but register writes and packet definitions
+    // (define: when it changes the packet); a collected shader-rewrite batch before any other command (native_draw.h)
+    if (native_draw::g_mdiPending && op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE && op != OP_SET_REGS && op != OP_NOP)
+        native_draw::flush_mdi();
     if (native_draw::g_batchPending && op != OP_PACKET_DRAW) native_draw::flush_batch();
 #endif
     switch (op) {
@@ -829,8 +838,10 @@ static void test_frame_load(const char* name, bool hold = false) {
 static void execute_op(Op op, const uint32* p, uint32 n) {
 #ifdef WWHD_NATIVE_DRAW
     // a packet's lowered state holds while only register writes that change nothing and its own instances come
-    // (native_draw.h); any other command may change what the full draw would resolve
-    if (op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_PACKET_DRAW) ++native_draw::g_epoch;
+    // (native_draw.h); any other command may change what the full draw would resolve (a packet definition: when it
+    // changes the packet, native_draw::define)
+    if (op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE)
+        ++native_draw::g_epoch;
 #endif
     switch (op) {
     case OP_NOP: break;
@@ -965,7 +976,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
                      (hasRange ? kRangeWords : 0) ||
             (kind != kNoDraw && kind >= pk->meshCount))
             break;
-        const uint64_t epoch = g_epoch;
+        const uint64_t epoch = g_epoch, bumps = g_journalBumps;
         static const uint32 stageBase[3] = {mmSQ_VTX_UNIFORM_BLOCK_START, mmSQ_PS_UNIFORM_BLOCK_START,
                                             mmSQ_GS_UNIFORM_BLOCK_START};
         const uint32* q = p + kDrawHead;
@@ -984,6 +995,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             }
         }
         g_epoch = epoch;
+        g_journalBumps = bumps;  // (their writes stay in the journal)
         Mesh range;
         if (hasRange && kind != kNoDraw) range = {pk->mesh[kind].prim, q[0], pk->mesh[kind].indexType, q[1]};
         if (kind != kNoDraw) draw(g_regs, *pk, kind, hasRange ? &range : nullptr);

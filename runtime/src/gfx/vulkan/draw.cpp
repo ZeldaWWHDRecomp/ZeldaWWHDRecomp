@@ -5242,6 +5242,11 @@ struct LoweredKind {
   // batching: the kind's batch shaders and pipeline (nullptr: its instances replay one by one)
   NativeShaders* batch = nullptr;
   Pipeline* batchPipeline = nullptr;
+  uint64_t journalPos = 0, journalBumps = 0;  // the register journal at the lowering (native_draw.h)
+  // an instance of the kind had another index range than the lowered one (kept across lowerings): its instances with a
+  // stream of their own join range batches too (a magma ball's first strip starts its ball's batch); else such
+  // instances form stream batches (3D lines: one index list, a stream per line)
+  bool rangeVaries = false;
 };
 struct LoweredPacket {
   uint64_t drawCount = ~0ull;  // R.drawCount after the packet's last draw (lowering or replay)
@@ -5281,6 +5286,7 @@ struct MdiBatch {
   // range batches: the instances' index bytes; per vertex buffer of the kind its copy so far (grown at each instance
   // to the prefix the largest index so far needs, read from guest memory at that instance, as its full draw would)
   std::vector<uint8_t> indexBytes;
+  uint32_t vertexRegs[16][2]{};  // a range batch's vertex buffers (address and size words)
   bool extentValid = true;
   uint32_t maxIndex = 0;
   std::array<std::vector<uint8_t>, 16> vertexBytes;
@@ -5391,6 +5397,45 @@ struct PendingBatch {
 uint64_t batchLost = 0;
 uint64_t packetVerifyCounter = 0;
 
+// The register journal (native_draw.h): the kind's lowered state stays valid when every epoch bump since its lowering
+// (or its last check) came from a journalled register write and every register those writes changed holds its value
+// from then again, so the full draw would see the same register file. The instance's own registers are the replay's
+// and are skipped: its blocks' address and size words, its vertex buffers' address and size words, the fetch shader
+// (compared by content). Off with WWHD_NATIVE_DRAW_JOURNAL=0.
+bool packet_regs_restored(LoweredKind& L, const native_draw::Packet& pk, const uint32_t* r) {
+  using namespace native_draw;
+  static const bool on = [] {
+    const char* e = std::getenv("WWHD_NATIVE_DRAW_JOURNAL");
+    return !(e && *e == '0');
+  }();
+  if (!on || g_epoch - L.epoch != g_journalBumps - L.journalBumps || g_journalPos - L.journalPos > kJournal)
+    return false;
+  static std::vector<uint32_t> seen(0x10000, 0);
+  static uint32_t stamp = 0;
+  if (++stamp == 0) std::fill(seen.begin(), seen.end(), 0), stamp = 1;
+  static const uint32_t stageBase[3] = {mmSQ_VTX_UNIFORM_BLOCK_START, mmSQ_PS_UNIFORM_BLOCK_START,
+                                        mmSQ_GS_UNIFORM_BLOCK_START};
+  for (uint32_t i = 0; i < pk.blockCount && i < kMaxBlocks; ++i) {
+    const uint32_t stage = pk.block[i] >> 16, reg = stageBase[stage < 3 ? stage : 0] + (pk.block[i] & 0xFFFF) * 7;
+    if (reg + 1 < 0x10000) seen[reg] = seen[reg + 1] = stamp;
+  }
+  for (uint32_t i = 0; i < L.cap.vertexBindCount; ++i) {
+    const uint32_t reg = mmSQ_VTX_ATTRIBUTE_BLOCK_START + L.cap.vertexBinds[i].binding * 7;
+    seen[reg] = seen[reg + 1] = stamp;
+  }
+  seen[mmSQ_PGM_START_FS] = seen[mmSQ_PGM_START_FS + 1] = stamp;
+  for (uint64_t p = L.journalPos; p < g_journalPos; ++p) {
+    const RegChange& c = g_journal[p % kJournal];
+    if (seen[c.reg] == stamp) continue;
+    seen[c.reg] = stamp;
+    if (r[c.reg] != c.old) return false;
+  }
+  L.epoch = g_epoch;
+  L.journalBumps = g_journalBumps;
+  L.journalPos = g_journalPos;
+  return true;
+}
+
 void packet_compare(const PacketCapture& a, const PacketCapture& b, bool sameVertexInput, bool sameRange, uint32_t site) {
   char what[200];
   auto check = [&](bool same, const char* field) {
@@ -5449,16 +5494,27 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     blockAddr[i] = r[reg];
     blockSize[i] = r[reg + 1] + 1;
   }
-  // a multi-draw batch this instance cannot join is drawn first (another packet or kind, other blocks)
+  // a multi-draw batch this instance cannot join is drawn first (another packet or kind, other blocks; a range batch:
+  // other vertex buffers)
   if (mdiBatch.active) {
     bool join = mdiBatch.id == pk.id && mdiBatch.kind == kind;
     for (uint32_t i = 0; join && i < pk.blockCount; ++i)
       join = blockAddr[i] == mdiBatch.blockAddr[i] && blockSize[i] == mdiBatch.blockSize[i];
+    for (uint32_t i = 0; join && mdiBatch.range && i < L.cap.vertexBindCount && i < 16; ++i) {
+      const uint32_t* a = r + mmSQ_VTX_ATTRIBUTE_BLOCK_START + L.cap.vertexBinds[i].binding * 7;
+      join = a[0] == mdiBatch.vertexRegs[i][0] && a[1] == mdiBatch.vertexRegs[i][1];
+    }
     if (!join) native_draw::flush_mdi();
   }
-  bool replayable = L.valid && P.drawCount == R.drawCount && L.epoch == native_draw::g_epoch &&
+  bool replayable = L.valid && P.drawCount == R.drawCount &&
       L.submission == R.submissionGeneration && L.frame == R.frame && L.passCount == R.renderPassCount &&
       R.rendering && R.passTracked && g_surface_epoch == L.surfaceEpoch && R.recording && L.cmd == R.cmd;
+  // the register file: unchanged (the epoch), or every journalled change undone
+  bool restored = false;
+  if (replayable && L.epoch != native_draw::g_epoch) {
+    replayable = restored = packet_regs_restored(L, pk, r);
+    if (restored) native_draw::count(pk.site, native_draw::kRestored);
+  }
   native_draw::Reason relower = native_draw::kReasons;  // (none of the counted instance reasons)
   if (replayable)
     for (uint32_t i = 0; i < pk.blockCount; ++i)
@@ -5486,10 +5542,13 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   }
   const uint32_t verifyEvery = native_draw::verify_every();
   const bool verify = replayable && verifyEvery && ++packetVerifyCounter % verifyEvery == 0;
-  // the index range: the one the kind was lowered with, or (range batches) another one of the same vertex input
+  // the index range: the one the kind was lowered with, or (range batches: every instance of a kind lowered with a
+  // range of its own) another one, with the kind's vertex input or a stream of the instance's own (a range batch keeps
+  // one vertex input: its first instance's)
   const bool sameRange = m.count == L.rangeCount && m.indexAddr == L.rangeAddr;
-  const bool rangeCandidate = native_draw::mdi_on() && replayable && !verify && sameVertexInput && !sameRange &&
-      !L.rangeRefused && m.indexAddr &&
+  if (replayable && !sameRange) L.rangeVaries = true;
+  const bool rangeCandidate = native_draw::mdi_on() && replayable && !verify && !L.rangeRefused && m.indexAddr &&
+      (!sameRange || L.rangeVaries) &&
       (L.cap.nativeIndexWidth || uint64_t(m.indexAddr) + uint64_t(m.count) * (m.indexType == 4 ? 2 : 4) <= 0x100000000ull);
   if (replayable && !verify && !sameRange && !rangeCandidate) replayable = false, relower = native_draw::kRangeChange;
   const uint64_t surfaceBefore = g_surface_epoch;
@@ -5500,7 +5559,7 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   };
   // multi-draw batches: an instance with a stream of its own joins the batch of its kind (same blocks: checked above)
   const bool mdiCandidate = native_draw::mdi_on() && replayable && !verify && !sameVertexInput && sameRange &&
-      !L.mdiRefused;
+      !L.mdiRefused && !rangeCandidate;
   auto mdi_append = [&] {
     auto& B = mdiBatch;
     const auto& v = L.cap.vertexBinds[0];
@@ -5688,6 +5747,11 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       B.bytes.clear();
       B.cmds.clear();
       B.indexBytes.clear();
+      for (uint32_t i = 0; i < L.cap.vertexBindCount && i < 16; ++i) {
+        const uint32_t* a = r + mmSQ_VTX_ATTRIBUTE_BLOCK_START + L.cap.vertexBinds[i].binding * 7;
+        B.vertexRegs[i][0] = a[0];
+        B.vertexRegs[i][1] = a[1];
+      }
       B.extentValid = true;
       B.maxIndex = 0;
       for (auto& v : B.vertexBytes) v.clear();
@@ -5800,6 +5864,8 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     for (auto& k : P.kinds) k.valid = false;
   L.valid = true;
   L.epoch = native_draw::g_epoch;
+  L.journalPos = native_draw::g_journalPos;
+  L.journalBumps = native_draw::g_journalBumps;
   L.submission = R.submissionGeneration;
   L.frame = R.frame;
   L.surfaceEpoch = g_surface_epoch;
