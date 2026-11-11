@@ -11,8 +11,10 @@
 #ifdef WWHD_HAS_VULKAN
 #include "gfx/vulkan/api.h"
 #endif
+#include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
@@ -29,96 +31,260 @@ static int env_int(const char* name, int fallback) {
     const char* e = std::getenv(name);
     return e && *e ? std::atoi(e) : fallback;
 }
-static bool grass_on() {
-    static const bool on = [] {
-        const bool master = env_int("WWHD_NATIVE_DRAW", 0) != 0, grass = env_int("WWHD_NATIVE_DRAW_GRASS", 1) != 0;
-        LOG("[native-draw] grass packets: %s", master && grass ? "on (WWHD_NATIVE_DRAW=1)"
-                                               : master ? "off (WWHD_NATIVE_DRAW_GRASS=0)" : "off (WWHD_NATIVE_DRAW=0)");
-        return master && grass;
-    }();
+static const char* const kSiteNames[kSites] = {"", "grass", "tree", "wood", "flower", "magma",
+                                               "star", "housi", "wave", "moya", "vrkumo"};
+static bool master_on() {
+    static const bool on = env_int("WWHD_NATIVE_DRAW", 0) != 0;
     return on;
+}
+// WWHD_NATIVE_DRAW=1 and WWHD_NATIVE_DRAW_<SITE> (default 1)
+static bool site_on(uint32_t site) {
+    static const std::array<bool, kSites> on = [] {
+        std::array<bool, kSites> v{};
+        char line[400];
+        int k = std::snprintf(line, sizeof line, "[native-draw] packets %s:", master_on() ? "on (WWHD_NATIVE_DRAW=1)"
+                                                                                       : "off (WWHD_NATIVE_DRAW=0)");
+        for (uint32_t s = 1; s < kSites; ++s) {
+            char name[48] = "WWHD_NATIVE_DRAW_";
+            for (const char* c = kSiteNames[s]; *c && std::strlen(name) < sizeof name - 1; ++c) {
+                const size_t n = std::strlen(name);
+                name[n] = char(*c - 'a' + 'A');
+                name[n + 1] = 0;
+            }
+            v[s] = master_on() && env_int(name, 1) != 0;
+            if (master_on()) k += std::snprintf(line + k, sizeof line - k, " %s %s", kSiteNames[s], v[s] ? "on" : "off");
+        }
+        LOG("%s", line);
+        return v;
+    }();
+    return site < kSites && on[site];
 }
 uint32_t verify_every() {
     static const uint32_t n = uint32_t(std::max(0, env_int("WWHD_NATIVE_DRAW_VERIFY", 0)));
     return n;
 }
 
-// ---------------------------------------------------------------- game thread: the grass site
-// j3d::RenderUniformBindEntries::bindMatrix (027FF88C), the grass model packets' getShape: binds the pair's previous
-// buffer (RenderUniformPair: mBuffers at +0x10, 28 bytes each, CPU storage +4, stride +12; mPreviousIndex +0x4C) at
-// the material's slot 2 locations (RenderUniformLocations_l: count +12, bindings +16, 20 bytes each; vertex +12,
-// pixel +14, geometry +16)
-constexpr uint32_t kBindMatrix = 0x027FF88C;
-static bool matrix_locations(uint32_t material, int32_t loc[3]) {
-    if (ld32(material + 12) <= 2) return false;  // (bindMatrix then reads guest address 0's record: left to it)
-    const uint32_t entry = ld32(material + 16) + 2 * 20;
+// ---------------------------------------------------------------- game thread: the sites
+// j3d::RenderUniformBindEntries (JSystem/J3DGraph/RenderUniformBindings.cpp): a RenderUniformPair's bind (its vtable
+// +0x2C) binds the pair's previous buffer (mBuffers at +0x10, 28 bytes each: CPU storage +4, size +12; mPreviousIndex
+// +0x4C) at the locations of one slot of the material's table (RenderUniformLocations_l: count +12, bindings +16,
+// 20 bytes each: vertex +12, pixel +14, geometry +16), in the order pixel, vertex, geometry
+static int pair_slot(uint32_t fn) {
+    switch (fn) {
+    case 0x027FF75C: return 0;  // bindFrame
+    case 0x027FF88C: return 2;  // bindMatrix
+    case 0x027FF9C0: return 3;  // bindMaterial
+    case 0x027FFB48: return 4;  // bindScene
+    default: return -1;
+    }
+}
+static bool slot_locations(uint32_t locations, uint32_t slot, int32_t loc[3]) {
+    if (!locations || ld32(locations + 12) <= slot) return false;  // (the bind then reads guest address 0's record)
+    const uint32_t entry = ld32(locations + 16) + slot * 20;
     for (int i = 0; i < 3; ++i) loc[i] = int16_t(ld16(entry + 12 + 2 * i));
-    return loc[0] != -1 || loc[1] != -1 || loc[2] != -1;
+    return true;
 }
 struct SiteState {
-    bool open = false;
+    bool open = false, defined = false;
     Packet pk;
-    uint32_t data = 0, size = 0;  // the pending instance's block
-    bool pending = false;
+    uint32_t locations = 0;  // the material's location table (pair binds)
+    // the pending instance: its effects since the last instance, in the site's order
+    uint32_t words[kMaxDrawWords];
+    uint32_t blocks = 0;
+    bool vertex = false;
+    uint32_t buffers = 0;
+    uint32_t vertexWords[kVertexHead + kMaxBuffers * kBufferWords];
 };
-static thread_local SiteState t_grass;
+static thread_local SiteState t_sites[kSites];
+static SiteState* site_state(uint32_t site) { return site < kSites ? &t_sites[site] : nullptr; }
+
+// the pending effects as one instance (KIND, or kNoDraw: effects only)
+static void emit_instance(SiteState& s, uint32_t kind) {
+    uint32_t n = kDrawHead + s.blocks * kBlockWords;
+    s.words[0] = s.pk.id;
+    s.words[1] = kind;
+    s.words[2] = s.blocks | uint32_t(s.vertex) << 8 | s.buffers << 12;
+    if (s.vertex) {
+        const uint32_t v = kVertexHead + s.buffers * kBufferWords;
+        std::memcpy(s.words + n, s.vertexWords, v * 4);
+        n += v;
+    }
+    gx2::emit(gx2::OP_PACKET_DRAW, s.words, n);
+    s.blocks = 0;
+    s.vertex = false;
+    s.buffers = 0;
+}
+static void flush(SiteState& s) {
+    if (s.defined && (s.blocks || s.vertex)) emit_instance(s, kNoDraw);
+}
+static bool declared(const Packet& pk, uint32_t key) {
+    for (uint32_t i = 0; i < pk.blockCount; ++i)
+        if (pk.block[i] == key) return true;
+    return false;
+}
+static void add_block(SiteState& s, uint32_t key, uint32_t addr, uint32_t size) {
+    if (s.blocks == kMaxBlocks) flush(s);
+    uint32_t* w = s.words + kDrawHead + s.blocks++ * kBlockWords;
+    w[0] = key;
+    w[1] = addr;
+    w[2] = size;
+    gx2::note_uniform_block(addr, size);  // as the GX2Set*UniformBlock call would
+}
 
 }  // namespace native_draw
 
 using namespace native_draw;
 
-extern "C" unsigned wwhd_native_grass_begin(unsigned pass, unsigned material, unsigned indices, unsigned texture) {
-    SiteState& s = t_grass;
-    s.open = false;
-    s.pending = false;
-    if (!grass_on() || !material || pass >= 8) return 0;
-    Packet& pk = s.pk;
+// the generic site entry points (decomp: port_native_draw.h)
+extern "C" unsigned wwhd_native_begin(unsigned site, unsigned pass, unsigned variant, unsigned material,
+                                      unsigned program, unsigned texture) {
+    SiteState* s = site_state(site);
+    if (!s) return 0;
+    s->open = s->defined = false;
+    s->blocks = s->buffers = 0;
+    s->vertex = false;
+    const uint32_t slot = variant * 8 + pass;
+    if (!site_on(site) || pass >= 8 || slot >= kIdsPerSite) return 0;
+    Packet& pk = s->pk;
     pk = Packet{};
-    if (!matrix_locations(material, pk.location)) return 0;
-    pk.id = kGrassFirstId + pass;
-    pk.site = kSiteGrass;
+    pk.id = site * kIdsPerSite + slot;
+    pk.site = site;
     pk.pass = pass;
+    pk.variant = variant;
     pk.material = material;
-    const uint32_t model = ld32(material);
-    pk.program = model ? ld32(ld32(model + 0x7C) + 0x28) : 0;  // Model.mpShaderResource -> ShaderResource.mpShader
+    pk.program = program;
     pk.texture = texture;
-    pk.textureBinding = (ld32(material + 0x14) ? ld32(material + 0x18) : 0) + 4;
-    // the site's GX2DrawIndexedEx(+4, +12, +0, +8, 0, 1) of each kind's index record (24 bytes each)
-    for (uint32_t k = 0; k < 2; ++k) {
-        const uint32_t b = indices + 24 * k;
-        pk.mesh[k] = {ld32(b + 4), ld32(b + 12), ld32(b + 0), ld32(b + 8)};
-    }
-    static_assert(sizeof(Packet) == kPacketWords * 4);
-    gx2::emit(gx2::OP_PACKET_DEFINE, reinterpret_cast<const uint32_t*>(&pk), kPacketWords);
-    s.open = true;
+    s->locations = 0;
+    s->open = true;
     return 1;
 }
-
-extern "C" unsigned wwhd_native_grass_instance(unsigned packet, unsigned material) {
-    SiteState& s = t_grass;
-    s.pending = false;
-    if (!s.open || material != s.pk.material) return 0;
-    const uint32_t vt = ld32(packet + 0xC);
-    if (!vt || ld32(vt + 0x2C) != kBindMatrix) return 0;
+// the instance blocks of a pair bind slot (RenderUniformBindEntries) of the location table LOCATIONS. Zero: not
+// declared (the slot is not in the table, another table, or too many blocks); the site's binds of it stay its own
+extern "C" unsigned wwhd_native_pair_slot(unsigned site, unsigned locations, unsigned slot) {
+    SiteState* s = site_state(site);
+    if (!s || !s->open || s->defined) return 0;
     int32_t loc[3];
-    if (!matrix_locations(material, loc) || std::memcmp(loc, s.pk.location, sizeof loc)) return 0;
-    const uint32_t buffer = packet + 0x10 + ld32(packet + 0x4C) * 28;
-    s.data = ld32(buffer + 4);
-    s.size = ld32(buffer + 12);
-    s.pending = true;
+    if ((s->locations && s->locations != locations) || !slot_locations(locations, slot, loc)) return 0;
+    uint32_t keys[3], n = 0, add = 0;
+    for (uint32_t st : {1u, 0u, 2u})
+        if (loc[st] != -1) {
+            keys[n] = block_key(st, uint32_t(loc[st]));
+            add += !declared(s->pk, keys[n]);
+            ++n;
+        }
+    if (s->pk.blockCount + add > kMaxBlocks) return 0;
+    for (uint32_t i = 0; i < n; ++i)
+        if (!declared(s->pk, keys[i])) s->pk.block[s->pk.blockCount++] = keys[i];
+    s->locations = locations;
     return 1;
 }
-
-extern "C" void wwhd_native_grass_draw(unsigned kind) {
-    SiteState& s = t_grass;
-    if (!s.pending || kind > 1) return;  // (never: the site asks for the draw only after a taken instance)
-    s.pending = false;
-    // as the three GX2Set*UniformBlock calls (pixel, vertex, geometry) and GX2DrawIndexedEx would
-    for (int i : {1, 0, 2})
-        if (s.pk.location[i] != -1) gx2::note_uniform_block(s.data, s.size);
-    mod_actor_shadow_proof::draw_submitted(s.pk.mesh[kind].count);
-    const uint32_t w[kDrawWords] = {s.pk.id, kind, s.data, s.size};
-    gx2::emit(gx2::OP_PACKET_DRAW, w, kDrawWords);
+// an instance block bound by a direct GX2Set{Vertex,Pixel,Geometry}UniformBlock call (stage 0, 1, 2)
+extern "C" unsigned wwhd_native_declare_block(unsigned site, unsigned stage, unsigned location) {
+    SiteState* s = site_state(site);
+    if (!s || !s->open || s->defined || stage > 2) return 0;
+    const uint32_t key = block_key(stage, location);
+    if (declared(s->pk, key)) return 1;
+    if (s->pk.blockCount == kMaxBlocks) return s->open = false, 0;
+    s->pk.block[s->pk.blockCount++] = key;
+    return 1;
+}
+extern "C" void wwhd_native_mesh(unsigned site, unsigned kind, unsigned prim, unsigned count, unsigned indexType,
+                                 unsigned indexAddr) {
+    SiteState* s = site_state(site);
+    if (!s || !s->open || s->defined) return;
+    if (kind >= kMaxKinds) { s->open = false; return; }
+    s->pk.mesh[kind] = {prim, count, indexType, indexAddr};
+    s->pk.meshCount = std::max<uint32_t>(s->pk.meshCount, kind + 1);
+}
+// the packet is complete: defined (OP_PACKET_DEFINE). Nonzero: the site's draws become its instances
+extern "C" unsigned wwhd_native_commit(unsigned site) {
+    SiteState* s = site_state(site);
+    if (!s || !s->open || !s->pk.meshCount) return s ? s->open = false, 0 : 0;
+    static_assert(sizeof(Packet) == kPacketWords * 4);
+    gx2::emit(gx2::OP_PACKET_DEFINE, reinterpret_cast<const uint32_t*>(&s->pk), kPacketWords);
+    s->defined = true;
+    return 1;
+}
+// where the site would call PAIR's bind (vtable +0x2C) with LOCATIONS: nonzero, the bind is the instance's (its
+// blocks pend for the next instance); zero, the site binds it itself (after the pending effects)
+extern "C" unsigned wwhd_native_pair(unsigned site, unsigned pair, unsigned locations) {
+    SiteState* s = site_state(site);
+    if (!s || !s->defined) return 0;
+    const uint32_t vt = pair ? ld32(pair + 0xC) : 0;
+    const int slot = vt ? pair_slot(ld32(vt + 0x2C)) : -1;
+    int32_t loc[3];
+    bool ok = slot >= 0 && locations == s->locations && slot_locations(locations, uint32_t(slot), loc);
+    for (uint32_t st = 0; ok && st < 3; ++st) ok = loc[st] == -1 || declared(s->pk, block_key(st, uint32_t(loc[st])));
+    if (!ok) {
+        flush(*s);
+        return 0;
+    }
+    const uint32_t buffer = pair + 0x10 + ld32(pair + 0x4C) * 28;
+    const uint32_t data = ld32(buffer + 4), size = ld32(buffer + 12);
+    for (uint32_t st : {1u, 0u, 2u})
+        if (loc[st] != -1) add_block(*s, block_key(st, uint32_t(loc[st])), data, size);
+    return 1;
+}
+// a direct GX2Set{Vertex,Pixel,Geometry}UniformBlock(LOCATION, SIZE, DATA) call (STAGE 0, 1, 2)
+extern "C" unsigned wwhd_native_block(unsigned site, unsigned stage, unsigned location, unsigned size, unsigned data) {
+    SiteState* s = site_state(site);
+    if (!s || !s->defined) return 0;
+    const uint32_t key = block_key(stage, location);
+    if (stage > 2 || !declared(s->pk, key)) {
+        flush(*s);
+        return 0;
+    }
+    add_block(*s, key, data, size);
+    return 1;
+}
+// where the site would call agl::VertexInputSet::bind (027BFE5C) on SHAPE: GX2SetFetchShader(+0xCC), then
+// GX2SetAttribBuffer(i, bytes, stride, data) for each of its mBufferCount (+0xC0) buffers (mBuffers +0xC4; a
+// VertexBufferPrefix_l: mData +0x140, mStride +0x144, mBytes +0x14C) that is set
+extern "C" unsigned wwhd_native_shape(unsigned site, unsigned shape) {
+    SiteState* s = site_state(site);
+    if (!s || !s->defined) return 0;
+    const int32_t count = shape ? int32_t(ld32(shape + 0xC0)) : -1;
+    if (count < 0 || count > int32_t(kMaxBuffers)) {
+        flush(*s);
+        return 0;
+    }
+    if (s->vertex) flush(*s);  // (a second bind before a draw: the first one's effects first)
+    const uint32_t fs = shape + 0xCC, buffers = ld32(shape + 0xC4);
+    uint32_t* w = s->vertexWords;
+    w[0] = ld32(fs + 0x0C) >> 8;
+    w[1] = ld32(fs + 0x08) >> 3;
+    uint32_t n = 0;
+    for (int32_t i = 0; i < count; ++i) {
+        const uint32_t src = ld32(buffers + uint32_t(i) * 4);
+        if (!src) continue;
+        uint32_t* b = w + kVertexHead + n++ * kBufferWords;
+        b[0] = uint32_t(i);
+        b[1] = ld32(src + 0x140);
+        b[2] = ld32(src + 0x14C);
+        b[3] = ld32(src + 0x144);
+    }
+    s->vertex = true;
+    s->buffers = n;
+    return 1;
+}
+// where the site would call GX2DrawIndexedEx with mesh KIND's arguments: nonzero, the instance is drawn (with the
+// effects pending since the last one)
+extern "C" unsigned wwhd_native_draw(unsigned site, unsigned kind) {
+    SiteState* s = site_state(site);
+    if (!s || !s->defined || kind >= s->pk.meshCount) {
+        if (s) flush(*s);
+        return 0;
+    }
+    mod_actor_shadow_proof::draw_submitted(s->pk.mesh[kind].count);
+    emit_instance(*s, kind);
+    return 1;
+}
+// the site's pass ends (or it leaves the packet): the pending effects
+extern "C" void wwhd_native_end(unsigned site) {
+    SiteState* s = site_state(site);
+    if (!s) return;
+    flush(*s);
+    s->open = s->defined = false;
 }
 
 namespace native_draw {
@@ -135,15 +301,16 @@ void define(const uint32_t* p, uint32_t n) {
     g_defined[p[0]] = true;
 }
 
-static uint64_t g_counts[kReasons], g_instances = 0, g_mismatches = 0, g_frames = 0;
-void count(Reason r) { ++g_counts[r]; }
+static uint64_t g_counts[kSites][kReasons], g_instances[kSites], g_mismatches = 0, g_frames = 0;
+void count(uint32_t site, Reason r) { ++g_counts[site < kSites ? site : 0][r]; }
 void verify_mismatch(const char* what) {
     if (g_mismatches++ < 32) LOG("[native-draw] VERIFY MISMATCH: %s", what);
 }
 
-void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, uint32_t addr, uint32_t size) {
-    ++g_instances;
-    const Mesh& m = pk.mesh[kind & 1];
+void draw(const uint32_t* regs, const Packet& pk, uint32_t kind) {
+    const uint32_t site = pk.site < kSites ? pk.site : 0;
+    ++g_instances[site];
+    const Mesh& m = pk.mesh[kind];
     Reason why = kNotVulkan;
 #ifdef WWHD_HAS_VULKAN
     if (render::vulkan()) {
@@ -153,29 +320,35 @@ void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, uint32_t addr, 
         else if (gfxvk::gamepad_backdrop_capture_active()) why = kBackdrop;
         else if (cloud_proto::g_active_seq) why = kClouds;
         else {
-            gfxvk::packet_draw(regs, pk, kind & 1, addr, size);  // replayed, or drawn the full way (counted there)
+            gfxvk::packet_draw(regs, pk, kind);  // replayed, or drawn the full way (counted there)
             return;
         }
     }
 #endif
-    count(why);
+    count(site, why);
     render::draw(regs, m.prim, m.count, m.indexType, m.indexAddr, 0, 1);
 }
 
+// every 300 frames, per site with instances: instances, replayed, lowered and every fallback reason per frame
 void frame_end() {
     ++g_frames;
-    static const bool on = grass_on();
     if (g_frames % 300) return;
     static const char* const names[kReasons] = {"replayed", "lowered", "verified", "not Vulkan", "stereo", "framegen",
-                                                "grass distance", "backdrop", "clouds", "refused", "buffer change"};
-    char buf[600];
-    int k = std::snprintf(buf, sizeof buf, "[native-draw] grass %s, last 300 frames: %.1f packet instances/frame",
-                          on ? "on" : "off", g_instances / 300.0);
-    for (uint32_t r = 0; r < kReasons; ++r)
-        if (g_counts[r]) k += std::snprintf(buf + k, sizeof buf - k, ", %s %.1f", names[r], g_counts[r] / 300.0);
-    if (verify_every()) std::snprintf(buf + k, sizeof buf - k, ", verify mismatches %llu", (unsigned long long)g_mismatches);
-    LOG("%s", buf);
-    g_instances = 0;
+                                                "grass distance", "backdrop", "clouds", "refused", "buffer change",
+                                                "block size", "fetch change", "stride change"};
+    for (uint32_t site = 0; site < kSites; ++site) {
+        if (!g_instances[site]) continue;
+        char buf[700];
+        int k = std::snprintf(buf, sizeof buf, "[native-draw] %s %s, last 300 frames: %.1f packet instances/frame",
+                              kSiteNames[site], site_on(site) ? "on" : "off", g_instances[site] / 300.0);
+        for (uint32_t r = 0; r < kReasons; ++r)
+            if (g_counts[site][r])
+                k += std::snprintf(buf + k, sizeof buf - k, ", %s %.1f", names[r], g_counts[site][r] / 300.0);
+        if (verify_every())
+            std::snprintf(buf + k, sizeof buf - k, ", verify mismatches %llu", (unsigned long long)g_mismatches);
+        LOG("%s", buf);
+    }
+    std::memset(g_instances, 0, sizeof g_instances);
     std::memset(g_counts, 0, sizeof g_counts);
 }
 

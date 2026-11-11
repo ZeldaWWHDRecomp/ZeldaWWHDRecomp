@@ -61,7 +61,7 @@ enum Op : uint32_t {
     // native draw packets (native_draw.h): emitted and executed only by WWHD_NATIVE_DRAW=ON builds (decomp build, fast
     // mode); declared in every build, after OP_COUNT, so that no other value or OP_COUNT changes. Recorded like any command:
     OP_PACKET_DEFINE = 0x40,  // native_draw::Packet (kPacketWords): a site's packet for this pass
-    OP_PACKET_DRAW = 0x41,    // packet id, kind, uniform block address, uniform block size: one instance
+    OP_PACKET_DRAW = 0x41,    // packet id, kind, the instance's blocks and vertex input (native_draw.h): one instance
 };
 
 // debug draw provenance (WWHD_VK_PIPELINE_WHO): a provider (set by dsweep.cpp) describes the guest code issuing a

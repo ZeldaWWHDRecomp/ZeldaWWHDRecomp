@@ -10,7 +10,7 @@ namespace native_draw { struct Packet; }
 namespace gfxvk {
 // native draw packets (gx2/native_draw.h; defined only in WWHD_NATIVE_DRAW=ON builds), render thread: the instance
 // replayed through the packet's lowered state, or drawn the full way (which lowers the packet)
-void packet_draw(const uint32_t* regs, const native_draw::Packet& pk, uint32_t kind, uint32_t addr, uint32_t size);
+void packet_draw(const uint32_t* regs, const native_draw::Packet& pk, uint32_t kind);
 void peek_z(const uint32_t*, uint32_t);
 void peek_retire();  // depth peeks: retire the submission of the latest peek copy now (backend.cpp)
 void init();                     // SDL host: windows + device; AppKit host: see init_appkit

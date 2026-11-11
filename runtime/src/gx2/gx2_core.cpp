@@ -940,17 +940,37 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
 #ifdef WWHD_NATIVE_DRAW
     case OP_PACKET_DEFINE: native_draw::define(p, n); break;
     case OP_PACKET_DRAW: {
-        const native_draw::Packet* pk = n == native_draw::kDrawWords ? native_draw::packet(p[0]) : nullptr;
+        // the instance's register effects, exactly as the site's skipped calls make them, in the site's order:
+        // GX2Set{Pixel,Vertex,Geometry}UniformBlock (gx2_resources.cpp uniform_block), GX2SetFetchShader and
+        // GX2SetAttribBuffer per buffer; they belong to the instance, so they keep the packet's state valid
+        using namespace native_draw;
+        const Packet* pk = n >= kDrawHead ? packet(p[0]) : nullptr;
         if (!pk) break;
-        // the instance's register writes, exactly as the site's GX2SetPixel/Vertex/GeometryUniformBlock calls make
-        // them (gx2_resources.cpp uniform_block); they belong to the instance, so they keep the packet's state valid
-        const uint64_t epoch = native_draw::g_epoch;
-        const uint32 w[7] = {p[2], p[3] - 1, 0, 1, 0, 0, 0xC0000000};
-        if (pk->location[1] != -1) apply_regs(mmSQ_PS_UNIFORM_BLOCK_START + uint32(pk->location[1]) * 7, w, 7);
-        if (pk->location[0] != -1) apply_regs(mmSQ_VTX_UNIFORM_BLOCK_START + uint32(pk->location[0]) * 7, w, 7);
-        if (pk->location[2] != -1) apply_regs(mmSQ_GS_UNIFORM_BLOCK_START + uint32(pk->location[2]) * 7, w, 7);
-        native_draw::g_epoch = epoch;
-        native_draw::draw(g_regs, *pk, p[1], p[2], p[3]);
+        const uint32 kind = p[1], blocks = p[2] & 0xFF, hasVertex = (p[2] >> 8) & 1, buffers = (p[2] >> 12) & 0xF;
+        if (blocks > kMaxBlocks || buffers > kMaxBuffers ||
+            n != kDrawHead + blocks * kBlockWords + (hasVertex ? kVertexHead + buffers * kBufferWords : 0) ||
+            (kind != kNoDraw && kind >= pk->meshCount))
+            break;
+        const uint64_t epoch = g_epoch;
+        static const uint32 stageBase[3] = {mmSQ_VTX_UNIFORM_BLOCK_START, mmSQ_PS_UNIFORM_BLOCK_START,
+                                            mmSQ_GS_UNIFORM_BLOCK_START};
+        const uint32* q = p + kDrawHead;
+        for (uint32 i = 0; i < blocks; ++i, q += kBlockWords) {
+            const uint32 stage = q[0] >> 16, location = q[0] & 0xFFFF;
+            const uint32 w[7] = {q[1], q[2] - 1, 0, 1, 0, 0, 0xC0000000};
+            if (stage < 3) apply_regs(stageBase[stage] + location * 7, w, 7);
+        }
+        if (hasVertex) {
+            apply_regs(mmSQ_PGM_START_FS, q, 1);
+            apply_regs(mmSQ_PGM_START_FS + 1, q + 1, 1);
+            q += kVertexHead;
+            for (uint32 i = 0; i < buffers; ++i, q += kBufferWords) {
+                const uint32 w[7] = {q[1], q[2] - 1, (q[3] & 0xFFFF) << 11, 0, 0, 0, 0xC0000000};
+                apply_regs(mmSQ_VTX_ATTRIBUTE_BLOCK_START + q[0] * 7, w, 7);
+            }
+        }
+        g_epoch = epoch;
+        if (kind != kNoDraw) draw(g_regs, *pk, kind);
         break;
     }
 #endif
