@@ -30,6 +30,7 @@ extern "C" void site_023FD39C(Cpu* c) {
     c->r[4] = v;
 }
 
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 // Decomp build: the decompiled posMoveFromFootPos asks at the same instruction (the decompilation's port_hooks.h
 // PORT_LINK_MOVE; tools/decomp_build/port_sites.py) with the vector argument &Link->speed; the result is the vector it
 // adds.
@@ -37,6 +38,7 @@ extern "C" unsigned wwhd_link_move(Cpu* c, unsigned sp, unsigned speed) {
     port_points::run(c, sp, site_023FD39C, [&](Cpu& r) { r.r[4] = speed; }, [&](Cpu& r) { speed = r.r[4]; });
     return speed;
 }
+#endif  // WWHD_PORT_POINTS
 
 // daPy_lk_c::setNormalSpeedF: faster sidling (mods/traversal.cpp)
 extern "C" void hook_02416230(Cpu* c) {

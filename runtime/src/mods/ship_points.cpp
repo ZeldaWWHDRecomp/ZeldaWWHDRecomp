@@ -5,6 +5,8 @@
 
 #include "port_points.h"
 #include "runtime.h"
+
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 extern "C" {
 void site_0247D4E8(Cpu*);  // setMoveAngle: f10 the speed the turn rate falls off with (r31 the ship)
 void site_0247E988(Cpu*);  // procSteerMove: the normal-sail branch (r31 the ship): automatic wind
@@ -29,3 +31,4 @@ extern "C" float wwhd_ship(Cpu* c, unsigned sp, unsigned site, unsigned ship, fl
                      [&](Cpu& r) { if (f >= 0) value = (float)r.f[f].ps0; });
     return value;
 }
+#endif  // WWHD_PORT_POINTS

@@ -334,6 +334,7 @@ extern "C" void hook_0240CDD0(Cpu* c) {
     g_prev_proc = proc;
 }
 
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 // Decomp build: the decompiled setFrontWallType / setMoveBGCorrectClimb compares and checkBgClimbMove's ledge search ask
 // at the same instructions (the decompilation's port_hooks.h PORT_CLIMB_STEEP / PORT_CLIMB_LEDGE;
 // tools/decomp_build/port_sites.py), with the values the handlers above read there.
@@ -365,3 +366,4 @@ extern "C" double wwhd_climb_ledge(Cpu* c, unsigned sp, unsigned link, double gr
                      [&](Cpu& r) { ground = r.f[1].ps0; });
     return ground;
 }
+#endif  // WWHD_PORT_POINTS

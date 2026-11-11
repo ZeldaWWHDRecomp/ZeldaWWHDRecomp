@@ -5,6 +5,8 @@
 
 #include "port_points.h"
 #include "runtime.h"
+
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 extern "C" {
 void site_026277A8(Cpu*); void site_026E9C24(Cpu*);  // the boat race's / the HUD's timer: r31 the layout, r7 the ms
 void site_025F8618(Cpu*);                            // dMesg_state_c::playerName's entry: r5 the message id
@@ -33,3 +35,4 @@ extern "C" unsigned wwhd_text(Cpu* c, unsigned sp, unsigned site, unsigned a, un
     }
     port_points::unknown("text", site);
 }
+#endif  // WWHD_PORT_POINTS

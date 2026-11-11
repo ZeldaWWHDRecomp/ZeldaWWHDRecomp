@@ -6,6 +6,8 @@
 
 #include "port_points.h"
 #include "runtime.h"
+
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 extern "C" {
 void site_024EB4A8(Cpu*); void site_024ECC70(Cpu*);  // calcWeight, chaseAttention: check_distace's f1, f2
 void site_024EB868(Cpu*);                            // EnemyDistance: the cutoff f13
@@ -37,3 +39,4 @@ extern "C" double wwhd_lock_on(Cpu* c, unsigned sp, unsigned site, unsigned obj,
     }
     port_points::unknown("lock-on", site);
 }
+#endif  // WWHD_PORT_POINTS

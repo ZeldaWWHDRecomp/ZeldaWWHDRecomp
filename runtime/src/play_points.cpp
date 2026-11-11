@@ -6,6 +6,8 @@
 
 #include "port_points.h"
 #include "runtime.h"
+
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 extern "C" void site_025B00B0(Cpu*);  // dScnPly_Draw: r3 the pause check's result
 extern "C" unsigned wwhd_play_word(Cpu* c, unsigned sp, unsigned site, unsigned value) {
     if (site != 0x025B00B0) port_points::unknown("play", site);
@@ -19,3 +21,4 @@ extern "C" void wwhd_pane(Cpu* c, unsigned sp, unsigned site, unsigned pane) {
     port_points::run(c, sp, site == 0x0287714C ? site_0287714C : site_02877150, [&](Cpu& r) { r.r[3] = pane; },
                      [](Cpu&) {});
 }
+#endif  // WWHD_PORT_POINTS

@@ -6,6 +6,8 @@
 
 #include "port_points.h"
 #include "runtime.h"
+
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 extern "C" {
 void site_02171B1C(Cpu*); void site_024F9DA4(Cpu*); void site_0250074C(Cpu*); void site_02506C68(Cpu*);
 void site_02506C80(Cpu*);                                                    // camera.cpp: the right stick's y
@@ -106,3 +108,4 @@ extern "C" double wwhd_camera_rate(Cpu* c, unsigned sp, unsigned site, unsigned 
     *c = saved;
     return value;
 }
+#endif  // WWHD_PORT_POINTS

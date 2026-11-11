@@ -7,6 +7,8 @@
 
 #include "port_points.h"
 #include "runtime.h"
+
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 extern "C" {
 void site_02870028(Cpu*); void site_028704CC(Cpu*);  // CalcLineRectImpl: a new line; r20 code, r22 wraps, r24 break
 void site_02870A50(Cpu*); void site_02870CC8(Cpu*);  // PrintImpl: after the prologue; r22 the control code (tags)
@@ -34,3 +36,4 @@ extern "C" unsigned wwhd_rtl(Cpu* c, unsigned sp, unsigned site, unsigned limite
     }
     port_points::unknown("rtl", site);
 }
+#endif  // WWHD_PORT_POINTS

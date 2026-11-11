@@ -7,6 +7,8 @@
 
 #include "port_points.h"
 #include "runtime.h"
+
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 extern "C" {
 void site_02617874(Cpu*);  // hdInputManager::init: r0 the mode stored to +0x1D0
 void site_0261864C(Cpu*);  // orientation: r3 isTvMode()'s result
@@ -44,3 +46,4 @@ extern "C" unsigned wwhd_ui_word(Cpu* c, unsigned sp, unsigned site, unsigned ob
     }
     port_points::unknown("ui", site);
 }
+#endif  // WWHD_PORT_POINTS

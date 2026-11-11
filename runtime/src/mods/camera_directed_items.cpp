@@ -176,6 +176,7 @@ void leaf_collision(Cpu* c) {
 extern "C" void hook_024076CC(Cpu* c) { mods::leaf_collision(c); }
 extern "C" void site_023E7A70(Cpu* c) { mods::leaf_start(c); }
 
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 // Decomp build: the decompiled procedure inits ask at the same instructions (the decompilation's port_hooks.h
 // PORT_ITEM_FACING; tools/decomp_build/port_sites.py): each site's handler above, with Link and the value it checks
 // besides (the bomb's throw type, the bottle's ship use) in the registers it reads there.
@@ -208,3 +209,4 @@ extern "C" void wwhd_item_facing(Cpu* c, unsigned sp, unsigned site, unsigned li
     }
     port_points::unknown("camera-directed items", site);
 }
+#endif  // WWHD_PORT_POINTS

@@ -541,6 +541,7 @@ extern "C" void site_023EC184(Cpu* c) { mods::release_predicate(c, 0x25, 0); }
 extern "C" void site_023EB548(Cpu* c) { mods::boomerang_release(c); }
 extern "C" void site_023EB614(Cpu* c) { mods::boomerang_held(c); }
 
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 // Decomp build: the decompiled item checks ask the mod at the same instructions (the decompilation's port_hooks.h
 // PORT_QUICK_USE; tools/decomp_build/port_sites.py). Each site's handler above runs with Link (or, for the launch
 // traces, the thrown actor) in the register it reads there, and the value it may replace in the register it writes.
@@ -582,3 +583,4 @@ extern "C" unsigned wwhd_quick_use(Cpu* c, unsigned sp, unsigned site, unsigned 
     }
     port_points::unknown("quick use", site);
 }
+#endif  // WWHD_PORT_POINTS

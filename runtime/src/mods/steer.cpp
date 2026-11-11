@@ -186,6 +186,7 @@ bool steer_pinch(int phase, float d) {
 extern "C" void site_023F35BC(Cpu* c) { mods::walk(c); }
 extern "C" void site_023F3610(Cpu* c) { mods::walk(c); }
 
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 // Decomp build: the decompiled setStickData asks at the same place (the decompilation's port_hooks.h PORT_STEER_WALK;
 // tools/decomp_build/port_sites.py; one statement there, which the compiled code has twice: both sites): Link in r31,
 // the camera angle in r3, the stick angle in r10, the walking direction (their sum) in r9, which the handler may replace.
@@ -197,6 +198,7 @@ extern "C" unsigned wwhd_steer_walk(Cpu* c, unsigned sp, unsigned site, unsigned
                      [&](Cpu& r) { value = r.r[9]; });
     return value;
 }
+#endif  // WWHD_PORT_POINTS
 
 #ifdef __ANDROID__
 #include <jni.h>

@@ -6,6 +6,8 @@
 
 #include "port_points.h"
 #include "runtime.h"
+
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
 extern "C" {
 void site_025BE898(Cpu*);                            // dSnap_packet::Execute after Judge: r31 the packet
 void site_025BF5D0(Cpu*); void site_025BF7C0(Cpu*);  // draw: drawColorTexture / drawDepthTexture, r6 scale, r7 position
@@ -26,3 +28,4 @@ extern "C" void wwhd_picto(Cpu* c, unsigned sp, unsigned site, unsigned a, unsig
     }
     port_points::run(c, sp, h, [&](Cpu& r) { r.r[ra] = a; if (rb >= 0) r.r[rb] = b; }, [](Cpu&) {});
 }
+#endif  // WWHD_PORT_POINTS

@@ -2,7 +2,18 @@
 // only; tools/decomp_build/port_sites.py lists them). A function with one of the port's instruction hooks inside used to
 // stay recompiled in the decomp build so that the hook ran; at a port point the decompiled function runs that hook's
 // own handler instead, at the same place. The normal (recompiled) build never calls these: its hooks are unchanged.
+//
+// So the points are compiled only where something calls them: the decomp build (WWHD_DECOMP) and the unit tests that
+// drive them (WWHD_PORT_POINT_TESTS). Each point sits inside `#if WWHD_PORT_POINTS`. The decomp build runs the USA game
+// only, so its sites are the USA addresses the decompiled source passes in; the region audit
+// (tools/recomp/test_coverage.py) skips these blocks. Nothing in them is in the normal build, where every game address
+// still goes through GC/GD.
 #pragma once
+#if defined(WWHD_DECOMP) || defined(WWHD_PORT_POINT_TESTS)
+#define WWHD_PORT_POINTS 1
+#else
+#define WWHD_PORT_POINTS 0
+#endif
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
