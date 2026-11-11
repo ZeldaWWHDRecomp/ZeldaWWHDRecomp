@@ -2938,6 +2938,7 @@ struct PacketCapture {
   // in: the instance blocks' uniform block indices (their locations) per stage, -1: none
   std::array<std::array<int, kBlocks>, 2> slot;
   bool hashes = false;  // WWHD_NATIVE_DRAW_VERIFY: hash the resolved inputs for the comparison
+  const native_draw::Packet* packet = nullptr;  // in: the packet (its instance register ranges)
   PacketCapture() { for (auto& s : slot) s.fill(-1); }
   int block_of(int st, size_t logicalSlot) const {
     for (int k = 0; k < kBlocks; ++k)
@@ -2971,9 +2972,13 @@ struct PacketCapture {
     VkBuffer supBuffer = VK_NULL_HANDLE;
     int supIndex = -1, supWrite = -1;
     std::vector<uint8_t> supBytes;
+    // the support bytes pack_uniforms_into copies from the packet's instance register ranges (the uniform-register
+    // copy, or remapped register entries): support byte offset, first register, words
+    struct RegPatch { uint32_t dst, reg, words; };
+    std::vector<RegPatch> regRemap;
     bool patches() const {
       for (const auto& b : block) if (!b.remap.empty()) return true;
-      return false;
+      return !regRemap.empty();
     }
   } stage[2];
   Pipeline* pipeline = nullptr;
@@ -3428,6 +3433,27 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
             for (const auto& entry : group.entries)
               blk.remap.push_back({uint32_t(sh->uniforms.offset_remapped + entry.mappedIndexOffset), uint32_t(entry.indexOffset)});
       if (blk.binding >= 0 && dynamicUniforms && blk.index < 0) cap->refuse("instance binding");
+    }
+    // the instance register ranges' support bytes (as pack_uniforms_into copies them; stereo is off for packets)
+    c.regRemap.clear();
+    if (const auto* pk = cap->packet; pk && sh->dec) {
+      const uint32_t aluBase = mmSQ_ALU_CONSTANT0_0 + (sh->vertex ? 0x400 : 0);
+      for (uint32_t i = 0; i < pk->regCount && i < native_draw::kMaxRegRanges; ++i) {
+        if ((pk->reg[i] >> 16) != uint32_t(sh->vertex ? 0 : 1)) continue;
+        const uint32_t lo = pk->reg[i] & 0xFFFF, hi = lo + pk->regWords[i];
+        if (sh->uniforms.offset_remapped >= 0)
+          for (const auto& entry : sh->dec->list_remappedUniformEntries_register)
+            if (const uint32_t w = uint32_t(entry.indexOffset) / 4; w < hi && w + 4 > lo)
+              c.regRemap.push_back({uint32_t(sh->uniforms.offset_remapped + entry.mappedIndexOffset), aluBase + w, 4});
+        if (sh->uniforms.offset_uniformRegister >= 0) {
+          const uint32_t n = uint32_t(sh->uniforms.count_uniformRegister) * 4, a = std::min(lo, n), b = std::min(hi, n);
+          if (a < b) c.regRemap.push_back({uint32_t(sh->uniforms.offset_uniformRegister) + a * 4, aluBase + a, b - a});
+        }
+      }
+      // (support bytes adjusted after packing: the bloom extract threshold, the AO noise scale)
+      if (!c.regRemap.empty() && ((!sh->vertex && (r[mmSQ_PGM_START_PS] << 8) == 0x44F91200) ||
+                                  (sh->vertex && sh->kind == gfx::ProgramKind::OcclusionVertex)))
+        cap->refuse("support uniforms adjusted after packing");
     }
     if (c.patches()) {
       if (sh->gatherUnits) cap->refuse("gather grid in the support uniforms");
@@ -5451,6 +5477,25 @@ bool packet_regs_restored(LoweredKind& L, const native_draw::Packet& pk, const u
   return true;
 }
 
+// the lowering draw's final support bytes with the instance blocks' kcache entries (as pack_uniforms_into reads them)
+// and the instance register ranges (from the registers R) of now
+void packet_support_bytes(const PacketCapture::Stage& st, const uint32_t* blockAddr, const uint32_t* blockSize,
+                          const uint32_t* r, std::vector<uint8_t>& bytes) {
+  bytes = st.supBytes;
+  for (int k = 0; k < PacketCapture::kBlocks; ++k) {
+    if (st.block[k].remap.empty()) continue;
+    const uint32_t addr = blockAddr[k], size = blockSize[k];
+    const uint8_t* submitted = addr ? gx2::submitted_uniform_block(addr, size) : nullptr;
+    const uint32_t blockBytes = std::min<uint32_t>(size, 0x10000);
+    for (const auto& [dst, src] : st.block[k].remap) {
+      const void* from = submitted && src + 16 <= blockBytes ? static_cast<const void*>(submitted + src) : ppc_ptr(addr + src);
+      if (size_t(dst) + 16 <= bytes.size()) std::memcpy(bytes.data() + dst, from, 16);
+    }
+  }
+  for (const auto& p : st.regRemap)
+    if (size_t(p.dst) + size_t(p.words) * 4 <= bytes.size()) std::memcpy(bytes.data() + p.dst, r + p.reg, p.words * 4);
+}
+
 void packet_compare(const PacketCapture& a, const PacketCapture& b, bool sameVertexInput, bool sameRange, uint32_t site) {
   char what[200];
   auto check = [&](bool same, const char* field) {
@@ -5729,19 +5774,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       for (const auto& blk : st.block) any = any || blk.binding >= 0;
       if (!any) continue;
       UploadSlice sup{};
-      if (patchSupport) {  // the support bytes with the instance blocks' kcache entries, as pack_uniforms_into reads them
+      if (patchSupport) {  // the support bytes with the instance blocks' kcache entries and register values
         static thread_local std::vector<uint8_t> bytes;
-        bytes = st.supBytes;
-        for (int k = 0; k < PacketCapture::kBlocks; ++k) {
-          if (st.block[k].remap.empty()) continue;
-          const uint32_t addr = blockAddr[k], size = blockSize[k];
-          const uint8_t* submitted = addr ? gx2::submitted_uniform_block(addr, size) : nullptr;
-          const uint32_t blockBytes = std::min<uint32_t>(size, 0x10000);
-          for (const auto& [dst, src] : st.block[k].remap) {
-            const void* from = submitted && src + 16 <= blockBytes ? static_cast<const void*>(submitted + src) : ppc_ptr(addr + src);
-            if (size_t(dst) + 16 <= bytes.size()) std::memcpy(bytes.data() + dst, from, 16);
-          }
-        }
+        packet_support_bytes(st, blockAddr, blockSize, r, bytes);
         rprof::UploadKind uploads(rprof::kUpUniformVars);
         sup = snapshot(bytes.data(), bytes.size(), R.properties.limits.minUniformBufferOffsetAlignment);
       }
@@ -5868,6 +5903,7 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     cap.slot[stage][i] = int(pk.block[i] & 0xFFFF);
   }
   cap.hashes = verifyEvery != 0;
+  cap.packet = &pk;
   const uint32_t fsRegs[2] = {r[mmSQ_PGM_START_FS], r[mmSQ_PGM_START_FS + 1]};
   g_packetCapture = &cap;
   try {
@@ -5885,6 +5921,17 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
         const auto& sup = cap.stage[e.stage].supBytes;
         if (size_t(e.dst) + 16 > sup.size() || std::memcmp(sup.data() + e.dst, bytes, 16))
           native_draw::verify_mismatch("batch instance entry differs from the full draw's support uniforms");
+      }
+    for (int s = 0; s < 2; ++s)  // the patched support bytes against the full draw's packing
+      if (L.cap.stage[s].patches()) {
+        static thread_local std::vector<uint8_t> patched;
+        packet_support_bytes(L.cap.stage[s], blockAddr, blockSize, r, patched);
+        if (patched != cap.stage[s].supBytes) {
+          char what[160];
+          std::snprintf(what, sizeof what, "site %u: %s support uniforms differ between the packet and the full draw (frame %llu)",
+                        pk.site, s ? "pixel" : "vertex", (unsigned long long)R.frame);
+          native_draw::verify_mismatch(what);
+        }
       }
     native_draw::count(pk.site, native_draw::kVerified);
   }

@@ -9,9 +9,13 @@
 // uniform locations, pass), not pre-packed register words, so the site need not change when the backend does:
 //   Packet    site, pass, variant, material, program, texture, the instance blocks (stage + uniform location, <= 6),
 //             meshes[kind] (<= 8: primitive, count, index type, index address, as GX2DrawIndexedEx takes them)
+//             and the instance register ranges (<= 6: stage + first register + count, in words as
+//             GX2Set{Vertex,Pixel}UniformReg take them; the UI's per-quad values)
 //   Instance  kind (or "effects only": no draw), the blocks the site bound since its last instance (<= 6:
 //             stage + location, address, size), the vertex input it bound (fetch shader + <= 2 attribute buffers),
-//             and optionally an index range of its own (count and index address; the kind's primitive and index type)
+//             optionally an index range of its own (count and index address; the kind's primitive and index type),
+//             and the register values it set (<= 6 ranges, <= 64 words in all: stage + offset + count + the values,
+//             copied by value at the call, as GX2 copies them), each inside a declared register range
 // Kinds alternate freely (trees: crown, trunk, stump parts). An instance's vertex input is either the one its kind
 // was lowered with (a static mesh) or a stream of its own (a per-draw vertex buffer with the same fetch content and
 // stride), which the replay copies like the full draw does.
@@ -25,8 +29,15 @@
 // clouds) and the Metal renderer take the full draw for every instance.
 //
 // The instance's register effects are applied exactly as the site's skipped GX2 calls would have applied them
-// (GX2Set{Pixel,Vertex,Geometry}UniformBlock, GX2SetFetchShader, GX2SetAttribBuffer, in the site's order), so the
-// register file, the context shadow and the full path see the same state as without packets.
+// (GX2Set{Pixel,Vertex,Geometry}UniformBlock, GX2SetFetchShader, GX2SetAttribBuffer, GX2Set{Vertex,Pixel}UniformReg,
+// in the site's order per kind), so the register file, the context shadow and the full path see the same state as
+// without packets. Register values reach the shaders through the support uniforms (Cemu's uniform-register copy): the
+// lowering draw records which support bytes come from the declared ranges, a replay patches exactly those from the
+// registers (like the instance blocks' kcache entries). A layout projection (aspect.cpp's tagged upload,
+// OP_SET_PROJ_REGS) is never an instance value: the site makes that call itself.
+// A packet defined again with the same content in the same command stream segment is not emitted again (the game
+// thread keys it by list_serial()), and a definition identical to the one held does not end the lowered
+// state.
 //
 // Run-time switches (ON builds): WWHD_NATIVE_DRAW=1 turns packets on (off by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
 // one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE, JPA);
@@ -81,7 +92,7 @@ namespace native_draw {
 enum Site : uint32_t {
     kSiteGrass = 1, kSiteTree = 2, kSiteWood = 3, kSiteFlower = 4, kSiteMagma = 5,
     kSiteStar = 6, kSiteHousi = 7, kSiteWave = 8, kSiteMoya = 9, kSiteVrkumo = 10, kSiteRain = 11, kSiteSea = 12,
-    kSiteLine = 13, kSiteJpa = 14, kSites = 15
+    kSiteLine = 13, kSiteJpa = 14, kSiteLayout = 15, kSites = 16
 };
 // packet ids: 8 per site (by pass, or by pass and variant), the first 8 unused
 constexpr uint32_t kIdsPerSite = 8;
@@ -90,6 +101,8 @@ constexpr uint32_t kMaxKinds = 8;
 constexpr uint32_t kMaxBlocks = 6;         // instance blocks per packet (stage + location)
 constexpr uint32_t kMaxBuffers = 2;        // attribute buffers of an instance's vertex input
 constexpr uint32_t kNoDraw = 0xFFFFFFFFu;  // instance kind: effects only
+constexpr uint32_t kMaxRegRanges = 6;      // register ranges per packet (declared) and per instance (values)
+constexpr uint32_t kMaxRegWords = 64;      // register value words per instance
 
 struct Mesh {
     uint32_t prim = 0, count = 0, indexType = 0, indexAddr = 0;  // as GX2DrawIndexedEx takes them
@@ -105,16 +118,31 @@ struct Packet {
     uint32_t block[kMaxBlocks] = {};  // the instance blocks: block_key(stage (0 vertex, 1 pixel, 2 geometry), location)
     uint32_t meshCount = 0;
     Mesh mesh[kMaxKinds];
+    uint32_t regCount = 0;
+    uint32_t reg[kMaxRegRanges] = {};       // the instance register ranges: reg_key(stage (0 vertex, 1 pixel), offset)
+    uint32_t regWords[kMaxRegRanges] = {};  // their sizes in words (multiples of 4)
 };
 constexpr uint32_t kPacketWords = sizeof(Packet) / 4;
 inline uint32_t block_key(uint32_t stage, uint32_t location) { return stage << 16 | (location & 0xFFFF); }
+inline uint32_t reg_key(uint32_t stage, uint32_t offset) { return stage << 16 | (offset & 0xFFFF); }
+// the first register of a register range (GX2Set{Vertex,Pixel}UniformReg: the ALU constants, + 0x400 for vertex)
+inline uint32_t reg_first(uint32_t key) { return ((key >> 16) == 0 ? 0x400u : 0u) + (key & 0xFFFF); }
+// is [OFFSET, OFFSET + WORDS) of STAGE inside one of the packet's declared register ranges
+inline bool reg_declared(const Packet& pk, uint32_t stage, uint32_t offset, uint32_t words) {
+    for (uint32_t i = 0; i < pk.regCount && i < kMaxRegRanges; ++i)
+        if ((pk.reg[i] >> 16) == stage && offset >= (pk.reg[i] & 0xFFFF) &&
+            offset + words <= (pk.reg[i] & 0xFFFF) + pk.regWords[i])
+            return true;
+    return false;
+}
 
-// OP_PACKET_DRAW payload: id, kind, layout (block count | has-vertex << 8 | buffer count << 12 | has-range << 16), then
-// per block {block key, address, size}, then the vertex input {SQ_PGM_START_FS word 0, word 1, then per buffer
-// {attribute index, address, size, stride}}, then the index range {count, index address}
-constexpr uint32_t kDrawHead = 3, kBlockWords = 3, kVertexHead = 2, kBufferWords = 4, kRangeWords = 2;
-constexpr uint32_t kMaxDrawWords =
-    kDrawHead + kMaxBlocks * kBlockWords + kVertexHead + kMaxBuffers * kBufferWords + kRangeWords;
+// OP_PACKET_DRAW payload: id, kind, layout (block count | has-vertex << 8 | buffer count << 12 | has-range << 16 |
+// register range count << 20), then per block {block key, address, size}, then the vertex input {SQ_PGM_START_FS
+// word 0, word 1, then per buffer {attribute index, address, size, stride}}, then the index range {count, index
+// address}, then per register range {reg_key(stage, offset), count, the values}
+constexpr uint32_t kDrawHead = 3, kBlockWords = 3, kVertexHead = 2, kBufferWords = 4, kRangeWords = 2, kRegHead = 2;
+constexpr uint32_t kMaxDrawWords = kDrawHead + kMaxBlocks * kBlockWords + kVertexHead + kMaxBuffers * kBufferWords +
+                                   kRangeWords + kMaxRegRanges * kRegHead + kMaxRegWords;
 
 // render thread: bumped by every register change and every command other than register writes and packet draws
 // (gx2_core.cpp); a packet's lowered state is valid only while it is unchanged
@@ -133,6 +161,10 @@ extern RegChange g_journal[kJournal];
 extern uint64_t g_journalPos, g_journalBumps;
 inline void journal(uint32_t reg, uint32_t old) { g_journal[g_journalPos++ % kJournal] = {reg, old}; }
 
+// game threads: changes at every display list begin, end and call (gx2_core.cpp), so a site's packet defined in one
+// command stream segment is defined again in the next
+uint64_t list_serial();
+
 const Packet* packet(uint32_t id);  // render thread: the defined packet, or nullptr
 // render thread: OP_PACKET_DEFINE. A definition the same as the packet's current one, word for word, changes nothing:
 // the packet's lowered state stays valid (g_epoch and a collected multi-draw batch stay as they are)
@@ -140,6 +172,11 @@ void define(const uint32_t* p, uint32_t n);
 // render thread: OP_PACKET_DRAW (kind < meshCount) after its register effects were applied: the packet path, or the
 // full draw. RANGE: the instance's own index range (the kind's primitive and index type), or null: the kind's mesh
 void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, const Mesh* range);
+// render thread: is a write of N ALU constants from FIRST (relative to SQ_ALU_CONSTANT0_0: pixel 0..0x3FF, vertex
+// 0x400..0x7FF) inside the declared instance register ranges of the packet whose instance was drawn last. Such a
+// write keeps that packet's lowered state: its next instance patches every declared range from the registers (the
+// material's colours, vertex colours and texture matrices of a layout pane; another draw in between lowers again)
+bool instance_regs(uint32_t first, uint32_t n);
 void frame_end();  // render thread, at each swap: the periodic counter line
 bool batch_on();   // shader-rewrite batches on (packets on, WWHD_NATIVE_DRAW_BATCH not 0)
 bool batch_site_on(uint32_t site);  // the site's kinds may be batched (WWHD_NATIVE_DRAW_BATCH_SITES)
@@ -155,7 +192,7 @@ enum Reason : uint32_t {
     kNotVulkan, kStereo, kFramegen, kGrassDistance, kBackdrop, kClouds, kRefused, kBufferChange,
     kBlockSize, kFetchChange, kStrideChange, kRangeChange, kMdi, kBatched,
     kRestored,  // (not a fallback) the lowered state kept by the register journal (registers changed and set back)
-    kReasons
+    kRegOutside, kReasons
 };
 void count(uint32_t site, Reason r);
 // Multi-draw batches (WWHD_NATIVE_DRAW_MDI=1 with packets on; off by default; Vulkan): consecutive replayable instances

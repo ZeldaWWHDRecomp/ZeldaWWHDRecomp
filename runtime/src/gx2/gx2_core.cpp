@@ -215,7 +215,8 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
         uint32* d = &g_regs[first];
         if (memcmp(d, v, n * 4) != 0) {
 #ifdef WWHD_NATIVE_DRAW
-            ++native_draw::g_epoch;
+            // (inside the declared instance register ranges of the packet drawn last: its next instance patches them)
+            if (!native_draw::instance_regs(first - mmSQ_ALU_CONSTANT0_0, n)) ++native_draw::g_epoch;
 #endif
             g_dirty_groups |= 1u << kSgAluConst;
             if (g_classify) rprof::g_reg_dirty |= 1;
@@ -986,10 +987,12 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         const Packet* pk = n >= kDrawHead ? packet(p[0]) : nullptr;
         if (!pk) break;
         const uint32 kind = p[1], blocks = p[2] & 0xFF, hasVertex = (p[2] >> 8) & 1, buffers = (p[2] >> 12) & 0xF,
-                     hasRange = (p[2] >> 16) & 1;
-        if (blocks > kMaxBlocks || buffers > kMaxBuffers ||
-            n != kDrawHead + blocks * kBlockWords + (hasVertex ? kVertexHead + buffers * kBufferWords : 0) +
-                     (hasRange ? kRangeWords : 0) ||
+                     hasRange = (p[2] >> 16) & 1, regRanges = (p[2] >> 20) & 0xF;
+        const uint32 fixedWords = kDrawHead + blocks * kBlockWords + (hasVertex ? kVertexHead + buffers * kBufferWords : 0) +
+                                  (hasRange ? kRangeWords : 0);
+        uint32 regEnd = fixedWords;  // the register ranges: each {key, count, values}
+        for (uint32 i = 0; i < regRanges && regEnd + kRegHead <= n; ++i) regEnd += kRegHead + p[regEnd + 1];
+        if (blocks > kMaxBlocks || buffers > kMaxBuffers || regRanges > kMaxRegRanges || n != regEnd ||
             (kind != kNoDraw && kind >= pk->meshCount))
             break;
         const uint64_t epoch = g_epoch, bumps = g_journalBumps;
@@ -1010,8 +1013,25 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
                 apply_regs(mmSQ_VTX_ATTRIBUTE_BLOCK_START + q[0] * 7, w, 7);
             }
         }
-        g_epoch = epoch;
-        g_journalBumps = bumps;  // (their writes stay in the journal)
+        if (hasRange) q += kRangeWords;
+        // GX2Set{Vertex,Pixel}UniformReg (gx2_resources.cpp uniform_regs: the ALU constants, + 0x400 for vertex; the
+        // count was made a multiple of 4 and clamped by the site); a range outside the packet's declared ones ends the
+        // lowered state like any register write
+        bool outside = false;
+        for (uint32 i = 0; i < regRanges; ++i) {
+            const uint32 stage = q[0] >> 16, offset = q[0] & 0xFFFF, words = q[1];
+            if (stage < 2 && offset + words <= 0x400) {
+                if (!reg_declared(*pk, stage, offset, words)) outside = true;
+                apply_regs(mmSQ_ALU_CONSTANT0_0 + reg_first(q[0]), q + kRegHead, words);
+            }
+            q += kRegHead + words;
+        }
+        if (outside) count(pk->site, kRegOutside);
+        else {
+            g_epoch = epoch;
+            g_journalBumps = bumps;  // (their writes stay in the journal)
+        }
+        q = p + fixedWords - (hasRange ? kRangeWords : 0);
         Mesh range;
         if (hasRange && kind != kNoDraw) range = {pk->mesh[kind].prim, q[0], pk->mesh[kind].indexType, q[1]};
         if (kind != kNoDraw) draw(g_regs, *pk, kind, hasRange ? &range : nullptr);
@@ -1381,7 +1401,15 @@ HLE(gx2, GX2GetContextStateDisplayList) {
 }
 
 // ---------------------------------------------------------------- display lists
+#ifdef WWHD_NATIVE_DRAW
+static std::atomic<uint64_t> g_native_list_serial{1};
+uint64_t native_draw::list_serial() { return g_native_list_serial.load(std::memory_order_relaxed); }
+#define NATIVE_LIST_SERIAL() g_native_list_serial.fetch_add(1, std::memory_order_relaxed)
+#else
+#define NATIVE_LIST_SERIAL()
+#endif
 HLE(gx2, GX2BeginDisplayListEx) {
+    NATIVE_LIST_SERIAL();
     if (Recording* rec = claim_rec()) {
         rec->start = rec->pos = arg(c, 0);
         rec->end = arg(c, 0) + arg(c, 1);
@@ -1391,6 +1419,7 @@ HLE(gx2, GX2BeginDisplayListEx) {
     }
 }
 HLE(gx2, GX2EndDisplayList) {
+    NATIVE_LIST_SERIAL();
     uint32 size = 0;
     if (Recording* rec = recording()) {
         size = rec->pos - rec->start;
@@ -1419,6 +1448,7 @@ HLE(gx2, GX2GetCurrentDisplayList) {
 // A list called while another is recorded runs with that one (its blocks are noted for it); a call
 // from the command stream takes the blocks of the list as they are now with it (submitted_uniforms.h).
 static void call_display_list(uint32 list, uint32 size) {
+    NATIVE_LIST_SERIAL();
     if (Recording* rec = recording(); rec && rec->start) {
         if (submitted_uniforms_on()) g_rec_calls[rec - g_recs].push_back(list);
         emit(OP_CALL, {list, size});

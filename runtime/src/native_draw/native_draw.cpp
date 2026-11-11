@@ -9,6 +9,7 @@
 #include "mods/mod_actor_shadow_proof.h"
 #include "gfx/renderer.h"
 #include "gfx/stereo.h"
+#include "aspect.h"
 #ifdef WWHD_HAS_VULKAN
 #include "gfx/vulkan/api.h"
 #endif
@@ -37,7 +38,8 @@ static int env_int(const char* name, int fallback) {
     return e && *e ? std::atoi(e) : fallback;
 }
 static const char* const kSiteNames[kSites] = {"", "grass", "tree", "wood", "flower", "magma",
-                                               "star", "housi", "wave", "moya", "vrkumo", "rain", "sea", "line", "jpa"};
+                                               "star", "housi", "wave", "moya", "vrkumo", "rain", "sea", "line", "jpa",
+                                               "layout"};
 static bool master_on() {
     static const bool on = env_int("WWHD_NATIVE_DRAW", 0) != 0;
     return on;
@@ -133,6 +135,11 @@ struct SiteState {
     bool vertex = false;
     uint32_t buffers = 0;
     uint32_t vertexWords[kVertexHead + kMaxBuffers * kBufferWords];
+    uint32_t regRanges = 0, regUsed = 0;  // the register values: ranges, words used in regWords (with their heads)
+    uint32_t regWords[kMaxRegRanges * kRegHead + kMaxRegWords];
+    // the packet last emitted (OP_PACKET_DEFINE) and the command stream segment it went into (list_serial)
+    Packet emitted;
+    uint64_t emittedSerial = 0;
 };
 static thread_local SiteState t_sites[kSites];
 static SiteState* site_state(uint32_t site) { return site < kSites ? &t_sites[site] : nullptr; }
@@ -142,7 +149,8 @@ static void emit_instance(SiteState& s, uint32_t kind, const uint32_t* range = n
     uint32_t n = kDrawHead + s.blocks * kBlockWords;
     s.words[0] = s.pk.id;
     s.words[1] = kind;
-    s.words[2] = s.blocks | uint32_t(s.vertex) << 8 | s.buffers << 12 | uint32_t(range != nullptr) << 16;
+    s.words[2] = s.blocks | uint32_t(s.vertex) << 8 | s.buffers << 12 | uint32_t(range != nullptr) << 16 |
+                 s.regRanges << 20;
     if (s.vertex) {
         const uint32_t v = kVertexHead + s.buffers * kBufferWords;
         std::memcpy(s.words + n, s.vertexWords, v * 4);
@@ -152,6 +160,10 @@ static void emit_instance(SiteState& s, uint32_t kind, const uint32_t* range = n
         s.words[n++] = range[0];
         s.words[n++] = range[1];
     }
+    if (s.regRanges) {
+        std::memcpy(s.words + n, s.regWords, s.regUsed * 4);
+        n += s.regUsed;
+    }
     gx2::emit(gx2::OP_PACKET_DRAW, s.words, n);
     if (kind != kNoDraw)  // (coverage: the instance's site in the "lr" field; its mesh or own index range)
         NATIVE_COVERAGE(kPacket, s.pk.site, range ? range[0] : s.pk.mesh[kind].count,
@@ -159,9 +171,10 @@ static void emit_instance(SiteState& s, uint32_t kind, const uint32_t* range = n
     s.blocks = 0;
     s.vertex = false;
     s.buffers = 0;
+    s.regRanges = s.regUsed = 0;
 }
 static void flush(SiteState& s) {
-    if (s.defined && (s.blocks || s.vertex)) emit_instance(s, kNoDraw);
+    if (s.defined && (s.blocks || s.vertex || s.regRanges)) emit_instance(s, kNoDraw);
 }
 static bool declared(const Packet& pk, uint32_t key) {
     for (uint32_t i = 0; i < pk.blockCount; ++i)
@@ -189,6 +202,7 @@ extern "C" unsigned wwhd_native_begin(unsigned site, unsigned pass, unsigned var
     s->open = s->defined = false;
     s->blocks = s->buffers = 0;
     s->vertex = false;
+    s->regRanges = s->regUsed = 0;
     const uint32_t slot = variant * 8 + pass;
     if (!site_on(site) || pass >= 8 || slot >= kIdsPerSite) return 0;
     Packet& pk = s->pk;
@@ -254,8 +268,29 @@ extern "C" unsigned wwhd_native_commit(unsigned site) {
     SiteState* s = site_state(site);
     if (!s || !s->open || !s->pk.meshCount) return s ? s->open = false, 0 : 0;
     static_assert(sizeof(Packet) == kPacketWords * 4);
-    gx2::emit(gx2::OP_PACKET_DEFINE, reinterpret_cast<const uint32_t*>(&s->pk), kPacketWords);
+    // (the same definition in the same command stream segment: already held by the render thread when the instances
+    // come)
+    const uint64_t serial = list_serial();
+    if (serial != s->emittedSerial || std::memcmp(&s->emitted, &s->pk, sizeof(Packet)) != 0) {
+        gx2::emit(gx2::OP_PACKET_DEFINE, reinterpret_cast<const uint32_t*>(&s->pk), kPacketWords);
+        s->emitted = s->pk;
+        s->emittedSerial = serial;
+    }
     s->defined = true;
+    return 1;
+}
+// an instance register range (before the commit): GX2Set{Vertex,Pixel}UniformReg(OFFSET, COUNT, ...) calls of STAGE
+// (0 vertex, 1 pixel) inside it become instance values. Zero: not declared (an absent location, or too many ranges)
+extern "C" unsigned wwhd_native_declare_regs(unsigned site, unsigned stage, unsigned offset, unsigned count) {
+    SiteState* s = site_state(site);
+    if (!s || !s->open || s->defined || stage > 1 || (offset & 0x8000)) return 0;
+    count &= ~3u;  // (as the GX2 call: uniform_regs)
+    if (offset >= 0x400 || !count) return 0;
+    count = std::min<uint32_t>(count, 0x400 - offset);
+    if (reg_declared(s->pk, stage, offset, count)) return 1;
+    if (s->pk.regCount == kMaxRegRanges) return 0;
+    s->pk.reg[s->pk.regCount] = reg_key(stage, offset);
+    s->pk.regWords[s->pk.regCount++] = count;
     return 1;
 }
 // where the site would call PAIR's bind (vtable +0x2C) with LOCATIONS: nonzero, the bind is the instance's (its
@@ -288,6 +323,31 @@ extern "C" unsigned wwhd_native_block(unsigned site, unsigned stage, unsigned lo
         return 0;
     }
     add_block(*s, key, data, size);
+    return 1;
+}
+// where the site would call GX2Set{Vertex,Pixel}UniformReg(OFFSET, COUNT, VALUES) (STAGE 0 vertex, 1 pixel): nonzero,
+// the values (read now, by value, as GX2 reads them) are the instance's; zero, the site makes the call itself (after
+// the pending effects): outside the declared ranges, or a layout projection (aspect.cpp tags that upload)
+extern "C" unsigned wwhd_native_regs(unsigned site, unsigned stage, unsigned offset, unsigned count, unsigned values) {
+    SiteState* s = site_state(site);
+    if (!s || !s->defined) return 0;
+    if (offset & 0x8000) return 1;  // (GX2: no effect)
+    count &= ~3u;
+    if (offset + count > 0x400) count = 0x400 - std::min<uint32_t>(offset, 0x400);
+    if (stage > 1 || count > kMaxRegWords || (stage == 0 && count == 16 && aspect::tagged_projection()) ||
+        !reg_declared(s->pk, stage, offset, count)) {
+        flush(*s);
+        return 0;
+    }
+    if (!count) return 1;
+    if (s->regRanges == kMaxRegRanges || s->regUsed - s->regRanges * kRegHead + count > kMaxRegWords)
+        flush(*s);  // (the pending effects as an effects-only instance first)
+    uint32_t* w = s->regWords + s->regUsed;
+    w[0] = reg_key(stage, offset);
+    w[1] = count;
+    for (uint32_t i = 0; i < count; ++i) w[kRegHead + i] = ld32(values + 4 * i);
+    s->regUsed += kRegHead + count;
+    ++s->regRanges;
     return 1;
 }
 // where the site would call agl::VertexInputSet::bind (027BFE5C) on SHAPE: GX2SetFetchShader(+0xCC), then
@@ -384,7 +444,7 @@ const Packet* packet(uint32_t id) { return id < kMaxPackets && g_defined[id] ? &
 
 void define(const uint32_t* p, uint32_t n) {
     if (n != kPacketWords || p[0] >= kMaxPackets) return;
-    if (g_defined[p[0]] && std::memcmp(&g_packets[p[0]], p, sizeof(Packet)) == 0) return;  // (unchanged)
+    if (g_defined[p[0]] && std::memcmp(&g_packets[p[0]], p, sizeof(Packet)) == 0) return;  // (unchanged: no new state)
     flush_mdi();
     flush_batch();
     ++g_epoch;
@@ -460,10 +520,20 @@ static void note_run(uint32_t site, const Packet& pk, uint32_t kind) {
     g_lastKind = kind;
 }
 
+static uint32_t g_drawnId = ~0u;  // the packet whose instance was drawn last
+bool instance_regs(uint32_t first, uint32_t n) {
+    if (g_drawnId >= kMaxPackets || !g_defined[g_drawnId]) return false;
+    const Packet& pk = g_packets[g_drawnId];
+    if (!pk.regCount || first >= 0x800) return false;
+    const uint32_t stage = first >= 0x400 ? 0 : 1, offset = first & 0x3FF;
+    return offset + n <= 0x400 && reg_declared(pk, stage, offset, n);
+}
+
 void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, const Mesh* range) {
     const uint32_t site = pk.site < kSites ? pk.site : 0;
     ++g_instances[site];
     note_run(site, pk, kind);
+    g_drawnId = pk.id;
     const Mesh& m = range ? *range : pk.mesh[kind];
     Reason why = kNotVulkan;
 #ifdef WWHD_HAS_VULKAN
@@ -495,7 +565,7 @@ void frame_end() {
                                                 "grass distance", "backdrop", "clouds", "refused", "buffer change",
                                                 "block size", "fetch change", "stride change", "range change",
                                                 "in multi-draw batches", "in shader-rewrite batches",
-                                                "kept by the register journal"};
+                                                "kept by the register journal", "register values outside the packet"};
     for (uint32_t site = 0; site < kSites; ++site) {
         if (!g_instances[site]) continue;
         char buf[700];
