@@ -16,7 +16,9 @@
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
+#include <cctype>
 #include <cstring>
+#include <string>
 
 namespace gfxvk {
 bool gamepad_backdrop_capture_active();
@@ -55,6 +57,40 @@ static bool site_on(uint32_t site) {
             if (master_on()) k += std::snprintf(line + k, sizeof line - k, " %s %s", kSiteNames[s], v[s] ? "on" : "off");
         }
         LOG("%s", line);
+        return v;
+    }();
+    return site < kSites && on[site];
+}
+// shader-rewrite batches (native_draw.h): on by default in this build (cmake WWHD_NATIVE_DRAW_BATCH sets
+// WWHD_NATIVE_DRAW_BATCH_DEFAULT=1), WWHD_NATIVE_DRAW_BATCH=0/1 overrides
+#ifndef WWHD_NATIVE_DRAW_BATCH_DEFAULT
+#define WWHD_NATIVE_DRAW_BATCH_DEFAULT 0
+#endif
+bool batch_on() {
+    static const bool on = [] {
+        const bool v = master_on() && env_int("WWHD_NATIVE_DRAW_BATCH", WWHD_NATIVE_DRAW_BATCH_DEFAULT) != 0;
+        if (master_on()) LOG("[native-draw] shader-rewrite batches %s (WWHD_NATIVE_DRAW_BATCH=%d)", v ? "on" : "off", v ? 1 : 0);
+        return v;
+    }();
+    return on;
+}
+// the sites whose kinds have the LOD-0 proof (native_draw.h): WWHD_NATIVE_DRAW_BATCH_SITES, a comma list of site
+// names (default "grass,flower"; any case)
+bool batch_site_on(uint32_t site) {
+    static const std::array<bool, kSites> on = [] {
+        std::array<bool, kSites> v{};
+        const char* e = std::getenv("WWHD_NATIVE_DRAW_BATCH_SITES");
+        std::string list = e ? e : "grass,flower";
+        for (auto& c : list) c = char(std::tolower(uint8_t(c)));
+        std::string names;
+        for (uint32_t s = 1; s < kSites; ++s) {
+            const std::string n = kSiteNames[s];
+            for (size_t at = list.find(n); at != std::string::npos; at = list.find(n, at + 1))
+                if ((at == 0 || list[at - 1] == ',') && (at + n.size() == list.size() || list[at + n.size()] == ','))
+                    v[s] = true;
+            if (v[s]) names += (names.empty() ? "" : ",") + n;
+        }
+        if (batch_on()) LOG("[native-draw] shader-rewrite batch sites: %s", names.empty() ? "none" : names.c_str());
         return v;
     }();
     return site < kSites && on[site];
@@ -363,7 +399,21 @@ void count_mdi(uint32_t site, uint32_t instances, bool indirect) {
     g_counts[site][kMdi] += instances;
     g_mdiMax[site] = std::max<uint64_t>(g_mdiMax[site], instances);
 }
+static uint64_t g_batchDraws[kSites], g_batchMax[kSites];
 void count(uint32_t site, Reason r) { ++g_counts[site < kSites ? site : 0][r]; }
+bool g_batchPending = false;
+void flush_batch() {
+#ifdef WWHD_HAS_VULKAN
+    if (g_batchPending) gfxvk::packet_flush();
+#endif
+    g_batchPending = false;
+}
+void count_batch(uint32_t site, uint32_t instances) {
+    site = site < kSites ? site : 0;
+    ++g_batchDraws[site];
+    g_counts[site][kBatched] += instances;
+    g_batchMax[site] = std::max<uint64_t>(g_batchMax[site], instances);
+}
 void verify_mismatch(const char* what) {
     if (g_mismatches++ < 32) LOG("[native-draw] VERIFY MISMATCH: %s", what);
 }
@@ -425,7 +475,7 @@ void frame_end() {
     static const char* const names[kReasons] = {"replayed", "lowered", "verified", "not Vulkan", "stereo", "framegen",
                                                 "grass distance", "backdrop", "clouds", "refused", "buffer change",
                                                 "block size", "fetch change", "stride change", "range change",
-                                                "in multi-draw batches"};
+                                                "in multi-draw batches", "in shader-rewrite batches"};
     for (uint32_t site = 0; site < kSites; ++site) {
         if (!g_instances[site]) continue;
         char buf[700];
@@ -440,6 +490,10 @@ void frame_end() {
             k += std::snprintf(buf + k, sizeof buf - k, "; multi-draw batches %.1f/frame (%.1f indirect), %.1f instances each (max %llu)",
                                g_mdiDraws[site] / 300.0, g_mdiIndirect[site] / 300.0,
                                double(g_counts[site][kMdi]) / double(g_mdiDraws[site]), (unsigned long long)g_mdiMax[site]);
+        if (g_batchDraws[site])
+            k += std::snprintf(buf + k, sizeof buf - k, "; shader-rewrite batches %.1f/frame, %.1f instances each (max %llu)",
+                               g_batchDraws[site] / 300.0, double(g_counts[site][kBatched]) / double(g_batchDraws[site]),
+                               (unsigned long long)g_batchMax[site]);
         if (verify_every())
             std::snprintf(buf + k, sizeof buf - k, ", verify mismatches %llu", (unsigned long long)g_mismatches);
         LOG("%s", buf);
@@ -451,6 +505,8 @@ void frame_end() {
     std::memset(g_mdiDraws, 0, sizeof g_mdiDraws);
     std::memset(g_mdiIndirect, 0, sizeof g_mdiIndirect);
     std::memset(g_mdiMax, 0, sizeof g_mdiMax);
+    std::memset(g_batchDraws, 0, sizeof g_batchDraws);
+    std::memset(g_batchMax, 0, sizeof g_batchMax);
 }
 
 }  // namespace native_draw

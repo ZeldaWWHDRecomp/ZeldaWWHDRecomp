@@ -165,6 +165,9 @@ function(wwhd_decomp_configure)
   # GABI_NATIVE_DRAW) instead of register writes plus a draw. Prototype: OFF by default, and OFF builds exactly as
   # before. Run-time switch of an ON build: WWHD_NATIVE_DRAW=1 (off unless set); see native_draw.h
   option(WWHD_NATIVE_DRAW "decomp build, fast mode: native draw packets at the grass draw site (prototype)" OFF)
+  # native draw packets, shader-rewrite batches (native_draw.h): the run-time default of WWHD_NATIVE_DRAW_BATCH in an
+  # ON build (packets on). ON: batches unless WWHD_NATIVE_DRAW_BATCH=0; OFF: only with WWHD_NATIVE_DRAW_BATCH=1
+  option(WWHD_NATIVE_DRAW_BATCH "decomp build, fast mode: native draw packets' shader-rewrite batches on by default" ON)
   # fast mode: AutoFrame's frame of a function that is not frame-exact (the place-only "nostore" frame: FrameCtx fields,
   # no prologue stores) set inline in the body instead of in the out-of-line AutoFrame::enter (gabi.h GABI_AF_INLINE);
   # frame-exact functions keep enter(). The same FrameCtx; no run-time switch (OFF: as before)
@@ -801,6 +804,11 @@ function(wwhd_decomp_link target)
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/backend.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/shaders.cpp"
                  APPEND PROPERTY COMPILE_DEFINITIONS WWHD_NATIVE_DRAW=1)
+    if(WWHD_NATIVE_DRAW_BATCH)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp"
+                   "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/shaders.cpp"
+                   APPEND PROPERTY COMPILE_DEFINITIONS WWHD_NATIVE_DRAW_BATCH_DEFAULT=1)
+    endif()
     message(STATUS "decomp build, fast mode: native draw packets (grass) compiled in; run-time switch WWHD_NATIVE_DRAW=1")
   endif()
   if(WWHD_DECOMP_EDGE_LCALL)  # the runtime's edge entry (decomp.cpp only)

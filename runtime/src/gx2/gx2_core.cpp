@@ -475,6 +475,7 @@ static void render_thread_main() {
                 execute(g_q_work.data(), (uint32)g_q_work.size());
 #ifdef WWHD_NATIVE_DRAW
                 native_draw::flush_mdi();  // (the chunk's collected multi-draw batch: nothing outside the commands records it)
+                native_draw::flush_batch();  // (the chunk's collected shader-rewrite batch: nothing outside the commands records it)
 #endif
             });
         }
@@ -767,8 +768,10 @@ static void execute_op(Op op, const uint32* p, uint32 n);
 static void execute_one(Op op, const uint32* p, uint32 n) {
     rprof::Op kind;
 #ifdef WWHD_NATIVE_DRAW
-    // a collected multi-draw batch is drawn before any other command but register writes (native_draw.h)
+    // a collected multi-draw batch is drawn before any other command but register writes; a collected shader-rewrite
+    // batch before any other command (native_draw.h)
     if (native_draw::g_mdiPending && op != OP_PACKET_DRAW && op != OP_SET_REGS && op != OP_NOP) native_draw::flush_mdi();
+    if (native_draw::g_batchPending && op != OP_PACKET_DRAW) native_draw::flush_batch();
 #endif
     switch (op) {
     case OP_DEBUG_CONTEXT: g_draw_context.store(n ? p[0] : 0, std::memory_order_relaxed); return;

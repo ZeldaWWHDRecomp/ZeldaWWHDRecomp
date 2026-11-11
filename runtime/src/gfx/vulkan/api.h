@@ -12,6 +12,7 @@ namespace gfxvk {
 // replayed through the packet's lowered state, or drawn the full way (which lowers the packet)
 void packet_draw(const uint32_t* regs, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range);
 void packet_mdi_flush();  // the collected multi-draw batch (native_draw::flush_mdi)
+void packet_flush();  // the collected shader-rewrite batch (native_draw::flush_batch)
 void peek_z(const uint32_t*, uint32_t);
 void peek_retire();  // depth peeks: retire the submission of the latest peek copy now (backend.cpp)
 void init();                     // SDL host: windows + device; AppKit host: see init_appkit

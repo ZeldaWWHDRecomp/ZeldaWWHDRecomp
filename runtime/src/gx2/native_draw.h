@@ -32,6 +32,24 @@
 // one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE); WWHD_NATIVE_DRAW_VERIFY=N draws
 // every Nth replayable instance through the full path and compares what it resolved with the packet (mismatches
 // logged, "[native-draw] VERIFY MISMATCH").
+//
+// Shader-rewrite batches (WWHD_NATIVE_DRAW_BATCH; Vulkan; on by default in this build (cmake WWHD_NATIVE_DRAW_BATCH,
+// ON), WWHD_NATIVE_DRAW_BATCH=0 turns them off): the replayable instances of a kind with the kind's own vertex input and
+// index range (a static mesh whose instances differ only in their instance blocks) are not drawn one by one but
+// collected and drawn as one instanced draw with a native shader pair: the kind's translated vertex (and pixel)
+// program, rewritten so that the instance blocks' entries it reads come from a per-instance vertex stream (each
+// instance's 16-byte block entries, raw as the support uniforms copy them) instead of the support uniforms. Every other
+// operation of the program stays as translated (same operations, order and precision). The collected batch is drawn
+// before any other command, at the end of each command chunk, and when an instance of another packet or kind comes. A
+// kind whose program the rewrite cannot take (an instance block read as a buffer, instance-rate vertex input, its
+// pipeline variant not compiled yet) replays its instances one by one.
+// Not bit-exact: on GPUs whose automatic texture-level (mip LOD) choice depends on how the draws are split (Apple),
+// one instanced draw can pick another level than one draw per instance at some pixels. That difference is accepted
+// per kind, and only where it is the only one: a site is enabled (batch_site_on; WWHD_NATIVE_DRAW_BATCH_SITES lists
+// them, default GRASS,FLOWER) only after its gate proved, for each of its kinds, that with every texture read at
+// explicit LOD 0 the batched picture is bit-identical to the unbatched one. Every other kind refuses (logged once).
+// Multi-draw batches (below) are exact and take precedence: an instance with a stream or an index range of its own
+// never joins a shader-rewrite batch.
 #pragma once
 #ifdef WWHD_NATIVE_DRAW
 #include <cstdint>
@@ -87,12 +105,18 @@ void define(const uint32_t* p, uint32_t n);  // render thread: OP_PACKET_DEFINE
 // full draw. RANGE: the instance's own index range (the kind's primitive and index type), or null: the kind's mesh
 void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, const Mesh* range);
 void frame_end();  // render thread, at each swap: the periodic counter line
+bool batch_on();   // shader-rewrite batches on (packets on, WWHD_NATIVE_DRAW_BATCH not 0)
+bool batch_site_on(uint32_t site);  // the site's kinds may be batched (WWHD_NATIVE_DRAW_BATCH_SITES)
+// render thread: an instanced batch is collected (gfxvk); flush_batch draws it now
+extern bool g_batchPending;
+void flush_batch();
+void count_batch(uint32_t site, uint32_t instances);  // one batch draw of INSTANCES instances
 
 // fallback / lowering reasons, counted per frame and site
 enum Reason : uint32_t {
     kReplayed, kLowered, kVerified,
     kNotVulkan, kStereo, kFramegen, kGrassDistance, kBackdrop, kClouds, kRefused, kBufferChange,
-    kBlockSize, kFetchChange, kStrideChange, kRangeChange, kMdi, kReasons
+    kBlockSize, kFetchChange, kStrideChange, kRangeChange, kMdi, kBatched, kReasons
 };
 void count(uint32_t site, Reason r);
 // Multi-draw batches (WWHD_NATIVE_DRAW_MDI=1 with packets on; off by default; Vulkan): consecutive replayable instances
