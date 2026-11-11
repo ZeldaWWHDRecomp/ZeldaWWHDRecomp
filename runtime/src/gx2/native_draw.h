@@ -45,7 +45,8 @@
 // TEXT, POST, SHADOW, AGLQUAD, AGLPAIR, SUN); WWHD_NATIVE_DRAW_JOURNAL=0 turns the register journal's check off
 // (draw.cpp); WWHD_NATIVE_DRAW_VERIFY=N draws
 // every Nth replayable instance through the full path and compares what it resolved with the packet (mismatches
-// logged, "[native-draw] VERIFY MISMATCH").
+// logged, "[native-draw] VERIFY MISMATCH"); WWHD_NATIVE_DRAW_J3D=1 turns the J3D material cache on (off by default,
+// below).
 //
 // Shader-rewrite batches (WWHD_NATIVE_DRAW_BATCH; Vulkan; on by default in this build (cmake WWHD_NATIVE_DRAW_BATCH,
 // ON), WWHD_NATIVE_DRAW_BATCH=0 turns them off): the replayable instances of a kind with the kind's own vertex input and
