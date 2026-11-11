@@ -279,6 +279,22 @@ extern "C" unsigned wwhd_native_draw(unsigned site, unsigned kind) {
     emit_instance(*s, kind);
     return 1;
 }
+// a site's experiment switch: option 1 = WWHD_NATIVE_DRAW_<SITE>_SPLIT (draws regrouped by mesh kind; 0 unless set)
+extern "C" unsigned wwhd_native_option(unsigned site, unsigned option) {
+    static std::array<int, kSites> split = [] {
+        std::array<int, kSites> v{};
+        for (uint32_t s = 1; s < kSites; ++s) {
+            char name[64] = "WWHD_NATIVE_DRAW_";
+            size_t n = std::strlen(name);
+            for (const char* c = kSiteNames[s]; *c && n < 40; ++c) name[n++] = char(*c - 'a' + 'A');
+            std::memcpy(name + n, "_SPLIT", 7);
+            v[s] = env_int(name, 0);
+            if (v[s]) LOG("[native-draw] %s: draws regrouped by mesh kind (%s=%d, experiment)", kSiteNames[s], name, v[s]);
+        }
+        return v;
+    }();
+    return option == 1 && site < kSites && site_on(site) ? unsigned(split[site] != 0) : 0;
+}
 // the site's pass ends (or it leaves the packet): the pending effects
 extern "C" void wwhd_native_end(unsigned site) {
     SiteState* s = site_state(site);
@@ -307,9 +323,33 @@ void verify_mismatch(const char* what) {
     if (g_mismatches++ < 32) LOG("[native-draw] VERIFY MISMATCH: %s", what);
 }
 
+// run lengths (what batching could merge): an in-order run is consecutive instances of one packet and kind with
+// nothing but their own effects in between (g_epoch unchanged: any other command or register change ends it, e.g. a
+// site's own sampler or room-block bind); a chain is the same without the kind, its kind-split draws the number of
+// distinct kinds in it (one draw per kind if a chain's instances were regrouped by kind)
+static uint64_t g_runs[kSites], g_chainKinds[kSites];
+static uint32_t g_lastId = ~0u, g_lastKind = ~0u, g_chainMask = 0, g_chainSite = 0;
+static uint64_t g_lastEpoch = 0;
+static void chain_end() {
+    g_chainKinds[g_chainSite] += uint64_t(__builtin_popcount(g_chainMask));
+    g_chainMask = 0;
+}
+static void note_run(uint32_t site, const Packet& pk, uint32_t kind) {
+    const bool chain = pk.id == g_lastId && g_epoch == g_lastEpoch;
+    if (!chain) {
+        chain_end();
+        g_chainSite = site;
+    }
+    if (!chain || kind != g_lastKind) ++g_runs[site];
+    g_chainMask |= 1u << (kind & 31);
+    g_lastId = pk.id;
+    g_lastKind = kind;
+}
+
 void draw(const uint32_t* regs, const Packet& pk, uint32_t kind) {
     const uint32_t site = pk.site < kSites ? pk.site : 0;
     ++g_instances[site];
+    note_run(site, pk, kind);
     const Mesh& m = pk.mesh[kind];
     Reason why = kNotVulkan;
 #ifdef WWHD_HAS_VULKAN
@@ -321,18 +361,22 @@ void draw(const uint32_t* regs, const Packet& pk, uint32_t kind) {
         else if (cloud_proto::g_active_seq) why = kClouds;
         else {
             gfxvk::packet_draw(regs, pk, kind);  // replayed, or drawn the full way (counted there)
+            g_lastEpoch = g_epoch;
             return;
         }
     }
 #endif
     count(site, why);
     render::draw(regs, m.prim, m.count, m.indexType, m.indexAddr, 0, 1);
+    g_lastEpoch = g_epoch;
 }
 
 // every 300 frames, per site with instances: instances, replayed, lowered and every fallback reason per frame
 void frame_end() {
     ++g_frames;
     if (g_frames % 300) return;
+    chain_end();
+    g_lastId = ~0u;
     static const char* const names[kReasons] = {"replayed", "lowered", "verified", "not Vulkan", "stereo", "framegen",
                                                 "grass distance", "backdrop", "clouds", "refused", "buffer change",
                                                 "block size", "fetch change", "stride change"};
@@ -344,11 +388,15 @@ void frame_end() {
         for (uint32_t r = 0; r < kReasons; ++r)
             if (g_counts[site][r])
                 k += std::snprintf(buf + k, sizeof buf - k, ", %s %.1f", names[r], g_counts[site][r] / 300.0);
+        k += std::snprintf(buf + k, sizeof buf - k, "; runs %.1f (in order, same kind), kind-split draws %.1f",
+                           g_runs[site] / 300.0, g_chainKinds[site] / 300.0);
         if (verify_every())
             std::snprintf(buf + k, sizeof buf - k, ", verify mismatches %llu", (unsigned long long)g_mismatches);
         LOG("%s", buf);
     }
     std::memset(g_instances, 0, sizeof g_instances);
+    std::memset(g_runs, 0, sizeof g_runs);
+    std::memset(g_chainKinds, 0, sizeof g_chainKinds);
     std::memset(g_counts, 0, sizeof g_counts);
 }
 
