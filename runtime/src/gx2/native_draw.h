@@ -12,7 +12,8 @@
 //             and the instance register ranges (<= 6: stage + first register + count, in words as
 //             GX2Set{Vertex,Pixel}UniformReg take them; the UI's per-quad values)
 //   Instance  kind (or "effects only": no draw), the blocks the site bound since its last instance (<= 6:
-//             stage + location, address, size), the vertex input it bound (fetch shader + <= 2 attribute buffers),
+//             stage + location, address, size), the vertex input it bound (fetch shader + <= 2 attribute buffers, or
+//             the attribute buffers alone: the text's per-group stream, the fetch shader left as it is),
 //             optionally an index range of its own (count and index address; the kind's primitive and index type),
 //             and the register values it set (<= 6 ranges, <= 64 words in all: stage + offset + count + the values,
 //             copied by value at the call, as GX2 copies them), each inside a declared register range
@@ -41,8 +42,8 @@
 //
 // Run-time switches (ON builds): WWHD_NATIVE_DRAW=1 turns packets on (off by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
 // one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE, JPA, LAYOUT,
-// POST, SHADOW, AGLQUAD, AGLPAIR, SUN); WWHD_NATIVE_DRAW_JOURNAL=0 turns the register journal's check off (draw.cpp);
-// WWHD_NATIVE_DRAW_VERIFY=N draws
+// TEXT, POST, SHADOW, AGLQUAD, AGLPAIR, SUN); WWHD_NATIVE_DRAW_JOURNAL=0 turns the register journal's check off
+// (draw.cpp); WWHD_NATIVE_DRAW_VERIFY=N draws
 // every Nth replayable instance through the full path and compares what it resolved with the packet (mismatches
 // logged, "[native-draw] VERIFY MISMATCH").
 //
@@ -93,7 +94,7 @@ namespace native_draw {
 enum Site : uint32_t {
     kSiteGrass = 1, kSiteTree = 2, kSiteWood = 3, kSiteFlower = 4, kSiteMagma = 5,
     kSiteStar = 6, kSiteHousi = 7, kSiteWave = 8, kSiteMoya = 9, kSiteVrkumo = 10, kSiteRain = 11, kSiteSea = 12,
-    kSiteLine = 13, kSiteJpa = 14, kSiteLayout = 15, /* 16: native-p6's text site */
+    kSiteLine = 13, kSiteJpa = 14, kSiteLayout = 15, kSiteText = 16,
     // one draw per packet (port_native_draw.h port_native_draw_single): the post effects (pass: the effect), the cascade
     // shadow preparation, agl's generic quads (shadow preparation, SSAO, post quads), agl's draw-pair passes, the sun's quads
     kSitePost = 17, kSiteShadow = 18, kSiteAglQuad = 19, kSiteAglPair = 20, kSiteSun = 21, kSites = 22
@@ -140,10 +141,11 @@ inline bool reg_declared(const Packet& pk, uint32_t stage, uint32_t offset, uint
     return false;
 }
 
-// OP_PACKET_DRAW payload: id, kind, layout (block count | has-vertex << 8 | buffer count << 12 | has-range << 16 |
-// register range count << 20), then per block {block key, address, size}, then the vertex input {SQ_PGM_START_FS
-// word 0, word 1, then per buffer {attribute index, address, size, stride}}, then the index range {count, index
-// address}, then per register range {reg_key(stage, offset), count, the values}
+// OP_PACKET_DRAW payload: id, kind, layout (block count | has-vertex << 8 | no-fetch << 9 | buffer count << 12 |
+// has-range << 16 | register range count << 20), then per block {block key, address, size}, then the vertex input
+// {SQ_PGM_START_FS word 0, word 1 (absent with no-fetch: GX2SetAttribBuffer calls alone, the fetch shader unchanged),
+// then per buffer {attribute index, address, size, stride}}, then the index range {count, index address}, then per
+// register range {reg_key(stage, offset), count, the values}
 constexpr uint32_t kDrawHead = 3, kBlockWords = 3, kVertexHead = 2, kBufferWords = 4, kRangeWords = 2, kRegHead = 2;
 constexpr uint32_t kMaxDrawWords = kDrawHead + kMaxBlocks * kBlockWords + kVertexHead + kMaxBuffers * kBufferWords +
                                    kRangeWords + kMaxRegRanges * kRegHead + kMaxRegWords;

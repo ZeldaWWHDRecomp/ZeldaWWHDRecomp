@@ -986,9 +986,10 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         using namespace native_draw;
         const Packet* pk = n >= kDrawHead ? packet(p[0]) : nullptr;
         if (!pk) break;
-        const uint32 kind = p[1], blocks = p[2] & 0xFF, hasVertex = (p[2] >> 8) & 1, buffers = (p[2] >> 12) & 0xF,
-                     hasRange = (p[2] >> 16) & 1, regRanges = (p[2] >> 20) & 0xF;
-        const uint32 fixedWords = kDrawHead + blocks * kBlockWords + (hasVertex ? kVertexHead + buffers * kBufferWords : 0) +
+        const uint32 kind = p[1], blocks = p[2] & 0xFF, hasVertex = (p[2] >> 8) & 1, noFetch = (p[2] >> 9) & 1,
+                     buffers = (p[2] >> 12) & 0xF, hasRange = (p[2] >> 16) & 1, regRanges = (p[2] >> 20) & 0xF;
+        const uint32 fixedWords = kDrawHead + blocks * kBlockWords +
+                                  (hasVertex ? (noFetch ? 0 : kVertexHead) + buffers * kBufferWords : 0) +
                                   (hasRange ? kRangeWords : 0);
         uint32 regEnd = fixedWords;  // the register ranges: each {key, count, values}
         for (uint32 i = 0; i < regRanges && regEnd + kRegHead <= n; ++i) regEnd += kRegHead + p[regEnd + 1];
@@ -1005,9 +1006,11 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             if (stage < 3) apply_regs(stageBase[stage] + location * 7, w, 7);
         }
         if (hasVertex) {
-            apply_regs(mmSQ_PGM_START_FS, q, 1);
-            apply_regs(mmSQ_PGM_START_FS + 1, q + 1, 1);
-            q += kVertexHead;
+            if (!noFetch) {  // (no-fetch: GX2SetAttribBuffer alone)
+                apply_regs(mmSQ_PGM_START_FS, q, 1);
+                apply_regs(mmSQ_PGM_START_FS + 1, q + 1, 1);
+                q += kVertexHead;
+            }
             for (uint32 i = 0; i < buffers; ++i, q += kBufferWords) {
                 const uint32 w[7] = {q[1], q[2] - 1, (q[3] & 0xFFFF) << 11, 0, 0, 0, 0xC0000000};
                 apply_regs(mmSQ_VTX_ATTRIBUTE_BLOCK_START + q[0] * 7, w, 7);

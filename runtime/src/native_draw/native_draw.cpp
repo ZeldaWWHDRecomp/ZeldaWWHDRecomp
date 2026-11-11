@@ -39,8 +39,7 @@ static int env_int(const char* name, int fallback) {
 }
 static const char* const kSiteNames[kSites] = {"", "grass", "tree", "wood", "flower", "magma",
                                                "star", "housi", "wave", "moya", "vrkumo", "rain", "sea", "line", "jpa",
-                                               "layout", "" /* (16: native-p6's text site, none here) */, "post", "shadow",
-                                               "aglquad", "aglpair", "sun"};
+                                               "layout", "text", "post", "shadow", "aglquad", "aglpair", "sun"};
 static bool master_on() {
     static const bool on = env_int("WWHD_NATIVE_DRAW", 0) != 0;
     return on;
@@ -133,7 +132,7 @@ struct SiteState {
     // the pending instance: its effects since the last instance, in the site's order
     uint32_t words[kMaxDrawWords];
     uint32_t blocks = 0;
-    bool vertex = false;
+    bool vertex = false, noFetch = false;  // (noFetch: attribute buffers alone, no fetch shader words)
     uint32_t buffers = 0;
     uint32_t vertexWords[kVertexHead + kMaxBuffers * kBufferWords];
     uint32_t regRanges = 0, regUsed = 0;  // the register values: ranges, words used in regWords (with their heads)
@@ -150,11 +149,11 @@ static void emit_instance(SiteState& s, uint32_t kind, const uint32_t* range = n
     uint32_t n = kDrawHead + s.blocks * kBlockWords;
     s.words[0] = s.pk.id;
     s.words[1] = kind;
-    s.words[2] = s.blocks | uint32_t(s.vertex) << 8 | s.buffers << 12 | uint32_t(range != nullptr) << 16 |
-                 s.regRanges << 20;
+    s.words[2] = s.blocks | uint32_t(s.vertex) << 8 | uint32_t(s.vertex && s.noFetch) << 9 | s.buffers << 12 |
+                 uint32_t(range != nullptr) << 16 | s.regRanges << 20;
     if (s.vertex) {
-        const uint32_t v = kVertexHead + s.buffers * kBufferWords;
-        std::memcpy(s.words + n, s.vertexWords, v * 4);
+        const uint32_t head = s.noFetch ? 0 : kVertexHead, v = head + s.buffers * kBufferWords;
+        std::memcpy(s.words + n, s.vertexWords + (kVertexHead - head), v * 4);
         n += v;
     }
     if (range) {
@@ -170,7 +169,7 @@ static void emit_instance(SiteState& s, uint32_t kind, const uint32_t* range = n
         NATIVE_COVERAGE(kPacket, s.pk.site, range ? range[0] : s.pk.mesh[kind].count,
                         range ? range[1] : s.pk.mesh[kind].indexAddr);
     s.blocks = 0;
-    s.vertex = false;
+    s.vertex = s.noFetch = false;
     s.buffers = 0;
     s.regRanges = s.regUsed = 0;
 }
@@ -202,7 +201,7 @@ extern "C" unsigned wwhd_native_begin(unsigned site, unsigned pass, unsigned var
     if (!s) return 0;
     s->open = s->defined = false;
     s->blocks = s->buffers = 0;
-    s->vertex = false;
+    s->vertex = s->noFetch = false;
     s->regRanges = s->regUsed = 0;
     const uint32_t slot = variant * 8 + pass;
     if (!site_on(site) || pass >= 8 || slot >= kIdsPerSite) return 0;
@@ -362,7 +361,7 @@ extern "C" unsigned wwhd_native_shape(unsigned site, unsigned shape) {
         flush(*s);
         return 0;
     }
-    if (s->vertex) flush(*s);  // (a second bind before a draw: the first one's effects first)
+    if (s->vertex) flush(*s);  // (a second bind (or attribute buffers alone) before a draw: those effects first)
     const uint32_t fs = shape + 0xCC, buffers = ld32(shape + 0xC4);
     uint32_t* w = s->vertexWords;
     w[0] = ld32(fs + 0x0C) >> 8;
@@ -378,7 +377,25 @@ extern "C" unsigned wwhd_native_shape(unsigned site, unsigned shape) {
         b[3] = ld32(src + 0x144);
     }
     s->vertex = true;
+    s->noFetch = false;
     s->buffers = n;
+    return 1;
+}
+// where the site would call GX2SetAttribBuffer(INDEX, SIZE, STRIDE, DATA) alone (the fetch shader stays as it is):
+// nonzero, the buffer is part of the instance's vertex input
+extern "C" unsigned wwhd_native_attrib(unsigned site, unsigned index, unsigned size, unsigned stride, unsigned data) {
+    SiteState* s = site_state(site);
+    if (!s || !s->defined) return 0;
+    if (s->vertex && !s->noFetch) flush(*s);  // (a fetch shader bind pending: its effects first)
+    for (uint32_t i = 0; s->vertex && i < s->buffers; ++i)
+        if (s->vertexWords[kVertexHead + i * kBufferWords] == index) { flush(*s); break; }
+    if (s->buffers == kMaxBuffers) flush(*s);
+    uint32_t* b = s->vertexWords + kVertexHead + s->buffers++ * kBufferWords;
+    b[0] = index;
+    b[1] = data;
+    b[2] = size;
+    b[3] = stride;
+    s->vertex = s->noFetch = true;
     return 1;
 }
 // where the site would call GX2DrawIndexedEx with mesh KIND's arguments: nonzero, the instance is drawn (with the
