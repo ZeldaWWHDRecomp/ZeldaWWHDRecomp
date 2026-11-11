@@ -42,7 +42,7 @@
 #include "fixed_seed.h"
 #include "platform/perf_hint.h"
 #include "platform/thread_sampler.h"
-#ifdef WWHD_DECOMP_FAST_MUTEX
+#if defined(WWHD_DECOMP_FAST_MUTEX) || defined(WWHD_MSGQ_FAST)
 #include "addr_cache.h"
 #endif
 
@@ -195,8 +195,8 @@ struct CoreSched {
 static CoreSched g_sched[3];
 static threads::SchedulerTick g_tick;
 
-#ifdef WWHD_DECOMP_FAST
-// Fast decomp build only (step d, WWHD_DECOMP_FAST_WAKES; the normal and the default decomp build keep the code
+#if defined(WWHD_DECOMP_FAST) || defined(WWHD_MSGQ_FAST)
+// Fast decomp build only (with WWHD_MSGQ_FAST also the message queues of any build) (step d, WWHD_DECOMP_FAST_WAKES; the normal and the default decomp build keep the code
 // below the #else branches): a notify is sent only when a thread may be asleep on that condition. Android's bionic
 // makes every notify_one / notify_all a futex syscall, sleeper or not; the game thread sent ~2.9k per logic step
 // at the cliff (OSSendMessage to the update_ubo queue, OSUnlockMutex), ~2.6k with nobody to wake.
@@ -239,6 +239,9 @@ static HostThread* best_ready(CoreSched& k) {  // k.m held
 
 static void sched_tick_thread();
 static void mem_watch_thread();
+#ifdef WWHD_MSGQ_FAST
+static void msgq_stats_report();
+#endif
 
 static void core_acquire(HostThread* t) {
     if (!g_sched_on || t->holds_core) return;
@@ -392,6 +395,9 @@ static void sched_tick_thread() {
         // when no guest deadline exists. New waits/alarms interrupt the idle wait.
         if (!g_tick.wait_idle()) std::this_thread::sleep_for(kSlice);
         ++tick_wakes;
+#ifdef WWHD_MSGQ_FAST
+        msgq_stats_report();
+#endif
         if (tick_stats && std::chrono::steady_clock::now() - tick_start >= std::chrono::seconds(5)) {
             auto now = std::chrono::steady_clock::now();
             uint64_t cpu = rprof::thread_cpu_ns();
@@ -1221,9 +1227,71 @@ struct HQueue {
 #ifdef WWHD_DECOMP_FAST
     uint32_t unsignaled = 0;  // senders waiting for space and receivers waiting for a message share cv
     std::atomic<uint32_t> count{0};  // msgs.size() for a spinning receiver; only a hint (re-checked under m)
+#elif defined(WWHD_MSGQ_FAST)
+    uint32_t unsignaled = 0;  // as above
 #endif
 };
+#ifdef WWHD_MSGQ_FAST
+// WWHD_MSGQ_FAST (cmake option, any build; OFF compiles the #else branches, the code as before): a cheaper message path
+// for the game thread's job queue (PipelineFrameQueue::enqueue -> sead Thread::sendMessage -> OSSendMessage, a NOBLOCK
+// send, ~2.4k per logic step at the cliff, received by the "update_ubo" thread). The phone profile of 2026-11-11
+// (all-decompiled fast build) put ~0.55 ms per frame into the futex syscall of the notify_all that step d's wake gate
+// lets through when that receiver really sleeps (its 30 us spin ran out), and ~0.2 ms into the table and queue
+// mutexes. Message order, jam to the front, BLOCK/NOBLOCK behaviour and the full and empty returns are unchanged:
+//  1. lookups: the queue table is read through AddrCache without its process-wide lock (a host queue is never deleted
+//     or replaced; OSInitMessageQueue re-initialises it in place), the locked map only on a miss;
+//  2. step d's wake gate (unsignaled; WWHD_DECOMP_FAST_WAKES=0: notify always) for the queues of every build;
+//  3. fast decomp build: a receiver that may spin (WWHD_DECOMP_FAST_SPIN_THREADS) and whose spin ran out naps before
+//     it sleeps: it polls the queue every WWHD_MSGQ_NAP_US (default 50 us; the OS timer slack makes it ~50-60 us) for
+//     up to WWHD_MSGQ_NAP_MAX_US (default 2000; 0 = no nap), off its core as in the spin. It is not asleep on the
+//     condition, so a send meanwhile needs no wake (no futex on the sender); the message waits at most one nap.
+//     Afterwards the receive goes on exactly as before (re-checked under the mutex, then park_wait, counted).
+//     Holding wakes back on the sender instead would be wrong here: the game thread waits for its receivers by
+//     spinning on guest memory (PipelineFrameQueue::finishFrame's lock/unlock loop, drainWorkerQueues), so a held
+//     wake would stall them.
+// WWHD_MSGQ_STATS=1: per-second counts every 5 s ([msgq] lines).
+struct QueueTable : ObjTable<HQueue> {
+    AddrCache<HQueue> cache;
+    HQueue* get(uint32_t addr) {
+        if (HQueue* p = cache.find(addr)) return p;
+        std::lock_guard<std::mutex> lk(m);
+        HQueue*& p = map[addr];
+        if (!p) p = new HQueue();
+        cache.insert(addr, p);
+        return p;
+    }
+    void reset(uint32_t) = delete;  // would replace an object the cache may hold
+};
+static QueueTable g_queues;
+// (environment read at first use: Android sets the app's variables after the library's static initialisation)
+static bool msgq_stats() {
+    static const bool on = [] { const char* e = getenv("WWHD_MSGQ_STATS"); return e && e[0] && e[0] != '0'; }();
+    return on;
+}
+enum MsgqStat { MS_SENDS, MS_WAKES, MS_RECV_BLOCK, MS_RECV_SPIN, MS_RECV_NAP, MS_RECV_SLEEP,
+                MS_SLEPT_50US, MS_SLEPT_200US, MS_SLEPT_1MS, MS_SLEPT_5MS, MS_SLEPT_LONG, MS_N };
+static std::atomic<uint64_t> g_msgq_stat[MS_N];
+static inline void msgq_count(MsgqStat s) {
+    if (__builtin_expect(msgq_stats(), 0)) g_msgq_stat[s].fetch_add(1, std::memory_order_relaxed);
+}
+static void msgq_stats_report() {  // the scheduler tick
+    if (!msgq_stats()) return;
+    static auto last = std::chrono::steady_clock::now();
+    static uint64_t prev[MS_N];
+    const auto now = std::chrono::steady_clock::now();
+    const double sec = std::chrono::duration<double>(now - last).count();
+    if (sec < 5) return;
+    double d[MS_N];
+    for (int i = 0; i < MS_N; i++) { const uint64_t v = g_msgq_stat[i].load(); d[i] = (v - prev[i]) / sec; prev[i] = v; }
+    LOG("[msgq] per s: sends %.0f (waking a sleeper %.0f); blocking receives on an empty queue %.0f: served by the spin %.0f, "
+        "by the nap %.0f, slept %.0f (woken after <50 us %.0f, <200 us %.0f, <1 ms %.0f, <5 ms %.0f, longer %.0f)",
+        d[MS_SENDS], d[MS_WAKES], d[MS_RECV_BLOCK], d[MS_RECV_SPIN], d[MS_RECV_NAP], d[MS_RECV_SLEEP], d[MS_SLEPT_50US],
+        d[MS_SLEPT_200US], d[MS_SLEPT_1MS], d[MS_SLEPT_5MS], d[MS_SLEPT_LONG]);
+    last = now;
+}
+#else
 static ObjTable<HQueue> g_queues;
+#endif
 
 #ifdef WWHD_DECOMP_FAST
 // Fast decomp build only (step d, WWHD_DECOMP_FAST_SPIN_US, default WWHD_DECOMP_FAST_SPIN_US_DEFAULT = 30 us since the
@@ -1268,6 +1336,7 @@ static bool spin_thread_ok(HostThread* t) {
     t->spin_ok = ok ? 1 : 0;
     return ok;
 }
+#ifndef WWHD_MSGQ_FAST  // (WWHD_MSGQ_FAST: msgq_spin_nap below)
 static void spin_for_message(HQueue* q, uint64_t ns) {
     threads::block_begin();
     const auto end = std::chrono::steady_clock::now() + std::chrono::nanoseconds(ns);
@@ -1281,6 +1350,40 @@ static void spin_for_message(HQueue* q, uint64_t ns) {
     }
     threads::block_end();
 }
+#endif
+#ifdef WWHD_MSGQ_FAST
+static uint64_t msgq_nap_ns() {
+    static const uint64_t ns = [] { const char* e = getenv("WWHD_MSGQ_NAP_US"); return (e ? strtoull(e, nullptr, 10) : 50) * 1000; }();
+    return ns;
+}
+static uint64_t msgq_nap_max_ns() {
+    static const uint64_t ns = [] { const char* e = getenv("WWHD_MSGQ_NAP_MAX_US"); return (e ? strtoull(e, nullptr, 10) : 2000) * 1000; }();
+    return ns;
+}
+// spin_for_message, then the nap (WWHD_MSGQ_FAST 3.); 1 = a message came during the spin, 2 = during the nap, 0 = none
+static int msgq_spin_nap(HQueue* q, uint64_t spin_ns) {
+    threads::block_begin();
+    const auto end = std::chrono::steady_clock::now() + std::chrono::nanoseconds(spin_ns);
+    int got = 1;
+    for (unsigned i = 1; q->count.load(std::memory_order_acquire) == 0; i++) {
+#if defined(__aarch64__)
+        __asm__ __volatile__("yield");
+#elif defined(__x86_64__)
+        __builtin_ia32_pause();
+#endif
+        if ((i & 31) == 0 && std::chrono::steady_clock::now() >= end) { got = 0; break; }
+    }
+    if (!got && msgq_nap_ns() && msgq_nap_max_ns()) {
+        const auto nap_end = std::chrono::steady_clock::now() + std::chrono::nanoseconds(msgq_nap_max_ns());
+        do {
+            std::this_thread::sleep_for(std::chrono::nanoseconds(msgq_nap_ns()));
+            if (q->count.load(std::memory_order_acquire)) { got = 2; break; }
+        } while (std::chrono::steady_clock::now() < nap_end);
+    }
+    threads::block_end();
+    return got;
+}
+#endif
 #endif
 
 HLE(coreinit, OSInitMessageQueue) {
@@ -1300,7 +1403,7 @@ HLE(coreinit, OSSendMessage) {
     uint32_t m = arg(c, 1), flags = arg(c, 2);
     std::array<uint32_t, 4> msg{ld32(m), ld32(m + 4), ld32(m + 8), ld32(m + 12)};
     if (g_trace_msg) LOG("[msg] send q=%08X msg=%08X %08X flags=%X lr=%08X", arg(c, 0), msg[0], msg[1], flags, c->lr);
-#ifdef WWHD_DECOMP_FAST
+#if defined(WWHD_DECOMP_FAST) || defined(WWHD_MSGQ_FAST)
     bool wake;
 #endif
     {
@@ -1310,7 +1413,7 @@ HLE(coreinit, OSSendMessage) {
         if (q->msgs.size() >= q->capacity) {
             if (!(flags & 1)) { ret(c, 0); return; }
             const auto full_since = profiled ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
-#ifdef WWHD_DECOMP_FAST
+#if defined(WWHD_DECOMP_FAST) || defined(WWHD_MSGQ_FAST)
             park_wait(lk, q->cv, counted_pred(q, [&] { return q->msgs.size() < q->capacity; }), W_MSG_SEND, arg(c, 0));
 #else
             park_wait(lk, q->cv, [&] { return q->msgs.size() < q->capacity; }, W_MSG_SEND, arg(c, 0));
@@ -1324,10 +1427,16 @@ HLE(coreinit, OSSendMessage) {
         if (flags & 2) q->msgs.push_front(msg); else q->msgs.push_back(msg);  // OS_MESSAGE_FLAG_HIGH_PRIORITY
 #ifdef WWHD_DECOMP_FAST
         q->count.store((uint32_t)q->msgs.size(), std::memory_order_release);
+#endif
+#if defined(WWHD_DECOMP_FAST) || defined(WWHD_MSGQ_FAST)
         wake = take_wake_all(q);
 #endif
+#ifdef WWHD_MSGQ_FAST
+        msgq_count(MS_SENDS);
+        if (wake) msgq_count(MS_WAKES);
+#endif
     }
-#ifdef WWHD_DECOMP_FAST
+#if defined(WWHD_DECOMP_FAST) || defined(WWHD_MSGQ_FAST)
     if (wake)
 #endif
     q->cv.notify_all();
@@ -1338,14 +1447,33 @@ HLE(coreinit, OSReceiveMessage) {
     uint32_t m = arg(c, 1), flags = arg(c, 2);
     std::array<uint32_t, 4> msg;
     if (g_trace_msg) LOG("[msg] recv q=%08X flags=%X lr=%08X thread=%08X", arg(c, 0), flags, c->lr, threads::current_thread());
-#ifdef WWHD_DECOMP_FAST
+#if defined(WWHD_DECOMP_FAST) || defined(WWHD_MSGQ_FAST)
     bool wake;
 #endif
     {
         std::unique_lock<std::mutex> lk(q->m);
         if (q->msgs.empty()) {
             if (!(flags & 1)) { ret(c, 0); return; }
+#ifdef WWHD_MSGQ_FAST
+            msgq_count(MS_RECV_BLOCK);
 #ifdef WWHD_DECOMP_FAST
+            if (const uint64_t spin = fast_spin_ns(); spin && t_self && spin_thread_ok(t_self)) {
+                lk.unlock();
+                const int got = msgq_spin_nap(q, spin);
+                if (got) msgq_count(got == 1 ? MS_RECV_SPIN : MS_RECV_NAP);
+                lk.lock();
+            }
+#endif
+            if (q->msgs.empty()) {
+                msgq_count(MS_RECV_SLEEP);
+                const auto since = msgq_stats() ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+                park_wait(lk, q->cv, counted_pred(q, [&] { return !q->msgs.empty(); }), W_MSG_RECV, arg(c, 0));
+                if (msgq_stats()) {
+                    const auto us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - since).count();
+                    msgq_count(us < 50 ? MS_SLEPT_50US : us < 200 ? MS_SLEPT_200US : us < 1000 ? MS_SLEPT_1MS : us < 5000 ? MS_SLEPT_5MS : MS_SLEPT_LONG);
+                }
+            }
+#elif defined(WWHD_DECOMP_FAST)
             if (const uint64_t spin = fast_spin_ns(); spin && t_self && spin_thread_ok(t_self)) {
                 lk.unlock();
                 spin_for_message(q, spin);
@@ -1361,10 +1489,12 @@ HLE(coreinit, OSReceiveMessage) {
         q->msgs.pop_front();
 #ifdef WWHD_DECOMP_FAST
         q->count.store((uint32_t)q->msgs.size(), std::memory_order_release);
+#endif
+#if defined(WWHD_DECOMP_FAST) || defined(WWHD_MSGQ_FAST)
         wake = take_wake_all(q);
 #endif
     }
-#ifdef WWHD_DECOMP_FAST
+#if defined(WWHD_DECOMP_FAST) || defined(WWHD_MSGQ_FAST)
     if (wake)
 #endif
     q->cv.notify_all();

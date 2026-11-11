@@ -76,6 +76,19 @@ endif()
 
 option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; experimental)" OFF)
 include(cmake/Decomp.cmake)
+
+# Cafe OS message queues (runtime/src/threads.cpp, WWHD_MSGQ_FAST): lock-free queue lookups, the wake gate in every
+# build and, in the decomp fast build, a short nap of the spinning receivers before they sleep. OFF = the code as before.
+# Default ON in the decomp fast build (phone pair 2026-11-11: logic -0.4 to -1.1 ms at the cliff), OFF otherwise.
+if(WWHD_DECOMP AND WWHD_DECOMP_FAST)
+  set(WWHD_MSGQ_FAST_DEFAULT ON)
+else()
+  set(WWHD_MSGQ_FAST_DEFAULT OFF)
+endif()
+option(WWHD_MSGQ_FAST "cheaper OSSendMessage / OSReceiveMessage wake path (threads.cpp)" ${WWHD_MSGQ_FAST_DEFAULT})
+if(WWHD_MSGQ_FAST)
+  set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/threads.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_MSGQ_FAST=1)
+endif()
 if(WWHD_DECOMP)
   wwhd_decomp_configure()
 elseif(EXISTS "${GEN_DIR}/decomp_hooks.txt")
@@ -4018,6 +4031,37 @@ else()
 endif()
 target_link_libraries(fast_mutex_test PRIVATE Threads::Threads)
 add_test(NAME decomp_fast_mutex COMMAND fast_mutex_test)
+
+# Cafe OS message queues (WWHD_MSGQ_FAST): the actual threads.cpp queue code, normal and decomp fast build, switch off and on
+foreach(msgq_variant normal_off normal_on fast_off fast_on)
+  add_executable(msgq_test_${msgq_variant}
+      runtime/tools/msgq_test.cpp
+      runtime/tools/native_quiescence_test_stubs.cpp
+      runtime/src/native_quiescence.cpp
+      runtime/src/mods/story_native_event_game_thread.cpp
+      runtime/src/mods/story_native_stage_owner.cpp
+      runtime/src/game_clock.cpp
+      runtime/src/hle/os_time.cpp
+      runtime/src/fixed_seed.cpp)
+  target_include_directories(msgq_test_${msgq_variant} PRIVATE
+      runtime/src runtime/include runtime/src/gx2
+      runtime/third_party/cemu runtime/third_party/cemu/Cafe
+      runtime/third_party/fmt/include runtime/third_party/imgui)
+  target_compile_options(msgq_test_${msgq_variant} PRIVATE -UNDEBUG -O1 -ffunction-sections -fdata-sections)
+  if(msgq_variant MATCHES "^fast")
+    target_compile_definitions(msgq_test_${msgq_variant} PRIVATE WWHD_DECOMP_FAST=1)
+  endif()
+  if(msgq_variant MATCHES "_on$")
+    target_compile_definitions(msgq_test_${msgq_variant} PRIVATE WWHD_MSGQ_FAST=1)
+  endif()
+  if(APPLE)
+    target_link_options(msgq_test_${msgq_variant} PRIVATE -Wl,-dead_strip)
+  else()
+    target_link_options(msgq_test_${msgq_variant} PRIVATE -Wl,--gc-sections)
+  endif()
+  target_link_libraries(msgq_test_${msgq_variant} PRIVATE Threads::Threads)
+  add_test(NAME msgq_${msgq_variant} COMMAND msgq_test_${msgq_variant})
+endforeach()
 
 # Genuine model/native-observation-backed Stage renewal; no native ticks/writes.
 get_target_property(STORY_NATIVE_STAGE_RENEW_SOURCES story_native_wait_saved_turn_model_test SOURCES)
