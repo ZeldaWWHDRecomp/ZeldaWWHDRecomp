@@ -19,6 +19,9 @@
 #include "stutter_trace.h"
 #include "mods/cemu_pack.h"
 #include "mods/shader_interface.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "api.h"
+#endif
 #include "graphic_pack_hash.h"
 #include "gfx/area_sample.h"
 #include "gfx/sampler_lod_bias.h"
@@ -1465,6 +1468,9 @@ std::vector<uint8_t> pack_uniforms(const uint32_t* regs, const Shader& shader,
 }
 
 void reset_shader_memoization() {
+#ifdef WWHD_NATIVE_DRAW
+    j3d_cache_clear();  // (its entries hold program hashes and shaders)
+#endif
     stateMemo.reset();
     lastFetch = {};
     programHashes.clear();
@@ -1500,4 +1506,11 @@ uint64_t vertex_program_hash(const uint32_t* regs, uint64_t frame) {
     if (!address || !size || size > 0x100000 || uint64_t(address) + size > 0x100000000ull) return 0;
     return program_hash(address, size, frame);
 }
+#ifdef WWHD_NATIVE_DRAW
+uint64_t pixel_program_hash(const uint32_t* regs, uint64_t frame) {
+    const uint32_t address = regs[mmSQ_PGM_START_PS] << 8, size = regs[mmSQ_PGM_START_PS + 1] << 3;
+    if (!address || !size || size > 0x100000 || uint64_t(address) + size > 0x100000000ull) return 0;
+    return program_hash(address, size, frame);
+}
+#endif
 } // namespace gfxvk::vk

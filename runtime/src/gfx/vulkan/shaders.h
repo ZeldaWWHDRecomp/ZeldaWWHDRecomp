@@ -69,6 +69,9 @@ void select_renderer();
 // it keeps immediate revalidation for standalone callers and shader tools.
 // the vertex program's bytes hash (as the shader keys; 0 without a program), revalidated once per frame
 uint64_t vertex_program_hash(const uint32_t* regs, uint64_t frame);
+#ifdef WWHD_NATIVE_DRAW
+uint64_t pixel_program_hash(const uint32_t* regs, uint64_t frame);  // (the same for the pixel program)
+#endif
 LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint64_t frame = ~uint64_t{0});
 // linkedVs (pixel shaders): the draw's vertex shader; inputs it has no output for read the GPU's
 // default value for them (SPI_PS_INPUT_CNTL DEFAULT_VAL), as constants.

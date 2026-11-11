@@ -13,6 +13,7 @@ namespace gfxvk {
 void packet_draw(const uint32_t* regs, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range);
 void packet_mdi_flush();  // the collected multi-draw batch (native_draw::flush_mdi)
 void packet_flush();  // the collected shader-rewrite batch (native_draw::flush_batch)
+void j3d_cache_clear();   // the J3D material cache's entries (draw.cpp): shaders, pipelines or samplers are reset
 void peek_z(const uint32_t*, uint32_t);
 void peek_retire();  // depth peeks: retire the submission of the latest peek copy now (backend.cpp)
 void init();                     // SDL host: windows + device; AppKit host: see init_appkit

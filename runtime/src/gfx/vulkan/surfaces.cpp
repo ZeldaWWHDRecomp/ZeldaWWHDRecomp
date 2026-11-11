@@ -370,6 +370,12 @@ Surface* surface_from_depth_buffer(uint32_t addr, uint32_t* firstSlice, uint32_t
 static uint64_t sparse_hash(Surface* s);
 uint64_t g_stat_full_checks, g_stat_uploads, g_stat_invalidates, g_stat_invalidated_surfaces;
 uint64_t g_surface_epoch = 1;  // backend.h
+#ifdef WWHD_NATIVE_DRAW
+uint64_t g_surface_struct_gen = 1;  // backend.h
+#define J3D_STRUCT ++g_surface_struct_gen;
+#else
+#define J3D_STRUCT
+#endif
 
 // Based on GreenNaugahyde/ZeldaWWHDRecompAndroid, commit 73b54e1 (rendered mip chains); the
 // sampler-reach limit and the per-level rebuild are from its v0.9.5 (b1993cf).
@@ -820,7 +826,7 @@ void destroy_surface_image(Surface* s) {
     if (s->mipChain) { destroy_surface_image(s->mipChain.get()); s->mipChain.reset(); }
     if (!s->spares.empty()) release_spares(s);
     if(!s->image)return;
-    ++g_surface_epoch;
+    ++g_surface_epoch;J3D_STRUCT
     auto views=std::move(s->layerViews);if(s->view)views.push_back(s->view);
     for(auto& [key,view]:s->sampledViews)if(view)views.push_back(view);s->sampledViews.clear();
     defer_surface_image(s->image,s->memory,std::move(views));
@@ -937,7 +943,7 @@ static bool eye_sized(const FormatInfo& fmt) {
     if (scaled_copy_mode(fmt) != ScaledCopy::Unsupported) return true;
     g_eyeSizedTargets = false;
     ++g_eyeSizeGeneration;
-    ++g_surface_epoch;  // continued draws hold the eye-sized targets' extents
+    ++g_surface_epoch;J3D_STRUCT  // continued draws hold the eye-sized targets' extents
     LOG("[stereo] Vulkan format %d can be neither blitted nor drawn on this device: Half SBS and "
         "top-and-bottom now render each eye at full size", int(fmt.pixel));
     return false;
@@ -1385,7 +1391,7 @@ static Surface* rescale(Surface* s) {
     try { resample(s,&replacement,s->arrayLayers,1,1,0,0); }
     catch(...) { destroy_surface_image(&replacement);throw; }
     if(keep) {
-        ++g_surface_epoch;  // as destroy_surface_image: the surface's image changes
+        ++g_surface_epoch;J3D_STRUCT  // as destroy_surface_image: the surface's image changes
         keep_spare(s,*s);   // (its mip chain goes with it)
     } else destroy_surface_image(s);
     if(dynres::on())dynres::note_rescale(!reused,std::chrono::duration<double,std::milli>(t1-t0).count(),
@@ -1469,7 +1475,7 @@ Surface* find_or_create_surface(const SurfaceDesc& d,bool forRendering) {
     s->fmt=d.isDepth&&!forRendering?comparison_format_info(d.format):format_info(d.format,d.isDepth);
     if(forRendering)s->sizeClaim.request(d.sizeRequest,R.frame);
     create_surface_image(s.get(),forRendering);
-    auto* raw=s.get();cache.emplace(d.addr,std::move(s));++g_surface_epoch;++g_surface_set_gen;
+    auto* raw=s.get();cache.emplace(d.addr,std::move(s));++g_surface_epoch;++g_surface_set_gen;J3D_STRUCT
     // format views of one guest surface (adopt_newer_alias): flag them once, so lookups stay cheap
     if(!raw->isDepth&&!raw->fmt.compressed&&raw->fmt.convert==Convert::NONE) {
         auto views=cache.equal_range(d.addr);
@@ -1544,7 +1550,7 @@ static void restore_evicted(Surface* s) {
     s->evicted = false;
     create_surface_image(s, false);
     s->dirty = true; s->contentHash = 0; s->watched = false; s->lastCheckedFrame = ~0ull;
-    ++g_surface_epoch; ++g_stat_tex_restores;
+    ++g_surface_epoch; ++g_stat_tex_restores;J3D_STRUCT
     rprof::add_texture_remake();
 }
 // Low memory (platform/memory_trim.h): every released-able texture not looked up within the last `idle` frames goes,
@@ -1958,7 +1964,7 @@ void copy_surface_impl(uint32_t srcAddr,uint32_t srcMip,uint32_t srcSlice,uint32
         memcpy(mem::ptr(dbase+offset),rows.data()+(size_t(y)*bw+x)*sf.bytesPerBlock,sf.bytesPerBlock);
     }
     for(auto& [address,image]:stereo_copy_cache(dbase,dw,dh,d->depth))if(address==dbase){image->gpuWritten=false;image->dirty=true;image->lastCheckedFrame=~0ull;}
-    ++g_surface_epoch;
+    ++g_surface_epoch;J3D_STRUCT
 }
 void copy_surface(uint32_t src,uint32_t srcMip,uint32_t srcSlice,uint32_t dst,uint32_t dstMip,uint32_t dstSlice) {
     copy_surface_impl(src,srcMip,srcSlice,dst,dstMip,dstSlice);
@@ -2081,7 +2087,7 @@ void ss_reset_surfaces() {
     gamepad_backdrop_reset();
     R.mainDepthAddr = 0;
     bgshaders::tracker().forget();
-    ++g_surface_epoch;
+    ++g_surface_epoch;J3D_STRUCT
     reset_ao_private_cache();
     for(auto& [addr,s]:R.surfaces){s->guestLayout.reset();s->dirty=true;s->lastCheckedFrame=~0ull;}
 }

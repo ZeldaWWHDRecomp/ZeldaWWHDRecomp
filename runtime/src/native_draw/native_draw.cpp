@@ -102,6 +102,14 @@ bool batch_site_on(uint32_t site) {
     }();
     return site < kSites && on[site];
 }
+bool j3d_on() {
+    static const bool on = [] {
+        const bool v = master_on() && env_int("WWHD_NATIVE_DRAW_J3D", 0) != 0;
+        if (master_on()) LOG("[native-draw] J3D material cache %s (WWHD_NATIVE_DRAW_J3D=%d)", v ? "on" : "off", v ? 1 : 0);
+        return v;
+    }();
+    return on;
+}
 uint32_t verify_every() {
     static const uint32_t n = uint32_t(std::max(0, env_int("WWHD_NATIVE_DRAW_VERIFY", 0)));
     return n;
@@ -468,6 +476,14 @@ extern "C" unsigned wwhd_native_option(unsigned site, unsigned option) {
     }();
     return option == 1 && site < kSites && site_on(site) ? unsigned(split[site] != 0) : 0;
 }
+// the J3D shape draw that follows (j3d::ShapePacket::submitShape): its key words (native_draw.h, J3D material cache).
+// Nonzero: named (the site's GX2 calls and its draw stay its own)
+extern "C" unsigned wwhd_native_j3d(unsigned shape, unsigned binding, unsigned pass, unsigned view, unsigned program) {
+    if (!j3d_on()) return 0;
+    const uint32_t w[5] = {shape, binding, pass, view, program};
+    gx2::emit(gx2::OP_J3D_SHAPE, w, 5);
+    return 1;
+}
 // 0: no packet; 1: begun, its mesh and commit still to come (a callee completes it); 2: defined
 extern "C" unsigned wwhd_native_state(unsigned site) {
     const SiteState* s = site_state(site);
@@ -628,10 +644,45 @@ void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, const Mesh* ran
     g_lastEpoch = g_epoch;
 }
 
+// ---------------------------------------------------------------- J3D material cache (render thread)
+uint64_t g_j3dKey = 0;
+void j3d_shape(const uint32_t* p, uint32_t n) {
+    if (n != 5 || !j3d_on()) { g_j3dKey = 0; return; }
+    uint64_t h = 0x9E3779B97F4A7C15ull;
+    for (uint32_t i = 0; i < 5; ++i) {
+        h ^= p[i] + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
+        h *= 0xFF51AFD7ED558CCDull;
+        h ^= h >> 32;
+    }
+    g_j3dKey = h ? h : 1;
+}
+static uint64_t g_j3d[kJ3dCounts];
+void j3d_count(J3dCount c, uint32_t n) { g_j3d[c < kJ3dCounts ? c : 0] += n; }
+static void j3d_report() {
+    if (!g_j3d[kJ3dDraws]) return;
+    static const char* const names[kJ3dCounts] = {
+        "draws", "hits", "continued (the previous draw's state)", "no entry", "ineligible", "verified", "VERIFY MISMATCHES", "stored", "evicted",
+        "changed: registers", "changed: texture words", "changed: surfaces",
+        "changed: pass not open", "changed: program", "changed: fetch shader", "changed: primitive",
+        "changed: settings", "changed: scissor targets", "changed: texture upload",
+        "refused: state not continuable", "refused: program kind", "refused: texture lookup", "refused: pass subset",
+        "refused: geometry shader", "refused: other"};
+    char buf[1400];
+    int k = std::snprintf(buf, sizeof buf, "[native-draw] j3d %s, last 300 frames, per frame:", j3d_on() ? "on" : "off");
+    for (uint32_t c = 0; c < kJ3dCounts; ++c)
+        if (g_j3d[c] && k < int(sizeof buf) - 64)
+            k += std::snprintf(buf + k, sizeof buf - k, "%s %s %.1f", c ? "," : "", names[c], g_j3d[c] / 300.0);
+    if (k < int(sizeof buf) - 32)
+        std::snprintf(buf + k, sizeof buf - k, "; hit rate %.1f%%", 100.0 * g_j3d[kJ3dHits] / double(g_j3d[kJ3dDraws]));
+    LOG("%s", buf);
+    std::memset(g_j3d, 0, sizeof g_j3d);
+}
+
 // every 300 frames, per site with instances: instances, replayed, lowered and every fallback reason per frame
 void frame_end() {
     ++g_frames;
     if (g_frames % 300) return;
+    j3d_report();
     chain_end();
     g_lastId = ~0u;
     static const char* const names[kReasons] = {"replayed", "lowered", "verified", "not Vulkan", "stereo", "framegen",

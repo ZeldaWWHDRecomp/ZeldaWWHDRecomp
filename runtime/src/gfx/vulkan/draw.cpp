@@ -55,6 +55,9 @@
 #ifdef WWHD_NATIVE_DRAW
 #include "gx2/native_draw.h"
 #include "gx2/native_pass.h"
+#include "framegen.h"
+#include "cloud_proto.h"
+#include "mods/cemu_pack.h"
 #include <memory>
 #endif
 #include <algorithm>
@@ -3800,7 +3803,15 @@ void drain_pending_guest_pipelines() {
   catch (...) { g_drainingPipelines = false; throw; }
   g_drainingPipelines = false;
 }
-void reset_pipeline_lookup_cache() { lastPipelineLookup = {}; pipelineLookaside = {}; samplerMemo = {}; drawBatchState = {}; continuedEyes = {}; }
+#ifdef WWHD_NATIVE_DRAW
+void j3d_cache_clear();
+#endif
+void reset_pipeline_lookup_cache() {
+  lastPipelineLookup = {}; pipelineLookaside = {}; samplerMemo = {}; drawBatchState = {}; continuedEyes = {};
+#ifdef WWHD_NATIVE_DRAW
+  j3d_cache_clear();
+#endif
+}
 uint64_t draw_batch_submissions() { return drawBatchSubmissions; }
 // WWHD_VK_TRACE_PASSES=1 (issue #144): log each new render pass shape once, just before the driver
 // sees it, so a crash inside vkCmdBeginRendering names the last pass in the crash report's log lines
@@ -3866,8 +3877,286 @@ bool clouds_skip_card();
 constexpr uint64_t kGrassVs[] = {0x23CDD3D4D6BAAACDull, 0x042E089911FC3CC0ull, 0x7C8717CA596569B3ull};
 
 bool clouds_pass_subset_ok(const std::array<Surface*, 8>& colors, const Surface* depth);
+#ifdef WWHD_NATIVE_DRAW
+// ---------------------------------------------------------------- J3D material cache (gx2/native_draw.h)
+// A J3D shape draw (named by OP_J3D_SHAPE) looks up the state its key resolved last time: the continued-draw state
+// (ContinuedDraw: fetch, vertex and pixel shaders, render targets, pipeline, each stage's texture views and samplers).
+// It is used, as the continued state of this draw, only when the full resolution now would give the same:
+// - every register the resolution reads outside the continued groups: the shader, fetch/interface, target and
+//   output groups word for word (j3d_ranges: DB_STENCILREFMASK(_BF) without the reference byte, which is dynamic),
+//   the texture resource and sampler words of every unit the two programs use (j3d_texture_words), and the primitive
+//   type (VGT_PRIMITIVE_TYPE, which draw() sets: the only kSgOther register the resolution reads; its readers are
+//   get_fetch_shader, translate (gather_linkage, ps_link, variant_hash, clip_emulation_wanted_regs), resolve_targets
+//   (GetActive*BufferMask, color_target, depth_target), pipeline_key, resolve_texture, sampled_texture(_view) and
+//   resolve_sampler);
+// - the programs' bytes: the vertex and pixel program hashes the shader keys start from (program_hash: a new frame
+//   checks them again, as the full lookup does) and the fetch shader as get_fetch_shader finds it now;
+// - the surfaces: no structural surface change since (a surface made, released, its image replaced or rescaled,
+//   a save-state reset: g_surface_struct_gen, and g_surface_set_gen), each
+//   sampled texture the only surface at its address in the cache (so write sequences pick no other one) with the
+//   same artistic-mips and GPU-written flags; its CPU writes upload first (an upload ends the hit, as for a
+//   continued draw);
+// - the render pass of the state's targets (or its pass subset) open, so the draw's targets were resolved this frame
+//   (their size claims and rescales made) and nothing else was drawn into them in between;
+// - the settings the state was resolved with (AO, anisotropy, the shader keys' vertex format and diagnostics salts,
+//   clipping in shaders, graphics-pack shaders present); program kinds
+//   with port features (AO, shadow mask, bloom, point lights) and geometry shaders are not stored.
+// Everything after the resolution (uniforms, support uniforms, descriptors, vertex and index data, dynamic state,
+// the pass, the draw) runs as for any continued draw. Stereo, 60 fps (generated), the GamePad backdrop and the
+// clouds bracket take the full draw. Entries: an open-addressed table (WWHD_NATIVE_DRAW_J3D_SLOTS, default 4096),
+// 4 probes, the least recently used of them replaced.
+namespace {
+struct J3dEntry {
+  uint64_t key = 0;  // 0: empty
+  uint64_t lastUsed = 0, structGen = 0, setGen = 0, checkedFrame = ~0ull;
+  uint64_t vsHash = 0, psHash = 0, salt[4]{};
+  uint32_t prim = 0;
+  ContinuedDraw state;
+  std::vector<uint32_t> words;    // j3d_ranges' values
+  std::vector<uint32_t> texRegs, texWords;
+  std::array<bool, 2 * LATTE_NUM_MAX_TEX_UNITS> artistic{}, gpuWritten{};
+};
+struct J3dCache {
+  std::vector<J3dEntry> slots;
+  std::vector<std::pair<uint32_t, uint32_t>> ranges;  // (first register, count): j3d_ranges
+  uint32_t rangeWords = 0;
+  uint64_t verifyCounter = 0;
+} j3d;
+constexpr uint32_t kJ3dProbes = 4;
+uint64_t j3d_struct_gen() { return g_surface_struct_gen; }
+// the registers compared word for word: every register of the shader, fetch/interface, target and output groups
+// (gx2/state_groups.h), and DB_STENCILREFMASK(_BF) (kSgStencilRefMask: compared without the reference byte)
+const std::vector<std::pair<uint32_t, uint32_t>>& j3d_ranges() {
+  if (j3d.ranges.empty()) {
+    constexpr uint32_t kMask = 1u << gx2::kSgShader | 1u << gx2::kSgFetch | 1u << gx2::kSgTargets |
+        1u << gx2::kSgOutput | 1u << gx2::kSgOutputTargets | 1u << gx2::kSgOutputShader;
+    for (uint32_t reg = 0; reg < gx2::kNumRegs; ++reg) {
+      const uint8_t g = gx2::state_group(reg);
+      if (g == gx2::kSgStencilRefMask || !(kMask >> g & 1)) continue;
+      if (!j3d.ranges.empty() && j3d.ranges.back().first + j3d.ranges.back().second == reg) ++j3d.ranges.back().second;
+      else j3d.ranges.push_back({reg, 1});
+    }
+    j3d.rangeWords = 0;
+    for (const auto& [first, n] : j3d.ranges) j3d.rangeWords += n;
+    LOG("[native-draw] j3d: %u registers compared in %zu ranges, plus DB_STENCILREFMASK(_BF) and the units' texture words",
+        j3d.rangeWords, j3d.ranges.size());
+  }
+  return j3d.ranges;
+}
+inline uint32_t j3d_stencil_bits(const uint32_t* r, int i) {
+  return r[i ? REGADDR::DB_STENCILREFMASK_BF : REGADDR::DB_STENCILREFMASK] & 0xFFFFFF00u;
+}
+// the texture resource words (7) and sampler words (3) of every unit the program uses (as variant_hash,
+// resolve_texture, sampled_texture_view and resolve_sampler read them)
+void j3d_texture_words(const vk::Shader* sh, std::vector<uint32_t>& regs) {
+  if (!sh || !sh->dec) return;
+  const uint32_t texbase = sh->vertex ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
+  for (int i = 0; i < sh->dec->textureUnitListCount; ++i) {
+    const uint32_t unit = sh->dec->textureUnitList[i];
+    if (unit >= LATTE_NUM_MAX_TEX_UNITS) continue;
+    for (uint32_t w = 0; w < 7; ++w) regs.push_back(texbase + unit * 7 + w);
+    const uint32_t si = sh->dec->textureUnitSamplerAssignment[unit];
+    if (si < 18)
+      for (uint32_t w = 0; w < 3; ++w) regs.push_back(REGADDR::SQ_TEX_SAMPLER_WORD0_0 + ((sh->vertex ? 18 : 0) + si) * 3 + w);
+  }
+}
+uint32_t j3d_slot_count() {
+  static const uint32_t n = [] {
+    const char* e = std::getenv("WWHD_NATIVE_DRAW_J3D_SLOTS");
+    uint32_t v = e && *e ? uint32_t(std::max(16, std::atoi(e))) : 4096u;
+    uint32_t p = 16;
+    while (p < v && p < (1u << 20)) p <<= 1;
+    return p;
+  }();
+  return n;
+}
+// the entry's key: the site's key and the draw's depth view and target addresses (the shadow cascades draw the same
+// shapes with the same key into the slices of one depth array: an entry per slice; the key only finds an entry)
+uint64_t j3d_key(uint64_t key, const uint32_t* r) {
+  for (uint32_t reg : {uint32_t(mmDB_DEPTH_VIEW), uint32_t(mmDB_DEPTH_BASE), uint32_t(mmCB_COLOR0_BASE)}) {
+    key = (key ^ r[reg]) * 0xFF51AFD7ED558CCDull;
+    key ^= key >> 32;
+  }
+  return key ? key : 1;
+}
+J3dEntry* j3d_find(uint64_t key) {
+  if (j3d.slots.empty()) return nullptr;
+  const uint32_t mask = uint32_t(j3d.slots.size() - 1);
+  for (uint32_t i = 0; i < kJ3dProbes; ++i) {
+    J3dEntry& e = j3d.slots[(uint32_t(key) + i) & mask];
+    if (e.key == key) return &e;
+  }
+  return nullptr;
+}
+// may this draw use or make an entry? (the port features that act per draw take the full draw)
+bool j3d_eligible(bool fastPathDraw, const void* replay, const void* shadersIn, const void* shadersOut) {
+  return fastPathDraw && !replay && !shadersIn && !shadersOut && !aoPrivateReplay && !stereoEye &&
+         stereo::frame.mode == stereo::Off && !framegen::requested() && !reproj::hud_coverage_wanted() &&
+         !gamepad_backdrop_capture_active() && !gamepad_backdrop_replaying() && !cloud_proto::g_active_seq;
+}
+// the entry holds (see above); its state then becomes this draw's continued state. Else the counted reason
+// WWHD_NATIVE_DRAW_J3D_DEBUG=1 (diagnostics): which compared registers differed when an entry did not hold
+// (every differing register counted; the top ones logged every 20000 such entries)
+bool j3d_debug() {
+  static const bool on = [] { const char* e = std::getenv("WWHD_NATIVE_DRAW_J3D_DEBUG"); return e && *e == '1'; }();
+  return on;
+}
+void j3d_debug_registers(const J3dEntry& e, const uint32_t* r) {
+  static std::unordered_map<uint32_t, uint64_t> counts;
+  static uint64_t n = 0;
+  const uint32_t* w = e.words.data();
+  for (const auto& [first, k] : j3d.ranges) {
+    for (uint32_t i = 0; i < k; ++i)
+      if (r[first + i] != w[i]) ++counts[first + i];
+    w += k;
+  }
+  if (j3d_stencil_bits(r, 0) != w[0]) ++counts[REGADDR::DB_STENCILREFMASK];
+  if (j3d_stencil_bits(r, 1) != w[1]) ++counts[REGADDR::DB_STENCILREFMASK_BF];
+  for (size_t i = 0; i < e.texRegs.size(); ++i)
+    if (r[e.texRegs[i]] != e.texWords[i]) ++counts[e.texRegs[i]];
+  if (++n % 20000) return;
+  std::vector<std::pair<uint64_t, uint32_t>> top;
+  for (const auto& [reg, c] : counts) top.push_back({c, reg});
+  std::sort(top.rbegin(), top.rend());
+  std::string text;
+  for (size_t i = 0; i < top.size() && i < 32; ++i) {
+    char b[40];
+    std::snprintf(b, sizeof b, " %04X:%llu", top[i].second, (unsigned long long)top[i].first);
+    text += b;
+  }
+  LOG("[native-draw] j3d debug: %llu entries that did not hold; registers that differed (register:count):%s",
+      (unsigned long long)n, text.c_str());
+}
+// WWHD_NATIVE_DRAW_J3D_STALE_TEST=1 (the stale-entry test only, never for play): the texture words are not
+// compared, so an entry whose textures changed is used stale (verify mode and pictures must show it)
+bool j3d_stale_test() {
+  static const bool on = [] {
+    const char* e = std::getenv("WWHD_NATIVE_DRAW_J3D_STALE_TEST");
+    const bool v = e && *e == '1';
+    if (v) LOG("[native-draw] j3d STALE TEST: texture words not compared (wrong pictures expected)");
+    return v;
+  }();
+  return on;
+}
+native_draw::J3dCount j3d_check(const J3dEntry& e, const uint32_t* r, uint32_t prim) {
+  using namespace native_draw;
+  if (e.structGen != j3d_struct_gen() || e.setGen != g_surface_set_gen) return kJ3dSurfaces;
+  if (e.prim != prim) return kJ3dPrimitive;
+  const ContinuedDraw& c = e.state;
+  if (c.aoMode != ao_mode() || c.aoHires != ao_hires_enabled() || c.aniso != aniso_enabled() ||
+      e.salt[0] != R.vertexFormats.shader_salt() || e.salt[1] != R.vertexDiagnostics.shader_salt() ||
+      e.salt[2] != uint64_t(R.clipEmulation) || e.salt[3] != uint64_t(mods::cemu::has_shaders()))
+    return kJ3dSettings;
+  const uint32_t* w = e.words.data();
+  for (const auto& [first, n] : j3d.ranges) {
+    if (std::memcmp(r + first, w, n * 4)) return j3d_debug() ? (j3d_debug_registers(e, r), kJ3dRegisters) : kJ3dRegisters;
+    w += n;
+  }
+  if (j3d_stencil_bits(r, 0) != w[0] || j3d_stencil_bits(r, 1) != w[1]) return kJ3dRegisters;
+  for (size_t i = 0; i < e.texRegs.size() && !j3d_stale_test(); ++i)
+    if (r[e.texRegs[i]] != e.texWords[i]) return j3d_debug() ? (j3d_debug_registers(e, r), kJ3dTextureWords) : kJ3dTextureWords;
+  for (int s = 0; s < 2; ++s)
+    for (uint32_t i = 0; i < c.stages[s].count; ++i)
+      if (c.stages[s].textures[i].surface->artisticMips != e.artistic[s * LATTE_NUM_MAX_TEX_UNITS + i] ||
+          c.stages[s].textures[i].surface->gpuWritten != e.gpuWritten[s * LATTE_NUM_MAX_TEX_UNITS + i])
+        return kJ3dSurfaces;
+  // the open pass: the state's own targets, or the colours of its pass subset
+  const DrawTargets& t = c.targets;
+  bool pass = R.rendering && R.passTracked && R.passDepth == t.depth && R.passDepthSlice == t.depthSlice &&
+              R.passWidth == t.width && R.passHeight == t.height &&
+              (R.passColors == t.colors || (c.subsetAbsent && R.passColors == c.subsetColors)) &&
+              std::equal(std::begin(t.slices), std::end(t.slices), R.passSlices.begin());
+  for (int i = 0; pass && i < 8; ++i)
+    if (Surface* s = R.passColors[i]) pass = s->layout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  if (pass && t.depth) pass = t.depth->layout == VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  if (pass && t.target) pass = t.target->sx == t.sx && t.target->sy == t.sy;
+  if (!pass) return kJ3dPass;
+  uint64_t fsKey = 0;
+  if (vk::get_fetch_shader(r, &fsKey, R.frame) != c.fs || fsKey != c.fsKey) return kJ3dFetch;
+  if (e.checkedFrame != R.frame &&
+      (vk::vertex_program_hash(r, R.frame) != e.vsHash || vk::pixel_program_hash(r, R.frame) != e.psHash))
+    return kJ3dProgram;
+  return kJ3dHits;
+}
+// after a full draw that resolved a continuable state (continued): file it under KEY
+void j3d_store(uint64_t key, const ContinuedDraw& c, const uint32_t* r, uint32_t prim) {
+  using namespace native_draw;
+  if (!c.valid || !c.vs || !c.ps || !c.fs || !c.pipeline) { j3d_count(kJ3dRefusedState); return; }
+  if (c.vs->kind != gfx::ProgramKind::Other || c.ps->kind != gfx::ProgramKind::Other) { j3d_count(kJ3dRefusedKind); return; }
+  if ((r[REGADDR::VGT_GS_MODE] & 3) || (r[REGADDR::SQ_PGM_START_GS] && r[REGADDR::SQ_PGM_START_GS + 1])) {
+    j3d_count(kJ3dRefusedGeometry);
+    return;
+  }
+  for (int s = 0; s < 2; ++s)
+    for (uint32_t i = 0; i < c.stages[s].count; ++i) {
+      const Surface* t = c.stages[s].textures[i].surface;
+      if (!t || !primary_surface(t) || R.surfaces.count(t->addr) != 1) {
+        if (j3d_debug() && t) {
+          static std::unordered_set<uint32_t> said;
+          if (said.size() < 64 && said.insert(t->addr).second)
+            LOG("[native-draw] j3d debug: texture %08X refused: %s, %zu surfaces at the address, %ux%u fmt %X mips %u%s",
+                t->addr, primary_surface(t) ? "primary" : "not primary (mip chain / private copy)",
+                size_t(R.surfaces.count(t->addr)), t->width, t->height, t->format, t->mips, t->gpuWritten ? ", GPU-written" : "");
+        }
+        j3d_count(kJ3dRefusedTexture);
+        return;
+      }
+    }
+  if (j3d.slots.empty()) j3d.slots.resize(j3d_slot_count());
+  const auto& ranges = j3d_ranges();
+  const uint32_t mask = uint32_t(j3d.slots.size() - 1);
+  J3dEntry* slot = nullptr;
+  for (uint32_t i = 0; i < kJ3dProbes; ++i) {
+    J3dEntry& e = j3d.slots[(uint32_t(key) + i) & mask];
+    if (e.key == key || !e.key) { slot = &e; break; }
+    if (!slot || e.lastUsed < slot->lastUsed) slot = &e;
+  }
+  if (slot->key && slot->key != key) j3d_count(kJ3dEvicted);
+  J3dEntry& e = *slot;
+  e.key = key;
+  e.lastUsed = R.frame;
+  e.structGen = j3d_struct_gen();
+  e.setGen = g_surface_set_gen;
+  e.checkedFrame = R.frame;
+  e.vsHash = vk::vertex_program_hash(r, R.frame);
+  e.psHash = vk::pixel_program_hash(r, R.frame);
+  e.salt[0] = R.vertexFormats.shader_salt();
+  e.salt[1] = R.vertexDiagnostics.shader_salt();
+  e.salt[2] = uint64_t(R.clipEmulation);
+  e.salt[3] = uint64_t(mods::cemu::has_shaders());
+  e.prim = prim;
+  e.state = c;
+  e.words.resize(j3d.rangeWords + 2);
+  uint32_t* w = e.words.data();
+  for (const auto& [first, n] : ranges) {
+    std::memcpy(w, r + first, n * 4);
+    w += n;
+  }
+  w[0] = j3d_stencil_bits(r, 0);
+  w[1] = j3d_stencil_bits(r, 1);
+  e.texRegs.clear();
+  j3d_texture_words(c.vs, e.texRegs);
+  j3d_texture_words(c.ps, e.texRegs);
+  e.texWords.resize(e.texRegs.size());
+  for (size_t i = 0; i < e.texRegs.size(); ++i) e.texWords[i] = r[e.texRegs[i]];
+  for (int s = 0; s < 2; ++s)
+    for (uint32_t i = 0; i < c.stages[s].count; ++i)
+      e.artistic[s * LATTE_NUM_MAX_TEX_UNITS + i] = c.stages[s].textures[i].surface->artisticMips,
+      e.gpuWritten[s * LATTE_NUM_MAX_TEX_UNITS + i] = c.stages[s].textures[i].surface->gpuWritten;
+  j3d_count(kJ3dStored);
+}
+}  // namespace
+void j3d_cache_clear() {
+  for (auto& e : j3d.slots) e.key = 0;
+}
+#endif
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances, bool* viewIndependent) {
+#ifdef WWHD_NATIVE_DRAW
+  // J3D material cache: the key of this draw, named by OP_J3D_SHAPE right before it (never an inner replay's)
+  const uint64_t j3dSiteKey = std::exchange(native_draw::g_j3dKey, 0);
+  const uint64_t j3dKey = j3dSiteKey ? j3d_key(j3dSiteKey, r) : 0;
+#endif
   const uint32_t dirtyGroups = gx2::take_dirty_groups();  // register groups changed since the previous draw
   if (__builtin_expect(fastpath_config().oracle, 0))
     for (auto& g : oracle.groups) g |= dirtyGroups;
@@ -3939,9 +4228,37 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   bool registerBreak = false;  // resolved in full for changed registers
   bool partialCandidate = false;  // WWHD_VK_FASTPATH_PARTIAL: such a draw may reuse pieces of the state
   uint32_t oracleCombo = 0;    // WWHD_VK_FASTPATH_ORACLE: the breaking groups of such a draw
+#ifdef WWHD_NATIVE_DRAW
+  const bool j3dDraw = j3dKey && j3d_eligible(fastPathDraw, replay, shadersIn, shadersOut);
+  bool j3dHit = false;
+  if (j3dKey) native_draw::j3d_count(native_draw::kJ3dDraws);
+  if (j3dKey && !j3dDraw) native_draw::j3d_count(native_draw::kJ3dIneligible);
+#endif
   if (fastPathDraw) {
     if (fastPath.stats) report_continued_stats();
     ContinuedReason reason = continued_reason(r, prim);
+#ifdef WWHD_NATIVE_DRAW
+    // a J3D draw that does not continue the previous draw: the state its key resolved, if it still holds
+    if (j3dDraw && reason == kContinued) native_draw::j3d_count(native_draw::kJ3dContinued);
+    else if (j3dDraw) {
+      if (J3dEntry* e = j3d_find(j3dKey)) {
+        const native_draw::J3dCount why = j3d_check(*e, r, prim);
+        if (why == native_draw::kJ3dHits) {
+          continued = e->state;  // (as if resolved now: the full resolution gives the same)
+          continued.valid = true;
+          continued.stateVersion = gx2::g_full_state_version;
+          continued.surfaceEpoch = g_surface_epoch;
+          continued.frame = R.frame;
+          partialGroups[stereoEye] = 0;
+          e->checkedFrame = R.frame;
+          e->lastUsed = R.frame;
+          reason = continued_reason(r, prim);  // (a scissor that leaves other colour buffers active)
+          j3dHit = reason == kContinued;
+          if (!j3dHit) native_draw::j3d_count(native_draw::kJ3dScissor);
+        } else native_draw::j3d_count(why);
+      } else native_draw::j3d_count(native_draw::kJ3dNoEntry);
+    }
+#endif
     if (reason == kContinued) {
       // guest writes to the reused textures (write tracking, GX2Invalidate) upload here; an upload
       // can change lookups, so it ends the continuation
@@ -3949,6 +4266,26 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
         for (uint32_t i = 0; i < stage.count; ++i) upload_surface(stage.textures[i].surface);
       if (g_surface_epoch != continued.surfaceEpoch) reason = kUpload;
     }
+#ifdef WWHD_NATIVE_DRAW
+    if (j3dHit && reason != kContinued) {
+      j3dHit = false;
+      native_draw::j3d_count(native_draw::kJ3dUpload);
+    }
+    // WWHD_NATIVE_DRAW_VERIFY=N: every Nth hit also resolves in full and compares (a mismatch: the full draw)
+    if (j3dHit && native_draw::verify_every() && ++j3d.verifyCounter % native_draw::verify_every() == 0) {
+      native_draw::j3d_count(native_draw::kJ3dVerified);
+      if (!verify_continued(r, prim)) {
+        reason = kVerifyMismatch;
+        j3dHit = false;
+        native_draw::j3d_count(native_draw::kJ3dVerifyMismatch);
+        char what[160];
+        std::snprintf(what, sizeof what, "j3d: the cached state differs from the full resolution (frame %llu, draw %llu)",
+                      (unsigned long long)R.frame, (unsigned long long)R.drawCount);
+        native_draw::verify_mismatch(what);
+      }
+    }
+    if (j3dHit) native_draw::j3d_count(native_draw::kJ3dHits);
+#endif
     if (reason == kContinued && fastPath.verifyEvery) {
       static uint64_t verifyCounter = 0;
       if (++verifyCounter % fastPath.verifyEvery == 0) {
@@ -5021,6 +5358,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     cap->drew = true;
     g_packetCapture = nullptr;
   }
+  // a J3D draw resolved in full: its state, filed under its key (j3d_store refuses what cannot be reused)
+  if (j3dDraw && !fast) j3d_store(j3dKey, continued, r, prim);
 #endif
   if (aoPrivateReplay) {
     ao_private().frame = R.frame;

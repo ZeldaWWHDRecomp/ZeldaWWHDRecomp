@@ -239,5 +239,38 @@ void count_mdi(uint32_t site, uint32_t instances, bool indirect);  // one batch 
 void verify_mismatch(const char* what);
 uint32_t verify_every();  // WWHD_NATIVE_DRAW_VERIFY (0: off)
 
+// ---------------------------------------------------------------- J3D material cache
+// WWHD_NATIVE_DRAW_J3D=1 (with WWHD_NATIVE_DRAW=1; off by default; Vulkan). The J3D shape draw
+// (j3d::ShapePacket::submitShape, decomp) still makes every GX2 call it makes without packets, so the register file
+// and every later emulated draw stay exactly as they are; right before its GX2DrawIndexedEx it names the draw
+// (OP_J3D_SHAPE: shape resource, material binding, pass, view, program record). That draw then looks up a persistent
+// cache of resolved states (fetch, vertex and pixel shaders, render targets, pipeline, texture views and samplers:
+// what the continued-draw fast path reuses between consecutive draws) by that key, kept across draws and frames.
+// The key only finds the entry: an entry is used only when everything the full resolution reads is unchanged since
+// it was resolved (gfx/vulkan/draw.cpp, J3D material cache): the registers the resolution reads (the shader,
+// fetch/interface, target and output groups word for word, the texture and sampler words of its units, the primitive
+// type), the programs' bytes (program hash, checked once per frame), the fetch shader (looked up), no structural
+// surface change (a surface made or released, an image replaced or rescaled...), the render pass of its targets
+// open, the settings. The draw is then drawn as a continued draw of that state (its
+// uniforms, support uniforms, descriptors, vertex and index data are prepared as for any draw). Anything else: the
+// full draw, which refreshes the entry. WWHD_NATIVE_DRAW_VERIFY=N also checks every Nth cache hit against the full
+// resolution (a mismatch is logged, counted and drawn the full way).
+bool j3d_on();
+// render thread: the key of the J3D draw named by the last command (0: none); the next draw takes it
+extern uint64_t g_j3dKey;
+void j3d_shape(const uint32_t* p, uint32_t n);  // OP_J3D_SHAPE
+// J3D cache counters (per frame): draws named, hits, misses (no entry / changed), refusals (not stored)
+enum J3dCount : uint32_t {
+    kJ3dDraws, kJ3dHits, kJ3dContinued, kJ3dNoEntry, kJ3dIneligible, kJ3dVerified, kJ3dVerifyMismatch, kJ3dStored, kJ3dEvicted,
+    // a found entry that did not hold (the first difference found)
+    kJ3dRegisters, kJ3dTextureWords, kJ3dSurfaces, kJ3dPass, kJ3dProgram, kJ3dFetch, kJ3dPrimitive,
+    kJ3dSettings, kJ3dScissor, kJ3dUpload,
+    // not stored: why
+    kJ3dRefusedState, kJ3dRefusedKind, kJ3dRefusedTexture, kJ3dRefusedSubset, kJ3dRefusedGeometry,
+    kJ3dRefusedOther,
+    kJ3dCounts
+};
+void j3d_count(J3dCount c, uint32_t n = 1);
+
 }  // namespace native_draw
 #endif

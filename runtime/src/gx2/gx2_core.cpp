@@ -723,7 +723,8 @@ void execute(const uint32* words, uint32 count) {
         Op op = (Op)(hdr & 0xFF);
         uint32 n = hdr >> 8;
 #ifdef WWHD_NATIVE_DRAW
-        if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW && (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT)) ||
+        if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW && op != OP_J3D_SHAPE &&
+             (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT)) ||
             i + 1 + n > count) {
 #else
         if (op >= OP_COUNT || i + 1 + n > count) {
@@ -860,12 +861,19 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     if (op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE &&
         (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT) && (op != OP_SET_PROJ_REGS || !native_draw::projection_as_regs()))
         ++native_draw::g_epoch;
+    // a J3D draw's name holds for the draw right after it (register writes may come in between)
+    if (op != OP_NOP && op != OP_SET_REGS && op != OP_DRAW_INDEXED && op != OP_J3D_SHAPE) native_draw::g_j3dKey = 0;
 #endif
     switch (op) {
     case OP_NOP: break;
     case OP_SET_REGS: apply_regs(p[0], p + 1, n - 1); break;
     case OP_DRAW: render::draw(g_regs, p[0], p[1], 0, 0, p[2], p[3]); break;
-    case OP_DRAW_INDEXED: render::draw(g_regs, p[0], p[1], p[2], p[3], p[4], p[5]); break;
+    case OP_DRAW_INDEXED:
+        render::draw(g_regs, p[0], p[1], p[2], p[3], p[4], p[5]);
+#ifdef WWHD_NATIVE_DRAW
+        native_draw::g_j3dKey = 0;  // (taken by the Vulkan draw; any other renderer leaves it)
+#endif
+        break;
     case OP_CLEAR_COLOR: {
         const uint32* q = p + kColorBufferWords;
         float rgba[4] = {bitsf(q[0]), bitsf(q[1]), bitsf(q[2]), bitsf(q[3])};
@@ -986,6 +994,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     case OP_PASS_END: native_pass::end(p, n); break;
     case OP_PASS_COPY: native_pass::copy(p, n); break;
     case OP_PASS_VIEWPORT: native_pass::viewport(p, n); break;
+    case OP_J3D_SHAPE: native_draw::j3d_shape(p, n); break;
     case OP_PACKET_DRAW: {
         // the instance's register effects, exactly as the site's skipped calls make them, in the site's order:
         // GX2Set{Pixel,Vertex,Geometry}UniformBlock (gx2_resources.cpp uniform_block), GX2SetFetchShader and
