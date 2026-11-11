@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf] [--unbased]]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf [--bare]] [--unbased]]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -867,6 +867,30 @@ def fast_text(own_verify, own_exact, ext_exact):
     return "\n".join(t) + "\n"
 
 
+def bare_rules(lines):
+    """--bare (fast mode, gabi.h GABI_LEAF_BARE, NativeInfo bit 22 "(bare)"): leaves whose body keeps none of the glue.
+    A leaf qualifies when no function of its game unit is caller=guest or (unbased): those are the only callers a leaf's
+    refusal check (native_enter_nc) refuses besides char / void / function pointer arguments, which gabi.h checks by type
+    (glue_bare_of), and a caller in another unit enters the leaf through its native entry after its own caller_ok check.
+    Returns the lines with "(bare)" after "(leaf)" for those."""
+    unit = lambda line: line.split("#")[1].split()[0]
+    blocked = set()
+    for line in lines:
+        f = line.split("#")[0].split()
+        if f[2] != "caller=ok" or "(unbased)" in line.split("#")[0]:
+            blocked.add(unit(line))
+    out, n = [], 0
+    for line in lines:
+        head, sep, tail = line.partition("#")
+        if "(leaf)" in head and unit(line) not in blocked:
+            head = head.replace("(leaf)", "(leaf),(bare)", 1)
+            n += 1
+        out.append(head + sep + tail)
+    print("decomp: native-call rules (--bare): %d of %d leaf functions bare (%d units with a caller=guest or unbased "
+          "function keep the glue on theirs)" % (n, sum(1 for x in lines if "(leaf)" in x.split("#")[0]), len(blocked)))
+    return out
+
+
 def unit_headers(out, lines, fast=False, hcalls=None):
     """OUT/native/K.h for game unit K (units.json order, as glue/K.cpp): its functions' and the decompiled functions
     it calls in other units (lean calls) {address, slot index, flags (1: callee=native, 2: caller=ok, 4: listed)},
@@ -888,6 +912,8 @@ def unit_headers(out, lines, fast=False, hcalls=None):
             flags |= 1 << 20
         if "(unbased)" in line.split("#")[0]:  # --unbased (gabi.h GABI_NOCHECK: bit 21)
             flags |= 1 << 21
+        if "(bare)" in line.split("#")[0]:  # --bare (gabi.h GABI_LEAF_BARE: bit 22)
+            flags |= 1 << 22
         m = DECL_FIELD.search(line.split("#")[0])
         if m:  # register-exact: flags 8, its registers and result (gabi.h NativeInfo)
             flags |= 8 | int(m.group(1)) << 8 | int(m.group(2)) << 12 | int(m.group(3)) << 16
@@ -961,6 +987,11 @@ def main():
         args.remove("--leaf")
         if not fast:
             sys.exit("native_rules.py: --leaf needs --fast")
+    bare = "--bare" in args  # fast mode (cmake WWHD_DECOMP_FAST_LEAF_BARE): leaves without glue (bare_rules)
+    if bare:
+        args.remove("--bare")
+        if not leaf:
+            sys.exit("native_rules.py: --bare needs --leaf")
     unbased = "--unbased" in args  # fast mode (cmake WWHD_DECOMP_FAST_NOCHECK): sources with unbased casts
     if unbased:
         args.remove("--unbased")
@@ -992,6 +1023,10 @@ def main():
     if LEAF_ERRORS:  # --leaf: leaf_rules printed each
         sys.exit("native_rules.py: %d leaf function(s) call a decompiled function that is not a leaf (--leaf); a leaf "
                  "keeps no call state, so this is a rules error" % len(LEAF_ERRORS))
+    if bare:
+        if not unbased:
+            sys.exit("native_rules.py: --bare needs --unbased (the unbased callers it leaves the glue for)")
+        lines = bare_rules(lines)
     if RULE_ERRORS:  # an exact callee with an under-declared call (rules() printed each): the decl table is wrong
         sys.exit("native_rules.py: %d ext declaration(s) pass fewer registers than their exact callee takes; fix the "
                  "decompilation's declarations (decl_lint.py) or its table" % len(RULE_ERRORS))

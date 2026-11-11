@@ -169,6 +169,13 @@ function(wwhd_decomp_configure)
   # unit runs one function instead of thunk + body. Same conversions and body; the body keeps its own copy for its other
   # callers. No run-time switch (OFF: as before)
   option(WWHD_DECOMP_FAST_THUNK_INL "decomp build, fast mode: leaf bodies inlined into their native-entry thunks" ON)
+  # fast mode: a leaf whose game unit has no caller=guest and no unbased function, and that takes no char / void /
+  # function pointer, keeps none of WWHD_GLUE_FUNC's glue: no thread-block lookup, refusal check, scope or depth count
+  # (native_rules.py --bare, NativeInfo bit 22; gabi.h GABI_LEAF_BARE). Its native entry is the argument conversion and
+  # the body. A leaf keeps no call state anyway; in its unit no caller is ever refused, and a caller in another unit
+  # checks caller_ok before it takes the native entry. Needs LEAF, PASS_TS and NOCHECK; the run-time diagnostics
+  # WWHD_DECOMP_FAST_LEAF=0 / _NOCHECK=0 do not reach bare leaves. No run-time switch (OFF: as before)
+  option(WWHD_DECOMP_FAST_LEAF_BARE "decomp build, fast mode: leaves without call glue (bare leaves)" OFF)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
@@ -257,6 +264,9 @@ function(wwhd_decomp_configure)
     endif()
     if(WWHD_DECOMP_FAST_LEAF)
       list(APPEND fast_args --leaf)
+      if(WWHD_DECOMP_FAST_LEAF_BARE)
+        list(APPEND fast_args --bare)
+      endif()
     endif()
     if(WWHD_DECOMP_FAST_NOCHECK)
       list(APPEND fast_args --unbased)
@@ -405,6 +415,13 @@ function(wwhd_decomp_link target)
         message(FATAL_ERROR "WWHD_DECOMP_FAST_THUNK_INL needs WWHD_DECOMP_FAST_LEAF")
       endif()
       list(APPEND opts -DGABI_THUNK_INL=1)
+    endif()
+    if(WWHD_DECOMP_FAST_LEAF_BARE)
+      if(NOT (WWHD_DECOMP_FAST_LEAF AND WWHD_DECOMP_FAST_PASS_TS AND WWHD_DECOMP_FAST_NOCHECK) OR WWHD_DECOMP_FAST_LEAF_CHECK
+         OR WWHD_DECOMP_FAST_CHECKCOUNT)
+        message(FATAL_ERROR "WWHD_DECOMP_FAST_LEAF_BARE needs WWHD_DECOMP_FAST_LEAF, _PASS_TS and _NOCHECK, and no _LEAF_CHECK / _CHECKCOUNT")
+      endif()
+      list(APPEND opts -DGABI_LEAF_BARE=1)
     endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)

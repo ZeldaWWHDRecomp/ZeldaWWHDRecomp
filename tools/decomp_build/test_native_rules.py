@@ -361,6 +361,21 @@ class NativeRulesTest(unittest.TestCase):
         self.assertEqual(leaves, {0x02000100})
         self.assertEqual(native_rules.LEAF_ERRORS, [])
 
+    def test_bare_rules(self):
+        # --bare: a leaf is bare only when no function of its unit is caller=guest or (unbased)
+        lines = [
+            "02000000  callee=native caller=ok  (leaf) decl=exact:1r0f:1  # u_ok a",
+            "02000010  callee=native caller=ok  - decl=exact:1r0f:1  # u_ok b",
+            "02000020  callee=native caller=ok  (leaf) decl=exact:1r0f:1  # u_guest c",
+            "02000030  callee=native caller=guest  A1 decl=exact:1r0f:1  # u_guest d",
+            "02000040  callee=native caller=ok  (leaf) decl=exact:1r0f:1  # u_unb e",
+            "02000050  callee=native caller=ok  (unbased) decl=exact:1r0f:1  # u_unb f",
+        ]
+        out = native_rules.bare_rules(lines)
+        self.assertIn("(leaf),(bare)", out[0])
+        self.assertNotIn("(bare)", "".join(out[1:]))
+        self.assertEqual([x.split("#")[1] for x in out], [x.split("#")[1] for x in lines])
+
 
 if __name__ == "__main__":
     unittest.main()
