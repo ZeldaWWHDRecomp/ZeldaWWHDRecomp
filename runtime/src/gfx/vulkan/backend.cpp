@@ -4944,8 +4944,11 @@ static void init_device(std::vector<const char *> extensions,
   // the batches draw one vkCmdDrawIndexed per instance
   if (packet_mdi_requested()) {
     enabled.multiDrawIndirect = available.multiDrawIndirect;
-    LOG("[native-draw] multi-draw batches: multiDrawIndirect supported/enabled=%u/%u", available.multiDrawIndirect,
-        enabled.multiDrawIndirect);
+    // (shader-rewrite stream batches: an indirect command's firstInstance selects its instance entries)
+    enabled.drawIndirectFirstInstance = available.drawIndirectFirstInstance;
+    LOG("[native-draw] multi-draw batches: multiDrawIndirect supported/enabled=%u/%u, drawIndirectFirstInstance %u/%u",
+        available.multiDrawIndirect, enabled.multiDrawIndirect, available.drawIndirectFirstInstance,
+        enabled.drawIndirectFirstInstance);
   }
 #endif
   R.enabledFeatures = enabled;

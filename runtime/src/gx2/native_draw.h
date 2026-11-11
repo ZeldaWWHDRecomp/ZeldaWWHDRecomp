@@ -49,8 +49,17 @@
 // per kind, and only where it is the only one: a site is enabled (batch_site_on; WWHD_NATIVE_DRAW_BATCH_SITES lists
 // them, default GRASS,FLOWER) only after its gate proved, for each of its kinds, that with every texture read at
 // explicit LOD 0 the batched picture is bit-identical to the unbatched one. Every other kind refuses (logged once).
-// Multi-draw batches (below) are exact and take precedence: an instance with a stream or an index range of its own
-// never joins a shader-rewrite batch, nor does an instance a range batch takes.
+// Stream batches: a kind whose instances bring a stream of their own (a vertex buffer of the instance's) and whose
+// blocks vary from instance to instance (cloud cards: a colour pair per card; particles: material, frame and matrix
+// blocks per particle) is batched the same way, its instances' streams copied back to back and drawn as one indirect
+// draw, one command per instance (vertexOffset: its stream, firstInstance: its entries). Only for a kind whose vertex
+// shader does not use the vertex index, with one vertex buffer (as multi-draw batches).
+// A batch ends at every state change: an instance whose kind's lowered state no longer holds (another texture, render
+// state, a changed packet definition) draws the open batch first; nothing outside the kind's own lowered state is
+// varied per instance (no per-instance textures, no batches across textures).
+// Multi-draw batches (below) are exact and take precedence: an instance with an index range of its own never joins a
+// shader-rewrite batch, nor does an instance a range batch takes; an instance with a stream of its own joins one only
+// for a kind whose blocks vary (a multi-draw batch, which needs the same blocks, takes at most one object's instances).
 //
 // How the register journal and the two kinds of batches work together (packet_draw): an instance is replayable when
 // its kind's lowered state holds: the epoch is unchanged, or the journal shows that every register changed since the
@@ -59,8 +68,7 @@
 // range batch it can join; a shader-rewrite batch (enabled site, the kind's own vertex input and index range, not a
 // multi-draw or range candidate); a new multi-draw or range batch; a replay of its own. At most one batch is open:
 // each is drawn before the other starts. A multi-draw batch stays open across register writes and unchanged packet
-// definitions (the next instance's replayable check decides); a shader-rewrite batch is drawn before any command
-// other than a packet draw.
+// definitions (the next instance's replayable check decides), and so does a shader-rewrite batch.
 #pragma once
 #ifdef WWHD_NATIVE_DRAW
 #include <cstdint>
@@ -136,7 +144,8 @@ bool batch_site_on(uint32_t site);  // the site's kinds may be batched (WWHD_NAT
 // render thread: an instanced batch is collected (gfxvk); flush_batch draws it now
 extern bool g_batchPending;
 void flush_batch();
-void count_batch(uint32_t site, uint32_t instances);  // one batch draw of INSTANCES instances
+// one batch of INSTANCES instances (STREAM: a stream batch; INDIRECT: drawn as one indirect draw)
+void count_batch(uint32_t site, uint32_t instances, bool stream, bool indirect);
 
 // fallback / lowering reasons, counted per frame and site
 enum Reason : uint32_t {

@@ -382,6 +382,7 @@ void define(const uint32_t* p, uint32_t n) {
     if (n != kPacketWords || p[0] >= kMaxPackets) return;
     if (g_defined[p[0]] && std::memcmp(&g_packets[p[0]], p, sizeof(Packet)) == 0) return;  // (unchanged)
     flush_mdi();
+    flush_batch();
     ++g_epoch;
     std::memcpy(&g_packets[p[0]], p, sizeof(Packet));
     g_defined[p[0]] = true;
@@ -411,7 +412,7 @@ void count_mdi(uint32_t site, uint32_t instances, bool indirect) {
     g_counts[site][kMdi] += instances;
     g_mdiMax[site] = std::max<uint64_t>(g_mdiMax[site], instances);
 }
-static uint64_t g_batchDraws[kSites], g_batchMax[kSites];
+static uint64_t g_batchDraws[kSites], g_batchMax[kSites], g_batchStream[kSites], g_batchIndirect[kSites];
 void count(uint32_t site, Reason r) { ++g_counts[site < kSites ? site : 0][r]; }
 bool g_batchPending = false;
 void flush_batch() {
@@ -420,9 +421,11 @@ void flush_batch() {
 #endif
     g_batchPending = false;
 }
-void count_batch(uint32_t site, uint32_t instances) {
+void count_batch(uint32_t site, uint32_t instances, bool stream, bool indirect) {
     site = site < kSites ? site : 0;
     ++g_batchDraws[site];
+    g_batchStream[site] += stream;
+    g_batchIndirect[site] += indirect;
     g_counts[site][kBatched] += instances;
     g_batchMax[site] = std::max<uint64_t>(g_batchMax[site], instances);
 }
@@ -504,8 +507,10 @@ void frame_end() {
                                g_mdiDraws[site] / 300.0, g_mdiIndirect[site] / 300.0,
                                double(g_counts[site][kMdi]) / double(g_mdiDraws[site]), (unsigned long long)g_mdiMax[site]);
         if (g_batchDraws[site])
-            k += std::snprintf(buf + k, sizeof buf - k, "; shader-rewrite batches %.1f/frame, %.1f instances each (max %llu)",
-                               g_batchDraws[site] / 300.0, double(g_counts[site][kBatched]) / double(g_batchDraws[site]),
+            k += std::snprintf(buf + k, sizeof buf - k,
+                               "; shader-rewrite batches %.1f/frame (%.1f stream, %.1f indirect), %.1f instances each (max %llu)",
+                               g_batchDraws[site] / 300.0, g_batchStream[site] / 300.0, g_batchIndirect[site] / 300.0,
+                               double(g_counts[site][kBatched]) / double(g_batchDraws[site]),
                                (unsigned long long)g_batchMax[site]);
         if (verify_every())
             std::snprintf(buf + k, sizeof buf - k, ", verify mismatches %llu", (unsigned long long)g_mismatches);
@@ -520,6 +525,8 @@ void frame_end() {
     std::memset(g_mdiMax, 0, sizeof g_mdiMax);
     std::memset(g_batchDraws, 0, sizeof g_batchDraws);
     std::memset(g_batchMax, 0, sizeof g_batchMax);
+    std::memset(g_batchStream, 0, sizeof g_batchStream);
+    std::memset(g_batchIndirect, 0, sizeof g_batchIndirect);
 }
 
 }  // namespace native_draw

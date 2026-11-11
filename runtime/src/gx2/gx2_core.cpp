@@ -776,11 +776,12 @@ static void execute_op(Op op, const uint32* p, uint32 n);
 static void execute_one(Op op, const uint32* p, uint32 n) {
     rprof::Op kind;
 #ifdef WWHD_NATIVE_DRAW
-    // a collected multi-draw batch is drawn before any other command but register writes and packet definitions
-    // (define: when it changes the packet); a collected shader-rewrite batch before any other command (native_draw.h)
-    if (native_draw::g_mdiPending && op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE && op != OP_SET_REGS && op != OP_NOP)
-        native_draw::flush_mdi();
-    if (native_draw::g_batchPending && op != OP_PACKET_DRAW) native_draw::flush_batch();
+    // a collected multi-draw or shader-rewrite batch is drawn before any other command but register writes and packet
+    // definitions (define: when it changes the packet; register writes: the next instance's replayable check)
+    if (op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE && op != OP_SET_REGS && op != OP_NOP) {
+        if (native_draw::g_mdiPending) native_draw::flush_mdi();
+        if (native_draw::g_batchPending) native_draw::flush_batch();
+    }
 #endif
     switch (op) {
     case OP_DEBUG_CONTEXT: g_draw_context.store(n ? p[0] : 0, std::memory_order_relaxed); return;
