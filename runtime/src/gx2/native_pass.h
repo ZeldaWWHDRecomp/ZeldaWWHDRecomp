@@ -85,6 +85,17 @@ void copy(const uint32_t* p, uint32_t n);       // render thread: OP_PASS_COPY
 void viewport(const uint32_t* p, uint32_t n);   // render thread: OP_PASS_VIEWPORT
 void note_draw(const uint32_t* regs);           // render thread: a draw (full or packet) about to execute
 void frame_end();                               // render thread: at each swap
+// The backend trusting the open pass (WWHD_NATIVE_PASS_TRUST=1, with WWHD_NATIVE_PASS=1; off by default; Vulkan):
+// while the draw just checked (note_draw) lies in a described pass whose every target word matches, the targets the
+// draw path resolved for the pass's previous draw are taken again when nothing else they depend on changed (same
+// frame and surface epoch, eye size, active colour mask and size claim of the pixel program), instead of looking up
+// the surfaces again. WWHD_NATIVE_PASS_TRUST=2: every draw resolves its targets and compares them with the trusted
+// ones (mismatches logged and counted). The counters ("trusted target draws" / "resolved") go on the pass line.
+int trust_mode();                               // 0 off, 1 trust, 2 verify
+// the draw of the command just checked (REGS: the registers it was checked with; once): in a described pass, every
+// word matching
+bool trusted(uint32_t& passId, const uint32_t* regs);
+void count_trust(int what);                     // 0 resolved (miss), 1 trusted, 2 verify mismatch
 
 }  // namespace native_pass
 #endif

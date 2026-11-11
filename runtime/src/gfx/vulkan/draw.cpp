@@ -54,6 +54,7 @@
 #include "reproj.h"
 #ifdef WWHD_NATIVE_DRAW
 #include "gx2/native_draw.h"
+#include "gx2/native_pass.h"
 #include <memory>
 #endif
 #include <algorithm>
@@ -2658,6 +2659,57 @@ bool resolve_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
     depth = nullptr;
   return true;
 }
+#ifdef WWHD_NATIVE_DRAW
+// native_pass.h (WWHD_NATIVE_PASS_TRUST): the targets of the open described pass. Its every target word matched the
+// description at this draw (note_draw), so the registers resolve_targets reads for the attachments are those of the
+// pass's previous draw; the rest it depends on is the key (frame, surface epoch: surfaces created, replaced or
+// uploaded; eye size; the active colour mask, whether depth is active, and the pixel program's size claim). Not for the AO replay (private
+// targets) or with stereo.
+bool pass_trusted_targets(const uint32_t* r, vk::Shader* ps, DrawTargets& t) {
+  const int mode = native_pass::trust_mode();
+  uint32_t passId = 0;
+  if (!mode || aoPrivateReplay || stereo::frame.mode != stereo::Off || !native_pass::trusted(passId, r))
+    return resolve_targets(r, ps, t);
+  struct Cached {
+    bool valid = false;
+    uint32_t pass = 0, eyeSize = 0, mask = 0;
+    uint64_t frame = ~0ull, epoch = 0;
+    gfx::SizeRequest claim{};
+    DrawTargets targets;
+  };
+  static Cached c;
+  const auto& lcr = *reinterpret_cast<const LatteContextRegister*>(r);
+  // (as resolve_targets: the active colour buffers, and whether the depth buffer is active, bit 8)
+  const uint32_t mask = LatteMRT::GetActiveColorBufferMask(ps->dec, lcr) | (LatteMRT::GetActiveDepthBufferMask(lcr) ? 0x100u : 0u);
+  const auto claim = gfx::size_request(ps->kind);
+  const bool hit = c.valid && c.pass == passId && c.frame == R.frame && c.epoch == g_surface_epoch &&
+                   c.eyeSize == stereo_eye_size_generation() && c.mask == mask && c.claim.claim == claim.claim && c.claim.renews == claim.renews && c.claim.keeps == claim.keeps;
+  if (hit && mode == 1) {
+    t = c.targets;
+    native_pass::count_trust(1);
+    return true;
+  }
+  const bool ok = resolve_targets(r, ps, t);
+  if (hit && (!ok || !t.same(c.targets) || t.activeColors != c.targets.activeColors)) {
+    native_pass::count_trust(2);
+    static int said = 0;
+    if (said++ < 16)
+      LOG("[native-pass] TRUSTED TARGETS DIFFER in pass %u (frame %llu): colours %d slices %d depth %d target %d size %d "
+          "scale %d active %d", passId, (unsigned long long)R.frame, t.colors != c.targets.colors,
+          t.slices != c.targets.slices, t.depth != c.targets.depth || t.depthSlice != c.targets.depthSlice,
+          t.target != c.targets.target, t.width != c.targets.width || t.height != c.targets.height,
+          std::memcmp(&t.sx, &c.targets.sx, 4) || std::memcmp(&t.sy, &c.targets.sy, 4),
+          t.activeColors != c.targets.activeColors);
+  } else {
+    native_pass::count_trust(hit ? 1 : 0);
+  }
+  c = {ok, passId, stereo_eye_size_generation(), mask, R.frame, g_surface_epoch, claim, t};
+  return ok;
+}
+#define PASS_TRUSTED_TARGETS(r, ps, t) pass_trusted_targets(r, ps, t)
+#else
+#define PASS_TRUSTED_TARGETS(r, ps, t) resolve_targets(r, ps, t)
+#endif
 // Eye 1's geometry replay still needs its own attachments, but consecutive draws do
 // not need to resolve the same attachment registers again. This cache only owns
 // lookup results; uploads and transitions below remain in command order.
@@ -4159,7 +4211,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
            continued.targets.activeColors);
   if(backdropReplay) targets=backdropReplay->targets;
   else if (fast || partialTargets) targets = continued.targets;
-  else if (!(replay ? resolve_replay_targets(r, ps, targets) : resolve_targets(r, ps, targets)))
+  else if (!(replay ? resolve_replay_targets(r, ps, targets) : PASS_TRUSTED_TARGETS(r, ps, targets)))
     return;
   if (auto* backdrop = gamepad_backdrop_replay_target()) {
     targets.colors[0] = backdrop;

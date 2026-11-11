@@ -190,8 +190,9 @@ static bool g_isOpen = false, g_drawn = false;
 enum Counter {
     kPasses, kDescribedDraws, kOutsideDraws, kMismatchDraws, kLoadIntents, kLoadsAfterDraw, kEnds,
     kNScan, kNExpandDepth, kNExpandColor, kNSurface, kViewportsDescribed, kScissorsDescribed, kViewportDraws,
-    kViewportUndescribed, kViewportMismatch, kCounters
+    kViewportUndescribed, kViewportMismatch, kTrusted, kTrustResolved, kTrustMismatch, kCounters
 };
+static bool g_lastDescribed = false;  // the last checked draw lay in a described pass, every target word matching
 // the viewport and scissor last described (kept across passes: a site sets them for the targets it binds next, or
 // for the pass it is in) and whether a register write since then set them otherwise
 static Viewport g_viewport, g_scissor;
@@ -239,7 +240,27 @@ void copy(const uint32_t* p, uint32_t n) {
     close_pass();  // (the pass is stored, then copied)
 }
 // the targets every draw derives from the registers (CB_COLOR*_BASE, DB_DEPTH_BASE) against the open pass
+int trust_mode() {
+    static const int v = [] {
+        const char* e = std::getenv("WWHD_NATIVE_PASS_TRUST");
+        const int m = on() && e && *e ? std::atoi(e) : 0;
+        if (on()) LOG("[native-pass] backend trusting the open pass: %s (WWHD_NATIVE_PASS_TRUST=%d)",
+                      m == 1 ? "on" : m == 2 ? "verify" : "off", m);
+        return m == 1 || m == 2 ? m : 0;
+    }();
+    return v;
+}
+static const uint32_t* g_noteRegs = nullptr;  // the registers the last check read; one draw resolve may trust it
+bool trusted(uint32_t& passId, const uint32_t* regs) {
+    passId = g_open.id;
+    const bool t = g_lastDescribed && g_isOpen && regs == g_noteRegs;
+    g_lastDescribed = false;  // (the draw of this command only: not a replay or helper draw it makes itself)
+    return t;
+}
+void count_trust(int what) { ++g_count[what == 1 ? kTrusted : what == 2 ? kTrustMismatch : kTrustResolved]; }
 void note_draw(const uint32_t* regs) {
+    g_lastDescribed = false;
+    g_noteRegs = regs;
     if (!g_isOpen) {
         ++g_count[kOutsideDraws];
         return;
@@ -269,6 +290,7 @@ void note_draw(const uint32_t* regs) {
                 if (regs[colorRegs[k] + i] != g_open.colors[i].regs[k]) bad = int(i * 10 + k);
     if (bad < 0) {
         ++g_count[kDescribedDraws];
+        g_lastDescribed = true;
         return;
     }
     ++g_count[kMismatchDraws];
@@ -285,7 +307,9 @@ void frame_end() {
                                                  "clears after a draw", "ends", "scan-out copies", "depth expands",
                                                  "colour expands", "surface copies", "viewports described",
                                                  "scissors described", "draws with the described viewport and scissor",
-                                                 "draws before any described viewport", "draws whose viewport or scissor differ"};
+                                                 "draws before any described viewport", "draws whose viewport or scissor differ",
+                                                 "trusted target draws", "target draws resolved",
+                                                 "trusted targets differing (verify)"};
     char buf[1000];
     int k = std::snprintf(buf, sizeof buf, "[native-pass] last 300 frames, per frame:");
     for (uint32_t c = 0; c < kCounters; ++c)
