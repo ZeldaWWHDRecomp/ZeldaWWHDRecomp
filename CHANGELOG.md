@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build (fast mode) on macOS: the same cross-unit inlining as on Android** (#526). The fast build's
+  whole-program link now also runs on the Mac, using Xcode's own link-time optimizer, so small functions such as the
+  collision and matrix helpers are inlined across units instead of being called through a wrapper each time.
+  Building takes longer at the final link (about 2 minutes). `WWHD_DECOMP_FAST_WHOLE_LTO=OFF` restores the previous
+  per-unit link. The normal build and the Android build are unchanged.
+
 - **Decomp build (fast mode): cheaper wake-ups between game threads, about 0.4–1.1 ms less game logic per frame on a
   phone** (#524). Message queues are now looked up without a global lock, a message only wakes its receiver when the
   receiver is actually asleep, and the busy worker threads wait a moment longer before they sleep, so most messages
