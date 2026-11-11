@@ -47,8 +47,10 @@
 // Not bit-exact: on GPUs whose automatic texture-level (mip LOD) choice depends on how the draws are split (Apple),
 // one instanced draw can pick another level than one draw per instance at some pixels. That difference is accepted
 // per kind, and only where it is the only one: a site is enabled (batch_site_on; WWHD_NATIVE_DRAW_BATCH_SITES lists
-// them, default GRASS,FLOWER) only after its gate proved, for each of its kinds, that with every texture read at
-// explicit LOD 0 the batched picture is bit-identical to the unbatched one. Every other kind refuses (logged once).
+// them, default GRASS,FLOWER,VRKUMO,JPA) only after its gate proved, for each of its kinds, that with every texture
+// read at explicit LOD 0 the batched picture is bit-identical to the unbatched one. Every other kind refuses (logged
+// once). (Fewer draws also move the draw-batch submission split, WWHD_VK_DRAW_BATCH, which by itself can change a
+// pixel or two in scenes above the split's draw count, batched or not; the proof of such a scene runs with it off.)
 // Stream batches: a kind whose instances bring a stream of their own (a vertex buffer of the instance's) and whose
 // blocks vary from instance to instance (cloud cards: a colour pair per card; particles: material, frame and matrix
 // blocks per particle) is batched the same way, its instances' streams copied back to back and drawn as one indirect

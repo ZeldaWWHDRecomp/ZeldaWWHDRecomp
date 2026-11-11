@@ -77,12 +77,12 @@ bool batch_on() {
     return on;
 }
 // the sites whose kinds have the LOD-0 proof (native_draw.h): WWHD_NATIVE_DRAW_BATCH_SITES, a comma list of site
-// names (default "grass,flower"; any case)
+// names (default "grass,flower,vrkumo,jpa"; any case)
 bool batch_site_on(uint32_t site) {
     static const std::array<bool, kSites> on = [] {
         std::array<bool, kSites> v{};
         const char* e = std::getenv("WWHD_NATIVE_DRAW_BATCH_SITES");
-        std::string list = e ? e : "grass,flower";
+        std::string list = e ? e : "grass,flower,vrkumo,jpa";
         for (auto& c : list) c = char(std::tolower(uint8_t(c)));
         std::string names;
         for (uint32_t s = 1; s < kSites; ++s) {
