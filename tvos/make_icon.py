@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""Gives the Apple TV app its icon and Top Shelf images (a tvOS brand asset), compiled into the bundle.
+"""Gives the Apple TV app its icon and Top Shelf images (a tvOS brand asset), compiled into the bundle; the
+iPhone / iPad app (its Info.plist names those devices) its icon.
 
 usage: python3 tvos/make_icon.py WindWakerHD.app [picture]
 
 The picture: the given one, else the game's own TV boot image when the game files are in the bundle
 (game/meta/bootTvTex.tga, as the app packages them: the picture is the game's, like the rest of the
 bundle, so the app stays on your devices), else the project's own icon (android/icon). Any picture is
-scaled to cover each size and cut to it. Runs after every build of the app (CMakeLists.txt); run it
+scaled to cover each size and cut to it. The iPhone / iPad icon is the boot image's middle panel (the hero raising
+the sword), apart from the GamePad app's icon on the same phone (ios/make_icon.py: the game's own small icon).
+Runs after every build of the app (CMakeLists.txt); run it
 again after putting the game files in, then sign. Only macOS's own tools: sips, and Xcode's actool.
 """
 import json
@@ -77,15 +80,64 @@ def stack(folder, picture, w, h, scales):
     imageset(os.path.join(folder, "Back.imagestacklayer", "Content.imageset"), picture, w, h, scales)
 
 
+IOS_ICON = "AppIcon"
+# the boot image's middle panel, as fractions of the picture (bootTvTex.tga, 1280x720): left, top, side / height
+HERO = (0.390, 0.26, 0.41)
+
+
+def ios_icon(app, picture, boot, tmp):
+    cat = os.path.join(tmp, "Assets.xcassets")
+    contents(cat, {})
+    folder = os.path.join(cat, IOS_ICON + ".appiconset")
+    os.makedirs(folder, exist_ok=True)
+    out = os.path.join(folder, "icon.png")
+    if boot:
+        w, h = size(picture)
+        side = round(HERO[2] * h)
+        subprocess.run(["sips", "-s", "format", "png", "-c", str(side), str(side), "--cropOffset",
+                        str(round(HERO[1] * h)), str(round(HERO[0] * w)), picture, "--out", out],
+                       check=True, capture_output=True)
+        subprocess.run(["sips", "-z", "1024", "1024", out, "--out", out], check=True, capture_output=True)
+    else:
+        cover(picture, 1024, 1024, out)
+    contents(folder, {"images": [{"filename": "icon.png", "idiom": "universal", "platform": "ios", "size": "1024x1024"}]})
+    partial = os.path.join(tmp, "partial.plist")
+    r = subprocess.run(["xcrun", "actool", cat, "--compile", app, "--platform", "iphoneos",
+                        "--minimum-deployment-target", "17.0", "--target-device", "iphone", "--target-device", "ipad",
+                        "--app-icon", IOS_ICON, "--output-partial-info-plist", partial,
+                        "--errors", "--warnings", "--output-format", "human-readable-text"],
+                       capture_output=True, text=True)
+    if r.returncode or not os.path.exists(partial):
+        sys.exit("actool failed:\n" + r.stdout + r.stderr)
+    return partial
+
+
 def main():
     if len(sys.argv) < 2:
         sys.exit(__doc__)
     app = sys.argv[1]
     picture = sys.argv[2] if len(sys.argv) > 2 else None
+    boot = False
     if not picture:
-        boot = os.path.join(app, "game", "meta", "bootTvTex.tga")
-        picture = boot if os.path.exists(boot) else os.path.join(here, "..", "android", "icon", "app_icon_1024.png")
+        picture = os.path.join(app, "game", "meta", "bootTvTex.tga")
+        boot = os.path.exists(picture)
+        if not boot:
+            picture = os.path.join(here, "..", "android", "icon", "app_icon_1024.png")
+    info_path = os.path.join(app, "Info.plist")
+    with open(info_path, "rb") as f:
+        ios = 3 not in plistlib.load(f).get("UIDeviceFamily", [3])
     with tempfile.TemporaryDirectory() as tmp:
+        if ios:
+            partial = ios_icon(app, picture, boot, tmp)
+            with open(info_path, "rb") as f:
+                info = plistlib.load(f)
+            with open(partial, "rb") as f:
+                info.update(plistlib.load(f))
+            info.pop("TVTopShelfImage", None)  # (left by an older run of this script)
+            with open(info_path, "wb") as f:
+                plistlib.dump(info, f)
+            print(f"{os.path.basename(app)}: iPhone / iPad icon from {os.path.basename(picture)}")
+            return
         cat = os.path.join(tmp, "Assets.xcassets")
         contents(cat, {})
         brand = os.path.join(cat, STACK + ".brandassets")

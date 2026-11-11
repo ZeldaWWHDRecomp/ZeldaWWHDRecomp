@@ -21,11 +21,14 @@
 #include "../input.h"
 #include "../overlay/hostui.h"
 #include "display_modes.h"
+#include "../overlay/overlay.h"
+#include "../platform/keycodes.h"
 #include "renderer.h"
 #include "../interp.h"
 #include "remote_video.h"
 #include "../mods/save_folder.h"
 #include "../remote_pad/remote_pad.h"
+#include "../mods/mods.h"
 #include "../audio_out.h"
 #include "../platform/host.h"
 #include <filesystem>
@@ -36,8 +39,13 @@ int wwhd_main(int argc, char** argv);  // main.cpp
 void log_msg(const char* fmt, ...);
 
 @interface WWMetalView : UIView
+#if TARGET_OS_TV
 @end
 @implementation WWMetalView
+#else
+@interface WWMetalView : UIView <UIKeyInput>
+@end
+#endif
 + (Class)layerClass { return [CAMetalLayer class]; }
 - (void)layoutSubviews {
     [super layoutSubviews];
@@ -47,6 +55,75 @@ void log_msg(const char* fmt, ...);
     layer.drawableSize = CGSizeMake(MAX(1.0, self.bounds.size.width * scale), MAX(1.0, self.bounds.size.height * scale));
 }
 @end
+#if !TARGET_OS_TV
+// The touch screen (iPhone, iPad): one finger at a time. While Settings or the text prompt is up it is the
+// overlay's pointer; otherwise a finger on the GamePad picture (in One screen mode, the whole picture) touches
+// the GamePad's screen, and a drag that leaves the picture keeps touching its edge.
+static UITouch* g_finger = nil;
+static bool g_finger_overlay = false;
+- (bool)point:(UITouch*)t x:(float*)nx y:(float*)ny {
+    const CGPoint p = [t locationInView:self];
+    const CGSize sz = self.bounds.size;
+    if (sz.width <= 0 || sz.height <= 0) return false;
+    *nx = float(p.x / sz.width);
+    *ny = float(p.y / sz.height);
+    return true;
+}
+- (void)finger:(UITouch*)t phase:(int)phase {  // 0 down, 1 moved, 2 up
+    float nx, ny, x, y;
+    if (![self point:t x:&nx y:&ny]) return;
+    if (phase == 0) g_finger_overlay = overlay::captures();
+    if (g_finger_overlay) {
+        overlay::mouse_move(nx, ny, true);
+        if (phase != 1) overlay::mouse_button(0, phase == 0, true);
+        return;
+    }
+    const bool on = gfx::overlay_hit(nx, ny, &x, &y, phase != 0);
+    if (phase == 0 && !on) {
+        mods::startup_title_tap();  // (on the title screen only: A, as "press A" asks)
+        return;
+    }
+    input::set_touch(phase != 2, on ? x : 0, on ? y : 0);
+}
+- (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
+    if (g_finger) return;
+    g_finger = touches.anyObject;
+    [self finger:g_finger phase:0];
+}
+- (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
+    if (g_finger && [touches containsObject:g_finger]) [self finger:g_finger phase:1];
+}
+- (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e {
+    if (!g_finger || ![touches containsObject:g_finger]) return;
+    [self finger:g_finger phase:2];
+    g_finger = nil;
+}
+- (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e { [self touchesEnded:touches withEvent:e]; }
+// The system keyboard while the overlay wants text (a Settings field, the game's text prompt): the view takes
+// the keyboard then (follow_text_input, polled), typed text goes to the overlay, Return and Delete as keys.
+- (BOOL)canBecomeFirstResponder { return overlay::wants_text(); }
+- (BOOL)hasText { return YES; }  // (Delete is always passed on)
+- (UITextAutocorrectionType)autocorrectionType { return UITextAutocorrectionTypeNo; }
+- (UITextAutocapitalizationType)autocapitalizationType { return UITextAutocapitalizationTypeNone; }
+- (UITextSpellCheckingType)spellCheckingType { return UITextSpellCheckingTypeNo; }
+- (void)key:(int)code {
+    overlay::key(code, true, false, 0);
+    overlay::key(code, false, false, 0);
+}
+- (void)insertText:(NSString*)text {
+    if ([text isEqualToString:@"\n"]) {
+        [self key:kVK_Return];
+        return;
+    }
+    overlay::text(text.UTF8String);
+}
+- (void)deleteBackward { [self key:kVK_Delete]; }
+- (void)followTextInput {
+    const bool want = overlay::wants_text();
+    if (want && !self.isFirstResponder) [self becomeFirstResponder];
+    else if (!want && self.isFirstResponder) [self resignFirstResponder];
+}
+#endif
 
 @interface WWViewController : UIViewController
 @end
@@ -554,6 +631,9 @@ void choose_file(const char*, const char*, bool, std::function<void(std::string)
 bool get(const char* key, std::string& value) { return gfx::host_setting(key, value); }
 void set(const char* key, const std::string& value) { gfx::set_host_setting(key, value); }
 float res_scale() { return render::res_scale(); }
+#if !TARGET_OS_TV
+    [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer*) { [g_view followTextInput]; }];
+#endif
 void set_res_scale(float s) {
     render::set_res_scale(s);
     gfx::set_host_setting("resScale", std::to_string(s));
