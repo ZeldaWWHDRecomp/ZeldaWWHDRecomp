@@ -464,6 +464,35 @@ class NativeRulesTest(unittest.TestCase):
         self.assertIn("template <> struct Sa<0x02011D2Cu>", h)
         self.assertIn("#define GABI_NE_0x02011D2C(F) extern \"C\" __attribute__((visibility(\"hidden\"))) uint32_t wwhd_sa_02011D2C(", h)
 
+    def test_accessor_rules(self):
+        # --accessor: the guard and object addresses from the unit's object_at views, the body's lazy form checked
+        t = self.tmp.name
+        u1 = os.path.join(t, "k.cpp")
+        good = ("struct KankyoGuard {\n    be<u32> value;\n};\n"
+                "static static KankyoEnvLight& g_env_light = gabi::object_at<KankyoEnvLight>(0x10475A68);\n"
+                "static static KankyoGuard& envLightInitialized = gabi::object_at<KankyoGuard>(0x104773B4);\n"
+                "KankyoEnvLight *kankyo_getEnvlight() { WWHD_GLUE_FUNC_R(0x02555D0C, KankyoEnvLight *);\n"
+                "    // the guard first\n    if (envLightInitialized.value == 0) {\n        envLightInitialized.value = 1;\n"
+                "        g_env_light.construct();\n        kankyoRegisterGlobal(&envLightDestructor);\n    }\n"
+                "    return wwhd_native_scope_.ret<wwhd_ret_t_>((&g_env_light));\n}\n")
+        json.dump({"units": [{"name": "d_kankyo", "sources": [{"path": u1}]}]}, open(os.path.join(self.out, "units.json"), "w"))
+        line = ["02555D0C  callee=native caller=ok  (may park) decl=exact:0r0f:1  # d_kankyo kankyo_getEnvlight"]
+        open(u1, "w").write(good)
+        self.assertEqual(native_rules.accessor_rules(line, self.out), {0x02555D0C: ("d_kankyo", 0x104773B4, 0x10475A68)})
+        bad_bodies = [good.replace("return wwhd_native_scope_", "if (x) return 0;\n    return wwhd_native_scope_"),
+                      good.replace("envLightInitialized.value == 0", "envLightInitialized.value != 0"),
+                      good.replace("be<u32> value;", "be<u8> value;"),
+                      good.replace("(&g_env_light)", "(&g_other)")]
+        for b in bad_bodies:
+            open(u1, "w").write(b)
+            with self.assertRaises(SystemExit):
+                native_rules.accessor_rules(line, self.out)
+        open(u1, "w").write(good)
+        for l in ("02555D0C  callee=guest caller=ok  src:cpu decl=exact:0r0f:1  # d_kankyo kankyo_getEnvlight",
+                  "02555D0C  callee=native caller=ok  - decl=exact:1r0f:1  # d_kankyo kankyo_getEnvlight"):
+            with self.assertRaises(SystemExit):
+                native_rules.accessor_rules([l], self.out)
+
 
 if __name__ == "__main__":
     unittest.main()

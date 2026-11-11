@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf [--bare [--bare-entry]]] [--stackarg] [--unbased]]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf [--bare [--bare-entry]]] [--stackarg] [--accessor] [--unbased]]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -834,7 +834,7 @@ def fast_shape(flags):
     return cr, ", ".join(params), ", ".join(names)
 
 
-def fast_text(own_verify, own_exact, ext_exact, own_sa=None):
+def fast_text(own_verify, own_exact, ext_exact, own_sa=None, own_acc=None):
     """fast mode (cmake WWHD_DECOMP_FAST, gabi.h GABI_FAST_NE): calls between units bound by address at link time.
     Each register-exact function of the unit is exported as extern "C" wwhd_ne_XXXXXXXX (its native entry shape)
     through VERIFY's GABI_NE_<addr>(F) (empty for every other VERIFY address of the unit), and each register-exact
@@ -855,6 +855,11 @@ def fast_text(own_verify, own_exact, ext_exact, own_sa=None):
         t.append('extern "C" GABI_NE_VIS %s wwhd_ne_%08X(%s);' % (cr, a, params or "void"))
         t.append("template <> struct Ne<0x%08Xu> { static constexpr bool ok = true; static constexpr auto fn = "
                  "&wwhd_ne_%08X; };" % (a, a))
+    if own_acc is not None:  # --accessor (gabi.h GABI_FAST_ACCESSOR): the unit's own lazy accessors (AccEntry)
+        t.append("template <uint32_t A> struct Acc { static constexpr bool ok = false; };")
+        for a, (guard, value) in sorted(own_acc.items()):
+            t.append("template <> struct Acc<0x%08Xu> { static constexpr bool ok = true; static constexpr uint32_t "
+                     "guard = 0x%08Xu, value = 0x%08Xu; };" % (a, guard, value))
     if own_sa is not None:  # --stackarg (gabi.h GABI_STACKARG): the unit's own bit-24 functions, for do_call_sa only
         t.append("template <uint32_t A> struct Sa { static constexpr bool ok = false; };")
         for a, flags in sorted(own_sa.items()):
@@ -1093,6 +1098,59 @@ def stackarg_rules(lines, out, src):
     return lines
 
 
+# --accessor (fast mode, gabi.h GABI_FAST_ACCESSOR): lazy accessors whose native entry returns the object's guest
+# address without running the body once its guard word is set: address -> (guard object, value object), both named as
+# in the function's own source (gen.py's gabi::object_at views). The 2026-11-11 phone profile: kankyo_getEnvlight,
+# 10,168 native entries per logic pass, each with the full scope.
+FAST_ACCESSORS = {0x02555D0C: ("envLightInitialized", "g_env_light")}
+
+
+def accessor_rules(lines, out):
+    """--accessor: {address: (unit, guard address, value address)} for each FAST_ACCESSORS function whose glued body is
+    exactly the lazy form `if (GUARD.value == 0) { GUARD.value = 1; ... } return &VALUE;` (comments and spaces aside, no
+    other return, no brace inside the if), GUARD's type a struct of one be<u32> `value`, the function register-exact,
+    callee=native, no parameter and an r3 result. gabi.h's AccEntry then returns VALUE's guest address while the guard
+    word is not 0, which is what the body returns then; the guest entry and every call while it is 0 run the body.
+    Exits on any mismatch (the decompilation changed the function: the table must be looked at again)."""
+    uj = json.load(open(os.path.join(out, "units.json"), encoding="utf-8"))
+    srcs = {u["name"]: [s["path"] for s in u["sources"]] for u in uj["units"]}
+    got = {}
+    for a, (guard, value) in sorted(FAST_ACCESSORS.items()):
+        line = next((x for x in lines if int(x.split()[0], 16) == a), None)
+        if line is None:
+            sys.exit("native_rules.py --accessor: %08X is not decompiled" % a)
+        head, _, tail = line.partition("#")
+        unit = tail.split()[0]
+        if "callee=native" not in head or not re.search(r"\bdecl=exact:[0-8]r0f:1\b", head) or \
+                (int(re.search(r"decl=exact:(\d)r", head).group(1)) != 0):
+            sys.exit("native_rules.py --accessor: %08X: not a native register-exact function without parameters and "
+                     "with an r3 result: %s" % (a, line))
+        text = "\n".join(open(p, encoding="utf-8", errors="replace").read() for p in srcs[unit])
+        bare = ne_strip(text)
+        g = re.search(r"&\s*" + guard + r"\s*=\s*gabi::object_at<(\w+)>\(0x([0-9A-Fa-f]{8})\)", bare)
+        v = re.search(r"&\s*" + value + r"\s*=\s*gabi::object_at<\w+>\(0x([0-9A-Fa-f]{8})\)", bare)
+        if not g or not v or not re.search(r"\bstruct\s+" + g.group(1) + r"\s*\{\s*be<u32>\s+value\s*;\s*\}\s*;", bare):
+            sys.exit("native_rules.py --accessor: %08X: %s / %s are not gabi::object_at views of a {be<u32> value} guard "
+                     "and an object in unit %s" % (a, guard, value, unit))
+        m = re.search(r"WWHD_GLUE_FUNC_R\(\s*0x%08X\s*," % a, bare)
+        if not m:
+            sys.exit("native_rules.py --accessor: %08X: no WWHD_GLUE_FUNC_R body in unit %s" % (a, unit))
+        k = bare.index(";", m.end()) + 1
+        depth, j = 1, k
+        while j < len(bare) and depth:
+            depth += {"{": 1, "}": -1}.get(bare[j], 0)
+            j += 1
+        body = re.sub(r"\s+", "", bare[k:j - 1])
+        shape = (r"if\(" + guard + r"\.value==0\)\{" + guard + r"\.value=1;[^{}]*\}return" +
+                 r"wwhd_native_scope_\.ret<wwhd_ret_t_>\(\(&" + value + r"\)\);")
+        if not re.fullmatch(shape, body) or body.count("return") != 1:
+            sys.exit("native_rules.py --accessor: %08X: the body is not the lazy accessor form: %s" % (a, body[:300]))
+        got[a] = (unit, int(g.group(2), 16), int(v.group(1), 16))
+        print("decomp: native-call rules (--accessor): %08X %s: guard %s %08X, object %s %08X" % (
+            a, tail.split(None, 1)[1].strip(), guard, got[a][1], value, got[a][2]))
+    return got
+
+
 def entry_only_rules(lines, out, src):
     """--bare-entry (fast mode, gabi.h GABI_BARE_ENTRY, NativeInfo bit 23 "(nentry)"): bare leaves whose body nothing
     can call by name, so that every call reaches it through its native entry (lcall / hcall / call_ptr / gabi::call),
@@ -1137,7 +1195,7 @@ def entry_only_rules(lines, out, src):
     return out_lines
 
 
-def unit_headers(out, lines, fast=False, hcalls=None, stackarg=False):
+def unit_headers(out, lines, fast=False, hcalls=None, stackarg=False, accessors=None):
     """OUT/native/K.h for game unit K (units.json order, as glue/K.cpp): its functions' and the decompiled functions
     it calls in other units (lean calls) {address, slot index, flags (1: callee=native, 2: caller=ok, 4: listed)},
     sorted, as gabi.h's GABI_NATIVE_TABLE (pre-included by cmake/Decomp.cmake)"""
@@ -1214,7 +1272,8 @@ def unit_headers(out, lines, fast=False, hcalls=None, stackarg=False):
             nexp += len(own)
             next_ += len(ext)
             extra = fast_text(verify[k], own, ext,
-                              {a: flags_of[a] for a in sa_own if unit_of[a] == k} if stackarg else None)
+                              {a: flags_of[a] for a in sa_own if unit_of[a] == k} if stackarg else None,
+                              {a: v[1:] for a, v in accessors.items() if index[v[0]] == k} if accessors is not None else None)
         gen.write_if_changed(os.path.join(out, "native", "%d.h" % k), (
             "// generated by tools/decomp_build/native_rules.py: native calls of game unit %s (decomp/native.txt)\n"
             "#pragma once\n#include <cstdint>\n#define GABI_NATIVE_TABLE 1\n"
@@ -1252,6 +1311,11 @@ def main():
         args.remove("--bare-entry")
         if not bare:
             sys.exit("native_rules.py: --bare-entry needs --bare")
+    accessor = "--accessor" in args  # fast mode (cmake WWHD_DECOMP_FAST_ACCESSOR): accessor_rules
+    if accessor:
+        args.remove("--accessor")
+        if not fast:
+            sys.exit("native_rules.py: --accessor needs --fast")
     stackarg = "--stackarg" in args  # fast mode (cmake WWHD_DECOMP_FAST_STACKARG): stackarg_rules
     if stackarg:
         args.remove("--stackarg")
@@ -1303,7 +1367,8 @@ def main():
     gen.write_if_changed(os.path.join(out, "native.txt"),
                          "# generated by tools/decomp_build/native_rules.py (native-calls rules)\n"
                          + "\n".join(lines) + "\n")
-    unit_headers(out, lines, fast, HeaderCalls(src, out) if hcall else None, stackarg)
+    unit_headers(out, lines, fast, HeaderCalls(src, out) if hcall else None, stackarg,
+                 accessor_rules(lines, out) if accessor else None)
     n = sum(1 for x in lines if "callee=native" in x)
     ne = sum(1 for x in lines if "callee=native" in x and DECL_FIELD.search(x.split("#")[0]))
     print("decomp: native-call rules%s: %d of %d functions may be called natively, %d of them register-exact (%s)" % (
