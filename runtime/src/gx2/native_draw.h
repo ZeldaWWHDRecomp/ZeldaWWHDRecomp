@@ -29,9 +29,9 @@
 // register file, the context shadow and the full path see the same state as without packets.
 //
 // Run-time switches (ON builds): WWHD_NATIVE_DRAW=1 turns packets on (off by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
-// one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE); WWHD_NATIVE_DRAW_VERIFY=N draws
-// every Nth replayable instance through the full path and compares what it resolved with the packet (mismatches
-// logged, "[native-draw] VERIFY MISMATCH").
+// one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE, JPA);
+// WWHD_NATIVE_DRAW_VERIFY=N draws every Nth replayable instance through the full path and compares what it resolved
+// with the packet (mismatches logged, "[native-draw] VERIFY MISMATCH").
 //
 // Shader-rewrite batches (WWHD_NATIVE_DRAW_BATCH; Vulkan; on by default in this build (cmake WWHD_NATIVE_DRAW_BATCH,
 // ON), WWHD_NATIVE_DRAW_BATCH=0 turns them off): the replayable instances of a kind with the kind's own vertex input and
@@ -60,7 +60,7 @@ namespace native_draw {
 enum Site : uint32_t {
     kSiteGrass = 1, kSiteTree = 2, kSiteWood = 3, kSiteFlower = 4, kSiteMagma = 5,
     kSiteStar = 6, kSiteHousi = 7, kSiteWave = 8, kSiteMoya = 9, kSiteVrkumo = 10, kSiteRain = 11, kSiteSea = 12,
-    kSiteLine = 13, kSites = 14
+    kSiteLine = 13, kSiteJpa = 14, kSites = 15
 };
 // packet ids: 8 per site (by pass, or by pass and variant), the first 8 unused
 constexpr uint32_t kIdsPerSite = 8;

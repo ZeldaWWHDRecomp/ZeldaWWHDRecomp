@@ -34,7 +34,7 @@ static int env_int(const char* name, int fallback) {
     return e && *e ? std::atoi(e) : fallback;
 }
 static const char* const kSiteNames[kSites] = {"", "grass", "tree", "wood", "flower", "magma",
-                                               "star", "housi", "wave", "moya", "vrkumo", "rain", "sea", "line"};
+                                               "star", "housi", "wave", "moya", "vrkumo", "rain", "sea", "line", "jpa"};
 static bool master_on() {
     static const bool on = env_int("WWHD_NATIVE_DRAW", 0) != 0;
     return on;
