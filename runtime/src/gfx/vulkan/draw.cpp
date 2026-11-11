@@ -5663,8 +5663,10 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     ++B.count;
     native_draw::g_batchPending = true;
   };
-  // (only an instance with the kind's own vertex input and index range: one a multi-draw batch cannot take)
-  if (replayable && !verify && L.batch && L.batchPipeline && sameVertexInput && sameRange) {
+  // (only an instance with the kind's own vertex input and index range that no multi-draw or range batch takes:
+  // exact batches come first)
+  if (replayable && !verify && L.batch && L.batchPipeline && sameVertexInput && sameRange && !mdiCandidate &&
+      !rangeCandidate) {
     append_instance();
     return;
   }

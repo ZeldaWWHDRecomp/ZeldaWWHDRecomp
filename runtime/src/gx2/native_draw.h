@@ -50,7 +50,17 @@
 // them, default GRASS,FLOWER) only after its gate proved, for each of its kinds, that with every texture read at
 // explicit LOD 0 the batched picture is bit-identical to the unbatched one. Every other kind refuses (logged once).
 // Multi-draw batches (below) are exact and take precedence: an instance with a stream or an index range of its own
-// never joins a shader-rewrite batch.
+// never joins a shader-rewrite batch, nor does an instance a range batch takes.
+//
+// How the register journal and the two kinds of batches work together (packet_draw): an instance is replayable when
+// its kind's lowered state holds: the epoch is unchanged, or the journal shows that every register changed since the
+// lowering holds its lowered value again (kRestored). Only a replayable instance joins a batch; otherwise the open
+// batch is drawn first and the kind lowered again. Order of choice for a replayable instance: an open multi-draw or
+// range batch it can join; a shader-rewrite batch (enabled site, the kind's own vertex input and index range, not a
+// multi-draw or range candidate); a new multi-draw or range batch; a replay of its own. At most one batch is open:
+// each is drawn before the other starts. A multi-draw batch stays open across register writes and unchanged packet
+// definitions (the next instance's replayable check decides); a shader-rewrite batch is drawn before any command
+// other than a packet draw.
 #pragma once
 #ifdef WWHD_NATIVE_DRAW
 #include <cstdint>
