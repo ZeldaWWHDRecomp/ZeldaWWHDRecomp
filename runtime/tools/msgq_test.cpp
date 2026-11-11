@@ -293,7 +293,11 @@ static void stress() {
 
 int main() {
 #ifdef WWHD_MSGQ_FAST
+#ifdef _WIN32
+    _putenv_s("WWHD_MSGQ_STATS", "1");  // (read at first use)
+#else
     setenv("WWHD_MSGQ_STATS", "1", 1);  // (read at first use)
+#endif
 #endif
     std::printf("msgq_test: %s build, WWHD_MSGQ_FAST %s\n", kFast ? "decomp fast" : "normal", kOn ? "on" : "off");
     map_guest_memory();
