@@ -4254,6 +4254,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           e->lastUsed = R.frame;
           reason = continued_reason(r, prim);  // (a scissor that leaves other colour buffers active)
           j3dHit = reason == kContinued;
+          // resolve_targets' one side effect besides the lookups it skips (made by the draw that opened the pass)
+          if (Surface* d = continued.targets.depth; j3dHit && d && d->width == 1280 && d->height == 720)
+            R.mainDepthAddr = d->addr;
           if (!j3dHit) native_draw::j3d_count(native_draw::kJ3dScissor);
         } else native_draw::j3d_count(why);
       } else native_draw::j3d_count(native_draw::kJ3dNoEntry);
