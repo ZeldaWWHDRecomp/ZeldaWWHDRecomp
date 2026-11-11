@@ -32,7 +32,7 @@ static int env_int(const char* name, int fallback) {
     return e && *e ? std::atoi(e) : fallback;
 }
 static const char* const kSiteNames[kSites] = {"", "grass", "tree", "wood", "flower", "magma",
-                                               "star", "housi", "wave", "moya", "vrkumo", "rain", "sea"};
+                                               "star", "housi", "wave", "moya", "vrkumo", "rain", "sea", "line"};
 static bool master_on() {
     static const bool on = env_int("WWHD_NATIVE_DRAW", 0) != 0;
     return on;
@@ -311,6 +311,11 @@ extern "C" unsigned wwhd_native_option(unsigned site, unsigned option) {
         return v;
     }();
     return option == 1 && site < kSites && site_on(site) ? unsigned(split[site] != 0) : 0;
+}
+// 0: no packet; 1: begun, its mesh and commit still to come (a callee completes it); 2: defined
+extern "C" unsigned wwhd_native_state(unsigned site) {
+    const SiteState* s = site_state(site);
+    return !s || !s->open ? 0 : s->defined ? 2 : 1;
 }
 // the site's pass ends (or it leaves the packet): the pending effects
 extern "C" void wwhd_native_end(unsigned site) {

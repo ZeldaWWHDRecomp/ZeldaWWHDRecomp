@@ -5149,7 +5149,10 @@ void packet_compare(const PacketCapture& a, const PacketCapture& b, bool sameVer
   check(a.uniformHash[0] == b.uniformHash[0], "vertex uniforms");
   check(a.uniformHash[1] == b.uniformHash[1], "pixel uniforms");
   check(a.textureHash == b.textureHash, "textures");
-  check(a.vertexLayoutHash == b.vertexLayoutHash && (!sameVertexInput || a.vertexHash == b.vertexHash), "vertex input");
+  // (an instance with another index range copies another prefix of the same vertex buffers: their addresses and size
+  // words are the same (sameVertexInput), the content hash covers the copied prefix only)
+  check(a.vertexLayoutHash == b.vertexLayoutHash && (!sameVertexInput || !sameRange || a.vertexHash == b.vertexHash),
+        "vertex input");
   check((!sameRange || (a.indexHash == b.indexHash && a.drawCount == b.drawCount)) && a.indexType == b.indexType,
         "index input");
   bool layout = a.offsetCount == b.offsetCount;

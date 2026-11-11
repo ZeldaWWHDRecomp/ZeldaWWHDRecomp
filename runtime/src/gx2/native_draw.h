@@ -29,7 +29,7 @@
 // register file, the context shadow and the full path see the same state as without packets.
 //
 // Run-time switches (ON builds): WWHD_NATIVE_DRAW=1 turns packets on (off by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
-// one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA); WWHD_NATIVE_DRAW_VERIFY=N draws
+// one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE); WWHD_NATIVE_DRAW_VERIFY=N draws
 // every Nth replayable instance through the full path and compares what it resolved with the packet (mismatches
 // logged, "[native-draw] VERIFY MISMATCH").
 #pragma once
@@ -42,7 +42,7 @@ namespace native_draw {
 enum Site : uint32_t {
     kSiteGrass = 1, kSiteTree = 2, kSiteWood = 3, kSiteFlower = 4, kSiteMagma = 5,
     kSiteStar = 6, kSiteHousi = 7, kSiteWave = 8, kSiteMoya = 9, kSiteVrkumo = 10, kSiteRain = 11, kSiteSea = 12,
-    kSites = 13
+    kSiteLine = 13, kSites = 14
 };
 // packet ids: 8 per site (by pass, or by pass and variant), the first 8 unused
 constexpr uint32_t kIdsPerSite = 8;
@@ -100,7 +100,8 @@ void count(uint32_t site, Reason r);
 // range, are drawn as one indirect multi-draw (gfxvk::packet_mdi_flush): same pipeline, shaders, descriptors and bytes
 // as replaying them one by one.
 // The collected batch is drawn before any other command, at the end of each command chunk, and before an instance
-// that cannot join it.
+// that cannot join it. Register writes (OP_SET_REGS) leave it open: they record nothing, and one that changes a
+// register ends the packet's lowered state (g_epoch), so no later instance joins the batch.
 bool mdi_on();
 extern bool g_mdiPending;  // render thread: a multi-draw batch is collected
 void flush_mdi();
