@@ -12,7 +12,10 @@
 // it against the registers at every draw (counters, and with WWHD_NATIVE_DRAW_VERIFY a mismatch is logged): this is
 // what a later backend step needs before it may trust the open pass instead of deriving targets and pass per draw.
 // A pass ends at the next OP_PASS_BEGIN, at a copy (store, then copy) and at the swap; OP_PASS_END is for sites that
-// know their end and their store intent.
+// know their end (the hd 3D layer passes, SSAO, bloom, cascade shadow layers).
+// The check covers every word the target binds write (base, size, view, info and the port's view-size conventions)
+// and, once a site described it (sead's viewport and scissor calls), the viewport and scissor registers; a draw whose
+// viewport or scissor was set by an undescribed call is counted apart (the targets may still be trusted).
 //
 // Run-time switch: WWHD_NATIVE_PASS=1 (off by default; independent of WWHD_NATIVE_DRAW). The counter line
 // ("[native-pass] ...", every 300 frames): passes, described draws (targets as described), draws outside a described
@@ -26,8 +29,13 @@ namespace native_pass {
 // an attachment: the image as the target registers address it (colour: mip and swizzle applied, as GX2SetColorBuffer
 // sets CB_COLOR*_BASE; depth: the image address, as DB_DEPTH_BASE), its format (GX2 surface format value), size of
 // the bound mip, view (mip, first slice, slice count) and samples (1, 2, 4, 8)
+// regs: the words the bind writes (what the render thread checks every draw against): colour CB_COLOR<i>_BASE, _SIZE,
+// _VIEW, _INFO, _TILE, _FRAG (GX2SetColorBuffer, the port's conventions included); depth DB_DEPTH_SIZE, _BASE, _INFO,
+// _VIEW, DB_HTILE_DATA_BASE, kDepthSlicesReg (GX2SetDepthBuffer)
+constexpr uint32_t kAttachmentRegs = 6;
 struct Attachment {
     uint32_t image = 0, format = 0, width = 0, height = 0, mip = 0, firstSlice = 0, slices = 0, samples = 0;
+    uint32_t regs[kAttachmentRegs] = {};
 };
 constexpr uint32_t kMaxColors = 8;
 // OP_PASS_BEGIN payload, word for word
@@ -60,11 +68,21 @@ struct Copy {
 };
 constexpr uint32_t kCopyWords = sizeof(Copy) / 4;
 
+// OP_PASS_VIEWPORT payload: the pass's viewport (kind 0: x, y, width, height, near, far as float bits, and the six
+// PA_CL_VPORT_* words GX2SetViewport writes) or scissor (kind 1: x, y, width, height, and PA_SC_GENERIC_SCISSOR_TL/BR)
+struct Viewport {
+    uint32_t kind = 0;
+    uint32_t value[6] = {};
+    uint32_t regs[6] = {};
+};
+constexpr uint32_t kViewportWords = sizeof(Viewport) / 4;
+
 bool on();                                      // WWHD_NATIVE_PASS=1
 void begin(const uint32_t* p, uint32_t n);      // render thread: OP_PASS_BEGIN
 void load(const uint32_t* p, uint32_t n);       // render thread: OP_PASS_LOAD
 void end(const uint32_t* p, uint32_t n);        // render thread: OP_PASS_END
 void copy(const uint32_t* p, uint32_t n);       // render thread: OP_PASS_COPY
+void viewport(const uint32_t* p, uint32_t n);   // render thread: OP_PASS_VIEWPORT
 void note_draw(const uint32_t* regs);           // render thread: a draw (full or packet) about to execute
 void frame_end();                               // render thread: at each swap
 

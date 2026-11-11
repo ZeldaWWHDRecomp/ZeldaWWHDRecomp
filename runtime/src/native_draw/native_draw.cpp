@@ -576,6 +576,15 @@ static bool check_on() {
     }();
     return on;
 }
+bool projection_as_regs() {
+    static const bool on = [] {
+        const bool v = master_on() && env_int("WWHD_NATIVE_DRAW_PROJ", 1) != 0;
+        if (master_on()) LOG("[native-draw] layout projections as register writes %s (WWHD_NATIVE_DRAW_PROJ=%d)",
+                             v ? "on" : "off", v ? 1 : 0);
+        return v;
+    }();
+    return on && stereo::frame.mode == stereo::Off;
+}
 bool checked_regs(uint32_t first, uint32_t n) {
     if (g_drawnId >= kMaxPackets || !g_defined[g_drawnId]) return false;
     const Packet& pk = g_packets[g_drawnId];

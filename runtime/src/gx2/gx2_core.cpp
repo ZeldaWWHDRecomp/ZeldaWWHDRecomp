@@ -723,7 +723,7 @@ void execute(const uint32* words, uint32 count) {
         Op op = (Op)(hdr & 0xFF);
         uint32 n = hdr >> 8;
 #ifdef WWHD_NATIVE_DRAW
-        if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW && (op < OP_PASS_BEGIN || op > OP_PASS_COPY)) ||
+        if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW && (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT)) ||
             i + 1 + n > count) {
 #else
         if (op >= OP_COUNT || i + 1 + n > count) {
@@ -789,7 +789,7 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     // definitions (define: when it changes the packet; register writes: the next instance's replayable check) and pass
     // descriptions (they record nothing: native_pass.h)
     if (op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE && op != OP_SET_REGS && op != OP_NOP &&
-        (op < OP_PASS_BEGIN || op > OP_PASS_COPY)) {
+        (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT)) {
         if (native_draw::g_mdiPending) native_draw::flush_mdi();
         if (native_draw::g_batchPending) native_draw::flush_batch();
     }
@@ -855,9 +855,10 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
 #ifdef WWHD_NATIVE_DRAW
     // a packet's lowered state holds while only register writes that change nothing and its own instances come
     // (native_draw.h); any other command may change what the full draw would resolve (a packet definition: when it
-    // changes the packet, native_draw::define; pass descriptions: native_pass.h, no state)
+    // changes the packet, native_draw::define; pass descriptions: native_pass.h, no state; a layout projection: its
+    // register writes decide, as OP_SET_REGS: native_draw::projection_as_regs)
     if (op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE &&
-        (op < OP_PASS_BEGIN || op > OP_PASS_COPY))
+        (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT) && (op != OP_SET_PROJ_REGS || !native_draw::projection_as_regs()))
         ++native_draw::g_epoch;
 #endif
     switch (op) {
@@ -984,6 +985,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     case OP_PASS_LOAD: native_pass::load(p, n); break;
     case OP_PASS_END: native_pass::end(p, n); break;
     case OP_PASS_COPY: native_pass::copy(p, n); break;
+    case OP_PASS_VIEWPORT: native_pass::viewport(p, n); break;
     case OP_PACKET_DRAW: {
         // the instance's register effects, exactly as the site's skipped calls make them, in the site's order:
         // GX2Set{Pixel,Vertex,Geometry}UniformBlock (gx2_resources.cpp uniform_block), GX2SetFetchShader and

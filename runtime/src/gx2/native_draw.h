@@ -202,6 +202,11 @@ bool instance_regs(uint32_t first, uint32_t n);
 // are decided by the replay's vertex input rule. Switch WWHD_NATIVE_DRAW_CHECK=0: such writes end the lowered state
 // as any register write (the comparison is then never reached)
 bool checked_regs(uint32_t first, uint32_t n);
+// render thread: a layout projection (OP_SET_PROJ_REGS, aspect.cpp) ends the lowered state only through its register
+// writes, like OP_SET_REGS: the values as narrowed for the bound target; unchanged ones keep it, ones inside the
+// declared instance register ranges of the packet drawn last are patched by its next instance. Off (every projection
+// ends it) with stereo on (stereo::tag_layout) or WWHD_NATIVE_DRAW_PROJ=0
+bool projection_as_regs();
 void frame_end();  // render thread, at each swap: the periodic counter line
 bool batch_on();   // shader-rewrite batches on (packets on, WWHD_NATIVE_DRAW_BATCH not 0)
 bool batch_site_on(uint32_t site);  // the site's kinds may be batched (WWHD_NATIVE_DRAW_BATCH_SITES)
