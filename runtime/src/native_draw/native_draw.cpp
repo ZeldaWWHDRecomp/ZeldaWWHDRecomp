@@ -39,7 +39,8 @@ static int env_int(const char* name, int fallback) {
 }
 static const char* const kSiteNames[kSites] = {"", "grass", "tree", "wood", "flower", "magma",
                                                "star", "housi", "wave", "moya", "vrkumo", "rain", "sea", "line", "jpa",
-                                               "layout"};
+                                               "layout", "" /* (16: native-p6's text site, none here) */, "post", "shadow",
+                                               "aglquad", "aglpair"};
 static bool master_on() {
     static const bool on = env_int("WWHD_NATIVE_DRAW", 0) != 0;
     return on;
