@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build (fast mode): cheaper wake-ups between game threads, about 0.4–1.1 ms less game logic per frame on a
+  phone** (#524). Message queues are now looked up without a global lock, a message only wakes its receiver when the
+  receiver is actually asleep, and the busy worker threads wait a moment longer before they sleep, so most messages
+  need no wake-up at all. On a Xiaomi 14 at the cliff, game logic went from 10.7 to 9.6 ms per frame on average.
+  Message order and blocking behaviour are unchanged. It is on by default in the decomp fast build
+  (`WWHD_MSGQ_FAST`); the normal build is unchanged.
+
 - **Decomp build (fast mode): about 2 ms less game logic per frame on a phone, and every game function now runs
   decompiled** (#522). In fast mode all 38,834 functions run decompiled, including Link's player code, the camera,
   the Picto Box, sailing, the title screen and file select; the port's own features in those places keep working
