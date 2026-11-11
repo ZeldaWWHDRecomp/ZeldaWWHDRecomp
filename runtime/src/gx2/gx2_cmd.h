@@ -62,6 +62,11 @@ enum Op : uint32_t {
     // mode); declared in every build, after OP_COUNT, so that no other value or OP_COUNT changes. Recorded like any command:
     OP_PACKET_DEFINE = 0x40,  // native_draw::Packet (kPacketWords): a site's packet for this pass
     OP_PACKET_DRAW = 0x41,    // packet id, kind, the instance's blocks and vertex input (native_draw.h): one instance
+    // native pass and copy descriptions (native_pass.h), same builds; descriptions only, they write no register
+    OP_PASS_BEGIN = 0x42,     // native_pass::Pass (kPassWords): the targets a site starts rendering into
+    OP_PASS_LOAD = 0x43,      // native_pass::Load: the site clears attachments of the open pass
+    OP_PASS_END = 0x44,       // the open pass ends (store)
+    OP_PASS_COPY = 0x45,      // native_pass::Copy: a scan-out, expand or surface copy
 };
 
 // debug draw provenance (WWHD_VK_PIPELINE_WHO): a provider (set by dsweep.cpp) describes the guest code issuing a

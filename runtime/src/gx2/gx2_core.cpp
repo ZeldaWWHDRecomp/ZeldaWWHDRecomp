@@ -54,6 +54,7 @@
 #include "render_prof.h"
 #ifdef WWHD_NATIVE_DRAW
 #include "native_draw.h"
+#include "native_pass.h"
 #endif
 #include "native_coverage.h"
 
@@ -716,7 +717,8 @@ void execute(const uint32* words, uint32 count) {
         Op op = (Op)(hdr & 0xFF);
         uint32 n = hdr >> 8;
 #ifdef WWHD_NATIVE_DRAW
-        if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW) || i + 1 + n > count) {
+        if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW && (op < OP_PASS_BEGIN || op > OP_PASS_COPY)) ||
+            i + 1 + n > count) {
 #else
         if (op >= OP_COUNT || i + 1 + n > count) {
 #endif
@@ -778,11 +780,17 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     rprof::Op kind;
 #ifdef WWHD_NATIVE_DRAW
     // a collected multi-draw or shader-rewrite batch is drawn before any other command but register writes and packet
-    // definitions (define: when it changes the packet; register writes: the next instance's replayable check)
-    if (op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE && op != OP_SET_REGS && op != OP_NOP) {
+    // definitions (define: when it changes the packet; register writes: the next instance's replayable check) and pass
+    // descriptions (they record nothing: native_pass.h)
+    if (op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE && op != OP_SET_REGS && op != OP_NOP &&
+        (op < OP_PASS_BEGIN || op > OP_PASS_COPY)) {
         if (native_draw::g_mdiPending) native_draw::flush_mdi();
         if (native_draw::g_batchPending) native_draw::flush_batch();
     }
+    // native_pass.h: every draw checked against the open pass description
+    if ((op == OP_DRAW || op == OP_DRAW_INDEXED || (op == OP_PACKET_DRAW && n >= 2 && p[1] != native_draw::kNoDraw)) &&
+        native_pass::on())
+        native_pass::note_draw(g_regs);
 #endif
     switch (op) {
     case OP_DEBUG_CONTEXT: g_draw_context.store(n ? p[0] : 0, std::memory_order_relaxed); return;
@@ -841,8 +849,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
 #ifdef WWHD_NATIVE_DRAW
     // a packet's lowered state holds while only register writes that change nothing and its own instances come
     // (native_draw.h); any other command may change what the full draw would resolve (a packet definition: when it
-    // changes the packet, native_draw::define)
-    if (op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE)
+    // changes the packet, native_draw::define; pass descriptions: native_pass.h, no state)
+    if (op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE &&
+        (op < OP_PASS_BEGIN || op > OP_PASS_COPY))
         ++native_draw::g_epoch;
 #endif
     switch (op) {
@@ -908,6 +917,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         render::swap();
 #ifdef WWHD_NATIVE_DRAW
         native_draw::frame_end();
+        if (native_pass::on()) native_pass::frame_end();
 #endif
         break;
     }
@@ -964,6 +974,10 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         break;
 #ifdef WWHD_NATIVE_DRAW
     case OP_PACKET_DEFINE: native_draw::define(p, n); break;
+    case OP_PASS_BEGIN: native_pass::begin(p, n); break;
+    case OP_PASS_LOAD: native_pass::load(p, n); break;
+    case OP_PASS_END: native_pass::end(p, n); break;
+    case OP_PASS_COPY: native_pass::copy(p, n); break;
     case OP_PACKET_DRAW: {
         // the instance's register effects, exactly as the site's skipped calls make them, in the site's order:
         // GX2Set{Pixel,Vertex,Geometry}UniformBlock (gx2_resources.cpp uniform_block), GX2SetFetchShader and
