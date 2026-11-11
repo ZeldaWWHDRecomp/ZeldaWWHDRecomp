@@ -17,7 +17,11 @@
 #include <cstdint>
 #include <utility>
 #include <cstring>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/mman.h>
+#endif
 #undef HLE
 // the imports as plain functions (the test has no dispatch registration, profiler or exception boundary)
 #define HLE(lib, name)                                   \
@@ -50,7 +54,11 @@ static constexpr uint32_t kBlock = 1, kJam = 2;                       // OS_MESS
 
 static void map_guest_memory() {
     void* want = ppc_ptr(kMem);
+#ifdef _WIN32
+    void* p = VirtualAlloc(want, kMemSize, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE);
+#else
     void* p = mmap(want, kMemSize, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+#endif
     if (p != want) { std::printf("msgq_test: cannot map guest memory at %p\n", want); std::exit(2); }
 }
 static void init_queue(uint32_t q, uint32_t slots) {
