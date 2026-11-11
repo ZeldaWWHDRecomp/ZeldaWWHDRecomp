@@ -76,8 +76,13 @@ inline GamePadSceneKind gamepad_scene_kind(uint32_t descriptor) {
         if (entry.descriptor == descriptor) return entry.kind;
     return GamePadSceneKind::Unknown;
 }
+// Game Over reuses the save/options window with routing 4: on the TV (gameover_pane.h: and on the GamePad).
+inline bool gameover_save_window(uint32_t descriptor, uint32_t routing) {
+    return routing == 4 && (descriptor == GD(0x1049ED08) || descriptor == GD(0x1049ED34));
+}
 inline bool gamepad_menu_state(uint32_t descriptor, uint32_t routing, uint32_t controller, bool bag_open = false) {
     // 2 routes the pause/menu overlay to DRC; 4 also occurs during ordinary cutscenes.
+    if (gameover_save_window(descriptor, routing)) return false;  // the TV shows it: no picture-in-picture
     return controller == 1 && (routing == 2 || bag_open || gamepad_scene_kind(descriptor) == GamePadSceneKind::Menu);
 }
 // Wind Waker: the metronome flag is on while Link conducts, the scene's song-list states

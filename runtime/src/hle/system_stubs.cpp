@@ -5,6 +5,7 @@
 #include "../runtime.h"
 #include "../input.h"
 #include "../controller_reapply.h"
+#include "../gfx/gameover_pane.h"
 #include "../mods/story_notebook.h"
 #include "../mods/story_bag.h"
 #include "../mods/game_settings_page.h"
@@ -118,6 +119,14 @@ HLE(vpad, VPADRead) {
     if (!input::pro_controller()) mods::item_ring_pad(p, repeat);  // X / Y / R: tap, or hold for the item ring
     if (!input::pro_controller()) mods::context_touch_pad(p, repeat);  // touch play: items by tap, put-away, ZL latch
     if (!input::pro_controller()) mods::touch_talk_pad(p, repeat);  // talks, answers, shops by touch; hold to go on
+    if (!input::pro_controller()) {  // the Game Over save window's Cancel / Save by touch (gfx/gameover_pane.h)
+        static gfx::gameover_pane::Tap tap;
+        static uint32_t tapped = 0;
+        const bool prompt = gfx::gameover_pane::g_save_prompt.load(std::memory_order_relaxed);
+        if (!repeat) tapped = tap.step(prompt, p.touch, p.tx, p.ty);
+        p.buttons |= tapped;
+        if (prompt) p.touch = false;  // the prompt reads no touch: the game would answer it with its "not here" mark
+    }
     if (!input::pro_controller()) mods::guest_pad_filter(c, p, repeat);  // code mods: their touches and input filters
     last_p = p;
     story_notebook::pad(p, c);  // the story notebook's page takes the controller while it is open

@@ -1,5 +1,6 @@
 // A read-only synthetic guest heap: the reader must never write to the game or call guest code.
 #include "gfx/display_modes.h"
+#include "gfx/gameover_pane.h"
 #include "runtime.h"
 #include "guest_addr.h"
 #include <cassert>
@@ -32,11 +33,16 @@ void display_gamepad_ui(GamePadUiState state) { observed = state; }
 }
 int main() {
     using namespace gfx;
-    display_read_gamepad_ui(); // no mapped memory: inactive modes must not read it
-    needed = true;
     const uint32_t globals = 0x101F0000, heap = 0x11000000;
     const size_t region = 0x10000;
-    map(globals, region); map(heap, region);
+    // inactive modes read the scene pointer (the Game Over save window, gameover_pane.h) and nothing else:
+    // with only the globals mapped and no scene, nothing is published
+    map(globals, region);
+    observed.available = true;
+    display_read_gamepad_ui();
+    assert(observed.available && !gameover_pane::g_save_prompt);
+    needed = true;
+    map(heap, region);
     // dComIfGp play object (function-local static); its metronome byte is the Wind Waker signal.
     const uint32_t metronome = GD(0x1046F0B0) + 0x5BD1, playPage = metronome & ~uint32_t(region - 1);
     map(playPage, region);
@@ -125,9 +131,24 @@ int main() {
     protect(globals, region, PROT_READ);
     display_read_gamepad_ui();
     assert(!observed.available && !observed.menu && !observed.off_tv && !observed.switching);
+    // the Game Over save window (routing 4) in any mode; the same window from the pause menu (routing 2) is not it
+    protect(globals, region, PROT_READ | PROT_WRITE);
+    st32(GD(0x101F8344), scene);
+    protect(globals, region, PROT_READ);
+    protect(heap, region, PROT_READ | PROT_WRITE);
+    st32(scene + 0x18, scene + 4); // the current state object again (set() writes its descriptor)
+    protect(heap, region, PROT_READ);
+    set(0x1049ED34, 4, 1);
+    assert(gameover_pane::g_save_prompt && !observed.menu);
+    set(0x1049ED34, 2, 1);
+    assert(!gameover_pane::g_save_prompt && observed.menu);
+    needed = false;
+    set(0x1049ED08, 4, 1);
+    assert(gameover_pane::g_save_prompt);
+    observed = {};
+    set(0x1049EC84, 2, 1);
+    assert(!gameover_pane::g_save_prompt && !observed.menu); // outside auto nothing else is published
     assert(munmap(mem::ptr(globals), region) == 0);
     assert(munmap(mem::ptr(heap), region) == 0);
     assert(munmap(mem::ptr(playPage), region) == 0);
-    needed = false;
-    display_read_gamepad_ui(); // no new guest reads after leaving auto
 }
