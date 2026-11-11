@@ -10,6 +10,7 @@ namespace overlay {
 inline bool controller_may_open_settings(bool window_focused, bool background_controllers) {
     return window_focused || !background_controllers;
 }
+constexpr double kSelectHoldSeconds = 0.5;  // held this long, Select opens Settings
 // Driven by the input pump, not rendered frames. Times are monotonic seconds.
 class SettingsShortcut {
     OpenReason reason_ = OpenReason::View;
@@ -27,10 +28,29 @@ public:
             if (open) { action = Close; latched_ = true; reason_ = OpenReason::View; }
             else {
                 if (since_ < 0) since_ = now;
-                if (now - since_ >= 0.5) { action = Open; latched_ = true; reason_ = OpenReason::View; }
+                if (now - since_ >= kSelectHoldSeconds) { action = Open; latched_ = true; reason_ = OpenReason::View; }
             }
         }
         return action;
+    }
+};
+// Select as the game sees it while held Select can open Settings: until the hold is decided the game
+// doesn't get it. Let go sooner and the game gets a short press then; held long enough (Settings), the
+// game never sees it, so opening Settings doesn't also press Minus (Off-TV Play). One per controller.
+class SelectForGame {
+    double since_ = -1, pulse_until_ = -1;
+public:
+    static constexpr double kPulseSeconds = 0.1;  // a press the game's pad read (30 or 60 per second) sees
+    float filter(double now, float select, bool active) {
+        const bool down = active && select > 0.5f;
+        if (!active) since_ = -1;
+        else if (down && since_ < 0) since_ = now;
+        else if (!down && since_ >= 0) {
+            if (now - since_ < kSelectHoldSeconds) pulse_until_ = now + kPulseSeconds;
+            since_ = -1;
+        }
+        if (!active) return now < pulse_until_ ? 1.f : select;
+        return !down && now < pulse_until_ ? 1.f : 0.f;
     }
 };
 }  // namespace overlay

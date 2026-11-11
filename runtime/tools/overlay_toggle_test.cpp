@@ -39,5 +39,16 @@ int main(){
  assert(s.poll(0,false,true,false)==SettingsShortcut::Open&&s.reason()==OpenReason::Home);
  assert(s.poll(.1,false,false,true)==SettingsShortcut::None);
  assert(s.poll(.2,true,false,true)==SettingsShortcut::Close&&s.reason()==OpenReason::View);
- puts("overlay_toggle: focus release, debounce and all transition reasons passed");
+ // Select for the game while a hold could open Settings: a tap arrives on release, a hold never
+ SelectForGame tap;
+ assert(tap.filter(1.0,1,true)==0&&tap.filter(1.2,1,true)==0);  // held: not yet
+ assert(tap.filter(1.3,0,true)==1);  // let go before 0.5 s: the game's press now
+ assert(tap.filter(1.3+SelectForGame::kPulseSeconds*0.9,0,true)==1);
+ assert(tap.filter(1.3+SelectForGame::kPulseSeconds*1.1,0,true)==0);
+ SelectForGame hold;
+ for(double t=5;t<5+kSelectHoldSeconds+0.3;t+=0.01) assert(hold.filter(t,1,true)==0);  // Settings opens
+ assert(hold.filter(6,0,true)==0&&hold.filter(6.05,0,true)==0);  // let go after: still nothing
+ SelectForGame off;  // Select is a modifier of another shortcut, or Settings can't open: as before
+ assert(off.filter(0,1,false)==1&&off.filter(0.6,1,false)==1&&off.filter(0.7,0,false)==0);
+ puts("overlay_toggle: focus release, debounce, all transition reasons and the Select hold passed");
 }

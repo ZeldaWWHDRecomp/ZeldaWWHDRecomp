@@ -50,6 +50,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <set>
@@ -3746,6 +3747,18 @@ void poll_controller_shortcuts(const float* values) {
 
     if (action == SettingsShortcut::Close || (action == SettingsShortcut::Open && may_open))
         set_open(action == SettingsShortcut::Open, shortcut.reason());
+}
+void hold_select_for_settings(uint64_t device, float* game) {
+    static std::mutex mu;
+    static std::map<uint64_t, SelectForGame> states;
+    if (g_no_host && !getenv("WWHD_TEST_PAD")) return;
+    bool selectModifier = false;
+    for (const auto& b : input_map::current().shortcuts) if (b.hold == input_map::kPadOptions && b.button) selectModifier = true;
+    // the same conditions under which a Select hold opens Settings (poll_controller_shortcuts)
+    const bool active = !selectModifier && !g_capturing_keys.load() && !is_open() &&
+        controller_may_open_settings(input::window_focused(), input::background_controllers());
+    std::lock_guard<std::mutex> lk(mu);
+    game[input_map::kPadOptions] = states[device].filter(now_s(), game[input_map::kPadOptions], active);
 }
 bool shortcut_took_input() { return g_shortcut_took.exchange(false); }
 
