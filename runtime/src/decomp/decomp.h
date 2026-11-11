@@ -78,6 +78,10 @@ extern "C" __attribute__((visibility("default"))) const GabiPtrEntry* g_decomp_p
 extern "C" __attribute__((visibility("default"))) uint32_t g_decomp_ptr_mask;
 extern "C" __attribute__((visibility("default"))) const GabiPtrEntry* g_decomp_call_tab;
 extern "C" __attribute__((visibility("default"))) const PpcFunc* g_decomp_hle_tab;
+#ifdef WWHD_DECOMP_FAST_MUTEX
+using GabiHleDirect = uint32_t (*)(Cpu* c, uint32_t r3);  // gabi.h GABI_FAST_MUTEX
+extern "C" __attribute__((visibility("default"))) const GabiHleDirect* g_decomp_hle_direct;
+#endif
 #endif
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_exact;
 #ifdef WWHD_DECOMP_FAST_A3_FN
@@ -89,8 +93,20 @@ extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_leaf_off;  //
 #ifdef WWHD_DECOMP_FAST_NSTATS
 extern "C" __attribute__((visibility("default"))) uint64_t* g_decomp_nstats;  // gabi.h GABI_NSTATS (decomp.cpp)
 #endif
+#ifdef WWHD_DECOMP_FAST_NOCHECK
+extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_nocheck_off;  // gabi.h GABI_NOCHECK (decomp.cpp)
+#endif
+#ifdef WWHD_DECOMP_FAST_CHECKCOUNT
+extern "C" __attribute__((visibility("default"))) uint64_t* g_decomp_checkcount;  // gabi.h GABI_CHECKCOUNT (decomp.cpp)
+#endif
 #ifdef WWHD_DECOMP_FAST_PTR_SUB
 extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_ptr_sub;  // gabi.h GABI_PTR_SUB (decomp.cpp)
+#endif
+#if defined(WWHD_DECOMP_FAST_PTR_FRONT) || defined(WWHD_DECOMP_FAST_CALL_FRONT)
+extern "C" __attribute__((visibility("default"))) uint8_t g_decomp_front_off;  // gabi.h GABI_PTR_FRONT / _CALL_FRONT (decomp.cpp)
+#endif
+#ifdef WWHD_DECOMP_FAST_HOSTRT_DIRECT
+extern "C" __attribute__((visibility("default"))) const PpcFunc* g_decomp_hostrt_tab;  // gabi.h GABI_HOSTRT_DIRECT (decomp.cpp)
 #endif
 // a guest mod or the port hooks the function with recompiled-table ordinal `ordinal` (every g_mod_hook_flags
 // write that sets a flag): it is no longer entered natively

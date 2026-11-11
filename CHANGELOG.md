@@ -7,6 +7,32 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build (fast mode) on macOS: the same cross-unit inlining as on Android** (#526). The fast build's
+  whole-program link now also runs on the Mac, using Xcode's own link-time optimizer, so small functions such as the
+  collision and matrix helpers are inlined across units instead of being called through a wrapper each time.
+  Building takes longer at the final link (about 2 minutes). `WWHD_DECOMP_FAST_WHOLE_LTO=OFF` restores the previous
+  per-unit link. The normal build and the Android build are unchanged.
+
+- **Decomp build (fast mode): cheaper wake-ups between game threads, about 0.4–1.1 ms less game logic per frame on a
+  phone** (#524). Message queues are now looked up without a global lock, a message only wakes its receiver when the
+  receiver is actually asleep, and the busy worker threads wait a moment longer before they sleep, so most messages
+  need no wake-up at all. On a Xiaomi 14 at the cliff, game logic went from 10.7 to 9.6 ms per frame on average.
+  Message order and blocking behaviour are unchanged. It is on by default in the decomp fast build
+  (`WWHD_MSGQ_FAST`); the normal build is unchanged.
+
+- **Decomp build (fast mode): about 2 ms less game logic per frame on a phone, and every game function now runs
+  decompiled** (#522). In fast mode all 38,834 functions run decompiled, including Link's player code, the camera,
+  the Picto Box, sailing, the title screen and file select; the port's own features in those places keep working
+  through port points. The speed steps of the last rounds are now on by default in fast mode, each with an off switch.
+  On a Xiaomi 14 at the cliff, game logic went from 13.9 to 11.9 ms per frame in the profiler. The decompilation
+  submodule now points to its latest public version (field names, the original assert texts, and a fix for a crash
+  after the file select). The normal build is unchanged.
+
+- **Vulkan: shaders' run-time indexed uniform reads stay in bounds** (#521, follow-up to #520). The Vulkan side of
+  the same bug: a shader that reads its uniform registers at an index computed at run time could read past the
+  buffer, which depending on the GPU driver returns junk or faults. Out-of-range reads now return zero, and the read
+  stays inside the buffer. Prepared shaders are rebuilt once after this update (the same rebuild #520 already causes).
+
 - **Metal: no more frozen picture from a GPU fault on older iPads** (#520, thanks @fayep). A few shaders read their
   uniform registers at an index computed at run time, and on Metal that read could run past the buffer. On an A12Z
   iPad Pro this caused a GPU page fault on the title screen, and the picture stayed frozen while the game kept

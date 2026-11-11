@@ -5,6 +5,7 @@
 #include "../input.h"
 #include "../overlay/overlay.h"
 #include "guest_addr.h"
+#include "../port_points.h"
 #include <atomic>
 #include <cmath>
 #include <cstdlib>
@@ -174,3 +175,38 @@ void leaf_collision(Cpu* c) {
 // remain native. No synthetic input, new actors, camera rotation, continuous facing, or retained host state.
 extern "C" void hook_024076CC(Cpu* c) { mods::leaf_collision(c); }
 extern "C" void site_023E7A70(Cpu* c) { mods::leaf_start(c); }
+
+#if WWHD_PORT_POINTS  // (port_points.h: the decomp build and the tests that drive the points)
+// Decomp build: the decompiled procedure inits ask at the same instructions (the decompilation's port_hooks.h
+// PORT_ITEM_FACING; tools/decomp_build/port_sites.py): each site's handler above, with Link and the value it checks
+// besides (the bomb's throw type, the bottle's ship use) in the registers it reads there.
+extern "C" {  // the handlers above (declared inside namespace mods; extern "C": the same functions)
+void site_023E7CF4(Cpu*); void site_023E88F4(Cpu*); void site_023E8D34(Cpu*); void site_023E8E40(Cpu*);
+void site_023E8A58(Cpu*); void site_023E8B20(Cpu*); void site_023E902C(Cpu*); void site_023E9130(Cpu*);
+void site_023E9E98(Cpu*); void site_023EDFC4(Cpu*); void site_0243C830(Cpu*); void site_023EDE00(Cpu*);
+}
+namespace {
+struct FacingPoint { uint32_t site; void (*handler)(Cpu*); int8_t link, extra; };  // registers; -1: none
+constexpr FacingPoint kFacingPoints[] = {
+    {0x023E7A70, site_023E7A70, 30, -1}, {0x023E7CF4, site_023E7CF4, 31, -1}, {0x023E88F4, site_023E88F4, 31, -1},
+    {0x023E8D34, site_023E8D34, 31, -1}, {0x023E8E40, site_023E8E40, 31, -1}, {0x023E8A58, site_023E8A58, 31, -1},
+    {0x023E8B20, site_023E8B20, 31, -1}, {0x023E902C, site_023E902C, 31, -1}, {0x023E9130, site_023E9130, 31, -1},
+    {0x023E9E98, site_023E9E98, 30, 31}, {0x023EDFC4, site_023EDFC4, 31, -1}, {0x0243C830, site_0243C830, 31, -1},
+    {0x023EDE00, site_023EDE00, 30, 29},
+};
+}  // namespace
+extern "C" void wwhd_item_facing(Cpu* c, unsigned sp, unsigned site, unsigned link, unsigned extra) {
+    for (const FacingPoint& p : kFacingPoints) {
+        if (p.site != site) continue;
+        if (!mods::camera_directed_items()) return;  // both handlers return at once with the mod off
+        port_points::run(c, sp, p.handler,
+                         [&](Cpu& r) {
+                             r.r[p.link] = link;
+                             if (p.extra >= 0) r.r[p.extra] = extra;
+                         },
+                         [](Cpu&) {});
+        return;
+    }
+    port_points::unknown("camera-directed items", site);
+}
+#endif  // WWHD_PORT_POINTS

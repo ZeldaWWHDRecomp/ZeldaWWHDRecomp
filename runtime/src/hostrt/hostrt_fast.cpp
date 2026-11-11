@@ -24,8 +24,14 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <atomic>
+
 #include "../decomp/decomp.h"
+#include "../runtime.h"
 #include "hostrt_impl.h"
+#ifdef WWHD_DECOMP_FAST_NATIVE_MATH
+#include "hostrt_native_math.h"
+#endif
 #include "recomp_table.h"
 
 extern uint8_t* g_mod_hook_flags;  // mods/guest_mods.cpp
@@ -159,6 +165,122 @@ static int fast_libm_level() {
 static bool fast_libm_on() { return fast_libm_level() != 0; }
 #endif
 
+#if defined(WWHD_DECOMP_FAST_LIBM) && defined(WWHD_DECOMP_FAST_NATIVE_MATH)
+// cmake WWHD_DECOMP_FAST_NATIVE_MATH (fast mode, needs WWHD_DECOMP_FAST_LIBM; OFF: none of this is compiled): the GHS
+// libm functions as native C++ that returns exactly what their recompiled originals return (hostrt_native_math.cpp;
+// proof: tools/host_runtime/difftest/nativemath.cpp, every single-format argument and 10^9 random ones). Decompiled
+// callers reach them as native entries (hostrt_fast_entries: no guest state at all, the argument and result as
+// doubles); a guest call that still comes here (another shape, gmem_call) gets a Cpu form that reads f1 (f2) and
+// writes f1. Not repeated: the original's stack frame below the caller's SP, the volatile registers and cr0/cr1 it
+// leaves, the caller's LR save word and the single-format rounding of a saved FPR's ps1 by GHS's save / restore
+// routines (no caller reads them: tools/host_runtime/callsite_regs.py; a decompiled function's own native body skips
+// the same save / restore). The __gh_set_errno calls are made as the original makes them (the port's import is a
+// no-op, nothing reads errno). WWHD_DECOMP_FAST_NATIVE_MATH (env): 0 the recompiled originals as before; check: the
+// originals run and each result is compared with the native one (mismatches logged, a summary every 2^24 calls).
+namespace {
+enum { NM_OFF = 0, NM_ON = 1, NM_CHECK = 2 };
+int native_math_mode() {
+    static const int m = [] {
+        const char* e = getenv("WWHD_DECOMP_FAST_NATIVE_MATH");
+        if (!fast_libm_on() || (e && !strcmp(e, "0"))) return (int)NM_OFF;
+        return e && !strcmp(e, "check") ? (int)NM_CHECK : (int)NM_ON;
+    }();
+    return m;
+}
+// __gh_set_errno(CODE) on this thread's Cpu, as the original calls it (r3 = the code)
+[[gnu::noinline, gnu::cold]] void nm_errno(Cpu* c, uint32_t code) {
+    c->r[3] = code;
+    imp_coreinit___gh_set_errno(c);
+}
+[[gnu::noinline, gnu::cold]] void nm_errno_tls(uint32_t code) { nm_errno(gabi_fast_cpu(), code); }
+
+// native entries (gabi.h NEntryT, sig(0, 1 or 2, 3)): f1 (f2) in, f1 out
+double ne_sqrtf(double x) {
+    uint32_t e = 0;
+    const double r = hostrt::nmath::sqrtf_n(x, e);
+    if (__builtin_expect(e != 0, 0)) nm_errno_tls(e);
+    return r;
+}
+double ne_sqrt(double x) {
+    uint32_t e = 0;
+    const double r = hostrt::nmath::sqrt_n(x, e);
+    if (__builtin_expect(e != 0, 0)) nm_errno_tls(e);
+    return r;
+}
+double ne_sin(double x) { return hostrt::nmath::sin_n(x); }
+double ne_cos(double x) { return hostrt::nmath::cos_n(x); }
+double ne_fmod(double x, double y) {
+    uint32_t e = 0;
+    const double r = hostrt::nmath::fmod_n(x, y, e);
+    if (__builtin_expect(e != 0, 0)) nm_errno_tls(e);
+    return r;
+}
+
+// the Cpu forms (hostrt_fast_direct)
+void cpu_sqrtf(Cpu* c) {
+    uint32_t e = 0;
+    const double r = hostrt::nmath::sqrtf_n(c->f[1].ps0, e);
+    if (__builtin_expect(e != 0, 0)) nm_errno(c, e);
+    c->f[1].ps0 = r;
+}
+void cpu_sqrt(Cpu* c) {
+    uint32_t e = 0;
+    const double r = hostrt::nmath::sqrt_n(c->f[1].ps0, e);
+    if (__builtin_expect(e != 0, 0)) nm_errno(c, e);
+    c->f[1].ps0 = r;
+}
+void cpu_sin(Cpu* c) { c->f[1].ps0 = hostrt::nmath::sin_n(c->f[1].ps0); }
+void cpu_cos(Cpu* c) { c->f[1].ps0 = hostrt::nmath::cos_n(c->f[1].ps0); }
+void cpu_fmod(Cpu* c) {
+    uint32_t e = 0;
+    const double r = hostrt::nmath::fmod_n(c->f[1].ps0, c->f[2].ps0, e);
+    if (__builtin_expect(e != 0, 0)) nm_errno(c, e);
+    c->f[1].ps0 = r;
+}
+
+// check mode: the original (as WWHD_DECOMP_FAST_LIBM would run it), then the native result compared
+struct NmStat { const char* name; std::atomic<uint64_t> calls{0}, bad{0}; };
+NmStat g_nm_stat[5] = {{"sqrtf"}, {"sqrt"}, {"sin"}, {"cos"}, {"fmod"}};
+[[gnu::noinline, gnu::cold]] void nm_bad(int k, double x, double y, double orig, double nat) {
+    if (g_nm_stat[k].bad++ < 20)
+        LOG("[nmath] CHECK %s differs: x %016llX y %016llX -> original %016llX native %016llX", g_nm_stat[k].name,
+            (unsigned long long)f64_as_u64(x), (unsigned long long)f64_as_u64(y), (unsigned long long)f64_as_u64(orig),
+            (unsigned long long)f64_as_u64(nat));
+}
+template <int K, PpcFunc ORIG> void chk(Cpu* c) {
+    const double x = c->f[1].ps0, y = c->f[2].ps0;
+    ORIG(c);
+    uint32_t e = 0;
+    double n;
+    switch (K) {
+    case 0: n = hostrt::nmath::sqrtf_n(x, e); break;
+    case 1: n = hostrt::nmath::sqrt_n(x, e); break;
+    case 2: n = hostrt::nmath::sin_n(x); break;
+    case 3: n = hostrt::nmath::cos_n(x); break;
+    default: n = hostrt::nmath::fmod_n(x, y, e); break;
+    }
+    if (f64_as_u64(n) != f64_as_u64(c->f[1].ps0)) nm_bad(K, x, y, c->f[1].ps0, n);
+    const uint64_t k = ++g_nm_stat[K].calls;
+    if (!(k & 0xFFFFFF))
+        LOG("[nmath] CHECK %s: %llu calls, %llu differ", g_nm_stat[K].name, (unsigned long long)k,
+            (unsigned long long)g_nm_stat[K].bad.load());
+}
+PpcFunc native_math_direct(uint32_t addr) {
+    const int m = native_math_mode();
+    if (m == NM_OFF) return nullptr;
+    const bool on = m == NM_ON;
+    switch (addr) {
+    case 0x028F4384u: return on ? cpu_sqrtf : chk<0, f_028F4384>;
+    case 0x028F37F0u: return on ? cpu_sqrt : chk<1, f_028F37F0>;
+    case 0x028F43F8u: return on ? cpu_sin : chk<2, f_028F43F8>;
+    case 0x028F4BE0u: return on ? cpu_cos : chk<3, f_028F4BE0>;
+    case 0x028F4034u: return on ? cpu_fmod : chk<4, f_028F4034>;
+    default: return nullptr;
+    }
+}
+}  // namespace
+#endif
+
 // the roots without a native entry that decompiled code calls often (decomp.cpp gmem_call, fast mode): their f_X
 // directly (-> ppc_host_call -> hook_X, which still decides between the replacement and the original), without
 // call_lr's answer and the dispatch table. These roots read LR only to store it into the caller's LR save word,
@@ -166,6 +288,9 @@ static bool fast_libm_on() { return fast_libm_level() != 0; }
 extern "C" PpcFunc hostrt_fast_direct(uint32_t addr) {
     static const bool off = [] { const char* f = getenv("WWHD_HOSTRT_FAST"); return f && (!strcmp(f, "0") || !strcmp(f, "entries")); }();
     if (off) return nullptr;
+#if defined(WWHD_DECOMP_FAST_LIBM) && defined(WWHD_DECOMP_FAST_NATIVE_MATH)
+    if (const PpcFunc nm = native_math_direct(addr)) return nm;
+#endif
     switch (addr) {
     case 0x028EFFD0u: return f_028EFFD0;
     case 0x028EFF8Cu: return f_028EFF8C;
@@ -230,9 +355,23 @@ extern "C" unsigned hostrt_fast_entries(void (*add)(uint32_t addr, uint32_t sig,
         {0x0286DA70u, f_0286DA70, sig(3, 0, 1), (void*)&ne_rrr_r<list_insert_0286DA70>},
         {0x0286DA9Cu, f_0286DA9C, sig(2, 0, 1), (void*)&ne_rr_r<list_erase_0286DA9C>},
         {0x028F026Cu, f_028F026C, sig(1, 0, 0), (void*)&ne_r_v<register_global_object_028F026C>},
+#if defined(WWHD_DECOMP_FAST_LIBM) && defined(WWHD_DECOMP_FAST_NATIVE_MATH)
+        // the GHS libm functions as native C++ (native_math_direct above); only with WWHD_DECOMP_FAST_NATIVE_MATH on
+        {0x028F4384u, f_028F4384, sig(0, 1, 3), (void*)&ne_sqrtf},
+        {0x028F37F0u, f_028F37F0, sig(0, 1, 3), (void*)&ne_sqrt},
+        {0x028F43F8u, f_028F43F8, sig(0, 1, 3), (void*)&ne_sin},
+        {0x028F4BE0u, f_028F4BE0, sig(0, 1, 3), (void*)&ne_cos},
+        {0x028F4034u, f_028F4034, sig(0, 2, 3), (void*)&ne_fmod},
+#endif
     };
     unsigned n = 0;
     for (const FastRoot& r : roots) {
+#if defined(WWHD_DECOMP_FAST_LIBM) && defined(WWHD_DECOMP_FAST_NATIVE_MATH)
+        // native math entries only when it is on (0: none; check: the Cpu path, where the originals run)
+        if (native_math_mode() != NM_ON && (r.fn == (void*)&ne_sqrtf || r.fn == (void*)&ne_sqrt || r.fn == (void*)&ne_sin ||
+                                            r.fn == (void*)&ne_cos || r.fn == (void*)&ne_fmod))
+            continue;
+#endif
         if (only) {
             char a[9];
             snprintf(a, sizeof a, "%08X", r.addr);

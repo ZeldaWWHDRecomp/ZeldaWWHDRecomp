@@ -24,8 +24,6 @@ NON_ADDRESS = {
     ("mods/lyt_build.cpp", 0x02020000): "the layout files' format version (BFLYT / BFLAN)",
     ("mods/item_ring.cpp", 0x10101CC0): "RGBA colour of the item ring's entry discs",
 }
-NON_ADDRESS.update({("trace.cpp", value): "WWHD_HOSTRT_TRACE: USA ranges of the port-owned guest runtime (decomp-build diagnostic)"
-                    for value in (0x0286C590, 0x0286DB50, 0x028EA038, 0x028F626C)})
 NON_ADDRESS.update({("espresso_fp.c", value): "frsqrte mantissa lookup table"
                     for value in (0x02FB7000, 0x02D26000, 0x02AC0000, 0x02881000,
                                   0x02665000, 0x02468000, 0x02287000, 0x020C1000)})
@@ -35,12 +33,36 @@ WRAPPED = re.compile(r'\b(GC|GD|GC_OPTIONAL|CANONICAL_CODE_ID)\s*\([^;]*?\)', re
 # Built only into the decomp build (cmake/Decomp.cmake), which runs the USA game only: its guest
 # addresses are USA addresses by definition and have no EUR counterpart to map.
 DECOMP_BUILD_ONLY = ("decomp/", "hostrt/")
+# The same boundary inside a shared file: `#if WWHD_DECOMP` / `#ifdef WWHD_DECOMP` blocks (that define is set only on
+# the decomp build's game target), and `#if WWHD_PORT_POINTS` blocks (runtime/src/port_points.h: the decomp build's
+# port points, also compiled into the unit tests that drive them, never into the normal build). Their `#else` branch is
+# normal-build code and is checked.
+DECOMP_GUARD = re.compile(r'[ \t]*#[ \t]*(?:if|ifdef)[ \t]+(?:WWHD_DECOMP|WWHD_PORT_POINTS)[ \t]*')
+CONDITIONAL = re.compile(r'[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b')
 FIXED_GAME_ALLOCATIONS = {0x145AC92C, 0x3BB9DE00, 0x44BDF900, 0x44BDFD00}
 
 
 
+def without_decomp_blocks(text):
+    """TEXT with the lines of decomp-build-only conditional blocks blanked (line numbers kept)."""
+    lines = text.split("\n")
+    stack = []  # per open conditional: True while its lines are decomp-build only
+    for i, line in enumerate(lines):
+        m = CONDITIONAL.match(line)
+        if m and m[1] in ("if", "ifdef", "ifndef"):
+            stack.append(bool(DECOMP_GUARD.fullmatch(line)))
+        elif m and m[1] in ("elif", "else") and stack:
+            stack[-1] = False
+        elif m and m[1] == "endif" and stack:
+            stack.pop()
+        elif any(stack):
+            lines[i] = ""
+    return "\n".join(lines)
+
+
 def address_errors(source, name, mapping):
     text = TRIVIA.sub(lambda m: re.sub(r"[^\n]", " ", m[0]), source)
+    text = without_decomp_blocks(text)
     spans = [(m.start(), m.end(), "code" if m[1] in ("GC", "GC_OPTIONAL", "CANONICAL_CODE_ID") else "data")
              for m in WRAPPED.finditer(text)]
     errors = []
@@ -125,6 +147,21 @@ class CoverageTests(unittest.TestCase):
         for offset in offsets:
             self.assertEqual(self.mapping.data(base + offset), self.mapping.data(base) + offset,
                              f"portable-state field +{offset:X} crosses a data shift")
+
+    def test_decomp_only_blocks_are_the_only_exemption(self):
+        raw = "uint32_t site = 0x0254465C;\n"
+        for guard in ("#if WWHD_PORT_POINTS  // the points", "#if WWHD_DECOMP", "#ifdef WWHD_DECOMP"):
+            self.assertEqual(address_errors(f"{guard}\n{raw}#endif\n", "new.cpp", self.mapping), [], guard)
+        # the #else branch, code after the block, and other conditions are the normal build's
+        self.assertTrue(address_errors(f"#if WWHD_PORT_POINTS\n#else\n{raw}#endif\n", "new.cpp", self.mapping))
+        self.assertTrue(address_errors(f"#if WWHD_PORT_POINTS\n#endif\n{raw}", "new.cpp", self.mapping))
+        self.assertTrue(address_errors(f"#if WWHD_PORT_POINTS\n#if X\n#endif\n#endif\n{raw}", "new.cpp", self.mapping))
+        self.assertTrue(address_errors(f"#ifndef WWHD_DECOMP\n{raw}#endif\n", "new.cpp", self.mapping))
+        self.assertTrue(address_errors(f"#if !WWHD_DECOMP\n{raw}#endif\n", "new.cpp", self.mapping))
+        self.assertTrue(address_errors(f"#if WWHD_DECOMP || X\n{raw}#endif\n", "new.cpp", self.mapping))
+        self.assertTrue(address_errors(f"#if WWHD_DECOMP_FAST\n{raw}#endif\n", "new.cpp", self.mapping))
+        line = address_errors(f"#if WWHD_DECOMP\n{raw}#endif\n\n{raw}", "new.cpp", self.mapping)[0]
+        self.assertTrue(line.startswith("new.cpp:5:"), line)
 
     def test_guard_rejects_raw_and_unmapped_addresses(self):
         self.assertTrue(address_errors("ld32(0x101F84DC);", "new.cpp", self.mapping))

@@ -9,20 +9,204 @@ without the marker (an older one), or a build without GABI_GAME_BUILD (where the
 keeps the function recompiled behind the site, as before.
 
 Each entry: site (the instruction hook), func (the function that contains it), path (its source, relative to the
-decompilation) and marker (text the source must contain).
+decompilation) and marker (text the source must contain). A point that names a site (PORT_QUICK_USE(0x023EAE30, ...))
+runs that site's own handler in the port (runtime/src/port_points.h), with the registers the handler reads set from
+the point's arguments.
+
+EMPTY: retired sites whose handler does nothing (runtime/src/game_hooks.cpp, the retired True 60 SITE()s, kept so the
+normal build's code stays as it was): the decompiled function needs no point for them, so they are moved whenever
+their function is decompiled (game build). tools/decomp_build/test_gen.py checks that each handler is still empty.
 """
+
+P01 = "wwhd_src/d/actor/d_a_player_main_01.cpp"
+P02 = "wwhd_src/d/actor/d_a_player_main_02.cpp"
+P03 = "wwhd_src/d/actor/d_a_player_main_03.cpp"
+P06 = "wwhd_src/d/actor/d_a_player_main_06.cpp"
+P07 = "wwhd_src/d/actor/d_a_player_main_07.cpp"
+CU = "wwhd_src/d/d_camera_util.cpp"
+CS = "wwhd_src/d/d_camera_subject.cpp"
+CP = "wwhd_src/d/d_camera_proc.cpp"
+CE2 = "wwhd_src/d/d_camera_engine2.cpp"
+SN = "wwhd_src/d/d_snap.cpp"
+SH = "wwhd_src/d/actor/d_a_ship.cpp"
+SO = "wwhd_src/d/hd_screen_sequence_option.cpp"
+SD = "wwhd_src/d/hd_scene_save_data.cpp"
+TM = "wwhd_src/nw/lyt/TextMeasureCore.cpp"
+
+
+def _p(site, func, path, macro):
+    """a point that names its site: marker `MACRO(0xSITE`"""
+    return dict(site=site, func=func, path=path, marker="%s(0x%08X" % (macro, site))
+
 
 SITES = [
     # Classic Wind Waker (runtime/src/mods/speedrun.cpp, issue #405): procTactWait's falling check
-    dict(site=0x0243A294, func=0x0243A094, path="wwhd_src/d/actor/d_a_player_main_07.cpp",
-         marker="|| PORT_CLASSIC_TACT()"),
+    dict(site=0x0243A294, func=0x0243A094, path=P07, marker="|| PORT_CLASSIC_TACT()"),
     # ... and endDemoMode's wait reset after a special demo
-    dict(site=0x023F22B4, func=0x023F2048, path="wwhd_src/d/actor/d_a_player_main_03.cpp",
-         marker="&& !PORT_CLASSIC_TACT()"),
+    dict(site=0x023F22B4, func=0x023F2048, path=P03, marker="&& !PORT_CLASSIC_TACT()"),
+    # Quick use (runtime/src/mods/quick_use.cpp, hooks_mods.txt): item dispatch, equip, ready checks and launch traces
+    _p(0x023DF7C0, 0x023DF600, P01, "PORT_QUICK_USE_AT"),  # makeItemType: inventory bomb published
+    _p(0x023E88B0, 0x023E88B0, P02, "PORT_QUICK_USE_AT"),  # procBowMove_init entry
+    _p(0x023EA474, 0x023EA1AC, P02, "PORT_QUICK_USE"),     # checkNextActionGrab: bomb trigger
+    _p(0x023EAE30, 0x023EAD5C, P02, "PORT_QUICK_USE"),     # checkNextActionHookshotReady
+    _p(0x023EAE78, 0x023EAD5C, P02, "PORT_QUICK_USE"),
+    _p(0x023EAE84, 0x023EAD5C, P02, "PORT_QUICK_USE"),
+    _p(0x023EB2B0, 0x023EB208, P02, "PORT_QUICK_USE"),     # checkNextActionBowReady
+    _p(0x023EB2C4, 0x023EB208, P02, "PORT_QUICK_USE_AT"),
+    _p(0x023EB434, 0x023EB208, P02, "PORT_QUICK_USE"),
+    _p(0x023EB548, 0x023EB510, P02, "PORT_QUICK_USE"),     # checkNextActionBoomerangReady
+    _p(0x023EB614, 0x023EB510, P02, "PORT_QUICK_USE"),
+    _p(0x023EC12C, 0x023EC084, P02, "PORT_QUICK_USE"),     # checkNextActionRopeReady
+    _p(0x023EC178, 0x023EC084, P02, "PORT_QUICK_USE"),
+    _p(0x023EC184, 0x023EC084, P02, "PORT_QUICK_USE"),
+    _p(0x023EFB44, 0x023EF7CC, P03, "PORT_QUICK_USE_AT"),  # checkNewItemChange: accepted slot change
+    _p(0x023F05EC, 0x023EFF20, P03, "PORT_QUICK_USE"),     # checkNextActionFromButton: ready-item trigger
+    _p(0x023F0624, 0x023EFF20, P03, "PORT_QUICK_USE_AT"),  # ... hookshot / rope / boomerang dispatch
+    _p(0x023F0670, 0x023EFF20, P03, "PORT_QUICK_USE_AT"),
+    _p(0x023F06AC, 0x023EFF20, P03, "PORT_QUICK_USE_AT"),
+    _p(0x023F1728, 0x023F14E0, P03, "PORT_QUICK_USE_AT"),  # checkMode: boomerang / hookshot / rope dispatch
+    _p(0x023F1764, 0x023F14E0, P03, "PORT_QUICK_USE_AT"),
+    _p(0x023F1784, 0x023F14E0, P03, "PORT_QUICK_USE_AT"),
+    _p(0x023FB49C, 0x023FB230, P03, "PORT_QUICK_USE_AT"),  # checkItemAction: boomerang launch trace
+    _p(0x0242E14C, 0x0242E010, P07, "PORT_QUICK_USE_AT"),  # procGrabThrow: bomb launch traces
+    _p(0x0242E198, 0x0242E010, P07, "PORT_QUICK_USE_AT"),
+    _p(0x0243C6F4, 0x0243C61C, P07, "PORT_QUICK_USE_AT"),  # procHammerSideSwing: launch trace
+    _p(0x0243CB70, 0x0243CA98, P07, "PORT_QUICK_USE_AT"),  # procHammerFrontSwing: launch trace
+    # Camera-directed items (runtime/src/mods/camera_directed_items.cpp): initial facing of an accepted item use
+    _p(0x023E7A70, 0x023E79DC, P02, "PORT_ITEM_FACING"),   # procFanSwing_init
+    _p(0x023E7CF4, 0x023E7C98, P02, "PORT_ITEM_FACING"),   # procBowSubject_init
+    _p(0x023E88F4, 0x023E88B0, P02, "PORT_ITEM_FACING"),   # procBowMove_init
+    _p(0x023E8A58, 0x023E89FC, P02, "PORT_ITEM_FACING"),   # procHookshotSubject_init
+    _p(0x023E8B20, 0x023E8ADC, P02, "PORT_ITEM_FACING"),   # procHookshotMove_init
+    _p(0x023E8D34, 0x023E8CA4, P02, "PORT_ITEM_FACING"),   # procBoomerangSubject_init
+    _p(0x023E8E40, 0x023E8DC8, P02, "PORT_ITEM_FACING"),   # procBoomerangMove_init
+    _p(0x023E902C, 0x023E8FBC, P02, "PORT_ITEM_FACING"),   # procRopeSubject_init
+    _p(0x023E9130, 0x023E90EC, P02, "PORT_ITEM_FACING"),   # procRopeMove_init
+    _p(0x023E9E98, 0x023E9E48, P02, "PORT_ITEM_FACING"),   # procGrabThrow_init
+    _p(0x023EDE00, 0x023EDD9C, P02, "PORT_ITEM_FACING"),   # procBottleSwing_init
+    _p(0x023EDFC4, 0x023EDF70, P03, "PORT_ITEM_FACING"),   # procHammerSideSwing_init
+    _p(0x0243C830, 0x0243C7D8, P07, "PORT_ITEM_FACING"),   # procHammerFrontSwing_init
+    # Link's movement mods (runtime/src/mods/link_move_hooks.cpp): posMoveFromFootPos's current.pos += speed
+    dict(site=0x023FD39C, func=0x023FCB9C, path=P03, marker="PORT_LINK_MOVE(&speed)"),
+    # Climbing (runtime/src/mods/climb.cpp): the wall-steepness compares and the ledge search at the top
+    _p(0x023E39EC, 0x023E3850, P02, "PORT_CLIMB_STEEP"),   # setFrontWallType
+    _p(0x02429570, 0x02429408, P06, "PORT_CLIMB_STEEP"),   # setMoveBGCorrectClimb
+    dict(site=0x02429C04, func=0x02429950, path=P06, marker="PORT_CLIMB_LEDGE(this,"),  # checkBgClimbMove
+    # Steering (runtime/src/mods/steer.cpp): setStickData's walking direction; one statement in the source, which the
+    # compiled code has twice (both sites)
+    _p(0x023F35BC, 0x023F32E4, P03, "PORT_STEER_WALK"),
+    dict(site=0x023F3610, func=0x023F32E4, path=P03, marker="PORT_STEER_WALK(0x023F35BC"),
+    # Camera (runtime/src/mods/camera_points.cpp): the right stick's y (Invert camera up/down), the stored aspect, the
+    # targeting letterbox, the projection calls (aspect, field of view, stereo culling)
+    _p(0x02171B1C, 0x0216F7FC, "wwhd_src/d/actor/d_a_himo2_move.cpp", "PORT_CAMERA_F"),  # new_himo2_move
+    _p(0x024F9DA4, 0x024F9BF4, CU, "PORT_CAMERA_F"),     # dCamera_c::updatePad
+    _p(0x0250074C, 0x025006D8, CU, "PORT_CAMERA_F"),     # dCamera_c::initPad
+    _p(0x02506C68, 0x02506964, CS, "PORT_CAMERA_F"),     # dCamera_c::CalcSubjectAngle: one statement, compiled twice
+    dict(site=0x02506C80, func=0x02506964, path=CS, marker="PORT_CAMERA_F(0x02506C68"),
+    _p(0x024F811C, 0x024F8068, CP, "PORT_PROJECTION"),   # view_setup: mDoLib_clipper::setup (both branches)
+    _p(0x024F8168, 0x024F8068, CP, "PORT_PROJECTION"),
+    _p(0x024FFA98, 0x024FFA3C, CP, "PORT_CAMERA_F"),     # camera_execute: the aspect stored
+    _p(0x025020E0, 0x02501F98, CP, "PORT_CAMERA_F"),     # init_phase2: the same
+    _p(0x024FF8C0, 0x024FF8A0, CP, "PORT_CAMERA_AT"),    # CalcTrimSize: trace
+    _p(0x024FF980, 0x024FF8A0, CP, "PORT_CAMERA_F"),     # CalcTrimSize: the Vista bars' height
+    _p(0x024FFD60, 0x024FFC40, CP, "PORT_PROJECTION_ARG"),  # camera_draw: C_MTXPerspective
+    _p(0x0250007C, 0x024FFC40, CP, "PORT_PROJECTION_ARG"),  # camera_draw: sead PerspectiveProjection::set
+    _p(0x024FF4C0, 0x024FF164, "wwhd_src/d/d_camera_run.cpp", "PORT_CAMERA_W"),  # eventCamera: one statement, twice
+    dict(site=0x024FF4E4, func=0x024FF164, path="wwhd_src/d/d_camera_run.cpp", marker="PORT_CAMERA_W(0x024FF4C0"),
+    _p(0x024FC080, 0x024FBF9C, "wwhd_src/d/d_camera_bg.cpp", "PORT_CAMERA_W"),  # defaultTriming: the table's size
+    # dCamera_c::manualCamera (fast mode): the direct / mouse / swipe camera, Invert camera up/down (mods/camera.cpp)
+    _p(0x02510448, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL_AT"),  # after each turning-speed chase (both branches)
+    _p(0x025104A0, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL_AT"),
+    _p(0x0251053C, 0x0250FDC8, CE2, "PORT_CAMERA_RATE"),       # the vertical stick rate
+    _p(0x02510DEC, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the latitude step
+    _p(0x02510EA0, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the V smoothing factor
+    _p(0x02510EE4, 0x0250FDC8, CE2, "PORT_CAMERA_MANUAL"),     # the U smoothing factor
+    # Enemy lock-on range (runtime/src/mods/lock_on.cpp): the attention's distance limits
+    _p(0x024EB4A8, 0x024EB2D4, "wwhd_src/d/d_attention.cpp", "PORT_LOCK_ON_DISTANCE"),    # calcWeight
+    _p(0x024EB868, 0x024EB7F0, "wwhd_src/d/d_attention.cpp", "PORT_LOCK_ON"),             # EnemyDistance
+    _p(0x024ECC70, 0x024ECB08, "wwhd_src/d/d_attention_2.cpp", "PORT_LOCK_ON_DISTANCE"),  # chaseAttention
+    _p(0x024EE574, 0x024EE49C, "wwhd_src/d/d_attention_3.cpp", "PORT_LOCK_ON"),           # LockonReleaseDistanse
+    # The Picto Box at wider aspects (runtime/src/aspect.cpp, issue #303)
+    _p(0x025BE898, 0x025BE870, SN, "PORT_PICTO"),  # Execute: after Judge (WWHD_PICTO_LOG)
+    _p(0x025BF5D0, 0x025BF250, SN, "PORT_PICTO"),  # draw: the colour copy
+    _p(0x025BF7C0, 0x025BF250, SN, "PORT_PICTO"),  # draw: the depth copy
+    _p(0x025BFDF8, 0x025BFDC0, SN, "PORT_PICTO"),  # DebugDraw: the TV projection's off-centre terms
+    _p(0x025BFFB0, 0x025BFDC0, SN, "PORT_PICTO"),  # DebugDraw: the subjects' projection
+    _p(0x025C0004, 0x025BFDC0, SN, "PORT_PICTO"),  # DebugDraw: dSnap_project's projection
+    # Sailing (runtime/src/mods/traversal.cpp): sail speed, automatic wind
+    _p(0x0247D4E8, 0x0247D4B0, SH, "PORT_SHIP"),  # setMoveAngle: the speed for the turn rate
+    _p(0x0247E988, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the normal-sail branch (automatic wind)
+    _p(0x0247EB88, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the target speed
+    _p(0x0247ED24, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the stock target again before the jump code
+    # Title, file select, Options and input (mods/one_screen.cpp, motion/game_hooks.cpp, controller_selection.cpp)
+    _p(0x02617874, 0x02617858, "wwhd_src/d/hd_input_ctrl.cpp", "PORT_UI_W"),  # hdInputManager::init: the mode
+    _p(0x0261864C, 0x02618604, "wwhd_src/d/hd_input_ctrl.cpp", "PORT_UI_W"),  # orientation: isTvMode()
+    _p(0x026D44A8, 0x026D440C, "wwhd_src/d/hd_title_controller_selection.cpp", "PORT_UI_EVENT"),  # updateSelection
+    _p(0x026D5D84, 0x026D5CE4, SO, "PORT_UI_AT"),  # hdSequenceOption_c::loadSettings: the values loaded
+    _p(0x026D8514, 0x026D83F0, SO, "PORT_UI_W"),   # hdSequenceOption_c::open: the item count
+    _p(0x0270AC04, 0x0270AB10, SD, "PORT_UI_STATE"),  # updateControllerChoice: the picker's state
+    _p(0x0270ADD0, 0x0270ADA0, SD, "PORT_UI_STATE"),  # updateSaveSelection: Back
+    # Text: the interpolated timer digits (countdown.cpp), the German genitive of the player's name (language_region.cpp)
+    _p(0x026277A8, 0x02627734, "wwhd_src/d/hd_screen_boat_race_result_parts.cpp", "PORT_TEXT_W"),  # boat race
+    _p(0x026E9C24, 0x026E9BC4, "wwhd_src/d/hd_screen_time.cpp", "PORT_TEXT_W"),                    # HUD timer
+    # playerName's entry hook (the message id in r5): its point sits at the only call, in expandTagged
+    _p(0x025F8618, 0x025F8618, "wwhd_src/d/d_mesg_state.cpp", "PORT_TEXT_NAME"),
+    _p(0x025F8720, 0x025F8618, "wwhd_src/d/d_mesg_state.cpp", "PORT_TEXT_NAME"),  # playerName: the name copied
+    _p(0x025FC668, 0x025FC444, "wwhd_src/d/hd_text_unit_line.cpp", "PORT_TEXT_NAME"),  # putPlayerName
+    # Single functions: the file select's projection (aspect.cpp)
+    _p(0x025ADB38, 0x025ADB04, "wwhd_src/d/d_s_name.cpp", "PORT_PROJECTION_ARG"),  # dScnName_c::setView
+    _p(0x025B00B0, 0x025AF8A0, "wwhd_src/d/d_s_play_8.cpp", "PORT_PLAY_W"),  # dScnPly_Draw: the world-system hold
+    _p(0x0287714C, 0x02877100, "wwhd_src/nw/lyt/PaneText.cpp", "PORT_PANE_AT"),  # Pane::Draw: around DrawSelf
+    _p(0x02877150, 0x02877100, "wwhd_src/nw/lyt/PaneText.cpp", "PORT_PANE_AT"),
+    # Right-to-left text and line breaks after a space (rtl_text_hooks.cpp)
+    _p(0x02870028, 0x0286FFCC, TM, "PORT_RTL_AT"),  # CalcLineRectImpl: a new line
+    _p(0x028704CC, 0x0286FFCC, TM, "PORT_RTL"),     # CalcLineRectImpl: the break position
+    _p(0x02870A50, 0x028709E0, TM, "PORT_RTL_AT"),  # PrintImpl: its frame
+    _p(0x02870CC8, 0x028709E0, TM, "PORT_RTL"),     # PrintImpl: before the tag processor
+    _p(0x02870CCC, 0x028709E0, TM, "PORT_RTL_AT"),  # PrintImpl: after it
+    _p(0x02870FC8, 0x028709E0, TM, "PORT_RTL"),     # PrintImpl: the break position
+]
+
+EMPTY = [
+    # posMoveFromFootPos: foot movement, gravity (retired True 60)
+    dict(site=0x023FCEB0, func=0x023FCB9C), dict(site=0x023FD338, func=0x023FCB9C),
+    dict(site=0x023FD35C, func=0x023FCB9C),
+    # daPy_lk_c::execute: procedure call (retired True 60). Its decompiled body once crashed after the file select (a
+    # read at guest address 8): TODO 77, fixed in the decompilation (the sound name from mAnmRatioUnder[0]'s animation,
+    # Link+0x57FC, not 0x77FC)
+    dict(site=0x0240D6D8, func=0x0240CDD0), dict(site=0x0240D6F8, func=0x0240CDD0),
+    dict(site=0x0240D6FC, func=0x0240CDD0),
+    # dCamera_c::Run 024FE3E8 (retired True 60). TODO 78 (21:9 + letterbox) was not a decompilation difference: the
+    # stage entry is not deterministic with interpolation on; compared at 30 fps (interpolation off) the bodies agree
+    dict(site=0x024FE89C, func=0x024FE3E8), dict(site=0x024FEB00, func=0x024FE3E8),
+    # the chase camera's step-length sites (025028B8; retired True 60)
+    dict(site=0x02502CCC, func=0x025028B8), dict(site=0x02502CD0, func=0x025028B8), dict(site=0x02502E44, func=0x025028B8),
+    dict(site=0x02502E48, func=0x025028B8), dict(site=0x02502E8C, func=0x025028B8), dict(site=0x02502E90, func=0x025028B8),
+    dict(site=0x02502ECC, func=0x025028B8), dict(site=0x02502ED0, func=0x025028B8), dict(site=0x0250329C, func=0x025028B8),
+    dict(site=0x025032CC, func=0x025028B8), dict(site=0x025034AC, func=0x025028B8), dict(site=0x025034B0, func=0x025028B8),
+    dict(site=0x025034D0, func=0x025028B8), dict(site=0x02503540, func=0x025028B8), dict(site=0x02503544, func=0x025028B8),
+    dict(site=0x02503564, func=0x025028B8), dict(site=0x025035BC, func=0x025028B8), dict(site=0x02503670, func=0x025028B8),
+    dict(site=0x02503674, func=0x025028B8), dict(site=0x025037B0, func=0x025028B8), dict(site=0x025037B4, func=0x025028B8),
+    dict(site=0x02503E20, func=0x025028B8), dict(site=0x02503E24, func=0x025028B8), dict(site=0x02503EC8, func=0x025028B8),
+    dict(site=0x02503ECC, func=0x025028B8), dict(site=0x025042F8, func=0x025028B8), dict(site=0x025043C8, func=0x025028B8),
+    dict(site=0x0250447C, func=0x025028B8), dict(site=0x02504620, func=0x025028B8), dict(site=0x02504624, func=0x025028B8),
+    dict(site=0x02504660, func=0x025028B8), dict(site=0x02504664, func=0x025028B8), dict(site=0x025046C0, func=0x025028B8),
+    dict(site=0x025046C4, func=0x025028B8), dict(site=0x025046FC, func=0x025028B8), dict(site=0x02504700, func=0x025028B8),
+    dict(site=0x025047B8, func=0x025028B8), dict(site=0x025047BC, func=0x025028B8), dict(site=0x02504808, func=0x025028B8),
+    dict(site=0x0250480C, func=0x025028B8), dict(site=0x025049CC, func=0x025028B8), dict(site=0x025049D0, func=0x025028B8),
+    dict(site=0x02504B1C, func=0x025028B8), dict(site=0x02504B70, func=0x025028B8), dict(site=0x02504B74, func=0x025028B8),
+    dict(site=0x02504B78, func=0x025028B8), dict(site=0x02504B7C, func=0x025028B8), dict(site=0x02504B94, func=0x025028B8),
+    dict(site=0x02504B98, func=0x025028B8), dict(site=0x02504BA8, func=0x025028B8), dict(site=0x02504BAC, func=0x025028B8),
+    dict(site=0x02504C00, func=0x025028B8), dict(site=0x02504C04, func=0x025028B8), dict(site=0x02504C14, func=0x025028B8),
+    dict(site=0x02504C18, func=0x025028B8), dict(site=0x02504C68, func=0x025028B8), dict(site=0x02504C6C, func=0x025028B8),
+    dict(site=0x02504D50, func=0x025028B8), dict(site=0x02504DA0, func=0x025028B8), dict(site=0x02504DA4, func=0x025028B8),
+    dict(site=0x02504DB0, func=0x025028B8), dict(site=0x02504DB4, func=0x025028B8), dict(site=0x02504ECC, func=0x025028B8),
+    dict(site=0x02504F5C, func=0x025028B8),
 ]
 
 
 def moved(listed, texts):
     """the SITES whose function is in `listed` (decompiled) and whose source text (texts: path -> text as compiled)
-    carries the marker"""
-    return [s for s in SITES if s["func"] in listed and s["marker"] in texts.get(s["path"], "")]
+    carries the marker, and the EMPTY sites whose function is in `listed` (path: the handler's file)"""
+    return ([s for s in SITES if s["func"] in listed and s["marker"] in texts.get(s["path"], "")] +
+            [dict(s, path="runtime/src/game_hooks.cpp: empty") for s in EMPTY if s["func"] in listed])

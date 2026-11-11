@@ -34,8 +34,10 @@ version), except:
 - functions the port's runtime replaces itself (its hooks for 60 fps, the camera, the controls and so
   on: `tools/recomp/hooks*.txt`) - the port's version stays in charge;
 - functions that contain one of the port's instruction-level patches, unless the decompiled source asks the port at
-  that point itself (the decompilation's `port_hooks.h`, game build only: `tools/decomp_build/port_sites.py`; so far
-  the Classic Wind Waker points in procTactWait and endDemoMode);
+  that point itself (the decompilation's `port_hooks.h`, game build only: `tools/decomp_build/port_sites.py`). So far
+  the Classic Wind Waker points in procTactWait and endDemoMode, and Link's player code: quick use, camera-directed
+  items, the movement mods, climbing and steering. Such a point runs the hook's own handler
+  (`runtime/src/port_points.h`), so the feature behaves the same in both builds;
 - functions a guest code mod hooks or replaces (they stay recompiled while that mod is on, so the mod
   keeps working).
 

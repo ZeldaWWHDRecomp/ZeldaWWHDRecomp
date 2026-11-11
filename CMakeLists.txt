@@ -76,6 +76,19 @@ endif()
 
 option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; experimental)" OFF)
 include(cmake/Decomp.cmake)
+
+# Cafe OS message queues (runtime/src/threads.cpp, WWHD_MSGQ_FAST): lock-free queue lookups, the wake gate in every
+# build and, in the decomp fast build, a short nap of the spinning receivers before they sleep. OFF = the code as before.
+# Default ON in the decomp fast build (phone pair 2026-11-11: logic -0.4 to -1.1 ms at the cliff), OFF otherwise.
+if(WWHD_DECOMP AND WWHD_DECOMP_FAST)
+  set(WWHD_MSGQ_FAST_DEFAULT ON)
+else()
+  set(WWHD_MSGQ_FAST_DEFAULT OFF)
+endif()
+option(WWHD_MSGQ_FAST "cheaper OSSendMessage / OSReceiveMessage wake path (threads.cpp)" ${WWHD_MSGQ_FAST_DEFAULT})
+if(WWHD_MSGQ_FAST)
+  set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/threads.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_MSGQ_FAST=1)
+endif()
 if(WWHD_DECOMP)
   wwhd_decomp_configure()
 elseif(EXISTS "${GEN_DIR}/decomp_hooks.txt")
@@ -1514,6 +1527,7 @@ if(Python3_Interpreter_FOUND)
     runtime/src/mods/camera_directed_items.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
   target_include_directories(camera_directed_items_eu_test PRIVATE runtime/src runtime/include)
   target_compile_options(camera_directed_items_eu_test PRIVATE -UNDEBUG)
+  target_compile_definitions(camera_directed_items_eu_test PRIVATE WWHD_PORT_POINT_TESTS=1)  # (runtime/src/port_points.h)
   add_test(NAME camera_directed_items_eu COMMAND camera_directed_items_eu_test)
   set_tests_properties(camera_directed_items_eu PROPERTIES ENVIRONMENT "WWHD_MOD_CAMERA_DIRECTED_ITEMS=0")
   add_executable(guest_addr_identity_test runtime/tools/guest_addr_test.cpp runtime/src/guest_addr_identity.c)
@@ -1538,6 +1552,8 @@ add_executable(camera_directed_items_test runtime/tools/camera_directed_items_te
   runtime/src/mods/camera_directed_items.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(camera_directed_items_test PRIVATE runtime/src runtime/include)
 target_compile_options(camera_directed_items_test PRIVATE -UNDEBUG)
+# the decomp build's port points (runtime/src/port_points.h) are compiled in only for the tests that drive them
+target_compile_definitions(camera_directed_items_test PRIVATE WWHD_PORT_POINT_TESTS=1)
 add_test(NAME camera_directed_items COMMAND camera_directed_items_test)
 set_tests_properties(camera_directed_items PROPERTIES ENVIRONMENT "WWHD_MOD_CAMERA_DIRECTED_ITEMS=0")
 add_test(NAME camera_directed_items_env_on COMMAND camera_directed_items_test --env)
@@ -1760,7 +1776,7 @@ add_executable(perf_average_test runtime/tools/perf_average_test.cpp)
 target_include_directories(perf_average_test PRIVATE runtime/src)
 target_compile_options(perf_average_test PRIVATE -UNDEBUG)
 add_test(NAME perf_average COMMAND perf_average_test)
-add_executable(lock_on_runtime_test runtime/tools/lock_on_runtime_test.cpp runtime/src/mods/lock_on.cpp runtime/src/guest_addr_identity.c)
+add_executable(lock_on_runtime_test runtime/tools/lock_on_runtime_test.cpp runtime/src/mods/lock_on.cpp runtime/src/mods/lock_on_points.cpp runtime/src/guest_addr_identity.c)
 add_executable(targeting_letterbox_test runtime/tools/targeting_letterbox_test.cpp runtime/src/mods/targeting_letterbox.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(targeting_letterbox_test PRIVATE runtime/src runtime/include)
 target_compile_options(targeting_letterbox_test PRIVATE -UNDEBUG)
@@ -1770,12 +1786,13 @@ add_test(NAME targeting_letterbox_startup_on COMMAND ${CMAKE_COMMAND} -E env WWH
 add_test(NAME targeting_letterbox_startup_always_off COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=1 WWHD_TARGET_LETTERBOX_MODE=2 $<TARGET_FILE:targeting_letterbox_test> 2)
 target_include_directories(lock_on_runtime_test PRIVATE runtime/src runtime/include)
 target_compile_options(lock_on_runtime_test PRIVATE -UNDEBUG)
+target_compile_definitions(lock_on_runtime_test PRIVATE WWHD_PORT_POINT_TESTS=1)  # (runtime/src/port_points.h)
 add_test(NAME lock_on_runtime COMMAND lock_on_runtime_test)
 if(Python3_Interpreter_FOUND)
-  add_executable(lock_on_runtime_eu_test runtime/tools/lock_on_runtime_test.cpp runtime/src/mods/lock_on.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
+  add_executable(lock_on_runtime_eu_test runtime/tools/lock_on_runtime_test.cpp runtime/src/mods/lock_on.cpp runtime/src/mods/lock_on_points.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
   target_include_directories(lock_on_runtime_eu_test PRIVATE runtime/src runtime/include)
   target_compile_options(lock_on_runtime_eu_test PRIVATE -UNDEBUG)
-  target_compile_definitions(lock_on_runtime_eu_test PRIVATE TEST_EU)
+  target_compile_definitions(lock_on_runtime_eu_test PRIVATE TEST_EU WWHD_PORT_POINT_TESTS=1)
   add_test(NAME lock_on_runtime_eu COMMAND lock_on_runtime_eu_test)
 endif()
 add_test(NAME lock_on_startup COMMAND ${CMAKE_COMMAND} -E env WWHD_MOD_LOCK_ON=1 WWHD_MOD_LOCK_ON_RANGE=2.5 WWHD_MOD_LOCK_ON_CYCLING=0 $<TARGET_FILE:lock_on_runtime_test> --startup 1 2.5 0)
@@ -1897,6 +1914,7 @@ add_test(NAME moon_jump_policy COMMAND moon_jump_policy_test)
 add_executable(moon_jump_movement_test runtime/tools/moon_jump_movement_test.cpp runtime/src/mods/link_move_hooks.cpp)
 target_include_directories(moon_jump_movement_test PRIVATE runtime/src runtime/include)
 target_compile_options(moon_jump_movement_test PRIVATE -UNDEBUG)
+target_compile_definitions(moon_jump_movement_test PRIVATE WWHD_PORT_POINT_TESTS=1)  # (runtime/src/port_points.h)
 add_test(NAME moon_jump_movement COMMAND moon_jump_movement_test)
 # Classic Wind Waker (Speedrun, issue #405): the two sites against the TWWHD Randomizer's Classic-mode words
 add_executable(classic_tact_test runtime/tools/classic_tact_test.cpp runtime/src/mods/speedrun.cpp)
@@ -2540,7 +2558,8 @@ add_test(NAME fast_forward_startup_valid COMMAND ${CMAKE_COMMAND} -E env WWHD_MO
 add_test(NAME fast_forward_startup_invalid COMMAND ${CMAKE_COMMAND} -E env WWHD_MOD_FAST_FORWARD=0 WWHD_MOD_FF_RATE=nan WWHD_MOD_FF_BUTTON=0x8000 WWHD_MOD_FF_MUTE=1 $<TARGET_FILE:fast_forward_runtime_test> --startup 0 2 0x40 1)
 add_test(NAME fast_forward_startup_bounds COMMAND ${CMAKE_COMMAND} -E env WWHD_MOD_FAST_FORWARD=0 WWHD_MOD_FF_RATE=5 WWHD_MOD_FF_BUTTON=0xffffffffffffffff WWHD_MOD_FF_MUTE=1 $<TARGET_FILE:fast_forward_runtime_test> --startup 0 2 0x40 1)
 # Quick-use exercises the real runtime hooks with a private-free native-predicate fixture.
-foreach(map native shifted)
+# points: the same replays through the decomp build's port points (wwhd_quick_use, the decompilation's port_hooks.h)
+foreach(map native shifted points)
   add_executable(quick_use_${map}_test runtime/tools/quick_use_runtime_test.cpp runtime/src/mods/quick_use.cpp)
   target_include_directories(quick_use_${map}_test PRIVATE runtime/src runtime/include)
   target_compile_options(quick_use_${map}_test PRIVATE -UNDEBUG)
@@ -2548,6 +2567,9 @@ foreach(map native shifted)
   if(map STREQUAL "shifted")
     target_compile_definitions(quick_use_${map}_test PRIVATE QUICK_USE_SHIFTED_MAP=1)
   else()
+    if(map STREQUAL "points")
+      target_compile_definitions(quick_use_${map}_test PRIVATE QUICK_USE_PORT_POINTS=1 WWHD_PORT_POINT_TESTS=1)
+    endif()
     target_sources(quick_use_${map}_test PRIVATE runtime/src/guest_addr_identity.c)
   endif()
   add_test(NAME quick_use_${map} COMMAND ${CMAKE_COMMAND} -E env --unset=WWHD_MOD_QUICK_USE --unset=WWHD_MOD_QUICK_USE_SPEED $<TARGET_FILE:quick_use_${map}_test>)
@@ -3985,6 +4007,61 @@ target_sources(native_quiescence_test PRIVATE runtime/src/game_clock.cpp)
 # threads.cpp (included by the test) reads the calendar clock and the fixed-seed switch;
 # Windows' linker keeps those references, so link their sources.
 target_sources(native_quiescence_test PRIVATE runtime/src/hle/os_time.cpp runtime/src/fixed_seed.cpp)
+
+# Decomp build fast mode, WWHD_DECOMP_FAST_MUTEX: the actual threads.cpp OSMutex code with its lock-free address cache
+# and the imports' direct host entries (built like native_quiescence_test, which includes threads.cpp the same way)
+add_executable(fast_mutex_test
+    runtime/tools/fast_mutex_test.cpp
+    runtime/tools/native_quiescence_test_stubs.cpp
+    runtime/src/native_quiescence.cpp
+    runtime/src/mods/story_native_event_game_thread.cpp
+    runtime/src/mods/story_native_stage_owner.cpp
+    runtime/src/game_clock.cpp
+    runtime/src/hle/os_time.cpp
+    runtime/src/fixed_seed.cpp)
+target_include_directories(fast_mutex_test PRIVATE
+    runtime/src runtime/include runtime/src/gx2
+    runtime/third_party/cemu runtime/third_party/cemu/Cafe
+    runtime/third_party/fmt/include runtime/third_party/imgui)
+target_compile_options(fast_mutex_test PRIVATE -UNDEBUG -O1 -ffunction-sections -fdata-sections)
+if(APPLE)
+    target_link_options(fast_mutex_test PRIVATE -Wl,-dead_strip)
+else()
+    target_link_options(fast_mutex_test PRIVATE -Wl,--gc-sections)
+endif()
+target_link_libraries(fast_mutex_test PRIVATE Threads::Threads)
+add_test(NAME decomp_fast_mutex COMMAND fast_mutex_test)
+
+# Cafe OS message queues (WWHD_MSGQ_FAST): the actual threads.cpp queue code, normal and decomp fast build, switch off and on
+foreach(msgq_variant normal_off normal_on fast_off fast_on)
+  add_executable(msgq_test_${msgq_variant}
+      runtime/tools/msgq_test.cpp
+      runtime/tools/native_quiescence_test_stubs.cpp
+      runtime/src/native_quiescence.cpp
+      runtime/src/mods/story_native_event_game_thread.cpp
+      runtime/src/mods/story_native_stage_owner.cpp
+      runtime/src/game_clock.cpp
+      runtime/src/hle/os_time.cpp
+      runtime/src/fixed_seed.cpp)
+  target_include_directories(msgq_test_${msgq_variant} PRIVATE
+      runtime/src runtime/include runtime/src/gx2
+      runtime/third_party/cemu runtime/third_party/cemu/Cafe
+      runtime/third_party/fmt/include runtime/third_party/imgui)
+  target_compile_options(msgq_test_${msgq_variant} PRIVATE -UNDEBUG -O1 -ffunction-sections -fdata-sections)
+  if(msgq_variant MATCHES "^fast")
+    target_compile_definitions(msgq_test_${msgq_variant} PRIVATE WWHD_DECOMP_FAST=1)
+  endif()
+  if(msgq_variant MATCHES "_on$")
+    target_compile_definitions(msgq_test_${msgq_variant} PRIVATE WWHD_MSGQ_FAST=1)
+  endif()
+  if(APPLE)
+    target_link_options(msgq_test_${msgq_variant} PRIVATE -Wl,-dead_strip)
+  else()
+    target_link_options(msgq_test_${msgq_variant} PRIVATE -Wl,--gc-sections)
+  endif()
+  target_link_libraries(msgq_test_${msgq_variant} PRIVATE Threads::Threads)
+  add_test(NAME msgq_${msgq_variant} COMMAND msgq_test_${msgq_variant})
+endforeach()
 
 # Genuine model/native-observation-backed Stage renewal; no native ticks/writes.
 get_target_property(STORY_NATIVE_STAGE_RENEW_SOURCES story_native_wait_saved_turn_model_test SOURCES)
