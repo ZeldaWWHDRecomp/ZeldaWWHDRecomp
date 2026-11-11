@@ -609,6 +609,21 @@ static void haptic_invalidated(GCController* controller, CHHapticEngine* engine)
         break;
     }
 }
+// A controller's buttons reach the game instead of a system gesture: the screenshot / recording one sits on Share
+// (Xbox) or on Options (a PlayStation controller's Create). Home (the PS / Xbox button) stays the system's.
+static void claim_buttons(GCController* c) {
+    if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
+        std::string claimed;
+        for (NSString* name in @[GCInputButtonShare, GCInputButtonOptions, GCInputButtonMenu]) {
+            GCControllerButtonInput* b = c.physicalInputProfile.buttons[name];
+            if (!b) continue;
+            b.preferredSystemGestureState = GCSystemGestureStateDisabled;
+            claimed += std::string(claimed.empty() ? "" : ", ") + name.UTF8String;
+        }
+        if (!claimed.empty())
+            LOG("[input] %s: %s for the game, not the system's gestures", (c.vendorName ?: @"controller").UTF8String, claimed.c_str());
+    }
+}
 static void haptic_start(GCController* c) {
     if (g_haptics_shutdown || !c.haptics) return;
     for (const auto& h : g_haptics) if (h.controller == c) return;
@@ -975,13 +990,14 @@ void init() {
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
     g_connect_order = [NSMutableArray array];
-    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); log_controller(c); }
+    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); log_controller(c); claim_buttons(c); }
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
     [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
         GCController* c = n.object;
         if (c && ![g_connect_order containsObject:c]) [g_connect_order addObject:c];
         log_controller(c);
         haptic_start(c);
+        claim_buttons(c);
         note_dominant_labels();
     }];
     [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
