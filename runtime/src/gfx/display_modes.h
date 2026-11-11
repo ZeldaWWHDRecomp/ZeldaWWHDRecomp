@@ -87,6 +87,9 @@ extern std::atomic<bool> g_one_screen_off_tv;  // ... and the game plays Off-TV 
 // GamePad screen hidden (#222). Not the single-screen mode, which is Off by default on Android.
 extern std::atomic<bool> g_second_screen_off;
 extern std::atomic<bool> g_second_display_available; // capability, independent of live surface
+// Android: a second (Presentation) display was there when the activity started (GamePadDisplay.seedDisplayPresent),
+// before the display host publishes availability; One screen mode's start default reads it (mods/one_screen.cpp)
+extern std::atomic<bool> g_second_display_present;
 // Android start: the saved Off choice read by Java before the native settings load, so a saved Off never
 // acquires the second screen for a moment (#222). Ignored once load_second_screen_off ran.
 void seed_second_screen_off(bool off);

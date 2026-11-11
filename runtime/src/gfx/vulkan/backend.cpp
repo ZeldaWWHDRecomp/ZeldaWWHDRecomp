@@ -2177,6 +2177,11 @@ extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_seedSavedOff(JNIEnv*, jclass, jboolean off) {
   gfx::seed_second_screen_off(off);
 }
+// ... and whether a second display is there at all: One screen mode's start default (mods/one_screen.cpp)
+extern "C" JNIEXPORT void JNICALL
+Java_org_wwhdrecomp_wwhd_GamePadDisplay_seedDisplayPresent(JNIEnv*, jclass, jboolean present) {
+  gfx::g_second_display_present = present;
+}
 // The parts of the game's view the platform does not show (WwhdActivity, ScreenCover, issue #349): the TV layout
 // uses the rest.
 extern "C" JNIEXPORT void JNICALL
