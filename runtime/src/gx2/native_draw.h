@@ -41,7 +41,7 @@
 //
 // Run-time switches (ON builds): WWHD_NATIVE_DRAW=1 turns packets on (off by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
 // one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE, JPA, LAYOUT,
-// POST, SHADOW, AGLQUAD, AGLPAIR); WWHD_NATIVE_DRAW_JOURNAL=0 turns the register journal's check off (draw.cpp);
+// POST, SHADOW, AGLQUAD, AGLPAIR, SUN); WWHD_NATIVE_DRAW_JOURNAL=0 turns the register journal's check off (draw.cpp);
 // WWHD_NATIVE_DRAW_VERIFY=N draws
 // every Nth replayable instance through the full path and compares what it resolved with the packet (mismatches
 // logged, "[native-draw] VERIFY MISMATCH").
@@ -95,8 +95,8 @@ enum Site : uint32_t {
     kSiteStar = 6, kSiteHousi = 7, kSiteWave = 8, kSiteMoya = 9, kSiteVrkumo = 10, kSiteRain = 11, kSiteSea = 12,
     kSiteLine = 13, kSiteJpa = 14, kSiteLayout = 15, /* 16: native-p6's text site */
     // one draw per packet (port_native_draw.h port_native_draw_single): the post effects (pass: the effect), the cascade
-    // shadow preparation, agl's generic quads (shadow preparation, SSAO, post quads), agl's draw-pair passes
-    kSitePost = 17, kSiteShadow = 18, kSiteAglQuad = 19, kSiteAglPair = 20, kSites = 21
+    // shadow preparation, agl's generic quads (shadow preparation, SSAO, post quads), agl's draw-pair passes, the sun's quads
+    kSitePost = 17, kSiteShadow = 18, kSiteAglQuad = 19, kSiteAglPair = 20, kSiteSun = 21, kSites = 22
 };
 // packet ids: 8 per site (by pass, or by pass and variant), the first 8 unused
 constexpr uint32_t kIdsPerSite = 8;
