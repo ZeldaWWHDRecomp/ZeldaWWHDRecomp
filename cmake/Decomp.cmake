@@ -798,8 +798,11 @@ function(wwhd_decomp_link target)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_SITE_LR=1)
   endif()
   if(WWHD_DECOMP_FAST AND WWHD_NATIVE_DRAW)  # (only the files that use it: gx2_cmd.h's packet ops, api.h's packet_draw)
-    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp")
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp"
+                   "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/coverage.cpp")
     set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/coverage.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gx2/gx2_resources.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gx2/gx2_core.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/draw.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/backend.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/shaders.cpp"

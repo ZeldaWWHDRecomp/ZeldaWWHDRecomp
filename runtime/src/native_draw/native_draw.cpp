@@ -1,6 +1,7 @@
 // Native draw packets (gx2/native_draw.h): the decompiled sites' entry points (game thread) and the render thread's
 // packet table and dispatch. Decomp build, fast mode, WWHD_NATIVE_DRAW=ON only.
 #include "gx2/native_draw.h"
+#include "gx2/native_coverage.h"
 #include "gx2/gx2_cmd.h"
 #include "runtime.h"
 #include "framegen.h"
@@ -152,6 +153,9 @@ static void emit_instance(SiteState& s, uint32_t kind, const uint32_t* range = n
         s.words[n++] = range[1];
     }
     gx2::emit(gx2::OP_PACKET_DRAW, s.words, n);
+    if (kind != kNoDraw)  // (coverage: the instance's site in the "lr" field; its mesh or own index range)
+        NATIVE_COVERAGE(kPacket, s.pk.site, range ? range[0] : s.pk.mesh[kind].count,
+                        range ? range[1] : s.pk.mesh[kind].indexAddr);
     s.blocks = 0;
     s.vertex = false;
     s.buffers = 0;

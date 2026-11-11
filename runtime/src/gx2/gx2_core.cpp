@@ -55,6 +55,7 @@
 #ifdef WWHD_NATIVE_DRAW
 #include "native_draw.h"
 #endif
+#include "native_coverage.h"
 
 using namespace Latte;
 
@@ -1414,12 +1415,25 @@ static void call_display_list(uint32 list, uint32 size) {
     emit(OP_CALL, {list, size});
     if (s) emit_host(OP_SUBMITTED_UNIFORMS, {});
 }
-HLE(gx2, GX2CallDisplayList) { call_display_list(arg(c, 0), arg(c, 1)); }
-HLE(gx2, GX2DirectCallDisplayList) { call_display_list(arg(c, 0), arg(c, 1)); }
+HLE(gx2, GX2CallDisplayList) { NATIVE_COVERAGE(kCallList, c->lr, 1, arg(c, 0)); call_display_list(arg(c, 0), arg(c, 1)); }
+HLE(gx2, GX2DirectCallDisplayList) { NATIVE_COVERAGE(kCallList, c->lr, 1, arg(c, 0)); call_display_list(arg(c, 0), arg(c, 1)); }
 
 // ---------------------------------------------------------------- draws
-HLE(gx2, GX2DrawEx) { mod_actor_shadow_proof::draw_submitted(arg(c,1));emit(OP_DRAW, {arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3)}); }
-HLE(gx2, GX2DrawIndexedEx) { mod_actor_shadow_proof::draw_submitted(arg(c,1));emit(OP_DRAW_INDEXED, {arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3), arg(c, 4), arg(c, 5)}); }
+// (native_coverage.h: a draw recorded into a display list counts as "list")
+#ifdef WWHD_NATIVE_DRAW
+#define COVERAGE_DRAW(count_, mesh_)                                                                              \
+    do {                                                                                                          \
+        if (native_draw::coverage::on()) {                                                                        \
+            const Recording* r_ = recording();                                                                    \
+            native_draw::coverage::op(r_ && r_->start ? native_draw::coverage::kList : native_draw::coverage::kDraw, \
+                                      c->lr, count_, mesh_);                                                      \
+        }                                                                                                         \
+    } while (0)
+#else
+#define COVERAGE_DRAW(count_, mesh_) ((void)0)
+#endif
+HLE(gx2, GX2DrawEx) { COVERAGE_DRAW(arg(c, 1), arg(c, 2)); mod_actor_shadow_proof::draw_submitted(arg(c,1));emit(OP_DRAW, {arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3)}); }
+HLE(gx2, GX2DrawIndexedEx) { COVERAGE_DRAW(arg(c, 1), arg(c, 3)); mod_actor_shadow_proof::draw_submitted(arg(c,1));emit(OP_DRAW_INDEXED, {arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3), arg(c, 4), arg(c, 5)}); }
 
 // ---------------------------------------------------------------- clears and copies
 static float farg(Cpu* c, int i) { return (float)c->f[1 + i].ps0; }
@@ -1432,18 +1446,21 @@ static void put_struct(std::vector<uint32>& p, uint32 addr, uint32 words) {
     if (addr) memcpy(&p[at], mem::ptr(addr), words * 4);
 }
 HLE(gx2, GX2ClearColor) {
+    NATIVE_COVERAGE(kClear, c->lr, 1, 0);
     std::vector<uint32> p;
     put_struct(p, arg(c, 0), kColorBufferWords);
     for (int i = 0; i < 4; i++) p.push_back(fbits(farg(c, i)));
     emit(OP_CLEAR_COLOR, p.data(), (uint32)p.size());
 }
 HLE(gx2, GX2ClearDepthStencilEx) {
+    NATIVE_COVERAGE(kClear, c->lr, 1, 0);
     std::vector<uint32> p;
     put_struct(p, arg(c, 0), kDepthBufferWords);
     p.insert(p.end(), {fbits(farg(c, 0)), arg(c, 1) & 0xFF, arg(c, 2)});
     emit(OP_CLEAR_DEPTH, p.data(), (uint32)p.size());
 }
 HLE(gx2, GX2ClearBuffersEx) {
+    NATIVE_COVERAGE(kClear, c->lr, 1, 0);
     std::vector<uint32> p;
     put_struct(p, arg(c, 0), kColorBufferWords);
     put_struct(p, arg(c, 1), kDepthBufferWords);
@@ -1457,6 +1474,7 @@ HLE(gx2, GX2SetClearDepthStencil) {
     db->clearStencil = arg(c, 1) & 0xFF;
 }
 HLE(gx2, GX2CopySurface) {
+    NATIVE_COVERAGE(kCopy, c->lr, 1, 0);
     // debug: WWHD_COPYDBG=1 logs each copy as issued (thread, caller, source and destination images)
     static const bool dbg = getenv("WWHD_COPYDBG") != nullptr;
     if (dbg)
@@ -1479,13 +1497,14 @@ HLE(gx2, GX2CopySurface) {
     }
 }
 HLE(gx2, GX2CopyColorBufferToScanBuffer) {
+    NATIVE_COVERAGE(kCopy, c->lr, 1, 1);
     std::vector<uint32> p;
     put_struct(p, arg(c, 0), kColorBufferWords);
     p.push_back(arg(c, 1));
     emit(OP_COPY_TO_SCAN, p.data(), (uint32)p.size());
 }
-HLE(gx2, GX2ExpandAAColorBuffer) { emit(OP_EXPAND_COLOR, {arg(c, 0)}); }
-HLE(gx2, GX2ExpandDepthBuffer) { emit(OP_EXPAND_DEPTH, {arg(c, 0)}); }
+HLE(gx2, GX2ExpandAAColorBuffer) { NATIVE_COVERAGE(kExpand, c->lr, 1, 0); emit(OP_EXPAND_COLOR, {arg(c, 0)}); }
+HLE(gx2, GX2ExpandDepthBuffer) { NATIVE_COVERAGE(kExpand, c->lr, 1, 1); emit(OP_EXPAND_DEPTH, {arg(c, 0)}); }
 HLE(gx2, GX2Invalidate) { emit(OP_INVALIDATE, {arg(c, 0), arg(c, 1), arg(c, 2)}); }
 
 // ---------------------------------------------------------------- submission and presentation
@@ -1498,6 +1517,9 @@ HLE(gx2, GX2DrawDone) {
 }
 namespace dtrace { void on_swap(uint64_t swap, uint64_t steps); }
 HLE(gx2, GX2SwapScanBuffers) {
+#ifdef WWHD_NATIVE_DRAW
+    if (native_draw::coverage::on()) native_draw::coverage::swap();
+#endif
     const uint64_t watchSwap = g_watch_swaps.fetch_add(1, std::memory_order_relaxed) + 1;
     // test aid for the watchdog: WWHD_TEST_HANG_AT=<swap>:<seconds> stops the game's thread in that swap
     static const std::pair<uint64_t, unsigned> hangAt = [] {

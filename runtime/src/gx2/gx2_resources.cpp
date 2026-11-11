@@ -9,6 +9,7 @@
 #include "gx2_texture_regs.h"
 #include "runtime.h"
 #include "../aspect.h"
+#include "native_coverage.h"
 
 using namespace Latte;
 using gx2::set_reg;
@@ -47,6 +48,7 @@ uint32 color_buffer_address(const GX2::GX2ColorBuffer* cb) {
 }  // namespace gx2
 
 HLE(gx2, GX2SetColorBuffer) {
+    NATIVE_COVERAGE(kTarget, c->lr, 1, 0);
     auto* cb = gp<GX2::GX2ColorBuffer>(arg(c, 0));
     uint32 target = arg(c, 1) & 7;
     set_reg(mmCB_COLOR0_BASE + target, gx2::color_buffer_address(cb));  // full address; our renderer's convention
@@ -66,6 +68,7 @@ HLE(gx2, GX2SetColorBuffer) {
 }
 
 HLE(gx2, GX2SetDepthBuffer) {
+    NATIVE_COVERAGE(kTarget, c->lr, 1, 1);
     auto* db = gp<GX2::GX2DepthBuffer>(arg(c, 0));
     uint32 info = ((uint32)db->surface.tileMode.value() & 0xF) << 15;
     switch (db->surface.format.value()) {
