@@ -1062,6 +1062,10 @@ void init() {
     LOG("[decomp] fast mode: bare entry leaves (bare leaves with pointer parameters that only their native entry calls)");
 #endif
 #endif
+#ifdef WWHD_DECOMP_FAST_STACKARG
+    // gabi.h GABI_STACKARG (cmake WWHD_DECOMP_FAST_STACKARG): no run-time switch
+    LOG("[decomp] fast mode: stack-argument calls native (cM3d_InclusionCheckPosIn3PosBox2d, EnvLight::setLight_palno_get)");
+#endif
 #ifdef WWHD_DECOMP_FAST_NSTATS
     if (const char* p = getenv("WWHD_DECOMP_FAST_NSTATS")) {
         g_decomp_nstats = new uint64_t[kNumSlots]();

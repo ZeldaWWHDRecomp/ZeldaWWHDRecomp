@@ -203,6 +203,16 @@ def ptr_call(m):
     return "gabi::%s_ic<decltype([]{})>(" % m.group(1)
 
 
+# --stackarg (fast mode, cmake WWHD_DECOMP_FAST_STACKARG): the constant-address do_call sites of the stack-argument
+# callees native_rules.py --stackarg may make native (its STACKARG_NATIVE) as gabi::do_call_sa<ADDR> (gabi.h
+# GABI_STACKARG: the native call when the callee's unit made it one, else the same do_call)
+SA_CALL = re.compile(r"\bgabi::do_call\(\s*gabi::cpu\s*,\s*(\w+)\s*,\s*0x(02011D2C|025580FC)\s*,\s*(\d)\s*\)")
+
+
+def sa_call(m):
+    return "gabi::do_call_sa<0x%s>(gabi::cpu, %s, %s)" % (m.group(2), m.group(1), m.group(3))
+
+
 def fast_rewrite(text, hcall, ptr_ic):
     """the fast-mode rewrites of a source or header (--hcall, --ptr-ic) -> (text, count)"""
     n = 0
@@ -470,6 +480,8 @@ def main():
                     help="fast mode: calls by constant address outside the ext stubs as gabi::hcall (OUT_DIR/hinc)")
     ap.add_argument("--ptr-ic", action="store_true",
                     help="fast mode: call_ptr / tail_ptr with a cached target per call site (OUT_DIR/hinc)")
+    ap.add_argument("--stackarg", action="store_true",
+                    help="fast mode: constant-address do_call sites of the stack-argument callees as gabi::do_call_sa")
     ap.add_argument("--game-build", action="store_true",
                     help="the units are compiled with GABI_GAME_BUILD (the decompilation's port_hooks.h points call the "
                          "port): list their sites as moved (port_sites.py)")
@@ -539,6 +551,14 @@ def main():
             if k:
                 rewritten.add(s)
                 n_hcall += k
+    n_sa = 0
+    if a.stackarg:
+        for s in sorted(texts):
+            texts[s], k = SA_CALL.subn(sa_call, texts[s])
+            if k:
+                rewritten.add(s)
+                n_sa += k
+        print("decomp: fast mode (stackarg): %d do_call sites as do_call_sa" % n_sa)
     compiled = {}       # source (relative) -> the file that is compiled: itself or its rewritten copy
     for s in texts:
         if s in rewritten:

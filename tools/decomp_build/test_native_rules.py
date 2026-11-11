@@ -432,6 +432,38 @@ class NativeRulesTest(unittest.TestCase):
             self.assertFalse(native_rules.ne_line_ok(bad, "f"), bad)
 
 
+    def test_stackarg_rules(self):
+        # --stackarg: a listed stack-argument reader whose only callee reasons are its stack-argument reads, caller=ok,
+        # register-exact and not named in its unit except its (multi-line) declaration and definition becomes
+        # callee=native "(stackarg)" (bit 24), without a wwhd_ne_ export; anything else stays as it was
+        t = self.tmp.name
+        u1 = os.path.join(t, "sa.cpp")
+        open(u1, "w").write(
+            "s32 incl(f32 ax, f32 ay,\n         f32 bx) { WWHD_GLUE_FUNC_R(0x02011D2C, s32, ax, ay, bx);\n"
+            "    f32 m = f32(gabi::load<f64>(gabi::cpu->r[1] + 8));\n    return 0;\n}\n"
+            "void Env::palno(u32 a, u32 b) { WWHD_GLUE_FUNC(0x025580FC, void, this, a, b);\n}\n"
+            "void user() { WWHD_GLUE_FUNC(0x02000040, void);\n    e->palno(1, 2);\n}\n")
+        json.dump({"units": [{"name": "sa", "sources": [{"path": u1}]}]}, open(os.path.join(self.out, "units.json"), "w"))
+        lines = ["02011D2C  callee=guest caller=ok  src:cpu,orig:caller-frame-read decl=exact:0r8f:1  # sa incl",
+                 "025580FC  callee=guest caller=ok  src:cpu,orig:caller-frame-read,(may park) decl=exact:8r0f:0  # sa &Env::palno",
+                 "02000040  callee=native caller=ok  - decl=exact:0r0f:0  # sa user"]
+        out = native_rules.stackarg_rules(list(lines), self.out, self.src)
+        self.assertEqual(out[0], "02011D2C  callee=native caller=ok  (stackarg) decl=exact:0r8f:1  # sa incl")
+        self.assertEqual(out[1:], lines[1:])  # palno: called by name in user()
+        for bad in ("02011D2C  callee=guest caller=guest  src:cpu,A2 cpu decl=exact:0r8f:1  # sa incl",
+                    "02011D2C  callee=guest caller=ok  src:cpu,src:local decl=exact:0r8f:1  # sa incl",
+                    "02011D2C  callee=guest caller=ok  src:cpu decl=-  # sa incl"):
+            self.assertEqual(native_rules.stackarg_rules([bad], self.out, self.src), [bad])
+        # the unit header: bit 24, no wwhd_ne_ export, wwhd_sa_ for its own unit
+        os.makedirs(os.path.join(self.out, "native"), exist_ok=True)
+        open(u1, "a").write("VERIFY(0x02011D2C, incl);\n")
+        native_rules.unit_headers(self.out, out[:1], fast=True, stackarg=True)
+        h = open(os.path.join(self.out, "native", "0.h")).read()
+        self.assertIn("{0x02011D2Cu, 0u, %du}," % (1 | 2 | 4 | 8 | 8 << 12 | 1 << 16 | 1 << 24), h)
+        self.assertNotIn("wwhd_ne_02011D2C", h)
+        self.assertIn("template <> struct Sa<0x02011D2Cu>", h)
+        self.assertIn("#define GABI_NE_0x02011D2C(F) extern \"C\" __attribute__((visibility(\"hidden\"))) uint32_t wwhd_sa_02011D2C(", h)
+
 
 if __name__ == "__main__":
     unittest.main()
