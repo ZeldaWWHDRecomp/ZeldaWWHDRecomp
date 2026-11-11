@@ -28,7 +28,7 @@
 // register file, the context shadow and the full path see the same state as without packets.
 //
 // Run-time switches (ON builds): WWHD_NATIVE_DRAW=1 turns packets on (off by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
-// one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO); WWHD_NATIVE_DRAW_VERIFY=N draws
+// one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN); WWHD_NATIVE_DRAW_VERIFY=N draws
 // every Nth replayable instance through the full path and compares what it resolved with the packet (mismatches
 // logged, "[native-draw] VERIFY MISMATCH").
 #pragma once
@@ -40,7 +40,7 @@ namespace native_draw {
 // the sites (port_native_draw.h: the same values)
 enum Site : uint32_t {
     kSiteGrass = 1, kSiteTree = 2, kSiteWood = 3, kSiteFlower = 4, kSiteMagma = 5,
-    kSiteStar = 6, kSiteHousi = 7, kSiteWave = 8, kSiteMoya = 9, kSiteVrkumo = 10, kSites = 11
+    kSiteStar = 6, kSiteHousi = 7, kSiteWave = 8, kSiteMoya = 9, kSiteVrkumo = 10, kSiteRain = 11, kSites = 12
 };
 // packet ids: 8 per site (by pass, or by pass and variant), the first 8 unused
 constexpr uint32_t kIdsPerSite = 8;
