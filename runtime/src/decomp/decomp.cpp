@@ -1052,6 +1052,11 @@ void init() {
 #ifdef WWHD_DECOMP_FAST_LEAF_CHECK
     LOG("[decomp] fast mode: leaf check build (a call or frame use from a leaf body traps)");
 #endif
+#ifdef WWHD_DECOMP_FAST_LEAF_BARE
+    // gabi.h GABI_LEAF_BARE (cmake WWHD_DECOMP_FAST_LEAF_BARE): no run-time switch; WWHD_DECOMP_FAST_LEAF=0 and
+    // WWHD_DECOMP_FAST_NOCHECK=0 do not reach bare leaves
+    LOG("[decomp] fast mode: bare leaves (leaves of units without caller=guest or unbased functions keep no call glue)");
+#endif
 #endif
 #ifdef WWHD_DECOMP_FAST_NSTATS
     if (const char* p = getenv("WWHD_DECOMP_FAST_NSTATS")) {
