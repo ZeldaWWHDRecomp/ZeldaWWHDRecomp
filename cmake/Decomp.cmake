@@ -35,12 +35,14 @@ option(WWHD_DECOMP_FAST_LTO "decomp build: fast mode with ThinLTO inside each ga
 # internal) instead of `ld -r` + hidden -> local. WWHD_DECOMP_FAST_UNIT_IR: each unit still optimised alone (native
 # object; the baseline of the next one, e.g. for a toolchain without `ld -r` such as ld64.lld); WWHD_DECOMP_FAST_WHOLE_LTO
 # (implies it): the units stay ThinLTO bitcode and the final link optimises across them (cross-unit inlining through
-# the exported wwhd_ne_* entries). Needs llvm-link / llvm-dis / llvm-as of the compiler's LLVM (the NDK's on Android).
+# the exported wwhd_ne_* entries). Needs llvm-link / llvm-dis / llvm-as of the compiler's LLVM (the NDK's on Android); on
+# macOS without them (Xcode, Command Line Tools) the compiler's own libLTO does the same link and internalisation
+# (unit_ir.py --liblto) and the final link is Apple ld's ThinLTO.
 option(WWHD_DECOMP_FAST_UNIT_IR "decomp build, fast mode: units isolated in the IR (unit_ir.py), each optimised alone" OFF)
 # WWHD_DECOMP_FAST_WHOLE_LTO: ON / OFF force it; AUTO (default, lead/user decision 2026-11-07, phone -1.69 ms per logic
 # pass): ON when the building machine has at least WWHD_DECOMP_FAST_WHOLE_LTO_MIN_RAM_GB of memory (the final link peaks
 # at ~5.5 GB on Android, ~3.4 GB on macOS; a phone building for itself usually has less) and the compiler's LLVM tools
-# are there (Xcode has no llvm-link), else the per-unit link; one configure line says which and why.
+# are there (llvm-link, or on macOS the compiler's libLTO), else the per-unit link; one configure line says which and why.
 set(WWHD_DECOMP_FAST_WHOLE_LTO "AUTO" CACHE STRING "decomp build, fast mode: ThinLTO across all game units at the final link (AUTO / ON / OFF)")
 set_property(CACHE WWHD_DECOMP_FAST_WHOLE_LTO PROPERTY STRINGS AUTO ON OFF)
 set(WWHD_DECOMP_FAST_WHOLE_LTO_MIN_RAM_GB "12" CACHE STRING "decomp build, fast mode: memory (GB) WWHD_DECOMP_FAST_WHOLE_LTO=AUTO needs for the whole-image link")
@@ -498,14 +500,32 @@ function(wwhd_decomp_link target)
     else()
       get_filename_component(wl_hints "${CMAKE_CXX_COMPILER}" DIRECTORY)
     endif()
+    # macOS without llvm-link next to the compiler (Xcode, Command Line Tools): the compiler's own libLTO, the one its
+    # driver hands Apple ld (<clang dir>/../lib/libLTO.dylib = <resource dir>/../../libLTO.dylib), so the units' bitcode
+    # is read by the LLVM that wrote it
+    set(liblto)
+    if(APPLE)
+      find_program(WWHD_DECOMP_LLVM_LINK_PROBE llvm-link HINTS "${wl_hints}" NO_DEFAULT_PATH)
+      if(NOT WWHD_DECOMP_LLVM_LINK_PROBE)
+        execute_process(COMMAND "${CMAKE_CXX_COMPILER}" -print-resource-dir RESULT_VARIABLE rd_rc
+                        OUTPUT_VARIABLE rd OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        get_filename_component(rd_lib "${rd}/../../libLTO.dylib" ABSOLUTE)
+        if(rd_rc EQUAL 0 AND rd AND EXISTS "${rd_lib}")
+          set(liblto "${rd_lib}")
+        endif()
+      endif()
+    endif()
     if(wl STREQUAL "AUTO")
       cmake_host_system_information(RESULT ram_mb QUERY TOTAL_PHYSICAL_MEMORY)
       math(EXPR need_mb "${WWHD_DECOMP_FAST_WHOLE_LTO_MIN_RAM_GB} * 1024")
       find_program(WWHD_DECOMP_LLVM_LINK_PROBE llvm-link HINTS "${wl_hints}" NO_DEFAULT_PATH)
       if(ram_mb LESS need_mb)
         message(STATUS "decomp fast mode: per-unit link (WWHD_DECOMP_FAST_WHOLE_LTO=AUTO: ${ram_mb} MB of memory, the whole-image link needs ${need_mb})")
-      elseif(NOT WWHD_DECOMP_LLVM_LINK_PROBE)
+      elseif(NOT WWHD_DECOMP_LLVM_LINK_PROBE AND NOT liblto)
         message(STATUS "decomp fast mode: per-unit link (WWHD_DECOMP_FAST_WHOLE_LTO=AUTO: no llvm-link next to the compiler)")
+      elseif(liblto)
+        set(whole_lto ON)
+        message(STATUS "decomp fast mode: whole-image ThinLTO link (WWHD_DECOMP_FAST_WHOLE_LTO=AUTO: ${ram_mb} MB of memory; units through ${liblto})")
       else()
         set(whole_lto ON)
         message(STATUS "decomp fast mode: whole-image ThinLTO link (WWHD_DECOMP_FAST_WHOLE_LTO=AUTO: ${ram_mb} MB of memory)")
@@ -528,10 +548,14 @@ function(wwhd_decomp_link target)
     else()
       get_filename_component(ir_hints "${CMAKE_CXX_COMPILER}" DIRECTORY)
     endif()
-    find_program(WWHD_DECOMP_LLVM_LINK llvm-link HINTS "${ir_hints}" NO_DEFAULT_PATH REQUIRED)
-    get_filename_component(ir_tools "${WWHD_DECOMP_LLVM_LINK}" DIRECTORY)
     set(ir_cc "${CMAKE_CXX_COMPILER}")
-    set(ir_args --tools "${ir_tools}" --cc "${ir_cc}")
+    if(liblto)  # (macOS, no llvm-link: see above)
+      set(ir_args --liblto "${liblto}" --cc "${ir_cc}")
+    else()
+      find_program(WWHD_DECOMP_LLVM_LINK llvm-link HINTS "${ir_hints}" NO_DEFAULT_PATH REQUIRED)
+      get_filename_component(ir_tools "${WWHD_DECOMP_LLVM_LINK}" DIRECTORY)
+      set(ir_args --tools "${ir_tools}" --cc "${ir_cc}")
+    endif()
     if(NOT whole_lto)
       list(APPEND ir_args --native)
     endif()
@@ -673,7 +697,9 @@ function(wwhd_decomp_link target)
                  APPEND PROPERTY COMPILE_OPTIONS -ffp-contract=off -fno-fast-math)
   endif()
   if(unit_ir AND whole_lto)  # the final link runs ThinLTO over the units' bitcode
-    if(APPLE)
+    if(liblto)  # Apple ld (its ThinLTO picks its own backend jobs; WWHD_DECOMP_FAST_LTO_JOBS does not apply)
+      target_link_options(${target} PRIVATE -flto=thin "LINKER:-cache_path_lto,${WWHD_DECOMP_OUT}/ltocache")
+    elseif(APPLE)
       target_link_options(${target} PRIVATE -flto=thin "LINKER:--thinlto-jobs=${WWHD_DECOMP_FAST_LTO_JOBS}"
                           "LINKER:-cache_path_lto,${WWHD_DECOMP_OUT}/ltocache")  # (ld64.lld: Mach-O option names)
     else()
