@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf]]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf] [--unbased]]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -477,6 +477,94 @@ def a3_bodies(t):
     return out
 
 
+_A3_HEADERS = {}
+
+
+def a3_header_calls(path, rx):
+    """whether a header of the include trees next to source PATH (its wwhd_src/include and the fast rewrite's hinc)
+    has a line matching RX that is not a declaration (a prototype ending in ');' without '=' or 'return'); True when
+    the trees cannot be found"""
+    i = path.rfind("/wwhd_src/")
+    if i < 0:
+        return True
+    for root in (path[:i] + "/wwhd_src/include", os.path.join(os.path.dirname(path[:i]), "hinc")):
+        if root not in _A3_HEADERS:
+            texts = []
+            for dp, _, fs in os.walk(root):
+                for f in fs:
+                    if f.endswith((".h", ".hpp", ".inc")):
+                        try:
+                            texts.append(a3_blank(open(os.path.join(dp, f), encoding="utf-8", errors="replace").read()))
+                        except OSError:
+                            pass
+            _A3_HEADERS[root] = texts
+        for txt in _A3_HEADERS[root]:
+            for ln in txt.split("\n"):
+                if rx.search(ln):
+                    st = ln.strip()
+                    if not (st.endswith(");") and "=" not in st and "return" not in st):
+                        return True
+    return False
+
+
+def result_stub_callers(under, units):
+    """A3 for an ext line that declares a result its callee's definition never sets ((-1, -1): the caller reads r3/f1
+    as an earlier guest call left them, d_s_play_7's `r = dScnPlyAPI_removeDemo(r)` chain): decided per call, from the
+    stub, not from the file that holds the ext line. The stub (a weak definition next to its ext line) is called by name
+    from any source of the same unit (its header declares it), so every body of that unit that calls one of the unit's
+    such stubs by name (a member call too: over-approximated, never missed) keeps its calls guest calls. A stub name
+    that cannot be read, or one a header's inline code calls (a wrapper the bodies would call instead), keeps every
+    function of the unit. -> (functions that need A3, units taken whole, {stub addr: [caller addrs]})"""
+    unit_of = {p: u for u, ps in units.items() for p in ps}
+    names = collections.defaultdict(dict)  # unit -> {stub name: addr}
+    whole_units = set()
+    for p, v in under.items():
+        stubs = {a for a, r, _, _ in v if r == (-1, -1)}
+        if not stubs:
+            continue
+        u = unit_of.get(p)
+        try:
+            t = open(p, encoding="utf-8", errors="replace").read()
+        except OSError:
+            t = ""
+        m = re.search(r"/\* WWHD glue(.*?)\*/", t, re.S)
+        found = set()
+        for line in (m.group(1).splitlines() if m else ()):
+            e = EXT_GLUE.match(line.strip())
+            if e and int(e.group(1), 16) in stubs:
+                pm = EXT_PROTO.match(e.group(2))
+                if pm:
+                    names[u][pm.group(2).split("::")[-1]] = int(e.group(1), 16)
+                    found.add(int(e.group(1), 16))
+        if u is None or found != stubs:
+            whole_units.add(u)
+    need, callers = set(), collections.defaultdict(list)
+    for u, nm in names.items():
+        if u in whole_units:
+            continue
+        rxs = {n: re.compile(r"(?<!\w)%s\s*\(" % re.escape(n)) for n in nm}
+        if any(a3_header_calls(p, rx) for p in units.get(u, ()) for rx in rxs.values()):
+            whole_units.add(u)
+            continue
+        for p in units.get(u, ()):
+            try:
+                bt = a3_blank(open(p, encoding="utf-8", errors="replace").read())
+            except OSError:
+                continue
+            for a, _, o, j in a3_bodies(bt):
+                for n, rx in rxs.items():
+                    if rx.search(bt, o, j):
+                        need.add(a)
+                        callers[nm[n]].append(a)
+    for u in whole_units:
+        for p in units.get(u, ()):
+            try:
+                need |= {int(x, 16) for x in FUNC_ADDR.findall(open(p, encoding="utf-8", errors="replace").read())}
+            except OSError:
+                pass
+    return need, whole_units, callers
+
+
 def a3_precise(path, entries):
     """--a3-fn: the functions of source PATH that need A3 (caller=guest) for its under-declared ext lines ENTRIES
     (under_declared's (callee, passes, takes, status)), or None for the whole source (the rule without --a3-fn).
@@ -489,7 +577,48 @@ def a3_precise(path, entries):
     return set() if all(st == "shim" and r != (-1, -1) for _, r, _, st in entries) else None
 
 
-def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False, leaf=False):
+# --unbased (fast mode, gabi.h GABI_NOCHECK, NativeInfo bit 21 "(unbased)"): a source that turns integers into pointers
+# without the guest window's base, `reinterpret_cast<T *>((uintptr_t)x)` (d_wood.cpp, hd_input_eventmgr.cpp, actors), in
+# its own text or in a project header it includes: its functions may pass such pointers (outside the guest window) to
+# decompiled callees, so their native calls keep native_enter_ok's per-argument window check (the 2026-11-09 check counts:
+# every argument refusal came from such a caller)
+UNBASED = re.compile(r"\(\s*uintptr_t\s*\)")
+INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
+
+
+def unbased_sources(src, paths):
+    """the sources (paths) whose text, or a project header they include (recursively), has an UNBASED cast"""
+    roots = [os.path.join(src, "wwhd_src", "include"), os.path.join(src, "wwhd_src")]
+    memo = {}
+
+    def has(path, seen):
+        if path in memo:
+            return memo[path]
+        if path in seen:
+            return False
+        seen.add(path)
+        try:
+            t = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            memo[path] = False
+            return False
+        r = bool(UNBASED.search(t))
+        if not r:
+            for inc in INCLUDE.findall(t):
+                for d in [os.path.dirname(path)] + roots:
+                    q = os.path.normpath(os.path.join(d, inc))
+                    if os.path.isfile(q):
+                        if has(q, seen):
+                            r = True
+                        break
+                if r:
+                    break
+        memo[path] = r
+        return r
+    return {p for p in paths if has(p, set())}
+
+
+def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False, leaf=False, unbased=False, a3_stub=False):
     if decl_path is None:
         decl_path = os.path.join(src, "tools", "verify", "decl_handoff.tsv")
     decl = read_decl(decl_path)
@@ -515,29 +644,46 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
     under_funcs = set()
     a3_fn_set = set()  # --a3-fn: functions of such sources that keep caller=ok (NativeInfo bit 19, "(a3fn)")
     a3_whole = a3_fn_n = 0
+    # --a3-stub (cmake WWHD_DECOMP_FAST_A3_STUB): a result its callee never sets: A3 for the bodies that call the stub
+    # (result_stub_callers), not the ext line's file. Without it: the ext line's whole source, as before
+    res_need, res_whole = set(), set()
+    if a3_stub:
+        units = collections.defaultdict(list)
+        for un in uj["units"]:
+            for sp in un["sources"]:
+                units[un["name"]].append(sp["path"])
+        res_need, res_whole, _ = result_stub_callers(under, units)
+        under_funcs |= res_need
     for p in under:
+        other = [e for e in under[p] if e[1] != (-1, -1)] if a3_stub else under[p]
+        if not other:
+            continue
         try:
             whole = {int(x, 16) for x in FUNC_ADDR.findall(open(p, encoding="utf-8", errors="replace").read())}
         except OSError:
             continue
-        got = a3_precise(p, under[p]) if a3_fn else None
+        got = a3_precise(p, other) if a3_fn else None
         if got is None:
             under_funcs |= whole
             a3_whole += 1
         else:
             under_funcs |= got
-            a3_fn_set |= whole - got
+            a3_fn_set |= (whole - got) - res_need
             a3_fn_n += 1
     if a3_fn:
         print("decomp: native-call rules (--a3-fn): A3 by function in %d sources (%d functions no longer A3), by "
               "source in %d" % (a3_fn_n, len(a3_fn_set), a3_whole))
+    if a3_stub:
+        print("decomp: native-call rules (--a3-stub): A3 for %d functions that call a stub declaring a result its definition "
+              "never sets%s" % (len(res_need), " (whole units: %s)" % ", ".join(sorted(str(u) for u in res_whole)) if res_whole else ""))
     for p, v in sorted(under.items()):
         for a, r, tk, st in v:
             what = ("declares a result its %s definition never sets" % st if r == (-1, -1) else
                     "passes %dr%df, its %s definition takes %dr%df" % (r[0], r[1], st, tk[0], tk[1]))
-            print("decomp: native-call rules: %s: ext %08X %s (the file's "
-                  "functions keep guest calls%s)" % (os.path.relpath(p, out), a, what,
-                                                     ", the callee its registers" if st == "exact" and r != (-1, -1) else ""))
+            print("decomp: native-call rules: %s: ext %08X %s (%s%s)" % (
+                os.path.relpath(p, out), a, what,
+                "its callers keep guest calls" if r == (-1, -1) and a3_stub else "the file's functions keep guest calls",
+                ", the callee its registers" if st == "exact" and r != (-1, -1) else ""))
     # gen.py --hooked-bodies (fast mode): functions the runtime hooks, listed so their bodies run decompiled behind
     # the hook; never entered natively (callers reach hook_X)
     hooked = set()
@@ -593,6 +739,17 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
         rows.append((a, r, caller, note, d, rk, fs))
     if leaf:
         leaf_rules(rows, calls, tails, feat)
+    if unbased:
+        ub = set()
+        srcs = unbased_sources(src, paths)
+        for p in srcs:
+            ub |= {int(x, 16) for x in FUNC_ADDR.findall(open(p, encoding="utf-8", errors="replace").read())}
+        n = 0
+        for a, r, caller, note, d, rk, fs in rows:
+            if a in ub:
+                note.append("unbased")
+                n += 1
+        print("decomp: native-call rules (--unbased): %d functions in %d sources keep the argument check" % (n, len(srcs)))
     for a, r, caller, note, d, rk, fs in rows:
         lines.append("%08X  callee=%s caller=%s  %s %s  # %s %s" % (
             a, "guest" if r else "native", "guest" if caller else "ok",
@@ -729,6 +886,8 @@ def unit_headers(out, lines, fast=False, hcalls=None):
             flags |= 1 << 19
         if "(leaf)" in line.split("#")[0]:  # --leaf (gabi.h GABI_LEAF: bit 20)
             flags |= 1 << 20
+        if "(unbased)" in line.split("#")[0]:  # --unbased (gabi.h GABI_NOCHECK: bit 21)
+            flags |= 1 << 21
         m = DECL_FIELD.search(line.split("#")[0])
         if m:  # register-exact: flags 8, its registers and result (gabi.h NativeInfo)
             flags |= 8 | int(m.group(1)) << 8 | int(m.group(2)) << 12 | int(m.group(3)) << 16
@@ -802,6 +961,16 @@ def main():
         args.remove("--leaf")
         if not fast:
             sys.exit("native_rules.py: --leaf needs --fast")
+    unbased = "--unbased" in args  # fast mode (cmake WWHD_DECOMP_FAST_NOCHECK): sources with unbased casts
+    if unbased:
+        args.remove("--unbased")
+        if not fast:
+            sys.exit("native_rules.py: --unbased needs --fast")
+    a3_stub = "--a3-stub" in args  # fast mode (cmake WWHD_DECOMP_FAST_A3_STUB): A3 from result stubs by caller
+    if a3_stub:
+        args.remove("--a3-stub")
+        if not fast:
+            sys.exit("native_rules.py: --a3-stub needs --fast")
     a3_fn = "--a3-fn" in args  # fast mode (cmake WWHD_DECOMP_FAST_A3_FN): A3 by function (a3_precise)
     if a3_fn:
         args.remove("--a3-fn")
@@ -819,7 +988,7 @@ def main():
         sys.exit(__doc__.strip().splitlines()[4])
     src, out, gen_dir = (os.path.abspath(x) for x in args[:3])
     strict = len(args) == 4
-    lines = rules(src, out, gen_dir, strict, decl_path or None, lift, a3_fn, leaf)
+    lines = rules(src, out, gen_dir, strict, decl_path or None, lift, a3_fn, leaf, unbased, a3_stub)
     if LEAF_ERRORS:  # --leaf: leaf_rules printed each
         sys.exit("native_rules.py: %d leaf function(s) call a decompiled function that is not a leaf (--leaf); a leaf "
                  "keeps no call state, so this is a rules error" % len(LEAF_ERRORS))

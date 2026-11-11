@@ -42,6 +42,9 @@
 #include "fixed_seed.h"
 #include "platform/perf_hint.h"
 #include "platform/thread_sampler.h"
+#ifdef WWHD_DECOMP_FAST_MUTEX
+#include "addr_cache.h"
+#endif
 
 static void wake_timed_events();
 
@@ -998,7 +1001,26 @@ struct HMutex {
     uint32_t unsignaled = 0;
 #endif
 };
+#ifdef WWHD_DECOMP_FAST_MUTEX
+// decomp build fast mode (WWHD_DECOMP_FAST_MUTEX): the same table, its lookups first through a cache read without a
+// lock (addr_cache.h; a host mutex is never deleted or replaced, so a cached pair stays right), the locked map only on
+// a miss. Same objects, same per-mutex locking and wait order: only the process-wide table lock per call is gone.
+struct MutexTable : ObjTable<HMutex> {
+    AddrCache<HMutex> cache;
+    HMutex* get(uint32_t addr) {
+        if (HMutex* p = cache.find(addr)) return p;
+        std::lock_guard<std::mutex> lk(m);
+        HMutex*& p = map[addr];
+        if (!p) p = new HMutex();
+        cache.insert(addr, p);
+        return p;
+    }
+    void reset(uint32_t) = delete;  // would replace an object the cache may hold
+};
+static MutexTable g_mutexes;
+#else
 static ObjTable<HMutex> g_mutexes;
+#endif
 
 static void mutex_lock(uint32_t addr) {
     HMutex* mx = g_mutexes.get(addr);
@@ -1058,6 +1080,40 @@ HLE(coreinit, OSInitMutex) {
 HLE(coreinit, OSLockMutex) { mutex_lock(arg(c, 0)); }
 HLE(coreinit, OSTryLockMutex) { ret(c, mutex_trylock(arg(c, 0))); }
 HLE(coreinit, OSUnlockMutex) { mutex_unlock(arg(c, 0)); }
+
+#if defined(WWHD_DECOMP_FAST_MUTEX) && !defined(WWHD_WRITE_WATCH)
+// gabi.h GABI_FAST_MUTEX: direct host entries of the three imports above for decompiled callers (gabi::call's HLE
+// branch). Each does what the import does when ppc_host_call runs it with the argument in r3: r3 set as ArgPack sets it,
+// the same profiler mark and exception boundary, the same work, the result in r3. decomp.cpp installs them only for
+// imports whose dispatch entry is still the function above (not replaced by a hook).
+static uint32_t direct_OSLockMutex(Cpu* c, uint32_t a) {
+    c->r[3] = a;
+    mainprof::Mark main_mark_(c, "OSLockMutex");
+    exception_report::boundary<GuestExit>("HLE coreinit.OSLockMutex", [&] { mutex_lock(a); });
+    return c->r[3];
+}
+static uint32_t direct_OSTryLockMutex(Cpu* c, uint32_t a) {
+    c->r[3] = a;
+    mainprof::Mark main_mark_(c, "OSTryLockMutex");
+    exception_report::boundary<GuestExit>("HLE coreinit.OSTryLockMutex", [&] { ret(c, mutex_trylock(a)); });
+    return c->r[3];
+}
+static uint32_t direct_OSUnlockMutex(Cpu* c, uint32_t a) {
+    c->r[3] = a;
+    mainprof::Mark main_mark_(c, "OSUnlockMutex");
+    exception_report::boundary<GuestExit>("HLE coreinit.OSUnlockMutex", [&] { mutex_unlock(a); });
+    return c->r[3];
+}
+namespace threads {
+// (import's own host function, its direct entry) pairs for decomp.cpp's g_decomp_hle_direct
+unsigned fast_mutex_entries(void (*add)(PpcFunc imp, uint32_t (*direct)(Cpu*, uint32_t))) {
+    add(imp_coreinit_OSLockMutex, direct_OSLockMutex);
+    add(imp_coreinit_OSTryLockMutex, direct_OSTryLockMutex);
+    add(imp_coreinit_OSUnlockMutex, direct_OSUnlockMutex);
+    return 3;
+}
+}  // namespace threads
+#endif
 
 // GHS C library locks
 static uint32_t g_ghs_lock = 0xC0FFEE00;

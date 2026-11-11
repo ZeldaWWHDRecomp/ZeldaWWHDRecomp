@@ -57,11 +57,22 @@ extern "C" __attribute__((visibility("default"))) gabi::ThreadState* gabi_tp_mis
     static const int atfork = pthread_atfork(nullptr, nullptr, tp_fork_child);
     (void)atfork;
     gabi::ThreadState* p = &gabi::tls;
+#ifdef GABI_NOCHECK
+    p->nocheck_off = g_decomp_nocheck_off; /* gabi.h GABI_NOCHECK: the run-time off switch, in the block a body holds */
+#endif
     /* live blocks only (gabi_tp_cache.h): a thread inside a guest entry; a block handed out again during thread exit
      * is zero */
     if (p->cpu) gabi_tp_claim(g_gabi_tp_slots, gabi_tp_key(), p, tp_guard, tp_dead);
     return p;
 }
+#endif
+
+#if defined(GABI_PASS_TS) && defined(GABI_TLS_OWNER)
+/* gabi.h GABI_PASS_TS (the port's WWHD_DECOMP_FAST_PASS_TS): the lookup the bodies share, once per function (declared
+ * const there); tls_fast unchanged, out of line. Never inlined: an inlined copy would be one lookup per use again (the
+ * inliner runs before the calls are merged), and after link-time inlining of one body into another the two bodies' calls
+ * still merge into one; the hit path is a leaf without a frame (13 instructions on arm64) */
+extern "C" __attribute__((visibility("default"), noinline)) gabi::ThreadState* gabi_ts_pass() { return &gabi::tls_fast(); }
 #endif
 
 #if defined(GABI_FAST) && defined(GABI_TLS_OWNER)

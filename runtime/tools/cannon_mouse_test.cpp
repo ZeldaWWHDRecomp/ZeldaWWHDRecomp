@@ -39,6 +39,7 @@ bool take_mouse(float,float){return false;} bool take_wheel(float){return false;
 void filter_pad(input::PadState&){}
 }
 namespace touch_options { touch_style::Options get(){return {};} }
+namespace test_aids { uint64_t origin_step(){return 0;} }
 namespace input_map {
 std::array<ShortcutBinding,kShortcutCount> shortcut_defaults(){return {};}
 Mapping current(){return {};}

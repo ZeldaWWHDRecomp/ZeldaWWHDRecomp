@@ -261,6 +261,50 @@ class GenTest(unittest.TestCase):
         self.run_gen("--game-build")
         self.assertNotIn(moved, self.read("decomp_hooks.txt"))
 
+    def test_port_sites_empty_moved_with_function(self):
+        """port_sites.EMPTY: a retired empty site moves whenever its function is decompiled (game build), marker or not"""
+        import port_sites
+        e = port_sites.EMPTY[0]
+        path = "wwhd_src/d/actor/empty.cpp"
+        os.makedirs(os.path.join(self.src, os.path.dirname(path)), exist_ok=True)
+        with open(os.path.join(self.src, path), "w") as f:
+            f.write("VERIFY(0x%08X, someFunction)\n" % e["func"])
+        with open(os.path.join(self.src, "tools/verify/units/empty.txt"), "w") as f:
+            f.write("src %s\n" % path)
+        moved = "# moved-site %08X" % e["site"]
+        self.run_gen()
+        self.assertNotIn(moved, self.read("decomp_hooks.txt"))
+        self.run_gen("--game-build")
+        self.assertIn(moved, self.read("decomp_hooks.txt"))
+
+    def test_port_sites_are_hooks_with_handlers(self):
+        """every port_sites.py site is an instruction hook (tools/recomp/hooks*.txt); every site a point names
+        (MACRO(0xSITE) has a row in the port's table for it; every EMPTY site's handler is the empty retired SITE()"""
+        import glob
+        import re
+        import port_sites
+        entries, _ = game_builds.read_hooks(game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")),
+                                            game_builds.canonical_build())
+        sites = {canon for site, canon, _, _ in entries if site}
+        runtime = {}
+        for f in glob.glob(os.path.join(ROOT, "runtime", "src", "**", "*.cpp"), recursive=True):
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                runtime[f] = fh.read()
+        for s in port_sites.SITES + port_sites.EMPTY:
+            self.assertIn(s["site"], sites, "%08X" % s["site"])
+        for s in port_sites.SITES:
+            if re.match(r"PORT_\w+\(0x%08X$" % s["site"], s["marker"]):
+                # the port's table row: {0xSITE, site_SITE, ...} (or the handler chosen by its address)
+                self.assertTrue(any(re.search(r"0x%08X\b" % s["site"], t) and "wwhd_" in t for t in runtime.values()),
+                                "no port point for %08X" % s["site"])
+        game_hooks = runtime[os.path.join(ROOT, "runtime", "src", "game_hooks.cpp")]
+        retired = game_hooks[game_hooks.index('#define SITE(addr) extern "C" void site_##addr(Cpu*) {}'):
+                             game_hooks.index("#undef SITE")]
+        for e in port_sites.EMPTY:
+            self.assertIn("SITE(%08X)" % e["site"], retired)
+            defs = [f for f, t in runtime.items() if "site_%08X(" % e["site"] in t]
+            self.assertEqual(defs, [], "%08X has a handler besides the empty one" % e["site"])
+
     def test_missing_tree(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), os.path.join(self.tmp.name, "nothing"), self.out],
                            capture_output=True, text=True)

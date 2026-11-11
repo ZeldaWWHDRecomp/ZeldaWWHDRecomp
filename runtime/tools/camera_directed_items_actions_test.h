@@ -8,17 +8,19 @@ void site_023E8A58(Cpu*); void site_023E8B20(Cpu*);
 void site_023E902C(Cpu*); void site_023E9130(Cpu*);
 void site_023E9E98(Cpu*); void site_023EDFC4(Cpu*); void site_0243C830(Cpu*);
 void site_023EDE00(Cpu*);
+void wwhd_item_facing(Cpu*, unsigned, unsigned, unsigned, unsigned);
 }
 namespace {
-struct ActionSite { void (*call)(Cpu*); unsigned reg; uint32_t proc; uint16_t item; };
+// extra: the register of the value the handler checks besides Link (the bomb's throw type, the bottle's ship use)
+struct ActionSite { void (*call)(Cpu*); unsigned reg; uint32_t proc; uint16_t item; uint32_t site; int extra; };
 constexpr ActionSite actions[] = {
-    {site_023E7CF4,31,0x94,0x27}, {site_023E88F4,31,0x95,0x27},
-    {site_023E8D34,31,0x80,0x2D}, {site_023E8E40,31,0x81,0x2D},
-    {site_023E8A58,31,0x83,0x2F}, {site_023E8B20,31,0x84,0x2F},
-    {site_023E902C,31,0x76,0x25}, {site_023E9130,31,0x7D,0x25},
-    {site_023E9E98,30,0x71,0x100},
-    {site_023EDFC4,31,0x51,0x33}, {site_0243C830,31,0x53,0x33},
-    {site_023EDE00,30,0xA5,0x50},
+    {site_023E7CF4,31,0x94,0x27,0x023E7CF4,-1}, {site_023E88F4,31,0x95,0x27,0x023E88F4,-1},
+    {site_023E8D34,31,0x80,0x2D,0x023E8D34,-1}, {site_023E8E40,31,0x81,0x2D,0x023E8E40,-1},
+    {site_023E8A58,31,0x83,0x2F,0x023E8A58,-1}, {site_023E8B20,31,0x84,0x2F,0x023E8B20,-1},
+    {site_023E902C,31,0x76,0x25,0x023E902C,-1}, {site_023E9130,31,0x7D,0x25,0x023E9130,-1},
+    {site_023E9E98,30,0x71,0x100,0x023E9E98,31},
+    {site_023EDFC4,31,0x51,0x33,0x023EDFC4,-1}, {site_0243C830,31,0x53,0x33,0x0243C830,-1},
+    {site_023EDE00,30,0xA5,0x50,0x023EDE00,29},
 };
 Cpu action_fixture(const ActionSite& a) {
     room_fixture();st32(player_addr+0x65F0,a.proc);st16(player_addr+0x69B0,a.item);
@@ -33,6 +35,16 @@ void check_action(const ActionSite& a,Cpu& c,bool facing,uint16_t yaw=0x4000) {
     Cpu expected;std::memcpy(&expected,&c,sizeof(c));
     unsigned char actor[65536];std::memcpy(actor,mem::ptr(player_addr),sizeof(actor));
     if(facing){actor[0x322]=actor[0x32A]=yaw>>8;actor[0x323]=actor[0x32B]=yaw&255;}
+    // the decomp build's port point first (the decompilation's port_hooks.h PORT_ITEM_FACING: Link and the extra value
+    // as the decompiled source passes them): the same writes as the hook, the Cpu unchanged; then the hook itself
+    {
+        static unsigned char before[65536];std::memcpy(before,mem::ptr(player_addr),sizeof(before));
+        Cpu p;std::memcpy(&p,&c,sizeof(c));
+        wwhd_item_facing(&p,c.r[1],a.site,c.r[a.reg],a.extra>=0?c.r[a.extra]:0);
+        assert(!std::memcmp(&p,&c,sizeof(c)));
+        assert(!std::memcmp(actor,mem::ptr(player_addr),sizeof(actor)));
+        std::memcpy(mem::ptr(player_addr),before,sizeof(before));
+    }
     a.call(&c);
     assert(!std::memcmp(&c,&expected,sizeof(c)));
     if(std::memcmp(actor,mem::ptr(player_addr),sizeof(actor)))

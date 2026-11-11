@@ -83,6 +83,7 @@ void f_025071FC_orig(Cpu* c);  // dCamera_c::subjectCamera
 void f_0240EBB0_orig(Cpu* c);  // daPy_Execute
 }
 
+namespace test_aids { uint64_t origin_step(); }  // test_aids.cpp: the scenario origin (0 before it)
 namespace mods {
 namespace {
 constexpr uint32_t kCamSpeed = 0x154;   // dCamera_c: eased turning speed (manual camera)
@@ -127,7 +128,8 @@ bool link_in_ship() {
 }
 
 // test aid: WWHD_TEST_MOUSE=2-3:5:0,... moves the mouse by (dx, dy) points per logic step from 2 s
-// to 3 s of game time (full logic steps / 30, from boot);
+// to 3 s of game time (full logic steps / 30, from boot; with WWHD_TEST_MOUSE_ORIGIN=1 from the scenario's origin, as
+// WWHD_TEST_STICK: two runs whose boots differ by a few steps then get the movement at the same scenario step);
 // WWHD_TEST_WHEEL=4.0:1,... scrolls by dy at that time.
 struct TimedMouse { double from, to; float dx, dy; };
 std::vector<TimedMouse> parse_mouse(const char* var, bool range) {
@@ -153,7 +155,13 @@ void inject_test_mouse() {
     uint64_t s = step();
     if (s == last) return;
     last = s;
+    static const bool from_origin = getenv("WWHD_TEST_MOUSE_ORIGIN") != nullptr;
     double t = game_time();
+    if (from_origin) {
+        const uint64_t o = ::test_aids::origin_step();  // a logic step, as game_time() counts
+        if (!o) return;                                 // before the scenario starts
+        t -= (double)o / 30.0;
+    }
     for (auto& m : moves)
         if (t >= m.from && t < m.to) mouse_add(m.dx, m.dy);
     for (auto& w : wheels)
@@ -430,8 +438,10 @@ extern "C" void hook_024FA9C8(Cpu* c) {
     }
 }
 
-// f28: vertical stick rate (+1 = stick up = V decreases by [sp+0x14] degrees per step)
-extern "C" void site_0251053C(Cpu* c) {
+// f28: vertical stick rate (+1 = stick up = V decreases by PER degrees per step: the latitude step, [sp+0x14] at the
+// hook; the decomp build's point passes it, mods/camera_points.cpp)
+namespace mods {
+void manual_pitch_rate(Cpu* c, double per) {
     if (!mouse_step()) return;
     float dy;
     {
@@ -439,11 +449,12 @@ extern "C" void site_0251053C(Cpu* c) {
         dy = g_direct_dy;
         g_direct_dy = 0;
     }
-    double per = ldf32(c->r[1] + 0x14);
     if (!(std::fabs(per) > 0.01)) return;
     // mouse down (dy > 0) looks down: V grows, so f28 < 0 (the other way with Invert camera up/down)
     c->f[28].ps0 = -dy / per * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
 }
+}  // namespace mods
+extern "C" void site_0251053C(Cpu* c) { mods::manual_pitch_rate(c, ldf32(c->r[1] + 0x14)); }
 // V smoothing (cSAngle * f1, f1 = [sp+0x18]) and U smoothing (f1 = [sp+0x1C])
 extern "C" void site_02510EA0(Cpu* c) {
     if (mouse_step()) c->f[1].ps0 = 1.0;
