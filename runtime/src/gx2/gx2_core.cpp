@@ -955,9 +955,11 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         using namespace native_draw;
         const Packet* pk = n >= kDrawHead ? packet(p[0]) : nullptr;
         if (!pk) break;
-        const uint32 kind = p[1], blocks = p[2] & 0xFF, hasVertex = (p[2] >> 8) & 1, buffers = (p[2] >> 12) & 0xF;
+        const uint32 kind = p[1], blocks = p[2] & 0xFF, hasVertex = (p[2] >> 8) & 1, buffers = (p[2] >> 12) & 0xF,
+                     hasRange = (p[2] >> 16) & 1;
         if (blocks > kMaxBlocks || buffers > kMaxBuffers ||
-            n != kDrawHead + blocks * kBlockWords + (hasVertex ? kVertexHead + buffers * kBufferWords : 0) ||
+            n != kDrawHead + blocks * kBlockWords + (hasVertex ? kVertexHead + buffers * kBufferWords : 0) +
+                     (hasRange ? kRangeWords : 0) ||
             (kind != kNoDraw && kind >= pk->meshCount))
             break;
         const uint64_t epoch = g_epoch;
@@ -979,7 +981,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             }
         }
         g_epoch = epoch;
-        if (kind != kNoDraw) draw(g_regs, *pk, kind);
+        Mesh range;
+        if (hasRange && kind != kNoDraw) range = {pk->mesh[kind].prim, q[0], pk->mesh[kind].indexType, q[1]};
+        if (kind != kNoDraw) draw(g_regs, *pk, kind, hasRange ? &range : nullptr);
         break;
     }
 #endif

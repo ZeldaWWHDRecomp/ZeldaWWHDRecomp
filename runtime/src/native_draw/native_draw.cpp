@@ -98,16 +98,20 @@ struct SiteState {
 static thread_local SiteState t_sites[kSites];
 static SiteState* site_state(uint32_t site) { return site < kSites ? &t_sites[site] : nullptr; }
 
-// the pending effects as one instance (KIND, or kNoDraw: effects only)
-static void emit_instance(SiteState& s, uint32_t kind) {
+// the pending effects as one instance (KIND, or kNoDraw: effects only); RANGE: its own index range {count, address}
+static void emit_instance(SiteState& s, uint32_t kind, const uint32_t* range = nullptr) {
     uint32_t n = kDrawHead + s.blocks * kBlockWords;
     s.words[0] = s.pk.id;
     s.words[1] = kind;
-    s.words[2] = s.blocks | uint32_t(s.vertex) << 8 | s.buffers << 12;
+    s.words[2] = s.blocks | uint32_t(s.vertex) << 8 | s.buffers << 12 | uint32_t(range != nullptr) << 16;
     if (s.vertex) {
         const uint32_t v = kVertexHead + s.buffers * kBufferWords;
         std::memcpy(s.words + n, s.vertexWords, v * 4);
         n += v;
+    }
+    if (range) {
+        s.words[n++] = range[0];
+        s.words[n++] = range[1];
     }
     gx2::emit(gx2::OP_PACKET_DRAW, s.words, n);
     s.blocks = 0;
@@ -279,6 +283,19 @@ extern "C" unsigned wwhd_native_draw(unsigned site, unsigned kind) {
     emit_instance(*s, kind);
     return 1;
 }
+// where the site would call GX2DrawIndexedEx with mesh KIND's primitive and index type but an index range of its own
+// (COUNT indices at INDEXADDR): nonzero, the instance is drawn (with the effects pending since the last one)
+extern "C" unsigned wwhd_native_draw_range(unsigned site, unsigned kind, unsigned count, unsigned indexAddr) {
+    SiteState* s = site_state(site);
+    if (!s || !s->defined || kind >= s->pk.meshCount) {
+        if (s) flush(*s);
+        return 0;
+    }
+    mod_actor_shadow_proof::draw_submitted(count);
+    const uint32_t range[2] = {count, indexAddr};
+    emit_instance(*s, kind, range);
+    return 1;
+}
 // a site's experiment switch: option 1 = WWHD_NATIVE_DRAW_<SITE>_SPLIT (draws regrouped by mesh kind; 0 unless set)
 extern "C" unsigned wwhd_native_option(unsigned site, unsigned option) {
     static std::array<int, kSites> split = [] {
@@ -369,11 +386,11 @@ static void note_run(uint32_t site, const Packet& pk, uint32_t kind) {
     g_lastKind = kind;
 }
 
-void draw(const uint32_t* regs, const Packet& pk, uint32_t kind) {
+void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, const Mesh* range) {
     const uint32_t site = pk.site < kSites ? pk.site : 0;
     ++g_instances[site];
     note_run(site, pk, kind);
-    const Mesh& m = pk.mesh[kind];
+    const Mesh& m = range ? *range : pk.mesh[kind];
     Reason why = kNotVulkan;
 #ifdef WWHD_HAS_VULKAN
     if (render::vulkan()) {
@@ -383,7 +400,7 @@ void draw(const uint32_t* regs, const Packet& pk, uint32_t kind) {
         else if (gfxvk::gamepad_backdrop_capture_active()) why = kBackdrop;
         else if (cloud_proto::g_active_seq) why = kClouds;
         else {
-            gfxvk::packet_draw(regs, pk, kind);  // replayed, or drawn the full way (counted there)
+            gfxvk::packet_draw(regs, pk, kind, range);  // replayed, or drawn the full way (counted there)
             g_lastEpoch = g_epoch;
             return;
         }
@@ -402,7 +419,8 @@ void frame_end() {
     g_lastId = ~0u;
     static const char* const names[kReasons] = {"replayed", "lowered", "verified", "not Vulkan", "stereo", "framegen",
                                                 "grass distance", "backdrop", "clouds", "refused", "buffer change",
-                                                "block size", "fetch change", "stride change", "in multi-draw batches"};
+                                                "block size", "fetch change", "stride change", "range change",
+                                                "in multi-draw batches"};
     for (uint32_t site = 0; site < kSites; ++site) {
         if (!g_instances[site]) continue;
         char buf[700];

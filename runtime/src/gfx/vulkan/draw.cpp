@@ -2970,10 +2970,15 @@ struct PacketCapture {
   VkDeviceSize indexOffset = 0;
   VkIndexType indexType = VK_INDEX_TYPE_UINT32;
   uint32_t drawCount = 0;
+  uint32_t nativeIndexWidth = 0;  // the guest's own index bytes were drawn (2 or 4 bytes each); 0: converted to uint32
+  bool hostRestart = false;       // the host's strip restart marker (its vertex extent leaves it out)
+  bool stripRestart = false;      // the conversion's guest restart marker (VGT_MULTI_PRIM_IB_RESET_*)
+  uint32_t restartIndex = 0;
   // the vertex buffers the draw bound: binding (= attribute buffer index), slice, and the attribute block's
-  // address, size and stride words it was made from
+  // address, size and stride words it was made from; its copy's extent (attributeEnd, supported: as the full draw's
+  // prefix)
   struct VertexBind { uint32_t binding = 0; VkBuffer buffer = VK_NULL_HANDLE; VkDeviceSize offset = 0; uint32_t regs[3]{};
-                      uint32_t stride = 0; bool perInstance = false; };
+                      uint32_t stride = 0; bool perInstance = false; uint64_t attributeEnd = 0; bool supported = true; };
   const vk::Shader* vs = nullptr;  // the draw's vertex shader (multi-draw batches: does it read the vertex index)
   std::array<VertexBind, 16> vertexBinds{};
   uint32_t vertexBindCount = 0;
@@ -4835,6 +4840,8 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
         for (int i = 0; i < 3; ++i) v.regs[i] = r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7 + i];
         v.stride = stride;
         v.perInstance = rate && *rate == LatteConst::VertexFetchType2::INSTANCE_DATA;
+        v.attributeEnd = attributeEnd;
+        v.supported = supported;
       } else cap->refuse("vertex bindings");
     }
 #endif
@@ -4852,6 +4859,14 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
 #endif
   rprof::g_upload_kind = rprof::kUpIndex;
   rprof::mark(rprof::kVertex);
+#ifdef WWHD_NATIVE_DRAW
+  if (cap) {
+    cap->nativeIndexWidth = nativeIndices ? (indexType == 0 ? 2 : 4) : 0;
+    cap->hostRestart = hostRestart;
+    cap->stripRestart = stripRestart;
+    cap->restartIndex = restartIndex;
+  }
+#endif
   if (nativeIndices) {
     bindIndex(nativeIndexSlice.buffer, nativeIndexSlice.offset,
                          indexType == 0 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
@@ -4983,6 +4998,10 @@ struct LoweredKind {
   // multi-draw batches (WWHD_NATIVE_DRAW_MDI): the kind's instances with a stream of their own may join one; null:
   // refused (the reason, logged once per packet)
   const char* mdiRefused = "not lowered";
+  // the index range it was lowered with (the kind's mesh, or the instance's own range); instances with another range
+  // may join a range batch (null: refused, the reason logged once per packet)
+  uint32_t rangeCount = 0, rangeAddr = 0;
+  const char* rangeRefused = "not lowered";
 };
 struct LoweredPacket {
   uint64_t drawCount = ~0ull;  // R.drawCount after the packet's last draw (lowering or replay)
@@ -4999,8 +5018,16 @@ std::array<std::unique_ptr<LoweredPacket>, native_draw::kMaxPackets> loweredPack
 // the vertex index (vertexOffset is part of it), with an instance-rate or more than one vertex buffer, or a zero
 // stride. Without the device feature (or while commands are recorded deferred) the commands become one
 // vkCmdDrawIndexed each, still under one bind.
+// Range batches: consecutive replayable instances of one packet kind with the same blocks and the same vertex input
+// that differ only in their own index range (count and index address: sea strips, a magma ball's strips) are drawn the
+// same way with one command per instance: their guest index bytes back to back in one upload slice (firstIndex per
+// command, vertexOffset 0, so every vertex index is the one the full draw sees) and each vertex buffer copied as the
+// full draw copies it, up to the largest index of all the batch's ranges (the prefix the full draw of their union
+// would copy; every instance reads only inside it). No vertex shader check is needed. Refused for a kind whose indices
+// were converted (big-endian, fans, quads, other restart markers) or with an instance-rate vertex buffer.
 struct MdiBatch {
   bool active = false;
+  bool range = false;  // a range batch (else a stream batch)
   uint32_t id = 0, kind = 0, site = 0, count = 0, binding = 0;
   LoweredPacket* packet = nullptr;
   LoweredKind* lowered = nullptr;
@@ -5011,6 +5038,12 @@ struct MdiBatch {
   std::array<uint32_t, 34> offsets{};
   std::vector<uint8_t> bytes;
   std::vector<VkDrawIndexedIndirectCommand> cmds;
+  // range batches: the instances' index bytes; per vertex buffer of the kind its copy so far (grown at each instance
+  // to the prefix the largest index so far needs, read from guest memory at that instance, as its full draw would)
+  std::vector<uint8_t> indexBytes;
+  bool extentValid = true;
+  uint32_t maxIndex = 0;
+  std::array<std::vector<uint8_t>, 16> vertexBytes;
 } mdiBatch;
 uint64_t mdiLost = 0;
 // Does the vertex shader's vertex index reach anything? The translation puts it into R0.x only (R0 = (vertex index,
@@ -5085,6 +5118,13 @@ bool vertex_index_live(const vk::Shader* s) {
   }
   return memo[s] = live;
 }
+const char* range_refusal(const PacketCapture& c) {
+  if (!c.indexed) return "not indexed";
+  if (!c.nativeIndexWidth && c.indexType != VK_INDEX_TYPE_UINT32) return "index form";
+  for (uint32_t i = 0; i < c.vertexBindCount; ++i)
+    if (c.vertexBinds[i].perInstance) return "instance-rate vertex buffer";
+  return nullptr;
+}
 const char* mdi_refusal(const PacketCapture& c) {
   if (!c.indexed) return "not indexed";
   if (c.vertexBindCount != 1) return "not one vertex buffer";
@@ -5097,7 +5137,7 @@ const char* mdi_refusal(const PacketCapture& c) {
 }
 uint64_t packetVerifyCounter = 0;
 
-void packet_compare(const PacketCapture& a, const PacketCapture& b, bool sameVertexInput, uint32_t site) {
+void packet_compare(const PacketCapture& a, const PacketCapture& b, bool sameVertexInput, bool sameRange, uint32_t site) {
   char what[200];
   auto check = [&](bool same, const char* field) {
     if (same) return;
@@ -5110,7 +5150,8 @@ void packet_compare(const PacketCapture& a, const PacketCapture& b, bool sameVer
   check(a.uniformHash[1] == b.uniformHash[1], "pixel uniforms");
   check(a.textureHash == b.textureHash, "textures");
   check(a.vertexLayoutHash == b.vertexLayoutHash && (!sameVertexInput || a.vertexHash == b.vertexHash), "vertex input");
-  check(a.indexHash == b.indexHash && a.drawCount == b.drawCount && a.indexType == b.indexType, "index input");
+  check((!sameRange || (a.indexHash == b.indexHash && a.drawCount == b.drawCount)) && a.indexType == b.indexType,
+        "index input");
   bool layout = a.offsetCount == b.offsetCount;
   for (int s = 0; s < 2; ++s)
     for (int k = 0; k < PacketCapture::kBlocks; ++k)
@@ -5134,12 +5175,12 @@ UploadSlice packet_block_upload(uint32_t addr, uint32_t size) {
 }
 }  // namespace
 
-void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind) {
+void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range) {
   auto& LP = loweredPackets[pk.id % native_draw::kMaxPackets];
   if (!LP) LP = std::make_unique<LoweredPacket>();
   auto& P = *LP;
   auto& L = P.kinds[kind % native_draw::kMaxKinds];
-  const native_draw::Mesh& m = pk.mesh[kind % native_draw::kMaxKinds];
+  const native_draw::Mesh& m = range ? *range : pk.mesh[kind % native_draw::kMaxKinds];
   // the instance blocks' registers now (their effects were applied): address and size per declared block
   uint32_t blockAddr[native_draw::kMaxBlocks]{}, blockSize[native_draw::kMaxBlocks]{};
   static const uint32_t stageBase[3] = {mmSQ_VTX_UNIFORM_BLOCK_START, mmSQ_PS_UNIFORM_BLOCK_START,
@@ -5186,6 +5227,12 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   }
   const uint32_t verifyEvery = native_draw::verify_every();
   const bool verify = replayable && verifyEvery && ++packetVerifyCounter % verifyEvery == 0;
+  // the index range: the one the kind was lowered with, or (range batches) another one of the same vertex input
+  const bool sameRange = m.count == L.rangeCount && m.indexAddr == L.rangeAddr;
+  const bool rangeCandidate = native_draw::mdi_on() && replayable && !verify && sameVertexInput && !sameRange &&
+      !L.rangeRefused && m.indexAddr &&
+      (L.cap.nativeIndexWidth || uint64_t(m.indexAddr) + uint64_t(m.count) * (m.indexType == 4 ? 2 : 4) <= 0x100000000ull);
+  if (replayable && !verify && !sameRange && !rangeCandidate) replayable = false, relower = native_draw::kRangeChange;
   const uint64_t surfaceBefore = g_surface_epoch;
   auto chained = [&] {  // after any draw of this packet: the kinds' surface epoch moves with the packet's own writes
     P.drawCount = R.drawCount;
@@ -5193,7 +5240,8 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       if (k.valid && k.surfaceEpoch == surfaceBefore) k.surfaceEpoch = g_surface_epoch;
   };
   // multi-draw batches: an instance with a stream of its own joins the batch of its kind (same blocks: checked above)
-  const bool mdiCandidate = native_draw::mdi_on() && replayable && !verify && !sameVertexInput && !L.mdiRefused;
+  const bool mdiCandidate = native_draw::mdi_on() && replayable && !verify && !sameVertexInput && sameRange &&
+      !L.mdiRefused;
   auto mdi_append = [&] {
     auto& B = mdiBatch;
     const auto& v = L.cap.vertexBinds[0];
@@ -5209,8 +5257,52 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     ++B.count;
     native_draw::g_mdiPending = true;
   };
-  if (mdiCandidate && mdiBatch.active) {  // (same packet, kind and blocks)
-    mdi_append();
+  // a range batch's instance: its index bytes, and each vertex buffer's copy grown to the prefix its full draw needs
+  // (native: the guest's index bytes; else the uint32 stream of the full draw's conversion, vk::convert_indices)
+  auto range_append = [&] {
+    auto& B = mdiBatch;
+    const uint32_t width = L.cap.nativeIndexWidth ? L.cap.nativeIndexWidth : 4;
+    const size_t at = B.indexBytes.size();
+    size_t count = m.count;
+    {
+      rprof::UploadKind uploads(rprof::kUpIndex);
+      if (L.cap.nativeIndexWidth) {
+        B.indexBytes.resize(at + count * width);
+        std::memcpy(B.indexBytes.data() + at, mem::ptr(m.indexAddr), count * width);
+        rprof::guest_read(rprof::kUpIndex, m.indexAddr, count * width);
+      } else {
+        static thread_local std::vector<uint32_t> converted;
+        vk::convert_indices(mem::ptr(m.indexAddr), m.prim, m.count, m.indexType, L.cap.stripRestart,
+                            L.cap.restartIndex, converted);
+        count = converted.size();
+        B.indexBytes.resize(at + count * 4);
+        std::memcpy(B.indexBytes.data() + at, converted.data(), count * 4);
+        rprof::guest_read(rprof::kUpIndex, m.indexAddr, uint64_t(m.count) * (m.indexType == 4 || m.indexType == 0 ? 2 : 4));
+      }
+    }
+    const VertexExtent e = indexed_vertex_extent(B.indexBytes.data() + at, count, width, L.cap.hostRestart, 0);
+    if (!e.valid) B.extentValid = false;
+    else B.maxIndex = std::max(B.maxIndex, e.maximum);
+    for (uint32_t i = 0; i < L.cap.vertexBindCount && i < B.vertexBytes.size(); ++i) {
+      const auto& v = L.cap.vertexBinds[i];
+      const uint32_t* a = r + mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7;
+      const uint32_t addr = a[0], size = a[1] + 1;
+      const uint32_t copied = v.supported ? vertex_prefix_size(size, v.stride, v.attributeEnd,
+                                                               {B.extentValid, B.maxIndex}) : size;
+      auto& out = B.vertexBytes[i];
+      if (copied <= out.size()) continue;
+      const size_t from = out.size();
+      out.resize(copied);
+      std::memcpy(out.data() + from, static_cast<const uint8_t*>(mem::ptr(addr)) + from, copied - from);
+      rprof::guest_read(rprof::kUpVertex, addr + uint32_t(from), copied - from);
+    }
+    B.cmds.push_back({uint32_t(count), 1, uint32_t(at / width), 0, 0});
+    ++B.count;
+    native_draw::g_mdiPending = true;
+  };
+  if (mdiBatch.active && (mdiBatch.range ? rangeCandidate : mdiCandidate)) {  // (same packet, kind and blocks)
+    if (mdiBatch.range) range_append();
+    else mdi_append();
     return;
   }
   if (mdiBatch.active) native_draw::flush_mdi();  // (this kind's batch, before the instance drawn otherwise)
@@ -5269,9 +5361,10 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
         sets[s] = stage_descriptor_set(s == 0, st.layout, writes.data(), st.writeCount);
       }
     }
-    if (same && mdiCandidate) {  // a new batch, drawn with this instance's descriptor sets and offsets
+    if (same && (mdiCandidate || rangeCandidate)) {  // a new batch, drawn with this instance's descriptor sets and offsets
       auto& B = mdiBatch;
       B.active = true;
+      B.range = rangeCandidate;
       B.id = pk.id;
       B.kind = kind;
       B.site = pk.site;
@@ -5289,7 +5382,12 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       B.offsets = offsets;
       B.bytes.clear();
       B.cmds.clear();
-      mdi_append();
+      B.indexBytes.clear();
+      B.extentValid = true;
+      B.maxIndex = 0;
+      for (auto& v : B.vertexBytes) v.clear();
+      if (B.range) range_append();
+      else mdi_append();
       return;
     }
     if (same) {
@@ -5360,7 +5458,7 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   P.boundKind = -1;  // (the full draw bound through its own cache)
   P.mdiKind = -1;
   if (verify && cap.drew) {
-    packet_compare(L.cap, cap, sameVertexInput, pk.site);
+    packet_compare(L.cap, cap, sameVertexInput, sameRange, pk.site);
     native_draw::count(pk.site, native_draw::kVerified);
   }
   const auto& c = continuedEyes[0];
@@ -5398,10 +5496,15 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   else L.fsBytes.clear();
   for (uint32_t i = 0; i < native_draw::kMaxBlocks; ++i) L.blockSize[i] = blockSize[i];
   L.mdiRefused = native_draw::mdi_on() ? mdi_refusal(L.cap) : "off";
-  if (native_draw::mdi_on() && L.mdiRefused) {
+  L.rangeCount = m.count;
+  L.rangeAddr = m.indexAddr;
+  L.rangeRefused = native_draw::mdi_on() && range ? range_refusal(L.cap) : "off";
+  if (native_draw::mdi_on()) {
     static std::unordered_set<std::string> said;
-    if (said.size() < 64 && said.insert(std::to_string(pk.id) + "/" + std::to_string(kind) + L.mdiRefused).second)
-      LOG("[native-draw] packet %u (site %u kind %u): no multi-draw batches: %s", pk.id, pk.site, kind, L.mdiRefused);
+    const char* why = range ? L.rangeRefused : L.mdiRefused;
+    if (why && said.size() < 64 && said.insert(std::to_string(pk.id) + "/" + std::to_string(kind) + why).second)
+      LOG("[native-draw] packet %u (site %u kind %u): no %s batches: %s", pk.id, pk.site, kind,
+          range ? "range" : "multi-draw", why);
   }
   chained();
   if (!verify) native_draw::count(pk.site, native_draw::kLowered);
@@ -5422,18 +5525,35 @@ void packet_mdi_flush() {
     return;
   }
   auto cmd = command_buffer();
-  // (a batch starts only while nothing came since the packet's last draw: after its own batch of this kind, the
-  // pipeline and index buffer are still bound)
+  // (a batch starts only while nothing came since the packet's last draw: after its own stream batch of this kind,
+  // the pipeline and index buffer are still bound)
   if (P.mdiKind != int(B.kind)) {
     record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, L.cap.vkPipeline);
-    record::vkCmdBindIndexBuffer(cmd, L.cap.indexBuffer, L.cap.indexOffset, L.cap.indexType);
+    if (!B.range) record::vkCmdBindIndexBuffer(cmd, L.cap.indexBuffer, L.cap.indexOffset, L.cap.indexType);
   }
-  UploadSlice v;
-  {
-    rprof::UploadKind uploads(rprof::kUpVertex);
-    v = snapshot(B.bytes.data(), B.bytes.size(), 4);
+  if (B.range) {  // the instances' index bytes; each vertex buffer's copy
+    UploadSlice ix;
+    {
+      rprof::UploadKind uploads(rprof::kUpIndex);
+      ix = snapshot(B.indexBytes.data(), B.indexBytes.size(), 4);
+    }
+    record::vkCmdBindIndexBuffer(cmd, ix.buffer, ix.offset, L.cap.indexType);
+    for (uint32_t i = 0; i < L.cap.vertexBindCount && i < B.vertexBytes.size(); ++i) {
+      UploadSlice v;
+      {
+        rprof::UploadKind uploads(rprof::kUpVertex);
+        v = snapshot(B.vertexBytes[i].data(), B.vertexBytes[i].size(), 4);
+      }
+      record::vkCmdBindVertexBuffers(cmd, L.cap.vertexBinds[i].binding, 1, &v.buffer, &v.offset);
+    }
+  } else {
+    UploadSlice v;
+    {
+      rprof::UploadKind uploads(rprof::kUpVertex);
+      v = snapshot(B.bytes.data(), B.bytes.size(), 4);
+    }
+    record::vkCmdBindVertexBuffers(cmd, B.binding, 1, &v.buffer, &v.offset);
   }
-  record::vkCmdBindVertexBuffers(cmd, B.binding, 1, &v.buffer, &v.offset);
   record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, L.cap.layout, 0, 2, B.sets, L.cap.offsetCount,
                                   B.offsets.data());
   static PFN_vkCmdDrawIndexedIndirect drawIndirect = nullptr;
@@ -5445,10 +5565,10 @@ void packet_mdi_flush() {
     UploadSlice c = snapshot(B.cmds.data(), B.cmds.size() * sizeof(VkDrawIndexedIndirectCommand), 4);
     drawIndirect(cmd, c.buffer, c.offset, B.count, sizeof(VkDrawIndexedIndirectCommand));
   } else {
-    for (const auto& c : B.cmds) record::vkCmdDrawIndexed(cmd, c.indexCount, 1, 0, c.vertexOffset, 0);
+    for (const auto& c : B.cmds) record::vkCmdDrawIndexed(cmd, c.indexCount, 1, c.firstIndex, c.vertexOffset, 0);
   }
   native_draw::count_mdi(B.site, B.count, indirect);
-  P.mdiKind = int(B.kind);
+  P.mdiKind = B.range ? -1 : int(B.kind);  // (a range batch bound an index buffer of its own)
   P.boundKind = -1;  // (the batch's stream is bound: the next replay rebinds)
   g_packetBindsDirty = true;
   static const uint32_t drawBatch = parse_draw_batch(std::getenv("WWHD_VK_DRAW_BATCH"));

@@ -10,7 +10,8 @@
 //   Packet    site, pass, variant, material, program, texture, the instance blocks (stage + uniform location, <= 6),
 //             meshes[kind] (<= 8: primitive, count, index type, index address, as GX2DrawIndexedEx takes them)
 //   Instance  kind (or "effects only": no draw), the blocks the site bound since its last instance (<= 6:
-//             stage + location, address, size), and the vertex input it bound (fetch shader + <= 2 attribute buffers)
+//             stage + location, address, size), the vertex input it bound (fetch shader + <= 2 attribute buffers),
+//             and optionally an index range of its own (count and index address; the kind's primitive and index type)
 // Kinds alternate freely (trees: crown, trunk, stump parts). An instance's vertex input is either the one its kind
 // was lowered with (a static mesh) or a stream of its own (a per-draw vertex buffer with the same fetch content and
 // stride), which the replay copies like the full draw does.
@@ -68,11 +69,12 @@ struct Packet {
 constexpr uint32_t kPacketWords = sizeof(Packet) / 4;
 inline uint32_t block_key(uint32_t stage, uint32_t location) { return stage << 16 | (location & 0xFFFF); }
 
-// OP_PACKET_DRAW payload: id, kind, layout (block count | has-vertex << 8 | buffer count << 12), then per block
-// {block key, address, size}, then the vertex input {SQ_PGM_START_FS word 0, word 1, then per buffer {attribute index,
-// address, size, stride}}
-constexpr uint32_t kDrawHead = 3, kBlockWords = 3, kVertexHead = 2, kBufferWords = 4;
-constexpr uint32_t kMaxDrawWords = kDrawHead + kMaxBlocks * kBlockWords + kVertexHead + kMaxBuffers * kBufferWords;
+// OP_PACKET_DRAW payload: id, kind, layout (block count | has-vertex << 8 | buffer count << 12 | has-range << 16), then
+// per block {block key, address, size}, then the vertex input {SQ_PGM_START_FS word 0, word 1, then per buffer
+// {attribute index, address, size, stride}}, then the index range {count, index address}
+constexpr uint32_t kDrawHead = 3, kBlockWords = 3, kVertexHead = 2, kBufferWords = 4, kRangeWords = 2;
+constexpr uint32_t kMaxDrawWords =
+    kDrawHead + kMaxBlocks * kBlockWords + kVertexHead + kMaxBuffers * kBufferWords + kRangeWords;
 
 // render thread: bumped by every register change and every command other than register writes and packet draws
 // (gx2_core.cpp); a packet's lowered state is valid only while it is unchanged
@@ -81,20 +83,21 @@ extern uint64_t g_epoch;
 const Packet* packet(uint32_t id);  // render thread: the defined packet, or nullptr
 void define(const uint32_t* p, uint32_t n);  // render thread: OP_PACKET_DEFINE
 // render thread: OP_PACKET_DRAW (kind < meshCount) after its register effects were applied: the packet path, or the
-// full draw
-void draw(const uint32_t* regs, const Packet& pk, uint32_t kind);
+// full draw. RANGE: the instance's own index range (the kind's primitive and index type), or null: the kind's mesh
+void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, const Mesh* range);
 void frame_end();  // render thread, at each swap: the periodic counter line
 
 // fallback / lowering reasons, counted per frame and site
 enum Reason : uint32_t {
     kReplayed, kLowered, kVerified,
     kNotVulkan, kStereo, kFramegen, kGrassDistance, kBackdrop, kClouds, kRefused, kBufferChange,
-    kBlockSize, kFetchChange, kStrideChange, kMdi, kReasons
+    kBlockSize, kFetchChange, kStrideChange, kRangeChange, kMdi, kReasons
 };
 void count(uint32_t site, Reason r);
 // Multi-draw batches (WWHD_NATIVE_DRAW_MDI=1 with packets on; off by default; Vulkan): consecutive replayable instances
-// of one packet kind that bind the same blocks and differ only in their own vertex stream are drawn as one indirect
-// multi-draw (gfxvk::packet_mdi_flush): same pipeline, shaders, descriptors and bytes as replaying them one by one.
+// of one packet kind that bind the same blocks and differ only in their own vertex stream, or only in their own index
+// range, are drawn as one indirect multi-draw (gfxvk::packet_mdi_flush): same pipeline, shaders, descriptors and bytes
+// as replaying them one by one.
 // The collected batch is drawn before any other command, at the end of each command chunk, and before an instance
 // that cannot join it.
 bool mdi_on();
