@@ -74,15 +74,21 @@ if(WWHD_WRITE_WATCH)
   add_compile_definitions(WWHD_WRITE_WATCH=1)
 endif()
 
+option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; experimental)" OFF)
+include(cmake/Decomp.cmake)
+
 # Cafe OS message queues (runtime/src/threads.cpp, WWHD_MSGQ_FAST): lock-free queue lookups, the wake gate in every
 # build and, in the decomp fast build, a short nap of the spinning receivers before they sleep. OFF = the code as before.
-option(WWHD_MSGQ_FAST "cheaper OSSendMessage / OSReceiveMessage wake path (threads.cpp)" OFF)
+# Default ON in the decomp fast build (phone pair 2026-11-11: logic -0.4 to -1.1 ms at the cliff), OFF otherwise.
+if(WWHD_DECOMP AND WWHD_DECOMP_FAST)
+  set(WWHD_MSGQ_FAST_DEFAULT ON)
+else()
+  set(WWHD_MSGQ_FAST_DEFAULT OFF)
+endif()
+option(WWHD_MSGQ_FAST "cheaper OSSendMessage / OSReceiveMessage wake path (threads.cpp)" ${WWHD_MSGQ_FAST_DEFAULT})
 if(WWHD_MSGQ_FAST)
   set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/threads.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_MSGQ_FAST=1)
 endif()
-
-option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; experimental)" OFF)
-include(cmake/Decomp.cmake)
 if(WWHD_DECOMP)
   wwhd_decomp_configure()
 elseif(EXISTS "${GEN_DIR}/decomp_hooks.txt")
