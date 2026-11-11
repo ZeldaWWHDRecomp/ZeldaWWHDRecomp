@@ -376,6 +376,62 @@ class NativeRulesTest(unittest.TestCase):
         self.assertNotIn("(bare)", "".join(out[1:]))
         self.assertEqual([x.split("#")[1] for x in out], [x.split("#")[1] for x in lines])
 
+    def test_entry_only_rules(self):
+        # --bare-entry: a bare leaf is (nentry) only when no line of its unit's sources or included headers names it
+        # except its declaration, its glued definition head, VERIFY / HostFn lines and by-address forwarders
+        t = self.tmp.name
+        inc = os.path.join(self.src, "wwhd_src", "include")
+        os.makedirs(inc)
+        open(os.path.join(inc, "h.h"), "w").write(
+            "s32 aOnly(void* a, void* b);\n"
+            "static inline bool aOnly(u32 a, u32 b) { return gabi::hcall<0x02000000, bool>(a, b); }\n"
+            "template <class R = void, class... A> inline R bFn(A... a) { return gabi::call<R>(0x02000010, a...); }\n"
+            "s32 bFn(void* a);\n"
+            "struct K { s32 hdrCalled(void* p); s32 viaHeader() { return dIn(0); } };\n"
+            '#include "h2.h"\n')
+        open(os.path.join(inc, "h2.h"), "w").write("s32 dIn(void* p);\n")
+        u1 = os.path.join(t, "u1.cpp")
+        open(u1, "w").write(
+            '#include "h.h"\n'
+            "s32 aOnly(void* a, void* b) { WWHD_GLUE_FUNC_R(0x02000000, s32, a, b);\n"
+            "    return 0; // calls bFn(a) in a comment only\n}\n"
+            "s32 bFn(void* a) { WWHD_GLUE_FUNC_R(0x02000010, s32, a);\n"
+            '    const char* s = "cFn(x)"; return 1;\n}\n'
+            "s32 cFn(void* a) { WWHD_GLUE_FUNC_R(0x02000020, s32, a);\n    return 2;\n}\n"
+            "s32 user(void* a) { WWHD_GLUE_FUNC_R(0x02000040, s32, a);\n    if (a) {\n        c * cFn(x * y);\n    }\n    return 0;\n}\n"
+            "s32 dIn(void* p) { WWHD_GLUE_FUNC_R(0x02000050, s32, p);\n    return 3;\n}\n"
+            "s32 ptrUse(void* a) { WWHD_GLUE_FUNC_R(0x02000060, s32, a);\n    return 4;\n}\n"
+            "static void* tab[] = {(void*)&ptrUse};\n"
+            "VERIFY(0x02000000, aOnly);\nstatic gabi::HostFn wwhd_fn_02000000((const void*)&aOnly, 0x02000000);\n")
+        u2 = os.path.join(t, "u2.cpp")
+        open(u2, "w").write("s32 eOther(void* a) { WWHD_GLUE_FUNC_R(0x02000030, s32, a);\n    return aOnly(a, a);\n}\n")
+        json.dump({"units": [{"name": "u1", "sources": [{"path": u1}]}, {"name": "u2", "sources": [{"path": u2}]}]},
+                  open(os.path.join(self.out, "units.json"), "w"))
+        lines = ["02000000  callee=native caller=ok  (leaf),(bare) decl=exact:2r0f:1  # u1 aOnly",
+                 "02000010  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u1 bFn",
+                 "02000020  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u1 cFn",
+                 "02000030  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u2 eOther",
+                 "02000040  callee=native caller=ok  - decl=exact:1r0f:1  # u1 user",
+                 "02000050  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u1 dIn",
+                 "02000060  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u1 ptrUse",
+                 "02000070  callee=native caller=ok  (leaf) decl=exact:1r0f:1  # u1 notBare"]
+        out = native_rules.entry_only_rules(lines, self.out, self.src)
+        got = {x.split()[0] for x in out if "(nentry)" in x}
+        # aOnly: declaration, forwarder overload, definition, VERIFY and HostFn only (u2's call is another unit);
+        # bFn: by-address forwarder template, comment and string mentions ignored; eOther: nothing names it;
+        # cFn: called by name in `c * cFn(x * y);`, a statement that looks like a declaration but is in a body; dIn: called by name from an inline method of an included header;
+        # ptrUse: its address taken by name; notBare: not bare
+        self.assertEqual(got, {"02000000", "02000010", "02000030"})
+        self.assertTrue(all("(bare),(nentry)" in x for x in out if "(nentry)" in x))
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "nentry.txt")))
+        for ok in ("void f(void* a);", "    virtual s32 g(const cXyz* p, u32 n) const;", "s32 C::f(void) { WWHD_GLUE_FUNC_R(0x02000000, s32, this);"):
+            self.assertTrue(native_rules.ne_line_ok(ok, ok.split("(")[0].split()[-1].split("::")[-1]), ok)
+        self.assertFalse(native_rules.ne_line_ok("    c * f(x * y);", "f", True))
+        for bad in ("    return f(a);", "    s32 r = f(a, b);", "f(a);", "    a.f(p);", "x = &f;",
+                    "s32 g(void* a) { return f(a); }"):
+            self.assertFalse(native_rules.ne_line_ok(bad, "f"), bad)
+
+
 
 if __name__ == "__main__":
     unittest.main()

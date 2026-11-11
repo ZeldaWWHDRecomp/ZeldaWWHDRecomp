@@ -1057,6 +1057,10 @@ void init() {
     // WWHD_DECOMP_FAST_NOCHECK=0 do not reach bare leaves
     LOG("[decomp] fast mode: bare leaves (leaves of units without caller=guest or unbased functions keep no call glue)");
 #endif
+#ifdef WWHD_DECOMP_FAST_BARE_ENTRY
+    // gabi.h GABI_BARE_ENTRY (cmake WWHD_DECOMP_FAST_BARE_ENTRY): no run-time switch
+    LOG("[decomp] fast mode: bare entry leaves (bare leaves with pointer parameters that only their native entry calls)");
+#endif
 #endif
 #ifdef WWHD_DECOMP_FAST_NSTATS
     if (const char* p = getenv("WWHD_DECOMP_FAST_NSTATS")) {
