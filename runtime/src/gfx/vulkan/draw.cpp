@@ -5258,6 +5258,7 @@ struct LoweredKind {
   uint32_t fsRegs[2]{};
   std::vector<uint8_t> fsBytes;  // the fetch shader's content (instances with their own fetch shader copy compare it)
   uint32_t blockSize[native_draw::kMaxBlocks]{};  // the instance blocks' sizes it was lowered with
+  std::vector<uint32_t> checkWords;  // the packet's compared checked registers it was lowered with (native_draw.h)
   // multi-draw batches (WWHD_NATIVE_DRAW_MDI): the kind's instances with a stream of their own may join one; null:
   // refused (the reason, logged once per packet)
   const char* mdiRefused = "not lowered";
@@ -5592,6 +5593,14 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     const uint32_t fsAddr = r[mmSQ_PGM_START_FS] << 8, fsSize = r[mmSQ_PGM_START_FS + 1] << 3;
     if (fsSize != L.fsBytes.size() || !fsAddr || std::memcmp(mem::ptr(fsAddr), L.fsBytes.data(), fsSize))
       replayable = false, relower = native_draw::kFetchChange;
+  }
+  // the checked registers (the site's own texture, sampler, blend calls in between): as lowered
+  for (uint32_t i = 0, at = 0; replayable && i < pk.checkCount && i < native_draw::kMaxChecks; ++i) {
+    if (!native_draw::check_compare(pk.check[i])) continue;
+    const uint32_t first = native_draw::check_first(pk.check[i]), n = native_draw::check_count(pk.check[i]);
+    if (at + n > L.checkWords.size() || std::memcmp(r + first, L.checkWords.data() + at, n * 4))
+      replayable = false, relower = native_draw::kCheckChange;
+    at += n;
   }
   for (uint32_t i = 0; replayable && i < L.cap.vertexBindCount; ++i) {
     const auto& v = L.cap.vertexBinds[i];
@@ -5973,6 +5982,11 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   if (fsAddr && fsSize <= 16 + 64 * 16) L.fsBytes.assign(mem::ptr(fsAddr), mem::ptr(fsAddr) + fsSize);
   else L.fsBytes.clear();
   for (uint32_t i = 0; i < native_draw::kMaxBlocks; ++i) L.blockSize[i] = blockSize[i];
+  L.checkWords.clear();
+  for (uint32_t i = 0; i < pk.checkCount && i < native_draw::kMaxChecks; ++i)
+    if (native_draw::check_compare(pk.check[i]))
+      L.checkWords.insert(L.checkWords.end(), r + native_draw::check_first(pk.check[i]),
+                          r + native_draw::check_first(pk.check[i]) + native_draw::check_count(pk.check[i]));
   L.mdiRefused = native_draw::mdi_on() ? mdi_refusal(L.cap) : "off";
   L.streamRefused = mdi_refusal(L.cap);
   L.rangeCount = m.count;

@@ -190,8 +190,11 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
     // primitive type directly, and context setup initializes only shadow.
     if (g_shadow) copy_words(&g_shadow[first], v, n);
 #ifdef WWHD_NATIVE_DRAW
-    native_draw::g_epoch += changed;
-    native_draw::g_journalBumps += changed;
+    // (inside the checked register ranges of the packet drawn last: its next instance compares them; such a write bumps
+    // neither the epoch nor the journal's count, so the journal's epoch == journalled bumps rule holds)
+    const bool bump = changed && !native_draw::checked_regs(first, n);
+    native_draw::g_epoch += bump;
+    native_draw::g_journalBumps += bump;
 #endif
     if (actualBump) ++g_shader_state_gen;
     if (changed && collectStats) {
@@ -234,8 +237,10 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
 #endif
     if (memcmp(&g_regs[first], v, n * 4) != 0) {
 #ifdef WWHD_NATIVE_DRAW
-        ++native_draw::g_epoch;
-        ++native_draw::g_journalBumps;
+        if (!native_draw::checked_regs(first, n)) {  // (as apply_small_regs)
+            ++native_draw::g_epoch;
+            ++native_draw::g_journalBumps;
+        }
 #endif
         const bool classify = g_classify;
         for (uint32 i = 0; i < n; i++)

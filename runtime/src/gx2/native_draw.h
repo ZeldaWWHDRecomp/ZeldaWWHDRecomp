@@ -108,6 +108,7 @@ constexpr uint32_t kMaxBuffers = 2;        // attribute buffers of an instance's
 constexpr uint32_t kNoDraw = 0xFFFFFFFFu;  // instance kind: effects only
 constexpr uint32_t kMaxRegRanges = 6;      // register ranges per packet (declared) and per instance (values)
 constexpr uint32_t kMaxRegWords = 64;      // register value words per instance
+constexpr uint32_t kMaxChecks = 8;         // checked register ranges per packet
 
 struct Mesh {
     uint32_t prim = 0, count = 0, indexType = 0, indexAddr = 0;  // as GX2DrawIndexedEx takes them
@@ -126,10 +127,22 @@ struct Packet {
     uint32_t regCount = 0;
     uint32_t reg[kMaxRegRanges] = {};       // the instance register ranges: reg_key(stage (0 vertex, 1 pixel), offset)
     uint32_t regWords[kMaxRegRanges] = {};  // their sizes in words (multiples of 4)
+    // the checked register ranges (the site's own state calls between instances: a pane's textures, samplers, blend,
+    // its quad buffer): check_key(first register, count, compare)
+    uint32_t checkCount = 0;
+    uint32_t check[kMaxChecks] = {};
 };
 constexpr uint32_t kPacketWords = sizeof(Packet) / 4;
 inline uint32_t block_key(uint32_t stage, uint32_t location) { return stage << 16 | (location & 0xFFFF); }
 inline uint32_t reg_key(uint32_t stage, uint32_t offset) { return stage << 16 | (offset & 0xFFFF); }
+// a checked register range: FIRST (absolute register), COUNT (<= 15) words; COMPARE: a replay needs them equal to the
+// lowering's (else the replay's own logic decides: the attribute buffers, copied as an instance stream)
+inline uint32_t check_key(uint32_t first, uint32_t count, bool compare) {
+    return (first & 0xFFFF) | (count & 0xF) << 16 | uint32_t(compare) << 31;
+}
+inline uint32_t check_first(uint32_t key) { return key & 0xFFFF; }
+inline uint32_t check_count(uint32_t key) { return (key >> 16) & 0xF; }
+inline bool check_compare(uint32_t key) { return key >> 31; }
 // the first register of a register range (GX2Set{Vertex,Pixel}UniformReg: the ALU constants, + 0x400 for vertex)
 inline uint32_t reg_first(uint32_t key) { return ((key >> 16) == 0 ? 0x400u : 0u) + (key & 0xFFFF); }
 // is [OFFSET, OFFSET + WORDS) of STAGE inside one of the packet's declared register ranges
@@ -183,6 +196,12 @@ void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, const Mesh* ran
 // write keeps that packet's lowered state: its next instance patches every declared range from the registers (the
 // material's colours, vertex colours and texture matrices of a layout pane; another draw in between lowers again)
 bool instance_regs(uint32_t first, uint32_t n);
+// render thread: is a write of N registers from FIRST inside the checked register ranges of the packet whose instance
+// was drawn last. Such a write keeps that packet's lowered state: its next instance replays only if the compared
+// ranges equal the ones it was lowered with (else it lowers again: "checked registers changed"); attribute buffers
+// are decided by the replay's vertex input rule. Switch WWHD_NATIVE_DRAW_CHECK=0: such writes end the lowered state
+// as any register write (the comparison is then never reached)
+bool checked_regs(uint32_t first, uint32_t n);
 void frame_end();  // render thread, at each swap: the periodic counter line
 bool batch_on();   // shader-rewrite batches on (packets on, WWHD_NATIVE_DRAW_BATCH not 0)
 bool batch_site_on(uint32_t site);  // the site's kinds may be batched (WWHD_NATIVE_DRAW_BATCH_SITES)
@@ -198,7 +217,7 @@ enum Reason : uint32_t {
     kNotVulkan, kStereo, kFramegen, kGrassDistance, kBackdrop, kClouds, kRefused, kBufferChange,
     kBlockSize, kFetchChange, kStrideChange, kRangeChange, kMdi, kBatched,
     kRestored,  // (not a fallback) the lowered state kept by the register journal (registers changed and set back)
-    kRegOutside, kReasons
+    kRegOutside, kCheckChange, kReasons
 };
 void count(uint32_t site, Reason r);
 // Multi-draw batches (WWHD_NATIVE_DRAW_MDI=1 with packets on; off by default; Vulkan): consecutive replayable instances

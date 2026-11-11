@@ -1,8 +1,10 @@
 // Native draw packets (gx2/native_draw.h): the decompiled sites' entry points (game thread) and the render thread's
 // packet table and dispatch. Decomp build, fast mode, WWHD_NATIVE_DRAW=ON only.
+#include "../../third_party/cemu/cemu_shim.h"  // (as the gx2 sources get it: -include; for gx2_regs.h)
 #include "gx2/native_draw.h"
 #include "gx2/native_coverage.h"
 #include "gx2/gx2_cmd.h"
+#include "gx2/gx2_regs.h"
 #include "runtime.h"
 #include "framegen.h"
 #include "cloud_proto.h"
@@ -293,6 +295,33 @@ extern "C" unsigned wwhd_native_declare_regs(unsigned site, unsigned stage, unsi
     s->pk.regWords[s->pk.regCount++] = count;
     return 1;
 }
+// a checked register range (before the commit): WHAT 0 pixel texture unit INDEX (its resource and sampler words), 1
+// blend target INDEX (CB_BLEND<INDEX>_CONTROL), 2 attribute buffer INDEX. The site's own calls setting them between
+// instances keep the lowered state; a replay compares them. Zero: not declared
+extern "C" unsigned wwhd_native_declare_check(unsigned site, unsigned what, unsigned index) {
+    SiteState* s = site_state(site);
+    if (!s || !s->open || s->defined) return 0;
+    uint32_t keys[2], n = 0;
+    switch (what) {
+    case 0:
+        if (index >= 18) return 0;
+        keys[n++] = check_key(Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + index * 7, 7, true);
+        keys[n++] = check_key(Latte::REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (Latte::SAMPLER_BASE_INDEX_PIXEL + index) * 3, 3, true);
+        break;
+    case 1:
+        if (index >= 8) return 0;
+        keys[n++] = check_key(Latte::REGADDR::CB_BLEND0_CONTROL + index, 1, true);
+        break;
+    case 2:
+        if (index >= 16) return 0;
+        keys[n++] = check_key(mmSQ_VTX_ATTRIBUTE_BLOCK_START + index * 7, 7, false);
+        break;
+    default: return 0;
+    }
+    if (s->pk.checkCount + n > kMaxChecks) return 0;
+    for (uint32_t i = 0; i < n; ++i) s->pk.check[s->pk.checkCount++] = keys[i];
+    return 1;
+}
 // where the site would call PAIR's bind (vtable +0x2C) with LOCATIONS: nonzero, the bind is the instance's (its
 // blocks pend for the next instance); zero, the site binds it itself (after the pending effects)
 extern "C" unsigned wwhd_native_pair(unsigned site, unsigned pair, unsigned locations) {
@@ -539,6 +568,23 @@ static void note_run(uint32_t site, const Packet& pk, uint32_t kind) {
 }
 
 static uint32_t g_drawnId = ~0u;  // the packet whose instance was drawn last
+static bool check_on() {
+    static const bool on = [] {
+        const bool v = master_on() && env_int("WWHD_NATIVE_DRAW_CHECK", 1) != 0;
+        if (master_on()) LOG("[native-draw] checked registers %s (WWHD_NATIVE_DRAW_CHECK=%d)", v ? "on" : "off", v ? 1 : 0);
+        return v;
+    }();
+    return on;
+}
+bool checked_regs(uint32_t first, uint32_t n) {
+    if (g_drawnId >= kMaxPackets || !g_defined[g_drawnId]) return false;
+    const Packet& pk = g_packets[g_drawnId];
+    if (!pk.checkCount || !check_on()) return false;
+    for (uint32_t i = 0; i < pk.checkCount && i < kMaxChecks; ++i)
+        if (first >= check_first(pk.check[i]) && first + n <= check_first(pk.check[i]) + check_count(pk.check[i]))
+            return true;
+    return false;
+}
 bool instance_regs(uint32_t first, uint32_t n) {
     if (g_drawnId >= kMaxPackets || !g_defined[g_drawnId]) return false;
     const Packet& pk = g_packets[g_drawnId];
@@ -583,7 +629,8 @@ void frame_end() {
                                                 "grass distance", "backdrop", "clouds", "refused", "buffer change",
                                                 "block size", "fetch change", "stride change", "range change",
                                                 "in multi-draw batches", "in shader-rewrite batches",
-                                                "kept by the register journal", "register values outside the packet"};
+                                                "kept by the register journal", "register values outside the packet",
+                                                "checked registers changed"};
     for (uint32_t site = 0; site < kSites; ++site) {
         if (!g_instances[site]) continue;
         char buf[700];
