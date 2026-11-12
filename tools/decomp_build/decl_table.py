@@ -30,7 +30,7 @@ def tree_files(root, exts=None):
 
 
 def inputs_hash(decomp, gen, image, rpx):
-    h = hashlib.sha256(b"decl_table-1\n")
+    h = hashlib.sha256(b"decl_table-2\n")
     groups = [
         (os.path.join(decomp, "wwhd_src"), None),
         (os.path.join(decomp, "tools", "verify", "include"), None),
@@ -41,7 +41,7 @@ def inputs_hash(decomp, gen, image, rpx):
     ]
     files = [os.path.join(decomp, "tools", "verify", f) for f in
              ("decl_lint.py", "funcdb.py", "autoglue.py", "specfile.py", "decl_exceptions.tsv")]
-    files += [os.path.join(ROOT, "tools", "rpx.py"), image, rpx]
+    files += [os.path.join(ROOT, "tools", "rpx.py"), os.path.join(HERE, "decl_lint_run.py"), image, rpx]
     files += [os.path.join(gen, f) for f in sorted(os.listdir(gen)) if f.startswith("code_")]
     for root, exts in groups:
         files += list(tree_files(root, exts))
@@ -76,11 +76,14 @@ def main():
         if os.path.exists(f):
             os.remove(f)
     work = os.path.join(a.out, "work")
-    cmd = [sys.executable, lint, "-j", str(a.jobs), "--gen", a.gen, "--image", a.image, "--rpx", a.rpx,
+    # through decl_lint_run.py: autoglue gets the zero-filled sections of RPX, not of the decompilation's own
+    # game/code/cking.rpx (a link it does not ship)
+    cmd = [sys.executable, os.path.join(HERE, "decl_lint_run.py"), "-j", str(a.jobs), "--gen", a.gen, "--image", a.image, "--rpx", a.rpx,
            "--runtime", os.path.join(ROOT, "runtime"), "--tools", os.path.join(ROOT, "tools"), "--out-dir", work,
            "--handoff", table + ".tmp"]
     with open(os.path.join(a.out, "decl_lint.log"), "w") as log:
-        r = subprocess.run(cmd, cwd=a.decomp, stdout=log, stderr=subprocess.STDOUT)
+        r = subprocess.run(cmd, cwd=a.decomp, stdout=log, stderr=subprocess.STDOUT,
+                           env=dict(os.environ, WWHD_DECL_DECOMP=a.decomp, WWHD_DECL_RPX=a.rpx))
     # exit 1 = some under-declared calls (listed in the log): the table is still complete; native_rules.py keeps the
     # files with such calls on guest calls
     if r.returncode not in (0, 1) or not os.path.isfile(table + ".tmp"):
