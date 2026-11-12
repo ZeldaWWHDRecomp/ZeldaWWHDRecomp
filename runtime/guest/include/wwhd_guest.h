@@ -142,6 +142,13 @@ typedef struct {
 typedef void (*wwhd_touch_fn)(const wwhd_touch_event* event);
 int wwhd_touch_register(wwhd_touch_fn callback);
 int wwhd_touch_claim(u32 slot, f32 x0, f32 y0, f32 x1, f32 y1);
+/* Touches on the GamePad picture (mod manager 1.12.0): wwhd_touch_claim(WWHD_TOUCH_GAMEPAD | slot, ...) claims a
+ * rectangle in the GamePad's touch coordinates (854 x 480 from the top left, +y down), wherever the GamePad shows
+ * (its window, a phone, One screen mode), with the same rules: a finger landing in one goes to `callback` and to
+ * nothing else (not the game, not the port's GamePad pages, not the input filters) until it lifts. Its events have
+ * WWHD_TOUCH_GAMEPAD in `kind` (WWHD_TOUCH_GAMEPAD | WWHD_TOUCH_DOWN, ...). Slots 0..7, apart from the TV picture's.
+ * Older hosts return 0 for such a claim: fall back then. */
+#define WWHD_TOUCH_GAMEPAD 0x100
 /* Where the drawn camera shows a point of the world (x, y, z of the current room): out[0], out[1] in the same layout
  * units as touches, with the picture's shape and field of view as drawn. Returns 1, or 0 when the point is behind the
  * camera or no camera is drawn (out unchanged). Read it on the logic step you use it (the camera moves). */

@@ -22,7 +22,7 @@ namespace input { PadState read(){return sample;} bool pro_controller(){return p
 namespace controller_reapply { bool holds_pro_controller(){return held;} bool holds_gamepad(){return held_gamepad;} bool pro_controller_live(){return live_pro;} }
 namespace crashrec { input::PadState read(int){return sample;} }
 namespace interp { bool repeat_input(){return repeat;} void trace_read(const char*){} uint64_t logic_steps(){return 0;} }
-namespace mods { void move_speed_input(uint32_t){} void jump_input(uint32_t){} void fast_forward_input(uint32_t&){} void moon_jump_input(const input::PadState&){} void pad_play_rules(input::PadState&){} void item_ring_pad(input::PadState&, bool){} void context_touch_pad(input::PadState&, bool){} void touch_talk_pad(input::PadState&, bool){} void one_screen_pad(input::PadState&){} void guest_pad_filter(Cpu*, input::PadState&, bool){} }
+namespace mods { void move_speed_input(uint32_t){} void jump_input(uint32_t){} void fast_forward_input(uint32_t&){} void moon_jump_input(const input::PadState&){} void pad_play_rules(input::PadState&){} void item_ring_pad(input::PadState&, bool){} void context_touch_pad(input::PadState&, bool){} void touch_talk_pad(input::PadState&, bool){} void one_screen_pad(input::PadState&){} void guest_pad_filter(Cpu*, input::PadState&, bool){} void guest_gamepad_touch(input::PadState&, bool){} }
 namespace motion { void right_stick(float,float){} VpadMotion vpad(bool){return {};} }
 namespace threads { void park_sleep_until(std::chrono::steady_clock::time_point,bool,void (*)()){} }
 namespace story_notebook { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the notebook page (not under test)

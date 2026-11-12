@@ -646,8 +646,9 @@ void svc_memset(Cpu* c) { memset(mem::ptr(c->r[3]), (int)(c->r[4] & 0xFF), c->r[
 // ---- live options, input filters, touches (guest_live.h; QoL track M0)
 std::mutex g_options_mutex;  // Loaded::options (the main thread changes live ones), g_revisions
 guestlive::Revisions g_revisions;
-std::mutex g_touch_mutex;    // g_touch, g_touch_queue
+std::mutex g_touch_mutex;    // g_touch, g_gamepad_touch, g_touch_queue
 guestlive::Touch g_touch;
+guestlive::Touch g_gamepad_touch;  // claims on the GamePad picture (854 x 480 from the top left)
 std::vector<std::pair<int,guestlive::Event>> g_touch_queue;  // (mod index, event) for the next pad read
 mods::json::Value option(Cpu* c) {std::lock_guard lock(g_options_mutex);return owner(c).options.get(cstr(c->r[3]));}
 void svc_config_changed(Cpu* c) {
@@ -684,15 +685,16 @@ void svc_touch_register(Cpu* c) {
     auto& mod=owner(c);uint32_t fn=c->r[3];c->r[3]=0;
     if(fn&&(!own_function(mod,fn)||!exchange_area(mod))){LOG("[guestmod:%s] touch callback refused: the callback must be the mod's own",mod.id.c_str());return;}
     mod.touch_callback=fn;
-    if(!fn){std::lock_guard lock(g_touch_mutex);g_touch.drop(int(&mod-g_loaded.data()));}
+    if(!fn){std::lock_guard lock(g_touch_mutex);g_touch.drop(int(&mod-g_loaded.data()));g_gamepad_touch.drop(int(&mod-g_loaded.data()));}
     c->r[3]=1;
 }
+// slot | guestlive::kGamepadFlag: a claim on the GamePad picture (older hosts refuse that slot: the mod's feature test)
 void svc_touch_claim(Cpu* c) {
-    auto& mod=owner(c);const int slot=int32_t(c->r[3]);c->r[3]=0;
+    auto& mod=owner(c);const bool gamepad=c->r[3]&guestlive::kGamepadFlag;const int slot=int32_t(c->r[3]&~guestlive::kGamepadFlag);c->r[3]=0;
     if(!mod.touch_callback||slot<0||slot>=guestlive::kSlots)return;
     const guestlive::Rect r{float(c->f[1].ps0),float(c->f[2].ps0),float(c->f[3].ps0),float(c->f[4].ps0)};
     std::lock_guard lock(g_touch_mutex);
-    g_touch.claim(int(&mod-g_loaded.data()),slot,r);c->r[3]=1;
+    (gamepad?g_gamepad_touch:g_touch).claim(int(&mod-g_loaded.data()),slot,r);c->r[3]=1;
 }
 // wwhd_screen_point(world xyz, out xy): a point of the world where the drawn camera shows it, in layout units (guest_live.h);
 // the camera_draw camera (interp::last_camera: eye +0xDC, center +0xE8, up +0xF4, fovy +0xD4) and the picture's aspect
@@ -2083,6 +2085,15 @@ int touch_pinch(uint32_t kind,float scale,float x,float y) {
     return owner;
 }
 bool touch_claimed_at(float x,float y) {std::lock_guard lock(g_touch_mutex);return g_touch.owner_at(x,y)>=0;}
+void gamepad_touch(input::PadState& p,bool repeat) {
+    static guestlive::PadFinger finger;  // the game's controller reads come from one thread
+    if(repeat||g_loaded.empty())return;
+    std::lock_guard lock(g_touch_mutex);
+    int owner;guestlive::Event e;
+    const bool hide=finger.step(g_gamepad_touch,p.touch,p.tx,p.ty,owner,e);
+    if(owner>=0&&size_t(owner)<g_loaded.size()&&g_touch_queue.size()<64)g_touch_queue.push_back({owner,e});
+    if(hide)p.touch=false,p.tx=p.ty=0;
+}
 bool touch_claims() {std::lock_guard lock(g_touch_mutex);return g_touch.any();}
 // test aid: WWHD_TEST_MOD_OPTION=frame:mod:option:json,... changes a mod's option at that (scripted) TV frame, as the
 // Settings window would (packages::configure on the main thread: a live option reaches the mod)
@@ -2233,6 +2244,7 @@ void state_loaded() {
 }  // namespace guestmods
 namespace mods {
 void guest_pad_filter(Cpu* c, input::PadState& p, bool repeat) { guestmods::pad_filter(c, p, repeat); }
+void guest_gamepad_touch(input::PadState& p, bool repeat) { guestmods::gamepad_touch(p, repeat); }
 bool guest_touch_claimed_at(float x, float y) { return guestmods::touch_claimed_at(x, y); }
 }  // namespace mods
 
