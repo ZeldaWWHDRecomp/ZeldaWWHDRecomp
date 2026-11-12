@@ -565,4 +565,5 @@ void play_context_want(bool on);
 playctx::PlayContext play_context();
 // nw::lyt::Pane::Draw (aspect.cpp hook_02877100): notes the message's parts, the Picto Box screens...
 void play_context_pane(uint32_t pane);
+bool play_context_logs_panes();  // WWHD_PLAYCTX_LOG=2: play_context_pane logs every pane name it sees
 }  // namespace mods

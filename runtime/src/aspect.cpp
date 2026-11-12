@@ -30,6 +30,7 @@
 #include "button_glyphs.h"
 #include "aspect_panes.h"
 #include "aspect_picto.h"
+#include "pane_name_filter.h"
 #include "mods/cemu_pack.h"
 #include "mods/play_context.h"
 #include "mods/mods.h"
@@ -592,6 +593,8 @@ extern "C" void hook_028766CC(Cpu* c) {
     // HUD fades (mods/hud_fade.h): the hearts, rupees and magic bar fade by their own alpha (+0x45), which
     // the calculation passes on to the children that inherit alpha; set only for the call
     const uint32_t pane = c->r[3];
+    // a pane no fade or prompt check is about (pane_name_filter.h)
+    if (pane_name_filter::skip((const char*)mem::ptr(pane + kPaneName))) return calculate_aspect_pane(c);
     const float fade = mods::hud_fade_alpha_of(pane);
     if (fade < 1.f) {
         const uint8_t a0 = ld8(pane + 0x45);
@@ -656,11 +659,14 @@ extern "C" void hook_02877100(Cpu* c) {
         };
         if (!ld32(pane+kPaneParent)) trace(trace,pane,0);
     }
-    mods::play_context_pane(pane);  // the message's parts, the Picto Box screens... (returns at once unless wanted)
+    // a pane no play-context, hiding or prompt check is about (pane_name_filter.h)
+    const bool plain = pane_name_filter::skip((const char*)mem::ptr(pane + kPaneName));
+    if (!plain || mods::play_context_logs_panes())
+        mods::play_context_pane(pane);  // the message's parts, the Picto Box screens... (returns at once unless wanted)
     {
         // the game's HUD parts the port hides: a faded-out heart / rupee / magic display, the button cluster
         // while the touch controls show the context buttons (only TV layouts: the GamePad keeps its own)
-        const int hide = mods::hud_pane_hide(pane);
+        const int hide = plain ? 0 : mods::hud_pane_hide(pane);
         if (hide == 1) return;
         if (hide == 2) {
             uint32_t root = pane;
@@ -670,7 +676,7 @@ extern "C" void hook_02877100(Cpu* c) {
     }
     // 60 fps (generated, framegen.h): the first layout on the TV picture ends its scene (only while on)
     if (framegen::requested() && !ld32(pane + kPaneParent)) gx2::emit(gx2::OP_FRAMEGEN_LAYOUT, {});
-    if (original()) { button_glyphs::draw_pane(c, f_02877100_orig); return; }
+    if (original()) { plain ? f_02877100_orig(c) : button_glyphs::draw_pane(c, f_02877100_orig); return; }
     uint32_t parent = ld32(pane + kPaneParent);
     if (!parent) {
         gx2::emit(gx2::OP_LAYOUT_ROOT, {pane});
@@ -692,7 +698,7 @@ extern "C" void hook_02877100(Cpu* c) {
             if (panes::parked_hud(gx, gy)) return;
         }
     }
-    button_glyphs::draw_pane(c, f_02877100_orig);
+    plain ? f_02877100_orig(c) : button_glyphs::draw_pane(c, f_02877100_orig);
 }
 
 // the projection matrix uploaded during `fn` is tagged: the render thread narrows it (rows x and y

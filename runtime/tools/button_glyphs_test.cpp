@@ -53,6 +53,7 @@ void emit(Op op, const uint32_t* words, uint32_t count) {
 }
 namespace mods::cemu { float aspect_ratio() { return 0; } }
 namespace mods { void play_context_pane(uint32_t) {} }  // the context buttons' pane observer (mods/play_context.cpp)
+namespace mods { bool play_context_logs_panes() { return false; } }
 namespace mods { float hud_fade_alpha_of(uint32_t) { return 1.f; } int hud_pane_hide(uint32_t) { return 0; } }  // HUD fades (mods/hud_fade.cpp)
 namespace mods { bool g_test_item_names = false; bool item_names_on_hud() { return g_test_item_names; } }  // the item ring's names (mods/item_ring.cpp)
 extern "C" void f_025A847C_orig(Cpu*) {}
