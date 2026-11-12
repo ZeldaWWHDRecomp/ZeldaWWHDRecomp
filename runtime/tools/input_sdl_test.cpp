@@ -726,8 +726,11 @@ int main(int argc,char** argv){
   btn(pad2,SDL_GAMEPAD_BUTTON_BACK,true);shortcutClock+=0.6;poll();assert(overlayOpen);
   btn(pad2,SDL_GAMEPAD_BUTTON_BACK,false);assert(btn(pad2,SDL_GAMEPAD_BUTTON_BACK,true).buttons==0&&!overlayOpen);
   assert(btn(pad1,SDL_GAMEPAD_BUTTON_START,true).buttons==input::kPlus);btn(pad1,SDL_GAMEPAD_BUTTON_START,false);
-  assert(btn(pad2,SDL_GAMEPAD_BUTTON_BACK,false).buttons==0);assert(btn(pad2,SDL_GAMEPAD_BUTTON_BACK,true).buttons==input::kMinus);
-  btn(pad2,SDL_GAMEPAD_BUTTON_BACK,false);
+  assert(btn(pad2,SDL_GAMEPAD_BUTTON_BACK,false).buttons==0);
+  // a new tap: the game's Minus comes on its release (a hold could still have opened Settings)
+  assert(btn(pad2,SDL_GAMEPAD_BUTTON_BACK,true).buttons==0);
+  assert(btn(pad2,SDL_GAMEPAD_BUTTON_BACK,false).buttons==input::kMinus);
+  shortcutClock+=0.2;assert(poll().buttons==0);
   // a port's shortcut (overlay/extensions.h, issue #173) took LB + RB + Select: like the overlay's input, the
   // three stay from the game until each is released (and Select held does not open the menu)
   platformShortcut=true;
@@ -739,7 +742,9 @@ int main(int argc,char** argv){
   assert(btn(pad1,SDL_GAMEPAD_BUTTON_BACK,false).buttons==0);  // L and R still held: still kept
   btn(pad1,SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,false);assert(btn(pad1,SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,true).buttons==input::kL);
   btn(pad1,SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,false);btn(pad1,SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,false);
-  assert(btn(pad1,SDL_GAMEPAD_BUTTON_BACK,true).buttons==input::kMinus);btn(pad1,SDL_GAMEPAD_BUTTON_BACK,false);
+  assert(btn(pad1,SDL_GAMEPAD_BUTTON_BACK,true).buttons==0);  // Select alone again: Minus on release
+  assert(btn(pad1,SDL_GAMEPAD_BUTTON_BACK,false).buttons==input::kMinus);
+  shortcutClock+=0.2;assert(poll().buttons==0);
   platformShortcut=false;
   // the name prompt: A / Start confirms (the prompt closes while it is held), with either pad
   for(auto [j,b,bit]:{std::make_tuple(pad1,SDL_GAMEPAD_BUTTON_SOUTH,S),std::make_tuple(pad2,SDL_GAMEPAD_BUTTON_START,uint32_t(input::kPlus))}){
