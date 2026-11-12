@@ -127,6 +127,34 @@ private:
     int pinch_owner_ = -1;
 };
 
+// ---- touches on the GamePad picture: claims in its touch coordinates (854 x 480 from the top left, +y down) with
+// the TV picture's rules (a Touch of their own). The GamePad has one finger, read with the controller (PadState touch,
+// tx/ty 0..1 from the top left), wherever it shows: a GamePad window, a phone, One screen mode.
+constexpr float kGamepadWidth = 854, kGamepadHeight = 480;
+constexpr uint32_t kGamepadFlag = 0x100;  // WWHD_TOUCH_GAMEPAD: in a claim's slot, and in the kind of its events
+struct PadFinger {
+    bool down = false, claimed = false;
+    float x = 0, y = 0;
+    // One controller read. Returns true while the finger must not reach the game (it landed in a claim; it stays hidden
+    // until it lifts, even if the claiming mod goes away meanwhile). `owner` >= 0 with `e`: that mod gets an event now.
+    bool step(Touch& claims, bool touch, float tx, float ty, int& owner, Event& e) {
+        owner = -1;
+        const float nx = tx * kGamepadWidth, ny = ty * kGamepadHeight;
+        uint32_t kind;
+        if (touch && !down) kind = kDown;
+        else if (touch && (nx != x || ny != y)) kind = kMove;
+        else if (!touch && down) kind = kUp;
+        else return touch && claimed;
+        if (touch) x = nx, y = ny;
+        down = touch;
+        owner = claims.route({kind, x, y});
+        if (kind == kDown) claimed = owner >= 0;
+        if (owner >= 0) e = {kind | kGamepadFlag, x, y};
+        if (!touch) claimed = false;
+        return touch && claimed;
+    }
+};
+
 // ---- the drawn camera as a projection to layout units (wwhd_screen_point): eye, center, up of the camera and k, layout units
 // per unit of x / z (aspect::layout_scale); +x right, +y up, 0 at the picture's centre
 struct V3 {

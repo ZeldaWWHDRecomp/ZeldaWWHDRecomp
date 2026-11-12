@@ -307,7 +307,7 @@ service requirement and do not change how ordinary saves are loaded.
 | `wwhd_item_action_dispatch` | Preserve quick-use bookkeeping immediately before an eligible native ready hookshot, rope or boomerang action; takes Link and item ID, preserves CPU context and writes no global input/equipment |
 | `wwhd_item_ready_trigger` | Preserve the port’s local quick-use predicate after a native ready-item query; takes Link and the original result, changes no global pad input |
 | `wwhd_input_filter_register` | Change the controller state the game reads, below |
-| `wwhd_touch_register`, `wwhd_touch_claim` | Touches (or mouse clicks) on parts of the TV picture your mod claims, and pinches there, below |
+| `wwhd_touch_register`, `wwhd_touch_claim` | Touches (or mouse clicks) on parts of the TV or GamePad picture your mod claims, and pinches on the TV picture, below |
 | `wwhd_screen_point` | Where the drawn camera shows a point of the world, in the touches' layout units, below |
 | `wwhd_mic_open`, `_close`, `_state`, `_pitch` | The microphone's pitch, for an option the player turned on (asks for permission then), below |
 | `wwhd_file_read`, `wwhd_file_write` | Flat file names in your mod's own data folder, at most 1 MiB per call; write replaces the file; return bytes or -1 |
@@ -356,6 +356,27 @@ on-screen stick, no talk by touch. It stays yours until it lifts, even outside t
 overlap the newest wins. Claim only while your feature shows something to touch, and remove the claim (an
 empty rectangle, x1 <= x0) when it doesn't, so the player's thumbs work the game again. Events arrive at the
 next controller read, before the input filters, so a touch can become a button in the same read.
+
+**Touches on the GamePad picture.** `wwhd_touch_claim(WWHD_TOUCH_GAMEPAD | slot, x0, y0, x1, y1)` claims a
+rectangle of the GamePad picture in its touch coordinates: 854 x 480 from the top left, +y down. It works wherever the GamePad
+shows: a GamePad window, a phone, or One screen mode. The rules are the TV picture's: register the callback
+first; a finger that lands in a claim goes only to your callback until it lifts, even outside the rectangle;
+the newest claim wins where claims overlap; remove a claim with an empty rectangle. The game and the port's own
+GamePad pages don't see that finger, and neither do the input filters (`touch` stays 0). Its events have
+`WWHD_TOUCH_GAMEPAD` added to `kind` (`WWHD_TOUCH_GAMEPAD | WWHD_TOUCH_DOWN`, and so on), so one callback can
+tell the pictures apart. The GamePad's 8 slots are separate from the TV picture's. There are no pinches on the
+GamePad picture. Hosts from before mod manager 1.12.0 refuse such a slot and return 0, so the return value is
+the feature test: fall back to something else there, or set `"minimum_manager_version": "1.12.0"`.
+
+```c
+static void touched(const wwhd_touch_event* e) {
+    if (e->kind == (WWHD_TOUCH_GAMEPAD | WWHD_TOUCH_UP)) answer(e->x, e->y);  /* a tap on our button */
+}
+/* while the prompt is up (0 on older hosts: fall back): */
+claimed = wwhd_touch_claim(WWHD_TOUCH_GAMEPAD | 0, 190, 300, 680, 370);
+/* when it closes: */
+wwhd_touch_claim(WWHD_TOUCH_GAMEPAD | 0, 0, 0, 0, 0);
+```
 
 **Pinches.** A second finger next to your mod's finger (Android, with the on-screen controls shown or hidden), or the
 mouse wheel over one of your claims (desktop), comes as `WWHD_TOUCH_PINCH` with `x` = the spread now divided by the
