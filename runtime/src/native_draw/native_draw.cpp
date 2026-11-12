@@ -35,18 +35,15 @@ RegChange g_journal[kJournal];
 uint64_t g_journalPos = 0, g_journalBumps = 0;
 
 // ---------------------------------------------------------------- switches
-static int env_int(const char* name, int fallback) {
-    const char* e = std::getenv(name);
-    return e && *e ? std::atoi(e) : fallback;
-}
+static int env_int(const char* name, int fallback) { return switch_value(name, fallback); }
 static const char* const kSiteNames[kSites] = {"", "grass", "tree", "wood", "flower", "magma",
                                                "star", "housi", "wave", "moya", "vrkumo", "rain", "sea", "line", "jpa",
                                                "layout", "text", "post", "shadow", "aglquad", "aglpair", "sun"};
 static bool master_on() {
-    static const bool on = env_int("WWHD_NATIVE_DRAW", 0) != 0;
+    static const bool on = packets_requested();
     return on;
 }
-// WWHD_NATIVE_DRAW=1 and WWHD_NATIVE_DRAW_<SITE> (default 1)
+// WWHD_NATIVE_DRAW (default 1) and WWHD_NATIVE_DRAW_<SITE> (default 1)
 static bool site_on(uint32_t site) {
     static const std::array<bool, kSites> on = [] {
         std::array<bool, kSites> v{};
@@ -519,7 +516,7 @@ void define(const uint32_t* p, uint32_t n) {
 static uint64_t g_counts[kSites][kReasons], g_instances[kSites], g_mismatches = 0, g_frames = 0;
 bool mdi_on() {
     static const bool on = [] {
-        const bool v = master_on() && env_int("WWHD_NATIVE_DRAW_MDI", 0) != 0;
+        const bool v = mdi_requested();
         if (master_on()) LOG("[native-draw] multi-draw batches %s (WWHD_NATIVE_DRAW_MDI=%d)", v ? "on" : "off", v ? 1 : 0);
         return v;
     }();

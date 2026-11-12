@@ -778,14 +778,11 @@ Buffer create_readback_buffer(VkDeviceSize size) {
 // slices. CACHED without COHERENT never counts: the arena requires COHERENT (no flush/invalidate).
 // WWHD_VK_UPLOAD_READS=auto (default) | shadow (always keep CPU copies) | direct (always read slices).
 #ifdef WWHD_NATIVE_DRAW
-// WWHD_NATIVE_DRAW=1 and WWHD_NATIVE_DRAW_MDI=1 (gx2/native_draw.h): the device and upload buffers get what the packets'
-// multi-draw batches need
+#include "gx2/native_draw.h"
+// packets and multi-draw batches on (gx2/native_draw.h; by default, unless WWHD_NATIVE_DRAW=0 or WWHD_NATIVE_DRAW_MDI=0):
+// the device and upload buffers get what the packets' multi-draw batches need
 static bool packet_mdi_requested() {
-  static const bool on = [] {
-    const char* a = std::getenv("WWHD_NATIVE_DRAW");
-    const char* b = std::getenv("WWHD_NATIVE_DRAW_MDI");
-    return a && std::atoi(a) && b && std::atoi(b);
-  }();
+  static const bool on = native_draw::mdi_requested();
   return on;
 }
 #endif
@@ -4939,7 +4936,7 @@ static void init_device(std::vector<const char *> extensions,
   enabled.dualSrcBlend = available.dualSrcBlend;
   enabled.logicOp = available.logicOp;
 #ifdef WWHD_NATIVE_DRAW
-  // native draw packets' multi-draw batches (gx2/native_draw.h, WWHD_NATIVE_DRAW=1 WWHD_NATIVE_DRAW_MDI=1): the
+  // native draw packets' multi-draw batches (gx2/native_draw.h; on unless WWHD_NATIVE_DRAW=0 or _MDI=0): the
   // feature only when they are asked for (the enabled features are part of the pipeline cache's checksum); without it
   // the batches draw one vkCmdDrawIndexed per instance
   if (packet_mdi_requested()) {

@@ -4,6 +4,7 @@
 #include "../../third_party/cemu/cemu_shim.h"  // (as the gx2 sources get it: -include)
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "gx2/native_pass.h"
+#include "gx2/native_draw.h"
 #include "gx2/gx2.h"
 #include "gx2/gx2_cmd.h"
 #include "gx2/gx2_regs.h"
@@ -23,8 +24,7 @@ namespace native_pass {
 
 bool on() {
     static const bool v = [] {
-        const char* e = std::getenv("WWHD_NATIVE_PASS");
-        const bool b = e && *e && std::atoi(e) != 0;
+        const bool b = native_draw::pass_requested();
         LOG("[native-pass] pass and copy descriptions %s (WWHD_NATIVE_PASS=%d)", b ? "on" : "off", b ? 1 : 0);
         return b;
     }();
@@ -242,8 +242,7 @@ void copy(const uint32_t* p, uint32_t n) {
 // the targets every draw derives from the registers (CB_COLOR*_BASE, DB_DEPTH_BASE) against the open pass
 int trust_mode() {
     static const int v = [] {
-        const char* e = std::getenv("WWHD_NATIVE_PASS_TRUST");
-        const int m = on() && e && *e ? std::atoi(e) : 0;
+        const int m = on() ? native_draw::switch_value("WWHD_NATIVE_PASS_TRUST", 1) : 0;
         if (on()) LOG("[native-pass] backend trusting the open pass: %s (WWHD_NATIVE_PASS_TRUST=%d)",
                       m == 1 ? "on" : m == 2 ? "verify" : "off", m);
         return m == 1 || m == 2 ? m : 0;

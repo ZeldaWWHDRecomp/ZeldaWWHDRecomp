@@ -40,7 +40,7 @@
 // thread keys it by list_serial()), and a definition identical to the one held does not end the lowered
 // state.
 //
-// Run-time switches (ON builds): WWHD_NATIVE_DRAW=1 turns packets on (off by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
+// Run-time switches (ON builds): WWHD_NATIVE_DRAW=0 turns packets off (on by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
 // one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE, JPA, LAYOUT,
 // TEXT, POST, SHADOW, AGLQUAD, AGLPAIR, SUN); WWHD_NATIVE_DRAW_JOURNAL=0 turns the register journal's check off
 // (draw.cpp); WWHD_NATIVE_DRAW_VERIFY=N draws
@@ -88,8 +88,21 @@
 #pragma once
 #ifdef WWHD_NATIVE_DRAW
 #include <cstdint>
+#include <cstdlib>
 
 namespace native_draw {
+
+// The run-time switches' defaults, one place for every file that reads them (native_draw.cpp, pass.cpp, the Vulkan
+// backend and shaders): packets, multi-draw batches, pass descriptions and pass trust on unless set to 0 (pass
+// descriptions follow packets unless WWHD_NATIVE_PASS is set); the J3D material cache off unless set to 1;
+// shader-rewrite batches as cmake WWHD_NATIVE_DRAW_BATCH says (ON: on)
+inline int switch_value(const char* name, int fallback) {
+    const char* e = std::getenv(name);
+    return e && *e ? std::atoi(e) : fallback;
+}
+inline bool packets_requested() { return switch_value("WWHD_NATIVE_DRAW", 1) != 0; }
+inline bool mdi_requested() { return packets_requested() && switch_value("WWHD_NATIVE_DRAW_MDI", 1) != 0; }
+inline bool pass_requested() { return switch_value("WWHD_NATIVE_PASS", packets_requested() ? 1 : 0) != 0; }
 
 // the sites (port_native_draw.h: the same values)
 enum Site : uint32_t {
@@ -229,7 +242,7 @@ enum Reason : uint32_t {
     kRegOutside, kCheckChange, kReasons
 };
 void count(uint32_t site, Reason r);
-// Multi-draw batches (WWHD_NATIVE_DRAW_MDI=1 with packets on; off by default; Vulkan): consecutive replayable instances
+// Multi-draw batches (with packets on; on by default, WWHD_NATIVE_DRAW_MDI=0 turns them off; Vulkan): consecutive replayable instances
 // of one packet kind that bind the same blocks and differ only in their own vertex stream, or only in their own index
 // range, are drawn as one indirect multi-draw (gfxvk::packet_mdi_flush): same pipeline, shaders, descriptors and bytes
 // as replaying them one by one.
@@ -244,7 +257,7 @@ void verify_mismatch(const char* what);
 uint32_t verify_every();  // WWHD_NATIVE_DRAW_VERIFY (0: off)
 
 // ---------------------------------------------------------------- J3D material cache
-// WWHD_NATIVE_DRAW_J3D=1 (with WWHD_NATIVE_DRAW=1; off by default; Vulkan). The J3D shape draw
+// WWHD_NATIVE_DRAW_J3D=1 (with packets on; off by default; Vulkan). The J3D shape draw
 // (j3d::ShapePacket::submitShape, decomp) still makes every GX2 call it makes without packets, so the register file
 // and every later emulated draw stay exactly as they are; right before its GX2DrawIndexedEx it names the draw
 // (OP_J3D_SHAPE: shape resource, material binding, pass, view, program record). That draw then looks up a persistent

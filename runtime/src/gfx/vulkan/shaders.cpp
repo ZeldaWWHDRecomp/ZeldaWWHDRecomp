@@ -21,6 +21,7 @@
 #include "mods/shader_interface.h"
 #ifdef WWHD_NATIVE_DRAW
 #include "api.h"
+#include "gx2/native_draw.h"
 #endif
 #include "graphic_pack_hash.h"
 #include "gfx/area_sample.h"
@@ -551,14 +552,12 @@ bool retain_shader_source() {
 #ifdef WWHD_NATIVE_DRAW
         // native draw packets (gx2/native_draw.h): multi-draw batches check the final text for the vertex index;
         // shader-rewrite batches are rewritten from it (on by default in this build: WWHD_NATIVE_DRAW_BATCH_DEFAULT)
-        const char* native = getenv("WWHD_NATIVE_DRAW");
-        const char* mdi = getenv("WWHD_NATIVE_DRAW_MDI");
-        const char* batch = getenv("WWHD_NATIVE_DRAW_BATCH");
-        if (native && atoi(native) != 0 && mdi && atoi(mdi) != 0) return true;
+        if (native_draw::mdi_requested()) return true;
 #ifndef WWHD_NATIVE_DRAW_BATCH_DEFAULT
 #define WWHD_NATIVE_DRAW_BATCH_DEFAULT 0
 #endif
-        if (native && atoi(native) != 0 && (batch && *batch ? atoi(batch) != 0 : WWHD_NATIVE_DRAW_BATCH_DEFAULT != 0))
+        if (native_draw::packets_requested() &&
+            native_draw::switch_value("WWHD_NATIVE_DRAW_BATCH", WWHD_NATIVE_DRAW_BATCH_DEFAULT) != 0)
             return true;
 #endif
         return (value && !strcmp(value, "1")) || key_verify_rate() != 0;

@@ -17,7 +17,8 @@
 // and, once a site described it (sead's viewport and scissor calls), the viewport and scissor registers; a draw whose
 // viewport or scissor was set by an undescribed call is counted apart (the targets may still be trusted).
 //
-// Run-time switch: WWHD_NATIVE_PASS=1 (off by default; independent of WWHD_NATIVE_DRAW). The counter line
+// Run-time switch: WWHD_NATIVE_PASS=0/1 (default: on when packets are on, i.e. unless WWHD_NATIVE_DRAW=0; set, it
+// is independent of WWHD_NATIVE_DRAW). The counter line
 // ("[native-pass] ...", every 300 frames): passes, described draws (targets as described), draws outside a described
 // pass, mismatches, load intents, copies by kind.
 #pragma once
@@ -77,7 +78,7 @@ struct Viewport {
 };
 constexpr uint32_t kViewportWords = sizeof(Viewport) / 4;
 
-bool on();                                      // WWHD_NATIVE_PASS=1
+bool on();                                      // WWHD_NATIVE_PASS (native_draw::pass_requested)
 void begin(const uint32_t* p, uint32_t n);      // render thread: OP_PASS_BEGIN
 void load(const uint32_t* p, uint32_t n);       // render thread: OP_PASS_LOAD
 void end(const uint32_t* p, uint32_t n);        // render thread: OP_PASS_END
@@ -85,7 +86,8 @@ void copy(const uint32_t* p, uint32_t n);       // render thread: OP_PASS_COPY
 void viewport(const uint32_t* p, uint32_t n);   // render thread: OP_PASS_VIEWPORT
 void note_draw(const uint32_t* regs);           // render thread: a draw (full or packet) about to execute
 void frame_end();                               // render thread: at each swap
-// The backend trusting the open pass (WWHD_NATIVE_PASS_TRUST=1, with WWHD_NATIVE_PASS=1; off by default; Vulkan):
+// The backend trusting the open pass (with pass descriptions on; on by default, WWHD_NATIVE_PASS_TRUST=0 turns it off;
+// Vulkan):
 // while the draw just checked (note_draw) lies in a described pass whose every target word matches, the targets the
 // draw path resolved for the pass's previous draw are taken again when nothing else they depend on changed (same
 // frame and surface epoch, eye size, active colour mask and size claim of the pixel program), instead of looking up

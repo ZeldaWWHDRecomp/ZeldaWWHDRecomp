@@ -160,11 +160,13 @@ function(wwhd_decomp_configure)
   # exit_regs / native_args_slow (gabi.h GABI_NX_LEAN). The body's own guest calls get their LR by call site as before.
   # No run-time switch (OFF: as before)
   option(WWHD_DECOMP_FAST_NX_LEAN "decomp build, fast mode: non-register-exact native entries without LR / pc, inline" ON)
-  # native draw packets (native renderer stage 1, P1: the grass draw site; runtime/src/gx2/native_draw.h): the decompiled
-  # site hands the render thread one packet per pass and an instance per draw (decomp: port_native_draw.h,
-  # GABI_NATIVE_DRAW) instead of register writes plus a draw. Prototype: OFF by default, and OFF builds exactly as
-  # before. Run-time switch of an ON build: WWHD_NATIVE_DRAW=1 (off unless set); see native_draw.h
-  option(WWHD_NATIVE_DRAW "decomp build, fast mode: native draw packets at the grass draw site (prototype)" OFF)
+  # native draw packets (the port's native renderer; runtime/src/gx2/native_draw.h, native_pass.h): the decompiled
+  # draw sites hand the render thread one packet per pass and an instance per draw (decomp: port_native_draw.h,
+  # GABI_NATIVE_DRAW) instead of register writes plus a draw, and describe their passes. ON by default in fast mode;
+  # OFF builds exactly as before. Run-time switches of an ON build (native_draw.h): packets, multi-draw batches, pass
+  # descriptions and pass trust on unless WWHD_NATIVE_DRAW=0 / _MDI=0 / WWHD_NATIVE_PASS=0 / _PASS_TRUST=0; the J3D
+  # material cache only with WWHD_NATIVE_DRAW_J3D=1
+  option(WWHD_NATIVE_DRAW "decomp build, fast mode: native draw packets and pass descriptions (the native renderer)" ON)
   # native draw packets, shader-rewrite batches (native_draw.h): the run-time default of WWHD_NATIVE_DRAW_BATCH in an
   # ON build (packets on). ON: batches unless WWHD_NATIVE_DRAW_BATCH=0; OFF: only with WWHD_NATIVE_DRAW_BATCH=1
   option(WWHD_NATIVE_DRAW_BATCH "decomp build, fast mode: native draw packets' shader-rewrite batches on by default" ON)
@@ -815,7 +817,7 @@ function(wwhd_decomp_link target)
                    "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/shaders.cpp"
                    APPEND PROPERTY COMPILE_DEFINITIONS WWHD_NATIVE_DRAW_BATCH_DEFAULT=1)
     endif()
-    message(STATUS "decomp build, fast mode: native draw packets (grass) compiled in; run-time switch WWHD_NATIVE_DRAW=1")
+    message(STATUS "decomp build, fast mode: native draw packets compiled in (on; run-time switch WWHD_NATIVE_DRAW=0 turns them off)")
   endif()
   if(WWHD_DECOMP_EDGE_LCALL)  # the runtime's edge entry (decomp.cpp only)
     set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_EDGE_LCALL=1)
