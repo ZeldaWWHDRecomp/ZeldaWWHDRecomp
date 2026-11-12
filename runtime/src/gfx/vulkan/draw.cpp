@@ -6386,6 +6386,10 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   L.rangeCount = m.count;
   L.rangeAddr = m.indexAddr;
   L.rangeRefused = native_draw::mdi_on() && range ? range_refusal(L.cap) : "off";
+  // a packet with instance register values (layout, text): each instance's support bytes are patched from its own
+  // registers, which a multi-draw, range or stream batch (the first instance's support bytes) would not carry
+  const char* const regValues = "instance register values";
+  if (pk.regCount) L.mdiRefused = L.streamRefused = L.rangeRefused = regValues;
   if (native_draw::mdi_on()) {
     static std::unordered_set<std::string> said;
     const char* why = range ? L.rangeRefused : L.mdiRefused;
@@ -6398,7 +6402,8 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   if (native_draw::batch_on() && L.cap.vs && L.cap.ps && L.cap.fs) {
     // shader-rewrite batches only for the sites whose kinds have the per-kind proof (native_draw.h: batch_site_on);
     // every other kind replays (or multi-draws) as before, the reason logged once per packet kind
-    const char* why = native_draw::batch_site_on(pk.site) ? nullptr : "the site's kinds have no LOD-0 proof (not enabled)";
+    const char* why = pk.regCount ? regValues
+                      : native_draw::batch_site_on(pk.site) ? nullptr : "the site's kinds have no LOD-0 proof (not enabled)";
     NativeShaders* ns = why ? nullptr : native_shaders(L.cap, pk);
     if (ns && !ns->refused) {
       L.batchPipeline = native_pipeline(r, L.cap, *ns);
