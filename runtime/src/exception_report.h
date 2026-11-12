@@ -43,10 +43,27 @@ inline void note(int fd, void (*out)(int, const char*, size_t)) noexcept {
     out(fd, "\n", 1);
 }
 struct NoPassThrough {};
+// The report of an exception that reached a boundary: "context: what" ("context: unknown C++ exception" for
+// what == nullptr), recorded, then abort. Out of line and cold: its 4 KiB message buffer is not in the frame of
+// every boundary (each HLE import and port hook call), which kept a stack probe and a canary on every call.
+[[noreturn, gnu::noinline, gnu::cold]] inline void boundary_failed(const char* context, const char* what) noexcept {
+    char message[4096];
+    if (what) std::snprintf(message, sizeof(message), "%s: %s", context, what);
+    else std::snprintf(message, sizeof(message), "%s: unknown C++ exception", context);
+    record(message);
+    std::abort();
+}
 // Native boundaries catch unexpected library exceptions before they reach generated C frames.
 // Guest thread exit is intentional control flow and must keep propagating to thread_main.
+// WWHD_BOUNDARY_INLINE_REPORT=1 (compile time, A/B builds only) keeps the report inline as before.
 template<class PassThrough = NoPassThrough, class F>
 void boundary(const char* context, F&& fn) {
+#if !defined(WWHD_BOUNDARY_INLINE_REPORT) || !WWHD_BOUNDARY_INLINE_REPORT
+    try { std::forward<F>(fn)(); }
+    catch (const PassThrough&) { throw; }
+    catch (const std::exception& e) { boundary_failed(context, e.what()); }
+    catch (...) { boundary_failed(context, nullptr); }
+#else
     try { std::forward<F>(fn)(); }
     catch (const PassThrough&) { throw; }
     catch (const std::exception& e) {
@@ -61,5 +78,6 @@ void boundary(const char* context, F&& fn) {
         record(message);
         std::abort();
     }
+#endif
 }
 } // namespace exception_report
