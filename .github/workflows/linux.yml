@@ -22,6 +22,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    timeout-minutes: 330  # a backstop just under GitHub's 360 (cold-cache runs have taken up to 268 min)
     env:
       SDL3_VERSION: release-3.4.18
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -30,7 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
       - name: Install dependencies
+        timeout-minutes: 15  # a stalled mirror fails fast instead of hanging until GitHub's 6 h limit
         run: |
           sudo apt-get update
           sudo apt-get install -y clang cmake ninja-build pkg-config python3-pil zlib1g-dev liblz4-dev \

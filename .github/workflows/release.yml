@@ -299,7 +299,9 @@ jobs:
         shell: bash
         run: rm -f "$RUNNER_TEMP/shader-template-deploy-key" "$RUNNER_TEMP/shader-template-known-hosts"
 
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
       - name: Install dependencies
+        timeout-minutes: 15  # a stalled mirror fails fast instead of hanging until GitHub's 6 h limit
         run: |
           sudo apt-get update
           # SDL3's documented Linux build dependencies (SDL3 docs/README-linux.md, Ubuntu 22.04+ set), so
@@ -786,6 +788,7 @@ jobs:
       - name: Validate the Gradle wrapper
         uses: gradle/actions/wrapper-validation@v4
 
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
       - name: Install the NDK and SDK packages
         timeout-minutes: 15
         run: |
@@ -892,7 +895,11 @@ jobs:
         abi: [arm64-v8a, x86_64]
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
+      - timeout-minutes: 15  # a stalled mirror fails fast instead of hanging until GitHub's 6 h limit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
       - uses: ./.github/actions/android-compiler
         with:
           abi: ${{ matrix.abi }}
