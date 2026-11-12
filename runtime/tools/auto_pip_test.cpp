@@ -1,4 +1,5 @@
 #include "gfx/display_modes.h"
+#include "gfx/auto_pip.h"
 #include <cassert>
 #include <cstdlib>
 
@@ -64,6 +65,11 @@ int main() {
     assert(!gamepad_menu_state(GD(0x1049EC00), 0, 0, true));
     for (uint32_t state : {GD(0x1049EC00), GD(0x1049EC2C), GD(0x1049EC58), GD(0x1049F364), GD(0x1049F3BC)})
         assert(!gamepad_menu_state(state, 4, 1)); // ordinary gameplay/cutscenes
+    // the save window: on the GamePad from the pause menu (routing 2), on the TV at Game Over (routing 4)
+    for (uint32_t state : {GD(0x1049ED08), GD(0x1049ED34)}) {
+        assert(gamepad_menu_state(state, 2, 1));
+        assert(!gamepad_menu_state(state, 4, 1));
+    }
     for (uint32_t state : {GD(0x1049F498), GD(0x1049F4C4), GD(0x1049F4F0)}) assert(gamepad_switch_state(state));
     display_set_mode(kDrcAuto);
     display_gamepad_ui(play);
@@ -118,4 +124,7 @@ int main() {
         display_set_mode(kDrcAuto); display_plus_pressed(); display_gamepad_ui(menu);
         assert(g_mode == kDrcAuto && frame().pip_on && !frame().drc_only);
     }
+    // the Game Over save window (routing 4) is not a GamePad menu; from the pause menu (routing 2) it is
+    assert(gameover_save_window(GD(0x1049ED34), 4) && gameover_save_window(GD(0x1049ED08), 4));
+    assert(!gameover_save_window(GD(0x1049ED34), 2) && !gameover_save_window(GD(0x1049EC84), 4));
 }
