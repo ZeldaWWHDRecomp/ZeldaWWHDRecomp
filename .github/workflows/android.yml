@@ -120,14 +120,26 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      - name: In-app randomizer (cached)
+        id: rando
+        uses: ./.github/actions/android-rando
+        with:
+          abi: arm64-v8a
+
       - name: APK
         working-directory: android
-        run: ./gradlew --no-daemon assembleRelease
+        run: ./gradlew --no-daemon -PwwhdRandoDir="${{ steps.rando.outputs.package }}" assembleRelease
 
       - name: Legal check of the APK
         run: |
           ls -la android/app/build/outputs/apk/release/
           python3 tools/release/guard.py android/app/build/outputs/apk/release/*.apk
+          # the in-app randomizer (Settings > Randomizer: "This app has no randomizer." without these)
+          for apk in android/app/build/outputs/apk/release/*.apk; do
+            for f in assets/rando-apk.json lib/arm64-v8a/libwwhd-rando-driver.so; do
+              unzip -l "$apk" "$f" > /dev/null || { echo "::error::$f missing in $apk"; exit 1; }
+            done
+          done
 
       - name: Keep the APK for a few days (placeholder code, not a release)
         uses: actions/upload-artifact@v5

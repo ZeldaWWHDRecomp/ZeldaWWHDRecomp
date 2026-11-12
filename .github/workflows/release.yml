@@ -742,6 +742,7 @@ jobs:
   # player's own dump): a release APK per ABI, without libmain.so and without the debug test fixtures,
   # signed with the project's key. arm64 for phones, x86_64 for emulators and Chromebooks. The
   # compiler inside it comes from the cache (.github/actions/android-compiler) or is built (~1 h).
+  # The in-app randomizer (.github/actions/android-rando, cached) goes in too; the guard step fails without it.
   android:
     needs: version
     if: needs.version.outputs.skip != 'true'
@@ -805,6 +806,12 @@ jobs:
       - name: Compiler files for the APK
         run: python3 tools/android/package_toolchain.py --compiler build/compiler/package --out build/compiler/apk-package
 
+      - name: In-app randomizer (cached)
+        id: rando
+        uses: ./.github/actions/android-rando
+        with:
+          abi: ${{ matrix.abi }}
+
       - name: Runtime, extractor and runtime SDK (placeholder game code, only to build the runtime)
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
@@ -850,7 +857,7 @@ jobs:
           code=${{ github.run_number }}
           android/gradlew -p android --no-daemon -PwwhdAbi="$ABI" -PwwhdVersionName="${VERSION#v}" -PwwhdVersionCode="$code" \
             -PwwhdPythonDir="$PWD/build/embedded-python/package" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" \
-            -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleRelease
+            -PwwhdExtractorDir="$PWD/build/extractor-apk" -PwwhdRandoDir="${{ steps.rando.outputs.package }}" assembleRelease
           mkdir -p dist
           cp android/app/build/outputs/apk/release/app-release.apk "$APK"
           ls -la dist
@@ -865,9 +872,12 @@ jobs:
           if grep -a -q -E 'SmokeActivity|SyntheticSetupService' "$RUNNER_TEMP/classes.dex"; then
             echo "::error::debug test activities in the APK"; exit 1
           fi
-          for f in toolchain-apk.json runtime-sdk.json extractor-apk.json python-source.zip; do
+          for f in toolchain-apk.json runtime-sdk.json extractor-apk.json rando-apk.json python-source.zip; do
             unzip -l "$APK" "assets/$f" > /dev/null || { echo "::error::assets/$f missing"; exit 1; }
           done
+          # the in-app randomizer (Settings > Randomizer): its driver beside the other native libraries
+          unzip -l "$APK" "lib/$ABI/libwwhd-rando-driver.so" > /dev/null \
+            || { echo "::error::lib/$ABI/libwwhd-rando-driver.so missing (no in-app randomizer)"; exit 1; }
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee apksigner.txt
           if [ "$SIGNED" = true ]; then
             grep -q "^Signer #1 certificate SHA-256 digest: $CERT_SHA256\$" apksigner.txt \
