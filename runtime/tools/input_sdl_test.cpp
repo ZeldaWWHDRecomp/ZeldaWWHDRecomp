@@ -6,6 +6,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <map>
 #include <string>
 #include <tuple>
 #include "input.h"
@@ -67,6 +68,9 @@ namespace overlay { void offer_controller_setup(const std::string&,const std::st
   if(!select)latched=false;if(latched)select=false;
   const auto a=sc.poll(shortcutClock,select,v[input_map::kPadHome]>0.5f,overlayOpen);if(a!=SettingsShortcut::None)overlayOpen=a==SettingsShortcut::Open;}
  bool shortcut_took_input(){const bool took=shortcutTook;shortcutTook=false;return took;}
+ // the real filter (settings_shortcut.h) on the test's clock: Select stays from the game while a hold could open Settings
+ void hold_select_for_settings(uint64_t device,float* game){static std::map<uint64_t,SelectForGame> s;
+  game[input_map::kPadOptions]=s[device].filter(shortcutClock,game[input_map::kPadOptions],!overlayOpen);}
  bool key(int code,bool down,bool repeat,int mods,KeyOrigin){
   if(code==kVK_Escape)++escapeKeys;
   if(promptShown){++promptKeys;return true;}
@@ -308,6 +312,20 @@ static int focus_rule(){
  SDL_ShowWindow(drc);pump();assert(front()==Front::GamePad);
  input_map::set_current(input_map::Mapping::defaults(),false);
  a=pressA();input::update();report("GamePad window focused again, option off:",a);assert(a&&motor==0xFFFF);
+ // Select (Back) and Settings: the game gets Minus for a tap, on release; a hold opens Settings without it; and
+ // the tap that closes Settings doesn't reach the game either (input_sdl.cpp, overlay::hold_select_for_settings)
+ auto back=[&](bool down){assert(SDL_SetJoystickVirtualButton(pad,SDL_GAMEPAD_BUTTON_BACK,down));pump();
+  return (input::read().buttons&input::kMinus)!=0;};
+ auto later=[&](double s){shortcutClock+=s;pump();return (input::read().buttons&input::kMinus)!=0;};
+ overlayOpen=false;
+ assert(!back(true)&&!later(0.2));       // a tap: nothing while held
+ assert(back(false));                     // ... Minus on release
+ assert(!later(0.2));                     // ... for a moment only
+ assert(!back(true)&&!later(0.3)&&!later(0.3)&&overlayOpen);  // a hold: Settings opens, the game never sees Minus
+ assert(!back(false)&&!later(0.2));
+ assert(!back(true)&&!overlayOpen);       // the closing tap (Settings closes on the press) ...
+ assert(!later(0.05)&&!back(false)&&!later(0.05)&&!later(0.2));  // ... gives the game no Minus
+ printf("#527 Select: tap -> Minus on release; hold -> Settings, no Minus; closing tap -> no Minus: passed\n");
  rumble::gamepad_stop(0);input::update();assert(motor==0);rumble::reset();
  SDL_CloseJoystick(pad);SDL_DetachVirtualJoystick(id);input::set_gamepad_window(nullptr);input::set_prompt_window(nullptr);
  SDL_DestroyWindow(other);SDL_DestroyWindow(drc);SDL_DestroyWindow(tv);SDL_Quit();

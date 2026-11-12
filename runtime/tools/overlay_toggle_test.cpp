@@ -48,6 +48,16 @@ int main(){
  SelectForGame hold;
  for(double t=5;t<5+kSelectHoldSeconds+0.3;t+=0.01) assert(hold.filter(t,1,true)==0);  // Settings opens
  assert(hold.filter(6,0,true)==0&&hold.filter(6.05,0,true)==0);  // let go after: still nothing
+ // open with a hold, close with a tap: the press that closed Settings (while it was open, inactive) is still
+ // down when the filter becomes active again; it stays from the game and its release gives no tap
+ SelectForGame close;
+ for(double t=10;t<10+kSelectHoldSeconds+0.1;t+=0.01) assert(close.filter(t,1,true)==0);  // the hold that opens
+ assert(close.filter(11,0,false)==0);   // Settings open, Select up
+ assert(close.filter(12,1,false)==1);   // the closing press, while open (the game's input is blocked then)
+ assert(close.filter(12.05,1,true)==0); // Settings closed, Select still down
+ assert(close.filter(12.1,0,true)==0);  // let go: no tap
+ for(double t=12.1;t<12.5;t+=0.01) assert(close.filter(t,0,true)==0);
+ assert(close.filter(13,1,true)==0&&close.filter(13.1,0,true)==1);  // the next tap is one again
  SelectForGame off;  // Select is a modifier of another shortcut, or Settings can't open: as before
  assert(off.filter(0,1,false)==1&&off.filter(0.6,1,false)==1&&off.filter(0.7,0,false)==0);
  puts("overlay_toggle: focus release, debounce, all transition reasons and the Select hold passed");
