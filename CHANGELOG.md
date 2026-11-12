@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: the game's picture starts at full size on handhelds with a navigation bar** (#502, #349, thanks
+  @plxjammerplx for the logs and testing). The full-screen window settings are now applied before the game's first
+  layout, so its picture is created at the full screen size from the start instead of depending on the full-screen
+  calls finishing first (on the Retroid Pocket Nova the picture could be created 48 rows short, and only minimizing
+  and resuming fixed it).
+
 - **Opening Settings with a held Select no longer switches the game to Off-TV Play** (#527, thanks @fayep). Holding
   Select (Minus; Create on a DualSense, View on Xbox) for half a second opens Settings, but the game also got the
   press, so the TV showed "Currently playing on Wii U GamePad", the sound left the TV mix and save states made from
