@@ -182,6 +182,7 @@ static const ShortcutInfo kShortcuts[kShortcutCount] = {
      {kVK_F11}, {kVK_Return, kModAlt}},
 #endif
     {"Screenshot", "Screenshot", "General", {kVK_F10}, {}},
+    {"Quit", "Quit Game", "General", {}, {}},
     {"Save1", "Save state 1", "Save states", {kVK_F1, kModShift}, {}},
     {"Save2", "Save state 2", "Save states", {kVK_F2, kModShift}, {}},
     {"Save3", "Save state 3", "Save states", {kVK_F3, kModShift}, {}},

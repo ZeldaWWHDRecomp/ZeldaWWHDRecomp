@@ -1192,6 +1192,28 @@ static void test_settings_shortcut() {
 
 static void test_shortcuts() {
     auto m = Mapping::defaults();
+    // A persisted Quit binding must be usable, fire once per press, and keep its buttons from the game.
+    {
+        Mapping quit;
+        CHECK(from_json(R"({"shortcuts":{"Quit":{"keys":[{"key":"F9","modifiers":2}],"hold":"Options","button":"Menu"}}})", quit));
+        const int action = shortcut_for_key(quit, kVK_F9, kModCtrl);
+        CHECK(action >= 0);
+        if (action >= 0) {
+            Mapping round;
+            CHECK(from_json(to_json(quit), round) && round == quit);
+            float raw[kPadCount]{}, game[kPadCount]{};
+            ShortcutPoll poll;
+            raw[kPadOptions] = raw[kPadMenu] = raw[kPadA] = 1;
+            std::copy(std::begin(raw), std::end(raw), game);
+            CHECK(poll.poll(round, raw, game) == std::vector<int>{action});
+            CHECK(game[kPadOptions] == 0 && game[kPadMenu] == 0 && game[kPadA] == 1);
+            CHECK(poll.poll(round, raw, game).empty());
+            raw[kPadMenu] = 0;
+            CHECK(poll.poll(round, raw, game).empty());
+            raw[kPadMenu] = 1;
+            CHECK(poll.poll(round, raw, game) == std::vector<int>{action});
+        }
+    }
     CHECK(shortcut_for_key(m, kVK_F6, 0) == kLoad1);
     CHECK(shortcut_for_key(m, kVK_F1, 0) == kSettings);
     CHECK(shortcut_for_key(m, kVK_Escape, 0) == kSettings);
