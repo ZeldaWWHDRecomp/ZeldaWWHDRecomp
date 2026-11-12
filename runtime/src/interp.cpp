@@ -48,6 +48,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "interp_fade.h"
 #include "interp_joints.h"
 #include "interp_keep.h"
+#include "interp_listener.h"
 #include "interp_nodraw.h"
 #include "interp_pacing.h"
 #include "interp_sploosh.h"
@@ -2549,8 +2550,11 @@ extern "C" void hook_025E1AA4(Cpu* c) { se_stat(6); se_trace(6, c); if (interp::
 // At 40 fps two steps of three have no exact frame (blended record passes): their camera, drawn
 // blended, updates the listener (one update a step, each drawn 3/4 of a step after the previous
 // one, as the frames).
+// The exact pre-run of a blended logic pass updates it as well, before the engine's step: otherwise
+// the engine heard the previous step's camera, after a stage change the loading screen's placeholder
+// far away, and dropped a sound started by the new stage's first step (issue #533, interp_listener.h).
 extern "C" void hook_025E1B44(Cpu* c) {
-    if (interp::g_cam_blended && !interp::record_blended()) return;
+    if (!interp::listener_takes_camera(interp::g_cam_blended, interp::g_cam_prerun, interp::record_blended())) return;
     if (!interp::enabled()) {
         f_025E1B44_orig(c);
         return;
@@ -2562,7 +2566,9 @@ extern "C" void hook_025E1B44(Cpu* c) {
     c->r[4] = mtx;
     f_025E1B44_orig(c);
 }
-extern "C" void hook_02027754(Cpu* c) { if (!interp::g_cam_blended) f_02027754_orig(c); }
+extern "C" void hook_02027754(Cpu* c) {
+    if (interp::listener_takes_camera(interp::g_cam_blended, interp::g_cam_prerun, false)) f_02027754_orig(c);
+}
 
 // WWHD's audio frame callback (020315CC, from the same frame-callback table as the per-frame
 // function) advances the sound engine one game step (JAIZelBasic::gframeProcess: sequences, effect
