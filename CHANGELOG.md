@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New shortcut: Quit Game** (#537, thanks @RivierGrullon). **Settings › Shortcuts › General › Quit Game** opens the
+  quit confirmation directly, for example from a controller combination such as holding Select and pressing Start.
+  It starts on Cancel; Cancel returns to play (or to Settings if you opened it there), Quit closes the game. Unbound
+  by default.
+
 - **Decomp build (fast mode): about 0.9 ms less game logic per frame on a phone** (#541). Four more steps, all on by
   default in fast mode: small collision and lighting helpers run without call bookkeeping, helpers with pointer
   parameters are entered only through their native entry, two calls that pass arguments on the game's stack run as
