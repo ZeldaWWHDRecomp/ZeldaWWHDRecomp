@@ -260,7 +260,7 @@ ASSEMBLY_SHARE = 0.35
 ASSEMBLY_SHARE_SEVERAL = 0.25
 # Share of the bar "Preparing shaders: models (experimental)" takes (all renderers) when it follows the warm.
 MODELS_SHARE = 0.5
-# the Metal shader archive after the warm: one more Metal warm, which compiles every shader and pipeline into it
+# the Metal shader library after the warm: one more Metal warm writes every shader's source, Xcode compiles them
 LIBRARY_SHARE = 0.15
 
 
@@ -499,12 +499,10 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
     library (macOS setup): every shader a launch replays (the head start and the live cache) compiled ahead of
     time into the generation, where the game takes them from (no compiles at run time, no shader text kept).
     When Metal is among the renderers, one more Metal warm writes them:
-      - with Xcode's Metal compiler (Xcode 26 and later: its Metal toolchain is downloaded once if missing):
-        every shader's source (WWHD_SHADERLIB_SOURCES), which shader_library.py compiles into shaders.metallib;
-      - otherwise (or if that fails), compiled with the system's own Metal compiler into Metal binary archives
-        in the shader-archive folder (WWHD_SHADERLIB_EXPORT).
-    The manifest's "library" is 'ready', 'failed' or 'skipped' ("library_kind": 'metallib' or 'archive');
-    without it the game compiles as before. library_toolchain() / library_builder(sources, out, progress=,
+    every shader's source (WWHD_SHADERLIB_SOURCES), which shader_library.py compiles into shaders.metallib with
+    Xcode's Metal compiler (Xcode 26 and later: its Metal toolchain is downloaded once if missing).
+    The manifest's "library" is 'ready', 'unavailable' (no Xcode 26), 'failed' or 'skipped'; without it the
+    game compiles as before. library_toolchain() / library_builder(sources, out, progress=,
     cancel=) replace shader_library's (tests).
     Paths are private local output only. No caller-supplied source is removed.
     """
@@ -560,61 +558,33 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
         finally:
             shutil.rmtree(longpath(sources), ignore_errors=True)
 
-    def build_archive(generation, low, high):
-        """the shader-archive folder in the generation, compiled by the game with the system's Metal compiler"""
-        archive = Path(generation) / 'shader-archive'
-        shutil.rmtree(longpath(archive), ignore_errors=True)
-        written = warm(generation, ['metal'], low, high, keep_going=False, export=archive,
-                       title='Compiling your game\'s shaders into the Metal shader archive')
-        return written.get('metal') == 'ready' and archive.is_dir() and any(archive.glob('*.binarchive'))
-
     def finish_library(generation, states, record):
-        """Every shader a launch replays compiled ahead of time, last: after the warm and the model sweep, which add
-        to the live cache. With Xcode's Metal compiler shaders.metallib, otherwise (or if that fails) the
-        shader-archive folder; the manifest records the state and kind. Returns the state, or None (none wanted,
-        Metal not ready)."""
+        """The Metal shader library, last: after the warm and the model sweep, which add to the live cache. With
+        Xcode 26 or newer, one more Metal warm writes the source of every shader a launch replays, and Xcode's
+        compiler builds shaders.metallib in the generation; without it, setup says so and the game compiles its
+        shaders during play. The manifest records the state. Returns it, or None (none wanted, Metal not ready)."""
         if not library or states.get('metal') != 'ready':
             return None
         generation = Path(generation)
-        metallib, archive = generation / 'shaders.metallib', generation / 'shader-archive'
-        kinds = {'metallib': lambda: metallib.is_file(),
-                 'archive': lambda: archive.is_dir() and any(archive.glob('*.binarchive'))}
+        metallib = generation / 'shaders.metallib'
         state = record.get('library')
-        kind = record.get('library_kind')
-        if state == 'failed':
-            return state  # (a failed one waits for Rebuild shader cache)
-        if state == 'ready' and kind in kinds and kinds[kind]():
-            if kind == 'archive' and not record.get('library_upgrade_failed'):
-                return upgrade_to_metallib(generation, metallib, archive)
-            return state
-        kind = None
+        if state == 'failed' or (state == 'ready' and metallib.is_file()):
+            return state  # (a failed library waits for Rebuild shader cache)
         try:
-            if library_toolchain_ready():
-                try:
-                    if build_metallib(generation, library_low, 1.0):
-                        kind = 'metallib'
-                        shutil.rmtree(longpath(archive), ignore_errors=True)
-                except InterruptedError:
-                    raise
-                except Exception as error:
-                    reporter.message('Metal shader library failed (%s); compiling the shader archive instead' % error)
-            if kind is None:
-                metallib.unlink(missing_ok=True)
-                reporter.message('Compiling shaders with the Metal compiler built into macOS. Installing Xcode 26 or '
-                                 'newer is recommended: setup then builds a smaller shader library (about 85 MB '
-                                 'instead of 500 MB) that covers every shader')
-                if build_archive(generation, library_low, 1.0):
-                    kind = 'archive'
-            state = 'ready' if kind else 'failed'
+            if not library_toolchain_ready():
+                reporter.message('Metal shader library skipped: it needs Xcode 26 or newer, which compiles every '
+                                 'shader ahead of time (about 85 MB); without it, shaders compile during play')
+                state = 'unavailable'
+            else:
+                state = 'ready' if build_metallib(generation, library_low, 1.0) else 'failed'
         except InterruptedError:
             state = 'skipped'
         except Exception as error:
-            reporter.message('Metal shader archive failed (%s); shaders compile during play' % error)
+            reporter.message('Metal shader library failed (%s); shaders compile during play' % error)
             state = 'failed'
         if state != 'ready':
-            shutil.rmtree(longpath(archive), ignore_errors=True)
             metallib.unlink(missing_ok=True)
-        record_library(generation, library=state, library_kind=kind)
+        record_library(generation, library=state)
         return state
 
     def record_library(generation, **fields):
@@ -625,32 +595,10 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
                 atomic_json(generation / 'manifest.json', current)
                 atomic_json(root / 'active.json', current)
 
-    def upgrade_to_metallib(generation, metallib, archive):
-        """An archive gives way to the smaller library once Xcode 26 or newer is installed. Whatever happens, the
-        player keeps a working one: the archive stays until the library is built, and a failed attempt is not
-        repeated on every setup run (Rebuild shader cache starts again)."""
-        try:
-            if not library_toolchain_ready():
-                return 'ready'
-            built = build_metallib(generation, library_low, 1.0)
-        except InterruptedError:
-            metallib.unlink(missing_ok=True)
-            return 'ready'
-        except Exception as error:
-            reporter.message('Metal shader library failed (%s); keeping the shader archive' % error)
-            built = False
-        if not built:
-            metallib.unlink(missing_ok=True)
-            record_library(generation, library_upgrade_failed=True)
-            return 'ready'
-        record_library(generation, library='ready', library_kind='metallib')
-        shutil.rmtree(longpath(archive), ignore_errors=True)
-        return 'ready'
-
-    def warm(generation, names, low, high, keep_going, export=None, sources=None, title=None):
+    def warm(generation, names, low, high, keep_going, sources=None, title=None):
         """wwhd --warm-shaders for each renderer in turn over [low, high] of the bar ->
-        {renderer: state}. keep_going: a failed renderer is recorded instead of raised. export: the Metal
-        warm also writes the shader archive there; sources: every shader's source there."""
+        {renderer: state}. keep_going: a failed renderer is recorded instead of raised. sources: the Metal
+        warm also writes every shader's source there (the shader library)."""
         states = {}
         share = (high - low) / len(names)
         for index, name in enumerate(names):
@@ -665,12 +613,9 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             # must not redirect the warm subprocess away from that directory.
             env.pop('WWHD_VK_PIPELINE_CACHE', None)
             env.update(cache_environment(generation, game, name))
-            if name == 'metal' and (export is not None or sources is not None):
-                if export is not None:
-                    env['WWHD_SHADERLIB_EXPORT'] = str(export)
-                if sources is not None:
-                    env['WWHD_SHADERLIB_SOURCES'] = str(sources)
-                env['WWHD_SHADERLIB'] = '0'  # every shader compiled or written, none taken from an older one
+            if name == 'metal' and sources is not None:
+                env['WWHD_SHADERLIB_SOURCES'] = str(sources)
+                env['WWHD_SHADERLIB'] = '0'  # every shader written, none taken from an older library
             try:
                 runner([str(executable), '--game', str(game), '--warm-shaders'], env, cancel, reporter.line)
                 states[name] = 'ready'
@@ -801,7 +746,7 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
                         done['models'] = sweep_models(generation, states)
                         if previous.get('library') == 'ready':
                             previous = dict(previous, library=None)  # the sweep added shaders: build it again
-                # a generation prepared before the archive existed gets it
+                # a generation prepared before the library existed gets it
                 lib_state = finish_library(generation, states, previous)
                 if lib_state:
                     done['library'] = lib_state

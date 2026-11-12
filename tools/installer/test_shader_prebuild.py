@@ -606,31 +606,25 @@ class TwoRendererTests(unittest.TestCase):
 
 
 class ShaderLibraryTests(unittest.TestCase):
-    """macOS: one more Metal warm makes every shader ahead of time: shaders.metallib with Xcode's Metal compiler,
-    else the shader-archive folder. (TwoRendererTests' fixture, without running its tests again.)"""
+    """macOS: with Xcode 26 or newer, one more Metal warm writes every shader's source and Xcode's compiler builds
+    shaders.metallib; without it, shaders compile during play. (TwoRendererTests' fixture, without running its
+    tests again.)"""
     def setUp(self):
         TwoRendererTests.setUp(self)
         self.exports = {}
-        self.export_fails = False
         self.order = []
-        self.toolchain = False
+        self.toolchain = True
         self.built = []
         self.build_error = None
 
     def runner(self, command, env, cancel, progress):
         if command[1] != str(self.package / 'tools/shaderprep.py'):
             renderer = env['WWHD_RENDERER_RUNTIME']
-            self.exports[renderer] = (env.get('WWHD_SHADERLIB_EXPORT'), env.get('WWHD_SHADERLIB_SOURCES'),
-                                      env.get('WWHD_SHADERLIB'))
+            self.exports[renderer] = (env.get('WWHD_SHADERLIB_SOURCES'), env.get('WWHD_SHADERLIB'))
+            self.assertNotIn('WWHD_SHADERLIB_EXPORT', env)  # no shader archive any more
             if env.get('WWHD_SHADERLIB_SOURCES'):
                 self.order.append('sources')
                 Path(env['WWHD_SHADERLIB_SOURCES'], 'w1.metal').write_text('synthetic shader source')
-            if env.get('WWHD_SHADERLIB_EXPORT'):
-                self.order.append('archive')
-                if self.export_fails:
-                    raise RuntimeError('synthetic export failure')
-                Path(env['WWHD_SHADERLIB_EXPORT']).mkdir(parents=True, exist_ok=True)
-                Path(env['WWHD_SHADERLIB_EXPORT'], '000.binarchive').write_text('synthetic archive')
         TwoRendererTests.runner(self, command, env, cancel, progress)
 
     def builder(self, sources, out, progress=None, cancel=None):
@@ -649,72 +643,38 @@ class ShaderLibraryTests(unittest.TestCase):
     def manifest(self):
         return json.loads((self.cache / 'active.json').read_text())
 
-    def test_without_xcode_the_metal_warm_writes_the_archive_into_the_generation(self):
+    def test_with_xcode_the_sources_become_shaders_metallib(self):
         result = self.prepare()
         self.assertEqual(result['library'], 'ready')
         generation = Path(result['generation'])
-        export, sources, library = self.exports['metal']
-        self.assertEqual((Path(export), sources), (generation / 'shader-archive', None))
-        self.assertEqual(library, '0')  # every shader compiled, none taken from an older one
-        self.assertEqual(self.exports['vulkan'], (None, None, None))
-        self.assertTrue((generation / 'shader-archive' / '000.binarchive').is_file())
-        self.assertEqual((self.manifest()['library'], self.manifest()['library_kind']), ('ready', 'archive'))
-
-    def test_with_xcode_the_sources_become_shaders_metallib(self):
-        self.toolchain = True
-        result = self.prepare()
-        generation = Path(result['generation'])
-        export, sources, library = self.exports['metal']
-        self.assertEqual((export, Path(sources), library), (None, generation / 'shader-sources', '0'))
+        sources, library = self.exports['metal']
+        self.assertEqual((Path(sources), library), (generation / 'shader-sources', '0'))
+        self.assertEqual(self.exports['vulkan'], (None, None))
         self.assertEqual(self.built, [['w1.metal']])
         self.assertTrue((generation / 'shaders.metallib').is_file())
         self.assertFalse((generation / 'shader-sources').exists())  # the sources are not kept
-        self.assertFalse((generation / 'shader-archive').exists())
-        self.assertEqual((self.manifest()['library'], self.manifest()['library_kind']), ('ready', 'metallib'))
+        self.assertEqual(self.manifest()['library'], 'ready')
+        self.assertNotIn('library_kind', self.manifest())
 
-    def test_a_failed_library_build_falls_back_to_the_archive(self):
-        self.toolchain = True
-        self.build_error = RuntimeError('metallib: synthetic failure')
+    def test_without_xcode_shaders_compile_during_play(self):
+        self.toolchain = False
         result = self.prepare()
-        generation = Path(result['generation'])
-        self.assertEqual(self.order, ['sources', 'archive'])
-        self.assertFalse((generation / 'shaders.metallib').exists())
-        self.assertTrue((generation / 'shader-archive' / '000.binarchive').is_file())
-        self.assertEqual((result['library'], self.manifest()['library_kind']), ('ready', 'archive'))
-
-    def test_the_archive_gives_way_to_the_library_once_xcode_is_installed(self):
-        first = self.prepare()
-        generation = Path(first['generation'])
-        self.assertEqual(self.manifest()['library_kind'], 'archive')
+        self.assertEqual((result['status'], result['library']), ('ready', 'unavailable'))
+        self.assertEqual(self.order, [])  # no library warm
+        self.assertFalse((Path(result['generation']) / 'shaders.metallib').exists())
+        self.assertEqual(self.manifest()['library'], 'unavailable')
+        # Xcode installed later: the next setup run builds it
         self.toolchain = True
         self.calls.clear()
         self.assertEqual(self.prepare()['library'], 'ready')
         self.assertEqual(self.calls, ['metal'])  # one Metal warm, for the sources
-        self.assertTrue((generation / 'shaders.metallib').is_file())
-        self.assertFalse((generation / 'shader-archive').exists())
-        self.assertEqual(self.manifest()['library_kind'], 'metallib')
-        self.calls.clear()
-        self.assertEqual(self.prepare()['library'], 'ready')
-        self.assertEqual(self.calls, [])
+        self.assertTrue((Path(result['generation']) / 'shaders.metallib').is_file())
 
-    def test_a_failed_switch_keeps_the_archive_and_is_not_repeated(self):
-        first = self.prepare()
-        generation = Path(first['generation'])
-        self.toolchain = True
+    def test_a_failed_build_leaves_the_preparation_ready_and_is_not_repeated(self):
         self.build_error = RuntimeError('metallib: synthetic failure')
-        self.assertEqual(self.prepare()['library'], 'ready')
-        self.assertTrue((generation / 'shader-archive' / '000.binarchive').is_file())
-        self.assertFalse((generation / 'shaders.metallib').exists())
-        self.assertEqual(self.manifest()['library_kind'], 'archive')
-        self.calls.clear()
-        self.assertEqual(self.prepare()['library'], 'ready')
-        self.assertEqual(self.calls, [])
-
-    def test_a_failed_export_leaves_the_preparation_ready(self):
-        self.export_fails = True
         result = self.prepare()
         self.assertEqual((result['status'], result['library']), ('ready', 'failed'))
-        self.assertFalse((Path(result['generation']) / 'shader-archive').exists())
+        self.assertFalse((Path(result['generation']) / 'shaders.metallib').exists())
         # a failed one is not retried on every setup run (Rebuild shader cache does)
         self.calls.clear()
         self.assertEqual(self.prepare()['library'], 'failed')
@@ -726,15 +686,14 @@ class ShaderLibraryTests(unittest.TestCase):
         self.calls.clear()
         second = self.prepare()
         self.assertTrue(second['reused'])
-        self.assertEqual(self.calls, ['metal'])  # the Metal warm again, for the archive; Vulkan stays
+        self.assertEqual(self.calls, ['metal'])  # the Metal warm again, for the sources; Vulkan stays
         self.assertEqual(second['library'], 'ready')
-        self.assertTrue((Path(first['generation']) / 'shader-archive' / '000.binarchive').is_file())
-        self.assertEqual(self.manifest()['library'], 'ready')
+        self.assertTrue((Path(first['generation']) / 'shaders.metallib').is_file())
         self.calls.clear()
         self.assertEqual(self.prepare()['library'], 'ready')
         self.assertEqual(self.calls, [])
 
-    def test_the_archive_comes_after_the_model_sweep(self):
+    def test_the_library_comes_after_the_model_sweep(self):
         order = self.order
 
         def sweeper(executable, game, root, name, identity, env, line=None, cancel=None, log=None, **kwargs):
@@ -744,7 +703,7 @@ class ShaderLibraryTests(unittest.TestCase):
         events = []
         result = self.prepare(models=True, sweeper=sweeper, events=events)
         self.assertEqual(result['library'], 'ready')
-        self.assertEqual(order[-1], 'archive')
+        self.assertEqual(order[-1], 'sources')
         self.assertIn('sweep metal', order)
         fractions = [f for _, f in events if f is not None]
         self.assertEqual(fractions, sorted(fractions))  # one bar, never backwards
@@ -752,7 +711,7 @@ class ShaderLibraryTests(unittest.TestCase):
 
     def test_off_by_default_and_for_vulkan_only(self):
         self.prepare(library=False)
-        self.assertEqual(self.exports['metal'], (None, None, None))
+        self.assertEqual(self.exports['metal'], (None, None))
         self.assertNotIn('library', self.manifest())
         self.cache = self.root / 'other-cache'
         result = self.prepare(renderers=('vulkan',))

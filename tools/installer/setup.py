@@ -3206,7 +3206,7 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
             renderers=["metal", "vulkan"] if IS_MAC else ["vulkan"],
             # "Preparing shaders: models (experimental)" (model_sweep.py): opt-in, off by default everywhere
             models=want_models,
-            # macOS: every shader compiled ahead of time into the generation (shaders.metallib or shader-archive)
+            # macOS: every shader compiled ahead of time into the generation (shaders.metallib, with Xcode 26 or newer)
             library=IS_MAC,
             skip=bool(getattr(args, "skip_shader_prebuild", False)),
             cancel=lambda: bool(getattr(args, "shader_prebuild_cancel", None) and

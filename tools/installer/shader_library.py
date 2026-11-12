@@ -6,14 +6,16 @@ metallib, so the game compiles none at run time and keeps no shader text (gfx/me
 Setup builds it as part of shader preparation (shader_prebuild.py) when Xcode 26 or newer is
 installed; it downloads Xcode's Metal toolchain itself the first time (`xcodebuild -downloadComponent
 MetalToolchain`, a separate download since Xcode 26). An older Xcode's compiler lacks the safe math
-mode the game compiles with (-fmetal-math-mode=safe), so without Xcode 26 setup makes Metal binary
-archives with the game's own compiler instead (shader_prebuild.py). The Metal warm writes every
+mode the game compiles with (-fmetal-math-mode=safe), so without Xcode 26 setup skips it and the game
+compiles its shaders during play, as before. The Metal warm writes every
 shader's MSL (WWHD_SHADERLIB_SOURCES), this compiles them as the game does at run time (Metal 3.0,
 safe math) and links shaders.metallib into the generation, next to headstart.bin, where the game
 finds it. Built from your own game's shaders, it stays on your devices.
 
 By hand (an Apple TV or iPhone build's resources):
   shader_library.py <sources folder> <out.metallib> [--sdk macosx|appletvos|iphoneos] [-j N]
+A shaders.metallib built into an Apple TV or iPhone app contains shaders made from your game: such a
+build is for your own devices and must not be distributed.
 """
 import argparse
 import concurrent.futures

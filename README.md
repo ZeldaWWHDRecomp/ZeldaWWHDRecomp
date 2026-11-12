@@ -803,12 +803,13 @@ both, one after the other on the same progress bar, so the game starts prepared 
 If Vulkan cannot start on your Mac, Metal is still prepared and Vulkan is skipped with a short
 message. Windows, Linux and Android prepare Vulkan.
 
-On a Mac, the last step compiles every shader ahead of time for Metal, so the game compiles none while you
-play and uses less memory (about 130 MB less on an M1). **Installing Xcode 26 or newer is recommended:**
-setup then uses Xcode's Metal compiler (downloading its Metal toolchain once if needed) and the result
-takes about 85 MB on disk. Without it, setup uses the compiler built into macOS instead, which works but
-takes about 500 MB on disk and leaves a small share of shaders to compile during play. Running setup
-again after installing Xcode (repair/update) switches to the smaller one.
+On a Mac with **Xcode 26 or newer** installed, the last step compiles every shader ahead of time for Metal
+(with Xcode's Metal compiler, downloading its Metal toolchain once if needed; about 85 MB on disk), so the
+game compiles none while you play and uses less memory (about 130 MB less on an M1). Without it, setup
+skips this step with a short message and the game compiles its shaders during play, as before; running
+setup again after installing Xcode (repair/update) adds it. A `shaders.metallib` built into an Apple TV or
+iPhone app contains shaders made from your game, so such a build is for your own devices and must not be
+distributed.
 
 You can uncheck **Prepare shaders now**, or use `--skip-shader-prebuild` with terminal setup.
 On Android, Back skips the preparation screen. If preparation fails or the build has no template,
