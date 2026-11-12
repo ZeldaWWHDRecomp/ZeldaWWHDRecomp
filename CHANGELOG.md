@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: the in-app randomizer is in the app again** (#542). The published Android builds were made without the
+  randomizer itself, so **Settings › Randomizer** said "This app has no randomizer." The Android release and CI
+  builds now build and include it (both ABIs), and the build fails if an APK comes out without it.
+
 - **New shortcut: Quit Game** (#537, thanks @RivierGrullon). **Settings › Shortcuts › General › Quit Game** opens the
   quit confirmation directly, for example from a controller combination such as holding Select and pressing Start.
   It starts on Cancel; Cancel returns to play (or to Settings if you opened it there), Quit closes the game. Unbound
