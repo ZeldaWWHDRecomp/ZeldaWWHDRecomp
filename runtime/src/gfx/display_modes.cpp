@@ -10,7 +10,10 @@
 //   WWHD_SIM_SCREEN=3024x1964            lay the TV picture out for a target of that size (present dumps and
 //                                        touch mapping), e.g. to check a full-screen layout without going full screen
 //   WWHD_TEST_TOUCH=3400-3410:0.9:0.85   a mouse press at (x, y) in the TV window (0..1 from top left) during
-//                                        TV frames 3400..3410; mapped through the overlay like a real click
+//                                        TV frames 3400..3410; mapped through the overlay like a real click (so it
+//                                        depends on the window size and the saved overlay placement)
+//   WWHD_TEST_DRC_TOUCH=3400-3410:0.45:0.06   a touch at (x, y) of the GamePad screen itself (0..1 from top left)
+//                                        during those TV frames, whatever the window, mode or overlay placement
 //   WWHD_TEST_DRC_MODE=3400:gamepad,3600:pip   switch the mode at those TV frames (as the settings overlay)
 //   WWHD_VIEW_BUTTON=0|1                 the touch screens' view button (on by default on Android only)
 //   WWHD_FULLSCREEN=0|1                  the TV window starts in full screen (1) or windowed (0), instead of as it
@@ -578,10 +581,20 @@ int next_view() {
 }
 
 // ---------------------------------------------------------------- scripted touch (tests)
-struct TestTouch { uint64_t from, to; float x, y; };
+struct TestTouch { uint64_t from, to; float x, y; bool drc; };
 static void test_touch(uint64_t frame) {
     static const std::vector<TestTouch> script = [] {
         std::vector<TestTouch> v;
+        // WWHD_TEST_DRC_TOUCH: GamePad screen coordinates, no overlay mapping
+        if (const char* e = getenv("WWHD_TEST_DRC_TOUCH")) {
+            unsigned long long a, b; float x, y; int n;
+            while (sscanf(e, "%llu-%llu:%f:%f%n", &a, &b, &x, &y, &n) == 4) {
+                v.push_back({a, b, std::clamp(x, 0.0f, 1.0f), std::clamp(y, 0.0f, 1.0f), true});
+                e += n;
+                if (*e != ',') break;
+                e++;
+            }
+        }
         if (const char* e = getenv("WWHD_TEST_TOUCH")) {
             unsigned long long a, b; float x, y; int n;
             while (sscanf(e, "%llu-%llu:%f:%f%n", &a, &b, &x, &y, &n) == 4) {
@@ -599,14 +612,24 @@ static void test_touch(uint64_t frame) {
         if (frame >= t.from && frame <= t.to) {
             float tx, ty;
             any = true;
-            if (overlay_hit(t.x, t.y, &tx, &ty)) {
+            if (t.drc) {
+                if (!down) LOG("[display] test touch: GamePad (%.3f, %.3f) = pixel (%.0f, %.0f) at frame %llu", t.x, t.y,
+                               t.x * 854, t.y * 480, (unsigned long long)frame);
+                input::set_touch(true, t.x, t.y);
+                down = true;
+            } else if (overlay_hit(t.x, t.y, &tx, &ty)) {
                 if (!down) LOG("[display] test touch: window (%.3f, %.3f) -> GamePad (%.3f, %.3f) = pixel (%.0f, %.0f) at frame %llu",
                                t.x, t.y, tx, ty, tx * 854, ty * 480, (unsigned long long)frame);
                 input::set_touch(true, tx, ty);
                 down = true;
             } else if (!down) {
-                LOG("[display] test touch: window (%.3f, %.3f) misses the GamePad overlay at frame %llu", t.x, t.y,
-                    (unsigned long long)frame);
+                {
+                    std::lock_guard<std::mutex> lk(g_layout_mu);
+                    const Layout& L = g_tv_layout;
+                    LOG("[display] test touch: window (%.3f, %.3f) misses the GamePad overlay at frame %llu (layout %.0fx%.0f, "
+                        "overlay %s %.0f,%.0f %.0fx%.0f%s)", t.x, t.y, (unsigned long long)frame, g_tv_dw, g_tv_dh,
+                        L.pip_on ? "on" : "off", L.pip.x, L.pip.y, L.pip.w, L.pip.h, L.drc_only ? ", GamePad only" : "");
+                }
                 down = true;  // log once
                 input::set_touch(false, 0, 0);
             }
