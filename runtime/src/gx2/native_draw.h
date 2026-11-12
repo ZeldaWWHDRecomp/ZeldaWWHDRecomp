@@ -111,8 +111,11 @@ constexpr uint32_t kMaxRegRanges = 6;      // register ranges per packet (declar
 constexpr uint32_t kMaxRegWords = 64;      // register value words per instance
 constexpr uint32_t kMaxChecks = 8;         // checked register ranges per packet
 
+// as GX2DrawIndexedEx takes them; index address 0: a non-indexed draw, GX2DrawEx(prim, count, 0, 1) (index type 0),
+// lowered exactly as OP_DRAW draws it (render::draw with index type and address 0). The Vulkan capture refuses a
+// non-indexed draw ("draw form"), so each such instance takes the full draw: exact, never replayed or batched.
 struct Mesh {
-    uint32_t prim = 0, count = 0, indexType = 0, indexAddr = 0;  // as GX2DrawIndexedEx takes them
+    uint32_t prim = 0, count = 0, indexType = 0, indexAddr = 0;
 };
 // OP_PACKET_DEFINE payload, word for word
 struct Packet {

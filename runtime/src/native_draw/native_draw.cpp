@@ -270,7 +270,8 @@ extern "C" void wwhd_native_mesh(unsigned site, unsigned kind, unsigned prim, un
     SiteState* s = site_state(site);
     if (!s || !s->open || s->defined) return;
     if (kind >= kMaxKinds) { s->open = false; return; }
-    s->pk.mesh[kind] = {prim, count, indexType, indexAddr};
+    // (index address 0: a non-indexed draw, GX2DrawEx with first vertex 0; its index type is 0, as OP_DRAW draws it)
+    s->pk.mesh[kind] = {prim, count, indexAddr ? indexType : 0u, indexAddr};
     s->pk.meshCount = std::max<uint32_t>(s->pk.meshCount, kind + 1);
 }
 // the packet is complete: defined (OP_PACKET_DEFINE). Nonzero: the site's draws become its instances
