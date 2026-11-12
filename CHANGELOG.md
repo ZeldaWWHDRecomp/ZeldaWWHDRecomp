@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Less work on the game thread** (#550, thanks to SwitchWakerHD for the measurements). Every replaced system
+  function and port hook no longer sets up a 4 KB stack frame for its error report (about 15,000–36,000 calls a
+  frame); layout panes skip the HUD and button-prompt name checks when none of them is about that pane
+  (`WWHD_PANE_NAME_FILTER=0` restores the old path); write-tracking hints no longer update statistics nobody reads.
+  Nothing changes in behaviour or picture; it matters most on slow CPUs.
+
 - **Mod SDK: code mods can claim touches on the GamePad picture** (#549, thanks @fayep). `wwhd_touch_claim` with
   `WWHD_TOUCH_GAMEPAD` claims rectangles of the GamePad picture (854 x 480), with the same rules as on the TV picture:
   a finger landing there goes only to the mod until it lifts, and the game doesn't see it. Works in a GamePad window,
