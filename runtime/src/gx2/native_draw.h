@@ -1,4 +1,4 @@
-// Native draw packets (native renderer stage 1: P1 grass, P2 the general form). Decomp build, fast mode, cmake
+// Native draw packets (the port's native renderer: engine-level draw descriptions). Decomp build, fast mode, cmake
 // WWHD_NATIVE_DRAW=ON only; nothing here exists in any other build.
 //
 // A hot decompiled draw site (decomp: wwhd_src/include/port_native_draw.h) describes its pass once as a packet

@@ -1,4 +1,4 @@
-// Native pass and copy descriptions (native renderer, the pass description of PLAN §8/§9). Decomp build, fast mode,
+// Native pass and copy descriptions (the port's native renderer: engine-level pass descriptions). Decomp build, fast mode,
 // cmake WWHD_NATIVE_DRAW=ON only; nothing here exists in any other build.
 //
 // A decompiled site that starts rendering into a set of targets (agl's bindRenderTarget) describes the pass it begins

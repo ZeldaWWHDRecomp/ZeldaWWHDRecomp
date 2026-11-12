@@ -6163,7 +6163,7 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     return;
   }
   if (pendingBatch.active) native_draw::flush_batch();  // (this kind's batch, before the instance drawn otherwise)
-  // the instance replayed with its kind's lowered state (P1): false when a block landed in another upload buffer
+  // the instance replayed with its kind's lowered state (the first replay form): false when a block landed in another upload buffer
   auto replay_instance = [&]() -> bool {
     UploadSlice blocks[native_draw::kMaxBlocks];
     for (uint32_t i = 0; i < pk.blockCount; ++i) blocks[i] = packet_block_upload(blockAddr[i], blockSize[i]);

@@ -10,8 +10,8 @@
 //   expand    GX2ExpandAAColorBuffer / GX2ExpandDepthBuffer
 //   target    GX2SetColorBuffer / GX2SetDepthBuffer (render-target switches)
 //   calllist  GX2CallDisplayList / GX2DirectCallDisplayList
-// plus, per chain, in-order runs and distinct meshes per render-target set and frame (as the P3 survey counter). The
-// file is written at the last swap with the image slide; native-p6/tools/coverage.py symbolises it (nm) and groups the
+// plus, per chain, in-order runs and distinct meshes per render-target set and frame (what in-order batching could merge). The
+// file is written at the last swap with the image slide, for an offline tool that symbolises it (nm) and groups the
 // chains by family (UI/2D, post, shadows, render-to-texture, J3D, ...). Packets ON or OFF alike: with packets on, a
 // covered draw counts as "packet" at its site, the rest as "draw". Mac only (other platforms: a log line, no file).
 #pragma once
