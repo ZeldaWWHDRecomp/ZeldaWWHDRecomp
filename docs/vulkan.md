@@ -868,7 +868,7 @@ positive draw count to tune it. Empty or invalid values disable batching.
 `WWHD_VK_DRAW_BATCH_CAP=1|2|3` sets the maximum mid-frame submissions (default three).
 See `docs/performance.md` for the local Windows comparison.
 
-## Recording graphics on a second thread (on by default on Android, optional elsewhere)
+## Recording graphics on a second thread (optional, off by default on every platform)
 
 Settings → Graphics → Advanced → "Record graphics on a second thread" moves the recording and
 submission of the Vulkan commands from the render thread to a second thread. The render thread
