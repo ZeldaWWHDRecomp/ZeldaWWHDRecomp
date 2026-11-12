@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Automatic picture-in-picture: no black box at the Game Over save question** (#528, thanks @fayep). At Game Over
+  the game asks "Would you like to save?" on the TV and keeps the GamePad black; with the GamePad screen set to
+  Automatic, the TV used to show that black GamePad picture as a box in its corner. The prompt no longer counts as a
+  GamePad menu. The same save window from the pause menu still appears on the GamePad as before.
+
 - **Dual-screen handhelds (AYN Thor style): Select switches between TV and GamePad play again** (#531). On a device
   whose second screen shows the GamePad picture, One screen (handheld) mode was on by default as on any Android phone:
   it kept the game in Off-TV Play, so both screens showed the same GamePad picture and Select opened the pause menu
