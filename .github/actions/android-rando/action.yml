@@ -1,0 +1,67 @@
+# The in-app randomizer for the APK (tools/rando's wwhd-rando built with the pinned NDK for android-33,
+# packaged by tools/android/package_rando.py), cached. Leaves the package in build/rando-apk/<abi>; the
+# caller passes it to Gradle as -PwwhdRandoDir. Without it the APK has no randomizer (Settings > Randomizer:
+# "This app has no randomizer.", AndroidRandomizer.available()).
+#
+# The cache key is the ABI, the runner image, the pinned NDK and every file the package is made from
+# (tools/rando, package_rando.py and the toolchain pins it imports), so the randomizer (a few minutes) is
+# rebuilt only when one of those changes. A restored package is checked against its rando-apk.json.
+#
+# Needs: the pinned NDK installed under $ANDROID_HOME/ndk, Ninja, CMake, Python 3.
+name: Android randomizer
+description: Restore or build the APK's randomizer package (build/rando-apk/<abi>)
+inputs:
+  abi:
+    description: arm64-v8a or x86_64
+    required: true
+outputs:
+  package:
+    description: the package directory, for gradle -PwwhdRandoDir
+    value: ${{ steps.pins.outputs.package }}
+runs:
+  using: composite
+  steps:
+    - id: pins
+      shell: bash
+      run: |
+        NDK=$(python3 -c "import sys; sys.path.insert(0, 'tools/android'); import build_toolchain as b; print(b.NDK_REVISION)")
+        echo "ndk=$NDK" >> "$GITHUB_OUTPUT"
+        echo "package=$PWD/build/rando-apk/${{ inputs.abi }}" >> "$GITHUB_OUTPUT"
+        echo "key=android-rando-v1-${{ inputs.abi }}-$ImageOS-ndk-$NDK-${{ hashFiles('tools/rando/**', 'tools/android/package_rando.py', 'tools/android/package_toolchain.py', 'tools/android/build_toolchain.py') }}" >> "$GITHUB_OUTPUT"
+
+    - id: cache
+      uses: actions/cache@v5
+      with:
+        path: build/rando-apk/${{ inputs.abi }}
+        key: ${{ steps.pins.outputs.key }}
+
+    - if: steps.cache.outputs.cache-hit != 'true'
+      name: Build the randomizer for Android (no cache for this key)
+      shell: bash
+      run: |
+        NDK="$ANDROID_HOME/ndk/${{ steps.pins.outputs.ndk }}"
+        build="$RUNNER_TEMP/rando-android-${{ inputs.abi }}"
+        cmake -S tools/rando -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+          -DANDROID_ABI="${{ inputs.abi }}" -DANDROID_PLATFORM=android-33
+        cmake --build "$build" --parallel 4
+        mkdir -p build/rando-apk
+        python3 tools/android/package_rando.py --build "$build" --ndk "$NDK" --abi "${{ inputs.abi }}" \
+          --out "${{ steps.pins.outputs.package }}"
+
+    - name: Check the randomizer package
+      shell: bash
+      run: |
+        python3 - "${{ steps.pins.outputs.package }}" "${{ inputs.abi }}" "${{ steps.pins.outputs.ndk }}" <<'EOF'
+        import hashlib, json, sys
+        from pathlib import Path
+        root, abi, ndk = Path(sys.argv[1]), sys.argv[2], sys.argv[3]
+        meta = json.loads((root / "assets/rando-apk.json").read_text())
+        exe = root / "jniLibs" / abi / meta["executable"]
+        ok = (meta["abi"] == abi and meta["ndk_revision"] == ndk and exe.is_file()
+              and hashlib.sha256(exe.read_bytes()).hexdigest() == meta["sha256"]
+              and (root / "assets/rando-data/logic/location_data.yaml").is_file())
+        if not ok:
+            sys.exit("::error::randomizer package does not match its rando-apk.json")
+        print(f"randomizer {meta['version']} for {abi}: {meta['installed_bytes']} bytes, {meta['data_files']} data files")
+        EOF
