@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **One screen (handheld) mode: the mouse camera works again** (#514, thanks @mi5t). Every click on the picture was
+  taken as a GamePad touch, so the mouse camera never captured the pointer. Now a click in play captures it, while
+  clicks in the game's touch menus (items, map, bottles) still act as touches. On Android in One screen mode, a finger
+  in those menus now goes straight to the game.
+
 - **The Ballad of Gales arrival whirlwind is heard again at 60 fps** (#533, thanks @DamnFine815). With frame
   smoothing (40, 60 or 120 fps) the sound engine heard the camera one game step late, so right after a stage change it
   still heard the loading screen's far-away camera and dropped sounds that started there. The King of Red Lions'
