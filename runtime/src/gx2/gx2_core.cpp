@@ -52,6 +52,11 @@
 #include "platform/perf_hint.h"
 #include "platform/thread_sampler.h"
 #include "render_prof.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "native_draw.h"
+#include "native_pass.h"
+#endif
+#include "native_coverage.h"
 
 using namespace Latte;
 
@@ -167,6 +172,9 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
         if (old != value) {
             const uint8 cls = g_reg_class[reg];
             changed = true;
+#ifdef WWHD_NATIVE_DRAW
+            native_draw::journal(reg, old);
+#endif
             note_state_change(cls, old, value);
             if (classify) classify_reg(cls, reg);
             if ((collectStats || !actualBump) && !(cls & kRcShaderIrrelevant)) {
@@ -181,6 +189,13 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
     // Shadow can differ even when registers already match: draw mutates
     // primitive type directly, and context setup initializes only shadow.
     if (g_shadow) copy_words(&g_shadow[first], v, n);
+#ifdef WWHD_NATIVE_DRAW
+    // (inside the checked register ranges of the packet drawn last: its next instance compares them; such a write bumps
+    // neither the epoch nor the journal's count, so the journal's epoch == journalled bumps rule holds)
+    const bool bump = changed && !native_draw::checked_regs(first, n);
+    native_draw::g_epoch += bump;
+    native_draw::g_journalBumps += bump;
+#endif
     if (actualBump) ++g_shader_state_gen;
     if (changed && collectStats) {
         ++shaderKeyDirtyStats.changedBatches;
@@ -202,6 +217,10 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
     if (first >= mmSQ_ALU_CONSTANT0_0 && first + n <= mmSQ_ALU_CONSTANT0_0 + 0x1000 && !g_collect_stats) {
         uint32* d = &g_regs[first];
         if (memcmp(d, v, n * 4) != 0) {
+#ifdef WWHD_NATIVE_DRAW
+            // (inside the declared instance register ranges of the packet drawn last: its next instance patches them)
+            if (!native_draw::instance_regs(first - mmSQ_ALU_CONSTANT0_0, n)) ++native_draw::g_epoch;
+#endif
             g_dirty_groups |= 1u << kSgAluConst;
             if (g_classify) rprof::g_reg_dirty |= 1;
             copy_words(d, v, n);
@@ -217,10 +236,19 @@ static void apply_regs(uint32 first, const uint32* v, uint32 n) {
     }
 #endif
     if (memcmp(&g_regs[first], v, n * 4) != 0) {
+#ifdef WWHD_NATIVE_DRAW
+        if (!native_draw::checked_regs(first, n)) {  // (as apply_small_regs)
+            ++native_draw::g_epoch;
+            ++native_draw::g_journalBumps;
+        }
+#endif
         const bool classify = g_classify;
         for (uint32 i = 0; i < n; i++)
             if (g_regs[first + i] != v[i]) {
                 const uint8 cls = g_reg_class[first + i];
+#ifdef WWHD_NATIVE_DRAW
+                native_draw::journal(first + i, g_regs[first + i]);
+#endif
                 note_state_change(cls, g_regs[first + i], v[i]);
                 if (classify) classify_reg(cls, first + i);
             }
@@ -459,7 +487,13 @@ static void render_thread_main() {
         }
         {
             std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
-            render::with_autorelease_pool([] { execute(g_q_work.data(), (uint32)g_q_work.size()); });
+            render::with_autorelease_pool([] {
+                execute(g_q_work.data(), (uint32)g_q_work.size());
+#ifdef WWHD_NATIVE_DRAW
+                native_draw::flush_mdi();  // (the chunk's collected multi-draw batch: nothing outside the commands records it)
+                native_draw::flush_batch();  // (the chunk's collected shader-rewrite batch: nothing outside the commands records it)
+#endif
+            });
         }
         g_q_work.clear();
     }
@@ -688,7 +722,13 @@ void execute(const uint32* words, uint32 count) {
         uint32 hdr = words[i];
         Op op = (Op)(hdr & 0xFF);
         uint32 n = hdr >> 8;
+#ifdef WWHD_NATIVE_DRAW
+        if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW && op != OP_J3D_SHAPE &&
+             (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT)) ||
+            i + 1 + n > count) {
+#else
         if (op >= OP_COUNT || i + 1 + n > count) {
+#endif
             LOG("[gx2] corrupt display list command %08X", hdr);
             return;
         }
@@ -745,14 +785,34 @@ static void execute_op(Op op, const uint32* p, uint32 n);
 // calls are not timed themselves: their ops are
 static void execute_one(Op op, const uint32* p, uint32 n) {
     rprof::Op kind;
+#ifdef WWHD_NATIVE_DRAW
+    // a collected multi-draw or shader-rewrite batch is drawn before any other command but register writes and packet
+    // definitions (define: when it changes the packet; register writes: the next instance's replayable check) and pass
+    // descriptions (they record nothing: native_pass.h)
+    if (op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE && op != OP_SET_REGS && op != OP_NOP &&
+        (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT)) {
+        if (native_draw::g_mdiPending) native_draw::flush_mdi();
+        if (native_draw::g_batchPending) native_draw::flush_batch();
+    }
+    // native_pass.h: every draw checked against the open pass description
+    if ((op == OP_DRAW || op == OP_DRAW_INDEXED || (op == OP_PACKET_DRAW && n >= 2 && p[1] != native_draw::kNoDraw)) &&
+        native_pass::on())
+        native_pass::note_draw(g_regs);
+#endif
     switch (op) {
     case OP_DEBUG_CONTEXT: g_draw_context.store(n ? p[0] : 0, std::memory_order_relaxed); return;
     case OP_SUBMITTED_UNIFORMS:
+#ifdef WWHD_NATIVE_DRAW
+        ++native_draw::g_epoch;
+#endif
         set_active_snapshot(n >= 2 ? (submitted::Snapshot*)(uintptr_t(p[0]) | (uint64_t(p[1]) << 32)) : nullptr);
         return;
     case OP_CALL: execute_op(op, p, n); return;
     case OP_SET_REGS: case OP_SET_PROJ_REGS: kind = rprof::kOpRegs; break;
     case OP_DRAW: case OP_DRAW_INDEXED: kind = rprof::kOpDraw; rprof::classify_draw(); break;
+#ifdef WWHD_NATIVE_DRAW
+    case OP_PACKET_DRAW: kind = rprof::kOpDraw; rprof::classify_draw(); break;
+#endif
     case OP_CLEAR_COLOR: case OP_CLEAR_DEPTH: case OP_CLEAR_BUFFERS: kind = rprof::kOpClear; break;
     case OP_COPY_SURFACE: kind = rprof::kOpCopy; break;
     case OP_COPY_TO_SCAN: kind = rprof::kOpScan; break;
@@ -793,11 +853,27 @@ static void test_frame_load(const char* name, bool hold = false) {
 }
 
 static void execute_op(Op op, const uint32* p, uint32 n) {
+#ifdef WWHD_NATIVE_DRAW
+    // a packet's lowered state holds while only register writes that change nothing and its own instances come
+    // (native_draw.h); any other command may change what the full draw would resolve (a packet definition: when it
+    // changes the packet, native_draw::define; pass descriptions: native_pass.h, no state; a layout projection: its
+    // register writes decide, as OP_SET_REGS: native_draw::projection_as_regs)
+    if (op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE &&
+        (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT) && (op != OP_SET_PROJ_REGS || !native_draw::projection_as_regs()))
+        ++native_draw::g_epoch;
+    // a J3D draw's name holds for the draw right after it (register writes may come in between)
+    if (op != OP_NOP && op != OP_SET_REGS && op != OP_DRAW_INDEXED && op != OP_J3D_SHAPE) native_draw::g_j3dKey = 0;
+#endif
     switch (op) {
     case OP_NOP: break;
     case OP_SET_REGS: apply_regs(p[0], p + 1, n - 1); break;
     case OP_DRAW: render::draw(g_regs, p[0], p[1], 0, 0, p[2], p[3]); break;
-    case OP_DRAW_INDEXED: render::draw(g_regs, p[0], p[1], p[2], p[3], p[4], p[5]); break;
+    case OP_DRAW_INDEXED:
+        render::draw(g_regs, p[0], p[1], p[2], p[3], p[4], p[5]);
+#ifdef WWHD_NATIVE_DRAW
+        native_draw::g_j3dKey = 0;  // (taken by the Vulkan draw; any other renderer leaves it)
+#endif
+        break;
     case OP_CLEAR_COLOR: {
         const uint32* q = p + kColorBufferWords;
         float rgba[4] = {bitsf(q[0]), bitsf(q[1]), bitsf(q[2]), bitsf(q[3])};
@@ -854,6 +930,10 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             present_observer::render_swap(uint64_t(p[3]) | (uint64_t(p[4]) << 32), render::frame_count());
         render::set_present_interval(n >= 6 ? p[5] : 0u, n >= 2 && p[1]);
         render::swap();
+#ifdef WWHD_NATIVE_DRAW
+        native_draw::frame_end();
+        if (native_pass::on()) native_pass::frame_end();
+#endif
         break;
     }
     case OP_SET_PROJ_REGS: {
@@ -907,6 +987,76 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             render::g_backend->framegen_layout(g_regs[mmCB_COLOR0_BASE], g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG],
                                                g_regs[mmDB_DEPTH_BASE]);
         break;
+#ifdef WWHD_NATIVE_DRAW
+    case OP_PACKET_DEFINE: native_draw::define(p, n); break;
+    case OP_PASS_BEGIN: native_pass::begin(p, n); break;
+    case OP_PASS_LOAD: native_pass::load(p, n); break;
+    case OP_PASS_END: native_pass::end(p, n); break;
+    case OP_PASS_COPY: native_pass::copy(p, n); break;
+    case OP_PASS_VIEWPORT: native_pass::viewport(p, n); break;
+    case OP_J3D_SHAPE: native_draw::j3d_shape(p, n); break;
+    case OP_PACKET_DRAW: {
+        // the instance's register effects, exactly as the site's skipped calls make them, in the site's order:
+        // GX2Set{Pixel,Vertex,Geometry}UniformBlock (gx2_resources.cpp uniform_block), GX2SetFetchShader and
+        // GX2SetAttribBuffer per buffer; they belong to the instance, so they keep the packet's state valid
+        using namespace native_draw;
+        const Packet* pk = n >= kDrawHead ? packet(p[0]) : nullptr;
+        if (!pk) break;
+        const uint32 kind = p[1], blocks = p[2] & 0xFF, hasVertex = (p[2] >> 8) & 1, noFetch = (p[2] >> 9) & 1,
+                     buffers = (p[2] >> 12) & 0xF, hasRange = (p[2] >> 16) & 1, regRanges = (p[2] >> 20) & 0xF;
+        const uint32 fixedWords = kDrawHead + blocks * kBlockWords +
+                                  (hasVertex ? (noFetch ? 0 : kVertexHead) + buffers * kBufferWords : 0) +
+                                  (hasRange ? kRangeWords : 0);
+        uint32 regEnd = fixedWords;  // the register ranges: each {key, count, values}
+        for (uint32 i = 0; i < regRanges && regEnd + kRegHead <= n; ++i) regEnd += kRegHead + p[regEnd + 1];
+        if (blocks > kMaxBlocks || buffers > kMaxBuffers || regRanges > kMaxRegRanges || n != regEnd ||
+            (kind != kNoDraw && kind >= pk->meshCount))
+            break;
+        const uint64_t epoch = g_epoch, bumps = g_journalBumps;
+        static const uint32 stageBase[3] = {mmSQ_VTX_UNIFORM_BLOCK_START, mmSQ_PS_UNIFORM_BLOCK_START,
+                                            mmSQ_GS_UNIFORM_BLOCK_START};
+        const uint32* q = p + kDrawHead;
+        for (uint32 i = 0; i < blocks; ++i, q += kBlockWords) {
+            const uint32 stage = q[0] >> 16, location = q[0] & 0xFFFF;
+            const uint32 w[7] = {q[1], q[2] - 1, 0, 1, 0, 0, 0xC0000000};
+            if (stage < 3) apply_regs(stageBase[stage] + location * 7, w, 7);
+        }
+        if (hasVertex) {
+            if (!noFetch) {  // (no-fetch: GX2SetAttribBuffer alone)
+                apply_regs(mmSQ_PGM_START_FS, q, 1);
+                apply_regs(mmSQ_PGM_START_FS + 1, q + 1, 1);
+                q += kVertexHead;
+            }
+            for (uint32 i = 0; i < buffers; ++i, q += kBufferWords) {
+                const uint32 w[7] = {q[1], q[2] - 1, (q[3] & 0xFFFF) << 11, 0, 0, 0, 0xC0000000};
+                apply_regs(mmSQ_VTX_ATTRIBUTE_BLOCK_START + q[0] * 7, w, 7);
+            }
+        }
+        if (hasRange) q += kRangeWords;
+        // GX2Set{Vertex,Pixel}UniformReg (gx2_resources.cpp uniform_regs: the ALU constants, + 0x400 for vertex; the
+        // count was made a multiple of 4 and clamped by the site); a range outside the packet's declared ones ends the
+        // lowered state like any register write
+        bool outside = false;
+        for (uint32 i = 0; i < regRanges; ++i) {
+            const uint32 stage = q[0] >> 16, offset = q[0] & 0xFFFF, words = q[1];
+            if (stage < 2 && offset + words <= 0x400) {
+                if (!reg_declared(*pk, stage, offset, words)) outside = true;
+                apply_regs(mmSQ_ALU_CONSTANT0_0 + reg_first(q[0]), q + kRegHead, words);
+            }
+            q += kRegHead + words;
+        }
+        if (outside) count(pk->site, kRegOutside);
+        else {
+            g_epoch = epoch;
+            g_journalBumps = bumps;  // (their writes stay in the journal)
+        }
+        q = p + fixedWords - (hasRange ? kRangeWords : 0);
+        Mesh range;
+        if (hasRange && kind != kNoDraw) range = {pk->mesh[kind].prim, q[0], pk->mesh[kind].indexType, q[1]};
+        if (kind != kNoDraw) draw(g_regs, *pk, kind, hasRange ? &range : nullptr);
+        break;
+    }
+#endif
     case OP_SETUP_CONTEXT:
         g_contexts[p[0]].assign(kNumRegs, 0);
         g_shadow = g_contexts[p[0]].data();
@@ -1270,7 +1420,15 @@ HLE(gx2, GX2GetContextStateDisplayList) {
 }
 
 // ---------------------------------------------------------------- display lists
+#ifdef WWHD_NATIVE_DRAW
+static std::atomic<uint64_t> g_native_list_serial{1};
+uint64_t native_draw::list_serial() { return g_native_list_serial.load(std::memory_order_relaxed); }
+#define NATIVE_LIST_SERIAL() g_native_list_serial.fetch_add(1, std::memory_order_relaxed)
+#else
+#define NATIVE_LIST_SERIAL()
+#endif
 HLE(gx2, GX2BeginDisplayListEx) {
+    NATIVE_LIST_SERIAL();
     if (Recording* rec = claim_rec()) {
         rec->start = rec->pos = arg(c, 0);
         rec->end = arg(c, 0) + arg(c, 1);
@@ -1280,6 +1438,7 @@ HLE(gx2, GX2BeginDisplayListEx) {
     }
 }
 HLE(gx2, GX2EndDisplayList) {
+    NATIVE_LIST_SERIAL();
     uint32 size = 0;
     if (Recording* rec = recording()) {
         size = rec->pos - rec->start;
@@ -1308,6 +1467,7 @@ HLE(gx2, GX2GetCurrentDisplayList) {
 // A list called while another is recorded runs with that one (its blocks are noted for it); a call
 // from the command stream takes the blocks of the list as they are now with it (submitted_uniforms.h).
 static void call_display_list(uint32 list, uint32 size) {
+    NATIVE_LIST_SERIAL();
     if (Recording* rec = recording(); rec && rec->start) {
         if (submitted_uniforms_on()) g_rec_calls[rec - g_recs].push_back(list);
         emit(OP_CALL, {list, size});
@@ -1318,12 +1478,25 @@ static void call_display_list(uint32 list, uint32 size) {
     emit(OP_CALL, {list, size});
     if (s) emit_host(OP_SUBMITTED_UNIFORMS, {});
 }
-HLE(gx2, GX2CallDisplayList) { call_display_list(arg(c, 0), arg(c, 1)); }
-HLE(gx2, GX2DirectCallDisplayList) { call_display_list(arg(c, 0), arg(c, 1)); }
+HLE(gx2, GX2CallDisplayList) { NATIVE_COVERAGE(kCallList, c->lr, 1, arg(c, 0)); call_display_list(arg(c, 0), arg(c, 1)); }
+HLE(gx2, GX2DirectCallDisplayList) { NATIVE_COVERAGE(kCallList, c->lr, 1, arg(c, 0)); call_display_list(arg(c, 0), arg(c, 1)); }
 
 // ---------------------------------------------------------------- draws
-HLE(gx2, GX2DrawEx) { mod_actor_shadow_proof::draw_submitted(arg(c,1));emit(OP_DRAW, {arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3)}); }
-HLE(gx2, GX2DrawIndexedEx) { mod_actor_shadow_proof::draw_submitted(arg(c,1));emit(OP_DRAW_INDEXED, {arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3), arg(c, 4), arg(c, 5)}); }
+// (native_coverage.h: a draw recorded into a display list counts as "list")
+#ifdef WWHD_NATIVE_DRAW
+#define COVERAGE_DRAW(count_, mesh_)                                                                              \
+    do {                                                                                                          \
+        if (native_draw::coverage::on()) {                                                                        \
+            const Recording* r_ = recording();                                                                    \
+            native_draw::coverage::op(r_ && r_->start ? native_draw::coverage::kList : native_draw::coverage::kDraw, \
+                                      c->lr, count_, mesh_);                                                      \
+        }                                                                                                         \
+    } while (0)
+#else
+#define COVERAGE_DRAW(count_, mesh_) ((void)0)
+#endif
+HLE(gx2, GX2DrawEx) { COVERAGE_DRAW(arg(c, 1), arg(c, 2)); mod_actor_shadow_proof::draw_submitted(arg(c,1));emit(OP_DRAW, {arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3)}); }
+HLE(gx2, GX2DrawIndexedEx) { COVERAGE_DRAW(arg(c, 1), arg(c, 3)); mod_actor_shadow_proof::draw_submitted(arg(c,1));emit(OP_DRAW_INDEXED, {arg(c, 0), arg(c, 1), arg(c, 2), arg(c, 3), arg(c, 4), arg(c, 5)}); }
 
 // ---------------------------------------------------------------- clears and copies
 static float farg(Cpu* c, int i) { return (float)c->f[1 + i].ps0; }
@@ -1336,18 +1509,21 @@ static void put_struct(std::vector<uint32>& p, uint32 addr, uint32 words) {
     if (addr) memcpy(&p[at], mem::ptr(addr), words * 4);
 }
 HLE(gx2, GX2ClearColor) {
+    NATIVE_COVERAGE(kClear, c->lr, 1, 0);
     std::vector<uint32> p;
     put_struct(p, arg(c, 0), kColorBufferWords);
     for (int i = 0; i < 4; i++) p.push_back(fbits(farg(c, i)));
     emit(OP_CLEAR_COLOR, p.data(), (uint32)p.size());
 }
 HLE(gx2, GX2ClearDepthStencilEx) {
+    NATIVE_COVERAGE(kClear, c->lr, 1, 0);
     std::vector<uint32> p;
     put_struct(p, arg(c, 0), kDepthBufferWords);
     p.insert(p.end(), {fbits(farg(c, 0)), arg(c, 1) & 0xFF, arg(c, 2)});
     emit(OP_CLEAR_DEPTH, p.data(), (uint32)p.size());
 }
 HLE(gx2, GX2ClearBuffersEx) {
+    NATIVE_COVERAGE(kClear, c->lr, 1, 0);
     std::vector<uint32> p;
     put_struct(p, arg(c, 0), kColorBufferWords);
     put_struct(p, arg(c, 1), kDepthBufferWords);
@@ -1361,6 +1537,7 @@ HLE(gx2, GX2SetClearDepthStencil) {
     db->clearStencil = arg(c, 1) & 0xFF;
 }
 HLE(gx2, GX2CopySurface) {
+    NATIVE_COVERAGE(kCopy, c->lr, 1, 0);
     // debug: WWHD_COPYDBG=1 logs each copy as issued (thread, caller, source and destination images)
     static const bool dbg = getenv("WWHD_COPYDBG") != nullptr;
     if (dbg)
@@ -1383,13 +1560,14 @@ HLE(gx2, GX2CopySurface) {
     }
 }
 HLE(gx2, GX2CopyColorBufferToScanBuffer) {
+    NATIVE_COVERAGE(kCopy, c->lr, 1, 1);
     std::vector<uint32> p;
     put_struct(p, arg(c, 0), kColorBufferWords);
     p.push_back(arg(c, 1));
     emit(OP_COPY_TO_SCAN, p.data(), (uint32)p.size());
 }
-HLE(gx2, GX2ExpandAAColorBuffer) { emit(OP_EXPAND_COLOR, {arg(c, 0)}); }
-HLE(gx2, GX2ExpandDepthBuffer) { emit(OP_EXPAND_DEPTH, {arg(c, 0)}); }
+HLE(gx2, GX2ExpandAAColorBuffer) { NATIVE_COVERAGE(kExpand, c->lr, 1, 0); emit(OP_EXPAND_COLOR, {arg(c, 0)}); }
+HLE(gx2, GX2ExpandDepthBuffer) { NATIVE_COVERAGE(kExpand, c->lr, 1, 1); emit(OP_EXPAND_DEPTH, {arg(c, 0)}); }
 HLE(gx2, GX2Invalidate) { emit(OP_INVALIDATE, {arg(c, 0), arg(c, 1), arg(c, 2)}); }
 
 // ---------------------------------------------------------------- submission and presentation
@@ -1402,6 +1580,9 @@ HLE(gx2, GX2DrawDone) {
 }
 namespace dtrace { void on_swap(uint64_t swap, uint64_t steps); }
 HLE(gx2, GX2SwapScanBuffers) {
+#ifdef WWHD_NATIVE_DRAW
+    if (native_draw::coverage::on()) native_draw::coverage::swap();
+#endif
     const uint64_t watchSwap = g_watch_swaps.fetch_add(1, std::memory_order_relaxed) + 1;
     // test aid for the watchdog: WWHD_TEST_HANG_AT=<swap>:<seconds> stops the game's thread in that swap
     static const std::pair<uint64_t, unsigned> hangAt = [] {

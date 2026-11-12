@@ -160,6 +160,16 @@ function(wwhd_decomp_configure)
   # exit_regs / native_args_slow (gabi.h GABI_NX_LEAN). The body's own guest calls get their LR by call site as before.
   # No run-time switch (OFF: as before)
   option(WWHD_DECOMP_FAST_NX_LEAN "decomp build, fast mode: non-register-exact native entries without LR / pc, inline" ON)
+  # native draw packets (the port's native renderer; runtime/src/gx2/native_draw.h, native_pass.h): the decompiled
+  # draw sites hand the render thread one packet per pass and an instance per draw (decomp: port_native_draw.h,
+  # GABI_NATIVE_DRAW) instead of register writes plus a draw, and describe their passes. ON by default in fast mode;
+  # OFF builds exactly as before. Run-time switches of an ON build (native_draw.h): packets, multi-draw batches, pass
+  # descriptions and pass trust on unless WWHD_NATIVE_DRAW=0 / _MDI=0 / WWHD_NATIVE_PASS=0 / _PASS_TRUST=0; the J3D
+  # material cache only with WWHD_NATIVE_DRAW_J3D=1
+  option(WWHD_NATIVE_DRAW "decomp build, fast mode: native draw packets and pass descriptions (the native renderer)" ON)
+  # native draw packets, shader-rewrite batches (native_draw.h): the run-time default of WWHD_NATIVE_DRAW_BATCH in an
+  # ON build (packets on). ON: batches unless WWHD_NATIVE_DRAW_BATCH=0; OFF: only with WWHD_NATIVE_DRAW_BATCH=1
+  option(WWHD_NATIVE_DRAW_BATCH "decomp build, fast mode: native draw packets' shader-rewrite batches on by default" ON)
   # fast mode: AutoFrame's frame of a function that is not frame-exact (the place-only "nostore" frame: FrameCtx fields,
   # no prologue stores) set inline in the body instead of in the out-of-line AutoFrame::enter (gabi.h GABI_AF_INLINE);
   # frame-exact functions keep enter(). The same FrameCtx; no run-time switch (OFF: as before)
@@ -220,8 +230,10 @@ function(wwhd_decomp_configure)
   if(NOT EXISTS "${GEN_DIR}/decomp_hooks.txt")
     message(FATAL_ERROR "WWHD_DECOMP: ${GEN_DIR} is not decomp build code.\n${fix}")
   endif()
-  file(SHA256 "${GEN_DIR}/decomp_hooks.txt" have)
-  file(SHA256 "${list}" want)
+  # (DecompHooks.cmake: the same list, the header line naming the decomp commit left out)
+  include("${CMAKE_SOURCE_DIR}/cmake/DecompHooks.cmake")
+  wwhd_decomp_hooks_digest("${GEN_DIR}/decomp_hooks.txt" have)
+  wwhd_decomp_hooks_digest("${list}" want)
   if(NOT have STREQUAL want)
     message(FATAL_ERROR "WWHD_DECOMP: ${GEN_DIR} was made with another decomp function list.\n${fix}")
   endif()
@@ -442,6 +454,9 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_AF_INLINE)
       list(APPEND opts -DGABI_AF_INLINE=1)
+    endif()
+    if(WWHD_NATIVE_DRAW)
+      list(APPEND opts -DGABI_NATIVE_DRAW=1)
     endif()
     if(WWHD_DECOMP_FAST_THUNK_INL)
       if(NOT WWHD_DECOMP_FAST_LEAF)
@@ -783,6 +798,26 @@ function(wwhd_decomp_link target)
   endif()
   if(WWHD_DECOMP_SITE_LR)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_SITE_LR=1)
+  endif()
+  if(WWHD_DECOMP_FAST AND WWHD_NATIVE_DRAW)  # (only the files that use it: gx2_cmd.h's packet ops, api.h's packet_draw)
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp"
+                   "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/coverage.cpp"
+                   "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/pass.cpp")
+    set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/coverage.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/pass.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gx2/gx2_resources.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gx2/gx2_core.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/draw.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/backend.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/shaders.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/surfaces.cpp"
+                 APPEND PROPERTY COMPILE_DEFINITIONS WWHD_NATIVE_DRAW=1)
+    if(WWHD_NATIVE_DRAW_BATCH)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp"
+                   "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/shaders.cpp"
+                   APPEND PROPERTY COMPILE_DEFINITIONS WWHD_NATIVE_DRAW_BATCH_DEFAULT=1)
+    endif()
+    message(STATUS "decomp build, fast mode: native draw packets compiled in (on; run-time switch WWHD_NATIVE_DRAW=0 turns them off)")
   endif()
   if(WWHD_DECOMP_EDGE_LCALL)  # the runtime's edge entry (decomp.cpp only)
     set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_EDGE_LCALL=1)

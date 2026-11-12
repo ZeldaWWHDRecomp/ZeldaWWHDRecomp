@@ -1,0 +1,103 @@
+// Native pass and copy descriptions (the port's native renderer: engine-level pass descriptions). Decomp build, fast mode,
+// cmake WWHD_NATIVE_DRAW=ON only; nothing here exists in any other build.
+//
+// A decompiled site that starts rendering into a set of targets (agl's bindRenderTarget) describes the pass it begins
+// (OP_PASS_BEGIN); a site that clears the pass's attachments describes that as the pass's load intent (OP_PASS_LOAD);
+// a site that copies, expands or resolves a surface describes the copy (OP_PASS_COPY). The description is engine-level
+// (attachments as images with format, size, mip and slices; load/store intents; copy kinds), not register words.
+//
+// Lowering today: the site still makes its own GX2 calls right after (or before) the description, so the register
+// file, the full draw path and every port feature see exactly what they saw without descriptions; a description adds
+// no register write and does not end a draw packet's lowered state. The render thread keeps the open pass and checks
+// it against the registers at every draw (counters, and with WWHD_NATIVE_DRAW_VERIFY a mismatch is logged): this is
+// what a later backend step needs before it may trust the open pass instead of deriving targets and pass per draw.
+// A pass ends at the next OP_PASS_BEGIN, at a copy (store, then copy) and at the swap; OP_PASS_END is for sites that
+// know their end (the hd 3D layer passes, SSAO, bloom, cascade shadow layers).
+// The check covers every word the target binds write (base, size, view, info and the port's view-size conventions)
+// and, once a site described it (sead's viewport and scissor calls), the viewport and scissor registers; a draw whose
+// viewport or scissor was set by an undescribed call is counted apart (the targets may still be trusted).
+//
+// Run-time switch: WWHD_NATIVE_PASS=0/1 (default: on when packets are on, i.e. unless WWHD_NATIVE_DRAW=0; set, it
+// is independent of WWHD_NATIVE_DRAW). The counter line
+// ("[native-pass] ...", every 300 frames): passes, described draws (targets as described), draws outside a described
+// pass, mismatches, load intents, copies by kind.
+#pragma once
+#ifdef WWHD_NATIVE_DRAW
+#include <cstdint>
+
+namespace native_pass {
+
+// an attachment: the image as the target registers address it (colour: mip and swizzle applied, as GX2SetColorBuffer
+// sets CB_COLOR*_BASE; depth: the image address, as DB_DEPTH_BASE), its format (GX2 surface format value), size of
+// the bound mip, view (mip, first slice, slice count) and samples (1, 2, 4, 8)
+// regs: the words the bind writes (what the render thread checks every draw against): colour CB_COLOR<i>_BASE, _SIZE,
+// _VIEW, _INFO, _TILE, _FRAG (GX2SetColorBuffer, the port's conventions included); depth DB_DEPTH_SIZE, _BASE, _INFO,
+// _VIEW, DB_HTILE_DATA_BASE, kDepthSlicesReg (GX2SetDepthBuffer)
+constexpr uint32_t kAttachmentRegs = 6;
+struct Attachment {
+    uint32_t image = 0, format = 0, width = 0, height = 0, mip = 0, firstSlice = 0, slices = 0, samples = 0;
+    uint32_t regs[kAttachmentRegs] = {};
+};
+constexpr uint32_t kMaxColors = 8;
+// OP_PASS_BEGIN payload, word for word
+struct Pass {
+    uint32_t id = 0;         // running number (game thread)
+    uint32_t colorMask = 0;  // bit i: colors[i] is an attachment
+    uint32_t hasDepth = 0;
+    Attachment colors[kMaxColors];
+    Attachment depth;
+};
+constexpr uint32_t kPassWords = sizeof(Pass) / 4;
+// OP_PASS_LOAD payload: the open pass's attachments the site clears before drawing (load intent "clear")
+enum LoadBits : uint32_t { kLoadClearColor0 = 1, kLoadClearDepth = 2, kLoadClearStencil = 4 };
+struct Load {
+    uint32_t bits = 0, colorIndex = 0;
+    uint32_t rgba[4] = {};  // float bits
+    uint32_t depth = 0, stencil = 0;
+};
+constexpr uint32_t kLoadWords = sizeof(Load) / 4;
+// OP_PASS_COPY payload
+enum CopyKind : uint32_t {
+    kCopyScanOut = 1,     // a colour image to the TV (dest 0) or GamePad (dest 1) scan buffer
+    kCopyExpandDepth = 2, // a depth image's compression resolved in place (readable as a texture afterwards)
+    kCopyExpandColor = 3, // a colour image's MSAA/compression resolved in place
+    kCopySurface = 4,     // an image (mip, slice) copied to another image (mip, slice)
+};
+struct Copy {
+    uint32_t kind = 0, dest = 0;  // dest: scan-out target (0 TV, 1 GamePad)
+    Attachment src, dst;          // dst: kCopySurface only
+};
+constexpr uint32_t kCopyWords = sizeof(Copy) / 4;
+
+// OP_PASS_VIEWPORT payload: the pass's viewport (kind 0: x, y, width, height, near, far as float bits, and the six
+// PA_CL_VPORT_* words GX2SetViewport writes) or scissor (kind 1: x, y, width, height, and PA_SC_GENERIC_SCISSOR_TL/BR)
+struct Viewport {
+    uint32_t kind = 0;
+    uint32_t value[6] = {};
+    uint32_t regs[6] = {};
+};
+constexpr uint32_t kViewportWords = sizeof(Viewport) / 4;
+
+bool on();                                      // WWHD_NATIVE_PASS (native_draw::pass_requested)
+void begin(const uint32_t* p, uint32_t n);      // render thread: OP_PASS_BEGIN
+void load(const uint32_t* p, uint32_t n);       // render thread: OP_PASS_LOAD
+void end(const uint32_t* p, uint32_t n);        // render thread: OP_PASS_END
+void copy(const uint32_t* p, uint32_t n);       // render thread: OP_PASS_COPY
+void viewport(const uint32_t* p, uint32_t n);   // render thread: OP_PASS_VIEWPORT
+void note_draw(const uint32_t* regs);           // render thread: a draw (full or packet) about to execute
+void frame_end();                               // render thread: at each swap
+// The backend trusting the open pass (with pass descriptions on; on by default, WWHD_NATIVE_PASS_TRUST=0 turns it off;
+// Vulkan):
+// while the draw just checked (note_draw) lies in a described pass whose every target word matches, the targets the
+// draw path resolved for the pass's previous draw are taken again when nothing else they depend on changed (same
+// frame and surface epoch, eye size, active colour mask and size claim of the pixel program), instead of looking up
+// the surfaces again. WWHD_NATIVE_PASS_TRUST=2: every draw resolves its targets and compares them with the trusted
+// ones (mismatches logged and counted). The counters ("trusted target draws" / "resolved") go on the pass line.
+int trust_mode();                               // 0 off, 1 trust, 2 verify
+// the draw of the command just checked (REGS: the registers it was checked with; once): in a described pass, every
+// word matching
+bool trusted(uint32_t& passId, const uint32_t* regs);
+void count_trust(int what);                     // 0 resolved (miss), 1 trusted, 2 verify mismatch
+
+}  // namespace native_pass
+#endif

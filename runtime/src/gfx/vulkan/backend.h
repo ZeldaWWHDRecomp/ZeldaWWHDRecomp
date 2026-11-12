@@ -345,6 +345,12 @@ uint64_t next_write_seq();
 extern uint64_t g_surface_epoch;
 // bumped whenever a surface cache gains, loses or swaps surfaces (texture invalidation's footprint index)
 extern uint64_t g_surface_set_gen;
+#ifdef WWHD_NATIVE_DRAW
+// surfaces.cpp: bumped with g_surface_epoch wherever a surface's image, size or place in the cache changes (made,
+// image destroyed or replaced, rescaled, restored, eye size, CPU copy, save-state reset); not by content uploads and
+// GPU writes. The J3D material cache (draw.cpp) holds its entries while it is unchanged.
+extern uint64_t g_surface_struct_gen;
+#endif
 inline void mark_gpu_written(Surface* s){s->gpuWritten=true;s->writeSeq=next_write_seq();++g_surface_epoch;}
 // A draw's own attachments: their newer writeSeq can only change lookups at their own addresses,
 // which the fast path excludes (draw.cpp); a surface becoming GPU-written still ends the epoch.

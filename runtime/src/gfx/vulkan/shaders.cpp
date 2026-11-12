@@ -19,6 +19,10 @@
 #include "stutter_trace.h"
 #include "mods/cemu_pack.h"
 #include "mods/shader_interface.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "api.h"
+#include "gx2/native_draw.h"
+#endif
 #include "graphic_pack_hash.h"
 #include "gfx/area_sample.h"
 #include "gfx/sampler_lod_bias.h"
@@ -545,6 +549,17 @@ uint32_t key_verify_rate() {
 bool retain_shader_source() {
     static const bool retain = [] {
         const char* value = getenv("WWHD_VK_SHADER_SOURCE_VERIFY");
+#ifdef WWHD_NATIVE_DRAW
+        // native draw packets (gx2/native_draw.h): multi-draw batches check the final text for the vertex index;
+        // shader-rewrite batches are rewritten from it (on by default in this build: WWHD_NATIVE_DRAW_BATCH_DEFAULT)
+        if (native_draw::mdi_requested()) return true;
+#ifndef WWHD_NATIVE_DRAW_BATCH_DEFAULT
+#define WWHD_NATIVE_DRAW_BATCH_DEFAULT 0
+#endif
+        if (native_draw::packets_requested() &&
+            native_draw::switch_value("WWHD_NATIVE_DRAW_BATCH", WWHD_NATIVE_DRAW_BATCH_DEFAULT) != 0)
+            return true;
+#endif
         return (value && !strcmp(value, "1")) || key_verify_rate() != 0;
     }();
     return retain;
@@ -1452,6 +1467,9 @@ std::vector<uint8_t> pack_uniforms(const uint32_t* regs, const Shader& shader,
 }
 
 void reset_shader_memoization() {
+#ifdef WWHD_NATIVE_DRAW
+    j3d_cache_clear();  // (its entries hold program hashes and shaders)
+#endif
     stateMemo.reset();
     lastFetch = {};
     programHashes.clear();
@@ -1487,4 +1505,11 @@ uint64_t vertex_program_hash(const uint32_t* regs, uint64_t frame) {
     if (!address || !size || size > 0x100000 || uint64_t(address) + size > 0x100000000ull) return 0;
     return program_hash(address, size, frame);
 }
+#ifdef WWHD_NATIVE_DRAW
+uint64_t pixel_program_hash(const uint32_t* regs, uint64_t frame) {
+    const uint32_t address = regs[mmSQ_PGM_START_PS] << 8, size = regs[mmSQ_PGM_START_PS + 1] << 3;
+    if (!address || !size || size > 0x100000 || uint64_t(address) + size > 0x100000000ull) return 0;
+    return program_hash(address, size, frame);
+}
+#endif
 } // namespace gfxvk::vk
