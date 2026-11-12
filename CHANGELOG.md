@@ -7,6 +7,24 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Linux and Steam Deck: quitting can no longer hang the game on exit** (#536). Some objects of the thread scheduler
+  and the render queue were destroyed at exit while background threads still waited on them; on Linux that wait
+  could last forever (it also held a CI runner for hours), and on macOS it could crash at exit instead. They now stay
+  alive until the process ends. Nothing changes during play.
+
+- **Quick doors: Walk through no longer freezes the game in the Tower of the Gods** (#539, #529, thanks @GoHoo for
+  the report and logs). Leaving the map room or the key room through a walk-through door started the hall's gate
+  and water-spout scenes early, with Link still in the side room, and the game stayed stuck in the scene. Opening a
+  door shows the next room again, and the game creates its actors anew; the door scene normally keeps them waiting
+  until they are set up. Walk-through doors now give the room's new actors the same short wait.
+
+- **World editor: the warp refuses the title screen, the file select and the ending** (#538). A warp there could
+  not be left with another warp, and warping to the ending halted the game.
+
+- **Decomp fast build: configures with the decomp submodule as it is published** (#540). #532 fixed this for the
+  decomp build; the fast build's declaration table still read a `game` link inside the decompilation folder. It now
+  uses the configured game path too.
+
 - **Android: the game's picture starts at full size on handhelds with a navigation bar** (#502, #349, thanks
   @plxjammerplx for the logs and testing). The full-screen window settings are now applied before the game's first
   layout, so its picture is created at the full screen size from the start instead of depending on the full-screen
