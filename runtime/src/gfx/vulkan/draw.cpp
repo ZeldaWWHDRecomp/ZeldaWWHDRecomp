@@ -65,10 +65,12 @@
 #include "gx2/native_j3d_desc.h"
 #include "gx2/native_pass.h"
 #include "gx2/native_j3d_desc_draw.h"
+#include "native_draw/j3d_depth.h"
 #include "framegen.h"
 #include "cloud_proto.h"
 #include "mods/cemu_pack.h"
 #include <memory>
+#include <optional>
 #endif
 #include <algorithm>
 #include <array>
@@ -4290,6 +4292,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const StereoShaders* replay = shadersIn && shadersIn->replay && !aoPrivateReplay &&
       shadersIn->submission == R.submissionGeneration ? shadersIn : nullptr;
 #ifdef WWHD_NATIVE_DRAW
+  // native J3D depth proof (native_draw/j3d_depth.h; off by default): a sampled draw captures its binds
+  std::optional<PacketCapture> j3dProofCap;
+  if (j3dSiteKey && !g_packetCapture && native_draw::j3d_depth::proof_wanted()) g_packetCapture = &j3dProofCap.emplace();
+  struct ProofCapEnd { bool on; ~ProofCapEnd() { if (on) g_packetCapture = nullptr; } } j3dProofCapEnd{j3dProofCap.has_value()};
   // the packet capture of this draw (packet_draw), not of the AO / backdrop replays it may run itself (those come
   // after its own draw, which hands the capture back)
   PacketCapture* const cap = g_packetCapture;
@@ -5527,6 +5533,38 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   // a described J3D draw (native_j3d_desc.h, verify): what this draw resolved
   if (native_draw::j3ddesc::g_resolving)
     j3ddesc_resolved(r, fs, fsKey, vs, ps, &own, colors, depth, fastPathDraw ? &continued : nullptr);
+  // native J3D depth shaders: the debug tools (native_draw/j3d_depth.h; off by default)
+  if (j3dSiteKey && (native_draw::j3d_depth::dump_on() || j3dProofCap)) {
+    const native_draw::j3d_depth::DrawInfo info{r, prim, count, indexType, indexAddr, baseVertex, fs, vs, ps, depth, depthSlice,
+                                                width, height, R.frame};
+    if (j3dProofCap && j3dProofCap->drew) {
+      const PacketCapture& c = *j3dProofCap;
+      native_draw::j3d_depth::ProofDraw pd;
+      pd.info = info;
+      pd.pipeline = c.vkPipeline;
+      pd.layout = c.layout;
+      pd.sets[0] = c.sets[0];
+      pd.sets[1] = c.sets[1];
+      std::copy_n(c.offsets.begin(), c.offsetCount, pd.offsets);
+      pd.offsetCount = c.offsetCount;
+      for (uint32_t i = 0; i < c.vertexBindCount && i < 16; ++i)
+        pd.vertexBinds[pd.vertexBindCount++] = {c.vertexBinds[i].binding, c.vertexBinds[i].buffer, c.vertexBinds[i].offset,
+                                                c.vertexBinds[i].stride};
+      pd.indexed = c.indexed;
+      pd.indexBuffer = c.indexBuffer;
+      pd.indexOffset = c.indexOffset;
+      pd.indexType = c.indexType;
+      pd.drawCount = c.drawCount;
+      pd.viewport = vp;
+      pd.scissor = sc;
+      std::copy(c.colors.begin(), c.colors.end(), pd.colors);
+      pd.vsSupport = c.stage[0].supBytes.data();
+      pd.vsSupportSize = uint32_t(c.stage[0].supBytes.size());
+      pd.refused = c.refused;
+      native_draw::j3d_depth::proof(pd);
+    }
+    if (native_draw::j3d_depth::dump_on()) native_draw::j3d_depth::note(info);
+  }
 #endif
   if (aoPrivateReplay) {
     ao_private().frame = R.frame;
