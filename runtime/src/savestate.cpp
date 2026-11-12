@@ -2116,7 +2116,8 @@ void service(Cpu* c) {
     service_auto_save();
     // test aid: WWHD_TEST_WARP_AT=frame:stage:room:point[,...] enters that stage (the world editor's warp, the game's
     // own stage change at a spawn point) at each TV frame; a warp the game refuses then (no control yet) is retried
-    // every 30 frames until the next one is due
+    // every 30 frames until the next one is due. frame:stage:room:@x:y:z:angle is the editor's position form (Link's
+    // restart point in that room, as a void-out restarts it), for rooms without a spawn point of their own
     static std::vector<std::pair<uint64_t, Warp>> warps = [] {
         std::vector<std::pair<uint64_t, Warp>> v;
         const char* e = getenv("WWHD_TEST_WARP_AT");
@@ -2126,8 +2127,14 @@ void service(Cpu* c) {
             all = comma == std::string::npos ? "" : all.substr(comma + 1);
             unsigned long long frame = 0;
             char stage[16] = {};
-            int room = 0, point = 0;
-            if (sscanf(item.c_str(), "%llu:%15[^:]:%d:%d", &frame, stage, &room, &point) == 4) {
+            int room = 0, point = 0, angle = 0;
+            float x = 0, y = 0, z = 0;
+            if (sscanf(item.c_str(), "%llu:%15[^:]:%d:@%f:%f:%f:%d", &frame, stage, &room, &x, &y, &z, &angle) == 7) {
+                Warp w;
+                w.stage = stage, w.room = room, w.angle = angle, w.at_position = true;
+                w.pos[0] = x, w.pos[1] = y, w.pos[2] = z;
+                v.push_back({frame, w});
+            } else if (sscanf(item.c_str(), "%llu:%15[^:]:%d:%d", &frame, stage, &room, &point) == 4) {
                 Warp w;
                 w.stage = stage, w.room = room, w.point = point;
                 v.push_back({frame, w});
