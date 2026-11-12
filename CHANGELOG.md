@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Opening Settings with a held Select no longer switches the game to Off-TV Play** (#527, thanks @fayep). Holding
+  Select (Minus; Create on a DualSense, View on Xbox) for half a second opens Settings, but the game also got the
+  press, so the TV showed "Currently playing on Wii U GamePad", the sound left the TV mix and save states made from
+  the menu got the green Off-TV picture. While a hold could still open Settings, Select now stays from the game: a
+  short tap reaches it on release (Off-TV Play a moment later, as before), a hold that opens Settings never does,
+  and the tap that closes Settings doesn't either. Nothing changes when Select is part of another shortcut.
+
 - **Automatic picture-in-picture: no black box at the Game Over save question** (#528, thanks @fayep). At Game Over
   the game asks "Would you like to save?" on the TV and keeps the GamePad black; with the GamePad screen set to
   Automatic, the TV used to show that black GamePad picture as a box in its corner. The prompt no longer counts as a
