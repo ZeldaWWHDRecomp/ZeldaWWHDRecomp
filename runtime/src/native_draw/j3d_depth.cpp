@@ -186,6 +186,12 @@ void shape(const uint32_t* p, uint32_t n) {
 
 bool dump_on() { return !dump_cfg().dir.empty(); }
 
+// the program record's name of the J3D draw named last (its material's program)
+std::string program_name() {
+    uint32_t flags = 0;
+    return g_named || g_words[4] ? prog_name(g_words[4], &flags) : "?";
+}
+
 void note(const DrawInfo& d) {
     DumpCfg& c = dump_cfg();
     if (!g_named) return;
@@ -253,7 +259,9 @@ void note(const DrawInfo& d) {
 
 // ---------------------------------------------------------------- proof harness (WWHD_J3D_DEPTH_PROOF)
 const char* family_of(const ProofDraw& d, std::string& name);  // j3d_depth_family.cpp
-bool record_native(VkCommandBuffer cmd, const ProofDraw& d);    // j3d_depth_family.cpp
+bool record_native(VkCommandBuffer cmd, const ProofDraw& d, bool lod0);  // j3d_depth_family.cpp
+bool record_translated_lod0(VkCommandBuffer cmd, const ProofDraw& d);    // j3d_depth_family.cpp
+bool samples_texture(const ProofDraw& d);                                 // j3d_depth_family.cpp
 bool has_native(const std::string& name);                       // j3d_depth_family.cpp
 void report_unknown(const std::string& dir);                    // j3d_depth_family.cpp
 namespace {
@@ -264,6 +272,7 @@ struct ProofCfg {
     uint32_t every = 0;
     std::string dir;
     bool self = false;  // WWHD_J3D_DEPTH_PROOF_SELF=1: the second proof draw is the translated one again (harness check)
+    bool lod0 = false;  // WWHD_J3D_DEPTH_PROOF_LOD0=1: texture-reading draws compared with both programs reading LOD 0
     uint32_t maxPending = 64;
 };
 const ProofCfg& proof_cfg() {
@@ -276,6 +285,8 @@ const ProofCfg& proof_cfg() {
         if (!c.dir.empty()) { std::error_code ec; std::filesystem::create_directories(c.dir, ec); }
         const char* sf = std::getenv("WWHD_J3D_DEPTH_PROOF_SELF");
         c.self = sf && std::atoi(sf);
+        const char* l0 = std::getenv("WWHD_J3D_DEPTH_PROOF_LOD0");
+        c.lod0 = l0 && std::atoi(l0);
         LOG("[j3d-depth] proof: every %u depth-only J3D draw%s%s", c.every, c.self ? " (harness check: translated twice)" : "",
             c.dir.empty() ? "" : (", mismatches to " + c.dir).c_str());
         return c;
@@ -427,6 +438,8 @@ void proof(const ProofDraw& d) {
     if (!d.indexed || !d.pipeline || !d.info.depth || !d.info.depth->fmt.depth) return skip("draw form");
     std::string family;
     if (const char* why = family_of(d, family)) return skip(why);
+    const bool lod = c.lod0 && samples_texture(d);  // (the tolerance rule's proof: both programs read LOD 0)
+    if (lod) family += " @LOD0";
     FamilyStat& st = g_stats[family];
     ++st.samples;
     if (!c.self && !has_native(family)) return;  // (counted: a structure without a native program yet)
@@ -436,11 +449,15 @@ void proof(const ProofDraw& d) {
     const VkDeviceSize bytes = (VkDeviceSize(texels) * (d16 ? 2 : 4) + 255) & ~VkDeviceSize(255);
     end_encoder();  // (the next draw reopens its pass with LOAD)
     Buffer buf = create_readback_buffer(bytes * 2);
-    draw_into(t, 0, d, [&](VkCommandBuffer cmd) { record_translated(cmd, d); }, buf, 0);
     bool nativeOk = true;
+    draw_into(t, 0, d, [&](VkCommandBuffer cmd) {
+        if (lod) nativeOk = record_translated_lod0(cmd, d);
+        else record_translated(cmd, d);
+    }, buf, 0);
     draw_into(t, 1, d, [&](VkCommandBuffer cmd) {
-        if (c.self) record_translated(cmd, d);
-        else nativeOk = record_native(cmd, d);
+        if (!nativeOk) return;
+        if (c.self) { if (lod) nativeOk = record_translated_lod0(cmd, d); else record_translated(cmd, d); }
+        else nativeOk = record_native(cmd, d, lod);
     }, buf, bytes);
     derive_dependency(buf.use, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
     transition_buffer(buf, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
@@ -452,7 +469,7 @@ void proof(const ProofDraw& d) {
     R.completions.push_back([buf, texels, bytes, d16, w, h, format, family, nativeOk, frame, dir] {
         --g_pending;
         FamilyStat& st = g_stats[family];
-        if (!nativeOk) { ++g_skipped["native draw not recorded"]; return; }
+        if (!nativeOk) { ++g_skipped["proof draw not recorded: " + family]; return; }
         const uint8_t* base = static_cast<const uint8_t*>(buf.mapped);
         auto word = [&](int k, uint32_t i) -> uint32_t {
             const uint8_t* p = base + VkDeviceSize(k) * bytes;

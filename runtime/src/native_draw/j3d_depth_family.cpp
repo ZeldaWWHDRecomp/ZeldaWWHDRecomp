@@ -26,6 +26,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -222,21 +223,6 @@ void main() {
 }
 const char* kFragment = "#version 450\nvoid main() {}\n";
 
-VkShaderModule module(const std::string& src, bool vertex) {
-    std::string error;
-    auto words = gfxvk::vk::compile_glsl(src, vertex, &error);
-    if (words.empty()) {
-        LOG("[j3d-depth] native %s program did not compile: %s", vertex ? "vertex" : "fragment", error.c_str());
-        return VK_NULL_HANDLE;
-    }
-    VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-    ci.codeSize = words.size() * 4;
-    ci.pCode = words.data();
-    VkShaderModule m = VK_NULL_HANDLE;
-    if (gfxvk::vkCreateShaderModule(R.device, &ci, nullptr, &m) != VK_SUCCESS) return VK_NULL_HANDLE;
-    return m;
-}
-
 struct Native {
     VkDevice device = VK_NULL_HANDLE;
     VkDescriptorSetLayout set = VK_NULL_HANDLE;
@@ -270,37 +256,21 @@ const LatteParsedFetchShaderAttribute* attribute(const LatteFetchShader* fs, uin
     return nullptr;
 }
 
-// the native pipeline for this draw (family kind, streams, raster and depth state as the translated pipeline has them,
-// the private pass's attachment formats); null with WHY set when it cannot be made
-VkPipeline pipeline(const ProofDraw& d, Kind kind, const char** why) {
+// the raster, depth and attachment state of a proof pipeline: as the translated pipeline has them (cull, front face,
+// polygon offset, depth clamp from the draw's registers; depth LESS + write; the private pass's attachment formats,
+// colour writes off); appended to KEY
+struct Fixed {
+    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    std::array<VkFormat, 8> colorFormats{};
+    uint32_t ncolor = 0;
+};
+Fixed fixed_state(const ProofDraw& d, std::string& key) {
     using namespace gfxvk;
     const uint32_t* r = d.info.regs;
-    ensure_layout();
-    if (!g_native.layout) { *why = "native layout"; return VK_NULL_HANDLE; }
-    const bool clampVariant = !R.enabledFeatures.depthClamp && (r[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27));
-    std::vector<Stream> streams{{0, 0}};
-    if (kind == kSkin2 || kind == kSkin3) streams = {{0, 0}, {2, 1}, {4, 2}};
-    std::vector<VkVertexInputBindingDescription> bindings;
-    std::vector<VkVertexInputAttributeDescription> attributes;
-    char key[512];
-    int kn = std::snprintf(key, sizeof key, "%d:%d:", int(kind), int(clampVariant));
-    for (const Stream& s : streams) {
-        const LatteParsedFetchShaderBufferGroup* g = nullptr;
-        const auto* a = attribute(d.info.fs, s.semantic, &g);
-        if (!a) { *why = "stream missing"; return VK_NULL_HANDLE; }
-        if (a->fetchType != LatteConst::VertexFetchType2::VERTEX_DATA) { *why = "instance stream"; return VK_NULL_HANDLE; }
-        const VkFormat native = vk::vertex_format(a->format);
-        if (R.vertexFormats.fallback(native)) { *why = "vertex format fallback"; return VK_NULL_HANDLE; }
-        const uint32_t stride = (r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g->attributeBufferIndex * 7 + 2] >> 11) & 0xFFFF;
-        if (std::none_of(bindings.begin(), bindings.end(), [&](const auto& b) { return b.binding == g->attributeBufferIndex; }))
-            bindings.push_back({g->attributeBufferIndex, stride, VK_VERTEX_INPUT_RATE_VERTEX});
-        attributes.push_back({s.location, g->attributeBufferIndex, native, a->offset});
-        kn += std::snprintf(key + kn, sizeof key - kn, "%u/%u/%d/%u/%u,", s.location, g->attributeBufferIndex, int(native),
-                            a->offset, stride);
-    }
+    Fixed f;
     LATTE_PA_SU_SC_MODE_CNTL pm;
     std::memcpy(&pm, r + REGADDR::PA_SU_SC_MODE_CNTL, 4);
-    VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+    auto& rs = f.rs;
     rs.polygonMode = VK_POLYGON_MODE_FILL;
     rs.depthClampEnable = (r[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27)) && R.enabledFeatures.depthClamp;
     rs.lineWidth = 1;
@@ -311,20 +281,37 @@ VkPipeline pipeline(const ProofDraw& d, Kind kind, const char** why) {
     rs.depthBiasConstantFactor = f32(r[REGADDR::PA_SU_POLY_OFFSET_FRONT_OFFSET]);
     rs.depthBiasSlopeFactor = f32(r[REGADDR::PA_SU_POLY_OFFSET_FRONT_SCALE]) / 16;
     rs.depthBiasClamp = rs.depthBiasEnable ? f32(r[REGADDR::PA_SU_POLY_OFFSET_CLAMP]) : 0.0f;
-    std::array<VkFormat, 8> colorFormats{};
-    uint32_t ncolor = 0;
     for (int i = 0; i < 8; ++i)
-        if (d.colors[i]) { colorFormats[i] = d.colors[i]->fmt.pixel; ncolor = i + 1; }
-    kn += std::snprintf(key + kn, sizeof key - kn, "|%08x|%08x|%08x|%08x|%08x|%d|%d", r[REGADDR::PA_SU_SC_MODE_CNTL],
-                        r[REGADDR::PA_CL_CLIP_CNTL], r[REGADDR::PA_SU_POLY_OFFSET_FRONT_OFFSET],
-                        r[REGADDR::PA_SU_POLY_OFFSET_FRONT_SCALE], r[REGADDR::PA_SU_POLY_OFFSET_CLAMP],
-                        int(d.info.depth->fmt.pixel), int(d.info.depth->fmt.stencil));
-    for (uint32_t i = 0; i < ncolor; ++i) kn += std::snprintf(key + kn, sizeof key - kn, ",%d", int(colorFormats[i]));
-    if (auto it = g_native.pipelines.find(key); it != g_native.pipelines.end()) {
-        if (!it->second) *why = "native pipeline failed";
+        if (d.colors[i]) { f.colorFormats[i] = d.colors[i]->fmt.pixel; f.ncolor = i + 1; }
+    char b[160];
+    std::snprintf(b, sizeof b, "|%08x|%08x|%08x|%08x|%08x|%d|%d", r[REGADDR::PA_SU_SC_MODE_CNTL], r[REGADDR::PA_CL_CLIP_CNTL],
+                  r[REGADDR::PA_SU_POLY_OFFSET_FRONT_OFFSET], r[REGADDR::PA_SU_POLY_OFFSET_FRONT_SCALE],
+                  r[REGADDR::PA_SU_POLY_OFFSET_CLAMP], int(d.info.depth->fmt.pixel), int(d.info.depth->fmt.stencil));
+    key += b;
+    for (uint32_t i = 0; i < f.ncolor; ++i) key += "," + std::to_string(int(f.colorFormats[i]));
+    return f;
+}
+
+std::map<std::string, VkPipeline> g_pipelines;  // every proof pipeline, by its key
+VkPipeline create_pipeline(const ProofDraw& d, VkPipelineLayout layout, const std::vector<uint32_t>& vsWords,
+                           const std::vector<uint32_t>& psWords, const std::vector<VkVertexInputBindingDescription>& bindings,
+                           const std::vector<VkVertexInputAttributeDescription>& attributes, std::string key,
+                           const char** why) {
+    using namespace gfxvk;
+    const Fixed f = fixed_state(d, key);
+    if (auto it = g_pipelines.find(key); it != g_pipelines.end()) {
+        if (!it->second) *why = "proof pipeline failed";
         return it->second;
     }
-    VkShaderModule vs = module(vertex_source(kind, clampVariant), true), fs = module(kFragment, false);
+    auto module = [](const std::vector<uint32_t>& w) {
+        VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        ci.codeSize = w.size() * 4;
+        ci.pCode = w.data();
+        VkShaderModule m = VK_NULL_HANDLE;
+        if (w.empty() || vkCreateShaderModule(R.device, &ci, nullptr, &m) != VK_SUCCESS) return VkShaderModule(VK_NULL_HANDLE);
+        return m;
+    };
+    VkShaderModule vs = module(vsWords), fs = module(psWords);
     VkPipeline pipe = VK_NULL_HANDLE;
     if (vs && fs) {
         VkPipelineShaderStageCreateInfo stages[2]{};
@@ -351,15 +338,15 @@ VkPipeline pipeline(const ProofDraw& d, Kind kind, const char** why) {
         ds.depthCompareOp = VK_COMPARE_OP_LESS;
         std::array<VkPipelineColorBlendAttachmentState, 8> cb{};  // (colour writes off, as the draw's mask)
         VkPipelineColorBlendStateCreateInfo bs{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        bs.attachmentCount = ncolor;
+        bs.attachmentCount = f.ncolor;
         bs.pAttachments = cb.data();
         VkDynamicState dyn[] = {VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR};
         VkPipelineDynamicStateCreateInfo dsi{VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO};
         dsi.dynamicStateCount = 2;
         dsi.pDynamicStates = dyn;
         VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
-        rendering.colorAttachmentCount = ncolor;
-        rendering.pColorAttachmentFormats = colorFormats.data();
+        rendering.colorAttachmentCount = f.ncolor;
+        rendering.pColorAttachmentFormats = f.colorFormats.data();
         rendering.depthAttachmentFormat = d.info.depth->fmt.pixel;
         rendering.stencilAttachmentFormat = d.info.depth->fmt.stencil ? d.info.depth->fmt.pixel : VK_FORMAT_UNDEFINED;
         VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
@@ -369,34 +356,303 @@ VkPipeline pipeline(const ProofDraw& d, Kind kind, const char** why) {
         ci.pVertexInputState = &vi;
         ci.pInputAssemblyState = &ia;
         ci.pViewportState = &vp;
-        ci.pRasterizationState = &rs;
+        ci.pRasterizationState = &f.rs;
         ci.pMultisampleState = &ms;
         ci.pDepthStencilState = &ds;
         ci.pColorBlendState = &bs;
         ci.pDynamicState = &dsi;
-        ci.layout = g_native.layout;
+        ci.layout = layout;
         if (vkCreateGraphicsPipelines(R.device, R.pipelineCache, 1, &ci, nullptr, &pipe) != VK_SUCCESS) pipe = VK_NULL_HANDLE;
     }
     if (vs) vkDestroyShaderModule(R.device, vs, nullptr);
     if (fs) vkDestroyShaderModule(R.device, fs, nullptr);
-    LOG("[j3d-depth] native pipeline %s%s", key, pipe ? "" : ": FAILED");
-    g_native.pipelines.emplace(key, pipe);
-    if (!pipe) *why = "native pipeline failed";
+    LOG("[j3d-depth] proof pipeline %s%s", key.c_str(), pipe ? "" : ": FAILED");
+    g_pipelines.emplace(key, pipe);
+    if (!pipe) *why = "proof pipeline failed";
     return pipe;
 }
 
-// a vertex uniform block's bytes as the draw read them (the submitted copy, else guest memory)
-const uint8_t* block(const uint32_t* r, uint32_t loc, uint32_t* size) {
-    const uint32_t addr = r[mmSQ_VTX_UNIFORM_BLOCK_START + loc * 7];
-    *size = std::min<uint32_t>(r[mmSQ_VTX_UNIFORM_BLOCK_START + loc * 7 + 1] + 1, 0x10000);
+std::vector<uint32_t> words(const std::string& src, bool vertex, const char* what) {
+    std::string error;
+    auto w = gfxvk::vk::compile_glsl(src, vertex, &error);
+    if (w.empty()) LOG("[j3d-depth] %s %s program did not compile: %s", what, vertex ? "vertex" : "pixel", error.c_str());
+    return w;
+}
+
+// the hand-written families' pipeline (their streams at locations 0-2)
+VkPipeline pipeline(const ProofDraw& d, Kind kind, const char** why) {
+    using namespace gfxvk;
+    const uint32_t* r = d.info.regs;
+    ensure_layout();
+    if (!g_native.layout) { *why = "native layout"; return VK_NULL_HANDLE; }
+    const bool clampVariant = !R.enabledFeatures.depthClamp && (r[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27));
+    std::vector<Stream> streams{{0, 0}};
+    if (kind == kSkin2 || kind == kSkin3) streams = {{0, 0}, {2, 1}, {4, 2}};
+    std::vector<VkVertexInputBindingDescription> bindings;
+    std::vector<VkVertexInputAttributeDescription> attributes;
+    std::string key = "hand:" + std::to_string(int(kind)) + ":" + std::to_string(int(clampVariant)) + ":";
+    for (const Stream& s : streams) {
+        const LatteParsedFetchShaderBufferGroup* g = nullptr;
+        const auto* a = attribute(d.info.fs, s.semantic, &g);
+        if (!a) { *why = "stream missing"; return VK_NULL_HANDLE; }
+        if (a->fetchType != LatteConst::VertexFetchType2::VERTEX_DATA) { *why = "instance stream"; return VK_NULL_HANDLE; }
+        const VkFormat native = vk::vertex_format(a->format);
+        if (R.vertexFormats.fallback(native)) { *why = "vertex format fallback"; return VK_NULL_HANDLE; }
+        const uint32_t stride = (r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g->attributeBufferIndex * 7 + 2] >> 11) & 0xFFFF;
+        if (std::none_of(bindings.begin(), bindings.end(), [&](const auto& b) { return b.binding == g->attributeBufferIndex; }))
+            bindings.push_back({g->attributeBufferIndex, stride, VK_VERTEX_INPUT_RATE_VERTEX});
+        attributes.push_back({s.location, g->attributeBufferIndex, native, a->offset});
+        key += std::to_string(s.location) + "/" + std::to_string(g->attributeBufferIndex) + "/" + std::to_string(int(native)) +
+               "/" + std::to_string(a->offset) + "/" + std::to_string(stride) + ",";
+    }
+    struct Words { std::vector<uint32_t> vs, ps; };
+    static std::map<int, Words> compiled;  // (kind, clamp variant)
+    Words& w = compiled[int(kind) * 2 + int(clampVariant)];
+    if (w.vs.empty()) { w.vs = words(vertex_source(kind, clampVariant), true, "native"); w.ps = words(kFragment, false, "native"); }
+    return create_pipeline(d, g_native.layout, w.vs, w.ps, bindings, attributes, key, why);
+}
+
+// every attribute the program reads, at the locations of MAPPING (as the translated pipeline fetches them)
+bool all_streams(const ProofDraw& d, const int8_t* mapping, std::vector<VkVertexInputBindingDescription>& bindings,
+                 std::vector<VkVertexInputAttributeDescription>& attributes, std::string& key, const char** why) {
+    using namespace gfxvk;
+    const uint32_t* r = d.info.regs;
+    if (R.vertexDiagnostics.cpuClasses) { *why = "CPU-converted vertex classes"; return false; }
+    for (const auto& g : d.info.fs->bufferGroups) {
+        bool used = false;
+        for (int i = 0; i < g.attribCount; ++i) {
+            const auto& a = g.attrib[i];
+            const int loc = mapping[a.semanticId];
+            if (loc < 0) continue;
+            if (a.fetchType != LatteConst::VertexFetchType2::VERTEX_DATA) { *why = "instance stream"; return false; }
+            const VkFormat native = vk::vertex_format(a.format);
+            if (native == VK_FORMAT_UNDEFINED || R.vertexFormats.fallback(native)) { *why = "vertex format"; return false; }
+            attributes.push_back({uint32_t(loc), g.attributeBufferIndex, native, a.offset});
+            key += std::to_string(loc) + "/" + std::to_string(int(native)) + "/" + std::to_string(a.offset) + ",";
+            used = true;
+        }
+        if (!used) continue;
+        const uint32_t stride = (r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7 + 2] >> 11) & 0xFFFF;
+        bindings.push_back({g.attributeBufferIndex, stride, VK_VERTEX_INPUT_RATE_VERTEX});
+        key += "b" + std::to_string(g.attributeBufferIndex) + "/" + std::to_string(stride) + ";";
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- LOD 0 (the tolerance rule's proof)
+// every implicit-LOD sample of a pixel texture unit (texture(unit, coord[, bias])) read at LOD 0 instead:
+// textureLod(unit, coord, 0.0). False when the program has another implicit-LOD lookup (offset, projection, gather).
+bool lod0(std::string& t) {
+    if (t.find("textureOffset(") != std::string::npos || t.find("textureProj(") != std::string::npos ||
+        t.find("textureGather") != std::string::npos)
+        return false;
+    std::string out;
+    size_t i = 0;
+    for (;;) {
+        size_t k = t.find("texture(", i);
+        if (k == std::string::npos) break;
+        if (k && (std::isalnum(uint8_t(t[k - 1])) || t[k - 1] == '_')) { out += t.substr(i, k + 8 - i); i = k + 8; continue; }
+        // split the arguments at top-level commas
+        size_t j = k + 8;
+        int depth = 0;
+        std::vector<std::string> args(1);
+        for (; j < t.size(); ++j) {
+            const char c = t[j];
+            if (c == '(') ++depth;
+            if (c == ')') { if (!depth) break; --depth; }
+            if (c == ',' && !depth) { args.emplace_back(); continue; }
+            args.back() += c;
+        }
+        if (j >= t.size() || args.size() < 2 || args[0].find("textureUnitPS") == std::string::npos) return false;
+        out += t.substr(i, k - i) + "textureLod(" + args[0] + "," + args[1] + ", 0.0)";
+        i = j + 1;
+    }
+    out += t.substr(i);
+    t = out;
+    return true;
+}
+
+// ---------------------------------------------------------------- generated family programs
+// A family without a hand-written program gets one made from its first member's translated programs: the
+// arithmetic is that text unchanged (it is the specification), the interface is replaced: every remapped uniform
+// read becomes a read of the block it names (own uniform buffers per block location, the whole guest block), the
+// buffer-mode blocks and the textures move to the native set, the support scalars (alpha test reference, the
+// emulated sampler LOD bias, texture scales) to one material block. Nothing per program remains in the interface.
+struct Generated {
+    std::string why;  // empty: made
+    std::vector<uint32_t> vs, ps, psLod0;
+    std::vector<uint32_t> vsBlocks, psBlocks, units;
+    bool support = false;
+    int8_t mapping[LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS]{};
+    VkDescriptorSetLayout set = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+};
+std::map<std::pair<uint64_t, uint64_t>, Generated> g_generated;
+
+constexpr uint32_t kPsBlockBase = 16, kSupportBinding = 32, kTextureBase = 40;
+
+bool rewrite_stage(const gfxvk::vk::Shader* s, std::string& t, std::vector<uint32_t>& blocks, std::vector<uint32_t>& units,
+                   bool& support, std::string& why) {
+    const bool vertex = s->vertex;
+    const char* S = vertex ? "VS" : "PS";
+    const uint32_t base = vertex ? 0 : kPsBlockBase;
+    t = s->source_text();
+    // the translation's support block (the VULKAN branch's declaration)
+    if (size_t k = t.find("uniform ufBlock"); k != std::string::npos) {
+        const size_t from = t.rfind('\n', k) + 1, to = t.find("};", k);
+        if (to == std::string::npos) { why = "support block"; return false; }
+        t.erase(from, to + 2 - from);
+    }
+    // buffer-mode blocks: to the native set
+    std::vector<uint32_t> buffers;
+    for (size_t k = 0; (k = t.find("UNIFORM_BUFFER_LAYOUT(", k)) != std::string::npos;) {
+        const size_t close = t.find(')', k);
+        const std::string name = std::string("uniformBlock") + S;
+        const size_t nm = t.find(name, close);
+        if (close == std::string::npos || nm == std::string::npos || nm > close + 32) { k = close; continue; }
+        const uint32_t loc = uint32_t(std::atoi(t.c_str() + nm + name.size()));
+        const std::string repl = "layout(set = 0, binding = " + std::to_string(base + loc) + ", std140)";
+        t.replace(k, close + 1 - k, repl);
+        buffers.push_back(loc);
+        blocks.push_back(loc);
+        k += repl.size();
+    }
+    // remapped reads -> the block they name
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> remap;
+    for (const auto& g : s->dec->list_remappedUniformEntries_bufferGroups)
+        for (const auto& e : g.entries) remap[e.mappedIndexOffset / 16] = {g.kcacheBankIdOffset / 28u, e.indexOffset / 16u};
+    std::map<uint32_t, uint32_t> remapped;  // location -> vec4 count
+    const std::string arr = std::string("uf_remapped") + S + "[";
+    for (size_t k = 0; (k = t.find(arr, k)) != std::string::npos;) {
+        const size_t close = t.find(']', k);
+        const uint32_t idx = uint32_t(std::atoi(t.c_str() + k + arr.size()));
+        auto it = remap.find(idx);
+        std::string repl;
+        if (it == remap.end()) repl = "ivec4(0)";  // (the inactive branch's declaration: never compiled)
+        else {
+            const auto [loc, vec] = it->second;
+            if (std::find(buffers.begin(), buffers.end(), loc) != buffers.end())
+                repl = "floatBitsToInt(uf_block" + std::string(S) + std::to_string(loc) + "[" + std::to_string(vec) + "])";
+            else {
+                repl = "fam_" + std::string(vertex ? "v" : "p") + std::to_string(loc) + "[" + std::to_string(vec) + "]";
+                remapped[loc] = std::max(remapped[loc], vec + 1);
+            }
+        }
+        t.replace(k, close + 1 - k, repl);
+        k += repl.size();
+    }
+    // support scalars
+    auto replace_all = [&](const std::string& from, const std::string& to) {
+        for (size_t k = 0; (k = t.find(from, k)) != std::string::npos; k += to.size()) { t.replace(k, from.size(), to); support = true; }
+    };
+    replace_all("uf_alphaTestRef", "fam_s.x");
+    for (int u = 15; u >= 0; --u) {
+        replace_all("uf_tex" + std::to_string(u) + "LodBias", "fam_lod[" + std::to_string(u) + "].x");
+        replace_all("uf_tex" + std::to_string(u) + "Scale", "fam_tsc[" + std::to_string(u) + "].xy");
+    }
+    // textures: to the native set
+    for (size_t k = 0; (k = t.find("TEXTURE_LAYOUT(", k)) != std::string::npos;) {
+        const size_t close = t.find(')', k), semi = t.find(';', close);
+        const std::string unit = std::string("textureUnit") + S;
+        const size_t nm = t.find(unit, close);
+        if (close == std::string::npos || semi == std::string::npos || nm == std::string::npos || nm > semi) { k = close; continue; }
+        if (vertex) { why = "vertex textures"; return false; }
+        const uint32_t u = uint32_t(std::atoi(t.c_str() + nm + unit.size()));
+        const std::string repl = "layout(set = 0, binding = " + std::to_string(kTextureBase + u) + ")";
+        t.replace(k, close + 1 - k, repl);
+        units.push_back(u);
+        k += repl.size();
+    }
+    // anything else of the translation's interface: not supported
+    for (size_t k = 0; (k = t.find("uf_", k)) != std::string::npos; ++k)
+        if (t.compare(k, 8, "uf_block") != 0) { why = "support uniform " + t.substr(k, 24); return false; }
+    std::string decl;
+    for (const auto& [loc, n] : remapped) {
+        decl += "layout(set = 0, binding = " + std::to_string(base + loc) + ", std140) uniform Fam" + (vertex ? "V" : "P") +
+                std::to_string(loc) + " { ivec4 fam_" + (vertex ? "v" : "p") + std::to_string(loc) + "[" + std::to_string(n) + "]; };\n";
+        blocks.push_back(loc);
+    }
+    if (support && !vertex)
+        decl += "layout(set = 0, binding = " + std::to_string(kSupportBinding) +
+                ", std140) uniform FamS { vec4 fam_s; vec4 fam_lod[16]; vec4 fam_tsc[16]; };\n";
+    const size_t main = t.find("void main()");
+    if (main == std::string::npos) { why = "no main"; return false; }
+    t.insert(main, decl);
+    return true;
+}
+
+Generated& generated(const ProofDraw& d, uint64_t vsHash, uint64_t psHash) {
+    using namespace gfxvk;
+    auto [it, fresh] = g_generated.try_emplace({vsHash, psHash});
+    Generated& g = it->second;
+    if (!fresh) return g;
+    const auto* vs = d.info.vs;
+    const auto* ps = d.info.ps;
+    if (ps->gatherUnits) { g.why = "gathering pixel program"; return g; }
+    std::string vt, pt, why;
+    std::vector<uint32_t> none;
+    bool vsupport = false;
+    if (!rewrite_stage(vs, vt, g.vsBlocks, none, vsupport, why) || !rewrite_stage(ps, pt, g.psBlocks, g.units, g.support, why)) {
+        g.why = why;
+        return g;
+    }
+    if (vsupport) { g.why = "vertex support uniforms"; return g; }
+    std::memcpy(g.mapping, vs->mapping.attributeMapping, sizeof g.mapping);
+    g.vs = words(vt, true, "generated");
+    g.ps = words(pt, false, "generated");
+    std::string pl = pt;
+    if (lod0(pl)) g.psLod0 = words(pl, false, "generated LOD 0");
+    if (g.vs.empty() || g.ps.empty()) { g.why = "generated program did not compile"; return g; }
+    std::vector<VkDescriptorSetLayoutBinding> b;
+    for (uint32_t loc : g.vsBlocks) b.push_back({loc, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr});
+    for (uint32_t loc : g.psBlocks)
+        b.push_back({kPsBlockBase + loc, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+    if (g.support) b.push_back({kSupportBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+    for (uint32_t u : g.units)
+        b.push_back({kTextureBase + u, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr});
+    VkDescriptorSetLayoutCreateInfo ci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+    ci.bindingCount = uint32_t(b.size());
+    ci.pBindings = b.data();
+    vkCreateDescriptorSetLayout(R.device, &ci, nullptr, &g.set);
+    VkPipelineLayoutCreateInfo li{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    li.setLayoutCount = 1;
+    li.pSetLayouts = &g.set;
+    vkCreatePipelineLayout(R.device, &li, nullptr, &g.layout);
+    if (!g.layout) g.why = "generated layout";
+    LOG("[j3d-depth] generated family %016llx/%016llx: %zu vertex blocks, %zu pixel blocks, %zu textures%s%s",
+        (unsigned long long)vsHash, (unsigned long long)psHash, g.vsBlocks.size(), g.psBlocks.size(), g.units.size(),
+        g.support ? ", support scalars" : "", g.psLod0.empty() ? ", no LOD-0 variant" : "");
+    return g;
+}
+
+// a uniform block's bytes as the draw read them (the submitted copy, else guest memory)
+const uint8_t* block(const uint32_t* r, uint32_t loc, uint32_t* size, bool vertex = true) {
+    const uint32_t start = vertex ? mmSQ_VTX_UNIFORM_BLOCK_START : mmSQ_PS_UNIFORM_BLOCK_START;
+    const uint32_t addr = r[start + loc * 7];
+    *size = std::min<uint32_t>(r[start + loc * 7 + 1] + 1, 0x10000);
     if (!addr) return nullptr;
     if (const uint8_t* sub = gx2::submitted_uniform_block(addr, *size)) return sub;
     return static_cast<const uint8_t*>(mem::ptr(addr));
 }
 
+bool generate_on() {
+    static const bool on = [] { const char* e = std::getenv("WWHD_J3D_DEPTH_GENERATE"); return e && std::atoi(e); }();
+    return on;
+}
+const char* intern(const std::string& s) {
+    static std::set<std::string> strings;
+    return strings.insert(s).first->c_str();
+}
+std::unordered_map<uint64_t, uint64_t> g_psHash;  // pixel shader key -> its structure hash
+struct Sample { const Family* hand = nullptr; Generated* gen = nullptr; uint64_t vsHash = 0, psHash = 0; };
+Sample g_sample;  // the sample family_of classified last (proof() records it right after)
+
 }  // namespace
 
+std::string program_name();  // j3d_depth.cpp: the draw's program record name
+
 const char* family_of(const ProofDraw& d, std::string& name) {
+    g_sample = {};
     const auto* vs = d.info.vs;
     const auto* ps = d.info.ps;
     if (!vs || !vs->dec || !ps || !ps->dec) return "no programs";
@@ -409,35 +665,189 @@ const char* family_of(const ProofDraw& d, std::string& name) {
             if (f.vs == it->second.vsHash) it->second.family = &f;
     }
     const Classified& c = it->second;
-    if (!c.family) {
-        auto& u = g_unknown[c.vsHash];
-        if (!u.first++) {
-            std::string text;
-            structure_hash(vs, &text);
-            u.second = text;
-            LOG("[j3d-depth] vertex structure %016llx not a family (pixel program %s)", (unsigned long long)c.vsHash,
-                colour_only(ps) ? "colour only" : "with texture/discard");
-        }
-        char b[64];
-        std::snprintf(b, sizeof b, "no family (%016llx)", (unsigned long long)c.vsHash);
-        name = b;
-        return nullptr;  // counted under its hash, drawn translated twice (harness check) or not at all
+    g_sample.vsHash = c.vsHash;
+    if (c.family && colour_only(ps)) {
+        g_sample.hand = c.family;
+        name = c.family->name;
+        return nullptr;
     }
-    if (!colour_only(ps)) return "family vertex program with a texture-reading pixel program";
-    name = c.family->name;
-    return nullptr;
+    auto [pit, pfresh] = g_psHash.try_emplace(ps->key);
+    if (pfresh) pit->second = structure_hash(ps);
+    g_sample.psHash = pit->second;
+    char b[96];
+    if (generate_on()) {
+        Generated& g = generated(d, c.vsHash, pit->second);
+        if (!g.why.empty()) return intern("generated program: " + g.why);
+        g_sample.gen = &g;
+        static std::map<std::pair<uint64_t, uint64_t>, std::string> names;  // (the first member's name)
+        auto& n = names[{c.vsHash, pit->second}];
+        if (n.empty()) {
+            std::snprintf(b, sizeof b, "gen %016llx/%016llx ", (unsigned long long)c.vsHash, (unsigned long long)pit->second);
+            n = b + program_name();
+        }
+        name = n;
+        return nullptr;
+    }
+    auto& u = g_unknown[c.vsHash];
+    if (!u.first++) {
+        std::string text;
+        structure_hash(vs, &text);
+        u.second = text;
+    }
+    std::snprintf(b, sizeof b, "no family (%016llx)", (unsigned long long)c.vsHash);
+    name = b;
+    return nullptr;  // counted under its hash, drawn translated twice (harness check) or not at all
 }
 
-// whether the sample has a native program (else the proof records it but does not compare)
-bool has_native(const std::string& name) {
-    for (const Family& f : families()) if (name == f.name) return true;
-    return false;
-}
+// whether the sample family_of classified last has a native program (else the proof counts it but does not compare)
+bool has_native(const std::string&) { return g_sample.hand || g_sample.gen; }
+bool samples_texture(const ProofDraw& d) { return d.info.ps && d.info.ps->dec && d.info.ps->dec->textureUnitListCount; }
 
-bool record_native(VkCommandBuffer cmd, const ProofDraw& d) {
+// the draw's translated programs with the pixel program's texture reads at LOD 0 (the tolerance rule's proof), on
+// the draw's own pipeline layout, sets and binds
+bool record_translated_lod0(VkCommandBuffer cmd, const ProofDraw& d) {
     using namespace gfxvk;
-    const Family* fam = nullptr;
-    if (auto it = g_byShader.find(d.info.vs->key); it != g_byShader.end()) fam = it->second.family;
+    struct Words { std::vector<uint32_t> w; bool tried = false; };
+    static std::unordered_map<uint64_t, Words> vsw, psw;
+    Words& v = vsw[d.info.vs->key];
+    if (!v.tried) { v.tried = true; v.w = words(d.info.vs->source_text(), true, "translated"); }
+    Words& p = psw[d.info.ps->key];
+    if (!p.tried) {
+        p.tried = true;
+        std::string t = d.info.ps->source_text();
+        if (lod0(t)) p.w = words(t, false, "translated LOD 0");
+    }
+    if (v.w.empty() || p.w.empty()) return false;
+    std::vector<VkVertexInputBindingDescription> bindings;
+    std::vector<VkVertexInputAttributeDescription> attributes;
+    char k[64];
+    std::snprintf(k, sizeof k, "tl0:%016llx:%016llx:", (unsigned long long)d.info.vs->key, (unsigned long long)d.info.ps->key);
+    std::string key = k;
+    const char* why = nullptr;
+    if (!all_streams(d, d.info.vs->mapping.attributeMapping, bindings, attributes, key, &why)) return false;
+    key += ":" + std::to_string(uint64_t(d.layout));
+    VkPipeline pipe = create_pipeline(d, d.layout, v.w, p.w, bindings, attributes, key, &why);
+    if (!pipe) return false;
+    record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    record::vkCmdSetViewport(cmd, 0, 1, &d.viewport);
+    record::vkCmdSetScissor(cmd, 0, 1, &d.scissor);
+    record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, d.layout, 0, 2, d.sets, d.offsetCount, d.offsets);
+    for (uint32_t i = 0; i < d.vertexBindCount; ++i)
+        record::vkCmdBindVertexBuffers(cmd, d.vertexBinds[i].binding, 1, &d.vertexBinds[i].buffer, &d.vertexBinds[i].offset);
+    record::vkCmdBindIndexBuffer(cmd, d.indexBuffer, d.indexOffset, d.indexType);
+    record::vkCmdDrawIndexed(cmd, d.drawCount, 1, 0, int32_t(d.info.baseVertex), 0);
+    return true;
+}
+
+namespace {
+void bind_and_draw(VkCommandBuffer cmd, const ProofDraw& d, VkPipeline pipe, VkPipelineLayout layout, VkDescriptorSet set) {
+    using namespace gfxvk;
+    record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
+    record::vkCmdSetViewport(cmd, 0, 1, &d.viewport);
+    record::vkCmdSetScissor(cmd, 0, 1, &d.scissor);
+    record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &set, 0, nullptr);
+    for (uint32_t i = 0; i < d.vertexBindCount; ++i)
+        record::vkCmdBindVertexBuffers(cmd, d.vertexBinds[i].binding, 1, &d.vertexBinds[i].buffer, &d.vertexBinds[i].offset);
+    record::vkCmdBindIndexBuffer(cmd, d.indexBuffer, d.indexOffset, d.indexType);
+    record::vkCmdDrawIndexed(cmd, d.drawCount, 1, 0, int32_t(d.info.baseVertex), 0);
+}
+VkDescriptorSet allocate(VkDescriptorSetLayout layout) {
+    using namespace gfxvk;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    alloc.descriptorPool = R.descriptorPool;
+    alloc.descriptorSetCount = 1;
+    alloc.pSetLayouts = &layout;
+    return vkAllocateDescriptorSets(R.device, &alloc, &set) == VK_SUCCESS ? set : VK_NULL_HANDLE;
+}
+
+// a generated family's native draw: its interface filled from the draw (whole guest blocks per location, the support
+// scalars from the pixel program's support bytes, the draw's own image views and samplers)
+bool record_generated(VkCommandBuffer cmd, const ProofDraw& d, Generated& g, bool lod) {
+    using namespace gfxvk;
+    const uint32_t* r = d.info.regs;
+    const auto* ps = d.info.ps;
+    const std::vector<uint32_t>& pw = lod ? g.psLod0 : g.ps;
+    if (pw.empty()) return false;
+    for (int i = 0; i < LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS; ++i)
+        if (g.mapping[i] != d.info.vs->mapping.attributeMapping[i]) return false;
+    std::vector<VkVertexInputBindingDescription> bindings;
+    std::vector<VkVertexInputAttributeDescription> attributes;
+    char k[80];
+    std::snprintf(k, sizeof k, "gen:%016llx:%016llx:%d:", (unsigned long long)g_sample.vsHash,
+                  (unsigned long long)g_sample.psHash, int(lod));
+    std::string key = k;
+    const char* why = nullptr;
+    if (!all_streams(d, g.mapping, bindings, attributes, key, &why)) return false;
+    VkPipeline pipe = create_pipeline(d, g.layout, g.vs, pw, bindings, attributes, key, &why);
+    if (!pipe) return false;
+    VkDescriptorSet set = allocate(g.set);
+    if (!set) return false;
+    std::vector<VkWriteDescriptorSet> w;
+    std::vector<VkDescriptorBufferInfo> bi;
+    std::vector<VkDescriptorImageInfo> ii;
+    bi.reserve(40);
+    ii.reserve(16);
+    const VkDeviceSize align = std::max<VkDeviceSize>(256, R.properties.limits.minUniformBufferOffsetAlignment);
+    auto ubo = [&](uint32_t binding, const void* data, uint32_t size) {
+        size = std::min<uint32_t>(size, R.properties.limits.maxUniformBufferRange);
+        UploadSlice sl = allocate_upload(size, align);
+        std::memcpy(sl.mapped, data, size);
+        bi.push_back({sl.buffer, sl.offset, size});
+        VkWriteDescriptorSet x{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        x.dstSet = set; x.dstBinding = binding; x.descriptorCount = 1;
+        x.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; x.pBufferInfo = &bi.back();
+        w.push_back(x);
+    };
+    for (uint32_t loc : g.vsBlocks) {
+        uint32_t size = 0;
+        const uint8_t* b = block(r, loc, &size, true);
+        if (!b) return false;
+        ubo(loc, b, size);
+    }
+    for (uint32_t loc : g.psBlocks) {
+        uint32_t size = 0;
+        const uint8_t* b = block(r, loc, &size, false);
+        if (!b) return false;
+        ubo(kPsBlockBase + loc, b, size);
+    }
+    if (g.support) {
+        float sv[33 * 4]{};
+        const uint8_t* sup = d.psSupport;
+        const uint32_t n = d.psSupportSize;
+        auto get = [&](int32_t off, float* dst, int count) {
+            if (off >= 0 && sup && uint32_t(off) + 4u * count <= n) std::memcpy(dst, sup + off, 4u * count);
+        };
+        get(ps->uniforms.offset_alphaTestRef, &sv[0], 1);
+        for (int u = 0; u < 16; ++u) {
+            get(ps->uniforms.offset_texLodBias[u], &sv[4 + u * 4], 1);
+            get(ps->uniforms.offset_texScale[u], &sv[4 + 64 + u * 4], 2);
+        }
+        if (!sup) return false;
+        ubo(kSupportBinding, sv, sizeof sv);
+    }
+    for (uint32_t u : g.units) {
+        const int binding = ps->mapping.textureUnitToBindingPoint[u];
+        const ProofDraw::Image* img = nullptr;
+        for (uint32_t i = 0; i < d.psImageCount; ++i)
+            if (int(d.psImages[i].binding) == binding) img = &d.psImages[i];
+        if (!img) return false;
+        ii.push_back(img->info);
+        VkWriteDescriptorSet x{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+        x.dstSet = set; x.dstBinding = kTextureBase + u; x.descriptorCount = 1;
+        x.descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER; x.pImageInfo = &ii.back();
+        w.push_back(x);
+    }
+    vkUpdateDescriptorSets(R.device, uint32_t(w.size()), w.data(), 0, nullptr);
+    bind_and_draw(cmd, d, pipe, g.layout, set);
+    return true;
+}
+}  // namespace
+
+bool record_native(VkCommandBuffer cmd, const ProofDraw& d, bool lod) {
+    using namespace gfxvk;
+    if (g_sample.gen) return record_generated(cmd, d, *g_sample.gen, lod);
+    const Family* fam = g_sample.hand;
     if (!fam) return false;
     const char* why = nullptr;
     VkPipeline pipe = pipeline(d, fam->kind, &why);
@@ -454,12 +864,8 @@ bool record_native(VkCommandBuffer cmd, const ProofDraw& d) {
     const uint32_t mbytes = fam->kind == kRigid ? 48 : modelSize;
     UploadSlice ms = allocate_upload(mbytes, 256);
     std::memcpy(ms.mapped, model, mbytes);
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    alloc.descriptorPool = R.descriptorPool;
-    alloc.descriptorSetCount = 1;
-    alloc.pSetLayouts = &g_native.set;
-    if (vkAllocateDescriptorSets(R.device, &alloc, &set) != VK_SUCCESS) return false;
+    VkDescriptorSet set = allocate(g_native.set);
+    if (!set) return false;
     VkDescriptorBufferInfo bi[2]{{vs.buffer, vs.offset, 7 * 16}, {ms.buffer, ms.offset, mbytes}};
     VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
     for (int i = 0; i < 2; ++i) {
@@ -470,14 +876,7 @@ bool record_native(VkCommandBuffer cmd, const ProofDraw& d) {
         w[i].pBufferInfo = &bi[i];
     }
     vkUpdateDescriptorSets(R.device, 2, w, 0, nullptr);
-    record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
-    record::vkCmdSetViewport(cmd, 0, 1, &d.viewport);
-    record::vkCmdSetScissor(cmd, 0, 1, &d.scissor);
-    record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, g_native.layout, 0, 1, &set, 0, nullptr);
-    for (uint32_t i = 0; i < d.vertexBindCount; ++i)
-        record::vkCmdBindVertexBuffers(cmd, d.vertexBinds[i].binding, 1, &d.vertexBinds[i].buffer, &d.vertexBinds[i].offset);
-    record::vkCmdBindIndexBuffer(cmd, d.indexBuffer, d.indexOffset, d.indexType);
-    record::vkCmdDrawIndexed(cmd, d.drawCount, 1, 0, int32_t(d.info.baseVertex), 0);
+    bind_and_draw(cmd, d, pipe, g_native.layout, set);
     return true;
 }
 

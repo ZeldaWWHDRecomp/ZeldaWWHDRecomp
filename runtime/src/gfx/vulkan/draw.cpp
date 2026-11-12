@@ -3141,6 +3141,11 @@ struct PacketCapture {
   VkRect2D scissor{};
   bool raster = false;
   void refuse(const char* why) { if (!refused) refused = why; }
+  // native J3D depth proof (native_draw/j3d_depth.h): also keep each stage's image writes
+  bool images = false;
+  struct ImageWrite { uint32_t binding; VkDescriptorImageInfo info; };
+  std::array<ImageWrite, LATTE_NUM_MAX_TEX_UNITS> imageWrites[2];
+  uint32_t imageWriteCount[2]{};
 };
 PacketCapture* g_packetCapture = nullptr;
 bool g_packetBindsDirty = false;  // a replay bound descriptor sets behind draw()'s bind cache
@@ -3645,6 +3650,15 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     for (const auto& blk : c.block)
       if (blk.binding >= 0 && blk.instWrite < 0) cap->refuse("instance write");
     if (c.patches() && c.supWrite < 0) cap->refuse("support write");
+  }
+#endif
+#ifdef WWHD_NATIVE_DRAW
+  if (auto* cap = g_packetCapture; cap && cap->images) {
+    const int st = sh->vertex ? 0 : 1;
+    cap->imageWriteCount[st] = 0;
+    for (uint32_t i = 0; i < writeCount; ++i)
+      if (writes[i].pImageInfo && cap->imageWriteCount[st] < cap->imageWrites[st].size())
+        cap->imageWrites[st][cap->imageWriteCount[st]++] = {writes[i].dstBinding, *writes[i].pImageInfo};
   }
 #endif
   out.set = stage_descriptor_set(sh->vertex, layout, writes.data(), writeCount);
@@ -4294,7 +4308,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
 #ifdef WWHD_NATIVE_DRAW
   // native J3D depth proof (native_draw/j3d_depth.h; off by default): a sampled draw captures its binds
   std::optional<PacketCapture> j3dProofCap;
-  if (j3dSiteKey && !g_packetCapture && native_draw::j3d_depth::proof_wanted()) g_packetCapture = &j3dProofCap.emplace();
+  if (j3dSiteKey && !g_packetCapture && native_draw::j3d_depth::proof_wanted()) {
+    g_packetCapture = &j3dProofCap.emplace();
+    j3dProofCap->images = true;
+  }
   struct ProofCapEnd { bool on; ~ProofCapEnd() { if (on) g_packetCapture = nullptr; } } j3dProofCapEnd{j3dProofCap.has_value()};
   // the packet capture of this draw (packet_draw), not of the AO / backdrop replays it may run itself (those come
   // after its own draw, which hands the capture back)
@@ -5560,6 +5577,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       std::copy(c.colors.begin(), c.colors.end(), pd.colors);
       pd.vsSupport = c.stage[0].supBytes.data();
       pd.vsSupportSize = uint32_t(c.stage[0].supBytes.size());
+      pd.psSupport = c.stage[1].supBytes.data();
+      pd.psSupportSize = uint32_t(c.stage[1].supBytes.size());
+      for (uint32_t i = 0; i < c.imageWriteCount[1] && i < 16; ++i)
+        pd.psImages[pd.psImageCount++] = {c.imageWrites[1][i].binding, c.imageWrites[1][i].info};
       pd.refused = c.refused;
       native_draw::j3d_depth::proof(pd);
     }

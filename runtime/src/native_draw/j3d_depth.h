@@ -10,7 +10,9 @@
 //     writes off, depth LESS + write) is drawn twice more after its own draw, into two private depth targets of its
 //     size and format, cleared to 1.0: once with its own translated programs and binds, once with the native depth
 //     family program it classifies into. The two depth images are read back and compared word for word (opaque
-//     families: exact; alpha-tested ones: exact with the texture read at LOD 0 in both, WWHD_J3D_DEPTH_PROOF_LOD0=1).
+//     families: exact; alpha-tested ones: exact with the texture read at LOD 0 in both, WWHD_J3D_DEPTH_PROOF_LOD0=1,
+//     then under the tolerance rule with their own LOD). Draws continued by the fast path keep no binds of their own:
+//     the alpha-tested families' proof runs with WWHD_VK_FASTPATH=0.
 //     Mismatch counts per family are logged every 300 frames (and the first mismatching pairs written to DIR).
 #pragma once
 #ifdef WWHD_NATIVE_DRAW
@@ -57,6 +59,11 @@ struct ProofDraw {
     gfxvk::Surface* colors[8]{};
     const uint8_t* vsSupport = nullptr;  // the vertex program's support uniform bytes (remapped block entries)
     uint32_t vsSupportSize = 0;
+    const uint8_t* psSupport = nullptr;  // the pixel program's support uniform bytes (alpha test ref, LOD bias, ...)
+    uint32_t psSupportSize = 0;
+    struct Image { uint32_t binding = 0; VkDescriptorImageInfo info{}; };
+    Image psImages[16];                  // the pixel stage's image writes (binding: textureUnitToBindingPoint)
+    uint32_t psImageCount = 0;
     const char* refused = nullptr;       // the capture's reason the binds cannot be replayed
 };
 // top of a named draw: whether it is sampled for the proof (the draw then captures its binds)
