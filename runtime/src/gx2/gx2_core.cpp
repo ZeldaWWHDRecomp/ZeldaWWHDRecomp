@@ -3,6 +3,7 @@
 #include "platform/r5_slow_render.h"
 #include "gfx/display_modes.h"
 #include "../game_clock.h"
+#include "../no_destroy.h"
 #include "vsync_pacing.h"
 #include "../mods/fast_forward.h"
 #include "../mods/mod_actor_shadow_proof.h"
@@ -388,9 +389,16 @@ static void set_active_snapshot(submitted::Snapshot* s) {  // render thread
 // Like the real GPU, command execution runs asynchronously to the game: GX2 calls append to a
 // queue that a render thread turns into Metal work. WWHD_NO_RENDER_THREAD=1 executes inline.
 static const bool g_render_thread = getenv("WWHD_NO_RENDER_THREAD") == nullptr;
-static std::mutex g_q_mutex;
-static std::condition_variable g_q_cv, g_q_done_cv;
-static std::vector<uint32> g_q_pending, g_q_work;
+// never destroyed (no_destroy.h): the detached render thread waits on g_q_cv (with no timeout while idle) and uses the
+// queue until the process ends, also when it leaves through std::exit (the game's exit(), its main thread returning)
+static NoDestroy<std::mutex> g_q_mutex_store;
+static std::mutex& g_q_mutex = g_q_mutex_store.value;
+static NoDestroy<std::condition_variable> g_q_cv_store, g_q_done_cv_store;
+static std::condition_variable& g_q_cv = g_q_cv_store.value;
+static std::condition_variable& g_q_done_cv = g_q_done_cv_store.value;
+static NoDestroy<std::vector<uint32>> g_q_pending_store, g_q_work_store;
+static std::vector<uint32>& g_q_pending = g_q_pending_store.value;
+static std::vector<uint32>& g_q_work = g_q_work_store.value;
 static bool g_q_waiting = false;
 static uint64_t g_fence_issued = 0, g_fence_done = 0;
 

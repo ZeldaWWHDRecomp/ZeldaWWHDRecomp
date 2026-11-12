@@ -7,6 +7,54 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Linux and Steam Deck: quitting can no longer hang the game on exit** (#536). Some objects of the thread scheduler
+  and the render queue were destroyed at exit while background threads still waited on them; on Linux that wait
+  could last forever (it also held a CI runner for hours), and on macOS it could crash at exit instead. They now stay
+  alive until the process ends. Nothing changes during play.
+
+- **Quick doors: Walk through no longer freezes the game in the Tower of the Gods** (#539, #529, thanks @GoHoo for
+  the report and logs). Leaving the map room or the key room through a walk-through door started the hall's gate
+  and water-spout scenes early, with Link still in the side room, and the game stayed stuck in the scene. Opening a
+  door shows the next room again, and the game creates its actors anew; the door scene normally keeps them waiting
+  until they are set up. Walk-through doors now give the room's new actors the same short wait.
+
+- **World editor: the warp refuses the title screen, the file select and the ending** (#538). A warp there could
+  not be left with another warp, and warping to the ending halted the game.
+
+- **Decomp fast build: configures with the decomp submodule as it is published** (#540). #532 fixed this for the
+  decomp build; the fast build's declaration table still read a `game` link inside the decompilation folder. It now
+  uses the configured game path too.
+
+- **Android: the game's picture starts at full size on handhelds with a navigation bar** (#502, #349, thanks
+  @plxjammerplx for the logs and testing). The full-screen window settings are now applied before the game's first
+  layout, so its picture is created at the full screen size from the start instead of depending on the full-screen
+  calls finishing first (on the Retroid Pocket Nova the picture could be created 48 rows short, and only minimizing
+  and resuming fixed it).
+
+- **Opening Settings with a held Select no longer switches the game to Off-TV Play** (#527, thanks @fayep). Holding
+  Select (Minus; Create on a DualSense, View on Xbox) for half a second opens Settings, but the game also got the
+  press, so the TV showed "Currently playing on Wii U GamePad", the sound left the TV mix and save states made from
+  the menu got the green Off-TV picture. While a hold could still open Settings, Select now stays from the game: a
+  short tap reaches it on release (Off-TV Play a moment later, as before), a hold that opens Settings never does,
+  and the tap that closes Settings doesn't either. Nothing changes when Select is part of another shortcut.
+
+- **Automatic picture-in-picture: no black box at the Game Over save question** (#528, thanks @fayep). At Game Over
+  the game asks "Would you like to save?" on the TV and keeps the GamePad black; with the GamePad screen set to
+  Automatic, the TV used to show that black GamePad picture as a box in its corner. The prompt no longer counts as a
+  GamePad menu. The same save window from the pause menu still appears on the GamePad as before.
+
+- **Dual-screen handhelds (AYN Thor style): Select switches between TV and GamePad play again** (#531). On a device
+  whose second screen shows the GamePad picture, One screen (handheld) mode was on by default as on any Android phone:
+  it kept the game in Off-TV Play, so both screens showed the same GamePad picture and Select opened the pause menu
+  instead of switching. One screen mode is now off by default when a second screen shows the GamePad picture; the
+  game starts in normal TV play and Select is the game's own Off-TV Play switch. If you turned One screen mode on
+  yourself, your choice is kept.
+
+- **Decomp build: works with the decomp submodule as it is published** (#532). Configuring the decomp build failed
+  with `cking.rpx` not found unless the decompilation folder had its own `game` link, which the public
+  decompilation does not ship. The build now reads the game from the configured game path (`WWHD_DECOMP_GAME`), so
+  a plain checkout of the public decompilation configures and builds. The normal build is unchanged.
+
 - **Decomp build (fast mode) on macOS: the same cross-unit inlining as on Android** (#526). The fast build's
   whole-program link now also runs on the Mac, using Xcode's own link-time optimizer, so small functions such as the
   collision and matrix helpers are inlined across units instead of being called through a wrapper each time.

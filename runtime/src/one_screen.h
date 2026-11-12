@@ -22,6 +22,10 @@
 // Defaults (user decision 2026-10-28): on for Android, unless the player chose the Pro Controller before; an
 // option on the Steam Deck and on desktops, off there. Decided at start (the game's screen mode is set while
 // it starts); the old setup (the Pro Controller, or the GamePad with the game's own behaviour) stays.
+// A device with a second screen in use for the GamePad picture (a dual-screen handheld such as the AYN Thor:
+// the Android Presentation display, GamePadDisplay.java) already has both pictures: off there by default, so
+// the TV and GamePad pictures stay apart and Minus is the game's own Off-TV Play switch, as on the Wii U.
+// The player's own choice (oneScreen in settings.ini) always wins.
 //
 // Idea from SwitchWakerHD (thanks @l0nkDev, its #5, MPL-2.0), reimplemented: addresses and the game's
 // behaviour re-checked in our build.
@@ -30,7 +34,19 @@
 
 namespace one_screen {
 
-inline bool default_on(bool android, bool chose_pro_controller) { return android && !chose_pro_controller; }
+// second_screen: a second physical screen shows the GamePad picture at start (second_screen_in_use)
+inline bool default_on(bool android, bool chose_pro_controller, bool second_screen) {
+    return android && !chose_pro_controller && !second_screen;
+}
+// the start choice: the player's saved oneScreen (saved_set: the key holds 0 or 1) wins over the default
+inline bool start_on(bool saved_set, bool saved_on, bool android, bool chose_pro_controller, bool second_screen) {
+    return saved_set ? saved_on : default_on(android, chose_pro_controller, second_screen);
+}
+// a second screen counts while it is there (seen when the activity started, or published by the display host)
+// and the player has not switched the GamePad screen off on it (#222: then the device is one screen again)
+inline bool second_screen_in_use(bool present_at_start, bool available, bool switched_off) {
+    return (present_at_start || available) && !switched_off;
+}
 
 enum Mode : int { kTvOnly = 0, kTvPlay = 1, kOffTv = 2, kBoth = 3 };
 // what the mode setter gets asked for, and what it may store, while the mode is active

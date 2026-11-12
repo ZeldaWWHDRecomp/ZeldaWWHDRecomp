@@ -291,7 +291,15 @@ class Glue:
             i += n
         if assets:
             assets.IMAGE, assets.OUT, assets._image = self.image, os.path.join(self.include, "assets"), regs
+            assets.RPX = self.rpx  # (its own default: the decompilation's game/code/cking.rpx)
         autoglue._image = regs
+        # autoglue's bss_ranges() (the zero-filled sections, for initialised views there) reads the RPX at the
+        # decompilation's own game/code/cking.rpx, a link the decompilation as it ships does not have: its sections
+        # from the RPX given here instead
+        if hasattr(autoglue, "bss_ranges"):
+            from rpx import Rpx, SHT_NOBITS
+            autoglue._bss = [(s.addr, s.file_size) for s in Rpx(self.rpx).sections
+                             if s.type == SHT_NOBITS and s.addr]
         self.mods = (assets, autoglue)
         return self.mods
 

@@ -36,6 +36,7 @@
 #include "savestate.h"
 #include "state_metadata_validation.h"
 #include "scheduler_tick.h"
+#include "no_destroy.h"
 #include "rendezvous.h"
 #include "render_prof.h"
 #include "hle/os_time.h"
@@ -192,8 +193,11 @@ struct CoreSched {
     HostThread* owner = nullptr;
     std::deque<HostThread*> ready;  // FIFO among equal priorities
 };
-static CoreSched g_sched[3];
-static threads::SchedulerTick g_tick;
+// never destroyed (no_destroy.h): the tick thread and guest threads waiting for a core may still wait on them at exit
+static NoDestroy<CoreSched[3]> g_sched_store;
+static CoreSched (&g_sched)[3] = g_sched_store.value;
+static NoDestroy<threads::SchedulerTick> g_tick_store;
+static threads::SchedulerTick& g_tick = g_tick_store.value;
 
 #if defined(WWHD_DECOMP_FAST) || defined(WWHD_MSGQ_FAST)
 // Fast decomp build only (with WWHD_MSGQ_FAST also the message queues of any build) (step d, WWHD_DECOMP_FAST_WAKES; the normal and the default decomp build keep the code
@@ -495,8 +499,11 @@ static HostThread* host_thread(uint32_t t) {
 // whose outcome is decided only by HLE objects (re-checked after waking), or idle (service threads).
 // A parked thread that wakes while frozen stops at the gate before it consumes anything, so the HLE
 // objects and guest memory fully describe where it will continue.
-static std::mutex g_frz_m;
-static std::condition_variable g_frz_cv;
+// never destroyed (no_destroy.h): a thread may wait at the gate when the process exits
+static NoDestroy<std::mutex> g_frz_m_store;
+static std::mutex& g_frz_m = g_frz_m_store.value;
+static NoDestroy<std::condition_variable> g_frz_cv_store;
+static std::condition_variable& g_frz_cv = g_frz_cv_store.value;
 static bool g_frozen = false;
 static HostThread* g_frz_owner = nullptr;
 static threads::detail::FreezeOwnership g_freeze_ownership;
@@ -1596,10 +1603,16 @@ struct Alarm {
     uint32_t callback;
     uint64_t serial;
 };
-static std::mutex g_alarm_mutex;
-static std::condition_variable g_alarm_cv;
-static std::multimap<uint64_t, Alarm> g_alarm_queue;
-static std::unordered_map<uint32_t, uint64_t> g_alarm_serial;  // alarm -> active serial (0 = cancelled)
+// never destroyed (no_destroy.h): the detached alarm thread waits on g_alarm_cv (with no timeout while no alarm is set)
+// and reads the queue until the process ends
+static NoDestroy<std::mutex> g_alarm_mutex_store;
+static std::mutex& g_alarm_mutex = g_alarm_mutex_store.value;
+static NoDestroy<std::condition_variable> g_alarm_cv_store;
+static std::condition_variable& g_alarm_cv = g_alarm_cv_store.value;
+static NoDestroy<std::multimap<uint64_t, Alarm>> g_alarm_queue_store;
+static std::multimap<uint64_t, Alarm>& g_alarm_queue = g_alarm_queue_store.value;
+static NoDestroy<std::unordered_map<uint32_t, uint64_t>> g_alarm_serial_store;
+static std::unordered_map<uint32_t, uint64_t>& g_alarm_serial = g_alarm_serial_store.value;  // alarm -> active serial (0 = cancelled)
 static uint64_t g_next_serial = 1;
 static bool g_alarm_thread_started = false;
 

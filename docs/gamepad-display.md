@@ -20,6 +20,11 @@ the full-size GamePad picture takes precedence until the game returns to TV. In 
 shortcut keeps its usual show/hide behavior. PiP corner, size, opacity and touch mapping are shared
 with manual PiP.
 
+On a dual-screen handheld (AYN Thor style), the second screen shows the GamePad picture and the main
+screen the TV picture. **Settings → Display → One screen (handheld)** is off by default there, so the
+game starts in normal TV play and Minus (Select) is the game's own Off-TV Play switch, as on the Wii U.
+If you turn the option on yourself, the game starts in Off-TV Play as on a one-screen device.
+
 An iPhone with a controller attached can also be the GamePad: it shows the GamePad picture, and its
 controller, touch screen and gyro drive the game. See [ios/README.md](../ios/README.md).
 
@@ -99,6 +104,8 @@ below are canonical USA addresses and are translated through `GD()` for regional
   (it trails the flag by a few frames on both ends). Either one shows PiP with GamePad routing `1`.
 - `1049F498`, `1049F4C4`, `1049F4F0` identify TV, DRC and Pro mode exchanges. These clear the closing
   delay and suppress PiP while routing changes; the pin survives.
+- Game Over reuses the save/options window (`1049ED08`/`1049ED34`) with routing `4`: the TV shows it
+  and the GamePad is black, so it opens no PiP (the same window from the pause menu, routing `2`, does).
 
 The state is published as atomic host-only flags. The renderer does not read guest memory. There
 are no guest writes or injected inputs. Outside auto, the reader exits before guest reads unless

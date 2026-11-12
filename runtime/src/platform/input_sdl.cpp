@@ -1116,6 +1116,7 @@ void update(){
  std::vector<overlay::PadValues> gated;
  g_gates.combine(devices,captured,v,game,&gated);  // a reconnected pad (new id) gets a new gate
  input_map::consume_shortcut_buttons(current,v,game);
+ overlay::hold_select_for_settings(~0ull,game);
  input::PadState state;
  if(current.controllers.empty()&&!current.preset.saved&&!current.preset.gamecube){
   state=input_map::controller_state(current,game);  // one set of bindings for all: as before
@@ -1123,6 +1124,7 @@ void update(){
   // each controller through its own bindings (a profile for its GUID / name, else the shared ones)
   for(size_t i=0;i<gated.size();i++){
    input_map::consume_shortcut_buttons(current,v,gated[i].data());
+   overlay::hold_select_for_settings(uint64_t(devices[i].first),gated[i].data());
    auto& gate=g_start_gates[devices[i].first];
    if(captured)gate={};
    state=input_map::combine(state,gate.read(input_map::view_for(current,input_map::profile_index(current,idents[i].guid,idents[i].name)),gated[i].data()));

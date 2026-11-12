@@ -15,6 +15,7 @@ import shlex
 import subprocess
 import threading
 import adb_util
+import screen_report
 import time
 
 PACKAGE = "org.wwhdrecomp.wwhd"
@@ -330,6 +331,10 @@ def main():
             "--ez", "isolated_secondary", "true" if args.require_isolated_device else "false",
             "--ez", "shared_general", "true" if args.shared_general else "false")
         until("connected", lambda m: m["dual"] and m["secondary_presented"] >= 10)
+        # #349: the full-screen window style comes before the first layout, so the game's first surface is made at
+        # the size it keeps (not with the system bars, grown afterwards)
+        surface_problem = screen_report.first_surface_problem(adb("logcat", "-d", "-s", "wwhd:I", "*:S"))
+        if surface_problem: raise AssertionError("primary game surface (#349): " + surface_problem)
         if metrics()["secondary_shared_general"] != args.shared_general:
             raise AssertionError("shared image layout does not match requested fixture")
         if args.require_isolated_device and (not metrics().get("secondary_isolated_device") or metrics().get("primary_requested_queues")!=1):

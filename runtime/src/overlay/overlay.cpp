@@ -50,6 +50,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <set>
@@ -1533,7 +1534,7 @@ void tab_display() {
     help("The game plays on one screen as on the Wii U GamePad alone (Off-TV Play) from the start: no GamePad "
          "or Pro Controller question, Plus or Minus pauses, touches on the picture work the game's menus. "
          "Off: the TV and GamePad pictures as on the Wii U. With the Pro Controller chosen in Controls it does "
-         "nothing. Applies at the next start.");
+         "nothing. Off by default on a device with a second screen for the GamePad picture. Applies at the next start.");
     if (mods::one_screen_next() != mods::one_screen_enabled()) note("Restart the game to apply.");
 #ifdef __ANDROID__
     if (check("Swap TV and GamePad displays", hostui::displays_swapped(), &v))
@@ -3714,6 +3715,12 @@ void external_binding_capture(bool active) {
         g_external_capture = false;
     }
 }
+// The held-Select Settings shortcut is on: Select is no other shortcut's modifier and no binding capture runs
+// (poll_controller_shortcuts opens Settings with it; hold_select_for_settings keeps Select from the game meanwhile).
+static bool select_hold_shortcut(const input_map::Mapping& m) {
+    for (const auto& b : m.shortcuts) if (b.hold == input_map::kPadOptions && b.button) return false;
+    return !g_capturing_keys.load();
+}
 void poll_controller_shortcuts(const float* values) {
     if (g_no_host && !getenv("WWHD_TEST_PAD")) return;
     PadValues pad;
@@ -3739,13 +3746,21 @@ void poll_controller_shortcuts(const float* values) {
     if (!captures()) for (int a : pressed) activate(a);
     else for (int a : pressed) if (a == input_map::kSettings && !g_capturing_keys.load()) activate(a);
     static SettingsShortcut shortcut;
-    bool selectModifier = false;
-    for (const auto& b : m.shortcuts) if (b.hold == input_map::kPadOptions && b.button) selectModifier = true;
-    const auto action = shortcut.poll(now_s(), !g_capturing_keys.load() && !selectModifier && pad[input_map::kPadOptions] > 0.5f,
+    const auto action = shortcut.poll(now_s(), select_hold_shortcut(m) && pad[input_map::kPadOptions] > 0.5f,
                                      false, is_open()); // Home is an ordinary, remappable Settings binding.
 
     if (action == SettingsShortcut::Close || (action == SettingsShortcut::Open && may_open))
         set_open(action == SettingsShortcut::Open, shortcut.reason());
+}
+void hold_select_for_settings(uint64_t device, float* game) {
+    static std::mutex mu;
+    static std::map<uint64_t, SelectForGame> states;
+    if (g_no_host && !getenv("WWHD_TEST_PAD")) return;
+    // while a Select hold could open Settings (the conditions of poll_controller_shortcuts)
+    const bool active = select_hold_shortcut(input_map::current()) && !is_open() &&
+        controller_may_open_settings(input::window_focused(), input::background_controllers());
+    std::lock_guard<std::mutex> lk(mu);
+    game[input_map::kPadOptions] = states[device].filter(now_s(), game[input_map::kPadOptions], active);
 }
 bool shortcut_took_input() { return g_shortcut_took.exchange(false); }
 

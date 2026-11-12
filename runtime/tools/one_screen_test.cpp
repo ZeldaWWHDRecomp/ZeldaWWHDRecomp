@@ -9,7 +9,17 @@ using namespace one_screen;
 
 int main() {
     // defaults: Android on, unless the player chose the Pro Controller; off elsewhere (an option)
-    assert(default_on(true, false) && !default_on(true, true) && !default_on(false, false));
+    assert(default_on(true, false, false) && !default_on(true, true, false) && !default_on(false, false, false));
+    // ... and off on Android with a second screen showing the GamePad picture (dual-screen handhelds)
+    assert(!default_on(true, false, true) && !default_on(false, false, true));
+    // the player's saved choice wins either way
+    assert(start_on(true, true, true, false, true) && start_on(true, true, false, false, false));
+    assert(!start_on(true, false, true, false, false));
+    assert(start_on(false, false, true, false, false) && !start_on(false, false, true, false, true));
+    // a second screen: seen at start or published later, not while switched off (#222)
+    assert(second_screen_in_use(true, false, false) && second_screen_in_use(false, true, false));
+    assert(!second_screen_in_use(true, true, true) && !second_screen_in_use(true, false, true));
+    assert(!second_screen_in_use(false, false, false));
     // the screen mode: TV play asked for -> Off-TV Play; "both" stored -> Off-TV Play; only while active
     assert(requested_mode(true, kTvPlay) == kOffTv && requested_mode(true, kTvOnly) == kTvOnly);
     assert(requested_mode(true, kOffTv) == kOffTv && requested_mode(false, kTvPlay) == kTvPlay);
