@@ -28,6 +28,8 @@
 // hidden, and the restart point is on his side). Then the door's own execute takes over again: rooms that lock
 // Link in drop their stop bars as after the door scene (its wait action's chkStopClose; setStop for the doors whose
 // bars come down only in the scene). Every other door, and a door while an event runs, keeps the game's scene.
+// A far room that was hidden gets its actors made again by the opening; without the scene they would run at once,
+// before the room has finished making (and removing) them: they wait a short time instead (walk_doors_hold.h, #529).
 //
 // HD offsets (from the HD code, GameCube + 0x11C for dDoor_info_c): current.pos 0x314, home.angle.x 0x2F8 (front
 // room bits 0-5, back room bits 6-11), mRoomNo2 0x3AC, mFromRoomNo 0x3AD, mToRoomNo 0x3AE, mAngleVec 0x3B0,
@@ -47,6 +49,7 @@
 
 #include "guest_addr.h"
 #include "mods.h"
+#include "mods/walk_doors_hold.h"
 #include "runtime.h"
 
 extern "C" {
@@ -119,11 +122,22 @@ struct Seen {
 };
 std::unordered_map<uint32_t, Seen> g_seen;
 uint32_t g_open_request = 0;  // a door whose A press was taken: it opens at its next execute
+// the far room's new actors after a walk-through opening wait as in the door scene (walk_doors_hold.h, #529)
+WalkDoorHold g_hold;
+constexpr uint32_t kActorType = 0xC4;  // fopAc_ac_c::actor_type (GameCube 0xC0): the same value in every actor
+constexpr uint32_t kCurRoom = 0x326;   // fopAc_ac_c current.roomNo
+constexpr uint8_t kRoomHidden = 8;
 
 bool guest_ptr(uint32_t a) { return a >= 0x10000000 && a < 0x50000000; }
 float ldf(uint32_t a) { return u32_as_f32(ld32(a)); }
 uint8_t room_flags(int room) { return ld8(kRoomStatus + (uint32_t)room * kRoomStride); }
 int stay_no() { return (int8_t)ld8(kStayNo); }
+// a walk-through opening into `far`: when the room was hidden its actors are made now, and they wait (see above)
+void hold_far_room(int far) {
+    if (far < 0 || far >= 0x3F || !(room_flags(far) & kRoomHidden)) return;
+    g_hold.start(far, ld32(kCounter));
+    if (kLog) LOG("[doors] room %d shown: its new actors wait", far);
+}
 
 // where Link stands against the door: along its facing, sideways, height
 struct Where {
@@ -212,6 +226,8 @@ void door_execute(Cpu* c, const Kind& k, void (*orig)(Cpu*)) {
             if (kLog) LOG("[doors] %s %08X found open: walk-through", k.name, door);
         } else {
             st8(door + kFront, (uint8_t)front);
+            uint16_t ax = ld16(door + kHomeAngleX);
+            hold_far_room(front == 0 ? (ax >> 6) & 0x3F : ax & 0x3F);
             guest_call(c, k.open_init, {door});
             it = g_doors.emplace(door, Door{kOpening, now}).first;
             if (kLog) LOG("[doors] %s %08X opening (Link %.0f along, %.0f side; room %d)", k.name, door, w.along, w.side, stay_no());
@@ -549,6 +565,11 @@ void knob_execute(Cpu* c) {
             f_021A5008_orig(c);
             return;
         }
+        {
+            uint16_t ax = ld16(door + kHomeAngleX);
+            int f = ax & 0x3F, b = (ax >> 6) & 0x3F;
+            if (f != b) hold_far_room(front == 0 ? b : f);
+        }
         guest_call(c, kKnobOpenInit, {door, (uint32_t)front});
         swing_wide(door);
         st32(door + kKnobFrame, f32_as_u32(kKnobAnim[front].start));
@@ -605,6 +626,22 @@ Wrapped g_wrapped[3];
 bool g_wrap_ready = false;
 }  // namespace
 
+// fpcM_Execute's hook (game_hooks.cpp), before a process runs: true = it waits this step (a new actor of a room just
+// shown by a walk-through opening; walk_doors_hold.h)
+bool walk_doors_hold(uint32_t proc) {
+    const uint32_t id = ld32(proc + 4);  // base_process_class::mBsPcId
+    if (g_hold.room() < 0) {
+        g_hold.hold(id, -2, 0);  // (only notes the highest process id)
+        return false;
+    }
+    const uint32_t link = link_actor();
+    int room = -2;
+    if (guest_ptr(link) && proc != link && ld32(proc + kActorType) == ld32(link + kActorType) && !g_doors.count(proc) &&
+        !g_knobs.count(proc))
+        room = (int8_t)ld8(proc + kCurRoom);
+    return g_hold.hold(id, room, ld32(kCounter));
+}
+
 bool walk_door_exit() {
     return walk_doors() && std::chrono::steady_clock::now() < g_exit_until.load();
 }
@@ -648,6 +685,7 @@ void walk_doors_reset() {
     g_swing.clear();  // (the curves are the state's now: nothing to put back)
     g_place = Placing{};
     g_open_request = 0;
+    g_hold.reset();
     g_exit_until = std::chrono::steady_clock::time_point{};
 }
 

@@ -155,6 +155,10 @@ void f_02593B10_orig(Cpu* c);  // d_meter per-step update
 extern "C" void hook_025DF940(Cpu* c) {
     uint32_t proc = c->r[3];
     mods::DoorExecuteWrap door_wrap{proc};  // Quick doors' walk-through mode (mods/walk_doors.cpp)
+    if (mods::walk_doors_hold(proc)) {  // a new actor of a room a walk-through door just showed: it waits
+        c->r[3] = 1;
+        return;
+    }
     uint32_t rx_s0 = ld32(kRndSeeds);
     uint32_t wv = watch_val();
     const uint32_t fn = actor_execute_fn(proc);

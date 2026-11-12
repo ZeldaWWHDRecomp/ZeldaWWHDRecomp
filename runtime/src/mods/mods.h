@@ -77,6 +77,9 @@ public:
 private:
     uint32_t slot_ = 0, game_ = 0;
 };
+// fpcM_Execute's hook (game_hooks.cpp): true = this process waits this step (walk_doors.cpp: the new actors of a room
+// a walk-through door just showed wait as in the door scene)
+bool walk_doors_hold(uint32_t proc);
 bool fast_scenes();
 void set_fast_scenes(bool on);
 // Instant text and No pauses in texts (instant_text.cpp): message boxes show their whole text at once; the
