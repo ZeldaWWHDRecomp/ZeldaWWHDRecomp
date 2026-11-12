@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: the telescope works with the Flexible touch layout again** (#523, thanks @Holiuwu12). The touch controls
+  took the telescope for a conversation, so a finger could neither look around nor zoom, and only an empty A button
+  showed. Now the right half looks around, the left half zooms, and the Back and telescope buttons stay.
+
 - **Decomp fast build: a native renderer, on by default** (#543). In the decomp build's fast mode, the decompiled draw
   code now describes what it draws as draw packets and render passes instead of emulated GPU register writes. That
   covers grass, flowers, trees, weather, sea, magma, lines, particles, sky clouds, menus and text, post effects and
