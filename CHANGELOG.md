@@ -7,6 +7,18 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: a native renderer, on by default** (#543). In the decomp build's fast mode, the decompiled draw
+  code now describes what it draws as draw packets and render passes instead of emulated GPU register writes. That
+  covers grass, flowers, trees, weather, sea, magma, lines, particles, sky clouds, menus and text, post effects and
+  shadows. The Vulkan renderer also draws repeated objects together.
+  - On a Xiaomi 14 at the cliff, the renderer's CPU time per frame went from 24.9 to 17.4 ms (−7.6 ms; 38 → 54 fps,
+    +41 %). In the lava room it went from 24.1 to 20.0 ms (−4.1 ms; 40 → 47 fps, +18 %).
+  - Pictures are the same as before except for grass, where single pixels can differ on GPUs that pick texture detail
+    differently for grouped draws.
+  - `WWHD_NATIVE_DRAW=0` turns it off. Each part has its own switch (`WWHD_NATIVE_DRAW_MDI`, `WWHD_NATIVE_DRAW_BATCH`,
+    `WWHD_NATIVE_PASS`, `WWHD_NATIVE_PASS_TRUST`); the J3D material cache (`WWHD_NATIVE_DRAW_J3D=1`) stays off.
+  - The normal build and the default decomp build are unchanged.
+
 - **Android: the in-app randomizer is in the app again** (#542). The published Android builds were made without the
   randomizer itself, so **Settings › Randomizer** said "This app has no randomizer." The Android release and CI
   builds now build and include it (both ABIs), and the build fails if an APK comes out without it.
