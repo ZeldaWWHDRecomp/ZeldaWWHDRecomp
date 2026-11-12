@@ -98,6 +98,23 @@ int main() {
     assert(tv_pointer::picture_takes_click(true, false) && !tv_pointer::picture_takes_click(true, true));
     assert(tv_pointer::gamepad_takes_click(false, true) && tv_pointer::gamepad_takes_click(true, false));
     assert(!tv_pointer::gamepad_takes_click(true, true));
+    // issue #514: a left click on the GamePad picture. Two screens (picture-in-picture): a touch there, the TV
+    // picture's elsewhere, whatever the game shows. One screen's Off-TV Play (the whole window is the GamePad
+    // picture): with the mouse camera, in play the click goes on to its capture, in a game menu it is a touch;
+    // without the mouse camera always a touch, as before
+    using tv_pointer::gamepad_picture_touch;  // (on the GamePad picture, One screen Off-TV, game menu, mouse camera)
+    for (bool menu : {false, true})
+        for (bool camera : {false, true}) {
+            assert(gamepad_picture_touch(true, false, menu, camera));    // One screen off: unchanged
+            assert(!gamepad_picture_touch(false, false, menu, camera));
+            assert(!gamepad_picture_touch(false, true, menu, camera));   // (never off the picture)
+        }
+    assert(!gamepad_picture_touch(true, true, false, true));  // One screen + mouse camera + play: the capture's
+    assert(gamepad_picture_touch(true, true, true, true));    // ... + a game menu: the game's touch screen
+    assert(gamepad_picture_touch(true, true, false, false) && gamepad_picture_touch(true, true, true, false));  // no camera
+    // a left button bound to a game button keeps winning: with the mouse camera an uncaptured click in play captures
+    // (above), a captured one is the bound button before the picture is asked (gamepad_takes_click)
+    assert(tv_pointer::picture_takes_click(true, true) == false && !tv_pointer::gamepad_takes_click(true, true));
 
     // ---- claims
     {

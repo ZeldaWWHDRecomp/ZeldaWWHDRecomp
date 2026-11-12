@@ -5753,7 +5753,8 @@ static bool gamepad_touch(const SDL_Event& event) {
           return true;
         }
       }
-      if (!gfx::overlay_hit(nx, ny, &tx, &ty)) {
+      // the GamePad picture's touch; in One screen's Off-TV Play only in a game menu or without the mouse camera (#514)
+      if (!gfx::gamepad_click_hit(nx, ny, &tx, &ty, mods::mouse_camera())) {
         float px, py, aspect;  // a port page on the TV that wants the pointer (tv_pointer.h)
         if (picture && tv_pointer::wanted() && gfx::game_picture_hit(nx, ny, &px, &py, &aspect)) {
           tv_pointer::set(true, px, py, aspect);

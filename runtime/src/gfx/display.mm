@@ -211,6 +211,12 @@ static void load_options() {
     if (sz.width <= 0 || sz.height <= 0) return false;
     return gfx::overlay_hit(p.x / sz.width, 1.0f - p.y / sz.height, tx, ty, c);
 }
+- (bool)touch:(NSEvent*)e x:(float*)tx y:(float*)ty {
+    NSPoint p = [self convertPoint:e.locationInWindow fromView:nil];
+    NSSize sz = self.bounds.size;
+    if (sz.width <= 0 || sz.height <= 0) return false;
+    return gfx::gamepad_click_hit(p.x / sz.width, 1.0f - p.y / sz.height, tx, ty, mods::mouse_camera());
+}
 - (BOOL)acceptsFirstMouse:(NSEvent*)e {
     float x, y;
     return [self map:e x:&x y:&y clamp:false];
@@ -285,7 +291,8 @@ static void load_options() {
         self.pointing = true;
         return;
     }
-    if ([self map:e x:&x y:&y clamp:false]) {
+    // the GamePad picture's touch; in One screen's Off-TV Play only in a game menu or without the mouse camera (#514)
+    if ([self touch:e x:&x y:&y]) {
         self.touching = true;
         input::set_touch(true, x, y);
     } else if (picture && tv_pointer::wanted() && [self picture:e down:true clamp:false]) {
@@ -1131,15 +1138,20 @@ void display_set_tv_fullscreen(bool on) {
 }
 void* display_tv_window() { return (__bridge void*)g_tv_window; }
 
-// mouse camera (mods/mouse.mm): a click on the GamePad overlay is a touch, not a capture
+// mouse camera (mods/mouse.mm): a click that is a GamePad touch (gamepad_click_hit), or in One screen's Off-TV
+// Play a talk's (WWTvView mouseDown hands it there first, touch_talk.h), is not a capture
 bool drc_overlay_hit(void* window, double wx, double wy) {
     NSWindow* w = (__bridge NSWindow*)window;
     if (!w || w != g_tv_window) return false;
     NSView* v = w.contentView;
     NSPoint p = [v convertPoint:NSMakePoint(wx, wy) fromView:nil];
     NSSize sz = v.bounds.size;
-    float tx, ty;
-    return sz.width > 0 && sz.height > 0 && overlay_hit(p.x / sz.width, 1.0f - p.y / sz.height, &tx, &ty);
+    if (sz.width <= 0 || sz.height <= 0) return false;
+    const float nx = p.x / sz.width, ny = 1.0f - p.y / sz.height;
+    float tx, ty, aspect;
+    if (gamepad_click_hit(nx, ny, &tx, &ty, mods::mouse_camera())) return true;
+    return g_one_screen_off_tv.load() && tv_pointer::wanted(tv_pointer::kOwnerTalk) &&
+           tv_pointer::picture_takes_click(tv_pointer::left_button_bound(), mods::mouse_camera()) && game_picture_hit(nx, ny, &tx, &ty, &aspect);
 }
 
 // ---------------------------------------------------------------- Display menu

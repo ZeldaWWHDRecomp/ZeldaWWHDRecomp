@@ -10,6 +10,7 @@ struct GamePadUiState {
     bool off_tv = false;
     bool switching = false;
     bool baton = false; // Wind Waker conducting: the game lists the songs on the GamePad
+    bool touch_menu = false; // a game menu on the GamePad's touch screen, in TV play or Off-TV Play
 };
 // Descriptors are data pointers in the running regional build, never canonical IDs.
 // Map every entry separately: a regional map may split the descriptor range.
@@ -84,6 +85,12 @@ inline bool gamepad_menu_state(uint32_t descriptor, uint32_t routing, uint32_t c
     // 2 routes the pause/menu overlay to DRC; 4 also occurs during ordinary cutscenes.
     if (gameover_save_window(descriptor, routing)) return false;  // the TV shows it: no picture-in-picture
     return controller == 1 && (routing == 2 || bag_open || gamepad_scene_kind(descriptor) == GamePadSceneKind::Menu);
+}
+// A game menu on the GamePad's touch screen (the item menu with its drags onto X / Y / R, the map, the bottles...),
+// in TV play (1) or in Off-TV Play (2), where the GamePad picture is the only one: the menus gamepad_menu_state
+// finds in TV play. One screen mode's touches and clicks on that picture ask it (one_screen.h).
+inline bool gamepad_touch_menu_state(uint32_t descriptor, uint32_t routing, uint32_t controller, bool bag_open = false) {
+    return (controller == 1 || controller == 2) && gamepad_menu_state(descriptor, routing, 1, bag_open);
 }
 // Wind Waker: the metronome flag is on while Link conducts, the scene's song-list states
 // while the GamePad shows the songs (they open a few frames after the flag and close after it).
