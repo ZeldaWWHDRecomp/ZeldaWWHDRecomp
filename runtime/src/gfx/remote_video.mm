@@ -131,9 +131,24 @@ bool setup(id<MTLDevice> device, int w, int h) {
     set(s, kVTCompressionPropertyKey_RealTime, kCFBooleanTrue);
     set(s, kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse);
     set(s, kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_High_AutoLevel);
-    // about 6 Mbit/s at 854 x 480 (menus and text stay sharp), more for a larger picture
-    const int64_t bits = std::clamp<int64_t>(int64_t(double(w) * h * 15), 4'000'000, 14'000'000);
+    // about 2 Mbit/s at 854 x 480, more for a larger picture: a busy home Wi-Fi link queues more than that for
+    // seconds rather than dropping it (4-5 s picture lag at 6 Mbit/s on a congested 2.4 GHz link).
+    // WWHD_REMOTE_VIDEO_KBPS sets it for a test.
+    static const int64_t kbps = getenv("WWHD_REMOTE_VIDEO_KBPS") ? atoll(getenv("WWHD_REMOTE_VIDEO_KBPS")) : 0;
+    const int64_t bits = kbps > 0 ? kbps * 1000 : std::clamp<int64_t>(int64_t(double(w) * h * 5), 1'500'000, 6'000'000);
     set_int(s, kVTCompressionPropertyKey_AverageBitRate, bits);
+    // and the peaks: keyframes and scene changes would otherwise burst well above the average, which is what
+    // refills the access point's queue. At most 1.5x the average in any one second (bytes, seconds).
+    {
+        int64_t bytes = bits * 3 / 2 / 8;
+        double seconds = 1.0;
+        CFNumberRef limit[2] = {CFNumberCreate(nullptr, kCFNumberSInt64Type, &bytes), CFNumberCreate(nullptr, kCFNumberDoubleType, &seconds)};
+        CFArrayRef limits = CFArrayCreate(nullptr, (const void**)limit, 2, &kCFTypeArrayCallBacks);
+        set(s, kVTCompressionPropertyKey_DataRateLimits, limits);
+        CFRelease(limits);
+        CFRelease(limit[0]);
+        CFRelease(limit[1]);
+    }
     set_int(s, kVTCompressionPropertyKey_ExpectedFrameRate, 60);
     set_int(s, kVTCompressionPropertyKey_MaxKeyFrameInterval, 600);
     set_int(s, kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, 10);
