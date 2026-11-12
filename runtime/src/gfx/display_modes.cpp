@@ -62,9 +62,9 @@ static std::atomic<double> g_plus_at{-1};
 static std::atomic<int> g_pause_restore{-1};
 static GamePadUiState gamepad_ui() {
     const unsigned bits = g_gamepad_ui.load();
-    return {bool(bits & 1), bool(bits & 2), bool(bits & 4), bool(bits & 8), bool(bits & 16)};
+    return {bool(bits & 1), bool(bits & 2), bool(bits & 4), bool(bits & 8), bool(bits & 16), bool(bits & 32)};
 }
-bool gamepad_ui_menu() { return gamepad_ui().menu; }
+bool gamepad_ui_menu() { return gamepad_ui().touch_menu; }
 std::atomic<float> g_drc_aspect{854.0f / 480.0f};
 std::atomic<bool> g_has_drc_window{false};
 std::atomic<bool> g_startup_gamepad{false};
@@ -210,11 +210,13 @@ int display_saved_mode() {
     return restore >= 0 ? restore : int(g_mode);
 }
 bool display_gamepad_state_needed() {
-    return g_mode == kDrcAuto || (g_pause_view && (g_plus_at >= 0 || g_pause_restore >= 0));
+    // One screen's Off-TV Play: its touches and clicks on the GamePad picture follow the game's menus (one_screen.h)
+    return g_mode == kDrcAuto || (g_pause_view && (g_plus_at >= 0 || g_pause_restore >= 0)) || g_one_screen_off_tv.load(std::memory_order_relaxed);
 }
 void display_gamepad_ui(GamePadUiState state) {
     g_gamepad_ui = unsigned(state.available) | (unsigned(state.menu) << 1) |
-        (unsigned(state.off_tv) << 2) | (unsigned(state.switching) << 3) | (unsigned(state.baton) << 4);
+        (unsigned(state.off_tv) << 2) | (unsigned(state.switching) << 3) | (unsigned(state.baton) << 4) |
+        (unsigned(state.touch_menu) << 5);
     const double now = display_now();
     if (g_mode == kDrcAuto) {
         AutoPipDecision decision{g_auto_until.load()};
@@ -479,6 +481,11 @@ bool overlay_hit(float nx, float ny, float* tx, float* ty, bool clamp_outside) {
     *tx = std::clamp(x, 0.0f, 1.0f);
     *ty = std::clamp(y, 0.0f, 1.0f);
     return true;
+}
+
+bool gamepad_click_hit(float nx, float ny, float* tx, float* ty, bool mouse_camera) {
+    const bool on = overlay_hit(nx, ny, tx, ty);
+    return tv_pointer::gamepad_picture_touch(on, g_one_screen_off_tv.load(std::memory_order_relaxed), gamepad_ui_menu(), mouse_camera);
 }
 
 bool main_picture(float* x, float* y, float* w, float* h) {

@@ -125,9 +125,9 @@ void display_set_mode(int m);      // a new mode (shown again unless off; auto s
 void display_plus_pressed();
 int display_saved_mode();
 bool display_gamepad_state_needed();
-void display_read_gamepad_ui(); // guest thread, once at swap; returns immediately outside auto/pause
+void display_read_gamepad_ui(); // guest thread, once at swap; returns immediately outside auto/pause/One screen's Off-TV Play
 void display_gamepad_ui(GamePadUiState state); // publish a host-only snapshot
-bool gamepad_ui_menu();                          // that snapshot: a GamePad menu is open (any thread)
+bool gamepad_ui_menu();                          // that snapshot: a game menu is on the GamePad's touch screen (any thread)
 
 // pixel rectangles in the target (drawable), top-left origin
 struct Layout { Box tv, pip; bool pip_on = false; bool drc_only = false; float scale = 1; };
@@ -157,6 +157,9 @@ bool game_picture_box(const PresentPlan& plan, Box* box);  // the same for a pla
 // a point in the TV window (0..1 from top left) on the GamePad picture -> touch position (0..1),
 // from the last display_plan; clamp_outside: a drag that left the picture keeps touching its edge
 bool overlay_hit(float nx, float ny, float* tx, float* ty, bool clamp_outside = false);
+// a left mouse click there that is a touch of the game's touch screen (tv_pointer::gamepad_picture_touch: in One
+// screen's Off-TV Play only in a game menu or without the mouse camera); else it goes on to the mouse camera
+bool gamepad_click_hit(float nx, float ny, float* tx, float* ty, bool mouse_camera);
 void display_input_plan(const PresentPlan& plan); // publish the logical canvas used by the compositor
 // the main picture of the last TV layout (the TV picture, or the GamePad picture in GamePad-only
 // mode), 0..1 of the TV window from the top left; false before the first layout (the settings
