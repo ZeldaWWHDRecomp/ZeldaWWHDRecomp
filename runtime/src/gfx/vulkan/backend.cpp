@@ -120,6 +120,9 @@ extern "C" int __llvm_profile_write_file(void);
 #include <filesystem>
 #include <future>
 #include <mutex>
+#ifdef WWHD_NATIVE_DRAW
+#include "pool_reset.h"
+#endif
 #ifdef __APPLE__
 #include <dlfcn.h>
 #include <mach-o/dyld.h>
@@ -1309,6 +1312,9 @@ static VkResult try_initialize_submission(Renderer::Submission& slot) {
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.queueFamilyIndex=R.queueFamily;
   pool.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+#ifdef WWHD_NATIVE_DRAW
+  pool.flags=pool_reset::pool_flags(pool.flags);  // WWHD_VK_ASYNC_POOL_RESET (pool_reset.h)
+#endif
   VkResult result=vkCreateCommandPool(R.device,&pool,nullptr,&slot.commandPool);
   if(result!=VK_SUCCESS)return result;
   VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -1376,10 +1382,14 @@ static void cleanup_submission(Renderer::Submission& slot) {
       vkFreeMemory(R.device, i.memory, nullptr);
   }
   slot.garbageImages.clear();
+#ifdef WWHD_NATIVE_DRAW
+  pool_reset::reset(&slot, R.device, slot.commandPool, slot.descriptorPool);  // (pool_reset.h)
+#else
   vk_check(vkResetCommandPool(R.device, slot.commandPool, 0),
            "reset command pool");
   vk_check(vkResetDescriptorPool(R.device, slot.descriptorPool, 0),
            "reset descriptor pool");
+#endif
   ++R.submissionGeneration;
 }
 static void retire_submission(Renderer::Submission& slot, WaitTiming& timing=submitWait) {
@@ -1538,6 +1548,9 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
     }
 #endif
     slot.pending=true;slot.retainedUnsubmitted=false;slot.deferredOwner=nullptr;
+#ifdef WWHD_NATIVE_DRAW
+    pool_reset::submitted(&slot, R.device, slot.fence, slot.commandPool, slot.descriptorPool);  // (pool_reset.h)
+#endif
   };
   if (record_worker_active()) {
     if (producer_presentation_recording()) {
@@ -4168,6 +4181,9 @@ void swap() {
           double(R.drawCount-draws)/(R.frame-frame),double(R.uploadBytes-bytes)/(R.frame-frame)/(1<<20),
           (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame), passReuse);
       if (reproj::enabled()) LOG("[vulkan perf] framegen %s", reproj::perf_line().c_str());
+#ifdef WWHD_NATIVE_DRAW
+      pool_reset::report(double(R.frame - frame));  // (pool_reset.h)
+#endif
       {  // draw.cpp: totals since the start (the pass subset's no-stutter check compares them ON vs OFF)
         extern uint64_t g_pipelineSyncCompiles, g_pipelineRenderWaits, g_pipelineBudgetWaits;
         extern uint64_t g_backgroundRequests, g_backgroundAdmitted, g_backgroundDeclined, g_backgroundWaits;
@@ -5175,6 +5191,9 @@ static void init_device(std::vector<const char *> extensions,
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.queueFamilyIndex = R.queueFamily;
   pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+#ifdef WWHD_NATIVE_DRAW
+  pool.flags = pool_reset::pool_flags(pool.flags);  // WWHD_VK_ASYNC_POOL_RESET (pool_reset.h)
+#endif
   vk_check(vkCreateCommandPool(R.device, &pool, nullptr, &slot.commandPool),
            "create command pool");
   VkCommandBufferAllocateInfo ca{
