@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **iPhone GamePad: no more seconds of picture lag on a busy Wi-Fi** (#534, thanks @fayep). The GamePad picture is
+  now sent at about 2 Mbit/s instead of 6 (854×480; more for a larger picture, between 1.5 and 6 Mbit/s), with its
+  peaks capped at 1.5 times that in any second. On a congested home Wi-Fi the access point used to queue the video,
+  and the phone's picture fell 4–5 seconds behind the TV.
+
 - **Linux and Steam Deck: quitting can no longer hang the game on exit** (#536). Some objects of the thread scheduler
   and the render queue were destroyed at exit while background threads still waited on them; on Linux that wait
   could last forever (it also held a CI runner for hours), and on macOS it could crash at exit instead. They now stay
