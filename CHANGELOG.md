@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build: works with the decomp submodule as it is published** (#532). Configuring the decomp build failed
+  with `cking.rpx` not found unless the decompilation folder had its own `game` link, which the public
+  decompilation does not ship. The build now reads the game from the configured game path (`WWHD_DECOMP_GAME`), so
+  a plain checkout of the public decompilation configures and builds. The normal build is unchanged.
+
 - **Decomp build (fast mode) on macOS: the same cross-unit inlining as on Android** (#526). The fast build's
   whole-program link now also runs on the Mac, using Xcode's own link-time optimizer, so small functions such as the
   collision and matrix helpers are inlined across units instead of being called through a wrapper each time.
