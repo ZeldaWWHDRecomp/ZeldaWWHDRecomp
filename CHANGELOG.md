@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **The Ballad of Gales arrival whirlwind is heard again at 60 fps** (#533, thanks @DamnFine815). With frame
+  smoothing (40, 60 or 120 fps) the sound engine heard the camera one game step late, so right after a stage change it
+  still heard the loading screen's far-away camera and dropped sounds that started there. The King of Red Lions'
+  whirlwind on arrival was one of them. 30 fps was not affected.
+
 - **Android: the telescope works with the Flexible touch layout again** (#523, thanks @Holiuwu12). The touch controls
   took the telescope for a conversation, so a finger could neither look around nor zoom, and only an empty A button
   showed. Now the right half looks around, the left half zooms, and the Back and telescope buttons stay.
