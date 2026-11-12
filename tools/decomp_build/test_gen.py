@@ -238,6 +238,40 @@ class GenTest(unittest.TestCase):
             self.assertIn("// glued", f.read())
         self.assertNotIn("assets.py", self.read("units.cmake"))  # no configure dependency on a missing file
 
+    def test_glue_bss_from_given_game(self):
+        # autoglue's bss_ranges() reads the decompilation's own game/code/cking.rpx, which the decompilation as it
+        # ships does not have: gen.py gives it the NOBITS sections of the --game RPX instead
+        import struct
+        def write(rel, text):
+            with open(os.path.join(self.src, rel), "w") as f:
+                f.write(text)
+        write("tools/verify/mkimage.py", "import sys\nopen(sys.argv[2], 'wb').close()\n")
+        write("tools/verify/autoglue.py", "import os\nclass GlueError(Exception): pass\n_bss = None\n"
+                                          "def bss_ranges():\n    global _bss\n    if _bss is None:\n"
+                                          "        open(os.path.join(os.path.dirname(__file__), '..', '..', 'game', 'code', "
+                                          "'cking.rpx'), 'rb')\n    return _bss\n"
+                                          "def transform(text, path): return text + '// bss %r\\n' % bss_ranges()\n"
+                                          "def include_closure(text, path): return []\n")
+        with open(os.path.join(self.src, "wwhd_src/b.cpp"), "a") as f:
+            f.write("/* WWHD glue (tools/verify/autoglue.py)\n*/\n")
+        # a minimal big-endian ELF: the null section, .bss (NOBITS at 0x10000000, 0x100 bytes), .shstrtab
+        names = b"\0.bss\0.shstrtab\0"
+        shoff = 0x34 + len(names)
+        hdr = bytearray(0x34)
+        hdr[:6] = b"\x7fELF\x01\x02"
+        struct.pack_into(">I", hdr, 0x20, shoff)
+        struct.pack_into(">HHH", hdr, 0x2E, 40, 3, 2)
+        shdrs = bytes(40) + struct.pack(">10I", 1, 8, 3, 0x10000000, 0, 0x100, 0, 0, 4, 0) \
+            + struct.pack(">10I", 6, 3, 0, 0, 0x34, len(names), 0, 0, 1, 0)
+        rpx = os.path.join(self.tmp.name, "cking.rpx")
+        with open(rpx, "wb") as f:
+            f.write(bytes(hdr) + names + shdrs)
+        r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), self.src, self.out, "--game", rpx, "--jobs", "1"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.out, "glued/wwhd_src/b.cpp")) as f:
+            self.assertIn("// bss [(268435456, 256)]", f.read())
+
     def test_port_sites_moved_in_game_build_only(self):
         """port_sites.py: a decompiled function whose source carries the port hook lists its instruction hook as moved
         (recomp.py then keeps no function for it), only with --game-build; without the marker, never"""
