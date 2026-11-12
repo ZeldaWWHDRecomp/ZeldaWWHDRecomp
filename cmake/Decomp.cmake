@@ -174,26 +174,29 @@ function(wwhd_decomp_configure)
   # (native_rules.py --bare, NativeInfo bit 22; gabi.h GABI_LEAF_BARE). Its native entry is the argument conversion and
   # the body. A leaf keeps no call state anyway; in its unit no caller is ever refused, and a caller in another unit
   # checks caller_ok before it takes the native entry. Needs LEAF, PASS_TS and NOCHECK; the run-time diagnostics
-  # WWHD_DECOMP_FAST_LEAF=0 / _NOCHECK=0 do not reach bare leaves. No run-time switch (OFF: as before)
-  option(WWHD_DECOMP_FAST_LEAF_BARE "decomp build, fast mode: leaves without call glue (bare leaves)" OFF)
+  # WWHD_DECOMP_FAST_LEAF=0 / _NOCHECK=0 do not reach bare leaves. No run-time switch
+  # (OFF: as before; ON by default since the 2026-11-12 phone pairs)
+  option(WWHD_DECOMP_FAST_LEAF_BARE "decomp build, fast mode: leaves without call glue (bare leaves)" ON)
   # fast mode, with WWHD_DECOMP_FAST_LEAF_BARE: a bare leaf that no line of its unit's sources or their headers calls by
   # name (native_rules.py --bare-entry, NativeInfo bit 23; gabi.h GABI_BARE_ENTRY) is bare even with a char / void /
   # function pointer parameter: every call enters it through its native entry, which rebuilds each pointer from a guest
   # address, or from guest code, so the parameter's guest-window check always passes (e.g. cM3d_Cross_AabCyl). No
-  # run-time switch (OFF: as before)
-  option(WWHD_DECOMP_FAST_BARE_ENTRY "decomp build, fast mode: bare leaves with pointer parameters entered only through their native entry" OFF)
+  # run-time switch (OFF: as before; ON by default since the 2026-11-12 phone pairs)
+  option(WWHD_DECOMP_FAST_BARE_ENTRY "decomp build, fast mode: bare leaves with pointer parameters entered only through their native entry" ON)
   # fast mode: the stack-argument guest calls in hot paths as native calls (cM3d_InclusionCheckPosIn3PosBox2d from the
   # c_m3d triangle tests, EnvLight::setLight_palno_get from setLight_bg / setLight_actor): native_rules.py --stackarg
   # makes each such callee native for these calls only (NativeInfo bit 24: no wwhd_ne_ export, no runtime entry), gen.py
   # --stackarg writes its do_call sites as gabi::do_call_sa, and gabi.h GABI_STACKARG calls it natively with r1 and the
   # stack words placed and stored exactly as do_call does (the callee reads and writes them at the same addresses), its
-  # result in r3; like every register-exact native entry no LR / pc. No run-time switch (OFF: as before)
-  option(WWHD_DECOMP_FAST_STACKARG "decomp build, fast mode: stack-argument calls to their readers as native calls" OFF)
+  # result in r3; like every register-exact native entry no LR / pc. No run-time switch
+  # (OFF: as before; ON by default since the 2026-11-12 phone pairs)
+  option(WWHD_DECOMP_FAST_STACKARG "decomp build, fast mode: stack-argument calls to their readers as native calls" ON)
   # fast mode: a lazy accessor's native entry (kankyo_getEnvlight) returns the object's guest address straight away once
   # its guard word is set, which is what the body returns then, without the body's scope (native_rules.py --accessor
   # checks the body's form and finds the guard and the object; gabi.h GABI_FAST_ACCESSOR, AccEntry). The guest entry and
-  # every call while the guard is 0 run the body as before. No run-time switch (OFF: as before)
-  option(WWHD_DECOMP_FAST_ACCESSOR "decomp build, fast mode: lazy accessors' native entries return the object without the body once initialised" OFF)
+  # every call while the guard is 0 run the body as before. No run-time switch
+  # (OFF: as before; ON by default since the 2026-11-12 phone pairs)
+  option(WWHD_DECOMP_FAST_ACCESSOR "decomp build, fast mode: lazy accessors' native entries return the object without the body once initialised" ON)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
