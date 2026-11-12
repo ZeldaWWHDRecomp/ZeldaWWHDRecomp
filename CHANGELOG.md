@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Dual-screen handhelds (AYN Thor style): Select switches between TV and GamePad play again** (#531). On a device
+  whose second screen shows the GamePad picture, One screen (handheld) mode was on by default as on any Android phone:
+  it kept the game in Off-TV Play, so both screens showed the same GamePad picture and Select opened the pause menu
+  instead of switching. One screen mode is now off by default when a second screen shows the GamePad picture; the
+  game starts in normal TV play and Select is the game's own Off-TV Play switch. If you turned One screen mode on
+  yourself, your choice is kept.
+
 - **Decomp build: works with the decomp submodule as it is published** (#532). Configuring the decomp build failed
   with `cking.rpx` not found unless the decompilation folder had its own `game` link, which the public
   decompilation does not ship. The build now reads the game from the configured game path (`WWHD_DECOMP_GAME`), so
