@@ -12,7 +12,11 @@
 //   calllist  GX2CallDisplayList / GX2DirectCallDisplayList
 // plus, per chain, in-order runs and distinct meshes per render-target set and frame (what in-order batching could merge). The
 // file is written at the last swap with the image slide, for an offline tool that symbolises it (nm) and groups the
-// chains by family (UI/2D, post, shadows, render-to-texture, J3D, ...). Packets ON or OFF alike: with packets on, a
+// chains by family (UI/2D, post, shadows, render-to-texture, J3D, ...). Scene sweeps:
+// WWHD_NATIVE_COVERAGE_WINDOWS=<from>-<to>,... counts in each window of script frames (the clock of WWHD_TEST_WARP_AT)
+// instead, and writes <file>.<n> per window (n from 0; the file's own from/to are ignored), each headed by
+// "W n from to first last" and "P0"/"P1" lines (start stage, point, start room, layer, Link's room, time of day) for
+// the window's first and last frame. Packets ON or OFF alike: with packets on, a
 // covered draw counts as "packet" at its site, the rest as "draw". Mac only (other platforms: a log line, no file).
 #pragma once
 #ifdef WWHD_NATIVE_DRAW
