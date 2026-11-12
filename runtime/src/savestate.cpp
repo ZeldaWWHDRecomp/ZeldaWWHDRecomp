@@ -2259,6 +2259,11 @@ void service_warp(Cpu* c) {
     // the game loads the stage's Stage archive (dStage_infoCreate halts the game without its stage.dzs): only a
     // stage it can load, an installed mod stage or one of the game's files, is ever written as the next stage
     if (!warp_stage_loadable(p.w.stage, p.w.room, why)) return finish(false, why);
+    // the title screen, the file select and the ending are no place to play: gameplay_ready refuses every warp from
+    // them, so a warp there could not be left with another one (and the ending's demo needs the archive its event
+    // loads: the game halts without it)
+    if (p.w.stage == "sea_T" || p.w.stage == "Name" || p.w.stage == "ENDumi")
+        return finish(false, "the stage " + p.w.stage + " is the title screen, the file select or the ending, not a place to play");
     if (!gameplay_ready(why, retry) || !player_has_control(c, why)) return finish(false, why);
     const uint32_t sv = ld32(kSaveInfoPtr);
     char name[8] = {};
