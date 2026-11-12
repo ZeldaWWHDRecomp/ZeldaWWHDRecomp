@@ -36,6 +36,13 @@ std::atomic<uint64_t> g_seq{0};                // advanced after each stamp is s
 std::atomic<uint64_t>* g_hint = nullptr;       // newest hint stamp per page (enable_hints)
 std::atomic<bool> g_hints{false};
 std::atomic<uint64_t> g_hint_calls{0}, g_hint_bytes{0};
+// the two counters above only once a report has asked for them (take_hint_stats): two atomic adds less per hint
+// (DCFlushRange and friends, about a thousand a frame) when no report reads them.
+// WWHD_WWATCH_HINT_STATS=1: count from the start, as before.
+std::atomic<bool> g_hint_stats{[] {
+    const char* e = std::getenv("WWHD_WWATCH_HINT_STATS");
+    return e && *e == '1';
+}()};
 std::atomic<uint64_t> g_protect_failures{0};  // pages arm() could not protect
 // arm() vs host writes: a page inside a pending kernel write must stay writable until the write ends
 std::mutex g_m;
@@ -248,6 +255,7 @@ void hint(uint32_t addr, uint32_t size) {
         while (cur < v && !g_hint[p].compare_exchange_weak(cur, v, std::memory_order_release, std::memory_order_relaxed)) {}
     }
     g_seq.fetch_add(1, std::memory_order_acq_rel);
+    if (!g_hint_stats.load(std::memory_order_relaxed)) return;
     g_hint_calls.fetch_add(1, std::memory_order_relaxed);
     g_hint_bytes.fetch_add(size, std::memory_order_relaxed);
 }
@@ -260,6 +268,7 @@ void take_stats(uint64_t& faults, uint64_t& protectedPages) {
 uint64_t protect_failures() { return g_protect_failures.load(std::memory_order_relaxed); }
 
 void take_hint_stats(uint64_t& calls, uint64_t& bytes) {
+    g_hint_stats.store(true, std::memory_order_relaxed);
     calls = g_hint_calls.exchange(0, std::memory_order_relaxed);
     bytes = g_hint_bytes.exchange(0, std::memory_order_relaxed);
 }
