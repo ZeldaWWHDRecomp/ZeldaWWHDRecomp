@@ -570,8 +570,11 @@ public class WwhdActivity extends SDLActivity {
         // low memory: the renderer frees what it can make again (onTrimMemory below, and a free-memory check)
         if (!mBrokenLibraries) memoryPressure = new MemoryPressure(this);
         // GamePad screen saved Off: known before onResume acquires a second display (AYN Thor, #222)
-        if (!mBrokenLibraries && !isReusingNativeSession() && usesSecondScreen())
+        if (!mBrokenLibraries && !isReusingNativeSession() && usesSecondScreen()) {
             GamePadDisplay.seedSavedOff(SavedSecondScreen.off(files));
+            // a second display (dual-screen handhelds): One screen mode is off by default there
+            GamePadDisplay.seedDisplayPresent(this);
+        }
         // heat guard: fan-cooled handhelds pause 60 fps later than phones (#247)
         if (!mBrokenLibraries) {
             try {

@@ -1533,7 +1533,7 @@ void tab_display() {
     help("The game plays on one screen as on the Wii U GamePad alone (Off-TV Play) from the start: no GamePad "
          "or Pro Controller question, Plus or Minus pauses, touches on the picture work the game's menus. "
          "Off: the TV and GamePad pictures as on the Wii U. With the Pro Controller chosen in Controls it does "
-         "nothing. Applies at the next start.");
+         "nothing. Off by default on a device with a second screen for the GamePad picture. Applies at the next start.");
     if (mods::one_screen_next() != mods::one_screen_enabled()) note("Restart the game to apply.");
 #ifdef __ANDROID__
     if (check("Swap TV and GamePad displays", hostui::displays_swapped(), &v))

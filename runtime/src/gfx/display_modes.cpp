@@ -71,6 +71,7 @@ std::atomic<bool> g_startup_gamepad{false};
 std::atomic<bool> g_one_screen{false}, g_one_screen_off_tv{false};
 std::atomic<bool> g_second_screen_off{false};
 std::atomic<bool> g_second_display_available{false};
+std::atomic<bool> g_second_display_present{false};
 static std::mutex g_second_screen_seed_mu;
 static bool g_second_screen_loaded = false;
 void seed_second_screen_off(bool off) {
