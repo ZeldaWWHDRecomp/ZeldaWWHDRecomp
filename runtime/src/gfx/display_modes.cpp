@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "../aspect.h"
+#include "../blind_touch.h"
 #include "../tv_pointer.h"
 #include "input.h"
 #include "runtime.h"
@@ -188,6 +189,29 @@ void display_set_mode(int m) {
     if (g_has_drc_window || g_second_display_available) g_second_screen_off = m == kDrcOff;  // chosen while the second screen is there
     if (m == kDrcAuto) { g_auto_pin = false; g_auto_until = 0; g_gamepad_ui = 0; }
     else if (m != kDrcOff) g_shown = true;
+}
+
+// ---------------------------------------------------------------- a controller's touchpad
+static std::atomic<double> g_touchpad_until{0};     // the PiP a touchpad finger brought up stays until then
+static std::atomic<bool> g_picture_on_screen{false};  // the last present showed the GamePad picture (not for the touchpad)
+static std::atomic<uint64_t> g_touchpad_highlight{0};  // on, touching, x and y in 1/65535 (0: none)
+void display_touchpad(input::PadState& s, bool finger, bool click, float x, float y) {
+    static std::mutex mu;
+    static input::BlindTouch blind;
+    std::lock_guard<std::mutex> lk(mu);
+    const input::BlindTouch::Result r = blind.step(finger, click, g_picture_on_screen.load(), display_now());
+    g_touchpad_until = blind.shown_until;
+    x = std::clamp(x, 0.0f, 1.0f), y = std::clamp(y, 0.0f, 1.0f);
+    g_touchpad_highlight = r.highlight ? 1ull << 33 | uint64_t(r.touch) << 32 | uint64_t(std::lround(x * 65535)) << 16 |
+                                             uint64_t(std::lround(y * 65535))
+                                       : 0;
+    if (r.touch && !s.touch) s.touch = true, s.tx = x, s.ty = y;
+}
+bool touchpad_highlight(float* x, float* y, bool* touching) {
+    const uint64_t h = g_touchpad_highlight.load();
+    if (!h) return false;
+    *x = float((h >> 16) & 0xFFFF) / 65535, *y = float(h & 0xFFFF) / 65535, *touching = (h >> 32) & 1;
+    return true;
 }
 
 // ---------------------------------------------------------------- GamePad screen while paused
@@ -700,6 +724,9 @@ PresentPlan display_plan(bool have_tv, float tw, float th, bool have_drc, float 
         pip = false;
         if (!startup_gamepad) drc_only = false; // keep startup touch usable on the remaining primary screen
     }
+    const bool elsewhere = (g_mode == kDrcWindow && g_has_drc_window && g_shown) || (g_second_display_available && !g_second_screen_off);
+    g_picture_on_screen = pip || drc_only || elsewhere;
+    if (!pip && !drc_only && !elsewhere && have_drc && display_now() < g_touchpad_until) pip = true;
     float dw = 0, dh = 0;
     bool sim = sim_screen(&dw, &dh);
     if (!sim) dw = layer_w, dh = layer_h;

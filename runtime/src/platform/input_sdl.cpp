@@ -123,6 +123,7 @@ static bool controller_values_live(){return true;}
 static bool controller_values_live(){return controllers_live();}
 #endif
 static PadState g_pad;
+static bool g_touchpad=false,g_touchpad_click=false;static float g_touchpad_x=0,g_touchpad_y=0;  // the first finger on a controller's touchpad (display_touchpad)
 static float g_values[input_map::kPadCount]={};
 static bool g_touch=false;static float g_tx=0,g_ty=0;
 static std::map<SDL_JoystickID,SDL_Gamepad*> g_controllers;
@@ -1078,8 +1079,14 @@ void update(){
  std::vector<std::pair<SDL_JoystickID,overlay::PadValues>> devices;
  // no game window in front and the background option off: the controllers are idle (window_focus.h)
  const bool live=controller_values_live();
+ bool touchpad=false,touchpad_click=false;float touchpad_x=0,touchpad_y=0;
  for(auto [id,pad]:g_controllers){
   if(!SDL_GamepadConnected(pad))continue;
+  if(live&&!touchpad&&SDL_GetNumGamepadTouchpads(pad)>0){
+   bool down=false;float x=0,y=0;
+   if(SDL_GetGamepadTouchpadFinger(pad,0,0,&down,&x,&y,nullptr)&&down)
+    touchpad=true,touchpad_click=SDL_GetGamepadButton(pad,SDL_GAMEPAD_BUTTON_TOUCHPAD),touchpad_x=x,touchpad_y=y;
+  }
   std::array<float,kPadCount> d{};
   auto put=[&](int p,float x){if(live)d[p]=std::max(d[p],x);};
   auto button=[&](SDL_GamepadButton b,int p){put(p,SDL_GetGamepadButton(pad,b)?1.f:0.f);};
@@ -1182,6 +1189,7 @@ void update(){
  // (not while the settings overlay or the text prompt takes the buttons: Start acts there)
  {static bool plus=false;const bool now=(state.buttons&input::kPlus)!=0;if(now&&!plus&&!overlay::blocks_input())gfx::display_plus_pressed();plus=now;}
  std::lock_guard lk(g_mu);std::copy(std::begin(v),std::end(v),g_values);g_pad=state;g_infos=std::move(infos);
+ g_touchpad=touchpad&&!overlay::captures();g_touchpad_click=g_touchpad&&touchpad_click;g_touchpad_x=touchpad_x;g_touchpad_y=touchpad_y;
  if(!overlay::blocks_input()&&!getenv("WWHD_NO_HOST_INPUT")){motion::poll_recalibrate(game,g_keys);screenshot::poll_controller(game);}
 }
 void prompt_text(const std::u16string& initial,int max_len,std::function<void(bool,std::u16string)> done){std::lock_guard lk(g_mu);g_initial=initial;g_pending_max_len=std::max(0,max_len);if(g_initial.size()>(size_t)g_pending_max_len)g_initial.resize(g_pending_max_len);g_pending=std::move(done);}
@@ -1430,6 +1438,7 @@ PadState read() {
     s.touch = g_touch;
     s.tx = g_tx;
     s.ty = g_ty;
+    if (!no_host) gfx::display_touchpad(s, g_touchpad && !overlay::blocks_input(), g_touchpad_click && !overlay::blocks_input(), g_touchpad_x, g_touchpad_y);
     s.virt |= g_touch_virt.load(std::memory_order_relaxed);  // the on-screen Jump / Moon jump buttons
     s.virt |= k.virt;
     // debug: WWHD_LOG_BUTTONS=1 logs every change of the merged button bits

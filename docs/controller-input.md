@@ -143,6 +143,19 @@ is **paused** (the game's own short pause, as when a strong hit lands; the music
 **Item button names**: X Y R, A1 A2 A3, or **Automatic** (default: A1, A2, A3 while you play by touch).
 The ring, the game's HUD buttons and the GamePad's item slots show them.
 
+## The touchpad as the GamePad's touch screen
+
+A DualShock 4's or DualSense's touchpad stands for the GamePad's touch screen, without looking at it: the
+whole pad is the whole GamePad picture.
+
+- A finger on the pad shows where it is: a ring on the GamePad picture.
+- **Clicking the pad down touches** the GamePad there. Click and let go for a tap; keep it clicked and
+  move the finger to drag (an item onto X, Y or R, a map marker).
+- While the GamePad picture is not on the TV, the first finger or click brings it up (picture-in-picture)
+  and does nothing else. It stays while the pad is in use and for 10 seconds after.
+
+A touchpad click bound to a game button in the controls still does that button as well.
+
 ## Controllers and the window focus
 
 Controllers play the game while either of the game's own windows is in front: the TV window or the

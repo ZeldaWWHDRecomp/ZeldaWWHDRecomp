@@ -20,6 +20,8 @@
 #include "display.h"
 #include "auto_pip.h"
 
+namespace input { struct PadState; }
+
 namespace gfx {
 
 enum DrcMode { kDrcWindow, kDrcPip, kDrcAuto, kDrcOff, kDrcGamePad, kDrcModeCount };
@@ -128,6 +130,14 @@ bool display_gamepad_state_needed();
 void display_read_gamepad_ui(); // guest thread, once at swap; returns immediately outside auto/pause/One screen's Off-TV Play
 void display_gamepad_ui(GamePadUiState state); // publish a host-only snapshot
 bool gamepad_ui_menu();                          // that snapshot: a game menu is on the GamePad's touch screen (any thread)
+// A controller's touchpad (blind_touch.h) into this controller read (input hosts): a finger on it (x, y 0..1 from the
+// pad's top left) is highlighted on the GamePad picture, a click touches the GamePad there; while the GamePad picture
+// isn't in sight of the TV's player (in the TV window, the GamePad window or on a second screen) either brings the
+// picture-in-picture up instead. The iPhone GamePad doesn't count: a player with a controller is looking at the TV.
+// A touch already in `s` stays.
+void display_touchpad(input::PadState& s, bool finger, bool click, float x, float y);
+// The touchpad's finger to highlight on the GamePad picture now (x, y 0..1), and whether it touches (any thread)
+bool touchpad_highlight(float* x, float* y, bool* touching);
 
 // pixel rectangles in the target (drawable), top-left origin
 struct Layout { Box tv, pip; bool pip_on = false; bool drc_only = false; float scale = 1; };
