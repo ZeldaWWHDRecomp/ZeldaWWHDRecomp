@@ -76,7 +76,7 @@ inline GamePadSceneKind gamepad_scene_kind(uint32_t descriptor) {
         if (entry.descriptor == descriptor) return entry.kind;
     return GamePadSceneKind::Unknown;
 }
-// Game Over reuses the save/options window with routing 4: on the TV (gameover_pane.h: and on the GamePad).
+// Game Over reuses the save/options window with routing 4: the TV shows it (the GamePad is black).
 inline bool gameover_save_window(uint32_t descriptor, uint32_t routing) {
     return routing == 4 && (descriptor == GD(0x1049ED08) || descriptor == GD(0x1049ED34));
 }

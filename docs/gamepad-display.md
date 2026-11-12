@@ -99,17 +99,12 @@ below are canonical USA addresses and are translated through `GD()` for regional
   (it trails the flag by a few frames on both ends). Either one shows PiP with GamePad routing `1`.
 - `1049F498`, `1049F4C4`, `1049F4F0` identify TV, DRC and Pro mode exchanges. These clear the closing
   delay and suppress PiP while routing changes; the pin survives.
-- Game Over reuses the save/options window (`1049ED08`/`1049ED34`) with routing `4`: the TV shows it,
-  so it opens no PiP. The game also draws it into the GamePad picture, then covers the whole picture
-  with an opaque black pane (an 8x8 BC4 texture quad). While that window is up, both renderers leave
-  the pane out (`runtime/src/gfx/gameover_pane.h`), so the GamePad shows the window. The prompt reads
-  only the controller, so a tap on its Cancel or Save becomes Left or Right onto it, then A; touches
-  are kept from the game there (it would answer each with its "not here" mark).
+- Game Over reuses the save/options window (`1049ED08`/`1049ED34`) with routing `4`: the TV shows it
+  and the GamePad is black, so it opens no PiP (the same window from the pause menu, routing `2`, does).
 
 The state is published as atomic host-only flags. The renderer does not read guest memory. There
-are no guest writes or injected inputs. Every swap reads the scene descriptor and the routing for
-the Game Over save window, whatever the mode; outside auto, the reader then exits before the other
-guest reads unless the existing optional Plus pause view is pending or active. The former GPU sampling and waits are
+are no guest writes or injected inputs. Outside auto, the reader exits before guest reads unless
+the existing optional Plus pause view is pending or active. The former GPU sampling and waits are
 gone from both Metal and Vulkan. The luma functions used by FXAA remain part of antialiasing.
 
 Unit tests: `auto_pip`, `auto_pip_pause`, `auto_pip_eu`, `gamepad_ui_state`, `display_fallback`, and `stereo_pointer`.

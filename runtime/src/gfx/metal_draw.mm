@@ -1,5 +1,4 @@
 #include "gamepad_backdrop.h"
-#include "gameover_pane.h"
 #include "metal_gamepad_backdrop.h"
 #include "metal_draw_replay.h"
 #include "metal_backdrop_source.h"
@@ -2626,9 +2625,6 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     // post effects, which would lose the islands and characters)
     if (!readsPicture && !colors[0] && depth && clouds_shadow_depth(depth)) readsPicture = true;
     if (readsPicture) clouds_shadows_now();
-    if (colors[0] && gameover_pane::skip(colors[0]->width, colors[0]->height, ps->dec->textureUnitListCount, ps->dec->textureUnitList,
-                                         &regs[REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS]))
-        return;  // gameover_pane.h: the black pane over the GamePad's save window
     if (!ensure_pass(colors, colorSlices, depth, depthSlice)) { g_skip[SK_PASS]++; return; }
     rprof::mark(rprof::kPass);
     if (cloud_proto::g_active_seq) clouds_mark_start(colors, colorSlices, depth, depthSlice, ensure_pass);

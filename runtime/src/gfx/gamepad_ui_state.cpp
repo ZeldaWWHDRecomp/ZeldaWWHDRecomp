@@ -2,7 +2,6 @@
 // Called on the guest thread at GX2SwapScanBuffers, never from a GPU completion handler.
 #include "display_modes.h"
 #include "auto_pip.h"
-#include "gameover_pane.h"
 #include "runtime.h"
 #include "guest_addr.h"
 #include <cstdlib>
@@ -14,17 +13,6 @@ bool object(uint32_t p, uint32_t size) {
 }
 }
 void display_read_gamepad_ui() {
-    {
-        // every swap, whatever the screen mode: the Game Over save window on the GamePad (gameover_pane.h)
-        const uint32_t scene = ld32(GD(0x101F8344));
-        bool prompt = false;
-        if (object(scene, 0x24c)) {
-            const uint32_t current = ld32(scene + 0x18);
-            const uint32_t descriptor = object(current, 12) ? ld32(current + 8) : ld32(scene + 0x14);
-            prompt = gameover_save_window(descriptor, ld32(GD(0x101F8348)));
-        }
-        gameover_pane::g_save_prompt.store(prompt, std::memory_order_relaxed);
-    }
     if (!display_gamepad_state_needed()) return;
     GamePadUiState state;
     {

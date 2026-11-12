@@ -1,6 +1,5 @@
 #include "gamepad_backdrop.h"
 #include "gamepad_backdrop_blend.h"
-#include "gfx/gameover_pane.h"
 #include "gamepad_backdrop_replay.h"
 #include "gx2/gx2_regs.h"
 #include "vertex_cpu_policy.h"
@@ -3956,9 +3955,6 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   Surface* depth = targets.depth;
   const uint32_t depthSlice = targets.depthSlice, width = targets.width, height = targets.height;
   const float sx = targets.sx, sy = targets.sy;
-  if (colors[0] && gfx::gameover_pane::skip(colors[0]->width, colors[0]->height, ps->dec->textureUnitListCount,
-                                            ps->dec->textureUnitList, &r[REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS]))
-    return;  // gameover_pane.h: the black pane over the GamePad's save window
   clouds_before_draw(r, ps, colors[0], slices[0], depth);  // clouds.cpp: cloud shadows
   rprof::mark(rprof::kTargets);
   // 60 fps (generated): a HUD draw into the TV picture writes its coverage too (only while it runs;
