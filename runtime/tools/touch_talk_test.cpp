@@ -514,6 +514,31 @@ int main() {
         d.up(0, 0);
         assert(count_press(d.run(letter, 8), kBtnA) == 1);
     }
+    // ---- the telescope: HD keeps a message status there all the time (the scope's own state, 11 SCOPE_ACTIVE, in
+    // dComIfGp_getMesgStatus too; measured at sea with the Mac build), and Aryll's lines show in it. A finger
+    // there looks around and zooms (the touch controls' sticks / swipe), never the talk's; in an event it is the talk's
+    {
+        Options o;
+        PlayContext scope = play();
+        scope.player_status0 = kSt0Telescope;
+        scope.flags = kInGame | kLink | kMessage | kZoomBar;  // as the game had it (no kInPlay: a message status)
+        scope.mesg_status = scope.scope_mesg_status = 11;
+        assert(talking(scope) && scope_look(scope));
+        assert(mode_of(scope, false) == kModeNone && !claims(scope, o, false));
+        PlayContext text = scope;  // her line waits for A: the key icon and the message window show
+        text.flags |= kKeyIcon | kMsgWindow;
+        text.mesg_status = text.scope_mesg_status = 10;
+        assert(!claims(text, o, false));
+        PlayContext event = scope;
+        event.flags |= kEvent;
+        assert(!scope_look(event) && claims(event, o, false) && mode_of(event, false) == kModeTalk);
+        // the Picto Box: only the scope's status (0/11), no talk anyway
+        PlayContext picto = play();
+        picto.player_status1 = kSt1PictoAim;
+        picto.flags |= kMessage | kPictoFinder | kZoomBar;
+        picto.scope_mesg_status = 11;
+        assert(!talking(picto) && !claims(picto, o, false));
+    }
     printf("touch_talk_test: ok\n");
     return 0;
 }

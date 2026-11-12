@@ -209,6 +209,25 @@ static void picto_box() {
     b = context_buttons(c);
     only(b, {kB, kR});
     item(b, kR, kItemTelescope);
+    // as the game really has it: its message status stays at the scope's own state (11) all the time there, which
+    // reads as a talk; the telescope's buttons stay (not the talk's lone A)
+    c.flags = (c.flags & ~kInPlay) | kMessage | kZoomBar;
+    c.mesg_status = c.scope_mesg_status = 11;
+    c.b_action = kActReturn;
+    b = context_buttons(c);
+    only(b, {kB, kR});
+    item(b, kR, kItemTelescope);
+    assert(!jump_buttons(c, true, true));
+    // its own text (Aryll on Outset) waiting for A: A goes on, B and the item stay
+    c.flags |= kKeyIcon | kMsgWindow;
+    c.mesg_status = c.scope_mesg_status = 10;
+    b = context_buttons(c);
+    only(b, {kA, kB, kR});
+    action(b, kA, kActNext);
+    // ... but in an event the talk rule decides
+    c.flags |= kEvent;
+    b = context_buttons(c);
+    only(b, {kA});
 }
 
 static void talking_to_someone() {

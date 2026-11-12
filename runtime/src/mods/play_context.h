@@ -203,6 +203,14 @@ inline bool item_in_hand(const PlayContext& c) {
 // a talk or a scene's text is up
 // (the message status, not kMessage: that one also holds the telescope's / Picto Box's scope status)
 inline bool talking(const PlayContext& c) { return c.mesg_status != 0 || c.has(kKeyIcon) || c.has(kMsgWindow); }
+// Link looks through the telescope, in play (no event, menu): the sticks look around (right) and zoom (left),
+// also while the telescope's own text shows (Aryll's lines on Outset: she waits for him to look and zoom). HD
+// puts the telescope's screen state (fopMsgStts_SCOPE_ACTIVE 11, ...) into the game's message status too, not
+// only into the scope's (the Picto Box sets only the scope's), so talking() is true all the time there: the
+// touch talk must not take the fingers, nor the talk rule the buttons.
+inline bool scope_look(const PlayContext& c) {
+    return telescope(c) && c.has(kLink) && !c.has(kEvent) && !c.has(kMenu);
+}
 
 // ---- the layout panes the observer notes (nw::lyt::Pane names, as the game's layouts have them) ----
 enum PaneSignal : int {

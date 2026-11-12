@@ -119,7 +119,7 @@ inline Mode mode_of(const PlayContext& c, bool menu_on_tv) {
     if (c.has(kNumberEntry)) return kModeNumber;
     if (c.has(kChoice)) return kModeChoice;
     if (c.has(kShop)) return kModeShop;
-    if (talking(c)) return kModeTalk;
+    if (talking(c) && !scope_look(c)) return kModeTalk;  // the telescope's fingers look around and zoom
     return kModeNone;
 }
 
