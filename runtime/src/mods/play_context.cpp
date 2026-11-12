@@ -158,6 +158,8 @@ playctx::PlayContext play_context() {
     return g_last;
 }
 
+bool play_context_logs_panes() { return log_level() >= 2; }
+
 void play_context_pane(uint32_t pane) {
     if (!wanted()) return;
     const char* n = (const char*)mem::ptr(pane + kPaneName);

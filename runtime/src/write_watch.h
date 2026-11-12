@@ -74,7 +74,7 @@ struct HostWrite {
 
 // statistics for the renderers' periodic report: write faults and pages protected since the last call
 void take_stats(uint64_t& faults, uint64_t& protectedPages);
-// hints since the last call: calls and bytes covered
+// hints since the last call: calls and bytes covered (counted from the first call on; WWHD_WWATCH_HINT_STATS=1: always)
 void take_hint_stats(uint64_t& calls, uint64_t& bytes);
 // pages arm() failed to protect so far (they are reported as written on every check instead)
 uint64_t protect_failures();
