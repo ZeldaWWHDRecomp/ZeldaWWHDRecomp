@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mod SDK: code mods can claim touches on the GamePad picture** (#549, thanks @fayep). `wwhd_touch_claim` with
+  `WWHD_TOUCH_GAMEPAD` claims rectangles of the GamePad picture (854 x 480), with the same rules as on the TV picture:
+  a finger landing there goes only to the mod until it lifts, and the game doesn't see it. Works in a GamePad window,
+  on a phone and in One screen mode. Older ports refuse such a claim, so mods can fall back. Mod manager 1.12.0.
+
 - **One screen (handheld) mode: the mouse camera works again** (#514, thanks @mi5t). Every click on the picture was
   taken as a GamePad touch, so the mouse camera never captured the pointer. Now a click in play captures it, while
   clicks in the game's touch menus (items, map, bottles) still act as touches. On Android in One screen mode, a finger
