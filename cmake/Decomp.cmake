@@ -184,7 +184,7 @@ function(wwhd_decomp_configure)
   set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${WWHD_DECOMP_GEN_DEPENDS})
   set(list "${WWHD_DECOMP_OUT}/decomp_hooks.txt")
   string(CONCAT fix "Translate the game code with the decomp build's function list:\n"
-         "  python3 tools/recomp/recomp.py game/code/cking.rpx ${GEN_DIR} --decomp-hooks ${list}\n"
+         "  python3 tools/recomp/recomp.py ${WWHD_DECOMP_GAME}/code/cking.rpx ${GEN_DIR} --decomp-hooks ${list}\n"
          "(keep the normal build's GEN_DIR as it is; e.g. -DGEN_DIR=build/gen-decomp for this build)")
   if(NOT EXISTS "${GEN_DIR}/decomp_hooks.txt")
     message(FATAL_ERROR "WWHD_DECOMP: ${GEN_DIR} is not decomp build code.\n${fix}")
