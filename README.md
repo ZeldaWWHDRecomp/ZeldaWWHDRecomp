@@ -491,13 +491,18 @@ controller sticks and an option to invert the camera's up/down are at the bottom
 Defaults…**. The mapping is saved to `~/Library/Application Support/WWHD/controls.json`
 (`WWHD_CONTROLS=<file>` uses another file); deleting it restores the defaults. The diagnostic keys P, F12 and 9, and Esc, remain reserved.
 
-**Settings → Shortcuts** remaps Settings, full screen, Screenshot (**F10**), saving and loading
+**Settings → Shortcuts** remaps Settings, full screen, Screenshot (**F10**), Quit Game, saving and loading
 slots 1–5, and the graphics shortcuts. Each action has a key with Shift/Ctrl/Alt (also Cmd on
 macOS), an alternate key, and a controller combination: hold one button, then press another,
 for example **Select + D-pad Up**. Click a binding to capture it; Esc cancels, right-click or
 **Clear** unbinds it. Conflicting keys (including game controls) and duplicate combinations
 are marked. **Reset to defaults** resets this tab. The GamePad picture-in-picture, performance
-overlay, mute and volume actions start unbound. Defaults otherwise stay unchanged.
+overlay, mute, volume and Quit Game actions start unbound. Defaults otherwise stay unchanged.
+
+**Quit Game** opens the quit confirmation directly, without navigating through Settings. Assign a
+controller combination in **Settings → Shortcuts → General → Quit Game**, for example hold Select
+and press Start. The confirmation starts on **Cancel**; A on Cancel, B or Esc returns to play.
+Move onto **Quit** and confirm to close the game. Progress since the last in-game save is lost.
 
 A combination consumes only its two buttons, only while both are held; other game inputs keep
 working. Select used as a combination's hold button is reserved for combinations instead of the

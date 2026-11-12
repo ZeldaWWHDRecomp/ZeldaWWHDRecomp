@@ -19,14 +19,14 @@
 #include "imgui_internal.h"
 
 static std::vector<std::string> logs;
-static int saves=0,loads=0,promptKeys=0;
+static int saves=0,loads=0,promptKeys=0,quits=0;
 static bool prompt=false,mouseCamera=false;
 void log_msg(const char* format,...) {
  char line[2048];va_list args;va_start(args,format);vsnprintf(line,sizeof line,format,args);va_end(args);
  logs.emplace_back(line);
 }
 namespace audio { void flush(){} float master_volume(){return 1;} void set_master_volume(float,bool){} }
-namespace ss { void request_save(int){++saves;} void request_load(int){++loads;} }
+namespace ss { void request_save(int){++saves;} void request_load(int){++loads;} bool in_gameplay(){return true;} }
 namespace render { const Backend* g_backend = nullptr; uint64_t frame_count(){return 42;} Api active(){return Api::Vulkan;} }
 namespace gx2 { void checkpoint_vulkan_caches(){} void checkpoint_present_observer(){} }
 namespace gfxvk { bool graphics_hotkey(char,bool){return false;} }
@@ -39,6 +39,7 @@ namespace game_hooks { uint64_t link_steps(){return 0;} bool state_loaded(){retu
 namespace test_aids { void set_origin_step(uint64_t){} void tick(double,bool){} }
 namespace text_entry { bool active(){return prompt;} void text(const char*){} void preedit(const char*){} void key(int,bool,bool){++promptKeys;} }
 namespace hostui {
+ void quit(){++quits;}
  void graphics_changed(){} void post(std::function<void()> fn){fn();}
  bool fullscreen(){return false;} void set_fullscreen(bool){}
  float res_scale(){return 1;} void set_res_scale(float){}
@@ -52,6 +53,86 @@ static void event_key(SDL_Window* window,SDL_Scancode key,bool down,SDL_Keymod m
  SDL_Event e{};e.type=down?SDL_EVENT_KEY_DOWN:SDL_EVENT_KEY_UP;e.key.windowID=SDL_GetWindowID(window);
  e.key.timestamp=123456789;e.key.scancode=key;e.key.mod=mods;e.key.repeat=repeat;
  input::handle_event(e);
+}
+// Issue #477: a real remapped controller chord reaches the existing confirmation directly.
+static int quit_shortcut_test() {
+ using namespace input_map;
+ using namespace overlay;
+ Mapping m;
+ assert(from_json(R"({"shortcuts":{"Quit":{"keys":[{"key":"F9","modifiers":2}],"hold":"Options","button":"Menu"}}})",m));
+ set_current(m,false);
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+ auto* window=SDL_CreateWindow("Quit shortcut",960,640,SDL_WINDOW_HIDDEN);assert(window);input::set_prompt_window(window);
+ ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;
+ io.DisplaySize=ImVec2(960,640);io.DeltaTime=1.f/60;
+ io.ConfigFlags|=ImGuiConfigFlags_NavEnableKeyboard|ImGuiConfigFlags_NavEnableGamepad;
+ io.BackendFlags|=ImGuiBackendFlags_HasGamepad|ImGuiBackendFlags_RendererHasTextures;
+ io.Fonts->AddFontDefault();
+ const int action=shortcut_for_key(m,kVK_F9,kModCtrl);
+ assert(action>=0);
+ bool setting=false;
+ auto frame=[&] {
+  poll_controller_shortcuts(U.values);
+  if(!is_open()) { // production still polls input, but skips ImGui during plain gameplay
+   std::copy(std::begin(U.values),std::end(U.values),std::begin(U.prev));
+   return;
+  }
+  prepare_menu_input(io,true,false);
+  ImGui::NewFrame();
+  if(U.just_opened)ImGui::SetNextWindowFocus();U.just_opened=false;
+  ImGui::Begin("Quit shortcut regression");bool open=true;
+  ImGui::Checkbox("Unchanged setting",&setting); // Settings draws its current page before the quit row
+  quit_row(open);ImGui::End();
+  if(!open)set_open(false);
+  if(navigation_pressed(face_input(kB))&&!g_pad_b_used&&!ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId))set_open(false);
+  g_pad_b_used=false;
+  g_dialog_open=is_open()&&ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel);
+  ImGui::Render();
+  std::copy(std::begin(U.values),std::end(U.values),std::begin(U.prev));
+ };
+ auto settle=[&]{for(int i=0;i<4;++i)frame();};
+ auto popup_up=[&]{auto* p=ImGui::FindWindowByName(quitprompt::kTitle);return is_open()&&p&&p->Active;};
+ auto release=[&]{std::fill(std::begin(U.values),std::end(U.values),0.f);settle();};
+ auto chord=[&]{U.values[kPadOptions]=U.values[kPadMenu]=1;settle();};
+ auto press=[&](int p){U.values[p]=1;frame();U.values[p]=0;settle();};
+ settle();assert(!is_open()&&quits==0);
+ chord();assert(is_open()&&popup_up()&&quits==0);
+ auto* popup=ImGui::FindWindowByName(quitprompt::kTitle);
+ assert(GImGui->NavWindow==popup&&GImGui->NavId==popup->GetID(quit::kCancel));
+ settle();assert(popup_up()&&quits==0); // holding the chord neither reopens nor confirms
+ release();press(face_input(kA));assert(!is_open()&&quits==0);
+ chord();release();press(face_input(kB));assert(!is_open()&&quits==0);
+ chord();release();io.AddKeyEvent(ImGuiKey_Escape,true);frame();io.AddKeyEvent(ImGuiKey_Escape,false);settle();
+ assert(!is_open()&&quits==0);
+ // The opening chord may itself contain B: it must not cancel the question it just opened.
+ auto back_binding=m;back_binding.shortcuts[action].button=face_input(kB);set_current(back_binding,false);
+ U.values[kPadOptions]=U.values[face_input(kB)]=1;settle();assert(is_open()&&popup_up()&&quits==0);
+ release();press(face_input(kB));assert(!is_open()&&quits==0);set_current(m,false);release();
+ // A held opening press must not activate the Settings page's previous selection before the dialog.
+ set_open(true);settle();auto* settings=ImGui::FindWindowByName("Quit shortcut regression");
+ ImGui::SetFocusID(settings->GetID("Unchanged setting"),settings);settle();set_open(false);release();
+ auto confirm_binding=m;confirm_binding.shortcuts[action].button=face_input(kA);set_current(confirm_binding,false);
+ U.values[kPadOptions]=U.values[face_input(kA)]=1;settle();assert(!setting&&is_open()&&popup_up());
+ release();press(face_input(kB));set_current(m,false);release();
+ // Closing the overlay with its own shortcut must not leave a stale confirmation on reopening.
+ chord();release();activate_shortcut(kSettings);settle();assert(!is_open());
+ activate_shortcut(kSettings);settle();assert(is_open()&&!popup_up());set_open(false);release();
+ // Keyboard bindings use the same request; auto-repeat does not reopen the confirmation.
+ event_key(window,SDL_SCANCODE_F9,true,SDL_KMOD_CTRL);settle();assert(is_open()&&popup_up());
+ event_key(window,SDL_SCANCODE_F9,true,SDL_KMOD_CTRL,true);settle();assert(popup_up()&&quits==0);
+ event_key(window,SDL_SCANCODE_F9,false,SDL_KMOD_CTRL);press(face_input(kB));assert(!is_open());
+ // A direct request from an already open Settings window keeps that window on cancellation.
+ set_open(true);activate_shortcut(action);settle();assert(popup_up());
+ press(face_input(kB));assert(is_open()&&!popup_up());set_open(false);release();
+ // Binding capture never activates the newly chosen shortcut, including on leaving capture held.
+ external_binding_capture(true);chord();assert(!is_open());
+ external_binding_capture(false);settle();assert(!is_open());release();
+ // A request abandoned before its first rendered frame must not reopen on the next Settings visit.
+ activate_shortcut(action);set_open(false);set_open(true);settle();assert(!popup_up());set_open(false);release();
+ chord();release();press(kPadDRight);press(face_input(kA));assert(quits==1);
+ ImGui::DestroyContext();SDL_DestroyWindow(window);SDL_Quit();
+ puts("quit shortcut: controller routing, Cancel focus, A/B/Esc cancellation, capture gate and confirmed exit passed");
+ return 0;
 }
 // Exercise the actual Shortcuts widgets and capture loop without a renderer or game data.
 static int shortcut_ui_test() {
@@ -402,6 +483,7 @@ static int window_target_test() {
  return 0;
 }
 int main(int argc,char** argv){
+ if(argc>1&&std::string(argv[1])=="--quit-shortcut")return quit_shortcut_test();
  if(argc>1&&std::string(argv[1])=="--shortcuts-ui")return shortcut_ui_test();
  if(argc>1&&std::string(argv[1])=="--window-target")return window_target_test();
  if(argc>1&&std::string(argv[1])=="--bindings-for")return bindings_for_test();

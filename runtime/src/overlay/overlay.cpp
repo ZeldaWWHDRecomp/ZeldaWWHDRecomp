@@ -153,6 +153,10 @@ const bool g_no_host_mouse = g_no_host && !getenv("WWHD_TEST_POST_MOUSE");
 bool g_pad_b_used = false;  // B answered a dialog this frame: it does not also close the menu
 // a dialog (or a list) is open in Settings: Esc and Android's Back close it, not the menu (popup.h)
 std::atomic<bool> g_dialog_open{false};
+// A host shortcut requests the render thread's existing confirmation. Keep the source until it is
+// answered: cancelling a shortcut used in play returns to play; Settings > Quit stays in Settings.
+enum class QuitShortcut { None, PendingGame, PendingSettings, Game, Settings };
+std::atomic<QuitShortcut> g_quit_shortcut{QuitShortcut::None};
 
 // input events from the host's main thread, replayed into ImGui on the render thread
 struct Event {
@@ -3511,6 +3515,14 @@ void quit_row(bool& open) {
     bool ask = quit::bottom_row(false, nullptr);
 #endif
     if (ask) LOG("[quit] Settings > Quit Game: asking");
+    auto request = g_quit_shortcut.load();
+    if (request == QuitShortcut::PendingGame || request == QuitShortcut::PendingSettings) {
+        const auto showing = request == QuitShortcut::PendingGame ? QuitShortcut::Game : QuitShortcut::Settings;
+        if (g_quit_shortcut.compare_exchange_strong(request, showing)) {
+            ask = true;
+            LOG("[quit] shortcut: asking");
+        }
+    }
     if (g_test_quit && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
         g_test_quit = false;
         ask = true;
@@ -3529,9 +3541,11 @@ void quit_row(bool& open) {
     const auto answer = quit::dialog(ask, ss::in_gameplay(), back, forced);
     if (answer == quit::Answer::None) return;
     asked = -1;
+    const bool return_to_game = g_quit_shortcut.exchange(QuitShortcut::None) == QuitShortcut::Game;
     if (answer == quit::Answer::Cancel) {
         if (back) g_pad_b_used = true;  // B answered: the menu stays open
-        LOG("[quit] answer: Cancel; back to Settings");
+        if (return_to_game) open = false;
+        LOG("[quit] answer: Cancel; back to %s", return_to_game ? "game" : "Settings");
         return;
     }
     LOG("[quit] answer: Quit");
@@ -3659,6 +3673,15 @@ void activate_shortcut(int action, KeyOrigin origin) {
     using namespace input_map;
     if (action < 0 || action >= kShortcutCount) return;
     if (action == kSettings) { set_open(!is_open(), OpenReason::F1, origin); return; }
+    if (action == kQuit) {
+        if (g_capturing_keys.load() || g_external_capture.load() || g_dialog_open.load() || text_entry::active()) return;
+        auto expected = QuitShortcut::None;
+        const auto request = is_open() ? QuitShortcut::PendingSettings : QuitShortcut::PendingGame;
+        if (!g_quit_shortcut.compare_exchange_strong(expected, request)) return;
+        set_open(true, OpenReason::API, origin);
+        if (!is_open()) g_quit_shortcut = QuitShortcut::None;  // no visible window to host the question
+        return;
+    }
     LOG("[shortcuts] %s", shortcut_info(action).id);
     hostui::post([action] {
         if (action >= kSave1 && action <= kSave5) { ss::request_save(action - kSave1 + 1); return; }
@@ -3730,6 +3753,7 @@ void poll_controller_shortcuts(const float* values) {
     // issue #267: a background controller press never opens Settings (settings_shortcut.h)
     const bool may_open = controller_may_open_settings(input::window_focused(), input::background_controllers());
     auto activate = [&](int a) {
+        if (a == input_map::kQuit && !is_open() && !may_open) return;
         if (a == input_map::kSettings) {
             const auto& b = m.shortcuts[a];
             if (!is_open() && !may_open) return;
@@ -3754,7 +3778,10 @@ void set_open(bool open, OpenReason reason, KeyOrigin origin) {
     if (open && window_target::selected.load() == window_target::Window::None) return;
 #endif
     if (g_open.exchange(open) == open) return;
-    if (!open) g_dialog_open = false;
+    if (!open) {
+        g_dialog_open = false;
+        g_quit_shortcut = QuitShortcut::None;
+    }
     for (auto& k : g_held_keys) k = false;
     input::release_keys();  // keys held now belong to the menu (opening) or are not stuck in the game (closing)
     if (open) {
@@ -3904,7 +3931,10 @@ void prepare_menu_input(ImGuiIO& io, bool open, bool mouse_used) {
     apply_capture();
     std::copy(std::begin(U.prev), std::end(U.prev), U.nav_prev.begin());
     std::copy(std::begin(U.values), std::end(U.values), U.nav_values.begin());
-    U.capture_navigation_gate.filter(U.nav_values.data(), capturing_at_start || U.capture_completed);
+    const auto quit = g_quit_shortcut.load();
+    const bool opening_quit = quit == QuitShortcut::PendingGame || quit == QuitShortcut::PendingSettings;
+    // The opening chord must not activate a Settings control before the confirmation is drawn.
+    U.capture_navigation_gate.filter(U.nav_values.data(), capturing_at_start || U.capture_completed || opening_quit);
     const int face[4] = {input_map::face_input(input_map::kA), input_map::face_input(input_map::kB),
                           input_map::face_input(input_map::kX), input_map::face_input(input_map::kY)};
     U.gamepad_navigation.feed(io, U.nav_values.data(), U.nav_prev.data(), open && U.cap_action < 0 && !capturing_at_start, mouse_used, face);  // the text prompt reads the controller itself
