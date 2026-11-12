@@ -361,6 +361,138 @@ class NativeRulesTest(unittest.TestCase):
         self.assertEqual(leaves, {0x02000100})
         self.assertEqual(native_rules.LEAF_ERRORS, [])
 
+    def test_bare_rules(self):
+        # --bare: a leaf is bare only when no function of its unit is caller=guest or (unbased)
+        lines = [
+            "02000000  callee=native caller=ok  (leaf) decl=exact:1r0f:1  # u_ok a",
+            "02000010  callee=native caller=ok  - decl=exact:1r0f:1  # u_ok b",
+            "02000020  callee=native caller=ok  (leaf) decl=exact:1r0f:1  # u_guest c",
+            "02000030  callee=native caller=guest  A1 decl=exact:1r0f:1  # u_guest d",
+            "02000040  callee=native caller=ok  (leaf) decl=exact:1r0f:1  # u_unb e",
+            "02000050  callee=native caller=ok  (unbased) decl=exact:1r0f:1  # u_unb f",
+        ]
+        out = native_rules.bare_rules(lines)
+        self.assertIn("(leaf),(bare)", out[0])
+        self.assertNotIn("(bare)", "".join(out[1:]))
+        self.assertEqual([x.split("#")[1] for x in out], [x.split("#")[1] for x in lines])
+
+    def test_entry_only_rules(self):
+        # --bare-entry: a bare leaf is (nentry) only when no line of its unit's sources or included headers names it
+        # except its declaration, its glued definition head, VERIFY / HostFn lines and by-address forwarders
+        t = self.tmp.name
+        inc = os.path.join(self.src, "wwhd_src", "include")
+        os.makedirs(inc)
+        open(os.path.join(inc, "h.h"), "w").write(
+            "s32 aOnly(void* a, void* b);\n"
+            "static inline bool aOnly(u32 a, u32 b) { return gabi::hcall<0x02000000, bool>(a, b); }\n"
+            "template <class R = void, class... A> inline R bFn(A... a) { return gabi::call<R>(0x02000010, a...); }\n"
+            "s32 bFn(void* a);\n"
+            "struct K { s32 hdrCalled(void* p); s32 viaHeader() { return dIn(0); } };\n"
+            '#include "h2.h"\n')
+        open(os.path.join(inc, "h2.h"), "w").write("s32 dIn(void* p);\n")
+        u1 = os.path.join(t, "u1.cpp")
+        open(u1, "w").write(
+            '#include "h.h"\n'
+            "s32 aOnly(void* a, void* b) { WWHD_GLUE_FUNC_R(0x02000000, s32, a, b);\n"
+            "    return 0; // calls bFn(a) in a comment only\n}\n"
+            "s32 bFn(void* a) { WWHD_GLUE_FUNC_R(0x02000010, s32, a);\n"
+            '    const char* s = "cFn(x)"; return 1;\n}\n'
+            "s32 cFn(void* a) { WWHD_GLUE_FUNC_R(0x02000020, s32, a);\n    return 2;\n}\n"
+            "s32 user(void* a) { WWHD_GLUE_FUNC_R(0x02000040, s32, a);\n    if (a) {\n        c * cFn(x * y);\n    }\n    return 0;\n}\n"
+            "s32 dIn(void* p) { WWHD_GLUE_FUNC_R(0x02000050, s32, p);\n    return 3;\n}\n"
+            "s32 ptrUse(void* a) { WWHD_GLUE_FUNC_R(0x02000060, s32, a);\n    return 4;\n}\n"
+            "static void* tab[] = {(void*)&ptrUse};\n"
+            "VERIFY(0x02000000, aOnly);\nstatic gabi::HostFn wwhd_fn_02000000((const void*)&aOnly, 0x02000000);\n")
+        u2 = os.path.join(t, "u2.cpp")
+        open(u2, "w").write("s32 eOther(void* a) { WWHD_GLUE_FUNC_R(0x02000030, s32, a);\n    return aOnly(a, a);\n}\n")
+        json.dump({"units": [{"name": "u1", "sources": [{"path": u1}]}, {"name": "u2", "sources": [{"path": u2}]}]},
+                  open(os.path.join(self.out, "units.json"), "w"))
+        lines = ["02000000  callee=native caller=ok  (leaf),(bare) decl=exact:2r0f:1  # u1 aOnly",
+                 "02000010  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u1 bFn",
+                 "02000020  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u1 cFn",
+                 "02000030  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u2 eOther",
+                 "02000040  callee=native caller=ok  - decl=exact:1r0f:1  # u1 user",
+                 "02000050  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u1 dIn",
+                 "02000060  callee=native caller=ok  (leaf),(bare) decl=exact:1r0f:1  # u1 ptrUse",
+                 "02000070  callee=native caller=ok  (leaf) decl=exact:1r0f:1  # u1 notBare"]
+        out = native_rules.entry_only_rules(lines, self.out, self.src)
+        got = {x.split()[0] for x in out if "(nentry)" in x}
+        # aOnly: declaration, forwarder overload, definition, VERIFY and HostFn only (u2's call is another unit);
+        # bFn: by-address forwarder template, comment and string mentions ignored; eOther: nothing names it;
+        # cFn: called by name in `c * cFn(x * y);`, a statement that looks like a declaration but is in a body; dIn: called by name from an inline method of an included header;
+        # ptrUse: its address taken by name; notBare: not bare
+        self.assertEqual(got, {"02000000", "02000010", "02000030"})
+        self.assertTrue(all("(bare),(nentry)" in x for x in out if "(nentry)" in x))
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "nentry.txt")))
+        for ok in ("void f(void* a);", "    virtual s32 g(const cXyz* p, u32 n) const;", "s32 C::f(void) { WWHD_GLUE_FUNC_R(0x02000000, s32, this);"):
+            self.assertTrue(native_rules.ne_line_ok(ok, ok.split("(")[0].split()[-1].split("::")[-1]), ok)
+        self.assertFalse(native_rules.ne_line_ok("    c * f(x * y);", "f", True))
+        for bad in ("    return f(a);", "    s32 r = f(a, b);", "f(a);", "    a.f(p);", "x = &f;",
+                    "s32 g(void* a) { return f(a); }"):
+            self.assertFalse(native_rules.ne_line_ok(bad, "f"), bad)
+
+
+    def test_stackarg_rules(self):
+        # --stackarg: a listed stack-argument reader whose only callee reasons are its stack-argument reads, caller=ok,
+        # register-exact and not named in its unit except its (multi-line) declaration and definition becomes
+        # callee=native "(stackarg)" (bit 24), without a wwhd_ne_ export; anything else stays as it was
+        t = self.tmp.name
+        u1 = os.path.join(t, "sa.cpp")
+        open(u1, "w").write(
+            "s32 incl(f32 ax, f32 ay,\n         f32 bx) { WWHD_GLUE_FUNC_R(0x02011D2C, s32, ax, ay, bx);\n"
+            "    f32 m = f32(gabi::load<f64>(gabi::cpu->r[1] + 8));\n    return 0;\n}\n"
+            "void Env::palno(u32 a, u32 b) { WWHD_GLUE_FUNC(0x025580FC, void, this, a, b);\n}\n"
+            "void user() { WWHD_GLUE_FUNC(0x02000040, void);\n    e->palno(1, 2);\n}\n")
+        json.dump({"units": [{"name": "sa", "sources": [{"path": u1}]}]}, open(os.path.join(self.out, "units.json"), "w"))
+        lines = ["02011D2C  callee=guest caller=ok  src:cpu,orig:caller-frame-read decl=exact:0r8f:1  # sa incl",
+                 "025580FC  callee=guest caller=ok  src:cpu,orig:caller-frame-read,(may park) decl=exact:8r0f:0  # sa &Env::palno",
+                 "02000040  callee=native caller=ok  - decl=exact:0r0f:0  # sa user"]
+        out = native_rules.stackarg_rules(list(lines), self.out, self.src)
+        self.assertEqual(out[0], "02011D2C  callee=native caller=ok  (stackarg) decl=exact:0r8f:1  # sa incl")
+        self.assertEqual(out[1:], lines[1:])  # palno: called by name in user()
+        for bad in ("02011D2C  callee=guest caller=guest  src:cpu,A2 cpu decl=exact:0r8f:1  # sa incl",
+                    "02011D2C  callee=guest caller=ok  src:cpu,src:local decl=exact:0r8f:1  # sa incl",
+                    "02011D2C  callee=guest caller=ok  src:cpu decl=-  # sa incl"):
+            self.assertEqual(native_rules.stackarg_rules([bad], self.out, self.src), [bad])
+        # the unit header: bit 24, no wwhd_ne_ export, wwhd_sa_ for its own unit
+        os.makedirs(os.path.join(self.out, "native"), exist_ok=True)
+        open(u1, "a").write("VERIFY(0x02011D2C, incl);\n")
+        native_rules.unit_headers(self.out, out[:1], fast=True, stackarg=True)
+        h = open(os.path.join(self.out, "native", "0.h")).read()
+        self.assertIn("{0x02011D2Cu, 0u, %du}," % (1 | 2 | 4 | 8 | 8 << 12 | 1 << 16 | 1 << 24), h)
+        self.assertNotIn("wwhd_ne_02011D2C", h)
+        self.assertIn("template <> struct Sa<0x02011D2Cu>", h)
+        self.assertIn("#define GABI_NE_0x02011D2C(F) extern \"C\" __attribute__((visibility(\"hidden\"))) uint32_t wwhd_sa_02011D2C(", h)
+
+    def test_accessor_rules(self):
+        # --accessor: the guard and object addresses from the unit's object_at views, the body's lazy form checked
+        t = self.tmp.name
+        u1 = os.path.join(t, "k.cpp")
+        good = ("struct KankyoGuard {\n    be<u32> value;\n};\n"
+                "static static KankyoEnvLight& g_env_light = gabi::object_at<KankyoEnvLight>(0x10475A68);\n"
+                "static static KankyoGuard& envLightInitialized = gabi::object_at<KankyoGuard>(0x104773B4);\n"
+                "KankyoEnvLight *kankyo_getEnvlight() { WWHD_GLUE_FUNC_R(0x02555D0C, KankyoEnvLight *);\n"
+                "    // the guard first\n    if (envLightInitialized.value == 0) {\n        envLightInitialized.value = 1;\n"
+                "        g_env_light.construct();\n        kankyoRegisterGlobal(&envLightDestructor);\n    }\n"
+                "    return wwhd_native_scope_.ret<wwhd_ret_t_>((&g_env_light));\n}\n")
+        json.dump({"units": [{"name": "d_kankyo", "sources": [{"path": u1}]}]}, open(os.path.join(self.out, "units.json"), "w"))
+        line = ["02555D0C  callee=native caller=ok  (may park) decl=exact:0r0f:1  # d_kankyo kankyo_getEnvlight"]
+        open(u1, "w").write(good)
+        self.assertEqual(native_rules.accessor_rules(line, self.out), {0x02555D0C: ("d_kankyo", 0x104773B4, 0x10475A68)})
+        bad_bodies = [good.replace("return wwhd_native_scope_", "if (x) return 0;\n    return wwhd_native_scope_"),
+                      good.replace("envLightInitialized.value == 0", "envLightInitialized.value != 0"),
+                      good.replace("be<u32> value;", "be<u8> value;"),
+                      good.replace("(&g_env_light)", "(&g_other)")]
+        for b in bad_bodies:
+            open(u1, "w").write(b)
+            with self.assertRaises(SystemExit):
+                native_rules.accessor_rules(line, self.out)
+        open(u1, "w").write(good)
+        for l in ("02555D0C  callee=guest caller=ok  src:cpu decl=exact:0r0f:1  # d_kankyo kankyo_getEnvlight",
+                  "02555D0C  callee=native caller=ok  - decl=exact:1r0f:1  # d_kankyo kankyo_getEnvlight"):
+            with self.assertRaises(SystemExit):
+                native_rules.accessor_rules([l], self.out)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -304,6 +304,11 @@ const PpcFunc* g_decomp_hostrt_tab = nullptr;
 #ifdef WWHD_DECOMP_FAST_NSTATS
 // gabi.h GABI_NSTATS (cmake WWHD_DECOMP_FAST_NSTATS, diagnostics): native entries per slot (WWHD_DECOMP_FAST_NSTATS=PATH)
 uint64_t* g_decomp_nstats = nullptr;
+#ifdef WWHD_DECOMP_FAST_ACCESSOR
+// gabi.h GABI_FAST_ACCESSOR with GABI_NSTATS (diagnostics): native entries of the lazy accessors by the running
+// function at the call (Cpu::decomp_running: caller slot + 1, 0 none; PATH.acc)
+uint64_t* g_decomp_acc_callers = nullptr;
+#endif
 #endif
 #ifdef WWHD_DECOMP_FAST_NOCHECK
 // gabi.h GABI_NOCHECK (cmake WWHD_DECOMP_FAST_NOCHECK): 1 = nested native calls run every native_enter_ok check again
@@ -1052,10 +1057,30 @@ void init() {
 #ifdef WWHD_DECOMP_FAST_LEAF_CHECK
     LOG("[decomp] fast mode: leaf check build (a call or frame use from a leaf body traps)");
 #endif
+#ifdef WWHD_DECOMP_FAST_LEAF_BARE
+    // gabi.h GABI_LEAF_BARE (cmake WWHD_DECOMP_FAST_LEAF_BARE): no run-time switch; WWHD_DECOMP_FAST_LEAF=0 and
+    // WWHD_DECOMP_FAST_NOCHECK=0 do not reach bare leaves
+    LOG("[decomp] fast mode: bare leaves (leaves of units without caller=guest or unbased functions keep no call glue)");
+#endif
+#ifdef WWHD_DECOMP_FAST_BARE_ENTRY
+    // gabi.h GABI_BARE_ENTRY (cmake WWHD_DECOMP_FAST_BARE_ENTRY): no run-time switch
+    LOG("[decomp] fast mode: bare entry leaves (bare leaves with pointer parameters that only their native entry calls)");
+#endif
+#endif
+#ifdef WWHD_DECOMP_FAST_ACCESSOR
+    // gabi.h GABI_FAST_ACCESSOR (cmake WWHD_DECOMP_FAST_ACCESSOR): no run-time switch
+    LOG("[decomp] fast mode: lazy accessors (kankyo_getEnvlight's native entry returns the object once initialised)");
+#endif
+#ifdef WWHD_DECOMP_FAST_STACKARG
+    // gabi.h GABI_STACKARG (cmake WWHD_DECOMP_FAST_STACKARG): no run-time switch
+    LOG("[decomp] fast mode: stack-argument calls native (cM3d_InclusionCheckPosIn3PosBox2d, EnvLight::setLight_palno_get)");
 #endif
 #ifdef WWHD_DECOMP_FAST_NSTATS
     if (const char* p = getenv("WWHD_DECOMP_FAST_NSTATS")) {
         g_decomp_nstats = new uint64_t[kNumSlots]();
+#ifdef WWHD_DECOMP_FAST_ACCESSOR
+        g_decomp_acc_callers = new uint64_t[kNumSlots + 1]();
+#endif
         static std::string path = p;
         std::thread([] {
             for (;;) {
@@ -1067,6 +1092,16 @@ void init() {
                         fprintf(fp, "%llu\t%08X\t%s\n", (unsigned long long)n, g_slots[i].addr, g_slots[i].name);
                 fclose(fp);
                 rename((path + ".tmp").c_str(), path.c_str());
+#ifdef WWHD_DECOMP_FAST_ACCESSOR
+                if (FILE* fa = fopen((path + ".acc.tmp").c_str(), "w")) {
+                    for (unsigned i = 0; i <= kNumSlots; i++)
+                        if (const uint64_t n = __atomic_load_n(&g_decomp_acc_callers[i], __ATOMIC_RELAXED))
+                            fprintf(fa, "%llu\t%08X\t%s\n", (unsigned long long)n, i ? g_slots[i - 1].addr : 0u,
+                                    i ? g_slots[i - 1].name : "-");
+                    fclose(fa);
+                    rename((path + ".acc.tmp").c_str(), (path + ".acc").c_str());
+                }
+#endif
             }
         }).detach();
         LOG("[decomp] fast mode native-entry stats: %s", p);

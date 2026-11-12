@@ -365,5 +365,21 @@ class FastRewriteTest(unittest.TestCase):
         self.assertEqual(gen.fast_rewrite(t, False, True)[1], 4)
 
 
+    def test_stackarg_call(self):
+        # --stackarg: only the listed stack-argument callees' constant-address do_call sites become do_call_sa
+        sys.path.insert(0, HERE)
+        import gen
+        t = ("    gabi::do_call(gabi::cpu, args, 0x02011D2C, 0);\n"
+             "    gabi::do_call(gabi::cpu, p, 0x025580FC, 2);\n"
+             "    gabi::do_call(gabi::cpu, args, 0x02011D30, 0);\n"
+             "    gabi::do_call(c, args, 0x02011D2C, 0);\n")
+        got, n = gen.SA_CALL.subn(gen.sa_call, t)
+        self.assertEqual(n, 2)
+        self.assertIn("gabi::do_call_sa<0x02011D2C>(gabi::cpu, args, 0);", got)
+        self.assertIn("gabi::do_call_sa<0x025580FC>(gabi::cpu, p, 2);", got)
+        self.assertIn("gabi::do_call(gabi::cpu, args, 0x02011D30, 0);", got)
+        self.assertIn("gabi::do_call(c, args, 0x02011D2C, 0);", got)
+
+
 if __name__ == "__main__":
     unittest.main()

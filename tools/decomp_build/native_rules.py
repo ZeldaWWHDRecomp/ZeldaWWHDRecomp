@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf] [--unbased]]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf [--bare [--bare-entry]]] [--stackarg] [--accessor] [--unbased]]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -834,7 +834,7 @@ def fast_shape(flags):
     return cr, ", ".join(params), ", ".join(names)
 
 
-def fast_text(own_verify, own_exact, ext_exact):
+def fast_text(own_verify, own_exact, ext_exact, own_sa=None, own_acc=None):
     """fast mode (cmake WWHD_DECOMP_FAST, gabi.h GABI_FAST_NE): calls between units bound by address at link time.
     Each register-exact function of the unit is exported as extern "C" wwhd_ne_XXXXXXXX (its native entry shape)
     through VERIFY's GABI_NE_<addr>(F) (empty for every other VERIFY address of the unit), and each register-exact
@@ -855,10 +855,26 @@ def fast_text(own_verify, own_exact, ext_exact):
         t.append('extern "C" GABI_NE_VIS %s wwhd_ne_%08X(%s);' % (cr, a, params or "void"))
         t.append("template <> struct Ne<0x%08Xu> { static constexpr bool ok = true; static constexpr auto fn = "
                  "&wwhd_ne_%08X; };" % (a, a))
+    if own_acc is not None:  # --accessor (gabi.h GABI_FAST_ACCESSOR): the unit's own lazy accessors (AccEntry)
+        t.append("template <uint32_t A> struct Acc { static constexpr bool ok = false; };")
+        for a, (guard, value) in sorted(own_acc.items()):
+            t.append("template <> struct Acc<0x%08Xu> { static constexpr bool ok = true; static constexpr uint32_t "
+                     "guard = 0x%08Xu, value = 0x%08Xu; };" % (a, guard, value))
+    if own_sa is not None:  # --stackarg (gabi.h GABI_STACKARG): the unit's own bit-24 functions, for do_call_sa only
+        t.append("template <uint32_t A> struct Sa { static constexpr bool ok = false; };")
+        for a, flags in sorted(own_sa.items()):
+            cr, params, _ = fast_shape(flags)
+            t.append('extern "C" __attribute__((visibility("hidden"))) %s wwhd_sa_%08X(%s);' % (cr, a, params or "void"))
+            t.append("template <> struct Sa<0x%08Xu> { static constexpr bool ok = true; static constexpr auto fn = "
+                     "&wwhd_sa_%08X; };" % (a, a))
     t.append("}  /* namespace gabi_native */")
     for tok in sorted(own_verify):
         a = int(tok, 16)
-        if a in own_exact:
+        if own_sa and a in own_sa:
+            cr, params, names = fast_shape(own_sa[a])
+            t.append('#define GABI_NE_%s(F) extern "C" __attribute__((visibility("hidden"))) %s wwhd_sa_%08X(%s) { return '
+                     'gabi::ne_body<%su, F, %s>(%s); }' % (tok, cr, a, params or "void", tok, cr, names))
+        elif a in own_exact:
             cr, params, names = fast_shape(own_exact[a])
             t.append('#define GABI_NE_%s(F) extern "C" GABI_NE_VIS %s wwhd_ne_%08X(%s) { return gabi::ne_body<%su, F, '
                      '%s>(%s); }' % (tok, cr, a, params or "void", tok, cr, names))
@@ -867,7 +883,319 @@ def fast_text(own_verify, own_exact, ext_exact):
     return "\n".join(t) + "\n"
 
 
-def unit_headers(out, lines, fast=False, hcalls=None):
+def bare_rules(lines):
+    """--bare (fast mode, gabi.h GABI_LEAF_BARE, NativeInfo bit 22 "(bare)"): leaves whose body keeps none of the glue.
+    A leaf qualifies when no function of its game unit is caller=guest or (unbased): those are the only callers a leaf's
+    refusal check (native_enter_nc) refuses besides char / void / function pointer arguments, which gabi.h checks by type
+    (glue_bare_of), and a caller in another unit enters the leaf through its native entry after its own caller_ok check.
+    Returns the lines with "(bare)" after "(leaf)" for those."""
+    unit = lambda line: line.split("#")[1].split()[0]
+    blocked = set()
+    for line in lines:
+        f = line.split("#")[0].split()
+        if f[2] != "caller=ok" or "(unbased)" in line.split("#")[0]:
+            blocked.add(unit(line))
+    out, n = [], 0
+    for line in lines:
+        head, sep, tail = line.partition("#")
+        if "(leaf)" in head and unit(line) not in blocked:
+            head = head.replace("(leaf)", "(leaf),(bare)", 1)
+            n += 1
+        out.append(head + sep + tail)
+    print("decomp: native-call rules (--bare): %d of %d leaf functions bare (%d units with a caller=guest or unbased "
+          "function keep the glue on theirs)" % (n, sum(1 for x in lines if "(leaf)" in x.split("#")[0]), len(blocked)))
+    return out
+
+
+# --bare-entry (fast mode, gabi.h GABI_BARE_ENTRY, NativeInfo bit 23 "(nentry)"): the occurrences of a bare leaf's name
+# in its unit's sources and their headers that cannot call its body with a pointer from outside the guest window (see
+# entry_only_rules). Everything else, comments and string literals aside, blocks the leaf.
+NE_KW = {"return", "else", "case", "do", "goto", "throw", "if", "while", "for", "switch", "new", "delete", "sizeof",
+         "co_return", "co_yield", "typedef", "using", "operator", "decltype", "alignof", "default"}
+NE_TYPE = r"(?:(?:const|volatile|unsigned|signed|struct|class)\s+)*(?P<t>[A-Za-z_]\w*)(?:\s*::\s*[A-Za-z_]\w*)*(?:\s*<[\w\s,:\*&]*>)?(?:\s+const)?"
+NE_PARAM = re.compile(r"^\s*" + NE_TYPE.replace("(?P<t>", "(?:") +
+                      r"(?:\s*[\*&]+\s*(?:const\s*)?|\s+)[A-Za-z_]\w*\s*(?:\[\s*\w*\s*\])?\s*$")
+NE_SPEC = r"\s*(?:template\s*<[^<>]*>\s*)?(?:(?:static|inline|extern|virtual|constexpr|explicit|friend)\s+)*"
+NE_FWD = r"\{\s*return\s+gabi::(?:call<[^<>()]*>\(\s*0x[0-9A-Fa-f]{8}\b|[lh]call<0x[0-9A-Fa-f]{8},[^<>()]*>\()[^;{}]*\);\s*\}"
+
+
+def ne_strip(text):
+    """the text with // and /* */ comments and string / character literals blanked (line structure kept)"""
+    return re.sub(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\\n])*"|\'(?:\\.|[^\'\\\n])*\'',
+                  lambda m: re.sub(r"[^\n]", " ", m.group(0)), text, flags=re.S)
+
+
+def ne_params_ok(params):
+    p = params.strip()
+    if p in ("", "void") or re.fullmatch(r"[A-Za-z_]\w*\s*\.\.\.\s*[A-Za-z_]\w*", p):
+        return True
+    return all(NE_PARAM.match(x) and x.split()[0] not in NE_KW for x in split_args(p))
+
+
+def ne_line_ok(line, name, in_body=False):
+    """whether one line (comments and literals blanked) that names NAME exactly once only declares or defines a
+    function of that name, or registers one: a VERIFY / VERIFY_NAMED mark (the guest entry and the native entry), a
+    HostFn line (the guest address of the function pointer), a declaration `TYPE NAME(PARAMS);`, a definition head
+    `TYPE NAME(PARAMS) {` followed by the glue macro (gen.py's form) and nothing else that names it, or a forwarder
+    `TYPE NAME(PARAMS) { return gabi::call / lcall / hcall by address; }` (the native or guest entry). PARAMS must be
+    parameter declarations (a type and a name each), and the line must start outside every function body or block
+    (IN_BODY: entry_only_rules' brace scan), so that a statement like `c * NAME(x * y);` is never taken for one."""
+    s = line.strip()
+    if re.match(r"VERIFY(?:_NAMED)?\(\s*0x[0-9A-Fa-f]{8}\s*,", s) or s.startswith("static gabi::HostFn wwhd_fn_"):
+        return True
+    if in_body:
+        return False
+    m = re.match(NE_SPEC + NE_TYPE + r"[\s\*&]+(?:[A-Za-z_]\w*(?:<[\w\s,:\*&]*>)?::)*" + re.escape(name) +
+                 r"\s*\((?P<p>[^()]*)\)\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?P<rest>.*)$", line)
+    if not m or m.group("t") in NE_KW or not ne_params_ok(m.group("p")):
+        return False
+    rest = m.group("rest").strip()
+    return (rest == ";" or re.fullmatch(NE_FWD, rest) is not None or
+            re.match(r"\{\s*WWHD_GLUE_FUNC(?:_R)?\(\s*0x[0-9A-Fa-f]{8}\s*,", rest) is not None)
+
+
+class NameScan:
+    """the lines of a unit's sources, and of the headers they include ("..." includes, transitively, every directory
+    the compiler may take), that name one of NAMES: (file, line, allowed) with allowed as ne_line_ok decides (comments
+    and string literals blanked; a declaration-like line inside a function body or block is never allowed; MULTILINE:
+    a line whose parentheses stay open is classified together with the next ones until they close)"""
+
+    def __init__(self, out, src, names, multiline=True):
+        self.multiline = multiline  # (--bare-entry: False, a declaration over several lines blocks)
+        self.uj = json.load(open(os.path.join(out, "units.json"), encoding="utf-8"))
+        self.hc = HeaderCalls(src, out)
+        self.names = set(names)
+        self.word = re.compile(r"\b[A-Za-z_]\w*\b")
+        self.memo = {}
+        self.files_of = {}
+
+    def scan(self, path):
+        if path not in self.memo:
+            try:
+                text = ne_strip(open(path, encoding="utf-8", errors="replace").read())
+            except OSError:
+                text = ""
+            got = collections.defaultdict(list)
+            # braces: a scope (namespace, class, struct, union, enum, extern) or anything else (a function body, a
+            # block, an initializer); a line starting inside anything else is in a body
+            stack, head = [], ""
+            tl = text.split("\n")
+            for i, ln in enumerate(tl, 1):
+                hits = collections.Counter(w for w in self.word.findall(ln) if w in self.names)
+                in_body = any(not sc for sc in stack)
+                for nm, c in hits.items():
+                    # a declaration or definition head whose parameter list goes on: the line with the next ones
+                    # until its parentheses close (at most 8), classified as one
+                    full, k = ln, i
+                    while self.multiline and full.count("(") > full.count(")") and k < len(tl) and k < i + 8:
+                        full += " " + tl[k]
+                        k += 1
+                    c2 = sum(1 for w in self.word.findall(full) if w == nm)
+                    got[nm].append((i, c == 1 and c2 == 1 and ne_line_ok(full, nm, in_body)))
+                for ch in ln + "\n":
+                    if ch == "{":
+                        stack.append(re.search(r"\b(?:namespace|class|struct|union|enum|extern)\b", head) is not None
+                                     and ")" not in head and "=" not in head)
+                        head = ""
+                    elif ch == "}":
+                        if stack:
+                            stack.pop()
+                        head = ""
+                    elif ch == ";":
+                        head = ""
+                    else:
+                        head += ch
+            self.memo[path] = got
+        return self.memo[path]
+
+    def files(self, unit):
+        if unit not in self.files_of:
+            seen, todo = set(), []
+            for u in self.uj["units"]:
+                if u["name"] != unit:
+                    continue
+                for s in u["sources"]:
+                    seen.add(s["path"])
+                    todo.append((s["path"], s.get("quote")))
+            while todo:
+                p, quote = todo.pop()
+                first = [os.path.dirname(p)] + ([quote] if quote else [])
+                for inc in self.hc._file(p)[1]:
+                    for d in first + self.hc.dirs:  # every candidate, not only the first: conservative
+                        q = os.path.normpath(os.path.join(d, inc))
+                        if os.path.isfile(q) and q not in seen:
+                            seen.add(q)
+                            todo.append((q, quote))
+            self.files_of[unit] = sorted(seen)
+        return self.files_of[unit]
+
+    def uses(self, unit, name):
+        return [(f, i, good) for f in self.files(unit) for i, good in self.scan(f).get(name, ())]
+
+
+def plain_name(full):
+    nm = full.strip().lstrip("&").split("(")[0].split("::")[-1].strip()
+    return nm if re.fullmatch(r"[A-Za-z_]\w*", nm) else None
+
+
+# --stackarg (fast mode, gabi.h GABI_STACKARG, NativeInfo bit 24 "(stackarg)"): the stack-argument guest calls in hot
+# paths made native calls. Each callee reads its stack arguments from its entry SP (STACK_ARG_READERS, each read
+# checked by hand); the 2026-11-11 phone profile: cM3d_InclusionCheckPosIn3PosBox2d from the c_m3d triangle tests
+# (do_call, f64 margin on the stack), EnvLight::setLight_palno_get from setLight_bg / setLight_actor (lcall, 14 words).
+STACKARG_NATIVE = {0x02011D2C, 0x025580FC}
+STACKARG_REASONS = {"src:cpu", "orig:caller-frame-read", "(may park)"}
+
+
+def stackarg_rules(lines, out, src):
+    """--stackarg: each STACKARG_NATIVE function whose only callee reasons are its stack-argument reads (src:cpu: its
+    SP reads, STACK_ARG_READERS; orig:caller-frame-read: the original reads its caller's outgoing-argument area),
+    that is caller=ok and register-exact, and that no line of its unit names except as ne_line_ok allows (no call by
+    name could enter it natively without its stack arguments in place) becomes callee=native "(stackarg)" (NativeInfo
+    bit 24). gabi.h GABI_STACKARG then enters it natively only from do_call_sa / lcall with r1 and the stack words
+    placed as do_call places them; it gets no wwhd_ne_ export and no runtime entry. Returns the lines."""
+    rows = {}
+    for k, line in enumerate(lines):
+        a = int(line.split()[0], 16)
+        if a in STACKARG_NATIVE:
+            rows[a] = k
+    scan = NameScan(out, src, [plain_name(lines[k].split("#")[1].split(None, 1)[1]) or "" for k in rows.values()])
+    n = 0
+    for a in sorted(STACKARG_NATIVE):
+        if a not in rows:
+            print("decomp: native-call rules (--stackarg): %08X: not decompiled, stays a guest call" % a)
+            continue
+        line = lines[rows[a]]
+        head, sep, tail = line.partition("#")
+        m = re.match(r"^(\S+)  (callee=\S+) (caller=\S+)  (.*) (decl=\S+)\s*$", head)
+        f = list(m.groups()) if m else head.split()
+        unit, full = tail.split(None, 1)
+        why = []
+        reasons = set(f[3].split(",")) if len(f) == 5 and f[3] != "-" else set()
+        if len(f) != 5:
+            why.append("unexpected rule line")
+        elif f[2] != "caller=ok":
+            why.append("caller=guest")
+        if a not in STACK_ARG_READERS:
+            why.append("not a checked stack-argument reader")
+        if not DECL_FIELD.search(head):
+            why.append("not register-exact")
+        if len(f) != 5 or f[1] != "callee=guest" or not reasons or reasons - STACKARG_REASONS or "src:cpu" not in reasons:
+            why.append("callee reasons %s" % f[3])
+        nm = plain_name(full)
+        if not nm:
+            why.append("no plain name")
+        else:
+            bad = [(x, i) for x, i, good in scan.uses(unit, nm) if not good]
+            if bad:
+                why.append("named in %s" % " ".join("%s:%d" % (os.path.relpath(x, out), i) for x, i in bad[:4]))
+        if why:
+            print("decomp: native-call rules (--stackarg): %08X %s stays a guest call: %s" % (a, full.strip(), "; ".join(why)))
+            continue
+        keep = [x for x in f[3].split(",") if x == "(may park)"]
+        lines[rows[a]] = "%s  callee=native %s  %s %s  %s%s" % (f[0], f[2], ",".join(keep + ["(stackarg)"]), f[4], sep, tail)
+        n += 1
+    print("decomp: native-call rules (--stackarg): %d of %d stack-argument callees native for do_call_sa" % (n, len(STACKARG_NATIVE)))
+    return lines
+
+
+# --accessor (fast mode, gabi.h GABI_FAST_ACCESSOR): lazy accessors whose native entry returns the object's guest
+# address without running the body once its guard word is set: address -> (guard object, value object), both named as
+# in the function's own source (gen.py's gabi::object_at views). The 2026-11-11 phone profile: kankyo_getEnvlight,
+# 10,168 native entries per logic pass, each with the full scope.
+FAST_ACCESSORS = {0x02555D0C: ("envLightInitialized", "g_env_light")}
+
+
+def accessor_rules(lines, out):
+    """--accessor: {address: (unit, guard address, value address)} for each FAST_ACCESSORS function whose glued body is
+    exactly the lazy form `if (GUARD.value == 0) { GUARD.value = 1; ... } return &VALUE;` (comments and spaces aside, no
+    other return, no brace inside the if), GUARD's type a struct of one be<u32> `value`, the function register-exact,
+    callee=native, no parameter and an r3 result. gabi.h's AccEntry then returns VALUE's guest address while the guard
+    word is not 0, which is what the body returns then; the guest entry and every call while it is 0 run the body.
+    Exits on any mismatch (the decompilation changed the function: the table must be looked at again)."""
+    uj = json.load(open(os.path.join(out, "units.json"), encoding="utf-8"))
+    srcs = {u["name"]: [s["path"] for s in u["sources"]] for u in uj["units"]}
+    got = {}
+    for a, (guard, value) in sorted(FAST_ACCESSORS.items()):
+        line = next((x for x in lines if int(x.split()[0], 16) == a), None)
+        if line is None:
+            sys.exit("native_rules.py --accessor: %08X is not decompiled" % a)
+        head, _, tail = line.partition("#")
+        unit = tail.split()[0]
+        if "callee=native" not in head or not re.search(r"\bdecl=exact:[0-8]r0f:1\b", head) or \
+                (int(re.search(r"decl=exact:(\d)r", head).group(1)) != 0):
+            sys.exit("native_rules.py --accessor: %08X: not a native register-exact function without parameters and "
+                     "with an r3 result: %s" % (a, line))
+        text = "\n".join(open(p, encoding="utf-8", errors="replace").read() for p in srcs[unit])
+        bare = ne_strip(text)
+        g = re.search(r"&\s*" + guard + r"\s*=\s*gabi::object_at<(\w+)>\(0x([0-9A-Fa-f]{8})\)", bare)
+        v = re.search(r"&\s*" + value + r"\s*=\s*gabi::object_at<\w+>\(0x([0-9A-Fa-f]{8})\)", bare)
+        if not g or not v or not re.search(r"\bstruct\s+" + g.group(1) + r"\s*\{\s*be<u32>\s+value\s*;\s*\}\s*;", bare):
+            sys.exit("native_rules.py --accessor: %08X: %s / %s are not gabi::object_at views of a {be<u32> value} guard "
+                     "and an object in unit %s" % (a, guard, value, unit))
+        m = re.search(r"WWHD_GLUE_FUNC_R\(\s*0x%08X\s*," % a, bare)
+        if not m:
+            sys.exit("native_rules.py --accessor: %08X: no WWHD_GLUE_FUNC_R body in unit %s" % (a, unit))
+        k = bare.index(";", m.end()) + 1
+        depth, j = 1, k
+        while j < len(bare) and depth:
+            depth += {"{": 1, "}": -1}.get(bare[j], 0)
+            j += 1
+        body = re.sub(r"\s+", "", bare[k:j - 1])
+        shape = (r"if\(" + guard + r"\.value==0\)\{" + guard + r"\.value=1;[^{}]*\}return" +
+                 r"wwhd_native_scope_\.ret<wwhd_ret_t_>\(\(&" + value + r"\)\);")
+        if not re.fullmatch(shape, body) or body.count("return") != 1:
+            sys.exit("native_rules.py --accessor: %08X: the body is not the lazy accessor form: %s" % (a, body[:300]))
+        got[a] = (unit, int(g.group(2), 16), int(v.group(1), 16))
+        print("decomp: native-call rules (--accessor): %08X %s: guard %s %08X, object %s %08X" % (
+            a, tail.split(None, 1)[1].strip(), guard, got[a][1], value, got[a][2]))
+    return got
+
+
+def entry_only_rules(lines, out, src):
+    """--bare-entry (fast mode, gabi.h GABI_BARE_ENTRY, NativeInfo bit 23 "(nentry)"): bare leaves whose body nothing
+    can call by name, so that every call reaches it through its native entry (lcall / hcall / call_ptr / gabi::call),
+    whose pointer arguments are rebuilt from guest addresses, or from guest code, whose arguments are guest addresses:
+    then even a char / void / function pointer parameter is always inside the guest window and the body's glue can go
+    (gabi.h glue_bare_of). Units never see each other's functions (ld -r, hidden -> local), so only the leaf's own
+    unit could call the body by name: a leaf qualifies when no line of its unit's sources, or of a header they include
+    ("..." includes, transitively, every directory the compiler may take), names it except as ne_line_ok allows.
+    Conservative: a name is the last part of the function's name, so a call of any function of that name blocks it.
+    Returns the lines with "(nentry)" after "(bare)" for those; writes OUT/nentry.txt (each leaf, its unit and the
+    lines that named it)."""
+    name_of = {}
+    for line in lines:
+        if "(bare)" in line.split("#")[0]:
+            unit, full = line.split("#")[1].split(None, 1)
+            name_of[int(line.split()[0], 16)] = (unit, plain_name(full))
+    scan = NameScan(out, src, {nm for _, nm in name_of.values() if nm}, multiline=False)
+    ok, report = set(), []
+    for a, (unit, nm) in sorted(name_of.items()):
+        if nm is None:
+            report.append("%08X %s - (no plain name)" % (a, unit))
+            continue
+        uses = scan.uses(unit, nm)
+        bad = [(f, i) for f, i, good in uses if not good]
+        if not bad:
+            ok.add(a)
+        report.append("%08X %s %s %s %s" % (a, unit, nm, "nentry" if not bad else "blocked",
+                                            " ".join("%s:%d%s" % (os.path.relpath(f, out), i, "" if g else "!")
+                                                     for f, i, g in uses)))
+    gen_mod = __import__("gen")
+    gen_mod.write_if_changed(os.path.join(out, "nentry.txt"), "# generated by tools/decomp_build/native_rules.py "
+                             "--bare-entry (each bare leaf: unit, name, verdict, lines naming it; ! blocks)\n" +
+                             "\n".join(report) + "\n")
+    out_lines = []
+    for line in lines:
+        head, sep, tail = line.partition("#")
+        if int(line.split()[0], 16) in ok:
+            head = head.replace("(bare)", "(bare),(nentry)", 1)
+        out_lines.append(head + sep + tail)
+    print("decomp: native-call rules (--bare-entry): %d of %d bare leaves entered only through their native entry "
+          "(%s)" % (len(ok), len(name_of), os.path.join(out, "nentry.txt")))
+    return out_lines
+
+
+def unit_headers(out, lines, fast=False, hcalls=None, stackarg=False, accessors=None):
     """OUT/native/K.h for game unit K (units.json order, as glue/K.cpp): its functions' and the decompiled functions
     it calls in other units (lean calls) {address, slot index, flags (1: callee=native, 2: caller=ok, 4: listed)},
     sorted, as gabi.h's GABI_NATIVE_TABLE (pre-included by cmake/Decomp.cmake)"""
@@ -888,6 +1216,12 @@ def unit_headers(out, lines, fast=False, hcalls=None):
             flags |= 1 << 20
         if "(unbased)" in line.split("#")[0]:  # --unbased (gabi.h GABI_NOCHECK: bit 21)
             flags |= 1 << 21
+        if "(bare)" in line.split("#")[0]:  # --bare (gabi.h GABI_LEAF_BARE: bit 22)
+            flags |= 1 << 22
+        if "(nentry)" in line.split("#")[0]:  # --bare-entry (gabi.h GABI_BARE_ENTRY: bit 23)
+            flags |= 1 << 23
+        if "(stackarg)" in line.split("#")[0]:  # --stackarg (gabi.h GABI_STACKARG: bit 24)
+            flags |= 1 << 24
         m = DECL_FIELD.search(line.split("#")[0])
         if m:  # register-exact: flags 8, its registers and result (gabi.h NativeInfo)
             flags |= 8 | int(m.group(1)) << 8 | int(m.group(2)) << 12 | int(m.group(3)) << 16
@@ -922,6 +1256,10 @@ def unit_headers(out, lines, fast=False, hcalls=None):
     # the exported functions: register-exact, with a VERIFY in their own unit (a callee without one keeps lcall's path)
     unit_of = {a: index[lines[s].split("#")[1].split()[0]] for a, s in slot_of.items()}
     exported = {a for a, f in flags_of.items() if f & 9 == 9 and "0x%08X" % a in verify[unit_of[a]]}
+    # --stackarg (bit 24): no wwhd_ne_ export (no call from another unit may enter it natively); its own unit gets
+    # wwhd_sa_ADDR for do_call_sa (fast_text)
+    sa_own = {a for a in exported if flags_of[a] >> 24 & 1}
+    exported -= sa_own
     os.makedirs(os.path.join(out, "native"), exist_ok=True)
     nexp = next_ = 0
     for name, k in index.items():
@@ -933,7 +1271,9 @@ def unit_headers(out, lines, fast=False, hcalls=None):
             ext = {a: f for a, f in exact.items() if unit_of[a] != k}
             nexp += len(own)
             next_ += len(ext)
-            extra = fast_text(verify[k], own, ext)
+            extra = fast_text(verify[k], own, ext,
+                              {a: flags_of[a] for a in sa_own if unit_of[a] == k} if stackarg else None,
+                              {a: v[1:] for a, v in accessors.items() if index[v[0]] == k} if accessors is not None else None)
         gen.write_if_changed(os.path.join(out, "native", "%d.h" % k), (
             "// generated by tools/decomp_build/native_rules.py: native calls of game unit %s (decomp/native.txt)\n"
             "#pragma once\n#include <cstdint>\n#define GABI_NATIVE_TABLE 1\n"
@@ -961,6 +1301,26 @@ def main():
         args.remove("--leaf")
         if not fast:
             sys.exit("native_rules.py: --leaf needs --fast")
+    bare = "--bare" in args  # fast mode (cmake WWHD_DECOMP_FAST_LEAF_BARE): leaves without glue (bare_rules)
+    if bare:
+        args.remove("--bare")
+        if not leaf:
+            sys.exit("native_rules.py: --bare needs --leaf")
+    bare_entry = "--bare-entry" in args  # fast mode (cmake WWHD_DECOMP_FAST_BARE_ENTRY): entry_only_rules
+    if bare_entry:
+        args.remove("--bare-entry")
+        if not bare:
+            sys.exit("native_rules.py: --bare-entry needs --bare")
+    accessor = "--accessor" in args  # fast mode (cmake WWHD_DECOMP_FAST_ACCESSOR): accessor_rules
+    if accessor:
+        args.remove("--accessor")
+        if not fast:
+            sys.exit("native_rules.py: --accessor needs --fast")
+    stackarg = "--stackarg" in args  # fast mode (cmake WWHD_DECOMP_FAST_STACKARG): stackarg_rules
+    if stackarg:
+        args.remove("--stackarg")
+        if not fast:
+            sys.exit("native_rules.py: --stackarg needs --fast")
     unbased = "--unbased" in args  # fast mode (cmake WWHD_DECOMP_FAST_NOCHECK): sources with unbased casts
     if unbased:
         args.remove("--unbased")
@@ -992,6 +1352,14 @@ def main():
     if LEAF_ERRORS:  # --leaf: leaf_rules printed each
         sys.exit("native_rules.py: %d leaf function(s) call a decompiled function that is not a leaf (--leaf); a leaf "
                  "keeps no call state, so this is a rules error" % len(LEAF_ERRORS))
+    if bare:
+        if not unbased:
+            sys.exit("native_rules.py: --bare needs --unbased (the unbased callers it leaves the glue for)")
+        lines = bare_rules(lines)
+        if bare_entry:
+            lines = entry_only_rules(lines, out, src)
+    if stackarg:
+        lines = stackarg_rules(lines, out, src)
     if RULE_ERRORS:  # an exact callee with an under-declared call (rules() printed each): the decl table is wrong
         sys.exit("native_rules.py: %d ext declaration(s) pass fewer registers than their exact callee takes; fix the "
                  "decompilation's declarations (decl_lint.py) or its table" % len(RULE_ERRORS))
@@ -999,7 +1367,8 @@ def main():
     gen.write_if_changed(os.path.join(out, "native.txt"),
                          "# generated by tools/decomp_build/native_rules.py (native-calls rules)\n"
                          + "\n".join(lines) + "\n")
-    unit_headers(out, lines, fast, HeaderCalls(src, out) if hcall else None)
+    unit_headers(out, lines, fast, HeaderCalls(src, out) if hcall else None, stackarg,
+                 accessor_rules(lines, out) if accessor else None)
     n = sum(1 for x in lines if "callee=native" in x)
     ne = sum(1 for x in lines if "callee=native" in x and DECL_FIELD.search(x.split("#")[0]))
     print("decomp: native-call rules%s: %d of %d functions may be called natively, %d of them register-exact (%s)" % (

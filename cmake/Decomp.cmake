@@ -169,9 +169,40 @@ function(wwhd_decomp_configure)
   # unit runs one function instead of thunk + body. Same conversions and body; the body keeps its own copy for its other
   # callers. No run-time switch (OFF: as before)
   option(WWHD_DECOMP_FAST_THUNK_INL "decomp build, fast mode: leaf bodies inlined into their native-entry thunks" ON)
+  # fast mode: a leaf whose game unit has no caller=guest and no unbased function, and that takes no char / void /
+  # function pointer, keeps none of WWHD_GLUE_FUNC's glue: no thread-block lookup, refusal check, scope or depth count
+  # (native_rules.py --bare, NativeInfo bit 22; gabi.h GABI_LEAF_BARE). Its native entry is the argument conversion and
+  # the body. A leaf keeps no call state anyway; in its unit no caller is ever refused, and a caller in another unit
+  # checks caller_ok before it takes the native entry. Needs LEAF, PASS_TS and NOCHECK; the run-time diagnostics
+  # WWHD_DECOMP_FAST_LEAF=0 / _NOCHECK=0 do not reach bare leaves. No run-time switch
+  # (OFF: as before; ON by default since the 2026-11-12 phone pairs)
+  option(WWHD_DECOMP_FAST_LEAF_BARE "decomp build, fast mode: leaves without call glue (bare leaves)" ON)
+  # fast mode, with WWHD_DECOMP_FAST_LEAF_BARE: a bare leaf that no line of its unit's sources or their headers calls by
+  # name (native_rules.py --bare-entry, NativeInfo bit 23; gabi.h GABI_BARE_ENTRY) is bare even with a char / void /
+  # function pointer parameter: every call enters it through its native entry, which rebuilds each pointer from a guest
+  # address, or from guest code, so the parameter's guest-window check always passes (e.g. cM3d_Cross_AabCyl). No
+  # run-time switch (OFF: as before; ON by default since the 2026-11-12 phone pairs)
+  option(WWHD_DECOMP_FAST_BARE_ENTRY "decomp build, fast mode: bare leaves with pointer parameters entered only through their native entry" ON)
+  # fast mode: the stack-argument guest calls in hot paths as native calls (cM3d_InclusionCheckPosIn3PosBox2d from the
+  # c_m3d triangle tests, EnvLight::setLight_palno_get from setLight_bg / setLight_actor): native_rules.py --stackarg
+  # makes each such callee native for these calls only (NativeInfo bit 24: no wwhd_ne_ export, no runtime entry), gen.py
+  # --stackarg writes its do_call sites as gabi::do_call_sa, and gabi.h GABI_STACKARG calls it natively with r1 and the
+  # stack words placed and stored exactly as do_call does (the callee reads and writes them at the same addresses), its
+  # result in r3; like every register-exact native entry no LR / pc. No run-time switch
+  # (OFF: as before; ON by default since the 2026-11-12 phone pairs)
+  option(WWHD_DECOMP_FAST_STACKARG "decomp build, fast mode: stack-argument calls to their readers as native calls" ON)
+  # fast mode: a lazy accessor's native entry (kankyo_getEnvlight) returns the object's guest address straight away once
+  # its guard word is set, which is what the body returns then, without the body's scope (native_rules.py --accessor
+  # checks the body's form and finds the guard and the object; gabi.h GABI_FAST_ACCESSOR, AccEntry). The guest entry and
+  # every call while the guard is 0 run the body as before. No run-time switch
+  # (OFF: as before; ON by default since the 2026-11-12 phone pairs)
+  option(WWHD_DECOMP_FAST_ACCESSOR "decomp build, fast mode: lazy accessors' native entries return the object without the body once initialised" ON)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
+  if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_STACKARG)  # (gen.py: do_call sites of the stack-argument callees as do_call_sa)
+    list(APPEND gen_extra --stackarg)
+  endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/gen.py"
                           "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}"
                           --game "${WWHD_DECOMP_GAME}/code/cking.rpx" ${gen_extra}
@@ -257,9 +288,21 @@ function(wwhd_decomp_configure)
     endif()
     if(WWHD_DECOMP_FAST_LEAF)
       list(APPEND fast_args --leaf)
+      if(WWHD_DECOMP_FAST_LEAF_BARE)
+        list(APPEND fast_args --bare)
+        if(WWHD_DECOMP_FAST_BARE_ENTRY)
+          list(APPEND fast_args --bare-entry)
+        endif()
+      endif()
     endif()
     if(WWHD_DECOMP_FAST_NOCHECK)
       list(APPEND fast_args --unbased)
+    endif()
+    if(WWHD_DECOMP_FAST_STACKARG)
+      list(APPEND fast_args --stackarg)
+    endif()
+    if(WWHD_DECOMP_FAST_ACCESSOR)
+      list(APPEND fast_args --accessor)
     endif()
   endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py"
@@ -405,6 +448,25 @@ function(wwhd_decomp_link target)
         message(FATAL_ERROR "WWHD_DECOMP_FAST_THUNK_INL needs WWHD_DECOMP_FAST_LEAF")
       endif()
       list(APPEND opts -DGABI_THUNK_INL=1)
+    endif()
+    if(WWHD_DECOMP_FAST_LEAF_BARE)
+      if(NOT (WWHD_DECOMP_FAST_LEAF AND WWHD_DECOMP_FAST_PASS_TS AND WWHD_DECOMP_FAST_NOCHECK) OR WWHD_DECOMP_FAST_LEAF_CHECK
+         OR WWHD_DECOMP_FAST_CHECKCOUNT)
+        message(FATAL_ERROR "WWHD_DECOMP_FAST_LEAF_BARE needs WWHD_DECOMP_FAST_LEAF, _PASS_TS and _NOCHECK, and no _LEAF_CHECK / _CHECKCOUNT")
+      endif()
+      list(APPEND opts -DGABI_LEAF_BARE=1)
+    endif()
+    if(WWHD_DECOMP_FAST_STACKARG)
+      list(APPEND opts -DGABI_STACKARG=1)
+    endif()
+    if(WWHD_DECOMP_FAST_ACCESSOR)
+      list(APPEND opts -DGABI_FAST_ACCESSOR=1)
+    endif()
+    if(WWHD_DECOMP_FAST_BARE_ENTRY)
+      if(NOT WWHD_DECOMP_FAST_LEAF_BARE)
+        message(FATAL_ERROR "WWHD_DECOMP_FAST_BARE_ENTRY needs WWHD_DECOMP_FAST_LEAF_BARE")
+      endif()
+      list(APPEND opts -DGABI_BARE_ENTRY=1)
     endif()
   endif()
   if(WWHD_DECOMP_SHARED_TLS)
@@ -657,9 +719,21 @@ function(wwhd_decomp_link target)
     endif()
     if(WWHD_DECOMP_FAST_LEAF)
       set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_LEAF=1)
+      if(WWHD_DECOMP_FAST_LEAF_BARE)  # (decomp.cpp: the start-up line that says bare leaves are on)
+        set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_LEAF_BARE=1)
+        if(WWHD_DECOMP_FAST_BARE_ENTRY)  # (decomp.cpp: its start-up line)
+          set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_BARE_ENTRY=1)
+        endif()
+      endif()
       if(WWHD_DECOMP_FAST_LEAF_CHECK)
         set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_LEAF_CHECK=1)
       endif()
+    endif()
+    if(WWHD_DECOMP_FAST_STACKARG)  # (decomp.cpp: its start-up line)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_STACKARG=1)
+    endif()
+    if(WWHD_DECOMP_FAST_ACCESSOR)  # (decomp.cpp: its start-up line; with _NSTATS the accessor's callers counted)
+      set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_ACCESSOR=1)
     endif()
     if(WWHD_DECOMP_FAST_NSTATS)
       set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_DECOMP_FAST_NSTATS=1)
