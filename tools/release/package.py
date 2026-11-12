@@ -82,6 +82,7 @@ INSTALLER_FILES = [
     "tools/installer/release_update.py",
     "tools/installer/decomp_setup.py",
     "tools/installer/shader_prebuild.py",
+    "tools/installer/shader_library.py",
     "tools/installer/model_sweep.py",
     "tools/installer/sweep_merge.py",
     "tools/installer/model_sweep_skip.txt",
