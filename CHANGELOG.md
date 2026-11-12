@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **macOS: setup compiles every shader ahead of time with Xcode 26** (#505, thanks @fayep). With Xcode 26 or newer
+  installed, setup's shader preparation builds every shader the game uses into one `shaders.metallib`, so the game
+  compiles none at start and keeps no shader text in memory (about 130 MB less memory on an M1 Mac mini). The
+  picture is identical to compiling at run time. Without Xcode 26 the step is skipped and the game compiles its
+  shaders as before; installing Xcode 26 later adds the library on the next setup run. A library built into an
+  Apple TV or iPhone app contains shaders made from your game, so such builds are for your own devices only.
+
 - **iPhone GamePad: no more seconds of picture lag on a busy Wi-Fi** (#534, thanks @fayep). The GamePad picture is
   now sent at about 2 Mbit/s instead of 6 (854×480; more for a larger picture, between 1.5 and 6 Mbit/s), with its
   peaks capped at 1.5 times that in any second. On a congested home Wi-Fi the access point used to queue the video,
