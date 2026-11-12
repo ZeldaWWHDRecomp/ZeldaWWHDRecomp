@@ -40,6 +40,10 @@ namespace overlay {
 // Host input thread, every input poll (the AppKit host: the overlay's frame): the settings shortcut
 // (Home, Select held) and the platform's shortcuts (extensions.h).
 void poll_controller_shortcuts(const float* values);
+// Host input thread, after the shortcuts' buttons are taken from the game's values: Select stays from the
+// game while a hold could still open Settings (settings_shortcut.h SelectForGame). `device` keeps one
+// state per controller (any value for the hosts' combined values).
+void hold_select_for_settings(uint64_t device, float* game);
 // Native Controls capture also owns controller presses until they are released.
 void external_binding_capture(bool active);
 // A new controller (no bindings of its own, not declined) was first used: offer the controller setup
