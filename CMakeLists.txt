@@ -4061,6 +4061,8 @@ foreach(msgq_variant normal_off normal_on fast_off fast_on)
   endif()
   target_link_libraries(msgq_test_${msgq_variant} PRIVATE Threads::Threads)
   add_test(NAME msgq_${msgq_variant} COMMAND msgq_test_${msgq_variant})
+  # a hang fails the run within minutes instead of holding the CI runner until the job limit (a run takes seconds)
+  set_tests_properties(msgq_${msgq_variant} PROPERTIES TIMEOUT 120)
 endforeach()
 
 # Genuine model/native-observation-backed Stage renewal; no native ticks/writes.

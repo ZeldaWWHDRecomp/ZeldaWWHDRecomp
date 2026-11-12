@@ -10,18 +10,38 @@
 //     (WWHD_MSGQ_FAST) and after it fell asleep; the right message every time;
 //  4. stress: 4 producers (BLOCK and NOBLOCK-with-retry sends) and 3 consumers (guest threads on cores 0-2, allowed to
 //     spin) on an 8-slot queue, 4 x 40000 messages: every message received exactly once, each producer's messages in
-//     order at every consumer, no thread stuck (watchdog).
+//     order at every consumer, no thread stuck (watchdog);
+//  0. exit (POSIX): a process that leaves through std::exit while the scheduler tick waits and a guest thread waits for
+//     its core ends at once. Before, the static destructors destroyed the tick's and the cores' condition variables
+//     under those waiters, and glibc's pthread_cond_destroy waits for every waiter to leave: the timed waiters were
+//     back in their wait before the exiting thread ran again, and the process hung at exit (Linux CI, 3 h in
+//     msgq_fast_off); elsewhere the tick then locked a destroyed core mutex (macOS: abort, "mutex lock failed").
+//     Each try runs in a child that dwells 300 ms after those destructors; a child that has not ended 8 s after
+//     std::exit, or did not exit with 0, fails the test.
 #undef NDEBUG  // the checks call the functions under test
 #include "runtime.h"
 #include <string>
 #include <cstdint>
 #include <utility>
 #include <cstring>
+#include <atomic>
+#include <chrono>
+#include <thread>
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <signal.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #endif
+// exit check (0.): defined before threads.cpp's statics, so destroyed after them; in a child that is about to exit it
+// holds the exit there for 300 ms, and a thread still using one of them meanwhile is caught (a destroyed mutex: lock
+// fails with EINVAL and the child aborts; glibc's condition destroy hangs before it gets here)
+static std::atomic<bool> g_exit_dwell{false};
+static struct ExitDwell {
+    ~ExitDwell() { if (g_exit_dwell) std::this_thread::sleep_for(std::chrono::milliseconds(300)); }
+} g_exit_dwell_obj;
 #undef HLE
 // the imports as plain functions (the test has no dispatch registration, profiler or exception boundary)
 #define HLE(lib, name)                                   \
@@ -221,6 +241,47 @@ static void spin_nap_sleep() {
     std::printf("msgq_test: receiver allowed to spin: messages after 0-20 ms delays received in order\n");
 }
 
+// 0. exit with waiters (in children: before any other thread of this process starts)
+static void exit_with_waiters() {
+#ifndef _WIN32
+    constexpr int kTries = 3;
+    for (int i = 0; i < kTries; i++) {
+        std::fflush(stdout);
+        const pid_t pid = fork();
+        if (pid < 0) { std::printf("msgq_test: fork failed\n"); std::exit(2); }
+        if (pid == 0) {
+            std::atomic<int> held{0};
+            // a guest thread owning core 0 for good, and one waiting for core 0 (core_acquire's 2 s wait loop)
+            std::thread([&] { Guest g(0, 16, false); threads::ensure_core(); held = 1; for (;;) std::this_thread::sleep_for(std::chrono::seconds(1)); }).detach();
+            while (!held) std::this_thread::yield();
+            std::thread([] { Guest g(0, 16, false); threads::ensure_core(); }).detach();
+            // the scheduler tick (started by the first core_acquire) and the core waiter settle into their waits
+            std::this_thread::sleep_for(std::chrono::milliseconds(150 + 40 * i));
+            g_exit_dwell = true;
+            std::exit(0);  // static destructors run while both still wait
+        }
+        const auto start = std::chrono::steady_clock::now();
+        int status = 0;
+        // (the children's 150-350 ms, then up to 8 s for the exit itself)
+        while (waitpid(pid, &status, WNOHANG) == 0) {
+            if (std::chrono::steady_clock::now() - start > std::chrono::milliseconds(8400)) {
+                kill(pid, SIGKILL);
+                waitpid(pid, &status, 0);
+                std::printf("msgq_test: exit try %d: the process did not end within 8 s of std::exit (hung in a static "
+                            "destructor under a waiting thread)\n", i + 1);
+                std::exit(1);
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+        if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+            std::printf("msgq_test: exit try %d: child status %d\n", i + 1, status);
+            std::exit(1);
+        }
+    }
+    std::printf("msgq_test: exit with the scheduler tick and a core waiter waiting: %d tries, each ended at once\n", kTries);
+#endif
+}
+
 // 4. stress
 static void stress() {
     const uint32_t q = kMem + 0x8000;
@@ -300,6 +361,7 @@ int main() {
 #endif
 #endif
     std::printf("msgq_test: %s build, WWHD_MSGQ_FAST %s\n", kFast ? "decomp fast" : "normal", kOn ? "on" : "off");
+    exit_with_waiters();
     map_guest_memory();
     semantics();
     blocking(false);
