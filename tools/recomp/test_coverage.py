@@ -32,7 +32,7 @@ LITERAL = re.compile(r'\b0[xX]([0-9a-fA-F]{1,8})(?![0-9a-fA-F])[uUlL]*\b')
 WRAPPED = re.compile(r'\b(GC|GD|GC_OPTIONAL|CANONICAL_CODE_ID)\s*\([^;]*?\)', re.S)
 # Built only into the decomp build (cmake/Decomp.cmake), which runs the USA game only: its guest
 # addresses are USA addresses by definition and have no EUR counterpart to map.
-DECOMP_BUILD_ONLY = ("decomp/", "hostrt/")
+DECOMP_BUILD_ONLY = ("decomp/", "hostrt/", "native_draw/")  # native_draw/: only the decomp fast build (cmake/Decomp.cmake)
 # The same boundary inside a shared file: `#if WWHD_DECOMP` / `#ifdef WWHD_DECOMP` blocks (that define is set only on
 # the decomp build's game target), and `#if WWHD_PORT_POINTS` blocks (runtime/src/port_points.h: the decomp build's
 # port points, also compiled into the unit tests that drive them, never into the normal build). Their `#else` branch is
