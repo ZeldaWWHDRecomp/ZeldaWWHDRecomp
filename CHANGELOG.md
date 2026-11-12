@@ -7,6 +7,14 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build (fast mode): about 0.9 ms less game logic per frame on a phone** (#541). Four more steps, all on by
+  default in fast mode: small collision and lighting helpers run without call bookkeeping, helpers with pointer
+  parameters are entered only through their native entry, two calls that pass arguments on the game's stack run as
+  native calls, and the environment-light lookup (about 10,000 calls per frame) returns its result directly once the
+  game has set it up. On a Xiaomi 14 at the cliff, game logic went from 10.2 to 9.5 ms (bare leaves) and a further
+  0.17 ms less (light lookup). Each can be turned off with `-DWWHD_DECOMP_FAST_<NAME>=OFF`. The decomp submodule moves
+  to f95e38b, which also fixes a crash entering Ice Ring Isle in the fast build. The normal build is unchanged.
+
 - **macOS: setup compiles every shader ahead of time with Xcode 26** (#505, thanks @fayep). With Xcode 26 or newer
   installed, setup's shader preparation builds every shader the game uses into one `shaders.metallib`, so the game
   compiles none at start and keeps no shader text in memory (about 130 MB less memory on an M1 Mac mini). The
