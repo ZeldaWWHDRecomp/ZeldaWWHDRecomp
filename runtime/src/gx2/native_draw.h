@@ -43,7 +43,8 @@
 // Run-time switches (ON builds): WWHD_NATIVE_DRAW=0 turns packets off (on by default); WWHD_NATIVE_DRAW_<SITE>=0 keeps
 // one site off (GRASS, TREE, WOOD, FLOWER, MAGMA, STAR, HOUSI, WAVE, MOYA, VRKUMO, RAIN, SEA, LINE, JPA, LAYOUT,
 // TEXT, POST, SHADOW, AGLQUAD, AGLPAIR, SUN); WWHD_NATIVE_DRAW_JOURNAL=0 turns the register journal's check off
-// (draw.cpp); WWHD_NATIVE_DRAW_VERIFY=N draws
+// (draw.cpp); WWHD_NATIVE_DRAW_KEEP=N keeps up to N earlier lowered states per kind (native_draw/alt_states.h; 0, off,
+// by default); WWHD_NATIVE_DRAW_VERIFY=N draws
 // every Nth replayable instance through the full path and compares what it resolved with the packet (mismatches
 // logged, "[native-draw] VERIFY MISMATCH"); WWHD_NATIVE_DRAW_J3D=1 turns the J3D material cache on (off by default,
 // below).
@@ -239,7 +240,9 @@ enum Reason : uint32_t {
     kNotVulkan, kStereo, kFramegen, kGrassDistance, kBackdrop, kClouds, kRefused, kBufferChange,
     kBlockSize, kFetchChange, kStrideChange, kRangeChange, kMdi, kBatched,
     kRestored,  // (not a fallback) the lowered state kept by the register journal (registers changed and set back)
-    kRegOutside, kCheckChange, kReasons
+    kRegOutside, kCheckChange,
+    kKept,  // (not a fallback) an earlier lowered state of the kind taken again (native_draw/alt_states.h)
+    kReasons
 };
 void count(uint32_t site, Reason r);
 // Multi-draw batches (with packets on; on by default, WWHD_NATIVE_DRAW_MDI=0 turns them off; Vulkan): consecutive replayable instances

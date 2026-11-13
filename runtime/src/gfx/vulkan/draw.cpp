@@ -5974,6 +5974,8 @@ UploadSlice packet_block_upload(uint32_t addr, uint32_t size) {
 // WWHD_NATIVE_DRAW_LEAN (on by default; =0 off): the lowering's capture as the thread's heap scratch, swapped into the kind
 // (native_draw/lean.h); the refusal logs' string keys built only when the kind's reason changes
 #include "native_draw/lean.h"
+// kept lowered states (native_draw/alt_states.h, WWHD_NATIVE_DRAW_KEEP)
+#include "native_draw/alt_states.h"
 void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range) {
   // a shader-rewrite batch of another packet or kind is drawn first (this instance then lowers or chains after it)
   if (pendingBatch.active && (pendingBatch.id != pk.id || (pendingBatch.kind != kind && !pendingBatch.kinds)))
@@ -6018,6 +6020,10 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   if (replayable && L.epoch != native_draw::g_epoch) {
     replayable = restored = packet_regs_restored(L, pk, r);
     if (restored) native_draw::count(pk.site, native_draw::kRestored);
+    else if (kept_states() && kept_take(P, L, pk, kind, r)) {
+      replayable = restored = true;
+      native_draw::count(pk.site, native_draw::kKept);
+    }
   }
   native_draw::Reason relower = native_draw::kReasons;  // (none of the counted instance reasons)
   if (replayable)
@@ -6068,6 +6074,7 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     P.drawCount = R.drawCount;
     for (auto& k : P.kinds)
       if (k.valid && k.surfaceEpoch == surfaceBefore) k.surfaceEpoch = g_surface_epoch;
+    if (kept_states()) kept_chain(pk.id, surfaceBefore, g_surface_epoch);
   };
   // multi-draw batches: an instance with a stream of its own joins the batch of its kind (same blocks: checked above)
   const bool mdiCandidate = native_draw::mdi_on() && replayable && !verify && !sameVertexInput && sameRange &&
@@ -6362,6 +6369,7 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   if (relower != native_draw::kReasons && !verify) native_draw::count(pk.site, relower);
   // the full draw, which lowers the packet's kind: its capture is the thread's scratch (reset in place, so packet_draw's
   // frame stays small for every instance), swapped into the kind below (WWHD_NATIVE_DRAW_LEAN, on by default; =0: copied, as before)
+  if (kept_states() && !verify) kept_store(L, pk, kind);
   PacketCapture& cap = packet_capture_scratch();
   for (uint32_t i = 0; i < pk.blockCount && i < native_draw::kMaxBlocks; ++i) {
     const uint32_t stage = pk.block[i] >> 16;
@@ -6421,6 +6429,7 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   // a new chain (another draw came in between): the other kinds' lowered states end
   if (!chain)
     for (auto& k : P.kinds) k.valid = false;
+  if (!chain && kept_states()) kept_end(pk.id);
   L.valid = true;
   L.epoch = native_draw::g_epoch;
   L.journalPos = native_draw::g_journalPos;
@@ -6562,6 +6571,7 @@ void packet_mdi_flush() {
   P.drawCount = R.drawCount;
   for (auto& k : P.kinds)  // (as chained(): the packet's own target writes keep its kinds' surface epoch)
     if (k.valid && k.surfaceEpoch == surfaceBefore) k.surfaceEpoch = g_surface_epoch;
+  if (kept_states()) kept_chain(B.id, surfaceBefore, g_surface_epoch);
   if (submit) {
     flush_async();
     ++drawBatchSubmissions;
@@ -6640,6 +6650,7 @@ void packet_flush() {
   P.drawCount = R.drawCount;  // (the packet's chain goes on after its batch)
   for (auto& k : P.kinds)
     if (k.valid && k.surfaceEpoch == surfaceBefore) k.surfaceEpoch = g_surface_epoch;
+  if (kept_states()) kept_chain(B.id, surfaceBefore, g_surface_epoch);
   native_draw::count_batch(B.site, B.count, B.stream || B.range, indirect);
   if (submit) {
     flush_async();
