@@ -113,6 +113,23 @@ int main() {
         }
         for (uint64_t e = s + 10 * kMissingSteps; s < e; s++) assert(!cap.update(stuck, none, s));
     }
+    {
+        // The cause: the map's chart grid moves the focus to Link's square only from one of its own squares.
+        uint32_t squares[49];
+        for (uint32_t i = 0; i < 49; i++) squares[i] = 0x1986ED7C + 0x230 * i;
+        // the map shown with its cursor on the chart (a square has the focus): the game's move runs
+        assert(grid_may_move_focus(squares[0], squares, 49));
+        assert(grid_may_move_focus(squares[48], squares, 49));
+        // after a scene change with the map not shown: the game gave the focus to the menu's tab button (or an
+        // item); the square doesn't take it (the reporter's log: a map square as the item menu's focus)
+        assert(!grid_may_move_focus(0x19701AFC, squares, 49));
+        assert(!grid_may_move_focus(0x1985B450, squares, 49));  // the map tab's chart icon
+        // no focus (a sub window, an opening menu): left alone too
+        assert(!grid_may_move_focus(0, squares, 49));
+        // cells without an element (0) never match a focus
+        uint32_t empty[49] = {};
+        assert(!grid_may_move_focus(0x19701AFC, empty, 49));
+    }
     std::puts("menu_cursor_test: ok");
     return 0;
 }
