@@ -52,6 +52,14 @@ against `stubgen` code, Metal-only Mac build, `--no-rando`), set up on an M1 Mac
   that Mac's own translated and compiled game code), with the shader library and icon added on another Mac
   (see below) and signed there; it starts, plays and loads the save.
 
+- **2026-11-13, the whole flow on a Mac with Xcode 27:** from a release folder, all seven steps (shader library,
+  icon, signing included), installed on the Apple TV with two mods (QoL, Story Notebook) and played. Then a fresh
+  release packaged from these commits on the build Mac, set up from scratch (`--code-mods 1`), built for the
+  Apple TV and iPhone, and installed on an iPhone (iOS 27.2) by setup; a build from the setup app's page too.
+- Bugs only a release folder shows, fixed: the shader warm's missing cancel callback, `Info.plist` written after
+  the icon step that reads it, and `bundle_mods.py` looking for its tools at the checkout's paths
+  (`tools/installer/test_apple_layout.py` now lays out a release and checks them).
+
 ## Problems found, and what to do about them
 
 | Found | Cause | To do |
@@ -59,8 +67,9 @@ against `stubgen` code, Metal-only Mac build, `--no-rando`), set up on an M1 Mac
 | "No development profile for tvOS apps" on an M1 Mac with Xcode 15.4 | no tvOS profile there (only an old iOS one), and no signing identity at all: the certificate's key is only on the Mac that made it | Instructions: sign in to Xcode (Settings > Accounts) on the Mac that runs setup, so Xcode makes a certificate and the profiles. The error message already says so; it could also list the identities it found. |
 | "The shader library needs Xcode 26 or newer" | the safe math mode (`-fmetal-math-mode=safe`) is Xcode 26+; that Mac has Xcode 15.4 | Require Xcode 26 for the Apple TV (no on-device shader compiles there). For iPhone / iPad maybe allow building without it, with a warning (shaders compile during play). |
 | `make_icon.py` fails: "Failed to locate any simulator runtime matching ... appletvsimulator 17.5" | `actool` compiling a tvOS asset catalog needs a tvOS **simulator runtime** installed | Either tell players to add the simulator runtime (Xcode > Settings > Components), or ship a prebuilt `Assets.car` from the release build (project icon) and only replace the image files, or make the icon without `actool`. |
-| A code mod "has no guest address yet" stopped the whole build (story notebook, installed by setup, never started) | a mod gets its guest address the first time the Mac game starts with it | Done: `bundle_mods.py` leaves such a mod out with a message and switches it off in the app's profile. Also: setup could start the game once headless to place new mods, or say so up front. |
-| setup's shader preparation skipped in a fork's release | the shader template is a private payload (`fetch_shader_template.py`) | Official releases have it. The device step needs a prepared shader generation (for the Metal warm that writes the shader sources); without one it says to prepare shaders first. Tested by copying that release's generation in. |
+| A code mod "has no guest address yet" stopped the whole build (story notebook, installed by setup, never started) | a mod gets its guest address the first time the Mac game starts with it | Done: `bundle_mods.py` leaves such a mod out with a message and switches it off in the app's profile, and the build first starts the Mac's game (through `data/bin`, so code mods are on) until the mod manager has placed them, then closes it. The size includes the mod's heap, which only the game knows, so setup doesn't place them itself. |
+| setup's shader preparation skipped in a fork's release | the shader template is a private payload (`fetch_shader_template.py`) | Official releases have it. The device step needs a prepared shader generation (for the Metal warm that writes the shader sources); without one it says to prepare shaders first. Tested by copying that release's generation in. Done: without a generation the device library is made from the live cache only (the warm runs with `WWHD_HEADSTART=0`), so a test release built from a checkout (`tvos/build_test_package.sh`) works without the template. |
+| The device library's size depends on the Mac's play | the warm writes the head start's shaders plus the live cache's: 1,862 from a fresh install, 14,948 from a Mac that had been played | Fine for now (the rest compile on the device when first met); [apple-devices.md](apple-devices.md) says so. |
 | The shader sources for the device library aren't kept on the Mac | shader preparation deletes them after building the Mac's `shaders.metallib` | The device step runs its own Metal warm of the Mac game (`WWHD_SHADERLIB_SOURCES`), then `shader_library.py --sdk appletvos / iphoneos`. Untested end to end yet (needs Xcode 26). Check that the Mac's MSL is right for the device (the TV app's library so far came from the Mac's sources and works). |
 | `devicectl list devices` lists extra "Apple TV 4K (3rd generation)" entries next to the real Apple TV; `info processes` fails on them ("Stream Process List is not supported") | they are **simulators** (`hardwareProperties.reality: simulated`), not old pairings. `tunnelState` is no guide: a working Apple TV shows "disconnected" (it connects on demand); one out of reach shows "unavailable" and has no `transportType` | Done: only physical devices are listed, each with `reachable` (a transport and not "unavailable"); only reachable ones can be chosen. |
 | Installing an app built from a fresh Mac install would switch off the TV's code mods (QoL) | the app's ModManager seed replaces the device's profile when the seed changes (`install_bundled_mods`) | Done (reported): `device_state` reads the device's profile (`Library/Caches/user/ModManager/profiles.json` in the app's container) and lists the mods an install would switch off or on. Maybe later: merge instead. |
@@ -68,12 +77,13 @@ against `stubgen` code, Metal-only Mac build, `--no-rando`), set up on an M1 Mac
 
 ## Still to check
 
-- The whole flow on a Mac with Xcode 26 and a signing identity: shader library, icon, signing, `devicectl`
-  install, the "game is running" check (it reads `devicectl device info processes` and refuses to guess).
-- The iPhone / iPad app the same way.
-- Done: `bundle_mods.py`'s "left out" lines are logged on every build, and `report()` lists them (with the reason)
-  before building (`bundle_mods.plan()`).
-- The setup app's screen for these requests (tools/installer/gui/setup_gui.cpp): not written yet.
+- Done: the whole flow with Xcode 27 (Apple TV and iPhone), the "game is running" check (it refused correctly
+  while the game was open), `bundle_mods.py`'s left-out lines and `report()`'s plan.
+- The setup app's page (Apple TV, iPhone or iPad...): status, build and device checks tested; installing from
+  it not yet (the game was open on the phone).
+- The release job (`release.yml`, macOS): builds the tvOS and iOS runtime and packages it; not run on GitHub's
+  runners yet (which Xcode they have, and whether the tvOS platform needs downloading).
+- An iPad install (it was locked during the test).
 - `Info.plist`: the release's copy says `org.wwhdrecomp.tv`; setup replaces the bundle identifier only. iCloud
   (the iPad's save in iCloud Drive) needs the team's own container: not offered yet.
 - Pipeline / shader identity: does the device app accept the Mac's `shaders.bin` from another runtime build?

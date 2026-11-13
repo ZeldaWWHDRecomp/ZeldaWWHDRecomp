@@ -4269,7 +4269,9 @@ def gui_main(args):
                                                                 bundle_prefix=apple_ids(ad, req)["bundle_prefix"])))
 
     def do_apple_build(req):
-        """{app: tv|iphone, team?, bundle_prefix?, icloud?} -> streams step/log, then {app: built_app()}"""
+        """{app: tv|iphone, team?, bundle_prefix?, icloud?} -> streams plan/step/log, then {app: built_app()}"""
+        import apple_device
+        GUI.emit({"event": "plan", "id": req.get("id"), "steps": [{"id": s, "title": t} for s, t in apple_device.BUILD_STEPS]})
         def run(ad):
             ids = apple_ids(ad, req)
             reply(req, app=ad.build_app(sys.modules[__name__], ctx, req.get("app"), team=ids["team"] or None,
