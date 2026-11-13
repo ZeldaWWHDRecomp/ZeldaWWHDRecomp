@@ -82,6 +82,7 @@ INSTALLER_FILES = [
     "tools/installer/build_cache.py",
     "tools/installer/release_update.py",
     "tools/installer/decomp_setup.py",
+    "tools/installer/apple_device.py",
     "tools/installer/shader_prebuild.py",
     "tools/installer/shader_library.py",
     "tools/installer/model_sweep.py",
@@ -194,7 +195,9 @@ def split_command(cmd):
     return out
 
 
-def link_command(build):
+def link_command(build, out_name="wwhd"):
+    """the link step of the wwhd target: the command that writes OUT_NAME (an Apple TV / iPhone build writes
+    WindWakerHD.app/WindWakerHD)"""
     lines = subprocess.check_output(["ninja", "-C", build, "-t", "commands", "wwhd"], text=True).splitlines()
     cmd = lines[-1].strip()
     # CMake wraps link rules (": && CMD && :" on POSIX hosts, 'cmd.exe /C "cd . && CMD && ..."' on
@@ -203,7 +206,7 @@ def link_command(build):
     if m:
         cmd = m.group(1)
     parts = [p.strip() for p in cmd.split(" && ")]
-    links = [p for p in parts if re.search(r"(^|\s)-o\s+\"?wwhd(\.exe)?\"?(\s|$)", p)]
+    links = [p for p in parts if re.search(r"(^|\s)-o\s+\"?%s(\.exe)?\"?(\s|$)" % re.escape(out_name), p)]
     if len(links) != 1:
         sys.exit("cannot find the link step in: " + cmd)
     cmd = links[0]
@@ -251,7 +254,8 @@ def gamecode_flags(build):
 
 def is_system_path(p):
     p = p.replace("\\", "/")
-    return "/MacOSX.platform/" in p or "/CommandLineTools/SDKs/" in p or p.startswith("/usr/lib/") or p.startswith("/lib/")
+    return ("/MacOSX.platform/" in p or "/AppleTVOS.platform/" in p or "/iPhoneOS.platform/" in p
+            or "/CommandLineTools/SDKs/" in p or p.startswith("/usr/lib/") or p.startswith("/lib/"))
 
 
 def decomp_variant(build):
@@ -417,11 +421,35 @@ def file_sha256(path):
     return h.hexdigest()
 
 
-def build_link_recipe(build, pkg, linkonly):
-    args = link_command(build)
+# Apple TV and iPhone / iPad apps (setup.py --apple-device, tools/installer/apple_device.py): CMake builds for those
+# SDKs against the placeholder game code, each to sdk/apple/<kind> with its own recipe; their headers are sdk/include
+APPLE_KINDS = {"tvOS": ("tvos", "appletvos"), "iOS": ("ios", "iphoneos")}
+APPLE_TOOL_FILES = ["tvos/bundle_mods.py", "tvos/make_icon.py"]
+
+
+def add_apple(pkg, abuild, linkonly):
+    """--apple-build: one Apple TV or iPhone / iPad build (CMAKE_SYSTEM_NAME tvOS or iOS). Returns its kind and the
+    manifest's entry for it."""
+    system = cache_value(abuild, "CMAKE_SYSTEM_NAME")
+    if system not in APPLE_KINDS:
+        sys.exit("--apple-build %s: not a tvOS or iOS build (CMAKE_SYSTEM_NAME %r)" % (abuild, system))
+    kind, sdk_name = APPLE_KINDS[system]
+    rel = os.path.join("sdk", "apple", kind)
+    driver, link, nobj, nlib = build_link_recipe(abuild, pkg, linkonly, rel, "WindWakerHD.app/WindWakerHD")
+    # the app's Info.plist as CMake wrote it; setup sets the bundle identifier of the player's own team
+    copy(os.path.join(abuild, "WindWakerHD.app", "Info.plist"), os.path.join(pkg, rel, "Info.plist"))
+    print("%s app: %d runtime objects, %d libraries" % (kind, nobj, nlib))
+    return kind, {"sdk": sdk_name, "exe": "WindWakerHD", "built_with": os.path.basename(driver),
+                  "gamecode_cflags": gamecode_flags(abuild), "link": link}
+
+
+def build_link_recipe(build, pkg, linkonly, sdk="sdk", out_name="wwhd"):
+    """the link line of BUILD as a recipe: its objects and libraries copied to PKG/SDK/obj and lib ({sdk} in the
+    recipe is that folder)"""
+    args = link_command(build, out_name)
     recipe, objs, libs = [], 0, 0
-    os.makedirs(os.path.join(pkg, "sdk", "obj"), exist_ok=True)
-    os.makedirs(os.path.join(pkg, "sdk", "lib"), exist_ok=True)
+    os.makedirs(os.path.join(pkg, sdk, "obj"), exist_ok=True)
+    os.makedirs(os.path.join(pkg, sdk, "lib"), exist_ok=True)
     skip = False
     seen_names = {}
     linkonly = {os.path.realpath(p) for p in linkonly}
@@ -456,7 +484,7 @@ def build_link_recipe(build, pkg, linkonly):
                 rel = os.path.relpath(path, build).replace("\\", "/")
                 rel = re.sub(r"^CMakeFiles/[^/]+\.dir/", "", rel)
                 flat = re.sub(r"[^A-Za-z0-9_.+-]", "_", rel)
-                shutil.copy2(path, os.path.join(pkg, "sdk", "obj", flat))
+                shutil.copy2(path, os.path.join(pkg, sdk, "obj", flat))
                 recipe.append("{sdk}/obj/" + flat)
                 objs += 1
                 continue
@@ -472,7 +500,7 @@ def build_link_recipe(build, pkg, linkonly):
                     sys.exit("two different libraries named %s on the link line" % name)
                 if name not in seen_names:
                     seen_names[name] = real
-                    shutil.copy2(real, os.path.join(pkg, "sdk", "lib", name))
+                    shutil.copy2(real, os.path.join(pkg, sdk, "lib", name))
                     libs += 1
                 recipe.append("{sdk}/lib/" + name)  # repeated libraries keep their place (link order)
                 continue
@@ -572,6 +600,9 @@ def main():
                     "shipped unmodified as tools/python")
     ap.add_argument("--decomp-build", help="macOS development builds: a build configured with -DWWHD_DECOMP=ON "
                     "-DWWHD_DECOMP_RUNTIME_ONLY=ON; the release then lets setup build the decomp version (experimental)")
+    ap.add_argument("--apple-build", action="append", default=[],
+                    help="macOS releases: a tvOS or iOS build of the app (CMAKE_SYSTEM_NAME tvOS / iOS, against the same "
+                    "placeholder code); setup then builds the game for an Apple TV, iPhone or iPad (setup.py --apple-device)")
     ap.add_argument("--no-rando", action="store_true", help="leave out the in-app randomizer (a build without -DWWHD_RANDO=ON)")
     ap.add_argument("--no-zip", action="store_true")
     a = ap.parse_args()
@@ -616,6 +647,12 @@ def main():
         if variant or not a.platform.startswith("macos"):
             sys.exit("--decomp-build: macOS regular releases only")
         manifest["decomp"] = add_decomp(pkg, os.path.abspath(a.decomp_build), a.linkonly_lib)
+    if a.apple_build:
+        if variant or not a.platform.startswith("macos"):
+            sys.exit("--apple-build: macOS regular releases only")
+        manifest["apple"] = dict(add_apple(pkg, os.path.abspath(b), a.linkonly_lib) for b in a.apple_build)
+        for rel in APPLE_TOOL_FILES:
+            copy(os.path.join(ROOT, rel), os.path.join(pkg, "tools", "apple", os.path.basename(rel)))
     if variant:
         manifest["variant"] = variant
         copy(os.path.join(build, "decomp", "decomp_hooks.txt"), os.path.join(pkg, "sdk", "decomp_hooks.txt"))

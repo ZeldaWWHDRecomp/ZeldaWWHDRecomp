@@ -29,6 +29,8 @@ import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
+if not (REPO / "tools" / "guestmod").is_dir():  # a release: this file is tools/apple/bundle_mods.py
+    REPO = REPO.parent
 
 
 def compiler(app):
@@ -43,21 +45,46 @@ def compiler(app):
                       "arm64-apple-%s%s" % (os_name, info.get("MinimumOSVersion", "17.0")), "-DWWHD_TVOS=1"]
 
 
-def guest_mods(manager):
-    """the switched-on guest mods of the active profile: [(id, package folder, guest base)]"""
+def plan(manager):
+    """what goes into the app from the active profile: (profiles with the left-out mods switched off,
+    [(id, package folder, guest base)] to build, [{id, name, reason}] left out). setup's apple_device.py
+    shows the same plan before building."""
     profiles = json.loads((manager / "profiles.json").read_text(encoding="utf-8"))
     profile = profiles["profiles"][profiles["active"]]
     regions = profiles.get("guest_regions", {})
-    out = []
+    out, left_out = [], []
     for mod_id, on in sorted(profile.get("enabled", {}).items()):
-        package = manager / "Mods" / mod_id
-        manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
-        if not on or manifest.get("kind") != "guest":
+        if not on:
             continue
-        if mod_id not in regions:
-            sys.exit("%s has no guest address yet: start the game once with it on (its setup), then run this again" % mod_id)
-        out.append((mod_id, package, int(regions[mod_id]["base"])))
-    return profiles, out
+        package = manager / "Mods" / mod_id
+        try:
+            manifest = json.loads((package / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            manifest = None
+        name = (manifest or {}).get("name") or mod_id
+        if manifest is None:
+            reason = "its package is missing from the mod manager"
+        elif manifest.get("kind") != "guest":
+            continue
+        elif mod_id not in regions:
+            # not set up on the Mac yet (the app would refuse it); setup's build starts the Mac's game to set it up
+            reason = "it has no guest address yet (the game on this Mac gives it one when it starts with the mod on)"
+        else:
+            out.append((mod_id, package, int(regions[mod_id]["base"])))
+            continue
+        profile["enabled"][mod_id] = False  # off in the app's profile
+        left_out.append({"id": mod_id, "name": name, "reason": reason, "needs_address": mod_id not in regions and manifest is not None})
+    return profiles, out, left_out
+
+
+def default_include():
+    """the guest ABI headers: a release's sdk/include, else the checkout's runtime/include"""
+    release = REPO / "sdk" / "include"
+    return release if (release / "wwhd_guest_abi.h").is_file() else REPO / "runtime" / "include"
+
+
+def guest_mod_builder():
+    return REPO / "tools" / "guestmod" / "build_guest_mod.py"
 
 
 def seed_digest(folder):
@@ -72,13 +99,15 @@ def main():
     ap.add_argument("--app", required=True, type=Path, help="WindWakerHD.app")
     ap.add_argument("--manager", required=True, type=Path, help="the prepared ModManager folder")
     ap.add_argument("--build", default="USA", help="the game build (USA or EU), as the app's game files")
-    ap.add_argument("--include", type=Path, default=REPO / "runtime" / "include", help="the runtime's guest ABI headers")
+    ap.add_argument("--include", type=Path, default=default_include(), help="the runtime's guest ABI headers")
     ap.add_argument("--sign", help="code signing identity for the modules (the app's)")
     a = ap.parse_args()
     if not (a.app / "Info.plist").is_file():
         sys.exit("%s is not an app" % a.app)
     platform, cc = compiler(a.app)
-    profiles, mods = guest_mods(a.manager)
+    profiles, mods, left_out = plan(a.manager)
+    for m in left_out:
+        print("%s is left out: %s" % (m["name"], m["reason"]))
     modules, seed = a.app / "GuestMods", a.app / "ModManager"
     for folder in (modules, seed):
         if folder.exists():
@@ -87,7 +116,7 @@ def main():
     (seed / "Mods").mkdir(parents=True)
     with tempfile.TemporaryDirectory() as cache:
         for mod_id, package, base in mods:
-            r = subprocess.run([sys.executable, str(REPO / "tools" / "guestmod" / "build_guest_mod.py"), str(package),
+            r = subprocess.run([sys.executable, str(guest_mod_builder()), str(package),
                                 "--base", str(base), "--build", a.build, "--json", "--out", cache,
                                 "--include", str(a.include), "--cc-json", json.dumps(cc)],
                                capture_output=True, text=True)

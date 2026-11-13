@@ -3342,6 +3342,22 @@ def main():
     ap.add_argument("--app-dir", help="macOS: where the app goes (default: ~/Applications)")
     ap.add_argument("--code-mods", choices=("0", "1"), help="build PowerPC mod support (new installs default off; skips the question; overrides WWHD_CODE_MODS)")
     ap.add_argument("--rebuild-code-mods", action="store_true", help="stage a cached game-code variant for the next restart")
+    ap.add_argument("--apple-device", choices=("tv", "iphone"),
+                    help="macOS: build the installed game as an app for an Apple TV or an iPhone / iPad, sign it with your "
+                    "developer team's profile and install it on a paired device (apple_device.py; needs Xcode)")
+    ap.add_argument("--apple-device-id", help="with --apple-device: the device (its name or identifier) when several are paired")
+    ap.add_argument("--apple-team", help="with --apple-device: the developer team (its identifier) when Xcode has several")
+    ap.add_argument("--apple-bundle-prefix", default="org.wwhdrecomp",
+                    help="with --apple-device: the apps' bundle identifiers are PREFIX.tv / PREFIX.ipad (default %(default)s)")
+    ap.add_argument("--apple-no-install", action="store_true", help="with --apple-device: build and sign the app only")
+    ap.add_argument("--apple-status", action="store_true",
+                    help="macOS: print, as JSON, whether the Apple TV and iPhone / iPad apps can be built and installed "
+                    "here (Xcode, signing, this Mac's game and mods, the devices) and what they would hold; with "
+                    "--apple-device and --apple-device-id, that device's state instead")
+    ap.add_argument("--apple-install-only", action="store_true",
+                    help="with --apple-device: install the app built last, without building it again")
+    ap.add_argument("--apple-unsigned", action="store_true",
+                    help="with --apple-device: build the app without signing or installing it (to sign it on another Mac)")
     ap.add_argument("--code-mods-status", help="atomic rebuild progress/result JSON (also of --randomize, --import-seed "
                     "and --play-seed: the game's Settings > Randomizer follows it)")
     ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists (also --randomize, --import-seed, "
@@ -3525,6 +3541,38 @@ def run(args, ui):
             if getattr(args, "code_mods_status", None):
                 code_mods.atomic_json(args.code_mods_status, {"state": "error", "message": str(e)})
             raise
+    if getattr(args, "apple_status", False):
+        if not IS_MAC:
+            raise SetupError("--apple-status needs a Mac")
+        import apple_device
+        try:
+            if args.apple_device and args.apple_device_id:
+                result = apple_device.device_state(sys.modules[__name__], ctx, args.apple_device, args.apple_device_id,
+                                                   bundle_prefix=args.apple_bundle_prefix)
+            else:
+                result = apple_device.report(sys.modules[__name__], ctx, team=args.apple_team,
+                                             bundle_prefix=args.apple_bundle_prefix)
+        except apple_device.Error as e:
+            raise SetupError(str(e))
+        print(json.dumps(result, indent=1, default=str))
+        return 0
+    if getattr(args, "apple_device", None):
+        if not IS_MAC:
+            raise SetupError("--apple-device needs a Mac (with Xcode)")
+        if not valid_game_folder(ctx.game_dir):
+            raise SetupError("No installed game files; run setup first")
+        import apple_device
+        log = lambda s: (say(s), LOG.write(s))
+        try:
+            if args.apple_install_only:
+                apple_device.install_app(sys.modules[__name__], ctx, args.apple_device, device=args.apple_device_id, log=log)
+                return 0
+            apple_device.build(sys.modules[__name__], ctx, args.apple_device, team=args.apple_team,
+                               device=args.apple_device_id, bundle_prefix=args.apple_bundle_prefix,
+                               install=not args.apple_no_install, signed=not args.apple_unsigned, log=log, step=step)
+        except apple_device.Error as e:
+            raise SetupError(str(e))
+        return 0
     if getattr(args, "rebuild_code_mods", False):
         if not valid_game_folder(ctx.game_dir):
             raise SetupError("No installed game files to rebuild from; run setup first")
@@ -3793,6 +3841,13 @@ def after_install(ctx, args, ui, state, source):
 #   launch       {}                      -> starts the installed game (the decomp version when start_decomp)
 #   start_decomp {on}                    -> start the decomp version from now on (development builds, macOS;
 #                                           install {decomp: true} builds it; hello: decomp_offered, decomp)
+#   apple_status {team?, bundle_prefix?} -> xcode, mac, mods, apps: {tv|iphone: checks, signing, ready, problems,
+#                                           app (the one built here), devices} (apple_device.report; hello's
+#                                           apple_offered says whether to ask)
+#   apple_device_state {app, device}     -> running, installed {version, build}, mods_on_device, switched_off,
+#                                           switched_on (what installing would change there)
+#   apple_build  {app: tv|iphone, team?} -> streams step/log, then app {path, version, build, mods, signed}
+#   apple_install {app, device}          -> streams log, then device; refuses while the game runs there
 #   quit         {}
 # Keys never leave this process: they are not logged, not echoed, not written to disk.
 
@@ -3945,6 +4000,8 @@ def gui_main(args):
                   "model_sweep": model_sweep_wanted(ctx), "model_sweep_text": MODEL_SWEEP_TEXT,
                   # the decomp version (decomp_setup.py): offered on macOS in development builds only
                   "decomp_offered": decomp_offered(ctx.manifest), "decomp": decomp_wanted(ctx),
+                  # the Apple TV / iPhone / iPad apps (apple_device.py): a Mac and a release with their runtimes
+                  "apple_offered": IS_MAC and bool(ctx.manifest.get("apple")),
                   "decomp_text": decomp_setup.DECOMP_TEXT, "decomp_docs": decomp_setup.DOCS_URL,
                   "toolchain": ctx.manifest["toolchain"],
                   # updating from an earlier release folder (release_update.py): offered, never automatic
@@ -4144,6 +4201,41 @@ def gui_main(args):
         launch(st, ctx.data_dir)
         reply(req)
 
+    def apple_call(req, fn):
+        import apple_device
+        if not IS_MAC or not ctx.manifest.get("apple"):
+            return fail(req, "not_offered", "This release has no Apple TV, iPhone or iPad apps.")
+        try:
+            return fn(apple_device)
+        except apple_device.Error as e:
+            fail(req, "failed", str(e))
+
+    def apple_log(text):
+        say(text)
+
+    def do_apple_status(req):
+        """{team?, bundle_prefix?} -> apple_device.report(): Xcode, this Mac's game, the mods, signing and the
+        devices, for each app"""
+        apple_call(req, lambda ad: reply(req, **ad.report(sys.modules[__name__], ctx, team=req.get("team"),
+                                                           bundle_prefix=req.get("bundle_prefix") or "org.wwhdrecomp")))
+
+    def do_apple_device_state(req):
+        """{app: tv|iphone, device, bundle_prefix?} -> apple_device.device_state(): running, installed, the mods an
+        install would switch off or on there"""
+        apple_call(req, lambda ad: reply(req, **ad.device_state(sys.modules[__name__], ctx, req.get("app"), req.get("device"),
+                                                                bundle_prefix=req.get("bundle_prefix") or "org.wwhdrecomp")))
+
+    def do_apple_build(req):
+        """{app: tv|iphone, team?, bundle_prefix?} -> streams step/log, then {app: built_app()}"""
+        apple_call(req, lambda ad: reply(req, app=ad.build_app(
+            sys.modules[__name__], ctx, req.get("app"), team=req.get("team"),
+            bundle_prefix=req.get("bundle_prefix") or "org.wwhdrecomp", log=apple_log, step=step)))
+
+    def do_apple_install(req):
+        """{app: tv|iphone, device} -> streams log, then {device}; refuses while the game runs there"""
+        apple_call(req, lambda ad: reply(req, device=ad.install_app(sys.modules[__name__], ctx, req.get("app"),
+                                                                    device=req.get("device"), log=apple_log)))
+
     def do_start_decomp(req):
         """{on: bool}: start the decomp version instead of the normal game from now on"""
         st = ctx.state()
@@ -4269,7 +4361,9 @@ def gui_main(args):
                 "language_sources": do_language_sources, "add_language_source": do_add_language_source,
                 "remove_language_source": do_remove_language_source,
                 "rando_state": do_rando_state, "rando_change": do_rando_change, "rando_make": do_rando_make,
-                "rando_play": do_rando_play, "rando_delete": do_rando_delete, "rando_import": do_rando_import}
+                "rando_play": do_rando_play, "rando_delete": do_rando_delete, "rando_import": do_rando_import,
+                "apple_status": do_apple_status, "apple_device_state": do_apple_device_state,
+                "apple_build": do_apple_build, "apple_install": do_apple_install}
     hello()
     for line in sys.stdin:
         line = line.strip()
