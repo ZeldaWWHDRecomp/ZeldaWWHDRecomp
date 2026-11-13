@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mac: controllers with a simpler layout now work in the game and the in-game Settings** (#557, thanks
+  @zeldafan2000 for the report, #556). Some controllers, such as GameCube adapters with a third-party driver, only
+  report a basic button layout to macOS. The Controls window listed them, but the game and the in-game Settings
+  skipped them ("Connect a controller to set it up"). They are now read by their button names, and a log line
+  names what a newly connected controller reports.
+
 - **New setting "Fix original game bugs"** (#555, Settings › Mods › Built-in and the in-game settings page, on by
   default). The first fix: the pause menu no longer loses its selection cursor after a door or other scene change
   once you had zoomed into a square on the MAP tab's chart (#336, thanks @XAlboX for the logs and video). Turn the
