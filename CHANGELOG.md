@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mouse aiming works with the game's Options › Gyro off** (#560, thanks @Eggtooth, #525). With the gyro source
+  "Mouse aiming", the mouse now aims in first person and with the bow, hookshot, boomerang and grappling hook
+  even when the game's own Gyro option is off. Your game's options and save are not changed, and controller gyro
+  still follows the game's Gyro option.
+
 - **Android: the Vulkan renderer uses render passes by default** (#559). On our test phone (Xiaomi 14) this cuts
   the render thread's time per frame at the Outset cliff from 17.83 to 16.04 ms in the decomp build (53.5 → 58.6
   fps, with fewer slow frames) and by about 1.5 ms in the normal build. The picture is unchanged; desktop keeps
