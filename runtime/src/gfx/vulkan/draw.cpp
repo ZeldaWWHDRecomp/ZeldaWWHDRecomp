@@ -5664,6 +5664,9 @@ struct LoweredKind {
   // may join a range batch (null: refused, the reason logged once per packet)
   uint32_t rangeCount = 0, rangeAddr = 0;
   const char* rangeRefused = "not lowered";
+  // shader-rewrite range batches (native_draw/range_batch.h): null when the kind's range instances may join one
+  const char* rangeBatchRefused = "not lowered";
+  const char* kindBatchRefused = "not lowered";  // kind batches (the same file: sites tree and wood)
   // batching: the kind's batch shaders and pipeline (nullptr: its instances replay one by one)
   NativeShaders* batch = nullptr;
   Pipeline* batchPipeline = nullptr;
@@ -5822,9 +5825,13 @@ const char* mdi_refusal(const PacketCapture& c) {
 // instance (cloud cards, particles): each instance's stream is copied back to back as a multi-draw batch copies it and
 // the batch is one vkCmdDrawIndexedIndirect with one command per instance (vertexOffset: its stream; firstInstance: its
 // entries in the per-instance stream).
+#include "native_draw/range_batch.h"
 struct PendingBatch {
   bool active = false;
   bool stream = false;  // a stream batch (else every instance draws the kind's own vertex input)
+  bool range = false;   // a range batch (native_draw/range_batch.h: index ranges and vertex buffers of their own)
+  bool kinds = false;   // a kind batch (the same file: instances of several kinds of the packet)
+  RangeBatch ranges;
   uint32_t id = 0, kind = 0, site = 0, count = 0, binding = 0;
   LoweredPacket* packet = nullptr;
   LoweredKind* lowered = nullptr;
@@ -5941,7 +5948,8 @@ UploadSlice packet_block_upload(uint32_t addr, uint32_t size) {
 #include "native_draw/lean.h"
 void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range) {
   // a shader-rewrite batch of another packet or kind is drawn first (this instance then lowers or chains after it)
-  if (pendingBatch.active && (pendingBatch.id != pk.id || pendingBatch.kind != kind)) native_draw::flush_batch();
+  if (pendingBatch.active && (pendingBatch.id != pk.id || (pendingBatch.kind != kind && !pendingBatch.kinds)))
+    native_draw::flush_batch();
   auto& LP = loweredPackets[pk.id % native_draw::kMaxPackets];
   if (!LP) LP = std::make_unique<LoweredPacket>();
   auto& P = *LP;
@@ -6094,7 +6102,14 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     ++B.count;
     native_draw::g_mdiPending = true;
   };
-  if (mdiBatch.active && (mdiBatch.range ? rangeCandidate : mdiCandidate)) {  // (same packet, kind and blocks)
+  // shader-rewrite range batches (native_draw/range_batch.h; the kind's site in WWHD_NATIVE_DRAW_BATCH_SITES): a range
+  // instance joins one instead of its object's exact range batch
+  // kind batches (native_draw/range_batch.h; sites tree and wood in WWHD_NATIVE_DRAW_BATCH_SITES): a replayable instance
+  // with its kind's own mesh joins one
+  const bool asKinds = (pk.site == native_draw::kSiteTree || pk.site == native_draw::kSiteWood) && replayable && !verify &&
+                       sameRange && sameVertexInput && L.batch && L.batchPipeline && !L.kindBatchRefused;
+  const bool asRange = asKinds || (rangeCandidate && L.batch && L.batchPipeline && !L.rangeBatchRefused);
+  if (mdiBatch.active && !asRange && (mdiBatch.range ? rangeCandidate : mdiCandidate)) {  // (same packet, kind and blocks)
     if (mdiBatch.range) range_append();
     else mdi_append();
     return;
@@ -6113,11 +6128,14 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     std::memcpy(out, from, 16);
     rprof::guest_read(rprof::kUpUbo, addr + e.src, 16);
   };
-  auto append_instance = [&](bool stream) {
+  auto append_instance = [&](bool stream, bool ranged = false, bool kinds = false) {
     auto& B = pendingBatch;
     if (!B.active) {
       B.active = true;
       B.stream = stream;
+      B.range = ranged;
+      B.kinds = kinds;
+      B.ranges.clear();
       B.binding = (*L.cap).vertexBinds[0].binding;
       B.bytes.clear();
       B.cmds.clear();
@@ -6140,7 +6158,8 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       entry_bytes(e, out);
       out += 16;
     }
-    if (B.stream) {  // the instance's stream, as a multi-draw batch copies it (mdi_append)
+    if (B.range) range_batch_append(B.ranges, L, m, r, B.cmds, B.count, B.kinds);
+    else if (B.stream) {  // the instance's stream, as a multi-draw batch copies it (mdi_append)
       const auto& v = (*L.cap).vertexBinds[0];
       const uint32_t* a = r + mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7;
       const uint32_t addr = a[0], size = a[1] + 1, stride = v.stride;
@@ -6160,6 +6179,14 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   // capture a multi-draw batch could draw (one vertex buffer, the vertex index unused); else a static batch for an
   // instance with the kind's own vertex input that no multi-draw batch takes. Both need the kind's own index range
   // and no range batch.
+  if (asRange) {
+    if (pendingBatch.active && (!pendingBatch.range || pendingBatch.kinds != asKinds ||
+                                (asKinds && !range_batch_kinds_match(*pendingBatch.lowered, L))))
+      native_draw::flush_batch();
+    append_instance(false, true, asKinds);
+    return;
+  }
+  if (pendingBatch.active && pendingBatch.range) native_draw::flush_batch();
   const bool batchable = replayable && !verify && L.batch && L.batchPipeline && sameRange && !rangeCandidate;
   const bool asStream = batchable && L.blocksVary && !L.streamRefused &&
                         (!sameVertexInput || (pendingBatch.active && pendingBatch.stream));
@@ -6399,6 +6426,8 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   // registers, which a multi-draw, range or stream batch (the first instance's support bytes) would not carry
   const char* const regValues = "instance register values";
   if (pk.regCount) L.mdiRefused = L.streamRefused = L.rangeRefused = regValues;
+  L.rangeBatchRefused = L.rangeRefused ? L.rangeRefused : range_batch_refusal((*L.cap));
+  L.kindBatchRefused = pk.regCount ? regValues : range_batch_refusal((*L.cap));
   if (native_draw::mdi_on()) {
     static std::unordered_set<std::string> said;
     const char* why = range ? L.rangeRefused : L.mdiRefused;
@@ -6533,19 +6562,22 @@ void packet_flush() {
   }
   auto cmd = command_buffer();
   record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, L.batchPipeline->pipeline);
-  record::vkCmdBindIndexBuffer(cmd, (*L.cap).indexBuffer, (*L.cap).indexOffset, (*L.cap).indexType);
-  if (B.stream) record::vkCmdBindVertexBuffers(cmd, B.binding, 1, &stream.buffer, &stream.offset);
-  else
-    for (uint32_t i = 0; i < (*L.cap).vertexBindCount; ++i) {
-      const auto& v = (*L.cap).vertexBinds[i];
-      record::vkCmdBindVertexBuffers(cmd, v.binding, 1, &v.buffer, &v.offset);
-    }
+  if (B.range) range_batch_bind(B.ranges, L, cmd);  // (its index bytes and vertex buffers)
+  else {
+    record::vkCmdBindIndexBuffer(cmd, (*L.cap).indexBuffer, (*L.cap).indexOffset, (*L.cap).indexType);
+    if (B.stream) record::vkCmdBindVertexBuffers(cmd, B.binding, 1, &stream.buffer, &stream.offset);
+    else
+      for (uint32_t i = 0; i < (*L.cap).vertexBindCount; ++i) {
+        const auto& v = (*L.cap).vertexBinds[i];
+        record::vkCmdBindVertexBuffers(cmd, v.binding, 1, &v.buffer, &v.offset);
+      }
+  }
   record::vkCmdBindVertexBuffers(cmd, L.batch->input.binding, 1, &inst.buffer, &inst.offset);
   record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, L.batchPipeline->layout, 0, 2, (*L.cap).sets,
                                   (*L.cap).offsetCount, (*L.cap).offsets.data());
   uint32_t draws = 1;
   bool indirect = false;
-  if (B.stream) {  // one indirect draw (the device features), else one vkCmdDrawIndexed per instance
+  if (B.stream || B.range) {  // one indirect draw (the device features), else one vkCmdDrawIndexed per instance
     static PFN_vkCmdDrawIndexedIndirect drawIndirect = nullptr;
     const bool device = R.enabledFeatures.multiDrawIndirect && R.enabledFeatures.drawIndirectFirstInstance;
     if (device && !drawIndirect)
@@ -6580,7 +6612,7 @@ void packet_flush() {
   P.drawCount = R.drawCount;  // (the packet's chain goes on after its batch)
   for (auto& k : P.kinds)
     if (k.valid && k.surfaceEpoch == surfaceBefore) k.surfaceEpoch = g_surface_epoch;
-  native_draw::count_batch(B.site, B.count, B.stream, indirect);
+  native_draw::count_batch(B.site, B.count, B.stream || B.range, indirect);
   if (submit) {
     flush_async();
     ++drawBatchSubmissions;
