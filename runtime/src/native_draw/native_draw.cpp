@@ -550,6 +550,12 @@ void count_mdi(uint32_t site, uint32_t instances, bool indirect) {
 }
 static uint64_t g_batchDraws[kSites], g_batchMax[kSites], g_batchStream[kSites], g_batchIndirect[kSites];
 void count(uint32_t site, Reason r) { ++g_counts[site < kSites ? site : 0][r]; }
+bool g_batchSubmitPending = false;
+void batch_submit_point() {
+#ifdef WWHD_HAS_VULKAN
+    if (g_batchSubmitPending) gfxvk::deferred_batch_point();
+#endif
+}
 bool g_batchPending = false;
 void flush_batch() {
 #ifdef WWHD_HAS_VULKAN

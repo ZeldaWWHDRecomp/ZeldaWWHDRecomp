@@ -98,6 +98,7 @@ void submitted(const void* slot, VkDevice device, VkFence fence, VkCommandPool c
   tickets[slot] = worker().push(device, fence, commands, descriptors);
   ++stats.async;
 }
+bool queued(const void* slot) { return tickets.count(slot) != 0; }
 void reset(const void* slot, VkDevice device, VkCommandPool commands, VkDescriptorPool descriptors) {
   if (auto it = tickets.find(slot); it != tickets.end()) {
     const uint64_t ticket = it->second;

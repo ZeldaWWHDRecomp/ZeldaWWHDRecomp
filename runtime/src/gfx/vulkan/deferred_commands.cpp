@@ -168,6 +168,18 @@ void DeferredCommands::vkCmdDrawIndexed(VkCommandBuffer cmd, uint32_t indices, u
     auto immediate=[=] { gfxvk::vkCmdDrawIndexed(cmd, indices, instances, firstIndex, vertexOffset, firstInstance); };
     record(0,true,[=] { return immediate; },immediate);
 }
+void DeferredCommands::vkCmdDrawIndexedIndirect(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride) {
+    if (hold(&PodCommands::vkCmdDrawIndexedIndirect, cmd, buffer, offset, drawCount, stride)) return;
+    if (pod_) {
+        if (!pod_->vkCmdDrawIndexedIndirect(cmd, buffer, offset, drawCount, stride)) {
+            drain_record_commands(fallback_stats::Boundary::EncoderFallback, 30, pod_->failure_reason());
+            pod_draw_indexed_indirect(cmd, buffer, offset, drawCount, stride);
+        } else publish_record_commands_at_draw_boundary();
+        return;
+    }
+    auto immediate=[=] { pod_draw_indexed_indirect(cmd, buffer, offset, drawCount, stride); };
+    record(0,true,[=] { return immediate; },immediate);
+}
 void DeferredCommands::vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uint32_t y, uint32_t z) {
     if (hold(&PodCommands::vkCmdDispatch, cmd, x, y, z)) return;
     if (pod_) {

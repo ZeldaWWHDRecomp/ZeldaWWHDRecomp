@@ -20,7 +20,7 @@ constexpr size_t Reasons = size_t(PodFailureReason::Count);
 struct Frame {
     uint64_t id = 0;
     bool completed = false;
-    std::array<std::array<uint32_t, Reasons>, 30> rejected{};
+    std::array<std::array<uint32_t, Reasons>, kPodOpcodes> rejected{};
     std::array<uint32_t, size_t(Boundary::Count)> boundaries{};
     uint32_t attempts = 0, completedDrains = 0, emptyPrefixes = 0;
     uint32_t nativePrefixPublications = 0;
@@ -101,7 +101,7 @@ public:
         if (b >= size_t(Boundary::Count)) { state_->invalid = true; return; }
         increment(frame_->boundaries[b]);
         if (boundary != Boundary::EncoderFallback) return;
-        if (!opcode || opcode >= 30 || !r || r >= Reasons || state_->inFallback ||
+        if (!opcode || opcode >= kPodOpcodes || !r || r >= Reasons || state_->inFallback ||
                 state_->intervalCount == MaxIntervals) { state_->invalid = true; return; }
         increment(frame_->attempts);
         increment(frame_->rejected[opcode][r]);
@@ -169,7 +169,7 @@ inline bool flush() {
             ok &= std::fprintf(f, "%s%u", j ? "," : "", row.fatalSubmitRetryReasons[j]) >= 0;
         ok &= std::fprintf(f, "],\"rejections\":[") >= 0;
         bool comma = false;
-        for (size_t opcode = 1; opcode < 30; ++opcode)
+        for (size_t opcode = 1; opcode < kPodOpcodes; ++opcode)
             for (size_t reason = 1; reason < Reasons; ++reason)
                 if (row.rejected[opcode][reason]) {
                     ok &= std::fprintf(f, "%s[%zu,%zu,%u]", comma ? "," : "", opcode, reason, row.rejected[opcode][reason]) >= 0;

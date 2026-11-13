@@ -256,6 +256,11 @@ bool mdi_on();
 extern bool g_mdiPending;  // render thread: a multi-draw batch is collected
 void flush_mdi();
 void count_mdi(uint32_t site, uint32_t instances, bool indirect);  // one batch draw of INSTANCES instances
+// WWHD_VK_BATCH_AT_PASS_END=1 (Vulkan, off by default): a draw-batch submission (WWHD_VK_DRAW_BATCH) that falls inside
+// an open render pass waits; the render thread makes it at the next command boundary with no pass open and no batch
+// collected (gfxvk::deferred_batch_point), or drops it when another submission came first (the swap's included)
+extern bool g_batchSubmitPending;
+void batch_submit_point();
 void verify_mismatch(const char* what);
 uint32_t verify_every();  // WWHD_NATIVE_DRAW_VERIFY (0: off)
 

@@ -1,5 +1,6 @@
 #pragma once
 #include "deferred_commands.h"
+#include "pod_commands.h"  // (pod_draw_indexed_indirect)
 
 // Immediate recording takes only a renderer-global null-pointer branch before the raw API.
 // Capture is explicitly registered by DeferredCommands::start_capture().
@@ -23,6 +24,11 @@ inline void vkCmdDraw(VkCommandBuffer cmd, uint32_t vertices, uint32_t instances
 inline void vkCmdDrawIndexed(VkCommandBuffer cmd, uint32_t indices, uint32_t instances, uint32_t firstIndex, int32_t vertexOffset, uint32_t firstInstance) {
     if(auto* recorder=dispatch_recorder())recorder->vkCmdDrawIndexed(cmd, indices, instances, firstIndex, vertexOffset, firstInstance);
     else gfxvk::vkCmdDrawIndexed(cmd, indices, instances, firstIndex, vertexOffset, firstInstance);
+}
+// (pod_draw_indexed_indirect: resolved by the caller first)
+inline void vkCmdDrawIndexedIndirect(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount, uint32_t stride) {
+    if(auto* recorder=dispatch_recorder())recorder->vkCmdDrawIndexedIndirect(cmd, buffer, offset, drawCount, stride);
+    else pod_draw_indexed_indirect(cmd, buffer, offset, drawCount, stride);
 }
 inline void vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uint32_t y, uint32_t z) {
     if(auto* recorder=dispatch_recorder())recorder->vkCmdDispatch(cmd, x, y, z);

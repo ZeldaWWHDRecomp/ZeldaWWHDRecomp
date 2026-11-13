@@ -122,6 +122,12 @@ extern "C" int __llvm_profile_write_file(void);
 #include <mutex>
 #ifdef WWHD_NATIVE_DRAW
 #include "pool_reset.h"
+#include "batch_pass_end.h"
+#include "record_mt.h"
+#include "record_tokens.h"
+#include "frame_breakdown.h"
+#include "display_timing.h"
+#include "present_ack.h"
 #endif
 #ifdef __APPLE__
 #include <dlfcn.h>
@@ -1225,6 +1231,9 @@ void end_encoder() {
       end_gpu_scope({R.submissionGeneration,slot.activeRenderScope});
       slot.activeRenderScope=UINT32_MAX;
     }
+#ifdef WWHD_NATIVE_DRAW
+    record_mt::pass_ended();  // (record_mt.h)
+#endif
   }
 }
 bool narrow_barriers() {
@@ -1383,6 +1392,9 @@ static void cleanup_submission(Renderer::Submission& slot) {
   }
   slot.garbageImages.clear();
 #ifdef WWHD_NATIVE_DRAW
+  if (record_mt::defer_command_pool_reset(&slot, slot.commandPool))  // (record_mt.h: on the emitter at activation)
+    vk_check(vkResetDescriptorPool(R.device, slot.descriptorPool, 0), "reset descriptor pool");
+  else
   pool_reset::reset(&slot, R.device, slot.commandPool, slot.descriptorPool);  // (pool_reset.h)
 #else
   vk_check(vkResetCommandPool(R.device, slot.commandPool, 0),
@@ -1400,6 +1412,9 @@ static void retire_submission(Renderer::Submission& slot, WaitTiming& timing=sub
     vk_check(timed_call(timing,[&] {
       // Submission serial identifies the fence; deque slots have no contiguous index.
       if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::FenceWaitBegin, 0, R.frame, slot.serial, 0);
+#ifdef WWHD_NATIVE_DRAW
+      const frame_breakdown::Scope fencePart(frame_breakdown::FenceWait);  // (frame_breakdown.h)
+#endif
       const auto result = vkWaitForFences(R.device,1,&slot.fence,VK_TRUE,UINT64_MAX);
       if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::FenceWaitEnd, 0, R.frame, slot.serial, uint64_t(int64_t(result)));
       return result;
@@ -1428,6 +1443,9 @@ static void activate_submission(size_t index) {
   R.garbageFramebuffers=std::move(slot.garbageFramebuffers);
   R.garbageCacheRegions=std::move(slot.garbageCacheRegions);
   R.recording=false;R.rendering=false;R.passTracked=false;
+#ifdef WWHD_NATIVE_DRAW
+  record_mt::activated(&slot, uint32_t(index), R.device);  // (record_mt.h)
+#endif
 }
 // depth peeks (depth_peek.h): the submission that carries the latest peek copy; retired on demand
 static uint64_t peekSubmission = 0, lastSubmissionSerial = 0;
@@ -1572,6 +1590,15 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
       slot.pending = true; slot.retainedUnsubmitted = false; slot.deferredOwner = nullptr;
       // Presentation/isolated DRC handshakes share queue/semaphore host lifetime.
       // Publish them only after the worker has actually submitted the batch.
+#ifdef WWHD_NATIVE_DRAW
+      const bool deferAck = present_ack::take_armed()  // (present_ack.h)
+#ifdef __ANDROID__
+          && !snapshotWait && !snapshotSignal
+#endif
+          ;
+      if (externalSync && deferAck) present_ack::defer(&slot, slot.serial);
+      else
+#endif
       if (externalSync) resolve_retained_submission(slot);
   #ifdef __ANDROID__
       if (snapshotSignal && isolatedSecondary && isolatedSecondary->prepared()) {
@@ -1694,6 +1721,9 @@ void set_present_interval(uint32_t ns, bool hold) {
   }();
   (void)leakSet;
   evenPresentInterval = async_present() ? ns : 0;  // (synchronous presentation waits for the GPU anyway)
+#ifdef WWHD_NATIVE_DRAW
+  display_timing::set_interval(evenPresentInterval);  // (display_timing.h)
+#endif
   evenPresentHold = hold;
   if (!evenPresentInterval) evenSchedule.reset();
 }
@@ -1873,6 +1903,9 @@ static void make_swapchain(Screen &s) {
   ci.minImageCount = std::max(caps.minImageCount, 2u);
   if (caps.maxImageCount)
     ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
+#ifdef WWHD_NATIVE_DRAW
+  if (&s == &R.tv) ci.minImageCount = display_timing::image_count(ci.minImageCount, caps.maxImageCount);  // (display_timing.h)
+#endif
   ci.imageFormat = format.format;
   ci.imageColorSpace = format.colorSpace;
   ci.imageExtent = extent;
@@ -2767,6 +2800,13 @@ static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t inde
   pi.swapchainCount = 1;
   pi.pSwapchains = &swapchain;
   pi.pImageIndices = &index;
+#ifdef WWHD_NATIVE_DRAW
+  if (&s == &R.tv)  // (present_ack.h: a deferred TV present submission is acknowledged before its present)
+    present_ack::settle([](void* p, uint64_t serial) {
+      auto& slot = *static_cast<Renderer::Submission*>(p);
+      if (slot.serial == serial) resolve_retained_submission(slot);
+    });
+#endif
   VkResult pr = timed_call(timing.present, [&] {
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::PresentBegin, 0, frame, &s == &R.tv ? 1 : 2);
     if (presentObservation && &s == &R.tv && observedHistory) {
@@ -2786,6 +2826,11 @@ static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t inde
         return vkQueuePresentKHR(R.queue, &pi);
       }
     }
+#ifdef WWHD_NATIVE_DRAW
+    display_timing::PresentTimes presentTimes;  // (display_timing.h)
+    if (&s == &R.tv) pi.pNext = display_timing::chain_present(pi.pNext, presentTimes, frame);
+    const frame_breakdown::Scope presentPart(&s == &R.tv ? frame_breakdown::Present : frame_breakdown::kParts);
+#endif
     std::lock_guard<std::mutex> queueLock(graphics_queue_mutex());
     send_hdr_metadata(s, swapchain);
     VkResult result=vkQueuePresentKHR(R.queue, &pi);
@@ -2844,6 +2889,9 @@ static void present_held(bool forced) {
   }
   if (forced && at < h.due) ++evenForcedPresents;  // early: the next frame or a swapchain change forced it out
   queue_present(R.tv, h.swapchain, h.index, h.wait, nullptr, h.observedPresentId, h.frame, false, true);
+#ifdef WWHD_NATIVE_DRAW
+  frame_breakdown::hold_issued(h.frame, at);  // (frame_breakdown.h)
+#endif
   evenSchedule.presented(h.due, at);
   trace_even_presented(at);
 }
@@ -3067,6 +3115,9 @@ static bool present(Screen &s) {
     }
 #endif
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::AcquireBegin, 0, R.frame, &s == &R.tv ? 1 : 2, acquireIndex);
+#ifdef WWHD_NATIVE_DRAW
+    const frame_breakdown::Scope acquirePart(&s == &R.tv ? frame_breakdown::Acquire : frame_breakdown::kParts);  // (frame_breakdown.h)
+#endif
     const auto result = vkAcquireNextImageKHR(R.device, s.swapchain, present_acquire_timeout(secondary),
                                 acquireSemaphore, VK_NULL_HANDLE, &index);
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::AcquireEnd, 0, R.frame, &s == &R.tv ? 1 : 2, uint64_t(int64_t(result)));
@@ -3239,7 +3290,13 @@ static bool present(Screen &s) {
     }
     finishedSemaphore = ap.finished[index];
     const size_t slot = R.activeSubmission;
+#ifdef WWHD_NATIVE_DRAW
+    present_ack::arm(async && &s == &R.tv && !secondary && record_worker_active());  // (present_ack.h)
+#endif
     submit(acquireSemaphore, finishedSemaphore, async);
+#ifdef WWHD_NATIVE_DRAW
+    (void)present_ack::take_armed();
+#endif
     ap.slot[acquireIndex] = slot;
     ap.serial[acquireIndex] = R.submissions[slot].serial;
   } else {
@@ -3300,6 +3357,9 @@ static bool present(Screen &s) {
     const int64_t ready = even_now_ns();
     const int64_t due = evenSchedule.plan(ready, evenPresentInterval);
     trace_even_present(R.frame, evenPresentHold, evenPresentInterval, ready, due);
+#ifdef WWHD_NATIVE_DRAW
+    frame_breakdown::hold_planned(R.frame, ready, due, due > ready + 100'000);  // (frame_breakdown.h)
+#endif
     if (evenPresentInterval && ++evenFrames % 1200 == 0) {
       LOG("[vulkan] even pacing: %.0f%% of the last 1200 frames held (%.2f ms on average), %llu forced out early",
           evenHeldPresents / 12.0, evenHeldPresents ? evenHeldNs / 1e6 / evenHeldPresents : 0.0,
@@ -3316,6 +3376,9 @@ static bool present(Screen &s) {
     }
     const VkResult pr = queue_present(s, s.swapchain, index, finishedSemaphore, pi.pNext, observedPresentId, R.frame, false);
     const int64_t at = even_now_ns();
+#ifdef WWHD_NATIVE_DRAW
+    frame_breakdown::hold_issued(R.frame, at);  // (frame_breakdown.h)
+#endif
     evenSchedule.presented(due, at);
     trace_even_presented(at);
     return pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR;
@@ -3815,6 +3878,9 @@ static void present_generated(bool tvShown) {
   if (!shown) reproj::not_presented();
 }
 void swap() {
+#ifdef WWHD_NATIVE_DRAW
+  const uint64_t swapPartStarted = frame_breakdown::begin();  // (frame_breakdown.h)
+#endif
   texture_budget_step();
   trim_memory_step();
   fallback_stats::begin_frame(R.frame);
@@ -4055,7 +4121,14 @@ void swap() {
   backdropDemandFrame.publish();
   gamepad_backdrop_maintain();
   fallback_stats::complete_frame(R.frame);
+#ifdef WWHD_NATIVE_DRAW
+  frame_breakdown::end(frame_breakdown::Swap, swapPartStarted);  // (frame_breakdown.h)
+  display_timing::poll(R.device, R.tv.swapchain);  // (display_timing.h)
+#endif
   stutter::frame(R.frame);
+#ifdef WWHD_NATIVE_DRAW
+  frame_breakdown::frame_done(R.frame);
+#endif
   std::atomic_ref<uint64_t>(R.frame).fetch_add(1);
   fallback_stats::begin_frame(R.frame); // Attribute early next-frame state drains exactly.
   R.completed = R.frame;
@@ -4182,7 +4255,15 @@ void swap() {
           (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame), passReuse);
       if (reproj::enabled()) LOG("[vulkan perf] framegen %s", reproj::perf_line().c_str());
 #ifdef WWHD_NATIVE_DRAW
-      pool_reset::report(double(R.frame - frame));  // (pool_reset.h)
+      {  // pool_reset.h, batch_pass_end.h
+        static uint64_t batch0 = 0;
+        pool_reset::report(double(R.frame - frame));
+        record_mt::report(double(R.frame - frame));
+        display_timing::report(double(R.frame - frame));
+        present_ack::report(double(R.frame - frame));
+        batch_pass_end::report(double(R.frame - frame), draw_batch_submissions() - batch0);
+        batch0 = draw_batch_submissions();
+      }
 #endif
       {  // draw.cpp: totals since the start (the pass subset's no-stutter check compares them ON vs OFF)
         extern uint64_t g_pipelineSyncCompiles, g_pipelineRenderWaits, g_pipelineBudgetWaits;
@@ -4830,7 +4911,10 @@ static void init_device(std::vector<const char *> extensions,
   nativeWorkerPresentation = false;
   if (record_worker_requested()) {
     const char* nativeOption = std::getenv("WWHD_R5_NATIVE_PRESENT");
-    const bool nativeRequested = nativeOption && !std::strcmp(nativeOption, "1");
+    bool nativeRequested = nativeOption && !std::strcmp(nativeOption, "1");
+#ifdef WWHD_NATIVE_DRAW
+    if (!nativeOption) nativeRequested = record_mt::native_present_default();  // (record_mt.h)
+#endif
     if (nativeRequested) {
 #ifdef __APPLE__
       constexpr bool appleHost = true;
@@ -4864,6 +4948,11 @@ static void init_device(std::vector<const char *> extensions,
       presentObservation = false;
     }
   }
+#ifdef WWHD_NATIVE_DRAW
+  const bool breakdownDisplayTiming = display_timing::wanted() && !presentObservation &&
+      has_extension(des, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);  // (display_timing.h)
+  if (breakdownDisplayTiming) de.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+#endif
   if (R.dynamicRenderingKHR) {
     de.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     if (deviceApi < VK_API_VERSION_1_2) {
@@ -5149,6 +5238,9 @@ static void init_device(std::vector<const char *> extensions,
   R.setHdrMetadata = hdrMetadata ? reinterpret_cast<PFN_vkSetHdrMetadataEXT>(vkGetDeviceProcAddr(R.device, "vkSetHdrMetadataEXT")) : nullptr;
   LOG("[HDR] metadata (VK_EXT_hdr_metadata) %s", R.setHdrMetadata ? "available" : "unavailable");
 #endif
+#ifdef WWHD_NATIVE_DRAW
+  display_timing::device_created(R.device, breakdownDisplayTiming);  // (display_timing.h)
+#endif
   if (presentObservation) {
     observedHistory = reinterpret_cast<PFN_vkGetPastPresentationTimingGOOGLE>(
         vkGetDeviceProcAddr(R.device, "vkGetPastPresentationTimingGOOGLE"));
@@ -5245,6 +5337,9 @@ static void init_device(std::vector<const char *> extensions,
   merge_pipeline_demand_cache(VK_NULL_HANDLE);
   merge_pipeline_worker_cache(VK_NULL_HANDLE);
   start_record_worker();
+#ifdef WWHD_NATIVE_DRAW
+  if (record_worker_active()) { (void)record_mt::bits(); record_tokens::install(R.device); }  // (record_mt.h)
+#endif
   LOG("[vulkan record worker] %s", record_worker_active()
       ? "enabled: POD recording/submission; producer-owned pipeline state"
       : "disabled: original immediate/deferred path");

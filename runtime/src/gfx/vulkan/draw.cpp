@@ -24,6 +24,9 @@
 #include "../artistic_mips.h"
 #include "sampler_filtering.h"
 #include "deferred_dispatch.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "batch_pass_end.h"
+#endif
 #include "buffer_cache.h"
 #include "gx2/state_groups.h"
 #include "vertex_cpu_decode.h"
@@ -42,6 +45,11 @@
 #include "pipeline_state.h"
 #include "pipeline_worker.h"
 #include "pipeline_demand.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "pipeline_future.h"
+#include "record_mt.h"
+#include "record_tokens.h"
+#endif
 #include "pipeline_failure.h"
 #include "settings.h"
 #include "vertex_formats.h"
@@ -125,6 +133,22 @@ struct DrawBatchState {
 };
 DrawBatchState drawBatchState;
 uint64_t drawBatchSubmissions = 0;
+#ifdef WWHD_NATIVE_DRAW
+// a draw batch's submission (draw, packet replay, batch flushes); WWHD_VK_BATCH_AT_PASS_END may defer it (batch_pass_end.h)
+static void draw_batch_submit() {
+  if (record_mt::skip_draw_batch()) return;  // (record_mt.h bit 64)
+  if (batch_pass_end::defer()) return;
+  flush_async();
+  ++drawBatchSubmissions;
+}
+// WWHD_VK_RECORD_INDIRECT=1 (off by default; MT recording stage 0): a multi-draw or shader-rewrite batch's indirect
+// draw also while a recorder captures the commands (the record worker's POD stream, opcode 30, or the exact-preparation
+// capture), instead of one vkCmdDrawIndexed per instance there; the same draws either way
+bool record_indirect() {
+  static const bool on = [] { const char* e = std::getenv("WWHD_VK_RECORD_INDIRECT"); return e && *e == '1'; }();
+  return on;
+}
+#endif
 bool aoPrivateReplay = false;
 struct AoPrivate {
   uint32_t source = 0;
@@ -670,9 +694,16 @@ struct PendingPipeline {
   // never recorded as a recipe
   bool keepRecipe = true;
   bool background = false;  // compiled in the background lane (PipelineVariant::background)
+#ifdef WWHD_NATIVE_DRAW
+  // the ticket, moved here when a draw queued the compile to the record worker (pipeline_future.h)
+  std::shared_ptr<pipeline_future::Future> future;
+#endif
   ~PendingPipeline() {
     // Even abandoned jobs can still read these immutable prerequisites.
     if (ticket) ticket->discard_and_wait();
+#ifdef WWHD_NATIVE_DRAW
+    if (future) pipeline_future::discard(*future);
+#endif
     for (auto module : modules)
       if (module) vkDestroyShaderModule(device, module, nullptr);
   }
@@ -863,7 +894,13 @@ Pipeline& resolve_pending_pipeline(Pipeline& pipeline, bool wait = true, bool pr
   try {
     auto& pending = *pipeline.pendingCompile;
     if (!wait && budgetNs) ++g_pipelineBudgetWaits;  // (Shader compile Fast: a bounded wait)
+#ifdef WWHD_NATIVE_DRAW
+    auto* future = pending.future.get();  // (pipeline_future.h: the ticket is in the future)
+    std::optional<PipelineBuildResult> built =
+        future ? pipeline_future::poll(*future, wait ? 0 : budgetNs) : pending.ticket->wait_for(wait ? 0 : budgetNs);
+#else
     std::optional<PipelineBuildResult> built = pending.ticket->wait_for(wait ? 0 : budgetNs);
+#endif
     if (!built && !wait) return pipeline;
     if (!built) {
       // something must wait for this pipeline now: its compile and its shaders' SPIR-V jump the queues
@@ -874,12 +911,19 @@ Pipeline& resolve_pending_pipeline(Pipeline& pipeline, bool wait = true, bool pr
             std::lock_guard lock(shader->binary->mutex);
             if (shader->binary->ticket) shader->binary->ticket->prioritize();
           }
+#ifdef WWHD_NATIVE_DRAW
+        if (future) pipeline_future::prioritize(*future); else
+#endif
         pending.ticket->prioritize();
       }
       if (!g_drainingPipelines) ++(pending.background ? g_backgroundWaits : g_pipelineRenderWaits);
       if (present) begin_pipeline_pending_frame();
-      built = pending.ticket->wait(present ? std::function<void()>(present_completed_frame_while_pipeline_pending)
-                                           : std::function<void()>{});
+      const auto presentWhilePending = present ? std::function<void()>(present_completed_frame_while_pipeline_pending)
+                                               : std::function<void()>{};
+#ifdef WWHD_NATIVE_DRAW
+      if (future) built = pipeline_future::wait(*future, presentWhilePending); else
+#endif
+      built = pending.ticket->wait(presentWhilePending);
     }
     R.pipelineCreateNs += built->compileNs;
     ++R.pipelineCreates;
@@ -3609,6 +3653,16 @@ VkDescriptorSet stage_descriptor_set(bool vertex, VkDescriptorSetLayout layout,
     remember_descriptors(last, layout, found, writes, writeCount);
     return found;
   }
+#ifdef WWHD_NATIVE_DRAW
+  // (record_tokens.h: allocated and written on the record worker)
+  if (record_tokens::active())
+    if (const VkDescriptorSet token = record_tokens::define(layout, writes, writeCount)) {
+      ++R.descriptorAllocations;
+      descriptorCache.insert(hash, layout, token, writes, writeCount);
+      remember_descriptors(last, layout, token, writes, writeCount);
+      return token;
+    }
+#endif
   VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
   ai.descriptorPool = R.descriptorPool;
   ai.descriptorSetCount = 1;
@@ -4686,7 +4740,15 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     resolve_pending_pipeline(p, false);
     if (p.pendingCompile) { gamepad_backdrop_debug("pipeline-pending", R.frame); return; }
   }
-  if (p.pendingCompile && !begin_exact_preparation()) resolve_pending_pipeline(p);
+#ifdef WWHD_NATIVE_DRAW
+  // (pipeline_future.h) a compile the record worker or the pipeline worker finished is taken here, as a poll
+  if (p.pendingCompile && pipeline_future::active()) resolve_pending_pipeline(p, false);
+#endif
+  if (p.pendingCompile && !begin_exact_preparation()
+#ifdef WWHD_NATIVE_DRAW
+      && !pipeline_future::active()  // (pipeline_future.h: the record worker waits for it)
+#endif
+     ) resolve_pending_pipeline(p);
   if (trackTargets) track_drawn(r, colors, depth, subsetClear);
   if (!p.pipeline && !p.pendingCompile) return; // terminal driver failure, not pending
   if(feedback_stats_enabled()) report_feedback_stats();
@@ -4959,7 +5021,20 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   rprof::mark(rprof::kPass);
   if (!dp.pipeline && !dp.pendingCompile) return;
+#ifdef WWHD_NATIVE_DRAW
+  if (&dp != &p && dp.pendingCompile && pipeline_future::active()) resolve_pending_pipeline(dp, false);  // (as p's)
+#endif
   const bool deferredPipelineDraw = bool(dp.pendingCompile);
+#ifdef WWHD_NATIVE_DRAW
+  std::shared_ptr<pipeline_future::Future> future;  // (pipeline_future.h)
+  if (dp.pendingCompile && pipeline_future::active()) {
+    auto& pending = *dp.pendingCompile;
+    if (!pending.future) pending.future = pipeline_future::make(pending.ticket);
+    future = pending.future;
+    pipeline_future::bind(cmd, future);
+    state.pipeline = VK_NULL_HANDLE;
+  } else
+#endif
   if (dp.pendingCompile) {
     auto* ownedPipeline = &dp;
     record::emit_owned([ownedPipeline,cmd]() {
@@ -5342,6 +5417,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
                          indexType == 0 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
     recordDraw(true, nativeIndexSlice.buffer, nativeIndexSlice.offset,
                indexType == 0 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32, count);
+#ifdef WWHD_NATIVE_DRAW
+    if(future) pipeline_future::draw_indexed(cmd, future, count, instances, int32_t(baseVertex)); else
+#endif
     if(deferredPipelineDraw) { auto* pipeline=&dp; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, count, instances, 0, int32_t(baseVertex), 0); }); }
     else record::vkCmdDrawIndexed(cmd, count, instances, 0, int32_t(baseVertex), 0);
   } else if (convertedEntry) {
@@ -5350,10 +5428,16 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     rprof::guest_read(rprof::kUpIndex, indexAddr, guestBytes);
     bindIndex(b.buffer, b.offset, VK_INDEX_TYPE_UINT32);
     recordDraw(true, b.buffer, b.offset, VK_INDEX_TYPE_UINT32, converted);
+#ifdef WWHD_NATIVE_DRAW
+    if(future) pipeline_future::draw_indexed(cmd, future, converted, instances, int32_t(baseVertex)); else
+#endif
     if(deferredPipelineDraw) { auto* pipeline=&dp; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, converted, instances, 0, int32_t(baseVertex), 0); }); }
     else record::vkCmdDrawIndexed(cmd, converted, instances, 0, int32_t(baseVertex), 0);
   } else if (indices.empty()) {
     recordDraw(false, VK_NULL_HANDLE, 0, VK_INDEX_TYPE_UINT32, count);
+#ifdef WWHD_NATIVE_DRAW
+    if(future) pipeline_future::draw(cmd, future, count, instances, baseVertex); else
+#endif
     if(deferredPipelineDraw) { auto* pipeline=&dp; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDraw(cmd, count, instances, baseVertex, 0); }); }
     else record::vkCmdDraw(cmd, count, instances, baseVertex, 0);
   } else {
@@ -5361,7 +5445,11 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     if (indexAddr) rprof::guest_read(rprof::kUpIndex, indexAddr, guestBytes);
     bindIndex(b.buffer, b.offset, VK_INDEX_TYPE_UINT32);
     recordDraw(true, b.buffer, b.offset, VK_INDEX_TYPE_UINT32, indices.size());
-    const auto drawCount=indices.size(); if(deferredPipelineDraw) { auto* pipeline=&dp; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, drawCount, instances, 0, int32_t(baseVertex), 0); }); }
+    const auto drawCount=indices.size();
+#ifdef WWHD_NATIVE_DRAW
+    if(future) pipeline_future::draw_indexed(cmd, future, uint32_t(drawCount), instances, int32_t(baseVertex)); else
+#endif
+    if(deferredPipelineDraw) { auto* pipeline=&dp; record::emit_owned([=] { if(pipeline->pipeline) gfxvk::vkCmdDrawIndexed(cmd, drawCount, instances, 0, int32_t(baseVertex), 0); }); }
     else record::vkCmdDrawIndexed(cmd, indices.size(), instances, 0, int32_t(baseVertex), 0);
   }
   }
@@ -5402,8 +5490,12 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   if (drawBatchState.after_draw(R.frame, drawBatch, drawBatchCap)) {
     // Submit only after this draw owns all its upload slices and deferred
     // resources. The next draw reopens attachments with LOAD and rebinds state.
+#ifdef WWHD_NATIVE_DRAW
+    draw_batch_submit();
+#else
     flush_async();
     ++drawBatchSubmissions;
+#endif
   }
   rprof::mark(rprof::kSubmit);
   // Original draw is complete. Replay exactly this pane draw with its own color
@@ -6354,10 +6446,7 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       // submission then lowers the packet again)
       static const uint32_t drawBatch = parse_draw_batch(std::getenv("WWHD_VK_DRAW_BATCH"));
       static const uint32_t drawBatchCap = parse_draw_batch_cap(std::getenv("WWHD_VK_DRAW_BATCH_CAP"));
-      if (drawBatchState.after_draw(R.frame, drawBatch, drawBatchCap)) {
-        flush_async();
-        ++drawBatchSubmissions;
-      }
+      if (drawBatchState.after_draw(R.frame, drawBatch, drawBatchCap)) draw_batch_submit();
       return true;
     }
     return false;
@@ -6545,9 +6634,13 @@ void packet_mdi_flush() {
   const bool mdiDevice = R.enabledFeatures.multiDrawIndirect;
   if (mdiDevice && !drawIndirect)
     drawIndirect = reinterpret_cast<PFN_vkCmdDrawIndexedIndirect>(vkGetDeviceProcAddr(R.device, "vkCmdDrawIndexedIndirect"));
-  const bool indirect = B.count > 1 && mdiDevice && drawIndirect && !dispatch_recorder();
+  const bool indirect = B.count > 1 && mdiDevice && drawIndirect && (!dispatch_recorder() || record_indirect());
   if (indirect) {
     UploadSlice c = snapshot(B.cmds.data(), B.cmds.size() * sizeof(VkDrawIndexedIndirectCommand), 4);
+    if (dispatch_recorder()) {  // WWHD_VK_RECORD_INDIRECT: through the recorder (POD opcode 30)
+      pod_draw_indexed_indirect = drawIndirect;
+      record::vkCmdDrawIndexedIndirect(cmd, c.buffer, c.offset, B.count, sizeof(VkDrawIndexedIndirectCommand));
+    } else
     drawIndirect(cmd, c.buffer, c.offset, B.count, sizeof(VkDrawIndexedIndirectCommand));
   } else {
     for (const auto& c : B.cmds) record::vkCmdDrawIndexed(cmd, c.indexCount, 1, c.firstIndex, c.vertexOffset, 0);
@@ -6572,10 +6665,13 @@ void packet_mdi_flush() {
   for (auto& k : P.kinds)  // (as chained(): the packet's own target writes keep its kinds' surface epoch)
     if (k.valid && k.surfaceEpoch == surfaceBefore) k.surfaceEpoch = g_surface_epoch;
   if (kept_states()) kept_chain(B.id, surfaceBefore, g_surface_epoch);
-  if (submit) {
-    flush_async();
-    ++drawBatchSubmissions;
-  }
+  if (submit) draw_batch_submit();
+}
+// WWHD_VK_BATCH_AT_PASS_END: a GX2 command boundary with a deferred draw-batch submission (batch_pass_end.h)
+void deferred_batch_point() {
+  if (!batch_pass_end::take()) return;
+  flush_async();
+  ++drawBatchSubmissions;
 }
 // the collected shader-rewrite batch as one instanced draw: the kind's lowered state (descriptor sets with their
 // offsets, index and vertex buffers, dynamic state), the batch pipeline and the instances' entries as a per-instance
@@ -6620,9 +6716,13 @@ void packet_flush() {
     const bool device = R.enabledFeatures.multiDrawIndirect && R.enabledFeatures.drawIndirectFirstInstance;
     if (device && !drawIndirect)
       drawIndirect = reinterpret_cast<PFN_vkCmdDrawIndexedIndirect>(vkGetDeviceProcAddr(R.device, "vkCmdDrawIndexedIndirect"));
-    indirect = B.count > 1 && device && drawIndirect && !dispatch_recorder();
+    indirect = B.count > 1 && device && drawIndirect && (!dispatch_recorder() || record_indirect());
     if (indirect) {
       UploadSlice c = snapshot(B.cmds.data(), B.cmds.size() * sizeof(VkDrawIndexedIndirectCommand), 4);
+      if (dispatch_recorder()) {  // WWHD_VK_RECORD_INDIRECT: through the recorder (POD opcode 30)
+        pod_draw_indexed_indirect = drawIndirect;
+        record::vkCmdDrawIndexedIndirect(cmd, c.buffer, c.offset, B.count, sizeof(VkDrawIndexedIndirectCommand));
+      } else
       drawIndirect(cmd, c.buffer, c.offset, B.count, sizeof(VkDrawIndexedIndirectCommand));
     } else {
       for (const auto& c : B.cmds)
@@ -6652,10 +6752,7 @@ void packet_flush() {
     if (k.valid && k.surfaceEpoch == surfaceBefore) k.surfaceEpoch = g_surface_epoch;
   if (kept_states()) kept_chain(B.id, surfaceBefore, g_surface_epoch);
   native_draw::count_batch(B.site, B.count, B.stream || B.range, indirect);
-  if (submit) {
-    flush_async();
-    ++drawBatchSubmissions;
-  }
+  if (submit) draw_batch_submit();
 }
 #endif
 // Setup's Vulkan preparation (headstart.cpp, the head start's Metal pipeline recipes): the recipe of the pipeline a

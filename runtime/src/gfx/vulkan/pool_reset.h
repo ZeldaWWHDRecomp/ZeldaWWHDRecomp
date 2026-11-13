@@ -26,6 +26,8 @@ VkCommandPoolCreateFlags pool_flags(VkCommandPoolCreateFlags defaultFlags);
 void submitted(const void* slot, VkDevice device, VkFence fence, VkCommandPool commands, VkDescriptorPool descriptors);
 // render thread, the slot retired (its fence signalled): its pools reset, by the reset thread (waited for) or here
 void reset(const void* slot, VkDevice device, VkCommandPool commands, VkDescriptorPool descriptors);
+// render thread: SLOT's reset is queued on the reset thread (the render thread submitted it itself)
+bool queued(const void* slot);
 // the counter line, every stats period of FRAMES frames
 void report(double frames);
 }  // namespace gfxvk::pool_reset
