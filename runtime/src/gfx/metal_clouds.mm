@@ -858,6 +858,7 @@ static void draw_cloud_shadows(const cloud_proto::Snapshot& s, Surface* color, u
         rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
         id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+        e.label = @"metal_clouds.mm:860";  // (named for WWHD_GPU_ERRORS: which pass faulted)
         [e setRenderPipelineState:it->second];
         [e setFragmentBytes:&g length:sizeof g atIndex:0];
         [e setFragmentTexture:depth->tex atIndex:0];

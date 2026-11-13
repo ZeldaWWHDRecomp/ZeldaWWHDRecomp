@@ -22,6 +22,7 @@
 #include "display_modes.h"
 #include "renderer.h"
 #include "../interp.h"
+#include "remote_video.h"
 
 int wwhd_main(int argc, char** argv);  // main.cpp
 void log_msg(const char* fmt, ...);
@@ -80,34 +81,46 @@ static void install_shader_cache(NSString* caches) {
 
 // Heat guard: the Apple TV 4K (A15) has no fan, and under the game's load it reaches tvOS's "serious" thermal
 // state, where the system slows the chip until the game runs at a third of its speed (30 -> 10 fps, measured).
-// From "serious" on, the game lowers its own load instead: 60 fps pauses (30), the occlusion depth goes to
-// half size and the internal resolution drops to 0.75x. After a minute at "fair" or "nominal" the player's settings come
-// back as they were. Nothing it changes is saved. (Android pauses only 60 fps: platform/heat_guard.h.)
+// The game lowers its own load instead, in two steps:
+//   "serious":  60 fps pauses (30), the occlusion depth goes to half size, the internal resolution to 0.75x;
+//   "critical": as well, the resolution goes to 0.5x and the iPhone GamePad gets every other picture.
+// After a minute below a step's state the guard goes back one step; off, the player's settings are back as they
+// were. Nothing it changes is saved. (Android pauses only 60 fps: platform/heat_guard.h.)
 struct HeatGuard {
-    bool active = false;
-    double cool_since = -1;
+    int step = 0;  // 0 off, 1 serious, 2 critical
+    double calmer_since = -1;
     int interp_mode = 0;
     bool ao_hires = false;
     float res = 1.0f;
 
-    // main thread, every 10 s
-    void tick(NSInteger thermal, double now) {
-        const bool hot = thermal >= NSProcessInfoThermalStateSerious;
-        if (hot) cool_since = -1;
-        else if (cool_since < 0) cool_since = now;
-        if (hot && !active) {
-            active = true;
-            interp_mode = interp::mode(), ao_hires = render::ao_hires(), res = render::res_scale();
-            if (interp_mode) interp::set_mode(0);
-            render::set_ao_hires(false);
-            if (res > 0.75f) render::set_res_scale(0.75f);
-            log_msg("[tvos] heat guard: the Apple TV is hot: 30 fps, half-size occlusion depth, 0.75x resolution until it cools");
-        } else if (!hot && active && now - cool_since >= 60) {
-            active = false;
+    void apply(int to) {
+        if (step == 0 && to > 0) interp_mode = interp::mode(), ao_hires = render::ao_hires(), res = render::res_scale();
+        step = to;
+        if (to == 0) {
             interp::set_mode(interp_mode);
             render::set_ao_hires(ao_hires);
             render::set_res_scale(res);
+            remote_video::set_frame_divisor(1);
             log_msg("[tvos] heat guard: cooled down: the settings are back");
+            return;
+        }
+        if (interp::mode()) interp::set_mode(0);
+        render::set_ao_hires(false);
+        render::set_res_scale(std::min(res, to == 2 ? 0.5f : 0.75f));
+        remote_video::set_frame_divisor(to == 2 ? 2 : 1);
+        log_msg(to == 2 ? "[tvos] heat guard: the Apple TV is very hot: 0.5x resolution, the iPhone GamePad at half rate, "
+                          "30 fps and half-size occlusion depth until it cools"
+                        : "[tvos] heat guard: the Apple TV is hot: 30 fps, half-size occlusion depth, 0.75x resolution until it cools");
+    }
+    // main thread, every 10 s
+    void tick(NSInteger thermal, double now) {
+        const int want = thermal >= NSProcessInfoThermalStateCritical ? 2 : thermal >= NSProcessInfoThermalStateSerious ? 1 : 0;
+        if (want >= step) calmer_since = -1;
+        else if (calmer_since < 0) calmer_since = now;
+        if (want > step) apply(want);
+        else if (want < step && now - calmer_since >= 60) {
+            apply(step - 1);
+            calmer_since = want < step ? now : -1;  // a further step back after another minute
         }
     }
 };

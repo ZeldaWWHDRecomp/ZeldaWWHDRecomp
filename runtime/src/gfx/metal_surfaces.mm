@@ -351,6 +351,7 @@ void resample(id<MTLTexture> src, id<MTLTexture> dst, const FormatInfo& fmt, uin
             rp.colorAttachments[0].storeAction = MTLStoreActionStore;
         }
         id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+        e.label = @"metal_surfaces.mm:353";  // (named for WWHD_GPU_ERRORS: which pass faulted)
         [e setRenderPipelineState:it->second];
         if (fmt.depth) [e setDepthStencilState:writeDepth];
         if (dstW) [e setViewport:MTLViewport{0, 0, (double)dstW, (double)dstH, 0, 1}];
@@ -387,6 +388,7 @@ static Surface* adopt_newer_alias(Surface* s) {
     if (!src) return s;
     end_encoder();
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    b.label = @"metal_surfaces.mm:389";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     NSUInteger layers = s->tex.textureType == MTLTextureType3D ? 1 : std::max<NSUInteger>(s->tex.arrayLength, 1);
     if (s->tex.textureType == MTLTextureTypeCube) layers = 6;
     for (NSUInteger level = 0; level < std::min(s->tex.mipmapLevelCount, newest->tex.mipmapLevelCount); level++)
@@ -630,6 +632,7 @@ static Surface* with_mip_chain(Surface* s, const SurfaceDesc& d) {
     if (s->mipChainSeq == key) return c;
     end_encoder();
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    b.label = @"metal_surfaces.mm:632";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     [b copyFromTexture:s->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0,0,0)
         sourceSize:MTLSizeMake(w,h,1) toTexture:c->tex destinationSlice:0 destinationLevel:0
         destinationOrigin:MTLOriginMake(0,0,0)];
@@ -905,6 +908,7 @@ void upload_surface(Surface* s) {
     std::vector<std::vector<uint8_t>> levelsForCheck;
     end_encoder();
     id<MTLBlitCommandEncoder> blit = [command_buffer() blitCommandEncoder];
+    blit.label = @"metal_surfaces.mm:907";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     for (uint32_t level = 0; level < ranges.size(); level++) {
         uint32_t base = ranges[level].first;
         uint32_t w, h, slices;
@@ -1024,6 +1028,7 @@ static std::vector<uint8_t> read_guest_texels(Surface* img, uint32_t w, uint32_t
     id<MTLBuffer> buf = [R.device newBufferWithLength:(NSUInteger)w * h * bytes options:MTLResourceStorageModeShared];
     end_encoder();
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    b.label = @"metal_surfaces.mm:1023";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1)
               toBuffer:buf destinationOffset:0 destinationBytesPerRow:(NSUInteger)w * bytes destinationBytesPerImage:(NSUInteger)w * h * bytes];
     [b endEncoding];
@@ -1112,6 +1117,7 @@ void copy_surface_impl(uint32_t srcAddr, uint32_t srcMip, uint32_t srcSlice, uin
         uint32_t dph = std::min<uint32_t>((uint32_t)std::lround(ch * dst->sy), (uint32_t)dst->tex.height);
         if (spw == dpw && sph == dph) {
             id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+            b.label = @"metal_surfaces.mm:1111";  // (named for WWHD_GPU_ERRORS: which pass faulted)
             [b copyFromTexture:src->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
                     sourceSize:MTLSizeMake(spw, sph, 1)
                      toTexture:dst->tex destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];

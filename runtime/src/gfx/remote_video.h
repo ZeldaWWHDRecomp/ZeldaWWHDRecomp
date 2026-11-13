@@ -10,6 +10,8 @@ id<MTLTexture> begin_frame(id<MTLDevice> device, bool srgb, float drc_w, float d
 // after drawing into it, in the command buffer that draws it: encoded and sent once the GPU is done.
 // time_ns: when the present began (remote_pad::clock_ns), the frame's time the phone measures its age from
 void end_frame(id<MTLCommandBuffer> cb, uint64_t time_ns);
+// only every nth present goes to the phone (1: all); any thread (the Apple TV's heat guard)
+void set_frame_divisor(int n);
 // Start-up: the running game's GamePad boot image (meta/bootDrcTex.tga, an uncompressed 24 or 32-bit TGA, 854x480 in
 // Wii U games) as a JPEG for the phone's background (remote_pad.h set_boot_image); nothing without one.
 void load_boot_image(const std::string& tga);

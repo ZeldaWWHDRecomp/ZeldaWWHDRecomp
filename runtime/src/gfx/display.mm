@@ -993,6 +993,7 @@ static void compose_tv(id<MTLTexture> target, const Layout& L) {
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+    e.label = @"display.mm:988";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     float dw = target.width, dh = target.height;
     MTLPixelFormat fmt = target.pixelFormat;
     draw_image(e, fmt, dw, dh, R.tv.tex, R.tv.srgb, L.tv, 1.0f, R.tv.dyn);
@@ -1026,6 +1027,7 @@ static void compose_drc(id<MTLTexture> target) {
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+    e.label = @"display.mm:1021";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     Layout L = layout(target.width, target.height, nominal_w(R.drc), nominal_h(R.drc), 0, 0, false);
     gamepad_draw_bars(R.device,e,target.pixelFormat,unsigned(target.width),unsigned(target.height),
                      {0,0,float(target.width),float(target.height)}, {L.tv.x,L.tv.y,L.tv.w,L.tv.h},
@@ -1089,10 +1091,12 @@ static void screenshot_screen(Screen& scr, const std::string& path, bool tv) {
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+    e.label = @"display.mm:1084";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     draw_image(e, t.pixelFormat, w, h, scr.tex, scr.srgb, Box{0, 0, (float)w, (float)h}, 1.0f, scr.dyn);
     [e endEncoding];
     id<MTLBuffer> buf = [R.device newBufferWithLength:w * h * 4 options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    b.label = @"display.mm:1088";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     [b copyFromTexture:t sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1)
               toBuffer:buf destinationOffset:0 destinationBytesPerRow:w * 4 destinationBytesPerImage:w * h * 4];
     [b endEncoding];
