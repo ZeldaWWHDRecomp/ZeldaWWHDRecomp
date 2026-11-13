@@ -166,6 +166,27 @@ static void test_named_face_labels() {
     CHECK(gamecube_named("Nintendo", "GameCube Controller") && !gamecube_named("Sony", "DualSense"));
 }
 
+// GameController element names (GCInputNames.h values, checked against the macOS SDK) for the pads macOS
+// lists without the extended gamepad profile, e.g. a GameCube adapter (issue #556)
+static void test_apple_element_names() {
+    CHECK(apple_button_input("Button A") == kPadA && apple_button_input("Button B") == kPadB);
+    CHECK(apple_button_input("Button X") == kPadX && apple_button_input("Button Y") == kPadY);
+    CHECK(apple_button_input("Left Shoulder") == kPadLB && apple_button_input("Right Bumper") == kPadRB);
+    CHECK(apple_button_input("Left Trigger") == kPadLT && apple_button_input("Right Trigger") == kPadRT);
+    CHECK(apple_button_input("Trigger") == kPadRT);
+    CHECK(apple_button_input("Button Menu") == kPadMenu && apple_button_input("Button Home") == kPadHome);
+    CHECK(apple_button_input("Button Options") == kPadOptions && apple_button_input("Button Share") == kPadCapture);
+    CHECK(apple_button_input("Left Thumbstick Button") == kPadL3 && apple_button_input("Right Thumbstick Button") == kPadR3);
+    for (const char* unknown : {"Button 1", "Arcade Button 0, 0", "Grip", "button a", "", static_cast<const char*>(nullptr)})
+        CHECK(apple_button_input(unknown) == kPadNone);
+    CHECK(apple_dpad_kind("Direction Pad") == AppleDpad::kDpad);
+    CHECK(apple_dpad_kind("Left Thumbstick") == AppleDpad::kLeftStick && apple_dpad_kind("Thumbstick") == AppleDpad::kLeftStick);
+    CHECK(apple_dpad_kind("Right Thumbstick") == AppleDpad::kRightStick);
+    CHECK(apple_dpad_kind("Cardinal Direction Pad") == AppleDpad::kNone && apple_dpad_kind(nullptr) == AppleDpad::kNone);
+    // the faces are raw letters, put in place by the layout as for an extended pad
+    CHECK(apple_face_input(apple_face_layout("", "GameCube Controller Adapter"), apple_button_input("Button A")) == kPadA);
+}
+
 static void test_apple_face_normalization() {
     using AL = AppleFaceLayout;
     using FL = FaceLabel;
@@ -1897,6 +1918,7 @@ int main() {
     test_conflict_helpers();
     test_mouse();
     test_defaults();
+    test_apple_element_names();
     test_apple_face_normalization();
     test_named_face_labels();
     test_face_layout();

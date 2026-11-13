@@ -968,6 +968,11 @@ void handle_event(const SDL_Event& event){
  else if(mods::handle_mouse_event(event))return;
  if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS")){open_controller(event.gdevice.which);note_dominant_labels();}
  if(event.type==SDL_EVENT_GAMEPAD_REMOVED)close_controller(event.gdevice.which);
+ // a device SDL sees only as a joystick (no gamepad mapping) is not used; say so for bug reports (#556)
+ if(event.type==SDL_EVENT_JOYSTICK_ADDED&&!SDL_IsGamepad(event.jdevice.which)){
+  const char* n=SDL_GetJoystickNameForID(event.jdevice.which);
+  LOG("[input] joystick without a gamepad mapping, not used: %s (vendor %04X, product %04X)",n?n:"?",
+      SDL_GetJoystickVendorForID(event.jdevice.which),SDL_GetJoystickProductForID(event.jdevice.which));}
  if(event.type==SDL_EVENT_GAMEPAD_SENSOR_UPDATE){g_sensor_seen[event.gsensor.which]=SDL_GetTicks();if(!getenv("WWHD_NO_HOST_INPUT")&&!overlay::blocks_input()&&controller_values_live())sensor_event(event.gsensor);return;}
  static const bool trace=getenv("WWHD_OVERLAY_TRACE")&&std::string(getenv("WWHD_OVERLAY_TRACE"))=="1";
  if(trace&&(event.type==SDL_EVENT_WINDOW_FOCUS_LOST||event.type==SDL_EVENT_WINDOW_FOCUS_GAINED))

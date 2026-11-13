@@ -214,6 +214,13 @@ void apple_face_labels(AppleFaceLayout layout, FaceLabel labels[4]);  // raw A/B
 // (south, east, west, north) guessed from what it says it is; `out` untouched when that says nothing.
 void family_face_labels(const char* vendor_name, const char* product_category, FaceLabel out[4]);
 bool gamecube_named(const char* vendor_name, const char* product_category);
+// A GameController element by its name (GCInputNames.h: "Button A", "Left Shoulder", "Trigger"), for the
+// pads macOS lists without the extended gamepad profile (some GameCube adapters, arcade sticks, generic
+// HID pads; issue #556): the controller input a button is (kPadNone: a name we don't know), and what a
+// direction pad is. Face buttons come back as raw A/B/X/Y; apple_face_input puts them in place.
+int apple_button_input(const char* element_name);
+enum class AppleDpad { kNone, kDpad, kLeftStick, kRightStick };
+AppleDpad apple_dpad_kind(const char* element_name);
 // A GameController pad known only by its names (the iPhone GamePad's controller, remote_pad.h): the
 // letters by position from its buttonA/B/X/Y names, else its family's.
 void named_face_labels(const char* vendor_name, const char* product_category, const char* const faces[4],
