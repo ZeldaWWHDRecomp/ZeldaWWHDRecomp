@@ -677,6 +677,7 @@ void register_game() {
         {"fast-forward", "Fast forward scenes and talks", "Hold the fast forward button to speed up cutscenes and dialogue."},
         {"instant-text", "Instant text", "Message boxes show their whole text at once."},
         {"no-text-pauses", "No pauses in texts", "Texts go on without their short pauses."},
+        {"fix-game-bugs", "Fix original game bugs", "Fixes bugs of the original game. Off, it plays exactly like the original."},
         {"jump-anywhere", "Jump anywhere", "A button of its own makes Link jump, standing or running."},
         {"leaf-rise", "Deku Leaf: wave to rise", "While gliding, each wave of the leaf lifts Link a little."},
         {"wall-climb", "Climb any wall", "Grab and climb walls with a stamina wheel; A or B lets go."},

@@ -73,6 +73,7 @@ private:
 struct Context {
     bool overlay_open = false;   // the port's overlay (Settings, Esc)
     bool settings_page = false;  // game_settings_page::page_open(): the entry arrow, page or slide has the controller
+    bool fix_game_bugs = true;   // the "Fix original game bugs" setting (game_fixes.cpp): off, the game as the original
 };
 
 // The reading is the stuck state the safety net acts on (the context aside).
@@ -88,7 +89,7 @@ class Restore {
 public:
     static constexpr int kMaxRestores = 20;
     bool update(const Reading& r, const Context& c, uint64_t step) {
-        if (!focus_stuck(r) || c.overlay_open || c.settings_page) { reset(); return false; }
+        if (!c.fix_game_bugs || !focus_stuck(r) || c.overlay_open || c.settings_page) { reset(); return false; }
         if (r.focus != focus_ || !since_) focus_ = r.focus, since_ = step ? step : 1;
         if (step < since_ + kMissingSteps || restores_ >= kMaxRestores) return false;
         restores_++;
@@ -123,7 +124,9 @@ inline uint32_t restore_target(uint32_t default_focus, bool default_linked, uint
 // selection still moves to Link's square, and the focus stays where the game put it (hud_gate.cpp).
 //   focus    the event manager's focused element (sEventMgr +0x70), 0 none
 //   squares  the grid's cells' elements (hdSeaChartCell_c +0x9C mTouchWidget)
-inline bool grid_may_move_focus(uint32_t focus, const uint32_t* squares, int count) {
+//   fix      the "Fix original game bugs" setting (game_fixes.cpp): off, the game's move always runs (the original)
+inline bool grid_may_move_focus(uint32_t focus, const uint32_t* squares, int count, bool fix = true) {
+    if (!fix) return true;
     if (!focus) return false;
     for (int i = 0; i < count; i++)
         if (squares[i] == focus) return true;

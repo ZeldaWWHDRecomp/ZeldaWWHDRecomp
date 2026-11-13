@@ -129,6 +129,25 @@ int main() {
         // cells without an element (0) never match a focus
         uint32_t empty[49] = {};
         assert(!grid_may_move_focus(0x19701AFC, empty, 49));
+        // "Fix original game bugs" off: the game's move always runs, as in the original
+        assert(grid_may_move_focus(0x19701AFC, squares, 49, false));
+        assert(grid_may_move_focus(0, squares, 49, false));
+        assert(grid_may_move_focus(squares[3], squares, 49, false));
+    }
+    {
+        // "Fix original game bugs" off: the safety net never gives the focus back (the original's stuck state stays)
+        Reading stuck = reading(0, false, "::StateID_Blank");
+        stuck.focus = 0x1987004C;
+        Context off;
+        off.fix_game_bugs = false;
+        Restore restore;
+        for (uint64_t s = 100; s < 100 + 20 * kMissingSteps; s++) assert(!restore.update(stuck, off, s));
+        assert(restore.restores() == 0);
+        // on again: the second after gives it back
+        Context on;
+        uint64_t s = 1000;
+        while (!restore.update(stuck, on, s)) s++;
+        assert(s == 1000 + kMissingSteps && restore.restores() == 1);
     }
     std::puts("menu_cursor_test: ok");
     return 0;
