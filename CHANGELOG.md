@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android: the Vulkan renderer uses render passes by default** (#559). On our test phone (Xiaomi 14) this cuts
+  the render thread's time per frame at the Outset cliff from 17.83 to 16.04 ms in the decomp build (53.5 → 58.6
+  fps, with fewer slow frames) and by about 1.5 ms in the normal build. The picture is unchanged; desktop keeps
+  dynamic rendering. `WWHD_VK_FORCE_RENDERPASS=0` brings dynamic rendering back. Also fixed: "60 fps (generated)"
+  no longer stops the renderer when render passes are used. Prepared shaders are rebuilt once after updating.
+
 - **Mac: controllers with a simpler layout now work in the game and the in-game Settings** (#557, thanks
   @zeldafan2000 for the report, #556). Some controllers, such as GameCube adapters with a third-party driver, only
   report a basic button layout to macOS. The Controls window listed them, but the game and the in-game Settings
