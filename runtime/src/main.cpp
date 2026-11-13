@@ -40,6 +40,9 @@
 #include "gfx/gamepad_backdrop_options.h"
 #if defined(__APPLE__) && defined(WWHD_HAS_METAL)
 #include "gfx/player_question.h"
+#ifdef WWHD_TVOS
+#include "gfx/cloud_save.h"
+#endif
 #endif
 #include "overlay/hostui.h"
 #include "render_prof.h"
@@ -832,6 +835,10 @@ int main(int argc, char** argv) {
         }
         config::save_dir = chosen.save_dir.string();
     }
+#endif
+#ifdef WWHD_TVOS
+    // the save in iCloud through CloudKit (Apple TV, iPhone, iPad: gfx/cloud_save.h), in the folder just settled
+    if (!save_override && !warm_shaders) cloud_save::startup(config::save_dir, ask_player);
 #endif
     std::filesystem::path backup_dir = save_folder::safe_writes() ? save_folder::state().backups : std::filesystem::path();
     if (randomizer::compiled_seed() && backup_dir.empty())

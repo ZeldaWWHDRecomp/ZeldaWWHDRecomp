@@ -3347,8 +3347,12 @@ def main():
                     "developer team's profile and install it on a paired device (apple_device.py; needs Xcode)")
     ap.add_argument("--apple-device-id", help="with --apple-device: the device (its name or identifier) when several are paired")
     ap.add_argument("--apple-team", help="with --apple-device: the developer team (its identifier) when Xcode has several")
-    ap.add_argument("--apple-bundle-prefix", default="org.wwhdrecomp",
-                    help="with --apple-device: the apps' bundle identifiers are PREFIX.tv / PREFIX.ipad (default %(default)s)")
+    ap.add_argument("--apple-bundle-prefix",
+                    help="with --apple-device: the apps' bundle identifiers are PREFIX.tv / PREFIX.ipad (default "
+                    "org.wwhdrecomp; kept for next time)")
+    ap.add_argument("--apple-icloud-container",
+                    help="with --apple-device: keep the save in this iCloud container's iCloud Drive folder "
+                    "(iCloud.<...>, of your team, on the apps' App IDs; \"\" for none; kept for next time)")
     ap.add_argument("--apple-no-install", action="store_true", help="with --apple-device: build and sign the app only")
     ap.add_argument("--apple-status", action="store_true",
                     help="macOS: print, as JSON, whether the Apple TV and iPhone / iPad apps can be built and installed "
@@ -3546,12 +3550,14 @@ def run(args, ui):
             raise SetupError("--apple-status needs a Mac")
         import apple_device
         try:
+            ids = apple_device.settings(ctx, bundle_prefix=args.apple_bundle_prefix, icloud=args.apple_icloud_container,
+                                        team=args.apple_team)
             if args.apple_device and args.apple_device_id:
                 result = apple_device.device_state(sys.modules[__name__], ctx, args.apple_device, args.apple_device_id,
-                                                   bundle_prefix=args.apple_bundle_prefix)
+                                                   bundle_prefix=ids["bundle_prefix"])
             else:
-                result = apple_device.report(sys.modules[__name__], ctx, team=args.apple_team,
-                                             bundle_prefix=args.apple_bundle_prefix)
+                result = apple_device.report(sys.modules[__name__], ctx, team=ids["team"] or None,
+                                             bundle_prefix=ids["bundle_prefix"], icloud=ids["icloud"] or None)
         except apple_device.Error as e:
             raise SetupError(str(e))
         print(json.dumps(result, indent=1, default=str))
@@ -3567,9 +3573,14 @@ def run(args, ui):
             if args.apple_install_only:
                 apple_device.install_app(sys.modules[__name__], ctx, args.apple_device, device=args.apple_device_id, log=log)
                 return 0
-            apple_device.build(sys.modules[__name__], ctx, args.apple_device, team=args.apple_team,
-                               device=args.apple_device_id, bundle_prefix=args.apple_bundle_prefix,
-                               install=not args.apple_no_install, signed=not args.apple_unsigned, log=log, step=step)
+            ids = apple_device.settings(ctx, bundle_prefix=args.apple_bundle_prefix, icloud=args.apple_icloud_container,
+                                        team=args.apple_team)
+            log("app identifiers: %s.%s, iCloud %s" % (ids["bundle_prefix"], apple_device.KINDS[args.apple_device][3],
+                                                       ids["icloud"] or "off"))
+            apple_device.build(sys.modules[__name__], ctx, args.apple_device, team=ids["team"] or None,
+                               device=args.apple_device_id, bundle_prefix=ids["bundle_prefix"],
+                               install=not args.apple_no_install, signed=not args.apple_unsigned, log=log, step=step,
+                               icloud=ids["icloud"] or None)
         except apple_device.Error as e:
             raise SetupError(str(e))
         return 0
@@ -3841,12 +3852,14 @@ def after_install(ctx, args, ui, state, source):
 #   launch       {}                      -> starts the installed game (the decomp version when start_decomp)
 #   start_decomp {on}                    -> start the decomp version from now on (development builds, macOS;
 #                                           install {decomp: true} builds it; hello: decomp_offered, decomp)
-#   apple_status {team?, bundle_prefix?} -> xcode, mac, mods, apps: {tv|iphone: checks, signing, ready, problems,
-#                                           app (the one built here), devices} (apple_device.report; hello's
-#                                           apple_offered says whether to ask)
-#   apple_device_state {app, device}     -> running, installed {version, build}, mods_on_device, switched_off,
-#                                           switched_on (what installing would change there)
-#   apple_build  {app: tv|iphone, team?} -> streams step/log, then app {path, version, build, mods, signed}
+#   apple_status {team?, bundle_prefix?, icloud?}
+#                                        -> settings, xcode, mac, mods, apps: {tv|iphone: checks, signing, ready,
+#                                           problems, app (the one built here), devices} (apple_device.report;
+#                                           hello's apple_offered says whether to ask; given identifiers are kept)
+#   apple_device_state {app, device}     -> running, installed {version, build}, others [{bundle_id, version}],
+#                                           mods_on_device, switched_off, switched_on (what installing would change)
+#   apple_build  {app: tv|iphone, team?, bundle_prefix?, icloud?}
+#                                        -> streams step/log, then app {path, version, build, mods, signed}
 #   apple_install {app, device}          -> streams log, then device; refuses while the game runs there
 #   quit         {}
 # Keys never leave this process: they are not logged, not echoed, not written to disk.
@@ -4213,23 +4226,33 @@ def gui_main(args):
     def apple_log(text):
         say(text)
 
+    def apple_ids(ad, req):
+        """the apps' identifiers: those REQ gives (kept for next time), else the saved ones"""
+        return ad.settings(ctx, bundle_prefix=req.get("bundle_prefix"), icloud=req.get("icloud"), team=req.get("team"))
+
     def do_apple_status(req):
-        """{team?, bundle_prefix?} -> apple_device.report(): Xcode, this Mac's game, the mods, signing and the
-        devices, for each app"""
-        apple_call(req, lambda ad: reply(req, **ad.report(sys.modules[__name__], ctx, team=req.get("team"),
-                                                           bundle_prefix=req.get("bundle_prefix") or "org.wwhdrecomp")))
+        """{team?, bundle_prefix?, icloud?} -> apple_device.report(): Xcode, this Mac's game, the mods, signing and
+        the devices, for each app, and the identifiers (settings)"""
+        def run(ad):
+            ids = apple_ids(ad, req)
+            reply(req, **ad.report(sys.modules[__name__], ctx, team=ids["team"] or None, bundle_prefix=ids["bundle_prefix"],
+                                   icloud=ids["icloud"] or None))
+        apple_call(req, run)
 
     def do_apple_device_state(req):
         """{app: tv|iphone, device, bundle_prefix?} -> apple_device.device_state(): running, installed, the mods an
         install would switch off or on there"""
         apple_call(req, lambda ad: reply(req, **ad.device_state(sys.modules[__name__], ctx, req.get("app"), req.get("device"),
-                                                                bundle_prefix=req.get("bundle_prefix") or "org.wwhdrecomp")))
+                                                                bundle_prefix=apple_ids(ad, req)["bundle_prefix"])))
 
     def do_apple_build(req):
-        """{app: tv|iphone, team?, bundle_prefix?} -> streams step/log, then {app: built_app()}"""
-        apple_call(req, lambda ad: reply(req, app=ad.build_app(
-            sys.modules[__name__], ctx, req.get("app"), team=req.get("team"),
-            bundle_prefix=req.get("bundle_prefix") or "org.wwhdrecomp", log=apple_log, step=step)))
+        """{app: tv|iphone, team?, bundle_prefix?, icloud?} -> streams step/log, then {app: built_app()}"""
+        def run(ad):
+            ids = apple_ids(ad, req)
+            reply(req, app=ad.build_app(sys.modules[__name__], ctx, req.get("app"), team=ids["team"] or None,
+                                        bundle_prefix=ids["bundle_prefix"], log=apple_log, step=step,
+                                        icloud=ids["icloud"] or None))
+        apple_call(req, run)
 
     def do_apple_install(req):
         """{app: tv|iphone, device} -> streams log, then {device}; refuses while the game runs there"""

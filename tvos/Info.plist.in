@@ -41,6 +41,7 @@
 		<key>UIApplicationSupportsMultipleScenes</key>
 		<false/>
 	</dict>
+	${WWHD_ICLOUD_PLIST}
 	<key>GCSupportsControllerUserInteraction</key>
 	<true/>
 	<key>GCSupportedGameControllers</key>
