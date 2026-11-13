@@ -9,7 +9,8 @@
 //               BetterJoy, SteamDeckGyroDSU, phone apps
 //   device      this phone/tablet’s own gyro and accelerometer (SDL3 host, screen rotation applied)
 //   mouse       mouse movement turns the GamePad while the game aims (bow, telescope, ...): for Steam
-//               Input's "gyro to mouse" and plain mice
+//               Input's "gyro to mouse" and plain mice without the mouse camera (with the mouse camera on,
+//               the mouse camera aims with the mouse itself: set_mouse_look)
 // The game decides itself when it uses the gyro (its own Options "Gyro" switch, aiming, the right stick
 // released); this module only reports how the virtual GamePad moves. The one exception is the mouse
 // source, which works with the game's Gyro switch off too (game_gyro_switch). WWHD turns its first-person camera by
@@ -108,14 +109,19 @@ void set_gyro_controllers(int n); // hosts: connected controllers that have a gy
 int gyro_controllers();
 // mouse movement in the game window (points, dy > 0 = down), captured or not
 void mouse_motion(float dx, float dy);
-// the mouse source is active and the game aims now: mouse movement belongs to the gyro (the mouse
-// camera mod leaves it alone) and the hosts capture the pointer while this holds
+// the mouse source is active and the game aims now (and the mouse camera does not look around itself,
+// set_mouse_look): mouse movement belongs to the gyro (the mouse camera leaves it alone) and the hosts
+// capture the pointer while this holds
 bool mouse_drives_gyro();
 // game_hooks.cpp: the game's Options > Gyro switch as its first-person camera reads it (on: the saved
 // switch). The mouse source is a PC choice of its own (issue #525): while it drives the aim the camera
 // reads the switch as on, so mouse aiming works whatever the game option says; the saved option is
 // never changed. Every other source keeps the game's switch as it is.
 bool game_gyro_switch(bool on);
+// mods/camera.cpp, once per logic step: the mouse camera is on and turns first person and every aim with the
+// mouse itself (issue #558). The mouse source then leaves the mouse alone (mouse_drives_gyro is false, the
+// hosts give the movement to the mouse camera); for Steam Input's gyro to mouse without the mouse camera.
+void set_mouse_look(bool on);
 // mods/camera.cpp: the game's aiming / first-person state, once per logic step
 void set_aiming(bool aiming);
 bool aiming();

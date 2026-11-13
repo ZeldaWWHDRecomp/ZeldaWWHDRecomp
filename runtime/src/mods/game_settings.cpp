@@ -802,11 +802,11 @@ void register_builtin() {
         add(std::move(it));
     }
     add(builtin_toggle("camera", "mouse-camera", "Mouse camera",
-                       "Click the game picture to look around with the mouse; Esc lets it go."));
+                       "Click the game picture to look around and aim with the mouse, first person included; Esc lets it go."));
     {
         Item it;
         it.id = "mouse-camera.sensitivity", it.tab = "camera", it.label = "Mouse sensitivity", it.kind = Kind::Number;
-        it.help = "How far the camera turns per mouse movement.";
+        it.help = "How far the camera turns per mouse movement, the same in first person and when aiming.";
         it.min = 0.08f, it.max = 0.30f, it.step = 0.02f;
         it.get = [] { return mods::mouse_sensitivity(); };
         it.set = [](float v) { set_mouse_sensitivity(v); };

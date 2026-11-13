@@ -30,6 +30,7 @@ std::mutex g_mu;
 Settings g_settings;
 std::atomic<bool> g_wants_device_sensors{false};
 bool g_aiming = false;
+bool g_mouse_look = false;  // the mouse camera turns first person itself (set_mouse_look)
 int g_gyro_controllers = 0;
 bool g_device_sensors_available = false;
 #ifdef __ANDROID__
@@ -374,18 +375,23 @@ int gyro_controllers() {
 
 void mouse_motion(float dx, float dy) {
     std::lock_guard lk(g_mu);
-    if (g_settings.source != kMouse || !g_aiming) return;
+    if (g_settings.source != kMouse || !g_aiming || g_mouse_look) return;
     g_mouse_dx += dx;
     g_mouse_dy += dy;
 }
 bool mouse_drives_gyro() {
     std::lock_guard lk(g_mu);
-    return g_settings.source == kMouse && g_aiming;
+    return g_settings.source == kMouse && g_aiming && !g_mouse_look;
 }
 bool game_gyro_switch(bool on) {
     if (on) return true;
     std::lock_guard lk(g_mu);
-    return g_settings.source == kMouse && g_aiming;
+    return g_settings.source == kMouse && g_aiming && !g_mouse_look;
+}
+void set_mouse_look(bool on) {
+    std::lock_guard lk(g_mu);
+    if (on && !g_mouse_look) g_mouse_dx = g_mouse_dy = 0;
+    g_mouse_look = on;
 }
 void set_aiming(bool a) {
     std::lock_guard lk(g_mu);

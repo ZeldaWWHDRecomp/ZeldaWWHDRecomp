@@ -10,7 +10,7 @@ The port has no GamePad, so it turns a **virtual GamePad** with one of these sou
 | Device gyro (phone/tablet) | the Android device’s own gyroscope and accelerometer; rotates with the displayed screen, works with touch or a controller |
 | Controller gyro | the gyro and accelerometer of a DualSense, DualShock 4, Switch Pro, Joy-Con, Steam Deck / Steam Controller and other controllers SDL3 reads (the macOS app uses GameController.framework: DualSense, DualShock 4, Switch Pro, Joy-Con) |
 | Cemuhook (DSU) | a Cemuhook motion server over UDP: DS4Windows, BetterJoy, SteamDeckGyroDSU, phone apps. Default 127.0.0.1, port 26760, slot 1 |
-| Mouse aiming | mouse movement turns the GamePad while the game aims, also with the game's Options → Gyro off; for a plain mouse and Steam Input's "gyro to mouse" output |
+| Mouse aiming | mouse movement turns the GamePad while the game aims, also with the game's Options → Gyro off; for Steam Input's "gyro to mouse" output and a mouse without the mouse camera. With **Mouse camera** on (Controls → Camera) this source waits: the mouse camera aims in first person directly (issue #558, docs/controller-input.md) |
 
 It works with both controller choices (Input → **Wii U GamePad** or **Wii U Pro Controller**, issue #71).
 In Pro Controller mode the game's own **Options → Gyroscope** switch stays in the options menu and can be
@@ -80,6 +80,44 @@ So what matters is how the direction matrix turns from one frame to the next, in
 frame. Measured in R3 look (`WWHD_TEST_GYRO`, Outset): a GamePad turn of 60° right turned the view
 113° right, a tilt of 20° up 29° up.
 
+## The mouse camera in first person (issue #558)
+
+Measured with the Mouse aiming source (`WWHD_TEST_MOUSE`, R3 look on Windfall, style SS01) the game's
+gyro input is lag-free and linear for slow movement, but not a PC shooter's mouse look:
+
+- the input is `30·sin` of the GamePad's turn per step: a flick of 20° of GamePad in one step turns the
+  view 2 % less than a slow turn, 50° 12 % less (the left/right range then clamps at 90° per step);
+  turning left/right and up/down in the same step couples (a 10°/10° step: 8 % more left/right);
+- left/right and up/down differ: the view turns `range × speed × 30` degrees per radian of GamePad, 108
+  left/right and 84 up/down in R3 look, the bow, hookshot, boomerang and grappling hook (styles SS01, SX01;
+  72 up/down in SX02, whose pitch range is 60°);
+- the drawn view eases towards the angles (camera parameter 20): of a step's turn 45 % of the up/down and
+  90 % of the left/right show in that step, the rest over the next five steps (stick and gyro alike). In the
+  Picto Box and the telescope (style SN15) Link turns with the drawn view (procScope), so its ease (0.75) also
+  scales left/right down to 0.75 there.
+
+So with the mouse camera on, the mouse does not go through the gyro: `@02506CEC` (CalcSubjectAngle's GamePad
+branch, the input already formed, before its swim inversion) adds the mouse's turn divided by the live
+style's `range × speed` (`mods/camera_mouse.h`, `subject_step`), so one point turns the view by the mouse
+sensitivity in every subject style; the game's clamps, pitch range, crawl rule and the telescope / Picto Box
+zoom slow-down still apply. The game keeps its angles in s16 units (65536 a turn) and truncates each step's
+turn (`cM_deg2s`), so the mouse's turn is landed on the nearest whole unit and the fraction carried to the
+next step (without it, slow movement lost up to one unit a step, 1 % at 2 points a step); a flick faster than
+the game's 90° a step carries the rest to the next steps. `@02508380` and `@025083C4` set the view's ease factor
+to 1 while the mouse looks around (the radius and field of view keep theirs), which also gives the Picto Box
+and the telescope their full left/right turn. At once, one more detail shows: when Link turns himself
+(`setBodyAngleToCamera`, R3 look and the item aims), the camera's yaw target is Link's new facing plus the
+turn again (0.45 × 2 = the 90 % above); `@025083C4` then aims the view at Link's facing, without that
+overshoot. The game takes the GamePad branch only with the right stick at rest; it also runs the function
+twice a step (Link, then the camera), so the movement is used once. Before, the mouse camera drove a synthetic
+right stick in first person: rate control, saturated at 12.5 points per step (3.6° per step at most).
+
+Measured after the change (mouse sensitivity 0.15° per point): 0.150° per point left/right and up/down in R3
+look, the bow, hookshot, boomerang, grappling hook, telescope and Picto Box; a 150-point flick turns 22.5° in
+the same step with no tail; 400 points 60°, 1000 points 90° and then 60° (the game's limit per step), a
+diagonal 200/200 30°/30°. With the mouse camera off (Mouse aiming source) and with a controller's right stick
+the camera angles are the same as before, step for step.
+
 ## Phone sensors
 
 On Android choose **Device gyro (phone/tablet)** in **Settings > Controls > Controller > Gyro**.
@@ -122,7 +160,9 @@ recalibrate on return. The status line reports unavailable sensors.
   Controller's right stick) and its per-frame calibration. With the source off nothing changes.
   With the Mouse aiming source, while the game aims, `02618604`'s first check (the Options → Gyro switch,
   `0271FC30` on options +5) reads as on (`@02618634`); the option itself, and so the save, stays as the
-  player set it. The other sources keep the game's switch.
+  player set it. The other sources keep the game's switch. With the mouse camera on, the mouse source
+  waits (`motion::set_mouse_look`): the mouse camera adds the mouse's degrees to `CalcSubjectAngle`'s
+  GamePad input itself (`mods/camera.cpp`, `@02506CEC`), see below.
 - Hosts: `platform/input_sdl.cpp` (SDL3 sensors, on only for the controller source; a watchdog turns a
   controller's sensors off and on again when they stay silent for 2 s while the game window has the
   focus), `gfx/input.mm` (GameController.framework, macOS 11+; sensors that the system switched off

@@ -189,7 +189,15 @@ short press, with a release between successive notches; fractional trackpad
 scrolls accumulate to a notch.
 
 In **Controls → Camera**, enable **Mouse camera** and click the TV picture to capture the pointer. Move the
-mouse to look around on foot or while sailing, at the same mouse sensitivity. With
+mouse to look around on foot or while sailing, at the same mouse sensitivity. In first person (R3 look) and
+whenever Link aims in first person (bow, hookshot, boomerang, grappling hook, telescope, Picto Box) the mouse
+turns the view directly, as in a PC shooter: one mouse movement turns it by a fixed angle, the mouse
+sensitivity's degrees per point, the same in every view and the same as on foot, with no acceleration and no
+easing; the view follows in the same logic step. Nothing needs setting up (no gyro source, no game
+**Options → Gyro**). The game's own limits stay: how far you can look up and down, and the telescope's and
+Picto Box's slower turning while zoomed in. Up/down follows **Invert camera up/down**, as on foot; the game's
+own aiming inversion option is for the right stick (as with the gyro, it does not apply to the mouse). A right
+stick pushed at the same time aims instead, as the game does with the gyro. With
 the boat cannon equipped, mouse movement aims the cannon instead; WASD or a
 controller's left stick takes priority while held. Mouse cannon aim also follows
 **Invert camera up/down**. Firing keeps its existing button binding. The
@@ -206,7 +214,8 @@ Turn that option off to use wheel bindings. When left click is bound, it replace
 the mouse camera's automatic “fire the aimed item” action. Middle click releases
 the pointer only when `Mouse3` is unbound; with it bound, use Escape to release.
 On macOS, unbound side buttons also retain their pointer-release behavior.
-The mouse gyro still receives movement independently of button bindings.
+The mouse gyro still receives movement independently of button bindings (with the mouse camera off; with it
+on, the mouse camera aims in first person itself and the **Mouse aiming** gyro source waits).
 
 A useful manual setup is left click = B, right click = R, and middle click =
 right-stick click (first person, with that mod enabled), with WASD and the remaining keyboard bindings.
