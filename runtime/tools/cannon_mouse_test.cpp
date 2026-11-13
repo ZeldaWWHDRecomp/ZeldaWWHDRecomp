@@ -33,6 +33,7 @@ float steer_swing_degrees(bool){return 0;}
 }
 namespace motion {
 void set_aiming(bool on){aiming=on;} bool mouse_drives_gyro(){return gyro_mouse&&aiming;}
+void mouse_motion(float,float){}  // the WWHD_TEST_MOUSE test aid (camera.cpp); not under test
 }
 namespace editor {
 bool take_mouse(float,float){return false;} bool take_wheel(float){return false;}

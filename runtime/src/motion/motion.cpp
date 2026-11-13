@@ -178,7 +178,7 @@ const char* source_id(int s) {
     return s >= 0 && s < kSourceCount ? ids[s] : "off";
 }
 const char* source_label(int s) {
-    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse (Steam Input gyro to mouse)", "Device gyro (phone/tablet)",
+    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse aiming (also Steam Input gyro to mouse)", "Device gyro (phone/tablet)",
                                    "Automatic (the controller's, this device's while you play by touch)"};
     return s >= 0 && s < kSourceCount ? labels[s] : "Off";
 }
@@ -379,6 +379,11 @@ void mouse_motion(float dx, float dy) {
     g_mouse_dy += dy;
 }
 bool mouse_drives_gyro() {
+    std::lock_guard lk(g_mu);
+    return g_settings.source == kMouse && g_aiming;
+}
+bool game_gyro_switch(bool on) {
+    if (on) return true;
     std::lock_guard lk(g_mu);
     return g_settings.source == kMouse && g_aiming;
 }

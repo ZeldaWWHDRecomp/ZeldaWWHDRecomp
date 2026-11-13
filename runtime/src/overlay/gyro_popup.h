@@ -28,9 +28,9 @@ inline bool dialog(bool open, motion::Settings& g, bool back) {
     // a slider's width: 220 when the line has room for it and its label
     auto slider_width = [](const char* label) { ImGui::SetNextItemWidth(flow::item_width(220, label, ImGui::GetFontSize() * 6)); };
     note("On the Wii U you aim in first person (bow, hookshot, boomerang, telescope, Picto Box, grappling hook) by "
-         "moving the GamePad. This works with the GamePad and the Pro Controller choice alike. The game's own "
-         "Options > Gyro switch still decides whether it uses the motion, and it ignores the motion while the right "
-         "stick is pushed.");
+         "moving the GamePad. This works with the GamePad and the Pro Controller choice alike. For a controller, "
+         "Cemuhook or this device the game's own Options > Gyro switch still decides whether it uses the motion; "
+         "the mouse works with it off too. The game ignores the motion while the right stick is pushed.");
     for (int i = 0; i < motion::kSourceCount; i++) {
 #ifndef __ANDROID__
         if (i == motion::kAuto && g.source != i) continue;  // Automatic picks this device for touch play (Android)
@@ -75,8 +75,9 @@ inline bool dialog(bool open, motion::Settings& g, bool back) {
         ImGui::SliderFloat("Mouse: degrees per point", &g.mouse_degrees, 0.01f, 1.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
         help("How far one point of mouse movement turns the GamePad (before the sensitivity above). With Steam "
              "Input's gyro to mouse, tune this and Steam's own sensitivity together.");
-        note("While the game aims, the pointer is captured and the mouse turns the GamePad (the mouse camera mod "
-             "leaves it alone then).");
+        note("While the game aims (first person, bow, hookshot, boomerang, grappling hook, telescope, Picto Box), "
+             "the pointer is captured and the mouse turns the view, whether the game's Options > Gyro is on or off "
+             "(the mouse camera leaves the mouse alone then).");
     }
     if (g.source == motion::kCemuhook) {
         static char host[256] = "";

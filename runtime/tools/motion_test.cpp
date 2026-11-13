@@ -381,6 +381,9 @@ static void test_settings_and_sources() {
     Settings s;
     assert(s.source == kOff);  // off by default
     assert(!drives_gamepad());
+    set_aiming(true);  // no source: the game's Options > Gyro switch as it is
+    assert(!motion::game_gyro_switch(false) && motion::game_gyro_switch(true));
+    set_aiming(false);
     s.source = kCemuhook;
     s.tuning.sensitivity_x = 1.5f;
     s.tuning.invert_y = true;
@@ -462,8 +465,11 @@ static void test_settings_and_sources() {
     g.frame(vpad(false));
     assert(close_to(g.yaw, 0, 1e-4f));  // not aiming: ignored
     assert(!mouse_drives_gyro());
+    assert(!motion::game_gyro_switch(false) && motion::game_gyro_switch(true));  // not aiming: the game's switch
     set_aiming(true);
     assert(mouse_drives_gyro());
+    // aiming with the mouse: the game's Options > Gyro reads as on also when it is off (issue #525)
+    assert(motion::game_gyro_switch(false) && motion::game_gyro_switch(true));
     mouse_motion(100, 0);  // 10 degrees right
     g.frame(vpad(false));
     fprintf(stderr, "  mouse 100 points right: game yaw %.3f\n", g.yaw);
@@ -503,6 +509,10 @@ static void test_settings_and_sources() {
     c.source = kController;
     set_settings(c);
     assert(wants_controller_sensors() && drives_gamepad());
+    // a controller's gyro keeps the game's Options > Gyro switch, also while aiming (issue #525)
+    set_aiming(true);
+    assert(!motion::game_gyro_switch(false) && motion::game_gyro_switch(true));
+    set_aiming(false);
     float right90[3] = {0, -kPi / 2, 0}, still[3] = {0, 0, 0}, acc[3] = {0, 9.80665f, 0};  // 90 deg/s right
     uint64_t t = 1000000000ull;
     g = {};
