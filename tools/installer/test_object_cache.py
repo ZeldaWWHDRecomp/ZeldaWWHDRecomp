@@ -133,6 +133,23 @@ class ObjectCache(unittest.TestCase):
         self.assertIn("error: broken", message)
         self.assertIn("exit code 1", message)
 
+    def test_host_errors_propagate_unchanged_and_are_not_retried(self):
+        import errno
+        a = self.gen("genA", {"code_000.c": "int a;"})
+        calls = []
+
+        def disk_full(cmd, **kwargs):
+            calls.append(cmd)
+            raise OSError(errno.ENOSPC, "authored disk-full fault")
+
+        with mock.patch.object(setup.subprocess, "run", side_effect=disk_full):
+            with self.assertRaises(OSError) as failure:
+                setup.compile_gamecode(self.tc, self.manifest, str(a), str(Path(self.tmp.name) / "o1"), 1)
+        self.assertEqual(failure.exception.errno, errno.ENOSPC)
+        sources = [c[c.index("-c") + 1] for c in calls]
+        self.assertEqual(len(sources), 3)  # code_000.c, table.c, imports.c: each tried once, none a second time
+        self.assertEqual(len(set(sources)), 3)
+
     def test_damaged_entry_and_trim(self):
         cache = object_cache.Cache(self.data / "c", "cc", ["-O3"], {})
         obj = Path(self.tmp.name) / "x.o"

@@ -1930,10 +1930,8 @@ def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress
         if key and cache.fetch(key, obj):
             return 0, ""
         cmd = tc.cc + flags + ["-c", fwd(src), "-o", fwd(obj)]
-        try:
-            p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-        except OSError as error:  # the compiler could not be started (blocked, removed)
-            return -1, "$ %s\n%s" % (" ".join(cmd), error)
+        # (host errors, OSError among them, propagate unchanged: only a compiler's own failure is retried)
+        p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
         out = p.stdout.decode("utf-8", "replace")
         if p.returncode == 0 and key:
             cache.store(key, obj)
