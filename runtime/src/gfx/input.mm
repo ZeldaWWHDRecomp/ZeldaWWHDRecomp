@@ -873,8 +873,8 @@ static void update_motion_sensors() API_AVAILABLE(macos(11.0)) {
             [active addObject:c];
             if (m.sensorsRequireManualActivation) m.sensorsActive = YES;
             const uint64_t id = (uint64_t)(uintptr_t)(__bridge void*)c;
+            // samples go on while Settings is open (as SDL's do): its gyro status and calibration need them
             m.valueChangedHandler = ^(GCMotion* mm) {
-                if (overlay::blocks_input()) return;
                 GCRotationRate r = mm.rotationRate;
                 GCAcceleration a = mm.hasGravityAndUserAcceleration
                                        ? GCAcceleration{mm.gravity.x + mm.userAcceleration.x, mm.gravity.y + mm.userAcceleration.y,

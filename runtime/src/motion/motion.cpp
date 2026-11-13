@@ -32,6 +32,7 @@ std::atomic<bool> g_wants_device_sensors{false};
 bool g_aiming = false;
 bool g_mouse_look = false;  // the mouse camera turns first person itself (set_mouse_look)
 int g_gyro_controllers = 0;
+bool g_remote_motion = false;  // the iPhone GamePad sends motion (kAuto uses it then)
 bool g_device_sensors_available = false;
 #ifdef __ANDROID__
 bool g_device_sensors_checked = false;
@@ -180,7 +181,7 @@ const char* source_id(int s) {
 }
 const char* source_label(int s) {
     static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse aiming (also Steam Input gyro to mouse)", "Device gyro (phone/tablet)",
-                                   "Automatic (the controller's, this device's while you play by touch)"};
+                                   "Automatic (the iPhone GamePad's while it is connected, this device's while you play by touch, else the controller's)"};
     return s >= 0 && s < kSourceCount ? labels[s] : "Off";
 }
 int source_from_id(const std::string& id) {
@@ -239,7 +240,7 @@ float default_sensitivity(int source) { return source == kDevice ? 1.0f : Tuning
 Settings from_saved(const std::vector<std::pair<std::string, std::string>>& saved) {
     Settings s;
 #ifdef WWHD_TVOS
-    s.source = kDevice;  // an Apple TV has no sensors of its own: the iPhone GamePad's, until changed
+    s.source = kAuto;  // an Apple TV has no sensors of its own: the iPhone GamePad's while connected, else the controller's
 #endif
     bool format = false, axis = false, x = false, y = false;
     for (const auto& [k, v] : saved) {
@@ -301,7 +302,7 @@ void controller_sample(uint64_t device, uint64_t t_ns, const float gyro[3], cons
     from_sdl(gyro, accel, g, a);
     if (!t_ns) t_ns = (uint64_t)Clock::now().time_since_epoch().count();
     std::lock_guard lk(g_mu);
-    if (g_settings.source == kController || (g_settings.source == kAuto && !touch_play())) feed(device, t_ns, g, a);
+    if (g_settings.source == kController || (g_settings.source == kAuto && !touch_play() && !g_remote_motion)) feed(device, t_ns, g, a);
 }
 void device_sample(uint64_t t_ns, const float gyro[3], const float accel[3]) {
     Vec3 g, a;
@@ -316,12 +317,21 @@ void remote_sample(uint64_t t_ns, const float gyro[3], const float accel[3], int
     Vec3 g, a;
     from_sdl(g3, a3, g, a);
     std::lock_guard lk(g_mu);
+    if (!g_remote_motion) {
+        g_remote_motion = true;
+        if (g_settings.source == kAuto) {
+            g_active = kNone;
+            g_pending = {};
+            log_msg("[gyro] automatic: the iPhone GamePad");
+        }
+    }
     if (g_settings.source == kDevice || g_settings.source == kAuto) feed(kRemoteDevice, t_ns, g, a);
 }
 void remote_reset() {
     std::lock_guard lk(g_mu);
     g_devices.erase(kRemoteDevice);
     if (g_active == kRemoteDevice) { g_active = kNone; g_pending = {}; }
+    g_remote_motion = false;  // (a rotation too: its next sample sets it again)
 }
 namespace {
 std::atomic<bool> g_touch_play{false};
@@ -338,8 +348,9 @@ void set_touch_play(bool touch) {
 }
 bool touch_play() { return g_touch_play.load(std::memory_order_relaxed); }
 int effective_source() {
-    const int s = settings().source;
-    return s == kAuto ? (touch_play() ? kDevice : kController) : s;
+    std::lock_guard lk(g_mu);
+    const int s = g_settings.source;
+    return s == kAuto ? (touch_play() || g_remote_motion ? kDevice : kController) : s;
 }
 void device_reset() {
     std::lock_guard lk(g_mu);
@@ -512,7 +523,7 @@ std::string status() {
         return (g_dsu ? "Cemuhook: " + g_dsu->status() + "." : "Cemuhook: off.") + stick;
     }
     std::lock_guard lk(g_mu);
-    const int source = g_settings.source == kAuto ? (touch_play() ? kDevice : kController) : g_settings.source;
+    const int source = g_settings.source == kAuto ? (touch_play() || g_remote_motion ? kDevice : kController) : g_settings.source;
     switch (source) {
     case kDevice:
     case kController: {
