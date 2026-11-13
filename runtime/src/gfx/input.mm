@@ -21,6 +21,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #import <QuartzCore/QuartzCore.h>  // CACurrentMediaTime
 #include <Carbon/Carbon.h>  // kVK_* key codes
 
+#include <chrono>
 #include <cmath>
 #include <atomic>
 #include <cstdlib>
@@ -42,6 +43,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../overlay/release_gate.h"
 #include "../fixed_seed.h"
 #include "../dsweep.h"
+#include "display_modes.h"
 
 #include <memory>
 #include <set>
@@ -89,6 +91,9 @@ static void apply_background_controllers() {  // main thread
     applied = on;
 }
 static PadState g_pad;  // controller part, refreshed on the main thread
+// the first finger on a controller's touchpad (display_touchpad), refreshed with g_pad
+struct TouchpadFinger { bool down = false, click = false; float x = 0, y = 0; };
+static TouchpadFinger g_touchpad;
 static bool g_touch;
 static float g_tx, g_ty;
 
@@ -160,6 +165,45 @@ static bool device_values(GCController* c, float* v) {
         stick(g.rightThumbstick, kPadRSUp, kPadRSDown, kPadRSLeft, kPadRSRight);
     }
     return true;
+}
+
+// The first finger on a DualShock 4's or DualSense's touchpad (0..1 from the pad's top left), and the pad's click.
+// GameController gives no touch state for the finger (no touchpads in the input profile; the pad button's "touched"
+// is only its click). A lifting finger usually sets the values to 0, 0, but not always: sometimes they keep its last
+// position. A finger on the pad is never perfectly still (its values change every 40-170 ms even when held), so it
+// is down from a change of the values until they are 0, 0 or have stayed the same for kTouchpadStillSeconds. Only
+// the highlight depends on this: touches are clicks. WWHD_LOG_TOUCHPAD=1 logs fingers and clicks.
+constexpr double kTouchpadStillSeconds = 0.5;
+static TouchpadFinger touchpad_finger(const std::vector<GCController*>& pads) {
+    if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
+        static const bool log = getenv("WWHD_LOG_TOUCHPAD") != nullptr;
+        static float lx = 0, ly = 0;
+        static double changed = -1;
+        static TouchpadFinger was;
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        for (GCController* c : pads) {
+            if (!c) continue;
+            GCExtendedGamepad* g = c.extendedGamepad;
+            GCControllerDirectionPad* t = nil;
+            if ([g isKindOfClass:[GCDualSenseGamepad class]]) t = ((GCDualSenseGamepad*)g).touchpadPrimary;
+            else if ([g isKindOfClass:[GCDualShockGamepad class]]) t = ((GCDualShockGamepad*)g).touchpadPrimary;
+            if (!t) continue;
+            const float x = t.xAxis.value, y = t.yAxis.value;
+            static __weak GCController* seen = nil;  // a controller's first values are where it starts, not a finger
+            if (c != seen) seen = c, lx = x, ly = y, changed = -1;
+            if (x != lx || y != ly) lx = x, ly = y, changed = now;
+            GCControllerButtonInput* button = c.physicalInputProfile.buttons[GCInputDualShockTouchpadButton];
+            TouchpadFinger f;
+            f.click = button && button.pressed;
+            f.down = f.click || (changed >= 0 && now - changed < kTouchpadStillSeconds && (x != 0 || y != 0));
+            f.x = (x + 1) / 2, f.y = (1 - y) / 2;
+            if (log && (f.down != was.down || f.click != was.click))
+                LOG("[input] touchpad: finger %s%s at %.3f %.3f", f.down ? "down" : "up", f.click ? ", clicked" : "", x, y);
+            was = f;
+            return f;
+        }
+    }
+    return {};
 }
 
 static std::string pad_name(GCController* c);
@@ -1020,9 +1064,11 @@ void init() {
             for (int k = 0; k < 4; k++) info.labels[k] = uint8_t(labels[k]);
             infos.push_back(std::move(info));
         }
+        const TouchpadFinger finger = overlay::captures() ? TouchpadFinger{} : touchpad_finger(pads);
         {
             std::lock_guard<std::mutex> lk(g_mu);
             g_pad = s;
+            g_touchpad = finger;
             std::copy(v, v + input_map::kPadCount, g_host_values);
             g_infos = std::move(infos);
         }
@@ -1320,6 +1366,8 @@ PadState read() {
         s.tx = r.input.tx;
         s.ty = r.input.ty;
     }
+    if (!no_host) gfx::display_touchpad(s, g_touchpad.down && !overlay::blocks_input(), g_touchpad.click && !overlay::blocks_input(),
+                                        g_touchpad.x, g_touchpad.y);
     if (g_test_touch) s.touch = true, s.tx = g_test_tx, s.ty = g_test_ty;
     // debug: WWHD_LOG_BUTTONS=1 logs every change of the merged button bits
     static const bool log_buttons = getenv("WWHD_LOG_BUTTONS") != nullptr;

@@ -1,5 +1,7 @@
 #include "gfx/display_modes.h"
 #include "gfx/auto_pip.h"
+#include "blind_touch.h"
+#include "input.h"
 #include <cassert>
 #include <cstdlib>
 
@@ -128,6 +130,49 @@ int main() {
         assert(g_mode == kDrcPip && display_saved_mode() == kDrcPip);
         display_set_mode(kDrcAuto); display_plus_pressed(); display_gamepad_ui(menu);
         assert(g_mode == kDrcAuto && frame().pip_on && !frame().drc_only);
+    }
+    // a controller's touchpad: a finger or a click brings the picture up; then a finger is highlighted, a click touches
+    {
+        using input::kTouchpadShowSeconds;
+        input::BlindTouch b;
+        auto r = b.step(true, false, false, 10);
+        assert(!r.touch && !r.highlight && b.shown_until == 10 + kTouchpadShowSeconds);
+        r = b.step(true, false, false, 10.1);
+        assert(!r.touch && r.highlight && b.shown_until == 10.1 + kTouchpadShowSeconds);  // shown: highlighted
+        r = b.step(true, true, false, 10.2);
+        assert(r.touch && r.highlight);              // a click touches, held: a drag
+        assert(b.step(true, true, false, 10.5).touch);
+        assert(!b.step(true, false, false, 10.6).touch);  // let go: the touch ends, the finger stays highlighted
+        b.step(false, false, false, 10.7);
+        r = b.step(true, true, false, 10.7 + kTouchpadShowSeconds);  // gone: a click only brings it up again
+        assert(!r.touch && !r.highlight);
+        assert(!b.step(true, true, false, 11 + kTouchpadShowSeconds).touch);  // that click stays no touch until it lets go
+        b.step(true, false, false, 12 + kTouchpadShowSeconds);
+        assert(b.step(true, true, false, 13 + kTouchpadShowSeconds).touch);
+        input::BlindTouch v;
+        r = v.step(false, true, true, 0);
+        assert(r.touch && r.highlight && v.shown_until == 0);  // a picture already up: touches, adds nothing
+        assert(v.step(true, true, false, 1).touch);  // a touch lasts while clicked, even if the picture goes
+    }
+    {
+        display_set_mode(kDrcOff);
+        assert(!frame().pip_on);
+        input::PadState s;
+        float hx, hy;
+        bool ht;
+        display_touchpad(s, true, false, 0.25f, 0.75f);
+        assert(!s.touch && frame().pip_on && !touchpad_highlight(&hx, &hy, &ht));  // brought up
+        display_touchpad(s, true, false, 0.25f, 0.75f);
+        assert(!s.touch && touchpad_highlight(&hx, &hy, &ht) && !ht && hx > 0.249f && hx < 0.251f);
+        display_touchpad(s, true, true, 1.5f, 0.75f);
+        assert(s.touch && s.tx == 1.0f && s.ty == 0.75f && touchpad_highlight(&hx, &hy, &ht) && ht);
+        input::PadState mouse;
+        mouse.touch = true, mouse.tx = 0.1f, mouse.ty = 0.2f;
+        display_touchpad(mouse, true, true, 0.5f, 0.5f);
+        assert(mouse.tx == 0.1f && mouse.ty == 0.2f);  // a touch already there stays
+        display_touchpad(s, false, false, 0, 0);
+        assert(!touchpad_highlight(&hx, &hy, &ht) && frame().pip_on);
+        display_set_mode(kDrcAuto);
     }
     // the Game Over save window (routing 4) is not a GamePad menu; from the pause menu (routing 2) it is
     assert(gameover_save_window(GD(0x1049ED34), 4) && gameover_save_window(GD(0x1049ED08), 4));
