@@ -46,6 +46,8 @@
 #if defined(WWHD_DECOMP_FAST_MUTEX) || defined(WWHD_MSGQ_FAST)
 #include "addr_cache.h"
 #endif
+#include "guest_addr.h"
+#include "thread_chain.h"
 
 static void wake_timed_events();
 
@@ -1962,19 +1964,36 @@ struct ThreadRec {
     Cpu cpu;
 };
 
+// Equivalent continuations (thread_chain.h): pairs of return addresses after two calls of the same
+// callee in one function whose following code is the same up to dead scratch registers.
+// - sead::Thread::run (0275FFCC): every sead worker thread (JpegEncodeMgrThread, ...) waits for its
+//   next message in MessageQueue::pop (02760374), called once before the message loop (returns to
+//   0275FFEC: lwz r10,0x78(r31); cmplw r3,r10; bne 0275FFFC; b 0276002C) and once at its end (returns to
+//   02760020: lwz r0,0x78(r31); cmplw r3,r0; bne 0275FFFC; fall through to 0276002C). Both compare the
+//   message with mQuitMessage and branch to the same two places, which write r0 before reading it and
+//   never read r10. A thread waits in the first pop until its first message (for JpegEncodeMgrThread:
+//   until a picto is taken or the pictograph list decodes one) and in the loop pop ever after, so
+//   without this pair a full state saved before the first message could not be loaded after it, or
+//   the other way round, although both resume the same way.
+bool equivalent_return(uint32_t a, uint32_t b) {
+    static const std::array<std::array<uint32_t, 2>, 1> pairs = [] {
+        std::array<std::array<uint32_t, 2>, 1> v{};
+        // only when the whole function keeps its layout in this build
+        const uint32_t lo = GC_OPTIONAL(0x0275FFCC), hi = GC_OPTIONAL(0x0276003C);
+        if (lo && hi && hi - lo == 0x70) v[0] = {GC(0x0275FFEC), GC(0x02760020)};
+        return v;
+    }();
+    for (auto& p : pairs)
+        if (p[0] && p[1] && ((a == p[0] && b == p[1]) || (a == p[1] && b == p[0]))) return true;
+    return false;
+}
+
 // guest call chain of a parked thread: stack pointer, return address and the back chain of saved
-// return addresses must be identical, so its host call stack is the same as the saved one
-bool same_chain(const Cpu& cur, const Cpu& saved) {
-    if (cur.r[1] != saved.r[1] || cur.lr != saved.lr) return false;
-    uint32_t a = cur.r[1];
-    for (int i = 0; i < 512; i++) {
-        uint32_t na = ld32(a), nb = ss::snap_ld32(a);
-        if (na != nb) return false;
-        if (!na || na <= a || na - a > 0x100000) break;
-        if (ld32(na + 4) != ss::snap_ld32(na + 4)) return false;
-        a = na;
-    }
-    return true;
+// return addresses must be identical (or equivalent continuations), so its host call stack is the same
+// as the saved one
+thread_chain::Diff same_chain(const Cpu& cur, const Cpu& saved) {
+    return thread_chain::compare(cur.r[1], cur.lr, saved.r[1], saved.lr, [](uint32_t a) { return ld32(a); },
+                                 [](uint32_t a) { return ss::snap_ld32(a); }, equivalent_return);
 }
 
 uint32_t owner_guest(const void* o, bool& ok) {
@@ -2160,10 +2179,8 @@ bool threads_ss_check(ss::Reader r, std::string& why) {
             why = buf;
             return false;
         }
-        if (!same_chain(t->cpu, s.cpu)) {
-            snprintf(buf, sizeof buf, "thread %s is at a different place (lr %08X sp %08X, saved lr %08X sp %08X)",
-                     threads::thread_name(t).c_str(), t->cpu.lr, t->cpu.r[1], s.cpu.lr, s.cpu.r[1]);
-            why = buf;
+        if (const auto d = same_chain(t->cpu, s.cpu); !d.same()) {
+            why = thread_chain::describe(threads::thread_name(t), d);
             return false;
         }
     }
