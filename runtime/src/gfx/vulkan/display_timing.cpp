@@ -3,6 +3,7 @@
 #ifdef WWHD_NATIVE_DRAW
 #include "display_pacing_policy.h"
 #include "frame_breakdown.h"
+#include "smooth_defaults.h"
 #include "stutter_trace.h"
 #include "runtime.h"
 #include <array>
@@ -30,29 +31,29 @@ uint64_t shown = 0, missedAsk = 0, errors = 0;
 int mode() {  // WWHD_VK_DISPLAY_PACING: bit 1 pacing, 2 one more swapchain image, 4 adaptive latency target
     static const int value = [] {
         const char* e = std::getenv("WWHD_VK_DISPLAY_PACING");
-        const int bits = e && *e ? std::atoi(e) : 0;
+        const int bits = e && *e ? std::atoi(e) : smooth_defaults::display_pacing();  // (smooth_defaults.h)
         return (bits & 1) ? bits & 7 : 0;
     }();
     return value;
 }
 bool pacing() {
     static const bool on = [] {
-#ifdef __ANDROID__
+#ifdef __linux__  // (Android and Linux: VK_GOOGLE_display_timing where the driver has it)
         const bool value = mode() & 1;
 #else
         const bool value = false;
 #endif
         policy.adapt = mode() & 4;
         if (const char* q = std::getenv("WWHD_VK_DISPLAY_PACING_Q"); q && *q) policy.quantile = std::clamp(std::atof(q), 0.0, 1.0);
-        if (value) LOG("[vulkan display pacing] on (WWHD_VK_DISPLAY_PACING): TV frames ask for an on-screen time on the "
+        if (value) LOG("[vulkan display pacing] on (%s): TV frames ask for an on-screen time on the "
                        "refresh grid one frame interval apart (latency quantile %.2f; one more swapchain image %s, adaptive latency %s)",
-                       policy.quantile, (mode() & 2) ? "on" : "off", (mode() & 4) ? "on" : "off");
+                       std::getenv("WWHD_VK_DISPLAY_PACING") ? "WWHD_VK_DISPLAY_PACING" : "Smooth frame pacing", policy.quantile, (mode() & 2) ? "on" : "off", (mode() & 4) ? "on" : "off");
         return value;
     }();
     return on;
 }
 bool wanted() {
-#ifdef __ANDROID__
+#ifdef __linux__
     return pacing() || frame_breakdown::enabled();
 #else
     return false;

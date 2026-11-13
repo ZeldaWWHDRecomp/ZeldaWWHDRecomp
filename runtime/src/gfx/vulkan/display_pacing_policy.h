@@ -17,7 +17,7 @@
 
 namespace gfxvk::display_pacing {
 struct Policy {
-    double quantile = 0.7;   // of the unpaced call-to-screen latency: the first latency target
+    double quantile = 0.5;   // of the unpaced call-to-screen latency: the first latency target
     bool adapt = false;      // (WWHD_VK_DISPLAY_PACING bit 4) lower the target after a window without misses
     int64_t period = 0;      // refresh duration, ns (0: unknown, no pacing)
     int64_t grid = 0;        // a time on the refresh grid (an actual present time), ns

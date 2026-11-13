@@ -819,6 +819,8 @@ function(wwhd_decomp_link target)
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/frame_breakdown.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/display_timing.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/present_ack.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/smooth_defaults.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/overlay/overlay.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/interp.cpp"
                  APPEND PROPERTY COMPILE_DEFINITIONS WWHD_NATIVE_DRAW=1)
     # MT recording stage 1 hooks (record_mt.h) in two files the unit tests also compile: for the game target only

@@ -6,6 +6,7 @@
 #include "record_worker.h"
 #include "pod_commands.h"
 #include "pool_reset.h"
+#include "smooth_defaults.h"
 #include "backend.h"
 #include "runtime.h"
 #include <cstdlib>
@@ -38,6 +39,7 @@ unsigned bits() {
   static const unsigned value = [] {
     unsigned v = 0;
     if (const char* e = std::getenv("WWHD_VK_RECORD_MT")) v = !std::strcmp(e, "all") ? 127u : unsigned(std::atoi(e)) & 127u;
+    else v = smooth_defaults::record_mt();  // (smooth_defaults.h: phones and the Steam Deck)
     if (const char* e = std::getenv("WWHD_VK_RECORD_DESCRIPTORS"); e && *e == '1') v |= kTokens;
     if (const char* e = std::getenv("WWHD_VK_RECORD_PIPELINE_FUTURES"); e && *e == '1') v |= kFutures;
     LOG("[vulkan record mt] WWHD_VK_RECORD_MT=%u: emitter pool reset %u, publish at pass cuts %u, recycled buffers %u, "

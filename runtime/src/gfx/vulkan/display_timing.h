@@ -5,7 +5,7 @@
 //   one frame interval after the previous frame's (display_pacing_policy.h); with 1: 2 one more swapchain image,
 //   4 adaptive latency target (half a refresh lower after 120 frames without a missed slot, half higher on a miss;
 //   without 4 only higher). WWHD_VK_DISPLAY_PACING_Q=0..1: the quantile of the unpaced latency it starts from
-//   (default 0.7).
+//   (default 0.5).
 // Without the extension (or off) nothing changes: the present chain is left as it is.
 #pragma once
 #ifdef WWHD_NATIVE_DRAW

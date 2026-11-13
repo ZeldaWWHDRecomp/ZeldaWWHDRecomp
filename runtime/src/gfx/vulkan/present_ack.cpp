@@ -2,6 +2,7 @@
 #include "present_ack.h"
 #ifdef WWHD_NATIVE_DRAW
 #include "runtime.h"
+#include "smooth_defaults.h"
 #include <cstdlib>
 #include <cstring>
 
@@ -15,9 +16,9 @@ uint64_t deferrals = 0, settles = 0;
 bool enabled() {
     static const bool on = [] {
         const char* e = std::getenv("WWHD_VK_LATE_PRESENT_ACK");
-        const bool value = e && !std::strcmp(e, "1");
-        if (value) LOG("[vulkan late present ack] on (WWHD_VK_LATE_PRESENT_ACK): the render thread waits for the record "
-                       "worker's TV present submission only right before that frame's present");
+        const bool value = e ? !std::strcmp(e, "1") : smooth_defaults::late_present_ack();  // (smooth_defaults.h)
+        if (value) LOG("[vulkan late present ack] on (%s): the render thread waits for the record "
+                       "worker's TV present submission only right before that frame's present", e ? "WWHD_VK_LATE_PRESENT_ACK" : "default");
         return value;
     }();
     return on;

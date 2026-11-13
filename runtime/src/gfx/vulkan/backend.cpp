@@ -128,6 +128,7 @@ extern "C" int __llvm_profile_write_file(void);
 #include "frame_breakdown.h"
 #include "display_timing.h"
 #include "present_ack.h"
+#include "smooth_defaults.h"
 #endif
 #ifdef __APPLE__
 #include <dlfcn.h>
@@ -4906,6 +4907,9 @@ static void init_device(std::vector<const char *> extensions,
 #ifdef __ANDROID__
     defaultWorker=defaultWorker||quest_theater::device();
 #endif
+#ifdef WWHD_NATIVE_DRAW
+    defaultWorker=defaultWorker||smooth_defaults::record_worker();  // (smooth_defaults.h)
+#endif
     set_record_worker_saved_choice(::hostui::get("vkRecordWorker", value) ? value == "1" : defaultWorker);
   }
   nativeWorkerPresentation = false;
@@ -5273,7 +5277,12 @@ static void init_device(std::vector<const char *> extensions,
   {
     // WWHD_VK_SUBMISSION_POOL (submission_pool.h): slots created now; overflow adds more up to 16 only
     // while a captured tail holds the next slot
-    const auto pool=subpool::choose(std::getenv("WWHD_VK_SUBMISSION_POOL"),std::getenv("WWHD_VK_SUBMISSION_POOL8"));
+    auto pool=subpool::choose(std::getenv("WWHD_VK_SUBMISSION_POOL"),std::getenv("WWHD_VK_SUBMISSION_POOL8"));
+#ifdef WWHD_NATIVE_DRAW
+    if (!std::strcmp(pool.source, "default") && smooth_defaults::submission_slots()) {  // (smooth_defaults.h)
+      pool.slots = smooth_defaults::submission_slots(); pool.source = "phone / Steam Deck default";
+    }
+#endif
     R.submissions.resize(pool.slots);
     submissionPoolSlots=pool.slots;
     LOG("[vulkan] submission pool %u slots (%s%s); overflow up to %u",pool.slots,pool.source,

@@ -65,6 +65,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "mods/link_masks.h"
 #ifdef WWHD_NATIVE_DRAW
 #include "gfx/vulkan/frame_breakdown.h"
+#include "gfx/vulkan/smooth_defaults.h"
 #endif
 
 
@@ -1619,7 +1620,11 @@ constexpr bool kEvenPacingDefault = true;
 constexpr bool kEvenPacingDefault = false;
 #endif
 static const char* const g_env_even = getenv("WWHD_INTERP_EVEN_PACING");
+#ifdef WWHD_NATIVE_DRAW
+static const bool g_even_pacing = g_env_even ? atoi(g_env_even) != 0 : kEvenPacingDefault || gfxvk::smooth_defaults::even_pacing();  // (gfx/vulkan/smooth_defaults.h)
+#else
 static const bool g_even_pacing = g_env_even ? atoi(g_env_even) != 0 : kEvenPacingDefault;
+#endif
 bool even_pacing() { return g_even_pacing; }
 int64_t frame_interval_ns() {
     static bool logged = false;

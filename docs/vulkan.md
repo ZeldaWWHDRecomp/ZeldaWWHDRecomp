@@ -872,7 +872,7 @@ positive draw count to tune it. Empty or invalid values disable batching.
 `WWHD_VK_DRAW_BATCH_CAP=1|2|3` sets the maximum mid-frame submissions (default three).
 See `docs/performance.md` for the local Windows comparison.
 
-## Recording graphics on a second thread (optional, off by default on every platform)
+## Recording graphics on a second thread (on by default on phones and the Steam Deck in the decomp build)
 
 Settings → Graphics → Advanced → "Record graphics on a second thread" moves the recording and
 submission of the Vulkan commands from the render thread to a second thread. The render thread
@@ -885,6 +885,10 @@ Vulkan calls and submits them. The pictures are the same either way.
   two threads can make frame times less even.
 - It uses a little more CPU time and battery.
 
+In the decomp build (fast mode) it is on by default on Android and the Steam Deck, whose render thread
+limits the frame rate, and the commands are then also prepared in parallel (`WWHD_VK_RECORD_MT`,
+see below); everywhere else it stays off by default.
+
 The choice is saved with the other graphics settings and applies the next time the game starts.
 `WWHD_VK_RECORD_WORKER=1` turns it on and any other value turns it off for one start; the
 environment variable takes precedence over the saved setting. The log says which path runs
@@ -895,6 +899,40 @@ completes, exactly as without the second thread. Screenshots and other readbacks
 save states and shutdown first wait for the second thread to finish the commands they depend on.
 A command whose arguments do not fit the stream is recorded directly by the render thread after
 the second thread has caught up, so the order of the commands never changes.
+
+## Phones and the Steam Deck: decomp build defaults and Smooth frame pacing
+
+In the decomp build (fast mode) on Android and the Steam Deck the renderer starts with:
+
+- graphics recorded on a second thread with multi-threaded preparation: `WWHD_VK_RECORD_MT=127`
+  (command-pool resets on the second thread, hand-over at pass ends, recycled buffers, the second
+  thread presents, descriptor tokens, pipeline futures, no mid-frame draw-batch submissions while it
+  records);
+- 8 submission slots (`WWHD_VK_SUBMISSION_POOL=8`): with the second thread recording, a slot the GPU had
+  not finished came round once every 64 frames and cost a refresh;
+- the late present acknowledgment (`WWHD_VK_LATE_PRESENT_ACK=1`): the render thread waits for the second
+  thread's TV submission only right before that frame's present instead of right after it;
+- on the Steam Deck also even frame pacing, as on Android (`WWHD_INTERP_EVEN_PACING`);
+- Settings → Graphics → Advanced → "Smooth frame pacing" (on by default; applies after a restart):
+  display pacing (`WWHD_VK_DISPLAY_PACING=3`). Each TV frame asks the screen for its refresh
+  (`VK_GOOGLE_display_timing`), one frame interval after the previous frame's, at least the present
+  call plus the measured present-to-screen time (`WWHD_VK_DISPLAY_PACING_Q`, default 0.5, of frames that
+  asked for nothing); a frame that misses its refresh raises that time by half a refresh. The TV
+  swapchain gets one more image so that a frame waiting for its refresh does not hold the image the
+  next frame needs. Where the driver has no `VK_GOOGLE_display_timing` nothing changes (the log says
+  `VK_GOOGLE_display_timing unavailable (display pacing off)`). Bit 4 of `WWHD_VK_DISPLAY_PACING`
+  (adaptive target, lower after 120 frames without a miss) is off: it made the frames less even.
+
+Every environment variable still wins over these defaults. On a Xiaomi 14 at the cliff (against the
+single-thread renderer): render thread 17.3 → 12.7 ms per frame, 53.5 → 59.8 frames
+a second on screen; frame intervals that are not two refreshes of the 120 Hz screen 25 % → 1.2–1.5 %;
+dropped in-between frames 374–415 → 5–22 per 90 s. Frames reach the screen about 9 ms later
+(present call to screen 16 → 24–25 ms) with Smooth frame pacing; turn it off for the lowest latency.
+
+`WWHD_VK_FRAME_BREAKDOWN=1` (with `WWHD_VK_STUTTER_TRACE`) adds per-frame rows to the stutter trace:
+the render thread's idle, swap, acquire, present and wait times, each even-pacing present, every game
+flip, the game thread's waits and dropped in-between frames, and on Android the on-screen time of each
+frame. `[vulkan display timing]` (with `WWHD_VK_STATS`) counts the on-screen intervals in refreshes.
 
 ## macOS defaults and tuning
 
