@@ -463,6 +463,30 @@ bool gamecube_named(const char* vendor_name, const char* product_category) {
     return lower(vendor_name, product_category).find("gamecube") != std::string::npos;
 }
 
+int apple_button_input(const char* element_name) {
+    if (!element_name) return kPadNone;
+    static constexpr std::pair<const char*, int> names[] = {
+        {"Button A", kPadA}, {"Button B", kPadB}, {"Button X", kPadX}, {"Button Y", kPadY},
+        {"Left Shoulder", kPadLB}, {"Right Shoulder", kPadRB}, {"Left Bumper", kPadLB}, {"Right Bumper", kPadRB},
+        {"Left Trigger", kPadLT}, {"Right Trigger", kPadRT}, {"Trigger", kPadRT},
+        {"Button Menu", kPadMenu}, {"Button Options", kPadOptions}, {"Button Home", kPadHome},
+        {"Button Share", kPadCapture}, {"Left Thumbstick Button", kPadL3}, {"Right Thumbstick Button", kPadR3},
+        {"Thumbstick Button", kPadL3},
+    };
+    for (const auto& [n, pad] : names)
+        if (!std::strcmp(element_name, n)) return pad;
+    return kPadNone;
+}
+
+AppleDpad apple_dpad_kind(const char* element_name) {
+    if (!element_name) return AppleDpad::kNone;
+    if (!std::strcmp(element_name, "Direction Pad")) return AppleDpad::kDpad;
+    if (!std::strcmp(element_name, "Left Thumbstick") || !std::strcmp(element_name, "Thumbstick"))
+        return AppleDpad::kLeftStick;
+    if (!std::strcmp(element_name, "Right Thumbstick")) return AppleDpad::kRightStick;
+    return AppleDpad::kNone;
+}
+
 void named_face_labels(const char* vendor_name, const char* product_category, const char* const faces[4],
                        FaceLabel labels[4]) {
     bool any = false;

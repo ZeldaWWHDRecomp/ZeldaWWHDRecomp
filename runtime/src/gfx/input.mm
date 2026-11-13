@@ -125,13 +125,72 @@ static bool gamecube_controller(GCController* c) {
     return input_map::gamecube_named(c.vendorName.UTF8String, c.productCategory.UTF8String);
 }
 
+// A pad macOS lists without the extended gamepad profile (issue #556: a GameCube adapter showed in the
+// Controls window, which lists every GCController, but not in the settings overlay or the game). Its
+// inputs are read by element name from the physical input profile every GCController has (macOS 11),
+// else from the micro gamepad profile. Elements with names we don't know stay unread; the connect log
+// (log_controller) lists them.
+static bool profile_values(GCController* c, float* v) {
+    using namespace input_map;
+    auto put = [&](int p, float x) { if (p != kPadNone && x > v[p]) v[p] = x; };
+    auto press = [](GCControllerButtonInput* in) { return in.isPressed ? std::max(in.value, 0.51f) : std::min(in.value, 0.5f); };
+    auto pad4 = [&](GCControllerDirectionPad* d, int up, int down, int left, int right) {
+        const float x = d.xAxis.value, y = d.yAxis.value;
+        put(right, std::max(x, 0.f)); put(left, std::max(-x, 0.f));
+        put(up, std::max(y, 0.f)); put(down, std::max(-y, 0.f));
+    };
+    if (@available(macOS 11.0, *)) {
+        GCPhysicalInputProfile* prof = c.physicalInputProfile;
+        if (!prof) return false;
+        const auto layout = controller_face_layout(c);
+        for (NSString* name in prof.buttons) {
+            const int p = apple_button_input(name.UTF8String);
+            if (p != kPadNone) put(apple_face_input(layout, p), press(prof.buttons[name]));
+        }
+        for (NSString* name in prof.dpads) {
+            GCControllerDirectionPad* d = prof.dpads[name];
+            switch (apple_dpad_kind(name.UTF8String)) {
+                case AppleDpad::kDpad: pad4(d, kPadDUp, kPadDDown, kPadDLeft, kPadDRight); break;
+                case AppleDpad::kLeftStick: pad4(d, kPadLSUp, kPadLSDown, kPadLSLeft, kPadLSRight); break;
+                case AppleDpad::kRightStick: pad4(d, kPadRSUp, kPadRSDown, kPadRSLeft, kPadRSRight); break;
+                case AppleDpad::kNone: break;
+            }
+        }
+        return true;
+    }
+    GCMicroGamepad* m = c.microGamepad;
+    if (!m) return false;
+    put(kPadA, press(m.buttonA)); put(kPadX, press(m.buttonX));
+    if (m.buttonMenu) put(kPadMenu, press(m.buttonMenu));
+    pad4(m.dpad, kPadDUp, kPadDDown, kPadDLeft, kPadDRight);
+    return true;
+}
+
+// once per connect: what macOS reports about a controller, for bug reports (which profile it has, and
+// the element names of one without the extended gamepad profile)
+static void log_controller(GCController* c) {
+    if (!c) return;
+    NSString* kind = c.extendedGamepad ? @"extended gamepad" : c.microGamepad ? @"micro gamepad" : @"physical input profile only";
+    NSMutableArray* names = [NSMutableArray array];
+    if (@available(macOS 11.0, *)) {
+        if (!c.extendedGamepad && c.physicalInputProfile) {
+            for (NSString* n in c.physicalInputProfile.buttons) [names addObject:n];
+            for (NSString* n in c.physicalInputProfile.dpads) [names addObject:n];
+            for (NSString* n in c.physicalInputProfile.axes) [names addObject:n];
+        }
+    }
+    LOG("[input] controller connected: \"%s\" (category \"%s\", %s)%s%s", c.vendorName.UTF8String ?: "",
+        c.productCategory.UTF8String ?: "", kind.UTF8String, names.count ? ", elements: " : "",
+        names.count ? [names componentsJoinedByString:@", "].UTF8String : "");
+}
+
 // every mappable controller input of one controller, 0..1; false: not a gamepad
 static bool device_values(GCController* c, float* v) {
     using namespace input_map;
     for (int i = 0; i < kPadCount; i++) v[i] = 0;
     auto put = [&](int p, float x) { if (x > v[p]) v[p] = x; };
     GCExtendedGamepad* g = c.extendedGamepad;
-    if (!g) return false;
+    if (!g) return profile_values(c, v);
     {
         const auto layout = controller_face_layout(c);
         auto b = [&](GCControllerButtonInput* in, int p) {
@@ -406,8 +465,9 @@ static std::string other_device_name(uintptr_t id) {
     return id == (uintptr_t)remote_pad::kDeviceId ? std::string(remote_pad::kControllerName) : io_device_name(id);
 }
 static std::string pad_name(GCController* c) {
-    NSString* n = c.vendorName ?: c.productCategory;
-    return n ? std::string(n.UTF8String) : std::string();
+    NSString* n = c.vendorName.length ? c.vendorName : c.productCategory;
+    // as the Controls window names it (a pad that names nothing would otherwise be listed blank)
+    return n.length ? std::string(n.UTF8String) : std::string("Controller");
 }
 
 // every mappable controller input, 0..1, the strongest over all connected controllers
@@ -897,11 +957,12 @@ void init() {
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
     g_connect_order = [NSMutableArray array];
-    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); }
+    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); log_controller(c); }
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
     [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
         GCController* c = n.object;
         if (c && ![g_connect_order containsObject:c]) [g_connect_order addObject:c];
+        log_controller(c);
         haptic_start(c);
         note_dominant_labels();
     }];
