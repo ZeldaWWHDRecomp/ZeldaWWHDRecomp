@@ -1,5 +1,5 @@
-// native_draw/lean.h: thinner lowering bookkeeping for every packet family (WWHD_NATIVE_DRAW_LEAN=1; off by default until
-// its phone pair).
+// native_draw/lean.h: thinner lowering bookkeeping for every packet family (on by default since its phone pairs, 2026-11-13:
+// render CPU faster or neutral at the cliff, lava room and sea; WWHD_NATIVE_DRAW_LEAN=0 turns it off).
 // Included by gfx/vulkan/draw.cpp inside namespace gfxvk before packet_draw (it uses PacketCapture).
 // - The lowering's PacketCapture (about 10 KB: per stage the descriptor writes and infos) is the thread's heap scratch,
 //   reset in place at each lowering and swapped into the lowered kind (a pointer swap) instead of a stack object in
@@ -11,7 +11,7 @@
 inline bool packet_lean_on() {
   static const bool on = [] {
     const char* e = std::getenv("WWHD_NATIVE_DRAW_LEAN");
-    const bool v = e && *e == '1';
+    const bool v = !e || *e != '0';
     LOG("[native-draw] lean lowering bookkeeping %s (WWHD_NATIVE_DRAW_LEAN=%d)", v ? "on" : "off", v ? 1 : 0);
     return v;
   }();

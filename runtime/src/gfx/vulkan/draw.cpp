@@ -5936,7 +5936,7 @@ UploadSlice packet_block_upload(uint32_t addr, uint32_t size) {
 }
 }  // namespace
 
-// WWHD_NATIVE_DRAW_LEAN (=1; off by default until its phone pair): the lowering's capture as the thread's heap scratch, swapped into the kind
+// WWHD_NATIVE_DRAW_LEAN (on by default; =0 off): the lowering's capture as the thread's heap scratch, swapped into the kind
 // (native_draw/lean.h); the refusal logs' string keys built only when the kind's reason changes
 #include "native_draw/lean.h"
 void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range) {
@@ -6306,7 +6306,7 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   }
   if (relower != native_draw::kReasons && !verify) native_draw::count(pk.site, relower);
   // the full draw, which lowers the packet's kind: its capture is the thread's scratch (reset in place, so packet_draw's
-  // frame stays small for every instance), swapped into the kind below (WWHD_NATIVE_DRAW_LEAN=1; off: copied, as before)
+  // frame stays small for every instance), swapped into the kind below (WWHD_NATIVE_DRAW_LEAN, on by default; =0: copied, as before)
   PacketCapture& cap = packet_capture_scratch();
   for (uint32_t i = 0; i < pk.blockCount && i < native_draw::kMaxBlocks; ++i) {
     const uint32_t stage = pk.block[i] >> 16;
