@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Full save states load after taking a picto again** (#565). A full save state made before the first picto (or
+  before opening the pictograph list) of a session could not be loaded after it, and the other way round: "cannot
+  load here (thread JpegEncodeMgrThread … is at a different place)", even though the values it printed were the
+  same. The Picto Box's encoder thread simply waits at one of two equivalent places; both are accepted now. If a
+  full state is still refused, the message names exactly what differs.
+
 - **Decomp fast build: more of the world drawn in batches** (#564). Trees and wooden props, the magma in Dragon Roost
   Cavern, sea waves and some other repeated scenery now draw many objects with one command instead of one each. On
   our test phone (Xiaomi 14) the render thread saves 0.72 ms per frame at the Outset cliff (54.1 → 56.0 fps),
