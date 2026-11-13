@@ -107,6 +107,14 @@ bool j3d_on() {
     }();
     return on;
 }
+bool gather_on() {
+    static const bool on = [] {
+        const bool v = master_on() && env_int("WWHD_NATIVE_DRAW_GATHER", 0) != 0;
+        if (master_on()) LOG("[native-draw] gather-grid packets %s (WWHD_NATIVE_DRAW_GATHER=%d)", v ? "on" : "off", v ? 1 : 0);
+        return v;
+    }();
+    return on;
+}
 uint32_t verify_every() {
     static const uint32_t n = uint32_t(std::max(0, env_int("WWHD_NATIVE_DRAW_VERIFY", 0)));
     return n;
@@ -482,6 +490,9 @@ extern "C" unsigned wwhd_native_j3d(unsigned shape, unsigned binding, unsigned p
     gx2::emit(gx2::OP_J3D_SHAPE, w, 5);
     return 1;
 }
+// gather-grid packets on (WWHD_NATIVE_DRAW_GATHER): a site may declare the blocks of a pass whose pixel program has
+// gather units (the 3D lines' pass 2)
+extern "C" unsigned wwhd_native_gather_on() { return gather_on() ? 1 : 0; }
 // 0: no packet; 1: begun, its mesh and commit still to come (a callee completes it); 2: defined
 extern "C" unsigned wwhd_native_state(unsigned site) {
     const SiteState* s = site_state(site);
