@@ -10,7 +10,7 @@ The port has no GamePad, so it turns a **virtual GamePad** with one of these sou
 | Device gyro (phone/tablet) | the Android device’s own gyroscope and accelerometer; rotates with the displayed screen, works with touch or a controller |
 | Controller gyro | the gyro and accelerometer of a DualSense, DualShock 4, Switch Pro, Joy-Con, Steam Deck / Steam Controller and other controllers SDL3 reads (the macOS app uses GameController.framework: DualSense, DualShock 4, Switch Pro, Joy-Con) |
 | Cemuhook (DSU) | a Cemuhook motion server over UDP: DS4Windows, BetterJoy, SteamDeckGyroDSU, phone apps. Default 127.0.0.1, port 26760, slot 1 |
-| Mouse | mouse movement turns the GamePad while the game aims; made for Steam Input's "gyro to mouse" output, works with a plain mouse too |
+| Mouse aiming | mouse movement turns the GamePad while the game aims, also with the game's Options → Gyro off; for a plain mouse and Steam Input's "gyro to mouse" output |
 
 It works with both controller choices (Input → **Wii U GamePad** or **Wii U Pro Controller**, issue #71).
 In Pro Controller mode the game's own **Options → Gyroscope** switch stays in the options menu and can be
@@ -46,7 +46,9 @@ Settings overlay (F1) → **Controls** → **Controller** → **Gyro…**:
 
 Everything is saved with the other settings (`gyro.*` in `settings.ini`, or `display.plist` on
 the macOS app). The game's own **Options → Gyro** switch (on by default in the game) still decides
-whether the game uses the motion, and the game ignores the motion while the right stick is pushed
+whether the game uses the motion of a controller, Cemuhook or the device gyro. **Mouse aiming** works
+with it off too (issue #525): the mouse is a PC aim device of its own, so the port reads the switch as on
+while the mouse aims, without changing the saved option. The game ignores the motion while the right stick is pushed
 (outside a 0.1 dead zone; a drifting stick does that too, see Troubleshooting).
 
 Why off by default: the gyro moves the first-person camera with every hand movement, which surprises
@@ -118,6 +120,9 @@ recalibrate on return. The status line reports unavailable sensors.
   `02618604` skips its mode-0 check, so the game reads the virtual GamePad's motion exactly as with
   the GamePad: same camera code, the in-game Gyro switch, its stick dead zone (now the Pro
   Controller's right stick) and its per-frame calibration. With the source off nothing changes.
+  With the Mouse aiming source, while the game aims, `02618604`'s first check (the Options → Gyro switch,
+  `0271FC30` on options +5) reads as on (`@02618634`); the option itself, and so the save, stays as the
+  player set it. The other sources keep the game's switch.
 - Hosts: `platform/input_sdl.cpp` (SDL3 sensors, on only for the controller source; a watchdog turns a
   controller's sensors off and on again when they stay silent for 2 s while the game window has the
   focus), `gfx/input.mm` (GameController.framework, macOS 11+; sensors that the system switched off

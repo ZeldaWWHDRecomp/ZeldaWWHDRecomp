@@ -1,2 +1,3 @@
 # Gyro aiming (runtime/src/motion/game_hooks.cpp). @ADDR = instruction hook.
+@02618634 # ControllerMgr orientation (02618604): after "is the game's Options > Gyro on?": the mouse source aims without it
 @0261864C # ControllerMgr orientation (02618604): after "is the mode 0 (Pro Controller)?": gyro in Pro Controller mode

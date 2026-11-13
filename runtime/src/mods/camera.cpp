@@ -128,7 +128,7 @@ bool link_in_ship() {
 }
 
 // test aid: WWHD_TEST_MOUSE=2-3:5:0,... moves the mouse by (dx, dy) points per logic step from 2 s
-// to 3 s of game time (full logic steps / 30, from boot; with WWHD_TEST_MOUSE_ORIGIN=1 from the scenario's origin, as
+// to 3 s of game time, to the mouse gyro source and the mouse camera as a real mouse (full logic steps / 30, from boot; with WWHD_TEST_MOUSE_ORIGIN=1 from the scenario's origin, as
 // WWHD_TEST_STICK: two runs whose boots differ by a few steps then get the movement at the same scenario step);
 // WWHD_TEST_WHEEL=4.0:1,... scrolls by dy at that time.
 struct TimedMouse { double from, to; float dx, dy; };
@@ -162,8 +162,12 @@ void inject_test_mouse() {
         if (!o) return;                                 // before the scenario starts
         t -= (double)o / 30.0;
     }
+    // as the hosts do (mouse.mm, mouse_sdl.cpp): the mouse gyro source first, then the mouse camera
     for (auto& m : moves)
-        if (t >= m.from && t < m.to) mouse_add(m.dx, m.dy);
+        if (t >= m.from && t < m.to) {
+            motion::mouse_motion(m.dx, m.dy);
+            if (!motion::mouse_drives_gyro()) mouse_add(m.dx, m.dy);
+        }
     for (auto& w : wheels)
         if (t >= w.from && t < w.from + 1.0 / 30.0) mouse_wheel(w.dy);
 }
