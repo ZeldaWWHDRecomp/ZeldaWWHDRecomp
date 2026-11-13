@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: more of the world drawn in batches** (#564). Trees and wooden props, the magma in Dragon Roost
+  Cavern, sea waves and some other repeated scenery now draw many objects with one command instead of one each. On
+  our test phone (Xiaomi 14) the render thread saves 0.72 ms per frame at the Outset cliff (54.1 → 56.0 fps),
+  0.29 ms in the Forbidden Woods and 0.89 ms in the Dragon Roost lava room (46.4 → 49.4 fps, with fewer slow
+  frames). The picture is unchanged. `WWHD_NATIVE_DRAW_BATCH_SITES` still sets the list. The normal build is not
+  affected.
+
 - **Setup: a game-code file that fails to compile once is retried** (#563, thanks @LexBoosT, #552). If compiling
   one of the game-code files fails during setup (for example when the PC briefly runs low on memory or a virus
   scanner holds a file), setup now tries that file once more on its own before stopping. If it still fails, the
