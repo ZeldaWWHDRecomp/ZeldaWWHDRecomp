@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New setting "Fix original game bugs"** (#555, Settings › Mods › Built-in and the in-game settings page, on by
+  default). The first fix: the pause menu no longer loses its selection cursor after a door or other scene change
+  once you had zoomed into a square on the MAP tab's chart (#336, thanks @XAlboX for the logs and video). Turn the
+  setting off and the game behaves exactly like the original.
+
 - **Decomp fast build: leaner native draw preparation** (#554). Native draw packets now keep their captured draw
   state in one reusable buffer per thread instead of building it for every instance and copying it, and the
   once-per-reason refusal logs no longer build their lookup keys on every draw. On an Android phone (Xiaomi 14)
