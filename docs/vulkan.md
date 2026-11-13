@@ -161,8 +161,12 @@ MRT pass. The cutoff is conservatively the next legacy-driver release after that
 establishes that release, but does not document a fix for this crash. This rule applies to Windows
 only; Intel Mesa drivers on Linux keep the normal capability-based selection.
 
+On Android the renderer uses render passes by default, even where dynamic rendering is available:
+there they cost less render-thread CPU per frame (`kRenderPassesByDefault` in
+`gfx/vulkan/rendering_path.h`). Desktop platforms keep dynamic rendering.
+
 For testing, set `WWHD_VK_FORCE_RENDERPASS=1` to force render passes on any supported device, or
-`WWHD_VK_FORCE_RENDERPASS=0` to bypass automatic fallback and require dynamic rendering. With `=0`,
+`WWHD_VK_FORCE_RENDERPASS=0` to bypass automatic fallback and the Android default and require dynamic rendering. With `=0`,
 a device without dynamic rendering cannot start. Unset the variable to restore automatic selection.
 The startup log and GPU report name the selected path and its reason. Render-pass mode uses a
 separate on-disk pipeline cache with a `-rp` suffix; switching paths does not discard either cache.

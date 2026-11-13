@@ -37,8 +37,17 @@ inline constexpr std::array renderingDriverRules{
     RenderingDriverRule{0x8086, intel_windows_driver(101, 5000), true,
         "driver rule: Intel Windows < 101.5000"},
 };
+// The platform default when neither WWHD_VK_FORCE_RENDERPASS nor a driver rule decides: render
+// passes on Android (measured faster there: less render-thread CPU per frame), dynamic rendering
+// elsewhere. This is the one place that chooses it.
+#ifdef __ANDROID__
+inline constexpr bool kRenderPassesByDefault = true;
+#else
+inline constexpr bool kRenderPassesByDefault = false;
+#endif
 inline RenderingChoice choose_rendering_path(RenderingCapabilities caps, uint32_t vendor,
-        uint32_t driver, bool windows, const char* forceRenderPass) {
+        uint32_t driver, bool windows, const char* forceRenderPass,
+        bool renderPassesByDefault = kRenderPassesByDefault) {
     if (caps.api < VK_API_VERSION_1_1) return {};
     const bool forceOn = forceRenderPass && !std::strcmp(forceRenderPass, "1");
     const bool forceOff = forceRenderPass && !std::strcmp(forceRenderPass, "0");
@@ -46,6 +55,7 @@ inline RenderingChoice choose_rendering_path(RenderingCapabilities caps, uint32_
     if (!forceOff) for (const auto& rule : renderingDriverRules)
         if (vendor == rule.vendor && (!rule.windowsOnly || windows) && driver < rule.before)
             return {RenderingPath::RenderPass, rule.reason};
+    if (!forceOff && renderPassesByDefault) return {RenderingPath::RenderPass, "platform default"};
     if (caps.api >= VK_API_VERSION_1_3 && caps.core)
         return {RenderingPath::Core, forceOff ? "WWHD_VK_FORCE_RENDERPASS=0" : "Vulkan 1.3 dynamic rendering"};
     if (caps.khr)
