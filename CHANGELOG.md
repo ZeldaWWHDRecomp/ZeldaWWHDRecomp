@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: leaner native draw preparation** (#554). Native draw packets now keep their captured draw
+  state in one reusable buffer per thread instead of building it for every instance and copying it, and the
+  once-per-reason refusal logs no longer build their lookup keys on every draw. On an Android phone (Xiaomi 14)
+  render-thread time at the cliff went from 17.41 to 16.86 ms per frame and in the lava room from 19.52 to
+  19.44 ms. `WWHD_NATIVE_DRAW_LEAN=0` turns it off. The normal build is unchanged.
+
 - **Decomp fast build: command and descriptor pools reset on a separate thread** (#553). The Vulkan renderer now
   resets the pools of a reused submission slot on its own thread instead of the render thread. On an Android phone
   (Xiaomi 14) this cuts render-thread time at the cliff from 17.33 to 16.54 ms per frame (54.8 → 56.7 fps) and in the
