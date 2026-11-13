@@ -566,13 +566,14 @@ extern "C" void site_02508380(Cpu* c) {
 // camera did not), the target counts that turn twice: the camera's base (Link's new facing) plus angU (new - old).
 // The ease hid it (0.45 x 2 = 90 % of a step, then back); at once the view would jump twice as far and back, so the
 // view goes to Link's facing. The telescope and Picto Box (procScope: Link follows the camera) are right as they are.
-extern "C" void site_025083C4(Cpu* c) {
+// The decomp build's point (camera_points.cpp wwhd_camera_ease) passes DIFF and ANG, its own locals, to subject_ease_u.
+void subject_ease_u(Cpu* c, uint32_t diff, uint32_t ang) {
     if (!mouse_looked()) return;
     c->f[1].ps0 = c->f[1].ps1 = camera_mouse::kMouseViewEase;
     if (g_subject_own_angle) return;
-    const uint32_t sp = c->r[1];
-    st16(sp + 0x12, (uint16_t)((int16_t)ld16(sp + 0x12) - (int16_t)ld16(sp + 0x08)));
+    st16(diff, (uint16_t)((int16_t)ld16(diff) - (int16_t)ld16(ang)));
 }
+extern "C" void site_025083C4(Cpu* c) { subject_ease_u(c, c->r[1] + 0x12, c->r[1] + 0x08); }
 
 // Logic-step camera measurements, enabled only by WWHD_MODS_TRACE.
 static void camera_trace(uint32_t cam, const char* mode, int16_t before) {

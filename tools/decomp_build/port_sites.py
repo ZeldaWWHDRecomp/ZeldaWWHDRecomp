@@ -103,6 +103,11 @@ SITES = [
     _p(0x0250074C, 0x025006D8, CU, "PORT_CAMERA_F"),     # dCamera_c::initPad
     _p(0x02506C68, 0x02506964, CS, "PORT_CAMERA_F"),     # dCamera_c::CalcSubjectAngle: one statement, compiled twice
     dict(site=0x02506C80, func=0x02506964, path=CS, marker="PORT_CAMERA_F(0x02506C68"),
+    # First person and item aims with the mouse camera (mods/camera.cpp, issue #558): CalcSubjectAngle's GamePad (gyro)
+    # turn, and subjectCamera's view ease of V and U (fast mode: subjectCamera's hook runs the decompiled body)
+    _p(0x02506CEC, 0x02506964, CS, "PORT_CAMERA_SUBJECT"),
+    _p(0x02508380, 0x025071FC, CS, "PORT_CAMERA_EASE"),
+    _p(0x025083C4, 0x025071FC, CS, "PORT_CAMERA_EASE"),
     _p(0x024F811C, 0x024F8068, CP, "PORT_PROJECTION"),   # view_setup: mDoLib_clipper::setup (both branches)
     _p(0x024F8168, 0x024F8068, CP, "PORT_PROJECTION"),
     _p(0x024FFA98, 0x024FFA3C, CP, "PORT_CAMERA_F"),     # camera_execute: the aspect stored
@@ -140,6 +145,7 @@ SITES = [
     _p(0x0247ED24, 0x0247E854, SH, "PORT_SHIP"),  # procSteerMove: the stock target again before the jump code
     # Title, file select, Options and input (mods/one_screen.cpp, motion/game_hooks.cpp, controller_selection.cpp)
     _p(0x02617874, 0x02617858, "wwhd_src/d/hd_input_ctrl.cpp", "PORT_UI_W"),  # hdInputManager::init: the mode
+    _p(0x02618634, 0x02618604, "wwhd_src/d/hd_input_ctrl.cpp", "PORT_UI_W"),  # orientation: the Gyro option (#525)
     _p(0x0261864C, 0x02618604, "wwhd_src/d/hd_input_ctrl.cpp", "PORT_UI_W"),  # orientation: isTvMode()
     _p(0x026D44A8, 0x026D440C, "wwhd_src/d/hd_title_controller_selection.cpp", "PORT_UI_EVENT"),  # updateSelection
     _p(0x026D5D84, 0x026D5CE4, SO, "PORT_UI_AT"),  # hdSequenceOption_c::loadSettings: the values loaded
