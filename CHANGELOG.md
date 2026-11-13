@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: command and descriptor pools reset on a separate thread** (#553). The Vulkan renderer now
+  resets the pools of a reused submission slot on its own thread instead of the render thread. On an Android phone
+  (Xiaomi 14) this cuts render-thread time at the cliff from 17.33 to 16.54 ms per frame (54.8 → 56.7 fps) and in the
+  lava room from 19.94 to 19.53 ms (46.8 → 47.5 fps), with no change to the slowest frames.
+  `WWHD_VK_ASYNC_POOL_RESET=0` turns it off. The normal build is unchanged.
+
 - **Less work on the game thread** (#550, thanks to SwitchWakerHD for the measurements). Every replaced system
   function and port hook no longer sets up a 4 KB stack frame for its error report (about 15,000–36,000 calls a
   frame); layout panes skip the HUD and button-prompt name checks when none of them is about that pane
