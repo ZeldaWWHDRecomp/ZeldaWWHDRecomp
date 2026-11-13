@@ -88,6 +88,10 @@ bool instant_text();
 void set_instant_text(bool on);
 bool no_text_pauses();
 void set_no_text_pauses(bool on);
+// Fix original game bugs (game_fixes.cpp): fixes of the original game's own bugs, on by default; off, the game
+// behaves exactly as the original.
+bool fix_game_bugs();
+void set_fix_game_bugs(bool on);
 void instant_text_step();
 
 // Optional enemy targeting assistance. Off preserves the game's targeting unchanged.

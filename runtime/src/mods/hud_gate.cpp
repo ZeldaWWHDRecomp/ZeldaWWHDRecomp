@@ -118,7 +118,8 @@ static std::string guest_text(uint32_t a) {
     return s;
 }
 
-// Issue #336 stop-gap, until the trigger is found (menu_cursor.h Restore): the item menu up for a second with
+// Issue #336 safety net, kept now that the cause is fixed (hook_026828B4 below; menu_cursor.h Restore), only with
+// "Fix original game bugs" on (game_fixes.cpp; off, the game as the original: the lines are still logged): the item menu up for a second with
 // its focus on an element that isn't linked into the menu's event manager gets the focus back on the menu's
 // default element, through the game's own setter cking::ui::input::EventMgr::setModeDefault (02615154:
 // (manager, element) sets the focus and the next focus, as the menu's screens do when a window slides in).
@@ -202,7 +203,7 @@ static void menu_cursor_watch(Cpu* c) {
         if (change == menu_cursor::Watch::Change::Back) LOG("[menu-cursor] the item menu's selection cursor is back");
         else LOG("%s", lost_line().c_str()), logged = true;
     }
-    const menu_cursor::Context context{overlay::is_open(), game_settings_page::page_open()};
+    const menu_cursor::Context context{overlay::is_open(), game_settings_page::page_open(), fix_game_bugs()};
     if (!c || !restore.update(r, context, step)) return;
     const uint32_t fallback = menu_default_focus(scene);
     const uint32_t target = menu_cursor::restore_target(fallback, object(fallback, 0x60) && ld32(fallback + 0xC) == events,
@@ -217,6 +218,47 @@ static void menu_cursor_watch(Cpu* c) {
     *c = saved;
     LOG("[menu-cursor] focus restored to %s (issue #336 stop-gap, %s)", describe_receiver(target, events).c_str(),
         target == fallback ? "the menu's default element" : "the element it was last on");
+}
+
+// Issue #336, the cause (menu_cursor.h grid_may_move_focus): when the map tab's chart grid moves its selected square
+// to Link's, the menu's focus goes along only while it is on one of the grid's squares. Otherwise the game's call
+// (setModeDefault(sEventMgr, Link's square's element) at 02682930) gets the element that has the focus, so the
+// focus stays where the game put it, and the grid's "focus transferred" flag (+0x13F) says the focus is not on the
+// grid (0), so stepping onto the chart later brings the focus to the selected square (handleInputPhase 5). The
+// squares' own selection moves as the game has it: the map shows Link's square selected when it is opened. One
+// line for the first few times a session. Only with "Fix original game bugs" on (game_fixes.cpp); off, the game's
+// call runs unchanged.
+//   hdSeaChartGrid_c: +0x00 its 49 cells; a cell (hdSeaChartCell_c) +0x9C its element (mTouchWidget)
+namespace {
+bool g_grid_focus_keep = false;  // during a transferPendingFocus whose focus move is left out (game thread)
+}
+extern "C" void f_026828B4_orig(Cpu* c);
+extern "C" void hook_026828B4(Cpu* c) {  // hdSeaChartGrid_c::transferPendingFocus
+    const uint32_t grid = c->r[3], events = ld32(GD(0x101F4FF0));
+    if (!object(grid, 0x158) || !object(events, 0xE4)) return f_026828B4_orig(c);
+    uint32_t squares[49];
+    for (uint32_t i = 0; i < 49; i++) {
+        const uint32_t cell = ld32(grid + 4 * i);
+        squares[i] = object(cell, 0xA4) ? ld32(cell + 0x9C) : 0;
+    }
+    const uint32_t focus = ld32(events + 0x70);
+    if (menu_cursor::grid_may_move_focus(focus, squares, 49, fix_game_bugs())) return f_026828B4_orig(c);
+    g_grid_focus_keep = true;
+    f_026828B4_orig(c);
+    const bool called = !g_grid_focus_keep;  // the site ran: the grid's square would have taken the focus
+    g_grid_focus_keep = false;
+    if (!called) return;
+    st8(grid + 0x13F, 0);
+    static int lines = 0;
+    if (lines < 5 && ++lines)
+        LOG("[menu-cursor] the map's chart selected Link's square and left the focus on %s (issue #336)",
+            describe_receiver(focus, events).c_str());
+}
+// transferPendingFocus: the bl to setModeDefault(sEventMgr, Link's square's element)
+extern "C" void site_02682930(Cpu* c) {
+    if (!g_grid_focus_keep) return;
+    c->r[4] = ld32(c->r[3] + 0x70);  // the element that has the focus (or none): setMode leaves it as it is
+    g_grid_focus_keep = false;
 }
 
 void hud_service(Cpu* c) {

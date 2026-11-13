@@ -100,3 +100,7 @@
 @026D5D84 # Options values loaded (+0x104..+0x109), before the rows are filled: into the new order
 026D6DD4  # Options values saved (fixed offsets): the game's order around it
 026D87D0  # Options Controller item callback (its value +0x107): the game's order around it
+# Pause menu: the map tab's chart grid moves the menu's focus only among its own squares (selection follows Link)
+# (issue #336; mods/hud_gate.cpp, rule in mods/menu_cursor.h)
+026828B4  # hdSeaChartGrid_c::transferPendingFocus
+@02682930 # transferPendingFocus: setModeDefault(sEventMgr, Link's square's element)

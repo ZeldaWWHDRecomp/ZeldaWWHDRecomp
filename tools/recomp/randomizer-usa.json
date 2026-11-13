@@ -2,7 +2,7 @@
   "format": 3,
   "id": "twwhd-randomizer-usa-v0-3",
   "base_sha256": "c4f0ab300542e0bfc462696850534e71db2ad02288a7eb55e5a4cd4062f16153",
-  "hooks_sha256": "285277ca33e1cf2545a467de6a1fb5369e282b03c77911827dea1371916560b3",
+  "hooks_sha256": "68c105a85d6c73e273366b3008bc84ba1764a372c51aeabaaf1bbf986b87340a",
   "entry_point": 42901792,
   "imports_sha256": "a56776e8fbb6f29271fb2b5755e80eeb30e2b96555f45dfa30dd7bbb1679011e",
   "sections": [
@@ -575,6 +575,8 @@
     39946560,
     40007324,
     40007592,
+    40380596,
+    40380720,
     40400628,
     40715432,
     40718532,
@@ -2462,6 +2464,13 @@
       ]
     },
     {
+      "start": 40380596,
+      "end": 40380752,
+      "sha256": [
+        "091181c51f34f81ef5808f50116bb2d71c7c10293abdde773a911dc5b3be1739"
+      ]
+    },
+    {
       "start": 40400628,
       "end": 40400944,
       "sha256": [
@@ -2877,7 +2886,7 @@
   ],
   "minimum_function_hash_bytes": 64,
   "guard_sha256": [
-    "27690112f0b74c4b2b996d6061d69ece1ce5cf12fd6777d2099332ce50760d70",
-    "4fea1e913363bea47ab6936a4a1f54d8881ba4d37101d189c16a19b690038f00"
+    "8d21381d989fbb25995e8a551ac37703514887db170773195406784a804efced",
+    "5fffde9b3a67f6460c6c4dd2012f279d93767685e3fb43b049188592c03c883a"
   ]
 }

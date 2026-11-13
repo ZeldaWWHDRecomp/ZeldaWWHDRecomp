@@ -59,7 +59,7 @@ private:
     bool lost_ = false;
 };
 
-// Issue #336 stop-gap, until the trigger is found: the item menu up with its focus on an element that isn't
+// Issue #336 safety net (the cause, the map's chart grid, is fixed: grid_may_move_focus below): the item menu up with its focus on an element that isn't
 // linked into the menu's event manager (so the focus cursor stays in ::StateID_Blank and the menu doesn't
 // move) is the stuck state players report. After a second of it, hud_gate.cpp logs the [menu-cursor] line
 // naming the element (that line is what is to find the trigger) and then gives the focus back to the menu's
@@ -73,6 +73,7 @@ private:
 struct Context {
     bool overlay_open = false;   // the port's overlay (Settings, Esc)
     bool settings_page = false;  // game_settings_page::page_open(): the entry arrow, page or slide has the controller
+    bool fix_game_bugs = true;   // the "Fix original game bugs" setting (game_fixes.cpp): off, the game as the original
 };
 
 // The reading is the stuck state the safety net acts on (the context aside).
@@ -88,7 +89,7 @@ class Restore {
 public:
     static constexpr int kMaxRestores = 20;
     bool update(const Reading& r, const Context& c, uint64_t step) {
-        if (!focus_stuck(r) || c.overlay_open || c.settings_page) { reset(); return false; }
+        if (!c.fix_game_bugs || !focus_stuck(r) || c.overlay_open || c.settings_page) { reset(); return false; }
         if (r.focus != focus_ || !since_) focus_ = r.focus, since_ = step ? step : 1;
         if (step < since_ + kMissingSteps || restores_ >= kMaxRestores) return false;
         restores_++;
@@ -110,6 +111,26 @@ inline uint32_t restore_target(uint32_t default_focus, bool default_linked, uint
     if (default_focus && default_linked) return default_focus;
     if (last_good && last_linked) return last_good;
     return 0;
+}
+
+// Issue #336, the cause: the map tab's chart grid (hdSeaChartGrid_c, 49 cells) moves the selected square to Link's
+// square when he is somewhere else than the last time the map ran (transferPendingFocus, 026828B4: the square
+// zoomed in on with A gets cancelled, Link's gets selected) and gives the menu event manager's focus to that
+// square's element (cking::ui::input::EventMgr::setModeDefault). After a scene change it runs while the map is
+// not shown: the pause menu is closed or on another tab, and the game has just put the focus on its own
+// element (the menu's tab button). The square's element is not linked into the menu, so the next item menu has
+// no selection cursor and takes no input. The grid moves the focus only among its own squares: while the focus
+// is on one of them (the map shown, its cursor on the chart) the move runs as the game has it; otherwise the
+// selection still moves to Link's square, and the focus stays where the game put it (hud_gate.cpp).
+//   focus    the event manager's focused element (sEventMgr +0x70), 0 none
+//   squares  the grid's cells' elements (hdSeaChartCell_c +0x9C mTouchWidget)
+//   fix      the "Fix original game bugs" setting (game_fixes.cpp): off, the game's move always runs (the original)
+inline bool grid_may_move_focus(uint32_t focus, const uint32_t* squares, int count, bool fix = true) {
+    if (!fix) return true;
+    if (!focus) return false;
+    for (int i = 0; i < count; i++)
+        if (squares[i] == focus) return true;
+    return false;
 }
 
 }  // namespace mods::menu_cursor
