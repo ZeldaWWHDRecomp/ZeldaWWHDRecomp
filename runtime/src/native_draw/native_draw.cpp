@@ -109,7 +109,7 @@ bool j3d_on() {
 }
 bool gather_on() {
     static const bool on = [] {
-        const bool v = master_on() && env_int("WWHD_NATIVE_DRAW_GATHER", 0) != 0;
+        const bool v = master_on() && env_int("WWHD_NATIVE_DRAW_GATHER", 1) != 0;
         if (master_on()) LOG("[native-draw] gather-grid packets %s (WWHD_NATIVE_DRAW_GATHER=%d)", v ? "on" : "off", v ? 1 : 0);
         return v;
     }();

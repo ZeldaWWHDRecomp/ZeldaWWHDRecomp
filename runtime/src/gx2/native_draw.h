@@ -273,9 +273,10 @@ uint32_t verify_every();  // WWHD_NATIVE_DRAW_VERIFY (0: off)
 // full draw, which refreshes the entry. WWHD_NATIVE_DRAW_VERIFY=N also checks every Nth cache hit against the full
 // resolution (a mismatch is logged, counted and drawn the full way).
 bool j3d_on();
-// gather-grid packets (WWHD_NATIVE_DRAW_GATHER, default 0): instance blocks of a pixel program with gather units (the
-// upscaled light buffer's grid in its support uniforms, gfx/area_sample.h) may be patched per instance; the replay scales
-// the patched entries as the full draw does. Off: such a packet is not lowered (drawn the full way every time)
+// gather-grid packets (WWHD_NATIVE_DRAW_GATHER, default 1; 0 turns them off): instance blocks of a pixel program with
+// gather units (the upscaled light buffer's grid in its support uniforms, gfx/area_sample.h) may be patched per
+// instance; the replay scales the patched entries as the full draw does. Off: such a packet is not lowered (drawn the
+// full way every time)
 bool gather_on();
 // render thread: the key of the J3D draw named by the last command (0: none); the next draw takes it
 extern uint64_t g_j3dKey;
