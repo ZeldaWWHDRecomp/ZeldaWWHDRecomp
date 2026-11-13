@@ -811,6 +811,7 @@ function(wwhd_decomp_link target)
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/backend.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/shaders.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/surfaces.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/pool_reset.cpp"
                  APPEND PROPERTY COMPILE_DEFINITIONS WWHD_NATIVE_DRAW=1)
     if(WWHD_NATIVE_DRAW_BATCH)
       set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp"
