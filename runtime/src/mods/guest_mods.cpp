@@ -2203,7 +2203,7 @@ void logic_service(Cpu* c) {
     if(const char* at=std::getenv(probe)){
         static uint32_t tick=0;const unsigned long target=std::strtoul(at,nullptr,10);
         if(++tick==target&&target>0&&target<=18000){
-            const uint32_t link=ld32(GD(0x1046F0B0)+0x5B34);
+            const uint32_t link=ld32(GD(0x1046F0B0)+GI(0x5B34));
             if(!(link&3)&&link>=mem::kMem2Start&&link<=mem::kMem2End-0x330&&ld16(link+0xE)==0xA8&&ld32(link+4)&&ld32(link+4)!=0xFFFFFFFFu){
                 story_particles::Burst burst;burst.effect=beacon?story_particles::Effect::BeaconSparkle:sparkle?story_particles::Effect::AuctionSparkle:story_particles::Effect::DoorDebris;
                 burst.position={u32_as_f32(ld32(link+0x314)),u32_as_f32(ld32(link+0x318)),u32_as_f32(ld32(link+0x31C))};

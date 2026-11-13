@@ -263,7 +263,8 @@ void apply(const Look& look) {
 const uint32_t kPlayFn = GC(0x025200D4), kCameraFn = GC(0x024F8044), kStopCamera = GC(0x02514F2C), kStartCamera = GC(0x02514F38),
                kSetCamera = GC(0x02514F50), kResetCamera = GC(0x02515048), kOrder = GC(0x0253EC0C), kCheckStart = GC(0x0253FD1C),
                kEnd = GC(0x0253EFA8), kHideHud = GC(0x025916C4), kShowHud = GC(0x0259169C);
-constexpr uint32_t kControl = 0x51D0, kMode = 0x5292, kOrderCount = 0x5290, kPlayer = 0x5B34, kHudShown = 0x5C22;
+constexpr uint32_t kControl = 0x51D0, kMode = 0x5292, kOrderCount = 0x5290;
+const uint32_t kPlayer = GI(0x5B34), kHudShown = GI(0x5C22);  // moved in the Japanese build (guest_addr.h GI)
 constexpr uint32_t kCenter = 0x10, kEye = 0x1C, kActive = 0x4;  // dCamera_c
 constexpr uint32_t kPos = 0x314, kAngleY = 0x32A;                // fopAc_ac_c
 const uint32_t kIngameUi = GD(0x101F8344);

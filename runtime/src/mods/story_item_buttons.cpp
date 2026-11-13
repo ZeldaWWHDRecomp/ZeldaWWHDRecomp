@@ -31,8 +31,8 @@ namespace story_item_buttons {
 namespace {
 
 const uint32_t kSavePtr = GD(0x101F84DC);              // save base pointer (d_com_inf_game)
-const uint32_t kPlaySelect = GD(0x1046F0B0) + 0x5BBB;  // g_dComIfG_gameInfo.play.mSelectItem[5]
-const uint32_t kLinkActor = GD(0x1046F0B0) + 0x5B34;   // g_dComIfG_gameInfo.play mpPlayerPtr[0]: Link (test_assign)
+const uint32_t kPlaySelect = GD(0x1046F0B0) + GI(0x5BBB);  // g_dComIfG_gameInfo.play.mSelectItem[5]
+const uint32_t kLinkActor = GD(0x1046F0B0) + GI(0x5B34);   // g_dComIfG_gameInfo.play mpPlayerPtr[0]: Link (test_assign)
 constexpr uint32_t kSaveSelect = 0x29;                 // dSv_player_status_a_c::mSelectItem[5] (save keys)
 const uint32_t kCheckNewItemChange = GC(0x023EF7CC);   // daPy_lk_c::checkNewItemChange(btn)
 const uint32_t kButtonCommand = GC(0x0264A774);        // hdCommandGuide_c::getButtonCommand(button)

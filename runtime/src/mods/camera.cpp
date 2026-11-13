@@ -531,7 +531,7 @@ extern "C" void site_02506CEC(Cpu* c) {
     double k = c->f[31].ps0;
     // the telescope / Picto Box zoom slow-down, as the game applies it after this point (k x (1 - slow x zoom))
     const uint32_t pad = ld32(cam + 0x124);
-    if ((flags & 0x10) && !(ld32(GD(0x1046F0B0) + pad * 16 + 0x5CD8) & 0x2000))
+    if ((flags & 0x10) && !(ld32(GD(0x1046F0B0) + GI(pad * 16 + 0x5CD8)) & 0x2000))
         k = (float)(k - (float)(k * ldf32(cam + 0x770)) * ldf32(cam + 0x390));
     float dx, dy;
     camera_mouse::SubjectStep st;

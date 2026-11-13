@@ -148,7 +148,7 @@ inline Index parse(const std::string& source,bool local=false) {
         e.authors=strings(v.get("authors"),32,256);require(!e.authors.empty(),"Mod needs an author");
         e.licences=strings(v.get("licences"),32,256);require(!e.licences.empty(),"Mod needs licence information");
         e.dependencies=strings(v.get("requires"),64,64,true);for(const auto& id:e.dependencies)require(identifier(id)&&id!=e.id,"Invalid mod dependency");
-        e.builds=strings(v.get("builds"),16,16,true);for(const auto& b:e.builds)require(b=="USA"||b=="EU","Unknown game build");
+        e.builds=strings(v.get("builds"),16,16,true);for(const auto& b:e.builds)require(b=="USA"||b=="EU"||b=="JP","Unknown game build");
         const auto& range=v.get("port_versions");require(range.type==json::Value::Object,"Missing port version range");
         e.minimum=Version::parse(text(range,"minimum",64));auto max=text(range,"maximum_exclusive",64,true);
         if(!max.empty()){e.maximum=Version::parse(max);e.bounded_maximum=true;require(e.maximum>e.minimum,"Empty port version range");}

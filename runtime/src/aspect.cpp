@@ -84,10 +84,10 @@ float gameplay_fov_scale() {
     // excluded. Never write the camera's authored FOV back into guest memory.
     const uint32_t play=GD(0x1046F0B0);
     const char* stage=reinterpret_cast<const char*>(mem::ptr(play+0x5134));
-    const uint32_t link=ld32(play+0x5B34);
+    const uint32_t link=ld32(play+GI(0x5B34));
     if(!*stage || !std::strncmp(stage,"sea_T",8) || !std::strncmp(stage,"Name",8) ||
-       !std::strncmp(stage,"ENDumi",8) || !link || ld32(play+0x5B2C)!=link ||
-       ld8(play+0x5292) || ld8(play+0x5BB2) || ld8(play+0x5BB3) ||
+       !std::strncmp(stage,"ENDumi",8) || !link || ld32(play+GI(0x5B2C))!=link ||
+       ld8(play+0x5292) || ld8(play+GI(0x5BB2)) || ld8(play+GI(0x5BB3)) ||
        ld8(play+0x5140+12) || ld32(GD(0x101F36CC)) || ld8(GD(0x101EA069)))return 1.0f;
     return scale;
 }

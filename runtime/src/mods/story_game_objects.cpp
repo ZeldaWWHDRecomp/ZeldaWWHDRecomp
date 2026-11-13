@@ -102,7 +102,7 @@ int batch_free(const std::string& kind) {
     };
     for (const auto& l : layouts) {
         if (kind != l.kind) continue;
-        const uint32_t packet = ld32(GD(0x1046F0B0) + l.pointer);  // dComIfGp_get{Grass,Tree,Wood,Flower}
+        const uint32_t packet = ld32(GD(0x1046F0B0) + GI(l.pointer));  // dComIfGp_get{Grass,Tree,Wood,Flower}
         if (!packet || (packet & 3) || packet < mem::kMem2Start || uint64_t(packet) + l.data + uint64_t(l.count) * l.stride > mem::kMem2End) return -1;
         int free = 0;
         for (uint32_t i = 0; i < l.count; ++i) free += !l.used(packet + l.data + i * l.stride);

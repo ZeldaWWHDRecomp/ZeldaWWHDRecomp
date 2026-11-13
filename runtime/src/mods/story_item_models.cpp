@@ -31,7 +31,7 @@ bool trace(){const char* v=std::getenv("WWHD_ITEM_TRACE");return v&&v[0]=='1'&&v
 Decl* definition(uint32_t key){for(auto&d:declarations)if(d.key==key)return &d;return nullptr;}
 std::string fingerprint(uint16_t key,const std::string&s,unsigned frames){return mods::hash::sha256_text(std::to_string(key)+":"+s+":"+std::to_string(frames));}
 bool valid(){auto*d=area?definition(ld32(area+4)):nullptr;return d&&ld32(area)==Magic&&std::memcmp(mem::ptr(area+280),d->hash.data(),64)==0&&std::memcmp(mem::ptr(area+Name),d->archive.c_str(),d->archive.size()+1)==0;}
-uint32_t link(){return ld32(GD(0x1046F0B0)+0x5B34);}
+uint32_t link(){return ld32(GD(0x1046F0B0)+GI(0x5B34));}
 bool exact(uint32_t a){return valid()&&span(a,0x8260)&&a==link()&&a==ld32(area+12)&&ld32(a+4)&&ld32(a+4)!=0xFFFFFFFFu&&ld32(a+4)==ld32(area+16)&&ld8(a+0x326)==ld32(area+352)&&std::memcmp(mem::ptr(area+480),mem::ptr(GD(0x1047E6B8)),8)==0&&ld16(a+0xE)==0xA8;}
 uint32_t free_space(Cpu*c,uint32_t heap){if(!span(heap,0x30))return 0;uint32_t vt=ld32(heap+0xC);if(!span(vt,0x78))return 0;uint32_t fn=ld32(vt+0x74);return fn?invoke(c,fn,{heap}):0;}
 bool release(Cpu*c){if(!valid())return true;

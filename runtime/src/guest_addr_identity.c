@@ -15,3 +15,5 @@ __attribute__((weak)) const uint32_t g_guest_code_lo = 0, g_guest_code_hi = 0;
 __attribute__((weak)) const uint32_t g_guest_data_lo = 0, g_guest_data_hi = 0;
 __attribute__((weak)) const GuestChanged g_guest_changed_code[] = {{0u, 0u}};
 __attribute__((weak)) const unsigned g_guest_changed_code_count = 0;
+__attribute__((weak)) const GuestChanged g_guest_removed_code[] = {{0u, 0u}};
+__attribute__((weak)) const unsigned g_guest_removed_code_count = 0;

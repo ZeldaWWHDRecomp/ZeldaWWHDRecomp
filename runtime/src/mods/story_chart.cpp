@@ -118,7 +118,7 @@ constexpr uint32_t kPartsLayout = 0x44, kLayoutAnimSet = 0xD4;
 constexpr uint32_t kFishAnim = 13, kFishSlot = 7;
 constexpr uint32_t kPaneScale = 0x34;
 constexpr uint32_t kIconPrimary = 0xB8;               // L_LinkPos_00: Link's icon in the balloon (trace: checks the mapping)
-const uint32_t kLinkPtr = GD(0x1046F0B0) + 0x5B34;  // g_dComIfG_gameInfo.play mpPlayerPtr[0]
+const uint32_t kLinkPtr = GD(0x1046F0B0) + GI(0x5B34);  // g_dComIfG_gameInfo.play mpPlayerPtr[0]
 
 // hdSeaChartMenu_c (hd_screen_sea_chart_menu.h) and library pane fields (hdPartsPaneSRT_c)
 constexpr uint32_t kMenuPanes = 0x50, kMainPane = 0x70;

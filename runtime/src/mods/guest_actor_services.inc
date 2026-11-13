@@ -146,7 +146,7 @@ int particle_room(Cpu* c){
     try{play=guest_call(c,GC(0x025200D4),{});}catch(...){*c=saved;return -1;}
     *c=saved;
     if(play<mem::kMem2Start||uint64_t(play)+0x5B38>mem::kMem2End)return -1;
-    const uint32_t link=ld32(play+0x5B34);
+    const uint32_t link=ld32(play+GI(0x5B34));
     if((link&3)||link<mem::kMem2Start||uint64_t(link)+0x327>mem::kMem2End||
        ld16(link+0xE)!=0x00A8||!ld32(link+4)||ld32(link+4)==0xFFFFFFFFu)return -1;
     const int room=int8_t(ld8(link+0x326));return room>=0&&room<=63?room:-1;

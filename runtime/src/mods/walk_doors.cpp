@@ -64,7 +64,7 @@ const uint32_t kDoor10Execute = GC(0x021277D0), kDoor12Execute = GC(0x02129830),
 PpcFunc g_knob_orig = nullptr;
 void f_021A5008_orig(Cpu* c) { g_knob_orig(c); }
 // Link: g_dComIfG_gameInfo.play mpPlayerPtr[0] (as story_chart.cpp)
-uint32_t link_actor() { return ld32(GD(0x1046F0B0) + 0x5B34); }
+uint32_t link_actor() { return ld32(GD(0x1046F0B0) + GI(0x5B34)); }
 // the fork's event_mode_now(): dComIfGp_event_runCheck, the event control's mode (0 no event; as jump.cpp)
 int event_mode_now() { return ld8(GD(0x1046F0B0) + 0x5292); }
 bool env_on(const char* n) {

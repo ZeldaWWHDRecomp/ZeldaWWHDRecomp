@@ -28,7 +28,8 @@ using namespace story_notebook;
 const uint32_t kPlay=GC(0x025200D4),kOrder=GC(0x0253EC0C),kCheckStart=GC(0x0253FD1C),kEnd=GC(0x0253EFA8);
 const uint32_t kCamera=GC(0x024F8044),kStopCamera=GC(0x02514F2C),kStartCamera=GC(0x02514F38),kSetCamera=GC(0x02514F50),kResetCamera=GC(0x02515048),kTrim=GC(0x02515280);
 const uint32_t kMessageManager=GD(0x101F4B5C),kMessage=GC(0x025F7DB0),kMessageStatus=GC(0x025F795C),kSetMessageStatus=GC(0x025F74D0),kResetMessage=GC(0x025F78C4),kFade=GC(0x025F069C);
-constexpr uint32_t kControl=0x51D0,kMode=0x5292,kOrderCount=0x5290,kStage=0x5134,kPlayer=0x5B34,kPos=0x314,kRoom=0x326;
+constexpr uint32_t kControl=0x51D0,kMode=0x5292,kOrderCount=0x5290,kStage=0x5134,kPos=0x314,kRoom=0x326;
+const uint32_t kPlayer=GI(0x5B34);
 const uint32_t kCalcTrim=GC(0x024FF8A0),kHideHud=GC(0x025916C4),kShowHud=GC(0x0259169C);
 const uint32_t kSearchActor=GC(0x025D54C4);
 const uint32_t kSetAnm=GC(0x022BED70),kPlayAnm=GC(0x022C2D6C),kPlayTex=GC(0x022C2CC0),kSetMtx=GC(0x022BF3A0),kPosMove=GC(0x025D6870),kGround=GC(0x024F08A8),kCollision=GC(0x022BF480);
@@ -219,7 +220,7 @@ public:
         std::memcpy(mem::ptr(g_scratch+32),mem::ptr(camera+0x10),24);
         std::memcpy(mem::ptr(g_scratch+16),mem::ptr(play+kStage),8);st8(g_scratch+24,ld8(ld32(play+kPlayer)+kRoom));
         st32(g_scratch+60,ld32(camera+0x600));st8(g_scratch+64,ld8(camera+4));
-        st32(g_scratch+148,ld32(camera+0x5FC));st32(g_scratch+152,ld32(camera+0x604));st8(g_scratch+156,ld8(play+0x5C22));
+        st32(g_scratch+148,ld32(camera+0x5FC));st32(g_scratch+152,ld32(camera+0x604));st8(g_scratch+156,ld8(play+GI(0x5C22)));
         call(kStopCamera,{camera});call(kTrim,{camera,2});call(kHideHud);
         g_active_input.store(true,std::memory_order_relaxed);
         LOG("[scenes] %s:%s started (native compulsory event / direct camera-message fallback)",g_entries[g_current].mod.c_str(),g_entries[g_current].scene.id.c_str());

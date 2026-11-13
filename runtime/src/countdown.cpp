@@ -29,7 +29,7 @@ void display(Cpu* c, const char* surface) {
         }
     }
     const uint32_t play = GD(0x1046F0B0);
-    const uint32_t timer = ld32(play + 0x5CF0);
+    const uint32_t timer = ld32(play + GI(0x5CF0));
     if (timer < mem::kMem2Start || timer >= mem::kMem2End - 0x136) return;
     const bool running = ld8(timer + kStatus) == 2 && ld8(timer + kStopped) == 0;
     const uint32_t native = c->r[7];

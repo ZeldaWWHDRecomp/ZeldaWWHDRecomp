@@ -80,11 +80,16 @@ def address_errors(source, name, mapping):
         if not any(lo <= m.start() < hi and wrapper == kind for lo, hi, wrapper in spans):
             errors.append(f"{name}:{line}: {a:08X} bypasses GC/GD")
         if not valid_address(mapping, kind, a):
-            errors.append(f"{name}:{line}: {a:08X} has no EUR mapping")
+            errors.append(f"{name}:{line}: {a:08X} has no {mapping.name} mapping")
         # Check the full address for declarations such as kPlay + field offset.
-        tail = re.match(r'\s*\+\s*(0x[0-9a-fA-F]+)', text[m.end():])
+        tail = re.match(r'\s*\)?\s*\+\s*(0x[0-9a-fA-F]+)', text[m.end():])
         if tail and not valid_address(mapping, kind, a + int(tail[1], 16)):
-            errors.append(f"{name}:{line}: derived address has no EUR mapping")
+            errors.append(f"{name}:{line}: derived address has no {mapping.name} mapping")
+        elif tail and kind == "data" and valid_address(mapping, kind, a) and \
+                mapping.data(a + int(tail[1], 16)) != mapping.data(a) + int(tail[1], 16):
+            # a member the build moved inside its object (the Japanese g_dComIfG_gameInfo): map the member
+            errors.append(f"{name}:{line}: {a:08X} + {tail[1]} moves in the {mapping.name} build; write "
+                          f"GI({tail[1]}) (guest_addr.h) or GD() of the member")
     return errors
 
 
@@ -114,16 +119,26 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(self.mapping.code(0x0275558C), 0x02755E48)
 
     def test_runtime_game_literals_are_wrapped_and_mapped(self):
-        errors = []
         root = ROOT / "runtime/src"
+        sources = []
         for path in sorted(root.rglob("*")):
             if path.suffix not in (".cpp", ".h", ".c", ".mm"):
                 continue
             name = path.relative_to(root).as_posix()
             if name.startswith(DECOMP_BUILD_ONLY):
                 continue
-            errors.extend(address_errors(path.read_text(encoding="utf-8"), name, self.mapping))
-        self.assertEqual(errors, [], "\n".join(errors))
+            sources.append((name, path.read_text(encoding="utf-8")))
+        for build in builds.all_builds():
+            if build.canonical:
+                continue
+            errors = [e for name, text in sources for e in address_errors(text, name, build)]
+            self.assertEqual(errors, [], "\n".join(errors))
+
+    def test_moved_members_are_mapped(self):
+        jp = builds.by_name("JP")
+        self.assertTrue(address_errors("ld32(GD(0x1046F0B0) + 0x5B34);", "new.cpp", jp))
+        self.assertEqual(address_errors("ld32(GD(0x1046F0B0) + GI(0x5B34));", "new.cpp", jp), [])
+        self.assertEqual(address_errors("ld32(GD(0x1046F0B0) + 0x5134);", "new.cpp", jp), [])  # not moved
 
     def test_canonical_dispatch_ids_are_explicit_and_mapped(self):
         # Canonical metadata must not be region-translated twice. The C++
@@ -139,14 +154,18 @@ class CoverageTests(unittest.TestCase):
 
     def test_portable_play_fields_keep_their_offsets(self):
         # The cutscene/rope gates and boat restoration derive addresses from kPlay.
-        # Mapping only its base is valid only while all those fields share its shift.
+        # Mapping only its base is valid only while all those fields share its shift; a field the
+        # Japanese build moved is written kPlay + GI(0x...) (guest_addr.h), which maps it too.
         source = (ROOT / "runtime/src/savestate.cpp").read_text(encoding="utf-8")
         base = int(re.search(r'kPlay\s*=\s*GD\(0x([0-9a-fA-F]+)\)', source)[1], 16)
         offsets = {int(m[1], 16) for m in re.finditer(r'\bkPlay\s*\+\s*0x([0-9a-fA-F]+)', source)}
-        self.assertGreaterEqual(len(offsets), 10)
-        for offset in offsets:
-            self.assertEqual(self.mapping.data(base + offset), self.mapping.data(base) + offset,
-                             f"portable-state field +{offset:X} crosses a data shift")
+        mapped = {int(m[1], 16) for m in re.finditer(r'\bkPlay\s*\+\s*GI\(0x([0-9a-fA-F]+)\)', source)}
+        self.assertGreaterEqual(len(offsets | mapped), 10)
+        for build in builds.all_builds():
+            for offset in offsets:
+                self.assertEqual(build.data(base + offset), build.data(base) + offset,
+                                 f"{build.name}: portable-state field +{offset:X} crosses a data shift; "
+                                 f"write kPlay + GI(0x{offset:X})")
 
     def test_decomp_only_blocks_are_the_only_exemption(self):
         raw = "uint32_t site = 0x0254465C;\n"

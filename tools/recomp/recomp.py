@@ -189,6 +189,7 @@ class Recompiler:
             (self.sites if site else self.hooks).add(addr)
         self._fixpoint()
         self._check_hooks(hook_entries)
+        self._check_names()
         self.decomp_hooks_file = decomp_hooks
         self.decomp, self.decomp_kept = set(), []
         self.hooked_rc = set()  # decomp build, `# hooked-body ADDR`: runtime-hooked functions whose original is decompiled
@@ -359,8 +360,38 @@ class Recompiler:
     def sym(self, addr):
         """The canonical (USA) address `addr` is named by: the same number for the USA build, the
         function's canonical address for any other. Generated symbols use it so that the runtime's
-        f_XXXXXXXX, hook_XXXXXXXX and site_XXXXXXXX never change with the build."""
-        return self.canon_of.get(addr) or self.build.canon_code(addr)
+        f_XXXXXXXX, hook_XXXXXXXX and site_XXXXXXXX never change with the build.
+
+        Code without a canonical counterpart -- a function only this build has, or an entry the
+        fixpoint found inside a function this build compiled differently -- is named
+        f_8XXXXXXX (builds.BUILD_ONLY | its own address), so it never takes a canonical name."""
+        canon = self.canon_of.get(addr)
+        if canon is not None:
+            return canon
+        if self._differs_inside(addr):
+            return game_builds.BUILD_ONLY | addr
+        return self.build.canon_code(addr)
+
+    def _differs_inside(self, addr):
+        """Is `addr` past the entry of a function this build compiled differently (its address)?"""
+        b = self.build
+        if not getattr(b, "differing", None):
+            return False
+        if not hasattr(self, "_other_differ"):
+            self._other_differ = sorted((o, o + s) for _, _, o, s in b.differing)
+            self._other_differ_starts = [o for o, _ in self._other_differ]
+        i = bisect.bisect_right(self._other_differ_starts, addr) - 1
+        return i >= 0 and self._other_differ[i][0] < addr < self._other_differ[i][1]
+
+    def _check_names(self):
+        """Two different addresses of this build must never get the same generated name."""
+        seen = {}
+        for a in sorted(self.entries | self.hooks | self.sites):
+            n = self.sym(a)
+            if n in seen and seen[n] != a:
+                raise SystemExit("%s build: %08X and %08X would both be named %08X" % (
+                    self.build.name, seen[n], a, n))
+            seen[n] = a
 
     def imp_name(self, slot):
         lib, name, kind = self.imports[slot]
@@ -611,6 +642,10 @@ class Recompiler:
         changed = ", ".join("{0x%08Xu, 0x%08Xu}" % (a, a + size) for a, size, _, _ in b.differing)
         f.write("const GuestChanged g_guest_changed_code[] = {%s};\n" % (changed or "{0u, 0u}"))
         f.write("const unsigned g_guest_changed_code_count = %d;\n" % len(b.differing))
+        # canonical functions the build does not have (the Japanese build): guest_code_valid() refuses them
+        removed = ", ".join("{0x%08Xu, 0x%08Xu}" % (a, a + size) for a, size in b.removed)
+        f.write("const GuestChanged g_guest_removed_code[] = {%s};\n" % (removed or "{0u, 0u}"))
+        f.write("const unsigned g_guest_removed_code_count = %d;\n" % len(b.removed))
 
     def write_report(self, outdir, nfiles):
         with _Output(os.path.join(outdir, "report.txt")) as f:

@@ -481,7 +481,7 @@ static void put_back_exact() {
 // blend can also snap internally (a >45 degree turn or abrupt collision zoom).
 float reticle_t() {
     if (!g_blend_draw) return 1.0f;
-    const uint32_t view = ld32(GD(0x1046F0B0) + 0x5FA4); // mDoLib_project's active view
+    const uint32_t view = ld32(GD(0x1046F0B0) + GI(0x5FA4)); // mDoLib_project's active view
     for (const auto& p : g_prev) {
         if (!p.cam || p.cam != view || p.drawn_pass != g_passes) continue;
         if (p.snap_step == g_logic_steps && p.snap) return 1.0f;
@@ -1936,7 +1936,7 @@ extern "C" void hook_0203593C(Cpu* c) {
         ~CountdownTrace() {
             static FILE* out = getenv("WWHD_COUNTDOWN_TRACE") ? fopen(getenv("WWHD_COUNTDOWN_TRACE"), "w") : nullptr;
             if (!out) return;
-            const uint32_t timer = ld32(GD(0x1046F0B0) + 0x5CF0);
+            const uint32_t timer = ld32(GD(0x1046F0B0) + GI(0x5CF0));
             if (timer < mem::kMem2Start || timer >= mem::kMem2End - 0x136) return;
             static bool paced = false;
             if (!paced && getenv("WWHD_COUNTDOWN_REALTIME")) {
@@ -2464,7 +2464,7 @@ extern "C" void hook_025D4654(Cpu* c) {
     // hold pass, phase, the status the draw saw (fopAcStts_NODRAW_e 0x01000000), the condition it left
     // (fopAcCnd_NODRAW 0x04: not drawn), drawn, the status before this hook and after the draw
     static FILE* link_trace = getenv("WWHD_INTERP_LINK_DRAW_TRACE") ? fopen(getenv("WWHD_INTERP_LINK_DRAW_TRACE"), "w") : nullptr;
-    if (link_trace && actor == ld32(GD(0x1046F0B0) + 0x5B34)) {
+    if (link_trace && actor == ld32(GD(0x1046F0B0) + GI(0x5B34))) {
         const uint32_t cond_after = ld32(actor + 0x2E4);
         fprintf(link_trace, "pass %llu step %llu interp %d hold %d phase %d status %08X cond %08X drawn %d in %08X after %08X link %08X\n",
                 (unsigned long long)interp::g_passes, (unsigned long long)interp::g_logic_steps, (int)interp::enabled(),
@@ -2635,7 +2635,7 @@ static void with_drawn_camera(Cpu* c, void (*orig)(Cpu*), const char* what, std:
     CamState exact[kCamSlots];
     bool swapped[kCamSlots] = {};
     // the game's camera (dComIfGp_getCamera(0): game info 1046F0B0 +0x5AF8), whose eye the sky's logic used
-    const uint32_t game_cam = ld32(GD(0x1046F0B0) + 0x5AF8);
+    const uint32_t game_cam = ld32(GD(0x1046F0B0) + GI(0x5AF8));
     int sky_slot = -1;
     for (int i = 0; i < kCamSlots; i++) {
         Prev& p = g_prev[i];

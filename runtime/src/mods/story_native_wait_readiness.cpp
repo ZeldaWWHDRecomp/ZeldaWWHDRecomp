@@ -101,7 +101,7 @@ Status Controller::inspect(Cpu*c){
   std::array<uint8_t,4>scalar{};if(!read(Initialized,scalar)||!word(scalar)||!read(Stage,scalar)||word(scalar)!=e.identity.stage||!read(Rooms+e.room_number*0x22C,scalar)||word(scalar)!=e.identity.room||!read(Play+0x5134,e.stage_name))return status_;
   std::array<uint8_t,8>stage{};std::copy(definitions_[0].stage.begin(),definitions_[0].stage.end(),stage.begin());if(e.stage_name!=stage)return status_;
   check_=Check::Link;
-  if(!read(Play+0x5B34,scalar))return status_;const uint32_t link=word(scalar);std::array<uint8_t,0x328>link_bytes{};if(link<mem::kMem2Start||uint64_t(link)+link_bytes.size()>mem::kMem2End||!read(link,link_bytes)||half(link_bytes,14)!=0xA8||!word(link_bytes,4)||word(link_bytes,4)==0xFFFFFFFFu||link_bytes[0x326]!=e.room_number)return status_;
+  if(!read(Play+GI(0x5B34),scalar))return status_;const uint32_t link=word(scalar);std::array<uint8_t,0x328>link_bytes{};if(link<mem::kMem2Start||uint64_t(link)+link_bytes.size()>mem::kMem2End||!read(link,link_bytes)||half(link_bytes,14)!=0xA8||!word(link_bytes,4)||word(link_bytes,4)==0xFFFFFFFFu||link_bytes[0x326]!=e.room_number)return status_;
   check_=Check::Control;
   // Retail talkEnd/endProc leave the last partner PIDs cached. Mode0 ignores
   // them; our genuine compulsory order will replace them with null partners.
@@ -112,7 +112,7 @@ Status Controller::inspect(Cpu*c){
   for(auto p:e.retail_manager)if(p>=arena_.allocation.address&&uint64_t(p)<uint64_t(arena_.allocation.address)+arena_.allocation.bytes)return status_;
   if(e.retail_current_event>=arena_.allocation.address&&uint64_t(e.retail_current_event)<uint64_t(arena_.allocation.address)+arena_.allocation.bytes)return status_;
   check_=Check::Camera;
-  if(!read(Play+0x5AF8,scalar))return status_;const uint32_t process=word(scalar);std::array<uint8_t,0xB28>raw{};if(process<mem::kMem2Start||uint64_t(process)+raw.size()>mem::kMem2End||!read(process,raw))return status_;
+  if(!read(Play+GI(0x5AF8),scalar))return status_;const uint32_t process=word(scalar);std::array<uint8_t,0xB28>raw{};if(process<mem::kMem2Start||uint64_t(process)+raw.size()>mem::kMem2End||!read(process,raw))return status_;
   const uint32_t profile=word(raw,0x10),name=half(raw,14);if((name!=0x1DC&&name!=0x1DD)||profile!=(name==0x1DC?Camera0:Camera1)||word(raw,0x228)!=Methods||word(raw,0x248)!=process||!word(raw,4)||word(raw,4)==0xFFFFFFFFu)return status_;
   std::array<uint8_t,0x40>meta{};std::array<uint8_t,20>methods{};if(!read(profile,meta)||half(meta,8)!=name||word(meta,0x10)!=0xB28||word(meta,0x3C)!=Methods||!read(Methods,methods))return status_;
   const std::array<uint32_t,5>functions={GC(0x025021A4),GC(0x02502288),GC(0x024FFA3C),GC(0x0250235C),GC(0x024FFC40)};for(unsigned n=0;n<5;++n)if(word(methods,n*4)!=functions[n])return status_;

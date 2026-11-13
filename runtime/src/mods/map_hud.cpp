@@ -52,7 +52,7 @@ void context(){
     ui=next_ui;hud=next_hud;compass=next_compass;map=next_map;coordinator=next_coord;
     compass_layout=next_cl;map_layout=next_ml;std::memcpy(stage,mem::ptr(play+0x5134),8);
     const auto gates=mods::game_ui_now();
-    eligible=compass&&(ld32(play+0x5CD8)&0x10000)&&!(ld32(play+0x5CD8)&0x202000)&&ld8(GD(0x1047B093))&&!ld8(play+0x514C)&&!mods::game_ui_hides_hud(gates);
+    eligible=compass&&(ld32(play+GI(0x5CD8))&0x10000)&&!(ld32(play+GI(0x5CD8))&0x202000)&&ld8(GD(0x1047B093))&&!ld8(play+0x514C)&&!mods::game_ui_hides_hud(gates);
     if(!eligible){lease.clear();suppressed.store(0,std::memory_order_release);}
 }
 // Enclose the native compass/clock pictures in their current global matrices.

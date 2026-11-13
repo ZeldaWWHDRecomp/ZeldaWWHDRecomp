@@ -8,7 +8,7 @@ bool capture(const story_native_event_memory::Read&read,const story_native_event
  if(!read||!story_native_event_arena::valid(l))return false;
  const auto inside=[&](uint32_t at){return at>=l.allocation.address&&uint64_t(at)<uint64_t(l.allocation.address)+l.allocation.bytes;};
  const uint32_t play=GD(0x1046F0B0);
- story_native_wait_run_footprint::Footprint f{{play+0x51D0,std::vector<uint8_t>(0x634)},{play+0x5AF8,std::vector<uint8_t>(4)}};
+ story_native_wait_run_footprint::Footprint f{{play+0x51D0,std::vector<uint8_t>(0x634)},{play+GI(0x5AF8),std::vector<uint8_t>(4)}};
  if(!read(f[0].address,f[0].bytes)||!read(f[1].address,f[1].bytes))return false;
  for(unsigned n=0;n<8;++n)if(inside(word(f[0].bytes,0xF4+n*4)))return false;
  if(inside(word(f[0].bytes,0xF4+0x53C)))return false;

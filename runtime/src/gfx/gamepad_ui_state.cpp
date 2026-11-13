@@ -38,7 +38,7 @@ void display_read_gamepad_ui() {
             // sets it while Link conducts with the Wind Waker; the song's end, a cancel and
             // dProcTalk_init clear it. The play object is the function-local static behind
             // dComIfGp_get (025200D4); before its first use the bytes are still zero.
-            const uint32_t metronome = ld8(GD(0x1046F0B0) + 0x5BD1);
+            const uint32_t metronome = ld8(GD(0x1046F0B0) + GI(0x5BD1));
             state.baton = gamepad_baton_state(descriptor, metronome != 0, controller);
             // Opt-in evidence for scripted menu/cutscene captures; no image measurements.
             static const bool trace = getenv("WWHD_TEST_GAMEPAD_UI_TRACE") != nullptr;

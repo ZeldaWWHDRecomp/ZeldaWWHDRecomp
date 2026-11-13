@@ -61,9 +61,9 @@ bool direction(uint32_t link, Direction& out) {
     if (!camera_directed_items() || overlay::blocks_input() ||
         !input::gameplay_focused() || !object(link,0x8000)) return false;
     const auto play = GD(0x1046F0B0);
-    if (ld32(play+0x5B34)!=link || ld8(play+0x5292) || ld32(play+0x52E4) || ld16(link+0x420) ||
+    if (ld32(play+GI(0x5B34))!=link || ld8(play+0x5292) || ld32(play+0x52E4) || ld16(link+0x420) ||
         ld32(link+0x65B0)) return false;
-    const auto process = ld32(play+0x5AF8);
+    const auto process = ld32(play+GI(0x5AF8));
     if (!object(process,0x248+0x8E0)) return false;
     const auto cam = process+0x248;
     // Native event ownership is bit 0x20000000 (024FA448); 0x20 is an ordinary mode-12

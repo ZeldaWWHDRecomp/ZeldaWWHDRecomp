@@ -1757,7 +1757,7 @@ interp::ChainCount g_chain_drawn;
 extern "C" void f_021768B0_orig(Cpu*);
 extern "C" void hook_021768B0(Cpu* c) {
     const uint32_t hs = ld32(c->r[3] + 0x18);
-    const uint32_t link = ld32(GD(0x1046F0B0) + 0x5B34);
+    const uint32_t link = ld32(GD(0x1046F0B0) + GI(0x5B34));
     if (!on(16) || !hs || !link) { f_021768B0_orig(c); return; }
     const uint32_t root = link + 0x72F0, tip = hs + 0x314, ang = hs + 0x328, cnt = hs + 0xD504;
     float r[3], p[3];

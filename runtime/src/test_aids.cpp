@@ -164,7 +164,7 @@ void tick(double t, bool ended) {
         const uint32_t window = ui ? ld32(ui + 0x1BC) : 0;
         if (trace) {
             fprintf(trace, "%.3f %llu %d status=%u next=%u f=%08X,%08X,%08X delay=%u,%u window=%u,%u rate=%.6f on=%u\n", t,
-                (unsigned long long)interp::logic_steps(), interp::hold_pass(), ld8(play + 0x5BE3), ld8(play + 0x514C),
+                (unsigned long long)interp::logic_steps(), interp::hold_pass(), ld8(play + GI(0x5BE3)), ld8(play + 0x514C),
                 f ? ld32(f) : 0, f ? ld32(f + 4) : 0, f ? ld32(f + 8) : 0, f ? ld32(f + 0x1C) : 0, mgr ? ld32(mgr + 0x448) : 0,
                 window ? ld8(window + 0xD1) : 0, window ? ld8(window + 0xD5) : 0,
                 (float)ldf32(GD(0x101D6160)), ld8(GD(0x101D616C)));
@@ -607,7 +607,7 @@ void logic_step(uint64_t step) {
         const uint32_t play = GD(0x1046F0B0);
         const unsigned event = ld8(play + 0x5292);
         const auto clock = game_clock::sample();
-        const auto link = ld32(play + 0x5B34);
+        const auto link = ld32(play + GI(0x5B34));
         fprintf(events, "%llu %u %u %u %lld %lld %u %llu\n", (unsigned long long)(step - g_origin_step), event,
                 mods::fast_forward_active(), clock.rate, (long long)clock.host, (long long)clock.guest,
                 interp::hold_pass(), (unsigned long long)interp::pass_count());
@@ -826,7 +826,7 @@ void reticle_targets(Cpu* cpu, uint32_t link) {
     if (filled == boom) return;
     struct Target { uint32_t actor; float distance; };
     std::vector<Target> candidates;
-    const uint32_t view = ld32(GD(0x1046F0B0) + 0x5FA4);
+    const uint32_t view = ld32(GD(0x1046F0B0) + GI(0x5FA4));
     if (!view) return;
     float eye[3], forward[3];
     for (int i = 0; i < 3; ++i) {

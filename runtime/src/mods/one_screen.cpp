@@ -36,9 +36,13 @@
 #include "../runtime.h"
 
 extern "C" void f_02618094_orig(Cpu* c);
-extern "C" void f_026D7828_orig(Cpu* c);
-extern "C" void f_026D6DD4_orig(Cpu* c);
-extern "C" void f_026D87D0_orig(Cpu* c);
+// the Options hooks are for the USA and European builds only (tools/recomp/hooks_options_order.txt): the Japanese
+// build's recompiled code has no originals for them and never calls the hooks below
+extern "C" {
+__attribute__((weak)) void f_026D7828_orig(Cpu*) {}
+__attribute__((weak)) void f_026D6DD4_orig(Cpu*) {}
+__attribute__((weak)) void f_026D87D0_orig(Cpu*) {}
+}
 
 namespace mods {
 namespace {

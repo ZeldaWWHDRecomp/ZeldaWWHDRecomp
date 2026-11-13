@@ -109,7 +109,7 @@ bool Adapter::ship(uint32_t at)const{
  std::array<uint8_t,4>global{},table{},global_after{},table_after{};
  std::array<uint8_t,0x328>first{},second{};
  std::array<uint8_t,0x28>meta{},meta_after{};
- if(!read(GD(0x1046F0B0)+0x5B3C,global)||word(global)!=at||
+ if(!read(GD(0x1046F0B0)+GI(0x5B3C),global)||word(global)!=at||
     !read(GD(0x101F3EE0)+ProfileId*4,table)||word(table)!=profile||
     !read(profile,meta)||half(meta,8)!=ProfileId||word(meta,0x10)!=0xD198||word(meta,0x24)!=methods||
     !read(at,first)||word(first,4)!=sources_.ship->pid||first[0xC]==3||first[0x5C]||
@@ -121,7 +121,7 @@ bool Adapter::ship(uint32_t at)const{
  // Only a readable status for a guaranteed nonmatching native lookup is issued;
  // no owned-object lease or cached borrow is inferred from this class prefix.
  if(!read(at,second)||second!=first||!active_layer(word(second,0x2C))||
-    !read(GD(0x1046F0B0)+0x5B3C,global_after)||global_after!=global||
+    !read(GD(0x1046F0B0)+GI(0x5B3C),global_after)||global_after!=global||
     !read(GD(0x101F3EE0)+ProfileId*4,table_after)||table_after!=table||
     !read(profile,meta_after)||meta_after!=meta)return false;
  return true;

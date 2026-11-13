@@ -29,8 +29,9 @@ class Registry(unittest.TestCase):
         names = {b.name for b in builds.all_builds()}
         self.assertIn("USA", names)
         self.assertIn("EU", names)
+        self.assertIn("JP", names)
         self.assertEqual(builds.by_title("0005000010143600").name, "EU")
-        self.assertIsNone(builds.by_title("0005000010143400"))  # Japan: no map yet
+        self.assertEqual(builds.by_title("0005000010143400").name, "JP")
         self.assertEqual(builds.by_name("eu").title_id, "0005000010143600")
         self.assertIsNone(builds.by_name("nonesuch"))
 
@@ -127,6 +128,61 @@ class Maps(unittest.TestCase):
         self.assertEqual(len(self.eu.differing), 18)
 
 
+class JapaneseMap(unittest.TestCase):
+    """The Japanese build (tools/recomp/builds/jp.json): six more functions than the USA build, and members of
+    g_dComIfG_gameInfo's dComIfG_play_c moved (mkbuildmap.py --layout; docs/builds.md)."""
+
+    GAME_INFO = 0x1046F0B0
+
+    def setUp(self):
+        self.jp = builds.by_name("JP")
+
+    def test_known_addresses(self):
+        self.assertEqual(self.jp.code(0x02000020), 0x02000020)
+        self.assertEqual(self.jp.code(0x025200D4), 0x025200D8)    # dComIfGp_get
+        self.assertEqual(self.jp.canon_code(0x025200D8), 0x025200D4)
+        self.assertEqual(self.jp.data(self.GAME_INFO), self.GAME_INFO)
+
+    def test_game_info_members_moved(self):
+        gi = self.GAME_INFO
+        self.assertEqual(self.jp.data(gi + 0x5134), gi + 0x5134)          # the stage name: before the shift
+        self.assertEqual(self.jp.data(gi + 0x5AAC), gi + 0x5AAC)
+        self.assertEqual(self.jp.data(gi + 0x5AB0), gi + 0x5AAC)          # from here 4 bytes earlier
+        self.assertEqual(self.jp.data(gi + 0x5B34), gi + 0x5B30)          # mpPlayerPtr[0]: Link
+        self.assertEqual(self.jp.data(gi + 0x5BEF), gi + 0x5BEA)          # the one member 5 bytes earlier
+        self.assertEqual(self.jp.data(gi + 0x5BF0), gi + 0x5BEC)
+        self.assertEqual(self.jp.data(gi + 0x62F4), gi + 0x62F0)          # its last word
+        self.assertEqual(self.jp.data(gi + 0x62F8), gi + 0x62F0)          # the next global: 8 bytes earlier
+        (layout,) = self.jp.layouts
+        self.assertEqual(layout["name"], "g_dComIfG_gameInfo")
+
+    def test_functions_only_one_build_has(self):
+        self.assertEqual(len(self.jp.removed), 8)
+        self.assertEqual(len(self.jp.inserted), 14)
+        removed, size = self.jp.removed[0]
+        self.assertTrue(self.jp.removed_function(removed + size - 4))
+        with self.assertRaisesRegex(ValueError, "does not have"):
+            self.jp.code(removed)
+        for addr, size in self.jp.inserted:
+            for a in (addr, addr + size - 4):
+                tag = self.jp.canon_code(a)
+                self.assertTrue(builds.Build.build_only(tag))     # never a canonical address (f_8XXXXXXX)
+                self.assertEqual(self.jp.code(tag), a)
+
+    def test_inverse_round_trip(self):
+        for a in list(self.jp._code.starts) + [a + 4 for a in self.jp._code.starts]:
+            if self.jp.body_differs(a) or self.jp.removed_function(a) or not self.jp.bounds["code"][0] <= a < self.jp.bounds["code"][1]:
+                continue
+            self.assertEqual(self.jp.canon_code(self.jp.code(a)), a, "%08X" % a)
+
+    def test_hooks_for_code_the_japanese_build_changed_are_skipped(self):
+        entries, skipped = builds.read_hooks(builds.hook_files(), self.jp)
+        self.assertIn(("hooks_language.txt", "USA"), skipped)
+        self.assertIn(("hooks_options_order.txt", "USA, EU"), skipped)
+        for site, canon, addr, where in entries:
+            self.assertFalse(self.jp.removed_function(canon), where)
+
+
 class Hooks(unittest.TestCase):
     """What the recompiler checks when it reads tools/recomp/hooks*.txt for a build."""
 
@@ -192,6 +248,20 @@ class NativeBoundaries(unittest.TestCase):
             output = StringIO()
             compiler.write_build_map(output)
             self.assertIn('const char g_guest_build_rpx_sha256[] = "%s";' % identity, output.getvalue())
+
+    def test_generated_map_lists_removed_functions(self):
+        from io import StringIO
+        from recomp import Recompiler
+        compiler = Recompiler.__new__(Recompiler)
+        for name, count in (('EU', 0), ('JP', 8)):
+            compiler.build = builds.by_name(name)
+            output = StringIO()
+            compiler.write_build_map(output)
+            text = output.getvalue()
+            self.assertIn('const unsigned g_guest_removed_code_count = %d;' % count, text)
+            self.assertIn('const GuestChanged g_guest_removed_code[] = {', text)
+        a, size = builds.by_name('JP').removed[0]
+        self.assertIn('{0x%08Xu, 0x%08Xu}' % (a, a + size), text)
 
     def test_hooks_and_sites_use_guarded_calls_in_each_symbol_map(self):
         from types import SimpleNamespace

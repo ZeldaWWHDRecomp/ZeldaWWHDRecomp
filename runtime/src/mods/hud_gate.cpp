@@ -39,7 +39,7 @@ namespace mods {
 namespace {
 const uint32_t kPlay = GD(0x1046F0B0);             // g_dComIfG_gameInfo.play
 constexpr uint32_t kEventRun = 0x5292;             // dComIfGp_event_runCheck (dEvt_control_c mode)
-constexpr uint32_t kMesgStatus = 0x5BB2, kScopeMesgStatus = 0x5BB3;  // dComIfGp_getMesgStatus (025F795C)
+const uint32_t kMesgStatus = GI(0x5BB2), kScopeMesgStatus = GI(0x5BB3);  // dComIfGp_getMesgStatus (025F795C)
 const uint32_t kMenuFlag = GD(0x101EA069);         // dMenu_flag (025986BC)
 const uint32_t kIngameUi = GD(0x101F8344);         // SCENE-ingame_ui (hdIngameUi_c*)
 const uint32_t kMenuRouting = GD(0x101F8348);      // 2: the pause/menu overlay is routed to the GamePad

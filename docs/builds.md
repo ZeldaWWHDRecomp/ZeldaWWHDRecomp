@@ -13,9 +13,10 @@ of hooks and the one runtime serve every build.
 |---|---|---|---|
 | USA (canonical) | `00050000-10143500` | `c4f0ab30…f16153` | the identity |
 | Europe | `00050000-10143600` | `f9f46173…6bbf0b` | `tools/recomp/builds/eu.json` |
+| Japan | `00050000-10143400` | `91183a3d…59de8f` | `tools/recomp/builds/jp.json` |
 
-Only version 0 of each (the disc or eShop release, without the update). Japan
-(`00050000-10143400`) has no map yet; see [Adding a build](#adding-a-build).
+Only version 0 of each (the disc or eShop release, without the update). The Japanese build is
+newer here and differs more than the European one; see [The Japanese build](#the-japanese-build).
 
 ## What the map is
 
@@ -43,7 +44,8 @@ python3 tools/recomp/mkbuildmap.py --check tools/recomp/builds/eu.json \
     usa/code/cking.rpx eur/code/cking.rpx       # re-derive and compare
 ```
 
-It refuses to write a map unless the two executables really are the same program:
+It refuses to write a map unless the two executables really are the same program (for the
+Japanese build, the relaxed form in [The Japanese build](#the-japanese-build)):
 
 - the same number of functions, in the same order;
 - every function whose body is unique within both builds is at the same index in both, which is
@@ -73,7 +75,9 @@ address where a regional build happens to allocate them.
 - **The runtime** gets the map as data in the generated `table.c` and translates the addresses it
   uses as values: `GC(…)` for code, `GD(…)` for data
   ([runtime/include/guest_addr.h](../runtime/include/guest_addr.h)). An offset inside an object does
-  not change with the build, so only the base of each object is translated. Linked without the game
+  not change with the build, so only the base of each object is translated, with one exception:
+  the members of `g_dComIfG_gameInfo` the Japanese build moved, which the runtime names by their
+  canonical offset through `GI(off)` (`ld32(play + GI(0x5B34))`: Link). Linked without the game
   code (unit tests, `stubgen.py`) the map falls back to the identity.
 - **A hooks file** may say which builds it is for:
 
@@ -89,6 +93,54 @@ address where a regional build happens to allocate them.
   compiled differently is refused by the recompiler, because it would patch different code. A hook
   on the *entry* of such a function wraps it whole, which usually still holds; the recompiler warns
   and notes it in `build/gen/report.txt`.
+
+## The Japanese build
+
+The Japanese executable has 37,772 functions to the USA build's 37,766, so the strict check above
+(same count, same order) cannot hold. `mkbuildmap.py` aligns the two by body instead and checks the
+pairing the same way (calls and global references), and a map may then also list:
+
+- `removed_functions`: canonical functions the build does not have (8). `code()` refuses them, and the
+  runtime's `guest_code_valid()` / `GC_OPTIONAL()` treat them as absent (`g_guest_removed_code`).
+- `inserted_functions`: functions only the build has (14). The recompiler names them
+  `f_8XXXXXXX` (`builds.BUILD_ONLY` | their own address), which no canonical name can be; so is an
+  entry the fixpoint finds inside a function the build compiled differently.
+- `layouts`: objects some of whose members moved. The Japanese `dComIfG_play_c` (in
+  `g_dComIfG_gameInfo` at `+0x12A0`) is 4 bytes shorter from gameInfo `+0x5AB0` on (5 at `+0x5BEF`),
+  so thousands of instructions reach those members with another displacement. A function whose
+  only difference is such a displacement counts as the same code (2,653 of them), and the member
+  shifts are part of the data map, so `GD(0x1046F0B0 + off)` and `GI(off)` give the right member.
+
+```sh
+python3 tools/recomp/mkbuildmap.py usa/code/cking.rpx jpn/code/cking.rpx --name JP \
+    --title 0005000010143400 --out tools/recomp/builds/jp.json \
+    --layout "g_dComIfG_gameInfo:1046F0B0:62F8:0+12A0:5AB0=-4+5BEF=-5+5BF0=-4"
+python3 tools/recomp/mkbuildmap.py --check tools/recomp/builds/jp.json \
+    usa/code/cking.rpx jpn/code/cking.rpx       # re-derive and compare (the layouts come from the map)
+```
+
+USA ↔ Japan: 35,069 functions with the same body, 2,653 that differ only by the moved members,
+36 that differ (mostly the message, text and language code and the Options window), 8 removed and 14
+inserted; 163,450 direct calls and 54,526 global addresses checked. One function (`025FD550`) calls a
+Japanese-only helper and is counted as differing.
+
+Tested on Windows (MSYS2 CLANG64, translated with `--mod-hooks`): a new game from the title screen, file
+select and name entry in kana (`WWHD_SWKBD_TEXT`), the prologue and the opening on Outset Island, with
+the play context (`WWHD_PLAYCTX_LOG=1`) reading Link, events and message windows through `GI()`. Later
+parts of the game are untested.
+
+What that means for the port on the Japanese build:
+
+- The Options window is Japanese code: One screen mode's "Options without Controller" hooks are for
+  the USA and European builds only (`tools/recomp/hooks_options_order.txt`), so on the Japanese
+  build the Controller item stays.
+- The game has its own (Japanese) text; a language source is refused, as on the European build.
+- Features written against message-window code the Japanese build changed (some story mods'
+  scene choices and demo windows: `story_scene_choice.cpp`, `story_demo.cpp`), the map HUD and the
+  randomizer are not available or untested there.
+- Guest mods are translated for the build, so their calls and globals map, but the SDK's
+  `WWHD_PLAY_*_OFFSET` constants (`runtime/guest/include/wwhd/`) are USA offsets: a mod that reads
+  those members directly reads the wrong ones on the Japanese build.
 
 ## Languages
 
@@ -108,8 +160,10 @@ lend a European or Japanese game's text to the USA code.
    (`tools/recomp/hooks.txt`), the save states
    (`runtime/src/savestate.cpp`), the mods, and the Cemu aspect-ratio pack
    (`runtime/src/mods/cemu_pack.cpp` picks the section for the build).
-4. The Japanese build also needs its own text handling: the port's region patch is written for the
-   USA code, and the Japanese font and message layouts are untested here.
+4. Check that no member of an object moved: `mkbuildmap.py` reports functions that differ only by
+   a displacement; if there are many, find the object and pass `--layout`
+   ([The Japanese build](#the-japanese-build)). `tools/recomp/test_coverage.py` then flags any
+   `GD(object) + offset` in the runtime whose member moves.
 
 ## Regression checks
 

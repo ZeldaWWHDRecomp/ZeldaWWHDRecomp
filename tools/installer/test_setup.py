@@ -701,10 +701,12 @@ class Titles(unittest.TestCase):
     def test_supported_ok(self):
         setup.check_title("0005000010143500")   # USA, the canonical build
         setup.check_title("0005000010143600")   # Europe (tools/recomp/builds/eu.json)
+        setup.check_title("0005000010143400")   # Japan (tools/recomp/builds/jp.json)
 
     def test_unsupported(self):
-        with self.assertRaisesRegex(setup.SetupError, "Japan.*can be built from"):
-            setup.check_title("0005000010143400")
+        with mock.patch.dict(setup.TITLE_IDS, {"0005000010143700": "Elsewhere"}):  # a region with no map
+            with self.assertRaisesRegex(setup.SetupError, "Elsewhere.*can be built from"):
+                setup.check_title("0005000010143700")
         with self.assertRaisesRegex(setup.SetupError, "not The Wind Waker HD"):
             setup.check_title("000500001010ec00")
 
@@ -746,9 +748,16 @@ class ArchiveTitles(unittest.TestCase):
         self.assertEqual(folder, "0005000010143600_v0")
         self.assertIn("the update for The Wind Waker HD (Europe), version 16", notes[0])
 
+    def test_japanese_archive(self):
+        jp, jp_update = _title("0005000010143400", 0), _title("0005000e10143400", 16)
+        folder, notes = setup.archive_choice(self.info([jp, jp_update], jp))
+        self.assertEqual(folder, "0005000010143400_v0")
+        self.assertIn("the update for The Wind Waker HD (Japan), version 16", notes[0])
+
     def test_other_region(self):
-        with self.assertRaisesRegex(setup.SetupError, "archive contains the Japan version"):
-            setup.archive_choice(self.info([_title("0005000010143400", 0), _title("0005000e10143400", 16)]))
+        with mock.patch.dict(setup.TITLE_IDS, {"0005000010143700": "Elsewhere"}):  # a region with no map
+            with self.assertRaisesRegex(setup.SetupError, "archive contains the Elsewhere version"):
+                setup.archive_choice(self.info([_title("0005000010143700", 0)]))
 
     def test_other_game(self):
         with self.assertRaisesRegex(setup.SetupError, "does not contain The Wind Waker HD.*title 00050000-1010EC00"):
