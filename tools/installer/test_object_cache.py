@@ -32,6 +32,10 @@ if "-E" in args:
     sys.stdout.write(pre); sys.exit(0)
 if "BROKEN" in text:
     print("error: broken"); sys.exit(1)
+flaky = os.environ["FAKE_CC_LOG"] + "." + os.path.basename(src) + ".failed"
+if "FLAKY" in text and not os.path.exists(flaky):  # fails the first time only (a compiler out of memory, a held file)
+    open(flaky, "w").close()
+    print("error: unable to open output file"); sys.exit(1)
 out = args[args.index("-o") + 1]
 with open(os.environ["FAKE_CC_LOG"], "a") as log:
     log.write(os.path.basename(src) + "\n")
@@ -111,6 +115,23 @@ class ObjectCache(unittest.TestCase):
             self.build(a, "o1")
         # (table.c and imports.c compiled and are kept; the broken source is not)
         self.assertEqual(len(list((self.data / "code-objects").glob("??/*.o"))), 2)
+
+    def test_a_file_that_fails_once_is_compiled_again_on_its_own(self):
+        # issue #552: a failure a second run of setup clears is retried once, one file at a time
+        a = self.gen("genA", {"code_000.c": "int a;", "code_001.c": "FLAKY"})
+        built = self.build(a, "o1")
+        self.assertEqual(sorted(built), ["code_000.c.o", "code_001.c.o", "imports.c.o", "table.c.o"])
+        self.assertEqual(self.compiled(), ["code_000.c", "code_001.c", "imports.c", "table.c"])
+        self.assertEqual(len(list((self.data / "code-objects").glob("??/*.o"))), 4)
+
+    def test_a_file_that_fails_twice_stops_setup_with_the_compiler_message(self):
+        a = self.gen("genA", {"code_000.c": "int a;", "code_022.c": "BROKEN"})
+        with self.assertRaises(setup.SetupError) as ctx:
+            self.build(a, "o1")
+        message = str(ctx.exception)
+        self.assertIn("compiling code_022.c failed", message)
+        self.assertIn("error: broken", message)
+        self.assertIn("exit code 1", message)
 
     def test_damaged_entry_and_trim(self):
         cache = object_cache.Cache(self.data / "c", "cc", ["-O3"], {})

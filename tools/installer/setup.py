@@ -1924,23 +1924,32 @@ def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress
     lock = threading.Lock()
     failures = []
 
+    def build_one(src, obj):
+        """(returncode, output) of one source: its cached object, else the compiler's."""
+        key = cache.key(tc.cc, flags, fwd(src), tc.env) if cache else None
+        if key and cache.fetch(key, obj):
+            return 0, ""
+        cmd = tc.cc + flags + ["-c", fwd(src), "-o", fwd(obj)]
+        try:
+            p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        except OSError as error:  # the compiler could not be started (blocked, removed)
+            return -1, "$ %s\n%s" % (" ".join(cmd), error)
+        out = p.stdout.decode("utf-8", "replace")
+        if p.returncode == 0 and key:
+            cache.store(key, obj)
+        if p.returncode != 0:
+            out = "$ %s\n(exit code %d)\n%s" % (" ".join(cmd), p.returncode, out)
+        return p.returncode, out
+
     def one(src):
         if cancel:
             cancel()
         obj = os.path.join(obj_dir, os.path.basename(src) + ".o")
-        key = cache.key(tc.cc, flags, fwd(src), tc.env) if cache else None
-        if key and cache.fetch(key, obj):
-            p, out = SimpleNamespace(returncode=0), ""
-        else:
-            cmd = tc.cc + flags + ["-c", fwd(src), "-o", fwd(obj)]
-            p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            out = p.stdout.decode("utf-8", "replace")
-            if p.returncode == 0 and key:
-                cache.store(key, obj)
+        rc, out = build_one(src, obj)
         with lock:
-            if p.returncode != 0:
-                failures.append((src, out))
-                LOG.write("$ " + " ".join(cmd) + "\n" + out)
+            if rc != 0:
+                failures.append(src)
+                LOG.write(out)
             done[0] += 1
             if progress:
                 progress(done[0], total)
@@ -1952,9 +1961,28 @@ def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress
     with ThreadPoolExecutor(max_workers=jobs) as ex:
         for f in as_completed([ex.submit(one, s) for s in srcs]):
             objs.append(f.result())
+    # Issue #552: a file that fails while many compilers run at once can compile on its own (a compiler out of
+    # memory beside the others, an object file a virus scanner or a cloud folder briefly holds). The generated
+    # code is the same on every run (the translator is deterministic), so a failure that a second run of setup
+    # clears is one of these. Failed files get one more try, one at a time, before setup gives up.
     if failures:
-        src, out = failures[0]
-        raise SetupError("compiling %s failed:\n%s" % (os.path.basename(src), "\n".join(out.strip().splitlines()[-20:])))
+        retry, failures[:] = sorted(failures), []
+        LOG.write("compile: %d file(s) failed; trying them again one at a time: %s"
+                  % (len(retry), ", ".join(os.path.basename(s) for s in retry)))
+        last = {}
+        for src in retry:
+            if cancel:
+                cancel()
+            rc, out = build_one(src, os.path.join(obj_dir, os.path.basename(src) + ".o"))
+            if rc != 0:
+                failures.append(src)
+                last[src] = out
+                LOG.write(out)
+        if failures:
+            src = failures[0]
+            raise SetupError("compiling %s failed:\n%s" % (os.path.basename(src),
+                                                           "\n".join(last[src].strip().splitlines()[-20:])))
+        LOG.write("compile: the second try compiled every file")
     if cache:
         cache.trim()
         LOG.write("object cache: %d of %d files from the cache" % (cache.hits, total))
@@ -3802,7 +3830,7 @@ def resolve_disc_keys(image, req, info_reader=None, file_reader=None):
     """Shared CLI/GUI/Android resolver. Returns keys, info, error, value-free notices.
 
     A common-key error proves the disc partition check passed. Find that disc
-    candidate once, then scan common candidates: O(disc + common), not O(n²).
+    candidate once, then scan common candidates: O(disc + common), not O(n^2).
     Explicit paste/single-key inputs take priority; multi-entry files can supply
     either missing key. Never return candidate values in diagnostics.
     """

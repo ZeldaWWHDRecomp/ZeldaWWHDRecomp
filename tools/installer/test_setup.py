@@ -2438,5 +2438,20 @@ class StoryNotebookStep(unittest.TestCase):
         self.assertIn("Mods menu", text)
 
 
+class ScriptsAreAscii(unittest.TestCase):
+    def test_setup_scripts_read_the_same_in_every_windows_language(self):
+        # issue #552 (where it was not the cause): the scripts setup runs and hashes stay plain ASCII, so a tool
+        # that reads one with the Windows language encoding gets the same text, and no file needs a BOM
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        names = []
+        for folder in ("tools", os.path.join("tools", "recomp"), os.path.join("tools", "installer")):
+            for name in sorted(os.listdir(os.path.join(root, folder))):
+                if name.endswith(".py") and not name.startswith("test_"):
+                    with open(os.path.join(root, folder, name), "rb") as f:
+                        if not f.read().isascii():
+                            names.append(os.path.join(folder, name))
+        self.assertEqual(names, [])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
