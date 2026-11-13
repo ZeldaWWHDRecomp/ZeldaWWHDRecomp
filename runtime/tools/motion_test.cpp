@@ -492,6 +492,21 @@ static void test_settings_and_sources() {
     mouse_motion(100, 0);
     g.frame(vpad(false));
     assert(close_to(g.yaw, -game_units_one_frame(5), 0.01f));
+    // the mouse camera aims in first person itself (issue #558): the mouse source then waits, the game's switch is
+    // its own again, and nothing reaches the virtual GamePad
+    motion::set_mouse_look(true);
+    assert(!mouse_drives_gyro());
+    assert(!motion::game_gyro_switch(false) && motion::game_gyro_switch(true));
+    g = {};
+    g.frame(vpad(false));
+    mouse_motion(100, 0);
+    g.frame(vpad(false));
+    assert(close_to(g.yaw, 0, 1e-4f));
+    motion::set_mouse_look(false);  // the mouse camera off again: the mouse source as before
+    assert(mouse_drives_gyro() && motion::game_gyro_switch(false));
+    mouse_motion(100, 0);
+    g.frame(vpad(false));
+    assert(close_to(g.yaw, -game_units_one_frame(5), 0.01f));
     set_aiming(false);
     // the right stick keeps the game from using the gyro: the status says so while aiming
     right_stick(0.5f, 0);

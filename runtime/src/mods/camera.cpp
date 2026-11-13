@@ -28,8 +28,15 @@
 //   paddling and salvage. rideCamera (0250D4E8) follows the ship while not looking around; it has
 //   no right-stick yaw/pitch or cLib_chaseF sites of its own. Sailing/paddling procedures 0x88/0x89
 //   are not item aiming: classifying them as aiming consumed the deltas before these sites ran.
-//   In first person (dCamera_c::subjectCamera 025071FC ran) the mouse drives both right-stick axes
-//   instead (rate control), which the game uses to look around / aim.
+//   In first person and every item aim (dCamera_c::subjectCamera 025071FC ran, or Link aims an item) the
+//   mouse turns the view directly, as in a PC shooter (issue #558): one point turns it by the sensitivity's
+//   degrees, the same as the follow camera, in every view (R3 look, bow, hookshot, boomerang, grappling hook,
+//   telescope, Picto Box). @02506CEC adds the turn to CalcSubjectAngle's GamePad (gyro) input, scaled by the
+//   live style's speed and yaw / pitch ranges and landed on whole game units (camera_mouse::subject_step), so the
+//   game's own limits stay; @02508380 / @025083C4 drop the drawn view's ease while the mouse looks around (and
+//   the yaw the ease used to hide, which the camera counts twice when Link turned himself). Measured (runs of
+//   issue #558): the right stick emulated before saturated at 12.5 points per step (3.6 degrees per step at most),
+//   and the view eased in over 5 steps.
 //   Boat cannon (Link procedure 0x8E) reads the left stick instead. Captured mouse movement
 //   feeds that stick while aiming the cannon; physical/keyboard left-stick input takes priority.
 //   Left click: while Link aims an item (bow, boomerang, hookshot, rope; procedures 0x76, 0x7D, 0x80-0x81,
@@ -46,8 +53,9 @@
 // Invert camera up/down (Controls; issue #167): the camera's own reads of the right stick's Y are
 //   negated (instruction hooks right after each call, camera_invert.h lists every reader and why),
 //   so first person, aiming and the follow/manual camera invert while the baton does not. The mouse
-//   follows: in first person through the synthetic right stick, in the follow camera through the
-//   sign of its pitch rate (site_0251053C).
+//   follows: in first person through the sign of its degrees (filter_pad), in the follow camera through the
+//   sign of its pitch rate (site_0251053C). The game's own aiming inversion (its options) is for the
+//   stick and, as with the gyro, does not apply to the mouse: the mouse looks the same way in every view.
 //   Manual styles can have descending latitude limits: limited_range_addition then reverses its
 //   delta. @02510DEC cancels that reversal for both inputs at the latitude call only, without
 //   changing the style's limits or its centre-height, radius and field-of-view input.
@@ -111,6 +119,12 @@ uint64_t g_r3_from = 0, g_r3_to = 0;  // steps during which R3 is held by the wh
 uint64_t g_r3_ready = 0;              // next step a wheel toggle may start
 bool g_synth = false;                 // filter_pad fed the mouse to the right stick this step
 uint64_t g_synth_step = ~0ull;
+// first person and item aims with the mouse camera (issue #558): this step's mouse movement in degrees (right, down
+// after the inversion setting) for CalcSubjectAngle (site_02506CEC), and the last step it turned the view
+float g_look_dx = 0, g_look_dy = 0;
+double g_look_rest_yaw = 0, g_look_rest_pitch = 0;  // game units carried to the next step (camera_mouse::subject_step)
+uint64_t g_look_step = ~0ull, g_look_used_step = ~0ull;
+bool g_subject_own_angle = false;  // subjectCamera computes the subject angle itself this step (Link did not)
 
 bool recent(uint64_t s, uint64_t n) { return s != ~0ull && step() <= s + n; }
 // the swing's degrees -> the swipe path's (mouse right = +): the camera's angle grows the other way (measured:
@@ -263,6 +277,7 @@ void filter_pad(input::PadState& s) {
     // which every item aim uses too
     const bool cannon = camera_mouse::cannon_aim(link_proc(), link_in_ship());
     const bool aim = !cannon && (in_first_person() || aiming_item(link_proc()));
+    motion::set_mouse_look(mouse_camera());  // the mouse camera aims itself: the Mouse aiming gyro source waits
     motion::set_aiming(aim);
     if (aim && trace_on()) {  // gyro measurements (docs/gyro.md): Link heading and body pitch, camera U / V while aiming
         static uint64_t traced = ~0ull;
@@ -295,7 +310,20 @@ void filter_pad(input::PadState& s) {
     const bool mouse_active = mouse_camera() && (mouse_captured() || test_mouse()) && !motion::mouse_drives_gyro();
     const bool swipe = recent(g_swipe_step, 8);
     if (!mouse_active) g_dx = g_dy = 0;
-    bool active = mouse_active || swipe;
+    // first person and item aims: the mouse turns the view directly, in degrees (site_02506CEC), not through a
+    // synthetic right stick. Once per logic step; movement the game does not take (its first-person transition)
+    // is dropped with the next step's.
+    const bool look = mouse_active && aim;
+    if (look && g_look_step != now) {
+        g_look_step = now;
+        const float sens = mouse_sensitivity();
+        g_look_dx = g_dx * sens;
+        g_look_dy = g_dy * sens * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
+        if (trace_on() && (g_look_dx != 0 || g_look_dy != 0)) trace("mouse look degrees right=%.3f down=%.3f", g_look_dx, g_look_dy);
+    }
+    if (look) g_dx = g_dy = 0;
+    else g_look_rest_yaw = g_look_rest_pitch = 0;
+    bool active = (mouse_active && !look) || swipe;
     bool stick_free = std::fabs(s.rx) < 0.2f && std::fabs(s.ry) < 0.2f;
     if (cannon && mouse_active) {
         // The cannon consumes left-stick input, not the camera's right stick or gyro. Consume
@@ -490,6 +518,62 @@ extern "C" void site_02506C68(Cpu* c) { camera_stick_y(c, "02506C68"); }  // dCa
 extern "C" void site_02506C80(Cpu* c) { camera_stick_y(c, "02506C80"); }  // the same, with the game's inverted-aiming option
 extern "C" void site_02171B1C(Cpu* c) { camera_stick_y(c, "02171B1C"); }  // new_himo2_move: rope-swing event camera
 
+// ---- First person and item aims with the mouse camera (issue #558; camera_mouse.h subject_step) ----
+// dCamera_c::CalcSubjectAngle (this: r27), its GamePad (gyro) branch: x (f22) and y (f0) are the GamePad's turn x 30,
+// before y's swim inversion (r31: swimming); f31 is the style's speed, f28 its yaw range, f27 its pitch range (the
+// swim one while swimming). The mouse's turn is added there, so the game's own clamps, pitch limits and zoom
+// slow-down still apply. The game takes this branch only with the right stick at rest (as the gyro): a pushed stick
+// aims instead. It runs twice a step when the camera asks too (Link, then the camera): the movement is used once.
+extern "C" void site_02506CEC(Cpu* c) {
+    const uint32_t cam = c->r[27];
+    const uint32_t style = ld32(cam + 0x384), flags = ld16(GD(0x1004487C) + style * 0x84 + 0x80);
+    if (flags & 0x20) return;  // a style that reads the input as an absolute angle (none of the game's subject styles)
+    double k = c->f[31].ps0;
+    // the telescope / Picto Box zoom slow-down, as the game applies it after this point (k x (1 - slow x zoom))
+    const uint32_t pad = ld32(cam + 0x124);
+    if ((flags & 0x10) && !(ld32(GD(0x1046F0B0) + pad * 16 + 0x5CD8) & 0x2000))
+        k = (float)(k - (float)(k * ldf32(cam + 0x770)) * ldf32(cam + 0x390));
+    float dx, dy;
+    camera_mouse::SubjectStep st;
+    {
+        std::lock_guard<std::mutex> lk(g_mu);
+        if (g_look_step == ~0ull || step() > g_look_step + 1) return;
+        dx = g_look_dx, dy = g_look_dy;
+        g_look_dx = g_look_dy = 0;
+        if (dx == 0 && dy == 0 && std::fabs(g_look_rest_yaw) < 0.5 && std::fabs(g_look_rest_pitch) < 0.5) return;
+        st = camera_mouse::subject_step(dx, dy, g_look_rest_yaw, g_look_rest_pitch, k, c->f[28].ps0, c->f[27].ps0,
+                                        ldf32(cam + 0x38C), c->r[31] != 0);
+        g_look_rest_yaw = st.rest_yaw, g_look_rest_pitch = st.rest_pitch;
+        g_look_used_step = step();
+    }
+    c->f[22].ps0 = c->f[22].ps1 = (float)(c->f[22].ps0 + st.x);
+    c->f[0].ps0 = c->f[0].ps1 = (float)(c->f[0].ps0 + st.y);
+    if (trace_on())
+        trace("mouse look right=%.3f down=%.3f style=%u k=%.5f yaw max=%.1f pitch max=%.1f x+=%.6f y+=%.6f rest %.3f %.3f",
+              dx, dy, style, k, c->f[28].ps0, c->f[27].ps0, st.x, st.y, st.rest_yaw, st.rest_pitch);
+}
+// dCamera_c::subjectCamera: the drawn view's ease towards those angles (cSAngle * f1, f1 = camera parameter 20), V
+// (02508380) and U (025083C4), outside the lock-on branch. While the mouse looks around the view follows at once.
+static bool mouse_looked() {
+    std::lock_guard<std::mutex> lk(g_mu);
+    return recent(g_look_used_step, 8);
+}
+extern "C" void site_02508380(Cpu* c) {
+    if (mouse_looked()) c->f[1].ps0 = c->f[1].ps1 = camera_mouse::kMouseViewEase;
+}
+// U: r3 points at the difference to ease (target - view, s16 at sp+0x12), sp+0x08 is the yaw the subject angle added
+// to Link's facing (angU). When Link turned himself this step (setBodyAngleToCamera: he called CalcSubjectAngle, the
+// camera did not), the target counts that turn twice: the camera's base (Link's new facing) plus angU (new - old).
+// The ease hid it (0.45 x 2 = 90 % of a step, then back); at once the view would jump twice as far and back, so the
+// view goes to Link's facing. The telescope and Picto Box (procScope: Link follows the camera) are right as they are.
+extern "C" void site_025083C4(Cpu* c) {
+    if (!mouse_looked()) return;
+    c->f[1].ps0 = c->f[1].ps1 = camera_mouse::kMouseViewEase;
+    if (g_subject_own_angle) return;
+    const uint32_t sp = c->r[1];
+    st16(sp + 0x12, (uint16_t)((int16_t)ld16(sp + 0x12) - (int16_t)ld16(sp + 0x08)));
+}
+
 // Logic-step camera measurements, enabled only by WWHD_MODS_TRACE.
 static void camera_trace(uint32_t cam, const char* mode, int16_t before) {
     if (!trace_on()) return;
@@ -517,7 +601,15 @@ extern "C" void hook_025071FC(Cpu* c) {
     if (g_subject_step == ~0ull || step() > g_subject_step + 2) trace("first person (subject camera) starts");
     g_subject_step = step();
     g_cam.store(c->r[3], std::memory_order_relaxed);
+    const uint32_t cam = c->r[3];
+    g_subject_own_angle = ld8(cam + 0x381) != 0;  // m37D: CalcSubjectAngle not yet run this step (site_025083C4)
     f_025071FC_orig(c);
+    if (trace_on()) {
+        const uint32_t style = ld32(cam + 0x384), row = GD(0x1004487C) + style * 0x84;
+        trace("subject: style %u flags %04X pitch max %.1f speed %.4f yaw max %.1f slow %.3f m384 %.5f m388 %.5f m38C %.3f U %d V %d",
+              style, ld16(row + 0x80), ldf32(row + 0x54), ldf32(row + 0x5C), ldf32(row + 0x68), ldf32(cam + 0x770),
+              ldf32(cam + 0x388), ldf32(cam + 0x38C), ldf32(cam + 0x390), (int16_t)ld16(cam + 0x42), (int16_t)ld16(cam + 0x40));
+    }
 }
 
 // daPy_Execute: Link (left click mapping, traces)

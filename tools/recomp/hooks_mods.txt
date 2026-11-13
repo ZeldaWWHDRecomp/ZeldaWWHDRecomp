@@ -23,6 +23,10 @@
 @02506C68 # dCamera_c::CalcSubjectAngle: after CPad_GET_SUBSTICK_POS_Y (first person / aiming)
 @02506C80 # dCamera_c::CalcSubjectAngle: the same on the game's inverted-aiming branch
 @02171B1C # new_himo2_move: after CPad_GET_SUBSTICK_POS_Y (rope-swing event camera)
+# Mouse camera in first person and item aims (issue #558; mods/camera.cpp)
+@02506CEC # dCamera_c::CalcSubjectAngle: gyro branch, x/y formed: the mouse's degrees (live style speed, yaw/pitch range)
+@02508380 # dCamera_c::subjectCamera: V ease factor (cSAngle * f1): 1 while the mouse looks around
+@025083C4 # dCamera_c::subjectCamera: U ease factor (cSAngle * f1): 1 while the mouse looks around
 0240EBB0  # daPy_Execute: Link (left click while aiming, traces)
 # Enemy lock-on (mods/lock_on.cpp): scale only category-2 horizontal distance predicates.
 024ECCFC  # judgementButton: R3 cycles the freshly rebuilt native enemy list before state update

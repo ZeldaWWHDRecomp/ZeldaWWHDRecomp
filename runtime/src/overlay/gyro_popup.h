@@ -76,8 +76,10 @@ inline bool dialog(bool open, motion::Settings& g, bool back) {
         help("How far one point of mouse movement turns the GamePad (before the sensitivity above). With Steam "
              "Input's gyro to mouse, tune this and Steam's own sensitivity together.");
         note("While the game aims (first person, bow, hookshot, boomerang, grappling hook, telescope, Picto Box), "
-             "the pointer is captured and the mouse turns the view, whether the game's Options > Gyro is on or off "
-             "(the mouse camera leaves the mouse alone then).");
+             "the pointer is captured and the mouse turns the view, whether the game's Options > Gyro is on or off. "
+             "With the Mouse camera on (Settings > Camera) you need none of this: the mouse camera aims in first "
+             "person itself, and this source waits. It is meant for Steam Input's gyro to mouse without the mouse "
+             "camera.");
     }
     if (g.source == motion::kCemuhook) {
         static char host[256] = "";
