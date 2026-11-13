@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Setup: a game-code file that fails to compile once is retried** (#563, thanks @LexBoosT, #552). If compiling
+  one of the game-code files fails during setup (for example when the PC briefly runs low on memory or a virus
+  scanner holds a file), setup now tries that file once more on its own before stopping. If it still fails, the
+  error shows the compiler's actual message, and setup.log records the full command.
+
 - **Mouse camera: first person and every aim turn like a PC shooter** (#561, thanks @Eggtooth, #558). With Mouse
   camera on, first person and every first-person aim (bow, hookshot, boomerang, grappling hook, telescope, Picto
   Box) turn directly with the mouse: a fixed angle per mouse movement (your Mouse sensitivity, the same as on foot),
