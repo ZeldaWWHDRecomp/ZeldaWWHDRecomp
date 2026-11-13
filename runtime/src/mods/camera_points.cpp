@@ -1,5 +1,6 @@
 // Decomp build: the port points of the decompiled camera code (the decompilation's port_hooks.h PORT_CAMERA_F,
-// PORT_CAMERA_W, PORT_CAMERA_AT, PORT_PROJECTION, PORT_CAMERA_MANUAL, PORT_CAMERA_RATE; port_sites.py). Each runs its
+// PORT_CAMERA_W, PORT_CAMERA_AT, PORT_PROJECTION, PORT_CAMERA_MANUAL, PORT_CAMERA_RATE, PORT_CAMERA_SUBJECT,
+// PORT_CAMERA_EASE; port_sites.py). Each runs its
 // instruction hook's handler (mods/camera.cpp, mods/targeting_letterbox.cpp, aspect.cpp) through port_points::run. In a
 // file of its own so that the tests that link one of those files alone do not need the others.
 #include <cstdint>
@@ -52,6 +53,45 @@ extern "C" unsigned wwhd_camera_word(Cpu* c, unsigned sp, unsigned site, unsigne
         return value;
     }
     port_points::unknown("camera", site);
+}
+
+// First person and item aims with the mouse camera (mods/camera.cpp, issue #558). dCamera_c::CalcSubjectAngle's GamePad
+// (gyro) turn, site_02506CEC: r27 the camera, f22 / f0 the turn x / y (the handler adds to them), f31 the style's speed,
+// f28 its yaw range, f27 its pitch range, r31 whether Link swims
+extern "C" void site_02506CEC(Cpu*);
+extern "C" void wwhd_camera_subject(Cpu* c, unsigned sp, unsigned site, unsigned obj, float* xy, float speed, float yaw,
+                                    float pitch, unsigned swim) {
+    if (site != 0x02506CEC) port_points::unknown("camera subject", site);
+    auto f = [](Cpu& r, int i, float v) { r.f[i].ps0 = r.f[i].ps1 = v; };  // lfs / fmuls results: both halves
+    port_points::run(c, sp, site_02506CEC,
+                     [&](Cpu& r) {
+                         r.r[27] = obj;
+                         r.r[31] = swim;
+                         f(r, 22, xy[0]); f(r, 0, xy[1]); f(r, 31, speed); f(r, 28, yaw); f(r, 27, pitch);
+                     },
+                     [&](Cpu& r) { xy[0] = (float)r.f[22].ps0; xy[1] = (float)r.f[0].ps0; });
+}
+// dCamera_c::subjectCamera's view ease (fast mode: hook_025071FC runs the decompiled body): f1 the factor of V
+// (site_02508380) and U (site_025083C4); U also corrects the difference it eases, which its hook reads at sp+0x12 with
+// the subject's yaw at sp+0x08: the point passes those two locals (DIFF, ANG) instead
+extern "C" void site_02508380(Cpu*);
+void subject_ease_u(Cpu* c, uint32_t diff, uint32_t ang);  // camera.cpp: site_025083C4's body
+extern "C" float wwhd_camera_ease(Cpu* c, unsigned sp, unsigned site, unsigned obj, float value, unsigned diff,
+                                  unsigned ang) {
+    (void)obj;
+    if (site == 0x02508380) {
+        port_points::run(c, sp, site_02508380, [&](Cpu& r) { r.f[1].ps0 = r.f[1].ps1 = value; },
+                         [&](Cpu& r) { value = (float)r.f[1].ps0; });
+        return value;
+    }
+    if (site != 0x025083C4) port_points::unknown("camera ease", site);
+    const Cpu saved = *c;
+    c->r[1] = sp;
+    c->f[1].ps0 = c->f[1].ps1 = value;
+    subject_ease_u(c, diff, ang);
+    value = (float)c->f[1].ps0;
+    *c = saved;
+    return value;
 }
 
 // view_setup / camera_draw, and the file select's dScnName_c::setView (aspect.cpp): the projection call's four float
