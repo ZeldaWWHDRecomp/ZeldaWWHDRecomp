@@ -4025,6 +4025,9 @@ target_sources(native_quiescence_test PRIVATE runtime/src/game_clock.cpp)
 # threads.cpp (included by the test) reads the calendar clock and the fixed-seed switch;
 # Windows' linker keeps those references, so link their sources.
 target_sources(native_quiescence_test PRIVATE runtime/src/hle/os_time.cpp runtime/src/fixed_seed.cpp)
+# ... and the full-state check's GC_OPTIONAL (thread_chain.h pair table) reads the guest address map:
+# the identity map's weak defaults (no game code linked in)
+target_sources(native_quiescence_test PRIVATE runtime/src/guest_addr_identity.c)
 
 # Decomp build fast mode, WWHD_DECOMP_FAST_MUTEX: the actual threads.cpp OSMutex code with its lock-free address cache
 # and the imports' direct host entries (built like native_quiescence_test, which includes threads.cpp the same way)
@@ -4048,6 +4051,7 @@ else()
     target_link_options(fast_mutex_test PRIVATE -Wl,--gc-sections)
 endif()
 target_link_libraries(fast_mutex_test PRIVATE Threads::Threads)
+target_sources(fast_mutex_test PRIVATE runtime/src/guest_addr_identity.c)  # (as native_quiescence_test)
 add_test(NAME decomp_fast_mutex COMMAND fast_mutex_test)
 
 # Cafe OS message queues (WWHD_MSGQ_FAST): the actual threads.cpp queue code, normal and decomp fast build, switch off and on
@@ -4060,7 +4064,8 @@ foreach(msgq_variant normal_off normal_on fast_off fast_on)
       runtime/src/mods/story_native_stage_owner.cpp
       runtime/src/game_clock.cpp
       runtime/src/hle/os_time.cpp
-      runtime/src/fixed_seed.cpp)
+      runtime/src/fixed_seed.cpp
+      runtime/src/guest_addr_identity.c)  # (as native_quiescence_test)
   target_include_directories(msgq_test_${msgq_variant} PRIVATE
       runtime/src runtime/include runtime/src/gx2
       runtime/third_party/cemu runtime/third_party/cemu/Cafe
