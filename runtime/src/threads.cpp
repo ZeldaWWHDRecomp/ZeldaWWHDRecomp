@@ -1978,7 +1978,9 @@ struct ThreadRec {
 bool equivalent_return(uint32_t a, uint32_t b) {
     static const std::array<std::array<uint32_t, 2>, 1> pairs = [] {
         std::array<std::array<uint32_t, 2>, 1> v{};
-        if (guest_code_range_ok(0x0275FFCC, 0x0276003C)) v[0] = {GC(0x0275FFEC), GC(0x02760020)};  // (whole function)
+        // only when the whole function keeps its layout in this build
+        const uint32_t lo = GC_OPTIONAL(0x0275FFCC), hi = GC_OPTIONAL(0x0276003C);
+        if (lo && hi && hi - lo == 0x70) v[0] = {GC(0x0275FFEC), GC(0x02760020)};
         return v;
     }();
     for (auto& p : pairs)
