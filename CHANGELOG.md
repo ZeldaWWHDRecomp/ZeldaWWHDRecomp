@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mouse camera: first person and every aim turn like a PC shooter** (#561, thanks @Eggtooth, #558). With Mouse
+  camera on, first person and every first-person aim (bow, hookshot, boomerang, grappling hook, telescope, Picto
+  Box) turn directly with the mouse: a fixed angle per mouse movement (your Mouse sensitivity, the same as on foot),
+  with no stick emulation, acceleration or easing, and no gyro setup. The game's own limits still apply. Up/down
+  follows Invert camera up/down, the same as on foot.
+
 - **Mouse aiming works with the game's Options › Gyro off** (#560, thanks @Eggtooth, #525). With the gyro source
   "Mouse aiming", the mouse now aims in first person and with the bow, hookshot, boomerang and grappling hook
   even when the game's own Gyro option is off. Your game's options and save are not changed, and controller gyro
