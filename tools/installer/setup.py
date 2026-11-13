@@ -3354,6 +3354,15 @@ def main():
                     help="with --apple-device: keep the save in this iCloud container's iCloud Drive folder "
                     "(iCloud.<...>, of your team, on the apps' App IDs; \"\" for none; kept for next time)")
     ap.add_argument("--apple-no-install", action="store_true", help="with --apple-device: build and sign the app only")
+    ap.add_argument("--apple-save", choices=("backup", "to-device", "from-device"),
+                    help="with --apple-device: back up the device app's save and settings to this Mac, copy this Mac's "
+                    "save to the device app, or the device app's save to this Mac (whatever is replaced is backed up "
+                    "first; refused while the game is open)")
+    ap.add_argument("--apple-save-settings", action="store_true",
+                    help="with --apple-save to-device: also the settings (display.plist, controls.json) and save states")
+    ap.add_argument("--apple-save-from-app", metavar="BUNDLE_ID",
+                    help="with --apple-save to-device: take the save (and settings) from that other app on the device "
+                    "instead of this Mac, e.g. one installed under an earlier bundle identifier")
     ap.add_argument("--apple-status", action="store_true",
                     help="macOS: print, as JSON, whether the Apple TV and iPhone / iPad apps can be built and installed "
                     "here (Xcode, signing, this Mac's game and mods, the devices) and what they would hold; with "
@@ -3570,6 +3579,18 @@ def run(args, ui):
         import apple_device
         log = lambda s: (say(s), LOG.write(s))
         try:
+            if args.apple_save:
+                ids = apple_device.settings(ctx, bundle_prefix=args.apple_bundle_prefix,
+                                            icloud=args.apple_icloud_container, team=args.apple_team)
+                kw = dict(device=args.apple_device_id, bundle_prefix=ids["bundle_prefix"], log=log)
+                if args.apple_save == "backup":
+                    apple_device.backup_device(sys.modules[__name__], ctx, args.apple_device, **kw)
+                elif args.apple_save == "to-device":
+                    apple_device.save_to_device(sys.modules[__name__], ctx, args.apple_device, settings=args.apple_save_settings,
+                                                from_app=args.apple_save_from_app, **kw)
+                else:
+                    apple_device.save_from_device(sys.modules[__name__], ctx, args.apple_device, **kw)
+                return 0
             if args.apple_install_only:
                 apple_device.install_app(sys.modules[__name__], ctx, args.apple_device, device=args.apple_device_id, log=log)
                 return 0
@@ -3861,6 +3882,8 @@ def after_install(ctx, args, ui, state, source):
 #   apple_build  {app: tv|iphone, team?, bundle_prefix?, icloud?}
 #                                        -> streams step/log, then app {path, version, build, mods, signed}
 #   apple_install {app, device}          -> streams log, then device; refuses while the game runs there
+#   apple_save {app, device, action: backup|to-device|from-device, settings?, from_app?}
+#                                        -> streams log, then result (apple_device.py saves; backs up first)
 #   quit         {}
 # Keys never leave this process: they are not logged, not echoed, not written to disk.
 
@@ -4254,6 +4277,23 @@ def gui_main(args):
                                         icloud=ids["icloud"] or None))
         apple_call(req, run)
 
+    def do_apple_save(req):
+        """{app, device, action: backup|to-device|from-device, settings?, from_app?} -> streams log, then {result}"""
+        def run(ad):
+            kw = dict(device=req.get("device"), bundle_prefix=apple_ids(ad, req)["bundle_prefix"], log=apple_log)
+            action = req.get("action")
+            if action == "backup":
+                result = str(ad.backup_device(sys.modules[__name__], ctx, req.get("app"), **kw))
+            elif action == "to-device":
+                result = ad.save_to_device(sys.modules[__name__], ctx, req.get("app"), settings=bool(req.get("settings")),
+                                           from_app=req.get("from_app") or None, **kw)
+            elif action == "from-device":
+                result = ad.save_from_device(sys.modules[__name__], ctx, req.get("app"), **kw)
+            else:
+                return fail(req, "failed", "Unknown save action")
+            reply(req, result=result)
+        apple_call(req, run)
+
     def do_apple_install(req):
         """{app: tv|iphone, device} -> streams log, then {device}; refuses while the game runs there"""
         apple_call(req, lambda ad: reply(req, device=ad.install_app(sys.modules[__name__], ctx, req.get("app"),
@@ -4386,7 +4426,8 @@ def gui_main(args):
                 "rando_state": do_rando_state, "rando_change": do_rando_change, "rando_make": do_rando_make,
                 "rando_play": do_rando_play, "rando_delete": do_rando_delete, "rando_import": do_rando_import,
                 "apple_status": do_apple_status, "apple_device_state": do_apple_device_state,
-                "apple_build": do_apple_build, "apple_install": do_apple_install}
+                "apple_build": do_apple_build, "apple_install": do_apple_install,
+                "apple_save": do_apple_save}
     hello()
     for line in sys.stdin:
         line = line.strip()

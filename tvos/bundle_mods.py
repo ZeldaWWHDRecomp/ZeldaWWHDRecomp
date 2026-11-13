@@ -45,6 +45,16 @@ def compiler(app):
                       "arm64-apple-%s%s" % (os_name, info.get("MinimumOSVersion", "17.0")), "-DWWHD_TVOS=1"]
 
 
+def package_fingerprint(package):
+    """the mod manager's fingerprint of a package (packages.cpp package_fingerprint): what the player trusted"""
+    files = {}
+    for root, dirs, names in os.walk(package):
+        for n in names:
+            p = Path(root) / n
+            files[p.relative_to(package).as_posix()] = hashlib.sha256(p.read_bytes()).hexdigest()
+    return hashlib.sha256("".join(n + "\0" + h + "\n" for n, h in sorted(files.items())).encode()).hexdigest()
+
+
 def plan(manager):
     """what goes into the app from the active profile: (profiles with the left-out mods switched off,
     [(id, package folder, guest base)] to build, [{id, name, reason}] left out). setup's apple_device.py
@@ -52,6 +62,7 @@ def plan(manager):
     profiles = json.loads((manager / "profiles.json").read_text(encoding="utf-8"))
     profile = profiles["profiles"][profiles["active"]]
     regions = profiles.get("guest_regions", {})
+    trust = profiles.get("native_trust", {})
     out, left_out = [], []
     for mod_id, on in sorted(profile.get("enabled", {}).items()):
         if not on:
@@ -66,6 +77,10 @@ def plan(manager):
             reason = "its package is missing from the mod manager"
         elif manifest.get("kind") != "guest":
             continue
+        elif trust.get(mod_id) != package_fingerprint(package):
+            # the game on the Mac loads a code mod only once the player confirmed it (Mods menu), and gives it
+            # its place only then
+            reason = "it isn't confirmed in this Mac's game yet (start the game, open Mods and confirm it)"
         elif mod_id not in regions:
             # not set up on the Mac yet (the app would refuse it); setup's build starts the Mac's game to set it up
             reason = "it has no guest address yet (the game on this Mac gives it one when it starts with the mod on)"
@@ -73,7 +88,9 @@ def plan(manager):
             out.append((mod_id, package, int(regions[mod_id]["base"])))
             continue
         profile["enabled"][mod_id] = False  # off in the app's profile
-        left_out.append({"id": mod_id, "name": name, "reason": reason, "needs_address": mod_id not in regions and manifest is not None})
+        left_out.append({"id": mod_id, "name": name, "reason": reason,
+                         "needs_address": mod_id not in regions and manifest is not None and "confirmed" not in reason,
+                         "needs_trust": "confirmed" in reason})
     return profiles, out, left_out
 
 

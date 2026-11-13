@@ -100,10 +100,10 @@ def signing_identities():
     return ids
 
 
-def find_profile(platform, bundle_id, team=None, now=None, icloud=None):
+def find_profile(platform, bundle_id, team=None, now=None, icloud=None, device=None):
     """The best development profile for the app on PLATFORM ("tvOS" / "iOS"): one of TEAM (any team when None)
     whose App ID covers BUNDLE_ID, not expired, with a certificate whose identity is in the keychain, and (ICLOUD)
-    carrying that iCloud container.
+    carrying that iCloud container, and (DEVICE: a UDID) listing that device.
     Returns (profile path, its plist, signing identity SHA-1) or raises."""
     import datetime
     now = now or datetime.datetime.now(datetime.timezone.utc)
@@ -128,6 +128,8 @@ def find_profile(platform, bundle_id, team=None, now=None, icloud=None):
                 continue
             if not ents.get("get-task-allow"):
                 continue  # a distribution profile: devices need a development one
+            if device and not prof.get("ProvisionsAllDevices") and device not in prof.get("ProvisionedDevices", []):
+                continue
             if icloud and (icloud not in ents.get("com.apple.developer.icloud-container-identifiers", []) or
                            (platform == "iOS" and icloud not in ents.get("com.apple.developer.ubiquity-container-identifiers", []))):
                 continue
@@ -285,7 +287,7 @@ def user_dir(setup, ctx):
 
 def shader_generation(data_dir, user_dir):
     """this Mac's active shader generation folder (None when setup had no shader template to prepare one: then
-    only the shaders the Mac's game has met go in) and its live cache folder (shader_prebuild.py)"""
+    the device library comes from the live cache: the models step and play) and its live cache folder"""
     root = Path(user_dir) / "shader-prebuild"
     live = root / "live"
     try:
@@ -295,9 +297,56 @@ def shader_generation(data_dir, user_dir):
     gen = root / active.get("generation", "")
     if active.get("generation") and (gen / "headstart.bin").is_file():
         return gen, live
-    if (live / "shaders.bin").is_file() and (live / "shaders.bin").stat().st_size > 0:
-        return None, live
-    raise Error("This Mac's game has no shaders yet: start the game and play for a while first")
+    return None, live  # (no template: the build's models step and play record the shaders)
+
+
+def sweep_models(setup, ctx, log):
+    """The models step of shader preparation (model_sweep.py: the game draws every object's models once, hidden, and
+    the live cache records their shaders), for this Mac's game when it hasn't run for this game and build. Only the
+    player's own game files are used, so it works without the shader template too. Resumes where it stopped; the
+    device's library then covers what it recorded."""
+    import shader_prebuild
+    import model_sweep
+    root = Path(user_dir(setup, ctx)) / "shader-prebuild"
+    exe = setup_game_exe(setup, ctx)
+    template = Path(setup.PKG) / "tools" / "shadercache" / "template.bin"
+    try:
+        wanted = shader_prebuild.identity(ctx.game_dir, template if template.is_file() else None, setup.PKG, "metal")
+    except (OSError, ValueError) as e:
+        log("models step skipped: %s" % e)
+        return
+    pipeline = shader_prebuild.pipeline_identity_of(exe)
+    wanted["runtime"] = ("pipeline:" + pipeline) if pipeline else shader_prebuild.file_hash(exe)
+    # with the particle pass: every effect of the common and title particle resources (dsweep.cpp), what actors
+    # and the world spawn while running; a device can't afford to compile them during play
+    wanted["particles"] = True
+    ident = model_sweep.identity_of(wanted, "metal")
+    if model_sweep.status(root, "metal", ident) == "done":
+        return
+    log("drawing the game's models once on this Mac, so the device's shader library covers them (the first time "
+        "takes a while; it resumes if stopped)")
+    env = shader_prebuild.cache_environment(root / "no-generation", ctx.game_dir, "metal")
+    shown = [-1]
+
+    def line(text):
+        parsed = shader_prebuild.parse_progress(text)
+        if parsed and parsed[1]:
+            pct = parsed[0] * 100 // parsed[1]
+            if pct >= shown[0] + 5:
+                shown[0] = pct
+                log("models: %d%%" % pct)
+
+    before = os.environ.get("WWHD_SETUP_MODEL_SWEEP_PARTICLES")
+    os.environ["WWHD_SETUP_MODEL_SWEEP_PARTICLES"] = "1"
+    try:
+        result = model_sweep.run(exe, ctx.game_dir, str(root), "metal", ident, env, line=line, log=log,
+                                 processes=model_sweep.processes(1))
+    finally:
+        if before is None:
+            os.environ.pop("WWHD_SETUP_MODEL_SWEEP_PARTICLES", None)
+        else:
+            os.environ["WWHD_SETUP_MODEL_SWEEP_PARTICLES"] = before
+    log("models step: %s" % result)
 
 
 def build_shader_library(setup, ctx, sdk, out, env, log):
@@ -321,7 +370,8 @@ def build_shader_library(setup, ctx, sdk, out, env, log):
             # no head start: the warm writes the live cache's shaders only
             wenv = dict(os.environ, **shader_prebuild.cache_environment(live.parent / "no-generation", ctx.game_dir, "metal"))
             wenv["WWHD_HEADSTART"] = "0"
-            log("no prepared shader generation: the library holds only the shaders this Mac's game has met")
+            log("no shader template here: the library holds the shaders this Mac's game has recorded (the models "
+                "step and play)")
         wenv.update(WWHD_SHADERLIB_SOURCES=str(sources), WWHD_SHADERLIB="0", WWHD_RENDERER="metal")
         log("writing the game's shaders (Metal warm of %s)" % exe)
         shader_prebuild.run_process([exe, "--game", ctx.game_dir, "--warm-shaders"], wenv, lambda: False, lambda line: None)
@@ -508,7 +558,7 @@ def report(setup, ctx, team=None, bundle_prefix="org.wwhdrecomp", icloud=None):
         shader_generation(ctx.data_dir, user_dir(setup, ctx))
         gen, _ = shader_generation(ctx.data_dir, user_dir(setup, ctx))
         shaders = check(True, "This Mac's shaders are prepared" if gen else
-                        "This Mac's game has met some shaders (no prepared shaders: the rest compile on the device)")
+                        "No shader template: the build draws the game's models on this Mac for the device's shaders")
     except Error as e:
         shaders = check(False, "", str(e), "Start the game on this Mac and play for a while")
     out["mac"] = {"game": game, "shaders": shaders}
@@ -550,14 +600,15 @@ def report(setup, ctx, team=None, bundle_prefix="org.wwhdrecomp", icloud=None):
             c["signing"] = check(True, "Signing as %s (%s), profile %s until %s" % (
                 a["signing"]["identity"], a["signing"]["team_name"] or a["signing"]["team"], a["signing"]["profile"],
                 str(prof.get("ExpirationDate", ""))[:10]))
-        except Error as e:
-            if icloud:
-                c["signing"] = check(False, "", "No %s development profile for %s with the iCloud container %s"
-                                     % (platform, bundle_id, icloud), str(e))
-            else:
-                c["signing"] = check(False, "", "No %s development profile with its certificate in this Mac's keychain" % platform,
-                                     "Open Xcode, sign in to your Apple Developer account (Settings > Accounts), and build "
-                                     "any %s app for your device once so Xcode makes the team's profile" % platform)
+        except Error:
+            try:
+                found_team = team_of(platform, team)
+                c["signing"] = check(True, "The build registers %s%s with your team (%s) through Xcode" % (
+                    bundle_id, " and iCloud " + icloud if icloud else "", found_team))
+            except Error:
+                c["signing"] = check(False, "", "No %s development certificate in this Mac's keychain" % platform,
+                                     "Open Xcode, sign in to your Apple Developer account (Settings > Accounts), and "
+                                     "build any %s app for your device once so Xcode makes your certificate" % platform)
         needed = [out["xcode"]["check"], game, shaders] + list(c.values())
         a["problems"] = [x["text"] for x in needed if not x["ok"]]
         a["ready"] = not a["problems"]
@@ -619,13 +670,196 @@ def device_state(setup, ctx, which, device, bundle_prefix="org.wwhdrecomp"):
     return out
 
 
+# ------------------------------------------------------------------------------------------------------- saves
+# The save between this Mac's game and a device's app: the save's user/*.sav files, copied with devicectl into or
+# out of the app's container (an app installed by this developer team only). Whatever a copy replaces is backed
+# up on the Mac first (data/apple/backups). A device app that keeps its save in iCloud Drive (iPhone, iPad) has it
+# in this Mac's iCloud Drive folder too: the copy goes there, and iCloud brings it to the device.
+
+SETTINGS_FILES = ("display.plist", "controls.json")
+
+
+def mac_save_dir(setup, ctx):
+    """the folder this Mac's game keeps its save in: Settings > Saves' choice, else data/save"""
+    try:
+        with open(os.path.join(user_dir(setup, ctx), "save-folder.json"), encoding="utf-8") as f:
+            folder = json.load(f).get("folder", "")
+        if folder:
+            return Path(folder)
+    except (OSError, ValueError):
+        pass
+    return Path(ctx.data_dir) / "save"
+
+
+def mac_game_running(setup, ctx):
+    exe = os.path.join(ctx.data_dir, "bin", ctx.manifest["exe"])
+    return any(subprocess.run(["pgrep", "-f", e], stdout=subprocess.DEVNULL).returncode == 0
+               for e in {exe, setup_game_exe(setup, ctx)})
+
+
+def _copy_from(env, device, bundle_id, source, dest):
+    p = subprocess.run(["xcrun", "devicectl", "device", "copy", "from", "--device", device, "--domain-type",
+                        "appDataContainer", "--domain-identifier", bundle_id, "--source", source, "--destination",
+                        str(dest)], env=env, capture_output=True, text=True)
+    return p.returncode == 0 and Path(dest).exists()
+
+
+def _copy_to(env, device, bundle_id, source, dest):
+    p = subprocess.run(["xcrun", "devicectl", "device", "copy", "to", "--device", device, "--domain-type",
+                        "appDataContainer", "--domain-identifier", bundle_id, "--source", str(source), "--destination",
+                        dest], env=env, capture_output=True, text=True)
+    if p.returncode != 0:
+        raise Error("Copying %s to the device failed: %s" % (Path(source).name, (p.stderr or p.stdout).strip()[-300:]))
+
+
+def _sav_files(folder):
+    user = Path(folder) / "user"
+    return sorted(p for p in user.glob("*.sav") if p.is_file()) if user.is_dir() else []
+
+
+def _device_target(setup, ctx, which, device, bundle_prefix):
+    kind, sdk, platform, suffix = KINDS[which]
+    xc = xcode_info()
+    if not xc:
+        raise Error("Xcode isn't installed")
+    env = xcode_env(xc["developer_dir"])
+    target = pick_device(platform, device, env)
+    return env, target, "%s.%s" % (bundle_prefix, suffix), ctx.manifest.get("apple", {}).get(kind, {}).get("exe", "WindWakerHD")
+
+
+def _not_running(env, target, exe):
+    try:
+        if running(target["id"], exe, env):
+            raise Error("Wind Waker HD is open on %s: save, quit it there (also from the app switcher), then try again"
+                        % target["name"])
+    except Error as e:
+        if "is open" in str(e):
+            raise
+        raise Error("%s. Unlock the device and try again." % e)
+
+
+def backup_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdrecomp", bundle_id=None, log=print):
+    """The device app's save and settings (Library/Caches/save and user, without the shader caches) into
+    data/apple/backups/<bundle id>-<time>. Returns that folder."""
+    env, target, own_id, exe = _device_target(setup, ctx, which, device, bundle_prefix)
+    bundle_id = bundle_id or own_id
+    out = Path(ctx.data_dir) / "apple" / "backups" / ("%s-%s" % (bundle_id, time.strftime("%Y%m%d-%H%M%S")))
+    out.mkdir(parents=True)
+    got = [part for part in ("save", "user") if _copy_from(env, target["id"], bundle_id, "Library/Caches/" + part, out / part)]
+    shutil.rmtree(out / "user" / "shader-prebuild", ignore_errors=True)
+    if not got:
+        shutil.rmtree(out, ignore_errors=True)
+        raise Error("Nothing to back up from %s on %s (is the app installed and started once?)" % (bundle_id, target["name"]))
+    log("backed up %s from %s to %s" % (" and ".join(got), target["name"], out))
+    return out
+
+
+def _device_icloud_folder(folder):
+    """a device's iCloud Drive save folder -> the same folder on this Mac (iCloud Drive brings it across)"""
+    marker = "/Mobile Documents/"
+    if marker not in folder:
+        return None
+    return Path.home() / "Library" / "Mobile Documents" / folder.split(marker, 1)[1]
+
+
+def save_to_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdrecomp", settings=False, from_app=None, log=print):
+    """This Mac's save (or, FROM_APP: another app's on the device, e.g. one installed under an earlier identifier)
+    into the device app; SETTINGS: also its settings and save states. Refused while the game is open on the device;
+    the device's save and settings are backed up first. Returns what was copied."""
+    env, target, bundle_id, exe = _device_target(setup, ctx, which, device, bundle_prefix)
+    _not_running(env, target, exe)
+    backup = backup_device(setup, ctx, which, device, bundle_prefix, log=log)
+    with tempfile.TemporaryDirectory() as tmp:
+        if from_app:
+            source = backup_device(setup, ctx, which, device, bundle_prefix, bundle_id=from_app, log=log)
+            save, settings_dir = source / "save", source / "user"
+        else:
+            if mac_game_running(setup, ctx):
+                raise Error("The game is open on this Mac: quit it first, so its save is complete")
+            save, settings_dir = mac_save_dir(setup, ctx), Path(user_dir(setup, ctx))
+        files = _sav_files(save)
+        if not any(f.name == "cking.sav" for f in files):
+            raise Error("No save in %s" % save)
+        # the device app's own save folder choice: an iPhone / iPad app with its save in iCloud Drive
+        choice = None
+        if (backup / "user" / "save-folder.json").is_file():
+            try:
+                choice = json.loads((backup / "user" / "save-folder.json").read_text(encoding="utf-8")).get("folder")
+            except ValueError:
+                pass
+        drive = _device_icloud_folder(choice) if choice else None
+        if drive:
+            if (drive / "user").is_dir():
+                keep = Path(ctx.data_dir) / "apple" / "backups" / ("icloud-drive-%s" % time.strftime("%Y%m%d-%H%M%S"))
+                shutil.copytree(drive / "user", keep / "user")
+                log("backed up the iCloud Drive save to %s" % keep)
+            (drive / "user").mkdir(parents=True, exist_ok=True)
+            for f in files:
+                shutil.copy2(f, drive / "user" / f.name)
+            log("the save is in iCloud Drive (%s): the device gets it from there" % drive)
+        else:
+            for f in files:
+                _copy_to(env, target["id"], bundle_id, f, "Library/Caches/save/user/" + f.name)
+            log("copied the save (%d files) to %s" % (len(files), target["name"]))
+        copied = ["save"]
+        if settings:
+            for name in SETTINGS_FILES:
+                if (settings_dir / name).is_file():
+                    _copy_to(env, target["id"], bundle_id, settings_dir / name, "Library/Caches/user/" + name)
+                    copied.append(name)
+            states = sorted(p for p in (settings_dir / "states").glob("*") if p.is_file()) if (settings_dir / "states").is_dir() else []
+            for f in states:
+                _copy_to(env, target["id"], bundle_id, f, "Library/Caches/user/states/" + f.name)
+            if states:
+                copied.append("save states")
+            log("copied %s to %s" % (", ".join(copied[1:]) or "no settings", target["name"]))
+    return copied
+
+
+def save_from_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdrecomp", log=print):
+    """The device app's save into this Mac's save folder (its save backed up first). Refused while the game is open
+    on either."""
+    env, target, bundle_id, exe = _device_target(setup, ctx, which, device, bundle_prefix)
+    _not_running(env, target, exe)
+    if mac_game_running(setup, ctx):
+        raise Error("The game is open on this Mac: quit it first")
+    got = backup_device(setup, ctx, which, device, bundle_prefix, log=log)
+    source = got / "save"
+    choice = None
+    if (got / "user" / "save-folder.json").is_file():
+        try:
+            choice = json.loads((got / "user" / "save-folder.json").read_text(encoding="utf-8")).get("folder")
+        except ValueError:
+            pass
+    drive = _device_icloud_folder(choice) if choice else None
+    if drive:
+        source = drive
+    files = _sav_files(source)
+    if not any(f.name == "cking.sav" for f in files):
+        raise Error("No save on %s" % target["name"])
+    dest = mac_save_dir(setup, ctx)
+    if _sav_files(dest):
+        keep = Path(ctx.data_dir) / "apple" / "backups" / ("mac-save-%s" % time.strftime("%Y%m%d-%H%M%S"))
+        shutil.copytree(dest / "user", keep / "user")
+        log("backed up this Mac's save to %s" % keep)
+    (dest / "user").mkdir(parents=True, exist_ok=True)
+    for f in _sav_files(dest):
+        if not (source / "user" / f.name).is_file():
+            f.unlink()
+    for f in files:
+        shutil.copy2(f, dest / "user" / f.name)
+    log("copied the save from %s to %s" % (target["name"], dest))
+    return str(dest)
+
+
 def pick_device(platform, device, env):
     """the reachable device of PLATFORM named DEVICE (its name or identifier), or the only one"""
     paired = devices(platform, env)
     found = [d for d in paired if d["reachable"] and (not device or device in (d["id"], d["name"]))]
     if len(found) != 1:
         raise Error("%s (%s devices this Mac can reach: %s)"
-                    % ("No such device" if device else "Choose a device" if found else "No %s device this Mac can reach" % platform,
+                    % (("Several devices are named %s: choose one by its identifier" % device if found else "No such device")
+                       if device else "Choose a device" if found else "No %s device this Mac can reach" % platform,
                        platform, ", ".join("%s (%s)" % (d["name"], d["id"]) for d in paired if d["reachable"]) or "none"))
     return found[0]
 
@@ -655,7 +889,11 @@ def build_app(setup, ctx, which, team=None, bundle_prefix="org.wwhdrecomp", sign
     bundle_id = "%s.%s" % (bundle_prefix, suffix)
     identity = None
     if signed:
-        prof_path, prof, identity = find_profile(platform, bundle_id, team, icloud=icloud)
+        try:
+            prof_path, prof, identity = find_profile(platform, bundle_id, team, icloud=icloud)
+        except Error:
+            # the App ID or its iCloud capability isn't registered yet: Xcode does it
+            prof_path, prof, identity = register_with_xcode(platform, bundle_id, None, team, icloud, env, log)
         log("signing: %s (team %s)" % (prof.get("Name"), prof["TeamIdentifier"][0]))
     steps = [s for s in BUILD_STEPS if signed or s[0] != "apple_sign"]
     n = iter(range(1, len(steps) + 1))
@@ -702,6 +940,7 @@ def build_app(setup, ctx, which, team=None, bundle_prefix="org.wwhdrecomp", sign
     for part in ("code", "content", "meta"):
         run(["cp", "-cR", os.path.join(ctx.game_dir, part), str(game / part)], env, log, "copying the game files")
     stage("apple_shaders")
+    sweep_models(setup, ctx, log)
     gen, live = shader_generation(ctx.data_dir, user_dir(setup, ctx))
     if (live / "shaders.bin").is_file():
         shutil.copyfile(live / "shaders.bin", staging / "shaders.bin")
@@ -728,12 +967,99 @@ def build_app(setup, ctx, which, team=None, bundle_prefix="org.wwhdrecomp", sign
         plistlib.dump(info, f)
     if signed:
         stage("apple_sign")
+        # the profile again: Xcode may have replaced it during the build (a device or capability registered)
+        try:
+            prof_path, prof, identity = find_profile(platform, bundle_id, team, icloud=icloud)
+        except Error:
+            prof_path, prof, identity = register_with_xcode(platform, bundle_id, None, team, icloud, env, log)
         sign(str(staging), prof_path, prof, identity, bundle_id, env, log, icloud=icloud)
     shutil.rmtree(setup.longpath(str(app)), ignore_errors=True)
     os.replace(str(staging), str(app))
     shutil.rmtree(setup.longpath(str(work)), ignore_errors=True)
     log("built %s%s" % (app, "" if signed else " (unsigned)"))
     return built_app(ctx, which)
+
+
+# A device that isn't in the app's profile yet (a new Apple TV, iPhone or iPad), or an App ID or iCloud container that
+# isn't registered: Xcode registers them when it builds for that device with -allowProvisioningUpdates. Setup lets it
+# build a throwaway app with the same bundle identifier and entitlements for the device, then takes the profile
+# Xcode made.
+PBXPROJ = """// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+		A0000000000000000000000B = {isa = PBXBuildFile; fileRef = A0000000000000000000000F; };
+		A0000000000000000000000F = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		A0000000000000000000000E = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = app.entitlements; sourceTree = "<group>"; };
+		A0000000000000000000000A = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = Probe.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A00000000000000000000001 = {isa = PBXGroup; children = (A0000000000000000000000F, A0000000000000000000000E, A0000000000000000000000A, ); sourceTree = "<group>"; };
+		A00000000000000000000002 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0000000000000000000000B, ); runOnlyForDeploymentPostprocessing = 0; };
+		A00000000000000000000003 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000005; buildPhases = (A00000000000000000000002, ); buildRules = ( ); dependencies = ( ); name = Probe; productName = Probe; productReference = A0000000000000000000000A; productType = "com.apple.product-type.application"; };
+		A00000000000000000000004 = {isa = PBXProject; attributes = {TargetAttributes = {A00000000000000000000003 = {DevelopmentTeam = @TEAM@; ProvisioningStyle = Automatic; }; }; }; buildConfigurationList = A00000000000000000000006; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base, ); mainGroup = A00000000000000000000001; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000003, ); };
+		A0000000000000000000000C = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = @SDK@; PRODUCT_NAME = Probe; SWIFT_VERSION = 5.0; @DEPLOY@ = 17.0; }; name = Debug; };
+		A0000000000000000000000D = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = @SDK@; PRODUCT_NAME = Probe; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = @TEAM@; CODE_SIGN_ENTITLEMENTS = app.entitlements; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = "@BUNDLE@"; TARGETED_DEVICE_FAMILY = "@FAMILY@"; }; name = Debug; };
+		A00000000000000000000005 = {isa = XCConfigurationList; buildConfigurations = (A0000000000000000000000D, ); defaultConfigurationName = Debug; };
+		A00000000000000000000006 = {isa = XCConfigurationList; buildConfigurations = (A0000000000000000000000C, ); defaultConfigurationName = Debug; };
+	};
+	rootObject = A00000000000000000000004;
+}
+"""
+
+
+def team_of(platform, team=None):
+    """the developer team to register with: TEAM, else the team of this Mac's development profiles for PLATFORM"""
+    if team:
+        return team
+    identities = signing_identities()
+    for d in PROFILE_DIRS:
+        for path in glob.glob(os.path.join(os.path.expanduser(d), "*.mobileprovision")):
+            prof = _plist_of_profile(path)
+            if prof and platform in prof.get("Platform", []) and prof.get("Entitlements", {}).get("get-task-allow"):
+                import hashlib
+                if any(hashlib.sha1(c).hexdigest().upper() in identities for c in prof.get("DeveloperCertificates", [])):
+                    return prof["TeamIdentifier"][0]
+    raise Error("No developer team found: sign in to Xcode (Settings > Accounts) and let it make a certificate")
+
+
+def register_with_xcode(platform, bundle_id, device=None, team=None, icloud=None, env=None, log=print):
+    """Lets Xcode register the App ID BUNDLE_ID with its iCloud container (ICLOUD) and DEVICE (a UDID; None: any
+    device of the platform) in the developer team, and download the profile, by building a throwaway app with the
+    same identifier and entitlements. Returns the new profile (find_profile)."""
+    team = team_of(platform, team)
+    sdk = "appletvos" if platform == "tvOS" else "iphoneos"
+    with tempfile.TemporaryDirectory() as tmp:
+        proj = Path(tmp) / "Probe.xcodeproj"
+        proj.mkdir()
+        (proj / "project.pbxproj").write_text(
+            PBXPROJ.replace("@TEAM@", team).replace("@SDK@", sdk).replace("@BUNDLE@", bundle_id)
+                   .replace("@FAMILY@", "3" if platform == "tvOS" else "1,2")
+                   .replace("@DEPLOY@", "TVOS_DEPLOYMENT_TARGET" if platform == "tvOS" else "IPHONEOS_DEPLOYMENT_TARGET"),
+            encoding="utf-8")
+        (Path(tmp) / "main.swift").write_text(
+            "import UIKit\nUIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, nil)\n", encoding="utf-8")
+        ents = {}
+        if icloud:
+            ents = {"com.apple.developer.icloud-container-identifiers": [icloud],
+                    "com.apple.developer.icloud-services": ["CloudKit"] + (["CloudDocuments"] if platform == "iOS" else [])}
+            if platform == "iOS":
+                ents["com.apple.developer.ubiquity-container-identifiers"] = [icloud]
+        with open(Path(tmp) / "app.entitlements", "wb") as f:
+            plistlib.dump(ents, f)
+        log("asking Xcode to register %s%s%s and make its profile (team %s)" % (
+            bundle_id, " with iCloud " + icloud if icloud else "", " and the device " + device if device else "", team))
+        p = subprocess.run(["xcodebuild", "-project", str(proj), "-scheme", "Probe", "-configuration", "Debug",
+                            "-destination", ("id=" + device) if device else "generic/platform=" + platform,
+                            "-allowProvisioningUpdates",
+                            "-allowProvisioningDeviceRegistration", "-derivedDataPath", str(Path(tmp) / "dd"), "build"],
+                           env=env, cwd=tmp, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        out = p.stdout.decode("utf-8", "replace")
+        if p.returncode != 0:
+            errors = [l for l in out.splitlines() if "error:" in l][-5:]
+            raise Error("Xcode couldn't register the device or make the profile:\n%s" % "\n".join(errors or out.splitlines()[-10:]))
+    return find_profile(platform, bundle_id, team, icloud=icloud, device=device)
 
 
 def install_app(setup, ctx, which, device=None, log=print):
@@ -750,6 +1076,21 @@ def install_app(setup, ctx, which, device=None, log=print):
     exe = ctx.manifest.get("apple", {}).get(kind, {}).get("exe", "WindWakerHD")
     if running(target["id"], exe, env):
         raise Error("The game is running on %s: save, close it (in the app switcher), then install again" % target["name"])
+    # a device the app's profile doesn't list yet (a new device): Xcode registers it, and the app is signed again
+    # with the profile it makes
+    app = Path(built["path"])
+    prof = _plist_of_profile(str(app / "embedded.mobileprovision")) or {}
+    if not prof.get("ProvisionsAllDevices") and target["id"] not in prof.get("ProvisionedDevices", []):
+        with open(app / "Info.plist", "rb") as f:
+            info = plistlib.load(f)
+        bundle_id, icloud = info["CFBundleIdentifier"], info.get("WWHDCloudKitContainer")
+        team = (prof.get("TeamIdentifier") or [None])[0]
+        try:
+            prof_path, prof, identity = find_profile(platform, bundle_id, team, icloud=icloud, device=target["id"])
+        except Error:
+            prof_path, prof, identity = register_with_xcode(platform, bundle_id, target["id"], team, icloud, env, log)
+        log("signing again with %s (it lists %s)" % (prof.get("Name"), target["name"]))
+        sign(str(app), prof_path, prof, identity, bundle_id, env, log, icloud=icloud)
     log("installing on %s (%s)" % (target["name"], target["model"]))
     run(["xcrun", "devicectl", "device", "install", "app", "--device", target["id"], built["path"]], env, log,
         "installing on " + target["name"])
