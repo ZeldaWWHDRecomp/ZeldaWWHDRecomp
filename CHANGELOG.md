@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: particle effects rebuild their GPU state less often** (#572). Particle effects that switch
+  between a few textures now reuse an earlier prepared state within a frame instead of rebuilding it. In the Dragon
+  Roost lava room on our test phone (Xiaomi 14) this saves 0.36 ms of render time per frame (about +1 fps, 1 % low
+  +1.3 fps). The picture is unchanged. `WWHD_NATIVE_DRAW_KEEP=0` turns it off. The normal build is not affected.
+
 - **Backup build pipeline for GitLab** (#570). The repository now carries a dormant GitLab CI copy of the GitHub
   workflows, so a private GitLab mirror can build and publish releases if the GitHub project ever becomes
   unavailable. It never runs on its own (pushes and merge requests start nothing) and has no effect on the GitHub
