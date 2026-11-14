@@ -31,6 +31,7 @@
 #include <vector>
 
 #include "runtime.h"
+#include "hot_wait.h"
 #include "native_quiescence.h"
 #include "native_quiescence_audit.h"
 #include "savestate.h"
@@ -716,6 +717,33 @@ void park_sleep_until(std::chrono::steady_clock::time_point tp, bool precise,
     if (t) park_gate(t);
     // The freeze gate marks the thread busy before host-only completion work.
     // Keep its guest core released until that work finishes; never call guest code.
+    if (before_resume) before_resume();
+    block_end();
+}
+// hot_wait.h
+int64_t hot_wait_us() {
+    static const int64_t value = [] {
+        const char* e = getenv("WWHD_VSYNC_HOT_WAIT_US");
+        const int64_t v = e && *e ? std::max<int64_t>(0, atoll(e)) : 0;
+        if (v) LOG("[threads] hot vsync waits: GX2WaitForVsync waits up to %lld us spin instead of sleeping "
+                   "(WWHD_VSYNC_HOT_WAIT_US)", (long long)v);
+        return v;
+    }();
+    return value;
+}
+void park_spin_until(std::chrono::steady_clock::time_point tp, void (*before_resume)()) {
+    HostThread* t = t_self;
+    if (t) {
+        t->wait_kind = W_SLEEP;
+        t->wait_obj = 0;
+        t->wst.store(kParked);
+    }
+    block_begin();
+    {
+        SchedulerTick::TimedWait timed(g_tick);
+        while (std::chrono::steady_clock::now() < tp) std::this_thread::yield();
+    }
+    if (t) park_gate(t);
     if (before_resume) before_resume();
     block_end();
 }
