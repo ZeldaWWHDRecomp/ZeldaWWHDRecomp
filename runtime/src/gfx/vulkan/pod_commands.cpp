@@ -1,7 +1,7 @@
 #include "pod_commands.h"
 #include "handoff_trace.h"
 #include "render_prof.h"
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "record_mt.h"
 #endif
 #include <algorithm>
@@ -1172,7 +1172,7 @@ void PodCommands::replay(const std::vector<std::byte> &bytes) {
           pod_draw_indexed_indirect(cmd, buffer, offset, drawCount, stride);
         break;
       }
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
       case 31:  // (record_mt.h)
         record_mt::replay_extension(r.bytes, r.remaining, execute);
         break;

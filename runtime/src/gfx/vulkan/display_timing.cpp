@@ -1,6 +1,6 @@
 // VK_GOOGLE_display_timing observation and display pacing: display_timing.h
 #include "display_timing.h"
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "display_pacing_policy.h"
 #include "frame_breakdown.h"
 #include "smooth_defaults.h"

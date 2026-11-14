@@ -54,8 +54,10 @@
 #include "render_prof.h"
 #ifdef WWHD_NATIVE_DRAW
 #include "native_draw.h"
-#include "../gfx/vulkan/frame_breakdown.h"
 #include "native_pass.h"
+#endif
+#ifdef WWHD_VK_SMOOTH
+#include "../gfx/vulkan/frame_breakdown.h"
 #endif
 #include "native_coverage.h"
 
@@ -447,7 +449,7 @@ static void render_thread_main() {
             std::unique_lock<std::mutex> lk(g_q_mutex);
             g_q_waiting = true;
             if (g_q_pending.empty()) {
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
                 const gfxvk::frame_breakdown::Scope idlePart(gfxvk::frame_breakdown::Idle);  // (gfx/vulkan/frame_breakdown.h)
 #endif
                 const uint64_t idle = rprof::enabled() ? rprof::now_ns() : 0;
@@ -557,7 +559,7 @@ static void render_sync(int site = kSyncShutdown) {
         ~Done() {
             const auto waited = std::chrono::steady_clock::now() - t;
             sync_stat(site, waited);
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
             if (gfxvk::frame_breakdown::enabled()) {  // (gfx/vulkan/frame_breakdown.h)
                 const auto end = std::chrono::steady_clock::now();
                 gfxvk::frame_breakdown::game_wait(site, int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>((end - waited).time_since_epoch()).count()),
@@ -1282,7 +1284,7 @@ static void update_flips() {  // g_flip_mutex held
         if ((!uncapped_benchmark() && due > now) || render::frames_completed() < g_pending_flips.front().swap) break;
         uint64_t at = now / vsync_granule() * vsync_granule();
         // Preserve the actual scheduler target BEFORE this flip may move its grid.
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
         const bool breakdown = gfxvk::frame_breakdown::enabled();  // (gfx/vulkan/frame_breakdown.h)
 #else
         constexpr bool breakdown = false;
@@ -1309,7 +1311,7 @@ static void update_flips() {  // g_flip_mutex held
                 std::chrono::duration_cast<std::chrono::nanoseconds>(dueAt.time_since_epoch()).count(),
                 due, shiftBefore, g_vsync_shift.load(std::memory_order_relaxed), uint32_t(vsync_granule()),
                 game_clock::shifted(), uncapped_benchmark());
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
         if (breakdown) {
             const auto ns = [](std::chrono::steady_clock::time_point t) {
                 return int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(t.time_since_epoch()).count()); };
@@ -1735,7 +1737,7 @@ HLE(gx2, GX2GetSwapStatus) {
 }
 HLE(gx2, GX2SetSwapInterval) { g_swap_interval = std::max<uint32>(arg(c, 0), 1); }
 HLE(gx2, GX2WaitForVsync) {
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
     struct VsyncRow {  // (gfx/vulkan/frame_breakdown.h)
         int64_t start = gfxvk::frame_breakdown::enabled() ? int64_t(gfxvk::frame_breakdown::now_ns()) : 0;
         ~VsyncRow() { if (start) gfxvk::frame_breakdown::game_vsync(start, int64_t(gfxvk::frame_breakdown::now_ns())); }

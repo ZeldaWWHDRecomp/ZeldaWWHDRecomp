@@ -9,7 +9,7 @@
 #include <cstdio>
 #include <memory>
 #include <stdexcept>
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "record_mt.h"
 #include "frame_breakdown.h"
 #include <atomic>
@@ -29,7 +29,7 @@ bool no_record_boost() {
     return value;
 }
 
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 // MT recording stage 1 (record_mt.h): mirrors of published_/completed_ (one worker per process) for the bounded
 // spin-then-block waits; written under mutex_
 std::atomic<uint64_t> publishedSpin{0}, completedSpin{0};
@@ -63,13 +63,13 @@ uint64_t RecordWorker::publish(PodCommands& commands) {
     // Allocate queue storage BEFORE moving the producer tail. Allocation failure
     // leaves every pending command owned by the producer for explicit recovery.
     jobs_.push_back({serial, frame, {}});
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
     if (record_mt::bits() & record_mt::kRecycle) jobs_.back().bytes = commands.take(record_mt::recycled_bytes());
     else
 #endif
     jobs_.back().bytes = commands.take();
     published_ = serial;
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
     publishedSpin.store(serial, std::memory_order_release);
 #endif
     trace::emit(Lane::Producer, Kind::Published, serial, frame, jobs_.size(), jobs_.back().bytes.size());
@@ -77,7 +77,7 @@ uint64_t RecordWorker::publish(PodCommands& commands) {
     return serial;
 }
 void RecordWorker::wait(uint64_t serial, trace::Reason reason) {
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
     if (completedSpin.load(std::memory_order_acquire) < serial && record_mt::spin_us()) {
         ++record_mt::counters().waitSpins;
         if (spin_for([&] { return completedSpin.load(std::memory_order_acquire) >= serial; }))
@@ -88,11 +88,11 @@ void RecordWorker::wait(uint64_t serial, trace::Reason reason) {
     if (serial > published_) throw std::logic_error("unknown record worker sequence");
     const bool blocked = completed_ < serial && !error_;
     if (blocked) trace::emit(Lane::Producer, Kind::SerialWaitBegin, serial, trace::producer_frame(), uint64_t(reason), completed_);
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
     const uint64_t waitPart = blocked ? frame_breakdown::begin() : 0;  // (frame_breakdown.h)
 #endif
     changed_.wait(lock, [&] { return completed_ >= serial || error_; });
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
     frame_breakdown::end(frame_breakdown::WorkerWait, waitPart);
 #endif
     if (blocked) trace::emit(Lane::Producer, Kind::SerialWaitEnd, serial, trace::producer_frame(), uint64_t(reason), completed_);
@@ -134,13 +134,13 @@ void RecordWorker::run() {
         bool on;
         ~LeaveHintSession() { if (on) perf_hint::remove_current_thread(); }
     } leave{boost};
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
     record_mt::emitter_started();
     uint64_t lastSerial = 0;
 #endif
     for (;;) {
         Job job;
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
         if (publishedSpin.load(std::memory_order_acquire) <= lastSerial && record_mt::spin_us()) {
             ++record_mt::counters().idleSpins;
             if (spin_for([&] { return publishedSpin.load(std::memory_order_acquire) > lastSerial; }))
@@ -155,7 +155,7 @@ void RecordWorker::run() {
             if (idle) trace::emit(Lane::Worker, Kind::IdleWaitEnd);
             if (jobs_.empty()) return;
             job = std::move(jobs_.front()); jobs_.pop_front();
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
             lastSerial = job.serial;
 #endif
             trace::emit(Lane::Worker, Kind::Dequeued, job.serial, job.producerFrame, jobs_.size(), job.bytes.size());
@@ -172,14 +172,14 @@ void RecordWorker::run() {
         }
         const uint64_t cpuEnd = trace::enabled() ? rprof::thread_cpu_ns() : 0;
         trace::emit(Lane::Worker, Kind::ReplayEnd, job.serial, job.producerFrame);
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
         if (record_mt::bits() & record_mt::kRecycle) record_mt::recycle(std::move(job.bytes));
 #endif
         if (trace::enabled()) trace::emit_worker(Kind::ReplayCPU, cpuStart, cpuEnd);
         {
             std::lock_guard lock(mutex_);
             completed_ = job.serial;
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
             completedSpin.store(job.serial, std::memory_order_release);
 #endif
             trace::emit(Lane::Worker, Kind::Completed, job.serial, job.producerFrame); changed_.notify_all();
@@ -205,7 +205,7 @@ bool record_worker_requested() {
 }
 bool producer_presentation_recording() { return producerPresentationRecording; }
 bool record_worker_active() { return bool(worker); }
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 bool record_worker_idle() {
     return !worker || (pending.empty() &&
         completedSpin.load(std::memory_order_acquire) == publishedSpin.load(std::memory_order_acquire));
@@ -268,7 +268,7 @@ bool record_commands_emitted(uint64_t serial) {
 }
 void drain_record_commands(fallback_stats::Boundary boundary, uint32_t opcode, PodFailureReason reason) {
     if (!worker) return;
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
     ++(boundary == fallback_stats::Boundary::EncoderFallback ? record_mt::counters().encoderFallbacks
                                                               : record_mt::counters().drains);
 #endif

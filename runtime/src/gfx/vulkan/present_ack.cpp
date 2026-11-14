@@ -1,6 +1,6 @@
 // Late acknowledgment of the TV present submission: present_ack.h
 #include "present_ack.h"
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "runtime.h"
 #include "smooth_defaults.h"
 #include <cstdlib>

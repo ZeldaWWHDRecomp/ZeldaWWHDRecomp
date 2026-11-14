@@ -1,6 +1,6 @@
-// Decomp build fast-mode defaults on phones and the Steam Deck: smooth_defaults.h
+// Vulkan renderer defaults on phones and the Steam Deck: smooth_defaults.h
 #include "smooth_defaults.h"
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "runtime.h"
 #include "overlay/hostui.h"
 #include <cstdio>
@@ -10,6 +10,21 @@
 
 namespace gfxvk::smooth_defaults {
 namespace {
+// The halves of the defaults, per build. Second-thread recording (record_worker(), record_mt()) was measured in the
+// decomp build's fast mode (native draw packets). The normal build (translated draws, many more commands) keeps the
+// pacing half alone: on a Xiaomi 14 at 60 fps (2026-11-14, n=2) the worker made the lava 1 % lows worse
+// (37.8 -> 34.9 fps, p99 26.4 -> 28.7 ms) although it helped at the cliff; the pacing half alone improved both
+// (cliff 1 % low 38.2 -> 40.8, lava 37.8 -> 39.5). WWHD_VK_RECORD_WORKER=1 / WWHD_VK_RECORD_MT=127 still turn it on.
+#ifdef WWHD_DECOMP_FAST
+constexpr bool kWorkerHalf = true;
+#define WWHD_SMOOTH_BUILD "decomp build fast mode"
+#elif defined(WWHD_DECOMP)
+constexpr bool kWorkerHalf = true;
+#define WWHD_SMOOTH_BUILD "decomp build"
+#else
+constexpr bool kWorkerHalf = false;
+#define WWHD_SMOOTH_BUILD "normal build"
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
 std::string first_line(const char* path) {
     char buf[64] = {};
@@ -24,10 +39,14 @@ std::string first_line(const char* path) {
 #endif
 void log_once() {
     static const bool logged = [] {
-        if (device())
-            LOG("[vulkan smooth defaults] %s, decomp build fast mode: graphics on a second thread with multi-threaded "
+        if (device() && kWorkerHalf)
+            LOG("[vulkan smooth defaults] %s, " WWHD_SMOOTH_BUILD ": graphics on a second thread with multi-threaded "
                 "recording, 8 submission slots, late present acknowledgment, Smooth frame pacing %s (each environment "
                 "variable still wins)", steam_deck() ? "Steam Deck" : "Android", smooth_pacing_setting() ? "on" : "off");
+        else if (device())
+            LOG("[vulkan smooth defaults] %s, " WWHD_SMOOTH_BUILD ": 8 submission slots, late present acknowledgment, "
+                "Smooth frame pacing %s; graphics on one thread (each environment variable still wins)",
+                steam_deck() ? "Steam Deck" : "Android", smooth_pacing_setting() ? "on" : "off");
         return true;
     }();
     (void)logged;
@@ -53,8 +72,8 @@ bool device() {
     return steam_deck();
 #endif
 }
-bool record_worker() { log_once(); return device(); }
-unsigned record_mt() { return device() ? 127u : 0u; }
+bool record_worker() { log_once(); return kWorkerHalf && device(); }
+unsigned record_mt() { return kWorkerHalf && device() ? 127u : 0u; }
 unsigned submission_slots() { return device() ? 8u : 0u; }
 bool late_present_ack() { return device(); }
 bool smooth_pacing_setting() {

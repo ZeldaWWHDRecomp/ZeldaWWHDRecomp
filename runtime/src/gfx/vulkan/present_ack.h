@@ -1,5 +1,5 @@
 // Late acknowledgment of the TV present submission (WWHD_VK_LATE_PRESENT_ACK=1, off by default; with the record
-// worker). Decomp build, fast mode (cmake WWHD_NATIVE_DRAW) only.
+// worker; on by default on phones and the Steam Deck, smooth_defaults.h). Every build with cmake WWHD_VK_SMOOTH.
 //
 // The TV's present submission (backend.cpp submit with the acquire and finished semaphores) goes to the record worker
 // like every other; the render thread then waited for the worker to have actually submitted it (it replays the whole
@@ -9,7 +9,7 @@
 // right before that frame's vkQueuePresentKHR (held or not), when the worker has usually long submitted it. The
 // isolated GamePad snapshot handshake (Android) keeps the old wait.
 #pragma once
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include <cstdint>
 
 namespace gfxvk::present_ack {

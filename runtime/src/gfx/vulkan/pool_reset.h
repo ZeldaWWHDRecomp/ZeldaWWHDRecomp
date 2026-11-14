@@ -1,10 +1,10 @@
 // Submission pool resets off the render thread (WWHD_VK_ASYNC_POOL_RESET).
-// Decomp build, fast mode only (cmake WWHD_NATIVE_DRAW); nothing here depends on the decomp, so the hooks can later
-// be taken into every build.
+// Every build with cmake WWHD_VK_SMOOTH (cmake/VkSmooth.cmake, on by default); nothing here depends on the decomp.
 //
 // A submission slot's command pool and descriptor pool are reset when the slot is retired (backend.cpp
 // cleanup_submission), on the render thread, just before the slot is recorded again; on the stock Adreno driver
-// vkResetCommandPool alone costs about 1 ms of the render thread per frame.
+// vkResetCommandPool alone costs about // WWHD_VK_ASYNC_POOL_RESET=0|1|2|3; unset: smooth_defaults::async_pool_reset() (1, the reset thread, in the decomp
+// build fast mode and on phones and the Steam Deck; else 0). 0: every reset inline on the render thread. ms of the render thread per frame.
 //   bit 1: after the render thread submits a slot, a reset thread waits for its fence and resets both pools (flags 0,
 //          as before); cleanup_submission then waits for that slot's reset (normally long done) and checks its results.
 //          Same pools, same flags, after the same fence, before the same next recording. The record worker's
@@ -15,7 +15,7 @@
 // WWHD_VK_ASYNC_POOL_RESET=0|1|2|3; unset: 1 (the reset thread). 0: every reset inline on the render thread, as in
 // every other build. Counter line "[vulkan pool reset]" (report).
 #pragma once
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "loader.h"
 
 namespace gfxvk::pool_reset {

@@ -128,7 +128,7 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "mobile_ui.h"
 #include "../report_header.h"
 #include "../dynres.h"
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "gfx/vulkan/smooth_defaults.h"
 #endif
 
@@ -1290,8 +1290,8 @@ void tab_graphics() {
 #ifdef WWHD_HAS_VULKAN
     heading("Advanced");
     // Vulkan commands recorded and submitted on a worker thread (gfx/vulkan/record_worker.h)
-#ifdef WWHD_NATIVE_DRAW
-    // (decomp build, fast mode: on for phones and the Steam Deck, gfx/vulkan/smooth_defaults.h)
+#ifdef WWHD_VK_SMOOTH
+    // (on for phones and the Steam Deck, gfx/vulkan/smooth_defaults.h)
     static const bool recordWorkerDefault = gfxvk::smooth_defaults::record_worker();
 #else
     constexpr bool recordWorkerDefault = false;  // gfx/vulkan/record_worker.h record_worker_default()
@@ -1301,7 +1301,7 @@ void tab_graphics() {
         recordWorker = v;
         hostui::post([v] { hostui::set("vkRecordWorker", v ? "1" : "0"); });
     }
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
     help(recordWorkerDefault
          ? "Applies after restarting the game. Hands the graphics work to a second CPU thread, which raises the "
            "frame rate on this device. Uses a little more CPU and battery. On by default here."

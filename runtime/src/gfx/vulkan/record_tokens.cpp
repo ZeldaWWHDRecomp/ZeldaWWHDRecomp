@@ -1,5 +1,5 @@
 // Descriptor tokens: record_tokens.h
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "record_tokens.h"
 #include "record_mt.h"
 #include "record_worker.h"

@@ -1,6 +1,6 @@
 // Per-frame breakdown of the render thread and of the frame's way to the screen (WWHD_VK_FRAME_BREAKDOWN=1, a
 // diagnostic, off by default; needs WWHD_VK_STUTTER_TRACE: the rows go into that trace, next to its "frame" rows).
-// Decomp build, fast mode (cmake WWHD_NATIVE_DRAW) only.
+// Every build with cmake WWHD_VK_SMOOTH (cmake/VkSmooth.cmake, on by default).
 //
 // Rows (kind, frame, key, start_ns, end_ns, thread, result, cpu_ns; steady clock ns):
 //   fb_idle, fb_swap, fb_acquire, fb_present, fb_worker_wait, fb_fence_wait: the render thread's time in that part
@@ -19,7 +19,7 @@
 //     GX2WaitForVsync; fb_gpass: a pass started (result 1 = in-between, key = phase); fb_gdrop: an in-between frame
 //     dropped (key = the step's elapsed time, cpu = the in-between pass estimate, start = the budget).
 #pragma once
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "loader.h"
 #include <cstdint>
 

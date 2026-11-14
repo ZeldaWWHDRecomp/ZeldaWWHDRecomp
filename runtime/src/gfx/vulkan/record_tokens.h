@@ -1,5 +1,5 @@
 // Descriptor tokens (MT recording stage 1, WWHD_VK_RECORD_MT bit 16 / WWHD_VK_RECORD_DESCRIPTORS=1; record_mt.h).
-// Decomp build, fast mode (cmake WWHD_NATIVE_DRAW).
+// Every build with cmake WWHD_VK_SMOOTH (cmake/VkSmooth.cmake, on by default).
 //
 // stage_descriptor_set (draw.cpp) keeps its decision: the identity/hash cache and the last set per stage. Only a new
 // set's allocation and write move to the emitter: while the worker's POD stream records, the producer returns a token
@@ -12,7 +12,7 @@
 // On the render thread (encoder fallbacks, eye streams emitted after a drain) translation needs a drained emitter,
 // which WWHD_VK_RECORD_CHECK=1 asserts. A rejected DefineSet drains and defines on the render thread.
 #pragma once
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "loader.h"
 #include <cstddef>
 #include <cstdint>
