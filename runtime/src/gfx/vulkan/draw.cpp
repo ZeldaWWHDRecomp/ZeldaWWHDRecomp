@@ -3027,6 +3027,11 @@ struct PacketCapture {
     VkBuffer supBuffer = VK_NULL_HANDLE;
     int supIndex = -1, supWrite = -1;
     std::vector<uint8_t> supBytes;
+    // gather units (native_draw::gather_on): each one's texture size and scale, in the order the full draw scales the
+    // support uniforms' entries from gatherBase on (gfx/area_sample.h scale_gather_grid)
+    struct Gather { uint32_t w, h; float sx, sy; };
+    std::vector<Gather> gathers;
+    int gatherBase = -1;
     // the support bytes pack_uniforms_into copies from the packet's instance register ranges (the uniform-register
     // copy, or remapped register entries): support byte offset, first register, words
     struct RegPatch { uint32_t dst, reg, words; };
@@ -3372,6 +3377,15 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
       memcpy(supportUniforms.data() + biasOffset, &bias, 4);
     }
     // the half-size light buffer's grid on an upscaled buffer (gfx/area_sample.h)
+#ifdef WWHD_NATIVE_DRAW
+    // (gather-grid packets: the unit's grid scaling, for the replay's patched entries)
+    if (g_packetCapture && (sh->gatherUnits >> unit & 1) && sh->uniforms.offset_remapped >= 0 &&
+        size_t(sh->uniforms.offset_remapped) < supportUniforms.size()) {
+      auto& st = g_packetCapture->stage[sh->vertex ? 0 : 1];
+      st.gathers.push_back({s->width, s->height, s->sx, s->sy});
+      st.gatherBase = sh->uniforms.offset_remapped;
+    }
+#endif
     if ((sh->gatherUnits >> unit & 1) && sh->uniforms.offset_remapped >= 0 &&
         size_t(sh->uniforms.offset_remapped) < supportUniforms.size())
       ::gfx::area_sample::scale_gather_grid(reinterpret_cast<float*>(supportUniforms.data() + sh->uniforms.offset_remapped),
@@ -3511,7 +3525,7 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
         cap->refuse("support uniforms adjusted after packing");
     }
     if (c.patches()) {
-      if (sh->gatherUnits) cap->refuse("gather grid in the support uniforms");
+      if (sh->gatherUnits && !native_draw::gather_on()) cap->refuse("gather grid in the support uniforms");
       if (c.supBinding < 0 || c.supBytes.empty()) cap->refuse("support uniforms");
       if (dynamicUniforms && c.supIndex < 0) cap->refuse("support binding");
     }
@@ -5525,6 +5539,8 @@ NativeShaders* native_shaders(const PacketCapture& cap, const native_draw::Packe
     return &ns;
   };
   if (reads[0].empty() && reads[1].empty()) return refuse("no instance block entries read");
+  // (gather-grid packets: the batch's entries would need the grid scaling the replay applies; replays only)
+  if (!cap.stage[0].gathers.empty() || !cap.stage[1].gathers.empty()) return refuse("gather grid in the support uniforms");
   std::string vt = cap.vs->source_text(), pt = cap.ps->source_text();
   if (vt.empty() || pt.empty()) return refuse("no shader text (retained only with WWHD_NATIVE_DRAW_BATCH=1 from the start)");
   for (const auto& g : cap.fs->bufferGroups)
@@ -5900,6 +5916,18 @@ void packet_support_bytes(const PacketCapture::Stage& st, const uint32_t* blockA
   }
   for (const auto& p : st.regRemap)
     if (size_t(p.dst) + size_t(p.words) * 4 <= bytes.size()) std::memcpy(bytes.data() + p.dst, r + p.reg, p.words * 4);
+  // gather units (native_draw::gather_on): the patched entries scaled as the full draw scales every entry from gatherBase
+  if (!st.gathers.empty() && st.gatherBase >= 0) {
+    auto scale = [&](uint32_t at) {
+      if (at < uint32_t(st.gatherBase) || (at - uint32_t(st.gatherBase)) % 16 || size_t(at) + 16 > bytes.size()) return;
+      for (const auto& g : st.gathers)
+        ::gfx::area_sample::scale_gather_grid(reinterpret_cast<float*>(bytes.data() + at), 1, g.w, g.h, g.sx, g.sy);
+    };
+    for (int k = 0; k < PacketCapture::kBlocks; ++k)
+      for (const auto& e : st.block[k].remap) scale(e.first);
+    for (const auto& p : st.regRemap)
+      for (uint32_t w = 0; w < p.words; w += 4) scale(p.dst + w * 4);
+  }
 }
 
 void packet_compare(const PacketCapture& a, const PacketCapture& b, bool sameVertexInput, bool sameRange, uint32_t site) {
