@@ -102,6 +102,10 @@ enum DrawFlag : uint32_t {
     kFlagRecording = 1,  // emitted while a display list is recorded
     kFlagDefined = 2,    // this draw (re)defined its desc
     kFlagEnvMade = 4,    // this draw (re)captured its env
+    // bits 8-15: index + 1 of the draw's first block of the pass's extra (scene) block, 0: none. Its ring index is
+    // flipped by another thread while J3D draws are recorded; the site's read and the description's can see either
+    // slot (the game's own race, lead ruling 2026-11-14)
+    kFlagExtraShift = 8, kFlagExtraMask = 0xFF00,
 };
 const Desc* find_desc(uint32_t id, uint32_t version);  // render thread (any thread after publication)
 const Env* find_env(uint32_t id, uint32_t version);

@@ -55,6 +55,7 @@ enum Count : uint32_t {
     // ambient changes by class: per pass instance (P) and per (desc, env) (D); classes: vertex buffers, texture and
     // sampler words, uniform-block words, ALU constants, vertex semantics, other
     cAmbP0, cAmbP1, cAmbP2, cAmbP3, cAmbP4, cAmbP5, cAmbD0, cAmbD1, cAmbD2, cAmbD3, cAmbD4, cAmbD5, cBaseVertex,
+    cExtraRace,
     cCounts
 };
 const char* const kReasonNames[kReasons] = {"described", "pass masked", "no resource", "named frame (wii_pipeline)",
@@ -78,7 +79,7 @@ const char* count_name(uint32_t c) {
         "pass-snapshot change: uniform blocks", "pass-snapshot change: ALU constants", "pass-snapshot change: semantics",
         "pass-snapshot change: other", "desc+env change: vertex buffers", "desc+env change: textures/samplers",
         "desc+env change: uniform blocks", "desc+env change: ALU constants", "desc+env change: semantics",
-        "desc+env change: other", "draws with a mesh base vertex"};
+        "desc+env change: other", "draws with a mesh base vertex", "extra-block slot race (not a mismatch)"};
     if (c >= cSkip0 && c < cSkip0 + kReasons) return kReasonNames[c - cSkip0];
     const uint32_t i = c < cSkip0 ? c : c - kReasons + 1;
     return i < sizeof names / sizeof names[0] && names[i] ? names[i] : "?";
@@ -679,8 +680,9 @@ extern "C" void wwhd_j3ddesc_block(unsigned stage, unsigned location, unsigned a
         c.overflow = true;
         return;
     }
+    if ((stage & 0x100) && !(c.flags & kFlagExtraMask)) c.flags |= (c.blockCount + 1) << kFlagExtraShift;
     uint32_t* b = c.blocks + c.blockCount++ * kBlockWords;
-    b[0] = stage << 16 | (location & 0xFFFF);
+    b[0] = (stage & 0xFF) << 16 | (location & 0xFFFF);
     b[1] = addr;
     b[2] = size;
 }
@@ -740,7 +742,7 @@ struct Pending {
     const Desc* desc = nullptr;
     const Env* env = nullptr;
     const Mesh* mesh = nullptr;
-    uint32_t blockCount = 0, blocks[kMaxBlocks * kBlockWords] = {};
+    uint32_t blockCount = 0, blocks[kMaxBlocks * kBlockWords] = {}, flags = 0;
 };
 Pending g_draw;
 uint64_t g_verifyCounter = 0;
@@ -850,6 +852,7 @@ void draw(const uint32_t* regs, const uint32_t* p, uint32_t n) {
     g_draw.env = e;
     g_draw.mesh = m;
     g_draw.blockCount = p[6];
+    g_draw.flags = p[5];
     std::memcpy(g_draw.blocks, p + kDrawHeaderWords, p[6] * kBlockWords * 4);
     g_pending = true;
 }
@@ -918,6 +921,14 @@ void site_draw(const uint32_t* regs, const uint32_t* p, uint32_t n) {
         for (uint32_t w = 0; w < 7; ++w) g_written.insert(base + loc * 7 + w);
         if (later) continue;
         const uint32_t want[7] = {b[1], b[2] - 1, 0, 1, 0, 0, 0xC0000000u};
+        const uint32_t extraFirst = (q.flags & kFlagExtraMask) >> kFlagExtraShift;  // (index + 1; 0: none)
+        if (extraFirst && i + 1 >= extraFirst && loc < 16 && regs[base + loc * 7] != b[1] &&
+            !std::memcmp(regs + base + loc * 7 + 1, want + 1, sizeof want - 4)) {
+            // the pass's extra block: another thread flipped its ring index between the description's read and the
+            // site's (lead ruling 2026-11-14: the game's own race, counted, not a mismatch)
+            count(cExtraRace);
+            continue;
+        }
         if (loc >= 16 || std::memcmp(regs + base + loc * 7, want, sizeof want)) {
             count(cBlockMismatch);
             std::snprintf(what, sizeof what, "block: %u of %u, desc %u (pass %u, record %08X) stage %u location %u: register %08X %08X, desc %08X %08X",
