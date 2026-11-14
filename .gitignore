@@ -50,3 +50,6 @@ headstart.bin
 /ios/WWHDGamePad/Info.plist
 /ios/local.xcconfig
 /ios/WWHDGamePad/Assets.xcassets/GameIcon.appiconset/
+# GitLab CI (ci/gitlab/gh_steps.py): emulated actions/cache and upload-artifact folders
+/.gitlab-ci-cache/
+/.gitlab-ci-artifacts/
