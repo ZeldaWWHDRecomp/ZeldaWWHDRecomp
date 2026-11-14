@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Phones and the Steam Deck: no active waiting at 30 fps** (#577). The active waiting for the screen from #576 is now
+  off by default when the game runs at 30 fps (frame interpolation off). At 30 fps it made no frames smoother, and the
+  phone warmed a little faster (Xiaomi 14: about +0.04 °C per minute in the Dragon Roost lava room and +0.1 °C per
+  minute on the cliff). With frame interpolation on, nothing changes. The default follows the frame rate setting while
+  you play, and `WWHD_VSYNC_HOT_WAIT_US` still applies in every mode. Desktop computers are not affected.
+
 - **Phones and the Steam Deck: graphics on a second thread in the normal build too, short waits no longer sleep**
   (#576). The normal build now also records the graphics work on a second thread on Android and the Steam Deck. The
   game thread no longer sleeps for short waits on the screen (up to 8 ms) but waits actively: after such short sleeps
