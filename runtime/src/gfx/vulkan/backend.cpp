@@ -122,6 +122,7 @@ extern "C" int __llvm_profile_write_file(void);
 #include <future>
 #include <mutex>
 #ifdef WWHD_NATIVE_DRAW
+#include "native_draw/j3d_desc_depth.h"
 #include "batch_pass_end.h"
 #endif
 #ifdef WWHD_VK_SMOOTH
@@ -5028,6 +5029,14 @@ static void init_device(std::vector<const char *> extensions,
     enabled12.samplerMirrorClampToEdge = VK_TRUE;
   }
   R.samplerMirrorClampToEdge = enabled12.samplerMirrorClampToEdge;
+#ifdef WWHD_NATIVE_DRAW
+  // shadow-slice instancing of described J3D depth draws (native_draw/j3d_desc_depth.h; off by default): gl_Layer
+  // written by the vertex stage
+  if (vulkan12 && ::native_draw::j3ddesc::depth::want_layer_output() && available12.shaderOutputLayer &&
+      available12.shaderOutputViewportIndex)
+    enabled12.shaderOutputLayer = enabled12.shaderOutputViewportIndex = VK_TRUE;
+  ::native_draw::j3ddesc::depth::set_layer_output(enabled12.shaderOutputLayer == VK_TRUE);
+#endif
   VkPhysicalDeviceFeatures available;
   vkGetPhysicalDeviceFeatures(R.physicalDevice, &available);
   VkPhysicalDeviceFeatures enabled{};

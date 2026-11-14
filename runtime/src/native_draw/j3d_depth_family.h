@@ -42,6 +42,7 @@ struct PipeIn {
 };
 struct Generated {
     std::string why;  // empty: made
+    std::string vsText;  // the generated vertex program's GLSL (the layered-instance variant is made from it)
     std::vector<uint32_t> vs, ps, psLod0;
     std::vector<uint32_t> vsBlocks, psBlocks, units;
     bool support = false;
@@ -76,10 +77,14 @@ const std::set<std::pair<uint64_t, uint64_t>>& proven_biasfree();  // the same 6
 Generated& generated(const gfxvk::vk::Shader* vs, const gfxvk::vk::Shader* ps, uint64_t vsHash, uint64_t psHash);
 std::vector<uint32_t> words(const std::string& src, bool vertex, const char* what);  // GLSL -> SPIR-V (empty: failed)
 // the hand-written family's pipeline (DYNLAYOUT: on that layout instead of the plain native one)
-VkPipeline pipeline(const PipeIn& d, Kind kind, const char** why, VkPipelineLayout dynLayout);
+// (VSOVERRIDE: another vertex program with the same streams, TAG added to the pipeline key: the layered-instance variant)
+VkPipeline pipeline(const PipeIn& d, Kind kind, const char** why, VkPipelineLayout dynLayout,
+                    const std::vector<uint32_t>* vsOverride, const char* tag);
 // a generated family's pipeline (LOD: its LOD-0 pixel program; DYN: on its dynamic-uniform layout)
+// (LAYOUTOVERRIDE, VSOVERRIDE, TAG: as pipeline())
 VkPipeline generated_pipeline(Generated& g, const PipeIn& in, uint64_t vsHash, uint64_t psHash, bool lod, const char** why,
-                              bool dyn);
+                              bool dyn, VkPipelineLayout layoutOverride, const std::vector<uint32_t>* vsOverride,
+                              const char* tag);
 // a raw pipeline with the family's fixed state (cull, front face, polygon offset, depth clamp from D.regs; LESS + write)
 VkPipeline create_pipeline(const PipeIn& d, VkPipelineLayout layout, const std::vector<uint32_t>& vsWords,
                            const std::vector<uint32_t>& psWords, const std::vector<VkVertexInputBindingDescription>& bindings,

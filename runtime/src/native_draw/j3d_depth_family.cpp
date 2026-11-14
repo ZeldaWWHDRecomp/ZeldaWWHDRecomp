@@ -507,7 +507,8 @@ std::vector<uint32_t> words(const std::string& src, bool vertex, const char* wha
 }
 
 // the hand-written families' pipeline (their streams at locations 0-2)
-VkPipeline pipeline(const PipeIn& d, Kind kind, const char** why, VkPipelineLayout dynLayout = VK_NULL_HANDLE) {
+VkPipeline pipeline(const PipeIn& d, Kind kind, const char** why, VkPipelineLayout dynLayout = VK_NULL_HANDLE,
+                    const std::vector<uint32_t>* vsOverride = nullptr, const char* tag = "") {
     using namespace gfxvk;
     const uint32_t* r = d.regs;
     ensure_layout();
@@ -536,7 +537,8 @@ VkPipeline pipeline(const PipeIn& d, Kind kind, const char** why, VkPipelineLayo
     static std::map<int, Words> compiled;  // (kind, clamp variant)
     Words& w = compiled[int(kind) * 2 + int(clampVariant)];
     if (w.vs.empty()) { w.vs = words(vertex_source(kind, clampVariant), true, "native"); w.ps = words(kFragment, false, "native"); }
-    if (dynLayout) return create_pipeline(d, dynLayout, w.vs, w.ps, bindings, attributes, key + "dyn:", why);
+    if (dynLayout)
+        return create_pipeline(d, dynLayout, vsOverride ? *vsOverride : w.vs, w.ps, bindings, attributes, key + "dyn:" + tag, why);
     return create_pipeline(d, g_native.layout, w.vs, w.ps, bindings, attributes, key, why);
 }
 
@@ -715,6 +717,7 @@ Generated& generated(const gfxvk::vk::Shader* vs, const gfxvk::vk::Shader* ps, u
     if (vsupport) { g.why = "vertex support uniforms"; return g; }
     std::memcpy(g.mapping, vs->mapping.attributeMapping, sizeof g.mapping);
     g.vs = words(vt, true, "generated");
+    g.vsText = vt;
     g.ps = words(pt, false, "generated");
     std::string pl = pt;
     if (lod0(pl)) g.psLod0 = words(pl, false, "generated LOD 0");
@@ -978,7 +981,8 @@ VkDescriptorSet hand_set(Kind kind, const uint32_t* r) {
 }
 // the pipeline of a generated family for these inputs (LOD: its LOD-0 pixel program)
 VkPipeline generated_pipeline(Generated& g, const PipeIn& in, uint64_t vsHash, uint64_t psHash, bool lod, const char** why,
-                              bool dyn = false) {
+                              bool dyn = false, VkPipelineLayout layoutOverride = VK_NULL_HANDLE,
+                              const std::vector<uint32_t>* vsOverride = nullptr, const char* tag = "") {
     const std::vector<uint32_t>& pw = lod ? g.psLod0 : g.ps;
     if (pw.empty()) { *why = "no LOD-0 program"; return VK_NULL_HANDLE; }
     std::vector<VkVertexInputBindingDescription> bindings;
@@ -987,6 +991,8 @@ VkPipeline generated_pipeline(Generated& g, const PipeIn& in, uint64_t vsHash, u
     std::snprintf(k, sizeof k, "gen:%016llx:%016llx:%d:", (unsigned long long)vsHash, (unsigned long long)psHash, int(lod));
     std::string key = k;
     if (!all_streams(in, g.mapping, bindings, attributes, key, why)) return VK_NULL_HANDLE;
+    if (layoutOverride)
+        return create_pipeline(in, layoutOverride, vsOverride ? *vsOverride : g.vs, pw, bindings, attributes, key + "dyn:" + tag, why);
     if (dyn) return create_pipeline(in, g.layoutDyn, g.vs, pw, bindings, attributes, key + "dyn:", why);
     return create_pipeline(in, g.layout, g.vs, pw, bindings, attributes, key, why);
 }

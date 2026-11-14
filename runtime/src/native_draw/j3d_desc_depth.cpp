@@ -1,0 +1,723 @@
+// Native depth programs for described J3D draws, and shadow-slice instancing (j3d_desc_depth.h). Decomp build fast mode,
+// WWHD_NATIVE_DRAW=ON only. The family core (hashes, proven lists, programs, pipelines) is j3d_depth_family.cpp.
+#include "../../third_party/cemu/cemu_shim.h"  // (as the gx2 sources get it: -include)
+#include "native_draw/j3d_desc_depth.h"
+#include "Cafe/HW/Latte/Core/FetchShader.h"
+#include "Cafe/HW/Latte/ISA/LatteReg.h"
+#include "Cafe/HW/Latte/ISA/RegDefines.h"
+#include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
+#include "native_draw/j3d_depth_family.h"
+#include "gfx/vulkan/backend.h"
+#include "gfx/vulkan/shaders.h"
+#include "gfx/vulkan/deferred_dispatch.h"
+#include "gx2/gx2_cmd.h"
+#include "runtime.h"
+#include <algorithm>
+#include <array>
+#include <cstdio>
+#include <cstring>
+#include <deque>
+#include <map>
+#include <regex>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+using namespace Latte;
+
+namespace native_draw::j3ddesc::depth {
+namespace {
+namespace fam = native_draw::j3d_depth::fam;
+using gfxvk::R;
+constexpr uint32_t kMaxBind = 48;
+constexpr uint32_t kMaxInst = 4;        // slices per instanced draw (the cascade has 3)
+constexpr uint32_t kLayerBinding = 60;  // the instanced variant's layer table {ivec4 fam_layer[kMaxInst]}
+
+bool env_on(const char* n) {
+    const char* e = std::getenv(n);
+    return e && std::atoi(e);
+}
+bool g_layerOutput = false;  // the device writes gl_Layer from the vertex stage (backend hook)
+
+// ---------------------------------------------------------------- counters
+struct Counts {
+    std::map<std::string, uint64_t> refused, failed;
+    uint64_t hand = 0, gen = 0, draws = 0, setsWritten = 0, setsOwn = 0;
+    uint64_t collected = 0, groups = 0, instanced = 0, flushes = 0, notCollected = 0;
+    std::map<std::string, uint64_t> instRefused;
+} g_counts;
+uint64_t g_countFrame = 0;
+
+// ---------------------------------------------------------------- per-state descriptor sets (one per submission slot)
+struct Ubo { uint32_t binding; VkBuffer buffer; VkDeviceSize offset, range; };
+struct Img { uint32_t binding; VkDescriptorImageInfo info; };
+struct SlotSet {
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    uint64_t gen = ~0ull;  // the submission it was last bound in
+    bool written = false;
+    std::array<VkBuffer, kMaxBind> buffers{};
+    std::array<VkDeviceSize, kMaxBind> ranges{};
+};
+struct SetCache { std::vector<SlotSet> slots; };
+// the slot's set: as it is (same buffers and ranges; images are static per state), rewritten (not bound yet in this
+// submission), else a set of the submission's pool for this draw. Dynamic offsets carry the per-draw part.
+VkDescriptorSet slot_set_for(SetCache& sc, VkDescriptorSetLayout layout, const Ubo* ubo, uint32_t nubo, const Img* img,
+                             uint32_t nimg) {
+    using namespace gfxvk;
+    const size_t slot = R.activeSubmission;
+    if (sc.slots.size() <= slot) sc.slots.resize(slot + 1);
+    SlotSet* ss = &sc.slots[slot];
+    bool same = ss->written;
+    for (uint32_t i = 0; i < nubo && same; ++i) same = ss->buffers[i] == ubo[i].buffer && ss->ranges[i] == ubo[i].range;
+    VkDescriptorSet set = VK_NULL_HANDLE;
+    if (same) set = ss->set;
+    else {
+        if (ss->gen == R.submissionGeneration) {
+            ss = nullptr;  // (bound earlier in this submission: kept; this draw takes a set of the submission)
+            VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+            a.descriptorPool = R.descriptorPool;
+            a.descriptorSetCount = 1;
+            a.pSetLayouts = &layout;
+            if (vkAllocateDescriptorSets(R.device, &a, &set) != VK_SUCCESS) return VK_NULL_HANDLE;
+        } else {
+            if (!ss->set) ss->set = fam::slot_set(layout);
+            set = ss->set;
+        }
+        if (!set) return VK_NULL_HANDLE;
+        std::array<VkWriteDescriptorSet, kMaxBind + 16> w{};
+        std::array<VkDescriptorBufferInfo, kMaxBind> bi{};
+        uint32_t nw = 0;
+        for (uint32_t i = 0; i < nubo; ++i) {
+            bi[i] = {ubo[i].buffer, 0, ubo[i].range};
+            w[nw] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            w[nw].dstSet = set, w[nw].dstBinding = ubo[i].binding, w[nw].descriptorCount = 1;
+            w[nw].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, w[nw].pBufferInfo = &bi[i];
+            ++nw;
+        }
+        // images: static per state, written with the set (a fresh set needs them; a kept one has them)
+        for (uint32_t i = 0; i < nimg && (!ss || !ss->written); ++i) {
+            w[nw] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+            w[nw].dstSet = set, w[nw].dstBinding = img[i].binding, w[nw].descriptorCount = 1;
+            w[nw].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, w[nw].pImageInfo = &img[i].info;
+            ++nw;
+        }
+        vkUpdateDescriptorSets(R.device, nw, w.data(), 0, nullptr);
+        if (ss) {
+            for (uint32_t i = 0; i < nubo; ++i) ss->buffers[i] = ubo[i].buffer, ss->ranges[i] = ubo[i].range;
+            ss->written = true;
+            ++g_counts.setsWritten;
+        } else ++g_counts.setsOwn;
+    }
+    if (ss) ss->gen = R.submissionGeneration;
+    return set;
+}
+
+// ---------------------------------------------------------------- states
+// what feeds a binding of the family's set
+enum NeedKind : uint8_t {
+    kWhole,     // the draw's block at (stage, location), whole (RANGE: at most that many bytes)
+    kHandView,  // the hand-written families' view: location 2's rows 0-2 and 27-30 (7 vec4), repacked
+    kPacked,    // instanced variant: the block's first VEC4S vec4 of every instance, packed (fam_v<loc>[i * n + k])
+    kSupport,   // the support scalars (static per state)
+    kLayers,    // instanced variant: the layer table
+};
+struct Need {
+    uint32_t stageLoc = 0, binding = 0, range = 0, vec4s = 0;
+    NeedKind kind = kWhole;
+};
+struct Variant {
+    VkPipeline pipe = VK_NULL_HANDLE;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkDescriptorSetLayout setLayout = VK_NULL_HANDLE;
+    std::vector<Need> needs;  // in binding order
+    SetCache sets;
+    const char* why = nullptr;  // (instanced variant) why there is none
+};
+}  // namespace
+struct State {  // (declared in the header)
+    const fam::Family* hand = nullptr;
+    fam::Generated* gen = nullptr;
+    uint64_t vsHash = 0, psHash = 0;
+    Variant plain, inst;
+    std::vector<Img> images;  // static
+    bool support = false;
+    std::array<float, 33 * 4> sv{};
+    uint64_t supGen = ~0ull;
+    gfxvk::UploadSlice sup{};
+};
+namespace {
+std::deque<State> g_states;
+struct Hashed { const fam::Family* family = nullptr; uint64_t hash = 0; };
+std::unordered_map<uint64_t, Hashed> g_vs;     // vertex shader key -> structure hash, hand-written family
+std::unordered_map<uint64_t, uint64_t> g_ps;   // pixel shader key -> structure hash
+
+State* refuse(const char* why) {
+    ++g_counts.refused[why];
+    return nullptr;
+}
+
+// the support scalars of the generated programs (FamS {fam_s; fam_lod[16]; fam_tsc[16]}), from the define's bytes
+bool support_from(State& s, const gfxvk::vk::Shader* ps, const uint8_t* sup, uint32_t n) {
+    if (!sup) return false;
+    auto get = [&](int32_t off, float* dst, int count) {
+        if (off >= 0 && uint32_t(off) + 4u * count <= n) std::memcpy(dst, sup + off, 4u * count);
+    };
+    get(ps->uniforms.offset_alphaTestRef, &s.sv[0], 1);
+    for (int u = 0; u < 16; ++u) {
+        get(ps->uniforms.offset_texLodBias[u], &s.sv[4 + u * 4], 1);
+        get(ps->uniforms.offset_texScale[u], &s.sv[4 + 64 + u * 4], 2);
+    }
+    return true;
+}
+
+// ---------------------------------------------------------------- the layered-instance variant
+// Same arithmetic, same streams; the per-slice blocks come from a packed array indexed by the instance, and the
+// instance's slice is written to gl_Layer. Hand-written: View {view[3]; proj[4]} -> fam_view[7 * kMaxInst];
+// generated: every remapped vertex block fam_v<L>[n] -> fam_v<L>[n * kMaxInst] (buffer-mode blocks and the pixel
+// stage stay shared: equal in every instance or the draws are not merged).
+size_t main_body(const std::string& t) {
+    size_t m = t.find("void main()");
+    if (m == std::string::npos) return std::string::npos;
+    m = t.find('{', m);
+    return m == std::string::npos ? m : m + 1;
+}
+bool inst_text(std::string& t, bool hand, std::map<uint32_t, uint32_t>& packed) {
+    const size_t nl = t.find('\n');
+    if (t.compare(0, 9, "#version ") != 0 || nl == std::string::npos) return false;
+    t.insert(nl + 1, "#extension GL_ARB_shader_viewport_layer_array : require\n");
+    std::string pre = "int fam_i = gl_InstanceIndex;\n    gl_Layer = fam_layer[fam_i].x;\n";
+    if (hand) {
+        const std::string decl = "uniform View { vec4 view[3]; vec4 proj[4]; };";
+        const size_t d = t.find(decl);
+        if (d == std::string::npos) return false;
+        t.replace(d, decl.size(), "uniform View { vec4 fam_view[" + std::to_string(7 * kMaxInst) + "]; };");
+        t = std::regex_replace(t, std::regex(R"(\bview\[)"), "fam_view[fam_i * 7 + ");
+        t = std::regex_replace(t, std::regex(R"(\bproj\[)"), "fam_view[fam_i * 7 + 3 + ");
+    } else {
+        // declarations first (kept apart while the reads are rewritten)
+        const std::regex declRe(R"(uniform FamV(\d+) \{ ivec4 fam_v\d+\[(\d+)\]; \};)");
+        std::smatch m;
+        std::string out, rest = t;
+        std::vector<std::string> decls;
+        while (std::regex_search(rest, m, declRe)) {
+            const uint32_t loc = uint32_t(std::stoul(m[1].str())), n = uint32_t(std::stoul(m[2].str()));
+            packed[loc] = n;
+            out += m.prefix().str() + "@DECL" + std::to_string(decls.size()) + "@";
+            decls.push_back("uniform FamV" + m[1].str() + " { ivec4 fam_v" + m[1].str() + "[" + std::to_string(n * kMaxInst) + "]; };");
+            rest = m.suffix().str();
+        }
+        out += rest;
+        for (const auto& [loc, n] : packed)
+            out = std::regex_replace(out, std::regex("\\bfam_v" + std::to_string(loc) + "\\["),
+                                     "fam_v" + std::to_string(loc) + "[fam_i * " + std::to_string(n) + " + ");
+        for (size_t i = 0; i < decls.size(); ++i) {
+            const std::string mark = "@DECL" + std::to_string(i) + "@";
+            out.replace(out.find(mark), mark.size(), decls[i]);
+        }
+        t.swap(out);
+    }
+    const size_t body = main_body(t);
+    if (body == std::string::npos) return false;
+    t.insert(body, "\n    " + pre);
+    t.insert(t.find("void main()"), "layout(set = 0, binding = " + std::to_string(kLayerBinding) +
+                                        ", std140) uniform FamLayer { ivec4 fam_layer[" + std::to_string(kMaxInst) + "]; };\n");
+    return true;
+}
+void make_inst(State& s, fam::PipeIn in, bool clampVariant) {
+    using namespace gfxvk;
+    Variant& v = s.inst;
+    if (!g_layerOutput) { v.why = "no gl_Layer from the vertex stage"; return; }
+    if (R.renderPasses) { v.why = "render-pass path (layered passes on dynamic rendering only)"; return; }
+    std::string t = s.hand ? fam::vertex_source(s.hand->kind, clampVariant) : s.gen->vsText;
+    std::map<uint32_t, uint32_t> packed;
+    if (t.empty() || !inst_text(t, s.hand != nullptr, packed)) { v.why = "vertex program rewrite"; return; }
+    const std::vector<uint32_t> vsWords = fam::words(t, true, "instanced depth");
+    if (vsWords.empty()) { v.why = "instanced program did not compile"; return; }
+    std::vector<VkDescriptorSetLayoutBinding> b;
+    if (s.hand) {
+        b = {{0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr},
+             {1, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr}};
+        v.needs = {{2u, 0, 7 * 16, 7, kPacked}, s.plain.needs[1]};
+        v.needs[0].kind = kHandView;  // (packed per instance from the view's repack)
+    } else {
+        b = s.gen->bindings;
+        for (const Need& n : s.plain.needs) {
+            Need m = n;
+            const uint32_t loc = n.stageLoc & 0xFFFF;
+            if (n.kind == kWhole && (n.stageLoc >> 16) == 0 && packed.count(loc)) {
+                m.kind = kPacked;
+                m.vec4s = packed[loc];
+                m.range = packed[loc] * 16 * kMaxInst;
+            }
+            v.needs.push_back(m);
+        }
+    }
+    b.push_back({kLayerBinding, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr});
+    v.needs.push_back({0, kLayerBinding, 16 * kMaxInst, 0, kLayers});
+    if (!fam::dyn_layout(b, v.setLayout, v.layout)) { v.why = "instanced layout"; return; }
+    in.colors = {};  // the layered pass has the depth attachment only (colour writes are off in this state anyway)
+    in.ncolor = 0;
+    const char* why = nullptr;
+    v.pipe = s.hand ? fam::pipeline(in, s.hand->kind, &why, v.layout, &vsWords, "inst:")
+                    : fam::generated_pipeline(*s.gen, in, s.vsHash, s.psHash, false, &why, true, v.layout, &vsWords, "inst:");
+    if (!v.pipe) v.why = why ? why : "instanced pipeline";
+}
+
+// ---------------------------------------------------------------- per-draw block uploads
+const uint32_t* find_block(const Draw& d, uint32_t stageLoc) {
+    for (uint32_t i = 0; i < d.blockCount; ++i)
+        if (d.blocks[i * 3] == stageLoc) return d.blocks + i * 3;
+    return nullptr;
+}
+// a block's bytes as the GPU reads them at this point of the command stream (the submitted copy, else guest memory)
+const uint8_t* host_block(uint32_t addr, uint32_t size) {
+    if (const uint8_t* sub = gx2::submitted_uniform_block(addr, size)) return sub;
+    return static_cast<const uint8_t*>(mem::ptr(addr));
+}
+// the hand-written families' view (rows 0-2 and 27-30): once per submission per address for submitted blocks
+gfxvk::UploadSlice view_upload(uint32_t addr, uint32_t size, bool* ok) {
+    using namespace gfxvk;
+    *ok = false;
+    if (!addr || size < 31 * 16) return {};
+    const uint8_t* sub = gx2::submitted_uniform_block(addr, size);
+    static uint32_t lastAddr = 0;
+    static uint64_t lastId = ~0ull, lastGen = ~0ull;
+    static UploadSlice last{};
+    if (sub && addr == lastAddr && lastId == gx2::submitted_uniforms_id() && lastGen == R.submissionGeneration) {
+        *ok = true;
+        return last;
+    }
+    const uint8_t* view = sub ? sub : static_cast<const uint8_t*>(mem::ptr(addr));
+    const VkDeviceSize align = std::max<VkDeviceSize>(256, R.properties.limits.minUniformBufferOffsetAlignment);
+    UploadSlice vs = allocate_upload(7 * 16, align);
+    std::memcpy(vs.mapped, view, 3 * 16);
+    std::memcpy(static_cast<uint8_t*>(vs.mapped) + 48, view + 27 * 16, 4 * 16);
+    vs.size = 7 * 16;
+    if (sub) lastAddr = addr, lastId = gx2::submitted_uniforms_id(), lastGen = R.submissionGeneration, last = vs;
+    else lastAddr = 0;
+    *ok = true;
+    return vs;
+}
+bool support_slice(State& s, Ubo& u, uint32_t binding) {
+    using namespace gfxvk;
+    if (s.supGen != R.submissionGeneration) {
+        const VkDeviceSize align = std::max<VkDeviceSize>(256, R.properties.limits.minUniformBufferOffsetAlignment);
+        s.sup = allocate_upload(sizeof s.sv, align);
+        if (!s.sup.mapped) return false;
+        std::memcpy(s.sup.mapped, s.sv.data(), sizeof s.sv);
+        s.sup.size = sizeof s.sv;
+        s.supGen = R.submissionGeneration;
+    }
+    u = {binding, s.sup.buffer, s.sup.offset, s.sup.size};
+    return true;
+}
+// a shared (not per-instance) binding of the draw: whole block, hand view, support
+bool shared_ubo(State& s, const Need& n, const Draw& d, Ubo& u, const char** why) {
+    using namespace gfxvk;
+    if (n.kind == kSupport) return support_slice(s, u, n.binding) || (*why = "support upload", false);
+    const uint32_t* b = find_block(d, n.stageLoc);
+    if (!b || !b[1]) { *why = "block missing"; return false; }
+    const uint32_t size = std::min<uint32_t>(b[2], 0x10000);
+    if (n.kind == kHandView) {
+        bool ok = false;
+        const UploadSlice v = view_upload(b[1], size, &ok);
+        if (!ok) { *why = "view upload"; return false; }
+        u = {n.binding, v.buffer, v.offset, 7 * 16};
+        return true;
+    }
+    if (!d.upload) { *why = "no block upload"; return false; }
+    const Slice sl = d.upload(b[1], size);
+    if (!sl.buffer) { *why = "block upload"; return false; }
+    const VkDeviceSize maxRange = R.properties.limits.maxUniformBufferRange;
+    u = {n.binding, reinterpret_cast<VkBuffer>(uintptr_t(sl.buffer)), VkDeviceSize(sl.offset),
+         std::min<VkDeviceSize>(n.range ? std::min<uint64_t>(n.range, sl.size) : sl.size, maxRange)};
+    return true;
+}
+
+// ---------------------------------------------------------------- shadow-slice instancing: the collection
+struct Entry {
+    uint32_t layer = 0;
+    uint32_t staged = 0;  // offset of this instance's packed bytes in g_stage (per kPacked/kHandView need, in need order)
+};
+struct Group {
+    State* state = nullptr;
+    Geometry geo;
+    std::array<Ubo, kMaxBind> shared{};  // per need (kPacked/kLayers entries unused)
+    uint32_t nshared = 0;
+    std::array<Entry, kMaxInst> inst{};
+    uint32_t count = 0;
+};
+struct Collection {
+    uint64_t surface = 0;
+    Target target;
+    std::vector<Group> groups;
+    std::unordered_map<uint64_t, std::vector<uint32_t>> byKey;  // (state, mesh) -> groups
+    std::vector<uint8_t> stage;
+    uint32_t minLayer = ~0u, maxLayer = 0;
+} g_col;
+struct ArrayView { VkImage image; uint32_t base, count; VkImageView view; };
+std::vector<ArrayView> g_views;
+VkImageView array_view(const Target& t, uint32_t base, uint32_t count) {
+    using namespace gfxvk;
+    for (const ArrayView& a : g_views)
+        if (a.image == t.image && a.base == base && a.count == count) return a.view;
+    VkImageViewCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+    ci.image = t.image;
+    ci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+    ci.format = t.format;
+    ci.subresourceRange = {VkImageAspectFlags(VK_IMAGE_ASPECT_DEPTH_BIT | (t.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0)), 0, 1, base,
+                           count};
+    VkImageView v = VK_NULL_HANDLE;
+    if (vkCreateImageView(R.device, &ci, nullptr, &v) != VK_SUCCESS) return VK_NULL_HANDLE;
+    g_views.push_back({t.image, base, count, v});
+    return v;
+}
+bool same_target(const Target& a, const Target& b) {
+    return a.surface == b.surface && a.image == b.image && a.width == b.width && a.height == b.height &&
+           std::memcmp(&a.viewport, &b.viewport, sizeof a.viewport) == 0 && std::memcmp(&a.scissor, &b.scissor, sizeof a.scissor) == 0;
+}
+bool same_geometry(const Geometry& a, const Geometry& b) {
+    if (a.mesh != b.mesh || a.vertexCount != b.vertexCount || a.index != b.index || a.indexOffset != b.indexOffset ||
+        a.indexType != b.indexType || a.indexCount != b.indexCount || a.baseVertex != b.baseVertex)
+        return false;
+    for (uint32_t i = 0; i < a.vertexCount; ++i)
+        if (a.vertex[i] != b.vertex[i] || a.vertexOffset[i] != b.vertexOffset[i] || a.vertexBinding[i] != b.vertexBinding[i])
+            return false;
+    return true;
+}
+}  // namespace
+
+// ---------------------------------------------------------------- switches
+bool on() {
+    static const bool v = [] {
+        const bool o = env_on("WWHD_NATIVE_J3D_DESC_DEPTH");
+        if (o) LOG("[j3d-desc-depth] native depth programs for described depth-only J3D draws on (WWHD_NATIVE_J3D_DESC_DEPTH=1%s)",
+                   fam::biasfree_on() ? ", bias-free family hashes" : "; WWHD_NATIVE_J3D_DEPTH_BIASFREE=1 recommended");
+        return o;
+    }();
+    return v;
+}
+bool want_layer_output() { return env_on("WWHD_NATIVE_J3D_DESC_DEPTH_INST"); }
+void set_layer_output(bool enabled) {
+    g_layerOutput = enabled;
+    if (want_layer_output()) LOG("[j3d-desc-depth] shadow-slice instancing: gl_Layer from the vertex stage %s", enabled ? "on" : "NOT available");
+}
+bool inst_on() {
+    static const bool v = on() && want_layer_output();
+    return v && g_layerOutput;
+}
+
+// ---------------------------------------------------------------- define
+State* choose(const Query& q) {
+    using namespace gfxvk;
+    if (!on() || !q.desc || q.desc->pass != 0 || !q.image) return nullptr;
+    const uint32_t* r = q.image;
+    if (r[REGADDR::CB_TARGET_MASK] != 0 || r[REGADDR::DB_DEPTH_CONTROL] != 0x16) return refuse("not depth-only");
+    const auto* vs = static_cast<const vk::Shader*>(q.vs);
+    const auto* ps = static_cast<const vk::Shader*>(q.ps);
+    const auto* fs = static_cast<const LatteFetchShader*>(q.fetch);
+    if (!vs || !vs->dec || !ps || !ps->dec || !fs) return refuse("no programs");
+    if (vs->source_text().empty() || ps->source_text().empty()) return refuse("no program text");
+    if (vs->clipVarying || ps->clipVarying) return refuse("depth clipping in shaders");
+    if (!q.depthFormat) return refuse("no depth target");
+    auto [vit, vfresh] = g_vs.try_emplace(vs->key);
+    if (vfresh) {
+        vit->second.hash = fam::structure_hash(vs, nullptr);
+        for (const fam::Family& f : fam::families())
+            if (f.vs == vit->second.hash) vit->second.family = &f;
+    }
+    auto [pit, pfresh] = g_ps.try_emplace(ps->key);
+    if (pfresh) pit->second = fam::structure_hash(ps, nullptr);
+    State s;
+    s.vsHash = vit->second.hash;
+    s.psHash = pit->second;
+    if (vit->second.family && fam::colour_only(ps)) s.hand = vit->second.family;
+    else {
+        if (!(fam::biasfree_on() ? fam::proven_biasfree() : fam::proven()).count({s.vsHash, s.psHash})) {
+            static std::set<std::pair<uint64_t, uint64_t>> said;
+            if (said.size() < 64 && said.insert({s.vsHash, s.psHash}).second)
+                LOG("[j3d-desc-depth] depth-only description %u without a proven family: %016llx/%016llx (stays translated)",
+                    q.desc->id, (unsigned long long)s.vsHash, (unsigned long long)s.psHash);
+            return refuse("not a proven family");
+        }
+        fam::Generated& g = fam::generated(vs, ps, s.vsHash, s.psHash);
+        if (!g.why.empty()) return refuse("generated program failed");
+        for (int i = 0; i < LATTE_NUM_MAX_ATTRIBUTE_LOCATIONS; ++i)
+            if (g.mapping[i] != vs->mapping.attributeMapping[i]) return refuse("attribute locations");
+        s.gen = &g;
+    }
+    // the pipeline: made here from the define's image (raster words, strides) and the pass's formats; the family core
+    // keeps one per (family, streams, raster words, formats), shared by every state with the same key
+    fam::PipeIn in;
+    in.regs = r;
+    in.fs = fs;
+    for (uint32_t i = 0; i < q.colorCount && i < 8; ++i) in.colors[i] = VkFormat(q.colorFormats[i]);
+    in.ncolor = std::min<uint32_t>(q.colorCount, 8);
+    in.depth = VkFormat(q.depthFormat);
+    in.stencil = q.depthStencil;
+    const char* why = nullptr;
+    const bool clampVariant = !R.enabledFeatures.depthClamp && (r[REGADDR::PA_CL_CLIP_CNTL] & (1u << 27));
+    if (s.hand) {
+        if (!fam::native_dyn()) return refuse("native layout");
+        s.plain.layout = fam::g_nativeDyn.layout, s.plain.setLayout = fam::g_nativeDyn.set;
+        s.plain.pipe = fam::pipeline(in, s.hand->kind, &why, s.plain.layout, nullptr, "");
+        s.plain.needs = {{2u, 0, 7 * 16, 7, kHandView}, {1u, 1, s.hand->kind == fam::kRigid ? 48u : 0u, 0, kWhole}};
+    } else {
+        fam::Generated& g = *s.gen;
+        if (!fam::dyn_layout(g.bindings, g.setDyn, g.layoutDyn)) return refuse("generated layout");
+        s.plain.layout = g.layoutDyn, s.plain.setLayout = g.setDyn;
+        s.plain.pipe = fam::generated_pipeline(g, in, s.vsHash, s.psHash, false, &why, true, VK_NULL_HANDLE, nullptr, "");
+        for (uint32_t loc : g.vsBlocks) s.plain.needs.push_back({loc, loc, 0, 0, kWhole});
+        for (uint32_t loc : g.psBlocks) s.plain.needs.push_back({1u << 16 | loc, fam::kPsBlockBase + loc, 0, 0, kWhole});
+        if (g.support) {
+            if (!support_from(s, ps, q.psSupport, q.psSupportSize)) return refuse("no support bytes");
+            s.support = true;
+            s.plain.needs.push_back({0, fam::kSupportBinding, 0, 0, kSupport});
+        }
+        for (uint32_t u : g.units) {
+            const int binding = ps->mapping.textureUnitToBindingPoint[u];
+            const Query::Image* im = nullptr;
+            for (uint32_t i = 0; i < q.imageCount; ++i)
+                if (int(q.images[i].binding) == binding) { im = &q.images[i]; break; }
+            if (!im) return refuse("texture missing");
+            s.images.push_back({fam::kTextureBase + u, {reinterpret_cast<VkSampler>(uintptr_t(im->sampler)),
+                                                        reinterpret_cast<VkImageView>(uintptr_t(im->view)), VkImageLayout(im->layout)}});
+        }
+        std::sort(s.plain.needs.begin(), s.plain.needs.end(), [](const Need& a, const Need& b) { return a.binding < b.binding; });
+    }
+    if (!s.plain.pipe) return refuse(why ? why : "pipeline");
+    if (s.plain.needs.size() > kMaxBind) return refuse("too many blocks");
+    ++(s.hand ? g_counts.hand : g_counts.gen);
+    g_states.push_back(std::move(s));
+    State& st = g_states.back();
+    if (want_layer_output()) {
+        make_inst(st, in, clampVariant);
+        if (st.inst.why) ++g_counts.instRefused[st.inst.why];
+    }
+    return &st;
+}
+
+// ---------------------------------------------------------------- per draw
+bool bind(State* s, const Draw& d, Binding& out) {
+    if (!s) return false;
+    auto fail = [](const char* why) { ++g_counts.failed[why]; return false; };
+    std::array<Ubo, kMaxBind> ubo;
+    uint32_t n = 0;
+    const char* why = nullptr;
+    for (const Need& need : s->plain.needs)
+        if (!shared_ubo(*s, need, d, ubo[n++], &why)) return fail(why);
+    const VkDescriptorSet set = slot_set_for(s->plain.sets, s->plain.setLayout, ubo.data(), n, s->images.data(),
+                                             uint32_t(s->images.size()));
+    if (!set) return fail("descriptor set");
+    static std::array<uint32_t, kMaxBind> offsets;
+    for (uint32_t i = 0; i < n; ++i) {
+        if (ubo[i].offset > UINT32_MAX) return fail("uniform offset");
+        offsets[i] = uint32_t(ubo[i].offset);
+    }
+    out.pipeline = uint64_t(reinterpret_cast<uintptr_t>(s->plain.pipe));
+    out.layout = uint64_t(reinterpret_cast<uintptr_t>(s->plain.layout));
+    out.set = uint64_t(reinterpret_cast<uintptr_t>(set));
+    out.offsets = offsets.data();
+    out.offsetCount = n;
+    ++g_counts.draws;
+    return true;
+}
+
+// ---------------------------------------------------------------- shadow-slice instancing
+bool inst_pending() { return !g_col.groups.empty(); }
+uint64_t inst_target() { return g_col.groups.empty() ? 0 : g_col.surface; }
+
+bool inst_collect(State* s, const Draw& d, const Geometry& g, const Target& t) {
+    auto no = [](const char* why) { ++g_counts.instRefused[why]; ++g_counts.notCollected; return false; };
+    if (!s || !inst_on() || !s->inst.pipe) return no(s && s->inst.why ? s->inst.why : "no instanced variant");
+    if (!g_col.groups.empty() && !same_target(g_col.target, t)) return no("another target (flush first)");
+    if (g.vertexCount > 16 || t.layer >= 64) return no("geometry");
+    // the shared bindings of this draw, and its per-instance bytes (read now: what the GPU would read at this draw)
+    Group probe;
+    probe.state = s;
+    probe.geo = g;
+    const char* why = nullptr;
+    const size_t stageAt = g_col.stage.size();
+    for (const Need& n : s->inst.needs) {
+        Ubo& u = probe.shared[probe.nshared++];
+        if (n.kind == kLayers) continue;
+        if (n.kind == kPacked || (n.kind == kHandView)) {
+            const uint32_t* b = find_block(d, n.stageLoc);
+            const uint32_t size = b ? std::min<uint32_t>(b[2], 0x10000) : 0;
+            if (!b || !b[1] || size < n.vec4s * 16 || (n.kind == kHandView && size < 31 * 16)) {
+                g_col.stage.resize(stageAt);
+                return no("per-instance block");
+            }
+            const uint8_t* p = host_block(b[1], size);
+            if (!p) { g_col.stage.resize(stageAt); return no("per-instance block"); }
+            const size_t at = g_col.stage.size();
+            g_col.stage.resize(at + n.vec4s * 16);
+            if (n.kind == kHandView) {
+                std::memcpy(&g_col.stage[at], p, 3 * 16);
+                std::memcpy(&g_col.stage[at + 48], p + 27 * 16, 4 * 16);
+            } else std::memcpy(&g_col.stage[at], p, n.vec4s * 16);
+            continue;
+        }
+        if (!shared_ubo(*s, n, d, u, &why)) { g_col.stage.resize(stageAt); return no(why); }
+    }
+    // its group: same state, mesh, geometry binds and shared bindings, and not yet this slice
+    const uint64_t key = uint64_t(reinterpret_cast<uintptr_t>(s)) * 0x9E3779B97F4A7C15ull ^ g.mesh;
+    std::vector<uint32_t>& list = g_col.byKey[key];
+    Group* grp = nullptr;
+    for (uint32_t gi : list) {
+        Group& c = g_col.groups[gi];
+        if (c.state != s || c.count >= kMaxInst || !same_geometry(c.geo, g)) continue;
+        bool same = true;
+        for (uint32_t i = 0; i < probe.nshared && same; ++i) {
+            const Ubo &a = c.shared[i], &b = probe.shared[i];
+            same = a.buffer == b.buffer && a.offset == b.offset && a.range == b.range;
+        }
+        for (uint32_t i = 0; i < c.count && same; ++i) same = c.inst[i].layer != t.layer;
+        if (same) { grp = &c; break; }
+    }
+    if (!grp) {
+        list.push_back(uint32_t(g_col.groups.size()));
+        g_col.groups.push_back(probe);
+        g_col.groups.back().count = 0;
+        grp = &g_col.groups.back();
+        ++g_counts.groups;
+    }
+    grp->inst[grp->count++] = {t.layer, uint32_t(stageAt)};
+    if (g_col.groups.size() == 1 && grp->count == 1) g_col.surface = t.surface, g_col.target = t;
+    g_col.minLayer = std::min(g_col.minLayer, t.layer);
+    g_col.maxLayer = std::max(g_col.maxLayer, t.layer);
+    ++g_counts.collected;
+    return true;
+}
+
+void inst_flush(VkCommandBuffer cmd) {
+    using namespace gfxvk;
+    if (g_col.groups.empty()) return;
+    ++g_counts.flushes;
+    const Target& t = g_col.target;
+    const uint32_t base = g_col.minLayer, count = g_col.maxLayer - g_col.minLayer + 1;
+    const VkImageView view = array_view(t, base, count);
+    const VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT | (t.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
+    auto barrier = [&](VkPipelineStageFlags dstStages, VkAccessFlags dstAccess) {
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        b.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        b.dstAccessMask = dstAccess;
+        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = t.image;
+        b.subresourceRange = {aspect, 0, 1, base, count};
+        record::vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
+                                     dstStages, 0, 0, nullptr, 0, nullptr, 1, &b);
+    };
+    const VkPipelineStageFlags tests = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
+    const VkAccessFlags depthRW = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    // the per-instance data of every group in one upload: per group, per packed need n * 16 * kMaxInst bytes, then the
+    // layer table (16 * kMaxInst), each at the uniform offset alignment
+    const VkDeviceSize align = std::max<VkDeviceSize>(256, R.properties.limits.minUniformBufferOffsetAlignment);
+    auto up = [&](VkDeviceSize n) { return (n + align - 1) / align * align; };
+    VkDeviceSize total = 0;
+    for (const Group& grp : g_col.groups)
+        for (const Need& n : grp.state->inst.needs)
+            if (n.kind == kPacked || n.kind == kHandView || n.kind == kLayers) total += up(n.kind == kLayers ? 16 * kMaxInst : n.vec4s * 16 * kMaxInst);
+    UploadSlice pack = view ? allocate_upload(total, align) : UploadSlice{};
+    if (!view || !pack.mapped) {
+        ++g_counts.failed[view ? "instance upload" : "array view"];
+        g_col = {};  // (nothing drawn: a failed flush loses the shadow casters of this pass; counted, gate must be 0)
+        return;
+    }
+    barrier(tests, depthRW);
+    VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+    depth.imageView = view;
+    depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+    depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+    depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+    VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
+    ri.renderArea = {{0, 0}, {t.width, t.height}};
+    ri.layerCount = count;
+    ri.pDepthAttachment = &depth;
+    ri.pStencilAttachment = t.stencil ? &depth : nullptr;
+    record::vkCmdBeginRendering(cmd, &ri);
+    record::vkCmdSetViewport(cmd, 0, 1, &t.viewport);
+    record::vkCmdSetScissor(cmd, 0, 1, &t.scissor);
+    uint8_t* dst = static_cast<uint8_t*>(pack.mapped);
+    VkDeviceSize at = 0;
+    VkPipeline bound = VK_NULL_HANDLE;
+    for (const Group& grp : g_col.groups) {
+        State& s = *grp.state;
+        std::array<Ubo, kMaxBind> ubo;
+        uint32_t nubo = 0;
+        uint32_t staged = 0;  // offset inside each instance's staged bytes
+        for (uint32_t ni = 0; ni < s.inst.needs.size(); ++ni) {
+            const Need& n = s.inst.needs[ni];
+            if (n.kind == kPacked || n.kind == kHandView) {
+                const uint32_t bytes = n.vec4s * 16;
+                for (uint32_t i = 0; i < grp.count; ++i) std::memcpy(dst + at + i * bytes, &g_col.stage[grp.inst[i].staged + staged], bytes);
+                staged += bytes;
+                ubo[nubo++] = {n.binding, pack.buffer, pack.offset + at, VkDeviceSize(bytes) * kMaxInst};
+                at += up(VkDeviceSize(bytes) * kMaxInst);
+            } else if (n.kind == kLayers) {
+                int32_t* l = reinterpret_cast<int32_t*>(dst + at);
+                std::memset(l, 0, 16 * kMaxInst);
+                for (uint32_t i = 0; i < grp.count; ++i) l[i * 4] = int32_t(grp.inst[i].layer - base);
+                ubo[nubo++] = {n.binding, pack.buffer, pack.offset + at, 16 * kMaxInst};
+                at += up(16 * kMaxInst);
+            } else ubo[nubo++] = grp.shared[ni];
+        }
+        // dynamic offsets carry the per-group part; the set's buffers are the pack and the shared blocks' buffers
+        std::array<Ubo, kMaxBind> setUbo = ubo;
+        std::array<uint32_t, kMaxBind> offsets{};
+        for (uint32_t i = 0; i < nubo; ++i) offsets[i] = uint32_t(ubo[i].offset), setUbo[i].offset = 0;
+        const VkDescriptorSet set = slot_set_for(s.inst.sets, s.inst.setLayout, setUbo.data(), nubo, s.images.data(),
+                                                 uint32_t(s.images.size()));
+        if (!set) { ++g_counts.failed["instanced set"]; continue; }
+        if (s.inst.pipe != bound) record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, bound = s.inst.pipe);
+        record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.inst.layout, 0, 1, &set, nubo, offsets.data());
+        for (uint32_t i = 0; i < grp.geo.vertexCount; ++i)
+            record::vkCmdBindVertexBuffers(cmd, grp.geo.vertexBinding[i], 1, &grp.geo.vertex[i], &grp.geo.vertexOffset[i]);
+        record::vkCmdBindIndexBuffer(cmd, grp.geo.index, grp.geo.indexOffset, grp.geo.indexType);
+        record::vkCmdDrawIndexed(cmd, grp.geo.indexCount, grp.count, 0, grp.geo.baseVertex, 0);
+        if (grp.count > 1) ++g_counts.instanced;
+        g_counts.draws += grp.count;
+    }
+    record::vkCmdEndRendering(cmd);
+    barrier(tests | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, depthRW | VK_ACCESS_SHADER_READ_BIT);
+    g_col.groups.clear();
+    g_col.byKey.clear();
+    g_col.stage.clear();
+    g_col.surface = 0;
+    g_col.minLayer = ~0u, g_col.maxLayer = 0;
+}
+
+// ---------------------------------------------------------------- counters, reset
+void frame_end() {
+    if (!on() || R.frame < g_countFrame + 300) return;
+    g_countFrame = R.frame;
+    auto list = [](const std::map<std::string, uint64_t>& m) {
+        std::string s;
+        for (auto& [k, n] : m) s += ", " + k + " " + std::to_string(n);
+        return s.empty() ? std::string(" none") : s;
+    };
+    LOG("[j3d-desc-depth] states: %llu hand-written, %llu generated; refused%s; native depth draws %.1f/frame; failed%s; "
+        "sets written %.1f/frame, own %.1f/frame", (unsigned long long)g_counts.hand, (unsigned long long)g_counts.gen,
+        list(g_counts.refused).c_str(), g_counts.draws / 300.0, list(g_counts.failed).c_str(), g_counts.setsWritten / 300.0,
+        g_counts.setsOwn / 300.0);
+    if (want_layer_output())
+        LOG("[j3d-desc-depth] slices: collected %.1f/frame, groups %.1f/frame, instanced draws %.1f/frame, flushes %.1f/frame, "
+            "not collected %.1f/frame%s", g_counts.collected / 300.0, g_counts.groups / 300.0, g_counts.instanced / 300.0,
+            g_counts.flushes / 300.0, g_counts.notCollected / 300.0, list(g_counts.instRefused).c_str());
+    g_counts.draws = g_counts.setsWritten = g_counts.setsOwn = 0;
+    g_counts.collected = g_counts.groups = g_counts.instanced = g_counts.flushes = g_counts.notCollected = 0;
+    g_counts.failed.clear();
+    g_counts.instRefused.clear();
+}
+void reset() {
+    g_col.groups.clear();
+    g_col.byKey.clear();
+    g_col.stage.clear();
+    g_col.surface = 0;
+    g_states.clear();  // (their slot sets stay allocated in the kept pools; pipelines stay in the family core's cache)
+    g_vs.clear();
+    g_ps.clear();
+}
+
+}  // namespace native_draw::j3ddesc::depth
