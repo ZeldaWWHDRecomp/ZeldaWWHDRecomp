@@ -1,7 +1,7 @@
 // Kept lowered states (decomp build, fast mode, WWHD_NATIVE_DRAW): included by gfx/vulkan/draw.cpp after its packet
 // state (LoweredKind, LoweredPacket) and the register journal check (packet_regs_restored), not compiled anywhere else.
 //
-// WWHD_NATIVE_DRAW_KEEP=N (0, the default: off; at most 8): a packet kind keeps up to N earlier lowered states of the
+// WWHD_NATIVE_DRAW_KEEP=N (8, the default, wherever packets are on; 0: off; at most 8): a packet kind keeps up to N earlier lowered states of the
 // current frame, submission and pass next to the one it uses. A site whose draws switch between a few states with
 // GX2 calls of its own between the instances (a particle renderer binding another emitter's texture, then the first
 // one's again) lowers today at every switch back, because the register file no longer holds what the kind was
@@ -20,7 +20,7 @@ constexpr uint32_t kKeptMax = 8;
 inline uint32_t kept_states() {
   static const uint32_t n = [] {
     const char* e = std::getenv("WWHD_NATIVE_DRAW_KEEP");
-    const uint32_t v = e && *e ? std::min<uint32_t>(uint32_t(std::strtoul(e, nullptr, 10)), kKeptMax) : 0;
+    const uint32_t v = e && *e ? std::min<uint32_t>(uint32_t(std::strtoul(e, nullptr, 10)), kKeptMax) : kKeptMax;
     LOG("[native-draw] kept lowered states per kind: %u (WWHD_NATIVE_DRAW_KEEP)", v);
     return v;
   }();
