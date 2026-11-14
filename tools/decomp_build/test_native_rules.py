@@ -93,6 +93,37 @@ class NativeRulesTest(unittest.TestCase):
             got[int(a, 16)] = (callee, caller, " ".join(x for x in why.split() if not x.startswith("decl=")))
         return got
 
+    def test_unchanged_inputs_skip_the_run(self):
+        # the script as cmake runs it: with gen.py's stamp, a second run with the same inputs prints the first run's
+        # messages and writes nothing; another input runs it again; without gen.py's stamp it always runs
+        import subprocess
+
+        def run(*extra):
+            r = subprocess.run([sys.executable, os.path.join(HERE, "native_rules.py"), self.src, self.out, self.gen,
+                                *extra], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stderr)
+            return r.stdout
+        native = os.path.join(self.out, "native.txt")
+        first = run()
+        self.assertFalse(os.path.exists(os.path.join(self.out, "native_rules.inputs.sha256")))
+        with open(os.path.join(self.out, "gen.inputs.sha256"), "w") as f:
+            f.write("x\n")
+        self.assertEqual(run(), first)
+        with open(native, "w") as f:
+            f.write("marker")
+        self.assertEqual(run(), first)
+        self.assertEqual(open(native).read(), "marker")
+        with open(os.path.join(self.gen, "table.c"), "a") as f:  # a changed input
+            f.write("\n")
+        self.assertEqual(run(), first)
+        self.assertNotEqual(open(native).read(), "marker")
+        with open(native, "w") as f:
+            f.write("marker")
+        with open(os.path.join(self.out, "gen.inputs.sha256"), "w") as f:  # gen.py's outputs changed
+            f.write("y\n")
+        run()
+        self.assertNotEqual(open(native).read(), "marker")
+
     def test_park_rule(self):
         F = self.F
         for strict in (False, True):
