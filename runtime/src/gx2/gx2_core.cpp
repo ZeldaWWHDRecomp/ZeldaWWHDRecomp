@@ -893,8 +893,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     if (op != OP_NOP && op != OP_SET_REGS && op != OP_DRAW_INDEXED && op != OP_J3D_SHAPE && op != OP_J3D_DESC_DRAW)
         native_draw::g_j3dKey = 0;
     // a J3D description waiting for the site's draw (verify): any other command in between is counted
+    // (an invalidate writes no register: the site's shader-mode bind makes one)
     if (native_draw::j3ddesc::g_pending && op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_DRAW_INDEXED &&
-        op != OP_J3D_SHAPE)
+        op != OP_J3D_SHAPE && op != OP_INVALIDATE)
         native_draw::j3ddesc::command(op);
 #endif
     switch (op) {
