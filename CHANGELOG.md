@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Phones and the Steam Deck (normal build): smooth frame pacing by default** (#574). The normal build now uses the
+  pacing part of the smooth defaults on Android and the Steam Deck too: 8 submission slots, submission pool resets on a
+  separate thread and display pacing with bounded latency (graphics stay on one thread for now). On our test phone
+  (Xiaomi 14) at 60 fps: +2.2 fps on the cliff and +1.5 fps in the Dragon Roost lava room, with better p99 frame times
+  and 1 % lows. Settings → Graphics → Advanced → "Smooth frame pacing" off turns display pacing off for the lowest
+  latency. Desktop computers are not affected.
+
 - **Decomp fast build: smoother frame pacing on Android and the Steam Deck** (#573). On phones and the Steam Deck the
   renderer now records the graphics work on a second CPU thread with multi-threaded recording, and asks the screen
   for an even refresh for every frame ("Smooth frame pacing", on by default). On our test phone (Xiaomi 14, 120 Hz
