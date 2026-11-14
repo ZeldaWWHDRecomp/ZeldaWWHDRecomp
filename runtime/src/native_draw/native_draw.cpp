@@ -699,7 +699,7 @@ void frame_end() {
                                                 "block size", "fetch change", "stride change", "range change",
                                                 "in multi-draw batches", "in shader-rewrite batches",
                                                 "kept by the register journal", "register values outside the packet",
-                                                "checked registers changed"};
+                                                "checked registers changed", "kept by an earlier lowered state"};
     for (uint32_t site = 0; site < kSites; ++site) {
         if (!g_instances[site]) continue;
         char buf[700];
