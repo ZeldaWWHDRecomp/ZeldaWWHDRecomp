@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Backup build pipeline for GitLab** (#570). The repository now carries a dormant GitLab CI copy of the GitHub
+  workflows, so a private GitLab mirror can build and publish releases if the GitHub project ever becomes
+  unavailable. It never runs on its own (pushes and merge requests start nothing) and has no effect on the GitHub
+  builds. See `docs/gitlab-ci.md`.
+
 - **Decomp fast build: 3D line effects redraw with less work** (#569). The colour pass of the game's 3D lines (ropes
   and similar line effects) can now reuse its prepared state from one object to the next instead of being set up
   again each time. In the Dragon Roost lava room on our test phone (Xiaomi 14) this saves 0.16 ms of render time per
