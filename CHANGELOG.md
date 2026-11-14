@@ -7,6 +7,17 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: smoother frame pacing on Android and the Steam Deck** (#573). On phones and the Steam Deck the
+  renderer now records the graphics work on a second CPU thread with multi-threaded recording, and asks the screen
+  for an even refresh for every frame ("Smooth frame pacing", on by default). On our test phone (Xiaomi 14, 120 Hz
+  screen) in our cliff test scene the render thread needs 12.7 ms per frame instead of 17.3 ms, and the game runs
+  at 59.8 fps instead of 53.5 fps. About 1 % of frames are shown for an uneven time, compared with 6–8 % without
+  Smooth frame pacing. The cost is latency: a frame reaches the screen about 22 ms after the game presents it,
+  7 ms later than without Smooth frame pacing, and that stays the same over a whole session. If you want the lowest
+  latency, turn "Smooth frame pacing" off in Settings → Graphics → Advanced; the change applies after a restart.
+  Screens whose driver cannot time frames (no `VK_GOOGLE_display_timing`) behave as before. Every part has its own
+  environment variable (see `docs/vulkan.md`). The normal build and desktop computers are not affected.
+
 - **Decomp fast build: particle effects rebuild their GPU state less often** (#572). Particle effects that switch
   between a few textures now reuse an earlier prepared state within a frame instead of rebuilding it. In the Dragon
   Roost lava room on our test phone (Xiaomi 14) this saves 0.36 ms of render time per frame (about +1 fps, 1 % low
