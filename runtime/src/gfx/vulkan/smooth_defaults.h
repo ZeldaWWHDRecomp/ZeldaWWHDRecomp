@@ -14,6 +14,7 @@
 // 120 Hz screen, 374-415 -> 5-14 dropped in-between frames a minute; present call to screen 16 -> 24-25 ms.
 #pragma once
 #ifdef WWHD_VK_SMOOTH
+#include <cstdint>
 namespace gfxvk::smooth_defaults {
 bool steam_deck();       // Linux: Steam's SteamDeck=1, or the DMI board of Valve's Jupiter / Galileo
 bool device();           // Android or the Steam Deck
@@ -24,7 +25,14 @@ bool late_present_ack();
 bool smooth_pacing_setting();  // Graphics > Advanced "Smooth frame pacing" (hostui key vkSmoothPacing, default on)
 int display_pacing();    // WWHD_VK_DISPLAY_PACING when it is not set: 11 (pacing + one more image + bounded latency) or 0
 bool even_pacing();      // even frame pacing's default on this device (Android already on)
-int vsync_hot_wait_us(); // WWHD_VSYNC_HOT_WAIT_US when it is not set (hot_wait.h): 8000 with the worker half, else 0
+// WWHD_VSYNC_HOT_WAIT_US when it is not set (hot_wait.h): 8000 with the worker half and frame interpolation on
+// (40-240 fps), else 0; at 30 fps (THIRTY_FPS: interp::mode() 0) also 0: spinning gave no pacing gain there (Xiaomi 14,
+// 2026-11-14, lava: 1 % low 20.7 instead of 21.3 fps, p99 48.3 instead of 47.0 ms) and the phone warmed faster
+// (+0.04 C/min lava, about +0.1 C/min cliff)
+int vsync_hot_wait_us(bool thirty_fps);
+// the limit GX2WaitForVsync applies (gx2_core.cpp, per wait): ENV, the value of WWHD_VSYNC_HOT_WAIT_US (null or empty:
+// not set; negative: 0), when set, in every mode; else vsync_hot_wait_us(thirty_fps)
+int64_t vsync_hot_wait_applied_us(const char* env, bool thirty_fps);
 // WWHD_VK_ASYNC_POOL_RESET when it is not set: the decomp build's fast mode keeps its reset thread on every device (as
 // measured there); the other builds use it on phones and the Steam Deck only (inline: a constant in the fast mode)
 inline int async_pool_reset() {

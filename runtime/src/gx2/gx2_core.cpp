@@ -1140,7 +1140,7 @@ using namespace gx2;
 static uint64_t g_swap_count = 0, g_flip_count = 0;
 namespace gx2 { uint64_t flips_presented() { return __atomic_load_n(&g_flip_count, __ATOMIC_RELAXED); } }  // live fps in the title
 static uint32 g_swap_interval = 1;  // as set by the game (frame interpolation halves it)
-namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); uint32_t vsync_granule_ticks(); uint64_t step_ticks(uint32_t game); bool paced_step_schedule(); int64_t frame_interval_ns(); }
+namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); uint32_t vsync_granule_ticks(); uint64_t step_ticks(uint32_t game); bool paced_step_schedule(); int64_t frame_interval_ns(); int mode(); }
 static std::mutex g_flip_mutex;
 static const auto g_vsync_epoch = std::chrono::steady_clock::now();
 static constexpr std::chrono::nanoseconds kVsyncPeriod(16683333);  // 59.94 Hz
@@ -1339,18 +1339,33 @@ static bool late_flip_pending() {  // g_flip_mutex held
 }
 // GX2WaitForVsync's sleeps: hot_wait.h (WWHD_VSYNC_HOT_WAIT_US) spins the short ones
 static uint64_t g_hot_waits = 0, g_hot_wait_ns = 0, g_cold_waits = 0;
+// The default follows the frame rate mode, which Settings and the 6 key change while the game runs, so it is chosen
+// per wait (game thread); each change of the applied value is logged with its reason.
 static int64_t vsync_hot_wait_us() {  // 0: off
-    static const int64_t value = [] {
+    static const char* const env = [] {  // null: not set
         const char* e = getenv("WWHD_VSYNC_HOT_WAIT_US");
-        int64_t v = e && *e ? std::max<int64_t>(0, atoll(e)) : 0;
-#ifdef WWHD_VK_SMOOTH
-        if (!e || !*e) v = gfxvk::smooth_defaults::vsync_hot_wait_us();  // (gfx/vulkan/smooth_defaults.h)
-#endif
-        if (v) LOG("[gx2] hot vsync waits: GX2WaitForVsync waits up to %lld us spin instead of sleeping (%s)",
-                   (long long)v, e && *e ? "WWHD_VSYNC_HOT_WAIT_US" : "phone / Steam Deck default");
-        return v;
+        return e && *e ? e : nullptr;
     }();
-    return value;
+    const char* why = env ? "WWHD_VSYNC_HOT_WAIT_US" : nullptr;  // (null: the off default of this device, not logged)
+#ifdef WWHD_VK_SMOOTH
+    const bool thirty = interp::mode() == 0;  // (gfx/vulkan/smooth_defaults.h)
+    const int64_t v = gfxvk::smooth_defaults::vsync_hot_wait_applied_us(env, thirty);
+    if (!env && gfxvk::smooth_defaults::vsync_hot_wait_us(false))
+        why = thirty ? "phone / Steam Deck default off at 30 fps: no pacing gain there, the phone warms faster"
+                     : "phone / Steam Deck default with frame interpolation";
+#else
+    const int64_t v = env ? std::max<int64_t>(0, atoll(env)) : 0;
+#endif
+    static int64_t logged = -1;
+    if (v != logged) {
+        if (why && v)  // (the first value too: which default applied and why)
+            LOG("[gx2] hot vsync waits: GX2WaitForVsync waits up to %lld us spin instead of sleeping (%s)", (long long)v,
+                why);
+        else if (why)
+            LOG("[gx2] hot vsync waits: off (%s)", why);
+        logged = v;
+    }
+    return v;
 }
 // (END: the end of the whole wait, which decides; the late-flip polling parks in 250 us steps towards its deadline)
 static void vsync_park(std::chrono::steady_clock::time_point tp, std::chrono::steady_clock::time_point end,
