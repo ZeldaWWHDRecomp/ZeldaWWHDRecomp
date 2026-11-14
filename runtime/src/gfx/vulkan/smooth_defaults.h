@@ -7,8 +7,8 @@
 // WWHD_VK_SUBMISSION_POOL, WWHD_VK_LATE_PRESENT_ACK, WWHD_VK_ASYNC_POOL_RESET, WWHD_VK_DISPLAY_PACING,
 // WWHD_INTERP_EVEN_PACING); every other device keeps the old defaults (desktop: nothing here is on).
 // The two halves have their own constants in smooth_defaults.cpp (kWorkerHalf: second-thread recording; the pacing
-// half: submission slots, late acknowledgment, pool resets, display pacing, even pacing). The normal build ships the
-// pacing half alone (kWorkerHalf false: the worker made the translated path's 1 % lows worse in lava on the phone).
+// half: submission slots, late acknowledgment, pool resets, display pacing, even pacing). With the worker half the game
+// thread's short vsync waits spin (hot_wait.h): without that the worker made the normal build's 1 % lows worse in lava.
 // Measured on a Xiaomi 14 at the cliff (decomp build fast mode, 2026-11-13, against the single-thread renderer):
 // render thread 17.3 -> 12.7 ms per frame; on screen 25 % -> 1.2-1.4 % of the frame intervals not two refreshes of the
 // 120 Hz screen, 374-415 -> 5-14 dropped in-between frames a minute; present call to screen 16 -> 24-25 ms.
@@ -24,6 +24,7 @@ bool late_present_ack();
 bool smooth_pacing_setting();  // Graphics > Advanced "Smooth frame pacing" (hostui key vkSmoothPacing, default on)
 int display_pacing();    // WWHD_VK_DISPLAY_PACING when it is not set: 11 (pacing + one more image + bounded latency) or 0
 bool even_pacing();      // even frame pacing's default on this device (Android already on)
+int vsync_hot_wait_us(); // WWHD_VSYNC_HOT_WAIT_US when it is not set (hot_wait.h): 8000 with the worker half, else 0
 // WWHD_VK_ASYNC_POOL_RESET when it is not set: the decomp build's fast mode keeps its reset thread on every device (as
 // measured there); the other builds use it on phones and the Steam Deck only (inline: a constant in the fast mode)
 inline int async_pool_reset() {

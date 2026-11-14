@@ -721,16 +721,6 @@ void park_sleep_until(std::chrono::steady_clock::time_point tp, bool precise,
     block_end();
 }
 // hot_wait.h
-int64_t hot_wait_us() {
-    static const int64_t value = [] {
-        const char* e = getenv("WWHD_VSYNC_HOT_WAIT_US");
-        const int64_t v = e && *e ? std::max<int64_t>(0, atoll(e)) : 0;
-        if (v) LOG("[threads] hot vsync waits: GX2WaitForVsync waits up to %lld us spin instead of sleeping "
-                   "(WWHD_VSYNC_HOT_WAIT_US)", (long long)v);
-        return v;
-    }();
-    return value;
-}
 void park_spin_until(std::chrono::steady_clock::time_point tp, void (*before_resume)()) {
     HostThread* t = t_self;
     if (t) {

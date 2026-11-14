@@ -59,6 +59,7 @@
 #endif
 #ifdef WWHD_VK_SMOOTH
 #include "../gfx/vulkan/frame_breakdown.h"
+#include "../gfx/vulkan/smooth_defaults.h"
 #endif
 #include "native_coverage.h"
 
@@ -1338,10 +1339,23 @@ static bool late_flip_pending() {  // g_flip_mutex held
 }
 // GX2WaitForVsync's sleeps: hot_wait.h (WWHD_VSYNC_HOT_WAIT_US) spins the short ones
 static uint64_t g_hot_waits = 0, g_hot_wait_ns = 0, g_cold_waits = 0;
+static int64_t vsync_hot_wait_us() {  // 0: off
+    static const int64_t value = [] {
+        const char* e = getenv("WWHD_VSYNC_HOT_WAIT_US");
+        int64_t v = e && *e ? std::max<int64_t>(0, atoll(e)) : 0;
+#ifdef WWHD_VK_SMOOTH
+        if (!e || !*e) v = gfxvk::smooth_defaults::vsync_hot_wait_us();  // (gfx/vulkan/smooth_defaults.h)
+#endif
+        if (v) LOG("[gx2] hot vsync waits: GX2WaitForVsync waits up to %lld us spin instead of sleeping (%s)",
+                   (long long)v, e && *e ? "WWHD_VSYNC_HOT_WAIT_US" : "phone / Steam Deck default");
+        return v;
+    }();
+    return value;
+}
 // (END: the end of the whole wait, which decides; the late-flip polling parks in 250 us steps towards its deadline)
 static void vsync_park(std::chrono::steady_clock::time_point tp, std::chrono::steady_clock::time_point end,
                        bool precise = false, void (*before_resume)() = nullptr) {
-    const int64_t hot = threads::hot_wait_us();
+    const int64_t hot = vsync_hot_wait_us();
     if (!hot) return threads::park_sleep_until(tp, precise, before_resume);
     const auto now = std::chrono::steady_clock::now();
     if (end - now > std::chrono::microseconds(hot)) {

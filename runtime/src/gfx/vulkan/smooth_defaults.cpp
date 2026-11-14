@@ -11,10 +11,12 @@
 namespace gfxvk::smooth_defaults {
 namespace {
 // The halves of the defaults, per build. Second-thread recording (record_worker(), record_mt()) was measured in the
-// decomp build's fast mode (native draw packets). The normal build (translated draws, many more commands) keeps the
-// pacing half alone: on a Xiaomi 14 at 60 fps (2026-11-14, n=2) the worker made the lava 1 % lows worse
-// (37.8 -> 34.9 fps, p99 26.4 -> 28.7 ms) although it helped at the cliff; the pacing half alone improved both
-// (cliff 1 % low 38.2 -> 40.8, lava 37.8 -> 39.5). WWHD_VK_RECORD_WORKER=1 / WWHD_VK_RECORD_MT=127 still turn it on.
+// decomp build's fast mode (native draw packets). In the normal build (translated draws) the worker alone made the lava
+// 1 % lows worse on a Xiaomi 14 at 60 fps (2026-11-14, n=2: 37.8 -> 34.9 fps, p99 26.4 -> 28.7 ms): the faster render
+// thread put the game ahead of its step slots more often, and the passes after its vsync sleeps ran 40-50 % slower
+// (cores clocked down). With those short waits spun (vsync_hot_wait_us(), hot_wait.h) the worker half wins there too
+// (against the pacing half alone: lava +5.3 fps, p99 -0.1 ms, 1 % low +0.2 fps; cliff +7.9 fps, -2.2 ms, +3.9 fps), so
+// every build has both halves; a build can still drop the worker half by setting its kWorkerHalf to false.
 #ifdef WWHD_DECOMP_FAST
 constexpr bool kWorkerHalf = true;
 #define WWHD_SMOOTH_BUILD "decomp build fast mode"
@@ -22,7 +24,7 @@ constexpr bool kWorkerHalf = true;
 constexpr bool kWorkerHalf = true;
 #define WWHD_SMOOTH_BUILD "decomp build"
 #else
-constexpr bool kWorkerHalf = false;
+constexpr bool kWorkerHalf = true;
 #define WWHD_SMOOTH_BUILD "normal build"
 #endif
 #if defined(__linux__) && !defined(__ANDROID__)
@@ -41,7 +43,7 @@ void log_once() {
     static const bool logged = [] {
         if (device() && kWorkerHalf)
             LOG("[vulkan smooth defaults] %s, " WWHD_SMOOTH_BUILD ": graphics on a second thread with multi-threaded "
-                "recording, 8 submission slots, late present acknowledgment, Smooth frame pacing %s (each environment "
+                "recording, 8 submission slots, late present acknowledgment, hot vsync waits, Smooth frame pacing %s (each environment "
                 "variable still wins)", steam_deck() ? "Steam Deck" : "Android", smooth_pacing_setting() ? "on" : "off");
         else if (device())
             LOG("[vulkan smooth defaults] %s, " WWHD_SMOOTH_BUILD ": 8 submission slots, late present acknowledgment, "
@@ -82,5 +84,6 @@ bool smooth_pacing_setting() {
 }
 int display_pacing() { return device() && smooth_pacing_setting() ? 11 : 0; }
 bool even_pacing() { return device(); }
+int vsync_hot_wait_us() { return kWorkerHalf && device() ? 8000 : 0; }
 }  // namespace gfxvk::smooth_defaults
 #endif
