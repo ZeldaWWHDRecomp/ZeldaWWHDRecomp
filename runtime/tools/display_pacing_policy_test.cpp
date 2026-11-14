@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <random>
 #include <utility>
+#include <tuple>
 #include <algorithm>
 #include <vector>
 
@@ -161,6 +162,37 @@ int main() {
         const auto [u1, r1] = run(true);
         std::printf("grid tracking: uneven %d -> %d, rebased %llu -> %llu of 3000\n", u0, u1, (unsigned long long)r0, (unsigned long long)r1);
         assert(r1 <= 1 && u1 <= u0 && r0 > 10);
+    }
+    {  // the Smooth frame pacing default (WWHD_VK_DISPLAY_PACING=11: bit 8 = GRID 1, CAP 4.2 ms, DECAY 300): a 40-minute
+       // session at 60 fps with a slow frame (ready 25 ms after its call) every ~500 frames stays within base + CAP,
+       // ends back at the base and keeps its frames two refreshes apart; without bit 8 the target climbs to what the
+       // slowest frames need and stays there
+        auto session = [](bool bounded) {
+            std::mt19937 rng(11);
+            std::uniform_int_distribution<int64_t> ready(11 * kMs, 16 * kMs);
+            std::uniform_int_distribution<int> slow(0, 499);
+            Policy p = measured(15 * kMs);
+            if (bounded) { p.track = true; p.cap = int64_t(4.2 * kMs); p.decay = 300; }
+            const int64_t g0 = 1000 * kMs;
+            auto up = [&](int64_t t) { int64_t m = (t - g0) % kRefresh; if (m < 0) m += kRefresh; return m ? t + kRefresh - m : t; };
+            int64_t maxTarget = 0, prev = 0; int uneven = 0, n = 0;
+            for (int i = 0; i < 40 * 3600; ++i) {
+                const int64_t call = 50000 * kMs + i * kFrame, d = p.desired(call, kFrame);
+                const int64_t r = call + (slow(rng) ? ready(rng) : 25 * kMs);
+                const int64_t shown = up(std::max(d, r));
+                p.feedback(call, shown - kRefresh, shown, d);
+                maxTarget = std::max(maxTarget, p.target);
+                if (i > 3600) { ++n; uneven += prev && shown - prev != 2 * kRefresh; }
+                prev = shown;
+            }
+            return std::make_tuple(maxTarget, p.target, p.base, 100.0 * uneven / n);
+        };
+        const auto [m1, t1, b1, u1] = session(true);
+        const auto [m0, t0, b0, u0] = session(false);
+        std::printf("40-minute session: bounded target max %.1f end %.1f (base %.1f), uneven %.2f%%; unbounded max %.1f ms, uneven %.2f%%\n",
+                    m1 / 1e6, t1 / 1e6, b1 / 1e6, u1, m0 / 1e6, u0);
+        assert(m1 <= b1 + int64_t(4.2 * kMs) && t1 <= b1 + kRefresh / 2 && u1 < 1.5);
+        assert(m0 > b0 + kRefresh && t0 == m0);  // (up to what the slowest frames need, for good)
     }
     std::printf("display_pacing_policy_test: ok\n");
     return 0;

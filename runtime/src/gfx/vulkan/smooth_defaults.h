@@ -18,7 +18,7 @@ unsigned record_mt();    // WWHD_VK_RECORD_MT when it is not set (0: off)
 unsigned submission_slots();  // WWHD_VK_SUBMISSION_POOL when neither variable is set (0: the old default)
 bool late_present_ack();
 bool smooth_pacing_setting();  // Graphics > Advanced "Smooth frame pacing" (hostui key vkSmoothPacing, default on)
-int display_pacing();    // WWHD_VK_DISPLAY_PACING when it is not set: 3 (pacing + one more image) or 0
+int display_pacing();    // WWHD_VK_DISPLAY_PACING when it is not set: 11 (pacing + one more image + bounded latency) or 0
 bool even_pacing();      // even frame pacing's default on this device (Android already on)
 }  // namespace gfxvk::smooth_defaults
 #endif

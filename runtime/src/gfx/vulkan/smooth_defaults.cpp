@@ -61,7 +61,7 @@ bool smooth_pacing_setting() {
     static const bool value = [] { std::string v; return !::hostui::get("vkSmoothPacing", v) || v != "0"; }();
     return value;
 }
-int display_pacing() { return device() && smooth_pacing_setting() ? 3 : 0; }
+int display_pacing() { return device() && smooth_pacing_setting() ? 11 : 0; }
 bool even_pacing() { return device(); }
 }  // namespace gfxvk::smooth_defaults
 #endif
