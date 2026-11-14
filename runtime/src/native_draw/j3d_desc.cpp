@@ -1182,61 +1182,46 @@ void resolved(const uint32_t* regs, const Resolved& r) {
     count(cResolvedSeen);
     const Desc* d = g_draw.desc;
     const Env* e = g_draw.env;
-    // ambient: registers the draw read that the description does not write
-    uint64_t pass = uint64_t(e->input) * 0x9E3779B97F4A7C15ull ^ (uint64_t(e->pass) << 40 | uint64_t(e->view) << 32 | g_renderFrame);
-    pass = pass * 0x100000001B3ull ^ regs[mmCB_COLOR0_BASE];
-    pass = pass * 0x100000001B3ull ^ regs[mmDB_DEPTH_BASE];
-    pass = pass * 0x100000001B3ull ^ regs[mmDB_DEPTH_VIEW];
-    if (pass != g_passKey) {
-        g_passKey = pass;
-        g_passSnap.clear();
-        count(cPassInstances);
-    }
-    uint32_t ambient = 0, passClasses = 0;
-    bool changed = false;
+    // ambient: registers the draw read that the description does not write. Decision 1 as refined (user, 2026-11-14):
+    // no per-pass snapshot; words past the program's own counts (vertex semantics, VS output ids, PS input controls the
+    // program's bind did not write) are ignored by rule; uniform-block words of locations the program reads but J3D does
+    // not bind are taken live from the register file; any other ambient word that differs from the value at the
+    // (desc, env)'s first verified draw sends the draw to the translated path in D1 ("refused"), and the per-draw
+    // resolution compare below stays the proof that nothing ignored reaches the translation.
+    uint32_t ambient = 0;
+    bool ignored = false, live = false, refused = false;
+    auto& snap = g_descEnvAmbient[uint64_t(uintptr_t(d)) * 0x9E3779B97F4A7C15ull ^ uint64_t(uintptr_t(e))];
     for (uint32_t reg : r.reads) {
-        if (reg >= gx2::kNumRegs || g_written.count(reg)) continue;
-        const uint8_t grp = gx2::state_group(reg);
-        if (grp == gx2::kSgTargets) continue;  // (render targets: the pass's; part of the pass instance)
+        if (reg >= gx2::kNumRegs || g_written.count(reg) || gx2::state_group(reg) == gx2::kSgTargets) continue;
         ++ambient;
         ++g_ambientHist[reg];
-        auto [it, fresh] = g_passSnap.try_emplace(reg, regs[reg]);
+        if (in(reg, mmSQ_VTX_SEMANTIC_0, 32) || reg == mmSQ_VTX_SEMANTIC_CLEAR || in(reg, mmSPI_VS_OUT_ID_0, 10) ||
+            in(reg, mmSPI_PS_INPUT_CNTL_0, 32)) {
+            ignored = true;
+            continue;
+        }
+        if (block_reg(reg)) {
+            live = true;
+            continue;
+        }
+        auto [it, fresh] = snap.try_emplace(reg, regs[reg]);
         if (!fresh && it->second != regs[reg]) {
-            ++g_changedHist[reg];
-            passClasses |= 1u << amb_class(reg);
-            if (!changed) {
+            ++g_descEnvHist[reg];
+            if (!refused) {
                 static uint32_t said = 0;
                 if (said < 20 && ++said)
-                    LOG("[j3d-desc] ambient %04X changed mid-pass: %08X -> %08X (desc %u pass %u)", reg, it->second,
-                        regs[reg], d->id, d->pass);
+                    LOG("[j3d-desc] ambient %04X differs for desc %u env %u: %08X -> %08X (refused)", reg, d->id, e->id,
+                        it->second, regs[reg]);
             }
-            changed = true;
+            refused = true;
             it->second = regs[reg];
         }
     }
-    {
-        auto& snap = g_descEnvAmbient[uint64_t(uintptr_t(d)) * 0x9E3779B97F4A7C15ull ^ uint64_t(uintptr_t(e))];
-        bool differs = false;
-        uint32_t classes = 0;
-        for (uint32_t reg : r.reads) {
-            if (reg >= gx2::kNumRegs || g_written.count(reg) || gx2::state_group(reg) == gx2::kSgTargets) continue;
-            auto [it, fresh] = snap.try_emplace(reg, regs[reg]);
-            if (!fresh && it->second != regs[reg]) {
-                ++g_descEnvHist[reg];
-                classes |= 1u << amb_class(reg);
-                differs = true;
-                it->second = regs[reg];
-            }
-        }
-        if (differs) count(cAmbientDescEnv);
-        for (uint32_t k = 0; k < 6; ++k)
-            if (classes >> k & 1) count(cAmbD0 + k);
-    }
     count(cAmbientWords, ambient);
     if (ambient) count(cAmbientDraws);
-    if (changed) count(cAmbientChanged);
-    for (uint32_t k = 0; k < 6; ++k)
-        if (passClasses >> k & 1) count(cAmbP0 + k);
+    if (ignored) count(cAmbIgnored);
+    if (live) count(cAmbLive);
+    if (refused) count(cAmbRefused);
     // resolution per (desc, env, targets)
     uint64_t key = (uint64_t(uintptr_t(d)) * 0x9E3779B97F4A7C15ull) ^ uint64_t(uintptr_t(e));
     for (const void* c : r.colors) key = (key ^ uint64_t(uintptr_t(c))) * 0x100000001B3ull;
@@ -1382,14 +1367,13 @@ void frame_end() {
         g_siteDraws = 0;
     }
     // the ambient registers (most frequent) and those that changed mid-pass
-    for (auto* h : {&g_ambientHist, &g_changedHist, &g_descEnvHist}) {
+    for (auto* h : {&g_ambientHist, &g_descEnvHist}) {
         if (h->empty()) continue;
         std::vector<std::pair<uint64_t, uint32_t>> v;
         for (const auto& [reg, n] : *h) v.push_back({n, reg});
         std::sort(v.rbegin(), v.rend());
         int j = std::snprintf(buf, sizeof buf, "[j3d-desc] %s (register: draws/frame):",
-                              h == &g_ambientHist ? "ambient" : h == &g_changedHist ? "ambient changed mid-pass"
-                                                                                     : "ambient differs for the same desc and env");
+                              h == &g_ambientHist ? "ambient" : "ambient refused (differs for the same desc and env)");
         for (size_t i = 0; i < v.size() && i < 40 && j < int(sizeof buf) - 40; ++i)
             j += std::snprintf(buf + j, sizeof buf - j, " %04X %.2f", v[i].second, v[i].first / 300.0);
         LOG("%s", buf);
