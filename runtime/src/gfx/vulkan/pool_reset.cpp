@@ -1,9 +1,10 @@
 // Submission pool resets off the render thread: pool_reset.h
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "pool_reset.h"
 #include "backend.h"
 #include "runtime.h"
 #include "record_worker.h"
+#include "smooth_defaults.h"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -83,7 +84,7 @@ std::unordered_map<const void*, uint64_t> tickets;  // render thread: a slot's q
 int mode() {
   static const int m = [] {
     const char* e = std::getenv("WWHD_VK_ASYNC_POOL_RESET");
-    const int v = e && *e ? std::atoi(e) & 3 : 1;  // unset: the reset thread (pool_reset.h)
+    const int v = e && *e ? std::atoi(e) & 3 : smooth_defaults::async_pool_reset();  // (pool_reset.h, smooth_defaults.h)
     LOG("[vulkan] submission pool resets: %s, %s (WWHD_VK_ASYNC_POOL_RESET=%d)", v & 1 ? "on a reset thread" : "on the render thread",
         v & 2 ? "transient command pools" : "resettable command buffers", v);
     return v;

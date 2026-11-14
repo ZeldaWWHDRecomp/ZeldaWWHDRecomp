@@ -1,6 +1,7 @@
 // Multi-threaded command recording, stage 1: the record worker ("Vulkan record", record_worker.cpp) as the one emitter
-// of the native renderer. Decomp build, fast mode (cmake WWHD_NATIVE_DRAW); every item works only with the record
-// worker (WWHD_VK_RECORD_WORKER=1) and is off unless its bit is set:
+// of the renderer (translated draws and, in the decomp build fast mode, native draw packets). Every build with
+// cmake WWHD_VK_SMOOTH (cmake/VkSmooth.cmake, on by default); every item works only with the record worker
+// (WWHD_VK_RECORD_WORKER=1) and is off unless its bit is set (smooth_defaults.h: 127 on phones and the Steam Deck):
 //   WWHD_VK_RECORD_MT=bits (or "all"):
 //     1  the slot's command pool is reset on the emitter: a reused slot's activation puts a reset command into the
 //        POD stream instead of resetting on the render thread (the slot's fence was waited for, as before)
@@ -20,7 +21,7 @@
 //     a token is translated on the render thread only while the emitter is drained (record_tokens.h)
 // Counter line "[vulkan record mt]" every stats period (report).
 #pragma once
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "loader.h"
 #include <atomic>
 #include <cstddef>

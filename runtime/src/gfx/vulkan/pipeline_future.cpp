@@ -1,5 +1,5 @@
 // Pipeline futures: pipeline_future.h
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "pipeline_future.h"
 #include "record_mt.h"
 #include "record_worker.h"
