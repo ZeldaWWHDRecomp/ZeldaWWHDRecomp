@@ -132,6 +132,7 @@ struct HostEvent {
 };
 std::mutex g_mu;
 std::atomic<bool> g_active{false};
+std::atomic<bool> g_japanese{false};  // japanese_requested()
 Request g_req;
 Done g_done;
 uint64_t g_serial = 0;  // per request: draw() picks up a new one
@@ -599,6 +600,7 @@ void window() {
 // ---------------------------------------------------------------- API
 bool start(const Request& r, Done done) {
     if (!overlay::alive()) return false;
+    if (r.language == 0) g_japanese.store(true, std::memory_order_relaxed);
     auto glyphs = game_font::name_glyphs(r.language);  // read once per language (a few ms)
     {
         std::lock_guard<std::mutex> lk(g_mu);
@@ -628,6 +630,7 @@ void dismiss() {
     LOG("[text] the game closed its keyboard");
 }
 
+bool japanese_requested() { return g_japanese.load(std::memory_order_relaxed); }
 bool active() { return g_active.load(std::memory_order_relaxed) || field_active(); }
 
 void key(int code, bool down, bool repeat) {

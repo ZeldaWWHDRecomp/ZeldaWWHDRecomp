@@ -370,6 +370,55 @@ void setup_fonts() {
     io.Fonts->AddFontDefaultVector(&cfg);
 }
 
+// Kana and kanji for Japanese games only (the Japanese build, a Japanese start through a language source, or
+// the game's text prompt in Japanese): a system font merged into the overlay's font as a fallback, so a run
+// without Japanese text never reads it (these fonts are 9-14 MB). Dear ImGui bakes glyphs on demand, so the
+// merge can come after the first frames (the game reads its language after the overlay starts); called
+// before NewFrame, while the atlas is not locked. Tried once.
+bool japanese_text_wanted() {
+    return strcmp(g_guest_build_name, "JP") == 0 || game_lang::started() == 0 || text_entry::japanese_requested();
+}
+void merge_japanese_font() {
+    static bool tried = false;
+    if (tried || !japanese_text_wanted()) return;
+    tried = true;
+    static const char* const candidates[] = {
+#if defined(__APPLE__)
+        "/System/Library/Fonts/\xE3\x83\x92\xE3\x83\xA9\xE3\x82\xAE\xE3\x83\x8E\xE8\xA7\x92\xE3\x82\xB4\xE3\x82\xB7\xE3\x83\x83\xE3\x82\xAF W3.ttc",  // Hiragino Kaku Gothic W3 (UTF-8)
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+#elif defined(_WIN32)
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+#elif defined(__ANDROID__)
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+#else
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+#endif
+    };
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.Fonts->Fonts.empty()) return;
+    for (const char* path : candidates) {
+        if (FILE* f = fopen(path, "rb")) {
+            fclose(f);
+            ImFontConfig cfg;
+            cfg.MergeMode = true;           // a fallback: the main font's own glyphs come first
+            cfg.DstFont = io.Fonts->Fonts[0];
+            cfg.SizePixels = 0.0f;          // the main font's scale (it may have an implicit size: the platform's)
+            if (io.Fonts->AddFontFromFileTTF(path, 0.0f, &cfg)) {
+                LOG("[overlay] Japanese font %s", path);
+                return;
+            }
+        }
+    }
+    LOG("[overlay] no Japanese font found: kana and kanji show as boxes");
+}
+
 void init_context() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -4257,6 +4306,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         }
     }
     prepare_menu_input(io, open, mouse_used);
+    merge_japanese_font();
     ImGui::NewFrame();
     setup_run_tick();
     modsui::tick(mods_host(), open);
