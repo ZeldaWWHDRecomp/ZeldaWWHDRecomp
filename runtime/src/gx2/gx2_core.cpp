@@ -43,6 +43,7 @@
 #include "gfx/vulkan/background_checkpoint.h"
 #endif
 #include "runtime.h"
+#include "hot_wait.h"
 #include "savestate.h"
 #include "state_metadata_validation.h"
 #include "guest_addr.h"
@@ -58,6 +59,7 @@
 #endif
 #ifdef WWHD_VK_SMOOTH
 #include "../gfx/vulkan/frame_breakdown.h"
+#include "../gfx/vulkan/smooth_defaults.h"
 #endif
 #include "native_coverage.h"
 
@@ -1335,6 +1337,43 @@ static bool late_flip_pending() {  // g_flip_mutex held
     const auto& front = g_pending_flips.front();
     return flip_due(front) <= vsync_index() && render::frames_completed() < front.swap;
 }
+// GX2WaitForVsync's sleeps: hot_wait.h (WWHD_VSYNC_HOT_WAIT_US) spins the short ones
+static uint64_t g_hot_waits = 0, g_hot_wait_ns = 0, g_cold_waits = 0;
+static int64_t vsync_hot_wait_us() {  // 0: off
+    static const int64_t value = [] {
+        const char* e = getenv("WWHD_VSYNC_HOT_WAIT_US");
+        int64_t v = e && *e ? std::max<int64_t>(0, atoll(e)) : 0;
+#ifdef WWHD_VK_SMOOTH
+        if (!e || !*e) v = gfxvk::smooth_defaults::vsync_hot_wait_us();  // (gfx/vulkan/smooth_defaults.h)
+#endif
+        if (v) LOG("[gx2] hot vsync waits: GX2WaitForVsync waits up to %lld us spin instead of sleeping (%s)",
+                   (long long)v, e && *e ? "WWHD_VSYNC_HOT_WAIT_US" : "phone / Steam Deck default");
+        return v;
+    }();
+    return value;
+}
+// (END: the end of the whole wait, which decides; the late-flip polling parks in 250 us steps towards its deadline)
+static void vsync_park(std::chrono::steady_clock::time_point tp, std::chrono::steady_clock::time_point end,
+                       bool precise = false, void (*before_resume)() = nullptr) {
+    const int64_t hot = vsync_hot_wait_us();
+    if (!hot) return threads::park_sleep_until(tp, precise, before_resume);
+    const auto now = std::chrono::steady_clock::now();
+    if (end - now > std::chrono::microseconds(hot)) {
+        ++g_cold_waits;
+        return threads::park_sleep_until(tp, precise, before_resume);
+    }
+    threads::park_spin_until(tp, before_resume);
+    ++g_hot_waits;
+    if (tp > now) g_hot_wait_ns += uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(tp - now).count());
+    static auto last = now;
+    if (now - last >= std::chrono::seconds(30)) {
+        LOG("[gx2] hot vsync waits: %llu spun (%.1f ms), %llu slept (longer than WWHD_VSYNC_HOT_WAIT_US) in %.0f s",
+            (unsigned long long)g_hot_waits, g_hot_wait_ns / 1e6, (unsigned long long)g_cold_waits,
+            std::chrono::duration<double>(now - last).count());
+        g_hot_waits = g_hot_wait_ns = g_cold_waits = 0;
+        last = now;
+    }
+}
 static bool wait_for_late_flip(std::chrono::steady_clock::time_point deadline) {
     uint64_t flips;
     {
@@ -1346,7 +1385,7 @@ static bool wait_for_late_flip(std::chrono::steady_clock::time_point deadline) {
     }
     constexpr auto kStep = std::chrono::microseconds(250);
     for (auto now = std::chrono::steady_clock::now(); now < deadline; now = std::chrono::steady_clock::now()) {
-        threads::park_sleep_until(std::min(deadline, now + kStep));
+        vsync_park(std::min(deadline, now + kStep), deadline);
         std::lock_guard<std::mutex> lk(g_flip_mutex);
         update_flips();
         if (g_flip_count != flips) return true;
@@ -1802,10 +1841,10 @@ HLE(gx2, GX2WaitForVsync) {
         const char* value = getenv("WWHD_VK_READY_FLIP_PARK");
         return render::vulkan() && value && !strcmp(value, "1");
     }();
-    threads::park_sleep_until(deadline, preciseSleep,
+    vsync_park(deadline, deadline, preciseSleep,
         readyFlipPark ? ready_flip_before_resume : nullptr);
 #else
-    threads::park_sleep_until(deadline, preciseSleep);
+    vsync_park(deadline, deadline, preciseSleep);
 #endif
     std::lock_guard<std::mutex> lk(g_flip_mutex);
     update_flips();
