@@ -7,6 +7,14 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Phones and the Steam Deck: graphics on a second thread in the normal build too, short waits no longer sleep**
+  (#576). The normal build now also records the graphics work on a second thread on Android and the Steam Deck. The
+  game thread no longer sleeps for short waits on the screen (up to 8 ms) but waits actively: after such short sleeps
+  the phone clocked its cores down and the next frames came out slower. Both builds use this. On our test phone
+  (Xiaomi 14) at 60 fps, compared with the frame pacing of the last update: +8 fps on the cliff (p99 −2.2 ms, 1 % low
+  +3.9 fps) and +6 fps in the Dragon Roost lava room with the same slow frames. `WWHD_VSYNC_HOT_WAIT_US=0` turns the
+  active waiting off. Desktop computers are not affected.
+
 - **Phones and the Steam Deck (normal build): smooth frame pacing by default** (#574). The normal build now uses the
   pacing part of the smooth defaults on Android and the Steam Deck too: 8 submission slots, submission pool resets on a
   separate thread and display pacing with bounded latency (graphics stay on one thread for now). On our test phone
