@@ -56,7 +56,8 @@ enum Count : uint32_t {
     // ambient changes by class: per pass instance (P) and per (desc, env) (D); classes: vertex buffers, texture and
     // sampler words, uniform-block words, ALU constants, vertex semantics, other
     cAmbP0, cAmbP1, cAmbP2, cAmbP3, cAmbP4, cAmbP5, cAmbD0, cAmbD1, cAmbD2, cAmbD3, cAmbD4, cAmbD5, cBaseVertex,
-    cExtraRace,
+    cExtraRace, cTlHit, cTlEnvHit, cTlMeshHit, cProgFlagOk, cProgFlagWrong, cProgBind, cAmbIgnored, cAmbLive,
+    cAmbRefused,
     cCounts
 };
 const char* const kReasonNames[kReasons] = {"described", "pass masked", "no resource", "named frame (wii_pipeline)",
@@ -80,7 +81,11 @@ const char* count_name(uint32_t c) {
         "pass-snapshot change: uniform blocks", "pass-snapshot change: ALU constants", "pass-snapshot change: semantics",
         "pass-snapshot change: other", "desc+env change: vertex buffers", "desc+env change: textures/samplers",
         "desc+env change: uniform blocks", "desc+env change: ALU constants", "desc+env change: semantics",
-        "desc+env change: other", "draws with a mesh base vertex", "extra-block slot race (not a mismatch)"};
+        "desc+env change: other", "draws with a mesh base vertex", "extra-block slot race (not a mismatch)",
+        "key cache hits (no lock)", "env cache hits (no lock)", "mesh cache hits (no lock)",
+        "site capture: program-bind flag right", "site capture: program-bind flag WRONG", "draws that bind the program",
+        "ambient: leftover words past the program's counts (ignored by rule)",
+        "ambient: read-but-unbound block words (taken live)", "ambient: refused (D1 translated path)"};
     if (c >= cSkip0 && c < cSkip0 + kReasons) return kReasonNames[c - cSkip0];
     const uint32_t i = c < cSkip0 ? c : c - kReasons + 1;
     return i < sizeof names / sizeof names[0] && names[i] ? names[i] : "?";
@@ -165,8 +170,10 @@ struct Key4Hash {
 // a content range (a sampler object's GX2Texture words, a sampler key's words): compared with its copy once per game
 // frame, whichever description touches it first; a change bumps its version
 struct GameObject {
-    uint32_t addr = 0, bytes = 0, version = 0;
-    uint64_t frame = 0;
+    uint32_t addr = 0, bytes = 0;
+    std::atomic<uint32_t> version{0};
+    std::atomic<uint64_t> frame{0};  // the game frame it was compared in (the first toucher compares, under mu)
+    std::mutex mu;
     std::vector<uint8_t> copy;
 };
 struct GameDesc {
@@ -201,16 +208,47 @@ struct Game {
     uint32_t nextDesc = 1, nextEnv = 1, nextMesh = 1;
 };
 // the object's state this game frame (g.mu held)
+// the object's state this game frame: compared with its copy by the first thread that touches it in the frame (its own
+// lock); every other touch in that frame reads the version without a lock
 GameObject* touch(GameObject* o, uint64_t frame) {
-    if (o->frame == frame) return o;
-    o->frame = frame;
-    if (!readable(o->addr, o->bytes)) return o;
-    const uint8_t* b = mem::ptr(o->addr);
-    if (o->copy.size() != o->bytes || std::memcmp(o->copy.data(), b, o->bytes)) {
-        o->copy.assign(b, b + o->bytes);
-        ++o->version;
+    if (o->frame.load(std::memory_order_acquire) == frame) return o;
+    std::lock_guard<std::mutex> lk(o->mu);
+    if (o->frame.load(std::memory_order_relaxed) == frame) return o;
+    if (readable(o->addr, o->bytes)) {
+        const uint8_t* b = mem::ptr(o->addr);
+        if (o->copy.size() != o->bytes || std::memcmp(o->copy.data(), b, o->bytes)) {
+            o->copy.assign(b, b + o->bytes);
+            o->version.fetch_add(1, std::memory_order_relaxed);
+        }
     }
+    o->frame.store(frame, std::memory_order_release);
     return o;
+}
+// WWHD_NATIVE_J3D_DESC_TLCACHE (default 1; 0: off): each recording thread keeps its own copy of the keys it last
+// found valid (descriptions, envs, meshes); a hit compares with that copy and the objects' versions, no lock
+bool tlcache_on() {
+    static const bool v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_TLCACHE", 1) != 0;
+    return v;
+}
+struct TlDesc {
+    std::vector<uint32_t> key;
+    std::vector<std::pair<GameObject*, uint32_t>> objects;
+    GameDesc* desc = nullptr;
+    uint16_t id = 0, version = 0;
+};
+struct TlEnv {
+    std::vector<uint32_t> key;
+    std::vector<std::pair<GameObject*, uint32_t>> objects;
+    GameEnv* env = nullptr;
+    uint16_t id = 0, version = 0;
+};
+thread_local std::unordered_map<Key4, TlDesc, Key4Hash> t_descs;
+thread_local std::unordered_map<Key4, TlEnv, Key4Hash> t_envs;
+thread_local std::unordered_map<MeshKey, uint16_t, MeshKeyHash> t_meshes;
+bool objects_hold(const std::vector<std::pair<GameObject*, uint32_t>>& objects, uint64_t frame) {
+    for (const auto& [o, version] : objects)
+        if (touch(o, frame)->version.load(std::memory_order_relaxed) != version) return false;
+    return true;
 }
 Game& game() {
     static Game g;
@@ -239,7 +277,7 @@ struct Current {
     std::vector<uint32_t> site, pre;
     const Desc* capDesc = nullptr;
     const Env* capEnv = nullptr;
-    uint32_t capBlocks = 0, capBlock[kMaxBlocks * kBlockWords] = {};
+    uint32_t capBlocks = 0, capBlock[kMaxBlocks * kBlockWords] = {}, capFlags = 0;
 };
 thread_local Current t_cur;
 bool sitecap_on() {
@@ -310,6 +348,18 @@ void site_compare(Current& c) {
     }
     std::unordered_map<uint32_t, uint32_t> got;
     for (auto& [r, v] : all) got[r] = v;
+    // the program-bind flag: the site's commands hold the program's list call (or its stage programs) exactly when set
+    bool bound = got.count(mmSQ_PGM_START_PS) != 0;
+    for (size_t i = 0; i < c.site.size() && !bound;) {
+        const uint32_t op = c.site[i] & 0xFF, m = c.site[i] >> 8;
+        if (op == gx2::OP_CALL && m == 2 && c.capDesc)
+            for (size_t j = 0; j + 2 < c.capDesc->segment[kSegProgram].size(); ++j)
+                if ((c.capDesc->segment[kSegProgram][j] & 0xFF) == gx2::OP_CALL &&
+                    c.capDesc->segment[kSegProgram][j + 1] == c.site[i + 1])
+                    bound = true;
+        i += 1 + m;
+    }
+    count(bound == ((c.capFlags & kFlagProgramBind) != 0) ? cProgFlagOk : cProgFlagWrong);
     std::lock_guard<std::mutex> lk(g_siteMu);
     ++g_siteDraws;
     for (auto& [r, v] : got) {
@@ -471,6 +521,9 @@ extern "C" unsigned wwhd_j3ddesc_mode(void) {
     }
     return unsigned(m);
 }
+extern "C" void wwhd_j3ddesc_flag(unsigned flag) {
+    if (flag == 1 && t_cur.open) t_cur.flags |= kFlagProgramBind;
+}
 extern "C" void wwhd_j3ddesc_skip(unsigned reason) {
     t_cur.open = false;
     t_cur.siteCap = false;
@@ -485,9 +538,28 @@ extern "C" unsigned wwhd_j3ddesc_begin(const unsigned* key, unsigned words) {
     const uint64_t frame = g_gameFrame.load(std::memory_order_relaxed);
     Game& g = game();
     unsigned result = 1;
+    const Key4 k4{key[0], key[1], key[2], key[5]};
+    if (tlcache_on() && !key[8]) {
+        auto it = t_descs.find(k4);
+        if (it != t_descs.end() && it->second.key.size() == words &&
+            !std::memcmp(it->second.key.data(), key, words * 4)) {
+            const uint64_t tc = t ? now_ns() : 0;
+            const bool hold = objects_hold(it->second.objects, frame);
+            if (tc) g_contentNs.fetch_add(now_ns() - tc, std::memory_order_relaxed);
+            if (hold) {
+                c.desc = it->second.desc;
+                c.pass = key[1];
+                c.descId = it->second.id;
+                c.descVersion = it->second.version;
+                count(cTlHit);
+                if (t) g_keyNs.fetch_add(now_ns() - t, std::memory_order_relaxed);
+                return 1;
+            }
+        }
+    }
     {
         std::lock_guard<std::mutex> lk(g.mu);
-        auto [it, fresh] = g.descs.try_emplace(Key4{key[0], key[1], key[2], key[5]});
+        auto [it, fresh] = g.descs.try_emplace(k4);
         GameDesc& d = it->second;
         c.desc = &d;
         c.pass = key[1];
@@ -498,7 +570,7 @@ extern "C" unsigned wwhd_j3ddesc_begin(const unsigned* key, unsigned words) {
         else {
             const uint64_t tc = t ? now_ns() : 0;
             for (const auto& [o, version] : d.objects)
-                if (touch(o, frame)->version != version) {
+                if (touch(o, frame)->version.load(std::memory_order_relaxed) != version) {
                     why = cDefContent;
                     break;
                 }
@@ -516,6 +588,7 @@ extern "C" unsigned wwhd_j3ddesc_begin(const unsigned* key, unsigned words) {
         } else {
             c.descId = d.id;
             c.descVersion = d.version;
+            if (tlcache_on()) t_descs[k4] = TlDesc{d.key, d.objects, &d, d.id, d.version};
         }
     }
     if (t) g_keyNs.fetch_add(now_ns() - t, std::memory_order_relaxed);
@@ -616,6 +689,8 @@ extern "C" unsigned wwhd_j3ddesc_define(void) {
     }
     c.descId = d.id;
     c.descVersion = d.version;
+    if (tlcache_on())
+        t_descs[Key4{c.key[0], c.key[1], c.key[2], c.key[5]}] = TlDesc{c.key, c.objects, &d, d.id, d.version};
     if (t) g_defineNs.fetch_add(now_ns() - t, std::memory_order_relaxed);
     return 1;
 }
@@ -624,9 +699,22 @@ extern "C" unsigned wwhd_j3ddesc_env(const unsigned* key, unsigned words) {
     if (!c.open || words < 5) return 0;
     c.tEnv = c.t0 ? now_ns() : 0;
     const uint64_t frame = g_gameFrame.load(std::memory_order_relaxed);
+    const Key4 k4{key[0], key[1], key[2], key[3]};
+    if (tlcache_on()) {
+        auto tl = t_envs.find(k4);
+        if (tl != t_envs.end() && tl->second.key.size() == words && !std::memcmp(tl->second.key.data(), key, words * 4) &&
+            objects_hold(tl->second.objects, frame)) {
+            c.env = tl->second.env;
+            c.envId = tl->second.id;
+            c.envVersion = tl->second.version;
+            count(cTlEnvHit);
+            if (c.tEnv) g_envNs.fetch_add(now_ns() - c.tEnv, std::memory_order_relaxed);
+            return 1;
+        }
+    }
     Game& g = game();
     std::lock_guard<std::mutex> lk(g.mu);
-    auto [it, fresh] = g.envs.try_emplace(Key4{key[0], key[1], key[2], key[3]});
+    auto [it, fresh] = g.envs.try_emplace(k4);
     GameEnv& e = it->second;
     c.env = &e;
     uint32_t why = 0;
@@ -641,6 +729,7 @@ extern "C" unsigned wwhd_j3ddesc_env(const unsigned* key, unsigned words) {
     if (!why) {
         c.envId = e.id;
         c.envVersion = e.version;
+        if (tlcache_on()) t_envs[k4] = TlEnv{e.key, e.objects, &e, e.id, e.version};
         if (c.tEnv) g_envNs.fetch_add(now_ns() - c.tEnv, std::memory_order_relaxed);
         return 1;
     }
@@ -708,6 +797,7 @@ extern "C" unsigned wwhd_j3ddesc_env_define(void) {
     }
     c.envId = e.id;
     c.envVersion = e.version;
+    if (tlcache_on()) t_envs[Key4{c.key[0], c.key[1], c.key[2], c.key[3]}] = TlEnv{e.key, e.objects, &e, e.id, e.version};
     if (c.tEnv) g_envNs.fetch_add(now_ns() - c.tEnv, std::memory_order_relaxed);
     return 1;
 }
@@ -716,6 +806,15 @@ extern "C" void wwhd_j3ddesc_mesh(unsigned prim, unsigned count_, unsigned index
     Current& c = t_cur;
     if (!c.open) return;
     const MeshKey k{{prim, count_, indexType, indexAddr, baseVertex}};
+    if (tlcache_on()) {
+        auto tl = t_meshes.find(k);
+        if (tl != t_meshes.end()) {
+            c.meshId = tl->second;
+            count(cTlMeshHit);
+            if (baseVertex) count(cBaseVertex);
+            return;
+        }
+    }
     Game& g = game();
     std::lock_guard<std::mutex> lk(g.mu);
     auto [it, fresh] = g.meshes.try_emplace(k, uint16_t(0));
@@ -725,6 +824,7 @@ extern "C" void wwhd_j3ddesc_mesh(unsigned prim, unsigned count_, unsigned index
         count(cMeshes);
     }
     c.meshId = it->second;
+    if (tlcache_on()) t_meshes[k] = it->second;
     if (baseVertex) count(cBaseVertex);
 }
 extern "C" void wwhd_j3ddesc_block(unsigned stage, unsigned location, unsigned addr, unsigned size) {
@@ -763,10 +863,12 @@ extern "C" unsigned wwhd_j3ddesc_draw(void) {
         c.capDesc = c.desc->rec;
         c.capEnv = c.env->rec;
         c.capBlocks = c.blockCount;
+        c.capFlags = c.flags;
         std::memcpy(c.capBlock, c.blocks, sizeof c.blocks);
         t_capturing = true;
     }
     count(cDescribed);
+    if (c.flags & kFlagProgramBind) count(cProgBind);
     count(cDescribedPass0 + std::min<uint32_t>(c.pass, 2));
     count(cBlocks, c.blockCount);
     if (c.t0) {

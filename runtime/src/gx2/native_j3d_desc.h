@@ -102,6 +102,8 @@ enum DrawFlag : uint32_t {
     kFlagRecording = 1,  // emitted while a display list is recorded
     kFlagDefined = 2,    // this draw (re)defined its desc
     kFlagEnvMade = 4,    // this draw (re)captured its env
+    kFlagProgramBind = 8,  // the site binds the program in this draw (shader != the render context's argument:
+                           // setProgramShaderMode and the program list run, with the segment's OP_INVALIDATE)
     // bits 8-15: index + 1 of the draw's first block of the pass's extra (scene) block, 0: none. Its ring index is
     // flipped by another thread while J3D draws are recorded; the site's read and the description's can see either
     // slot (the game's own race, lead ruling 2026-11-14)
