@@ -4,6 +4,7 @@
 // the site's draw and what that draw resolved), and the inventory counters.
 #include "../../third_party/cemu/cemu_shim.h"  // (as the gx2 sources get it: -include; for gx2_regs.h)
 #include "gx2/native_j3d_desc.h"
+#include "gx2/native_j3d_desc_draw.h"
 #include "gx2/native_draw.h"
 #include "gx2/gx2_cmd.h"
 #include "gx2/gx2_regs.h"
@@ -1402,6 +1403,7 @@ void reset() {
     g_passKey = 0;
     g_passSnap.clear();
     g_descEnvAmbient.clear();
+    d1::reset();  // (D1 described draws: their states hold shaders and pipelines)
 }
 
 }  // namespace native_draw::j3ddesc

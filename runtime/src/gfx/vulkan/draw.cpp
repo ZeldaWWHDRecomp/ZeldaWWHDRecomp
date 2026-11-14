@@ -64,6 +64,7 @@
 #include "gx2/native_draw.h"
 #include "gx2/native_j3d_desc.h"
 #include "gx2/native_pass.h"
+#include "gx2/native_j3d_desc_draw.h"
 #include "framegen.h"
 #include "cloud_proto.h"
 #include "mods/cemu_pack.h"
@@ -3044,6 +3045,7 @@ struct PacketCapture {
   std::array<std::array<int, kBlocks>, 2> slot;
   bool hashes = false;  // WWHD_NATIVE_DRAW_VERIFY: hash the resolved inputs for the comparison
   const native_draw::Packet* packet = nullptr;  // in: the packet (its instance register ranges)
+  bool keepWrites = false;  // in: every stage's descriptor writes, dynamic uniforms too (J3D described draws)
   PacketCapture() { for (auto& s : slot) s.fill(-1); }
   int block_of(int st, size_t logicalSlot) const {
     for (int k = 0; k < kBlocks; ++k)
@@ -3064,6 +3066,8 @@ struct PacketCapture {
   struct Stage {
     Block block[kBlocks];
     bool dynamic = true;
+    std::array<uint32_t, 17> dynBindings{};  // keepWrites: the dynamic bindings in the order of their offsets
+    uint32_t dynCount = 0;
     // regular (non-dynamic) uniforms: the stage's descriptor writes, to write a set per instance with its blocks
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     uint32_t writeCount = 0;
@@ -3128,10 +3132,17 @@ struct PacketCapture {
   // verify mode: every other uniform block's bytes, the textures, vertex (content; and layout: attribute index,
   // stride word) and index inputs
   uint64_t uniformHash[2]{}, textureHash = 0, vertexHash = 0, vertexLayoutHash = 0, indexHash = 0;
+  // (J3D described draws) the pass subset the draw was recorded with (its colour slots taken over, not written); the
+  // draw's viewport and scissor (raster: set by this draw)
+  uint32_t absent = 0;
+  VkViewport viewport{};
+  VkRect2D scissor{};
+  bool raster = false;
   void refuse(const char* why) { if (!refused) refused = why; }
 };
 PacketCapture* g_packetCapture = nullptr;
 bool g_packetBindsDirty = false;  // a replay bound descriptor sets behind draw()'s bind cache
+bool g_packetDynamicDirty = false;  // a J3D described draw set viewport, scissor, blend constants or stencil references
 inline uint64_t packet_hash(uint64_t h, const void* data, size_t n) {
   const auto* b = static_cast<const uint8_t*>(data);
   for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 0x100000001B3ull;
@@ -3611,7 +3622,12 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     }
   }
 #ifdef WWHD_NATIVE_DRAW
-  if (auto* cap = g_packetCapture; cap && !dynamicUniforms) {
+  if (auto* cap = g_packetCapture; cap && cap->keepWrites) {
+    auto& c = cap->stage[sh->vertex ? 0 : 1];
+    c.dynCount = dynamicCount;
+    for (uint32_t i = 0; i < dynamicCount; ++i) c.dynBindings[i] = dynamicBindings[i].first;
+  }
+  if (auto* cap = g_packetCapture; cap && (!dynamicUniforms || cap->keepWrites)) {
     auto& c = cap->stage[sh->vertex ? 0 : 1];
     c.layout = layout;
     c.writeCount = writeCount;
@@ -4932,6 +4948,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     ++R.passSubsetKept;
   }
   Pipeline& dp = subsetAbsent ? p : own;  // the pipeline the draw is recorded with
+#ifdef WWHD_NATIVE_DRAW
+  if (cap) cap->absent = subsetAbsent;
+#endif
   struct DrawStateCache {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkBuffer indexBuffer = VK_NULL_HANDLE;
@@ -4969,6 +4988,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   // leave this cache claiming dynamic state that was never set in this buffer.
   if (!reusePass) state = {};
 #ifdef WWHD_NATIVE_DRAW
+  if (g_packetDynamicDirty) {  // a J3D described draw set the dynamic state since
+    state.viewportValid = state.scissorValid = state.blendValid = state.stencilValid = false;
+    g_packetDynamicDirty = false;
+  }
   if (g_packetBindsDirty) {  // packet replays bound descriptor sets (and pipelines, vertex and index buffers) since
     state.descriptorProbe = {};
     state.pipeline = VK_NULL_HANDLE;
@@ -5173,6 +5196,13 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     shadersOut->scissor = sc;
     shadersOut->rasterReady = true;
   }
+#ifdef WWHD_NATIVE_DRAW
+  if (cap) {
+    cap->viewport = vp;
+    cap->scissor = sc;
+    cap->raster = !reuseRaster;
+  }
+#endif
   // Bitwise comparison preserves distinct signed zeros and exact float state.
   if (!state.viewportValid || std::memcmp(&state.viewport, &vp, sizeof(vp))) {
     record::vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -6093,6 +6123,7 @@ UploadSlice packet_block_upload(uint32_t addr, uint32_t size) {
 // WWHD_NATIVE_DRAW_LEAN (on by default; =0 off): the lowering's capture as the thread's heap scratch, swapped into the kind
 // (native_draw/lean.h); the refusal logs' string keys built only when the kind's reason changes
 #include "native_draw/lean.h"
+#include "native_draw/j3d_desc_vk.h"  // j3ddesc_draw (J3D described draws, stage D1)
 // kept lowered states (native_draw/alt_states.h, WWHD_NATIVE_DRAW_KEEP)
 #include "native_draw/alt_states.h"
 void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range) {

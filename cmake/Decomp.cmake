@@ -881,10 +881,12 @@ function(wwhd_decomp_link target)
                    "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/coverage.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/j3d_desc.cpp"
                    "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/j3d_desc.cpp"
+                   "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/j3d_desc_draw.cpp"
                    "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/pass.cpp")
     set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/coverage.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/j3d_desc.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/j3d_desc_draw.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/pass.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gx2/gx2_resources.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gx2/gx2_core.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/draw.cpp"

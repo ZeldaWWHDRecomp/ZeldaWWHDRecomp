@@ -57,6 +57,7 @@
 #include "native_draw.h"
 #include "native_pass.h"
 #include "native_j3d_desc.h"
+#include "native_j3d_desc_draw.h"
 #endif
 #ifdef WWHD_VK_SMOOTH
 #include "../gfx/vulkan/frame_breakdown.h"
@@ -501,6 +502,7 @@ static void render_thread_main() {
 #ifdef WWHD_NATIVE_DRAW
                 native_draw::flush_mdi();  // (the chunk's collected multi-draw batch: nothing outside the commands records it)
                 native_draw::flush_batch();  // (the chunk's collected shader-rewrite batch: nothing outside the commands records it)
+                native_draw::j3ddesc::d1::foreign();  // (J3D described draws' run: every reader outside the commands sees it)
 #endif
             });
         }
@@ -810,6 +812,11 @@ static void execute_op(Op op, const uint32* p, uint32 n);
 static void execute_one(Op op, const uint32* p, uint32 n) {
     rprof::Op kind;
 #ifdef WWHD_NATIVE_DRAW
+    // J3D described draws (native_j3d_desc_draw.h, mode 2): a command that may read or write registers ends the run
+    // (its register effects settled first)
+    if (op != OP_J3D_DESC_DRAW && op != OP_NOP && op != OP_DEBUG_CONTEXT && op != OP_SUBMITTED_UNIFORMS &&
+        op != OP_INVALIDATE)
+        native_draw::j3ddesc::d1::foreign();
     // a collected multi-draw or shader-rewrite batch is drawn before any other command but register writes and packet
     // definitions (define: when it changes the packet; register writes: the next instance's replayable check) and pass
     // descriptions (they record nothing: native_pass.h)
@@ -980,6 +987,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
 #ifdef WWHD_NATIVE_DRAW
         native_draw::frame_end();
         if (native_pass::on()) native_pass::frame_end();
+        native_draw::j3ddesc::d1::frame_end();
 #endif
         break;
     }
@@ -1042,7 +1050,10 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     case OP_PASS_COPY: native_pass::copy(p, n); break;
     case OP_PASS_VIEWPORT: native_pass::viewport(p, n); break;
     case OP_J3D_SHAPE: native_draw::j3d_shape(p, n); break;
-    case OP_J3D_DESC_DRAW: native_draw::j3ddesc::draw(g_regs, p, n); break;
+    case OP_J3D_DESC_DRAW:  // (mode 2: the draw, native_j3d_desc_draw.h; else D0's describe and verify)
+        if (native_draw::j3ddesc::d1::on()) native_draw::j3ddesc::d1::draw(g_regs, apply_regs, p, n);
+        else native_draw::j3ddesc::draw(g_regs, p, n);
+        break;
     case OP_PACKET_DRAW: {
         // the instance's register effects, exactly as the site's skipped calls make them, in the site's order:
         // GX2Set{Pixel,Vertex,Geometry}UniformBlock (gx2_resources.cpp uniform_block), GX2SetFetchShader and
