@@ -17,6 +17,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 #include <unordered_map>
@@ -250,7 +251,40 @@ std::mutex g_siteMu;
 std::unordered_map<uint32_t, uint64_t> g_siteExtra, g_siteDiff, g_pre;
 uint64_t g_preOps[64];
 uint64_t g_siteDraws = 0;
+// (debug) a command list as op/register summaries
+void summary(const std::vector<uint32_t>& w, char* line, size_t size) {
+    int j = 0;
+    for (size_t i = 0; i < w.size() && j < int(size) - 24;) {
+        const uint32_t op = w[i] & 0xFF, m = w[i] >> 8;
+        if (op == gx2::OP_SET_REGS && m) j += std::snprintf(line + j, size - j, " %04X+%u", w[i + 1], m - 1);
+        else j += std::snprintf(line + j, size - j, " op%u(%08X)", op, m ? w[i + 1] : 0);
+        i += 1 + m;
+    }
+}
 void site_compare(Current& c) {
+    if (g_trace && c.capDesc && c.capDesc->pass == 2) {
+        static int left = 6;
+        const Mesh* mm = find_mesh(c.meshId);
+        if (mm && mm->count == uint32_t(native_draw::switch_value("WWHD_NATIVE_J3D_DESC_UNITS", 0)) && left > 0) {
+            --left;
+            char line[2000];
+            summary(c.site, line, sizeof line);
+            LOG("[j3d-desc] site commands of desc %u (env %u, %zu image words):%s", c.capDesc->id, c.capEnv ? c.capEnv->id : 0,
+                c.capEnv ? c.capEnv->image.size() : 0, line);
+            for (size_t i = 0; i < c.site.size();) {
+                const uint32_t op = c.site[i] & 0xFF, m = c.site[i] >> 8;
+                if (op == gx2::OP_CALL && m == 2 && readable(c.site[i + 1], c.site[i + 2])) {
+                    const uint32_t* lw = reinterpret_cast<const uint32_t*>(mem::ptr(c.site[i + 1]));
+                    std::vector<uint32_t> l(lw, lw + c.site[i + 2] / 4);
+                    summary(l, line, sizeof line);
+                    LOG("[j3d-desc]   list %08X (%u bytes):%s", c.site[i + 1], c.site[i + 2], line);
+                }
+                i += 1 + m;
+            }
+            summary(c.capDesc->segment[kSegProgram], line, sizeof line);
+            LOG("[j3d-desc]   desc program segment:%s", line);
+        }
+    }
     std::vector<std::pair<uint32_t, uint32_t>> all, d;
     decode(c.site.data(), uint32_t(c.site.size()), all, 0);
     std::unordered_map<uint32_t, uint32_t> want;
@@ -344,6 +378,7 @@ uint32_t key_reason(const std::vector<uint32_t>& a, const uint32_t* b, uint32_t 
 }  // namespace
 
 thread_local bool t_capturing = false;
+extern bool g_trace;
 
 bool capture(uint32_t op, const uint32_t* p, uint32_t n) {
     Current& c = t_cur;
@@ -394,6 +429,14 @@ bool capture(uint32_t op, const uint32_t* p, uint32_t n) {
     s.push_back(op | (n << 8));
     s.insert(s.end(), p, p + n);
     return true;
+}
+
+bool capture_regs(uint32_t first, const uint32_t* values, uint32_t count) {
+    thread_local std::vector<uint32_t> w;
+    w.resize(count + 1);
+    w[0] = first;
+    std::memcpy(w.data() + 1, values, count * 4);
+    return capture(gx2::OP_SET_REGS, w.data(), count + 1);
 }
 
 void game_swap() { g_gameFrame.fetch_add(1, std::memory_order_relaxed); }
@@ -649,6 +692,17 @@ extern "C" unsigned wwhd_j3ddesc_env_define(void) {
         r->prev = e.rec;
         e.rec = r;
         g_envs[e.id].store(r, std::memory_order_release);
+        if (g_trace) {  // (debug: every env version, its image size and key)
+            char sum[600];
+            summary(r->image, sum, sizeof sum);
+            LOG("[j3d-desc] env %u v%u image:%s", r->id, r->version, sum);
+            char line[600];
+            int j = std::snprintf(line, sizeof line, "[j3d-desc] env %u v%u: %zu image words, key:", r->id, r->version,
+                                  r->image.size());
+            for (size_t i = 0; i < r->key.size() && j < int(sizeof line) - 12; ++i)
+                j += std::snprintf(line + j, sizeof line - j, " %08X", r->key[i]);
+            LOG("%s", line);
+        }
         count(cEnvVersions);
         c.flags |= kFlagEnvMade;
     }
@@ -737,6 +791,33 @@ extern "C" unsigned wwhd_j3ddesc_draw(void) {
 namespace native_draw::j3ddesc {
 bool g_pending = false;
 bool g_resolving = false;
+bool g_trace = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_UNITS", 0) != 0;
+namespace {
+// the last writer of each pixel texture unit's word 0: the command count, the last non-register command and its
+// first payload word, the last J3D description draw seen
+struct Writer {
+    uint64_t seq = 0;
+    uint32_t lastOp = 0, lastWord = 0, lastDesc = 0, lastDescSeq = 0;
+};
+Writer g_unitWriter[8];
+uint64_t g_seq = 0;
+uint32_t g_lastOp = 0, g_lastWord = 0, g_lastDesc = 0;
+uint64_t g_lastDescSeq = 0;
+}  // namespace
+void trace_write(uint32_t first, uint32_t count) {
+    ++g_seq;
+    for (uint32_t u = 0; u < 8; ++u) {
+        const uint32_t r = REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + u * 7;
+        if (r >= first && r < first + count)
+            g_unitWriter[u] = {g_seq, g_lastOp, g_lastWord, g_lastDesc, uint32_t(g_seq - g_lastDescSeq)};
+    }
+}
+void trace_op(uint32_t op, const uint32_t* p, uint32_t n) {
+    ++g_seq;
+    g_lastOp = op;
+    g_lastWord = n ? p[0] : 0;
+    if (op == gx2::OP_J3D_DESC_DRAW && n) g_lastDesc = p[0], g_lastDescSeq = g_seq;
+}
 namespace {
 struct Pending {
     const Desc* desc = nullptr;
@@ -969,6 +1050,28 @@ void site_draw(const uint32_t* regs, const uint32_t* p, uint32_t n) {
         }
     }
     if (ok) count(cVerifiedOk);
+    // WWHD_NATIVE_J3D_DESC_UNITS=COUNT[:N]: the first N site draws with mesh index count COUNT: their pixel texture
+    // units 0-7 (debug: the D1 render side's comparison)
+    {
+        static const int want = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_UNITS", 0);
+        static int left = [] {
+            const char* e = std::getenv("WWHD_NATIVE_J3D_DESC_UNITS");
+            const char* c = e ? std::strchr(e, ':') : nullptr;
+            return c ? std::atoi(c + 1) : 8;
+        }();
+        if (want && int(m->count) == want && left > 0) {
+            --left;
+            LOG("[j3d-desc] units: desc %u v%u env %u v%u pass %u record %08X frame %08X mesh %u", d->id, d->version,
+                q.env->id, q.env->version, d->pass, d->record, d->frame, m->count);
+            for (uint32_t u = 0; u < 8; ++u) {
+                const uint32_t r0 = REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + u * 7;
+                const Writer& w = g_unitWriter[u];
+                LOG("[j3d-desc]   ps unit %u: %08X %08X %08X%s; written %llu commands ago, after op %u (%08X), last desc %u (%u commands before that write)",
+                    u, regs[r0], regs[r0 + 1], regs[r0 + 2], g_written.count(r0) ? " (description)" : "",
+                    (unsigned long long)(g_seq - w.seq), w.lastOp, w.lastWord, w.lastDesc, w.lastDescSeq);
+            }
+        }
+    }
     g_resolving = true;  // (the Vulkan draw reports what it resolved: resolved())
 }
 void resolved(const uint32_t* regs, const Resolved& r) {

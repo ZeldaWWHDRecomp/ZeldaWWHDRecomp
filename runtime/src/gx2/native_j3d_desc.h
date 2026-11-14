@@ -115,6 +115,8 @@ const Mesh* find_mesh(uint32_t id);
 // game threads: a define segment is open; gx2::emit hands every command to capture(), which consumes it (true)
 extern thread_local bool t_capturing;
 bool capture(uint32_t op, const uint32_t* p, uint32_t n);
+// the same for gx2::set_regs, which writes its command in place (recording buffer or render queue), not through emit
+bool capture_regs(uint32_t first, const uint32_t* values, uint32_t count);
 // render thread
 void draw(const uint32_t* regs, const uint32_t* p, uint32_t n);  // OP_J3D_DESC_DRAW (verify mode: held pending)
 extern bool g_pending;                                           // a described draw waits for the site's draw
@@ -142,6 +144,11 @@ void read_regs(const gfxvk::vk::Shader* vs, const gfxvk::vk::Shader* ps, const L
                std::vector<uint32_t>& out);
 void game_swap();  // game thread, GX2SwapScanBuffers: the game frame (content checks, env re-capture)
 void command(uint32_t op);  // render thread: any other command between a described draw and the site's draw
+// WWHD_NATIVE_J3D_DESC_UNITS=COUNT[:N] (debug, both modes): for the J3D draws with mesh index count COUNT, which
+// command last wrote pixel texture units 0-7 (gx2_core.cpp OP_SET_REGS / every other command call in)
+extern bool g_trace;
+void trace_write(uint32_t first, uint32_t count);
+void trace_op(uint32_t op, const uint32_t* p, uint32_t n);
 void frame_end();           // render thread, at each swap: the counter line
 void reset();               // render thread: a save-state load or shader reset
 

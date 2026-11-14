@@ -710,6 +710,10 @@ void shutdown_vulkan_caches() {
 
 void set_regs(uint32 first, const uint32* values, uint32 count) {
     if (!count) return;
+#ifdef WWHD_NATIVE_DRAW
+    // a J3D description being defined (native_j3d_desc.h): register writes are captured as emit's commands are
+    if (native_draw::j3ddesc::t_capturing && native_draw::j3ddesc::capture_regs(first, values, count)) return;
+#endif
     // the command is the first register and the values: written in place (no staging copy)
     const uint32 n = count + 1;
     if (Recording* rec = recording(); rec && rec->start) {
@@ -892,6 +896,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     // a J3D draw's name holds for the draw right after it (register writes may come in between)
     if (op != OP_NOP && op != OP_SET_REGS && op != OP_DRAW_INDEXED && op != OP_J3D_SHAPE && op != OP_J3D_DESC_DRAW)
         native_draw::g_j3dKey = 0;
+    if (native_draw::j3ddesc::g_trace && op != OP_SET_REGS && op != OP_NOP) native_draw::j3ddesc::trace_op(op, p, n);
     // a J3D description waiting for the site's draw (verify): any other command in between is counted
     // (an invalidate writes no register: the site's shader-mode bind makes one)
     if (native_draw::j3ddesc::g_pending && op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_DRAW_INDEXED &&
@@ -900,7 +905,12 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
 #endif
     switch (op) {
     case OP_NOP: break;
-    case OP_SET_REGS: apply_regs(p[0], p + 1, n - 1); break;
+    case OP_SET_REGS:
+#ifdef WWHD_NATIVE_DRAW
+        if (native_draw::j3ddesc::g_trace) native_draw::j3ddesc::trace_write(p[0], n - 1);  // (debug)
+#endif
+        apply_regs(p[0], p + 1, n - 1);
+        break;
     case OP_DRAW: render::draw(g_regs, p[0], p[1], 0, 0, p[2], p[3]); break;
     case OP_DRAW_INDEXED:
 #ifdef WWHD_NATIVE_DRAW
