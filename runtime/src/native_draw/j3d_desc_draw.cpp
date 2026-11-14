@@ -75,9 +75,9 @@ uint64_t g_counts[cCounts] = {};
 uint64_t g_frames = 0;
 const char* const kCountNames[cCounts] = {
     "draws", "replayed", "full", "verified", "MISMATCH", "items", "items refused", "states", "states refused", "runs",
-    "settles", "settled words", "class checks", "class words", "volatile settles", "LOST", "gated",
+    "settles", "settled words", "class checks", "class words", "J3D-written checks", "LOST", "gated",
     "no state", "no state for the pass", "state refused", "item refused", "surfaces", "binds", "ambient",
-    "ambient (J3D-written)", "texture", "index", "uniform offset", "draw us", "settle us", "invalidates"};
+    "ambient (J3D-written)", "texture", "index", "uniform offset", "draw us", "settle us", "invalidates", "live vertex buffers", "J3D-written words looked up"};
 // reasons (debug): first characters of the why strings, counted by text
 std::unordered_map<std::string, uint64_t> g_why;
 
@@ -246,6 +246,24 @@ void push_run(const In& in) {
     e.blockCount = in.blockCount;
     std::copy_n(in.blocks, in.blockCount, e.blocks);
     g_runCount = uint32_t(g_run.size());
+}
+
+bool effective(uint32_t reg, uint32_t& value) {
+    size_t looked = 0;
+    for (size_t i = g_run.size(); i-- > 0;) {
+        const Entry& e = g_run[i];
+        for (uint32_t b = e.blockCount; b-- > 0;)
+            if (reg >= e.blocks[b].reg && reg < e.blocks[b].reg + 7) {
+                uint32_t w[7];
+                block_words(e.blocks[b], w);
+                value = w[reg - e.blocks[b].reg];
+                return true;
+            }
+        if (e.item->value(reg, value)) return true;
+        if (++looked >= 64) return false;
+    }
+    value = g_regs[reg];
+    return true;
 }
 
 void settle_run() {

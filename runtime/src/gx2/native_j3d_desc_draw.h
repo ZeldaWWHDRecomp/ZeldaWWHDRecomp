@@ -82,6 +82,9 @@ extern uint64_t g_runSerial;  // moves at every command that ends a run (and at 
 extern uint32_t g_runCount;   // draws in the open run
 void settle_run();             // the run's effect into the register file (no-op without one)
 void push_run(const In& in);   // a draw drawn from its state: its effect joins the run
+// the value REG has with the run applied (the run's last write of it, else the register file), without settling;
+// false: the run is long and holds none in its last entries (the caller settles and reads the file)
+bool effective(uint32_t reg, uint32_t& value);
 void apply_effects(const In& in);  // the translated path: run settled, then the item's effect and the blocks applied
 // gx2_core.cpp: before every command but OP_NOP, OP_J3D_DESC_DRAW and commands that neither read nor write registers
 inline void foreign() {
@@ -97,7 +100,7 @@ enum Count : uint32_t {
     fNoState, fNoPass, fRefusedState, fItemRefused, fSurfaces, fBinds, fAmbient, fVolatile, fTexture, fIndex,
     fOffset,
     // (WWHD_NATIVE_J3D_DESC_D1TIMING=1) render-thread ns: described draws (whole), settles
-    tDrawNs, tSettleNs, cInvalidates, cCounts
+    tDrawNs, tSettleNs, cInvalidates, cLiveVertex, cVolatileWords, cCounts
 };
 void count(Count c, uint64_t n = 1);
 void note(const char* why);  // (WWHD_NATIVE_J3D_DESC_D1DEBUG=1) a fallback reason

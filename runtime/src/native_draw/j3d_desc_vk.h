@@ -111,7 +111,8 @@ struct State {
   std::vector<uint32_t> volValues;
   uint32_t prim = 0, indexType = 0;
   Stage st[2];
-  struct VertexBind { uint32_t binding, stride, addr, size; uint64_t attributeEnd; bool supported; };
+  // addr/size: from the item's effect (fixed: live = false), else read from the register file at each draw
+  struct VertexBind { uint32_t binding, stride, addr, size; uint64_t attributeEnd; bool supported, live; };
   std::vector<VertexBind> vertex;
   uint32_t nativeIndexWidth = 0;
   bool stripRestart = false, hostRestart = false;
@@ -444,19 +445,26 @@ const char* ambient_holds(State& s, const uint32_t* r) {
   }
   if (!s.vol.empty()) {
     d1::count(d1::cVolatileSettles);
-    d1::settle_run();
-    for (const Range& g : s.vol)
-      if (std::memcmp(r + g.first, s.volValues.data() + g.at, g.count * 4)) {
-        if (d1::debug_on())
-          for (uint32_t i = 0; i < g.count; ++i)
-            if (r[g.first + i] != s.volValues[g.at + i]) {
-              static char k[48];
-              std::snprintf(k, sizeof k, "J3D-written ambient %04X", g.first + i);
-              d1::note(k);
-              break;
-            }
-        return "ambient (J3D-written)";
+    // each word as the run leaves it (looked up backwards in the run; a long run without it: settled first)
+    bool same = true;
+    uint32_t badReg = 0;
+    for (const Range& g : s.vol) {
+      for (uint32_t i = 0; i < g.count && same; ++i) {
+        uint32_t v;
+        if (!d1::effective(g.first + i, v)) d1::settle_run(), v = r[g.first + i];
+        same = v == s.volValues[g.at + i];
+        badReg = g.first + i;
       }
+      d1::count(d1::cVolatileWords, g.count);
+    }
+    if (!same) {
+      if (d1::debug_on()) {
+        static char k[48];
+        std::snprintf(k, sizeof k, "J3D-written ambient %04X", badReg);
+        d1::note(k);
+      }
+      return "ambient (J3D-written)";
+    }
   }
   return nullptr;
 }
@@ -513,7 +521,10 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
     if (v.binding >= g_bound.vb.size()) return "vertex binding";
     const uint32_t* a = r + mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7;
     if (!a[0]) return "vertex buffer address";
-    s.vertex.push_back({v.binding, v.stride, a[0], a[1] + 1, v.attributeEnd, v.supported});
+    uint32_t w0, w1;
+    const uint32_t reg = mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7;
+    const bool fixed = in.item->value(reg, w0) && in.item->value(reg + 1, w1);
+    s.vertex.push_back({v.binding, v.stride, a[0], a[1] + 1, v.attributeEnd, v.supported, !fixed});
   }
   s.blockCount = in.blockCount;
   for (uint32_t i = 0; i < in.blockCount; ++i) s.blockReg[i] = in.blocks[i].reg;
@@ -623,7 +634,8 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
     // meshes; the game sets them before the J3D site), not ambient words
     bool stream = false;
     for (const auto& v : s.vertex)
-      stream = stream || reg == mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7 || reg == mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7 + 1;
+      stream = stream || (v.live && (reg == mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7 ||
+                                     reg == mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7 + 1));
     if (stream) continue;
     bool bound = false;
     for (uint32_t i = 0; i < in.blockCount && !bound; ++i) bound = reg >= in.blocks[i].reg && reg < in.blocks[i].reg + 7;
@@ -681,7 +693,9 @@ void compare(const State& s, const PacketCapture& cap, const uint32_t* r, const 
     const uint32_t* w = r + mmSQ_VTX_ATTRIBUTE_BLOCK_START + b.binding * 7;
     if (a.binding != b.binding || a.stride != b.stride || a.attributeEnd != b.attributeEnd || a.supported != b.supported)
       return mismatch(in, "vertex layout");
-    (void)w;
+    if (w[0] != b.addr || w[1] + 1 != b.size) {
+      if (!b.live) return mismatch(in, "vertex buffer words");
+    }
   }
   if (!std::equal(s.blend.begin(), s.blend.end(), r + REGADDR::CB_BLEND_RED) ||
       s.stencilFront != (r[REGADDR::DB_STENCILREFMASK] & 255) || s.stencilBack != (r[REGADDR::DB_STENCILREFMASK_BF] & 255))
@@ -783,6 +797,11 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
   {
     bool settled = false;
     for (size_t i = 0; i < s.vertex.size(); ++i) {
+      if (!s.vertex[i].live) {
+        vaddr[i] = s.vertex[i].addr, vsize[i] = s.vertex[i].size;
+        continue;
+      }
+      d1::count(d1::cLiveVertex);
       const uint32_t reg = mmSQ_VTX_ATTRIBUTE_BLOCK_START + s.vertex[i].binding * 7;
       if (!settled && (d1::written(reg) || d1::written(reg + 1))) d1::settle_run(), settled = true;
       vaddr[i] = in.regs[reg];
