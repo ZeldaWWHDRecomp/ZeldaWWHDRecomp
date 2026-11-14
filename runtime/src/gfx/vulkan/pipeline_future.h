@@ -1,5 +1,5 @@
 // Pipeline futures (MT recording stage 1, WWHD_VK_RECORD_MT bit 32 / WWHD_VK_RECORD_PIPELINE_FUTURES=1; record_mt.h).
-// Decomp build, fast mode (cmake WWHD_NATIVE_DRAW).
+// Every build with cmake WWHD_VK_SMOOTH (cmake/VkSmooth.cmake, on by default).
 //
 // Under the record worker a draw whose pipeline is still compiling made the render thread wait for the compile
 // (draw.cpp: begin_exact_preparation() is false with the worker), the ~150 waits per run and the p99 cost of R5. With
@@ -13,7 +13,7 @@
 // callback (that callback drains the emitter): then it publishes and lets the emitter wait.
 // Only while the worker's main stream records (not the stereo eye stream, not the presentation scope).
 #pragma once
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "loader.h"
 #include "pipeline_demand.h"
 #include <condition_variable>

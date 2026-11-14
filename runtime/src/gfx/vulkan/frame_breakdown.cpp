@@ -1,6 +1,6 @@
 // Per-frame breakdown rows in the stutter trace: frame_breakdown.h
 #include "frame_breakdown.h"
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "stutter_trace.h"
 #include "runtime.h"
 #include <array>

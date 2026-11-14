@@ -76,6 +76,7 @@ endif()
 
 option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; experimental)" OFF)
 include(cmake/Decomp.cmake)
+include(cmake/VkSmooth.cmake)  # (option WWHD_VK_SMOOTH; wwhd_vk_smooth below)
 
 # Cafe OS message queues (runtime/src/threads.cpp, WWHD_MSGQ_FAST): lock-free queue lookups, the wake gate in every
 # build and, in the decomp fast build, a short nap of the spinning receivers before they sleep. OFF = the code as before.
@@ -439,6 +440,8 @@ if(WWHD_HAS_VULKAN)
   # VK_NO_PROTOTYPES: the renderer loads every Vulkan function at run time (gfx/vulkan/loader.h), so the
   # executable starts without a Vulkan loader or with an older one, and can say what is missing
   target_compile_definitions(wwhd PRIVATE WWHD_HAS_VULKAN=1 VK_NO_PROTOTYPES)
+  # smooth frame pacing and multi-threaded recording (on by default on phones and the Steam Deck only)
+  wwhd_vk_smooth(wwhd)
   if(APPLE)
     # gfx/vulkan/handoff_trace.cpp reads CACurrentMediaTime (the present observer's clock) on every
     # Apple build with Vulkan, including Vulkan-only builds, where the Metal block above doesn't link it
@@ -1101,6 +1104,14 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(display_pacing_policy_test PRIVATE runtime/src)
   target_compile_options(display_pacing_policy_test PRIVATE -UNDEBUG)
   add_test(NAME vulkan_display_pacing_policy COMMAND display_pacing_policy_test)
+  # smooth frame pacing defaults per device as the normal build compiles them (cmake/VkSmooth.cmake, smooth_defaults.h)
+  add_executable(smooth_defaults_test runtime/tools/smooth_defaults_test.cpp)  # (includes smooth_defaults.cpp)
+  target_include_directories(smooth_defaults_test PRIVATE runtime/include runtime/src)
+  target_compile_definitions(smooth_defaults_test PRIVATE WWHD_VK_SMOOTH=1)
+  target_compile_options(smooth_defaults_test PRIVATE -UNDEBUG)
+  add_test(NAME vulkan_smooth_defaults_desktop COMMAND smooth_defaults_test desktop)
+  add_test(NAME vulkan_smooth_defaults_deck COMMAND smooth_defaults_test deck)
+  add_test(NAME vulkan_smooth_defaults_deck_pacing_off COMMAND smooth_defaults_test deck-pacing-off)
   add_executable(pass_cache_test runtime/tools/pass_cache_test.cpp runtime/src/gfx/vulkan/pass_cache.cpp)
   target_include_directories(pass_cache_test PRIVATE runtime/src ${Vulkan_INCLUDE_DIRS})
   target_compile_definitions(pass_cache_test PRIVATE VK_NO_PROTOTYPES)

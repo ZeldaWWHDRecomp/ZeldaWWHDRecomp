@@ -48,7 +48,7 @@ public:
     return result;
   }
   static void replay(const std::vector<std::byte> &bytes);
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
   // MT recording stage 1 (record_mt.h): opcode 31 carries an extension command (sub-opcode + payload) that
   // record_mt::replay_extension replays; take() that continues with a recycled byte vector
   bool extension(std::span<const std::byte> payload) { return append(31, payload); }

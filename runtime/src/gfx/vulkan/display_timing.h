@@ -1,4 +1,4 @@
-// VK_GOOGLE_display_timing for the TV swapchain (Android; decomp build, fast mode: cmake WWHD_NATIVE_DRAW only):
+// VK_GOOGLE_display_timing for the TV swapchain (Android; every build with cmake WWHD_VK_SMOOTH):
 // - observation for the frame breakdown (frame_breakdown.h: fb_display rows) and the counter line
 //   "[vulkan display timing]" (WWHD_VK_STATS): on-screen intervals in refreshes;
 // - WWHD_VK_DISPLAY_PACING=bits (off by default): 1 each TV present asks for an on-screen time on the refresh grid,
@@ -8,7 +8,7 @@
 //   (default 0.5).
 // Without the extension (or off) nothing changes: the present chain is left as it is.
 #pragma once
-#ifdef WWHD_NATIVE_DRAW
+#ifdef WWHD_VK_SMOOTH
 #include "loader.h"
 #include <cstdint>
 
