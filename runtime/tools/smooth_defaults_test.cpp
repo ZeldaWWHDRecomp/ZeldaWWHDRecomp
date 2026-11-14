@@ -27,8 +27,12 @@ int main(int argc, char** argv) {
     using namespace gfxvk::smooth_defaults;
     const std::string mode = argc > 1 ? argv[1] : "desktop";
     pacingOff = mode == "deck-pacing-off";
+#ifdef _WIN32
+    _putenv_s("SteamDeck", mode == "desktop" ? "" : "1");
+#else
     if (mode == "desktop") unsetenv("SteamDeck");
     else setenv("SteamDeck", "1", 1);
+#endif
 #if defined(__linux__) && !defined(__ANDROID__)
     const bool deck = mode != "desktop";
 #else
