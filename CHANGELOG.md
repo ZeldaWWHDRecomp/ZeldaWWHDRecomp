@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: 3D line effects redraw with less work** (#569). The colour pass of the game's 3D lines (ropes
+  and similar line effects) can now reuse its prepared state from one object to the next instead of being set up
+  again each time. In the Dragon Roost lava room on our test phone (Xiaomi 14) this saves 0.16 ms of render time per
+  frame, with slightly steadier frame times (1 % low +0.9 fps). The picture is unchanged.
+  `WWHD_NATIVE_DRAW_GATHER=0` turns it off. The normal build is not affected.
+
 - **Full save states load after taking a picto again** (#565). A full save state made before the first picto (or
   before opening the pictograph list) of a session could not be loaded after it, and the other way round: "cannot
   load here (thread JpegEncodeMgrThread … is at a different place)", even though the values it printed were the
