@@ -116,8 +116,11 @@ class Checker:
                 self.ok('address')
             elif op in D_FORM and u & 0xFFFF0000 == o & 0xFFFF0000 and self.low_half(u, o):
                 self.ok('address')
-            elif op in D_FORM and u & 0xFFFF0000 == o & 0xFFFF0000 and 0x5000 <= u & 0xFFFF < 0x62F8 and \
-                    self.build.data(GAME_INFO + (u & 0xFFFF)) - GAME_INFO == o & 0xFFFF:
+            elif op in D_FORM and u & 0xFFFF0000 == o & 0xFFFF0000 and (u >> 16) & 31 and \
+                    0x5000 <= u & 0xFFFF < 0x62F8 and \
+                    self.build.data(GAME_INFO + (u & 0xFFFF)) - self.build.data(GAME_INFO) == o & 0xFFFF:
+                # a member displacement from a pointer register (not r0, which reads as 0): the object's own
+                # address shift taken out, as GI() and the guest-mod translator do
                 self.ok('gameinfo member')
             else:
                 self.problems.append('%s: %08X vs %08X' % (where, u, o))

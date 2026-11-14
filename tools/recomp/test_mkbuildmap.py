@@ -98,5 +98,45 @@ class DataSteps(unittest.TestCase):
             self.assertEqual(f(lay.start + off), lay.start + off + lay.delta(off), "+%#x" % off)
 
 
+class CodePointers(unittest.TestCase):
+    """The data-section pointer pass of derive_aligned (on stand-ins for the two executables)."""
+
+    @staticmethod
+    def binary(entries, pointers):
+        from types import SimpleNamespace
+        return SimpleNamespace(entries=entries, code_pointers=pointers)
+
+    @staticmethod
+    def result(maps, differing=()):
+        return {"_data": lambda slot: slot + 0x10, "_maps": maps, "_called": set(), "stats": {},
+                "differing_functions": [[a, 4, maps(a), 4] for a in differing]}
+
+    def test_a_slot_pairs_functions_without_a_counterpart(self):
+        canon = self.binary([0x100, 0x200, 0x300], {0x1000: 0x200, 0x1004: 0x300})
+        other = self.binary([0x100, 0x280, 0x380], {0x1010: 0x280, 0x1014: 0x380})
+        found = mkbuildmap.pair_through_pointers(canon, other, self.result(lambda t: t), [1, 2], [1, 2])
+        self.assertEqual(found, {1: 1, 2: 2})
+
+    def test_an_ambiguous_slot_pairs_nothing(self):
+        canon = self.binary([0x100, 0x200, 0x300], {0x1000: 0x200, 0x1004: 0x300})
+        other = self.binary([0x100, 0x280, 0x380], {0x1010: 0x280, 0x1014: 0x280})  # both slots hold one function
+        found = mkbuildmap.pair_through_pointers(canon, other, self.result(lambda t: t), [1, 2], [1, 2])
+        self.assertEqual(found, {})
+
+    def test_slots_are_checked_and_a_pairing_without_evidence_reported(self):
+        canon = self.binary([], {0x1000 + 4 * k: 0x200 for k in range(200)} | {0x2000: 0x300})
+        other = self.binary([], {0x1010 + 4 * k: 0x240 for k in range(200)} | {0x2010: 0x999})
+        r = self.result(lambda t: t + 0x40, differing=(0x200, 0x300, 0x400))
+        mkbuildmap.check_pointers(canon, other, r)
+        self.assertEqual((r["stats"]["pointers_checked"], r["stats"]["pointers_elsewhere"]), (201, 1))
+        self.assertEqual(r["stats"]["differing_unconfirmed"], ["00000300", "00000400"])
+
+    def test_many_slots_holding_other_functions_are_refused(self):
+        canon = self.binary([], {0x1000 + 4 * k: 0x200 for k in range(10)})
+        other = self.binary([], {0x1010 + 4 * k: 0x999 for k in range(10)})
+        with self.assertRaisesRegex(mkbuildmap.Mismatch, "code pointers"):
+            mkbuildmap.check_pointers(canon, other, self.result(lambda t: t + 0x40))
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

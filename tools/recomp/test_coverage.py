@@ -40,6 +40,26 @@ DECOMP_BUILD_ONLY = ("decomp/", "hostrt/", "native_draw/")  # native_draw/: only
 DECOMP_GUARD = re.compile(r'[ \t]*#[ \t]*(?:if|ifdef)[ \t]+(?:WWHD_DECOMP|WWHD_PORT_POINTS)[ \t]*')
 CONDITIONAL = re.compile(r'[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)\b')
 FIXED_GAME_ALLOCATIONS = {0x145AC92C, 0x3BB9DE00, 0x44BDF900, 0x44BDFD00}
+# g_dComIfG_gameInfo members the Japanese build moved: USA offsets 0x5AB0 to the end of the object. An offset in that
+# range is written GI(0x...) (guest_addr.h), which gives the build's own; the play pointer can come from anywhere (a
+# variable, a call, a hook's argument), so the literal itself is what is checked. Numbers in the range that are not
+# play offsets added as they stand, or are mapped through GI() where they are used, are listed with the reason.
+MOVED_PLAY_OFFSETS = (0x5AB0, 0x62F8)
+GI_CALL = re.compile(r'\bGI\s*\(')
+NOT_A_MOVED_OFFSET = {
+    **{("src/editor/demo_names.cpp", v): "a demo id" for v in (0x6103, 0x612E, 0x6165, 0x6166, 0x619A, 0x61AB, 0x61B1,
+                                                                0x61E4, 0x61FE)},
+    ("src/hle/padscore.cpp", 0x5FE0): "KPADGetMplsWorkSize's result",
+    ("src/mods/native_actor_carry.cpp", 0x5B38): "a bound: the play pointer leaves room for the canonical object",
+    ("src/mods/story_particles.cpp", 0x5AB4): "a bound: the play pointer leaves room for the canonical object",
+    ("src/mods/story_world_grapple.cpp", 0x5B38): "a bound: the play pointer leaves room for the canonical object",
+    **{("src/mods/play_context.h", v): "a canonical offset the reader maps (Addresses::member, GI())"
+       for v in (0x5B2C, 0x5BB2, 0x5BB3, 0x5BB5, 0x5BB6, 0x5BB7, 0x5BBB, 0x5CD8, 0x5CDC, 0x5CEA)},
+    **{("src/mods/story_game_objects.cpp", v): "a canonical offset, read as GI(l.pointer)"
+       for v in (0x5AB8, 0x5ABC, 0x5AC0, 0x5AC4)},
+    ("src/mods/story_native_camera_capture.h", 0x5AF8): "the canonical default; the adapter passes GI(0x5AF8)",
+    ("src/mods/story_notebook.cpp", 0x6000): "an angle (s16)",
+}
 
 
 
@@ -93,6 +113,41 @@ def address_errors(source, name, mapping):
     return errors
 
 
+def moved_offset_errors(source, name):
+    """Literals in the range of the play object members the Japanese build moved, outside GI(...)."""
+    text = TRIVIA.sub(lambda m: re.sub(r"[^\n]", " ", m[0]), source)
+    text = without_decomp_blocks(text)
+    spans = []
+    for m in GI_CALL.finditer(text):
+        depth = 0
+        for k in range(m.end() - 1, len(text)):
+            depth += {"(": 1, ")": -1}.get(text[k], 0)
+            if not depth:
+                spans.append((m.start(), k))
+                break
+    errors = []
+    for m in LITERAL.finditer(text):
+        value = int(m[1], 16)
+        if not MOVED_PLAY_OFFSETS[0] <= value < MOVED_PLAY_OFFSETS[1] or (name, value) in NOT_A_MOVED_OFFSET or \
+                any(lo <= m.start() < hi for lo, hi in spans):
+            continue
+        line = text.count("\n", 0, m.start()) + 1
+        errors.append(f"{name}:{line}: 0x{value:X} is the offset of a play object member the Japanese build moved; "
+                      f"write GI(0x{value:X}) (guest_addr.h), or list why it is not one in NOT_A_MOVED_OFFSET")
+    return errors
+
+
+def runtime_sources(*roots):
+    for root in roots:
+        for path in sorted((ROOT / "runtime" / root).rglob("*")):
+            if path.suffix not in (".cpp", ".h", ".c", ".mm"):
+                continue
+            name = path.relative_to(ROOT / "runtime" / root).as_posix()
+            if name.startswith(DECOMP_BUILD_ONLY):
+                continue
+            yield f"{root}/{name}", name, path.read_text(encoding="utf-8")
+
+
 def valid_address(mapping, kind, address):
     try:
         getattr(mapping, kind)(address)
@@ -119,15 +174,7 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(self.mapping.code(0x0275558C), 0x02755E48)
 
     def test_runtime_game_literals_are_wrapped_and_mapped(self):
-        root = ROOT / "runtime/src"
-        sources = []
-        for path in sorted(root.rglob("*")):
-            if path.suffix not in (".cpp", ".h", ".c", ".mm"):
-                continue
-            name = path.relative_to(root).as_posix()
-            if name.startswith(DECOMP_BUILD_ONLY):
-                continue
-            sources.append((name, path.read_text(encoding="utf-8")))
+        sources = [(name, text) for _, name, text in runtime_sources("src")]
         for build in builds.all_builds():
             if build.canonical:
                 continue
@@ -139,6 +186,17 @@ class CoverageTests(unittest.TestCase):
         self.assertTrue(address_errors("ld32(GD(0x1046F0B0) + 0x5B34);", "new.cpp", jp))
         self.assertEqual(address_errors("ld32(GD(0x1046F0B0) + GI(0x5B34));", "new.cpp", jp), [])
         self.assertEqual(address_errors("ld32(GD(0x1046F0B0) + 0x5134);", "new.cpp", jp), [])  # not moved
+
+    def test_moved_play_offsets_are_written_gi(self):
+        errors = [e for path, _, text in runtime_sources("src", "include") for e in moved_offset_errors(text, path)]
+        self.assertEqual(errors, [], "\n".join(errors))
+        # the play pointer held anywhere: only the offset shows the member
+        for raw in ("const uint32_t play = GD(0x1046F0B0); ld32(play + 0x5B34);", "ld32(kPlay + 0x5CD8);",
+                    "constexpr uint32_t kLink = 0x5B34;", "ld32(play + GI(0x5B34) + 0x5B34);"):
+            self.assertTrue(moved_offset_errors(raw, "src/new.cpp"), raw)
+        for fine in ("ld32(play + GI(0x5B34));", "ld32(play + GI(pad * 16 + 0x5CD8));", "ld32(play + 0x5134);",
+                     "ld32(link + 0x65B0);", "// play + 0x5B34"):
+            self.assertEqual(moved_offset_errors(fine, "src/new.cpp"), [], fine)
 
     def test_canonical_dispatch_ids_are_explicit_and_mapped(self):
         # Canonical metadata must not be region-translated twice. The C++

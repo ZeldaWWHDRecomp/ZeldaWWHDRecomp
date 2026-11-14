@@ -153,8 +153,15 @@ volatile u32 offsets[] = {WWHD_PLAY_PLAYER_OFFSET, WWHD_PLAY_METRONOME_OFFSET};
                      'unsigned int link(void) { return *(volatile unsigned int*)(info + 0x5B34); }\n'
         other = old + 'extern unsigned char save[] __asm__("__wwhd_gdata_0x101F84DC");\n' \
                       'unsigned int first(void) { return *(volatile unsigned int*)save; }\n'
+        # the play pointer from elsewhere (a hook's argument): only the USA offset in the code shows it
+        # (an older wwhd_guest.h: a hook descriptor without the .wwhd_game_info marker)
+        hook = 'struct desc { unsigned kind, target; void* func; unsigned flags; };\n' \
+               '__attribute__((section(".wwhd_hooks"), used)) static const struct desc d = {2, 0x%08X, (void*)&hook, 0};\n'
+        argument = old + 'void hook(unsigned char* play) { *(volatile unsigned int*)(play + 0x5B34) = 0; }\n' + \
+            hook % 0x0240EBB0
+        hooked = old + 'void hook(void) { }\n' + hook % 0x025200D4
         with tempfile.TemporaryDirectory() as d:
-            for name, src in (("accessor", play), ("data", data)):
+            for name, src in (("accessor", play), ("data", data), ("argument", argument), ("hooked accessor", hooked)):
                 with self.subTest(name):
                     elf = Path(self.build_elf(src, d)).read_bytes()
                     builder.translator_for(elf, 0x7F000000, by_name("EU"))
@@ -167,6 +174,14 @@ volatile u32 offsets[] = {WWHD_PLAY_PLAYER_OFFSET, WWHD_PLAY_METRONOME_OFFSET};
         with tempfile.TemporaryDirectory() as d:
             elf = Path(self.build_elf(src, d)).read_bytes()
             with self.assertRaisesRegex(guestmod.ModError, 'outside the play object'):
+                builder.translator_for(elf, 0x7F000000)
+
+    def test_play_offset_without_hex_prefix_refused(self):
+        # WWHD_GAME_INFO_MEMBER pastes the text of its argument: 100 would silently be 0x100
+        src = '#include "wwhd_guest.h"\nWWHD_GAME_INFO_MEMBER(100);\nu32 member(void) { return WWHD_GAME_INFO_OFFSET(100); }\n'
+        with tempfile.TemporaryDirectory() as d:
+            elf = Path(self.build_elf(src, d)).read_bytes()
+            with self.assertRaisesRegex(guestmod.ModError, 'in hex with 0x'):
                 builder.translator_for(elf, 0x7F000000)
 
     def test_public_headers_c_and_cpp(self):

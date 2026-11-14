@@ -275,9 +275,13 @@ WWHD_GAME_INFO_MEMBER(0x5B2C);
 u8* slot = wwhd_play_get() + WWHD_GAME_INFO_OFFSET(0x5B2C);
 ```
 
-These offsets are fixed when the mod is linked, so they can initialize variables but can't be case
-labels, array sizes or static asserts. A mod built with an older SDK (plain USA numbers) is refused
-on the Japanese build if it reads the play object; ask its author to rebuild.
+Write the offset in hex with `0x`: the macro keeps its text, and the translator refuses an offset
+without the prefix rather than read `100` as `0x100`. These offsets are fixed when the mod is linked,
+so they can initialize variables but can't be case labels, array sizes or static asserts. A mod built
+with an older SDK (plain USA numbers) is refused on the Japanese build if it reaches the play object
+(calls or hooks `wwhd_play_get`, addresses `g_dComIfG_gameInfo`, or adds an offset between `0x5AB0`
+and `0x62F7` in its code, which can also catch an offset into another object); ask its author to
+rebuild.
 
 ### Native save event flags
 

@@ -43,6 +43,7 @@ class Build:
                           for a, s1, b, s2 in d.get("differing_functions", [])]
         self._differ_starts = [a for a, _, _, _ in self.differing]
         self._differ_ends = [a + s for a, s, _, _ in self.differing]
+        self._differ_here = sorted((b, s2) for _, _, b, s2 in self.differing)  # their code in this build
         # functions only the canonical build has, and functions only this build has (mkbuildmap.py
         # derive_aligned); [(address, size)], sorted
         self.removed = sorted((int(a, 16), int(s)) for a, s in d.get("removed_functions", []))
@@ -56,8 +57,11 @@ class Build:
 
     def code(self, canon):
         """Canonical (USA) code address -> this build's address."""
-        if self.build_only(canon) and _in_ranges(self.inserted, canon & ~BUILD_ONLY):
-            return canon & ~BUILD_ONLY   # an id from canon_code() of a function only this build has
+        if self.build_only(canon) and (_in_ranges(self.inserted, canon & ~BUILD_ONLY) or
+                                       _in_ranges(self._differ_here, canon & ~BUILD_ONLY)):
+            # an id of code without a canonical counterpart: a function only this build has (canon_code()), or
+            # an entry inside one this build compiled differently (the recompiler's sym())
+            return canon & ~BUILD_ONLY
         self.require_address("code", canon)
         if _in_ranges(self.removed, canon):
             raise ValueError("%08X is in a function the %s build does not have" % (canon, self.name))
@@ -91,7 +95,8 @@ class Build:
 
         An address in a function only this build has (`inserted`) has no canonical address: it gets
         the id BUILD_ONLY | address, outside every canonical address, so the recompiler's names for
-        it (f_8XXXXXXX) never meet a canonical one; code() turns it back."""
+        it (f_8XXXXXXX) never meet a canonical one; code() turns it back, as it does the recompiler's
+        id of an entry inside a function this build compiled differently."""
         if _in_ranges(self.inserted, addr):
             return BUILD_ONLY | addr
         return self._code.unapply(addr)

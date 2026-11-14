@@ -1530,6 +1530,16 @@ if(Python3_Interpreter_FOUND)
   target_include_directories(guest_addr_test PRIVATE runtime/include)
   target_compile_options(guest_addr_test PRIVATE -UNDEBUG)
   add_test(NAME guest_addr COMMAND guest_addr_test)
+  # the Japanese map: removed functions and the play object members it moved (GI())
+  add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/guest_map_fixture_jp.c"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/recomp/write_map_fixture.py"
+      "${CMAKE_BINARY_DIR}/guest_map_fixture_jp.c" JP
+    DEPENDS tools/recomp/write_map_fixture.py tools/recomp/builds.py tools/recomp/builds/jp.json tools/recomp/recomp.py)
+  add_executable(guest_addr_jp_test runtime/tools/guest_addr_test.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture_jp.c")
+  target_include_directories(guest_addr_jp_test PRIVATE runtime/include)
+  target_compile_definitions(guest_addr_jp_test PRIVATE TEST_JP)
+  target_compile_options(guest_addr_jp_test PRIVATE -UNDEBUG)
+  add_test(NAME guest_addr_jp COMMAND guest_addr_jp_test)
   add_executable(auto_pip_eu_test runtime/tools/auto_pip_test.cpp runtime/src/gfx/display_modes.cpp
     "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
   target_include_directories(auto_pip_eu_test PRIVATE runtime/src runtime/include runtime/third_party/fmt/include)

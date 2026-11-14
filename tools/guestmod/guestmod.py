@@ -39,6 +39,7 @@ R_PPC_REL24, R_PPC_REL14, R_PPC_REL32 = 10, 11, 26
 REGION_START, REGION_END = 0x7F000000, 0x80000000
 GAME_INFO, GAME_INFO_SIZE = 0x1046F0B0, 0x62F8  # g_dComIfG_gameInfo, what dComIfGp_get() returns
 PLAY_GET = 0x025200D4  # dComIfGp_get (the SDK's wwhd_play_get)
+PLAY_DISPLACEMENT_OPS = {14} | set(range(32, 56))  # addi/li, and the D-form loads and stores
 
 
 class ModError(Exception):
@@ -105,6 +106,7 @@ class Translator:
         self.services = []  # host service names, in order of first use
         self.layout()
         self.relocate()
+        self.check_old_play_displacements()
         self.discover()
 
     # ---- layout: code first, then read-only data, data, bss
@@ -176,22 +178,54 @@ class Translator:
     def moves_game_info(self):
         return any(l["name"] == "g_dComIfG_gameInfo" for l in self.build.layouts)
 
+    def old_play_offsets(self):
+        """Does this mod come from an older SDK, which compiled play member offsets as USA numbers, for a build
+        that moved members?"""
+        return not self.new_game_info and self.moves_game_info()
+
+    def refuse_old_play_offsets(self, what):
+        raise ModError("Mod uses an older SDK whose play object offsets are USA offsets, which the %s build moved "
+                       "(%s); ask its author to rebuild with the current SDK" % (self.build.name, what))
+
     def check_old_play_offsets(self, kind, address):
-        """An older SDK compiled play member offsets as USA numbers: refuse such a mod's play object access
-        (the play accessor, or a game data address inside the object) on a build that moved members."""
-        if self.new_game_info or not self.moves_game_info():
+        """Refuse an older SDK's play object access (the play accessor called or hooked, or a game data address
+        inside the object) on a build that moved members."""
+        if not self.old_play_offsets():
             return
-        if (kind in ("game", "orig") and address == PLAY_GET) or \
-                (kind == "gdata" and GAME_INFO <= address < GAME_INFO + GAME_INFO_SIZE):
-            raise ModError("Mod uses an older SDK whose play object offsets are USA offsets, which the %s build "
-                           "moved; ask its author to rebuild with the current SDK" % self.build.name)
+        if kind in ("game", "orig") and address == PLAY_GET:
+            self.refuse_old_play_offsets("it uses dComIfGp_get")
+        if kind == "gdata" and GAME_INFO <= address < GAME_INFO + GAME_INFO_SIZE:
+            self.refuse_old_play_offsets("it uses g_dComIfG_gameInfo+0x%X" % (address - GAME_INFO))
+
+    def check_old_play_displacements(self):
+        """The play pointer can also come from a hook's argument or another object, which the translator cannot
+        follow. Every access to a member that moved still needs its USA offset in the code, so refuse an older
+        SDK's mod whose instructions add a constant in the moved range (a displacement, or an addi/li). This can
+        also refuse a mod that uses such an offset in another object; rebuilding with the current SDK lifts it."""
+        if not self.old_play_offsets():
+            return
+        lo = min(int(o, 16) for l in self.build.layouts if l["name"] == "g_dComIfG_gameInfo"
+                 for o, _ in l["field_steps"])
+        for start, end in self.text:
+            for a in range(start, end, 4):
+                w = self.word(a)
+                if a in self.imports or a + 2 in self.relocated_halves or w >> 26 not in PLAY_DISPLACEMENT_OPS:
+                    continue
+                d = sext(w & 0xFFFF, 16)
+                if lo <= d < GAME_INFO_SIZE:
+                    self.refuse_old_play_offsets("the instruction at mod +0x%X adds 0x%X, an offset of a play "
+                                                 "object member that moved" % (a - self.base, d))
 
     def symbol_value(self, sym):
         """(kind, value): kind 'addr' for a guest address, else an import kind."""
         if sym["shndx"] == 0:  # undefined
-            m = re.match(r"__wwhd_(game|orig|gdata|ginfo)_(?:0x)?([0-9A-Fa-f]{1,8})$", sym["name"])
+            m = re.match(r"__wwhd_(game|orig|gdata|ginfo)_(0[xX])?([0-9A-Fa-f]{1,8})$", sym["name"])
             if m:
-                return m.group(1), int(m.group(2), 16)
+                if m.group(1) == "ginfo" and not m.group(2):
+                    # WWHD_GAME_INFO_MEMBER pastes the offset's text: 100 would be read as 0x100
+                    raise ModError("%s: write the play object offset in hex with 0x (WWHD_GAME_INFO_MEMBER(0x...))"
+                                   % sym["name"])
+                return m.group(1), int(m.group(3), 16)
             if not re.match(r"[A-Za-z_][A-Za-z0-9_]*$", sym["name"]):
                 raise ModError("unknown symbol %r" % sym["name"])
             return "svc", sym["name"]
@@ -203,6 +237,7 @@ class Translator:
 
     def relocate(self):
         self.code_refs = set()
+        self.relocated_halves = set()  # halfwords a 16-bit relocation wrote
         for rs in self.elf.sections:
             if rs["type"] != SHT_RELA or rs["info"] not in self.sec_addr:
                 continue
@@ -236,10 +271,13 @@ class Translator:
                     self.put32(p, s)
                 elif typ == R_PPC_ADDR16_LO:
                     self.put16(p, s)
+                    self.relocated_halves.add(p)
                 elif typ == R_PPC_ADDR16_HI:
                     self.put16(p, s >> 16)
+                    self.relocated_halves.add(p)
                 elif typ == R_PPC_ADDR16_HA:
                     self.put16(p, (s + 0x8000) >> 16)
+                    self.relocated_halves.add(p)
                 elif typ == R_PPC_REL24:
                     d = (s - p) & 0xFFFFFFFF
                     if sext(d, 32) != sext(d & 0x03FFFFFC, 26):
@@ -263,6 +301,7 @@ class Translator:
                     raise ModError("bad hook descriptor %d (kind %d)" % (k, kind))
                 if not self.in_text(func):
                     raise ModError("hook descriptor %d does not point to mod code" % k)
+                self.check_old_play_offsets("game", target)
                 self.hooks.append((kind, self.game_address("game", target), func, flags))
 
     # ---- functions: symbols, call targets, address-taken code, tail-call targets

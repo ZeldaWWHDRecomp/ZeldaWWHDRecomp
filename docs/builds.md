@@ -98,11 +98,15 @@ address where a regional build happens to allocate them.
 
 The Japanese executable has 37,772 functions to the USA build's 37,766, so the strict check above
 (same count, same order) cannot hold. `mkbuildmap.py` aligns the two by body instead and checks the
-pairing the same way (calls and global references), and a map may then also list:
+pairing the same way (calls and global references), then reads the code pointers in the data
+sections (vtables, static initializer and callback tables): a function only one build seems to have,
+held by a slot whose counterpart holds a function only the other build seems to have, is the same
+function rewritten and is paired; a slot holding another function than the map gives is a regional
+table entry, and more than 1% of those is refused. A map may then also list:
 
-- `removed_functions`: canonical functions the build does not have (8). `code()` refuses them, and the
+- `removed_functions`: canonical functions the build does not have (6). `code()` refuses them, and the
   runtime's `guest_code_valid()` / `GC_OPTIONAL()` treat them as absent (`g_guest_removed_code`).
-- `inserted_functions`: functions only the build has (14). The recompiler names them
+- `inserted_functions`: functions only the build has (12). The recompiler names them
   `f_8XXXXXXX` (`builds.BUILD_ONLY` | their own address), which no canonical name can be; so is an
   entry the fixpoint finds inside a function the build compiled differently.
 - `layouts`: objects some of whose members moved. The Japanese `dComIfG_play_c` (in
@@ -120,9 +124,13 @@ python3 tools/recomp/mkbuildmap.py --check tools/recomp/builds/jp.json \
 ```
 
 USA ↔ Japan: 35,069 functions with the same body, 2,653 that differ only by the moved members,
-36 that differ (mostly the message, text and language code and the Options window), 8 removed and 14
-inserted; 163,450 direct calls and 54,526 global addresses checked. One function (`025FD550`) calls a
-Japanese-only helper and is counted as differing.
+38 that differ (mostly the message, text and language code and the Options window), 6 removed and 12
+inserted; 163,450 direct calls, 54,526 global addresses and 34,246 code pointers checked. One function
+(`025FD550`) calls a Japanese-only helper and is counted as differing. Two static initializers
+(`0202EABC`, `0264E754`) were rewritten too much to pair by their code and are paired by the
+initializer table. 38 pointer slots hold a regional function (the message code's tag handlers and an
+Options window slot). Nine differing functions are tied to their counterpart only by position and
+similar code, with no call or pointer to confirm it; the map lists them (`checked.differing_unconfirmed`).
 
 Tested on Windows (MSYS2 CLANG64, translated with `--mod-hooks`): a new game from the title screen, file
 select and name entry in kana (`WWHD_SWKBD_TEXT`), the prologue and the opening on Outset Island, with
@@ -145,8 +153,11 @@ What that means for the port on the Japanese build:
 - Guest mods are translated for the build, so their calls and globals map, and the SDK's
   `WWHD_PLAY_*_OFFSET` values follow the moved play object members: the translator resolves them
   (`WWHD_GAME_INFO_OFFSET`, [mod-sdk-v2.md](mod-sdk-v2.md)). A mod built with an older SDK compiled
-  them as USA numbers; it is refused on the Japanese build if it reads the play object (calls
-  `dComIfGp_get` or addresses `g_dComIfG_gameInfo`), and loads otherwise.
+  them as USA numbers; it is refused on the Japanese build if it reaches the play object (calls or
+  hooks `dComIfGp_get`, addresses `g_dComIfG_gameInfo`, or has an instruction that adds an offset of
+  a moved member, `0x5AB0` to `0x62F7`, wherever its pointer came from), and loads otherwise. The
+  last test can also refuse a mod that uses such an offset in another object; rebuilding it with the
+  current SDK lifts the refusal.
 
 ## Languages
 

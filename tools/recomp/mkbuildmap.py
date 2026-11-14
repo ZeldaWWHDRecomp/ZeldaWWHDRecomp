@@ -54,8 +54,11 @@ class Binary:
         # 16-bit relocations point at the halfword, i.e. instruction address + 2
         self.reloc_type = {}
         self.reloc_target = collections.defaultdict(list)
+        self.code_pointers = {}  # data word -> the code address it holds (vtables, callback tables)
         for sec, addr, typ, sym, add in p.rpx.relocs:
             if sec.name != ".text":
+                if typ == 1 and p.in_text((sym.value + add) & 0xFFFFFFFF):  # R_PPC_ADDR32
+                    self.code_pointers[addr] = (sym.value + add) & 0xFFFFFFFF
                 continue
             self.reloc_type[addr & ~3] = typ
             self.reloc_target[addr & ~3].append((typ, (sym.value + add) & 0xFFFFFFFF))
@@ -283,9 +286,9 @@ def align(canon, other, layouts):
 
     1. Align the function lists by body (displacements a layout can move masked out).
     2. Inside every stretch that does not align: pair bodies that are equal (layout considered) and
-       unique in the stretch, then, in order, functions of the same size whose code is mostly the
-       same (a regional variant); a body that does not change but moved elsewhere is paired in a
-       last pass over the whole program.
+       unique in the stretch, then, in order, functions whose code is mostly the same (a regional
+       variant; their sizes may differ); a body that does not change but moved elsewhere is paired
+       in a last pass over the whole program.
     What is left has no counterpart: `removed` (only canonical) and `inserted` (only the other build).
     """
     n, m = len(canon.entries), len(other.entries)
@@ -312,7 +315,8 @@ def align(canon, other, layouts):
                 pairs[i] = eq[i][0]
         ci = [i for i in ci if i not in pairs]
         oj = [j for j in oj if j not in pairs.values()]
-        # the rest in order: same-size functions whose code is mostly the same
+        # the rest in order: functions whose code is mostly the same (any size; derive_aligned checks the
+        # pairing through calls and data pointers where it can)
         k = 0
         for i in ci:
             for kk in range(k, len(oj)):
@@ -371,8 +375,63 @@ def derive_aligned(canon, other, layouts):
     paired function with the same code (layout considered) lands on the mapped address; every data
     address referenced from such a function maps to exactly one address, and the final data map
     (with the layouts' field shifts) gives every one of them; every instruction that differs in a
-    function counted as the same code is a displacement a layout explains."""
+    function counted as the same code is a displacement a layout explains.
+
+    Then the code pointers in the data sections (vtables, callback tables): a slot maps with the data
+    and the function it holds with the code. A function only one build seems to have, held by a slot
+    whose counterpart holds a function only the other build seems to have, is the same function
+    rewritten (paired, and the map derived again); a slot that holds another function than the map
+    gives is a regional table entry, and many of those are refused like wrong calls."""
     pairs, removed, inserted = align(canon, other, layouts)
+    result = derive_pairs(canon, other, layouts, pairs, removed, inserted)
+    found = pair_through_pointers(canon, other, result, removed, inserted)
+    if found:
+        pairs.update(found)
+        removed = [i for i in removed if i not in found]
+        inserted = [j for j in inserted if j not in found.values()]
+        result = derive_pairs(canon, other, layouts, pairs, removed, inserted)
+    check_pointers(canon, other, result)
+    return result
+
+
+def pair_through_pointers(canon, other, result, removed, inserted):
+    """{canonical index: other index} for functions without a counterpart that the same data slot holds."""
+    entry_c = {canon.entries[i]: i for i in removed}
+    entry_o = {other.entries[j]: j for j in inserted}
+    votes = collections.defaultdict(collections.Counter)
+    for slot, t in canon.code_pointers.items():
+        t2 = other.code_pointers.get(result["_data"](slot))
+        if t in entry_c and t2 in entry_o:
+            votes[entry_c[t]][entry_o[t2]] += 1
+    taken = collections.Counter(j for v in votes.values() for j in v)
+    return {i: next(iter(v)) for i, v in votes.items() if len(v) == 1 and taken[next(iter(v))] == 1}
+
+
+def check_pointers(canon, other, result):
+    """Every code pointer in the data sections whose slot both builds have holds the mapped function."""
+    maps, checked, elsewhere = result["_maps"], 0, []
+    confirmed = set(result["_called"])
+    for slot, t in sorted(canon.code_pointers.items()):
+        t2 = other.code_pointers.get(result["_data"](slot))
+        if t2 is None:
+            continue
+        checked += 1
+        if maps(t) == t2:
+            confirmed.add(t)
+        else:
+            elsewhere.append((slot, t, t2))
+    if len(elsewhere) * 100 > checked:
+        raise Mismatch("%d of %d code pointers in the data sections do not hold the mapped function, e.g. %s" % (
+            len(elsewhere), checked, "; ".join("%08X holds %08X, there %08X" % e for e in elsewhere[:5])))
+    s = result["stats"]
+    s["pointers_checked"], s["pointers_elsewhere"] = checked, len(elsewhere)
+    # differing functions that neither a call from unchanged code nor a data pointer ties to their counterpart:
+    # paired by their position and their code's similarity alone
+    s["differing_unconfirmed"] = ["%08X" % a for a, _, _, _ in result["differing_functions"] if a not in confirmed]
+
+
+def derive_pairs(canon, other, layouts, pairs, removed, inserted):
+    """derive_aligned for a given pairing."""
     n, m = len(canon.entries), len(other.entries)
     bc = [canon.body(i) for i in range(n)]
     bo = [other.body(j) for j in range(m)]
@@ -420,7 +479,7 @@ def derive_aligned(canon, other, layouts):
     # of its own there) is not the same code: it counts as differing. A few of those are regional
     # code; many would mean the pairing is wrong, which is refused.
     checked = wrong = duplicates = 0
-    examples, calls_elsewhere = [], set()
+    examples, calls_elsewhere, called = [], set(), set()
     for i, j in unchanged.items():
         for k in range(0, canon.ends[i] - canon.entries[i], 4):
             a = canon.entries[i] + k
@@ -434,7 +493,9 @@ def derive_aligned(canon, other, layouts):
             w2 = other.p.word(b)
             t2 = (sext(w2 & 0x03FFFFFC, 26) + (0 if w2 & 2 else b)) & 0xFFFFFFFF
             checked += 1
-            if maps(t) != t2 and same_function(other, maps(t), t2):
+            if maps(t) == t2:
+                called.add(t)
+            elif same_function(other, maps(t), t2):
                 duplicates += 1   # the other build calls a copy of the function: the same code
             elif maps(t) != t2:
                 wrong += 1
@@ -491,6 +552,8 @@ def derive_aligned(canon, other, layouts):
                   "data_addresses": len(seen), "same_code": len(same), "layout_only": len(layout_only),
                   "reordered": moved, "calls_to_copies": duplicates,
                   "calls_elsewhere": ["%08X" % canon.entries[i] for i in sorted(calls_elsewhere)]},
+        # for derive_aligned's pointer pass only (not written to the map)
+        "_maps": maps, "_data": data, "_called": called,
     }
 
 
@@ -600,6 +663,9 @@ def report(m):
               "only canonical %d, only the other build %d" % (
                   s["functions_other"], s["same_code"], s["layout_only"], s["reordered"],
                   len(m["removed_functions"]), len(m["inserted_functions"])))
+        print("code pointers in the data sections checked %d, holding a regional function %d; differing functions "
+              "paired by position and similarity alone: %s" % (
+                  s["pointers_checked"], s["pointers_elsewhere"], " ".join(s["differing_unconfirmed"]) or "none"))
         for lay in m["layouts"]:
             print("   layout %s at %08X (+%X bytes), bases %s: %s" % (
                 lay.name, lay.start, lay.size, " ".join("+%X" % b for b in lay.bases),

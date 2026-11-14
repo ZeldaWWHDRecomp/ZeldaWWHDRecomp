@@ -37,11 +37,13 @@
 
 extern "C" void f_02618094_orig(Cpu* c);
 // the Options hooks are for the USA and European builds only (tools/recomp/hooks_options_order.txt): the Japanese
-// build's recompiled code has no originals for them and never calls the hooks below
+// build's recompiled code has no originals for them and never calls the hooks below. On a build whose originals are
+// missing although its hooks are installed (hooks_options_order.txt left out of a tool set), stop rather than skip
+// the Options window's own code.
 extern "C" {
-__attribute__((weak)) void f_026D7828_orig(Cpu*) {}
-__attribute__((weak)) void f_026D6DD4_orig(Cpu*) {}
-__attribute__((weak)) void f_026D87D0_orig(Cpu*) {}
+__attribute__((weak)) void f_026D7828_orig(Cpu*) { fatal("one_screen: the Options window's original 026D7828 is not linked"); }
+__attribute__((weak)) void f_026D6DD4_orig(Cpu*) { fatal("one_screen: the Options window's original 026D6DD4 is not linked"); }
+__attribute__((weak)) void f_026D87D0_orig(Cpu*) { fatal("one_screen: the Options window's original 026D87D0 is not linked"); }
 }
 
 namespace mods {

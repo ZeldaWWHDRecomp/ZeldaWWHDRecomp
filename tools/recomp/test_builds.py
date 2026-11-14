@@ -168,8 +168,17 @@ class JapaneseMap(unittest.TestCase):
         self.assertEqual(layout["name"], "g_dComIfG_gameInfo")
 
     def test_functions_only_one_build_has(self):
-        self.assertEqual(len(self.jp.removed), 8)
-        self.assertEqual(len(self.jp.inserted), 14)
+        self.assertEqual(len(self.jp.removed), 6)
+        self.assertEqual(len(self.jp.inserted), 12)
+        # two static initializers rewritten past pairing by code, paired by the initializer table
+        self.assertEqual(self.jp.code(0x0202EABC), 0x0202EABC)
+        self.assertEqual(self.jp.code(0x0264E754), 0x0264F2E4)
+        self.assertTrue(self.jp.body_differs(0x0264E754))
+        # the recompiler's name of an entry inside a function the build compiled differently maps back too
+        inside = 0x0264F2E4 + 0x40
+        self.assertEqual(self.jp.code(builds.BUILD_ONLY | inside), inside)
+        with self.assertRaises(ValueError):
+            self.jp.code(builds.BUILD_ONLY | 0x02000020)   # an address with a canonical counterpart
         removed, size = self.jp.removed[0]
         self.assertTrue(self.jp.removed_function(removed + size - 4))
         with self.assertRaisesRegex(ValueError, "does not have"):
@@ -264,7 +273,7 @@ class NativeBoundaries(unittest.TestCase):
         from io import StringIO
         from recomp import Recompiler
         compiler = Recompiler.__new__(Recompiler)
-        for name, count in (('EU', 0), ('JP', 8)):
+        for name, count in (('EU', 0), ('JP', 6)):
             compiler.build = builds.by_name(name)
             output = StringIO()
             compiler.write_build_map(output)
