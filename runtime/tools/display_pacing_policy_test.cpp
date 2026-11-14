@@ -4,6 +4,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <random>
+#include <utility>
+#include <algorithm>
 #include <vector>
 
 using gfxvk::display_pacing::Policy;
@@ -97,6 +99,68 @@ int main() {
         }
         std::printf("display pacing simulation: %d of %zu paced intervals not two refreshes\n", uneven, paced.size() - 1);
         assert(uneven * 100 < int(paced.size()) * 2);  // (< 2 %: the drift and the misses above the quantile)
+    }
+    {  // bounded latency, cap: misses raise the target to at most base + CAP
+        Policy p = measured(15 * kMs);
+        p.cap = kRefresh / 2;
+        const int64_t d = p.desired(7000 * kMs, kFrame), base = p.target;
+        assert(p.base == base);
+        for (int i = 0; i < 10; ++i) p.feedback(7000 * kMs, d + kRefresh, d + kRefresh / 2 + kRefresh, d);  // misses
+        assert(p.target == base + kRefresh / 2 && p.raised == 10 && p.capped == 9);
+        Policy u = measured(15 * kMs);  // (without the cap: 10 misses = 5 refreshes more, the unbounded climb)
+        const int64_t e = u.desired(7000 * kMs, kFrame);
+        for (int i = 0; i < 10; ++i) u.feedback(7000 * kMs, e + kRefresh, e + kRefresh / 2 + kRefresh, e);
+        assert(u.target == u.base + 10 * (kRefresh / 2));
+    }
+    {  // bounded latency, decay: DECAY frames without a miss take a quarter refresh off, never below the base
+        Policy p = measured(15 * kMs);
+        p.decay = 10;
+        const int64_t d = p.desired(8000 * kMs, kFrame), base = p.target;
+        p.feedback(8000 * kMs, d + kRefresh, d + kRefresh / 2 + kRefresh, d);  // one miss: + half a refresh
+        assert(p.target == base + kRefresh / 2);
+        for (int i = 0; i < 9; ++i) p.feedback(8000 * kMs, d - kRefresh / 2, d + kRefresh / 2, d);
+        assert(p.target == base + kRefresh / 2);
+        p.feedback(8000 * kMs, d - kRefresh / 2, d + kRefresh / 2, d);
+        assert(p.target == base + kRefresh / 2 - kRefresh / 4 && p.decayed == 1);
+        for (int i = 0; i < 100; ++i) p.feedback(8000 * kMs, d - kRefresh / 2, d + kRefresh / 2, d);
+        assert(p.target == base && p.decayed == 2);  // (the floor)
+    }
+    {  // bounded latency, keep: a call KEEP late keeps its slot; later than that it is rebased as before
+        Policy p = measured(15 * kMs);
+        p.keep = 3 * kMs;
+        int64_t call = 9000 * kMs;
+        const int64_t a = p.desired(call, kFrame) + kRefresh / 2;
+        const int64_t room = a - (call + p.target);  // (the slot's slack over the target)
+        call += kFrame + room + 2 * kMs;  // 2 ms past the slot's limit
+        const int64_t b = p.desired(call, kFrame) + kRefresh / 2;
+        assert(b == a + 2 * kRefresh && p.kept == 1 && p.rebased == 0);
+        call += kFrame + 2 * kMs;  // and 4 ms (> KEEP) past it
+        const int64_t c = p.desired(call, kFrame) + kRefresh / 2;
+        assert(c > b + 2 * kRefresh && p.rebased == 1);
+    }
+    {  // bounded latency, grid tracking: a refresh duration 0.3 % short (the phone's driver: 8.31 vs 8.333 ms) and
+       // a screen that shows a frame at the first real refresh at or after its ask: the untracked chain drifts off
+       // the present calls and is rebased again and again; the tracked one stays on the screen's grid
+        auto run = [](bool track) {
+            Policy p = measured(15 * kMs);
+            p.set_period(8'310'000);
+            p.track = track;
+            const int64_t real = kRefresh, g0 = 1000 * kMs;
+            auto up = [&](int64_t t) { int64_t m = (t - g0) % real; if (m < 0) m += real; return m ? t + real - m : t; };
+            int64_t prev = 0; int uneven = 0;
+            for (int i = 0; i < 3000; ++i) {
+                const int64_t call = 20000 * kMs + i * (2 * real), d = p.desired(call, kFrame);
+                const int64_t shown = up(std::max(d, call + 12 * kMs));
+                if (prev && shown - prev != 2 * real) ++uneven;
+                prev = shown;
+                p.feedback(call, shown - real, shown, d);
+            }
+            return std::make_pair(uneven, p.rebased);
+        };
+        const auto [u0, r0] = run(false);
+        const auto [u1, r1] = run(true);
+        std::printf("grid tracking: uneven %d -> %d, rebased %llu -> %llu of 3000\n", u0, u1, (unsigned long long)r0, (unsigned long long)r1);
+        assert(r1 <= 1 && u1 <= u0 && r0 > 10);
     }
     std::printf("display_pacing_policy_test: ok\n");
     return 0;

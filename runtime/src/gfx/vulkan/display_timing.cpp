@@ -28,13 +28,33 @@ int64_t lastActual = 0;
 std::array<uint64_t, 6> refreshes{};  // on-screen intervals: 1, 2, 3, 4, 5+ refreshes, other
 uint64_t shown = 0, missedAsk = 0, errors = 0;
 }
-int mode() {  // WWHD_VK_DISPLAY_PACING: bit 1 pacing, 2 one more swapchain image, 4 adaptive latency target
+int mode() {  // WWHD_VK_DISPLAY_PACING: bit 1 pacing, 2 one more swapchain image, 4 adaptive latency target,
+              // 8 bounded latency (the GRID, CAP and DECAY defaults below)
     static const int value = [] {
         const char* e = std::getenv("WWHD_VK_DISPLAY_PACING");
         const int bits = e && *e ? std::atoi(e) : smooth_defaults::display_pacing();  // (smooth_defaults.h)
-        return (bits & 1) ? bits & 7 : 0;
+        return (bits & 1) ? bits & 15 : 0;
     }();
     return value;
+}
+// Bounded latency (display_pacing_policy.h): each part its own variable, bit 8 sets the measured defaults (phone
+// closed-loop model over the land-cliff runs, r5-pacing/latfix): the chain on the screen's own refresh grid, a miss
+// raises the target to at most half a refresh above the measured latency, 300 frames without a miss take a quarter
+// refresh back off it. KEEP stays off by default (no gain in the model, more uneven frames when frames are slow).
+static void bounded_latency() {
+    const bool bundle = mode() & 8;
+    auto num = [](const char* name, double fallback) {
+        const char* e = std::getenv(name);
+        return e && *e ? std::max(0.0, std::atof(e)) : fallback;
+    };
+    policy.track = num("WWHD_VK_DISPLAY_PACING_GRID", bundle ? 1 : 0) != 0;
+    policy.cap = int64_t(num("WWHD_VK_DISPLAY_PACING_CAP", bundle ? 4.2 : 0) * 1e6);
+    policy.decay = int(num("WWHD_VK_DISPLAY_PACING_DECAY", bundle ? 300 : 0));
+    policy.keep = int64_t(num("WWHD_VK_DISPLAY_PACING_KEEP", 0) * 1e6);
+    if (policy.track || policy.cap || policy.decay || policy.keep)
+        LOG("[vulkan display pacing] bounded latency%s: refresh grid tracking %s, target cap %.1f ms above the measured "
+            "latency, decay after %d frames without a miss, keep a slot %.1f ms (0: off)", bundle ? " (bit 8)" : "",
+            policy.track ? "on" : "off", policy.cap / 1e6, policy.decay, policy.keep / 1e6);
 }
 bool pacing() {
     static const bool on = [] {
@@ -45,6 +65,7 @@ bool pacing() {
 #endif
         policy.adapt = mode() & 4;
         if (const char* q = std::getenv("WWHD_VK_DISPLAY_PACING_Q"); q && *q) policy.quantile = std::clamp(std::atof(q), 0.0, 1.0);
+        if (value) bounded_latency();
         if (value) LOG("[vulkan display pacing] on (%s): TV frames ask for an on-screen time on the "
                        "refresh grid one frame interval apart (latency quantile %.2f; one more swapchain image %s, adaptive latency %s)",
                        std::getenv("WWHD_VK_DISPLAY_PACING") ? "WWHD_VK_DISPLAY_PACING" : "Smooth frame pacing", policy.quantile, (mode() & 2) ? "on" : "off", (mode() & 4) ? "on" : "off");
@@ -138,6 +159,10 @@ void report(double frames) {
         100.0 * refreshes[3] / total, 100.0 * refreshes[4] / total, pacing() ? "on" : "off",
         (unsigned long long)policy.paced, (unsigned long long)policy.rebased, (unsigned long long)policy.unpaced,
         (unsigned long long)missedAsk, policy.target / 1e6, (unsigned long long)policy.raised, (unsigned long long)policy.lowered);
+    if (policy.track || policy.cap || policy.decay || policy.keep)
+        LOG("[vulkan display pacing] bounded latency: base %.1f ms, capped %llu, decayed %llu, kept %llu",
+            policy.base / 1e6, (unsigned long long)policy.capped, (unsigned long long)policy.decayed, (unsigned long long)policy.kept);
+    policy.capped = policy.decayed = policy.kept = 0;
     refreshes = {}; shown = missedAsk = 0; policy.paced = policy.rebased = policy.unpaced = policy.raised = policy.lowered = 0;
 }
 }  // namespace gfxvk::display_timing

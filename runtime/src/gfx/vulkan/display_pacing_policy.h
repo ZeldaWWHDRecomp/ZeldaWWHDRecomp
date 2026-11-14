@@ -27,6 +27,23 @@ struct Policy {
     int count = 0, next = 0;
     int windowFrames = 0, windowMisses = 0;
     uint64_t paced = 0, rebased = 0, unpaced = 0, misses = 0, raised = 0, lowered = 0;
+    // Bounded latency (each 0 = off: the rule above, unchanged). Measured on the phone (land-cliff): without them the
+    // target only ever goes up, half a refresh per miss, so a session's latency is the first target plus 4.2 ms for
+    // every miss so far (19.8 -> 32.2 ms within one 75 s bench run, unbounded over a session).
+    int64_t cap = 0;    // (WWHD_VK_DISPLAY_PACING_CAP, ms) a miss raises the target to at most base + CAP
+    int decay = 0;      // (WWHD_VK_DISPLAY_PACING_DECAY, frames) after DECAY paced frames without a miss the target
+                        // goes a quarter refresh back down, never below base (bit 4 instead goes down to one refresh,
+                        // below what the frames need, and swings: lower -> misses -> raise)
+    int64_t keep = 0;   // (WWHD_VK_DISPLAY_PACING_KEEP, ms) a chain slot is kept while it is at least the call +
+                        // target - KEEP: a present call a few ms late keeps its slot instead of moving the chain a
+                        // refresh later (the "screen latency up" 3-refresh frames)
+    bool track = false; // (WWHD_VK_DISPLAY_PACING_GRID=1) each chain slot is snapped to the nearest refresh of the
+                        // latest on-screen time: the driver's refresh duration (8.300-8.313 ms on the phone) is shorter
+                        // than the screen's real one (8.333 ms over a run), so an untracked chain asks 0.05 ms earlier
+                        // every frame, drifts off the present calls and is rebased a refresh later every ~120 frames
+    int64_t base = 0;   // the first target (the measured latency quantile)
+    int clean = 0;      // paced frames since the last miss (decay)
+    uint64_t capped = 0, decayed = 0, kept = 0;
     static constexpr int kWindow = 120;
     void set_period(int64_t ns) { if (ns > 0) period = ns; }
     // a finished presentation: CALL = its present call, EARLIEST = the earliest it could have been shown,
@@ -47,7 +64,14 @@ struct Policy {
         const bool miss = actual > desired + period;  // (asked: desired + half a refresh)
         if (miss) {  // a frame that did not make its slot: keep half a refresh more from now on
             ++misses; ++windowMisses;
-            if (target) { target += period / 2; ++raised; }
+            if (target) {
+                target += period / 2; ++raised;
+                if (cap && target > base + cap) { target = base + cap; ++capped; }
+            }
+            clean = 0;
+        } else if (decay && target > base && ++clean >= decay) {
+            target = std::max(base, target - period / 4); ++decayed;
+            clean = 0;
         }
         if (++windowFrames >= kWindow) {
             if (adapt && windowMisses == 0 && target > period) { target -= period / 2; ++lowered; }
@@ -66,6 +90,11 @@ struct Policy {
         if (m < 0) m += period;
         return m ? t + (period - m) : t;
     }
+    int64_t snap_near(int64_t t) const {  // the nearest refresh to T
+        int64_t m = (t - grid) % period;
+        if (m < 0) m += period;
+        return m * 2 < period ? t - m : t + (period - m);
+    }
     // the present time to ask for (desiredPresentTime, ns) for a frame presented NOW whose frame interval is
     // INTERVAL ns (0: not paced); 0: ask for nothing (as without pacing)
     int64_t desired(int64_t now, int64_t interval) {
@@ -75,10 +104,11 @@ struct Policy {
             last = 0; ++unpaced;
             return 0;
         }
-        if (!target) target = latency_quantile();
+        if (!target) base = target = latency_quantile();
         const int64_t step = k * period, earliest = now + target;
-        int64_t slot = last ? last + step : snap_up(earliest);
-        if (slot < earliest || slot > earliest + 2 * step) {  // late call (or a stale chain after a pause)
+        int64_t slot = last ? (track ? snap_near(last + step) : last + step) : snap_up(earliest);
+        if (keep && last && slot < earliest && slot >= earliest - keep) ++kept;
+        else if (slot < earliest || slot > earliest + 2 * step) {  // late call (or a stale chain after a pause)
             if (last) ++rebased;
             slot = snap_up(earliest);
         }

@@ -922,6 +922,16 @@ In the decomp build (fast mode) on Android and the Steam Deck the renderer start
   next frame needs. Where the driver has no `VK_GOOGLE_display_timing` nothing changes (the log says
   `VK_GOOGLE_display_timing unavailable (display pacing off)`). Bit 4 of `WWHD_VK_DISPLAY_PACING`
   (adaptive target, lower after 120 frames without a miss) is off: it made the frames less even.
+  Bit 8 (bounded latency, being tested on the phone, off by default) keeps the present-to-screen
+  time from creeping up. Without it a miss raises the target for good, so a session's latency only
+  ever grows. Each part has its own variable, and bit 8 sets the defaults given here:
+  - `WWHD_VK_DISPLAY_PACING_GRID=1`: each asked refresh is snapped to the screen's real refresh grid,
+    because the driver's refresh duration can be slightly short (8.31 instead of 8.333 ms).
+  - `WWHD_VK_DISPLAY_PACING_CAP=4.2`: a miss raises the target to at most this many ms above the
+    measured time.
+  - `WWHD_VK_DISPLAY_PACING_DECAY=300`: after this many frames without a miss the target goes a
+    quarter refresh back down, never below the measured time.
+  - `WWHD_VK_DISPLAY_PACING_KEEP` (ms, default 0): a present call up to this late keeps its refresh.
 
 Every environment variable still wins over these defaults. On a Xiaomi 14 at the cliff (against the
 single-thread renderer): render thread 17.3 → 12.7 ms per frame, 53.5 → 59.8 frames
