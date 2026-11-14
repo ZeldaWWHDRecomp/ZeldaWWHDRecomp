@@ -117,9 +117,8 @@ class RandoCli(unittest.TestCase):
         game = Path(self.tmp.name) / 'game'
         (game / 'meta').mkdir(parents=True)
         out = str(Path(self.tmp.name) / 'out')
-        for tid, word in (('0005000010143400', 'Japanese'), ('000500001234ABCD', 'knows')):
-            (game / 'meta/meta.xml').write_text('<menu><title_id type="hexBinary" length="8">%s</title_id></menu>' % tid)
-            self.assertIn(word, self.cli('generate', '--game', str(game), '--out', out, ok=False)['error'])
+        (game / 'meta/meta.xml').write_text('<menu><title_id type="hexBinary" length="8">000500001234ABCD</title_id></menu>')
+        self.assertIn('knows', self.cli('generate', '--game', str(game), '--out', out, ok=False)['error'])
         self.assertFalse(Path(out).exists())
 
     def test_output_must_be_empty(self):

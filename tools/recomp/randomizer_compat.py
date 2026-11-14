@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MPL-2.0
-"""Automatic compatibility checks for randomized RPX files (USA; EU from the in-app randomizer's port of its patches).
+"""Automatic compatibility checks for randomized RPX files (USA; EU and JP from the in-app randomizer's port of its
+patches).
 
 The shipped profile contains hashes and layout facts, never game instructions. It
 covers the port's hook sites and their containing functions. It is a hook-clash
@@ -29,7 +30,7 @@ RPX_LIMITS = dict(file=32 << 20, section=32 << 20, inflated=64 << 20,
 PROFILE = Path(__file__).with_name('randomizer-usa.json')
 # one profile per build the randomizer can be run on, chosen by the randomized RPX's entry point (the randomizer
 # never moves it; the releases' differ)
-PROFILES = [PROFILE, Path(__file__).with_name('randomizer-eu.json')]
+PROFILES = [PROFILE, Path(__file__).with_name('randomizer-eu.json'), Path(__file__).with_name('randomizer-jp.json')]
 # Short instruction sequences (including li/blr) must not expose enumerable digests.
 # Group every body below 64 bytes with all hook words in one canonical aggregate.
 MIN_FUNCTION_HASH_BYTES = 64

@@ -104,8 +104,8 @@ computer (about two minutes); every later start launches the game directly.
    update): before translating, setup checks the game's code (`code/cking.rpx`) against the SHA-256
    of each and explains what to use instead when it matches neither (e.g. a game folder with an
    update copied over it). The European game plays in English, French, German, Italian or Spanish —
-   its own text, chosen in the settings' Language tab. The Japanese game plays in Japanese; some
-   features are USA/Europe only there (the randomizer, One screen mode's Options order). How one port serves all three: [docs/builds.md](docs/builds.md).
+   its own text, chosen in the settings' Language tab. The Japanese game plays in Japanese; One
+   screen mode's Options order is USA/Europe only. How one port serves all three: [docs/builds.md](docs/builds.md).
 3. That's it: start Wind Waker HD to play. To repair, update or change the game, hold **Shift** while
    starting it (macOS, Windows) or start it with `--setup` (Linux; also the "Setup" action of its
    menu entry).

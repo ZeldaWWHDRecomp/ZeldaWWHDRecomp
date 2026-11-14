@@ -5,8 +5,8 @@ The port includes TWWHD Randomizer 1.2.0 by SuperDude88 and its contributors (MI
 don't need the PC randomizer or a full copy of the game per seed. A seed made with the official TWWHD Randomizer 1.2.0 can be played
 too (see [A seed from the official randomizer](#a-seed-from-the-official-randomizer)).
 
-Install the game as it is (the USA or the European release) first. The Japanese release can't be
-randomized: the port has no Japanese build.
+Install the game as it is (the USA, European or Japanese release) first. Seeds made with the official
+randomizer are USA only.
 
 ## Make a randomized game in the game
 
@@ -122,8 +122,9 @@ check covers TWWHD Randomizer 1.2.0 with every option that changes game code; ol
 (1.1.1 and earlier) are refused. Passing it is not a full playthrough guarantee: so far seeds
 were played up to their starting island on macOS. Windows gameplay is untested.
 
-European randomized games use GreenNaugahyde's port of the randomizer's patches to the European
-release (ZeldaWWHDRecompAndroid, MPL-2.0).
+European and Japanese randomized games use GreenNaugahyde's port of the randomizer's patches to those
+releases (ZeldaWWHDRecompAndroid, MPL-2.0). Japanese randomized games are new: they pass the same check,
+but have been played less than the others (see [randomizer-maintainers.md](randomizer-maintainers.md)).
 
 ## In a terminal
 

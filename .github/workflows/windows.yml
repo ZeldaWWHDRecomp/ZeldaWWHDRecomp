@@ -91,6 +91,7 @@ jobs:
           cmake --build build/rando
           python tools/rando/test_rando_cli.py build/rando
           python tools/rando/test_places.py
+          python tools/rando/test_ported_patches.py
 
       # Synthetic fixtures only: no game files, caches or performance runs.
       - name: Shader preparation and benchmark tooling unit tests

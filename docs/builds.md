@@ -135,9 +135,10 @@ What that means for the port on the Japanese build:
   the USA and European builds only (`tools/recomp/hooks_options_order.txt`), so on the Japanese
   build the Controller item stays.
 - The game has its own (Japanese) text; a language source is refused, as on the European build.
-- Features written against message-window code the Japanese build changed (some story mods'
-  scene choices and demo windows: `story_scene_choice.cpp`, `story_demo.cpp`) and the
-  randomizer are not available or untested there. The map/compass bridge for code mods
+- Story mods' scene choices and demo windows (`story_scene_choice.cpp`, `story_demo.cpp`) hook
+  message-window code the Japanese build changed; the Japanese functions take the same members
+  and arguments, so the hooks are the same, but only demo steps without messages were played
+  there. Randomized games: see [Randomized games](#randomized-games). The map/compass bridge for code mods
   ([mod-sdk-map-hud.md](mod-sdk-map-hud.md)) is: every function it uses is the same code. The
   catalogue's minimap mods do not support the Japanese build yet: the HD minimap enables itself on
   USA and EU only, and both read members of the play object that moved (see the next point).
@@ -232,10 +233,10 @@ by their own CI/build and platform testing, not by these macOS game runs.
 
 ## Randomized games
 
-Setup makes randomized games itself from the USA or European game (the in-app
-randomizer, TWWHD Randomizer 1.2.0) and also plays USA seeds made with the official
-TWWHD Randomizer. It checks every randomized executable against a compatibility
-profile (`tools/recomp/randomizer-usa.json`, `randomizer-eu.json`) and pins the build
-to that exact game file. Arbitrary modified RPX files and randomized Japanese games
-remain unsupported. See [randomized games](randomizer-experiment.md) for players and
+Setup makes randomized games itself from the USA, European or Japanese game (the
+in-app randomizer, TWWHD Randomizer 1.2.0) and also plays USA seeds made with the
+official TWWHD Randomizer. It checks every randomized executable against a compatibility
+profile (`tools/recomp/randomizer-usa.json`, `randomizer-eu.json`, `randomizer-jp.json`)
+and pins the build to that exact game file. Arbitrary modified RPX files remain
+unsupported. See [randomized games](randomizer-experiment.md) for players and
 [randomizer-maintainers.md](randomizer-maintainers.md) for the profile review.
