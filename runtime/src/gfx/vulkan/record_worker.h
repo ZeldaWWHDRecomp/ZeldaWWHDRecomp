@@ -58,6 +58,10 @@ bool record_worker_requested(); // no thread while disabled
 constexpr bool record_worker_default() { return false; }
 bool producer_presentation_recording(); // producer-only scoped routing
 bool record_worker_active(); // producer only, under GX2 execution mutex
+#ifdef WWHD_NATIVE_DRAW
+// MT recording stage 1 (record_mt.h): nothing pending and every published job replayed (render thread)
+bool record_worker_idle();
+#endif
 void start_record_worker();
 void stop_record_worker();
 PodCommands* record_worker_commands();

@@ -812,7 +812,21 @@ function(wwhd_decomp_link target)
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/shaders.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/surfaces.cpp"
                  "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/pool_reset.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/batch_pass_end.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/record_mt.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/record_tokens.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/pipeline_future.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/frame_breakdown.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/display_timing.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/present_ack.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/smooth_defaults.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/overlay/overlay.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/interp.cpp"
                  APPEND PROPERTY COMPILE_DEFINITIONS WWHD_NATIVE_DRAW=1)
+    # MT recording stage 1 hooks (record_mt.h) in two files the unit tests also compile: for the game target only
+    set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/pod_commands.cpp"
+                 "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/record_worker.cpp"
+                 APPEND PROPERTY COMPILE_DEFINITIONS "$<$<STREQUAL:$<TARGET_PROPERTY:NAME>,${target}>:WWHD_NATIVE_DRAW=1>")
     if(WWHD_NATIVE_DRAW_BATCH)
       set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/native_draw/native_draw.cpp"
                    "${CMAKE_SOURCE_DIR}/runtime/src/gfx/vulkan/shaders.cpp"

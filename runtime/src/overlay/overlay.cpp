@@ -128,6 +128,9 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "mobile_ui.h"
 #include "../report_header.h"
 #include "../dynres.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "gfx/vulkan/smooth_defaults.h"
+#endif
 
 namespace gx2 { uint64_t flips_presented(); bool uncapped(); void set_uncapped(bool on); }
 
@@ -1287,15 +1290,40 @@ void tab_graphics() {
 #ifdef WWHD_HAS_VULKAN
     heading("Advanced");
     // Vulkan commands recorded and submitted on a worker thread (gfx/vulkan/record_worker.h)
+#ifdef WWHD_NATIVE_DRAW
+    // (decomp build, fast mode: on for phones and the Steam Deck, gfx/vulkan/smooth_defaults.h)
+    static const bool recordWorkerDefault = gfxvk::smooth_defaults::record_worker();
+#else
     constexpr bool recordWorkerDefault = false;  // gfx/vulkan/record_worker.h record_worker_default()
+#endif
     static bool recordWorker = [] { std::string value; return hostui::get("vkRecordWorker", value) ? value == "1" : recordWorkerDefault; }();
     if (check("Record graphics on a second thread", recordWorker, &v, !getenv("WWHD_VK_RECORD_WORKER"))) {
         recordWorker = v;
         hostui::post([v] { hostui::set("vkRecordWorker", v ? "1" : "0"); });
     }
+#ifdef WWHD_NATIVE_DRAW
+    help(recordWorkerDefault
+         ? "Applies after restarting the game. Hands the graphics work to a second CPU thread, which raises the "
+           "frame rate on this device. Uses a little more CPU and battery. On by default here."
+         : "Applies after restarting the game. Hands the graphics work to a second CPU thread. This can raise "
+           "the frame rate on devices whose CPU holds it back (phones, handhelds). On other computers it can "
+           "make frame times less even (more short hitches). Uses a little more CPU and battery. Off by default.");
+    // Smooth frame pacing (gfx/vulkan/smooth_defaults.h, display_timing.h): phones and the Steam Deck
+    if (gfxvk::smooth_defaults::device()) {
+        static bool smoothPacing = [] { std::string value; return !hostui::get("vkSmoothPacing", value) || value != "0"; }();
+        if (check("Smooth frame pacing", smoothPacing, &v, !getenv("WWHD_VK_DISPLAY_PACING"))) {
+            smoothPacing = v;
+            hostui::post([v] { hostui::set("vkSmoothPacing", v ? "1" : "0"); });
+        }
+        help("Applies after restarting the game. Each frame asks the screen for its own refresh, so frames reach the "
+             "screen evenly (fewer short hitches at 60 fps). Shows frames about one refresh later. Needs a display "
+             "driver that can time frames (VK_GOOGLE_display_timing); without it nothing changes. On by default.");
+    }
+#else
     help("Applies after restarting the game. Hands the graphics work to a second CPU thread. This can raise "
          "the frame rate on devices whose CPU holds it back (phones, handhelds). On other computers it can "
          "make frame times less even (more short hitches). Uses a little more CPU and battery. Off by default.");
+#endif
     static bool forceVertexFallback = [] { std::string value; return hostui::get("vkVertexFallback", value) && value == "1"; }();
     if (check("Force RGB vertex fallback", forceVertexFallback, &v, !getenv("WWHD_VK_VERTEX_FALLBACK"))) {
         forceVertexFallback = v;

@@ -63,6 +63,10 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "gfx/renderer.h"
 #include "mods/link_appearance.h"
 #include "mods/link_masks.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "gfx/vulkan/frame_breakdown.h"
+#include "gfx/vulkan/smooth_defaults.h"
+#endif
 
 
 extern "C" {
@@ -1616,7 +1620,11 @@ constexpr bool kEvenPacingDefault = true;
 constexpr bool kEvenPacingDefault = false;
 #endif
 static const char* const g_env_even = getenv("WWHD_INTERP_EVEN_PACING");
+#ifdef WWHD_NATIVE_DRAW
+static const bool g_even_pacing = g_env_even ? atoi(g_env_even) != 0 : kEvenPacingDefault || gfxvk::smooth_defaults::even_pacing();  // (gfx/vulkan/smooth_defaults.h)
+#else
 static const bool g_even_pacing = g_env_even ? atoi(g_env_even) != 0 : kEvenPacingDefault;
+#endif
 bool even_pacing() { return g_even_pacing; }
 int64_t frame_interval_ns() {
     static bool logged = false;
@@ -1860,6 +1868,9 @@ static void after_pass(int phase) {
         break;
     default:  // the rest of the step's in-between passes (and its record pass) are dropped
         trace_step(now, g_last_logic, 'D');
+#ifdef WWHD_NATIVE_DRAW
+        gfxvk::frame_breakdown::game_drop(elapsed, pass, budget);  // (gfx/vulkan/frame_breakdown.h)
+#endif
         g_hold_next = false;
         // (60 fps: the next logic pass starts at once and keeps what the skip saved as a lead)
         g_wait_step = pacing::wait_after_drop(oneFrame);
@@ -2007,6 +2018,9 @@ extern "C" void hook_0203593C(Cpu* c) {
     if (at && ++passes == at) set_enabled(true);
     if (ff_transition) restart_fast_forward_pacing(mods::fast_forward_active());
     log_paced_start();
+#ifdef WWHD_NATIVE_DRAW
+    gfxvk::frame_breakdown::game_pass(g_hold_next, g_phase);  // (gfx/vulkan/frame_breakdown.h)
+#endif
     paced_pass_start();
     game_hooks::new_pass();
     if (ff_transition) {

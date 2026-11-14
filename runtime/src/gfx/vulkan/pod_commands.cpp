@@ -1,6 +1,9 @@
 #include "pod_commands.h"
 #include "handoff_trace.h"
 #include "render_prof.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "record_mt.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -10,6 +13,7 @@
 #include <stdexcept>
 #include <type_traits>
 namespace gfxvk {
+PFN_vkCmdDrawIndexedIndirect pod_draw_indexed_indirect = nullptr;
 std::mutex& graphics_queue_mutex() {
   static std::mutex m;
   return m;
@@ -210,6 +214,23 @@ bool PodCommands::vkCmdDraw(VkCommandBuffer cmd, uint32_t vertices,
     w.put(firstInstance);
     if (!w.valid) return reject(w.failure);
     return append(3, w.view());
+  } catch (const std::bad_alloc &) {
+    return reject(PodFailureReason::AllocationFailure);
+  }
+}
+bool PodCommands::vkCmdDrawIndexedIndirect(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset,
+                                           uint32_t drawCount, uint32_t stride) {
+  if (!pod_draw_indexed_indirect) return reject(PodFailureReason::InvalidInput);
+  if (directScalars_) return append_scalars(30, cmd, buffer, offset, drawCount, stride);
+  try {
+    Writer w(limits_.maxPayloadBytes);
+    w.put(cmd);
+    w.put(buffer);
+    w.put(offset);
+    w.put(drawCount);
+    w.put(stride);
+    if (!w.valid) return reject(w.failure);
+    return append(30, w.view());
   } catch (const std::bad_alloc &) {
     return reject(PodFailureReason::AllocationFailure);
   }
@@ -706,7 +727,7 @@ bool PodCommands::submit(VkDevice device, VkQueue queue, VkCommandBuffer cmd,
 }
 void PodCommands::replay(const std::vector<std::byte> &bytes) {
   const bool smallDiagnostic = handoff_trace::enabled() && bytes.size() <= 2048;
-  std::array<uint32_t, 30> opcodeCounts;
+  std::array<uint32_t, kPodOpcodes> opcodeCounts;
   if (smallDiagnostic) opcodeCounts.fill(0);
   // Validate the entire stream before emitting its first Vulkan command.
   for (bool execute : {false, true}) {
@@ -1137,6 +1158,25 @@ void PodCommands::replay(const std::vector<std::byte> &bytes) {
         }
         break;
       }
+      case 30: {
+        auto cmd = r.get<VkCommandBuffer>();
+        auto buffer = r.get<VkBuffer>();
+        auto offset = r.get<VkDeviceSize>();
+        auto drawCount = r.get<uint32_t>();
+        auto stride = r.get<uint32_t>();
+        if (r.remaining)
+          throw std::runtime_error("trailing POD payload");
+        if (!pod_draw_indexed_indirect)
+          throw std::runtime_error("POD indirect draw without vkCmdDrawIndexedIndirect");
+        if (execute)
+          pod_draw_indexed_indirect(cmd, buffer, offset, drawCount, stride);
+        break;
+      }
+#ifdef WWHD_NATIVE_DRAW
+      case 31:  // (record_mt.h)
+        record_mt::replay_extension(r.bytes, r.remaining, execute);
+        break;
+#endif
       default:
         throw std::runtime_error("unknown POD opcode");
       }
