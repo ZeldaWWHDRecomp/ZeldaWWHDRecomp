@@ -418,6 +418,10 @@ uint64_t ulps(uint32_t a, uint32_t b) { return a > b ? uint64_t(a - b) : uint64_
 
 }  // namespace
 
+namespace {
+void run_pair(const ProofDraw& d, const std::string& family, const std::function<bool(VkCommandBuffer)>& first,
+              const std::function<bool(VkCommandBuffer)>& second);
+}
 bool proof_wanted() {
     const ProofCfg& c = proof_cfg();
     if (!c.every || !g_named || g_words[2] != 0) return false;
@@ -443,6 +447,44 @@ void proof(const ProofDraw& d) {
     FamilyStat& st = g_stats[family];
     ++st.samples;
     if (!c.self && !has_native(family)) return;  // (counted: a structure without a native program yet)
+    run_pair(d, family, [&](VkCommandBuffer cmd) {
+        if (lod) return record_translated_lod0(cmd, d);
+        record_translated(cmd, d);
+        return true;
+    }, [&](VkCommandBuffer cmd) {
+        if (c.self) {
+            if (lod) return record_translated_lod0(cmd, d);
+            record_translated(cmd, d);
+            return true;
+        }
+        return record_native(cmd, d, lod);
+    });
+}
+
+// a described depth draw (j3d_desc_depth.h, WWHD_NATIVE_J3D_DESC_DEPTH=1): D's translated binds against the description
+// path's native binding (SECOND records it on the same streams); WWHD_J3D_DEPTH_PROOF_SELF=1: translated twice
+bool proof_desc_wanted() {
+    const ProofCfg& c = proof_cfg();
+    if (!c.every) return false;
+    return ++g_counter % c.every == 0 && g_pending < c.maxPending;
+}
+void proof_desc(const ProofDraw& d, const std::string& family, const std::function<bool(VkCommandBuffer)>& second) {
+    const ProofCfg& c = proof_cfg();
+    report(d.info.frame);
+    if (!d.indexed || !d.pipeline || !d.info.depth || !d.info.depth->fmt.depth) { ++g_skipped["draw form"]; return; }
+    ++g_stats[family].samples;
+    run_pair(d, family, [&](VkCommandBuffer cmd) { record_translated(cmd, d); return true; },
+             [&](VkCommandBuffer cmd) {
+                 if (c.self) { record_translated(cmd, d); return true; }
+                 return second(cmd);
+             });
+}
+
+namespace {
+void run_pair(const ProofDraw& d, const std::string& family, const std::function<bool(VkCommandBuffer)>& first,
+              const std::function<bool(VkCommandBuffer)>& second) {
+    using namespace gfxvk;
+    const ProofCfg& c = proof_cfg();
     Targets& t = targets_for(d);
     const uint32_t texels = d.info.width * d.info.height;
     const bool d16 = d.info.depth->fmt.pixel == VK_FORMAT_D16_UNORM;  // (the cascade array: 1024x1024x3 D16)
@@ -450,14 +492,9 @@ void proof(const ProofDraw& d) {
     end_encoder();  // (the next draw reopens its pass with LOAD)
     Buffer buf = create_readback_buffer(bytes * 2);
     bool nativeOk = true;
-    draw_into(t, 0, d, [&](VkCommandBuffer cmd) {
-        if (lod) nativeOk = record_translated_lod0(cmd, d);
-        else record_translated(cmd, d);
-    }, buf, 0);
+    draw_into(t, 0, d, [&](VkCommandBuffer cmd) { nativeOk = first(cmd); }, buf, 0);
     draw_into(t, 1, d, [&](VkCommandBuffer cmd) {
-        if (!nativeOk) return;
-        if (c.self) { if (lod) nativeOk = record_translated_lod0(cmd, d); else record_translated(cmd, d); }
-        else nativeOk = record_native(cmd, d, lod);
+        if (nativeOk) nativeOk = second(cmd);
     }, buf, bytes);
     derive_dependency(buf.use, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
     transition_buffer(buf, VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_HOST_READ_BIT);
@@ -506,5 +543,6 @@ void proof(const ProofDraw& d) {
     });
     defer_buffer(buf);
 }
+}  // namespace
 
 }  // namespace native_draw::j3d_depth

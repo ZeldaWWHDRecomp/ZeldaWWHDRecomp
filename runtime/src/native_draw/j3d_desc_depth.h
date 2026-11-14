@@ -78,6 +78,38 @@ struct Binding {
 // false: this draw takes the translated path (counted by reason)
 bool bind(State* s, const Draw& d, Binding& out);
 
+// ---------------------------------------------------------------- proof (WWHD_J3D_DEPTH_PROOF=N with the description path)
+// every Nth native depth draw of the description path also has its translated sets made; after the draw, both are
+// drawn into private depth targets and compared word for word (j3d_depth.h proof_desc; counted per family)
+bool proof_wanted();
+struct ProofIn {
+    VkPipeline pipeline = VK_NULL_HANDLE;  // the translated state's
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    VkDescriptorSet sets[2]{};
+    const uint32_t* offsets = nullptr;
+    uint32_t offsetCount = 0;
+    VkBuffer vb[16]{};
+    VkDeviceSize vbo[16]{};
+    uint32_t vbBinding[16]{};
+    uint32_t vbCount = 0;
+    VkBuffer ib = VK_NULL_HANDLE;
+    VkDeviceSize ibo = 0;
+    VkIndexType indexType = VK_INDEX_TYPE_UINT32;
+    uint32_t count = 0;
+    VkViewport viewport{};
+    VkRect2D scissor{};
+    const uint32_t* blend = nullptr;  // 4 words
+    uint32_t stencilFront = 0, stencilBack = 0;
+    void* colors[8]{};  // gfxvk::Surface*
+    void* depth = nullptr;
+    uint32_t depthSlice = 0, width = 0, height = 0;
+    const void* vs = nullptr;
+    const void* ps = nullptr;
+    const void* fs = nullptr;
+    Binding native;  // what the draw drew with
+};
+void proof(State* s, const ProofIn& p);
+
 // ---------------------------------------------------------------- shadow-slice instancing (WWHD_NATIVE_J3D_DESC_DEPTH_INST=1)
 // The description path hands each native depth draw of pass 0 to inst_collect() instead of drawing it; inst_flush()
 // draws everything collected (one instanced draw per (state, mesh) group with 2+ slices, else one draw) in one layered

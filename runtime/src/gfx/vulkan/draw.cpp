@@ -66,6 +66,7 @@
 #include "gx2/native_pass.h"
 #include "gx2/native_j3d_desc_draw.h"
 #include "native_draw/j3d_depth.h"
+#include "native_draw/j3d_desc_depth.h"  // (at file scope: j3d_desc_vk.h includes it again inside gfxvk)
 #include "framegen.h"
 #include "cloud_proto.h"
 #include "mods/cemu_pack.h"

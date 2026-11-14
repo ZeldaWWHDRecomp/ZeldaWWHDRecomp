@@ -17,6 +17,8 @@
 #pragma once
 #ifdef WWHD_NATIVE_DRAW
 #include <cstdint>
+#include <functional>
+#include <string>
 #include "gfx/vulkan/loader.h"
 
 struct LatteFetchShader;
@@ -66,6 +68,11 @@ struct ProofDraw {
     uint32_t psImageCount = 0;
     const char* refused = nullptr;       // the capture's reason the binds cannot be replayed
 };
+// a described depth draw (WWHD_NATIVE_J3D_DESC_DEPTH=1, the description path's draw): whether it is sampled (every
+// Nth of WWHD_J3D_DEPTH_PROOF), and its proof: D = its translated binds (as the description path would draw it), SECOND
+// records the native binding the path drew with; FAMILY names the stats line
+bool proof_desc_wanted();
+void proof_desc(const ProofDraw& d, const std::string& family, const std::function<bool(VkCommandBuffer)>& second);
 // top of a named draw: whether it is sampled for the proof (the draw then captures its binds)
 bool proof_wanted();
 // after its own draw: the two proof draws and their comparison

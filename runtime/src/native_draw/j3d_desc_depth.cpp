@@ -7,6 +7,7 @@
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LatteDecompiler.h"
 #include "native_draw/j3d_depth_family.h"
+#include "native_draw/j3d_depth.h"
 #include "gfx/vulkan/backend.h"
 #include "gfx/vulkan/shaders.h"
 #include "gfx/vulkan/deferred_dispatch.h"
@@ -521,6 +522,57 @@ bool bind(State* s, const Draw& d, Binding& out) {
     out.offsetCount = n;
     ++g_counts.draws;
     return true;
+}
+
+// ---------------------------------------------------------------- proof
+bool proof_wanted() { return native_draw::j3d_depth::proof_desc_wanted(); }
+void proof(State* s, const ProofIn& p) {
+    using namespace gfxvk;
+    namespace jd = native_draw::j3d_depth;
+    static std::vector<uint32_t> regs;  // (record_translated reads the blend constants and stencil references here)
+    if (regs.empty()) regs.assign(0x10000, 0);
+    if (p.blend) std::copy_n(p.blend, 4, regs.data() + REGADDR::CB_BLEND_RED);
+    regs[REGADDR::DB_STENCILREFMASK] = p.stencilFront;
+    regs[REGADDR::DB_STENCILREFMASK_BF] = p.stencilBack;
+    jd::ProofDraw d;
+    d.info.regs = regs.data();
+    d.info.count = p.count;
+    d.info.fs = static_cast<const LatteFetchShader*>(p.fs);
+    d.info.vs = static_cast<const vk::Shader*>(p.vs);
+    d.info.ps = static_cast<const vk::Shader*>(p.ps);
+    d.info.depth = static_cast<Surface*>(p.depth);
+    d.info.depthSlice = p.depthSlice, d.info.width = p.width, d.info.height = p.height;
+    d.info.frame = R.frame;
+    d.pipeline = p.pipeline;
+    d.layout = p.layout;
+    d.sets[0] = p.sets[0], d.sets[1] = p.sets[1];
+    d.offsetCount = std::min<uint32_t>(p.offsetCount, 34);
+    std::copy_n(p.offsets, d.offsetCount, d.offsets);
+    for (uint32_t i = 0; i < p.vbCount && i < 16; ++i) d.vertexBinds[d.vertexBindCount++] = {p.vbBinding[i], p.vb[i], p.vbo[i], 0};
+    d.indexed = true;
+    d.indexBuffer = p.ib, d.indexOffset = p.ibo, d.indexType = p.indexType;
+    d.drawCount = p.count;
+    d.viewport = p.viewport, d.scissor = p.scissor;
+    for (int i = 0; i < 8; ++i) d.colors[i] = static_cast<Surface*>(p.colors[i]);
+    char name[64];
+    if (s->hand) std::snprintf(name, sizeof name, "desc:%s", s->hand->name);
+    else std::snprintf(name, sizeof name, "desc:%016llx/%016llx", (unsigned long long)s->vsHash, (unsigned long long)s->psHash);
+    const Binding nb = p.native;
+    std::array<uint32_t, kMaxBind> offs{};
+    std::copy_n(nb.offsets, std::min<uint32_t>(nb.offsetCount, kMaxBind), offs.data());
+    jd::proof_desc(d, name, [&](VkCommandBuffer cmd) {
+        record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, reinterpret_cast<VkPipeline>(nb.pipeline));
+        record::vkCmdSetViewport(cmd, 0, 1, &d.viewport);
+        record::vkCmdSetScissor(cmd, 0, 1, &d.scissor);
+        const VkDescriptorSet set = reinterpret_cast<VkDescriptorSet>(nb.set);
+        record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, reinterpret_cast<VkPipelineLayout>(nb.layout), 0, 1,
+                                        &set, nb.offsetCount, offs.data());
+        for (uint32_t i = 0; i < d.vertexBindCount; ++i)
+            record::vkCmdBindVertexBuffers(cmd, d.vertexBinds[i].binding, 1, &d.vertexBinds[i].buffer, &d.vertexBinds[i].offset);
+        record::vkCmdBindIndexBuffer(cmd, d.indexBuffer, d.indexOffset, d.indexType);
+        record::vkCmdDrawIndexed(cmd, d.drawCount, 1, 0, 0, 0);
+        return true;
+    });
 }
 
 // ---------------------------------------------------------------- shadow-slice instancing

@@ -858,6 +858,7 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
   VkPipeline pipe = s.vkPipeline;
   VkPipelineLayout pipeLayout = s.layout;
 #if J3DDESC_DEPTH
+  static native_draw::j3ddesc::depth::ProofIn g_depthProof;
   native_draw::j3ddesc::depth::Binding fam;
   if (s.depthFamily && !s.absent) {
     native_draw::j3ddesc::depth::Draw dd;
@@ -875,11 +876,16 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
   }
 #endif
   ph.mark(d1::pIndices);
+#if J3DDESC_DEPTH
+  const bool depthProof = familyDraw && native_draw::j3ddesc::depth::proof_wanted();  // (D2 proof: translated sets too)
+#else
+  constexpr bool depthProof = false;
+#endif
   // uniform blocks, support bytes, descriptor sets, offsets
   VkDescriptorSet sets[2];
   std::array<uint32_t, 34> offsets{};
   uint32_t offsetCount = 0;
-  for (int k = 0; k < 2 && !familyDraw; ++k) {
+  for (int k = 0; k < 2 && (!familyDraw || depthProof); ++k) {
     Stage& S = s.st[k];
     UploadSlice slices[17];
     for (uint32_t mask = S.blockMask; mask; mask &= mask - 1) {
@@ -988,6 +994,9 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
       B.vb[v.binding] = b.buffer;
       B.vbo[v.binding] = b.offset;
     }
+#if J3DDESC_DEPTH
+    if (depthProof && vi < 16) g_depthProof.vb[vi] = b.buffer, g_depthProof.vbo[vi] = b.offset, g_depthProof.vbBinding[vi] = v.binding;
+#endif
   }
   if (B.indexBuffer != ib.buffer || B.indexOffset != ib.offset || B.indexType != indexType) {
     record::vkCmdBindIndexBuffer(cmd, ib.buffer, ib.offset, indexType);
@@ -1018,6 +1027,21 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
   record::vkCmdDrawIndexed(cmd, drawCount, 1, 0, 0, 0);
   g_packetBindsDirty = true;
   ph.mark(d1::pRecord);
+#if J3DDESC_DEPTH
+  if (depthProof) {  // (D2) the draw again, translated and native, into private targets (ends the pass: binds forgotten)
+    auto& P = g_depthProof;
+    P.pipeline = s.vkPipeline, P.layout = s.layout, P.sets[0] = sets[0], P.sets[1] = sets[1];
+    P.offsets = offsets.data(), P.offsetCount = offsetCount, P.vbCount = uint32_t(std::min<size_t>(s.vertex.size(), 16));
+    P.ib = ib.buffer, P.ibo = ib.offset, P.indexType = indexType, P.count = drawCount;
+    P.viewport = s.viewport, P.scissor = s.scissor, P.blend = s.blend.data();
+    P.stencilFront = s.stencilFront, P.stencilBack = s.stencilBack;
+    for (int i = 0; i < 8; ++i) P.colors[i] = s.colors[i];
+    P.depth = s.depth, P.depthSlice = s.depthSlice, P.width = s.width, P.height = s.height;
+    P.vs = s.vs, P.ps = s.ps, P.fs = s.fs, P.native = fam;
+    native_draw::j3ddesc::depth::proof(static_cast<native_draw::j3ddesc::depth::State*>(s.depthFamily), P);
+    g_bound = Bound{};
+  }
+#endif
   // the translated draw's side effects
   in.regs[REGADDR::VGT_PRIMITIVE_TYPE] = m.prim;  // (draw() writes it so, not through apply_regs)
   if (bgshaders::enabled() && !gamepad_backdrop_replaying()) {
