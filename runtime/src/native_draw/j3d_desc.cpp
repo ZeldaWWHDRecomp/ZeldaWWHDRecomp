@@ -21,6 +21,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <string>
 #include <vector>
 
 using namespace Latte;
@@ -30,10 +31,10 @@ namespace native_draw::j3ddesc {
 int mode() {
     static const int v = [] {
         const int m = packets_requested() ? switch_value("WWHD_NATIVE_J3D_DESC", 0) : 0;
-        const int k = m == 1 ? 1 : 0;  // (D0: only mode 1 exists)
+        const int k = m == 1 || m == 2 ? m : 0;
         if (packets_requested() && m)
             LOG("[j3d-desc] J3D material descriptions %s (WWHD_NATIVE_J3D_DESC=%d)",
-                k == 1 ? "described and verified" : "off (mode not built)", m);
+                k == 1 ? "described and verified" : k == 2 ? "drawn from their descriptions" : "off (unknown mode)", m);
         return k;
     }();
     return v;
@@ -53,7 +54,7 @@ enum Count : uint32_t {
     cResTargets, cResTextures, cAmbientWords, cAmbientDraws, cAmbientChanged, cPassInstances, cAmbientDescEnv, cResSurfaceOnly,
     // ambient changes by class: per pass instance (P) and per (desc, env) (D); classes: vertex buffers, texture and
     // sampler words, uniform-block words, ALU constants, vertex semantics, other
-    cAmbP0, cAmbP1, cAmbP2, cAmbP3, cAmbP4, cAmbP5, cAmbD0, cAmbD1, cAmbD2, cAmbD3, cAmbD4, cAmbD5,
+    cAmbP0, cAmbP1, cAmbP2, cAmbP3, cAmbP4, cAmbP5, cAmbD0, cAmbD1, cAmbD2, cAmbD3, cAmbD4, cAmbD5, cBaseVertex,
     cCounts
 };
 const char* const kReasonNames[kReasons] = {"described", "pass masked", "no resource", "named frame (wii_pipeline)",
@@ -65,7 +66,7 @@ const char* count_name(uint32_t c) {
         "defines", "define: new", "define: shader", "define: draw state", "define: state part",
         "define: projection flags", "define: fetch", "define: sampler table", "define: streams/samplers",
         "define: texture/sampler content", "define: refresh", "define: same image (kept)", "env captures", "env: new",
-        "env: key", "env: frame", "env: same image (kept)", "env versions", "meshes", "recording", "blocks",
+        "env: key", "env: texture/projection content", "env: same image (kept)", "env versions", "meshes", "recording", "blocks",
         "list binds", "desc draws", "unknown records", "verify due", "site draws", "interrupted",
         "verify: mesh mismatches", "verify: image mismatches", "verify: env mismatches", "verify: block mismatches",
         "verify: list bytes changed", "verify: ok", "resolved: seen", "resolved: first", "resolved: same",
@@ -77,7 +78,7 @@ const char* count_name(uint32_t c) {
         "pass-snapshot change: uniform blocks", "pass-snapshot change: ALU constants", "pass-snapshot change: semantics",
         "pass-snapshot change: other", "desc+env change: vertex buffers", "desc+env change: textures/samplers",
         "desc+env change: uniform blocks", "desc+env change: ALU constants", "desc+env change: semantics",
-        "desc+env change: other"};
+        "desc+env change: other", "draws with a mesh base vertex"};
     if (c >= cSkip0 && c < cSkip0 + kReasons) return kReasonNames[c - cSkip0];
     const uint32_t i = c < cSkip0 ? c : c - kReasons + 1;
     return i < sizeof names / sizeof names[0] && names[i] ? names[i] : "?";
@@ -85,7 +86,8 @@ const char* count_name(uint32_t c) {
 std::atomic<uint64_t> g_count[cCounts];
 inline void count(uint32_t c, uint64_t n = 1) { g_count[c].fetch_add(n, std::memory_order_relaxed); }
 // game-thread timing (WWHD_NATIVE_J3D_DESC_TIMING=1): ns in the key compare (begin) and in the whole hook
-std::atomic<uint64_t> g_keyNs{0}, g_hookNs{0}, g_defineNs{0}, g_timed{0};
+std::atomic<uint64_t> g_keyNs{0}, g_hookNs{0}, g_defineNs{0}, g_timed{0}, g_contentNs{0}, g_envNs{0}, g_siteNs{0},
+    g_siteTimed{0};
 bool timing() {
     static const bool v = switch_value("WWHD_NATIVE_J3D_DESC_TIMING", 0) != 0;
     return v;
@@ -158,17 +160,25 @@ struct Key4Hash {
         return size_t((uint64_t(k.a) << 32 | k.c) * 0x9E3779B97F4A7C15ull ^ (uint64_t(k.b) << 32 | k.d) * 0xC2B2AE3D27D4EB4Full);
     }
 };
+// a content range (a sampler object's GX2Texture words, a sampler key's words): compared with its copy once per game
+// frame, whichever description touches it first; a change bumps its version
+struct GameObject {
+    uint32_t addr = 0, bytes = 0, version = 0;
+    uint64_t frame = 0;
+    std::vector<uint8_t> copy;
+};
 struct GameDesc {
     uint16_t id = 0, version = 0;
     const Desc* rec = nullptr;
     std::vector<uint32_t> key;
-    std::vector<uint8_t> content;  // the content ranges' bytes at define
-    uint64_t checked = 0;          // the game frame the content was last checked in
+    std::vector<std::pair<GameObject*, uint32_t>> objects;  // its content ranges and their versions at define
 };
+struct GameObject;
 struct GameEnv {
     uint16_t id = 0, version = 0;
     const Env* rec = nullptr;
     std::vector<uint32_t> key;
+    std::vector<std::pair<GameObject*, uint32_t>> objects;  // its 7 textures (and pass 0's projection) and versions
     uint64_t frame = 0;
 };
 struct MeshKey {
@@ -185,15 +195,28 @@ struct Game {
     std::unordered_map<Key4, GameDesc, Key4Hash> descs;
     std::unordered_map<Key4, GameEnv, Key4Hash> envs;
     std::unordered_map<MeshKey, uint16_t, MeshKeyHash> meshes;
+    std::unordered_map<uint64_t, GameObject> objects;
     uint32_t nextDesc = 1, nextEnv = 1, nextMesh = 1;
 };
+// the object's state this game frame (g.mu held)
+GameObject* touch(GameObject* o, uint64_t frame) {
+    if (o->frame == frame) return o;
+    o->frame = frame;
+    if (!readable(o->addr, o->bytes)) return o;
+    const uint8_t* b = mem::ptr(o->addr);
+    if (o->copy.size() != o->bytes || std::memcmp(o->copy.data(), b, o->bytes)) {
+        o->copy.assign(b, b + o->bytes);
+        ++o->version;
+    }
+    return o;
+}
 Game& game() {
     static Game g;
     return g;
 }
 // the draw being described on this thread
 struct Current {
-    uint64_t t0 = 0;
+    uint64_t t0 = 0, tEnv = 0;
     bool open = false;
     GameDesc* desc = nullptr;  // (stable: unordered_map nodes)
     GameEnv* env = nullptr;
@@ -206,10 +229,11 @@ struct Current {
     std::vector<uint32_t> seg[kSegs];
     std::vector<uint8_t> lists;
     std::vector<uint32_t> key;
-    std::vector<uint8_t> content;
+    std::vector<std::pair<GameObject*, uint32_t>> objects, envObjects;
     uint32_t why = 0;
     // WWHD_NATIVE_J3D_DESC_SITECAP=1 (mode 1, debug): the site's own commands after the hook, up to its draw
-    bool siteCap = false, preCap = false;
+    bool siteCap = false, preCap = false, siteTime = false;
+    uint64_t tSite = 0;
     std::vector<uint32_t> site, pre;
     const Desc* capDesc = nullptr;
     const Env* capEnv = nullptr;
@@ -260,8 +284,30 @@ void site_compare(Current& c) {
     }
 }
 
-// the variable part's content ranges {address, bytes} (J3DNativeDesc.h DescKey)
-void content_of(const uint32_t* key, uint32_t words, std::vector<uint8_t>& out) {
+GameObject* object(Game& g, uint32_t addr, uint32_t bytes, uint64_t frame) {
+    auto [it, fresh] = g.objects.try_emplace(uint64_t(addr) << 32 | bytes);
+    GameObject* o = &it->second;
+    if (fresh) o->addr = addr, o->bytes = bytes;
+    return touch(o, frame);
+}
+// an env's objects: the 7 frame textures (agl::TextureSampler, 0x198 bytes: the bind reads its GX2Texture, sampler
+// words, border and dirty byte) and, pass 0, the projection's render state (0x70 bytes)
+void env_objects(Game& g, const uint32_t* key, uint32_t words, uint64_t frame,
+                 std::vector<std::pair<GameObject*, uint32_t>>& out) {
+    out.clear();
+    for (uint32_t i = 5; i < 12 && i < words; ++i)
+        if (key[i]) {
+            GameObject* o = object(g, key[i], 0x198, frame);
+            out.push_back({o, o->version});
+        }
+    if (key[4]) {
+        GameObject* o = object(g, key[4], 0x70, frame);
+        out.push_back({o, o->version});
+    }
+}
+// the variable part's content ranges {address, bytes} (J3DNativeDesc.h DescKey) as objects with their versions now
+void objects_of(Game& g, const uint32_t* key, uint32_t words, uint64_t frame,
+                std::vector<std::pair<GameObject*, uint32_t>>& out) {
     out.clear();
     uint32_t i = kKeyFixed;
     if (words <= i) return;
@@ -272,11 +318,13 @@ void content_of(const uint32_t* key, uint32_t words, std::vector<uint8_t>& out) 
     i += 1 + samplers * 2;
     if (i >= words) return;
     const uint32_t ranges = key[i++];
-    for (uint32_t r = 0; r < ranges && i + 1 < words; ++r, i += 2)
-        if (readable(key[i], key[i + 1])) {
-            const uint8_t* b = mem::ptr(key[i]);
-            out.insert(out.end(), b, b + key[i + 1]);
-        }
+    for (uint32_t r = 0; r < ranges && i + 1 < words; ++r, i += 2) {
+        auto [it, fresh] = g.objects.try_emplace(uint64_t(key[i]) << 32 | key[i + 1]);
+        GameObject* o = &it->second;
+        if (fresh) o->addr = key[i], o->bytes = key[i + 1];
+        touch(o, frame);
+        out.push_back({o, o->version});
+    }
 }
 // the first key word that differs: the define's reason
 uint32_t key_reason(const std::vector<uint32_t>& a, const uint32_t* b, uint32_t n) {
@@ -298,6 +346,15 @@ thread_local bool t_capturing = false;
 
 bool capture(uint32_t op, const uint32_t* p, uint32_t n) {
     Current& c = t_cur;
+    if (c.siteTime) {  // (timing: the site's own bind code, hook to draw: what mode 2 no longer runs)
+        if (op == gx2::OP_DRAW_INDEXED || op == gx2::OP_DRAW) {
+            c.siteTime = false;
+            t_capturing = false;
+            g_siteNs.fetch_add(now_ns() - c.tSite, std::memory_order_relaxed);
+            g_siteTimed.fetch_add(1, std::memory_order_relaxed);
+        }
+        return false;
+    }
     if (c.preCap) {  // (passive: what this thread emits between its J3D draws)
         if (op == gx2::OP_SET_REGS || op == gx2::OP_CALL) {
             if (op == gx2::OP_CALL) {
@@ -373,6 +430,7 @@ extern "C" unsigned wwhd_j3ddesc_mode(void) {
 extern "C" void wwhd_j3ddesc_skip(unsigned reason) {
     t_cur.open = false;
     t_cur.siteCap = false;
+    t_cur.siteTime = false;
     t_capturing = false;
     count(cSkip0 + (reason < kReasons ? reason : 0));
 }
@@ -393,15 +451,20 @@ extern "C" unsigned wwhd_j3ddesc_begin(const unsigned* key, unsigned words) {
         if (fresh) why = cDefNew;
         else if (key[8]) why = cDefRefresh;
         else if (d.key.size() != words || std::memcmp(d.key.data(), key, words * 4)) why = key_reason(d.key, key, words);
-        else if (d.checked != frame) {
-            content_of(key, words, c.content);
-            d.checked = frame;
-            if (c.content != d.content) why = cDefContent;
+        else {
+            const uint64_t tc = t ? now_ns() : 0;
+            for (const auto& [o, version] : d.objects)
+                if (touch(o, frame)->version != version) {
+                    why = cDefContent;
+                    break;
+                }
+            if (tc) g_contentNs.fetch_add(now_ns() - tc, std::memory_order_relaxed);
         }
         if (why) {
             c.why = why;
+            count(why);
             c.key.assign(key, key + words);
-            if (why != cDefContent) content_of(key, words, c.content);
+            objects_of(g, key, words, frame, c.objects);
             for (auto& s : c.seg) s.clear();
             c.lists.clear();
             c.foreign = c.listBinds = false;
@@ -460,8 +523,7 @@ extern "C" unsigned wwhd_j3ddesc_define(void) {
         for (uint32_t s = kSegProgram; s <= kSegState && same; ++s) same = d.rec->segment[s] == c.seg[s];
     if (same) same = d.rec->lists == c.lists;
     d.key = c.key;
-    d.content = c.content;
-    d.checked = g_gameFrame.load(std::memory_order_relaxed);
+    d.objects = c.objects;
     if (same) {
         count(cDefSame);
     } else {
@@ -506,7 +568,6 @@ extern "C" unsigned wwhd_j3ddesc_define(void) {
                 LOG("%s", line);
             }
         count(cDefines);
-        count(c.why);
         c.flags |= kFlagDefined;
     }
     c.descId = d.id;
@@ -517,6 +578,7 @@ extern "C" unsigned wwhd_j3ddesc_define(void) {
 extern "C" unsigned wwhd_j3ddesc_env(const unsigned* key, unsigned words) {
     Current& c = t_cur;
     if (!c.open || words < 5) return 0;
+    c.tEnv = c.t0 ? now_ns() : 0;
     const uint64_t frame = g_gameFrame.load(std::memory_order_relaxed);
     Game& g = game();
     std::lock_guard<std::mutex> lk(g.mu);
@@ -526,14 +588,21 @@ extern "C" unsigned wwhd_j3ddesc_env(const unsigned* key, unsigned words) {
     uint32_t why = 0;
     if (fresh) why = cEnvNew;
     else if (e.key.size() != words || std::memcmp(e.key.data(), key, words * 4)) why = cEnvKey;
-    else if (e.frame != frame) why = cEnvFrame;
+    else
+        for (const auto& [o, version] : e.objects)
+            if (touch(o, frame)->version != version) {
+                why = cEnvFrame;
+                break;
+            }
     if (!why) {
         c.envId = e.id;
         c.envVersion = e.version;
+        if (c.tEnv) g_envNs.fetch_add(now_ns() - c.tEnv, std::memory_order_relaxed);
         return 1;
     }
     count(why);
     c.key.assign(key, key + words);
+    env_objects(g, key, words, frame, c.envObjects);
     c.seg[kSegEnv].clear();
     c.foreign = false;
     return 2;
@@ -551,6 +620,7 @@ extern "C" unsigned wwhd_j3ddesc_env_define(void) {
     std::lock_guard<std::mutex> lk(g.mu);
     GameEnv& e = *c.env;
     e.key = c.key;
+    e.objects = c.envObjects;
     e.frame = g_gameFrame.load(std::memory_order_relaxed);
     if (e.rec && e.rec->image == c.seg[kSegEnv]) {
         count(cEnvSame);
@@ -583,6 +653,7 @@ extern "C" unsigned wwhd_j3ddesc_env_define(void) {
     }
     c.envId = e.id;
     c.envVersion = e.version;
+    if (c.tEnv) g_envNs.fetch_add(now_ns() - c.tEnv, std::memory_order_relaxed);
     return 1;
 }
 extern "C" void wwhd_j3ddesc_mesh(unsigned prim, unsigned count_, unsigned indexType, unsigned indexAddr,
@@ -599,6 +670,7 @@ extern "C" void wwhd_j3ddesc_mesh(unsigned prim, unsigned count_, unsigned index
         count(cMeshes);
     }
     c.meshId = it->second;
+    if (baseVertex) count(cBaseVertex);
 }
 extern "C" void wwhd_j3ddesc_block(unsigned stage, unsigned location, unsigned addr, unsigned size) {
     Current& c = t_cur;
@@ -644,8 +716,19 @@ extern "C" unsigned wwhd_j3ddesc_draw(void) {
     if (c.t0) {
         g_hookNs.fetch_add(now_ns() - c.t0, std::memory_order_relaxed);
         g_timed.fetch_add(1, std::memory_order_relaxed);
+        if (mode() == 1 && !c.siteCap) {
+            c.siteTime = true;
+            t_capturing = true;
+            c.tSite = now_ns();
+        }
     }
-    return 0;  // (D0: the site makes its calls and its draw)
+    if (mode() == 2) {
+        // the site makes no GX2 call: what its GX2Set*UniformBlock calls note for the list being recorded
+        // (submitted-uniform snapshots, gx2_resources.cpp uniform_block)
+        for (uint32_t i = 0; i < c.blockCount; ++i) gx2::note_uniform_block(c.blocks[i * kBlockWords + 1], c.blocks[i * kBlockWords + 2]);
+        return 1;
+    }
+    return 0;  // (mode 1: the site makes its calls and its draw)
 }
 
 // ---------------------------------------------------------------- render side (verify)
@@ -721,10 +804,11 @@ uint32_t amb_class(uint32_t r) {
     return 5;
 }
 // mismatch lines (capped)
-uint32_t g_said = 0;
+// (capped per kind: the first word of the text)
+std::unordered_map<std::string, uint32_t> g_said;
 void say(const char* what) {
-    if (g_said < 60 && ++g_said)
-        LOG("[j3d-desc] VERIFY MISMATCH %s%s", what, g_said == 60 ? " (no more of these lines)" : "");
+    uint32_t& n = g_said[std::string(what, strcspn(what, ":"))];
+    if (n < 30 && ++n) LOG("[j3d-desc] VERIFY MISMATCH %s%s", what, n == 30 ? " (no more of this kind)" : "");
 }
 const char* const kSegNames[kSegs] = {"none", "program", "material", "state", "env"};
 // registers the pending draw's description writes (desc, env, blocks), for the ambient set
@@ -836,10 +920,23 @@ void site_draw(const uint32_t* regs, const uint32_t* p, uint32_t n) {
         const uint32_t want[7] = {b[1], b[2] - 1, 0, 1, 0, 0, 0xC0000000u};
         if (loc >= 16 || std::memcmp(regs + base + loc * 7, want, sizeof want)) {
             count(cBlockMismatch);
-            std::snprintf(what, sizeof what, "block %u of %u: desc %u (pass %u, record %08X) stage %u location %u: register %08X %08X, desc %08X %08X",
+            std::snprintf(what, sizeof what, "block: %u of %u, desc %u (pass %u, record %08X) stage %u location %u: register %08X %08X, desc %08X %08X",
                           i, q.blockCount, d->id, d->pass, d->record, stage, loc, loc < 16 ? regs[base + loc * 7] : 0,
                           loc < 16 ? regs[base + loc * 7 + 1] : 0, b[1], b[2] - 1);
             say(what);
+            if (g_said["block"] <= 30) {  // (every block of the draw, with the register file's words)
+                char all[600];
+                int j = std::snprintf(all, sizeof all, "[j3d-desc]   blocks of desc %u env %u:", d->id, q.env->id);
+                for (uint32_t k = 0; k < q.blockCount && j < int(sizeof all) - 60; ++k) {
+                    const uint32_t* x = q.blocks + k * kBlockWords;
+                    const uint32_t st = x[0] >> 16, lc = x[0] & 0xFFFF;
+                    const uint32_t bs = st == 0 ? mmSQ_VTX_UNIFORM_BLOCK_START : st == 1 ? mmSQ_PS_UNIFORM_BLOCK_START
+                                                                                      : mmSQ_GS_UNIFORM_BLOCK_START;
+                    j += std::snprintf(all + j, sizeof all - j, " [%u] s%u l%u %08X+%X (reg %08X)", k, st, lc, x[1], x[2],
+                                       lc < 16 ? regs[bs + lc * 7] : 0);
+                }
+                LOG("%s", all);
+            }
             ok = false;
         }
     }
@@ -1033,11 +1130,16 @@ void frame_end() {
     }
     const uint64_t timed = g_timed.exchange(0);
     const uint64_t keyNs = g_keyNs.exchange(0), hookNs = g_hookNs.exchange(0), defNs = g_defineNs.exchange(0);
-    if (timed && k < int(sizeof buf) - 200)
+    const uint64_t contentNs = g_contentNs.exchange(0), envNs = g_envNs.exchange(0);
+    const uint64_t siteNs = g_siteNs.exchange(0), siteTimed = g_siteTimed.exchange(0);
+    if (timed && k < int(sizeof buf) - 300)
         k += std::snprintf(buf + k, sizeof buf - k,
-                           " game thread (Mac, indication): key compare %.0f ns/draw %.3f ms/frame, whole hook %.0f ns/draw %.3f ms/frame, defines %.3f ms/frame,",
+                           " game thread (Mac, indication): key compare %.0f ns/draw %.3f ms/frame, whole hook %.0f ns/draw %.3f ms/frame, defines %.3f ms/frame, content checks %.3f ms/frame, env %.3f ms/frame,",
                            double(keyNs) / timed, keyNs / 300.0 / 1e6, double(hookNs) / timed, hookNs / 300.0 / 1e6,
-                           defNs / 300.0 / 1e6);
+                           defNs / 300.0 / 1e6, contentNs / 300.0 / 1e6, envNs / 300.0 / 1e6);
+    if (siteTimed && k < int(sizeof buf) - 200)
+        k += std::snprintf(buf + k, sizeof buf - k, " the site's own calls (hook to draw) %.0f ns/draw %.3f ms/frame,",
+                           double(siteNs) / siteTimed, siteNs / 300.0 / 1e6);
     LOG("%s descs seen %zu, envs seen %zu", buf, g_descEffects.size(), g_envEffects.size());
     if (sitecap_on()) {
         std::lock_guard<std::mutex> lk(g_siteMu);
