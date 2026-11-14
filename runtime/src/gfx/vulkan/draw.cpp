@@ -62,6 +62,7 @@
 #include "reproj.h"
 #ifdef WWHD_NATIVE_DRAW
 #include "gx2/native_draw.h"
+#include "gx2/native_j3d_desc.h"
 #include "gx2/native_pass.h"
 #include "framegen.h"
 #include "cloud_proto.h"
@@ -4221,6 +4222,29 @@ void j3d_store(uint64_t key, const ContinuedDraw& c, const uint32_t* r, uint32_t
 }  // namespace
 void j3d_cache_clear() {
   for (auto& e : j3d.slots) e.key = 0;
+  native_draw::j3ddesc::reset();  // (J3D descriptions: their verify holds resolutions)
+}
+// J3D descriptions (native_j3d_desc.h, verify): what the site's draw of a described J3D draw resolved
+void j3ddesc_resolved(const uint32_t* r, const LatteFetchShader* fs, uint64_t fsKey, const vk::Shader* vs,
+                      const vk::Shader* ps, const Pipeline* pipeline, const std::array<Surface*, 8>& colors,
+                      const Surface* depth, const ContinuedDraw* stages) {
+  native_draw::j3ddesc::Resolved o;
+  o.vsKey = vs ? vs->key : 0;
+  o.psKey = ps ? ps->key : 0;
+  o.fsKey = fsKey;
+  o.pipeline = pipeline;
+  for (int i = 0; i < 8; ++i) o.colors[i] = colors[i];
+  o.depth = depth;
+  if (stages)  // (the continued state's stages: recorded by the fast path's draws)
+    for (int s = 0; s < 2; ++s) {
+      const auto& st = stages->stages[s];
+      o.textureCount[s] = std::min<uint32_t>(st.count, 18);
+      for (uint32_t i = 0; i < o.textureCount[s]; ++i)
+        o.textures[s][i] = {st.textures[i].unit, st.textures[i].surface, uint64_t(st.textures[i].view),
+                            uint64_t(st.textures[i].sampler)};
+    }
+  native_draw::j3ddesc::read_regs(vs, ps, fs, o.reads);
+  native_draw::j3ddesc::resolved(r, o);
 }
 #endif
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
@@ -5470,6 +5494,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   // a J3D draw resolved in full: its state, filed under its key (j3d_store refuses what cannot be reused)
   if (j3dDraw && !fast) j3d_store(j3dKey, continued, r, prim);
+  // a described J3D draw (native_j3d_desc.h, verify): what this draw resolved
+  if (native_draw::j3ddesc::g_resolving)
+    j3ddesc_resolved(r, fs, fsKey, vs, ps, &own, colors, depth, fastPathDraw ? &continued : nullptr);
 #endif
   if (aoPrivateReplay) {
     ao_private().frame = R.frame;

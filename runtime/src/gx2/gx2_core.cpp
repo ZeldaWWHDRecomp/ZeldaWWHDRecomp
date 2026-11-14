@@ -56,6 +56,7 @@
 #ifdef WWHD_NATIVE_DRAW
 #include "native_draw.h"
 #include "native_pass.h"
+#include "native_j3d_desc.h"
 #endif
 #ifdef WWHD_VK_SMOOTH
 #include "../gfx/vulkan/frame_breakdown.h"
@@ -596,6 +597,10 @@ std::string current_draw_context() {
     return id < g_draw_context_texts.size() ? g_draw_context_texts[id] : "-";
 }
 void emit(Op op, const uint32* payload, uint32 n) {
+#ifdef WWHD_NATIVE_DRAW
+    // a J3D description being defined (native_j3d_desc.h): the bind callees' commands are captured, never emitted
+    if (native_draw::j3ddesc::t_capturing && native_draw::j3ddesc::capture(op, payload, n)) return;
+#endif
     static thread_local bool describing = false;
     if (g_draw_context_provider && !describing && (op == OP_DRAW || op == OP_DRAW_INDEXED || op == OP_CALL) &&
         !(recording() && recording()->start)) {
@@ -739,7 +744,7 @@ void execute(const uint32* words, uint32 count) {
         uint32 n = hdr >> 8;
 #ifdef WWHD_NATIVE_DRAW
         if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW && op != OP_J3D_SHAPE &&
-             (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT)) ||
+             (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT) && op != OP_J3D_DESC_DRAW) ||
             i + 1 + n > count) {
 #else
         if (op >= OP_COUNT || i + 1 + n > count) {
@@ -805,7 +810,8 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     // definitions (define: when it changes the packet; register writes: the next instance's replayable check) and pass
     // descriptions (they record nothing: native_pass.h)
     if (op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE && op != OP_SET_REGS && op != OP_NOP &&
-        (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT)) {
+        (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT) &&
+        (op != OP_J3D_DESC_DRAW || native_draw::j3ddesc::mode() != 1)) {  // (mode 1: a description, records nothing)
         if (native_draw::g_mdiPending) native_draw::flush_mdi();
         if (native_draw::g_batchPending) native_draw::flush_batch();
         // WWHD_VK_BATCH_AT_PASS_END: a deferred draw-batch submission, once no pass is open (never before the swap's)
@@ -878,17 +884,27 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     // (native_draw.h); any other command may change what the full draw would resolve (a packet definition: when it
     // changes the packet, native_draw::define; pass descriptions: native_pass.h, no state; a layout projection: its
     // register writes decide, as OP_SET_REGS: native_draw::projection_as_regs)
+    // (J3D descriptions: no state, native_j3d_desc.h)
     if (op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_PACKET_DRAW && op != OP_PACKET_DEFINE &&
-        (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT) && (op != OP_SET_PROJ_REGS || !native_draw::projection_as_regs()))
+        (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT) && (op != OP_SET_PROJ_REGS || !native_draw::projection_as_regs()) &&
+        op != OP_J3D_DESC_DRAW)
         ++native_draw::g_epoch;
     // a J3D draw's name holds for the draw right after it (register writes may come in between)
-    if (op != OP_NOP && op != OP_SET_REGS && op != OP_DRAW_INDEXED && op != OP_J3D_SHAPE) native_draw::g_j3dKey = 0;
+    if (op != OP_NOP && op != OP_SET_REGS && op != OP_DRAW_INDEXED && op != OP_J3D_SHAPE && op != OP_J3D_DESC_DRAW)
+        native_draw::g_j3dKey = 0;
+    // a J3D description waiting for the site's draw (verify): any other command in between is counted
+    if (native_draw::j3ddesc::g_pending && op != OP_NOP && op != OP_SET_REGS && op != OP_CALL && op != OP_DRAW_INDEXED &&
+        op != OP_J3D_SHAPE)
+        native_draw::j3ddesc::command(op);
 #endif
     switch (op) {
     case OP_NOP: break;
     case OP_SET_REGS: apply_regs(p[0], p + 1, n - 1); break;
     case OP_DRAW: render::draw(g_regs, p[0], p[1], 0, 0, p[2], p[3]); break;
     case OP_DRAW_INDEXED:
+#ifdef WWHD_NATIVE_DRAW
+        if (native_draw::j3ddesc::g_pending) native_draw::j3ddesc::site_draw(g_regs, p, n);  // (verify)
+#endif
         render::draw(g_regs, p[0], p[1], p[2], p[3], p[4], p[5]);
 #ifdef WWHD_NATIVE_DRAW
         native_draw::g_j3dKey = 0;  // (taken by the Vulkan draw; any other renderer leaves it)
@@ -1015,6 +1031,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     case OP_PASS_COPY: native_pass::copy(p, n); break;
     case OP_PASS_VIEWPORT: native_pass::viewport(p, n); break;
     case OP_J3D_SHAPE: native_draw::j3d_shape(p, n); break;
+    case OP_J3D_DESC_DRAW: native_draw::j3ddesc::draw(g_regs, p, n); break;
     case OP_PACKET_DRAW: {
         // the instance's register effects, exactly as the site's skipped calls make them, in the site's order:
         // GX2Set{Pixel,Vertex,Geometry}UniformBlock (gx2_resources.cpp uniform_block), GX2SetFetchShader and
@@ -1667,6 +1684,7 @@ namespace dtrace { void on_swap(uint64_t swap, uint64_t steps); }
 HLE(gx2, GX2SwapScanBuffers) {
 #ifdef WWHD_NATIVE_DRAW
     if (native_draw::coverage::on()) native_draw::coverage::swap();
+    native_draw::j3ddesc::game_swap();
 #endif
     const uint64_t watchSwap = g_watch_swaps.fetch_add(1, std::memory_order_relaxed) + 1;
     // test aid for the watchdog: WWHD_TEST_HANG_AT=<swap>:<seconds> stops the game's thread in that swap

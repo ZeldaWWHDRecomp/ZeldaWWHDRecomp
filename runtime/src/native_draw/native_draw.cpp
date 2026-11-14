@@ -3,6 +3,7 @@
 #include "../../third_party/cemu/cemu_shim.h"  // (as the gx2 sources get it: -include; for gx2_regs.h)
 #include "gx2/native_draw.h"
 #include "gx2/native_coverage.h"
+#include "gx2/native_j3d_desc.h"
 #include "gx2/gx2_cmd.h"
 #include "gx2/gx2_regs.h"
 #include "runtime.h"
@@ -695,6 +696,7 @@ static void j3d_report() {
 
 // every 300 frames, per site with instances: instances, replayed, lowered and every fallback reason per frame
 void frame_end() {
+    j3ddesc::frame_end();
     ++g_frames;
     if (g_frames % 300) return;
     j3d_report();
