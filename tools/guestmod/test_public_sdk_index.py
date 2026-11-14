@@ -78,7 +78,7 @@ class PublicDeclarations(unittest.TestCase):
         }
         output = '\n'.join(play_declarations(sources.__getitem__))
         self.assertIn('WWHD_GAME_FUNC(0x025200D4, u8*, wwhd_play_get, (void))', output)
-        self.assertIn('WWHD_PLAY_ENABLE_NEXT_STAGE_OFFSET 0x514C', output)
+        self.assertIn('WWHD_PLAY_ENABLE_NEXT_STAGE_OFFSET WWHD_GAME_INFO_OFFSET(0x514C)', output)
         self.assertNotIn('WWHD_PLAY_LAYER_', output)
         for source in sources:
             changed = dict(sources)

@@ -55,6 +55,9 @@ def main():
 #else
 #define SDK_ASSERT(expression) _Static_assert(expression, "SDK layout")
 #endif
+/* play offsets are resolved for the build on install; here, their USA numbers */
+#undef WWHD_GAME_INFO_OFFSET
+#define WWHD_GAME_INFO_OFFSET(off) (off)
 SDK_ASSERT(sizeof(ProcFunc_l) == 8);
 SDK_ASSERT(sizeof(daPy_mtxFollowEcallBack_c) == 0xC);
 SDK_ASSERT(__builtin_offsetof(daPy_lk_c, m33E8.mpEmitter) == 0x6800);

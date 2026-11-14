@@ -74,7 +74,11 @@ def object_declarations(read_source, revision):
             value = values[0]
         else:
             value = unique_number(text, pattern, name)
-        lines += [f'/* wwhd_src/{source} */', f'#define {name} {value}']
+        lines += [f'/* wwhd_src/{source} */']
+        if name.startswith('WWHD_PLAY_'):  # the build's offset of the play member (wwhd_guest.h)
+            lines += [f'WWHD_GAME_INFO_MEMBER({value});']
+            value = f'WWHD_GAME_INFO_OFFSET({value})'
+        lines += [f'#define {name} {value}']
     source = 'include/d/actor/d_a_player.h'
     callback = r'struct daPy_mtxFollowEcallBack_c\s*\{\s*be<u32> mVtable;\s*gptr<void> mpEmitter;\s*gptr<void> mpMatrix;\s*\};\s*WWHD_SIZE\(daPy_mtxFollowEcallBack_c, 0xC\);'
     if len(re.findall(callback, read_source(source))) != 1:

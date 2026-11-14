@@ -43,7 +43,8 @@ def play_declarations(read_source):
         if len(matches) != 1:
             raise ValueError('public play declaration changed: ' + name)
         lines += [f'/* wwhd_src/{source} */',
-                  f'#define WWHD_PLAY_{name}_OFFSET {matches[0][1]}']
+                  f'WWHD_GAME_INFO_MEMBER({matches[0][1]});',
+                  f'#define WWHD_PLAY_{name}_OFFSET WWHD_GAME_INFO_OFFSET({matches[0][1]})']
     return lines
 
 

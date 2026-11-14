@@ -12,6 +12,7 @@ wwhd_guest_abi.h). Undefined symbols resolve as follows:
                          as data (address taken) it is the function's guest address
   __wwhd_orig_0x<ADDR>   the game's own code of a function, below every mod (call only)
   __wwhd_gdata_0x<ADDR>  game data at a fixed address
+  __wwhd_ginfo_0x<OFF>   (its address) this build's offset of the play object member at USA offset OFF
   anything else          a host service by name (wwhd_log, memcpy, ...), checked when the module loads
 
 Errors (unsupported relocations or instructions, unknown symbols) are reported in plain words and
@@ -29,13 +30,15 @@ sys.path.insert(0, os.path.join(HERE, "..", "recomp"))
 from ppc2c import translate, Unhandled  # noqa: E402
 from builds import canonical_build
 
-TRANSLATOR_VERSION = "guestmod-0.3"
+TRANSLATOR_VERSION = "guestmod-0.4"  # 0.4: play object offsets resolved per build
 
 SHT_PROGBITS, SHT_SYMTAB, SHT_RELA, SHT_NOBITS = 1, 2, 4, 8
 SHF_ALLOC, SHF_EXECINSTR = 2, 4
 R_PPC_ADDR32, R_PPC_ADDR16_LO, R_PPC_ADDR16_HI, R_PPC_ADDR16_HA = 1, 4, 5, 6
 R_PPC_REL24, R_PPC_REL14, R_PPC_REL32 = 10, 11, 26
 REGION_START, REGION_END = 0x7F000000, 0x80000000
+GAME_INFO, GAME_INFO_SIZE = 0x1046F0B0, 0x62F8  # g_dComIfG_gameInfo, what dComIfGp_get() returns
+PLAY_GET = 0x025200D4  # dComIfGp_get (the SDK's wwhd_play_get)
 
 
 class ModError(Exception):
@@ -94,6 +97,9 @@ class Translator:
                 for s in elf.sections):
             raise ModError("Mod uses an older SDK with unrelocatable USA data addresses; "
                            "ask its author to rebuild with the European-compatible SDK")
+        self.new_game_info = any(
+            s["name"] == ".wwhd_game_info" and s["size"] > 0 and s["size"] % 4 == 0 and
+            self.elf.bytes_of(s) == b"\0\0\0\1" * (s["size"] // 4) for s in elf.sections)
         self.imm_override = {}
         self.imports = {}   # call/branch site -> ("game"|"orig"|"svc", value)
         self.services = []  # host service names, in order of first use
@@ -161,10 +167,29 @@ class Translator:
             raise ModError("%s cannot use %s0x%08X on %s: %s" %
                            ("Mod", name, address, self.build.name, exc)) from exc
 
+    def game_info_offset(self, offset):
+        if not 0 <= offset < GAME_INFO_SIZE:
+            raise ModError("Mod uses play object offset 0x%X, outside the play object (0x%X bytes)" %
+                           (offset, GAME_INFO_SIZE))
+        return self.build.data(GAME_INFO + offset) - self.build.data(GAME_INFO)
+
+    def moves_game_info(self):
+        return any(l["name"] == "g_dComIfG_gameInfo" for l in self.build.layouts)
+
+    def check_old_play_offsets(self, kind, address):
+        """An older SDK compiled play member offsets as USA numbers: refuse such a mod's play object access
+        (the play accessor, or a game data address inside the object) on a build that moved members."""
+        if self.new_game_info or not self.moves_game_info():
+            return
+        if (kind in ("game", "orig") and address == PLAY_GET) or \
+                (kind == "gdata" and GAME_INFO <= address < GAME_INFO + GAME_INFO_SIZE):
+            raise ModError("Mod uses an older SDK whose play object offsets are USA offsets, which the %s build "
+                           "moved; ask its author to rebuild with the current SDK" % self.build.name)
+
     def symbol_value(self, sym):
         """(kind, value): kind 'addr' for a guest address, else an import kind."""
         if sym["shndx"] == 0:  # undefined
-            m = re.match(r"__wwhd_(game|orig|gdata)_(?:0x)?([0-9A-Fa-f]{1,8})$", sym["name"])
+            m = re.match(r"__wwhd_(game|orig|gdata|ginfo)_(?:0x)?([0-9A-Fa-f]{1,8})$", sym["name"])
             if m:
                 return m.group(1), int(m.group(2), 16)
             if not re.match(r"[A-Za-z_][A-Za-z0-9_]*$", sym["name"]):
@@ -190,8 +215,13 @@ class Translator:
                 kind, val = self.symbol_value(sym)
                 where = "%s+0x%X" % (target["name"], off)
                 if kind in ("game", "orig", "gdata"):
+                    self.check_old_play_offsets(kind, (val + addend) & 0xFFFFFFFF)
                     val = self.game_address(kind, (val + addend) & 0xFFFFFFFF)
                     addend = 0
+                elif kind == "ginfo":
+                    if typ in (R_PPC_REL24, R_PPC_REL14):
+                        raise ModError("%s: %s is an offset, not a function" % (where, sym["name"]))
+                    val, addend = self.game_info_offset((val + addend) & 0xFFFFFFFF), 0
                 if kind in ("orig", "svc") or (kind == "game" and typ in (R_PPC_REL24, R_PPC_REL14)):
                     if typ != R_PPC_REL24:
                         raise ModError("%s: %s can only be called, not used as a value (%s)" % (where, sym["name"], typ))

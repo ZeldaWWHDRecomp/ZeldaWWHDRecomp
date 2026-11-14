@@ -142,9 +142,11 @@ What that means for the port on the Japanese build:
   ([mod-sdk-map-hud.md](mod-sdk-map-hud.md)) is: every function it uses is the same code. The
   catalogue's minimap mods do not support the Japanese build yet: the HD minimap enables itself on
   USA and EU only, and both read members of the play object that moved (see the next point).
-- Guest mods are translated for the build, so their calls and globals map, but the SDK's
-  `WWHD_PLAY_*_OFFSET` constants (`runtime/guest/include/wwhd/`) are USA offsets: a mod that reads
-  those members directly reads the wrong ones on the Japanese build.
+- Guest mods are translated for the build, so their calls and globals map, and the SDK's
+  `WWHD_PLAY_*_OFFSET` values follow the moved play object members: the translator resolves them
+  (`WWHD_GAME_INFO_OFFSET`, [mod-sdk-v2.md](mod-sdk-v2.md)). A mod built with an older SDK compiled
+  them as USA numbers; it is refused on the Japanese build if it reads the play object (calls
+  `dComIfGp_get` or addresses `g_dComIfG_gameInfo`), and loads otherwise.
 
 ## Languages
 

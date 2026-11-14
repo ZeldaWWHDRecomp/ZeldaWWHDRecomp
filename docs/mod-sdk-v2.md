@@ -265,6 +265,20 @@ references to the EU build. Functions that differ or don't exist in EU are refus
 error naming them. Don't cast integers to pointers (that hard-codes a USA address), and only
 use object fields that are the same in both versions.
 
+**Japanese installs.** The same translation applies. The Japanese build also moved some members of
+the play object (`wwhd_play_get()`, `g_dComIfG_gameInfo`), so the SDK's `WWHD_PLAY_*_OFFSET` values
+are resolved for the build when the mod is installed. For a member the SDK doesn't name, declare it
+once at file scope and use its USA offset:
+
+```c
+WWHD_GAME_INFO_MEMBER(0x5B2C);
+u8* slot = wwhd_play_get() + WWHD_GAME_INFO_OFFSET(0x5B2C);
+```
+
+These offsets are fixed when the mod is linked, so they can initialize variables but can't be case
+labels, array sizes or static asserts. A mod built with an older SDK (plain USA numbers) is refused
+on the Japanese build if it reads the play object; ask its author to rebuild.
+
 ### Native save event flags
 
 Include `wwhd/save_flags.h` to access the game's persistent event array. These are
