@@ -912,8 +912,12 @@ On Android and the Steam Deck the renderer starts with (the normal build and the
 - hot vsync waits (`WWHD_VSYNC_HOT_WAIT_US=8000`): the game thread's waits in GX2WaitForVsync of at
   most 8 ms spin instead of sleeping (longer ones sleep). On a phone the passes after such a sleep ran
   40-50 % slower (the cores clock down while both threads wait), and with the faster second-thread
-  recording the game waits more often, so without this the slowest frames got slower in places;
-  `WWHD_VSYNC_HOT_WAIT_US=0` turns it off;
+  recording the game waits more often, so without this the slowest frames got slower in places.
+  Only with frame interpolation on (40-240 fps): at 30 fps the default is 0, since spinning gave no
+  pacing gain there on a Xiaomi 14 (lava 1 % low 20.7 instead of 21.3 fps) and the phone warmed
+  faster. The default follows the frame rate setting while the game runs; the log names the value
+  in use and why. `WWHD_VSYNC_HOT_WAIT_US=0` turns it off everywhere, any other value applies in
+  every mode;
 - 8 submission slots (`WWHD_VK_SUBMISSION_POOL=8`): with the second thread recording, a slot the GPU had
   not finished came round once every 64 frames and cost a refresh;
 - the late present acknowledgment (`WWHD_VK_LATE_PRESENT_ACK=1`): the render thread waits for the second

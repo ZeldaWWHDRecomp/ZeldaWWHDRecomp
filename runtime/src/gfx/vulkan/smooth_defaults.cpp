@@ -3,6 +3,7 @@
 #ifdef WWHD_VK_SMOOTH
 #include "runtime.h"
 #include "overlay/hostui.h"
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -84,6 +85,9 @@ bool smooth_pacing_setting() {
 }
 int display_pacing() { return device() && smooth_pacing_setting() ? 11 : 0; }
 bool even_pacing() { return device(); }
-int vsync_hot_wait_us() { return kWorkerHalf && device() ? 8000 : 0; }
+int vsync_hot_wait_us(bool thirty_fps) { return kWorkerHalf && device() && !thirty_fps ? 8000 : 0; }
+int64_t vsync_hot_wait_applied_us(const char* env, bool thirty_fps) {
+    return env && *env ? std::max<int64_t>(0, std::atoll(env)) : vsync_hot_wait_us(thirty_fps);
+}
 }  // namespace gfxvk::smooth_defaults
 #endif
