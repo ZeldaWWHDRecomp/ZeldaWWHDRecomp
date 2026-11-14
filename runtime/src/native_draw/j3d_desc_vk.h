@@ -427,7 +427,21 @@ const char* ambient_holds(State& s, const uint32_t* r) {
         break;
       }
   }
-  if (!c.ok) return "ambient";
+  if (!c.ok) {
+    if (d1::debug_on())  // (the first differing word of this state's class)
+      for (const Range& g : c.ranges)
+        if (std::memcmp(r + g.first, c.values.data() + g.at, g.count * 4)) {
+          for (uint32_t i = 0; i < g.count; ++i)
+            if (r[g.first + i] != c.values[g.at + i]) {
+              static char k[48];
+              std::snprintf(k, sizeof k, "ambient (state) %04X", g.first + i);
+              d1::note(k);
+              break;
+            }
+          break;
+        }
+    return "ambient";
+  }
   if (!s.vol.empty()) {
     d1::count(d1::cVolatileSettles);
     d1::settle_run();
@@ -597,8 +611,6 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
         for (uint32_t w = 0; w < 3; ++w) list.push_back(REGADDR::SQ_TEX_SAMPLER_WORD0_0 + x.samplerIndex * 3 + w);
     }
   }
-  for (const auto& v : s.vertex)
-    list.push_back(mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7), list.push_back(mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7 + 1);
   std::sort(list.begin(), list.end());
   list.erase(std::unique(list.begin(), list.end()), list.end());
   s.ambientRegs.clear();
@@ -607,6 +619,12 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
   for (uint32_t reg : list) {
     if (reg >= gx2::kNumRegs || reg == REGADDR::VGT_PRIMITIVE_TYPE) continue;
     if (std::binary_search(it.regs.begin(), it.regs.end(), reg)) continue;
+    // a vertex buffer's address and size: per-draw inputs read at each draw (they change per frame for animated
+    // meshes; the game sets them before the J3D site), not ambient words
+    bool stream = false;
+    for (const auto& v : s.vertex)
+      stream = stream || reg == mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7 || reg == mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7 + 1;
+    if (stream) continue;
     bool bound = false;
     for (uint32_t i = 0; i < in.blockCount && !bound; ++i) bound = reg >= in.blocks[i].reg && reg < in.blocks[i].reg + 7;
     if (bound) continue;
@@ -663,7 +681,7 @@ void compare(const State& s, const PacketCapture& cap, const uint32_t* r, const 
     const uint32_t* w = r + mmSQ_VTX_ATTRIBUTE_BLOCK_START + b.binding * 7;
     if (a.binding != b.binding || a.stride != b.stride || a.attributeEnd != b.attributeEnd || a.supported != b.supported)
       return mismatch(in, "vertex layout");
-    if (w[0] != b.addr || w[1] + 1 != b.size) return mismatch(in, "vertex buffer words");
+    (void)w;
   }
   if (!std::equal(s.blend.begin(), s.blend.end(), r + REGADDR::CB_BLEND_RED) ||
       s.stencilFront != (r[REGADDR::DB_STENCILREFMASK] & 255) || s.stencilBack != (r[REGADDR::DB_STENCILREFMASK_BF] & 255))
@@ -760,6 +778,18 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
   uint32_t drawCount = 0;
   VertexExtent extent;
   if (!mesh_indices(s, m, ib, indexType, drawCount, extent)) return "index";
+  // vertex buffers from the register file (a J3D-written one: the run settled first)
+  uint32_t vaddr[16], vsize[16];
+  {
+    bool settled = false;
+    for (size_t i = 0; i < s.vertex.size(); ++i) {
+      const uint32_t reg = mmSQ_VTX_ATTRIBUTE_BLOCK_START + s.vertex[i].binding * 7;
+      if (!settled && (d1::written(reg) || d1::written(reg + 1))) d1::settle_run(), settled = true;
+      vaddr[i] = in.regs[reg];
+      vsize[i] = in.regs[reg + 1] + 1;
+      if (!vaddr[i]) return "index";  // (the translated draw raises)
+    }
+  }
   // (D2) a depth family state: its pipeline, set and offsets in place of the translated ones
   bool familyDraw = false;
   VkPipeline pipe = s.vkPipeline;
@@ -879,13 +909,14 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
   } else
 #endif
   record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeLayout, 0, 2, sets, offsetCount, offsets.data());
-  for (const auto& v : s.vertex) {
-    const uint32_t copied = v.supported ? vertex_prefix_size(v.size, v.stride, v.attributeEnd, extent) : v.size;
+  for (size_t vi = 0; vi < s.vertex.size(); ++vi) {
+    const auto& v = s.vertex[vi];
+    const uint32_t copied = v.supported ? vertex_prefix_size(vsize[vi], v.stride, v.attributeEnd, extent) : vsize[vi];
     UploadSlice b;
     {
       rprof::UploadKind uploads(rprof::kUpVertex);
-      if (!cached_guest_range(v.addr, copied, rprof::kUpVertex, b)) b = snapshot(mem::ptr(v.addr), copied, 4);
-      rprof::guest_read(rprof::kUpVertex, v.addr, copied);
+      if (!cached_guest_range(vaddr[vi], copied, rprof::kUpVertex, b)) b = snapshot(mem::ptr(vaddr[vi]), copied, 4);
+      rprof::guest_read(rprof::kUpVertex, vaddr[vi], copied);
     }
     if (B.vb[v.binding] != b.buffer || B.vbo[v.binding] != b.offset) {
       record::vkCmdBindVertexBuffers(cmd, v.binding, 1, &b.buffer, &b.offset);
@@ -950,7 +981,30 @@ void full_draw(const In& in, PacketCapture* cap) {
   try {
     const native_draw::j3ddesc::Mesh& m = *in.mesh;
     draw(in.regs, m.prim, m.count, m.indexType, m.indexAddr, m.baseVertex, 1);
-  } catch (...) { g_packetCapture = nullptr; throw; }
+  } catch (...) {
+    g_packetCapture = nullptr;
+    LOG("[j3d-d1] the translated draw of desc %u v%u env %u v%u (pass %u, mesh prim %u count %u) raised (frame %llu)",
+        in.item->desc->id, in.item->desc->version, in.item->env->id, in.item->env->version, in.item->desc->pass,
+        in.mesh->prim, in.mesh->count, (unsigned long long)R.frame);
+    for (uint32_t u = 0; u < 18; ++u) {  // (its pixel texture units: words 0-2, written by the item or not)
+      const uint32_t* t = in.regs + REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + u * 7;
+      uint32_t v;
+      if (t[2]) LOG("[j3d-d1]   ps unit %u: %08X %08X %08X%s%s", u, t[0], t[1], t[2],
+                    in.item->value(REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + u * 7 + 1, v) ? " (item)" : "",
+                    d1::written(REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + u * 7 + 1) ? " (J3D-written)" : "");
+    }
+    {
+      std::string runs;
+      const auto& R2 = in.item->runs;
+      for (size_t k = 0; k + 1 < R2.size() && runs.size() < 900; k += 2) runs += " " + std::to_string(R2[k + 1]) + "@" + std::to_string(R2[k]);
+      LOG("[j3d-d1]   item: %zu registers, runs (count@first, decimal):%s; segments %zu/%zu/%zu words, lists %zu bytes, env image %zu words",
+          in.item->regs.size(), runs.c_str(), in.item->desc->segment[1].size(), in.item->desc->segment[2].size(),
+          in.item->desc->segment[3].size(), in.item->desc->lists.size(), in.item->env->image.size());
+    }
+    LOG("[j3d-d1]   CB_COLOR0 base %08X info %08X, DB base %08X info %08X", in.regs[mmCB_COLOR0_BASE],
+        in.regs[mmCB_COLOR0_INFO], in.regs[mmDB_DEPTH_BASE], in.regs[mmDB_DEPTH_INFO]);
+    throw;
+  }
   g_packetCapture = nullptr;
   d1::count(d1::cFull);
 }

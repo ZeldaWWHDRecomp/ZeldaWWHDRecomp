@@ -19,6 +19,8 @@ bool gamepad_backdrop_capture_active();
 }
 #endif
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -46,6 +48,19 @@ uint32_t verify_every() {
     static const uint32_t v = uint32_t(switch_value("WWHD_NATIVE_J3D_DESC_VERIFY", 0));
     return v;
 }
+bool timing_on() {
+    static const bool v = switch_value("WWHD_NATIVE_J3D_DESC_D1TIMING", 0) != 0;
+    return v;
+}
+inline uint64_t tnow() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+}
+struct Timed {  // (WWHD_NATIVE_J3D_DESC_D1TIMING=1) ns into a counter
+    Count c;
+    uint64_t t0;
+    explicit Timed(Count k) : c(k), t0(timing_on() ? tnow() : 0) {}
+    ~Timed() { if (t0) count(c, tnow() - t0); }
+};
 bool Item::value(uint32_t reg, uint32_t& v) const {
     auto it = std::lower_bound(regs.begin(), regs.end(), reg);
     if (it == regs.end() || *it != reg) return false;
@@ -62,7 +77,7 @@ const char* const kCountNames[cCounts] = {
     "draws", "replayed", "full", "verified", "MISMATCH", "items", "items refused", "states", "states refused", "runs",
     "settles", "settled words", "class checks", "class words", "volatile settles", "LOST", "gated",
     "no state", "no state for the pass", "state refused", "item refused", "surfaces", "binds", "ambient",
-    "ambient (J3D-written)", "texture", "index", "uniform offset"};
+    "ambient (J3D-written)", "texture", "index", "uniform offset", "draw us", "settle us", "invalidates"};
 // reasons (debug): first characters of the why strings, counted by text
 std::unordered_map<std::string, uint64_t> g_why;
 
@@ -97,7 +112,7 @@ namespace {
 // order, as the D0 builder stores them): false if anything but register writes and list calls is in it, or a list's
 // bytes are missing (decoding guest memory now could see a list rewritten since the define)
 bool decode(const uint32_t* w, uint32_t n, std::vector<std::pair<uint32_t, uint32_t>>& out, int depth,
-            const uint8_t** lists, const uint8_t* listsEnd, const char*& why) {
+            const uint8_t** lists, const uint8_t* listsEnd, const char*& why, std::vector<uint32_t>& inv) {
     uint32_t i = 0;
     while (i < n) {
         const uint32_t op = w[i] & 0xFF, m = w[i] >> 8;
@@ -110,9 +125,14 @@ bool decode(const uint32_t* w, uint32_t n, std::vector<std::pair<uint32_t, uint3
             std::memcpy(copy.data(), *lists, copy.size() * 4);
             *lists += w[i + 2];
             const uint8_t* none = nullptr;  // (a list called from a list: its bytes were not kept)
-            if (!decode(copy.data(), uint32_t(copy.size()), out, depth + 1, &none, nullptr, why)) return false;
+            if (!decode(copy.data(), uint32_t(copy.size()), out, depth + 1, &none, nullptr, why, inv)) return false;
+        } else if (op == gx2::OP_INVALIDATE && m == 3) {
+            inv.insert(inv.end(), {w[i + 1], w[i + 2], w[i + 3]});
         } else if (op != gx2::OP_NOP) {
-            return why = "not a register write", false;
+            static const char* names[256] = {};
+            static char text[256][40];
+            if (!names[op]) std::snprintf(text[op], sizeof text[op], "not a register write (op %02X)", op), names[op] = text[op];
+            return why = names[op], false;
         }
         i += 1 + m;
     }
@@ -124,11 +144,11 @@ std::unique_ptr<Item> make_item(const Desc* d, const Env* e) {
     it->env = e;
     std::vector<std::pair<uint32_t, uint32_t>> all;
     const char* why = nullptr;
-    bool ok = decode(e->image.data(), uint32_t(e->image.size()), all, 0, nullptr, nullptr, why);
+    bool ok = decode(e->image.data(), uint32_t(e->image.size()), all, 0, nullptr, nullptr, why, it->invalidates);
     const uint8_t* lists = d->lists.data();
     const uint8_t* end = lists + d->lists.size();
     for (uint32_t s = kSegProgram; ok && s <= kSegState; ++s)
-        ok = decode(d->segment[s].data(), uint32_t(d->segment[s].size()), all, 0, &lists, end, why);
+        ok = decode(d->segment[s].data(), uint32_t(d->segment[s].size()), all, 0, &lists, end, why, it->invalidates);
     if (ok && lists != end) ok = false, why = "list bytes left over";
     if (!ok) {
         it->refused = why;
@@ -230,6 +250,7 @@ void push_run(const In& in) {
 
 void settle_run() {
     if (g_run.empty()) return;
+    Timed timed(tSettleNs);
     const bool check = runcheck_on();
     if (check) {  // the sequential order, on a copy
         g_check.assign(g_regs, g_regs + gx2::kNumRegs);
@@ -331,9 +352,11 @@ void full(const In& in) {
 }  // namespace
 
 void draw(uint32_t* regs, Apply apply, const uint32_t* p, uint32_t n) {
+    Timed timed(tDrawNs);
     g_regs = regs;
     g_apply = apply;
     count(cDraws);
+    ++native_draw::g_epoch;  // (a draw: packets' lowered states see it as any other draw; gx2_core exempts the op for mode 1)
     if (n < kDrawHeaderWords) return count(cLost);
     const uint32_t blocks = p[6];
     if (blocks > kMaxBlocks || n != kDrawHeaderWords + blocks * kBlockWords) return count(cLost);
@@ -359,6 +382,12 @@ void draw(uint32_t* regs, Apply apply, const uint32_t* p, uint32_t n) {
         in.blocks[in.blockCount++] = {stageBase[stage] + location * 7, q[1], q[2]};
     }
     if (native_pass::on()) native_pass::note_draw(regs);  // (as for every draw; its counters)
+    for (size_t k = 0; k + 2 < in.item->invalidates.size(); k += 3) {  // (refused items: in their commands)
+        if (in.item->refused) break;
+        const uint32_t* v = in.item->invalidates.data() + k;
+        count(cInvalidates);
+        render::invalidate(v[0], v[1], v[2]);
+    }
     if (in.item->refused) {
         count(fItemRefused);
         note(in.item->refused);
@@ -380,11 +409,21 @@ void draw(uint32_t* regs, Apply apply, const uint32_t* p, uint32_t n) {
 
 void frame_end() {
     ++g_frames;
+    if (timing_on() && g_frames % 300 == 0) {  // (any mode) the render thread's CPU time per frame, last 300 frames
+        static uint64_t last = 0;
+        timespec ts{};
+        clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+        const uint64_t cpu = uint64_t(ts.tv_sec) * 1000000000ull + uint64_t(ts.tv_nsec);
+        if (last) LOG("[j3d-d1] render thread CPU %.3f ms/frame (last 300 frames, mode %d)", (cpu - last) / 300.0 / 1e6, mode());
+        last = cpu;
+    }
     if (g_frames % 300 || !g_counts[cDraws]) return;
     char buf[2048];
     int j = std::snprintf(buf, sizeof buf, "[j3d-d1] per frame:");
     for (uint32_t c = 0; c < cCounts && j < int(sizeof buf) - 64; ++c)
-        if (g_counts[c]) j += std::snprintf(buf + j, sizeof buf - j, " %s %.2f;", kCountNames[c], g_counts[c] / 300.0);
+        if (g_counts[c])
+            j += std::snprintf(buf + j, sizeof buf - j, " %s %.2f;", kCountNames[c],
+                               g_counts[c] / 300.0 / (c == tDrawNs || c == tSettleNs ? 1000.0 : 1.0));
     LOG("%s", buf);
     std::fill(std::begin(g_counts), std::end(g_counts), 0);
     if (debug_on() && !g_why.empty()) {

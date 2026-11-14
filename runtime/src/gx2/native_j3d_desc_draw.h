@@ -48,6 +48,9 @@ struct Item {
     // the net register effect (env image, program, material, state; each register once, its last value), sorted by
     // register, and the same as runs of consecutive registers {first, count} over VALUES
     std::vector<uint32_t> regs, values, runs;
+    // the GX2Invalidate calls in the site's binds {flags, address, size} (OP_INVALIDATE: no register effect; executed
+    // for every draw of the item, before it, as the site's calls make them)
+    std::vector<uint32_t> invalidates;
     const char* refused = nullptr;  // not a plain register effect: drawn the translated way, commands executed
     void* render = nullptr;         // the renderer's states (j3d_desc_vk.h)
     uint64_t settled = 0;           // the settle that took its effect last (once per settle)
@@ -92,7 +95,9 @@ enum Count : uint32_t {
     cSettleWords, cClassChecks, cClassWords, cVolatileSettles, cLost, cGated,
     // fallback reasons
     fNoState, fNoPass, fRefusedState, fItemRefused, fSurfaces, fBinds, fAmbient, fVolatile, fTexture, fIndex,
-    fOffset, cCounts
+    fOffset,
+    // (WWHD_NATIVE_J3D_DESC_D1TIMING=1) render-thread ns: described draws (whole), settles
+    tDrawNs, tSettleNs, cInvalidates, cCounts
 };
 void count(Count c, uint64_t n = 1);
 void note(const char* why);  // (WWHD_NATIVE_J3D_DESC_D1DEBUG=1) a fallback reason
