@@ -5,8 +5,9 @@ this adds optional services, not a serialized guest structure or pane ownership.
 
 ## Native identities and integration
 
-All addresses are canonical USA v0, mapped with `GC` / `GD` for USA/EU. Other
-builds, missing native entries, or replacement conflicts leave capability zero.
+All addresses are canonical USA v0, mapped with `GC` / `GD` for the build (USA, EU, JP). A build
+that compiled any of the functions named here differently (`guest_code_unchanged`), missing native
+entries, or replacement conflicts leave capability zero.
 The native adapter is `runtime/src/mods/map_hud.cpp`; synthetic-memory tests run
 that same adapter, not a separate implementation.
 

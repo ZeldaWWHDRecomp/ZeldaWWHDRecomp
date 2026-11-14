@@ -7,6 +7,7 @@ int main() {
     assert(GC(0x02715310) == 0x02715310);
     assert(GD(0x101F84DC) == 0x101F84DC);
     assert(guest_code_valid(0x02593B18));
+    assert(guest_code_unchanged(0x02593B10));
 #else
     assert(GC(0x02715310) == 0x02715BCC);
     assert(GC(0x02574144) == 0x02574148);
@@ -15,6 +16,8 @@ int main() {
     assert(GD(0x104B5730) == 0x104B5748);
     assert(!guest_code_valid(0x02593B18));
     assert(guest_code_valid(0x02593B10));
+    assert(!guest_code_unchanged(0x02593B10));  // the entry of a function the European build changed
+    assert(guest_code_unchanged(0x02715310));
     assert(!guest_code_valid(0x02000000));
     assert(!guest_data_valid(0x104DA1C8));
     assert(!guest_data_valid(0x145AC92C));

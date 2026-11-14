@@ -61,6 +61,15 @@ static inline int guest_code_valid(uint32_t a) {
         if (g_guest_removed_code[i].start <= a && a < g_guest_removed_code[i].end) return 0;
     return 1;
 }
+/* Whether the function at canonical code address a (its entry, or any address in it) is the same
+ * code in this build: valid and not one of the functions the build compiled differently. A hook that
+ * relies on what a function does, not just where it is, asks this instead of guest_code_valid(). */
+static inline int guest_code_unchanged(uint32_t a) {
+    if (!guest_code_valid(a)) return 0;
+    for (unsigned i = 0; i < g_guest_changed_code_count; i++)
+        if (g_guest_changed_code[i].start <= a && a < g_guest_changed_code[i].end) return 0;
+    return 1;
+}
 static inline int guest_data_valid(uint32_t a) {
     return guest_in_bounds(a, g_guest_data_lo, g_guest_data_hi);
 }

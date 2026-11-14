@@ -137,6 +137,17 @@ class JapaneseMap(unittest.TestCase):
     def setUp(self):
         self.jp = builds.by_name("JP")
 
+    def test_map_bridge_functions_are_the_same_code(self):
+        # runtime/src/mods/map_hud.cpp installs the map/compass bridge only when every function it names is
+        # unchanged in the build (guest_code_unchanged); the Japanese build keeps all of them
+        import re
+        with open(os.path.join(HERE, "..", "..", "runtime", "src", "mods", "map_hud.cpp"), encoding="utf-8") as f:
+            names = {int(a, 16) for a in re.findall(r"CANONICAL_CODE_ID\(0x([0-9A-Fa-f]{8})\)", f.read())}
+        self.assertGreaterEqual(len(names), 12)
+        for a in sorted(names):
+            self.assertFalse(self.jp.removed_function(a), "%08X" % a)
+            self.assertFalse(any(s <= a < s + n for s, n, _, _ in self.jp.differing), "%08X" % a)
+
     def test_known_addresses(self):
         self.assertEqual(self.jp.code(0x02000020), 0x02000020)
         self.assertEqual(self.jp.code(0x025200D4), 0x025200D8)    # dComIfGp_get

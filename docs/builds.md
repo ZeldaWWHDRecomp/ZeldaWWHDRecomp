@@ -136,8 +136,11 @@ What that means for the port on the Japanese build:
   build the Controller item stays.
 - The game has its own (Japanese) text; a language source is refused, as on the European build.
 - Features written against message-window code the Japanese build changed (some story mods'
-  scene choices and demo windows: `story_scene_choice.cpp`, `story_demo.cpp`), the map HUD and the
-  randomizer are not available or untested there.
+  scene choices and demo windows: `story_scene_choice.cpp`, `story_demo.cpp`) and the
+  randomizer are not available or untested there. The map/compass bridge for code mods
+  ([mod-sdk-map-hud.md](mod-sdk-map-hud.md)) is: every function it uses is the same code. The
+  catalogue's minimap mods do not support the Japanese build yet: the HD minimap enables itself on
+  USA and EU only, and both read members of the play object that moved (see the next point).
 - Guest mods are translated for the build, so their calls and globals map, but the SDK's
   `WWHD_PLAY_*_OFFSET` constants (`runtime/guest/include/wwhd/`) are USA offsets: a mod that reads
   those members directly reads the wrong ones on the Japanese build.
