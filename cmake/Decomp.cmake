@@ -49,6 +49,39 @@ set(WWHD_DECOMP_FAST_WHOLE_LTO_MIN_RAM_GB "12" CACHE STRING "decomp build, fast 
 set(WWHD_DECOMP_FAST_LTO_JOBS "8" CACHE STRING "decomp build, fast mode: ThinLTO backend jobs of the final link (WWHD_DECOMP_FAST_WHOLE_LTO)")
 option(WWHD_DECOMP_RUNTIME_ONLY "decomp build: the runtime only, for packaging (no units, no game)" OFF)
 
+# Decomp build only: compiles through ccache when it is installed (WWHD_DECOMP_CCACHE, default ON when found; the
+# environment variable of that name, 0 or 1, sets the default). Configure rewrites generated files with the same content
+# after a change elsewhere, and other build directories compile the same units: ccache answers those from its cache.
+# CCACHE_BASEDIR is the common parent of the source tree, the decompilation and this build directory (absolute paths
+# below it are hashed as relative ones, so build directories laid out alike share hits); CCACHE_NOHASHDIR keeps the
+# working directory out of the hash. An explicit CMAKE_<LANG>_COMPILER_LAUNCHER wins. The normal build is not affected.
+if(WWHD_DECOMP)
+  find_program(WWHD_CCACHE_PROGRAM ccache)
+  set(ccache_default OFF)
+  if(WWHD_CCACHE_PROGRAM)
+    set(ccache_default ON)
+  endif()
+  if(DEFINED ENV{WWHD_DECOMP_CCACHE})
+    set(ccache_default "$ENV{WWHD_DECOMP_CCACHE}")
+  endif()
+  option(WWHD_DECOMP_CCACHE "decomp build: compile through ccache (default ON when ccache is installed)" ${ccache_default})
+  if(WWHD_DECOMP_CCACHE AND WWHD_CCACHE_PROGRAM AND NOT CMAKE_CXX_COMPILER_LAUNCHER AND NOT CMAKE_C_COMPILER_LAUNCHER)
+    get_filename_component(base "${CMAKE_SOURCE_DIR}" REALPATH)
+    foreach(p "${CMAKE_BINARY_DIR}" "${WWHD_DECOMP_DIR}")
+      get_filename_component(p "${p}" REALPATH)
+      string(FIND "${p}/" "${base}/" at)
+      while(NOT at EQUAL 0 AND NOT base STREQUAL "/")
+        get_filename_component(base "${base}" DIRECTORY)
+        string(FIND "${p}/" "${base}/" at)
+      endwhile()
+    endforeach()
+    set(launcher "${CMAKE_COMMAND}" -E env "CCACHE_BASEDIR=${base}" CCACHE_NOHASHDIR=1 "${WWHD_CCACHE_PROGRAM}")
+    set(CMAKE_C_COMPILER_LAUNCHER ${launcher})
+    set(CMAKE_CXX_COMPILER_LAUNCHER ${launcher})
+    message(STATUS "decomp build: compiling through ccache (${WWHD_CCACHE_PROGRAM}, base ${base}; -DWWHD_DECOMP_CCACHE=OFF: without)")
+  endif()
+endif()
+
 function(wwhd_decomp_configure)
   if(NOT APPLE AND NOT ANDROID)
     # the unit isolation needs ld64's `ld -r` (hidden -> local), or on Android ld.lld -r + llvm-objcopy
@@ -273,10 +306,18 @@ function(wwhd_decomp_configure)
     # build without a table crashed at start, 2026-11-07). Made here from this build's own translation with the
     # decompilation's decl_lint.py (port mode; tools/decomp_build/decl_table.py, cached by a hash of its inputs: a few
     # minutes when the decompilation or the translation changed, nothing otherwise). WWHD_DECOMP_DECL_TABLE overrides it.
+    # The per-unit cache (tools/decomp_build/decl_cache.py) recomputes only what a change touches and is shared by
+    # build directories: WWHD_DECOMP_BUILD_CACHE (default: the environment variable of that name, else the user's
+    # cache directory; "off" disables it; WWHD_DECOMP_BUILD_CACHE_MB caps its size, default 3072)
+    set(WWHD_DECOMP_BUILD_CACHE "$ENV{WWHD_DECOMP_BUILD_CACHE}" CACHE STRING "decomp build, fast mode: root of the shared declaration-table cache (empty: the user cache directory; off: none)")
+    set(cache_args)
+    if(WWHD_DECOMP_BUILD_CACHE)
+      set(cache_args --cache "${WWHD_DECOMP_BUILD_CACHE}")
+    endif()
     cmake_host_system_information(RESULT ncpu QUERY NUMBER_OF_LOGICAL_CORES)
     execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/decl_table.py"
                             "${WWHD_DECOMP_DIR}" "${GEN_DIR}" "${WWHD_DECOMP_OUT}/verify/image.bin"
-                            "${WWHD_DECOMP_GAME}/code/cking.rpx" "${WWHD_DECOMP_OUT}/decl" --jobs ${ncpu}
+                            "${WWHD_DECOMP_GAME}/code/cking.rpx" "${WWHD_DECOMP_OUT}/decl" --jobs ${ncpu} ${cache_args}
                     RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err OUTPUT_STRIP_TRAILING_WHITESPACE)
     if(NOT rc EQUAL 0)
       message(FATAL_ERROR "WWHD_DECOMP_FAST needs the decompilation's declaration table and could not make it:\n${out}\n${err}\n"
@@ -284,7 +325,8 @@ function(wwhd_decomp_configure)
     endif()
     message(STATUS "${out}")
     set(decl_args --decl "${WWHD_DECOMP_OUT}/decl/handoff.tsv")
-    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/decl_table.py")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/decl_table.py"
+                 "${CMAKE_SOURCE_DIR}/tools/decomp_build/decl_cache.py" "${CMAKE_SOURCE_DIR}/tools/decomp_build/decl_lint_run.py")
   endif()
   set(fast_args)
   if(WWHD_DECOMP_FAST)
