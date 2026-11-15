@@ -468,7 +468,82 @@ def decomp_revision(src):
         return ""
 
 
+def hidden(name):
+    """names no tool reads that the system writes on its own (Finder's .DS_Store, ._ files, __pycache__)"""
+    return name.startswith(".") or name == "__pycache__"
+
+
+def inputs_stamp(argv, src, out, game):
+    """a hash of everything gen.py reads: its arguments, the decompilation (wwhd_src, tools/verify) and its revision,
+    the game's RPX, this directory's and tools/recomp's files, tools/rpx.py, PYTHONPATH and the Python version"""
+    import hashlib
+    h = hashlib.sha256(b"gen-1\n")
+    h.update(("%r\n%s\n%s\n%s\n%s\n" % (argv, src, out, os.environ.get("PYTHONPATH", ""), sys.version)).encode())
+    h.update((decomp_revision(src) + "\n").encode())
+    files = []
+    for top in (os.path.join(src, "wwhd_src"), os.path.join(src, "tools", "verify")):
+        for dp, ds, fs in os.walk(top):
+            ds[:] = sorted(d for d in ds if not hidden(d))
+            files += [os.path.join(dp, f) for f in sorted(fs) if not hidden(f)]
+    for d in (HERE, os.path.join(ROOT, "tools", "recomp")):
+        files += [os.path.join(d, f) for f in sorted(os.listdir(d)) if os.path.isfile(os.path.join(d, f)) and not hidden(f)]
+    files += [os.path.join(ROOT, "tools", "rpx.py")] + ([game] if game else [])
+    for p in files:
+        h.update(p.encode() + b"\0")
+        try:
+            with open(p, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+        except OSError:
+            h.update(b"-")
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+# outputs whose presence the skip checks (the rest are written with them)
+STAMPED = ("decomp_hooks.txt", "hooks.cpp", "units.cmake", "units.json", "functions.tsv", "excluded.txt", "skipped.txt")
+
+
 def main():
+    """gen.py, skipped when OUT_DIR/gen.inputs.sha256 records the same inputs (inputs_stamp) and its outputs are there:
+    it then prints what the run that made them printed"""
+    import io
+    argv = sys.argv[1:]
+    pos = [x for x in argv if not x.startswith("-")]
+    stamp = None
+    if len(pos) >= 2 and "-h" not in argv and "--help" not in argv:
+        src, out = os.path.abspath(pos[0]), os.path.abspath(pos[1])
+        game = argv[argv.index("--game") + 1] if "--game" in argv[:-1] else None
+        stamp = os.path.join(out, "gen.inputs.sha256")
+        said = os.path.join(out, "gen.stdout")
+        key = inputs_stamp(argv, src, out, os.path.abspath(game) if game else None)
+        try:
+            same = open(stamp).read().strip() == key and all(os.path.isfile(os.path.join(out, f)) for f in STAMPED)
+        except OSError:
+            same = False
+        if same:
+            with open(said, encoding="utf-8") as fh:
+                sys.stdout.write(fh.read())
+            return
+        if os.path.exists(stamp):
+            os.remove(stamp)  # (this script's own stamp: a failed run must not leave the old one)
+
+    class Tee(io.StringIO):
+        def write(self, x):
+            sys.__stdout__.write(x)
+            return super().write(x)
+    tee = Tee()
+    old, sys.stdout = sys.stdout, tee
+    try:
+        _main()
+    finally:
+        sys.stdout = old
+    if stamp:
+        write_if_changed(said, tee.getvalue())
+        write_if_changed(stamp, key + "\n")
+
+
+def _main():
     ap = argparse.ArgumentParser(usage=__doc__.strip().splitlines()[3][7:])
     ap.add_argument("src")
     ap.add_argument("out")

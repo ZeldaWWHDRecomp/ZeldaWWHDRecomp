@@ -1375,5 +1375,81 @@ def main():
         " (strict park rule)" if strict else "", n, len(lines), ne, os.path.join(out, "native.txt")))
 
 
+def inputs_stamp(argv, src, out, gen_dir):
+    """a hash of what native_rules.py reads: its arguments, the decompilation (wwhd_src, tools/verify), gen.py's outputs
+    (by gen.py's own input stamp, OUT_DIR/gen.inputs.sha256; None without it: no skip), the files of GEN_DIR, the
+    declaration table, this directory's scripts, PYTHONPATH and the Python version"""
+    import hashlib
+    try:
+        with open(os.path.join(out, "gen.inputs.sha256")) as fh:
+            gen_stamp = fh.read().strip()
+    except OSError:
+        return None
+    h = hashlib.sha256(b"native_rules-1\n")
+    h.update(("%r\n%s\n%s\n%s\n" % (argv, gen_stamp, os.environ.get("PYTHONPATH", ""), sys.version)).encode())
+    hidden = lambda n: n.startswith(".") or n == "__pycache__"  # noqa: E731 (Finder's .DS_Store and the like)
+    files = []
+    for top in (os.path.join(src, "wwhd_src"), os.path.join(src, "tools", "verify")):
+        for dp, ds, fs in os.walk(top):
+            ds[:] = sorted(d for d in ds if not hidden(d))
+            files += [os.path.join(dp, f) for f in sorted(fs) if not hidden(f)]
+    files += [os.path.join(gen_dir, f) for f in sorted(os.listdir(gen_dir))
+              if os.path.isfile(os.path.join(gen_dir, f)) and not hidden(f)]
+    files += [os.path.join(HERE, f) for f in sorted(os.listdir(HERE)) if f.endswith(".py")]
+    if "--decl" in argv[:-1]:
+        files.append(os.path.abspath(argv[argv.index("--decl") + 1]))
+    for p in files:
+        h.update(p.encode() + b"\0")
+        try:
+            with open(p, "rb") as fh:
+                for chunk in iter(lambda: fh.read(1 << 20), b""):
+                    h.update(chunk)
+        except OSError:
+            h.update(b"-")
+        h.update(b"\n")
+    return h.hexdigest()
+
+
+def main_skipping():
+    """main(), skipped when OUT_DIR/native_rules.inputs.sha256 records the same inputs (inputs_stamp) and its outputs
+    are there: it then prints what the run that made them printed"""
+    import io
+    argv = sys.argv[1:]
+    pos = [x for x in argv if not x.startswith("-") and x != "strict"]
+    key = stamp = None
+    if len(pos) >= 3:
+        src, out, gen_dir = (os.path.abspath(x) for x in pos[:3])
+        if os.path.isdir(gen_dir) and os.path.isdir(out):
+            key = inputs_stamp(argv, src, out, gen_dir)
+            stamp, said = os.path.join(out, "native_rules.inputs.sha256"), os.path.join(out, "native_rules.stdout")
+    if key:
+        try:
+            same = open(stamp).read().strip() == key and all(
+                os.path.isfile(os.path.join(out, f)) for f in ("native.txt", "native_rules.stdout"))
+        except OSError:
+            same = False
+        if same:
+            with open(said, encoding="utf-8") as fh:
+                sys.stdout.write(fh.read())
+            return
+    if stamp and os.path.exists(stamp):
+        os.remove(stamp)  # (this script's own stamp: a failed run must not leave the old one)
+
+    class Tee(io.StringIO):
+        def write(self, x):
+            sys.__stdout__.write(x)
+            return super().write(x)
+    tee = Tee()
+    old, sys.stdout = sys.stdout, tee
+    try:
+        main()
+    finally:
+        sys.stdout = old
+    if key:
+        import gen as gen_mod
+        gen_mod.write_if_changed(said, tee.getvalue())
+        gen_mod.write_if_changed(stamp, key + "\n")
+
+
 if __name__ == "__main__":
-    main()
+    main_skipping()

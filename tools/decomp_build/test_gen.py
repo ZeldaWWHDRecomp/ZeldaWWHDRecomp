@@ -141,8 +141,36 @@ class GenTest(unittest.TestCase):
         self.run_gen()
         p = os.path.join(self.out, "hooks.cpp")
         os.utime(p, (1, 1))
+        with open(os.path.join(self.src, "tools/verify/units/empty2.txt"), "w") as f:  # a new input: gen.py runs
+            f.write("# no sources either\n")
         self.run_gen()
         self.assertEqual(os.path.getmtime(p), 1)
+
+    def test_unchanged_inputs_skip_the_run(self):
+        first = self.run_gen()
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "gen.inputs.sha256")))
+        os.remove(os.path.join(self.out, "units.json"))  # (to see whether the second run writes it)
+        os.remove(os.path.join(self.out, "functions.tsv"))
+        with open(os.path.join(self.out, "functions.tsv"), "w") as f:
+            f.write("")
+        # an output missing: gen.py runs again
+        self.assertEqual(self.run_gen(), first)
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "units.json")))
+        # unchanged: nothing written, the first run's messages printed again
+        os.utime(os.path.join(self.out, "functions.tsv"), (1, 1))
+        with open(os.path.join(self.out, "functions.tsv"), "w") as f:
+            f.write("marker")
+        self.assertEqual(self.run_gen(), first)
+        self.assertEqual(self.read("functions.tsv"), "marker")
+        # a changed source or another argument: it runs
+        with open(os.path.join(self.src, "wwhd_src/b.cpp"), "a") as f:
+            f.write("VERIFY(0x02000700, b_two)\n")
+        self.run_gen()
+        self.assertIn("02000700", self.read("functions.tsv"))
+        with open(os.path.join(self.out, "functions.tsv"), "w") as f:
+            f.write("marker")
+        self.run_gen("--jobs", "1")
+        self.assertIn("02000700", self.read("functions.tsv"))
 
     def test_unmarked_shared_source_does_not_join(self):
         # c1/c2 share only c_pending.cpp (no VERIFY marks: support code): two game units, each with its copy
