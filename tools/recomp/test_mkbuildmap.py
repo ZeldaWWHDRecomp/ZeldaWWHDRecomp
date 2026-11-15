@@ -138,5 +138,146 @@ class CodePointers(unittest.TestCase):
             mkbuildmap.check_pointers(canon, other, self.result(lambda t: t + 0x40))
 
 
+def addi(rd, ra, imm):
+    return (14 << 26) | (rd << 21) | (ra << 16) | (imm & 0xFFFF)
+
+
+def lis(rd, imm):
+    return (15 << 26) | (rd << 21) | (imm & 0xFFFF)
+
+
+def bl(pc, target):
+    return (18 << 26) | ((target - pc) & 0x03FFFFFC) | 1
+
+
+BLR = 0x4E800020
+R_PPC_ADDR16_HA = 6
+R_PPC_ADDR16_LO = 4
+
+
+class SyntheticBinary(mkbuildmap.Binary):
+    """In-memory stand-in for Binary so align() and derive_aligned() run without .rpx files."""
+
+    def __init__(self, funcs, text_lo=0x02000020, data_lo=0x10000000, data_size=0x500000, code_pointers=()):
+        from collections import defaultdict
+        from types import SimpleNamespace
+
+        self.entries = []
+        self.ends = []
+        self.reloc_type = {}
+        self.reloc_target = defaultdict(list)
+        words = {}
+
+        pc = text_lo
+        deferred = []
+        for fn in funcs:
+            self.entries.append(pc)
+            for item in fn:
+                if isinstance(item, tuple) and item[0] == "bl":
+                    deferred.append((pc, item[1]))
+                    words[pc] = 0
+                elif isinstance(item, tuple):
+                    word, typ, target = item
+                    words[pc] = word
+                    self.reloc_type[pc] = typ
+                    self.reloc_target[pc].append((typ, target))
+                else:
+                    words[pc] = item
+                pc += 4
+            self.ends.append(pc)
+
+        text_hi = pc
+        for call_pc, target_idx in deferred:
+            words[call_pc] = bl(call_pc, self.entries[target_idx])
+        self.code_pointers = {slot: self.entries[idx] for slot, idx in code_pointers}
+
+        self.p = SimpleNamespace(
+            text_lo=text_lo,
+            text_hi=text_hi,
+            word=words.__getitem__,
+            in_text=lambda a, lo=text_lo, hi=text_hi: lo <= a < hi,
+            import_calls=set(),
+            undef_calls=set(),
+            rpx=SimpleNamespace(sections=[SimpleNamespace(name=".data", addr=data_lo, size=data_size)]),
+        )
+
+
+class AlignedDerivation(unittest.TestCase):
+    """Independent synthetic test of align() and derive_aligned()."""
+
+    def setUp(self):
+        self.lay = Layout.parse(JP_GAME_INFO)
+
+    def _build_pair(self):
+        def anchor(imm):
+            return [addi(3, 0, imm), addi(4, 0, imm + 1), BLR]
+
+        def data_ref(addr):
+            hi = ((addr + 0x8000) >> 16) & 0xFFFF
+            lo = addr & 0xFFFF
+            return [(lis(3, hi), R_PPC_ADDR16_HA, addr),
+                    (addi(3, 3, lo), R_PPC_ADDR16_LO, addr),
+                    BLR]
+
+        moved_body = [addi(3, 0, 0x555), addi(3, 3, 7), BLR]
+        canon_funcs = [
+            [("bl", 5), ("bl", 9), BLR],                                                   # 0: fn0
+            data_ref(0x1046F0B0),                                                          # 1: fn1
+            [addi(3, 0, 0x111), addi(4, 0, 0x222), addi(5, 0, 0x333), BLR],                # 2: removed
+            anchor(10),                                                                    # 3: fn2
+            anchor(20),                                                                    # 4: fn3
+            [lwz(3, 3, 0x5B34), BLR],                                                      # 5: get_link
+            anchor(30),                                                                    # 6: fn4
+            data_ref(0x10480000),                                                          # 7: fn5
+            anchor(40),                                                                    # 8: fn6
+            moved_body,                                                                    # 9: moved
+            anchor(50),                                                                    # 10: fn7
+        ]
+        other_funcs = [
+            [("bl", 6), ("bl", 2), BLR],                                                   # 0: fn0'
+            data_ref(0x1046F0B0),                                                          # 1: fn1'
+            moved_body,                                                                    # 2: moved'
+            anchor(10),                                                                    # 3: fn2'
+            [addi(3, 0, 0x444), addi(4, 0, 0x555), addi(5, 0, 0x666), BLR],                # 4: inserted
+            anchor(20),                                                                    # 5: fn3'
+            [lwz(3, 3, 0x5B30), BLR],                                                      # 6: get_link'
+            anchor(30),                                                                    # 7: fn4'
+            data_ref(0x10480020),                                                          # 8: fn5'
+            anchor(40),                                                                    # 9: fn6'
+            anchor(50),                                                                    # 10: fn7'
+        ]
+
+        canon = SyntheticBinary(canon_funcs, text_lo=0x02000020, code_pointers=[(0x10480100, 9)])
+        other = SyntheticBinary(other_funcs, text_lo=0x02000040, code_pointers=[(0x10480120, 2)])
+        return canon, other
+
+    def test_align_and_derive_aligned_with_layout(self):
+        canon, other = self._build_pair()
+        pairs, removed, inserted = mkbuildmap.align(canon, other, [self.lay])
+        self.assertEqual(removed, [2])
+        self.assertEqual(inserted, [4])
+        self.assertEqual(pairs, {0: 0, 1: 1, 3: 3, 4: 5, 5: 6, 6: 7, 7: 8, 8: 9, 9: 2, 10: 10})
+
+        res = mkbuildmap.derive_aligned(canon, other, [self.lay])
+        self.assertEqual(res["removed_functions"], [[canon.entries[2], 16]])
+        self.assertEqual(res["inserted_functions"], [[other.entries[4], 16]])
+        self.assertEqual(res["differing_functions"], [])
+        s = res["stats"]
+        self.assertEqual((s["same_code"], s["layout_only"], s["reordered"]), (9, 1, 1))
+        self.assertEqual((s["calls_checked"], s["pointers_checked"], s["pointers_elsewhere"]), (2, 1, 0))
+        code = mkbuildmap.piecewise(res["code_steps"])
+        data = mkbuildmap.piecewise(res["data_steps"])
+        self.assertEqual(code(canon.entries[5]), other.entries[6])
+        self.assertEqual(code(canon.entries[9]), other.entries[2])
+        self.assertEqual(data(0x1046F0B0 + 0x5B34), 0x1046F0B0 + 0x5B30)
+        self.assertEqual(data(0x10480000), 0x10480020)
+
+    def test_without_layout_the_getter_pair_is_differing_not_layout_only(self):
+        canon, other = self._build_pair()
+        res = mkbuildmap.derive_aligned(canon, other, [])
+        self.assertEqual(res["stats"]["layout_only"], 0)
+        self.assertEqual(res["differing_functions"], [[canon.entries[5], 8, other.entries[6], 8]])
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
