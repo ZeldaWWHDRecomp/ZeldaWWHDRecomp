@@ -2,7 +2,7 @@
 """Decomp build: which decompiled functions may later be called natively (plain C++ calls between decompiled
 functions, without a guest frame; native-calls design, phase 1). This only writes the rules; nothing uses them yet.
 
-usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf [--bare [--bare-entry]]] [--stackarg] [--accessor] [--unbased]]
+usage: native_rules.py DECOMP_DIR OUT_DIR GEN_DIR [strict] [--decl TABLE] [--cache DIR | --no-cache] [--lift CATS] [--fast [--hcall] [--a3-fn] [--leaf [--bare [--bare-entry]]] [--stackarg] [--accessor] [--unbased]]
 
 Reads OUT_DIR (gen.py's outputs: functions.tsv, excluded.txt, units.json, verify/image.bin when the sources are
 glued), GEN_DIR/table.c (the recompiler's function, import, kept and import-call tables) and the decompilation's
@@ -91,18 +91,44 @@ HCALL = re.compile(r"\bgabi::hcall<0x([0-9A-Fa-f]{8}),")
 INCLUDE = re.compile(r'^\s*#\s*include\s*"([^"]+)"', re.M)
 
 
+def header_refs(text):
+    """(gabi::hcall addresses, "..." includes) of a file's text (HeaderCalls; a pure function of the text)"""
+    return {int(a, 16) for a in HCALL.findall(text)}, INCLUDE.findall(text)
+
+
 class HeaderCalls:
     """--hcall (fast mode, gen.py --hcall): the gabi::hcall addresses a unit's sources reach, their own and those of
     the headers they include ("..." includes, transitively; searched as the compiler does: the including file's
     directory, the source's -iquote directory, then the unit include path with gen.py's OUT/hinc copy of
     wwhd_src/include in its place). Each header is read once."""
 
-    def __init__(self, src, out):
+    def __init__(self, src, out, cache=None):
+        self.cache = cache  # native_cache.Cache: each file's hcall addresses and includes by its content
         root = os.path.abspath(os.path.join(HERE, "..", ".."))
         self.dirs = [os.path.join(root, "runtime", "include"), os.path.join(src, "tools", "verify", "include"),
                      os.path.join(src, "tools", "verify", "src"), os.path.join(out, "hinc"),
                      os.path.join(src, "wwhd_src", "include"), os.path.join(out, "include")]
         self.memo = {}
+        self.isfile_memo = {}
+        self.find_memo = {}
+        self.cand_memo = {}
+
+    def candidates(self, inc, first):
+        """every existing file INC names from the directories FIRST and the include path, in search order"""
+        k = (tuple(first), inc)
+        v = self.cand_memo.get(k)
+        if v is None:
+            v = self.cand_memo[k] = [q for q in (os.path.normpath(os.path.join(d, inc)) for d in first + self.dirs)
+                                     if self.isfile(q)]
+        return v
+
+    def isfile(self, p):
+        """os.path.isfile, memoised for this object's life (the searched trees are inputs: nothing writes them while
+        it is used)"""
+        v = self.isfile_memo.get(p)
+        if v is None:
+            v = self.isfile_memo[p] = os.path.isfile(p)
+        return v
 
     def _file(self, path):
         if path not in self.memo:
@@ -110,13 +136,19 @@ class HeaderCalls:
                 text = open(path, encoding="utf-8", errors="replace").read()
             except OSError:
                 text = ""
-            self.memo[path] = ({int(a, 16) for a in HCALL.findall(text)}, INCLUDE.findall(text))
+            self.memo[path] = self.cache.text("nhdr", text, header_refs) if self.cache else header_refs(text)
         return self.memo[path]
 
     def _find(self, inc, first):
+        k = (tuple(first), inc)
+        if k not in self.find_memo:
+            self.find_memo[k] = self._find1(inc, first)
+        return self.find_memo[k]
+
+    def _find1(self, inc, first):
         for d in first + self.dirs:
             p = os.path.normpath(os.path.join(d, inc))
-            if os.path.isfile(p):
+            if self.isfile(p):
                 return p
         return None
 
@@ -253,46 +285,60 @@ def split_args(s):
     return out
 
 
-def source_features(paths):
-    """{addr: (features, (int args, float args))} from the bodies of WWHD_FUNC / WWHD_GLUE_FUNC functions"""
+def source_text_features(t):
+    """the part of source_features that one source's text T decides: [(addr, features, (int args, float args), result
+    kind, names the body calls)] of its WWHD_FUNC / WWHD_GLUE_FUNC bodies, in text order. A pure function of T
+    (native_cache.py keeps it by T's content)"""
+    got = []
+    for m in FUNC.finditer(t):
+        addr = int(m.group(3), 16)
+        # the macro's arguments, then the body: from the last '{' before it to its matching '}'
+        depth, k = 1, t.index("(", m.start()) + 1
+        while k < len(t) and depth:
+            depth += {"(": 1, ")": -1}.get(t[k], 0)
+            k += 1
+        allargs = split_args(t[t.index("(", m.start()) + 1:k - 1])
+        margs = allargs[2:]  # after addr, R
+        o = t.rfind("{", 0, m.start())
+        depth, j = 0, o
+        while j < len(t):
+            depth += {"{": 1, "}": -1}.get(t[j], 0)
+            if depth == 0:
+                break
+            j += 1
+        head = t[t.rfind("\n", 0, max(0, t.rfind(")", 0, o))) + 1:o]
+        body = t[k:j]
+        fs = set(nm for nm, rx in SRCF if rx.search(body) or (nm == "src:va" and rx.search(head)))
+        blank = a3_blank(body)
+        if LEAF_BAD.search(blank) or '"' in body:
+            fs.add("src:nonleaf")  # --leaf: a guest call form, string literal or gabi state use (never a reason)
+        called = set(CALL_NAME.findall(blank))
+        if "src:cpu" in fs and not SRCF_CPU.search(CPU_SP_READ.sub("", body)):
+            fs.add("src:cpu_sp")  # the only Cpu access: reads of the stack pointer (see CPU_SP_READ)
+        if m.group(1) and not m.group(2) and len(allargs) > 1 and allargs[1].strip() != "void":
+            fs.add("src:ret")  # a result native_returns.py did not hand to NativeScope (gabi.h: guest calls only)
+        if not m.group(1):
+            fs.add("src:wwhd_func")  # WWHD_FUNC (not the GameCube-style entry): its automatic frame, no native form
+        # parameter types from the function head: floats by type, the rest (this, pointers, integers) by count
+        params = split_args(head[head.rfind("(", 0, head.rfind(")")) + 1:head.rfind(")")]) if "(" in head else []
+        nf = sum(1 for x in params if FLOAT_T.match(" ".join(x.split()[:-1]) if len(x.split()) > 1 else x))
+        got.append((addr, fs, (max(0, len(margs) - nf), nf), ret_kind(allargs[1] if len(allargs) > 1 else ""), called))
+    return got
+
+
+def source_features(paths, cache=None):
+    """{addr: (features, (int args, float args), result kind)} from the bodies of WWHD_FUNC / WWHD_GLUE_FUNC functions
+    (the first source of PATHS that defines an address wins; LEAF_CALLS likewise). CACHE: native_cache.Cache"""
     out = {}
     for p in paths:
         try:
             t = open(p, encoding="utf-8", errors="replace").read()
         except OSError:
             continue
-        for m in FUNC.finditer(t):
-            addr = int(m.group(3), 16)
-            # the macro's arguments, then the body: from the last '{' before it to its matching '}'
-            depth, k = 1, t.index("(", m.start()) + 1
-            while k < len(t) and depth:
-                depth += {"(": 1, ")": -1}.get(t[k], 0)
-                k += 1
-            allargs = split_args(t[t.index("(", m.start()) + 1:k - 1])
-            margs = allargs[2:]  # after addr, R
-            o = t.rfind("{", 0, m.start())
-            depth, j = 0, o
-            while j < len(t):
-                depth += {"{": 1, "}": -1}.get(t[j], 0)
-                if depth == 0:
-                    break
-                j += 1
-            head = t[t.rfind("\n", 0, max(0, t.rfind(")", 0, o))) + 1:o]
-            body = t[k:j]
-            fs = set(nm for nm, rx in SRCF if rx.search(body) or (nm == "src:va" and rx.search(head)))
-            if LEAF_BAD.search(a3_blank(body)) or '"' in body:
-                fs.add("src:nonleaf")  # --leaf: a guest call form, string literal or gabi state use (never a reason)
-            LEAF_CALLS.setdefault(addr, (p, set(CALL_NAME.findall(a3_blank(body)))))
-            if "src:cpu" in fs and not SRCF_CPU.search(CPU_SP_READ.sub("", body)):
-                fs.add("src:cpu_sp")  # the only Cpu access: reads of the stack pointer (see CPU_SP_READ)
-            if m.group(1) and not m.group(2) and len(allargs) > 1 and allargs[1].strip() != "void":
-                fs.add("src:ret")  # a result native_returns.py did not hand to NativeScope (gabi.h: guest calls only)
-            if not m.group(1):
-                fs.add("src:wwhd_func")  # WWHD_FUNC (not the GameCube-style entry): its automatic frame, no native form
-            # parameter types from the function head: floats by type, the rest (this, pointers, integers) by count
-            params = split_args(head[head.rfind("(", 0, head.rfind(")")) + 1:head.rfind(")")]) if "(" in head else []
-            nf = sum(1 for x in params if FLOAT_T.match(" ".join(x.split()[:-1]) if len(x.split()) > 1 else x))
-            out.setdefault(addr, (fs, (max(0, len(margs) - nf), nf), ret_kind(allargs[1] if len(allargs) > 1 else "")))
+        for addr, fs, args, rk, called in (cache.text("nsrc", t, source_text_features) if cache else
+                                           source_text_features(t)):
+            LEAF_CALLS.setdefault(addr, (p, set(called)))
+            out.setdefault(addr, (set(fs), args, rk))
     return out
 
 
@@ -378,7 +424,12 @@ def called_names(text):
     return out
 
 
-def under_declared(paths, decl, rks=None):
+def own_called_names(t):
+    """called_names of source text T without its other-unit ext stub lines (under_declared; a pure function of T)"""
+    return called_names("\n".join(x for x in t.splitlines() if "/* other unit (ext) */" not in x))
+
+
+def under_declared(paths, decl, rks=None, cache=None):
     """{source path: [(callee, passes, takes)]}: `ext` glue lines that pass fewer registers than a register-exact
     (exact / shim) callee's definition takes, except stubs the source only takes the address of (gabi::guest_fn, a HostFn
     binding: no call; a stub called through a header wrapper counts as called). The declaration table (decl_lint.py) should never let these
@@ -413,7 +464,7 @@ def under_declared(paths, decl, rks=None):
                 pm = EXT_PROTO.match(e.group(2))
                 name = pm.group(2).split("::")[-1] if pm else None
                 if calls is None:
-                    calls = called_names("\n".join(x for x in t.splitlines() if "/* other unit (ext) */" not in x))
+                    calls = cache.text("ncalled", t, own_called_names) if cache else own_called_names(t)
                 if name and name not in calls and re.search(r"&\s*%s\b" % re.escape(name), t):
                     continue  # used by its address only (taken in the source and never called there)
                 out.setdefault(p, []).append((a, r, (d[1], d[2]), d[0]))
@@ -427,12 +478,20 @@ def decl_token(d, rk):
     return "decl=%s:%dr%df:%d" % (d[0], d[1], d[2], rk)
 
 
-def spec_values(src, directive):
-    """{FUNC: int(VALUE)} of every `directive FUNC VALUE` line of the gated unit specs (gen.py unit_specs)"""
+_UNIT_SPECS = {}
+
+
+def spec_values(src, directive, cache=None):
+    """{FUNC: int(VALUE)} of every `directive FUNC VALUE` line of the gated unit specs (gen.py unit_specs; read once
+    per run). CACHE: native_cache.Cache, by the decompilation's tools/verify/*.py and units/ tree"""
+    if cache:
+        return cache.specs(src, directive, spec_values)
     import gen
+    if src not in _UNIT_SPECS:
+        _UNIT_SPECS[src] = gen.unit_specs(src)
     rx = re.compile(r"^\s*%s\s+([0-9A-Fa-f]{8})\s+(\S+)" % directive)
     out = {}
-    for _, lines in gen.unit_specs(src):
+    for _, lines in _UNIT_SPECS[src]:
         for line in lines:
             m = rx.match(line.split("#")[0])
             if m:
@@ -478,15 +537,29 @@ def a3_bodies(t):
 
 
 _A3_HEADERS = {}
+_A3_HEADER_CALLS = {}
 
 
-def a3_header_calls(path, rx):
+def a3_reset():
+    """forgets the header trees a3_header_calls read (tests change them between calls)"""
+    _A3_HEADERS.clear()
+    _A3_HEADER_CALLS.clear()
+
+
+def a3_header_calls(path, rx, name=None):
     """whether a header of the include trees next to source PATH (its wwhd_src/include and the fast rewrite's hinc)
     has a line matching RX that is not a declaration (a prototype ending in ');' without '=' or 'return'); True when
-    the trees cannot be found"""
+    the trees cannot be found. NAME: a literal that every match of RX contains (a header without it is skipped). The
+    answer depends only on the trees (read once per run) and RX, so it is memoised by both: result_stub_callers asks
+    the same question for every source of a unit (1588 calls, 50 distinct, at decomp a13ed11)"""
     i = path.rfind("/wwhd_src/")
     if i < 0:
         return True
+    memo = (path[:i], rx.pattern, rx.flags, name)
+    got = _A3_HEADER_CALLS.get(memo)
+    if got is not None:
+        return got
+    got = False
     for root in (path[:i] + "/wwhd_src/include", os.path.join(os.path.dirname(path[:i]), "hinc")):
         if root not in _A3_HEADERS:
             texts = []
@@ -499,12 +572,20 @@ def a3_header_calls(path, rx):
                             pass
             _A3_HEADERS[root] = texts
         for txt in _A3_HEADERS[root]:
+            if name is not None and name not in txt:
+                continue
             for ln in txt.split("\n"):
                 if rx.search(ln):
                     st = ln.strip()
                     if not (st.endswith(");") and "=" not in st and "return" not in st):
-                        return True
-    return False
+                        got = True
+                        break
+            if got:
+                break
+        if got:
+            break
+    _A3_HEADER_CALLS[memo] = got
+    return got
 
 
 def result_stub_callers(under, units):
@@ -543,7 +624,7 @@ def result_stub_callers(under, units):
         if u in whole_units:
             continue
         rxs = {n: re.compile(r"(?<!\w)%s\s*\(" % re.escape(n)) for n in nm}
-        if any(a3_header_calls(p, rx) for p in units.get(u, ()) for rx in rxs.values()):
+        if any(a3_header_calls(p, rx, n) for p in units.get(u, ()) for n, rx in rxs.items()):
             whole_units.add(u)
             continue
         for p in units.get(u, ()):
@@ -618,7 +699,8 @@ def unbased_sources(src, paths):
     return {p for p in paths if has(p, set())}
 
 
-def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False, leaf=False, unbased=False, a3_stub=False):
+def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False, leaf=False, unbased=False, a3_stub=False,
+          cache=None):
     if decl_path is None:
         decl_path = os.path.join(src, "tools", "verify", "decl_handoff.tsv")
     decl = read_decl(decl_path)
@@ -629,14 +711,14 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
     funcs, imports, icalls, kept = read_table(os.path.join(gen_dir, "table.c"))
     img = os.path.join(out, "verify", "image.bin")
     secs = read_image(img) if os.path.isfile(img) else []
-    calls, tails, feat = scan_code(secs, funcs, icalls)
+    calls, tails, feat = cache.code(img, secs, funcs, icalls, scan_code) if cache and secs else scan_code(secs, funcs, icalls)
     park = may_park(funcs, imports, calls, tails, [a for a in funcs if "orig:bctrl" in feat.get(a, ())]) if secs else None
-    fx = set(spec_values(src, "framexact"))
-    fp = spec_values(src, "footprint")
+    fx = set(spec_values(src, "framexact", cache))
+    fp = spec_values(src, "footprint", cache)
     uj = json.load(open(os.path.join(out, "units.json"), encoding="utf-8"))
     paths = [s["path"] for u in uj["units"] for s in u["sources"]]
-    srcf = source_features(paths)
-    under = under_declared(paths, decl, {a: v[2] for a, v in srcf.items()})
+    srcf = source_features(paths, cache)
+    under = under_declared(paths, decl, {a: v[2] for a, v in srcf.items()}, cache)
     # an exact callee an ext line under-declares loses its native entry (configure error); a result declared for a callee
     # that returns nothing only needs the caller's guest calls (A3 decl: every earlier call stores its result)
     under_callees = {a for v in under.values() for a, r, _, st in v if st == "exact" and r != (-1, -1)}
@@ -738,7 +820,7 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
             d = None
         rows.append((a, r, caller, note, d, rk, fs))
     if leaf:
-        leaf_rules(rows, calls, tails, feat)
+        leaf_rules(rows, calls, tails, feat, cache)
     if unbased:
         ub = set()
         srcs = unbased_sources(src, paths)
@@ -757,7 +839,20 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
     return lines
 
 
-def leaf_rules(rows, calls, tails, feat):
+def source_names(t):
+    """[(name, addr)]: the decompiled functions (a3_bodies) and ext stubs of source text T by their short names (a
+    pure function of T, for leaf_rules)"""
+    out = [(nm, a) for a, nm, _, _ in a3_bodies(t) if nm]
+    m = re.search(r"/\* WWHD glue(.*?)\*/", t, re.S)
+    for line in (m.group(1).splitlines() if m else ()):
+        e = EXT_GLUE.match(line.strip())
+        pm = EXT_PROTO.match(e.group(2)) if e else None
+        if pm:
+            out.append((pm.group(2).split("::")[-1], int(e.group(1), 16)))
+    return out
+
+
+def leaf_rules(rows, calls, tails, feat, cache=None):
     """--leaf (fast mode, gabi.h GABI_LEAF, NativeInfo bit 20 "(leaf)"): bodies that keep no call state on a native entry.
     A leaf is a callee=native, register-exact function (decl= exact/shim) whose original makes no call at all (no bl, no
     tail branch into another function or an import, no branch through CTR or a bclrl: scan_code) and whose body has no source feature (no Local,
@@ -779,15 +874,8 @@ def leaf_rules(rows, calls, tails, feat):
             t = open(p, encoding="utf-8", errors="replace").read()
         except OSError:
             continue
-        for a, nm, _, _ in a3_bodies(t):
-            if nm:
-                names[p][nm].add(a)
-        m = re.search(r"/\* WWHD glue(.*?)\*/", t, re.S)
-        for line in (m.group(1).splitlines() if m else ()):
-            e = EXT_GLUE.match(line.strip())
-            pm = EXT_PROTO.match(e.group(2)) if e else None
-            if pm:
-                names[p][pm.group(2).split("::")[-1]].add(int(e.group(1), 16))
+        for nm, a in (cache.text("nleaf", t, source_names) if cache else source_names(t)):
+            names[p][nm].add(a)
     # a candidate whose body calls a name that is a decompiled function or ext stub of its source which is not a leaf is
     # no leaf (by name: an inline method of another class with the same name counts too, e.g. a pane's hide() inside a
     # function whose original makes no call); to a fixed point, since a demoted callee demotes its callers
@@ -954,58 +1042,69 @@ def ne_line_ok(line, name, in_body=False):
             re.match(r"\{\s*WWHD_GLUE_FUNC(?:_R)?\(\s*0x[0-9A-Fa-f]{8}\s*,", rest) is not None)
 
 
+def name_scan_text(raw, names, multiline=True):
+    """NameScan.scan of a file's text RAW: {name: [(line, allowed)]} for the NAMES it has. What a name gets depends on
+    the text, MULTILINE and that name only (not on the other names), so native_cache.py keeps it per name"""
+    text = ne_strip(raw)
+    word = re.compile(r"\b[A-Za-z_]\w*\b")
+    got = collections.defaultdict(list)
+    # braces: a scope (namespace, class, struct, union, enum, extern) or anything else (a function body, a
+    # block, an initializer); a line starting inside anything else is in a body
+    stack, head = [], ""
+    tl = text.split("\n")
+    for i, ln in enumerate(tl, 1):
+        hits = collections.Counter(w for w in word.findall(ln) if w in names)
+        in_body = any(not sc for sc in stack)
+        for nm, c in hits.items():
+            # a declaration or definition head whose parameter list goes on: the line with the next ones
+            # until its parentheses close (at most 8), classified as one
+            full, k = ln, i
+            while multiline and full.count("(") > full.count(")") and k < len(tl) and k < i + 8:
+                full += " " + tl[k]
+                k += 1
+            c2 = sum(1 for w in word.findall(full) if w == nm)
+            got[nm].append((i, c == 1 and c2 == 1 and ne_line_ok(full, nm, in_body)))
+        for ch in ln + "\n":
+            if ch == "{":
+                stack.append(re.search(r"\b(?:namespace|class|struct|union|enum|extern)\b", head) is not None
+                             and ")" not in head and "=" not in head)
+                head = ""
+            elif ch == "}":
+                if stack:
+                    stack.pop()
+                head = ""
+            elif ch == ";":
+                head = ""
+            else:
+                head += ch
+    return dict(got)
+
+
 class NameScan:
     """the lines of a unit's sources, and of the headers they include ("..." includes, transitively, every directory
     the compiler may take), that name one of NAMES: (file, line, allowed) with allowed as ne_line_ok decides (comments
     and string literals blanked; a declaration-like line inside a function body or block is never allowed; MULTILINE:
     a line whose parentheses stay open is classified together with the next ones until they close)"""
 
-    def __init__(self, out, src, names, multiline=True):
+    def __init__(self, out, src, names, multiline=True, cache=None):
         self.multiline = multiline  # (--bare-entry: False, a declaration over several lines blocks)
+        self.cache = cache  # native_cache.Cache: the scans by the file's content
         self.uj = json.load(open(os.path.join(out, "units.json"), encoding="utf-8"))
-        self.hc = HeaderCalls(src, out)
+        self.hc = HeaderCalls(src, out, cache)
         self.names = set(names)
-        self.word = re.compile(r"\b[A-Za-z_]\w*\b")
         self.memo = {}
         self.files_of = {}
 
     def scan(self, path):
         if path not in self.memo:
             try:
-                text = ne_strip(open(path, encoding="utf-8", errors="replace").read())
+                raw = open(path, encoding="utf-8", errors="replace").read()
             except OSError:
-                text = ""
-            got = collections.defaultdict(list)
-            # braces: a scope (namespace, class, struct, union, enum, extern) or anything else (a function body, a
-            # block, an initializer); a line starting inside anything else is in a body
-            stack, head = [], ""
-            tl = text.split("\n")
-            for i, ln in enumerate(tl, 1):
-                hits = collections.Counter(w for w in self.word.findall(ln) if w in self.names)
-                in_body = any(not sc for sc in stack)
-                for nm, c in hits.items():
-                    # a declaration or definition head whose parameter list goes on: the line with the next ones
-                    # until its parentheses close (at most 8), classified as one
-                    full, k = ln, i
-                    while self.multiline and full.count("(") > full.count(")") and k < len(tl) and k < i + 8:
-                        full += " " + tl[k]
-                        k += 1
-                    c2 = sum(1 for w in self.word.findall(full) if w == nm)
-                    got[nm].append((i, c == 1 and c2 == 1 and ne_line_ok(full, nm, in_body)))
-                for ch in ln + "\n":
-                    if ch == "{":
-                        stack.append(re.search(r"\b(?:namespace|class|struct|union|enum|extern)\b", head) is not None
-                                     and ")" not in head and "=" not in head)
-                        head = ""
-                    elif ch == "}":
-                        if stack:
-                            stack.pop()
-                        head = ""
-                    elif ch == ";":
-                        head = ""
-                    else:
-                        head += ch
-            self.memo[path] = got
+                raw = ""
+            if self.cache:
+                self.memo[path] = self.cache.names(raw, self.names, self.multiline, name_scan_text)
+            else:
+                self.memo[path] = name_scan_text(raw, self.names, self.multiline)
         return self.memo[path]
 
     def files(self, unit):
@@ -1021,9 +1120,8 @@ class NameScan:
                 p, quote = todo.pop()
                 first = [os.path.dirname(p)] + ([quote] if quote else [])
                 for inc in self.hc._file(p)[1]:
-                    for d in first + self.hc.dirs:  # every candidate, not only the first: conservative
-                        q = os.path.normpath(os.path.join(d, inc))
-                        if os.path.isfile(q) and q not in seen:
+                    for q in self.hc.candidates(inc, first):  # every candidate, not only the first: conservative
+                        if q not in seen:
                             seen.add(q)
                             todo.append((q, quote))
             self.files_of[unit] = sorted(seen)
@@ -1046,7 +1144,7 @@ STACKARG_NATIVE = {0x02011D2C, 0x025580FC}
 STACKARG_REASONS = {"src:cpu", "orig:caller-frame-read", "(may park)"}
 
 
-def stackarg_rules(lines, out, src):
+def stackarg_rules(lines, out, src, cache=None):
     """--stackarg: each STACKARG_NATIVE function whose only callee reasons are its stack-argument reads (src:cpu: its
     SP reads, STACK_ARG_READERS; orig:caller-frame-read: the original reads its caller's outgoing-argument area),
     that is caller=ok and register-exact, and that no line of its unit names except as ne_line_ok allows (no call by
@@ -1058,7 +1156,8 @@ def stackarg_rules(lines, out, src):
         a = int(line.split()[0], 16)
         if a in STACKARG_NATIVE:
             rows[a] = k
-    scan = NameScan(out, src, [plain_name(lines[k].split("#")[1].split(None, 1)[1]) or "" for k in rows.values()])
+    scan = NameScan(out, src, [plain_name(lines[k].split("#")[1].split(None, 1)[1]) or "" for k in rows.values()],
+                    cache=cache)
     n = 0
     for a in sorted(STACKARG_NATIVE):
         if a not in rows:
@@ -1151,7 +1250,7 @@ def accessor_rules(lines, out):
     return got
 
 
-def entry_only_rules(lines, out, src):
+def entry_only_rules(lines, out, src, cache=None):
     """--bare-entry (fast mode, gabi.h GABI_BARE_ENTRY, NativeInfo bit 23 "(nentry)"): bare leaves whose body nothing
     can call by name, so that every call reaches it through its native entry (lcall / hcall / call_ptr / gabi::call),
     whose pointer arguments are rebuilt from guest addresses, or from guest code, whose arguments are guest addresses:
@@ -1167,7 +1266,7 @@ def entry_only_rules(lines, out, src):
         if "(bare)" in line.split("#")[0]:
             unit, full = line.split("#")[1].split(None, 1)
             name_of[int(line.split()[0], 16)] = (unit, plain_name(full))
-    scan = NameScan(out, src, {nm for _, nm in name_of.values() if nm}, multiline=False)
+    scan = NameScan(out, src, {nm for _, nm in name_of.values() if nm}, multiline=False, cache=cache)
     ok, report = set(), []
     for a, (unit, nm) in sorted(name_of.items()):
         if nm is None:
@@ -1195,7 +1294,12 @@ def entry_only_rules(lines, out, src):
     return out_lines
 
 
-def unit_headers(out, lines, fast=False, hcalls=None, stackarg=False, accessors=None):
+def lcall_addrs(t):
+    """the gabi::lcall addresses of source text T (unit_headers; a pure function of T)"""
+    return [int(a, 16) for a in LCALL.findall(t)]
+
+
+def unit_headers(out, lines, fast=False, hcalls=None, stackarg=False, accessors=None, cache=None):
     """OUT/native/K.h for game unit K (units.json order, as glue/K.cpp): its functions' and the decompiled functions
     it calls in other units (lean calls) {address, slot index, flags (1: callee=native, 2: caller=ok, 4: listed)},
     sorted, as gabi.h's GABI_NATIVE_TABLE (pre-included by cmake/Decomp.cmake)"""
@@ -1236,7 +1340,8 @@ def unit_headers(out, lines, fast=False, hcalls=None, stackarg=False, accessors=
         ext = set()
         for src in u["sources"]:
             try:
-                ext.update(int(a, 16) for a in LCALL.findall(open(src["path"], encoding="utf-8", errors="replace").read()))
+                t = open(src["path"], encoding="utf-8", errors="replace").read()
+                ext.update(cache.text("nlcall", t, lcall_addrs) if cache else lcall_addrs(t))
             except OSError:
                 pass
             if hcalls:  # --hcall: the unit's calls by constant address (gabi.h hcall: native_info and Ne)
@@ -1249,8 +1354,9 @@ def unit_headers(out, lines, fast=False, hcalls=None, stackarg=False, accessors=
         for u in uj["units"]:
             for src in u["sources"]:
                 try:
-                    verify[index[u["name"]]].update(
-                        VERIFY_ADDR.findall(open(src["path"], encoding="utf-8", errors="replace").read()))
+                    t = open(src["path"], encoding="utf-8", errors="replace").read()
+                    verify[index[u["name"]]].update(cache.text("nverify", t, VERIFY_ADDR.findall) if cache else
+                                                    VERIFY_ADDR.findall(t))
                 except OSError:
                     pass
     # the exported functions: register-exact, with a VERIFY in their own unit (a callee without one keeps lcall's path)
@@ -1340,6 +1446,14 @@ def main():
         i = args.index("--lift")
         lift = tuple(x for x in (args[i + 1] if i + 1 < len(args) else "").split(",") if x)
         del args[i:i + 2]
+    cache_arg = None  # --cache DIR / --no-cache (native_cache.py; default: decl_cache.default_root)
+    if "--no-cache" in args:
+        args.remove("--no-cache")
+        cache_arg = "off"
+    if "--cache" in args:
+        i = args.index("--cache")
+        cache_arg = args[i + 1] if i + 1 < len(args) else ""
+        del args[i:i + 2]
     if "--decl" in args:
         i = args.index("--decl")
         decl_path = args[i + 1] if i + 1 < len(args) else ""
@@ -1348,7 +1462,9 @@ def main():
         sys.exit(__doc__.strip().splitlines()[4])
     src, out, gen_dir = (os.path.abspath(x) for x in args[:3])
     strict = len(args) == 4
-    lines = rules(src, out, gen_dir, strict, decl_path or None, lift, a3_fn, leaf, unbased, a3_stub)
+    import native_cache
+    cache = native_cache.open_cache(cache_arg)
+    lines = rules(src, out, gen_dir, strict, decl_path or None, lift, a3_fn, leaf, unbased, a3_stub, cache)
     if LEAF_ERRORS:  # --leaf: leaf_rules printed each
         sys.exit("native_rules.py: %d leaf function(s) call a decompiled function that is not a leaf (--leaf); a leaf "
                  "keeps no call state, so this is a rules error" % len(LEAF_ERRORS))
@@ -1357,9 +1473,9 @@ def main():
             sys.exit("native_rules.py: --bare needs --unbased (the unbased callers it leaves the glue for)")
         lines = bare_rules(lines)
         if bare_entry:
-            lines = entry_only_rules(lines, out, src)
+            lines = entry_only_rules(lines, out, src, cache)
     if stackarg:
-        lines = stackarg_rules(lines, out, src)
+        lines = stackarg_rules(lines, out, src, cache)
     if RULE_ERRORS:  # an exact callee with an under-declared call (rules() printed each): the decl table is wrong
         sys.exit("native_rules.py: %d ext declaration(s) pass fewer registers than their exact callee takes; fix the "
                  "decompilation's declarations (decl_lint.py) or its table" % len(RULE_ERRORS))
@@ -1367,12 +1483,15 @@ def main():
     gen.write_if_changed(os.path.join(out, "native.txt"),
                          "# generated by tools/decomp_build/native_rules.py (native-calls rules)\n"
                          + "\n".join(lines) + "\n")
-    unit_headers(out, lines, fast, HeaderCalls(src, out) if hcall else None, stackarg,
-                 accessor_rules(lines, out) if accessor else None)
+    unit_headers(out, lines, fast, HeaderCalls(src, out, cache) if hcall else None, stackarg,
+                 accessor_rules(lines, out) if accessor else None, cache)
     n = sum(1 for x in lines if "callee=native" in x)
     ne = sum(1 for x in lines if "callee=native" in x and DECL_FIELD.search(x.split("#")[0]))
     print("decomp: native-call rules%s: %d of %d functions may be called natively, %d of them register-exact (%s)" % (
         " (strict park rule)" if strict else "", n, len(lines), ne, os.path.join(out, "native.txt")))
+    if cache:  # (stderr: the messages, kept in native_rules.stdout, stay those of an uncached run)
+        cache.store.prune()
+        sys.stderr.write("decomp: native-call rules cache %s: %s (hits/lookups)\n" % (cache.store.root, cache.summary()))
 
 
 def inputs_stamp(argv, src, out, gen_dir):

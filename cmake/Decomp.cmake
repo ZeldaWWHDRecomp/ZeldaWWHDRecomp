@@ -307,6 +307,15 @@ function(wwhd_decomp_configure)
     list(JOIN lift "," lj)
     set(lift_args --lift "${lj}")
   endif()
+  # the shared decomp build cache (tools/decomp_build/decl_cache.py: the declaration table's per-unit entries;
+  # native_cache.py: native_rules.py's per-source entries), shared by build directories: WWHD_DECOMP_BUILD_CACHE
+  # (default: the environment variable of that name, else the user's cache directory; "off" disables it;
+  # WWHD_DECOMP_BUILD_CACHE_MB caps its size, default 3072)
+  set(WWHD_DECOMP_BUILD_CACHE "$ENV{WWHD_DECOMP_BUILD_CACHE}" CACHE STRING "decomp build: root of the shared declaration-table and native-rules cache (empty: the user cache directory; off: none)")
+  set(cache_args)
+  if(WWHD_DECOMP_BUILD_CACHE)
+    set(cache_args --cache "${WWHD_DECOMP_BUILD_CACHE}")
+  endif()
   set(decl_args)
   if(WWHD_DECOMP_DECL_TABLE)
     set(decl_args --decl "${WWHD_DECOMP_DECL_TABLE}")
@@ -320,13 +329,7 @@ function(wwhd_decomp_configure)
     # decompilation's decl_lint.py (port mode; tools/decomp_build/decl_table.py, cached by a hash of its inputs: a few
     # minutes when the decompilation or the translation changed, nothing otherwise). WWHD_DECOMP_DECL_TABLE overrides it.
     # The per-unit cache (tools/decomp_build/decl_cache.py) recomputes only what a change touches and is shared by
-    # build directories: WWHD_DECOMP_BUILD_CACHE (default: the environment variable of that name, else the user's
-    # cache directory; "off" disables it; WWHD_DECOMP_BUILD_CACHE_MB caps its size, default 3072)
-    set(WWHD_DECOMP_BUILD_CACHE "$ENV{WWHD_DECOMP_BUILD_CACHE}" CACHE STRING "decomp build, fast mode: root of the shared declaration-table cache (empty: the user cache directory; off: none)")
-    set(cache_args)
-    if(WWHD_DECOMP_BUILD_CACHE)
-      set(cache_args --cache "${WWHD_DECOMP_BUILD_CACHE}")
-    endif()
+    # build directories (WWHD_DECOMP_BUILD_CACHE above)
     cmake_host_system_information(RESULT ncpu QUERY NUMBER_OF_LOGICAL_CORES)
     execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/decl_table.py"
                             "${WWHD_DECOMP_DIR}" "${GEN_DIR}" "${WWHD_DECOMP_OUT}/verify/image.bin"
@@ -373,13 +376,14 @@ function(wwhd_decomp_configure)
     endif()
   endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py"
-                          "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE} ${decl_args} ${lift_args} ${fast_args}
+                          "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}" "${GEN_DIR}" ${WWHD_DECOMP_PARK_RULE} ${decl_args} ${cache_args} ${lift_args} ${fast_args}
                   RESULT_VARIABLE rc OUTPUT_VARIABLE out ERROR_VARIABLE err OUTPUT_STRIP_TRAILING_WHITESPACE)
   if(NOT rc EQUAL 0)
     message(FATAL_ERROR "WWHD_DECOMP: tools/decomp_build/native_rules.py failed:\n${out}\n${err}")
   endif()
   message(STATUS "${out}")
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_rules.py"
+               "${CMAKE_SOURCE_DIR}/tools/decomp_build/native_cache.py")
   # site-exact LR (tools/decomp_build/site_lr.py): the original's bl lists per unit and the sited sources' list
   # default OFF (2026-11-04: about 3 ms per logic pass on the phone, ladder step 2); level 1 sets LR only at the edges
 option(WWHD_DECOMP_SITE_LR "decomp build: each guest call of a decompiled function gets its own bl's return address where it can be matched" OFF)
