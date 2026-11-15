@@ -176,11 +176,14 @@ def moved_offset_errors(source, name):
                         flagged.add((k + 1 + tail.start(2), k + 1 + tail.end(2)))
                 break
 
-    def in_gi(pos):
-        return any(lo <= pos < hi for lo, hi in spans)
+    def in_spans(pos, ranges):
+        return any(lo <= pos < hi for lo, hi in ranges)
+
+    def play_c_fix(gi_off):
+        return f"gameInfo + GI(0x{gi_off:X}) (or play_c + GI(0x{gi_off:X}) - 0x{PLAY_C_BASE:X})"
 
     for m in LITERAL.finditer(text):
-        if in_gi(m.start()):
+        if in_spans(m.start(), spans) or in_spans(m.start(), flagged):
             continue
         value = int(m[1], 16)
         if MOVED_PLAY_OFFSETS[0] <= value < MOVED_PLAY_OFFSETS[1] and (name, value) not in NOT_A_MOVED_OFFSET:
@@ -192,25 +195,26 @@ def moved_offset_errors(source, name):
             ctx = text[max(0, m.start() - 120):m.end() + 120]
             if PLAY_CONTEXT.search(ctx):
                 line = text.count("\n", 0, m.start()) + 1
+                gi_off = value + PLAY_C_BASE
                 errors.append(f"{name}:{line}: 0x{value:X} near play may be a play_c-relative offset of a moved "
-                              f"member (gameInfo+0x{value + PLAY_C_BASE:X}); write play + GI(0x{value + PLAY_C_BASE:X}) "
+                              f"member (gameInfo+0x{gi_off:X}); write {play_c_fix(gi_off)} "
                               f"(guest_addr.h), or list why it is not one in NOT_A_MOVED_OFFSET")
                 flagged.add((m.start(), m.end()))
 
     for m in PLAY_ADD_DECIMAL.finditer(text):
-        if in_gi(m.start(1)) or (m.start(1), m.end(1)) in flagged:
+        if in_spans(m.start(1), spans) or in_spans(m.start(1), flagged):
             continue
         value = int(m[1], 10)
         if (MOVED_PLAY_OFFSETS[0] <= value < MOVED_PLAY_OFFSETS[1] or
                 MOVED_PLAY_C_OFFSETS[0] <= value < MOVED_PLAY_C_OFFSETS[1]) and (name, value) not in NOT_A_MOVED_OFFSET:
             line = text.count("\n", 0, m.start(1)) + 1
-            gameinfo_off = value if value >= MOVED_PLAY_OFFSETS[0] else value + PLAY_C_BASE
+            fix = f"GI(0x{value:X})" if value >= MOVED_PLAY_OFFSETS[0] else play_c_fix(value + PLAY_C_BASE)
             errors.append(f"{name}:{line}: {value} (0x{value:X}) added to play may be the decimal offset of a "
-                          f"moved member; write GI(0x{gameinfo_off:X}) (guest_addr.h)")
+                          f"moved member; write {fix} (guest_addr.h)")
             flagged.add((m.start(1), m.end(1)))
 
     for m in SPLIT_HEX_ADD.finditer(text):
-        if in_gi(m.start()):
+        if in_spans(m.start(), spans):
             continue
         if any(lo <= m.start() < hi or m.start() <= lo < m.end() for lo, hi in flagged):
             continue
@@ -226,9 +230,10 @@ def moved_offset_errors(source, name):
             ctx = text[max(0, m.start() - 120):m.end() + 120]
             if PLAY_CONTEXT.search(ctx):
                 line = text.count("\n", 0, m.start()) + 1
+                gi_off = total + PLAY_C_BASE
                 errors.append(f"{name}:{line}: 0x{a:X} + {rhs} (= 0x{total:X}) near play may be a play_c-relative "
-                              f"offset of a moved member (gameInfo+0x{total + PLAY_C_BASE:X}); write "
-                              f"play + GI(0x{total + PLAY_C_BASE:X}) (guest_addr.h)")
+                              f"offset of a moved member (gameInfo+0x{gi_off:X}); write "
+                              f"{play_c_fix(gi_off)} (guest_addr.h)")
     return errors
 
 
@@ -293,6 +298,11 @@ class CoverageTests(unittest.TestCase):
                     "ld32(play + 0x5A00 + 0x134);", "ld32(play + 0x4800 + 0x94);",
                     "ld32(play + GI(0x5134) + 0xA00);"):
             self.assertTrue(moved_offset_errors(raw, "src/new.cpp"), raw)
+        self.assertEqual(len(moved_offset_errors("ld32(play + GI(0x12A0) + 0x4894);", "src/new.cpp")), 1)
+        for play_c_case in ("ld32(play_c + 0x4894);", "ld32(play_c + 18580);", "ld32(play_c + 0x4800 + 0x94);"):
+            errs = moved_offset_errors(play_c_case, "src/new.cpp")
+            self.assertEqual(len(errs), 1, play_c_case)
+            self.assertIn("gameInfo + GI(0x5B34) (or play_c + GI(0x5B34) - 0x12A0)", errs[0])
         for fine in ("ld32(play + GI(0x5B34));", "ld32(play + GI(pad * 16 + 0x5CD8));", "ld32(play + 0x5134);",
                      "ld32(link + 0x65B0);", "// play + 0x5B34",
                      "uint32_t se = 0x4810;", "if (display && angle == 0x5000) {}",
