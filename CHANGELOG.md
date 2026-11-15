@@ -7,6 +7,15 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build: much faster phone (Android) builds** (#580). A test build of the decomp build for Android in a
+  build folder shared between branches used to rebuild everything after every switch and took about an hour. Now
+  only what changed is rebuilt: about 1.5 minutes with no change and about 11–19 minutes after a decomp edit. The game
+  code's roughly 39,000 entry points are split into several files instead of one huge file that alone took 13–17
+  minutes to compile; the machine code is the same. One build folder can serve several branches without a full
+  rebuild (`STABLE_SRC=1` in `android/build_native.sh`), and the link-time optimisation cache is now capped at 3 GB by
+  default (`WWHD_DECOMP_LTO_CACHE_POLICY`); the first build after updating shrinks an existing larger cache. The
+  normal build and the player setup are not affected.
+
 - **Decomp build: much faster rebuilds** (#578). The decomp build no longer redoes its slowest preparation steps after
   every change. The declaration table is cached per source file and shared between build folders, so after a `.cpp`
   edit it takes about 2–4 minutes instead of 13–17, and with nothing changed about 2 seconds. `gen.py` and
