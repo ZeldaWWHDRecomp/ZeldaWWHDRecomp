@@ -50,6 +50,7 @@ extern "C" int __llvm_profile_write_file(void);
 #include "../../one_screen.h"
 #include "deferred_commands.h"
 #include "record_worker.h"
+#include "record_worker_choice.h"
 #include "submission_cpu_ack.h"
 #include "submission_pool.h"
 #include "worker_present_policy.h"
@@ -4914,7 +4915,8 @@ static void init_device(std::vector<const char *> extensions,
 #ifdef WWHD_VK_SMOOTH
     defaultWorker=defaultWorker||smooth_defaults::record_worker();  // (smooth_defaults.h)
 #endif
-    set_record_worker_saved_choice(::hostui::get("vkRecordWorker", value) ? value == "1" : defaultWorker);
+    const bool saved=::hostui::get("vkRecordWorker", value);
+    set_record_worker_saved_choice(record_worker_choice(nullptr, saved ? value.c_str() : nullptr, defaultWorker));
   }
   nativeWorkerPresentation = false;
   if (record_worker_requested()) {

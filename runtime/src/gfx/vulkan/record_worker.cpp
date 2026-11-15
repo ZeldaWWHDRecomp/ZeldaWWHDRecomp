@@ -1,4 +1,5 @@
 #include "record_worker.h"
+#include "record_worker_choice.h"
 #include "deferred_commands.h"
 #include "platform/host.h"
 #include "render_prof.h"
@@ -196,10 +197,12 @@ bool savedChoice = false;
 }
 void set_record_worker_saved_choice(bool on) { savedChoice = on; }
 bool record_worker_requested() {
-    // -1: no environment override; the variable takes precedence over the saved setting
+    // the variable takes precedence over the saved setting (savedChoice: the saved setting or the device default,
+    // backend.cpp; record_worker_choice.h)
+    // (-1: not set; read once)
     static const int environment = [] {
         const char* e = std::getenv("WWHD_VK_RECORD_WORKER");
-        return e ? int(!std::strcmp(e, "1")) : -1;
+        return e ? int(record_worker_choice(e, nullptr, false)) : -1;
     }();
     return environment >= 0 ? environment == 1 : savedChoice;
 }

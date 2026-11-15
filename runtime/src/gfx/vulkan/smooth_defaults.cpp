@@ -40,16 +40,22 @@ std::string first_line(const char* path) {
     return s;
 }
 #endif
+// The worker half on this device: Android only. On the Steam Deck the normal build crashed at start with
+// VK_ERROR_DEVICE_LOST ("POD Vulkan operation failed: -4", issue #178, 2026-11-15) since the worker became the
+// default there (#576); the Deck keeps the pacing half until the cause is known.
+bool worker_half() { return worker_half_for(device() && !steam_deck(), steam_deck()); }
 void log_once() {
     static const bool logged = [] {
-        if (device() && kWorkerHalf)
+        if (worker_half())
             LOG("[vulkan smooth defaults] %s, " WWHD_SMOOTH_BUILD ": graphics on a second thread with multi-threaded "
                 "recording, 8 submission slots, late present acknowledgment, hot vsync waits, Smooth frame pacing %s (each environment "
                 "variable still wins)", steam_deck() ? "Steam Deck" : "Android", smooth_pacing_setting() ? "on" : "off");
         else if (device())
             LOG("[vulkan smooth defaults] %s, " WWHD_SMOOTH_BUILD ": 8 submission slots, late present acknowledgment, "
-                "Smooth frame pacing %s; graphics on one thread (each environment variable still wins)",
-                steam_deck() ? "Steam Deck" : "Android", smooth_pacing_setting() ? "on" : "off");
+                "Smooth frame pacing %s; graphics on one thread%s (each environment variable still wins)",
+                steam_deck() ? "Steam Deck" : "Android", smooth_pacing_setting() ? "on" : "off",
+                steam_deck() ? "; second-thread recording and hot vsync waits: Steam Deck default: off (issue #178)"
+                             : "");
         return true;
     }();
     (void)logged;
@@ -75,8 +81,9 @@ bool device() {
     return steam_deck();
 #endif
 }
-bool record_worker() { log_once(); return kWorkerHalf && device(); }
-unsigned record_mt() { return kWorkerHalf && device() ? 127u : 0u; }
+bool worker_half_for(bool android, bool deck) { return kWorkerHalf && android && !deck; }
+bool record_worker() { log_once(); return worker_half(); }
+unsigned record_mt() { return worker_half() ? 127u : 0u; }
 unsigned submission_slots() { return device() ? 8u : 0u; }
 bool late_present_ack() { return device(); }
 bool smooth_pacing_setting() {
@@ -85,7 +92,7 @@ bool smooth_pacing_setting() {
 }
 int display_pacing() { return device() && smooth_pacing_setting() ? 11 : 0; }
 bool even_pacing() { return device(); }
-int vsync_hot_wait_us(bool thirty_fps) { return kWorkerHalf && device() && !thirty_fps ? 8000 : 0; }
+int vsync_hot_wait_us(bool thirty_fps) { return worker_half() && !thirty_fps ? 8000 : 0; }
 int64_t vsync_hot_wait_applied_us(const char* env, bool thirty_fps) {
     return env && *env ? std::max<int64_t>(0, std::atoll(env)) : vsync_hot_wait_us(thirty_fps);
 }
