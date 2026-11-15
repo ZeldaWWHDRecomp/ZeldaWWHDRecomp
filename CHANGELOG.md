@@ -7,6 +7,15 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp build: much faster rebuilds** (#578). The decomp build no longer redoes its slowest preparation steps after
+  every change. The declaration table is cached per source file and shared between build folders, so after a `.cpp`
+  edit it takes about 2–4 minutes instead of 13–17, and with nothing changed about 2 seconds. `gen.py` and
+  `native_rules.py` skip their work when their inputs are unchanged, so a reconfigure with nothing changed takes 16 s
+  instead of about 13 minutes. When `ccache` is installed it is used for decomp builds, and a second build folder then
+  builds in about 8 minutes instead of an hour. Also fixed: build folders could keep an outdated live-in table after
+  their translation changed. `WWHD_DECOMP_BUILD_CACHE=off` and `-DWWHD_DECOMP_CCACHE=OFF` turn the new caches off. The
+  normal build is not affected.
+
 - **Phones and the Steam Deck: no active waiting at 30 fps** (#577). The active waiting for the screen from #576 is now
   off by default when the game runs at 30 fps (frame interpolation off). At 30 fps it made no frames smoother, and the
   phone warmed a little faster (Xiaomi 14: about +0.04 °C per minute in the Dragon Roost lava room and +0.1 °C per
