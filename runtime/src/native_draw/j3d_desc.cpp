@@ -59,7 +59,7 @@ enum Count : uint32_t {
     // sampler words, uniform-block words, ALU constants, vertex semantics, other
     cAmbP0, cAmbP1, cAmbP2, cAmbP3, cAmbP4, cAmbP5, cAmbD0, cAmbD1, cAmbD2, cAmbD3, cAmbD4, cAmbD5, cBaseVertex,
     cExtraRace, cTlHit, cTlEnvHit, cTlMeshHit, cProgFlagOk, cProgFlagWrong, cProgBind, cAmbIgnored, cAmbLive,
-    cAmbRefused,
+    cAmbRefused, cEnvDirty,
     cCounts
 };
 const char* const kReasonNames[kReasons] = {"described", "pass masked", "no resource", "named frame (wii_pipeline)",
@@ -87,7 +87,8 @@ const char* count_name(uint32_t c) {
         "key cache hits (no lock)", "env cache hits (no lock)", "mesh cache hits (no lock)",
         "site capture: program-bind flag right", "site capture: program-bind flag WRONG", "draws that bind the program",
         "ambient: leftover words past the program's counts (ignored by rule)",
-        "ambient: read-but-unbound block words (taken live)", "ambient: refused (D1 translated path)"};
+        "ambient: read-but-unbound block words (taken live)", "ambient: refused (D1 translated path)",
+        "env: a bound frame texture is dirty (the site's bind updates it)"};
     if (c >= cSkip0 && c < cSkip0 + kReasons) return kReasonNames[c - cSkip0];
     const uint32_t i = c < cSkip0 ? c : c - kReasons + 1;
     return i < sizeof names / sizeof names[0] && names[i] ? names[i] : "?";
@@ -263,6 +264,7 @@ struct Current {
     GameDesc* desc = nullptr;  // (stable: unordered_map nodes)
     GameEnv* env = nullptr;
     uint32_t descId = 0, descVersion = 0, envId = 0, envVersion = 0, meshId = 0, flags = 0, pass = 0;
+    bool envDirty = false;  // (wwhd_j3ddesc_flag(2)) a bound frame texture is dirty: the env is captured
     uint32_t blockCount = 0, blocks[kMaxBlocks * kBlockWords] = {};
     bool overflow = false;
     // a define or env capture in progress
@@ -566,6 +568,7 @@ extern "C" unsigned wwhd_j3ddesc_mode(void) {
         c.blockCount = 0;
         c.overflow = false;
         c.flags = 0;
+        c.envDirty = false;
         c.t0 = timing() ? now_ns() : 0;
         count(cHook);
     }
@@ -573,6 +576,10 @@ extern "C" unsigned wwhd_j3ddesc_mode(void) {
 }
 extern "C" void wwhd_j3ddesc_flag(unsigned flag) {
     if (flag == 1 && t_cur.open) t_cur.flags |= kFlagProgramBind;
+    // 2: a frame texture the env binds is dirty: the site's bindTextureSampler runs updateSamplerState (game memory:
+    // the sampler words, dirty = 0; and new sampler register words), so this draw's env is captured whatever its key
+    // (the key's dirty bytes are the values before that capture: a later dirty texture can repeat them)
+    if (flag == 2 && t_cur.open) t_cur.envDirty = true;
 }
 extern "C" void wwhd_j3ddesc_skip(unsigned reason) {
     t_cur.open = false;
@@ -750,7 +757,7 @@ extern "C" unsigned wwhd_j3ddesc_env(const unsigned* key, unsigned words) {
     c.tEnv = c.t0 ? now_ns() : 0;
     const uint64_t frame = g_gameFrame.load(std::memory_order_relaxed);
     const Key4 k4{key[0], key[1], key[2], key[3]};
-    if (tlcache_on()) {
+    if (tlcache_on() && !c.envDirty) {  // (D0 fb12d0622: a dirty bound frame texture captures the env)
         auto tl = t_envs.find(k4);
         if (tl != t_envs.end() && tl->second.key.size() == words && !std::memcmp(tl->second.key.data(), key, words * 4) &&
             objects_hold(tl->second.objects, frame)) {
@@ -769,6 +776,7 @@ extern "C" unsigned wwhd_j3ddesc_env(const unsigned* key, unsigned words) {
     c.env = &e;
     uint32_t why = 0;
     if (fresh) why = cEnvNew;
+    else if (c.envDirty) why = cEnvDirty;
     else if (e.key.size() != words || std::memcmp(e.key.data(), key, words * 4)) why = cEnvKey;
     else
         for (const auto& [o, version] : e.objects)
