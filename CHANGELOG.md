@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New: support for the Japanese release** (00050000-10143400, v0; #575, thanks @DynDec). Setup accepts the Japanese
+  disc image, the recompiler maps the Japanese code onto the USA addresses (moved play-object members are translated),
+  the in-app randomizer works on it, and the overlay loads a system Japanese font when Japanese text is needed. Guest
+  mods built with the new SDK (guestmod-0.4) resolve play-object offsets per release; mods that still use hand-written
+  moved offsets are refused on the Japanese release, and such packages need port 0.5.2 / mod manager 1.13.0 or newer.
+  Not yet on the Japanese release: catalogue minimap mods, One-screen's controller-free Options, and story scene
+  choices. Played from the start through the Forsaken Fortress on Windows; other platforms untested so far.
 - **Fixed: crash at start on the Steam Deck in Game Mode** (#178, #586). In Game Mode, gamescope's Vulkan layer
   (up to gamescope 3.16.31) corrupted memory when the game read past display timings the way the new "Smooth frame
   pacing" did, and the game crashed a few seconds after start. Display timings are now read safely, and the game
