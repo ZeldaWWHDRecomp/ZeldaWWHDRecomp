@@ -512,6 +512,25 @@ void game_swap() {
     }
     LOG("[j3d-desc] writeset frame %llu hash %016llX ranges %zu", (unsigned long long)frame, (unsigned long long)h,
         g_watch.size());
+    // WWHD_NATIVE_J3D_DESC_WRITESET_DUMP=F1,F2,...: the watched bytes at those game frames, one line per range
+    static const std::vector<uint64_t> dumpAt = [] {
+        std::vector<uint64_t> v;
+        if (const char* e = std::getenv("WWHD_NATIVE_J3D_DESC_WRITESET_DUMP"))
+            for (const char* q = e; *q;) {
+                v.push_back(std::strtoull(q, const_cast<char**>(&q), 10));
+                if (*q == ',') ++q; else break;
+            }
+        return v;
+    }();
+    if (std::find(dumpAt.begin(), dumpAt.end(), frame) != dumpAt.end())
+        for (const auto& [addr, bytes] : g_watch) {
+            if (!readable(addr, bytes)) continue;
+            std::string line;
+            char hex[4];
+            const uint8_t* b = mem::ptr(addr);
+            for (uint32_t i = 0; i < bytes && i < 0x200; ++i) std::snprintf(hex, sizeof hex, "%02X", b[i]), line += hex;
+            LOG("[j3d-desc] writeset dump frame %llu %08X+%X %s", (unsigned long long)frame, addr, bytes, line.c_str());
+        }
 }
 
 }  // namespace native_draw::j3ddesc
