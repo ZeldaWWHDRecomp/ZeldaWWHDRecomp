@@ -7,6 +7,15 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the game crashed at start on the Steam Deck** ("GX2 render thread: POD Vulkan operation failed: -4", #178,
+  #582). "Record graphics on a second thread" is now off by default on the Steam Deck while we look for the cause.
+  Smooth frame pacing and the other Steam Deck defaults stay on, and Android keeps the second thread. You can still
+  turn it on in Settings → Graphics → Advanced or with `WWHD_VK_RECORD_WORKER=1`. Thanks @xsoalokinx for the report.
+
+- **Decomp build: faster rebuilds after a decomp change** (#583). The step that works out which decomp functions can
+  call each other natively (`native_rules.py`) now only redoes the files that changed: about 30 seconds after a
+  decomp `.cpp` edit instead of 7–16 minutes, with the same result. The normal build is not affected.
+
 - **Decomp build: much faster phone (Android) builds** (#580). A test build of the decomp build for Android in a
   build folder shared between branches used to rebuild everything after every switch and took about an hour. Now
   only what changed is rebuilt: about 1.5 minutes with no change and about 11–19 minutes after a decomp edit. The game
