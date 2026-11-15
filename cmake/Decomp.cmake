@@ -65,6 +65,9 @@ if(WWHD_DECOMP)
     set(ccache_default "$ENV{WWHD_DECOMP_CCACHE}")
   endif()
   option(WWHD_DECOMP_CCACHE "decomp build: compile through ccache (default ON when ccache is installed)" ${ccache_default})
+  # WWHD_DECOMP_CCACHE_BASEDIR: CCACHE_BASEDIR as given (android/build_native.sh STABLE_SRC=1: the folder of the stable
+  # source links, the same for every worktree it builds); empty: the common parent described above
+  set(WWHD_DECOMP_CCACHE_BASEDIR "" CACHE PATH "decomp build: CCACHE_BASEDIR (empty: the common parent of the source tree, the decompilation and the build directory)")
   if(WWHD_DECOMP_CCACHE AND WWHD_CCACHE_PROGRAM AND NOT CMAKE_CXX_COMPILER_LAUNCHER AND NOT CMAKE_C_COMPILER_LAUNCHER)
     get_filename_component(base "${CMAKE_SOURCE_DIR}" REALPATH)
     foreach(p "${CMAKE_BINARY_DIR}" "${WWHD_DECOMP_DIR}")
@@ -75,6 +78,9 @@ if(WWHD_DECOMP)
         string(FIND "${p}/" "${base}/" at)
       endwhile()
     endforeach()
+    if(WWHD_DECOMP_CCACHE_BASEDIR)
+      set(base "${WWHD_DECOMP_CCACHE_BASEDIR}")
+    endif()
     set(launcher "${CMAKE_COMMAND}" -E env "CCACHE_BASEDIR=${base}" CCACHE_NOHASHDIR=1 "${WWHD_CCACHE_PROGRAM}")
     set(CMAKE_C_COMPILER_LAUNCHER ${launcher})
     set(CMAKE_CXX_COMPILER_LAUNCHER ${launcher})
@@ -243,6 +249,13 @@ function(wwhd_decomp_configure)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
+  # hooks.cpp's ~39000 hook_X entry points in files of WWHD_DECOMP_HOOK_SHARD (gen.py --hook-shard; hooks.cpp keeps the
+  # slot table): each entry point compiles to the same code, but one file of all of them took 17-37 min at -O3 (the
+  # longest single step of a decomp build), the shards a few seconds each, in parallel. 0: one hooks.cpp as before
+  set(WWHD_DECOMP_HOOK_SHARD "4096" CACHE STRING "decomp build: hook_X entry points per generated hooks file (0: all in hooks.cpp)")
+  if(WWHD_DECOMP_HOOK_SHARD GREATER 0)
+    list(APPEND gen_extra --hook-shard ${WWHD_DECOMP_HOOK_SHARD})
+  endif()
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_STACKARG)  # (gen.py: do_call sites of the stack-argument callees as do_call_sa)
     list(APPEND gen_extra --stackarg)
   endif()
@@ -385,6 +398,9 @@ option(WWHD_DECOMP_SITE_LR "decomp build: each guest call of a decompiled functi
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/site_lr.py")
   endif()
   set(WWHD_DECOMP_UNIT_COUNT ${WWHD_DECOMP_UNIT_COUNT} PARENT_SCOPE)
+  if(DEFINED WWHD_DECOMP_HOOK_SOURCES)
+    set(WWHD_DECOMP_HOOK_SOURCES ${WWHD_DECOMP_HOOK_SOURCES} PARENT_SCOPE)
+  endif()
   foreach(i RANGE 1 ${WWHD_DECOMP_UNIT_COUNT})
     math(EXPR k "${i} - 1")
     set(WWHD_DECOMP_UNIT_${k}_NAME "${WWHD_DECOMP_UNIT_${k}_NAME}" PARENT_SCOPE)
@@ -752,10 +768,14 @@ function(wwhd_decomp_link target)
     list(APPEND objs "${o}")
   endforeach()
   set_source_files_properties(${objs} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
-  set_source_files_properties("${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${WWHD_DECOMP_OUT}/hooks.cpp"
+  set(hook_srcs "${WWHD_DECOMP_OUT}/hooks.cpp")
+  if(DEFINED WWHD_DECOMP_HOOK_SOURCES)  # (units.cmake: hooks.cpp and its shards, WWHD_DECOMP_HOOK_SHARD)
+    set(hook_srcs ${WWHD_DECOMP_HOOK_SOURCES})
+  endif()
+  set_source_files_properties("${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" ${hook_srcs}
     PROPERTIES INCLUDE_DIRECTORIES "${WWHD_DECOMP_DIR}/tools/verify/include")
   target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
-    "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${WWHD_DECOMP_OUT}/hooks.cpp" ${objs})
+    "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" ${hook_srcs} ${objs})
   target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
   if(WWHD_DECOMP_FAST)  # the runtime's fast-mode parts (runtime/src/decomp)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST=1)
@@ -834,8 +854,16 @@ function(wwhd_decomp_link target)
       target_link_options(${target} PRIVATE -flto=thin "LINKER:--thinlto-jobs=${WWHD_DECOMP_FAST_LTO_JOBS}"
                           "LINKER:-cache_path_lto,${WWHD_DECOMP_OUT}/ltocache")  # (ld64.lld: Mach-O option names)
     else()
+      # the cache's size and age (ld.lld --thinlto-cache-policy; pruning only, the output is the same): without one
+      # lld lets it grow to 75 % of the free disk space (5 GB in the shared Android build, 2026-11-15). Empty: lld's default
+      set(WWHD_DECOMP_LTO_CACHE_POLICY "cache_size_bytes=3g:prune_after=168h" CACHE STRING
+          "decomp build, fast mode: ThinLTO cache policy of the whole-image link (ld.lld; empty: lld's default)")
+      set(policy)
+      if(WWHD_DECOMP_LTO_CACHE_POLICY)
+        set(policy "LINKER:--thinlto-cache-policy=${WWHD_DECOMP_LTO_CACHE_POLICY}")
+      endif()
       target_link_options(${target} PRIVATE -flto=thin "LINKER:--thinlto-jobs=${WWHD_DECOMP_FAST_LTO_JOBS}" "LINKER:--lto-O2"
-                          "LINKER:--thinlto-cache-dir=${WWHD_DECOMP_OUT}/ltocache")
+                          "LINKER:--thinlto-cache-dir=${WWHD_DECOMP_OUT}/ltocache" ${policy})
     endif()
   endif()
   if(WWHD_DECOMP_SITE_LR)

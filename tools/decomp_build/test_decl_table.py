@@ -124,6 +124,90 @@ class DeclTableTest(unittest.TestCase):
         self.assertEqual(self.runs(d2), 1)
 
 
+# the parts of decl_lint.py that read the runtime directory (as the decompilation has them)
+LINT_RUNTIME = '''def compile_flags():
+    f = list(CFLAGS)
+    if PATHS["runtime"] != os.path.join(ROOT, "runtime"):
+        f[f.index("-Iruntime/include")] = "-I" + os.path.join(PATHS["runtime"], "include")
+def _import_reads(runtime=None):
+    for path in glob.glob(os.path.join(runtime or os.path.join(ROOT, "runtime"), "src", "**", "*.cpp"), recursive=True):
+        t = open(path, encoding="utf-8", errors="replace").read()
+        for m in re.finditer(r"HLE\\((\\w+),\\s*(\\w+)\\)\\s*\\{", t):
+            pass
+def main():
+    if a.runtime:
+        IMPORT_READS.update(_import_reads(PATHS["runtime"]))
+'''
+
+
+class RuntimeInputsTest(unittest.TestCase):
+    """decl_table.inputs_hash reads of runtime/src only the HLE bodies decl_lint reads, while decl_lint reads nothing
+    else there"""
+
+    def setUp(self):
+        import decl_table
+        self.dt = decl_table
+        self.tmp = tempfile.TemporaryDirectory()
+        t = self.tmp.name
+        self.decomp, self.root, self.gen = (os.path.join(t, d) for d in ("decomp", "port", "gen"))
+        for d in (os.path.join(self.decomp, "tools", "verify"), os.path.join(self.root, "runtime", "src", "os"),
+                  os.path.join(self.root, "runtime", "include"), os.path.join(self.root, "tools"), self.gen):
+            os.makedirs(d)
+        self.lint(LINT_RUNTIME)
+        self.write("runtime/src/os/hle.cpp", "static int x;\nHLE(coreinit, OSFoo) {\n    if (arg(c, 0)) { x++; }\n}\n"
+                   "void helper() {}\n")
+        self.write("runtime/src/render.cpp", "void draw() {}\n")
+        self.write("runtime/src/render.h", "void draw();\n")
+        self.image, self.rpx = os.path.join(t, "image.bin"), os.path.join(t, "cking.rpx")
+        open(self.image, "wb").close()
+        tiny_rpx(self.rpx)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def lint(self, text):
+        with open(os.path.join(self.decomp, "tools", "verify", "decl_lint.py"), "w") as f:
+            f.write(text)
+
+    def write(self, rel, text):
+        with open(os.path.join(self.root, rel), "w") as f:
+            f.write(text)
+
+    def key(self):
+        return self.dt.inputs_hash(self.decomp, self.gen, self.image, self.rpx, root=self.root)
+
+    def test_hle_bodies(self):
+        self.assertEqual(self.dt.hle_bodies("a HLE(gx2, Draw) { if (x) { y(); } } b HLE(os, B){}"),
+                         ["HLE(gx2, Draw) { if (x) { y(); } }", "HLE(os, B){}"])
+
+    def test_only_hle_bodies_count(self):
+        k = self.key()
+        self.write("runtime/src/render.cpp", "void draw() { /* changed */ }\n")
+        self.write("runtime/src/render.h", "void draw(int);\n")
+        self.write("runtime/src/os/hle.cpp", "static int x, y;\nHLE(coreinit, OSFoo) {\n    if (arg(c, 0)) { x++; }\n}\n"
+                   "void helper() { y++; }\n")
+        self.assertEqual(self.key(), k)
+        self.write("runtime/src/os/hle.cpp", "HLE(coreinit, OSFoo) {\n    if (arg(c, 1)) {}\n}\n")
+        self.assertNotEqual(self.key(), k)
+        k = self.key()
+        self.write("runtime/src/new.cpp", "HLE(gx2, GX2Bar) { c->r[3] = 0; }\n")
+        self.assertNotEqual(self.key(), k)
+        k = self.key()
+        self.write("runtime/include/api.h", "int api;\n")  # the sources compile against runtime/include
+        self.assertNotEqual(self.key(), k)
+
+    def test_other_runtime_reader_hashes_every_file(self):
+        # a decl_lint that reads runtime/src some other way: every .cpp and .h file counts again
+        self.lint(LINT_RUNTIME + 'def more():\n    open(os.path.join(PATHS["runtime"], "src", "main.cpp"))\n')
+        k = self.key()
+        self.write("runtime/src/render.h", "void draw(int);\n")
+        self.assertNotEqual(self.key(), k)
+        self.lint(LINT_RUNTIME.replace('r"HLE\\(', 'r"HLE2\\('))  # another HLE reader
+        k = self.key()
+        self.write("runtime/src/render.cpp", "void draw() { /* changed */ }\n")
+        self.assertNotEqual(self.key(), k)
+
+
 class StoreTest(unittest.TestCase):
     def test_atomic_roundtrip_and_lru_cap(self):
         with tempfile.TemporaryDirectory() as t:

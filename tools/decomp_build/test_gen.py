@@ -122,6 +122,31 @@ class GenTest(unittest.TestCase):
         self.assertEqual(sorted(os.path.basename(x["path"]) for x in units["units"][0]["sources"]), ["a.cpp", "a2.cpp"])
         self.assertTrue(units["units"][0]["glue"].endswith(os.path.join("glue", "0.cpp")))
 
+    def test_hook_shards(self):
+        # the same entry points, 3 per file after the tables; one file again removes the shards
+        self.run_gen()
+        whole = self.read("hooks.cpp")
+        entries = [l for l in whole.splitlines() if l.startswith("void hook")]
+        self.assertEqual(len(entries), 4)
+        self.assertIn('"%s"' % os.path.join(self.out, "hooks.cpp").replace("\\", "/"), self.read("units.cmake"))
+        self.run_gen("--hook-shard", "3")
+        tables = self.read("hooks.cpp")
+        self.assertEqual(tables, whole.replace("\n".join(entries) + "\n", ""))
+        shards = [self.read("hooks_1.cpp"), self.read("hooks_2.cpp")]
+        self.assertFalse(os.path.exists(os.path.join(self.out, "hooks_3.cpp")))
+        got = [l for s in shards for l in s.splitlines() if l.startswith("void hook")]
+        self.assertEqual(got, entries)
+        self.assertEqual([len([l for l in s.splitlines() if l.startswith("void hook")]) for s in shards], [3, 1])
+        for s in shards:
+            self.assertIn('#include "decomp/decomp.h"', s)
+            self.assertNotIn("g_slots[]", s)
+        units = self.read("units.cmake")
+        self.assertIn("set(WWHD_DECOMP_HOOK_SOURCES\n  \"%s\"\n  \"%s\"\n  \"%s\")" % tuple(
+            os.path.join(self.out, f).replace("\\", "/") for f in ("hooks.cpp", "hooks_1.cpp", "hooks_2.cpp")), units)
+        self.run_gen()
+        self.assertEqual(self.read("hooks.cpp"), whole)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "hooks_1.cpp")))
+
     def test_frame_exact(self):
         # `framexact FUNC RET` lines of a unit spec: listed functions only (0x02000700 is not decompiled)
         with open(os.path.join(self.src, "tools/verify/units/bunit.txt"), "a") as f:
