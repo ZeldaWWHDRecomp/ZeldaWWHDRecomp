@@ -1204,7 +1204,20 @@ void resolved(const uint32_t* regs, const Resolved& r) {
             live = true;
             continue;
         }
+        // CB_TARGET_MASK: only the nibbles of colour targets bound in this pass are observable (lead decision
+        // 2026-11-15, an application of decision 1 as refined); the others are leftovers
+        uint32_t observed = 0xFFFFFFFFu;
+        if (reg == REGADDR::CB_TARGET_MASK) {
+            observed = 0;
+            for (int i = 0; i < 8; ++i)
+                if (r.colors[i]) observed |= 0xFu << (4 * i);
+        }
         auto [it, fresh] = snap.try_emplace(reg, regs[reg]);
+        if (!fresh && it->second != regs[reg] && !((it->second ^ regs[reg]) & observed)) {
+            ignored = true;
+            it->second = regs[reg];
+            continue;
+        }
         if (!fresh && it->second != regs[reg]) {
             ++g_descEnvHist[reg];
             if (!refused) {
