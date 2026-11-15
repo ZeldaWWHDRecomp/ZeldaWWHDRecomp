@@ -512,6 +512,19 @@ def derive_pairs(canon, other, layouts, pairs, removed, inserted):
         layout_only.pop(i, None)
     differs = sorted(set(differs) | calls_elsewhere)
 
+    disps = collections.Counter()
+    disps_r0 = 0
+    for i, j in layout_only.items():
+        for w1, w2 in zip(bc[i], bo[j]):
+            if w1 != w2:
+                d1, d2 = sext(w1 & 0xFFFF, 16), sext(w2 & 0xFFFF, 16)
+                disps[(d1, d2 - d1)] += 1
+                # rA == 0 in D-form is li (addi with r0) or an absolute low address, not a pointer to a layout object.
+                if ((w1 >> 16) & 0x1F) == 0:
+                    disps_r0 += 1
+    layout_hist = {"%+X (%+d)" % (d1, delta): count
+                   for (d1, delta), count in sorted(disps.items(), key=lambda kv: (-kv[1], kv[0]))}
+
     # data: a relocation in an unchanged function names the same global in both builds
     seen = collections.defaultdict(collections.Counter)
     for a, lst in canon.reloc_target.items():
@@ -551,7 +564,8 @@ def derive_pairs(canon, other, layouts, pairs, removed, inserted):
         "stats": {"functions": n, "functions_other": m, "anchors": len(anchors), "calls_checked": checked,
                   "data_addresses": len(seen), "same_code": len(same), "layout_only": len(layout_only),
                   "reordered": moved, "calls_to_copies": duplicates,
-                  "calls_elsewhere": ["%08X" % canon.entries[i] for i in sorted(calls_elsewhere)]},
+                  "calls_elsewhere": ["%08X" % canon.entries[i] for i in sorted(calls_elsewhere)],
+                  "layout_displacements_r0": disps_r0, "layout_displacements": layout_hist},
         # for derive_aligned's pointer pass only (not written to the map)
         "_maps": maps, "_data": data, "_called": called,
     }
@@ -670,6 +684,21 @@ def report(m):
             print("   layout %s at %08X (+%X bytes), bases %s: %s" % (
                 lay.name, lay.start, lay.size, " ".join("+%X" % b for b in lay.bases),
                 ", ".join("from +%X %+d" % (o, d) for o, d in lay.steps)))
+        hist = s.get("layout_displacements")
+        if hist:
+            total = sum(hist.values())
+            print("   explained displacements: %d word%s (%d distinct, %d with base r0)" % (
+                total, "" if total == 1 else "s", len(hist), s.get("layout_displacements_r0", 0)))
+            line = ""
+            for k, count in hist.items():
+                item = "%s: %d" % (k, count)
+                if line and len(line) + 2 + len(item) > 96:
+                    print("      " + line)
+                    line = item
+                else:
+                    line = item if not line else line + ", " + item
+            if line:
+                print("      " + line)
         for a, size in m["removed_functions"]:
             print("   only canonical: %08X (%d bytes)" % (a, size))
         for a, size in m["inserted_functions"]:
