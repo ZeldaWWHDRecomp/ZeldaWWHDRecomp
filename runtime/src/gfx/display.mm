@@ -20,7 +20,7 @@
 //
 // The modes, the layout of the TV window, the automatic overlay and the overlay's touch mapping are
 // shared with the SDL host (display_modes.cpp, which lists their test variables: WWHD_DRC_MODE,
-// WWHD_DRC_PIP, WWHD_SCALE_FILTER, WWHD_SIM_SCREEN, WWHD_TEST_TOUCH).
+// WWHD_DRC_PIP, WWHD_SCALE_FILTER, WWHD_SIM_SCREEN, WWHD_TEST_TOUCH, WWHD_TEST_DRC_TOUCH).
 //
 // Debug / test environment:
 //   WWHD_FULLSCREEN=0|1                  TV window starts windowed / in full screen instead of as it was left
