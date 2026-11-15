@@ -254,7 +254,7 @@ def gamecode_flags(build):
 
 def is_system_path(p):
     p = p.replace("\\", "/")
-    return ("/MacOSX.platform/" in p or "/AppleTVOS.platform/" in p or "/iPhoneOS.platform/" in p
+    return ("/MacOSX.platform/" in p or "/AppleTVOS.platform/" in p or "/iPhoneOS.platform/" in p or "/XROS.platform/" in p
             or "/CommandLineTools/SDKs/" in p or p.startswith("/usr/lib/") or p.startswith("/lib/"))
 
 
@@ -423,7 +423,9 @@ def file_sha256(path):
 
 # Apple TV and iPhone / iPad apps (setup.py --apple-device, tools/installer/apple_device.py): CMake builds for those
 # SDKs against the placeholder game code, each to sdk/apple/<kind> with its own recipe; their headers are sdk/include
-APPLE_KINDS = {"tvOS": ("tvos", "appletvos"), "iOS": ("ios", "iphoneos")}
+sys.path.insert(0, os.path.join(ROOT, "tools", "installer"))
+import apple_device  # noqa: E402  (its KINDS: the Apple device kinds; CMAKE_SYSTEM_NAME is the kind's platform)
+APPLE_KINDS = {k.platform: (k.folder, k.sdk) for k in apple_device.KINDS.values()}
 APPLE_TOOL_FILES = ["tvos/bundle_mods.py", "tvos/make_icon.py"]
 
 
@@ -432,7 +434,7 @@ def add_apple(pkg, abuild, linkonly):
     manifest's entry for it."""
     system = cache_value(abuild, "CMAKE_SYSTEM_NAME")
     if system not in APPLE_KINDS:
-        sys.exit("--apple-build %s: not a tvOS or iOS build (CMAKE_SYSTEM_NAME %r)" % (abuild, system))
+        sys.exit("--apple-build %s: not a tvOS, iOS or visionOS build (CMAKE_SYSTEM_NAME %r)" % (abuild, system))
     kind, sdk_name = APPLE_KINDS[system]
     rel = os.path.join("sdk", "apple", kind)
     driver, link, nobj, nlib = build_link_recipe(abuild, pkg, linkonly, rel, "WindWakerHD.app/WindWakerHD")
