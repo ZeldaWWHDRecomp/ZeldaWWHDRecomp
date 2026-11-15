@@ -240,6 +240,14 @@ uint32_t g_checkSaid = 0;
 uint64_t g_runSerial = 1;
 uint32_t g_runCount = 0;
 
+namespace {
+uint64_t g_v[0x10000 / 64];  // V
+uint64_t g_vGen = 1;
+uint64_t g_runId = 1;        // the open run (a new one at the first push after a settle)
+uint64_t g_rstamp[0x10000];  // per watched register: the run that wrote it last, and the value
+uint32_t g_rval[0x10000];
+inline bool watched(uint32_t r) { return g_v[r >> 6] >> (r & 63) & 1; }
+}  // namespace
 void push_run(const In& in) {
     if (g_run.empty()) count(cRuns), ++g_runId;
     // the watched registers' run values (item effect, then the blocks)
@@ -268,14 +276,6 @@ void push_run(const In& in) {
     g_runCount = uint32_t(g_run.size());
 }
 
-namespace {
-uint64_t g_v[0x10000 / 64];  // V
-uint64_t g_vGen = 1;
-uint64_t g_runId = 1;        // the open run (a new one at the first push after a settle)
-uint64_t g_rstamp[0x10000];  // per watched register: the run that wrote it last, and the value
-uint32_t g_rval[0x10000];
-inline bool watched(uint32_t r) { return g_v[r >> 6] >> (r & 63) & 1; }
-}  // namespace
 void add_watched(const uint32_t* regs, size_t n) {
     bool grew = false;
     for (size_t i = 0; i < n; ++i) {
@@ -431,7 +431,8 @@ void draw(uint32_t* regs, Apply apply, const uint32_t* p, uint32_t n) {
     // this draw (flag kFlagProgramBind: setProgramShaderMode runs). Refused items: in their commands.
     if (!in.item->refused) {
         Timed timedInv(tInvalidateNs);
-        if (p[5] & kFlagProgramBind)
+        static const bool allInv = switch_value("WWHD_NATIVE_J3D_DESC_D1ALLINV", 0) != 0;  // (before flag 8: every draw)
+        if ((p[5] & kFlagProgramBind) || allInv)
             for (size_t k = 0; k + 2 < in.item->programInvalidates.size(); k += 3) {
                 const uint32_t* v = in.item->programInvalidates.data() + k;
                 count(cInvalidates);
@@ -448,6 +449,10 @@ void draw(uint32_t* regs, Apply apply, const uint32_t* p, uint32_t n) {
         note(in.item->refused);
         return full(in);
     }
+    // WWHD_NATIVE_J3D_DESC_D1FULL=1 (profile baseline): every described draw the translated way (effects applied, the
+    // full draw), timed in the same scope as the described draws
+    static const bool allFull = switch_value("WWHD_NATIVE_J3D_DESC_D1FULL", 0) != 0;
+    if (allFull) return full(in);
 #ifdef WWHD_HAS_VULKAN
     if (render::vulkan()) {
         // port features acting per draw keep the translated path (the D0 builder skips most of them already)
