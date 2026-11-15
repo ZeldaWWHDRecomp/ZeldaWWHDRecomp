@@ -243,6 +243,13 @@ function(wwhd_decomp_configure)
   # the decompilation's port_hooks.h points call the port in this game build (-DGABI_GAME_BUILD below): their
   # instruction hooks no longer keep the functions recompiled (gen.py --game-build, tools/decomp_build/port_sites.py)
   list(APPEND gen_extra --game-build)
+  # hooks.cpp's ~39000 hook_X entry points in files of WWHD_DECOMP_HOOK_SHARD (gen.py --hook-shard; hooks.cpp keeps the
+  # slot table): each entry point compiles to the same code, but one file of all of them took 17-37 min at -O3 (the
+  # longest single step of a decomp build), the shards a few seconds each, in parallel. 0: one hooks.cpp as before
+  set(WWHD_DECOMP_HOOK_SHARD "4096" CACHE STRING "decomp build: hook_X entry points per generated hooks file (0: all in hooks.cpp)")
+  if(WWHD_DECOMP_HOOK_SHARD GREATER 0)
+    list(APPEND gen_extra --hook-shard ${WWHD_DECOMP_HOOK_SHARD})
+  endif()
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_STACKARG)  # (gen.py: do_call sites of the stack-argument callees as do_call_sa)
     list(APPEND gen_extra --stackarg)
   endif()
@@ -385,6 +392,9 @@ option(WWHD_DECOMP_SITE_LR "decomp build: each guest call of a decompiled functi
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/tools/decomp_build/site_lr.py")
   endif()
   set(WWHD_DECOMP_UNIT_COUNT ${WWHD_DECOMP_UNIT_COUNT} PARENT_SCOPE)
+  if(DEFINED WWHD_DECOMP_HOOK_SOURCES)
+    set(WWHD_DECOMP_HOOK_SOURCES ${WWHD_DECOMP_HOOK_SOURCES} PARENT_SCOPE)
+  endif()
   foreach(i RANGE 1 ${WWHD_DECOMP_UNIT_COUNT})
     math(EXPR k "${i} - 1")
     set(WWHD_DECOMP_UNIT_${k}_NAME "${WWHD_DECOMP_UNIT_${k}_NAME}" PARENT_SCOPE)
@@ -752,10 +762,14 @@ function(wwhd_decomp_link target)
     list(APPEND objs "${o}")
   endforeach()
   set_source_files_properties(${objs} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
-  set_source_files_properties("${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${WWHD_DECOMP_OUT}/hooks.cpp"
+  set(hook_srcs "${WWHD_DECOMP_OUT}/hooks.cpp")
+  if(DEFINED WWHD_DECOMP_HOOK_SOURCES)  # (units.cmake: hooks.cpp and its shards, WWHD_DECOMP_HOOK_SHARD)
+    set(hook_srcs ${WWHD_DECOMP_HOOK_SOURCES})
+  endif()
+  set_source_files_properties("${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" ${hook_srcs}
     PROPERTIES INCLUDE_DIRECTORIES "${WWHD_DECOMP_DIR}/tools/verify/include")
   target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
-    "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${WWHD_DECOMP_OUT}/hooks.cpp" ${objs})
+    "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" ${hook_srcs} ${objs})
   target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
   if(WWHD_DECOMP_FAST)  # the runtime's fast-mode parts (runtime/src/decomp)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST=1)
