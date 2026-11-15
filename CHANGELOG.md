@@ -7,6 +7,14 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: crash at start on the Steam Deck in Game Mode** (#178, #586). In Game Mode, gamescope's Vulkan layer
+  (up to gamescope 3.16.31) corrupted memory when the game read past display timings the way the new "Smooth frame
+  pacing" did, and the game crashed a few seconds after start. Display timings are now read safely, and the game
+  checks that they are trustworthy (matching refresh rate, real timings coming back) before it paces on them;
+  otherwise it paces on its own CPU-side even pacing, so Game Mode keeps smooth frame pacing. A log line
+  (`[vulkan display pacing] source: …`) says which one is used. Desktop Mode and Android are unchanged. Thanks
+  @xsoalokinx for testing.
+
 - **Fixed: the game crashed at start on the Steam Deck** ("GX2 render thread: POD Vulkan operation failed: -4", #178,
   #582). "Record graphics on a second thread" is now off by default on the Steam Deck while we look for the cause.
   Smooth frame pacing and the other Steam Deck defaults stay on, and Android keeps the second thread. You can still
