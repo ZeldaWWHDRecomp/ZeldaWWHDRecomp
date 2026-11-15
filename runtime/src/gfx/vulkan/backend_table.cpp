@@ -2,6 +2,7 @@
 #include "api.h"
 #include "gamepad_backdrop.h"
 #include "stereo.h"
+#include "gfx/stereo_gx2.h"
 #include "buffer_cache.h"
 #include "settings.h"
 #include "reproj.h"
@@ -54,9 +55,9 @@ const Backend& vulkan_backend() {
 #endif
         b.draw = gfxvk::draw_stereo;
         b.gamepad_backdrop_scope = gfxvk::gamepad_backdrop_scope;
-        b.clear_color = [](const uint32_t* r, uint32_t cb, const float* c) { gfxvk::stereo_pair([&] { gfxvk::clear_color(r, cb, c); }); };
-        b.clear_depth_stencil = [](const uint32_t* r, uint32_t db, float d, uint32_t s, uint32_t f) { gfxvk::stereo_pair([&] { gfxvk::clear_depth_stencil(r, db, d, s, f); }); };
-        b.copy_surface = [](uint32_t s, uint32_t sm, uint32_t sl, uint32_t d, uint32_t dm, uint32_t dl) { gfxvk::stereo_pair([&] { gfxvk::copy_surface(s, sm, sl, d, dm, dl); }); };
+        b.clear_color = [](const uint32_t* r, uint32_t cb, const float* c) { gfxvk::stereo_pair([&] { gfxvk::clear_color(r, cb, c); }, false, stereo::shared_color_buffer(cb)); };
+        b.clear_depth_stencil = [](const uint32_t* r, uint32_t db, float d, uint32_t s, uint32_t f) { gfxvk::stereo_pair([&] { gfxvk::clear_depth_stencil(r, db, d, s, f); }, false, stereo::shared_depth_buffer(db)); };
+        b.copy_surface = [](uint32_t s, uint32_t sm, uint32_t sl, uint32_t d, uint32_t dm, uint32_t dl) { gfxvk::stereo_pair([&] { gfxvk::copy_surface(s, sm, sl, d, dm, dl); }, false, stereo::shared_copy_destination(d, dm)); };
         b.copy_to_scan = [](uint32_t cb, uint32_t t) { gfxvk::stereo_pair([&] { gfxvk::copy_to_scan(cb, t); }); };
         // eye 1's held commands precede the presentation recorded into the frame's last submission
         b.swap = [] { gfxvk::stereo_flush(); gfxvk::stereo_select_eye(0); gfxvk::swap(); gfxvk::stereo_latch(); };
@@ -105,6 +106,7 @@ const Backend& vulkan_backend() {
             case kFeatureScaleFilter: return gfxvk::graphics_feature_available(gfxvk::GraphicsFeature::ScaleFilter);
             case kFeatureCapture: return true;
             case kFeatureShaderHeadStart: return false;  // Metal shader cache only
+            case kFeatureStereo: return true;
             }
             return true;
         };

@@ -279,7 +279,8 @@ void overlay_prepare(ImDrawData* d) {
         if (tex->Status != ImTextureStatus_OK) update_texture(cmd, tex);
 }
 
-void overlay_draw(ImDrawData* d, VkCommandBuffer cmd, VkFormat format, VkExtent2D extent, bool linear, int eye,float whiteScale) {
+void overlay_draw(ImDrawData* d, VkCommandBuffer cmd, VkFormat format, VkExtent2D extent, bool linear, int eye,float whiteScale,
+                  float shift) {
     if (!d || d->TotalVtxCount <= 0 || d->DisplaySize.x <= 0 || d->DisplaySize.y <= 0) return;
     // the draw data is laid out for the TV window; a target of another size (present dump) gets it scaled
     const bool packed = eye >= 0;
@@ -307,7 +308,7 @@ void overlay_draw(ImDrawData* d, VkCommandBuffer cmd, VkFormat format, VkExtent2
     Params p{};
     p.scale[0] = 2.0f / d->DisplaySize.x;
     p.scale[1] = 2.0f / d->DisplaySize.y;
-    p.translate[0] = -1.0f - d->DisplayPos.x * p.scale[0];
+    p.translate[0] = -1.0f - (d->DisplayPos.x - shift) * p.scale[0];
     p.translate[1] = -1.0f - d->DisplayPos.y * p.scale[1];
     p.linear = linear ? 1 : 0;
     p.whiteScale = whiteScale;
@@ -322,8 +323,8 @@ void overlay_draw(ImDrawData* d, VkCommandBuffer cmd, VkFormat format, VkExtent2
                     record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(format,c.UserCallbackData!=nullptr));
                 continue;
             }
-            float x0 = (c.ClipRect.x - d->DisplayPos.x) * sx, y0 = (c.ClipRect.y - d->DisplayPos.y) * sy;
-            float x1 = (c.ClipRect.z - d->DisplayPos.x) * sx, y1 = (c.ClipRect.w - d->DisplayPos.y) * sy;
+            float x0 = (c.ClipRect.x - d->DisplayPos.x + shift) * sx, y0 = (c.ClipRect.y - d->DisplayPos.y) * sy;
+            float x1 = (c.ClipRect.z - d->DisplayPos.x + shift) * sx, y1 = (c.ClipRect.w - d->DisplayPos.y) * sy;
             x0 = std::max(x0, 0.0f);
             y0 = std::max(y0, 0.0f);
             x1 = std::min(x1, vw);

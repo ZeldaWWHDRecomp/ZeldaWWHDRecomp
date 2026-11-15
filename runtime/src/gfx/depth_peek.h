@@ -4,6 +4,7 @@
 #include <cmath>
 #include <condition_variable>
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -11,6 +12,15 @@ namespace gfx::depth_peek {
 inline uint32_t from_float(float z) {
     if (!std::isfinite(z)) return 0;
     return z >= 1.0f ? 0xFFFFFFu : uint32_t(std::clamp(z, 0.0f, 1.0f) * 16777215.0f);
+}
+// a depth texel read back: 16-bit unorm or 32-bit float bytes, as 0..1 and as the 24-bit value the game reads
+inline float texel(const uint8_t* bytes, bool d16) {
+    if (d16) { uint16_t v; std::memcpy(&v, bytes, 2); return v / 65535.0f; }
+    float v; std::memcpy(&v, bytes, 4); return v;
+}
+inline uint32_t texel24(const uint8_t* bytes, bool d16) {
+    if (d16) { uint16_t v; std::memcpy(&v, bytes, 2); return v == 0xFFFF ? 0xFFFFFFu : uint32_t(v) << 8; }
+    return from_float(texel(bytes, false));
 }
 inline int pixel(uint32_t coordinate, uint32_t extent, uint32_t guestExtent) {
     return int(std::clamp(double(int32_t(coordinate)) * extent / guestExtent, 0.0, double(extent - 1)));

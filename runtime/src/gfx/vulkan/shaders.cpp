@@ -1390,13 +1390,8 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     uint32_t aluBase = mmSQ_ALU_CONSTANT0_0 + (shader.vertex ? 0x400 : 0);
     uint32_t blockBase = shader.vertex ? mmSQ_VTX_UNIFORM_BLOCK_START : mmSQ_PS_UNIFORM_BLOCK_START;
     auto projectionRow = [&](int offset, const void* bytes, size_t available) {
-        if (!shader.vertex || eyeOffset == 0 || available < 64) return;
-        float p[16]; memcpy(p,bytes,64);
-        const float unshifted[4] = {p[0],p[1],p[2],p[3]};
-        if (stereo::project_eye(p,eyeOffset,convergence)) {
-            copy(offset,p,16);
-            if (eyeRows && offset >= 0 && size_t(offset) + 16 <= data.size()) eyeRows->add(size_t(offset),unshifted);
-        }
+        if (shader.vertex && offset >= 0 && size_t(offset) + 16 <= data.size())
+            stereo::project_entry(data.data() + offset, bytes, available, eyeOffset, convergence, eyeRows, size_t(offset));
     };
     if (offsets.offset_remapped >= 0) {
         for (const auto& entry : shader.dec->list_remappedUniformEntries_register) {

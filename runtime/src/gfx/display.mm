@@ -51,6 +51,10 @@
 #include "../aspect.h"
 #include "../mods/fast_forward.h"
 #include "display.h"
+#include "vision_screen.h"
+#if TARGET_OS_VISION
+#include "../../../visionos/bridge.h"
+#endif
 #include "display_modes.h"
 #include "headless_compose.h"
 #include "gx2/gx2.h"
@@ -684,7 +688,45 @@ static void attach_metal_layers() {
     R.tv.visible = true;
 }
 
+#if TARGET_OS_VISION
+// Apple Vision Pro: the GamePad screen mode Window is the GamePad's own window (visionos/GamePad.swift): the mode opens
+// and closes it; closed by the player, the mode stays and the GamePad picture shows in the TV picture meanwhile
+// (display_plan's window fallback)
+void set_drc_mode(int m);
+static void apply_drc_window() {
+    const bool want = g_mode == kDrcWindow;
+    if (want != g_has_drc_window.load()) dispatch_async(dispatch_get_main_queue(), ^{ want ? wwhd_gamepad_open() : wwhd_gamepad_close(); });
+}
+#else
 static void apply_drc_window() {}
+#endif
+#if TARGET_OS_VISION
+// Apple Vision Pro: the GamePad picture in a window of its own (host_tvos.mm's GamePad scene), handed over on the
+// main thread and taken up by the render thread at the end of a presentation
+static std::mutex g_vision_drc_mutex;
+static CAMetalLayer* g_vision_drc_pending = nil;
+static bool g_vision_drc_changed = false;
+void vision_drc_layer(CAMetalLayer* layer) {
+    std::lock_guard lock(g_vision_drc_mutex);
+    g_vision_drc_pending = layer;
+    g_vision_drc_changed = true;
+}
+static void take_vision_drc_layer() {
+    CAMetalLayer* layer = nil;
+    {
+        std::lock_guard lock(g_vision_drc_mutex);
+        if (!g_vision_drc_changed) return;
+        g_vision_drc_changed = false;
+        layer = g_vision_drc_pending;
+    }
+    R.drc.layer = layer;
+    R.drc.visible = layer != nil;
+    g_has_drc_window = layer != nil;
+    if (layer && g_mode != kDrcWindow)  // (opened with the game window's GamePad button; saved on the main thread)
+        dispatch_async(dispatch_get_main_queue(), ^{ set_drc_mode(kDrcWindow); });
+    LOG("[display] GamePad window %s", layer ? "open" : "closed");
+}
+#endif
 bool drc_window_available() { return g_mode == kDrcPip || g_mode == kDrcAuto || g_mode == kDrcGamePad; }
 bool drc_window_shown() { return drc_screen_shown(false); }
 void show_drc_window(bool on) {
@@ -695,6 +737,7 @@ void toggle_drc_screen() { show_drc_window(!drc_window_shown()); }
 void set_drc_mode(int m) {
     display_set_mode(m);
     save_options();
+    apply_drc_window();
     LOG("[display] GamePad screen mode: %s", kModeNames[m]);
 }
 
@@ -706,7 +749,11 @@ static void create_windows() {
     load_options();
     void host_tvos_load_graphics();  // host_tvos.mm: the graphics options saved in the same file
     host_tvos_load_graphics();
+#if TARGET_OS_VISION
+    apply_drc_window();
+#else
     if (g_mode == kDrcWindow) g_mode = kDrcAuto;  // (no second window on a TV: automatic picture-in-picture)
+#endif
     g_shown = !input::pro_controller();
 }
 #endif  // WWHD_TVOS
@@ -949,18 +996,18 @@ static bool is_srgb(MTLPixelFormat f) { return f == MTLPixelFormatBGRA8Unorm_sRG
 // dyn: the picture's dynamic resolution factor (Screen::dyn; below 1: always scaled filtered, as the Vulkan
 // presentation: integer scaling becomes smooth, sharp scaling takes its sharpness from the full size)
 static void draw_image(id<MTLRenderCommandEncoder> e, MTLPixelFormat fmt, float dw, float dh, id<MTLTexture> tex,
-                       bool src_linear, Box b, float alpha, float dyn = 1.0f) {
+                       bool src_linear, Box b, float alpha, float dyn = 1.0f, bool plain = false) {
     if (!tex || b.w <= 0 || b.h <= 0) return;
     float rect[4] = {b.x / dw, b.y / dh, b.w / dw, b.h / dh};
     bool blend = alpha < 0.999f;
     [e setRenderPipelineState:pipeline(fmt, false, blend)];
     if (blend) [e setBlendColorRed:0 green:0 blue:0 alpha:alpha];
     struct { int aa, conv; float sharp, foot; } p;
-    p.aa = fxaa_enabled() ? 1 : 0;
+    p.aa = !plain && fxaa_enabled() ? 1 : 0;
     bool dst_linear = is_srgb(fmt);
     p.conv = src_linear == dst_linear ? 0 : dst_linear ? 1 : 2;
     float scale = std::min(b.w / tex.width, b.h / tex.height);  // target pixels per source texel
-    int filter = g_filter;
+    int filter = plain ? kSmooth : int(g_filter);
     float sharpScale = scale;
     if (dyn < 1.0f) {
         if (filter == kInteger) filter = kSmooth;
@@ -987,8 +1034,10 @@ static void draw_solid(id<MTLRenderCommandEncoder> e, MTLPixelFormat fmt, float 
 static ImDrawData* g_overlay_draw = nullptr;
 static void overlay_metal_init() { ImGui_ImplMetal_Init(R.device); }
 
-// the TV window's picture: TV image scaled to fit, GamePad overlay on top
-static void compose_tv(id<MTLTexture> target, const Layout& L) {
+// the TV window's picture: TV image (tv: R.tv, or a stereo eye's) scaled to fit, GamePad overlay on top
+// hudShift: stereo 3D, the eye's horizontal shift (target pixels) of the GamePad picture-in-picture and the
+// settings overlay, which appear at the HUD's distance (stereo::layout_shift)
+static void compose_tv_picture(id<MTLTexture> target, const Layout& L, const Screen& tv, float hudShift = 0) {
     MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
     rp.colorAttachments[0].texture = target;
     rp.colorAttachments[0].loadAction = MTLLoadActionClear;
@@ -998,16 +1047,18 @@ static void compose_tv(id<MTLTexture> target, const Layout& L) {
     e.label = @"compose_tv";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     float dw = target.width, dh = target.height;
     MTLPixelFormat fmt = target.pixelFormat;
-    draw_image(e, fmt, dw, dh, R.tv.tex, R.tv.srgb, L.tv, 1.0f, R.tv.dyn);
+    draw_image(e, fmt, dw, dh, tv.tex, tv.srgb, L.tv, 1.0f, tv.dyn);
     if (L.pip_on && R.drc.tex) {
-        float op = L.drc_only ? 1.0f : g_pip_opacity.load(), bw = std::max(1.0f, roundf(L.pip.w / 200.0f));
+        Box pip = L.pip;
+        if (!L.drc_only) pip.x += hudShift;
+        float op = L.drc_only ? 1.0f : g_pip_opacity.load(), bw = std::max(1.0f, roundf(pip.w / 200.0f));
         float frame[4] = {0, 0, 0, 0.6f * op};
-        draw_solid(e, fmt, dw, dh, {L.pip.x - bw, L.pip.y - bw, L.pip.w + 2 * bw, L.pip.h + 2 * bw}, frame);
+        draw_solid(e, fmt, dw, dh, {pip.x - bw, pip.y - bw, pip.w + 2 * bw, pip.h + 2 * bw}, frame);
         if (L.drc_only)
             gamepad_draw_bars(R.device, e, fmt, unsigned(dw), unsigned(dh), {0,0,dw,dh},
-                             {L.pip.x,L.pip.y,L.pip.w,L.pip.h}, R.drc.tex, R.drc.backdrop, R.drc.srgb, op);
-        draw_image(e, fmt, dw, dh, R.drc.tex, R.drc.srgb, L.pip, op, R.drc.dyn);
-        if(auto* draw=overlay::guesthud::gamepad_region(dw,dh,L.pip.x,L.pip.y,L.pip.w,L.pip.h,op)) {
+                             {pip.x,pip.y,pip.w,pip.h}, R.drc.tex, R.drc.backdrop, R.drc.srgb, op);
+        draw_image(e, fmt, dw, dh, R.drc.tex, R.drc.srgb, pip, op, R.drc.dyn);
+        if(auto* draw=overlay::guesthud::gamepad_region(dw,dh,pip.x,pip.y,pip.w,pip.h,op)) {
             if(is_srgb(fmt))overlay::linearize_colors(draw,true);
             ImGui_ImplMetal_NewFrame(rp);
             ImGui_ImplMetal_RenderDrawData(draw,command_buffer(),e);
@@ -1016,8 +1067,59 @@ static void compose_tv(id<MTLTexture> target, const Layout& L) {
     // settings overlay (overlay/overlay.h) on top: Dear ImGui's Metal backend in the same pass
     if (g_overlay_draw) {
         if (is_srgb(fmt)) overlay::linearize_colors(g_overlay_draw);
+        const ImVec2 pos = g_overlay_draw->DisplayPos;
+        g_overlay_draw->DisplayPos.x -= hudShift / std::max(g_overlay_draw->FramebufferScale.x, 1e-3f);
         ImGui_ImplMetal_NewFrame(rp);
         ImGui_ImplMetal_RenderDrawData(g_overlay_draw, command_buffer(), e);
+        g_overlay_draw->DisplayPos = pos;
+    }
+    [e endEncoding];
+}
+
+// the HUD's shift in the picture of a displayed eye (0 left, 1 right; target pixels of the eye's layout L)
+static float hud_shift(int eye, const Layout& L) { return stereo::hud_shift_px(eye, L.tv.w); }
+
+// the canvas one eye's layout is made for: Full SBS gives each eye half the width at its own pixels;
+// Half SBS and top-and-bottom squeeze a whole-target layout into their half
+static float stereo_canvas_w(float w) { return std::max(1.0f, floorf(stereo::eye_canvas_width(w))); }
+
+// L: one eye's layout (stereo_canvas_w). Each eye's composition, at its own TV picture with the
+// same GamePad overlay and menus (no disparity), is drawn into a texture of its own, then packed
+// into the target. A stereo mode never shows a mono frame: black until both eyes have a picture.
+static void compose_tv(id<MTLTexture> target, const Layout& L) {
+    const int mode = stereo::frame.mode;
+    static id<MTLTexture> eyes[2];
+    if (mode == stereo::Off) {
+        eyes[0] = eyes[1] = nil;
+        compose_tv_picture(target, L, R.tv);
+        return;
+    }
+    const NSUInteger lw = NSUInteger(stereo_canvas_w(target.width)), lh = target.height;
+    if (R.tvRight.tex)
+        for (int eye = 0; eye < 2; eye++) {
+            if (!eyes[eye] || eyes[eye].width != lw || eyes[eye].height != lh || eyes[eye].pixelFormat != target.pixelFormat) {
+                MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:target.pixelFormat width:lw
+                                                                                            height:lh mipmapped:NO];
+                d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+                d.storageMode = MTLStorageModePrivate;
+                eyes[eye] = [R.device newTextureWithDescriptor:d];
+            }
+            compose_tv_picture(eyes[eye], L, tv_eye(eye), hud_shift(eye, L));
+        }
+    MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = target;
+    rp.colorAttachments[0].loadAction = MTLLoadActionClear;
+    rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+    e.label = @"display.mm stereo";
+    if (R.tvRight.tex) {
+        const float dw = target.width, dh = target.height;
+        // plain: the eyes' compositions have the scaling filter and FXAA already
+        for (int eye = 0; eye < 2; eye++) {
+            const stereo::Rect r = stereo::pack({0, 0, float(lw), dh}, dw, dh, mode, eye);
+            draw_image(e, target.pixelFormat, dw, dh, eyes[eye], is_srgb(target.pixelFormat), {r.x, r.y, r.w, r.h}, 1.0f, 1.0f, true);
+        }
     }
     [e endEncoding];
 }
@@ -1075,8 +1177,11 @@ static void present_to_layer(Screen& scr, void (^draw)(id<MTLTexture>)) {
 // encoding) into an 8-bit image of the window's pixel format (its pipelines exist already) without the
 // settings overlay, copied to a shared buffer in this frame's command buffer; the completion handler
 // hands the buffer to the encoding thread (no wait here)
+// stereo 3D: the TV picture is both eyes' (tv_eye), packed as the window shows them (Full SBS twice as wide), as
+// the Vulkan renderer's screenshot
 static void screenshot_screen(Screen& scr, const std::string& path, bool tv) {
-    const NSUInteger w = scr.tex.width, h = scr.tex.height;
+    const int stereoMode = tv && R.tvRight.tex ? stereo::frame.mode : stereo::Off;
+    const NSUInteger w = scr.tex.width * (stereoMode == stereo::FullSBS ? 2 : 1), h = scr.tex.height;
     // the TV window's pixel format for both pictures: its pipelines exist (the GamePad window's do not
     // while the GamePad picture is only shown as the overlay)
     const MTLPixelFormat pf = R.tv.layer ? R.tv.layer.pixelFormat : MTLPixelFormatRGBA8Unorm;
@@ -1094,7 +1199,15 @@ static void screenshot_screen(Screen& scr, const std::string& path, bool tv) {
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
     e.label = @"screenshot_screen";  // (named for WWHD_GPU_ERRORS: which pass faulted)
-    draw_image(e, t.pixelFormat, w, h, scr.tex, scr.srgb, Box{0, 0, (float)w, (float)h}, 1.0f, scr.dyn);
+    if (stereoMode == stereo::Off) {
+        draw_image(e, t.pixelFormat, w, h, scr.tex, scr.srgb, Box{0, 0, (float)w, (float)h}, 1.0f, scr.dyn);
+    } else {
+        for (int eye = 0; eye < 2; eye++) {
+            const Screen& picture = tv_eye(eye);
+            const stereo::Rect r = stereo::pack({0, 0, stereo_canvas_w(w), (float)h}, (float)w, (float)h, stereoMode, eye);
+            draw_image(e, t.pixelFormat, w, h, picture.tex, picture.srgb, Box{r.x, r.y, r.w, r.h}, 1.0f, picture.dyn);
+        }
+    }
     [e endEncoding];
     id<MTLBuffer> buf = [R.device newBufferWithLength:w * h * 4 options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
@@ -1132,9 +1245,25 @@ void present_screens() {
     // inputs of the prepared shaders' identity, cmake/pipeline_identity_inputs.txt)
     const uint64_t present_ns = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
         std::chrono::steady_clock::now().time_since_epoch()).count());
+#if TARGET_OS_VISION
+    // Apple Vision Pro: the TV picture is the game window's 3D screen (vision_screen.h), a whole picture per eye; the
+    // window's own layer isn't shown
+    const bool screen = vision_screen::active();
+    const CGSize ls = screen ? CGSizeMake(WWHD_SCREEN_WIDTH, WWHD_SCREEN_HEIGHT)
+                             : R.tv.layer ? R.tv.layer.drawableSize : CGSizeMake(0, 0);
+    const bool fullSbs = !screen && stereo::frame.mode == stereo::FullSBS;
+#else
     CGSize ls = R.tv.layer ? R.tv.layer.drawableSize : CGSizeMake(0, 0);
+    const bool fullSbs = stereo::frame.mode == stereo::FullSBS;
+#endif
     PresentPlan P = display_plan(R.tv.tex != nil, nominal_w(R.tv), nominal_h(R.tv), R.drc.tex != nil, nominal_w(R.drc), nominal_h(R.drc),
-                                 ls.width, ls.height, R.frame);
+                                 ls.width, ls.height, R.frame, !fullSbs);
+    // Full SBS: each eye's layout is made for half the width; touches and the pointer use that canvas
+    PresentPlan eyePlan = P;
+    if (fullSbs) {
+        eyePlan = display_plan_for(P, stereo_canvas_w(P.dw), P.dh, nominal_w(R.tv), nominal_h(R.tv), nominal_w(R.drc), nominal_h(R.drc));
+        display_input_plan(eyePlan);
+    }
     bool backdropNeeded = false;
     if (P.drc_only && P.pip_on && R.drc.tex && R.tv.layer && R.tv.visible) {
         if (P.sim) {
@@ -1152,17 +1281,19 @@ void present_screens() {
     }
     gamepad_backdrop::set_capture_requested(gamepad_backdrop::enabled.load(std::memory_order_relaxed) && backdropNeeded);
     Layout L;
-    L.tv = P.tv;
-    L.pip = P.pip;
-    L.pip_on = P.pip_on;
-    L.drc_only = P.drc_only;
-    L.scale = P.scale;
+    L.tv = eyePlan.tv;
+    L.pip = eyePlan.pip;
+    L.pip_on = eyePlan.pip_on;
+    L.drc_only = eyePlan.drc_only;
+    L.scale = eyePlan.scale;
     float dw = P.dw, dh = P.dh;
     bool pip = P.pip_wanted, drc_only = P.drc_only;
     Box game_box;
-    const bool game_shown = game_picture_box(P, &game_box);
-    overlay::guesthud::set_regions(P.tv.x,P.tv.y,P.tv.w,P.tv.h,!P.drc_only,game_box.x,game_box.y,game_box.w,game_box.h,game_shown);
-    g_overlay_draw = overlay::frame(dw, dh, overlay_metal_init);  // settings overlay, drawn by compose_tv
+    const bool game_shown = game_picture_box(eyePlan, &game_box);
+    overlay::guesthud::set_regions(eyePlan.tv.x,eyePlan.tv.y,eyePlan.tv.w,eyePlan.tv.h,!eyePlan.drc_only,game_box.x,game_box.y,game_box.w,
+                                   game_box.h,game_shown);
+    // settings overlay, drawn by compose_tv (at the eye's layout width: half for Full SBS only where it is packed)
+    g_overlay_draw = overlay::frame(fullSbs ? stereo_canvas_w(dw) : dw, dh, overlay_metal_init);
     // The iPhone GamePad's screen (remote_video.h), the same picture whatever the GamePad screen mode here,
     // before anything for the windows and in a command buffer of its own: the encoder starts as soon as
     // it is drawn, not after the TV's composition and its wait for a drawable.
@@ -1198,13 +1329,25 @@ void present_screens() {
     if (P.sim) {
         present_to_layer(R.tv, ^(id<MTLTexture> t) {
             CGSize ds = R.tv.layer.drawableSize;
-            compose_tv(t, layout(ds.width, ds.height, nominal_w(R.tv), nominal_h(R.tv), nominal_w(R.drc), nominal_h(R.drc), pip, drc_only));
+            compose_tv(t, layout(stereo_canvas_w(ds.width), ds.height, nominal_w(R.tv), nominal_h(R.tv), nominal_w(R.drc), nominal_h(R.drc),
+                                 pip, drc_only));
         });
-    } else {
+    } else if (!TARGET_OS_VISION) {  // (Apple Vision Pro: the window shows the 3D screen, vision_screen.h)
         present_to_layer(R.tv, ^(id<MTLTexture> t) { compose_tv(t, L); });
     }
     bool drc_win = P.drc_window;
     if (drc_win) present_to_layer(R.drc, ^(id<MTLTexture> t) { compose_drc(t); });
+#if TARGET_OS_VISION
+    take_vision_drc_layer();
+    // the 3D screen's pictures: each eye's own TV picture with the same GamePad overlay and menus (L: made for its size)
+    id<MTLTexture> eyes[2] = {nil, nil};
+    if (R.tv.tex && vision_screen::begin_frame(R.device, eyes)) {
+        const bool stereo = stereo::frame.mode != stereo::Off && R.tvRight.tex;
+        compose_tv_picture(eyes[0], L, tv_eye(0), stereo ? hud_shift(0, L) : 0);
+        if (stereo) compose_tv_picture(eyes[1], L, tv_eye(1), hud_shift(1, L));
+        vision_screen::end_frame(command_buffer(), stereo);
+    }
+#endif
 
     for (auto& path : display_take_present_dumps()) {
         if (!R.tv.tex || dw < 1 || dh < 1) continue;

@@ -325,7 +325,7 @@ endif()
 file(GLOB GX2_SOURCES CONFIGURE_DEPENDS runtime/src/gx2/*.cpp)
 # renderer selection / dispatch (runtime/src/gfx/renderer.cpp) and the GamePad screen modes / TV window
 # layout both window hosts share (display_modes.cpp): every configuration
-set(GFX_SOURCES runtime/src/gfx/renderer.cpp runtime/src/gfx/display_modes.cpp runtime/src/gfx/mod_wheel.cpp runtime/src/gfx/gamepad_ui_state.cpp)
+set(GFX_SOURCES runtime/src/gfx/renderer.cpp runtime/src/gfx/stereo_settings.cpp runtime/src/gfx/display_modes.cpp runtime/src/gfx/mod_wheel.cpp runtime/src/gfx/gamepad_ui_state.cpp)
 set(MOD_GFX_SOURCES)
 if(WWHD_HAS_METAL)
   # Metal renderer and the AppKit host (windows, menus, input, controls window, display modes)

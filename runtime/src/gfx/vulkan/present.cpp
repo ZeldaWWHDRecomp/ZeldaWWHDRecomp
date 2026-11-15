@@ -436,6 +436,7 @@ void reset_present_resources() {
 // ---------------------------------------------------------------- composition
 namespace {
 const gfx::PresentPlan* currentPlan=nullptr;
+float hudShift[2]={};  // stereo 3D: each half's HUD shift (screen_quads), for the settings overlay
 GamepadBackdropDemand backdropDemand;
 bool linear_filtering(VkFormat format) {
  const auto& properties=format_properties(format);
@@ -532,8 +533,8 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
  if(gamepadOverlay)overlay_draw(gamepadOverlay,cmd,format,extent,targetLinear,-1,whiteScale);
  if(overlay) {
   if (overlay == overlayDraw && overlayFrame.stereo_packed(stereo::frame.mode != stereo::Off, bool(stereoRight.scan))) {
-   overlay_draw(overlay,cmd,format,extent,targetLinear,0,whiteScale);
-   overlay_draw(overlay,cmd,format,extent,targetLinear,1,whiteScale);
+   overlay_draw(overlay,cmd,format,extent,targetLinear,0,whiteScale,hudShift[0]);
+   overlay_draw(overlay,cmd,format,extent,targetLinear,1,whiteScale,hudShift[1]);
   } else overlay_draw(overlay,cmd,format,extent,targetLinear,-1,whiteScale);
  }
  end_pass(cmd);
@@ -870,18 +871,25 @@ std::vector<ComposeQuad> screen_quads(Screen& screen,VkExtent2D target,int& filt
  if (stereo::frame.mode == stereo::FullSBS) logical.width = std::max(1u,target.width/2);
  auto mono = screen_quads_mono(screen,logical,filter);
  add_gamepad_backdrop(mono,logical);
+ // the GamePad picture-in-picture (and the settings overlay, compose) at the HUD's distance (stereo::layout_shift)
+ float tvWidth=0;
+ for (const auto& q:mono) if (q.image == screen.scan.get()) tvWidth=q.box.w;
+ const bool pipShift = !currentPlan || !currentPlan->drc_only;
  std::vector<ComposeQuad> result;
+ for (int eye=0;eye<2;++eye) {
+  hudShift[eye]=stereo::hud_shift_px(eye,tvWidth);
+ }
  for (int eye=0;eye<2;++eye) for (auto q:mono) {
+  if (pipShift && q.image != screen.scan.get() && !q.backdrop) {
+   q.box.x += hudShift[eye];
+   if (q.clipped) q.clip.x += hudShift[eye];
+  }
   if (q.image == screen.scan.get() && (eye != int(stereo::frame.swap))) q.image = stereoRight.scan.get();
   if (q.clipped) {
-   if(stereo::frame.mode==stereo::FullSBS)q.clip.x+=eye*logical.width;
-   else { auto r=stereo::pack({q.clip.x,q.clip.y,q.clip.w,q.clip.h},float(target.width),float(target.height),stereo::frame.mode,eye);q.clip={r.x,r.y,r.w,r.h}; }
+   auto r=stereo::pack({q.clip.x,q.clip.y,q.clip.w,q.clip.h},float(target.width),float(target.height),stereo::frame.mode,eye);q.clip={r.x,r.y,r.w,r.h};
   }
-  if (stereo::frame.mode == stereo::FullSBS) q.box.x += eye * logical.width;
-  else {
-   auto r=stereo::pack({q.box.x,q.box.y,q.box.w,q.box.h},float(target.width),float(target.height),stereo::frame.mode,eye);
-   q.box={r.x,r.y,r.w,r.h};
-  }
+  auto r=stereo::pack({q.box.x,q.box.y,q.box.w,q.box.h},float(target.width),float(target.height),stereo::frame.mode,eye);
+  q.box={r.x,r.y,r.w,r.h};
   result.push_back(q);
  }
  return result;

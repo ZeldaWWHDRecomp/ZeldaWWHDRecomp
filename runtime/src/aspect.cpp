@@ -283,7 +283,7 @@ static void stereo_clipper(Cpu* c) {
     const float nearPlane=std::max(1.0f,float(c->f[3].ps0));
     const float projectionX = 1.0f / (std::tan(float(c->f[1].ps0)*float(M_PI)/360.0f)*float(c->f[2].ps0));
     const float margin=stereo::requestedDepth.load()*stereo::eyeDistanceAtUnitDepth * projectionX *
-        (1.0f/nearPlane + 1.0f/stereo::requestedConvergence.load());
+        (1.0f/nearPlane + 1.0f/stereo::requested_convergence());
     c->f[2].ps0 *= 1.0f+margin;
     c->f[2].ps1 = c->f[2].ps0;
 }

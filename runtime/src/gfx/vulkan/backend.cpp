@@ -3990,7 +3990,7 @@ void swap() {
   // Publish that same layout for GamePad hit testing and the software pointer.
   gfx::PresentPlan inputPlan=plan;
   if(stereo::frame.mode==stereo::FullSBS) {
-    inputPlan=gfx::display_plan_for(plan,layerW*.5f,layerH,
+    inputPlan=gfx::display_plan_for(plan,stereo::eye_canvas_width(layerW),layerH,
         float(tvDisplay.width),float(tvDisplay.height),
         nominal_width(drcScan),nominal_height(drcScan));
     gfx::display_input_plan(inputPlan);
@@ -4002,8 +4002,7 @@ void swap() {
     overlay::guesthud::set_regions(inputPlan.tv.x,inputPlan.tv.y,inputPlan.tv.w,inputPlan.tv.h,!inputPlan.drc_only,
         game.x,game.y,game.w,game.h,gameShown);
   }
-  const float overlayWidth = (plan.dw > 0 ? plan.dw : layerW) /
-      (stereo::frame.mode == stereo::FullSBS ? 2.0f : 1.0f);
+  const float overlayWidth = stereo::eye_canvas_width(plan.dw > 0 ? plan.dw : layerW);
   using overlay::window_target::Window;
   Window requested = Window::TV;
   bool requireDrawable = false;

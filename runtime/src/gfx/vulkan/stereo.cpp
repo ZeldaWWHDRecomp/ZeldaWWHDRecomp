@@ -6,6 +6,8 @@
 #include <string_view>
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "overlay/hostui.h"
+#include "gfx/renderer.h"
+#include "../../fixed_seed.h"
 #include <cstdlib>
 #include <limits>
 #include <optional>
@@ -59,9 +61,7 @@ DeferredCommands* eye_stream() {
 void attach_eye_stream() { eye_deferred_commands = stereoEye && streaming() ? eye_stream() : nullptr; }
 }
 bool stereo_light_atlas(uint32_t width,uint32_t height,uint32_t layers,bool depth) {
-    // WWHD's three 1024-square sun cascades are rendered in light space.
-    // Scene depth, AO, the screen-space shadow mask and bloom remain per-eye.
-    return depth && width==1024 && height==1024 && layers==3;
+    return stereo::sun_atlas(width,height,layers,depth);
 }
 decltype(Renderer::surfaces)& stereo_surface_cache(const SurfaceDesc& desc) {
     if(stereoEye && stereo_light_atlas(desc.width,desc.height,desc.slices,desc.isDepth))
@@ -100,7 +100,8 @@ void stereo_select_eye(int eye) {
 uint64_t stereoFlushGeneration = 1;
 bool stereo_shared_texture(const Surface* s) {
     if (!streaming() || s->layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) return false;
-    const bool photograph = stereo::layoutPhotograph && s->gpuWritten && !s->isDepth;
+    // (a captured photograph, the GamePad screen's pictures: eye 0's rendered image)
+    const bool photograph = (stereo::layoutPhotograph || stereo::gamepad_shaped(s->width, s->height)) && s->gpuWritten && !s->isDepth;
     if (!photograph && (s->gpuWritten || s->dirty || s->lastCheckedFrame != R.frame)) return false;
     auto& eye0 = stereoEye ? otherSurfaces : R.surfaces;
     auto& eye1 = stereoEye ? R.surfaces : otherSurfaces;
@@ -119,7 +120,7 @@ Surface* stereo_eye0_texture(const SurfaceDesc& d) {
     // preview must match the canonical image subsequently saved by the guest.
     // Eye 0's draw has already resolved format aliases and transitioned it;
     // the normal held-texture lease orders any later rewrite after this read.
-    if (stereo::layoutPhotograph && !d.isDepth) {
+    if ((stereo::layoutPhotograph || stereo::gamepad_shaped(d.width, d.height)) && !d.isDepth) {
         Surface* photo = nullptr;
         auto range = otherSurfaces.equal_range(d.addr);
         for (auto it = range.first; it != range.second; ++it) {
@@ -190,6 +191,8 @@ StereoInOrder::~StereoInOrder() {
 void stereo_latch() {
     // Frame boundary: the swap submitted eye 1's commands; nothing held may outlive it.
     stereo_flush();
+    render::stereo_test_switch(fixed_seed::script_frame(R.frame));
+    sample_hud_depth();
     const bool wasOff=stereo::frame.mode==stereo::Off;
     stereo::latch();
     if (stereo::frame.mode==stereo::Off) {
@@ -240,12 +243,9 @@ void stereo_latch() {
     stereo_select_eye(0);
 }
 void load_saved_stereo_hdr() {
+    render::load_saved_stereo();
     std::string v;
     auto num=[&](const char* key) { return ::hostui::get(key,v) ? std::optional<float>(float(atof(v.c_str()))) : std::nullopt; };
-    if(auto x=num("stereoMode"))stereo::set_mode(int(*x));
-    if(auto x=num("stereoDepth"))stereo::set_depth(*x);
-    if(auto x=num("stereoConvergence"))stereo::set_convergence(*x);
-    if(auto x=num("stereoSwap"))stereo::requestedSwap=*x!=0;
 #ifdef WWHD_HDR_OUTPUT
     if(auto x=num("hdrEnabled"))hdr::enabled=*x!=0;
 #endif
@@ -260,6 +260,5 @@ void load_saved_stereo_hdr() {
     if(auto x=num("hdrExposure"))hdr::set(hdr::exposure,*x,-3,3);
     if(auto x=num("hdrHighlights"))hdr::set(hdr::highlights,*x,0,1);
     if(auto x=num("hdrMenuWhite"))hdr::set(hdr::menuWhite,*x,80,500);
-    stereo::latch();
 }
 }

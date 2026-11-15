@@ -128,7 +128,9 @@ void write_rgba_png(const std::string& path, uint32_t width, uint32_t height,
 void set_overlay_draw(overlay::window_target::DrawFrame frame);
 void overlay_renderer_init();
 void overlay_prepare(ImDrawData* draw);  // texture uploads (outside rendering)
-void overlay_draw(ImDrawData* draw,VkCommandBuffer cmd,VkFormat format,VkExtent2D extent,bool linear,int stereoEye=-1,float whiteScale=1);
+// shift: stereo 3D, the eye's horizontal shift of the overlay (pixels of its layout's canvas, stereo::layout_shift)
+void overlay_draw(ImDrawData* draw,VkCommandBuffer cmd,VkFormat format,VkExtent2D extent,bool linear,int stereoEye=-1,float whiteScale=1,
+                  float shift=0);
 void test_hdr_presentation();
 void reset_overlay_resources();
 // Device shutdown/recreation only: drain submissions before destroying these.
