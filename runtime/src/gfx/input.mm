@@ -1216,7 +1216,10 @@ struct Scenario {
 namespace interp { void set_mode(int m); uint64_t logic_steps(); }
 namespace test_aids { void tick(double t, bool ended); void set_origin_step(uint64_t s); }
 namespace input {
-// WWHD_TEST_TOUCH=t0-t1:x:y,...: touches the GamePad screen at (x, y) (0..1) during scenario times
+// WWHD_TEST_TOUCH=t0-t1:x:y,...: touches the GamePad screen at (x, y) (0..1) during scenario times (seconds). This is
+// the variable's meaning whenever a scenario origin is set (WWHD_TEST_ORIGIN / WWHD_TEST_ORIGIN_LOAD); without one it
+// is display_modes.cpp's frame-timed press in TV window coordinates, which then skips it while a scenario is set.
+// A frame-timed touch in a scenario run: WWHD_TEST_DRC_TOUCH (TV frames, GamePad coordinates).
 static bool g_test_touch = false;
 static float g_test_tx = 0, g_test_ty = 0;
 static void apply_scenario(PadState& s) {

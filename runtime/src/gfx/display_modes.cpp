@@ -11,9 +11,13 @@
 //                                        touch mapping), e.g. to check a full-screen layout without going full screen
 //   WWHD_TEST_TOUCH=3400-3410:0.9:0.85   a mouse press at (x, y) in the TV window (0..1 from top left) during
 //                                        TV frames 3400..3410; mapped through the overlay like a real click (so it
-//                                        depends on the window size and the saved overlay placement)
+//                                        depends on the window size and the saved overlay placement). Only in a run
+//                                        without a timed scenario: with WWHD_TEST_ORIGIN or WWHD_TEST_ORIGIN_LOAD set
+//                                        the variable is the scenario's (seconds, GamePad coordinates; input.mm,
+//                                        AppKit host) and is not read here: WWHD_TEST_DRC_TOUCH for a frame touch then
 //   WWHD_TEST_DRC_TOUCH=3400-3410:0.45:0.06   a touch at (x, y) of the GamePad screen itself (0..1 from top left)
 //                                        during those TV frames, whatever the window, mode or overlay placement
+//                                        (with or without a scenario)
 //   WWHD_TEST_DRC_MODE=3400:gamepad,3600:pip   switch the mode at those TV frames (as the settings overlay)
 //   WWHD_VIEW_BUTTON=0|1                 the touch screens' view button (on by default on Android only)
 //   WWHD_FULLSCREEN=0|1                  the TV window starts in full screen (1) or windowed (0), instead of as it
@@ -595,7 +599,12 @@ static void test_touch(uint64_t frame) {
                 e++;
             }
         }
-        if (const char* e = getenv("WWHD_TEST_TOUCH")) {
+        // WWHD_TEST_TOUCH: TV frames, window coordinates; a scenario run reads it as scenario seconds instead
+        // (gfx/input.mm), so it is left to that one parser there
+        const bool scenario = getenv("WWHD_TEST_ORIGIN") || getenv("WWHD_TEST_ORIGIN_LOAD");
+        if (const char* e = getenv("WWHD_TEST_TOUCH"); e && scenario)
+            LOG("[display] WWHD_TEST_TOUCH is the scenario's (seconds, GamePad coordinates): no frame-timed window touch");
+        else if (e) {
             unsigned long long a, b; float x, y; int n;
             while (sscanf(e, "%llu-%llu:%f:%f%n", &a, &b, &x, &y, &n) == 4) {
                 v.push_back({a, b, x, y});
