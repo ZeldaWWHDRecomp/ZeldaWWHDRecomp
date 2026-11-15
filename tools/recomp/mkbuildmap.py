@@ -257,10 +257,15 @@ class Layout:
 DFORM = {14} | set(range(32, 56))   # addi, and the D-form loads and stores (integer and float)
 
 
+def is_layout_dform(w):
+    """D-form instruction with a non-zero base register (rA == 0 is literal 0 / li, never a pointer)."""
+    return (w >> 26) in DFORM and ((w >> 16) & 0x1F) != 0
+
+
 def layout_word_equal(w1, w2, layouts):
     if w1 == w2:
         return True
-    if (w1 & 0xFFFF0000) != (w2 & 0xFFFF0000) or (w1 >> 26) not in DFORM:
+    if (w1 & 0xFFFF0000) != (w2 & 0xFFFF0000) or not is_layout_dform(w1):
         return False
     d1, d2 = sext(w1 & 0xFFFF, 16), sext(w2 & 0xFFFF, 16)
     return any(lay.explains(d1, d2) for lay in layouts)
@@ -274,7 +279,7 @@ def masked(body, layouts):
     """The body with every displacement a layout could have moved masked out: for aligning only."""
     out = []
     for w in body:
-        if (w >> 26) in DFORM and any(lay.sensitive(sext(w & 0xFFFF, 16)) for lay in layouts):
+        if is_layout_dform(w) and any(lay.sensitive(sext(w & 0xFFFF, 16)) for lay in layouts):
             w &= 0xFFFF0000
         out.append(w)
     return out
@@ -513,15 +518,11 @@ def derive_pairs(canon, other, layouts, pairs, removed, inserted):
     differs = sorted(set(differs) | calls_elsewhere)
 
     disps = collections.Counter()
-    disps_r0 = 0
     for i, j in layout_only.items():
         for w1, w2 in zip(bc[i], bo[j]):
             if w1 != w2:
                 d1, d2 = sext(w1 & 0xFFFF, 16), sext(w2 & 0xFFFF, 16)
                 disps[(d1, d2 - d1)] += 1
-                # rA == 0 in D-form is li (addi with r0) or an absolute low address, not a pointer to a layout object.
-                if ((w1 >> 16) & 0x1F) == 0:
-                    disps_r0 += 1
     layout_hist = {"%+X (%+d)" % (d1, delta): count
                    for (d1, delta), count in sorted(disps.items(), key=lambda kv: (-kv[1], kv[0]))}
 
@@ -565,7 +566,7 @@ def derive_pairs(canon, other, layouts, pairs, removed, inserted):
                   "data_addresses": len(seen), "same_code": len(same), "layout_only": len(layout_only),
                   "reordered": moved, "calls_to_copies": duplicates,
                   "calls_elsewhere": ["%08X" % canon.entries[i] for i in sorted(calls_elsewhere)],
-                  "layout_displacements_r0": disps_r0, "layout_displacements": layout_hist},
+                  "layout_displacements": layout_hist},
         # for derive_aligned's pointer pass only (not written to the map)
         "_maps": maps, "_data": data, "_called": called,
     }
@@ -656,7 +657,7 @@ def to_json(m, name, title, sha256, canon_sha256, canon_name):
     }
 
 
-MAP_KEYS = ("code_steps", "data_steps", "differing_functions", "code_bounds", "data_bounds",
+MAP_KEYS = ("checked", "code_steps", "data_steps", "differing_functions", "code_bounds", "data_bounds",
             "removed_functions", "inserted_functions", "layouts")
 
 
@@ -687,8 +688,8 @@ def report(m):
         hist = s.get("layout_displacements")
         if hist:
             total = sum(hist.values())
-            print("   explained displacements: %d word%s (%d distinct, %d with base r0)" % (
-                total, "" if total == 1 else "s", len(hist), s.get("layout_displacements_r0", 0)))
+            print("   explained displacements: %d word%s (%d distinct)" % (
+                total, "" if total == 1 else "s", len(hist)))
             line = ""
             for k, count in hist.items():
                 item = "%s: %d" % (k, count)

@@ -58,6 +58,10 @@ class LayoutSpec(unittest.TestCase):
         self.assertTrue(mkbuildmap.layout_word_equal(lwz(3, 4, 0x5B34), lwz(3, 4, 0x5B30), [self.lay]))
         self.assertFalse(mkbuildmap.layout_word_equal(lwz(3, 4, 0x5B34), lwz(3, 4, 0x5B30), []))
         self.assertFalse(mkbuildmap.layout_word_equal(lwz(3, 4, 0x5B34), lwz(3, 5, 0x5B30), [self.lay]))  # other base reg
+        self.assertFalse(mkbuildmap.layout_word_equal(addi(3, 0, 0x5B34), addi(3, 0, 0x5B30), [self.lay]))  # li: rA == 0
+        self.assertFalse(mkbuildmap.layout_word_equal(lwz(3, 0, 0x5B34), lwz(3, 0, 0x5B30), [self.lay]))
+        self.assertEqual(mkbuildmap.masked([addi(3, 0, 0x5B34), lwz(3, 4, 0x5B34)], [self.lay]),
+                         [addi(3, 0, 0x5B34), lwz(3, 4, 0)])
         x_form = (31 << 26) | (3 << 21) | (4 << 16) | (5 << 11) | (23 << 1)  # lwzx: no displacement
         self.assertFalse(mkbuildmap.layout_word_equal(x_form, x_form ^ 4, [self.lay]))
         self.assertTrue(mkbuildmap.layout_body_equal([0x60000000, lwz(3, 4, 0x5BEF)],
@@ -265,13 +269,13 @@ class AlignedDerivation(unittest.TestCase):
         s = res["stats"]
         self.assertEqual((s["same_code"], s["layout_only"], s["reordered"]), (9, 1, 1))
         self.assertEqual((s["calls_checked"], s["pointers_checked"], s["pointers_elsewhere"]), (2, 1, 0))
-        self.assertEqual(s["layout_displacements_r0"], 0)
         self.assertEqual(s["layout_displacements"], {"+5B34 (-4)": 1})
+        self.assertIn("checked", mkbuildmap.MAP_KEYS)
         import io, contextlib
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             mkbuildmap.report(res)
-        self.assertIn("explained displacements: 1 word (1 distinct, 0 with base r0)", buf.getvalue())
+        self.assertIn("explained displacements: 1 word (1 distinct)", buf.getvalue())
         self.assertIn("+5B34 (-4): 1", buf.getvalue())
         code = mkbuildmap.piecewise(res["code_steps"])
         data = mkbuildmap.piecewise(res["data_steps"])
