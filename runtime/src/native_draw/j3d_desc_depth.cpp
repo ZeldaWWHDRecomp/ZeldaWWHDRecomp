@@ -498,14 +498,14 @@ State* choose(const Query& q) {
     s.psHash = pit->second;
     if (vit->second.family && fam::colour_only(ps)) s.hand = vit->second.family;
     else {
-        // proven families not sampled on the described path: their only proof states (siren-r8, sea-r22) were lost in the
-        // 2026-11-14 cleanup and a warp rebuild did not reach them; drawn translated (exact) until proven again
+        // proven families not sampled on the described path: the wizrobe pair (state archive/states/siren-r8.wwstate,
+        // proven in mode 0) is never replayed natively by D1 (its draws stay translated), so it is unproven there;
+        // drawn translated (exact) until proven on the described path
         static const std::set<std::pair<uint64_t, uint64_t>> notSampled = {
             {0x1d46893bdfbcd2c1ull, 0xd3abfbb42cd82ef0ull},  // wizrobe_all_tx
             {0x26b70fa90605042full, 0xeee2b994dc8c4f4cull},  // wizrobe_cloth_tx
-            {0xabb399ac72e51910ull, 0x0b0d83df11001cbdull},  // SP_Vbtsp_v
         };
-        if (fam::biasfree_on() && notSampled.count({s.vsHash, s.psHash})) return refuse("not sampled (states lost)");
+        if (fam::biasfree_on() && notSampled.count({s.vsHash, s.psHash})) return refuse("not sampled (described path)");
         if (!(fam::biasfree_on() ? fam::proven_biasfree() : fam::proven()).count({s.vsHash, s.psHash})) {
             static std::set<std::pair<uint64_t, uint64_t>> said;
             if (said.size() < 64 && said.insert({s.vsHash, s.psHash}).second)
