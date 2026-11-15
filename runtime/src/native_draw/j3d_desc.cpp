@@ -860,8 +860,8 @@ extern "C" unsigned wwhd_j3ddesc_draw(void) {
     if (sitecap_on() && c.desc && c.env) {
         c.siteCap = true;
         c.site.clear();
-        c.capDesc = c.desc->rec;
-        c.capEnv = c.env->rec;
+        c.capDesc = find_desc(c.descId, c.descVersion);  // (the draw's own versions: another thread may have defined
+        c.capEnv = find_env(c.envId, c.envVersion);      // a newer one under the same map key)
         c.capBlocks = c.blockCount;
         c.capFlags = c.flags;
         std::memcpy(c.capBlock, c.blocks, sizeof c.blocks);
