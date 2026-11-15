@@ -27,17 +27,26 @@ PIPELINE_CODE = re.compile(
     r"ShaderOverride|shader_override")
 
 
-def entries():
-    out = []
+def lines():
     for line in LIST.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#"):
-            out.append(line)
-    return out
+            yield line
+
+
+def entries():
+    return [line for line in lines() if not line.startswith("!")]
+
+
+def excluded():
+    """files inside a listed folder that are left out ("!path")"""
+    return [line[1:] for line in lines() if line.startswith("!")]
 
 
 def covered(rel, listed=None):
     rel = Path(rel).as_posix()
+    if rel in excluded():
+        return False
     for e in listed or entries():
         if rel == e or rel.startswith(e.rstrip("/") + "/"):
             return True
@@ -84,8 +93,14 @@ def dependencies(entry):
 
 class PipelineIdentityInputs(unittest.TestCase):
     def test_list_entries_exist(self):
-        for e in entries():
+        for e in entries() + excluded():
             self.assertTrue((ROOT / e).exists(), "listed but missing: %s" % e)
+
+    def test_exclusions_are_files_in_listed_folders(self):
+        listed = entries()
+        for e in excluded():
+            self.assertTrue((ROOT / e).is_file(), "an exclusion names one file: %s" % e)
+            self.assertTrue(any(e.startswith(x.rstrip("/") + "/") for x in listed), "excluded but not in a listed folder: %s" % e)
 
     def test_pipeline_and_shader_code_is_covered(self):
         listed = entries()
