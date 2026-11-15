@@ -148,6 +148,18 @@ class JapaneseMap(unittest.TestCase):
             self.assertFalse(self.jp.removed_function(a), "%08X" % a)
             self.assertFalse(any(s <= a < s + n for s, n, _, _ in self.jp.differing), "%08X" % a)
 
+    def test_scene_choice_refuses_differing_message_constructors_on_jp(self):
+        # runtime/src/mods/story_scene_choice.cpp requires guest_code_unchanged on the message-control
+        # constructors (025F65F4, 025F7424, 025F7500): unchanged on EU, differing on JP.
+        import re
+        eu = builds.by_name("EU")
+        with open(os.path.join(HERE, "..", "..", "runtime", "src", "mods", "story_scene_choice.cpp"), encoding="utf-8") as f:
+            guarded = {int(a, 16) for a in re.findall(r"guest_code_unchanged\(0x([0-9A-Fa-f]{8})\)", f.read())}
+        self.assertEqual(guarded, {0x025F65F4, 0x025F7424, 0x025F7500})
+        for a in sorted(guarded):
+            self.assertFalse(eu.body_differs(a), "%08X" % a)
+            self.assertTrue(self.jp.body_differs(a), "%08X" % a)
+
     def test_known_addresses(self):
         self.assertEqual(self.jp.code(0x02000020), 0x02000020)
         self.assertEqual(self.jp.code(0x025200D4), 0x025200D8)    # dComIfGp_get

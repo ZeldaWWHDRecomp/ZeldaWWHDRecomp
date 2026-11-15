@@ -143,10 +143,12 @@ What that means for the port on the Japanese build:
   the USA and European builds only (`tools/recomp/hooks_options_order.txt`), so on the Japanese
   build the Controller item stays.
 - The game has its own (Japanese) text; a language source is refused, as on the European build.
-- Story mods' scene choices and demo windows (`story_scene_choice.cpp`, `story_demo.cpp`) hook
-  message-window code the Japanese build changed; the Japanese functions take the same members
-  and arguments, so the hooks are the same, but only demo steps without messages were played
-  there. Randomized games: see [Randomized games](#randomized-games). The map/compass bridge for code mods
+- Story mods' demo windows (`story_demo.cpp`) hook message-window code the Japanese build changed;
+  the Japanese function takes the same members and arguments, so the hook is the same, though only
+  demo steps without messages were played there. Scene choices (`story_scene_choice.cpp`) check
+  `guest_code_unchanged` on the message-control constructors (`025F65F4`, `025F7424`, `025F7500`)
+  and stay disabled on the Japanese build until tested there. Randomized games: see
+  [Randomized games](#randomized-games). The map/compass bridge for code mods
   ([mod-sdk-map-hud.md](mod-sdk-map-hud.md)) is: every function it uses is the same code. The
   catalogue's minimap mods do not support the Japanese build yet: the HD minimap enables itself on
   USA and EU only, and both read members of the play object that moved (see the next point).

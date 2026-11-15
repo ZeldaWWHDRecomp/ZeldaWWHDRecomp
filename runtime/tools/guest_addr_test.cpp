@@ -18,6 +18,7 @@ int main() {
     assert(GC_OPTIONAL(0x02715310) == 0x02715DF8);
     assert(GC(0x0264E754) == 0x0264F2E4);  // rewritten: paired through the static initializer table
     assert(!guest_code_unchanged(0x0264E754));
+    assert(!guest_code_unchanged(0x025F65F4) && !guest_code_unchanged(0x025F7424) && !guest_code_unchanged(0x025F7500));
     assert(!guest_code_valid(0x0264E758));
     // play object members (g_dComIfG_gameInfo): 4 bytes earlier from +0x5AB0, 5 at +0x5BEF
     assert(GI(0x5134) == 0x5134);
@@ -36,6 +37,7 @@ int main() {
     assert(!guest_code_valid(0x02593B18));
     assert(guest_code_valid(0x02593B10));
     assert(!guest_code_unchanged(0x02593B10));  // the entry of a function the European build changed
+    assert(guest_code_unchanged(0x025F65F4) && guest_code_unchanged(0x025F7424) && guest_code_unchanged(0x025F7500));
     assert(guest_code_unchanged(0x02715310));
     assert(!guest_code_valid(0x02000000));
     assert(!guest_data_valid(0x104DA1C8));

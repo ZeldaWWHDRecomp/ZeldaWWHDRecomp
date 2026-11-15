@@ -1540,6 +1540,12 @@ if(Python3_Interpreter_FOUND)
   target_compile_definitions(guest_addr_jp_test PRIVATE TEST_JP)
   target_compile_options(guest_addr_jp_test PRIVATE -UNDEBUG)
   add_test(NAME guest_addr_jp COMMAND guest_addr_jp_test)
+  add_executable(story_scene_choice_jp_test runtime/tools/story_scene_choice_test.cpp
+    runtime/src/mods/story_scene_choice.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture_jp.c")
+  target_include_directories(story_scene_choice_jp_test PRIVATE runtime/include runtime/src)
+  target_compile_definitions(story_scene_choice_jp_test PRIVATE TEST_JP)
+  target_compile_options(story_scene_choice_jp_test PRIVATE -UNDEBUG)
+  add_test(NAME story_scene_choice_jp COMMAND story_scene_choice_jp_test)
   add_executable(auto_pip_eu_test runtime/tools/auto_pip_test.cpp runtime/src/gfx/display_modes.cpp
     "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
   target_include_directories(auto_pip_eu_test PRIVATE runtime/src runtime/include runtime/third_party/fmt/include)

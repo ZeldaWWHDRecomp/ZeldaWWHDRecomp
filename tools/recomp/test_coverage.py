@@ -29,7 +29,7 @@ NON_ADDRESS.update({("espresso_fp.c", value): "frsqrte mantissa lookup table"
                                   0x02665000, 0x02468000, 0x02287000, 0x020C1000)})
 TRIVIA = re.compile(r'//[^\n]*|/\*.*?\*/|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
 LITERAL = re.compile(r'\b0[xX]([0-9a-fA-F]{1,8})(?![0-9a-fA-F])[uUlL]*\b')
-WRAPPED = re.compile(r'\b(GC|GD|GC_OPTIONAL|CANONICAL_CODE_ID)\s*\([^;]*?\)', re.S)
+WRAPPED = re.compile(r'\b(GC|GD|GC_OPTIONAL|CANONICAL_CODE_ID|guest_code_unchanged)\s*\([^;]*?\)', re.S)
 # Built only into the decomp build (cmake/Decomp.cmake), which runs the USA game only: its guest
 # addresses are USA addresses by definition and have no EUR counterpart to map.
 DECOMP_BUILD_ONLY = ("decomp/", "hostrt/", "native_draw/")  # native_draw/: only the decomp fast build (cmake/Decomp.cmake)
@@ -83,7 +83,7 @@ def without_decomp_blocks(text):
 def address_errors(source, name, mapping):
     text = TRIVIA.sub(lambda m: re.sub(r"[^\n]", " ", m[0]), source)
     text = without_decomp_blocks(text)
-    spans = [(m.start(), m.end(), "code" if m[1] in ("GC", "GC_OPTIONAL", "CANONICAL_CODE_ID") else "data")
+    spans = [(m.start(), m.end(), "code" if m[1] in ("GC", "GC_OPTIONAL", "CANONICAL_CODE_ID", "guest_code_unchanged") else "data")
              for m in WRAPPED.finditer(text)]
     errors = []
     for m in LITERAL.finditer(text):
