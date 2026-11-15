@@ -21,7 +21,13 @@
 #        -PwwhdDebugSuffix=.decomp it installs next to the normal build); GEN_DIR must then come from
 #        recomp.py --decomp-hooks; DECOMP_DIR (default decomp, the submodule) and DECOMP_GAME (default
 #        game: your USA game) as WWHD_DECOMP_DIR and WWHD_DECOMP_GAME; DECOMP_FAST=1 with DECOMP=1: the decomp
-#        build's fast mode (WWHD_DECOMP_FAST, cmake/Decomp.cmake)
+#        build's fast mode (WWHD_DECOMP_FAST, cmake/Decomp.cmake),
+#        STABLE_SRC=1: one build folder OUT for several worktrees: CMake reads the source tree through the link
+#        OUT/src (and DECOMP_DIR through OUT/decomp-src), which tools/decomp_build/stable_src.py points at this
+#        worktree first, setting the file times so that ninja rebuilds only files whose content differs from the
+#        last build's. Paths in commands and generated files are then the same for every worktree (no rehome
+#        step; ccache hits across worktrees, CCACHE_BASEDIR=OUT; gen.py / native_rules.py / the declaration table
+#        skip unchanged inputs). A build folder configured without it needs a new OUT once.
 # The game code in build/gen is generated from your own game (tools/recomp/recomp.py) and stays on
 # your machine; the APK built from it contains it and must not be distributed. CI builds this with
 # placeholder code (tools/recomp/stubgen.py) only to check that it compiles.
@@ -53,26 +59,42 @@ ninja="$(command -v ninja || true)"
 decomp="${DECOMP:-0}"
 libdir=libs
 if [ "$decomp" = 1 ]; then
-    out="${OUT:-$here/build-decomp}/game"; libdir=libs-decomp
+    out_root="${OUT:-$here/build-decomp}"; libdir=libs-decomp
 else
-    out="${OUT:-$here/build}/game"
+    out_root="${OUT:-$here/build}"
 fi
+out="$out_root/game"
 cpu="${CPU:-generic}"
 flags=()
 if [ "$cpu" != generic ]; then flags=("-DCMAKE_C_FLAGS=-mcpu=$cpu" "-DCMAKE_CXX_FLAGS=-mcpu=$cpu"); fi
 if [ -n "${WWHD_VERSION:-}" ]; then flags+=("-DWWHD_VERSION=$WWHD_VERSION"); fi
+src="$root"
+decomp_dir="${DECOMP_DIR:-$root/decomp}"
+if [ "${STABLE_SRC:-0}" = 1 ]; then
+    mkdir -p "$out_root"
+    out_root="$(cd "$out_root" && pwd)"; out="$out_root/game"
+    src="$out_root/src"
+    if [ -f "$out/CMakeCache.txt" ] && ! grep -qx "CMAKE_HOME_DIRECTORY:INTERNAL=$src" "$out/CMakeCache.txt"; then
+        echo "STABLE_SRC=1: $out was configured from $(sed -n 's/^CMAKE_HOME_DIRECTORY:INTERNAL=//p' "$out/CMakeCache.txt"), not $src: use a new OUT"
+        exit 2
+    fi
+    links=("src=$root")
+    if [ "$decomp" = 1 ]; then links+=("decomp-src=$decomp_dir"); decomp_dir="$out_root/decomp-src"; fi
+    python3 "$root/tools/decomp_build/stable_src.py" "$out_root" "${links[@]}"
+    if [ "$decomp" = 1 ]; then flags+=("-DWWHD_DECOMP_CCACHE_BASEDIR=$out_root"); fi
+fi
 if [ "$decomp" = 1 ]; then
-    flags+=(-DWWHD_DECOMP=ON "-DWWHD_DECOMP_DIR=${DECOMP_DIR:-$root/decomp}" "-DWWHD_DECOMP_GAME=${DECOMP_GAME:-$root/game}")
+    flags+=(-DWWHD_DECOMP=ON "-DWWHD_DECOMP_DIR=$decomp_dir" "-DWWHD_DECOMP_GAME=${DECOMP_GAME:-$src/game}")
     if [ "${DECOMP_FAST:-0}" = 1 ]; then flags+=(-DWWHD_DECOMP_FAST=ON); else flags+=(-DWWHD_DECOMP_FAST=OFF); fi
 fi
 
 echo "== game (libmain.so$([ "$decomp" = 1 ] && echo ', decomp build')), NDK $(basename "$ndk"), CPU $cpu"
 mkdir -p "$out"
-"$cmake" -S "$root" -B "$out" -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" \
+"$cmake" -S "$src" -B "$out" -G Ninja "-DCMAKE_MAKE_PROGRAM=$ninja" \
     "-DCMAKE_TOOLCHAIN_FILE=$ndk/build/cmake/android.toolchain.cmake" "-DANDROID_ABI=$abi" \
     "-DANDROID_PLATFORM=android-$api" -DANDROID_STL=c++_shared -DCMAKE_BUILD_TYPE=Release \
     -DWWHD_BUNDLED_DEPS=ON "-DWWHD_QUEST_THEATER=${QUEST_THEATER:-ON}" \
-    "-DGEN_DIR=${GEN_DIR:-$root/build/gen}" ${flags[@]+"${flags[@]}"} > "$out.log"
+    "-DGEN_DIR=${GEN_DIR:-$src/build/gen}" ${flags[@]+"${flags[@]}"} > "$out.log"
 "$cmake" --build "$out" -j "$jobs" --target wwhd wwhd_yaz0 >> "$out.log" 2>&1 || { tail -40 "$out.log"; exit 1; }
 libs="$here/app/$libdir/$abi"
 mkdir -p "$libs"
