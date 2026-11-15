@@ -33,7 +33,11 @@ Root: $WWHD_DECOMP_BUILD_CACHE (cmake WWHD_DECOMP_BUILD_CACHE), default ~/Librar
 $XDG_CACHE_HOME/wwhd-decomp-build; "off" disables it. Cap: $WWHD_DECOMP_BUILD_CACHE_MB (default 3072 MB). The cache
 holds data made from the player's game (sites, the RPX's disassembly): it stays on this machine like the build
 directory. Pickles are trusted data: the root must be writable by this user only."""
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
 import hashlib
 import os
 import pickle
@@ -243,7 +247,11 @@ class Store:
         now = time.time() if now is None else now
         with open(os.path.join(self.root, ".lock"), "a") as lk:
             try:
-                fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                if fcntl:
+                    fcntl.flock(lk, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    lk.seek(0)
+                    msvcrt.locking(lk.fileno(), msvcrt.LK_NBLCK, 1)
             except OSError:
                 return 0
             total, files = self.size()
