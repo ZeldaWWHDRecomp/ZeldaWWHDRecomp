@@ -13,8 +13,21 @@
 # when a translation unit listed here includes a runtime header that is not, or when a source outside
 # the list creates pipelines or shaders.
 #
-# One path per line, relative to the source root: a folder (every source file below it) or a file.
+# One path per line, relative to the source root: a folder (every source file below it) or a file. "!path" leaves
+# out one file of a listed folder: the hosts' windows, menus, input and the like, which create no pipelines or
+# shaders (the test above fails if one does) and change for reasons a player's prepared shaders shouldn't pay for.
 runtime/src/gfx
+!runtime/src/gfx/host_tvos.mm
+!runtime/src/gfx/input.mm
+!runtime/src/gfx/controls_ui.mm
+!runtime/src/gfx/menu.mm
+!runtime/src/gfx/text_input_appkit.mm
+!runtime/src/gfx/quit_prompt.mm
+!runtime/src/gfx/player_question.mm
+!runtime/src/gfx/cloud_save_uikit.mm
+!runtime/src/gfx/present_observer.mm
+!runtime/src/gfx/overlay_appkit.mm
+!runtime/src/gfx/remote_video.mm
 runtime/src/gx2
 runtime/include
 runtime/third_party/cemu
