@@ -84,7 +84,6 @@ NOT_A_MOVED_OFFSET = {
        for v in (0x5B2C, 0x5BB2, 0x5BB3, 0x5BB5, 0x5BB6, 0x5BB7, 0x5BBB, 0x5CD8, 0x5CDC, 0x5CEA)},
     **{("src/mods/story_game_objects.cpp", v): "a canonical offset, read as GI(l.pointer)"
        for v in (0x5AB8, 0x5ABC, 0x5AC0, 0x5AC4)},
-    ("src/mods/story_native_camera_capture.h", 0x5AF8): "the canonical default; the adapter passes GI(0x5AF8)",
     ("src/mods/story_notebook.cpp", 0x6000): "an angle (s16)",
 }
 

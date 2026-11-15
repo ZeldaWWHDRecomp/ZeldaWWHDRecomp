@@ -74,7 +74,7 @@ static void terminal_run(unsigned mode){
   w(e.identity.image+0xE4,0);w(e.identity.manager+0x20,0);
  });active_terminal=&terminal;
  assert(depth.begin_drain());assert(terminal.close()==T::Result::Completed&&all_off==2);assert(depth.cancel_drain());
- const story_native_camera_capture::Layout camera_layout{play,0x101D55F0,0x101D5634,0x101D5538,{0x025021A4,0x02502288,0x024FFA3C,0x0250235C,0x024FFC40},{0x10049348,0x10049350,0x10044878,0x1004487C}};
+ const story_native_camera_capture::Layout camera_layout{play,0x101D55F0,0x101D5634,0x101D5538,{0x025021A4,0x02502288,0x024FFA3C,0x0250235C,0x024FFC40},{0x10049348,0x10049350,0x10044878,0x1004487C},0x5AF8};
  story_native_camera_return::Sources bs;bs.capture=[&](auto*,auto&v){v.identity=e.identity;v.event_state=v.camera_play=0;v.terminal_serial=terminal.completion().serial();v.retained=controller.retained(e);v.exclusive=claim;return story_native_camera_capture::capture(read,camera_layout,e,v.camera);};bs.verify_camera=[&](const auto&camera,const auto&i){return story_native_camera_policy::verify(sources.camera_tables,read,camera,i).valid;};bs.owned_thread=[&](auto*c){return c==&cpu;};bs.route=[]{return true;};
  story_native_camera_return::Barrier barrier(e.identity,e.camera,bs);assert(barrier.arm(terminal.completion()));
  if(before_return){assert(controller.stop_terminal(&cpu,terminal,barrier)==C::State::Quarantined&&controller.retained(e)&&claim&&!consumer_writes&&quarantines==1&&!writer.attempted()&&!releases&&session.quarantined());story_native_wait_journal::Record saved;assert(story_native_wait_journal::decode(std::span(mem::ptr(layout.wait.header.address),story_native_wait_journal::kBytes),saved)&&saved.phase==story_native_wait_journal::Phase::Quarantined);}
