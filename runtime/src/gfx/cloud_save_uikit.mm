@@ -469,12 +469,18 @@ bool upload(const Remote& r, const Files& f, double seconds) {
 
 // while the game runs: a save that changed since the last sync goes up, unless another device's is there now (then
 // the next start asks which to keep)
-void upload_if_changed(double seconds) {
+// WAIT_WRITES: a save from the last 3 s (the game may still be writing it) is waited for rather than left for later
+void upload_if_changed(double seconds, bool wait_writes = false) {
     std::lock_guard<std::mutex> guard(g_mu);
-    const Files f = read_files(g_dir);
+    Files f = read_files(g_dir);
     const std::string synced = synced_hash();
     if (f.hash.empty() || (f.hash == synced && !g_move)) return;
-    if (f.saved > 0 && [NSDate date].timeIntervalSince1970 - f.saved < 3) return;  // (the game may still be writing)
+    if (const double age = [NSDate date].timeIntervalSince1970 - f.saved; f.saved > 0 && age < 3) {
+        if (!wait_writes) return;
+        std::this_thread::sleep_for(std::chrono::duration<double>(3 - age));
+        f = read_files(g_dir);
+        if (f.hash.empty() || f.hash == synced) return;
+    }
     Remote r;
     if (!fetch(r, seconds)) return;
     if (f.hash == synced && !r.legacy) {  // (another device moved it)
@@ -587,5 +593,12 @@ void flush() {
             task = UIBackgroundTaskInvalid;
         });
     });
+}
+
+void flush_then(std::function<void()> done) {
+    std::thread([done] {
+        if (g_container) @autoreleasepool { upload_if_changed(20, true); }
+        done();
+    }).detach();
 }
 }  // namespace cloud_save

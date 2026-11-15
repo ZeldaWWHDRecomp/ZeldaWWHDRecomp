@@ -17,4 +17,8 @@ void startup(const std::string& save_dir, const Ask& ask);
 
 // the app is going to the background: upload a changed save now
 void flush();
+// the game is ending: upload a changed save (one written in the last moments too, once it is written), then DONE (on a
+// thread of its own, not the main one: an app whose windows are gone may be suspended; at once when nothing changed,
+// after at most about 20 s otherwise)
+void flush_then(std::function<void()> done);
 }  // namespace cloud_save
