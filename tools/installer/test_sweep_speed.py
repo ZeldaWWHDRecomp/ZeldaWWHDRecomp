@@ -198,8 +198,8 @@ class SpeedTests(unittest.TestCase):
         self.assertEqual((state / 'skip.txt').read_text().splitlines(), [actors[5], actors[13]])
         done = [l[11:] for l in (state / 'progress.txt').read_text().splitlines() if l.startswith('actor-done ')]
         self.assertEqual(sorted(done), sorted(set(actors) - {actors[5], actors[13]}))
-        # 8 -> 4 -> 2 -> 1 for each of the two, then the last attempt
-        self.assertEqual(game.calls, 9)
+        # 8 -> 4 -> 2 -> 1 and the single actor once more for each of the two, then the last attempt
+        self.assertEqual(game.calls, 11)
 
     def test_stopped_group_needs_more_than_one_actor_left(self):
         self.assertEqual(model_sweep.stopped_group(['start', 'actor-group 2', 'actor a', 'actor b']), ['a', 'b'])

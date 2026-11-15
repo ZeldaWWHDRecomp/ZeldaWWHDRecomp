@@ -147,13 +147,33 @@ class ModelSweepTests(unittest.TestCase):
         self.assertEqual(self.run_sweep(FakeGame(self, [])), 'done')
 
     def test_a_crash_skips_the_model_and_resumes_after_the_archives_done(self):
-        game = FakeGame(self, [('crash', 'Kn'), 'ok'])
+        game = FakeGame(self, [('crash', 'Kn'), ('crash', 'Kn'), 'ok'])
         self.assertEqual(self.run_sweep(game), 'done')
         state = model_sweep.state_dir(self.cache, 'vulkan')
         self.assertEqual((state / 'skip.txt').read_text(), 'Kn:a.bdl\n')
         progress = (state / 'progress.txt').read_text().splitlines()
         self.assertEqual(progress.count('archive-done Always'), 1)  # not swept twice
+        self.assertEqual(len(game.calls), 3)
+
+    def test_a_model_that_stopped_the_game_once_is_tried_again_in_a_fresh_game(self):
+        game = FakeGame(self, [('crash', 'Kn'), 'ok'])
+        self.assertEqual(self.run_sweep(game), 'done')
+        state = model_sweep.state_dir(self.cache, 'vulkan')
+        self.assertFalse((state / 'skip.txt').exists())
         self.assertEqual(len(game.calls), 2)
+
+    def test_a_stopped_attempt_keeps_its_output_and_crash_report(self):
+        class CrashingGame(FakeGame):
+            def __call__(self, command, env, stdout, stderr, cwd):
+                stdout.write(b'[gfx] last words\n')
+                (Path(cwd) / 'captures').mkdir()
+                (Path(cwd) / 'captures' / 'crash-20261114-101500.log').write_text('CRASH: signal 6\n')
+                return super().__call__(command, env, stdout, stderr, cwd)
+        self.assertEqual(self.run_sweep(CrashingGame(self, [('crash', 'Kn'), 'ok'])), 'done')
+        kept = list((model_sweep.state_dir(self.cache, 'vulkan') / 'failures').iterdir())
+        self.assertEqual(len(kept), 1)  # the stopped attempt's (not the one that finished)
+        self.assertTrue((kept[0] / 'output.log').read_bytes().startswith(b'[gfx] last words'))
+        self.assertEqual((kept[0] / 'crash-20261114-101500.log').read_text(), 'CRASH: signal 6\n')
 
     def test_the_culprit_is_the_last_model_archive_or_actor_started(self):
         lines = ['start', 'load Bk', 'model Bk:a.bdl', 'archive-done Bk', 'actors', 'actor Tbox:0:0:0',
@@ -177,7 +197,7 @@ class ModelSweepTests(unittest.TestCase):
         self.assertEqual(progress.count('archive-done Always'), 1)
 
     def test_another_build_starts_over_and_another_game_forgets_the_skips(self):
-        self.run_sweep(FakeGame(self, [('crash', 'Kn'), 'ok']))
+        self.run_sweep(FakeGame(self, [('crash', 'Kn'), ('crash', 'Kn'), 'ok']))
         state = model_sweep.state_dir(self.cache, 'vulkan')
         self.run_sweep(FakeGame(self, ['ok']), identity={'game': 'g', 'preparation': 'new build'})
         self.assertEqual((state / 'skip.txt').read_text(), 'Kn:a.bdl\n')
