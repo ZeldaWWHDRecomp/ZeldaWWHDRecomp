@@ -479,6 +479,14 @@ void proof_desc(const ProofDraw& d, const std::string& family, const std::functi
                  return second(cmd);
              });
 }
+// two recorders of one draw (the instanced program against the per-slice native one): FIRST into target 0, SECOND into 1
+void proof_pair(const ProofDraw& d, const std::string& family, const std::function<bool(VkCommandBuffer)>& first,
+                const std::function<bool(VkCommandBuffer)>& second) {
+    report(d.info.frame);
+    if (!d.indexed || !d.info.depth || !d.info.depth->fmt.depth) { ++g_skipped["draw form"]; return; }
+    ++g_stats[family].samples;
+    run_pair(d, family, first, second);
+}
 
 namespace {
 void run_pair(const ProofDraw& d, const std::string& family, const std::function<bool(VkCommandBuffer)>& first,

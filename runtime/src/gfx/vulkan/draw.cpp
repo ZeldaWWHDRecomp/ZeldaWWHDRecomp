@@ -67,6 +67,7 @@
 #include "gx2/native_j3d_desc_draw.h"
 #include "native_draw/j3d_depth.h"
 #include "native_draw/j3d_desc_depth.h"  // (at file scope: j3d_desc_vk.h includes it again inside gfxvk)
+#include "native_draw/j3d_desc_depth_inst.h"
 #include "framegen.h"
 #include "cloud_proto.h"
 #include "mods/cemu_pack.h"
@@ -4283,6 +4284,10 @@ void j3ddesc_resolved(const uint32_t* r, const LatteFetchShader* fs, uint64_t fs
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances, bool* viewIndependent) {
 #ifdef WWHD_NATIVE_DRAW
+  // shadow-slice instancing (native_draw/j3d_desc_depth_inst.h): a translated draw that does not commute with the
+  // collected depth draws (with its final registers) draws them first
+  if (::native_draw::j3ddesc::depth::g_instPending && !::native_draw::j3ddesc::depth::inst_commutes(r))
+    ::native_draw::j3ddesc::depth::inst_flush_now("draw");
   // J3D material cache: the key of this draw, named by OP_J3D_SHAPE right before it (never an inner replay's)
   const uint64_t j3dSiteKey = std::exchange(native_draw::g_j3dKey, 0);
   const uint64_t j3dKey = j3dSiteKey ? j3d_key(j3dSiteKey, r) : 0;

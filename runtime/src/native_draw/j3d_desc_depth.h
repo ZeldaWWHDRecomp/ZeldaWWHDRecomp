@@ -138,8 +138,13 @@ struct Geometry {  // the draw's vertex and index binds, as the description path
     uint32_t indexCount = 0;
     int32_t baseVertex = 0;
 };
-// false: not collectable (the caller draws it now, after inst_flush() if something is collected for another target)
-bool inst_collect(State* s, const Draw& d, const Geometry& g, const Target& t);
+// whether the state's draws are collected (instancing on, the state has its instanced variant)
+bool inst_wanted(const State* s);
+// false: not collectable (the caller draws it now; with something collected for another target it flushes first, which
+// ends the open pass). PROOF (INST proof, WWHD_J3D_DEPTH_PROOF=N: every Nth collected draw, proof_wanted()): the
+// draw's plain native binding (bind()); the flush then also draws this instance with it and with the instanced program
+// into private targets and compares them word for word (stats as inst:<family>)
+bool inst_collect(State* s, const Draw& d, const Geometry& g, const Target& t, const Binding* proof = nullptr);
 bool inst_pending();                  // something is collected
 uint64_t inst_target();               // the collected draws' cascade surface (0: none)
 void inst_flush(VkCommandBuffer cmd); // draws and clears the collection (no pass open; leaves none open)

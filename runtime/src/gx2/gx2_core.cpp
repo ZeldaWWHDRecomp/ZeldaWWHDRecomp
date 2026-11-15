@@ -58,6 +58,7 @@
 #include "native_pass.h"
 #include "native_j3d_desc.h"
 #include "native_j3d_desc_draw.h"
+#include "native_draw/j3d_desc_depth_inst.h"
 #endif
 #ifdef WWHD_VK_SMOOTH
 #include "../gfx/vulkan/frame_breakdown.h"
@@ -835,6 +836,9 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     if ((op == OP_DRAW || op == OP_DRAW_INDEXED || (op == OP_PACKET_DRAW && n >= 2 && p[1] != native_draw::kNoDraw)) &&
         native_pass::on())
         native_pass::note_draw(g_regs);
+    // shadow-slice instancing (native_draw/j3d_desc_depth_inst.h): collected depth draws are drawn before a command
+    // that may touch or read their cascade
+    if (native_draw::j3ddesc::depth::g_instPending) native_draw::j3ddesc::depth::inst_before_op(op, p, n, g_regs);
 #endif
     switch (op) {
     case OP_DEBUG_CONTEXT: g_draw_context.store(n ? p[0] : 0, std::memory_order_relaxed); return;

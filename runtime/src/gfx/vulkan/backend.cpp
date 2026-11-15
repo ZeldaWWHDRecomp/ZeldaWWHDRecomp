@@ -123,6 +123,7 @@ extern "C" int __llvm_profile_write_file(void);
 #include <mutex>
 #ifdef WWHD_NATIVE_DRAW
 #include "native_draw/j3d_desc_depth.h"
+#include "native_draw/j3d_desc_depth_inst.h"
 #include "batch_pass_end.h"
 #endif
 #ifdef WWHD_VK_SMOOTH
@@ -1515,6 +1516,10 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
     publish_or_finish_present_prefix(*active_deferred_commands);
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::DrainEnd, 0, R.frame, uint64_t(handoff_trace::Reason::ExternalSyncPrefix));
   }
+#ifdef WWHD_NATIVE_DRAW
+  // shadow-slice instancing (native_draw/j3d_desc_depth_inst.h): collected depth draws belong to this submission
+  if (::native_draw::j3ddesc::depth::g_instPending) ::native_draw::j3ddesc::depth::inst_flush_now("submit");
+#endif
   end_encoder();
   auto& slot=R.submissions[R.activeSubmission];
   if (slot.perfQuery != UINT32_MAX) {

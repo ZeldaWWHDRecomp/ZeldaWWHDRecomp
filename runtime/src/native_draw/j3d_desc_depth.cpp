@@ -2,6 +2,7 @@
 // WWHD_NATIVE_DRAW=ON only. The family core (hashes, proven lists, programs, pipelines) is j3d_depth_family.cpp.
 #include "../../third_party/cemu/cemu_shim.h"  // (as the gx2 sources get it: -include)
 #include "native_draw/j3d_desc_depth.h"
+#include "native_draw/j3d_desc_depth_inst.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "Cafe/HW/Latte/ISA/LatteReg.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
@@ -43,8 +44,8 @@ bool g_layerOutput = false;  // the device writes gl_Layer from the vertex stage
 // ---------------------------------------------------------------- counters
 struct Counts {
     std::map<std::string, uint64_t> refused, failed;
-    uint64_t hand = 0, gen = 0, draws = 0, setsWritten = 0, setsOwn = 0;
-    uint64_t collected = 0, groups = 0, instanced = 0, flushes = 0, notCollected = 0;
+    uint64_t hand = 0, gen = 0, reused = 0, draws = 0, setsWritten = 0, setsOwn = 0;
+    uint64_t collected = 0, groups = 0, instanced = 0, instDraws = 0, flushes = 0, notCollected = 0;
     std::map<std::string, uint64_t> instRefused;
 } g_counts;
 uint64_t g_countFrame = 0;
@@ -59,21 +60,31 @@ struct SlotSet {
     std::array<VkBuffer, kMaxBind> buffers{};
     std::array<VkDeviceSize, kMaxBind> ranges{};
 };
-struct SetCache { std::vector<SlotSet> slots; };
-// the slot's set: as it is (same buffers and ranges; images are static per state), rewritten (not bound yet in this
-// submission), else a set of the submission's pool for this draw. Dynamic offsets carry the per-draw part.
+constexpr uint32_t kSetsPerSlot = 4;  // a state's draws in one submission may see up to this many buffer sets
+struct SetCache { std::vector<std::array<SlotSet, kSetsPerSlot>> slots; };
+// the slot's set: one with the same buffers and ranges as it is (images are static per state), else one not bound yet in
+// this submission rewritten, else a set of the submission's pool for this draw (counted "own": an allocation). Up to
+// kSetsPerSlot sets per (state, submission slot): blocks that move to another upload buffer within one submission (the
+// upload ring's next buffer) find their set again from the next frame on. Dynamic offsets carry the per-draw part.
 VkDescriptorSet slot_set_for(SetCache& sc, VkDescriptorSetLayout layout, const Ubo* ubo, uint32_t nubo, const Img* img,
                              uint32_t nimg) {
     using namespace gfxvk;
     const size_t slot = R.activeSubmission;
     if (sc.slots.size() <= slot) sc.slots.resize(slot + 1);
-    SlotSet* ss = &sc.slots[slot];
-    bool same = ss->written;
-    for (uint32_t i = 0; i < nubo && same; ++i) same = ss->buffers[i] == ubo[i].buffer && ss->ranges[i] == ubo[i].range;
+    auto& entries = sc.slots[slot];
+    SlotSet* ss = nullptr;
+    SlotSet* spare = nullptr;  // (not bound in this submission: may be rewritten)
+    for (SlotSet& e : entries) {
+        bool same = e.written;
+        for (uint32_t i = 0; i < nubo && same; ++i) same = e.buffers[i] == ubo[i].buffer && e.ranges[i] == ubo[i].range;
+        if (same) { ss = &e; break; }
+        if (!spare && e.gen != R.submissionGeneration) spare = &e;
+    }
     VkDescriptorSet set = VK_NULL_HANDLE;
-    if (same) set = ss->set;
+    if (ss) set = ss->set;
     else {
-        if (ss->gen == R.submissionGeneration) {
+        ss = spare ? spare : &entries[0];
+        if (!spare) {
             ss = nullptr;  // (bound earlier in this submission: kept; this draw takes a set of the submission)
             VkDescriptorSetAllocateInfo a{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
             a.descriptorPool = R.descriptorPool;
@@ -140,6 +151,7 @@ struct State {  // (declared in the header)
     fam::Generated* gen = nullptr;
     uint64_t vsHash = 0, psHash = 0;
     Variant plain, inst;
+    uint32_t ncolor = 0;  // the pass's colour targets (the plain pipeline's formats; the instanced one has none)
     std::vector<Img> images;  // static
     bool support = false;
     std::array<float, 33 * 4> sv{};
@@ -148,6 +160,37 @@ struct State {  // (declared in the header)
 };
 namespace {
 std::deque<State> g_states;
+std::unordered_multimap<uint64_t, State*> g_byKey;  // choose(): states by their inputs (state_key)
+// a state's inputs: family, hashes, pipeline (the core's per-key pipeline: family, streams, raster words, formats), the
+// block plan, support scalars and static images
+uint64_t state_key(const State& s) {
+    uint64_t h = 1469598103934665603ull;
+    auto mix = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; };
+    mix(uint64_t(reinterpret_cast<uintptr_t>(s.hand))), mix(uint64_t(reinterpret_cast<uintptr_t>(s.gen)));
+    mix(s.vsHash), mix(s.psHash), mix(uint64_t(reinterpret_cast<uintptr_t>(s.plain.pipe))), mix(s.ncolor);
+    for (const Need& n : s.plain.needs) mix(uint64_t(n.stageLoc) << 32 | n.binding), mix(uint64_t(n.range) << 8 | n.kind);
+    for (const Img& i : s.images)
+        mix(i.binding), mix(uint64_t(reinterpret_cast<uintptr_t>(i.info.sampler))),
+            mix(uint64_t(reinterpret_cast<uintptr_t>(i.info.imageView))), mix(uint64_t(i.info.imageLayout));
+    if (s.support) for (float f : s.sv) { uint32_t b; std::memcpy(&b, &f, 4); mix(b); }
+    return h;
+}
+bool same_state(const State& a, const State& b) {
+    if (a.hand != b.hand || a.gen != b.gen || a.vsHash != b.vsHash || a.psHash != b.psHash || a.plain.pipe != b.plain.pipe ||
+        a.plain.layout != b.plain.layout || a.ncolor != b.ncolor || a.support != b.support ||
+        a.plain.needs.size() != b.plain.needs.size() || a.images.size() != b.images.size())
+        return false;
+    for (size_t i = 0; i < a.plain.needs.size(); ++i) {
+        const Need &x = a.plain.needs[i], &y = b.plain.needs[i];
+        if (x.stageLoc != y.stageLoc || x.binding != y.binding || x.range != y.range || x.vec4s != y.vec4s || x.kind != y.kind)
+            return false;
+    }
+    for (size_t i = 0; i < a.images.size(); ++i)
+        if (a.images[i].binding != b.images[i].binding || a.images[i].info.sampler != b.images[i].info.sampler ||
+            a.images[i].info.imageView != b.images[i].info.imageView || a.images[i].info.imageLayout != b.images[i].info.imageLayout)
+            return false;
+    return !a.support || std::memcmp(a.sv.data(), b.sv.data(), sizeof a.sv) == 0;
+}
 struct Hashed { const fam::Family* family = nullptr; uint64_t hash = 0; };
 std::unordered_map<uint64_t, Hashed> g_vs;     // vertex shader key -> structure hash, hand-written family
 std::unordered_map<uint64_t, uint64_t> g_ps;   // pixel shader key -> structure hash
@@ -339,6 +382,12 @@ bool shared_ubo(State& s, const Need& n, const Draw& d, Ubo& u, const char** why
 struct Entry {
     uint32_t layer = 0;
     uint32_t staged = 0;  // offset of this instance's packed bytes in g_stage (per kPacked/kHandView need, in need order)
+    bool proof = false;   // INST proof: also drawn per slice with its plain binding (below) at the flush
+    VkPipeline plainPipe = VK_NULL_HANDLE;
+    VkPipelineLayout plainLayout = VK_NULL_HANDLE;
+    VkDescriptorSet plainSet = VK_NULL_HANDLE;
+    std::array<uint32_t, kMaxBind> plainOffsets{};
+    uint32_t plainOffsetCount = 0;
 };
 struct Group {
     State* state = nullptr;
@@ -355,11 +404,26 @@ struct Collection {
     std::unordered_map<uint64_t, std::vector<uint32_t>> byKey;  // (state, mesh) -> groups
     std::vector<uint8_t> stage;
     uint32_t minLayer = ~0u, maxLayer = 0;
-} g_col;
+    uint64_t layers = 0;  // bit per collected layer
+    void clear() {  // (keeps the capacity: no allocation once warm)
+        groups.clear();
+        for (auto& [k, v] : byKey) v.clear();
+        stage.clear();
+        surface = 0;
+        minLayer = ~0u, maxLayer = 0, layers = 0;
+    }
+} g_col, g_flushing;  // (the flush draws from g_flushing: a submission inside it finds nothing collected)
+// flush points (counters): where the collection was drawn
+std::map<std::string, uint64_t> g_flushAt;
 struct ArrayView { VkImage image; uint32_t base, count; VkImageView view; };
 std::vector<ArrayView> g_views;
+uint64_t g_viewsGen = 0;
 VkImageView array_view(const Target& t, uint32_t base, uint32_t count) {
     using namespace gfxvk;
+    if (g_viewsGen != g_surface_struct_gen) {  // (a surface's image may have changed: its views are not reused; the old
+        g_views.clear();                       // views stay alive, a few per surface rebuild)
+        g_viewsGen = g_surface_struct_gen;
+    }
     for (const ArrayView& a : g_views)
         if (a.image == t.image && a.base == base && a.count == count) return a.view;
     VkImageViewCreateInfo ci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -454,6 +518,7 @@ State* choose(const Query& q) {
     in.fs = fs;
     for (uint32_t i = 0; i < q.colorCount && i < 8; ++i) in.colors[i] = VkFormat(q.colorFormats[i]);
     in.ncolor = std::min<uint32_t>(q.colorCount, 8);
+    s.ncolor = in.ncolor;
     in.depth = VkFormat(q.depthFormat);
     in.stencil = q.depthStencil;
     const char* why = nullptr;
@@ -488,9 +553,15 @@ State* choose(const Query& q) {
     }
     if (!s.plain.pipe) return refuse(why ? why : "pipeline");
     if (s.plain.needs.size() > kMaxBind) return refuse("too many blocks");
+    // an equal state made before (the description path makes its states again, e.g. at every slice pass's first draw):
+    // that one, with its slot sets and instanced variant (one State per distinct set of inputs, no growth per define)
+    const uint64_t key = state_key(s);
+    for (auto [it, end] = g_byKey.equal_range(key); it != end; ++it)
+        if (same_state(*it->second, s)) { ++g_counts.reused; return it->second; }
     ++(s.hand ? g_counts.hand : g_counts.gen);
     g_states.push_back(std::move(s));
     State& st = g_states.back();
+    g_byKey.emplace(key, &st);
     if (want_layer_output()) {
         make_inst(st, in, clampVariant);
         if (st.inst.why) ++g_counts.instRefused[st.inst.why];
@@ -576,18 +647,21 @@ void proof(State* s, const ProofIn& p) {
 }
 
 // ---------------------------------------------------------------- shadow-slice instancing
+bool g_instPending = false;
 bool inst_pending() { return !g_col.groups.empty(); }
 uint64_t inst_target() { return g_col.groups.empty() ? 0 : g_col.surface; }
+bool inst_wanted(const State* s) { return s && s->inst.pipe && inst_on(); }
 
-bool inst_collect(State* s, const Draw& d, const Geometry& g, const Target& t) {
+bool inst_collect(State* s, const Draw& d, const Geometry& g, const Target& t, const Binding* proof) {
     auto no = [](const char* why) { ++g_counts.instRefused[why]; ++g_counts.notCollected; return false; };
     if (!s || !inst_on() || !s->inst.pipe) return no(s && s->inst.why ? s->inst.why : "no instanced variant");
     if (!g_col.groups.empty() && !same_target(g_col.target, t)) return no("another target (flush first)");
     if (g.vertexCount > 16 || t.layer >= 64) return no("geometry");
     // the shared bindings of this draw, and its per-instance bytes (read now: what the GPU would read at this draw)
-    Group probe;
+    static Group probe;
     probe.state = s;
     probe.geo = g;
+    probe.nshared = 0;
     const char* why = nullptr;
     const size_t stageAt = g_col.stage.size();
     for (const Need& n : s->inst.needs) {
@@ -630,54 +704,194 @@ bool inst_collect(State* s, const Draw& d, const Geometry& g, const Target& t) {
     if (!grp) {
         list.push_back(uint32_t(g_col.groups.size()));
         g_col.groups.push_back(probe);
-        g_col.groups.back().count = 0;
         grp = &g_col.groups.back();
+        grp->count = 0;
         ++g_counts.groups;
     }
-    grp->inst[grp->count++] = {t.layer, uint32_t(stageAt)};
+    Entry& e = grp->inst[grp->count++];
+    e = Entry{};
+    e.layer = t.layer, e.staged = uint32_t(stageAt);
+    if (proof && proof->pipeline) {
+        e.proof = true;
+        e.plainPipe = reinterpret_cast<VkPipeline>(uintptr_t(proof->pipeline));
+        e.plainLayout = reinterpret_cast<VkPipelineLayout>(uintptr_t(proof->layout));
+        e.plainSet = reinterpret_cast<VkDescriptorSet>(uintptr_t(proof->set));
+        e.plainOffsetCount = std::min<uint32_t>(proof->offsetCount, kMaxBind);
+        std::copy_n(proof->offsets, e.plainOffsetCount, e.plainOffsets.data());
+    }
     if (g_col.groups.size() == 1 && grp->count == 1) g_col.surface = t.surface, g_col.target = t;
     g_col.minLayer = std::min(g_col.minLayer, t.layer);
     g_col.maxLayer = std::max(g_col.maxLayer, t.layer);
+    g_col.layers |= 1ull << t.layer;
+    g_instPending = true;
     ++g_counts.collected;
     return true;
+}
+
+// ---------------------------------------------------------------- the flush points (j3d_desc_depth_inst.h)
+// why a draw with this register file does not commute (nullptr: it does)
+const char* commute_why(const uint32_t* r) {
+    using namespace gfxvk;
+    if (g_col.groups.empty()) return nullptr;
+    const auto* s = reinterpret_cast<const Surface*>(uintptr_t(g_col.surface));
+    if (r[mmDB_DEPTH_BASE] != s->addr) return "other target";
+    // no colour written (a colour write's depth test would see the collected draws or not): a bound target (base set,
+    // surfaces.cpp color_target) with a write mask
+    for (int i = 0; i < 8; ++i)
+        if (r[mmCB_COLOR0_BASE + i] && ((r[REGADDR::CB_TARGET_MASK] >> (4 * i)) & 15)) return "colour";
+    // depth test + write, LESS (0x16) or LEQUAL (0x36), no stencil: the stored depth is the minimum over the clear value
+    // and every fragment that passes, in any order (an equal depth stores equal bits)
+    const uint32_t dc = r[REGADDR::DB_DEPTH_CONTROL];
+    if (dc != 0x16 && dc != 0x36) return "depth control";
+    return nullptr;
+}
+bool inst_commutes(const uint32_t* r) { return !commute_why(r); }
+bool commutes_image(const uint32_t* r) {
+    for (int i = 0; i < 8; ++i)
+        if (r[mmCB_COLOR0_BASE + i] && ((r[REGADDR::CB_TARGET_MASK] >> (4 * i)) & 15)) return false;
+    return r[REGADDR::DB_DEPTH_CONTROL] == 0x16 || r[REGADDR::DB_DEPTH_CONTROL] == 0x36;
+}
+void inst_before_op(uint32_t op, const uint32_t* p, uint32_t n, const uint32_t* regs) {
+    using namespace gx2;
+    if (g_col.groups.empty()) return;
+    switch (op) {
+    // register writes, descriptions and names record nothing; an invalidate of guest memory never reaches a render
+    // target (gpu-written surfaces are skipped) and replaced buffer contents get new upload slices
+    case OP_NOP: case OP_SET_REGS: case OP_SET_PROJ_REGS: case OP_DEBUG_CONTEXT: case OP_SUBMITTED_UNIFORMS: case OP_CALL:
+    case OP_SET_CONTEXT: case OP_INVALIDATE: case OP_PACKET_DEFINE: case OP_J3D_SHAPE: case OP_PASS_BEGIN: case OP_PASS_LOAD:
+    case OP_PASS_END: case OP_PASS_COPY: case OP_PASS_VIEWPORT:
+    // (expands: below) their own checks: described draws (j3d_desc_vk.h), translated draws (the Vulkan draw, with their final registers),
+    // depth clears (inst_before_clear, with the cleared layers)
+    case OP_J3D_DESC_DRAW: case OP_DRAW: case OP_DRAW_INDEXED: case OP_CLEAR_DEPTH:
+        return;
+    case OP_PACKET_DRAW:  // (its effects are blocks, fetch shader and attribute buffers: the targets are the file's)
+        if (n < 2 || p[1] == 0xFFFFFFFFu /* native_draw::kNoDraw: effects only */) return;
+        if (const char* why = commute_why(regs)) {
+            static std::map<uint32_t, uint32_t> said;  // (debug: the first few per depth control word)
+            if (said.size() < 16 && !said.count(regs[REGADDR::DB_DEPTH_CONTROL]) && said.emplace(regs[REGADDR::DB_DEPTH_CONTROL], 0).second)
+                LOG("[j3d-desc-depth] flush at a packet draw (%s): packet %u kind %u, DB_DEPTH_BASE %08X (cascade %08X), "
+                    "DB_DEPTH_CONTROL %08X, CB_TARGET_MASK %08X", why, p[0], p[1], regs[mmDB_DEPTH_BASE],
+                    reinterpret_cast<const gfxvk::Surface*>(uintptr_t(g_col.surface))->addr, regs[REGADDR::DB_DEPTH_CONTROL],
+                    regs[REGADDR::CB_TARGET_MASK]);
+            return inst_flush_now(why[0] == 'o' ? "packet: target" : why[0] == 'c' ? "packet: colour" : "packet: depth");
+        }
+        return;
+    case OP_SWAP: return inst_flush_now("swap");
+    case OP_COPY_SURFACE: return inst_flush_now("copy");
+    case OP_EXPAND_DEPTH: case OP_EXPAND_COLOR:  // (HiZ / MSAA decompression: nothing on the host, gx2_core.cpp)
+        return;
+    case OP_CLEAR_COLOR: case OP_CLEAR_BUFFERS: return inst_flush_now("clear");
+    case OP_FLUSH: case OP_DRAW_DONE: case OP_FENCE: return inst_flush_now("gpu sync");
+    default: return inst_flush_now("other command");
+    }
+}
+void inst_before_clear(const void* surface, uint32_t first, uint32_t num) {
+    if (g_col.groups.empty() || uint64_t(reinterpret_cast<uintptr_t>(surface)) != g_col.surface) return;
+    const uint64_t mask = num >= 64 ? ~0ull : ((1ull << num) - 1) << std::min<uint32_t>(first, 63);
+    if (first < 64 && !(mask & g_col.layers)) return;  // (a slice's own clear before its draws: another layer)
+    inst_flush_now("clear");
+}
+void inst_flush_now(const char* where) {
+    if (g_col.groups.empty()) return;
+    ++g_flushAt[where];
+    gfxvk::end_encoder();
+    inst_flush(gfxvk::command_buffer());
+}
+
+// the INST proof of a group: each sampled instance drawn into private targets with its plain per-slice binding (FIRST)
+// and with the instanced program at that instance with a zero layer table (SECOND), compared word for word
+static void inst_proof(const Group& grp, const Target& t, VkDescriptorSet set, const std::array<uint32_t, kMaxBind>& offsets,
+                uint32_t nubo, uint32_t layerUbo, uint32_t zeroOffset) {
+    using namespace gfxvk;
+    namespace jd = native_draw::j3d_depth;
+    State& s = *grp.state;
+    for (uint32_t i = 0; i < grp.count; ++i) {
+        const Entry& e = grp.inst[i];
+        if (!e.proof) continue;
+        if (s.ncolor) { ++g_counts.instRefused["proof: colour targets"]; continue; }
+        jd::ProofDraw d;
+        d.info.depth = reinterpret_cast<Surface*>(uintptr_t(t.surface));
+        d.info.width = t.width, d.info.height = t.height;
+        d.info.count = grp.geo.indexCount;
+        d.info.frame = R.frame;
+        d.pipeline = e.plainPipe;
+        d.indexed = true;
+        d.indexBuffer = grp.geo.index, d.indexOffset = grp.geo.indexOffset, d.indexType = grp.geo.indexType;
+        d.drawCount = grp.geo.indexCount;
+        d.viewport = t.viewport, d.scissor = t.scissor;
+        char name[64];
+        if (s.hand) std::snprintf(name, sizeof name, "inst:%s", s.hand->name);
+        else std::snprintf(name, sizeof name, "inst:%016llx/%016llx", (unsigned long long)s.vsHash, (unsigned long long)s.psHash);
+        auto geometry = [&](VkCommandBuffer cmd) {
+            record::vkCmdSetViewport(cmd, 0, 1, &t.viewport);
+            record::vkCmdSetScissor(cmd, 0, 1, &t.scissor);
+            for (uint32_t v = 0; v < grp.geo.vertexCount; ++v)
+                record::vkCmdBindVertexBuffers(cmd, grp.geo.vertexBinding[v], 1, &grp.geo.vertex[v], &grp.geo.vertexOffset[v]);
+            record::vkCmdBindIndexBuffer(cmd, grp.geo.index, grp.geo.indexOffset, grp.geo.indexType);
+        };
+        std::array<uint32_t, kMaxBind> zeroOffsets = offsets;
+        zeroOffsets[layerUbo] = zeroOffset;
+        jd::proof_pair(d, name, [&](VkCommandBuffer cmd) {
+            record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, e.plainPipe);
+            record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, e.plainLayout, 0, 1, &e.plainSet,
+                                            e.plainOffsetCount, e.plainOffsets.data());
+            geometry(cmd);
+            record::vkCmdDrawIndexed(cmd, grp.geo.indexCount, 1, 0, grp.geo.baseVertex, 0);
+            return true;
+        }, [&](VkCommandBuffer cmd) {
+            record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.inst.pipe);
+            record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, s.inst.layout, 0, 1, &set, nubo,
+                                            zeroOffsets.data());
+            geometry(cmd);
+            record::vkCmdDrawIndexed(cmd, grp.geo.indexCount, 1, 0, grp.geo.baseVertex, i);  // (gl_InstanceIndex = i)
+            return true;
+        });
+    }
 }
 
 void inst_flush(VkCommandBuffer cmd) {
     using namespace gfxvk;
     if (g_col.groups.empty()) return;
+    // the collection is drawn from g_flushing: an upload or submission inside this flush finds nothing collected
+    std::swap(g_col, g_flushing);
+    g_col.clear();
+    g_instPending = false;
+    Collection& col = g_flushing;
     ++g_counts.flushes;
-    const Target& t = g_col.target;
-    const uint32_t base = g_col.minLayer, count = g_col.maxLayer - g_col.minLayer + 1;
+    const Target& t = col.target;
+    Surface* surface = reinterpret_cast<Surface*>(uintptr_t(col.surface));
+    const uint32_t base = col.minLayer, count = col.maxLayer - col.minLayer + 1;
     const VkImageView view = array_view(t, base, count);
     const VkImageAspectFlags aspect = VK_IMAGE_ASPECT_DEPTH_BIT | (t.stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
-    auto barrier = [&](VkPipelineStageFlags dstStages, VkAccessFlags dstAccess) {
-        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-        b.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-        b.dstAccessMask = dstAccess;
-        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
-        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-        b.image = t.image;
-        b.subresourceRange = {aspect, 0, 1, base, count};
-        record::vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                                     dstStages, 0, 0, nullptr, 0, nullptr, 1, &b);
-    };
     const VkPipelineStageFlags tests = VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT;
     const VkAccessFlags depthRW = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_READ_BIT | VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
     // the per-instance data of every group in one upload: per group, per packed need n * 16 * kMaxInst bytes, then the
-    // layer table (16 * kMaxInst), each at the uniform offset alignment
+    // layer table (16 * kMaxInst), each at the uniform offset alignment; then one zero layer table (the INST proof)
     const VkDeviceSize align = std::max<VkDeviceSize>(256, R.properties.limits.minUniformBufferOffsetAlignment);
     auto up = [&](VkDeviceSize n) { return (n + align - 1) / align * align; };
-    VkDeviceSize total = 0;
-    for (const Group& grp : g_col.groups)
+    VkDeviceSize total = up(16 * kMaxInst);
+    for (const Group& grp : col.groups)
         for (const Need& n : grp.state->inst.needs)
             if (n.kind == kPacked || n.kind == kHandView || n.kind == kLayers) total += up(n.kind == kLayers ? 16 * kMaxInst : n.vec4s * 16 * kMaxInst);
     UploadSlice pack = view ? allocate_upload(total, align) : UploadSlice{};
     if (!view || !pack.mapped) {
         ++g_counts.failed[view ? "instance upload" : "array view"];
-        g_col = {};  // (nothing drawn: a failed flush loses the shadow casters of this pass; counted, gate must be 0)
+        col.clear();  // (nothing drawn: a failed flush loses the shadow casters of this pass; counted, gate must be 0)
         return;
     }
-    barrier(tests, depthRW);
+    end_encoder();
+    // the cascade as a depth attachment (its tracked layout: a slice's clear leaves it a transfer destination)
+    transition_image(surface, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, tests, depthRW);
+    {
+        VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};  // (the slices' earlier depth writes)
+        b.srcAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+        b.dstAccessMask = depthRW;
+        b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        b.image = t.image;
+        b.subresourceRange = {aspect, 0, 1, base, count};
+        record::vkCmdPipelineBarrier(cmd, tests, tests, 0, 0, nullptr, 0, nullptr, 1, &b);
+    }
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     depth.imageView = view;
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
@@ -692,18 +906,24 @@ void inst_flush(VkCommandBuffer cmd) {
     record::vkCmdSetViewport(cmd, 0, 1, &t.viewport);
     record::vkCmdSetScissor(cmd, 0, 1, &t.scissor);
     uint8_t* dst = static_cast<uint8_t*>(pack.mapped);
-    VkDeviceSize at = 0;
+    std::memset(dst, 0, 16 * kMaxInst);  // (the zero layer table)
+    const uint32_t zeroAt = uint32_t(pack.offset);
+    VkDeviceSize at = up(16 * kMaxInst);
     VkPipeline bound = VK_NULL_HANDLE;
-    for (const Group& grp : g_col.groups) {
+    struct Drawn { uint32_t group; VkDescriptorSet set; std::array<uint32_t, kMaxBind> offsets; uint32_t nubo, layerUbo; };
+    static std::vector<Drawn> proofs;
+    proofs.clear();
+    for (uint32_t gi = 0; gi < col.groups.size(); ++gi) {
+        const Group& grp = col.groups[gi];
         State& s = *grp.state;
         std::array<Ubo, kMaxBind> ubo;
-        uint32_t nubo = 0;
+        uint32_t nubo = 0, layerUbo = 0;
         uint32_t staged = 0;  // offset inside each instance's staged bytes
         for (uint32_t ni = 0; ni < s.inst.needs.size(); ++ni) {
             const Need& n = s.inst.needs[ni];
             if (n.kind == kPacked || n.kind == kHandView) {
                 const uint32_t bytes = n.vec4s * 16;
-                for (uint32_t i = 0; i < grp.count; ++i) std::memcpy(dst + at + i * bytes, &g_col.stage[grp.inst[i].staged + staged], bytes);
+                for (uint32_t i = 0; i < grp.count; ++i) std::memcpy(dst + at + i * bytes, &col.stage[grp.inst[i].staged + staged], bytes);
                 staged += bytes;
                 ubo[nubo++] = {n.binding, pack.buffer, pack.offset + at, VkDeviceSize(bytes) * kMaxInst};
                 at += up(VkDeviceSize(bytes) * kMaxInst);
@@ -711,6 +931,7 @@ void inst_flush(VkCommandBuffer cmd) {
                 int32_t* l = reinterpret_cast<int32_t*>(dst + at);
                 std::memset(l, 0, 16 * kMaxInst);
                 for (uint32_t i = 0; i < grp.count; ++i) l[i * 4] = int32_t(grp.inst[i].layer - base);
+                layerUbo = nubo;
                 ubo[nubo++] = {n.binding, pack.buffer, pack.offset + at, 16 * kMaxInst};
                 at += up(16 * kMaxInst);
             } else ubo[nubo++] = grp.shared[ni];
@@ -729,15 +950,16 @@ void inst_flush(VkCommandBuffer cmd) {
         record::vkCmdBindIndexBuffer(cmd, grp.geo.index, grp.geo.indexOffset, grp.geo.indexType);
         record::vkCmdDrawIndexed(cmd, grp.geo.indexCount, grp.count, 0, grp.geo.baseVertex, 0);
         if (grp.count > 1) ++g_counts.instanced;
+        ++g_counts.instDraws;
         g_counts.draws += grp.count;
+        for (uint32_t i = 0; i < grp.count; ++i)
+            if (grp.inst[i].proof) { proofs.push_back({gi, set, offsets, nubo, layerUbo}); break; }
     }
     record::vkCmdEndRendering(cmd);
-    barrier(tests | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, depthRW | VK_ACCESS_SHADER_READ_BIT);
-    g_col.groups.clear();
-    g_col.byKey.clear();
-    g_col.stage.clear();
-    g_col.surface = 0;
-    g_col.minLayer = ~0u, g_col.maxLayer = 0;
+    mark_gpu_written(surface);
+    // the proofs: after the layered pass (each ends its own private pass)
+    for (const Drawn& p : proofs) inst_proof(col.groups[p.group], t, p.set, p.offsets, p.nubo, p.layerUbo, zeroAt);
+    col.clear();
 }
 
 // ---------------------------------------------------------------- counters, reset
@@ -749,24 +971,31 @@ void frame_end() {
         for (auto& [k, n] : m) s += ", " + k + " " + std::to_string(n);
         return s.empty() ? std::string(" none") : s;
     };
-    LOG("[j3d-desc-depth] states: %llu hand-written, %llu generated; refused%s; native depth draws %.1f/frame; failed%s; "
-        "sets written %.1f/frame, own %.1f/frame", (unsigned long long)g_counts.hand, (unsigned long long)g_counts.gen,
-        list(g_counts.refused).c_str(), g_counts.draws / 300.0, list(g_counts.failed).c_str(), g_counts.setsWritten / 300.0,
+    LOG("[j3d-desc-depth] states: %llu hand-written, %llu generated (made so far), reused at %.1f defines/frame; refused%s; "
+        "native depth draws %.1f/frame; failed%s; sets written %.1f/frame, own %.1f/frame", (unsigned long long)g_counts.hand,
+        (unsigned long long)g_counts.gen, g_counts.reused / 300.0, list(g_counts.refused).c_str(), g_counts.draws / 300.0, list(g_counts.failed).c_str(), g_counts.setsWritten / 300.0,
         g_counts.setsOwn / 300.0);
-    if (want_layer_output())
-        LOG("[j3d-desc-depth] slices: collected %.1f/frame, groups %.1f/frame, instanced draws %.1f/frame, flushes %.1f/frame, "
-            "not collected %.1f/frame%s", g_counts.collected / 300.0, g_counts.groups / 300.0, g_counts.instanced / 300.0,
-            g_counts.flushes / 300.0, g_counts.notCollected / 300.0, list(g_counts.instRefused).c_str());
-    g_counts.draws = g_counts.setsWritten = g_counts.setsOwn = 0;
-    g_counts.collected = g_counts.groups = g_counts.instanced = g_counts.flushes = g_counts.notCollected = 0;
+    if (want_layer_output()) {
+        LOG("[j3d-desc-depth] slices: collected %.1f/frame, groups %.1f/frame, instanced draws %.1f/frame (of them with 2+ "
+            "slices %.1f), flushes %.1f/frame, not collected %.1f/frame%s", g_counts.collected / 300.0, g_counts.groups / 300.0,
+            g_counts.instDraws / 300.0, g_counts.instanced / 300.0, g_counts.flushes / 300.0, g_counts.notCollected / 300.0,
+            list(g_counts.instRefused).c_str());
+        LOG("[j3d-desc-depth] flush points (300 frames):%s", list(g_flushAt).c_str() + 1);
+    }
+    g_counts.draws = g_counts.setsWritten = g_counts.setsOwn = g_counts.reused = 0;
+    g_counts.collected = g_counts.groups = g_counts.instanced = g_counts.instDraws = g_counts.flushes = g_counts.notCollected = 0;
     g_counts.failed.clear();
     g_counts.instRefused.clear();
+    for (auto& [k, n] : g_flushAt) n = 0;
 }
 void reset() {
-    g_col.groups.clear();
+    // (a save-state load or shader reset: what is collected is drawn first while a command buffer records, else dropped)
+    if (!g_col.groups.empty()) {
+        if (gfxvk::R.recording) inst_flush_now("reset");
+        else ++g_counts.failed["dropped at reset"], g_col.clear(), g_instPending = false;
+    }
     g_col.byKey.clear();
-    g_col.stage.clear();
-    g_col.surface = 0;
+    g_byKey.clear();
     g_states.clear();  // (their slot sets stay allocated in the kept pools; pipelines stay in the family core's cache)
     g_vs.clear();
     g_ps.clear();

@@ -73,6 +73,10 @@ struct ProofDraw {
 // records the native binding the path drew with; FAMILY names the stats line
 bool proof_desc_wanted();
 void proof_desc(const ProofDraw& d, const std::string& family, const std::function<bool(VkCommandBuffer)>& second);
+// the same comparison for two given recorders (shadow-slice instancing: the instanced program against the per-slice
+// native one); D gives the target (depth surface, size) and the draw form; sampling is the caller's (proof_desc_wanted)
+void proof_pair(const ProofDraw& d, const std::string& family, const std::function<bool(VkCommandBuffer)>& first,
+                const std::function<bool(VkCommandBuffer)>& second);
 // top of a named draw: whether it is sampled for the proof (the draw then captures its binds)
 bool proof_wanted();
 // after its own draw: the two proof draws and their comparison

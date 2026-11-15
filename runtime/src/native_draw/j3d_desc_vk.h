@@ -125,6 +125,7 @@ struct State {
   bool drawnDepth = false, mainDepth = false;
   uint32_t absent = 0;
   void* depthFamily = nullptr;  // (D2) the depth family state chosen at the making (depth::State*), else the translated bind
+  bool depthCanon = false;      // (D2 INST) commutes with collected depth draws when on their cascade (commutes_image)
 };
 struct States {
   std::vector<std::unique_ptr<State>> list;
@@ -672,6 +673,7 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
   // (D2) pass 0: the depth family, chosen from what this define resolved (R = the define's register image). Its other
   // inputs (poly offset, clip and mode words) are ambient words or the item's effect: a change makes a new state.
   namespace dp = native_draw::j3ddesc::depth;
+  s.depthCanon = native_draw::j3ddesc::depth::commutes_image(r);  // (D2 INST: commutes with collected depth draws)
   if (dp::on() && in.item->desc->pass == 0) {
     dp::Query q;
     q.desc = in.item->desc;
@@ -790,6 +792,15 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
   static Phases proto;
   Phases ph = proto;
   ph.t = ph.on ? Phases::now() : 0;
+#if J3DDESC_DEPTH
+  // (D2 INST) a draw that does not commute with the collected depth draws (not canonical, or another target) draws
+  // them first; that ends the open pass, so this draw takes the translated path
+  if (native_draw::j3ddesc::depth::g_instPending &&
+      (!s.depthCanon || uint64_t(reinterpret_cast<uintptr_t>(s.depth)) != native_draw::j3ddesc::depth::inst_target())) {
+    native_draw::j3ddesc::depth::inst_flush_now("described draw");
+    return "binds";
+  }
+#endif
   if (s.structGen != g_surface_struct_gen) return "surfaces";
   const native_draw::j3ddesc::Mesh& m = *in.mesh;
   if (m.prim != s.prim || m.indexType != s.indexType || in.blockCount != s.blockCount) return "binds";
@@ -868,7 +879,51 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
       const UploadSlice b = block_upload(addr, size);
       return {uint64_t(reinterpret_cast<uintptr_t>(b.buffer)), uint64_t(b.offset), uint64_t(b.size)};
     };
-    familyDraw = native_draw::j3ddesc::depth::bind(static_cast<native_draw::j3ddesc::depth::State*>(s.depthFamily), dd, fam);
+    auto* ds = static_cast<native_draw::j3ddesc::depth::State*>(s.depthFamily);
+    if (native_draw::j3ddesc::depth::inst_wanted(ds) && s.vertex.size() <= 16) {
+      // (D2 INST) pass 0's family draws are collected per (state, mesh) across the cascade slices and drawn layered at
+      // the next flush point (j3d_desc_depth_inst.h): nothing recorded here
+      namespace dp = native_draw::j3ddesc::depth;
+      dp::Geometry g;
+      g.mesh = uint32_t(reinterpret_cast<uintptr_t>(&m) >> 4);
+      for (size_t vi = 0; vi < s.vertex.size(); ++vi) {
+        const auto& v = s.vertex[vi];
+        const uint32_t copied = v.supported ? vertex_prefix_size(vsize[vi], v.stride, v.attributeEnd, extent) : vsize[vi];
+        UploadSlice b;
+        {
+          rprof::UploadKind uploads(rprof::kUpVertex);
+          if (!cached_guest_range(vaddr[vi], copied, rprof::kUpVertex, b)) b = snapshot(mem::ptr(vaddr[vi]), copied, 4);
+          rprof::guest_read(rprof::kUpVertex, vaddr[vi], copied);
+        }
+        g.vertex[vi] = b.buffer, g.vertexOffset[vi] = b.offset, g.vertexBinding[vi] = v.binding;
+      }
+      g.vertexCount = uint32_t(s.vertex.size());
+      g.index = ib.buffer, g.indexOffset = ib.offset, g.indexType = indexType, g.indexCount = drawCount;
+      dp::Target tg;
+      tg.image = s.depth->image;
+      tg.surface = uint64_t(reinterpret_cast<uintptr_t>(s.depth));
+      tg.format = s.depth->fmt.pixel;
+      tg.stencil = s.depth->fmt.stencil;
+      tg.layer = s.depthSlice, tg.width = s.width, tg.height = s.height;
+      tg.viewport = s.viewport, tg.scissor = s.scissor;
+      dp::Binding plain;
+      const bool sampled = dp::proof_wanted() && dp::bind(ds, dd, plain);  // (INST proof: the per-slice native binding)
+      if (dp::inst_collect(ds, dd, g, tg, sampled ? &plain : nullptr)) {
+        // the draw's side effects, as below (nothing recorded: no draw count, no draw batch)
+        in.regs[REGADDR::VGT_PRIMITIVE_TYPE] = m.prim;
+        if (bgshaders::enabled() && !gamepad_backdrop_replaying() && s.drawnDepth) bgshaders::tracker().drawn(s.depth->addr, R.frame);
+        for (int i = 0; i < 8; ++i)
+          if (s.colors[i] && !(s.absent >> i & 1)) mark_draw_target_written(s.colors[i]);
+        mark_draw_target_written(s.depth);
+        if (s.mainDepth) R.mainDepthAddr = s.depth->addr;
+        return nullptr;
+      }
+      if (dp::inst_target() && dp::inst_target() != tg.surface) {  // (collected for another target: drawn first)
+        dp::inst_flush_now("described draw");
+        return "binds";
+      }
+    }
+    familyDraw = native_draw::j3ddesc::depth::bind(ds, dd, fam);
     if (familyDraw) {
       pipe = reinterpret_cast<VkPipeline>(fam.pipeline);
       pipeLayout = reinterpret_cast<VkPipelineLayout>(fam.layout);
@@ -1129,6 +1184,9 @@ void j3ddesc_draw(const native_draw::j3ddesc::d1::In& in) {
   static uint64_t housekept = 0;
   if (R.frame != housekept) {  // once per frame: sets of dropped states freed; every 600 frames unused states dropped
     housekept = R.frame;
+#if J3DDESC_DEPTH
+    native_draw::j3ddesc::depth::frame_end();  // (D2: its counter line every 300 frames)
+#endif
     collect_sets();
     if (R.frame % 600 == 0)
       for (auto& x : g_states) {
