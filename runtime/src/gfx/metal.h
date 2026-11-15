@@ -11,6 +11,7 @@
 #include <vector>
 
 #include "formats.h"
+#include "stereo.h"
 #include "target_size.h"
 
 namespace gfx {
@@ -52,6 +53,7 @@ struct Surface {
     // dynamic resolution (dynres.h): the factor of the internal resolution the texture was made at (1: off),
     // and textures of other recent scales kept for the next change (metal_surfaces.mm rescale)
     float dyn = 1.0f;
+    uint64_t eyeHeld = 0;  // stereo: eye 1's unsubmitted commands sample this eye 0 texture (stereo_flush_generation)
     bool artisticMips = false;  // hand-drawn mip levels (artistic_mips.h): resolution-aware bias, no forced anisotropy
     struct Kept { id<MTLTexture> tex; float scale, dyn, ax, ay, sx, sy; };
     std::vector<Kept> spares;
@@ -67,6 +69,8 @@ struct Screen {
     std::atomic<bool> srgb{false};     // scan buffer is sRGB: the display applies the encoding
     std::atomic<bool> visible{true};   // nextDrawable blocks while the window is covered
 };
+
+using SurfaceMap = std::unordered_multimap<uint32_t, std::unique_ptr<Surface>>;
 
 uint64_t next_write_seq();
 inline void mark_gpu_written(Surface* s) { s->gpuWritten = true; s->writeSeq = next_write_seq(); }
@@ -91,20 +95,25 @@ struct Renderer {
     };
     std::vector<GuestRange> guest;
 
-    // outputs
-    Screen tv, drc;
+    // outputs (tvRight: stereo 3D's right eye, metal_stereo.mm)
+    Screen tv, drc, tvRight;
     id<MTLRenderPipelineState> presentPipeline = nil;
     id<MTLRenderPipelineState> presentPipelineSRGB = nil;
     id<MTLSamplerState> linearClamp = nil;
 
     // surfaces keyed by guest address (several may share an address with different shapes)
-    std::unordered_multimap<uint32_t, std::unique_ptr<Surface>> surfaces;
+    SurfaceMap surfaces;
     std::vector<Surface*> linearTargets;  // linear-aligned colour surfaces (never removed): GX2DrawDone write-back
 
     uint64_t frame = 0;
     uint64_t drawCount = 0;
 };
 extern Renderer R;
+
+// the main (1280x720, sun-check) depth buffer of the selected eye, in a format read_depth_texels reads; or null
+Surface* main_depth();
+// copies the depth texels at the n (x, y) points (texture pixels) into buffer, stride bytes apart (metal_main.mm)
+void read_depth_texels(Surface* depth, const uint32_t* xy, uint32_t n, id<MTLBuffer> buffer, uint32_t stride);
 
 // command buffer / encoder management
 id<MTLCommandBuffer> command_buffer();
@@ -152,5 +161,50 @@ void set_frame_aspect(float a);
 void resample(id<MTLTexture> src, id<MTLTexture> dst, const FormatInfo& fmt, uint32_t slices, float uMax = 1, float vMax = 1,
               uint32_t dstW = 0, uint32_t dstH = 0);
 void forget_texture_views();  // metal_draw.mm: textures were replaced
+
+// ---- stereo 3D (gfx/stereo.h; metal_stereo.mm)
+// With a mode on, every guest operation runs once per eye: eye 1 with a surface cache of its own
+// (R.surfaces, R.linearTargets and R.mainDepthAddr belong to the selected eye). Outside
+// stereo_pair eye 0 is selected, so guest reads (peek_z, write-backs) see eye 0's surfaces.
+// While a mode is on, each eye records into a command buffer of its own whose render pass stays open
+// across eye switches (ending a pass at every switch stores and reloads its attachments on a tile-based
+// GPU); every submission commits eye 0's before eye 1's (metal_main.mm submit).
+extern int stereoEye;
+void stereo_select_eye(int eye);
+id<MTLCommandBuffer> stereo_take_other_commands();  // the unselected eye's command buffer, its pass ended (nil: none)
+bool stereo_other_pending();  // the unselected eye has recorded commands
+uint64_t stereo_flush_generation();  // advanced whenever eye 1's commands are taken for a submission
+void flush();  // metal_main.mm: commits the command buffers (both eyes')
+bool wait_idle_failed();  // ... and waits for them: true when one failed (wait_idle ignores it)
+// before eye 0 writes s again: eye 1's commands that sample it (eyeHeld) run first
+void stereo_release_submit();  // (counted for the periodic report)
+inline void stereo_release(Surface* s) {
+    if (s && s->eyeHeld && s->eyeHeld == stereo_flush_generation()) stereo_release_submit();
+}
+void stereo_release_eye_allocations();  // metal_draw.mm: eye 1's private textures, when 3D turns off
+SurfaceMap& stereo_other_surfaces();  // the unselected eye's cache (empty while stereo is off)
+// eye 0 alone draws the targets both eyes share (stereo::eye_shared_target); eye 1's lookups of them go to
+// eye 0's cache, and eye 0 submits eye 1's commands before writing them again (stereo_release)
+SurfaceMap& stereo_surface_cache(const SurfaceDesc& d);  // where a lookup of d goes for the selected eye
+SurfaceMap& stereo_copy_cache(uint32_t addr, uint32_t width, uint32_t height, uint32_t layers);  // ... a copy's source
+bool stereo_screen_target(uint32_t width, uint32_t height);  // metal_surfaces.mm: the eyes' cameras differ there
+void stereo_latch();  // frame boundary: the mode for the next frame
+// the TV picture each eye sees (0 left, 1 right; the swap option applied); both are R.tv while
+// stereo is off. The scan textures stay valid until the next frame's copy_to_scan.
+const Screen& tv_eye(int eye);
+// eye0Only: the operation's target is one both eyes share
+template <class F> void stereo_pair(F&& f, bool eye0Only = false) {
+    if (stereo::frame.mode == stereo::Off || eye0Only) {
+        f();
+        return;
+    }
+    try {
+        stereo_select_eye(0);
+        f();
+        stereo_select_eye(1);
+        f();
+        stereo_select_eye(0);
+    } catch (...) { stereo_select_eye(0); throw; }
+}
 
 }  // namespace gfx

@@ -61,7 +61,35 @@ int main() {
     stereo::set_mode(-1); assert(stereo::requestedMode==stereo::Off);
     stereo::set_depth(std::numeric_limits<float>::quiet_NaN()); assert(stereo::requestedDepth==1);
     stereo::set_convergence(0); assert(stereo::requestedConvergence==10);
+    stereo::set_hud_distance(0); assert(stereo::requestedHudDistance==10);
+    stereo::set_hud_distance(150);stereo::set_convergence(600);
     stereo::set_mode(stereo::TAB);stereo::latch();
+    // the 2D layouts sit where a scene point at the HUD distance does: in front of the screen plane
+    // (crossed: the left eye's picture moves right), as clip_shift places a point that near
+    stereo::mainCamera[0]=1;
+    assert(stereo::layout_shift(stereo::eye_offset(0))>0 && stereo::layout_shift(stereo::eye_offset(1))<0);
+    assert(std::fabs(stereo::layout_shift(8)-stereo::clip_shift(150,8,stereo::frame.convergence)/150)<1e-6f);
+    // behind the glass: the HUD distance is the screen plane
+    stereo::requestedBehindGlass=true;stereo::latch();
+    assert(stereo::frame.convergence==150 && stereo::layout_shift(8)==0);
+    stereo::requestedBehindGlass=false;stereo::latch();
+    // the automatic HUD distance: the game's linearization (near 3, far 375000), a margin in front of the nearest
+    // sample, nearer at once, farther slowly, never nearer than kNearestHud
+    const float k=1-3.0f/375000;
+    assert(std::fabs(stereo::hud::distance((1-3.0f/100)/k,3,k)-100)<0.5f);
+    assert(stereo::hud::distance(1,3,k)==0 && stereo::hud::distance(0.1f,3,k)==0);
+    float depths[2]={(1-3.0f/100)/k,(1-3.0f/1000)/k};
+    stereo::hud::observe(depths,2,3,k);assert(std::fabs(stereo::hud::nearest-100)<0.5f);
+    stereo::hud::followed=150;
+    const float first=stereo::hud::follow(150,false);assert(first<120 && first>80);
+    for(int i=0;i<20;++i)stereo::hud::follow(150,false);
+    assert(std::fabs(stereo::hud::followed-80)<1);
+    float far[1]={(1-3.0f/1000)/k};stereo::hud::observe(far,1,3,k);
+    assert(stereo::hud::follow(150,false)<85);  // (receding slowly)
+    float wall[1]={(1-3.0f/15)/k};stereo::hud::observe(wall,1,3,k);
+    for(int i=0;i<30;++i)stereo::hud::follow(150,false);
+    assert(std::fabs(stereo::hud::followed-stereo::hud::kNearestHud)<0.5f);
+    stereo::hud::nearest=-1;stereo::hud::followed=150;
     stereo::set_mode(stereo::Off);assert(stereo::frame.mode==stereo::TAB);
     // Lens values do not identify a layout. A 3D camera with the same lens must
     // retain disparity, even after those values have been uploaded by nw::lyt.

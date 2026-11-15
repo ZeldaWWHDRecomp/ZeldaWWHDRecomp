@@ -34,8 +34,16 @@ inline bool camera_projection(const float* p) {
     for (int i=0;i<16;++i) if (!std::isfinite(p[i])) return false;
     return true;
 }
+// the last camera projection given an eye: its horizontal scale and depth rows (p[0], p[10], p[11]); seen:
+// one was given since the renderer cleared it (the renderers keep the scene camera's, stereo.h mainCamera)
+inline float lastCamera[3] = {0.974f, 0, 0};
+inline bool cameraSeen = false;
 inline bool project_eye(float* p, float eye, float convergence) {
     if (!camera_projection(p)) return false;
+    lastCamera[0] = p[0];
+    lastCamera[1] = p[10];
+    lastCamera[2] = p[11];
+    cameraSeen = true;
     const float projectedEye = eye*p[0];
     p[2] -= projectedEye/convergence;
     p[3] -= projectedEye;
@@ -61,6 +69,19 @@ inline void apply_eye_rows(unsigned char* bytes, const EyeRows& rows, float eye,
         const float shifted[2] = {row.p2 - projectedEye/convergence, row.p3 - projectedEye};
         std::memcpy(bytes+row.offset+8, shifted, sizeof shifted);
     }
+}
+// One 16-byte remapped uniform entry copied from source (available bytes readable there): when it is the
+// first row of a camera projection (the next three rows follow it at the source), the eye's x row is written
+// to entry (and noted in rows at rowOffset).
+inline void project_entry(unsigned char* entry, const void* source, size_t available, float eye, float convergence,
+                          EyeRows* rows = nullptr, size_t rowOffset = 0) {
+    if (eye == 0 || available < 64) return;
+    float p[16];
+    std::memcpy(p, source, 64);
+    const float unshifted[4] = {p[0], p[1], p[2], p[3]};
+    if (!project_eye(p, eye, convergence)) return;
+    std::memcpy(entry, p, 16);
+    if (rows) rows->add(rowOffset, unshifted);
 }
 // Whether project_uniform_block would change the block (read in place: no copy without a camera).
 inline bool has_camera_projection(const unsigned char* bytes, size_t size) {

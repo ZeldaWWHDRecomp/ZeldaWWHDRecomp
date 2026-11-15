@@ -1,3 +1,6 @@
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include "render_objects.h"
 #include "tooltip.h"
 #include "controls_options.h"
@@ -1137,24 +1140,42 @@ void tab_graphics() {
             post_changed([i] { aspect::set_mode(i); hostui::set("aspectMode", std::to_string(i)); });
     }
 
-#ifdef WWHD_HAS_VULKAN
-    if (render::g_backend->api == render::Api::Vulkan) {
+    if (render::feature_available(render::kFeatureStereo)) {
         heading("Stereoscopic 3D (experimental)");
+#if defined(__APPLE__) && TARGET_OS_VISION
+        // Apple Vision Pro: each eye gets its own picture whatever the packing; 3D is on (Half SBS) or off
+        bool on = stereo::requestedMode.load() != stereo::Off;
+        if (ImGui::Checkbox("3D", &on))
+            post_changed([on] {
+                const int mode = on ? stereo::HalfSBS : stereo::Off;
+                stereo::set_mode(mode);
+                hostui::set("stereoMode", std::to_string(mode));
+            });
+#else
         const char* modes[] = {"Off", "Half SBS", "Full SBS", "Top and bottom (TAB)"};
         int mode = stereo::requestedMode.load();
         if (ImGui::Combo("3D output", &mode, modes, stereo::Count))
             post_changed([mode] { stereo::set_mode(mode); hostui::set("stereoMode", std::to_string(mode)); });
+#endif
         float depth = stereo::requestedDepth.load(), convergence = stereo::requestedConvergence.load();
         if (ImGui::SliderFloat("3D depth", &depth, 0.0f, 5.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp))
             post_changed([depth] { stereo::set_depth(depth); hostui::set("stereoDepth", std::to_string(depth)); });
         if (ImGui::SliderFloat("Convergence", &convergence, 10.0f, 10000.0f, "%.0f", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp))
             post_changed([convergence] { stereo::set_convergence(convergence); hostui::set("stereoConvergence", std::to_string(convergence)); });
+        bool hudAuto = stereo::requestedHudAuto.load();
+        if (ImGui::Checkbox("Automatic HUD distance", &hudAuto))
+            post_changed([hudAuto] { stereo::requestedHudAuto = hudAuto; hostui::set("stereoHudAuto", hudAuto ? "1" : "0"); });
+        float hud = stereo::requestedHudDistance.load();
+        if (ImGui::SliderFloat(hudAuto ? "HUD distance (farthest)" : "HUD distance", &hud, 10.0f, 10000.0f, "%.0f", ImGuiSliderFlags_Logarithmic | ImGuiSliderFlags_AlwaysClamp))
+            post_changed([hud] { stereo::set_hud_distance(hud); hostui::set("stereoHudDistance", std::to_string(hud)); });
+        bool glass = stereo::requestedBehindGlass.load();
+        if (ImGui::Checkbox("Behind the glass", &glass))
+            post_changed([glass] { stereo::requestedBehindGlass = glass; hostui::set("stereoBehindGlass", glass ? "1" : "0"); });
         bool swap = stereo::requestedSwap.load();
         if (ImGui::Checkbox("Swap eyes", &swap))
             post_changed([swap] { stereo::requestedSwap = swap; hostui::set("stereoSwap", swap ? "1" : "0"); });
-        help("Separate geometry rendering for each eye. Half SBS and TAB are anamorphic; Full SBS preserves each eye's pixels. Experimental: scene and effect validation is in progress.");
+        help("Separate geometry rendering for each eye. Half SBS and TAB are anamorphic; Full SBS preserves each eye's pixels. HUD distance: how near the HUD, menus and GamePad picture appear (lower is nearer; convergence is the screen); automatic, just in front of the nearest thing in view, at most that far. Behind the glass: the HUD on the screen and the scene behind it (convergence follows the HUD distance; automatic, the nearest thing in view is on the screen), for a display whose frame would clip what comes out of it. Experimental: scene and effect validation is in progress.");
     }
-#endif
 #if defined(WWHD_HAS_VULKAN) && defined(WWHD_HDR_OUTPUT)
     if(render::vulkan()) {
         heading("HDR output");

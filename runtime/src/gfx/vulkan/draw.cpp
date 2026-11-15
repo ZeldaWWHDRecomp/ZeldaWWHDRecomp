@@ -3338,6 +3338,8 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                                 supportUniforms.size() - sh->uniforms.offset_remapped);
   // Metal AO mode 2 tiles noise per 960x540 output pixel rather than 640x360.
   const int remapped = sh->uniforms.offset_remapped;
+  if (sunShadow && !sh->vertex && remapped >= 0 && size_t(remapped) <= supportUniforms.size())
+    stereo::note_shadow_pass(supportUniforms.data() + remapped, supportUniforms.size() - remapped);
   if (sunShadow && eyeOffset != 0 && remapped >= 0 &&
       size_t(remapped) <= supportUniforms.size()) {
     // Unknown layouts keep their original uniforms. The helper validates
@@ -3915,7 +3917,7 @@ static void trace_pass(const std::array<Surface *, 8> &colors, uint32_t ncolor, 
 }
 // The depth target is the light-space sun atlas both eyes share (stereo_light_atlas).
 static bool sun_atlas_target(const uint32_t* r) {
-  return r[mmDB_HTILE_DATA_BASE]==((1024u<<16)|1024u) && r[gx2::kDepthSlicesReg]==3 &&
+  return stereo::sun_atlas(r[mmDB_HTILE_DATA_BASE]>>16,r[mmDB_HTILE_DATA_BASE]&0xFFFF,r[gx2::kDepthSlicesReg],true) &&
       LatteMRT::GetActiveDepthBufferMask(*reinterpret_cast<const LatteContextRegister*>(r));
 }
 void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexType,
@@ -4637,6 +4639,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   auto& colors = targets.colors;
   auto& slices = targets.slices;
   Surface* depth = targets.depth;
+  // stereo: eye 0 alone draws the GamePad screen (eye 1 samples eye 0's pictures, stereo_eye0_texture)
+  if (viewIndependent && !backdropReplay && stereo::frame.mode != stereo::Off && targets.target &&
+      stereo::eye_shared_target(targets.target->width, targets.target->height, targets.target->slices, targets.target->isDepth))
+    *viewIndependent = true;
   const uint32_t depthSlice = targets.depthSlice, width = targets.width, height = targets.height;
   const float sx = targets.sx, sy = targets.sy;
   clouds_before_draw(r, ps, colors[0], slices[0], depth);  // clouds.cpp: cloud shadows
@@ -4761,7 +4767,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   FeedbackStatsProbe feedbackProbe;
   auto* probe=feedback_stats_enabled()?&feedbackProbe:nullptr;
   const float cameraEye = stereo::frame.mode != stereo::Off && !stereo::layoutDrawDepth && stereo_screen_target(targets.target->width,targets.target->height)
-      ? (stereoEye ? 1.0f : -1.0f)*stereo::frame.depth*stereo::eyeDistanceAtUnitDepth : 0.0f;
+      ? stereo::eye_offset(stereoEye) : 0.0f;
   const bool sunShadow = ps->kind == gfx::ProgramKind::SunShadowMask;
   const bool recordState = fastPathDraw && !fast;
   if (recordState && !partial)
@@ -4793,12 +4799,14 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     // Bind the already resolved sets/offsets, never replay_stage/bind_stage.
     if(!backdrop_reuse_resources(*backdropReplay,p,vs,ps,R.submissionGeneration,vres,pres))return;
   } else {
+  stereo::cameraSeen = false;
   if (!replayStages || !replay->stages[0].valid ||
       !replay_stage(replay->stages[0], r, vs, cameraEye, colors, depth, vres))
     vres = bind_stage(r, vs, p.sets[0], p.dynamicUniforms, sx, sy, colors, depth, probe, cameraEye, sunShadow,
                       fast || partialStage[0] ? &continued.stages[0] : nullptr,
                       recordState && !partialStage[0] ? &continued.stages[0] : nullptr,
                       shadersOut ? &shadersOut->stages[0] : nullptr);
+  stereo::note_main_camera(!stereoEye && depth && depth->addr == R.mainDepthAddr);
   partial_stage(1);
   if (!replayStages || !replay->stages[1].valid ||
       !replay_stage(replay->stages[1], r, ps, sunShadow ? cameraEye : 0, colors, depth, pres))
@@ -5149,6 +5157,11 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     shadersOut->scissor = sc;
     shadersOut->rasterReady = true;
   }
+  // stereo 3D: the 2D layouts in front of the scene (stereo::layout_shift); eye 1's replay takes eye 0's
+  // viewport unshifted
+  if (stereo::frame.mode != stereo::Off && stereo::layoutDrawDepth &&
+      stereo_screen_target(targets.target->width, targets.target->height))
+    vp.x += stereo::layout_shift(stereo::eye_offset(stereoEye)) * vp.width * 0.5f;
   // Bitwise comparison preserves distinct signed zeros and exact float state.
   if (!state.viewportValid || std::memcmp(&state.viewport, &vp, sizeof(vp))) {
     record::vkCmdSetViewport(cmd, 0, 1, &vp);

@@ -42,7 +42,8 @@ struct StereoInOrder {
 };
 // Wrap complete guest operations, including clears/copies, so intermediate
 // color, depth, history and alias images stay in the corresponding eye's graph.
-template<class F> void stereo_pair(F&& f, bool force = false) {
+// eye0Only: the operation's target is one both eyes share (stereo::eye_shared_target)
+template<class F> void stereo_pair(F&& f, bool force = false, bool eye0Only = false) {
     if (stereo::frame.mode == stereo::Off && !force) {
         stereo_select_eye(0);
         f();
@@ -51,6 +52,11 @@ template<class F> void stereo_pair(F&& f, bool force = false) {
     // Clears and copies may reach the shared sun atlas (stereo_copy_cache).
     // Canonical guest reads explicitly select the left eye.
     StereoInOrder ordered;
+    if (eye0Only && stereo::frame.mode != stereo::Off) {
+        stereo_select_eye(0);
+        f();
+        return;
+    }
     try {
         stereo_select_eye(0);
         f();
@@ -79,5 +85,6 @@ void stereo_reset_eye_sized_targets();
 // still have the other size, so a draw resolves its attachments again (draw.cpp)
 uint32_t stereo_eye_size_generation();
 void stereo_latch();
+void sample_hud_depth();  // capture.cpp: the automatic HUD distance's depth samples (stereo::hud)
 void load_saved_stereo_hdr(); // start-up, both hosts: 3D and HDR settings saved by the overlay
 }

@@ -98,7 +98,7 @@ struct Backend {
     void (*gamepad_backdrop_scope)(const uint32_t* regs, bool begin) = nullptr;
 };
 enum Feature : int { kFeatureAO, kFeatureAOHires, kFeatureAniso, kFeatureFXAA, kFeatureScaleFilter, kFeatureCapture,
-                     kFeatureShaderHeadStart };
+                     kFeatureShaderHeadStart, kFeatureStereo };
 
 extern const Backend* g_backend;
 #ifdef WWHD_HAS_METAL
@@ -200,6 +200,13 @@ void scale_bloom_uniforms(void* remapped, size_t size);
 inline bool fxaa() { return g_backend->fxaa(); }
 inline void set_fxaa(bool v) { g_backend->set_fxaa(v); }
 inline bool feature_available(Feature f) { return g_backend->feature_available(f); }
+// start-up, a renderer offering kFeatureStereo: the 3D settings the overlay saved (gfx/stereo.h);
+// tests override the saved values: WWHD_STEREO=off|half-sbs|full-sbs|tab (or 0..3), WWHD_STEREO_DEPTH, WWHD_STEREO_HUD
+// (HUD distance), WWHD_STEREO_HUD_AUTO and WWHD_STEREO_GLASS (0|1)
+void load_saved_stereo();
+// test aid, at each frame boundary before stereo::latch: WWHD_TEST_STEREO_AT=<frame>:<mode 0..3>,... switches the
+// mode from those frames on (frame: as WWHD_DUMP_FRAMES counts them, fixed_seed::script_frame)
+void stereo_test_switch(uint64_t frame);
 inline std::string device() { return g_backend && g_backend->device ? g_backend->device() : std::string(); }
 
 }  // namespace render

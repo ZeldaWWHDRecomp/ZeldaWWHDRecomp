@@ -21,6 +21,7 @@
 #include "gx2/gx2.h"
 #include "gx2_texture_regs.h"
 #include "metal.h"
+#include "gfx/renderer.h"
 #include "runtime.h"
 #include "dynres.h"
 #include "input.h"
@@ -44,9 +45,7 @@ void peek_retire() {
         p.answer(p.cmd.status == MTLCommandBufferStatusCompleted);  // once: the handler may have done it
     }
 }
-void peek_z(const uint32_t* cells, uint32_t n) {
-    depth_peek::AnswerGuard guard;  // answered here unless the copy's completion takes it over
-    const uint64_t ticket = depth_peek::next_ticket();  // one per request, in request order
+Surface* main_depth() {
     Surface* depth = nullptr;
     auto range = R.surfaces.equal_range(R.mainDepthAddr);
     for (auto it = range.first; it != range.second; ++it) {
@@ -54,6 +53,27 @@ void peek_z(const uint32_t* cells, uint32_t n) {
         if (s->isDepth && s->width == 1280 && s->height == 720 && s->tex &&
             (!depth || s->writeSeq > depth->writeSeq)) depth = s;
     }
+    if (!depth) return nullptr;
+    const MTLPixelFormat format = depth->tex.pixelFormat;
+    return format == MTLPixelFormatDepth16Unorm || format == MTLPixelFormatDepth32Float || format == MTLPixelFormatDepth32Float_Stencil8
+               ? depth : nullptr;
+}
+void read_depth_texels(Surface* depth, const uint32_t* xy, uint32_t n, id<MTLBuffer> buffer, uint32_t stride) {
+    end_encoder();
+    id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    b.label = @"metal_main.mm read_depth_texels";  // (named for WWHD_GPU_ERRORS: which pass faulted)
+    const bool stencil = depth->tex.pixelFormat == MTLPixelFormatDepth32Float_Stencil8;
+    for (uint32_t i = 0; i < n; i++)
+        [b copyFromTexture:depth->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(xy[i * 2], xy[i * 2 + 1], 0)
+                sourceSize:MTLSizeMake(1, 1, 1) toBuffer:buffer destinationOffset:i * stride destinationBytesPerRow:stride
+          destinationBytesPerImage:stride options:stencil ? MTLBlitOptionDepthFromDepthStencil : MTLBlitOptionNone];
+    [b endEncoding];
+}
+
+void peek_z(const uint32_t* cells, uint32_t n) {
+    depth_peek::AnswerGuard guard;  // answered here unless the copy's completion takes it over
+    const uint64_t ticket = depth_peek::next_ticket();  // one per request, in request order
+    Surface* depth = main_depth();
     uint32_t points = std::min(n / 3,64u);
     if (!depth || !points) return;
     // Shader compile Fast: the game reads this depth buffer back, so draws into it keep the exact
@@ -61,36 +81,20 @@ void peek_z(const uint32_t* cells, uint32_t n) {
     // game keeps its previous answers, from a complete frame
     if (bgshaders::enabled()) bgshaders::tracker().peeked(depth->addr, R.frame);
     if (bgshaders::tracker().left_out_in(depth->addr, R.frame)) { bgshaders::peek_withheld(); return; }
-    auto format = depth->tex.pixelFormat;
-    if (format != MTLPixelFormatDepth16Unorm && format != MTLPixelFormatDepth32Float &&
-        format != MTLPixelFormatDepth32Float_Stencil8) return;
+    const bool d16 = depth->tex.pixelFormat == MTLPixelFormatDepth16Unorm;
     id<MTLBuffer> staging = [R.device newBufferWithLength:points*256 options:MTLResourceStorageModeShared];
     if (!staging) return;
-    std::vector<uint32_t> destinations(points);
-    end_encoder();
-    id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
-    b.label = @"peek_z";  // (named for WWHD_GPU_ERRORS: which pass faulted)
+    std::vector<uint32_t> destinations(points), xy(points * 2);
     for (uint32_t i=0; i<points; i++) {
-        int x = depth_peek::pixel(cells[i*3],(uint32_t)depth->tex.width,640);
-        int y = depth_peek::pixel(cells[i*3+1],(uint32_t)depth->tex.height,480);
-        [b copyFromTexture:depth->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(x,y,0)
-            sourceSize:MTLSizeMake(1,1,1) toBuffer:staging destinationOffset:i*256 destinationBytesPerRow:256
-            destinationBytesPerImage:256 options:format == MTLPixelFormatDepth32Float_Stencil8 ?
-                MTLBlitOptionDepthFromDepthStencil : MTLBlitOptionNone];
+        xy[i*2] = depth_peek::pixel(cells[i*3],(uint32_t)depth->tex.width,640);
+        xy[i*2+1] = depth_peek::pixel(cells[i*3+1],(uint32_t)depth->tex.height,480);
         destinations[i] = cells[i*3+2];
     }
-    [b endEncoding];
-    auto answer = [staging, destinations, points, format, ticket] {
+    read_depth_texels(depth, xy.data(), points, staging, 256);
+    auto answer = [staging, destinations, points, d16, ticket] {
         const uint8_t* raw = static_cast<const uint8_t*>(staging.contents);
         std::vector<uint32_t> depths(points);
-        for (uint32_t i=0; i<points; i++) {
-            if (format == MTLPixelFormatDepth16Unorm) {
-                uint16_t v; memcpy(&v,raw+i*256,2);
-                depths[i] = v == 0xFFFF ? 0xFFFFFF : uint32_t(v) << 8;
-            } else {
-                float v; memcpy(&v,raw+i*256,4); depths[i] = depth_peek::from_float(v);
-            }
-        }
+        for (uint32_t i=0; i<points; i++) depths[i] = depth_peek::texel24(raw + i*256, d16);
         depth_peek::publish(ticket,destinations,depths);
     };
     // answered once: by the completion handler or by peek_retire, whichever comes first
@@ -234,6 +238,30 @@ static void track_gpu_time(id<MTLCommandBuffer> cb) {
     }];
 }
 
+void pool_retire(id<MTLCommandBuffer> cmd);
+
+// commits the command buffer; with stereo 3D both eyes', eye 0's first (eye 1's commands may read
+// what eye 0's wrote: the sun cascades). The upload pool's chunks are recycled after the last.
+static bool submit(bool wait, bool trackTime) {
+    id<MTLCommandBuffer> mine = R.cmd, other = stereo_take_other_commands();
+    R.cmd = nil;
+    id<MTLCommandBuffer> first = stereoEye ? other : mine, last = stereoEye ? mine : other;
+    if (!last) std::swap(first, last);
+    if (!last) return false;
+    if (first) {
+        dynres_time(first);
+        [first commit];
+    }
+    pool_retire(last);
+    if (trackTime) track_gpu_time(last);
+    else dynres_time(last);
+    [last commit];
+    if (!wait) return false;
+    [first waitUntilCompleted];
+    [last waitUntilCompleted];
+    return first.status == MTLCommandBufferStatusError || last.status == MTLCommandBufferStatusError;
+}
+
 void end_encoder() {
     if (R.enc) {
         [R.enc endEncoding];
@@ -242,11 +270,7 @@ void end_encoder() {
         // hardware command processor), instead of all at once on swap
         static const bool chunked = getenv("WWHD_NO_CHUNK") == nullptr;
         if (chunked && g_draws_since_commit >= 256 && R.cmd) {
-            void pool_retire(id<MTLCommandBuffer> cmd);
-            pool_retire(R.cmd);
-            track_gpu_time(R.cmd);
-            [R.cmd commit];
-            R.cmd = nil;
+            submit(false, true);
             g_draws_since_commit = 0;
         }
     }
@@ -254,29 +278,16 @@ void end_encoder() {
     R.passDepth = nullptr;
 }
 
-void pool_retire(id<MTLCommandBuffer> cmd);
-
 void flush() {
     end_encoder();
-    if (R.cmd) {
-        pool_retire(R.cmd);
-        track_gpu_time(R.cmd);
-        [R.cmd commit];
-        R.cmd = nil;
-    }
+    submit(false, true);
 }
 
-void wait_idle() {
+bool wait_idle_failed() {
     end_encoder();
-    if (R.cmd) {
-        id<MTLCommandBuffer> c = R.cmd;
-        pool_retire(c);
-        dynres_time(c);
-        [c commit];
-        R.cmd = nil;
-        [c waitUntilCompleted];
-    }
+    return submit(true, false);
 }
+void wait_idle() { wait_idle_failed(); }
 
 // ---------------------------------------------------------------- init
 void init() {
@@ -291,6 +302,7 @@ void init() {
     map_guest_range(0xE0000000, 0x04000000);
     map_guest_range(0xF4000000, 0x02000000);
     LOG("[gfx] Metal device: %s", R.device.name.UTF8String);
+    if (render::feature_available(render::kFeatureStereo)) render::load_saved_stereo();
 }
 
 #ifndef WWHD_TVOS  // (tvOS: display.mm's run_appkit_loop is the main loop, as here)
@@ -304,6 +316,7 @@ std::string device_name() { return R.device ? std::string(R.device.name.UTF8Stri
 static void clear_surface(Surface* s, const float* rgba, bool clearDepth, float depth, bool clearStencil, uint32_t stencil,
                           uint32_t firstSlice = 0, uint32_t numSlices = 1) {
     if (!s || !s->tex) return;
+    stereo_release(s);
     end_encoder();
     for (uint32_t slice = firstSlice; slice < firstSlice + numSlices; slice++) {
     MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
@@ -339,7 +352,7 @@ void clear_color(const uint32_t* regs, uint32_t cb, const float rgba[4]) {
     Surface* s = surface_from_color_buffer(cb, &first, &num);
     if (log_this_frame() && s)
         LOG("[clear] color %08X %ux%u fmt %X -> %.3f %.3f %.3f %.3f", s->addr, s->width, s->height, s->format, rgba[0], rgba[1], rgba[2], rgba[3]);
-    if (s) gamepad_backdrop_clear(s);
+    if (s && !stereoEye) gamepad_backdrop_clear(s);
     clear_surface(s, rgba, false, 0, false, 0, first, num);
 }
 
@@ -361,8 +374,10 @@ void copy_surface(uint32_t src, uint32_t srcMip, uint32_t srcSlice, uint32_t dst
 
 void copy_to_scan(uint32_t cb, uint32_t target) {
     // target: 1 = TV, 4/8 = GamePad
+    if (stereoEye && !(target & 1)) return;  // one GamePad picture: eye 0's
     if (log_this_frame()) LOG("[scan] copy %08X to %s", cb, (target & 1) ? "TV" : "DRC");
-    Screen& scr = (target & 1) ? R.tv : R.drc;
+    Screen& scr = stereoEye ? R.tvRight : (target & 1) ? R.tv : R.drc;
+    if (stereoEye) scr.srgb = R.tv.srgb.load();
     Surface* s = surface_from_color_buffer(cb);
     if (!s || !s->tex) return;
     end_encoder();
@@ -473,10 +488,11 @@ void dump_texture(id<MTLTexture> src, const char* name, bool async, bool srgbEnc
     }
     bool rgb10 = pf == MTLPixelFormatRGB10A2Unorm;
     bool rgba8 = pf == MTLPixelFormatRGBA8Unorm || pf == MTLPixelFormatRGBA8Unorm_sRGB;
+    bool bgra8 = pf == MTLPixelFormatBGRA8Unorm || pf == MTLPixelFormatBGRA8Unorm_sRGB;
     bool f16 = pf == MTLPixelFormatRGBA16Float;
     bool r8 = pf == MTLPixelFormatR8Unorm;
     bool rg11 = pf == MTLPixelFormatRG11B10Float;
-    if (!rgb10 && !rgba8 && !f16 && !r8 && !rg11) { LOG("[gfx] dump: unsupported format %lu", (unsigned long)pf); return; }
+    if (!rgb10 && !rgba8 && !bgra8 && !f16 && !r8 && !rg11) { LOG("[gfx] dump: unsupported format %lu", (unsigned long)pf); return; }
     uint32_t bpp = f16 ? 8 : r8 ? 1 : 4;
     MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pf width:w height:h mipmapped:NO];
     d.storageMode = MTLStorageModeShared;
@@ -498,6 +514,8 @@ void dump_texture(id<MTLTexture> src, const char* name, bool async, bool srgbEnc
             o[0] = (v & 0x3FF) >> 2; o[1] = ((v >> 10) & 0x3FF) >> 2; o[2] = ((v >> 20) & 0x3FF) >> 2;
         } else if (rgba8) {
             memcpy(o, &raw[i * 4], 3);
+        } else if (bgra8) {
+            o[0] = raw[i * 4 + 2], o[1] = raw[i * 4 + 1], o[2] = raw[i * 4];
         } else if (r8) {
             o[0] = o[1] = o[2] = raw[i];
         } else if (rg11) {
@@ -562,6 +580,8 @@ static void service_tv_dumps() {
 
 static void dump_tv(const std::string& stem) {
     dump_texture(R.tv.tex, (stem + ".png").c_str(), true, R.tv.srgb);
+    if (stereo::frame.mode != stereo::Off && R.tvRight.tex)
+        dump_texture(R.tvRight.tex, (stem + "_right.png").c_str(), true, R.tvRight.srgb);
     if (R.drc.tex)
         dump_texture(R.drc.tex, (stem + "_drc.png").c_str(), true, R.drc.srgb);
     static const bool present = getenv("WWHD_DUMP_PRESENT") != nullptr;
@@ -650,7 +670,8 @@ void invalidate(uint32_t flags, uint32_t addr, uint32_t size) {
             if (addr < (uint64_t)b + n && b < end) return true;
         return false;
     };
-    for (auto& [a, s] : R.surfaces)
+    for (SurfaceMap* m : {&R.surfaces, &stereo_other_surfaces()})
+    for (auto& [a, s] : *m)
         // MEM1 holds render targets; CPU-side surfaces there are views of GPU data, not CPU uploads
         if (!s->gpuWritten && !(a >= 0xF4000000 && a < 0xF6000000) && hits(s.get())) {
             s->lastCheckedFrame = ~0ull;

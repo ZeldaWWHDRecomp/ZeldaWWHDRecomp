@@ -63,7 +63,8 @@ static uint64_t g_spare_textures = 0;  // textures kept in Surface::spares (all 
 static void latch_dynamic_resolution() {
     g_dyn_frame = dynres::latch(R.frame, g_res_frame);
     if (!dynres::on() && g_spare_textures) {  // off: the kept textures go
-        for (auto& [addr, s] : R.surfaces) s->spares.clear();
+        for (SurfaceMap* m : {&R.surfaces, &stereo_other_surfaces()})
+            for (auto& [addr, s] : *m) s->spares.clear();
         g_spare_textures = 0;
     }
 }
@@ -111,12 +112,13 @@ static void latch_aspect() {
 }
 // the game's screen-sized buffers and their reductions (1920x1080 ... 60x33); not the GamePad's
 // (854x480, shown in its own window), not shadow maps, mip chains or textures
-static bool screen_shaped(const Surface* s) {
-    if (s->fmt.compressed || s->mips > 1 || s->slices > 1 || s->width < 32) return false;
-    for (uint32_t w = 854, h = 480; w >= 32; w >>= 1, h >>= 1)
-        if ((s->width == w || s->width == w + 1) && s->height == h) return false;
-    float r = (float)s->width * 9.0f / ((float)s->height * 16.0f);
+static bool screen_shaped(uint32_t width, uint32_t height) {
+    if (width < 32 || stereo::gamepad_shaped(width, height)) return false;
+    float r = (float)width * 9.0f / ((float)height * 16.0f);
     return r > 0.97f && r < 1.03f;
+}
+static bool screen_shaped(const Surface* s) {
+    return !s->fmt.compressed && s->mips <= 1 && s->slices <= 1 && screen_shaped(s->width, s->height);
 }
 
 // the factor a render target gets. Shadow maps (depth arrays: the game's cascades) scale with the
@@ -155,14 +157,12 @@ static float target_dyn(const Surface* s) {
     return g_dyn_frame;
 }
 bool target_aspect_factors(uint32_t w, uint32_t h, float& kx, float& ky) {
-    Surface s;
-    s.width = w;
-    s.height = h;
-    bool on = screen_shaped(&s) && (g_aspect_kx != 1.0f || g_aspect_ky != 1.0f);
+    bool on = screen_shaped(w, h) && (g_aspect_kx != 1.0f || g_aspect_ky != 1.0f);
     kx = on ? g_aspect_kx : 1.0f;
     ky = on ? g_aspect_ky : 1.0f;
     return on;
 }
+bool stereo_screen_target(uint32_t w, uint32_t h) { return screen_shaped(w, h); }
 // extra horizontal / vertical factor for the aspect ratio
 static void target_aspect(const Surface* s, float& kx, float& ky) {
     uint32_t width,height;
@@ -403,8 +403,15 @@ static Surface* adopt_newer_alias(Surface* s) {
 }
 
 // the existing surface a lookup resolves to, or nullptr
-static Surface* find_surface(const SurfaceDesc& d, bool forRendering) {
-    auto range = R.surfaces.equal_range(d.addr);
+static Surface* find_surface_in(SurfaceMap& cache, const SurfaceDesc& d, bool forRendering);
+static Surface* find_surface(const SurfaceDesc& d, bool forRendering, SurfaceMap* cache = nullptr) {
+    SurfaceMap& in = cache ? *cache : stereo_surface_cache(d);
+    Surface* s = find_surface_in(in, d, forRendering);
+    if (s && &in != &R.surfaces) s->eyeHeld = stereo_flush_generation();  // eye 1 uses eye 0's (stereo_release)
+    return s;
+}
+static Surface* find_surface_in(SurfaceMap& cache, const SurfaceDesc& d, bool forRendering) {
+    auto range = cache.equal_range(d.addr);
     Surface* exact = nullptr;
     // sampling a GPU-written surface: several can alias one address (mip chains rendered into the same
     // memory, a render target recreated as a texture array...). Prefer the same size, then the same
@@ -480,10 +487,11 @@ Surface* find_or_create_surface(const SurfaceDesc& d, bool forRendering) {
         LOG("[gfx] render target %08X %ux%ux%u fmt %X%s -> %lux%lu", s->addr, s->width, s->height, s->slices, s->format,
             s->isDepth ? " depth" : "", (unsigned long)s->tex.width, (unsigned long)s->tex.height);
     Surface* raw = s.get();
-    R.surfaces.emplace(d.addr, std::move(s));
+    SurfaceMap& cache = stereo_surface_cache(d);
+    cache.emplace(d.addr, std::move(s));
     // format views of one guest surface (adopt_newer_alias): flag them once, so lookups stay cheap
     if (!raw->isDepth && !raw->fmt.compressed && raw->fmt.convert == Convert::NONE) {
-        auto views = R.surfaces.equal_range(d.addr);
+        auto views = cache.equal_range(d.addr);
         for (auto it = views.first; it != views.second; ++it) {
             Surface* o = it->second.get();
             if (o != raw && !o->isDepth && !o->fmt.compressed && o->fmt.convert == Convert::NONE && o->format != raw->format &&
@@ -491,7 +499,8 @@ Surface* find_or_create_surface(const SurfaceDesc& d, bool forRendering) {
                 o->formatViews = raw->formatViews = true;
         }
     }
-    if (!raw->isDepth && (Latte::E_HWTILEMODE)raw->tileMode == Latte::E_HWTILEMODE::TM_LINEAR_ALIGNED) R.linearTargets.push_back(raw);
+    if (!raw->isDepth && (Latte::E_HWTILEMODE)raw->tileMode == Latte::E_HWTILEMODE::TM_LINEAR_ALIGNED && &cache == &R.surfaces)
+        R.linearTargets.push_back(raw);
     return forRendering ? adopt_newer_alias(raw) : raw;
 }
 
@@ -655,6 +664,37 @@ static Surface* with_mip_chain(Surface* s, const SurfaceDesc& d) {
     return c;
 }
 
+// stereo eye 1: a texture the guest uploads and neither eye renders is eye 0's, checked and uploaded by eye 0 this
+// frame (one copy, one check); eye 1's commands that sample it are submitted before eye 0 writes it again
+// (stereo_release). So is a captured photograph (the Picto Box pane samples one canonical picture, the one the
+// game saves): eye 0's rendered surface.
+static Surface* stereo_eye0_texture(const SurfaceDesc& d) {
+    if (!stereoEye || stereo::frame.mode == stereo::Off) return nullptr;
+    SurfaceMap& eye0 = stereo_other_surfaces();
+    if (!d.isDepth && stereo::layoutPhotograph) {
+        Surface* rendered = nullptr;
+        auto range = eye0.equal_range(d.addr);
+        for (auto it = range.first; it != range.second; ++it) {
+            Surface* s = it->second.get();
+            if (s->gpuWritten && !s->isDepth && s->tex && s->width == d.width && s->height == d.height &&
+                (s->format & 0x3F) == (d.format & 0x3F) && s->slices == d.slices && (!rendered || s->writeSeq > rendered->writeSeq))
+                rendered = s;
+        }
+        if (rendered) {
+            rendered->eyeHeld = stereo_flush_generation();
+            return rendered;
+        }
+    }
+    if (R.surfaces.count(d.addr)) return nullptr;
+    Surface* s = find_surface_in(eye0, d, false);  // (held by eye 1 only when it is used: below)
+    if (!s || s->gpuWritten || s->dirty || !s->writeSeq || s->lastCheckedFrame != R.frame) return nullptr;
+    auto range = eye0.equal_range(d.addr);
+    for (auto it = range.first; it != range.second; ++it)
+        if (it->second->gpuWritten) return nullptr;
+    s->eyeHeld = stereo_flush_generation();
+    return s;
+}
+
 Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
     Latte::LATTE_SQ_TEX_RESOURCE_WORD0_N w0;
     Latte::LATTE_SQ_TEX_RESOURCE_WORD1_N w1;
@@ -710,6 +750,7 @@ Surface* sampled_texture(const uint32_t* w, bool isDepthSampler) {
         dd.isDepth = true;
         if (Surface* s = find_surface(dd, false); s && s->gpuWritten) return s;
     }
+    if (Surface* shared = stereo_eye0_texture(d)) return shared;
     Surface* s = find_or_create_surface(d, false);
     if (s && !s->gpuWritten && s->lastCheckedFrame != R.frame) {
         s->lastCheckedFrame = R.frame;
@@ -897,6 +938,7 @@ void upload_surface(Surface* s) {
     const bool changed = !(hash == s->contentHash && s->writeSeq);
     rprof::add_texture_check(g_stat_hashed_bytes - hashedBefore, changed);
     if (!changed) return;
+    stereo_release(s);
     s->contentHash = hash;
     s->writeSeq = next_write_seq();  // fresh CPU data is now the newest version of this memory
     g_stat_uploads++;
@@ -1038,6 +1080,7 @@ static std::vector<uint8_t> read_guest_texels(Surface* img, uint32_t w, uint32_t
 }
 // GX2CopySurface done on the GPU into a linear destination: the game reads it once the call returns
 static void write_back_linear_copy(Surface* img, GX2Surface* d, uint32_t dbase, uint32_t dstMip, uint32_t dstSlice, uint32_t w, uint32_t h) {
+    if (stereoEye) return;  // the game reads eye 0's picture
     LatteAddrLib::AddrSurfaceInfo_OUT di{};
     LatteAddrLib::GX2CalculateSurfaceInfo(d->format, d->width, d->height, d->depth, d->dim, d->tileMode, d->aa, dstMip, &di);
     auto dtm = (Latte::E_HWTILEMODE)di.hwTileMode;
@@ -1088,13 +1131,16 @@ void copy_surface_impl(uint32_t srcAddr, uint32_t srcMip, uint32_t srcSlice, uin
     // GPU-produced source: copy texture to texture. Of the source's GPU images (format views), the
     // one in the source's format, else the most recent; a newer view is copied into it first.
     Surface* gpuSrc = nullptr;
-    auto range = R.surfaces.equal_range(sbase);
+    SurfaceMap& srcCache = stereo_copy_cache(sbase, w, h, std::max<uint32_t>(s->depth, 1));
+    auto range = srcCache.equal_range(sbase);
     for (auto it = range.first; it != range.second; ++it) {
         Surface* c = it->second.get();
         if (!c->gpuWritten || c->width != w || c->height != h) continue;
         auto key = [&](Surface* x) { return std::make_pair(x->format == (uint32_t)s->format.value(), x->writeSeq); };
         if (!gpuSrc || key(c) > key(gpuSrc)) gpuSrc = c;
     }
+    // eye 1 copying from eye 0's surface: held, so eye 0 doesn't rewrite it before this copy runs (stereo_release)
+    if (gpuSrc && &srcCache != &R.surfaces) gpuSrc->eyeHeld = stereo_flush_generation();
     // Shader compile (background_shaders.h): a target copied from now and then keeps its draws exact
     if (gpuSrc && bgshaders::enabled()) bgshaders::tracker().copied(gpuSrc->addr, R.frame);
     if (gpuSrc) {
@@ -1107,6 +1153,7 @@ void copy_surface_impl(uint32_t srcAddr, uint32_t srcMip, uint32_t srcSlice, uin
         dd.format = (uint32_t)d->format.value();
         dd.tileMode = (uint32_t)d->tileMode.value();
         Surface* dst = find_or_create_surface(dd, true);
+        if (dst) stereo_release(dst);
         if (!dst || dst->fmt.pixel != src->fmt.pixel) return;
         end_encoder();
         // region in guest pixels, then in each texture's pixels (both may be scaled for the internal resolution)
@@ -1148,7 +1195,7 @@ void copy_surface_impl(uint32_t srcAddr, uint32_t srcMip, uint32_t srcSlice, uin
     if (dbg)
         LOG("[copydbg] exec cpu copy t=%.3f src %08X dst %08X..%08X (%ux%u fmt %X tm %u->%u)", timebase::now() / (double)timebase::kTicksPerSec,
             sbase, dbase, dbase + (uint32_t)di.surfSize, w, h, (uint32_t)s->format.value(), (uint32_t)stm, (uint32_t)dtm);
-    for (uint32_t y = 0; y < bh; y++)
+    for (uint32_t y = 0; y < bh && !stereoEye; y++)  // (eye 0 has made the copy in guest memory)
         for (uint32_t x = 0; x < bw; x++) {
             uint32_t so = element_offset(si, stm, x, y, srcSlice, bpp, sswz, &sci);
             uint32_t dofs = element_offset(di, dtm, x, y, dstSlice, bpp, dswz, &dci);
