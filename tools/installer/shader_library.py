@@ -29,7 +29,7 @@ import tempfile
 import time
 
 MIN_OS = {"macosx": "-mmacosx-version-min=13.0", "appletvos": "-mtvos-version-min=17.0",
-          "iphoneos": "-mios-version-min=17.0"}
+          "iphoneos": "-mios-version-min=17.0", "xros": None}  # (visionOS: the SDK's own minimum)
 TOOLCHAIN_HINT = "xcodebuild -downloadComponent MetalToolchain"
 
 # A function definition at the start of a line: a return type, its name, "(" (not a statement such as
@@ -140,7 +140,7 @@ def build(sources, out, sdk="macosx", jobs=None, progress=None, cancel=lambda: F
             with open(os.path.join(sources, name)) as f, open(src, "w") as g:
                 g.write(private_helpers(f.read()))
             r = subprocess.run(["xcrun", "-sdk", sdk, "metal", "-c", "-std=metal3.0", "-fmetal-math-mode=safe",
-                                MIN_OS[sdk], src, "-o", air], capture_output=True, text=True, env=env)
+                                *([MIN_OS[sdk]] if MIN_OS[sdk] else []), src, "-o", air], capture_output=True, text=True, env=env)
             return name, air if r.returncode == 0 else None
 
         airs = []

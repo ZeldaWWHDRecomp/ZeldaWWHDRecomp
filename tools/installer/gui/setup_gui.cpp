@@ -888,7 +888,7 @@ static int step_index(const std::string& id) {
 }
 
 static void rando_read(const J& ev);  // the Randomizer page (below)
-static void apple_read(const J& ev);  // the Apple TV, iPhone or iPad page (below)
+static void apple_read(const J& ev);  // the Apple TV, iPhone, iPad or Vision Pro page (below)
 static bool g_repair_for_apple = false;  // a repair started from that page (code mods on): back to it when done
 static void apple_reload();
 
@@ -1615,13 +1615,13 @@ static void screen_randomizer() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Apple TV, iPhone or iPad (macOS; setup.py apple_*: apple_device.py): build the app from this Mac's game, sign it
+// Apple TV, iPhone, iPad or Vision Pro (macOS; setup.py apple_*: apple_device.py): build the app from this Mac's game, sign it
 // with the player's team and install it on a paired device
 
 static struct AppleUI {
     bool loaded = false;   // apple_status answered
     J status;              // apple_device.report()
-    int app = 0;           // 0 Apple TV, 1 iPhone / iPad
+    int app = 0;           // 0 Apple TV, 1 iPhone / iPad, 2 Apple Vision Pro
     std::string device;    // the chosen device's id
     J state;               // apple_device.device_state() for device
     bool have_state = false;
@@ -1635,7 +1635,14 @@ static struct AppleUI {
 
 static void apple_reload() { P.loaded = false, P.have_state = false; }
 
-static const char* apple_app_id() { return P.app == 0 ? "tv" : "iphone"; }
+// the Apple device kinds (apple_device.py KINDS), in the order the page offers them
+static const struct AppleApp { const char* id; const char* label; const char* none_paired; } kAppleApps[] = {
+    {"tv", "Apple TV", "No Apple TV is paired with this Mac: pair it in Xcode (Window > Devices and Simulators)."},
+    {"iphone", "iPhone or iPad",
+     "No iPhone or iPad is paired with this Mac: connect it and pair it in Xcode (Window > Devices and Simulators)."},
+    {"vision", "Apple Vision Pro", "No Apple Vision Pro is paired with this Mac: pair it in Xcode (Window > Devices and Simulators)."},
+};
+static const char* apple_app_id() { return kAppleApps[P.app].id; }
 
 static const J* apple_app_status() {
     const J* apps = P.status.get("apps");
@@ -1717,7 +1724,7 @@ static std::string apple_names(const J* list) {
 }
 
 static void screen_apple() {
-    page_header("Apple TV, iPhone or iPad",
+    page_header("Apple TV, iPhone, iPad or Vision Pro",
                 "Builds the game for your own devices from this Mac's game, signs it with your Apple developer team and "
                 "installs it. The app contains your game: it is for your devices only.");
     if (!P.loaded) {
@@ -1730,9 +1737,10 @@ static void screen_apple() {
     const bool idle = !busy() && !P.building;
     int app = P.app;
     if (!idle) ImGui::BeginDisabled();
-    radio("Apple TV", &app, 0);
-    ImGui::SameLine();
-    radio("iPhone or iPad", &app, 1);
+    for (int i = 0; i < int(std::size(kAppleApps)); i++) {
+        if (i) ImGui::SameLine();
+        radio(kAppleApps[i].label, &app, i);
+    }
     if (!idle) ImGui::EndDisabled();
     if (app != P.app) P.app = app, P.device.clear(), P.have_state = false, P.message.clear();
     const J* a = apple_app_status();
@@ -1761,8 +1769,8 @@ static void screen_apple() {
     };
     if (ImGui::TreeNode("App identifiers##ids")) {
         // an App ID and an iCloud container belong to one developer team: yours
-        muted("Your apps are <prefix>.tv and <prefix>.ipad. With an iCloud container (iCloud Documents, on both App IDs), "
-              "the save is kept in iCloud Drive, the same on the Apple TV, iPhone, iPad and Mac.");
+        muted("Your apps are <prefix>.tv, <prefix>.ipad and <prefix>.vision. With an iCloud container, the save is kept in "
+              "iCloud, the same on the Apple TV, iPhone, iPad, Vision Pro and Mac.");
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
         ImGui::InputTextWithHint("Prefix", "com.example.wwhd", P.prefix, sizeof P.prefix, ImGuiInputTextFlags_CharsNoBlank);
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
@@ -1821,8 +1829,7 @@ static void screen_apple() {
     const J* devs = a ? a->get("devices") : nullptr;
     if (!P.status.str("devices_error").empty()) colored(BAD, P.status.str("devices_error"));
     if (!devs || devs->a.empty())
-        muted(P.app == 0 ? "No Apple TV is paired with this Mac: pair it in Xcode (Window > Devices and Simulators)."
-                         : "No iPhone or iPad is paired with this Mac: connect it and pair it in Xcode (Window > Devices and Simulators).");
+        muted(kAppleApps[P.app].none_paired);
     else
         for (auto& d : devs->a) {
             const std::string id = d.str("id");
@@ -1921,7 +1928,7 @@ static void screen_menu() {
     ImGui::SameLine();
     if (button("Open the folder", ImVec2(half, 0))) open_folder(home_folder());
     if (button("Randomized games (TWWHD Randomizer)...", ImVec2(w, 0), false, !update)) R.loaded = false, go(Screen::Randomizer);
-    if (A.apple_offered && button("Apple TV, iPhone or iPad...", ImVec2(w, 0), false, !update)) P.loaded = false, go(Screen::Apple);
+    if (A.apple_offered && button("Apple TV, iPhone, iPad or Vision Pro...", ImVec2(w, 0), false, !update)) P.loaded = false, go(Screen::Apple);
     if (footer({"Quit"}) == 0) A.exit_code = 0;
 }
 
@@ -2580,7 +2587,7 @@ static void start_child() {
 //   {"screen": "keys", "set": {"common_mode": "file", "common_key_file": "..."}, "when_step": "compile",
 //    "idle": true, "shot": "03-keys.png", "click": "Check keys and install"}
 // "set" fields: code_mods (boolean), decomp (boolean), model_sweep (boolean), source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
-// (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true), rando_tab (games|new), rando_page ("0".."5"), rando_import (a folder, as if chosen with Import seed...), apple_app (tv|iphone), apple_device (a device's name). Screenshots are PNG files
+// (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true), rando_tab (games|new), rando_page ("0".."5"), rando_import (a folder, as if chosen with Import seed...), apple_app (tv|iphone|vision), apple_device (a device's name). Screenshots are PNG files
 // of the window. The run ends (exit 0) after the last step, or with exit 2 on a 45-minute timeout.
 
 
@@ -2623,7 +2630,12 @@ static void automation_frame() {
             else if (k == "rando_tab") R.select_tab = v == "new" ? 1 : 0;  // the Randomizer page's Games / New game
             else if (k == "rando_page") R.page = std::clamp(atoi(v.c_str()), 0, 5);
             else if (k == "rando_import") rando_import(v);  // as if chosen with Import seed...
-            else if (k == "apple_app") P.app = v == "iphone" ? 1 : 0, P.device.clear(), P.have_state = false;  // the Apple page's app
+            else if (k == "apple_app") {  // the Apple page's app
+                P.app = 0;
+                for (int i = 0; i < int(std::size(kAppleApps)); i++)
+                    if (v == kAppleApps[i].id) P.app = i;
+                P.device.clear(), P.have_state = false;
+            }
             else if (k == "apple_device") apple_pick_device(v);  // the Apple page's device, by name
         }
     }

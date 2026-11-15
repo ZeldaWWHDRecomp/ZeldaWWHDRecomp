@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The game for an Apple TV, iPhone or iPad, built on this Mac (setup.py --apple-device tv|iphone).
+"""The game for an Apple TV, iPhone, iPad or Apple Vision Pro, built on this Mac (setup.py --apple-device tv|iphone|vision).
 
 These devices run only code signed into an app and have no compiler, so the Mac builds the app from your own
 game, as setup builds the Mac's game:
@@ -28,14 +28,22 @@ import subprocess
 import sys
 import tempfile
 import time
+from collections import namedtuple
 from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-KINDS = {  # --apple-device name: (sdk/apple folder, SDK, devicectl platform, bundle id suffix)
-    "tv": ("tvos", "appletvos", "tvOS", "tv"),
-    "iphone": ("ios", "iphoneos", "iOS", "ipad"),
+# The Apple devices (--apple-device NAME), one row each: everything else about a kind derives from its row (the
+# release's runtimes, tools/release/package.py; the Xcode probe; signing).
+#   folder: sdk/apple/<folder> in a release; sdk: Xcode's SDK; platform: devicectl's and CMake's name (and a
+#   profile's Platform); suffix: <prefix>.<suffix> bundle id; family: UIDeviceFamily; deploy_key / min_os: the
+#   deployment target; icloud_drive: the save also in iCloud Drive (else CloudKit only)
+Kind = namedtuple("Kind", "folder sdk platform suffix label family deploy_key min_os icloud_drive")
+KINDS = {
+    "tv": Kind("tvos", "appletvos", "tvOS", "tv", "Apple TV", "3", "TVOS_DEPLOYMENT_TARGET", "17.0", False),
+    "iphone": Kind("ios", "iphoneos", "iOS", "ipad", "iPhone or iPad", "1,2", "IPHONEOS_DEPLOYMENT_TARGET", "17.0", True),
+    "vision": Kind("visionos", "xros", "visionOS", "vision", "Apple Vision Pro", "7", "XROS_DEPLOYMENT_TARGET", "26.0", False),
 }
-LABELS = {"tv": "Apple TV", "iphone": "iPhone or iPad"}
+BY_PLATFORM = {k.platform: k for k in KINDS.values()}
 PROFILE_DIRS = ["~/Library/Developer/Xcode/UserData/Provisioning Profiles", "~/Library/MobileDevice/Provisioning Profiles"]
 
 
@@ -60,7 +68,7 @@ def developer_dir():
         return "/Applications/Xcode.app/Contents/Developer"
     if apps:
         return apps[-1]
-    raise Error("Building for an Apple TV, iPhone or iPad needs Xcode (from the App Store); the Command Line "
+    raise Error("Building for an Apple TV, iPhone, iPad or Vision Pro needs Xcode (from the App Store); the Command Line "
                 "Tools alone have no tvOS or iOS SDK")
 
 
@@ -131,7 +139,8 @@ def find_profile(platform, bundle_id, team=None, now=None, icloud=None, device=N
             if device and not prof.get("ProvisionsAllDevices") and device not in prof.get("ProvisionedDevices", []):
                 continue
             if icloud and (icloud not in ents.get("com.apple.developer.icloud-container-identifiers", []) or
-                           (platform == "iOS" and icloud not in ents.get("com.apple.developer.ubiquity-container-identifiers", []))):
+                           (BY_PLATFORM[platform].icloud_drive and
+                            icloud not in ents.get("com.apple.developer.ubiquity-container-identifiers", []))):
                 continue
             import hashlib
             certs = [hashlib.sha1(c).hexdigest().upper() for c in prof.get("DeveloperCertificates", [])]
@@ -146,7 +155,7 @@ def find_profile(platform, bundle_id, team=None, now=None, icloud=None, device=N
         raise Error("No development profile for %s with the iCloud container %s. In the Apple Developer site (or "
                     "Xcode, Signing & Capabilities), give the App ID %s the iCloud capability (%s) with that "
                     "container, then let Xcode download its profile. Profiles found: %s"
-                    % (bundle_id, icloud, bundle_id, "CloudKit and iCloud Documents" if platform == "iOS" else "CloudKit",
+                    % (bundle_id, icloud, bundle_id, "CloudKit and iCloud Documents" if BY_PLATFORM[platform].icloud_drive else "CloudKit",
                        "; ".join(seen) or "none"))
     if not best:
         raise Error("No development profile for %s apps%s with its certificate in this Mac's keychain. Open Xcode, "
@@ -156,14 +165,13 @@ def find_profile(platform, bundle_id, team=None, now=None, icloud=None, device=N
     return best[1], best[2], best[3]
 
 
-def entitlements(prof, bundle_id, icloud=None):
-    """with ICLOUD: CloudKit (the save's record, cloud_save.h) everywhere, and iCloud Drive (its folder) on an
-    iPhone / iPad: an Apple TV app gets no iCloud Drive"""
+def entitlements(prof, bundle_id, icloud=None, drive=False):
+    """with ICLOUD: CloudKit (the save's record, cloud_save.h) everywhere, and with DRIVE (the kind's icloud_drive)
+    iCloud Drive (its folder) too"""
     team = prof["TeamIdentifier"][0]
     out = {"application-identifier": "%s.%s" % (team, bundle_id), "com.apple.developer.team-identifier": team,
            "get-task-allow": True}
     if icloud:
-        drive = "iOS" in prof.get("Platform", [])
         out.update({"com.apple.developer.icloud-container-identifiers": [icloud],
                     "com.apple.developer.icloud-services": ["CloudKit"] + (["CloudDocuments"] if drive else []),
                     "com.apple.developer.icloud-container-environment": "Development"})
@@ -204,11 +212,11 @@ def settings(ctx, **given):
     return out
 
 
-def sign(app, prof_path, prof, identity, bundle_id, env, log, icloud=None):
+def sign(app, prof_path, prof, identity, bundle_id, env, log, icloud=None, drive=False):
     shutil.copyfile(prof_path, os.path.join(app, "embedded.mobileprovision"))
     ent = os.path.join(os.path.dirname(app), "entitlements.plist")
     with open(ent, "wb") as f:
-        plistlib.dump(entitlements(prof, bundle_id, icloud), f)
+        plistlib.dump(entitlements(prof, bundle_id, icloud, drive), f)
     for lib in sorted(glob.glob(os.path.join(app, "GuestMods", "*.dylib"))):
         run(["codesign", "--force", "--sign", identity, "--timestamp=none", lib], env, log, "signing " + os.path.basename(lib))
     run(["codesign", "--force", "--sign", identity, "--entitlements", ent, "--timestamp=none",
@@ -232,7 +240,7 @@ def devices(platform, env):
     found = []
     for d in data.get("result", {}).get("devices", []):
         hw, props, conn = d.get("hardwareProperties", {}), d.get("deviceProperties", {}), d.get("connectionProperties", {})
-        wanted = (platform,) if platform else ("tvOS", "iOS")
+        wanted = (platform,) if platform else ("tvOS", "iOS", "visionOS")
         if hw.get("reality") != "physical" or hw.get("platform") not in wanted:
             continue
         found.append({"id": hw.get("udid") or d.get("identifier"), "name": props.get("name", "?"),
@@ -520,7 +528,7 @@ def prepare_mod_addresses(setup, ctx, log=print, wait=180):
 
 def built_app(ctx, which):
     """the app built here last: {path, version, build, mods, signed}, or None"""
-    app = Path(ctx.data_dir) / "apple" / KINDS[which][0] / "WindWakerHD.app"
+    app = Path(ctx.data_dir) / "apple" / KINDS[which].folder / "WindWakerHD.app"
     try:
         with open(app / "Info.plist", "rb") as f:
             info = plistlib.load(f)
@@ -533,7 +541,7 @@ def built_app(ctx, which):
 def report(setup, ctx, team=None, bundle_prefix="org.wwhdrecomp", icloud=None):
     """Everything that decides whether the apps can be built and installed here, and what they would hold:
     {xcode: {check, version, path}, mac: {game, shaders}, mods: mod_plan(), devices_error,
-     apps: {tv|iphone: {label, platform, bundle_id, checks: {release, sdk, shader_compiler, icon, signing},
+     apps: {tv|iphone|vision: {label, platform, bundle_id, checks: {release, sdk, shader_compiler, icon, signing},
                         signing: {...}, ready, problems, app: built_app(), devices: [...]}}}"""
     out = {"apps": {}, "settings": {"bundle_prefix": bundle_prefix, "icloud": icloud or "", "team": team or ""}}
     xc = xcode_info()
@@ -572,9 +580,10 @@ def report(setup, ctx, team=None, bundle_prefix="org.wwhdrecomp", icloud=None):
             found = devices(None, env)
         except Error as e:
             out["devices_error"] = str(e)
-    for which, (kind, sdk, platform, suffix) in KINDS.items():
+    for which, k in KINDS.items():
+        kind, sdk, platform, suffix = k[:4]
         bundle_id = "%s.%s" % (bundle_prefix, suffix)
-        a = {"label": LABELS[which], "platform": platform, "bundle_id": bundle_id, "checks": {}, "signing": None,
+        a = {"label": k.label, "platform": platform, "bundle_id": bundle_id, "checks": {}, "signing": None,
              "app": built_app(ctx, which), "devices": [d for d in found if d["platform"] == platform]}
         c = a["checks"]
         c["release"] = check(ctx.manifest.get("apple", {}).get(kind), "This release has the %s app" % platform,
@@ -621,7 +630,7 @@ def device_state(setup, ctx, which, device, bundle_prefix="org.wwhdrecomp"):
     build}|None, others: [{bundle_id, version}], mods_on_device: [ids]|None, switched_off: [names], switched_on: [names]}
     (others: the game there under other identifiers, which an install leaves as they are, saves included; the mods
     an install would switch off or on there: the app's profile replaces the device's when the app's mods change)."""
-    kind, sdk, platform, suffix = KINDS[which]
+    kind, sdk, platform, suffix = KINDS[which][:4]
     xc = xcode_info()
     if not xc:
         raise Error("Xcode isn't installed")
@@ -727,7 +736,7 @@ def _copy_from_app(env, device, bundle_id, which, path, dest):
 
 
 def _device_target(setup, ctx, which, device, bundle_prefix):
-    kind, sdk, platform, suffix = KINDS[which]
+    kind, sdk, platform, suffix = KINDS[which][:4]
     xc = xcode_info()
     if not xc:
         raise Error("Xcode isn't installed")
@@ -886,9 +895,9 @@ def build_app(setup, ctx, which, team=None, bundle_prefix="org.wwhdrecomp", sign
     """Builds and (signed=False: not, to sign on another Mac) signs the app for WHICH ("tv" / "iphone") into
     data/apple/<tvos|ios>/WindWakerHD.app. step(n, total, title, id): each stage (BUILD_STEPS). Returns built_app()."""
     if which not in KINDS:
-        raise Error("--apple-device: tv or iphone")
+        raise Error("--apple-device: tv, iphone or vision")
     step = step or (lambda n, total, title, sid: log(title))
-    kind, sdk, platform, suffix = KINDS[which]
+    kind, sdk, platform, suffix = KINDS[which][:4]
     entry = ctx.manifest.get("apple", {}).get(kind)
     if not entry:
         raise Error("This release has no %s app; use a macOS release that includes it" % platform)
@@ -938,7 +947,7 @@ def build_app(setup, ctx, which, team=None, bundle_prefix="org.wwhdrecomp", sign
     info.pop("WWHDCloudKitContainer", None)
     if icloud:
         info["WWHDCloudKitContainer"] = icloud
-        if platform == "iOS":
+        if KINDS[which].icloud_drive:
             info["NSUbiquitousContainers"] = icloud_info(icloud)
     # what the device's installed app says (device_state): the release and when this app was built
     info["CFBundleShortVersionString"] = ctx.version
@@ -982,7 +991,7 @@ def build_app(setup, ctx, which, team=None, bundle_prefix="org.wwhdrecomp", sign
             prof_path, prof, identity = find_profile(platform, bundle_id, team, icloud=icloud)
         except Error:
             prof_path, prof, identity = register_with_xcode(platform, bundle_id, None, team, icloud, env, log)
-        sign(str(staging), prof_path, prof, identity, bundle_id, env, log, icloud=icloud)
+        sign(str(staging), prof_path, prof, identity, bundle_id, env, log, icloud=icloud, drive=KINDS[which].icloud_drive)
     shutil.rmtree(setup.longpath(str(app)), ignore_errors=True)
     os.replace(str(staging), str(app))
     shutil.rmtree(setup.longpath(str(work)), ignore_errors=True)
@@ -990,7 +999,7 @@ def build_app(setup, ctx, which, team=None, bundle_prefix="org.wwhdrecomp", sign
     return built_app(ctx, which)
 
 
-# A device that isn't in the app's profile yet (a new Apple TV, iPhone or iPad), or an App ID or iCloud container that
+# A device that isn't in the app's profile yet (a new Apple TV, iPhone, iPad or Vision Pro), or an App ID or iCloud container that
 # isn't registered: Xcode registers them when it builds for that device with -allowProvisioningUpdates. Setup lets it
 # build a throwaway app with the same bundle identifier and entitlements for the device, then takes the profile
 # Xcode made.
@@ -1009,7 +1018,7 @@ PBXPROJ = """// !$*UTF8*$!
 		A00000000000000000000002 = {isa = PBXSourcesBuildPhase; buildActionMask = 2147483647; files = (A0000000000000000000000B, ); runOnlyForDeploymentPostprocessing = 0; };
 		A00000000000000000000003 = {isa = PBXNativeTarget; buildConfigurationList = A00000000000000000000005; buildPhases = (A00000000000000000000002, ); buildRules = ( ); dependencies = ( ); name = Probe; productName = Probe; productReference = A0000000000000000000000A; productType = "com.apple.product-type.application"; };
 		A00000000000000000000004 = {isa = PBXProject; attributes = {TargetAttributes = {A00000000000000000000003 = {DevelopmentTeam = @TEAM@; ProvisioningStyle = Automatic; }; }; }; buildConfigurationList = A00000000000000000000006; developmentRegion = en; hasScannedForEncodings = 0; knownRegions = (en, Base, ); mainGroup = A00000000000000000000001; projectDirPath = ""; projectRoot = ""; targets = (A00000000000000000000003, ); };
-		A0000000000000000000000C = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = @SDK@; PRODUCT_NAME = Probe; SWIFT_VERSION = 5.0; @DEPLOY@ = 17.0; }; name = Debug; };
+		A0000000000000000000000C = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = @SDK@; PRODUCT_NAME = Probe; SWIFT_VERSION = 5.0; @DEPLOY@ = @VERSION@; }; name = Debug; };
 		A0000000000000000000000D = {isa = XCBuildConfiguration; buildSettings = {SDKROOT = @SDK@; PRODUCT_NAME = Probe; CODE_SIGN_STYLE = Automatic; DEVELOPMENT_TEAM = @TEAM@; CODE_SIGN_ENTITLEMENTS = app.entitlements; GENERATE_INFOPLIST_FILE = YES; PRODUCT_BUNDLE_IDENTIFIER = "@BUNDLE@"; TARGETED_DEVICE_FAMILY = "@FAMILY@"; }; name = Debug; };
 		A00000000000000000000005 = {isa = XCConfigurationList; buildConfigurations = (A0000000000000000000000D, ); defaultConfigurationName = Debug; };
 		A00000000000000000000006 = {isa = XCConfigurationList; buildConfigurations = (A0000000000000000000000C, ); defaultConfigurationName = Debug; };
@@ -1039,22 +1048,21 @@ def register_with_xcode(platform, bundle_id, device=None, team=None, icloud=None
     device of the platform) in the developer team, and download the profile, by building a throwaway app with the
     same identifier and entitlements. Returns the new profile (find_profile)."""
     team = team_of(platform, team)
-    sdk = "appletvos" if platform == "tvOS" else "iphoneos"
+    k = BY_PLATFORM[platform]
     with tempfile.TemporaryDirectory() as tmp:
         proj = Path(tmp) / "Probe.xcodeproj"
         proj.mkdir()
         (proj / "project.pbxproj").write_text(
-            PBXPROJ.replace("@TEAM@", team).replace("@SDK@", sdk).replace("@BUNDLE@", bundle_id)
-                   .replace("@FAMILY@", "3" if platform == "tvOS" else "1,2")
-                   .replace("@DEPLOY@", "TVOS_DEPLOYMENT_TARGET" if platform == "tvOS" else "IPHONEOS_DEPLOYMENT_TARGET"),
+            PBXPROJ.replace("@TEAM@", team).replace("@SDK@", k.sdk).replace("@BUNDLE@", bundle_id)
+                   .replace("@FAMILY@", k.family).replace("@DEPLOY@", k.deploy_key).replace("@VERSION@", k.min_os),
             encoding="utf-8")
         (Path(tmp) / "main.swift").write_text(
             "import UIKit\nUIApplicationMain(CommandLine.argc, CommandLine.unsafeArgv, nil, nil)\n", encoding="utf-8")
         ents = {}
         if icloud:
             ents = {"com.apple.developer.icloud-container-identifiers": [icloud],
-                    "com.apple.developer.icloud-services": ["CloudKit"] + (["CloudDocuments"] if platform == "iOS" else [])}
-            if platform == "iOS":
+                    "com.apple.developer.icloud-services": ["CloudKit"] + (["CloudDocuments"] if k.icloud_drive else [])}
+            if k.icloud_drive:
                 ents["com.apple.developer.ubiquity-container-identifiers"] = [icloud]
         with open(Path(tmp) / "app.entitlements", "wb") as f:
             plistlib.dump(ents, f)
@@ -1073,21 +1081,20 @@ def register_with_xcode(platform, bundle_id, device=None, team=None, icloud=None
 
 
 def install_app(setup, ctx, which, device=None, log=print):
-    """Installs the app built_app() for WHICH on DEVICE (its name or identifier; the only reachable one when None).
-    Refuses while the game runs there, or when that can't be checked. Returns the device."""
-    kind, sdk, platform, suffix = KINDS[which]
+    """Installs the app built_app() for WHICH on DEVICE (its name or identifier; the only reachable one when None),
+    signing it first when it was built unsigned (on another Mac). Refuses while the game runs there, or when that
+    can't be checked. Returns the device."""
+    kind, sdk, platform, suffix = KINDS[which][:4]
     built = built_app(ctx, which)
     if not built:
         raise Error("No %s app is built yet" % platform)
-    if not built["signed"]:
-        raise Error("The app at %s isn't signed: sign it first (an unsigned build is for signing on another Mac)" % built["path"])
     env = xcode_env(developer_dir())
     target = pick_device(platform, device, env)
     exe = ctx.manifest.get("apple", {}).get(kind, {}).get("exe", "WindWakerHD")
     if running(target["id"], exe, env):
         raise Error("The game is running on %s: save, close it (in the app switcher), then install again" % target["name"])
-    # a device the app's profile doesn't list yet (a new device): Xcode registers it, and the app is signed again
-    # with the profile it makes
+    # unsigned (built on another Mac), or a device the app's profile doesn't list yet (a new device): signed here,
+    # with this Mac's profile for it, which Xcode makes (registering the device) when there's none
     app = Path(built["path"])
     prof = _plist_of_profile(str(app / "embedded.mobileprovision")) or {}
     if not prof.get("ProvisionsAllDevices") and target["id"] not in prof.get("ProvisionedDevices", []):
@@ -1099,8 +1106,8 @@ def install_app(setup, ctx, which, device=None, log=print):
             prof_path, prof, identity = find_profile(platform, bundle_id, team, icloud=icloud, device=target["id"])
         except Error:
             prof_path, prof, identity = register_with_xcode(platform, bundle_id, target["id"], team, icloud, env, log)
-        log("signing again with %s (it lists %s)" % (prof.get("Name"), target["name"]))
-        sign(str(app), prof_path, prof, identity, bundle_id, env, log, icloud=icloud)
+        log("signing with %s (it lists %s)" % (prof.get("Name"), target["name"]))
+        sign(str(app), prof_path, prof, identity, bundle_id, env, log, icloud=icloud, drive=KINDS[which].icloud_drive)
     log("installing on %s (%s)" % (target["name"], target["model"]))
     run(["xcrun", "devicectl", "device", "install", "app", "--device", target["id"], built["path"]], env, log,
         "installing on " + target["name"])
@@ -1112,7 +1119,7 @@ def build(setup, ctx, which, team=None, device=None, bundle_prefix="org.wwhdreco
           icloud=None):
     """setup.py --apple-device: build_app, then (install and signed) install_app. Returns the app's path."""
     if install and signed:  # (the device first: no build for a device that isn't there)
-        pick_device(KINDS[which][2], device, xcode_env(developer_dir()))
+        pick_device(KINDS[which].platform, device, xcode_env(developer_dir()))
     built = build_app(setup, ctx, which, team=team, bundle_prefix=bundle_prefix, signed=signed, log=log, step=step,
                       icloud=icloud)
     if install and signed:

@@ -3342,7 +3342,8 @@ def main():
     ap.add_argument("--app-dir", help="macOS: where the app goes (default: ~/Applications)")
     ap.add_argument("--code-mods", choices=("0", "1"), help="build PowerPC mod support (new installs default off; skips the question; overrides WWHD_CODE_MODS)")
     ap.add_argument("--rebuild-code-mods", action="store_true", help="stage a cached game-code variant for the next restart")
-    ap.add_argument("--apple-device", choices=("tv", "iphone"),
+    import apple_device  # (its kinds; nothing else of it runs here)
+    ap.add_argument("--apple-device", choices=tuple(apple_device.KINDS),
                     help="macOS: build the installed game as an app for an Apple TV or an iPhone / iPad, sign it with your "
                     "developer team's profile and install it on a paired device (apple_device.py; needs Xcode)")
     ap.add_argument("--apple-device-id", help="with --apple-device: the device (its name or identifier) when several are paired")
@@ -3874,12 +3875,12 @@ def after_install(ctx, args, ui, state, source):
 #   start_decomp {on}                    -> start the decomp version from now on (development builds, macOS;
 #                                           install {decomp: true} builds it; hello: decomp_offered, decomp)
 #   apple_status {team?, bundle_prefix?, icloud?}
-#                                        -> settings, xcode, mac, mods, apps: {tv|iphone: checks, signing, ready,
+#                                        -> settings, xcode, mac, mods, apps: {tv|iphone|vision: checks, signing, ready,
 #                                           problems, app (the one built here), devices} (apple_device.report;
 #                                           hello's apple_offered says whether to ask; given identifiers are kept)
 #   apple_device_state {app, device}     -> running, installed {version, build}, others [{bundle_id, version}],
 #                                           mods_on_device, switched_off, switched_on (what installing would change)
-#   apple_build  {app: tv|iphone, team?, bundle_prefix?, icloud?}
+#   apple_build  {app: tv|iphone|vision, team?, bundle_prefix?, icloud?}
 #                                        -> streams step/log, then app {path, version, build, mods, signed}
 #   apple_install {app, device}          -> streams log, then device; refuses while the game runs there
 #   apple_save {app, device, action: backup|to-device|from-device, settings?, from_app?}
@@ -4240,7 +4241,7 @@ def gui_main(args):
     def apple_call(req, fn):
         import apple_device
         if not IS_MAC or not ctx.manifest.get("apple"):
-            return fail(req, "not_offered", "This release has no Apple TV, iPhone or iPad apps.")
+            return fail(req, "not_offered", "This release has no Apple TV, iPhone, iPad or Vision Pro apps.")
         try:
             return fn(apple_device)
         except apple_device.Error as e:
@@ -4263,13 +4264,13 @@ def gui_main(args):
         apple_call(req, run)
 
     def do_apple_device_state(req):
-        """{app: tv|iphone, device, bundle_prefix?} -> apple_device.device_state(): running, installed, the mods an
+        """{app: tv|iphone|vision, device, bundle_prefix?} -> apple_device.device_state(): running, installed, the mods an
         install would switch off or on there"""
         apple_call(req, lambda ad: reply(req, **ad.device_state(sys.modules[__name__], ctx, req.get("app"), req.get("device"),
                                                                 bundle_prefix=apple_ids(ad, req)["bundle_prefix"])))
 
     def do_apple_build(req):
-        """{app: tv|iphone, team?, bundle_prefix?, icloud?} -> streams plan/step/log, then {app: built_app()}"""
+        """{app: tv|iphone|vision, team?, bundle_prefix?, icloud?} -> streams plan/step/log, then {app: built_app()}"""
         import apple_device
         GUI.emit({"event": "plan", "id": req.get("id"), "steps": [{"id": s, "title": t} for s, t in apple_device.BUILD_STEPS]})
         def run(ad):
@@ -4297,7 +4298,7 @@ def gui_main(args):
         apple_call(req, run)
 
     def do_apple_install(req):
-        """{app: tv|iphone, device} -> streams log, then {device}; refuses while the game runs there"""
+        """{app: tv|iphone|vision, device} -> streams log, then {device}; refuses while the game runs there"""
         apple_call(req, lambda ad: reply(req, device=ad.install_app(sys.modules[__name__], ctx, req.get("app"),
                                                                     device=req.get("device"), log=apple_log)))
 

@@ -37,9 +37,10 @@ def compiler(app):
     """clang for the app's platform and minimum OS (Info.plist: CFBundleSupportedPlatforms, MinimumOSVersion)"""
     info = plistlib.loads((app / "Info.plist").read_bytes())
     platform = (info.get("CFBundleSupportedPlatforms") or ["?"])[0]
-    sdk, os_name = {"AppleTVOS": ("appletvos", "tvos"), "iPhoneOS": ("iphoneos", "ios")}.get(platform, (None, None))
+    sdk, os_name = {"AppleTVOS": ("appletvos", "tvos"), "iPhoneOS": ("iphoneos", "ios"),
+                    "XROS": ("xros", "xros")}.get(platform, (None, None))
     if not sdk:
-        sys.exit("%s is for %s: only Apple TV, iPhone and iPad apps take bundled mods" % (app, platform))
+        sys.exit("%s is for %s: only Apple TV, iPhone, iPad and Vision Pro apps take bundled mods" % (app, platform))
     # WWHD_TVOS as in the app's own build: it moves the game's memory (ppc.h PPC_MEM_BASE)
     return platform, ["xcrun", "--sdk", sdk, "clang", "-target",
                       "arm64-apple-%s%s" % (os_name, info.get("MinimumOSVersion", "17.0")), "-DWWHD_TVOS=1"]
