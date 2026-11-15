@@ -152,12 +152,10 @@ What that means for the port on the Japanese build:
   USA and EU only, and both read members of the play object that moved (see the next point).
 - Guest mods are translated for the build, so their calls and globals map, and the SDK's
   `WWHD_PLAY_*_OFFSET` values follow the moved play object members: the translator resolves them
-  (`WWHD_GAME_INFO_OFFSET`, [mod-sdk-v2.md](mod-sdk-v2.md)). A mod built with an older SDK compiled
-  them as USA numbers; it is refused on the Japanese build if it reaches the play object (calls or
-  hooks `dComIfGp_get`, addresses `g_dComIfG_gameInfo`, or has an instruction that adds an offset of
-  a moved member, `0x5AB0` to `0x62F7`, wherever its pointer came from), and loads otherwise. The
-  last test can also refuse a mod that uses such an offset in another object; rebuilding it with the
-  current SDK lifts the refusal.
+  (`WWHD_GAME_INFO_OFFSET`, [mod-sdk-v2.md](mod-sdk-v2.md)). On the Japanese build, a mod whose code
+  adds a raw unrelocated offset of a moved member (`0x5AB0` to `0x62F7`, wherever its pointer came
+  from) is refused unless resolved through `WWHD_GAME_INFO_OFFSET`, and a mod built with an older SDK
+  is also refused if it calls or hooks `dComIfGp_get` or addresses `g_dComIfG_gameInfo`.
 
 ## Languages
 

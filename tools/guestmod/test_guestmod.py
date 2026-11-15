@@ -168,6 +168,15 @@ volatile u32 offsets[] = {WWHD_PLAY_PLAYER_OFFSET, WWHD_PLAY_METRONOME_OFFSET};
                     with self.assertRaisesRegex(guestmod.ModError, 'older SDK whose play object offsets.*JP'):
                         builder.translator_for(elf, 0x7F000000, by_name("JP"))
             builder.translator_for(Path(self.build_elf(other, d)).read_bytes(), 0x7F000000, by_name("JP"))
+            # A current-SDK mod (.wwhd_game_info present) that still writes a raw moved offset by hand is also refused.
+            raw_new = '#include "wwhd/data.h"\nu32 link(void) { return *(volatile u32*)(wwhd_play_get() + 0x5B34); }\n'
+            elf = Path(self.build_elf(raw_new, d)).read_bytes()
+            builder.translator_for(elf, 0x7F000000, by_name("EU"))
+            with self.assertRaisesRegex(guestmod.ModError, r'raw play object offset on JP.*WWHD_GAME_INFO_OFFSET\(0x5B34\)'):
+                builder.translator_for(elf, 0x7F000000, by_name("JP"))
+            # Relocated halfwords (e.g. a gdata address whose low 16 bits fall in 0x5AB0..0x62F7) are not raw offsets.
+            relocated = '#include "wwhd/objects.h"\nu8 flying(void) { return WWHD_GAME_DATA(WWHD_ADDR_Medli_flying, u8); }\n'
+            builder.translator_for(Path(self.build_elf(relocated, d)).read_bytes(), 0x7F000000, by_name("JP"))
 
     def test_play_offset_outside_the_object_refused(self):
         src = '#include "wwhd_guest.h"\nWWHD_GAME_INFO_MEMBER(0x7000);\nu32 far(void) { return WWHD_GAME_INFO_OFFSET(0x7000); }\n'
