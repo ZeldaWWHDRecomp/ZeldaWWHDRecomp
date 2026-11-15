@@ -36,6 +36,10 @@ def local_catalogue(metadata, package, output):
         parts = minimum.split('.')
         if len(parts) != 3 or not all(p.isdigit() for p in parts) or tuple(int(p) for p in parts) < (0, 5, 2):
             raise ValueError('Guest mod built with guestmod-0.4 requires catalogue minimum port version 0.5.2 or newer')
+        mgr = manifest.get('minimum_manager_version', '')
+        mgr_parts = mgr.split('.') if isinstance(mgr, str) else []
+        if len(mgr_parts) != 3 or not all(p.isdigit() for p in mgr_parts) or tuple(int(p) for p in mgr_parts) < (1, 13, 0):
+            raise ValueError('Guest mod built with guestmod-0.4 requires minimum_manager_version 1.13.0 or newer')
     payload = package.read_bytes()
     output.mkdir()
     target = output / (ident + '.zip')

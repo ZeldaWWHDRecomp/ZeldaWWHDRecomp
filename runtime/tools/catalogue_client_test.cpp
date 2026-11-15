@@ -50,15 +50,20 @@ int main() {
         manifest["id"]="pilot";pack("../manifest.json");
         rejects([&]{StagedPackage bad(entry,version,"USA","all",root/"work",root/"fixtures",{});});
         assert(fs::is_empty(root/"work")&&!fs::exists(root/"manifest.json"));
-        {   // Mods rebuilt with the new SDK (__wwhd_ginfo_*, guestmod-0.4) need catalogue port_versions.minimum >= 0.5.2.
+        {   // Mods rebuilt with the new SDK (__wwhd_ginfo_*, guestmod-0.4) need catalogue port_versions.minimum >= 0.5.2 and minimum_manager_version >= 1.13.0.
             Entry guest_entry=entry;guest_entry.kind="guest";guest_entry.minimum=Version::parse("0.5.1");
-            auto guest_manifest=mods::json::parse(R"({"format_version":1,"id":"pilot","version":"1.0.0","kind":"guest","guest":{"api_version":1,"elf":"mod.elf"}})");
-            zip_files(package,{{"manifest.json",mods::json::dump(guest_manifest)},{"mod.elf",std::string("\x7f""ELF\x01\x02__wwhd_ginfo_0x5B2C",25)}});
+            auto guest_manifest=mods::json::parse(R"({"format_version":1,"id":"pilot","version":"1.0.0","minimum_manager_version":"1.13.0","kind":"guest","guest":{"api_version":1,"elf":"mod.elf"}})");
+            const std::string ginfo_elf("\x7f""ELF\x01\x02__wwhd_ginfo_0x5B2C",25);
+            zip_files(package,{{"manifest.json",mods::json::dump(guest_manifest)},{"mod.elf",ginfo_elf}});
             guest_entry.downloads["all"]={"pilot.zip",mods::hash::sha256_file(package),fs::file_size(package)};
             rejects([&]{StagedPackage bad(guest_entry,Version::parse("0.5.2"),"USA","all",root/"work",root/"fixtures",{});});
             guest_entry.minimum=Version::parse("0.5.2");
             StagedPackage ok(guest_entry,Version::parse("0.5.2"),"USA","all",root/"work",root/"fixtures",{});
             assert(fs::is_regular_file(ok.path()/"mod.elf"));
+            guest_manifest["minimum_manager_version"]="1.12.0";
+            zip_files(package,{{"manifest.json",mods::json::dump(guest_manifest)},{"mod.elf",ginfo_elf}});
+            guest_entry.downloads["all"]={"pilot.zip",mods::hash::sha256_file(package),fs::file_size(package)};
+            rejects([&]{StagedPackage bad(guest_entry,Version::parse("0.5.2"),"USA","all",root/"work",root/"fixtures",{});});
         }
         {std::ofstream out(root/"fixtures"/"index.json");out<<"{\"format_version\":1,\"mods\":[]}";}
         assert(load((root/"fixtures"/"index.json").string(),{},root/"temporary").index.entries.empty());

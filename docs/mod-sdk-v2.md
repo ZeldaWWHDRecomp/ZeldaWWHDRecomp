@@ -283,7 +283,8 @@ Japanese build, the translator refuses any mod whose code adds a raw unrelocated
 calls or hooks `wwhd_play_get` or addresses `g_dComIfG_gameInfo`. Mods rebuilt with this SDK
 (`__wwhd_ginfo_*`, `guestmod-0.4`) won't load on older ports (`0.5.1` and earlier): set
 `"minimum_manager_version": "1.13.0"` in `manifest.json` and `"port_versions": {"minimum": "0.5.2"}`
-in the catalogue entry.
+in the catalogue entry (and omit `"builds"` in a shared `index.json` when the mod supports all three
+builds, since `0.5.1` and earlier reject `index.json` if any entry's `"builds"` lists `"JP"`).
 
 ### Native save event flags
 
@@ -1539,7 +1540,7 @@ its real catalogue metadata. Supply an installed release/data directory, regiona
 normal save and extracted HD game, the ZIP, source `catalogue.json`, an explicit
 private game-source JSON and a private output folder. The JSON maps declared game
 IDs to the player's local paths (for example `gc_wind_waker` to an RVZ); use `{}`
-for a mod without a game-source step. Run separately with `--region USA`/`EU` and
+for a mod without a game-source step. Run separately with `--region USA`/`EU`/`JP` and
 `--renderer metal`/`vulkan`; `--mode` accepts `30` and `interp60`.
 
 Before launching, the driver invokes the real installer with

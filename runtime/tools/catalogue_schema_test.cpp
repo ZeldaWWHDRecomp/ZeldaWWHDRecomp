@@ -29,9 +29,16 @@ int main() {
     auto good=catalogue::parse(json::dump(fixture()));assert(good.entries.size()==1);
     auto& e=good.entries[0];auto version=catalogue::Version::parse("0.2.10");
     assert(e.compatible(version,"EU","windows-x86_64"));
+    assert(!e.compatible(version,"JP","windows-x86_64"));
     assert(e.compatible(version,"EU","android-arm64"));  // code mods run on Android since v0.4.0 (mods issue #6)
     assert(!e.compatible(catalogue::Version::parse("0.2.9"),"USA","linux-x86_64"));
     assert(!e.compatible(catalogue::Version::parse("0.3.0"),"USA","linux-x86_64"));
+    {   auto jp=fixture();jp["mods"].array[0]["builds"].array.push_back(json::Value("JP"));
+        assert(catalogue::parse(json::dump(jp)).entries[0].compatible(version,"JP","windows-x86_64"));
+        auto any_build=fixture();any_build["mods"].array[0].object.erase("builds");
+        assert(catalogue::parse(json::dump(any_build)).entries[0].compatible(version,"JP","windows-x86_64"));
+    }
+    refused([](auto& v){v["mods"].array[0]["builds"].array.push_back(json::Value("KOR"));});
     refused([](auto& v){v["format_version"]=2;});
     refused([](auto& v){v["mods"].array.push_back(v["mods"].array[0]);});
     refused([](auto& v){v["mods"].array[0]["version"]="1.2.3.4";});

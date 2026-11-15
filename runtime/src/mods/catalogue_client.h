@@ -76,8 +76,12 @@ inline void check_manifest(const Entry& entry,const json::Value& manifest,const 
         if(std::filesystem::is_regular_file(package/elf)) {
             auto bytes=read_bounded(package/elf,64*1024*1024);
             // Mods rebuilt with the new SDK (__wwhd_ginfo_*, guestmod-0.4) won't load on older ports (<= 0.5.1).
-            if(bytes.find("__wwhd_ginfo_")!=std::string::npos||bytes.find(".wwhd_game_info")!=std::string::npos)
+            if(bytes.find("__wwhd_ginfo_")!=std::string::npos||bytes.find(".wwhd_game_info")!=std::string::npos) {
                 require(entry.minimum>=Version{0,5,2},"Guest mod built with guestmod-0.4 requires catalogue minimum port version 0.5.2 or newer");
+                const auto& min_mgr=manifest.get("minimum_manager_version");
+                require(min_mgr.type==json::Value::String&&Version::parse(min_mgr.text)>=Version{1,13,0},
+                        "Guest mod built with guestmod-0.4 requires minimum_manager_version 1.13.0 or newer");
+            }
         }
     }
 }

@@ -160,7 +160,9 @@ What that means for the port on the Japanese build:
   is also refused if it calls or hooks `dComIfGp_get` or addresses `g_dComIfG_gameInfo`. Mods
   rebuilt with this SDK (`__wwhd_ginfo_*`, `guestmod-0.4`) won't load on older ports, so their
   manifests need `"minimum_manager_version": "1.13.0"` and their catalogue entries need a matching
-  minimum port version (`0.5.2`).
+  minimum port version (`0.5.2`). In a shared catalogue `index.json`, entries that support all three
+  builds should omit `"builds"` (or leave it empty) rather than listing `"JP"`, because ports `0.5.1`
+  and earlier reject `index.json` at parse time if any entry's `"builds"` names `"JP"`.
 
 ## Languages
 
