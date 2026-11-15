@@ -244,10 +244,19 @@ UploadSlice block_upload(uint32_t addr, uint32_t size) {
   return b;
 }
 // the draw's address and size of block J of stage S (the draw's block or the fixed one)
+// (decision 1 as refined, 2026-11-14: a block the program reads but the draw does not bind is taken live from the
+// register file, as the run leaves it)
 inline void block_of(const Stage& S, const In& in, uint32_t j, uint32_t& addr, uint32_t& size) {
   const int f = S.blockFrom[j];
-  if (f >= 0) addr = in.blocks[f].addr, size = std::min<uint32_t>(in.blocks[f].size, 0x10000);
-  else addr = S.fixedAddr[j], size = S.fixedSize[j];
+  if (f >= 0) {
+    addr = in.blocks[f].addr, size = std::min<uint32_t>(in.blocks[f].size, 0x10000);
+    return;
+  }
+  const uint32_t reg = (S.sh->vertex ? mmSQ_VTX_UNIFORM_BLOCK_START : mmSQ_PS_UNIFORM_BLOCK_START) + j * 7;
+  uint32_t w1 = 0;
+  d1::effective(reg, addr);
+  d1::effective(reg + 1, w1);
+  size = std::min<uint32_t>(w1 + 1, 0x10000);
 }
 // the support bytes of stage S as pack_uniforms_into makes them for this draw: the state's bytes with the kcache
 // entries of the blocks copied again (a block without an address: its entries stay zero), into BYTES (S.sup.size())
@@ -392,6 +401,7 @@ void split(State& s) {
     else regs.push_back(s.ambientRegs[i]), values.push_back(s.ambientValues[i]);
   }
   ranges_of(vregs, s.vol);
+  d1::add_watched(vregs.data(), vregs.size());
   uint64_t h = 0xCBF29CE484222325ull;
   for (size_t i = 0; i < regs.size(); ++i) h = ((h ^ regs[i]) * 0x100000001B3ull ^ values[i]) * 0x100000001B3ull;
   auto& bucket = g_classes[h];
@@ -613,8 +623,12 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
                            uint32_t(REGADDR::CB_TARGET_MASK), uint32_t(REGADDR::DB_DEPTH_CONTROL)});
   for (int k = 0; k < 2; ++k) {
     const uint32_t blockBase = k ? mmSQ_PS_UNIFORM_BLOCK_START : mmSQ_VTX_UNIFORM_BLOCK_START;
+    // (blocks the draw does not bind: read live through the run, so watched)
     for (uint32_t mask = s.st[k].blockMask; mask; mask &= mask - 1)
-      list.push_back(blockBase + __builtin_ctz(mask) * 7), list.push_back(blockBase + __builtin_ctz(mask) * 7 + 1);
+      if (s.st[k].blockFrom[__builtin_ctz(mask)] < 0) {
+        const uint32_t w[2] = {blockBase + __builtin_ctz(mask) * 7, blockBase + __builtin_ctz(mask) * 7 + 1};
+        d1::add_watched(w, 2);
+      }
     const uint32_t texbase = k ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS;
     for (const Tex& x : s.st[k].tex) {
       for (uint32_t w = 0; w < 7; ++w) list.push_back(texbase + x.unit * 7 + w);
@@ -630,6 +644,15 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
   for (uint32_t reg : list) {
     if (reg >= gx2::kNumRegs || reg == REGADDR::VGT_PRIMITIVE_TYPE) continue;
     if (std::binary_search(it.regs.begin(), it.regs.end(), reg)) continue;
+    // decision 1 as refined (user 2026-11-14): words past the program's own counts (vertex semantics, VS output ids, PS
+    // input controls) are ignored by rule (the resolution compare, VERIFY, is the proof); uniform-block words: live
+    if ((reg >= mmSQ_VTX_SEMANTIC_0 && reg < mmSQ_VTX_SEMANTIC_0 + 32) || reg == mmSQ_VTX_SEMANTIC_CLEAR ||
+        (reg >= mmSPI_VS_OUT_ID_0 && reg < mmSPI_VS_OUT_ID_0 + 10) || (reg >= mmSPI_PS_INPUT_CNTL_0 && reg < mmSPI_PS_INPUT_CNTL_0 + 32))
+      continue;
+    if ((reg >= mmSQ_VTX_UNIFORM_BLOCK_START && reg < mmSQ_VTX_UNIFORM_BLOCK_START + 16 * 7) ||
+        (reg >= mmSQ_PS_UNIFORM_BLOCK_START && reg < mmSQ_PS_UNIFORM_BLOCK_START + 16 * 7) ||
+        (reg >= mmSQ_GS_UNIFORM_BLOCK_START && reg < mmSQ_GS_UNIFORM_BLOCK_START + 16 * 7))
+      continue;
     // a vertex buffer's address and size: per-draw inputs read at each draw (they change per frame for animated
     // meshes; the game sets them before the J3D site), not ambient words
     bool stream = false;

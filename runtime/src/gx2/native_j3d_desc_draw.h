@@ -51,9 +51,13 @@ struct Item {
     // the GX2Invalidate calls in the site's binds {flags, address, size} (OP_INVALIDATE: no register effect; executed
     // for every draw of the item, before it, as the site's calls make them)
     std::vector<uint32_t> invalidates;
+    std::vector<uint32_t> programInvalidates;  // those of the program segment: only when the site binds the program
     const char* refused = nullptr;  // not a plain register effect: drawn the translated way, commands executed
     void* render = nullptr;         // the renderer's states (j3d_desc_vk.h)
     uint64_t settled = 0;           // the settle that took its effect last (once per settle)
+    // its writes of watched registers (V: J3D-written words some state reads as ambient), made again when V grew
+    std::vector<uint32_t> vregs, vvals;
+    uint64_t vGen = 0;
     bool value(uint32_t reg, uint32_t& v) const;
 };
 // a uniform block bind of the draw: its first register (stage base + location * 7), address, size in bytes
@@ -85,6 +89,8 @@ void push_run(const In& in);   // a draw drawn from its state: its effect joins 
 // the value REG has with the run applied (the run's last write of it, else the register file), without settling;
 // false: the run is long and holds none in its last entries (the caller settles and reads the file)
 bool effective(uint32_t reg, uint32_t& value);
+// V: registers looked up with effective() (a state's J3D-written ambient words); the run keeps their last values
+void add_watched(const uint32_t* regs, size_t n);
 void apply_effects(const In& in);  // the translated path: run settled, then the item's effect and the blocks applied
 // gx2_core.cpp: before every command but OP_NOP, OP_J3D_DESC_DRAW and commands that neither read nor write registers
 inline void foreign() {
@@ -100,7 +106,7 @@ enum Count : uint32_t {
     fNoState, fNoPass, fRefusedState, fItemRefused, fSurfaces, fBinds, fAmbient, fVolatile, fTexture, fIndex,
     fOffset,
     // (WWHD_NATIVE_J3D_DESC_D1TIMING=1) render-thread ns: described draws (whole), settles
-    tDrawNs, tSettleNs, cInvalidates, cLiveVertex, cVolatileWords, cCounts
+    tDrawNs, tSettleNs, cInvalidates, cLiveVertex, cVolatileWords, tInvalidateNs, cCounts
 };
 void count(Count c, uint64_t n = 1);
 void note(const char* why);  // (WWHD_NATIVE_J3D_DESC_D1DEBUG=1) a fallback reason

@@ -77,7 +77,7 @@ const char* const kCountNames[cCounts] = {
     "draws", "replayed", "full", "verified", "MISMATCH", "items", "items refused", "states", "states refused", "runs",
     "settles", "settled words", "class checks", "class words", "J3D-written checks", "LOST", "gated",
     "no state", "no state for the pass", "state refused", "item refused", "surfaces", "binds", "ambient",
-    "ambient (J3D-written)", "texture", "index", "uniform offset", "draw us", "settle us", "invalidates", "live vertex buffers", "J3D-written words looked up"};
+    "ambient (J3D-written)", "texture", "index", "uniform offset", "draw us", "settle us", "invalidates", "live vertex buffers", "J3D-written words looked up", "invalidate us"};
 // reasons (debug): first characters of the why strings, counted by text
 std::unordered_map<std::string, uint64_t> g_why;
 
@@ -148,7 +148,8 @@ std::unique_ptr<Item> make_item(const Desc* d, const Env* e) {
     const uint8_t* lists = d->lists.data();
     const uint8_t* end = lists + d->lists.size();
     for (uint32_t s = kSegProgram; ok && s <= kSegState; ++s)
-        ok = decode(d->segment[s].data(), uint32_t(d->segment[s].size()), all, 0, &lists, end, why, it->invalidates);
+        ok = decode(d->segment[s].data(), uint32_t(d->segment[s].size()), all, 0, &lists, end, why,
+                    s == kSegProgram ? it->programInvalidates : it->invalidates);
     if (ok && lists != end) ok = false, why = "list bytes left over";
     if (!ok) {
         it->refused = why;
@@ -240,7 +241,26 @@ uint64_t g_runSerial = 1;
 uint32_t g_runCount = 0;
 
 void push_run(const In& in) {
-    if (g_run.empty()) count(cRuns);
+    if (g_run.empty()) count(cRuns), ++g_runId;
+    // the watched registers' run values (item effect, then the blocks)
+    Item& it = *in.item;
+    if (it.vGen != g_vGen) {
+        it.vGen = g_vGen;
+        it.vregs.clear(), it.vvals.clear();
+        for (size_t k = 0; k < it.regs.size(); ++k)
+            if (watched(it.regs[k])) it.vregs.push_back(it.regs[k]), it.vvals.push_back(it.values[k]);
+    }
+    for (size_t k = 0; k < it.vregs.size(); ++k) g_rstamp[it.vregs[k]] = g_runId, g_rval[it.vregs[k]] = it.vvals[k];
+    for (uint32_t b = 0; b < in.blockCount; ++b) {
+        const uint32_t first = in.blocks[b].reg;
+        if (!(watched(first) | watched(first + 1) | watched(first + 2) | watched(first + 3) | watched(first + 4) |
+              watched(first + 5) | watched(first + 6)))
+            continue;
+        uint32_t w[7];
+        block_words(in.blocks[b], w);
+        for (uint32_t k = 0; k < 7; ++k)
+            if (watched(first + k)) g_rstamp[first + k] = g_runId, g_rval[first + k] = w[k];
+    }
     Entry& e = g_run.emplace_back();
     e.item = in.item;
     e.blockCount = in.blockCount;
@@ -248,21 +268,28 @@ void push_run(const In& in) {
     g_runCount = uint32_t(g_run.size());
 }
 
-bool effective(uint32_t reg, uint32_t& value) {
-    size_t looked = 0;
-    for (size_t i = g_run.size(); i-- > 0;) {
-        const Entry& e = g_run[i];
-        for (uint32_t b = e.blockCount; b-- > 0;)
-            if (reg >= e.blocks[b].reg && reg < e.blocks[b].reg + 7) {
-                uint32_t w[7];
-                block_words(e.blocks[b], w);
-                value = w[reg - e.blocks[b].reg];
-                return true;
-            }
-        if (e.item->value(reg, value)) return true;
-        if (++looked >= 64) return false;
+namespace {
+uint64_t g_v[0x10000 / 64];  // V
+uint64_t g_vGen = 1;
+uint64_t g_runId = 1;        // the open run (a new one at the first push after a settle)
+uint64_t g_rstamp[0x10000];  // per watched register: the run that wrote it last, and the value
+uint32_t g_rval[0x10000];
+inline bool watched(uint32_t r) { return g_v[r >> 6] >> (r & 63) & 1; }
+}  // namespace
+void add_watched(const uint32_t* regs, size_t n) {
+    bool grew = false;
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t r = regs[i];
+        if (r >= 0x10000 || watched(r)) continue;
+        g_v[r >> 6] |= uint64_t(1) << (r & 63);
+        grew = true;
     }
-    value = g_regs[reg];
+    if (!grew) return;
+    ++g_vGen;
+    settle_run();  // (the open run did not keep the new ones: the register file holds them once settled)
+}
+bool effective(uint32_t reg, uint32_t& value) {
+    value = !g_run.empty() && g_rstamp[reg] == g_runId ? g_rval[reg] : g_regs[reg];
     return true;
 }
 
@@ -400,11 +427,21 @@ void draw(uint32_t* regs, Apply apply, const uint32_t* p, uint32_t n) {
         in.blocks[in.blockCount++] = {stageBase[stage] + location * 7, q[1], q[2]};
     }
     if (native_pass::on()) native_pass::note_draw(regs);  // (as for every draw; its counters)
-    for (size_t k = 0; k + 2 < in.item->invalidates.size(); k += 3) {  // (refused items: in their commands)
-        if (in.item->refused) break;
-        const uint32_t* v = in.item->invalidates.data() + k;
-        count(cInvalidates);
-        render::invalidate(v[0], v[1], v[2]);
+    // the binds' GX2Invalidate calls, in segment order; the program segment's only when the site binds the program in
+    // this draw (flag kFlagProgramBind: setProgramShaderMode runs). Refused items: in their commands.
+    if (!in.item->refused) {
+        Timed timedInv(tInvalidateNs);
+        if (p[5] & kFlagProgramBind)
+            for (size_t k = 0; k + 2 < in.item->programInvalidates.size(); k += 3) {
+                const uint32_t* v = in.item->programInvalidates.data() + k;
+                count(cInvalidates);
+                render::invalidate(v[0], v[1], v[2]);
+            }
+        for (size_t k = 0; k + 2 < in.item->invalidates.size(); k += 3) {
+            const uint32_t* v = in.item->invalidates.data() + k;
+            count(cInvalidates);
+            render::invalidate(v[0], v[1], v[2]);
+        }
     }
     if (in.item->refused) {
         count(fItemRefused);
@@ -441,7 +478,7 @@ void frame_end() {
     for (uint32_t c = 0; c < cCounts && j < int(sizeof buf) - 64; ++c)
         if (g_counts[c])
             j += std::snprintf(buf + j, sizeof buf - j, " %s %.2f;", kCountNames[c],
-                               g_counts[c] / 300.0 / (c == tDrawNs || c == tSettleNs ? 1000.0 : 1.0));
+                               g_counts[c] / 300.0 / (c == tDrawNs || c == tSettleNs || c == tInvalidateNs ? 1000.0 : 1.0));
     LOG("%s", buf);
     std::fill(std::begin(g_counts), std::end(g_counts), 0);
     if (debug_on() && !g_why.empty()) {
