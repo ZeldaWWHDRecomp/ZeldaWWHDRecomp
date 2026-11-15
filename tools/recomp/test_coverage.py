@@ -44,8 +44,35 @@ FIXED_GAME_ALLOCATIONS = {0x145AC92C, 0x3BB9DE00, 0x44BDF900, 0x44BDFD00}
 # range is written GI(0x...) (guest_addr.h), which gives the build's own; the play pointer can come from anywhere (a
 # variable, a call, a hook's argument), so the literal itself is what is checked. Numbers in the range that are not
 # play offsets added as they stand, or are mapped through GI() where they are used, are listed with the reason.
+#
+# Limits of this source audit (a regex scan, not a C++ parser or constant evaluator):
+# - bare decimal constants not directly added to a play/gameInfo expression (e.g. `constexpr uint32_t kLink = 23348;`)
+#   are missed, to avoid false positives on unrelated counts or millisecond limits (such as 20000);
+# - dComIfG_play_c-relative offsets (gameInfo + 0x12A0, so 0x4810..0x5057) are flagged only when a play/bgs/gameInfo
+#   identifier or 0x12A0 / 0x1046F0B0 appears nearby, because sound ids and angles share that range;
+# - multi-step or indirect split arithmetic across variables or macros (e.g. `kBase + 0x134` or `GI(0x5134) + off`)
+#   is not folded.
 MOVED_PLAY_OFFSETS = (0x5AB0, 0x62F8)
+PLAY_C_BASE = 0x12A0
+MOVED_PLAY_C_OFFSETS = (MOVED_PLAY_OFFSETS[0] - PLAY_C_BASE, MOVED_PLAY_OFFSETS[1] - PLAY_C_BASE)
 GI_CALL = re.compile(r'\bGI\s*\(')
+PLAY_CONTEXT = re.compile(
+    r'(?:(?<![A-Za-z])play|(?<![A-Z])Play)(?![a-z])[A-Za-z0-9_]*\b'
+    r'|\b(?:[A-Za-z0-9_]*_)?(?:bgs|kBgs|game_?[Ii]nfo)\b'
+    r'|\b0[xX](?:12[aA]0|1046[fF]0[bB]0)[uUlL]*\b'
+)
+PLAY_ADD_DECIMAL = re.compile(
+    r'(?:'
+    r'(?:(?<![A-Za-z])play|(?<![A-Z])Play)(?![a-z])[A-Za-z0-9_]*'
+    r'|\b(?:[A-Za-z0-9_]*_)?(?:bgs|kBgs|game_?[Ii]nfo)'
+    r'|\bGD\s*\(\s*0[xX]1046[fF]0[bB]0[uUlL]*\s*\)'
+    r'|\b0[xX]12[aA]0[uUlL]*'
+    r')(?:\s*\(\s*\))?(?:\s*\))?\s*\+\s*(\d+)[uUlL]*\b(?!\s*(?:[.eEfF*\/%]|<<|>>))'
+)
+SPLIT_HEX_ADD = re.compile(
+    r'\b0[xX]([0-9a-fA-F]{1,8})[uUlL]*\s*\+\s*(?:0[xX]([0-9a-fA-F]{1,8})|(\d+))[uUlL]*\b'
+    r'(?!\s*(?:[.eEfF*\/%]|<<|>>))'
+)
 NOT_A_MOVED_OFFSET = {
     **{("src/editor/demo_names.cpp", v): "a demo id" for v in (0x6103, 0x612E, 0x6165, 0x6166, 0x619A, 0x61AB, 0x61B1,
                                                                 0x61E4, 0x61FE)},
@@ -114,26 +141,95 @@ def address_errors(source, name, mapping):
 
 
 def moved_offset_errors(source, name):
-    """Literals in the range of the play object members the Japanese build moved, outside GI(...)."""
+    """Literals in the range of the play object members the Japanese build moved, outside GI(...).
+
+    Also catches play_c-relative literals (0x4810..0x5057, i.e. gameInfo + 0x12A0) near play/bgs/gameInfo,
+    decimal literals directly added to a play expression, split hex sums (e.g. 0x5A00 + 0x134) landing in the
+    moved range, and GI(0x...) + const expressions that cross a Japanese data-shift boundary.
+    """
     text = TRIVIA.sub(lambda m: re.sub(r"[^\n]", " ", m[0]), source)
     text = without_decomp_blocks(text)
     spans = []
+    errors = []
+    flagged = set()
+    jp = builds.by_name("JP")
+    gi_base = 0x1046F0B0
     for m in GI_CALL.finditer(text):
         depth = 0
         for k in range(m.end() - 1, len(text)):
             depth += {"(": 1, ")": -1}.get(text[k], 0)
             if not depth:
                 spans.append((m.start(), k))
+                inner = re.fullmatch(r'0[xX]([0-9a-fA-F]{1,8})[uUlL]*', text[m.end():k].strip())
+                tail = inner and re.match(
+                    r'\s*([+-])\s*(0[xX][0-9a-fA-F]{1,8}|\d+)[uUlL]*\b(?!\s*(?:[.eEfF*\/%]|<<|>>))',
+                    text[k + 1:])
+                if tail:
+                    base = int(inner[1], 16)
+                    delta = int(tail[2], 0) * (1 if tail[1] == "+" else -1)
+                    combined = base + delta
+                    if (0 <= combined < 0x62F8 and valid_address(jp, "data", gi_base + base) and
+                            valid_address(jp, "data", gi_base + combined) and
+                            jp.data(gi_base + combined) - jp.data(gi_base + base) != delta):
+                        line = text.count("\n", 0, m.start()) + 1
+                        errors.append(f"{name}:{line}: GI(0x{base:X}) {tail[1]} {tail[2]} crosses a moved-member "
+                                      f"shift (0x{combined:X}); write GI(0x{combined:X})")
+                        flagged.add((k + 1 + tail.start(2), k + 1 + tail.end(2)))
                 break
-    errors = []
+
+    def in_gi(pos):
+        return any(lo <= pos < hi for lo, hi in spans)
+
     for m in LITERAL.finditer(text):
-        value = int(m[1], 16)
-        if not MOVED_PLAY_OFFSETS[0] <= value < MOVED_PLAY_OFFSETS[1] or (name, value) in NOT_A_MOVED_OFFSET or \
-                any(lo <= m.start() < hi for lo, hi in spans):
+        if in_gi(m.start()):
             continue
-        line = text.count("\n", 0, m.start()) + 1
-        errors.append(f"{name}:{line}: 0x{value:X} is the offset of a play object member the Japanese build moved; "
-                      f"write GI(0x{value:X}) (guest_addr.h), or list why it is not one in NOT_A_MOVED_OFFSET")
+        value = int(m[1], 16)
+        if MOVED_PLAY_OFFSETS[0] <= value < MOVED_PLAY_OFFSETS[1] and (name, value) not in NOT_A_MOVED_OFFSET:
+            line = text.count("\n", 0, m.start()) + 1
+            errors.append(f"{name}:{line}: 0x{value:X} is the offset of a play object member the Japanese build "
+                          f"moved; write GI(0x{value:X}) (guest_addr.h), or list why it is not one in NOT_A_MOVED_OFFSET")
+            flagged.add((m.start(), m.end()))
+        elif MOVED_PLAY_C_OFFSETS[0] <= value < MOVED_PLAY_C_OFFSETS[1] and (name, value) not in NOT_A_MOVED_OFFSET:
+            ctx = text[max(0, m.start() - 120):m.end() + 120]
+            if PLAY_CONTEXT.search(ctx):
+                line = text.count("\n", 0, m.start()) + 1
+                errors.append(f"{name}:{line}: 0x{value:X} near play may be a play_c-relative offset of a moved "
+                              f"member (gameInfo+0x{value + PLAY_C_BASE:X}); write play + GI(0x{value + PLAY_C_BASE:X}) "
+                              f"(guest_addr.h), or list why it is not one in NOT_A_MOVED_OFFSET")
+                flagged.add((m.start(), m.end()))
+
+    for m in PLAY_ADD_DECIMAL.finditer(text):
+        if in_gi(m.start(1)) or (m.start(1), m.end(1)) in flagged:
+            continue
+        value = int(m[1], 10)
+        if (MOVED_PLAY_OFFSETS[0] <= value < MOVED_PLAY_OFFSETS[1] or
+                MOVED_PLAY_C_OFFSETS[0] <= value < MOVED_PLAY_C_OFFSETS[1]) and (name, value) not in NOT_A_MOVED_OFFSET:
+            line = text.count("\n", 0, m.start(1)) + 1
+            gameinfo_off = value if value >= MOVED_PLAY_OFFSETS[0] else value + PLAY_C_BASE
+            errors.append(f"{name}:{line}: {value} (0x{value:X}) added to play may be the decimal offset of a "
+                          f"moved member; write GI(0x{gameinfo_off:X}) (guest_addr.h)")
+            flagged.add((m.start(1), m.end(1)))
+
+    for m in SPLIT_HEX_ADD.finditer(text):
+        if in_gi(m.start()):
+            continue
+        if any(lo <= m.start() < hi or m.start() <= lo < m.end() for lo, hi in flagged):
+            continue
+        a = int(m[1], 16)
+        b = int(m[2], 16) if m[2] else int(m[3], 10)
+        total = a + b
+        rhs = f"0x{m[2]}" if m[2] else m[3]
+        if MOVED_PLAY_OFFSETS[0] <= total < MOVED_PLAY_OFFSETS[1] and (name, total) not in NOT_A_MOVED_OFFSET:
+            line = text.count("\n", 0, m.start()) + 1
+            errors.append(f"{name}:{line}: 0x{a:X} + {rhs} (= 0x{total:X}) is the offset of "
+                          f"a play object member the Japanese build moved; write GI(0x{total:X}) (guest_addr.h)")
+        elif MOVED_PLAY_C_OFFSETS[0] <= total < MOVED_PLAY_C_OFFSETS[1] and (name, total) not in NOT_A_MOVED_OFFSET:
+            ctx = text[max(0, m.start() - 120):m.end() + 120]
+            if PLAY_CONTEXT.search(ctx):
+                line = text.count("\n", 0, m.start()) + 1
+                errors.append(f"{name}:{line}: 0x{a:X} + {rhs} (= 0x{total:X}) near play may be a play_c-relative "
+                              f"offset of a moved member (gameInfo+0x{total + PLAY_C_BASE:X}); write "
+                              f"play + GI(0x{total + PLAY_C_BASE:X}) (guest_addr.h)")
     return errors
 
 
@@ -192,10 +288,17 @@ class CoverageTests(unittest.TestCase):
         self.assertEqual(errors, [], "\n".join(errors))
         # the play pointer held anywhere: only the offset shows the member
         for raw in ("const uint32_t play = GD(0x1046F0B0); ld32(play + 0x5B34);", "ld32(kPlay + 0x5CD8);",
-                    "constexpr uint32_t kLink = 0x5B34;", "ld32(play + GI(0x5B34) + 0x5B34);"):
+                    "constexpr uint32_t kLink = 0x5B34;", "ld32(play + GI(0x5B34) + 0x5B34);",
+                    "ld32(play_c + 0x4894);", "ld32(play + 0x12A0 + 0x4894);",
+                    "ld32(play + 23348);", "ld32(play_c + 18580);",
+                    "ld32(play + 0x5A00 + 0x134);", "ld32(play + 0x4800 + 0x94);",
+                    "ld32(play + GI(0x5134) + 0xA00);"):
             self.assertTrue(moved_offset_errors(raw, "src/new.cpp"), raw)
         for fine in ("ld32(play + GI(0x5B34));", "ld32(play + GI(pad * 16 + 0x5CD8));", "ld32(play + 0x5134);",
-                     "ld32(link + 0x65B0);", "// play + 0x5B34"):
+                     "ld32(link + 0x65B0);", "// play + 0x5B34",
+                     "uint32_t se = 0x4810;", "if (display && angle == 0x5000) {}",
+                     "if (player && timeout > 20000) {}", "ld8(play + GI(0x5BBB) + 1);",
+                     "ld32(play + GI(0x5134) + 4);"):
             self.assertEqual(moved_offset_errors(fine, "src/new.cpp"), [], fine)
 
     def test_canonical_dispatch_ids_are_explicit_and_mapped(self):
