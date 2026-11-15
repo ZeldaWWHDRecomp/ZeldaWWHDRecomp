@@ -16,6 +16,7 @@
 #include "runtime.h"
 #include <algorithm>
 #include <atomic>
+#include <map>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -490,13 +491,42 @@ bool capture_regs(uint32_t first, const uint32_t* values, uint32_t count) {
     return capture(gx2::OP_SET_REGS, w.data(), count + 1);
 }
 
-void game_swap() { g_gameFrame.fetch_add(1, std::memory_order_relaxed); }
+// WWHD_NATIVE_J3D_DESC_WRITESET=1 (debug, every mode): the ranges the decomp names (wwhd_j3ddesc_watch), hashed at
+// each game swap: "[j3d-desc] writeset frame N hash H ranges R" (mode 0 and mode 2 runs must log the same hashes)
+bool writeset_on() {
+    static const bool v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_WRITESET", 0) != 0;
+    return v;
+}
+std::mutex g_watchMu;
+std::map<uint32_t, uint32_t> g_watch;
+void game_swap() {
+    const uint64_t frame = g_gameFrame.fetch_add(1, std::memory_order_relaxed);
+    if (!writeset_on()) return;
+    std::lock_guard<std::mutex> lk(g_watchMu);
+    uint64_t h = 0xCBF29CE484222325ull;
+    for (const auto& [addr, bytes] : g_watch) {
+        h = (h ^ addr) * 0x100000001B3ull;
+        if (!readable(addr, bytes)) continue;
+        const uint8_t* b = mem::ptr(addr);
+        for (uint32_t i = 0; i < bytes; ++i) h = (h ^ b[i]) * 0x100000001B3ull;
+    }
+    LOG("[j3d-desc] writeset frame %llu hash %016llX ranges %zu", (unsigned long long)frame, (unsigned long long)h,
+        g_watch.size());
+}
 
 }  // namespace native_draw::j3ddesc
 
 // ---------------------------------------------------------------- the decomp's entry points (port_native_draw.h)
 using namespace native_draw::j3ddesc;
 
+extern "C" unsigned wwhd_j3ddesc_writeset_on(void) { return writeset_on() ? 1 : 0; }
+extern "C" void wwhd_j3ddesc_watch(unsigned addr, unsigned bytes) {
+    thread_local std::unordered_set<uint64_t> seen;
+    if (!seen.insert(uint64_t(addr) << 32 | bytes).second) return;
+    std::lock_guard<std::mutex> lk(g_watchMu);
+    uint32_t& b = g_watch[addr];
+    if (bytes > b) b = bytes;
+}
 extern "C" unsigned wwhd_j3ddesc_mode(void) {
     const int m = mode();
     if (m) {
