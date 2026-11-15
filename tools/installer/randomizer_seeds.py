@@ -172,7 +172,8 @@ def ensure_places(setup, data_dir, game_dir):
 
 
 def check_base(setup, ctx):
-    """the installed game a seed is made from: the USA release as it is, the regular (not decomp) release"""
+    """the installed game a seed is made from: the USA, European or Japanese release as it is, the regular (not decomp)
+    release"""
     if ctx.manifest.get("variant") == "decomp":
         raise setup.SetupError("Randomized games need the regular port release, not the decomp version.")
     if not setup.valid_game_folder(ctx.game_dir):
@@ -183,8 +184,9 @@ def check_base(setup, ctx):
                                "is (Change the game); the randomized game's saves stay, and importing the same output "
                                "folder again plays it with them.")
     build = setup.check_game_version(ctx.game_dir)
-    if build.name not in ("USA", "EU"):
-        raise setup.SetupError("Randomized games can be made from the USA and European releases (yours is the %s one)." % build.name)
+    if build.name not in ("USA", "EU", "JP"):
+        raise setup.SetupError("Randomized games can be made from the USA, European and Japanese releases (yours is the %s "
+                               "one)." % build.name)
     return build
 
 

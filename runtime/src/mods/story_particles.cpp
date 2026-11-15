@@ -58,7 +58,7 @@ bool burst(Cpu*c,const Burst&b){
  struct RestoreFrame{uint32_t at;std::array<uint8_t,0x40>&bytes;~RestoreFrame(){std::memcpy(mem::ptr(at),bytes.data(),bytes.size());}} restore_frame{frame,old_frame};
  try{
   const uint32_t play=invoke(c,GetPlay,{});if(!mem2(play,0x5AB4))return false;
-  const uint32_t control=ld32(play+0x5AB0),manager=ld32(ManagerGlobal);
+  const uint32_t control=ld32(play+GI(0x5AB0)),manager=ld32(ManagerGlobal);
   if(!mem2(control,0x41A4)||!resource_available(manager,id(b.effect)))return false;
   const float values[]={b.position.x,b.position.y,b.position.z,b.scale,b.scale,b.scale};
   for(unsigned i=0;i<6;++i)st32(scratch+i*4,f32_as_u32(values[i]));

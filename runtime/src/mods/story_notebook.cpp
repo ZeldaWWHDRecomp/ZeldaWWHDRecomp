@@ -140,8 +140,8 @@ constexpr uint32_t kActorRoom = 0x326;        // fopAc_ac_c current.roomNo
 constexpr uint32_t kPlayStartStage = 0x5134;  // the game info's start stage name (char[8])
 constexpr uint16_t kCommandNone = 0, kCommandGetItem = 4, kConditionCanGetItem = 0x0008;
 constexpr uint32_t kPlayItemPartner = 0x52A0;     // dComIfGp_event_setItemPartnerId
-constexpr uint32_t kPlayPlayer = 0x5B2C;          // dComIfGp_getPlayer(0): Link
-const uint32_t kLinkActor = GD(0x1046F0B0) + 0x5B34;  // g_dComIfG_gameInfo.play mpPlayerPtr[0] (as story_chart.cpp)
+const uint32_t kPlayPlayer = GI(0x5B2C);          // dComIfGp_getPlayer(0): Link
+const uint32_t kLinkActor = GD(0x1046F0B0) + GI(0x5B34);  // g_dComIfG_gameInfo.play mpPlayerPtr[0] (as story_chart.cpp)
 const Cpu* c_or_zero(const Cpu* c) {
     static const Cpu zero{};
     return c ? c : &zero;
@@ -195,7 +195,8 @@ constexpr uint32_t kShipTurnAfterTalk = 0x00400000;  // daSFLG_UNK400000_e: the 
 constexpr uint32_t kAttentionPos = 0x390, kAttentionFlags = 0x39C;  // fopAc_ac_c attention_info.position, .flags
 constexpr uint32_t kAttnLockonTalk = 0x2, kAttnSpeak = 0x8, kAttnShip = 0x80;
 constexpr uint32_t kPlayOrderCount = 0x5290, kPlayEventMode = 0x5292;  // dEvt_control_c (play + 0x51D0) mOrderCount, mMode
-constexpr uint32_t kPlayPlayerStatus = 0x5CD8, kPlayMiniGame = 0x5CEA, kRideShip = 0x10000;  // daPyStts0_SHIP_RIDE_e
+const uint32_t kPlayPlayerStatus = GI(0x5CD8), kPlayMiniGame = GI(0x5CEA);
+constexpr uint32_t kRideShip = 0x10000;  // daPyStts0_SHIP_RIDE_e
 constexpr uint16_t kCommandTalk = 1, kConditionCanTalk = 1;
 // The message the line is shown as: the boat's own one-box line 0x5DF, which setNextMessage ends the
 // talk after without setting anything; its text is replaced for exactly that talk (story_mail::say).

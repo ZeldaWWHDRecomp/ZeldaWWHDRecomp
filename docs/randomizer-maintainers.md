@@ -130,3 +130,29 @@ releases: 0242A218->0242A21C and the tiny 02417FF4->02417FF8.
 
 On macOS, European seeds with the standard and the everything preset reached the Outset pier
 from a fresh file.
+
+## Japanese profile
+
+The Japanese patches (the same fork, `tools/rando/twwhd_rando/asm_jpn`) were checked the same way by
+`tools/rando/test_ported_patches.py`, which runs on repository files only:
+- Every one of its 3514 patched words and 290 relocations matches the USA patch through the USA-to-JP
+  map (`tools/recomp/builds/jp.json`). Branches compare by mapped target, `lis`/low-half pairs and
+  address words by mapped value.
+- The randomizer's own code follows the longer Japanese `.text` (+0xAE0).
+- Three words address `g_dComIfG_gameInfo` members the Japanese build moved (0x5B60, 0x5B64: −4),
+  and match the map's member layout.
+- Six sites are in functions the Japanese build changed, which the map does not map instruction by
+  instruction: `make_game_nonlinear` at 021B0BC0 (JP 021B0BC4), and `swordless.asm`'s three hooks
+  into `dSv_player_status_a_c` with their branches back (025B2030, 025B26F4, 025B26F8 → JP 025B2018,
+  025B26DC, 025B26E0). Each was compared by hand: the instructions around them are the same in both
+  games. They are listed in the test.
+
+`randomizer-jp.json` was made from two seeds generated from a Japanese game by the in-app randomizer:
+one with Quiet Swift Sail, one with Classic Mode and dungeon entrance shuffle. The reviewed functions
+are the USA ones mapped to the Japanese build (`--reviewed-functions 0216F800,023EFF28,025499A4,
+02417FFC,0242A220,0247E85C,025217FC,0243A09C,023F2050`); the tool requires the changed functions to
+equal that list exactly.
+
+On Windows, the Quiet Swift Sail seed (JPTest1) reached the Outset pier from a fresh file with the
+randomizer's starting items (sword, shield, magic, Wind Waker, Swift Sail). Later play is untested, as
+is the dungeon-entrance seed in play.

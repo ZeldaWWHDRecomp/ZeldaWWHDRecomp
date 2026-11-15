@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix="wwhd-story-notebook-") as temporary:
             bundle.writestr(info, data)
     data = archive.read_bytes()
     entry = dict(id="story-notebook", name=manifest["name"], version="1.0.0", kind="guest", description=manifest["description"],
-                 authors=[manifest["author"]], licences=["CC0-1.0"], requires=[], builds=["USA", "EU"],
+                 authors=[manifest["author"]], licences=["CC0-1.0"], requires=[], builds=["USA", "EU", "JP"],
                  port_versions={"minimum": "0.2.10"}, setup=[],
                  downloads={"all": dict(url=archive.name, size=len(data), sha256=hashlib.sha256(data).hexdigest())})
     (root / "index.json").write_text(json.dumps(dict(format_version=1, mods=[entry])))

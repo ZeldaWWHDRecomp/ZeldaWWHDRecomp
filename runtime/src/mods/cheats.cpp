@@ -75,9 +75,9 @@ const uint32_t kStageName = GD(0x1046F0B0) + 0x5134;  // current stage, as in sa
 //  - mAirMeter (+0x48C4) and its max (+0x48C8): set when Link enters deep water
 //    (daPy_lk_c::setSwimTimerStartStop), counted down while he swims; at 0 he sinks.
 //  - mSelectItem[5] (+0x4933): the play's copy of the X / Y / R item numbers (story_item_buttons.cpp).
-const uint32_t kRupeeChange = GD(0x1046F0B0) + 0x5B48;
-const uint32_t kAirMeter = GD(0x1046F0B0) + 0x5B4C;
-const uint32_t kPlaySelect = GD(0x1046F0B0) + 0x5BBB;
+const uint32_t kRupeeChange = GD(0x1046F0B0) + GI(0x5B48);
+const uint32_t kAirMeter = GD(0x1046F0B0) + GI(0x5B4C);
+const uint32_t kPlaySelect = GD(0x1046F0B0) + GI(0x5BBB);
 
 std::string stage() { return std::string((const char*)mem::ptr(kStageName), strnlen((const char*)mem::ptr(kStageName), 8)); }
 

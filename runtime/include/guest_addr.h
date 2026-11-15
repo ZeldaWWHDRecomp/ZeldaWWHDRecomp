@@ -32,6 +32,8 @@ extern const unsigned g_guest_data_step_count;
 extern const uint32_t g_guest_code_lo, g_guest_code_hi, g_guest_data_lo, g_guest_data_hi;
 extern const GuestChanged g_guest_changed_code[];
 extern const unsigned g_guest_changed_code_count;
+extern const GuestChanged g_guest_removed_code[];   /* canonical functions this build does not have */
+extern const unsigned g_guest_removed_code_count;
 extern const char g_guest_build_name[];     /* "USA", "EU", ... */
 extern const char g_guest_build_title_id[];
 extern const char g_guest_build_rpx_sha256[];
@@ -46,7 +48,8 @@ static inline uint32_t guest_shift(const GuestStep* steps, unsigned n, uint32_t 
 }
 
 /* Zero bounds identify the canonical/placeholder identity map. Other maps must
- * stay inside the verified executable; an interior of changed code has no map. */
+ * stay inside the verified executable; an interior of changed code has no map, and
+ * neither has a canonical function the build does not have at all (removed). */
 static inline int guest_in_bounds(uint32_t a, uint32_t lo, uint32_t hi) {
     return (!lo && !hi) || (lo <= a && a < hi);
 }
@@ -54,6 +57,17 @@ static inline int guest_code_valid(uint32_t a) {
     if (!guest_in_bounds(a, g_guest_code_lo, g_guest_code_hi)) return 0;
     for (unsigned i = 0; i < g_guest_changed_code_count; i++)
         if (g_guest_changed_code[i].start < a && a < g_guest_changed_code[i].end) return 0;
+    for (unsigned i = 0; i < g_guest_removed_code_count; i++)
+        if (g_guest_removed_code[i].start <= a && a < g_guest_removed_code[i].end) return 0;
+    return 1;
+}
+/* Whether the function at canonical code address a (its entry, or any address in it) is the same
+ * code in this build: valid and not one of the functions the build compiled differently. A hook that
+ * relies on what a function does, not just where it is, asks this instead of guest_code_valid(). */
+static inline int guest_code_unchanged(uint32_t a) {
+    if (!guest_code_valid(a)) return 0;
+    for (unsigned i = 0; i < g_guest_changed_code_count; i++)
+        if (g_guest_changed_code[i].start <= a && a < g_guest_changed_code[i].end) return 0;
     return 1;
 }
 static inline int guest_data_valid(uint32_t a) {
@@ -85,5 +99,16 @@ static inline int guest_code_range_ok(uint32_t canon_lo, uint32_t canon_hi) {
 
 #define GC(a) guest_code((uint32_t)(a))
 #define GD(a) guest_data((uint32_t)(a))
+
+/* g_dComIfG_gameInfo, what dComIfGp_get() (025200D4) returns: its members are named by their canonical (USA)
+ * offset from it. The Japanese build moved some (its dComIfG_play_c, from +0x5AB0; the "layouts" of
+ * tools/recomp/builds/jp.json), and the data map moves each member with it, so an offset from the base is
+ * mapped too: GI(off) is this build's offset of the member at canonical offset `off`, for the base GD() gives
+ * and for a base the game returned alike (ld32(play + GI(0x5B34)): Link). The identity elsewhere. */
+#define GUEST_GAME_INFO 0x1046F0B0u
+static inline uint32_t guest_game_info_offset(uint32_t off) {
+    return guest_data(GUEST_GAME_INFO + off) - guest_data(GUEST_GAME_INFO);
+}
+#define GI(off) guest_game_info_offset((uint32_t)(off))
 /* Optional code hook: unsupported builds leave the caller on its fallback. */
 #define GC_OPTIONAL(a) (guest_code_valid((uint32_t)(a)) ? guest_code((uint32_t)(a)) : 0)

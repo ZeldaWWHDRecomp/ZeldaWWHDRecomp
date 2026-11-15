@@ -39,6 +39,11 @@ void pane(Cpu&c,uint32_t source){c.r[3]=Arena+0xA000;c.r[4]=source;c.r[5]=0;hook
 int main(){map(Arena,0x10000);map(0x101F0000,0x10000);map(0x10480000,0x10000);st32(0x101F4AE8,Resource);st32(0x1048D760,Arena+0xF000);Cpu c{};
 story_scene_choice::configure(original,call,Scratch,[](Cpu*){return owns;});unsigned replacements=0;
 auto replace=[&](uint32_t fn,void(*hook)(Cpu*)){hooks[fn]=hook;++replacements;};
+#ifdef TEST_JP
+ready();assert(!story_scene_choice::install([](uint32_t){return std::string();},replace)&&replacements==0);
+assert(!story_scene_choice::begin(&c,{u"Walk",u"Stay"},0));
+return 0;
+#endif
 assert(!story_scene_choice::install([](uint32_t fn){return fn==0x027046D4?std::string("foreign"):std::string();},replace));assert(replacements==0);
 assert(story_scene_choice::install([](uint32_t){return std::string();},replace)&&replacements==2);
 ready();c.r[3]=Manager;c.r[4]=0x1234;hooks.at(0x025F7980)(&c);assert(routes==1);

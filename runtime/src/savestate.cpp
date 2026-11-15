@@ -979,8 +979,8 @@ const uint32_t kPlay = GD(0x1046F0B0);              // g_dComIfG_gameInfo.play (
 const uint32_t kStartStage = kPlay + 0x5134;    // dStage_startStage_c: name[8], point s16, room s8, layer s8
 const uint32_t kNextStage = kPlay + 0x5140;     // dStage_nextStage_c: the same + enabled, wipe
 const uint32_t kStageData = kPlay + 0x5150;     // dStage_stageDt_c (getStagInfo: vtable +0x15C)
-const uint32_t kLinkPtr = kPlay + 0x5B34;       // mpPlayerPtr[0]: daPy_lk_c
-const uint32_t kShipPtr = kPlay + 0x5B3C;       // dComIfGp_getShipActor: daShip_c (0 without a boat)
+const uint32_t kLinkPtr = kPlay + GI(0x5B34);       // mpPlayerPtr[0]: daPy_lk_c
+const uint32_t kShipPtr = kPlay + GI(0x5B3C);       // dComIfGp_getShipActor: daShip_c (0 without a boat)
 constexpr uint32_t kActorPos = 0x314, kActorRoom = 0x326, kShapeAngleY = 0x32A;  // fopAc_ac_c (WWHD)
 constexpr uint32_t kLinkProc = 0x65F0;              // daPy_lk_c::mCurProc
 constexpr uint32_t kInfo = 0x20;                    // dSv_info_c in the save area
@@ -1059,11 +1059,11 @@ bool gameplay_ready(std::string& why, bool& retry) {
 // while the Telescope or the Picto Box aims; that is left out (Link restarts standing, harmless).
 // Updated every frame for the event delay.
 const uint32_t kEventRun = kPlay + 0x5292;     // dComIfGp_event_runCheck (dEvt_control_c mode)
-const uint32_t kMesgStatus = kPlay + 0x5BB2;   // dComIfGp_getMesgStatus (messageState 025F795C)
-const uint32_t kScopeMesgStatus = kPlay + 0x5BB3;
+const uint32_t kMesgStatus = kPlay + GI(0x5BB2);   // dComIfGp_getMesgStatus (messageState 025F795C)
+const uint32_t kScopeMesgStatus = kPlay + GI(0x5BB3);
 const uint32_t kMenuFlag = GD(0x101EA069);         // dMenu_flag (025986BC)
-const uint32_t kPlayerPtr = kPlay + 0x5B2C;    // mpPlayer[0]: the controlled actor
-const uint32_t kPlayerStatus0 = kPlay + 0x5CD8; // dComIfGp_checkPlayerStatus0 (mPlayerStatus[0][0])
+const uint32_t kPlayerPtr = kPlay + GI(0x5B2C);    // mpPlayer[0]: the controlled actor
+const uint32_t kPlayerStatus0 = kPlay + GI(0x5CD8); // dComIfGp_checkPlayerStatus0 (mPlayerStatus[0][0])
 constexpr uint32_t kSttsRope = 0x00800000;          // daPyStts0_UNK800000_e: set by Link's rope procedures (procRope*)
 const uint32_t fn_ovlpDoingReq = GC(0x025DBE38);   // fopOvlpM_IsDoingReq (a wipe or scene overlap runs)
 int g_event_wait = 0;                              // d_menu_window.cpp event_wait_frame

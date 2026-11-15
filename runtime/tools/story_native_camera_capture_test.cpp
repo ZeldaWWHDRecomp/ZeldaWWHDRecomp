@@ -9,7 +9,7 @@
 using namespace story_native_camera_capture;
 static void put(std::span<uint8_t>b,unsigned p,uint32_t v){for(unsigned n=0;n<4;++n)b[p+n]=uint8_t(v>>(24-8*n));}
 struct Fixture {
- Layout l{0x1046F0B0,0x101D55F0,0x101D5634,0x101D5538,{0x025021A4,0x02502288,0x024FFA3C,0x0250235C,0x024FFC40},{0x10049348,0x10049350,0x10044878,0x1004487C}};
+ Layout l{0x1046F0B0,0x101D55F0,0x101D5634,0x101D5538,{0x025021A4,0x02502288,0x024FFA3C,0x0250235C,0x024FFC40},{0x10049348,0x10049350,0x10044878,0x1004487C},0x5AF8};
  Expected e{};uint32_t process=0x20001000;std::map<uint32_t,std::vector<uint8_t>> memory;
  unsigned reads=0,process_reads=0;bool mutate=false,throw_read=false;int change_metadata=0;
  Fixture(){

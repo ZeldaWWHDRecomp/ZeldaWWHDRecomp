@@ -428,7 +428,10 @@ providers, or compatibility with Zelda64Recomp/BlueWake packages.
 
 Manager versions: 1.1 content mods, 1.2 Cemu graphics packs, 1.3 setup steps, 1.4 the
 `experimental` flag, 1.5 the region-neutral `game_id` `"wwhd"` (imports written by 1.5 use it and
-require 1.5.0, so an older build shows "Requires mod manager 1.5.0" instead of "targets another game").
+require 1.5.0, so an older build shows "Requires mod manager 1.5.0" instead of "targets another game"),
+1.13 the Japanese game build (`JP`) and per-build play object offsets (`__wwhd_ginfo_*`,
+`guestmod-0.4`; catalogue entries for mods rebuilt with this SDK need `"port_versions": {"minimum": "0.5.2"}`,
+and all-region catalogue entries should omit `"builds"` so `0.5.1` and earlier ports can still parse `index.json`).
 Manifests with `"wwhd-usa"` keep loading.
 
 Package manifest fields:

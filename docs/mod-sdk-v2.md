@@ -265,6 +265,27 @@ references to the EU build. Functions that differ or don't exist in EU are refus
 error naming them. Don't cast integers to pointers (that hard-codes a USA address), and only
 use object fields that are the same in both versions.
 
+**Japanese installs.** The same translation applies. The Japanese build also moved some members of
+the play object (`wwhd_play_get()`, `g_dComIfG_gameInfo`), so the SDK's `WWHD_PLAY_*_OFFSET` values
+are resolved for the build when the mod is installed. For a member the SDK doesn't name, declare it
+once at file scope and use its USA offset:
+
+```c
+WWHD_GAME_INFO_MEMBER(0x5B2C);
+u8* slot = wwhd_play_get() + WWHD_GAME_INFO_OFFSET(0x5B2C);
+```
+
+Write the offset in hex with `0x`: the macro keeps its text, and the translator refuses an offset
+without the prefix rather than read `100` as `0x100`. These offsets are fixed when the mod is linked,
+so they can initialize variables but can't be case labels, array sizes or static asserts. On the
+Japanese build, the translator refuses any mod whose code adds a raw unrelocated offset between
+`0x5AB0` and `0x62F7` (use `WWHD_GAME_INFO_OFFSET`), as well as any mod built with an older SDK that
+calls or hooks `wwhd_play_get` or addresses `g_dComIfG_gameInfo`. Mods rebuilt with this SDK
+(`__wwhd_ginfo_*`, `guestmod-0.4`) won't load on older ports (`0.5.1` and earlier): set
+`"minimum_manager_version": "1.13.0"` in `manifest.json` and `"port_versions": {"minimum": "0.5.2"}`
+in the catalogue entry (and omit `"builds"` in a shared `index.json` when the mod supports all three
+builds, since `0.5.1` and earlier reject `index.json` if any entry's `"builds"` lists `"JP"`).
+
 ### Native save event flags
 
 Include `wwhd/save_flags.h` to access the game's persistent event array. These are
@@ -1519,7 +1540,7 @@ its real catalogue metadata. Supply an installed release/data directory, regiona
 normal save and extracted HD game, the ZIP, source `catalogue.json`, an explicit
 private game-source JSON and a private output folder. The JSON maps declared game
 IDs to the player's local paths (for example `gc_wind_waker` to an RVZ); use `{}`
-for a mod without a game-source step. Run separately with `--region USA`/`EU` and
+for a mod without a game-source step. Run separately with `--region USA`/`EU`/`JP` and
 `--renderer metal`/`vulkan`; `--mode` accepts `30` and `interp60`.
 
 Before launching, the driver invokes the real installer with

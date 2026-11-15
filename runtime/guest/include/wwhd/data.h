@@ -30,10 +30,14 @@ WWHD_GAME_FUNC(0x025200D4, u8*, wwhd_play_get, (void));
 /* Player slot is [v kamome] in the public source; preserve its 8-byte stride.
  * ENABLE_NEXT_STAGE is the transition flag, not a stage layer. */
 /* wwhd_src/include/d/d_com_inf_game.h */
-#define WWHD_PLAY_PLAYER_OFFSET 0x5B2C
+WWHD_GAME_INFO_MEMBER(0x5B2C);
+#define WWHD_PLAY_PLAYER_OFFSET WWHD_GAME_INFO_OFFSET(0x5B2C)
 /* wwhd_src/include/d/actor/d_a_mo2.h */
-#define WWHD_PLAY_START_STAGE_NAME_OFFSET 0x5134
+WWHD_GAME_INFO_MEMBER(0x5134);
+#define WWHD_PLAY_START_STAGE_NAME_OFFSET WWHD_GAME_INFO_OFFSET(0x5134)
 /* wwhd_src/include/d/actor/d_a_fm_local.h */
-#define WWHD_PLAY_EVENT_RUNNING_OFFSET 0x5292
+WWHD_GAME_INFO_MEMBER(0x5292);
+#define WWHD_PLAY_EVENT_RUNNING_OFFSET WWHD_GAME_INFO_OFFSET(0x5292)
 /* wwhd_src/d/d_s_play_4.cpp */
-#define WWHD_PLAY_ENABLE_NEXT_STAGE_OFFSET 0x514C
+WWHD_GAME_INFO_MEMBER(0x514C);
+#define WWHD_PLAY_ENABLE_NEXT_STAGE_OFFSET WWHD_GAME_INFO_OFFSET(0x514C)

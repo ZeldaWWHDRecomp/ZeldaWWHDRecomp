@@ -12,14 +12,15 @@ from randomizer_compat import (digest, guard_digest, hook_digest, import_digest,
                                CompatibilityError, PROFILE_FORMAT)
 from rpx import Rpx
 
-# the profile of each build (randomizer_compat.PROFILES); EU seeds come from the in-app randomizer's port of the patches
-PROFILE_IDS = {'USA': 'twwhd-randomizer-usa-v0-3', 'EU': 'twwhd-randomizer-eu-v0-2'}
+# the profile of each build (randomizer_compat.PROFILES); EU and JP seeds come from the in-app randomizer's port of
+# the patches
+PROFILE_IDS = {'USA': 'twwhd-randomizer-usa-v0-3', 'EU': 'twwhd-randomizer-eu-v0-2', 'JP': 'twwhd-randomizer-jp-v0-1'}
 
 
 def make(base_path, reviewed_paths, reviewed_functions):
     reference = Recompiler(str(base_path))  # exact supported-build SHA check (its text: relocations applied)
     if reference.build.name not in PROFILE_IDS:
-        raise ValueError('profile reference must be the original USA or EU RPX')
+        raise ValueError('profile reference must be the original USA, EU or JP RPX')
     rpx = reference.p.rpx
     hooks, _ = builds.read_hooks(builds.hook_files(), reference.build)
     starts = sorted({reference.func_of(address) for _, _, address, _ in hooks})

@@ -58,7 +58,7 @@ inline Loaded refresh_cached(const std::string& source,const Fetch& fetch,const 
         throw;
     }
 }
-inline void check_manifest(const Entry& entry,const json::Value& manifest) {
+inline void check_manifest(const Entry& entry,const json::Value& manifest,const std::filesystem::path& package={}) {
     require(manifest.type==json::Value::Object,"Package manifest is missing");
     require(manifest.get("id").string()==entry.id,"Package ID differs from catalogue");
     require(manifest.get("version").string()==entry.version,"Package version differs from catalogue");
@@ -69,6 +69,21 @@ inline void check_manifest(const Entry& entry,const json::Value& manifest) {
     require(deps.type==json::Value::Null||deps.type==json::Value::Array,"Invalid package dependencies");
     for(const auto& dep:deps.array)actual.insert(text(dep,"id",80));
     require(actual==expected,"Package dependencies differ from catalogue");
+    if(entry.kind=="guest"&&!package.empty()) {
+        const auto& guest=manifest.get("guest");
+        std::string elf=guest.type==json::Value::Object&&guest.get("elf").type==json::Value::String?guest.get("elf").text:"mod.elf";
+        require(relative_file(elf),"Invalid guest ELF path");
+        if(std::filesystem::is_regular_file(package/elf)) {
+            auto bytes=read_bounded(package/elf,64*1024*1024);
+            // Mods rebuilt with the new SDK (__wwhd_ginfo_*, guestmod-0.4) won't load on older ports (<= 0.5.1).
+            if(bytes.find("__wwhd_ginfo_")!=std::string::npos||bytes.find(".wwhd_game_info")!=std::string::npos) {
+                require(entry.minimum>=Version{0,5,2},"Guest mod built with guestmod-0.4 requires catalogue minimum port version 0.5.2 or newer");
+                const auto& min_mgr=manifest.get("minimum_manager_version");
+                require(min_mgr.type==json::Value::String&&Version::parse(min_mgr.text)>=Version{1,13,0},
+                        "Guest mod built with guestmod-0.4 requires minimum_manager_version 1.13.0 or newer");
+            }
+        }
+    }
 }
 class StagedPackage {
     std::filesystem::path directory_;
@@ -94,7 +109,7 @@ public:
             }
             verify_package(archive,download);
             mods::archive::stage(archive,directory_/"package");
-            check_manifest(entry,json::parse(read_bounded(path()/"manifest.json",1024*1024)));
+            check_manifest(entry,json::parse(read_bounded(path()/"manifest.json",1024*1024)),path());
         }catch(...){std::error_code error;fs::remove_all(directory_,error);throw;}
     }
     StagedPackage(const StagedPackage&)=delete;

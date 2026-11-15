@@ -39,7 +39,8 @@
 /* wwhd_src/include/d/actor/d_a_ship.h */
 #define WWHD_OFFSET_line_material_id_vslot 0x14
 /* wwhd_src/include/d/actor/d_a_ship.h */
-#define WWHD_PLAY_LINE_PACKETS_OFFSET 0x5FB4
+WWHD_GAME_INFO_MEMBER(0x5FB4);
+#define WWHD_PLAY_LINE_PACKETS_OFFSET WWHD_GAME_INFO_OFFSET(0x5FB4)
 /* wwhd_src/include/d/actor/d_a_ship.h */
 #define WWHD_STRIDE_line_packet 0x9C
 /* wwhd_src/include/d/actor/d_a_npc_md.h */
@@ -63,15 +64,20 @@
 /* wwhd_src/include/d/actor/d_a_himo2.h */
 #define WWHD_ADDR_Himo2_SafeString_vtable 0x10010DEC
 /* wwhd_src/d/actor/d_a_player_main_07.cpp */
-#define WWHD_PLAY_PLAYER_STATUS1_OFFSET 0x5CDC
+WWHD_GAME_INFO_MEMBER(0x5CDC);
+#define WWHD_PLAY_PLAYER_STATUS1_OFFSET WWHD_GAME_INFO_OFFSET(0x5CDC)
 /* wwhd_src/d/actor/d_a_player_main_07.cpp */
-#define WWHD_PLAY_METRONOME_OFFSET 0x5BD1
+WWHD_GAME_INFO_MEMBER(0x5BD1);
+#define WWHD_PLAY_METRONOME_OFFSET WWHD_GAME_INFO_OFFSET(0x5BD1)
 /* wwhd_src/include/d/actor/d_a_npc_mn.h */
-#define WWHD_PLAY_EVENT_FLAGS_OFFSET 0x52B8
+WWHD_GAME_INFO_MEMBER(0x52B8);
+#define WWHD_PLAY_EVENT_FLAGS_OFFSET WWHD_GAME_INFO_OFFSET(0x52B8)
 /* wwhd_src/include/d/d_com_inf_game.h */
-#define WWHD_PLAY_BG_COLLISION_OFFSET 0x12A0
+WWHD_GAME_INFO_MEMBER(0x12A0);
+#define WWHD_PLAY_BG_COLLISION_OFFSET WWHD_GAME_INFO_OFFSET(0x12A0)
 /* wwhd_src/include/d/d_com_inf_game.h */
-#define WWHD_PLAY_PLAYER_STATUS0_OFFSET 0x5CD8
+WWHD_GAME_INFO_MEMBER(0x5CD8);
+#define WWHD_PLAY_PLAYER_STATUS0_OFFSET WWHD_GAME_INFO_OFFSET(0x5CD8)
 /* wwhd_src/include/d/actor/d_a_player.h; declared fields in public order, size 0xC. */
 typedef struct { u32 mVtable, mpEmitter, mpMatrix; } daPy_mtxFollowEcallBack_c;
 /* wwhd_src/include/d/d_com_inf_game.h; GHS places the vtable after the string pointer. */

@@ -29,7 +29,7 @@ def generate(output, heart_elf=None, heart_source=None):
     output.mkdir(parents=True, exist_ok=True)
     entries = []
 
-    def package(ident, name, kind, files, setup=None, licences=None, **extra):
+    def package(ident, name, kind, files, setup=None, licences=None, minimum_port="0.2.10", **extra):
         manifest = dict(format_version=1, id=ident, name=name, version="1.0.0",
                         game_id="wwhd", minimum_manager_version="1.5.0", kind=kind, author="WWHD catalogue test fixtures",
                         description="Authored synthetic catalogue pilot; contains no game assets.", **extra)
@@ -48,8 +48,8 @@ def generate(output, heart_elf=None, heart_source=None):
         data = archive.read_bytes()
         entries.append(dict(id=ident, name=name, version=manifest["version"], kind=kind,
                             description=manifest["description"], authors=[manifest["author"]],
-                            licences=licences or ["CC0-1.0"], requires=[], builds=["USA", "EU"],
-                            port_versions={"minimum": "0.2.10"}, setup=setup or [],
+                            licences=licences or ["CC0-1.0"], requires=[], builds=["USA", "EU", "JP"],
+                            port_versions={"minimum": minimum_port}, setup=setup or [],
                             downloads={"all": dict(url=archive.name, size=len(data), sha256=hashlib.sha256(data).hexdigest())}))
 
     package("catalogue-content-pilot", "Synthetic content pilot", "content",
@@ -71,10 +71,13 @@ def generate(output, heart_elf=None, heart_source=None):
         folder = heart_source or Path(__file__).resolve().parents[3] / "ZeldaWWHDMods/heart-ticker"
         source = folder / "manifest.json"
         original = json.loads(source.read_text())
+        new_sdk = b"__wwhd_ginfo_" in elf or b".wwhd_game_info" in elf
         package("heart-ticker", "Heart ticker guest pilot", "guest", {"mod.elf": elf, "src/mod.c": (folder / "mod.c").read_bytes(),
                     "LICENSE.txt": (folder / "LICENSE").read_bytes()},
                 [dict(id="build", type="build_guest_mod", title="Build heart ticker for this install")],
-                licences=["MPL-2.0"], guest=original["guest"], options=original["options"])
+                licences=["MPL-2.0"], minimum_port="0.5.2" if new_sdk else "0.2.10",
+                minimum_manager_version="1.13.0" if new_sdk else "1.5.0",
+                guest=original["guest"], options=original["options"])
     # A minimal synthetic disc header is enough for ID validation; it is not a playable game.
     header = bytearray(32)
     header[:6] = b"GZLE01"

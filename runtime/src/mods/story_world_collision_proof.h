@@ -77,7 +77,7 @@ template<class Call> bool move(Cpu*c,uint32_t actor,Call call){
     if(!registered(registry,body,actor)){LOG("[world_w0] rejected stale registration actor=%08X body=%08X",actor,body);return false;}
     for(unsigned i=0;i<12;++i)st32(actor+Matrix+i*4,ld32(actor+0x56C+i*4));
     call(c,GC(0x024F43DC),{body});const uint32_t tick=ld32(actor+State+64)+1;st32(actor+State+64,tick);
-    if(tick%30==0){const uint32_t link=ld32(play+0x5B34);const bool riding=address(link,0x6600)&&(ld32(link+0x80C+0x28)&0x20)&&ld16(link+0x80C+0xD4+0x16)==ld32(body)&&ld32(link+0x80C+0xD4+0x18)==body;
+    if(tick%30==0){const uint32_t link=ld32(play+GI(0x5B34));const bool riding=address(link,0x6600)&&(ld32(link+0x80C+0x28)&0x20)&&ld16(link+0x80C+0xD4+0x16)==ld32(body)&&ld32(link+0x80C+0xD4+0x18)==body;
         LOG("[world_w0] motion actor=%08X tick=%u body=%08X slot=%u occupied=%u y=%.3f pitch=%d roll=%d link=%08X riding=%u link_x=%.3f link_y=%.3f link_z=%.3f proc=%u",actor,tick,body,ld32(body),occupied(registry),double(u32_as_f32(ld32(actor+0x318))),int(int16_t(ld16(actor+0x328))),int(int16_t(ld16(actor+0x32C))),link,unsigned(riding),address(link,0x6600)?double(u32_as_f32(ld32(link+0x314))):0,address(link,0x6600)?double(u32_as_f32(ld32(link+0x318))):0,address(link,0x6600)?double(u32_as_f32(ld32(link+0x31C))):0,address(link,0x6600)?ld32(link+0x65F0):0xFFFFFFFFu);}
     return true;
 }

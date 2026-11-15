@@ -263,6 +263,29 @@ class Compatibility(unittest.TestCase):
         self.assertEqual((build.name, build.title_id, build.sha256), ('EU', C.TITLE_ID, 'c' * 64))
         self.assertEqual(build.code(0x0216F7FC), eu.code(0x0216F7FC))
 
+    def test_shipped_jp_profile_matches_the_jp_build_and_the_reviewed_usa_variants(self):
+        """randomizer-jp.json (JP seeds from the in-app randomizer's port of the patches): the JP build's hooks (no
+        Options-order hooks), the same reviewed functions as the USA profile through the JP address map, chosen by the
+        JP entry point"""
+        profile = json.loads(C.PROFILES[2].read_text())
+        jp = builds.by_name('JP')
+        hooks, _ = builds.read_hooks(builds.hook_files(), jp)
+        self.assertEqual(profile['base_sha256'], jp.sha256)
+        self.assertEqual(profile['hooks_sha256'], C.hook_digest(hooks))
+        self.assertEqual(set(profile['points']), {a for _, _, a, _ in hooks})
+        entries = {json.loads(p.read_text())['entry_point'] for p in C.PROFILES}
+        self.assertEqual(len(entries), 3)  # identify() chooses a profile by the entry point
+        reviewed = {jp.code(a): 2 for a in (0x0216F7FC, 0x023EFF20, 0x025499A0, 0x0247E854, 0x025217F8, 0x0242A218,
+                                            0x0243A094, 0x023F2048)}
+        self.assertEqual(profile['format'], C.PROFILE_FORMAT)
+        self.assertEqual(len(profile['guard_sha256']), 2)  # the tiny 02417FF4 (JP 02417FFC), as in the USA profile
+        self.assertEqual({f['start']: len(f['sha256']) for f in profile['functions'] if len(f['sha256']) > 1},
+                         reviewed)
+        build = C.randomized_build(jp, 'c' * 64)
+        self.assertEqual((build.name, build.title_id, build.sha256), ('JP', C.TITLE_ID, 'c' * 64))
+        self.assertEqual(build.code(0x0216F7FC), jp.code(0x0216F7FC))
+        self.assertEqual(build.data(0x1046F0B0 + 0x5B34), jp.data(0x1046F0B0 + 0x5B34))  # the moved members too
+
 
 if __name__ == '__main__':
     unittest.main()

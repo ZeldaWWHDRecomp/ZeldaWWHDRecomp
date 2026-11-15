@@ -16,6 +16,8 @@
 
 /* Old SDKs embedded data pointers without relocations and cannot safely run on EU. */
 static const unsigned int wwhd_address_format __attribute__((used, section(".wwhd_addresses"))) = 1;
+/* Old SDKs compiled the play object's member offsets as USA numbers, which the Japanese build moved. */
+static const unsigned int wwhd_game_info_format __attribute__((used, section(".wwhd_game_info"))) = 1;
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -69,6 +71,16 @@ typedef struct { u32 kind, target; void* func; u32 flags; } wwhd_hook_desc;
 #define WWHD_GAME_DATA(addr, type) (*({ \
     extern u8 WWHD__CAT(wwhd_game_data_, addr)[] __asm__("__wwhd_gdata_" WWHD__STR(addr)); \
     (type volatile*)WWHD__CAT(wwhd_game_data_, addr); }))
+
+/* The offset of a member of the play object (wwhd_play_get(), g_dComIfG_gameInfo) at USA offset `off`. Builds
+ * that moved members (the Japanese one) get theirs: the translator resolves it when the mod is installed. Declare
+ * the member once at file scope (the SDK's WWHD_PLAY_*_OFFSET members are declared):
+ *   WWHD_GAME_INFO_MEMBER(0x5B2C);  ...  wwhd_play_get() + WWHD_GAME_INFO_OFFSET(0x5B2C)
+ * Write the offset in hex with 0x (the symbol keeps its text; the translator refuses other spellings).
+ * The value is fixed when the mod is linked, not when it is compiled: it can initialize a variable, but is no
+ * integer constant expression (no case labels, array sizes or static asserts). */
+#define WWHD_GAME_INFO_MEMBER(off) extern u8 WWHD__CAT(wwhd_game_info_, off)[] __asm__("__wwhd_ginfo_" WWHD__STR(off))
+#define WWHD_GAME_INFO_OFFSET(off) ((u32)WWHD__CAT(wwhd_game_info_, off))
 
 /* ---- host services (resolved by name on install; missing ones are an install error) ---- */
 void wwhd_log(const char* message);

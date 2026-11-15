@@ -120,8 +120,8 @@ uint32_t enemy_pid(Cpu* c, uint32_t link) {
 }
 bool context(Cpu* c, uint32_t link, uint16_t item, unsigned slot, uint32_t& pid, Phase phase = Phase::drawing) {
     if (!enabled.load(std::memory_order_relaxed) || !playable() || !link || slot >= 3 ||
-        ld32(play_address() + 0x5B2C) != link || (phase != Phase::equipping && ld16(link + 0x69B0) != (item == kBomb ? 0x100 : item)) ||
-        ld8(play_address() + 0x5BBB + slot) != item ||
+        ld32(play_address() + GI(0x5B2C)) != link || (phase != Phase::equipping && ld16(link + 0x69B0) != (item == kBomb ? 0x100 : item)) ||
+        ld8(play_address() + GI(0x5BBB) + slot) != item ||
         (item != kBomb && (phase != Phase::equipping && phase != Phase::handoff) && ld8(link + 0x68D9) != slot) ||
         ld32(link + 0x8260) || ld16(link + 0x699C) ||
         (ld8(link + 0x690D) & 3)) return false; // native A/B cancel wins
@@ -185,7 +185,7 @@ void equip(Cpu* c) {
     const unsigned slot = ld8(link + 0x68D9);
     if (slot >= 3 || !(edges & kButtons[slot]) || !recent(edge_steps[slot], step(), 2) ||
         !(ld8(link + 0x690D) & (4u << slot))) return;
-    const uint16_t item = ld8(play_address() + 0x5BBB + slot);
+    const uint16_t item = ld8(play_address() + GI(0x5BBB) + slot);
     uint32_t pid;
     if (!move_proc(item) || (item == kHammer && ld16(link + 0x69B0) == kHammer) ||
         !context(c, link, item, slot, pid, Phase::equipping)) return;

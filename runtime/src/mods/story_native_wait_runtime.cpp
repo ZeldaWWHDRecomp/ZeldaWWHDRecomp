@@ -287,7 +287,7 @@ std::optional<story_native_wait_runtime_backend::Bundle> runtime_backend(
  const auto&instance=turn?layout.turn:layout.wait;
  B::Config config;config.memory.stamp=config.collector.stamp=instance.stamp.address;
  config.memory.record={instance.record.address,instance.record.bytes};
- if(!scalar(GD(0x1046F0B0)+0x5B34,config.memory.link)||
+ if(!scalar(GD(0x1046F0B0)+GI(0x5B34),config.memory.link)||
     !scalar(config.memory.link+4,config.memory.link_pid))return {};
  std::array<uint8_t,24> manager_context{};
  if(!read(expected.identity.manager+0x24,manager_context))return {};
@@ -734,7 +734,7 @@ static void service_selected(Cpu*c,bool force){
      const story_native_camera_capture::Layout camera_layout{
       GD(0x1046F0B0),GD(0x101D55F0),GD(0x101D5634),GD(0x101D5538),
       {GC(0x025021A4),GC(0x02502288),GC(0x024FFA3C),GC(0x0250235C),GC(0x024FFC40)},
-      {GD(0x10049348),GD(0x10049350),GD(0x10044878),GD(0x1004487C)}};
+      {GD(0x10049348),GD(0x10049350),GD(0x10044878),GD(0x1004487C)},GI(0x5AF8)};
      story_native_event_observation::Camera raw_camera;
      const bool camera_captured=story_native_camera_capture::capture(read,camera_layout,*expected,raw_camera)&&
       raw_camera==expected->camera;

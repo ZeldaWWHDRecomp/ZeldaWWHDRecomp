@@ -14,7 +14,7 @@ void lift(Cpu*c){
     const uint32_t link=c->r[3];
     if(link>=0x10000000u&&link<=0x50000000u-0x65BCu&&!(link&3)){
         Cpu probe=*c;const uint32_t play=invoke(&probe,GC(0x025200D4),{});
-        if(play>=0x10000000u&&play<=0x50000000u-0x5B38u&&!(play&3)&&ld32(play+0x5B34)==link){
+        if(play>=0x10000000u&&play<=0x50000000u-0x5B38u&&!(play&3)&&ld32(play+GI(0x5B34))==link){
             const uint32_t candidate=ld32(link+0x65B8);
             for(const auto&e:guards)if(e.guard){
                 bool denied=true;try{denied=e.guard(candidate);}catch(...){/* predicate faults cannot admit a lift */}

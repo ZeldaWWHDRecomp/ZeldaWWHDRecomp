@@ -63,7 +63,7 @@ constexpr uint32_t kShapeAngleY = 0x32A;       // shape_angle.y
 constexpr uint32_t kShipMode = 0x635;          // mCurMode; MODE_STEER_MOVE = 1
 constexpr uint32_t kShipState = 0x644;         // mStateFlag; SAIL_ON = 0x200
 const uint32_t kPlay = GD(0x1046F0B0);          // dComIfGp (the play info; what 025200D4 returns)
-constexpr uint32_t kSwiftSail = 0x5D2C;        // dComIfGp: the Swift Sail is in use (HD)
+const uint32_t kSwiftSail = GI(0x5D2C);        // dComIfGp: the Swift Sail is in use (HD)
 const uint32_t kTactWindSet = GC(0x0257E490);  // dKyw_tact_wind_set(s16 ang_x, s16 ang_y)
 
 float ladder_factor() { return active_factor(mods::ladder_speed(), mods::ladder_speed_factor()); }

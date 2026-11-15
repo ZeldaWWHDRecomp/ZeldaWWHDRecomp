@@ -54,6 +54,8 @@ void dismiss();
 // any thread: the prompt shows, or a platform keyboard that field() started (the overlay and the game
 // get no input meanwhile: overlay::captures())
 bool active();
+// any thread: a prompt in Japanese (language 0) was asked for in this run (the overlay then loads a Japanese font)
+bool japanese_requested();
 
 // ---- host input (main thread)
 // Keys (macOS virtual key codes, as overlay::key): editing and navigation only (Backspace, Delete,

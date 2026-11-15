@@ -119,9 +119,9 @@ void end_event(){const uint32_t f=play_base()+kEventControl+0xE8;st16(f,uint16_t
 void release_link(Cpu*c,Kind k,uint32_t a,const char*why){
  if(k==Kind::Redead){if(holds_event(c,a)){end_event();LOG("[native_enemy] redead actor=%08X: its event ended (%s)",a,why);}return;}
  if(k!=Kind::Poe)return;const uint32_t p=play_base();
- if(int16_t(ld16(a+0x482))==3&&holds_event(c,a)){end_event();const uint32_t cam=ld32(p+0x5AF8+uint32_t(int32_t(int8_t(ld8(p+0x5B30))))*0x34);
+ if(int16_t(ld16(a+0x482))==3&&holds_event(c,a)){end_event();const uint32_t cam=ld32(p+GI(0x5AF8)+uint32_t(int32_t(int8_t(ld8(p+GI(0x5B30)))))*0x34);
   if(memory(cam,0x400)){Cpu probe=*c;invoke(&probe,GC(0x02514F38),{cam+0x248});probe=*c;invoke(&probe,GC(0x02515280),{cam+0x248,0});}LOG("[native_enemy] poe actor=%08X: its possession event ended (%s)",a,why);}
- if(ld8(a+0x45F)){st8(a+0x45F,0);st8(more::poe_possessing(),0);const uint32_t link=ld32(p+0x5B34);if(int16_t(ld16(a+0x484))==0x51&&memory(link,0x8260)&&ld16(link+0xE)==0xA8)st32(link+0x3BC,ld32(link+0x3BC)&~0x100u);LOG("[native_enemy] poe actor=%08X: its possession ended (%s)",a,why);}}
+ if(ld8(a+0x45F)){st8(a+0x45F,0);st8(more::poe_possessing(),0);const uint32_t link=ld32(p+GI(0x5B34));if(int16_t(ld16(a+0x484))==0x51&&memory(link,0x8260)&&ld16(link+0xE)==0xA8)st32(link+0x3BC,ld32(link+0x3BC)&~0x100u);LOG("[native_enemy] poe actor=%08X: its possession ended (%s)",a,why);}}
 // a reserved Redead or Poe the adapter no longer owns (after a state load or a quarantine): its hold on Link ends too
 void release_orphan(Cpu*c,uint32_t a){const uint16_t prof=ld16(a+0xE);for(Kind k:{Kind::Redead,Kind::Poe}){const auto*n=more::find(k);if(prof==n->descriptor.profile&&memory(a,n->descriptor.bytes)&&ld32(a+0xB4)==n->vtable())release_link(c,k,a,"left over");}}
 // the Poe's lantern (the game's, by its PID 0x48C) goes with the Poe while it still holds it

@@ -1,0 +1,10 @@
+# One screen (handheld) mode (one_screen.cpp): the pause menu's Options items without Controller.
+# builds: USA, EU
+#   The Japanese build compiled the Options window's code differently (its list setup, value loading and
+#   saving: tools/recomp/builds/jp.json differing_functions), so these hooks would patch different code
+#   there; the recompiler skips this file on that build and its Options keep the Controller item.
+026D7828  # hdSequenceOption_c constructor: the Options items without Controller (descriptor order)
+@026D8514 # Options list setup: stw r7 (6 items) to +0x120: 5 without Controller
+@026D5D84 # Options values loaded (+0x104..+0x109), before the rows are filled: into the new order
+026D6DD4  # Options values saved (fixed offsets): the game's order around it
+026D87D0  # Options Controller item callback (its value +0x107): the game's order around it

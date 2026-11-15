@@ -1329,7 +1329,8 @@ def file_sha256(path):
 
 GAME_VERSION_FIX = ("Use the game's own files: a disc image (.wud/.wux), a Cemu archive (.wua; setup takes the game from it "
                     "and leaves an update out), or the game's folder exactly as dumped (in Cemu: "
-                    "mlc01/usr/title/00050000/10143500 for the USA game, 10143600 for the European one; not the "
+                    "mlc01/usr/title/00050000/10143500 for the USA game, 10143600 for the European one, 10143400 for "
+                    "the Japanese one; not the "
                     "update in 0005000e/...), without update files copied over it.")
 
 

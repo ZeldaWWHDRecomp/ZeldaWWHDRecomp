@@ -179,6 +179,8 @@ def main():
     ap.add_argument('--placements', action='store_true', help="also count the game's own placements of each variant")
     ap.add_argument('--json', action='store_true', help='one JSON result line (for the port)')
     args = ap.parse_args()
+    if hasattr(sys.stdout, 'reconfigure'):  # labels are UTF-8 ("é"); a Japanese Windows console is cp932
+        sys.stdout.reconfigure(encoding='utf-8')
     files = args.recipe or sorted(glob.glob(os.path.join(DEFAULT_RECIPES, '*.recipe.json')))
     try:
         entries = load_recipes(files)

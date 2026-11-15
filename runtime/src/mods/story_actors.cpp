@@ -130,7 +130,7 @@ std::array<uint32_t,story_enemy_ownership::kKindCount> enemy_profiles(){std::arr
     static_assert(std::size(story_enemies_more::kNatives)<=kMoreEnemyProfiles);uint32_t slot=0;for(const auto&n:story_enemies_more::kNatives)out[unsigned(n.kind)]=g_scratch+kMoreEnemyProfilesScratchOffset+0x30*slot++;return out;}
 bool enemies_declared(){return std::any_of(g_actors.begin(),g_actors.end(),[](const Actor&a){return a.enemy_token!=0;});}
 bool combat_declared(){return enemies_declared()||std::any_of(g_actors.begin(),g_actors.end(),[](const Actor&a){return a.spec.kind=="mod"&&a.spec.combat_enabled;});}
-bool pure_link(uint32_t& actor,uint32_t& pid){actor=ld32(GD(0x1046F0B0)+0x5B34);if(actor<mem::kMem2Start||actor>mem::kMem2End-0x8260u||(actor&3)||ld16(actor+0xE)!=0xA8)return false;pid=ld32(actor+4);return pid&&pid!=0xFFFFFFFFu;}
+bool pure_link(uint32_t& actor,uint32_t& pid){actor=ld32(GD(0x1046F0B0)+GI(0x5B34));if(actor<mem::kMem2Start||actor>mem::kMem2End-0x8260u||(actor&3)||ld16(actor+0xE)!=0xA8)return false;pid=ld32(actor+4);return pid&&pid!=0xFFFFFFFFu;}
 void refresh_link(){if(!combat_declared())return;uint32_t actor=0,pid=0;if(pure_link(actor,pid))story_enemy_ownership::set_link(actor,pid);}
 // Typed child routes passed source and real module composition contracts.
 // Native per-weapon/type/mode acceptance remains a separate proof gate.
@@ -267,7 +267,7 @@ bool scene_is_deleting(uint32_t scene){
     }
     return scene!=0;
 }
-bool player_present(Cpu* c){Cpu probe=*c;const uint32_t play=g_call(&probe,kPlay,{});return play&&ld32(play+0x5B34);}
+bool player_present(Cpu* c){Cpu probe=*c;const uint32_t play=g_call(&probe,kPlay,{});return play&&ld32(play+GI(0x5B34));}
 void sign_execute(Cpu* c) {
     const uint32_t npc=c->r[3];Actor* a=find(npc);
     if(!a||a->spec.actor!="sign")return g_original(c,kSignExecute);
@@ -737,7 +737,7 @@ uint32_t rat_hole_ready(Cpu* c,const Actor& rat){
     for(const auto&b:g_actors){if(&b==&rat)break;if(b.mod==rat.mod&&b.spec.hole==rat.spec.hole&&!b.removed&&b.enemy_token&&!story_enemies::is_defeated(b.enemy_token))return 0xFFFFFFFFu;}
     Cpu probe=*c;st32(g_scratch+0x40,0);if(!g_call(&probe,kSearch,{h->process,g_scratch+0x40}))return 0xFFFFFFFFu;
     const uint32_t hole=ld32(g_scratch+0x40);if(!hole||ld32(hole+4)!=h->process||!story_enemies::verify_actor(h->enemy_token,story_enemies::Kind::RatHole,hole))return 0xFFFFFFFFu;
-    probe=*c;const uint32_t play=g_call(&probe,kPlay,{});const uint32_t player=play?ld32(play+0x5B34):0;if(!player)return 0xFFFFFFFFu;
+    probe=*c;const uint32_t play=g_call(&probe,kPlay,{});const uint32_t player=play?ld32(play+GI(0x5B34)):0;if(!player)return 0xFFFFFFFFu;
     const float dx=ldf32(player+0x314)-ldf32(hole+0x314),dz=ldf32(player+0x31C)-ldf32(hole+0x31C),d=dx*dx+dz*dz;
     if(!(d<kRatHoleReach*kRatHoleReach)||!(d>kRatHoleNear*kRatHoleNear))return 0xFFFFFFFFu;
     return h->process;
@@ -923,7 +923,7 @@ void service(Cpu* c){
         else if(layer&&scene_is_deleting(ld32(layer+0x18)))cancel_talk("draining");
     }
     Cpu probe=*c;const uint32_t play=g_call(&probe,kPlay,{});if(!play)return;
-    const uint32_t player=ld32(play+0x5B34);if(!player)return;
+    const uint32_t player=ld32(play+GI(0x5B34));if(!player)return;
     // the editor's changed actors: removed wherever they are, then created again by room_loaded below
     // (not while a mod scene runs: a native scene's residents stay its own until it ends)
     for(auto& a:g_actors){
