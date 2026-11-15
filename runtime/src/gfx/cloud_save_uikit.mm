@@ -617,4 +617,11 @@ void flush() {
         });
     });
 }
+
+void flush_then(std::function<void()> done) {
+    std::thread([done] {
+        if (g_container) @autoreleasepool { upload_if_changed(20, true); }
+        done();
+    }).detach();
+}
 }  // namespace cloud_save

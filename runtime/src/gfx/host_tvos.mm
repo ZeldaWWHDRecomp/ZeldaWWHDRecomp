@@ -17,6 +17,7 @@
 #include <unistd.h>
 #include <algorithm>
 #include <functional>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -28,6 +29,9 @@
 #include "renderer.h"
 #include "../interp.h"
 #include "remote_video.h"
+#if TARGET_OS_VISION
+#include "../../../visionos/bridge.h"
+#endif
 #include "../mods/save_folder.h"
 #include "cloud_save.h"
 #include "../mods/mods.h"
@@ -53,7 +57,11 @@ void log_msg(const char* fmt, ...);
 - (void)layoutSubviews {
     [super layoutSubviews];
     CAMetalLayer* layer = (CAMetalLayer*)self.layer;
+#if TARGET_OS_VISION
+    const CGFloat scale = self.traitCollection.displayScale ?: 2.0;  // (a window: no UIScreen)
+#else
     const CGFloat scale = self.window.screen.nativeScale ?: UIScreen.mainScreen.nativeScale;
+#endif
     layer.contentsScale = scale;
     layer.drawableSize = CGSizeMake(MAX(1.0, self.bounds.size.width * scale), MAX(1.0, self.bounds.size.height * scale));
 }
@@ -142,6 +150,123 @@ static bool g_finger_overlay = false;
 @end
 
 static WWMetalView* g_view = nil;
+
+#if TARGET_OS_VISION
+// (diagnostic, with WWHD_VISION_EVENTS=1: devicectl device process launch --environment-variables) the windows'
+// comings and goings, written at once to captures/vision-events.log: before the game's log runs and when the game
+// never starts
+static void vision_event(NSString* what) {
+    static const bool on = [] {
+        const char* v = getenv("WWHD_VISION_EVENTS");
+        return v && *v && strcmp(v, "0") != 0;
+    }();
+    if (!on) return;
+    NSString* dir = [NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject
+        stringByAppendingPathComponent:@"captures"];
+    [[NSFileManager defaultManager] createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+    NSString* line = [NSString stringWithFormat:@"%@ pid %d: %@\n", [NSDate date], getpid(), what];
+    NSString* path = [dir stringByAppendingPathComponent:@"vision-events.log"];
+    NSFileHandle* f = [NSFileHandle fileHandleForWritingAtPath:path];
+    if (!f) {
+        [line writeToFile:path atomically:NO encoding:NSUTF8StringEncoding error:nil];
+        return;
+    }
+    [f seekToEndOfFile];
+    [f writeData:[line dataUsingEncoding:NSUTF8StringEncoding]];
+    [f closeFile];
+}
+extern "C" void wwhd_vision_event(const char* what) { vision_event(@(what)); }
+// ---------------------------------------------------------------- Apple Vision Pro's windows
+// The game's window shows the TV picture on a 3D screen (visionos/StereoScreen.swift) and takes no touches; the
+// GamePad picture has a window of its own, where a pinch is a touch of the GamePad's screen.
+namespace gfx { void vision_drc_layer(CAMetalLayer* layer); }  // display.mm
+
+// visionOS turns a controller's buttons into pinches where the player looks unless a view claims them: the game
+// reads them through the Game Controller framework instead, in both windows
+static void claim_controllers(UIView* view) {
+    GCEventInteraction* claim = [GCEventInteraction new];
+    claim.handledEventTypes = GCUIEventTypeGamepad;
+    [view addInteraction:claim];
+}
+
+static void ask_window_size(UIWindowScene* scene, CGSize size) {
+    UIWindowSceneGeometryPreferencesVision* p = [[UIWindowSceneGeometryPreferencesVision alloc] initWithSize:size];
+    p.resizingRestrictions = UIWindowSceneResizingRestrictionsUniform;
+    [scene requestGeometryUpdateWithPreferences:p errorHandler:nil];
+}
+
+// the GamePad window's view: the game view's layer and sizing, its own touches
+@interface WWDrcView : WWMetalView
+@end
+@implementation WWDrcView
+// the window has the GamePad picture's shape (854 x 480), so the point is the touch
+- (void)touchAt:(UITouch*)t down:(bool)down {
+    const CGPoint p = [t locationInView:self];
+    const CGSize sz = self.bounds.size;
+    if (sz.width <= 0 || sz.height <= 0) return;
+    input::set_touch(down, std::clamp(float(p.x / sz.width), 0.0f, 1.0f), std::clamp(float(p.y / sz.height), 0.0f, 1.0f));
+}
+- (void)touchesBegan:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e { [self touchAt:touches.anyObject down:true]; }
+- (void)touchesMoved:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e { [self touchAt:touches.anyObject down:true]; }
+- (void)touchesEnded:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e { [self touchAt:touches.anyObject down:false]; }
+- (void)touchesCancelled:(NSSet<UITouch*>*)touches withEvent:(UIEvent*)e { [self touchAt:touches.anyObject down:false]; }
+@end
+
+// visionos/GamePad.swift: the GamePad window's view (retained), and whether that window shows
+extern "C" void* wwhd_gamepad_view(void) {
+    WWDrcView* view = [WWDrcView new];
+    view.backgroundColor = UIColor.blackColor;
+    claim_controllers(view);
+    CAMetalLayer* layer = (CAMetalLayer*)view.layer;
+    layer.device = MTLCreateSystemDefaultDevice();
+    layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    layer.framebufferOnly = YES;
+    layer.maximumDrawableCount = 3;
+    return (__bridge_retained void*)view;
+}
+// SwiftUI may make the window's view again before it lets the old one go: only the view the game draws to ends it
+static __weak CAMetalLayer* g_drc_layer = nil;
+extern "C" void wwhd_gamepad_shown(void* view, int on) {
+    CAMetalLayer* layer = (CAMetalLayer*)((__bridge UIView*)view).layer;
+    if (on) g_drc_layer = layer;
+    else if (layer != g_drc_layer) return;
+    gfx::vision_drc_layer(on ? layer : nil);
+}
+
+// visionos/StereoScreen.swift: the game's window was closed (its contents torn down; going to the background, as for
+// the Digital Crown or another app's full space, keeps them). The game ends with it: closing a window on visionOS
+// doesn't end the app. _exit: exit() would run the static destructors under the game's running threads.
+// The other windows (the GamePad's) are closed first: a session left behind would come back alone at the next start.
+extern "C" void wwhd_game_window_closed(void) {
+    static bool ending = false;
+    if (ending) return;
+    ending = true;
+    log_msg("[vision] the game's window was closed: the game ends");
+    vision_event(@"game window closed: closing the others, ending once the save is in iCloud");
+    save_folder::pause_lock();
+    for (UISceneSession* s in UIApplication.sharedApplication.openSessions)
+        if (![s.userInfo[@"window"] isEqual:@"game"]) [UIApplication.sharedApplication requestSceneSessionDestruction:s options:nil errorHandler:nil];
+    // Ends once a new save is uploaded (at once without one), from the upload's thread: with its windows gone the app
+    // is suspended, main-thread timers and all, unless it asks for background time
+    [UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{
+        vision_event(@"exit (background time over)");
+        _exit(0);
+    }];
+    cloud_save::flush_then([] {
+        usleep(250000);  // (the other windows' closing gets its moment)
+        vision_event(@"exit");
+        _exit(0);
+    });
+}
+// visionos/GamePad.swift: whether the game's window is up (the app may start with only the GamePad's window restored),
+// and asking for one
+extern "C" bool wwhd_game_window_up(void) {
+    if (g_view) return true;
+    for (UIScene* s in UIApplication.sharedApplication.connectedScenes)  // (connected, its view not made yet)
+        if ([s.session.userInfo[@"window"] isEqual:@"game"]) return true;
+    return false;
+}
+#endif
 static int g_argc = 0;
 static char** g_argv = nullptr;
 
@@ -427,14 +552,19 @@ int uikit_audio_session(bool surround) {
 // The game's stereo mix is its 5.1 front pair, 1.9 dB louder (measured: the start recorded both ways), its surrounds
 // 5.1's own; they are folded in at -3 dB, the centre too. The feed follows the route as it changes (headphones in or
 // out, AirPods connecting).
-enum Route : int { kRenderer, kFolded, kDiscrete };
+// kEntity: Apple Vision Pro, where the system renderer plays nothing on the headset's speakers: the game window's
+// RealityKit entity plays the six as channel audio (visionos/StereoScreen.swift, wwhd_audio_render)
+enum Route : int { kRenderer, kFolded, kDiscrete, kEntity };
 static std::atomic<int> g_route{kRenderer};
+static std::atomic<bool> g_entity_audio{false};
 static void (*g_pull)(int16_t*, uint32_t) = nullptr;
 static AudioUnit g_units[3] = {};  // [kFolded], [kDiscrete]
 void uikit_audio_route_check() {
     AVAudioSession* session = [AVAudioSession sharedInstance];
     audio::set_output_latency_ms(float((session.outputLatency + session.IOBufferDuration) * 1000));
-    if (session.maximumOutputNumberOfChannels >= 6) {
+    if (g_entity_audio) {
+        g_route = kEntity;
+    } else if (session.maximumOutputNumberOfChannels >= 6) {
         [session setPreferredOutputNumberOfChannels:6 error:nil];
         g_route = kDiscrete;
     } else if ([session.currentRoute.outputs.firstObject.portType isEqualToString:AVAudioSessionPortBuiltInSpeaker]) {
@@ -468,6 +598,10 @@ static OSStatus discrete_render(void*, AudioUnitRenderActionFlags*, const AudioT
 // start (on) or stop the unit of a route
 static bool route_unit(int route, bool on) {
     if (route == kRenderer) return true;
+    if (route == kEntity) {
+        audio::set_host_target_ms(on ? 20 : 8);  // (RealityKit asks for audio in blocks, as a unit does)
+        return true;
+    }
     AudioUnit& unit = g_units[route];
     if (!unit) {
         AudioComponentDescription d{kAudioUnitType_Output, kAudioUnitSubType_RemoteIO, kAudioUnitManufacturer_Apple, 0, 0};
@@ -495,6 +629,40 @@ static bool route_unit(int route, bool on) {
     AudioOutputUnitStop(unit);
     audio::set_host_target_ms(8);
     return true;
+}
+// visionos/StereoScreen.swift: the game window's entity plays the 5.1 mix (ON) or stops; false while the game plays
+// no 5.1 (stereo chosen, or not started yet)
+extern "C" bool wwhd_audio_entity(int on) {
+    if (on && !g_pull) return false;
+    g_entity_audio = on != 0;
+    uikit_audio_route_check();
+    return true;
+}
+// RealityKit's audio thread: FRAMES of one channel of the mix (L R C LFE Ls Rs; the LFE goes to the fronts) for the
+// entity placed where that speaker would be (visionos/StereoScreen.swift). The mix is pulled once for all of them:
+// each channel reads its own place in a short window of it, and whichever is furthest ahead pulls more.
+extern "C" void wwhd_audio_render_channel(int channel, AudioBufferList* list, uint32_t frames) {
+    constexpr uint32_t kWindow = 4096;
+    static std::mutex lock;
+    static float window[6][kWindow];
+    static uint64_t written = 0, read[6] = {};
+    static int16_t six[256 * 6];
+    float* out = list->mNumberBuffers ? static_cast<float*>(list->mBuffers[0].mData) : nullptr;
+    if (!out || channel < 0 || channel > 5) return;
+    std::lock_guard guard(lock);
+    if (written - read[channel] > kWindow - frames) read[channel] = written;  // (fallen too far behind: from now)
+    while (written - read[channel] < frames) {
+        if (g_pull && g_route == kEntity) g_pull(six, 256);
+        else memset(six, 0, sizeof six);
+        for (uint32_t i = 0; i < 256; i++, written++)
+            for (int c = 0; c < 6; c++) {
+                float v = six[i * 6 + c] / 32768.0f;
+                if (c < 2) v += 0.5f * six[i * 6 + 3] / 32768.0f;
+                window[c][written % kWindow] = v;
+            }
+    }
+    for (uint32_t i = 0; i < frames; i++) out[i] = window[channel][(read[channel] + i) % kWindow];
+    read[channel] += frames;
 }
 bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
     if (@available(iOS 15.0, tvOS 15.0, *)) {
@@ -571,6 +739,7 @@ bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
                 route = to;
                 AVAudioSessionPortDescription* out = [AVAudioSession sharedInstance].currentRoute.outputs.firstObject;
                 log_msg("[audio] 5.1 now %s to %s%s", to == kDiscrete ? "as six channels" : to == kFolded ? "folded to stereo"
+                        : to == kEntity ? "as the game window's channel audio (RealityKit)"
                         : "as multichannel content, for the system's Spatial Audio", out.portName.UTF8String ?: "the output",
                         ok ? "" : " (no output unit)");
             }
@@ -697,33 +866,31 @@ static void* run_game(void*) {
     return nullptr;
 }
 
-@interface WWSceneDelegate : UIResponder <UIWindowSceneDelegate>
-@property (strong, nonatomic) UIWindow* window;
-@end
-@implementation WWSceneDelegate
-// suspended in the background, the game can't keep its save folder's lock fresh: it gives it back meanwhile
+// the game's window: in the background, the game can't keep its save folder's lock fresh: it gives it back meanwhile
 // (mods/save_folder.h pause_lock)
-- (void)sceneDidEnterBackground:(UIScene*)scene {
+static void game_window_background(UIScene* scene) {
     save_folder::pause_lock();
     cloud_save::flush();
+#if TARGET_OS_VISION
+    // Apple Vision Pro: the game window closed? Its session is discarded then; hidden by another app's full space,
+    // it stays (checked a moment later: the discard follows the background)
+    log_msg("[vision] the game's window went to the background");
+    vision_event(@"game window to the background");
+    UISceneSession* session = scene.session;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        const bool open = [UIApplication.sharedApplication.openSessions containsObject:session];
+        log_msg("[vision] the game's window is %s", open ? "still open (hidden)" : "closed");
+        if (!open) wwhd_game_window_closed();
+    });
+#endif
 }
-- (void)sceneWillEnterForeground:(UIScene*)scene {
+static void game_window_foreground() {
     save_folder::resume_lock();
     uikit_audio_route_check();  // (the output may have changed meanwhile)
     // the iPhone GamePad: the system took the server's socket and its Bonjour advertisement in the background
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{ remote_pad::restart(); });
 }
-- (void)scene:(UIScene*)scene willConnectToSession:(UISceneSession*)session options:(UISceneConnectionOptions*)options {
-    UIWindowScene* ws = (UIWindowScene*)scene;
-    self.window = [[UIWindow alloc] initWithWindowScene:ws];
-    WWViewController* vc = [WWViewController new];
-    self.window.rootViewController = vc;
-    [self.window makeKeyAndVisible];
-    g_view = (WWMetalView*)vc.view;
-    [g_view layoutIfNeeded];
-#if !TARGET_OS_TV
-    [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer*) { [g_view followTextInput]; }];
-#endif
+static void start_game() {
     static bool started = false;
     if (started) return;
     started = true;
@@ -735,6 +902,71 @@ static void* run_game(void*) {
     pthread_create(&t, &attr, run_game, nullptr);
     pthread_attr_destroy(&attr);
 }
+
+#if TARGET_OS_VISION
+// Apple Vision Pro: the game's window is a SwiftUI one (visionos/GamePad.swift, WWVisionScenes) so the GamePad's
+// window can be placed against it. Its view controller: the game's view under the 3D screen.
+extern "C" void* wwhd_game_view_controller(void) {
+    WWViewController* vc = [WWViewController new];
+    g_view = (WWMetalView*)vc.view;
+    // the 3D screen over the game's view, which stays for its layer and the keyboard but takes no touches
+    g_view.userInteractionEnabled = NO;
+    UIViewController* screen = (__bridge_transfer UIViewController*)wwhd_screen_view();
+    [vc addChildViewController:screen];
+    screen.view.frame = g_view.bounds;
+    screen.view.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    [g_view addSubview:screen.view];
+    [screen didMoveToParentViewController:vc];
+    return (__bridge_retained void*)vc;
+}
+// ... once it is in its window: the scene's comings and goings, the window's shape, the controllers, the game
+extern "C" void wwhd_game_window_shown(void* controller) {
+    UIViewController* vc = (__bridge UIViewController*)controller;
+    UIWindowScene* ws = vc.view.window.windowScene;
+    if (!ws) return;
+    static __weak UIWindowScene* seen = nil;
+    if (seen == ws) return;
+    seen = ws;
+    ws.session.userInfo = @{@"window": @"game"};
+    vision_event(@"game window connected");
+    NSNotificationCenter* nc = NSNotificationCenter.defaultCenter;
+    [nc addObserverForName:UISceneDidEnterBackgroundNotification object:ws queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification* n) { game_window_background((UIScene*)n.object); }];
+    [nc addObserverForName:UISceneWillEnterForegroundNotification object:ws queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification*) { game_window_foreground(); }];
+    [nc addObserverForName:UISceneDidDisconnectNotification object:ws queue:NSOperationQueue.mainQueue
+                usingBlock:^(NSNotification*) {
+                    log_msg("[vision] the game's window disconnected");
+                    vision_event(@"game window disconnected");
+                    wwhd_game_window_closed();
+                }];
+    [g_view layoutIfNeeded];
+    ask_window_size(ws, CGSizeMake(1280, 720));
+    claim_controllers(vc.view.window);
+    [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer*) { [g_view followTextInput]; }];
+    start_game();
+}
+#endif
+
+@interface WWSceneDelegate : UIResponder <UIWindowSceneDelegate>
+@property (strong, nonatomic) UIWindow* window;
+@end
+// (tvOS, iOS: the game's window; visionOS has SwiftUI windows instead)
+@implementation WWSceneDelegate
+- (void)sceneDidEnterBackground:(UIScene*)scene { game_window_background(scene); }
+- (void)sceneWillEnterForeground:(UIScene*)scene { game_window_foreground(); }
+- (void)scene:(UIScene*)scene willConnectToSession:(UISceneSession*)session options:(UISceneConnectionOptions*)options {
+    self.window = [[UIWindow alloc] initWithWindowScene:(UIWindowScene*)scene];
+    WWViewController* vc = [WWViewController new];
+    self.window.rootViewController = vc;
+    [self.window makeKeyAndVisible];
+    g_view = (WWMetalView*)vc.view;
+    [g_view layoutIfNeeded];
+#if !TARGET_OS_TV
+    [NSTimer scheduledTimerWithTimeInterval:0.15 repeats:YES block:^(NSTimer*) { [g_view followTextInput]; }];
+#endif
+    start_game();
+}
 @end
 
 @interface WWAppDelegate : UIResponder <UIApplicationDelegate>
@@ -744,9 +976,17 @@ static void* run_game(void*) {
     configurationForConnectingSceneSession:(UISceneSession*)session options:(UISceneConnectionOptions*)options {
     UISceneConfiguration* c = [[UISceneConfiguration alloc] initWithName:nil sessionRole:session.role];
     c.delegateClass = [WWSceneDelegate class];
+#if TARGET_OS_VISION
+    // both windows are SwiftUI scenes (visionos/GamePad.swift): the game's first, then the GamePad's
+    c.delegateClass = NSClassFromString(@"WWVisionScenes");
+    vision_event([NSString stringWithFormat:@"window to connect: role %@, tag %@", session.role, session.userInfo[@"window"]]);
+#endif
     return c;
 }
 - (BOOL)application:(UIApplication*)application didFinishLaunchingWithOptions:(NSDictionary*)options {
+#if TARGET_OS_VISION
+    vision_event([NSString stringWithFormat:@"launched; open sessions %lu", (unsigned long)application.openSessions.count]);
+#endif
     application.idleTimerDisabled = YES;  // a game: no screen saver while it is played with a controller
     return YES;
 }
@@ -850,7 +1090,18 @@ void choose_game_source(bool, std::function<void(std::string)>) {}
 void choose_mod_source(bool, std::function<void(std::string)>) {}
 void choose_save_folder(std::function<void(std::string)>) {}
 void choose_file(const char*, const char*, bool, std::function<void(std::string)>) {}
-bool get(const char* key, std::string& value) { return gfx::host_setting(key, value); }
+bool get(const char* key, std::string& value) {
+    if (gfx::host_setting(key, value)) return true;
+#if TARGET_OS_VISION
+    // Apple Vision Pro's defaults until the player chooses: 3D (the game window's screen shows each eye its picture)
+    // and 5.1 (the game window's speakers, visionos/StereoScreen.swift)
+    // (stereoMode 1, Half SBS: on the 3D screen any mode but Off is a whole picture per eye)
+    static const std::pair<const char*, const char*> kDefaults[] = {{"stereoMode", "1"}, {"audioSpeakers", "surround"}};
+    for (const auto& [k, v] : kDefaults)
+        if (!strcmp(key, k)) return value = v, true;
+#endif
+    return false;
+}
 void set(const char* key, const std::string& value) { gfx::set_host_setting(key, value); }
 float res_scale() { return render::res_scale(); }
 void set_res_scale(float s) {
@@ -864,7 +1115,11 @@ bool scale_filter_available() { return true; }
 bool fullscreen() { return true; }
 void set_fullscreen(bool) {}
 int drc_modes() { return gfx::kDrcModeCount; }
+#if TARGET_OS_VISION
+bool drc_mode_offered(int m) { return m >= 0 && m < gfx::kDrcModeCount; }  // (the GamePad window: host_tvos.mm)
+#else
 bool drc_mode_offered(int m) { return m >= 0 && m < gfx::kDrcModeCount && m != gfx::kDrcWindow; }  // (no second window)
+#endif
 int drc_mode() { return gfx::display_drc_mode(); }
 void set_drc_mode(int m) { gfx::set_drc_mode(m); }
 void save_pip_position() { gfx::display_set_pip(gfx::g_pip_anchor, gfx::g_pip_size, gfx::g_pip_opacity); }

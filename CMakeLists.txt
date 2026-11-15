@@ -113,8 +113,9 @@ option(WWHD_HAS_IOKIT "macOS AppKit host: read generic HID gamepads through IOKi
 # (gfx/host_tvos.mm) instead of the AppKit one; the game is an app bundle. WWHD_TVOS is defined everywhere,
 # the generated game code too (ppc.h: where the guest memory lies).
 set(WWHD_TVOS OFF)
-# An iPad build (-DCMAKE_SYSTEM_NAME=iOS) is the same app: WWHD_TVOS also means that UIKit host there.
-if(CMAKE_SYSTEM_NAME MATCHES "^(tvOS|iOS)$")
+# An iPad build (-DCMAKE_SYSTEM_NAME=iOS) is the same app: WWHD_TVOS also means that UIKit host there,
+# and on Apple Vision Pro (-DCMAKE_SYSTEM_NAME=visionOS), where the app is a window.
+if(CMAKE_SYSTEM_NAME MATCHES "^(tvOS|iOS|visionOS)$")
   set(WWHD_TVOS ON)
   set(WWHD_HAS_IOKIT OFF CACHE BOOL "" FORCE)
   set(WWHD_EDITOR_MCP OFF CACHE BOOL "" FORCE)
@@ -409,6 +410,9 @@ elseif(WWHD_TVOS)
   if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(WWHD_BUNDLE_PLIST ${CMAKE_SOURCE_DIR}/ipados/Info.plist.in)
     set(WWHD_BUNDLE_ID ${WWHD_APPLE_ID_PREFIX}.ipad)
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
+    set(WWHD_BUNDLE_PLIST ${CMAKE_SOURCE_DIR}/visionos/Info.plist.in)
+    set(WWHD_BUNDLE_ID ${WWHD_APPLE_ID_PREFIX}.vision)
   else()
     set(WWHD_BUNDLE_PLIST ${CMAKE_SOURCE_DIR}/tvos/Info.plist.in)
     set(WWHD_BUNDLE_ID ${WWHD_APPLE_ID_PREFIX}.tv)
@@ -482,6 +486,24 @@ if(WWHD_TVOS)
   target_link_libraries(wwhd PRIVATE etcpak)
   target_include_directories(wwhd PRIVATE runtime/third_party/etcpak)
   target_compile_definitions(wwhd PRIVATE WWHD_ETCPAK=1)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
+  # Apple Vision Pro's windows (host_tvos.mm, gfx/vision_screen.mm): the 3D screen and the GamePad's window are SwiftUI
+  # (visionos/*.swift; their interface with the game: visionos/bridge.h), compiled to one object of their own so the
+  # app still links with clang++ (the installer relinks it so). The Swift libraries are the SDK's (-L/usr/lib/swift:
+  # the linker looks there under the SDK root).
+  set(WWHD_VISION_SWIFT ${CMAKE_SOURCE_DIR}/visionos/StereoScreen.swift ${CMAKE_SOURCE_DIR}/visionos/GamePad.swift)
+  set(WWHD_VISION_OBJ ${CMAKE_BINARY_DIR}/visionos_swift.o)
+  add_custom_command(OUTPUT ${WWHD_VISION_OBJ}
+    COMMAND xcrun --sdk xros swiftc -c -wmo -parse-as-library -O -module-name WWVision
+            -target arm64-apple-xros${CMAKE_OSX_DEPLOYMENT_TARGET}
+            -import-objc-header ${CMAKE_SOURCE_DIR}/visionos/bridge.h ${WWHD_VISION_SWIFT} -o ${WWHD_VISION_OBJ}
+    DEPENDS ${WWHD_VISION_SWIFT} ${CMAKE_SOURCE_DIR}/visionos/bridge.h
+    COMMENT "Swift: the Vision Pro windows" VERBATIM)
+  target_sources(wwhd PRIVATE ${WWHD_VISION_OBJ})
+  set_source_files_properties(${WWHD_VISION_OBJ} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+  target_link_options(wwhd PRIVATE "-L/usr/lib/swift")
+  target_link_libraries(wwhd PRIVATE "-framework SwiftUI" "-framework RealityKit")
 endif()
 if(WWHD_HAS_METAL AND WWHD_TVOS)
   target_compile_definitions(wwhd PRIVATE WWHD_HAS_METAL=1)
