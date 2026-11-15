@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <atomic>
 #include <map>
+#include <set>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -26,6 +27,7 @@
 #include <unordered_set>
 #include <string>
 #include <vector>
+namespace interp { uint64_t logic_steps(); }  // (interp.cpp: the logic step, WWHD_PROC_DIGEST's frame column)
 
 using namespace Latte;
 
@@ -493,46 +495,149 @@ bool capture_regs(uint32_t first, const uint32_t* values, uint32_t count) {
     return capture(gx2::OP_SET_REGS, w.data(), count + 1);
 }
 
-// WWHD_NATIVE_J3D_DESC_WRITESET=1 (debug, every mode): the ranges the decomp names (wwhd_j3ddesc_watch), hashed at
-// each game swap: "[j3d-desc] writeset frame N hash H ranges R" (mode 0 and mode 2 runs must log the same hashes)
-bool writeset_on() {
-    static const bool v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_WRITESET", 0) != 0;
+// WWHD_NATIVE_J3D_DESC_WRITESET=1 (debug, every mode): the write-set proof of the description path. The decomp names,
+// at the start of each J3D draw, the game memory its site may write outside its GX2 calls (wwhd_j3ddesc_watch) and
+// says when the draw is over (wwhd_j3ddesc_watch_done: the site's end in modes 0/1, submit's return in mode 2). Each
+// draw's post-state (each named range's bytes then) is hashed per range into the logic step the draw began in (the
+// frame column of WWHD_PROC_DIGEST; the swap count drifts against it between runs in the title); the
+// frame's value is the sum of its distinct range states (several recording threads: independent of their order).
+// Two frames after a frame ends: "[j3d-desc] writeset frame N hash H states S draws D drawsum X late L" (mode 0 and
+// mode 2 runs must log the same H, S and D, up to a frame offset; X, the per-draw sum, is informative only).
+// (Not hashed at the swap: other threads keep writing some named bytes while the next frame records, and a range named
+// in an earlier frame may since have been freed and reused.)
+int writeset_level() {
+    static const int v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_WRITESET", 0);
     return v;
 }
+bool writeset_on() { return writeset_level() != 0; }
+struct WsFrame {
+    uint64_t sum = 0, draws = 0;
+    // the distinct post-states (range, bytes) of the frame and their sum: the proof's value. (The per-draw sum also
+    // counts how many draws saw each state: that depends on the recording threads' interleaving, e.g. a pass-0 draw
+    // before or after another thread's pass-1 polygon-offset setters on the same draw state, in mode 0 too.)
+    std::unordered_map<uint64_t, uint64_t> states;  // state -> address << 32 | bytes
+    uint64_t stateSum = 0;
+    std::map<uint64_t, std::string> fresh;  // (WRITESET=2) states not in the last logged frame: "ADDR+BYTES HEX
+    std::set<std::string> dump;  // (WRITESET_DUMP frames) the distinct post-states "ADDR+BYTES HEX"
+};
 std::mutex g_watchMu;
-std::map<uint32_t, uint32_t> g_watch;
-void game_swap() {
-    const uint64_t frame = g_gameFrame.fetch_add(1, std::memory_order_relaxed);
-    if (!writeset_on()) return;
-    std::lock_guard<std::mutex> lk(g_watchMu);
-    uint64_t h = 0xCBF29CE484222325ull;
-    for (const auto& [addr, bytes] : g_watch) {
-        h = (h ^ addr) * 0x100000001B3ull;
-        if (!readable(addr, bytes)) continue;
-        const uint8_t* b = mem::ptr(addr);
-        for (uint32_t i = 0; i < bytes; ++i) h = (h ^ b[i]) * 0x100000001B3ull;
-    }
-    LOG("[j3d-desc] writeset frame %llu hash %016llX ranges %zu", (unsigned long long)frame, (unsigned long long)h,
-        g_watch.size());
-    // WWHD_NATIVE_J3D_DESC_WRITESET_DUMP=F1,F2,...: the watched bytes at those game frames, one line per range
-    static const std::vector<uint64_t> dumpAt = [] {
-        std::vector<uint64_t> v;
+std::map<uint64_t, WsFrame> g_wsFrames;
+uint64_t g_wsLogged = 0;  // frames <= this were logged; a draw that still lands there is "late"
+uint64_t g_wsLate = 0;
+struct WsDraw {
+    bool open = false;
+    uint64_t frame = 0;
+    std::vector<std::pair<uint32_t, uint32_t>> ranges;
+};
+thread_local WsDraw t_ws;
+const std::vector<uint64_t>& ws_dump_frames() {
+    // WWHD_NATIVE_J3D_DESC_WRITESET_DUMP=F1,F2,...: those frames' distinct post-states, one line each
+    static const std::vector<uint64_t> v = [] {
+        std::vector<uint64_t> r;
         if (const char* e = std::getenv("WWHD_NATIVE_J3D_DESC_WRITESET_DUMP"))
             for (const char* q = e; *q;) {
-                v.push_back(std::strtoull(q, const_cast<char**>(&q), 10));
+                r.push_back(std::strtoull(q, const_cast<char**>(&q), 10));
                 if (*q == ',') ++q; else break;
             }
-        return v;
+        return r;
     }();
-    if (std::find(dumpAt.begin(), dumpAt.end(), frame) != dumpAt.end())
-        for (const auto& [addr, bytes] : g_watch) {
+    return v;
+}
+// (WRITESET=2) the last logged frame's states, and a range's bytes as "ADDR+BYTES HEX"
+std::unordered_map<uint64_t, uint64_t> g_wsLast;
+std::string ws_hex(uint32_t addr, uint32_t bytes) {
+    char head[32];
+    std::snprintf(head, sizeof head, "%08X+%X ", addr, bytes);
+    std::string line = head;
+    if (!readable(addr, bytes)) return line + "-";
+    char hex[4];
+    const uint8_t* b = mem::ptr(addr);
+    for (uint32_t i = 0; i < bytes && i < 0x200; ++i) std::snprintf(hex, sizeof hex, "%02X", b[i]), line += hex;
+    return line;
+}
+// BYTES | 0x80000000 (the current core's render context): hashed without its address (the same draw may be recorded
+// on another core's thread from run to run, in mode 0 too: seen in the title, 6 draws moving between 104B4650 and
+// 104B4640 with the same contents)
+constexpr uint32_t kWsAnyAddress = 0x80000000u;
+void ws_watch(uint32_t addr, uint32_t bytes) {
+    WsDraw& d = t_ws;
+    if (!d.open) d.open = true, d.frame = interp::logic_steps(), d.ranges.clear();
+    d.ranges.emplace_back(addr, bytes);
+}
+void ws_done() {
+    WsDraw& d = t_ws;
+    if (!d.open) return;
+    d.open = false;
+    uint64_t h = 0;
+    thread_local std::vector<std::pair<uint64_t, uint64_t>> states;
+    states.clear();
+    for (const auto& [addr, flagged] : d.ranges) {
+        const uint32_t bytes = flagged & ~kWsAnyAddress;
+        uint64_t r = 0xCBF29CE484222325ull;
+        r = (r ^ ((flagged & kWsAnyAddress) ? 0 : addr)) * 0x100000001B3ull;
+        r = (r ^ bytes) * 0x100000001B3ull;
+        if (readable(addr, bytes)) {
+            const uint8_t* b = mem::ptr(addr);
+            for (uint32_t i = 0; i < bytes; ++i) r = (r ^ b[i]) * 0x100000001B3ull;
+        }
+        r ^= r >> 33, r *= 0xFF51AFD7ED558CCDull, r ^= r >> 33;  // (mixed before the sums)
+        states.emplace_back(r, uint64_t(addr) << 32 | bytes);
+        h = (h ^ r) * 0x100000001B3ull;
+    }
+    const auto& dumpAt = ws_dump_frames();
+    const bool dump = std::find(dumpAt.begin(), dumpAt.end(), d.frame) != dumpAt.end();
+    std::vector<std::string> lines;
+    if (dump)
+        for (const auto& [addr, flagged] : d.ranges) {
+            const uint32_t bytes = flagged & ~kWsAnyAddress;
             if (!readable(addr, bytes)) continue;
-            std::string line;
+            char head[32];
+            std::snprintf(head, sizeof head, "%08X+%X ", addr, bytes);
+            std::string line = head;
             char hex[4];
             const uint8_t* b = mem::ptr(addr);
             for (uint32_t i = 0; i < bytes && i < 0x200; ++i) std::snprintf(hex, sizeof hex, "%02X", b[i]), line += hex;
-            LOG("[j3d-desc] writeset dump frame %llu %08X+%X %s", (unsigned long long)frame, addr, bytes, line.c_str());
+            lines.push_back(std::move(line));
         }
+    std::lock_guard<std::mutex> lk(g_watchMu);
+    if (d.frame <= g_wsLogged) {
+        ++g_wsLate;
+        return;
+    }
+    WsFrame& f = g_wsFrames[d.frame];
+    f.sum += h, ++f.draws;
+    for (const auto& [r, where] : states)
+        if (f.states.emplace(r, where).second) {
+            f.stateSum += r;
+            if (writeset_level() >= 2 && !g_wsLast.count(r)) f.fresh[r] = ws_hex(uint32_t(where >> 32), uint32_t(where));
+        }
+    for (auto& l : lines) f.dump.insert(std::move(l));
+}
+void game_swap() {
+    g_gameFrame.fetch_add(1, std::memory_order_relaxed);
+    if (!writeset_on()) return;
+    const uint64_t frame = interp::logic_steps();
+    std::lock_guard<std::mutex> lk(g_watchMu);
+    while (!g_wsFrames.empty() && g_wsFrames.begin()->first + 2 <= frame) {
+        auto it = g_wsFrames.begin();
+        for (const auto& l : it->second.dump)
+            LOG("[j3d-desc] writeset dump frame %llu %s", (unsigned long long)it->first, l.c_str());
+        if (writeset_level() >= 2) {
+            for (const auto& [r, l] : it->second.fresh)
+                LOG("[j3d-desc] writeset change frame %llu + %016llX %s", (unsigned long long)it->first, (unsigned long long)r, l.c_str());
+            for (const auto& [r, where] : g_wsLast)
+                if (!it->second.states.count(r))
+                    LOG("[j3d-desc] writeset change frame %llu - %016llX %08X+%X", (unsigned long long)it->first,
+                        (unsigned long long)r, unsigned(where >> 32), unsigned(uint32_t(where)));
+            g_wsLast = it->second.states;
+        }
+        LOG("[j3d-desc] writeset frame %llu hash %016llX states %zu draws %llu drawsum %016llX late %llu",
+            (unsigned long long)it->first, (unsigned long long)it->second.stateSum, it->second.states.size(),
+            (unsigned long long)it->second.draws, (unsigned long long)it->second.sum, (unsigned long long)g_wsLate);
+        g_wsLogged = it->first;
+        g_wsFrames.erase(it);
+    }
+    if (frame >= 2 && g_wsLogged < frame - 2) g_wsLogged = frame - 2;
 }
 
 }  // namespace native_draw::j3ddesc
@@ -541,13 +646,8 @@ void game_swap() {
 using namespace native_draw::j3ddesc;
 
 extern "C" unsigned wwhd_j3ddesc_writeset_on(void) { return writeset_on() ? 1 : 0; }
-extern "C" void wwhd_j3ddesc_watch(unsigned addr, unsigned bytes) {
-    thread_local std::unordered_set<uint64_t> seen;
-    if (!seen.insert(uint64_t(addr) << 32 | bytes).second) return;
-    std::lock_guard<std::mutex> lk(g_watchMu);
-    uint32_t& b = g_watch[addr];
-    if (bytes > b) b = bytes;
-}
+extern "C" void wwhd_j3ddesc_watch(unsigned addr, unsigned bytes) { ws_watch(addr, bytes); }
+extern "C" void wwhd_j3ddesc_watch_done(void) { ws_done(); }
 extern "C" unsigned wwhd_j3ddesc_mode(void) {
     const int m = mode();
     if (m) {
