@@ -952,6 +952,17 @@ and no hot vsync waits):
   so the latency grew over a session (26–34 ms within one 75 s bench run). Bit 4 (adaptive target,
   lower after 120 frames without a miss, down to one refresh) is off: it made the frames less even.
 
+  On Linux outside Android (the Steam Deck, also in Gaming Mode, where `VK_GOOGLE_display_timing`
+  comes from gamescope's WSI layer, not from the driver) the extension is checked before it paces:
+  the refresh duration must match the display's refresh rate (gamescope's layer reports 16.667 ms
+  until the compositor has sent its own value, and the OLED Deck runs at 90 Hz), and 16 plausible past
+  timings must come back within 300 presents. If they do not, or stop coming, the game asks for no
+  more present times and keeps the CPU-side even pacing; the log line
+  `[vulkan display pacing] source:` says which source paces and why. Past timings are read by asking
+  for the count first: gamescope's layer up to 3.16.31 erased as many stored timings as the caller's
+  array holds, which corrupts its memory when fewer are stored (fixed in gamescope 3.17.0); this is
+  the likely cause of the Gaming Mode start crash on the Steam Deck (issue #178).
+
 Every environment variable still wins over these defaults; on other devices none of them is on. On a
 Xiaomi 14 at the cliff in the decomp build (fast mode, against the single-thread renderer): render thread 17.3 → 12.7 ms per frame, 53.5 → 59.8 frames
 a second on screen; dropped in-between frames 374–415 → 5–22 per 90 s. With Smooth frame pacing,

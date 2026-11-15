@@ -7,6 +7,9 @@
 //   without 4 only higher). WWHD_VK_DISPLAY_PACING_Q=0..1: the quantile of the unpaced latency it starts from
 //   (default 0.5).
 // Without the extension (or off) nothing changes: the present chain is left as it is.
+// Off Android the source is checked first (display_timing_source.h; in Steam's Gaming Mode the extension comes from
+// gamescope's WSI layer): a trusted refresh duration and past timings that come back, else CPU-side even pacing only.
+// Past timings are read count first (gamescope's layer up to 3.16.31 corrupted its memory otherwise, issue #178).
 #pragma once
 #ifdef WWHD_VK_SMOOTH
 #include "loader.h"

@@ -2,10 +2,13 @@
 #include "display_timing.h"
 #ifdef WWHD_VK_SMOOTH
 #include "display_pacing_policy.h"
+#include "display_timing_source.h"
 #include "frame_breakdown.h"
 #include "smooth_defaults.h"
 #include "stutter_trace.h"
 #include "runtime.h"
+#include "interp.h"
+#include "platform/gaming_mode.h"
 #include <array>
 #include <cmath>
 #include <cstdlib>
@@ -27,6 +30,20 @@ display_pacing::Policy policy;
 int64_t lastActual = 0;
 std::array<uint64_t, 6> refreshes{};  // on-screen intervals: 1, 2, 3, 4, 5+ refreshes, other
 uint64_t shown = 0, missedAsk = 0, errors = 0;
+// whether the extension can pace this swapchain (display_timing_source.h); Android: no checks, as before
+display_timing_source::Source source;
+uint64_t polls = 0;
+const char* origin() { return source.gamescope ? "the gamescope WSI layer (Gaming Mode)" : "the driver"; }
+void log_source() {  // (a state change)
+    if (source.state == display_timing_source::State::Usable)
+        LOG("[vulkan display pacing] source: VK_GOOGLE_display_timing from %s (%llu past timings checked, refresh "
+            "%.3f ms)", origin(), (unsigned long long)source.matched, source.period() / 1e6);
+    else if (source.state == display_timing_source::State::Unusable)
+        LOG("[vulkan display pacing] source: CPU-side even pacing only; VK_GOOGLE_display_timing from %s not used: "
+            "%s (%llu presents asked, %llu timings back, %llu implausible); present times are no longer asked for",
+            origin(), source.reason, (unsigned long long)source.asked, (unsigned long long)source.matched,
+            (unsigned long long)source.implausible);
+}
 }
 int mode() {  // WWHD_VK_DISPLAY_PACING: bit 1 pacing, 2 one more swapchain image, 4 adaptive latency target,
               // 8 bounded latency (the GRID, CAP and DECAY defaults below)
@@ -89,6 +106,15 @@ void device_created(VkDevice device, bool extensionEnabled) {
     LOG("[vulkan frame breakdown] display times: %s%s", pastTiming ? "VK_GOOGLE_display_timing" :
         extensionEnabled ? "no vkGetPastPresentationTimingGOOGLE" : "VK_GOOGLE_display_timing unavailable",
         pacing() && !pastTiming ? " (display pacing off)" : "");
+#ifdef __ANDROID__
+    source.checks = false;
+#else
+    source.gamescope = gaming_mode::active();  // (platform/gaming_mode.h)
+    if (pastTiming)
+        LOG("[vulkan display pacing] source: VK_GOOGLE_display_timing from %s, checked before it paces: the refresh "
+            "duration must match the display's refresh rate and past timings must come back (else CPU-side even pacing "
+            "only)", origin());
+#endif
 }
 void set_interval(uint32_t ns) { interval = ns; }
 uint32_t image_count(uint32_t count, uint32_t maxCount) {
@@ -98,19 +124,28 @@ uint32_t image_count(uint32_t count, uint32_t maxCount) {
 const void* chain_present(const void* pNext, PresentTimes& storage, uint64_t frame) {
     if (!pastTiming) return pNext;
     std::lock_guard lock(mutex);
+    if (!source.chain()) return pNext;  // (display_timing_source.h: not usable here)
     if (issued.size() >= 64) return pNext;  // (nothing comes back: stop asking)
     const int64_t call = int64_t(stutter::now());
-    const int64_t desired = pacing() ? policy.desired(call, int64_t(interval)) : 0;
+    // (checked sources pace once confirmed: display_timing_source.h)
+    const bool confirmed = !source.checks || source.state == display_timing_source::State::Usable;
+    const int64_t desired = pacing() && confirmed ? policy.desired(call, int64_t(interval)) : 0;
     storage.time.presentID = ++nextId;
     storage.time.desiredPresentTime = uint64_t(std::max<int64_t>(desired, 0));  // 0: as soon as possible
     storage.info.swapchainCount = 1;
     storage.info.pTimes = &storage.time;
     storage.info.pNext = pNext;
     issued[storage.time.presentID] = {frame, call, desired};
+    if (source.asked_one()) {
+        log_source();
+        issued.clear();
+        policy.period = 0; policy.last = 0;
+    }
     return &storage.info;
 }
 void poll(VkDevice device, VkSwapchainKHR swapchain) {
     if (!pastTiming || !swapchain) return;
+#ifdef __ANDROID__
     if (refreshCycle && swapchain != periodFor) {
         VkRefreshCycleDurationGOOGLE cycle{};
         if (refreshCycle(device, swapchain, &cycle) == VK_SUCCESS && cycle.refreshDuration) {
@@ -122,6 +157,36 @@ void poll(VkDevice device, VkSwapchainKHR swapchain) {
     std::array<VkPastPresentationTimingGOOGLE, 16> past{};
     uint32_t n = uint32_t(past.size());
     const VkResult r = pastTiming(device, swapchain, &n, past.data());
+#else
+    {
+        std::lock_guard lock(mutex);
+        if (!source.chain()) return;
+    }
+    // the refresh duration: read again until it is trusted (every 30 polls) and then every 300 (gamescope's layer
+    // reports its placeholder until the compositor's refresh cycle arrives; Gaming Mode can change the refresh rate)
+    ++polls;
+    if (refreshCycle && (swapchain != periodFor || polls % (source.refreshTrusted ? 300 : 30) == 0)) {
+        VkRefreshCycleDurationGOOGLE cycle{};
+        if (refreshCycle(device, swapchain, &cycle) == VK_SUCCESS) {
+            const int hz = interp::display_hz();
+            std::lock_guard lock(mutex);
+            const int64_t before = source.refreshNs;
+            const bool changed = source.refresh(int64_t(cycle.refreshDuration), hz);
+            if (changed) { policy.period = source.period(); policy.last = 0; }
+            if (changed || swapchain != periodFor || before != source.refreshNs)
+                LOG("[vulkan display timing] refresh %.3f ms (%s; display %d Hz)", cycle.refreshDuration / 1e6,
+                    source.refreshTrusted ? "used" : "not used yet: does not match the display's refresh rate", hz);
+        }
+        periodFor = swapchain;
+    }
+    // first the count, then at most that many (display_timing_source.h: gamescope's layer up to 3.16 erased as many
+    // as the array holds and corrupted its memory when fewer were stored)
+    std::array<VkPastPresentationTimingGOOGLE, 16> past{};
+    uint32_t n = 0;
+    const VkResult r = display_timing_source::fetch(
+        [&](uint32_t* count, VkPastPresentationTimingGOOGLE* data) { return pastTiming(device, swapchain, count, data); },
+        past.data(), uint32_t(past.size()), n, VK_SUCCESS);
+#endif
     if (r != VK_SUCCESS && r != VK_INCOMPLETE) {
         if (++errors == 1) LOG("[vulkan display timing] vkGetPastPresentationTimingGOOGLE: %d", int(r));
         return;
@@ -133,6 +198,8 @@ void poll(VkDevice device, VkSwapchainKHR swapchain) {
         if (it == issued.end()) continue;
         const Issued is = it->second;
         issued.erase(it);
+        if (source.timing(is.call, int64_t(p.actualPresentTime))) log_source();
+        if (!source.chain()) { issued.clear(); policy.period = 0; policy.last = 0; return; }
         policy.feedback(is.call, int64_t(p.earliestPresentTime), int64_t(p.actualPresentTime), is.desired);
         if (frame_breakdown::enabled())
             stutter::trace().add("fb_display", is.frame, p.earliestPresentTime, uint64_t(is.call), p.actualPresentTime,
