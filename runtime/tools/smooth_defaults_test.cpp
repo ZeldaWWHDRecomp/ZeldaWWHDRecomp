@@ -1,11 +1,17 @@
 // smooth_defaults (gfx/vulkan/smooth_defaults.h) as the normal build compiles it: every default is off on a desktop,
-// and on the Steam Deck (Linux, SteamDeck=1) the whole set is on (second-thread recording with MT 127, hot vsync waits
-// of 8 ms with frame interpolation and none at 30 fps, 8 slots, late acknowledgment, pool reset thread, display pacing,
-// even pacing); "Smooth frame pacing" off leaves only display pacing off; WWHD_VSYNC_HOT_WAIT_US wins in every mode. Modes: desktop (no SteamDeck variable), deck (SteamDeck=1: on only on Linux), deck-pacing-off (and the saved
-// setting vkSmoothPacing=0).
+// and on the Steam Deck (Linux, SteamDeck=1) the pacing half is on (8 slots, late acknowledgment, pool reset thread,
+// display pacing, even pacing) but the worker half is off (no second-thread recording, MT 0, no hot vsync waits:
+// issue #178, VK_ERROR_DEVICE_LOST at start), and the log says why; Android keeps both halves (worker_half_for, the
+// device rule with its inputs given: second-thread recording with MT 127, hot vsync waits of 8 ms with frame
+// interpolation and none at 30 fps); "Smooth frame pacing" off leaves only display pacing off; WWHD_VSYNC_HOT_WAIT_US
+// wins in every mode; WWHD_VK_RECORD_WORKER wins over the saved setting, which wins over the device default
+// (record_worker_choice.h). Modes: desktop (no SteamDeck variable), deck (SteamDeck=1: on only on Linux),
+// deck-pacing-off (and the saved setting vkSmoothPacing=0).
 // (the source itself, without the renderer sources' forced cemu_shim.h include)
 #include "gfx/vulkan/smooth_defaults.cpp"
+#include "gfx/vulkan/record_worker_choice.h"
 #include <cassert>
+#include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -21,7 +27,19 @@ bool get(const char* key, std::string& value) {
     return true;
 }
 }  // namespace hostui
-void log_msg(const char* fmt, ...) { std::printf("log: %s\n", fmt); }
+namespace {
+std::string logged;  // every formatted log line
+}
+void log_msg(const char* fmt, ...) {
+    char buf[1024];
+    va_list args;
+    va_start(args, fmt);
+    std::vsnprintf(buf, sizeof buf, fmt, args);
+    va_end(args);
+    std::printf("log: %s\n", buf);
+    logged += buf;
+    logged += '\n';
+}
 
 int main(int argc, char** argv) {
     using namespace gfxvk::smooth_defaults;
@@ -40,17 +58,34 @@ int main(int argc, char** argv) {
 #endif
     assert(steam_deck() == deck);
     assert(device() == deck);
-    assert(record_worker() == deck);
-    assert(record_mt() == (deck ? 127u : 0u));
-    assert(vsync_hot_wait_us(false) == (deck ? 8000 : 0));  // frame interpolation (40-240 fps)
-    assert(vsync_hot_wait_us(true) == 0);                    // 30 fps
+    // the worker half: Android only (the rule with its inputs given, so every host checks it)
+    assert(worker_half_for(true, false));    // Android: unchanged
+    assert(!worker_half_for(false, true));   // Steam Deck: off (issue #178)
+    assert(!worker_half_for(false, false));  // desktop
+    assert(!record_worker());                // desktop and the Steam Deck
+    assert(record_mt() == 0u);
+    assert(vsync_hot_wait_us(false) == 0);   // frame interpolation (40-240 fps): no worker, no hot waits
+    assert(vsync_hot_wait_us(true) == 0);    // 30 fps
+    if (deck) assert(logged.find("Steam Deck default: off (issue #178)") != std::string::npos);
+    else assert(logged.empty());
+    // "Record graphics on a second thread": WWHD_VK_RECORD_WORKER wins, then the saved setting, then the default
+    const bool deviceDefault = record_worker();
+    assert(gfxvk::record_worker_choice(nullptr, nullptr, deviceDefault) == deviceDefault);
+    assert(gfxvk::record_worker_choice(nullptr, nullptr, true));  // (Android's default)
+    assert(gfxvk::record_worker_choice(nullptr, "1", deviceDefault));
+    assert(!gfxvk::record_worker_choice(nullptr, "0", true));
+    assert(gfxvk::record_worker_choice("1", nullptr, deviceDefault));
+    assert(gfxvk::record_worker_choice("1", "0", deviceDefault));
+    assert(!gfxvk::record_worker_choice("0", "1", true));
+    assert(!gfxvk::record_worker_choice("", "1", true));  // (set: any value but exactly 1 is off)
+    assert(!gfxvk::record_worker_choice("yes", nullptr, true));
     // GX2WaitForVsync's limit: the default per mode, and WWHD_VSYNC_HOT_WAIT_US wins in every mode
 #ifdef _WIN32
     _putenv_s("WWHD_VSYNC_HOT_WAIT_US", "");
 #else
     unsetenv("WWHD_VSYNC_HOT_WAIT_US");
 #endif
-    assert(vsync_hot_wait_applied_us(std::getenv("WWHD_VSYNC_HOT_WAIT_US"), false) == (deck ? 8000 : 0));
+    assert(vsync_hot_wait_applied_us(std::getenv("WWHD_VSYNC_HOT_WAIT_US"), false) == 0);
     assert(vsync_hot_wait_applied_us(std::getenv("WWHD_VSYNC_HOT_WAIT_US"), true) == 0);
 #ifdef _WIN32
     _putenv_s("WWHD_VSYNC_HOT_WAIT_US", "3000");
@@ -65,6 +100,7 @@ int main(int argc, char** argv) {
     setenv("WWHD_VSYNC_HOT_WAIT_US", "0", 1);
 #endif
     assert(vsync_hot_wait_applied_us(std::getenv("WWHD_VSYNC_HOT_WAIT_US"), false) == 0);
+    assert(vsync_hot_wait_applied_us("8000", false) == 8000);  // the Steam Deck can still turn them on
     assert(submission_slots() == (deck ? 8u : 0u));
     assert(late_present_ack() == deck);
     assert(async_pool_reset() == (deck ? 1 : 0));

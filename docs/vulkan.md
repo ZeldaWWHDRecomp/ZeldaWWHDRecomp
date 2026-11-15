@@ -872,7 +872,7 @@ positive draw count to tune it. Empty or invalid values disable batching.
 `WWHD_VK_DRAW_BATCH_CAP=1|2|3` sets the maximum mid-frame submissions (default three).
 See `docs/performance.md` for the local Windows comparison.
 
-## Recording graphics on a second thread (on by default on phones and the Steam Deck)
+## Recording graphics on a second thread (on by default on phones)
 
 Settings → Graphics → Advanced → "Record graphics on a second thread" moves the recording and
 submission of the Vulkan commands from the render thread to a second thread. The render thread
@@ -885,9 +885,12 @@ Vulkan calls and submits them. The pictures are the same either way.
   two threads can make frame times less even.
 - It uses a little more CPU time and battery.
 
-It is on by default on Android and the Steam Deck, whose render thread limits the frame rate, and the
-commands are then also prepared in parallel (`WWHD_VK_RECORD_MT`, see below); everywhere else it stays
-off by default.
+It is on by default on Android, whose render thread limits the frame rate, and the commands are then
+also prepared in parallel (`WWHD_VK_RECORD_MT`, see below); everywhere else it stays off by default.
+On the Steam Deck it is off by default for now: with it the game crashed there at start with
+`GX2 render thread: POD Vulkan operation failed: -4` (`VK_ERROR_DEVICE_LOST`, issue #178). The log
+says `Steam Deck default: off (issue #178)`. The setting and `WWHD_VK_RECORD_WORKER=1` still turn it
+on there (without the parallel preparation unless `WWHD_VK_RECORD_MT` is set too).
 
 The choice is saved with the other graphics settings and applies the next time the game starts.
 `WWHD_VK_RECORD_WORKER=1` turns it on and any other value turns it off for one start; the
@@ -903,7 +906,9 @@ the second thread has caught up, so the order of the commands never changes.
 ## Phones and the Steam Deck: defaults and Smooth frame pacing
 
 On Android and the Steam Deck the renderer starts with (the normal build and the decomp build alike; cmake
-`WWHD_VK_SMOOTH`, on by default, compiles this code in, and OFF leaves it out):
+`WWHD_VK_SMOOTH`, on by default, compiles this code in, and OFF leaves it out; the first two items on
+Android only, see issue #178 above: the Steam Deck starts with graphics on one thread, `WWHD_VK_RECORD_MT=0`
+and no hot vsync waits):
 
 - graphics recorded on a second thread with multi-threaded preparation: `WWHD_VK_RECORD_MT=127`
   (command-pool resets on the second thread, hand-over at pass ends, recycled buffers, the second

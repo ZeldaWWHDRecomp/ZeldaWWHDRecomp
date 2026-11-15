@@ -1291,7 +1291,7 @@ void tab_graphics() {
     heading("Advanced");
     // Vulkan commands recorded and submitted on a worker thread (gfx/vulkan/record_worker.h)
 #ifdef WWHD_VK_SMOOTH
-    // (on for phones and the Steam Deck, gfx/vulkan/smooth_defaults.h)
+    // (on for phones, off on the Steam Deck: issue #178, gfx/vulkan/smooth_defaults.h)
     static const bool recordWorkerDefault = gfxvk::smooth_defaults::record_worker();
 #else
     constexpr bool recordWorkerDefault = false;  // gfx/vulkan/record_worker.h record_worker_default()

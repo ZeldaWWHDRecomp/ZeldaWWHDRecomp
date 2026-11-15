@@ -51,8 +51,9 @@ private:
 // renderer before it starts; WWHD_VK_RECORD_WORKER (exactly 1 on, anything else off) wins.
 void set_record_worker_saved_choice(bool on);
 bool record_worker_requested(); // no thread while disabled
-// Default of Graphics > Advanced "Record graphics on a second thread" when the player never chose (phones and the
-// Steam Deck: smooth_defaults.h, with multi-threaded recording; Quest: backend.cpp), else off. Old note, translated
+// Default of Graphics > Advanced "Record graphics on a second thread" when the player never chose (phones:
+// smooth_defaults.h, with multi-threaded recording, not the Steam Deck (issue #178); Quest: backend.cpp), else off.
+// The resolution: record_worker_choice.h. Old note, translated
 // draws without multi-threaded recording (record_mt.h): on a Xiaomi 14 (Snapdragon 8 Gen 3) it made typical frames
 // ~0.6 ms faster but the slowest 1% ~3 ms slower (1% low 42 instead of 49 fps at 120 fps interpolation) than the
 // single-thread path.
