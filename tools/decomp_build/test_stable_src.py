@@ -93,6 +93,16 @@ class StableSrcTest(unittest.TestCase):
         self.assertEqual(rec["src"]["tree"], os.path.realpath(self.b))
         self.assertEqual(os.path.realpath(os.path.join(self.root, "decomp-src")), os.path.realpath(self.b))
 
+    def test_adopt_then_switch(self):
+        # a build folder moved to the links from wt-a: recorded as it is (no time changes), then wt-b
+        self.assertEqual(stable_src.switch(self.root, {"src": self.a}, now=NOW, adopt=True), {"src": (3, 0)})
+        self.assertEqual(self.mtime(self.a, "src/diff.cpp"), T0)
+        self.assertEqual(os.path.realpath(os.path.join(self.root, "src")), os.path.realpath(self.a))
+        self.assertEqual(stable_src.switch(self.root, {"src": self.b}, now=NOW), {"src": (2, 2)})
+        self.assertEqual(self.mtime(self.b, "src/same.cpp"), T0)
+        self.assertEqual(self.mtime(self.b, "src/diff.cpp"), NOW)
+        self.assertEqual(self.mtime(self.a, "src/diff.cpp"), T0)  # the adopted tree is never touched
+
     def test_not_a_link(self):
         os.makedirs(os.path.join(self.root, "src"))
         r = subprocess.run([sys.executable, os.path.join(HERE, "stable_src.py"), self.root, "src=" + self.a],

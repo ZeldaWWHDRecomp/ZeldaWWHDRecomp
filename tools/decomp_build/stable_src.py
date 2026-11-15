@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Stable source paths for a build directory shared by several worktrees (android/build_native.sh STABLE_SRC=1).
 
-usage: stable_src.py ROOT NAME=TREE [NAME=TREE ...]
+usage: stable_src.py [--adopt] ROOT NAME=TREE [NAME=TREE ...]
 
 Points the links ROOT/NAME at the trees (e.g. ROOT/src -> a port worktree, ROOT/decomp-src -> its decompilation).
 A build configured through the links (cmake -S ROOT/src, WWHD_DECOMP_DIR=ROOT/decomp-src) has the same paths in
@@ -17,6 +17,9 @@ not ignored), its content hash and time. For the new tree, a file whose content 
 recorded time (to ninja nothing changed), every other file the current time (newer than any output: it and what
 depends on it rebuild). Then the record is rewritten for the new tree. Run it before every build (the record must be
 what the build saw: an edit made after the run is seen as an edit by the next run and by ninja alike).
+
+--adopt: record the trees as they are and point the links at them, changing no file's time: for a build folder that
+was just moved to the links (its paths rewritten from these trees to ROOT/NAME), so the next switch knows what it saw.
 
 Files outside the listing (ignored files, e.g. build outputs inside a tree) keep their times: a build must not read
 ignored files of the tree. The record is ROOT's own; the trees' files get only their times changed.
@@ -52,8 +55,9 @@ def digest(path):
     return h.hexdigest()
 
 
-def switch(root, links, now=None):
-    """links: {name: tree}. Returns {name: (kept, touched)}: files that got their recorded time, files that got NOW."""
+def switch(root, links, now=None, adopt=False):
+    """links: {name: tree}. Returns {name: (kept, touched)}: files that got their recorded time, files that got NOW.
+    adopt: record every file with its own time instead (no time is changed; all count as kept)."""
     now = time.time_ns() if now is None else now
     rec_path = os.path.join(root, RECORD)
     try:
@@ -80,6 +84,10 @@ def switch(root, links, now=None):
                 kept += 1
                 continue
             h = digest(p)
+            if adopt:
+                files[rel] = [h, st.st_mtime_ns, st.st_ino, st.st_size]
+                kept += 1
+                continue
             if o and o[0] == h:
                 if st.st_mtime_ns != o[1]:
                     os.utime(p, ns=(st.st_atime_ns, o[1]))
@@ -111,13 +119,16 @@ def switch(root, links, now=None):
 
 
 def main():
-    if len(sys.argv) < 3 or any("=" not in a for a in sys.argv[2:]):
+    args = sys.argv[1:]
+    adopt = args[:1] == ["--adopt"]
+    args = args[1:] if adopt else args
+    if len(args) < 2 or any("=" not in a for a in args[1:]):
         sys.exit(__doc__.strip().splitlines()[2])
-    root = os.path.abspath(sys.argv[1])
+    root = os.path.abspath(args[0])
     os.makedirs(root, exist_ok=True)
-    links = dict(a.split("=", 1) for a in sys.argv[2:])
+    links = dict(a.split("=", 1) for a in args[1:])
     t0 = time.time()
-    for name, (kept, touched) in sorted(switch(root, links).items()).__iter__():
+    for name, (kept, touched) in sorted(switch(root, links, adopt=adopt).items()):
         print("stable_src: %s -> %s: %d files as before, %d new or changed" % (
             os.path.join(root, name), os.path.realpath(links[name]), kept, touched))
     print("stable_src: %.1f s" % (time.time() - t0))
