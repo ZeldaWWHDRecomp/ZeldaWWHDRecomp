@@ -21,6 +21,7 @@ Cached in two layers:
 import argparse
 import hashlib
 import os
+import re
 import subprocess
 import sys
 import time
@@ -39,10 +40,60 @@ def tree_files(root, exts=None):
                 yield os.path.join(dp, f)
 
 
-def inputs_hash(decomp, gen, image, rpx):
+# decl_lint's reader of the runtime (its _import_reads: the HLE(lib, name) bodies of runtime/src/**/*.cpp) and the
+# only other uses of the runtime directory it has (the include directory); runtime_inputs relies on these
+HLE_READER = ('re.finditer(r"HLE\\((\\w+),\\s*(\\w+)\\)\\s*\\{", t)',
+              'glob.glob(os.path.join(runtime or os.path.join(ROOT, "runtime"), "src", "**", "*.cpp"), recursive=True)')
+RUNTIME_USES = ('os.path.join(PATHS["runtime"], "include")', 'if PATHS["runtime"] != os.path.join(ROOT, "runtime")',
+                '_import_reads(PATHS["runtime"])')
+HLE = re.compile(r"HLE\((\w+),\s*(\w+)\)\s*\{")
+
+
+def hle_bodies(text):
+    """the HLE(lib, name) { ... } bodies of a runtime source as decl_lint's _import_reads cuts them"""
+    out = []
+    for m in HLE.finditer(text):
+        i, depth = m.end(), 1
+        while depth and i < len(text):
+            depth += {"{": 1, "}": -1}.get(text[i], 0)
+            i += 1
+        out.append(m.group(0) + text[m.end():i])
+    return out
+
+
+def runtime_inputs(decomp, root):
+    """[(name, path or None, bytes or None)]: the part of ROOT/runtime/src the table depends on. When the
+    decompilation's decl_lint.py reads it only through the known HLE reader (HLE_READER, RUNTIME_USES), that is the HLE
+    bodies of its .cpp files (a runtime change elsewhere keeps the table); otherwise every .cpp and .h file."""
+    src = os.path.join(root, "runtime", "src")
+    try:
+        with open(os.path.join(decomp, "tools", "verify", "decl_lint.py"), encoding="utf-8", errors="replace") as fh:
+            lint = fh.read()
+    except OSError:
+        lint = ""
+    # every use of PATHS["runtime"] is one of RUNTIME_USES (the occurrence lies inside one of them)
+    known = all(r in lint for r in HLE_READER) and all(
+        any(lint.find(u, max(0, m.start() - len(u)), m.end() + len(u)) >= 0 for u in RUNTIME_USES)
+        for m in re.finditer(r'PATHS\["runtime"\]', lint))
+    out = []
+    for p in tree_files(src, (".cpp",) if known else (".cpp", ".h")):
+        name = "port/" + os.path.relpath(p, root).replace(os.sep, "/")
+        if not known:
+            out.append((name, p, None))
+            continue
+        with open(p, encoding="utf-8", errors="replace") as fh:
+            bodies = hle_bodies(fh.read())
+        if bodies:
+            out.append((name + "#hle", None, "\0".join(bodies).encode("utf-8", "surrogateescape")))
+    return out
+
+
+def inputs_hash(decomp, gen, image, rpx, root=None):
     """every input of the table, each named relative to its place (decomp/..., gen/..., port/..., image, rpx): the same
-    inputs in another build directory or checkout give the same hash"""
-    h = hashlib.sha256(b"decl_table-3\n")
+    inputs in another build directory or checkout give the same hash. Of the runtime's sources, only what decl_lint
+    reads (runtime_inputs)."""
+    root = root or ROOT
+    h = hashlib.sha256(b"decl_table-4\n")
     v = os.path.join(decomp, "tools", "verify")
     named = [("decomp/tools/verify/" + f, os.path.join(v, f)) for f in sorted(os.listdir(v))
              if os.path.isfile(os.path.join(v, f)) and not decl_cache.hidden(f)]
@@ -50,16 +101,17 @@ def inputs_hash(decomp, gen, image, rpx):
                                    (decomp, "decomp", os.path.join("tools", "verify", "include"), None),
                                    (decomp, "decomp", os.path.join("tools", "verify", "src"), None),
                                    (decomp, "decomp", os.path.join("tools", "verify", "units"), None),
-                                   (ROOT, "port", os.path.join("runtime", "src"), (".cpp", ".h")),
-                                   (ROOT, "port", os.path.join("runtime", "include"), None)):
+                                   (root, "port", os.path.join("runtime", "include"), None)):
         named += [(label + "/" + os.path.relpath(p, base), p) for p in tree_files(os.path.join(base, sub), exts)]
-    named += [("port/tools/rpx.py", os.path.join(ROOT, "tools", "rpx.py"))]
+    named += [("port/tools/rpx.py", os.path.join(root, "tools", "rpx.py"))]
     named += [("port/tools/decomp_build/" + f, os.path.join(HERE, f))
               for f in ("decl_table.py", "decl_lint_run.py", "decl_cache.py")]
     named += [("image", image), ("rpx", rpx)]
     named += [("gen/" + f, os.path.join(gen, f)) for f in sorted(os.listdir(gen)) if f.startswith("code_")]
-    for name, p in named:
-        if os.path.isfile(p):
+    for name, p, data in [(n, p, None) for n, p in named] + runtime_inputs(decomp, root):
+        if data is not None:
+            h.update(name.encode() + b"\0" + data + b"\n")
+        elif os.path.isfile(p):
             h.update(name.encode() + b"\0")
             with open(p, "rb") as fh:
                 for chunk in iter(lambda: fh.read(1 << 20), b""):
