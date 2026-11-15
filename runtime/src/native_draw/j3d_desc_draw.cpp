@@ -77,7 +77,7 @@ const char* const kCountNames[cCounts] = {
     "draws", "replayed", "full", "verified", "MISMATCH", "items", "items refused", "states", "states refused", "runs",
     "settles", "settled words", "class checks", "class words", "J3D-written checks", "LOST", "gated",
     "no state", "no state for the pass", "state refused", "item refused", "surfaces", "binds", "ambient",
-    "ambient (J3D-written)", "texture", "index", "uniform offset", "draw us", "settle us", "invalidates", "live vertex buffers", "J3D-written words looked up", "invalidate us"};
+    "ambient (J3D-written)", "texture", "index", "uniform offset", "draw us", "settle us", "invalidates", "live vertex buffers", "J3D-written words looked up", "invalidate us", "replay checks us", "replay textures us", "replay indices us", "replay blocks/sets us", "replay record us", "replay after us", "vk dispatch us"};
 // reasons (debug): first characters of the why strings, counted by text
 std::unordered_map<std::string, uint64_t> g_why;
 
@@ -458,6 +458,7 @@ void draw(uint32_t* regs, Apply apply, const uint32_t* p, uint32_t n) {
         // port features acting per draw keep the translated path (the D0 builder skips most of them already)
         if (stereo::frame.mode == stereo::Off && !framegen::requested() && !gfxvk::gamepad_backdrop_capture_active() &&
             !cloud_proto::g_active_seq && !aspect::content_clip() && !(render::grass_distance() > 0 && in.mesh->count == 108)) {
+            Timed timedVk(tVkNs);
             gfxvk::j3ddesc_draw(in);
             return;
         }
@@ -483,7 +484,7 @@ void frame_end() {
     for (uint32_t c = 0; c < cCounts && j < int(sizeof buf) - 64; ++c)
         if (g_counts[c])
             j += std::snprintf(buf + j, sizeof buf - j, " %s %.2f;", kCountNames[c],
-                               g_counts[c] / 300.0 / (c == tDrawNs || c == tSettleNs || c == tInvalidateNs ? 1000.0 : 1.0));
+                               g_counts[c] / 300.0 / (c == tDrawNs || c == tSettleNs || c == tInvalidateNs || (c >= pChecks && c <= tVkNs) ? 1000.0 : 1.0));
     LOG("%s", buf);
     std::fill(std::begin(g_counts), std::end(g_counts), 0);
     if (debug_on() && !g_why.empty()) {

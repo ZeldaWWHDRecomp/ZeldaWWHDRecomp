@@ -106,7 +106,7 @@ enum Count : uint32_t {
     fNoState, fNoPass, fRefusedState, fItemRefused, fSurfaces, fBinds, fAmbient, fVolatile, fTexture, fIndex,
     fOffset,
     // (WWHD_NATIVE_J3D_DESC_D1TIMING=1) render-thread ns: described draws (whole), settles
-    tDrawNs, tSettleNs, cInvalidates, cLiveVertex, cVolatileWords, tInvalidateNs, cCounts
+    tDrawNs, tSettleNs, cInvalidates, cLiveVertex, cVolatileWords, tInvalidateNs, pChecks, pTextures, pIndices, pSets, pRecord, pAfter, tVkNs, cCounts
 };
 void count(Count c, uint64_t n = 1);
 void note(const char* why);  // (WWHD_NATIVE_J3D_DESC_D1DEBUG=1) a fallback reason

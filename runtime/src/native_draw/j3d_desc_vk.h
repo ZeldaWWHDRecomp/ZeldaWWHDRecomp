@@ -770,13 +770,33 @@ void compare(const State& s, const PacketCapture& cap, const uint32_t* r, const 
 
 // ---------------------------------------------------------------- the draw from the state
 // CHECKONLY (verify): the checks and the texture work only, nothing recorded
+// (WWHD_NATIVE_J3D_DESC_D1TIMING=1) the replay's phases in ns: checks, textures, indices + vertex words, blocks +
+// support + sets, recording, after the draw
+struct Phases {
+  bool on;
+  uint64_t t;
+  static uint64_t now() {
+    return uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count());
+  }
+  Phases() : on(native_draw::switch_value("WWHD_NATIVE_J3D_DESC_D1TIMING", 0) != 0), t(on ? now() : 0) {}
+  void mark(d1::Count c) {
+    if (!on) return;
+    const uint64_t n = now();
+    d1::count(c, n - t);
+    t = n;
+  }
+};
 const char* try_replay(State& s, const In& in, bool checkOnly) {
+  static Phases proto;
+  Phases ph = proto;
+  ph.t = ph.on ? Phases::now() : 0;
   if (s.structGen != g_surface_struct_gen) return "surfaces";
   const native_draw::j3ddesc::Mesh& m = *in.mesh;
   if (m.prim != s.prim || m.indexType != s.indexType || in.blockCount != s.blockCount) return "binds";
   for (uint32_t i = 0; i < in.blockCount; ++i)
     if (in.blocks[i].reg != s.blockReg[i]) return "binds";
   if (const char* why = ambient_holds(s, in.regs)) return why;
+  ph.mark(d1::pChecks);
   // textures (the continued path's per-draw work, skipped where it would do nothing)
   const uint64_t epoch = g_surface_epoch, pass = R.renderPassCount;
   for (int k = 0; k < 2; ++k) {
@@ -809,6 +829,7 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
     if (c && c->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) return "texture";
   if (s.depth && s.depth->layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) return "texture";
   if (checkOnly) return nullptr;
+  ph.mark(d1::pTextures);
   // indices (nothing recorded yet: a miss is still a plain translated draw)
   UploadSlice ib;
   VkIndexType indexType = VK_INDEX_TYPE_UINT32;
@@ -853,6 +874,7 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
     }
   }
 #endif
+  ph.mark(d1::pIndices);
   // uniform blocks, support bytes, descriptor sets, offsets
   VkDescriptorSet sets[2];
   std::array<uint32_t, 34> offsets{};
@@ -933,6 +955,7 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
       offsets[offsetCount++] = uint32_t(b.offset);
     }
   }
+  ph.mark(d1::pSets);
   // record
   auto cmd = command_buffer();
   Bound& B = g_bound;
@@ -994,6 +1017,7 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
   B.dynamic = true;
   record::vkCmdDrawIndexed(cmd, drawCount, 1, 0, 0, 0);
   g_packetBindsDirty = true;
+  ph.mark(d1::pRecord);
   // the translated draw's side effects
   in.regs[REGADDR::VGT_PRIMITIVE_TYPE] = m.prim;  // (draw() writes it so, not through apply_regs)
   if (bgshaders::enabled() && !gamepad_backdrop_replaying()) {
@@ -1013,6 +1037,7 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
   static const uint32_t drawBatch = parse_draw_batch(std::getenv("WWHD_VK_DRAW_BATCH"));
   static const uint32_t drawBatchCap = parse_draw_batch_cap(std::getenv("WWHD_VK_DRAW_BATCH_CAP"));
   if (drawBatchState.after_draw(R.frame, drawBatch, drawBatchCap)) draw_batch_submit();
+  ph.mark(d1::pAfter);
   return nullptr;
 }
 
