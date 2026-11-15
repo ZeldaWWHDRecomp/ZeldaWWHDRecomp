@@ -17,6 +17,7 @@ T0 = 1_000_000_000 * 10**9  # an old time (ns)
 NOW = 2_000_000_000 * 10**9
 
 
+@unittest.skipIf(os.name == "nt", "stable_src serves the Android build on macOS/Linux hosts (symbolic links)")
 class StableSrcTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
