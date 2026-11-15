@@ -28,6 +28,7 @@ jobs:
         run: |
           python3 tools/decomp_build/test_gen.py
           python3 tools/decomp_build/test_native_rules.py
+          python3 tools/decomp_build/test_native_cache.py
           python3 tools/decomp_build/test_native_returns.py
           python3 tools/decomp_build/test_site_lr.py
           python3 tools/decomp_build/test_decl_table.py

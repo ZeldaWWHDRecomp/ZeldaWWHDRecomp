@@ -100,7 +100,8 @@ class NativeRulesTest(unittest.TestCase):
 
         def run(*extra):
             r = subprocess.run([sys.executable, os.path.join(HERE, "native_rules.py"), self.src, self.out, self.gen,
-                                *extra], capture_output=True, text=True)
+                                *extra], capture_output=True, text=True,
+                               env=dict(os.environ, WWHD_DECOMP_BUILD_CACHE=os.path.join(self.tmp.name, "cache")))
             self.assertEqual(r.returncode, 0, r.stderr)
             return r.stdout
         native = os.path.join(self.out, "native.txt")
@@ -320,10 +321,10 @@ class NativeRulesTest(unittest.TestCase):
         self.assertEqual((need, whole, dict(callers)), ({F(20)}, set(), {F(1): [F(20)]}))
         # a header's inline code that calls the stub (a wrapper): every function of the unit keeps guest calls
         open(self.src + "/wwhd_src/include/c.h", "w").write("u32 stubRes(u32);\ninline u32 wrap(u32 x) { return stubRes(x); }\n")
-        native_rules._A3_HEADERS.clear()
+        native_rules.a3_reset()
         need, whole, _ = native_rules.result_stub_callers({c1: [(F(1), (-1, -1), (0, 0), "exact")]}, {"c": [c1, c2]})
         self.assertEqual((need, whole), ({F(19), F(20)}, {"c"}))
-        native_rules._A3_HEADERS.clear()
+        native_rules.a3_reset()
 
     def test_lcall_result_shape(self):
         """gabi.h lcall: a call that declares a u32 result of an exact callee that sets none (dScnPlyAPI_removeDemo ->
