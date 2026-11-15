@@ -1101,7 +1101,7 @@ inline void community_list(Host& h) {
         }
         for (const auto& v : list) {
             const auto* e = catalogue_entry(snap, v.id);
-            bool update = e && newer(e->version, v.version);
+            bool update = e && newer(e->version, v.version) && unavailable_reason(h, *e).empty();
             Row r = row(facts(v, update));
             auto view = v;
             std::string note;
@@ -1371,7 +1371,7 @@ inline void package_page(Host& h, const mods::packages::View& v) {
     auto& s = state();
     auto snap = s.loader.snapshot();
     const auto* entry = catalogue_entry(snap, v.id);
-    bool update = entry && newer(entry->version, v.version);
+    bool update = entry && newer(entry->version, v.version) && unavailable_reason(h, *entry).empty();
     PageFacts pf;
     pf.enabled = v.enabled;
     pf.active = v.active;

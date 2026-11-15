@@ -157,7 +157,10 @@ What that means for the port on the Japanese build:
   (`WWHD_GAME_INFO_OFFSET`, [mod-sdk-v2.md](mod-sdk-v2.md)). On the Japanese build, a mod whose code
   adds a raw unrelocated offset of a moved member (`0x5AB0` to `0x62F7`, wherever its pointer came
   from) is refused unless resolved through `WWHD_GAME_INFO_OFFSET`, and a mod built with an older SDK
-  is also refused if it calls or hooks `dComIfGp_get` or addresses `g_dComIfG_gameInfo`.
+  is also refused if it calls or hooks `dComIfGp_get` or addresses `g_dComIfG_gameInfo`. Mods
+  rebuilt with this SDK (`__wwhd_ginfo_*`, `guestmod-0.4`) won't load on older ports, so their
+  manifests need `"minimum_manager_version": "1.13.0"` and their catalogue entries need a matching
+  minimum port version (`0.5.2`).
 
 ## Languages
 
