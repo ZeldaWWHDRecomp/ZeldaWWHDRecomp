@@ -854,8 +854,16 @@ function(wwhd_decomp_link target)
       target_link_options(${target} PRIVATE -flto=thin "LINKER:--thinlto-jobs=${WWHD_DECOMP_FAST_LTO_JOBS}"
                           "LINKER:-cache_path_lto,${WWHD_DECOMP_OUT}/ltocache")  # (ld64.lld: Mach-O option names)
     else()
+      # the cache's size and age (ld.lld --thinlto-cache-policy; pruning only, the output is the same): without one
+      # lld lets it grow to 75 % of the free disk space (5 GB in the shared Android build, 2026-11-15). Empty: lld's default
+      set(WWHD_DECOMP_LTO_CACHE_POLICY "cache_size_bytes=3g:prune_after=168h" CACHE STRING
+          "decomp build, fast mode: ThinLTO cache policy of the whole-image link (ld.lld; empty: lld's default)")
+      set(policy)
+      if(WWHD_DECOMP_LTO_CACHE_POLICY)
+        set(policy "LINKER:--thinlto-cache-policy=${WWHD_DECOMP_LTO_CACHE_POLICY}")
+      endif()
       target_link_options(${target} PRIVATE -flto=thin "LINKER:--thinlto-jobs=${WWHD_DECOMP_FAST_LTO_JOBS}" "LINKER:--lto-O2"
-                          "LINKER:--thinlto-cache-dir=${WWHD_DECOMP_OUT}/ltocache")
+                          "LINKER:--thinlto-cache-dir=${WWHD_DECOMP_OUT}/ltocache" ${policy})
     endif()
   endif()
   if(WWHD_DECOMP_SITE_LR)
