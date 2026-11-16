@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: sky and light colour changes ran too fast with frame interpolation** (#595). At 60 and 120 fps the weather
+  and palette colour changes, the day/night light fade, the room and sea light blends and the item-get and arrow light
+  flashes ran 2x (60 fps) to 4x (120 fps) too fast, because the in-between frames advanced them too. They now run at
+  the original speed. 30 fps without interpolation is unchanged.
 - **Decomp fast build: J3D models drawn from descriptions, on by default** (#594). In the decomp build's fast mode the
   decompiled J3D model code (characters, enemies, objects, map parts) now describes each draw (material, textures,
   mesh) instead of emulating its GPU register writes, and the Vulkan renderer draws from those descriptions with
