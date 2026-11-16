@@ -77,7 +77,7 @@ const char* const kCountNames[cCounts] = {
     "draws", "replayed", "full", "verified", "MISMATCH", "items", "items refused", "states", "states refused", "runs",
     "settles", "settled words", "class checks", "class words", "J3D-written checks", "LOST", "gated",
     "no state", "no state for the pass", "state refused", "item refused", "surfaces", "binds", "ambient",
-    "ambient (J3D-written)", "texture", "index", "uniform offset", "draw us", "settle us", "invalidates", "live vertex buffers", "J3D-written words looked up", "invalidate us", "replay checks us", "replay textures us", "replay indices us", "replay blocks/sets us", "replay record us", "replay after us", "vk dispatch us"};
+    "ambient (J3D-written)", "texture", "index", "uniform offset", "draw us", "settle us", "invalidates", "live vertex buffers", "J3D-written words looked up", "invalidate us", "replay checks us", "replay textures us", "replay indices us", "replay blocks/sets us", "replay record us", "replay after us", "vk dispatch us", "pass begun", "pass begin refused (clouds)", "pass begin refused (no targets)", "pass begin refused (no state for the targets)", "pass begin refused (subset)", "fallback full draw us", "fallback state making us", "make memo hits", "make memo classes kept", "support built", "support reused"};
 // reasons (debug): first characters of the why strings, counted by text
 std::unordered_map<std::string, uint64_t> g_why;
 
@@ -104,6 +104,14 @@ void add_written_block(uint32_t first) {
 void count(Count c, uint64_t n) { g_counts[c] += n; }
 void note(const char* why) {
     if (debug_on() && why) ++g_why[why];
+}
+// (WWHD_NATIVE_J3D_DESC_D1DEBUG=2) a fallback reason per site: desc id, pass, env id
+void note_site(const char* why, const Item& it) {
+    static const bool v = switch_value("WWHD_NATIVE_J3D_DESC_D1DEBUG", 0) >= 2;
+    if (!v || !why) return;
+    char k[160];
+    std::snprintf(k, sizeof k, "[desc %u pass %u env %u] %s", it.desc->id, it.desc->pass, it.env->id, why);
+    ++g_why[k];
 }
 
 // ---------------------------------------------------------------- items
@@ -209,6 +217,7 @@ Item* item_of(uint32_t descId, uint32_t descVer, uint32_t envId, uint32_t envVer
     for (auto& x : *ds.items)
         if (x->env == es.env) return x.get();
     ds.items->push_back(make_item(ds.desc, es.env));
+    note_site("new item", *ds.items->back());
     return ds.items->back().get();
 }
 const Mesh* mesh_of(uint32_t id) {
@@ -479,12 +488,12 @@ void frame_end() {
         last = cpu;
     }
     if (g_frames % 300 || !g_counts[cDraws]) return;
-    char buf[2048];
+    char buf[8192];
     int j = std::snprintf(buf, sizeof buf, "[j3d-d1] per frame:");
     for (uint32_t c = 0; c < cCounts && j < int(sizeof buf) - 64; ++c)
         if (g_counts[c])
             j += std::snprintf(buf + j, sizeof buf - j, " %s %.2f;", kCountNames[c],
-                               g_counts[c] / 300.0 / (c == tDrawNs || c == tSettleNs || c == tInvalidateNs || (c >= pChecks && c <= tVkNs) ? 1000.0 : 1.0));
+                               g_counts[c] / 300.0 / (c == tDrawNs || c == tSettleNs || c == tInvalidateNs || (c >= pChecks && c <= tVkNs) || c == tFallbackFullNs || c == tFallbackMakeNs ? 1000.0 : 1.0));
     LOG("%s", buf);
     std::fill(std::begin(g_counts), std::end(g_counts), 0);
     if (debug_on() && !g_why.empty()) {
@@ -492,7 +501,7 @@ void frame_end() {
         for (auto& [k, c] : g_why) v.push_back({c, k});
         std::sort(v.rbegin(), v.rend());
         j = std::snprintf(buf, sizeof buf, "[j3d-d1] fallback reasons per frame:");
-        for (size_t i = 0; i < v.size() && i < 16 && j < int(sizeof buf) - 96; ++i)
+        for (size_t i = 0; i < v.size() && i < 48 && j < int(sizeof buf) - 200; ++i)
             j += std::snprintf(buf + j, sizeof buf - j, " %s %.2f;", v[i].second.c_str(), v[i].first / 300.0);
         LOG("%s", buf);
         g_why.clear();

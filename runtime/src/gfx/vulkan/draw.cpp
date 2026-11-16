@@ -4281,6 +4281,9 @@ void j3ddesc_resolved(const uint32_t* r, const LatteFetchShader* fs, uint64_t fs
   native_draw::j3ddesc::resolved(r, o);
 }
 #endif
+#ifdef WWHD_NATIVE_DRAW
+#include "native_draw/draw_pass_begin.h"  // begin_draw_pass: draw()'s pass begin, shared with J3D described draws
+#endif
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances, bool* viewIndependent) {
 #ifdef WWHD_NATIVE_DRAW
@@ -5036,6 +5039,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     record::vkCmdBindIndexBuffer(cmd, buffer, offset, type);
     state.indexBuffer = buffer; state.indexOffset = offset; state.indexType = type;
   };
+#ifdef WWHD_NATIVE_DRAW
+  if (!reusePass) begin_draw_pass(cmd, colors, slices, depth, depthSlice, width, height);
+#else
   if (!reusePass) {
     end_encoder();
     std::array<VkRenderingAttachmentInfo, 8> attachments{};
@@ -5100,6 +5106,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     R.passWidth = width;
     R.passHeight = height;
   }
+#endif
   rprof::mark(rprof::kPass);
   if (!dp.pipeline && !dp.pendingCompile) return;
 #ifdef WWHD_VK_SMOOTH

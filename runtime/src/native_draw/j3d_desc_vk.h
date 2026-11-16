@@ -76,6 +76,14 @@ struct Stage {
   uint32_t bufCount = 0;
   uint64_t supSubmission = ~0ull;
   UploadSlice supSlice{};
+  // (SUPPORT2, j3d_desc_support2.h) the copy list as runs, the blocks it reads, the slice kept for its inputs
+  struct SupRun { uint32_t dst, block, src, len; };
+  std::vector<SupRun> supRuns;
+  uint32_t supBlocks = 0;
+  bool supRunsMade = false;
+  UploadSlice supKept{};
+  uint64_t supKeptSubmission = ~0ull, supKeptUid = 0;
+  std::array<uint32_t, 16> supKeptAddr{}, supKeptSize{};
 };
 // ambient words not written by J3D: interned (same registers, same values), checked once per run
 struct Range { uint32_t first, count, at; };
@@ -124,11 +132,15 @@ struct State {
   uint32_t drawnColors = 0;  // track_drawn: the colour slots the draw writes
   bool drawnDepth = false, mainDepth = false;
   uint32_t absent = 0;
+  bool beginOk = false;  // (PASSBEGIN) drawn into its own pass: may begin it (absent mask 0)
   void* depthFamily = nullptr;  // (D2) the depth family state chosen at the making (depth::State*), else the translated bind
   bool depthCanon = false;      // (D2 INST) commutes with collected depth draws when on their cascade (commutes_image)
 };
+#include "native_draw/j3d_desc_msmemo.h"  // (WWHD_NATIVE_J3D_DESC_MSMEMO=1)
+#include "native_draw/dfix_timing.h"  // (D1TIMING: make_state / support build ns per call)
 struct States {
   std::vector<std::unique_ptr<State>> list;
+  MakeMemo memo;  // (MSMEMO) make_state's program-only work, last key
 };
 std::vector<std::unique_ptr<States>> g_states;  // owned here; Item::render points at one
 std::vector<Item*> g_itemsWithStates;
@@ -290,6 +302,7 @@ void support_bytes(const Stage& S, const In& in, std::vector<uint8_t>& bytes) {
   bytes = S.sup;
   support_patch(S, in, bytes.data());
 }
+#include "native_draw/j3d_desc_support2.h"  // (WWHD_NATIVE_J3D_DESC_SUPPORT2=1)
 // the mesh's indices: the buffer-cache entry the full draw binds for this range (a converted entry made once, here or
 // by a full draw); false: no entry (the translated path then)
 bool mesh_indices(const State& s, const native_draw::j3ddesc::Mesh& m, UploadSlice& ib, VkIndexType& type,
@@ -483,6 +496,7 @@ const char* ambient_holds(State& s, const uint32_t* r) {
 // ---------------------------------------------------------------- the state from a translated draw's capture
 // R: the register file with the run settled and the draw's effect applied (what the draw resolved from)
 const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, const In& in) {
+  dfixt::Scope makeTime(dfixt::kMake);
   if (!cap.drew) return "not drawn";
   if (cap.refused) return cap.refused;
   if (!cap.raster) return "raster reused";
@@ -517,6 +531,7 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
   s.scissor = cap.scissor;
   s.mainDepth = cap.depth && cap.depth->width == 1280 && cap.depth->height == 720;
   s.absent = cap.absent;
+  s.beginOk = !cap.absent;
   std::copy_n(r + REGADDR::CB_BLEND_RED, 4, s.blend.begin());
   s.stencilFront = r[REGADDR::DB_STENCILREFMASK] & 255;
   s.stencilBack = r[REGADDR::DB_STENCILREFMASK_BF] & 255;
@@ -616,12 +631,21 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
       if (S.source[i] >= 0) S.bufWrite[S.bufCount++] = uint8_t(i);
   }
   // the ambient words: what the draw reads besides the item's effect, the draw's blocks and the primitive
+  MakeMemo* memo = msmemo_on() && in.item->render ? &static_cast<States*>(in.item->render)->memo : nullptr;
+  static std::vector<uint32_t> memoKey;
+  bool memoHit = false;
+  if (memo) {
+    msmemo_key(s, cap, in, memoKey);
+    memoHit = memoKey == memo->key;
+  }
   static std::vector<uint32_t> list;
-  read_regs(cap.vs, cap.ps, cap.fs, list);
+  if (!memoHit) read_regs(cap.vs, cap.ps, cap.fs, list);
   // (and every word the state keeps from the register file, should a group above not hold it)
+  if (!memoHit) {
   for (uint32_t w = 0; w < 4; ++w) list.push_back(REGADDR::CB_BLEND_RED + w);
   list.insert(list.end(), {uint32_t(REGADDR::DB_STENCILREFMASK), uint32_t(REGADDR::DB_STENCILREFMASK_BF),
                            uint32_t(REGADDR::CB_TARGET_MASK), uint32_t(REGADDR::DB_DEPTH_CONTROL)});
+  }
   for (int k = 0; k < 2; ++k) {
     const uint32_t blockBase = k ? mmSQ_PS_UNIFORM_BLOCK_START : mmSQ_VTX_UNIFORM_BLOCK_START;
     // (blocks the draw does not bind: read live through the run, so watched)
@@ -631,16 +655,23 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
         d1::add_watched(w, 2);
       }
     const uint32_t texbase = k ? REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS : REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS;
+    if (!memoHit)
     for (const Tex& x : s.st[k].tex) {
       for (uint32_t w = 0; w < 7; ++w) list.push_back(texbase + x.unit * 7 + w);
       if (x.samplerIndex != ~0u)
         for (uint32_t w = 0; w < 3; ++w) list.push_back(REGADDR::SQ_TEX_SAMPLER_WORD0_0 + x.samplerIndex * 3 + w);
     }
   }
-  std::sort(list.begin(), list.end());
-  list.erase(std::unique(list.begin(), list.end()), list.end());
   s.ambientRegs.clear();
   s.ambientValues.clear();
+  if (memoHit) {  // (MSMEMO) the list kept with the key, its values from R
+    s.ambientRegs = memo->regs;
+    s.ambientValues.resize(s.ambientRegs.size());
+    for (size_t i = 0; i < s.ambientRegs.size(); ++i) s.ambientValues[i] = r[s.ambientRegs[i]];
+    d1::count(d1::cMemoHits);
+  } else {
+  std::sort(list.begin(), list.end());
+  list.erase(std::unique(list.begin(), list.end()), list.end());
   const Item& it = *in.item;
   for (uint32_t reg : list) {
     if (reg >= gx2::kNumRegs || reg == REGADDR::VGT_PRIMITIVE_TYPE) continue;
@@ -667,8 +698,19 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
     s.ambientRegs.push_back(reg);
     s.ambientValues.push_back(r[reg]);
   }
+  if (memo) memo->key = memoKey, memo->regs = s.ambientRegs, memo->splitKept = false;
+  }
   for (uint32_t i = 0; i < in.blockCount; ++i) d1::add_written_block(in.blocks[i].reg);  // (W: before the split)
-  split(s);
+  if (memoHit && memo->splitKept && memo->wGen == d1::g_wGen && memo->values == s.ambientValues) {
+    s.wGen = memo->wGen, s.cls = memo->cls, s.vol = memo->vol, s.volValues = memo->volValues;  // (MSMEMO: split's result)
+    d1::count(d1::cMemoClassKept);
+  } else {
+    split(s);
+    if (memo) {
+      memo->splitKept = true, memo->wGen = s.wGen, memo->values = s.ambientValues;
+      memo->cls = s.cls, memo->vol = s.vol, memo->volValues = s.volValues;
+    }
+  }
 #if J3DDESC_DEPTH
   // (D2) pass 0: the depth family, chosen from what this define resolved (R = the define's register image). Its other
   // inputs (poly offset, clip and mode words) are ambient words or the item's effect: a change makes a new state.
@@ -788,7 +830,9 @@ struct Phases {
     t = n;
   }
 };
-const char* try_replay(State& s, const In& in, bool checkOnly) {
+// BEGINPASS (j3d_desc_passbegin.h): the state was found by the draw's own target lookup; the pass is begun here when it
+// is not the open one (after every check that can still send the draw the translated way)
+const char* try_replay(State& s, const In& in, bool checkOnly, bool beginPass = false) {
   static Phases proto;
   Phases ph = proto;
   ph.t = ph.on ? Phases::now() : 0;
@@ -835,10 +879,18 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
         sample_transition(sf, S.texStages);
     }
   }
+  bool needPass = false;
+  if (beginPass) {  // (draw()'s reusePass test, after its textures)
+    if (g_surface_epoch != epoch) return "texture";
+    needPass = !on_pass(s);
+    for (Surface* c : s.colors) needPass = needPass || (c && c->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+    needPass = needPass || (s.depth && s.depth->layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
+  } else {
   if (g_surface_epoch != epoch || R.renderPassCount != pass || !on_pass(s)) return "texture";
   for (Surface* c : s.colors)
     if (c && c->layout != VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL) return "texture";
   if (s.depth && s.depth->layout != VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL) return "texture";
+  }
   if (checkOnly) return nullptr;
   ph.mark(d1::pTextures);
   // indices (nothing recorded yet: a miss is still a plain translated draw)
@@ -863,6 +915,11 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
       vsize[i] = in.regs[reg + 1] + 1;
       if (!vaddr[i]) return "index";  // (the translated draw raises)
     }
+  }
+  if (needPass) {  // (draw()'s own pass begin; nothing after it sends the draw the translated way but "uniform offset")
+    begin_draw_pass(command_buffer(), s.colors, s.slices, s.depth, s.depthSlice, s.width, s.height);
+    s.passSerial = R.renderPassCount, s.passCmd = R.cmd, s.passSubmission = R.submissionGeneration;
+    d1::count(d1::cPassBegun);
   }
   // (D2) a depth family state: its pipeline, set and offsets in place of the translated ones
   bool familyDraw = false;
@@ -949,7 +1006,12 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
       block_of(S, in, uint32_t(j), addr, size);
       slices[j] = block_upload(addr, size);
     }
-    if (S.support) {
+    if (S.support) {  // (D1TIMING: support build ns per call)
+    dfixt::Scope supTime(dfixt::kSupport);
+    if (support2_on()) {
+      rprof::UploadKind uploads(rprof::kUpUniformVars);
+      slices[16] = support2(S, in);
+    } else {
       if (S.copies.empty() && S.supSubmission == R.submissionGeneration) slices[16] = S.supSlice;
       else {
         rprof::UploadKind uploads(rprof::kUpUniformVars);
@@ -958,6 +1020,7 @@ const char* try_replay(State& s, const In& in, bool checkOnly) {
         slices[16] = snapshot(bytes.data(), bytes.size(), R.properties.limits.minUniformBufferOffsetAlignment);
         if (S.copies.empty()) S.supSubmission = R.submissionGeneration, S.supSlice = slices[16];
       }
+    }
     }
     static std::array<VkWriteDescriptorSet, kWrites> writes;
     static std::array<VkDescriptorBufferInfo, kWrites> buffers;
@@ -1163,6 +1226,7 @@ d1::Count reason_count(const char* why) {
   if (!std::strcmp(why, "uniform offset")) return d1::fOffset;
   return d1::fTexture;
 }
+#include "native_draw/j3d_desc_passbegin.h"  // (WWHD_NATIVE_J3D_DESC_PASSBEGIN=1)
 }  // namespace j3ddescvk
 
 void j3ddesc_clear() {
@@ -1188,6 +1252,7 @@ void j3ddesc_draw(const native_draw::j3ddesc::d1::In& in) {
     native_draw::j3ddesc::depth::frame_end();  // (D2: its counter line every 300 frames)
 #endif
     collect_sets();
+    dfixt::report(R.frame);
     if (R.frame % 600 == 0)
       for (auto& x : g_states) {
         auto& v = x->list;
@@ -1217,6 +1282,8 @@ void j3ddesc_draw(const native_draw::j3ddesc::d1::In& in) {
       break;
     }
   }
+  bool beginPass = false;
+  if (!s && passbegin_on() && !list.empty()) beginPass = (s = passbegin_find(list, in)) != nullptr;
   if (s) s->lastUsed = R.frame;
   if (s && s->refused && R.frame < s->retryFrame) {
     d1::count(d1::fRefusedState);
@@ -1225,7 +1292,7 @@ void j3ddesc_draw(const native_draw::j3ddesc::d1::In& in) {
   }
   bool verify = s && !s->refused && d1::verify_every() && ++g_verifyCounter % d1::verify_every() == 0;
   if (s && !s->refused) {
-    const char* why = try_replay(*s, in, verify);
+    const char* why = try_replay(*s, in, verify, beginPass);
     if (!why && !verify) {
       d1::count(d1::cReplayed);
       d1::push_run(in);
@@ -1235,15 +1302,22 @@ void j3ddesc_draw(const native_draw::j3ddesc::d1::In& in) {
       verify = false;
       d1::count(reason_count(why));
       d1::note(why);
+      d1::note_site(why, *in.item);
     }
   } else if (!s) {
     d1::count(list.empty() ? d1::fNoState : d1::fNoPass);
     d1::note(list.empty() ? "no state" : !R.rendering ? "no pass open" : "no state for the open pass");
+    d1::note_site(list.empty() ? "no state" : !R.rendering ? "no pass open" : "no state for the open pass", *in.item);
   }
   static PacketCapture cap;
+  static Phases fproto;  // (D1TIMING: the fallback's full draw, then its state making)
+  Phases fph = fproto;
+  fph.t = fph.on ? Phases::now() : 0;
   cap = PacketCapture{};
   cap.keepWrites = true;
   full_draw(in, &cap);
+  fph.mark(d1::tFallbackFullNs);
+  struct MakeTimer { Phases& p; ~MakeTimer() { p.mark(d1::tFallbackMakeNs); } } makeTimer{fph};
   if (verify) compare(*s, cap, in.regs, in);
   auto fresh = std::make_unique<State>();
   fresh->lastUsed = R.frame;

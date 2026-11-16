@@ -106,10 +106,18 @@ enum Count : uint32_t {
     fNoState, fNoPass, fRefusedState, fItemRefused, fSurfaces, fBinds, fAmbient, fVolatile, fTexture, fIndex,
     fOffset,
     // (WWHD_NATIVE_J3D_DESC_D1TIMING=1) render-thread ns: described draws (whole), settles
-    tDrawNs, tSettleNs, cInvalidates, cLiveVertex, cVolatileWords, tInvalidateNs, pChecks, pTextures, pIndices, pSets, pRecord, pAfter, tVkNs, cCounts
+    tDrawNs, tSettleNs, cInvalidates, cLiveVertex, cVolatileWords, tInvalidateNs, pChecks, pTextures, pIndices, pSets, pRecord, pAfter, tVkNs,
+    // (WWHD_NATIVE_J3D_DESC_PASSBEGIN=1) described draws that began their pass; refusals: cloud settings, no targets, no
+    // state for the targets, a pass subset draw() could take
+    cPassBegun, cPassBeginClouds, cPassBeginLookup, cPassBeginNoMatch, cPassBeginSubset,
+    // (D1TIMING) us: the translated fallbacks (full draw), their state making and replacement
+    tFallbackFullNs, tFallbackMakeNs,
+    // (MSMEMO) ambient lists taken from the memo, classes kept; (SUPPORT2) support slices built, reused
+    cMemoHits, cMemoClassKept, cSupBuilt, cSupReused, cCounts
 };
 void count(Count c, uint64_t n = 1);
 void note(const char* why);  // (WWHD_NATIVE_J3D_DESC_D1DEBUG=1) a fallback reason
+void note_site(const char* why, const Item& it);  // (_D1DEBUG=2) the same per desc id, pass and env id
 bool debug_on();
 uint32_t verify_every();
 
