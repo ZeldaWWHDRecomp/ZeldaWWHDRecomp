@@ -179,8 +179,10 @@ class Recompiler:
         # build keeps the game's code there and never reads these lists
         hook_list = game_builds.hook_files()
         if decomp_hooks:
-            hook_list += game_builds.decomp_only_hook_files() + [
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "decomp_hostrt_hooks.txt")]
+            hostrt = os.path.join(os.path.dirname(os.path.abspath(__file__)), "decomp_hostrt_hooks.txt")
+            if not os.path.isfile(hostrt):  # (read_hooks skips missing files: a release without it linked nothing)
+                sys.exit("recomp.py --decomp-hooks: %s is missing" % hostrt)
+            hook_list += game_builds.decomp_only_hook_files() + [hostrt]
         hook_entries, self.skipped_hooks = game_builds.read_hooks(hook_list, self.build)
         self.canon_of = {}              # this build's address -> canonical address (for symbol names)
         self.hooks, self.sites = set(), set()

@@ -1632,6 +1632,9 @@ inline void more(Host& h) {
         if (ImGui::Checkbox("Use code mods##code_mods_switch", &code)) mods::code::request(code);
         muted((std::string("Code mods need the game code rebuilt with mod support (") + mods::code::rebuild_duration() +
                ") and a restart. Installing a code mod turns this on by itself.").c_str());
+        // e.g. the decomp version built before code-mod support was switched on (mods::code::startup)
+        if (const auto code_status = mods::code::status(); !code_status.building && !code_status.error.empty())
+            muted(code_status.error.c_str());
         ImGui::Unindent();
     }
     if (section("Save backups")) {

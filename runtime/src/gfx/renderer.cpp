@@ -179,7 +179,12 @@ const Backend* backend_for(Api a) {
 
 Api default_api() {
     if (const ext::PlatformBackend* p = ext::registered(); p && p->make_default) return Api::Platform;
-#ifdef WWHD_HAS_METAL
+#if defined(WWHD_HAS_METAL) && defined(WWHD_DECOMP) && defined(WWHD_HAS_VULKAN)
+    // the decomp version on the Mac (docs/decomp-build.md, user decision 2026-11-16): Vulkan (MoltenVK) by default, so
+    // fast mode's native draw packets (Vulkan only) are used; the normal build keeps Metal. A saved Graphics > Renderer
+    // choice, --renderer and WWHD_RENDERER_RUNTIME still win, and a Vulkan start-up failure falls back to Metal
+    return Api::Vulkan;
+#elif defined(WWHD_HAS_METAL)
     return Api::Metal;
 #else
     return Api::Vulkan;

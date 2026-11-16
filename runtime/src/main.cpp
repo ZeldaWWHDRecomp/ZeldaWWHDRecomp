@@ -52,6 +52,7 @@
 #include "crash_addr.h"
 #include "build_info.h"
 #include "pipeline_runtime_identity.h"
+extern "C" unsigned g_mod_hook_count;  // mods/guest_mods.cpp: set by a game-code build with code-mod support
 #ifdef WWHD_DECOMP
 #include "decomp/decomp.h"
 #endif
@@ -504,7 +505,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--shader-prebuild-library")) shaderprebuild::runtimeLibrary = argv[++i];
     }
 #ifdef WWHD_DECOMP
-    mods::code::startup(argc, argv, true);  // the decomp version: never swapped for the normal game's code-mod build
+    // the decomp version: never swapped for the normal game's code-mod build (g_mod_hook_count: its own code-mod support)
+    mods::code::startup(argc, argv, true, g_mod_hook_count != 0);
 #else
     mods::code::startup(argc, argv);
 #endif
@@ -684,6 +686,18 @@ int main(int argc, char** argv) {
                 result = gfxvk::renderer_smoke_test();
         });
         return result;
+    }
+#endif
+#ifdef WWHD_DECOMP
+    // the decomp version plays only the game as it is (decomp_mods.cpp): a seed chosen on the Randomizer page needs the
+    // normal game (setup starts that one for it); started anyway, it says so and plays the unrandomized game
+    if (const std::string seed = decomp::mods::randomizer_conflict(); !seed.empty()) {
+        LOG("[randomizer] randomized game %s is selected; the decomp version plays the game as it is", seed.c_str());
+        if (ask_player("Wind Waker HD: randomized game",
+                       "The randomized game " + seed + " is selected, but the decomp version plays only the game as it "
+                       "is. To play the randomized game, start Wind Waker HD without the decomp version.",
+                       {"Play the game as it is", "Quit"}) == 1)
+            return 1;
     }
 #endif
     if (randomizer::compiled_seed()) {

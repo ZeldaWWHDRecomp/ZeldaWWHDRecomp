@@ -17,6 +17,7 @@ never the source tree or the submodule) and is rewritten only when it changes:
                     the GOT / an external symbol in both); one file of ~39000 entry points and the slot table takes
                     17-37 min at -O3 (the inliner's cost grows with the table and entry points together), the shards
                     seconds each, in parallel. units.cmake lists the files (WWHD_DECOMP_HOOK_SOURCES)
+  guest_hooked.txt  --guest-hooks (fast mode): the decompiled functions code mods hook, for native_rules.py
   units.cmake       the game units and their source files, for CMakeLists.txt
   units.json        the same for setup (tools/installer/setup.py builds the decomp version)
   glue/N.cpp        per unit: tools/decomp_build/glue.cpp with the unit's name
@@ -493,6 +494,8 @@ def inputs_stamp(argv, src, out, game):
     for d in (HERE, os.path.join(ROOT, "tools", "recomp")):
         files += [os.path.join(d, f) for f in sorted(os.listdir(d)) if os.path.isfile(os.path.join(d, f)) and not hidden(f)]
     files += [os.path.join(ROOT, "tools", "rpx.py")] + ([game] if game else [])
+    if "--guest-hooks" in argv[:-1]:  # (its content: a code-mod set change regenerates hooks.cpp and the rules)
+        files.append(os.path.abspath(argv[argv.index("--guest-hooks") + 1]))
     for p in files:
         h.update(p.encode() + b"\0")
         try:
@@ -503,6 +506,12 @@ def inputs_stamp(argv, src, out, game):
             h.update(b"-")
         h.update(b"\n")
     return h.hexdigest()
+
+
+def guest_hooks(path):
+    """--guest-hooks FILE: hex addresses, one per line (# comments, blank lines)"""
+    with open(path, encoding="utf-8") as fh:
+        return {int(l.split("#")[0].strip(), 16) for l in fh if l.split("#")[0].strip()}
 
 
 HOOK_SHARD = re.compile(r"hooks_(\d+)\.cpp$")
@@ -587,6 +596,9 @@ def _main():
                     help="fast mode: call_ptr / tail_ptr with a cached target per call site (OUT_DIR/hinc)")
     ap.add_argument("--stackarg", action="store_true",
                     help="fast mode: constant-address do_call sites of the stack-argument callees as gabi::do_call_sa")
+    ap.add_argument("--guest-hooks", metavar="FILE",
+                    help="fast mode: the game functions the code mods hook (one hex address per line, # comments): "
+                         "never entered natively (native_rules.py: callee=guest), listed in hooks.cpp (kGuestHooked)")
     ap.add_argument("--hook-shard", type=int, default=0, metavar="N",
                     help="hook_X entry points in files of N (hooks_1.cpp, ...; hooks.cpp keeps the tables); 0: all in "
                          "hooks.cpp")
@@ -730,6 +742,12 @@ def _main():
     fx = sorted(frame_exact(src) & set(listed))
     write_if_changed(os.path.join(out, "frame_exact.txt"), "".join("%08X  # %s %s\n" % (x, owner[x][0], owner[x][1]) for x in fx))
     h += ["};", "const unsigned kNumSlots = %d;" % len(listed)]
+    # --guest-hooks (fast mode): the decompiled functions code mods hook; native_rules.py reads guest_hooked.txt, the
+    # runtime kGuestHooked (decomp_mods.cpp: a hook outside it means this build binds its callers natively)
+    gh = sorted(guest_hooks(a.guest_hooks) & set(listed)) if a.guest_hooks else []
+    write_if_changed(os.path.join(out, "guest_hooked.txt"), "".join("%08X\n" % x for x in gh))
+    h += ["const uint32_t kGuestHooked[] = {%s};" % ", ".join(["0x%08Xu" % x for x in gh] or ["0u"]),
+          "const unsigned kNumGuestHooked = %d;" % len(gh)]
     h += ["const uint32_t kFrameExact[] = {%s};" % ", ".join(["0x%08Xu" % x for x in fx] or ["0u"]),
           "const unsigned kNumFrameExact = %d;" % len(fx), "}  // namespace decomp", "", 'extern "C" {']
     entries = ["void hook_%08X(Cpu* c) { decomp::call(c, %d); }" % (x, i) for i, x in enumerate(listed) if x not in hooks]

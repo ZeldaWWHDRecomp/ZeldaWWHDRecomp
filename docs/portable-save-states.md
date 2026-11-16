@@ -15,6 +15,12 @@ Both live in the states folder (its path is shown in the Saves tab; releases kee
 use `~/Library/Application Support/wwhd/states/` on macOS and the configuration folder elsewhere; `WWHD_STATE_DIR` overrides it). Loading a slot loads whichever kind it holds (the newer file if it
 holds both). Crash Recovery's automatic states are always full states.
 
+Full states also record which kind of build made them: the normal game, the decomp version's plain build or its fast
+mode ([decomp-build.md](decomp-build.md)). Each loads only full states of its own kind and says so for the others
+("full state of the normal game; it loads only there (use a portable state)"); portable states load in all of them.
+Scripted comparisons that load one full state into builds of different kinds (`WWHD_STATE_LOAD_AT`, `WWHD_TEST_LOAD`,
+or `WWHD_STATE_ANY_BUILD=1`) are allowed to.
+
 ## Choosing the kind
 
 - **Save** (Saves tab of the settings overlay, Shift+F1–F5, the macOS Save States menu) makes a

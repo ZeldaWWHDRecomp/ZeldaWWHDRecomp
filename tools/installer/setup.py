@@ -2061,9 +2061,9 @@ def link_with_sdk_fallback(cmd, env):
                      % (os.path.basename(current or "?"), failed))
 
 
-def link_game(tc, manifest, objs, work, out_exe, recipe=None, glue=()):
+def link_game(tc, manifest, objs, work, out_exe, recipe=None, glue=(), extra=()):
     """recipe: another link line than manifest["link"] (the decomp version: decomp_setup.py), whose
-    {decomp_glue} stands for the objects `glue`"""
+    {decomp_glue} stands for the objects `glue`; extra: more link options (the decomp version's whole-image ThinLTO)"""
     lib = os.path.join(work, "libgamecode.a")
     if os.path.exists(lib):
         os.remove(lib)
@@ -2084,6 +2084,7 @@ def link_game(tc, manifest, objs, work, out_exe, recipe=None, glue=()):
         # the runtime libraries the release installs next to the game (manifest runtime_files: the Vulkan
         # loader and MoltenVK) are found there, never in Homebrew or elsewhere on the Mac
         args += ["-Wl,-rpath,@executable_path"]
+    args += list(extra)
     if tc.rsp:
         rsp = os.path.join(work, "link.rsp")
         with open(rsp, "w", encoding="utf-8") as f:
@@ -2493,6 +2494,17 @@ def launch(state, data_dir, decomp=None, game_args=None):
     if decomp is None:
         decomp = bool(state.get("start_decomp"))
     exe = state["exe"]
+    if decomp and state.get("decomp_exe"):
+        # the decomp version plays only the game as it is: a selected randomized game starts the normal game
+        import randomizer_seeds
+        try:
+            playing = randomizer_seeds.load(data_dir).get("playing", "vanilla")
+        except ValueError:
+            playing = "vanilla"
+        if playing not in (None, "", "vanilla"):
+            say("The randomized game %s is selected: starting the normal game (the decomp version plays only the "
+                "game as it is)." % playing)
+            decomp = False
     if decomp and state.get("decomp_exe") and os.path.isfile(state["decomp_exe"]):
         exe = state["decomp_exe"]
         say("Starting the decomp version of the game%s..." % with_options(game_args))
@@ -2885,6 +2897,18 @@ def decomp_wanted(ctx):
     return bool(install_defaults(ctx)[1].get("decomp", False) if choice is None else choice)
 
 
+def decomp_mode(ctx):
+    """"fast" (the default: fast mode) or "plain" (--decomp-plain, for testers); a plain choice is remembered until
+    --decomp without --decomp-plain. A release without fast parts builds the plain build."""
+    if getattr(ctx.args, "decomp_plain", False):
+        mode = "plain"
+    elif getattr(ctx.args, "decomp", None):
+        mode = "fast"
+    else:
+        mode = install_defaults(ctx)[1].get("decomp_mode") or "fast"
+    return mode if decomp_setup.mode_offered(ctx.manifest, mode) else "plain"
+
+
 MODEL_SWEEP_TEXT = (
     "Experimental: after the shaders, start the game hidden, draw every model, room and placed actor once and "
     "visit every stage, so their pipelines are ready before they first appear (fewer hitches in play). About 20 "
@@ -3258,13 +3282,21 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
     if decomp_offered(manifest) and kind != "gen":
         state["decomp"] = want_decomp  # remembered: a repair or update builds it again
         state["start_decomp"] = bool(old_state.get("start_decomp")) and want_decomp
+        if want_decomp:
+            state["decomp_mode"] = decomp_mode(ctx)  # remembered too ("plain": --decomp-plain)
     write_state(data_dir, state)  # the normal game is ready, whatever happens to the decomp version
+    # with code mods: the Story Notebook first (normal game), so the decomp build's mod-hook probe sees it
+    if kind != "gen" and state.get("code_mods") and state.get("exe"):
+        install_story_notebook(state, data_dir)
     if want_decomp:
         begin("decomp")
         try:
-            exe, rev, nunits = decomp_setup.build(sys.modules[__name__], ctx, tc, jobs)
-            state.update(decomp_exe=exe, decomp_revision=rev)
+            # with the install's code-mod choice, as the normal game (the game reports a later switch: code_mods.cpp)
+            exe, rev, nunits, info = decomp_setup.build(sys.modules[__name__], ctx, tc, jobs, mode=state["decomp_mode"],
+                                                        code_mods=bool(state.get("code_mods")))
+            state.update(decomp_exe=exe, decomp_revision=rev, decomp_code_mods=info["code_mods"])
             state.pop("decomp_error", None)
+            state.pop("decomp_stale", None)
         except SetupError as e:
             # the normal game stays as it is: the decomp version is optional
             say("")
@@ -3282,8 +3314,6 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
         old = old_state["decomp_exe"]
         if os.path.isfile(old) and old != state.get("exe"):
             os.remove(old)
-    if kind != "gen" and state.get("code_mods") and state.get("exe"):
-        install_story_notebook(state, data_dir)
     return state
 
 
@@ -3347,8 +3377,10 @@ def main():
     ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists (also --randomize, --import-seed, "
                     "--play-seed)")
     ap.add_argument("--decomp", dest="decomp", action="store_const", const=True, default=None,
-                    help="development builds, macOS: also build the decomp version of the game (experimental; "
-                         "docs/decomp-build.md); remembered for repairs and updates")
+                    help="macOS: also build the decomp version of the game (its fast mode; docs/decomp-build.md); "
+                         "remembered for repairs and updates")
+    ap.add_argument("--decomp-plain", action="store_true",
+                    help="with --decomp (implied): the plain decomp build instead of fast mode (for testing; remembered)")
     ap.add_argument("--no-decomp", dest="decomp", action="store_const", const=False,
                     help="do not build the decomp version (any more)")
     ap.add_argument("--start-decomp", choices=("0", "1"),
@@ -3403,6 +3435,10 @@ def main():
                     help="machine interface for the graphical installer (JSON lines; see tools/installer/README.md)")
     own, GAME_ARGS[:] = split_game_args(sys.argv[1:])
     args = ap.parse_args(own)
+    if args.decomp_plain:
+        if args.decomp is False:
+            ap.error("--decomp-plain and --no-decomp: one at a time")
+        args.decomp = True  # (--decomp-plain implies --decomp)
     try:
         sys.stdout.reconfigure(errors="replace")
     except AttributeError:
@@ -3546,7 +3582,7 @@ def run(args, ui):
     state = ctx.state()
     installed = ctx.installed()
     if getattr(args, "decomp", None) and not decomp_offered(ctx.manifest):
-        raise SetupError("the decomp version is offered on macOS in development builds only (docs/decomp-build.md)")
+        raise SetupError("the decomp version is offered on macOS only so far (docs/decomp-build.md)")
     if getattr(args, "start_decomp", None) is not None:
         on = args.start_decomp == "1"
         if on and not (state.get("decomp_exe") and os.path.isfile(state["decomp_exe"])):
@@ -3558,7 +3594,8 @@ def run(args, ui):
             return 0
     # --decomp / --no-decomp on an installed game: a repair that builds (or drops) the decomp version
     decomp_change = (installed and getattr(args, "decomp", None) is not None
-                     and bool(args.decomp) != bool(state.get("decomp_exe")))
+                     and (bool(args.decomp) != bool(state.get("decomp_exe"))
+                          or (args.decomp and decomp_mode(ctx) != (state.get("decomp_mode") or "plain"))))
     if args.remove_language_source:
         say("Removed %s" % remove_language_source(data_dir, args.remove_language_source))
         return 0
@@ -3791,7 +3828,7 @@ def after_install(ctx, args, ui, state, source):
 #                                        -> sources (the added ones); experimental (docs/language-packs.md)
 #   remove_language_source {region}      -> removed (the folder)
 #   launch       {}                      -> starts the installed game (the decomp version when start_decomp)
-#   start_decomp {on}                    -> start the decomp version from now on (development builds, macOS;
+#   start_decomp {on}                    -> start the decomp version from now on (macOS;
 #                                           install {decomp: true} builds it; hello: decomp_offered, decomp)
 #   quit         {}
 # Keys never leave this process: they are not logged, not echoed, not written to disk.
@@ -3943,7 +3980,7 @@ def gui_main(args):
                   "code_mods": setup_code_mods(ctx),
                   # "Preparing shaders: models (experimental)": opt-in, off by default
                   "model_sweep": model_sweep_wanted(ctx), "model_sweep_text": MODEL_SWEEP_TEXT,
-                  # the decomp version (decomp_setup.py): offered on macOS in development builds only
+                  # the decomp version (decomp_setup.py): offered on macOS releases that bring its parts
                   "decomp_offered": decomp_offered(ctx.manifest), "decomp": decomp_wanted(ctx),
                   "decomp_text": decomp_setup.DECOMP_TEXT, "decomp_docs": decomp_setup.DOCS_URL,
                   "toolchain": ctx.manifest["toolchain"],

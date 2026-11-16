@@ -97,10 +97,6 @@ function(wwhd_decomp_configure)
   if(NOT EXISTS "${WWHD_DECOMP_DIR}/tools/verify/include/gabi.h")
     message(FATAL_ERROR "WWHD_DECOMP: no decompilation in ${WWHD_DECOMP_DIR}; run: git submodule update --init decomp")
   endif()
-  if(WWHD_DECOMP_RUNTIME_ONLY)
-    set(WWHD_DECOMP_UNIT_COUNT 0 PARENT_SCOPE)
-    return()
-  endif()
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   # fast mode: the functions the runtime hooks run their decompiled bodies behind the hook (gen.py --hooked-bodies;
   # WWHD_DECOMP_FAST_HOOKED=OFF keeps them recompiled as in the default decomp build)
@@ -115,6 +111,15 @@ function(wwhd_decomp_configure)
   endif()
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_HCALL)
     list(APPEND gen_extra --hcall)
+  endif()
+  # fast mode with code mods (game code translated with recomp.py --mod-hooks): the game functions the code mods hook,
+  # one hex address per line (setup: the code-mod build's list; WWHD_DECOMP_MOD_HOOKS_PROBE=FILE on a decomp build
+  # writes it). They are never entered natively (gen.py --guest-hooks, native_rules.py callee=guest), so their callers
+  # take the guest call where the mod's check is; empty (default): none, the build as before
+  set(WWHD_DECOMP_GUEST_HOOKS "" CACHE FILEPATH "decomp build, fast mode: the game functions code mods hook (gen.py --guest-hooks)")
+  if(WWHD_DECOMP_FAST AND WWHD_DECOMP_GUEST_HOOKS)
+    list(APPEND gen_extra --guest-hooks "${WWHD_DECOMP_GUEST_HOOKS}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WWHD_DECOMP_GUEST_HOOKS}")
   endif()
   # fast mode: call_ptr / tail_ptr (function pointers, vtables) keep their last target's native entry per call site
   # (gen.py --ptr-ic, gabi.h GABI_PTR_IC) instead of probing the address table on every call
@@ -258,6 +263,12 @@ function(wwhd_decomp_configure)
   endif()
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_STACKARG)  # (gen.py: do_call sites of the stack-argument callees as do_call_sa)
     list(APPEND gen_extra --stackarg)
+  endif()
+  # WWHD_DECOMP_RUNTIME_ONLY (the release's part): no units and no game; the options above are declared all the same,
+  # so wwhd_decomp_link gives the runtime and the recorded unit flags the mode's switches
+  if(WWHD_DECOMP_RUNTIME_ONLY)
+    set(WWHD_DECOMP_UNIT_COUNT 0 PARENT_SCOPE)
+    return()
   endif()
   execute_process(COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/gen.py"
                           "${WWHD_DECOMP_DIR}" "${WWHD_DECOMP_OUT}"
@@ -608,18 +619,26 @@ function(wwhd_decomp_link target)
   if(ANDROID)  # bionic's libc macros that clash with the decompilation's names (android_compat.h)
     list(APPEND opts "SHELL:-include ${CMAKE_SOURCE_DIR}/tools/decomp_build/android_compat.h")
   endif()
+  # WWHD_DECOMP_RUNTIME_ONLY (the release's part, tools/release/package.py --decomp-build): no units; the probe records
+  # how setup compiles a unit (fast mode: with -flto=thin, as the units below), and the runtime gets every target-side
+  # part of the mode below (fast mode's definitions, the native draw sources) as in a full build. The whole-image link
+  # options are setup's own (tools/installer/decomp_setup.py), not in the release's link line.
   if(WWHD_DECOMP_RUNTIME_ONLY)
     add_library(wwhd_decomp_flags OBJECT "${CMAKE_SOURCE_DIR}/tools/decomp_build/flags_probe.cpp")
     target_include_directories(wwhd_decomp_flags PRIVATE ${inc})
-    target_compile_options(wwhd_decomp_flags PRIVATE ${opts})
+    if(WWHD_DECOMP_THINLTO OR (WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_LTO))
+      target_compile_options(wwhd_decomp_flags PRIVATE ${opts} -flto=thin)
+    else()
+      target_compile_options(wwhd_decomp_flags PRIVATE ${opts})
+    endif()
     set_target_properties(wwhd_decomp_flags PROPERTIES CXX_EXTENSIONS OFF EXCLUDE_FROM_ALL ON)
     set_source_files_properties("${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp"
       PROPERTIES INCLUDE_DIRECTORIES "${WWHD_DECOMP_DIR}/tools/verify/include")
     target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
-      "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${CMAKE_SOURCE_DIR}/tools/decomp_build/hooks_none.cpp")
+      "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp_mods.cpp"
+      "${CMAKE_SOURCE_DIR}/tools/decomp_build/hooks_none.cpp")
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
-    return()
-  endif()
+  else()  # (the game units: up to the end of this block)
   # WWHD_DECOMP_THINLTO: ThinLTO inside each unit (its sources and glue are optimised together when `ld -r` merges
   # them; units stay isolated, so nothing is inlined across units or into the runtime)
   set(unit_link "${CMAKE_LINKER}" -r)
@@ -779,8 +798,10 @@ function(wwhd_decomp_link target)
   set_source_files_properties("${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" ${hook_srcs}
     PROPERTIES INCLUDE_DIRECTORIES "${WWHD_DECOMP_DIR}/tools/verify/include")
   target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
-    "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" ${hook_srcs} ${objs})
+    "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp_mods.cpp"
+    ${hook_srcs} ${objs})
   target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
+  endif()  # (WWHD_DECOMP_RUNTIME_ONLY)
   if(WWHD_DECOMP_FAST)  # the runtime's fast-mode parts (runtime/src/decomp)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST=1)
     if(WWHD_DECOMP_FAST_LOCAL)

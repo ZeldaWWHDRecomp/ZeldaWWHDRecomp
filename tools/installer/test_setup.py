@@ -2081,7 +2081,7 @@ class DecompOption(unittest.TestCase):
         for v in ("v0.2.13", "v0.2.13-rc1", "", None, "v0.2.13-devel.", "devel-0123abcd"):
             self.assertFalse(ds.is_dev_version(v), v)
         self.assertTrue(ds.offered(self.DEV, True))
-        self.assertFalse(ds.offered(dict(self.DEV, version="v0.2.13"), True))   # a release
+        self.assertTrue(ds.offered(dict(self.DEV, version="v0.2.13"), True))    # regular releases too (2026-11-16)
         self.assertFalse(ds.offered({k: v for k, v in self.DEV.items() if k != "decomp"}, True))  # no parts
 
     def test_platform_gate(self):
@@ -2103,7 +2103,60 @@ class DecompOption(unittest.TestCase):
         self.assertTrue(self.wanted(self.DEV, None, {"decomp": True}))    # a repair or update remembers it
         self.assertFalse(self.wanted(self.DEV, False, {"decomp": True}))  # --no-decomp
         self.assertFalse(self.wanted(self.DEV, True, {}, mac=False))      # never where it is not offered
-        self.assertFalse(self.wanted(dict(self.DEV, version="v0.2.13"), True, {"decomp": True}))
+        self.assertFalse(self.wanted({k: v for k, v in self.DEV.items() if k != "decomp"}, True, {"decomp": True}))
+
+    def mode(self, manifest, decomp, plain, state):
+        ctx = mock.Mock(manifest=manifest, args=mock.Mock(decomp=decomp, decomp_plain=plain), defaults_dir=None)
+        ctx.state.return_value = state
+        return setup.decomp_mode(ctx)
+
+    def test_mode_fast_by_default(self):
+        fast = dict(self.DEV, decomp={"tree_sha256": "", "fast": {"link": []}})
+        self.assertEqual(self.mode(fast, True, False, {}), "fast")                        # --decomp / the checkbox
+        self.assertEqual(self.mode(fast, True, True, {}), "plain")                        # --decomp-plain
+        self.assertEqual(self.mode(fast, None, False, {"decomp_mode": "plain"}), "plain")  # remembered
+        self.assertEqual(self.mode(fast, True, False, {"decomp_mode": "plain"}), "fast")   # --decomp: fast again
+        self.assertEqual(self.mode(fast, None, False, {}), "fast")
+        self.assertEqual(self.mode(self.DEV, True, False, {}), "plain")  # a release without fast parts
+
+    def test_guest_hooks_default_and_installed(self):
+        ds = setup.decomp_setup
+        with tempfile.TemporaryDirectory() as d:
+            pkg, data = os.path.join(d, "pkg"), os.path.join(d, "data")
+            os.makedirs(os.path.join(pkg, "tools", "decomp_build"))
+            os.makedirs(data)
+            with open(os.path.join(pkg, "tools", "decomp_build", "gen.py"), "w") as f:
+                f.write('ap.add_argument("--guest-hooks")\n')
+            with open(os.path.join(pkg, ds.DEFAULT_HOOKS), "w") as f:
+                f.write("# default\n0202A3B4\n0204938C\n")
+            s = mock.Mock(PKG=pkg)
+            self.assertEqual(ds.guest_hook_args(s, data, "fast", False), ([], []))   # code mods off
+            self.assertEqual(ds.guest_hook_args(s, data, "plain", True), ([], []))   # plain build
+            with open(os.path.join(data, ds.MOD_HOOKS_FILE), "w") as f:
+                f.write("0204938C\n02100000  # an installed mod\n")
+            args, _ = ds.guest_hook_args(s, data, "fast", True)
+            self.assertEqual(args[0], "--guest-hooks")
+            self.assertEqual(ds.read_hook_list(args[1]), {0x0202A3B4, 0x0204938C, 0x02100000})
+            with open(os.path.join(pkg, "tools", "decomp_build", "gen.py"), "w") as f:
+                f.write("# a gen.py without guest hooks\n")
+            self.assertEqual(ds.guest_hook_args(s, data, "fast", True), ([], []))
+
+    def test_fast_args_match_decomp_cmake(self):
+        # decomp_setup's fast mode passes what cmake/Decomp.cmake passes with its default options
+        import re as re_
+        with open(os.path.join(os.path.dirname(os.path.abspath(setup.__file__)), "..", "..", "cmake", "Decomp.cmake")) as f:
+            cm = f.read()
+        default = lambda k: re_.search(r'option\(%s "[^"]*" (ON|OFF)\)' % k, cm).group(1)
+        ds = setup.decomp_setup
+        for opt, arg in (("HOOKED", "--hooked-bodies"), ("HCALL", "--hcall"), ("PTR_IC", "--ptr-ic"),
+                         ("STACKARG", "--stackarg")):
+            self.assertEqual(default("WWHD_DECOMP_FAST_" + opt) == "ON", arg in ds.FAST_GEN_ARGS, opt)
+        for opt, arg in (("HCALL", "--hcall"), ("A3_FN", "--a3-fn"), ("A3_STUB", "--a3-stub"), ("LEAF", "--leaf"),
+                         ("LEAF_BARE", "--bare"), ("BARE_ENTRY", "--bare-entry"), ("NOCHECK", "--unbased"),
+                         ("STACKARG", "--stackarg"), ("ACCESSOR", "--accessor")):
+            self.assertEqual(default("WWHD_DECOMP_FAST_" + opt) == "ON", arg in ds.FAST_RULES_ARGS, opt)
+        self.assertIn('set(WWHD_DECOMP_HOOK_SHARD "%d"' % ds.HOOK_SHARD, cm)
+        self.assertIn('WWHD_DECOMP_FAST_WHOLE_LTO_MIN_RAM_GB "%d"' % (ds.WHOLE_LTO_MIN_RAM >> 30), cm)
 
     def test_steps(self):
         self.assertEqual(setup.plan_steps("installed", True)[-2:], ["shaders", "decomp"])

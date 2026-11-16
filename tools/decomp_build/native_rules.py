@@ -14,6 +14,7 @@ callee=native: a decompiled caller may call it without a guest frame. Any rule t
 keeps the guest call (the reasons say which):
   C1 kept         the recompiler kept it (an instruction hook inside, or not a function entry)
   C2 runtime hook the port hooks it (it is not listed: gen.py excluded it)
+  C2b guest mod hook  a code mod hooks it (fast mode: gen.py --guest-hooks, OUT_DIR/guest_hooked.txt)
   C3 framexact    a unit spec marks it frame-exact (cross-build save states compare its frame)
   C4 may park     only with `strict` (WWHD_DECOMP_PARK_RULE): a path of direct calls (bl, or a tail b into another
                   function or an import stub) or any indirect call (bctrl) reaches a blocking import. By default it is
@@ -772,6 +773,12 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
     hp = os.path.join(out, "hooked.txt")
     if os.path.isfile(hp):
         hooked = {int(x, 16) for x in open(hp, encoding="utf-8").read().split()}
+    # gen.py --guest-hooks (fast mode): functions the code mods hook; never entered natively, so every call reaches the
+    # guest entry, whose recompiled original carries the mod's check (recomp.py --mod-hooks)
+    guest = set()
+    gp = os.path.join(out, "guest_hooked.txt")
+    if os.path.isfile(gp):
+        guest = {int(x, 16) for x in open(gp, encoding="utf-8").read().split()}
     lines, rows = [], []
     for a in sorted(dec):
         r = []
@@ -779,6 +786,8 @@ def rules(src, out, gen_dir, strict=False, decl_path=None, lift=(), a3_fn=False,
             r.append("kept")
         if a in hooked:
             r.append("runtime hook")
+        if a in guest:
+            r.append("guest mod hook")
         if a in fx:
             r.append("framexact")
         note = []
