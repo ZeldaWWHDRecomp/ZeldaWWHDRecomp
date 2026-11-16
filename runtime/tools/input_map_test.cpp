@@ -1955,6 +1955,28 @@ int main() {
     CHECK(background_controllers());
     set_current(Mapping::defaults(), false);
     CHECK(!background_controllers());
+    // the touchpad as the GamePad's touch screen: on by default, saved only when off; a bound touchpad click
+    Mapping pad = Mapping::defaults();
+    CHECK(pad.touchpad_touch && touchpad_touch() && !touchpad_click_bound());
+    CHECK(to_json(pad).find("touchpad_gamepad_touch") == std::string::npos);
+    pad.touchpad_touch = false;
+    CHECK(to_json(pad).find("\"touchpad_gamepad_touch\": false") != std::string::npos);
+    CHECK(from_json(to_json(pad), parsed) && parsed == pad);
+    set_current(pad, false);
+    CHECK(!touchpad_touch());
+    pad = Mapping::defaults();
+    pad.pad[kA] = kPadTouchpad;
+    set_current(pad, false);
+    CHECK(touchpad_click_bound());
+    pad = Mapping::defaults();
+    Mapping::Controller own;
+    own.pad = pad.pad;
+    own.pad[kB] = kPadTouchpad;
+    pad.controllers.push_back(own);
+    set_current(pad, false);
+    CHECK(touchpad_click_bound());
+    set_current(Mapping::defaults(), false);
+    CHECK(touchpad_touch() && !touchpad_click_bound());
     test_files();
     test_virtual_actions();
     test_play_buttons();

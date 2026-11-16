@@ -154,7 +154,9 @@ whole pad is the whole GamePad picture.
 - While the GamePad picture is not on the TV, the first finger or click brings it up (picture-in-picture)
   and does nothing else. It stays while the pad is in use and for 10 seconds after.
 
-A touchpad click bound to a game button in the controls still does that button as well.
+A touchpad click bound to a game button in the controls does that button only: it doesn't touch or bring
+the picture up (the finger is still shown). Settings > Controls > **Touchpad as the GamePad's touch screen**
+(on by default) turns it all off, for a player who rests a thumb on the pad.
 
 ## Controllers and the window focus
 

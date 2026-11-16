@@ -29,6 +29,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 
 #include "input.h"
 #include "input_map.h"
+#include "../blind_touch.h"
 #include "mouse_bindings.h"
 #include "mods/mods.h"
 #include "renderer.h"
@@ -1366,8 +1367,12 @@ PadState read() {
         s.tx = r.input.tx;
         s.ty = r.input.ty;
     }
-    if (!no_host) gfx::display_touchpad(s, g_touchpad.down && !overlay::blocks_input(), g_touchpad.click && !overlay::blocks_input(),
-                                        g_touchpad.x, g_touchpad.y);
+    if (!no_host) {
+        const bool open = !overlay::blocks_input();
+        const TouchpadInput t = touchpad_input(input_map::touchpad_touch(), input_map::touchpad_click_bound(),
+                                               g_touchpad.down && open, g_touchpad.click && open);
+        gfx::display_touchpad(s, t.finger, t.click, g_touchpad.x, g_touchpad.y);
+    }
     if (g_test_touch) s.touch = true, s.tx = g_test_tx, s.ty = g_test_ty;
     // debug: WWHD_LOG_BUTTONS=1 logs every change of the merged button bits
     static const bool log_buttons = getenv("WWHD_LOG_BUTTONS") != nullptr;

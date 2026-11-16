@@ -3038,6 +3038,18 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
             note("%s", why.c_str());
     }
 #endif
+    {
+        const auto cur = input_map::current();
+        bool v;
+        if (check("Touchpad as the GamePad's touch screen", cur.touchpad_touch, &v)) {
+            input_map::Mapping t = cur;
+            t.touchpad_touch = v;
+            input_map::set_current(t);
+        }
+        help("A DualShock 4's or DualSense's touchpad: a finger shows where it is on the GamePad picture and a click\n"
+             "touches there; while the GamePad picture isn't on the TV, the first touch brings it up. A touchpad click\n"
+             "bound to a game button does that button only. Off: the pad does nothing but a bound click.");
+    }
     if (remote_pad::host_supported()) remote_pad_section();
     heading("Menus and background input");
     {

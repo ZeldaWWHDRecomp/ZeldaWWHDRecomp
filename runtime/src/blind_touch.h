@@ -10,6 +10,17 @@ namespace input {
 
 constexpr double kTouchpadShowSeconds = 10;
 
+// What of the pad reaches the rule. Off (Settings > Controls > "Touchpad as the GamePad's touch screen"): nothing. A
+// click bound to a game button in the controls is that button only, as a bound left mouse button is (tv_pointer.h,
+// #315): it neither touches nor brings the picture up, and the finger is still shown.
+struct TouchpadInput {
+    bool finger = false, click = false;
+};
+inline TouchpadInput touchpad_input(bool on, bool click_bound, bool finger, bool click) {
+    if (!on) return {};
+    return {finger, click && !click_bound};
+}
+
 struct BlindTouch {
     bool clicked = false;    // the pad is clicked down
     bool touching = false;   // that click touches the GamePad (else it only brought the picture up)

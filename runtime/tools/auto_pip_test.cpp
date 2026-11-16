@@ -153,6 +153,18 @@ int main() {
         r = v.step(false, true, true, 0);
         assert(r.touch && r.highlight && v.shown_until == 0);  // a picture already up: touches, adds nothing
         assert(v.step(true, true, false, 1).touch);  // a touch lasts while clicked, even if the picture goes
+        // off: nothing reaches the rule; a click bound to a game button is that button only, the finger still shown
+        auto t = input::touchpad_input(false, false, true, true);
+        assert(!t.finger && !t.click);
+        t = input::touchpad_input(true, true, true, true);
+        assert(t.finger && !t.click);
+        t = input::touchpad_input(true, false, true, true);
+        assert(t.finger && t.click);
+        input::BlindTouch bound;
+        bound.step(true, false, true, 0);
+        t = input::touchpad_input(true, true, true, true);
+        r = bound.step(t.finger, t.click, true, 0.1);
+        assert(!r.touch && r.highlight);
     }
     {
         display_set_mode(kDrcOff);

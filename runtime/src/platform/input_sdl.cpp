@@ -27,6 +27,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../input.h"
 #include "../audio_out.h"
 #include "../input_map.h"
+#include "../blind_touch.h"
 #include "../mouse_bindings.h"
 #include "../mods/mods.h"
 #include "../motion/motion.h"
@@ -1438,7 +1439,12 @@ PadState read() {
     s.touch = g_touch;
     s.tx = g_tx;
     s.ty = g_ty;
-    if (!no_host) gfx::display_touchpad(s, g_touchpad && !overlay::blocks_input(), g_touchpad_click && !overlay::blocks_input(), g_touchpad_x, g_touchpad_y);
+    if (!no_host) {
+        const bool open = !overlay::blocks_input();
+        const input::TouchpadInput t = input::touchpad_input(input_map::touchpad_touch(), input_map::touchpad_click_bound(),
+                                                             g_touchpad && open, g_touchpad_click && open);
+        gfx::display_touchpad(s, t.finger, t.click, g_touchpad_x, g_touchpad_y);
+    }
     s.virt |= g_touch_virt.load(std::memory_order_relaxed);  // the on-screen Jump / Moon jump buttons
     s.virt |= k.virt;
     // debug: WWHD_LOG_BUTTONS=1 logs every change of the merged button bits
