@@ -33,10 +33,10 @@
 // are taken as a per-pass snapshot (user decision 1, 2026-11-14): if one changes mid-pass, that draw falls back to the
 // translated path.
 //
-// Switch WWHD_NATIVE_J3D_DESC (with packets on; default 0 = off: nothing described, nothing emitted):
+// Switch WWHD_NATIVE_J3D_DESC (with packets on; fast build default 2; 0 = off: nothing described, nothing emitted):
 //   1  describe and verify (D0): the site keeps every GX2 call and its draw; OP_J3D_DESC_DRAW goes before the site's
 //      binds and the render thread checks it at the site's draw (the next OP_DRAW_INDEXED).
-//   2  (D1, not built yet) described draws: the site makes no GX2 call; the render thread binds and draws from the
+//   2  (D1, the default) described draws: the site makes no GX2 call; the render thread binds and draws from the
 //      records.
 // WWHD_NATIVE_J3D_DESC_VERIFY=N (mode 1; default 1): every Nth described draw is checked (0: none, counters only).
 // WWHD_NATIVE_J3D_DESC_TIMING=1: game-thread cost of the description (key compare, whole hook) in the counter line.

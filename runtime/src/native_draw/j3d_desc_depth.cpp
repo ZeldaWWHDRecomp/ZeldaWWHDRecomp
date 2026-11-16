@@ -35,9 +35,9 @@ constexpr uint32_t kMaxBind = 48;
 constexpr uint32_t kMaxInst = 4;        // slices per instanced draw (the cascade has 3)
 constexpr uint32_t kLayerBinding = 60;  // the instanced variant's layer table {ivec4 fam_layer[kMaxInst]}
 
-bool env_on(const char* n) {
+bool env_on(const char* n, bool fallback = false) {
     const char* e = std::getenv(n);
-    return e && std::atoi(e);
+    return e && *e ? std::atoi(e) != 0 : fallback;
 }
 bool g_layerOutput = false;  // the device writes gl_Layer from the vertex stage (backend hook)
 
@@ -455,7 +455,7 @@ bool same_geometry(const Geometry& a, const Geometry& b) {
 // ---------------------------------------------------------------- switches
 bool on() {
     static const bool v = [] {
-        const bool o = env_on("WWHD_NATIVE_J3D_DESC_DEPTH");
+        const bool o = env_on("WWHD_NATIVE_J3D_DESC_DEPTH", true);  // default on (=0: off)
         if (o) LOG("[j3d-desc-depth] native depth programs for described depth-only J3D draws on (WWHD_NATIVE_J3D_DESC_DEPTH=1%s)",
                    fam::biasfree_on() ? ", bias-free family hashes" : "; WWHD_NATIVE_J3D_DEPTH_BIASFREE=1 recommended");
         return o;

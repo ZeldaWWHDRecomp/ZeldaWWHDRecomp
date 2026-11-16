@@ -23,7 +23,8 @@
 // that is not a canonical depth-only described draw into the same cascade surface (see inst_* below and the D2 section
 // of NATIVE-J3D-DESC.md for the exactness argument).
 //
-// Switches (default off): WWHD_NATIVE_J3D_DESC_DEPTH=1 (with WWHD_NATIVE_J3D_DESC=2), WWHD_NATIVE_J3D_DESC_DEPTH_INST=1.
+// Switches: WWHD_NATIVE_J3D_DESC_DEPTH (with WWHD_NATIVE_J3D_DESC=2; fast build default on, =0 off; with
+// WWHD_NATIVE_J3D_DEPTH_BIASFREE, default on, =0 off), WWHD_NATIVE_J3D_DESC_DEPTH_INST=1 (default off).
 // Counters: one "[j3d-desc-depth]" line per 300 frames.
 #pragma once
 #ifdef WWHD_NATIVE_DRAW

@@ -152,11 +152,11 @@ static void draw_batch_submit() {
   ++drawBatchSubmissions;
 }
 #ifdef WWHD_NATIVE_DRAW
-// WWHD_VK_RECORD_INDIRECT=1 (off by default; MT recording stage 0): a multi-draw or shader-rewrite batch's indirect
+// WWHD_VK_RECORD_INDIRECT (fast build: on by default, =0 turns it off; MT recording stage 0): a multi-draw or shader-rewrite batch's indirect
 // draw also while a recorder captures the commands (the record worker's POD stream, opcode 30, or the exact-preparation
 // capture), instead of one vkCmdDrawIndexed per instance there; the same draws either way
 bool record_indirect() {
-  static const bool on = [] { const char* e = std::getenv("WWHD_VK_RECORD_INDIRECT"); return e && *e == '1'; }();
+  static const bool on = [] { const char* e = std::getenv("WWHD_VK_RECORD_INDIRECT"); return !(e && *e == '0'); }();
   return on;
 }
 #endif

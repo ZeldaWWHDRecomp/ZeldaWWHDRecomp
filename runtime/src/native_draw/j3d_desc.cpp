@@ -35,7 +35,7 @@ namespace native_draw::j3ddesc {
 
 int mode() {
     static const int v = [] {
-        const int m = packets_requested() ? switch_value("WWHD_NATIVE_J3D_DESC", 0) : 0;
+        const int m = packets_requested() ? switch_value("WWHD_NATIVE_J3D_DESC", 2) : 0;
         const int k = m == 1 || m == 2 ? m : 0;
         if (packets_requested() && m)
             LOG("[j3d-desc] J3D material descriptions %s (WWHD_NATIVE_J3D_DESC=%d)",

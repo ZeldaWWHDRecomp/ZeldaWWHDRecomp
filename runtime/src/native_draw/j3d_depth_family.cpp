@@ -136,7 +136,7 @@ bool bias_free(std::string& t, bool pixel) {
 bool biasfree_on() {
     static const bool on = [] {
         const char* e = std::getenv("WWHD_NATIVE_J3D_DEPTH_BIASFREE");
-        const bool v = e && std::atoi(e);
+        const bool v = e && *e ? std::atoi(e) != 0 : true;  // default on (=0: off)
         if (v) LOG("[j3d-depth] structure hashes without the sampler LOD-bias term (WWHD_NATIVE_J3D_DEPTH_BIASFREE=1)");
         return v;
     }();

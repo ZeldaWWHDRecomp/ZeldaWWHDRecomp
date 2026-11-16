@@ -1,5 +1,5 @@
 // native_draw/j3d_desc_msmemo.h: make_state's program-only work memoized per item (WWHD_NATIVE_J3D_DESC_MSMEMO=1, with
-// WWHD_NATIVE_J3D_DESC=2; default off). Included by j3d_desc_vk.h inside namespace gfxvk::j3ddescvk, after State.
+// WWHD_NATIVE_J3D_DESC=2; fast build default on, =0 off). Included by j3d_desc_vk.h inside namespace gfxvk::j3ddescvk, after State.
 // Decomp build, fast mode, WWHD_NATIVE_DRAW=ON only.
 //
 // Exact by construction: the ambient register list (read_regs, the extra words, sort + unique, the filters) is a pure
@@ -10,7 +10,7 @@
 #pragma once
 
 bool msmemo_on() {
-  static const bool v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_MSMEMO", 0) != 0;
+  static const bool v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_MSMEMO", 1) != 0;
   return v;
 }
 struct MakeMemo {

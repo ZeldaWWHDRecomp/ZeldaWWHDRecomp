@@ -1,5 +1,5 @@
 // native_draw/j3d_desc_passbegin.h: J3D described draws that begin their render pass (WWHD_NATIVE_J3D_DESC_PASSBEGIN=1,
-// with WWHD_NATIVE_J3D_DESC=2; default off). Included by j3d_desc_vk.h inside namespace gfxvk::j3ddescvk, after
+// with WWHD_NATIVE_J3D_DESC=2; fast build default on, =0 off). Included by j3d_desc_vk.h inside namespace gfxvk::j3ddescvk, after
 // try_replay. Decomp build, fast mode, WWHD_NATIVE_DRAW=ON only. Exactness argument: NATIVE-J3D-DESC.md section 15.
 //
 // The first J3D draw of a pass (12-17 per frame in every scene measured) found no state matching the open pass: its
@@ -14,7 +14,7 @@
 #pragma once
 
 bool passbegin_on() {
-  static const bool v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_PASSBEGIN", 0) != 0;
+  static const bool v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_PASSBEGIN", 1) != 0;
   return v;
 }
 
