@@ -12,6 +12,7 @@
 #import <VideoToolbox/VideoToolbox.h>
 #import <ImageIO/ImageIO.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <mutex>
@@ -37,6 +38,7 @@ struct Encoder {
 Encoder g_enc;                       // render thread
 std::atomic<int> g_in_flight{0};
 std::atomic<bool> g_force_key{false};
+std::atomic<int> g_divisor{1};
 bool g_was_wanted = false;           // render thread
 
 void put_be32(std::vector<uint8_t>& out, uint32_t v) {
@@ -221,6 +223,8 @@ id<MTLTexture> begin_frame(id<MTLDevice> device, bool srgb, float drc_w, float d
         return nil;
     }
     g_was_wanted = true;
+    static unsigned presents = 0;
+    if (const int n = g_divisor.load(std::memory_order_relaxed); n > 1 && presents++ % unsigned(n)) return nil;
     if (g_in_flight.load() >= kMaxInFlight) return nil;
     // the picture's own shape, at most kMaxWidth wide, even sizes (4:2:0)
     const int w = std::min(int(std::lround(drc_w / 2)) * 2, kMaxWidth);
@@ -237,6 +241,8 @@ id<MTLTexture> begin_frame(id<MTLDevice> device, bool srgb, float drc_w, float d
     g_in_flight.fetch_add(1);
     return CVMetalTextureGetTexture(g_texture);
 }
+
+void set_frame_divisor(int n) { g_divisor.store(std::max(1, n), std::memory_order_relaxed); }
 
 void end_frame(id<MTLCommandBuffer> cb, uint64_t time_ns) {
     if (!g_pixels) return;

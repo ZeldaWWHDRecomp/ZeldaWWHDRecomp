@@ -212,6 +212,7 @@ void context_touch_service();                            // frame boundary (test
 bool context_touch_hide_cluster();  // the game's own button cluster is hidden now (aspect.cpp)
 bool context_touch_aim_latched();   // an item is latched by a tap (no jump buttons then)
 void context_touch_pack(int32_t* out, int n);       // context_touch.h pack (Java)
+void startup_title_tap();  // a tap on the title screen: a short A press (context_touch.cpp)
 int context_touch_assets(const std::string& dir);   // 0 not yet, -1 failed, > 0 generation
 bool context_buttons_on();
 void set_context_buttons_on(bool on);

@@ -15,11 +15,17 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 // Q = L, E = R, Left Shift = ZL, C = ZR, Enter = +, Tab = -, H = Home, 1-4 = D-pad up/down/left/right,
 // X = L-stick click, V = R-stick click; controllers use button positions (Xbox "A" = Wii U B),
 // switchable to by-label with input_map::FaceLayout (issue #78).
+#ifdef WWHD_TVOS
+// Apple TV: controllers, haptics and motion as on the Mac; no keyboard monitor, the app counts as active
+#import <UIKit/UIKit.h>
+#include "../platform/keycodes.h"
+#else
 #import <AppKit/AppKit.h>
+#include <Carbon/Carbon.h>  // kVK_* key codes
+#endif
 #import <GameController/GameController.h>
 #import <CoreHaptics/CoreHaptics.h>
 #import <QuartzCore/QuartzCore.h>  // CACurrentMediaTime
-#include <Carbon/Carbon.h>  // kVK_* key codes
 
 #include <cmath>
 #include <atomic>
@@ -38,6 +44,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../rumble.h"
 #include "../motion/motion.h"
 #include "../remote_pad/remote_pad.h"
+#include "display_modes.h"
 #include "../overlay/overlay.h"
 #include "../overlay/release_gate.h"
 #include "../fixed_seed.h"
@@ -472,8 +479,12 @@ static std::string pad_name(GCController* c) {
 
 // every mappable controller input, 0..1, the strongest over all connected controllers
 void controller_values(float* v) {
+#ifdef WWHD_TVOS
+    g_gameplay_focus.store(true, std::memory_order_relaxed);
+#else
     g_gameplay_focus.store(NSApp.isActive && NSApp.keyWindow && !NSApp.modalWindow &&
                           !NSApp.keyWindow.sheetParent, std::memory_order_relaxed);
+#endif
     using namespace input_map;
     for (int i = 0; i < kPadCount; i++) v[i] = 0;
     for (const auto& [id, d] : devices_values())
@@ -596,6 +607,21 @@ static void haptic_invalidated(GCController* controller, CHHapticEngine* engine)
         h.ready = false;
         h.retry_after = CACurrentMediaTime() + 0.1;
         break;
+    }
+}
+// A controller's buttons reach the game instead of a system gesture: the screenshot / recording one sits on Share
+// (Xbox) or on Options (a PlayStation controller's Create). Home (the PS / Xbox button) stays the system's.
+static void claim_buttons(GCController* c) {
+    if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
+        std::string claimed;
+        for (NSString* name in @[GCInputButtonShare, GCInputButtonOptions, GCInputButtonMenu]) {
+            GCControllerButtonInput* b = c.physicalInputProfile.buttons[name];
+            if (!b) continue;
+            b.preferredSystemGestureState = GCSystemGestureStateDisabled;
+            claimed += std::string(claimed.empty() ? "" : ", ") + name.UTF8String;
+        }
+        if (!claimed.empty())
+            LOG("[input] %s: %s for the game, not the system's gestures", (c.vendorName ?: @"controller").UTF8String, claimed.c_str());
     }
 }
 static void haptic_start(GCController* c) {
@@ -736,6 +762,7 @@ void shutdown_rumble() {
 // so it does not touch CoreHaptics; the engines stop with the process.
 void stop_rumble_now() {}
 
+#ifndef WWHD_TVOS
 // modifier keys arrive as flagsChanged; the device-dependent bits tell left from right
 static bool modifier_down(uint16_t code, NSEventModifierFlags f) {
     switch (code) {
@@ -823,6 +850,10 @@ static void start_test_keys() {
     }];
 }
 
+#else
+static void start_test_keys() {}
+#endif
+
 // ---- motion sensors (motion/motion.h) ----
 // GameController.framework reports the gyro and accelerometer of DualSense, DualShock 4, Switch Pro and
 // Joy-Con controllers (macOS 11+). Its frame (as CoreMotion's, for a controller lying flat): x right, y
@@ -858,8 +889,8 @@ static void update_motion_sensors() API_AVAILABLE(macos(11.0)) {
             [active addObject:c];
             if (m.sensorsRequireManualActivation) m.sensorsActive = YES;
             const uint64_t id = (uint64_t)(uintptr_t)(__bridge void*)c;
+            // samples go on while Settings is open (as SDL's do): its gyro status and calibration need them
             m.valueChangedHandler = ^(GCMotion* mm) {
-                if (overlay::blocks_input()) return;
                 GCRotationRate r = mm.rotationRate;
                 GCAcceleration a = mm.hasGravityAndUserAcceleration
                                        ? GCAcceleration{mm.gravity.x + mm.userAcceleration.x, mm.gravity.y + mm.userAcceleration.y,
@@ -896,6 +927,7 @@ void init() {
 #endif
     remote_pad::set_host_supported();  // Settings > Controls offers the iPhone GamePad
     remote_pad::start_from_env();      // WWHD_REMOTE_PAD=1 keeps it on (else the setting decides)
+#ifndef WWHD_TVOS
     NSEventMask mask = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
         // keep Cmd-Q etc.; in an overlay text field the editing shortcuts (Cmd+A/C/V/X/Z) go to the overlay
@@ -953,17 +985,19 @@ void init() {
                                                       object:nil queue:nil usingBlock:^(NSNotification*) {
         release_keys();
     }];
+#endif
     apply_background_controllers();  // before discovery; the poll below follows later changes
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
     g_connect_order = [NSMutableArray array];
-    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); log_controller(c); }
+    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); log_controller(c); claim_buttons(c); }
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
     [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
         GCController* c = n.object;
         if (c && ![g_connect_order containsObject:c]) [g_connect_order addObject:c];
         log_controller(c);
         haptic_start(c);
+        claim_buttons(c);
         note_dominant_labels();
     }];
     [nc addObserverForName:GCControllerDidDisconnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
@@ -980,7 +1014,11 @@ void init() {
         // one gate per controller as on the SDL host (overlay/release_gate.h, issue #153); the overlay
         // polls the Home / Select shortcut on its frame (and the platform shortcuts: an input one took
         // counts as captured, overlay/extensions.h)
+#ifdef WWHD_TVOS
+        g_window_focus.store(true, std::memory_order_relaxed);
+#else
         g_window_focus.store(NSApp.isActive, std::memory_order_relaxed);
+#endif
         apply_background_controllers();
         static overlay::DeviceGates<uintptr_t> gates;
         std::vector<GCController*> pads;
@@ -1385,6 +1423,13 @@ PadState read() {
         s.ty = r.input.ty;
     }
     if (g_test_touch) s.touch = true, s.tx = g_test_tx, s.ty = g_test_ty;
+    // Plus pressed: the pause view (display_modes.h) may show the GamePad picture while the game's menu is open
+    {
+        static bool plus = false;
+        const bool now = (s.buttons & input::kPlus) != 0;
+        if (now && !plus && !overlay::blocks_input()) gfx::display_plus_pressed();
+        plus = now;
+    }
     // debug: WWHD_LOG_BUTTONS=1 logs every change of the merged button bits
     static const bool log_buttons = getenv("WWHD_LOG_BUTTONS") != nullptr;
     static uint32_t last_buttons = 0;
@@ -1403,6 +1448,12 @@ PadState read() {
     return s;
 }
 
+#ifdef WWHD_TVOS
+// (the in-game text prompt of the settings overlay is the normal path; this fallback declines)
+void prompt_text(const std::u16string&, int, std::function<void(bool ok, std::u16string text)> done) {
+    done(false, std::u16string());
+}
+#else
 void prompt_text(const std::u16string& initial, int max_len,
                  std::function<void(bool ok, std::u16string text)> done) {
     NSString* init = [NSString stringWithCharacters:(const unichar*)initial.data() length:initial.size()];
@@ -1433,5 +1484,6 @@ void prompt_text(const std::u16string& initial, int max_len,
         else finish([alert runModal]);
     });
 }
+#endif
 
 }  // namespace input

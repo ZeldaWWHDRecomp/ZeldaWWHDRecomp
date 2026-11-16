@@ -66,6 +66,9 @@ inline ProcessResult run_process(const std::vector<std::string>& args,const std:
     CloseHandle(read);WaitForSingleObject(pi.hProcess,INFINITE);DWORD code=1;
     GetExitCodeProcess(pi.hProcess,&code);CloseHandle(pi.hThread);CloseHandle(pi.hProcess);
     result.code=int(code);
+#elif defined(WWHD_TVOS)
+    (void)args;(void)directory;(void)capture;
+    result.error="Tools cannot run on Apple TV";
 #else
     int pipefd[2];if(pipe(pipefd)){result.error="cannot create tool output pipe";return result;}
     fcntl(pipefd[0],F_SETFD,FD_CLOEXEC);fcntl(pipefd[1],F_SETFD,FD_CLOEXEC);
