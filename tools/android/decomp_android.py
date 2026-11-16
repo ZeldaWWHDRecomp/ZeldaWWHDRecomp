@@ -91,7 +91,10 @@ class Host:
     def tool_command(self, name):
         """a tool name a Python tool runs -> its command on the device, or None"""
         if name in ("clang++", "c++"):
-            return list(self.compiler["cxx"])
+            # (decl_lint's -fsyntax-only pass: as the game units on Android, with android_compat.h first, which keeps
+            # bionic's bzero / bcopy macros and stdio's remove() out of the decompilation's names; cmake/Decomp.cmake)
+            return list(self.compiler["cxx"]) + ["-include", os.path.join(self.PKG, "tools", "decomp_build",
+                                                                          "android_compat.h")]
         if name in ("clang", "cc"):
             return list(self.compiler["cc"])
         if name in self.DECOMP_TOOLS:

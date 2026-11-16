@@ -76,7 +76,9 @@ def decomp_tool_files(root):
     desktop = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(desktop)
     files = [root / rel for rel in desktop.DECOMP_TOOLS]
-    files += [root / "tools/android/decomp_android.py"]
+    files += [root / "tools/android/decomp_android.py",
+              # pre-included into every game unit on Android (the release's unit flags) and decl_lint's check
+              root / "tools/decomp_build/android_compat.h"]
     files += sorted(p for p in (root / "runtime/include").rglob("*") if p.is_file())
     files += sorted(p for p in (root / "runtime/src").rglob("*.cpp")
                     if "HLE(" in p.read_text(encoding="utf-8", errors="replace"))

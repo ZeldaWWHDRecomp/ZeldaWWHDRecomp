@@ -46,7 +46,8 @@ class HostTests(unittest.TestCase):
         r = self.host.subprocess_run(["clang++", "-fsyntax-only", "a.cpp"], cwd="/w", capture_output=True, text=True)
         cmd = self.calls[-1][0]
         self.assertEqual(cmd[:4], [decomp_android.SHELL, "-c", 'cd "$0" && exec "$@"', "/w"])
-        self.assertEqual(cmd[4:], COMPILER["cxx"] + ["-fsyntax-only", "a.cpp"])
+        self.assertEqual(cmd[4:], COMPILER["cxx"] + ["-include", str(self.root / "tools/decomp_build/android_compat.h"),
+                                                     "-fsyntax-only", "a.cpp"])
         self.assertEqual((r.returncode, r.stdout, r.stderr), (0, "out\n", "err\n"))
 
     def test_unknown_tools_are_missing(self):
