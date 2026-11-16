@@ -7,6 +7,20 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp version: fast mode, every macOS release, and code mods** (#597). Setup's "Also build the decomp version
+  (experimental)" is now offered in regular macOS releases, not only development builds, and builds the decomp
+  build's fast mode (about 40 to 80 minutes more on a busy Mac, less on a quiet one; setup asks for 4 GB free while
+  it builds, about 800 MB stay). The decomp version starts with Vulkan (MoltenVK), where its native renderer works;
+  a saved renderer choice still wins, and the normal game keeps Metal. Code mods now work in the decomp version: it
+  follows setup's "Build with code-mod support" choice, the Story Notebook and catalogue code mods load as in the
+  normal game, and switching code mods in Settings > Mods rebuilds the decomp version too and restarts it. A
+  randomized game plays in the normal game only: with a seed selected, setup starts the normal game, and the decomp
+  version started directly says so and plays the game as it is. Known issue: with the decomp version on MoltenVK the
+  graphics device was lost in 1 of 5 test runs; if that happens, choose Metal in Settings > Graphics > Renderer.
+- **Full save states remember which version made them** (#597). A full state saved in the decomp version loads only
+  in the decomp version, and the other way round; a portable state moves between them. The normal game's states are
+  unchanged.
+- **Fixed: setup could not build the decomp version** (#597): two files it needs were missing from releases.
 - **Fixed: sky and light colour changes ran too fast with frame interpolation** (#595). At 60 and 120 fps the weather
   and palette colour changes, the day/night light fade, the room and sea light blends and the item-get and arrow light
   flashes ran 2x (60 fps) to 4x (120 fps) too fast, because the in-between frames advanced them too. They now run at
