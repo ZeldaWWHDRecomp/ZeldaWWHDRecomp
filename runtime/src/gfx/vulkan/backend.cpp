@@ -76,7 +76,7 @@ extern "C" int __llvm_profile_write_file(void);
 #include "present.h"
 #include "present_worker.h"
 #include "reproj.h"
-#include "hidden_tv.h"  // WWHD_VK_SKIP_HIDDEN_TV (gpusave, off by default)
+#include "hidden_tv.h"  // WWHD_VK_SKIP_HIDDEN_TV (gpusave, on by default)
 #include "android_isolated_presenter.h"
 #include "presentation_queue.h"
 #include "gfx/display.h"

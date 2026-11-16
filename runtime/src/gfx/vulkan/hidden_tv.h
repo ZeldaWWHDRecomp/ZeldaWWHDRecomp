@@ -1,5 +1,5 @@
 #pragma once
-// The TV picture nobody sees (gpusave). WWHD_VK_SKIP_HIDDEN_TV=1 (off by default): while no output shows the TV
+// The TV picture nobody sees (gpusave). WWHD_VK_SKIP_HIDDEN_TV (on by default; =0 turns it off): while no output shows the TV
 // picture (the presenter's actual layout of the previous frame: no surface drew the TV scan in a non-empty box; e.g.
 // One screen (handheld) mode in Off-TV Play, where the TV buffer holds only the game's "playing on the GamePad"
 // screen), the game's TV copy to the scan buffer (copy_to_scan target 1: a 1080p resample) is left pending instead of

@@ -15,9 +15,10 @@ namespace {
 int mode() {
     static const int m = [] {
         const char* e = std::getenv("WWHD_VK_SKIP_HIDDEN_TV");
-        const int v = e && *e ? std::atoi(e) : 0;
+        const int v = e && *e ? std::atoi(e) : 1;  // on by default; WWHD_VK_SKIP_HIDDEN_TV=0 turns it off
         if (v) LOG("[hidden tv] on: the TV copy to the scan waits while no output shows the TV picture%s",
                    v == 2 ? " (test: frame dumps write the older TV scan)" : "");
+        else LOG("[hidden tv] off (WWHD_VK_SKIP_HIDDEN_TV=0): the TV copy to the scan is recorded every frame");
         return v;
     }();
     return m;
