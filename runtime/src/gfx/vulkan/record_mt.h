@@ -71,7 +71,11 @@ bool skip_draw_batch();
 bool native_present_default();
 
 // --- POD extension commands (pod_commands.cpp opcode 31) ---
-enum class Ext : uint32_t { SlotReset = 1, DefineSet = 2, BindFuture = 3 };
+enum class Ext : uint32_t { SlotReset = 1, DefineSet = 2, BindFuture = 3
+#if defined(WWHD_DECOMP_FAST)
+                            , PardecideDesc = 4  // (native_draw/pardecide_ops.h)
+#endif
+};
 // append one extension command (sub-opcode + payload) to STREAM; false: rejected (the caller drains and does the
 // work inline)
 bool append(PodCommands& stream, Ext op, std::span<const std::byte> payload);

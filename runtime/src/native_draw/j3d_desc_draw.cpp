@@ -1,5 +1,8 @@
 // Native J3D material descriptions, stage D1, render side (gx2/native_j3d_desc_draw.h). Decomp build, fast mode,
 // WWHD_NATIVE_DRAW=ON only.
+#if defined(WWHD_DECOMP_FAST)
+#include "native_draw/pardecide_ops.h"
+#endif
 #include "../../third_party/cemu/cemu_shim.h"  // (as the gx2 sources get it: -include; for gx2_regs.h)
 #include "gx2/native_j3d_desc_draw.h"
 #include "gx2/native_draw.h"
@@ -479,6 +482,9 @@ void draw(uint32_t* regs, Apply apply, const uint32_t* p, uint32_t n) {
 
 void frame_end() {
     ++g_frames;
+#if defined(WWHD_DECOMP_FAST)
+    if (::native_draw::pardecide::level() && g_frames % 300 == 0) ::native_draw::pardecide::report(300.0);
+#endif
     if (timing_on() && g_frames % 300 == 0) {  // (any mode) the render thread's CPU time per frame, last 300 frames
         static uint64_t last = 0;
         timespec ts{};
