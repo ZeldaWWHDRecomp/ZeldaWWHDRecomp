@@ -1831,6 +1831,16 @@ static void after_pass(int phase) {
         }
         return;
     }
+    // test aid: WWHD_TEST_DROP_STEPS=n drops the in-between passes (the record pass included) of every n-th logic step
+    // after its logic pass, as pacing does when a step runs late, but at fixed steps (tests of what the next step's
+    // logic finds after a blended pass)
+    static const uint64_t drop_every = getenv("WWHD_TEST_DROP_STEPS") ? strtoull(getenv("WWHD_TEST_DROP_STEPS"), nullptr, 10) : 0;
+    if (drop_every && phase == 0 && g_logic_steps % drop_every == 0) {
+        g_hold_next = false;
+        g_wait_step = g_drop_lead = false;
+        if (pacing) paced_step_done(g_step_holds);
+        return;
+    }
     if (!pacing) { g_hold_next = true; g_wait_step = g_drop_lead = false; return; }
     if (phase > 0) g_last_hold = pace_clock::now();
     const auto now = pace_clock::now();
