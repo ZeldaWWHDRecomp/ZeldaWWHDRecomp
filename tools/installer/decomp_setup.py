@@ -38,7 +38,11 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 
-import decomp_platform
+# Its own folder, for decomp_platform: the release's embeddable Python (._pth, isolated) doesn't put a script's folder on
+# sys.path (tools/release/test_shipped_tools.py).
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import decomp_platform  # noqa: E402
 
 DECOMP_TEXT = (
     "Builds a second version of the game in which the game functions of the public decompilation "
