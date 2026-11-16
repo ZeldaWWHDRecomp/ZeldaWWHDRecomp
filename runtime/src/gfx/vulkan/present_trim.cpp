@@ -105,8 +105,12 @@ int env_int(const char* name) {
 
 uint32_t mask() {
     static const uint32_t m = [] {
-        const uint32_t v = uint32_t(std::max(0, env_int("WWHD_VK_PRESENT_TRIM"))) & (kShader | kBars | kClear | kHidden);
-        if (v) LOG("[present trim] on: mask %u (plain shader %s, bars per vertex %s, no clear when covered %s, hidden quads "
+        // on by default (all bits); WWHD_VK_PRESENT_TRIM=0 runs the old composition code, another value picks bits
+        const char* e = std::getenv("WWHD_VK_PRESENT_TRIM");
+        const uint32_t all = kShader | kBars | kClear | kHidden;
+        const uint32_t v = e && *e ? uint32_t(std::max(0, env_int("WWHD_VK_PRESENT_TRIM"))) & all : all;
+        if (v == 0) LOG("[present trim] off (WWHD_VK_PRESENT_TRIM=0)");
+        else if (v != all) LOG("[present trim] on: mask %u (plain shader %s, bars per vertex %s, no clear when covered %s, hidden quads "
                    "skipped %s)", v, v & kShader ? "on" : "off", v & kBars ? "on" : "off", v & kClear ? "on" : "off",
                    v & kHidden ? "on" : "off");
         return v;

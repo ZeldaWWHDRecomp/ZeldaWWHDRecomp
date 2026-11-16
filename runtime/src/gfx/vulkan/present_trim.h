@@ -1,5 +1,6 @@
 #pragma once
-// Cheaper window composition (gpusave A2). WWHD_VK_PRESENT_TRIM=<mask> (off by default; 7 = all), pixel-identical:
+// Cheaper window composition (gpusave A2). WWHD_VK_PRESENT_TRIM=<mask> (on by default = 15, all bits;
+// 0 = off), pixel-identical:
 //
 //   1 plain picture shader: a picture quad without FXAA, sharp filtering, the smooth filter's 4-tap footprint, a
 //     backdrop or HDR (the phone's default: smooth filter, FXAA off) is drawn by a shader that samples once and only
@@ -12,7 +13,7 @@
 //
 // Diagnostics (not pixel-identical, off by default): WWHD_VK_PRESENT_LOG=N logs every N-th composition's quads and
 // overlay draw data; WWHD_VK_PRESENT_NO_OVERLAY=1 leaves the window overlay out (its GPU cost by difference).
-// Off: present.cpp runs its old code (each hook is behind present_trim::mask()).
+// WWHD_VK_PRESENT_TRIM=0: present.cpp runs its old code (each hook is behind present_trim::mask()).
 #include "present.h"
 #include <cstdint>
 #include <vector>
