@@ -21,6 +21,8 @@ Slot g_slots[] = {{0u, 0, "", nullptr}};
 const unsigned kNumSlots = 0;
 const uint32_t kFrameExact[] = {0u};
 const unsigned kNumFrameExact = 0;
+const uint32_t kGuestHooked[] = {0u};
+const unsigned kNumGuestHooked = 0;
 }  // namespace decomp
 
 #ifdef WWHD_DECOMP_FAST

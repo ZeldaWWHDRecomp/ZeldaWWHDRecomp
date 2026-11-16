@@ -10,6 +10,7 @@
 #pragma once
 #include <cstdint>
 #include <cstring>
+#include <string>
 
 #include "decomp/call_lr.h"
 #include "ppc.h"  // g_mod_hook_flags
@@ -43,6 +44,20 @@ extern const unsigned kNumSlots;
 // a unit spec of the decompilation: cross-build save states compare the parked threads' chains)
 extern const uint32_t kFrameExact[];
 extern const unsigned kNumFrameExact;
+// fast mode: the decompiled functions the code mods hooked when this build was made (gen.py --guest-hooks; their
+// callers take the guest call, so a guest mod's hook on them fires); decomp_mods.cpp checks the hooks against it
+extern const uint32_t kGuestHooked[];
+extern const unsigned kNumGuestHooked;
+namespace mods {  // decomp_mods.cpp
+// at decomp::init, after the guest mods registered: true when a hooked function is missing from kGuestHooked (fast
+// mode; every game function then runs recompiled this start); WWHD_DECOMP_MOD_HOOKS_PROBE=FILE writes the hooks, exits
+bool decide();
+bool all_recompiled();
+// decomp_mod_hooked after init: a fast build stops when a natively entered function is hooked late
+void late_hook(uint32_t addr, bool native);
+// the seed the in-app randomizer plays now (randomizer/seeds.json), empty for the game as it is
+std::string randomizer_conflict();
+}  // namespace mods
 
 // sets up the slots (environment, guest mods, frames); main.cpp, after the game's code is loaded and
 // the guest mods are registered, before any guest thread runs

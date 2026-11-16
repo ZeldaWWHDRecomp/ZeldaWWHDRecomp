@@ -765,6 +765,7 @@ extern "C" void decomp_mod_hooked(uint32_t ordinal) {
     const uint32_t addr = g_recomp_funcs[ordinal].addr;
     Slot* s = std::lower_bound(g_slots, g_slots + kNumSlots, addr, [](const Slot& x, uint32_t v) { return x.addr < v; });
     if (s != g_slots + kNumSlots && s->addr == addr) {
+        mods::late_hook(addr, (ok[s - g_slots] & 1) != 0);
         __atomic_store_n(&ok[s - g_slots], 0, __ATOMIC_RELAXED);
         if (GabiNativeEntry* ne = g_decomp_native_entry) __atomic_store_n(&ne[s - g_slots].sig, 0u, __ATOMIC_RELAXED);
     }
@@ -970,6 +971,8 @@ void init() {
         else excl.insert((uint32_t)strtoul(w.c_str(), nullptr, 16));
     }
     std::set<uint32_t> kept(g_recomp_decomp_kept, g_recomp_decomp_kept + g_recomp_decomp_kept_count);
+    // code mods (decomp_mods.cpp): a fast build that does not know a hooked function runs everything recompiled
+    if (mods::decide()) std::fill(unit_on.begin(), unit_on.end(), 0);
     unsigned on = 0, missing = 0, modded = 0, units = 0;
     std::vector<char> unit_used(kNumUnits, 0);
     for (unsigned i = 0; i < kNumSlots; i++) {

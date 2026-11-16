@@ -112,6 +112,15 @@ function(wwhd_decomp_configure)
   if(WWHD_DECOMP_FAST AND WWHD_DECOMP_FAST_HCALL)
     list(APPEND gen_extra --hcall)
   endif()
+  # fast mode with code mods (game code translated with recomp.py --mod-hooks): the game functions the code mods hook,
+  # one hex address per line (setup: the code-mod build's list; WWHD_DECOMP_MOD_HOOKS_PROBE=FILE on a decomp build
+  # writes it). They are never entered natively (gen.py --guest-hooks, native_rules.py callee=guest), so their callers
+  # take the guest call where the mod's check is; empty (default): none, the build as before
+  set(WWHD_DECOMP_GUEST_HOOKS "" CACHE FILEPATH "decomp build, fast mode: the game functions code mods hook (gen.py --guest-hooks)")
+  if(WWHD_DECOMP_FAST AND WWHD_DECOMP_GUEST_HOOKS)
+    list(APPEND gen_extra --guest-hooks "${WWHD_DECOMP_GUEST_HOOKS}")
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${WWHD_DECOMP_GUEST_HOOKS}")
+  endif()
   # fast mode: call_ptr / tail_ptr (function pointers, vtables) keep their last target's native entry per call site
   # (gen.py --ptr-ic, gabi.h GABI_PTR_IC) instead of probing the address table on every call
   option(WWHD_DECOMP_FAST_PTR_IC "decomp build, fast mode: per-call-site cache of call_ptr / tail_ptr targets" ON)
@@ -626,7 +635,8 @@ function(wwhd_decomp_link target)
     set_source_files_properties("${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp"
       PROPERTIES INCLUDE_DIRECTORIES "${WWHD_DECOMP_DIR}/tools/verify/include")
     target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
-      "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${CMAKE_SOURCE_DIR}/tools/decomp_build/hooks_none.cpp")
+      "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp_mods.cpp"
+      "${CMAKE_SOURCE_DIR}/tools/decomp_build/hooks_none.cpp")
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
   else()  # (the game units: up to the end of this block)
   # WWHD_DECOMP_THINLTO: ThinLTO inside each unit (its sources and glue are optimised together when `ld -r` merges
@@ -788,7 +798,8 @@ function(wwhd_decomp_link target)
   set_source_files_properties("${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" ${hook_srcs}
     PROPERTIES INCLUDE_DIRECTORIES "${WWHD_DECOMP_DIR}/tools/verify/include")
   target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp.cpp"
-    "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" ${hook_srcs} ${objs})
+    "${CMAKE_SOURCE_DIR}/runtime/src/decomp/frames.cpp" "${CMAKE_SOURCE_DIR}/runtime/src/decomp/decomp_mods.cpp"
+    ${hook_srcs} ${objs})
   target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
   endif()  # (WWHD_DECOMP_RUNTIME_ONLY)
   if(WWHD_DECOMP_FAST)  # the runtime's fast-mode parts (runtime/src/decomp)

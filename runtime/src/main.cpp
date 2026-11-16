@@ -688,6 +688,18 @@ int main(int argc, char** argv) {
         return result;
     }
 #endif
+#ifdef WWHD_DECOMP
+    // the decomp version plays only the game as it is (decomp_mods.cpp): a seed chosen on the Randomizer page needs the
+    // normal game (setup starts that one for it); started anyway, it says so and plays the unrandomized game
+    if (const std::string seed = decomp::mods::randomizer_conflict(); !seed.empty()) {
+        LOG("[randomizer] randomized game %s is selected; the decomp version plays the game as it is", seed.c_str());
+        if (ask_player("Wind Waker HD: randomized game",
+                       "The randomized game " + seed + " is selected, but the decomp version plays only the game as it "
+                       "is. To play the randomized game, start Wind Waker HD without the decomp version.",
+                       {"Play the game as it is", "Quit"}) == 1)
+            return 1;
+    }
+#endif
     if (randomizer::compiled_seed()) {
         // An in-app seed plays its changed files over the installed game (setup --randomize); a seed
         // installed as a whole output folder is the game folder itself.

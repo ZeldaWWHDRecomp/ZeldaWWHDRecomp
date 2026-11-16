@@ -38,8 +38,8 @@ version), except:
   the Classic Wind Waker points in procTactWait and endDemoMode, and Link's player code: quick use, camera-directed
   items, the movement mods, climbing and steering. Such a point runs the hook's own handler
   (`runtime/src/port_points.h`), so the feature behaves the same in both builds;
-- functions a guest code mod hooks or replaces (they stay recompiled while that mod is on, so the mod
-  keeps working).
+- functions a code mod hooks or replaces (they stay recompiled while that mod is on, so the mod
+  keeps working; see Mods below).
 
 The game log says how many run decompiled (`[decomp] decomp build: ...`), and the version shown in
 Settings (`F1`) > Language / About and in the performance report ends in `decomp`.
@@ -208,6 +208,26 @@ What setup uses and makes:
   Tools; fast mode's ThinLTO uses their own libLTO);
 - everything it generates stays in the install's data folder (`data/decomp-work`, removed after the
   build); the result is `data/bin/wwhd-decomp` (portable releases) or `data/decomp/bin/wwhd`.
+
+## Mods
+
+The decomp version supports the same mods as the normal game:
+
+- built-in mods (Settings > Mods), graphics packs, content mods and Vulkan shader overrides need nothing extra;
+- code mods (the catalogue's mods, the Story Notebook and the story system) need code-mod support, as in the normal
+  game: the decomp version follows setup's **Build with code-mod support** choice, and switching it in
+  Settings > Mods rebuilds the decomp version too, then the game restarts. A function a code mod hooks or replaces
+  runs recompiled, with the mod's check in it.
+- In fast mode, calls between decompiled functions are fixed when the decomp version is built, so setup builds it
+  with the list of functions your code mods hook (`decomp-mod-hooks.txt` in the data folder); only calls to those
+  functions change. If you switch on a code mod later that hooks another function, that start runs all game code
+  recompiled (the log says `[decomp] code mods: ... not hooked when this decomp version was built`), and the next
+  repair or code-mod rebuild includes it.
+- Randomized games (the Randomizer page) play in the normal game only: the decomp version is made from the game as
+  it is. Starting the decomp version while a randomized game is selected says so and plays the game as it is.
+
+Debug switch: `WWHD_DECOMP_MOD_HOOKS_PROBE=FILE` writes the game functions the enabled code mods hook to FILE and
+exits (setup uses it); `-DWWHD_DECOMP_GUEST_HOOKS=FILE` builds a fast decomp version from source with such a list.
 
 ## Releases
 

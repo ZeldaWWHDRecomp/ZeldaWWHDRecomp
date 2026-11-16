@@ -128,7 +128,22 @@ bool restart(std::string& error){
     // the app loads the new build when it starts again (WwhdActivity); it cannot relaunch itself
     error="Close and reopen the app to use the rebuilt game code";return failed();
 #endif
+#ifdef WWHD_DECOMP
+    // the decomp version: setup's code-mod rebuild builds it again too (its result's "decomp": "ready"); it then
+    // restarts itself, otherwise the rebuild's reason ("decomp_error") stays on screen
+    if(g_fixed_build){
+        auto report=read(status_path);
+        if(report.get("decomp").string()!="ready"){
+            error=report.get("decomp_error").string("Setup did not rebuild the decomp version; run setup's Repair, or start the normal game");
+            return failed();
+        }
+        {std::lock_guard guard(mutex);if(state.ready&&std::getenv("WWHD_CODE_MODS"))environment("WWHD_CODE_MODS",state.target?"1":"0");}
+        if(!relaunch(error))return failed();
+        return true;
+    }
+#else
     if(g_fixed_build){error="The decomp version has no code-mod support; start the normal game for code mods";return failed();}
+#endif
     // The relaunched game uses the support the player just built: an explicit WWHD_CODE_MODS from the
     // launch (automated runs) would otherwise select the other build and stop a setup that resumes there.
     {std::lock_guard guard(mutex);if(state.ready&&std::getenv("WWHD_CODE_MODS"))environment("WWHD_CODE_MODS",state.target?"1":"0");}
