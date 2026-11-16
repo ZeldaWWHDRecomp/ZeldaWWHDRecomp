@@ -19,6 +19,7 @@ bool hold_pass();        // this is an in-between (hold) pass: no game logic
 uint64_t logic_steps();  // logic steps so far
 bool zoom_ease(Cpu* c, void (*orig)(Cpu*));
 void fx_actor_draw(uint32_t proc, uint32_t exec, bool begin);
+void kankyo_draw(uint32_t proc, bool begin);  // interp_kankyo.cpp: the environment's draw-time state
 bool fx_hold_anim();
 }
 namespace test_aids {  // test_aids.cpp (debug dumps)
@@ -183,13 +184,16 @@ extern "C" void hook_025DF940(Cpu* c) {
 }
 
 // fpcM_Draw(process): frame interpolation's actor draws that advance their own state, once per
-// logic step (interp_fx.cpp: replayed draws and fields blended between the steps)
+// logic step (interp_fx.cpp: replayed draws and fields blended between the steps; interp_kankyo.cpp: the
+// environment's draw)
 extern "C" void hook_025DF904(Cpu* c) {
     uint32_t proc = c->r[3];
     uint32_t wv = watch_val();
     const uint32_t keep_exec = interp::enabled() ? actor_execute_fn(proc) : 0;
     if (keep_exec) interp::fx_actor_draw(proc, keep_exec, true);
+    interp::kankyo_draw(proc, true);
     f_025DF904_orig(c);
+    interp::kankyo_draw(proc, false);
     if (keep_exec) interp::fx_actor_draw(proc, keep_exec, false);
     watch_link("draw", proc, wv);
 }
