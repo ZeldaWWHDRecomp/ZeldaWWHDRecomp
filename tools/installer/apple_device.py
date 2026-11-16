@@ -649,10 +649,7 @@ def device_state(setup, ctx, which, device, bundle_prefix="org.wwhdrecomp"):
                     out["others"].append({"bundle_id": a.get("bundleIdentifier", ""), "version": a.get("version", "")})
         if out["installed"]:
             prof = os.path.join(tmp, "profiles.json")
-            p = subprocess.run(["xcrun", "devicectl", "device", "copy", "from", "--device", target["id"],
-                                "--domain-type", "appDataContainer", "--domain-identifier", bundle_id,
-                                "--source", "Library/Caches/user/ModManager/profiles.json", "--destination", prof],
-                               env=env, capture_output=True, text=True)
+            _copy_from_app(env, target["id"], bundle_id, which, "user/ModManager/profiles.json", prof)
             try:
                 with open(prof, encoding="utf-8") as f:
                     profiles = json.load(f)
@@ -717,6 +714,18 @@ def _sav_files(folder):
     return sorted(p for p in user.glob("*.sav") if p.is_file()) if user.is_dir() else []
 
 
+def _data_dirs(which):
+    """Where the device app keeps its settings and saves, in its container (host_tvos.mm host_tvos_data_dir): an
+    Apple TV app in Caches, the others in Application Support. After it, where earlier builds kept them (the app
+    moves them over at its next start), read when the first has none."""
+    return ["Library/Caches"] if which == "tv" else ["Library/Application Support", "Library/Caches"]
+
+
+def _copy_from_app(env, device, bundle_id, which, path, dest):
+    """PATH in the app's data folder (_data_dirs) into DEST: whether there was one"""
+    return any(_copy_from(env, device, bundle_id, d + "/" + path, dest) for d in _data_dirs(which))
+
+
 def _device_target(setup, ctx, which, device, bundle_prefix):
     kind, sdk, platform, suffix = KINDS[which]
     xc = xcode_info()
@@ -739,13 +748,13 @@ def _not_running(env, target, exe):
 
 
 def backup_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdrecomp", bundle_id=None, log=print):
-    """The device app's save and settings (Library/Caches/save and user, without the shader caches) into
+    """The device app's save and settings (save and user in its data folder, without the shader caches) into
     data/apple/backups/<bundle id>-<time>. Returns that folder."""
     env, target, own_id, exe = _device_target(setup, ctx, which, device, bundle_prefix)
     bundle_id = bundle_id or own_id
     out = Path(ctx.data_dir) / "apple" / "backups" / ("%s-%s" % (bundle_id, time.strftime("%Y%m%d-%H%M%S")))
     out.mkdir(parents=True)
-    got = [part for part in ("save", "user") if _copy_from(env, target["id"], bundle_id, "Library/Caches/" + part, out / part)]
+    got = [part for part in ("save", "user") if _copy_from_app(env, target["id"], bundle_id, which, part, out / part)]
     shutil.rmtree(out / "user" / "shader-prebuild", ignore_errors=True)
     if not got:
         shutil.rmtree(out, ignore_errors=True)
@@ -768,6 +777,7 @@ def save_to_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdrecomp
     the device's save and settings are backed up first. Returns what was copied."""
     env, target, bundle_id, exe = _device_target(setup, ctx, which, device, bundle_prefix)
     _not_running(env, target, exe)
+    data = _data_dirs(which)[0]
     backup = backup_device(setup, ctx, which, device, bundle_prefix, log=log)
     with tempfile.TemporaryDirectory() as tmp:
         if from_app:
@@ -799,17 +809,17 @@ def save_to_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdrecomp
             log("the save is in iCloud Drive (%s): the device gets it from there" % drive)
         else:
             for f in files:
-                _copy_to(env, target["id"], bundle_id, f, "Library/Caches/save/user/" + f.name)
+                _copy_to(env, target["id"], bundle_id, f, data + "/save/user/" + f.name)
             log("copied the save (%d files) to %s" % (len(files), target["name"]))
         copied = ["save"]
         if settings:
             for name in SETTINGS_FILES:
                 if (settings_dir / name).is_file():
-                    _copy_to(env, target["id"], bundle_id, settings_dir / name, "Library/Caches/user/" + name)
+                    _copy_to(env, target["id"], bundle_id, settings_dir / name, data + "/user/" + name)
                     copied.append(name)
             states = sorted(p for p in (settings_dir / "states").glob("*") if p.is_file()) if (settings_dir / "states").is_dir() else []
             for f in states:
-                _copy_to(env, target["id"], bundle_id, f, "Library/Caches/user/states/" + f.name)
+                _copy_to(env, target["id"], bundle_id, f, data + "/user/states/" + f.name)
             if states:
                 copied.append("save states")
             log("copied %s to %s" % (", ".join(copied[1:]) or "no settings", target["name"]))
