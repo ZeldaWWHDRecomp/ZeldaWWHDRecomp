@@ -67,7 +67,7 @@ def identity(game, template, package, renderer):
     if not archives:
         raise ValueError('No game shader archives or executable found')
     return dict(schema=SCHEMA, renderer=renderer,
-                template=file_hash(template), translator=file_hash(Path(package) / 'tools/shaderprep.py'),
+                template=file_hash(template) if template else None, translator=file_hash(Path(package) / 'tools/shaderprep.py'),
                 format=file_hash(Path(package) / 'tools/shaderprep_format.py') if (Path(package) / 'tools/shaderprep_format.py').is_file() else None,
                 game={str(p.relative_to(game)): file_hash(p) for p in archives})
 

@@ -109,6 +109,18 @@ option(WWHD_BUNDLED_DEPS "build missing dependencies from pinned sources" OFF)
 # macOS AppKit host: read generic HID gamepads that GameController.framework does not surface
 # (Steam Input's virtual pad and other generic pads). The mapping is platform/hid_gamepad.cpp.
 option(WWHD_HAS_IOKIT "macOS AppKit host: read generic HID gamepads through IOKit" ON)
+# Apple TV (tvOS, -DCMAKE_SYSTEM_NAME=tvOS -DWWHD_RENDERER=METAL): the Metal renderer with a UIKit host
+# (gfx/host_tvos.mm) instead of the AppKit one; the game is an app bundle. WWHD_TVOS is defined everywhere,
+# the generated game code too (ppc.h: where the guest memory lies).
+set(WWHD_TVOS OFF)
+# An iPad build (-DCMAKE_SYSTEM_NAME=iOS) is the same app: WWHD_TVOS also means that UIKit host there,
+# and on Apple Vision Pro (-DCMAKE_SYSTEM_NAME=visionOS), where the app is a window.
+if(CMAKE_SYSTEM_NAME MATCHES "^(tvOS|iOS|visionOS)$")
+  set(WWHD_TVOS ON)
+  set(WWHD_HAS_IOKIT OFF CACHE BOOL "" FORCE)
+  set(WWHD_EDITOR_MCP OFF CACHE BOOL "" FORCE)
+  add_compile_definitions(WWHD_TVOS=1)
+endif()
 if(WIN32 AND CMAKE_CXX_SIMULATE_ID STREQUAL "MSVC" OR WWHD_BUNDLED_DEPS)
   include(cmake/WindowsDependencies.cmake)
 endif()
@@ -314,12 +326,22 @@ endif()
 file(GLOB GX2_SOURCES CONFIGURE_DEPENDS runtime/src/gx2/*.cpp)
 # renderer selection / dispatch (runtime/src/gfx/renderer.cpp) and the GamePad screen modes / TV window
 # layout both window hosts share (display_modes.cpp): every configuration
-set(GFX_SOURCES runtime/src/gfx/renderer.cpp runtime/src/gfx/display_modes.cpp runtime/src/gfx/mod_wheel.cpp runtime/src/gfx/gamepad_ui_state.cpp)
+set(GFX_SOURCES runtime/src/gfx/renderer.cpp runtime/src/gfx/stereo_settings.cpp runtime/src/gfx/display_modes.cpp runtime/src/gfx/mod_wheel.cpp runtime/src/gfx/gamepad_ui_state.cpp)
 set(MOD_GFX_SOURCES)
 if(WWHD_HAS_METAL)
   # Metal renderer and the AppKit host (windows, menus, input, controls window, display modes)
   file(GLOB METAL_SOURCES CONFIGURE_DEPENDS runtime/src/gfx/*.mm)
   file(GLOB MOD_GFX_SOURCES CONFIGURE_DEPENDS runtime/src/mods/*.mm)
+  if(WWHD_TVOS)
+    # the AppKit host's windows, menus, dialogs, controls window, text input and mouse: host_tvos.mm instead
+    foreach(f menu controls_ui text_input_appkit quit_prompt player_question overlay_appkit present_observer)
+      list(REMOVE_ITEM METAL_SOURCES ${CMAKE_SOURCE_DIR}/runtime/src/gfx/${f}.mm)
+    endforeach()
+    list(REMOVE_ITEM MOD_GFX_SOURCES ${CMAKE_SOURCE_DIR}/runtime/src/mods/mouse.mm)
+  else()
+    list(REMOVE_ITEM METAL_SOURCES ${CMAKE_SOURCE_DIR}/runtime/src/gfx/host_tvos.mm
+         ${CMAKE_SOURCE_DIR}/runtime/src/gfx/cloud_save_uikit.mm)
+  endif()
   list(APPEND GFX_SOURCES ${METAL_SOURCES} runtime/src/platform/mic_apple.mm)  # (the microphone for code mods, mic.h)
   set_source_files_properties(${METAL_SOURCES} ${MOD_GFX_SOURCES} runtime/src/platform/mic_apple.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
   # the settings overlay's Metal renderer (with guest HUD blend markers)
@@ -366,6 +388,39 @@ if(ANDROID)
   # Android: SDLActivity loads the game as libmain.so and calls its SDL_main (android/)
   add_library(wwhd SHARED ${RUNTIME_SOURCES} ${GX2_SOURCES} ${GFX_SOURCES} ${MOD_GFX_SOURCES} ${IMGUI_METAL})
   set_target_properties(wwhd PROPERTIES OUTPUT_NAME main)
+elseif(WWHD_TVOS)
+  # an app bundle (tvos/README.md: packaging the game files, signing, installing)
+  add_executable(wwhd MACOSX_BUNDLE ${RUNTIME_SOURCES} ${GX2_SOURCES} ${GFX_SOURCES} ${MOD_GFX_SOURCES} ${IMGUI_METAL})
+  # Your own identifiers for an app you sign (an App ID and an iCloud container are unique to one developer
+  # team): WWHD_APPLE_ID_PREFIX names the apps <prefix>.tv / <prefix>.ipad; WWHD_ICLOUD_CONTAINER (an
+  # "iCloud.<...>" container of that team, empty: none) keeps the save in that container's iCloud
+  # Drive folder (gfx/host_tvos.mm), visible as "Wind Waker HD" in iCloud Drive.
+  set(WWHD_APPLE_ID_PREFIX "org.wwhdrecomp" CACHE STRING "bundle identifier prefix of the Apple TV / iPad apps")
+  set(WWHD_ICLOUD_CONTAINER "" CACHE STRING "iCloud container for the save (empty: the save stays on the device)")
+  set(WWHD_ICLOUD_PLIST "")
+  if(WWHD_ICLOUD_CONTAINER)
+    set(WWHD_ICLOUD_PLIST "<key>WWHDCloudKitContainer</key><string>${WWHD_ICLOUD_CONTAINER}</string><key>NSUbiquitousContainers</key><dict><key>${WWHD_ICLOUD_CONTAINER}</key><dict><key>NSUbiquitousContainerIsDocumentScopePublic</key><true/><key>NSUbiquitousContainerName</key><string>Wind Waker HD</string><key>NSUbiquitousContainerSupportedFolderLevels</key><string>Any</string></dict></dict>")
+  endif()
+  if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+    set(WWHD_BUNDLE_PLIST ${CMAKE_SOURCE_DIR}/ipados/Info.plist.in)
+    set(WWHD_BUNDLE_ID ${WWHD_APPLE_ID_PREFIX}.ipad)
+  elseif(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
+    set(WWHD_BUNDLE_PLIST ${CMAKE_SOURCE_DIR}/visionos/Info.plist.in)
+    set(WWHD_BUNDLE_ID ${WWHD_APPLE_ID_PREFIX}.vision)
+  else()
+    set(WWHD_BUNDLE_PLIST ${CMAKE_SOURCE_DIR}/tvos/Info.plist.in)
+    set(WWHD_BUNDLE_ID ${WWHD_APPLE_ID_PREFIX}.tv)
+  endif()
+  set_target_properties(wwhd PROPERTIES OUTPUT_NAME WindWakerHD
+    MACOSX_BUNDLE_INFO_PLIST ${WWHD_BUNDLE_PLIST}
+    MACOSX_BUNDLE_GUI_IDENTIFIER ${WWHD_BUNDLE_ID}
+    MACOSX_BUNDLE_BUNDLE_NAME "Wind Waker HD")
+  # its icon and Top Shelf images: the game's TV boot image once the game files are in the bundle, else
+  # the project's icon (tvos/make_icon.py; sips and actool)
+  find_package(Python3 COMPONENTS Interpreter REQUIRED)
+  add_custom_command(TARGET wwhd POST_BUILD
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tvos/make_icon.py $<TARGET_BUNDLE_DIR:wwhd>
+    VERBATIM)
 else()
   add_executable(wwhd ${RUNTIME_SOURCES} ${GX2_SOURCES} ${GFX_SOURCES} ${MOD_GFX_SOURCES} ${IMGUI_METAL})
 endif()
@@ -416,7 +471,38 @@ if(WWHD_EDITOR_MCP)
 else()
   target_compile_definitions(wwhd PRIVATE WWHD_EDITOR_MCP=0)
 endif()
-if(WWHD_HAS_METAL)
+if(WWHD_TVOS)
+  # the A15's GPU has no BC textures: they are re-encoded to ETC2 / EAC on upload (gfx/metal_surfaces.mm) with
+  # etcpak (runtime/third_party/etcpak, BSD 3-clause)
+  add_library(etcpak STATIC runtime/third_party/etcpak/ProcessRGB.cpp runtime/third_party/etcpak/Tables.cpp
+              runtime/third_party/etcpak/Dither.cpp)
+  target_compile_options(etcpak PRIVATE -O3 -w)
+  target_link_libraries(wwhd PRIVATE etcpak)
+  target_include_directories(wwhd PRIVATE runtime/third_party/etcpak)
+  target_compile_definitions(wwhd PRIVATE WWHD_ETCPAK=1)
+endif()
+if(CMAKE_SYSTEM_NAME STREQUAL "visionOS")
+  # Apple Vision Pro's windows (host_tvos.mm, gfx/vision_screen.mm): the 3D screen and the GamePad's window are SwiftUI
+  # (visionos/*.swift; their interface with the game: visionos/bridge.h), compiled to one object of their own so the
+  # app still links with clang++ (the installer relinks it so). The Swift libraries are the SDK's (-L/usr/lib/swift:
+  # the linker looks there under the SDK root).
+  set(WWHD_VISION_SWIFT ${CMAKE_SOURCE_DIR}/visionos/StereoScreen.swift ${CMAKE_SOURCE_DIR}/visionos/GamePad.swift)
+  set(WWHD_VISION_OBJ ${CMAKE_BINARY_DIR}/visionos_swift.o)
+  add_custom_command(OUTPUT ${WWHD_VISION_OBJ}
+    COMMAND xcrun --sdk xros swiftc -c -wmo -parse-as-library -O -module-name WWVision
+            -target arm64-apple-xros${CMAKE_OSX_DEPLOYMENT_TARGET}
+            -import-objc-header ${CMAKE_SOURCE_DIR}/visionos/bridge.h ${WWHD_VISION_SWIFT} -o ${WWHD_VISION_OBJ}
+    DEPENDS ${WWHD_VISION_SWIFT} ${CMAKE_SOURCE_DIR}/visionos/bridge.h
+    COMMENT "Swift: the Vision Pro windows" VERBATIM)
+  target_sources(wwhd PRIVATE ${WWHD_VISION_OBJ})
+  set_source_files_properties(${WWHD_VISION_OBJ} PROPERTIES EXTERNAL_OBJECT TRUE GENERATED TRUE)
+  target_link_options(wwhd PRIVATE "-L/usr/lib/swift")
+  target_link_libraries(wwhd PRIVATE "-framework SwiftUI" "-framework RealityKit")
+endif()
+if(WWHD_HAS_METAL AND WWHD_TVOS)
+  target_compile_definitions(wwhd PRIVATE WWHD_HAS_METAL=1)
+  target_link_libraries(wwhd PRIVATE "-framework Metal" "-framework QuartzCore" "-framework UIKit" "-framework CoreGraphics" "-framework Foundation" "-framework ImageIO" "-framework UniformTypeIdentifiers" "-framework GameController" "-framework CoreHaptics" "-framework AudioToolbox" "-framework AVFoundation" "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo" "-framework CloudKit" compression)
+elseif(WWHD_HAS_METAL)
   target_compile_definitions(wwhd PRIVATE WWHD_HAS_METAL=1)
   target_link_libraries(wwhd PRIVATE "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework Foundation" "-framework ImageIO" "-framework UniformTypeIdentifiers" "-framework GameController" "-framework CoreHaptics" "-framework Carbon" "-framework AudioToolbox" "-framework CoreAudio" "-framework AVFoundation" compression)
   # the iPhone GamePad's screen (gfx/remote_video.mm): H.264 from the GamePad picture
@@ -1268,6 +1354,11 @@ if(NOT WIN32)
   target_link_libraries(remote_pad_test PRIVATE Threads::Threads)
   add_test(NAME remote_pad COMMAND remote_pad_test)
   set_tests_properties(remote_pad PROPERTIES TIMEOUT 30)
+  if(NOT WWHD_TVOS)
+    # a scripted stand-in for the iPhone GamePad app, for tests on a device nobody is holding (not a test itself)
+    add_executable(remote_pad_drive runtime/tools/remote_pad_drive.cpp runtime/src/remote_pad/protocol.cpp)
+    target_include_directories(remote_pad_drive PRIVATE runtime/src)
+  endif()
 endif()
 if(WWHD_HAS_METAL)
   # the iPhone GamePad's screen end to end: Metal frames -> H.264 -> loopback UDP -> decoded colours

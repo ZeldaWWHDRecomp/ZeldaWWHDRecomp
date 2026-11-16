@@ -858,6 +858,7 @@ static void draw_cloud_shadows(const cloud_proto::Snapshot& s, Surface* color, u
         rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
         id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+        e.label = @"draw_cloud_shadows";  // (named for WWHD_GPU_ERRORS: which pass faulted)
         [e setRenderPipelineState:it->second];
         [e setFragmentBytes:&g length:sizeof g atIndex:0];
         [e setFragmentTexture:depth->tex atIndex:0];
@@ -897,7 +898,7 @@ static void clouds_end();
 void clouds_mark_start(Surface* const* colors, const uint32_t* colorSlices, Surface* depth, uint32_t depthSlice,
                        bool (*ensure)(Surface* const*, const uint32_t*, Surface*, uint32_t)) {
     static const bool timing = env_on("WWHD_CLOUDS_TIME");
-    if (cloud_proto::mode() != cloud_proto::kMark || cloud_proto::g_drawn) return;
+    if (cloud_proto::mode() != cloud_proto::kMark || cloud_proto::g_drawn || stereo::frame.mode != stereo::Off) return;
     cloud_proto::g_drawn = true;
     if (timing) {
         cloud_proto::g_on_end = clouds_end;
@@ -912,6 +913,9 @@ bool clouds_draw(id<MTLRenderCommandEncoder> enc, const MTLViewport& vp, Surface
     const int mode = cloud_proto::mode();
     static const bool timing = env_on("WWHD_CLOUDS_TIME");
     if (mode == cloud_proto::kMark || mode == cloud_proto::kOff) return false;  // the game's own cards
+    // stereo 3D keeps the game's cards, drawn for each eye: the toon clouds, haze grade and cloud
+    // shadows are drawn once per frame (limitation, as in the Vulkan renderer)
+    if (stereo::frame.mode != stereo::Off) return false;
     if (cloud_proto::g_drawn) return true;
     cloud_proto::g_drawn = true;
     if (timing) {
@@ -937,6 +941,7 @@ bool open_target_pass(const uint32_t* regs);  // metal_draw.mm
 void sky_clouds_begin(const uint32_t* regs, uint32_t seq) {
     static uint64_t begins = 0, opened = 0;
     begins++;
+    if (stereo::frame.mode != stereo::Off) return;  // (see clouds_draw)
     if (render::cloud_shadows() && R.enc && R.passColor[0]) {  // the sky buffer: its composite triggers the shadows
         g_sky = R.passColor[0], g_skyFrame = R.frame, g_skySeq = seq;
         opened++;

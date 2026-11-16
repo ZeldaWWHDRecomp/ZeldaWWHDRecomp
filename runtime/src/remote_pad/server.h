@@ -58,6 +58,7 @@ public:
     bool running() const { return running_.load(); }
     uint16_t port() const { return port_; }
     Snapshot snapshot() const;
+    void set_host(const std::string& name);  // the name the Welcome carries (Bonjour's, once registered)
     // Any thread: one encoded frame to the phone (protocol.h kVideo) if it asked for video; false when
     // nobody takes it. Sent from the caller's thread, outside the server's lock.
     bool send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, uint16_t width, uint16_t height);

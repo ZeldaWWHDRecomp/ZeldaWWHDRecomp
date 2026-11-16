@@ -402,7 +402,7 @@ static bool shift_held() {
 // ---------------------------------------------------------------------------------------------
 // state
 
-enum class Screen { Starting, NeedCLT, Menu, Welcome, Source, Keys, Installing, Error, Save, Done, Fatal, Randomizer };
+enum class Screen { Starting, NeedCLT, Menu, Welcome, Source, Keys, Installing, Error, Save, Done, Fatal, Randomizer, Apple };
 
 static const char* screen_name(Screen s) {
     switch (s) {
@@ -418,6 +418,7 @@ static const char* screen_name(Screen s) {
     case Screen::Done: return "done";
     case Screen::Fatal: return "fatal";
     case Screen::Randomizer: return "randomizer";
+    case Screen::Apple: return "apple";
     }
     return "?";
 }
@@ -483,6 +484,7 @@ struct App {
     bool code_mods = false;
     // the decomp version (tools/installer/decomp_setup.py): offered on macOS in development builds only
     bool decomp_offered = false, decomp = false, start_decomp = false;
+    bool apple_offered = false;  // macOS releases with the Apple TV / iPhone / iPad apps
     std::string decomp_text, decomp_docs, decomp_exe, decomp_error;
     bool prepare_shaders = true;
     bool model_sweep = false;  // "Preparing shaders: models (experimental)": opt-in, off by default
@@ -886,6 +888,9 @@ static int step_index(const std::string& id) {
 }
 
 static void rando_read(const J& ev);  // the Randomizer page (below)
+static void apple_read(const J& ev);  // the Apple TV, iPhone, iPad or Vision Pro page (below)
+static bool g_repair_for_apple = false;  // a repair started from that page (code mods on): back to it when done
+static void apple_reload();
 
 static void handle_reply(const J& ev) {
     std::string cmd = ev.str("cmd");
@@ -937,7 +942,8 @@ static void handle_reply(const J& ev) {
             if (A.start_decomp) g_exe = A.decomp_exe;
             A.installed = true;
             addlog("Setup finished.");
-            go(A.save_exists ? Screen::Done : Screen::Save);
+            if (g_repair_for_apple) g_repair_for_apple = false, apple_reload(), go(Screen::Apple);
+            else go(A.save_exists ? Screen::Done : Screen::Save);
         } else {
             if (A.current >= 0 && A.current < (int)A.steps.size()) A.steps[A.current].state = 3;
             A.error_msg = ev.str("message");
@@ -946,6 +952,8 @@ static void handle_reply(const J& ev) {
         }
     } else if (cmd.rfind("rando_", 0) == 0) {
         rando_read(ev);
+    } else if (cmd.rfind("apple_", 0) == 0) {
+        apple_read(ev);
     } else if (cmd == "remove_toolchain" || cmd == "shortcut") {
         if (!ok) addlog(ev.str("message"));
     } else if (cmd == "import_save" || cmd == "import_existing") {
@@ -976,6 +984,7 @@ static void handle_event(const J& ev) {
         A.model_sweep = ev.boolean("model_sweep");
         A.model_sweep_text = ev.str("model_sweep_text");
         A.decomp_offered = ev.boolean("decomp_offered");
+        A.apple_offered = ev.boolean("apple_offered");
         A.decomp = ev.boolean("decomp");
         A.decomp_text = ev.str("decomp_text");
         A.decomp_docs = ev.str("decomp_docs");
@@ -1605,6 +1614,298 @@ static void screen_randomizer() {
     if (b == 1) R.message = "Making and building the randomized game (a few minutes)...", rando_send("rando_make");
 }
 
+// ---------------------------------------------------------------------------------------------
+// Apple TV, iPhone, iPad or Vision Pro (macOS; setup.py apple_*: apple_device.py): build the app from this Mac's game, sign it
+// with the player's team and install it on a paired device
+
+static struct AppleUI {
+    bool loaded = false;   // apple_status answered
+    J status;              // apple_device.report()
+    int app = 0;           // 0 Apple TV, 1 iPhone / iPad, 2 Apple Vision Pro
+    std::string device;    // the chosen device's id
+    J state;               // apple_device.device_state() for device
+    bool have_state = false;
+    std::string message;   // the last build or install, or a failed request
+    bool message_bad = false;
+    bool building = false, confirm_install = false;
+    char prefix[128] = "", icloud[128] = "";  // the apps' identifiers (apple_status's settings, edited here)
+    bool save_settings = false;                // copy the settings and save states with the save
+    bool saving = false;
+} P;
+
+static void apple_reload() { P.loaded = false, P.have_state = false; }
+
+// the Apple device kinds (apple_device.py KINDS), in the order the page offers them
+static const struct AppleApp { const char* id; const char* label; const char* none_paired; } kAppleApps[] = {
+    {"tv", "Apple TV", "No Apple TV is paired with this Mac: pair it in Xcode (Window > Devices and Simulators)."},
+    {"iphone", "iPhone or iPad",
+     "No iPhone or iPad is paired with this Mac: connect it and pair it in Xcode (Window > Devices and Simulators)."},
+    {"vision", "Apple Vision Pro", "No Apple Vision Pro is paired with this Mac: pair it in Xcode (Window > Devices and Simulators)."},
+};
+static const char* apple_app_id() { return kAppleApps[P.app].id; }
+
+static const J* apple_app_status() {
+    const J* apps = P.status.get("apps");
+    return apps ? apps->get(apple_app_id()) : nullptr;
+}
+
+static void apple_check_device() {
+    P.have_state = false, P.confirm_install = false;
+    if (!P.device.empty())
+        request("apple_device_state", "\"app\": " + jstr(apple_app_id()) + ", \"device\": " + jstr(P.device));
+}
+
+static void apple_pick_device(const std::string& name) {
+    if (const J* a = apple_app_status())
+        if (const J* ds = a->get("devices"))
+            for (auto& d : ds->a)
+                if (d.str("name") == name && d.boolean("reachable")) P.device = d.str("id"), apple_check_device();
+}
+
+static void apple_read(const J& ev) {
+    const std::string cmd = ev.str("cmd");
+    const bool ok = ev.boolean("ok");
+    if (!ok) {
+        P.loaded = P.loaded || cmd == "apple_status";
+        P.building = false, P.saving = false;
+        P.message = ev.str("message"), P.message_bad = true;
+        if (cmd == "apple_build" && A.current >= 0 && A.current < (int)A.steps.size()) A.steps[A.current].state = 3;
+        return;
+    }
+    if (cmd == "apple_status") {
+        P.status = ev, P.loaded = true;
+        if (const J* ids = ev.get("settings")) {
+            snprintf(P.prefix, sizeof P.prefix, "%s", ids->str("bundle_prefix").c_str());
+            snprintf(P.icloud, sizeof P.icloud, "%s", ids->str("icloud").c_str());
+        }
+        // keep the chosen device while it is still listed and reachable
+        bool listed = false;
+        if (const J* a = apple_app_status())
+            if (const J* ds = a->get("devices"))
+                for (auto& d : ds->a) listed = listed || (d.str("id") == P.device && d.boolean("reachable"));
+        if (!listed) P.device.clear(), P.have_state = false;
+        else if (!P.have_state) apple_check_device();
+    } else if (cmd == "apple_device_state") {
+        P.state = ev, P.have_state = true;
+    } else if (cmd == "apple_build") {
+        P.building = false;
+        for (auto& s : A.steps)
+            if (s.state != 3) s.state = 2;
+        const J* app = ev.get("app");
+        P.message = "The app is built" + (app ? " (version " + app->str("version") + ", build " + app->str("build") + ")" : std::string()) +
+                    ". Install it on a device below.";
+        P.message_bad = false;
+        A.queue.push_back({"apple_status", ""});
+    } else if (cmd == "apple_save") {
+        P.saving = false;
+        P.message = "Done.", P.message_bad = false;
+    } else if (cmd == "apple_install") {
+        P.message = "Installed. Start Wind Waker HD on the device.", P.message_bad = false;
+        A.queue.push_back({"apple_device_state", "\"app\": " + jstr(apple_app_id()) + ", \"device\": " + jstr(P.device)});
+    }
+}
+
+static void apple_check_row(const J* c) {
+    if (!c) return;
+    mark(c->boolean("ok") ? 2 : 3);
+    ImGui::TextWrapped("%s", c->str("text").c_str());
+    if (!c->boolean("ok") && !c->str("fix").empty()) {
+        ImGui::Indent(ImGui::GetFontSize() * 1.6f);
+        muted(c->str("fix"));
+        ImGui::Unindent(ImGui::GetFontSize() * 1.6f);
+    }
+}
+
+static std::string apple_names(const J* list) {
+    std::string out;
+    if (list)
+        for (auto& v : list->a) out += (out.empty() ? "" : ", ") + (v.t == J::Str ? v.s : v.str("name", v.str("id")));
+    return out;
+}
+
+static void screen_apple() {
+    page_header("Apple TV, iPhone, iPad or Vision Pro",
+                "Builds the game for your own devices from this Mac's game, signs it with your Apple developer team and "
+                "installs it. The app contains your game: it is for your devices only.");
+    if (!P.loaded) {
+        if (!busy()) request("apple_status", "");
+        mark(1);
+        ImGui::TextUnformatted("Checking Xcode, signing and the devices...");
+        if (footer({"Back"}) == 0) go(Screen::Menu);
+        return;
+    }
+    const bool idle = !busy() && !P.building;
+    int app = P.app;
+    if (!idle) ImGui::BeginDisabled();
+    for (int i = 0; i < int(std::size(kAppleApps)); i++) {
+        if (i) ImGui::SameLine();
+        radio(kAppleApps[i].label, &app, i);
+    }
+    if (!idle) ImGui::EndDisabled();
+    if (app != P.app) P.app = app, P.device.clear(), P.have_state = false, P.message.clear();
+    const J* a = apple_app_status();
+    float body = space_above_footer();
+    ImGui::BeginChild("apple", ImVec2(0, std::max(120.0f, body)), ImGuiChildFlags_None);
+    if (P.building) {
+        for (auto& s : A.steps) {
+            mark(s.state);
+            if (s.state == 0) ImGui::PushStyleColor(ImGuiCol_Text, MUTED);
+            ImGui::TextUnformatted(s.title.c_str());
+            if (s.state == 0) ImGui::PopStyleColor();
+        }
+        if (details_header()) log_pane(std::max(60.0f, ImGui::GetContentRegionAvail().y));
+        ImGui::EndChild();
+        footer({"Back"}, -1, 1);
+        return;
+    }
+    if (!P.message.empty()) colored(P.message_bad ? BAD : GOOD, P.message), ImGui::Spacing();
+    const bool ready = a && a->boolean("ready");
+    auto checks = [&] {
+        if (const J* x = P.status.get("xcode")) apple_check_row(x->get("check"));
+        if (const J* mac = P.status.get("mac")) apple_check_row(mac->get("game")), apple_check_row(mac->get("shaders"));
+        if (a)
+            if (const J* c = a->get("checks"))
+                for (const char* k : {"release", "sdk", "shader_compiler", "icon", "signing"}) apple_check_row(c->get(k));
+    };
+    if (ImGui::TreeNode("App identifiers##ids")) {
+        // an App ID and an iCloud container belong to one developer team: yours
+        muted("Your apps are <prefix>.tv, <prefix>.ipad and <prefix>.vision. With an iCloud container, the save is kept in "
+              "iCloud, the same on the Apple TV, iPhone, iPad, Vision Pro and Mac.");
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
+        ImGui::InputTextWithHint("Prefix", "com.example.wwhd", P.prefix, sizeof P.prefix, ImGuiInputTextFlags_CharsNoBlank);
+        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
+        ImGui::InputTextWithHint("iCloud container", "none: the save stays on the device", P.icloud, sizeof P.icloud,
+                                 ImGuiInputTextFlags_CharsNoBlank);
+        if (button("Use these", ImVec2(0, 0), false, idle)) {
+            P.loaded = false, P.message.clear(), P.have_state = false;
+            request("apple_status", "\"bundle_prefix\": " + jstr(P.prefix) + ", \"icloud\": " + jstr(P.icloud));
+        }
+        ImGui::TreePop();
+    } else if (const J* ids = P.status.get("settings")) {
+        ImGui::SameLine();
+        muted(ids->str("bundle_prefix") + (ids->str("icloud").empty() ? ", no iCloud" : ", iCloud " + ids->str("icloud")));
+    }
+    if (!ready) checks();
+    else {
+        mark(2);
+        if (ImGui::TreeNode("Xcode, signing and this Mac's game are ready##checks")) {
+            checks();
+            ImGui::TreePop();
+        }
+    }
+    if (const J* mods = P.status.get("mods")) {
+        ImGui::Spacing();
+        if (!mods->boolean("on")) {
+            muted("Code mods are off on this Mac, so the app gets none. Switching them on rebuilds this Mac's game "
+                  "(a few minutes); then the app can have the mods you use there.");
+            if (button("Switch on code mods", ImVec2(0, 0), false, idle)) {
+                A.code_mods = true, g_repair_for_apple = true;
+                start_install("installed");
+            }
+        }
+        else {
+            std::string in = apple_names(mods->get("included"));
+            ImGui::TextWrapped("Mods built into the app: %s", in.empty() ? "none" : in.c_str());
+            if (const J* left = mods->get("left_out"))
+                for (auto& m : left->a) colored(BAD, m.str("name") + " is left out: " + m.str("reason"));
+        }
+    }
+    const J* built = a ? a->get("app") : nullptr;
+    const bool have_built = built && built->t == J::Obj;
+    ImGui::Spacing();
+    if (have_built)
+        muted("Built here: version " + built->str("version") + ", build " + built->str("build") +
+              (built->boolean("signed") ? "" : " (not signed)"));
+    if (button(have_built ? "Build the app again" : "Build the app", ImVec2(0, 0), !have_built, idle && ready)) {
+        P.building = true, P.message.clear(), A.steps.clear(), A.current = -1;
+        request("apple_build", "\"app\": " + jstr(apple_app_id()));
+    }
+    if (!ready && a)
+        if (const J* probs = a->get("problems"))
+            if (!probs->a.empty()) muted("Fix the problems above first.");
+    // devices
+    ImGui::Spacing();
+    heading("Device", 20.0f);
+    const J* devs = a ? a->get("devices") : nullptr;
+    if (!P.status.str("devices_error").empty()) colored(BAD, P.status.str("devices_error"));
+    if (!devs || devs->a.empty())
+        muted(kAppleApps[P.app].none_paired);
+    else
+        for (auto& d : devs->a) {
+            const std::string id = d.str("id");
+            std::string label = d.str("name") + " (" + d.str("model") + ", " + d.str("platform") + " " + d.str("os") + ")" +
+                                (d.boolean("reachable") ? "" : ": not reachable") + "##" + id;
+            bool on = P.device == id;
+            if (!d.boolean("reachable") || !idle) ImGui::BeginDisabled();
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(4, 3));
+            if (ImGui::RadioButton(label.c_str(), on) && !on) P.device = id, apple_check_device();
+            ImGui::PopStyleVar();
+            if (!d.boolean("reachable") || !idle) ImGui::EndDisabled();
+        }
+    bool can_install = false;
+    if (!P.device.empty()) {
+        if (!P.have_state) mark(1), ImGui::TextUnformatted("Checking the device...");
+        else {
+            const J* inst = P.state.get("installed");
+            if (inst && inst->t == J::Obj)
+                muted("On the device: version " + inst->str("version") + ", build " + inst->str("build"));
+            else muted("The game isn't installed on the device yet.");
+            if (const J* others = P.state.get("others"))
+                for (auto& o : others->a)
+                    muted("The device also has Wind Waker HD as " + o.str("bundle_id") + " (version " + o.str("version") +
+                          "): installing leaves it and its save as they are.");
+            const J* running = P.state.get("running");
+            if (running && running->t == J::Bool && running->b)
+                colored(BAD, "The game is open on the device: save, quit it there, then check again.");
+            else if (!running || running->t != J::Bool)
+                colored(BAD, P.state.str("running_error", "Couldn't check whether the game is open on the device."));
+            else can_install = have_built && built->boolean("signed");
+            std::string off = apple_names(P.state.get("switched_off")), on = apple_names(P.state.get("switched_on"));
+            if (!off.empty()) colored(BAD, "Installing switches these mods off on the device (this Mac's app doesn't have them): " + off);
+            if (!on.empty()) muted("Installing switches these mods on there: " + on);
+            if (button("Check again", ImVec2(0, 0), false, idle)) apple_check_device();
+            ImGui::SameLine();
+            const std::string name = "Install on the device";
+            if (button(name.c_str(), ImVec2(0, 0), true, idle && can_install)) {
+                if (!off.empty() && !P.confirm_install) P.confirm_install = true;
+                else P.confirm_install = false, P.message = "Installing...", P.message_bad = false,
+                     request("apple_install", "\"app\": " + jstr(apple_app_id()) + ", \"device\": " + jstr(P.device));
+            }
+            if (P.confirm_install) colored(BAD, "Click Install again to install anyway and switch those mods off.");
+            // the save between this Mac and the device's app (whatever a copy replaces is backed up on the Mac first)
+            if (inst && inst->t == J::Obj) {
+                ImGui::Spacing();
+                heading("Saves", 16.0f);
+                const bool can = idle && !P.saving;
+                auto save_request = [&](const std::string& fields) {
+                    P.saving = true, P.message = "Working...", P.message_bad = false;
+                    request("apple_save", "\"app\": " + jstr(apple_app_id()) + ", \"device\": " + jstr(P.device) + ", " + fields);
+                };
+                if (button("Copy this Mac's save to the device", ImVec2(0, 0), false, can))
+                    save_request(std::string("\"action\": \"to-device\", \"settings\": ") + (P.save_settings ? "true" : "false"));
+                ImGui::SameLine();
+                if (button("Copy the device's save to this Mac", ImVec2(0, 0), false, can)) save_request("\"action\": \"from-device\"");
+                ImGui::SameLine();
+                if (button("Back up the device", ImVec2(0, 0), false, can)) save_request("\"action\": \"backup\"");
+                ImGui::Checkbox("Also copy this Mac's settings and save states to the device", &P.save_settings);
+                if (const J* others = P.state.get("others"))
+                    for (auto& o : others->a) {
+                        const std::string label = "Take the save and settings from " + o.str("bundle_id") + "##from" + o.str("bundle_id");
+                        if (button(label.c_str(), ImVec2(0, 0), false, can))
+                            save_request("\"action\": \"to-device\", \"settings\": true, \"from_app\": " + jstr(o.str("bundle_id")));
+                    }
+                muted("The game must be closed on the device. Whatever a copy replaces is backed up on this Mac first "
+                      "(data/apple/backups in the install).");
+            }
+        }
+    }
+    if (details_header()) log_pane(160);
+    ImGui::EndChild();
+    int b = footer({"Refresh", "Back"}, -1, idle ? 0 : 1);
+    if (b == 0) P.loaded = false, P.message.clear();
+    if (b == 1) go(Screen::Menu);
+}
+
 static void screen_menu() {
     bool update = A.installed_version != A.version;
     page_header(A.portable ? "Wind Waker HD" : "Wind Waker HD is installed",
@@ -1621,9 +1922,13 @@ static void screen_menu() {
     if (button("Repair", ImVec2(w, 0))) start_install("installed");
     muted("Rebuilds the game code from the installed game files.");
     if (button("Change the game (disc image, Cemu archive or game folder)", ImVec2(w, 0))) go(Screen::Source);
-    if (button("Import saves or settings...", ImVec2(w, 0))) go(Screen::Save);
+    // two short buttons share a row, so the menu keeps its height with the Apple button
+    const float half = (w - ImGui::GetStyle().ItemSpacing.x) / 2;
+    if (button("Import saves or settings...", ImVec2(half, 0))) go(Screen::Save);
+    ImGui::SameLine();
+    if (button("Open the folder", ImVec2(half, 0))) open_folder(home_folder());
     if (button("Randomized games (TWWHD Randomizer)...", ImVec2(w, 0), false, !update)) R.loaded = false, go(Screen::Randomizer);
-    if (button("Open the folder", ImVec2(w, 0))) open_folder(home_folder());
+    if (A.apple_offered && button("Apple TV, iPhone, iPad or Vision Pro...", ImVec2(w, 0), false, !update)) P.loaded = false, go(Screen::Apple);
     if (footer({"Quit"}) == 0) A.exit_code = 0;
 }
 
@@ -2282,7 +2587,7 @@ static void start_child() {
 //   {"screen": "keys", "set": {"common_mode": "file", "common_key_file": "..."}, "when_step": "compile",
 //    "idle": true, "shot": "03-keys.png", "click": "Check keys and install"}
 // "set" fields: code_mods (boolean), decomp (boolean), model_sweep (boolean), source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
-// (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true), rando_tab (games|new), rando_page ("0".."5"), rando_import (a folder, as if chosen with Import seed...). Screenshots are PNG files
+// (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true), rando_tab (games|new), rando_page ("0".."5"), rando_import (a folder, as if chosen with Import seed...), apple_app (tv|iphone|vision), apple_device (a device's name). Screenshots are PNG files
 // of the window. The run ends (exit 0) after the last step, or with exit 2 on a 45-minute timeout.
 
 
@@ -2325,6 +2630,13 @@ static void automation_frame() {
             else if (k == "rando_tab") R.select_tab = v == "new" ? 1 : 0;  // the Randomizer page's Games / New game
             else if (k == "rando_page") R.page = std::clamp(atoi(v.c_str()), 0, 5);
             else if (k == "rando_import") rando_import(v);  // as if chosen with Import seed...
+            else if (k == "apple_app") {  // the Apple page's app
+                P.app = 0;
+                for (int i = 0; i < int(std::size(kAppleApps)); i++)
+                    if (v == kAppleApps[i].id) P.app = i;
+                P.device.clear(), P.have_state = false;
+            }
+            else if (k == "apple_device") apple_pick_device(v);  // the Apple page's device, by name
         }
     }
     A.stable_frames++;  // frames on this screen (the "set" above runs once, at 0)
@@ -2550,6 +2862,7 @@ int main(int argc, char** argv) {
         case Screen::Done: screen_done(); break;
         case Screen::Fatal: screen_fatal(); break;
         case Screen::Randomizer: screen_randomizer(); break;
+        case Screen::Apple: screen_apple(); break;
         }
         if (!A.toast.empty() && ImGui::GetTime() < A.toast_until) {
             ImGui::SetCursorPos(ImVec2(ImGui::GetStyle().WindowPadding.x,

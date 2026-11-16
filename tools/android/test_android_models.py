@@ -126,10 +126,10 @@ class AndroidModelsTest(unittest.TestCase):
         return path.read_text().splitlines() if path.exists() else []
 
     def test_attempts_resume_skip_what_stopped_the_game_and_finish(self):
-        result, activity, logs = self.sweep([('crash', 'Bb'), 'done'])
+        result, activity, logs = self.sweep([('crash', 'Bb'), ('crash', 'Bb'), 'done'])
         self.assertEqual(result, {'schema': 1, 'status': 'done'})
         self.assertEqual(self.state('skip.txt'), ['Bb:a.bdl'])
-        self.assertEqual(len(activity.requests), 2)
+        self.assertEqual(len(activity.requests), 3)
         request = activity.requests[0]
         # the game's options only, hidden and muted, the generation's live caches, its own folder and output
         self.assertTrue(all(k.startswith('WWHD_') for k in request['env']))

@@ -1,6 +1,6 @@
 #pragma once
 #include <cstdint>
-#if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
+#if defined(__APPLE__) && !defined(WWHD_SDL_HOST) && !defined(WWHD_TVOS)
 #ifdef __OBJC__
 @class CAMetalLayer;
 @class NSWindow;

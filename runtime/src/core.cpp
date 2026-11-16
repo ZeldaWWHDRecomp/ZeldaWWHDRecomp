@@ -2,7 +2,9 @@
 // Guest memory, RPX loading, function dispatch, logging and HLE registry.
 #ifdef __APPLE__
 #include <mach/mach.h>
+#ifndef WWHD_TVOS
 #include <mach/mach_vm.h>
+#endif
 #include <mach-o/ldsyms.h>
 #endif
 #include "platform/host.h"
@@ -103,7 +105,7 @@ namespace mem {
 static std::atomic<uint32_t> g_runtime_top{kRuntimeStart};
 
 void init() {
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(WWHD_TVOS)  // (tvOS apps have no mach_vm_allocate: the mmap below)
     mach_vm_address_t addr = (mach_vm_address_t)PPC_MEM_BASE;
     kern_return_t kr = mach_vm_allocate(mach_task_self(), &addr, 0x100000000ull, VM_FLAGS_FIXED);
     if (kr != KERN_SUCCESS) fatal("cannot reserve guest address space at %p (kr=%d)", PPC_MEM_BASE, kr);

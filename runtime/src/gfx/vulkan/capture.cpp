@@ -4,6 +4,7 @@
 #include "gfx/depth_peek.h"
 #include "runtime.h"
 #include "backend.h"
+#include "stereo.h"
 #include "gx2/gx2.h"
 #include <zlib.h>
 #include <algorithm>
@@ -19,9 +20,9 @@
 namespace gfxvk {
 // Adapted from the fork's peek_z readback; answers retire with the GPU submission.
 void peek_submitted();  // backend.cpp: the submission that carries this copy, for peek_retire
-void peek_z(const uint32_t* cells, uint32_t n) {
-    ::gfx::depth_peek::AnswerGuard guard;  // answered here unless the copy's completion takes it over
-    const uint64_t ticket = ::gfx::depth_peek::next_ticket();  // one per request, in request order
+namespace {
+// the main (1280x720, sun-check) depth buffer of the selected eye, in a format read_depth_texels reads; or null
+Surface* main_depth() {
     Surface* depth = nullptr;
     auto range = R.surfaces.equal_range(R.mainDepthAddr);
     for (auto it = range.first; it != range.second; ++it) {
@@ -29,6 +30,33 @@ void peek_z(const uint32_t* cells, uint32_t n) {
         if (s->isDepth && s->width == 1280 && s->height == 720 && s->image &&
             (!depth || s->writeSeq > depth->writeSeq)) depth = s;
     }
+    if (!depth) return nullptr;
+    const VkFormat format = depth->fmt.pixel;
+    return format == VK_FORMAT_D32_SFLOAT || format == VK_FORMAT_D32_SFLOAT_S8_UINT || format == VK_FORMAT_D16_UNORM ? depth : nullptr;
+}
+// copies the depth texels at the n (x, y) points (image pixels) into staging, 4 bytes apart, for host reads
+void read_depth_texels(Surface* depth, const uint32_t* xy, uint32_t n, Buffer& staging) {
+    static std::vector<VkBufferImageCopy> regions;
+    regions.resize(n);
+    for (uint32_t i = 0; i < n; i++) {
+        auto& r = regions[i];
+        r = {};
+        r.bufferOffset = i * 4;
+        r.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT,0,0,1};
+        r.imageOffset = {int32_t(xy[i*2]), int32_t(xy[i*2+1]), 0};
+        r.imageExtent = {1,1,1};
+    }
+    transition_image(depth,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
+    record::vkCmdCopyImageToBuffer(command_buffer(),depth->image,depth->layout,staging.buffer,n,regions.data());
+    derive_dependency(staging.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
+    transition_buffer(staging,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
+}
+}  // namespace
+
+void peek_z(const uint32_t* cells, uint32_t n) {
+    ::gfx::depth_peek::AnswerGuard guard;  // answered here unless the copy's completion takes it over
+    const uint64_t ticket = ::gfx::depth_peek::next_ticket();  // one per request, in request order
+    Surface* depth = main_depth();
     uint32_t points = std::min(n / 3, 64u);
     if (!depth || !points) return;
     // Shader compile Fast: the game reads this depth buffer back, so draws into it keep the exact
@@ -36,37 +64,19 @@ void peek_z(const uint32_t* cells, uint32_t n) {
     // game keeps its previous answers, from a complete frame
     if (bgshaders::enabled()) bgshaders::tracker().peeked(depth->addr, R.frame);
     if (bgshaders::tracker().left_out_in(depth->addr, R.frame)) { bgshaders::peek_withheld(); return; }
-    VkFormat format = depth->fmt.pixel;
-    if (format != VK_FORMAT_D32_SFLOAT && format != VK_FORMAT_D32_SFLOAT_S8_UINT &&
-        format != VK_FORMAT_D16_UNORM) return;
+    const bool d16 = depth->fmt.pixel == VK_FORMAT_D16_UNORM;
     Buffer staging = create_readback_buffer(points * 4);
-    std::vector<VkBufferImageCopy> regions(points);
-    std::vector<uint32_t> destinations(points);
+    std::vector<uint32_t> destinations(points), xy(points * 2);
     for (uint32_t i = 0; i < points; i++) {
-        auto& r = regions[i];
-        r.bufferOffset = i * 4;
-        r.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT,0,0,1};
-        r.imageOffset = {::gfx::depth_peek::pixel(cells[i*3],depth->extent.width,640),
-            ::gfx::depth_peek::pixel(cells[i*3+1],depth->extent.height,480),0};
-        r.imageExtent = {1,1,1};
+        xy[i*2] = ::gfx::depth_peek::pixel(cells[i*3],depth->extent.width,640);
+        xy[i*2+1] = ::gfx::depth_peek::pixel(cells[i*3+1],depth->extent.height,480);
         destinations[i] = cells[i*3+2];
     }
-    transition_image(depth,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
-    record::vkCmdCopyImageToBuffer(command_buffer(),depth->image,depth->layout,staging.buffer,points,regions.data());
-    derive_dependency(staging.use,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
-    transition_buffer(staging,VK_PIPELINE_STAGE_HOST_BIT,VK_ACCESS_HOST_READ_BIT);
-    R.completions.push_back([staging, destinations, points, format, ticket] {
+    read_depth_texels(depth, xy.data(), points, staging);
+    R.completions.push_back([staging, destinations, points, d16, ticket] {
         const auto* raw = static_cast<const uint8_t*>(staging.mapped);
         std::vector<uint32_t> depths(points);
-        for (uint32_t i = 0; i < points; i++) {
-            if (format == VK_FORMAT_D16_UNORM) {
-                uint16_t v; memcpy(&v,raw+i*4,2);
-                depths[i] = v == 0xFFFF ? 0xFFFFFF : uint32_t(v) << 8;
-            } else {
-                float v; memcpy(&v,raw+i*4,4);
-                depths[i] = ::gfx::depth_peek::from_float(v);
-            }
-        }
+        for (uint32_t i = 0; i < points; i++) depths[i] = ::gfx::depth_peek::texel24(raw + i*4, d16);
         ::gfx::depth_peek::publish(ticket,destinations,depths);
         ::gfx::depth_peek::answered();
     });
@@ -76,6 +86,31 @@ void peek_z(const uint32_t* cells, uint32_t n) {
     // it while the game waits for it at its swap (peek_retire, depth_peek.h)
     if (::gfx::depth_peek::mode() == 2) flush();  // test: the former synchronous copy
     else if (::gfx::depth_peek::synchronous()) { flush_async(); peek_submitted(); }
+}
+
+// stereo 3D's automatic HUD distance (stereo::hud): the nearest depth of the frame just drawn, from a grid of
+// eye 0's main depth buffer, read back when its submission completes (no wait), every other frame
+void sample_hud_depth() {
+    if (stereo::frame.mode == stereo::Off || !stereo::requestedHudAuto || (R.frame & 1)) return;
+    float nearPlane, k;
+    Surface* depth = main_depth();
+    if (!depth || !stereo::hud::depth_linearization(nearPlane, k)) return;
+    constexpr uint32_t n = stereo::hud::kSamples;
+    static uint32_t xy[n * 2], gridW = 0, gridH = 0;
+    if (gridW != depth->extent.width || gridH != depth->extent.height) {
+        gridW = depth->extent.width, gridH = depth->extent.height;
+        for (uint32_t i = 0; i < n; i++) stereo::hud::grid_point(i, gridW, gridH, xy[i*2], xy[i*2+1]);
+    }
+    const bool d16 = depth->fmt.pixel == VK_FORMAT_D16_UNORM;
+    Buffer staging = create_readback_buffer(n * 4);
+    read_depth_texels(depth, xy, n, staging);
+    R.completions.push_back([staging, d16, nearPlane, k] {
+        const auto* raw = static_cast<const uint8_t*>(staging.mapped);
+        float depths[n];
+        for (uint32_t i = 0; i < n; i++) depths[i] = ::gfx::depth_peek::texel(raw + i*4, d16);
+        stereo::hud::observe(depths, n, nearPlane, k);
+    });
+    defer_buffer(staging);
 }
 
 uint64_t frame_count();

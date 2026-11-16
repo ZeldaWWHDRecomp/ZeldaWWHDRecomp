@@ -564,7 +564,16 @@ void output_frame(Cpu* c) {
     // the iPhone GamePad's speaker (remote_pad.h): the GamePad mix goes to the phone, and the host plays
     // the TV mix alone, as a Wii U does (GamePad-only sounds and Off-TV Play from the GamePad)
     const bool remote_speaker = remote_pad::audio_wanted();
-    if (remote_speaker) remote_pad::send_audio(drc_lr[0], drc_lr[1], kSamples48);
+    // held back so the phone plays it with this device's sound: this side's queue and output latency, less the
+    // phone's (its jitter buffer, 40 ms, and its speaker's output, about 15)
+    // The measured part moves only when the latency really does (a route change; each change cuts or pauses the
+    // phone's sound); the player's extra (Settings > Audio: a TV's or receiver's own delay) is added as it is.
+    if (remote_speaker) {
+        static int measured = 0;
+        const int now = audio::target_frames() + audio::output_latency_frames() - audio::kRate * 55 / 1000;
+        if (std::abs(now - measured) > audio::kRate * 15 / 1000) measured = now;
+        remote_pad::send_audio(drc_lr[0], drc_lr[1], kSamples48, measured + audio::kRate * audio::pad_audio_extra_ms() / 1000);
+    }
     const bool host_drc = g_output.play_drc && !remote_speaker;
     const float pad_gain = !remote_speaker && g_output.play_gamepad_only && audio::gamepad_sounds() ? audio::gamepad_sounds_volume() : 0.f;
     static const bool trace_pad = getenv("WWHD_AX_GAMEPAD_TRACE") != nullptr;

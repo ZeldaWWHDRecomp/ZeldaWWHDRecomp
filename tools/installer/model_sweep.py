@@ -5,7 +5,8 @@ this computer; in play they are compiled when their archive loads instead of whe
 Nothing is shipped: the archive list is made of names from the player's own game files, and the results are the
 player's normal shader caches (the live folder of the shader preparation). The sweep keeps its progress (names
 only) next to those caches, so a cancelled or crashed sweep resumes where it stopped; a model that crashes the
-game is skipped on the next attempt (skip.txt, names only).
+game is tried once more in a fresh game, then skipped (skip.txt, names only). A stopped attempt's output and crash
+reports (and a stalled one's sample) are kept in failures/ for a bug report.
 """
 from contextlib import ExitStack
 import hashlib
@@ -33,6 +34,7 @@ ISLAND_STAGES = ('sea',)
 MODELS_PER_BATCH = max(1, min(8, int(os.environ.get('WWHD_SETUP_MODEL_SWEEP_BATCH', '1') or 1)))
 STARTUP_SECONDS = 300     # until an attempt's first progress line (the game starting up)
 MAX_PROCESSES = 4          # game processes of the models step at once on a desktop (user decision 2026-10-23)
+FAILURES_KEPT = 20         # stopped attempts whose evidence is kept (the oldest go)
 STALL_SECONDS = 60         # no new line in progress.txt for this long: the attempt counts as a crash (a model, room or
                            # actor takes well under a second; a stuck game writes nothing more)
 
@@ -134,6 +136,25 @@ def stopped_group(progress_lines):
     return left if len(left) > 1 else None
 
 
+def _keep_evidence(scratch, folder, child, stalled, log):
+    """A stopped attempt's output, its crash reports (main.cpp: captures/ in the attempt's working folder) and, when it
+    stalled, a sample of its threads (macOS) -> folder; the oldest beyond FAILURES_KEPT go."""
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        if stalled and sys.platform == 'darwin' and getattr(child, 'pid', None):
+            subprocess.run(['/usr/bin/sample', str(child.pid), '3', '-file', str(folder / 'sample.txt')],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60)
+        for path in [scratch / 'output.log'] + sorted((scratch / 'captures').glob('*.log')):
+            if path.is_file():
+                shutil.copyfile(path, folder / path.name)
+        kept = sorted(p for p in folder.parent.iterdir() if p.is_dir())
+        for old in kept[:-FAILURES_KEPT]:
+            shutil.rmtree(old, ignore_errors=True)
+        log('Model preparation: the stopped attempt\'s log is in %s' % folder)
+    except (OSError, subprocess.SubprocessError) as error:
+        log('Model preparation: the stopped attempt\'s log was not kept (%s)' % error)
+
+
 def state_dir(cache_root, renderer):
     return Path(cache_root) / 'model-sweep' / renderer
 
@@ -233,10 +254,13 @@ def run(executable, game, cache_root, renderer, identity, cache_env, line=lambda
 
 
 def _attempts(executable, game, state, renderer, cache_env, archives, stages, visits, line, cancel, log, popen, clock,
-              sleep, attempts, stall, tweak=lambda env: None):
-    """The attempts of one game process (restarted after a stop, skipping what stopped it) until its progress says
-    'sweep-done' -> 'done' or 'failed'; tweak(env) adjusts each attempt's environment."""
+              sleep, attempts, stall, tweak=lambda env: None, failures=None):
+    """The attempts of one game process (restarted after a stop, skipping what stopped it the second time) until its
+    progress says 'sweep-done' -> 'done' or 'failed'; tweak(env) adjusts each attempt's environment. A stopped attempt's
+    evidence goes to failures (state/failures)."""
     progress_file = state / 'progress.txt'
+    failures = Path(failures) if failures else state / 'failures'
+    retried = set()
     def finished():
         return sum(1 for l in _lines(progress_file) if l.startswith(('archive-done ', 'actor-done ')))
     without_progress, before = 0, finished()
@@ -302,6 +326,9 @@ def _attempts(executable, game, state, renderer, cache_env, archives, stages, vi
                     sleep(.2)
                 forward(final=True)
             finally:
+                if stalled or (child.poll() is not None and child.returncode):
+                    _keep_evidence(scratch, failures / ('%s-attempt%d' % (time.strftime('%Y%m%d-%H%M%S'), attempt)),
+                                   child, stalled, log)
                 if child.poll() is None:
                     child.terminate()
                     try:
@@ -328,11 +355,20 @@ def _attempts(executable, game, state, renderer, cache_env, archives, stages, vi
             continue
         skip = set(_lines(state / 'skip.txt'))
         name = culprit(done_lines, skip)
+        # a stop can be the game's and not the model's: the model is tried again in a fresh game before it is skipped
+        retry = bool(name) and name not in retried
         log('Model preparation attempt %d stopped (%s); %s' % (
             attempt, 'stalled' if stalled else 'exit %s' % child.returncode,
-            'skipping %s' % name if name else 'nothing new to skip'))
+            ('trying %s again' if retry else 'skipping %s') % name if name else 'nothing new to skip'))
         if not name:
             return 'failed'
+        if retry:  # (not counted as an attempt without progress: each culprit still has its one in MAX_ATTEMPTS)
+            retried.add(name)
+            now = finished()
+            if now > before:
+                without_progress = 0
+            before = now
+            continue
         if 'actor ' + name in done_lines:  # an actor: the second placement of a name that stops the game skips them all
             base = name.split(':', 1)[0]
             if any(s.split(':', 1)[0] == base for s in skip if s.count(':') == 3):
@@ -476,7 +512,8 @@ def _run_parts(executable, game, state, renderer, cache_env, archives, stages, v
         def work(i):
             try:
                 results[i] = _attempts(executable, game, parts[i], renderer, caches[i][0], archives, stages, visits,
-                                       line_for(i), cancel, log, popen, clock, sleep, attempts, stall, tweak=tweak_for(i))
+                                       line_for(i), cancel, log, popen, clock, sleep, attempts, stall, tweak=tweak_for(i),
+                                       failures=state / 'failures' / ('part%d' % i))
             except InterruptedError:
                 results[i] = 'paused'
             except Exception as error:  # noqa: BLE001 - one part failing leaves the others' work usable

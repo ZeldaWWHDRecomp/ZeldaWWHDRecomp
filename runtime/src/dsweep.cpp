@@ -168,6 +168,8 @@ struct State {
     Entry entry;                     // ... as queued
     bool requested = false;          // a stage resource: its load is requested
     bool owned = false;              // ... loaded by the sweep (released after it)
+    uint32_t stage_info = 0;         // ... its path info, and the vtables of its two heaps (+0xC0, +0xC4) then
+    uint32_t stage_heap_vt[2] = {};
     std::set<std::string> resident, skip, done;
     unsigned swept = 0, failed = 0, archives = 0, load_failed = 0;
     size_t listed = 0;               // archives in WWHD_DSWEEP_ARCHIVES and WWHD_DSWEEP_STAGES (progress total)
@@ -188,6 +190,8 @@ struct State {
     uint32_t actor_id = 0xFFFFFFFF, actor = 0;
     unsigned actor_frames = 0, actor_draws = 0, actors = 0, actor_failed = 0;
     std::vector<uint32_t> orphans;   // actors still being created when given up: deleted once they exist
+    uint32_t title_player = 0;       // the title's player when the actor sweep began
+    bool actors_shown = false;       // this attempt made actors
     std::set<uint32_t> host_actors;  // the title's own actors (drawn before the actor sweep; never deleted)
     std::map<uint32_t, uint32_t> ours;  // process id -> actor: the shown actor and what it made (drawn, not the title's)
     std::vector<std::pair<uint32_t, uint32_t>> frozen;  // actor, status bits added for one execute pass
@@ -346,6 +350,28 @@ uint32_t find_path_info(const std::string& id) {
     for (uint32_t info : path_infos())
         if (path_id(info) == id) return info;
     return 0;
+}
+uint32_t heap_vtable(uint32_t at) {
+    const uint32_t heap = ld32(at);
+    return mem2(heap, 0x10) ? ld32(heap + 0xC) : 0;
+}
+// (a destroyed heap has its base class's vtable, whose method there is empty)
+bool heap_alive(uint32_t at) {
+    const uint32_t vtable = heap_vtable(at);
+    return mem2(vtable, 0x28) && ld32(vtable + 0x24);
+}
+// The title's scene restarts now and then (see title_restarted), and its stage teardown (dStage_Delete) also destroys the
+// heaps of a sea stage resource the sweep holds then (an island's LOD, measured): its path info stays, its heaps'
+// vtables are their base class's (also when it happened while the resource was loading). Released again by the sweep,
+// it stopped the game (DeleteInfo, 0260757C, called a destroyed heap's method: abort). Such a resource is neither drawn
+// nor released; the attempt ends in order and the next one, a new game, sweeps it.
+bool stage_res_lost() {
+    const uint32_t info = g.stage_info;
+    if (!info || (find_path_info(g.archive) == info && heap_alive(info + 0xC0) && heap_alive(info + 0xC4) &&
+                  heap_vtable(info + 0xC0) == g.stage_heap_vt[0] && heap_vtable(info + 0xC4) == g.stage_heap_vt[1]))
+        return false;
+    LOG("[dsweep] %s was released by the game while swept", g.archive.c_str());
+    return true;
 }
 // a relative offset field (the archive header's self-relative pointers)
 uint32_t rel(uint32_t at) {
@@ -746,6 +772,15 @@ void begin(Cpu* c) {
     phase_time("objects");
 }
 
+// An orderly end of the attempt ("restart" in progress.txt): the supervisor starts the game again, and the sweep goes
+// on where it was, nothing skipped
+void restart_attempt(const char* why) {
+    flush_done(true);
+    progress("restart");
+    LOG("[dsweep] %s: restarting", why);
+    g_abort = true;
+    g.phase = Phase::Done;
+}
 void finish() {
     g.phase = Phase::Done;
     g_tag = 0;
@@ -791,7 +826,14 @@ struct Member {
 std::vector<Member> g_group;                  // the group being shown
 std::map<std::string, unsigned> g_group_cap;  // actor id -> the largest group it is shown in (actor-groups.txt)
 std::vector<uint32_t> g_group_archives;       // the groups its pipelines are filed under
+// Actors that must not be deleted at the title: shown for longer, as the last actor of their attempt, which then ends in
+// order (the next actor follows in a new game). The boss Kalle Demos (Bkm) makes 28 parts (20 hands, d_a_bmdhand, and 8
+// d_a_bmdfoot) that its deletion leaves, and the hands kept reading the freed boss: a bus error in daBmdhand_Execute
+// at the next hand shown (Bms2) or later.
+bool shown_last(const std::string& name) { return name == "Bkm"; }
+constexpr unsigned kShownLastFrames = 240;  // (its parts are made over several frames, then drawn)
 unsigned group_cap(const State::Spawn& sp) {
+    if (shown_last(sp.name)) return 1;
     auto it = g_group_cap.find(sp.id());
     return it == g_group_cap.end() ? actor_groups().size : std::max(1u, it->second);
 }
@@ -907,6 +949,9 @@ bool file_select_pending();
 void begin_visits() {
     static const char* list = std::getenv("WWHD_DSWEEP_VISIT");
     if (!list || !*list) return begin_file_select();
+    // the visits start from a title the actor sweep left alone: an actor can leave a stage change requested there, which
+    // the title never takes; the first visit waited for it to finish, the attempt stalled and its last actor was skipped
+    if (g.actors_shown) return restart_attempt("actors done, the stage visits next");
     g_visits.clear();
     auto add = [&](const Visit& v) {
         if (v.stage == "sea_T" || v.stage == "Name" || g.skip.count("visit-" + v.stage) || g.skip.count(v.id()))
@@ -968,21 +1013,15 @@ void visit_step(const std::string& current) {
     if (g_visit >= g_visits.size()) {
         g_visiting = false;
         // the file select is reached from the title only: the next attempt starts there (an orderly restart)
-        if (file_select_pending()) {
-            flush_done(true);
-            progress("restart");
-            LOG("[dsweep] visits done: restarting for the file select");
-            g_abort = true;
-            g.phase = Phase::Done;
-            return;
-        }
+        if (file_select_pending()) return restart_attempt("visits done, the file select next");
         return finish();
     }
     const Visit& v = g_visits[g_visit];
     const uint32_t next = GD(0x1046F0B0) + 0x5140;  // dStage_nextStage_c: name[8], point, room, layer, enabled, wipe
     if (!g_visit_asked) {
         if (ld8(next + 12)) return;  // a stage change is in progress
-        progress("visit " + v.id());
+        static size_t named = ~size_t(0);
+        if (named != g_visit) named = g_visit, progress("visit " + v.id());
         for (int i = 0; i < 8; ++i) st8(next + i, i < int(v.stage.size()) ? uint8_t(v.stage[i]) : 0);
         st16(next + 8, uint16_t(v.point));
         st8(next + 10, uint8_t(v.room));
@@ -1190,13 +1229,31 @@ void begin_actors(Cpu* c) {
             if (!added) it->second = std::min(it->second, cap);
         }
     phase_time("actors");
+    g.title_player = ld32(GD(0x1046F0B0) + GI(0x5B34));
     LOG("[dsweep] actors: %zu names, %zu to create (%zu placements)", table.size(), g.spawns.size(), g.placed.size());
     progress("actors");
     g.phase = Phase::Actors;
     g.actor_id = 0xFFFFFFFF;
 }
+// The title restarts its scene from time to time (after its idle story intro, or when an actor asked for a stage
+// change): its actors are made again, and the sweep took the new ones, drawn after it began, for what its actor had
+// made and deleted them (the camera then followed the new player into one of them: abort in dCamera_c::bumpCheck). A
+// new player says it happened; the attempt ends there, the actor being shown (if any) counting as the one that stopped
+// it.
+bool title_restarted() {
+    if (!config().title || !g.title_player || ld32(GD(0x1046F0B0) + GI(0x5B34)) == g.title_player) return false;
+    if (g.actor_id == 0xFFFFFFFF && g_group.empty()) {
+        restart_attempt("the title restarted its scene between two actors");
+        return true;
+    }
+    LOG("[dsweep] the title restarted its scene during actor %s: ending this attempt", g.spawn.id().c_str());
+    g_abort = true;
+    g.phase = Phase::Done;
+    return true;
+}
 void actor_group_step(Cpu* c);
 void actor_step(Cpu* c) {
+    if (title_restarted()) return;
     // orphans: actors given up while being created, deleted once they exist
     for (size_t i = 0; i < g.orphans.size();) {
         if (const uint32_t a = actor_of(c, g.orphans[i])) {
@@ -1213,6 +1270,7 @@ void actor_step(Cpu* c) {
             pipeline_groups::set_sweeping(0);
             return begin_plants();
         }
+        g.actors_shown = true;
         g.spawn = g.spawns.back();
         g.spawns.pop_back();
         progress("actor " + g.spawn.id());
@@ -1250,8 +1308,16 @@ void actor_step(Cpu* c) {
         }
     }
     const bool creating = !g.actor && g.actor_id != 0xFFFFFFFF && call(c, GC(0x025DD868), {g.actor_id});
-    const bool shown = g.actor && (g.actor_draws >= kShowDraws || g.actor_frames >= kShowFrames);
-    if (!shown && (creating || g.actor) && g.actor_frames < kCreateFrames) return;
+    const bool last = shown_last(g.spawn.name);
+    const bool shown = g.actor && (last ? g.actor_frames >= kShownLastFrames
+                                        : g.actor_draws >= kShowDraws || g.actor_frames >= kShowFrames);
+    if (!shown && (creating || g.actor) && g.actor_frames < (last ? kShownLastFrames : kCreateFrames)) return;
+    if (last) {
+        progress("actor-done " + g.spawn.id());
+        report_archives(g.spawn.name);
+        LOG("[dsweep] actor %s: %zu actors drawn, with what it made", g.spawn.id().c_str(), g.ours.size());
+        return restart_attempt(("actor " + g.spawn.id() + " is not deleted").c_str());
+    }
     // the actor and the actors it made (those still alive)
     for (const auto& [id, a] : g.ours)
         if (actor_of(c, id) == a) call(c, GC(0x025DF944), {a});  // fpcM_Delete
@@ -1274,6 +1340,7 @@ void actor_group_step(Cpu* c) {
             pipeline_groups::set_sweeping(0);
             return begin_plants();
         }
+        g.actors_shown = true;
         const unsigned cap = group_cap(g.spawns.back());
         while (!g.spawns.empty() && g_group.size() < cap && group_cap(g.spawns.back()) == cap) {
             g_group.push_back({g.spawns.back()});
@@ -1321,10 +1388,17 @@ void actor_group_step(Cpu* c) {
     for (size_t j = 0; j < g_group.size(); ++j) {
         const Member& m = g_group[j];
         creating[j] = !m.actor && m.id != 0xFFFFFFFF && call(c, GC(0x025DD868), {m.id});
-        const bool shown = m.actor && (m.draws >= kShowDraws || m.frames >= kShowFrames);
-        if (!shown && (creating[j] || m.actor) && m.frames < kCreateFrames) all = false;
+        const bool last = shown_last(m.spawn.name);
+        const bool shown = m.actor && (last ? m.frames >= kShownLastFrames
+                                            : m.draws >= kShowDraws || m.frames >= kShowFrames);
+        if (!shown && (creating[j] || m.actor) && m.frames < (last ? kShownLastFrames : kCreateFrames)) all = false;
     }
     if (!all) return;
+    if (g_group.size() == 1 && shown_last(g_group[0].spawn.name)) {  // (alone: group_cap)
+        progress("actor-done " + g_group[0].spawn.id());
+        report_archives(g_group[0].spawn.name);
+        return restart_attempt(("actor " + g_group[0].spawn.id() + " is not deleted").c_str());
+    }
     for (const auto& [id, a] : g.ours)
         if (actor_of(c, id) == a) call(c, GC(0x025DF944), {a});  // fpcM_Delete
     g.ours.clear();
@@ -1451,6 +1525,8 @@ void step(Cpu* c, uint32_t host) {
         g.cursor = 0;
         g_tag = 0;
         pipeline_groups::set_sweeping(0);
+        g.stage_info = g.owned ? info : 0;
+        for (int i = 0; i < 2; ++i) g.stage_heap_vt[i] = heap_vtable(info + 0xC0 + 4 * i);
         add_stage_models(c, info, g.entry);
         harvest(c, g.entry);
         g.phase = Phase::Sweeping;
@@ -1502,6 +1578,7 @@ void step(Cpu* c, uint32_t host) {
         return;
     }
     case Phase::Sweeping:
+        if (stage_res_lost()) return restart_attempt("a stage resource was lost");
         if (sweep_frame(c, host)) return;
         g.phase = Phase::Draining;
         g.frames = 0;
@@ -1509,6 +1586,7 @@ void step(Cpu* c, uint32_t host) {
         pipeline_groups::set_sweeping(0);
         return;
     case Phase::Draining:
+        if (stage_res_lost()) return restart_attempt("a stage resource was lost");
         if (++g.frames < kDrain) return;
         free_heaps(c, 0);  // every instance goes before its archive does
         g.models.clear();
@@ -1519,6 +1597,7 @@ void step(Cpu* c, uint32_t host) {
             else if (g.owned) {  // the stage resource loader's release (dComIfG_deleteStageRes)
                 const uint32_t ss = safe_strings(g.entry.stage, g.entry.arc);
                 call(c, GC(0x0260E8A8), {ld32(GD(0x101F4F54)), ss, ss + 8});
+                g.stage_info = 0;
                 g_released = g.archive;
             }
             progress("archive-done " + g.archive);

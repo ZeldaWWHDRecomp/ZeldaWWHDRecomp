@@ -235,6 +235,42 @@ static Upload submitted_upload(uint32_t addr, uint32_t size, const uint8_t* byte
     return u;
 }
 
+// Stereo 3D: a vertex uniform block with the eye's camera (stereo_projection.h project_uniform_block), projected
+// straight into the upload chunk; nil buf: the block holds no camera projection. A submitted block (display
+// lists) is looked at once per submission, eye and upload chunk, like submitted_upload.
+static Upload eye_uniform_block(uint32_t addr, uint32_t size, const uint8_t* source, bool submitted, float eyeOffset) {
+    auto project = [&] {
+        if (!stereo::has_camera_projection(source, size)) return Upload{nil, 0};
+        Upload u = reserve((size + 255) & ~255u);
+        uint8_t* bytes = (uint8_t*)u.buf.contents + u.offset;
+        memcpy(bytes, source, size);
+        stereo::project_uniform_block(bytes, size, eyeOffset, stereo::frame.convergence);
+        rprof::add_upload(size);
+        return u;
+    };
+    if (!submitted) return project();
+    struct Item { uint32_t size; Upload u; };
+    struct Cache { std::unordered_map<uint32_t, Item> items; uint64_t submission = 0, chunk = ~0ull; float eyeOffset = 0, convergence = 0; };
+    static Cache caches[2];
+    Cache& c = caches[stereoEye];
+    if (c.submission != gx2::submitted_uniforms_id() || c.chunk != g_pool_gen || c.eyeOffset != eyeOffset ||
+        c.convergence != stereo::frame.convergence) {
+        c.items.clear();
+        c.submission = gx2::submitted_uniforms_id();
+        c.chunk = g_pool_gen;
+        c.eyeOffset = eyeOffset;
+        c.convergence = stereo::frame.convergence;
+    }
+    if (auto it = c.items.find(addr); it != c.items.end() && it->second.size == size) return it->second.u;
+    const Upload u = project();
+    if (c.chunk != g_pool_gen) {  // the upload began a new chunk: the earlier items are in a retired one
+        c.items.clear();
+        c.chunk = g_pool_gen;
+    }
+    c.items[addr] = {size, u};
+    return u;
+}
+
 // Vertex buffers and uniform blocks the CPU rewrites. Metal binds them straight from guest memory,
 // and the GPU reads them when it runs, after the render thread recorded the draw; by then the game may
 // already have written the next frame's data into a dynamic buffer, so what a draw showed depended on
@@ -286,6 +322,33 @@ static bool rewritten_copy(GuestRangeKind kind, uint32_t addr, uint32_t size, Up
 // called before a command buffer commits: buffers used so far are recycled when it completes
 void pool_retire(id<MTLCommandBuffer> cmd) {
     g_texture_staging_bytes = 0;
+    // a GPU fault fails the command buffer (and the ones after it) without a word: the picture just stops
+    [cmd addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        // shader validation (MTL_SHADER_VALIDATION=1) reports through the command buffer's logs
+        if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
+            static std::atomic<int> reports{0};
+            for (id<MTLFunctionLog> l in done.logs) {
+                if (reports++ >= 40) break;
+                LOG("[gfx] GPU log (frame %llu, encoder \"%s\", function %s): %s", (unsigned long long)R.frame,
+                    l.encoderLabel.UTF8String ?: "?", l.function.name.UTF8String ?: "?", l.description.UTF8String ?: "?");
+            }
+        }
+        if (done.status != MTLCommandBufferStatusError) return;
+        static std::atomic<int> logged{0};
+        if (logged++ >= 20) return;
+        NSError* e = done.error;
+        if (logged == 1) LOG("[gfx] GPU error details: %s", e.description.UTF8String ?: "?");
+        LOG("[gfx] GPU command buffer failed (frame %llu): %s (code %ld)", (unsigned long long)R.frame,
+            e.localizedDescription.UTF8String ?: "?", (long)e.code);
+        if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
+            NSArray<id<MTLCommandBufferEncoderInfo>>* infos = e.userInfo[MTLCommandBufferEncoderInfoErrorKey];
+            for (id<MTLCommandBufferEncoderInfo> info in infos)
+                if (info.errorState == MTLCommandEncoderErrorStateFaulted || info.errorState == MTLCommandEncoderErrorStateAffected)
+                    LOG("[gfx]   encoder \"%s\": %s; %s", info.label.UTF8String ?: "?",
+                        info.errorState == MTLCommandEncoderErrorStateFaulted ? "faulted" : "affected",
+                        [info.debugSignposts componentsJoinedByString:@" / "].UTF8String ?: "");
+        }
+    }];
     // the GPU timeline of the performance report (render_prof.h add_gpu_span): this command buffer's GPU interval
     if (rprof::enabled())
         [cmd addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -1443,6 +1506,9 @@ static id<MTLTexture> null_texture(MTLTextureType type) {
 
 // texture view with the shader's expected type and the resource's component swizzle
 static std::unordered_map<uint64_t, id<MTLTexture>> g_views;
+// debug (WWHD_GPU_SYNC_FRAMES): the textures the current draw binds, for the failing draw's description
+static bool g_describe_textures = false;
+static std::string g_draw_textures;
 void forget_texture_views() { g_views.clear(); }
 
 static id<MTLTexture> texture_view(Surface* s, MTLTextureType type, uint32_t word4) {
@@ -1500,8 +1566,13 @@ bool ao_hires_enabled() { return g_ao_hires.load(std::memory_order_relaxed); }
 void set_ao_hires(bool v) { g_ao_hires = v; LOG("[gfx] full-size occlusion depth %s", v ? "on" : "off"); }
 static bool g_hires_redraw = false;          // inside the second draw of the downsample
 static uint32_t g_hires_src = 0;             // guest address of the game's 640x360 buffer
-static uint64_t g_hires_frame = ~0ull;       // frame the private copy was last drawn
-static Surface g_hires_color, g_hires_depth;
+static uint64_t g_hires_frame[2] = {~0ull, ~0ull};  // frame the private copy was last drawn (per stereo eye)
+static Surface g_hires_color[2], g_hires_depth[2];
+void stereo_release_eye_allocations() {
+    g_hires_color[1] = Surface{};
+    g_hires_depth[1] = Surface{};
+    g_hires_frame[1] = ~0ull;
+}
 
 static Surface* hires_surface(Surface& dst, const Surface* like) {
     uint32_t w = like->width * 3 / 2, h = like->height * 3 / 2;
@@ -1566,7 +1637,11 @@ static inline void bind_bytes(id<MTLRenderCommandEncoder> encoder, bool vertex, 
     else [encoder setFragmentBytes:bytes length:length atIndex:index];
     if (record) record->bytes(vertex,bytes,length,index);
 }
-static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Shader* sh, bool vertex, Surface* const* colors, MetalDrawBindings* record = nullptr) {
+// eyeOffset: stereo 3D's camera shift for this eye (0: none); the vertex stage's camera projections
+// get the eye's off-axis frustum (gfx/stereo_projection.h). sunShadow: the draw is the sun-shadow
+// pass (known by its pixel shader), whose two stages get the reconstruction fix
+static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Shader* sh, bool vertex, Surface* const* colors,
+                       MetalDrawBindings* record = nullptr, float eyeOffset = 0, bool sunShadow = false) {
     LatteDecompilerShader* dec = sh->dec;
     float texScale[18][2];
     for (auto& t : texScale) t[0] = t[1] = 1.0f;
@@ -1594,9 +1669,9 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
         // which it gets from the next time it is drawn (target_scale)
         if (!vertex && sh->kind == gfx::ProgramKind::PointLight && unit == 0 && s && s->gpuWritten)
             s->sizeClaim.request(gfx::size_request(sh->kind), R.frame);
-        if (!vertex && s && g_hires_src && s->addr == g_hires_src && g_hires_frame == R.frame && ao_hires_enabled() &&
+        if (!vertex && s && g_hires_src && s->addr == g_hires_src && g_hires_frame[stereoEye] == R.frame && ao_hires_enabled() &&
             sh->kind == gfx::ProgramKind::OcclusionPixel)
-            s = &g_hires_color;
+            s = &g_hires_color[stereoEye];
         id<MTLTexture> tex = s && s->tex ? texture_view(s, type, tw[4]) : nil;
         if (s && unit < 18) {
             texScale[unit][0] = s->sx; texScale[unit][1] = s->sy;
@@ -1608,7 +1683,20 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
              regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3],
              regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3 + 1],
              regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3 + 2]);
+        const bool placeholder = !tex;
         if (!tex) tex = null_texture(type);
+        if (g_describe_textures) {
+            char d[400];
+            snprintf(d, sizeof d, "\n  %s tex%u -> binding %u: surface %08X %ux%u fmt %X gpuWritten %d mips %u%s; texture %lux%lux%lu "
+                     "pixel %lu type %lu levels %lu storage %lu view %d parent %lux%lu pixel %lu",
+                     vertex ? "VS" : "PS", unit, binding, tw[2] << 8, s ? s->width : 0, s ? s->height : 0, s ? s->format : 0,
+                     s ? (int)s->gpuWritten : -1, s ? s->mips : 0, placeholder ? " (placeholder)" : "",
+                     (unsigned long)tex.width, (unsigned long)tex.height, (unsigned long)tex.depth, (unsigned long)tex.pixelFormat,
+                     (unsigned long)tex.textureType, (unsigned long)tex.mipmapLevelCount, (unsigned long)tex.storageMode,
+                     tex.parentTexture != nil, (unsigned long)tex.parentTexture.width, (unsigned long)tex.parentTexture.height,
+                     (unsigned long)tex.parentTexture.pixelFormat);
+            g_draw_textures += d;
+        }
         const uint32_t* sw = &regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3];
         // quirk: the ambient-occlusion pass (PS 44BDFD00) point-samples its centre depth from a 640x360
         // buffer while drawing 960x540; every third row lands half a texel off and shows as screen-fixed
@@ -1663,11 +1751,18 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
         }
         uint32_t aluBase = mmSQ_ALU_CONSTANT0_0 + (vertex ? 0x400 : 0);
         uint32_t blockBase = vertex ? mmSQ_VTX_UNIFORM_BLOCK_START : mmSQ_PS_UNIFORM_BLOCK_START;
+        const float convergence = stereo::frame.convergence;
+        const bool shiftCamera = vertex && eyeOffset != 0;
+        auto projectionRow = [&](uint8_t* entry, const void* source, size_t available) {
+            if (shiftCamera) stereo::project_entry(entry, source, available, eyeOffset, convergence);
+        };
         if (dec->uniform.loc_remapped >= 0) {
             uint8_t* dst = (uint8_t*)at(dec->uniform.loc_remapped);
             // the decompiler fills only the list matching the shader's uniform mode
-            for (auto& e : dec->list_remappedUniformEntries_register)
+            for (auto& e : dec->list_remappedUniformEntries_register) {
                 memcpy(dst + e.mappedIndexOffset, &regs[aluBase + e.indexOffset / 4], 16);
+                if (e.indexOffset <= 4096 - 64) projectionRow(dst + e.mappedIndexOffset, &regs[aluBase + e.indexOffset / 4], 4096 - e.indexOffset);
+            }
             for (auto& g : dec->list_remappedUniformEntries_bufferGroups) {
                 uint32_t addr = regs[blockBase + g.kcacheBankIdOffset / 4];
                 if (!addr) continue;
@@ -1675,13 +1770,19 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
                 // entries past the block's end still read guest memory, as before
                 const uint32_t blockSize = std::min<uint32_t>(regs[blockBase + g.kcacheBankIdOffset / 4 + 1] + 1, 0x10000);
                 const uint8_t* submitted = gx2::submitted_uniform_block(addr, blockSize);
-                for (auto& e : g.entries)
-                    memcpy(dst + e.mappedIndexOffset,
-                           submitted && e.indexOffset + 16 <= blockSize ? submitted + e.indexOffset : mem::ptr(addr + e.indexOffset), 16);
+                for (auto& e : g.entries) {
+                    const void* source =
+                        submitted && e.indexOffset + 16 <= blockSize ? (const void*)(submitted + e.indexOffset) : mem::ptr(addr + e.indexOffset);
+                    memcpy(dst + e.mappedIndexOffset, source, 16);
+                    if (e.indexOffset < blockSize) projectionRow(dst + e.mappedIndexOffset, source, blockSize - e.indexOffset);
+                }
             }
             // Apply once before the Gaussian/mip chain, preserving the game's threshold and haze.
             if (!vertex && (regs[mmSQ_PGM_START_PS] << 8) == 0x44F91200)
                 render::scale_bloom_uniforms(dst, buf.size() - dec->uniform.loc_remapped);
+            if (sunShadow && !vertex) stereo::note_shadow_pass(dst, buf.size() - dec->uniform.loc_remapped);
+            if (eyeOffset != 0 && sunShadow)
+                stereo::shadow_uniforms(dst, buf.size() - dec->uniform.loc_remapped, vertex, eyeOffset, convergence);
             // AO mode 2: the occlusion pass's VS (44BDF900) scales its noise coordinates by remapped[0].w
             // for a 640x360 grid; the pass draws 960x540, so tile the 4x4 noise per output pixel instead
             if (vertex && ao_mode() == 2 && sh->kind == gfx::ProgramKind::OcclusionVertex)
@@ -1692,8 +1793,12 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
                     gfx::area_sample::scale_gather_grid((float*)dst, (buf.size() - dec->uniform.loc_remapped) / 16, texGuest[unit][0],
                                                         texGuest[unit][1], texScale[unit][0], texScale[unit][1]);
         }
-        if (dec->uniform.loc_uniformRegister >= 0)
+        if (dec->uniform.loc_uniformRegister >= 0) {
             memcpy(at(dec->uniform.loc_uniformRegister), &regs[aluBase], dec->uniform.count_uniformRegister * 16);
+            if (shiftCamera)
+                stereo::project_uniform_block((unsigned char*)at(dec->uniform.loc_uniformRegister), dec->uniform.count_uniformRegister * 16,
+                                              eyeOffset, convergence);
+        }
         if (dec->uniform.loc_windowSpaceToClipSpaceTransform >= 0) {
             float vw = 2.0f * gx2::bitsf(regs[REGADDR::PA_CL_VPORT_XSCALE]);
             float vh = -2.0f * gx2::bitsf(regs[REGADDR::PA_CL_VPORT_YSCALE]);
@@ -1748,7 +1853,16 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
         if (!gb) continue;
         // a block of a display list: its bytes as submitted (gx2/submitted_uniforms.h), uploaded
         // once per submission and upload pool chunk (guest memory is what the GPU reads later)
-        if (const uint8_t* submitted = gx2::submitted_uniform_block(addr, size)) {
+        const uint8_t* submitted = gx2::submitted_uniform_block(addr, size);
+        // stereo: only a block holding a camera projection gets a copy for the eye
+        if (vertex && eyeOffset != 0) {
+            const Upload u = eye_uniform_block(addr, size, submitted ? submitted : (const uint8_t*)mem::ptr(addr), submitted, eyeOffset);
+            if (u.buf) {
+                bind_buffer(enc,vertex,u.buf,u.offset,binding,record);
+                continue;
+            }
+        }
+        if (submitted) {
             Upload u = submitted_upload(addr, size, submitted);
             bind_buffer(enc,vertex,u.buf,u.offset,binding,record);
             continue;
@@ -1771,6 +1885,8 @@ static bool ensure_pass(Surface* const* colors, const uint32_t* colorSlices, Sur
             same = R.passColor[i] == colors[i] && (!colors[i] || R.passColorSlice[i] == colorSlices[i]);
         if (same) return true;
     }
+    for (int i = 0; i < 8; i++) stereo_release(colors[i]);
+    stereo_release(depth);
     end_encoder();
     MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
     bool any = false;
@@ -1801,6 +1917,7 @@ static bool ensure_pass(Surface* const* colors, const uint32_t* colorSlices, Sur
     }
     if (!any) return false;
     R.enc = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+    R.enc.label = @"ensure_pass";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     for (int i = 0; i < 8; i++) {
         R.passColor[i] = colors[i];
         R.passColorSlice[i] = colorSlices[i];
@@ -2041,6 +2158,21 @@ static CacheScan cache_scan(const std::string& path) {
 }
 
 // load and replay the recipes; runs once on the render thread before the first draw
+// Known pipelines are built in the background after the replay, a few per frame, so none stalls a draw. On an
+// Apple TV that is every recorded pipeline (about 12,000 with a full shader prebuild, some 150 MB) under a
+// fixed memory limit: there they are built when first drawn. WWHD_BG_PIPELINES=1 / 0 decides elsewhere.
+static bool background_pipelines() {
+    static const bool on = [] {
+        if (const char* e = getenv("WWHD_BG_PIPELINES"); e && *e) return strcmp(e, "0") != 0;
+#ifdef WWHD_TVOS
+        return false;
+#else
+        return true;
+#endif
+    }();
+    return on;
+}
+
 static void cache_load();
 static void cache_load_once() {
     static bool loaded = (cache_load(), true);
@@ -2112,7 +2244,7 @@ static void cache_load() {
                 if (repeated()) continue;
                 PipelineRecipe r;
                 g_user_pipelines.insert(h);
-                if (get(p, end, r) && g_known_pipelines.insert(h).second && !recordOnly) {
+                if (get(p, end, r) && g_known_pipelines.insert(h).second && !recordOnly && background_pipelines()) {
                     g_pending_pipelines.push_back(r);
                     pipelines++;
                 }
@@ -2322,6 +2454,18 @@ void report_skips() {
         (unsigned long long)g_stat_staging_buffers, g_stat_staging_buffer_bytes / 1048576.0);
     g_stat_staging_pool = g_stat_staging_pool_bytes = g_stat_staging_buffers = g_stat_staging_buffer_bytes = 0;
     g_stat_full_checks = g_stat_uploads = g_stat_invalidates = g_stat_invalidated_surfaces = g_stat_hashed_bytes = 0;
+    if (!bc_textures_supported()) {
+        // a GPU without BC textures (formats.h decodeBC): what the decoded ones take, by BC type, of all surfaces
+        double bc[6] = {}, all = 0;
+        for (const auto& [addr, surf] : R.surfaces) {
+            if (!surf->tex) continue;
+            const double mb = surf->tex.allocatedSize / 1048576.0;
+            all += mb;
+            if (surf->fmt.decodeBC) bc[surf->fmt.bcMode & 7] += mb;
+        }
+        LOG("[gfx] decoded BC textures: BC1 %.0f MiB, BC2 %.0f, BC3 %.0f, BC4 %.0f, BC5 %.0f; all surfaces %.0f MiB",
+            bc[1], bc[2], bc[3], bc[4], bc[5], all);
+    }
     for (int k = 0; k < kRangeKinds; k++) {
         size_t dynamicRanges = 0;
         for (auto& [key, r] : g_guest_ranges[k]) dynamicRanges += r.dynamic;
@@ -2486,6 +2630,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, coverage == 2 ? 1 : 0);
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
+    encoder.label = @"prepare_backdrop";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     if (!encoder) {backdrop_trace("encoder-reject",pixel,d.width,d.height);return false;}
     [encoder endEncoding];
     storage->complete.store(false,std::memory_order_release);
@@ -2558,9 +2703,41 @@ void gamepad_backdrop_reset() {
     backdropScanned = {}; backdropScannedNext = 0; backdropForeign = false;
     gamepad_backdrop::set_capture_requested(false);
 }
+// debug: WWHD_GPU_SYNC_FRAMES=<from>-<to> (see the end of draw)
+static bool gpu_sync_frame() {
+    static const std::pair<uint64_t, uint64_t> frames = [] {
+        unsigned long long a = 0, b = 0;
+        const char* e = getenv("WWHD_GPU_SYNC_FRAMES");
+        if (!e || sscanf(e, "%llu-%llu", &a, &b) != 2) return std::pair<uint64_t, uint64_t>{1, 0};
+        return std::pair<uint64_t, uint64_t>{a, b};
+    }();
+    return R.frame >= frames.first && R.frame <= frames.second;
+}
+
+// stereo 3D: eye 1 draws the same guest draw right after eye 0 (draw_stereo), with eye 0's shaders, primitive
+// type and uploaded indices (the index vector below still holds eye 0's)
+struct StereoDraw {
+    LatteFetchShader* fs = nullptr;
+    uint64_t fsKey = 0;
+    Shader *vs = nullptr, *ps = nullptr;
+    MTLPrimitiveType primitive = MTLPrimitiveTypeTriangle;
+    Upload index{};  // (buf nil: no index buffer)
+    uint64_t indexChunk = 0;  // g_pool_gen of INDEX's chunk: eye 1 uploads its own once that chunk is retired
+    bool drawn = false;  // eye 0 encoded the draw
+    bool eye0Only = false;  // into a target both eyes share (stereo::eye_shared_target)
+};
+static StereoDraw g_stereoDraw;
+static StereoDraw* g_stereoOut = nullptr;       // eye 0's top-level draw records
+static const StereoDraw* g_stereoIn = nullptr;  // eye 1's reuses
+
 void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexType, uint32_t indexAddr, uint32_t baseVertex,
           uint32_t instances) {
-    const bool captureDraw = backdropScope && !backdropReplay && gamepad_backdrop::capture_enabled();
+    // (the top-level draw only: not the occlusion depth copy's or the backdrop's second draw)
+    StereoDraw* const stereoOut = std::exchange(g_stereoOut, nullptr);
+    const StereoDraw* const stereoIn = std::exchange(g_stereoIn, nullptr);
+    g_describe_textures = gpu_sync_frame();
+    if (g_describe_textures) g_draw_textures.clear();
+    const bool captureDraw = backdropScope && !backdropReplay && !stereoEye && gamepad_backdrop::capture_enabled();
     if (captureDraw) ++backdropExpected;
     std::optional<BackdropDrawReplay> capturedBindings;
     if (captureDraw) capturedBindings.emplace();
@@ -2578,8 +2755,9 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     if (regs[REGADDR::PA_CL_CLIP_CNTL] & (1 << 22)) { g_skip[SK_RASTER_KILL]++; return; }  // rasterization disabled
 
     uint64_t fsKey = 0;
-    LatteFetchShader* fs = backdropReplay ? backdropBindings->fetch : get_fetch_shader(regs, &fsKey);
+    LatteFetchShader* fs = backdropReplay ? backdropBindings->fetch : stereoIn ? stereoIn->fs : get_fetch_shader(regs, &fsKey);
     if (backdropReplay) fsKey = backdropBindings->fetchKey;
+    if (stereoIn) fsKey = stereoIn->fsKey;
     if (!fs) {
         if (g_skip[SK_NO_FETCH]++ < 5) {
             uint32_t prog = regs[mmSQ_PGM_START_FS] << 8;
@@ -2588,9 +2766,10 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         }
         return;
     }
-    Shader* vs = backdropReplay ? backdropBindings->vertex : get_shader(regs, true, fs, fsKey);
-    Shader* ps = backdropReplay ? backdropBindings->pixel : get_shader(regs, false, fs, fsKey);
+    Shader* vs = backdropReplay ? backdropBindings->vertex : stereoIn ? stereoIn->vs : get_shader(regs, true, fs, fsKey);
+    Shader* ps = backdropReplay ? backdropBindings->pixel : stereoIn ? stereoIn->ps : get_shader(regs, false, fs, fsKey);
     if (!vs || !ps || !vs->dec || !ps->dec) { g_skip[SK_NO_SHADER]++; return; }  // translation failed
+    if (stereoOut) *stereoOut = {fs, fsKey, vs, ps};
     const LatteContextRegister& lcr = *(const LatteContextRegister*)regs;
     uint8_t mask = LatteMRT::GetActiveColorBufferMask(ps->dec, lcr);
     Surface* colors[8] = {};
@@ -2606,6 +2785,13 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         depth = nullptr;
     }
     if (depth && depth->width == 1280 && depth->height == 720) R.mainDepthAddr = depth->addr;
+    // stereo: the target decides the eye's camera (screen-shaped), and eye 0 alone draws the shared ones
+    const Surface* stereoTarget = stereo::frame.mode != stereo::Off ? (colors[0] ? colors[0] : depth) : nullptr;
+    const bool eyeScreen = stereoTarget && stereo_screen_target(stereoTarget->width, stereoTarget->height);
+    if (stereoTarget && stereo::eye_shared_target(stereoTarget->width, stereoTarget->height, stereoTarget->slices, stereoTarget->isDepth)) {
+        if (stereoEye) return;
+        if (stereoOut) stereoOut->eye0Only = true;
+    }
     // must this draw run even if its compile takes longer than the budget? (see wait_compiled)
     const bool fast = bgshaders::enabled();
     const bool bgOn = fast && !g_hires_redraw;  // the AO pass's hires redraw of a draw always waits
@@ -2663,9 +2849,9 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     uint32_t guestH = colors[0] ? colors[0]->height : 0;
     if (g_hires_redraw) {
         g_hires_src = colors[0]->addr;
-        colors[0] = hires_surface(g_hires_color, colors[0]);
+        colors[0] = hires_surface(g_hires_color[stereoEye], colors[0]);
         colorSlices[0] = 0;
-        if (depth) { depth = hires_surface(g_hires_depth, depth); depthSlice = 0; }
+        if (depth) { depth = hires_surface(g_hires_depth[stereoEye], depth); depthSlice = 0; }
     }
     // Metal requires matching attachment sizes; drop mismatching ones. Sizes here are the textures'
     // (internal resolution); kx/ky = texture pixels per guest pixel of the target.
@@ -2690,6 +2876,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     static std::vector<uint32_t> indices;  // render thread only; keeps its capacity between draws
     MTLPrimitiveType ptype;
     if (backdropReplay) { indices = backdropBindings->indices; ptype = backdropBindings->primitive; }
+    else if (stereoIn) ptype = stereoIn->primitive;
     else if (!build_indices(prim, count, indexType, indexAddr, indices, ptype)) { g_skip[SK_PRIM]++; return; }
     if (captureDraw) {
         capturedBindings->indices = indices; capturedBindings->primitive = ptype;
@@ -2778,6 +2965,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     bool halfZ = clipCntl.get_DX_CLIP_SPACE_DEF();
     MTLViewport vp{xo - xs, yo + ys, xs * 2.0f, ys * -2.0f, halfZ ? zo : zo - zs, zs + zo};
     vp.originX *= kx; vp.originY *= ky; vp.width *= kx; vp.height *= ky;
+    vp.originX += stereo::layout_shift_px(stereoEye, vp.width, eyeScreen);  // (the 2D layouts in front of the scene)
     [enc setViewport:vp];
     uint32_t tl = regs[REGADDR::PA_SC_GENERIC_SCISSOR_TL], br = regs[REGADDR::PA_SC_GENERIC_SCISSOR_BR];
     auto lo = [](uint32_t v, float k, uint32_t lim) { return std::min<uint32_t>((uint32_t)std::floor(v * k + 0.01f), lim); };
@@ -2819,8 +3007,12 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     {
         rprof::UploadKind uploads(rprof::kUpUbo);  // Metal: uniform snapshots and bindings of both stages
         R.binding = true;
-        bind_stage(enc, regs, vs, true, colors, captureDraw ? &capturedBindings->bindings : nullptr);
-        bind_stage(enc, regs, ps, false, colors, captureDraw ? &capturedBindings->bindings : nullptr);
+        const float eyeOffset = stereo::camera_eye_offset(stereoEye, eyeScreen);
+        const bool sunShadow = ps->kind == gfx::ProgramKind::SunShadowMask;
+        stereo::cameraSeen = false;
+        bind_stage(enc, regs, vs, true, colors, captureDraw ? &capturedBindings->bindings : nullptr, eyeOffset, sunShadow);
+        stereo::note_main_camera(!stereoEye && depth && depth->addr == R.mainDepthAddr);
+        bind_stage(enc, regs, ps, false, colors, captureDraw ? &capturedBindings->bindings : nullptr, eyeOffset, sunShadow);
         R.binding = false;
     }
     }
@@ -2837,7 +3029,9 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         [enc drawPrimitives:ptype vertexStart:baseVertex vertexCount:count instanceCount:instances];
     } else {
         rprof::UploadKind uploads(rprof::kUpIndex);
-        Upload u = upload(indices.data(), (uint32_t)(indices.size() * 4));
+        Upload u = stereoIn && stereoIn->indexChunk == g_pool_gen ? stereoIn->index
+                                                                  : upload(indices.data(), (uint32_t)(indices.size() * 4));
+        if (stereoOut) stereoOut->index = u, stereoOut->indexChunk = g_pool_gen;
         [enc drawIndexedPrimitives:ptype
                         indexCount:indices.size()
                          indexType:MTLIndexTypeUInt32
@@ -2846,6 +3040,48 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
                      instanceCount:instances
                         baseVertex:baseVertex
                       baseInstance:0];
+    }
+    if (stereoOut) {
+        stereoOut->primitive = ptype;
+        stereoOut->drawn = true;
+    }
+    // debug: WWHD_GPU_SYNC_FRAMES=<from>-<to> commits every draw of those frames on its own and waits for it; the
+    // first one the GPU fails (a page fault) is described, and the check stops
+    {
+        static bool found = false;
+        if (!found && gpu_sync_frame() && !backdropReplay) {
+            end_encoder();
+            if (R.cmd || stereo_other_pending()) {
+                if (wait_idle_failed()) {
+                    found = true;
+                    uint32_t maxIndex = 0;
+                    for (uint32_t i : indices) maxIndex = std::max(maxIndex, i);
+                    LOG("[gpusync] frame %llu draw #%llu FAILED: VS %08X key %016llx, PS %08X key %016llx, prim %u count %u "
+                        "indices %zu (max %u) base %u instances %u, target %ux%u, manual fetch %d",
+                        (unsigned long long)R.frame, (unsigned long long)thisDraw, regs[mmSQ_PGM_START_VS] << 8,
+                        (unsigned long long)vs->key, regs[mmSQ_PGM_START_PS] << 8, (unsigned long long)ps->key, (unsigned)ptype,
+                        count, indices.size(), maxIndex, baseVertex, instances, w, h, fs->mtlFetchVertexManually ? 1 : 0);
+                    LOG("[gpusync]   textures:%s", g_draw_textures.c_str());
+                    for (int i = 0; i < 8; i++)
+                        if (Surface* c = colors[i])
+                            LOG("[gpusync]   color %d: surface %08X %ux%u fmt %X gpuWritten %d; texture %lux%lu pixel %lu storage %lu "
+                                "levels %lu slices %lu, slice %u", i, c->addr, c->width, c->height, c->format, (int)c->gpuWritten,
+                                (unsigned long)c->tex.width, (unsigned long)c->tex.height, (unsigned long)c->tex.pixelFormat,
+                                (unsigned long)c->tex.storageMode, (unsigned long)c->tex.mipmapLevelCount,
+                                (unsigned long)c->tex.arrayLength, colorSlices[i]);
+                    if (depth)
+                        LOG("[gpusync]   depth: surface %08X %ux%u fmt %X; texture %lux%lu pixel %lu storage %lu slices %lu, slice %u",
+                            depth->addr, depth->width, depth->height, depth->format, (unsigned long)depth->tex.width,
+                            (unsigned long)depth->tex.height, (unsigned long)depth->tex.pixelFormat, (unsigned long)depth->tex.storageMode,
+                            (unsigned long)depth->tex.arrayLength, depthSlice);
+                    for (auto& g : fs->bufferGroups) {
+                        const uint32_t base = mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7;
+                        LOG("[gpusync]   vertex buffer %u: %08X size %u stride %u, %d attributes", (unsigned)g.attributeBufferIndex,
+                            regs[base], regs[base + 1] + 1, (regs[base + 2] >> 11) & 0xFFFF, (int)g.attribCount);
+                    }
+                }
+            }
+        }
     }
     if (backdropReplay) {
         backdropEncoded = true;
@@ -2968,7 +3204,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
             dump_texture(depth->tex, name, false, false);
         }
     }
-    if (g_hires_redraw) { g_hires_frame = R.frame; return; }  // the private copy is ready for the occlusion pass
+    if (g_hires_redraw) { g_hires_frame[stereoEye] = R.frame; return; }  // the private copy is ready for the occlusion pass
     if (ao_hires_enabled() && colors[0] && ps->kind == gfx::ProgramKind::DepthDownsample) {
         g_hires_redraw = true;
         draw(regs, prim, count, indexType, indexAddr, baseVertex, instances);
@@ -2999,6 +3235,34 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
         }
     }
 
+}
+
+void draw_stereo(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexType, uint32_t indexAddr, uint32_t baseVertex,
+                 uint32_t instances) {
+    if (stereo::frame.mode == stereo::Off) {
+        draw(regs, prim, count, indexType, indexAddr, baseVertex, instances);
+        return;
+    }
+    const uint64_t leftOut = g_skip[SK_COMPILING] + g_skip[SK_PIPE_COMPILING];
+    try {
+        stereo_select_eye(0);
+        g_stereoDraw = {};
+        g_stereoOut = &g_stereoDraw;
+        draw(regs, prim, count, indexType, indexAddr, baseVertex, instances);
+        g_stereoOut = nullptr;
+        // a shared target (eye 0's alone), or left out while its shaders compile (Shader compile Fast): from both eyes
+        if (g_stereoDraw.eye0Only || g_skip[SK_COMPILING] + g_skip[SK_PIPE_COMPILING] != leftOut) return;
+        stereo_select_eye(1);
+        g_stereoIn = g_stereoDraw.drawn ? &g_stereoDraw : nullptr;
+        draw(regs, prim, count, indexType, indexAddr, baseVertex, instances);
+        g_stereoIn = nullptr;
+        stereo_select_eye(0);
+    } catch (...) {
+        g_stereoOut = nullptr;
+        g_stereoIn = nullptr;
+        stereo_select_eye(0);
+        throw;
+    }
 }
 
 // ---------------------------------------------------------------- shader head start hooks (shader_headstart.mm)
@@ -3051,7 +3315,7 @@ bool headstart_queue_pipeline(const uint8_t* raw, size_t size) {
     if (size != sizeof(PipelineRecipe)) return false;
     PipelineRecipe r;
     memcpy(&r, raw, size);
-    if (g_known_pipelines.insert(hash_bytes(raw, size)).second) g_pending_pipelines.push_back(r);
+    if (g_known_pipelines.insert(hash_bytes(raw, size)).second && background_pipelines()) g_pending_pipelines.push_back(r);
     return true;
 }
 

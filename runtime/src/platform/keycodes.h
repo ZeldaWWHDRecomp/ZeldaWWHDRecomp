@@ -1,6 +1,6 @@
 #pragma once
 // Stable physical key IDs used in controls.json; identical across host platforms.
-#ifdef __APPLE__
+#if defined(__APPLE__) && !defined(WWHD_TVOS)
 #include <Carbon/Carbon.h>
 #else
 enum {

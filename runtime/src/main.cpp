@@ -40,6 +40,9 @@
 #include "gfx/gamepad_backdrop_options.h"
 #if defined(__APPLE__) && defined(WWHD_HAS_METAL)
 #include "gfx/player_question.h"
+#ifdef WWHD_TVOS
+#include "gfx/cloud_save.h"
+#endif
 #endif
 #include "overlay/hostui.h"
 #include "render_prof.h"
@@ -204,7 +207,9 @@ static void install_crash_handler() {
     stack_t ss{};
     ss.ss_sp = altstack;
     ss.ss_size = sizeof altstack;
+#ifndef WWHD_TVOS  // (not on tvOS: the handlers run on the faulting thread's stack)
     sigaltstack(&ss, nullptr);
+#endif
     struct sigaction sa{};
     sa.sa_sigaction = crash_handler;
     sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
@@ -477,7 +482,12 @@ static void enter_data_folder(int argc, char** argv) {
 
 extern "C" void synthetic_game_frame(Cpu*, PpcFunc);
 
+#ifdef WWHD_TVOS
+// Apple TV: UIKit owns the main thread; gfx/host_tvos.mm's main() starts this on a thread of its own
+int wwhd_main(int argc, char** argv) {
+#else
 int main(int argc, char** argv) {
+#endif
     // setup's start check of a newly built game, before it replaces the one before (tools/installer/setup.py
     // build_identity): proves the binary starts here (its libraries load) and says what it is, then exits.
     // The pipeline identity keys the prepared shaders (pipeline_runtime_identity.h).
@@ -825,6 +835,10 @@ int main(int argc, char** argv) {
         }
         config::save_dir = chosen.save_dir.string();
     }
+#endif
+#ifdef WWHD_TVOS
+    // the save in iCloud through CloudKit (Apple TV, iPhone, iPad: gfx/cloud_save.h), in the folder just settled
+    if (!save_override && !warm_shaders) cloud_save::startup(config::save_dir, ask_player);
 #endif
     std::filesystem::path backup_dir = save_folder::safe_writes() ? save_folder::state().backups : std::filesystem::path();
     if (randomizer::compiled_seed() && backup_dir.empty())

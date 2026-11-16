@@ -279,7 +279,10 @@ inline constexpr int64_t kLockRefresh = 5 * 60;   // a running game rewrites its
 inline constexpr int64_t kLockStale = 15 * 60;    // an older lock is left over from a crash or a power cut
 inline fs::path lock_file(const fs::path& save_dir) { return save_dir / "wwhd-playing.lock"; }
 
+// The name a lock gives this machine. WWHD_MACHINE_NAME first: a host whose host name says nothing (iPadOS and
+// iOS all report "localhost") gives one that is its own (gfx/host_tvos.mm).
 inline std::string machine_name() {
+    if (const char* own = getenv("WWHD_MACHINE_NAME"); own && *own) return own;
 #ifdef _WIN32
     wchar_t name[MAX_COMPUTERNAME_LENGTH + 1];
     DWORD size = MAX_COMPUTERNAME_LENGTH + 1;
@@ -369,6 +372,7 @@ struct State {
     std::string machine;
     std::string notice;      // shown once in the Saves tab
     std::atomic<bool> stop{false};
+    bool paused = false;     // the lock is taken back for now (pause_lock)
 };
 inline State& state() { static State s; return s; }
 
@@ -746,7 +750,7 @@ inline Startup startup(const fs::path& default_dir, const fs::path& config_dir, 
             std::this_thread::sleep_for(std::chrono::seconds(1));
             if (waited % kLockRefresh != kLockRefresh - 1) continue;
             std::lock_guard g(st.mu);
-            if (st.active && !st.stop) write_lock(lock_file(st.folder), {st.machine, now()});
+            if (st.active && !st.stop && !st.paused) write_lock(lock_file(st.folder), {st.machine, now()});
         }
     }).detach();
     say("using " + target.string());
@@ -762,6 +766,26 @@ inline void release() {
     const auto lock = read_lock(lock_file(s.folder));
     std::error_code ec;
     if (lock && lock->machine == s.machine) fs::remove(lock_file(s.folder), ec);
+}
+
+// A host whose game is about to be suspended (an iPad app in the background) takes its lock back, since it
+// can't refresh it there, and writes it again when it is back (resume_lock). Another device that starts
+// meanwhile is not warned; one that is still playing when this one comes back is (the next start).
+inline void pause_lock() {
+    auto& s = state();
+    std::lock_guard guard(s.mu);
+    if (!s.active || s.paused) return;
+    s.paused = true;
+    const auto lock = read_lock(lock_file(s.folder));
+    std::error_code ec;
+    if (lock && lock->machine == s.machine) fs::remove(lock_file(s.folder), ec);
+}
+inline void resume_lock() {
+    auto& s = state();
+    std::lock_guard guard(s.mu);
+    if (!s.active || !s.paused) return;
+    s.paused = false;
+    write_lock(lock_file(s.folder), {s.machine, now()});
 }
 
 // hle/fs.cpp: write save files through a temporary file in a chosen folder
