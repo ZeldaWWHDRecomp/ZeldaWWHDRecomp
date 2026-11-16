@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: Story Notebook icons in the bag** (#589, thanks @fayep). When the game's icon archive has the notebook, each
+  bag place now shows one notebook icon (before, a second, flickering copy could appear), the carried letter shows the
+  game's letter icon, and switching between Pro Controller and GamePad no longer leaves icons or the notebook page on
+  the other screen.
 - **New: support for the Japanese release** (00050000-10143400, v0; #575, thanks @DynDec). Setup accepts the Japanese
   disc image, the recompiler maps the Japanese code onto the USA addresses (moved play-object members are translated),
   the in-app randomizer works on it, and the overlay loads a system Japanese font when Japanese text is needed. Guest
