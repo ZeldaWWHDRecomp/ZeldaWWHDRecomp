@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Vulkan: cheaper window composition** (#598). Putting the TV/GamePad pictures, bars and frames into the window
+  now does about 60 % less GPU work (a simpler shader for the common smooth-filter case, no clear when the pictures
+  cover the window, hidden quads skipped). The picture is pixel-identical. On phones this shows as lower GPU clocks
+  (less heat and battery) rather than a higher frame rate. `WWHD_VK_PRESENT_TRIM=0` turns it off.
 - **Decomp version: fast mode, every macOS release, and code mods** (#597). Setup's "Also build the decomp version
   (experimental)" is now offered in regular macOS releases, not only development builds, and builds the decomp
   build's fast mode (about 40 to 80 minutes more on a busy Mac, less on a quiet one; setup asks for 4 GB free while
