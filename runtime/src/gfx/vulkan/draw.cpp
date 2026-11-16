@@ -62,11 +62,17 @@
 #include "reproj.h"
 #ifdef WWHD_NATIVE_DRAW
 #include "gx2/native_draw.h"
+#include "gx2/native_j3d_desc.h"
 #include "gx2/native_pass.h"
+#include "gx2/native_j3d_desc_draw.h"
+#include "native_draw/j3d_depth.h"
+#include "native_draw/j3d_desc_depth.h"  // (at file scope: j3d_desc_vk.h includes it again inside gfxvk)
+#include "native_draw/j3d_desc_depth_inst.h"
 #include "framegen.h"
 #include "cloud_proto.h"
 #include "mods/cemu_pack.h"
 #include <memory>
+#include <optional>
 #endif
 #include <algorithm>
 #include <array>
@@ -146,11 +152,11 @@ static void draw_batch_submit() {
   ++drawBatchSubmissions;
 }
 #ifdef WWHD_NATIVE_DRAW
-// WWHD_VK_RECORD_INDIRECT=1 (off by default; MT recording stage 0): a multi-draw or shader-rewrite batch's indirect
+// WWHD_VK_RECORD_INDIRECT (fast build: on by default, =0 turns it off; MT recording stage 0): a multi-draw or shader-rewrite batch's indirect
 // draw also while a recorder captures the commands (the record worker's POD stream, opcode 30, or the exact-preparation
 // capture), instead of one vkCmdDrawIndexed per instance there; the same draws either way
 bool record_indirect() {
-  static const bool on = [] { const char* e = std::getenv("WWHD_VK_RECORD_INDIRECT"); return e && *e == '1'; }();
+  static const bool on = [] { const char* e = std::getenv("WWHD_VK_RECORD_INDIRECT"); return !(e && *e == '0'); }();
   return on;
 }
 #endif
@@ -3043,6 +3049,7 @@ struct PacketCapture {
   std::array<std::array<int, kBlocks>, 2> slot;
   bool hashes = false;  // WWHD_NATIVE_DRAW_VERIFY: hash the resolved inputs for the comparison
   const native_draw::Packet* packet = nullptr;  // in: the packet (its instance register ranges)
+  bool keepWrites = false;  // in: every stage's descriptor writes, dynamic uniforms too (J3D described draws)
   PacketCapture() { for (auto& s : slot) s.fill(-1); }
   int block_of(int st, size_t logicalSlot) const {
     for (int k = 0; k < kBlocks; ++k)
@@ -3063,6 +3070,8 @@ struct PacketCapture {
   struct Stage {
     Block block[kBlocks];
     bool dynamic = true;
+    std::array<uint32_t, 17> dynBindings{};  // keepWrites: the dynamic bindings in the order of their offsets
+    uint32_t dynCount = 0;
     // regular (non-dynamic) uniforms: the stage's descriptor writes, to write a set per instance with its blocks
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     uint32_t writeCount = 0;
@@ -3127,10 +3136,22 @@ struct PacketCapture {
   // verify mode: every other uniform block's bytes, the textures, vertex (content; and layout: attribute index,
   // stride word) and index inputs
   uint64_t uniformHash[2]{}, textureHash = 0, vertexHash = 0, vertexLayoutHash = 0, indexHash = 0;
+  // (J3D described draws) the pass subset the draw was recorded with (its colour slots taken over, not written); the
+  // draw's viewport and scissor (raster: set by this draw)
+  uint32_t absent = 0;
+  VkViewport viewport{};
+  VkRect2D scissor{};
+  bool raster = false;
   void refuse(const char* why) { if (!refused) refused = why; }
+  // native J3D depth proof (native_draw/j3d_depth.h): also keep each stage's image writes
+  bool images = false;
+  struct ImageWrite { uint32_t binding; VkDescriptorImageInfo info; };
+  std::array<ImageWrite, LATTE_NUM_MAX_TEX_UNITS> imageWrites[2];
+  uint32_t imageWriteCount[2]{};
 };
 PacketCapture* g_packetCapture = nullptr;
 bool g_packetBindsDirty = false;  // a replay bound descriptor sets behind draw()'s bind cache
+bool g_packetDynamicDirty = false;  // a J3D described draw set viewport, scissor, blend constants or stencil references
 inline uint64_t packet_hash(uint64_t h, const void* data, size_t n) {
   const auto* b = static_cast<const uint8_t*>(data);
   for (size_t i = 0; i < n; ++i) h = (h ^ b[i]) * 0x100000001B3ull;
@@ -3610,7 +3631,12 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     }
   }
 #ifdef WWHD_NATIVE_DRAW
-  if (auto* cap = g_packetCapture; cap && !dynamicUniforms) {
+  if (auto* cap = g_packetCapture; cap && cap->keepWrites) {
+    auto& c = cap->stage[sh->vertex ? 0 : 1];
+    c.dynCount = dynamicCount;
+    for (uint32_t i = 0; i < dynamicCount; ++i) c.dynBindings[i] = dynamicBindings[i].first;
+  }
+  if (auto* cap = g_packetCapture; cap && (!dynamicUniforms || cap->keepWrites)) {
     auto& c = cap->stage[sh->vertex ? 0 : 1];
     c.layout = layout;
     c.writeCount = writeCount;
@@ -3626,6 +3652,15 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
     for (const auto& blk : c.block)
       if (blk.binding >= 0 && blk.instWrite < 0) cap->refuse("instance write");
     if (c.patches() && c.supWrite < 0) cap->refuse("support write");
+  }
+#endif
+#ifdef WWHD_NATIVE_DRAW
+  if (auto* cap = g_packetCapture; cap && cap->images) {
+    const int st = sh->vertex ? 0 : 1;
+    cap->imageWriteCount[st] = 0;
+    for (uint32_t i = 0; i < writeCount; ++i)
+      if (writes[i].pImageInfo && cap->imageWriteCount[st] < cap->imageWrites[st].size())
+        cap->imageWrites[st][cap->imageWriteCount[st]++] = {writes[i].dstBinding, *writes[i].pImageInfo};
   }
 #endif
   out.set = stage_descriptor_set(sh->vertex, layout, writes.data(), writeCount);
@@ -4221,11 +4256,41 @@ void j3d_store(uint64_t key, const ContinuedDraw& c, const uint32_t* r, uint32_t
 }  // namespace
 void j3d_cache_clear() {
   for (auto& e : j3d.slots) e.key = 0;
+  native_draw::j3ddesc::reset();  // (J3D descriptions: their verify holds resolutions)
 }
+// J3D descriptions (native_j3d_desc.h, verify): what the site's draw of a described J3D draw resolved
+void j3ddesc_resolved(const uint32_t* r, const LatteFetchShader* fs, uint64_t fsKey, const vk::Shader* vs,
+                      const vk::Shader* ps, const Pipeline* pipeline, const std::array<Surface*, 8>& colors,
+                      const Surface* depth, const ContinuedDraw* stages) {
+  native_draw::j3ddesc::Resolved o;
+  o.vsKey = vs ? vs->key : 0;
+  o.psKey = ps ? ps->key : 0;
+  o.fsKey = fsKey;
+  o.pipeline = pipeline;
+  for (int i = 0; i < 8; ++i) o.colors[i] = colors[i];
+  o.depth = depth;
+  if (stages)  // (the continued state's stages: recorded by the fast path's draws)
+    for (int s = 0; s < 2; ++s) {
+      const auto& st = stages->stages[s];
+      o.textureCount[s] = std::min<uint32_t>(st.count, 18);
+      for (uint32_t i = 0; i < o.textureCount[s]; ++i)
+        o.textures[s][i] = {st.textures[i].unit, st.textures[i].surface, uint64_t(st.textures[i].view),
+                            uint64_t(st.textures[i].sampler)};
+    }
+  native_draw::j3ddesc::read_regs(vs, ps, fs, o.reads);
+  native_draw::j3ddesc::resolved(r, o);
+}
+#endif
+#ifdef WWHD_NATIVE_DRAW
+#include "native_draw/draw_pass_begin.h"  // begin_draw_pass: draw()'s pass begin, shared with J3D described draws
 #endif
 void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
           uint32_t indexAddr, uint32_t baseVertex, uint32_t instances, bool* viewIndependent) {
 #ifdef WWHD_NATIVE_DRAW
+  // shadow-slice instancing (native_draw/j3d_desc_depth_inst.h): a translated draw that does not commute with the
+  // collected depth draws (with its final registers) draws them first
+  if (::native_draw::j3ddesc::depth::g_instPending && !::native_draw::j3ddesc::depth::inst_commutes(r))
+    ::native_draw::j3ddesc::depth::inst_flush_now("draw");
   // J3D material cache: the key of this draw, named by OP_J3D_SHAPE right before it (never an inner replay's)
   const uint64_t j3dSiteKey = std::exchange(native_draw::g_j3dKey, 0);
   const uint64_t j3dKey = j3dSiteKey ? j3d_key(j3dSiteKey, r) : 0;
@@ -4250,6 +4315,13 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const StereoShaders* replay = shadersIn && shadersIn->replay && !aoPrivateReplay &&
       shadersIn->submission == R.submissionGeneration ? shadersIn : nullptr;
 #ifdef WWHD_NATIVE_DRAW
+  // native J3D depth proof (native_draw/j3d_depth.h; off by default): a sampled draw captures its binds
+  std::optional<PacketCapture> j3dProofCap;
+  if (j3dSiteKey && !g_packetCapture && native_draw::j3d_depth::proof_wanted()) {
+    g_packetCapture = &j3dProofCap.emplace();
+    j3dProofCap->images = true;
+  }
+  struct ProofCapEnd { bool on; ~ProofCapEnd() { if (on) g_packetCapture = nullptr; } } j3dProofCapEnd{j3dProofCap.has_value()};
   // the packet capture of this draw (packet_draw), not of the AO / backdrop replays it may run itself (those come
   // after its own draw, which hands the capture back)
   PacketCapture* const cap = g_packetCapture;
@@ -4908,6 +4980,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     ++R.passSubsetKept;
   }
   Pipeline& dp = subsetAbsent ? p : own;  // the pipeline the draw is recorded with
+#ifdef WWHD_NATIVE_DRAW
+  if (cap) cap->absent = subsetAbsent;
+#endif
   struct DrawStateCache {
     VkPipeline pipeline = VK_NULL_HANDLE;
     VkBuffer indexBuffer = VK_NULL_HANDLE;
@@ -4945,6 +5020,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   // leave this cache claiming dynamic state that was never set in this buffer.
   if (!reusePass) state = {};
 #ifdef WWHD_NATIVE_DRAW
+  if (g_packetDynamicDirty) {  // a J3D described draw set the dynamic state since
+    state.viewportValid = state.scissorValid = state.blendValid = state.stencilValid = false;
+    g_packetDynamicDirty = false;
+  }
   if (g_packetBindsDirty) {  // packet replays bound descriptor sets (and pipelines, vertex and index buffers) since
     state.descriptorProbe = {};
     state.pipeline = VK_NULL_HANDLE;
@@ -4960,6 +5039,9 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     record::vkCmdBindIndexBuffer(cmd, buffer, offset, type);
     state.indexBuffer = buffer; state.indexOffset = offset; state.indexType = type;
   };
+#ifdef WWHD_NATIVE_DRAW
+  if (!reusePass) begin_draw_pass(cmd, colors, slices, depth, depthSlice, width, height);
+#else
   if (!reusePass) {
     end_encoder();
     std::array<VkRenderingAttachmentInfo, 8> attachments{};
@@ -5024,6 +5106,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     R.passWidth = width;
     R.passHeight = height;
   }
+#endif
   rprof::mark(rprof::kPass);
   if (!dp.pipeline && !dp.pendingCompile) return;
 #ifdef WWHD_VK_SMOOTH
@@ -5149,6 +5232,13 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     shadersOut->scissor = sc;
     shadersOut->rasterReady = true;
   }
+#ifdef WWHD_NATIVE_DRAW
+  if (cap) {
+    cap->viewport = vp;
+    cap->scissor = sc;
+    cap->raster = !reuseRaster;
+  }
+#endif
   // Bitwise comparison preserves distinct signed zeros and exact float state.
   if (!state.viewportValid || std::memcmp(&state.viewport, &vp, sizeof(vp))) {
     record::vkCmdSetViewport(cmd, 0, 1, &vp);
@@ -5470,6 +5560,45 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   // a J3D draw resolved in full: its state, filed under its key (j3d_store refuses what cannot be reused)
   if (j3dDraw && !fast) j3d_store(j3dKey, continued, r, prim);
+  // a described J3D draw (native_j3d_desc.h, verify): what this draw resolved
+  if (native_draw::j3ddesc::g_resolving)
+    j3ddesc_resolved(r, fs, fsKey, vs, ps, &own, colors, depth, fastPathDraw ? &continued : nullptr);
+  // native J3D depth shaders: the debug tools (native_draw/j3d_depth.h; off by default)
+  if (j3dSiteKey && (native_draw::j3d_depth::dump_on() || j3dProofCap)) {
+    const native_draw::j3d_depth::DrawInfo info{r, prim, count, indexType, indexAddr, baseVertex, fs, vs, ps, depth, depthSlice,
+                                                width, height, R.frame};
+    if (j3dProofCap && j3dProofCap->drew) {
+      const PacketCapture& c = *j3dProofCap;
+      native_draw::j3d_depth::ProofDraw pd;
+      pd.info = info;
+      pd.pipeline = c.vkPipeline;
+      pd.layout = c.layout;
+      pd.sets[0] = c.sets[0];
+      pd.sets[1] = c.sets[1];
+      std::copy_n(c.offsets.begin(), c.offsetCount, pd.offsets);
+      pd.offsetCount = c.offsetCount;
+      for (uint32_t i = 0; i < c.vertexBindCount && i < 16; ++i)
+        pd.vertexBinds[pd.vertexBindCount++] = {c.vertexBinds[i].binding, c.vertexBinds[i].buffer, c.vertexBinds[i].offset,
+                                                c.vertexBinds[i].stride};
+      pd.indexed = c.indexed;
+      pd.indexBuffer = c.indexBuffer;
+      pd.indexOffset = c.indexOffset;
+      pd.indexType = c.indexType;
+      pd.drawCount = c.drawCount;
+      pd.viewport = vp;
+      pd.scissor = sc;
+      std::copy(c.colors.begin(), c.colors.end(), pd.colors);
+      pd.vsSupport = c.stage[0].supBytes.data();
+      pd.vsSupportSize = uint32_t(c.stage[0].supBytes.size());
+      pd.psSupport = c.stage[1].supBytes.data();
+      pd.psSupportSize = uint32_t(c.stage[1].supBytes.size());
+      for (uint32_t i = 0; i < c.imageWriteCount[1] && i < 16; ++i)
+        pd.psImages[pd.psImageCount++] = {c.imageWrites[1][i].binding, c.imageWrites[1][i].info};
+      pd.refused = c.refused;
+      native_draw::j3d_depth::proof(pd);
+    }
+    if (native_draw::j3d_depth::dump_on()) native_draw::j3d_depth::note(info);
+  }
 #endif
   if (aoPrivateReplay) {
     ao_private().frame = R.frame;
@@ -6066,6 +6195,7 @@ UploadSlice packet_block_upload(uint32_t addr, uint32_t size) {
 // WWHD_NATIVE_DRAW_LEAN (on by default; =0 off): the lowering's capture as the thread's heap scratch, swapped into the kind
 // (native_draw/lean.h); the refusal logs' string keys built only when the kind's reason changes
 #include "native_draw/lean.h"
+#include "native_draw/j3d_desc_vk.h"  // j3ddesc_draw (J3D described draws, stage D1)
 // kept lowered states (native_draw/alt_states.h, WWHD_NATIVE_DRAW_KEEP)
 #include "native_draw/alt_states.h"
 void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range) {

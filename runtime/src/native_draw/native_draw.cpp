@@ -2,7 +2,9 @@
 // packet table and dispatch. Decomp build, fast mode, WWHD_NATIVE_DRAW=ON only.
 #include "../../third_party/cemu/cemu_shim.h"  // (as the gx2 sources get it: -include; for gx2_regs.h)
 #include "gx2/native_draw.h"
+#include "native_draw/j3d_depth.h"
 #include "gx2/native_coverage.h"
+#include "gx2/native_j3d_desc.h"
 #include "gx2/gx2_cmd.h"
 #include "gx2/gx2_regs.h"
 #include "runtime.h"
@@ -662,6 +664,7 @@ void draw(const uint32_t* regs, const Packet& pk, uint32_t kind, const Mesh* ran
 // ---------------------------------------------------------------- J3D material cache (render thread)
 uint64_t g_j3dKey = 0;
 void j3d_shape(const uint32_t* p, uint32_t n) {
+    j3d_depth::shape(p, n);  // (native J3D depth shaders' debug tools)
     if (n != 5 || !j3d_on()) { g_j3dKey = 0; return; }
     uint64_t h = 0x9E3779B97F4A7C15ull;
     for (uint32_t i = 0; i < 5; ++i) {
@@ -695,6 +698,7 @@ static void j3d_report() {
 
 // every 300 frames, per site with instances: instances, replayed, lowered and every fallback reason per frame
 void frame_end() {
+    j3ddesc::frame_end();
     ++g_frames;
     if (g_frames % 300) return;
     j3d_report();

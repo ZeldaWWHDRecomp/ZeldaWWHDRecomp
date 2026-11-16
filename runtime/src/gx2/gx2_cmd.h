@@ -69,6 +69,8 @@ enum Op : uint32_t {
     OP_PASS_COPY = 0x45,      // native_pass::Copy: a scan-out, expand or surface copy
     OP_PASS_VIEWPORT = 0x46,  // native_pass::Viewport: the open pass's viewport or scissor (the site sets it)
     OP_J3D_SHAPE = 0x47,      // the J3D shape draw that follows: its key words (native_draw.h, J3D material cache)
+    // J3D material descriptions (native_j3d_desc.h), same builds: one described J3D draw (desc, env, mesh, its blocks)
+    OP_J3D_DESC_DRAW = 0x50,
 };
 
 // debug draw provenance (WWHD_VK_PIPELINE_WHO): a provider (set by dsweep.cpp) describes the guest code issuing a

@@ -51,6 +51,9 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#ifdef WWHD_NATIVE_DRAW
+#include "native_draw/j3d_desc_depth_inst.h"
+#endif
 
 Latte::E_GX2SURFFMT LatteTexture_ReconstructGX2Format(const Latte::LATTE_SQ_TEX_RESOURCE_WORD1_N&, const Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N&);
 namespace gfxvk {
@@ -1782,6 +1785,10 @@ void clear_color(const uint32_t*,uint32_t cb,const float rgba[4]) {
 }
 void clear_depth_stencil(const uint32_t*,uint32_t db,float depth,uint32_t stencil,uint32_t flags) {
     uint32_t first,num;auto* s=surface_from_depth_buffer(db,&first,&num);if(!s)return;
+#ifdef WWHD_NATIVE_DRAW
+    // shadow-slice instancing (native_draw/j3d_desc_depth_inst.h): a clear of a collected layer draws them first
+    if(::native_draw::j3ddesc::depth::g_instPending)::native_draw::j3ddesc::depth::inst_before_clear(s,first,num);
+#endif
     VkImageAspectFlags aspects=0;if(flags&1)aspects|=VK_IMAGE_ASPECT_DEPTH_BIT;if((flags&2)&&s->fmt.stencil)aspects|=VK_IMAGE_ASPECT_STENCIL_BIT;
     if(!aspects)return;
     // 60 fps (generated, reproj.cpp): a second 3D pass of the frame keeps the first one's depth (only while on)

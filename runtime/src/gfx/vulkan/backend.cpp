@@ -122,6 +122,8 @@ extern "C" int __llvm_profile_write_file(void);
 #include <future>
 #include <mutex>
 #ifdef WWHD_NATIVE_DRAW
+#include "native_draw/j3d_desc_depth.h"
+#include "native_draw/j3d_desc_depth_inst.h"
 #include "batch_pass_end.h"
 #endif
 #ifdef WWHD_VK_SMOOTH
@@ -1514,6 +1516,10 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
     publish_or_finish_present_prefix(*active_deferred_commands);
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::DrainEnd, 0, R.frame, uint64_t(handoff_trace::Reason::ExternalSyncPrefix));
   }
+#ifdef WWHD_NATIVE_DRAW
+  // shadow-slice instancing (native_draw/j3d_desc_depth_inst.h): collected depth draws belong to this submission
+  if (::native_draw::j3ddesc::depth::g_instPending) ::native_draw::j3ddesc::depth::inst_flush_now("submit");
+#endif
   end_encoder();
   auto& slot=R.submissions[R.activeSubmission];
   if (slot.perfQuery != UINT32_MAX) {
@@ -5028,6 +5034,14 @@ static void init_device(std::vector<const char *> extensions,
     enabled12.samplerMirrorClampToEdge = VK_TRUE;
   }
   R.samplerMirrorClampToEdge = enabled12.samplerMirrorClampToEdge;
+#ifdef WWHD_NATIVE_DRAW
+  // shadow-slice instancing of described J3D depth draws (native_draw/j3d_desc_depth.h; off by default): gl_Layer
+  // written by the vertex stage
+  if (vulkan12 && ::native_draw::j3ddesc::depth::want_layer_output() && available12.shaderOutputLayer &&
+      available12.shaderOutputViewportIndex)
+    enabled12.shaderOutputLayer = enabled12.shaderOutputViewportIndex = VK_TRUE;
+  ::native_draw::j3ddesc::depth::set_layer_output(enabled12.shaderOutputLayer == VK_TRUE);
+#endif
   VkPhysicalDeviceFeatures available;
   vkGetPhysicalDeviceFeatures(R.physicalDevice, &available);
   VkPhysicalDeviceFeatures enabled{};
