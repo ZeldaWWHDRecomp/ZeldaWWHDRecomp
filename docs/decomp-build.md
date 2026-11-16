@@ -156,8 +156,8 @@ What it means for players:
 Setup on the Mac (regular releases and development builds) can build the decomp version next to the normal game. It is
 off by default:
 
-- in the setup window: tick **Also build the decomp version (experimental)** (shown with the other build options; not on Windows,
-  Linux and Android yet), then install, repair or update;
+- in the setup window: tick **Also build the decomp version (experimental)** (shown with the other build options; not on Windows
+  and Linux yet; Android: below), then install, repair or update;
 - in a terminal: `tools/Setup in Terminal.command --decomp` (`--no-decomp` removes it again).
 
 It builds **fast mode** (above). For testing, `--decomp-plain` builds the plain decomp build instead (remembered;
@@ -208,6 +208,26 @@ What setup uses and makes:
   Tools; fast mode's ThinLTO uses their own libLTO);
 - everything it generates stays in the install's data folder (`data/decomp-work`, removed after the
   build); the result is `data/bin/wwhd-decomp` (portable releases) or `data/decomp/bin/wwhd`.
+
+## In setup (Android)
+
+The Android app's setup offers the same option: tick **Also build the decomp version (experimental)** on the setup
+screen (next to **Code mods**). After the normal game is built and ready, setup builds the decomp version on the phone,
+in fast mode, with the Code mods choice; switching either option rebuilds. Tick **Start the decomp version** (shown once
+it is built) to play it from the next start; the normal game stays one tick away. A randomized game is played by the
+normal game only. If the build fails, the normal game is ready and the setup screen says why.
+
+How it differs from the Mac (tools/android/decomp_android.py):
+
+- the release carries the decomp parts in the app's runtime SDK (per ABI, plain and fast; no game code), and the
+  app's compiler brings `llvm-objcopy` (and `llvm-link` / `llvm-dis` / `llvm-as` for the whole-image link);
+- the game units are linked one by one (`ld.lld -r`, ThinLTO inside the unit, then `llvm-objcopy --localize-hidden`).
+  The whole-image link (about 5.5 GB at its peak) is not used on phones until it has been measured there;
+- the declaration table's disassembly uses the port's capstone stand-in (`tools/decomp_build/capstone_shim`: the same
+  text as capstone 5.0.7 for every instruction of the game; nothing is downloaded from PyPI);
+- the setup's Python tools run inside the app's setup process, one after the other;
+- the built functions code mods hook come from the release's list and from the decomp version's own record (setup
+  cannot start the game as a probe on a phone).
 
 ## Mods
 
