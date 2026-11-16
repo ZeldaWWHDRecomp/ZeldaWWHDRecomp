@@ -55,7 +55,7 @@ Settings (`F1`) > Language / About and in the performance report ends in `decomp
   recompiled code: about 1.3 times the CPU time of the whole game process in that session (21.6 s
   instead of 16.8 s for 30 s of play, on a busy machine; 1.6 times at 47e1dbc). Making it faster is
   future work.
-- Not yet available on Windows, Linux and Android. In setup: macOS development builds (below).
+- Not yet available on Windows, Linux and Android. In setup: macOS (below).
 
 ## Building it from source
 
@@ -125,19 +125,66 @@ the k-th `bl` to it in the original, where both have the same number of calls. R
 read LR then see the caller's exact call site there; elsewhere LR stays as before (the per-unit report is
 `decomp/sites/K.txt` in the build directory).
 
-## In setup (development builds, macOS)
+## Fast mode
 
-The development builds for macOS (the rolling "Development build" pre-release) can build the decomp
-version during setup, next to the normal game. It is off by default:
+Fast mode (`-DWWHD_DECOMP_FAST=ON`, cmake/Decomp.cmake) is the decomp build made for speed. It is what setup builds by
+default. Compared with the plain decomp build:
 
-- in the setup window: tick **Also build the decomp version (experimental)** (shown with the other
-  build options; not shown in regular releases or on Windows, Linux and Android), then install,
-  repair or update;
+- calls between decompiled functions are plain C++ calls, bound by address when the game is linked, and with enough
+  memory (12 GB or more) the final link optimises across all game units (whole-image ThinLTO);
+- the decompiled draw sites hand the renderer native draw packets (the native renderer). Its gain is on **Vulkan**: on
+  Metal every draw takes the full path as before. The decomp version on the Mac therefore starts with Vulkan
+  (MoltenVK) by default (below);
+- it drops what only verification needs: the per-function isolation of the verifier, site-exact return addresses.
+
+What it means for players:
+
+- **Save states:** portable states (the normal Save, Quick save, the automatic saves) work as in the normal game. Full
+  states (the debugging option, Crash Recovery's automatic states) are made and loaded by the same kind of build only: a
+  full state made by the normal game, the plain decomp build or fast mode loads only in a build of the same kind, and
+  any other says so ("full state of the normal game; it loads only there (use a portable state)").
+- **Code mods:** calls between decompiled functions are bound when the game is linked, so the functions installed
+  code mods hook are kept enterable at build time (below, "In setup"); built-in mods, content mods and graphics packs
+  work as in the normal game.
+- **Renderer:** the decomp version on the Mac starts with Vulkan (MoltenVK) unless you chose a renderer in Graphics >
+  Renderer (that choice is shared with the normal game and wins), or start it with `--renderer=metal`. If Vulkan cannot
+  start, it falls back to Metal. The normal game is unchanged: it still starts with Metal. Both keep their shader
+  caches apart (Metal's and Vulkan's are separate files), so switching never discards the other's.
+
+## In setup (macOS)
+
+Setup on the Mac (regular releases and development builds) can build the decomp version next to the normal game. It is
+off by default:
+
+- in the setup window: tick **Also build the decomp version (experimental)** (shown with the other build options; not on Windows,
+  Linux and Android yet), then install, repair or update;
 - in a terminal: `tools/Setup in Terminal.command --decomp` (`--no-decomp` removes it again).
 
-Setup always builds the normal game first; the decomp version is an extra step at the end (10 to
-30 minutes more, depending on the Mac; about 100 MB on disk, and about 500 MB more while it builds). If it fails, setup says why and the normal game is ready as
-usual. The choice is remembered: a repair or an update builds the decomp version again.
+It builds **fast mode** (above). For testing, `--decomp-plain` builds the plain decomp build instead (remembered;
+`--decomp` goes back to fast mode).
+
+Setup always builds the normal game first; the decomp version is an extra step at the end. Measured in the real setup
+flow on a Mac (Apple M3 Max, 16 cores, 128 GB, 8 compile jobs) that was busy with other builds at the same time
+(load 17 to 68), so a quiet Mac is faster:
+
+| | fast mode (default) | plain build (`--decomp-plain`) |
+|---|---|---|
+| time | 41 min (first build; a repair at load 35 to 68 took 84 min) | 31 min (a repair; load about 45) |
+| of which: the declaration table | 7 to 15 min (once per decompilation pin and code-mod choice; kept in `data/decomp-cache`) | none |
+| memory of setup's processes, peak | 4.0 to 4.4 GB (the whole-image link about 3.5 GB) | 2.6 GB |
+| disk space while it builds | about 1 GB (`data/decomp-work`); setup asks for 4 GB free | about 0.7 GB; setup asks for 3 GB free |
+| kept afterwards | the game (about 200 MB), the decomp source (120 MB), compiled objects for the next repair | the same |
+
+With less than 12 GB of memory fast mode links each game unit on its own (no whole-image link: less memory, a little
+less speed). If it fails, setup says why and the normal game is ready as usual. The choice is remembered: a repair or an update builds the decomp version again.
+
+It is built with the install's code-mod choice (Settings > Mods, "code-mod support"), like the normal game, and
+switching code-mod support in the game rebuilds the decomp version too (after the normal game; if that fails, the
+normal game is ready and Settings > Mods says why; a repair tries again). With code mods on, setup installs the Story
+Notebook first and then asks the built decomp version which game functions the installed code mods hook; fast mode keeps
+those enterable for the mods (`data/decomp-mod-hooks.txt`, kept across repairs and updates) and builds again when the
+list grew. A randomized game is played by the normal game: with one selected, starting the decomp version starts the
+normal game and says so.
 
 To play it, tick **Start the decomp version instead of the normal game** in the setup window (hold
 Shift while starting Wind Waker HD), or `--start-decomp 1` in a terminal; or start Wind Waker HD with
@@ -146,25 +193,30 @@ decomp version shares the saves, settings and shader caches of the normal game.
 
 What setup uses and makes:
 
-- the decompilation's source at the version the development build was made with: setup downloads it
+- the decompilation's source at the version the release was made with: setup downloads it
   from [github.com/ZeldaWWHDDecomp/wwhd](https://github.com/ZeldaWWHDDecomp/wwhd) (about 8 MB, only
   when the option is on) and checks the unpacked files against the SHA-256 the release names before it
   uses them. It contains no game code or data. It is kept in `data/decomp-src`, so a repair or an
-  update with the same version downloads nothing. Without an internet connection setup says so
-  ("Couldn't download the decomp source"); the normal game is ready as usual, and the next repair
-  tries again;
+  update with the same version downloads nothing. Fast mode also downloads the disassembler its declaration table needs
+  (capstone 5.0.7, BSD-3-Clause, about 1 MB from PyPI, checked by its SHA-256; kept there too). Without an internet
+  connection setup says so ("Couldn't download the decomp source"); the normal game is ready as usual, and the next
+  repair tries again;
 - your own `cking.rpx`: setup prepares the decompiled source with it as described above (the model
-  data headers, the source glue), translates the game code with the decomp build's function list and
-  compiles the 862 game units with the same compiler as the normal game;
+  data headers, the source glue), translates the game code with the decomp build's function list, works out which
+  calls can be native (`native_rules.py`; fast mode first checks every decompiled call's declaration against your
+  game code, `decl_table.py`) and compiles the game units with the same compiler as the normal game (the Command Line
+  Tools; fast mode's ThinLTO uses their own libLTO);
 - everything it generates stays in the install's data folder (`data/decomp-work`, removed after the
-  build); the result is `data/bin/wwhd-decomp`.
+  build); the result is `data/bin/wwhd-decomp` (portable releases) or `data/decomp/bin/wwhd`.
 
 ## Releases
 
-Regular releases do not offer the decomp version. The decomp release variant (a separate download
-whose setup translates the game with `sdk/decomp_hooks.txt`) is not possible with the decompilation
-at 2c1deae: its sources are prepared with data read from your own game, so a release cannot ship the
-compiled decomp units. Setup builds them instead (above).
+Every macOS release brings the decomp version's parts (release.yml "Decomp version parts"): the runtime built twice
+without game units (`-DWWHD_DECOMP_RUNTIME_ONLY=ON`, plain and `-DWWHD_DECOMP_FAST=ON`; tools/release/package.py
+`--decomp-build` / `--decomp-fast-build`), the commit and SHA-256 of the decompilation, and the tools above. A release
+cannot ship the compiled decomp units: their sources are prepared with data read from your own game, so setup builds
+them. The decomp release variant (a separate download whose setup translates the game with `sdk/decomp_hooks.txt`) is
+not possible for the same reason.
 
 ## Debug switches
 

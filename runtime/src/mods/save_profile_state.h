@@ -25,7 +25,7 @@ inline bool read_state_identity(ss::Reader reader, StateIdentity &identity) {
            field(identity.fingerprint, 64) && reader.ok && reader.at_end() && identity.valid();
 }
 inline bool valid_state_requirement(uint32_t flags, const StateIdentity &identity) {
-    return !(flags & ~ss::kRequiresSaveProfile) &&
+    return !(flags & ~ss::kKnownReservedBits) &&  // (the build-kind bits: savestate.cpp read_header checks them)
            bool(flags & ss::kRequiresSaveProfile) == !identity.empty();
 }
 inline bool compatible_full_state(ss::Reader reader, const StateIdentity &current) {

@@ -74,17 +74,37 @@ fs::path selected(){
     return exe;
 }
 }
-void startup(int argc,char** argv,bool fixed_build){
+void startup(int argc,char** argv,bool fixed_build,bool has_mod_hooks){
     launch_args.assign(argv,argv+argc);
     g_fixed_build=fixed_build;
     if(const char* dir=std::getenv("WWHD_INSTALL_DIR"))install_dir=dir;
     else install_dir=fs::path(host::exe_dir()).parent_path();
+    // the decomp version outside a portable release lives in DATA/decomp/bin (tools/installer/decomp_setup.py
+    // exe_path): its install folder is DATA, the folder with setup's install.json, not DATA/decomp
+    if(fixed_build&&!std::getenv("WWHD_INSTALL_DIR")&&install_dir.filename()=="decomp"&&
+       !fs::is_regular_file(install_dir/"install.json")&&fs::is_regular_file(install_dir.parent_path()/"install.json"))
+        install_dir=install_dir.parent_path();
     environment("WWHD_INSTALL_DIR",install_dir.string());
     auto config=install_dir/"guest-sdk.json";
     if(!std::getenv("WWHD_GUEST_BUILD_CONFIG")&&fs::is_regular_file(config))environment("WWHD_GUEST_BUILD_CONFIG",config.string());
     // the decomp version (setup's option, docs/decomp-build.md) is a build of its own, without code-mod
     // support: it is never replaced by the cached code-mod build of the normal game
-    if(fixed_build)return;
+    if(fixed_build){
+        // a code-mod switch rebuilds the normal game only (setup's code_mods.rebuild): when the chosen support is on but
+        // this decomp version was built without it, say how to get it (a setup repair builds the decomp version again
+        // with the install's choice)
+        try {
+            if(fs::is_regular_file(install_dir/"code-mods-active.json")){
+                auto active=read(install_dir/"code-mods-active.json");
+                if(active.get("state").string()=="ready"&&active.get("hooks").boolean&&!has_mod_hooks){
+                    std::lock_guard guard(mutex);
+                    state.error="The decomp version was built without code-mod support: run setup's Repair to build it again with code mods";
+                    fprintf(stderr,"[code mods] %s\n",state.error.c_str());
+                }
+            }
+        }catch(const std::exception&){}
+        return;
+    }
     try {
         auto exe=selected();if(exe.empty())return;
         auto current=fs::path(host::exe_dir())/fs::path(argv[0]).filename();

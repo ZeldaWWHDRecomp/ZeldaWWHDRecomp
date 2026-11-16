@@ -52,6 +52,7 @@
 #include "crash_addr.h"
 #include "build_info.h"
 #include "pipeline_runtime_identity.h"
+extern "C" unsigned g_mod_hook_count;  // mods/guest_mods.cpp: set by a game-code build with code-mod support
 #ifdef WWHD_DECOMP
 #include "decomp/decomp.h"
 #endif
@@ -504,7 +505,8 @@ int main(int argc, char** argv) {
         else if (!strcmp(argv[i], "--shader-prebuild-library")) shaderprebuild::runtimeLibrary = argv[++i];
     }
 #ifdef WWHD_DECOMP
-    mods::code::startup(argc, argv, true);  // the decomp version: never swapped for the normal game's code-mod build
+    // the decomp version: never swapped for the normal game's code-mod build (g_mod_hook_count: its own code-mod support)
+    mods::code::startup(argc, argv, true, g_mod_hook_count != 0);
 #else
     mods::code::startup(argc, argv);
 #endif

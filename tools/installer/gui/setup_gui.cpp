@@ -481,7 +481,7 @@ struct App {
     double free_bytes = 0, source_bytes = 0, toolchain_bytes = 0;
     bool opt_remove_toolchain = false, opt_shortcut = false;
     bool code_mods = false;
-    // the decomp version (tools/installer/decomp_setup.py): offered on macOS in development builds only
+    // the decomp version (tools/installer/decomp_setup.py): offered on macOS (fast mode by default)
     bool decomp_offered = false, decomp = false, start_decomp = false;
     std::string decomp_text, decomp_docs, decomp_exe, decomp_error;
     bool prepare_shaders = true;

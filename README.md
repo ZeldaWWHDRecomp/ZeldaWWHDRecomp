@@ -882,11 +882,12 @@ cmake -S . -B build/decomp && cmake --build build/decomp --target wwhd -j 4
 ./build/decomp/wwhd
 ```
 
-**In setup (development builds, macOS):** tick "Also build the decomp version (experimental)" in the setup
+**In setup (macOS):** tick "Also build the decomp version (experimental)" in the setup
 window, or run `tools/Setup in Terminal.command --decomp`. Setup builds the normal game first, then a second
-version in which the decompiled game functions run as compiled source (10 to 30 minutes more, about 100 MB).
-Start it with "Start the decomp version instead of the normal game" in setup, or once with
-`Wind Waker HD --decomp`.
+version in which the decompiled game functions run as compiled source, in the decomp build's fast mode
+(about 40 to 80 minutes more on a busy Mac, less on a quiet one; about 1 GB while it builds; `--decomp-plain`: the plain decomp build, for testing). It starts with Vulkan (MoltenVK), where its
+native renderer helps; the normal game keeps Metal. Start it with "Start the decomp version instead of the normal game"
+in setup, or once with `Wind Waker HD --decomp`.
 
 What runs decompiled, the current status and how it is compared with the normal build:
 [docs/decomp-build.md](docs/decomp-build.md).

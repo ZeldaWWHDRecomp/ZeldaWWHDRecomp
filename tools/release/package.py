@@ -27,6 +27,7 @@ import os
 import re
 import shlex
 import shutil
+import tempfile
 import stat
 import subprocess
 import sys
@@ -266,11 +267,18 @@ def decomp_variant(build):
     return "decomp" if on else None
 
 
-# The decomp version setup can build (development builds, macOS; tools/installer/decomp_setup.py,
-# docs/decomp-build.md): the tools that prepare the decompilation's source. The source is not in the
-# release: setup downloads the pinned commit and checks it against the SHA-256 written here.
-DECOMP_TOOLS = ["tools/decomp_build/gen.py", "tools/decomp_build/port_sites.py", "tools/decomp_build/glue.cpp",
+# The decomp version setup can build (macOS; tools/installer/decomp_setup.py, docs/decomp-build.md): the tools that
+# prepare the decompilation's source, its native-call rules and (fast mode) the declaration table and the units'
+# IR isolation. The source is not in the release: setup downloads the pinned commit and checks it against the SHA-256
+# written here.
+DECOMP_TOOLS = ["tools/decomp_build/gen.py", "tools/decomp_build/port_sites.py", "tools/decomp_build/fast_hooks.py",
+                "tools/decomp_build/native_returns.py", "tools/decomp_build/native_rules.py",
+                "tools/decomp_build/native_cache.py", "tools/decomp_build/decl_table.py", "tools/decomp_build/decl_cache.py",
+                "tools/decomp_build/decl_lint_run.py", "tools/decomp_build/unit_ir.py", "tools/decomp_build/glue.cpp",
+                "tools/decomp_build/decomp_mod_hooks_default.txt",
                 "tools/decomp_build/frames_vis.h"]
+# fast mode's declaration table (decl_table.py) runs the decompilation's decl_lint.py in port mode, which reads the
+# port's runtime headers and the HLE bodies of its sources (the import registers); setup finds them at PKG/runtime
 DECOMP_HOOKS_NONE = "tools_decomp_build_hooks_none.cpp.o"  # flattened like the other runtime objects
 
 
@@ -337,20 +345,26 @@ def portable_flags(args, src, mapping, keep_unknown_includes=False):
     return out
 
 
-def add_decomp(pkg, dbuild, linkonly):
-    """--decomp-build: the parts of the decomp version setup can build (tools/installer/decomp_setup.py).
-    DBUILD is configured like --build, plus -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON (no game needed).
-    Returns the manifest's "decomp" entry."""
-    on = lambda v: (v or "").upper() in ("ON", "1", "TRUE", "YES")
+def on(v):
+    return (v or "").upper() in ("ON", "1", "TRUE", "YES")
+
+
+def decomp_parts(pkg, dbuild, linkonly, sub, fast):
+    """One runtime-only decomp build's part of the release: its link line ({decomp_glue}: setup's hooks and units), how
+    setup compiles a game unit and the hooks, its own runtime objects in sdk/SUB/obj. fast: the build must be (and
+    is checked to be) fast mode."""
     if not (on(cache_value(dbuild, "WWHD_DECOMP")) and on(cache_value(dbuild, "WWHD_DECOMP_RUNTIME_ONLY"))):
-        sys.exit("--decomp-build %s: configure it with -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON" % dbuild)
+        sys.exit("%s: configure it with -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON" % dbuild)
+    if on(cache_value(dbuild, "WWHD_DECOMP_FAST")) != fast:
+        sys.exit("%s: %s" % (dbuild, "--decomp-fast-build needs -DWWHD_DECOMP_FAST=ON" if fast
+                             else "--decomp-build is the plain decomp build (-DWWHD_DECOMP_FAST=OFF)"))
     ddir = cache_value(dbuild, "WWHD_DECOMP_DIR")
     if not ddir or not os.path.isfile(os.path.join(ddir, "tools", "verify", "include", "gabi.h")):
-        sys.exit("--decomp-build: no decompilation at %s (git submodule update --init decomp)" % ddir)
+        sys.exit("%s: no decompilation at %s (git submodule update --init decomp)" % (dbuild, ddir))
     # the link line: the runtime objects that are the same as the regular release's are taken from sdk/obj
-    # (and its libraries from sdk/lib), the others go to sdk/decomp/obj; hooks_none.cpp's object becomes {decomp_glue} (setup's hooks and units)
-    stage = pkg + ".decomp-stage"
-    shutil.rmtree(stage, ignore_errors=True)
+    # (and its libraries from sdk/lib), the others go to sdk/SUB/obj; hooks_none.cpp's object becomes {decomp_glue} (setup's hooks and units)
+    stage_tmp = tempfile.mkdtemp(prefix="wwhd-%s-stage-" % sub)  # (outside the output folder: see add_decomp's tree)
+    stage = os.path.join(stage_tmp, "stage")
     _, link, _, _ = build_link_recipe(dbuild, stage, linkonly)
     recipe, own = [], 0
     for a in link:
@@ -365,14 +379,14 @@ def add_decomp(pkg, dbuild, linkonly):
                 # (WWHD_DECOMP only defines things for the wwhd target) but carry their own archive times
                 if os.path.isfile(main) and (kind == "lib" or file_sha256(main) == file_sha256(mine)):
                     break
-                copy(mine, os.path.join(pkg, "sdk", "decomp", kind, name))
-                a = "{sdk}/decomp/%s/%s" % (kind, name)
+                copy(mine, os.path.join(pkg, "sdk", sub, kind, name))
+                a = "{sdk}/%s/%s/%s" % (sub, kind, name)
                 own += 1
                 break
         recipe.append(a)
-    shutil.rmtree(stage)
+    shutil.rmtree(stage_tmp, ignore_errors=True)
     if "{decomp_glue}" not in recipe:
-        sys.exit("--decomp-build: %s is not on the decomp build's link line" % DECOMP_HOOKS_NONE)
+        sys.exit("%s: %s is not on the decomp build's link line" % (dbuild, DECOMP_HOOKS_NONE))
     mapping = {os.path.join(ROOT, "runtime", "include"): "{sdk}/include",
                os.path.join(ROOT, "runtime", "src"): "{sdk}/decomp/include",
                os.path.join(ROOT, "tools", "decomp_build"): "{tools}/decomp_build",
@@ -380,6 +394,22 @@ def add_decomp(pkg, dbuild, linkonly):
                ddir: "{decomp}"}
     unit_flags = portable_flags(*compile_entry(dbuild, "tools/decomp_build/flags_probe.cpp"), mapping)
     hooks_flags = portable_flags(*compile_entry(dbuild, "tools/decomp_build/hooks_none.cpp"), mapping)
+    print("decomp version (%s): %d own runtime objects" % ("fast mode" if fast else "plain build", own))
+    return ddir, {"link": recipe, "unit_flags": unit_flags, "hooks_flags": hooks_flags}
+
+
+def add_decomp(pkg, dbuild, fbuild, linkonly):
+    """--decomp-build / --decomp-fast-build: the parts of the decomp version setup can build
+    (tools/installer/decomp_setup.py): the plain decomp build (sdk/decomp) and its fast mode (sdk/decomp-fast; what
+    setup builds by default), each configured like --build plus -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON (fast:
+    -DWWHD_DECOMP_FAST=ON); no game needed. Returns the manifest's "decomp" entry."""
+    ddir, plain = decomp_parts(pkg, dbuild, linkonly, "decomp", False)
+    entry = dict(plain)
+    if fbuild:
+        fdir, fast = decomp_parts(pkg, fbuild, linkonly, "decomp-fast", True)
+        if os.path.realpath(fdir) != os.path.realpath(ddir):
+            sys.exit("--decomp-fast-build: another decompilation (%s) than --decomp-build's (%s)" % (fdir, ddir))
+        entry["fast"] = fast
     # the decompilation's source: its commit and the SHA-256 of the files setup downloads (decomp_setup.py
     # SOURCE_PATHS as git tracks them), from a temporary copy; not shipped
     sys.path.insert(0, os.path.join(ROOT, "tools", "installer"))
@@ -390,23 +420,37 @@ def add_decomp(pkg, dbuild, linkonly):
     tracked = [t for t in tracked if t]
     if not tracked or subprocess.run(["git", "-C", ddir, "diff", "--quiet", "HEAD", "--"] + paths).returncode:
         sys.exit("--decomp-build: %s is not a clean checkout of the decompilation" % ddir)
-    tree = pkg + ".decomp-tree"
-    shutil.rmtree(tree, ignore_errors=True)
+    # (in the system's temporary folder: a file browser showing the output folder writes .DS_Store files into new
+    # folders, which tree_digest leaves out but which made removing a copy there fail)
+    tmp = tempfile.mkdtemp(prefix="wwhd-decomp-tree-")
+    tree = os.path.join(tmp, "tree")
     for rel in tracked:
         copy(os.path.join(ddir, rel), os.path.join(tree, rel))
     digest = decomp_setup.tree_digest(tree)
-    shutil.rmtree(tree)
+    shutil.rmtree(tmp, ignore_errors=True)
     rev = subprocess.run(["git", "-C", ddir, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
     # about the size of GitHub's archive of the commit (shown before setup downloads it)
     size = len(subprocess.run(["git", "-C", ddir, "archive", "--format=tar.gz", "HEAD"], capture_output=True,
                               check=True).stdout)
     for rel in DECOMP_TOOLS:
         copy(os.path.join(ROOT, rel), os.path.join(pkg, rel))
-    copy(os.path.join(ROOT, "runtime", "src", "decomp", "decomp.h"), os.path.join(pkg, "sdk", "decomp", "include", "decomp", "decomp.h"))
-    print("decomp version: decompilation %s (%d files, setup downloads about %d MB), %d own runtime objects"
-          % (rev[:7], len(tracked), size // 1000000, own))
-    return {"revision": rev, "tree_sha256": digest, "url": decomp_setup.ARCHIVE_URL % rev, "download_bytes": size,
-            "link": recipe, "unit_flags": unit_flags, "hooks_flags": hooks_flags}
+    # decomp/decomp.h and the headers it includes (call_lr.h since 2026-11-08: without it no hooks.cpp compiled)
+    for h in sorted(os.listdir(os.path.join(ROOT, "runtime", "src", "decomp"))):
+        if h.endswith(".h"):
+            copy(os.path.join(ROOT, "runtime", "src", "decomp", h), os.path.join(pkg, "sdk", "decomp", "include", "decomp", h))
+    if fbuild:  # decl_table.py's inputs from the port (see DECOMP_TOOLS): PKG/runtime/include, the sources with HLE bodies
+        for dp, _, fns in os.walk(os.path.join(ROOT, "runtime", "include")):
+            for fn in fns:
+                copy(os.path.join(dp, fn), os.path.join(pkg, os.path.relpath(os.path.join(dp, fn), ROOT)))
+        for dp, _, fns in os.walk(os.path.join(ROOT, "runtime", "src")):
+            for fn in sorted(fns):
+                p = os.path.join(dp, fn)
+                if fn.endswith(".cpp") and "HLE(" in open(p, encoding="utf-8", errors="replace").read():
+                    copy(p, os.path.join(pkg, os.path.relpath(p, ROOT)))
+    print("decomp version: decompilation %s (%d files, setup downloads about %d MB)%s"
+          % (rev[:7], len(tracked), size // 1000000, ", plain build and fast mode" if fbuild else ", plain build only"))
+    entry.update({"revision": rev, "tree_sha256": digest, "url": decomp_setup.ARCHIVE_URL % rev, "download_bytes": size})
+    return entry
 
 
 def file_sha256(path):
@@ -570,8 +614,10 @@ def main():
     ap.add_argument("--setup-gui", help="the built graphical installer (wwhd-setup) to include")
     ap.add_argument("--windows-python", help="windows: the pinned embeddable Python zip (toolchains.json python.windows, or python.windows-arm64), "
                     "shipped unmodified as tools/python")
-    ap.add_argument("--decomp-build", help="macOS development builds: a build configured with -DWWHD_DECOMP=ON "
-                    "-DWWHD_DECOMP_RUNTIME_ONLY=ON; the release then lets setup build the decomp version (experimental)")
+    ap.add_argument("--decomp-build", help="macOS: a build configured with -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON "
+                    "(the plain decomp build); the release then lets setup build the decomp version")
+    ap.add_argument("--decomp-fast-build", help="macOS, with --decomp-build: the same configured with -DWWHD_DECOMP_FAST=ON "
+                    "too; setup then builds the decomp version in fast mode by default (--decomp-plain: the plain build)")
     ap.add_argument("--no-rando", action="store_true", help="leave out the in-app randomizer (a build without -DWWHD_RANDO=ON)")
     ap.add_argument("--no-zip", action="store_true")
     a = ap.parse_args()
@@ -612,10 +658,13 @@ def main():
         # replaces the one before, and keys the prepared shaders by its pipeline identity
         "build_identity": 1,
     }
+    if a.decomp_fast_build and not a.decomp_build:
+        sys.exit("--decomp-fast-build needs --decomp-build (the plain build stays available: setup --decomp-plain)")
     if a.decomp_build:
         if variant or not a.platform.startswith("macos"):
-            sys.exit("--decomp-build: macOS regular releases only")
-        manifest["decomp"] = add_decomp(pkg, os.path.abspath(a.decomp_build), a.linkonly_lib)
+            sys.exit("--decomp-build: macOS releases only (not the decomp release variant)")
+        manifest["decomp"] = add_decomp(pkg, os.path.abspath(a.decomp_build),
+                                        os.path.abspath(a.decomp_fast_build) if a.decomp_fast_build else None, a.linkonly_lib)
     if variant:
         manifest["variant"] = variant
         copy(os.path.join(build, "decomp", "decomp_hooks.txt"), os.path.join(pkg, "sdk", "decomp_hooks.txt"))
@@ -626,7 +675,9 @@ def main():
         copy(os.path.join(ROOT, rel), os.path.join(pkg, rel))
     copy_shader_template(ROOT, pkg)
     for hp in sorted(os.listdir(os.path.join(ROOT, "tools", "recomp"))):
-        if re.match(r"(decomp_only_)?hooks.*\.txt$", hp):  # decomp_only_*: the decomp build's setup
+        # decomp_only_* and decomp_hostrt_hooks.txt: the decomp version's translation in setup (recomp.py --decomp-hooks;
+        # without the host runtime list the runtime's hostrt hooks miss their originals f_X_orig at the link)
+        if re.match(r"(decomp_only_|decomp_hostrt_)?hooks.*\.txt$", hp):
             copy(os.path.join(ROOT, "tools", "recomp", hp), os.path.join(pkg, "tools", "recomp", hp))
     # the address maps of the builds the port can be made from (tools/recomp/builds.py, docs/builds.md)
     for bp in sorted(os.listdir(os.path.join(ROOT, "tools", "recomp", "builds"))):

@@ -323,10 +323,12 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
             os.replace(setup.longpath(work), setup.longpath(cache))
             work = None
         check()
+        decomp = rebuild_decomp(setup, ctx, tc, hooks, progress)
         result = {'state': 'ready', 'hooks': bool(hooks), 'fingerprint': key,
                   'exe': str(exe.resolve()), 'cached': cached,
                   'seconds': round(time.monotonic() - started, 2),
                   'user_dir': str((data / 'user').resolve()) if setup.PORTABLE else ''}
+        result.update(decomp)
         if status_file:
             atomic_json(status_file, result)
         # Selection is the last fallible write: a reporting error must not switch
@@ -341,6 +343,34 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
         if work:
             shutil.rmtree(setup.longpath(work), ignore_errors=True)
         lock.close()
+
+
+def rebuild_decomp(setup, ctx, tc, hooks, progress):
+    """A code-mod switch rebuilds the install's decomp version too (decomp_setup.build with the new choice), after the
+    normal game's variant. Returns what the result JSON gets: {"decomp": "ready"} or {"decomp_error": "<one line>"}
+    (the decomp version's Settings > Mods restart reads them), or {} when the install has no decomp version. A failure
+    never fails the normal game's rebuild; install.json then says the decomp version is stale."""
+    import decomp_setup
+    data = str(ctx.data_dir)
+    state = setup.read_state(data)
+    if not state.get('decomp_exe') or not os.path.isfile(state['decomp_exe']):
+        return {}
+    progress('Building the decomp version')
+    try:
+        exe, rev, _, info = decomp_setup.build(setup, ctx, tc, ctx.args.jobs or setup.default_jobs(),
+                                               mode=state.get('decomp_mode') or 'plain', code_mods=bool(hooks))
+        state.update(decomp_exe=exe, decomp_revision=rev, decomp_code_mods=info['code_mods'])
+        for k in ('decomp_error', 'decomp_stale'):
+            state.pop(k, None)
+        outcome = {'decomp': 'ready'}
+    except Exception as e:  # (SetupError and anything else: the normal game's variant is ready regardless)
+        message = (str(e).splitlines() or [e.__class__.__name__])[0][:300]
+        setup.LOG.write('decomp version not rebuilt: %s' % e)
+        decomp_setup.code_mods_changed(state, hooks)
+        state['decomp_error'] = message
+        outcome = {'decomp_error': message}
+    setup.write_state(data, state)
+    return outcome
 
 
 def remember_installed(setup, ctx, tc, hooks, exe, gen, objs):

@@ -459,8 +459,31 @@ bool write_memory_slot(int slot,const Header& h,const Writer& metadata,const std
     return host::replace_file(tmp,(destination.empty()?slot_path(slot):destination));
 }
 
+// the build kind this executable writes into its full states (full_state_header.h kBuildKindMask)
+constexpr uint32_t kOwnBuildKind =
+#if defined(WWHD_DECOMP_FAST)
+    2;
+#elif defined(WWHD_DECOMP)
+    1;
+#else
+    0;
+#endif
+// scripted comparisons load one full state into builds of different kinds (tools/gametest, the decomp build's A/B
+// checks): their test variables, or WWHD_STATE_ANY_BUILD=1, allow it; a player's load is refused
+bool cross_build_allowed() {
+    static const bool on = [] {
+        for (const char* t : {"WWHD_STATE_ANY_BUILD", "WWHD_STATE_LOAD_AT", "WWHD_TEST_LOAD"})
+            if (const char* v = getenv(t); v && *v && strcmp(v, "0")) return true;
+        return false;
+    }();
+    return on;
+}
 bool read_header(FILE* f, Header& h, std::string& why) {
     if (!read_full_state_header(f, h, why)) return false;
+    if (const uint32_t kind = build_kind(h.reserved); kind != kOwnBuildKind && !cross_build_allowed()) {
+        why = std::string("full state of the ") + build_kind_name(kind) + "; it loads only there (use a portable state)";
+        return false;
+    }
     if (!full_state_version_supported(h.version)) { why = "saved by another version"; return false; }
     if (!memchr(h.area,0,sizeof h.area)) {why="invalid state area";return false;}
     if (h.cpu_size != sizeof(Cpu)) { why = "saved by an incompatible build"; return false; }
@@ -645,7 +668,7 @@ bool do_save_fast(int slot, const std::string& destination, std::function<void(b
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kFastVersion;
-    h.reserved = g_save_profile.empty() ? 0 : kRequiresSaveProfile;
+    h.reserved = (g_save_profile.empty() ? 0 : kRequiresSaveProfile) | (kOwnBuildKind << kBuildKindShift);
     h.header_size = sizeof(Header);
     h.created = (uint64_t)time(nullptr);
     std::string stage = stage_name();
@@ -769,7 +792,7 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kVersion;
-    h.reserved = g_save_profile.empty() ? 0 : kRequiresSaveProfile;
+    h.reserved = (g_save_profile.empty() ? 0 : kRequiresSaveProfile) | (kOwnBuildKind << kBuildKindShift);
     h.header_size = sizeof(Header);
     h.created = (uint64_t)time(nullptr);
     std::string stage = stage_name();
