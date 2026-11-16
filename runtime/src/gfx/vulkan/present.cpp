@@ -467,21 +467,39 @@ bool sampleable(const Surface& source) {
 }
 // WWHD_VK_PRESENT_TRIM 4: opaque picture quads (drawn without blending) cover every pixel of the target, as the
 // draw loop in compose() rasterises them (viewport box, scissor)
+present_trim::Rect quad_scissor(const ComposeQuad& q,VkExtent2D extent) {
+ present_trim::Rect scissor{0,0,int(extent.width),int(extent.height)};
+ if(q.clipped) {
+  const int x=int(std::clamp(std::floor(q.clip.x),0.f,float(extent.width)));
+  const int y=int(std::clamp(std::floor(q.clip.y),0.f,float(extent.height)));
+  scissor={x,y,int(std::clamp(std::ceil(q.clip.x+q.clip.w),float(x),float(extent.width))),
+           int(std::clamp(std::ceil(q.clip.y+q.clip.h),float(y),float(extent.height)))};
+ }
+ return scissor;
+}
+// a quad the draw loop draws without blending over its whole box (image, opacity 1, not the premultiplied backdrop)
+bool opaque_quad(const ComposeQuad& q) {
+ return !q.solid&&q.image&&q.image->view&&q.backdrop!=1&&q.alpha>=0.999f&&q.box.w>0&&q.box.h>0;
+}
 bool covered_by_opaque_quads(const std::vector<ComposeQuad>& quads,VkExtent2D extent) {
  if(!present_trim::clear())return false;
  std::vector<present_trim::Rect> opaque;
- for(const auto& q:quads) {
-  if(q.solid||!q.image||!q.image->view||q.backdrop==1||q.alpha<0.999f||q.box.w<=0||q.box.h<=0)continue;
-  present_trim::Rect scissor{0,0,int(extent.width),int(extent.height)};
-  if(q.clipped) {
-   const int x=int(std::clamp(std::floor(q.clip.x),0.f,float(extent.width)));
-   const int y=int(std::clamp(std::floor(q.clip.y),0.f,float(extent.height)));
-   scissor={x,y,int(std::clamp(std::ceil(q.clip.x+q.clip.w),float(x),float(extent.width))),
-            int(std::clamp(std::ceil(q.clip.y+q.clip.h),float(y),float(extent.height)))};
-  }
-  opaque.push_back(present_trim::pixels(q.box.x,q.box.y,q.box.w,q.box.h,scissor));
- }
+ for(const auto& q:quads)
+  if(opaque_quad(q))opaque.push_back(present_trim::pixels(q.box.x,q.box.y,q.box.w,q.box.h,quad_scissor(q,extent)));
  return present_trim::covers(opaque,extent.width,extent.height);
+}
+// WWHD_VK_PRESENT_TRIM 8: quads whose every pixel a later opaque quad overwrites (1: skip)
+std::vector<char> hidden_quads(const std::vector<ComposeQuad>& quads,VkExtent2D extent) {
+ std::vector<char> hidden(quads.size(),0);
+ if(!present_trim::hidden())return hidden;
+ std::vector<present_trim::Rect> later;
+ for(size_t i=quads.size();i-->0;) {
+  const auto& q=quads[i];
+  const auto scissor=quad_scissor(q,extent);
+  hidden[i]=!later.empty()&&present_trim::covers(later,present_trim::outer_pixels(q.box.x,q.box.y,q.box.w,q.box.h,scissor));
+  if(opaque_quad(q))later.push_back(present_trim::pixels(q.box.x,q.box.y,q.box.w,q.box.h,scissor));
+ }
+ return hidden;
 }
 // draw the quads into `view` (cleared to black first); `layout` is the target image's current layout
 void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D extent,VkFormat format,
@@ -513,10 +531,11 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea.extent=extent;rendering.layerCount=1;rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
  layout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
  if(present_trim::mask()&&covered_by_opaque_quads(quads,extent))attachment.loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // (WWHD_VK_PRESENT_TRIM 4)
+ const auto hiddenQuads=present_trim::hidden()?hidden_quads(quads,extent):std::vector<char>{};  // (WWHD_VK_PRESENT_TRIM 8)
  if(present_trim::log_every()) {
   static uint64_t composed=0;
   if(composed++%uint64_t(present_trim::log_every())==0)
-   present_trim::log_composition(quads,extent,overlay,gamepadOverlay,attachment.loadOp==VK_ATTACHMENT_LOAD_OP_CLEAR);
+   present_trim::log_composition(quads,extent,overlay,gamepadOverlay,attachment.loadOp==VK_ATTACHMENT_LOAD_OP_CLEAR,hiddenQuads);
  }
  begin_pass(cmd,rendering,[&] { return color_pass(format,layout); });R.rendering=true;R.passTracked=false;
  VkRect2D scissor{{0,0},extent};record::vkCmdSetScissor(cmd,0,1,&scissor);
@@ -524,6 +543,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
  const float whiteScale=hdrOutput?std::min(hdr::menuWhite.load(),hdr::parameters().peak)/80.0f:1.0f;
  for(auto& q:quads) {
   if(q.box.w<=0||q.box.h<=0)continue;
+  if(!hiddenQuads.empty()&&hiddenQuads[size_t(&q-quads.data())])continue;  // (WWHD_VK_PRESENT_TRIM 8)
   VkRect2D quadScissor{{0,0},extent};
   if(q.clipped) {
    const int x=int(std::clamp(std::floor(q.clip.x),0.f,float(extent.width)));

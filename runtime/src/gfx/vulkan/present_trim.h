@@ -7,6 +7,8 @@
 //   2 edge-colour bars: the GamePad bars' edge colour (4 taps, the same for every pixel of a bar) is sampled per
 //     vertex instead of per pixel (the sum c += tap * 0.25 is exact in either stage)
 //   4 no clear when covered: the swap image starts DONT_CARE instead of CLEAR when opaque quads cover every pixel
+//   8 hidden quads skipped: a quad whose pixels later opaque quads all overwrite is not drawn (the phone's GamePad-only
+//     layout draws the PiP frame, 2155x1222 blended, under the bars and the picture that cover all of it)
 //
 // Diagnostics (not pixel-identical, off by default): WWHD_VK_PRESENT_LOG=N logs every N-th composition's quads and
 // overlay draw data; WWHD_VK_PRESENT_NO_OVERLAY=1 leaves the window overlay out (its GPU cost by difference).
@@ -17,11 +19,12 @@
 
 struct ImDrawData;
 namespace gfxvk::present_trim {
-enum : uint32_t { kShader = 1, kBars = 2, kClear = 4 };
+enum : uint32_t { kShader = 1, kBars = 2, kClear = 4, kHidden = 8 };
 uint32_t mask();
 inline bool shader() { return mask() & kShader; }
 inline bool bars() { return mask() & kBars; }
 inline bool clear() { return mask() & kClear; }
+inline bool hidden() { return mask() & kHidden; }
 // the plain picture shader's fragment source, and the bars' vertex + fragment sources
 const char* plain_fragment_source();
 const char* bars_vertex_source();
@@ -33,9 +36,13 @@ struct Rect { int x0, y0, x1, y1; };
 // the pixels a viewport box rasterises (pixel centres inside it), clipped to the scissor
 Rect pixels(float x, float y, float w, float h, const Rect& scissor);
 bool covers(const std::vector<Rect>& opaque, uint32_t width, uint32_t height);
+// every pixel of region lies in one of the opaque rects
+bool covers(const std::vector<Rect>& opaque, const Rect& region);
+// all pixels a viewport box can touch (outer bound), clipped to the scissor
+Rect outer_pixels(float x, float y, float w, float h, const Rect& scissor);
 // diagnostics
 int log_every();
 bool no_overlay();
 void log_composition(const std::vector<ComposeQuad>& quads, VkExtent2D extent, ImDrawData* overlay, ImDrawData* gamepadOverlay,
-                     bool cleared);
+                     bool cleared, const std::vector<char>& hidden);
 }

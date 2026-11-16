@@ -105,9 +105,10 @@ int env_int(const char* name) {
 
 uint32_t mask() {
     static const uint32_t m = [] {
-        const uint32_t v = uint32_t(std::max(0, env_int("WWHD_VK_PRESENT_TRIM"))) & (kShader | kBars | kClear);
-        if (v) LOG("[present trim] on: mask %u (plain shader %s, bars per vertex %s, no clear when covered %s)", v,
-                   v & kShader ? "on" : "off", v & kBars ? "on" : "off", v & kClear ? "on" : "off");
+        const uint32_t v = uint32_t(std::max(0, env_int("WWHD_VK_PRESENT_TRIM"))) & (kShader | kBars | kClear | kHidden);
+        if (v) LOG("[present trim] on: mask %u (plain shader %s, bars per vertex %s, no clear when covered %s, hidden quads "
+                   "skipped %s)", v, v & kShader ? "on" : "off", v & kBars ? "on" : "off", v & kClear ? "on" : "off",
+                   v & kHidden ? "on" : "off");
         return v;
     }();
     return m;
@@ -132,13 +133,27 @@ Rect pixels(float x, float y, float w, float h, const Rect& scissor) {
     return r;
 }
 
+Rect outer_pixels(float x, float y, float w, float h, const Rect& scissor) {
+    if (!(w > 0) || !(h > 0) || !std::isfinite(x + y + w + h)) return {0, 0, 0, 0};
+    Rect r{int(std::floor(x)) - 1, int(std::floor(y)) - 1, int(std::ceil(x + w)) + 1, int(std::ceil(y + h)) + 1};
+    r.x0 = std::max(r.x0, scissor.x0), r.y0 = std::max(r.y0, scissor.y0);
+    r.x1 = std::min(r.x1, scissor.x1), r.y1 = std::min(r.y1, scissor.y1);
+    if (r.x1 <= r.x0 || r.y1 <= r.y0) return {0, 0, 0, 0};
+    return r;
+}
+
 bool covers(const std::vector<Rect>& opaque, uint32_t width, uint32_t height) {
-    if (!width || !height || opaque.empty()) return false;
-    std::vector<int> xs{0, int(width)}, ys{0, int(height)};
+    if (!width || !height) return false;
+    return covers(opaque, Rect{0, 0, int(width), int(height)});
+}
+bool covers(const std::vector<Rect>& opaque, const Rect& region) {
+    if (region.x1 <= region.x0 || region.y1 <= region.y0) return true;  // nothing to cover
+    if (opaque.empty()) return false;
+    std::vector<int> xs{region.x0, region.x1}, ys{region.y0, region.y1};
     for (const auto& r : opaque) {
         if (r.x1 <= r.x0 || r.y1 <= r.y0) continue;
-        xs.push_back(std::clamp(r.x0, 0, int(width))), xs.push_back(std::clamp(r.x1, 0, int(width)));
-        ys.push_back(std::clamp(r.y0, 0, int(height))), ys.push_back(std::clamp(r.y1, 0, int(height)));
+        xs.push_back(std::clamp(r.x0, region.x0, region.x1)), xs.push_back(std::clamp(r.x1, region.x0, region.x1));
+        ys.push_back(std::clamp(r.y0, region.y0, region.y1)), ys.push_back(std::clamp(r.y1, region.y0, region.y1));
     }
     std::sort(xs.begin(), xs.end()), xs.erase(std::unique(xs.begin(), xs.end()), xs.end());
     std::sort(ys.begin(), ys.end()), ys.erase(std::unique(ys.begin(), ys.end()), ys.end());
@@ -188,7 +203,7 @@ static void log_overlay(const char* name, ImDrawData* d, VkExtent2D extent) {
 }
 
 void log_composition(const std::vector<ComposeQuad>& quads, VkExtent2D extent, ImDrawData* overlay, ImDrawData* gamepadOverlay,
-                     bool cleared) {
+                     bool cleared, const std::vector<char>& hidden) {
     LOG("[present trim] composition %ux%u: %zu quads, %s", extent.width, extent.height, quads.size(),
         cleared ? "cleared" : "not cleared (covered)");
     for (size_t i = 0; i < quads.size(); ++i) {
@@ -201,6 +216,7 @@ void log_composition(const std::vector<ComposeQuad>& quads, VkExtent2D extent, I
                 q.image ? q.image->extent.width : 0, q.image ? q.image->extent.height : 0,
                 q.image ? int(q.image->fmt.pixel) : 0, q.sourceLinear ? " linear" : "", q.box.x, q.box.y, q.box.w, q.box.h,
                 q.alpha, q.backdrop, q.clipped ? " clipped" : "");
+        if (i < hidden.size() && hidden[i]) LOG("[present trim]   quad %zu hidden by later opaque quads: skipped", i);
     }
     log_overlay("gamepad overlay", gamepadOverlay, extent);
     log_overlay("overlay", overlay, extent);
