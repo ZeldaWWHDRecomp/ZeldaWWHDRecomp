@@ -7,6 +7,18 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: J3D models drawn from descriptions, on by default** (#594). In the decomp build's fast mode the
+  decompiled J3D model code (characters, enemies, objects, map parts) now describes each draw (material, textures,
+  mesh) instead of emulating its GPU register writes, and the Vulkan renderer draws from those descriptions with
+  states it made once. Depth-only draws (shadows, depth pre-pass) use native depth programs, described draws may begin
+  their own render pass, the per-draw state work is cached, and the record worker records multi-draw batches as one
+  indirect draw. On a Xiaomi 14 at the cliff the renderer's CPU time per frame went from 13.4 to 12.6 ms (in the
+  lava room the indirect recording alone saved about 0.6 ms in an earlier measurement). Pictures are unchanged.
+  `WWHD_NATIVE_J3D_DESC=0` turns J3D descriptions off; the parts have their own switches
+  (`WWHD_NATIVE_J3D_DESC_DEPTH=0`, `WWHD_NATIVE_J3D_DESC_PASSBEGIN=0`, `WWHD_NATIVE_J3D_DESC_MSMEMO=0`,
+  `WWHD_VK_RECORD_INDIRECT=0`); `WWHD_NATIVE_DRAW=0` still turns the whole native renderer off. The normal build and
+  the default decomp build are unchanged. The decompilation update also brings its binary-order and 32-bit address
+  fixes and new port points for the GamePad gyro option and camera.
 - **Fixed: Story Notebook icons in the bag** (#589, thanks @fayep). When the game's icon archive has the notebook, each
   bag place now shows one notebook icon (before, a second, flickering copy could appear), the carried letter shows the
   game's letter icon, and switching between Pro Controller and GamePad no longer leaves icons or the notebook page on
