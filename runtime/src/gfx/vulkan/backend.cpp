@@ -76,6 +76,7 @@ extern "C" int __llvm_profile_write_file(void);
 #include "present.h"
 #include "present_worker.h"
 #include "reproj.h"
+#include "hidden_tv.h"  // WWHD_VK_SKIP_HIDDEN_TV (gpusave, off by default)
 #include "android_isolated_presenter.h"
 #include "presentation_queue.h"
 #include "gfx/display.h"
@@ -3402,9 +3403,35 @@ static bool present(Screen &s) {
              "present completion");
   return pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR;
 }
+static void copy_to_scan_now(uint32_t cb, uint32_t target);
+static void copy_surface_to_scan(Surface* src, uint32_t target);
 void copy_to_scan(uint32_t cb, uint32_t target) {
+  // WWHD_VK_SKIP_HIDDEN_TV (hidden_tv.h): the TV copy waits while no output shows the TV picture
+  if (target == 1 && hidden_tv::on() && hidden_tv::defer(cb, surface_from_color_buffer(cb))) return;
+  copy_to_scan_now(cb, target);
+}
+// WWHD_VK_SKIP_HIDDEN_TV: the waiting TV copy, recorded now and published (swap: after the scans are published)
+void hidden_tv_materialize(const char* why) {
+  if (!hidden_tv::pending()) return;
+  bool unchanged = false;
+  Surface* src = hidden_tv::take(unchanged);
+  hidden_tv::count_late(why, src && unchanged);
+  if (!src) return;  // (gone: the TV scan keeps its older picture; logged)
+  copy_surface_to_scan(src, 1);
+  Screen& s = R.tv;
+  if (s.buildingScanDirty) {
+    s.scan.swap(s.buildingScan);
+    std::swap(s.scanDisplayExtent, s.buildingScanDisplayExtent);
+    s.scanSrgb = s.buildingScanSrgb;
+    s.buildingScanDirty = false;
+  }
+}
+static void copy_to_scan_now(uint32_t cb, uint32_t target) {
   Surface *src = surface_from_color_buffer(cb);
   if (target == 4 && !stereoEye) gamepad_backdrop_scan(src);
+  copy_surface_to_scan(src, target);
+}
+static void copy_surface_to_scan(Surface* src, uint32_t target) {
   if (!src)
     return;
   if (stereoEye && target == 4) return; // GamePad is a shared 2D device.
@@ -3491,6 +3518,7 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
 // debug: WWHD_DUMP_FRAMES=100,300 writes the TV image of those frames to frame_<n>.png (and
 // frame_<n>_drc.png; WWHD_DUMP_PRESENT=1 adds the composed window, frame_<n>_present.png), as Metal
 static void dump_scan(Screen &s, const std::string &path) {
+  if (&s == &R.tv && !hidden_tv::stale_dumps()) hidden_tv_materialize("a frame dump");  // (hidden_tv.h)
   if (!s.scan || !s.scan->image)
     return;
   try {
@@ -3579,6 +3607,7 @@ static void take_screenshots(const gfx::PresentPlan &plan) {
   std::string tvPath, drcPath;
   if (!R.tv.scan || !R.tv.scan->image || !screenshot::take(R.frame + 1, tvPath, drcPath))
     return;
+  hidden_tv_materialize("a screenshot");  // (hidden_tv.h)
   auto shoot = [&](Screen &s, const std::string &path, bool tv) {
     PendingShot p;
     p.path = path;
@@ -3951,47 +3980,66 @@ void swap() {
   // comes from gfx/display_modes.cpp, which both window hosts and the Metal renderer share
   Surface *tvScan = R.tv.scan && R.tv.scan->image ? R.tv.scan.get() : nullptr;
   Surface *drcScan = R.drc.scan && R.drc.scan->image ? R.drc.scan.get() : nullptr;
-  const auto tvDisplay = scan_display_extent(R.tv);
+  auto tvDisplay = scan_display_extent(R.tv);
 #ifdef WWHD_SDL_HOST
   gfx::g_filter = scale_filter();  // the SDL host keeps the scaling filter with the Vulkan settings
   const float layerW = float(R.tv.width.load()), layerH = float(R.tv.height.load());
 #else
   const float layerW = float(R.tv.swapExtent.width), layerH = float(R.tv.swapExtent.height);
 #endif
-  // (sizes at the full internal resolution: dynamic resolution keeps the layout)
-  gfx::PresentPlan plan = gfx::display_plan(
-      tvScan, float(tvDisplay.width), float(tvDisplay.height),
-      drcScan, nominal_width(drcScan), nominal_height(drcScan),
-      layerW, layerH, R.frame + 1, stereo::frame.mode!=stereo::FullSBS);
+  // (a function: WWHD_VK_SKIP_HIDDEN_TV makes it again once the TV scan is recorded late with another size)
+  auto make_plan = [&] {
+    tvScan = R.tv.scan && R.tv.scan->image ? R.tv.scan.get() : nullptr;
+    tvDisplay = scan_display_extent(R.tv);
+    // (sizes at the full internal resolution: dynamic resolution keeps the layout)
+    gfx::PresentPlan plan = gfx::display_plan(
+        tvScan, float(tvDisplay.width), float(tvDisplay.height),
+        drcScan, nominal_width(drcScan), nominal_height(drcScan),
+        layerW, layerH, R.frame + 1, stereo::frame.mode!=stereo::FullSBS);
 #ifdef __ANDROID__
-  // A physical second display owns the GamePad picture. Keep the requested
-  // single-screen mode intact so disconnecting restores its normal fallback.
-  if (gfx::g_has_drc_window) {
-    plan.drc_window = true;
-    plan.pip_on = false;
-    plan.pip_wanted = false;
-    plan.drc_only = false;
-    plan.tv = gfx::display_layout(layerW, layerH,
-        tvScan ? float(tvDisplay.width) : 1280,
-        tvScan ? float(tvDisplay.height) : 720);
-    if (drcScan && R.drc.width > 0 && R.drc.height > 0) {
-      bool swapped = dual_display::active_swap;
-      float w = swapped ? layerW : float(R.drc.width.load());
-      float h = swapped ? layerH : float(R.drc.height.load());
-      gfx::Box box = gfx::display_layout(w, h, nominal_width(drcScan), nominal_height(drcScan));
-      std::lock_guard<std::mutex> guard(secondaryMutex);
-      if (!secondaryChanged) {
-        auto& touchBox = swapped ? primaryTouchBox : secondaryTouchBox;
-        touchBox = {box.x / w, box.y / h, box.w / w, box.h / h};
+    // A physical second display owns the GamePad picture. Keep the requested
+    // single-screen mode intact so disconnecting restores its normal fallback.
+    if (gfx::g_has_drc_window) {
+      plan.drc_window = true;
+      plan.pip_on = false;
+      plan.pip_wanted = false;
+      plan.drc_only = false;
+      plan.tv = gfx::display_layout(layerW, layerH,
+          tvScan ? float(tvDisplay.width) : 1280,
+          tvScan ? float(tvDisplay.height) : 720);
+      if (drcScan && R.drc.width > 0 && R.drc.height > 0) {
+        bool swapped = dual_display::active_swap;
+        float w = swapped ? layerW : float(R.drc.width.load());
+        float h = swapped ? layerH : float(R.drc.height.load());
+        gfx::Box box = gfx::display_layout(w, h, nominal_width(drcScan), nominal_height(drcScan));
+        std::lock_guard<std::mutex> guard(secondaryMutex);
+        if (!secondaryChanged) {
+          auto& touchBox = swapped ? primaryTouchBox : secondaryTouchBox;
+          touchBox = {box.x / w, box.y / h, box.w / w, box.h / h};
+        }
       }
     }
-  }
-  // the view button's dot: 60 fps chosen (long press), green while drawn, yellow while paused
-  if (perf_hint::fps60_chosen())
-    plan.button_dot = interp::mode() != 0 ? 1 : 2;
+    // the view button's dot: 60 fps chosen (long press), green while drawn, yellow while paused
+    if (perf_hint::fps60_chosen())
+      plan.button_dot = interp::mode() != 0 ? 1 : 2;
 #endif
+    return plan;
+  };
+  gfx::PresentPlan plan = make_plan();
   GamepadBackdropDemandFrame backdropDemandFrame;
   set_present_plan(&plan);
+  if (hidden_tv::on()) {
+    // WWHD_VK_SKIP_HIDDEN_TV (hidden_tv.h): this frame's quads on every surface presented decide; a TV picture
+    // shown gets its waiting copy now, before anything draws or reads it
+    const bool shown = hidden_tv_scan_shown(plan.drc_window || gfx::g_has_drc_window);
+    if (shown && hidden_tv::pending()) {
+      const auto before = scan_display_extent(R.tv);
+      hidden_tv_materialize("the layout");
+      const auto after = scan_display_extent(R.tv);
+      if (after.width != before.width || after.height != before.height) { plan = make_plan(); set_present_plan(&plan); }
+    }
+    hidden_tv::layout_shown(shown);
+  }
   // Full SBS uses a half-width logical canvas before placing the two eyes.
   // Publish that same layout for GamePad hit testing and the software pointer.
   gfx::PresentPlan inputPlan=plan;
@@ -4042,6 +4090,7 @@ void swap() {
   set_overlay_draw(overlayFrame);
   compose_headless_diagnostic(R.tv);
   take_screenshots(plan);
+  hidden_tv::end_frame();  // (hidden_tv.h: the TV copy was not needed)
 #ifdef __ANDROID__
   prepare_secondary_snapshot();
 #endif
