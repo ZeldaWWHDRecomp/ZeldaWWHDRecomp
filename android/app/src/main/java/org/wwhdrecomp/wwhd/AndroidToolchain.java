@@ -32,11 +32,17 @@ public final class AndroidToolchain {
         else if (abi.equals("x86_64")) triple = "x86_64-linux-android";
         else throw new IOException("Unsupported compiler architecture");
         if (metadata.getInt("api") != 33) throw new IOException("Unsupported compiler API");
-        String[] tools = {"clang", "ld.lld", "llvm-ar"};
-        String[] names = {"libwwhd-clang-driver.so", "libwwhd-ld.lld-driver.so", "libwwhd-ar-driver.so"};
+        // the first three are the game's compiler; the rest build the decomp version (tools/android/package_toolchain.py
+        // NAMES, decomp_android.py) and are optional: a compiler package without them builds the normal game only
+        String[] tools = {"clang", "ld.lld", "llvm-ar", "llvm-objcopy", "llvm-link", "llvm-dis", "llvm-as"};
+        String[] names = {"libwwhd-clang-driver.so", "libwwhd-ld.lld-driver.so", "libwwhd-ar-driver.so",
+            "libwwhd-objcopy-driver.so", "libwwhd-llvm-link-driver.so", "libwwhd-llvm-dis-driver.so",
+            "libwwhd-llvm-as-driver.so"};
+        final int required = 3;
         File[] executables = new File[tools.length];
         for (int index = 0; index < tools.length; index++) {
             String name = names[index];
+            if (index >= required && !metadata.getJSONObject("executables").has(tools[index])) continue;
             if (!metadata.getJSONObject("executables").getString(tools[index]).equals(name))
                 throw new IOException("Unexpected compiler executable mapping");
             File executable = new File(context.getApplicationInfo().nativeLibraryDir, name);
@@ -88,7 +94,11 @@ public final class AndroidToolchain {
             .put("-resource-dir=" + new File(data, "lib/clang/20").getAbsolutePath());
         JSONArray cxx = new JSONArray(cc.toString()).put("--driver-mode=g++")
             .put("-fuse-ld=lld").put("--ld-path=" + executables[1].getAbsolutePath());
+        JSONObject decompTools = new JSONObject();
+        for (int index = required; index < tools.length; index++)
+            if (executables[index] != null) decompTools.put(tools[index], executables[index].getAbsolutePath());
         return new JSONObject().put("cc", cc).put("cxx", cxx)
+            .put("decomp_tools", decompTools)
             .put("ar", new JSONArray().put(executables[2].getAbsolutePath()))
             .put("ld", executables[1].getAbsolutePath())
             .put("identity", identity).put("data", data.getAbsolutePath()).put("abi", abi);

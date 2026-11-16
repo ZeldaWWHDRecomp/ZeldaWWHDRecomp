@@ -15,6 +15,11 @@ import time
 
 LLVM_REVISION = "87f0227cb60147a26a1eeb4fb06e3b505e9c7261"  # llvmorg-20.1.8
 NDK_REVISION = "30.0.16248370"
+# the decomp version (tools/installer/decomp_setup.py, docs/decomp-build.md): llvm-objcopy makes each game unit's hidden
+# symbols local after `ld.lld -r` (always); llvm-link / llvm-dis / llvm-as isolate the units' IR for the optional
+# whole-image ThinLTO link (tools/decomp_build/unit_ir.py --tools). Same LLVM build, small executables. (decl_lint.py's
+# `clang++` is the clang executable with --driver-mode=g++: tools/android/decomp_android.py.)
+DECOMP_TOOLS = ("llvm-objcopy", "llvm-link", "llvm-dis", "llvm-as")
 TARGETS = {
     "arm64-v8a": ("AArch64", "aarch64-linux-android"),
     "x86_64": ("X86", "x86_64-linux-android"),
@@ -94,9 +99,9 @@ def main():
         "-DLLVM_NATIVE_TOOL_DIR=" + str(native / "bin"),
         "-DLLVM_ENABLE_THREADS=ON", "-DLLVM_ENABLE_PIC=ON")
     run("cmake", "--build", target, "--parallel", args.jobs,
-        "--target", "clang", "lld", "llvm-ar", "clang-resource-headers")
+        "--target", "clang", "lld", "llvm-ar", "clang-resource-headers", *DECOMP_TOOLS)
     (package / "bin").mkdir(parents=True)
-    for name, built in (("clang", "clang"), ("ld.lld", "lld"), ("llvm-ar", "llvm-ar")):
+    for name, built in (("clang", "clang"), ("ld.lld", "lld"), ("llvm-ar", "llvm-ar")) + tuple((t, t) for t in DECOMP_TOOLS):
         destination = package / "bin" / name
         shutil.copy2(target / "bin" / built, destination)
         run(ndk_tools / "bin/llvm-strip", "--strip-unneeded", destination)
