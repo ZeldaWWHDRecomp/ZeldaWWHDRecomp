@@ -144,18 +144,47 @@ static WWMetalView* g_view = nil;
 static int g_argc = 0;
 static char** g_argv = nullptr;
 
-// Where things are: the game files inside the app (game/, packaged with it), everything the game writes in
-// the app's Caches folder (an Apple TV app may write nowhere else that lasts): settings and caches (the
-// user folder), saves, and the log (relative to the working directory).
+// Where things are: the game files inside the app (game/, packaged with it), everything the game writes in its data
+// folder (host_tvos_data_dir): settings and caches (the user folder), saves, and the log (relative to the working
+// directory).
+namespace gfx {
+// The data folder. On an Apple TV the app's Caches folder: an Apple TV app may write nowhere else that lasts, and
+// tvOS may empty it when it needs space. On an iPhone, iPad or Vision Pro Application Support, which the system
+// leaves alone; what earlier builds kept in Caches there is moved over the first time.
+NSString* host_tvos_data_dir() {
+    static NSString* dir;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        NSString* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
+#if TARGET_OS_TV
+        dir = caches;
+#else
+        NSFileManager* fm = [NSFileManager defaultManager];
+        dir = NSSearchPathForDirectoriesInDomains(NSApplicationSupportDirectory, NSUserDomainMask, YES).firstObject;
+        [fm createDirectoryAtPath:dir withIntermediateDirectories:YES attributes:nil error:nil];
+        for (NSString* part in @[ @"save", @"user", @"wwhd", @"captures" ]) {
+            NSString* from = [caches stringByAppendingPathComponent:part];
+            NSString* to = [dir stringByAppendingPathComponent:part];
+            if (![fm fileExistsAtPath:from] || [fm fileExistsAtPath:to]) continue;
+            NSError* err = nil;
+            if ([fm moveItemAtPath:from toPath:to error:&err]) NSLog(@"[files] %@ moved from Caches to Application Support", part);
+            else NSLog(@"[files] %@ not moved from Caches: %@", part, err.localizedDescription);
+        }
+#endif
+    });
+    return dir;
+}
+}  // namespace gfx
+
 // The live shader cache packaged with the app (shaders.bin: every shader and pipeline the game is known to use,
 // recorded where the game was prepared) goes where the renderer keeps it (the user folder's live shader caches,
 // shader_prebuild.h bind_live_caches), when the
 // copy there is missing or smaller: the first start, or after tvOS emptied the Caches folder. Its records are
 // the game's state, valid on any GPU; with the packaged shader library none of them compiles here.
-static void install_shader_cache(NSString* caches) {
+static void install_shader_cache(NSString* data) {
     NSString* packaged = [[NSBundle mainBundle] pathForResource:@"shaders" ofType:@"bin"];
     if (!packaged) return;
-    NSString* dir = [caches stringByAppendingPathComponent:@"user/shader-prebuild/live"];
+    NSString* dir = [data stringByAppendingPathComponent:@"user/shader-prebuild/live"];
     NSString* live = [dir stringByAppendingPathComponent:@"shaders.bin"];
     NSFileManager* fm = [NSFileManager defaultManager];
     const unsigned long long have = [[fm attributesOfItemAtPath:live error:nil] fileSize];
@@ -174,13 +203,20 @@ static void install_shader_cache(NSString* caches) {
 //   "serious":  60 fps pauses (30), the occlusion depth goes to half size, the internal resolution to 0.75x;
 //   "critical": as well, the resolution goes to 0.5x and the iPhone GamePad gets every other picture.
 // After a minute below a step's state the guard goes back one step; off, the player's settings are back as they
-// were. Nothing it changes is saved. (Android pauses only 60 fps: platform/heat_guard.h.)
+// were. Nothing it changes is saved: while a step is on, the settings file gets the player's own values (save_graphics),
+// and one the player changes meanwhile is theirs from then on, kept after the cool-down too. (Android pauses only
+// 60 fps: platform/heat_guard.h.)
 struct HeatGuard {
     int step = 0;  // 0 off, 1 serious, 2 critical
     double calmer_since = -1;
+    // the player's own values of what the guard lowers
     int interp_mode = 0;
     bool ao_hires = false;
     float res = 1.0f;
+    // what is in place now as the guard left it: a value that differs from it later is the player's choice
+    int live_interp = 0;
+    bool live_ao = false;
+    float live_res = 1.0f;
 
     void apply(int to) {
         if (step == 0 && to > 0) interp_mode = interp::mode(), ao_hires = render::ao_hires(), res = render::res_scale();
@@ -196,6 +232,7 @@ struct HeatGuard {
         if (interp::mode()) interp::set_mode(0);
         render::set_ao_hires(false);
         render::set_res_scale(std::min(res, to == 2 ? 0.5f : 0.75f));
+        live_interp = interp::mode(), live_ao = render::ao_hires(), live_res = render::res_scale();
         remote_video::set_frame_divisor(to == 2 ? 2 : 1);
         log_msg(to == 2 ? "[tvos] heat guard: the Apple TV is very hot: 0.5x resolution, the iPhone GamePad at half rate, "
                           "30 fps and half-size occlusion depth until it cools"
@@ -212,7 +249,15 @@ struct HeatGuard {
             calmer_since = want < step ? now : -1;  // a further step back after another minute
         }
     }
+    // a setting changed (main thread): while a step is on, what differs from the guard's values the player chose
+    void adopt() {
+        if (!step) return;
+        if (interp::mode() != live_interp) interp_mode = live_interp = interp::mode();
+        if (render::ao_hires() != live_ao) ao_hires = live_ao = render::ao_hires();
+        if (render::res_scale() != live_res) res = live_res = render::res_scale();
+    }
 };
+static HeatGuard g_heat;
 
 // Memory: what tvOS counts against the app (its physical footprint) and what it still allows, and the thermal
 // state, every 10 s
@@ -233,9 +278,8 @@ static void start_memory_log() {
                 (unsigned long long)(info.phys_footprint >> 20), (unsigned long long)(peak >> 20), os_proc_available_memory() >> 20,
                 t >= 0 && t < 4 ? kThermal[t] : "?");
         // (the renderer's settings change on the main thread, as the settings overlay changes them)
-        static HeatGuard guard;
         const double now = CACurrentMediaTime();
-        if (render::g_backend) dispatch_async(dispatch_get_main_queue(), ^{ guard.tick(t, now); });
+        if (render::g_backend) dispatch_async(dispatch_get_main_queue(), ^{ g_heat.tick(t, now); });
     });
     dispatch_resume(timer);
 }
@@ -280,7 +324,7 @@ static void install_bundled_mods(NSString* user) {
 // Saves). Through the save folder choice (mods/save_folder.h): the first time, the save here is copied there
 // (or, if one is there already, the player picks which to keep); every start checks the folder before the game
 // reads it. Files iCloud has not put on this iPad yet are downloaded first. Signed out of iCloud: the save stays
-// in the Caches folder, as without iCloud.
+// in the data folder, as without iCloud.
 static void use_icloud_save_folder(NSString* save) {
     NSFileManager* fm = [NSFileManager defaultManager];
     NSURL* container = [fm URLForUbiquityContainerIdentifier:@WWHD_ICLOUD_CONTAINER];  // (blocks: not the main thread)
@@ -591,14 +635,22 @@ bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
 }
 
 static void* run_game(void*) {
-    NSString* caches = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES).firstObject;
-    install_shader_cache(caches);
+    NSString* data = gfx::host_tvos_data_dir();
+    install_shader_cache(data);
     start_memory_log();
-    NSString* user = [caches stringByAppendingPathComponent:@"user"];
-    NSString* save = [caches stringByAppendingPathComponent:@"save"];
+    NSString* user = [data stringByAppendingPathComponent:@"user"];
+    NSString* save = [data stringByAppendingPathComponent:@"save"];
     for (NSString* d in @[ user, save ])
         [[NSFileManager defaultManager] createDirectoryAtPath:d withIntermediateDirectories:YES attributes:nil error:nil];
-    chdir(caches.fileSystemRepresentation);
+#if !TARGET_OS_TV
+    // (the shader caches are remade from the app: not in the device's backups)
+    {
+        NSString* shaders = [user stringByAppendingPathComponent:@"shader-prebuild"];
+        [[NSFileManager defaultManager] createDirectoryAtPath:shaders withIntermediateDirectories:YES attributes:nil error:nil];
+        [[NSURL fileURLWithPath:shaders] setResourceValue:@YES forKey:NSURLIsExcludedFromBackupKey error:nil];
+    }
+#endif
+    chdir(data.fileSystemRepresentation);
     setenv("WWHD_USER_DIR", user.fileSystemRepresentation, 0);
     install_bundled_mods(user);
     // a name of this device for the save folder's lock: every iPad and iPhone's host name is "localhost". The
@@ -700,13 +752,15 @@ void host_tvos_load_graphics() {
     if (saved_number("fps60", v)) interp::set_mode(int(v));
 }
 static void save_graphics() {
-    set_host_setting("resScale", std::to_string(render::res_scale()));
-    set_host_setting("aoHires", render::ao_hires() ? "1" : "0");
+    g_heat.adopt();
+    const bool guarded = g_heat.step > 0;  // (the player's own values, not the heat guard's lowered ones)
+    set_host_setting("resScale", std::to_string(guarded ? g_heat.res : render::res_scale()));
+    set_host_setting("aoHires", (guarded ? g_heat.ao_hires : render::ao_hires()) ? "1" : "0");
     set_host_setting("fxaa", render::fxaa() ? "1" : "0");
     set_host_setting("aniso", render::aniso() ? "1" : "0");
     set_host_setting("cloudShadows", render::cloud_shadows() ? "1" : "0");
     set_host_setting("interpFps", std::to_string(interp::fps()));
-    set_host_setting("fps60", std::to_string(interp::mode()));
+    set_host_setting("fps60", std::to_string(guarded ? g_heat.interp_mode : interp::mode()));
 }
 
 // display.mm

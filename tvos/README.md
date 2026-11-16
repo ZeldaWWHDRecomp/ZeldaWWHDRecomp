@@ -27,14 +27,16 @@ Play at 720p and 30 fps (the defaults).
   are built when first drawn, not all in the background (about 400 MB less).
 - **Heat guard:** from the "serious" thermal state the game pauses 60 fps, halves the occlusion depth and
   renders at 0.75x, and puts your settings back after a minute at "fair" or "nominal". Nothing it changes
-  is saved.
+  is saved; a setting you change meanwhile is yours and stays.
 - **Settings:** the game's Settings (controller: hold Create / Select) instead of the Mac's menus. The
   graphics options are saved; full-size occlusion depth starts off.
 - **Files:** the game files are read from the app; settings, saves and the log go to the app's Caches
-  folder, which tvOS may empty when it needs space. Copy saves in and out with `xcrun devicectl device
-  copy`.
-- **Not on an Apple TV:** restarts (renderer changes apply at the next start), code mods, file panels,
-  keyboard and mouse.
+  folder, which tvOS may empty when it needs space (on an iPhone or iPad: Application Support, which stays).
+  Copy saves in and out with `xcrun devicectl device copy`.
+- **Leaving the game:** a controller's buttons and the Siri Remote's go to the game alone, so Back doesn't
+  leave it; the remote's TV button goes to the Home screen.
+- **Not on an Apple TV:** restarts (renderer changes apply at the next start), building code mods (the Mac
+  builds them into the app, below), file panels, keyboard and mouse.
 
 ## Building (by hand, for now)
 

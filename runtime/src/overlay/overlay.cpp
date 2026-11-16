@@ -3612,9 +3612,15 @@ void tab_audio() {
             hostui::post([extra] { audio::set_pad_audio_extra_ms(extra, false); });
         if (ImGui::IsItemDeactivatedAfterEdit())
             hostui::post([extra] { audio::set_pad_audio_extra_ms(extra); });
-        help("The phone plays the GamePad's sound held back by this device's own delay, as far as it is known. A TV or "
-             "receiver adds its own: if the phone's sound comes early (an echo), raise this; late, lower it. "
-             "Applies at once and is remembered.");
+        // (the Apple TV, iPhone and iPad hosts measure their output's delay; the others don't)
+        if (audio::output_latency_frames() > 0)
+            help("The phone plays the GamePad's sound held back by this device's own delay, as far as it is known. A TV "
+                 "or receiver adds its own: if the phone's sound comes early (an echo), raise this; late, lower it. "
+                 "Applies at once and is remembered.");
+        else
+            help("The phone plays the GamePad's sound held back by the game's own sound queue only: this computer's "
+                 "output delay isn't measured, and speakers, a TV or a receiver add their own. If the phone's sound "
+                 "comes early (an echo), raise this; late, lower it. Applies at once and is remembered.");
     }
     bool menu_sounds_on = menu_sounds::option();
     if (ImGui::Checkbox("Menu sounds", &menu_sounds_on))

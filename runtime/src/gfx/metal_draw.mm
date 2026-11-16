@@ -1844,7 +1844,7 @@ static bool ensure_pass(Surface* const* colors, const uint32_t* colorSlices, Sur
     }
     if (!any) return false;
     R.enc = [command_buffer() renderCommandEncoderWithDescriptor:rp];
-    R.enc.label = @"metal_draw.mm:1811";  // (named for WWHD_GPU_ERRORS: which pass faulted)
+    R.enc.label = @"ensure_pass";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     for (int i = 0; i < 8; i++) {
         R.passColor[i] = colors[i];
         R.passColorSlice[i] = colorSlices[i];
@@ -2557,7 +2557,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, coverage == 2 ? 1 : 0);
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
-    encoder.label = @"metal_draw.mm:2532";  // (named for WWHD_GPU_ERRORS: which pass faulted)
+    encoder.label = @"prepare_backdrop";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     if (!encoder) {backdrop_trace("encoder-reject",pixel,d.width,d.height);return false;}
     [encoder endEncoding];
     storage->complete.store(false,std::memory_order_release);
