@@ -23,12 +23,50 @@ public final class AndroidGame {
         public final File game;
         public final boolean codeMods;  // built with code-mod support (the setup's choice at that time)
         public final File randomizerFiles;  // a randomized game's changed files (played over the game), else null
-        private Selection(File library, File game, boolean codeMods, File randomizerFiles) {
+        public final boolean decomp;  // library is the decomp version (setup's "Start the decomp version")
+        private Selection(File library, File game, boolean codeMods, File randomizerFiles, boolean decomp) {
             this.library = library;
             this.game = game;
             this.codeMods = codeMods;
             this.randomizerFiles = randomizerFiles;
+            this.decomp = decomp;
         }
+    }
+
+    // ---- the decomp version (setup's "Also build the decomp version", docs/decomp-build.md; tools/android/
+    // decomp_android.py): a second library built next to the normal game, from the game as it is, with the same
+    // code-mod choice. "enabled": build it; "start": the game starts it instead of the normal one when it is built.
+    private static AtomicFile decompChoice(Context context) {
+        return new AtomicFile(new File(storage(context), "decomp-choice.json"));
+    }
+
+    private static JSONObject decompChoiceValue(Context context) {
+        try { return read(decompChoice(context)); }
+        catch (Exception missing) { return new JSONObject(); }
+    }
+
+    public static synchronized boolean decompChosen(Context context) {
+        return decompChoiceValue(context).optBoolean("enabled", false);
+    }
+
+    public static synchronized boolean startDecompChosen(Context context) {
+        JSONObject value = decompChoiceValue(context);
+        return value.optBoolean("enabled", false) && value.optBoolean("start", false);
+    }
+
+    public static synchronized void chooseDecomp(Context context, boolean enabled, boolean start) throws Exception {
+        try (SelectionLock ignored = new SelectionLock(context)) {
+            write(decompChoice(context), new JSONObject().put("schema", 1).put("enabled", enabled).put("start", enabled && start));
+        }
+    }
+
+    /** The built decomp version's state for setup's screen: "built", an error message, or null (not built). */
+    public static synchronized String decompState(Context context) {
+        try (SelectionLock ignored = new SelectionLock(context)) {
+            JSONObject active = read(record(context, "active"));
+            if (active.has("decomp_library")) return "built";
+            return active.has("decomp_error") ? active.getString("decomp_error") : null;
+        } catch (Exception missing) { return null; }
     }
 
     // ---- the code-mod choice (setup's Code mods switch, or Settings > Mods in the game): the next
@@ -170,6 +208,16 @@ public final class AndroidGame {
         return library;
     }
 
+    /** The record's decomp library, checked as the game library is (inside setup storage, read-only, its checksum). */
+    private static File decompLibrary(Context context, JSONObject value) throws Exception {
+        File library = new File(storage(context), value.getString("decomp_library")).getCanonicalFile();
+        if (!library.getPath().startsWith(storage(context).getCanonicalPath() + File.separator) ||
+                !library.isFile() || library.canWrite())
+            throw new IOException("Invalid decomp library");
+        if (!hash(library).equals(value.getString("decomp_sha256"))) throw new IOException("Decomp library checksum mismatch");
+        return library;
+    }
+
     private static File randomizerFiles(Context context, JSONObject value) throws Exception {
         File root = storage(context).getCanonicalFile();
         File files = new File(storage(context), value.getString("randomizer_files")).getCanonicalFile();
@@ -207,7 +255,14 @@ public final class AndroidGame {
             File library = library(context, value, false);
             File game = value.has("game") ? new File(storage(context), value.getString("game")).getCanonicalFile() : null;
             File files = value.has("randomizer_files") ? randomizerFiles(context, value) : null;
-            return new Selection(library, game, value.optBoolean("code_mods", false), files);
+            if (files == null && value.has("decomp_library") && startDecompChosen(context)) {
+                try {
+                    return new Selection(decompLibrary(context, value), game, value.optBoolean("code_mods", false), null, true);
+                } catch (Exception failure) {
+                    Log.w("wwhd-game", "Decomp version unavailable, starting the normal game: " + failure.getMessage());
+                }
+            }
+            return new Selection(library, game, value.optBoolean("code_mods", false), files, false);
         } catch (java.io.FileNotFoundException missing) {
             return null;
         } catch (Exception failure) {
@@ -222,7 +277,10 @@ public final class AndroidGame {
         try (SelectionLock ignored = new SelectionLock(context)) {
             JSONObject active = read(record(context, "active"));
             library(context, active, true);
-            return active.optBoolean("code_mods", false) != chosen;
+            // the decomp version follows the setup's option (a failed build counts as built: setup says why)
+            boolean decompThere = active.has("decomp_library") || active.has("decomp_error");
+            boolean decompWanted = decompChosen(context) && !active.has("randomizer_files");
+            return active.optBoolean("code_mods", false) != chosen || decompWanted != decompThere;
         } catch (Exception failure) { return true; }
     }
 
@@ -244,13 +302,19 @@ public final class AndroidGame {
     /** randomizerFiles: a randomized game's changed files (the in-app randomizer), played over game; null for none. */
     public static synchronized void activate(Context context, File candidate, File game, boolean codeMods,
                                              File randomizerFiles) throws Exception {
+        activate(context, candidate, game, codeMods, randomizerFiles, null);
+    }
+
+    /** decomp: setup's decomp result (ready.json "decomp": {library, mode, ...} or {error}), null when not asked for. */
+    public static synchronized void activate(Context context, File candidate, File game, boolean codeMods,
+                                             File randomizerFiles, JSONObject decomp) throws Exception {
         try (SelectionLock ignored = new SelectionLock(context)) {
-            activateLocked(context, candidate, game, codeMods, randomizerFiles);
+            activateLocked(context, candidate, game, codeMods, randomizerFiles, decomp);
         }
     }
 
     private static void activateLocked(Context context, File candidate, File game, boolean codeMods,
-                                       File randomizerFiles) throws Exception {
+                                       File randomizerFiles, JSONObject decomp) throws Exception {
         JSONObject value = expected(context);
         if (codeMods) value.put("code_mods", true);
         if (randomizerFiles != null) {
@@ -273,6 +337,20 @@ public final class AndroidGame {
         }
         System.loadLibrary("wwhdpython");
         validate(candidate.getAbsolutePath()); // RTLD_NOW: dependencies and SDL_main must resolve.
+        if (decomp != null && decomp.has("library")) {
+            File library = new File(decomp.getString("library")).getCanonicalFile();
+            if (!library.getPath().startsWith(root.getPath() + File.separator) || !library.isFile() || library.canWrite())
+                throw new IOException("Decomp library is outside completed setup storage");
+            try {
+                validate(library.getAbsolutePath());  // (a separate namespace load: the normal game is not loaded here)
+                value.put("decomp_library", root.toPath().relativize(library.toPath()).toString())
+                    .put("decomp_sha256", hash(library)).put("decomp_mode", decomp.optString("mode", "fast"));
+            } catch (Throwable failure) {
+                value.put("decomp_error", "The decomp version does not load: " + failure.getMessage());
+            }
+        } else if (decomp != null) {
+            value.put("decomp_error", decomp.optString("error", "The decomp version could not be built"));
+        }
         // Recheck immediately before publication; failed validation never moves
         // the current selection. Older libraries and saves remain untouched.
         library(context, value, true);

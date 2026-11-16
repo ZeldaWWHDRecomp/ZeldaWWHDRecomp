@@ -276,7 +276,9 @@ DECOMP_TOOLS = ["tools/decomp_build/gen.py", "tools/decomp_build/port_sites.py",
                 "tools/decomp_build/native_cache.py", "tools/decomp_build/decl_table.py", "tools/decomp_build/decl_cache.py",
                 "tools/decomp_build/decl_lint_run.py", "tools/decomp_build/unit_ir.py", "tools/decomp_build/glue.cpp",
                 "tools/decomp_build/decomp_mod_hooks_default.txt",
-                "tools/decomp_build/frames_vis.h"]
+                "tools/decomp_build/frames_vis.h",
+                # the capstone stand-in (Android; WWHD_DECOMP_CAPSTONE_SHIM=1 elsewhere): decomp_setup.fetch_capstone
+                "tools/decomp_build/capstone_shim/capstone/__init__.py"]
 # fast mode's declaration table (decl_table.py) runs the decompilation's decl_lint.py in port mode, which reads the
 # port's runtime headers and the HLE bodies of its sources (the import registers); setup finds them at PKG/runtime
 DECOMP_HOOKS_NONE = "tools_decomp_build_hooks_none.cpp.o"  # flattened like the other runtime objects
@@ -410,6 +412,32 @@ def add_decomp(pkg, dbuild, fbuild, linkonly):
         if os.path.realpath(fdir) != os.path.realpath(ddir):
             sys.exit("--decomp-fast-build: another decompilation (%s) than --decomp-build's (%s)" % (fdir, ddir))
         entry["fast"] = fast
+    pin, tracked = decomp_source_pin(ddir)
+    rev, size = pin["revision"], pin["download_bytes"]
+    for rel in DECOMP_TOOLS:
+        copy(os.path.join(ROOT, rel), os.path.join(pkg, rel))
+    # decomp/decomp.h and the headers it includes (call_lr.h since 2026-11-08: without it no hooks.cpp compiled)
+    for h in sorted(os.listdir(os.path.join(ROOT, "runtime", "src", "decomp"))):
+        if h.endswith(".h"):
+            copy(os.path.join(ROOT, "runtime", "src", "decomp", h), os.path.join(pkg, "sdk", "decomp", "include", "decomp", h))
+    if fbuild:  # decl_table.py's inputs from the port (see DECOMP_TOOLS): PKG/runtime/include, the sources with HLE bodies
+        for dp, _, fns in os.walk(os.path.join(ROOT, "runtime", "include")):
+            for fn in fns:
+                copy(os.path.join(dp, fn), os.path.join(pkg, os.path.relpath(os.path.join(dp, fn), ROOT)))
+        for dp, _, fns in os.walk(os.path.join(ROOT, "runtime", "src")):
+            for fn in sorted(fns):
+                p = os.path.join(dp, fn)
+                if fn.endswith(".cpp") and "HLE(" in open(p, encoding="utf-8", errors="replace").read():
+                    copy(p, os.path.join(pkg, os.path.relpath(p, ROOT)))
+    print("decomp version: decompilation %s (%d files, setup downloads about %d MB)%s"
+          % (rev[:7], tracked, size // 1000000, ", plain build and fast mode" if fbuild else ", plain build only"))
+    entry.update(pin)
+    return entry
+
+
+def decomp_source_pin(ddir):
+    """The decompilation's source as setup downloads it: {"revision", "tree_sha256", "url", "download_bytes"} and the
+    number of its files (the Android runtime SDK uses it too: tools/android/package_runtime.py)"""
     # the decompilation's source: its commit and the SHA-256 of the files setup downloads (decomp_setup.py
     # SOURCE_PATHS as git tracks them), from a temporary copy; not shipped
     sys.path.insert(0, os.path.join(ROOT, "tools", "installer"))
@@ -432,25 +460,7 @@ def add_decomp(pkg, dbuild, fbuild, linkonly):
     # about the size of GitHub's archive of the commit (shown before setup downloads it)
     size = len(subprocess.run(["git", "-C", ddir, "archive", "--format=tar.gz", "HEAD"], capture_output=True,
                               check=True).stdout)
-    for rel in DECOMP_TOOLS:
-        copy(os.path.join(ROOT, rel), os.path.join(pkg, rel))
-    # decomp/decomp.h and the headers it includes (call_lr.h since 2026-11-08: without it no hooks.cpp compiled)
-    for h in sorted(os.listdir(os.path.join(ROOT, "runtime", "src", "decomp"))):
-        if h.endswith(".h"):
-            copy(os.path.join(ROOT, "runtime", "src", "decomp", h), os.path.join(pkg, "sdk", "decomp", "include", "decomp", h))
-    if fbuild:  # decl_table.py's inputs from the port (see DECOMP_TOOLS): PKG/runtime/include, the sources with HLE bodies
-        for dp, _, fns in os.walk(os.path.join(ROOT, "runtime", "include")):
-            for fn in fns:
-                copy(os.path.join(dp, fn), os.path.join(pkg, os.path.relpath(os.path.join(dp, fn), ROOT)))
-        for dp, _, fns in os.walk(os.path.join(ROOT, "runtime", "src")):
-            for fn in sorted(fns):
-                p = os.path.join(dp, fn)
-                if fn.endswith(".cpp") and "HLE(" in open(p, encoding="utf-8", errors="replace").read():
-                    copy(p, os.path.join(pkg, os.path.relpath(p, ROOT)))
-    print("decomp version: decompilation %s (%d files, setup downloads about %d MB)%s"
-          % (rev[:7], len(tracked), size // 1000000, ", plain build and fast mode" if fbuild else ", plain build only"))
-    entry.update({"revision": rev, "tree_sha256": digest, "url": decomp_setup.ARCHIVE_URL % rev, "download_bytes": size})
-    return entry
+    return {"revision": rev, "tree_sha256": digest, "url": decomp_setup.ARCHIVE_URL % rev, "download_bytes": size}, len(tracked)
 
 
 def file_sha256(path):

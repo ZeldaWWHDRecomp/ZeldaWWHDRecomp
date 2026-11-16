@@ -274,6 +274,9 @@ public class SetupService extends Service {
                 // the setup's Code mods switch: game code with mod support (read at every start, so a
                 // changed choice rebuilds)
                 configuration.put("code_mods", AndroidGame.codeModsChosen(this));
+                // setup's "Also build the decomp version" (tools/android/decomp_android.py: fast mode, the same code-mod
+                // choice; a randomized game builds the normal game only)
+                configuration.put("decomp", AndroidGame.decompChosen(this));
                 configuration.put("port_revision", revision).put("jobs", compileJobs())
                     .put("shader_cache_root", AndroidUserDirectories.shaderPrebuild(getExternalFilesDir(null)).getAbsolutePath());
                 SetupStore.write(new File(active, "job.json"), configuration);
@@ -294,7 +297,10 @@ public class SetupService extends Service {
                 checkPause(active);
                 JSONObject randomized = ready.optJSONObject("randomizer");
                 AndroidGame.activate(this, new File(ready.getString("library")), new File(ready.getString("game")),
-                    configuration.getBoolean("code_mods"), randomized != null ? new File(randomized.getString("files")) : null);
+                    configuration.getBoolean("code_mods"), randomized != null ? new File(randomized.getString("files")) : null,
+                    !configuration.optBoolean("decomp", false) || randomized != null ? null :
+                        ready.has("decomp") ? ready.getJSONObject("decomp") :
+                        new JSONObject().put("error", "This setup cannot build the decomp version"));
                 JSONObject shaders = ready.optJSONObject("shader_prebuild");
                 String message = null;
                 boolean prepared = shaders != null && shaders.optString("status").equals("ready");

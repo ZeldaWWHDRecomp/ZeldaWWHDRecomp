@@ -828,7 +828,19 @@ jobs:
           cmake --build android/build/game --target wwhd-extract --parallel 4
           NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
           python3 tools/android/package_extractor.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/extractor-apk
-          python3 tools/android/package_runtime.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/runtime-sdk
+          # the decomp version's parts (setup's option, tools/android/decomp_android.py): the runtime built for the decomp
+          # build without game units and without the game, plain and fast mode, as the macOS job's; the decompilation's
+          # source is not in the APK (setup downloads the pinned commit)
+          git submodule update --init decomp
+          : > "$RUNNER_TEMP/no-decomp-units.txt"
+          python3 tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks "$RUNNER_TEMP/no-decomp-units.txt"
+          for fast in 0 1; do
+            WWHD_VERSION="$VERSION" GEN_DIR="$PWD/build/gen-stub-decomp" ANDROID_SDK="$ANDROID_HOME" JOBS=4 \
+              DECOMP=1 DECOMP_RUNTIME_ONLY=1 DECOMP_FAST=$fast OUT="$PWD/android/build-decomp-$fast" android/build_native.sh
+          done
+          python3 tools/android/package_runtime.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/runtime-sdk \
+            --decomp-build android/build-decomp-0/game --decomp-fast-build android/build-decomp-1/game
+          rm -rf android/build-decomp-0 android/build-decomp-1  # (runner disk: the parts are in the runtime SDK now)
           # the APK carries no game library: setup links the player's own one on the phone
           rm "android/app/libs/$ABI/libmain.so"
           ls -la "android/app/libs/$ABI"

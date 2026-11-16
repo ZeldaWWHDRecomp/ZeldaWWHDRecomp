@@ -192,18 +192,27 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             objects = adapter.compile(toolchain, manifest, generated, compiler["identity"], native_run, jobs=jobs)
             library = adapter.link(toolchain, manifest, objects, compiler["identity"], native_run)
             adapter.boundary()
+            # the decomp version (setup's option; tools/android/decomp_android.py): a second library next to the normal
+            # game, from the game as it is (a randomized game plays in the normal game only); its failure leaves the
+            # normal game ready
+            decomp = None
+            if job.get("decomp") and not overlay:
+                decomp = decomp_step(adapter, job, compiler, manifest, game, native_run, jobs, code_mods, publish)
             # earlier updates' stages go (this run's, and the builds the selection records name, stay): the
             # records are in the setup storage above jobs/<id>
             records = root.parent.parent if root.parent.name == "jobs" else None
             if hasattr(adapter, "cleanup_stages"):
                 try:
-                    adapter.cleanup_stages([Path(generated).parent, Path(objects[0]).parent.parent, Path(library).parent],
+                    adapter.cleanup_stages([Path(generated).parent, Path(objects[0]).parent.parent, Path(library).parent]
+                                           + ([Path(decomp["library"]).parent] if decomp and decomp.get("library") else []),
                                            records, log=lambda text: print(text, file=sys.stderr))
                 except OSError as error:
                     print("old setup stages kept: %s" % error, file=sys.stderr)
             result = {"schema": 1, "library": str(library), "game": str(game),
                       "port_revision": job["port_revision"], "compiler_identity": compiler["identity"],
                       "code_mods": code_mods}
+            if decomp:
+                result["decomp"] = decomp
             if overlay:
                 result["randomizer"] = {"files": str(overlay), "seed": seed["id"], "hash": seed.get("hash", ""),
                                         "permalink": seed.get("permalink", "")}
@@ -258,6 +267,29 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             state["error"] = str(failure)[:2048]
             publish({"state": "failed"})
             raise
+
+
+def decomp_step(adapter, job, compiler, manifest, game, native_run, jobs, code_mods, publish):
+    """The decomp version's library (job "decomp": true; "decomp_mode" fast (default) / plain; "decomp_whole_lto": the
+    whole-image link switch; "decomp_mod_hooks": the decomp version's own record of hooked functions). Returns
+    {"library", "mode", "code_mods", ...} or {"error"}; a pause passes through."""
+    from setup_adapter import Paused
+    mode = job.get("decomp_mode", "fast")
+    if mode not in ("fast", "plain"):
+        raise ValueError("The decomp mode must be fast or plain")
+    try:
+        import decomp_android
+        library, info = decomp_android.build(adapter, compiler, manifest, game, native_run, jobs=jobs,
+                                             code_mods=code_mods, mode=mode, whole=job.get("decomp_whole_lto") is True,
+                                             mod_hooks=job.get("decomp_mod_hooks"))
+        return dict(info, library=str(library), mode=mode, code_mods=code_mods)
+    except Paused:
+        raise
+    except Exception as failure:  # the normal game stays ready (as setup on the desktop)
+        message = str(failure).splitlines()[0][:300] if str(failure) else type(failure).__name__
+        print("decomp version failed: %s" % failure, file=sys.stderr)
+        publish({"stage": "decomp", "state": "failed", "detail": message})
+        return {"error": message, "mode": mode}
 
 
 def read_key_descriptors(descriptors):

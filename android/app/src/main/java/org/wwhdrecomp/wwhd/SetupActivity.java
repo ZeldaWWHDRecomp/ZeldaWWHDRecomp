@@ -38,6 +38,8 @@ public class SetupActivity extends Activity {
     private Button restore;
     private android.widget.CheckBox codeMods;
     private TextView codeModsDetail;
+    private android.widget.CheckBox decomp, startDecomp;
+    private TextView decompDetail;
     private android.widget.CheckBox models;
     private TextView modelsDetail;
     private Button cancelModels;
@@ -210,6 +212,23 @@ public class SetupActivity extends Activity {
         codeModsDetail.setText(R.string.setup_code_mods_detail);
         codeModsDetail.setPadding(0, 0, 0, gap);
         layout.addView(codeModsDetail);
+        // the desktop setup's "Also build the decomp version" (docs/decomp-build.md) and which version the game starts
+        decomp = new android.widget.CheckBox(this);
+        decomp.setText(R.string.setup_decomp);
+        decomp.setTextSize(16);
+        decomp.setChecked(AndroidGame.decompChosen(this));
+        decomp.setOnCheckedChangeListener((view, checked) -> chooseDecomp(checked, startDecomp.isChecked()));
+        layout.addView(decomp);
+        startDecomp = new android.widget.CheckBox(this);
+        startDecomp.setText(R.string.setup_decomp_start);
+        startDecomp.setTextSize(16);
+        startDecomp.setChecked(AndroidGame.startDecompChosen(this));
+        startDecomp.setOnCheckedChangeListener((view, checked) -> chooseDecomp(decomp.isChecked(), checked));
+        layout.addView(startDecomp);
+        decompDetail = new TextView(this);
+        decompDetail.setText(R.string.setup_decomp_detail);
+        decompDetail.setPadding(0, 0, 0, gap);
+        layout.addView(decompDetail);
         // the desktop setup's optional "Preparing shaders: models" step
         models = new android.widget.CheckBox(this);
         models.setText(R.string.setup_models);
@@ -331,6 +350,26 @@ public class SetupActivity extends Activity {
                 else control(SetupService.RESUME);
             });
         }, "wwhd-rando-make").start();
+    }
+
+    /** The decomp version's options: remembered; switching the build on (or off) rebuilds a finished setup now, as the
+     *  Code mods switch does; "Start the decomp version" applies from the next game start. */
+    private void chooseDecomp(boolean enabled, boolean start) {
+        new Thread(() -> {
+            try {
+                AndroidGame.chooseDecomp(this, enabled, start);
+                File job = SetupStore.current(this);
+                File host = job == null ? null : new File(job, "host.json");
+                if (host != null && host.isFile() && SetupStore.read(host).optString("state").equals("complete") &&
+                        AndroidGame.needsRebuild(this))
+                    runOnUiThread(() -> {
+                        try { SetupService.start(this, null); }
+                        catch (Exception failure) { status.setText("Tap Resume to continue setup: " + failure.getMessage()); }
+                    });
+            } catch (Exception failure) {
+                runOnUiThread(() -> status.setText("The decomp option could not be saved: " + failure.getMessage()));
+            }
+        }).start();
     }
 
     /** The Code mods switch: remembered for the next build; a finished setup builds again now (the
@@ -773,6 +812,14 @@ public class SetupActivity extends Activity {
                     codeMods.setChecked(!codeMods.isChecked());
                     codeMods.setOnCheckedChangeListener((view, checked) -> chooseCodeMods(checked));
                 }
+                show(decomp, phoneSetup);
+                show(decompDetail, phoneSetup);
+                decomp.setEnabled(!working);
+                String decompState = AndroidGame.decompState(SetupActivity.this);
+                show(startDecomp, phoneSetup && decomp.isChecked());
+                startDecomp.setEnabled(!working && "built".equals(decompState));
+                if (decompState != null && !"built".equals(decompState) && decomp.isChecked())
+                    setTextIfChanged(decompDetail, getString(R.string.setup_decomp_detail) + "\n\n" + decompState);
                 // a heat pause offers Continue only once the device has cooled down (#277)
                 boolean heatHot = hostName.equals("paused") && hostState != null &&
                     hostState.optString("reason").equals("heat") && !hostState.optBoolean("cooled");

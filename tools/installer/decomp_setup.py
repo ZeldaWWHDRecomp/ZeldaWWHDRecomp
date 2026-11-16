@@ -209,8 +209,20 @@ def mode_offered(manifest, mode):
     return mode == "plain" or isinstance(d.get("fast"), dict)
 
 
+CAPSTONE_SHIM = os.path.join("tools", "decomp_build", "capstone_shim")  # (in the release: Android, and for its proof)
+
+
+def is_android(s):
+    """the Android setup app (tools/android/decomp_android.py): ELF units, the APK's LLVM tools, Python tools in-process"""
+    return bool(getattr(s, "IS_ANDROID", False))
+
+
 def fetch_capstone(s, data_dir):
-    """capstone for decl_lint.py: DATA/decomp-src/capstone-<sha8>, the folder to put on PYTHONPATH"""
+    """capstone for decl_lint.py: DATA/decomp-src/capstone-<sha8>, the folder to put on PYTHONPATH. On Android (no
+    capstone wheel loads on bionic) and with WWHD_DECOMP_CAPSTONE_SHIM=1: the port's capstone stand-in
+    (tools/decomp_build/capstone_shim; the same text for every instruction of the game, test_capstone_shim.py)."""
+    if is_android(s) or os.environ.get("WWHD_DECOMP_CAPSTONE_SHIM") == "1":
+        return os.path.join(s.PKG, CAPSTONE_SHIM)
     import platform
     import zipfile
     pin = CAPSTONE.get(platform.machine())
@@ -257,17 +269,34 @@ def liblto_of(tc):
 
 
 def total_memory():
+    if sys.platform.startswith("linux"):  # (Android, Linux)
+        try:
+            with open("/proc/meminfo") as f:
+                for line in f:
+                    if line.startswith("MemTotal:"):
+                        return int(line.split()[1]) * 1024
+        except (OSError, ValueError, IndexError):
+            return 0
     try:
         return int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]))
     except (OSError, ValueError, subprocess.CalledProcessError):
         return 0
 
 
-def whole_lto(tc):
+def whole_lto(tc, s=None):
     """(on, libLTO, why): fast mode's whole-image ThinLTO link, as cmake's WWHD_DECOMP_FAST_WHOLE_LTO=AUTO decides it
-    (WWHD_DECOMP_WHOLE_LTO=0/1 forces it for tests)"""
-    lib = liblto_of(tc)
+    (WWHD_DECOMP_WHOLE_LTO=0/1 forces it for tests). On Android only when switched on (WWHD_DECOMP_WHOLE_LTO=1, the
+    app's switch): its final link peaks about 5.5 GB, the per-unit link is the default there until measured on a phone;
+    it needs the APK's llvm-link / llvm-dis / llvm-as (libLTO None: unit_ir.py --tool)."""
     force = os.environ.get("WWHD_DECOMP_WHOLE_LTO")
+    if s is not None and is_android(s):
+        tools = getattr(s, "DECOMP_TOOLS", {}) or {}
+        if force != "1":
+            return False, None, "per-unit link on Android (the whole-image link is a switch)"
+        if not all(tools.get(t) for t in ("llvm-link", "llvm-dis", "llvm-as")):
+            return False, None, "the app's compiler has no llvm-link / llvm-dis / llvm-as"
+        return True, None, "switched on (%d GB of memory)" % (total_memory() >> 30)
+    lib = liblto_of(tc)
     if not lib:
         return False, None, "the compiler has no libLTO"
     if force in ("0", "1"):
@@ -363,7 +392,9 @@ def build(s, ctx, tc, jobs, mode="fast", code_mods=False, step=None):
         path = os.path.join(ctx.data_dir, MOD_HOOKS_FILE)
         have = read_hook_list(path)
         known = have | read_hook_list(os.path.join(s.PKG, DEFAULT_HOOKS))
-        found = probe_mod_hooks(s, ctx, exe)
+        # (Android: the decomp version is a library the app loads, it cannot be started as a probe; the decomp version
+        # records a hook it does not know in decomp-mod-hooks.txt itself, for the next build)
+        found = None if is_android(s) else probe_mod_hooks(s, ctx, exe)
         if found is not None and not found <= known:
             with open(path, "w", encoding="utf-8") as f:
                 f.write("# the game functions installed code mods hook (setup's probe and the decomp version)\n")
@@ -404,7 +435,8 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
         os.makedirs(lp(work))
     out = os.path.join(work, "gen")
     times = {}
-    lto, liblto, lto_why = whole_lto(tc) if fast else (False, None, "")
+    lto, liblto, lto_why = whole_lto(tc, s) if fast else (False, None, "")
+    android = is_android(s)
     gen_guest, rules_guest = guest_hook_args(s, data_dir, mode, code_mods)
     s.say("  Decomp version: %s%s" % ("fast mode" if fast else "plain build (--decomp-plain)",
                                       (", whole-image link (%s)" % lto_why if lto else ", per-unit link (%s)" % lto_why)
@@ -454,7 +486,8 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
         # kept in DATA/decomp-cache (one per code-mod choice: the translation differs): decl_table.py reuses it while
         # the decompilation, the translation and the game are unchanged (a repair, an update with the same pin)
         decl = os.path.join(data_dir, "decomp-cache", "decl-%d" % bool(code_mods))
-        cxx_dir = os.path.dirname(tool_path(tc, "clang++"))
+        # (Android: decl_lint.py's `clang++` is mapped to the app's compiler by decomp_android.py)
+        cxx_dir = "" if android else os.path.dirname(tool_path(tc, "clang++"))
         denv = dict(os.environ, PYTHONPATH=os.pathsep.join(
             [capstone] + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])),
             PATH=os.pathsep.join([cxx_dir, os.environ.get("PATH", "")]))
@@ -512,7 +545,7 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
             p = SimpleNamespace(returncode=0, stdout=b"")
             hits[0] += 1
         else:
-            p = subprocess.run(cmd, env=tc.env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            p = run_tool(s, cmd, tc.env)
             if p.returncode == 0 and key:
                 ucache.store(key, obj)
         with lock:
@@ -544,13 +577,7 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
     for i, _, obj, _ in jobs_list:
         if i is not None:
             by_unit.setdefault(i, []).append(obj)
-    if lto:
-        merge = lambda o, objs_: [sys.executable, os.path.join(s.PKG, "tools", "decomp_build", "unit_ir.py"), o,
-                                  "--liblto", liblto, "--cc", tool_path(tc, "clang++")] + objs_
-    elif fast:
-        merge = lambda o, objs_: tc.cxx + ["-r", "-nostdlib", "-flto=thin", "-o", o] + objs_
-    else:
-        merge = lambda o, objs_: ["xcrun", "ld", "-r", "-o", o] + objs_
+    merge = merge_commands(s, tc, fast, lto, liblto)
     glue = [None] * len(units)
     pr = s.Progress("isolating the game units")
     mfail, mdone = [], [0]
@@ -559,7 +586,8 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
         u = units[i]
         o = os.path.join(work, "units", "%s.o" % u["name"])
         try:
-            s.run_logged(merge(o, by_unit[i]), env=tc.env, what="merging the game unit %s" % u["name"])
+            for cmd in merge(o, by_unit[i]):
+                s.run_logged(cmd, env=tc.env, what="merging the game unit %s" % u["name"])
         except s.SetupError as e:
             mfail.append(e)
         glue[i] = o
@@ -577,14 +605,17 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
     # 6. link: the release's decomp link line with this game code, hooks and units (fast mode, whole-image: ThinLTO
     # across the units at this link)
     t0 = time.time()
-    exe = exe_path(data_dir, s.PORTABLE)
+    # (Android: the decomp library in the app's setup storage, decomp_android.py)
+    exe = getattr(s, "DECOMP_OUTPUT", None) or exe_path(data_dir, s.PORTABLE)
     os.makedirs(os.path.dirname(exe), exist_ok=True)
     new = exe + ".new"
     hooks_objs = [os.path.join(work, f[:-4] + ".o") for f in hook_srcs]
     link_extra = ["-flto=thin"] if lto else []  # (no ThinLTO cache: the work folder goes after the build anyway)
+    if lto and android:  # (ld.lld: as cmake/Decomp.cmake's Android whole-image link, one backend thread per job)
+        link_extra += ["-Wl,--thinlto-jobs=%d" % jobs, "-Wl,--lto-O2"]
     s.say("  Linking the decomp version%s..." % (" (whole-image optimisation, a few minutes)" if lto else ""))
     s.link_game(tc, manifest, objs, work, new, recipe=parts["link"], glue=hooks_objs + glue, extra=link_extra)
-    if not s.PORTABLE:
+    if not s.PORTABLE and not android:
         for rf in manifest.get("runtime_files", []):
             shutil.copyfile(os.path.join(s.PKG, "sdk", "runtime", rf), os.path.join(os.path.dirname(exe), rf))
     os.replace(new, exe)
@@ -599,6 +630,36 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
         shutil.rmtree(lp(work), ignore_errors=True)
     return exe, rev, len(units), {"mode": mode, "code_mods": bool(code_mods), "whole_lto": lto,
                                   "seconds": round(times["total"]), "work_mb": work_bytes >> 20}
+
+
+def run_tool(s, cmd, env):
+    """a native tool (the compiler): -> object with returncode, stdout (bytes, stderr included). Android: through the
+    app's process bridge (decomp_android.py run_native)."""
+    if hasattr(s, "run_native"):
+        code, out = s.run_native(cmd, env)
+        return SimpleNamespace(returncode=code, stdout=out)
+    return subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+
+
+def merge_commands(s, tc, fast, lto, liblto):
+    """(out, objects) -> the commands that make one game unit's object, its hidden symbols local so units never see each
+    other (cmake/Decomp.cmake): Mach-O `ld -r` (plain) or clang -r with ThinLTO inside the unit (fast); ELF (Android)
+    ld.lld -r (fast: --lto-O2, one backend thread) then llvm-objcopy --localize-hidden; whole-image link: unit_ir.py
+    (the IR isolation; macOS through the compiler's libLTO, Android with the app's llvm-link / llvm-dis / llvm-as)."""
+    unit_ir = [sys.executable, os.path.join(s.PKG, "tools", "decomp_build", "unit_ir.py")]
+    if is_android(s):
+        t = s.DECOMP_TOOLS
+        if lto:
+            cc = sum((["--cc-arg", a] for a in tc.cxx[1:]), ["--cc", tc.cxx[0]])
+            tools = sum((["--tool", "%s=%s" % (n, t[n])] for n in ("llvm-link", "llvm-dis", "llvm-as")), [])
+            return lambda o, objs: [unit_ir + [o] + tools + cc + objs]
+        ld = [t["ld.lld"], "-r"] + (["--lto-O2", "--thinlto-jobs=1"] if fast else [])
+        return lambda o, objs: [ld + ["-o", o] + objs, [t["llvm-objcopy"], "--localize-hidden", o]]
+    if lto:
+        return lambda o, objs: [unit_ir + [o, "--liblto", liblto, "--cc", tool_path(tc, "clang++")] + objs]
+    if fast:
+        return lambda o, objs: [tc.cxx + ["-r", "-nostdlib", "-flto=thin", "-o", o] + objs]
+    return lambda o, objs: [["xcrun", "ld", "-r", "-o", o] + objs]
 
 
 def dir_size(root):

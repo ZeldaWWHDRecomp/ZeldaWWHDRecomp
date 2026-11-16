@@ -551,7 +551,7 @@ class Adapter:
                 return self.hash_file(self.package / "tools/installer/setup.py")
         return hashlib.sha256("\0".join(parts).encode()).hexdigest()
 
-    STAGE_PREFIXES = ("translation-", "compile-", "link-")
+    STAGE_PREFIXES = ("translation-", "compile-", "link-", "decomp-")
 
     def cleanup_stages(self, keep, records_root=None, log=None):
         """Removes this adapter's stage folders (translation-/compile-/link-<64 hex> in its storage) except `keep`
@@ -565,7 +565,7 @@ class Adapter:
                     value = json.loads((Path(records_root) / (record + ".json")).read_text())
                 except (OSError, ValueError):
                     continue
-                for key in ("library", "randomizer_files", "game"):
+                for key in ("library", "randomizer_files", "game", "decomp_library"):
                     if isinstance(value.get(key), str):
                         named.add((Path(records_root) / value[key]).resolve())
         removed = []
