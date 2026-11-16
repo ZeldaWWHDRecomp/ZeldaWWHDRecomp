@@ -35,6 +35,7 @@ runtime/src/pipeline_groups.h
 runtime/src/pipeline_runtime_identity.cpp
 runtime/src/pipeline_runtime_identity.h
 runtime/src/platform/quest_theater_controllers.h
+runtime/src/native_draw/j3d_depth_family.cpp
 # the runtime headers the units above that create pipelines or shaders include (the guard's -MM check)
 runtime/src/aspect.h
 runtime/src/aspect_panes.h
@@ -58,6 +59,8 @@ runtime/src/mods/mod_json.h
 runtime/src/mods/mods.h
 runtime/src/mods/move_speed.h
 runtime/src/mods/save_folder_writes.h
+runtime/src/native_draw/j3d_depth.h
+runtime/src/native_draw/j3d_depth_family.h
 runtime/src/one_screen.h
 runtime/src/overlay/guest_hud.h
 runtime/src/overlay/hostui.h
