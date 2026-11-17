@@ -5946,6 +5946,9 @@ Pipeline* native_pipeline(const uint32_t* r, const PacketCapture& cap, NativeSha
   return p;
 }
 
+#if defined(WWHD_DECOMP_FAST)
+#include "native_draw/pkt_persist_state.h"  // (WWHD_NATIVE_PKT_PERSIST)
+#endif
 struct LoweredKind {
   bool valid = false;
   uint64_t epoch = 0, submission = 0, frame = 0, surfaceEpoch = 0, passCount = 0;
@@ -5986,6 +5989,9 @@ struct LoweredKind {
   // stream of their own join range batches too (a magma ball's first strip starts its ball's batch); else such
   // instances form stream batches (3D lines: one index list, a stream per line)
   bool rangeVaries = false;
+#if defined(WWHD_DECOMP_FAST)
+  std::unique_ptr<pkpstate::Extra> persist;  // (WWHD_NATIVE_PKT_PERSIST: native_draw/pkt_persist.h)
+#endif
 };
 struct LoweredPacket {
   uint64_t drawCount = ~0ull;  // R.drawCount after the packet's last draw (lowering or replay)
@@ -6271,6 +6277,9 @@ UploadSlice packet_block_upload(uint32_t addr, uint32_t size) {
 #endif
 // kept lowered states (native_draw/alt_states.h, WWHD_NATIVE_DRAW_KEEP)
 #include "native_draw/alt_states.h"
+#if defined(WWHD_DECOMP_FAST)
+#include "native_draw/pkt_persist.h"  // (WWHD_NATIVE_PKT_PERSIST)
+#endif
 void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range) {
   // a shader-rewrite batch of another packet or kind is drawn first (this instance then lowers or chains after it)
   if (pendingBatch.active && (pendingBatch.id != pk.id || (pendingBatch.kind != kind && !pendingBatch.kinds)))
@@ -6320,6 +6329,12 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       native_draw::count(pk.site, native_draw::kKept);
     }
   }
+#if defined(WWHD_DECOMP_FAST)  // (WWHD_NATIVE_PKT_PERSIST: a kept state from an earlier chain, native_draw/pkt_persist.h)
+  const bool persistSite = pkpersist::site_on(pk);
+  bool persisted = false;
+  if (!replayable && persistSite && pkpersist::take(P, L, pk, kind, m, r, blockSize))
+    replayable = restored = persisted = true;
+#endif
   native_draw::Reason relower = native_draw::kReasons;  // (none of the counted instance reasons)
   if (replayable)
     for (uint32_t i = 0; i < pk.blockCount; ++i)
@@ -6354,7 +6369,12 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     replayable = g_surface_epoch == L.surfaceEpoch;
   }
   const uint32_t verifyEvery = native_draw::verify_every();
+#if defined(WWHD_DECOMP_FAST)
+  const bool verify = replayable && ((verifyEvery && ++packetVerifyCounter % verifyEvery == 0) ||
+                                     (persisted && pkpersist::verify_takes()));
+#else
   const bool verify = replayable && verifyEvery && ++packetVerifyCounter % verifyEvery == 0;
+#endif
   // the index range: the one the kind was lowered with, or (range batches: every instance of a kind lowered with a
   // range of its own) another one, with the kind's vertex input or a stream of the instance's own (a range batch keeps
   // one vertex input: its first instance's)
@@ -6558,6 +6578,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
         sup = snapshot(bytes.data(), bytes.size(), R.properties.limits.minUniformBufferOffsetAlignment);
       }
       if (st.dynamic) {  // the same set, the blocks' offsets
+#if defined(WWHD_DECOMP_FAST)  // (a persistent state in another submission: the set with this submission's buffers)
+        if (persisted && pkpersist::sets_due(L)) sets[s] = pkpersist::stage_set(L, s, blocks, sup);
+#endif
         for (int k = 0; k < PacketCapture::kBlocks; ++k) {
           const auto& blk = st.block[k];
           if (blk.binding < 0) continue;
@@ -6583,6 +6606,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
         sets[s] = stage_descriptor_set(s == 0, st.layout, writes.data(), st.writeCount);
       }
     }
+#if defined(WWHD_DECOMP_FAST)
+    if (persisted && L.persist) L.persist->setsFor = R.submissionGeneration;
+#endif
     if (same && (mdiCandidate || rangeCandidate)) {  // a new batch, drawn with this instance's descriptor sets and offsets
       auto& B = mdiBatch;
       B.active = true;
@@ -6622,6 +6648,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     }
     if (same) {
       auto cmd = command_buffer();
+#if defined(WWHD_DECOMP_FAST)
+      if (persisted) pkpersist::dynamic_state(cmd, *L.cap, r);  // (another draw may have set its own)
+#endif
       const bool kindChange = P.boundKind != int(kind);
 #if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)  // (WWHD_NATIVE_PAR_DECIDE: the replay as one POD command, native_draw/pardecide_packet.h)
       if (::native_draw::pardecide::level() >= 1 && (*L.cap).vertexBindCount <= ::native_draw::pardecide::kDescMaxVb &&
@@ -6683,6 +6712,10 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   if (relower != native_draw::kReasons && !verify) native_draw::count(pk.site, relower);
   // the full draw, which lowers the packet's kind: its capture is the thread's scratch (reset in place, so packet_draw's
   // frame stays small for every instance), swapped into the kind below (WWHD_NATIVE_DRAW_LEAN, on by default; =0: copied, as before)
+#if defined(WWHD_DECOMP_FAST)
+  if (persistSite && !verify) pkpersist::store_lowering(L, pk.id, kind, pk.site);
+  else
+#endif
   if (kept_states() && !verify) kept_store(L, pk, kind);
   PacketCapture& cap = packet_capture_scratch();
   for (uint32_t i = 0; i < pk.blockCount && i < native_draw::kMaxBlocks; ++i) {
@@ -6692,6 +6725,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
   }
   cap.hashes = verifyEvery != 0;
   cap.packet = &pk;
+#if defined(WWHD_DECOMP_FAST)
+  if (persistSite) cap.keepWrites = true, cap.hashes = cap.hashes || pkpersist::verify_takes();
+#endif
   const uint32_t fsRegs[2] = {r[mmSQ_PGM_START_FS], r[mmSQ_PGM_START_FS + 1]};
   g_packetCapture = &cap;
   try {
@@ -6741,6 +6777,11 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     return;
   }
   // a new chain (another draw came in between): the other kinds' lowered states end
+#if defined(WWHD_DECOMP_FAST)
+  if (!chain && persistSite)  // (the old chain's states of the other kinds: kept)
+    for (uint32_t k = 0; k < native_draw::kMaxKinds; ++k)
+      if (&P.kinds[k] != &L) pkpersist::store(P.kinds[k], pk.id, k, pk.site);
+#endif
   if (!chain)
     for (auto& k : P.kinds) k.valid = false;
   if (!chain && kept_states()) kept_end(pk.id);
@@ -6805,6 +6846,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       LOG("[native-draw] packet %u (site %u pass %u kind %u): no shader-rewrite batches: %s", pk.id, pk.site, pk.pass,
           kind, why);
   }
+#if defined(WWHD_DECOMP_FAST)
+  if (persistSite) pkpersist::make(L, pk, m, r);
+#endif
   chained();
   if (!verify) native_draw::count(pk.site, native_draw::kLowered);
 }
