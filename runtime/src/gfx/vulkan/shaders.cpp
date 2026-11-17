@@ -43,6 +43,8 @@
 #include "ppc.h"
 #include "util/helpers/StringBuf.h"
 #include <memory>
+#include <regex>
+#include "../draw_batch.h"
 #include <filesystem>
 #include <glslang/build_info.h>
 #include "platform/host.h"
@@ -560,6 +562,8 @@ bool retain_shader_source() {
             native_draw::switch_value("WWHD_NATIVE_DRAW_BATCH", WWHD_NATIVE_DRAW_BATCH_DEFAULT) != 0)
             return true;
 #endif
+        // same-state draw runs (gx2/draw_runs.h, batch_draw.h): the batched variants are rewritten from it
+        if (draw_batch::switch_on("WWHD_VK_BATCH_RUNS")) return true;
         return (value && !strcmp(value, "1")) || key_verify_rate() != 0;
     }();
     return retain;
@@ -1143,6 +1147,15 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         render_objects::set_shaders(shaders.size());
         fprintf(stderr, "[vulkan] shader %08X: %s\n", address, shader->error.c_str());
         return remember(shader);
+    }
+    // (TEST ONLY, WWHD_TEST_PS_LOD0=1: every pixel program's biased texture reads at explicit level 0, so pictures
+    // can be compared without the GPU's automatic level choice: checks of batched draws)
+    if (!vertex) [[unlikely]] {
+        static const bool lod0 = [] { const char* e = getenv("WWHD_TEST_PS_LOD0"); return e && *e == '1'; }();
+        if (lod0) {
+            static const std::regex read(R"(\btexture\((\w+), (vec[234]\((?:[^()]|\([^()]*\))*\)),\s*uf_tex\d+LodBias\))");
+            shader->glsl = std::regex_replace(shader->glsl, read, "textureLod($1, $2, 0.0)");
+        }
     }
     // Final GLSL identity: aliasing, the SPIR-V cache and pending compiles use
     // it, so the text can be released once the compile has been requested.
