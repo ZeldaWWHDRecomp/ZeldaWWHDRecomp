@@ -2301,6 +2301,18 @@ class DecompOption(unittest.TestCase):
                                            "and try again"), msg)
             self.assertFalse(os.path.exists(os.path.join(d, "data", "decomp-src")))
 
+    def test_source_certificate_failure_is_not_called_a_connection_problem(self):
+        with tempfile.TemporaryDirectory() as d:
+            pin = {"revision": "3" * 40, "tree_sha256": "0" * 64}
+            bad = setup.SetupError("download failed: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify "
+                                   "failed: unable to get local issuer certificate (_ssl.c:1000)>")
+            with self.assertRaises(setup.SetupError) as e:
+                self.fetch(os.path.join(d, "data"), pin, None, fail=bad)
+            msg = str(e.exception)
+            self.assertTrue(msg.startswith(setup.decomp_setup.FETCH_CERTIFICATE), msg)
+            self.assertNotIn("internet connection", msg)
+            self.assertIn("CERTIFICATE_VERIFY_FAILED", msg)
+
     def test_digest_ignores_finder_files(self):
         ds = setup.decomp_setup
         with tempfile.TemporaryDirectory() as d:

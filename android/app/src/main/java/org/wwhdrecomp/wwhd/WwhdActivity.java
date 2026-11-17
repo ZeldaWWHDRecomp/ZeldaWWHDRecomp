@@ -110,6 +110,10 @@ public class WwhdActivity extends SDLActivity {
                     out.put("stage", "Compiling the game code");
                     out.put("done", event.optInt("compiled") + event.optInt("reused")).put("total", event.optInt("total"));
                 } else if (event != null && event.optString("stage").equals("translate")) out.put("stage", "Translating the game code");
+                else if (event != null && event.optString("stage").equals("decomp")) {  // (the decomp version's build)
+                    out.put("stage", "Building the decomp version");
+                    if (event.optInt("total") > 0) out.put("done", event.optInt("done")).put("total", event.optInt("total"));
+                }
             }
             return out.toString();
         } catch (Exception failure) {
@@ -130,7 +134,8 @@ public class WwhdActivity extends SDLActivity {
                 return "This game was built on a computer: make randomized games there (setup's Randomized games).";
             AndroidGame.Selection current = AndroidGame.selected(context);
             if (current == null || current.game == null) return "Set up the game first.";
-            return "";
+            String refusal = GameVersion.randomizerRefusal(AndroidGame.chosenVersion(context));
+            return refusal != null ? refusal : "";
         } catch (Exception failure) {
             return "The randomizer is unavailable: " + failure.getMessage();
         }

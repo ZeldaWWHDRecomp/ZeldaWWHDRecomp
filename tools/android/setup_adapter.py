@@ -59,6 +59,15 @@ def atomic_json(path, value):
         temporary.unlink(missing_ok=True)
 
 
+def record_version(value):
+    """the game version a selection record (AndroidGame's active/previous/normal.json) names: "recomp", "decomp" or
+    "both" (records written before the choice: "both" when they have the decomp version's keys)"""
+    version = value.get("game_version")
+    if version in ("recomp", "decomp", "both"):
+        return version
+    return "both" if ("decomp_library" in value or "decomp_error" in value) else "recomp"
+
+
 class Adapter:
     def __init__(self, package, storage, port_revision, emit=lambda event: None,
                  pause_requested=lambda: False):
@@ -556,14 +565,23 @@ class Adapter:
     def cleanup_stages(self, keep, records_root=None, log=None):
         """Removes this adapter's stage folders (translation-/compile-/link-<64 hex> in its storage) except `keep`
         and the link stages the selection records name (active, previous, normal: the game, its rollback and the
-        game as it is). Only folders this adapter creates; each removal is logged. Returns the removed names."""
+        game as it is). A record of another game version than the active one (the recompiled or the decomp version,
+        after the player switched: AndroidGame drops it at that activation) keeps nothing, as the desktop removes the
+        other version's game. Only folders this adapter creates; each removal is logged. Returns the removed names."""
         keep = {Path(path).resolve() for path in keep}
         named = set()
         if records_root is not None:
+            active = None
             for record in ("active", "previous", "normal"):
                 try:
                     value = json.loads((Path(records_root) / (record + ".json")).read_text())
                 except (OSError, ValueError):
+                    continue
+                if not isinstance(value, dict):
+                    continue
+                if record == "active":
+                    active = record_version(value)
+                elif active is not None and record_version(value) != active:
                     continue
                 for key in ("library", "randomizer_files", "game", "decomp_library"):
                     if isinstance(value.get(key), str):

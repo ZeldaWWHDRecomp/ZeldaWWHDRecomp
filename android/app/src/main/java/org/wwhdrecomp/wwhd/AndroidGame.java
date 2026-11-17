@@ -23,7 +23,7 @@ public final class AndroidGame {
         public final File game;
         public final boolean codeMods;  // built with code-mod support (the setup's choice at that time)
         public final File randomizerFiles;  // a randomized game's changed files (played over the game), else null
-        public final boolean decomp;  // library is the decomp version (setup's "Start the decomp version")
+        public final boolean decomp;  // library is the decomp version (setup's choice, GameVersion)
         private Selection(File library, File game, boolean codeMods, File randomizerFiles, boolean decomp) {
             this.library = library;
             this.game = game;
@@ -33,9 +33,10 @@ public final class AndroidGame {
         }
     }
 
-    // ---- the decomp version (setup's "Also build the decomp version", docs/decomp-build.md; tools/android/
-    // decomp_android.py): a second library built next to the normal game, from the game as it is, with the same
-    // code-mod choice. "enabled": build it; "start": the game starts it instead of the normal one when it is built.
+    // ---- setup's one choice of game version (GameVersion; docs/decomp-build.md; tools/android/decomp_android.py):
+    // the recompiled version (the default) or the decomp version, only the chosen one is built and started
+    // ({"version": "recomp"|"decomp"}). A file from an earlier app version ({"enabled": true, "start"}: "Also build
+    // the decomp version") is "both": both stay built and "start" picks one, until the player chooses.
     private static AtomicFile decompChoice(Context context) {
         return new AtomicFile(new File(storage(context), "decomp-choice.json"));
     }
@@ -45,22 +46,69 @@ public final class AndroidGame {
         catch (Exception missing) { return new JSONObject(); }
     }
 
-    public static synchronized boolean decompChosen(Context context) {
-        return decompChoiceValue(context).optBoolean("enabled", false);
-    }
-
-    public static synchronized boolean startDecompChosen(Context context) {
+    /** "recomp", "decomp" or (an install from before the choice) "both". */
+    public static synchronized String chosenVersion(Context context) {
         JSONObject value = decompChoiceValue(context);
-        return value.optBoolean("enabled", false) && value.optBoolean("start", false);
+        return GameVersion.chosen(value.has("version") ? value.optString("version") : null,
+                                  value.optBoolean("enabled", false));
     }
 
-    public static synchronized void chooseDecomp(Context context, boolean enabled, boolean start) throws Exception {
+    /** The decomp version is the chosen one. */
+    public static synchronized boolean decompChosen(Context context) {
+        return GameVersion.DECOMP.equals(chosenVersion(context));
+    }
+
+    /** The game starts the decomp version: the decomp choice, or for "both" its earlier "start" choice. */
+    public static synchronized boolean startDecompChosen(Context context) {
+        return GameVersion.startsDecomp(chosenVersion(context), decompChoiceValue(context).optBoolean("start", false));
+    }
+
+    /** The player's choice of version ("recomp" or "decomp"); it replaces an earlier "both". */
+    public static synchronized void chooseVersion(Context context, String version) throws Exception {
+        if (!GameVersion.RECOMP.equals(version) && !GameVersion.DECOMP.equals(version))
+            throw new IllegalArgumentException("The game version must be recomp or decomp");
         try (SelectionLock ignored = new SelectionLock(context)) {
-            write(decompChoice(context), new JSONObject().put("schema", 1).put("enabled", enabled).put("start", enabled && start));
+            write(decompChoice(context), new JSONObject().put("schema", 2).put("version", version));
         }
     }
 
-    /** The built decomp version's state for setup's screen: "built", an error message, or null (not built). */
+    /** An install with both versions (from before the choice): which one starts, until the player chooses. */
+    public static synchronized void chooseStartDecomp(Context context, boolean start) throws Exception {
+        try (SelectionLock ignored = new SelectionLock(context)) {
+            if (!GameVersion.BOTH.equals(chosenVersion(context))) throw new IOException("Only an install with both versions");
+            write(decompChoice(context), new JSONObject().put("schema", 1).put("enabled", true).put("start", start));
+        }
+    }
+
+    /** The randomizer's refusal under the decomp choice (thrown as IOException with the player's message). */
+    public static void checkRandomizerVersion(Context context) throws IOException {
+        String refusal = GameVersion.randomizerRefusal(chosenVersion(context));
+        if (refusal != null) throw new IOException(refusal);
+    }
+
+    /** The setup job the game as it is was built in (normal.json's library, jobs/<id>/...), or null. */
+    public static synchronized String normalJob(Context context) {
+        try (SelectionLock ignored = new SelectionLock(context)) {
+            java.util.regex.Matcher id = java.util.regex.Pattern.compile("^jobs/([0-9a-f]{32})/")
+                .matcher(read(record(context, "normal")).getString("library"));
+            return id.find() ? id.group(1) : null;
+        } catch (Exception none) { return null; }
+    }
+
+    private static String builtVersion(JSONObject record) {
+        return GameVersion.built(record.has("game_version") ? record.optString("game_version") : null,
+                                 record.has("decomp_library"), record.has("decomp_error"));
+    }
+
+    /** The active build's version ("recomp", "decomp", "both"), or null when there is none. */
+    public static synchronized String activeVersion(Context context) {
+        try (SelectionLock ignored = new SelectionLock(context)) {
+            return builtVersion(read(record(context, "active")));
+        } catch (Exception missing) { return null; }
+    }
+
+    /** The built decomp version's state for setup's screen (an install with both versions): "built", an error
+     *  message, or null (not built). */
     public static synchronized String decompState(Context context) {
         try (SelectionLock ignored = new SelectionLock(context)) {
             JSONObject active = read(record(context, "active"));
@@ -255,7 +303,9 @@ public final class AndroidGame {
             File library = library(context, value, false);
             File game = value.has("game") ? new File(storage(context), value.getString("game")).getCanonicalFile() : null;
             File files = value.has("randomizer_files") ? randomizerFiles(context, value) : null;
-            if (files == null && value.has("decomp_library") && startDecompChosen(context)) {
+            if (GameVersion.DECOMP.equals(builtVersion(value)))  // only the decomp version: its library is the game
+                return new Selection(library, game, value.optBoolean("code_mods", false), null, true);
+            if (files == null && value.has("decomp_library") && startDecompChosen(context)) {  // both versions
                 try {
                     return new Selection(decompLibrary(context, value), game, value.optBoolean("code_mods", false), null, true);
                 } catch (Exception failure) {
@@ -274,13 +324,14 @@ public final class AndroidGame {
     /** A compatible previous runtime can still launch while its replacement builds. */
     public static synchronized boolean needsRebuild(Context context) {
         boolean chosen = codeModsChosen(context);
+        String version = chosenVersion(context);
         try (SelectionLock ignored = new SelectionLock(context)) {
             JSONObject active = read(record(context, "active"));
             library(context, active, true);
-            // the decomp version follows the setup's option (a failed build counts as built: setup says why)
-            boolean decompThere = active.has("decomp_library") || active.has("decomp_error");
-            boolean decompWanted = decompChosen(context) && !active.has("randomizer_files");
-            return active.optBoolean("code_mods", false) != chosen || decompWanted != decompThere;
+            // the chosen version against the built one (GameVersion: a failed decomp build is not built)
+            return active.optBoolean("code_mods", false) != chosen ||
+                GameVersion.needsRebuild(version, builtVersion(active), active.has("decomp_library"),
+                                         active.has("randomizer_files"));
         } catch (Exception failure) { return true; }
     }
 
@@ -305,17 +356,30 @@ public final class AndroidGame {
         activate(context, candidate, game, codeMods, randomizerFiles, null);
     }
 
-    /** decomp: setup's decomp result (ready.json "decomp": {library, mode, ...} or {error}), null when not asked for. */
+    /** decomp: setup's decomp result (ready.json "decomp": {library, mode, ...} or {error}), null when not asked for:
+     *  the recompiled version, or (an install with both) both versions. */
     public static synchronized void activate(Context context, File candidate, File game, boolean codeMods,
                                              File randomizerFiles, JSONObject decomp) throws Exception {
+        activate(context, candidate, game, codeMods, randomizerFiles, decomp,
+                 decomp == null ? GameVersion.RECOMP : GameVersion.BOTH);
+    }
+
+    /** version: what setup built (GameVersion). "decomp": candidate is the decomp library (decomp has its library,
+     *  the same file); "both": decomp is the second library's result; "recomp": decomp is null. */
+    public static synchronized void activate(Context context, File candidate, File game, boolean codeMods,
+                                             File randomizerFiles, JSONObject decomp, String version) throws Exception {
         try (SelectionLock ignored = new SelectionLock(context)) {
-            activateLocked(context, candidate, game, codeMods, randomizerFiles, decomp);
+            activateLocked(context, candidate, game, codeMods, randomizerFiles, decomp, version);
         }
     }
 
     private static void activateLocked(Context context, File candidate, File game, boolean codeMods,
-                                       File randomizerFiles, JSONObject decomp) throws Exception {
+                                       File randomizerFiles, JSONObject decomp, String version) throws Exception {
+        if (!GameVersion.known(version)) throw new IOException("Unknown game version");
+        if (GameVersion.DECOMP.equals(version) && (randomizerFiles != null || decomp == null || !decomp.has("library")))
+            throw new IOException("The decomp version's build is incomplete");
         JSONObject value = expected(context);
+        value.put("game_version", version);
         if (codeMods) value.put("code_mods", true);
         if (randomizerFiles != null) {
             File root = storage(context).getCanonicalFile();
@@ -337,7 +401,12 @@ public final class AndroidGame {
         }
         System.loadLibrary("wwhdpython");
         validate(candidate.getAbsolutePath()); // RTLD_NOW: dependencies and SDL_main must resolve.
-        if (decomp != null && decomp.has("library")) {
+        if (GameVersion.DECOMP.equals(version)) {  // only the decomp version: the candidate (validated above) is it
+            if (!new File(decomp.getString("library")).getCanonicalFile().equals(candidate))
+                throw new IOException("The decomp version's library is not the candidate");
+            value.put("decomp_library", value.getString("library")).put("decomp_sha256", value.getString("sha256"))
+                .put("decomp_mode", decomp.optString("mode", "fast"));
+        } else if (decomp != null && decomp.has("library")) {
             File library = new File(decomp.getString("library")).getCanonicalFile();
             if (!library.getPath().startsWith(root.getPath() + File.separator) || !library.isFile() || library.canWrite())
                 throw new IOException("Decomp library is outside completed setup storage");
@@ -362,7 +431,13 @@ public final class AndroidGame {
         }
         catch (java.io.FileNotFoundException missing) { /* first build */ }
         catch (Exception corrupt) { Log.w("wwhd-game", "Replacing unreadable active build metadata"); }
-        if (previous != null && !previous.toString().equals(value.toString())) write(record(context, "previous"), previous);
+        // a switch to the other version (GameVersion.switched): the one before is no rollback (the desktop removes the
+        // other version's game, its bin.previous copy too); its stage goes after this activation
+        boolean switched = previous != null && GameVersion.switched(builtVersion(previous), version);
+        if (switched) {
+            File old = record(context, "previous").getBaseFile();
+            if (old.exists() && !old.delete()) throw new IOException("Cannot remove the other version's rollback record");
+        } else if (previous != null && !previous.toString().equals(value.toString())) write(record(context, "previous"), previous);
         write(record(context, "active"), value);
         // the game as it is stays one choice away from any randomized game: its newest build is kept as "normal"
         // (SetupJobCleanup keeps every job a record in setup storage names)
@@ -371,6 +446,42 @@ public final class AndroidGame {
             JSONObject normal = null;
             try { normal = read(record(context, "normal")); } catch (java.io.FileNotFoundException none) { /* none yet */ }
             if (normal == null) write(record(context, "normal"), previous);  // (builds made before this record existed)
+        }
+        if (switched) {
+            // (a randomized build right after a switch: "the game as it is" of the other version goes too)
+            try {
+                if (!builtVersion(read(record(context, "normal"))).equals(version)) {
+                    File normal = record(context, "normal").getBaseFile();
+                    if (normal.exists() && !normal.delete()) throw new IOException("Cannot remove the other version's record");
+                }
+            } catch (java.io.FileNotFoundException none) { /* none */ }
+            removeStages(context, previous, value);
+        }
+    }
+
+    /** After a switch: the other version's library stages (checkpoints/link-<hex>, decomp-<hex>) that the new active
+     *  record does not use (setup_adapter.cleanup_stages removes the rest of the job's old stages on its next run). */
+    private static void removeStages(Context context, JSONObject previous, JSONObject active) {
+        java.util.HashSet<File> used = new java.util.HashSet<>();
+        for (String key : new String[] {"library", "decomp_library"})
+            if (active.has(key)) {
+                try { used.add(new File(storage(context), active.optString(key)).getCanonicalFile().getParentFile()); }
+                catch (IOException unreadable) { return; }
+            }
+        for (String key : new String[] {"library", "decomp_library"}) {
+            if (!previous.has(key)) continue;
+            try {
+                File stage = new File(storage(context), previous.getString(key)).getCanonicalFile().getParentFile();
+                if (used.contains(stage) ||
+                        !stage.getPath().startsWith(storage(context).getCanonicalPath() + File.separator) ||
+                        !stage.getName().matches("(link|decomp)-[0-9a-f]{64}") ||
+                        !stage.getParentFile().getName().equals("checkpoints"))
+                    continue;
+                SetupJobCleanup.remove(stage.toPath());
+                Log.i("wwhd-game", "removed the other version's stage " + stage.getName());
+            } catch (Exception failure) {
+                Log.w("wwhd-game", "the other version's stage kept: " + failure.getMessage());
+            }
         }
     }
 

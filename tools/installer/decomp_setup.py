@@ -60,6 +60,15 @@ ARCHIVE_URL = "https://github.com/ZeldaWWHDDecomp/wwhd/archive/%s.tar.gz"  # % t
 # (all of tools/verify: fast mode's declaration table runs its decl_lint.py with the modules it uses)
 SOURCE_PATHS = ["wwhd_src", "tools/verify", "LICENSE", "README.md"]
 FETCH_FAILED = "Couldn't download the decomp source \u2014 check your internet connection and try again"
+# (a certificate failure is no connection problem: Android's store unreadable, a proxy's own certificate, a wrong clock)
+FETCH_CERTIFICATE = ("Couldn't download the decomp source \u2014 the secure connection to GitHub could not be verified "
+                     "(certificate check failed; is the date and time on this device right?)")
+
+
+def fetch_failed(detail):
+    """setup's message for a failed download of the decomp source (or capstone): FETCH_FAILED, or FETCH_CERTIFICATE
+    for a certificate failure; with the first line of the cause"""
+    return "%s (%s)" % (FETCH_CERTIFICATE if "certificate" in detail.lower() else FETCH_FAILED, detail)
 DEV_VERSION = re.compile(r"-devel\.[0-9a-f]+$|^development build$")
 
 
@@ -161,7 +170,7 @@ def fetch_source(s, data_dir, d):
         s.LOG.write("decomp source: %s" % e)
         shutil.rmtree(lp(cache), ignore_errors=True)
         detail = getattr(s, "plain_text", str)(str(e)).splitlines()[0][:200]
-        raise s.SetupError("%s (%s)" % (FETCH_FAILED, detail))
+        raise s.SetupError(fetch_failed(detail))
     finally:
         if os.path.exists(archive):
             os.remove(archive)
@@ -242,7 +251,7 @@ def fetch_capstone(s, data_dir):
         os.replace(tmp, root)
     except (s.SetupError, OSError, ValueError, zipfile.BadZipFile) as e:
         shutil.rmtree(tmp, ignore_errors=True)
-        raise s.SetupError("%s (the disassembler: %s)" % (FETCH_FAILED, str(e).splitlines()[0][:200]))
+        raise s.SetupError(fetch_failed("the disassembler: %s" % str(e).splitlines()[0][:200]))
     finally:
         if os.path.exists(whl):
             os.remove(whl)

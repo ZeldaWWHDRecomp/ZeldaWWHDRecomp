@@ -473,6 +473,33 @@ class CompileTests(unittest.TestCase):
         self.assertTrue(all(s.is_dir() for s in stages[:4]) and other.is_dir())
         self.assertEqual(len(logged), 2)
 
+    def test_cleanup_drops_the_other_versions_records_after_a_switch(self):
+        """setup's choice of game version: once the decomp version is active, a previous/normal record of the
+        recompiled version (or of both, from before the choice) keeps nothing; one of the same version does"""
+        adapter = self.adapter()
+        storage = self.root / "jobs"
+        names = {"recomp": "link-" + "1" * 64, "decomp": "decomp-" + "2" * 64, "both": "decomp-" + "3" * 64,
+                 "same": "decomp-" + "4" * 64}
+        for name in names.values():
+            (storage / name).mkdir(parents=True)
+        records = self.root / "records"
+        records.mkdir()
+        lib = lambda key: "../jobs/%s/libgame.so" % names[key]
+        (records / "active.json").write_text(json.dumps({"library": lib("decomp"), "decomp_library": lib("decomp"),
+                                                         "game_version": "decomp"}))
+        (records / "previous.json").write_text(json.dumps({"library": lib("recomp")}))  # (before the choice: recomp)
+        (records / "normal.json").write_text(json.dumps({"library": lib("recomp"), "decomp_library": lib("both")}))
+        self.assertEqual(sorted(adapter.cleanup_stages([], records)), sorted([names["recomp"], names["both"],
+                                                                                names["same"]]))
+        self.assertTrue((storage / names["decomp"]).is_dir())
+        (storage / names["same"]).mkdir()
+        (records / "previous.json").write_text(json.dumps({"library": lib("same"), "game_version": "decomp"}))
+        self.assertEqual(adapter.cleanup_stages([], records), [])
+        from setup_adapter import record_version
+        self.assertEqual([record_version(v) for v in ({"game_version": "decomp"}, {}, {"decomp_error": "x"},
+                                                      {"decomp_library": "y"}, {"game_version": "x"})],
+                         ["decomp", "recomp", "both", "both", "recomp"])
+
 
 class LinkTests(unittest.TestCase):
     setUp = TranslationTests.setUp

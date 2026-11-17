@@ -247,11 +247,17 @@ On Linux and Windows setup uses the compiler it already downloads for the normal
 
 ## In setup (Android)
 
-The Android app's setup offers the same option: tick **Also build the decomp version (experimental)** on the setup
-screen (next to **Code mods**). After the normal game is built and ready, setup builds the decomp version on the phone,
-in fast mode, with the Code mods choice; switching either option rebuilds. Tick **Start the decomp version** (shown once
-it is built) to play it from the next start; the normal game stays one tick away. A randomized game is played by the
-normal game only. If the build fails, the normal game is ready and the setup screen says why.
+The Android app's setup offers the same choice: under **Which version of the game to build** on the setup screen (next
+to **Code mods**), **Recompiled version (default)** or **Decomp version (experimental)**. Only the chosen version is
+built on the phone and started; the decomp version in fast mode, with the Code mods choice (switching Code mods, on the
+setup screen or in Settings > Mods, rebuilds only it). Choosing the other version on a finished setup builds it now; the
+game built before stays playable meanwhile and, if the build fails, stays the one that starts (the setup screen says why;
+Continue tries again). Once the new version is active, the other one's library goes; the decomp source, the
+declaration table and the compiled objects stay for a later switch back. Randomized games play in the recompiled version
+only: with the decomp version chosen, the randomizer says to choose the recompiled version first.
+
+An app that built both versions before this choice ("Also build the decomp version") keeps both and starts the one it
+started (**Start the decomp version instead**, shown only then), until a version is chosen.
 
 How it differs from the Mac (tools/android/decomp_android.py):
 
