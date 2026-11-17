@@ -44,12 +44,18 @@ class FakeGame:
         skip = set((state / 'skip.txt').read_text().splitlines()) if (state / 'skip.txt').exists() else set()
         with progress.open('a') as out:
             out.write('start\n')
+            if action == 'restart':  # an orderly restart before anything is done
+                out.write('restart\n')
+                return Proc(0)
             for name in archives:
                 if name in done or name in skip:
                     continue
                 out.write('load %s\nmodel %s:a.bdl\n' % (name, name))
                 if action == ('crash', name):
                     return Proc(139)
+                if action == ('title', name):  # (the title's scene restarted while this was shown)
+                    out.write('title-restarted\n')
+                    return Proc(0)
                 if action == 'cancel' and len(done) == 1:
                     self.test.cancelled = True
                     return Proc(None)
@@ -169,11 +175,41 @@ class ModelSweepTests(unittest.TestCase):
                 (Path(cwd) / 'captures').mkdir()
                 (Path(cwd) / 'captures' / 'crash-20261114-101500.log').write_text('CRASH: signal 6\n')
                 return super().__call__(command, env, stdout, stderr, cwd)
-        self.assertEqual(self.run_sweep(CrashingGame(self, [('crash', 'Kn'), 'ok'])), 'done')
-        kept = list((model_sweep.state_dir(self.cache, 'vulkan') / 'failures').iterdir())
-        self.assertEqual(len(kept), 1)  # the stopped attempt's (not the one that finished)
+        self.assertEqual(self.run_sweep(CrashingGame(self, [('crash', 'Kn')] * 2), attempts=1), 'failed')
+        kept = sorted((model_sweep.state_dir(self.cache, 'vulkan') / 'failures').iterdir())
+        self.assertEqual(len(kept), 2)
         self.assertTrue((kept[0] / 'output.log').read_bytes().startswith(b'[gfx] last words'))
         self.assertEqual((kept[0] / 'crash-20261114-101500.log').read_text(), 'CRASH: signal 6\n')
+        # once the step finishes, the evidence goes
+        self.assertEqual(self.run_sweep(CrashingGame(self, ['ok'])), 'done')
+        self.assertFalse((model_sweep.state_dir(self.cache, 'vulkan') / 'failures').exists())
+
+    def test_restarts_without_progress_end_the_step(self):
+        game = FakeGame(self, ['restart'] * 5)
+        self.assertEqual(self.run_sweep(game, attempts=3), 'failed')
+        self.assertEqual(len(game.calls), 3)
+
+    def test_retries_are_limited(self):
+        names = ['A%d' % i for i in range(model_sweep.MAX_RETRIES + 1)]
+        for name in names:
+            (self.game / 'content' / 'Common' / 'Object' / (name + '.szs')).write_bytes(b'Yaz0')
+        script = [('crash', n) for n in names[:-1] for _ in (0, 1)][::2] + [('crash', names[-1]), 'ok']
+        game = FakeGame(self, script)
+        self.assertEqual(self.run_sweep(game), 'done')
+        skipped = (model_sweep.state_dir(self.cache, 'vulkan') / 'skip.txt').read_text().splitlines()
+        self.assertEqual(skipped, [names[-1] + ':a.bdl'])  # the retries ran out: skipped at its first stop
+
+    def test_a_title_restart_shows_the_actor_again_then_skips_it(self):
+        game = FakeGame(self, [('title', 'Kn'), 'ok'])
+        self.assertEqual(self.run_sweep(game), 'done')
+        state = model_sweep.state_dir(self.cache, 'vulkan')
+        self.assertFalse((state / 'skip.txt').exists())
+        self.assertFalse((state / 'failures').exists())
+        self.cache = self.root / 'cache2'
+        game = FakeGame(self, [('title', 'Kn'), ('title', 'Kn'), 'ok'])
+        self.assertEqual(self.run_sweep(game), 'done')
+        self.assertEqual((model_sweep.state_dir(self.cache, 'vulkan') / 'skip.txt').read_text(), 'Kn:a.bdl\n')
+        self.assertEqual(len(game.calls), 3)
 
     def test_the_culprit_is_the_last_model_archive_or_actor_started(self):
         lines = ['start', 'load Bk', 'model Bk:a.bdl', 'archive-done Bk', 'actors', 'actor Tbox:0:0:0',

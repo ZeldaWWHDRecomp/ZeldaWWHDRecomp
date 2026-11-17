@@ -5,8 +5,9 @@ this computer; in play they are compiled when their archive loads instead of whe
 Nothing is shipped: the archive list is made of names from the player's own game files, and the results are the
 player's normal shader caches (the live folder of the shader preparation). The sweep keeps its progress (names
 only) next to those caches, so a cancelled or crashed sweep resumes where it stopped; a model that crashes the
-game is tried once more in a fresh game, then skipped (skip.txt, names only). A stopped attempt's output and crash
-reports (and a stalled one's sample) are kept in failures/ for a bug report.
+game is tried once more in a fresh game (the first few such models), then skipped (skip.txt, names only). A stopped
+attempt's output and crash reports (and a stalled one's sample) are kept in failures/ for a bug report until the
+models step finishes.
 """
 from contextlib import ExitStack
 import hashlib
@@ -25,7 +26,10 @@ SCHEMA = 1
 # Rooms, stages and the sea's island LODs are stage resources (<stage>_<archive>.szs), loaded by the stage loader.
 NOT_OBJECTS = re.compile(r'(_Stage|_Room\d+|_LOD\d+|_LODALL)$')
 STAGE_ARCHIVE = re.compile(r'^(.+)_(Stage|Room\d+|LOD\d+|LODALL)$')
-MAX_ATTEMPTS = 40          # attempts in a row that finish no archive or actor (each skips what it stopped at)
+MAX_ATTEMPTS = 40          # attempts in a row that finish no archive or actor (a stop skips what it stopped at; an
+                           # orderly restart counts too, so one that repeats without progress ends the step)
+MAX_RETRIES = 3            # culprits tried once more in a fresh game before they are skipped, per game process (each
+                           # retry repeats the stop: a crash, or a stall's STALL_SECONDS)
 MAX_ATTEMPTS_TOTAL = 1000  # attempts in all (actors that stop the game: a few seconds each)
 DEFAULT_SKIP = Path(__file__).with_name('model_sweep_skip.txt')
 # models drawn per batch (two frames each); WWHD_SETUP_MODEL_SWEEP_BATCH=n for measurements only
@@ -260,15 +264,25 @@ def _attempts(executable, game, state, renderer, cache_env, archives, stages, vi
     evidence goes to failures (state/failures)."""
     progress_file = state / 'progress.txt'
     failures = Path(failures) if failures else state / 'failures'
-    retried = set()
+    retried, title_restarts = set(), set()
     def finished():
         return sum(1 for l in _lines(progress_file) if l.startswith(('archive-done ', 'actor-done ')))
     without_progress, before = 0, finished()
+
+    def progressed():  # counts the attempts in a row that finished no archive or actor
+        nonlocal without_progress, before
+        now = finished()
+        without_progress = 0 if now > before else without_progress + 1
+        before = now
+
+    def done():
+        shutil.rmtree(failures, ignore_errors=True)  # (the evidence is for a step that doesn't finish)
+        return 'done'
     for attempt in range(1, MAX_ATTEMPTS_TOTAL + 1):
         if without_progress >= attempts:
             break
         if 'sweep-done' in _lines(progress_file):
-            return 'done'
+            return done()
         if cancel():
             raise InterruptedError('Model preparation paused')
         with ExitStack() as stack:
@@ -338,9 +352,19 @@ def _attempts(executable, game, state, renderer, cache_env, archives, stages, vi
                         child.wait()
         done_lines = _lines(progress_file)
         if 'sweep-done' in done_lines:
-            return 'done'
+            return done()
         if done_lines and done_lines[-1] == 'restart':  # an orderly restart the sweep asked for (not a stop)
+            progressed()
             continue
+        if done_lines and done_lines[-1] == 'title-restarted':
+            # the title restarted its scene while an actor was shown: its idle story intro, or the actor asked for a
+            # stage change. The actor is shown again; a second time it is skipped as one that stops the game.
+            name = culprit(done_lines, set(_lines(state / 'skip.txt')))
+            if name and name not in title_restarts:
+                title_restarts.add(name)
+                log('Model preparation attempt %d: the title restarted during %s; showing it again' % (attempt, name))
+                progressed()
+                continue
         group = stopped_group(done_lines)
         if group:
             # a group of actors stopped the game: its actors go again in groups half as large, down to single actors
@@ -349,14 +373,12 @@ def _attempts(executable, game, state, renderer, cache_env, archives, stages, vi
                 attempt, 'stalled' if stalled else 'exit %s' % child.returncode, len(group)))
             with (state / 'actor-groups.txt').open('a', encoding='utf-8') as stream:
                 stream.write(''.join('%d %s\n' % (len(group) // 2, name) for name in group))
-            now = finished()
-            without_progress = 0 if now > before else without_progress + 1
-            before = now
+            progressed()
             continue
         skip = set(_lines(state / 'skip.txt'))
         name = culprit(done_lines, skip)
         # a stop can be the game's and not the model's: the model is tried again in a fresh game before it is skipped
-        retry = bool(name) and name not in retried
+        retry = bool(name) and name not in retried and name not in title_restarts and len(retried) < MAX_RETRIES
         log('Model preparation attempt %d stopped (%s); %s' % (
             attempt, 'stalled' if stalled else 'exit %s' % child.returncode,
             ('trying %s again' if retry else 'skipping %s') % name if name else 'nothing new to skip'))
@@ -375,9 +397,7 @@ def _attempts(executable, game, state, renderer, cache_env, archives, stages, vi
                 name = base
         with (state / 'skip.txt').open('a', encoding='utf-8') as stream:
             stream.write(name + '\n')
-        now = finished()
-        without_progress = 0 if now > before else without_progress + 1
-        before = now
+        progressed()
     return 'failed'
 
 

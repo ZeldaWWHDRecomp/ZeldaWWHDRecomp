@@ -1238,8 +1238,9 @@ void begin_actors(Cpu* c) {
 // The title restarts its scene from time to time (after its idle story intro, or when an actor asked for a stage
 // change): its actors are made again, and the sweep took the new ones, drawn after it began, for what its actor had
 // made and deleted them (the camera then followed the new player into one of them: abort in dCamera_c::bumpCheck). A
-// new player says it happened; the attempt ends there, the actor being shown (if any) counting as the one that stopped
-// it.
+// new player says it happened; the attempt ends there. Between actors that is an orderly restart; during one,
+// "title-restarted" tells the supervisor (model_sweep.py), which shows that actor again once before it skips it (the
+// actor may have asked for the stage change, or the title's idle intro came at that moment).
 bool title_restarted() {
     if (!config().title || !g.title_player || ld32(GD(0x1046F0B0) + GI(0x5B34)) == g.title_player) return false;
     if (g.actor_id == 0xFFFFFFFF && g_group.empty()) {
@@ -1247,6 +1248,8 @@ bool title_restarted() {
         return true;
     }
     LOG("[dsweep] the title restarted its scene during actor %s: ending this attempt", g.spawn.id().c_str());
+    flush_done(true);
+    progress("title-restarted");
     g_abort = true;
     g.phase = Phase::Done;
     return true;
