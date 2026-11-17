@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: less render-thread work for model and effect draws** (#603). Each described model draw and
+  native effect draw is now handed to the Vulkan recording thread as one compact command, and model draw data is
+  built straight into its upload buffer. On a Xiaomi 14 at the Dragon Roost cliff this saves about 0.2 ms on the
+  render thread and 0.45 ms on the recording thread per frame; the picture is unchanged.
+  `WWHD_NATIVE_PAR_DECIDE=0` / `WWHD_NATIVE_J3D_DESC_SUPPORT2=0` turn the two parts off.
 - **Decomp version on Linux, Steam Deck and Windows** (#602). Setup's "Also build the decomp version
   (experimental)" is now offered on Linux (x86_64 and ARM64, including Steam Deck) and Windows, not only macOS. It
   uses the compiler setup already downloads for the game, so nothing else needs installing. Linux and Windows x86_64
