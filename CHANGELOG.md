@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Mac (Metal): the soft shading around characters and edges no longer goes missing** (#610). In some sessions a
+  depth-writing shader failed to build at startup, which skipped about 3,200 draws per session and removed the darkening
+  around Link and along edges until the game was restarted. It now builds reliably every time.
 - **Groundwork for multithreaded draw recording** (#608). The Vulkan renderer's per-draw state and shared caches are
   ready to be used from more than one thread. No thread is started yet and nothing changes for players; the
   multithreaded recording itself follows. Multithreaded draw recording and draw batching from VR-WakerHD, thanks
