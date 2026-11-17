@@ -265,6 +265,8 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
         check()
         progress('Getting the compiler')
         tc = setup.get_toolchain(ctx.manifest['toolchain'], ctx.data_dir, setup.UI(False))
+        if decomp_only(setup, data):
+            return rebuild_decomp_only(setup, ctx, tc, hooks, progress, status_file, started)
         version = setup.run_logged(tc.cc + ['--version'], env=tc.env, what='checking the compiler')
         key = fingerprint(setup.PKG, ctx.manifest, ctx.game_dir, [tc.cc, version], hooks)
         cache = data / 'code-builds' / cache_name(key)
@@ -345,6 +347,32 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
         lock.close()
 
 
+def decomp_only(setup, data):
+    """the install has only the decomp version (setup's choice, install.json game_version "decomp")"""
+    try:
+        return hasattr(setup, 'installed_version') and setup.installed_version(setup.read_state(str(data))) == 'decomp'
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def rebuild_decomp_only(setup, ctx, tc, hooks, progress, status_file, started):
+    """An install with only the decomp version: a code-mod switch rebuilds that game alone (no recompiled variant is
+    built). Its failure is the rebuild's failure (SetupError: the game built before stays as it is). The result has
+    "decomp": "ready" (the decomp version's Settings > Mods restart reads it); code-mods-active.json gets the choice."""
+    outcome = rebuild_decomp(setup, ctx, tc, hooks, progress)
+    if 'decomp_error' in outcome:
+        raise setup.SetupError('The decomp version could not be rebuilt: %s' % outcome['decomp_error'])
+    state = setup.read_state(str(ctx.data_dir))
+    result = {'state': 'ready', 'hooks': bool(hooks), 'exe': state.get('exe', ''), 'cached': False,
+              'seconds': round(time.monotonic() - started, 2), 'game_version': 'decomp'}
+    result.update(outcome)
+    if status_file:
+        atomic_json(status_file, result)
+    atomic_json(Path(ctx.data_dir) / 'code-mods-active.json',
+                {'state': 'ready', 'hooks': bool(hooks), 'game_version': 'decomp'})
+    return result
+
+
 def rebuild_decomp(setup, ctx, tc, hooks, progress):
     """A code-mod switch rebuilds the install's decomp version too (decomp_setup.build with the new choice), after the
     normal game's variant. Returns what the result JSON gets: {"decomp": "ready"} or {"decomp_error": "<one line>"}
@@ -359,6 +387,10 @@ def rebuild_decomp(setup, ctx, tc, hooks, progress):
     try:
         exe, rev, _, info = decomp_setup.build(setup, ctx, tc, ctx.args.jobs or setup.default_jobs(),
                                                mode=state.get('decomp_mode') or 'plain', code_mods=bool(hooks))
+        if hasattr(setup, 'installed_version') and setup.installed_version(state) == 'decomp':
+            # only the decomp version: it is the install's game ("exe"; in the app on a Mac, made again here)
+            exe = setup.place_decomp_game(ctx, state, exe)
+            state['exe'] = exe
         state.update(decomp_exe=exe, decomp_revision=rev, decomp_code_mods=info['code_mods'])
         for k in ('decomp_error', 'decomp_stale'):
             state.pop(k, None)

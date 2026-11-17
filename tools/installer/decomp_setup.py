@@ -1,8 +1,8 @@
-"""Setup's optional decomp version (docs/decomp-build.md, "In setup"): a second game binary built on the
-player's machine with the decompiled game functions of the public decompilation (ZeldaWWHDDecomp/wwhd)
-as compiled source, next to the normal game. Experimental and opt-in: offered on every OS whose release brings its
-parts (macOS, Linux, Windows; decomp_platform.py has what differs per OS), off by default; the normal game is always
-built first and stays playable when this fails.
+"""Setup's decomp version (docs/decomp-build.md, "In setup"): the game binary built on the player's machine with the
+decompiled game functions of the public decompilation (ZeldaWWHDDecomp/wwhd) as compiled source. Experimental: setup's
+one choice is the recompiled version (the default) or this one, and only the chosen one is built (setup.py
+GAME_VERSIONS; an install an earlier setup built both for keeps both until setup runs with a choice). Offered on every
+OS whose release brings its parts (macOS, Linux, Windows; decomp_platform.py has what differs per OS).
 
 What the release brings (tools/release/package.py --decomp-build), described in sdk/manifest.json
 "decomp":
@@ -44,12 +44,15 @@ if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import decomp_platform  # noqa: E402
 
+# setup's one choice (setup.py GAME_VERSIONS): the two versions, one line each, then what the decomp version costs
+RECOMP_TEXT = ("The original game code from your copy, translated and compiled for this computer: the recommended way "
+               "to play, and the fastest setup.")
 DECOMP_TEXT = (
-    "Builds a second version of the game in which the game functions of the public decompilation "
-    "(ZeldaWWHDDecomp/wwhd) run as compiled source instead of translated code, in its fast mode (it starts with "
-    "Vulkan). Experimental; the normal version stays the default and is built first. Adds about an hour to setup "
-    "(measured on a busy Mac; less on a quiet one), needs about 4 GB free while it builds and about 800 MB afterwards, uses up "
-    "to about 4.5 GB of memory, and downloads the decompilation's source (about 17 MB) from GitHub.")
+    "Rebuilt from the public decompilation's source (ZeldaWWHDDecomp/wwhd): the decompiled game functions run as "
+    "compiled source instead of translated code, in its fast mode (it starts with Vulkan). Experimental. Setup takes "
+    "about an hour longer (measured on a busy Mac; less on a quiet one), needs about 4 GB free while it builds and "
+    "about 800 MB afterwards, uses up to about 4.5 GB of memory, and downloads the decompilation's source (about "
+    "17 MB) from GitHub. Randomized games play in the recompiled version only.")
 DOCS_URL = "https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/blob/devel/docs/decomp-build.md"
 ARCHIVE_URL = "https://github.com/ZeldaWWHDDecomp/wwhd/archive/%s.tar.gz"  # % the full commit
 # the parts of the decompilation the decomp version is built from (tools/release/package.py hashes the same)
@@ -344,11 +347,14 @@ def code_mods_changed(state, hooks):
     return True
 
 
-def build(s, ctx, tc, jobs, mode="fast", code_mods=False, step=None):
+def build(s, ctx, tc, jobs, mode="fast", code_mods=False, step=None, before_probe=None):
     """See build_once; with code-mod support in fast mode the built game is asked which functions the installed code
     mods hook (probe_mod_hooks): a function the build does not keep enterable is added to DATA/decomp-mod-hooks.txt and
-    the units are prepared, compiled (unchanged ones from the object cache) and linked again."""
+    the units are prepared, compiled (unchanged ones from the object cache) and linked again. before_probe(exe): called
+    with the built game first (setup with only the decomp version installs the Story Notebook with it there)."""
     exe, rev, nunits, info = build_once(s, ctx, tc, jobs, mode, code_mods, keep_work=True)
+    if before_probe:
+        before_probe(exe)
     if mode == "fast" and code_mods and gen_has_guest_hooks(s):
         path = os.path.join(ctx.data_dir, MOD_HOOKS_FILE)
         have = read_hook_list(path)
@@ -573,9 +579,12 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
     link_extra = ["-flto=thin"] if lto else []  # (no ThinLTO cache: the work folder goes after the build anyway)
     s.say("  Linking the decomp version%s..." % (" (whole-image optimisation, a few minutes)" if lto else ""))
     s.link_game(tc, manifest, objs, work, new, recipe=parts["link"], glue=hooks_objs + glue, extra=link_extra)
-    if not s.PORTABLE:
-        for rf in manifest.get("runtime_files", []):
-            shutil.copyfile(os.path.join(s.PKG, "sdk", "runtime", rf), os.path.join(os.path.dirname(exe), rf))
+    for rf in manifest.get("runtime_files", []):
+        # (portable: bin/'s, from the recompiled version; when only the decomp version is installed, its own copy)
+        dst = os.path.join(os.path.dirname(exe), rf)
+        if not s.PORTABLE or not os.path.isfile(dst):
+            shutil.copyfile(os.path.join(s.PKG, "sdk", "runtime", rf), dst)
+            shutil.copymode(os.path.join(s.PKG, "sdk", "runtime", rf), dst)
     os.replace(new, exe)
     times["link"] = time.time() - t0
     times["total"] = time.time() - t_all

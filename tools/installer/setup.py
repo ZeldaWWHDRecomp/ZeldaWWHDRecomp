@@ -2493,6 +2493,17 @@ def launch(state, data_dir, decomp=None, game_args=None):
     game_args: options for the game (None: this run's GAME_ARGS)"""
     game_args = list(GAME_ARGS if game_args is None else game_args)
     say("")
+    if installed_version(state) == "decomp":
+        # only the decomp version is installed: it is "exe" (in the app on a Mac), and it plays the game as it is
+        decomp = False
+        import randomizer_seeds
+        try:
+            playing = randomizer_seeds.load(data_dir).get("playing", "vanilla")
+        except ValueError:
+            playing = "vanilla"
+        if playing not in (None, "", "vanilla"):
+            say("The randomized game %s is selected, but randomized games play in the recompiled version: the decomp "
+                "version plays the game as it is." % playing)
     if decomp is None:
         decomp = bool(state.get("start_decomp"))
     exe = state["exe"]
@@ -2872,17 +2883,22 @@ STEP_TITLES = {
     "transfer": "Bringing over your game files, saves, settings and caches",
     "app": "Building the game",
     "shaders": "Preparing shaders",
-    "decomp": "Building the decomp version (experimental)",
+    "decomp": "Building the decomp version (experimental; the longest step)",
 }
 
 
-def plan_steps(kind, decomp=False):
+def plan_steps(kind, decomp=False, normal=True):
+    """The steps of one setup run. decomp: the decomp version is built; normal: the recompiled version is built too
+    (False: the decomp version is the install's game, game_version "decomp": no translate/compile of its own, the
+    decomp step comes before the launchers and the shaders, which use it)."""
     result = {"image": ["keys", "compiler", "extract", "translate", "compile", "app"],
             "archive": ["archive", "compiler", "extract", "translate", "compile", "app"],
             "folder": ["folder", "compiler"] + ([] if PORTABLE else ["copy"]) + ["translate", "compile", "app"],
             "installed": ["compiler", "translate", "compile", "app"],
             "update": ["compiler", "translate", "compile", "transfer", "app"],
             "gen": ["compiler", "compile", "app"]}[kind]
+    if decomp and not normal and kind != "gen":
+        return [s for s in result if s not in ("translate", "compile", "app")] + ["decomp", "app", "shaders"]
     return result + ([] if kind == "gen" else ["shaders"]) + (["decomp"] if decomp else [])
 
 
@@ -2890,13 +2906,61 @@ def decomp_offered(manifest):
     return decomp_setup.offered(manifest)
 
 
-def decomp_wanted(ctx):
-    """The decomp version (decomp_setup.py): --decomp / --no-decomp (or the setup window's choice), else
-    what the last setup did. Never where it is not offered."""
+# Which version of the game an install builds and starts (install.json "game_version"; setup's one choice, 2026-11-17):
+#   "recomp"  the recompiled version (the default): the game code translated from the player's cking.rpx
+#   "decomp"  the decomp version (decomp_setup.py) only: install.json "exe" and "decomp_exe" are both that game
+#   "both"    an install an earlier setup built both versions for ("Also build the decomp version", up to 2026-11-17;
+#             no "game_version" in its install.json): kept as it is, starting what it started before
+#             ("start_decomp"), until setup is run with a choice (the setup window always sends one, --decomp /
+#             --recomp in a terminal); then only the chosen version stays.
+GAME_VERSIONS = ("recomp", "decomp")
+
+
+def installed_version(state):
+    """"recomp", "decomp" or "both": what an install.json says was built"""
+    v = (state or {}).get("game_version")
+    if v in GAME_VERSIONS:
+        return v
+    return "both" if (state or {}).get("decomp_exe") else "recomp"
+
+
+def game_version(ctx):
+    """The version this setup run builds: --decomp / --recomp (or the setup window's choice), else what the last setup
+    did ("both" for an install that has both, see GAME_VERSIONS). Always "recomp" where the decomp version is not
+    offered."""
     if not decomp_offered(ctx.manifest):
-        return False
+        return "recomp"
     choice = getattr(ctx.args, "decomp", None)
-    return bool(install_defaults(ctx)[1].get("decomp", False) if choice is None else choice)
+    if choice is not None:
+        return "decomp" if choice else "recomp"
+    st = install_defaults(ctx)[1] or {}
+    v = st.get("game_version")
+    if v in GAME_VERSIONS:
+        return v
+    return "both" if st.get("decomp") else "recomp"
+
+
+def decomp_wanted(ctx):
+    """The decomp version is built (game_version "decomp", or "both" for an install that has both)."""
+    return game_version(ctx) in ("decomp", "both")
+
+
+def decomp_selected(ctx):
+    """What the setup window preselects: the decomp version when it is the install's game, or for an install with both
+    when it is the one that starts (start_decomp)"""
+    v = game_version(ctx)
+    return v == "decomp" or (v == "both" and bool((install_defaults(ctx)[1] or {}).get("start_decomp")))
+
+
+RANDOMIZER_NEEDS_RECOMP = ("Randomized games play in the recompiled version: run setup and choose \"Recompiled version\" "
+                           "to play one (this install has the decomp version).")
+
+
+def check_randomizer_version(state):
+    """Randomized games are built and played by the recompiled version (code_mods variants); an install with only the
+    decomp version refuses them (SetupError)."""
+    if installed_version(state) == "decomp":
+        raise SetupError(RANDOMIZER_NEEDS_RECOMP)
 
 
 def decomp_mode(ctx):
@@ -3039,17 +3103,21 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
     args.code_mods = "1" if setup_code_mods(ctx, ui) else "0"
     kind = source[0]
     want_models = kind != "gen" and model_sweep_wanted(ctx, ui)
-    want_decomp = kind != "gen" and decomp_wanted(ctx)
+    version = game_version(ctx) if kind != "gen" else "recomp"  # (GAME_VERSIONS)
     if kind in ("folder", "installed") and game_folder_title(source[1]) == RANDOMIZER_TITLE:
-        want_decomp = False
+        if version == "decomp":
+            say("  Randomized games play in the recompiled version: building that one.")
+        version = "recomp"
         problem = path_length_problem(data_dir, PKG, extra_path_chars=RANDOMIZER_PATH_EXTRA)
         if problem:
             raise SetupError(problem)
+    want_decomp = version in ("decomp", "both")
+    normal = version != "decomp"  # the recompiled version is built (False: only the decomp version)
     old_state = ctx.state()
     if update_from:
         old_state = dict(update_from["state"])
         old_state.pop("decomp_exe", None)  # (the earlier release's decomp version stays with it)
-    steps = plan_steps("update" if update_from else kind, want_decomp)
+    steps = plan_steps("update" if update_from else kind, want_decomp, normal)
     total = len(steps)
     counter = iter(range(1, total + 1))
 
@@ -3139,6 +3207,8 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
             raise SetupError(problem)
         if manifest.get("variant") == "decomp":
             raise SetupError("Randomized games require the regular port release, not the decomp runtime.")
+        if not normal:
+            raise SetupError(RANDOMIZER_NEEDS_RECOMP)
         want_decomp = False
         say("  Randomized game: compatibility check passed; building this seed's code.")
     keys = None
@@ -3148,44 +3218,51 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
     os.makedirs(work)
     if free_space(data_dir) < (2 << 30):
         raise SetupError("not enough free disk space in %s for building (2 GB needed)" % data_dir)
-    if kind == "gen":
-        gen_dir = source[1]
-    else:
-        begin("translate")
-        t0 = time.time()
-        gen_dir = os.path.join(work, "gen")
-        nfiles = recompile(ctx.game_dir, gen_dir, hooks=code_mods.hooks_option(getattr(args, "code_mods", None)),
-                           cache_root=cache_root)
-        say("  %d source files (%d s%s)" % (nfiles, time.time() - t0,
-                                           ", unchanged since the last build" if TRANSLATION_STATS.get("reused") else ""))
-
-    compiled_randomizer = translated_randomizer_identity(gen_dir)
-    if getattr(source_build, "randomizer", False) is True and not compiled_randomizer:
-        raise SetupError("The translator did not record this randomized build identity; run setup again.")
-    if compiled_randomizer:
-        problem = path_length_problem(data_dir, PKG, extra_path_chars=RANDOMIZER_PATH_EXTRA)
-        if problem:
-            raise SetupError(problem)
-    begin("compile")
     jobs = args.jobs or default_jobs()
-    t0 = time.time()
-    objs = compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs, cache_dir=cache_root)
-    say("  compiled in %d s" % (time.time() - t0))
+    if not normal:
+        # only the decomp version: it is the install's game (no recompiled version is built)
+        exe, exe_dir, info = build_decomp_only(ctx, tc, jobs, old_state, update_from, begin, ui)
+        tc = get_toolchain(manifest["toolchain"], data_dir, ui) if update_from else tc
+        gen_dir, objs, compiled_randomizer = None, None, None
+    else:
+        if kind == "gen":
+            gen_dir = source[1]
+        else:
+            begin("translate")
+            t0 = time.time()
+            gen_dir = os.path.join(work, "gen")
+            nfiles = recompile(ctx.game_dir, gen_dir, hooks=code_mods.hooks_option(getattr(args, "code_mods", None)),
+                               cache_root=cache_root)
+            say("  %d source files (%d s%s)" % (nfiles, time.time() - t0,
+                                               ", unchanged since the last build" if TRANSLATION_STATS.get("reused") else ""))
 
-    if not update_from:
-        begin("app")
-    say("  Linking...")
-    exe, exe_dir = ctx.exe, ctx.exe_dir
-    # the new game goes to bin.staging first and is checked there; the game in bin stays as it is until then
-    staging = stage_build(tc, manifest, objs, work, data_dir, kind == "gen")
-    if update_from:
-        begin("transfer")
-        transfer_earlier_release(ctx, update_from)
-        tc = get_toolchain(manifest["toolchain"], data_dir, ui)  # (now here: its paths go into guest-sdk.json)
-        game_dir = ctx.game_dir
-        begin("app")
-    publish_build(staging, exe_dir, data_dir)
-    say("  Built %s" % exe)
+        compiled_randomizer = translated_randomizer_identity(gen_dir)
+        if getattr(source_build, "randomizer", False) is True and not compiled_randomizer:
+            raise SetupError("The translator did not record this randomized build identity; run setup again.")
+        if compiled_randomizer:
+            problem = path_length_problem(data_dir, PKG, extra_path_chars=RANDOMIZER_PATH_EXTRA)
+            if problem:
+                raise SetupError(problem)
+        begin("compile")
+        jobs = args.jobs or default_jobs()
+        t0 = time.time()
+        objs = compile_gamecode(tc, manifest, gen_dir, os.path.join(work, "obj"), jobs, cache_dir=cache_root)
+        say("  compiled in %d s" % (time.time() - t0))
+
+        if not update_from:
+            begin("app")
+        say("  Linking...")
+        exe, exe_dir = ctx.exe, ctx.exe_dir
+        # the new game goes to bin.staging first and is checked there; the game in bin stays as it is until then
+        staging = stage_build(tc, manifest, objs, work, data_dir, kind == "gen")
+        if update_from:
+            begin("transfer")
+            transfer_earlier_release(ctx, update_from)
+            tc = get_toolchain(manifest["toolchain"], data_dir, ui)  # (now here: its paths go into guest-sdk.json)
+            game_dir = ctx.game_dir
+            begin("app")
+        publish_build(staging, exe_dir, data_dir)
+        say("  Built %s" % exe)
 
     state = {"version": ctx.version, "platform": manifest["platform"], "exe": exe, "data_dir": data_dir,
              "game_dir": ctx.game_dir, "portable": PORTABLE,
@@ -3202,11 +3279,7 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
         # the "what was prepared" file and the setup window reports it back in its hello message.
         state["appimage"] = os.environ["APPIMAGE"]
     if PORTABLE:
-        # the game keeps its settings, save states and caches in data/user (runtime: host::portable_user_dir)
-        with open(os.path.join(exe_dir, "portable.txt"), "w") as f:
-            f.write("Portable mode: this game keeps its settings, controls, save states and shader caches in\n"
-                    "../user (next to this folder) instead of your user folders. Delete this file to use those.\n")
-        os.makedirs(os.path.join(data_dir, "user"), exist_ok=True)
+        write_portable_marker(exe_dir, data_dir)
         if args.shortcuts and kind != "gen":
             state["shortcut"] = create_shortcut()
     elif not args.no_shortcuts and kind != "gen":
@@ -3227,15 +3300,26 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
         else:
             windows_shortcuts(data_dir, exe)
             say("  Shortcuts: Start menu and desktop (\"%s\")" % APP_NAME)
+    if not normal:
+        # the decomp version is the install's game: "exe" and "decomp_exe" are the same (in the app on a Mac)
+        state.update(game_version="decomp", decomp=True, start_decomp=True, decomp_exe=state["exe"],
+                     decomp_mode=info["mode"], decomp_revision=info["revision"], decomp_code_mods=info["code_mods"])
+        remove_recomp_game(ctx, state)
     if kind != "gen":
         if old_state.get("version") != ctx.version:  # (an update; a repair keeps this release's variants)
             clean_old_code_builds(data_dir, ctx.version)
-        try:
-            code_mods.remember_installed(sys.modules[__name__], ctx, tc, state["code_mods"], state["exe"], gen_dir, objs)
-        except (OSError, SetupError) as e:
-            LOG.write("Initial code-mod cache skipped: " + str(e))
-            # Never leave an older variant selected after a successful setup build.
-            Path(data_dir, "code-mods-active.json").unlink(missing_ok=True)
+        if normal:
+            try:
+                code_mods.remember_installed(sys.modules[__name__], ctx, tc, state["code_mods"], state["exe"], gen_dir, objs)
+            except (OSError, SetupError) as e:
+                LOG.write("Initial code-mod cache skipped: " + str(e))
+                # Never leave an older variant selected after a successful setup build.
+                Path(data_dir, "code-mods-active.json").unlink(missing_ok=True)
+        else:
+            # the decomp version is built with the code-mod choice itself (no recompiled variant to select): the choice
+            # only, which setup's next run and the decomp version read (runtime/src/mods/code_mods.cpp)
+            code_mods.atomic_json(os.path.join(data_dir, "code-mods-active.json"),
+                                  {"state": "ready", "hooks": bool(state["code_mods"]), "game_version": "decomp"})
         write_code_mods_setting(data_dir, state["code_mods"])
     if kind != "gen":
         begin("shaders")
@@ -3281,16 +3365,19 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
         state["setup_python_missing"] = python_pending  # issue #472: downloaded when a mod needs it
     else:
         state.pop("setup_python_missing", None)
-    if decomp_offered(manifest) and kind != "gen":
+    if decomp_offered(manifest) and kind != "gen" and normal:
         state["decomp"] = want_decomp  # remembered: a repair or update builds it again
+        if version == "recomp":
+            state["game_version"] = "recomp"  # ("both": none, GAME_VERSIONS)
         state["start_decomp"] = bool(old_state.get("start_decomp")) and want_decomp
         if want_decomp:
             state["decomp_mode"] = decomp_mode(ctx)  # remembered too ("plain": --decomp-plain)
     write_state(data_dir, state)  # the normal game is ready, whatever happens to the decomp version
-    # with code mods: the Story Notebook first (normal game), so the decomp build's mod-hook probe sees it
-    if kind != "gen" and state.get("code_mods") and state.get("exe"):
+    # with code mods: the Story Notebook first (normal game), so the decomp build's mod-hook probe sees it (only the
+    # decomp version: build_decomp_only installed it with that game, before its probe)
+    if kind != "gen" and state.get("code_mods") and state.get("exe") and normal:
         install_story_notebook(state, data_dir)
-    if want_decomp:
+    if want_decomp and normal:
         begin("decomp")
         try:
             # with the install's code-mod choice, as the normal game (the game reports a later switch: code_mods.cpp)
@@ -3311,12 +3398,96 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
                 os.remove(stale)
             state["start_decomp"] = False
         write_state(data_dir, state)
-    elif decomp_offered(manifest) and old_state.get("decomp_exe"):
-        # switched off: the decomp version this setup built earlier goes
+    elif decomp_offered(manifest) and old_state.get("decomp_exe") and normal:
+        # switched to the recompiled version: the decomp version this setup built earlier goes (a portable release's
+        # is in bin.previous by now, with the build before this one: it goes from there too)
         old = old_state["decomp_exe"]
-        if os.path.isfile(old) and old != state.get("exe"):
-            os.remove(old)
+        for path in (old, os.path.join(data_dir, PREVIOUS_DIR, os.path.basename(old)) if PORTABLE else None):
+            if path and os.path.isfile(path) and os.path.abspath(path) != os.path.abspath(state.get("exe", "")):
+                os.remove(path)
+                LOG.write("removed the decomp version %s (the recompiled version was chosen)" % path)
+        own = os.path.dirname(decomp_setup.exe_path(data_dir, False))  # (not portable: data/decomp/bin, its runtime files)
+        if not PORTABLE and os.path.isdir(own) and not os.path.isfile(decomp_setup.exe_path(data_dir, False)):
+            shutil.rmtree(longpath(os.path.dirname(own)), ignore_errors=True)
     return state
+
+
+def write_portable_marker(exe_dir, data_dir):
+    """A portable release's game keeps its settings, save states and caches in data/user (runtime:
+    host::portable_user_dir): bin/portable.txt"""
+    os.makedirs(exe_dir, exist_ok=True)
+    with open(os.path.join(exe_dir, "portable.txt"), "w") as f:
+        f.write("Portable mode: this game keeps its settings, controls, save states and shader caches in\n"
+                "../user (next to this folder) instead of your user folders. Delete this file to use those.\n")
+    os.makedirs(os.path.join(data_dir, "user"), exist_ok=True)
+
+
+def build_decomp_only(ctx, tc, jobs, old_state, update_from, begin, ui):
+    """install() with game_version "decomp": the decomp version (decomp_setup.build) is the install's game and the
+    recompiled version is not built. An update brings the earlier release's data over first (the decomp build works
+    in this install's data folder). With code-mod support the Story Notebook is installed with the built game before
+    its mod-hook probe. A failure stops setup (SetupError); the game installed before is then as it was.
+    Returns (the built game, its folder, info: mode, revision, code_mods)."""
+    data_dir = ctx.data_dir
+    if update_from:
+        begin("transfer")
+        transfer_earlier_release(ctx, update_from)
+        tc = get_toolchain(ctx.manifest["toolchain"], data_dir, ui)  # (now here: its paths go into guest-sdk.json)
+    begin("decomp")
+    exe = decomp_setup.exe_path(data_dir, PORTABLE)
+    if PORTABLE:  # (before the build: the Story Notebook and the mod-hook probe run the built game)
+        write_portable_marker(os.path.dirname(exe), data_dir)
+    hooks = code_mods.hooks_option(getattr(ctx.args, "code_mods", None))
+
+    def notebook(built):
+        install_story_notebook({"exe": built, "game_dir": ctx.game_dir}, data_dir)
+    mode = decomp_mode(ctx)
+    try:
+        exe, rev, nunits, info = decomp_setup.build(sys.modules[__name__], ctx, tc, jobs, mode=mode, code_mods=hooks,
+                                                    before_probe=notebook if hooks else None)
+    except SetupError as e:
+        LOG.write("decomp version failed: %s" % e)
+        before = installed_version(old_state) if not update_from and os.path.isfile(old_state.get("exe") or "") else None
+        raise SetupError("the decomp version could not be built: %s\n%s" % (e, (
+            "The game installed before is unchanged and starts as before." if before else
+            "Run setup again, or choose the recompiled version.")))
+    begin("app")
+    say("  Built %s" % exe)
+    return exe, os.path.dirname(exe), {"mode": info.get("mode", mode), "revision": rev, "code_mods": info["code_mods"]}
+
+
+def place_decomp_game(ctx, state, exe):
+    """A rebuilt decomp version (code_mods.rebuild_decomp) where the install starts it, when it is the install's only
+    game: a Mac app holds the game binary itself, so the app is made again with it. Returns where the game is now."""
+    app = state.get("app")
+    if not (IS_MAC and app and not PORTABLE):
+        return exe
+    files = ctx.manifest.get("runtime_files", [])
+    mac_app(app, exe, ctx.data_dir, ctx.version, files)
+    folder = os.path.dirname(exe)
+    os.remove(exe)
+    for rf in files:
+        if os.path.isfile(os.path.join(folder, rf)):
+            os.remove(os.path.join(folder, rf))
+    if os.path.isdir(folder) and not os.listdir(folder):
+        os.rmdir(folder)
+    return os.path.join(app, "Contents", "MacOS", "wwhd")
+
+
+def remove_recomp_game(ctx, state):
+    """game_version "decomp": the recompiled version an earlier setup built here goes (its game binary, also the one
+    kept in bin.previous; a portable release's runtime files in bin/ stay, the decomp version uses them). A Mac app now
+    holds the decomp version."""
+    keep = {os.path.abspath(state["exe"]), os.path.abspath(state.get("decomp_exe") or state["exe"])}
+    previous = os.path.join(ctx.data_dir, PREVIOUS_DIR, os.path.basename(ctx.exe)) if ctx.exe else None
+    for path in (ctx.exe, previous):  # (bin.previous: the build before the last recompiled one, publish_build)
+        if path and os.path.isfile(path) and os.path.abspath(path) not in keep:
+            os.remove(path)
+            LOG.write("removed the recompiled version %s (the decomp version was chosen)" % path)
+    exe_dir = ctx.exe_dir
+    if not PORTABLE and exe_dir and os.path.isdir(exe_dir) and not any(
+            os.path.dirname(k) == os.path.abspath(exe_dir) for k in keep):
+        shutil.rmtree(longpath(exe_dir), ignore_errors=True)  # (its runtime files: the decomp version has its own)
 
 
 def install_story_notebook(state, data_dir, runner=subprocess.run):
@@ -3379,14 +3550,17 @@ def main():
     ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists (also --randomize, --import-seed, "
                     "--play-seed)")
     ap.add_argument("--decomp", dest="decomp", action="store_const", const=True, default=None,
-                    help="also build the decomp version of the game (its fast mode; docs/decomp-build.md); "
-                         "remembered for repairs and updates")
+                    help="build and start the decomp version of the game instead of the recompiled version (its fast "
+                         "mode; experimental; docs/decomp-build.md); remembered for repairs and updates. On an "
+                         "installed game: switches to it (the recompiled version is removed)")
     ap.add_argument("--decomp-plain", action="store_true",
                     help="with --decomp (implied): the plain decomp build instead of fast mode (for testing; remembered)")
-    ap.add_argument("--no-decomp", dest="decomp", action="store_const", const=False,
-                    help="do not build the decomp version (any more)")
+    ap.add_argument("--recomp", "--no-decomp", dest="decomp", action="store_const", const=False,
+                    help="build and start the recompiled version (the default); on an installed game with the decomp "
+                         "version: switches to the recompiled version (the decomp version is removed)")
     ap.add_argument("--start-decomp", choices=("0", "1"),
-                    help="start the decomp version instead of the normal game from now on (1) or not (0)")
+                    help="an install an earlier setup built both versions for: start the decomp version from now on "
+                         "(1) or the recompiled version (0)")
     ap.add_argument("--repair-guest-python", action="store_true", help="upgrade local mod setup Python without rebuilding game code")
     # the in-app randomizer (tools/rando, randomizer_seeds.py): randomized games made from the installed USA game
     ap.add_argument("--randomize", action="store_true", help="make a randomized game (TWWHD Randomizer 1.2.0) and build it; "
@@ -3587,6 +3761,9 @@ def run(args, ui):
         raise SetupError("this release has no decomp version parts (docs/decomp-build.md)")
     if getattr(args, "start_decomp", None) is not None:
         on = args.start_decomp == "1"
+        if installed and installed_version(state) != "both":
+            raise SetupError("this install has only the %s version: run setup with %s to switch"
+                             % (("decomp", "--recomp") if installed_version(state) == "decomp" else ("recompiled", "--decomp")))
         if on and not (state.get("decomp_exe") and os.path.isfile(state["decomp_exe"])):
             raise SetupError("the decomp version is not built: run setup with --decomp first")
         state["start_decomp"] = on
@@ -3594,9 +3771,10 @@ def run(args, ui):
         say("From now on the game starts %s." % ("the decomp version" if on else "the normal version"))
         if args.decomp is None:
             return 0
-    # --decomp / --no-decomp on an installed game: a repair that builds (or drops) the decomp version
+    # --decomp / --recomp on an installed game: a repair that switches to that version (or, for an install with both,
+    # keeps only that one; or builds the decomp version in another mode)
     decomp_change = (installed and getattr(args, "decomp", None) is not None
-                     and (bool(args.decomp) != bool(state.get("decomp_exe"))
+                     and ((("decomp" if args.decomp else "recomp") != installed_version(state))
                           or (args.decomp and decomp_mode(ctx) != (state.get("decomp_mode") or "plain"))))
     if args.remove_language_source:
         say("Removed %s" % remove_language_source(data_dir, args.remove_language_source))
@@ -3830,8 +4008,10 @@ def after_install(ctx, args, ui, state, source):
 #                                        -> sources (the added ones); experimental (docs/language-packs.md)
 #   remove_language_source {region}      -> removed (the folder)
 #   launch       {}                      -> starts the installed game (the decomp version when start_decomp)
-#   start_decomp {on}                    -> start the decomp version from now on (macOS;
-#                                           install {decomp: true} builds it; hello: decomp_offered, decomp)
+#   start_decomp {on}                    -> an install with both versions (an earlier setup): start the decomp version
+#                                           from now on, or not; problem one_version otherwise. install {decomp: bool}
+#                                           is setup's one choice (true: the decomp version only, false: the
+#                                           recompiled version only); hello: decomp_offered, decomp, game_version
 #   quit         {}
 # Keys never leave this process: they are not logged, not echoed, not written to disk.
 
@@ -3983,7 +4163,11 @@ def gui_main(args):
                   # "Preparing shaders: models (experimental)": opt-in, off by default
                   "model_sweep": model_sweep_wanted(ctx), "model_sweep_text": MODEL_SWEEP_TEXT,
                   # the decomp version (decomp_setup.py): offered on macOS releases that bring its parts
-                  "decomp_offered": decomp_offered(ctx.manifest), "decomp": decomp_wanted(ctx),
+                  # setup's one choice (GAME_VERSIONS): "decomp" true = the decomp version is preselected;
+                  # game_version: what is installed ("recomp", "decomp" or "both" from an earlier setup), "" if nothing
+                  "decomp_offered": decomp_offered(ctx.manifest), "decomp": decomp_selected(ctx),
+                  "game_version": installed_version(st) if ctx.installed() else "",
+                  "recomp_text": decomp_setup.RECOMP_TEXT,
                   "decomp_text": decomp_setup.DECOMP_TEXT, "decomp_docs": decomp_setup.DOCS_URL,
                   "toolchain": ctx.manifest["toolchain"],
                   # updating from an earlier release folder (release_update.py): offered, never automatic
@@ -4129,7 +4313,9 @@ def gui_main(args):
             source = ("installed", update_from["game_dir"] if update_from else ctx.game_dir)
         else:
             return fail(req, "bad_request", "unknown source")
-        steps = plan_steps(kind if kind != "update" or not journal else "installed", decomp_wanted(ctx))
+        version = game_version(ctx)
+        steps = plan_steps(kind if kind != "update" or not journal else "installed", version in ("decomp", "both"),
+                           version != "decomp")
         GUI.emit({"event": "plan", "id": req.get("id"), "steps": [{"id": s, "title": STEP_TITLES[s]} for s in steps]})
         try:
             if kind == "update" and journal:
@@ -4145,6 +4331,7 @@ def gui_main(args):
         tdir = toolchain_dir(ctx.data_dir)
         reply(req, app=state.get("app", ""), exe=state.get("exe", ""), data_dir=ctx.data_dir,
               decomp_exe=state.get("decomp_exe", ""), decomp_error=state.get("decomp_error", ""),
+              game_version=installed_version(state), start_decomp=bool(state.get("start_decomp")),
               game_dir=state.get("game_dir", ""), save_exists=have_save(ctx.data_dir),
               toolchain_bytes=folder_size(tdir) if os.path.isdir(tdir) else 0)
 
@@ -4189,6 +4376,8 @@ def gui_main(args):
         on = req.get("on")
         if not isinstance(on, bool):
             return fail(req, "bad_request", "on must be a boolean")
+        if installed_version(st) != "both":
+            return fail(req, "one_version", "This install has one version: choose the other in setup to switch.")
         if on and not (st.get("decomp_exe") and os.path.isfile(st["decomp_exe"])):
             return fail(req, "not_built", "The decomp version is not built.")
         st["start_decomp"] = on
