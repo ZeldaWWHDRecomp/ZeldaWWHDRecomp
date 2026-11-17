@@ -124,6 +124,7 @@ public final class AndroidRandomizer {
      *  one when empty), then a setup job that makes it, checks it and builds it; the game plays it from its next start.
      *  Off the UI thread; returns the new job's id (selected; SetupService.start runs it). */
     public static String makeJob(Context context, String preset, String seed, String permalink) throws Exception {
+        AndroidGame.checkRandomizerVersion(context);  // (the decomp version plays no randomized game)
         AndroidGame.Selection current = AndroidGame.selected(context);
         if (current == null || current.game == null) throw new IOException("No installed game");
         if (!replaceable(SetupStore.current(context))) throw new IOException("Setup is running: wait for it, or pause it in the setup screen");
@@ -149,6 +150,7 @@ public final class AndroidRandomizer {
      *  seed_import), checks and builds it. Off the UI thread; returns the new job's id, or throws with the message for
      *  the player (a folder that is no game says which folder to choose). */
     public static String importJob(Context context, android.net.Uri uri) throws Exception {
+        AndroidGame.checkRandomizerVersion(context);  // (the decomp version plays no randomized game)
         AndroidGame.Selection current = AndroidGame.selected(context);
         if (current == null || current.game == null) throw new IOException("No installed game");
         SetupFolderCheck.Result found = SetupImport.checkFolder(context, uri,

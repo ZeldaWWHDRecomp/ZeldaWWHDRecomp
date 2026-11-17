@@ -29,7 +29,11 @@ for d in inc:  # the "headers": every .h of an -I folder is part of the preproce
             text += open(os.path.join(d, h)).read()
 pre = "\n".join(defs) + "\n" + text
 if "-E" in args:
-    sys.stdout.write(pre); sys.exit(0)
+    if "-o" in args:
+        open(args[args.index("-o") + 1], "w").write(pre)
+    else:
+        sys.stdout.write(pre)
+    sys.exit(0)
 if "BROKEN" in text:
     print("error: broken"); sys.exit(1)
 flaky = os.environ["FAKE_CC_LOG"] + "." + os.path.basename(src) + ".failed"
@@ -149,6 +153,44 @@ class ObjectCache(unittest.TestCase):
         sources = [c[c.index("-c") + 1] for c in calls]
         self.assertEqual(len(sources), 3)  # code_000.c, table.c, imports.c: each tried once, none a second time
         self.assertEqual(len(set(sources)), 3)
+
+    def test_key_hashes_all_of_a_large_preprocessed_source(self):
+        # (the Android app's process bridge keeps 4 MiB of a stream: with the preprocessed text read from stdout,
+        # every decomp game-code file had the same key behind a ~4 MB funcs.h; phone run 2026-11-17)
+        # (the stand-in compiler puts the source first: the shared 4+ MiB part is at the top of the sources here, as
+        # funcs.h's declarations come before each code_NNN.c's functions)
+        big = "".join("int f_%08X(void);\n" % i for i in range(260000))  # 4.7 MB
+        a = self.gen("a", {"code_000.c": big + "int x;", "code_001.c": big + "int y;"})
+        real = object_cache.subprocess.run
+
+        def bounded(cmd, **kw):  # a bridge that silently keeps the first 4 MiB of what it captures
+            p = real(cmd, **kw)
+            if isinstance(p.stdout, bytes):
+                p.stdout = p.stdout[:4 << 20]
+            return p
+
+        cache = object_cache.Cache(self.data / "c", "cc", ["-O3"], {})
+        flags = ["-I" + str(a)]
+        with mock.patch.object(object_cache.subprocess, "run", side_effect=bounded):
+            k0 = cache.key(self.tc.cc, flags, str(a / "code_000.c"), self.tc.env)
+            k1 = cache.key(self.tc.cc, flags, str(a / "code_001.c"), self.tc.env)
+        self.assertTrue(k0 and k1)
+        self.assertNotEqual(k0, k1)
+        self.assertEqual(k0, cache.key(self.tc.cc, flags, str(a / "code_000.c"), self.tc.env))  # (stable)
+        self.assertEqual(list((self.data / "c").glob(object_cache.PRE_PREFIX + "*")), [])  # nothing left behind
+        self.assertIsNone(cache.key(self.tc.cc, flags, str(a / "missing.c"), self.tc.env))  # preprocessing failed
+        self.assertEqual(list((self.data / "c").glob(object_cache.PRE_PREFIX + "*")), [])
+
+    def test_trim_removes_stale_preprocessed_files(self):
+        cache = object_cache.Cache(self.data / "c", "cc", ["-O3"], {})
+        (self.data / "c").mkdir(parents=True)
+        old, new = self.data / "c" / "pre-old.i", self.data / "c" / "pre-new.i"
+        old.write_text("x")
+        new.write_text("x")
+        os.utime(old, (1000, 1000))
+        cache.trim()
+        self.assertFalse(old.exists())
+        self.assertTrue(new.exists())  # (another build's key() may be hashing it right now)
 
     def test_damaged_entry_and_trim(self):
         cache = object_cache.Cache(self.data / "c", "cc", ["-O3"], {})

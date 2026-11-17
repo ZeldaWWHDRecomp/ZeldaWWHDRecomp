@@ -21,7 +21,9 @@
 #        -PwwhdDebugSuffix=.decomp it installs next to the normal build); GEN_DIR must then come from
 #        recomp.py --decomp-hooks; DECOMP_DIR (default decomp, the submodule) and DECOMP_GAME (default
 #        game: your USA game) as WWHD_DECOMP_DIR and WWHD_DECOMP_GAME; DECOMP_FAST=1 with DECOMP=1: the decomp
-#        build's fast mode (WWHD_DECOMP_FAST, cmake/Decomp.cmake),
+#        build's fast mode (WWHD_DECOMP_FAST, cmake/Decomp.cmake); DECOMP_RUNTIME_ONLY=1 with DECOMP=1: only the
+#        runtime built for it, no game units and no game (WWHD_DECOMP_RUNTIME_ONLY: the release's decomp parts,
+#        tools/android/package_runtime.py --decomp-build), nothing copied into the app,
 #        STABLE_SRC=1: one build folder OUT for several worktrees: CMake reads the source tree through the link
 #        OUT/src (and DECOMP_DIR through OUT/decomp-src), which tools/decomp_build/stable_src.py points at this
 #        worktree first, setting the file times so that ninja rebuilds only files whose content differs from the
@@ -83,7 +85,13 @@ if [ "${STABLE_SRC:-0}" = 1 ]; then
     python3 "$root/tools/decomp_build/stable_src.py" "$out_root" "${links[@]}"
     if [ "$decomp" = 1 ]; then flags+=("-DWWHD_DECOMP_CCACHE_BASEDIR=$out_root"); fi
 fi
-if [ "$decomp" = 1 ]; then
+runtime_only="${DECOMP_RUNTIME_ONLY:-0}"
+if [ "$decomp" = 1 ] && [ "$runtime_only" = 1 ]; then
+    # the release's decomp parts (tools/android/package_runtime.py --decomp-build): the runtime built for the decomp
+    # build without game units and without the game (WWHD_DECOMP_RUNTIME_ONLY); nothing is copied into the app
+    flags+=(-DWWHD_DECOMP=ON "-DWWHD_DECOMP_DIR=$decomp_dir" -DWWHD_DECOMP_RUNTIME_ONLY=ON)
+    if [ "${DECOMP_FAST:-0}" = 1 ]; then flags+=(-DWWHD_DECOMP_FAST=ON); else flags+=(-DWWHD_DECOMP_FAST=OFF); fi
+elif [ "$decomp" = 1 ]; then
     flags+=(-DWWHD_DECOMP=ON "-DWWHD_DECOMP_DIR=$decomp_dir" "-DWWHD_DECOMP_GAME=${DECOMP_GAME:-$src/game}")
     if [ "${DECOMP_FAST:-0}" = 1 ]; then flags+=(-DWWHD_DECOMP_FAST=ON); else flags+=(-DWWHD_DECOMP_FAST=OFF); fi
 fi
@@ -96,6 +104,7 @@ mkdir -p "$out"
     -DWWHD_BUNDLED_DEPS=ON "-DWWHD_QUEST_THEATER=${QUEST_THEATER:-ON}" \
     "-DGEN_DIR=${GEN_DIR:-$src/build/gen}" ${flags[@]+"${flags[@]}"} > "$out.log"
 "$cmake" --build "$out" -j "$jobs" --target wwhd wwhd_yaz0 >> "$out.log" 2>&1 || { tail -40 "$out.log"; exit 1; }
+if [ "$runtime_only" = 1 ]; then echo "decomp runtime parts in $out"; exit 0; fi
 libs="$here/app/$libdir/$abi"
 mkdir -p "$libs"
 bin="$ndk/toolchains/llvm/prebuilt/$host"

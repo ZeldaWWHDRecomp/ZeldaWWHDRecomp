@@ -38,6 +38,9 @@ public class SetupActivity extends Activity {
     private Button restore;
     private android.widget.CheckBox codeMods;
     private TextView codeModsDetail;
+    private android.widget.RadioButton recompVersion, decompVersion;
+    private android.widget.CheckBox startDecomp;
+    private TextView versionTitle, recompDetail, decompDetail;
     private android.widget.CheckBox models;
     private TextView modelsDetail;
     private Button cancelModels;
@@ -210,6 +213,42 @@ public class SetupActivity extends Activity {
         codeModsDetail.setText(R.string.setup_code_mods_detail);
         codeModsDetail.setPadding(0, 0, 0, gap);
         layout.addView(codeModsDetail);
+        // the desktop setup's "Which version of the game to build" (docs/decomp-build.md, GameVersion): the recompiled
+        // version (the default) or the decomp version, one line each. An install from before the choice has both
+        // ("both"): the version that starts is preselected and "Start the decomp version instead" stays until the
+        // player taps one (a tap on the preselected one chooses it too: click listeners, not check changes)
+        versionTitle = new TextView(this);
+        versionTitle.setText(R.string.setup_version_title);
+        versionTitle.setTextSize(16);
+        layout.addView(versionTitle);
+        android.widget.RadioGroup versions = new android.widget.RadioGroup(this);
+        recompVersion = new android.widget.RadioButton(this);
+        recompVersion.setId(android.view.View.generateViewId());
+        recompVersion.setText(R.string.setup_recomp);
+        recompVersion.setTextSize(16);
+        versions.addView(recompVersion);
+        recompDetail = new TextView(this);
+        recompDetail.setText(R.string.setup_recomp_detail);
+        versions.addView(recompDetail);
+        decompVersion = new android.widget.RadioButton(this);
+        decompVersion.setId(android.view.View.generateViewId());
+        decompVersion.setText(R.string.setup_decomp);
+        decompVersion.setTextSize(16);
+        versions.addView(decompVersion);
+        decompDetail = new TextView(this);
+        decompDetail.setText(R.string.setup_decomp_detail);
+        versions.addView(decompDetail);
+        versions.check((AndroidGame.startDecompChosen(this) ? decompVersion : recompVersion).getId());
+        recompVersion.setOnClickListener(view -> chooseVersion(GameVersion.RECOMP));
+        decompVersion.setOnClickListener(view -> chooseVersion(GameVersion.DECOMP));
+        layout.addView(versions);
+        startDecomp = new android.widget.CheckBox(this);
+        startDecomp.setText(R.string.setup_decomp_start);
+        startDecomp.setTextSize(16);
+        startDecomp.setChecked(AndroidGame.startDecompChosen(this));
+        startDecomp.setOnCheckedChangeListener((view, checked) -> chooseStartDecomp(checked));
+        startDecomp.setPadding(0, 0, 0, gap);
+        layout.addView(startDecomp);
         // the desktop setup's optional "Preparing shaders: models" step
         models = new android.widget.CheckBox(this);
         models.setText(R.string.setup_models);
@@ -331,6 +370,53 @@ public class SetupActivity extends Activity {
                 else control(SetupService.RESUME);
             });
         }, "wwhd-rando-make").start();
+    }
+
+    /** A setup job that makes or imports a randomized game (AndroidRandomizer.makeJob / importJob). */
+    private static boolean randomizedJob(File job) {
+        try {
+            JSONObject source = SetupStore.read(new File(job, "source.json"));
+            return source.optString("kind").equals("installed") || source.has("seed_import");
+        } catch (Exception unreadable) { return false; }
+    }
+
+    /** The version choice: remembered; a different one rebuilds a finished setup now, as the Code mods switch does
+     *  (the game built before stays playable until the new one is ready, and when its build fails). The decomp
+     *  version plays no randomized game: with a randomized game's job selected, the game as it is is built. */
+    private void chooseVersion(String version) {
+        new Thread(() -> {
+            try {
+                AndroidGame.chooseVersion(this, version);
+                File job = SetupStore.current(this);
+                if (version.equals(GameVersion.DECOMP) && job != null && randomizedJob(job) &&
+                        AndroidRandomizer.replaceable(job)) {
+                    String normal = AndroidGame.normalJob(this);
+                    if (normal != null) {
+                        synchronized (SetupJobCleanup.CREATION) { SetupStore.select(this, normal); }
+                        job = SetupStore.current(this);
+                    }
+                }
+                File host = job == null ? null : new File(job, "host.json");
+                if (host != null && host.isFile() && SetupStore.read(host).optString("state").equals("complete") &&
+                        AndroidGame.needsRebuild(this))
+                    runOnUiThread(() -> {
+                        try { SetupService.start(this, null); }
+                        catch (Exception failure) { status.setText("Tap Resume to continue setup: " + failure.getMessage()); }
+                    });
+            } catch (Exception failure) {
+                runOnUiThread(() -> status.setText("The version choice could not be saved: " + failure.getMessage()));
+            }
+        }, "wwhd-game-version").start();
+    }
+
+    /** An install with both versions (from before the choice): which one starts, from the next game start. */
+    private void chooseStartDecomp(boolean start) {
+        new Thread(() -> {
+            try { AndroidGame.chooseStartDecomp(this, start); }
+            catch (Exception failure) {
+                runOnUiThread(() -> status.setText("The version choice could not be saved: " + failure.getMessage()));
+            }
+        }, "wwhd-start-decomp").start();
     }
 
     /** The Code mods switch: remembered for the next build; a finished setup builds again now (the
@@ -650,6 +736,13 @@ public class SetupActivity extends Activity {
                     event.has("fraction") ? (int)(1000 * event.optDouble("fraction")) : -1);
                 else if (step.equals("translate")) phase(getString(R.string.setup_translating), getString(R.string.setup_leave_detail), -1);
                 else if (step.equals("link") || step.equals("activate")) phase(getString(R.string.setup_finishing), null, -1);
+                else if (step.equals("decomp")) {  // the decomp version's build (tools/android/decomp_android.py's events)
+                    int total = event.optInt("total"), done = Math.min(total, event.optInt("done"));
+                    String detail = event.optString("detail", "");
+                    phase(getString(R.string.setup_decomp_building),
+                        detail.isEmpty() ? getString(R.string.setup_leave_detail) : detail,
+                        total > 0 ? (int)(1000L * done / total) : -1);
+                }
                 else phase(getString(R.string.setup_extracting), getString(R.string.setup_leave_detail), -1);
                 return;
             }
@@ -773,6 +866,21 @@ public class SetupActivity extends Activity {
                     codeMods.setChecked(!codeMods.isChecked());
                     codeMods.setOnCheckedChangeListener((view, checked) -> chooseCodeMods(checked));
                 }
+                show(versionTitle, phoneSetup);
+                show(recompVersion, phoneSetup);
+                show(recompDetail, phoneSetup);
+                show(decompVersion, phoneSetup);
+                show(decompDetail, phoneSetup);
+                recompVersion.setEnabled(!working);
+                decompVersion.setEnabled(!working);
+                String version = AndroidGame.chosenVersion(SetupActivity.this);
+                boolean both = version.equals(GameVersion.BOTH);
+                // "Start the decomp version instead": only an install with both versions, once the decomp one is built
+                String decompState = both ? AndroidGame.decompState(SetupActivity.this) : null;
+                show(startDecomp, phoneSetup && both);
+                startDecomp.setEnabled(!working && "built".equals(decompState));
+                setTextIfChanged(decompDetail, getString(R.string.setup_decomp_detail) +
+                    (decompState != null && !"built".equals(decompState) ? "\n\n" + decompState : ""));
                 // a heat pause offers Continue only once the device has cooled down (#277)
                 boolean heatHot = hostName.equals("paused") && hostState != null &&
                     hostState.optString("reason").equals("heat") && !hostState.optBoolean("cooled");

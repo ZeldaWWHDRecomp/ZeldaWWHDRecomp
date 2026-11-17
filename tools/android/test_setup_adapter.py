@@ -338,6 +338,36 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(len(launches), 1)
         self.assertNotEqual(Path(objects[0]).read_bytes(), b"corrupt")
 
+    def test_app_update_moving_the_compiler_folder_reuses_objects(self):
+        # Android installs the compiler's programs in the APK's native-lib folder, a new random name on every app
+        # update (/data/app/~~<random>==/<app>-<random>==/lib/arm64): the objects stay; another bundle compiles anew
+        from types import SimpleNamespace
+        generated, toolchain, manifest, runner = self.prepare()
+
+        def in_folder(name):
+            folder = self.root / "data/app" / name / "lib/arm64"
+            folder.mkdir(parents=True)
+            driver = folder / "libwwhd-clang-driver.so"  # (a script: macOS's clang shim goes by its own name)
+            driver.write_text('#!/bin/sh\nexec "%s" "$@"\n' % toolchain.cc[0])
+            driver.chmod(0o755)
+            return SimpleNamespace(cc=[str(driver), "--driver-mode=gcc"], env=None)
+
+        first = (generated, in_folder("~~PH_jxam==/app-371P=="), manifest, runner)
+        objects = self.compile(self.adapter(), first, identity="09d51026")
+        moved = (generated, in_folder("~~-SjofBLV==/app-e5dJ=="), manifest, runner)
+        self.assertEqual(objects, self.compile(self.adapter(), moved, identity="09d51026",
+                                               native=lambda *a, **k: self.fail("must not compile")))
+        calls = []
+        def counted(command, **kwargs):
+            calls.append(command)
+            return runner(command, **kwargs)
+        self.compile(self.adapter(), moved, identity="another-bundle", native=counted)
+        self.assertEqual(len(calls), len(objects))
+        calls.clear()
+        options = SimpleNamespace(cc=moved[1].cc + ["-O1"], env=None)
+        self.compile(self.adapter(), (generated, options, manifest, runner), identity="09d51026", native=counted)
+        self.assertEqual(len(calls), len(objects))
+
     def test_low_space_retains_objects_and_retries_only_missing_output(self):
         prepared = self.prepare()
         objects = self.compile(self.adapter(), prepared)
@@ -472,6 +502,33 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(sorted(removed), ["compile-" + "f" * 64, "link-" + "e" * 64])
         self.assertTrue(all(s.is_dir() for s in stages[:4]) and other.is_dir())
         self.assertEqual(len(logged), 2)
+
+    def test_cleanup_drops_the_other_versions_records_after_a_switch(self):
+        """setup's choice of game version: once the decomp version is active, a previous/normal record of the
+        recompiled version (or of both, from before the choice) keeps nothing; one of the same version does"""
+        adapter = self.adapter()
+        storage = self.root / "jobs"
+        names = {"recomp": "link-" + "1" * 64, "decomp": "decomp-" + "2" * 64, "both": "decomp-" + "3" * 64,
+                 "same": "decomp-" + "4" * 64}
+        for name in names.values():
+            (storage / name).mkdir(parents=True)
+        records = self.root / "records"
+        records.mkdir()
+        lib = lambda key: "../jobs/%s/libgame.so" % names[key]
+        (records / "active.json").write_text(json.dumps({"library": lib("decomp"), "decomp_library": lib("decomp"),
+                                                         "game_version": "decomp"}))
+        (records / "previous.json").write_text(json.dumps({"library": lib("recomp")}))  # (before the choice: recomp)
+        (records / "normal.json").write_text(json.dumps({"library": lib("recomp"), "decomp_library": lib("both")}))
+        self.assertEqual(sorted(adapter.cleanup_stages([], records)), sorted([names["recomp"], names["both"],
+                                                                                names["same"]]))
+        self.assertTrue((storage / names["decomp"]).is_dir())
+        (storage / names["same"]).mkdir()
+        (records / "previous.json").write_text(json.dumps({"library": lib("same"), "game_version": "decomp"}))
+        self.assertEqual(adapter.cleanup_stages([], records), [])
+        from setup_adapter import record_version
+        self.assertEqual([record_version(v) for v in ({"game_version": "decomp"}, {}, {"decomp_error": "x"},
+                                                      {"decomp_library": "y"}, {"game_version": "x"})],
+                         ["decomp", "recomp", "both", "both", "recomp"])
 
 
 class LinkTests(unittest.TestCase):

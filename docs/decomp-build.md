@@ -164,7 +164,7 @@ version of the game, the one you choose:
 Only the chosen version is built and started; nothing of the other one is built or kept.
 
 - in the setup window: choose **Decomp version (experimental)** under "Which version of the game to build" (shown with
-  the other build options; not on Android yet), then install, repair or update;
+  the other build options; Android: below), then install, repair or update;
 - in a terminal: `tools/Setup in Terminal.command --decomp` (macOS), `tools/setup-in-terminal.sh --decomp` (Linux),
   `tools\Setup in a console window.bat --decomp` (Windows); `--recomp` (or `--no-decomp`) chooses the recompiled
   version.
@@ -244,6 +244,32 @@ On Linux and Windows setup uses the compiler it already downloads for the normal
   declaration table needs, has no Windows ARM64 package.
 - capstone 5.0.7 from PyPI: the manylinux wheel (x86-64, ARM64) on Linux, the win_amd64 wheel on Windows.
 - The decomp version starts with Vulkan, the renderer of Linux and Windows anyway.
+
+## In setup (Android)
+
+The Android app's setup offers the same choice: under **Which version of the game to build** on the setup screen (next
+to **Code mods**), **Recompiled version (default)** or **Decomp version (experimental)**. Only the chosen version is
+built on the phone and started; the decomp version in fast mode, with the Code mods choice (switching Code mods, on the
+setup screen or in Settings > Mods, rebuilds only it). Choosing the other version on a finished setup builds it now; the
+game built before stays playable meanwhile and, if the build fails, stays the one that starts (the setup screen says why;
+Continue tries again). Once the new version is active, the other one's library goes; the decomp source, the
+declaration table and the compiled objects stay for a later switch back. Randomized games play in the recompiled version
+only: with the decomp version chosen, the randomizer says to choose the recompiled version first.
+
+An app that built both versions before this choice ("Also build the decomp version") keeps both and starts the one it
+started (**Start the decomp version instead**, shown only then), until a version is chosen.
+
+How it differs from the Mac (tools/android/decomp_android.py):
+
+- the release carries the decomp parts in the app's runtime SDK (per ABI, plain and fast; no game code), and the
+  app's compiler brings `llvm-objcopy` (and `llvm-link` / `llvm-dis` / `llvm-as` for the whole-image link);
+- the game units are linked one by one (`ld.lld -r`, ThinLTO inside the unit, then `llvm-objcopy --localize-hidden`).
+  The whole-image link (about 5.5 GB at its peak) is not used on phones until it has been measured there;
+- the declaration table's disassembly uses the port's capstone stand-in (`tools/decomp_build/capstone_shim`: the same
+  text as capstone 5.0.7 for every instruction of the game; nothing is downloaded from PyPI);
+- the setup's Python tools run inside the app's setup process, one after the other;
+- the built functions code mods hook come from the release's list and from the decomp version's own record (setup
+  cannot start the game as a probe on a phone).
 
 ## Mods
 

@@ -16,8 +16,12 @@ usage: unit_ir.py OUT.o (--tools DIR | --liblto LIB | --libllvm LIB) --cc CLANG 
   --libllvm LIB  instead of those: the LLVM shared library (libLLVM-NN.dll of llvm-mingw, which ships neither llvm-link
                 nor libLTO; the decomp version on Windows, tools/installer/decomp_platform.py): the same link and the same
                 rule as --tools, through the LLVM C API (LLVMLinkModules2, then every hidden definition internal)
+  --tool NAME=PATH  one of llvm-link / llvm-dis / llvm-as by its own path (the Android app's, whose names differ;
+                instead of or over --tools)
+  --cc-arg ARG  one more argument of the compiler command (repeatable; the Android app's clang driver flags)
   --native     write a native object (one unit optimised alone, as today) instead of ThinLTO bitcode
-Temporary files next to OUT.o (OUT.o.tmp.*), removed at the end."""
+Temporary files next to OUT.o (OUT.o.tmp.*), removed at the end. The IR text goes through files (no pipes), as the
+Android app's process bridge takes no large input."""
 import os
 import re
 import subprocess
@@ -168,10 +172,16 @@ def main():
     out = a.pop(0)
     opt = {}
     objs = []
+    tool, cc_args = {}, []
     while a:
         x = a.pop(0)
         if x in ("--tools", "--liblto", "--libllvm", "--cc", "--target"):
             opt[x] = a.pop(0)
+        elif x == "--tool":
+            name, _, path = a.pop(0).partition("=")
+            tool[name] = path
+        elif x == "--cc-arg":
+            cc_args.append(a.pop(0))
         elif x == "--native":
             opt[x] = True
         else:
@@ -186,21 +196,24 @@ def main():
             triple = libllvm_link(opt["--libllvm"], tmp + ".i.bc", objs)
             m = re.match(r"(.+)", triple or "")
         else:
-            t = opt["--tools"]
-            run(os.path.join(t, "llvm-link"), "-o", tmp + ".bc", *objs)
-            ll = subprocess.run([os.path.join(t, "llvm-dis"), tmp + ".bc", "-o", "-"], check=True, capture_output=True,
-                                text=True).stdout
+            t = lambda name: tool.get(name) or os.path.join(opt["--tools"], name)
+            run(t("llvm-link"), "-o", tmp + ".bc", *objs)
+            run(t("llvm-dis"), tmp + ".bc", "-o", tmp + ".ll")
+            with open(tmp + ".ll", encoding="utf-8") as f:
+                ll = f.read()
             ll, n = internalize(ll)
-            subprocess.run([os.path.join(t, "llvm-as"), "-o", tmp + ".i.bc"], input=ll, text=True, check=True)
+            with open(tmp + ".i.ll", "w", encoding="utf-8") as f:
+                f.write(ll)
+            run(t("llvm-as"), "-o", tmp + ".i.bc", tmp + ".i.ll")
             m = re.search(r'^target triple = "([^"]+)"', ll, re.M)  # the units' own target (clang would override it)
-        cc = [opt["--cc"], "-c", "-O2", "-Wno-override-module", "-fPIC"]
+        cc = [opt["--cc"]] + cc_args + ["-c", "-O2", "-Wno-override-module", "-fPIC"]
         if "--target" in opt or m:
             cc.append("--target=" + opt.get("--target", m.group(1) if m else ""))
         if "--native" not in opt:
             cc.append("-flto=thin")
         run(*cc, tmp + ".i.bc", "-o", out)
     finally:
-        for s in (".bc", ".i.bc"):
+        for s in (".bc", ".i.bc", ".ll", ".i.ll"):
             try:
                 os.remove(tmp + s)
             except OSError:

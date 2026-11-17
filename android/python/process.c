@@ -22,7 +22,8 @@ static double monotonic(void) {
 }
 
 /* No shell, Python fork, or writable executable is involved. By default stdout
-   and stderr share one bounded pipe. Extraction requests separate streaming
+   and stderr share one bounded pipe: more than 4 MiB on a stream is a
+   RuntimeError unless on_output receives the stream as it comes. Extraction requests separate streaming
    pipes, private stdin bytes and cooperative cancellation. */
 static PyObject *run(PyObject *self, PyObject *args, PyObject *kwargs) {
     (void)self;
@@ -86,6 +87,7 @@ static PyObject *run(PyObject *self, PyObject *args, PyObject *kwargs) {
     int pipes[2][2] = {{-1, -1}, {-1, -1}}, incoming[2] = {-1, -1};
     char *output[2] = {NULL, NULL};
     size_t used[2] = {0, 0};
+    int overflowed[2] = {0, 0};  // a stream that sent more than `limit` bytes
     int streams = separate ? 2 : 1;
     for (int stream = 0; stream < streams; stream++) {
         output[stream] = malloc(limit);
@@ -165,6 +167,7 @@ static PyObject *run(PyObject *self, PyObject *args, PyObject *kwargs) {
             else if (bytes > 0) {
                 size_t keep = (size_t)bytes < limit - used[stream] ? (size_t)bytes : limit - used[stream];
                 memcpy(output[stream] + used[stream], chunk, keep); used[stream] += keep;
+                if (keep < (size_t)bytes) overflowed[stream] = 1;  // (still drained: the child never blocks)
                 if (on_output != Py_None && !callback_failed && !cancelled) {
                     PyEval_RestoreThread(_save);
                     PyObject *value = PyObject_CallFunction(on_output, "sy#",
@@ -189,6 +192,13 @@ static PyObject *run(PyObject *self, PyObject *args, PyObject *kwargs) {
     else if (cancelled) PyErr_SetString(PyExc_InterruptedError, "native tool was cancelled");
     else if (timed_out) PyErr_SetString(PyExc_TimeoutError, "native tool timed out");
     else if (io_error) { errno = io_error; PyErr_SetFromErrno(PyExc_OSError); }
+    else if (on_output == Py_None && (overflowed[0] || overflowed[1])) {
+        /* The captured output would be cut off: a caller hashing or parsing it would silently see only its first
+           part (the decomp version's object cache keyed every game-code file the same, 2026-11-17). With
+           on_output the caller received every byte, so only the returned copy is bounded. */
+        PyErr_Format(PyExc_RuntimeError, "native tool output exceeds %zu MiB (%s); write it to a file instead",
+                     limit >> 20, separate ? (overflowed[0] ? "stdout" : "stderr") : "combined output");
+    }
     else {
         int code = WIFEXITED(status) ? WEXITSTATUS(status) : -WTERMSIG(status);
         if (separate) result = Py_BuildValue("iy#y#", code, output[0], (Py_ssize_t)used[0], output[1], (Py_ssize_t)used[1]);

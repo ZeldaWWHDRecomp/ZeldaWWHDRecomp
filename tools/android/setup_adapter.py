@@ -59,6 +59,15 @@ def atomic_json(path, value):
         temporary.unlink(missing_ok=True)
 
 
+def record_version(value):
+    """the game version a selection record (AndroidGame's active/previous/normal.json) names: "recomp", "decomp" or
+    "both" (records written before the choice: "both" when they have the decomp version's keys)"""
+    version = value.get("game_version")
+    if version in ("recomp", "decomp", "both"):
+        return version
+    return "both" if ("decomp_library" in value or "decomp_error" in value) else "recomp"
+
+
 class Adapter:
     def __init__(self, package, storage, port_revision, emit=lambda event: None,
                  pause_requested=lambda: False):
@@ -420,13 +429,17 @@ class Adapter:
         # Per object, by its inputs (as the desktop's code-objects cache): an object is reused when its source,
         # every header the game code can include, the compiler and the flags are unchanged. Not by the release
         # (port_revision) or the whole generated tree, so an app update recompiles only the sources that
-        # changed. The installer counts by the code that makes the compile command.
+        # changed. The installer counts by the code that makes the compile command. The compiler is known by its
+        # bundle identity: its programs' folder (the APK's native-lib folder) gets a new random name on every app
+        # update, so the command counts with that folder as a fixed name (as setup.object_cache does).
+        native = os.path.dirname(toolchain.cc[0])
+        command = [arg.replace(native, "<native-lib>") if native else arg for arg in toolchain.cc]
         identity = hashlib.sha256(json.dumps({
             "installer": self.compile_code_identity(),
             "headers": {str(path.relative_to(self.package)) if path.is_relative_to(self.package) else str(path):
                         self.hash_tree(path) for path in roots},
             "toolchain": toolchain_identity,
-            "command": toolchain.cc, "environment": toolchain.env,
+            "command": command, "environment": toolchain.env,
             "flags": manifest["gamecode_cflags"],
             "debug_info": os.environ.get("WWHD_SETUP_DEBUG_INFO", ""),
         }, sort_keys=True).encode()).hexdigest()
@@ -551,21 +564,30 @@ class Adapter:
                 return self.hash_file(self.package / "tools/installer/setup.py")
         return hashlib.sha256("\0".join(parts).encode()).hexdigest()
 
-    STAGE_PREFIXES = ("translation-", "compile-", "link-")
+    STAGE_PREFIXES = ("translation-", "compile-", "link-", "decomp-")
 
     def cleanup_stages(self, keep, records_root=None, log=None):
         """Removes this adapter's stage folders (translation-/compile-/link-<64 hex> in its storage) except `keep`
         and the link stages the selection records name (active, previous, normal: the game, its rollback and the
-        game as it is). Only folders this adapter creates; each removal is logged. Returns the removed names."""
+        game as it is). A record of another game version than the active one (the recompiled or the decomp version,
+        after the player switched: AndroidGame drops it at that activation) keeps nothing, as the desktop removes the
+        other version's game. Only folders this adapter creates; each removal is logged. Returns the removed names."""
         keep = {Path(path).resolve() for path in keep}
         named = set()
         if records_root is not None:
+            active = None
             for record in ("active", "previous", "normal"):
                 try:
                     value = json.loads((Path(records_root) / (record + ".json")).read_text())
                 except (OSError, ValueError):
                     continue
-                for key in ("library", "randomizer_files", "game"):
+                if not isinstance(value, dict):
+                    continue
+                if record == "active":
+                    active = record_version(value)
+                elif active is not None and record_version(value) != active:
+                    continue
+                for key in ("library", "randomizer_files", "game", "decomp_library"):
                     if isinstance(value.get(key), str):
                         named.add((Path(records_root) / value[key]).resolve())
         removed = []
