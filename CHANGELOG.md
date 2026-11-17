@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp version on Linux, Steam Deck and Windows** (#602). Setup's "Also build the decomp version
+  (experimental)" is now offered on Linux (x86_64 and ARM64, including Steam Deck) and Windows, not only macOS. It
+  uses the compiler setup already downloads for the game, so nothing else needs installing. Linux and Windows x86_64
+  build the fast mode, as on macOS; Windows on ARM builds the plain decomp version only. On Windows the game's data
+  folder path must be at most 164 characters for this step; setup checks it first and says so. Not yet tested on a
+  real Linux, Steam Deck or Windows machine: reports welcome.
 - **Vulkan: the hidden TV picture is no longer copied every frame** (#599). In one-screen (handheld) mode, as on
   Android phones, the game shows the GamePad picture and its TV picture is only a "playing on the GamePad" screen that
   nothing displays. Its 1080p copy is now skipped while no screen shows it, and made in the same frame as soon as one
