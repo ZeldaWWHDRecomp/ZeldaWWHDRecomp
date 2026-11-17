@@ -6,4 +6,10 @@
 namespace hle_fs {
 void set_save_root(const std::string& dir);  // "" = the --save folder (config::save_dir)
 std::string save_root();
+
+// A host about to end the process (the Vision Pro's game window closed): waits until no save file is open for writing
+// and none was closed in the last SETTLE seconds (a save is several files, one after another), at most MAX_SECONDS,
+// then holds every later save write for good, so the save on disk is whole when the process ends. -> whether it
+// settled in time.
+bool stop_save_writes(double max_seconds, double settle = 0.5);
 }  // namespace hle_fs

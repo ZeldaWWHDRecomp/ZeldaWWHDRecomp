@@ -423,16 +423,26 @@ def file_sha256(path):
 
 # Apple TV and iPhone / iPad apps (setup.py --apple-device, tools/installer/apple_device.py): CMake builds for those
 # SDKs against the placeholder game code, each to sdk/apple/<kind> with its own recipe; their headers are sdk/include
-sys.path.insert(0, os.path.join(ROOT, "tools", "installer"))
-import apple_device  # noqa: E402  (its KINDS: the Apple device kinds; CMAKE_SYSTEM_NAME is the kind's platform)
-APPLE_KINDS = {k.platform: (k.folder, k.sdk) for k in apple_device.KINDS.values()}
 APPLE_TOOL_FILES = ["tvos/bundle_mods.py", "tvos/make_icon.py"]
+
+
+def apple_kinds():
+    """CMAKE_SYSTEM_NAME -> (sdk/apple folder, SDK) of the Apple device kinds (apple_device.py KINDS). Loaded when
+    needed, under a name of its own and without changing sys.path: modules that import this one (the Android tests)
+    must not find the installer's modules."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("package_apple_device",
+                                                  os.path.join(ROOT, "tools", "installer", "apple_device.py"))
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {k.platform: (k.folder, k.sdk) for k in module.KINDS.values()}
 
 
 def add_apple(pkg, abuild, linkonly):
     """--apple-build: one Apple TV or iPhone / iPad build (CMAKE_SYSTEM_NAME tvOS or iOS). Returns its kind and the
     manifest's entry for it."""
     system = cache_value(abuild, "CMAKE_SYSTEM_NAME")
+    APPLE_KINDS = apple_kinds()
     if system not in APPLE_KINDS:
         sys.exit("--apple-build %s: not a tvOS, iOS or visionOS build (CMAKE_SYSTEM_NAME %r)" % (abuild, system))
     kind, sdk_name = APPLE_KINDS[system]

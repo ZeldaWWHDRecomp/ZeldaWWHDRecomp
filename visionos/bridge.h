@@ -38,8 +38,8 @@ void wwhd_audio_render_channel(int channel, AudioBufferList* _Nonnull list, uint
 // the GamePad window's view (retained), and whether it shows (gfx/host_tvos.mm)
 void* _Nonnull wwhd_gamepad_view(void);
 void wwhd_gamepad_shown(void* _Nonnull view, int on);
-// the game's window was closed: the game ends (gfx/host_tvos.mm)
-void wwhd_game_window_closed(void);
+// the game's window went away (WHY: for the log): the game ends if its session is gone too (gfx/host_tvos.mm)
+void wwhd_game_window_gone(const char* _Nonnull why);
 // whether the game's window is up (the app may start with only the GamePad's window restored)
 bool wwhd_game_window_up(void);
 // the game window's view controller (retained): the game's view under the 3D screen; and once it is in its window

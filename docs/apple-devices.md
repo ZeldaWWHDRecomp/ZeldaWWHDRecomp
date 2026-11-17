@@ -79,10 +79,15 @@ The setup page's Saves section takes the save and settings from it ("Take the sa
 ## Apple Vision Pro
 
 The game window shows the TV picture in 3D: the game draws a picture for each eye, and the HUD, prompts and
-dialogs float just in front of whatever is nearest in view. Settings > 3D has the depth, the HUD distance and
-"Behind the glass", which keeps the whole scene behind the window's surface. The GamePad has a window of its own,
-where a pinch is a touch; the GamePad button on the right of the game window opens it again. The sound is 5.1,
-spatialized by the headset. Closing the game window ends the game (after saving to iCloud).
+dialogs float just in front of whatever is nearest in view.
+
+- **3D settings:** Settings > Graphics > "Stereoscopic 3D (experimental)" has the depth, the HUD distance and
+  "Behind the glass", which keeps the whole scene behind the window's surface.
+- **The GamePad** has a window of its own, where a pinch is a touch. The GamePad button on the right of the game
+  window opens it again.
+- **Sound** is 5.1, spatialized by the headset.
+- **Closing the game window quits the game**, like quitting on any other device. Progress since your last in-game
+  save is lost. The game doesn't save for you; it only sends your last save to iCloud before it quits.
 
 ## Saves
 

@@ -168,7 +168,7 @@ private struct ScreenView: View {
         .onDisappear {
             updates?.cancel()
             wwhd_screen_attach(0)
-            wwhd_game_window_closed()
+            wwhd_game_window_gone("view torn down")
         }
     }
 }

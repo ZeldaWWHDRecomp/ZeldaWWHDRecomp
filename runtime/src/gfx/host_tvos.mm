@@ -13,6 +13,7 @@
 #include <csignal>
 #include <mach/mach.h>
 #include <os/proc.h>
+#include <os/lock.h>
 #include <pthread.h>
 #include <unistd.h>
 #include <algorithm>
@@ -34,6 +35,7 @@
 #endif
 #include "../mods/save_folder.h"
 #include "cloud_save.h"
+#include "../hle/save_root.h"
 #include "../mods/mods.h"
 #include "../remote_pad/remote_pad.h"
 #include "../audio_out.h"
@@ -233,29 +235,54 @@ extern "C" void wwhd_gamepad_shown(void* view, int on) {
     gfx::vision_drc_layer(on ? layer : nil);
 }
 
-// visionos/StereoScreen.swift: the game's window was closed (its contents torn down; going to the background, as for
-// the Digital Crown or another app's full space, keeps them). The game ends with it: closing a window on visionOS
-// doesn't end the app. _exit: exit() would run the static destructors under the game's running threads.
-// The other windows (the GamePad's) are closed first: a session left behind would come back alone at the next start.
-extern "C" void wwhd_game_window_closed(void) {
+// The game's window was closed (its session discarded). Closing a window on visionOS doesn't end the app, so the game
+// ends with it:
+// 1. the other windows (the GamePad's) are closed: a session left behind would come back alone at the next start;
+// 2. once no save file is being written, later save writes are held (hle_fs::stop_save_writes), so the save on disk
+//    is whole;
+// 3. a changed save goes to iCloud, then the process ends. _exit: exit() would run the static destructors under the
+//    game's running threads.
+static void game_window_closed() {
     static bool ending = false;
     if (ending) return;
     ending = true;
     log_msg("[vision] the game's window was closed: the game ends");
-    vision_event(@"game window closed: closing the others, ending once the save is in iCloud");
-    save_folder::pause_lock();
+    vision_event(@"game window closed: closing the others, ending once the save is written and in iCloud");
     for (UISceneSession* s in UIApplication.sharedApplication.openSessions)
         if (![s.userInfo[@"window"] isEqual:@"game"]) [UIApplication.sharedApplication requestSceneSessionDestruction:s options:nil errorHandler:nil];
-    // Ends once a new save is uploaded (at once without one), from the upload's thread: with its windows gone the app
-    // is suspended, main-thread timers and all, unless it asks for background time
+    // (from threads of their own: with its windows gone the app is suspended, main-thread timers and all, unless it
+    // asks for background time)
     [UIApplication.sharedApplication beginBackgroundTaskWithExpirationHandler:^{
         vision_event(@"exit (background time over)");
         _exit(0);
     }];
-    cloud_save::flush_then([] {
-        usleep(250000);  // (the other windows' closing gets its moment)
-        vision_event(@"exit");
-        _exit(0);
+    std::thread([] {
+        if (!hle_fs::stop_save_writes(10)) log_msg("[vision] a save was still being written after 10 s: ending anyway");
+        save_folder::pause_lock();
+        cloud_save::flush_then([] {
+            usleep(250000);  // (the other windows' closing gets its moment)
+            vision_event(@"exit");
+            _exit(0);
+        });
+    }).detach();
+}
+
+static bool game_session_open() {
+    for (UISceneSession* s in UIApplication.sharedApplication.openSessions)
+        if ([s.userInfo[@"window"] isEqual:@"game"]) return true;
+    return false;
+}
+
+// The game window went away (to the background, disconnected, or its view torn down: visionos/StereoScreen.swift):
+// closed only if its session is gone too. visionOS also takes a hidden window's scene away to free memory (another
+// app's full space, the Digital Crown) and keeps its session; it is checked a moment later, as the discard follows.
+extern "C" void wwhd_game_window_gone(const char* why) {
+    NSString* how = [NSString stringWithUTF8String:why];
+    vision_event([NSString stringWithFormat:@"game window %@", how]);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        const bool open = game_session_open();
+        log_msg("[vision] the game's window (%s) is %s", how.UTF8String, open ? "still open (hidden)" : "closed");
+        if (!open) game_window_closed();
     });
 }
 // visionos/GamePad.swift: whether the game's window is up (the app may start with only the GamePad's window restored),
@@ -640,29 +667,36 @@ extern "C" bool wwhd_audio_entity(int on) {
 }
 // RealityKit's audio thread: FRAMES of one channel of the mix (L R C LFE Ls Rs; the LFE goes to the fronts) for the
 // entity placed where that speaker would be (visionos/StereoScreen.swift). The mix is pulled once for all of them:
-// each channel reads its own place in a short window of it, and whichever is furthest ahead pulls more.
+// each channel reads its own place in a short window of it, and whichever is furthest ahead pulls more. A request
+// longer than kChunk goes in pieces, so a channel never reads past the window. os_unfair_lock: a realtime thread's
+// lock (it lends its priority to the holder).
 extern "C" void wwhd_audio_render_channel(int channel, AudioBufferList* list, uint32_t frames) {
-    constexpr uint32_t kWindow = 4096;
-    static std::mutex lock;
+    constexpr uint32_t kWindow = 4096, kChunk = 1024;
+    static os_unfair_lock lock = OS_UNFAIR_LOCK_INIT;
     static float window[6][kWindow];
     static uint64_t written = 0, read[6] = {};
     static int16_t six[256 * 6];
     float* out = list->mNumberBuffers ? static_cast<float*>(list->mBuffers[0].mData) : nullptr;
     if (!out || channel < 0 || channel > 5) return;
-    std::lock_guard guard(lock);
-    if (written - read[channel] > kWindow - frames) read[channel] = written;  // (fallen too far behind: from now)
-    while (written - read[channel] < frames) {
-        if (g_pull && g_route == kEntity) g_pull(six, 256);
-        else memset(six, 0, sizeof six);
-        for (uint32_t i = 0; i < 256; i++, written++)
-            for (int c = 0; c < 6; c++) {
-                float v = six[i * 6 + c] / 32768.0f;
-                if (c < 2) v += 0.5f * six[i * 6 + 3] / 32768.0f;
-                window[c][written % kWindow] = v;
-            }
+    os_unfair_lock_lock(&lock);
+    for (uint32_t done = 0; done < frames;) {
+        const uint32_t n = std::min(frames - done, kChunk);
+        if (written - read[channel] > kWindow - n) read[channel] = written;  // (fallen too far behind: from now)
+        while (written - read[channel] < n) {
+            if (g_pull && g_route == kEntity) g_pull(six, 256);
+            else memset(six, 0, sizeof six);
+            for (uint32_t i = 0; i < 256; i++, written++)
+                for (int c = 0; c < 6; c++) {
+                    float v = six[i * 6 + c] / 32768.0f;
+                    if (c < 2) v += 0.5f * six[i * 6 + 3] / 32768.0f;
+                    window[c][written % kWindow] = v;
+                }
+        }
+        for (uint32_t i = 0; i < n; i++) out[done + i] = window[channel][(read[channel] + i) % kWindow];
+        read[channel] += n;
+        done += n;
     }
-    for (uint32_t i = 0; i < frames; i++) out[i] = window[channel][(read[channel] + i) % kWindow];
-    read[channel] += frames;
+    os_unfair_lock_unlock(&lock);
 }
 bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames)) {
     if (@available(iOS 15.0, tvOS 15.0, *)) {
@@ -872,16 +906,7 @@ static void game_window_background(UIScene* scene) {
     save_folder::pause_lock();
     cloud_save::flush();
 #if TARGET_OS_VISION
-    // Apple Vision Pro: the game window closed? Its session is discarded then; hidden by another app's full space,
-    // it stays (checked a moment later: the discard follows the background)
-    log_msg("[vision] the game's window went to the background");
-    vision_event(@"game window to the background");
-    UISceneSession* session = scene.session;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        const bool open = [UIApplication.sharedApplication.openSessions containsObject:session];
-        log_msg("[vision] the game's window is %s", open ? "still open (hidden)" : "closed");
-        if (!open) wwhd_game_window_closed();
-    });
+    wwhd_game_window_gone("to the background");
 #endif
 }
 static void game_window_foreground() {
@@ -935,11 +960,7 @@ extern "C" void wwhd_game_window_shown(void* controller) {
     [nc addObserverForName:UISceneWillEnterForegroundNotification object:ws queue:NSOperationQueue.mainQueue
                 usingBlock:^(NSNotification*) { game_window_foreground(); }];
     [nc addObserverForName:UISceneDidDisconnectNotification object:ws queue:NSOperationQueue.mainQueue
-                usingBlock:^(NSNotification*) {
-                    log_msg("[vision] the game's window disconnected");
-                    vision_event(@"game window disconnected");
-                    wwhd_game_window_closed();
-                }];
+                usingBlock:^(NSNotification*) { wwhd_game_window_gone("disconnected"); }];
     [g_view layoutIfNeeded];
     ask_window_size(ws, CGSizeMake(1280, 720));
     claim_controllers(vc.view.window);
@@ -1096,7 +1117,7 @@ bool get(const char* key, std::string& value) {
     // Apple Vision Pro's defaults until the player chooses: 3D (the game window's screen shows each eye its picture)
     // and 5.1 (the game window's speakers, visionos/StereoScreen.swift)
     // (stereoMode 1, Half SBS: on the 3D screen any mode but Off is a whole picture per eye)
-    static const std::pair<const char*, const char*> kDefaults[] = {{"stereoMode", "1"}, {"audioSpeakers", "surround"}};
+    static const std::pair<const char*, const char*> kDefaults[] = {{"stereoModeMetal", "1"}, {"audioSpeakers", "surround"}};
     for (const auto& [k, v] : kDefaults)
         if (!strcmp(key, k)) return value = v, true;
 #endif

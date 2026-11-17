@@ -93,6 +93,16 @@ bool trace_story() {
 
 std::mutex g_fs_mutex;
 std::unordered_map<uint32_t, OpenFile> g_files;
+// hle_fs::stop_save_writes: save writes being opened, and whether they are held (both under g_fs_mutex)
+int g_save_opening = 0;
+bool g_save_writes_stopped = false;
+std::atomic<int64_t> g_save_closed_ns{0};  // when a save file written last closed (steady clock)
+bool save_write(const std::string& gpath, const std::string& mode) {
+    return mode.find_first_of("wa+") != std::string::npos && gpath.rfind("/vol/save/", 0) == 0;
+}
+int64_t steady_ns() {
+    return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 std::unordered_map<uint32_t, OpenDir> g_dirs;
 uint32_t g_next_handle = 1;
 
@@ -246,7 +256,28 @@ uint64_t game_size(const std::string& gpath, const std::string& hp, const struct
                                                                       : (uint64_t)st.st_size;
 }
 
+int32_t open_file_now(const std::string& gpath, const std::string& mode, uint32_t out_handle);
 int32_t open_file(const std::string& gpath, const std::string& mode, uint32_t out_handle) {
+    const bool saving = save_write(gpath, mode);
+    if (saving) {
+        std::unique_lock<std::mutex> lk(g_fs_mutex);
+        if (g_save_writes_stopped) {  // the process is ending: this write never starts
+            lk.unlock();
+            LOG("[fs] %s: held, the game is ending", gpath.c_str());
+            BlockingScope b;
+            for (;;) std::this_thread::sleep_for(std::chrono::hours(1));
+        }
+        g_save_opening++;
+    }
+    const int32_t result = open_file_now(gpath, mode, out_handle);
+    if (saving) {
+        std::lock_guard<std::mutex> lk(g_fs_mutex);
+        g_save_opening--;
+    }
+    return result;
+}
+
+int32_t open_file_now(const std::string& gpath, const std::string& mode, uint32_t out_handle) {
     std::string hp = read_path(gpath,mode);
     if (mode.find_first_of("wa") != std::string::npos) make_parent_dirs(hp);
     std::string m = mode;
@@ -306,6 +337,23 @@ int32_t open_dir(const std::string& gpath, uint32_t out_handle) {
 
 }  // namespace
 
+bool hle_fs::stop_save_writes(double max_seconds, double settle) {
+    const int64_t end = steady_ns() + int64_t(max_seconds * 1e9), quiet = int64_t(settle * 1e9);
+    for (;;) {
+        {
+            std::lock_guard<std::mutex> lk(g_fs_mutex);
+            bool writing = g_save_opening > 0;
+            for (const auto& [h, f] : g_files) writing = writing || save_write(f.path, f.mode);
+            const bool settled = !writing && steady_ns() - g_save_closed_ns.load() >= quiet;
+            if (settled || steady_ns() >= end) {
+                g_save_writes_stopped = true;
+                return settled;
+            }
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+}
+
 // ---------------------------------------------------------------- FS
 HLE(coreinit, FSInit) {}
 HLE(coreinit, FSShutdown) {}
@@ -334,6 +382,7 @@ HLE(coreinit, FSCloseFile) {
             if (!it->second.final_host.empty()) complete = !it->second.failed && host::flush_file(it->second.f);
             if (fclose(it->second.f) != 0) complete = false;
             written = it->second.story && it->second.mode.find_first_of("wa+") != std::string::npos;
+            if (save_write(it->second.path, it->second.mode)) g_save_closed_ns = steady_ns();
             written_guest = it->second.path, written_host = it->second.host, final_host = it->second.final_host;
             g_files.erase(it);
         }
