@@ -5,7 +5,12 @@
 #include "interp.h"
 #include "gfx/depth_peek.h"
 // Metal renderer: device, window, presentation, clears and copies.
+#ifdef WWHD_TVOS
+#import <Foundation/Foundation.h>
+#import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
+#else
 #import <AppKit/AppKit.h>
+#endif
 #import <ImageIO/ImageIO.h>
 #import <UniformTypeIdentifiers/UniformTypeIdentifiers.h>
 
@@ -64,6 +69,7 @@ void peek_z(const uint32_t* cells, uint32_t n) {
     std::vector<uint32_t> destinations(points);
     end_encoder();
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    b.label = @"peek_z";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     for (uint32_t i=0; i<points; i++) {
         int x = depth_peek::pixel(cells[i*3],(uint32_t)depth->tex.width,640);
         int y = depth_peek::pixel(cells[i*3+1],(uint32_t)depth->tex.height,480);
@@ -133,6 +139,9 @@ static void map_guest_range(uint32_t base, uint32_t size) {
                                                  options:MTLResourceStorageModeShared
                                              deallocator:nil];
     if (!b) fatal("cannot map guest memory %08X+%X for the GPU", base, size);
+    // where it lies for the GPU: a GPU page fault report gives the faulting GPU address
+    if (@available(macOS 13.0, iOS 16.0, tvOS 16.0, *))
+        LOG("[gfx] guest %08X+%X at GPU address %llx", base, size, (unsigned long long)b.gpuAddress);
     R.guest.push_back({base, size, b});
 }
 
@@ -176,7 +185,15 @@ static void read_overlay_gpu_times() {
 id<MTLCommandBuffer> command_buffer() {
     if (!R.cmd) {
         read_overlay_gpu_times();
-        R.cmd = [R.queue commandBuffer];
+        // WWHD_GPU_ERRORS=1: a failed command buffer says which encoder faulted (pool_retire logs it)
+        static const bool encoderStatus = getenv("WWHD_GPU_ERRORS") && *getenv("WWHD_GPU_ERRORS") == '1';
+        if (encoderStatus) {
+            MTLCommandBufferDescriptor* d = [MTLCommandBufferDescriptor new];
+            d.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
+            R.cmd = [R.queue commandBufferWithDescriptor:d];
+        } else {
+            R.cmd = [R.queue commandBuffer];
+        }
         commandFrame = R.frame;
         commandToken = perf::gpu_begin(commandFrame);
     }
@@ -276,7 +293,9 @@ void init() {
     LOG("[gfx] Metal device: %s", R.device.name.UTF8String);
 }
 
+#ifndef WWHD_TVOS  // (tvOS: display.mm's run_appkit_loop is the main loop, as here)
 void run_main_loop() { [NSApp run]; }
+#endif
 
 // the MTLDevice's name, for reports (renderer.h Backend::device); "" before init
 std::string device_name() { return R.device ? std::string(R.device.name.UTF8String) : std::string(); }
@@ -309,6 +328,7 @@ static void clear_surface(Surface* s, const float* rgba, bool clearDepth, float 
         rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     }
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+    e.label = @"clear_surface";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     [e endEncoding];
     }
     mark_gpu_written(s);
@@ -372,6 +392,7 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
     if (!dynres::on() && !scr.scanSpares.empty()) scr.scanSpares.clear();
     scr.dyn = s->dyn;  // the layout uses the size at the full internal resolution
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    b.label = @"copy_to_scan";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     [b copyFromTexture:s->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
             sourceSize:MTLSizeMake(w, h, 1) toTexture:scr.tex destinationSlice:0 destinationLevel:0
      destinationOrigin:MTLOriginMake(0, 0, 0)];
@@ -398,6 +419,7 @@ static void dump_depth(id<MTLTexture> src, const char* name) {
     id<MTLBuffer> buf = [R.device newBufferWithLength:(NSUInteger)w * h * bpp * n options:MTLResourceStorageModeShared];
     end_encoder();
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    b.label = @"dump_depth";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     for (uint32_t z = 0; z < n; z++)
         [b copyFromTexture:src sourceSlice:z sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1)
                   toBuffer:buf destinationOffset:(NSUInteger)z * w * h * bpp destinationBytesPerRow:w * bpp destinationBytesPerImage:w * h * bpp
@@ -461,6 +483,7 @@ void dump_texture(id<MTLTexture> src, const char* name, bool async, bool srgbEnc
     id<MTLTexture> t = [R.device newTextureWithDescriptor:d];
     end_encoder();
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    b.label = @"dump_texture";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     [b copyFromTexture:src sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0) sourceSize:MTLSizeMake(w, h, 1)
              toTexture:t destinationSlice:0 destinationLevel:0 destinationOrigin:MTLOriginMake(0, 0, 0)];
     [b endEncoding];

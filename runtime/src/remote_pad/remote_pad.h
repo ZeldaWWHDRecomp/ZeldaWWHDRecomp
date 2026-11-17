@@ -7,7 +7,7 @@
 //   - it shows the GamePad screen: the renderer encodes the picture it draws for the GamePad window
 //     (gfx/remote_video.mm, Metal) and sends it here.
 //
-// Off by default: Settings > Controls > iPhone GamePad (saved as "remotePad"), or WWHD_REMOTE_PAD=1
+// Off by default (on on an Apple TV): Settings > Controls > iPhone GamePad (saved as "remotePad"), or WWHD_REMOTE_PAD=1
 // (or =<port>), which keeps it on whatever the setting says. While on, the game listens on UDP port 26770
 // (remote_pad::kDefaultPort) and advertises itself over Bonjour so the phone finds it. A phone must be
 // paired first: Settings opens with a code to type on the phone (pairing.h).
@@ -25,6 +25,9 @@ namespace remote_pad {
 
 void start_from_env();  // once at startup (input::init); does nothing unless WWHD_REMOTE_PAD is set
 void stop();
+// stop and listen again (an iPad or iPhone app back from the background, where its socket and its Bonjour
+// advertisement were torn down); nothing when the GamePad is off
+void restart();
 
 // ---- Settings > Controls > iPhone GamePad ----
 void set_enabled(bool on);   // the setting: listen or stop (WWHD_REMOTE_PAD keeps it listening)
@@ -75,8 +78,10 @@ void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, ui
 // ---- the GamePad speaker (protocol.h kAudio) ----
 // The phone plays the GamePad mix: the host then plays the TV mix alone (hle/ax.cpp). Cheap.
 bool audio_wanted();
-// the AX frame thread, every frame: the GamePad mix after the game's final mix, 48 kHz, s16 range
-void send_audio(const int32_t* left, const int32_t* right, int frames);
+// the AX frame thread, every frame: the GamePad mix after the game's final mix, 48 kHz, s16 range. It is held
+// back by `delay` frames first, so the phone plays it with the host's own sound (the host's queue and output,
+// less the phone's: hle/ax.cpp)
+void send_audio(const int32_t* left, const int32_t* right, int frames, int delay = 0);
 
 // ---- the game's text prompt on the phone (protocol.h kText / kTextInput) ----
 // The prompt (overlay/text_entry.cpp, render thread): how it is now, sent whenever it changes (cheap

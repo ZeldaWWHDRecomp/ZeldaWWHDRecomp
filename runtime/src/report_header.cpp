@@ -17,6 +17,7 @@
 #endif
 #include <windows.h>
 #elif defined(__APPLE__)
+#include <TargetConditionals.h>
 #include <sys/sysctl.h>
 #elif defined(__ANDROID__)
 #include <sys/system_properties.h>
@@ -131,7 +132,17 @@ std::string os_description() {
     if (sysctlbyname("kern.osproductversion", ver, &n, nullptr, 0) != 0) ver[0] = 0;
     n = sizeof build;
     if (sysctlbyname("kern.osversion", build, &n, nullptr, 0) != 0) build[0] = 0;
-    std::string s = std::string("macOS ") + (ver[0] ? ver : "(unknown version)");
+#if TARGET_OS_TV
+    const char* name = "tvOS ";
+#elif TARGET_OS_IPHONE
+    char machine[64] = "";  // "iPad8,10", "iPhone19,2"
+    n = sizeof machine;
+    if (sysctlbyname("hw.machine", machine, &n, nullptr, 0) != 0) machine[0] = 0;
+    const char* name = strncmp(machine, "iPad", 4) == 0 ? "iPadOS " : "iOS ";
+#else
+    const char* name = "macOS ";
+#endif
+    std::string s = std::string(name) + (ver[0] ? ver : "(unknown version)");
     if (build[0]) s += std::string(" (") + build + ")";
     return s;
 #elif defined(__ANDROID__)

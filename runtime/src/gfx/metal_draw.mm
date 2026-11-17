@@ -286,6 +286,33 @@ static bool rewritten_copy(GuestRangeKind kind, uint32_t addr, uint32_t size, Up
 // called before a command buffer commits: buffers used so far are recycled when it completes
 void pool_retire(id<MTLCommandBuffer> cmd) {
     g_texture_staging_bytes = 0;
+    // a GPU fault fails the command buffer (and the ones after it) without a word: the picture just stops
+    [cmd addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        // shader validation (MTL_SHADER_VALIDATION=1) reports through the command buffer's logs
+        if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
+            static std::atomic<int> reports{0};
+            for (id<MTLFunctionLog> l in done.logs) {
+                if (reports++ >= 40) break;
+                LOG("[gfx] GPU log (frame %llu, encoder \"%s\", function %s): %s", (unsigned long long)R.frame,
+                    l.encoderLabel.UTF8String ?: "?", l.function.name.UTF8String ?: "?", l.description.UTF8String ?: "?");
+            }
+        }
+        if (done.status != MTLCommandBufferStatusError) return;
+        static std::atomic<int> logged{0};
+        if (logged++ >= 20) return;
+        NSError* e = done.error;
+        if (logged == 1) LOG("[gfx] GPU error details: %s", e.description.UTF8String ?: "?");
+        LOG("[gfx] GPU command buffer failed (frame %llu): %s (code %ld)", (unsigned long long)R.frame,
+            e.localizedDescription.UTF8String ?: "?", (long)e.code);
+        if (@available(macOS 11.0, iOS 14.0, tvOS 14.0, *)) {
+            NSArray<id<MTLCommandBufferEncoderInfo>>* infos = e.userInfo[MTLCommandBufferEncoderInfoErrorKey];
+            for (id<MTLCommandBufferEncoderInfo> info in infos)
+                if (info.errorState == MTLCommandEncoderErrorStateFaulted || info.errorState == MTLCommandEncoderErrorStateAffected)
+                    LOG("[gfx]   encoder \"%s\": %s; %s", info.label.UTF8String ?: "?",
+                        info.errorState == MTLCommandEncoderErrorStateFaulted ? "faulted" : "affected",
+                        [info.debugSignposts componentsJoinedByString:@" / "].UTF8String ?: "");
+        }
+    }];
     // the GPU timeline of the performance report (render_prof.h add_gpu_span): this command buffer's GPU interval
     if (rprof::enabled())
         [cmd addCompletedHandler:^(id<MTLCommandBuffer> done) {
@@ -1443,6 +1470,9 @@ static id<MTLTexture> null_texture(MTLTextureType type) {
 
 // texture view with the shader's expected type and the resource's component swizzle
 static std::unordered_map<uint64_t, id<MTLTexture>> g_views;
+// debug (WWHD_GPU_SYNC_FRAMES): the textures the current draw binds, for the failing draw's description
+static bool g_describe_textures = false;
+static std::string g_draw_textures;
 void forget_texture_views() { g_views.clear(); }
 
 static id<MTLTexture> texture_view(Surface* s, MTLTextureType type, uint32_t word4) {
@@ -1608,7 +1638,20 @@ static void bind_stage(id<MTLRenderCommandEncoder> enc, const uint32_t* regs, Sh
              regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3],
              regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3 + 1],
              regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3 + 2]);
+        const bool placeholder = !tex;
         if (!tex) tex = null_texture(type);
+        if (g_describe_textures) {
+            char d[400];
+            snprintf(d, sizeof d, "\n  %s tex%u -> binding %u: surface %08X %ux%u fmt %X gpuWritten %d mips %u%s; texture %lux%lux%lu "
+                     "pixel %lu type %lu levels %lu storage %lu view %d parent %lux%lu pixel %lu",
+                     vertex ? "VS" : "PS", unit, binding, tw[2] << 8, s ? s->width : 0, s ? s->height : 0, s ? s->format : 0,
+                     s ? (int)s->gpuWritten : -1, s ? s->mips : 0, placeholder ? " (placeholder)" : "",
+                     (unsigned long)tex.width, (unsigned long)tex.height, (unsigned long)tex.depth, (unsigned long)tex.pixelFormat,
+                     (unsigned long)tex.textureType, (unsigned long)tex.mipmapLevelCount, (unsigned long)tex.storageMode,
+                     tex.parentTexture != nil, (unsigned long)tex.parentTexture.width, (unsigned long)tex.parentTexture.height,
+                     (unsigned long)tex.parentTexture.pixelFormat);
+            g_draw_textures += d;
+        }
         const uint32_t* sw = &regs[REGADDR::SQ_TEX_SAMPLER_WORD0_0 + (samplerIdx + samplerBase) * 3];
         // quirk: the ambient-occlusion pass (PS 44BDFD00) point-samples its centre depth from a 640x360
         // buffer while drawing 960x540; every third row lands half a texel off and shows as screen-fixed
@@ -1801,6 +1844,7 @@ static bool ensure_pass(Surface* const* colors, const uint32_t* colorSlices, Sur
     }
     if (!any) return false;
     R.enc = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+    R.enc.label = @"ensure_pass";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     for (int i = 0; i < 8; i++) {
         R.passColor[i] = colors[i];
         R.passColorSlice[i] = colorSlices[i];
@@ -2041,6 +2085,21 @@ static CacheScan cache_scan(const std::string& path) {
 }
 
 // load and replay the recipes; runs once on the render thread before the first draw
+// Known pipelines are built in the background after the replay, a few per frame, so none stalls a draw. On an
+// Apple TV that is every recorded pipeline (about 12,000 with a full shader prebuild, some 150 MB) under a
+// fixed memory limit: there they are built when first drawn. WWHD_BG_PIPELINES=1 / 0 decides elsewhere.
+static bool background_pipelines() {
+    static const bool on = [] {
+        if (const char* e = getenv("WWHD_BG_PIPELINES"); e && *e) return strcmp(e, "0") != 0;
+#ifdef WWHD_TVOS
+        return false;
+#else
+        return true;
+#endif
+    }();
+    return on;
+}
+
 static void cache_load();
 static void cache_load_once() {
     static bool loaded = (cache_load(), true);
@@ -2112,7 +2171,7 @@ static void cache_load() {
                 if (repeated()) continue;
                 PipelineRecipe r;
                 g_user_pipelines.insert(h);
-                if (get(p, end, r) && g_known_pipelines.insert(h).second && !recordOnly) {
+                if (get(p, end, r) && g_known_pipelines.insert(h).second && !recordOnly && background_pipelines()) {
                     g_pending_pipelines.push_back(r);
                     pipelines++;
                 }
@@ -2322,6 +2381,18 @@ void report_skips() {
         (unsigned long long)g_stat_staging_buffers, g_stat_staging_buffer_bytes / 1048576.0);
     g_stat_staging_pool = g_stat_staging_pool_bytes = g_stat_staging_buffers = g_stat_staging_buffer_bytes = 0;
     g_stat_full_checks = g_stat_uploads = g_stat_invalidates = g_stat_invalidated_surfaces = g_stat_hashed_bytes = 0;
+    if (!bc_textures_supported()) {
+        // a GPU without BC textures (formats.h decodeBC): what the decoded ones take, by BC type, of all surfaces
+        double bc[6] = {}, all = 0;
+        for (const auto& [addr, surf] : R.surfaces) {
+            if (!surf->tex) continue;
+            const double mb = surf->tex.allocatedSize / 1048576.0;
+            all += mb;
+            if (surf->fmt.decodeBC) bc[surf->fmt.bcMode & 7] += mb;
+        }
+        LOG("[gfx] decoded BC textures: BC1 %.0f MiB, BC2 %.0f, BC3 %.0f, BC4 %.0f, BC5 %.0f; all surfaces %.0f MiB",
+            bc[1], bc[2], bc[3], bc[4], bc[5], all);
+    }
     for (int k = 0; k < kRangeKinds; k++) {
         size_t dynamicRanges = 0;
         for (auto& [key, r] : g_guest_ranges[k]) dynamicRanges += r.dynamic;
@@ -2486,6 +2557,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
     pass.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, coverage == 2 ? 1 : 0);
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> encoder = [command_buffer() renderCommandEncoderWithDescriptor:pass];
+    encoder.label = @"prepare_backdrop";  // (named for WWHD_GPU_ERRORS: which pass faulted)
     if (!encoder) {backdrop_trace("encoder-reject",pixel,d.width,d.height);return false;}
     [encoder endEncoding];
     storage->complete.store(false,std::memory_order_release);
@@ -2558,8 +2630,21 @@ void gamepad_backdrop_reset() {
     backdropScanned = {}; backdropScannedNext = 0; backdropForeign = false;
     gamepad_backdrop::set_capture_requested(false);
 }
+// debug: WWHD_GPU_SYNC_FRAMES=<from>-<to> (see the end of draw)
+static bool gpu_sync_frame() {
+    static const std::pair<uint64_t, uint64_t> frames = [] {
+        unsigned long long a = 0, b = 0;
+        const char* e = getenv("WWHD_GPU_SYNC_FRAMES");
+        if (!e || sscanf(e, "%llu-%llu", &a, &b) != 2) return std::pair<uint64_t, uint64_t>{1, 0};
+        return std::pair<uint64_t, uint64_t>{a, b};
+    }();
+    return R.frame >= frames.first && R.frame <= frames.second;
+}
+
 void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexType, uint32_t indexAddr, uint32_t baseVertex,
           uint32_t instances) {
+    g_describe_textures = gpu_sync_frame();
+    if (g_describe_textures) g_draw_textures.clear();
     const bool captureDraw = backdropScope && !backdropReplay && gamepad_backdrop::capture_enabled();
     if (captureDraw) ++backdropExpected;
     std::optional<BackdropDrawReplay> capturedBindings;
@@ -2847,6 +2932,48 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
                         baseVertex:baseVertex
                       baseInstance:0];
     }
+    // debug: WWHD_GPU_SYNC_FRAMES=<from>-<to> commits every draw of those frames on its own and waits for it; the
+    // first one the GPU fails (a page fault) is described, and the check stops
+    {
+        static bool found = false;
+        if (!found && gpu_sync_frame() && !backdropReplay) {
+            end_encoder();
+            if (id<MTLCommandBuffer> c = R.cmd) {
+                pool_retire(c);
+                [c commit];
+                R.cmd = nil;
+                [c waitUntilCompleted];
+                if (c.status == MTLCommandBufferStatusError) {
+                    found = true;
+                    uint32_t maxIndex = 0;
+                    for (uint32_t i : indices) maxIndex = std::max(maxIndex, i);
+                    LOG("[gpusync] frame %llu draw #%llu FAILED: VS %08X key %016llx, PS %08X key %016llx, prim %u count %u "
+                        "indices %zu (max %u) base %u instances %u, target %ux%u, manual fetch %d",
+                        (unsigned long long)R.frame, (unsigned long long)thisDraw, regs[mmSQ_PGM_START_VS] << 8,
+                        (unsigned long long)vs->key, regs[mmSQ_PGM_START_PS] << 8, (unsigned long long)ps->key, (unsigned)ptype,
+                        count, indices.size(), maxIndex, baseVertex, instances, w, h, fs->mtlFetchVertexManually ? 1 : 0);
+                    LOG("[gpusync]   textures:%s", g_draw_textures.c_str());
+                    for (int i = 0; i < 8; i++)
+                        if (Surface* c = colors[i])
+                            LOG("[gpusync]   color %d: surface %08X %ux%u fmt %X gpuWritten %d; texture %lux%lu pixel %lu storage %lu "
+                                "levels %lu slices %lu, slice %u", i, c->addr, c->width, c->height, c->format, (int)c->gpuWritten,
+                                (unsigned long)c->tex.width, (unsigned long)c->tex.height, (unsigned long)c->tex.pixelFormat,
+                                (unsigned long)c->tex.storageMode, (unsigned long)c->tex.mipmapLevelCount,
+                                (unsigned long)c->tex.arrayLength, colorSlices[i]);
+                    if (depth)
+                        LOG("[gpusync]   depth: surface %08X %ux%u fmt %X; texture %lux%lu pixel %lu storage %lu slices %lu, slice %u",
+                            depth->addr, depth->width, depth->height, depth->format, (unsigned long)depth->tex.width,
+                            (unsigned long)depth->tex.height, (unsigned long)depth->tex.pixelFormat, (unsigned long)depth->tex.storageMode,
+                            (unsigned long)depth->tex.arrayLength, depthSlice);
+                    for (auto& g : fs->bufferGroups) {
+                        const uint32_t base = mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7;
+                        LOG("[gpusync]   vertex buffer %u: %08X size %u stride %u, %d attributes", (unsigned)g.attributeBufferIndex,
+                            regs[base], regs[base + 1] + 1, (regs[base + 2] >> 11) & 0xFFFF, (int)g.attribCount);
+                    }
+                }
+            }
+        }
+    }
     if (backdropReplay) {
         backdropEncoded = true;
         return; // private replay never changes game target history, AO or debug captures
@@ -3051,7 +3178,7 @@ bool headstart_queue_pipeline(const uint8_t* raw, size_t size) {
     if (size != sizeof(PipelineRecipe)) return false;
     PipelineRecipe r;
     memcpy(&r, raw, size);
-    if (g_known_pipelines.insert(hash_bytes(raw, size)).second) g_pending_pipelines.push_back(r);
+    if (g_known_pipelines.insert(hash_bytes(raw, size)).second && background_pipelines()) g_pending_pipelines.push_back(r);
     return true;
 }
 

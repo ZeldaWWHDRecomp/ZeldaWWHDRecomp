@@ -43,6 +43,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include <functional>
+#include <initializer_list>
 #include <atomic>
 #include <chrono>
 #include <cfloat>
@@ -281,6 +282,43 @@ bool controller_down(int p) { return U.values[p] > 0.5f; }
 bool controller_pressed(int p) { return U.values[p] > 0.5f && U.prev[p] <= 0.5f; }
 bool navigation_pressed(int p) { return U.cap_action < 0 && !U.capture_completed && U.gamepad_navigation.pressed(U.nav_values.data(), U.nav_prev.data(), p); }
 int shown_builtin() { return ext::builtin_tab(U.tab); }  // the open tab's Tab, -1 for an added one
+
+// A or down on a focused tab moves the selection into its page. ImGui's own down from a tab bar skips a page
+// that is scrolled past its first items (they are above the tabs then) and lands on Quit Game.
+struct EnterPage {
+    int pending = -1;  // the tab whose page takes the selection when it is next drawn
+    // after BeginTabItem(i); `before` is the item ID from before it (no tab item: nothing to check)
+    void check(int i, int shown, ImGuiID before) {
+        if (ImGui::GetItemID() == before || !ImGui::IsItemFocused()) return;
+        auto pressed = [](std::initializer_list<ImGuiKey> keys) {
+            for (ImGuiKey k : keys)
+                if (ImGui::IsKeyPressed(k, false)) return true;
+            return false;
+        };
+        if (pressed({ImGuiKey_GamepadFaceDown, ImGuiKey_Enter, ImGuiKey_KeypadEnter, ImGuiKey_Space}))
+            pending = i;  // (an unselected tab: once its page shows)
+        else if (pressed({ImGuiKey_GamepadDpadDown, ImGuiKey_GamepadLStickDown, ImGuiKey_DownArrow}))
+            pending = shown;
+    }
+    // in tab i's page, before the item to select: true once, when it was asked for
+    bool take(int i) {
+        if (pending != i) return false;
+        pending = -1;
+        return true;
+    }
+};
+EnterPage g_enter_settings_page, g_enter_controls_page;
+bool g_enter_controls_tabs = false;  // the Controls page was entered: its selected tab takes the selection
+
+// Like SetKeyboardFocusHere, without activating what it lands on, and scrolled into view
+void select_next_item() {
+    ImGuiContext& g = *ImGui::GetCurrentContext();
+    ImGui::SetNavWindow(g.CurrentWindow);
+    ImGui::NavMoveRequestSubmit(ImGuiDir_None, ImGuiDir_Down, ImGuiNavMoveFlags_IsTabbing | ImGuiNavMoveFlags_FocusApi,
+                                ImGuiScrollFlags_KeepVisibleEdgeX | ImGuiScrollFlags_KeepVisibleEdgeY);
+    g.NavTabbingDir = 1;
+    g.NavTabbingCounter = 1;
+}
 
 void post_changed(std::function<void()> fn) {
     hostui::post([fn] {
@@ -3251,12 +3289,24 @@ void controls_gameplay_page() {
     talk_rows();
 }
 
+// a Controls tab (BeginTabItem), taking the selection from the Settings tabs and going on into its page
+bool controls_tab(int i, const char* name) {
+    if (g_enter_controls_tabs && i == U.controls_page) {
+        g_enter_controls_tabs = false;
+        select_next_item();
+    }
+    const ImGuiID before = ImGui::GetItemID();
+    const bool open = ImGui::BeginTabItem(name, nullptr, U.select_controls_page == i ? ImGuiTabItemFlags_SetSelected : 0);
+    g_enter_controls_page.check(i, U.controls_page, before);
+    return open;
+}
+
 // Pages hold presentation state only; no controls.json migration is needed.
 void tab_controls() {
     input_map::Mapping m = edit_current();
     const bool pro = input::pro_controller();
     if (ImGui::BeginTabBar("controls_sections", ImGuiTabBarFlags_FittingPolicyScroll)) {
-        if (ImGui::BeginTabItem("Bindings", nullptr, U.select_controls_page == 0 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (controls_tab(0, "Bindings")) {
             if (U.controls_page != 0) {
                 U.cap_action = -1;
                 g_capturing_keys = false;
@@ -3264,12 +3314,12 @@ void tab_controls() {
             }
             U.controls_page = 0;
             ImGui::BeginChild("BindingsPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            if (g_enter_controls_page.take(U.controls_page)) select_next_item();
             controls_bindings_page(m, pro);
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Controller", nullptr,
-                                U.select_controls_page == 1 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (controls_tab(1, "Controller")) {
             if (U.controls_page != 1) {
                 U.cap_action = -1;
                 g_capturing_keys = false;
@@ -3277,11 +3327,12 @@ void tab_controls() {
             }
             U.controls_page = 1;
             ImGui::BeginChild("ControllerPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            if (g_enter_controls_page.take(U.controls_page)) select_next_item();
             controls_controller_page(m, pro);
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Prompts", nullptr, U.select_controls_page == 2 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (controls_tab(2, "Prompts")) {
             if (U.controls_page != 2) {
                 U.cap_action = -1;
                 g_capturing_keys = false;
@@ -3289,11 +3340,12 @@ void tab_controls() {
             }
             U.controls_page = 2;
             ImGui::BeginChild("PromptsPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            if (g_enter_controls_page.take(U.controls_page)) select_next_item();
             controls_prompts_page(m);
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Camera", nullptr, U.select_controls_page == 3 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (controls_tab(3, "Camera")) {
             if (U.controls_page != 3) {
                 U.cap_action = -1;
                 g_capturing_keys = false;
@@ -3301,11 +3353,12 @@ void tab_controls() {
             }
             U.controls_page = 3;
             ImGui::BeginChild("CameraPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            if (g_enter_controls_page.take(U.controls_page)) select_next_item();
             controls_camera_page();
             ImGui::EndChild();
             ImGui::EndTabItem();
         }
-        if (ImGui::BeginTabItem("Gameplay", nullptr, U.select_controls_page == 4 ? ImGuiTabItemFlags_SetSelected : 0)) {
+        if (controls_tab(4, "Gameplay")) {
             if (U.controls_page != 4) {
                 U.cap_action = -1;
                 g_capturing_keys = false;
@@ -3313,6 +3366,7 @@ void tab_controls() {
             }
             U.controls_page = 4;
             ImGui::BeginChild("GameplayPage", ImVec2(0, 0), ImGuiChildFlags_NavFlattened);
+            if (g_enter_controls_page.take(U.controls_page)) select_next_item();
             controls_gameplay_page();
             ImGui::EndChild();
             ImGui::EndTabItem();
@@ -3551,6 +3605,23 @@ void tab_audio() {
     if (ImGui::IsItemDeactivatedAfterEdit())
         hostui::post([pad_volume] { audio::set_gamepad_sounds_volume(pad_volume / 100.0f); });
     help("Play sounds from the GamePad speaker through your main speakers during TV play. Applies immediately and is remembered. Master volume also applies.");
+    if (remote_pad::audio_wanted()) {
+        int extra = audio::pad_audio_extra_ms();
+        ImGui::SetNextItemWidth(260);
+        if (ImGui::SliderInt("iPhone GamePad sound delay", &extra, -100, 300, "%+d ms", ImGuiSliderFlags_AlwaysClamp))
+            hostui::post([extra] { audio::set_pad_audio_extra_ms(extra, false); });
+        if (ImGui::IsItemDeactivatedAfterEdit())
+            hostui::post([extra] { audio::set_pad_audio_extra_ms(extra); });
+        // (the Apple TV, iPhone and iPad hosts measure their output's delay; the others don't)
+        if (audio::output_latency_frames() > 0)
+            help("The phone plays the GamePad's sound held back by this device's own delay, as far as it is known. A TV "
+                 "or receiver adds its own: if the phone's sound comes early (an echo), raise this; late, lower it. "
+                 "Applies at once and is remembered.");
+        else
+            help("The phone plays the GamePad's sound held back by the game's own sound queue only: this computer's "
+                 "output delay isn't measured, and speakers, a TV or a receiver add their own. If the phone's sound "
+                 "comes early (an echo), raise this; late, lower it. Applies at once and is remembered.");
+    }
     bool menu_sounds_on = menu_sounds::option();
     if (ImGui::Checkbox("Menu sounds", &menu_sounds_on))
         hostui::post([menu_sounds_on] { menu_sounds::set_option(menu_sounds_on); });
@@ -3565,6 +3636,13 @@ void tab_audio() {
         if (combo("Speakers", &speakers, "Stereo\0Surround 5.1\0"))
             hostui::post([speakers] { audio::set_requested_surround(speakers == 1); });
         note("Restart the game after changing Speakers.");
+        if (audio::spatial_surround()) {
+            int rear = audio::rear_surrounds() ? 1 : 0;
+            if (combo("Surround placement", &rear, "Side\0Rear\0"))
+                hostui::post([rear] { audio::set_rear_surrounds(rear == 1); });
+            help("Where Spatial Audio places the two surround channels: at your sides (5.1 with side surrounds) or "
+                 "behind you (5.1 with rear surrounds). Applies at once.");
+        }
     }
     if (audio::surround_fallback())
         note("Surround 5.1 unavailable on this output. Using stereo; restart after connecting a 5.1 device.");
@@ -3706,11 +3784,18 @@ void settings_window() {
             for (int i = 0; i < int(tabs.size()); i++) {
                 if (!tabs[i].visible()) continue;  // a tab only some launches have (the world editor's, with --editor)
                 ImGuiTabItemFlags f = U.select_tab == i ? ImGuiTabItemFlags_SetSelected : 0;
-                if (ImGui::BeginTabItem(tabs[i].name.c_str(), nullptr, f)) {
+                const ImGuiID before = ImGui::GetItemID();
+                const bool shown = ImGui::BeginTabItem(tabs[i].name.c_str(), nullptr, f);
+                g_enter_settings_page.check(i, U.tab, before);
+                if (shown) {
                     if (U.tab != i) U.cap_action = -1, g_capturing_keys = false, U.cap_note.clear();
                     U.tab = i;
                     // the page ends one row above the bottom of the window: the bottom row (quit_row)
                     ImGui::BeginChild("page", ImVec2(0, -ImGui::GetFrameHeightWithSpacing()), ImGuiChildFlags_NavFlattened);
+                    if (g_enter_settings_page.take(i)) {
+                        if (tabs[i].builtin == kControls) g_enter_controls_tabs = true;
+                        else select_next_item();
+                    }
                     switch (tabs[i].builtin) {
                     case kSaves: tab_saves(); break;
                     case kGraphics: tab_graphics(); break;
@@ -4081,7 +4166,14 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             hostui::post([pro = v == "1"] { hostui::set_pro_controller(pro); });
         // the iPhone GamePad: its paired phones, and on if it was (WWHD_REMOTE_PAD starts it anyway)
         remote_pad::load_paired(hostui::get("remotePadPhones", v) ? v : std::string());  // (also when none is saved)
-        if (remote_pad::host_supported() && hostui::get("remotePad", v) && v == "1") remote_pad::set_enabled(true);
+#ifdef WWHD_TVOS
+        // on an Apple TV the phone is the usual controller (Settings needs one): on unless turned off
+        const bool remote_pad_default = true;
+#else
+        const bool remote_pad_default = false;
+#endif
+        if (remote_pad::host_supported() && (hostui::get("remotePad", v) ? v == "1" : remote_pad_default))
+            remote_pad::set_enabled(true);
         // the saved rumble choice (WWHD_RUMBLE wins)
         if (!rumble::env_override() && hostui::get("rumble", v)) rumble::set_enabled(v != "0");
 #ifdef __ANDROID__

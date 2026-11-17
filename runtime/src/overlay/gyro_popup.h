@@ -32,9 +32,6 @@ inline bool dialog(bool open, motion::Settings& g, bool back) {
          "Cemuhook or this device the game's own Options > Gyro switch still decides whether it uses the motion; "
          "the mouse works with it off too. The game ignores the motion while the right stick is pushed.");
     for (int i = 0; i < motion::kSourceCount; i++) {
-#ifndef __ANDROID__
-        if (i == motion::kAuto && g.source != i) continue;  // Automatic picks this device for touch play (Android)
-#endif
         if (radio(motion::source_label(i), g.source == i)) {
             // an untouched sensitivity follows the new source's default (the device's own sensors: 1.0)
             const float was = motion::default_sensitivity(g.source), now = motion::default_sensitivity(i);

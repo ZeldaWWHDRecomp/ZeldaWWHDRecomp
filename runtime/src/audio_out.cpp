@@ -11,7 +11,14 @@
 
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
 #include <AudioToolbox/AudioToolbox.h>
+#ifdef WWHD_TVOS
+int uikit_audio_session(bool surround);  // gfx/host_tvos.mm: the audio session; the route's output channels
+// gfx/host_tvos.mm: 5.1 spatialized for headphones (AVAudioEngine), pulling the game's six channels through `pull`
+bool uikit_spatial_start(void (*pull)(int16_t* interleaved, uint32_t frames));
+#endif
+#ifndef WWHD_TVOS  // (tvOS: the RemoteIO unit, without the HAL's device queries; stereo)
 #include <CoreAudio/CoreAudio.h>
+#endif
 #else
 #include <SDL3/SDL.h>
 #endif
@@ -30,7 +37,7 @@ namespace audio {
 namespace {
 
 constexpr int kCapacity = 1 << 15; // frames (~680 ms)
-constexpr int kTarget = kRate * 40 / 1000;
+constexpr int kTarget = kRate * 40 / 1000;  // queued ahead of the output (the mixer paces itself to it)
 
 int16_t g_ring[kCapacity * 6];
 std::atomic<uint32_t> g_read{0}, g_write{0};
@@ -52,6 +59,17 @@ std::atomic<bool> g_gamepad_sounds{true};
 std::atomic<float> g_gamepad_gain{1};
 std::atomic<float> g_gain{1};  // master volume (issue #124), read by the producer mix
 std::atomic<int> g_channels{2};
+std::atomic<int> g_host_target_ms{8};  // the host path's mixer queue (set_host_target_ms)
+std::atomic<bool> g_rear_surrounds{false};  // the spatial feed's 5.1 layout: rear surrounds (Rls Rrs), else side (Ls Rs)
+std::atomic<bool> g_host_output{false};  // the host renders the mix itself (pull_interleaved), without g_unit
+// With the host rendering the mix itself (its own queue covers the output), only the mixer's jitter needs room
+// here: 8 ms (with the spatial feed's margin, the game's own share of the latency is about one 60 fps frame).
+// WWHD_AUDIO_TARGET_MS sets either (while measuring underruns).
+int target() {
+    static const int env = [] { const char* e = getenv("WWHD_AUDIO_TARGET_MS"); return e && *e ? kRate * atoi(e) / 1000 : 0; }();
+    if (env > 0) return env;
+    return g_host_output ? kRate * g_host_target_ms / 1000 : kTarget;
+}
 std::atomic<bool> g_requested{false}, g_fallback{false}, g_device_changed{false};
 std::atomic<int> g_test{-1};     // sample position; only producer advances, UI starts/stops
 constexpr int kTestSlot = kRate; // 0.65 s tone + 0.35 s silence per speaker
@@ -118,6 +136,7 @@ void pull(int16_t *out, uint32_t frames) {
     g_read.store(r + n, std::memory_order_release);
 }
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
+#ifndef WWHD_TVOS
 OSStatus output_changed(AudioObjectID, UInt32, const AudioObjectPropertyAddress *, void *) {
     // Six-channel game state cannot be switched to stereo mid-frame. Keep it silent until
     // restart renegotiates the new device, instead of letting the OS fold it into two speakers.
@@ -126,6 +145,7 @@ OSStatus output_changed(AudioObjectID, UInt32, const AudioObjectPropertyAddress 
     audio::flush();
     return noErr;
 }
+#endif
 OSStatus render(void *, AudioUnitRenderActionFlags *, const AudioTimeStamp *, UInt32, UInt32 frames,
                 AudioBufferList *io) {
     if (g_device_changed)
@@ -160,6 +180,9 @@ void SDLCALL render(void *, SDL_AudioStream *stream, int additional, int) {
 #endif
 
 } // namespace
+
+// the mix as the output reads it, for a host that renders it itself (interleaved, channels())
+void pull_interleaved(int16_t* out, uint32_t frames) { pull(out, frames); }
 
 void init() {
     std::call_once(g_start, [] {
@@ -223,7 +246,11 @@ void init() {
 #if defined(__APPLE__) && !defined(WWHD_SDL_HOST)
         AudioComponentDescription desc{};
         desc.componentType = kAudioUnitType_Output;
+#ifdef WWHD_TVOS
+        desc.componentSubType = kAudioUnitSubType_RemoteIO;
+#else
         desc.componentSubType = kAudioUnitSubType_DefaultOutput;
+#endif
         desc.componentManufacturer = kAudioUnitManufacturer_Apple;
         AudioComponent comp = AudioComponentFindNext(nullptr, &desc);
         if (!comp || AudioComponentInstanceNew(comp, &g_unit) != noErr) {
@@ -234,6 +261,19 @@ void init() {
             open_dump();
             return;
         }
+#ifdef WWHD_TVOS
+        // the audio session (gfx/host_tvos.mm). Surround: the host's feed hands the six to whatever the route is (a
+        // 5.1 receiver, AirPods with Spatial Audio, a device's speaker folded to stereo) and follows it as it changes
+        ::uikit_audio_session(g_channels == 6);
+        if (g_channels == 6) {
+            if (::uikit_spatial_start(pull_interleaved)) {
+                g_host_output = true;
+                open_dump();
+                return;
+            }
+            fallback();
+        }
+#else
         if (g_channels == 6) {
             AudioDeviceID device = 0;
             UInt32 size = sizeof(device);
@@ -257,6 +297,7 @@ void init() {
             if (count < 6)
                 fallback();
         }
+#endif
         AudioStreamBasicDescription fmt{};
         fmt.mSampleRate = kRate;
         fmt.mFormatID = kAudioFormatLinearPCM;
@@ -282,6 +323,11 @@ void init() {
                 layout->mChannelDescriptions[i].mChannelLabel = labels[i];
             OSStatus layout_status = AudioUnitSetProperty(g_unit, kAudioUnitProperty_AudioChannelLayout,
                                                           kAudioUnitScope_Input, 0, layout, sizeof storage);
+#ifdef WWHD_TVOS
+            // RemoteIO takes no layout: the session's six channels are in this order already
+            if (layout_status != noErr) LOG("[audio] 5.1 in the session's channel order (no layout on this output: %d)", (int)layout_status);
+            layout_status = noErr;
+#endif
             if (format_status != noErr || layout_status != noErr) {
                 fallback();
                 fmt.mChannelsPerFrame = 2;
@@ -328,9 +374,11 @@ void init() {
             g_unit = nullptr;
             return;
         }
+#ifndef WWHD_TVOS
         AudioObjectPropertyAddress changed{kAudioHardwarePropertyDefaultOutputDevice, kAudioObjectPropertyScopeGlobal,
                                            kAudioObjectPropertyElementMain};
         AudioObjectAddPropertyListener(kAudioObjectSystemObject, &changed, output_changed, nullptr);
+#endif
         LOG("[audio] CoreAudio output started (48 kHz, %d channels)", g_channels.load());
 #else
         if (!SDL_InitSubSystem(SDL_INIT_AUDIO)) {
@@ -457,7 +505,7 @@ void push(const int16_t *stereo, int frames) {
                 write_wav_header();
         }
     }
-    if (!g_unit || g_device_changed)
+    if ((!g_unit && !g_host_output) || g_device_changed)
         return;
     uint32_t w = g_write.load(std::memory_order_relaxed), r = g_read.load(std::memory_order_acquire);
     if (w - r + frames > kCapacity) { // device stalled: drop rather than overwrite
@@ -488,6 +536,42 @@ bool requested_surround() {
 void set_requested_surround(bool enabled) {
     g_requested = enabled;
     hostui::set("audioSpeakers", enabled ? "surround" : "stereo");
+}
+void set_host_target_ms(int ms) { g_host_target_ms = ms; }
+static std::atomic<int> g_output_latency_frames{0};
+int output_latency_frames() { return g_output_latency_frames; }
+static std::atomic<int> g_pad_extra_ms{0};
+int pad_audio_extra_ms() {
+    static const bool loaded = [] {
+        if (const char* e = getenv("WWHD_PAD_AUDIO_EXTRA_MS")) g_pad_extra_ms = atoi(e);
+        else if (std::string v; hostui::get("audioPadExtraMs", v) && !v.empty()) g_pad_extra_ms = atoi(v.c_str());
+        return true;
+    }();
+    (void)loaded;
+    return g_pad_extra_ms;
+}
+void set_pad_audio_extra_ms(int ms, bool save) {
+    pad_audio_extra_ms();  // (the saved value first, so it can't overwrite this one later)
+    g_pad_extra_ms = ms;
+    if (save && !getenv("WWHD_PAD_AUDIO_EXTRA_MS")) hostui::set("audioPadExtraMs", std::to_string(ms));
+}
+void set_output_latency_ms(float ms) { g_output_latency_frames = int(ms * kRate / 1000); }
+bool spatial_surround() {
+    return g_host_output && g_channels == 6;
+}
+bool rear_surrounds() {
+    static const bool loaded = [] {
+        std::string v;
+        if (hostui::get("audioSurroundPlacement", v)) g_rear_surrounds = v == "rear";
+        return true;
+    }();
+    (void)loaded;
+    return g_rear_surrounds;
+}
+void set_rear_surrounds(bool rear) {
+    rear_surrounds();  // (the saved value first, so it can't overwrite this one later)
+    g_rear_surrounds = rear;
+    hostui::set("audioSurroundPlacement", rear ? "rear" : "side");
 }
 float master_volume() {
     return g_gain.load();
@@ -534,13 +618,13 @@ const char *speaker_test_channel() {
 }
 
 int buffered_frames() {
-    if (!g_unit || g_device_changed)
-        return kTarget;
+    if ((!g_unit && !g_host_output) || g_device_changed)
+        return target();
     return (int)(g_write.load(std::memory_order_acquire) - g_read.load(std::memory_order_acquire));
 }
 
 int target_frames() {
-    return kTarget;
+    return target();
 }
 
 void flush() {

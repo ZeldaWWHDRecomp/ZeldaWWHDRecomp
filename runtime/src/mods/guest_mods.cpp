@@ -1293,6 +1293,28 @@ std::string notebook_model(const std::filesystem::path& glb,const std::string& d
     return std::filesystem::is_regular_file(out,ec)?out.string():std::string();
 }
 
+#ifdef WWHD_TVOS
+// An Apple TV can't build a code mod: it has no compiler and runs only code signed into the app. The Mac builds
+// each module for tvOS into the app (tvos/README.md, tvos/bundle_mods.py): GuestMods/<id>.dylib and <id>.json,
+// the builder's own result (the ELF's sha256, the allocation size, the guest base it was built for, the build).
+// base 0: the size only (the builder's --inspect).
+mods::json::Value bundled_module(const mods::packages::GuestPackage& pkg,uint32_t base) {
+    const char* dir=getenv("WWHD_BUNDLED_GUEST_MODS");  // (host_tvos.mm: the app's GuestMods folder)
+    const auto json=std::filesystem::path(dir?dir:"")/(pkg.id+".json");
+    std::error_code ec;
+    if(!dir||!std::filesystem::is_regular_file(json,ec))
+        exception_report::raise("This mod isn't built into the app; build the app again with it");
+    std::ifstream in(json,std::ios::binary);
+    auto result=mods::json::parse(std::string{std::istreambuf_iterator<char>(in),{}});
+    if(result.get("build").string()!=g_guest_build_name)
+        exception_report::raise("This mod was built into the app for another game version; build the app again");
+    if(base&&result.get("base").type==mods::json::Value::Number&&uint32_t(result.get("base").number)!=base)
+        exception_report::raise("This mod was built for another place in memory (other mods changed); build the app again");
+    if(base)result["module"]=(std::filesystem::path(dir)/(pkg.id+".dylib")).string();
+    return result;
+}
+#endif
+
 bool load_one(const std::string& path, std::string& err,const mods::packages::GuestPackage& pkg,uint32_t base,uint32_t reserved) {
     native_actor_profiles::startup::ImportAttempt profile_import(g_actor_profile_import);
 
@@ -1514,12 +1536,18 @@ void init() {
     // directory before entering those callbacks to avoid recursively locking it.
 #ifdef __ANDROID__
     const auto cache=host::android::guest_module_cache();
+#elif defined(WWHD_TVOS)
+    const std::string cache;
 #else
     const auto cache=(std::filesystem::path(packages::directory()).parent_path()/"GuestBuild").string();
 #endif
     auto inspect=[cache](const packages::GuestPackage& pkg) {
         if(!g_mod_hook_count)exception_report::raise("Guest mods require code-mod support; rebuild and restart first");
+#ifdef WWHD_TVOS
+        auto result=bundled_module(pkg,0);
+#else
         auto result=BuildBridge::installed(cache).run(pkg.path,0x7F000000,true,g_guest_build_name);
+#endif
         if(result.get("elf_sha256").string()!=pkg.fingerprint)exception_report::raise("Guest ELF changed; review its trust confirmation again");
         const auto& size=result.get("allocation_size");
         if(size.type!=mods::json::Value::Number||size.number<=0||size.number>0x1000000||std::floor(size.number)!=size.number)
@@ -1530,7 +1558,11 @@ void init() {
     };
     auto build=[cache](const packages::GuestPackage& pkg,uint32_t base) {
         if(!g_mod_hook_count)exception_report::raise("Guest mods require code-mod support; rebuild and restart first");
+#ifdef WWHD_TVOS
+        auto result=bundled_module(pkg,base);
+#else
         auto result=BuildBridge::installed(cache).run(pkg.path,base,false,g_guest_build_name);
+#endif
         if(result.get("elf_sha256").string()!=pkg.fingerprint)exception_report::raise("Guest ELF changed; review its trust confirmation again");
         const auto& memory=result.get("allocation_size");
         if(memory.type!=mods::json::Value::Number||memory.number<=0||memory.number>0x1000000||std::floor(memory.number)!=memory.number||pkg.heap_size>0x1000000-uint32_t(memory.number))
@@ -1539,6 +1571,9 @@ void init() {
         return packages::GuestBuilt{result.get("module").string(),reserved};
     };
     packages::set_guest_builder(inspect,build,[cache](const mods::json::Value& requests) {
+#ifdef WWHD_TVOS
+        (void)requests;return std::vector<std::string>{};  // (nothing to build on the TV: the app holds the modules)
+#endif
         auto result=BuildBridge::installed(cache).check_cached(requests,g_guest_build_name);
         const auto& valid=result.get("valid");
         if(valid.type!=mods::json::Value::Array)exception_report::raise("Invalid guest cache check result");
