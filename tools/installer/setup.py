@@ -704,8 +704,9 @@ def free_space(path):
 
 
 class Toolchain:
-    def __init__(self, cc, cxx, ar, env=None, rsp=False, desc=""):
-        self.cc, self.cxx, self.ar, self.env, self.rsp, self.desc = cc, cxx, ar, env, rsp, desc
+    def __init__(self, cc, cxx, ar, env=None, rsp=False, desc="", kind=""):
+        # kind: toolchains.json's ("xcode-clt", "llvm-mingw", "zig"; the decomp version's steps differ by it)
+        self.cc, self.cxx, self.ar, self.env, self.rsp, self.desc, self.kind = cc, cxx, ar, env, rsp, desc, kind
 
 
 def load_toolchains():
@@ -1094,7 +1095,8 @@ def get_toolchain(name, data_dir, ui):
     kind = tc["kind"]
     if kind == "xcode-clt":
         ensure_xcode_clt(ui)
-        return Toolchain(["xcrun", "clang"], ["xcrun", "clang++"], ["xcrun", "ar"], desc="Apple Command Line Tools")
+        return Toolchain(["xcrun", "clang"], ["xcrun", "clang++"], ["xcrun", "ar"], desc="Apple Command Line Tools",
+                         kind=kind)
     root = os.path.join(data_dir, "toolchain")
     os.makedirs(root, exist_ok=True)
     tdir = os.path.join(root, tc["dir"])
@@ -1140,13 +1142,13 @@ def get_toolchain(name, data_dir, ui):
         b = os.path.join(tdir, "bin")
         triple = tc.get("triple", "x86_64-w64-mingw32")  # aarch64-w64-mingw32: the Windows on ARM64 release
         return Toolchain([os.path.join(b, triple + "-clang.exe")], [os.path.join(b, triple + "-clang++.exe")],
-                         [os.path.join(b, "llvm-ar.exe")], rsp=True, desc="llvm-mingw " + tc["dir"])
+                         [os.path.join(b, "llvm-ar.exe")], rsp=True, desc="llvm-mingw " + tc["dir"], kind=kind)
     if kind == "zig":
         z = os.path.join(tdir, "zig")
         env = dict(os.environ)
         env.setdefault("ZIG_GLOBAL_CACHE_DIR", os.path.join(root, "zig-cache"))
         t = ["-target", tc["target"]]
-        return Toolchain([z, "cc"] + t, [z, "c++"] + t, [z, "ar"], env=env, desc="zig " + tc["dir"])
+        return Toolchain([z, "cc"] + t, [z, "c++"] + t, [z, "ar"], env=env, desc="zig " + tc["dir"], kind=kind)
     raise SetupError("unsupported toolchain kind %r" % kind)
 
 
@@ -2885,7 +2887,7 @@ def plan_steps(kind, decomp=False):
 
 
 def decomp_offered(manifest):
-    return decomp_setup.offered(manifest, IS_MAC)
+    return decomp_setup.offered(manifest)
 
 
 def decomp_wanted(ctx):
@@ -3377,7 +3379,7 @@ def main():
     ap.add_argument("--code-mods-cancel", help="cancel rebuild when this file exists (also --randomize, --import-seed, "
                     "--play-seed)")
     ap.add_argument("--decomp", dest="decomp", action="store_const", const=True, default=None,
-                    help="macOS: also build the decomp version of the game (its fast mode; docs/decomp-build.md); "
+                    help="also build the decomp version of the game (its fast mode; docs/decomp-build.md); "
                          "remembered for repairs and updates")
     ap.add_argument("--decomp-plain", action="store_true",
                     help="with --decomp (implied): the plain decomp build instead of fast mode (for testing; remembered)")
@@ -3582,7 +3584,7 @@ def run(args, ui):
     state = ctx.state()
     installed = ctx.installed()
     if getattr(args, "decomp", None) and not decomp_offered(ctx.manifest):
-        raise SetupError("the decomp version is offered on macOS only so far (docs/decomp-build.md)")
+        raise SetupError("this release has no decomp version parts (docs/decomp-build.md)")
     if getattr(args, "start_decomp", None) is not None:
         on = args.start_decomp == "1"
         if on and not (state.get("decomp_exe") and os.path.isfile(state["decomp_exe"])):

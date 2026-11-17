@@ -2080,35 +2080,35 @@ class DecompOption(unittest.TestCase):
         self.assertTrue(ds.is_dev_version("development build"))
         for v in ("v0.2.13", "v0.2.13-rc1", "", None, "v0.2.13-devel.", "devel-0123abcd"):
             self.assertFalse(ds.is_dev_version(v), v)
-        self.assertTrue(ds.offered(self.DEV, True))
-        self.assertTrue(ds.offered(dict(self.DEV, version="v0.2.13"), True))    # regular releases too (2026-11-16)
-        self.assertFalse(ds.offered({k: v for k, v in self.DEV.items() if k != "decomp"}, True))  # no parts
+        self.assertTrue(ds.offered(self.DEV))
+        self.assertTrue(ds.offered(dict(self.DEV, version="v0.2.13")))    # regular releases too (2026-11-16)
+        self.assertFalse(ds.offered({k: v for k, v in self.DEV.items() if k != "decomp"}))  # no parts
 
-    def test_platform_gate(self):
-        self.assertFalse(setup.decomp_setup.offered(self.DEV, False))
-        with mock.patch.object(setup, "IS_MAC", False):
-            self.assertFalse(setup.decomp_offered(self.DEV))
-        with mock.patch.object(setup, "IS_MAC", True):
-            self.assertTrue(setup.decomp_offered(self.DEV))
+    def test_offered_on_every_os(self):
+        # (2026-11-16: Linux, the Steam Deck and Windows too; the release's parts decide)
+        for mac, win in ((True, False), (False, False), (False, True)):
+            with mock.patch.object(setup, "IS_MAC", mac), mock.patch.object(setup, "IS_WIN", win), \
+                    mock.patch.object(setup, "IS_LINUX", not mac and not win):
+                self.assertTrue(setup.decomp_offered(dict(self.DEV, platform="linux-x86_64")))
+                self.assertFalse(setup.decomp_offered({k: v for k, v in self.DEV.items() if k != "decomp"}))
 
-    def wanted(self, manifest, arg, state, mac=True):
+    def wanted(self, manifest, arg, state):
         ctx = mock.Mock(manifest=manifest, args=mock.Mock(decomp=arg))
         ctx.state.return_value = state
-        with mock.patch.object(setup, "IS_MAC", mac):
-            return setup.decomp_wanted(ctx)
+        return setup.decomp_wanted(ctx)
 
     def test_option_default_off_and_remembered(self):
         self.assertFalse(self.wanted(self.DEV, None, {}))                 # off by default
         self.assertTrue(self.wanted(self.DEV, True, {}))                  # --decomp / the checkbox
         self.assertTrue(self.wanted(self.DEV, None, {"decomp": True}))    # a repair or update remembers it
         self.assertFalse(self.wanted(self.DEV, False, {"decomp": True}))  # --no-decomp
-        self.assertFalse(self.wanted(self.DEV, True, {}, mac=False))      # never where it is not offered
         self.assertFalse(self.wanted({k: v for k, v in self.DEV.items() if k != "decomp"}, True, {"decomp": True}))
 
-    def mode(self, manifest, decomp, plain, state):
+    def mode(self, manifest, decomp, plain, state, pin=True):
         ctx = mock.Mock(manifest=manifest, args=mock.Mock(decomp=decomp, decomp_plain=plain), defaults_dir=None)
         ctx.state.return_value = state
-        return setup.decomp_mode(ctx)
+        with mock.patch.object(setup.decomp_setup.decomp_platform, "capstone_pin", return_value={} if pin else None):
+            return setup.decomp_mode(ctx)
 
     def test_mode_fast_by_default(self):
         fast = dict(self.DEV, decomp={"tree_sha256": "", "fast": {"link": []}})
@@ -2118,6 +2118,7 @@ class DecompOption(unittest.TestCase):
         self.assertEqual(self.mode(fast, True, False, {"decomp_mode": "plain"}), "fast")   # --decomp: fast again
         self.assertEqual(self.mode(fast, None, False, {}), "fast")
         self.assertEqual(self.mode(self.DEV, True, False, {}), "plain")  # a release without fast parts
+        self.assertEqual(self.mode(fast, True, False, {}, pin=False), "plain")  # no disassembler here (Windows on ARM)
 
     def test_guest_hooks_default_and_installed(self):
         ds = setup.decomp_setup
@@ -2374,6 +2375,218 @@ class DecompOption(unittest.TestCase):
                 os.remove(dexe)
                 setup.launch(dict(st, start_decomp=True), d)  # not built (any more): the normal game
             self.assertEqual(started, [exe, dexe, dexe, exe])
+
+
+class DecompDesktop(unittest.TestCase):
+    """The decomp version on Linux (the Steam Deck too) and Windows (decomp_platform.py, 2026-11-16): the per-OS
+    disassembler, names, path limit, unit merge commands and the decl_lint compiler; elf_localize.py (Linux's
+    llvm-objcopy --localize-hidden) on a hand-made object. tools/decomp_build/test_unit_merge.py runs the merge with
+    the real pinned toolchains in the release jobs."""
+    dp = setup.decomp_setup.decomp_platform
+    ZIG = ["/z/zig", "c++", "-target", "x86_64-linux-gnu.2.35"]
+
+    def test_capstone_pins(self):
+        dp = self.dp
+        for system, machine, tag in (("linux", "x86_64", "manylinux_2_17_x86_64"),
+                                     ("linux", "aarch64", "manylinux_2_17_aarch64"),
+                                     ("windows", "AMD64", "win_amd64"), ("darwin", "arm64", "macosx_11_0_arm64"),
+                                     ("darwin", "x86_64", "macosx_10_9_x86_64")):
+            pin = dp.capstone_pin(system, machine)
+            self.assertIn(tag, pin["url"])
+            self.assertTrue(pin["url"].startswith("https://files.pythonhosted.org/packages/"))
+            self.assertIn("/capstone-5.0.7-py3-none-", pin["url"])
+            self.assertRegex(pin["sha256"], "^[0-9a-f]{64}$")
+            self.assertGreater(pin["size"], 1000000)
+        self.assertIsNone(dp.capstone_pin("windows", "ARM64"))  # no wheel: fast mode not offered on Windows on ARM
+        self.assertEqual(dp.capstone_pin("linux", "arm64"), dp.capstone_pin("linux", "aarch64"))
+        # macOS: the pins #597 shipped, unchanged
+        self.assertEqual(dp.capstone_pin("darwin", "arm64")["sha256"],
+                         "acb89f5bf6f625745a104a3a44819d3acea173228055c1eadc60d2282ae490bb")
+        self.assertEqual(dp.capstone_pin("darwin", "x86_64")["sha256"],
+                         "a9f64e3d75d8c4d7b3d26bba153b2992aadcf6b8d57674b4ef176b4ecdd9822f")
+
+    def test_exe_names(self):
+        dp = self.dp
+        with mock.patch.object(dp, "EXE_SUFFIX", ".exe"):
+            self.assertTrue(dp.exe_path("D", True).endswith(os.path.join("bin", "wwhd-decomp.exe")))
+            self.assertTrue(dp.exe_path("D", False).endswith(os.path.join("decomp", "bin", "wwhd.exe")))
+        with mock.patch.object(dp, "EXE_SUFFIX", ""):
+            self.assertEqual(dp.exe_path("D", True), os.path.join("D", "bin", "wwhd-decomp"))
+            self.assertEqual(dp.exe_path("D", False), os.path.join("D", "decomp", "bin", "wwhd"))
+        self.assertIs(setup.decomp_setup.exe_path, dp.exe_path)
+
+    def test_windows_path_limit(self):
+        dp = self.dp
+        most = setup.WINDOWS_MAX_PATH - 1 - dp.DEEPEST_DECOMP_PATH
+        self.assertEqual(dp.WINDOWS_MAX_PATH, setup.WINDOWS_MAX_PATH)
+        self.assertIsNone(dp.windows_path_problem("C:\\" + "x" * (most - 3), windows=True))
+        msg = dp.windows_path_problem("C:\\" + "x" * (most - 2), windows=True)
+        self.assertIn("too long", msg)
+        self.assertIn("at most %d" % most, msg)
+        self.assertIsNone(dp.windows_path_problem("/" + "x" * 400, windows=False))
+
+    def test_deepest_decomp_path(self):
+        # the constant against the decompilation in the submodule: its source below DATA\decomp-src\<12 hex>\ and the
+        # glued copies below DATA\decomp-work\gen\glued\ (gen.py)
+        root = os.path.join(os.path.dirname(os.path.abspath(setup.__file__)), "..", "..", "decomp")
+        if not os.path.isdir(os.path.join(root, "wwhd_src")):
+            self.skipTest("no decompilation (git submodule update --init decomp)")
+        deepest = 0
+        for top in ("wwhd_src", os.path.join("tools", "verify", "include"), os.path.join("tools", "verify", "src")):
+            for dp_, _, fns in os.walk(os.path.join(root, top)):
+                for fn in fns:
+                    rel = os.path.relpath(os.path.join(dp_, fn), root)
+                    deepest = max(deepest, len("decomp-src\\" + "0" * 12 + "\\" + rel),
+                                  len("decomp-work\\gen\\glued\\" + rel))
+        self.assertLessEqual(deepest, self.dp.DEEPEST_DECOMP_PATH)
+
+    def test_merge_commands(self):
+        dp = self.dp
+        objs = ["/w/a.o", "/w/b.o"]
+        tools = os.path.join("/pkg", "tools", "decomp_build")
+        zig = setup.Toolchain(["/z/zig", "cc", "-target", "x86_64-linux-gnu.2.35"], self.ZIG, ["/z/zig", "ar"], kind="zig")
+        self.assertEqual(dp.merge_commands(zig, "/pkg", "/w/u.o", objs, True, python="py"),
+                         [["/z/zig", "ld.lld", "-r", "--lto-O2", "--thinlto-jobs=1", "-o", "/w/u.o"] + objs,
+                          ["py", os.path.join(tools, "elf_localize.py"), "/w/u.o"]])
+        self.assertEqual(dp.merge_commands(zig, "/pkg", "/w/u.o", objs, False, python="py")[0],
+                         ["/z/zig", "ld.lld", "-r", "-o", "/w/u.o"] + objs)
+        with tempfile.TemporaryDirectory() as d:
+            cxx = os.path.join(d, "x86_64-w64-mingw32-clang++.exe")
+            mingw = setup.Toolchain([cxx], [cxx], [os.path.join(d, "llvm-ar.exe")], rsp=True, kind="llvm-mingw")
+            with mock.patch.dict(os.environ, {"WWHD_DECOMP_LIBLLVM": ""}):
+                with self.assertRaises(OSError):  # (an llvm-mingw without its LLVM library)
+                    dp.merge_commands(mingw, "/pkg", "/w/u.o", objs, True, python="py")
+                dll = os.path.join(d, "libLLVM-23.dll")
+                open(dll, "w").close()
+                for fast in (True, False):
+                    self.assertEqual(dp.merge_commands(mingw, "/pkg", "/w/u.o", objs, fast, python="py"),
+                                     [["py", os.path.join(tools, "unit_ir.py"), "/w/u.o", "--libllvm", dll, "--cc", cxx,
+                                       "--native"] + objs])
+        # macOS: the commands #597 ran
+        mac = setup.Toolchain(["xcrun", "clang"], ["xcrun", "clang++"], ["xcrun", "ar"], kind="xcode-clt")
+        self.assertEqual(dp.merge_commands(mac, "/pkg", "/w/u.o", objs, True),
+                         [["xcrun", "clang++", "-r", "-nostdlib", "-flto=thin", "-o", "/w/u.o"] + objs])
+        self.assertEqual(dp.merge_commands(mac, "/pkg", "/w/u.o", objs, False), [["xcrun", "ld", "-r", "-o", "/w/u.o"] + objs])
+        with mock.patch.object(dp, "tool_path", return_value="/cl/clang++"):
+            self.assertEqual(dp.merge_commands(mac, "/pkg", "/w/u.o", objs, True, lto=True, liblto="/l/libLTO.dylib",
+                                               python="py"),
+                             [["py", os.path.join(tools, "unit_ir.py"), "/w/u.o", "--liblto", "/l/libLTO.dylib", "--cc",
+                               "/cl/clang++"] + objs])
+
+    def test_unit_flags_and_whole_lto(self):
+        dp, ds = self.dp, setup.decomp_setup
+        mingw = setup.Toolchain(["c"], ["x86_64-w64-mingw32-clang++.exe"], ["ar"], kind="llvm-mingw")
+        zig = setup.Toolchain(["z"], self.ZIG, ["ar"], kind="zig")
+        self.assertEqual(dp.unit_flags_extra(mingw, False), ["-flto=thin"])  # (Windows: units are bitcode)
+        self.assertEqual(dp.unit_flags_extra(mingw, True), [])               # (fast mode's flags have it)
+        self.assertEqual(dp.unit_flags_extra(zig, False), [])
+        for tc in (mingw, zig):
+            self.assertEqual(ds.whole_lto(tc), (False, None, "the whole-image link is macOS-only"))
+        self.assertEqual(dp.toolchain_kind(setup.Toolchain(["xcrun", "clang"], ["xcrun", "clang++"], ["ar"])), "xcode-clt")
+        self.assertEqual(dp.toolchain_kind(setup.Toolchain(["/z/zig"], ["/z/zig", "c++"], ["ar"])), "zig")
+        self.assertEqual(dp.toolchain_kind(setup.Toolchain(["c"], [r"C:\t\bin\aarch64-w64-mingw32-clang++.exe"], ["ar"])),
+                         "llvm-mingw")
+
+    def test_get_toolchain_kind(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"WWHD_TOOLCHAIN_DIR": d}):
+            self.assertEqual(setup.get_toolchain("zig-0.16.0", d, None).kind, "zig")
+            self.assertEqual(setup.get_toolchain("llvm-mingw-20260922", d, None).kind, "llvm-mingw")
+
+    def test_clangxx_for_decl_lint(self):
+        dp = self.dp
+        with tempfile.TemporaryDirectory() as d:
+            zig = setup.Toolchain(["z"], self.ZIG, ["ar"], kind="zig")
+            b = dp.clangxx_dir(zig, d)
+            script = os.path.join(b, "clang++")
+            with open(script) as f:
+                self.assertEqual(f.read(), '#!/bin/sh\nexec /z/zig c++ -target x86_64-linux-gnu.2.35 "$@"\n')
+            if os.name != "nt":
+                self.assertTrue(os.access(script, os.X_OK))
+            bin_ = os.path.join(d, "llvm-mingw", "bin")
+            os.makedirs(bin_)
+            for n in ("x86_64-w64-mingw32-clang++.exe", "clang++.exe"):
+                open(os.path.join(bin_, n), "w").close()
+            mingw = setup.Toolchain(["c"], [os.path.join(bin_, "x86_64-w64-mingw32-clang++.exe")], ["ar"], kind="llvm-mingw")
+            with mock.patch.object(dp, "EXE_SUFFIX", ".exe"):
+                self.assertEqual(dp.clangxx_dir(mingw, d), bin_)
+
+    def test_total_memory(self):
+        self.assertGreater(self.dp.total_memory(), 1 << 30)
+
+    @staticmethod
+    def elf(symbols, relocs, group_sig, addrsig):
+        """a small ELF64 relocatable: .text, .rela.text, .group (GRP_COMDAT, signature group_sig), .symtab, .strtab,
+        .llvm_addrsig, .shstrtab; symbols (name, bind, vis, defined); relocs and addrsig as symbol indices"""
+        import struct
+        strtab, names = b"\0", []
+        for n, _, _, _ in symbols:
+            names.append(len(strtab))
+            strtab += n.encode() + b"\0"
+        nlocal = 1 + sum(1 for _, b, _, _ in symbols if b == 0)
+        syms = b"\0" * 24 + b"".join(struct.pack("<IBBHQQ", names[i], (b << 4) | 2, v, 1 if d else 0, 0, 0)
+                                     for i, (n, b, v, d) in enumerate(symbols))
+        rela = b"".join(struct.pack("<QQq", 4 * k, (s << 32) | 2, 0) for k, s in enumerate(relocs))
+        group = struct.pack("<II", 1, 1)
+
+        def uleb(v):
+            out = bytearray()
+            while True:
+                b, v = v & 0x7F, v >> 7
+                out.append(b | (0x80 if v else 0))
+                if not v:
+                    return bytes(out)
+        sh_names = [b"", b".text", b".rela.text", b".group", b".symtab", b".strtab", b".llvm_addrsig", b".shstrtab"]
+        shstr, offs = b"\0", []
+        for n in sh_names:
+            offs.append(shstr.find(n + b"\0") if n == b"" else len(shstr))
+            if n:
+                shstr += n + b"\0"
+        bodies = [b"", b"\x90" * 16, rela, group, syms, strtab, b"".join(uleb(a) for a in addrsig), shstr]
+        # name type flags addr offset size link info addralign entsize
+        meta = [(0, 0, 0, 0, 0, 0), (1, 6, 0, 0, 16, 0), (4, 0x40, 4, 1, 8, 24), (17, 0, 4, group_sig, 4, 4),
+                (2, 0, 5, nlocal, 8, 24), (3, 0, 0, 0, 1, 0), (0x6FFF4C03, 0x80000000, 4, 0, 1, 0), (3, 0, 0, 0, 1, 0)]
+        data, offsets = bytearray(64), []
+        for body in bodies:
+            while len(data) % 8:
+                data.append(0)
+            offsets.append(len(data))
+            data += body
+        while len(data) % 8:
+            data.append(0)
+        shoff = len(data)
+        for i, (typ, flags, link, info, align, ent) in enumerate(meta):
+            data += struct.pack("<IIQQQQIIQQ", offs[i], typ, flags, 0, offsets[i] if i else 0, len(bodies[i]), link, info,
+                                align, ent)
+        hdr = b"\x7fELF\x02\x01\x01" + b"\0" * 9 + struct.pack("<HHIQQQIHHHHHH", 1, 62, 1, 0, 0, shoff, 0, 64, 0, 0, 64,
+                                                                 len(meta), 7)
+        data[:64] = hdr
+        return bytes(data)
+
+    def test_elf_localize(self):
+        import struct
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(setup.__file__)), "..", "decomp_build"))
+        import elf_localize
+        # 1 f: global hidden defined, 2 g: global default defined, 3 h: global hidden UNDEFINED, 4 w: weak hidden defined
+        # (the group's signature), 5 x: global default undefined
+        syms = [("f", 1, 2, True), ("g", 1, 0, True), ("h", 1, 2, False), ("w", 2, 2, True), ("x", 1, 0, False)]
+        obj = self.elf(syms, relocs=[1, 2, 3, 5], group_sig=4, addrsig=[1, 4, 2])
+        out, n = elf_localize.localize_hidden(obj)
+        self.assertEqual(n, 2)  # f and w
+        shoff, = struct.unpack_from("<Q", out, 0x28)
+        sh = [struct.unpack_from("<IIQQQQIIQQ", out, shoff + 64 * i) for i in range(8)]
+        st, strt = sh[4], sh[5]
+        name = lambda off: out[strt[4] + off:out.index(b"\0", strt[4] + off)].decode()
+        table = [(name(x[0]), x[1] >> 4) for x in struct.iter_unpack("<IBBHQQ", out[st[4]:st[4] + st[5]])]
+        self.assertEqual(table, [("", 0), ("f", 0), ("w", 0), ("g", 1), ("h", 1), ("x", 1)])  # locals first, in order
+        self.assertEqual(st[7], 3)  # sh_info: the first global
+        rel = [table[info >> 32][0] for _, info, _ in struct.iter_unpack("<QQq", out[sh[2][4]:sh[2][4] + sh[2][5]])]
+        self.assertEqual(rel, ["f", "g", "h", "x"])  # every relocation still names its symbol
+        self.assertEqual(table[sh[3][7]][0], "w")  # the group's signature, renumbered
+        self.assertEqual(struct.unpack_from("<I", out, sh[3][4])[0] & 1, 0)  # GRP_COMDAT dropped: its signature is local
+        self.assertEqual([table[i][0] for i in out[sh[6][4]:sh[6][4] + sh[6][5]]], ["f", "w", "g"])  # .llvm_addrsig
+        self.assertEqual(elf_localize.localize_hidden(out), (out, 0))  # nothing left to do
+        with self.assertRaises(elf_localize.ElfError):
+            elf_localize.localize_hidden(b"\xcf\xfa\xed\xfe" + b"\0" * 60)  # Mach-O
 
 
 class GameOptions(unittest.TestCase):

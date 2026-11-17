@@ -55,7 +55,8 @@ Settings (`F1`) > Language / About and in the performance report ends in `decomp
   recompiled code: about 1.3 times the CPU time of the whole game process in that session (21.6 s
   instead of 16.8 s for 30 s of play, on a busy machine; 1.6 times at 47e1dbc). Making it faster is
   future work.
-- Not yet available on Windows, Linux and Android. In setup: macOS (below).
+- Building it from source: macOS (and Android cross builds). In setup: macOS, Linux (the Steam Deck too) and Windows
+  (below); Linux and Windows are untested on real machines so far (CI builds and checks their parts).
 
 ## Building it from source
 
@@ -151,14 +152,15 @@ What it means for players:
   start, it falls back to Metal. The normal game is unchanged: it still starts with Metal. Both keep their shader
   caches apart (Metal's and Vulkan's are separate files), so switching never discards the other's.
 
-## In setup (macOS)
+## In setup (macOS, Linux, Windows)
 
-Setup on the Mac (regular releases and development builds) can build the decomp version next to the normal game. It is
+Setup (regular releases and development builds; macOS, Linux including the Steam Deck, and Windows) can build the decomp version next to the normal game. It is
 off by default:
 
-- in the setup window: tick **Also build the decomp version (experimental)** (shown with the other build options; not on Windows
-  and Linux yet; Android: below), then install, repair or update;
-- in a terminal: `tools/Setup in Terminal.command --decomp` (`--no-decomp` removes it again).
+- in the setup window: tick **Also build the decomp version (experimental)** (shown with the other build options;
+  Android: below), then install, repair or update;
+- in a terminal: `tools/Setup in Terminal.command --decomp` (macOS), `tools/setup-in-terminal.sh --decomp` (Linux),
+  `tools\Setup in a console window.bat --decomp` (Windows); `--no-decomp` removes it again.
 
 It builds **fast mode** (above). For testing, `--decomp-plain` builds the plain decomp build instead (remembered;
 `--decomp` goes back to fast mode).
@@ -207,7 +209,24 @@ What setup uses and makes:
   game code, `decl_table.py`) and compiles the game units with the same compiler as the normal game (the Command Line
   Tools; fast mode's ThinLTO uses their own libLTO);
 - everything it generates stays in the install's data folder (`data/decomp-work`, removed after the
-  build); the result is `data/bin/wwhd-decomp` (portable releases) or `data/decomp/bin/wwhd`.
+  build); the result is `data/bin/wwhd-decomp` (portable releases) or `data/decomp/bin/wwhd` (`.exe` on Windows).
+
+On Linux and Windows setup uses the compiler it already downloads for the normal game and nothing from the system
+(`tools/installer/decomp_platform.py`):
+
+- **Linux** (the Steam Deck too: SteamOS has no compiler, none is needed): the pinned zig. Each game unit is merged with
+  `zig ld.lld -r` and its hidden symbols are made local by `tools/decomp_build/elf_localize.py` (what
+  `llvm-objcopy --localize-hidden` does; zig has no llvm-objcopy). Fast mode always links each unit on its own (zig has
+  no tool for the whole-image link). The declaration table's `clang++` is a small script in the work folder that runs
+  `zig c++`.
+- **Windows**: the pinned llvm-mingw. Windows object files have no relocatable link, so every game unit source is
+  compiled to LLVM bitcode and each unit is linked and isolated in the IR (`tools/decomp_build/unit_ir.py --libllvm`,
+  through llvm-mingw's own `libLLVM-23.dll`), then compiled to one object; each unit on its own (no whole-image link
+  yet). Its tools read the decompilation with ordinary Windows paths, so the data folder must be at most 164 characters
+  long (setup checks this first). **Windows on ARM** builds the plain decomp build: capstone, which fast mode's
+  declaration table needs, has no Windows ARM64 package.
+- capstone 5.0.7 from PyPI: the manylinux wheel (x86-64, ARM64) on Linux, the win_amd64 wheel on Windows.
+- The decomp version starts with Vulkan, the renderer of Linux and Windows anyway.
 
 ## In setup (Android)
 
@@ -251,7 +270,8 @@ exits (setup uses it); `-DWWHD_DECOMP_GUEST_HOOKS=FILE` builds a fast decomp ver
 
 ## Releases
 
-Every macOS release brings the decomp version's parts (release.yml "Decomp version parts"): the runtime built twice
+Every macOS, Linux and Windows release brings the decomp version's parts (release.yml "Decomp version parts"; Windows
+on ARM: the plain build only): the runtime built twice
 without game units (`-DWWHD_DECOMP_RUNTIME_ONLY=ON`, plain and `-DWWHD_DECOMP_FAST=ON`; tools/release/package.py
 `--decomp-build` / `--decomp-fast-build`), the commit and SHA-256 of the decompilation, and the tools above. A release
 cannot ship the compiled decomp units: their sources are prepared with data read from your own game, so setup builds

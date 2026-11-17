@@ -74,7 +74,7 @@ if(WWHD_WRITE_WATCH)
   add_compile_definitions(WWHD_WRITE_WATCH=1)
 endif()
 
-option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; experimental)" OFF)
+option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; the release part also Linux, Windows; experimental)" OFF)
 include(cmake/Decomp.cmake)
 include(cmake/VkSmooth.cmake)  # (option WWHD_VK_SMOOTH; wwhd_vk_smooth below)
 

@@ -26,6 +26,7 @@
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "runtime.h"
 #include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
+#include "hidden_tv.h"
 #include "input.h"
 #include "input_map.h"
 #include "gfx/display_modes.h"
@@ -1175,6 +1176,10 @@ bool android_display_touch_event(const SDL_Event&);
 int android_display_smoke_test() {
  try {
   mem::init();
+  // WWHD_VK_SKIP_HIDDEN_TV's layout decision (hidden_tv.h) runs on every swap: a second display shows the TV or the
+  // GamePad picture with the TV picture on the other one, so it must never find the TV picture hidden while one is on
+  setenv("WWHD_VK_SKIP_HIDDEN_TV", "1", 0);
+  uint64_t hiddenTvFrames = 0, hiddenTvWhileDual = 0;
   for (Screen* screen : {&R.tv, &R.drc}) {
    screen->scan = std::make_unique<Surface>();
    Surface& image = *screen->scan;
@@ -1305,6 +1310,12 @@ int android_display_smoke_test() {
    clear_image(*R.tv.scan, tv); clear_image(*R.drc.scan, drc);
    const auto swapStarted=std::chrono::steady_clock::now();
    swap();
+   if (hidden_tv::on() && !hidden_tv::shown_last()) {
+    ++hiddenTvFrames;
+    if (gfx::g_has_drc_window && ++hiddenTvWhileDual <= 5)
+     LOG("[hidden tv] smoke: TV picture found hidden while a second display is on (frame %llu, swapped %d, mode %d)",
+         (unsigned long long)R.frame, int(dual_display::active_swap.load()), int(gfx::g_mode));
+   }
    auto now = std::chrono::steady_clock::now();
    if(R.tv.presented.load()!=lastPrimaryCount) {
     if(lastPrimary!=std::chrono::steady_clock::time_point{})
@@ -1370,6 +1381,7 @@ int android_display_smoke_test() {
         << ",\"second_available\":" << (gfx::g_second_display_available ? "true" : "false")
         << ",\"second_off\":" << (gfx::drc_screen_off() ? "true" : "false")
         << ",\"dual\":" << (gfx::g_has_drc_window ? "true" : "false")
+        << ",\"hidden_tv_frames\":" << hiddenTvFrames << ",\"hidden_tv_while_dual\":" << hiddenTvWhileDual
         << ",\"swap_requested\":" << (dual_display::requested_swap ? "true" : "false")
         << ",\"swap_active\":" << (dual_display::active_swap ? "true" : "false")
         << ",\"scale_filter\":" << hostui::scale_filter()

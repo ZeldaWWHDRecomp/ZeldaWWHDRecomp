@@ -101,9 +101,9 @@ def source_files(root, test_fixtures=False):
                     root / "tools/recomp/randomizer-eu.json",
                     root / "tools/recomp/randomizer-jp.json"]
     # Newer desktop installers import these production siblings at start-up (setup.py:
-    # "import code_mods", "import decomp_setup"). Older branches do not have them; support
-    # both without changing installer behavior.
-    for sibling in ("code_mods.py", "decomp_setup.py", "build_cache.py", "release_update.py"):
+    # "import code_mods", "import decomp_setup"; decomp_setup.py: "import decomp_platform"). Older branches do not
+    # have them; support both without changing installer behavior.
+    for sibling in ("code_mods.py", "decomp_setup.py", "decomp_platform.py", "build_cache.py", "release_update.py"):
         path = root / "tools/installer" / sibling
         if path.is_file():
             source_paths.append(path)

@@ -83,6 +83,7 @@ INSTALLER_FILES = [
     "tools/installer/build_cache.py",
     "tools/installer/release_update.py",
     "tools/installer/decomp_setup.py",
+    "tools/installer/decomp_platform.py",
     "tools/installer/shader_prebuild.py",
     "tools/installer/shader_library.py",
     "tools/installer/model_sweep.py",
@@ -267,7 +268,7 @@ def decomp_variant(build):
     return "decomp" if on else None
 
 
-# The decomp version setup can build (macOS; tools/installer/decomp_setup.py, docs/decomp-build.md): the tools that
+# The decomp version setup can build (macOS, Linux, Windows; tools/installer/decomp_setup.py, docs/decomp-build.md): the tools that
 # prepare the decompilation's source, its native-call rules and (fast mode) the declaration table and the units'
 # IR isolation. The source is not in the release: setup downloads the pinned commit and checks it against the SHA-256
 # written here.
@@ -275,13 +276,14 @@ DECOMP_TOOLS = ["tools/decomp_build/gen.py", "tools/decomp_build/port_sites.py",
                 "tools/decomp_build/native_returns.py", "tools/decomp_build/native_rules.py",
                 "tools/decomp_build/native_cache.py", "tools/decomp_build/decl_table.py", "tools/decomp_build/decl_cache.py",
                 "tools/decomp_build/decl_lint_run.py", "tools/decomp_build/unit_ir.py", "tools/decomp_build/glue.cpp",
+                "tools/decomp_build/elf_localize.py",
                 "tools/decomp_build/decomp_mod_hooks_default.txt",
                 "tools/decomp_build/frames_vis.h",
                 # the capstone stand-in (Android; WWHD_DECOMP_CAPSTONE_SHIM=1 elsewhere): decomp_setup.fetch_capstone
                 "tools/decomp_build/capstone_shim/capstone/__init__.py"]
 # fast mode's declaration table (decl_table.py) runs the decompilation's decl_lint.py in port mode, which reads the
 # port's runtime headers and the HLE bodies of its sources (the import registers); setup finds them at PKG/runtime
-DECOMP_HOOKS_NONE = "tools_decomp_build_hooks_none.cpp.o"  # flattened like the other runtime objects
+DECOMP_HOOKS_NONE = ("tools_decomp_build_hooks_none.cpp.o", "tools_decomp_build_hooks_none.cpp.obj")  # flattened (.obj: llvm-mingw)
 
 
 def cache_value(build, key):
@@ -370,7 +372,7 @@ def decomp_parts(pkg, dbuild, linkonly, sub, fast):
     _, link, _, _ = build_link_recipe(dbuild, stage, linkonly)
     recipe, own = [], 0
     for a in link:
-        if a == "{sdk}/obj/" + DECOMP_HOOKS_NONE:
+        if a in ["{sdk}/obj/" + n for n in DECOMP_HOOKS_NONE]:
             recipe.append("{decomp_glue}")
             continue
         for kind in ("obj", "lib"):
@@ -388,7 +390,7 @@ def decomp_parts(pkg, dbuild, linkonly, sub, fast):
         recipe.append(a)
     shutil.rmtree(stage_tmp, ignore_errors=True)
     if "{decomp_glue}" not in recipe:
-        sys.exit("%s: %s is not on the decomp build's link line" % (dbuild, DECOMP_HOOKS_NONE))
+        sys.exit("%s: %s is not on the decomp build's link line" % (dbuild, DECOMP_HOOKS_NONE[0]))
     mapping = {os.path.join(ROOT, "runtime", "include"): "{sdk}/include",
                os.path.join(ROOT, "runtime", "src"): "{sdk}/decomp/include",
                os.path.join(ROOT, "tools", "decomp_build"): "{tools}/decomp_build",
@@ -624,9 +626,9 @@ def main():
     ap.add_argument("--setup-gui", help="the built graphical installer (wwhd-setup) to include")
     ap.add_argument("--windows-python", help="windows: the pinned embeddable Python zip (toolchains.json python.windows, or python.windows-arm64), "
                     "shipped unmodified as tools/python")
-    ap.add_argument("--decomp-build", help="macOS: a build configured with -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON "
+    ap.add_argument("--decomp-build", help="a build configured with -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON "
                     "(the plain decomp build); the release then lets setup build the decomp version")
-    ap.add_argument("--decomp-fast-build", help="macOS, with --decomp-build: the same configured with -DWWHD_DECOMP_FAST=ON "
+    ap.add_argument("--decomp-fast-build", help="with --decomp-build: the same configured with -DWWHD_DECOMP_FAST=ON "
                     "too; setup then builds the decomp version in fast mode by default (--decomp-plain: the plain build)")
     ap.add_argument("--no-rando", action="store_true", help="leave out the in-app randomizer (a build without -DWWHD_RANDO=ON)")
     ap.add_argument("--no-zip", action="store_true")
@@ -671,8 +673,8 @@ def main():
     if a.decomp_fast_build and not a.decomp_build:
         sys.exit("--decomp-fast-build needs --decomp-build (the plain build stays available: setup --decomp-plain)")
     if a.decomp_build:
-        if variant or not a.platform.startswith("macos"):
-            sys.exit("--decomp-build: macOS releases only (not the decomp release variant)")
+        if variant:
+            sys.exit("--decomp-build: not for the decomp release variant")
         manifest["decomp"] = add_decomp(pkg, os.path.abspath(a.decomp_build),
                                         os.path.abspath(a.decomp_fast_build) if a.decomp_fast_build else None, a.linkonly_lib)
     if variant:

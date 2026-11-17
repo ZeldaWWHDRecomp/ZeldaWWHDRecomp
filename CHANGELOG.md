@@ -7,6 +7,21 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp version on Linux, Steam Deck and Windows** (#602). Setup's "Also build the decomp version
+  (experimental)" is now offered on Linux (x86_64 and ARM64, including Steam Deck) and Windows, not only macOS. It
+  uses the compiler setup already downloads for the game, so nothing else needs installing. Linux and Windows x86_64
+  build the fast mode, as on macOS; Windows on ARM builds the plain decomp version only. On Windows the game's data
+  folder path must be at most 164 characters for this step; setup checks it first and says so. Not yet tested on a
+  real Linux, Steam Deck or Windows machine: reports welcome.
+- **Vulkan: the hidden TV picture is no longer copied every frame** (#599). In one-screen (handheld) mode, as on
+  Android phones, the game shows the GamePad picture and its TV picture is only a "playing on the GamePad" screen that
+  nothing displays. Its 1080p copy is now skipped while no screen shows it, and made in the same frame as soon as one
+  does (picture-in-picture, TV mode, a second display, one-screen mode off). The picture is unchanged.
+  `WWHD_VK_SKIP_HIDDEN_TV=0` turns it off.
+- **Vulkan: cheaper window composition** (#598). Putting the TV/GamePad pictures, bars and frames into the window
+  now does about 60 % less GPU work (a simpler shader for the common smooth-filter case, no clear when the pictures
+  cover the window, hidden quads skipped). The picture is pixel-identical. On phones this shows as lower GPU clocks
+  (less heat and battery) rather than a higher frame rate. `WWHD_VK_PRESENT_TRIM=0` turns it off.
 - **Decomp version: fast mode, every macOS release, and code mods** (#597). Setup's "Also build the decomp version
   (experimental)" is now offered in regular macOS releases, not only development builds, and builds the decomp
   build's fast mode (about 40 to 80 minutes more on a busy Mac, less on a quiet one; setup asks for 4 GB free while

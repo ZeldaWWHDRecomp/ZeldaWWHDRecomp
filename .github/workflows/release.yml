@@ -366,6 +366,33 @@ jobs:
             -DVulkan_LIBRARY="/usr/lib/$ARCH-linux-gnu/libvulkan.so.1"
           cmake --build build/rel
 
+      - name: Decomp version parts (setup's option "Also build the decomp version", docs/decomp-build.md)
+        # as in the macOS job: the runtime built for the decomp build without game units and without the game
+        # (WWHD_DECOMP_RUNTIME_ONLY), fast mode and the plain decomp build, with the same pinned zig; setup isolates the
+        # units itself (zig ld.lld -r + tools/decomp_build/elf_localize.py, tools/installer/decomp_platform.py)
+        run: |
+          git submodule update --init decomp
+          : > "$RUNNER_TEMP/no-decomp-units.txt"
+          python3 tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks "$RUNNER_TEMP/no-decomp-units.txt"
+          for mode in plain fast; do
+            dir=build/rel-decomp; fast=OFF
+            if [ "$mode" = fast ]; then dir=build/rel-decomp-fast; fast=ON; fi
+            cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" \
+              -DGEN_DIR="$PWD/build/gen-stub-decomp" \
+              -DCMAKE_C_COMPILER="$ZBIN/zcc" -DCMAKE_CXX_COMPILER="$ZBIN/zcxx" \
+              -DCMAKE_AR="$ZBIN/zar" -DCMAKE_RANLIB="$ZBIN/zranlib" \
+              -DWWHD_BUNDLED_DEPS=ON -DCMAKE_PREFIX_PATH="$HOME/sdl3" \
+              -DVulkan_INCLUDE_DIR="$HOME/vulkan/include" \
+              -DVulkan_LIBRARY="/usr/lib/$ARCH-linux-gnu/libvulkan.so.1" \
+              -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON -DWWHD_DECOMP_FAST=$fast
+            cmake --build "$dir" --target wwhd
+          done
+
+      - name: Decomp version unit isolation with the pinned zig (stub units, tools/decomp_build/test_unit_merge.py)
+        # setup's own merge commands on stub game units, linked into a program that runs and checks each unit used
+        # its own hidden symbols and inline copies (no game, no decompilation needed)
+        run: python3 tools/decomp_build/test_unit_merge.py --toolchain "$TOOLCHAIN" --toolchain-dir "$ZIG_DIR"
+
       - name: Unit tests
         # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
         timeout-minutes: 45
@@ -379,8 +406,10 @@ jobs:
 
       - name: Package
         run: |
+          DECOMP=()
+          if [ -d build/rel-decomp ]; then DECOMP=(--decomp-build build/rel-decomp --decomp-fast-build build/rel-decomp-fast); fi
           python3 tools/release/package.py --build build/rel --platform "linux-$ARCH" --version "$VERSION" \
-            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup \
+            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup "${DECOMP[@]}" \
             --runtime-file "$HOME/sdl3/lib/libSDL3.so.0" \
             --linkonly-lib "/usr/lib/$ARCH-linux-gnu/libvulkan.so.1" \
             --license "SDL3 (zlib)=$PWD/SDL3-3.4.18/LICENSE.txt" \
@@ -557,6 +586,31 @@ jobs:
             -DVulkan_INCLUDE_DIR="$VULKAN_DIR/include" -DVulkan_LIBRARY="$VULKAN_DIR/libvulkan-1.a"
           ninja -C build/rel -d keeprsp
 
+      - name: Decomp version parts (setup's option "Also build the decomp version", docs/decomp-build.md)
+        # as in the macOS job, with the same pinned llvm-mingw; setup isolates the units in the IR (COFF has no
+        # relocatable link: tools/decomp_build/unit_ir.py --libllvm, tools/installer/decomp_platform.py). arm64: the plain
+        # build only (fast mode's declaration table needs capstone, which has no Windows ARM64 wheel)
+        run: |
+          git submodule update --init decomp
+          T="$(cygpath -m "$RUNNER_TEMP")"
+          : > "$T/no-decomp-units.txt"
+          python tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks "$T/no-decomp-units.txt"
+          modes="plain fast"
+          if [ "${{ matrix.arch }}" = arm64 ]; then modes=plain; fi
+          for mode in $modes; do
+            dir=build/rel-decomp; fast=OFF
+            if [ "$mode" = fast ]; then dir=build/rel-decomp-fast; fast=ON; fi
+            cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" \
+              -DGEN_DIR="$(cygpath -m "$PWD/build/gen-stub-decomp")" \
+              -DCMAKE_C_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang.exe" \
+              -DCMAKE_CXX_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang++.exe" \
+              -DCMAKE_RC_COMPILER="$LLVM_MINGW/bin/$TRIPLE-windres.exe" \
+              -DCMAKE_EXE_LINKER_FLAGS=-static -DWWHD_BUNDLED_DEPS=ON \
+              -DVulkan_INCLUDE_DIR="$VULKAN_DIR/include" -DVulkan_LIBRARY="$VULKAN_DIR/libvulkan-1.a" \
+              -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON -DWWHD_DECOMP_FAST=$fast
+            ninja -C "$dir" -d keeprsp wwhd
+          done
+
       - name: Unit tests
         # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
         timeout-minutes: 45
@@ -575,11 +629,23 @@ jobs:
           echo "$SUM  $T/python-embed.zip" | sha256sum -c -
           echo "WIN_PY_ZIP=$T/python-embed.zip" >> "$GITHUB_ENV"
 
+      - name: Decomp version unit isolation with llvm-mingw and the embeddable Python (stub units, test_unit_merge.py)
+        # setup's own merge commands (unit_ir.py --libllvm through llvm-mingw's libLLVM DLL, with the Python players
+        # run setup with) on stub game units, linked into a program that runs and checks each unit kept its own copies
+        run: |
+          T="$(cygpath -m "$RUNNER_TEMP")"
+          mkdir -p "$T/pyembed" && unzip -q -o "$WIN_PY_ZIP" -d "$T/pyembed"
+          "$T/pyembed/python.exe" "$(cygpath -m "$PWD/tools/decomp_build/test_unit_merge.py")" --toolchain "$TOOLCHAIN" \
+            --toolchain-dir "$LLVM_MINGW" --work "$T/unit-merge"
+
       - name: Package
         run: |
           W="$(cygpath -m "$PWD")"  # native Windows Python cannot open /d/a/... paths
+          DECOMP=()
+          if [ -d build/rel-decomp ]; then DECOMP=(--decomp-build build/rel-decomp); fi
+          if [ -d build/rel-decomp-fast ]; then DECOMP+=(--decomp-fast-build build/rel-decomp-fast); fi
           python tools/release/package.py --build build/rel --platform windows-${{ matrix.arch }} --version "$VERSION" \
-            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup.exe \
+            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup.exe "${DECOMP[@]}" \
             --windows-python "$WIN_PY_ZIP" \
             --runtime-file build/rel/SDL3.dll \
             --runtime-file build/rel/libusb-1.0.dll \

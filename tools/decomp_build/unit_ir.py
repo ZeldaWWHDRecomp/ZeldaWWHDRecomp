@@ -6,12 +6,16 @@ becomes internal. That is the isolation `ld -r` + hidden -> local gives today, d
 optimise across units (ThinLTO imports a callee's body by its address-named entry) without the units' duplicate
 hidden symbols (ODR clashes, ext stubs with stand-in names) meeting.
 
-usage: unit_ir.py OUT.o (--tools DIR | --liblto LIB) --cc CLANG [--target T] [--native] OBJ...  (default target: the IR's)
+usage: unit_ir.py OUT.o (--tools DIR | --liblto LIB | --libllvm LIB) --cc CLANG [--target T] [--native] OBJ...
+       (default target: the IR's)
 
   --tools DIR   llvm-link / llvm-dis / llvm-as of the compiler's LLVM (NDK, Homebrew LLVM)
   --liblto LIB  instead of those: the compiler's own libLTO (Xcode / Command Line Tools, which ship no llvm-link): the
                 same link of the unit's bitcode and the same rule (every hidden definition internal, every other one
                 kept) through its C API (lto_codegen_write_merged_modules, symbols kept by lto_codegen_add_must_preserve_symbol)
+  --libllvm LIB  instead of those: the LLVM shared library (libLLVM-NN.dll of llvm-mingw, which ships neither llvm-link
+                nor libLTO; the decomp version on Windows, tools/installer/decomp_platform.py): the same link and the same
+                rule as --tools, through the LLVM C API (LLVMLinkModules2, then every hidden definition internal)
   --tool NAME=PATH  one of llvm-link / llvm-dis / llvm-as by its own path (the Android app's, whose names differ;
                 instead of or over --tools)
   --cc-arg ARG  one more argument of the compiler command (repeatable; the Android app's clang driver flags)
@@ -90,6 +94,79 @@ def liblto_link(lib, out, objs):
     return triple
 
 
+# LLVM C API enums (llvm-c/Core.h)
+LL_EXTERNAL, LL_LINKONCE_ANY, LL_LINKONCE_ODR, LL_WEAK_ANY, LL_WEAK_ODR, LL_INTERNAL = 0, 2, 3, 5, 6, 8
+LL_DEFAULT_VIS, LL_HIDDEN_VIS = 0, 1
+INTERNALIZED = (LL_EXTERNAL, LL_LINKONCE_ANY, LL_LINKONCE_ODR, LL_WEAK_ANY, LL_WEAK_ODR)  # (internalize()'s LINK)
+
+
+def libllvm_link(lib, out, objs):
+    """The LLVM C API (an LLVM shared library): the unit's bitcode objects linked into one module (LLVMLinkModules2),
+    then internalize()'s rule on the module itself: every hidden definition (function, variable, alias) with external,
+    linkonce or weak linkage becomes internal with default visibility, and every internal function and variable loses
+    its comdat (a local symbol needs none). Writes the module to `out`; returns its target triple."""
+    import ctypes
+    if os.name == "nt" and hasattr(os, "add_dll_directory"):  # (the DLL's own libc++ / libunwind next to it)
+        os.add_dll_directory(os.path.dirname(os.path.abspath(lib)))
+    L = ctypes.CDLL(lib)
+    vp, cp, i, u = ctypes.c_void_p, ctypes.c_char_p, ctypes.c_int, ctypes.c_uint
+    for name, res, args in (("LLVMContextCreate", vp, []), ("LLVMContextDispose", None, [vp]),
+                            ("LLVMCreateMemoryBufferWithContentsOfFile", i, [cp, ctypes.POINTER(vp), ctypes.POINTER(cp)]),
+                            ("LLVMDisposeMemoryBuffer", None, [vp]), ("LLVMDisposeMessage", None, [vp]),
+                            ("LLVMParseBitcodeInContext2", i, [vp, vp, ctypes.POINTER(vp)]),
+                            ("LLVMLinkModules2", i, [vp, vp]), ("LLVMDisposeModule", None, [vp]),
+                            ("LLVMWriteBitcodeToFile", i, [vp, cp]), ("LLVMGetTarget", cp, [vp]),
+                            ("LLVMGetFirstFunction", vp, [vp]), ("LLVMGetNextFunction", vp, [vp]),
+                            ("LLVMGetFirstGlobal", vp, [vp]), ("LLVMGetNextGlobal", vp, [vp]),
+                            ("LLVMGetFirstGlobalAlias", vp, [vp]), ("LLVMGetNextGlobalAlias", vp, [vp]),
+                            ("LLVMIsDeclaration", i, [vp]), ("LLVMGetLinkage", u, [vp]), ("LLVMSetLinkage", None, [vp, u]),
+                            ("LLVMGetVisibility", u, [vp]), ("LLVMSetVisibility", None, [vp, u]),
+                            ("LLVMGetComdat", vp, [vp]), ("LLVMSetComdat", None, [vp, vp])):
+        f = getattr(L, name)
+        f.restype, f.argtypes = res, args
+    ctx = L.LLVMContextCreate()
+    dest = None
+    try:
+        for o in objs:
+            buf, msg, mod = vp(), cp(), vp()
+            if L.LLVMCreateMemoryBufferWithContentsOfFile(o.encode(), ctypes.byref(buf), ctypes.byref(msg)):
+                sys.exit("unit_ir.py: %s: %s" % (o, (msg.value or b"").decode(errors="replace")))
+            failed = L.LLVMParseBitcodeInContext2(ctx, buf, ctypes.byref(mod))  # (reads it all: the buffer can go)
+            L.LLVMDisposeMemoryBuffer(buf)
+            if failed:
+                sys.exit("unit_ir.py: %s: not LLVM bitcode (compile the unit with -flto=thin)" % o)
+            if dest is None:
+                dest = mod
+            elif L.LLVMLinkModules2(dest, mod):  # (mod is destroyed either way)
+                sys.exit("unit_ir.py: linking %s failed" % o)
+        if dest is None:
+            sys.exit("unit_ir.py: no objects")
+
+        def each(first, nxt):
+            v = first(dest)
+            while v:
+                yield v
+                v = nxt(v)
+        globals_ = list(each(L.LLVMGetFirstFunction, L.LLVMGetNextFunction)) + \
+            list(each(L.LLVMGetFirstGlobal, L.LLVMGetNextGlobal))
+        aliases = list(each(L.LLVMGetFirstGlobalAlias, L.LLVMGetNextGlobalAlias))
+        for v in globals_ + aliases:
+            if (not L.LLVMIsDeclaration(v) and L.LLVMGetVisibility(v) == LL_HIDDEN_VIS
+                    and L.LLVMGetLinkage(v) in INTERNALIZED):
+                L.LLVMSetLinkage(v, LL_INTERNAL)
+                L.LLVMSetVisibility(v, LL_DEFAULT_VIS)
+        for v in globals_:  # (aliases have no comdat)
+            if L.LLVMGetLinkage(v) == LL_INTERNAL and L.LLVMGetComdat(v):
+                L.LLVMSetComdat(v, None)
+        if L.LLVMWriteBitcodeToFile(dest, out.encode()):
+            sys.exit("unit_ir.py: cannot write %s" % out)
+        return (L.LLVMGetTarget(dest) or b"").decode()
+    finally:
+        if dest is not None:
+            L.LLVMDisposeModule(dest)
+        L.LLVMContextDispose(ctx)
+
+
 def main():
     a = sys.argv[1:]
     out = a.pop(0)
@@ -98,7 +175,7 @@ def main():
     tool, cc_args = {}, []
     while a:
         x = a.pop(0)
-        if x in ("--tools", "--liblto", "--cc", "--target"):
+        if x in ("--tools", "--liblto", "--libllvm", "--cc", "--target"):
             opt[x] = a.pop(0)
         elif x == "--tool":
             name, _, path = a.pop(0).partition("=")
@@ -115,6 +192,9 @@ def main():
         if "--liblto" in opt:
             triple = liblto_link(opt["--liblto"], tmp + ".i.bc", objs)
             m = re.match(r"(.+)", triple or "")  # the units' own target (clang would override it)
+        elif "--libllvm" in opt:
+            triple = libllvm_link(opt["--libllvm"], tmp + ".i.bc", objs)
+            m = re.match(r"(.+)", triple or "")
         else:
             t = lambda name: tool.get(name) or os.path.join(opt["--tools"], name)
             run(t("llvm-link"), "-o", tmp + ".bc", *objs)
