@@ -302,7 +302,7 @@ void support_bytes(const Stage& S, const In& in, std::vector<uint8_t>& bytes) {
   bytes = S.sup;
   support_patch(S, in, bytes.data());
 }
-#include "native_draw/j3d_desc_support2.h"  // (WWHD_NATIVE_J3D_DESC_SUPPORT2=1)
+#include "native_draw/j3d_desc_support2.h"  // (WWHD_NATIVE_J3D_DESC_SUPPORT2, default on; =0 off)
 // the mesh's indices: the buffer-cache entry the full draw binds for this range (a converted entry made once, here or
 // by a full draw); false: no entry (the translated path then)
 bool mesh_indices(const State& s, const native_draw::j3ddesc::Mesh& m, UploadSlice& ib, VkIndexType& type,
@@ -832,6 +832,9 @@ struct Phases {
 };
 // BEGINPASS (j3d_desc_passbegin.h): the state was found by the draw's own target lookup; the pass is begun here when it
 // is not the open one (after every check that can still send the draw the translated way)
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
+#include "native_draw/pardecide_desc.h"  // (WWHD_NATIVE_PAR_DECIDE: the record step as one POD command)
+#endif
 const char* try_replay(State& s, const In& in, bool checkOnly, bool beginPass = false) {
   static Phases proto;
   Phases ph = proto;
@@ -1087,6 +1090,19 @@ const char* try_replay(State& s, const In& in, bool checkOnly, bool beginPass = 
     B = Bound{};
     B.cmd = cmd;
   }
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
+  if (::native_draw::pardecide::level() >= 1 && !depthProof) {
+#if J3DDESC_DEPTH
+    if (familyDraw) {
+      const VkDescriptorSet set = reinterpret_cast<VkDescriptorSet>(fam.set);
+      pdesc::record(cmd, B, s, pipe, pipeLayout, 1, &set, fam.offsetCount, fam.offsets, vaddr, vsize, extent, ib, indexType,
+                    drawCount);
+    } else
+#endif
+    pdesc::record(cmd, B, s, pipe, pipeLayout, 2, sets, offsetCount, offsets.data(), vaddr, vsize, extent, ib, indexType,
+                  drawCount);
+  } else {
+#endif
   if (B.pipeline != pipe) {
     record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     B.pipeline = pipe;
@@ -1143,6 +1159,9 @@ const char* try_replay(State& s, const In& in, bool checkOnly, bool beginPass = 
   }
   B.dynamic = true;
   record::vkCmdDrawIndexed(cmd, drawCount, 1, 0, 0, 0);
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
+  }
+#endif
   g_packetBindsDirty = true;
   ph.mark(d1::pRecord);
 #if J3DDESC_DEPTH

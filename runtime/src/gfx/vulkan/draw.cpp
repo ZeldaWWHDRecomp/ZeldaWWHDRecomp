@@ -50,6 +50,9 @@
 #include "record_mt.h"
 #include "record_tokens.h"
 #endif
+#if defined(WWHD_DECOMP_FAST)
+#include "native_draw/pardecide_emit.h"  // (WWHD_NATIVE_PAR_DECIDE: file scope, before the native_draw headers)
+#endif
 #include "pipeline_failure.h"
 #include "settings.h"
 #include "vertex_formats.h"
@@ -6196,6 +6199,12 @@ UploadSlice packet_block_upload(uint32_t addr, uint32_t size) {
 // (native_draw/lean.h); the refusal logs' string keys built only when the kind's reason changes
 #include "native_draw/lean.h"
 #include "native_draw/j3d_desc_vk.h"  // j3ddesc_draw (J3D described draws, stage D1)
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
+#include "native_draw/pardecide_packet.h"  // (WWHD_NATIVE_PAR_DECIDE)
+#endif
+#if defined(WWHD_DECOMP_FAST)
+#include "native_draw/pardecide_mdi.h"  // (WWHD_NATIVE_MDI_DIRECT)
+#endif
 // kept lowered states (native_draw/alt_states.h, WWHD_NATIVE_DRAW_KEEP)
 #include "native_draw/alt_states.h"
 void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind, const native_draw::Mesh* range) {
@@ -6306,11 +6315,21 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     const auto& v = (*L.cap).vertexBinds[0];
     const uint32_t* a = r + mmSQ_VTX_ATTRIBUTE_BLOCK_START + v.binding * 7;
     const uint32_t addr = a[0], size = a[1] + 1, stride = v.stride;
+#if defined(WWHD_DECOMP_FAST)  // (WWHD_NATIVE_MDI_DIRECT: copied at the flush, native_draw/pardecide_mdi.h)
+    const size_t padded = (size_t(size) + stride - 1) / stride * stride;
+    const size_t at = pdmdi::on() ? pdmdi::append(addr, size, uint32_t(padded)) : B.bytes.size();
+    if (!pdmdi::on()) {
+      B.bytes.resize(at + padded);
+      std::memcpy(B.bytes.data() + at, mem::ptr(addr), size);
+      if (padded > size) std::memset(B.bytes.data() + at + size, 0, padded - size);
+    }
+#else
     const size_t at = B.bytes.size();
     const size_t padded = (size_t(size) + stride - 1) / stride * stride;
     B.bytes.resize(at + padded);
     std::memcpy(B.bytes.data() + at, mem::ptr(addr), size);
     if (padded > size) std::memset(B.bytes.data() + at + size, 0, padded - size);
+#endif
     rprof::guest_read(rprof::kUpVertex, addr, size);
     B.cmds.push_back({(*L.cap).drawCount, 1, 0, int32_t(at / stride), 0});
     ++B.count;
@@ -6522,6 +6541,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       B.bytes.clear();
       B.cmds.clear();
       B.indexBytes.clear();
+#if defined(WWHD_DECOMP_FAST)
+      if (pdmdi::on()) pdmdi::clear();
+#endif
       for (uint32_t i = 0; i < (*L.cap).vertexBindCount && i < 16; ++i) {
         const uint32_t* a = r + mmSQ_VTX_ATTRIBUTE_BLOCK_START + (*L.cap).vertexBinds[i].binding * 7;
         B.vertexRegs[i][0] = a[0];
@@ -6537,6 +6559,12 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     if (same) {
       auto cmd = command_buffer();
       const bool kindChange = P.boundKind != int(kind);
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)  // (WWHD_NATIVE_PAR_DECIDE: the replay as one POD command, native_draw/pardecide_packet.h)
+      if (::native_draw::pardecide::level() >= 1 && (*L.cap).vertexBindCount <= ::native_draw::pardecide::kDescMaxVb &&
+          (*L.cap).offsetCount <= ::native_draw::pardecide::kDescMaxOffsets)
+        pdpacket::record(cmd, kindChange, sameVertexInput, *L.cap, r, sets, offsets.data());
+      else {
+#endif
       if (kindChange) {
         record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (*L.cap).vkPipeline);
         record::vkCmdBindIndexBuffer(cmd, (*L.cap).indexBuffer, (*L.cap).indexOffset, (*L.cap).indexType);
@@ -6562,6 +6590,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       record::vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, (*L.cap).layout, 0, 2, sets,
                                       (*L.cap).offsetCount, offsets.data());
       record::vkCmdDrawIndexed(cmd, (*L.cap).drawCount, 1, 0, 0, 0);
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
+      }
+#endif
       P.boundKind = sameVertexInput ? int(kind) : -1;  // (a stream bound: the next instance rebinds)
       P.mdiKind = -1;
       g_packetBindsDirty = true;
@@ -6754,6 +6785,10 @@ void packet_mdi_flush() {
     UploadSlice v;
     {
       rprof::UploadKind uploads(rprof::kUpVertex);
+#if defined(WWHD_DECOMP_FAST)
+      if (pdmdi::on()) v = pdmdi::upload();
+      else
+#endif
       v = snapshot(B.bytes.data(), B.bytes.size(), 4);
     }
     record::vkCmdBindVertexBuffers(cmd, B.binding, 1, &v.buffer, &v.offset);
