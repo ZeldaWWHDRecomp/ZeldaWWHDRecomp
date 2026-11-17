@@ -99,6 +99,40 @@ class HostTests(unittest.TestCase):
         self.assertIsNot(concurrent.futures.ProcessPoolExecutor, decomp_android._ThreadPool)
         self.assertIs(subprocess.run.__module__, "subprocess")
 
+    def test_object_cache_keys_through_the_bridge_see_whole_sources(self):
+        # (phone run 2026-11-17: the bridge kept 4 MiB of the preprocessor's stdout, every decomp code_NNN.c got
+        # the same key and so the first one's object; now the preprocessor writes a file, hashed in full)
+        import object_cache
+
+        def native(cmd, env=None, cancel=None, separate=False, input=None):
+            assert "-E" in cmd
+            text = Path(cmd[cmd.index("-P") + 1]).read_bytes()
+            if "-o" in cmd:
+                Path(cmd[cmd.index("-o") + 1]).write_bytes(text)
+                text = b""
+            return 0, text[:4 << 20], b""  # (the bridge's bound before it became an error)
+        host = decomp_android.Host(FakeSetup(), self.root, COMPILER, TOOLS, native, self.root / "lib.so", self.log)
+        shared = b"int f_02000000(void);\n" * 220000  # 4.8 MB, as funcs.h
+        for name, tail in (("code_003.c", b"int a;"), ("code_015.c", b"int b;")):
+            (self.root / name).write_bytes(shared + tail)
+        cache = object_cache.Cache(self.root / "code-objects", "cc", ["-O3"], {})
+        saved = object_cache.subprocess
+        object_cache.subprocess = SimpleNamespace(run=host.subprocess_run, PIPE=subprocess.PIPE,
+                                                  STDOUT=subprocess.STDOUT, DEVNULL=subprocess.DEVNULL)
+        try:
+            keys = [cache.key(["/apk/clang"], ["-O3"], str(self.root / n)) for n in ("code_003.c", "code_015.c")]
+        finally:
+            object_cache.subprocess = saved
+        self.assertTrue(all(keys))
+        self.assertNotEqual(keys[0], keys[1])
+
+    def test_bridge_overflow_is_not_swallowed(self):
+        def native(cmd, **_):
+            raise RuntimeError("native tool output exceeds 4 MiB (stdout); write it to a file instead")
+        host = decomp_android.Host(FakeSetup(), self.root, COMPILER, TOOLS, native, self.root / "lib.so", self.log)
+        with self.assertRaisesRegex(RuntimeError, "exceeds 4 MiB"):
+            host.subprocess_run(["clang", "-E", "big.c"], capture_output=True)
+
     def test_run_logged_raises_with_the_tail(self):
         script = self.root / "fail.py"
         script.write_text("print('broken here')\nraise SystemExit('stop')\n")
