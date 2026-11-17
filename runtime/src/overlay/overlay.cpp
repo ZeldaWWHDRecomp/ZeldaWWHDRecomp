@@ -1149,13 +1149,13 @@ void tab_graphics() {
             post_changed([on] {
                 const int mode = on ? stereo::HalfSBS : stereo::Off;
                 stereo::set_mode(mode);
-                hostui::set("stereoMode", std::to_string(mode));
+                hostui::set(render::stereo_mode_key(), std::to_string(mode));
             });
 #else
         const char* modes[] = {"Off", "Half SBS", "Full SBS", "Top and bottom (TAB)"};
         int mode = stereo::requestedMode.load();
         if (ImGui::Combo("3D output", &mode, modes, stereo::Count))
-            post_changed([mode] { stereo::set_mode(mode); hostui::set("stereoMode", std::to_string(mode)); });
+            post_changed([mode] { stereo::set_mode(mode); hostui::set(render::stereo_mode_key(), std::to_string(mode)); });
 #endif
         float depth = stereo::requestedDepth.load(), convergence = stereo::requestedConvergence.load();
         if (ImGui::SliderFloat("3D depth", &depth, 0.0f, 5.0f, "%.2fx", ImGuiSliderFlags_AlwaysClamp))

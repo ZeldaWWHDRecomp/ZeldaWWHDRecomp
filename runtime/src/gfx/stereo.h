@@ -16,7 +16,8 @@ inline std::atomic<float> requestedDepth{1.0f}, requestedConvergence{600.0f};
 inline std::atomic<bool> requestedSwap{false};
 // how far in front of the viewer the 2D layouts (HUD, prompts, menus), the GamePad picture-in-picture and
 // the settings overlay appear: the distance (camera units) of a scene point with the same disparity. Automatic
-// (requestedHudAuto): in front of the nearest scene depth the renderer measured (hud::follow), at most this far.
+// (requestedHudAuto): in front of the nearest scene depth the renderer measured (hud::follow), at most this far;
+// on for someone new to 3D, off for someone who used it before it existed (stereo_settings.cpp).
 inline std::atomic<float> requestedHudDistance{150.0f};
 inline std::atomic<bool> requestedHudAuto{true};
 // "behind the glass" (a display with a frame, e.g. a window in the room): the HUD distance is the

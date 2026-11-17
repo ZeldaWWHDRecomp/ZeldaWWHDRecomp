@@ -204,6 +204,8 @@ inline bool feature_available(Feature f) { return g_backend->feature_available(f
 // tests override the saved values: WWHD_STEREO=off|half-sbs|full-sbs|tab (or 0..3), WWHD_STEREO_DEPTH, WWHD_STEREO_HUD
 // (HUD distance), WWHD_STEREO_HUD_AUTO and WWHD_STEREO_GLASS (0|1)
 void load_saved_stereo();
+// the settings key of the saved 3D output, the running renderer's own (stereo_settings.cpp)
+const char* stereo_mode_key();
 // test aid, at each frame boundary before stereo::latch: WWHD_TEST_STEREO_AT=<frame>:<mode 0..3>,... switches the
 // mode from those frames on (frame: as WWHD_DUMP_FRAMES counts them, fixed_seed::script_frame)
 void stereo_test_switch(uint64_t frame);

@@ -17,16 +17,21 @@
 #include "../overlay/hostui.h"
 
 namespace render {
+// The 3D output each renderer starts with is its own: the Mac offered 3D only with Vulkan before, and someone who
+// once tried it there shouldn't find Metal in 3D after an update.
+const char* stereo_mode_key() { return vulkan() ? "stereoMode" : "stereoModeMetal"; }
+
 void load_saved_stereo() {
     std::string v;
     auto num = [&](const char* key) { return ::hostui::get(key, v) ? std::optional<float>(float(atof(v.c_str()))) : std::nullopt; };
-    if (auto x = num("stereoMode")) stereo::set_mode(int(*x));
+    if (auto x = num(stereo_mode_key())) stereo::set_mode(int(*x));
     if (auto x = num("stereoDepth")) stereo::set_depth(*x);
     if (auto x = num("stereoConvergence")) stereo::set_convergence(*x);
     if (auto x = num("stereoSwap")) stereo::requestedSwap = *x != 0;
     if (auto x = num("stereoHudDistance")) stereo::set_hud_distance(*x);
     if (auto x = num("stereoBehindGlass")) stereo::requestedBehindGlass = *x != 0;
     if (auto x = num("stereoHudAuto")) stereo::requestedHudAuto = *x != 0;
+    else if (num("stereoMode")) stereo::requestedHudAuto = false;  // (3D used before the automatic HUD distance: its HUD stays put)
     // tests: WWHD_STEREO_DEPTH, WWHD_STEREO_HUD (HUD distance), WWHD_STEREO_HUD_AUTO and WWHD_STEREO_GLASS (0/1)
     // override the saved values
     if (const char* e = getenv("WWHD_STEREO_DEPTH")) stereo::set_depth(float(atof(e)));
