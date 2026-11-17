@@ -28,8 +28,10 @@ struct BatchDraw {
   uint32_t first = 0, count = 0;  // the chunk's pieces
   bool declined = false;          // (draw: the variant's pipeline is not ready; nothing was drawn)
 };
+// (draw threads T1: the calling thread's, DRAW_THREAD_STATIC; set around draw() by batch_draw_run, read by draw and
+// bind_stage)
 inline BatchDraw*& batch_draw() {
-  static thread_local BatchDraw* batch = nullptr;
+  DRAW_THREAD_STATIC(batch, BatchDraw*);
   return batch;
 }
 // the chunk's pieces of batched block i, one after another at the variant's stride (zero after each guest block),

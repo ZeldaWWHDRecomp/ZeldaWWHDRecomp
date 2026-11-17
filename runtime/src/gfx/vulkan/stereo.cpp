@@ -18,7 +18,7 @@ namespace {
 decltype(R.surfaces) otherSurfaces;
 decltype(R.linearTargets) otherLinearTargets;
 uint32_t otherMainDepth = 0;
-// The unselected eye's render pass (R.rendering and R.pass*).
+// The unselected eye's render pass (pass_state()).
 struct EyePass {
     bool rendering = false, tracked = false;
     std::array<Surface*,8> colors{};
@@ -37,14 +37,14 @@ int inOrderScopes = 0;
 bool streaming() { return stereo::frame.mode != stereo::Off && !inOrderScopes; }
 void swap_pass() {
     auto& slot = R.submissions[R.activeSubmission];
-    std::swap(R.rendering, otherPass.rendering);
-    std::swap(R.passTracked, otherPass.tracked);
-    std::swap(R.passColors, otherPass.colors);
-    std::swap(R.passSlices, otherPass.slices);
-    std::swap(R.passDepth, otherPass.depth);
-    std::swap(R.passDepthSlice, otherPass.depthSlice);
-    std::swap(R.passWidth, otherPass.width);
-    std::swap(R.passHeight, otherPass.height);
+    std::swap(pass_state().rendering, otherPass.rendering);
+    std::swap(pass_state().tracked, otherPass.tracked);
+    std::swap(pass_state().colors, otherPass.colors);
+    std::swap(pass_state().slices, otherPass.slices);
+    std::swap(pass_state().depth, otherPass.depth);
+    std::swap(pass_state().depthSlice, otherPass.depthSlice);
+    std::swap(pass_state().width, otherPass.width);
+    std::swap(pass_state().height, otherPass.height);
     std::swap(slot.activeRenderScope, otherPass.scope);
 }
 DeferredCommands* eye_stream() {

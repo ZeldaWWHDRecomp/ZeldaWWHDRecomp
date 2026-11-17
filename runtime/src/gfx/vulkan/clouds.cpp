@@ -90,9 +90,9 @@ VkPipeline grade_pipeline() {
     uint32_t ncolor = 0;
     VkFormat colorFormats[8]{};
     for (uint32_t i = 0; i < 8; i++)
-        if (R.passColors[i]) { colorFormats[i] = R.passColors[i]->fmt.pixel; ncolor = i + 1; }
+        if (pass_state().colors[i]) { colorFormats[i] = pass_state().colors[i]->fmt.pixel; ncolor = i + 1; }
     for (uint32_t i = 0; i < ncolor; i++) key += "/" + std::to_string(int(colorFormats[i]));
-    if (R.passDepth) key += "/d" + std::to_string(int(R.passDepth->fmt.pixel)) + (R.passDepth->fmt.stencil ? "s" : "");
+    if (pass_state().depth) key += "/d" + std::to_string(int(pass_state().depth->fmt.pixel)) + (pass_state().depth->fmt.stencil ? "s" : "");
     if (auto it = res.pipelines.find(key); it != res.pipelines.end()) return it->second;
     VkShaderModule vs = sky_module(kSkyVertex, true), fs = sky_module(kGradeFragment, false);
     VkPipelineShaderStageCreateInfo stages[2]{};
@@ -134,9 +134,9 @@ VkPipeline grade_pipeline() {
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
     rendering.colorAttachmentCount = ncolor;
     rendering.pColorAttachmentFormats = colorFormats;
-    if (R.passDepth) {
-        rendering.depthAttachmentFormat = R.passDepth->fmt.pixel;
-        rendering.stencilAttachmentFormat = R.passDepth->fmt.stencil ? R.passDepth->fmt.pixel : VK_FORMAT_UNDEFINED;
+    if (pass_state().depth) {
+        rendering.depthAttachmentFormat = pass_state().depth->fmt.pixel;
+        rendering.stencilAttachmentFormat = pass_state().depth->fmt.stencil ? pass_state().depth->fmt.pixel : VK_FORMAT_UNDEFINED;
     }
     VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
     pipeline_targets(ci, rendering);
@@ -174,24 +174,24 @@ void sky_clouds_begin(const uint32_t* regs, uint32_t seq) {
     (void)regs;
     static uint64_t begins = 0, opened = 0;
     begins++;
-    if (R.rendering && R.passColors[0]) g_skyAddr = R.passColors[0]->addr, g_skySeq = seq, g_skyFrame = R.frame, opened++;
+    if (pass_state().rendering && pass_state().colors[0]) g_skyAddr = pass_state().colors[0]->addr, g_skySeq = seq, g_skyFrame = R.frame, opened++;
     if (cloud_proto::mode() == cloud_proto::kSdf) g_cloudsWanted = seq;
     if (begins % 300 == 0 && render::cloud_shadows())
         LOG("[shadows] Vulkan: sky begins %llu, with an open pass %llu", (unsigned long long)begins, (unsigned long long)opened);
     const float reduce = 1.0f - render::horizon_haze();
     if (reduce <= 0.0f || stereo::frame.mode != stereo::Off) return;  // stereo 3D: the original sky (limitation)
     static uint64_t missed = 0;
-    if (!R.rendering || !R.passTracked || !R.passColors[0] || !R.passWidth || !R.passHeight) {
+    if (!pass_state().rendering || !pass_state().tracked || !pass_state().colors[0] || !pass_state().width || !pass_state().height) {
         if (missed++ % 600 == 0) LOG("[sky] horizon haze: no open sky pass (%llu times)", (unsigned long long)missed);
         return;
     }
     VkPipeline pipe = grade_pipeline();
     if (!pipe) return;
     cloud_proto::SkyFrame g;
-    cloud_proto::sky_frame(*cloud_proto::snapshot(seq), float(R.passWidth) / float(R.passHeight), reduce, g);
+    cloud_proto::sky_frame(*cloud_proto::snapshot(seq), float(pass_state().width) / float(pass_state().height), reduce, g);
     VkCommandBuffer cmd = command_buffer();
-    VkViewport viewport{0, 0, float(R.passWidth), float(R.passHeight), 0, 1};
-    VkRect2D area{{0, 0}, {R.passWidth, R.passHeight}};
+    VkViewport viewport{0, 0, float(pass_state().width), float(pass_state().height), 0, 1};
+    VkRect2D area{{0, 0}, {pass_state().width, pass_state().height}};
     record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     record::vkCmdSetViewport(cmd, 0, 1, &viewport);
     record::vkCmdSetScissor(cmd, 0, 1, &area);
@@ -371,8 +371,8 @@ void shadows_now() {
     Surface* color = g_picture;
     Surface* depth = g_pictureDepth;
     // several surfaces can share an address: take the last pass's, where the later scene draws went
-    if (R.passColors[0] && R.passColors[0]->addr == g_pictureAddr) color = R.passColors[0];
-    if (R.passDepth && R.passDepth->addr == g_pictureDepthAddr) depth = R.passDepth;
+    if (pass_state().colors[0] && pass_state().colors[0]->addr == g_pictureAddr) color = pass_state().colors[0];
+    if (pass_state().depth && pass_state().depth->addr == g_pictureDepthAddr) depth = pass_state().depth;
     if (!color || !depth || !depth->fmt.depth) return;
     VkPipeline pipe = shadow_pipeline(color->fmt.pixel);
     if (!pipe) return;
@@ -404,7 +404,7 @@ void shadows_now() {
     alloc.descriptorSetCount = 1;
     alloc.pSetLayouts = &sres.set;
     check_vk(vkAllocateDescriptorSets(R.device, &alloc, &set), "allocate cloud shadow descriptors");
-    VkDescriptorImageInfo image{sres.sampler, depth_view(depth, R.passDepth == depth ? R.passDepthSlice : 0),
+    VkDescriptorImageInfo image{sres.sampler, depth_view(depth, pass_state().depth == depth ? pass_state().depthSlice : 0),
                                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     VkDescriptorBufferInfo buffer{clouds.buffer, clouds.offset, sizeof(float) * 4 * 100};
     VkWriteDescriptorSet w[2]{{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}, {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}};
@@ -735,9 +735,9 @@ VkPipeline cloud_pipeline(bool depthTested) {
     uint32_t ncolor = 0;
     VkFormat colorFormats[8]{};
     for (uint32_t i = 0; i < 8; i++)
-        if (R.passColors[i]) { colorFormats[i] = R.passColors[i]->fmt.pixel; ncolor = i + 1; }
+        if (pass_state().colors[i]) { colorFormats[i] = pass_state().colors[i]->fmt.pixel; ncolor = i + 1; }
     for (uint32_t i = 0; i < ncolor; i++) key += "/" + std::to_string(int(colorFormats[i]));
-    Surface* depth = R.passDepth;
+    Surface* depth = pass_state().depth;
     if (depth) key += "/d" + std::to_string(int(depth->fmt.pixel)) + (depth->fmt.stencil ? "s" : "");
     if (auto it = cres.pipelines.find(key); it != cres.pipelines.end()) return it->second;
     VkShaderModule vs = sky_module(kCloudVertex, true), fs = sky_module(kCloudFragment, false);
@@ -814,17 +814,17 @@ VkPipeline cloud_pipeline(bool depthTested) {
 // (sky-only test) rather than the half-resolution sky buffer (Lite)
 void draw_clouds(uint32_t seq, uint32_t target, bool depthTested) {
     cloud_resources();  // may end the pass for the one-time noise upload
-    if (!R.rendering || !R.passTracked || !R.passColors[0] || R.passColors[0]->addr != target) {
+    if (!pass_state().rendering || !pass_state().tracked || !pass_state().colors[0] || pass_state().colors[0]->addr != target) {
         static uint64_t missed = 0;
         if (missed++ % 600 == 0) LOG("[clouds] Vulkan: the composite pass is closed (%llu times)", (unsigned long long)missed);
         return;
     }
     VkPipeline pipe = cloud_pipeline(depthTested);
     if (!pipe) return;
-    const uint32_t w = R.passWidth, h = R.passHeight;
+    const uint32_t w = pass_state().width, h = pass_state().height;
     cloud_scene::Globals g;
     std::vector<cloud_scene::Inst> inst;
-    cloud_scene::build(*cloud_proto::snapshot(seq), float(w) / float(h), cloud_proto::mode(), depthTested && R.passDepth, R.frame, g, inst);
+    cloud_scene::build(*cloud_proto::snapshot(seq), float(w) / float(h), cloud_proto::mode(), depthTested && pass_state().depth, R.frame, g, inst);
     if (inst.empty()) return;
     if (inst.size() > kMaxInstances) inst.erase(inst.begin(), inst.end() - kMaxInstances);  // keep the nearest
     UploadSlice gu = allocate_upload(sizeof g, 256), iu = allocate_upload(sizeof(cloud_scene::Inst) * kMaxInstances, 256);
@@ -864,7 +864,7 @@ bool clouds_skip_card() {
     if (!cloud_proto::g_active_seq || (m != cloud_proto::kSdf && m != cloud_proto::kHide)) return false;
     // Lite: the clouds go into the half-resolution sky buffer in place of the cards (a quarter of the pixels);
     // High: into the full-resolution picture after the composite (clouds_before_draw)
-    if (m == cloud_proto::kSdf && cloud_proto::tier() == 1 && g_cloudsWanted && R.passColors[0] && R.passColors[0]->addr == g_skyAddr) {
+    if (m == cloud_proto::kSdf && cloud_proto::tier() == 1 && g_cloudsWanted && pass_state().colors[0] && pass_state().colors[0]->addr == g_skyAddr) {
         const uint32_t seq = g_cloudsWanted;
         g_cloudsWanted = 0;
         draw_clouds(seq, g_skyAddr, false);

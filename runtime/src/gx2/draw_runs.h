@@ -50,8 +50,13 @@ inline bool vs_block_addr(uint32 reg) { return reg >= kVsBlocks && reg < kVsBloc
 inline void vs_block_addrs(uint32* out) {
     for (uint32 i = 0; i < 16; ++i) out[i] = g_regs[kVsBlocks + i * 7];
 }
+// (draw threads T1: forwarded like every other change to the register file, register_forward.h; a draw thread's copy
+// then draws each piece, and the restore after the run, with the same addresses)
 inline void set_vs_block_addrs(const uint32* addrs) {
-    for (uint32 i = 0; i < 16; ++i) g_regs[kVsBlocks + i * 7] = addrs[i];
+    for (uint32 i = 0; i < 16; ++i) {
+        g_regs[kVsBlocks + i * 7] = addrs[i];
+        forward::note(kVsBlocks + i * 7, &g_regs[kVsBlocks + i * 7], 1);
+    }
 }
 inline uint32 draw_instances(Op op, const uint32* p) { return op == OP_DRAW ? p[3] : p[5]; }
 

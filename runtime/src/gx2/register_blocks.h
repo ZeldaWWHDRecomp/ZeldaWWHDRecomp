@@ -22,8 +22,9 @@ public:
     }
     // Compare before copying, including zeros from a newly initialized context.
     // The predicate uses the renderer's existing shader relevance rules.
-    template <class Relevant>
-    bool restore(uint32_t* regs, const uint32_t* shadow, Relevant relevant) const {
+    // copied(first, regs + first, count): after each block it changed (register_forward.h)
+    template <class Relevant, class Copied>
+    bool restore(uint32_t* regs, const uint32_t* shadow, Relevant relevant, Copied copied) const {
         bool shader = false;
         for (size_t b : blocks) {
             size_t first = b * BlockWords, n = std::min(BlockWords, Words - first);
@@ -32,8 +33,13 @@ public:
                 for (size_t i = first; i < first + n; ++i)
                     if (regs[i] != shadow[i] && relevant(uint32_t(i), regs[i], shadow[i])) { shader = true; break; }
             memcpy(regs + first, shadow + first, n * sizeof(uint32_t));
+            copied(uint32_t(first), regs + first, uint32_t(n));
         }
         return shader;
+    }
+    template <class Relevant>
+    bool restore(uint32_t* regs, const uint32_t* shadow, Relevant relevant) const {
+        return restore(regs, shadow, relevant, [](uint32_t, const uint32_t*, uint32_t) {});
     }
 };
 } // namespace gx2
