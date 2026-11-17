@@ -537,7 +537,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
   if(composed++%uint64_t(present_trim::log_every())==0)
    present_trim::log_composition(quads,extent,overlay,gamepadOverlay,attachment.loadOp==VK_ATTACHMENT_LOAD_OP_CLEAR,hiddenQuads);
  }
- begin_pass(cmd,rendering,[&] { return color_pass(format,layout); });R.rendering=true;R.passTracked=false;
+ begin_pass(cmd,rendering,[&] { return color_pass(format,layout); });pass_state().rendering=true;pass_state().tracked=false;
  VkRect2D scissor{{0,0},extent};record::vkCmdSetScissor(cmd,0,1,&scissor);
  const bool targetLinear=srgb_format(format)||hdrOutput||pqEncode;
  const float whiteScale=hdrOutput?std::min(hdr::menuWhite.load(),hdr::parameters().peak)/80.0f:1.0f;
@@ -618,7 +618,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
  end_pass(cmd);
  barrier.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;barrier.newLayout=finalLayout;barrier.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;barrier.dstAccessMask=0;
  record::vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,0,0,nullptr,0,nullptr,1,&barrier);layout=finalLayout;
- R.rendering=false;R.passTracked=false;
+ pass_state().rendering=false;pass_state().tracked=false;
 }
 }  // namespace
 
@@ -1240,7 +1240,7 @@ void draw_mod_overlay(Surface& scan, VkExtent2D displayExtent) {
  attachment.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
  const VkExtent2D extent{scan.extent.width,scan.extent.height};
  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea.extent=extent;rendering.layerCount=1;rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
- begin_pass(cmd,rendering,[&] { return color_pass(scan.fmt.pixel,scan.layout); });R.rendering=true;R.passTracked=false;
+ begin_pass(cmd,rendering,[&] { return color_pass(scan.fmt.pixel,scan.layout); });pass_state().rendering=true;pass_state().tracked=false;
  const float w=float(extent.width),h=float(extent.height);
  const float xRatio=displayExtent.width&&displayExtent.height
      ? (w/h)/(float(displayExtent.width)/displayExtent.height) : 1.0f;
@@ -1263,7 +1263,7 @@ void draw_mod_overlay(Surface& scan, VkExtent2D displayExtent) {
   PresentParams params{};const float u[4]={move.stamina,move.alpha,move.exhausted?2.0f:move.swimming?1.0f:0.0f,0};memcpy(&params,u,16);
   record::vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);record::vkCmdDraw(cmd,3,1,0,0);
  }
- end_pass(cmd);R.rendering=false;R.passTracked=false;
+ end_pass(cmd);pass_state().rendering=false;pass_state().tracked=false;
 }
 
 bool present_capture_requested() { return present_capture().enabled; }

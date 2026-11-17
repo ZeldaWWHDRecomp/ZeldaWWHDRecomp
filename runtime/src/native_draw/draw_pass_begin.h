@@ -63,12 +63,12 @@ inline void begin_draw_pass(VkCommandBuffer cmd, const std::array<Surface*, 8>& 
     return pass;
   });
   ++R.renderPassCount;
-  R.rendering = true;
-  R.passTracked = true;
-  R.passColors = colors;
-  std::copy(std::begin(slices), std::end(slices), R.passSlices.begin());
-  R.passDepth = depth;
-  R.passDepthSlice = depthSlice;
-  R.passWidth = width;
-  R.passHeight = height;
+  pass_state().rendering = true;
+  pass_state().tracked = true;
+  pass_state().colors = colors;
+  std::copy(std::begin(slices), std::end(slices), pass_state().slices.begin());
+  pass_state().depth = depth;
+  pass_state().depthSlice = depthSlice;
+  pass_state().width = width;
+  pass_state().height = height;
 }

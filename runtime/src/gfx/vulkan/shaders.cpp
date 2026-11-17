@@ -48,6 +48,7 @@
 #include <filesystem>
 #include <glslang/build_info.h>
 #include "platform/host.h"
+#include "gfx/vulkan/draw_thread_locks.h"
 #include <array>
 #include <algorithm>
 #include <chrono>
@@ -958,6 +959,7 @@ DescriptorRankPlan make_descriptor_rank_plan(const LatteDecompilerShaderResource
 }
 
 LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint64_t frame) {
+  gfxvk::draw_locks::Guard locked(gfxvk::draw_locks::kShaders);  // (draw threads: a shared cache)
     ++stats.fetchLookups;
     if (keyOut) *keyOut = 0;
     static const bool memo = [] {
@@ -1070,6 +1072,7 @@ namespace { thread_local uint64_t lastVariantKey = 0; }
 uint64_t last_translated_variant_key() { return lastVariantKey; }
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint64_t fsKey,
                   uint64_t frame, uint64_t stateGeneration, const Shader* linkedVs, bool clipAllowed) {
+  gfxvk::draw_locks::Guard locked(gfxvk::draw_locks::kShaders);  // (draw threads: a shared cache)
     lastVariantKey = 0;
     const bool clip = clipAllowed && clip_emulation_wanted_regs(regs);
     poll_shader_binaries(frame);

@@ -20,14 +20,14 @@ bool on() {
   return value;
 }
 bool defer() {
-  if (!on() || !R.rendering) return false;
+  if (!on() || !pass_state().rendering) return false;
   if (!native_draw::g_batchSubmitPending) ++deferred;
   native_draw::g_batchSubmitPending = true;
   generation = R.submissionGeneration;
   return true;
 }
 bool take() {
-  if (R.rendering) return false;
+  if (pass_state().rendering) return false;
   native_draw::g_batchSubmitPending = false;
   if (generation != R.submissionGeneration) {
     ++dropped;

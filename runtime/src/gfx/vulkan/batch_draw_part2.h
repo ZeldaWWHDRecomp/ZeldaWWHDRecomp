@@ -1,5 +1,11 @@
 // Same-state draw runs, part 2 (batch_draw.h): the batched variants, what the renderer takes, the chunked draw.
 // Included by draw.cpp only, inside namespace gfxvk, before draw_stereo. PROVENANCE: as batch_draw.h.
+// Draw threads (T1, drawthreads DESIGN.md): the held run's entry (batch_draw_run, from draw_stereo before any hand-off to
+// a draw thread; gx2 holds runs on the command processor thread) runs on the render thread only, so its counters
+// (g_batchWhy, g_batchPieces, g_batchDraws), batch_log's frame and batch_can_hold's log count stay plain. A draw thread
+// that is ever handed a held run must carry draw_batch::current() in its job and move these first. The variant map is
+// a shared cache all the same: under the shaders lock (batch_variant). The per-draw state the draw path reads
+// (batch_draw(), bind_stage's piece buffers) is per thread.
 #pragma once
 
 inline bool batch_runs_on() {
@@ -15,7 +21,7 @@ inline bool batch_can_hold(const uint32_t* r) {
   capture = g_packetCapture != nullptr;
 #endif
   const bool ok = batch_runs_on() && R.device && stereoOff && !backdrop && !coverage && !gs && !capture;
-  // (diagnostics: what keeps draws from runs, the first few times)
+  // (diagnostics: what keeps draws from runs, the first few times; render thread only: gx2 and draw_stereo)
   static int logged = 0;
   if (!ok && logged < 4) {
     ++logged;
@@ -42,10 +48,13 @@ struct BatchVariant {
   std::unique_ptr<vk::Shader> shader;
   vk::batch::Variant layout;
 };
-inline std::map<std::pair<uint64_t, uint32_t>, std::shared_ptr<BatchVariant>> g_batchVariants;  // (render thread)
+// (under the shaders lock: batch_variant; its entries are read by the draw path through BatchDraw, and their state by
+// the compile thread's release store)
+inline std::map<std::pair<uint64_t, uint32_t>, std::shared_ptr<BatchVariant>> g_batchVariants;
 inline std::atomic<uint64_t> g_batchVariantsMade{0}, g_batchVariantsFailed{0};
 // blocks: the batched guest blocks (bit i); bit 16: the support block too
 inline BatchVariant* batch_variant(vk::Shader* base, uint32_t blocks) {
+  draw_locks::Guard locked(draw_locks::kShaders);  // (draw threads: a shared cache)
   auto& slot = g_batchVariants[{base->key, blocks}];
   // (a shader cache cleared since: the variant was made from another translation; a new one is made)
   if (slot && (slot->base != base || slot->baseDec != base->dec)) slot.reset();
@@ -93,7 +102,7 @@ inline BatchVariant* batch_variant(vk::Shader* base, uint32_t blocks) {
 // why runs were drawn draw by draw (the log line)
 enum BatchWhy { kBatchDrawn, kBatchState, kBatchFetch, kBatchShader, kBatchGrass, kBatchBlocks, kBatchMaking,
                 kBatchFailed, kBatchPipeline, kBatchWhys };
-inline uint64_t g_batchWhy[kBatchWhys]{}, g_batchPieces = 0, g_batchDraws = 0;
+inline uint64_t g_batchWhy[kBatchWhys]{}, g_batchPieces = 0, g_batchDraws = 0;  // (render thread only: see the top)
 inline bool batch_accept(const uint32_t* r, const draw_batch::Batch& run, uint32_t count, BatchDraw& out) {
   auto no = [](BatchWhy why) { ++g_batchWhy[why]; return false; };
   if (!batch_can_hold(r)) return no(kBatchState);
@@ -181,7 +190,9 @@ inline void batch_draw_run(const uint32_t* r, uint32_t prim, uint32_t count, uin
       ++g_batchWhy[kBatchPipeline];
       return;
     }
-    // (a later chunk: its pieces one by one here, each with its own addresses; the registers put back)
+    // (a later chunk: its pieces one by one here, each with its own addresses; the registers put back. Draw threads:
+    // these writes go to the register file this draw was given and are undone before return, so they are not
+    // forwarded: on a draw thread that file is its own copy)
     uint32_t* regs = const_cast<uint32_t*>(r);
     uint32_t saved[16];
     for (uint32_t i = 0; i < 16; ++i) saved[i] = regs[mmSQ_VTX_UNIFORM_BLOCK_START + i * 7];
