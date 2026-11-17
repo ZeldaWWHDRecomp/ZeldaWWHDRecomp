@@ -34,6 +34,28 @@ SHELL = "/system/bin/sh"
 CA_PATHS = ("/apex/com.android.conscrypt/cacerts", "/system/etc/security/cacerts")
 
 
+def android_ssl_context(capath):
+    """An ssl context that trusts the certificates in Android's store folder. Not capath=: Android names those files
+    by OpenSSL's old (MD5) subject hash, and OpenSSL looks them up by the new one, so it finds none
+    (CERTIFICATE_VERIFY_FAILED, "unable to get local issuer certificate"). Every file's PEM block is loaded instead."""
+    import ssl
+    begin, end = "-----BEGIN CERTIFICATE-----", "-----END CERTIFICATE-----"
+    pem = []
+    for name in sorted(os.listdir(capath)):
+        try:
+            with open(os.path.join(capath, name), encoding="ascii", errors="replace") as stream:
+                text = stream.read()
+        except OSError:
+            continue
+        start = text.find(begin)
+        stop = text.find(end, start)
+        if start >= 0 and stop > start:
+            pem.append(text[start:stop + len(end)])
+    if not pem:
+        raise OSError("no certificates in %s" % capath)
+    return ssl.create_default_context(cadata="\n".join(pem) + "\n")
+
+
 class Host:
     """The setup module as decomp_setup.build() uses it, for the Android app. setup: the loaded installer module
     (setup_adapter.Adapter.setup); tools: {"ld.lld", "llvm-objcopy", ["llvm-link", "llvm-dis", "llvm-as"]: paths};
@@ -217,12 +239,14 @@ class Host:
 
     def download(self, url, dest, sha256, size, what):
         """setup.download with Android's certificate store (Python's ssl finds none by itself there)"""
-        import ssl
         import urllib.request
         capath = next((p for p in CA_PATHS if os.path.isdir(p)), None)
         if capath is None:
             return self.setup.download(url, dest, sha256, size, what)
-        ctx = ssl.create_default_context(capath=capath)
+        try:
+            ctx = android_ssl_context(capath)
+        except (OSError, ValueError) as e:
+            raise self.setup.SetupError("download failed: the certificate store could not be read (%s)" % e)
         self.say("  " + what + "...")
         h = hashlib.sha256()
         req = urllib.request.Request(url, headers={"User-Agent": "wwhd-setup"})

@@ -18,6 +18,33 @@ COMPILER = {"cc": ["/apk/clang", "--driver-mode=gcc"], "cxx": ["/apk/clang", "--
 TOOLS = {"ld.lld": "/apk/ld.lld", "llvm-objcopy": "/apk/objcopy", "llvm-link": "/apk/link", "llvm-dis": "/apk/dis",
          "llvm-as": "/apk/as"}
 
+TEST_ROOTS = (
+    """-----BEGIN CERTIFICATE-----
+MIIBjTCCATOgAwIBAgIUI1tPTzuL+YXA4nJ2Q0vdgK8xK5cwCgYIKoZIzj0EAwIw
+GzEZMBcGA1UEAwwQd3doZCB0ZXN0IHJvb3QgMTAgFw0yNjExMTcxMDQxMjdaGA8y
+MTI2MTAyNDEwNDEyN1owGzEZMBcGA1UEAwwQd3doZCB0ZXN0IHJvb3QgMTBZMBMG
+ByqGSM49AgEGCCqGSM49AwEHA0IABGLnlDgV7IoeUqV0GCLg/UaX/utEnVK0Up9L
+lWguy7YLoTS9DvImCCS9Y0L9x4w6FTUYC8kP9GBGV3iUUo569yqjUzBRMB0GA1Ud
+DgQWBBQttAQbiWlMy0XcVLHxeBa+KznoZzAfBgNVHSMEGDAWgBQttAQbiWlMy0Xc
+VLHxeBa+KznoZzAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0gAMEUCIQDc
+pYeFNZ9k2rEC8FFZJC4c6kK1gJqmNoegfvoWXu0HxQIgJEJH83NQdOG/J4ZjzGA0
+LHceG098lLB348DUx/E1dBY=
+-----END CERTIFICATE-----
+""",
+    """-----BEGIN CERTIFICATE-----
+MIIBjDCCATOgAwIBAgIUYNMFHPELdHpejNNgr/KuQpHHFIkwCgYIKoZIzj0EAwIw
+GzEZMBcGA1UEAwwQd3doZCB0ZXN0IHJvb3QgMjAgFw0yNjExMTcxMDQxMjdaGA8y
+MTI2MTAyNDEwNDEyN1owGzEZMBcGA1UEAwwQd3doZCB0ZXN0IHJvb3QgMjBZMBMG
+ByqGSM49AgEGCCqGSM49AwEHA0IABAOEdOa3soUJnWW1SbSkUXz/GCI4bRvaVMgp
+MWrzOMmSzHpukz9VeNkCzAoeubZw71onJBeHb7QhEoI+r93YyNajUzBRMB0GA1Ud
+DgQWBBT4QWR3HXZNkY1peBFM9TiP825HtTAfBgNVHSMEGDAWgBT4QWR3HXZNkY1p
+eBFM9TiP825HtTAPBgNVHRMBAf8EBTADAQH/MAoGCCqGSM49BAMCA0cAMEQCIGXB
+owkEnQQN3wF+JPTGUqdMf8okHEdktRABIWaGtqDKAiAff/VGYI18Sl4zYOXI8Q7o
+6chu4kuNvcKfNXH2GwEMFQ==
+-----END CERTIFICATE-----
+""",
+)  # two throwaway self-signed test roots
+
 
 class FakeSetup:
     class SetupError(Exception):
@@ -115,6 +142,22 @@ class MergeTests(unittest.TestCase):
     def test_capstone_stand_in_on_android(self):
         self.assertEqual(decomp_setup.fetch_capstone(self.s(), "/data"),
                          os.path.join("/pkg", "tools", "decomp_build", "capstone_shim"))
+
+
+class CertificateStoreTests(unittest.TestCase):
+    def test_android_store_files_are_loaded_whatever_their_names(self):
+        # Android's cacerts: one PEM per file, named by the old subject hash, with a text dump after the block
+        with tempfile.TemporaryDirectory() as folder:
+            for i, pem in enumerate(TEST_ROOTS):
+                Path(folder, "0000000%d.0" % i).write_text(pem + "Certificate:\n    Data:\n        Version: 3 (0x2)\n")
+            Path(folder, "README").write_text("not a certificate\n")
+            ctx = decomp_android.android_ssl_context(folder)
+            self.assertEqual(ctx.cert_store_stats()["x509_ca"], 2)
+
+    def test_an_empty_store_is_an_error(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(OSError):
+                decomp_android.android_ssl_context(folder)
 
 
 if __name__ == "__main__":
