@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Setup: choose the recompiled or the decomp version** (#605). Setup now asks which version to build, the
+  recompiled version (default) or the decomp version, and builds and starts only that one, instead of "also build the
+  decomp version". Running setup again with the other choice switches; if that build fails, the installed version stays.
+  Installs that built both keep starting the same version as before until you choose. In the terminal: `--recomp` /
+  `--decomp`. The randomizer needs the recompiled version.
 - **Frame interpolation: cut trees come to rest at the right angle** (#601). When frame pacing skipped a step's
   in-between frames, the top of a cut tree could come to rest at a slightly blended angle. It now lands exactly as in
   the original game. `WWHD_INTERP_TREE_MTX=0` restores the old behaviour.
