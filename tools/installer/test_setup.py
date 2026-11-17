@@ -2377,6 +2377,305 @@ class DecompOption(unittest.TestCase):
             self.assertEqual(started, [exe, dexe, dexe, exe])
 
 
+class DecompChoice(unittest.TestCase):
+    """Setup's one choice (setup.py GAME_VERSIONS, 2026-11-17): the recompiled version or the decomp version, only the
+    chosen one built and started; an install an earlier setup built both for keeps both, starting what it started,
+    until setup runs with a choice."""
+    MANIFEST = {"version": "test", "platform": "fixture", "toolchain": {}, "exe": "wwhd", "decomp": {"tree_sha256": ""}}
+
+    def ctx_for(self, state, decomp=None):
+        ctx = mock.Mock(manifest=self.MANIFEST, args=mock.Mock(decomp=decomp, decomp_plain=False), defaults_dir=None)
+        ctx.state.return_value = state
+        return ctx
+
+    def test_choice_default_remembered_and_legacy(self):
+        v = lambda state, decomp=None: setup.game_version(self.ctx_for(state, decomp))
+        self.assertEqual(v({}), "recomp")                                         # the default
+        self.assertEqual(v({}, True), "decomp")                                   # --decomp / the window's choice
+        self.assertEqual(v({"game_version": "decomp", "decomp": True}), "decomp")  # remembered by repairs, updates
+        self.assertEqual(v({"game_version": "decomp"}, False), "recomp")         # --recomp: switch
+        self.assertEqual(v({"game_version": "recomp"}), "recomp")
+        # an earlier setup built both ("Also build the decomp version"): both until a choice is made
+        legacy = {"decomp": True, "exe": "bin/wwhd", "decomp_exe": "bin/wwhd-decomp", "start_decomp": True}
+        self.assertEqual(v(legacy), "both")
+        self.assertEqual(v(legacy, False), "recomp")
+        self.assertEqual(v(legacy, True), "decomp")
+        self.assertTrue(setup.decomp_wanted(self.ctx_for(legacy)))
+        # what the window preselects for it: the version that starts now
+        self.assertTrue(setup.decomp_selected(self.ctx_for(legacy)))
+        self.assertFalse(setup.decomp_selected(self.ctx_for(dict(legacy, start_decomp=False))))
+        self.assertTrue(setup.decomp_selected(self.ctx_for({"game_version": "decomp"})))
+        # not offered: always the recompiled version
+        ctx = self.ctx_for({"game_version": "decomp"}, True)
+        ctx.manifest = {k: x for k, x in self.MANIFEST.items() if k != "decomp"}
+        self.assertEqual(setup.game_version(ctx), "recomp")
+        # what an install.json says was built
+        self.assertEqual(setup.installed_version({}), "recomp")
+        self.assertEqual(setup.installed_version(legacy), "both")
+        self.assertEqual(setup.installed_version({"game_version": "decomp", "decomp_exe": "x"}), "decomp")
+        self.assertEqual(setup.installed_version({"game_version": "recomp"}), "recomp")
+
+    def test_steps_decomp_only(self):
+        for kind in ("image", "archive", "folder", "installed"):
+            steps = setup.plan_steps(kind, True, False)
+            self.assertNotIn("translate", steps, kind)
+            self.assertNotIn("compile", steps, kind)
+            self.assertEqual(steps[-3:], ["decomp", "app", "shaders"], kind)
+            self.assertEqual(steps.count("decomp"), 1)
+        self.assertEqual(setup.plan_steps("update", True, False), ["compiler", "transfer", "decomp", "app", "shaders"])
+        both = setup.plan_steps("installed", True)  # (an install with both: as before)
+        self.assertEqual(both, ["compiler", "translate", "compile", "app", "shaders", "decomp"])
+        self.assertNotIn("decomp", setup.plan_steps("installed", False))
+
+    # install() end to end with the builds replaced: what is built, what install.json says, what is removed
+    def run_install(self, d, decomp, before=None, fail_decomp=False, code_mods_on="0"):
+        from pathlib import Path
+        from types import SimpleNamespace
+        root = Path(d)
+        game = root / "game"
+        (game / "code").mkdir(parents=True, exist_ok=True)
+        (game / "code/cking.rpx").write_bytes(b"synthetic fingerprint input")
+        (root / "sdk").mkdir(exist_ok=True)
+        data = root / "data"
+        data.mkdir(exist_ok=True)
+        if before is not None:
+            setup.write_state(str(data), before)
+        tc = SimpleNamespace(cc=["test-compiler"], cxx=["test-compiler"], env={}, desc="fixture")
+        args = SimpleNamespace(code_mods=code_mods_on, jobs=4, shortcuts=False, keep_work=False, decomp=decomp,
+                               decomp_plain=False, skip_shader_prebuild=False, model_sweep=False)
+        ctx = SimpleNamespace(data_dir=str(data), game_dir=str(game), args=args, manifest=dict(self.MANIFEST),
+                              exe=str(data / "bin/wwhd"), exe_dir=str(data / "bin"), version="test", defaults_dir=None,
+                              state=lambda: setup.read_state(str(data)))
+        calls = {"recompile": 0, "decomp": [], "shaders": [], "notebook": []}
+
+        def translate(game, gen, hooks=False, cache_root=None):
+            calls["recompile"] += 1
+            Path(gen).mkdir()
+            return 1
+
+        def link(tc, manifest, objs, work, target, **kw):
+            Path(target).write_bytes(b"synthetic executable")
+
+        def decomp_build(s, ctx_, tc_, jobs, mode="fast", code_mods=False, step=None, before_probe=None):
+            calls["decomp"].append({"mode": mode, "code_mods": code_mods})
+            if fail_decomp:
+                raise setup.SetupError("compiling d_a_player.cpp failed")
+            exe = setup.decomp_setup.exe_path(str(data), setup.PORTABLE)
+            os.makedirs(os.path.dirname(exe), exist_ok=True)
+            Path(exe).write_bytes(b"synthetic decomp executable")
+            if before_probe:
+                before_probe(exe)
+            return exe, "2c1deae" + "0" * 33, 862, {"mode": mode, "code_mods": bool(code_mods)}
+
+        def shaders(game, template, exe, *a, **kw):
+            calls["shaders"].append(exe)
+            return {"status": "ready"}
+
+        with mock.patch.multiple(setup, PKG=root, PORTABLE=True, IS_MAC=False, IS_LINUX=True), \
+                mock.patch.object(setup, "valid_game_folder", return_value=True), \
+                mock.patch.object(setup, "game_folder_title", return_value=None), \
+                mock.patch.object(setup, "check_game_version"), \
+                mock.patch.object(setup, "get_toolchain", return_value=tc), \
+                mock.patch.object(setup, "run_logged", return_value="fixture compiler"), \
+                mock.patch.object(setup, "free_space", return_value=20 << 30), \
+                mock.patch.object(setup, "recompile", side_effect=translate), \
+                mock.patch.object(setup, "compile_gamecode", return_value=[]), \
+                mock.patch.object(setup, "link_game", side_effect=link), \
+                mock.patch.object(setup, "write_guest_build_config"), \
+                mock.patch.object(setup, "say"), mock.patch.object(setup, "step"), \
+                mock.patch.object(setup, "prepare_shaders_nonfatal", side_effect=shaders), \
+                mock.patch.object(setup, "install_story_notebook",
+                                  side_effect=lambda st, dd: calls["notebook"].append(st["exe"])), \
+                mock.patch.object(setup.decomp_setup, "build", side_effect=decomp_build):
+            state = setup.install(ctx, ("installed", str(game)))
+        return state, calls, data
+
+    def test_decomp_only_builds_and_starts_only_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            state, calls, data = self.run_install(d, True, code_mods_on="1")
+            dexe = str(data / "bin" / "wwhd-decomp")
+            self.assertEqual(calls["recompile"], 0)                 # no recompiled version
+            self.assertEqual(len(calls["decomp"]), 1)               # one build
+            self.assertTrue(calls["decomp"][0]["code_mods"])        # with the install's code-mod choice
+            self.assertEqual(calls["notebook"], [dexe])             # the Story Notebook with that game, before its probe
+            self.assertEqual(calls["shaders"], [dexe])              # shaders prepared with it
+            self.assertFalse((data / "bin" / "wwhd").exists())
+            self.assertTrue((data / "bin" / "portable.txt").is_file())
+            saved = setup.read_state(str(data))                    # the choice is persisted
+            self.assertEqual(saved["game_version"], "decomp")
+            self.assertEqual((saved["exe"], saved["decomp_exe"]), (dexe, dexe))
+            self.assertTrue(saved["start_decomp"])
+            with open(data / "install.json") as f:
+                self.assertEqual(json.load(f)["exe"], "bin/wwhd-decomp")
+            active = json.loads((data / "code-mods-active.json").read_text())
+            self.assertEqual((active["state"], active["hooks"]), ("ready", True))
+            # a repair (no choice given) builds the decomp version again, only that one
+            state, calls, data = self.run_install(d, None)
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (0, 1))
+            self.assertEqual(setup.read_state(str(data))["game_version"], "decomp")
+
+    def test_recomp_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            state, calls, data = self.run_install(d, None)
+            self.assertEqual((calls["recompile"], calls["decomp"]), (1, []))
+            saved = setup.read_state(str(data))
+            self.assertEqual(saved["game_version"], "recomp")
+            self.assertFalse(saved.get("decomp_exe"))
+            self.assertFalse(saved["start_decomp"])
+            self.assertEqual(calls["shaders"], [str(data / "bin" / "wwhd")])
+
+    def legacy(self, data, start_decomp):
+        os.makedirs(os.path.join(data, "bin"), exist_ok=True)
+        for name in ("wwhd", "wwhd-decomp"):
+            open(os.path.join(data, "bin", name), "w").close()
+        return {"version": "older", "exe": os.path.join(data, "bin", "wwhd"), "game_dir": "game",
+                "decomp_exe": os.path.join(data, "bin", "wwhd-decomp"), "decomp": True, "start_decomp": start_decomp,
+                "decomp_mode": "fast", "code_mods": False}
+
+    def test_install_with_both_keeps_its_launch_target(self):
+        for start_decomp in (True, False):
+            with tempfile.TemporaryDirectory() as d:
+                data = os.path.join(d, "data")
+                state, calls, _ = self.run_install(d, None, before=self.legacy(data, start_decomp))
+                self.assertEqual((calls["recompile"], len(calls["decomp"])), (1, 1))  # both, as before
+                saved = setup.read_state(data)
+                self.assertNotIn("game_version", saved)            # still an install with both
+                self.assertEqual(setup.installed_version(saved), "both")
+                self.assertEqual(bool(saved["start_decomp"]), start_decomp)  # no surprise switch
+                self.assertTrue(os.path.isfile(saved["exe"]) and os.path.isfile(saved["decomp_exe"]))
+                started = []
+                with mock.patch.object(setup.subprocess, "Popen", lambda a, **kw: started.append(a[0])), \
+                        mock.patch.object(setup, "say"), mock.patch.object(setup, "IS_MAC", False):
+                    setup.launch(saved, data)
+                self.assertEqual(started, [saved["decomp_exe"] if start_decomp else saved["exe"]])
+
+    def test_install_with_both_then_a_choice(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = os.path.join(d, "data")
+            state, calls, _ = self.run_install(d, True, before=self.legacy(data, False))
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (0, 1))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin", "wwhd")))     # the recompiled version went
+            self.assertEqual(setup.read_state(data)["game_version"], "decomp")
+        with tempfile.TemporaryDirectory() as d:
+            data = os.path.join(d, "data")
+            state, calls, _ = self.run_install(d, False, before=self.legacy(data, True))
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (1, 0))
+            # the decomp version went (from bin.previous too, where the build before this one is kept)
+            self.assertFalse(os.path.exists(os.path.join(data, "bin", "wwhd-decomp")))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin.previous", "wwhd-decomp")))
+            saved = setup.read_state(data)
+            self.assertEqual((saved["game_version"], saved["start_decomp"]), ("recomp", False))
+            self.assertFalse(saved.get("decomp_exe"))
+
+    def test_switching(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = os.path.join(d, "data")
+            self.run_install(d, None)                                           # recompiled
+            self.run_install(d, None)                                           # a repair: bin.previous has one too
+            self.assertTrue(os.path.isfile(os.path.join(data, "bin", "wwhd")))
+            self.assertTrue(os.path.isfile(os.path.join(data, "bin.previous", "wwhd")))
+            _, calls, _ = self.run_install(d, True)                             # -> decomp
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (0, 1))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin", "wwhd")))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin.previous", "wwhd")))
+            self.assertTrue(os.path.isfile(os.path.join(data, "bin", "wwhd-decomp")))
+            self.assertEqual(setup.read_state(data)["exe"], os.path.join(data, "bin", "wwhd-decomp"))
+            _, calls, _ = self.run_install(d, False)                            # -> recompiled again
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (1, 0))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin", "wwhd-decomp")))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin.previous", "wwhd-decomp")))
+            saved = setup.read_state(data)
+            self.assertEqual((saved["game_version"], saved["exe"]), ("recomp", os.path.join(data, "bin", "wwhd")))
+
+    def test_failed_switch_keeps_the_installed_game(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = os.path.join(d, "data")
+            self.run_install(d, None)
+            before = open(os.path.join(data, "install.json")).read()
+            with self.assertRaises(setup.SetupError) as e:
+                self.run_install(d, True, fail_decomp=True)
+            self.assertIn("could not be built", str(e.exception))
+            self.assertIn("installed before is unchanged", str(e.exception))
+            self.assertEqual(open(os.path.join(data, "install.json")).read(), before)
+            self.assertTrue(os.path.isfile(os.path.join(data, "bin", "wwhd")))
+        with tempfile.TemporaryDirectory() as d:  # a new install: nothing to fall back to, says what to do
+            with self.assertRaises(setup.SetupError) as e:
+                self.run_install(d, True, fail_decomp=True)
+            self.assertIn("choose the recompiled version", str(e.exception))
+            self.assertFalse(os.path.exists(os.path.join(d, "data", "install.json")))
+
+    def test_launch_decomp_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            dexe = os.path.join(d, "bin", "wwhd-decomp")
+            os.makedirs(os.path.dirname(dexe))
+            open(dexe, "w").close()
+            st = {"exe": dexe, "decomp_exe": dexe, "game_version": "decomp", "start_decomp": True}
+            started, said = [], []
+            with mock.patch.object(setup.subprocess, "Popen", lambda a, **kw: started.append(a[0])), \
+                    mock.patch.object(setup, "say", lambda *a: said.append(" ".join(a))), \
+                    mock.patch.object(setup, "IS_MAC", False):
+                setup.launch(st, d)
+                setup.launch(st, d, decomp=False)
+                with mock.patch("randomizer_seeds.load", return_value={"playing": "abcd"}):
+                    setup.launch(st, d)
+            self.assertEqual(started, [dexe] * 3)
+            self.assertTrue(any("recompiled version" in t for t in said))
+
+    def test_randomizer_needs_the_recompiled_version(self):
+        import randomizer_seeds
+        with self.assertRaises(setup.SetupError) as e:
+            setup.check_randomizer_version({"game_version": "decomp", "decomp_exe": "x", "exe": "x"})
+        self.assertIn("Recompiled version", str(e.exception))
+        setup.check_randomizer_version({"game_version": "recomp"})
+        setup.check_randomizer_version({"decomp_exe": "x", "exe": "y"})  # (an install with both: as before)
+        ctx = mock.Mock(manifest={}, game_dir="g")
+        ctx.state.return_value = {"game_version": "decomp", "exe": "x", "decomp_exe": "x"}
+        with self.assertRaises(setup.SetupError):
+            randomizer_seeds.check_base(setup, ctx)
+        with self.assertRaises(setup.SetupError):
+            randomizer_seeds.select(setup, ctx, "vanilla", False)
+
+    def test_code_mod_switch_rebuilds_only_the_decomp_version(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            dexe = data / "bin" / "wwhd-decomp"
+            dexe.parent.mkdir()
+            dexe.write_bytes(b"old")
+            setup.write_state(str(data), {"exe": str(dexe), "decomp_exe": str(dexe), "game_version": "decomp",
+                                          "decomp_mode": "fast", "code_mods": False})
+            ctx = SimpleNamespace(data_dir=str(data), game_dir=str(data / "game"), manifest={"toolchain": {}, "exe": "wwhd"},
+                                  args=SimpleNamespace(jobs=4), version="test")
+            built = []
+
+            def decomp_build(s, ctx_, tc_, jobs, mode="fast", code_mods=False, **kw):
+                built.append((mode, code_mods))
+                dexe.write_bytes(b"new")
+                return str(dexe), "r" * 40, 1, {"mode": mode, "code_mods": code_mods}
+            status = data / "status.json"
+            with mock.patch.object(setup, "PORTABLE", True), \
+                    mock.patch.object(setup, "get_toolchain", return_value=SimpleNamespace(cc=["cc"], env={})), \
+                    mock.patch.object(setup, "recompile", side_effect=AssertionError("no recompiled variant")), \
+                    mock.patch.object(setup.decomp_setup, "build", side_effect=decomp_build):
+                result = setup.code_mods.rebuild(setup, ctx, True, str(status))
+            self.assertEqual(built, [("fast", True)])
+            self.assertEqual((result["state"], result["decomp"]), ("ready", "ready"))
+            self.assertEqual(json.loads(status.read_text())["decomp"], "ready")
+            active = json.loads((data / "code-mods-active.json").read_text())
+            self.assertEqual((active["state"], active["hooks"]), ("ready", True))
+            saved = setup.read_state(str(data))
+            self.assertEqual((saved["exe"], saved["decomp_code_mods"]), (str(dexe), True))
+            # a failed rebuild is the switch's failure; the game built before stays
+            with mock.patch.object(setup, "PORTABLE", True), \
+                    mock.patch.object(setup, "get_toolchain", return_value=SimpleNamespace(cc=["cc"], env={})), \
+                    mock.patch.object(setup.decomp_setup, "build", side_effect=setup.SetupError("link failed")):
+                with self.assertRaises(setup.SetupError):
+                    setup.code_mods.rebuild(setup, ctx, False, str(status))
+            self.assertEqual(json.loads(status.read_text())["state"], "error")
+            self.assertEqual(dexe.read_bytes(), b"new")
+
+
 class DecompDesktop(unittest.TestCase):
     """The decomp version on Linux (the Steam Deck too) and Windows (decomp_platform.py, 2026-11-16): the per-OS
     disassembler, names, path limit, unit merge commands and the decl_lint compiler; elf_localize.py (Linux's
