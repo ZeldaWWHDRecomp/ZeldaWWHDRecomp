@@ -111,7 +111,7 @@ void f_027F5018_orig(Cpu* c);  // J3DModel UBO update
 
 }
 
-namespace test_aids { void logic_step(uint64_t step); }
+namespace test_aids { void logic_step(uint64_t step); uint64_t origin_step(); }
 
 namespace interp {
 
@@ -1833,9 +1833,10 @@ static void after_pass(int phase) {
     }
     // test aid: WWHD_TEST_DROP_STEPS=n drops the in-between passes (the record pass included) of every n-th logic step
     // after its logic pass, as pacing does when a step runs late, but at fixed steps (tests of what the next step's
-    // logic finds after a blended pass)
+    // logic finds after a blended pass): counted from the scenario origin once there is one (the same steps of the
+    // scenario in every run, wherever a state load lands), before it from step 0
     static const uint64_t drop_every = getenv("WWHD_TEST_DROP_STEPS") ? strtoull(getenv("WWHD_TEST_DROP_STEPS"), nullptr, 10) : 0;
-    if (drop_every && phase == 0 && g_logic_steps % drop_every == 0) {
+    if (drop_every && phase == 0 && (g_logic_steps - test_aids::origin_step()) % drop_every == 0) {
         g_hold_next = false;
         g_wait_step = g_drop_lead = false;
         if (pacing) paced_step_done(g_step_holds);
