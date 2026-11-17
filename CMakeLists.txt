@@ -392,13 +392,19 @@ elseif(WWHD_TVOS)
   add_executable(wwhd MACOSX_BUNDLE ${RUNTIME_SOURCES} ${GX2_SOURCES} ${GFX_SOURCES} ${MOD_GFX_SOURCES} ${IMGUI_METAL})
   # Your own identifiers for an app you sign (an App ID and an iCloud container are unique to one developer
   # team): WWHD_APPLE_ID_PREFIX names the apps <prefix>.tv / <prefix>.ipad; WWHD_ICLOUD_CONTAINER (an
-  # "iCloud.<...>" container of that team, empty: none) keeps the save in that container's iCloud
-  # Drive folder (gfx/host_tvos.mm), visible as "Wind Waker HD" in iCloud Drive.
+  # "iCloud.<...>" container of that team, empty: none) keeps an iPhone or iPad save in that container's
+  # iCloud Drive folder (gfx/host_tvos.mm), visible as "Wind Waker HD" in iCloud Drive. WWHD_ICLOUD_CLOUDKIT
+  # also syncs it through the container's CloudKit database (gfx/cloud_save.h), the only way on an Apple TV;
+  # the app's signature must then carry CloudKit too, or the app stops at launch.
   set(WWHD_APPLE_ID_PREFIX "org.wwhdrecomp" CACHE STRING "bundle identifier prefix of the Apple TV / iPad apps")
   set(WWHD_ICLOUD_CONTAINER "" CACHE STRING "iCloud container for the save (empty: the save stays on the device)")
+  option(WWHD_ICLOUD_CLOUDKIT "with WWHD_ICLOUD_CONTAINER: the save through CloudKit too (signed with CloudKit)" OFF)
   set(WWHD_ICLOUD_PLIST "")
+  if(WWHD_ICLOUD_CONTAINER AND WWHD_ICLOUD_CLOUDKIT)
+    set(WWHD_ICLOUD_PLIST "<key>WWHDCloudKitContainer</key><string>${WWHD_ICLOUD_CONTAINER}</string>")
+  endif()
   if(WWHD_ICLOUD_CONTAINER)
-    set(WWHD_ICLOUD_PLIST "<key>WWHDCloudKitContainer</key><string>${WWHD_ICLOUD_CONTAINER}</string><key>NSUbiquitousContainers</key><dict><key>${WWHD_ICLOUD_CONTAINER}</key><dict><key>NSUbiquitousContainerIsDocumentScopePublic</key><true/><key>NSUbiquitousContainerName</key><string>Wind Waker HD</string><key>NSUbiquitousContainerSupportedFolderLevels</key><string>Any</string></dict></dict>")
+    set(WWHD_ICLOUD_PLIST "${WWHD_ICLOUD_PLIST}<key>NSUbiquitousContainers</key><dict><key>${WWHD_ICLOUD_CONTAINER}</key><dict><key>NSUbiquitousContainerIsDocumentScopePublic</key><true/><key>NSUbiquitousContainerName</key><string>Wind Waker HD</string><key>NSUbiquitousContainerSupportedFolderLevels</key><string>Any</string></dict></dict>")
   endif()
   if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
     set(WWHD_BUNDLE_PLIST ${CMAKE_SOURCE_DIR}/ipados/Info.plist.in)
@@ -2835,6 +2841,10 @@ target_include_directories(save_folder_test PRIVATE runtime/src)
 target_compile_options(save_folder_test PRIVATE -UNDEBUG)
 target_link_libraries(save_folder_test PRIVATE Threads::Threads)
 add_test(NAME save_folder COMMAND save_folder_test)
+add_executable(cloud_save_sync_test runtime/tools/cloud_save_sync_test.cpp)
+target_include_directories(cloud_save_sync_test PRIVATE runtime/src)
+target_compile_options(cloud_save_sync_test PRIVATE -UNDEBUG)
+add_test(NAME cloud_save_sync COMMAND cloud_save_sync_test)
 
 add_executable(mod_setup_run_test runtime/tools/mod_setup_run_test.cpp)
 target_include_directories(mod_setup_run_test PRIVATE runtime/src)

@@ -58,12 +58,19 @@ open **App identifiers**, or pass `--apple-bundle-prefix com.example.wwhd`. Setu
 
 To switch devices with one save, enter an iCloud container name of your own on the setup page (or
 `--apple-icloud-container iCloud.com.example.wwhd`). The build has Xcode register the App IDs, the container and
-your devices in your team, so there is nothing to set up by hand. The Apple TV keeps the save in CloudKit; the
-iPhone and iPad keep it in CloudKit and in iCloud Drive's "Wind Waker HD" folder, which a Mac uses too when
-Settings > Saves > Save folder points at `~/Library/Mobile Documents/iCloud~com~example~wwhd/Documents/Wind Waker HD`.
-At start the newer save wins; if both changed, the game asks which to keep (the other goes to save-backups). A
-"Checking your save in iCloud..." message shows while it looks. The Mac and the Apple TV meet through an iPhone or
-iPad start in between, or the setup page's Saves buttons.
+your devices in your team, so there is nothing to set up by hand.
+
+- **Apple TV:** the save goes through CloudKit (an Apple TV app gets no iCloud Drive).
+- **iPhone and iPad:** the save lives in iCloud Drive's "Wind Waker HD" folder and also goes through CloudKit. The
+  Mac's game has only the folder (Settings > Saves > Save folder:
+  `~/Library/Mobile Documents/iCloud~com~example~wwhd/Documents/Wind Waker HD`) and the Apple TV only CloudKit, so
+  an iPhone or iPad is what carries a save between them. Only the game's own save files (`cking*.sav`) are
+  synced: iCloud Drive's conflict copies ("cking 2.sav") are left alone.
+- **At start** the game compares its save with iCloud's. The side that changed since this device last synced is
+  used. If both changed, you're asked which to keep, and the other goes to save-backups (the newest 10 are kept).
+  A "Checking your save in iCloud..." message shows while it looks.
+- **The Mac and the Apple TV** meet through an iPhone or iPad start in between, or the setup page's Saves buttons.
+  After a copy through iCloud Drive, check in the Files app that it has finished syncing before you play.
 
 Changing the prefix installs a new app next to the old one: the old app and its save stay until you delete it.
 The setup page's Saves section takes the save and settings from it ("Take the save and settings from ...").
@@ -73,6 +80,9 @@ The setup page's Saves section takes the save and settings from it ("Take the sa
 The setup page's Saves section (or `--apple-save backup|to-device|from-device`) copies the save between this Mac
 and the device's app, and backs the device up. Whatever a copy replaces is backed up on the Mac first, in the
 install's `data/apple/backups`. The game must be closed on the device.
+
+Without iCloud, back up the Apple TV now and then: tvOS keeps an app's files in a folder it may empty when the
+TV runs short of space, and the save lives there.
 
 ## Mods
 
@@ -86,5 +96,5 @@ switched off when you install, and the setup page warns you first.
 - The Apple TV's iCloud save is new: tell us how it goes.
 - Provisioning profiles expire after a year: build and install again then.
 
-Please report what you find, with the device, the setup log and what you did. How it works and what's still open:
+Please report what you find, with the device, the setup log and what you did. How it works:
 [apple-device-installer.md](apple-device-installer.md).

@@ -1761,8 +1761,8 @@ static void screen_apple() {
     };
     if (ImGui::TreeNode("App identifiers##ids")) {
         // an App ID and an iCloud container belong to one developer team: yours
-        muted("Your apps are <prefix>.tv and <prefix>.ipad. With an iCloud container (iCloud Documents, on both App IDs), "
-              "the save is kept in iCloud Drive, the same on the Apple TV, iPhone, iPad and Mac.");
+        muted("Your apps are <prefix>.tv and <prefix>.ipad. With an iCloud container, the save follows you: the Apple TV "
+              "keeps it in iCloud (CloudKit), an iPhone or iPad there and in iCloud Drive, where a Mac can use it too.");
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
         ImGui::InputTextWithHint("Prefix", "com.example.wwhd", P.prefix, sizeof P.prefix, ImGuiInputTextFlags_CharsNoBlank);
         ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);

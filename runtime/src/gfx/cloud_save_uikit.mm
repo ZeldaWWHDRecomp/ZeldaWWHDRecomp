@@ -25,6 +25,7 @@
 #include <thread>
 
 #include "cloud_save.h"
+#include "cloud_save_sync.h"
 #include "../platform/host.h"
 
 void log_msg(const char* fmt, ...);
@@ -145,7 +146,7 @@ Files read_files(const std::string& dir) {
     Files f;
     std::error_code ec;
     for (const auto& e : fs::directory_iterator(fs::path(dir) / "user", ec)) {
-        if (!e.is_regular_file(ec) || e.path().extension() != ".sav") continue;
+        if (!e.is_regular_file(ec) || !is_save_file(e.path().filename().string())) continue;
         std::ifstream in(e.path(), std::ios::binary);
         f.data[e.path().filename().string()] = std::string((std::istreambuf_iterator<char>(in)), {});
     }
@@ -210,17 +211,36 @@ std::string local_time(double t) {
     return [f stringFromDate:[NSDate dateWithTimeIntervalSince1970:t]].UTF8String;
 }
 
-// the save files of a side about to be replaced, into save-backups/icloud-<time>-<what>
-void backup(const std::map<std::string, std::string>& files, const char* what) {
-    if (files.empty()) return;
+// the save files of a side about to be replaced, into save-backups/icloud-<time>-<what> (the newest kBackups kept):
+// whether every file was written. A side that isn't backed up isn't replaced.
+constexpr size_t kBackups = 10;
+bool backup(const std::map<std::string, std::string>& files, const char* what) {
+    if (files.empty()) return true;
     char stamp[32];
     const time_t now = time(nullptr);
     strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", localtime(&now));
-    const fs::path dir = fs::path(g_dir).parent_path() / "save-backups" / (std::string("icloud-") + stamp + "-" + what) / "user";
+    const fs::path backups = fs::path(g_dir).parent_path() / "save-backups";
+    const std::string name = std::string("icloud-") + stamp + "-" + what;
+    fs::path dir = backups / name;
+    for (int n = 2; fs::exists(dir); n++) dir = backups / (name + "-" + std::to_string(n));
     std::error_code ec;
-    fs::create_directories(dir, ec);
-    for (auto& [name, bytes] : files) std::ofstream(dir / name, std::ios::binary) << bytes;
-    log_msg("[cloud save] the %s save is kept in %s", what, dir.parent_path().c_str());
+    fs::create_directories(dir / "user", ec);
+    bool ok = !ec;
+    for (auto& [file, bytes] : files) {
+        if (!ok) break;
+        std::ofstream out(dir / "user" / file, std::ios::binary);
+        out << bytes;
+        out.close();
+        ok = out.good();
+    }
+    if (!ok) {
+        log_msg("[cloud save] keeping a copy of the %s save failed (is the device full?): it isn't replaced", what);
+        fs::remove_all(dir, ec);
+        return false;
+    }
+    log_msg("[cloud save] the %s save is kept in %s", what, dir.c_str());
+    prune_backups(backups, "icloud-", kBackups);
+    return true;
 }
 
 // the downloaded save in place of this device's: each file written whole and renamed over, the others removed
@@ -239,7 +259,7 @@ bool apply(const std::map<std::string, std::string>& files) {
         if (ec) return false;
     }
     for (const auto& e : fs::directory_iterator(user, ec))
-        if (e.path().extension() == ".sav" && !files.count(e.path().filename().string())) fs::remove(e.path(), ec);
+        if (is_save_file(e.path().filename().string()) && !files.count(e.path().filename().string())) fs::remove(e.path(), ec);
     return true;
 }
 
@@ -468,13 +488,20 @@ bool upload(const Remote& r, const Files& f, double seconds) {
 }
 
 // while the game runs: a save that changed since the last sync goes up, unless another device's is there now (then
-// the next start asks which to keep)
-void upload_if_changed(double seconds) {
+// the next start asks which to keep). A save written in the last kSettle seconds may still be being written: it
+// waits for the next round, or with SETTLE (leaving the app) is waited for here.
+constexpr double kSettle = 3;
+void upload_if_changed(double seconds, bool settle = false) {
     std::lock_guard<std::mutex> guard(g_mu);
-    const Files f = read_files(g_dir);
+    Files f = read_files(g_dir);
     const std::string synced = synced_hash();
     if (f.hash.empty() || (f.hash == synced && !g_move)) return;
-    if (f.saved > 0 && [NSDate date].timeIntervalSince1970 - f.saved < 3) return;  // (the game may still be writing)
+    if (const double age = [NSDate date].timeIntervalSince1970 - f.saved; f.saved > 0 && age < kSettle) {
+        if (!settle) return;
+        std::this_thread::sleep_for(std::chrono::duration<double>(kSettle - std::max(age, 0.0)));
+        f = read_files(g_dir);
+        if (f.hash.empty() || (f.hash == synced && !g_move)) return;
+    }
     Remote r;
     if (!fetch(r, seconds)) return;
     if (f.hash == synced && !r.legacy) {  // (another device moved it)
@@ -517,49 +544,51 @@ void startup(const std::string& save_dir, const Ask& ask) {
         Remote r;
         if (!fetch(r, kWait)) {
             log_msg("[cloud save] playing this device's save; it goes to iCloud when iCloud answers");
-        } else if (!r.any()) {
-            g_upload_now = !local.hash.empty();
         } else {
             if (r.legacy) g_move = g_upload_now = true;
             const std::string& there = r.hash;
-            const std::string& device = r.device;
-            const double there_saved = r.saved;
             std::map<std::string, std::string> files;
-            if (there == local.hash) {
-                set_synced(there);
-            } else if (local.hash.empty() || local.hash == synced) {
-                if (download(r, files, local, kWait)) {
-                    backup(local.data, "this-device");
-                    if (apply(files)) {
-                        set_synced(there);
-                        log_msg("[cloud save] using the save from iCloud (saved %s on %s)", local_time(there_saved).c_str(),
-                                device.c_str());
-                    } else {
-                        log_msg("[cloud save] writing the save from iCloud failed: this device's save is in save-backups");
-                    }
-                } else {
+            // iCloud's save in place of this device's, this device's kept first
+            auto use_icloud = [&](const char* how) {
+                if (!download(r, files, local, kWait)) {
                     log_msg("[cloud save] the save in iCloud couldn't be read: keeping this device's");
+                } else if (!backup(local.data, "this-device")) {  // (it says why)
+                } else if (!apply(files)) {
+                    log_msg("[cloud save] writing the save from iCloud failed: this device's save is in save-backups");
+                } else {
+                    set_synced(there);
+                    log_msg("[cloud save] using the save from iCloud (saved %s on %s%s)", local_time(r.saved).c_str(),
+                            r.device.c_str(), how);
                 }
-            } else if (there == synced) {
-                g_upload_now = true;
-            } else {
-                // both changed since this device last synced
+            };
+            switch (start_choice(local.hash, synced, r.any(), there)) {
+            case Start::Nothing: break;
+            case Start::Same: set_synced(there); break;
+            case Start::Download: use_icloud(""); break;
+            case Start::Upload: g_upload_now = true; break;
+            case Start::Ask: {
                 const std::string text = "The save in iCloud and this device's save have both changed.\n\n"
-                                         "In iCloud: saved " + local_time(there_saved) + " on " + device + "\n"
+                                         "In iCloud: saved " + local_time(r.saved) + " on " + r.device + "\n"
                                          "On this device: saved " + local_time(local.saved) + "\n\n"
                                          "Which save do you want to play? The other one is kept in save-backups.";
                 hide_status();
                 const int pick = ask ? ask("Wind Waker HD: iCloud save", text, {"Use the iCloud save", "Keep this device's save"}) : -1;
-                if (pick == 0 && download(r, files, local, kWait)) {
-                    backup(local.data, "this-device");
-                    if (apply(files)) set_synced(there), log_msg("[cloud save] using the save from iCloud (chosen)");
+                if (pick == 0) {
+                    use_icloud(", chosen");
                 } else if (pick == 1) {
-                    if (download(r, files, local, kWait)) backup(files, "icloud");
-                    set_synced(there);  // (iCloud's save is the one this device replaces)
-                    g_upload_now = true;
+                    // iCloud's save is replaced only once this device has a copy of it
+                    if (download(r, files, local, kWait) && backup(files, "icloud")) {
+                        set_synced(there);
+                        g_upload_now = true;
+                    } else {
+                        log_msg("[cloud save] the save in iCloud couldn't be kept here: playing this device's, iCloud's "
+                                "stays (asked again next start)");
+                    }
                 } else {
                     log_msg("[cloud save] both saves changed and no choice was made: playing this device's, iCloud's stays");
                 }
+                break;
+            }
             }
         }
     }
@@ -581,7 +610,7 @@ void flush() {
         task = UIBackgroundTaskInvalid;
     }];
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        @autoreleasepool { upload_if_changed(20); }
+        @autoreleasepool { upload_if_changed(20, true); }
         dispatch_async(dispatch_get_main_queue(), ^{
             if (task != UIBackgroundTaskInvalid) [UIApplication.sharedApplication endBackgroundTask:task];
             task = UIBackgroundTaskInvalid;

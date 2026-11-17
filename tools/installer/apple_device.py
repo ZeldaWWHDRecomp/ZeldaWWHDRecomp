@@ -39,6 +39,22 @@ LABELS = {"tv": "Apple TV", "iphone": "iPhone or iPad"}
 PROFILE_DIRS = ["~/Library/Developer/Xcode/UserData/Provisioning Profiles", "~/Library/MobileDevice/Provisioning Profiles"]
 
 
+# The developer team's identifier and the signing certificate's: kept out of the setup log, which players attach
+# to bug reports. Each is shown by its last characters only (enough to tell two apart).
+_PRIVATE = set()
+
+
+def private(*values):
+    _PRIVATE.update(v for v in values if v)
+    return values[0] if len(values) == 1 else values
+
+
+def redact(text):
+    for v in sorted(_PRIVATE, key=len, reverse=True):
+        text = text.replace(v, "\u2026" + v[-3:])
+    return text
+
+
 class Error(RuntimeError):
     pass
 
@@ -115,7 +131,7 @@ def find_profile(platform, bundle_id, team=None, now=None, icloud=None, device=N
             if not prof:
                 continue
             ents = prof.get("Entitlements", {})
-            prof_team = (prof.get("TeamIdentifier") or [""])[0]
+            prof_team = private((prof.get("TeamIdentifier") or [""])[0])
             app_id = ents.get("application-identifier", "")
             seen.append("%s (%s, %s)" % (prof.get("Name", "?"), prof_team, ", ".join(prof.get("Platform", []))))
             if platform not in prof.get("Platform", []) or (team and prof_team != team):
@@ -135,7 +151,7 @@ def find_profile(platform, bundle_id, team=None, now=None, icloud=None, device=N
                 continue
             import hashlib
             certs = [hashlib.sha1(c).hexdigest().upper() for c in prof.get("DeveloperCertificates", [])]
-            identity = next((c for c in certs if c in identities), None)
+            identity = private(next((c for c in certs if c in identities), None))
             if not identity:
                 continue
             exact = pattern == bundle_id
@@ -143,16 +159,16 @@ def find_profile(platform, bundle_id, team=None, now=None, icloud=None, device=N
             if not best or rank > best[0]:
                 best = (rank, path, prof, identity)
     if not best and icloud:
-        raise Error("No development profile for %s with the iCloud container %s. In the Apple Developer site (or "
+        raise Error(redact("No development profile for %s with the iCloud container %s. In the Apple Developer site (or "
                     "Xcode, Signing & Capabilities), give the App ID %s the iCloud capability (%s) with that "
                     "container, then let Xcode download its profile. Profiles found: %s"
                     % (bundle_id, icloud, bundle_id, "CloudKit and iCloud Documents" if platform == "iOS" else "CloudKit",
-                       "; ".join(seen) or "none"))
+                       "; ".join(seen) or "none")))
     if not best:
-        raise Error("No development profile for %s apps%s with its certificate in this Mac's keychain. Open Xcode, "
+        raise Error(redact("No development profile for %s apps%s with its certificate in this Mac's keychain. Open Xcode, "
                     "sign in to your Apple Developer account (Settings > Accounts) and let it make the team's "
                     "profile: e.g. build any %s app for your device once. Profiles found: %s"
-                    % (platform, " of team " + team if team else "", platform, "; ".join(seen) or "none"))
+                    % (platform, " of team " + private(team) if team else "", platform, "; ".join(seen) or "none")))
     return best[1], best[2], best[3]
 
 
@@ -198,6 +214,8 @@ def settings(ctx, **given):
             raise Error("The bundle identifier prefix should look like com.example.wwhd")
         if out["icloud"] and not re.fullmatch(r"iCloud\.[A-Za-z0-9.-]+", out["icloud"]):
             raise Error("The iCloud container should look like iCloud.com.example.wwhd")
+        if out["team"] and not re.fullmatch(r"[A-Z0-9]{10}", out["team"]):
+            raise Error("A developer team identifier is 10 capital letters and digits (Xcode > Settings > Accounts)")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(out, f, indent=1)
@@ -227,7 +245,7 @@ def devices(platform, env):
         p = subprocess.run(["xcrun", "devicectl", "list", "devices", "--json-output", out], env=env, capture_output=True, text=True)
         if p.returncode != 0 or not os.path.isfile(out):
             raise Error("Listing the paired devices failed (xcrun devicectl list devices): %s" % (p.stderr or p.stdout).strip()[-400:])
-        with open(out) as f:
+        with open(out, encoding="utf-8") as f:
             data = json.load(f)
     found = []
     for d in data.get("result", {}).get("devices", []):
@@ -250,7 +268,7 @@ def running(device, executable, env):
                            env=env, capture_output=True, text=True)
         if p.returncode != 0 or not os.path.isfile(out):
             raise Error("Couldn't check whether the game is running on the device: %s" % (p.stderr or p.stdout).strip()[-400:])
-        with open(out) as f:
+        with open(out, encoding="utf-8") as f:
             procs = json.load(f).get("result", {}).get("runningProcesses", [])
     if not procs:
         raise Error("Couldn't check whether the game is running on the device (no processes listed)")
@@ -260,12 +278,12 @@ def running(device, executable, env):
 # --------------------------------------------------------------------------------------------------------- build
 
 def run(cmd, env, log, what):
-    log("$ " + " ".join(cmd))
+    log(redact("$ " + " ".join(cmd)))
     p = subprocess.run(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = p.stdout.decode("utf-8", "replace")
     if p.returncode != 0:
-        log(out)
-        raise Error("%s failed:\n%s" % (what, "\n".join(out.strip().splitlines()[-15:])))
+        log(redact(out))
+        raise Error(redact("%s failed:\n%s" % (what, "\n".join(out.strip().splitlines()[-15:]))))
     return out
 
 
@@ -485,8 +503,7 @@ def prepare_mod_addresses(setup, ctx, log=print, wait=180):
         return
     # the installed game (bin), which starts the code-mods build with code mods on
     exe = os.path.join(ctx.data_dir, "bin", ctx.manifest["exe"])
-    if any(subprocess.run(["pgrep", "-f", e], stdout=subprocess.DEVNULL).returncode == 0
-           for e in {exe, setup_game_exe(setup, ctx)}):
+    if mac_game_running(setup, ctx):
         log("The game is open on this Mac: quit it and build again to include %s" % ", ".join(m["name"] for m in missing))
         return
     profiles = Path(user_dir(setup, ctx)) / "ModManager" / "profiles.json"
@@ -674,6 +691,7 @@ def device_state(setup, ctx, which, device, bundle_prefix="org.wwhdrecomp"):
 # in this Mac's iCloud Drive folder too: the copy goes there, and iCloud brings it to the device.
 
 SETTINGS_FILES = ("display.plist", "controls.json")
+SETUP_COPY_LIST = "setup-copy.txt"  # (host_tvos.mm finish_setup_save_copy)
 
 
 def mac_save_dir(setup, ctx):
@@ -688,10 +706,16 @@ def mac_save_dir(setup, ctx):
     return Path(ctx.data_dir) / "save"
 
 
+def process_running(paths):
+    """whether a process of this user runs one of the executables PATHS (compared exactly: pgrep -f would read a
+    path as a pattern, and "Wind Waker HD (1)" would never match itself)"""
+    out = subprocess.run(["ps", "-x", "-o", "command="], capture_output=True, text=True).stdout
+    return any(line == p or line.startswith(p + " ") for line in out.splitlines() for p in paths)
+
+
 def mac_game_running(setup, ctx):
     exe = os.path.join(ctx.data_dir, "bin", ctx.manifest["exe"])
-    return any(subprocess.run(["pgrep", "-f", e], stdout=subprocess.DEVNULL).returncode == 0
-               for e in {exe, setup_game_exe(setup, ctx)})
+    return process_running({exe, setup_game_exe(setup, ctx)})
 
 
 def _copy_from(env, device, bundle_id, source, dest):
@@ -709,9 +733,26 @@ def _copy_to(env, device, bundle_id, source, dest):
         raise Error("Copying %s to the device failed: %s" % (Path(source).name, (p.stderr or p.stdout).strip()[-300:]))
 
 
+def is_save_file(name):
+    """the game's save files are "cking*.sav" (cloud_save_sync.h): not iCloud Drive's "cking 2.sav" conflict copies"""
+    return re.fullmatch(r"[A-Za-z0-9_]+\.sav", name) is not None
+
+
 def _sav_files(folder):
     user = Path(folder) / "user"
-    return sorted(p for p in user.glob("*.sav") if p.is_file()) if user.is_dir() else []
+    return sorted(p for p in user.glob("*.sav") if p.is_file() and is_save_file(p.name)) if user.is_dir() else []
+
+
+def _new_folder(path):
+    """PATH made, or PATH-2, PATH-3 ... when it exists (two copies within a second)"""
+    for n in range(1, 1000):
+        candidate = Path(str(path) + ("" if n == 1 else "-%d" % n))
+        try:
+            candidate.mkdir(parents=True)
+            return candidate
+        except FileExistsError:
+            continue
+    raise Error("Couldn't make a new folder next to %s" % path)
 
 
 def _data_dirs(which):
@@ -752,8 +793,7 @@ def backup_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdrecomp"
     data/apple/backups/<bundle id>-<time>. Returns that folder."""
     env, target, own_id, exe = _device_target(setup, ctx, which, device, bundle_prefix)
     bundle_id = bundle_id or own_id
-    out = Path(ctx.data_dir) / "apple" / "backups" / ("%s-%s" % (bundle_id, time.strftime("%Y%m%d-%H%M%S")))
-    out.mkdir(parents=True)
+    out = _new_folder(Path(ctx.data_dir) / "apple" / "backups" / ("%s-%s" % (bundle_id, time.strftime("%Y%m%d-%H%M%S"))))
     got = [part for part in ("save", "user") if _copy_from_app(env, target["id"], bundle_id, which, part, out / part)]
     shutil.rmtree(out / "user" / "shader-prebuild", ignore_errors=True)
     if not got:
@@ -769,6 +809,35 @@ def _device_icloud_folder(folder):
     if marker not in folder:
         return None
     return Path.home() / "Library" / "Mobile Documents" / folder.split(marker, 1)[1]
+
+
+def _device_drive_folder(backup):
+    """the device app's save folder in iCloud Drive, as this Mac sees it (from its save folder choice in BACKUP, a
+    backup_device folder), or None when its save isn't in iCloud Drive. Raises when this Mac's iCloud Drive hasn't
+    got the app's container: iCloud Drive off, or another Apple ID than the device's."""
+    choice = None
+    if (backup / "user" / "save-folder.json").is_file():
+        try:
+            choice = json.loads((backup / "user" / "save-folder.json").read_text(encoding="utf-8")).get("folder")
+        except ValueError:
+            pass
+    drive = _device_icloud_folder(choice) if choice else None
+    if not drive:
+        return None
+    root = Path.home() / "Library" / "Mobile Documents"
+    container = root / drive.relative_to(root).parts[0]
+    if not container.is_dir():
+        raise Error("The device keeps its save in iCloud Drive, but this Mac's iCloud Drive hasn't got the game's folder "
+                    "(%s). Turn on iCloud Drive on this Mac, signed in to the same Apple ID as the device, wait for it "
+                    "to sync, and try again." % container.name)
+    if (drive / "user").is_dir() and any(p.name.startswith(".") and p.name.endswith(".icloud") for p in (drive / "user").iterdir()):
+        raise Error("iCloud Drive is still bringing the save's files to this Mac: wait for it to finish (Finder shows "
+                    "the folder %s), then try again." % drive)
+    return drive
+
+
+SYNC_NOTE = ("iCloud Drive syncs in the background: before playing, check in the Files app (iCloud Drive > Wind Waker "
+             "HD) that the copy's files have no cloud icon on both this Mac and the device")
 
 
 def save_to_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdrecomp", settings=False, from_app=None, log=print):
@@ -791,25 +860,28 @@ def save_to_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdrecomp
         if not any(f.name == "cking.sav" for f in files):
             raise Error("No save in %s" % save)
         # the device app's own save folder choice: an iPhone / iPad app with its save in iCloud Drive
-        choice = None
-        if (backup / "user" / "save-folder.json").is_file():
-            try:
-                choice = json.loads((backup / "user" / "save-folder.json").read_text(encoding="utf-8")).get("folder")
-            except ValueError:
-                pass
-        drive = _device_icloud_folder(choice) if choice else None
+        drive = _device_drive_folder(backup)
+        names = {f.name for f in files}
         if drive:
-            if (drive / "user").is_dir():
-                keep = Path(ctx.data_dir) / "apple" / "backups" / ("icloud-drive-%s" % time.strftime("%Y%m%d-%H%M%S"))
+            if _sav_files(drive):
+                keep = _new_folder(Path(ctx.data_dir) / "apple" / "backups" / ("icloud-drive-%s" % time.strftime("%Y%m%d-%H%M%S")))
                 shutil.copytree(drive / "user", keep / "user")
                 log("backed up the iCloud Drive save to %s" % keep)
             (drive / "user").mkdir(parents=True, exist_ok=True)
+            for f in _sav_files(drive):
+                if f.name not in names:
+                    f.unlink()
             for f in files:
                 shutil.copy2(f, drive / "user" / f.name)
-            log("the save is in iCloud Drive (%s): the device gets it from there" % drive)
+            log("the save is in iCloud Drive (%s): the device gets it from there. %s." % (drive, SYNC_NOTE))
         else:
             for f in files:
                 _copy_to(env, target["id"], bundle_id, f, data + "/save/user/" + f.name)
+            # the list of the copy's files, last: the app removes the save files the copy didn't have when it starts
+            # (devicectl copies files but can't remove them)
+            listing = Path(tmp) / SETUP_COPY_LIST
+            listing.write_text("".join(n + "\n" for n in sorted(names)), encoding="utf-8")
+            _copy_to(env, target["id"], bundle_id, listing, data + "/save/" + SETUP_COPY_LIST)
             log("copied the save (%d files) to %s" % (len(files), target["name"]))
         copied = ["save"]
         if settings:
@@ -835,21 +907,18 @@ def save_from_device(setup, ctx, which, device=None, bundle_prefix="org.wwhdreco
         raise Error("The game is open on this Mac: quit it first")
     got = backup_device(setup, ctx, which, device, bundle_prefix, log=log)
     source = got / "save"
-    choice = None
-    if (got / "user" / "save-folder.json").is_file():
-        try:
-            choice = json.loads((got / "user" / "save-folder.json").read_text(encoding="utf-8")).get("folder")
-        except ValueError:
-            pass
-    drive = _device_icloud_folder(choice) if choice else None
+    drive = _device_drive_folder(got)
     if drive:
         source = drive
     files = _sav_files(source)
     if not any(f.name == "cking.sav" for f in files):
         raise Error("No save on %s" % target["name"])
+    if drive:
+        saved = time.strftime("%Y-%m-%d %H:%M", time.localtime((source / "user" / "cking.sav").stat().st_mtime))
+        log("the device's save is in iCloud Drive: this Mac's copy of it was saved %s. %s." % (saved, SYNC_NOTE))
     dest = mac_save_dir(setup, ctx)
     if _sav_files(dest):
-        keep = Path(ctx.data_dir) / "apple" / "backups" / ("mac-save-%s" % time.strftime("%Y%m%d-%H%M%S"))
+        keep = _new_folder(Path(ctx.data_dir) / "apple" / "backups" / ("mac-save-%s" % time.strftime("%Y%m%d-%H%M%S")))
         shutil.copytree(dest / "user", keep / "user")
         log("backed up this Mac's save to %s" % keep)
     (dest / "user").mkdir(parents=True, exist_ok=True)
@@ -904,7 +973,7 @@ def build_app(setup, ctx, which, team=None, bundle_prefix="org.wwhdrecomp", sign
         except Error:
             # the App ID or its iCloud capability isn't registered yet: Xcode does it
             prof_path, prof, identity = register_with_xcode(platform, bundle_id, None, team, icloud, env, log)
-        log("signing: %s (team %s)" % (prof.get("Name"), prof["TeamIdentifier"][0]))
+        log(redact("signing: %s (team %s)" % (prof.get("Name"), private(prof["TeamIdentifier"][0]))))
     steps = [s for s in BUILD_STEPS if signed or s[0] != "apple_sign"]
     n = iter(range(1, len(steps) + 1))
     stage = lambda sid: step(next(n), len(steps), dict(steps)[sid], sid)
@@ -1058,8 +1127,8 @@ def register_with_xcode(platform, bundle_id, device=None, team=None, icloud=None
                 ents["com.apple.developer.ubiquity-container-identifiers"] = [icloud]
         with open(Path(tmp) / "app.entitlements", "wb") as f:
             plistlib.dump(ents, f)
-        log("asking Xcode to register %s%s%s and make its profile (team %s)" % (
-            bundle_id, " with iCloud " + icloud if icloud else "", " and the device " + device if device else "", team))
+        log(redact("asking Xcode to register %s%s%s and make its profile (team %s)" % (
+            bundle_id, " with iCloud " + icloud if icloud else "", " and the device " + device if device else "", private(team))))
         p = subprocess.run(["xcodebuild", "-project", str(proj), "-scheme", "Probe", "-configuration", "Debug",
                             "-destination", ("id=" + device) if device else "generic/platform=" + platform,
                             "-allowProvisioningUpdates",
@@ -1068,7 +1137,7 @@ def register_with_xcode(platform, bundle_id, device=None, team=None, icloud=None
         out = p.stdout.decode("utf-8", "replace")
         if p.returncode != 0:
             errors = [l for l in out.splitlines() if "error:" in l][-5:]
-            raise Error("Xcode couldn't register the device or make the profile:\n%s" % "\n".join(errors or out.splitlines()[-10:]))
+            raise Error(redact("Xcode couldn't register the device or make the profile:\n%s" % "\n".join(errors or out.splitlines()[-10:])))
     return find_profile(platform, bundle_id, team, icloud=icloud, device=device)
 
 

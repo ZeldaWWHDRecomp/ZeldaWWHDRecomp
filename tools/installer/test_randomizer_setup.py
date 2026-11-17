@@ -154,7 +154,8 @@ class RandomizerSetup(unittest.TestCase):
                 args = mock.Mock(game_dir=str(path), gen_dir=None, archive=None, image=None, decomp=None,
                                  start_decomp=None, remove_language_source=None, language_source=None,
                                  randomize=False, list_seeds=False, play_seed=None, delete_seed=None, import_seed=None,
-                                 repair_guest_python=False, rebuild_code_mods=False)
+                                 repair_guest_python=False, rebuild_code_mods=False,
+                                 apple_status=False, apple_device=None)
                 ctx = SimpleNamespace(args=args, data_dir=str(data), game_dir=str(data/'game'), version='test',
                                       manifest={'platform':'test'}, state=lambda: {}, installed=lambda: False)
                 lines = []

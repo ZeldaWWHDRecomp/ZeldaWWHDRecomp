@@ -319,6 +319,23 @@ static void install_bundled_mods(NSString* user) {
     NSLog(@"[mods] the app's mods installed (seed %@)", stamp);
 }
 
+// Setup's save copy (tools/installer/apple_device.py save_to_device) ends with save/setup-copy.txt, the names of
+// the files it copied: the save files it didn't copy are the replaced save's, removed here before the game reads it.
+static void finish_setup_save_copy(NSString* save) {
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* list = [save stringByAppendingPathComponent:@"setup-copy.txt"];
+    NSString* text = [NSString stringWithContentsOfFile:list encoding:NSUTF8StringEncoding error:nil];
+    if (!text) return;
+    NSSet<NSString*>* copied = [NSSet setWithArray:[text componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet]];
+    NSString* user = [save stringByAppendingPathComponent:@"user"];
+    if ([copied containsObject:@"cking.sav"])
+        for (NSString* name in [fm contentsOfDirectoryAtPath:user error:nil])
+            if ([name.pathExtension isEqualToString:@"sav"] && ![copied containsObject:name] &&
+                [fm removeItemAtPath:[user stringByAppendingPathComponent:name] error:nil])
+                NSLog(@"[save] %@ removed: setup's save copy hasn't got it", name);
+    [fm removeItemAtPath:list error:nil];
+}
+
 // iPhone, iPad: the save in the app's iCloud Drive folder, "Wind Waker HD" in it, so it is the same on the iPhone,
 // iPad and Mac signed in to the same iCloud (a Mac chooses that folder in Settings > Saves; the Apple TV, which gets no
 // iCloud Drive, has it through CloudKit: cloud_save.h). The container is the one the
@@ -668,6 +685,7 @@ static void* run_game(void*) {
                                                     id.length >= 4 ? [id substringToIndex:4] : @"?"];
         setenv("WWHD_MACHINE_NAME", name.UTF8String, 0);
     }
+    finish_setup_save_copy(save);
     use_icloud_save_folder(save);
     const std::string game = std::string([NSBundle mainBundle].bundlePath.fileSystemRepresentation) + "/game";
     std::vector<std::string> args = {g_argc ? g_argv[0] : "WindWakerHD", "--game", game, "--save", save.fileSystemRepresentation};

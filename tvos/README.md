@@ -62,8 +62,8 @@ Mac with code mods on (install them, switch them on), build the app with game co
 then `python3 tvos/bundle_mods.py --app build/tvos/WindWakerHD.app --manager <that ModManager folder> --sign
 <identity>` before signing the app (step 3). Options change on the TV; another set of mods needs another app.
 
-Still to do: setup building and installing it; saves kept in iCloud (CloudKit), in step with the Mac; a
-settings panel for the Siri Remote.
+Setup builds, signs and installs it, and keeps the save in iCloud ([docs/apple-devices.md](../docs/apple-devices.md)).
+Still to do: a settings panel for the Siri Remote.
 
 ## iPad (experimental)
 
@@ -74,14 +74,16 @@ touch controls yet.
 
 - **Your identifiers.** An App ID and an iCloud container belong to one developer team, so the build takes yours:
   `-DWWHD_APPLE_ID_PREFIX=<prefix>` names the apps `<prefix>.tv` and `<prefix>.ipad` (default `org.wwhdrecomp`).
-- **The save in iCloud Drive.** With `-DWWHD_ICLOUD_CONTAINER=iCloud.<...>` (a container of your team, which the
+- **The save in iCloud.** With `-DWWHD_ICLOUD_CONTAINER=iCloud.<...>` (a container of your team, which the
   iPad app's profile and entitlements must carry: iCloud Documents), the iPad keeps its save in that container's
   iCloud Drive folder, shown as "Wind Waker HD". It goes through the save folder choice (the Mac's Settings >
   Saves > Save folder): the first start copies the save there, or asks which to keep if one is there already;
   files iCloud hasn't brought to the iPad yet are downloaded first. A Mac chooses the same folder
   (`~/Library/Mobile Documents/iCloud~<...>/Documents/Wind Waker HD`) to share the save. While the game runs,
   its lock names the device ("iPad (83A7)"); in the background the iPad gives the lock back. Signed out of
-  iCloud, the save stays on the iPad.
+  iCloud, the save stays on the iPad. `-DWWHD_ICLOUD_CLOUDKIT=ON` also syncs the save through the container's
+  CloudKit database, which is how an Apple TV keeps it (it has no iCloud Drive). The app's signature must then
+  carry CloudKit as well (`com.apple.developer.icloud-services` with `CloudKit`), or it stops at launch.
 - **Testing without anyone at the iPad.** `remote_pad_drive` (`runtime/tools/remote_pad_drive.cpp`) pairs like
   the iPhone GamePad app and presses buttons from a script; start the game with `WWHD_PAD_LOG_CODE=1` so it can
   read the pairing code from the console. `WWHD_GPU_ERRORS=1` names the encoder of a failed command buffer, and
