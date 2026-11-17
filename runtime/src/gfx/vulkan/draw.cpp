@@ -63,6 +63,11 @@
 #include "pass_reuse.h"
 #include "hud_coverage.h"
 #include "reproj.h"
+#include "../draw_batch.h"   // (same-state draw runs: batch_draw.h)
+#include "batch_glsl.h"
+#include "shader_compiler.h"
+#include <map>
+#include <thread>
 #ifdef WWHD_NATIVE_DRAW
 #include "gx2/native_draw.h"
 #include "gx2/native_j3d_desc.h"
@@ -3162,6 +3167,7 @@ inline uint64_t packet_hash(uint64_t h, const void* data, size_t n) {
 }
 template <class T> inline uint64_t packet_hash_value(uint64_t h, const T& v) { return packet_hash(h, &v, sizeof v); }
 #endif
+#include "batch_draw.h"  // (same-state draw runs, part 1)
 StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
                           VkDescriptorSetLayout layout, bool dynamicUniforms, float sx, float sy,
                           const std::array<Surface *, 8> &colors,
@@ -3382,8 +3388,17 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   const uint64_t blocksStarted = rprof::sub_begin();
   uint32_t block =
       sh->vertex ? mmSQ_VTX_UNIFORM_BLOCK_START : mmSQ_PS_UNIFORM_BLOCK_START;
+  // a held run's instanced draw (batch_draw.h): its batched blocks and support block hold every piece's
+  const BatchDraw* batch = sh->vertex ? batch_draw() : nullptr;
+  if (batch && sh != batch->variant) batch = nullptr;
   for (int i = 0; i < 16; i++)
     if (m.uniformBuffersBindingPoint[i] >= 0) {
+      if (batch && (batch->layout->blocks >> i & 1)) [[unlikely]] {
+        static thread_local std::vector<uint8_t> pieces;
+        batch_gather(*batch, r, uint32_t(i), pieces);
+        uniform(m.uniformBuffersBindingPoint[i], pieces.data(), pieces.size(), size_t(i));
+        continue;
+      }
       uint32_t addr = r[block + i * 7];
       uint32_t size = std::min<uint32_t>(r[block + i * 7 + 1] + 1, 0x10000);
       // a block of a display list: its bytes as submitted (gx2/submitted_uniforms.h), uploaded once
@@ -3530,6 +3545,11 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
 #ifdef WWHD_NATIVE_DRAW
     if (g_packetCapture) g_packetCapture->stage[sh->vertex ? 0 : 1].supBytes.assign(supportUniforms.begin(), supportUniforms.end());
 #endif
+    if (batch && batch->layout->support) [[unlikely]] {
+      static thread_local std::vector<uint8_t> pieces;
+      batch_support(*batch, r, *sh, supportUniforms, pieces);
+      uniform(m.uniformVarsBufferBindingPoint, pieces.data(), pieces.size(), 16);
+    } else
     uniform(m.uniformVarsBufferBindingPoint, supportUniforms.data(),
             supportUniforms.size(), 16);
     rprof::sub_end(rprof::kSubUniformSupportUpload, uploadStarted);
@@ -3956,8 +3976,15 @@ static bool sun_atlas_target(const uint32_t* r) {
   return r[mmDB_HTILE_DATA_BASE]==((1024u<<16)|1024u) && r[gx2::kDepthSlicesReg]==3 &&
       LatteMRT::GetActiveDepthBufferMask(*reinterpret_cast<const LatteContextRegister*>(r));
 }
+#include "batch_draw_part2.h"  // (same-state draw runs, part 2)
 void draw_stereo(const uint32_t *r,uint32_t prim,uint32_t count,uint32_t indexType,
                  uint32_t indexAddr,uint32_t baseVertex,uint32_t instances) {
+  // a held run (gx2/draw_runs.h): one instanced draw, or nothing drawn here (gx2 then draws its pieces)
+  batch_register();
+  if (const draw_batch::Batch* run = draw_batch::current()) [[unlikely]] {
+    batch_draw_run(r, prim, count, indexType, indexAddr, baseVertex, *run);
+    return;
+  }
   if(stereo::frame.mode==stereo::Off) {
     stereo_select_eye(0);
     draw(r,prim,count,indexType,indexAddr,baseVertex,instances);
@@ -4366,9 +4393,10 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   }
   // continued-draw fast path (see fastpath_config); the AO replay draw stays outside of it
   const auto& fastPath = fastpath_config();
-  // a replayed eye 1 draw records no continuation of its own
-  const bool fastPathDraw = fastPath.on && !aoPrivateReplay && !replay && !gamepad_backdrop_replaying();
-  if (replay) {
+  // a replayed eye 1 draw records no continuation of its own; nor does a held run's instanced draw (batch_draw.h)
+  BatchDraw* const batch = batch_draw();
+  const bool fastPathDraw = fastPath.on && !aoPrivateReplay && !replay && !batch && !gamepad_backdrop_replaying();
+  if (replay || batch) {
     continued.valid = false;
     continued.invalidReason = kNoState;
   }
@@ -4500,6 +4528,11 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     if (!fs)
       exception_report::raise("missing Vulkan fetch shader");
     vk::translate_stages(r, fs, fsKey, R.frame, g_shader_state_gen, vs, ps);
+  }
+  // a held run's instanced draw: its vertex shader's batched variant (batch_draw.h; batch_accept took this one)
+  if (batch) {
+    if (vs != batch->base || !ps || !ps->ready()) { batch->declined = true; return; }
+    vs = batch->variant;
   }
   // WWHD_VK_FASTPATH_PARTIAL: the state's own shaders (the state's fields stay as recorded until this
   // draw records its own); partialChanged: the breaking groups changed since it was recorded
@@ -4739,7 +4772,17 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   const bool partialSameTargets = partial && targets.same(continued.targets);
   const bool partialPipeline = partialSameTargets && topology == continued.topology &&
                                !(partialChanged & gx2::kSgPartialPipelineMask);
-  Pipeline* pp = fast || partialPipeline ? continued.ownPipeline
+  Pipeline* pp = nullptr;
+  if (batch) [[unlikely]] {
+    // the variant's pipeline: made in the background lane only (never on the render thread, never a recipe); until it
+    // is ready nothing is drawn here and gx2 draws the run's pieces one by one
+    Pipeline& got = pipeline(r, vs, ps, fs, topology, colors, depth, PipelineVariant{.background = true});
+    if (&got != &declined_pipeline_storage() && !got.pipeline && got.pendingCompile && !got.compileError)
+      resolve_pending_pipeline(got, false);
+    if (&got == &declined_pipeline_storage() || !got.pipeline || got.pendingCompile) { batch->declined = true; return; }
+    pp = &got;
+  } else
+  pp = fast || partialPipeline ? continued.ownPipeline
       : !backdropReplay && replay && replay->formats == target_formats(colors, depth) ? replay->pipeline
       : &pipeline(r, vs, ps, fs, topology, colors, depth, {.covSlot = covSlot});
   if (covSlot) {  // its coverage variant still compiling (or failed): drawn as usual, the frame generated the old way
@@ -4764,7 +4807,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
   std::array<Surface*, 8> ownColors{};  // the draw's own colour targets, when it took over others
   std::array<uint32_t, 8> ownSlices{};
   Pipeline* subsetPipeline = nullptr;
-  if (pass_reuse::subset_on() && R.rendering && R.passTracked && !aoPrivateReplay && !replay && !backdropReplay &&
+  if (pass_reuse::subset_on() && R.rendering && R.passTracked && !aoPrivateReplay && !replay && !backdropReplay && !batch &&
       !covSlot && stereo::frame.mode == stereo::Off && own.pipeline && !own.pendingCompile && async_pipeline_enabled() &&
       !gamepad_backdrop_replaying() && !gamepad_backdrop_capture_active()) {
     ownColors = colors;

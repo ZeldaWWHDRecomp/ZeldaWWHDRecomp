@@ -45,6 +45,13 @@
 #include "runtime.h"
 #include "hot_wait.h"
 #include "savestate.h"
+#include "draw_run_census.h"
+#include "gfx/draw_batch.h"
+namespace draw_batch {  // (gfx/draw_batch.h: defined here, once; draw_runs.h)
+thread_local const Batch* t_current = nullptr;
+thread_local bool t_consumed = false;
+CanHold g_canHold = nullptr;
+}  // namespace draw_batch
 #include "state_metadata_validation.h"
 #include "guest_addr.h"
 #include "../aspect.h"
@@ -350,6 +357,15 @@ static void record_overflow(Recording* rec, uint32 bytes) {
 }
 
 static void execute_one(Op op, const uint32* p, uint32 n);
+// draw runs (draw_runs.h; WWHD_VK_BATCH_RUNS, WWHD_VK_INDEX_RUNS; on by default in the normal build, =0 turns one off)
+#include "draw_runs.h"
+bool draw_runs::hold_allowed() {
+#ifdef WWHD_NATIVE_DRAW
+    // (a J3D draw's name or a described J3D draw waiting for the site's draw belongs to the next draw alone)
+    if (native_draw::g_j3dKey || native_draw::j3ddesc::g_pending) return false;
+#endif
+    return true;
+}
 
 // ---------------------------------------------------------------- submitted uniform blocks
 // (submitted_uniforms.h) WWHD_GX2_SUBMITTED_UNIFORMS=0 turns it off: draws in display lists then read
@@ -812,6 +828,16 @@ static void execute_op(Op op, const uint32* p, uint32 n);
 // calls are not timed themselves: their ops are
 static void execute_one(Op op, const uint32* p, uint32 n) {
     rprof::Op kind;
+    if (draw_runs::any_on() && draw_runs::before_op(op, p, n)) return;  // (draw_runs.h)
+    if (run_census::on()) [[unlikely]] {  // (diagnostics: draw_run_census.h)
+        if (op == OP_SET_REGS) { if (n && p[0] < kNumRegs && n - 1 <= kNumRegs - p[0]) run_census::regs(g_regs, p[0], p + 1, n - 1); }
+        else if (op == OP_DRAW || op == OP_DRAW_INDEXED) run_census::draw(g_regs, op, p, n, op == OP_DRAW_INDEXED);
+        else if (op == OP_SWAP) { run_census::other_op(false); run_census::frame_end(); }
+#ifdef WWHD_NATIVE_DRAW
+        else if (op == OP_PACKET_DRAW) run_census::other_op(true);
+#endif
+        else if (op != OP_NOP && op != OP_DEBUG_CONTEXT && op != OP_SUBMITTED_UNIFORMS && op != OP_CALL) run_census::other_op(false);
+    }
 #ifdef WWHD_NATIVE_DRAW
     // J3D described draws (native_j3d_desc_draw.h, mode 2): a command that may read or write registers ends the run
     // (its register effects settled first)
