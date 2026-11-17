@@ -1,7 +1,8 @@
 """Setup's optional decomp version (docs/decomp-build.md, "In setup"): a second game binary built on the
 player's machine with the decompiled game functions of the public decompilation (ZeldaWWHDDecomp/wwhd)
-as compiled source, next to the normal game. Experimental and opt-in: offered on macOS in development
-builds only, off by default; the normal game is always built first and stays playable when this fails.
+as compiled source, next to the normal game. Experimental and opt-in: offered on every OS whose release brings its
+parts (macOS, Linux, Windows; decomp_platform.py has what differs per OS), off by default; the normal game is always
+built first and stays playable when this fails.
 
 What the release brings (tools/release/package.py --decomp-build), described in sdk/manifest.json
 "decomp":
@@ -22,7 +23,7 @@ What the release brings (tools/release/package.py --decomp-build), described in 
 What is made here, from the player's own cking.rpx, in DATA/decomp-work (removed afterwards unless
 --keep-work): gen.py's output (the game image, the model data headers, the glued sources, hooks.cpp,
 the function list), the game code translated with that list, the objects. The result is
-bin/wwhd-decomp (portable releases) or decomp/bin/wwhd (with its runtime files) otherwise.
+bin/wwhd-decomp(.exe) (portable releases) or decomp/bin/wwhd(.exe) (with its runtime files) otherwise.
 """
 import hashlib
 import json
@@ -37,11 +38,17 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from types import SimpleNamespace
 
+# Its own folder, for decomp_platform: the release's embeddable Python (._pth, isolated) doesn't put a script's folder on
+# sys.path (tools/release/test_shipped_tools.py).
+if os.path.dirname(os.path.abspath(__file__)) not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import decomp_platform  # noqa: E402
+
 DECOMP_TEXT = (
     "Builds a second version of the game in which the game functions of the public decompilation "
     "(ZeldaWWHDDecomp/wwhd) run as compiled source instead of translated code, in its fast mode (it starts with "
     "Vulkan). Experimental; the normal version stays the default and is built first. Adds about an hour to setup "
-    "on a busy Mac (less on a quiet one), needs about 4 GB free while it builds and about 800 MB afterwards, uses up "
+    "(measured on a busy Mac; less on a quiet one), needs about 4 GB free while it builds and about 800 MB afterwards, uses up "
     "to about 4.5 GB of memory, and downloads the decompilation's source (about 17 MB) from GitHub.")
 DOCS_URL = "https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/blob/devel/docs/decomp-build.md"
 ARCHIVE_URL = "https://github.com/ZeldaWWHDDecomp/wwhd/archive/%s.tar.gz"  # % the full commit
@@ -57,10 +64,10 @@ def is_dev_version(version):
     return bool(DEV_VERSION.search(version or ""))
 
 
-def offered(manifest, is_mac):
-    """Setup offers the decomp version on macOS, in every release that brings its parts (development builds and,
-    since 2026-11-16, regular releases)."""
-    return bool(is_mac and isinstance(manifest.get("decomp"), dict))
+def offered(manifest):
+    """Setup offers the decomp version in every release that brings its parts (development builds and, since
+    2026-11-16, regular releases; macOS, and since 2026-11-16 Linux and Windows too)."""
+    return isinstance(manifest.get("decomp"), dict)
 
 
 OS_FILES = re.compile(r"^(\.DS_Store|\._.*|Thumbs\.db|desktop\.ini)$", re.I)  # what file browsers add
@@ -124,10 +131,9 @@ def fetch_source(s, data_dir, d):
     """The decompilation's source at the pinned commit (manifest "decomp": revision, tree_sha256, url,
     download_bytes) in cache_dir(): reused when it is there and checks out, else downloaded and checked.
     Older pins' copies are removed. Returns its folder; SetupError (FETCH_FAILED) otherwise.
-    Setup's own file operations here use s.longpath (Windows extended-length paths; unchanged elsewhere).
-    The decomp version is macOS-only: on Windows its deepest files (data\\decomp-src\\<12>\\ plus the
-    decompilation's own 70-character paths, and decomp-work\\gen\\glued\\...) would exceed
-    setup.DEEPEST_DATA_PATH, which a Windows decomp version has to take into account."""
+    Setup's own file operations here use s.longpath (Windows extended-length paths; unchanged elsewhere): the
+    source's tools\\verify\\units files are deeper than MAX_PATH below an ordinary data folder. What reads the source
+    later (gen.py, decl_lint.py, the compiler) uses ordinary paths: decomp_platform.windows_path_problem."""
     lp = getattr(s, "longpath", lambda p: p)
     rev, want = d["revision"], d["tree_sha256"]
     root = cache_dir(data_dir, rev)
@@ -169,12 +175,7 @@ def fwd(p):
     return p.replace("\\", "/")
 
 
-def exe_path(data_dir, portable):
-    """Where the decomp game goes: next to the normal one in a portable release (it shares bin/'s runtime
-    files and portable.txt, so settings, saves and shader caches), else decomp/bin/ in the data folder."""
-    if portable:
-        return os.path.join(data_dir, "bin", "wwhd-decomp")
-    return os.path.join(data_dir, "decomp", "bin", "wwhd")
+exe_path = decomp_platform.exe_path  # bin/wwhd-decomp(.exe) in a portable release, else decomp/bin/wwhd(.exe)
 
 
 
@@ -190,30 +191,23 @@ WHOLE_LTO_MIN_RAM = 12 << 30  # cmake WWHD_DECOMP_FAST_WHOLE_LTO=AUTO (WWHD_DECO
 # docs/decomp-build.md "In setup"), checked before it starts
 SPACE_NEEDED = {"fast": 4 << 30, "plain": 3 << 30}
 # fast mode's declaration table (decl_table.py) runs the decompilation's decl_lint.py, which disassembles the game
-# code with capstone (BSD-3-Clause; a py3-none wheel: no compiled Python module, its own libcapstone). Downloaded
-# once into DATA/decomp-src, checked by its SHA-256.
-CAPSTONE = {
-    "arm64": {"url": "https://files.pythonhosted.org/packages/8f/43/29cd1dbdb2b55bf339bca36444809503b8311dcc04898726a7e35b47ac86/"
-                     "capstone-5.0.7-py3-none-macosx_11_0_arm64.whl",
-              "sha256": "acb89f5bf6f625745a104a3a44819d3acea173228055c1eadc60d2282ae490bb", "size": 1200084},
-    "x86_64": {"url": "https://files.pythonhosted.org/packages/b7/6c/f02847b3385651eb00a6a27049bd12982cdd61e981b248e7f0dc8ed15756/"
-                      "capstone-5.0.7-py3-none-macosx_10_9_x86_64.whl",
-               "sha256": "a9f64e3d75d8c4d7b3d26bba153b2992aadcf6b8d57674b4ef176b4ecdd9822f", "size": 1188995},
-}
+# code with capstone (decomp_platform.CAPSTONE: a pinned wheel per OS and processor). Downloaded once into
+# DATA/decomp-src, checked by its SHA-256.
 MODES = ("fast", "plain")
 
 
 def mode_offered(manifest, mode):
-    """fast mode needs the release's fast parts (tools/release/package.py --decomp-fast-build); plain is always there"""
+    """fast mode needs the release's fast parts (tools/release/package.py --decomp-fast-build) and a disassembler for
+    this OS and processor (decomp_platform.capstone_pin); plain is always there"""
     d = manifest.get("decomp") or {}
-    return mode == "plain" or isinstance(d.get("fast"), dict)
+    return mode == "plain" or (isinstance(d.get("fast"), dict) and decomp_platform.capstone_pin() is not None)
 
 
 def fetch_capstone(s, data_dir):
     """capstone for decl_lint.py: DATA/decomp-src/capstone-<sha8>, the folder to put on PYTHONPATH"""
     import platform
     import zipfile
-    pin = CAPSTONE.get(platform.machine())
+    pin = decomp_platform.capstone_pin()
     if not pin:
         raise s.SetupError("the decomp version's fast mode has no disassembler for this processor (%s)" % platform.machine())
     root = os.path.join(data_dir, "decomp-src", "capstone-" + pin["sha256"][:8])
@@ -239,15 +233,14 @@ def fetch_capstone(s, data_dir):
     return root
 
 
-def tool_path(tc, name):
-    """the toolchain's NAME as one path (xcrun -f on the Mac)"""
-    if tc.cxx and os.path.basename(tc.cxx[0]) == "xcrun":
-        return subprocess.run(["xcrun", "-f", name], capture_output=True, text=True, check=True).stdout.strip()
-    return shutil.which(name) or name
+tool_path = decomp_platform.tool_path  # the toolchain's NAME as one path (xcrun -f on the Mac)
 
 
 def liblto_of(tc):
-    """the compiler's own libLTO.dylib (cmake/Decomp.cmake: <resource dir>/../../libLTO.dylib), or None"""
+    """the compiler's own libLTO.dylib (cmake/Decomp.cmake: <resource dir>/../../libLTO.dylib), or None; macOS only
+    (Linux's zig and Windows' llvm-mingw have none: decomp_platform.py)"""
+    if decomp_platform.toolchain_kind(tc) not in ("xcode-clt", ""):
+        return None
     try:
         rd = subprocess.run(tc.cxx + ["-print-resource-dir"], capture_output=True, text=True, env=tc.env).stdout.strip()
     except OSError:
@@ -256,11 +249,7 @@ def liblto_of(tc):
     return lib if os.path.isfile(lib) else None
 
 
-def total_memory():
-    try:
-        return int(subprocess.check_output(["sysctl", "-n", "hw.memsize"]))
-    except (OSError, ValueError, subprocess.CalledProcessError):
-        return 0
+total_memory = decomp_platform.total_memory
 
 
 def whole_lto(tc):
@@ -269,7 +258,8 @@ def whole_lto(tc):
     lib = liblto_of(tc)
     force = os.environ.get("WWHD_DECOMP_WHOLE_LTO")
     if not lib:
-        return False, None, "the compiler has no libLTO"
+        return False, None, ("the compiler has no libLTO" if decomp_platform.toolchain_kind(tc) in ("xcode-clt", "")
+                             else "the whole-image link is macOS-only")
     if force in ("0", "1"):
         return force == "1", lib, "WWHD_DECOMP_WHOLE_LTO=" + force
     mem = total_memory()
@@ -394,6 +384,9 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
     if build_id is not None and not build_id.canonical:
         raise s.SetupError("the decomp version works with the USA game only (yours is the %s build)" % build_id.name)
     lp = getattr(s, "longpath", lambda p: p)
+    problem = decomp_platform.windows_path_problem(data_dir)
+    if problem:
+        raise s.SetupError(problem)
     need = SPACE_NEEDED[mode]
     if s.free_space(data_dir) < need:
         raise s.SetupError("not enough free disk space in %s for building the decomp version (%s needed)"
@@ -454,8 +447,8 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
         # kept in DATA/decomp-cache (one per code-mod choice: the translation differs): decl_table.py reuses it while
         # the decompilation, the translation and the game are unchanged (a repair, an update with the same pin)
         decl = os.path.join(data_dir, "decomp-cache", "decl-%d" % bool(code_mods))
-        cxx_dir = os.path.dirname(tool_path(tc, "clang++"))
-        denv = dict(os.environ, PYTHONPATH=os.pathsep.join(
+        cxx_dir = decomp_platform.clangxx_dir(tc, work)  # (decl_lint runs `clang++`; Linux: a script running zig c++)
+        denv = dict(tc.env or os.environ, PYTHONPATH=os.pathsep.join(
             [capstone] + ([os.environ["PYTHONPATH"]] if os.environ.get("PYTHONPATH") else [])),
             PATH=os.pathsep.join([cxx_dir, os.environ.get("PATH", "")]))
         s.run_logged([sys.executable, os.path.join(s.PKG, "tools", "decomp_build", "decl_table.py"), src, gen_dir,
@@ -478,7 +471,8 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
     m = {"sdk": fwd(os.path.join(s.PKG, "sdk")), "decomp": fwd(src),
          "tools": fwd(os.path.join(s.PKG, "tools")), "out": fwd(out)}
     # debug information as for the game code (setup.debug_info_flags: off unless WWHD_SETUP_DEBUG_INFO)
-    unit_flags = s.debug_info_flags([subst(a, m) for a in parts["unit_flags"]])
+    unit_flags = s.debug_info_flags([subst(a, m) for a in parts["unit_flags"]]) + \
+        decomp_platform.unit_flags_extra(tc, fast)
     hooks_flags = s.debug_info_flags([subst(a, m) for a in parts["hooks_flags"]])
     jobs_list = []  # (unit index, source, object, extra flags)
     for i, u in enumerate(units):
@@ -538,19 +532,13 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
 
     # 5. each unit becomes one object whose hidden symbols are local, so units never see each other: `ld -r` (plain),
     # ld -r with ThinLTO inside the unit (fast, per-unit link), or the IR isolation for the whole-image link (unit_ir.py
-    # through the compiler's libLTO), as cmake/Decomp.cmake
+    # through the compiler's libLTO), as cmake/Decomp.cmake; Linux and Windows: decomp_platform.merge_commands
     t0 = time.time()
     by_unit = {}
     for i, _, obj, _ in jobs_list:
         if i is not None:
             by_unit.setdefault(i, []).append(obj)
-    if lto:
-        merge = lambda o, objs_: [sys.executable, os.path.join(s.PKG, "tools", "decomp_build", "unit_ir.py"), o,
-                                  "--liblto", liblto, "--cc", tool_path(tc, "clang++")] + objs_
-    elif fast:
-        merge = lambda o, objs_: tc.cxx + ["-r", "-nostdlib", "-flto=thin", "-o", o] + objs_
-    else:
-        merge = lambda o, objs_: ["xcrun", "ld", "-r", "-o", o] + objs_
+    merge = lambda o, objs_: decomp_platform.merge_commands(tc, s.PKG, o, objs_, fast, lto=lto, liblto=liblto)
     glue = [None] * len(units)
     pr = s.Progress("isolating the game units")
     mfail, mdone = [], [0]
@@ -559,8 +547,9 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
         u = units[i]
         o = os.path.join(work, "units", "%s.o" % u["name"])
         try:
-            s.run_logged(merge(o, by_unit[i]), env=tc.env, what="merging the game unit %s" % u["name"])
-        except s.SetupError as e:
+            for cmd in merge(o, by_unit[i]):
+                s.run_logged(cmd, env=tc.env, what="merging the game unit %s" % u["name"])
+        except (s.SetupError, OSError) as e:
             mfail.append(e)
         glue[i] = o
         with lock:

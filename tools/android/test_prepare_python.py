@@ -1,6 +1,9 @@
 """Resource identities must survive repackaging without changing source bytes."""
 import io
 import hashlib
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 import tempfile
 from unittest.mock import patch
@@ -73,6 +76,33 @@ class ResourceIdentityTests(unittest.TestCase):
             sibling.write_text("# authored production sibling\n")
             self.assertIn(sibling, source_files(root))
             self.assertIn(sibling, source_files(root, True))
+
+    def test_bundled_installer_modules_import_from_the_bundle_alone(self):
+        """The Android package holds only source_files(): setup.py and every bundled tools/installer module must import
+        from that tree alone (an unbundled sibling such as decomp_platform.py failed only on the emulator)."""
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as temp:
+            package = Path(temp) / "source"
+            for path in source_files(root, True):
+                destination = package / path.relative_to(root)
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, destination)
+            installer = package / "tools/installer"
+            modules = sorted(path.stem for path in installer.glob("*.py"))
+            self.assertIn("decomp_platform", modules)
+            # setup.py loaded as setup_adapter.py loads it (importlib spec, installer folder on sys.path), then
+            # every bundled sibling by name; isolated, so nothing from the checkout or the user site leaks in.
+            script = (
+                "import importlib, importlib.util, sys\n"
+                "installer = sys.argv[1]\n"
+                "sys.path.insert(0, installer)\n"
+                "spec = importlib.util.spec_from_file_location('wwhd_android_installer', installer + '/setup.py')\n"
+                "spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+                "for name in sys.argv[2:]: importlib.import_module(name)\n")
+            result = subprocess.run([sys.executable, "-I", "-c", script, str(installer)] +
+                                    [name for name in modules if name != "setup"],
+                                    cwd=temp, capture_output=True, text=True, timeout=120)
+            self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_same_source_bytes_have_same_archive_identity(self):
         def bundle(name, data):

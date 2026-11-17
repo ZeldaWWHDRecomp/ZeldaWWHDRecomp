@@ -130,7 +130,11 @@ class DecompBuildPackaging(unittest.TestCase):
 
     def test_decomp_parts_listed(self):
         self.assertIn("tools/installer/decomp_setup.py", package.INSTALLER_FILES)
-        self.assertEqual(package.DECOMP_HOOKS_NONE, "tools_decomp_build_hooks_none.cpp.o")
+        self.assertIn("tools/installer/decomp_platform.py", package.INSTALLER_FILES)  # (Linux, Windows: 2026-11-16)
+        self.assertIn("tools/decomp_build/elf_localize.py", package.DECOMP_TOOLS)
+        # hooks_none's runtime object as CMake names it: .o (clang, zig), .obj (llvm-mingw)
+        self.assertEqual(package.DECOMP_HOOKS_NONE, ("tools_decomp_build_hooks_none.cpp.o",
+                                                     "tools_decomp_build_hooks_none.cpp.obj"))
         for rel in package.DECOMP_TOOLS:
             self.assertTrue((Path(package.ROOT) / rel).is_file(), rel)
 

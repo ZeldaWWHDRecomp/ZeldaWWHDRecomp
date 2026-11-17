@@ -89,10 +89,13 @@ if(WWHD_DECOMP)
 endif()
 
 function(wwhd_decomp_configure)
-  if(NOT APPLE AND NOT ANDROID)
+  if(NOT APPLE AND NOT ANDROID AND NOT WWHD_DECOMP_RUNTIME_ONLY)
     # the unit isolation needs ld64's `ld -r` (hidden -> local), or on Android ld.lld -r + llvm-objcopy
-    # --localize-hidden (wwhd_decomp_link); other platforms need their own step
-    message(FATAL_ERROR "WWHD_DECOMP: the decomp build is available on macOS and Android only so far")
+    # --localize-hidden (wwhd_decomp_link); other platforms need their own step. The release's runtime-only part
+    # (WWHD_DECOMP_RUNTIME_ONLY) builds everywhere: on Linux and Windows setup isolates the units itself
+    # (tools/installer/decomp_platform.py: ld.lld -r + tools/decomp_build/elf_localize.py, or unit_ir.py --libllvm)
+    message(FATAL_ERROR "WWHD_DECOMP: the decomp build is available on macOS and Android only so far "
+                        "(elsewhere: -DWWHD_DECOMP_RUNTIME_ONLY=ON, the release's part for setup's decomp version)")
   endif()
   if(NOT EXISTS "${WWHD_DECOMP_DIR}/tools/verify/include/gabi.h")
     message(FATAL_ERROR "WWHD_DECOMP: no decompilation in ${WWHD_DECOMP_DIR}; run: git submodule update --init decomp")

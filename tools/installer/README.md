@@ -52,7 +52,8 @@ no-op without the marker).
 | file | what |
 |---|---|
 | `setup.py` | all of the installation logic (Python 3.8+, standard library only) |
-| `decomp_setup.py` | the optional decomp version (macOS; fast mode by default, `--decomp-plain` the plain decomp build; [docs/decomp-build.md](../../docs/decomp-build.md)) |
+| `decomp_setup.py` | the optional decomp version (macOS, Linux, Windows; fast mode by default, `--decomp-plain` the plain decomp build; [docs/decomp-build.md](../../docs/decomp-build.md)) |
+| `decomp_platform.py` | the decomp version's per-OS parts: unit isolation on Linux (zig `ld.lld -r` + `tools/decomp_build/elf_localize.py`) and Windows (`unit_ir.py --libllvm`), capstone pins, the Windows path limit |
 | `toolchains.json` | pinned compilers and Python downloads (URL + SHA-256); CI builds with the same ones |
 | `gui/setup_gui.cpp` | **Wind Waker HD**, the program a release starts: first-start setup, then the game launcher (SDL3 + Dear ImGui) |
 | `install-macos.command` | setup in Terminal, macOS (shipped as `tools/Setup in Terminal.command`) |
@@ -243,7 +244,7 @@ One JSON object per line. Events on stdout all have `"event"`:
 
 | event | fields |
 |---|---|
-| `hello` | `version`, `platform`, `data_dir`, `app_dir`, `log`, `portable`, `package`, `installed` (state or null), `game_files`, `game_dir`, `save_exists`, `legacy` (an earlier installation to copy from), `free_bytes`, `language_sources` (as the `language_sources` reply), `toolchain`, `code_mods`, `model_sweep` (the experimental step "Preparing shaders: models", off by default; the last choice), `model_sweep_text`, `decomp_offered` (the decomp version can be built: macOS releases that bring its parts), `decomp` (its option), `decomp_text`, `decomp_docs` |
+| `hello` | `version`, `platform`, `data_dir`, `app_dir`, `log`, `portable`, `package`, `installed` (state or null), `game_files`, `game_dir`, `save_exists`, `legacy` (an earlier installation to copy from), `free_bytes`, `language_sources` (as the `language_sources` reply), `toolchain`, `code_mods`, `model_sweep` (the experimental step "Preparing shaders: models", off by default; the last choice), `model_sweep_text`, `decomp_offered` (the decomp version can be built: releases that bring its parts), `decomp` (its option), `decomp_text`, `decomp_docs` |
 | `log` | `text` (also written to `setup.log`) |
 | `plan` | `steps`: `[{id, title}]` of the installation that starts |
 | `step` | `n`, `total`, `title`, `id` (`keys`, `archive`, `folder`, `compiler`, `extract`, `copy`, `translate`, `compile`, `app`, `shaders`, `decomp`) |
