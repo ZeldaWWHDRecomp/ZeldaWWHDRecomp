@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Normal build: much less render-thread work through draw batching** (#606). Runs of draws that share all their
+  state are now drawn as one instanced draw. At the Dragon Roost cliff about 4,400 draws a frame become 34, which cuts
+  the render thread by about 28 % on a Xiaomi 14 (17.8 → 12.9 ms, now a steady 60 fps there) and by 35–45 % on a Mac.
+  The picture is unchanged. On by default in the normal build; `WWHD_VK_BATCH_RUNS=0` turns it off. Multithreaded draw
+  recording and draw batching from VR-WakerHD, thanks @mkooner!
 - **Setup: choose the recompiled or the decomp version** (#605). Setup now asks which version to build, the
   recompiled version (default) or the decomp version, and builds and starts only that one, instead of "also build the
   decomp version". Running setup again with the other choice switches; if that build fails, the installed version stays.
