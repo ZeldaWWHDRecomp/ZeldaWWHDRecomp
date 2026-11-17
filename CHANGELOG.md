@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Vulkan: the hidden TV picture is no longer copied every frame** (#599). In one-screen (handheld) mode, as on
+  Android phones, the game shows the GamePad picture and its TV picture is only a "playing on the GamePad" screen that
+  nothing displays. Its 1080p copy is now skipped while no screen shows it, and made in the same frame as soon as one
+  does (picture-in-picture, TV mode, a second display, one-screen mode off). The picture is unchanged.
+  `WWHD_VK_SKIP_HIDDEN_TV=0` turns it off.
 - **Vulkan: cheaper window composition** (#598). Putting the TV/GamePad pictures, bars and frames into the window
   now does about 60 % less GPU work (a simpler shader for the common smooth-filter case, no clear when the pictures
   cover the window, hidden quads skipped). The picture is pixel-identical. On phones this shows as lower GPU clocks
