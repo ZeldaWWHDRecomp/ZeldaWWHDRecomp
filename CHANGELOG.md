@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Groundwork for multithreaded draw recording** (#608). The Vulkan renderer's per-draw state and shared caches are
+  ready to be used from more than one thread. No thread is started yet and nothing changes for players; the
+  multithreaded recording itself follows. Multithreaded draw recording and draw batching from VR-WakerHD, thanks
+  @mkooner!
 - **Normal build: much less render-thread work through draw batching** (#606). Runs of draws that share all their
   state are now drawn as one instanced draw. At the Dragon Roost cliff about 4,400 draws a frame become 34, which cuts
   the render thread by about 28 % on a Xiaomi 14 (17.8 → 12.9 ms, now a steady 60 fps there) and by 35–45 % on a Mac.
