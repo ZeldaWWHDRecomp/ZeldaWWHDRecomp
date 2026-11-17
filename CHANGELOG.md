@@ -7,6 +7,12 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Android setup: choose the recompiled or the decomp version** (#609). Like the desktop setup (#605), the Android
+  app's setup asks which version to build, the recompiled version (default) or the decomp version (experimental),
+  and builds only that one on the phone. The decomp build takes a long time on a phone (about 1.5–2 hours the first
+  time on a Xiaomi 14); the game built before stays playable until it finishes, and if it fails, the setup says why.
+  Also fixed: the compile cache on Android was lost on every app update, and a large preprocessed file could reuse
+  the wrong cached object.
 - **Decomp fast build: UI and text draws reuse their prepared state across frames** (#611). Layout and text draws
   whose state hasn't changed skip preparing it again. On a Xiaomi 14 this saves about 0.1 ms of render-thread time
   per frame at the Dragon Roost cliff and 0.15 ms at the Windfall pier; the picture is unchanged.
