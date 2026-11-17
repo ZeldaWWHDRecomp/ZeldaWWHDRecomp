@@ -97,10 +97,12 @@ static void apply_background_controllers() {  // main thread
 }
 static PadState g_pad;  // controller part, refreshed on the main thread
 static bool g_touch;
+static bool g_touch_unread;  // a touch began since the game last read: a tap shorter than a read still reaches it
 static float g_tx, g_ty;
 
 void set_touch(bool down, float x, float y) {
     std::lock_guard<std::mutex> lk(g_mu);
+    if (down && !g_touch) g_touch_unread = true;
     g_touch = down;
     g_tx = x;
     g_ty = y;
@@ -1413,7 +1415,8 @@ PadState read() {
     s.virt |= k.virt;  // Jump anywhere, the moon jump (keys of their own)
     if (k.lx || k.ly) { s.lx = k.lx; s.ly = k.ly; }
     if (k.rx || k.ry) { s.rx = k.rx; s.ry = k.ry; }
-    s.touch = g_touch;
+    s.touch = g_touch || g_touch_unread;
+    g_touch_unread = false;
     s.tx = g_tx;
     s.ty = g_ty;
     // a finger on the iPhone GamePad's screen, unless the mouse holds the GamePad window's touch
