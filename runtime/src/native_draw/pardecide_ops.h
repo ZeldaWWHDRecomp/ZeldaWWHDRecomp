@@ -1,5 +1,5 @@
 // pardecide (MT recording stage 4, "decide serially, fill off the render thread"; decomp build fast mode only):
-// WWHD_NATIVE_PAR_DECIDE=N (default 0 = off). Design: zelda_wwhd-work/pardecide/DESIGN.md.
+// WWHD_NATIVE_PAR_DECIDE=N (default 1 = S1 on in the decomp fast build; 0 off).
 //
 // This header holds the POD extension commands (record_mt.h, opcode 31) that carry a decided draw's work to the record
 // worker ("emitter"): the render thread keeps every decision (which binds, which upload slices, in stream order) and
@@ -18,11 +18,12 @@
 #include <stdexcept>
 
 namespace native_draw::pardecide {
-// WWHD_NATIVE_PAR_DECIDE: 0 off; 1 compact described draws and packet replays, expanded on the emitter (S1). Read once.
+// WWHD_NATIVE_PAR_DECIDE: 0 off; 1 (the default) compact described draws and packet replays, expanded on the emitter
+// (S1). Read once. Phone cliff 2026-11-17 (with SUPPORT2): render thread -0.22 ms, record worker -0.45 ms per frame.
 inline int level() {
   static const int v = [] {
     const char* e = std::getenv("WWHD_NATIVE_PAR_DECIDE");
-    return e && *e ? std::atoi(e) : 0;
+    return e && *e ? std::atoi(e) : 1;
   }();
   return v;
 }

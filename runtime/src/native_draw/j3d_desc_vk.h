@@ -302,7 +302,7 @@ void support_bytes(const Stage& S, const In& in, std::vector<uint8_t>& bytes) {
   bytes = S.sup;
   support_patch(S, in, bytes.data());
 }
-#include "native_draw/j3d_desc_support2.h"  // (WWHD_NATIVE_J3D_DESC_SUPPORT2=1)
+#include "native_draw/j3d_desc_support2.h"  // (WWHD_NATIVE_J3D_DESC_SUPPORT2, default on; =0 off)
 // the mesh's indices: the buffer-cache entry the full draw binds for this range (a converted entry made once, here or
 // by a full draw); false: no entry (the translated path then)
 bool mesh_indices(const State& s, const native_draw::j3ddesc::Mesh& m, UploadSlice& ib, VkIndexType& type,

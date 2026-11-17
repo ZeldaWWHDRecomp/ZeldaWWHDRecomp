@@ -1,5 +1,5 @@
 // native_draw/j3d_desc_support2.h: a described draw's support bytes built straight into their upload slice
-// (WWHD_NATIVE_J3D_DESC_SUPPORT2=1, with WWHD_NATIVE_J3D_DESC=2; default off). Included by j3d_desc_vk.h inside
+// (WWHD_NATIVE_J3D_DESC_SUPPORT2, with WWHD_NATIVE_J3D_DESC=2; default on since 2026-11-17, =0 off). Included by j3d_desc_vk.h inside
 // namespace gfxvk::j3ddescvk, after support_patch. Decomp build, fast mode, WWHD_NATIVE_DRAW=ON only.
 //
 // Exact by construction: the slice holds the bytes snapshot(support_bytes(S, in)) makes (the template, each kcache entry
@@ -15,7 +15,7 @@
 #pragma once
 
 bool support2_on() {
-  static const bool v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_SUPPORT2", 0) != 0;
+  static const bool v = native_draw::switch_value("WWHD_NATIVE_J3D_DESC_SUPPORT2", 1) != 0;
   return v;
 }
 
