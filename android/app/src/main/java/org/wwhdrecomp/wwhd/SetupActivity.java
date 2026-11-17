@@ -689,6 +689,13 @@ public class SetupActivity extends Activity {
                     event.has("fraction") ? (int)(1000 * event.optDouble("fraction")) : -1);
                 else if (step.equals("translate")) phase(getString(R.string.setup_translating), getString(R.string.setup_leave_detail), -1);
                 else if (step.equals("link") || step.equals("activate")) phase(getString(R.string.setup_finishing), null, -1);
+                else if (step.equals("decomp")) {  // the decomp version's build (tools/android/decomp_android.py's events)
+                    int total = event.optInt("total"), done = Math.min(total, event.optInt("done"));
+                    String detail = event.optString("detail", "");
+                    phase(getString(R.string.setup_decomp_building),
+                        detail.isEmpty() ? getString(R.string.setup_leave_detail) : detail,
+                        total > 0 ? (int)(1000L * done / total) : -1);
+                }
                 else phase(getString(R.string.setup_extracting), getString(R.string.setup_leave_detail), -1);
                 return;
             }

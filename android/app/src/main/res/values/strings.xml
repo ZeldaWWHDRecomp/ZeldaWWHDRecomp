@@ -128,6 +128,7 @@
     <string name="setup_decomp">Also build the decomp version (experimental)</string>
     <string name="setup_decomp_detail">Builds a second version of the game in which the game functions of the public decompilation (ZeldaWWHDDecomp/wwhd) run as compiled source, in its fast mode, next to the normal game. It follows your Code mods choice. Adds a long build after setup (an hour or more on a phone), downloads the decompilation\'s source (about 17 MB) from GitHub and needs about 4 GB of free space while it builds. The normal game is built first and stays playable.</string>
     <string name="setup_decomp_start">Start the decomp version</string>
+    <string name="setup_decomp_building">Building the decomp version…</string>
     <string name="setup_models">Prepare model shaders (recommended)</string>
     <string name="setup_models_detail">Far fewer stutters the first time you see a place. Takes about 40 minutes after setup on a recent phone, behind a progress screen; keep the screen on. Untick to skip it; Cancel keeps what was prepared (tick again to continue).</string>
     <string name="setup_models_running">Preparing shaders: models</string>
