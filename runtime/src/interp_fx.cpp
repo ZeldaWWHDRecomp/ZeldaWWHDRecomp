@@ -779,8 +779,88 @@ extern "C" void hook_025D0994(Cpu* c) {
 // frame interpolation. Advanced once per logic step, shown at the pass's fraction
 // (interp_fade.h bytes_call). Tree data: packet +0x9C, 0xA8 apart, alpha at +3.
 extern "C" void f_025CA6EC_orig(Cpu* c);
+// The game reads one of update's matrices: animation (025C6D40, logic) copies the cut top's mTopMtx (slot +0x24) into
+// the tree's mFallenTopMtx (data +0x70) when it lands, and places the smoke with it. update builds the matrices from
+// the slots' angles and the top's offset, which a blended pass shows blended (sway_calc); the step's record pass
+// builds them exactly again before the next logic pass. When pacing drops the rest of a step (its record pass
+// included), the next logic pass found the blended matrices, and a top landing then rested at a blended pose. After
+// update on a blended pass the exact matrices of the slots shown blended are built as update builds them (the game's
+// matrix functions, the exact angles and offsets) and put in when the next pass starts (fx_pass_start); the pass draws
+// what update built. (debug: WWHD_INTERP_TREE_MTX=0 leaves them as before.)
+namespace {
+constexpr uint32_t kTreeAnm = 0x2A9C, kTreeAnmStride = 0x84, kTreeData = 0x9C, kTreeDataStride = 0xA8;
+constexpr int kTreeAnms = 72, kTreeDatas = 64, kTreeMtxWords = 24;  // mTopMtx +0x24, mTrunkMtx +0x54 (3x4 each)
+struct TreeMtxExact { uint32_t ea; uint32_t w[kTreeMtxWords]; };
+std::vector<TreeMtxExact> g_tree_exact;  // put in at the next pass start
+void tree_exact_matrices(Cpu* c, uint32_t pk) {
+    static const bool off = getenv("WWHD_INTERP_TREE_MTX") && atoi(getenv("WWHD_INTERP_TREE_MTX")) == 0;  // debug: 0 = old
+    if (off) return;
+    const uint32_t lo = pk + kTreeAnm, len = kTreeAnmStride * kTreeAnms;
+    bool blended[kTreeAnms] = {};
+    int n = 0;
+    for (const Temp& e : g_temp)
+        if (e.addr - lo < len) n += !blended[(e.addr - lo) / kTreeAnmStride], blended[(e.addr - lo) / kTreeAnmStride] = true;
+    if (!n) return;
+    static const uint32_t kStack = GD(0x1048D0CC);  // update's work matrix
+    static const uint32_t kRotY = GC(0x025F1884), kConcatX = GC(0x025F1BF4), kConcatY = GC(0x025F1C28), kCopy = GC(0x028E90D4);
+    uint32_t stack[12], drawn[kTreeAnms][0x84 / 4];
+    for (int k = 0; k < 12; k++) stack[k] = ld32(kStack + 4 * k);
+    for (int i = 0; i < kTreeAnms; i++)
+        if (blended[i]) for (int k = 0; k < 0x84 / 4; k++) drawn[i][k] = ld32(lo + kTreeAnmStride * i + 4 * k);
+    for (auto it = g_temp.rbegin(); it != g_temp.rend(); ++it)  // the exact slot values (an s16 entry: its whole word)
+        if (it->addr - lo < len) st32(it->addr, it->exact);
+    const uint32_t sp = c->r[1], lr = c->lr, r3 = c->r[3], r4 = c->r[4], r5 = c->r[5];
+    auto rot = [&](uint32_t a, uint32_t ax, uint32_t ay, uint32_t to) {  // update's rotateY, concatenate X, Y; copy
+        const int16_t cut = (int16_t)ld16(a + 0xA);
+        guest_call(c, kRotY, {kStack, (uint32_t)(int32_t)cut});
+        guest_call(c, kConcatX, {kStack, (uint32_t)(int32_t)(int16_t)ld16(a + ax)});
+        guest_call(c, kConcatY, {kStack, (uint32_t)(int32_t)(int16_t)((int16_t)ld16(a + ay) - cut)});
+        guest_call(c, kCopy, {kStack, a + to});
+    };
+    for (int i = 0; i < kTreeAnms; i++)
+        if (blended[i]) {
+            const uint32_t a = lo + kTreeAnmStride * i;
+            rot(a, 0x4, 0x6, 0x24);  // mTopMtx: mTopAngleX, mTopAngleY
+            rot(a, 0x8, 0x2, 0x54);  // mTrunkMtx: mTrunkAngleX, mTrunkAngleY
+        }
+    c->r[1] = sp, c->lr = lr, c->r[3] = r3, c->r[4] = r4, c->r[5] = r5;
+    // the translations, as update's loop over the trees sets them (active, not clipped this pass; the top of a tree
+    // that has not landed: its position + the top's offset; the trunk: its position)
+    for (int t = 0; t < kTreeDatas; t++) {
+        const uint32_t d = pk + kTreeData + kTreeDataStride * t;
+        const uint8_t state = ld8(d);
+        const int i = (int8_t)ld8(d + 2);
+        if (!(state & 2) || (state & 4) || i < 0 || i >= kTreeAnms || !blended[i]) continue;
+        const uint32_t a = lo + kTreeAnmStride * i;
+        for (int k = 0; k < 3; k++) {
+            const float p = u32_as_f32(ld32(d + 4 + 4 * k));
+            if (!(state & 8)) st32(a + 0x24 + 4 * (3 + 4 * k), f32_as_u32(p + u32_as_f32(ld32(a + 0x18 + 4 * k))));
+            st32(a + 0x54 + 4 * (3 + 4 * k), ld32(d + 4 + 4 * k));
+        }
+    }
+    for (int i = 0; i < kTreeAnms; i++)
+        if (blended[i]) {
+            const uint32_t a = lo + kTreeAnmStride * i;
+            TreeMtxExact x{a + 0x24, {}};
+            for (int k = 0; k < kTreeMtxWords; k++) x.w[k] = ld32(a + 0x24 + 4 * k);
+            g_tree_exact.push_back(x);
+            for (int k = 0; k < 0x84 / 4; k++) st32(a + 4 * k, drawn[i][k]);  // the pass draws what update built
+        }
+    for (int k = 0; k < 12; k++) st32(kStack + 4 * k, stack[k]);
+    static int tr = trace_left(4);
+    if (tr) {
+        tr--;
+        LOG("[interp-fx] trees: exact matrices of %d blended slots kept for the next pass (t %.3f)", n, interp::pass_t());
+    }
+}
+}  // namespace
 extern "C" void hook_025CA6EC(Cpu* c) {
-    if (!on(8) || interp::in_execute()) { f_025CA6EC_orig(c); return; }
+    if (!on(8) || interp::in_execute()) {
+        const uint32_t pk = c->r[3];
+        f_025CA6EC_orig(c);
+        if (on(16) && halfway()) tree_exact_matrices(c, pk);
+        return;
+    }
     const uint32_t pk = c->r[3];
     static interp::fade::BytesGate<64> gate;
     uint8_t v[64];
@@ -799,6 +879,7 @@ extern "C" void hook_025CA6EC(Cpu* c) {
         st8(pk + 0x9C + 0xA8 * i + 3, v[i]);
         if (v[i] != gate.after[i]) interp::exact_after_pass(pk + 0x9C + 0xA8 * i + 3, gate.after[i], 1);
     }
+    if (on(16) && halfway()) tree_exact_matrices(c, pk);
 }
 extern "C" void hook_0254C6C4(Cpu* c) { sway_calc(c, 0, f_0254C6C4_orig); }
 extern "C" void hook_025C9948(Cpu* c) { sway_calc(c, 1, f_025C9948_orig); }
@@ -1140,6 +1221,9 @@ void fx_pass_start() {
     g_wave_keep = 0;
     wave_restore();
     temp_restore();
+    for (const TreeMtxExact& x : g_tree_exact)
+        for (int k = 0; k < kTreeMtxWords; k++) st32(x.ea + 4 * k, x.w[k]);
+    g_tree_exact.clear();
 }
 // blended hold pass (after fx_pass_start and the save-state service, which want the exact values):
 // particles, wave crests, sprites, sway and bush animations at this pass's fraction. (Values that

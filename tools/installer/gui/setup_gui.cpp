@@ -481,9 +481,11 @@ struct App {
     double free_bytes = 0, source_bytes = 0, toolchain_bytes = 0;
     bool opt_remove_toolchain = false, opt_shortcut = false;
     bool code_mods = false;
-    // the decomp version (tools/installer/decomp_setup.py): offered on macOS (fast mode by default)
+    // the decomp version (tools/installer/decomp_setup.py): setup's one choice, the recompiled version (decomp false,
+    // the default) or the decomp version (true); game_version: what is installed ("recomp", "decomp", or "both" from
+    // an earlier setup, which start_decomp chooses between)
     bool decomp_offered = false, decomp = false, start_decomp = false;
-    std::string decomp_text, decomp_docs, decomp_exe, decomp_error;
+    std::string decomp_text, recomp_text, decomp_docs, decomp_exe, decomp_error, game_version;
     bool prepare_shaders = true;
     bool model_sweep = false;  // "Preparing shaders: models (experimental)": opt-in, off by default
     std::string model_sweep_text;
@@ -933,8 +935,9 @@ static void handle_reply(const J& ev) {
             g_exe_normal_path = g_exe;
             A.decomp_exe = ev.str("decomp_exe");
             A.decomp_error = ev.str("decomp_error");
-            if (A.decomp_exe.empty()) A.start_decomp = false;
-            if (A.start_decomp) g_exe = A.decomp_exe;
+            A.game_version = ev.str("game_version");
+            A.start_decomp = ev.boolean("start_decomp") && !A.decomp_exe.empty();
+            if (A.start_decomp) g_exe = A.decomp_exe;  // (only the decomp version: "exe" is it already)
             A.installed = true;
             addlog("Setup finished.");
             go(A.save_exists ? Screen::Done : Screen::Save);
@@ -978,7 +981,9 @@ static void handle_event(const J& ev) {
         A.decomp_offered = ev.boolean("decomp_offered");
         A.decomp = ev.boolean("decomp");
         A.decomp_text = ev.str("decomp_text");
+        A.recomp_text = ev.str("recomp_text");
         A.decomp_docs = ev.str("decomp_docs");
+        A.game_version = ev.str("game_version");
         A.game_files = ev.boolean("game_files");
         A.save_exists = ev.boolean("save_exists");
         A.portable = ev.boolean("portable");
@@ -1301,16 +1306,28 @@ static void code_mods_choice() {
           "cost some performance, and the build takes a bit longer. You can switch this later in "
           "Settings > Mods; that requires another rebuild.");
     if (A.decomp_offered) {
-        checkbox("Also build the decomp version (experimental)", &A.decomp);
+        // one choice: only the chosen version is built and started (setup.py GAME_VERSIONS)
+        ImGui::Spacing();
+        ImGui::TextUnformatted("Which version of the game to build:");
+        int v = A.decomp ? 1 : 0;
+        if (radio("Recompiled version (default)", &v, 0)) A.decomp = false;
+        muted(A.recomp_text);
+        if (radio("Decomp version (experimental)", &v, 1)) A.decomp = true;
         muted(A.decomp_text);
+        if (A.game_version == "both")
+            muted("An earlier setup built both versions. From now on setup keeps only the one chosen here and removes "
+                  "the other.");
+        else if (!A.game_version.empty() && (A.game_version == "decomp") != A.decomp)
+            muted(A.decomp ? "Switching: setup builds the decomp version and removes the recompiled version."
+                           : "Switching: setup builds the recompiled version and removes the decomp version.");
         if (button("About the decomp version (docs/decomp-build.md)")) SDL_OpenURL(A.decomp_docs.c_str());
     }
     ImGui::Spacing();
 }
 
-// Menu and Done: which version Play starts (only when the decomp version is built)
+// Menu and Done: which version Play starts (only an install an earlier setup built both versions for)
 static void start_choice() {
-    if (A.decomp_exe.empty()) return;
+    if (A.decomp_exe.empty() || A.game_version != "both") return;
     bool v = A.start_decomp;
     if (checkbox("Start the decomp version instead of the normal game", &v)) {
         A.start_decomp = v;

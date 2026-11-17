@@ -50,7 +50,7 @@ inline void kept_swap(LoweredKind& a, LoweredKind& b) {
 }
 inline bool kept_current(const LoweredKind& k) {
   return k.valid && k.submission == R.submissionGeneration && k.frame == R.frame && k.passCount == R.renderPassCount &&
-         R.rendering && R.passTracked && g_surface_epoch == k.surfaceEpoch && R.recording && k.cmd == R.cmd;
+         pass_state().rendering && pass_state().tracked && g_surface_epoch == k.surfaceEpoch && R.recording && k.cmd == R.cmd;
 }
 // the kind's state failed the journal check: a kept state that passes it becomes the kind's state (true)
 inline bool kept_take(LoweredPacket& P, LoweredKind& L, const native_draw::Packet& pk, uint32_t kind, const uint32_t* r) {

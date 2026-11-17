@@ -154,20 +154,39 @@ What it means for players:
 
 ## In setup (macOS, Linux, Windows)
 
-Setup (regular releases and development builds; macOS, Linux including the Steam Deck, and Windows) can build the decomp version next to the normal game. It is
-off by default:
+Setup (regular releases and development builds; macOS, Linux including the Steam Deck, and Windows) builds **one**
+version of the game, the one you choose:
 
-- in the setup window: tick **Also build the decomp version (experimental)** (shown with the other build options;
-  Android: below), then install, repair or update;
+- **Recompiled version (default)**: the original game code from your copy, translated and compiled; the recommended way
+  to play and the fastest setup;
+- **Decomp version (experimental)**: the decomp version described here.
+
+Only the chosen version is built and started; nothing of the other one is built or kept.
+
+- in the setup window: choose **Decomp version (experimental)** under "Which version of the game to build" (shown with
+  the other build options; Android: below), then install, repair or update;
 - in a terminal: `tools/Setup in Terminal.command --decomp` (macOS), `tools/setup-in-terminal.sh --decomp` (Linux),
-  `tools\Setup in a console window.bat --decomp` (Windows); `--no-decomp` removes it again.
+  `tools\Setup in a console window.bat --decomp` (Windows); `--recomp` (or `--no-decomp`) chooses the recompiled
+  version.
+
+The choice is remembered: a repair or an update builds the same version again. To switch, run setup again and choose the
+other version (a repair, or `--decomp` / `--recomp` in a terminal): setup builds it, makes it the one that starts and
+removes the game binary of the other one (also its copy kept in `data/bin.previous`). The downloaded decomp source, the
+declaration table and the compiled objects stay (`data/decomp-src`, `data/decomp-cache`, the object cache), so switching
+back is faster; the recompiled version's code-mod builds stay in `data/code-builds` as before. If the decomp version
+cannot be built, setup says why and stops; the game installed before is unchanged and starts as before.
+
+An install made by an earlier setup with both versions ("Also build the decomp version") keeps both and starts the one
+it started before, until setup is run again with a choice: the setup window then preselects the version that starts and
+keeps only the chosen one. Until then **Start the decomp version instead of the normal game** in the setup window (hold
+Shift while starting Wind Waker HD) or `--start-decomp 1` / `0` in a terminal still switch between the two.
 
 It builds **fast mode** (above). For testing, `--decomp-plain` builds the plain decomp build instead (remembered;
 `--decomp` goes back to fast mode).
 
-Setup always builds the normal game first; the decomp version is an extra step at the end. Measured in the real setup
-flow on a Mac (Apple M3 Max, 16 cores, 128 GB, 8 compile jobs) that was busy with other builds at the same time
-(load 17 to 68), so a quiet Mac is faster:
+The decomp version's step (it translates the game code itself as well) was measured in the real setup flow, then still
+after the recompiled version, on a Mac (Apple M3 Max, 16 cores, 128 GB, 8 compile jobs) that was busy with other builds
+at the same time (load 17 to 68), so a quiet Mac is faster:
 
 | | fast mode (default) | plain build (`--decomp-plain`) |
 |---|---|---|
@@ -178,20 +197,18 @@ flow on a Mac (Apple M3 Max, 16 cores, 128 GB, 8 compile jobs) that was busy wit
 | kept afterwards | the game (about 200 MB), the decomp source (120 MB), compiled objects for the next repair | the same |
 
 With less than 12 GB of memory fast mode links each game unit on its own (no whole-image link: less memory, a little
-less speed). If it fails, setup says why and the normal game is ready as usual. The choice is remembered: a repair or an update builds the decomp version again.
+less speed).
 
-It is built with the install's code-mod choice (Settings > Mods, "code-mod support"), like the normal game, and
-switching code-mod support in the game rebuilds the decomp version too (after the normal game; if that fails, the
-normal game is ready and Settings > Mods says why; a repair tries again). With code mods on, setup installs the Story
-Notebook first and then asks the built decomp version which game functions the installed code mods hook; fast mode keeps
-those enterable for the mods (`data/decomp-mod-hooks.txt`, kept across repairs and updates) and builds again when the
-list grew. A randomized game is played by the normal game: with one selected, starting the decomp version starts the
-normal game and says so.
+It is built with the install's code-mod choice (Settings > Mods, "code-mod support"), and switching code-mod support
+in the game rebuilds the decomp version (only it: no recompiled build is made; if that fails, the game built before stays
+and Settings > Mods says why). With code mods on, setup installs the Story Notebook with the built decomp version and
+then asks it which game functions the installed code mods hook; fast mode keeps those enterable for the mods
+(`data/decomp-mod-hooks.txt`, kept across repairs and updates) and builds again when the list grew. Randomized games
+are built and played by the recompiled version only: with the decomp version, setup's randomizer says to choose the
+recompiled version first.
 
-To play it, tick **Start the decomp version instead of the normal game** in the setup window (hold
-Shift while starting Wind Waker HD), or `--start-decomp 1` in a terminal; or start Wind Waker HD with
-`--decomp` once. The version shown in Settings (`F1`) > Language / About ends in `decomp`. The
-decomp version shares the saves, settings and shader caches of the normal game.
+The version shown in Settings (`F1`) > Language / About ends in `decomp`. The decomp version uses the same saves,
+settings and shader caches as the recompiled version.
 
 What setup uses and makes:
 

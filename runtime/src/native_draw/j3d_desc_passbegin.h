@@ -72,7 +72,7 @@ State* passbegin_find(std::vector<std::unique_ptr<State>>& list, const In& in) {
     return nullptr;
   }
   // draw() takes a pass subset of the open pass before its textures (and keeps the open pass): never begun here
-  if (pass_reuse::subset_on() && R.rendering && R.passTracked && async_pipeline_enabled()) {
+  if (pass_reuse::subset_on() && pass_state().rendering && pass_state().tracked && async_pipeline_enabled()) {
     DrawTargets u = t;
     if (take_pass_subset(o.r, s->vs, ps, u)) {
       d1::count(d1::cPassBeginSubset);

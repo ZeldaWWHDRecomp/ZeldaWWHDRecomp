@@ -7,6 +7,28 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Groundwork for multithreaded draw recording** (#608). The Vulkan renderer's per-draw state and shared caches are
+  ready to be used from more than one thread. No thread is started yet and nothing changes for players; the
+  multithreaded recording itself follows. Multithreaded draw recording and draw batching from VR-WakerHD, thanks
+  @mkooner!
+- **Normal build: much less render-thread work through draw batching** (#606). Runs of draws that share all their
+  state are now drawn as one instanced draw. At the Dragon Roost cliff about 4,400 draws a frame become 34, which cuts
+  the render thread by about 28 % on a Xiaomi 14 (17.8 → 12.9 ms, now a steady 60 fps there) and by 35–45 % on a Mac.
+  The picture is unchanged. On by default in the normal build; `WWHD_VK_BATCH_RUNS=0` turns it off. Multithreaded draw
+  recording and draw batching from VR-WakerHD, thanks @mkooner!
+- **Setup: choose the recompiled or the decomp version** (#605). Setup now asks which version to build, the
+  recompiled version (default) or the decomp version, and builds and starts only that one, instead of "also build the
+  decomp version". Running setup again with the other choice switches; if that build fails, the installed version stays.
+  Installs that built both keep starting the same version as before until you choose. In the terminal: `--recomp` /
+  `--decomp`. The randomizer needs the recompiled version.
+- **Frame interpolation: cut trees come to rest at the right angle** (#601). When frame pacing skipped a step's
+  in-between frames, the top of a cut tree could come to rest at a slightly blended angle. It now lands exactly as in
+  the original game. `WWHD_INTERP_TREE_MTX=0` restores the old behaviour.
+- **Decomp fast build: less render-thread work for model and effect draws** (#603). Each described model draw and
+  native effect draw is now handed to the Vulkan recording thread as one compact command, and model draw data is
+  built straight into its upload buffer. On a Xiaomi 14 at the Dragon Roost cliff this saves about 0.2 ms on the
+  render thread and 0.45 ms on the recording thread per frame; the picture is unchanged.
+  `WWHD_NATIVE_PAR_DECIDE=0` / `WWHD_NATIVE_J3D_DESC_SUPPORT2=0` turn the two parts off.
 - **Decomp version on Linux, Steam Deck and Windows** (#602). Setup's "Also build the decomp version
   (experimental)" is now offered on Linux (x86_64 and ARM64, including Steam Deck) and Windows, not only macOS. It
   uses the compiler setup already downloads for the game, so nothing else needs installing. Linux and Windows x86_64

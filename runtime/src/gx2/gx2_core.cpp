@@ -45,6 +45,13 @@
 #include "runtime.h"
 #include "hot_wait.h"
 #include "savestate.h"
+#include "draw_run_census.h"
+#include "gfx/draw_batch.h"
+namespace draw_batch {  // (gfx/draw_batch.h: defined here, once; draw_runs.h)
+thread_local const Batch* t_current = nullptr;
+thread_local bool t_consumed = false;
+CanHold g_canHold = nullptr;
+}  // namespace draw_batch
 #include "state_metadata_validation.h"
 #include "guest_addr.h"
 #include "../aspect.h"
@@ -65,6 +72,7 @@
 #include "../gfx/vulkan/smooth_defaults.h"
 #endif
 #include "native_coverage.h"
+#include "register_forward.h"
 
 using namespace Latte;
 
@@ -127,6 +135,7 @@ static bool g_key_dirty = false;      // WWHD_VK_SHADER_KEY_DIRTY=1
 static bool g_collect_stats = false;  // WWHD_VK_STATS (Vulkan)
 static bool g_classify = false;       // render-thread profiler on (rprof::enabled(); updated at each swap)
 
+static void forward_check_start();
 static void build_reg_tables() {
     // the draw classifier's buffer/constant class also takes the dynamic words (prof_fast_or_dynamic)
     g_reg_classes.build(shader_address_memo(),
@@ -145,6 +154,7 @@ static void build_reg_tables() {
 #endif
     g_key_bits.build(shader_key_mask());
     g_reg_tables_ready = true;
+    forward_check_start();
 }
 static inline void ensure_reg_tables() {
     if (__builtin_expect(!g_reg_tables_ready, 0)) build_reg_tables();
@@ -215,8 +225,45 @@ static void apply_small_regs(uint32 first, const uint32* v, uint32 n) {
 }
 #endif
 
+// WWHD_GX2_FORWARD_CHECK=1 (register_forward.h): the check sink, set at the first register command
+static void forward_check_start() {
+    static const bool on = [] { const char* e = getenv("WWHD_GX2_FORWARD_CHECK"); return e && !strcmp(e, "1"); }();
+    if (!on || forward::g_check) return;
+    static forward::CheckSink sink;
+    sink.copy.assign(g_regs, g_regs + kNumRegs);
+    forward::g_check = &sink;
+    forward::set_sink(&sink);
+    LOG("[gx2 forward check] on");
+}
+static void forward_check_draw() {
+    auto& c = *forward::g_check;
+    ++c.draws;
+    if (!memcmp(c.copy.data(), g_regs, sizeof g_regs)) {
+        if (c.draws % 100000 == 0) LOG("[gx2 forward check] %llu draws, %llu with differences", (unsigned long long)c.draws, (unsigned long long)c.mismatchDraws);
+        return;
+    }
+    if (c.mismatchDraws++ < 16)
+        for (uint32 i = 0, said = 0; i < kNumRegs && said < 8; ++i)
+            if (c.copy[i] != g_regs[i]) {
+                LOG("[gx2 forward check] draw %llu: register %04X forwarded %08X, file %08X", (unsigned long long)c.draws, i, c.copy[i], g_regs[i]);
+                ++said;
+            }
+    c.copy.assign(g_regs, g_regs + kNumRegs);  // (each difference once)
+}
+// the draw's own write (the Vulkan draw() sets the primitive type in the file it is given): a draw thread makes it in
+// its copy itself, so the check copy takes it as the draw left it
+static void forward_check_drawn() {
+    const uint32 r = uint32(REGADDR::VGT_PRIMITIVE_TYPE);
+    forward::g_check->copy[r] = g_regs[r];
+}
+static void apply_regs_now(uint32 first, const uint32* v, uint32 n);
+// every register command's write; a draw thread's copy gets it too while one runs (register_forward.h)
 static void apply_regs(uint32 first, const uint32* v, uint32 n) {
     if (first >= kNumRegs || n > kNumRegs - first) return;
+    apply_regs_now(first, v, n);
+    forward::note(first, &g_regs[first], n);
+}
+static void apply_regs_now(uint32 first, const uint32* v, uint32 n) {
     ensure_reg_tables();
     g_register_blocks.touch(first, n);
     // ALU constants (uniform registers, most of the register traffic): continued state (one dirty
@@ -350,6 +397,15 @@ static void record_overflow(Recording* rec, uint32 bytes) {
 }
 
 static void execute_one(Op op, const uint32* p, uint32 n);
+// draw runs (draw_runs.h; WWHD_VK_BATCH_RUNS, WWHD_VK_INDEX_RUNS; on by default in the normal build, =0 turns one off)
+#include "draw_runs.h"
+bool draw_runs::hold_allowed() {
+#ifdef WWHD_NATIVE_DRAW
+    // (a J3D draw's name or a described J3D draw waiting for the site's draw belongs to the next draw alone)
+    if (native_draw::g_j3dKey || native_draw::j3ddesc::g_pending) return false;
+#endif
+    return true;
+}
 
 // ---------------------------------------------------------------- submitted uniform blocks
 // (submitted_uniforms.h) WWHD_GX2_SUBMITTED_UNIFORMS=0 turns it off: draws in display lists then read
@@ -780,7 +836,7 @@ static void set_context(uint32 ctx) {
     ensure_reg_tables();
     if (g_register_blocks.restore(g_regs, g_shadow, [](uint32 reg, uint32 old, uint32 value) {
         return !(g_reg_class[reg] & kRcShaderIrrelevant) && g_key_bits.changed(reg, old, value);
-    })) ++g_shader_state_gen;
+    }, forward::note)) ++g_shader_state_gen;
     note_full_state_change();
     rprof::g_reg_dirty |= 2;  // draw classifier: a context load counts as a full state change
 }
@@ -812,6 +868,16 @@ static void execute_op(Op op, const uint32* p, uint32 n);
 // calls are not timed themselves: their ops are
 static void execute_one(Op op, const uint32* p, uint32 n) {
     rprof::Op kind;
+    if (draw_runs::any_on() && draw_runs::before_op(op, p, n)) return;  // (draw_runs.h)
+    if (run_census::on()) [[unlikely]] {  // (diagnostics: draw_run_census.h)
+        if (op == OP_SET_REGS) { if (n && p[0] < kNumRegs && n - 1 <= kNumRegs - p[0]) run_census::regs(g_regs, p[0], p + 1, n - 1); }
+        else if (op == OP_DRAW || op == OP_DRAW_INDEXED) run_census::draw(g_regs, op, p, n, op == OP_DRAW_INDEXED);
+        else if (op == OP_SWAP) { run_census::other_op(false); run_census::frame_end(); }
+#ifdef WWHD_NATIVE_DRAW
+        else if (op == OP_PACKET_DRAW) run_census::other_op(true);
+#endif
+        else if (op != OP_NOP && op != OP_DEBUG_CONTEXT && op != OP_SUBMITTED_UNIFORMS && op != OP_CALL) run_census::other_op(false);
+    }
 #ifdef WWHD_NATIVE_DRAW
     // J3D described draws (native_j3d_desc_draw.h, mode 2): a command that may read or write registers ends the run
     // (its register effects settled first)
@@ -922,12 +988,18 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
 #endif
         apply_regs(p[0], p + 1, n - 1);
         break;
-    case OP_DRAW: render::draw(g_regs, p[0], p[1], 0, 0, p[2], p[3]); break;
+    case OP_DRAW:
+        if (forward::g_check) [[unlikely]] forward_check_draw();
+        render::draw(g_regs, p[0], p[1], 0, 0, p[2], p[3]);
+        if (forward::g_check) [[unlikely]] forward_check_drawn();
+        break;
     case OP_DRAW_INDEXED:
+        if (forward::g_check) [[unlikely]] forward_check_draw();
 #ifdef WWHD_NATIVE_DRAW
         if (native_draw::j3ddesc::g_pending) native_draw::j3ddesc::site_draw(g_regs, p, n);  // (verify)
 #endif
         render::draw(g_regs, p[0], p[1], p[2], p[3], p[4], p[5]);
+        if (forward::g_check) [[unlikely]] forward_check_drawn();
 #ifdef WWHD_NATIVE_DRAW
         native_draw::g_j3dKey = 0;  // (taken by the Vulkan draw; any other renderer leaves it)
 #endif
@@ -2006,6 +2078,7 @@ void gx2_ss_load(ss::Reader& r) {
     std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
     r.u32();
     r.bytes(g_regs, sizeof g_regs);
+    forward::note(0, g_regs, kNumRegs);
     g_register_blocks = {};
     g_register_blocks.include(g_regs);
     g_contexts.clear();

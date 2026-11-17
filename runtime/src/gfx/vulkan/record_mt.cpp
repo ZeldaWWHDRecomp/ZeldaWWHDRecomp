@@ -9,6 +9,9 @@
 #include "smooth_defaults.h"
 #include "backend.h"
 #include "runtime.h"
+#if defined(WWHD_DECOMP_FAST)
+#include "../../native_draw/pardecide_ops.h"
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
@@ -147,6 +150,9 @@ void replay_extension(const std::byte* bytes, size_t size, bool execute) {
   }
   case Ext::DefineSet: record_tokens::replay_define(bytes, size, execute); break;
   case Ext::BindFuture: pipeline_future::replay(bytes, size, execute); break;
+#if defined(WWHD_DECOMP_FAST)
+  case Ext::PardecideDesc: native_draw::pardecide::replay_desc(bytes, size, execute); break;
+#endif
   default: throw std::runtime_error("unknown POD extension");
   }
 }

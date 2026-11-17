@@ -231,8 +231,8 @@ void mismatch(const In& in, const char* field) {
         (unsigned long long)R.frame, g_said == 40 ? " (no more of these lines)" : "");
 }
 bool on_pass(const State& s) {
-  return R.recording && R.rendering && R.passTracked && R.passColors == s.colors && R.passSlices == s.slices &&
-         R.passDepth == s.depth && R.passDepthSlice == s.depthSlice && R.passWidth == s.width && R.passHeight == s.height;
+  return R.recording && pass_state().rendering && pass_state().tracked && pass_state().colors == s.colors && pass_state().slices == s.slices &&
+         pass_state().depth == s.depth && pass_state().depthSlice == s.depthSlice && pass_state().width == s.width && pass_state().height == s.height;
 }
 
 // ---------------------------------------------------------------- uploads (as the full draw makes them)
@@ -302,7 +302,7 @@ void support_bytes(const Stage& S, const In& in, std::vector<uint8_t>& bytes) {
   bytes = S.sup;
   support_patch(S, in, bytes.data());
 }
-#include "native_draw/j3d_desc_support2.h"  // (WWHD_NATIVE_J3D_DESC_SUPPORT2=1)
+#include "native_draw/j3d_desc_support2.h"  // (WWHD_NATIVE_J3D_DESC_SUPPORT2, default on; =0 off)
 // the mesh's indices: the buffer-cache entry the full draw binds for this range (a converted entry made once, here or
 // by a full draw); false: no entry (the translated path then)
 bool mesh_indices(const State& s, const native_draw::j3ddesc::Mesh& m, UploadSlice& ib, VkIndexType& type,
@@ -505,15 +505,15 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
   if (cap.vs->kind != gfx::ProgramKind::Other || cap.ps->kind != gfx::ProgramKind::Other) return "program kind";
   if (R.vertexDiagnostics.noVertexReuse) return "vertex diagnostics";
   if (in.mesh->baseVertex) return "base vertex";
-  const auto& c = continuedEyes[0];
+  const auto& c = continued_eyes()[0];
   if (!c.valid || c.vs != cap.vs || c.ps != cap.ps || c.frame != R.frame) return "textures not continuable";
-  if (!R.rendering || R.passColors != cap.colors || R.passDepth != cap.depth) return "pass";
-  s.colors = R.passColors;
-  s.slices = R.passSlices;
-  s.depth = R.passDepth;
-  s.depthSlice = R.passDepthSlice;
-  s.width = R.passWidth;
-  s.height = R.passHeight;
+  if (!pass_state().rendering || pass_state().colors != cap.colors || pass_state().depth != cap.depth) return "pass";
+  s.colors = pass_state().colors;
+  s.slices = pass_state().slices;
+  s.depth = pass_state().depth;
+  s.depthSlice = pass_state().depthSlice;
+  s.width = pass_state().width;
+  s.height = pass_state().height;
   s.structGen = g_surface_struct_gen;
   s.pipeline = cap.pipeline;
   s.vkPipeline = cap.vkPipeline;
@@ -722,7 +722,7 @@ const char* make_state(State& s, const PacketCapture& cap, const uint32_t* r, co
     q.env = in.item->env;
     q.image = r;
     q.vs = s.vs, q.ps = s.ps, q.fetch = s.fs;
-    if (Surface* d = R.passDepth) q.depthFormat = int(d->fmt.pixel), q.depthStencil = d->fmt.stencil;
+    if (Surface* d = pass_state().depth) q.depthFormat = int(d->fmt.pixel), q.depthStencil = d->fmt.stencil;
     for (int i = 0; i < 8; ++i)
       if (s.colors[i]) q.colorFormats[i] = int(s.colors[i]->fmt.pixel), q.colorCount = uint32_t(i + 1);
     const Stage& P = s.st[1];
@@ -767,7 +767,7 @@ void compare(const State& s, const PacketCapture& cap, const uint32_t* r, const 
   if (!std::equal(s.blend.begin(), s.blend.end(), r + REGADDR::CB_BLEND_RED) ||
       s.stencilFront != (r[REGADDR::DB_STENCILREFMASK] & 255) || s.stencilBack != (r[REGADDR::DB_STENCILREFMASK_BF] & 255))
     return mismatch(in, "blend constants or stencil references");
-  const auto& c = continuedEyes[0];
+  const auto& c = continued_eyes()[0];
   for (int k = 0; k < 2; ++k) {
     const Stage& S = s.st[k];
     const auto& cs = cap.stage[k];
@@ -832,6 +832,9 @@ struct Phases {
 };
 // BEGINPASS (j3d_desc_passbegin.h): the state was found by the draw's own target lookup; the pass is begun here when it
 // is not the open one (after every check that can still send the draw the translated way)
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
+#include "native_draw/pardecide_desc.h"  // (WWHD_NATIVE_PAR_DECIDE: the record step as one POD command)
+#endif
 const char* try_replay(State& s, const In& in, bool checkOnly, bool beginPass = false) {
   static Phases proto;
   Phases ph = proto;
@@ -1087,6 +1090,19 @@ const char* try_replay(State& s, const In& in, bool checkOnly, bool beginPass = 
     B = Bound{};
     B.cmd = cmd;
   }
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
+  if (::native_draw::pardecide::level() >= 1 && !depthProof) {
+#if J3DDESC_DEPTH
+    if (familyDraw) {
+      const VkDescriptorSet set = reinterpret_cast<VkDescriptorSet>(fam.set);
+      pdesc::record(cmd, B, s, pipe, pipeLayout, 1, &set, fam.offsetCount, fam.offsets, vaddr, vsize, extent, ib, indexType,
+                    drawCount);
+    } else
+#endif
+    pdesc::record(cmd, B, s, pipe, pipeLayout, 2, sets, offsetCount, offsets.data(), vaddr, vsize, extent, ib, indexType,
+                  drawCount);
+  } else {
+#endif
   if (B.pipeline != pipe) {
     record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipe);
     B.pipeline = pipe;
@@ -1143,6 +1159,9 @@ const char* try_replay(State& s, const In& in, bool checkOnly, bool beginPass = 
   }
   B.dynamic = true;
   record::vkCmdDrawIndexed(cmd, drawCount, 1, 0, 0, 0);
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
+  }
+#endif
   g_packetBindsDirty = true;
   ph.mark(d1::pRecord);
 #if J3DDESC_DEPTH
@@ -1270,7 +1289,7 @@ void j3ddesc_draw(const native_draw::j3ddesc::d1::In& in) {
   }
   auto& list = ss->list;
   State* s = nullptr;
-  const bool open = R.recording && R.rendering && R.passTracked;
+  const bool open = R.recording && pass_state().rendering && pass_state().tracked;
   for (auto& x : list) {
     if (open && x->passSerial == R.renderPassCount && x->passCmd == R.cmd && x->passSubmission == R.submissionGeneration) {
       s = x.get();
@@ -1306,8 +1325,8 @@ void j3ddesc_draw(const native_draw::j3ddesc::d1::In& in) {
     }
   } else if (!s) {
     d1::count(list.empty() ? d1::fNoState : d1::fNoPass);
-    d1::note(list.empty() ? "no state" : !R.rendering ? "no pass open" : "no state for the open pass");
-    d1::note_site(list.empty() ? "no state" : !R.rendering ? "no pass open" : "no state for the open pass", *in.item);
+    d1::note(list.empty() ? "no state" : !pass_state().rendering ? "no pass open" : "no state for the open pass");
+    d1::note_site(list.empty() ? "no state" : !pass_state().rendering ? "no pass open" : "no state for the open pass", *in.item);
   }
   static PacketCapture cap;
   static Phases fproto;  // (D1TIMING: the fallback's full draw, then its state making)
@@ -1326,8 +1345,8 @@ void j3ddesc_draw(const native_draw::j3ddesc::d1::In& in) {
     if (!cap.drew) return;  // (nothing drawn: nothing learnt)
     fresh->refused = true;
     fresh->retryFrame = R.frame + 60;
-    fresh->colors = R.passColors, fresh->slices = R.passSlices, fresh->depth = R.passDepth;
-    fresh->depthSlice = R.passDepthSlice, fresh->width = R.passWidth, fresh->height = R.passHeight;
+    fresh->colors = pass_state().colors, fresh->slices = pass_state().slices, fresh->depth = pass_state().depth;
+    fresh->depthSlice = pass_state().depthSlice, fresh->width = pass_state().width, fresh->height = pass_state().height;
     d1::count(d1::cStatesRefused);
     static std::unordered_set<std::string> said;
     if (said.size() < 64 && said.insert(why).second) LOG("[j3d-d1] state refused: %s", why);

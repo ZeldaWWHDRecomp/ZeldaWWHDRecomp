@@ -965,8 +965,8 @@ void run_pass(Surface& target, VkPipeline pipe, const Input* in, int n, const Pu
         }
         return pass;
     });
-    R.rendering = true;
-    R.passTracked = false;
+    pass_state().rendering = true;
+    pass_state().tracked = false;
     VkViewport viewport{0, 0, float(extent.width), float(extent.height), 0, 1};
     VkRect2D scissor{{0, 0}, extent};
     record::vkCmdSetViewport(cmd, 0, 1, &viewport);
@@ -981,8 +981,8 @@ void run_pass(Surface& target, VkPipeline pipe, const Input* in, int n, const Pu
         record::vkCmdDraw(cmd, 3, 1, 0, 0);
     }
     end_pass(cmd);
-    R.rendering = false;
-    R.passTracked = false;
+    pass_state().rendering = false;
+    pass_state().tracked = false;
     mark_gpu_written(&target);
     sampled(&target);
 }
