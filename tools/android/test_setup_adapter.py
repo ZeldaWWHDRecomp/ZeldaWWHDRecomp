@@ -338,6 +338,36 @@ class CompileTests(unittest.TestCase):
         self.assertEqual(len(launches), 1)
         self.assertNotEqual(Path(objects[0]).read_bytes(), b"corrupt")
 
+    def test_app_update_moving_the_compiler_folder_reuses_objects(self):
+        # Android installs the compiler's programs in the APK's native-lib folder, a new random name on every app
+        # update (/data/app/~~<random>==/<app>-<random>==/lib/arm64): the objects stay; another bundle compiles anew
+        from types import SimpleNamespace
+        generated, toolchain, manifest, runner = self.prepare()
+
+        def in_folder(name):
+            folder = self.root / "data/app" / name / "lib/arm64"
+            folder.mkdir(parents=True)
+            driver = folder / "libwwhd-clang-driver.so"  # (a script: macOS's clang shim goes by its own name)
+            driver.write_text('#!/bin/sh\nexec "%s" "$@"\n' % toolchain.cc[0])
+            driver.chmod(0o755)
+            return SimpleNamespace(cc=[str(driver), "--driver-mode=gcc"], env=None)
+
+        first = (generated, in_folder("~~PH_jxam==/app-371P=="), manifest, runner)
+        objects = self.compile(self.adapter(), first, identity="09d51026")
+        moved = (generated, in_folder("~~-SjofBLV==/app-e5dJ=="), manifest, runner)
+        self.assertEqual(objects, self.compile(self.adapter(), moved, identity="09d51026",
+                                               native=lambda *a, **k: self.fail("must not compile")))
+        calls = []
+        def counted(command, **kwargs):
+            calls.append(command)
+            return runner(command, **kwargs)
+        self.compile(self.adapter(), moved, identity="another-bundle", native=counted)
+        self.assertEqual(len(calls), len(objects))
+        calls.clear()
+        options = SimpleNamespace(cc=moved[1].cc + ["-O1"], env=None)
+        self.compile(self.adapter(), (generated, options, manifest, runner), identity="09d51026", native=counted)
+        self.assertEqual(len(calls), len(objects))
+
     def test_low_space_retains_objects_and_retries_only_missing_output(self):
         prepared = self.prepare()
         objects = self.compile(self.adapter(), prepared)

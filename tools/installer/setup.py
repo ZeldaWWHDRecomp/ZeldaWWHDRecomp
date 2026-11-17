@@ -1891,9 +1891,13 @@ def gamecode_compile_flags(manifest):
     return debug_info_flags(manifest["gamecode_cflags"])
 
 
+NATIVE_LIB = "<native-lib>"  # the Android app's compiler folder in object-cache keys (object_cache below)
+
+
 def object_cache(tc, data_dir, flags, gen_dir, extra=None):
     """the compiled-object cache of this install (object_cache.py), or None when the compiler can't say its version.
-    extra: more {folder: name} replacements (folders in the flags that differ between installs)"""
+    extra: more {folder: name} replacements (folders in the flags that differ between installs). tc.identity (only
+    the Android app's compiler has one): the compiler bundle's identity, see below."""
     import object_cache as oc
     try:
         version = subprocess.run(tc.cc + ["--version"], env=tc.env, stdout=subprocess.PIPE,
@@ -1907,7 +1911,22 @@ def object_cache(tc, data_dir, flags, gen_dir, extra=None):
     if not any(f.startswith("-g") and f != "-g0" for f in flags):
         replacements[fwd(PKG)] = "<release>"
         replacements.update({fwd(k): v for k, v in (extra or {}).items()})
-    return oc.Cache(os.path.join(data_dir, "code-objects"), " ".join(tc.cc) + "\n" + version, flags, replacements)
+    compiler = " ".join(tc.cc)
+    bundle = getattr(tc, "identity", None)
+    if bundle:
+        # the Android app's compiler (AndroidToolchain.java): a validated bundle named by its identity (the SHA-256
+        # its package records for the programs and the sysroot). Its programs are in the APK's native-lib folder,
+        # which Android names at random on every install and update (/data/app/~~<random>==/<app>-<random>==/
+        # lib/arm64): that folder is in the command, in the flags and in `--version` (InstalledDir), and without a
+        # fixed name every app update would drop every cached object (phone run 2026-11-17). The compiler is known by
+        # its bundle identity instead; its options and version text still count. The objects never hold that folder
+        # (it is the compiler's, not a source's), so it is replaced with debug information too.
+        native = os.path.dirname(tc.cc[0])
+        if native:
+            compiler, version = compiler.replace(native, NATIVE_LIB), version.replace(native, NATIVE_LIB)
+            replacements[native] = NATIVE_LIB
+        compiler = "toolchain %s\n%s" % (bundle, compiler)
+    return oc.Cache(os.path.join(data_dir, "code-objects"), compiler + "\n" + version, flags, replacements)
 
 
 def compile_gamecode(tc, manifest, gen_dir, obj_dir, jobs, cancel=None, progress=None, cache_dir=None):

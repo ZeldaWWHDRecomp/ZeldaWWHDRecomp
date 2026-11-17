@@ -346,8 +346,10 @@ def build(adapter, compiler, manifest, game, native_run, jobs=1, code_mods=False
                 "# the game functions installed code mods hook (the decomp version's record)\n" +
                 "".join("%08X\n" % a for a in sorted(known | found)))
     started = time.monotonic()
+    # identity: the compiler bundle's (AndroidToolchain.java); the object cache knows the compiler by it, not by the
+    # APK's native-lib folder its programs are in (a new random name on every app update; setup.object_cache)
     tc = SimpleNamespace(cc=list(compiler["cc"]), cxx=list(compiler["cxx"]), ar=list(compiler["ar"]),
-                         env=compiler.get("env"), rsp=compiler.get("rsp", True))
+                         env=compiler.get("env"), rsp=compiler.get("rsp", True), identity=compiler["identity"])
     env_switch = os.environ.get("WWHD_DECOMP_WHOLE_LTO")
     os.environ["WWHD_DECOMP_WHOLE_LTO"] = "1" if whole else "0"
     adapter.emit({"stage": "decomp", "state": "running", "mode": mode, "whole_lto": bool(whole)})

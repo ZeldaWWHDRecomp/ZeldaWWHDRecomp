@@ -535,7 +535,9 @@ def build_once(s, ctx, tc, jobs, mode="fast", code_mods=False, keep_work=False, 
 
     ucache = None
     if hasattr(s, "object_cache"):
-        ucache = s.object_cache(SimpleNamespace(cc=tc.cxx, env=tc.env), data_dir, unit_flags, work, {decomp_root: "<decomp>"})
+        # (identity: the Android app's compiler bundle, decomp_android.py; the desktop toolchains have none)
+        ucache = s.object_cache(SimpleNamespace(cc=tc.cxx, env=tc.env, identity=getattr(tc, "identity", None)),
+                                data_dir, unit_flags, work, {decomp_root: "<decomp>"})
     hits = [0]
 
     def one(job):

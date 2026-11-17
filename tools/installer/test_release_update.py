@@ -104,6 +104,65 @@ class ObjectCacheAcrossReleases(unittest.TestCase):
         self.assertNotEqual(base("/a/WindWakerHD-v1"), base("/a/WindWakerHD-v1", ["-O2"]))
 
 
+class ObjectCacheAndroidCompiler(unittest.TestCase):
+    """the Android app's compiler (tools/android/decomp_android.py: tc.identity) is in the APK's native-lib folder,
+    which Android names at random on every install and update; the key knows the compiler by its bundle identity"""
+
+    def setUp(self):
+        import setup
+        self.setup = setup
+
+    def base(self, native, identity="09d51026e038", extra=(), version="20"):
+        from types import SimpleNamespace
+        cc = "%s/libwwhd-clang-driver.so" % native
+        cxx = [cc, "--driver-mode=gcc", "--target=aarch64-linux-android33",
+               "--sysroot=/data/user/0/app/no_backup/toolchains/09d51026e038/sysroot",
+               "--driver-mode=g++", "-fuse-ld=lld", "--ld-path=%s/libwwhd-ld.lld-driver.so" % native]
+        tc = SimpleNamespace(cc=cxx, env=None, identity=identity)
+        seen = []
+
+        def run(command, **kwargs):
+            seen.append(command)
+            text = "clang version %s.0.0\nInstalledDir: %s\n" % (version, os.path.dirname(command[0]))
+            return SimpleNamespace(stdout=text.encode(), returncode=0)
+        pkg = "/data/data/app/no_backup/embedded-python/a38a/source"
+        flags = ["-I%s/sdk/include" % pkg, "-I/data/work/gen", "-O3", "-include",
+                 "%s/tools/decomp_build/android_compat.h" % pkg] + list(extra)
+        with mock.patch.object(self.setup, "PKG", pkg), \
+                mock.patch.object(self.setup.subprocess, "run", side_effect=run):
+            cache = self.setup.object_cache(tc, "/data", flags, "/data/work/gen")
+        self.assertEqual(seen[0][0], cc)  # (asks the real compiler)
+        return cache.base
+
+    def test_another_native_lib_folder_keeps_the_key(self):
+        a = "/data/app/~~PH_jxamUU9cURet3Z4OWpw==/org.wwhdrecomp.wwhd-371P7dchhTHDgotHg294Sg==/lib/arm64"
+        b = "/data/app/~~-SjofBLVURzvz_ek0DNtVw==/org.wwhdrecomp.wwhd-e5dJHYQo8gBx3DXKk5jrYA==/lib/arm64"
+        self.assertEqual(self.base(a), self.base(b))
+        self.assertEqual(self.base(a, extra=["-g"]), self.base(b, extra=["-g"]))
+
+    def test_another_compiler_or_flag_changes_the_key(self):
+        a = "/data/app/~~PH_jxam==/org.wwhdrecomp.wwhd-371P==/lib/arm64"
+        self.assertNotEqual(self.base(a), self.base(a, identity="5e1f00aa9b7c"))
+        self.assertNotEqual(self.base(a), self.base(a, version="21"))
+        self.assertNotEqual(self.base(a), self.base(a, extra=["-O2"]))
+
+    def test_desktop_key_is_unchanged(self):
+        # the formula before the Android compiler's identity: the compiler's command and --version text, the flags
+        # with the release and generated-code folders replaced
+        import hashlib
+        from types import SimpleNamespace
+        tc = SimpleNamespace(cc=["/usr/bin/clang", "-arch", "arm64"], env=None)
+        pkg = "/Users/p/WindWakerHD-v1"
+        flags = ["-I%s/sdk/include" % pkg, "-I/data/work/gen", "-O3"]
+        out = SimpleNamespace(stdout=b"Apple clang version 17.0.0\nInstalledDir: /usr/bin\n", returncode=0)
+        with mock.patch.object(self.setup, "PKG", pkg), mock.patch.object(self.setup.subprocess, "run",
+                                                                         return_value=out):
+            base = self.setup.object_cache(tc, "/data", flags, "/data/work/gen").base
+        expected = hashlib.sha256(("wwhd object cache 1\0/usr/bin/clang -arch arm64\nApple clang version 17.0.0\n"
+                                   "InstalledDir: /usr/bin\n\0-I<release>/sdk/include\0-I<gen>\0-O3").encode()).digest()
+        self.assertEqual(base, expected)
+
+
 class TransferTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

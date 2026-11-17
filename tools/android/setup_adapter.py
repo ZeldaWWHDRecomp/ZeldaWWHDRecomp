@@ -429,13 +429,17 @@ class Adapter:
         # Per object, by its inputs (as the desktop's code-objects cache): an object is reused when its source,
         # every header the game code can include, the compiler and the flags are unchanged. Not by the release
         # (port_revision) or the whole generated tree, so an app update recompiles only the sources that
-        # changed. The installer counts by the code that makes the compile command.
+        # changed. The installer counts by the code that makes the compile command. The compiler is known by its
+        # bundle identity: its programs' folder (the APK's native-lib folder) gets a new random name on every app
+        # update, so the command counts with that folder as a fixed name (as setup.object_cache does).
+        native = os.path.dirname(toolchain.cc[0])
+        command = [arg.replace(native, "<native-lib>") if native else arg for arg in toolchain.cc]
         identity = hashlib.sha256(json.dumps({
             "installer": self.compile_code_identity(),
             "headers": {str(path.relative_to(self.package)) if path.is_relative_to(self.package) else str(path):
                         self.hash_tree(path) for path in roots},
             "toolchain": toolchain_identity,
-            "command": toolchain.cc, "environment": toolchain.env,
+            "command": command, "environment": toolchain.env,
             "flags": manifest["gamecode_cflags"],
             "debug_info": os.environ.get("WWHD_SETUP_DEBUG_INFO", ""),
         }, sort_keys=True).encode()).hexdigest()
