@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Frame interpolation: cut trees come to rest at the right angle** (#601). When frame pacing skipped a step's
+  in-between frames, the top of a cut tree could come to rest at a slightly blended angle. It now lands exactly as in
+  the original game. `WWHD_INTERP_TREE_MTX=0` restores the old behaviour.
 - **Decomp fast build: less render-thread work for model and effect draws** (#603). Each described model draw and
   native effect draw is now handed to the Vulkan recording thread as one compact command, and model draw data is
   built straight into its upload buffer. On a Xiaomi 14 at the Dragon Roost cliff this saves about 0.2 ms on the
