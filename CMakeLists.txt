@@ -714,6 +714,12 @@ target_link_libraries(sampler_lod_bias_test PRIVATE cemu_latte)
 target_compile_options(sampler_lod_bias_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
 add_test(NAME sampler_lod_bias COMMAND sampler_lod_bias_test)
 
+# a pixel shader's depth output removed from its MSL (runtime/src/gfx/msl_depth_output.h)
+add_executable(msl_depth_output_test runtime/tools/msl_depth_output_test.cpp)
+target_include_directories(msl_depth_output_test PRIVATE runtime/src)
+target_compile_options(msl_depth_output_test PRIVATE -UNDEBUG)
+add_test(NAME msl_depth_output COMMAND msl_depth_output_test)
+
 add_executable(gamepad_backdrop_test runtime/tools/gamepad_backdrop_test.cpp)
 target_compile_options(gamepad_backdrop_test PRIVATE -UNDEBUG)
 add_test(NAME gamepad_backdrop COMMAND gamepad_backdrop_test)

@@ -14,6 +14,7 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 // MSL the decompiler emits (as used by Cemu's Metal renderer).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "gfx/area_sample.h"
+#include "gfx/msl_depth_output.h"
 #include "gfx/sampler_lod_bias.h"
 #include "gfx/shader_linkage.h"
 #include "render_objects.h"
@@ -387,6 +388,10 @@ struct Shader {
     uint64_t retryFrame = 0;                  // a failed compile is retried from this frame on (0: not scheduled)
     std::vector<uint8_t> packed;              // a deferred compile's MSL, LZ4 (pack_source); empty: none
     uint32_t packedLen = 0;                   // its length unpacked
+    // pixel shaders that write depth: the same program without its depth output, for pipelines without a
+    // depth attachment (gfx/msl_depth_output.h, get_pipeline); compiled on first use. Same key (recipes
+    // name the shader), own copy of the translation's metadata (depthMask off) and source.
+    Shader* noDepth = nullptr;
 };
 
 // A Metal compile or pipeline build can fail for reasons that have nothing to do with the source:
@@ -939,6 +944,29 @@ static void verify_key(const uint32_t* regs, bool vertex, LatteFetchShader* fs, 
     }
 }
 
+// the variant of a depth-writing pixel shader without its depth output (Shader::noDepth), or nullptr. Made
+// while the translation's text is still there; compiled on first use (compile_deferred).
+static Shader* make_no_depth_variant(const Shader* s) {
+    if (!s->dec || !s->dec->depthMask || !s->dec->strBuf_shaderSource) return nullptr;
+    std::string src = s->dec->strBuf_shaderSource->c_str();
+    if (!gfx::msl_depth::strip_depth_output(src)) {
+        LOG("[gfx] pixel shader %016llx: depth output not found in its MSL; pipelines without a depth buffer stay unbuilt",
+            (unsigned long long)s->key);
+        return nullptr;
+    }
+    auto* v = new Shader();
+    v->key = s->key;
+    v->kind = s->kind;
+    v->gatherUnits = s->gatherUnits;
+    v->dec = new LatteDecompilerShader(*s->dec);  // bindings and outputs as translated (no owned pointers but the text)
+    v->dec->depthMask = false;
+    v->dec->strBuf_shaderSource = new StringBuf((uint32)src.size() + 1);
+    v->dec->strBuf_shaderSource->add(std::string_view(src));
+    v->state = CS_DEFERRED;
+    pack_source(v);
+    return v;
+}
+
 static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint64_t fsKey) {
     uint32_t addr = regs[vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS] << 8;
     uint32_t size = regs[(vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS) + 1] << 3;
@@ -977,6 +1005,7 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         return s;
     }
     if (!vertex) s->gatherUnits = gfx::area_sample::gathered_units(s->dec->strBuf_shaderSource->c_str(), true);
+    if (!vertex) s->noDepth = make_no_depth_variant(s);
     if (!use.known) {
         const auto& dec = *s->dec;
         use.unitCount = (uint8_t)std::clamp((int)dec.textureUnitListCount, 0, (int)LATTE_NUM_MAX_TEX_UNITS);
@@ -1171,6 +1200,16 @@ static void cache_record_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, 
 
 static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, LatteFetchShader* fs,
                                                uint64_t fsKey, const TargetFormats& tf, unsigned backdropCoverage = 0) {
+    // no depth attachment: a pixel shader that writes depth goes in without its depth output. Metal refuses
+    // the pipeline otherwise and then also every other pipeline of that fragment function, depth attachment
+    // or not, for the rest of the session (gfx/msl_depth_output.h)
+    if (!tf.depth && ps->noDepth) {
+        ps = ps->noDepth;
+        retry_failed_compile(ps, g_draw_must_run);
+        if (ps->state == CS_FAILED) return nil;
+        compile_deferred(ps);
+        if (!wait_compiled(ps->state)) return nil;
+    }
     FormatInfo cfmt[8], dfmt;
     for (int i = 0; i < 8; i++)
         if (tf.color[i]) cfmt[i] = format_info(tf.color[i], false);
@@ -2246,6 +2285,18 @@ static void build_pending_pipelines(int budget, int maxInFlight) {
         retry_failed_compile(vi->second);
         retry_failed_compile(pi->second);
         if (vi->second->state != CS_READY || pi->second->state != CS_READY) { i++; continue; }
+        // without a depth attachment, a depth-writing pixel shader's variant goes in (get_pipeline)
+        if (Shader* nd = r.tf.depth ? nullptr : pi->second->noDepth) {
+            if (finallyFailed(nd)) {
+                g_pending_pipelines[i] = g_pending_pipelines.back();
+                g_pending_pipelines.pop_back();
+                g_recipes_dropped++;
+                continue;
+            }
+            retry_failed_compile(nd);
+            compile_deferred(nd);
+            if (nd->state != CS_READY) { i++; continue; }
+        }
         for (int k = 0; k < 8; k++) regs[REGADDR::CB_BLEND0_CONTROL + k] = r.blend[k];
         regs[REGADDR::CB_COLOR_CONTROL] = r.colorControl;
         regs[REGADDR::CB_TARGET_MASK] = r.targetMask;
