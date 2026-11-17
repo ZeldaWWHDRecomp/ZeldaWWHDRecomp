@@ -818,7 +818,7 @@ UploadReads upload_reads_mode() {
 void note_upload_block(const Buffer& buffer) {
   const VkMemoryPropertyFlags readable =
       VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  const bool first = R.uploadAllocations == 0;
+  const bool first = draw_counters().uploadAllocations == 0;
   const bool cached = (buffer.properties & readable) == readable && (first || R.uploadCached);
   const auto mode = upload_reads_mode();
   const bool direct = mode == UploadReads::Direct || (mode == UploadReads::Auto && cached);
@@ -841,17 +841,17 @@ static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, boo
     if (offset > block.buffer.size || size > block.buffer.size - offset)
       return UploadSlice{};
     block.used = offset + size;
-    R.uploadBytes += size;
+    draw_counters().uploadBytes += size;
     rprof::add_upload(size);
     return UploadSlice{block.buffer.buffer,offset,size,
                        static_cast<uint8_t*>(block.buffer.mapped)+offset};
   };
-  for (auto& block : R.uploadBlocks) {
+  for (auto& block : upload_blocks()) {
     auto result = slice(block);
     if (result.buffer) return result;
   }
   if (!grow) return UploadSlice{};
-  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowBegin, 0, R.frame, size, R.uploadBlocks.size());
+  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowBegin, 0, R.frame, size, upload_blocks().size());
   auto buffer = create_buffer(std::max<VkDeviceSize>(32ull<<20,size),
       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
@@ -859,11 +859,11 @@ static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, boo
       | (packet_mdi_requested() ? VkBufferUsageFlags(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) : 0)  // (multi-draw batches' commands)
 #endif
       , VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowEnd, 0, R.frame, buffer.size, R.uploadBlocks.size());
+  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowEnd, 0, R.frame, buffer.size, upload_blocks().size());
   note_upload_block(buffer);
-  R.uploadBlocks.push_back({buffer,0});
-  ++R.uploadAllocations;
-  return slice(R.uploadBlocks.back());
+  upload_blocks().push_back({buffer,0});
+  ++draw_counters().uploadAllocations;
+  return slice(upload_blocks().back());
 }
 void defer_buffer(Buffer b) { R.garbageBuffers.push_back(b); }
 void defer_surface_image(VkImage image, VkDeviceMemory memory,
@@ -1179,7 +1179,7 @@ VkCommandBuffer command_buffer() {
 }
 static GpuScopeToken begin_gpu_scope(const GpuScopeMetadata& metadata) {
   if(!R.gpuTimestampsEnabled || !R.gpuPassTimestampsEnabled) return {};
-  if(R.rendering) { ++gpuScopeTotals.dropped;return {}; }
+  if(pass_state().rendering) { ++gpuScopeTotals.dropped;return {}; }
   const VkCommandBuffer cmd=command_buffer();
   auto& slot=R.submissions[R.activeSubmission];
   if(slot.gpuScopeCount==Renderer::Submission::maxGpuScopes) { ++gpuScopeTotals.dropped;return {}; }
@@ -1193,7 +1193,7 @@ static void end_gpu_scope(GpuScopeToken token) {
   auto& slot=R.submissions[R.activeSubmission];
   if(token.index>=slot.gpuScopeCount || slot.gpuScopes[token.index].ended ||
       slot.gpuScopes[token.index].generation!=token.generation) return;
-  if(R.rendering) { ++gpuScopeTotals.dropped;return; }
+  if(pass_state().rendering) { ++gpuScopeTotals.dropped;return; }
   record::vkCmdWriteTimestamp(R.cmd,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,slot.timestampQueries,3+2*token.index);
   slot.gpuScopes[token.index].ended=true;
 }
@@ -1229,10 +1229,10 @@ GpuScopeToken gpu_begin_feedback_scope(const Surface& source) {
 }
 void gpu_end_feedback_scope(GpuScopeToken token) { end_gpu_scope(token); }
 void end_encoder() {
-  if (R.rendering) {
+  if (pass_state().rendering) {
     end_pass(R.cmd);
-    R.rendering = false;
-    R.passTracked = false;
+    pass_state().rendering = false;
+    pass_state().tracked = false;
     if(R.gpuPassTimestampsEnabled) {
       auto& slot=R.submissions[R.activeSubmission];
       end_gpu_scope({R.submissionGeneration,slot.activeRenderScope});
@@ -1449,7 +1449,7 @@ static void activate_submission(size_t index) {
   R.garbageImages=std::move(slot.garbageImages);
   R.garbageFramebuffers=std::move(slot.garbageFramebuffers);
   R.garbageCacheRegions=std::move(slot.garbageCacheRegions);
-  R.recording=false;R.rendering=false;R.passTracked=false;
+  R.recording=false;pass_state().rendering=false;pass_state().tracked=false;
 #ifdef WWHD_VK_SMOOTH
   record_mt::activated(&slot, uint32_t(index), R.device);  // (record_mt.h)
 #endif
@@ -4273,7 +4273,7 @@ void swap() {
     static uint64_t vertexHistoryRequests=0,vertexHistoryMatches=0,vertexHistoryBytes=0;
     static uint64_t vertexHistoryReuseChecks=0,vertexHistoryReuseHits=0,vertexHistoryReuseBytes=0;
     static std::array<uint64_t,7> vertexHistoryDistances{};
-    static Renderer::CpuPreparationStats previousPreparation;
+    static DrawCounters::CpuPreparationStats previousPreparation;
     static SparseHashStats previousSparse;
     static gx2::ShaderKeyDirtyStats previousShaderDirty;
 #ifndef _WIN32
@@ -4310,8 +4310,8 @@ void swap() {
                       double(R.passPrefetchUsed-prefetchUsed)/(R.frame-frame), double(R.passSplitsSeen-splitsSeen)/(R.frame-frame));
       LOG("[vulkan perf] frame %llu %.2f fps, %.1f draws/frame, %.2f MiB uploads/frame, %llu new upload blocks, %.1f passes/frame%s",
           (unsigned long long)R.frame,(R.frame-frame)/seconds,
-          double(R.drawCount-draws)/(R.frame-frame),double(R.uploadBytes-bytes)/(R.frame-frame)/(1<<20),
-          (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame), passReuse);
+          double(R.drawCount-draws)/(R.frame-frame),double(draw_counters().uploadBytes-bytes)/(R.frame-frame)/(1<<20),
+          (unsigned long long)(draw_counters().uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame), passReuse);
       if (reproj::enabled()) LOG("[vulkan perf] framegen %s", reproj::perf_line().c_str());
 #ifdef WWHD_VK_SMOOTH
       pool_reset::report(double(R.frame - frame));  // (pool_reset.h, record_mt.h, display_timing.h, present_ack.h)
@@ -4412,48 +4412,48 @@ void swap() {
           (currentBatchSubmissions-batchSubmissions)/frames);
       batchSubmissions=currentBatchSubmissions;
       LOG("[vulkan vertex snapshots] declared %.2f MiB/frame; prepared %.2f MiB/frame",
-          (R.vertexDeclaredBytes-vertexDeclaredBytes)/frames/(1<<20),
-          (R.vertexCopiedBytes-vertexCopiedBytes)/frames/(1<<20));
-      vertexDeclaredBytes=R.vertexDeclaredBytes;vertexCopiedBytes=R.vertexCopiedBytes;
+          (draw_counters().vertexDeclaredBytes-vertexDeclaredBytes)/frames/(1<<20),
+          (draw_counters().vertexCopiedBytes-vertexCopiedBytes)/frames/(1<<20));
+      vertexDeclaredBytes=draw_counters().vertexDeclaredBytes;vertexCopiedBytes=draw_counters().vertexCopiedBytes;
       LOG("[vulkan vertex binds] %.1f actual/frame %.1f skipped/frame",
-          (R.vertexBindCalls-vertexBindCalls)/frames,
-          (R.vertexBindSkips-vertexBindSkips)/frames);
-      vertexBindCalls=R.vertexBindCalls;vertexBindSkips=R.vertexBindSkips;
+          (draw_counters().vertexBindCalls-vertexBindCalls)/frames,
+          (draw_counters().vertexBindSkips-vertexBindSkips)/frames);
+      vertexBindCalls=draw_counters().vertexBindCalls;vertexBindSkips=draw_counters().vertexBindSkips;
       LOG("[vulkan vertex history] %.1f requests/frame %.1f nonconsecutive keys/frame %.3f MiB potential/frame; distances 1..7 %.1f %.1f %.1f %.1f %.1f %.1f %.1f",
-          (R.vertexHistoryRequests-vertexHistoryRequests)/frames,
-          (R.vertexHistoryMatches-vertexHistoryMatches)/frames,
-          (R.vertexHistoryBytes-vertexHistoryBytes)/frames/(1<<20),
-          (R.vertexHistoryDistances[0]-vertexHistoryDistances[0])/frames,
-          (R.vertexHistoryDistances[1]-vertexHistoryDistances[1])/frames,
-          (R.vertexHistoryDistances[2]-vertexHistoryDistances[2])/frames,
-          (R.vertexHistoryDistances[3]-vertexHistoryDistances[3])/frames,
-          (R.vertexHistoryDistances[4]-vertexHistoryDistances[4])/frames,
-          (R.vertexHistoryDistances[5]-vertexHistoryDistances[5])/frames,
-          (R.vertexHistoryDistances[6]-vertexHistoryDistances[6])/frames);
-      vertexHistoryRequests=R.vertexHistoryRequests;vertexHistoryMatches=R.vertexHistoryMatches;
-      vertexHistoryBytes=R.vertexHistoryBytes;vertexHistoryDistances=R.vertexHistoryDistances;
+          (draw_counters().vertexHistoryRequests-vertexHistoryRequests)/frames,
+          (draw_counters().vertexHistoryMatches-vertexHistoryMatches)/frames,
+          (draw_counters().vertexHistoryBytes-vertexHistoryBytes)/frames/(1<<20),
+          (draw_counters().vertexHistoryDistances[0]-vertexHistoryDistances[0])/frames,
+          (draw_counters().vertexHistoryDistances[1]-vertexHistoryDistances[1])/frames,
+          (draw_counters().vertexHistoryDistances[2]-vertexHistoryDistances[2])/frames,
+          (draw_counters().vertexHistoryDistances[3]-vertexHistoryDistances[3])/frames,
+          (draw_counters().vertexHistoryDistances[4]-vertexHistoryDistances[4])/frames,
+          (draw_counters().vertexHistoryDistances[5]-vertexHistoryDistances[5])/frames,
+          (draw_counters().vertexHistoryDistances[6]-vertexHistoryDistances[6])/frames);
+      vertexHistoryRequests=draw_counters().vertexHistoryRequests;vertexHistoryMatches=draw_counters().vertexHistoryMatches;
+      vertexHistoryBytes=draw_counters().vertexHistoryBytes;vertexHistoryDistances=draw_counters().vertexHistoryDistances;
       LOG("[vulkan vertex history reuse] %.1f checks/frame %.1f hits/frame %.3f MiB reused/frame",
-          (R.vertexHistoryReuseChecks-vertexHistoryReuseChecks)/frames,
-          (R.vertexHistoryReuseHits-vertexHistoryReuseHits)/frames,
-          (R.vertexHistoryReuseBytes-vertexHistoryReuseBytes)/frames/(1<<20));
-      vertexHistoryReuseChecks=R.vertexHistoryReuseChecks;
-      vertexHistoryReuseHits=R.vertexHistoryReuseHits;vertexHistoryReuseBytes=R.vertexHistoryReuseBytes;
+          (draw_counters().vertexHistoryReuseChecks-vertexHistoryReuseChecks)/frames,
+          (draw_counters().vertexHistoryReuseHits-vertexHistoryReuseHits)/frames,
+          (draw_counters().vertexHistoryReuseBytes-vertexHistoryReuseBytes)/frames/(1<<20));
+      vertexHistoryReuseChecks=draw_counters().vertexHistoryReuseChecks;
+      vertexHistoryReuseHits=draw_counters().vertexHistoryReuseHits;vertexHistoryReuseBytes=draw_counters().vertexHistoryReuseBytes;
       LOG("[vulkan vertex reuse] %.1f checks/frame; %.1f hits/frame; %.2f MiB reused/frame; compare %.3f ms/frame",
-          (R.vertexReuseChecks-vertexReuseChecks)/frames,
-          (R.vertexReuseHits-vertexReuseHits)/frames,
-          (R.vertexReuseBytes-vertexReuseBytes)/frames/(1<<20),
-          (R.vertexReuseCompareNs-vertexReuseCompareNs)/frames/1e6);
-      vertexReuseChecks=R.vertexReuseChecks;vertexReuseHits=R.vertexReuseHits;
-      vertexReuseBytes=R.vertexReuseBytes;vertexReuseCompareNs=R.vertexReuseCompareNs;
-      uint64_t descriptorChecks=R.descriptorLookups-descriptorLookups;
-      uint64_t descriptorReuses=R.descriptorCacheHits-descriptorHits;
+          (draw_counters().vertexReuseChecks-vertexReuseChecks)/frames,
+          (draw_counters().vertexReuseHits-vertexReuseHits)/frames,
+          (draw_counters().vertexReuseBytes-vertexReuseBytes)/frames/(1<<20),
+          (draw_counters().vertexReuseCompareNs-vertexReuseCompareNs)/frames/1e6);
+      vertexReuseChecks=draw_counters().vertexReuseChecks;vertexReuseHits=draw_counters().vertexReuseHits;
+      vertexReuseBytes=draw_counters().vertexReuseBytes;vertexReuseCompareNs=draw_counters().vertexReuseCompareNs;
+      uint64_t descriptorChecks=draw_counters().descriptorLookups-descriptorLookups;
+      uint64_t descriptorReuses=draw_counters().descriptorCacheHits-descriptorHits;
       LOG("[vulkan descriptors] %.1f lookups/frame; %.1f allocations/frame; %.1f%% reused; %.1f%% consecutive",
-          descriptorChecks/frames,(R.descriptorAllocations-descriptorAllocations)/frames,
+          descriptorChecks/frames,(draw_counters().descriptorAllocations-descriptorAllocations)/frames,
           descriptorChecks ? 100.0*descriptorReuses/descriptorChecks : 0.0,
-          descriptorChecks ? 100.0*(R.descriptorFastHits-descriptorFastHits)/descriptorChecks : 0.0);
-      descriptorLookups=R.descriptorLookups;descriptorHits=R.descriptorCacheHits;
-      descriptorAllocations=R.descriptorAllocations;descriptorFastHits=R.descriptorFastHits;
-      const auto& prep=R.cpuPreparation;
+          descriptorChecks ? 100.0*(draw_counters().descriptorFastHits-descriptorFastHits)/descriptorChecks : 0.0);
+      descriptorLookups=draw_counters().descriptorLookups;descriptorHits=draw_counters().descriptorCacheHits;
+      descriptorAllocations=draw_counters().descriptorAllocations;descriptorFastHits=draw_counters().descriptorFastHits;
+      const auto& prep=draw_counters().cpuPreparation;
       const auto sparse=sparse_hash_stats();
       LOG("[vulkan sparse hash memo] %.1f checks/frame %.1f hits/frame %.3f MiB fresh samples/frame %.1f mixed words/frame %.1f overflow/frame",
           (sparse.checks-previousSparse.checks)/frames,
@@ -4534,7 +4534,7 @@ void swap() {
       }
       submitWait = {}; presentSubmitWait = {}; queueSubmitTiming = {};
       }
-      start=now;frame=R.frame;draws=R.drawCount;bytes=R.uploadBytes;allocs=R.uploadAllocations;passes=R.renderPassCount;
+      start=now;frame=R.frame;draws=R.drawCount;bytes=draw_counters().uploadBytes;allocs=draw_counters().uploadAllocations;passes=R.renderPassCount;
       subsetKept=R.passSubsetKept;prefetched=R.passPrefetched;prefetchUsed=R.passPrefetchUsed;splitsSeen=R.passSplitsSeen;
     }
   }

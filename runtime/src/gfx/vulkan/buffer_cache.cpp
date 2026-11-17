@@ -12,6 +12,7 @@
 #include "render_prof.h"
 #include "runtime.h"
 #include "write_watch.h"
+#include "gfx/vulkan/draw_thread_locks.h"
 
 namespace gfxvk {
 namespace {
@@ -163,6 +164,7 @@ void buffer_cache_mismatch(const char* what, const bufcache::Entry& e, uint32_t 
 }
 
 bool cached_guest_range(uint32_t addr, uint32_t size, int uploadKind, UploadSlice& out) {
+  draw_locks::Guard locked(draw_locks::kBuffers);  // (draw threads: a shared cache)
   if (!addr || size < 16 || size > kMaxCachedRange || uint64_t(addr) + size > 0x100000000ull) return false;
   auto& cache = state().cache;
   bufcache::Entry* e;
@@ -184,6 +186,7 @@ bool cached_guest_range(uint32_t addr, uint32_t size, int uploadKind, UploadSlic
 }
 
 bool cached_native_indices(uint32_t addr, uint32_t size, UploadSlice& out, bufcache::Entry*& entry) {
+  draw_locks::Guard locked(draw_locks::kBuffers);  // (draw threads: a shared cache)
   if (!addr || !size || size > kMaxCachedRange || uint64_t(addr) + size > 0x100000000ull) return false;
   auto& cache = state().cache;
   bufcache::Entry* e;
@@ -210,6 +213,7 @@ bool cached_native_indices(uint32_t addr, uint32_t size, UploadSlice& out, bufca
 }
 
 void buffer_cache_end_frame() {
+  draw_locks::Guard locked(draw_locks::kBuffers);  // (draw threads: a shared cache)
   State* s = g_state.load(std::memory_order_acquire);
   if (!s) return;
   s->cache.set_frame(R.frame);
@@ -217,15 +221,18 @@ void buffer_cache_end_frame() {
 }
 
 void buffer_cache_invalidate_all() {
+  draw_locks::Guard locked(draw_locks::kBuffers);  // (draw threads: a shared cache)
   if (State* s = g_state.load(std::memory_order_acquire)) s->cache.invalidate_all();
 }
 
 void buffer_cache_guest_invalidate(uint32_t flags, uint32_t addr, uint32_t size) {
+  draw_locks::Guard locked(draw_locks::kBuffers);  // (draw threads: a shared cache)
   // GX2_INVALIDATE_MODE_ATTRIBUTE_BUFFER (1), UNIFORM_BLOCK (4); in command order on the render thread
   if ((flags & 5) && g_state.load(std::memory_order_acquire)) wwatch::hint(addr, size);
 }
 
 void buffer_cache_free(const std::vector<bufcache::Region>& regions) {
+  draw_locks::Guard locked(draw_locks::kBuffers);  // (draw threads: a shared cache)
   State* s = g_state.load(std::memory_order_acquire);
   if (!s) return;
   for (auto& r : regions) s->backing.release(r);
