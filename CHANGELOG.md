@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Decomp fast build: UI and text draws reuse their prepared state across frames** (#611). Layout and text draws
+  whose state hasn't changed skip preparing it again. On a Xiaomi 14 this saves about 0.1 ms of render-thread time
+  per frame at the Dragon Roost cliff and 0.15 ms at the Windfall pier; the picture is unchanged.
+  `WWHD_NATIVE_PKT_PERSIST=0` turns it off.
 - **Mac (Metal): the soft shading around characters and edges no longer goes missing** (#610). In some sessions a
   depth-writing shader failed to build at startup, which skipped about 3,200 draws per session and removed the darkening
   around Link and along edges until the game was restarted. It now builds reliably every time.
