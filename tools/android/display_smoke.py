@@ -857,6 +857,12 @@ def main():
         until("mode reacquires hidden display", lambda m:
               m["dual"] and not m["second_off"] and m["swap_active"] and
               m["secondary_presented"] >= hidden["secondary_presented"] + 10)
+        # WWHD_VK_SKIP_HIDDEN_TV (hidden_tv.h): the TV picture is never found hidden while a second display is on
+        hidden_logs = adb("logcat", "-d", "-s", "wwhd:I", "*:S")
+        if "[hidden tv] smoke: TV picture found hidden while a second display is on" in hidden_logs:
+            raise AssertionError("hidden TV decision: TV picture hidden while a second display is on")
+        if metrics().get("hidden_tv_while_dual", 0):
+            raise AssertionError("hidden TV decision: hidden_tv_while_dual " + str(metrics()["hidden_tv_while_dual"]))
         command("exit_smoke")
         shutdown_deadline=time.monotonic()+20
         while time.monotonic()<shutdown_deadline:

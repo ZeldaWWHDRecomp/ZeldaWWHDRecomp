@@ -1176,6 +1176,7 @@ static std::vector<Stick> scripted_stick(const char* var = "WWHD_STICK") {
 //   WWHD_TEST_PRESS=3-3.1:8000    buttons (hex)
 //   WWHD_TEST_MODE=1@0.5          60 fps mode at 0.5 s (0 off, 1 interpolation; 2, the retired True 60, = 1 at 60 fps)
 //   WWHD_TEST_END=12              writes the file "test_done" at 12 s (the test script stops the game)
+//   WWHD_TEST_PRO=2.5             the keyboard/controller act as a Pro Controller from 2.5 s (as the player's choice)
 namespace {
 struct TimedStick { double from, to; float x, y; };
 struct TimedPress { double from, to; uint32_t bits; };
@@ -1184,7 +1185,7 @@ struct Scenario {
     std::vector<TimedStick> sticks, rsticks;
     std::vector<TimedPress> presses;
     int mode = -1;
-    double mode_at = 0, end = 0;
+    double mode_at = 0, end = 0, pro_at = -1;
     Scenario() {
         if (const char* e = getenv("WWHD_TEST_ORIGIN")) origin = strtoull(e, nullptr, 10);
         auto timed_sticks = [](const char* e, std::vector<TimedStick>& out) {
@@ -1209,6 +1210,7 @@ struct Scenario {
         }
         if (const char* e = getenv("WWHD_TEST_MODE")) sscanf(e, "%d@%lf", &mode, &mode_at);
         if (const char* e = getenv("WWHD_TEST_END")) end = atof(e);
+        if (const char* e = getenv("WWHD_TEST_PRO")) pro_at = atof(e);
     }
 };
 }  // namespace
@@ -1261,6 +1263,11 @@ static void apply_scenario(PadState& s) {
     static std::atomic<bool> mode_set{false}, ended{false};
     static std::atomic<int> dbg{0};
     if (getenv("WWHD_TEST_DEBUG") && dbg++ % 30 == 0) LOG("[test] t=%.3f frame %llu", t, (unsigned long long)render::frame_count());
+    static std::atomic<bool> pro_set{false};
+    if (sc.pro_at >= 0 && t >= sc.pro_at && !pro_set.exchange(true)) {
+        LOG("[test] t=%.3f s: Pro Controller (frame %llu)", t, (unsigned long long)render::frame_count());
+        set_pro_controller(true);
+    }
     if (sc.mode >= 0 && t >= sc.mode_at && !mode_set.exchange(true)) {
         LOG("[test] t=%.3f s: 60 fps mode %d", t, sc.mode);
         interp::set_mode(sc.mode);
