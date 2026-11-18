@@ -1043,6 +1043,7 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
 // the frame time of a slower computer, for measuring frame pacing (docs/performance.md).
 // WWHD_TEST_GAME_LOAD_MS=x:y busy-waits x ms at the swap of a logic step's frame and y ms at an
 // in-between frame's (the uneven passes of a phone whose game thread is the bottleneck).
+// WWHD_TEST_RENDER_LOAD_MS=x:y likewise on the render thread (a logic frame's and an in-between frame's swap).
 static void test_frame_load(const char* name, bool hold = false) {
     const char* e = getenv(name);
     const char* colon = e ? strchr(e, ':') : nullptr;
@@ -1163,7 +1164,7 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         break;
     case OP_SWAP: {
         static const bool load = getenv("WWHD_TEST_RENDER_LOAD_MS") != nullptr;
-        if (load) test_frame_load("WWHD_TEST_RENDER_LOAD_MS");
+        if (load) test_frame_load("WWHD_TEST_RENDER_LOAD_MS", n >= 2 && p[1]);  // (x:y: y ms for an in-between frame)
         if (n) render::set_frame_aspect(gx2::bitsf(p[0]));  // aspect ratio from the next frame on (aspect.cpp)
         if (n >= 3 && p[2]) render::request_capture();
         if (n >= 5 && present_observer::enabled())
