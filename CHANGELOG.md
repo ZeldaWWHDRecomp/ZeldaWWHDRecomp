@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Faster rendering on Android again** (#614). A change in the groundwork for multithreaded draw recording (#608)
+  made every draw look up per-thread data even with no extra draw thread running, which costs extra on Android. On a
+  Xiaomi 14 that added about 0.5–0.7 ms of render-thread time per frame at the Dragon Roost cliff; the fix removes it.
 - **Android setup: choose the recompiled or the decomp version** (#609). Like the desktop setup (#605), the Android
   app's setup asks which version to build, the recompiled version (default) or the decomp version (experimental),
   and builds only that one on the phone. The decomp build takes a long time on a phone (about 1.5–2 hours the first
