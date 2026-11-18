@@ -6720,7 +6720,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
 #endif
       const bool kindChange = P.boundKind != int(kind);
 #if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)  // (WWHD_NATIVE_PAR_DECIDE: the replay as one POD command, native_draw/pardecide_packet.h)
-      if (::native_draw::pardecide::level() >= 1 && (*L.cap).vertexBindCount <= ::native_draw::pardecide::kDescMaxVb &&
+      // (cheapib b1 captures the per-call commands of a logic pass's calls: no compact command while it captures)
+      if (::native_draw::pardecide::level() >= 1 && !::cheapib::g_b1_capturing &&
+          (*L.cap).vertexBindCount <= ::native_draw::pardecide::kDescMaxVb &&
           (*L.cap).offsetCount <= ::native_draw::pardecide::kDescMaxOffsets)
         pdpacket::record(cmd, kindChange, sameVertexInput, *L.cap, r, sets, offsets.data());
       else {

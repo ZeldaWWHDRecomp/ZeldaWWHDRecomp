@@ -1122,7 +1122,8 @@ const char* try_replay(State& s, const In& in, bool checkOnly, bool beginPass = 
     B.cmd = cmd;
   }
 #if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
-  if (::native_draw::pardecide::level() >= 1 && !depthProof) {
+  // (cheapib b1 captures the per-call commands of a logic pass's calls: no compact command while it captures)
+  if (::native_draw::pardecide::level() >= 1 && !depthProof && !::cheapib::g_b1_capturing) {
 #if J3DDESC_DEPTH
     if (familyDraw) {
       const VkDescriptorSet set = reinterpret_cast<VkDescriptorSet>(fam.set);
