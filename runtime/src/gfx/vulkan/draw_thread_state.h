@@ -10,8 +10,16 @@ namespace draw_thread_state {
 inline const bool kSplit = gfxvk::draw_switches::any_thread();
 template <class Key, class T> inline T shared_value{};
 template <class Key, class T> inline thread_local T own_value{};
+// The thread_local copy is reached only through this call. Written inline (`kSplit ? own_value : shared_value`), the
+// compiler computes both addresses and selects one, so the thread_local's address was resolved at every access even
+// with no draw thread; libmain's TLS is dynamic (a dlopen'ed library on Android), so each of those went through the
+// linker's TLS descriptor resolver (~40 per draw: about 0.3 ms of the render thread a frame at the cliff, Xiaomi 14).
+template <class Key, class T> [[gnu::noinline, gnu::cold]] T& own_value_slow() { return own_value<Key, T>; }
 // the calling thread's T for Key (value-initialised on first use)
-template <class Key, class T> inline T& value() { return kSplit ? own_value<Key, T> : shared_value<Key, T>; }
+template <class Key, class T> inline T& value() {
+    if (kSplit) [[unlikely]] return own_value_slow<Key, T>();
+    return shared_value<Key, T>;
+}
 }  // namespace draw_thread_state
 
 // In a function, in place of `static T name;` (a memo or scratch the draw path keeps): `DRAW_THREAD_STATIC(name, T);`
