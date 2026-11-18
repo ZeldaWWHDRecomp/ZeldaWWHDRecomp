@@ -3,6 +3,7 @@
 #include "mods/player_models.h"
 #include "mods/achievements_host.h"
 #include "interp.h"
+#include "interp_prerun_cams.h"
 #include "dsweep.h"
 #include "mods/story_native_restore_resume.h"
 namespace interp {class NativeResumeBoundaryIssuer {public:static void after_service(Cpu*c){story_native_restore_resume::LoadWindow::service_return(c);}};}
@@ -592,8 +593,34 @@ bool exact_cull_on() {
     static const bool off = getenv("WWHD_INTERP_EXACT_CULL") && !atoi(getenv("WWHD_INTERP_EXACT_CULL"));
     return !off;
 }
+// More than one camera process drawn on a pass (the sea: two, 47C6CE10 then 47C6C2D8 on the ocean route): at 30 fps
+// the culls after a camera's draw see that camera's view in j3dSys, so the logic pass's culls after the last camera
+// see the last camera's exact view. Only the pass's first camera had the pre-run, and the culls after the second
+// camera saw the first camera's exact view (M0-RT-09: a barrel culled differently at N 2, its execute_sub in one run
+// only; the first camera moving, the second still). Each further camera of the pass gets a pre-run of its own for
+// the culling view (and its zoom ease, which advances on the pre-run); the rest of the pre-run's state (the camera
+// image put back, the shadow cascades' camera) stays the first camera's. debug: WWHD_INTERP_CULL_ALL_CAMS=0 keeps
+// the first camera's view for the whole pass (as before)
+static bool cull_all_cams_on() {
+    static const bool off = getenv("WWHD_INTERP_CULL_ALL_CAMS") && !atoi(getenv("WWHD_INTERP_CULL_ALL_CAMS"));
+    return !off;
+}
+prerun_cams::Cams g_prerun_cams;
 void exact_prerun(Cpu* c) {
-    if (!exact_cull_on() || !interp_on() || g_prerun_pass == g_passes) return;
+    if (!exact_cull_on() || !interp_on()) return;
+    const auto kind = g_prerun_cams.take(g_prerun_pass == g_passes, c->r[3], cull_all_cams_on());
+    if (kind == prerun_cams::Kind::None) return;
+    if (kind == prerun_cams::Kind::More) {  // a further camera: its culling view (and zoom ease) only
+        const Cpu saved = *c;
+        g_cam_prerun = true;
+        g_cam_blended = true;
+        f_024FFC40_orig(c);
+        memcpy(g_exact_view, ppc_ptr(GD(0x104B45F8)), sizeof g_exact_view);
+        g_cam_prerun = false;
+        g_cam_blended = false;
+        *c = saved;
+        return;
+    }
     const Cpu saved = *c;
     g_cam_prerun = true;
     g_cam_blended = true;  // (the sound engine keeps the record pass's camera)
