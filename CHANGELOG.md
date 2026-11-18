@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **At sea, objects behave the same at 60 and 120 fps as at 30 fps** (#617). On the ocean two cameras are drawn every
+  frame; with frame interpolation on, objects drawn after the second camera decided whether they were on screen with
+  the first camera's view. Objects that only run part of their logic while visible (floating barrels, for example)
+  could then act on different frames than at 30 fps. Each camera now gets its own view for this check.
+
 - **Message boxes: button icons animate at the right speed at 60 and 120 fps** (#615). With frame interpolation on,
   the message system's once-per-frame update also ran on the in-between frames, so the animated button icons in
   message boxes played 2x too fast at 60 fps and up to 4x at 120 fps. It now runs once per game frame, as on the
