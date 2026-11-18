@@ -148,16 +148,17 @@ void b2_capture_edge(Seg& s, bool end) {
     }
 }
 void inst_formats(Inst& in) {
-    if (in.fmt || in.legacy || !R.rendering || !R.passTracked) return;
+    const ::gfxvk::PassState& ps = ::gfxvk::pass_state();
+    if (in.fmt || in.legacy || !ps.rendering || !ps.tracked) return;
     for (uint32_t i = 0; i < in.colorCount && i < 8; i++)
         if (in.colors[i] != VK_FORMAT_UNDEFINED) {  // (marked: a view is bound)
-            Surface* c = R.passColors[i];
+            Surface* c = ps.colors[i];
             if (!c) return;
             in.colors[i] = c->fmt.pixel;
         }
     if (in.depth != VK_FORMAT_UNDEFINED) {
-        if (!R.passDepth) return;
-        in.depth = R.passDepth->fmt.pixel;
+        if (!ps.depth) return;
+        in.depth = ps.depth->fmt.pixel;
     }
     if (in.stencil != VK_FORMAT_UNDEFINED) in.stencil = in.depth;
     in.fmt = true;

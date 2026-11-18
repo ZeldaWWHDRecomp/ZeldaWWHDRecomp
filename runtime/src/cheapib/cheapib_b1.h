@@ -256,18 +256,20 @@ __attribute__((always_inline)) inline const uint8_t* snap_block(const gx2::submi
     const uint8_t* p = snap->find(addr, 0);
     return p && snap->block_size(addr) >= need ? p : nullptr;
 }
-PassState pass_state() {
-    return {R.rendering, R.passTracked, R.passColors, R.passSlices, R.passDepth, R.passDepthSlice, R.passWidth, R.passHeight};
+PassState pass_state() {  // (devel #608: the open pass is gfxvk::pass_state(), R.pass on the render thread)
+    const ::gfxvk::PassState& q = ::gfxvk::pass_state();
+    return {q.rendering, q.tracked, q.colors, q.slices, q.depth, q.depthSlice, q.width, q.height};
 }
 void set_pass_state(const PassState& p) {
-    R.rendering = p.rendering;
-    R.passTracked = p.passTracked;
-    R.passColors = p.colors;
-    R.passSlices = p.slices;
-    R.passDepth = p.depth;
-    R.passDepthSlice = p.depthSlice;
-    R.passWidth = p.width;
-    R.passHeight = p.height;
+    ::gfxvk::PassState& q = ::gfxvk::pass_state();
+    q.rendering = p.rendering;
+    q.tracked = p.passTracked;
+    q.colors = p.colors;
+    q.slices = p.slices;
+    q.depth = p.depth;
+    q.depthSlice = p.depthSlice;
+    q.width = p.width;
+    q.height = p.height;
 }
 Renderer::UploadBlock* logic_block(uint64_t buffer) {
     if (g_cap.slot >= R.submissions.size()) return nullptr;
