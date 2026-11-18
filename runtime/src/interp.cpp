@@ -46,6 +46,7 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "framegen.h"
 #include "interp_camera.h"
 #include "interp_fade.h"
+#include "interp_hold.h"
 #include "interp_joints.h"
 #include "interp_keep.h"
 #include "interp_listener.h"
@@ -2193,8 +2194,11 @@ static bool called_from_frame_function() {
     return lr > lo && lr < hi;
 }
 static bool hold_skip_child(int i) {
-    // children 8-14 (after the loop body: frame setup, lighting, display) run; 1, 4, 5 (HD menus and
-    // systems) and 7 are held. Child 7 (0270870C, hdSceneBoot_c::execute, called while the boot
+    // children 8-10 and 12-14 (after the loop body: frame setup, lighting, display) run; 1, 4, 5 (HD
+    // menus and systems), 7 and 11 are held (interp_hold.h).
+    // Child 11 (027199C0 -> dMesg_core_c::update 025F77B0) is the message manager's frame end: the
+    // message frame counter and the button glyph timers of message boxes; run on every pass, the glyph
+    // animations played 2x/4x/8x too fast at 60/120/240 fps. Child 7 (0270870C, hdSceneBoot_c::execute, called while the boot
     // scene exists) plays the start-up loading screen (Boot_00: its parts' states and animations);
     // run on every pass it played 2x/4x/8x too fast at 60/120/240 fps (issue #300). Its draw (the
     // scene's draw delegate) still runs on every pass.
@@ -2205,8 +2209,8 @@ static bool hold_skip_child(int i) {
     // light counts of the HD light manager at *101F8A20 (+0x10..+0x1C), which dKy_setLight (child 8)
     // fills via 0273862C and child 9 hands to the renderer; held, every point light was added a
     // second time on hold passes: candle light twice as bright on every other frame at 60 fps).
-    static const uint32_t run = (getenv("WWHD_HOLD_RUN") ? (uint32_t)strtoul(getenv("WWHD_HOLD_RUN"), nullptr, 0) : 0x7F4C) | 1;
-    return interp::g_hold_frame && !(run & (1u << i)) && called_from_frame_function();
+    static const uint32_t run = getenv("WWHD_HOLD_RUN") ? (uint32_t)strtoul(getenv("WWHD_HOLD_RUN"), nullptr, 0) : interp::hold::kDefaultRunMask;
+    return interp::g_hold_frame && !interp::hold::runs_on_hold(run, i) && called_from_frame_function();
 }
 // debug: WWHD_INTERP_FADER_TRACE=n logs n changes of the HD display's fader object (*101F86B4 +0x440,
 // the stage fade dOvlpFd_startFadeInHD starts): which per-frame child, or the time between passes
