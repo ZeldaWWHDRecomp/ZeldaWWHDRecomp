@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Message boxes: button icons animate at the right speed at 60 and 120 fps** (#615). With frame interpolation on,
+  the message system's once-per-frame update also ran on the in-between frames, so the animated button icons in
+  message boxes played 2x too fast at 60 fps and up to 4x at 120 fps. It now runs once per game frame, as on the
+  Wii U.
+
 - **Faster rendering on Android again** (#614). A change in the groundwork for multithreaded draw recording (#608)
   made every draw look up per-thread data even with no extra draw thread running, which costs extra on Android. On a
   Xiaomi 14 that added about 0.5–0.7 ms of render-thread time per frame at the Dragon Roost cliff; the fix removes it.
