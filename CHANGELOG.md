@@ -19,7 +19,7 @@ what is on `devel` and not released yet (also in the
 
 - **Faster rendering on Android again** (#614). A change in the groundwork for multithreaded draw recording (#608)
   made every draw look up per-thread data even with no extra draw thread running, which costs extra on Android. On a
-  Xiaomi 14 that added about 0.5–0.7 ms of render-thread time per frame at the Dragon Roost cliff; the fix removes it.
+  Xiaomi 14 that added about 0.5–0.7 ms of render-thread time per frame at the Outset Island cliff; the fix removes it.
 - **Android setup: choose the recompiled or the decomp version** (#609). Like the desktop setup (#605), the Android
   app's setup asks which version to build, the recompiled version (default) or the decomp version (experimental),
   and builds only that one on the phone. The decomp build takes a long time on a phone (about 1.5–2 hours the first
@@ -28,7 +28,7 @@ what is on `devel` and not released yet (also in the
   the wrong cached object.
 - **Decomp fast build: UI and text draws reuse their prepared state across frames** (#611). Layout and text draws
   whose state hasn't changed skip preparing it again. On a Xiaomi 14 this saves about 0.1 ms of render-thread time
-  per frame at the Dragon Roost cliff and 0.15 ms at the Windfall pier; the picture is unchanged.
+  per frame at the Outset Island cliff and 0.15 ms at the Windfall pier; the picture is unchanged.
   `WWHD_NATIVE_PKT_PERSIST=0` turns it off.
 - **Mac (Metal): the soft shading around characters and edges no longer goes missing** (#610). In some sessions a
   depth-writing shader failed to build at startup, which skipped about 3,200 draws per session and removed the darkening
@@ -38,7 +38,7 @@ what is on `devel` and not released yet (also in the
   multithreaded recording itself follows. Multithreaded draw recording and draw batching from VR-WakerHD, thanks
   @mkooner!
 - **Normal build: much less render-thread work through draw batching** (#606). Runs of draws that share all their
-  state are now drawn as one instanced draw. At the Dragon Roost cliff about 4,400 draws a frame become 34, which cuts
+  state are now drawn as one instanced draw. At the Outset Island cliff about 4,400 draws a frame become 34, which cuts
   the render thread by about 28 % on a Xiaomi 14 (17.8 → 12.9 ms, now a steady 60 fps there) and by 35–45 % on a Mac.
   The picture is unchanged. On by default in the normal build; `WWHD_VK_BATCH_RUNS=0` turns it off. Multithreaded draw
   recording and draw batching from VR-WakerHD, thanks @mkooner!
@@ -52,7 +52,7 @@ what is on `devel` and not released yet (also in the
   the original game. `WWHD_INTERP_TREE_MTX=0` restores the old behaviour.
 - **Decomp fast build: less render-thread work for model and effect draws** (#603). Each described model draw and
   native effect draw is now handed to the Vulkan recording thread as one compact command, and model draw data is
-  built straight into its upload buffer. On a Xiaomi 14 at the Dragon Roost cliff this saves about 0.2 ms on the
+  built straight into its upload buffer. On a Xiaomi 14 at the Outset Island cliff this saves about 0.2 ms on the
   render thread and 0.45 ms on the recording thread per frame; the picture is unchanged.
   `WWHD_NATIVE_PAR_DECIDE=0` / `WWHD_NATIVE_J3D_DESC_SUPPORT2=0` turn the two parts off.
 - **Decomp version on Linux, Steam Deck and Windows** (#602). Setup's "Also build the decomp version
