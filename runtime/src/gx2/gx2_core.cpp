@@ -79,6 +79,7 @@ CanHold g_canHold = nullptr;
 #include "../cheapib/ib_census.h"  // its draw census / checker (WWHD_IB_CENSUS)
 #include "../drawoff/drawoff.h"  // the DrawDone wait off the critical path (WWHD_DRAWOFF)
 #endif
+#include "due_ticks.h"  // the held-frame due check without a clock call (WWHD_PRESENT_DUE_TICKS)
 
 #ifdef WWHD_DECOMP_FAST
 static void note_frames_done();  // (drawoff c2 flip times, update_flips)
@@ -1030,7 +1031,7 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     // draw, clear and copy, which is fine-grained enough: one takes a few microseconds)
     if (kind != rprof::kOpOther && kind != rprof::kOpRegs) {
         const int64_t due = render::present_due();
-        if (due && steady_ns() >= due) render::service_present();
+        if (due && (due_ticks::enabled() ? due_ticks::reached(due, steady_ns) : steady_ns() >= due)) render::service_present();
     }
     const uint64_t started = rprof::op_begin(kind);
     execute_op(op, p, n);
