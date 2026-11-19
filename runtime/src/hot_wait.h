@@ -1,4 +1,4 @@
-// Hot vsync waits (WWHD_VSYNC_HOT_WAIT_US=n; default 8000 on phones with second-thread recording (not the Steam Deck)
+// Hot vsync waits (WWHD_VSYNC_HOT_WAIT_US=n; default 8000 on phones and the Steam Deck with second-thread recording
 // and frame interpolation on, smooth_defaults.h, 0 at 30 fps and everywhere else; the variable wins; the default
 // follows the frame rate mode while the game runs): GX2WaitForVsync's waits (gx2_core.cpp: the
 // virtual vsync's deadline and the late-flip polling before it) that are at most n microseconds long spin with the

@@ -40,9 +40,11 @@ std::string first_line(const char* path) {
     return s;
 }
 #endif
-// The worker half on this device: Android only. On the Steam Deck the normal build crashed at start with
-// VK_ERROR_DEVICE_LOST ("POD Vulkan operation failed: -4", issue #178, 2026-11-15) since the worker became the
-// default there (#576); the Deck keeps the pacing half until the cause is known.
+// The worker half on this device: Android and the Steam Deck. The Deck had it off from 2026-11-15 (issue #178: the
+// normal build crashed at start with VK_ERROR_DEVICE_LOST, "POD Vulkan operation failed: -4", after #576); the cause
+// was gamescope's WSI layer (up to 3.16.31) corrupting its memory in vkGetPastPresentationTimingGOOGLE, and the
+// renderer reads display timings safely since 33b1f17a1 (display_timing.h), so the Deck has both halves again
+// (user decision 2026-11-19).
 bool worker_half() { return worker_half_for(device() && !steam_deck(), steam_deck()); }
 void log_once() {
     static const bool logged = [] {
@@ -52,10 +54,8 @@ void log_once() {
                 "variable still wins)", steam_deck() ? "Steam Deck" : "Android", smooth_pacing_setting() ? "on" : "off");
         else if (device())
             LOG("[vulkan smooth defaults] %s, " WWHD_SMOOTH_BUILD ": 8 submission slots, late present acknowledgment, "
-                "Smooth frame pacing %s; graphics on one thread%s (each environment variable still wins)",
-                steam_deck() ? "Steam Deck" : "Android", smooth_pacing_setting() ? "on" : "off",
-                steam_deck() ? "; second-thread recording and hot vsync waits: Steam Deck default: off (issue #178)"
-                             : "");
+                "Smooth frame pacing %s; graphics on one thread (each environment variable still wins)",
+                steam_deck() ? "Steam Deck" : "Android", smooth_pacing_setting() ? "on" : "off");
         return true;
     }();
     (void)logged;
@@ -81,7 +81,7 @@ bool device() {
     return steam_deck();
 #endif
 }
-bool worker_half_for(bool android, bool deck) { return kWorkerHalf && android && !deck; }
+bool worker_half_for(bool android, bool deck) { return kWorkerHalf && (android || deck); }
 bool record_worker() { log_once(); return worker_half(); }
 unsigned record_mt() { return worker_half() ? 127u : 0u; }
 unsigned submission_slots() { return device() ? 8u : 0u; }
