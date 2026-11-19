@@ -7,6 +7,13 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **New in the decomp version (fast mode): "Faster rendering (replays unchanged draws)"** in Settings > Graphics >
+  Frame rate, off by default. With 40-240 fps, the frames between two game steps replay the step's draws and update
+  only what moves, and the game no longer waits for the GPU before the next step. On a Xiaomi 14 at 120 fps this
+  gave 13-21 % more frames and 21-30 % less render time, but more uneven frame times (slowest 1 % of frames 1-7 ms
+  longer), so it stays off until that is fixed. It needs the Vulkan renderer and "Record graphics on a second
+  thread", and can change fine details like grass and leaves very slightly. The normal build is unchanged.
+
 - **Steam Deck: graphics are recorded on a second thread again by default**, with multi-threaded recording and
   hot vsync waits, as on Android phones. It was switched off as a precaution after the Gaming Mode start crash (#178);
   that crash's real cause was fixed in how display timings are read. Settings → Graphics → Advanced → "Record
