@@ -7,6 +7,11 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Steam Deck: graphics are recorded on a second thread again by default**, with multi-threaded recording and
+  hot vsync waits, as on Android phones. It was switched off as a precaution after the Gaming Mode start crash (#178);
+  that crash's real cause was fixed in how display timings are read. Settings → Graphics → Advanced → "Record
+  graphics on a second thread" (or `WWHD_VK_RECORD_WORKER=0`) still turns it off.
+
 - **Fixed: the decomp version crashed when the Mirror Shield reflected light.** Every light beam reflected with the
   Mirror Shield closed the game in the decomp version. It now works as in the original game. The recompiled version
   was not affected.
