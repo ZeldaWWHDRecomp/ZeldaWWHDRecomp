@@ -20,6 +20,7 @@
 // Counter line "[cheapib] b1 ..." every 1200 frames (render thread).
 #pragma once
 #include "cheapib.h"
+#include "render_replay.h"
 #include "../interp.h"
 #include "../runtime.h"
 #if defined(WWHD_HAS_VULKAN) && defined(WWHD_NATIVE_DRAW)
@@ -64,12 +65,14 @@ std::deque<Tag> g_tags;
 
 bool requested() {
     static const bool on = [] {
-        const char* e = getenv("WWHD_CHEAPIB_B1");
+        const char* e = render_replay::env("WWHD_CHEAPIB_B1");  // (render_replay.h)
         if (!e || !atoi(e)) return false;
 #ifdef CHEAPIB_B1_RENDER
-        const char* w = getenv("WWHD_VK_RECORD_WORKER");
-        if (mode() != 1 || !w || strcmp(w, "1") != 0) {
-            LOG("[cheapib] WWHD_CHEAPIB_B1=1 needs WWHD_CHEAPIB=1 and WWHD_VK_RECORD_WORKER=1: off");
+        // second-thread recording as this start has it (WWHD_VK_RECORD_WORKER, else the saved setting or the device's
+        // default: record_worker.h), not only the variable
+        if (mode() != 1 || !gfxvk::record_worker_requested()) {
+            LOG("[cheapib] WWHD_CHEAPIB_B1=1 needs WWHD_CHEAPIB=1 and second-thread recording (WWHD_VK_RECORD_WORKER=1 or "
+                "\"Record graphics on a second thread\"): off");
             return false;
         }
         LOG("[cheapib] b1: replayed in-betweens re-emit the logic pass's recorded commands with the patched uniform blocks");
@@ -1508,7 +1511,7 @@ bool b1_hold(const void* slot) {
 }
 bool b1_skip(const void* slot) {
 #ifdef CHEAPIB_B1_RENDER
-    static const bool on = getenv("WWHD_CHEAPIB_B1_SKIP") && atoi(getenv("WWHD_CHEAPIB_B1_SKIP"));
+    static const bool on = [] { const char* e = render_replay::env("WWHD_CHEAPIB_B1_SKIP"); return e && atoi(e); }();  // (render_replay.h)
     if (!on || !slot || slot != b1::g_held || !b1::g_cap.valid) return false;
     b1::g_st.skips++;
     return true;

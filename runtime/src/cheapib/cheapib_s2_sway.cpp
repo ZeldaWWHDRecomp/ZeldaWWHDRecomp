@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "cheapib/cheapib.h"
+#include "cheapib/render_replay.h"
 #include "guest_addr.h"
 #include "ppc.h"
 #include "runtime.h"
@@ -131,7 +132,7 @@ bool write_field(uint32_t buffer, uint32_t index, const uint32_t* src, int count
 
 uint32_t read_mask() {
 #ifdef WWHD_DECOMP_FAST
-    const char* e = getenv("WWHD_CHEAPIB_S2");
+    const char* e = render_replay::env("WWHD_CHEAPIB_S2");  // (render_replay.h)
     const uint32_t m = e ? (uint32_t)strtoul(e, nullptr, 0) : 0;
     if (m && mode() == 1) {
         LOG("[cheapib] WWHD_CHEAPIB_S2=0x%X (stage 2): replayed in-betweens write the sway matrices of the logic pass's "

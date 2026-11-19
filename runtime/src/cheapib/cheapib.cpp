@@ -1,5 +1,6 @@
 // cheapib: cheap in-between frames (decomp build, fast mode only). See cheapib.h.
 #include "cheapib/cheapib.h"
+#include "cheapib/render_replay.h"
 
 #include <atomic>
 #include <pthread.h>
@@ -36,7 +37,7 @@ constexpr uint16_t kReplayFlag = 0x200;
 
 int read_mode() {
 #ifdef WWHD_DECOMP_FAST
-    const char* e = getenv("WWHD_CHEAPIB");
+    const char* e = render_replay::env("WWHD_CHEAPIB");  // (the setting's set when not set: render_replay.h)
     const int m = e ? atoi(e) : 0;
     if (m == 1) {
         LOG("[cheapib] WWHD_CHEAPIB=1 (stage 1): in-betweens replay the logic pass's display lists with the moving "

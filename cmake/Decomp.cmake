@@ -814,7 +814,8 @@ function(wwhd_decomp_link target)
     "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_sky.cpp"
     "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_sun.cpp"
     "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_weather.cpp"
-    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_particles.cpp")
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_particles.cpp"
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/render_replay.cpp")
   if(WWHD_DECOMP_FAST)  # the runtime's fast-mode parts (runtime/src/decomp)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST=1)
     # the DrawDone wait off the critical path (runtime/src/drawoff/drawoff.h; WWHD_DRAWOFF, default 0)

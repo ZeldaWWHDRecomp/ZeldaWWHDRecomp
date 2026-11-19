@@ -1,5 +1,6 @@
 // drawoff: the game thread's DrawDone wait off the critical path (decomp build, fast mode only). See drawoff.h.
 #include "drawoff/drawoff.h"
+#include "cheapib/render_replay.h"
 
 #include <algorithm>
 #include <atomic>
@@ -44,7 +45,7 @@ int64_t now_ns() {
 
 int read_mode() {
 #ifdef WWHD_DECOMP_FAST
-    const char* e = getenv("WWHD_DRAWOFF");
+    const char* e = cheapib::render_replay::env("WWHD_DRAWOFF");  // (the setting's set when not set: cheapib/render_replay.h)
     const int m = e ? atoi(e) : 0;
     if (m == 1) {
         LOG("[drawoff] WWHD_DRAWOFF=1 (c1): GX2DrawDone queues a fence, the game waits for it before the next painter");

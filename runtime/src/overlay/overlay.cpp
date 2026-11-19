@@ -128,6 +128,9 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "mobile_ui.h"
 #include "../report_header.h"
 #include "../dynres.h"
+#ifdef WWHD_DECOMP_FAST
+#include "../cheapib/render_replay.h"  // Frame rate: "Faster rendering" (decomp build, fast mode)
+#endif
 #ifdef WWHD_VK_SMOOTH
 #include "gfx/vulkan/smooth_defaults.h"
 #endif
@@ -1010,6 +1013,26 @@ void tab_graphics() {
             note("Off: if this computer cannot reach %d fps, the whole game slows down (the performance\n"
                  "overlay then shows fewer than 30 logic steps/s). Turn it on to keep the game's speed.", interp::fps());
     }
+#ifdef WWHD_DECOMP_FAST
+    // decomp build, fast mode: cheap in-between frames + c2 as one set (cheapib/render_replay.h; saved, read at start)
+    {
+        static bool renderReplay = cheapib::render_replay::chosen();
+        const bool fixed = getenv("WWHD_RENDER_REPLAY") != nullptr;
+        bool on;
+        if (check("Faster rendering (replays unchanged draws)", renderReplay, &on, !fixed)) {
+            renderReplay = on;
+            hostui::post([on] { hostui::set("renderReplay", on ? "1" : "0"); });
+        }
+        help("Applies after restarting the game. On by default. With 40-240 fps, the frames between two game\n"
+             "steps replay the step's draws and update only what moves, instead of drawing everything again:\n"
+             "much faster rendering (on a phone at 120 fps about a quarter more frames). Can change fine\n"
+             "details like grass and leaves very slightly. Needs the Vulkan renderer and \"Record graphics\n"
+             "on a second thread\" (Advanced; on by default on phones).");
+        if (fixed) note("Set by WWHD_RENDER_REPLAY for this start.");
+        else if (renderReplay != cheapib::render_replay::chosen()) note("Restart the game to apply.");
+        else if (const char* why = cheapib::render_replay::inactive_reason()) note("%s", why);
+    }
+#endif
 #ifdef __ANDROID__
     // the heat guard exists on Android only (platform/perf_hint.cpp); WWHD_HEAT_GUARD wins and is not saved
     {
