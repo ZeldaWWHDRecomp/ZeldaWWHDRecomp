@@ -40,15 +40,19 @@ extern "C" void hook_0246C5E8(Cpu* c);
 namespace interp {
 bool hold_pass();
 uint64_t logic_steps();
+float pass_t();
+uint64_t pass_count();
+#ifdef WWHD_DECOMP_FAST  // (the fast build's: interp.cpp, interp_fx.cpp)
 bool cheapib_blended_hold();
 bool cheapib_set_blend_draw(bool on);
-float pass_t();
 bool fx_sea_scroll(uint32_t pk, bool blended, float t, float& y);  // interp_fx.cpp
-uint64_t pass_count();
+#endif
 }  // namespace interp
+#ifdef WWHD_DECOMP_FAST
 namespace gx2 {
-void cheapib_vtx_emit(void* writes);
+void cheapib_vtx_emit(void* writes);  // (gx2_core.cpp, fast build)
 }
+#endif
 
 namespace cheapib {
 namespace {
@@ -84,6 +88,7 @@ struct C2Pending {
     std::vector<uint8_t> bytes;
 } g_c2;
 void send(Writes* w) {
+#ifdef WWHD_DECOMP_FAST  // (drawoff and the render thread's OP_CHEAPIB_VTX are the fast build's; stage 2 is off without it)
     if (drawoff::g_vertex_on) {  // (c2; drawoff::copies_on() is c1's ring copies, off with c2)
         const uint64_t p = interp::pass_count();
         if (g_c2.pass != p) {
@@ -97,6 +102,9 @@ void send(Writes* w) {
         g_c2.bytes.insert(g_c2.bytes.end(), w->bytes.begin(), w->bytes.end());
     }
     gx2::cheapib_vtx_emit(w);
+#else
+    delete w;
+#endif
 }
 
 // daSea_packet_c (d_a_sea.h)
@@ -259,6 +267,9 @@ void s2_vtx_logic_done() {
 
 // a replayed in-between (cheapib_models.h replay, after the models' drain)
 void s2_vtx_rerun(Cpu* c) {
+#ifndef WWHD_DECOMP_FAST  // (stage 2 exists in the fast build only: vtx_on() is false without it)
+    (void)c;
+#else
     if (!vtx_on() || !replaying() || verifying()) return;
     Sea& s = g.sea;
     if (!s.pk || s.step != interp::logic_steps()) return;  // (this step's logic pass drew no sea)
@@ -340,6 +351,7 @@ void s2_vtx_rerun(Cpu* c) {
         g.passes = g.written = g.bytes = g.ns = g.skipped = g.cam = g.scroll = g.logic = g.c2_patched = g.c2_older = 0;
         g.applied = g.applied_bytes = 0;
     }
+#endif
 }
 
 }  // namespace cheapib

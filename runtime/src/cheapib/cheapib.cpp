@@ -330,9 +330,13 @@ void note_emitter_thread() {
     g_em = pthread_self();
     g_em_have.store(true, std::memory_order_release);
 }
-void b1_frame();
+#ifdef WWHD_DECOMP_FAST
+void b1_frame();  // (cheapib_b1.h, in the fast build's backend.cpp)
+#endif
 std::string swap_dump_label() {
+#ifdef WWHD_DECOMP_FAST
     b1_frame();
+#endif
     if (!dump().on && !stats()) return {};
     Dump& d = dump();
     std::pair<std::string, int> e{{}, -1};
@@ -377,10 +381,14 @@ bool skip_draw() {
     return true;
 }
 
+#ifdef WWHD_DECOMP_FAST
 void b1_tag(uint32_t list, uint32_t size, int kind, uint64_t step, uint32_t index);
+#endif
 bool drop_call(uint32_t list, uint32_t size) {
+#ifdef WWHD_DECOMP_FAST  // (b1 is the fast build's: cheapib_b1.h)
     if (b1_on())  // (every top-level call, in the order the render thread executes them)
         b1_tag(list, size, g.last_kind == 0 && g.interp_pass ? 0 : g.last_kind == 2 ? 2 : -1, interp::logic_steps(), g.calls++);
+#endif
     if (g.window == kNone) return false;
     const uint64_t h = list && size && size < (64u << 20) ? hash_bytes((const uint8_t*)ppc_ptr(list), size) : 0;
     if (g.window == kLogic) {
