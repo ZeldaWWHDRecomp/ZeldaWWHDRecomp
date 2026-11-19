@@ -7,6 +7,10 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: the decomp version crashed when the Mirror Shield reflected light.** Every light beam reflected with the
+  Mirror Shield closed the game in the decomp version. It now works as in the original game. The recompiled version
+  was not affected.
+
 - **At sea, objects behave the same at 60 and 120 fps as at 30 fps** (#617). On the ocean two cameras are drawn every
   frame; with frame interpolation on, objects drawn after the second camera decided whether they were on screen with
   the first camera's view. Objects that only run part of their logic while visible (floating barrels, for example)
