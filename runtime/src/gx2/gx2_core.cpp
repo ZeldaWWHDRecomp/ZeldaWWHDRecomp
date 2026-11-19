@@ -1466,8 +1466,8 @@ static int64_t vsync_hot_wait_us() {  // 0: off
     const bool thirty = interp::mode() == 0;  // (gfx/vulkan/smooth_defaults.h)
     const int64_t v = gfxvk::smooth_defaults::vsync_hot_wait_applied_us(env, thirty);
     if (!env && gfxvk::smooth_defaults::vsync_hot_wait_us(false))
-        why = thirty ? "phone default off at 30 fps: no pacing gain there, the phone warms faster"
-                     : "phone default with frame interpolation";
+        why = thirty ? "phone / Steam Deck default off at 30 fps: no pacing gain there, the phone warms faster"
+                     : "phone / Steam Deck default with frame interpolation";
 #else
     const int64_t v = env ? std::max<int64_t>(0, atoll(env)) : 0;
 #endif

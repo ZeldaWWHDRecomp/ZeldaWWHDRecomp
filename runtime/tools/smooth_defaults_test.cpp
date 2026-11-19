@@ -1,9 +1,7 @@
 // smooth_defaults (gfx/vulkan/smooth_defaults.h) as the normal build compiles it: every default is off on a desktop,
-// and on the Steam Deck (Linux, SteamDeck=1) the pacing half is on (8 slots, late acknowledgment, pool reset thread,
-// display pacing, even pacing) but the worker half is off (no second-thread recording, MT 0, no hot vsync waits:
-// issue #178, VK_ERROR_DEVICE_LOST at start), and the log says why; Android keeps both halves (worker_half_for, the
-// device rule with its inputs given: second-thread recording with MT 127, hot vsync waits of 8 ms with frame
-// interpolation and none at 30 fps); "Smooth frame pacing" off leaves only display pacing off; WWHD_VSYNC_HOT_WAIT_US
+// and on the Steam Deck (Linux, SteamDeck=1) the whole set is on, as on Android (worker_half_for, the device rule
+// with its inputs given): second-thread recording with MT 127, hot vsync waits of 8 ms with frame interpolation and
+// none at 30 fps, 8 slots, late acknowledgment, pool reset thread, display pacing, even pacing; "Smooth frame pacing" off leaves only display pacing off; WWHD_VSYNC_HOT_WAIT_US
 // wins in every mode; WWHD_VK_RECORD_WORKER wins over the saved setting, which wins over the device default
 // (record_worker_choice.h). Modes: desktop (no SteamDeck variable), deck (SteamDeck=1: on only on Linux),
 // deck-pacing-off (and the saved setting vkSmoothPacing=0).
@@ -58,15 +56,17 @@ int main(int argc, char** argv) {
 #endif
     assert(steam_deck() == deck);
     assert(device() == deck);
-    // the worker half: Android only (the rule with its inputs given, so every host checks it)
-    assert(worker_half_for(true, false));    // Android: unchanged
-    assert(!worker_half_for(false, true));   // Steam Deck: off (issue #178)
+    // the worker half: Android and the Steam Deck (the rule with its inputs given, so every host checks it)
+    assert(worker_half_for(true, false));    // Android
+    assert(worker_half_for(false, true));    // Steam Deck (again since 2026-11-19, issue #178)
     assert(!worker_half_for(false, false));  // desktop
-    assert(!record_worker());                // desktop and the Steam Deck
-    assert(record_mt() == 0u);
-    assert(vsync_hot_wait_us(false) == 0);   // frame interpolation (40-240 fps): no worker, no hot waits
-    assert(vsync_hot_wait_us(true) == 0);    // 30 fps
-    if (deck) assert(logged.find("Steam Deck default: off (issue #178)") != std::string::npos);
+    assert(record_worker() == deck);
+    assert(record_mt() == (deck ? 127u : 0u));
+    assert(vsync_hot_wait_us(false) == (deck ? 8000 : 0));  // frame interpolation (40-240 fps)
+    assert(vsync_hot_wait_us(true) == 0);                    // 30 fps
+    if (deck) assert(logged.find("Steam Deck, ") != std::string::npos &&
+                     logged.find("graphics on a second thread") != std::string::npos &&
+                     logged.find("issue #178") == std::string::npos);
     else assert(logged.empty());
     // "Record graphics on a second thread": WWHD_VK_RECORD_WORKER wins, then the saved setting, then the default
     const bool deviceDefault = record_worker();
@@ -85,7 +85,7 @@ int main(int argc, char** argv) {
 #else
     unsetenv("WWHD_VSYNC_HOT_WAIT_US");
 #endif
-    assert(vsync_hot_wait_applied_us(std::getenv("WWHD_VSYNC_HOT_WAIT_US"), false) == 0);
+    assert(vsync_hot_wait_applied_us(std::getenv("WWHD_VSYNC_HOT_WAIT_US"), false) == (deck ? 8000 : 0));
     assert(vsync_hot_wait_applied_us(std::getenv("WWHD_VSYNC_HOT_WAIT_US"), true) == 0);
 #ifdef _WIN32
     _putenv_s("WWHD_VSYNC_HOT_WAIT_US", "3000");
@@ -100,7 +100,7 @@ int main(int argc, char** argv) {
     setenv("WWHD_VSYNC_HOT_WAIT_US", "0", 1);
 #endif
     assert(vsync_hot_wait_applied_us(std::getenv("WWHD_VSYNC_HOT_WAIT_US"), false) == 0);
-    assert(vsync_hot_wait_applied_us("8000", false) == 8000);  // the Steam Deck can still turn them on
+    assert(vsync_hot_wait_applied_us("8000", false) == 8000);  // a desktop can still turn them on
     assert(submission_slots() == (deck ? 8u : 0u));
     assert(late_present_ack() == deck);
     assert(async_pool_reset() == (deck ? 1 : 0));

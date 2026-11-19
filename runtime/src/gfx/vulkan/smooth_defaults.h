@@ -6,8 +6,8 @@
 // pacing, as on Android (interp.cpp). Each environment variable still wins (WWHD_VK_RECORD_WORKER, WWHD_VK_RECORD_MT,
 // WWHD_VK_SUBMISSION_POOL, WWHD_VK_LATE_PRESENT_ACK, WWHD_VK_ASYNC_POOL_RESET, WWHD_VK_DISPLAY_PACING,
 // WWHD_INTERP_EVEN_PACING); every other device keeps the old defaults (desktop: nothing here is on).
-// The Steam Deck has the pacing half only (no second-thread recording, MT recording or hot vsync waits by default):
-// with the worker the normal build crashed there at start with VK_ERROR_DEVICE_LOST (issue #178, 2026-11-15).
+// The Steam Deck has both halves (again since 2026-11-19: its start crash with the worker, issue #178, came from
+// gamescope's WSI layer, and display timings are read safely since 33b1f17a1).
 // The two halves have their own constants in smooth_defaults.cpp (kWorkerHalf: second-thread recording; the pacing
 // half: submission slots, late acknowledgment, pool resets, display pacing, even pacing). With the worker half the game
 // thread's short vsync waits spin (hot_wait.h): without that the worker made the normal build's 1 % lows worse in lava.
@@ -20,8 +20,8 @@
 namespace gfxvk::smooth_defaults {
 bool steam_deck();       // Linux: Steam's SteamDeck=1, or the DMI board of Valve's Jupiter / Galileo
 bool device();           // Android or the Steam Deck
-// the worker half (second-thread recording, MT 127, hot vsync waits) on a device: Android only, not the Steam Deck
-// (issue #178); the parameters keep it testable on any host (smooth_defaults_test.cpp)
+// the worker half (second-thread recording, MT 127, hot vsync waits) on a device: Android and the Steam Deck; the
+// parameters keep it testable on any host (smooth_defaults_test.cpp)
 bool worker_half_for(bool android, bool deck);
 bool record_worker();    // Graphics > Advanced "Record graphics on a second thread" when the player never chose
 unsigned record_mt();    // WWHD_VK_RECORD_MT when it is not set (0: off)
@@ -30,7 +30,7 @@ bool late_present_ack();
 bool smooth_pacing_setting();  // Graphics > Advanced "Smooth frame pacing" (hostui key vkSmoothPacing, default on)
 int display_pacing();    // WWHD_VK_DISPLAY_PACING when it is not set: 11 (pacing + one more image + bounded latency) or 0
 bool even_pacing();      // even frame pacing's default on this device (Android already on)
-// WWHD_VSYNC_HOT_WAIT_US when it is not set (hot_wait.h): 8000 with the worker half (Android) and frame interpolation on
+// WWHD_VSYNC_HOT_WAIT_US when it is not set (hot_wait.h): 8000 with the worker half (Android, the Steam Deck) and frame interpolation on
 // (40-240 fps), else 0; at 30 fps (THIRTY_FPS: interp::mode() 0) also 0: spinning gave no pacing gain there (Xiaomi 14,
 // 2026-11-14, lava: 1 % low 20.7 instead of 21.3 fps, p99 48.3 instead of 47.0 ms) and the phone warmed faster
 // (+0.04 C/min lava, about +0.1 C/min cliff)
