@@ -1769,6 +1769,13 @@ static void paced_pass_start() {
     pace_clock::time_point slot;
     if (gx2::next_step_time(slot)) {
         using ns = std::chrono::nanoseconds;
+#ifdef WWHD_DECOMP_FAST
+        // drawoff c2: the slot the last logic pass used, while its frame has not flipped yet (drawoff::step_slot)
+        if (g_last_logic != pace_clock::time_point{})
+            slot = pace_clock::time_point(std::chrono::duration_cast<pace_clock::duration>(ns(drawoff::step_slot(
+                ns(slot.time_since_epoch()).count(), ns(g_last_logic.time_since_epoch()).count(),
+                ns(DRAWOFF_LEAD(vsync_tick())).count(), ns(kPacedStep).count()))));
+#endif
         // (DRAWOFF_LEAD, drawoff c2: a frame flips one pass later, its list is called at the next pass's start, so the
         // logic pass starts that many frames earlier; started one frame before its slot, it slept with the record pass's
         // list uncalled, that frame flipped up to a frame late and the step's frames bunched: p50 6 / p95 17 ms)

@@ -102,6 +102,14 @@ int grid_keep_frames();
 // wait for flips, so it notices one up to a whole logic pass late: in-between frames counted 20+ ms late, moved the grid
 // and came out bunched with the next logic frame); 0: the game's next call (as before)
 bool flip_time();
+// interp's paced step start (WWHD_DRAWOFF_SLOT_AHEAD, c2, default 1; 0 = as before): the step slot (ns) to plan the next
+// logic pass with. Under c2 a logic frame reaches the render thread a pass later, so after a dropped rest of a step (no
+// in-between pass between two logic passes) its flip has not executed when the next logic pass starts: gx2's step slot is
+// still that step's own. Counted from it the next step looked a whole step late and started a new schedule (phone, cliff,
+// 120 fps: 95 % of ~120 N a minute) or kept the old start (its in-between frames planned a step short). A slot whose
+// logic pass would start less than half a step after the last one (`last`) is moved on by whole steps, as gx2's
+// next_slot does once that flip executes. `lead`: the start's lead before its slot; `step`: the step length.
+int64_t step_slot(int64_t slot, int64_t last, int64_t lead, int64_t step);
 // a display-list call recorded into the list this thread records (c2: the called list's vertex ranges join it)
 void nested_call(uint32_t list);
 // a top-level display-list call (game thread): its vertex snapshot (c2; null: none), handed to the render thread

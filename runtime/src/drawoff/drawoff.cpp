@@ -953,6 +953,20 @@ bool flip_time() {
     }();
     return on;
 }
+int64_t step_slot(int64_t slot, int64_t last, int64_t lead, int64_t step) {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_DRAWOFF_SLOT_AHEAD");
+        const bool v = c2() && (!e || atoi(e) != 0);
+        if (c2()) LOG("[drawoff] c2 step slots: %s (WWHD_DRAWOFF_SLOT_AHEAD=%d)", v ? "a slot the last logic pass already used counts as the next one" : "as gx2 has it (as before)", v ? 1 : 0);
+        return v;
+    }();
+    if (!on || last <= 0 || step <= 0) return slot;
+    static uint64_t moved = 0;
+    const int64_t s0 = slot;
+    while (slot - lead < last + step / 2) slot += step;
+    if (slot != s0 && (++moved == 1 || moved % 1000 == 0)) LOG("[drawoff] c2 step slot moved on by %.1f ms (%llu times)", (slot - s0) / 1e6, (unsigned long long)moved);
+    return slot;
+}
 bool render_cost() {
     static const bool on = [] {
         const char* e = getenv("WWHD_DRAWOFF_RENDER_COST");
