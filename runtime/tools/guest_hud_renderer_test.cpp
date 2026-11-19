@@ -4,6 +4,8 @@
 #include <cassert>
 #include <cmath>
 
+namespace gfx { bool touchpad_highlight(float*, float*, bool*) { return false; } }  // gfx/display_modes.cpp
+
 int main() {
     // No guest HUD must be a no-op even without an ImGui context. Opening the
     // port's own overlay must not initialize guest draw lists or take snapshots.
