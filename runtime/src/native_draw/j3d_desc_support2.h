@@ -48,7 +48,13 @@ UploadSlice support2(Stage& S, const In& in) {
   for (const auto& run : S.supRuns)
     if (run.block < 16 && addr[run.block] && !(sub[run.block] && run.src + run.len <= size[run.block])) keepable = false;
   const uint64_t uid = gx2::submitted_uniforms_id();
-  if (keepable && S.supKept.buffer && S.supKeptSubmission == R.submissionGeneration && S.supKeptUid == uid) {
+#ifdef WWHD_DECOMP_FAST
+  // (cheapib b1: a captured call's slice is built and noted as support_bytes + snapshot note it; no kept slice then)
+  const bool b1cap = ::cheapib::g_b1_capturing;
+#else
+  constexpr bool b1cap = false;
+#endif
+  if (keepable && !b1cap && S.supKept.buffer && S.supKeptSubmission == R.submissionGeneration && S.supKeptUid == uid) {
     bool same = true;
     for (uint32_t mask = S.supBlocks; mask && same; mask &= mask - 1) {
       const int j = __builtin_ctz(mask);
@@ -64,10 +70,22 @@ UploadSlice support2(Stage& S, const In& in) {
   uint8_t* bytes = static_cast<uint8_t*>(slice.mapped);
   if (n) std::memcpy(bytes, S.sup.data(), n);
   if (slice.size > n) std::memset(bytes + n, 0, slice.size - n);
+#ifdef WWHD_DECOMP_FAST
+  if (b1cap) ::cheapib::b1_src_arm(bytes, 3);
+#endif
   for (const auto& run : S.supRuns) {
     const uint32_t a = run.block < 16 ? addr[run.block] : 0;
     if (!a) { std::memset(bytes + run.dst, 0, run.len); continue; }
     const uint8_t* sb = sub[run.block];
+#ifdef WWHD_DECOMP_FAST
+    if (b1cap) {  // (support_patch's notes, entry by entry)
+      for (uint32_t o = 0; o < run.len; o += 16) {
+        const bool fromSub = sb && run.src + o + 16 <= size[run.block];
+        ::cheapib::b1_src(bytes, run.dst + o, fromSub ? static_cast<const void*>(sb + run.src + o) : ppc_ptr(a + run.src + o));
+        if (!fromSub) ::cheapib::b1_guest_read(4, a, size[run.block]);
+      }
+    }
+#endif
     if (sb && run.src + run.len <= size[run.block]) std::memcpy(bytes + run.dst, sb + run.src, run.len);
     else if (!sb) std::memcpy(bytes + run.dst, ppc_ptr(a + run.src), run.len);
     else
@@ -83,7 +101,13 @@ UploadSlice support2(Stage& S, const In& in) {
             ::gfx::area_sample::scale_gather_grid(reinterpret_cast<float*>(bytes + c.dst), 1, x.surface->width,
                                                   x.surface->height, x.surface->sx, x.surface->sy);
   d1::count(d1::cSupBuilt);
-  if (keepable) {
+#ifdef WWHD_DECOMP_FAST
+  if (b1cap) {
+    b1_note_support_regs(S, bytes);
+    if (n) ::cheapib::b1_note_upload(uint64_t(slice.buffer), slice.offset, slice.size, bytes, n);
+  }
+#endif
+  if (keepable && !b1cap) {
     S.supKept = slice, S.supKeptSubmission = R.submissionGeneration, S.supKeptUid = uid;
     for (uint32_t mask = S.supBlocks; mask; mask &= mask - 1) {
       const int j = __builtin_ctz(mask);

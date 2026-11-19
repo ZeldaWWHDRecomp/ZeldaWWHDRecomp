@@ -63,6 +63,19 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "game_hooks.h"
 #include "gx2/gx2.h"
 #include "gfx/renderer.h"
+#ifdef WWHD_DECOMP_FAST
+#include "cheapib/cheapib.h"  // cheap in-between frames (decomp build, fast mode; WWHD_CHEAPIB)
+#define CHEAPIB(x) cheapib::x
+#define CHEAPIB_MODELS(x) interp::cheapib_models::x  // (stage 1's model patch: cheapib/cheapib_models.h)
+#include "drawoff/drawoff.h"  // the DrawDone wait off the critical path (decomp build, fast mode; WWHD_DRAWOFF)
+#define DRAWOFF(x) drawoff::x
+#define DRAWOFF_LEAD(tick) ((tick) * (1 + drawoff::frames_in_flight()))  // (paced_pass_start)
+#else
+#define CHEAPIB(x) ((void)0)
+#define CHEAPIB_MODELS(x) ((void)0)
+#define DRAWOFF(x) ((void)0)
+#define DRAWOFF_LEAD(tick) tick
+#endif
 #include "mods/link_appearance.h"
 #include "mods/link_masks.h"
 #ifdef WWHD_VK_SMOOTH
@@ -818,6 +831,9 @@ extern "C" void hook_027C93A8(Cpu* c) {
 extern "C" void f_024FFC18_orig(Cpu* c);
 extern "C" void hook_024FFC18(Cpu* c) {
     if (interp::g_cam_prerun) { c->r[3] = 1; return; }
+#ifdef WWHD_DECOMP_FAST
+    if (cheapib::replaying()) { c->r[3] = 1; return; }  // (cheapib's camera patch on a replayed pass: no 2D lists recorded)
+#endif
     f_024FFC18_orig(c);
 }
 extern "C" void f_025D6CE8_orig(Cpu* c);
@@ -1361,6 +1377,9 @@ extern "C" void hook_025A4204(Cpu* c) {
     f_025A4204_orig(c);
     interp::g_ptcl_model_draw = saved;
 }
+#ifdef WWHD_DECOMP_FAST
+#include "cheapib/cheapib_models.h"  // cheapib stage 1: replayed passes re-run the logic pass's viewCalcs
+#endif
 // J3DModel::viewCalc(J3DModel*)
 extern "C" void hook_027F55FC(Cpu* c) {
     using namespace interp;
@@ -1369,6 +1388,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
         f_027F55FC_orig(c);
         return;
     }
+    CHEAPIB_MODELS(note(c));
     const bool record = record_pass();
     uint32_t model = c->r[3];
     const uint8_t marker_cell = sploosh_marker_cell(g_sploosh_markers, model);
@@ -1485,7 +1505,11 @@ extern "C" void hook_027F55FC(Cpu* c) {
     f_027F55FC_orig(c);
     const uint32_t r3 = c->r[3];
     c->r[3] = model;
+#ifdef WWHD_DECOMP_FAST
+    interp::cheapib_models::ubo_update(c);  // (cheapib's patch: the matrices only, cheapib_models.h)
+#else
     f_027F5018_orig(c);  // the model's UBO update, here and now on the blended matrices
+#endif
     c->r[3] = r3;
     memcpy(ppc_ptr(mtx), saved.data(), 4 * words);
 }
@@ -1704,7 +1728,14 @@ static void paced_pass_start() {
     previousRecord = g_hold_next && g_phase + 1 >= g_step_n;  // this pass is the step's record pass
     const auto now = pace_clock::now();
     if (g_last_entry != pace_clock::time_point{}) {
+#ifdef WWHD_DECOMP_FAST
+        // drawoff c2 (drawoff/drawoff.h): the pass's waits for flips (sead's waitForSwap with two swaps in flight) are
+        // the display's backpressure, not the pass's cost: counted, an in-between probe that waited for a 30 fps
+        // flip rhythm measured 33 ms and kept every in-between frame out
+        const auto pass = now - g_last_entry - g_slept - std::chrono::nanoseconds(drawoff::take_flip_wait_ns());
+#else
         const auto pass = now - g_last_entry - g_slept;
+#endif
         pace_clock::duration& avg = g_pass_was_hold ? g_hold_avg : g_logic_avg;
         // a probe after a long pause replaces the old value (pacing::probe_estimate; one that hit a
         // hitch is repeated a second later)
@@ -1738,8 +1769,11 @@ static void paced_pass_start() {
     pace_clock::time_point slot;
     if (gx2::next_step_time(slot)) {
         using ns = std::chrono::nanoseconds;
+        // (DRAWOFF_LEAD, drawoff c2: a frame flips one pass later, its list is called at the next pass's start, so the
+        // logic pass starts that many frames earlier; started one frame before its slot, it slept with the record pass's
+        // list uncalled, that frame flipped up to a frame late and the step's frames bunched: p50 6 / p95 17 ms)
         const auto plan = pacing::slot_step_start(ns(now.time_since_epoch()).count(), ns(slot.time_since_epoch()).count(),
-                                                  ns(vsync_tick()).count(), ns(kPacedStep).count(), g_wait_step,
+                                                  ns(DRAWOFF_LEAD(vsync_tick())).count(), ns(kPacedStep).count(), g_wait_step,
                                                   pacing::keep_window(ns(kPacedStep).count(), ns(vsync_tick()).count(), in_between() == 1));
         const auto before = g_last_logic;
         g_last_logic = pace_clock::time_point(std::chrono::duration_cast<pace_clock::duration>(ns(plan.start)));
@@ -1808,6 +1842,9 @@ static int plan_step() {
     g_step_capacity = std::max(1, in_between());
     int n = std::max(1, in_between());
     if (n > 1 && paced() && interp_on()) {
+#ifdef WWHD_DECOMP_FAST
+        if (!cheapib::plan_all())  // (test-only ceilings: replayed in-betweens cost next to nothing; plan them all)
+#endif
         n = pacing::plan_in_between(n, kPacedBudget.count(), std::chrono::duration_cast<std::chrono::nanoseconds>(g_logic_avg).count(),
                                     std::chrono::duration_cast<std::chrono::nanoseconds>(g_hold_avg).count());
         // even frame delivery: only counts that divide the display's refreshes per step evenly
@@ -1888,6 +1925,15 @@ static void after_pass(int phase) {
         budget = fps40() ? pacing::one_frame_budget_40(ns(vsync_tick()).count(), std::chrono::duration_cast<ns>(g_logic_avg).count(), ns(kPacedStep).count())
                          : pacing::one_frame_budget(ns(kPacedStep).count(), ns(vsync_tick()).count());
     }
+#ifdef WWHD_DECOMP_FAST
+    // drawoff c2: the decision comes before the pass's own draw, swap and wait for the render thread (a pass's list
+    // runs a pass later, its cost shows as waits after this point): this pass counts at least its recent duration
+    // (pacing::logic_pass_elapsed), else the step planned passes the render thread could not draw in it
+    else if (drawoff::frames_in_flight() > 0 && drawoff::render_cost())
+        elapsed = pacing::logic_pass_elapsed(ns(now.time_since_epoch()).count(), ns((g_last_entry + g_slept).time_since_epoch()).count(),
+                                             ns(g_last_logic.time_since_epoch()).count(),
+                                             std::chrono::duration_cast<ns>(g_pass_was_hold ? g_hold_avg : g_logic_avg).count());
+#endif
     // After a long time without in-between passes their cost is stale (the scene may be lighter
     // now): one probe, if one vsync tick fits; its duration replaces the estimate.
     const bool probe = phase == 0 && (now - g_last_hold >= kProbeAfter || (g_probe_retry != pace_clock::time_point{} && now >= g_probe_retry));
@@ -1969,6 +2015,8 @@ bool frame_is_hold() { return interp_on() && g_hold_next; }
 }  // namespace interp
 extern "C" void hook_0203593C(Cpu* c) {
     using namespace interp;
+    CHEAPIB(pass_entry());
+    DRAWOFF(pass_entry());
     // Opt-in countdown trace: scalar timing measurements only, no save or asset data.
     struct CountdownTrace {
         bool hold;
@@ -2088,7 +2136,11 @@ extern "C" void hook_0203593C(Cpu* c) {
         {
             PassTimer timer(0);
             g_in_frame = true;
+            CHEAPIB(frame_begin(false, false));
+            DRAWOFF(frame_begin(false));
             f_0203593C_orig(c);
+            CHEAPIB(frame_end(false, false));
+            DRAWOFF(frame_end());
             g_in_frame = false;
         }
         static unsigned stats_steps = 0;
@@ -2115,7 +2167,12 @@ extern "C" void hook_0203593C(Cpu* c) {
             fx_hold_blend(pass_t());  // the effects blended at logic time, at this pass's fraction
         }
         g_in_frame = true;
+        CHEAPIB(frame_begin(true, true));
+        DRAWOFF(frame_begin(true));
         f_0203593C_orig(c);
+        CHEAPIB_MODELS(replay(c));
+        CHEAPIB(frame_end(true, true));
+        DRAWOFF(frame_end());
         g_in_frame = false;
         g_hold_frame = false;
         after_pass(g_phase);
@@ -2135,7 +2192,12 @@ extern "C" void hook_0203593C(Cpu* c) {
     {
         PassTimer timer(0);
         g_in_frame = true;
+        CHEAPIB(frame_begin(false, true));
+        DRAWOFF(frame_begin(false));
         f_0203593C_orig(c);  // logic pass (the loop body hook marks it)
+        CHEAPIB_MODELS(logic_done());
+        CHEAPIB(frame_end(false, true));
+        DRAWOFF(frame_end());
         g_in_frame = false;
     }
     g_record_logic = false;
@@ -2534,6 +2596,11 @@ void trace_read(const char* who) {
     }
 }
 bool hold_pass() { return g_hold; }
+#ifdef WWHD_DECOMP_FAST
+// cheapib stage 2 (cheapib_s2_vertex.cpp): a replayed pass's site drawn as its loop body would (blended hold pass)
+bool cheapib_blended_hold() { return blended_hold(); }
+bool cheapib_set_blend_draw(bool on) { const bool was = g_blend_draw; g_blend_draw = on; return was; }
+#endif
 // full (30 Hz) logic steps so far: test scenarios run on game time, so frame-time hitches (which
 // slow the frame-locked game down) don't shift the input against the game
 uint64_t logic_steps() { return g_logic_steps; }

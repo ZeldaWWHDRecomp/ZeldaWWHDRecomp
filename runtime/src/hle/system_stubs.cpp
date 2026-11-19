@@ -1,4 +1,5 @@
 #include "mods/mods.h"
+#include "../latency_test.h"
 // Libraries the game uses for system integration and online features.
 // Online services (Miiverse, SpotPass, accounts) report "unavailable".
 #include "../crashrec.h"
@@ -111,6 +112,7 @@ HLE(vpad, VPADRead) {
     static input::PadState last_p;
     const bool repeat = interp::repeat_input();
     input::PadState p = repeat ? last_p : crashrec::read(0);  // live input, recorded/replayed by crash recovery
+    if (!repeat && latency_test::on()) latency_test::pad(p.buttons, p.ly);  // (test: latency_test.h)
     if (!repeat) mods::one_screen_pad(p);  // One screen: Minus pauses as Plus (Off-TV Play has no TV to switch to)
     if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
     mods::guest_gamepad_touch(p, repeat);  // a finger on a code mod's GamePad claim is the mod's only

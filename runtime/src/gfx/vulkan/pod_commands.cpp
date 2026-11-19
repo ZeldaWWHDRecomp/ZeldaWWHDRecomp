@@ -12,6 +12,9 @@
 #include <new>
 #include <stdexcept>
 #include <type_traits>
+#ifdef WWHD_DECOMP_FAST
+#include "../../cheapib/cheapib.h"  // cheapib b1: the commands of a logic pass's display-list calls are captured
+#endif
 namespace gfxvk {
 PFN_vkCmdDrawIndexedIndirect pod_draw_indexed_indirect = nullptr;
 std::mutex& graphics_queue_mutex() {
@@ -122,6 +125,9 @@ void checked(VkResult r) {
 } // namespace
 bool PodCommands::append(uint32_t opcode,
                          std::span<const std::byte> payload) {
+#ifdef WWHD_DECOMP_FAST
+  if (cheapib::g_b2_guard) cheapib::b2_guard(this, opcode);
+#endif
   if (commands_ >= limits_.maxCommands)
     return reject(PodFailureReason::CommandLimit);
   if (bytes_.size() > limits_.maxPayloadBytes || payload.size() > UINT32_MAX ||
@@ -139,6 +145,10 @@ bool PodCommands::append(uint32_t opcode,
     bytes_.insert(bytes_.end(), header, header + sizeof h);
     bytes_.insert(bytes_.end(), payload.begin(), payload.end());
     ++commands_;
+#ifdef WWHD_DECOMP_FAST
+    if (cheapib::g_b1_capturing) cheapib::b1_capture(this, opcode, payload.data(), payload.size());
+    if (cheapib::g_b2_shadow) cheapib::b2_shadow(this, opcode, payload.data(), payload.size());
+#endif
     return true;
   } catch (const std::bad_alloc &) {
     return reject(PodFailureReason::AllocationFailure);
@@ -149,6 +159,9 @@ template<class... T>
 bool PodCommands::append_scalars(uint32_t opcode, const T&... values) {
   static_assert((std::is_trivially_copyable_v<T> && ...));
   constexpr size_t payload = (sizeof(T) + ... + 0);
+#ifdef WWHD_DECOMP_FAST
+  if (cheapib::g_b2_guard) cheapib::b2_guard(this, opcode);
+#endif
   if (payload > limits_.maxPayloadBytes) return reject(PodFailureReason::ByteBudgetOrOverflow);
   if (commands_ >= limits_.maxCommands) return reject(PodFailureReason::CommandLimit);
   if (bytes_.size() > limits_.maxPayloadBytes || payload > UINT32_MAX ||
@@ -168,7 +181,12 @@ bool PodCommands::append_scalars(uint32_t opcode, const T&... values) {
       std::memcpy(bytes_.data() + cursor, &value, sizeof(value)); cursor += sizeof(value);
     };
     (put(values), ...); // Only nonthrowing field copies after successful growth.
-    ++commands_; return true;
+    ++commands_;
+#ifdef WWHD_DECOMP_FAST
+    if (cheapib::g_b1_capturing) cheapib::b1_capture(this, opcode, bytes_.data() + old + sizeof(Header), payload);
+    if (cheapib::g_b2_shadow) cheapib::b2_shadow(this, opcode, bytes_.data() + old + sizeof(Header), payload);
+#endif
+    return true;
   } catch (const std::bad_alloc&) { return reject(PodFailureReason::AllocationFailure); }
 }
 bool PodCommands::vkCmdBindPipeline(VkCommandBuffer cmd,

@@ -25,6 +25,9 @@
 #include <cctype>
 #include <cstring>
 #include <string>
+#ifdef WWHD_DECOMP_FAST
+#include "../drawoff/drawoff.h"
+#endif
 
 namespace gfxvk {
 bool gamepad_backdrop_capture_active();
@@ -171,6 +174,13 @@ static void emit_instance(SiteState& s, uint32_t kind, const uint32_t* range = n
     if (s.vertex) {
         const uint32_t head = s.noFetch ? 0 : kVertexHead, v = head + s.buffers * kBufferWords;
         std::memcpy(s.words + n, s.vertexWords + (kVertexHead - head), v * 4);
+#ifdef WWHD_DECOMP_FAST
+        if (drawoff::copies_on() || drawoff::c2_notes())  // (drawoff/drawoff.h: with c1/c2 the next calc rewrites a 3D line's other buffer)
+            for (uint32_t i = 0; i < s.buffers; ++i) {
+                uint32_t* b = s.words + n + head + i * kBufferWords;
+                b[1] = drawoff::vertex_source(s.pk.site, b[1], b[2]);
+            }
+#endif
         n += v;
     }
     if (range) {

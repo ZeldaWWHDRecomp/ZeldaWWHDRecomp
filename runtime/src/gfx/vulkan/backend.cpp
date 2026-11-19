@@ -1,4 +1,5 @@
 #include "../gamepad_backdrop.h"
+#include "latency_test.h"
 #include "gamepad_backdrop.h"
 #include "background_shaders.h"
 #include "vertex_cpu_policy.h"
@@ -191,6 +192,10 @@ uint64_t resident_bytes() {
 namespace gx2 { uint64_t flips_presented(); void checkpoint_vulkan_caches(); void shutdown_vulkan_caches(); void request_background_vulkan_cache_checkpoint(); }
 #include "../../interp.h"
 #include "../../fixed_seed.h"
+#ifdef WWHD_DECOMP_FAST
+#include "../../cheapib/cheapib.h"  // in-between frame dumps (WWHD_CHEAPIB_DUMP)
+#include "../../drawoff/drawoff.h"  // (frame dump names, test aid)
+#endif
 
 extern uint32_t g_latteCpuVertexClasses;
 extern bool g_latteCpuVertexDecode;  // Cemu GLSL attribute decoder (LatteDecompiler.h), issue #207 diagnostic
@@ -831,8 +836,14 @@ void note_upload_block(const Buffer& buffer) {
 }
 }  // namespace
 static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, bool grow);
-UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) { return upload_slice(size,alignment,true); }
-UploadSlice allocate_upload_no_grow(VkDeviceSize size, VkDeviceSize alignment) { return upload_slice(size,alignment,false); }
+#ifdef WWHD_DECOMP_FAST
+// (cheapib b1, WWHD_CHEAPIB_B1_CHECK=1: the slices a captured or checked call allocates)
+#define CHEAPIB_B1_ALLOC(s) if (cheapib::g_b1_capturing && s.buffer) cheapib::b1_note_alloc(uint64_t(s.buffer), s.offset, s.size, s.mapped);
+#else
+#define CHEAPIB_B1_ALLOC(s)
+#endif
+UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) { auto s = upload_slice(size,alignment,true); CHEAPIB_B1_ALLOC(s) return s; }
+UploadSlice allocate_upload_no_grow(VkDeviceSize size, VkDeviceSize alignment) { auto s = upload_slice(size,alignment,false); CHEAPIB_B1_ALLOC(s) return s; }
 static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, bool grow) {
   size = std::max<VkDeviceSize>(size,16);
   alignment = std::max<VkDeviceSize>(alignment,4);
@@ -855,6 +866,9 @@ static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, boo
   auto buffer = create_buffer(std::max<VkDeviceSize>(32ull<<20,size),
       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
       VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+#ifdef WWHD_DECOMP_FAST
+      | VK_BUFFER_USAGE_TRANSFER_DST_BIT  // (cheapib b2: uniform slices refreshed in place by a copy)
+#endif
 #ifdef WWHD_NATIVE_DRAW
       | (packet_mdi_requested() ? VkBufferUsageFlags(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) : 0)  // (multi-draw batches' commands)
 #endif
@@ -1269,6 +1283,9 @@ void transition_buffer(Buffer& buffer, VkPipelineStageFlags stage, VkAccessFlags
 }
 bool transition_image(Surface *s, VkImageLayout layout,
                       VkPipelineStageFlags stage, VkAccessFlags access) {
+#ifdef WWHD_DECOMP_FAST
+  if (cheapib::g_b1_capturing) cheapib::b1_note_image(s);  // (cheapib b1: layouts before and after a captured call)
+#endif
   const bool conservativePassBreak = s->layout != layout ||
       layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || access != VK_ACCESS_SHADER_READ_BIT;
   if (conservativePassBreak) stereo_release_texture(s);  // a texture both eyes sample
@@ -1427,6 +1444,11 @@ static void retire_submission(Renderer::Submission& slot, WaitTiming& timing=sub
       return result;
     },rprof::kWaitGpu),"wait submission retirement");
   } else vk_check(status,"submission fence status");
+#ifdef WWHD_DECOMP_FAST
+  // cheapib b1: the logic pass's slot stays as it is (uploads, descriptor sets, deferred objects) while its in-betweens
+  // replay its commands (its GPU work is done: waited above); its activation releases it
+  if (cheapib::b1_retire(&slot, &timing == &slotReuseWait)) return;
+#endif
   timed_call(retirementCleanupTiming,[&] {
     collect_gpu_timestamp_queries(slot);
     if(R.gpuPassTimestampsEnabled) collect_gpu_pass_queries(slot);
@@ -1471,9 +1493,14 @@ static void drain_submissions() {
 // Overflow is allocated only when a captured tail prevents ring reuse. Slot
 // addresses and screenshot indices stay stable; the total is strictly bounded.
 static size_t next_submission_slot() {
-  const auto choice=subpool::next_slot(R.activeSubmission,R.submissions.size(),
-      R.submissions[(R.activeSubmission+1)%R.submissions.size()].retainedUnsubmitted);
-  const size_t next=(R.activeSubmission+1)%R.submissions.size();
+  size_t from=R.activeSubmission;
+#ifdef WWHD_DECOMP_FAST
+  // cheapib b1 (WWHD_CHEAPIB_B1_SKIP=1): the held logic slot is passed over while its in-betweens replay
+  if (cheapib::b1_skip(&R.submissions[(from+1)%R.submissions.size()])) from=(from+1)%R.submissions.size();
+#endif
+  const auto choice=subpool::next_slot(from,R.submissions.size(),
+      R.submissions[(from+1)%R.submissions.size()].retainedUnsubmitted);
+  const size_t next=(from+1)%R.submissions.size();
   if(choice.step==subpool::Step::Reuse)return choice.index;
   if(choice.step==subpool::Step::Grow) {
     bool appended=false;
@@ -1637,10 +1664,19 @@ void peek_retire() {
   for (;;) {
     Renderer::Submission* oldest = nullptr;
     for (auto& slot : R.submissions)
-      if (slot.pending && slot.serial <= peekSubmission && (!oldest || slot.serial < oldest->serial)) oldest = &slot;
+      if (slot.pending && slot.serial <= peekSubmission && (!oldest || slot.serial < oldest->serial)
+#ifdef WWHD_DECOMP_FAST
+          && !cheapib::b1_hold(&slot)  // (cheapib b1's held slot stays pending: waited for, not cleaned)
+#endif
+          )
+        oldest = &slot;
     if (!oldest) break;
     retire_submission(*oldest);
   }
+#ifdef WWHD_DECOMP_FAST
+  for (auto& slot : R.submissions)  // (cheapib b1's held slot: its fence waited for, the slot kept)
+    if (slot.pending && slot.serial <= peekSubmission && cheapib::b1_hold(&slot)) retire_submission(slot);
+#endif
   peekSubmission = 0;
 }
 void flush_async() {
@@ -2858,6 +2894,7 @@ static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t inde
   }
   if (pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR) {
     ++s.presented;
+    if (latency_test::on() && &s == &R.tv) latency_test::presented(frame);  // (test: latency_test.h)
 #ifndef __ANDROID__
     if (firstPicture.armed) first_picture_shown();
 #endif
@@ -3535,8 +3572,15 @@ static void request_present_dump(const std::string& path) { gfx::request_present
 static std::atomic<bool> captureRequested{false};
 void request_capture() { captureRequested = true; }
 static void frame_dumps(uint64_t frame) {
+#ifdef WWHD_DECOMP_FAST
+  if (const std::string l = cheapib::swap_dump_label(); !l.empty()) dump_scan(R.tv, l);  // (WWHD_CHEAPIB_DUMP)
+#endif
   static const auto frames = gfx::capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
+#ifdef WWHD_DECOMP_FAST
+  const uint64_t dumpFrame = drawoff::dump_script_frame(frame, fixed_seed::script_frame(frame));  // (test: drawoff.h)
+#else
   const uint64_t dumpFrame = fixed_seed::script_frame(frame);  // (TV frame unless WWHD_TEST_FIXED_SEED)
+#endif
   // test aid: WWHD_BG_SHADERS_DUMP=n writes the TV image of the first n frames that left a draw out
   // (Shader compile Fast) and of the two frames after each, to check what went missing
   static const uint64_t leftOutDumps = getenv("WWHD_BG_SHADERS_DUMP") ? strtoull(getenv("WWHD_BG_SHADERS_DUMP"), nullptr, 10) : 0;
@@ -6324,3 +6368,6 @@ void screen_changed(int screen, bool visible) {
 }
 #endif
 } // namespace gfxvk
+#ifdef WWHD_DECOMP_FAST
+#include "../../cheapib/cheapib_b1.h"  // cheapib b1: the render side of replayed in-betweens (decomp fast build)
+#endif

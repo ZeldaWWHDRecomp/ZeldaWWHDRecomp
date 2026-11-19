@@ -432,6 +432,11 @@ uint32_t key_reason(const std::vector<uint32_t>& a, const uint32_t* b, uint32_t 
     return cDefVariable;
 }
 }  // namespace
+#ifdef WWHD_DECOMP_FAST
+// drawoff (drawoff/drawoff.h): a J3D draw is open on this thread (its binds stay as they are: described draws keep
+// their register state across passes)
+bool game_draw_open() { return t_cur.open; }
+#endif
 
 thread_local bool t_capturing = false;
 extern bool g_trace;

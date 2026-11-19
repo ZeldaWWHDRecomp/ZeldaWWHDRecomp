@@ -1,4 +1,5 @@
 #include "mods/mods.h"
+#include "../latency_test.h"
 // padscore: Wii Remote / Pro Controller (WPAD, KPAD). Only a Pro Controller on channel 0 exists,
 // and only while the keyboard/host controllers are set to act as one (Input menu). Struct layouts
 // and constants follow Cemu's padscore.
@@ -86,6 +87,7 @@ HLE(padscore, KPADReadEx) {
     static input::PadState last_p;
     const bool repeat = interp::repeat_input();
     input::PadState p = repeat ? last_p : crashrec::read(1);  // see interp.cpp; crash recovery records/replays it
+    if (!repeat && latency_test::on()) latency_test::pad(p.buttons, p.ly);  // (test: latency_test.h)
     if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
     const uint32_t live_virt = p.virt;  // as VPADRead: the virtual inputs as read now
     const bool live = !repeat;

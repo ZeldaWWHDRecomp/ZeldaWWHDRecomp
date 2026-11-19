@@ -34,6 +34,9 @@
 #include "render_prof.h"
 #include "gx2/gx2_cmd.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
+#ifdef WWHD_DECOMP_FAST
+#include "../../cheapib/cheapib.h"  // cheapib b1: sources of the packed support uniforms
+#endif
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LattePSInputDefault.h"
@@ -1397,6 +1400,9 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     // Reused capacity may contain another shader's payload. Define every byte,
     // including gaps, padding, and remapped blocks with missing guest addresses.
     std::fill(data.begin(), data.end(), uint8_t{0});
+#ifdef WWHD_DECOMP_FAST
+    CHEAPIB_B1_SRC_ARM(data.data(), 1)
+#endif
     if (!shader.dec) return;
     auto copy = [&](int offset, const void* src, size_t size) {
         if (offset >= 0 && size_t(offset) + size <= data.size()) memcpy(data.data() + offset, src, size);
@@ -1417,6 +1423,9 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     if (offsets.offset_remapped >= 0) {
         for (const auto& entry : shader.dec->list_remappedUniformEntries_register) {
             copy(offsets.offset_remapped + entry.mappedIndexOffset, regs + aluBase + entry.indexOffset / 4, 16);
+#ifdef WWHD_DECOMP_FAST
+            CHEAPIB_B1_REG(data.data(), uint32_t(offsets.offset_remapped + entry.mappedIndexOffset), aluBase + entry.indexOffset / 4, 4)
+#endif
             if (entry.indexOffset <= 4096-64)
                 projectionRow(offsets.offset_remapped+entry.mappedIndexOffset,
                     regs+aluBase+entry.indexOffset/4,4096-entry.indexOffset);
@@ -1432,6 +1441,10 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
                 const void* src = submitted && entry.indexOffset + 16 <= blockSize
                     ? static_cast<const void*>(submitted + entry.indexOffset) : ppc_ptr(address + entry.indexOffset);
                 copy(offsets.offset_remapped + entry.mappedIndexOffset, src, 16);
+#ifdef WWHD_DECOMP_FAST
+                CHEAPIB_B1_SRC(data.data(), uint32_t(offsets.offset_remapped + entry.mappedIndexOffset), src)  // (guest-memory reads: not noted)
+                if (!(submitted && entry.indexOffset + 16 <= blockSize)) CHEAPIB_B1_GUEST(2, address, uint32_t(blockSize))
+#endif
                 if (entry.indexOffset < blockSize)
                     projectionRow(offsets.offset_remapped+entry.mappedIndexOffset,
                         src,blockSize-entry.indexOffset);
@@ -1440,6 +1453,11 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     }
     if (offsets.offset_uniformRegister >= 0) {
         copy(offsets.offset_uniformRegister, regs + aluBase, size_t(offsets.count_uniformRegister) * 16);
+#ifdef WWHD_DECOMP_FAST
+        if (::cheapib::g_b1_capturing)  // (per 16-byte register, so each is judged on its own)
+            for (int i = 0; i < offsets.count_uniformRegister; i++)
+                ::cheapib::b1_src_reg(data.data(), uint32_t(offsets.offset_uniformRegister + 16 * i), aluBase + 4 * i, 4);
+#endif
         if (shader.vertex && eyeOffset != 0)
             stereo::project_uniform_block(data.data()+offsets.offset_uniformRegister,
                 size_t(offsets.count_uniformRegister)*16,eyeOffset,convergence,

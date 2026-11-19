@@ -388,10 +388,18 @@ extern uint64_t g_surface_set_gen;
 // GPU writes. The J3D material cache (draw.cpp) holds its entries while it is unchanged.
 extern uint64_t g_surface_struct_gen;
 #endif
-inline void mark_gpu_written(Surface* s){s->gpuWritten=true;s->writeSeq=next_write_seq();++g_surface_epoch;}
+#ifdef WWHD_DECOMP_FAST
+}  // namespace gfxvk
+namespace cheapib { extern bool g_b1_capturing; void b1_note_written(void* surface); void b1_note_alloc(uint64_t buffer, uint64_t offset, uint64_t size, void* mapped); }  // (cheapib b1: replayed calls mark them again; WWHD_CHEAPIB_B1_CHECK's upload list)
+namespace gfxvk {
+#define CHEAPIB_NOTE_WRITTEN(s) if (cheapib::g_b1_capturing) cheapib::b1_note_written(s);
+#else
+#define CHEAPIB_NOTE_WRITTEN(s)
+#endif
+inline void mark_gpu_written(Surface* s){CHEAPIB_NOTE_WRITTEN(s) s->gpuWritten=true;s->writeSeq=next_write_seq();++g_surface_epoch;}
 // A draw's own attachments: their newer writeSeq can only change lookups at their own addresses,
 // which the fast path excludes (draw.cpp); a surface becoming GPU-written still ends the epoch.
-inline void mark_draw_target_written(Surface* s){if(!s->gpuWritten)++g_surface_epoch;s->gpuWritten=true;s->writeSeq=next_write_seq();}
+inline void mark_draw_target_written(Surface* s){CHEAPIB_NOTE_WRITTEN(s) if(!s->gpuWritten)++g_surface_epoch;s->gpuWritten=true;s->writeSeq=next_write_seq();}
 }
 
 namespace gfxvk { void reset_feedback_images(); } // Call before device teardown, then drain retirements.

@@ -69,6 +69,10 @@
 #include "shader_compiler.h"
 #include <map>
 #include <thread>
+#ifdef WWHD_DECOMP_FAST
+#include "../../cheapib/cheapib.h"  // cheapib b1: uniform uploads of a logic pass's calls noted
+#endif
+#include "drawoff/vertex_source.h"  // WWHD_VERTEX_PTR: vertex reads (drawoff c2: a list's copies at the original address)
 #ifdef WWHD_NATIVE_DRAW
 #include "gx2/native_draw.h"
 #include "gx2/native_j3d_desc.h"
@@ -299,6 +303,10 @@ UploadSlice snapshot(const void *data, size_t size, VkDeviceSize alignment) {
   } else {
     std::memset(slice.mapped, 0, slice.size);
   }
+#ifdef WWHD_DECOMP_FAST
+  if (cheapib::g_b1_capturing && data && size)
+    cheapib::b1_note_upload(uint64_t(slice.buffer), slice.offset, slice.size, data, size);
+#endif
   return slice;
 }
 
@@ -326,7 +334,7 @@ UploadSlice vertex_snapshot(uint32_t binding, uint32_t address, uint32_t size,
     }
   }
   if (!enabled)
-    return snapshot(mem::ptr(address), size, 4);
+    return snapshot(WWHD_VERTEX_PTR(address, size), size, 4);
   static const bool historyEnabled = [] {
     const char* e = std::getenv("WWHD_VK_VERTEX_HISTORY_REUSE");
     return e && !std::strcmp(e, "1");
@@ -340,12 +348,12 @@ UploadSlice vertex_snapshot(uint32_t binding, uint32_t address, uint32_t size,
     generation = R.submissionGeneration;
   }
   if (binding >= cache.size())
-    return snapshot(mem::ptr(address), size, 4);
+    return snapshot(WWHD_VERTEX_PTR(address, size), size, 4);
   auto &history = cache[binding];
   auto &last = history.last;
   if (!bounded) {
     history.reset();
-    return snapshot(mem::ptr(address), size, 4);
+    return snapshot(WWHD_VERTEX_PTR(address, size), size, 4);
   }
   // One exact matching payload per draw; secondary is consulted only when
   // the original consecutive key differs, never after a changed-byte miss.
@@ -360,7 +368,7 @@ UploadSlice vertex_snapshot(uint32_t binding, uint32_t address, uint32_t size,
     if (timed) start = std::chrono::steady_clock::now();
     // the entry's CPU copy, not candidate->slice.mapped, unless the entry was made with direct reads
     // (host-cached upload memory: see vertex_snapshot_history.h)
-    const bool equal = VertexSnapshotHistory<UploadSlice>::equal(*candidate, mem::ptr(address));
+    const bool equal = VertexSnapshotHistory<UploadSlice>::equal(*candidate, WWHD_VERTEX_PTR(address, size));
     if (timed)
       draw_counters().vertexReuseCompareNs += std::chrono::duration_cast<std::chrono::nanoseconds>(
           std::chrono::steady_clock::now() - start).count();
@@ -375,7 +383,7 @@ UploadSlice vertex_snapshot(uint32_t binding, uint32_t address, uint32_t size,
       return history.last.slice;
     }
   }
-  return history.remember(address, size, mem::ptr(address), historyEnabled, R.uploadReadsDirect,
+  return history.remember(address, size, WWHD_VERTEX_PTR(address, size), historyEnabled, R.uploadReadsDirect,
                           [](const void* bytes, size_t n) { return snapshot(bytes, n, 4); });
 }
 
@@ -393,7 +401,7 @@ UploadSlice cpu_vertex_stream(const LatteParsedFetchShaderBufferGroup& g, uint32
   auto slice = allocate_upload(std::max<size_t>(size_t(bytes), 16), 16);
   auto* out = static_cast<uint32_t*>(slice.mapped);
   if (bytes < slice.size) std::memset(static_cast<uint8_t*>(slice.mapped) + bytes, 0, slice.size - bytes);
-  const auto* guest = static_cast<const uint8_t*>(mem::ptr(addr));
+  const auto* guest = static_cast<const uint8_t*>(WWHD_VERTEX_PTR(addr, size));
   for (int j = 0; j < g.attribCount; ++j) {
     const auto& a = g.attrib[j];
     if (!vk::cpu_vertex_selected(a, R.vertexDiagnostics.cpuClasses)) continue;
@@ -437,7 +445,7 @@ UploadSlice vertex_window_snapshot(uint32_t binding,uint32_t address,uint32_t re
   static const bool reuse=[] {const char* e=std::getenv("WWHD_VK_REUSE_VERTEX_SNAPSHOTS");
     return e && !std::strcmp(e,"1");}();
   Entry* entry=reuse && binding<entries.size()?&entries[binding]:nullptr;
-  const auto* fresh=static_cast<const uint8_t*>(source?source:mem::ptr(address))+begin;
+  const auto* fresh=static_cast<const uint8_t*>(source?source:WWHD_VERTEX_PTR(address,reservation))+begin;
   // compares the entry's CPU copy of the window, not the mapped slice, unless the entry was made with
   // direct reads (host-cached upload memory; vertex_snapshot_history.h)
   if(entry && entry->matches(address,reservation,begin,length)) {
@@ -3551,7 +3559,13 @@ StageResources bind_stage(const uint32_t *r, vk::Shader *sh,
   if (m.uniformVarsBufferBindingPoint >= 0) {
     const uint64_t uploadStarted = rprof::sub_begin();
 #ifdef WWHD_NATIVE_DRAW
-    if (g_packetCapture) g_packetCapture->stage[sh->vertex ? 0 : 1].supBytes.assign(supportUniforms.begin(), supportUniforms.end());
+    if (g_packetCapture) {
+      auto& kept = g_packetCapture->stage[sh->vertex ? 0 : 1].supBytes;
+      kept.assign(supportUniforms.begin(), supportUniforms.end());
+#ifdef WWHD_DECOMP_FAST
+      ::cheapib::b1_src_keep(supportUniforms.data(), kept.data());  // (cheapib b1: their sources go with them)
+#endif
+    }
 #endif
     if (batch && batch->layout->support) [[unlikely]] {
       DRAW_THREAD_STATIC(pieces, std::vector<uint8_t>);  // (draw threads T1: per thread)
@@ -3885,6 +3899,10 @@ bool partial_candidate(uint32_t prim) {
          !(partial_groups()[stereoEye] >> gx2::kSgOther & 1);
 }
 } // namespace
+#if defined(WWHD_DECOMP_FAST) && defined(WWHD_NATIVE_DRAW)
+// cheapib b1: commands re-emitted behind draw()'s caches (binds and dynamic state no longer known)
+void cheapib_b1_binds_dirty() { g_packetBindsDirty = g_packetDynamicDirty = true; }
+#endif
 // Sizing (WWHD_VK_MEMORY_LOG_FRAMES): the game's pipelines (never freed), those still compiling (each holds its two
 // VkShaderModules until done; a finished pipeline keeps none) and the failed ones.
 void guest_pipeline_counts(size_t& total, size_t& compiling, size_t& failed) {
@@ -5495,7 +5513,7 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
     if (cap && cpuCount) cap->refuse("CPU vertex classes");
     if (cap && cap->hashes) {
       cap->vertexHash = packet_hash(packet_hash_value(packet_hash_value(packet_hash_value(cap->vertexHash + 1,
-          g.attributeBufferIndex), addr), copied), mem::ptr(addr), copied);
+          g.attributeBufferIndex), addr), copied), WWHD_VERTEX_PTR(addr, copied), copied);
       cap->vertexLayoutHash = packet_hash_value(packet_hash_value(cap->vertexLayoutHash + 1, g.attributeBufferIndex),
           r[mmSQ_VTX_ATTRIBUTE_BLOCK_START + g.attributeBufferIndex * 7 + 2]);
     }
@@ -5514,9 +5532,17 @@ void draw(const uint32_t *r, uint32_t prim, uint32_t count, uint32_t indexType,
       if (preparation_stats_enabled()) ++draw_counters().vertexBindCalls;
       if (cpuCount == uint32_t(g.attribCount)) continue;
     }
+#ifdef WWHD_DECOMP_FAST
+    // (cheapib stage 2: a CPU-written vertex site's bytes while b1 captures: a plain slice b1 can rebuild)
+    const bool vtxSite = cheapib::g_b1_capturing && cheapib::vtx_site(addr, copied);
+#else
+    constexpr bool vtxSite = false;
+#endif
     if (R.vertexDiagnostics.noVertexReuse)
-      b = snapshot(mem::ptr(addr), size, 4);  // the whole declared buffer, fresh every draw
-    else if (!buffer_cache_enabled() || !cached_guest_range(addr, copied, rprof::kUpVertex, b))
+      b = snapshot(WWHD_VERTEX_PTR(addr, size), size, 4);  // the whole declared buffer, fresh every draw
+    else if (vtxSite)
+      b = snapshot(WWHD_VERTEX_PTR(addr, copied), copied, 4);
+    else if (!WWHD_VERTEX_CACHE_OK(addr, copied) || !cached_guest_range(addr, copied, rprof::kUpVertex, b))
       b = copyWindow
         ? vertex_window_snapshot(g.attributeBufferIndex,addr,copied,
                                  uint32_t(windowBegin),uint32_t(windowEnd-windowBegin))
@@ -6149,6 +6175,9 @@ struct PendingBatch {
   std::vector<uint8_t> data;
   std::vector<uint8_t> bytes;  // stream batches: the instances' streams
   std::vector<VkDrawIndexedIndirectCommand> cmds;
+#ifdef WWHD_DECOMP_FAST
+  std::vector<uint32_t> sources;  // cheapib b1: per 16-byte entry of data, its block address and offset in the block
+#endif
 } pendingBatch;
 uint64_t batchLost = 0;
 uint64_t packetVerifyCounter = 0;
@@ -6198,6 +6227,10 @@ bool packet_regs_restored(LoweredKind& L, const native_draw::Packet& pk, const u
 void packet_support_bytes(const PacketCapture::Stage& st, const uint32_t* blockAddr, const uint32_t* blockSize,
                           const uint32_t* r, std::vector<uint8_t>& bytes) {
   bytes = st.supBytes;
+#ifdef WWHD_DECOMP_FAST
+  CHEAPIB_B1_SRC_ARM(bytes.data(), 2)
+  if (::cheapib::g_b1_capturing) ::cheapib::b1_src_inherit(st.supBytes.data(), bytes.data());
+#endif
   for (int k = 0; k < PacketCapture::kBlocks; ++k) {
     if (st.block[k].remap.empty()) continue;
     const uint32_t addr = blockAddr[k], size = blockSize[k];
@@ -6206,10 +6239,19 @@ void packet_support_bytes(const PacketCapture::Stage& st, const uint32_t* blockA
     for (const auto& [dst, src] : st.block[k].remap) {
       const void* from = submitted && src + 16 <= blockBytes ? static_cast<const void*>(submitted + src) : ppc_ptr(addr + src);
       if (size_t(dst) + 16 <= bytes.size()) std::memcpy(bytes.data() + dst, from, 16);
+#ifdef WWHD_DECOMP_FAST
+      CHEAPIB_B1_SRC(bytes.data(), dst, from)  // (guest-memory reads: not noted)
+      if (!(submitted && src + 16 <= blockBytes)) CHEAPIB_B1_GUEST(3, addr, blockBytes)
+#endif
     }
   }
   for (const auto& p : st.regRemap)
-    if (size_t(p.dst) + size_t(p.words) * 4 <= bytes.size()) std::memcpy(bytes.data() + p.dst, r + p.reg, p.words * 4);
+    if (size_t(p.dst) + size_t(p.words) * 4 <= bytes.size()) {
+      std::memcpy(bytes.data() + p.dst, r + p.reg, p.words * 4);
+#ifdef WWHD_DECOMP_FAST
+      CHEAPIB_B1_REG(bytes.data(), p.dst, p.reg, p.words)
+#endif
+    }
   // gather units (native_draw::gather_on): the patched entries scaled as the full draw scales every entry from gatherBase
   if (!st.gathers.empty() && st.gatherBase >= 0) {
     auto scale = [&](uint32_t at) {
@@ -6258,6 +6300,10 @@ UploadSlice packet_block_upload(uint32_t addr, uint32_t size) {
   rprof::UploadKind uploads(rprof::kUpUbo);
   const uint8_t* submitted = addr ? gx2::submitted_uniform_block(addr, size) : nullptr;
   if (submitted) b = snapshot(submitted, size, R.properties.limits.minUniformBufferOffsetAlignment);
+#ifdef WWHD_DECOMP_FAST
+  if (!submitted && addr) CHEAPIB_B1_GUEST(1, addr, size)
+#endif
+  if (submitted) {}
   else if (!addr || !buffer_cache_enabled() || !cached_guest_range(addr, size, rprof::kUpUbo, b))
     b = snapshot(addr ? mem::ptr(addr) : nullptr, size, R.properties.limits.minUniformBufferOffsetAlignment);
   if (addr) rprof::guest_read(rprof::kUpUbo, addr, size);
@@ -6411,7 +6457,10 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     const size_t at = B.bytes.size();
     const size_t padded = (size_t(size) + stride - 1) / stride * stride;
     B.bytes.resize(at + padded);
-    std::memcpy(B.bytes.data() + at, mem::ptr(addr), size);
+    std::memcpy(B.bytes.data() + at, WWHD_VERTEX_PTR(addr, size), size);
+#ifdef WWHD_DECOMP_FAST
+    CHEAPIB_VTX_SRC(&B.bytes, at, addr, size)
+#endif
     if (padded > size) std::memset(B.bytes.data() + at + size, 0, padded - size);
 #endif
     rprof::guest_read(rprof::kUpVertex, addr, size);
@@ -6455,7 +6504,10 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       if (copied <= out.size()) continue;
       const size_t from = out.size();
       out.resize(copied);
-      std::memcpy(out.data() + from, static_cast<const uint8_t*>(mem::ptr(addr)) + from, copied - from);
+      std::memcpy(out.data() + from, static_cast<const uint8_t*>(WWHD_VERTEX_PTR(addr, copied)) + from, copied - from);
+#ifdef WWHD_DECOMP_FAST
+      CHEAPIB_VTX_SRC(&out, from, addr + uint32_t(from), uint32_t(copied - from))
+#endif
       rprof::guest_read(rprof::kUpVertex, addr + uint32_t(from), copied - from);
     }
     B.cmds.push_back({uint32_t(count), 1, uint32_t(at / width), 0, 0});
@@ -6485,6 +6537,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     const uint8_t* submitted = gx2::submitted_uniform_block(addr, blockBytes);
     const void* from = submitted && e.src + 16 <= blockBytes ? static_cast<const void*>(submitted + e.src)
                                                              : ppc_ptr(addr + e.src);
+#ifdef WWHD_DECOMP_FAST
+    if (from != static_cast<const void*>(submitted + e.src)) CHEAPIB_B1_GUEST(0, addr, blockBytes)
+#endif
     std::memcpy(out, from, 16);
     rprof::guest_read(rprof::kUpUbo, addr + e.src, 16);
   };
@@ -6510,6 +6565,9 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       B.frame = R.frame;
       B.passCount = R.renderPassCount;
       B.data.clear();
+#ifdef WWHD_DECOMP_FAST
+      B.sources.clear();
+#endif
     }
     const size_t at = B.data.size();
     B.data.resize(at + L.batch->entries.size() * 16);
@@ -6517,6 +6575,12 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
     for (const auto& e : L.batch->entries) {
       entry_bytes(e, out);
       out += 16;
+#ifdef WWHD_DECOMP_FAST
+      if (cheapib::g_b1_capturing) {
+        B.sources.push_back(blockAddr[e.block]);
+        B.sources.push_back(e.src);
+      }
+#endif
     }
     if (B.range) range_batch_append(B.ranges, L, m, r, B.cmds, B.count, B.kinds);
     else if (B.stream) {  // the instance's stream, as a multi-draw batch copies it (mdi_append)
@@ -6526,7 +6590,10 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
       const size_t vat = B.bytes.size();
       const size_t padded = (size_t(size) + stride - 1) / stride * stride;
       B.bytes.resize(vat + padded);
-      std::memcpy(B.bytes.data() + vat, mem::ptr(addr), size);
+      std::memcpy(B.bytes.data() + vat, WWHD_VERTEX_PTR(addr, size), size);
+#ifdef WWHD_DECOMP_FAST
+      CHEAPIB_VTX_SRC(&B.bytes, vat, addr, size)
+#endif
       if (padded > size) std::memset(B.bytes.data() + vat + size, 0, padded - size);
       rprof::guest_read(rprof::kUpVertex, addr, size);
       B.cmds.push_back({(*L.cap).drawCount, 1, 0, int32_t(vat / stride), B.count});
@@ -6674,8 +6741,8 @@ void packet_draw(const uint32_t* r, const native_draw::Packet& pk, uint32_t kind
         UploadSlice b;
         {
           rprof::UploadKind uploads(rprof::kUpVertex);
-          if (!buffer_cache_enabled() || !cached_guest_range(addr, size, rprof::kUpVertex, b))
-            b = snapshot(mem::ptr(addr), size, 4);
+          if (!WWHD_VERTEX_CACHE_OK(addr, size) || !cached_guest_range(addr, size, rprof::kUpVertex, b))
+            b = snapshot(WWHD_VERTEX_PTR(addr, size), size, 4);
           rprof::guest_read(rprof::kUpVertex, addr, size);
         }
         record::vkCmdBindVertexBuffers(cmd, v.binding, 1, &b.buffer, &b.offset);
@@ -6967,6 +7034,11 @@ void packet_flush() {
     inst = snapshot(B.data.data(), B.data.size(), 16);
     if (B.stream) stream = snapshot(B.bytes.data(), B.bytes.size(), 4);
   }
+#ifdef WWHD_DECOMP_FAST
+  // cheapib b1: the instance entries' sources, so a replayed in-between refreshes them from its own blocks
+  if (cheapib::g_b1_capturing && B.sources.size() * 8 == B.data.size())
+    cheapib::b1_note_instances(uint64_t(inst.buffer), inst.offset, inst.size, B.sources.data(), B.data.size() / 16);
+#endif
   auto cmd = command_buffer();
   record::vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, L.batchPipeline->pipeline);
   if (B.range) range_batch_bind(B.ranges, L, cmd);  // (its index bytes and vertex buffers)
