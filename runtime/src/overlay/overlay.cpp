@@ -1023,12 +1023,12 @@ void tab_graphics() {
             renderReplay = on;
             hostui::post([on] { hostui::set("renderReplay", on ? "1" : "0"); });
         }
-        help("Applies after restarting the game. Off by default. With 40-240 fps, the frames between two game\n"
-             "steps replay the step's draws and update only what moves, instead of drawing everything again:\n"
-             "much faster rendering (on a phone at 120 fps about 15-20 % more frames, with some uneven frame\n"
-             "times). Can change fine\n"
-             "details like grass and leaves very slightly. Needs the Vulkan renderer and \"Record graphics\n"
-             "on a second thread\" (Advanced; on by default on phones).");
+        help("Applies after restarting the game. On by default. With 40-240 fps, the frames between two game\n"
+             "steps replay the step's draws and update only what moves, instead of drawing everything again,\n"
+             "and no more of them are planned than the GPU can draw in time: faster, steadier rendering (on a\n"
+             "phone at 120 fps about a quarter less render time, up to a tenth more frames, fewer late frames).\n"
+             "Can change fine details like grass and leaves very slightly. Needs the Vulkan renderer and\n"
+             "\"Record graphics on a second thread\" (Advanced; on by default on phones).");
         if (fixed) note("Set by WWHD_RENDER_REPLAY for this start.");
         else if (renderReplay != cheapib::render_replay::chosen()) note("Restart the game to apply.");
         else if (const char* why = cheapib::render_replay::inactive_reason()) note("%s", why);

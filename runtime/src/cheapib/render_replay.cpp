@@ -22,6 +22,7 @@ constexpr Value kSet[] = {
     {"WWHD_CHEAPIB_B1", "1"},
     {"WWHD_CHEAPIB_B1_SKIP", "1"},
     {"WWHD_DRAWOFF", "2"},
+    {"WWHD_DRAWOFF_GPU_CAP", "1"},  // (drawoff/gpu_cap.h: no more in-betweens than the GPU draws in a step)
 };
 
 const char* g_reason = nullptr;
@@ -29,7 +30,7 @@ const char* g_reason = nullptr;
 bool read_chosen() {
     if (const char* e = getenv("WWHD_RENDER_REPLAY")) return atoi(e) != 0;
     std::string value;
-    return hostui::get("renderReplay", value) && value == "1";  // default off (user 2026-11-19: frame-time tail)
+    return !hostui::get("renderReplay", value) || value != "0";  // default on (with the GPU cap, user 2026-11-20)
 }
 
 bool read_active() {
