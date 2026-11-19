@@ -29,7 +29,7 @@ const char* g_reason = nullptr;
 bool read_chosen() {
     if (const char* e = getenv("WWHD_RENDER_REPLAY")) return atoi(e) != 0;
     std::string value;
-    return !hostui::get("renderReplay", value) || value != "0";
+    return hostui::get("renderReplay", value) && value == "1";  // default off (user 2026-11-19: frame-time tail)
 }
 
 bool read_active() {

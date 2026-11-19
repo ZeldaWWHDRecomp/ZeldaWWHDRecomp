@@ -1023,9 +1023,10 @@ void tab_graphics() {
             renderReplay = on;
             hostui::post([on] { hostui::set("renderReplay", on ? "1" : "0"); });
         }
-        help("Applies after restarting the game. On by default. With 40-240 fps, the frames between two game\n"
+        help("Applies after restarting the game. Off by default. With 40-240 fps, the frames between two game\n"
              "steps replay the step's draws and update only what moves, instead of drawing everything again:\n"
-             "much faster rendering (on a phone at 120 fps about a quarter more frames). Can change fine\n"
+             "much faster rendering (on a phone at 120 fps about 15-20 % more frames, with some uneven frame\n"
+             "times). Can change fine\n"
              "details like grass and leaves very slightly. Needs the Vulkan renderer and \"Record graphics\n"
              "on a second thread\" (Advanced; on by default on phones).");
         if (fixed) note("Set by WWHD_RENDER_REPLAY for this start.");

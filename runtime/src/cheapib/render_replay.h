@@ -13,13 +13,13 @@
 //
 // Precedence (each read once): a set environment variable of the list above wins for itself; else
 // WWHD_RENDER_REPLAY=0/1 (tests: the whole set off or on, not saved); else the saved setting (hostui key
-// "renderReplay", default on).
+// "renderReplay", default off).
 #pragma once
 
 namespace cheapib::render_replay {
 
 #ifdef WWHD_DECOMP_FAST
-// the setting's saved value (default on); WWHD_RENDER_REPLAY when set
+// the setting's saved value (default off); WWHD_RENDER_REPLAY when set
 bool chosen();
 // the set applies for this start: chosen(), the Vulkan renderer and second-thread recording (read once, logged)
 bool active();
