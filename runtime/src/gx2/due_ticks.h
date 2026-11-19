@@ -39,6 +39,7 @@ inline uint64_t frequency() {
 #endif
 
 // due: render::present_due() (non-zero); now_ns: the steady_clock reader (called only when `due` is new)
+inline uint64_t g_converted = 0;  // due times converted (held frames seen; the preflight's proof the path runs)
 template <class NowNs>
 inline bool reached(int64_t due, NowNs now_ns) {
 #if defined(__aarch64__)
@@ -48,6 +49,7 @@ inline bool reached(int64_t due, NowNs now_ns) {
     const uint64_t c = counter();
     const int64_t now = now_ns();
     s_for = due;
+    ++g_converted;
     if (now >= due) {
         s_tick = c;
         return true;

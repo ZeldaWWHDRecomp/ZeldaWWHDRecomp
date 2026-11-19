@@ -1032,6 +1032,11 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     if (kind != rprof::kOpOther && kind != rprof::kOpRegs) {
         const int64_t due = render::present_due();
         if (due && (due_ticks::enabled() ? due_ticks::reached(due, steady_ns) : steady_ns() >= due)) render::service_present();
+        if (due && due_ticks::enabled() && (due_ticks::g_converted == 1 || due_ticks::g_converted == 1000)) {
+            LOG("[gx2] WWHD_PRESENT_DUE_TICKS=1: held-frame due checks on the CPU counter (%llu held frames)",
+                (unsigned long long)due_ticks::g_converted);
+            ++due_ticks::g_converted;  // (logged once per mark: 1 -> 2, 1000 -> 1001)
+        }
     }
     const uint64_t started = rprof::op_begin(kind);
     execute_op(op, p, n);
