@@ -195,6 +195,12 @@ namespace gx2 { uint64_t flips_presented(); void checkpoint_vulkan_caches(); voi
 #ifdef WWHD_DECOMP_FAST
 #include "../../cheapib/cheapib.h"  // in-between frame dumps (WWHD_CHEAPIB_DUMP)
 #include "../../drawoff/drawoff.h"  // (frame dump names, test aid)
+#include "../../drawoff/gpu_cap.h"  // the paced plan's GPU time per frame (WWHD_DRAWOFF_GPU_CAP)
+#define DRAWOFF_GPU_TIMING() drawoff::gpu_cap::timing_wanted()
+#define DRAWOFF_GPU_INTERVAL(ns) drawoff::gpu_cap::gpu_interval(ns)
+#else
+#define DRAWOFF_GPU_TIMING() false
+#define DRAWOFF_GPU_INTERVAL(ns) ((void)0)
 #endif
 
 extern uint32_t g_latteCpuVertexClasses;
@@ -1043,6 +1049,7 @@ static void collect_gpu_timestamp_queries(Renderer::Submission& slot) {
     const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
     const double start = double(values[0].ticks & mask) * period;
     dynres::gpu_interval(start, start + double(elapsed) * period);
+    DRAWOFF_GPU_INTERVAL(double(elapsed) * period);
     return;
   }
   if (!R.gpuTimestampsEnabled) return;
@@ -1063,6 +1070,7 @@ static void collect_gpu_timestamp_queries(Renderer::Submission& slot) {
   }
   const double ns = double(timestamp_elapsed_ticks(values[0].ticks, values[1].ticks,
       R.gpuTimestampValidBits)) * double(R.properties.limits.timestampPeriod);
+  DRAWOFF_GPU_INTERVAL(ns);
   if (rprof::enabled()) {  // the performance report's GPU timeline (busy, idle between submissions)
     const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
     const double start = double(values[0].ticks & mask) * double(R.properties.limits.timestampPeriod);
@@ -1161,9 +1169,10 @@ VkCommandBuffer command_buffer() {
     } else vk_check(vkBeginCommandBuffer(R.cmd, &bi), "begin command buffer");
     R.recording = true;
     begin_overlay_gpu_queries(R.cmd, R.submissions[R.activeSubmission]);
-    // dynamic resolution (dynres.h) times every command buffer on the GPU while it is on
+    // dynamic resolution (dynres.h) times every command buffer on the GPU while it is on (and the drawoff GPU cap,
+    // drawoff/gpu_cap.h)
     bool dynresTiming = false;
-    if (dynres::on() && timestamp_capable(R.gpuTimestampValidBits, R.properties.limits.timestampPeriod)) {
+    if ((dynres::on() || DRAWOFF_GPU_TIMING()) && timestamp_capable(R.gpuTimestampValidBits, R.properties.limits.timestampPeriod)) {
       auto& slot = R.submissions[R.activeSubmission];
       if (!slot.timestampQueries) {
         VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};

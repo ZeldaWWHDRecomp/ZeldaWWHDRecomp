@@ -70,11 +70,14 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "drawoff/drawoff.h"  // the DrawDone wait off the critical path (decomp build, fast mode; WWHD_DRAWOFF)
 #define DRAWOFF(x) drawoff::x
 #define DRAWOFF_LEAD(tick) ((tick) * (1 + drawoff::frames_in_flight()))  // (paced_pass_start)
+#include "drawoff/gpu_cap.h"  // the plan counts the GPU's time per frame (WWHD_DRAWOFF_GPU_CAP)
+#define DRAWOFF_GPU_CAP(n, step) drawoff::gpu_cap::cap(n, step)
 #else
 #define CHEAPIB(x) ((void)0)
 #define CHEAPIB_MODELS(x) ((void)0)
 #define DRAWOFF(x) ((void)0)
 #define DRAWOFF_LEAD(tick) tick
+#define DRAWOFF_GPU_CAP(n, step) (n)
 #endif
 #include "mods/link_appearance.h"
 #include "mods/link_masks.h"
@@ -1854,6 +1857,8 @@ static int plan_step() {
 #endif
         n = pacing::plan_in_between(n, kPacedBudget.count(), std::chrono::duration_cast<std::chrono::nanoseconds>(g_logic_avg).count(),
                                     std::chrono::duration_cast<std::chrono::nanoseconds>(g_hold_avg).count());
+        // drawoff GPU cap (drawoff/gpu_cap.h): no more in-betweens than the GPU draws with the logic frame in the step
+        n = DRAWOFF_GPU_CAP(n, std::chrono::duration_cast<std::chrono::nanoseconds>(kPacedStep).count());
         // even frame delivery: only counts that divide the display's refreshes per step evenly
         if (g_even_pacing && present_vsync() && display_hz() > 0)
             n = pacing::even_in_between(n, int(std::lround(display_hz() * std::chrono::duration<double>(kPacedStep).count())));
