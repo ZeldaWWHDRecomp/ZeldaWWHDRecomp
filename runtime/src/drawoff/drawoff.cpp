@@ -944,6 +944,15 @@ int grid_keep_frames() {
     }();
     return n;
 }
+bool flip_time() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_DRAWOFF_FLIP_TIME");
+        const bool v = c2() && (!e || atoi(e) != 0);
+        if (c2()) LOG("[drawoff] c2 flip times: %s (WWHD_DRAWOFF_FLIP_TIME=%d)", v ? "a flip counts when its frame was rendered (or due), not when the game next looks" : "when the game next looks (as before)", v ? 1 : 0);
+        return v;
+    }();
+    return on;
+}
 bool render_cost() {
     static const bool on = [] {
         const char* e = getenv("WWHD_DRAWOFF_RENDER_COST");

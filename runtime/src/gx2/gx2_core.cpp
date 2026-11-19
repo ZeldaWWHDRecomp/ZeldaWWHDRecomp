@@ -80,6 +80,9 @@ CanHold g_canHold = nullptr;
 #include "../drawoff/drawoff.h"  // the DrawDone wait off the critical path (WWHD_DRAWOFF)
 #endif
 
+#ifdef WWHD_DECOMP_FAST
+static void note_frames_done();  // (drawoff c2 flip times, update_flips)
+#endif
 using namespace Latte;
 
 namespace gx2 {
@@ -1175,6 +1178,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
             latency_test::render_swap(++swaps, render::frame_count());
         }
         render::swap();
+#ifdef WWHD_DECOMP_FAST
+        if (drawoff::flip_time()) ::note_frames_done();
+#endif
         if (latency_test::on()) {
             static uint64_t swapped = 0;
             latency_test::render_swapped(++swapped);
@@ -1524,6 +1530,28 @@ static void trace_flip(const PendingFlip& f, std::chrono::steady_clock::time_poi
     fprintf(out, "%.3f %.3f %.3f %llu %llu %d %d\n", ms(std::chrono::steady_clock::now()), ms(f.at), ms(dueAt), (unsigned long long)due,
             (unsigned long long)at, int(!f.step), int(vsync_granule()));
 }
+#ifdef WWHD_DECOMP_FAST
+// drawoff c2 (drawoff::flip_time): when the render thread finished each frame (vsync clock), so a flip the game notices
+// only at its next GX2 call counts at the time it could have executed
+static std::atomic<uint64_t> g_done_id[64];
+static std::atomic<int64_t> g_done_t[64];
+static void note_frames_done() {  // render thread, after a swap
+    static uint64_t last = 0;
+    const uint64_t v = render::frames_completed();
+    if (v <= last) return;
+    const int64_t t = vsync_clock_now();
+    for (uint64_t k = std::max(last + 1, v >= 63 ? v - 63 : 0); k <= v; ++k) {
+        g_done_t[k % 64].store(t, std::memory_order_relaxed);
+        g_done_id[k % 64].store(k, std::memory_order_release);
+    }
+    last = v;
+}
+static bool frame_done_time(uint64_t swap, int64_t& t) {
+    if (g_done_id[swap % 64].load(std::memory_order_acquire) != swap) return false;
+    t = g_done_t[swap % 64].load(std::memory_order_relaxed);
+    return g_done_id[swap % 64].load(std::memory_order_acquire) == swap;
+}
+#endif
 static void update_flips() {  // g_flip_mutex held
     static const bool observeDeadlines = present_observer::enabled();
     uint64_t now = vsync_index();
@@ -1541,8 +1569,14 @@ static void update_flips() {  // g_flip_mutex held
         const int64_t shiftBefore = observeDeadlines ? g_vsync_shift.load(std::memory_order_relaxed) : 0;
         if (!uncapped_benchmark()) {  // on its vsync, or late: then the grid may move (vsync_pacing.h)
             int64_t shift = g_vsync_shift.load(std::memory_order_relaxed);
-            const int64_t t = vsync_clock_now();
+            int64_t t = vsync_clock_now();
             const int64_t dueTime = kVsyncClock.time(due, shift);
+#ifdef WWHD_DECOMP_FAST
+            if (drawoff::flip_time()) {  // (the frame's render end, not before its due time)
+                int64_t done;
+                if (frame_done_time(g_pending_flips.front().swap, done)) t = std::min(t, std::max(dueTime, done));
+            }
+#endif
 #ifdef WWHD_DECOMP_FAST
             // drawoff c2: a frame reaches the render thread a pass later (one swap in flight), so its flip may come up to a
             // frame later and keep the grid (drawoff::grid_keep_frames; WWHD_DRAWOFF_GRID_KEEP=0: off). Counted as missed

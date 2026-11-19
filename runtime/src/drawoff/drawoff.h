@@ -97,6 +97,11 @@ bool render_cost();
 // gx2_core's flips (vsync_pacing.h flip_executed): the frames at the drawn rate a late flip may take beyond one vsync
 // and keep the grid (c2 with WWHD_DRAWOFF_GRID_KEEP unset or 1: frames_in_flight(); else 0)
 int grid_keep_frames();
+// gx2_core's flips: the time a flip counts as executed (c2 with WWHD_DRAWOFF_FLIP_TIME unset or 1): the later of its due
+// time and the time the render thread finished its frame, not the game's next GX2 vsync call (under c2 the game does not
+// wait for flips, so it notices one up to a whole logic pass late: in-between frames counted 20+ ms late, moved the grid
+// and came out bunched with the next logic frame); 0: the game's next call (as before)
+bool flip_time();
 // a display-list call recorded into the list this thread records (c2: the called list's vertex ranges join it)
 void nested_call(uint32_t list);
 // a top-level display-list call (game thread): its vertex snapshot (c2; null: none), handed to the render thread
