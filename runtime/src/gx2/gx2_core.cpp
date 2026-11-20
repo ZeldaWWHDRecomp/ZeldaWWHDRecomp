@@ -73,7 +73,17 @@ CanHold g_canHold = nullptr;
 #endif
 #include "native_coverage.h"
 #include "register_forward.h"
+#include "../latency_test.h"
+#ifdef WWHD_DECOMP_FAST
+#include "../cheapib/cheapib.h"  // cheap in-between frames (WWHD_CHEAPIB)
+#include "../cheapib/ib_census.h"  // its draw census / checker (WWHD_IB_CENSUS)
+#include "../drawoff/drawoff.h"  // the DrawDone wait off the critical path (WWHD_DRAWOFF)
+#endif
+#include "due_ticks.h"  // the held-frame due check without a clock call (WWHD_PRESENT_DUE_TICKS)
 
+#ifdef WWHD_DECOMP_FAST
+static void note_frames_done();  // (drawoff c2 flip times, update_flips)
+#endif
 using namespace Latte;
 
 namespace gx2 {
@@ -260,6 +270,10 @@ static void apply_regs_now(uint32 first, const uint32* v, uint32 n);
 // every register command's write; a draw thread's copy gets it too while one runs (register_forward.h)
 static void apply_regs(uint32 first, const uint32* v, uint32 n) {
     if (first >= kNumRegs || n > kNumRegs - first) return;
+#ifdef WWHD_DECOMP_FAST
+    static_assert(cheapib::kB1Alu0 == mmSQ_ALU_CONSTANT0_0, "cheapib b1: ALU constant base");
+    if (first < mmSQ_ALU_CONSTANT0_0 + 0x1000 && first + n > mmSQ_ALU_CONSTANT0_0) CHEAPIB_B1_ALU_WRITTEN(first, n)
+#endif
     apply_regs_now(first, v, n);
     forward::note(first, &g_regs[first], n);
 }
@@ -436,6 +450,9 @@ const uint8_t* submitted_uniform_block(uint32 addr, uint32 size) {
     return g_snap_active ? g_snap_active->find(addr, size) : nullptr;
 }
 uint64_t submitted_uniforms_id() { return g_snap_active ? g_snap_active->id() : 0; }
+#ifdef WWHD_DECOMP_FAST
+bool submitted_uniform_covers(uint32 addr, uint32 size) { return g_snap_active && g_snap_active->covers(addr, size); }  // (drawoff)
+#endif
 static bool snapshot_readable(uint32 addr, uint32 size) {
     const uint64_t end = uint64_t(addr) + size + submitted::Snapshot::kTail;
     auto in = [&](uint64_t lo, uint64_t hi) { return addr >= lo && end <= hi; };
@@ -469,6 +486,11 @@ static submitted::Snapshot* submit_snapshot(uint32 list, uint32 size) {
     }
     return s;
 }
+#ifdef WWHD_DECOMP_FAST
+static auto ib_readable = [](uint32 a, uint32 n) { return snapshot_readable(a, n); };
+const submitted::Snapshot* active_snapshot() { return g_snap_active; }  // (render thread; cheapib b1)
+void apply_alu_regs(uint32_t first, const uint32_t* values, uint32_t count) { apply_regs(first, values, count); }
+#endif
 static void set_active_snapshot(submitted::Snapshot* s) {  // render thread
     if (g_snap_active) {
         std::lock_guard<std::mutex> lk(g_snap_mutex);
@@ -572,6 +594,10 @@ static void start_render_thread() {
     std::call_once(once, [] { std::thread([] { exception_report::boundary("GX2 render thread", render_thread_main); }).detach(); });
 }
 static void enqueue(Op op, const uint32* payload, uint32 n) {
+#ifdef WWHD_DECOMP_FAST
+    if (cheapib::drop_op(op)) return;
+    ib_census::top(op, payload, n, ib_readable);
+#endif
     start_render_thread();
     std::lock_guard<std::mutex> lk(g_q_mutex);
     g_q_pending.push_back(op | (n << 8));
@@ -579,6 +605,10 @@ static void enqueue(Op op, const uint32* payload, uint32 n) {
     if (g_q_waiting) g_q_cv.notify_one();
 }
 static void enqueue_regs(uint32 first, const uint32* values, uint32 count) {  // OP_SET_REGS {first, values...}
+#ifdef WWHD_DECOMP_FAST
+    if (cheapib::drop_op(OP_SET_REGS)) return;
+    ib_census::top_regs(first, values, count, ib_readable);
+#endif
     start_render_thread();
     std::lock_guard<std::mutex> lk(g_q_mutex);
     g_q_pending.push_back(OP_SET_REGS | ((count + 1) << 8));
@@ -644,6 +674,44 @@ static void render_sync(int site = kSyncShutdown) {
     std::unique_lock<std::mutex> lk(g_q_mutex);
     g_q_done_cv.wait(lk, [&] { return g_fence_done >= id; });
 }
+#ifdef WWHD_DECOMP_FAST
+// drawoff (drawoff/drawoff.h): render_sync in two halves, the fence now and the wait later (as a DrawDone wait)
+uint64_t drawoff_fence() {
+    if (!g_render_thread) return 0;
+    uint64_t id;
+    {
+        std::lock_guard<std::mutex> lk(g_q_mutex);
+        id = ++g_fence_issued;
+    }
+    uint32 w = (uint32)id;
+    enqueue(OP_FENCE, &w, 1);
+    return id;
+}
+bool drawoff_fence_done(uint64_t id) {
+    std::lock_guard<std::mutex> lk(g_q_mutex);
+    return g_fence_done >= id;
+}
+void drawoff_wait(uint64_t id) {
+    if (!g_render_thread || !id) return;
+    BlockingScope b;
+    const auto t = std::chrono::steady_clock::now();
+    {
+        std::unique_lock<std::mutex> lk(g_q_mutex);
+        g_q_done_cv.wait(lk, [&] { return g_fence_done >= id; });
+    }
+    const auto waited = std::chrono::steady_clock::now() - t;
+    sync_stat(kSyncDrawDone, waited);
+#ifdef WWHD_VK_SMOOTH
+    if (gfxvk::frame_breakdown::enabled()) {  // (gfx/vulkan/frame_breakdown.h)
+        const auto end = std::chrono::steady_clock::now();
+        gfxvk::frame_breakdown::game_wait(kSyncDrawDone, int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>((end - waited).time_since_epoch()).count()),
+                                          int64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(end.time_since_epoch()).count()));
+    }
+#endif
+    if (rprof::enabled())
+        rprof::add_sync(rprof::kSyncDrawDone, (uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(waited).count());
+}
+#endif
 
 std::string (*g_draw_context_provider)() = nullptr;
 static std::mutex g_draw_context_mutex;
@@ -685,6 +753,9 @@ void emit(Op op, const uint32* payload, uint32 n) {
         w[0] = op | (n << 8);
         memcpy(w + 1, payload, n * 4);
         rec->pos += bytes;
+#ifdef WWHD_DECOMP_FAST
+        if (cheapib::on()) cheapib::note_recorded(bytes);
+#endif
         return;
     }
     if (g_render_thread) {
@@ -704,6 +775,12 @@ static void emit_host(Op op, std::initializer_list<uint32> payload) {
     std::lock_guard<std::recursive_mutex> lk(g_exec_mutex);
     host::with_autorelease_pool([&] { execute_one(op, payload.begin(), (uint32)payload.size()); });
 }
+#ifdef WWHD_DECOMP_FAST
+// cheapib stage 2 (game thread, top level): a replayed pass's vertex writes, in order with its calls
+void cheapib_vtx_emit(void* writes) {
+    emit_host(OP_CHEAPIB_VTX, {uint32(uintptr_t(writes)), uint32(uint64_t(uintptr_t(writes)) >> 32)});
+}
+#endif
 
 // 60 fps (generated, framegen.h): the camera of the frame being drawn, host-only (also while a display
 // list is being recorded: the camera belongs to the frame, not to the list). Never called while off.
@@ -807,7 +884,11 @@ void execute(const uint32* words, uint32 count) {
         uint32 n = hdr >> 8;
 #ifdef WWHD_NATIVE_DRAW
         if ((op >= OP_COUNT && op != OP_PACKET_DEFINE && op != OP_PACKET_DRAW && op != OP_J3D_SHAPE &&
-             (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT) && op != OP_J3D_DESC_DRAW) ||
+             (op < OP_PASS_BEGIN || op > OP_PASS_VIEWPORT) && op != OP_J3D_DESC_DRAW
+#ifdef WWHD_DECOMP_FAST
+             && op != OP_CHEAPIB_VTX
+#endif
+             ) ||
             i + 1 + n > count) {
 #else
         if (op >= OP_COUNT || i + 1 + n > count) {
@@ -831,6 +912,9 @@ static void set_context(uint32 ctx) {
         return;
     }
     g_shadow = it->second.data();
+#ifdef WWHD_DECOMP_FAST
+    CHEAPIB_B1_ALU_WRITTEN(mmSQ_ALU_CONSTANT0_0, 0x1000)  // (cheapib b1: a context load may restore any of them)
+#endif
     // Draw writes primitive type without updating the context shadow.
     g_register_blocks.touch(uint32(REGADDR::VGT_PRIMITIVE_TYPE), 1);
     ensure_reg_tables();
@@ -867,6 +951,9 @@ static void execute_op(Op op, const uint32* p, uint32 n);
 // every op is counted and (sampled) timed for the render-thread profiler (render_prof.h); display-list
 // calls are not timed themselves: their ops are
 static void execute_one(Op op, const uint32* p, uint32 n) {
+#ifdef WWHD_DECOMP_FAST
+    if (drawoff::g_census) drawoff::g_tag = op;  // (the census notes which command read a range)
+#endif
     rprof::Op kind;
     if (draw_runs::any_on() && draw_runs::before_op(op, p, n)) return;  // (draw_runs.h)
     if (run_census::on()) [[unlikely]] {  // (diagnostics: draw_run_census.h)
@@ -909,11 +996,21 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     switch (op) {
     case OP_DEBUG_CONTEXT: g_draw_context.store(n ? p[0] : 0, std::memory_order_relaxed); return;
     case OP_SUBMITTED_UNIFORMS:
+#ifdef WWHD_DECOMP_FAST
+        // drawoff c2 (drawoff/drawoff.h): words 2-3 the call's vertex copies; 5 words: a bind's copy outside lists
+        if (n == 5) { drawoff::render_vertex_overlay((void*)(uintptr_t(p[2]) | (uint64_t(p[3]) << 32))); return; }
+        if (drawoff::g_vertex_on || drawoff::g_census) drawoff::render_vertex_snapshot(n >= 4 ? (void*)(uintptr_t(p[2]) | (uint64_t(p[3]) << 32)) : nullptr);
+#endif
 #ifdef WWHD_NATIVE_DRAW
         ++native_draw::g_epoch;
 #endif
         set_active_snapshot(n >= 2 ? (submitted::Snapshot*)(uintptr_t(p[0]) | (uint64_t(p[1]) << 32)) : nullptr);
         return;
+#ifdef WWHD_DECOMP_FAST
+    case OP_CHEAPIB_VTX:
+        if (n >= 2) cheapib::vtx_apply((void*)(uintptr_t(p[0]) | (uint64_t(p[1]) << 32)));
+        return;
+#endif
     case OP_CALL: execute_op(op, p, n); return;
     case OP_SET_REGS: case OP_SET_PROJ_REGS: kind = rprof::kOpRegs; break;
     case OP_DRAW: case OP_DRAW_INDEXED: kind = rprof::kOpDraw; rprof::classify_draw(); break;
@@ -934,7 +1031,12 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
     // draw, clear and copy, which is fine-grained enough: one takes a few microseconds)
     if (kind != rprof::kOpOther && kind != rprof::kOpRegs) {
         const int64_t due = render::present_due();
-        if (due && steady_ns() >= due) render::service_present();
+        if (due && (due_ticks::enabled() ? due_ticks::reached(due, steady_ns) : steady_ns() >= due)) render::service_present();
+        if (due && due_ticks::enabled() && (due_ticks::g_converted == 1 || due_ticks::g_converted == 1000)) {
+            LOG("[gx2] WWHD_PRESENT_DUE_TICKS=1: held-frame due checks on the CPU counter (%llu held frames)",
+                (unsigned long long)due_ticks::g_converted);
+            ++due_ticks::g_converted;  // (logged once per mark: 1 -> 2, 1000 -> 1001)
+        }
     }
     const uint64_t started = rprof::op_begin(kind);
     execute_op(op, p, n);
@@ -950,6 +1052,7 @@ static void execute_one(Op op, const uint32* p, uint32 n) {
 // the frame time of a slower computer, for measuring frame pacing (docs/performance.md).
 // WWHD_TEST_GAME_LOAD_MS=x:y busy-waits x ms at the swap of a logic step's frame and y ms at an
 // in-between frame's (the uneven passes of a phone whose game thread is the bottleneck).
+// WWHD_TEST_RENDER_LOAD_MS=x:y likewise on the render thread (a logic frame's and an in-between frame's swap).
 static void test_frame_load(const char* name, bool hold = false) {
     const char* e = getenv(name);
     const char* colon = e ? strchr(e, ':') : nullptr;
@@ -1036,7 +1139,24 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         break;
     }
     case OP_COPY_TO_SCAN: render::copy_to_scan(unpack_struct(p, kColorBufferWords, 0), p[kColorBufferWords]); break;
+#ifdef WWHD_DECOMP_FAST
+    case OP_CALL: {
+        static thread_local int depth = 0;  // (drawoff: top-level calls in its trace, every list in its census)
+        // cheapib b1 (cheapib_b1.h): a top-level call of a replayed in-between re-emits the logic pass's commands
+        if (depth == 0 && cheapib::b1_call_begin(p[0], p[1])) break;
+        if (drawoff::g_census || drawoff::g_trace) drawoff::render_call(p[0], p[1], true, depth);
+        depth++;
+        // c2 (drawoff/drawoff.h): the list's body as it was when its top-level call was made
+        const uint8_t* body = drawoff::g_vertex_on ? drawoff::vertex_bytes(p[0], p[1]) : nullptr;
+        execute(body ? (const uint32*)body : (const uint32*)mem::ptr(p[0]), p[1] / 4);
+        depth--;
+        if (drawoff::g_trace) drawoff::render_call(p[0], p[1], false, depth);
+        if (depth == 0) cheapib::b1_call_end();
+        break;
+    }
+#else
     case OP_CALL: execute((const uint32*)mem::ptr(p[0]), p[1] / 4); break;
+#endif
     case OP_SET_CONTEXT: set_context(p[0]); break;
     case OP_INVALIDATE: render::invalidate(p[0], p[1], p[2]); break;
     case OP_EXPAND_COLOR: case OP_EXPAND_DEPTH: break;  // MSAA/HiZ decompression: nothing to do on the host
@@ -1053,13 +1173,27 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         break;
     case OP_SWAP: {
         static const bool load = getenv("WWHD_TEST_RENDER_LOAD_MS") != nullptr;
-        if (load) test_frame_load("WWHD_TEST_RENDER_LOAD_MS");
+        if (load) test_frame_load("WWHD_TEST_RENDER_LOAD_MS", n >= 2 && p[1]);  // (x:y: y ms for an in-between frame)
         if (n) render::set_frame_aspect(gx2::bitsf(p[0]));  // aspect ratio from the next frame on (aspect.cpp)
         if (n >= 3 && p[2]) render::request_capture();
         if (n >= 5 && present_observer::enabled())
             present_observer::render_swap(uint64_t(p[3]) | (uint64_t(p[4]) << 32), render::frame_count());
         render::set_present_interval(n >= 6 ? p[5] : 0u, n >= 2 && p[1]);
+        if (latency_test::on()) {  // (test: latency_test.h; OP_SWAPs execute in the game's swap order)
+            static uint64_t swaps = 0;
+            latency_test::render_swap(++swaps, render::frame_count());
+        }
         render::swap();
+#ifdef WWHD_DECOMP_FAST
+        if (drawoff::flip_time()) ::note_frames_done();
+#endif
+        if (latency_test::on()) {
+            static uint64_t swapped = 0;
+            latency_test::render_swapped(++swapped);
+        }
+#ifdef WWHD_DECOMP_FAST
+        if (drawoff::g_census || drawoff::g_trace || drawoff::g_vertex_on) drawoff::render_swap();  // (the render frame's end)
+#endif
 #ifdef WWHD_NATIVE_DRAW
         native_draw::frame_end();
         if (native_pass::on()) native_pass::frame_end();
@@ -1137,6 +1271,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         using namespace native_draw;
         const Packet* pk = n >= kDrawHead ? packet(p[0]) : nullptr;
         if (!pk) break;
+#ifdef WWHD_DECOMP_FAST
+        if (drawoff::g_census) drawoff::g_tag = OP_PACKET_DRAW | (pk->site << 8);
+#endif
         const uint32 kind = p[1], blocks = p[2] & 0xFF, hasVertex = (p[2] >> 8) & 1, noFetch = (p[2] >> 9) & 1,
                      buffers = (p[2] >> 12) & 0xF, hasRange = (p[2] >> 16) & 1, regRanges = (p[2] >> 20) & 0xF;
         const uint32 fixedWords = kDrawHead + blocks * kBlockWords +
@@ -1200,6 +1337,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
         std::lock_guard<std::mutex> lk(g_q_mutex);
         g_fence_done = std::max<uint64_t>(g_fence_done, p[0]);
         g_q_done_cv.notify_all();
+#ifdef WWHD_DECOMP_FAST
+        if (drawoff::g_trace) drawoff::render_fence(p[0]);
+#endif
         break;
     }
     default: break;
@@ -1253,6 +1393,9 @@ using namespace gx2;
 // vsync_granule_ticks: 4, 2, 1; 6 at 40 fps), and every vsync count below is in ticks, rounded to
 // granules, so at 30/60 fps (granule 4) the timing is the 59.94 Hz one exactly.
 static uint64_t g_swap_count = 0, g_flip_count = 0;
+#ifdef WWHD_DECOMP_FAST
+static bool g_c2_swapped = false;  // drawoff c2: no GX2WaitForVsync since the last swap (game thread)
+#endif
 namespace gx2 { uint64_t flips_presented() { return __atomic_load_n(&g_flip_count, __ATOMIC_RELAXED); } }  // live fps in the title
 static uint32 g_swap_interval = 1;  // as set by the game (frame interpolation halves it)
 namespace interp { uint32_t effective_swap_interval(uint32_t game); uint64_t logic_steps(); uint32_t vsync_granule_ticks(); uint64_t step_ticks(uint32_t game); bool paced_step_schedule(); int64_t frame_interval_ns(); int mode(); }
@@ -1393,6 +1536,28 @@ static void trace_flip(const PendingFlip& f, std::chrono::steady_clock::time_poi
     fprintf(out, "%.3f %.3f %.3f %llu %llu %d %d\n", ms(std::chrono::steady_clock::now()), ms(f.at), ms(dueAt), (unsigned long long)due,
             (unsigned long long)at, int(!f.step), int(vsync_granule()));
 }
+#ifdef WWHD_DECOMP_FAST
+// drawoff c2 (drawoff::flip_time): when the render thread finished each frame (vsync clock), so a flip the game notices
+// only at its next GX2 call counts at the time it could have executed
+static std::atomic<uint64_t> g_done_id[64];
+static std::atomic<int64_t> g_done_t[64];
+static void note_frames_done() {  // render thread, after a swap
+    static uint64_t last = 0;
+    const uint64_t v = render::frames_completed();
+    if (v <= last) return;
+    const int64_t t = vsync_clock_now();
+    for (uint64_t k = std::max(last + 1, v >= 63 ? v - 63 : 0); k <= v; ++k) {
+        g_done_t[k % 64].store(t, std::memory_order_relaxed);
+        g_done_id[k % 64].store(k, std::memory_order_release);
+    }
+    last = v;
+}
+static bool frame_done_time(uint64_t swap, int64_t& t) {
+    if (g_done_id[swap % 64].load(std::memory_order_acquire) != swap) return false;
+    t = g_done_t[swap % 64].load(std::memory_order_relaxed);
+    return g_done_id[swap % 64].load(std::memory_order_acquire) == swap;
+}
+#endif
 static void update_flips() {  // g_flip_mutex held
     static const bool observeDeadlines = present_observer::enabled();
     uint64_t now = vsync_index();
@@ -1410,9 +1575,24 @@ static void update_flips() {  // g_flip_mutex held
         const int64_t shiftBefore = observeDeadlines ? g_vsync_shift.load(std::memory_order_relaxed) : 0;
         if (!uncapped_benchmark()) {  // on its vsync, or late: then the grid may move (vsync_pacing.h)
             int64_t shift = g_vsync_shift.load(std::memory_order_relaxed);
-            const int64_t t = vsync_clock_now();
+            int64_t t = vsync_clock_now();
             const int64_t dueTime = kVsyncClock.time(due, shift);
+#ifdef WWHD_DECOMP_FAST
+            if (drawoff::flip_time()) {  // (the frame's render end, not before its due time)
+                int64_t done;
+                if (frame_done_time(g_pending_flips.front().swap, done)) t = std::min(t, std::max(dueTime, done));
+            }
+#endif
+#ifdef WWHD_DECOMP_FAST
+            // drawoff c2: a frame reaches the render thread a pass later (one swap in flight), so its flip may come up to a
+            // frame later and keep the grid (drawoff::grid_keep_frames; WWHD_DRAWOFF_GRID_KEEP=0: off). Counted as missed
+            // vsyncs, a third of the c2 flips moved the grid (0.5 % without c2), and every move re-rounded the next step
+            // slots by up to a frame: the logic frames came unevenly (phone p99 30.6 ms against 25.4 without c2)
+            at = vsync_pacing::flip_executed(kVsyncClock, shift, due, t, vsync_granule(),
+                                             drawoff::grid_keep_frames() * kVsyncClock.granule_ns(vsync_granule()));
+#else
             at = vsync_pacing::flip_executed(kVsyncClock, shift, due, t, vsync_granule());
+#endif
             g_vsync_shift.store(shift, std::memory_order_relaxed);
             now = std::max(now, at);
             if (g_pending_flips.front().step) {  // the next step's slot
@@ -1587,6 +1767,9 @@ static void watchdog_thread() {
             LOG("[watchdog] no frame for %.1f s (swap %llu). Render queue locked", std::chrono::duration<double>(now - lastChange).count(),
                 (unsigned long long)swaps);
         threads::dump_state();
+#ifdef WWHD_DECOMP_FAST
+        cheapib::watchdog_dump();  // (debug: the J3D pipeline's worker queues, cheapib.cpp)
+#endif
     }
 }
 
@@ -1629,6 +1812,10 @@ uint64_t native_draw::list_serial() { return g_native_list_serial.load(std::memo
 #endif
 HLE(gx2, GX2BeginDisplayListEx) {
     NATIVE_LIST_SERIAL();
+#ifdef WWHD_DECOMP_FAST
+    if (drawoff::g_trace) drawoff::note_begin_list(c->lr);
+    if (drawoff::lists_on()) drawoff::list_begin(arg(c, 0));  // (its vertex copies: drawoff/drawoff.h)
+#endif
     if (Recording* rec = claim_rec()) {
         rec->start = rec->pos = arg(c, 0);
         rec->end = arg(c, 0) + arg(c, 1);
@@ -1639,6 +1826,12 @@ HLE(gx2, GX2BeginDisplayListEx) {
 }
 HLE(gx2, GX2EndDisplayList) {
     NATIVE_LIST_SERIAL();
+#ifdef WWHD_DECOMP_FAST
+    if (drawoff::lists_on()) {  // (its vertex ranges / copies: drawoff/drawoff.h)
+        const Recording* r = recording();
+        drawoff::list_end(r && r->start ? r->pos - r->start : 0);
+    }
+#endif
     uint32 size = 0;
     if (Recording* rec = recording()) {
         size = rec->pos - rec->start;
@@ -1670,14 +1863,38 @@ static void call_display_list(uint32 list, uint32 size) {
     NATIVE_LIST_SERIAL();
     if (Recording* rec = recording(); rec && rec->start) {
         if (submitted_uniforms_on()) g_rec_calls[rec - g_recs].push_back(list);
+#ifdef WWHD_DECOMP_FAST
+        if (drawoff::c2_notes()) drawoff::nested_call(list);  // (its vertex ranges join this list's: drawoff/drawoff.h)
+#endif
         emit(OP_CALL, {list, size});
         return;
     }
+#ifdef WWHD_DECOMP_FAST
+    if (cheapib::drop_call(list, size)) return;  // (WWHD_CHEAPIB=9: a replayed painter's call)
+    if (drawoff::g_trace) drawoff::note_call(list, size);
+    if (drawoff::copies_on()) drawoff::list_call(list);  // (a list recorded with vertex copies in an earlier pass: drain)
+    if (void* v = drawoff::vertex_snapshot(list, size)) {  // c2: the list's dynamic vertex ranges as they are now
+        submitted::Snapshot* s = submit_snapshot(list, size);
+        const uint64_t sp = uint64_t(uintptr_t(s)), vp = uint64_t(uintptr_t(v));
+        emit_host(OP_SUBMITTED_UNIFORMS, {uint32(sp), uint32(sp >> 32), uint32(vp), uint32(vp >> 32)});
+        emit(OP_CALL, {list, size});
+        emit_host(OP_SUBMITTED_UNIFORMS, {});
+        return;
+    }
+#endif
     submitted::Snapshot* s = submit_snapshot(list, size);
     if (s) emit_host(OP_SUBMITTED_UNIFORMS, {uint32(uintptr_t(s)), uint32(uint64_t(uintptr_t(s)) >> 32)});
     emit(OP_CALL, {list, size});
     if (s) emit_host(OP_SUBMITTED_UNIFORMS, {});
 }
+#ifdef WWHD_DECOMP_FAST
+// drawoff c2 (gx2_resources.cpp GX2SetAttribBuffer outside lists): the bind's copy goes to the render thread in order
+void gx2::drawoff_vertex_overlay(void* v) {
+    if (!v) return;
+    const uint64_t vp = uint64_t(uintptr_t(v));
+    emit_host(OP_SUBMITTED_UNIFORMS, {0u, 0u, uint32(vp), uint32(vp >> 32), 1u});
+}
+#endif
 HLE(gx2, GX2CallDisplayList) { NATIVE_COVERAGE(kCallList, c->lr, 1, arg(c, 0)); call_display_list(arg(c, 0), arg(c, 1)); }
 HLE(gx2, GX2DirectCallDisplayList) { NATIVE_COVERAGE(kCallList, c->lr, 1, arg(c, 0)); call_display_list(arg(c, 0), arg(c, 1)); }
 
@@ -1775,11 +1992,24 @@ HLE(gx2, GX2Flush) { emit_host(OP_FLUSH, {}); }
 HLE(gx2, GX2DrawDone) {
     BlockingScope b;
     emit_host(OP_DRAW_DONE, {});
+#ifdef WWHD_DECOMP_FAST
+    if (drawoff::g_census) drawoff::census_dd();
+    if (drawoff::defer_draw_done(c->lr)) {  // (WWHD_DRAWOFF=1: waited for before the next painter)
+        ret(c, 1);
+        return;
+    }
+#endif
     render_sync(kSyncDrawDone);
+#ifdef WWHD_DECOMP_FAST
+    if (drawoff::g_census) drawoff::draw_done_returned();
+#endif
     ret(c, 1);
 }
 namespace dtrace { void on_swap(uint64_t swap, uint64_t steps); }
 HLE(gx2, GX2SwapScanBuffers) {
+#ifdef WWHD_DECOMP_FAST
+    if (drawoff::g_trace || drawoff::g_census) drawoff::note_swap();
+#endif
 #ifdef WWHD_NATIVE_DRAW
     if (native_draw::coverage::on()) native_draw::coverage::swap();
     native_draw::j3ddesc::game_swap();
@@ -1872,6 +2102,11 @@ HLE(gx2, GX2SwapScanBuffers) {
             present_observer::fail("diagnostic swap ID ordering/reset mismatch");
         g_pending_flips.push_back({g_swap_count, std::chrono::steady_clock::now(), !hold});
     }
+#ifdef WWHD_DECOMP_FAST
+    g_c2_swapped = true;
+    drawoff::note_swap_script(g_swap_count, ld32(GD(0x101FF560)));  // (test: dump names, drawoff.h; mTimer)
+#endif
+    if (latency_test::on()) latency_test::game_swap(g_swap_count);  // (test: latency_test.h)
     // depth peeks of this frame (the sun's glare test) are answered before the game's next step reads
     // them, as on the Wii U (gfx/depth_peek.h)
     gfx::depth_peek::wait_answered();
@@ -1900,6 +2135,14 @@ HLE(gx2, GX2SwapScanBuffers) {
 HLE(gx2, GX2GetSwapStatus) {
     std::lock_guard<std::mutex> lk(g_flip_mutex);
     update_flips();
+#ifdef WWHD_DECOMP_FAST
+    // drawoff c2 (drawoff/drawoff.h): one swap in flight counts as flipped, so sead's waitForSwap ends with the
+    // flips one swap behind (the cap); further behind, the game waits as before
+    if (const uint32_t ahead = drawoff::swaps_ahead(); ahead && g_swap_count > g_flip_count && g_swap_count - g_flip_count <= ahead) {
+        drawoff::c2_note(1);
+        if (arg(c, 0)) st32(arg(c, 0), (uint32)(g_flip_count + g_count_offset));
+    } else
+#endif
     if (arg(c, 0)) st32(arg(c, 0), (uint32)(g_swap_count + g_count_offset));
     if (arg(c, 1)) st32(arg(c, 1), (uint32)(g_flip_count + g_count_offset));
     if (arg(c, 2)) st64(arg(c, 2), timebase::to_guest(g_last_flip_time));
@@ -1922,6 +2165,37 @@ HLE(gx2, GX2WaitForVsync) {
         update_flips();
         return;
     }
+#ifdef WWHD_DECOMP_FAST
+    // (c2: the part of the wait before the awaited flip is due, the display's pacing, leaves interp's pass cost,
+    // drawoff.h take_flip_wait_ns. The part after it, a frame the render thread has not finished yet, is the pass's
+    // cost: left out too, a render thread slower than the game hid its frames' cost, interp planned in-between frames
+    // that did not fit and the logic steps came late: 28.9 steps a second on the phone.)
+    struct C2FlipWait {
+        int64_t t = 0, due = INT64_MAX;  // due: when the oldest pending flip is due (none: the whole wait is pacing)
+        C2FlipWait() {
+            if (!drawoff::c2()) return;
+            t = steady_ns();
+            std::lock_guard<std::mutex> lk(g_flip_mutex);
+            if (drawoff::render_cost() && !g_pending_flips.empty())  // (WWHD_DRAWOFF_RENDER_COST=0: all left out)
+                due = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                          tick_time(flip_due(g_pending_flips.front())).time_since_epoch()).count();
+        }
+        ~C2FlipWait() { if (t) drawoff::add_flip_wait_ns(std::clamp<int64_t>(due - t, 0, steady_ns() - t)); }
+    } c2FlipWait;
+    // drawoff c2 (drawoff/drawoff.h): the first vsync wait after a swap (sead's waitForSwap) returns at once while
+    // the flips are at most one swap behind; any further wait is the vsync wait it always was
+    if (g_c2_swapped) {
+        g_c2_swapped = false;
+        if (const uint32_t ahead = drawoff::swaps_ahead()) {
+            std::lock_guard<std::mutex> lk(g_flip_mutex);
+            update_flips();
+            if (g_swap_count - g_flip_count <= ahead) {
+                drawoff::c2_note(0);
+                return;
+            }
+        }
+    }
+#endif
 #ifdef WWHD_HAS_VULKAN
     static const bool readyFlipWait = [] {
         const char* value = getenv("WWHD_VK_READY_FLIP_WAIT");

@@ -74,6 +74,7 @@ bool native_present_default();
 enum class Ext : uint32_t { SlotReset = 1, DefineSet = 2, BindFuture = 3
 #if defined(WWHD_DECOMP_FAST)
                             , PardecideDesc = 4  // (native_draw/pardecide_ops.h)
+                            , CheapibB2Exec = 5, CheapibB2Free = 6  // (cheapib b2: cheapib/cheapib_b2.h)
 #endif
 };
 // append one extension command (sub-opcode + payload) to STREAM; false: rejected (the caller drains and does the

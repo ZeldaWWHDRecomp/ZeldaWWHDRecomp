@@ -49,6 +49,9 @@
 #include "interp_slots.h"
 #include "interp_trail.h"
 #include "runtime.h"
+#ifdef WWHD_DECOMP_FAST
+#include "cheapib/cheapib_s2.h"  // (stage 2: material animations noted on the logic pass)
+#endif
 
 namespace interp {
 bool enabled();
@@ -1366,6 +1369,14 @@ extern "C" void hook_027DF40C(Cpu* c) {
         return;
     }
     uint32_t anm = c->r[3];
+#ifdef WWHD_DECOMP_FAST
+    {  // debug (cheapib stage 2): WWHD_CHEAPIB_S2_MATLOG=STEP logs every evaluation of that logic step
+        static const uint64_t at = getenv("WWHD_CHEAPIB_S2_MATLOG") ? strtoull(getenv("WWHD_CHEAPIB_S2_MATLOG"), nullptr, 10) : 0;
+        if (at && interp::logic_steps() == at && interp::logic_pass())
+            LOG("[cheapib] s2 material eval: %08X ts %08X frame %.3f exec %d halfway %d lr %08X", anm, ld32(anm),
+                ld32(anm) ? (float)ldf32(ld32(anm)) : 0.0f, (int)interp::in_execute(), (int)halfway(), c->lr);
+    }
+#endif
     uint32_t ts = ld32(anm);
     if (!ts) {
         f_027DF40C_orig(c);
@@ -1389,6 +1400,10 @@ extern "C" void hook_027DF40C(Cpu* c) {
         auto it = g_anm.find(anm);
         if (it != g_anm.end()) from = &it->second;
     }
+#ifdef WWHD_DECOMP_FAST
+    if (interp::logic_pass() && halfway() && cheapib::s2_mat_on())  // (cheapib stage 2: noted for the replayed passes)
+        cheapib::s2_mat_eval(anm, ts, from && from->ts == ts && from->pass == interp::hold_pass_count() ? from->frame : cur, cur);
+#endif
     if (!from || from->ts != ts || from->pass != interp::hold_pass_count() || from->frame == cur) {
         f_027DF40C_orig(c);
         return;
@@ -1410,6 +1425,27 @@ extern "C" void hook_027DF40C(Cpu* c) {
     stf32(ts, cur);  // the evaluator's cache (+0x28) keeps mid, so the next exact frame re-evaluates
     if (g_anm_blended.size() < 4096) g_anm_blended.push_back(anm);
 }
+#ifdef WWHD_DECOMP_FAST
+// cheapib stage 2's material animations (cheapib/cheapib_s2_material.cpp): the same blend and records on replayed passes
+namespace interp {
+float fx_anm_mid(float a, float b, float start, float end, bool loop, float t) {
+    const auto s = g_astats;
+    const float m = anm_mid(a, b, start, end, loop, t);
+    g_astats = s;
+    return m;
+}
+bool fx_anm_loop(uint32_t ts) { return ld32(ts + 0x10) == kLoopFn; }
+void fx_anm_record(uint32_t anm, uint32_t ts, float frame) {
+    AnmRec& r = g_anm[anm];
+    r.ts = ts;
+    r.frame = frame;
+    r.pass = interp::hold_pass_count();
+}
+void fx_anm_blended(uint32_t anm) {
+    if (g_anm_blended.size() < 4096) g_anm_blended.push_back(anm);
+}
+}  // namespace interp
+#endif
 // Before the next step's logic (interp.cpp, start of a logic pass): animators whose last evaluation
 // in the step was a blended one (no exact evaluation followed: their caller evaluates only when it
 // sees the frame change) are evaluated at the step's exact frame, so their values and their cache
@@ -1622,6 +1658,9 @@ extern "C" void hook_02019918(Cpu* c) { rnd_call(c, 'X', f_02019918_orig); }
 // sea vertex grid from the height table
 extern "C" void hook_0246C5E8(Cpu* c) {
     uint32_t pk = c->r[3];
+#ifdef WWHD_DECOMP_FAST
+    cheapib::s2_sea_fill(pk);  // (cheapib stage 2: the logic pass's buffer noted for the replayed passes)
+#endif
     uint32_t tab = ld32(pk + kSeaHeights);
     if (!on(2) || !tab) {
         f_0246C5E8_orig(c);
@@ -1686,6 +1725,18 @@ extern "C" void hook_0246C7C8(Cpu* c) {
     f_0246C7C8_orig(c);
     g_sea_scroll_half = false;
 }
+#ifdef WWHD_DECOMP_FAST
+// cheapib stage 2 (cheapib/cheapib_s2_vertex.cpp): the sea scroll translation a full pass draws now (hook_0246C7C8 keeps
+// the counter on hold passes; the PSMTXTrans hook's halfway rule on blended passes); false: these rules are off
+namespace interp {
+bool fx_sea_scroll(uint32_t pk, bool blended, float t, float& y) {
+    if (!on(2) || !on(8)) return false;
+    const float f = (float)(int16_t)ld16(pk + kSeaScroll) / 300.0f;
+    y = blended ? (float)((double)f - (1.0 - (double)t) / 300.0) : f;
+    return true;
+}
+}  // namespace interp
+#endif
 
 // daSea_packet_c::CalcFlatInter: wave strength (+0x130, 0 = flat near islands, 1 = open sea)
 // test aid: WWHD_SEA_WAVES=1 forces full waves everywhere (to check the wave blending on Outset)

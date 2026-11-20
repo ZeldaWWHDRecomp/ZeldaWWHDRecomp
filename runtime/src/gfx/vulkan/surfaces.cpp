@@ -55,6 +55,9 @@
 #ifdef WWHD_NATIVE_DRAW
 #include "native_draw/j3d_desc_depth_inst.h"
 #endif
+#ifdef WWHD_DECOMP_FAST
+#include "../../drawoff/drawoff.h"
+#endif
 
 Latte::E_GX2SURFFMT LatteTexture_ReconstructGX2Format(const Latte::LATTE_SQ_TEX_RESOURCE_WORD1_N&, const Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N&);
 namespace gfxvk {
@@ -1669,6 +1672,9 @@ void upload_surface(Surface* s) {
         ranges[level]={base,uint32_t(std::min<uint64_t>(guest_info(s,level).surfSize,0x100000000ull-base))};
     }
     s->dataSize=ranges[0].second;
+#ifdef WWHD_DECOMP_FAST
+    if(drawoff::g_census)for(uint32_t level=0;level<levels;++level)drawoff::read(drawoff::kTexture,ranges[level].first,ranges[level].second);
+#endif
     bool full = s->dirty || !s->watched;
     if (wwatch::active()) {
         for(uint32_t level=0;level<levels&&!full;++level)full=wwatch::written_since(ranges[level].first,ranges[level].second,s->watchStamp);

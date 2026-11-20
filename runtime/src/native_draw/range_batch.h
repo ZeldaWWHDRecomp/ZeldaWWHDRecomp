@@ -167,8 +167,11 @@ inline void range_batch_append(RangeBatch& B, const LoweredKind& L, const native
     const size_t from = out.size() - size_t(B.base) * v.stride;  // (this segment's bytes so far)
     if (copied <= from) continue;
     out.resize(out.size() + (copied - from));
-    std::memcpy(out.data() + size_t(B.base) * v.stride + from, static_cast<const uint8_t*>(mem::ptr(addr)) + from,
+    std::memcpy(out.data() + size_t(B.base) * v.stride + from, static_cast<const uint8_t*>(WWHD_VERTEX_PTR(addr, copied)) + from,
                 copied - from);
+#ifdef WWHD_DECOMP_FAST
+    CHEAPIB_VTX_SRC(&out, size_t(B.base) * v.stride + from, addr + uint32_t(from), uint32_t(copied - from))
+#endif
     rprof::guest_read(rprof::kUpVertex, addr + uint32_t(from), copied - from);
   }
   cmds.push_back({uint32_t(count), 1, uint32_t(at / width), int32_t(B.base), instance});

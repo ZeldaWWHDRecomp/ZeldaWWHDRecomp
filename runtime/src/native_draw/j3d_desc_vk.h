@@ -289,6 +289,10 @@ void support_patch(const Stage& S, const In& in, uint8_t* bytes) {
     const void* src = submitted && c.src + 16 <= blockSize ? static_cast<const void*>(submitted + c.src)
                                                            : ppc_ptr(address + c.src);
     std::memcpy(bytes + c.dst, src, 16);
+#ifdef WWHD_DECOMP_FAST
+    CHEAPIB_B1_SRC(bytes, c.dst, src)  // (cheapib b1: rebuilt from this pass's block on a replay; guest reads: not noted)
+    if (!(submitted && c.src + 16 <= blockSize)) CHEAPIB_B1_GUEST(4, address, blockSize)
+#endif
   }
   if (S.sh->gatherUnits && S.sh->uniforms.offset_remapped >= 0)
     for (const Tex& x : S.tex)
@@ -298,9 +302,36 @@ void support_patch(const Stage& S, const In& in, uint8_t* bytes) {
             ::gfx::area_sample::scale_gather_grid(reinterpret_cast<float*>(bytes + c.dst), 1, x.surface->width,
                                                   x.surface->height, x.surface->sx, x.surface->sy);
 }
+#ifdef WWHD_DECOMP_FAST
+// cheapib b1: the register entries of the support bytes (the state's, made with the ambient words of its class), as
+// pack_uniforms_into lays them out: inherited ones are rebuilt from the register file on a replay. Registers J3D items
+// write (d1's W set: deferred in a run, so not yet seen by the call's write list) count as the call's own (kept)
+void b1_note_support_regs(const Stage& S, const uint8_t* bytes) {
+  const vk::Shader* sh = S.sh;
+  if (!sh || !sh->dec) return;
+  const uint32_t aluBase = mmSQ_ALU_CONSTANT0_0 + (sh->vertex ? 0x400 : 0);
+  auto note = [&](int dst, uint32_t word) {
+    if (word + 4 > 0x400) return;
+    for (uint32_t w = 0; w < 4; ++w)
+      if (d1::written(aluBase + word + w)) return;
+    ::cheapib::b1_src_reg(bytes, uint32_t(dst), aluBase + word, 4);
+  };
+  if (sh->uniforms.offset_remapped >= 0)
+    for (const auto& e : sh->dec->list_remappedUniformEntries_register)
+      note(sh->uniforms.offset_remapped + e.mappedIndexOffset, e.indexOffset / 4);
+  if (sh->uniforms.offset_uniformRegister >= 0)
+    for (int i = 0; i < sh->uniforms.count_uniformRegister; ++i) note(sh->uniforms.offset_uniformRegister + 16 * i, 4 * i);
+}
+#endif
 void support_bytes(const Stage& S, const In& in, std::vector<uint8_t>& bytes) {
   bytes = S.sup;
+#ifdef WWHD_DECOMP_FAST
+  CHEAPIB_B1_SRC_ARM(bytes.data(), 3)
+#endif
   support_patch(S, in, bytes.data());
+#ifdef WWHD_DECOMP_FAST
+  if (::cheapib::g_b1_capturing) b1_note_support_regs(S, bytes.data());
+#endif
 }
 #include "native_draw/j3d_desc_support2.h"  // (WWHD_NATIVE_J3D_DESC_SUPPORT2, default on; =0 off)
 // the mesh's indices: the buffer-cache entry the full draw binds for this range (a converted entry made once, here or
@@ -1091,7 +1122,8 @@ const char* try_replay(State& s, const In& in, bool checkOnly, bool beginPass = 
     B.cmd = cmd;
   }
 #if defined(WWHD_DECOMP_FAST) && defined(WWHD_VK_SMOOTH)
-  if (::native_draw::pardecide::level() >= 1 && !depthProof) {
+  // (cheapib b1 captures the per-call commands of a logic pass's calls: no compact command while it captures)
+  if (::native_draw::pardecide::level() >= 1 && !depthProof && !::cheapib::g_b1_capturing) {
 #if J3DDESC_DEPTH
     if (familyDraw) {
       const VkDescriptorSet set = reinterpret_cast<VkDescriptorSet>(fam.set);

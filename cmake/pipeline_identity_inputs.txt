@@ -41,6 +41,7 @@ runtime/src/aspect.h
 runtime/src/aspect_panes.h
 runtime/src/audio_out.h
 runtime/src/build_info.h
+runtime/src/drawoff/vertex_source.h
 runtime/src/dsweep.h
 runtime/src/dynres.h
 runtime/src/exception_report.h
@@ -50,6 +51,7 @@ runtime/src/input.h
 runtime/src/input_map.h
 runtime/src/interp.h
 runtime/src/interp_pacing.h
+runtime/src/latency_test.h
 runtime/src/main_profile.h
 runtime/src/mods/camera_swipe.h
 runtime/src/mods/climb.h

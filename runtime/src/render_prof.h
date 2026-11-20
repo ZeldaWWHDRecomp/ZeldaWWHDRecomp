@@ -20,6 +20,9 @@
 #include <cstdint>
 #include <initializer_list>
 #include <string>
+#ifdef WWHD_DECOMP_FAST
+#include "drawoff/drawoff.h"
+#endif
 
 namespace rprof {
 
@@ -89,6 +92,9 @@ extern bool g_track_unique;
 void guest_read_slow(Upload kind, uint32_t addr, uint64_t size);
 inline void guest_read(Upload kind, uint32_t addr, uint64_t size) {
     if (g_track_unique) guest_read_slow(kind, addr, size);
+#ifdef WWHD_DECOMP_FAST
+    drawoff::read(kind, addr, size);  // (drawoff/drawoff.h census; kinds are rprof's)
+#endif
 }
 
 void add_wait(Wait w, uint64_t ns);         // render thread blocked on the GPU / swapchain

@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "game_hooks.h"
+#include "latency_test.h"
 #include "guest_addr.h"
 #include "runtime.h"
 #include "mods/mods.h"
@@ -167,11 +168,13 @@ extern "C" void hook_025DF940(Cpu* c) {
     const bool is_cam = g_cam_trace && is_camera(proc);
     if (is_cam) g_follow_called = false;
     const uint32_t dump_fn = test_aids::dumping() ? fn : 0;
+    const uint32_t latencyProc = is_link && latency_test::on() ? ld32(proc + kCurProc) : 0;
     if (is_link) {
         g_link = proc;
         if (dump_fn) test_aids::before_execute_link(proc);
     }
     f_025DF940_orig(c);
+    if (is_link && latency_test::on()) latency_test::link_execute(latencyProc, ld32(proc + kCurProc));  // (latency_test.h)
     if (test_aids::digesting()) test_aids::proc_digest(proc);
     if (dump_fn) test_aids::after_execute(proc, dump_fn, is_link);
     if (is_cam) trace_camera(proc);

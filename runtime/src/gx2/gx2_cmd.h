@@ -71,6 +71,10 @@ enum Op : uint32_t {
     OP_J3D_SHAPE = 0x47,      // the J3D shape draw that follows: its key words (native_draw.h, J3D material cache)
     // J3D material descriptions (native_j3d_desc.h), same builds: one described J3D draw (desc, env, mesh, its blocks)
     OP_J3D_DESC_DRAW = 0x50,
+    // cheapib stage 2 (decomp build, fast mode; cheapib/cheapib_s2_vertex.cpp): host-only, never recorded: a replayed
+    // in-between's vertex bytes for CPU-written vertex sites, written into guest memory before its calls (payload: the
+    // writes object as two words)
+    OP_CHEAPIB_VTX = 0x51,
 };
 
 // debug draw provenance (WWHD_VK_PIPELINE_WHO): a provider (set by dsweep.cpp) describes the guest code issuing a
@@ -96,6 +100,8 @@ void set_regs(uint32_t first, const uint32_t* values, uint32_t count);
 
 // the live register file used for execution
 uint32_t* regs();
+// (decomp fast mode, cheapib b1: a replayed call's net ALU-constant writes, applied as its execution would)
+void apply_alu_regs(uint32_t first, const uint32_t* values, uint32_t count);
 
 // execute a sequence of encoded commands
 void execute(const uint32_t* words, uint32_t count);

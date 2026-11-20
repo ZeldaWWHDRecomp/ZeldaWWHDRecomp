@@ -805,8 +805,22 @@ function(wwhd_decomp_link target)
     ${hook_srcs} ${objs})
   target_compile_definitions(${target} PRIVATE WWHD_DECOMP=1)
   endif()  # (WWHD_DECOMP_RUNTIME_ONLY)
+  # cheap in-between frames (runtime/src/cheapib/cheapib.h): the decomp's PORT_CHEAPIB_SKIP_DRAW point links in every
+  # decomp build; the switch (WWHD_CHEAPIB, default 0) exists in fast mode only
+  target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib.cpp"
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_sway.cpp"
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_material.cpp"
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_vertex.cpp"
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_sky.cpp"
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_sun.cpp"
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_weather.cpp"
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/cheapib_s2_particles.cpp"
+    "${CMAKE_SOURCE_DIR}/runtime/src/cheapib/render_replay.cpp")
   if(WWHD_DECOMP_FAST)  # the runtime's fast-mode parts (runtime/src/decomp)
     target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST=1)
+    # the DrawDone wait off the critical path (runtime/src/drawoff/drawoff.h; WWHD_DRAWOFF, default 0)
+    target_sources(${target} PRIVATE "${CMAKE_SOURCE_DIR}/runtime/src/drawoff/drawoff.cpp"
+      "${CMAKE_SOURCE_DIR}/runtime/src/drawoff/gpu_cap.cpp")  # (WWHD_DRAWOFF_GPU_CAP)
     if(WWHD_DECOMP_FAST_LOCAL)
       target_compile_definitions(${target} PRIVATE WWHD_DECOMP_FAST_LOCAL=1)  # (decomp.cpp: g_decomp_fast_local)
     endif()

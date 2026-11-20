@@ -145,6 +145,10 @@ public:
                             VkSubpassContents contents);
   bool vkCmdEndRenderPass(VkCommandBuffer cmd);
 
+#ifdef WWHD_DECOMP_FAST
+  // cheapib b1 (cheapib/cheapib_b1.h): one command as captured from a stream (opcode and payload), appended again
+  bool append_raw(uint32_t opcode, std::span<const std::byte> payload) { return append(opcode, payload); }
+#endif
 private:
   // Written only by a rejected append/encoder. Every false exit records a
   // fresh cause; successful calls neither reset nor expose this diagnostic.

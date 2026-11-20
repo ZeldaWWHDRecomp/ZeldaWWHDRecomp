@@ -11,6 +11,7 @@
 #include "runtime.h"
 #if defined(WWHD_DECOMP_FAST)
 #include "../../native_draw/pardecide_ops.h"
+#include "../../cheapib/cheapib.h"  // cheapib b2: secondary command buffers (cheapib_b2.h)
 #endif
 #include <cstdlib>
 #include <cstring>
@@ -69,7 +70,12 @@ bool check() {
   }();
   return value;
 }
-void emitter_started() { emitterThread = true; }
+void emitter_started() {
+  emitterThread = true;
+#ifdef WWHD_DECOMP_FAST
+  cheapib::note_emitter_thread();  // (its CPU time in cheapib's stats lines)
+#endif
+}
 bool on_emitter() { return emitterThread; }
 
 bool defer_command_pool_reset(const void* slot, VkCommandPool commands) {
@@ -152,6 +158,7 @@ void replay_extension(const std::byte* bytes, size_t size, bool execute) {
   case Ext::BindFuture: pipeline_future::replay(bytes, size, execute); break;
 #if defined(WWHD_DECOMP_FAST)
   case Ext::PardecideDesc: native_draw::pardecide::replay_desc(bytes, size, execute); break;
+  case Ext::CheapibB2Exec: case Ext::CheapibB2Free: cheapib::b2_ext(code, bytes, size, execute); break;  // (cheapib_b2.h)
 #endif
   default: throw std::runtime_error("unknown POD extension");
   }

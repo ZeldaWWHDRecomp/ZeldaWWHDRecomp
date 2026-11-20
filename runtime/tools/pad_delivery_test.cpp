@@ -28,6 +28,7 @@ namespace threads { void park_sleep_until(std::chrono::steady_clock::time_point,
 namespace story_notebook { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the notebook page (not under test)
 namespace story_scenes {void mute(input::PadState&){} }
 namespace story_bag { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the bag pages (not under test)
+namespace latency_test { bool g_on = false; void pad(uint32_t&, float&){} }  // the latency test aid (not under test)
 namespace game_settings_page { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the settings page (not under test)
 namespace link_appearance { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the colour page of Link's look (not under test)
 namespace menu_sounds { void service(Cpu*){} }  // the Settings overlay's menu sounds (not under test)
