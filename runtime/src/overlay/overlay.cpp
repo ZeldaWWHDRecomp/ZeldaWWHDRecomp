@@ -1027,8 +1027,8 @@ void tab_graphics() {
              "steps replay the step's draws and update only what moves, instead of drawing everything again,\n"
              "and no more of them are planned than the GPU can draw in time: faster, steadier rendering (on a\n"
              "phone at 120 fps about a quarter less render time, up to a tenth more frames, fewer late frames).\n"
-             "Can change fine details like grass and leaves very slightly. Needs the Vulkan renderer and\n"
-             "\"Record graphics on a second thread\" (Advanced; on by default on phones).");
+             "Needs the Vulkan renderer and \"Record graphics on a second thread\" (Advanced; on by default\n"
+             "on phones).");
         if (fixed) note("Set by WWHD_RENDER_REPLAY for this start.");
         else if (renderReplay != cheapib::render_replay::chosen()) note("Restart the game to apply.");
         else if (const char* why = cheapib::render_replay::inactive_reason()) note("%s", why);

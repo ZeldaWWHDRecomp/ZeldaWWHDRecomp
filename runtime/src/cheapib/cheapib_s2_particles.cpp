@@ -140,6 +140,19 @@ void add_range(uint32_t lo, uint32_t size) {
 
 bool ptcl_on() { return (s2_mask() & 2048) != 0; }
 
+// A manager draw's camera matrix (its draw info +0) can live on the drawing thread's stack: the particle layer jobs run
+// on runtime threads whose guest stacks are runtime-owned (kRuntimeStart..kRuntimeEnd), the game thread's in MEM2.
+// Before, only MEM2 cameras were noted: a 2D group drawn from a layer job got a zero camera, so the rerun built its
+// emitter frame uniform with a zero draw matrix and the rupee sparkle vanished on every replayed pass of that step.
+// Which thread drew it depended on host timing (c2 on or off, any render load). WWHD_CHEAPIB_S2_PTCL_CAM=0: the old
+// MEM2-only rule (test).
+bool cam_noted(uint32_t cam) {
+    static const bool fix = !getenv("WWHD_CHEAPIB_S2_PTCL_CAM") || atoi(getenv("WWHD_CHEAPIB_S2_PTCL_CAM")) != 0;
+    const uint64_t end = uint64_t(cam) + 48;
+    if (cam >= mem::kMem2Start && cam < mem::kMem2End) return true;  // (the old rule, unchanged)
+    return fix && cam >= mem::kRuntimeStart && end <= mem::kRuntimeEnd;
+}
+
 uint32_t buf_size(uint32_t pool, uint32_t b) {
     const uint32_t cap = ld32(b + kBufCap), elem = ld32(pool + kPoolElem);
     const uint64_t n = uint64_t(cap) * elem;
@@ -167,7 +180,7 @@ void note(int op, uint32_t mgr, uint32_t info, uint32_t group) {
     Note n{op, mgr, group};
     for (uint32_t i = 0; i < kInfoWords; i++) n.info[i] = ld32(info + 4 * i);
     const uint32_t cam = n.info[0];
-    if (cam >= 0x10000000 && cam < 0x50000000) {
+    if (cam_noted(cam)) {
         for (int i = 0; i < 12; i++) n.cam[i] = ld32(cam + 4 * i);
         n.cam_view = true;  // (n.cam, n.info: host-order words, as ld32 reads them)
         for (int i = 0; i < 12; i++) n.cam_view &= n.cam[i] == ld32(GD(kView) + 4 * i);
