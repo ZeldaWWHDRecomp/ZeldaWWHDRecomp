@@ -7,13 +7,16 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: with Faster rendering, the rupee counter's sparkle (and other particles drawn by background jobs)
+  sometimes vanished in the in-between frames.**
+
 - **New in the decomp version (fast mode): "Faster rendering (replays unchanged draws)"** in Settings > Graphics >
   Frame rate, on by default. With 40-240 fps, the frames between two game steps replay the step's draws and update
   only what moves, the game no longer waits for the GPU before the next step, and a step gets no more in-between
   frames than the GPU can draw in time. On a Xiaomi 14 at 120 fps (warm phone): 24-30 % less render time, up to
   11 % more frames (60 instead of 54-59), and steadier frames (slowest 1 % of frames 3-7 ms shorter, late
   frames on screen 1-4 a minute instead of 5-73). It needs the Vulkan renderer and "Record graphics on a second
-  thread", and can change fine details like grass and leaves very slightly. The normal build is unchanged.
+  thread". The normal build is unchanged.
 
 - **Steam Deck: graphics are recorded on a second thread again by default**, with multi-threaded recording and
   hot vsync waits, as on Android phones. It was switched off as a precaution after the Gaming Mode start crash (#178);
