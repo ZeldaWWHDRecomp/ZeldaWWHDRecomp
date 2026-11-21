@@ -7,6 +7,9 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: at 60 fps (and higher), music fades ran at double speed.** The HD sound player now updates once per
+  game step while frames are interpolated, so every fade takes as long as at 30 fps.
+
 - **Fixed: with Faster rendering, the rupee counter's sparkle (and other particles drawn by background jobs)
   sometimes vanished in the in-between frames.**
 

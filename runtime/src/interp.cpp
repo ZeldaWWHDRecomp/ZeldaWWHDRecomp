@@ -91,6 +91,7 @@ extern "C" {
 void f_025F172C_orig(Cpu* c);  // main loop body
 void f_0203593C_orig(Cpu* c);  // per-frame function (HD systems around the loop body)
 void f_020315CC_orig(Cpu* c);  // audio frame callback (JAIZelBasic::gframeProcess)
+void f_0202FA3C_orig(Cpu* c);  // HD sound player update (updateSoundPlayer)
 void f_02032FE8_orig(Cpu* c);
 void f_020357CC_orig(Cpu* c);
 void f_025EE048_orig(Cpu* c);
@@ -2717,6 +2718,43 @@ extern "C" void hook_020315CC(Cpu* c) {
         done_for = g_logic_steps;
     }
     f_020315CC_orig(c);
+}
+
+// The HD sound player's update (updateSoundPlayer 0202FA3C: the NW4F players' frame with their fade
+// frames, the master and BGM faders) is a per-frame step too, called from the frame loop on every
+// displayed frame: at 60 fps every fade (pause menu duck, BGM cross-fades, stream fade-outs) ran in
+// half its time. Once per logic step, as the audio frame callback above.
+// debug: WWHD_SND_PLAYER_EVERY_PASS=1 restores the old behaviour; WWHD_SND_FADE_TRACE=FILE writes
+// a line whenever a fader volume changes: logic step, pass, whether the update ran, the volumes of
+// the master faders (TV, GamePad) and the two BGM faders (player +0x194 / +0x1AC / +0x1C4 / +0x1DC).
+extern "C" void hook_0202FA3C(Cpu* c) {
+    using namespace interp;
+    static const bool every = getenv("WWHD_SND_PLAYER_EVERY_PASS") != nullptr;
+    static uint64_t done_for = ~0ull;
+    bool run = true;
+    if (enabled() && !every) {
+        run = done_for != g_logic_steps;
+        if (run) done_for = g_logic_steps;
+    }
+    const uint32_t player = c->r[3];  // (the callee leaves its own r3)
+    if (run) f_0202FA3C_orig(c);
+    static FILE* trace = [] {
+        const char* p = getenv("WWHD_SND_FADE_TRACE");
+        FILE* f = p ? fopen(p, "w") : nullptr;
+        if (f) setvbuf(f, nullptr, _IOLBF, 0);
+        return f;
+    }();
+    if (!trace) return;
+    static uint32_t last[4] = {~0u, ~0u, ~0u, ~0u};
+    static uint64_t passes = 0;
+    passes++;
+    uint32_t v[4];
+    for (int i = 0; i < 4; i++) v[i] = ld32(player + 0x194 + 0x18 * i);
+    if (!memcmp(v, last, sizeof v)) return;
+    memcpy(last, v, sizeof v);
+    auto f = [](uint32_t w) { float x; memcpy(&x, &w, 4); return (double)x; };
+    fprintf(trace, "%llu %llu %d %.4f %.4f %.4f %.4f\n", (unsigned long long)g_logic_steps, (unsigned long long)passes, run ? 1 : 0,
+            f(v[0]), f(v[1]), f(v[2]), f(v[3]));
 }
 
 // The night sky's stars (dKyr_drawStar 02574144, from the star packet's draw, which runs when the
