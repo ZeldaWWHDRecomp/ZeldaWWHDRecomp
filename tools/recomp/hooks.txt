@@ -53,6 +53,7 @@
 # run the game's own code; the entries stay so the generated code is unchanged.
 025DF940  # fpcM_Execute: Link's step clock for test scenarios, traces and dumps
 025DF904  # fpcM_Draw: actor draws that advance their own state, once per logic step (interp_fx.cpp)
+0202FA3C  # HD sound player update (updateSoundPlayer: NW4F players, master/BGM faders): once per logic step while interpolating
 0200ECD4  # cLib_addCalc
 0200ED84  # cLib_addCalc2
 0200EDC8  # cLib_addCalc0
