@@ -2736,6 +2736,7 @@ extern "C" void hook_0202FA3C(Cpu* c) {
         run = done_for != g_logic_steps;
         if (run) done_for = g_logic_steps;
     }
+    const uint32_t player = c->r[3];  // (the callee leaves its own r3)
     if (run) f_0202FA3C_orig(c);
     static FILE* trace = [] {
         const char* p = getenv("WWHD_SND_FADE_TRACE");
@@ -2748,7 +2749,7 @@ extern "C" void hook_0202FA3C(Cpu* c) {
     static uint64_t passes = 0;
     passes++;
     uint32_t v[4];
-    for (int i = 0; i < 4; i++) v[i] = ld32(c->r[3] + 0x194 + 0x18 * i);
+    for (int i = 0; i < 4; i++) v[i] = ld32(player + 0x194 + 0x18 * i);
     if (!memcmp(v, last, sizeof v)) return;
     memcpy(last, v, sizeof v);
     auto f = [](uint32_t w) { float x; memcpy(&x, &w, 4); return (double)x; };
