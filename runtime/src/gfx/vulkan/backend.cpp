@@ -3586,9 +3586,9 @@ static void frame_dumps(uint64_t frame) {
 #endif
   static const auto frames = gfx::capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
 #ifdef WWHD_DECOMP_FAST
-  const uint64_t dumpFrame = drawoff::dump_script_frame(frame, fixed_seed::script_frame(frame));  // (test: drawoff.h)
+  uint64_t dumpFrame = drawoff::dump_script_frame(frame, fixed_seed::script_frame(frame));  // (test: drawoff.h)
 #else
-  const uint64_t dumpFrame = fixed_seed::script_frame(frame);  // (TV frame unless WWHD_TEST_FIXED_SEED)
+  uint64_t dumpFrame = fixed_seed::script_frame(frame);  // (TV frame unless WWHD_TEST_FIXED_SEED)
 #endif
   // test aid: WWHD_BG_SHADERS_DUMP=n writes the TV image of the first n frames that left a draw out
   // (Shader compile Fast) and of the two frames after each, to check what went missing
@@ -3602,7 +3602,11 @@ static void frame_dumps(uint64_t frame) {
       dump_scan(R.tv, "frame_" + std::to_string(dumpFrame) + ".png");
     }
   }
-  if (gfx::capture_schedule::contains(frames, dumpFrame)) {
+  // test aid WWHD_DUMP_PASS: only the pass the swap named (gx2_core.cpp), by its step
+  static const bool passDumps = gfx::capture_schedule::pass_select(getenv("WWHD_DUMP_PASS")) != -2;
+  const bool due = passDumps ? gfx::capture_schedule::g_pass_dump != 0 : gfx::capture_schedule::contains(frames, dumpFrame);
+  if (passDumps && due) dumpFrame = gfx::capture_schedule::g_pass_dump - 1;
+  if (due) {
     dump_scan(R.tv, "frame_" + std::to_string(dumpFrame) + ".png");
     dump_scan(R.drc, "frame_" + std::to_string(dumpFrame) + "_drc.png");
     if (getenv("WWHD_DUMP_PRESENT"))

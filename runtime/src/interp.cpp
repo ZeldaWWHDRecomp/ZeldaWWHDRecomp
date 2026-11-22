@@ -6,6 +6,7 @@
 #include "interp_prerun_cams.h"
 #include "dsweep.h"
 #include "mods/story_native_restore_resume.h"
+namespace ax { void step_clock_release(); }  // hle/ax.cpp (WWHD_TEST_STEP_CLOCK)
 namespace interp {class NativeResumeBoundaryIssuer {public:static void after_service(Cpu*c){story_native_restore_resume::LoadWindow::service_return(c);}};}
 #include "countdown.h"
 #include "mods/guest_mods.h"
@@ -61,6 +62,12 @@ namespace interp {class NativeResumeBoundaryIssuer {public:static void after_ser
 #include "runtime.h"
 #include "savestate.h"
 #include "game_hooks.h"
+#if WWHD_DECOMP
+#include "t60/t60.h"  // true 60 Hz logic, decomp build: its steps ride on these passes
+#include "t60/t60_draw.h"  // (converted processes drawn at the interpolated world's phase)
+#include "t60/t60_ui.h"  // (converted UI systems step on every step)
+#include "t60/t60_audio.h"  // (the sound system: once per 30 Hz frame, starts from every step)
+#endif
 #include "gx2/gx2.h"
 #include "gfx/renderer.h"
 #ifdef WWHD_DECOMP_FAST
@@ -462,6 +469,10 @@ float pass_t() {
     if (g_step40 && !g_hold) return g_t40;
     return pacing::pass_fraction(g_hold ? g_phase : 0, g_step_n, g_exact_step);
 }
+#if WWHD_DECOMP
+// true 60 (t60_draw.h): the time the interpolated world is drawn at on this pass, in 30 Hz frames on the step clock
+double t60_world_time() { return (double)g_logic_steps - 1.0 + pass_t(); }
+#endif
 // At 40 fps the logic pass of a step without an in-between frame also records its step (g_record_logic):
 // - after a record pass it is a blended record pass: drawn blended (pass_t()), and what it draws is
 //   recorded as it is at the step (exact) for the next step's frames (record_blended());
@@ -623,6 +634,27 @@ static bool cull_all_cams_on() {
     return !off;
 }
 prerun_cams::Cams g_prerun_cams;
+// true60 (magic bar placement, decomp d_meter_t60_project.h): the HD renderer's 3D camera as the exact pre-run
+// left it (*101F95D0 -> cameras[count > 1 ? 1 : 0], the camera mDoLib_projectScreen 025F0EA4 reads): its view matrix
+// (0x30) and projection state (sead ProjectionState, 0xAC). The pass's shown camera_draw then builds the blended
+// in-between camera into the same objects; a logic reader of the projection (the HUD meter's fly-gauge move, in the play
+// scene's draw after camera_draw) takes these back for its call (wwhd_t60_exact_hdcam).
+static uint32_t g_exact_hd_view_ea = 0, g_exact_hd_proj_ea = 0;
+static uint8_t g_exact_hd_view[0x30], g_exact_hd_proj[0xAC];
+static void exact_hdcam_take() {
+    g_exact_hd_view_ea = g_exact_hd_proj_ea = 0;
+    const uint32_t sys = ld32(GD(0x101F95D0));
+    if (!sys) return;
+    const uint32_t count = ld32(sys + 0x1020), cams = ld32(sys + 0x1024);
+    if (!cams) return;
+    const uint32_t cam = ld32(cams + (count > 1 ? 4 : 0));
+    if (!cam) return;
+    const uint32_t flags = ld32(cam + 0x50);
+    const uint32_t view = (flags & 0xC0u) == 0xC0u ? cam + 0x84 : ld32(cam + 0x48);
+    const uint32_t proj = (flags & 0x1000u) ? ld32(cam + 0x164) : ld32(cam + 0x4C);
+    if (view) { memcpy(g_exact_hd_view, ppc_ptr(view), sizeof g_exact_hd_view); g_exact_hd_view_ea = view; }
+    if (proj) { memcpy(g_exact_hd_proj, ppc_ptr(proj), sizeof g_exact_hd_proj); g_exact_hd_proj_ea = proj; }
+}
 void exact_prerun(Cpu* c) {
     if (!exact_cull_on() || !interp_on()) return;
     const auto kind = g_prerun_cams.take(g_prerun_pass == g_passes, c->r[3], cull_all_cams_on());
@@ -643,6 +675,7 @@ void exact_prerun(Cpu* c) {
     g_cam_blended = true;  // (the sound engine keeps the record pass's camera)
     f_024FFC40_orig(c);
     memcpy(g_exact_view, ppc_ptr(GD(0x104B45F8)), sizeof g_exact_view);
+    exact_hdcam_take();
     {   // (the exact camera's process for the shadow cascades of a 40 fps blended record pass)
         g_exact_cam_addr = saved.r[3];
         // (the process's size from its profile, +0x10 -> +0x10, as WWHD_PROC_DIGEST takes it)
@@ -658,6 +691,28 @@ void exact_prerun(Cpu* c) {
     g_cam_blended = false;
     g_prerun_pass = g_passes;
     *c = saved;
+}
+// true60 (logic must not read the in-between picture; decomp f_op_actor_mng_t60_cull.h):
+// the frame-end view the decomp's culling copy takes on a frame's first step. j3dSys's live view there is the one the
+// last draw left, i.e. the blended in-between camera of the tick30 pass's draw; the exact camera's view of that pass
+// (exact_prerun, the 30 fps frame's) is the one A's execute reads. Returns 1 and the 0x30 bytes when this or a recent
+// pass had the pre-run, 0 otherwise (the decomp keeps the live view). debug: WWHD_T60_CULL_EXACT=0 off
+// the HD 3D camera of the exact pre-run (above): its view / projection object addresses and bytes (0x30 / 0xAC); returns 1
+// when this or a recent pass had the pre-run (as wwhd_t60_exact_view), 0 otherwise (the reader keeps the live camera); an
+// address 0 = that part was not there. debug: WWHD_T60_CULL_EXACT=0 off (with the exact view)
+extern "C" __attribute__((visibility("default"))) int wwhd_t60_exact_hdcam(uint32_t* view_ea, void* view, uint32_t* proj_ea, void* proj) {
+    static const bool off = getenv("WWHD_T60_CULL_EXACT") && !atoi(getenv("WWHD_T60_CULL_EXACT"));
+    if (off || !exact_cull_on() || !interp_on() || g_prerun_pass == ~0ull || g_prerun_pass + 4 < g_passes) return 0;
+    *view_ea = g_exact_hd_view_ea; *proj_ea = g_exact_hd_proj_ea;
+    memcpy(view, g_exact_hd_view, sizeof g_exact_hd_view);
+    memcpy(proj, g_exact_hd_proj, sizeof g_exact_hd_proj);
+    return 1;
+}
+extern "C" __attribute__((visibility("default"))) int wwhd_t60_exact_view(void* out) {
+    static const bool off = getenv("WWHD_T60_CULL_EXACT") && !atoi(getenv("WWHD_T60_CULL_EXACT"));
+    if (off || !exact_cull_on() || !interp_on() || g_prerun_pass == ~0ull || g_prerun_pass + 4 < g_passes) return 0;
+    memcpy(out, g_exact_view, sizeof g_exact_view);
+    return 1;
 }
 // the culling view of this pass: the exact camera's on a blended logic pass
 struct ExactCullView {
@@ -757,6 +812,16 @@ void interp_tevstr_keep(uint32_t tevstr) {
     using namespace interp;
     static const bool off = getenv("WWHD_INTERP_TEV_KEEP") && !atoi(getenv("WWHD_INTERP_TEV_KEEP"));
     if (off || !g_hold || !enabled() || tevstr < 0x10000000 || tevstr >= 0x50000000) return;
+#if WWHD_DECOMP
+    // true 60 (an actor's light): the frame-level work on a frame's first step (WWHD_T60_SCENE_FIRST:
+    // process creation, the decomp's t60_frame_work_begin sets wwhd_t60_tick30 while it runs) is the 30 Hz frame's logic
+    // although the pass is a hold pass: a create's settingTevStruct (daBL_Create's draw_SUB, any create that sets its
+    // light) is A's one call of that frame and stays. Kept and put back, the tevStr fell back to dKy_tevstr_init's state
+    // (mInitType 123, light position 0) and the actor's light eased in from the origin (Earth Temple room 13 Bubbles, el
+    // pairs). N = 1 / the tick30 step: never here (g_tick: unchanged). Negative control WWHD_T60_TEVKEEP_NEGCTRL=1.
+    static const bool negctrl = getenv("WWHD_T60_TEVKEEP_NEGCTRL") && atoi(getenv("WWHD_T60_TEVKEEP_NEGCTRL"));
+    if (!negctrl && wwhd_t60_tick30 && !t60::tick30()) return;
+#endif
     for (const auto& k : g_tev_kept)
         if (k.addr == tevstr) return;
     if (g_tev_kept.size() >= 4096) return;
@@ -986,6 +1051,32 @@ extern "C" void hook_02838148(Cpu* c) {
     interp::ExactCullView v;
     f_02838148_orig(c);
 }
+#if WWHD_DECOMP
+// true 60 (t60_draw.h): a converted camera process is drawn at the interpolated world's phase: the camera of its step at
+// the world's time (between two of its steps: blended), drawn as an exact camera; the logic pass's culling view stays
+// the one of its newest step (the logic's, as the exact camera's pre-run gives it). false: not aligned
+static bool t60_camera(Cpu* c, uint32_t cam, interp::Prev* p) {
+    using namespace interp;
+    if (!enabled()) return false;
+    const CamState cur = read_cam(cam);
+    CamState drawn;
+    if (!t60::draw::camera(cam, cur, read_shake(cam), t60_world_time(), drawn)) return false;
+    if (g_blend_draw && !g_hold && p->valid) exact_prerun(c);
+    write_cam(cam, drawn);
+    p->drawn = drawn;
+    p->drawn_pass = g_passes;
+    publish_drawn_eye(drawn);
+    cam_trace(cam, "t60");
+    f_024FFC40_orig(c);
+    g_view_pass = g_passes;
+    write_cam(cam, cur);
+    p->s = cur;  // (the record the normal path blends from, should the alignment end)
+    p->shake = read_shake(cam);
+    p->trim = (float)ldf32(cam + kCamBody + kTrimHeight);
+    p->valid = true;
+    return true;
+}
+#endif
 static void camera_draw(Cpu* c) {
     const uint32_t saved = interp::g_drawing_cam;
     interp::g_drawing_cam = c->r[3];
@@ -997,6 +1088,9 @@ static void camera_draw_body(Cpu* c) {
     uint32_t cam = c->r[3];
     mods::moon_jump_camera(cam);
     Prev* p = prev_for(cam);
+#if WWHD_DECOMP
+    if (t60_camera(c, cam, p)) return;  // (true 60: a converted camera)
+#endif
     if (g_blend_draw) {  // blended between the step drawn last (S) and the new one (S+1)
         if (!g_hold && p->valid) exact_prerun(c);  // (logic pass: the exact camera's culling view first)
         CamState cur = read_cam(cam);
@@ -1345,6 +1439,34 @@ void blend_mtx(const float* a, const float* b, float* out, float t) {
 }
 }  // namespace
 void blend_world_matrix(const float* a, const float* b, float* out, float t) { blend_mtx(a, b, out, t); }
+#if WWHD_DECOMP
+// true 60 (t60_draw.h): a model of a converted process, drawn with its joint matrices at the interpolated world's phase
+// (its UBO update here and now on them, as for a blended model); false: not aligned, drawn as before
+static bool t60_model(Cpu* c, uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n) {
+    const uint32_t words = 12 * n;
+    static std::vector<uint32_t> out;
+    out.resize(words);
+    if (!t60::draw::model(model, jnt, mtx, n, t60_world_time(), out.data())) return false;
+    uint32_t* cur = (uint32_t*)ppc_ptr(mtx);
+    if (memcmp(cur, out.data(), 4 * words) == 0) {  // (its newest step: drawn as it is)
+        f_027F55FC_orig(c);
+        return true;
+    }
+    const std::vector<uint32_t> saved(cur, cur + words);
+    {
+        std::lock_guard<std::mutex> lk(g_ubo_mu);
+        g_ubo_done[model]++;
+    }
+    memcpy(cur, out.data(), 4 * words);
+    f_027F55FC_orig(c);
+    const uint32_t r3 = c->r[3];
+    c->r[3] = model;
+    f_027F5018_orig(c);
+    c->r[3] = r3;
+    memcpy(cur, saved.data(), 4 * words);
+    return true;
+}
+#endif
 }  // namespace interp
 
 // The board assigns its pooled J3D hit/miss models by scanning cells at +0x598
@@ -1403,6 +1525,9 @@ extern "C" void hook_027F55FC(Cpu* c) {
         f_027F55FC_orig(c);
         return;
     }
+#if WWHD_DECOMP
+    if (t60_model(c, model, jnt, mtx, n)) return;  // (true 60: a converted process's model)
+#endif
     const uint32_t words = 12 * n;
     const uint32_t* cur = (const uint32_t*)ppc_ptr(mtx);  // guest (big-endian) words
     // 40 fps blended record pass: this step is recorded (stamped for the next pass) and drawn blended
@@ -1541,8 +1666,10 @@ extern "C" void hook_027F5018(Cpu* c) {
 // systems stay in step with the game logic at 30 steps per second.
 namespace interp {
 void fx_pass_start();          // interp_fx.cpp: puts back the values drawn blended
+void kankyo_pass_start();      // interp_kankyo.cpp: puts back the environment state the last hold pass's draw wrote
 void fx_anm_settle(Cpu* c);    // interp_fx.cpp: material animations exact again before a logic pass
 void fx_hold_blend(float t);   // interp_fx.cpp: blended hold pass: logic-time effect blends at t
+void fx_hold_blend_deferred(float t);  // interp_fx.cpp: the same when the play scene's draw starts (true 60 steps)
 void fx_ss_reset();
 void nodraw_reset();          // fopAc_Draw hook: the step's one-shot no-draw requests
 void reticle_reset();
@@ -1596,7 +1723,12 @@ static std::atomic<bool> g_paced{[] {
 }()};
 static std::atomic<bool> g_paced_hi{!g_env_paced || atoi(g_env_paced) != 0};  // 120/240 fps
 static std::atomic<bool>& paced_flag(int f) { return f > 60 ? g_paced_hi : g_paced; }
+#if WWHD_DECOMP
+// (true 60 selected: every in-between pass may be a logic step, none may be skipped)
+static bool paced() { return paced_flag(fps()).load(std::memory_order_relaxed) && !t60::wants_unpaced(); }
+#else
 static bool paced() { return paced_flag(fps()).load(std::memory_order_relaxed); }
+#endif
 bool paced_interpolation() { return paced(); }  // at the current frame rate
 // the step schedule of paced interpolation is in use (gx2_core.cpp step slots): Keep game speed on
 // at the current rate and frame interpolation on
@@ -2030,6 +2162,10 @@ extern "C" void hook_0203593C(Cpu* c) {
     using namespace interp;
     CHEAPIB(pass_entry());
     DRAWOFF(pass_entry());
+#if WWHD_DECOMP
+    t60::ui::layout_exact(c);  // (true 60, HD layouts: the last pass drew the step's layout picture; A's panes again before
+                               // this pass's input, events and logic read them; t60/t60_ui.h)
+#endif
     // Opt-in countdown trace: scalar timing measurements only, no save or asset data.
     struct CountdownTrace {
         bool hold;
@@ -2096,6 +2232,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     fader_between_passes();
     perf::game_frame();
     fx_pass_start();
+    kankyo_pass_start();
     if (enabled() && !g_hold_next) fx_anm_settle(c);  // (a logic pass follows)
     ss::service(c);  // save states: exact values are back in guest memory, all other threads idle
     interp::NativeResumeBoundaryIssuer::after_service(c); // before any resumed native/game service
@@ -2116,6 +2253,14 @@ extern "C" void hook_0203593C(Cpu* c) {
     static uint64_t passes = 0;
     static const uint64_t at = getenv("WWHD_INTERP_AT_STEP") ? strtoull(getenv("WWHD_INTERP_AT_STEP"), nullptr, 10) : 0;
     if (at && ++passes == at) set_enabled(true);
+#if WWHD_DECOMP
+    // true 60 Hz logic (WWHD_T60_STEPS=N): its steps are the passes of frame interpolation at 30 N fps
+    if (const int want = t60::wants_fps(); want && (!g_on.load(std::memory_order_relaxed) || fps() != want)) {
+        LOG("[t60] %d steps per 30 Hz frame: frame interpolation at %d fps", t60::selected_n(), want);
+        set_fps(want);
+        set_enabled(true);
+    }
+#endif
     if (ff_transition) restart_fast_forward_pacing(mods::fast_forward_active());
     log_paced_start();
 #ifdef WWHD_VK_SMOOTH
@@ -2136,6 +2281,7 @@ extern "C" void hook_0203593C(Cpu* c) {
         reticle_reset();
     }
     if (!enabled() || !g_hold_next) {
+        threads::sync_loads_wait(g_logic_steps + 1);  // (test aid WWHD_TEST_SYNC_LOADS: loads complete between frames)
         g_logic_steps++;
         test_aids::logic_step(g_logic_steps);
         mods::play_context_step();  // once per full logic step (the context buttons' reading)
@@ -2148,6 +2294,10 @@ extern "C" void hook_0203593C(Cpu* c) {
         g_step_n = 1;
         {
             PassTimer timer(0);
+#if WWHD_DECOMP
+            t60::pass_begin(false, false, 0, 1, g_logic_steps);
+            t60::draw::pass_start(g_passes);
+#endif
             g_in_frame = true;
             CHEAPIB(frame_begin(false, false));
             DRAWOFF(frame_begin(false));
@@ -2176,16 +2326,42 @@ extern "C" void hook_0203593C(Cpu* c) {
         if (record_pass()) {
             g_record_passes++;
             if (g_step40) g_frac40.record();
-        } else {
-            fx_hold_blend(pass_t());  // the effects blended at logic time, at this pass's fraction
+        }
+#if WWHD_DECOMP
+        t60::pass_begin(true, true, g_phase, g_step_n + 1, g_logic_steps);  // (a step of true 60, or a plain in-between pass)
+        t60::draw::pass_start(g_passes);
+        // (a step of true 60: its converted processes execute on this pass and see the exact values; the blends go in
+        // when the play scene's draw starts, interp_fx.cpp fx_hold_blend_deferred)
+        if (!record_pass()) {
+            if (t60::sub_step()) fx_hold_blend_deferred(pass_t());
+            else fx_hold_blend(pass_t());
+        }
+#else
+        if (!record_pass()) fx_hold_blend(pass_t());  // the effects blended at logic time, at this pass's fraction
+#endif
+        // test aid WWHD_TEST_LOAD_QUIET=mask (savestate.h test_load_quiet): in the named phases
+        // of a followed stage change the in-between passes skip the per-frame function. Run, the cliff state's portable
+        // load held its seeds over 36 30 Hz frames at N 1 and 35 with in-between passes (N 2, or N 1 with frame
+        // interpolation on), every load of a pair one frame shorter in B (wf1: Link's procedure 40 at 457 in A, 455 in
+        // B). The frame is gained on the in-between passes of phase 1 (the old stage's fade-out / teardown): quiet there
+        // (mask 1 or 3) B holds 36 as A; quiet in phase 2 only it still holds 35. Not the hold-capable children 8-14
+        // (each held: 35), nor the audio or loader threads (idle at every step boundary in B; waited for in A: still 36).
+        const bool quiet = ss::test_load_quiet();
+        if (quiet) {
+            static uint64_t skipped = 0;
+            if (++skipped <= 3 || skipped % 50 == 0)
+                LOG("[test] WWHD_TEST_LOAD_QUIET: in-between pass %llu of a stage load skipped (step %llu, %llu so far)",
+                    (unsigned long long)g_passes, (unsigned long long)g_logic_steps, (unsigned long long)skipped);
         }
         g_in_frame = true;
-        CHEAPIB(frame_begin(true, true));
-        DRAWOFF(frame_begin(true));
-        f_0203593C_orig(c);
-        CHEAPIB_MODELS(replay(c));
-        CHEAPIB(frame_end(true, true));
-        DRAWOFF(frame_end());
+        if (!quiet) {
+            CHEAPIB(frame_begin(true, true));
+            DRAWOFF(frame_begin(true));
+            f_0203593C_orig(c);
+            CHEAPIB_MODELS(replay(c));
+            CHEAPIB(frame_end(true, true));
+            DRAWOFF(frame_end());
+        }
         g_in_frame = false;
         g_hold_frame = false;
         after_pass(g_phase);
@@ -2204,6 +2380,10 @@ extern "C" void hook_0203593C(Cpu* c) {
     }
     {
         PassTimer timer(0);
+#if WWHD_DECOMP
+        t60::pass_begin(true, false, 0, g_step_n + 1, g_logic_steps);  // (true 60: the tick30 step)
+        t60::draw::pass_start(g_passes);
+#endif
         g_in_frame = true;
         CHEAPIB(frame_begin(false, true));
         DRAWOFF(frame_begin(false));
@@ -2235,9 +2415,16 @@ extern "C" void hook_0203593C(Cpu* c) {
 // pass's): their hooks take the fraction the pass was drawn at from here.
 namespace interp {
 namespace {
-struct Drawn { uint64_t pass = ~0ull; float t = 1.0f; bool record = false, record_blended = false; } g_drawn;
+struct Drawn {
+    uint64_t pass = ~0ull;
+    float t = 1.0f;
+    bool record = false, record_blended = false;
+    int phase = 0;                       // (WWHD_DUMP_PASS: dump_pass_take)
+    uint64_t step = 0;
+    bool interp = false;
+} g_drawn;
 void note_drawn() {
-    g_drawn = Drawn{g_passes, pass_t(), record_pass(), record_blended()};
+    g_drawn = Drawn{g_passes, pass_t(), record_pass(), record_blended(), g_hold ? g_phase : 0, g_logic_steps, enabled()};
     mods::hud_drawn(g_drawn.t, g_logic_steps, interp_on());  // (the mod HUDs of this frame)
 }
 }  // namespace
@@ -2261,6 +2448,42 @@ bool display_record_blended() {
     return g_drawn.pass == g_passes && g_drawn.record_blended;
 }
 uint64_t display_record_stamp() { return g_record_passes + (display_record_blended() ? 1 : 0); }
+// test aid WWHD_DUMP_PASS (gfx/capture_schedule.h pass_select): which pass's image a swap shows. The game copies the TV
+// color buffer to its scan buffer AFTER the swap (lr 0274C288; the DRC's copy, 0274C2B0, comes before it), outside the
+// per-frame function, so the TV image a swap presents is the render of the pass before (one pass of latency, at every
+// rate and with interpolation off alike). g_scan_tv is the drawn record (note_drawn) of the pass whose render the last
+// TV copy took; the swap names that one. (The _drc.png dump of the same swap is a pass newer.)
+static Drawn g_scan_tv;
+// at GX2CopyColorBufferToScanBuffer (gx2_core.cpp): target 1 = TV. WWHD_DUMP_PASS_TRACE=n also logs the first n copies.
+void dump_pass_copy(uint32_t lr, uint32_t target) {
+    if (target == 1) g_scan_tv = g_drawn;
+    static int trace = getenv("WWHD_DUMP_PASS_TRACE") ? atoi(getenv("WWHD_DUMP_PASS_TRACE")) : 0;
+    if (trace > 0 && trace--)
+        LOG("[interp] dump pass: copy to scan %u from lr=%08X at step %llu pass %llu (in frame %d, hold %d, phase %d), "
+            "drawn: step %llu pass %llu phase %d record %d",
+            target, lr, (unsigned long long)g_logic_steps, (unsigned long long)g_passes, (int)g_in_frame, (int)g_hold, g_phase,
+            (unsigned long long)g_drawn.step, (unsigned long long)g_drawn.pass, g_drawn.phase,
+            (int)g_drawn.record);
+}
+// true once per TV image (the copied pass) that is the record pass (want -1; with interpolation off when it drew: its
+// only pass) or pass `want` of its step; *step = its logic step.
+bool dump_pass_take(int want, uint64_t* step) {
+    static uint64_t taken = ~0ull;
+    static int trace = getenv("WWHD_DUMP_PASS_TRACE") ? atoi(getenv("WWHD_DUMP_PASS_TRACE")) : 0;
+    const Drawn& d = g_scan_tv;
+    if (trace > 0 && trace--)
+        LOG("[interp] dump pass: swap at step %llu pass %llu (in frame %d, hold %d, phase %d); TV image: step %llu pass %llu "
+            "phase %d record %d interp %d (last drawn pass %llu)",
+            (unsigned long long)g_logic_steps, (unsigned long long)g_passes, (int)g_in_frame, (int)g_hold, g_phase,
+            (unsigned long long)d.step, (unsigned long long)d.pass, d.phase, (int)d.record, (int)d.interp,
+            (unsigned long long)g_drawn.pass);
+    if (d.pass == ~0ull || d.pass == taken) return false;
+    const bool due = !d.interp ? want <= 0 : want < 0 ? d.record : d.phase == want;
+    if (!due) return false;
+    taken = d.pass;
+    *step = d.step;
+    return true;
+}
 }  // namespace interp
 
 // main loop body (inside the per-frame function): logic pass -> camera drawn blended;
@@ -2358,7 +2581,16 @@ extern "C" void hook_02032FE8(Cpu* c) { FaderWatch fw("child 0"); g_hold_child_c
 extern "C" void hook_020357CC(Cpu* c) { FaderWatch fw("child 1"); g_hold_child_cpu = c; if (!hold_skip_child(1)) f_020357CC_orig(c); }
 extern "C" void hook_025EE048(Cpu* c) { FaderWatch fw("child 2"); g_hold_child_cpu = c; if (!hold_skip_child(2)) f_025EE048_orig(c); }
 extern "C" void hook_02756170(Cpu* c) { FaderWatch fw("child 3"); g_hold_child_cpu = c; if (!hold_skip_child(3)) f_02756170_orig(c); }
-extern "C" void hook_02617AF4(Cpu* c) { FaderWatch fw("child 4"); g_hold_child_cpu = c; if (!hold_skip_child(4)) f_02617AF4_orig(c); }
+extern "C" void hook_02617AF4(Cpu* c) {
+    FaderWatch fw("child 4");
+    g_hold_child_cpu = c;
+#if WWHD_DECOMP
+    // (true 60: the HD input manager on every step; its frame counts on the frame's first step, decomp
+    // d/hd_input_ctrl.cpp; the frame's later in-between steps are hold passes)
+    if (t60::first_step() || t60::sub_step()) { f_02617AF4_orig(c); return; }
+#endif
+    if (!hold_skip_child(4)) f_02617AF4_orig(c);
+}
 extern "C" void hook_02614F74(Cpu* c) { FaderWatch fw("child 5"); g_hold_child_cpu = c; if (!hold_skip_child(5)) f_02614F74_orig(c); }
 extern "C" void hook_0273841C(Cpu* c) { FaderWatch fw("child 6"); g_hold_child_cpu = c; if (!hold_skip_child(6)) f_0273841C_orig(c); }
 extern "C" void hook_0270870C(Cpu* c) { FaderWatch fw("child 7"); g_hold_child_cpu = c; if (!hold_skip_child(7)) f_0270870C_orig(c); }
@@ -2481,7 +2713,16 @@ static bool g_in_execute = false;  // inside fpcEx_Handler (actor Execute): logi
 namespace mods { void after_execute(Cpu* c, uint32_t execute_fn); }  // mods/turbo.cpp
 namespace editor { void logic_service(Cpu* c); void camera_service(Cpu* c, bool logic_pass); }  // editor/editor_game.cpp: the world editor (live actors, fly camera)
 extern "C" void hook_025DE788(Cpu* c) {
-    if (skip(1)) return;
+    if (skip(1)) {
+#if WWHD_DECOMP
+        if (t60::sub_step()) {  // true 60's sub-step: the converted processes execute (fpcEx_Execute's rate gate)
+            g_in_execute = true;
+            f_025DE788_orig(c);
+            g_in_execute = false;
+        }
+#endif
+        return;
+    }
     interp::record_executed_step();
     g_in_execute = true;
     uint32_t execute_fn = c->r[3];
@@ -2500,9 +2741,28 @@ extern "C" void hook_025DE788(Cpu* c) {
     guestmods::draw_frame(c,interp::executed_steps());
     g_in_execute = false;
 }
-extern "C" void hook_025DE024(Cpu* c) { if (!skip(2)) f_025DE024_orig(c); }
-extern "C" void hook_025E0EE4(Cpu* c) { if (skip(4)) c->r[3] = 1; else f_025E0EE4_orig(c); }
-extern "C" void hook_025DDCEC(Cpu* c) { if (skip(8)) c->r[3] = 1; else f_025DDCEC_orig(c); }
+// (true 60, frame-level work on the frame's first step, on by default (WWHD_T60_SCENE_FIRST=0: off): the decomp's fpcM_Management calls the three process handlers on
+// the frame's first step only; at N > 1 that step is a hold pass, where these skips held them for the whole frame:
+// no process was deleted, re-prioritised or created in any N > 1 frame. The decomp gates the calls itself.)
+// On that pass the handlers are logic (their create / delete methods draw random numbers, start sounds, set up models), not
+// a redraw: they run marked as an execute (g_in_execute), as on a logic pass, so the hold pass's random-number replay
+// (interp_fx.cpp rnd_call: values replayed, seeds kept) and its other draw-only paths leave them alone (an event pair: the
+// creates' draws did not advance the seeds, the game's random numbers left A's sequence after the first load and the
+// next processes got other ids).
+#if WWHD_DECOMP
+static bool skip_handler(int bit) { return skip(bit) && !t60::frame_work_hold_pass(); }
+struct HandlerAsLogic {
+    const bool was = g_in_execute;
+    HandlerAsLogic() { if (t60::frame_work_hold_pass() && interp::g_hold) g_in_execute = true; }
+    ~HandlerAsLogic() { g_in_execute = was; }
+};
+#else
+static bool skip_handler(int bit) { return skip(bit); }
+struct HandlerAsLogic {};
+#endif
+extern "C" void hook_025DE024(Cpu* c) { if (!skip_handler(2)) { HandlerAsLogic l; f_025DE024_orig(c); } }
+extern "C" void hook_025E0EE4(Cpu* c) { if (skip_handler(4)) c->r[3] = 1; else { HandlerAsLogic l; f_025E0EE4_orig(c); } }
+extern "C" void hook_025DDCEC(Cpu* c) { if (skip_handler(8)) c->r[3] = 1; else { HandlerAsLogic l; f_025DDCEC_orig(c); } }
 extern "C" void hook_025D42C4(Cpu* c) { if (!skip(16)) f_025D42C4_orig(c); }
 extern "C" void hook_0200E6EC(Cpu* c) { if (!skip(32)) f_0200E6EC_orig(c); }
 // WWHD's addition at the end of fpcM_Management (025DFA58): the HD UI manager (*101F8344) updates
@@ -2517,6 +2777,21 @@ extern "C" void hook_0200E6EC(Cpu* c) { if (!skip(32)) f_0200E6EC_orig(c); }
 // at 30 fps.
 extern "C" void f_02715310_orig(Cpu* c);
 extern "C" void hook_02715310(Cpu* c) {
+#if WWHD_DECOMP
+    // (true 60: the HD layouts' picture; the secondary screens see A's panes, then this step's picture is
+    // put up for its draw; t60/t60_ui.h layout_present / layout_exact)
+    struct LayoutPicture {
+        Cpu* c;
+        explicit LayoutPicture(Cpu* cpu) : c(cpu) { t60::ui::layout_exact(c); }
+        ~LayoutPicture() { t60::ui::layout_present(c); }
+    } picture(c);
+    if (t60::ui::steps(t60::ui::kHdUi)) {  // (true 60: converted HD UI screens step on every step; t60/t60_ui.h)
+        const float prev = t60::ui::step_enter();
+        f_02715310_orig(c);
+        t60::ui::step_leave(prev);
+        return;
+    }
+#endif
     if (!skip(64)) f_02715310_orig(c);
     else countdown::refresh(c);
 }
@@ -2552,7 +2827,11 @@ extern "C" void hook_025D4654(Cpu* c) {
     // cull with the camera they draw with (blended), and the record pass with shadow cascades set up
     // after the blended logic pass: at the next step's logic an actor could count as drawn or not
     // drawn where at 30 fps it did not. debug: WWHD_INTERP_EXACT_CULL=0 (as before)
-    const bool keep_condition = interp::enabled() && interp::g_hold && interp::exact_cull_on();
+    bool keep_condition = interp::enabled() && interp::g_hold && interp::exact_cull_on();
+#if WWHD_DECOMP
+    // (true 60: a converted actor's draw on one of its own steps is that step's draw, not a repeat: rule 14)
+    if (keep_condition && t60::draw::stepped_this_pass(actor)) keep_condition = false;
+#endif
     const uint32_t condition = keep_condition ? ld32(actor + 0x2E4) : 0;
     const Cpu saved = *c;
     // (kept: not drawn by the step's logic pass; or drawn by it, keep_drawn_on: its draw's hand-offs to
@@ -2629,11 +2908,48 @@ bool in_execute() { return g_in_execute; }
 uint64_t hold_pass_count() { return g_record_passes; }
 uint64_t pass_count() { return g_passes; }  // every pass (per-pass bookkeeping)
 const char* phase_name() { return !enabled() ? "interp off" : g_hold ? "IN-BETWEEN" : g_logic_pass ? "logic" : "other"; }
+#if WWHD_DECOMP
+// true 60: the game's controller (sead::ControllerManager::calc, at the start of a pass) reads
+// the GamePad once per 30 Hz frame, at the start of the pass that runs the frame's first step: with N > 1 an in-between
+// pass, whose read is then live; on the frame's other passes it keeps its state (buttons, triggers, sticks)
+bool t60_input_pass() {
+    if (!enabled()) return true;
+    // N = 1: only the read before a logic pass is live; an in-between (hold) pass
+    // repeats the previous read (VPADRead repeat, system_stubs.cpp) so a press first seen there is not spent before the
+    // logic pass (an input probe: Grandma's event never started with 60 fps interpolation)
+    if (t60::selected_n() <= 1) return !g_hold_next;
+    return t60::next_pass_first(true, g_hold_next, g_hold_next ? g_phase + 1 : 0, g_step_n + 1);
+}
+// Load-task order (creates and create-phase work at A's point in the frame): the pass about to begin runs the
+// frame's create handlers, i.e. its frame-level work (with WWHD_T60_SCENE_FIRST the frame's first step, at N > 1 an
+// in-between pass; else the tick30 logic pass)
+bool t60_frame_work_pass() {
+    if (!enabled() || t60::selected_n() <= 1 || !wwhd_t60_scene_first) return !g_hold_next || !enabled();
+    return t60::next_pass_first(true, g_hold_next, g_hold_next ? g_phase + 1 : 0, g_step_n + 1);
+}
+// True 60 fps input: the controller reads the GamePad at the start of every pass that runs a logic step
+bool t60_input_step() {
+    if (!enabled()) return true;
+    if (t60::selected_n() <= 1) return !g_hold_next;  // (N = 1, see t60_input_pass)
+    return t60::next_pass_step(true, g_hold_next, g_hold_next ? g_phase + 1 : 0, g_step_n + 1);
+}
+// test aid WWHD_T60_TEST_INPUT_STEP: the controller read's step position in its frame (t60.h)
+double input_step_offset() {
+    if (!enabled() || t60::selected_n() <= 1) return 0.0;
+    return t60::next_pass_step_offset(true, g_hold_next, g_hold_next ? g_phase + 1 : 0, g_step_n + 1);
+}
+#else
+double input_step_offset() { return 0.0; }
+#endif
 bool repeat_input() {
     static const bool off = getenv("WWHD_INTERP_NO_REPEAT") != nullptr;  // debug
     return enabled() && g_hold_next && !off;
 }
 }  // namespace interp
+#if WWHD_DECOMP
+extern "C" __attribute__((visibility("default"))) int wwhd_t60_input_pass() { return interp::t60_input_pass() ? 1 : 0; }
+extern "C" __attribute__((visibility("default"))) int wwhd_t60_input_step() { return interp::t60_input_step() ? 1 : 0; }
+#endif
 
 // Sound effect starts (JAIZelBasic::seStart core and the mDoAud_* start wrappers). Some sounds are
 // started from drawing code (animation-linked effects); an in-between frame only redraws, so a
@@ -2642,13 +2958,30 @@ bool repeat_input() {
 // debug: WWHD_SE_STATS=1 logs calls per second by frame phase every 5 s
 // debug: WWHD_SE_TRACE=path logs every start that is not suppressed: logic step, full pass (1/0),
 // wrapper index, r4 (the sound id for the seStart wrappers), caller
+// a sound start is suppressed on in-between passes; true 60 (decomp build): not from an execute on one of its steps
+static bool se_held() {
+#if WWHD_DECOMP
+    if (t60::sub_step() && g_in_execute) return false;
+    if (t60::audio::se_step_logic()) return false;  // (a converted UI system's step: t60/t60_audio.h SE)
+#endif
+    return interp::g_hold;
+}
 static void se_trace(int fn, Cpu* c) {
     static FILE* f = getenv("WWHD_SE_TRACE") ? fopen(getenv("WWHD_SE_TRACE"), "w") : nullptr;
-    if (!f || interp::g_hold) return;
+    if (!f || se_held()) return;
+#if WWHD_DECOMP
+    // (step: the 30 Hz frame the step ends; full: the tick30 step)
+    fprintf(f, "%llu %d %d %08X %08X\n", (unsigned long long)t60::record_step(interp::g_logic_steps), interp::g_hold ? 0 : 1, fn,
+            c->r[4], c->lr);
+#else
     fprintf(f, "%llu %d %d %08X %08X\n", (unsigned long long)interp::g_logic_steps, interp::g_hold ? 0 : 1, fn, c->r[4], c->lr);
+#endif
     fflush(f);
 }
 static void se_stat(int fn) {
+#if WWHD_DECOMP
+    t60::audio::count(se_held() ? t60::audio::kSeHeld : t60::audio::kSeOn, true);  // (WWHD_T60_AUD_STATS)
+#endif
     static const bool on = getenv("WWHD_SE_STATS") != nullptr;
     if (!on) return;
     static uint32_t n[7][4];
@@ -2668,13 +3001,13 @@ static void se_stat(int fn) {
         t0 = t;
     }
 }
-extern "C" void hook_0201EBA0(Cpu* c) { se_stat(0); se_trace(0, c); if (interp::g_hold) { c->r[3] = 0; return; } f_0201EBA0_orig(c); }
-extern "C" void hook_025E1988(Cpu* c) { se_stat(1); se_trace(1, c); if (interp::g_hold) { c->r[3] = 0; return; } f_025E1988_orig(c); }
-extern "C" void hook_025E19CC(Cpu* c) { se_stat(2); se_trace(2, c); if (interp::g_hold) { c->r[3] = 0; return; } f_025E19CC_orig(c); }
-extern "C" void hook_025E1A04(Cpu* c) { se_stat(3); se_trace(3, c); if (interp::g_hold) { c->r[3] = 0; return; } f_025E1A04_orig(c); }
-extern "C" void hook_025E1A40(Cpu* c) { se_stat(4); se_trace(4, c); if (interp::g_hold) { c->r[3] = 0; return; } f_025E1A40_orig(c); }
-extern "C" void hook_025E1A7C(Cpu* c) { se_stat(5); se_trace(5, c); if (interp::g_hold) { c->r[3] = 0; return; } f_025E1A7C_orig(c); }
-extern "C" void hook_025E1AA4(Cpu* c) { se_stat(6); se_trace(6, c); if (interp::g_hold) { c->r[3] = 0; return; } f_025E1AA4_orig(c); }
+extern "C" void hook_0201EBA0(Cpu* c) { se_stat(0); se_trace(0, c); if (se_held()) { c->r[3] = 0; return; } f_0201EBA0_orig(c); }
+extern "C" void hook_025E1988(Cpu* c) { se_stat(1); se_trace(1, c); if (se_held()) { c->r[3] = 0; return; } f_025E1988_orig(c); }
+extern "C" void hook_025E19CC(Cpu* c) { se_stat(2); se_trace(2, c); if (se_held()) { c->r[3] = 0; return; } f_025E19CC_orig(c); }
+extern "C" void hook_025E1A04(Cpu* c) { se_stat(3); se_trace(3, c); if (se_held()) { c->r[3] = 0; return; } f_025E1A04_orig(c); }
+extern "C" void hook_025E1A40(Cpu* c) { se_stat(4); se_trace(4, c); if (se_held()) { c->r[3] = 0; return; } f_025E1A40_orig(c); }
+extern "C" void hook_025E1A7C(Cpu* c) { se_stat(5); se_trace(5, c); if (se_held()) { c->r[3] = 0; return; } f_025E1A7C_orig(c); }
+extern "C" void hook_025E1AA4(Cpu* c) { se_stat(6); se_trace(6, c); if (se_held()) { c->r[3] = 0; return; } f_025E1AA4_orig(c); }
 
 // The sound engine takes its listener from camera_draw. Feeding it the halfway camera as well as the
 // exact one makes the listener hop every frame (Doppler/panning wobble: doubled-sounding effects),
@@ -2690,7 +3023,11 @@ extern "C" void hook_025E1AA4(Cpu* c) { se_stat(6); se_trace(6, c); if (interp::
 // the engine heard the previous step's camera, after a stage change the loading screen's placeholder
 // far away, and dropped a sound started by the new stage's first step (issue #533, interp_listener.h).
 extern "C" void hook_025E1B44(Cpu* c) {
-    if (!interp::listener_takes_camera(interp::g_cam_blended, interp::g_cam_prerun, interp::record_blended())) return;
+    const bool takes = interp::listener_takes_camera(interp::g_cam_blended, interp::g_cam_prerun, interp::record_blended());
+#if WWHD_DECOMP
+    t60::audio::count(t60::audio::kListener, takes);  // (WWHD_T60_AUD_STATS)
+#endif
+    if (!takes) return;
     if (!interp::enabled()) {
         f_025E1B44_orig(c);
         return;
@@ -2703,7 +3040,11 @@ extern "C" void hook_025E1B44(Cpu* c) {
     f_025E1B44_orig(c);
 }
 extern "C" void hook_02027754(Cpu* c) {
-    if (interp::listener_takes_camera(interp::g_cam_blended, interp::g_cam_prerun, false)) f_02027754_orig(c);
+    const bool takes = interp::listener_takes_camera(interp::g_cam_blended, interp::g_cam_prerun, false);
+#if WWHD_DECOMP
+    t60::audio::count(t60::audio::kPolygon, takes);  // (WWHD_T60_AUD_STATS)
+#endif
+    if (takes) f_02027754_orig(c);
 }
 
 // WWHD's audio frame callback (020315CC, from the same frame-callback table as the per-frame
@@ -2713,11 +3054,18 @@ extern "C" void hook_02027754(Cpu* c) {
 extern "C" void hook_020315CC(Cpu* c) {
     using namespace interp;
     static uint64_t done_for = ~0ull;
+    bool run = true;
     if (enabled()) {
-        if (done_for == g_logic_steps) return;
-        done_for = g_logic_steps;
+        run = done_for != g_logic_steps;
+        if (run) done_for = g_logic_steps;
     }
-    f_020315CC_orig(c);
+#if WWHD_DECOMP
+    run = t60::audio::ctl_runs(run);  // (true 60: the tick30 step, once per 30 Hz frame; t60/t60_audio.h CTL)
+#endif
+    if (run) {
+        ax::step_clock_release();  // (WWHD_TEST_STEP_CLOCK: this audio frame's AX frames, hle/ax.cpp)
+        f_020315CC_orig(c);
+    }
 }
 
 // The HD sound player's update (updateSoundPlayer 0202FA3C: the NW4F players' frame with their fade
@@ -2897,6 +3245,19 @@ extern "C" void hook_025F06A8(Cpu* c) {
     fade::State s{(float)ldf32(g + 8), (float)ldf32(g + 0xC), (uint8_t)ld8(g + 0x1F)};
     const float before = s.rate;
     const float t = display_t();
+    // true 60 (a boss warp, SirenB WARP_WIND): the frame's first step runs on an in-between pass and
+    // runs the play scene's frame work there (the event manager, the director's FADE fadeOut). The gate
+    // took that fade as new on the step's own pass and advanced it, then again on the frame's logic pass: one advance
+    // too many in the fade's first frame (rate 0.2 where 30 Hz has 0.1), the director's cut end (rate >= 1, flag 1649)
+    // a frame early (B 3949 step 1 = A 3953, A 3954). Form: on an in-between pass of a frame at N > 1 such a change is
+    // the step's start state, advanced once on the frame's logic pass (interp_fade.h start_unadvanced).
+    // Negative control WWHD_T60_FADESTART_NEGCTRL=1 (the change advanced at once, as before).
+#if WWHD_DECOMP
+    static const bool fadestart_nc = [] { const char* e = getenv("WWHD_T60_FADESTART_NEGCTRL"); return e && e[0] == '1'; }();
+    const bool start_unadvanced = !fadestart_nc && g_hold_frame && wwhd_t60_steps > 1;
+#else
+    const bool start_unadvanced = false;
+#endif
     fade::call(gate, g_logic_steps, t, s, [&](fade::State& v) {
         stf32(g + 8, v.rate);
         stf32(g + 0xC, v.speed);
@@ -2905,7 +3266,7 @@ extern "C" void hook_025F06A8(Cpu* c) {
         v.rate = (float)ldf32(g + 8);
         v.speed = (float)ldf32(g + 0xC);
         v.fade = (uint8_t)ld8(g + 0x1F);
-    });
+    }, start_unadvanced);
     stf32(g + 8, s.rate);
     stf32(g + 0xC, s.speed);
     st8(g + 0x1F, s.fade);

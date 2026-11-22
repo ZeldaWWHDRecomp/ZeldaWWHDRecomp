@@ -52,6 +52,10 @@
 #ifdef WWHD_DECOMP_FAST
 #include "cheapib/cheapib_s2.h"  // (stage 2: material animations noted on the logic pass)
 #endif
+#if WWHD_DECOMP
+#include "t60/t60_particles.h"  // (true 60: the particle calc on every step)
+#include "t60/t60.h"  // (t60::tick30: WWHD_T60_PTCL_TRACE)
+#endif
 
 namespace interp {
 bool enabled();
@@ -208,6 +212,33 @@ void for_each_ptcl(uint32_t mgr, uint32_t group, F&& f) {
             for (uint32_t pl = ld32(emtr + list); pl && guard < 100000; pl = ld32(pl + 0xC), guard++)
                 if (uint32_t p = ld32(pl)) f(p, emtr);
     }
+}
+
+// debug: WWHD_T60_PTCL_TRACE=FILE: the particles at each 30 Hz frame end (the calc of the frame's tick30 step, before
+// any drawing blend or history state is written), one line per group with particles: frame tag (g_Counter.mCounter0
+// 101FF558), group, count, mean age, centroid x y z, mean size, mean alpha (particle trajectory runs: B at N steps
+// against A at 30 Hz, tools/ptcltraj.py)
+void ptcl_trace(uint32_t mgr, uint32_t group) {
+    static FILE* f = [] {
+        const char* e = getenv("WWHD_T60_PTCL_TRACE");
+        FILE* o = e ? fopen(e, "w") : nullptr;
+        if (o) setvbuf(o, nullptr, _IOLBF, 0);
+        return o;
+    }();
+    if (!f) return;
+    unsigned n = 0;
+    double age = 0, c[3] = {0, 0, 0}, sz = 0, al = 0;
+    for_each_ptcl(mgr, group, [&](uint32_t p, uint32_t) {
+        const PtclState s = read_ptcl(p);
+        n++;
+        age += s.age;
+        for (int k = 0; k < 3; k++) c[k] += wf(s.w[kWPos + k]);
+        sz += wf(s.w[kWSize]);
+        al += wf(s.w[kWAlpha]);
+    });
+    if (!n) return;
+    fprintf(f, "%u %u %u %.4f %.3f %.3f %.3f %.4f %.4f\n", ld32(GD(0x101FF558)), group, n, age / n, c[0] / n, c[1] / n,
+            c[2] / n, sz / n, al / n);
 }
 
 void ptcl_restore() {
@@ -379,6 +410,28 @@ void temp_reapply(float t) {  // blended hold pass, after temp_restore at the pa
     g_temp.swap(g_temp_keep);
     g_temp_keep.clear();
 }
+// Logic about to compute the words in [lo, lo + len) (a world system's calc on a pass where it steps): the exact values
+// of the ones still shown blended are put back (in reverse order: an s16 entry keeps its whole word) and their entries
+// dropped, also those kept for a later blended hold pass, so the calc starts from the exact state and neither the pass
+// start's put-back nor a later re-apply writes the old values over what it computes. Frame interpolation alone: never
+// (the world block runs on logic passes, after the pass start put everything back); true 60 (decomp build): the steps
+// before the tick30 step are blended hold passes that run converted world systems.
+// Decomp build only (the normal build: no change).
+void temp_put_back(uint32_t lo, uint32_t len) {
+#if !WWHD_DECOMP
+    (void)lo, (void)len;
+    return;
+#else
+    auto in = [&](const Temp& e) { return e.addr - lo < len; };
+    int n = 0;
+    for (auto it = g_temp.rbegin(); it != g_temp.rend(); ++it)
+        if (in(*it)) st32(it->addr, it->exact), n++;
+    static uint64_t calls = 0;  // (the log: the 1st, 2nd, 4th, 8th, ... time; never without true 60)
+    if (n && (++calls, !(calls & (calls - 1)))) LOG("[interp-fx] %d blended words put back before a world system's calc at %08X (%llu times)", n, lo, (unsigned long long)calls);
+    g_temp.erase(std::remove_if(g_temp.begin(), g_temp.end(), in), g_temp.end());
+    g_temp_keep.erase(std::remove_if(g_temp_keep.begin(), g_temp_keep.end(), in), g_temp_keep.end());
+#endif
+}
 bool plausible(float v) { return v == 0.0f || (std::fabs(v) > 1e-12f && std::fabs(v) < 1e9f); }
 
 // ---------------------------------------------------------------------------------------------
@@ -425,6 +478,7 @@ struct SwayRec {
 void sway_calc(Cpu* c, int k, void (*orig)(Cpu*)) {
     const SwayKind& sk = kSway[k];
     uint32_t pk = c->r[3];
+    temp_put_back(pk + sk.base, sk.stride * sk.slots);  // (the calc reads its slots: exact values only)
     orig(c);
     if (!on(16) || !halfway()) return;
     SwayRec& r = g_sway[k];
@@ -738,6 +792,10 @@ no_dump:
 
 // particle calc of groups 7-8 in dScnPly_Draw, followed by g_Counter.mTimer++
 extern "C" void hook_025A8148(Cpu* c) {
+#if WWHD_DECOMP
+    // (true 60 step passes: the calc runs; the decompilation counts mTimer once per 30 Hz frame, t60/t60_particles.h)
+    if (t60::particles::steps_here()) return f_025A8148_orig(c);
+#endif
     if (hold_back()) {
         st32(kCounterTimer, ld32(kCounterTimer) - 1);  // cancels the increment that follows
         return;  // particles are held back on hold passes anyway
@@ -748,6 +806,7 @@ extern "C" void hook_025A8148(Cpu* c) {
 extern "C" void hook_025D0994(Cpu* c) {
     if (hold_back()) return;
     uint32_t pk = c->r[3];
+    temp_put_back(pk + kWoodAnm, kWoodAnmStride * kWoodAnms);  // (as sway_calc)
     f_025D0994_orig(c);
     if (!on(16) || !halfway()) return;
     bool valid = g_wood.pkt == pk && g_wood.step + 1 == interp::hold_pass_count() && g_wood.w.size() == kWoodAnms * kWoodWords;
@@ -1208,12 +1267,19 @@ extern "C" void hook_0215F9E4(Cpu* c) {
 }
 
 namespace { void fx_step_stats(); }
+namespace { float g_deferred_t = -1.0f; }  // (fx_hold_blend_deferred: the fraction; -1 none)
 // start of every pass (interp.cpp, per-frame function): the blended values only live until the
 // pass has been painted (the painter runs after the per-frame function, before the next one). What
 // was blended is kept for the pass: a blended hold pass applies it again at its fraction.
 namespace interp {
 void light_trace_flush();
 void fx_pass_start() {
+    if (g_deferred_t >= 0.0f) {  // (a pass without the play scene's draw: its deferred blends never went in)
+        g_deferred_t = -1.0f;
+        g_temp.swap(g_temp_keep);  // (kept as if applied, so that this pass start keeps them for the step's later passes)
+        g_ptcl_applied.swap(g_ptcl_keep);
+        if (g_wave_keep) g_wave.pkt = g_wave_keep, g_wave_keep = 0;
+    }
     light_trace_flush();
     g_passes++;
     if (!g_packet_before.empty()) g_packet_before.clear();  // (records a 40 fps blended record pass replaced: its own blends only)
@@ -1237,7 +1303,19 @@ void fx_hold_blend(float t) {
     wave_reapply(t);
     temp_reapply(t);
 }
+// True 60 (decomp build): a blended hold pass that is a step before the tick30 step runs the converted processes'
+// executes, which must see the game's exact values (the blends are drawing only). Its blends go in when the play
+// scene's draw starts (hook_025AF8A0: after every execute of the pass, before the drawing).
+void fx_hold_blend_deferred(float t) { g_deferred_t = t; }
 }  // namespace interp
+namespace {
+void deferred_hold_blend() {
+    if (g_deferred_t < 0.0f) return;
+    const float t = g_deferred_t;
+    g_deferred_t = -1.0f;
+    interp::fx_hold_blend(t);
+}
+}  // namespace
 
 // dScnPly_Draw: start of drawing on every pass
 // The grey-scale screen (mDoGph_calcMonotone 025F0840, from the environment's execute: once per
@@ -1253,6 +1331,7 @@ void fx_monotone_step(int16_t before, int16_t after) {
 }
 }  // namespace interp
 extern "C" void hook_025AF8A0(Cpu* c) {
+    deferred_hold_blend();  // (true 60 steps: the blends after the pass's executes)
     // (already done at the pass start; a blended hold pass has its particles re-applied by now)
     if (!(interp::hold_pass() && !interp::record_pass())) ptcl_restore();
     if (interp::logic_pass()) fx_step_stats();
@@ -1268,12 +1347,82 @@ extern "C" void hook_025AF8A0(Cpu* c) {
     f_025AF8A0_orig(c);
 }
 
+#if WWHD_DECOMP
+// true 60 (t60/t60_particles.h): on a step pass the decompiled calc steps at dt; the particles are drawn at
+// the step the picture shows (W, draw_lag steps behind the newest) from a short per-step history, and put back to the
+// exact state at the next pass start (g_ptcl_applied, restored by fx_pass_start / ptcl_restore)
+namespace {
+struct PtclHist {
+    uint64_t stamp[4] = {0, 0, 0, 0};
+    uint32_t w[4][kPW];
+    float age = -1e30f;
+    int n = 0;  // entries used (newest at (n - 1) % 4)
+};
+std::unordered_map<uint32_t, PtclHist> g_ptcl_hist;
+uint64_t g_ptcl_hist_sweep = 0;
+uint64_t g_ptcl_step_pass = ~0ull;
+void t60_ptcl_step(Cpu* c) {
+    if (g_ptcl_step_pass != interp::pass_count()) {  // (once per pass: every group's calc of the pass comes after it)
+        g_ptcl_step_pass = interp::pass_count();
+        ptcl_restore();  // (a blended re-apply of an earlier pass: the calc starts from the exact state)
+        t60::particles::count(0);
+    }
+    uint32_t mgr = c->r[3], group = c->r[4];
+    f_0282167C_orig(c);
+    if (group >= 16) return;
+    if (t60::tick30()) ptcl_trace(mgr, group);  // (WWHD_T60_PTCL_TRACE: the frame end)
+    const uint64_t stamp = t60::particles::step_stamp();
+    const int lag = t60::particles::draw_lag();
+    for_each_ptcl(mgr, group, [&](uint32_t p, uint32_t) {
+        PtclState cur = read_ptcl(p);
+        PtclHist& h = g_ptcl_hist[p];
+        if (cur.age < h.age || (h.n && h.stamp[(h.n - 1) % 4] + 4 < stamp)) h = PtclHist{};  // (a new particle in this slot)
+        if (!h.n || h.stamp[(h.n - 1) % 4] != stamp) h.n++;
+        const int i = (h.n - 1) % 4;
+        h.stamp[i] = stamp;
+        memcpy(h.w[i], cur.w, sizeof cur.w);
+        h.age = cur.age;
+        if (lag <= 0) return;
+        const uint64_t want = stamp - (uint64_t)lag;
+        for (int k = 0; k < 4 && k < h.n; k++) {
+            const int j = (h.n - 1 - k) % 4;
+            if (h.stamp[j] != want) continue;
+            if (memcmp(h.w[j], cur.w, sizeof cur.w)) {
+                Applied ap{p};
+                memcpy(ap.w, cur.w, sizeof ap.w);
+                memcpy(ap.a, h.w[j], sizeof ap.a);
+                ap.is_born = false;
+                ap.extras = true;
+                g_ptcl_applied.push_back(ap);
+                write_ptcl(p, h.w[j]);
+                t60::particles::count(1);
+            }
+            return;
+        }
+        t60::particles::count(2);  // born after W: drawn at its newest state
+    });
+    if (stamp >= g_ptcl_hist_sweep + 64) {
+        g_ptcl_hist_sweep = stamp;
+        for (auto it = g_ptcl_hist.begin(); it != g_ptcl_hist.end();)
+            it = it->second.n && it->second.stamp[(it->second.n - 1) % 4] + 8 < stamp ? g_ptcl_hist.erase(it) : std::next(it);
+    }
+}
+}  // namespace
+#endif
+
 // JPAEmitterManager::calc(mgr, group)
 extern "C" void hook_0282167C(Cpu* c) {
+#if WWHD_DECOMP
+    // (the world block's groups 0-8 only: the menu groups 9-12 are calculated by dPa_control_c::calcMenu 025A81F8,
+    // which dScnPly_Draw calls outside the world block on every pass, at dt 1 (menu open or not): they stay a 30 Hz
+    // system under frame interpolation's rules below, held on the earlier steps, once per 30 Hz frame on the tick30 step)
+    if (c->r[4] < t60::particles::kMenuGroupFirst && t60::particles::steps_here()) return t60_ptcl_step(c);
+#endif
     if (hold_back()) return;  // no logic on hold passes (it ran twice per step: double speed)
     uint32_t mgr = c->r[3], group = c->r[4];
     if (!on(1) || !halfway() || group >= 16) {
         f_0282167C_orig(c);
+        if (group < 16) ptcl_trace(mgr, group);  // (WWHD_T60_PTCL_TRACE: a logic pass = the frame end)
         return;
     }
     g_ptcl_before.clear();
@@ -1281,6 +1430,7 @@ extern "C" void hook_0282167C(Cpu* c) {
     static int tr = trace_left(0);
     PtclTrace trace;
     f_0282167C_orig(c);
+    ptcl_trace(mgr, group);  // (WWHD_T60_PTCL_TRACE, before the halfway values)
     static const float kCut = 600.0f;
     static int tr_born = trace_left(5);
     const uint64_t step = interp::hold_pass_count();
@@ -1584,6 +1734,10 @@ void rnd_trace(Cpu* c, char fn, bool replayed) {
     n.clear();
     hits = 0;
 }
+#if WWHD_DECOMP
+void t60_rnd_log_extra(FILE* f, unsigned long long logic_step);
+bool t60_test_rng(char fn, uint32_t lr, float max, float* out);  // (t60/t60_test_rng.cpp: WWHD_TEST_RNG_CONST, tests)
+#endif
 // fn: ' ' cM_rnd (fraction), 'F' cM_rndF(max), 'X' cM_rndFX(max) = (fraction - 0.5) * 2 * max
 static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
     static int depth = 0;  // cM_rndF / cM_rndFX call cM_rnd: only the outer call counts
@@ -1596,11 +1750,26 @@ static void rnd_call(Cpu* c, char fn, void (*orig)(Cpu*)) {
         for (int k = 0; k < 10 && sp >= 0x10000000; k++) { sp = ld32(sp); if (sp < 0x10000000) break; fprintf(lf, " %08X", ld32(sp + 4)); }
         fprintf(lf, "\n");
     }
-    if (lf && !depth && (c->lr == GC(0x025616CCu) || getenv("WWHD_RND_REGS_ALL")))
+    if (lf && !depth && (c->lr == GC(0x025616CCu) || getenv("WWHD_RND_REGS_ALL")) && c->r[24] >= 0x10000000u)  // (r24 a guest pointer only there)
         fprintf(lf, "REGS %08X %08X %08X %08X %08X %08X %08X L %08X %08X %08X %08X %08X\n", c->r[24], c->r[26], c->r[27], c->r[28], c->r[29], c->r[30], c->r[31],
                 ld32(c->r[24] + 0x14), ld32(c->r[24] + 0x18), ld32(c->r[24] + 0x1C), ld32(c->r[24] + 0x28), ld32(c->r[24] + 0x2C));
-    if (lf && !depth) fprintf(lf, "%llu %d %d %c %08X %08X\n", (unsigned long long)interp::logic_steps(), (int)interp::hold_pass(),
-                               (int)interp::in_execute(), fn, c->lr, ld32(GD(0x101FF9D4)));
+    if (lf && !depth) {
+        fprintf(lf, "%llu %d %d %c %08X %08X", (unsigned long long)interp::logic_steps(), (int)interp::hold_pass(),
+                (int)interp::in_execute(), fn, c->lr, ld32(GD(0x101FF9D4)));
+#if WWHD_DECOMP
+        t60_rnd_log_extra(lf, (unsigned long long)interp::logic_steps());  // (t60/t60_rnd_debug.cpp: step state, WWHD_RND_HBT host chain)
+#endif
+        fprintf(lf, "\n");
+    }
+#if WWHD_DECOMP
+    if (!depth) {  // test aid: random numbers that do not depend on the draw count (default off)
+        float v;
+        if (t60_test_rng(fn, c->lr, fn == ' ' ? 1.0f : (float)c->f[1].ps0, &v)) {
+            c->f[1].ps0 = v;
+            return;
+        }
+    }
+#endif
     if (!on(8) || interp::in_execute() || depth) {
         orig(c);
         return;

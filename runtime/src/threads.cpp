@@ -1425,7 +1425,9 @@ HLE(coreinit, OSInitMessageQueue) {
     hq->cv.notify_all();
     st32(q, 0x6D536751);  // "mSgQ"
 }
+namespace threads { void sync_loads_after_send(uint32_t queue); }  // (test aid WWHD_TEST_SYNC_LOADS, end of this file)
 HLE(coreinit, OSSendMessage) {
+    const uint32_t queue_ea = arg(c, 0);  // (r3 is the result after ret())
     HQueue* q = g_queues.get(arg(c, 0));
     uint32_t m = arg(c, 1), flags = arg(c, 2);
     std::array<uint32_t, 4> msg{ld32(m), ld32(m + 4), ld32(m + 8), ld32(m + 12)};
@@ -1468,6 +1470,7 @@ HLE(coreinit, OSSendMessage) {
 #endif
     q->cv.notify_all();
     ret(c, 1);
+    threads::sync_loads_after_send(queue_ea);
 }
 HLE(coreinit, OSReceiveMessage) {
     HQueue* q = g_queues.get(arg(c, 0));
@@ -2466,3 +2469,171 @@ void threads_ss_targets(ss::Reader r) {
         t->has_target = true;
     }
 }
+
+// ---------------------------------------------------------------- test aid: loads complete between frames
+// WWHD_TEST_SYNC_LOADS=1 (scripted comparison runs): the game's loader threads serve the main thread's requests
+// before the game goes on. A message the main thread sends to a loader's queue (a load request) makes it wait until
+// the loaders are idle again: parked receiving on an empty message queue (or on an event / sleep queue), never
+// running, ready, sleeping (a loader's retry wait) or waiting for a mutex; the same check runs before each full logic
+// step. The game's own poll of a request (often later in the same frame) then always finds it done, so stage loads,
+// actor creation and the random numbers drawn on the way take the same frames in every run. Without it the loaders are host threads racing the game: after a
+// portable state load (true 60 pairs, 2026-11-15) about one run in three created the stage's actors with another
+// random sequence (seagulls, the grass-cutting NPC's idle timing 18 frames apart). The main thread parks meanwhile
+// (its core released); WWHD_TEST_SYNC_LOADS_NAMES=a|b|... replaces the thread list; a wait longer than 2 s gives up
+// and logs the busy threads (that step then keeps the race).
+namespace threads {
+static bool sync_loads_on() {
+    static const bool on = [] { const char* e = getenv("WWHD_TEST_SYNC_LOADS"); return e && e[0] && e[0] != '0'; }();
+    return on;
+}
+static const std::vector<std::string>& sync_loads_names() {
+    static const std::vector<std::string> v = [] {
+        std::vector<std::string> r;
+        const char* e = getenv("WWHD_TEST_SYNC_LOADS_NAMES");
+        std::string s = e && *e ? e : "DVDThread A|ResMgrThread|ResMgrPackLoadThread|LayoutResMgr|WorkerMgr/Worker1()|WorkerMgr/Worker2()";
+        for (size_t p = 0; p <= s.size();) {
+            size_t q = s.find('|', p);
+            if (q == std::string::npos) q = s.size();
+            if (q > p) r.push_back(s.substr(p, q - p));
+            p = q + 1;
+        }
+        return r;
+    }();
+    return v;
+}
+// the message queues the loader threads were seen receiving on (guarded by g_threads_mutex)
+static std::set<uint32_t>& sync_loads_queues() {
+    static std::set<uint32_t> q;
+    return q;
+}
+// true when every listed loader thread is idle; otherwise `busy` names the others and their state
+static bool loaders_idle(std::string& busy) {
+    busy.clear();
+    int matched = 0;
+    struct Report { int last = -1; } static report;
+    std::lock_guard<std::mutex> lk(g_threads_mutex);
+    for (auto& [g, t] : g_threads) {
+        if (!t->started || t->exited || t->service) continue;
+        std::string name = thread_name(t);  // ("name@OSThread")
+        name = name.substr(0, name.rfind('@'));
+        const auto& names = sync_loads_names();
+        if (std::find(names.begin(), names.end(), name) == names.end()) continue;
+        ++matched;
+        bool idle = false;
+        const int w = t->wst.load();
+        if (w == kParked) {
+            if (t->wait_kind == W_MSG_RECV) {
+                sync_loads_queues().insert(t->wait_obj);  // (a queue a loader waits on: requests to it are waited for)
+                HQueue* q = g_queues.get(t->wait_obj);
+                std::lock_guard<std::mutex> ql(q->m);
+                idle = q->msgs.empty();
+            } else {
+                idle = t->wait_kind == W_EVENT || t->wait_kind == W_SLEEPQ;
+            }
+        }
+        if (!idle) {
+            char buf[96];
+            snprintf(buf, sizeof buf, " \"%s\" %s/%u", name.c_str(), w == kRunning ? "run" : w == kParked ? "park" : "req",
+                     (unsigned)t->wait_kind);
+            busy += buf;
+        }
+    }
+    if (matched != report.last) {  // (the loader threads found, logged when the count changes)
+        report.last = matched;
+        LOG("[test] WWHD_TEST_SYNC_LOADS: %d loader thread(s) of %zu names found", matched, sync_loads_names().size());
+    }
+    return busy.empty();
+}
+// the game thread (the one running the logic steps) just sent a message to a loader's queue (a load request): it waits until the loaders are idle
+// again, so the request is served before the game goes on and the game's own poll of it (often in the same frame)
+// always finds it done; bounded (200 ms, then logged), skipped while the loaders are idle
+static bool is_sync_loads_thread(HostThread* t) {  // a listed loader / worker thread (g_threads_mutex held or not needed)
+    std::string name = thread_name(t);
+    name = name.substr(0, name.rfind('@'));
+    const auto& names = sync_loads_names();
+    return std::find(names.begin(), names.end(), name) != names.end();
+}
+void sync_loads_after_send(uint32_t queue) {
+    // any thread other than the loaders themselves (the game thread, a preparing thread): a loader handing work to
+    // another loader or a worker must not wait for itself
+    if (!sync_loads_on() || !t_self || t_self->service) return;
+    {
+        std::lock_guard<std::mutex> lk(g_threads_mutex);
+        if (!sync_loads_queues().count(queue)) return;
+    }
+    if (is_sync_loads_thread(t_self)) return;
+    static std::atomic<int> logged{0};
+    if (logged.fetch_add(1) < 10) LOG("[test] WWHD_TEST_SYNC_LOADS: request from \"%s\" to queue %08X", thread_name(t_self).c_str(), queue);
+    static uint64_t waits = 0, timeouts = 0;
+    std::string busy;
+    // (the receiver may not have woken yet: give it a moment to take the message before calling the loaders idle)
+    if (loaders_idle(busy)) {
+        park_sleep_until(std::chrono::steady_clock::now() + std::chrono::microseconds(50));
+        if (loaders_idle(busy)) return;
+    }
+    const auto t0 = std::chrono::steady_clock::now();
+    while (!loaders_idle(busy)) {
+        if (std::chrono::steady_clock::now() - t0 > std::chrono::milliseconds(200)) {
+            if (++timeouts <= 10) LOG("[test] WWHD_TEST_SYNC_LOADS: a request still busy after 200 ms:%s", busy.c_str());
+            break;
+        }
+        park_sleep_until(std::chrono::steady_clock::now() + std::chrono::microseconds(100));
+    }
+    if (++waits <= 3 || waits % 100 == 0) LOG("[test] WWHD_TEST_SYNC_LOADS: %llu request(s) waited for", (unsigned long long)waits);
+}
+// debug WWHD_TEST_SYNC_LOADS_TRACE=from:to: at each full logic step in [from, to], before and
+// after the loaders' wait, one line with every guest thread not parked on a message queue / event / sleep queue (state,
+// wait kind, wait object, lr), the parked ones counted
+static void sync_loads_trace(uint64_t step, const char* when) {
+    static const std::pair<uint64_t, uint64_t> range = [] {
+        const char* e = getenv("WWHD_TEST_SYNC_LOADS_TRACE");
+        uint64_t a = 0, b = 0;
+        if (e && *e) { a = strtoull(e, nullptr, 10); const char* c = strchr(e, ':'); b = c ? strtoull(c + 1, nullptr, 10) : a; }
+        return std::make_pair(a, b);
+    }();
+    if (!range.first || step < range.first || step > range.second) return;
+    static const char* kinds[] = {"-", "mutex", "event", "msg-send", "msg-recv", "sleepq", "join", "rdv", "sleep", "service", "entry"};
+    std::string out;
+    int parked = 0;
+    std::lock_guard<std::mutex> lk(g_threads_mutex);
+    for (auto& [g, t] : g_threads) {
+        if (!t->started || t->exited || t->is_main) continue;
+        const int w = t->wst.load();
+        const int k = t->wait_kind;
+        if (w == kParked && (k == W_MSG_RECV || k == W_EVENT || k == W_SLEEPQ || k == W_SERVICE)) { ++parked; continue; }
+        char buf[160];
+        snprintf(buf, sizeof buf, " [%s %s %s %08X lr %08X]", thread_name(t).c_str(), w == kRunning ? "run" : w == kParked ? "park" : "req",
+                 k < 11 ? kinds[k] : "?", t->wait_obj, t->cpu.lr);
+        out += buf;
+    }
+    LOG("[synctrace] step %llu %s: %d parked idle;%s", (unsigned long long)step, when, parked, out.empty() ? " all idle" : out.c_str());
+}
+static void sync_loads_wait_inner(uint64_t step);
+void sync_loads_wait(uint64_t step) {
+    sync_loads_trace(step, "before");
+    sync_loads_wait_inner(step);
+    sync_loads_trace(step, "after");
+}
+static void sync_loads_wait_inner(uint64_t step) {
+    if (!sync_loads_on()) return;
+    static uint64_t waited_steps = 0, timeouts = 0;
+    std::string busy;
+    if (loaders_idle(busy)) return;
+    const auto t0 = std::chrono::steady_clock::now();
+    uint64_t polls = 0;
+    while (!loaders_idle(busy)) {
+        if (std::chrono::steady_clock::now() - t0 > std::chrono::seconds(2)) {
+            ++timeouts;
+            LOG("[test] WWHD_TEST_SYNC_LOADS: step %llu: loaders still busy after 2 s:%s (timeout %llu)", (unsigned long long)step,
+                busy.c_str(), (unsigned long long)timeouts);
+            break;
+        }
+        park_sleep_until(std::chrono::steady_clock::now() + std::chrono::microseconds(200));
+        ++polls;
+    }
+    ++waited_steps;
+    if (waited_steps <= 3 || waited_steps % 50 == 0)
+        LOG("[test] WWHD_TEST_SYNC_LOADS: step %llu waited for the loaders (%llu polls); %llu steps waited so far",
+            (unsigned long long)step, (unsigned long long)polls, (unsigned long long)waited_steps);
+}
+}  // namespace threads

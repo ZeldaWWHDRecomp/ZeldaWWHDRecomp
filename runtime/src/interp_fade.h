@@ -27,8 +27,22 @@ struct Gate {
 
 // One call on a pass at fraction `frac` (0 < frac <= 1) of logic step `step`. `s` is the guest
 // state; orig(s) runs the game's update on it (and applies the colour).
+// `start_unadvanced` (true 60, a boss warp): a fade the game starts or changes within the step (s differs
+// from the step's after state on a later call of the same step: the game code ran between the calls, i.e. on a true 60
+// in-between step's pass) is taken as the step's start state and not advanced on that pass; the step's next call (the
+// frame's logic pass, a new step) advances it once, as the 30 Hz draw after the game's logic does. Off (default): the
+// change is a new gate, advanced at once (before the true 60 steps: no game code ran between two calls of a step).
 template <class Orig>
-void call(Gate& g, uint64_t step, float frac, State& s, Orig&& orig) {
+void call(Gate& g, uint64_t step, float frac, State& s, Orig&& orig, bool start_unadvanced = false) {
+    if (start_unadvanced && g.step == step && !(s == g.after)) {
+        g.before = s;
+        g.after = s;
+        State v = s;
+        if (v.fade) v.speed = frac * v.speed;  // shown at frac from the new start
+        orig(v);
+        s = g.after;
+        return;
+    }
     if (g.step != step || !(s == g.after)) {  // the step's first call, or the game started a fade
         g.step = step;
         g.before = s;

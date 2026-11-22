@@ -41,7 +41,7 @@ def measure(directory, control_at=28):
     requested = next((t for t, status, nxt in rows if status == 2 and nxt), None)
     cleared = next((t for t, _, nxt in rows if requested is not None and t > requested and not nxt), None)
     link = [row for line in (directory / "link.txt").read_text().splitlines()
-            if len(row := line.split()) == 18]
+            if len(row := line.split()) >= 18]
     origin = int((directory / "gameover.txt").read_text().splitlines()[0].split()[1])
     late = [(float(row[6]), float(row[8])) for row in link if int(row[1]) >= origin + control_at * 30]
     moved = bool(late) and (max(x for x, _ in late) - min(x for x, _ in late) > 10 or

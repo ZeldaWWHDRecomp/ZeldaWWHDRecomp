@@ -1,5 +1,9 @@
 #include <algorithm>
 #include <atomic>
+#if WWHD_DECOMP
+#include "t60/t60.h"
+void t60_test_rng_restart();  // (t60/t60_test_rng.cpp: WWHD_TEST_RNG_KEYED's draw counters start anew with the seeds)
+#endif
 #include <chrono>
 #include <cmath>
 #include <cstdarg>
@@ -22,6 +26,7 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#include "game_hooks.h"
 #include "state_load_result.h"
 #include "mods/fast_forward.h"
 #include "mods/story_store.h"
@@ -1460,16 +1465,30 @@ void do_portable_save(Cpu* c, int slot) {
 const bool g_fixed_seed = fixed_seed::enabled();
 fixed_seed::BootGate g_fixed_seed_boot;
 fixed_seed::LoadGate g_fixed_seed_load;
+// test aid (true 60 pairs, WWHD_TEST_LOAD_SEED_HOLD=1 only): the stage change of a WWHD_TEST_WARP_AT warp is followed
+// like a portable load's (seeds at its loading start and arrival, held over its loading frames), so two runs whose warp
+// load takes another number of frames enter the new stage from the same random state. Its own gate: no load-relative
+// clock or capture start (those belong to the portable load).
+fixed_seed::LoadGate g_fixed_seed_warp;
+std::atomic<bool> g_warp_gate_req{false};
+// the scenario clock does not count a test warp's loading frames (their number differs by host between the pair's runs;
+// counted, the rest of the scenario's input and the compare's frames would land a frame apart): logic steps paused so
+// far, and the step the running warp load began at (0: none). compare60 drops the same steps (the log line at arrival).
+std::atomic<uint64_t> g_warp_paused{0}, g_warp_load_from{0};
 void apply_fixed_seed(const char* when) {
     if (!g_fixed_seed) return;
     g_fixed_seed_boot.mark();
+#if WWHD_DECOMP
+    ::t60_test_rng_restart();
+#endif
     const auto a = fixed_seed::apply([](uint32_t ea) { return ld32(ea); }, [](uint32_t ea, uint32_t v) { st32(ea, v); },
                                      GD(0x101FF9D4), GD(0x104B5730), GD(0x101FF558),
                                      GD(0x101FF560));  // cM_rnd seeds, JPA emitter seed, g_Counter.mCounter0, mTimer
     LOG("[test] WWHD_TEST_FIXED_SEED: %s: cM_rnd seeds %u %u %u (were %u %u %u), particle seed %u (was %08X), mCounter0 %u "
-        "(was %u, mTimer %u)",
+        "(was %u, mTimer %u), logic step %llu",
         when, fixed_seed::kSeeds[0], fixed_seed::kSeeds[1], fixed_seed::kSeeds[2], a.seeds_before[0], a.seeds_before[1],
-        a.seeds_before[2], fixed_seed::kParticleSeed, a.particle_seed_before, a.counter0_after, a.counter0_before, a.timer);
+        a.seeds_before[2], fixed_seed::kParticleSeed, a.particle_seed_before, a.counter0_after, a.counter0_before, a.timer,
+        (unsigned long long)interp::logic_steps());
 }
 
 // a pending portable load at the frame boundary
@@ -1496,6 +1515,18 @@ void service_portable_load(Cpu* c) {
     } else {
         LOG("[savestate] %s: portable state applied: entering %s room %d layer %d at %.1f %.1f %.1f", portable_label(p.slot).c_str(),
             p.s->stage.c_str(), p.s->room, p.s->layer, p.s->pos[0], p.s->pos[1], p.s->pos[2]);
+#if WWHD_DECOMP
+        // test aid (true 60 pairs, opt-in): WWHD_TEST_PROC_ID_BASE=V makes V the next process id, so the new stage's
+        // processes get the same ids in both runs of a pair (the boot before the load creates a host-timing-dependent
+        // number of short-lived title processes; test pairs saw ids 2-3 apart in about one pair in three)
+        if (const char* pb = getenv("WWHD_TEST_PROC_ID_BASE")) {
+            const uint32_t v = (uint32_t)strtoul(pb, nullptr, 0);
+            if (v) {
+                wwhd_test_proc_id_base = v;
+                LOG("[test] WWHD_TEST_PROC_ID_BASE: next process id 0x%X after the portable load", v);
+            }
+        }
+#endif
         if (g_fixed_seed) {
             g_fixed_seed_boot.mark();
             g_fixed_seed_load.start(ld32(GD(0x101FF560)), interp::logic_steps());  // written once the old stage is gone (service)
@@ -1624,7 +1655,13 @@ std::vector<Timed> parse_timed(const char* var) {
     while (e) {
         const char clock = *e == 't' || *e == 's' ? *e : 0;
         if (sscanf(e + (clock != 0), "%llu:%d%n", &f, &s, &n) != 2) break;
-        v.push_back({f, s, clock});
+        // the request functions drop a slot outside 1..kSlots without a word (a slot 6 entry used to log "due" and
+        // write nothing): say so once here and leave the entry out
+        if ((s < 1 || s > kSlots) && !is_auto(s))
+            LOG("[test] %s: entry %s%llu:%d ignored: slot %d is not a state slot (1..%d)", var, clock == 's' ? "s" : clock == 't' ? "t" : "",
+                f, s, s, kSlots);
+        else
+            v.push_back({f, s, clock});
         e += (clock != 0) + n;
         if (*e != ',') break;
         e++;
@@ -1933,6 +1970,23 @@ std::atomic<uint32_t> g_seeded_arrival_counter{0};
 uint64_t seeded_arrival_frame() { return g_seeded_arrival_frame.load(); }
 uint64_t seeded_arrival_step() { return g_seeded_arrival_step.load(); }
 uint32_t seeded_arrival_counter() { return g_seeded_arrival_counter.load(); }
+// test aid WWHD_TEST_LOAD_QUIET=mask (savestate.h; opt-in): the gates' phases (bit 1: phase 1,
+// bit 2: phase 2) in which the in-between passes skip the per-frame function
+static int test_load_quiet_mask() {
+    static const int mask = [] {
+        const char* s = getenv("WWHD_TEST_SYNC_LOADS");
+        const char* h = getenv("WWHD_TEST_LOAD_SEED_HOLD");
+        const char* q = getenv("WWHD_TEST_LOAD_QUIET");
+        return g_fixed_seed && s && s[0] && s[0] != '0' && h && atoi(h) && q ? atoi(q) : 0;
+    }();
+    return mask;
+}
+bool test_load_quiet() {
+    const int mask = test_load_quiet_mask();
+    if (!mask) return false;
+    const int ph = std::max(g_fixed_seed_load.phase, g_fixed_seed_warp.phase);
+    return ph && (mask & ph);
+}
 
 void set_save_profile(const mods::save_profile::Selection& selected,const mods::save_profile::Paths& paths) {
     const mods::save_profile::StateIdentity identity{selected.namespace_key(),selected.owner,selected.fingerprint};
@@ -2137,10 +2191,16 @@ void service(Cpu* c) {
     track_events();
     service_at_start();
     service_auto_save();
-    // test aid: WWHD_TEST_WARP_AT=frame:stage:room:point[,...] enters that stage (the world editor's warp, the game's
-    // own stage change at a spawn point) at each TV frame; a warp the game refuses then (no control yet) is retried
-    // every 30 frames until the next one is due. frame:stage:room:@x:y:z:angle is the editor's position form (Link's
-    // restart point in that room, as a void-out restarts it), for rooms without a spawn point of their own
+    // test aid: WWHD_TEST_WARP_AT=frame:stage:room:point[:layer][,...] enters that stage (the world editor's warp, the
+    // game's own stage change at a spawn point) at each TV frame; a warp the game refuses then (no control yet) is
+    // retried every 30 frames until the next one is due. frame:stage:room:@x:y:z:angle is the editor's position form
+    // (Link's restart point in that room, as a void-out restarts it), for rooms without a spawn point of their own.
+    // The optional layer (0-15) loads that layer of the stage instead of the one the game picks from the story state
+    // (true 60 pairs of layer-only actors, e.g. GTower layer 8)
+    // (a frame written tSECONDS, e.g. t1.3:LinkRM:0:0, is scenario time instead: seconds from the test origin, as
+    // WWHD_TEST_STICK / PRESS, so the two runs of a true 60 pair warp at the same game moment; their origins fall on
+    // different TV frames)
+    static std::vector<double> warp_secs;
     static std::vector<std::pair<uint64_t, Warp>> warps = [] {
         std::vector<std::pair<uint64_t, Warp>> v;
         const char* e = getenv("WWHD_TEST_WARP_AT");
@@ -2150,17 +2210,22 @@ void service(Cpu* c) {
             all = comma == std::string::npos ? "" : all.substr(comma + 1);
             unsigned long long frame = 0;
             char stage[16] = {};
-            int room = 0, point = 0, angle = 0;
+            int room = 0, point = 0, angle = 0, layer = -1;
             float x = 0, y = 0, z = 0;
+            double secs = -1.0;
             if (sscanf(item.c_str(), "%llu:%15[^:]:%d:@%f:%f:%f:%d", &frame, stage, &room, &x, &y, &z, &angle) == 7) {
                 Warp w;
                 w.stage = stage, w.room = room, w.angle = angle, w.at_position = true;
                 w.pos[0] = x, w.pos[1] = y, w.pos[2] = z;
                 v.push_back({frame, w});
-            } else if (sscanf(item.c_str(), "%llu:%15[^:]:%d:%d", &frame, stage, &room, &point) == 4) {
+                warp_secs.push_back(-1.0);
+            } else if (sscanf(item.c_str(), "t%lf:%15[^:]:%d:%d:%d", &secs, stage, &room, &point, &layer) >= 4 ||
+                       sscanf(item.c_str(), "%llu:%15[^:]:%d:%d:%d", &frame, stage, &room, &point, &layer) >= 4) {
                 Warp w;
                 w.stage = stage, w.room = room, w.point = point;
+                w.layer = layer >= 0 && layer < 16 ? layer : -1;
                 v.push_back({frame, w});
+                warp_secs.push_back(item[0] == 't' ? secs : -1.0);
             }
         }
         return v;
@@ -2170,8 +2235,14 @@ void service(Cpu* c) {
         static std::atomic<bool> pending{false}, done{false};
         static uint64_t tried = 0;
         const uint64_t f = fixed_seed::script_frame(render::frame_count());
-        if (next < warps.size() && f >= warps[next].first) {
-            if (done.exchange(false) || (next + 1 < warps.size() && f >= warps[next + 1].first)) {
+#if WWHD_DECOMP
+        const double ts = t60::test_scenario_time();
+#else
+        const double ts = -1.0;  // (scenario-time warps: the decomp build's true 60 pairs only)
+#endif
+        auto due = [&](size_t i) { return warp_secs[i] < 0 ? f >= warps[i].first : ts >= 0 && ts >= warp_secs[i]; };
+        if (next < warps.size() && due(next)) {
+            if (done.exchange(false) || (next + 1 < warps.size() && due(next + 1))) {
                 pending = false;
                 ++next;
             } else if (!pending && f >= tried + 30) {
@@ -2181,6 +2252,7 @@ void service(Cpu* c) {
                 g_warp_force = force;
                 request_warp(warps[next].second, [](bool ok, const std::string&) {
                     if (ok) done = true;
+                    if (ok) g_warp_gate_req = true;  // (followed by the fixed-seed warp gate when the hold is on)
                     pending = false;
                     g_warp_force = false;
                 });
@@ -2190,18 +2262,149 @@ void service(Cpu* c) {
     service_warp(c);       // world editor
     service_file_save(c);  // world editor test states
     if (int slot = g_psave_req.exchange(0)) do_portable_save(c, slot);
+    // diagnostic WWHD_TEST_LOAD_TRACE=1: while a portable load is followed (and 8 boundaries after its arrival), one line
+    // per frame boundary with the logic step, mTimer and cM_rnd's seeds (where two runs' loads part)
+    if (g_fixed_seed && getenv("WWHD_TEST_LOAD_TRACE")) {
+        static uint64_t last_step = 0;
+        static int after = 0;
+        const uint64_t st = interp::logic_steps();
+        if (g_fixed_seed_load.phase) after = 8;
+        if ((g_fixed_seed_load.phase || after > 0) && st != last_step) {
+            last_step = st;
+            if (!g_fixed_seed_load.phase) after--;
+            LOG("[loadtrace] step %llu phase %d mTimer %u rnd %u %u %u", (unsigned long long)st, g_fixed_seed_load.phase,
+                ld32(GD(0x101FF560)), ld32(GD(0x101FF9D4)), ld32(GD(0x101FF9D4) + 4), ld32(GD(0x101FF9D4) + 8));
+        }
+    }
     if (g_fixed_seed) {  // (before service_portable_load: a load applied now is followed from the next boundary on)
         switch (g_fixed_seed_load.step(ld32(GD(0x101FF560)), interp::logic_steps())) {
-        case fixed_seed::LoadGate::kLoading: apply_fixed_seed("portable state: loading the new stage"); break;
+        case fixed_seed::LoadGate::kLoading:
+            apply_fixed_seed("portable state: loading the new stage");
+#if WWHD_DECOMP
+            // test aid (true 60 pairs, opt-in): WWHD_TEST_PROC_ID_BASE_LOADING=V makes V the next process id once the old
+            // stage is gone. The base at the portable load (WWHD_TEST_PROC_ID_BASE) still raced with the last short-lived
+            // process of the old scene (profile 0x3D0: created just before or just after the new scene's request by host
+            // timing; in enemy test pairs the enemies' ids 1 apart, the keyed draws differed).
+            // A second base, apart from the first (no id is reused while the first base's processes live).
+            if (const char* pb = getenv("WWHD_TEST_PROC_ID_BASE_LOADING")) {
+                const uint32_t v = (uint32_t)strtoul(pb, nullptr, 0);
+                if (v) {
+                    wwhd_test_proc_id_base = v;
+                    LOG("[test] WWHD_TEST_PROC_ID_BASE_LOADING: next process id 0x%X (the old stage is gone)", v);
+                }
+            }
+#endif
+            break;
         case fixed_seed::LoadGate::kArrived:
             apply_fixed_seed("portable state: first frame in the new stage");
             // the load-relative capture's start after a portable load (WWHD_TEST_CAPTURE_LOAD_STEP; gx2_core.cpp)
             g_seeded_arrival_step = interp::logic_steps();
             g_seeded_arrival_counter = ld32(GD(0x101FF560));
             g_seeded_arrival_frame = render::frame_count();
+            game_hooks::portable_arrived();  // (WWHD_TEST_ORIGIN_LOAD after a portable load: the clock starts here)
             break;
         case fixed_seed::LoadGate::kTimedOut: LOG("[test] WWHD_TEST_FIXED_SEED: portable state: no stage change seen"); break;
         default: break;
+        }
+        // the loading frames (2026-11-15, true 60 pairs): the seeds, the particle seed and mCounter0 are held at their
+        // fixed values at every frame boundary until the arrival. How many loading frames a stage change takes depends
+        // on the host (34..37 at the cliff state: the load's asynchronous parts), and processes draw random numbers on
+        // every loading frame; the new stage's actors first execute one frame before mTimer moves (the arrival above),
+        // so a run with another loading length started its actors from another random state (the seagulls and the
+        // grass-cutting NPC parted in about one run in three). Held per frame, the new stage starts from the same state
+        // however long the load took.
+        // Opt-in (WWHD_TEST_LOAD_SEED_HOLD=1: the true 60 pair scripts), so the cliff check's references, made with the
+        // seeds written only at the load's start and arrival, stay valid.
+        static const bool hold_on = getenv("WWHD_TEST_LOAD_SEED_HOLD") && atoi(getenv("WWHD_TEST_LOAD_SEED_HOLD"));
+        if (hold_on) {  // a test warp's stage change, the same way (g_fixed_seed_warp above)
+            static bool game_load = false;  // the gate follows one of the game's own stage changes, not a test warp
+            if (g_warp_gate_req.exchange(false)) g_fixed_seed_warp.start(ld32(GD(0x101FF560)), interp::logic_steps()), game_load = false;
+            static uint64_t wheld_step = 0, wheld = 0;
+            const uint64_t wst = interp::logic_steps();
+#if WWHD_DECOMP
+            // the game's own stage changes after the scenario origin (a door, an event's scene change: pev4's bed event
+            // reloads the room, 17 / 16 loading frames by host), followed the same way as a test warp's: mTimer standing
+            // still over a logic step with no gate running (dScnPly_Draw counts it; after the origin it stops only while
+            // a stage loads, and on the new stage's first actor frame) is the loading start; the gate fires kLoading on
+            // that step at once
+            {
+                // with WWHD_TEST_LOAD_QUIET: the gate starts at the game's scene-change request
+                // instead, the next stage's enable (dStage_nextStage_c, set by dStage_changeScene / the event's scene
+                // change) rising with no gate running, so its phase 1 covers the old stage's fade-out and the quiet
+                // in-between passes apply there as at a test warp (the mTimer detection alone started at phase 2: B
+                // gained a frame in the fade, wf1's stage change held 21 / 20, Link's procedure 40 at 457 / 456)
+                static bool next_on = false;
+                const bool en = ld8(kNextStage + 12) != 0;
+                if (en && !next_on && test_load_quiet_mask() && !g_fixed_seed_warp.phase && !g_fixed_seed_load.phase &&
+                    t60::test_scenario_time() >= 0) {
+                    g_fixed_seed_warp.start(ld32(GD(0x101FF560)), wst);
+                    game_load = true;
+                    char nm[9] = {};
+                    for (int i = 0; i < 8; i++) nm[i] = (char)ld8(kNextStage + i);
+                    LOG("[test] WWHD_TEST_LOAD_QUIET: stage change requested (next stage %s room %d point %d): followed from "
+                        "logic step %llu, mTimer %u", nm, (int)(int8_t)ld8(kNextStage + 10), (int)(int16_t)ld16(kNextStage + 8),
+                        (unsigned long long)wst, ld32(GD(0x101FF560)));
+                }
+                next_on = en;
+            }
+            {
+                static uint64_t tstep = 0;
+                static uint32_t ttimer = 0;
+                const uint32_t tm = ld32(GD(0x101FF560));
+                if (wst != tstep) {
+                    if (tstep && wst == tstep + 1 && tm == ttimer && !g_fixed_seed_warp.phase && !g_fixed_seed_load.phase &&
+                        t60::test_scenario_time() >= 0) {
+                        g_fixed_seed_warp.start(tm, tstep);
+                        game_load = true;
+                    }
+                    tstep = wst, ttimer = tm;
+                }
+            }
+#endif
+            const char* const what = game_load ? "stage change" : "test warp";
+            switch (g_fixed_seed_warp.step(ld32(GD(0x101FF560)), wst)) {
+            // (mCounter0: a constant, not mTimer + offset: mTimer stands one apart between the pair's runs since their
+            // portable load (the origin reseed sets mCounter0 4096 for that reason), and a warp is entered by script time)
+            case fixed_seed::LoadGate::kLoading:
+                apply_fixed_seed(game_load ? "stage change: loading the new stage" : "test warp: loading the new stage");
+                st32(GD(0x101FF558), 8192u);
+                g_warp_load_from = wst;
+                break;
+            case fixed_seed::LoadGate::kArrived:
+                apply_fixed_seed(game_load ? "stage change: first frame in the new stage" : "test warp: first frame in the new stage");
+                st32(GD(0x101FF558), 8192u);
+                LOG("[test] WWHD_TEST_FIXED_SEED: %s: g_Counter.mCounter0 8192", what);
+                if (const uint64_t from = g_warp_load_from.exchange(0)) {
+                    g_warp_paused += wst - from;
+                    LOG("[test] %s: scenario clock paused over logic steps %llu-%llu", what, (unsigned long long)from,
+                        (unsigned long long)(wst - 1));
+                }
+                LOG("[test] WWHD_TEST_FIXED_SEED: %s: seeds held over %llu loading frame(s)", what, (unsigned long long)wheld);
+                wheld = 0;
+                break;
+            case fixed_seed::LoadGate::kTimedOut: LOG("[test] WWHD_TEST_FIXED_SEED: %s: no stage change seen", what); break;
+            default: break;
+            }
+            if (g_fixed_seed_warp.phase == 2 && wst != wheld_step) {
+                wheld_step = wst;
+                fixed_seed::apply([](uint32_t ea) { return ld32(ea); }, [](uint32_t ea, uint32_t v) { st32(ea, v); }, GD(0x101FF9D4),
+                                  GD(0x104B5730), GD(0x101FF558), GD(0x101FF560));
+                st32(GD(0x101FF558), 8192u);
+                ++wheld;
+            }
+        }
+        if (hold_on) {
+            static uint64_t held_step = 0, held = 0;
+            const uint64_t st = interp::logic_steps();
+            if (g_fixed_seed_load.phase == 2 && st != held_step) {
+                held_step = st;
+                fixed_seed::apply([](uint32_t ea) { return ld32(ea); }, [](uint32_t ea, uint32_t v) { st32(ea, v); }, GD(0x101FF9D4),
+                                  GD(0x104B5730), GD(0x101FF558), GD(0x101FF560));
+                ++held;
+            } else if (!g_fixed_seed_load.phase && held) {
+                LOG("[test] WWHD_TEST_FIXED_SEED: portable state: seeds held over %llu loading frame(s)", (unsigned long long)held);
+                held = 0;
+            }
         }
     }
     service_portable_load(c);
@@ -2299,7 +2502,8 @@ void service_warp(Cpu* c) {
     char name[8] = {};
     memcpy(name, p.w.stage.data(), std::min<size_t>(p.w.stage.size(), 7));
     // the current stage's layer when staying in it; otherwise the game picks the layer (-1)
-    const int8_t layer = p.w.stage == stage_name() ? (int8_t)ld8(kStartStage + 11) : -1;
+    const int8_t layer = p.w.layer >= 0 ? (int8_t)p.w.layer  // (test aid: WWHD_TEST_WARP_AT's layer field)
+                         : p.w.stage == stage_name() ? (int8_t)ld8(kStartStage + 11) : -1;
     uint16_t point = (uint16_t)(int16_t)p.w.point;
     if (p.w.at_position) {
         const uint32_t rs = sv + kRestart;  // dSv_restart_c, as apply_portable sets it
@@ -2391,4 +2595,81 @@ LinkPlace link_place() {
     return p;
 }
 
+}  // namespace ss
+
+// tests (WWHD_TEST_ORIGIN_RESEED with WWHD_TEST_FIXED_SEED): the fixed seeds and g_Counter again at the scenario's origin
+// (input_sdl / input.mm, WWHD_TEST_ORIGIN_LOAD), so that two runs whose state load landed at another phase of the
+// frame counter (true 60 pairs: the N-step run boots at another pass rate) start the scenario from the same RNG and
+// counter state
+namespace ax { void step_clock_origin(); }  // hle/ax.cpp
+namespace ss {
+// the scenario clock's paused logic steps (input_sdl / input.mm apply_scenario): a test warp's loading frames
+uint64_t test_scenario_paused(uint64_t now) {
+    const uint64_t from = g_warp_load_from.load();
+    return g_warp_paused.load() + (from && now > from ? now - from : 0);
+}
+void test_origin_reseed() {
+    if (!getenv("WWHD_TEST_ORIGIN_RESEED") || !g_fixed_seed) return;
+    apply_fixed_seed("scenario origin (WWHD_TEST_ORIGIN_RESEED)");
+    // (fixed_seed::apply derives mCounter0 from mTimer, which the load phase shifts too: a constant here)
+    st32(GD(0x101FF558), 4096u);
+    // the sound system's own random state: JAIZelBasic::getRandomU32's seed (jai_rng_seed) and its TRandom_enough_
+    // (+0x216C: Link's voice variant pick, linkVoiceStart -> randomIndex). Boot and the state load start a different
+    // number of sounds in the two runs (p16_move: two more Link voices before the origin in the N-step run), so the
+    // first voice after the origin picked another variant (frame 148: 1816 vs 1814). Fixed values here.
+    st32(GD(0x1018D4F0), 0x5A17C0DEu);
+    const uint32_t basic = ld32(GD(0x101FFC78));  // JAIZelBasic::zel_basic
+    if (in_mem2(basic)) {
+        const uint32_t r = basic + 0x216C;  // TRandom_enough_ {mSeed, mValue, mShuffle[32]}: setSeed(0)
+        uint32_t seed = 1;
+        auto next = [](uint32_t v) { return (uint32_t)(((uint64_t)v * 16807u) % 0x7FFFFFFFu); };
+        for (int i = 0; i < 8; i++) seed = next(seed);
+        for (int i = 31; i >= 0; i--) {
+            seed = next(seed);
+            st32(r + 8 + 4 * (uint32_t)i, seed);
+        }
+        st32(r, seed);
+        st32(r + 4, 0);
+    }
+    LOG("[test] WWHD_TEST_ORIGIN_RESEED: g_Counter.mCounter0 4096, sound RNG (seed, voice TRandom %s) at the origin",
+        in_mem2(basic) ? "set" : "absent");
+    // the AX step clock's phase (hle/ax.cpp, WWHD_TEST_STEP_CLOCK): its ninths accumulator again at 0, so both runs give
+    // the scenario's 30 Hz frames the same 11 / 12 AX-frame pattern from the origin on (mdP2r: a sub-BGM fanfare started
+    // after the origin ended a frame apart, the two runs' boots having left the accumulator at another phase)
+    ax::step_clock_origin();
+    // test aid (true 60 pixel pairs) WWHD_TEST_ORIGIN_TIMER=v: g_Counter.mTimer = v at the origin. Two runs whose state
+    // load landed a frame apart reach the origin with mTimer one apart (compare60's origin-clock gate); the timer drives
+    // world animation, so their pictures differ on every frame even with the logic otherwise equal. v must lie far from
+    // the run's own mTimer (the stage-change detection above takes a standing mTimer for a loading start).
+    if (const char* tv = getenv("WWHD_TEST_ORIGIN_TIMER")) {
+        const uint32_t was = ld32(GD(0x101FF560));
+        const uint32_t v = (uint32_t)strtoul(tv, nullptr, 10);
+        st32(GD(0x101FF560), v);
+        LOG("[test] WWHD_TEST_ORIGIN_TIMER: g_Counter.mTimer %u (was %u) at the origin", v, was);
+    }
+    // test aid WWHD_TEST_ORIGIN_MEMDUMP=path: guest memory 10000000-50000000 at the origin (after the reseeds above),
+    // sparse: records {u32 address, 64 KiB} for the blocks that are not all zero
+    if (const char* mp = getenv("WWHD_TEST_ORIGIN_MEMDUMP")) {
+        if (FILE* f = fopen(mp, "wb")) {
+            constexpr uint32_t kBlock = 0x10000;
+            size_t n = 0;
+            for (uint64_t a = 0x10000000u; a < mem::kMem2End; a += kBlock) {
+                const uint8_t* p = mem::ptr((uint32_t)a);
+                bool zero = true;
+                for (uint32_t i = 0; i < kBlock && zero; i += 8) {
+                    uint64_t w;
+                    memcpy(&w, p + i, 8);
+                    zero = w == 0;
+                }
+                if (zero) continue;
+                const uint32_t a32 = (uint32_t)a;
+                fwrite(&a32, 4, 1, f);
+                fwrite(p, 1, kBlock, f);
+                n++;
+            }
+            fclose(f);
+            LOG("[test] WWHD_TEST_ORIGIN_MEMDUMP: %zu non-zero 64 KiB blocks to %s", n, mp);
+        }
+    }
+}
 }  // namespace ss

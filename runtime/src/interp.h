@@ -11,6 +11,8 @@ uint32_t last_camera();
 // the eye camera_draw drew last, blended or exact (the position the frame is seen from): false before
 // any camera was drawn. Thread safe (each coordinate on its own; render thread: Grass draw distance).
 bool drawn_eye(float eye[3]);
+// test aid WWHD_DUMP_PASS: the swapped image is the record pass (want -1) or pass `want` of its step (once per pass)
+bool dump_pass_take(int want, uint64_t* step);
 bool frame_is_hold();        // this frame's per-frame function runs a hold pass (no logic): for tasks that calc before it
 void record_executed_step(); // game thread; includes built-in turbo passes
 uint64_t executed_steps();    // actual actor logic passes

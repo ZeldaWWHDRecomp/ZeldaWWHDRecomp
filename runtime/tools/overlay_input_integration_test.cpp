@@ -37,6 +37,8 @@ namespace dsweep { uint32_t pad_buttons(uint64_t){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
 namespace game_hooks { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }
 namespace test_aids { void set_origin_step(uint64_t){} void tick(double,bool){} }
+namespace t60 { void test_scenario_time(double){} }
+namespace ss { void test_origin_reseed(){} }
 namespace text_entry { bool active(){return prompt;} void text(const char*){} void preedit(const char*){} void key(int,bool,bool){++promptKeys;} }
 namespace hostui {
  void quit(){++quits;}

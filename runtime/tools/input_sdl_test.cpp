@@ -38,6 +38,8 @@ namespace interp { void set_mode(int){} uint64_t logic_steps(){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
 namespace game_hooks { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }  // test scenario clock (input_sdl.cpp)
 namespace test_aids { void set_origin_step(uint64_t){} void tick(double,bool){} }
+namespace t60 { void test_scenario_time(double){} }
+namespace ss { void test_origin_reseed(){} }
 static int lockOnResets=0,quickUseResets=0,quickUseFilters=0;static bool quickUsePending=false;
 static input::PadState quickUseSample{};
 namespace mods {

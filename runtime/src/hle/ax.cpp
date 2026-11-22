@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <condition_variable>
 #include <chrono>
 #include <cmath>
 #include <cstring>
@@ -26,6 +27,7 @@
 #include "../dsp_overload_guard.h"
 #include "../remote_pad/remote_pad.h"
 #include "../runtime.h"
+#include "../fixed_seed.h"
 
 namespace interp { const char* phase_name(); }
 
@@ -625,12 +627,61 @@ void keep_dsp_channels() {
     }
 }
 
+// WWHD_TEST_STEP_CLOCK (test scenarios): the AX frames are clocked by the game's audio frame (step_clock_release, from
+// the audio frame callback 020315CC: once per 30 Hz frame, also at N > 1) instead of the wall clock: 1000 / 30 / 3 =
+// 11 1/9 AX frames (3 ms) per 30 Hz frame (an exact accumulator: 100 ninths a frame), so a sound's length in game frames
+// (checkSound-style gates: the sploosh game's SE_FIRE) does not depend on the machine's speed or N (an N 4 run at 0.51x
+// real time ended every sound after half as many frames). The release waits (at most 200 ms) until the frame's AX frames
+// are done, so the game's next step sees them. Before the first release (boot) and after 500 ms without one, the
+// frames keep the wall clock. Shipping (no step clock): unchanged. debug: WWHD_AX_WALL_CLOCK=1 keeps the wall clock.
+std::mutex g_clk_mutex;
+std::condition_variable g_clk_cv;
+int64_t g_clk_budget = 0;      // AX frames released and not run yet
+uint32_t g_clk_ninths = 0;     // the accumulator's remainder (ninths of an AX frame)
+bool g_clk_started = false;    // a release arrived
+std::chrono::steady_clock::time_point g_clk_last;
+uint64_t g_clk_timeouts = 0, g_clk_wall = 0;
+bool step_clocked() {
+    static const bool on = [] {
+        const char* w = getenv("WWHD_AX_WALL_CLOCK");
+        bool v = fixed_seed::step_clock() && !(w && *w && strcmp(w, "0") != 0);
+        if (v) LOG("[ax] WWHD_TEST_STEP_CLOCK: AX frames clocked by the game's audio frame (11 1/9 per 30 Hz frame)");
+        return v;
+    }();
+    return on;
+}
+// the frame thread: wait for a released frame; true = run one now (false: the thread stops)
+bool step_clock_take() {
+    std::unique_lock<std::mutex> lk(g_clk_mutex);
+    for (;;) {
+        if (!g_running) return false;
+        if (g_clk_budget > 0) {
+            g_clk_budget--;
+            return true;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (!g_clk_started || now - g_clk_last > std::chrono::milliseconds(500)) {
+            lk.unlock();  // boot / no audio frames for a while: one wall-clock frame
+            std::this_thread::sleep_for(std::chrono::microseconds(3000));
+            g_clk_wall++;
+            return true;
+        }
+        g_clk_cv.wait_for(lk, std::chrono::milliseconds(50));
+    }
+}
+void step_clock_done() {
+    std::lock_guard<std::mutex> lk(g_clk_mutex);
+    g_clk_cv.notify_all();
+}
+
 void frame_thread() {
     Cpu* c = threads::make_service_cpu("AX frame", 0x20000);
     host::set_thread_name("AX frame");
     threads::set_service_core(0);  // the game's audio threads live on core 0
     auto next = std::chrono::steady_clock::now();
+    const bool clocked = step_clocked();
     while (g_running) {
+        if (clocked && !step_clock_take()) break;
         // pace frames by the device: run slightly faster/slower to keep ~40 ms queued
         double level = (double)(audio::buffered_frames() - audio::target_frames()) / audio::target_frames();
         double stretch = 1.0 + std::clamp(level * 0.05, -0.05, 0.05);
@@ -656,6 +707,10 @@ void frame_thread() {
         if (took) threads::release_core();
         g_aux_frame = 1 - g_aux_frame;
         threads::service_end();
+        if (clocked) {
+            step_clock_done();
+            continue;
+        }
         std::this_thread::sleep_until(next);
         auto now = std::chrono::steady_clock::now();
         if (now - next > std::chrono::milliseconds(30)) next = now;  // don't try to catch up after a stall
@@ -854,6 +909,27 @@ static FILE* sound_trace_file() {  // g_ax_mutex held
     return g_sound_trace;
 }
 namespace ax {
+// WWHD_TEST_ORIGIN_RESEED (savestate.cpp test_origin_reseed): the accumulator's phase at the scenario origin, the same in
+// every run (released frames still pending stay released)
+void step_clock_origin() {
+    if (!step_clocked()) return;
+    std::lock_guard<std::mutex> lk(g_clk_mutex);
+    g_clk_ninths = 0;
+    LOG("[ax] step clock: phase reset at the scenario origin");
+}
+void step_clock_release() {
+    if (!step_clocked() || !g_running) return;
+    std::unique_lock<std::mutex> lk(g_clk_mutex);
+    g_clk_started = true;
+    g_clk_last = std::chrono::steady_clock::now();
+    g_clk_ninths += 100;
+    g_clk_budget += g_clk_ninths / 9;
+    g_clk_ninths %= 9;
+    g_clk_cv.notify_all();
+    if (!g_clk_cv.wait_for(lk, std::chrono::milliseconds(200), [] { return g_clk_budget <= 0 || !g_running; })) {
+        if (g_clk_timeouts++ < 5) LOG("[ax] step clock: the frame's AX frames not done within 200 ms (%lld left)", (long long)g_clk_budget);
+    }
+}
 void start_sound_trace(const char* path, double seconds) {
     std::lock_guard<std::mutex> lk(g_sound_trace_mutex);
     if (g_sound_trace) fclose(g_sound_trace);

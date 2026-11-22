@@ -115,9 +115,20 @@ extern "C" void hook_0275F808(Cpu* c) {
 // one or more logic steps earlier than at 30 fps, and the game's logic took another course. On hold
 // passes the load task waits: it calcs once per 30 Hz step, in the frame of the step's logic, as at
 // 30 fps. debug: WWHD_INTERP_LOAD_STEP=0 calcs it on every frame as before
+// True 60: at 30 fps the load task calcs before the frame's create handlers; with
+// WWHD_T60_SCENE_FIRST at N > 1 those run on the frame's first step, an in-between pass, so the task calcs before THAT
+// pass, not before the tick30 logic pass (there it calced between the frame's creates and its executes: a load request
+// a process made in the frame's executes was taken one frame late, and a room scene's archive sync answered "not yet"
+// once more: its BG actor's create, and its random draw, a frame late; in the test pairs). N = 1, or
+// SCENE_FIRST off: unchanged.
+namespace interp { bool t60_frame_work_pass(); }
 extern "C" void hook_0260C74C(Cpu* c) {
     static const bool every_frame = getenv("WWHD_INTERP_LOAD_STEP") && !atoi(getenv("WWHD_INTERP_LOAD_STEP"));
+#if WWHD_DECOMP
+    if (!every_frame && !interp::t60_frame_work_pass()) return;
+#else
     if (!every_frame && interp::frame_is_hold()) return;
+#endif
     f_0260C74C_orig(c);
 }
 

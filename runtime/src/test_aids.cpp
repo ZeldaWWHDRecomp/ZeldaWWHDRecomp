@@ -13,17 +13,27 @@
 //   WWHD_TEST_POKE=t:ADDR:HEX,...   at scenario time t (s, game time; see input.mm) writes the bytes
 //                                   HEX to guest memory at ADDR. ADDR is hex, or *PTR+OFF (the word
 //                                   at PTR plus OFF), e.g. *101F84DC+2E:38 equips the Hero's Sword.
-//   WWHD_LINK_WARP=step:x:y:z:angle[,...]  each once, in order, before Link's full-pass execute at origin step + step;
+//   WWHD_LINK_WARP=step:x:y:z:angle[,...]  each once, in order, before Link's full-pass execute at origin step + step
+//                                   (scenario clock: a test warp's loading steps not counted; true 60: Link's first
+//                                   step of that 30 Hz frame);
 //                                   updates the actor and the HD executable's retained position.
 //   WWHD_SAVEINFO_DUMP=path         at the end of the scenario (WWHD_TEST_END) writes the save-info
 //                                   block (dSv_info_c, *101F84DC, 0x12A0 bytes: what the game saves,
 //                                   plus the current stage/zone memory) to path; also at the times
 //                                   in WWHD_SAVEINFO_AT=t1,t2,... to path.t1, path.t2, ...
+//   WWHD_MEM_DUMP=path:ADDR:SIZE[,...]  before each execute of Link: SIZE bytes at ADDR (ADMP records as below; ADDR
+//                                   *PTR+OFF: the u32 at PTR plus OFF, re-read at every record; true 60:
+//                                   every step, Link converted or not, the step / full columns of WWHD_ACTOR_DUMP)
 //   WWHD_ACTOR_DUMP=path:FN:SIZE,...  after every execute of a process whose execute function is FN
 //                                   (hex; "link" for daPy_lk_c) appends a record to path: header
 //                                   'ADMP', u64 logic step, u32 full pass (1), f32 dt (1), u32 process,
 //                                   u32 size, then SIZE raw (big-endian guest) bytes of the process.
 #include <cstdio>
+#include "game_hooks.h"
+#if WWHD_DECOMP
+#include "t60/t60.h"
+#include "t60/t60_draw.h"
+#endif
 #include <cstdlib>
 #include <cstring>
 #include <cmath>
@@ -352,14 +362,16 @@ std::vector<DumpSpec> parse_dumps() {
 void rng_trace();
 // after each process execute (game_hooks.cpp); fn = its execute function
 void after_execute(uint32_t proc, uint32_t fn, bool is_link) {
-    const float dt = 1.0f;  // (the record keeps its step-length field)
+    // step, full pass, step length: the trace records' columns (game_hooks.h: 1 / 1 at 30 Hz; true 60, decomp build:
+    // the 30 Hz frame the step ends, the tick30 step, the execute's dt)
+    const float dt = game_hooks::rec_dt();
     static std::vector<DumpSpec> dumps = parse_dumps();
     if (is_link) rng_trace();
     if (dumps.empty()) return;
     for (auto& d : dumps) {
         if (!(d.link ? is_link : fn == d.fn)) continue;
-        uint64_t step = interp::logic_steps();
-        uint32_t full = interp::hold_pass() ? 0 : 1;
+        uint64_t step = game_hooks::rec_step();
+        uint32_t full = game_hooks::rec_full() && !interp::hold_pass() ? 1 : 0;
         fwrite("ADMP", 1, 4, d.f);
         fwrite(&step, 8, 1, d.f);
         fwrite(&full, 4, 1, d.f);
@@ -538,19 +550,32 @@ void hook_0255B9C8(Cpu* c) { light_trace(3, c); f_0255B9C8_orig(c); }
 void hook_0255BA9C(Cpu* c) { light_trace(4, c); f_0255BA9C_orig(c); }
 }
 
+namespace ss { uint64_t test_scenario_paused(uint64_t now); }  // savestate.cpp: a test warp's paused loading steps
 namespace test_aids {
 // WWHD_LINK_PRE=path: Link's process (0x8284 bytes) right before each full-pass execute (same record format)
 uint64_t origin_step();
-void before_execute_link(uint32_t proc) {
+// WWHD_LINK_WARP=step:x:y:z:angle[,step:x:y:z:angle...]: each warp once, in order, before Link's execute on the FIRST
+// step of the 30 Hz frame (decomp build at N steps: game_hooks calls it there; before_execute_link's tick30 call is
+// then a no-op for that warp). At N 1 the frame's only step. (Before 2026-11-18 it ran on the tick30 step only, so at
+// N 2 the warp landed between a converted Link's two steps: B's step 2 saw a frame that started at the old place,
+// a get-item test pair, frame 120: wait anim rate 3.211 on that step, anim 1.055 ahead after it; A warps before its
+// one execute.)
+void link_warp(uint32_t proc, bool before_tick30) {
     // Visual comparison fixture: apply at an actor boundary, outside controller-read call stacks.
-    // WWHD_LINK_WARP=step:x:y:z:angle[,step:x:y:z:angle...]: each warp once, in order
     static size_t warps_done = 0;
-    if (!interp::hold_pass() && origin_step()) {
+    // (the first step at N > 1 is a hold pass for the interpolation; the warp still applies there)
+    if ((before_tick30 || !interp::hold_pass()) && origin_step()) {
         if (const char* e = getenv("WWHD_LINK_WARP")) {
             for (size_t i = 0; i < warps_done && e; i++) { e = strchr(e, ','); if (e) e++; }
             unsigned long long step; float x,y,z; int angle;
-            if (e && sscanf(e,"%llu:%f:%f:%f:%d",&step,&x,&y,&z,&angle)==5 && interp::logic_steps() >= origin_step()+step) {
-                LOG("[test] warp Link %08X from %.1f %.1f %.1f to %.1f %.1f %.1f",proc,(float)ldf32(proc+0x314),(float)ldf32(proc+0x318),(float)ldf32(proc+0x31C),x,y,z);
+            // (the scenario clock: logic steps since the origin minus a test warp's paused loading steps, as the scripted
+            // input's time; the raw step count put the warp a frame apart in the two runs of a pair whose stage-warp
+            // loading took 21 / 20 steps (a chest pair: A frame 99, B frame 100))
+            // (before_tick30: the frame's first step at N > 1 runs before the step that counts the frame: its clock is
+            // the frame's count - 1)
+            const uint64_t now = interp::logic_steps() + (before_tick30 ? 1 : 0);
+            if (e && sscanf(e,"%llu:%f:%f:%f:%d",&step,&x,&y,&z,&angle)==5 && now - ss::test_scenario_paused(now) >= origin_step()+step) {
+                LOG("[test] warp Link%s %08X from %.1f %.1f %.1f to %.1f %.1f %.1f",before_tick30?" (first step)":"",proc,(float)ldf32(proc+0x314),(float)ldf32(proc+0x318),(float)ldf32(proc+0x31C),x,y,z);
                 for (uint32_t off : {0x2ECu,0x300u,0x314u}) { stf32(proc+off,x); stf32(proc+off+4,y); stf32(proc+off+8,z); }
                 st16(proc+0x322,(uint16_t)angle);st16(proc+0x32A,(uint16_t)angle);
                 // The HD executable restores these retained debug values at 0240D130 each update.
@@ -560,29 +585,58 @@ void before_execute_link(uint32_t proc) {
             }
         }
     }
-    // WWHD_MEM_DUMP=path:addr:size: that memory before each full-pass execute of Link (same record format)
-    static FILE* md = nullptr;
-    static uint32_t md_a = 0, md_n = 0;
+}
+void before_execute_link(uint32_t proc) {
+    link_warp(proc, false);
+    // WWHD_MEM_DUMP=path:addr:size[,path:addr:size...]: that memory before each full-pass execute of Link (same record
+    // format), each range to its own file; ADDR may be *PTR+OFF (the range starts at the u32 at PTR plus OFF, read once,
+    // at the first record: e.g. a packet behind a pointer)
+    struct MemDump { FILE* f; uint32_t a, n; std::string spec; };
+    static std::vector<MemDump> mds;
     static bool md_init = false;
     if (!md_init) {
         md_init = true;
         if (const char* e = getenv("WWHD_MEM_DUMP")) {
-            const char* c1 = strchr(e, ':');
-            if (c1) {
-                md = fopen(std::string(e, c1 - e).c_str(), "wb");
-                char* end;
-                md_a = (uint32_t)strtoul(c1 + 1, &end, 16);
-                if (*end == ':') md_n = (uint32_t)strtoul(end + 1, nullptr, 16);
+            std::string all(e);
+            size_t p0 = 0;
+            while (p0 <= all.size()) {
+                size_t p1 = all.find(',', p0);
+                if (p1 == std::string::npos) p1 = all.size();
+                std::string one = all.substr(p0, p1 - p0);
+                size_t c1 = one.find(':'), c2 = one.find(':', c1 == std::string::npos ? 0 : c1 + 1);
+                if (c1 != std::string::npos && c2 != std::string::npos) {
+                    MemDump d{fopen(one.substr(0, c1).c_str(), "wb"), 0, 0, one.substr(c1 + 1, c2 - c1 - 1)};
+                    d.n = (uint32_t)strtoul(one.c_str() + c2 + 1, nullptr, 16);
+                    if (d.f && d.n) mds.push_back(d);
+                }
+                p0 = p1 + 1;
             }
         }
     }
-    if (md && md_n && !interp::hold_pass()) {
-        uint64_t step = interp::logic_steps();
-        uint32_t full = 1;
-        float dt = 1.0f;
-        fwrite("ADMP", 1, 4, md); fwrite(&step, 8, 1, md); fwrite(&full, 4, 1, md); fwrite(&dt, 4, 1, md);
-        fwrite(&md_a, 4, 1, md); fwrite(&md_n, 4, 1, md); fwrite(mem::ptr(md_a), 1, md_n, md);
-        fflush(md);
+    // (true 60, decomp build: before Link's execute call on every step, converted or not (game_hooks.cpp), with the trace
+    // records' columns: the 30 Hz frame the step ends, full = the tick30 step; at 30 Hz: full passes only, as before)
+    if (!mds.empty() && (!game_hooks::rec_full() || !interp::hold_pass())) {
+        uint64_t step = game_hooks::rec_step();
+        uint32_t full = game_hooks::rec_full() && !interp::hold_pass() ? 1 : 0;
+        float dt = game_hooks::rec_dt();
+        for (MemDump& d : mds) {
+            // hex: resolved once; *PTR+OFF: the u32 at PTR re-read on every record (a stage load moves the packets: a
+            // pointer read once at the title screen kept dumping the old stage's memory), the header carries the address
+            const char* sp = d.spec.c_str();
+            if (*sp == '*') {
+                char* end;
+                uint32_t ptr = (uint32_t)strtoul(sp + 1, &end, 16);
+                uint32_t off = *end == '+' ? (uint32_t)strtoul(end + 1, nullptr, 16) : 0;
+                uint32_t base = ld32(GD(ptr));
+                if (!base) continue;  // not set (yet / during a load): no record
+                d.a = base + off;
+            } else if (!d.a) {
+                d.a = (uint32_t)strtoul(sp, nullptr, 16);
+            }
+            fwrite("ADMP", 1, 4, d.f); fwrite(&step, 8, 1, d.f); fwrite(&full, 4, 1, d.f); fwrite(&dt, 4, 1, d.f);
+            fwrite(&d.a, 4, 1, d.f); fwrite(&d.n, 4, 1, d.f); fwrite(mem::ptr(d.a), 1, d.n, d.f);
+            fflush(d.f);
+        }
     }
     static FILE* f = getenv("WWHD_LINK_PRE") ? fopen(getenv("WWHD_LINK_PRE"), "wb") : nullptr;
     if (!f || interp::hold_pass()) return;
@@ -595,34 +649,73 @@ void before_execute_link(uint32_t proc) {
 }
 }
 
+#if WWHD_DECOMP
+extern void (*t60_frame_first_hook)();  // (t60/t60.cpp: called as each 30 Hz frame's first logic step begins)
+#endif
 namespace test_aids {
 uint64_t g_origin_step = 0;
+namespace {
+const char* event_path() {
+    static const char* p = getenv("WWHD_EVENT_TIMELINE");
+    return p;
+}
+// WWHD_EVENT_TIMELINE's event-end save-info dumps (.endK, .endK.p1 / .p2): taken at a 30 Hz frame boundary, the state
+// at the end of a 30 Hz frame. In the decomp build they run from the true 60 step driver as each frame's first logic
+// step begins (at N > 1 the logic-step boundary below falls between the frame's first step and its tick30 step,
+// so a dump there held the first step's frame-level work (process creation, the play scene) but not yet the tick30
+// world's (the day clock): a frame apart from the 30 Hz run's dump in either direction). Elsewhere from logic_step.
+bool g_frame_hooked = false;
+void event_end_dumps(const char* path_base) {
+    static unsigned previous_event = 0, completed = 0;
+    const uint32_t play = GD(0x1046F0B0);
+    const unsigned event = ld8(play + 0x5292);
+    const auto link = ld32(play + GI(0x5B34));
+    // the two frames after an event's end get .endK.p1 / .p2 (event-gate check: matched exactly a frame or two apart, the
+    // end writes that run on after the mode clears)
+    static std::string follow_path;
+    static int follow = 0;
+    if (follow > 0) {
+        dump_saveinfo(follow_path + ".p" + std::to_string(3 - follow));
+        --follow;
+    }
+    if (previous_event && !event) {
+        const auto path = std::string(path_base) + ".end" + std::to_string(++completed);
+        dump_saveinfo(path);
+        follow_path = path;
+        follow = 2;
+        if (link >= mem::kMem2Start && link < mem::kMem2End) {
+            if (FILE* f = fopen((path + ".link").c_str(), "wb")) {
+                fwrite(mem::ptr(link + 0x314), 1, 0x20, f);
+                fclose(f);
+            }
+        }
+    }
+    previous_event = event;
+}
+void frame_first_step() {
+    g_frame_hooked = true;
+    if (event_path() && g_origin_step) event_end_dumps(event_path());
+}
+#if WWHD_DECOMP
+const bool g_frame_hook_armed = [] {
+    if (event_path()) t60_frame_first_hook = frame_first_step;
+    return true;
+}();
+#endif
+}  // namespace
 // Called at the actual logic-step boundary, including frames that do not poll input.
 void logic_step(uint64_t step) {
     // Opt-in event/clock regression aid. Raw state snapshots stay in the private test directory.
-    static const char* event_path = getenv("WWHD_EVENT_TIMELINE");
-    static FILE* events = event_path ? fopen(event_path, "w") : nullptr;
-    static unsigned previous_event = 0, completed = 0;
+    static FILE* events = event_path() ? fopen(event_path(), "w") : nullptr;
     if (events && g_origin_step) {
         const uint32_t play = GD(0x1046F0B0);
         const unsigned event = ld8(play + 0x5292);
         const auto clock = game_clock::sample();
-        const auto link = ld32(play + GI(0x5B34));
         fprintf(events, "%llu %u %u %u %lld %lld %u %llu\n", (unsigned long long)(step - g_origin_step), event,
                 mods::fast_forward_active(), clock.rate, (long long)clock.host, (long long)clock.guest,
                 interp::hold_pass(), (unsigned long long)interp::pass_count());
         fflush(events);
-        if (previous_event && !event) {
-            const auto path = std::string(event_path) + ".end" + std::to_string(++completed);
-            dump_saveinfo(path);
-            if (link >= mem::kMem2Start && link < mem::kMem2End) {
-                if (FILE* f = fopen((path + ".link").c_str(), "wb")) {
-                    fwrite(mem::ptr(link + 0x314), 1, 0x20, f);
-                    fclose(f);
-                }
-            }
-        }
-        previous_event = event;
+        if (!g_frame_hooked) event_end_dumps(event_path());
     }
     static FILE* timeline = [] {
         const char* path = getenv("WWHD_LOGIC_TIMELINE");

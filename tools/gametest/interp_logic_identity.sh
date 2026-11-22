@@ -17,6 +17,8 @@
 # FPS="30 60 120" chooses the runs (240 works too). Headless, muted, hidden windows, no host input, an
 # own shader cache per OUT (SHADER_CACHE=file to share one; PREBUILD=file seeds each run's prebuilt shaders); the game is always stopped when a run ends. Run folders keep only the traces
 # and the log. Exit status 0 when every comparison is identical.
+# Loads are synchronous (WWHD_TEST_SYNC_LOADS=1; SYNC_LOADS=0 for the old asynchronous loads): under machine load an
+# asynchronous load ended 2 frames apart between the runs (BADSTART, mTimer 3111 vs 3113, RT-07 2026-11-21).
 set -u
 zmodload zsh/datetime
 exe=${1:A} game=${2:A} save=${3:A} state=${4:A} out=${5:A}; shift 5
@@ -44,7 +46,7 @@ run() {  # run EXE NAME FPS [VAR=value ...]
     ( cd $d && env WWHD_HIDDEN=1 WWHD_HIDDEN_WINDOWS=1 WWHD_NO_HOST_INPUT=1 WWHD_NO_AUDIO=1 WWHD_NO_GAMEPAD=1 WWHD_LAST_SESSION=0 \
         WWHD_SETTINGS=$d/settings.ini WWHD_DISPLAY_SETTINGS=$d/display.plist WWHD_CONTROLS=$d/controls.json \
         WWHD_SHADER_CACHE=${SHADER_CACHE:-$out/shadercache.bin} WWHD_USER_DIR=$d/user WWHD_STATE_DIR=$d/states \
-        WWHD_TEST_FIXED_SEED=1 WWHD_PRESS=$boot WWHD_STATE_LOAD_AT=$load:1 WWHD_TEST_ORIGIN=1 WWHD_TEST_ORIGIN_LOAD=30 WWHD_TEST_END=$end \
+        WWHD_TEST_FIXED_SEED=1 WWHD_TEST_SYNC_LOADS=${SYNC_LOADS:-1} WWHD_PRESS=$boot WWHD_STATE_LOAD_AT=$load:1 WWHD_TEST_ORIGIN=1 WWHD_TEST_ORIGIN_LOAD=30 WWHD_TEST_END=$end \
         WWHD_TEST_STICK=$stick WWHD_TEST_RSTICK=$rstick WWHD_TEST_PRESS=$press \
         WWHD_LINK_TRACE=trace.txt WWHD_CAM_TRACE=cam.txt WWHD_SAVEINFO_DUMP=si.bin WWHD_SE_TRACE=se.txt WWHD_RNG_TRACE=rng.txt \
         WWHD_PROC_DIGEST=digest.txt WWHD_PROC_DIGEST_SKIP=$skip WWHD_PROC_DIGEST_ANM_CACHE=$anm WWHD_PROC_DIGEST_LINE_LINKS=$anm \

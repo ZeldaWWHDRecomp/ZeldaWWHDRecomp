@@ -16,6 +16,9 @@
 #include "../mods/story_scenes.h"
 #include "../rumble.h"
 #include "../motion/motion.h"
+#if WWHD_DECOMP
+#include "../t60/t60.h"  // true 60 Hz logic (decomp build): a poll per step, presses latched for the 30 Hz world
+#endif
 
 namespace interp { bool repeat_input(); void trace_read(const char*); uint64_t logic_steps(); }
 
@@ -110,9 +113,23 @@ HLE(vpad, VPADRead) {
     interp::trace_read("VPAD");
     // frame interpolation: the read after a logic pass repeats the last sample (interp.cpp)
     static input::PadState last_p;
-    const bool repeat = interp::repeat_input();
+    bool repeat = interp::repeat_input();
+#if WWHD_DECOMP
+    // true 60: the game's controller reads the GamePad on every logic step (true 60 fps input; before: once
+    // per 30 Hz frame on its first step), at the start of the pass that runs the step (an
+    // in-between pass for the frame's earlier steps; sead::ControllerManager::calc skips the other passes): that read is
+    // live
+    if (repeat && wwhd_t60_input_step()) repeat = false;
+#endif
     input::PadState p = repeat ? last_p : crashrec::read(0);  // live input, recorded/replayed by crash recovery
     if (!repeat && latency_test::on()) latency_test::pad(p.buttons, p.ly);  // (test: latency_test.h)
+#if WWHD_DECOMP
+    if (!repeat || t60::poll_every_read()) {  // true 60: the in-between reads poll too (raw input for converted code)
+        const input::PadState raw = repeat ? crashrec::read(0) : p;
+        const float sticks[4] = {raw.lx, raw.ly, raw.rx, raw.ry};
+        t60::pad_poll(raw.buttons, sticks, !repeat);
+    }
+#endif
     if (!repeat) mods::one_screen_pad(p);  // One screen: Minus pauses as Plus (Off-TV Play has no TV to switch to)
     if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
     mods::guest_gamepad_touch(p, repeat);  // a finger on a code mod's GamePad claim is the mod's only
@@ -155,6 +172,9 @@ HLE(vpad, VPADRead) {
     stick_dirs(p.lx, p.ly, 0x10000000, 0x08000000, 0x40000000, 0x20000000);
     stick_dirs(p.rx, p.ry, 0x01000000, 0x00800000, 0x04000000, 0x02000000);
     if (repeat) hold = last_hold;  // buttons (and the stick-as-button bits) change on full passes only
+#if WWHD_DECOMP
+    else hold = t60::game_buttons(hold);  // (true 60: a press that came and went between two live reads, once)
+#endif
 
     memset(mem::ptr(st), 0, 0xAC);
     st32(st + 0x00, hold);

@@ -7,6 +7,12 @@
 #include <cstdlib>
 #include <cstring>
 
+#if WWHD_DECOMP
+#include "t60/t60.h"
+#include "t60/t60_draw.h"
+#include "t60/t60_world.h"
+#include "t60/t60_ui.h"
+#endif
 #include "game_hooks.h"
 #include "latency_test.h"
 #include "guest_addr.h"
@@ -26,6 +32,7 @@ bool fx_hold_anim();
 namespace test_aids {  // test_aids.cpp (debug dumps)
 void after_execute(uint32_t proc, uint32_t fn, bool is_link);
 void before_execute_link(uint32_t proc);
+void link_warp(uint32_t proc, bool before_tick30);  // WWHD_LINK_WARP (the frame's first step)
 bool dumping();
 bool digesting();  // WWHD_PROC_DIGEST (comparisons of two builds)
 void proc_digest(uint32_t proc);
@@ -61,8 +68,27 @@ bool is_camera(uint32_t proc) {
     return m >= 0x10000000 && m < 0x50000000 && ld32(m + 8) == kCameraExecute;
 }
 
-// WWHD_LINK_TRACE=path: one line per Link execute: pass, logic step, time, full pass (always 1 now),
-// dt (always 1), procedure, pos, speedF, speed, angles, animation frame and rate, normal speed.
+// The trace records' step, full and dt columns: the 30 Hz logic step, 1, 1; true 60 (decomp build): the 30 Hz frame the
+// step ends, whether it is the tick30 step, and the execute's step length (t60.h record_step, wwhd_t60_ran)
+int g_rec_full = 1;
+float g_rec_dt = 1.0f;
+}  // namespace
+uint64_t game_hooks::rec_step() {
+#if WWHD_DECOMP
+    return t60::record_step(interp::logic_steps());
+#else
+    return interp::logic_steps();
+#endif
+}
+int game_hooks::rec_full() { return g_rec_full; }
+float game_hooks::rec_dt() { return g_rec_dt; }
+#if WWHD_DECOMP
+void t60_link_trace_feet(FILE* f, uint32_t link);  // t60/t60_link_trace.cpp
+#endif
+namespace {
+using game_hooks::rec_step;
+// WWHD_LINK_TRACE=path: one line per Link execute: pass, logic step, time, full pass (1),
+// dt (1; true 60: see above), procedure, pos, speedF, speed, angles, animation frame and rate, normal speed.
 // The mods' runtime tests read this format.
 FILE* g_trace = [] {
     const char* p = getenv("WWHD_LINK_TRACE");
@@ -71,15 +97,29 @@ FILE* g_trace = [] {
 void trace_link(uint32_t proc) {
     if (!g_trace) return;
     double t = (double)timebase::now() / timebase::kTicksPerSec;  // guest time (the test origin is logged as [test])
-    fprintf(g_trace, "%llu %llu %.4f %d %.2f %d %.3f %.3f %.3f %.4f %.4f %.4f %.4f %d %d %.3f %.3f %.3f\n", (unsigned long long)g_pass,
-            (unsigned long long)interp::logic_steps(), t, 1, 1.0f, (int)ld32(proc + kCurProc), ldf32(proc + kPos), ldf32(proc + kPos + 4),
+    fprintf(g_trace, "%llu %llu %.4f %d %.2f %d %.3f %.3f %.3f %.4f %.4f %.4f %.4f %d %d %.3f %.3f %.3f", (unsigned long long)g_pass,
+            (unsigned long long)rec_step(), t, g_rec_full, g_rec_dt, (int)ld32(proc + kCurProc), ldf32(proc + kPos), ldf32(proc + kPos + 4),
             ldf32(proc + kPos + 8), ldf32(proc + kSpeedF), ldf32(proc + kSpeed), ldf32(proc + kSpeed + 4), ldf32(proc + kSpeed + 8),
             (int)(int16_t)ld16(proc + kShapeAngle + 2), (int)(int16_t)ld16(proc + kAngle + 2), ldf32(proc + kFrameCtrlUnder + 4),
             ldf32(proc + kFrameCtrlUnder), ldf32(proc + kNormalSpeed));
+    // appended (true 60 pair checks): the positions of the actors Link's target-facing turns use, mpAttnActorLockOn
+    // (+0x65B0), mpAttnActorA (+0x65B8) and the grabbed actor (mActorKeepGrab.mActor, +0x65A4: procGrab clears A);
+    // "- - -" when unset
+    for (uint32_t o : {0x65B0u, 0x65B8u, 0x65A4u}) {
+        uint32_t a = ld32(proc + o);
+        if (a >= 0x10000000 && a < 0x50000000)
+            fprintf(g_trace, " %.3f %.3f %.3f", ldf32(a + kPos), ldf32(a + kPos + 4), ldf32(a + kPos + 8));
+        else
+            fprintf(g_trace, " - - -");
+    }
+#if WWHD_DECOMP
+    t60_link_trace_feet(g_trace, proc);  // base foot + both toes' xz (t60/t60_link_trace.cpp)
+#endif
+    fputc('\n', g_trace);
     static int n = 0;
     if (++n % 60 == 0) fflush(g_trace);
 }
-// WWHD_CAM_TRACE=path: one line per camera execute: pass, logic step, full pass (1), dt (1), follow
+// WWHD_CAM_TRACE=path: one line per camera execute: pass, logic step, full pass (1), dt (1; true 60: above), follow
 // camera used, eye xyz, center xyz, fovy; then a line of counters and follow-camera work words
 FILE* g_cam_trace = [] {
     const char* p = getenv("WWHD_CAM_TRACE");
@@ -88,12 +128,24 @@ FILE* g_cam_trace = [] {
 void trace_camera(uint32_t proc) {
     if (!g_cam_trace) return;
     fprintf(g_cam_trace, "%llu %llu %d %.2f %d %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n", (unsigned long long)g_pass,
-            (unsigned long long)interp::logic_steps(), 1, 1.0f, g_follow_called ? 1 : 0, ldf32(proc + 0xDC), ldf32(proc + 0xE0),
+            (unsigned long long)rec_step(), g_rec_full, g_rec_dt, g_follow_called ? 1 : 0, ldf32(proc + 0xDC), ldf32(proc + 0xE0),
             ldf32(proc + 0xE4), ldf32(proc + 0xE8), ldf32(proc + 0xEC), ldf32(proc + 0xF0), ldf32(proc + 0xD4));
     uint32_t d = proc + kDCamera;
     fprintf(g_cam_trace, "    m100 %d m108 %d work", (int)ld32(d + 0x100), (int)ld32(d + 0x108));
     for (uint32_t o = 0x36C; o <= 0x388; o += 4) fprintf(g_cam_trace, " %08X", ld32(d + o));
     fprintf(g_cam_trace, " type %u mode %u style %u V %d", ld32(d + 0x51C), ld32(d + 0x13C), ld32(d + 0x514), (int16_t)ld16(d + 0x40));
+    // appended (true 60 pair checks, moving-background carriers): the moving BG actor under the player that the camera's
+    // checkGroundInfo found (dCamera_c::mpMoveBgActor +0x340): its process name (fpcM_GetName, +0x08) and position;
+    // "mvbg -" when there is none
+    uint32_t mv = ld32(d + 0x340);
+    if (mv >= 0x10000000 && mv < 0x50000000)
+        fprintf(g_cam_trace, " mvbg %04X %.3f %.3f %.3f", (unsigned)ld16(mv + 0x08), ldf32(mv + kPos), ldf32(mv + kPos + 4), ldf32(mv + kPos + 8));
+    else
+        fprintf(g_cam_trace, " mvbg -");
+    // the shake (dCamera_c mShakeLength +0x554, mShakeFrame +0x558, mShakeFlags +0x58C, mEyeShake +0x578, mFovYShake +0x584,
+    // mBankShake +0x588; shakeCamera 024FC108): appended last, so the readers of the fields before are unaffected
+    fprintf(g_cam_trace, " shake %d %d %08X %.4f %.4f %.4f %.4f %d", (int)ld32(d + 0x554), (int)ld32(d + 0x558), ld32(d + 0x58C),
+            ldf32(d + 0x578), ldf32(d + 0x57C), ldf32(d + 0x580), ldf32(d + 0x584), (int16_t)ld16(d + 0x588));
     fprintf(g_cam_trace, "\n");
     static int n = 0;
     if (++n % 60 == 0) fflush(g_cam_trace);
@@ -119,11 +171,14 @@ uint32_t watch_val() {
     uint32_t wa = watch_addr();
     return wa ? ld32(wa) : 0;
 }
-// debug: WWHD_RND_EXEC=path logs each process execute that draws random numbers
+// debug: WWHD_RND_EXEC=path logs each process execute that draws random numbers (step, hold pass, process, execute
+// function, the seed before, the profile name; true 60: the converted processes' executes on the earlier steps too,
+// hold pass 1)
 FILE* g_rx = getenv("WWHD_RND_EXEC") ? fopen(getenv("WWHD_RND_EXEC"), "w") : nullptr;
 void rx_log(uint32_t proc, uint32_t s0) {
     if (g_rx && ld32(kRndSeeds) != s0)
-        fprintf(g_rx, "%llu %d %08X %08X %08X\n", (unsigned long long)interp::logic_steps(), (int)interp::hold_pass(), proc, actor_execute_fn(proc), s0);
+        fprintf(g_rx, "%llu %d %08X %08X %08X %04X\n", (unsigned long long)interp::logic_steps(), (int)interp::hold_pass(), proc,
+                actor_execute_fn(proc), s0, (unsigned)ld16(proc + 0xE));
 }
 }  // namespace
 
@@ -133,6 +188,10 @@ uint64_t pass() { return g_pass; }
 uint32_t link() { return g_link; }
 uint64_t link_steps() { return g_link_steps; }
 bool state_loaded() { return g_state_loaded; }
+void portable_arrived() {
+    g_link_steps = 0;
+    g_state_loaded = true;
+}
 void ss_reset() {
     g_link_steps = 0;
     g_state_loaded = true;
@@ -164,6 +223,33 @@ extern "C" void hook_025DF940(Cpu* c) {
     uint32_t rx_s0 = ld32(kRndSeeds);
     uint32_t wv = watch_val();
     const uint32_t fn = actor_execute_fn(proc);
+#if WWHD_DECOMP
+    // true 60: on the steps before the tick30 step only converted processes execute (the rate gate tells which:
+    // wwhd_t60_ran); the step clock counts tick30 steps, the traces and dumps record every execute with its full / dt
+    if (!t60::tick30()) {
+        // (test aid WWHD_LINK_WARP: on the frame's first step, before Link's execute, as A's one execute)
+        if (fn == kDaPyExecute && t60::first_step() && test_aids::dumping()) test_aids::link_warp(proc, true);
+        if (fn == kDaPyExecute && test_aids::dumping()) {  // (WWHD_MEM_DUMP: before Link's execute on every step)
+            g_rec_full = 0;
+            test_aids::before_execute_link(proc);
+            g_rec_full = 1;
+        }
+        wwhd_t60_ran = -1.0f;
+        f_025DF940_orig(c);
+        if (wwhd_t60_ran <= 0.0f) return;
+        t60::draw::note_execute(proc);  // (its draw state is at this step's time now)
+        g_rec_full = 0;
+        g_rec_dt = wwhd_t60_ran;
+        if (fn == kDaPyExecute) trace_link(proc);
+        if (test_aids::dumping()) test_aids::after_execute(proc, fn, fn == kDaPyExecute);
+        if (g_cam_trace && is_camera(proc)) trace_camera(proc);
+        g_rec_full = 1;
+        g_rec_dt = 1.0f;
+        rx_log(proc, rx_s0);  // (WWHD_RND_EXEC: a converted process's draws on the frame's earlier steps too)
+        return;
+    }
+    wwhd_t60_ran = -1.0f;
+#endif
     const bool is_link = fn == kDaPyExecute;
     const bool is_cam = g_cam_trace && is_camera(proc);
     if (is_cam) g_follow_called = false;
@@ -175,13 +261,22 @@ extern "C" void hook_025DF940(Cpu* c) {
     }
     f_025DF940_orig(c);
     if (is_link && latency_test::on()) latency_test::link_execute(latencyProc, ld32(proc + kCurProc));  // (latency_test.h)
+#if WWHD_DECOMP
+    g_rec_dt = wwhd_t60_ran > 0.0f ? wwhd_t60_ran : 1.0f;  // (a converted process's tick30 step: 1/N)
+    t60::draw::note_execute(proc);
+#endif
     if (test_aids::digesting()) test_aids::proc_digest(proc);
     if (dump_fn) test_aids::after_execute(proc, dump_fn, is_link);
     if (is_cam) trace_camera(proc);
     if (is_link) {
         trace_link(proc);
+#if WWHD_DECOMP
+        if (wwhd_t60_tick30) g_link_steps++;  // (true 60: a converted Link executes N times per 30 Hz frame; the clock counts frames)
+#else
         g_link_steps++;
+#endif
     }
+    g_rec_dt = 1.0f;
     rx_log(proc, rx_s0);
     watch_link("execute", proc, wv);
 }
@@ -192,12 +287,21 @@ extern "C" void hook_025DF940(Cpu* c) {
 extern "C" void hook_025DF904(Cpu* c) {
     uint32_t proc = c->r[3];
     uint32_t wv = watch_val();
+    const uint32_t rx_s0 = g_rx ? ld32(kRndSeeds) : 0;
     const uint32_t keep_exec = interp::enabled() ? actor_execute_fn(proc) : 0;
     if (keep_exec) interp::fx_actor_draw(proc, keep_exec, true);
     interp::kankyo_draw(proc, true);
+#if WWHD_DECOMP
+    const uint32_t drawing = t60::draw::draw_begin(proc);  // (true 60: whose models and camera these are)
+#endif
     f_025DF904_orig(c);
+#if WWHD_DECOMP
+    t60::draw::draw_end(drawing);
+#endif
     interp::kankyo_draw(proc, false);
     if (keep_exec) interp::fx_actor_draw(proc, keep_exec, false);
+    if (g_rx && ld32(kRndSeeds) != rx_s0)  // (WWHD_RND_EXEC: a draw that draws random numbers, marked 2)
+        fprintf(g_rx, "%llu 2 %08X %08X %08X\n", (unsigned long long)interp::logic_steps(), proc, actor_execute_fn(proc), rx_s0);
     watch_link("draw", proc, wv);
 }
 
@@ -233,6 +337,9 @@ extern "C" void hook_025028B8(Cpu* c) {
 // debug: WWHD_WORLD_EVERY_PASS=1 restores the old behaviour.
 static bool hold_world() {
     static const bool every = getenv("WWHD_WORLD_EVERY_PASS") != nullptr;
+#if WWHD_DECOMP
+    if (t60::world::lift_hold()) return false;  // (true 60: converted world systems step here; t60/t60_world.h)
+#endif
     return interp::enabled() && interp::hold_pass() && !every;
 }
 extern "C" void site_025B00B0(Cpu* c) {
@@ -249,6 +356,14 @@ extern "C" void hook_025CB6D4(Cpu* c) {
 // Charm ring while Tetra calls starts from here every 20 updates (issue #262).
 extern "C" void hook_02593B10(Cpu* c) {
     static const bool every = getenv("WWHD_HUD_EVERY_PASS") != nullptr;  // debug: old behaviour
+#if WWHD_DECOMP
+    if (t60::ui::steps(t60::ui::kHud)) {  // (true 60: a converted HUD steps on every step; t60/t60_ui.h)
+        const float prev = t60::ui::step_enter();
+        f_02593B10_orig(c);
+        t60::ui::step_leave(prev);
+        return;
+    }
+#endif
     if (interp::hold_pass() && !every) return;
     f_02593B10_orig(c);
 }
