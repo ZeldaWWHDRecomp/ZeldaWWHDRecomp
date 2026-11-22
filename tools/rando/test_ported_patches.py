@@ -193,5 +193,49 @@ class PortedPatches(unittest.TestCase):
         self.assertEqual(c.end, 0x028F92D4)  # the randomizer's code follows the longer JP .text
 
 
+class LocationSymbols(unittest.TestCase):
+    """Locations whose item is a byte in the randomizer's own code (location_data.yaml, Type: Custom_Symbol; written by
+    command/WriteLocations.cpp). That code is at other addresses on the European and Japanese releases, so the symbol
+    has to come from the release's own custom_symbols.yaml: a USA address there is inside another function of the
+    release (issue #628: the Dampa minigame's item was written into dragon_tingle_statue_item_get_func)."""
+
+    @staticmethod
+    def symbols(folder):
+        with open(os.path.join(RANDO, folder, 'custom_symbols.yaml'), encoding='utf-8') as f:
+            return {m.group(1): int(m.group(2), 16) for m in re.finditer(r'^(\w+):\s*0x([0-9A-Fa-f]+)', f.read(), re.M)}
+
+    @staticmethod
+    def location_symbols():
+        with open(os.path.join(RANDO, 'logic', 'data', 'location_data.yaml'), encoding='utf-8') as f:
+            text = f.read()
+        names = []
+        for block in re.findall(r'^  SymbolNames:\n((?:    - .*\n)+)', text, re.M):
+            names += [n.strip().strip('"') for n in re.findall(r'^    - (.*)$', block, re.M)]
+        return [n for n in names if not n.startswith('@')]  # (@address: a USA address, ported like every other)
+
+    def test_releases_have_the_location_symbols_at_their_own_addresses(self):
+        names = self.location_symbols()
+        self.assertGreaterEqual(len(names), 4)
+        usa = self.symbols('asm')
+        for folder in ('asm_eur', 'asm_jpn'):
+            own = self.symbols(folder)
+            for name in names:
+                self.assertIn(name, usa)
+                self.assertIn(name, own, folder)
+                self.assertNotEqual(own[name], usa[name], '%s %s' % (folder, name))
+
+    def test_sources_read_the_symbols_of_the_release(self):
+        # only wwhd_rando::asm_dir() (utility/wwhd_region.cpp) names the asm folders
+        found = []
+        for path in glob.glob(os.path.join(RANDO, '**', '*.cpp'), recursive=True):
+            rel = os.path.relpath(path, RANDO).replace(os.sep, '/')
+            if rel.startswith('libs/') or rel == 'utility/wwhd_region.cpp':
+                continue
+            with open(path, encoding='utf-8', errors='replace') as f:
+                if re.search(r'"asm(_eur|_jpn)?[/"]', f.read()):
+                    found.append(rel)
+        self.assertEqual(found, [])
+
+
 if __name__ == '__main__':
     unittest.main()

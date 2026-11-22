@@ -7,6 +7,15 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+- **Fixed: randomized European and Japanese games crashed when a Tingle Statue (and a few other items) was
+  collected** (#628, thanks @StevGod for the report). Four places (the Dampa pig minigame, the two potion shop
+  slots and Zunari's Magic Armor slot) keep their item in the randomizer's own code. Their addresses were taken from
+  the USA release, so on the other two the item's number was written into another of the randomizer's functions: on
+  a European game into the Dragon and Earth Tingle Statues' and the Hookshot's, on a Japanese one into the Dragon
+  Tingle Statue's, the Earth Temple Big Key's and the Tower of the Gods map's. Those could close the game when they
+  ran, and the four places gave an item the spoiler log did not name. Each release's own addresses are used now.
+  Nothing changes for USA games. Seeds already made keep the fault: make a new one.
+
 - **Fixed: at 60 fps (and higher), music fades ran at double speed.** The HD sound player now updates once per
   game step while frames are interpolated, so every fade takes as long as at 30 fps.
 

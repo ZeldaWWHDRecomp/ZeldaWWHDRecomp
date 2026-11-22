@@ -7,6 +7,7 @@
 
 #include <utility/file.hpp>
 #include <utility/platform.hpp>
+#include <utility/wwhd_region.hpp>
 #include <filetypes/util/elfUtil.hpp>
 #include <command/RandoSession.hpp>
 #include <command/WWHDStructs.hpp>
@@ -375,7 +376,7 @@ ModificationError ModifySymbol::parseArgs(const YAML::Node& locationObject) {
 }
 
 ModificationError ModifySymbol::writeLocation(const Item& item) {
-    if (custom_symbols.size() == 0) Load_Custom_Symbols(Utility::get_data_path() / "asm/custom_symbols.yaml");
+    if (custom_symbols.size() == 0) Load_Custom_Symbols(wwhd_rando::asm_dir() / "custom_symbols.yaml"); // WWHD: this release's symbols (the randomizer's own code is at other addresses on EUR and JPN)
 
     for(const auto& symbol : symbolNames) {
         uint32_t address;
