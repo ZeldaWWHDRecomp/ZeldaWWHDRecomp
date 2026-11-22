@@ -160,6 +160,22 @@ void test_guest_taps_rewritten() {
     assert(msl.find("gradient2d(dx, dy)") != std::string::npos);
 }
 
+// The light buffer's blur (issues #66, #631) takes the console-grid taps reading level 0 directly.
+void test_guest_taps_level0_rewritten() {
+    const Program blur{1u, Fix::GuestTapsLevel0};
+    std::string glsl = "void main() {\nR1f = (texture(textureUnitPS0, vec2(R0f.w,R0f.x),uf_tex0LodBias));\n}\n";
+    assert(rewrite(glsl, blur, false) == 1);
+    assert(glsl.find("wwhdGuestSampleLevel0(textureUnitPS0, uf_tex0Scale, vec2(R0f.w,R0f.x),uf_tex0LodBias)") != std::string::npos);
+    assert(glsl.find("vec4 wwhdGuestSampleLevel0(sampler2D t, vec2 scale, vec2 uv, float lodBias)") < glsl.find("void main("));
+    assert(glsl.find("#define WWHD_FETCH(p) textureLod(t, p, 0.0)") != std::string::npos);
+    std::string msl = "fragment FragmentOut main0(FragmentIn in [[stage_in]]) {\n"
+                      "R1f = (tex0.sample(samplr0, float2(R0f.w,R0f.x)));\n}\n";
+    assert(rewrite(msl, blur, true) == 1);
+    assert(msl.find("wwhd_guest_sample_level0(tex0, samplr0, supportBuffer.tex0Scale, float2(R0f.w,R0f.x))") != std::string::npos);
+    assert(msl.find("static float4 wwhd_guest_sample_level0(") < msl.find("fragment FragmentOut main0"));
+    assert(msl.find("#define WWHD_FETCH(p) t.sample(s, p, level(0.0))") != std::string::npos);
+}
+
 // The lit materials' depth-aware upsample of the half-size light buffer: the units they gather from,
 // and their grid uniform scaled to the buffer's real size.
 void test_gather_grid() {
@@ -206,6 +222,7 @@ int main() {
     test_rewrite_gather_rays();
     test_area_taps_still_rewritten();
     test_guest_taps_rewritten();
+    test_guest_taps_level0_rewritten();
     test_gather_grid();
     test_classification();
     std::puts("area_sample: ok");
