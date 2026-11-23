@@ -24,6 +24,7 @@
 //   WWHD_TEST_GAME_SOURCES=<absolute JSON>  game-ID -> local path; setup diagnostics require
 //                                              NO_HOST_INPUT and explicit MOD_MANAGER_DIR too
 //   WWHD_TEST_OVERLAY=perf                     only the performance overlay
+//   WWHD_TEST_OVERLAY=perf-minimal             only the minimal performance overlay (one line)
 //   WWHD_TEST_PERF_REPORT=<file>                export the clipboard report in a headless test
 //   WWHD_TEST_PERF_REPORT_AT=<frame>            export at this presented frame (default 300)
 //   WWHD_TEST_PERF_REPORT=<file>@<frame>,...    several reports, each at its presented frame
@@ -71,8 +72,13 @@ bool pointer_layer_active();
 bool layer_takes_pointer();
 // the renderer draws the overlay (frame() ran within the last second): the text prompt can show
 bool alive();
-bool perf_shown();          // performance overlay (FPS, frame time) on
-void set_perf_shown(bool on);
+bool perf_shown();          // performance overlay (FPS, frame time) on, minimal or full
+void set_perf_shown(bool on);  // on: the full overlay
+// Performance overlay: off, minimal (one line in the corner: fps, frame time, render-thread CPU) or full.
+// Saved as perfOverlay in settings.ini: 0 off, 1 full (as before the minimal mode), 2 minimal.
+enum class PerfOverlay : int { Off = 0, Minimal = 1, Full = 2 };
+PerfOverlay perf_mode();
+void set_perf_mode(PerfOverlay mode);
 
 // ---- host input (main thread)
 // Key codes are macOS virtual key codes (kVK_*); the SDL host maps to them (platform/keycodes.h).
