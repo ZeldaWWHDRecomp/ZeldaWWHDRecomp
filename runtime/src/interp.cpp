@@ -270,6 +270,14 @@ void set_mode(int m) {
 }
 // menus and the 6 key: frame interpolation at f on, or off if it is on at f already
 void toggle_fps(int f) {
+#if WWHD_DECOMP
+    if (t60::requested_n() > 1) {
+        t60::request_n(1);
+        set_fps(f);
+        set_mode(1);
+        return;
+    }
+#endif
     if (mode() == 1 && fps() == valid_fps(f)) {
         set_mode(0);
         return;
@@ -277,6 +285,15 @@ void toggle_fps(int f) {
     set_fps(f);
     set_mode(1);
 }
+#if WWHD_DECOMP
+void set_true_logic(int n) {
+    t60::request_n(n);
+    if (n <= 1) return;
+    framegen::set_chosen(false);
+    set_fps(30 * n);
+    set_mode(1);
+}
+#endif
 // the frame rate shown in titles and the overlay: "30 fps", "60 fps", "120 fps", "240 fps"
 // (with the rate capped to the display: "240 fps (120 shown)")
 const char* mode_name() {
@@ -537,6 +554,64 @@ static void cam_trace(uint32_t cam, const char* what) {
     LOG("[interp] camera %08X step %llu t %.3f %-7s eye %.3f %.3f %.3f center %.3f %.3f %.3f", cam, (unsigned long long)interp::g_logic_steps,
         interp::pass_t(), what, s.eye[0], s.eye[1], s.eye[2], s.center[0], s.center[1], s.center[2]);
 }
+
+// debug: WWHD_T60_PASSLOG=path: one line per pass (the talk hitch measurements, 2026-11-23): pass, 30 Hz step, hold,
+// phase, passes per step, t60 N / tick30 / step k, pass_t, the world time, the camera's draw path (t: true 60 aligned,
+// b: blended, e: exact, -: no camera drawn) with its drawn eye and centre, Link's drawn root (the model with the most
+// joints his process drew on the pass; - none), the event mode / message status, and the host time in ms
+namespace passlog {
+FILE* const g_f = getenv("WWHD_T60_PASSLOG") ? fopen(getenv("WWHD_T60_PASSLOG"), "w") : nullptr;
+char g_cam_path = '-';
+interp::CamState g_cam{};
+uint32_t g_link_n = 0;
+float g_link[3] = {0, 0, 0};
+bool on() { return g_f != nullptr; }
+void cam(char path, const interp::CamState& s) {
+    if (!g_f) return;
+    g_cam_path = path;
+    g_cam = s;
+}
+void viewcalc(Cpu* c) {  // J3DModel::viewCalc as drawn (the matrices in place are the drawn ones)
+#if WWHD_DECOMP
+    const uint32_t play = GD(0x1046F0B0);
+    const uint32_t proc = t60::draw::drawing();
+    if (!proc || proc != ld32(play + 0x5B34)) return;
+#else
+    return;
+#endif
+    const uint32_t model = c->r[3];
+    const uint32_t jnt = ld32(model + 0x2C);  // (interp kMdlJoints / kJntMtx / kJntNum)
+    const uint32_t mtx = jnt ? ld32(jnt + 0x10) : 0;
+    const uint32_t n = jnt ? ld16(jnt + 0x2C) : 0;
+    if (!mtx || n <= g_link_n) return;
+    g_link_n = n;
+    const uint32_t* w = (const uint32_t*)ppc_ptr(mtx);
+    for (int i = 0; i < 3; i++) g_link[i] = u32_as_f32(__builtin_bswap32(w[3 + 4 * i]));
+}
+void end_pass(uint64_t pass, uint64_t step, bool hold, int phase, int passes, float t, double w) {
+    if (!g_f) return;
+    static const auto t0 = std::chrono::steady_clock::now();
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+    const uint32_t play = GD(0x1046F0B0);
+#if WWHD_DECOMP
+    const unsigned n = wwhd_t60_steps;
+    const int kind = t60::tick30() ? 'T' : t60::sub_step() ? 'S' : 'h';
+    const unsigned k = wwhd_t60_stepk;
+#else
+    const unsigned n = 1, k = 1;
+    const int kind = hold ? 'h' : 'T';
+#endif
+    fprintf(g_f, "%llu %llu %d %d %d %u %c%u %.4f %.4f %c %.3f %.3f %.3f %.3f %.3f %.3f", (unsigned long long)pass,
+            (unsigned long long)step, hold ? 1 : 0, phase, passes, n, kind, k, t, w, g_cam_path, g_cam.eye[0], g_cam.eye[1],
+            g_cam.eye[2], g_cam.center[0], g_cam.center[1], g_cam.center[2]);
+    if (g_link_n) fprintf(g_f, " L %.3f %.3f %.3f", g_link[0], g_link[1], g_link[2]);
+    else fputs(" L - - -", g_f);
+    fprintf(g_f, " ev %u %u %.3f\n", (unsigned)ld8(play + 0x5292), (unsigned)ld8(play + 0x5BB2), ms);
+    if (pass % 120 == 0) fflush(g_f);
+    g_cam_path = '-';
+    g_link_n = 0;
+}
+}  // namespace passlog
 
 namespace editor { void camera_drawn(uint32_t camera); }  // editor/editor_game.cpp: the editor's overlays project with it
 static void camera_draw(Cpu* c);
@@ -1073,6 +1148,7 @@ static bool t60_camera(Cpu* c, uint32_t cam, interp::Prev* p) {
     p->drawn = drawn;
     p->drawn_pass = g_passes;
     publish_drawn_eye(drawn);
+    passlog::cam('t', drawn);
     cam_trace(cam, "t60");
     f_024FFC40_orig(c);
     g_view_pass = g_passes;
@@ -1148,6 +1224,7 @@ static void camera_draw_body(Cpu* c) {
         p->drawn = read_cam(cam);
         p->drawn_pass = g_passes;
         publish_drawn_eye(p->drawn);
+        passlog::cam(p->valid && p->snap_step == g_logic_steps && p->snap ? 's' : p->valid ? 'b' : 'n', p->drawn);
         // (also on a snap: the sound listener keeps following only the record pass's camera)
         g_cam_blended = p->valid;
         cam_trace(cam, "blended");
@@ -1181,6 +1258,7 @@ static void camera_draw_body(Cpu* c) {
     p->drawn = p->s;
     p->drawn_pass = g_passes;
     publish_drawn_eye(p->drawn);
+    passlog::cam('e', p->drawn);
     cam_trace(cam, "exact");
     static const bool dbg = getenv("WWHD_T60_CAMDRAWLOG") != nullptr;  // debug: statics camera_draw writes
     if (dbg && g_hold) {
@@ -1456,7 +1534,7 @@ static bool t60_model(Cpu* c, uint32_t model, uint32_t jnt, uint32_t mtx, uint32
     if (!t60::draw::model(model, jnt, mtx, n, t60_world_time(), out.data())) return false;
     uint32_t* cur = (uint32_t*)ppc_ptr(mtx);
     if (memcmp(cur, out.data(), 4 * words) == 0) {  // (its newest step: drawn as it is)
-        f_027F55FC_orig(c);
+        ::passlog::viewcalc(c), f_027F55FC_orig(c);
         return true;
     }
     const std::vector<uint32_t> saved(cur, cur + words);
@@ -1465,7 +1543,7 @@ static bool t60_model(Cpu* c, uint32_t model, uint32_t jnt, uint32_t mtx, uint32
         g_ubo_done[model]++;
     }
     memcpy(cur, out.data(), 4 * words);
-    f_027F55FC_orig(c);
+    ::passlog::viewcalc(c), f_027F55FC_orig(c);
     const uint32_t r3 = c->r[3];
     c->r[3] = model;
     f_027F5018_orig(c);
@@ -1518,7 +1596,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
     using namespace interp;
     static const bool off = getenv("WWHD_INTERP_MODELS") && !atoi(getenv("WWHD_INTERP_MODELS"));  // debug
     if (!enabled() || off || g_ptcl_model_draw || (!g_hold && !g_record_logic && g_exact_step)) {
-        f_027F55FC_orig(c);
+        passlog::viewcalc(c), f_027F55FC_orig(c);
         return;
     }
     CHEAPIB_MODELS(note(c));
@@ -1529,7 +1607,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
     uint32_t mtx = jnt ? ld32(jnt + kJntMtx) : 0;
     uint32_t n = jnt ? ld16(jnt + kJntNum) : 0;
     if (!mtx || n == 0 || n > kMaxJoints) {
-        f_027F55FC_orig(c);
+        passlog::viewcalc(c), f_027F55FC_orig(c);
         return;
     }
 #if WWHD_DECOMP
@@ -1573,7 +1651,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
         p.w.assign(cur, cur + words);
         if (!blendRecord) {
             trace_model("exact", jnt, n, cur);
-            f_027F55FC_orig(c);
+            passlog::viewcalc(c), f_027F55FC_orig(c);
             return;
         }
     }
@@ -1584,19 +1662,19 @@ extern "C" void hook_027F55FC(Cpu* c) {
         it->second.pass + 1 < g_record_passes) {  // new model, or not drawn on the last record pass
         g_mstats.fresh++;
         trace_model("new", jnt, n, cur);
-        f_027F55FC_orig(c);
+        passlog::viewcalc(c), f_027F55FC_orig(c);
         return;
     }
     if (it->second.marker_cell != marker_cell) {  // a pooled marker now represents another cell
         g_mstats.fresh++;
         trace_model("reassigned", jnt, n, cur);
-        f_027F55FC_orig(c);
+        passlog::viewcalc(c), f_027F55FC_orig(c);
         return;
     }
     const std::vector<uint32_t>& prev = it->second.w;
     if (memcmp(prev.data(), cur, 4 * words) == 0) {  // not moving
         trace_model("still", jnt, n, cur);
-        f_027F55FC_orig(c);
+        passlog::viewcalc(c), f_027F55FC_orig(c);
         return;
     }
     static const float kCut = getenv("WWHD_INTERP_MODEL_CUT") ? (float)atof(getenv("WWHD_INTERP_MODEL_CUT")) : 400.0f;
@@ -1617,7 +1695,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
         }
         g_mstats.cut++;
         trace_model("cut", jnt, n, cur);
-        f_027F55FC_orig(c);
+        passlog::viewcalc(c), f_027F55FC_orig(c);
         return;
     }
     g_mstats.blended++;
@@ -1638,7 +1716,7 @@ extern "C" void hook_027F55FC(Cpu* c) {
         g_ubo_done[model]++;  // (before viewCalc queues the model for the job)
     }
     memcpy(ppc_ptr(mtx), mid.data(), 4 * words);
-    f_027F55FC_orig(c);
+    passlog::viewcalc(c), f_027F55FC_orig(c);
     const uint32_t r3 = c->r[3];
     c->r[3] = model;
 #ifdef WWHD_DECOMP_FAST
@@ -2312,6 +2390,7 @@ extern "C" void hook_0203593C(Cpu* c) {
             CHEAPIB(frame_end(false, false));
             DRAWOFF(frame_end());
             g_in_frame = false;
+            passlog::end_pass(g_passes, g_logic_steps, false, 0, 1, pass_t(), (double)g_logic_steps - 1.0 + pass_t());
         }
         static unsigned stats_steps = 0;
         if (pass_stats() && ++stats_steps % 300 == 0) LOG("[interp]%s", pass_cpu_report().c_str());
@@ -2370,6 +2449,7 @@ extern "C" void hook_0203593C(Cpu* c) {
             DRAWOFF(frame_end());
         }
         g_in_frame = false;
+        passlog::end_pass(g_passes, g_logic_steps, true, g_phase, g_step_n + 1, pass_t(), (double)g_logic_steps - 1.0 + pass_t());
         g_hold_frame = false;
         after_pass(g_phase);
         g_hold = false;
@@ -2399,6 +2479,7 @@ extern "C" void hook_0203593C(Cpu* c) {
         CHEAPIB(frame_end(false, true));
         DRAWOFF(frame_end());
         g_in_frame = false;
+        passlog::end_pass(g_passes, g_logic_steps, false, 0, g_step_n + 1, pass_t(), (double)g_logic_steps - 1.0 + pass_t());
     }
     g_record_logic = false;
     after_pass(0);  // g_hold_next: an in-between pass follows (always, unless paced)

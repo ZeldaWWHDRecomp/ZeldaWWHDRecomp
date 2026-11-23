@@ -77,7 +77,18 @@ int wwhd_t60_in_step_word(uint32_t state, uint32_t offset, uint32_t* word);
 
 namespace t60 {
 int selected_n();   // the chosen steps per 30 Hz frame: 1 (default), 2, 4 (WWHD_T60_STEPS=N)
-void set_n(int n);  // (settings; takes effect with the next 30 Hz frame)
+void set_n(int n);  // (tests: at once)
+// the settings' Frame rate (true logic): request_n takes effect at the next 30 Hz frame boundary (the logic pass that
+// ends the running frame, before the next frame's N is decided), so a change never splits a frame; any thread.
+// requested_n: the N chosen, a pending change included (menus show it). WWHD_T60_STEPS wins over the saved setting
+// (n_from_env: it is not loaded and not saved then; tests); load_saved_n: the saved setting at start-up.
+void request_n(int n);
+int requested_n();
+bool n_from_env();
+void load_saved_n(int n);
+// logic steps run so far, every true-60 step counted (the overlay's "true logic" steps/s; the 30 Hz frames are
+// interp::executed_steps); any thread
+uint64_t steps_run();
 // interp.cpp, at the start of each pass of the per-frame function: whether frame interpolation runs its pass structure,
 // whether this is an in-between (hold) pass, its phase (0: the logic pass), the passes of this 30 Hz frame (P) and the
 // 30 Hz step clock (interp::logic_steps, already counting this frame's logic pass)

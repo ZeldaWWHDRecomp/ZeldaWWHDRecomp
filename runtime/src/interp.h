@@ -21,6 +21,12 @@ void set_mode(int m);
 int fps();                  // frame interpolation's chosen frame rate: 40, 60, 120 or 240
 void set_fps(int f);
 void toggle_fps(int f);     // frame interpolation at f on, or off if it is on at f (menus, the 6 key)
+#if WWHD_DECOMP
+// the decomp build's true logic (t60/t60.h): N 2 / 4 steps per 30 Hz frame with frame interpolation at 30 N (frame
+// generation off); N 1 leaves frame interpolation as it is (the menus then set the rate chosen). From the next 30 Hz
+// frame on. toggle_fps also returns to N 1 (true logic chosen: frame interpolation alone at f, not off)
+void set_true_logic(int n);
+#endif
 const char* mode_name();    // "30 fps", "40 fps", "60 fps", "120 fps", "240 fps"; "240 fps (120 shown)" when capped
 int output_fps();           // the rate frame interpolation draws: fps() capped to the display
 int frames_per_step();      // frames drawn per 30 Hz logic step: 1, 2, 4 or 8 (40 fps: at most 2; 4 per 3 steps)

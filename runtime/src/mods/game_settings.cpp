@@ -25,6 +25,9 @@
 #include "../gfx/renderer.h"
 #include "../gfx/gamepad_backdrop_options.h"
 #include "../interp.h"
+#if WWHD_DECOMP
+#include "../t60/t60.h"  // (the Frame rate's true-logic choices)
+#endif
 #include "../input.h"
 #include "../rumble.h"
 #include "../platform/phone_rumble.h"
@@ -459,6 +462,45 @@ void register_graphics() {
             ? "40 fps and more add in-between frames; the game logic keeps its 30 steps. Generated: "
               "every other frame made on the graphics chip."
             : "40 fps and more add in-between frames; the game logic keeps its 30 steps.";
+#if WWHD_DECOMP
+        // the decomp build: the true-logic choices after the others (game_settings_graphics.h kTrue60, kTrue120), the
+        // list mapped to the choices (the generated one only on Vulkan); live, from the next 30 Hz frame on
+        it.help = framegen::available()
+            ? "40 fps and more add in-between frames; the game logic keeps its 30 steps. Generated: every other frame "
+              "made on the graphics chip. True logic: the game itself runs 60 (or 120) steps a second."
+            : "40 fps and more add in-between frames; the game logic keeps its 30 steps. True logic: the game itself "
+              "runs 60 (or 120) steps a second.";
+        it.choices.clear();
+        {
+            int list[g::kRateCountTrue];
+            const int count = g::rate_list(list, framegen::available(), true);
+            for (int i = 0; i < count; i++)
+                it.choices.push_back(list[i] >= g::kTrue60 ? g::kTrueRateNames[list[i] - g::kTrue60] : g::kRateNames[list[i]]);
+        }
+        it.get = [] {
+            int list[g::kRateCountTrue];
+            const int count = g::rate_list(list, framegen::available(), true);
+            const int c = g::rate_choice_true(interp::mode(), interp::fps(), framegen::available() && framegen::chosen(),
+                                              t60::requested_n());
+            return float(g::rate_index(list, count, c));
+        };
+        it.set = [](float v) {
+            int list[g::kRateCountTrue];
+            const int count = g::rate_list(list, framegen::available(), true);
+            const int c = list[std::clamp(int(std::lround(v)), 0, count - 1)];
+            if (const int n = g::steps_of(c); n > 1) {
+                saved([n] { interp::set_true_logic(n); });
+                return;
+            }
+            const g::Rate r = g::rate_of(c);
+            saved([r] {
+                interp::set_true_logic(1);  // (any other choice: the logic at 30 steps again)
+                if (r.fps) interp::set_fps(r.fps);
+                interp::set_mode(r.mode);
+                framegen::set_chosen(r.generated && framegen::available());
+            });
+        };
+#else
         // 60 fps (generated, framegen.h) on Vulkan only (the last choice)
         it.choices.assign(std::begin(g::kRateNames), std::end(g::kRateNames) - (framegen::available() ? 0 : 1));
         it.get = [] { return float(g::rate_choice(interp::mode(), interp::fps(), framegen::available() && framegen::chosen())); };
@@ -470,6 +512,7 @@ void register_graphics() {
                 framegen::set_chosen(r.generated && framegen::available());  // (any other choice: off)
             });
         };
+#endif
         add(std::move(it));
     }
     {

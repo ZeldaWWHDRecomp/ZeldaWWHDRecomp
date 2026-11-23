@@ -11,6 +11,9 @@
 #include "stereo.h"
 #include "input.h"
 #include "interp.h"
+#if WWHD_DECOMP
+#include "t60/t60.h"  // (Frame rate: true logic, saved as t60Steps)
+#endif
 #include "framegen.h"
 #include "overlay/hostui.h"
 #include "platform/host.h"
@@ -251,6 +254,9 @@ void graphics_changed() {
     put("fpsGenerated", {"WWHD_FRAMEGEN"}, framegen::chosen() ? "1" : "0");  // 60 fps (generated, framegen.h)
     put("fps60Paced", {"WWHD_INTERP_PACED"}, interp::paced_interpolation_at(60) ? "1" : "0");
     put("fpsHighPaced", {"WWHD_INTERP_PACED"}, interp::paced_interpolation_at(120) ? "1" : "0");
+#if WWHD_DECOMP
+    put("t60Steps", {"WWHD_T60_STEPS"}, std::to_string(t60::requested_n()));  // true logic: steps per 30 Hz frame
+#endif
     put("scaleFilter", {"WWHD_SCALE_FILTER"}, std::to_string(gfxvk::scale_filter()));
     put("vkPresentMode", {"WWHD_VK_PRESENT_MODE"}, std::to_string(gfxvk::present_mode()));
     put("vkDevice", {"WWHD_VK_DEVICE"}, gfxvk::device_setting());
@@ -319,6 +325,9 @@ void load_saved_options() {
     if (saved("fpsGenerated", {"WWHD_FRAMEGEN"})) framegen::set_chosen(num("fpsGenerated") != 0);  // (after fps60: it clears it)
     if (saved("fps60Paced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(60, num("fps60Paced") != 0);
     if (saved("fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(120, num("fpsHighPaced") != 0);
+#if WWHD_DECOMP
+    if (saved("t60Steps", {"WWHD_T60_STEPS"})) t60::load_saved_n((int)num("t60Steps"));  // (WWHD_T60_STEPS wins)
+#endif
     if (saved("scaleFilter", {"WWHD_SCALE_FILTER"})) gfxvk::set_scale_filter((int)num("scaleFilter"));
     if (saved("vkPresentMode", {"WWHD_VK_PRESENT_MODE"})) gfxvk::set_present_mode((int)num("vkPresentMode"));
 #ifdef __ANDROID__

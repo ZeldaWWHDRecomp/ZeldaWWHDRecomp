@@ -194,12 +194,57 @@ static void test_keyed_frame() {
     assert((uint64_t)(222 + 5 - 100) != (uint64_t)(221 + 5 - 100));
 }
 
+// the settings' Frame rate (t60::request_n, game_settings_graphics.h true logic): shown at once, taken at the next 30 Hz
+// frame boundary (the logic pass), so a frame never changes N in its middle; steps_run counts every step
+static void test_request_n() {
+    assert(t60::selected_n() == 1 && t60::requested_n() == 1 && !t60::n_from_env());
+    t60::request_n(3);  // (not a choice: ignored)
+    assert(t60::requested_n() == 1 && t60::wants_fps() == 0);
+    t60::request_n(2);
+    assert(t60::requested_n() == 2 && t60::selected_n() == 1 && t60::wants_fps() == 60);  // (interpolation at 60 already)
+    wwhd_t60_world60 = 1;
+    hold(1, 2);  // an in-between pass of the running frame: still N = 1
+    check(false, false, 1);
+    logic(true, 2);  // the frame boundary takes it
+    check(true, false, 1);
+    assert(t60::selected_n() == 2 && t60::requested_n() == 2);
+    const uint64_t s = t60::steps_run();
+    wwhd_t60_world60 = 1;
+    hold(1, 2);  // the next frame at N = 2
+    check(false, true, 2);
+    t60::request_n(1);  // back, in the middle of that frame: it keeps its 2 steps
+    assert(t60::wants_fps() == 0 && t60::selected_n() == 2 && t60::requested_n() == 1);
+    logic(true, 2);
+    check(true, false, 2);
+    assert(t60::selected_n() == 1 && t60::steps_run() == s + 2);
+    wwhd_t60_world60 = 1;
+    hold(1, 2);  // ... and the frame after at 1 step
+    check(false, false, 1);
+    logic(true, 2);
+    check(true, false, 1);
+    assert(t60::steps_run() == s + 3);
+    t60::request_n(4);
+    t60::request_n(1);  // (a change taken back before the boundary: nothing changes)
+    logic(true, 2);
+    check(true, false, 1);
+    assert(t60::selected_n() == 1);
+    t60::load_saved_n(4);  // the saved setting at start-up (no WWHD_T60_STEPS in the test's environment)
+    assert(t60::selected_n() == 4 && t60::wants_fps() == 120);
+    t60::load_saved_n(3);  // (not a choice: ignored)
+    assert(t60::selected_n() == 4);
+    t60::set_n(1);
+    logic(false, 1);
+    check(true, false, 1);
+    printf("t60_test: frame rate setting ok\n");
+}
+
 int main() {
     test_keyed_frame();
     test_draw_hist();
     test_hold();
     test_convert_list();
     test_scene_first();
+    test_request_n();
     wwhd_t60_scene_first = 0;  // the schedule below: the 30 Hz world flag's original form (WWHD_T60_SCENE_FIRST=0)
     // default N = 1: every logic pass is a tick30 step of a 1-step frame, in-between passes are no steps
     logic(false, 1);

@@ -13,6 +13,9 @@
 #include <tuple>
 
 #include "../interp.h"
+#if WWHD_DECOMP
+#include "../t60/t60.h"  // (Frame rate: true logic, saved as t60Steps)
+#endif
 #include "../framegen.h"
 #include "../savestate.h"
 #include "../screenshot.h"
@@ -128,6 +131,10 @@ static void load_prefs() {
     if (saved(@"fpsGenerated", {"WWHD_FRAMEGEN"})) framegen::set_chosen([pref(@"fpsGenerated") boolValue]);  // 60 fps (generated)
     if (saved(@"fps60Paced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(60, [pref(@"fps60Paced") boolValue]);
     if (saved(@"fpsHighPaced", {"WWHD_INTERP_PACED"})) interp::load_paced_interpolation_at(120, [pref(@"fpsHighPaced") boolValue]);
+#if WWHD_DECOMP
+    // true logic (decomp build): the steps per 30 Hz frame, 1 / 2 / 4 (WWHD_T60_STEPS wins and is not saved)
+    if (saved(@"t60Steps", {"WWHD_T60_STEPS"})) t60::load_saved_n([pref(@"t60Steps") intValue]);
+#endif
 #ifdef WWHD_HAS_VULKAN
     if (saved(@"vkPresentMode", {"WWHD_VK_PRESENT_MODE"})) gfxvk::set_present_mode([pref(@"vkPresentMode") intValue]);
 #endif
@@ -151,6 +158,9 @@ static void save_prefs() {
         set_pref(@"fps60Paced", @(interp::paced_interpolation_at(60)));
         set_pref(@"fpsHighPaced", @(interp::paced_interpolation_at(120)));
     }
+#if WWHD_DECOMP
+    if (!env_set({"WWHD_T60_STEPS"})) set_pref(@"t60Steps", @(t60::requested_n()));
+#endif
 #ifdef WWHD_HAS_VULKAN
     if (!env_set({"WWHD_VK_DEVICE"})) set_pref(@"vkDevice", [NSString stringWithUTF8String:gfxvk::device_setting().c_str()]);
     if (!env_set({"WWHD_VK_PRESENT_MODE"})) set_pref(@"vkPresentMode", @(gfxvk::present_mode()));
@@ -331,6 +341,18 @@ static WWStateMenu* g_state_menu;
     input_map::set_current(m);
 }
 - (void)toggleInterpFps:(NSMenuItem*)item { interp::toggle_fps((int)item.tag); update_title(); }
+#if WWHD_DECOMP
+// true logic (decomp build): N 2 / 4 steps per 30 Hz frame on, or back to 30 fps if it is on at that N already
+- (void)toggleTrueLogic:(NSMenuItem*)item {
+    if (t60::requested_n() == (int)item.tag) {
+        interp::set_true_logic(1);
+        interp::set_mode(0);
+    } else {
+        interp::set_true_logic((int)item.tag);
+    }
+    update_title();
+}
+#endif
 - (void)toggleDrcWindow:(NSMenuItem*)item { gfx::show_drc_window(!gfx::drc_window_shown()); }
 - (void)toggleFxaa:(NSMenuItem*)item { render::set_fxaa(!render::fxaa()); update_title(); }
 - (void)toggleHires:(NSMenuItem*)item { render::set_ao_hires(!render::ao_hires()); update_title(); }
@@ -367,8 +389,15 @@ static WWStateMenu* g_state_menu;
         if (item.tag == 4) return m.preset.saved;
         item.state = on ? NSControlStateValueOn : NSControlStateValueOff;
     }
+#if WWHD_DECOMP
+    if (item.action == @selector(toggleInterpFps:))
+        item.state = interp::mode() == 1 && interp::fps() == item.tag && t60::requested_n() <= 1 ? NSControlStateValueOn : NSControlStateValueOff;
+    if (item.action == @selector(toggleTrueLogic:))
+        item.state = t60::requested_n() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
+#else
     if (item.action == @selector(toggleInterpFps:))
         item.state = interp::mode() == 1 && interp::fps() == item.tag ? NSControlStateValueOn : NSControlStateValueOff;
+#endif
     if (item.action == @selector(toggleDrcWindow:)) {
         item.state = gfx::drc_window_shown() ? NSControlStateValueOn : NSControlStateValueOff;
         return gfx::drc_window_available();
@@ -529,6 +558,10 @@ void install_menu(NSWindow* tv) {
     add(g, @"60 fps: frame interpolation (6)", @selector(toggleInterpFps:), @"6", 60);
     add(g, @"120 fps: frame interpolation", @selector(toggleInterpFps:), @"", 120);
     add(g, @"240 fps: frame interpolation", @selector(toggleInterpFps:), @"", 240);
+#if WWHD_DECOMP
+    add(g, @"60 fps: true logic (the game runs 60 steps a second)", @selector(toggleTrueLogic:), @"", 2);
+    add(g, @"120 fps: true logic (experimental)", @selector(toggleTrueLogic:), @"", 4);
+#endif
     [g addItem:[NSMenuItem separatorItem]];
     add(g, @"Take Screenshot", @selector(screenshot:), @"").toolTip =
         @"Saves the TV picture as a PNG (internal resolution, without the settings overlay) in the screenshots folder. "

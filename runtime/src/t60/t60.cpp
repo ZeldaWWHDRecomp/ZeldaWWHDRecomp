@@ -24,6 +24,7 @@
 #include "t60/t60.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -228,6 +229,10 @@ int env_n() {
     return n;
 }
 int g_selected = env_n();
+// the settings' change (request_n) waiting for the next 30 Hz frame boundary (0: none)
+std::atomic<int> g_requested{0};
+// every logic step run so far, the true-60 steps before a frame's tick30 step included (steps_run: the overlay's rate)
+std::atomic<uint64_t> g_steps_run{0};
 const uint64_t g_at_step = getenv("WWHD_T60_AT_STEP") ? strtoull(getenv("WWHD_T60_AT_STEP"), nullptr, 10) : 0;
 uint64_t g_frames = 0;   // logic passes so far (WWHD_T60_AT_STEP)
 int g_build_n = 1;       // N of the 30 Hz frame whose steps run now: it ends with the next logic pass
@@ -271,6 +276,24 @@ void set_n(int n) {
     g_selected = n;
     LOG("[t60] steps per 30 Hz frame: %d", n);
 }
+void request_n(int n) {
+    if (n != 1 && n != 2 && n != 4) return;
+    g_requested.store(n, std::memory_order_relaxed);
+}
+uint64_t steps_run() { return g_steps_run.load(std::memory_order_relaxed); }
+int requested_n() {
+    const int r = g_requested.load(std::memory_order_relaxed);
+    return r ? r : g_selected;
+}
+bool n_from_env() {
+    static const bool set = getenv("WWHD_T60_STEPS") != nullptr;
+    return set;
+}
+void load_saved_n(int n) {
+    if (n_from_env() || (n != 1 && n != 2 && n != 4)) return;
+    g_selected = n;
+    if (n > 1) LOG("[t60] steps per 30 Hz frame: %d (the saved Frame rate setting)", n);
+}
 
 void pass_begin(bool interp_on, bool hold, int phase, int passes, uint64_t logic_steps) {
     static const int convert = (LOG("[t60] decomp build timebase: WWHD_T60_STEPS=%d SCENE_FIRST=%d EVENTS60=%d", g_selected, wwhd_t60_scene_first, wwhd_t60_events60), test_convert());
@@ -304,6 +327,11 @@ void pass_begin(bool interp_on, bool hold, int phase, int passes, uint64_t logic
     }
     int n = 1, sub = 0;
     if (!hold) {  // the logic pass: the tick30 step that ends the frame planned on the last frame's in-between passes
+        if (const int r = g_requested.exchange(0, std::memory_order_relaxed); r && r != g_selected) {
+            // (the settings' change: from the next frame on, whose N is decided on its first in-between pass)
+            g_selected = r;
+            LOG("[t60] steps per 30 Hz frame: %d (Frame rate setting)", r);
+        }
         g_frames++;
         n = g_build_n;
         sub = n - 1;
@@ -341,6 +369,7 @@ void pass_begin(bool interp_on, bool hold, int phase, int passes, uint64_t logic
             wwhd_t60_world60 = 0;  // (the frame's first step: set again by its play scene)
     }
     g_step_time = (double)logic_steps + (g_sub ? (double)sub / n + 1.0 / n : 0.0);
+    if (g_tick || g_sub) g_steps_run.fetch_add(1, std::memory_order_relaxed);
     wwhd_t60_tick30 = g_tick ? 1 : 0;
     wwhd_t60_first = (g_tick && n == 1) || (g_sub && sub == 0) ? 1 : 0;
     wwhd_t60_stepk = g_tick ? (uint32_t)n : g_sub ? (uint32_t)(sub + 1) : 1u;
@@ -402,7 +431,12 @@ double next_pass_step_offset(bool interp_on, bool hold_next, int next_phase, int
 // 30 N fps from step k; before, a whole N 4 boot ran its title / file-select presses at 120 fps passes and did not start
 // the game in time: a test pair)
 bool wants_unpaced() { return selected_n() > 1; }
-int wants_fps() { return selected_n() > 1 ? 30 * g_selected : 0; }
+// (a pending settings change counts already: frame interpolation is switched to its rate, or no longer held at 30 N, on
+// the passes before the frame boundary takes it; the step decision itself waits for that boundary)
+int wants_fps() {
+    const int n = requested_n();
+    return (g_at_step && g_frames < g_at_step) || n <= 1 ? 0 : 30 * n;
+}
 uint64_t record_step(uint64_t logic_steps) { return g_tick ? logic_steps : logic_steps + 1; }
 double step_time() { return g_step_time; }
 
