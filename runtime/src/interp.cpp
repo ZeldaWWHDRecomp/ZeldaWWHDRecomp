@@ -703,6 +703,13 @@ void exact_prerun(Cpu* c) {
 extern "C" __attribute__((visibility("default"))) int wwhd_t60_exact_hdcam(uint32_t* view_ea, void* view, uint32_t* proj_ea, void* proj) {
     static const bool off = getenv("WWHD_T60_CULL_EXACT") && !atoi(getenv("WWHD_T60_CULL_EXACT"));
     if (off || !exact_cull_on() || !interp_on() || g_prerun_pass == ~0ull || g_prerun_pass + 4 < g_passes) return 0;
+    // a pass that drew its camera without a pre-run of its own drew it exactly: an exact logic pass of paced interpolation
+    // (g_exact_step: drawn unblended), or the first draw of a camera without a history (a state load's
+    // ss_reset, a fast-forward switch, a new camera process); the copy in the window is then an earlier step's camera and
+    // the live one is this pass's exact draw: no copy. Readers before this pass's camera_draw keep the window.
+    // debug: WWHD_T60_HDCAM_THIS_PASS=0 serves the window as before
+    static const bool any_pass = getenv("WWHD_T60_HDCAM_THIS_PASS") && !atoi(getenv("WWHD_T60_HDCAM_THIS_PASS"));
+    if (!any_pass && g_view_pass == g_passes && g_prerun_pass != g_passes) return 0;
     *view_ea = g_exact_hd_view_ea; *proj_ea = g_exact_hd_proj_ea;
     memcpy(view, g_exact_hd_view, sizeof g_exact_hd_view);
     memcpy(proj, g_exact_hd_proj, sizeof g_exact_hd_proj);
