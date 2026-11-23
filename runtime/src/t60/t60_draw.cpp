@@ -12,6 +12,7 @@
 #include "guest_addr.h"
 #include "interp_camera.h"
 #include "interp_joints.h"
+#include "mods/mods.h"
 #include "runtime.h"
 #include "t60/t60.h"
 #include "t60/t60_draw_hist.h"
@@ -134,6 +135,9 @@ struct CamHist {
     // step after it, 0 then)
     double rot_stamp = -1.0;
     float rot_w = 0.0f;
+    // held event-camera steps, part 2: the newest step's camera as executed (kept in `steps` or not; rot_newest reads it)
+    double newest_time = -1.0;
+    interp::camera::CamState newest{};
 };
 std::unordered_map<uint32_t, CamHist> g_cams;
 
@@ -197,6 +201,46 @@ void rot_from_newest(interp::camera::CamState& out, const interp::camera::CamSta
         for (int i = 0; i < 3; i++) u[i] = sa * ua[i] + sb * un[i];
     }
     for (int i = 0; i < 3; i++) out.eye[i] = out.center[i] + la * u[i];
+}
+
+// Held event-camera steps (2026-11-23; seen in play: a stutter when a talk starts). An event camera
+// (the talk camera included, d_camera_run_t60.h: the event engine's whole form) runs its engine on the tick30 step only;
+// on the frame's earlier steps the converted camera executes but its view holds. Those held steps were kept in the
+// camera's draw history like steps of their own, so at N 2 the picture showed the frame's whole move on one pass and
+// stood still on the other (30 Hz stairs: the talk camera's swing into place, a talk route: eye 7.15 / 0 / 184 / 0 per
+// pass). A held step (a step before the tick30 step whose camera is bit-equal to the newest kept step) is not kept: the
+// camera is drawn between its frame ends like the interpolated world (as at N 1). And the history's blend takes frame
+// interpolation's relative cut rule (interp_camera.h cam_snap: a step far larger than the camera's previous kept step,
+// scaled to the same time) besides the absolute one, so the talk camera's cut is a cut, not a two-pass smear (EVENTS60=0
+// frames at N 1 had it too). Draw only. NC: WWHD_T60_CAM_HELD_NEGCTRL=1 (both off, as before).
+// Part 2 (seen in play after part 1: the start is fixed, the swing back after the talk still stutters). The follow
+// / lock-on / ride / hung cameras run their frames whole on the tick30 step (d_camera_follow_whole_t60.h); an earlier
+// step's camera is a picture only (the previous frame's change extrapolated, the eye half-way to the per-step run:
+// wwhd_t60_cam_follow_picture). While the camera eases (the return from the talk camera, a settle after a warp) the
+// per-step eye hardly moves, so that picture showed ~25 % of the frame's move and the tick30 pass the rest (Windfall
+// talk end: eye per pass 3.9 / 13.5 / 4.4 / 11.2 / 3.9 / 9.0; a warp settle 0.26 of 140 units per frame for
+// 35 frames). Drawn at the world time W one step behind its newest step, the camera's next frame end is known when W
+// is an earlier step's time: every step before the tick30 step is now left out of the draw history and the camera is
+// drawn between its exact frame ends (interpolated, not extrapolated). rot_newest still turns the orbit toward the
+// newest step as executed (`newest`, picture steps included), so a right-stick orbit keeps its lead. NC of part 2
+// alone: WWHD_T60_CAM_FRAMEEND_NEGCTRL=1 (only the held steps are left out, the part 1 form).
+// Part 3 (seen in play after part 2: turning the camera is shaky): while the player turns the camera (the right stick
+// as rot_newest counts it, or mods::camera_turned_by_player: the stick's manual camera, the mouse or a swipe in the last
+// steps) the earlier steps are kept as before part 2 (the picture the camera draw tuning judged: its blends, rot_newest),
+// so a turned camera is drawn exactly as before part 2; part 2's frame-end form applies while nobody turns it (the talk
+// camera's swing back, the settles). Part of part 2's NC.
+const bool g_cam_frameend_nc = [] {
+    const char* e = getenv("WWHD_T60_CAM_FRAMEEND_NEGCTRL");
+    return e && atoi(e) != 0;
+}();
+const bool g_cam_held_nc = [] {
+    const char* e = getenv("WWHD_T60_CAM_HELD_NEGCTRL");
+    return e && atoi(e) != 0;
+}();
+bool same_cam(const interp::camera::CamState& a, const interp::camera::CamState& b) {
+    for (int i = 0; i < 3; i++)
+        if (a.eye[i] != b.eye[i] || a.center[i] != b.center[i] || a.up[i] != b.up[i]) return false;
+    return a.fovy == b.fovy && a.bank == b.bank;
 }
 
 // (x y z: the drawn root joint's translation, or the drawn eye)
@@ -344,7 +388,15 @@ bool camera(uint32_t cam, const interp::camera::CamState& cur, const interp::cam
     CamHist& h = g_cams[cam];
     if (h.id != id) h = CamHist{}, h.id = id;
     h.pass = g_pass;
-    hist::stamp(h.steps, e->second.time, CamStep{cur, shake});
+    const double time = e->second.time;
+    // (held event-camera steps: a held step before the tick30 step is not kept; part 2: no step before the tick30 step is)
+    const bool earlier = !g_cam_held_nc && std::fabs(time - std::round(time)) > hist::kEps && !h.steps.empty() &&
+                         h.steps.back().first < time - hist::kEps;
+    const bool turning = earlier && !g_cam_frameend_nc && (rot_manual_now() || mods::camera_turned_by_player());
+    const bool held = earlier && ((!g_cam_frameend_nc && !turning) || (!shake.on && !h.steps.back().second.k.on &&
+                                                                       same_cam(h.steps.back().second.s, cur)));
+    if (!held) hist::stamp(h.steps, time, CamStep{cur, shake});
+    if (time >= h.newest_time - hist::kEps) h.newest_time = time, h.newest = cur;
     const hist::Pick p = hist::pick(h.steps, w);
     const CamStep& sa = h.steps[p.a].second;
     const CamStep& sb = h.steps[p.b].second;
@@ -353,17 +405,26 @@ bool camera(uint32_t cam, const interp::camera::CamState& cur, const interp::cam
         out = sa.s;
     } else {
         float last = 1e30f;  // (only the absolute cuts: a jump of eye or centre, or of the field of view)
+        if (!g_cam_held_nc && p.a > 0) {  // (held event-camera steps: and the relative rule, on the kept step before, per time)
+            const auto& s0 = h.steps[p.a - 1];
+            const double dt0 = h.steps[p.a].first - s0.first, dt1 = h.steps[p.b].first - h.steps[p.a].first;
+            if (dt0 > hist::kEps) {
+                const float m0 = std::max(interp::camera::dist(s0.second.s.eye, sa.s.eye), interp::camera::dist(s0.second.s.center, sa.s.center));
+                last = (float)(m0 * dt1 / dt0);
+            }
+        }
         if (interp::camera::cam_snap(sa.s, sb.s, last)) out = sb.s, f = 1.0f;  // (a cut: the later step)
         else out = interp::camera::blend_shaken(sa.s, sa.k, sb.s, sb.k, f, false);
     }
     if (g_rot_newest) {  // camera draw alignment: the newest step's orbit direction in a manual-yaw episode (above)
-        const double tn = h.steps.back().first;
+        const bool own = !g_cam_held_nc && !g_cam_frameend_nc;  // (part 2: the newest step as executed)
+        const double tn = own ? h.newest_time : h.steps.back().first;
         if (tn != h.rot_stamp) {  // once per new step: the episode weight of this newest step
             h.rot_stamp = tn;
             h.rot_w = rot_manual_now() ? 1.0f : (h.rot_w >= 1.0f ? 0.5f : 0.0f);
         }
-        const interp::camera::CamState& sn = h.steps.back().second.s;
-        if (h.rot_w > 0.0f && &sn != &sa.s) {
+        const interp::camera::CamState& sn = own ? h.newest : h.steps.back().second.s;
+        if (h.rot_w > 0.0f && (own ? tn > h.steps[p.a].first + hist::kEps || f != 0.0f : &sn != &sa.s)) {
             float last = 1e30f;
             if (interp::camera::cam_snap(out, sn, last)) out = sn;  // (a cut between W and the newest step: newest whole)
             else rot_from_newest(out, sn, h.rot_w);
