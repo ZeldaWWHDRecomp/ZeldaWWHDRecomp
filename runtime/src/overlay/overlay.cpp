@@ -144,7 +144,7 @@ using clock = std::chrono::steady_clock;
 double now_s() { return std::chrono::duration<double>(clock::now().time_since_epoch()).count(); }
 
 std::atomic<bool> g_open{false};
-std::atomic<bool> g_perf{false};
+std::atomic<int> g_perf{int(PerfOverlay::Off)};  // PerfOverlay
 std::atomic<bool> g_stereo_pointer_visible{false};
 PerfAverage g_average;
 std::atomic<float> g_density{1.0f};
@@ -457,7 +457,7 @@ void init_context() {
 
 // ---------------------------------------------------------------- test switch
 struct TestSwitch {
-    bool open = false, perf = false, quit = false;
+    bool open = false, perf = false, perf_minimal = false, quit = false;
     int tab = -1;
     uint64_t at = 1;
     bool done = false;
@@ -477,6 +477,7 @@ TestSwitch parse_test() {
     t.quit = what == "quit";
     t.open = what == "open" || t.quit;
     t.perf = what == "perf";
+    t.perf_minimal = what == "perf-minimal";
     if (!tab.empty()) t.tab = ext::tab_index(tab);  // built-in or added (extensions.h)
     return t;
 }
@@ -1335,7 +1336,14 @@ void tab_graphics() {
     note("This build has no Vulkan renderer.");
 #endif
     heading("Overlay");
-    if (check("Performance overlay (FPS, frame time)", perf_shown(), &v)) set_perf_shown(v);
+    {
+        int mode = int(perf_mode());
+        if (combo("Performance overlay", &mode, "Off\0Minimal (one line: fps, frame time)\0Full\0"))
+            set_perf_mode(PerfOverlay(mode));
+        help("Minimal: one small line in the top-left corner with the frame rate, the frame time and the render "
+             "thread's CPU time per frame (R). Full: frame times, averages, CPU and GPU times and a graph. The "
+             "Performance overlay shortcut (Shortcuts tab) cycles through Off, Minimal, Full.");
+    }
     if (ImGui::Button("Reset performance averages")) { g_average.reset(); perf::reset(); interp::reset_display_hz_seen(); }
     // the render-thread profiler (render_prof.h): its report is the detailed part of the performance report
     if (check("Detailed performance profiling", rprof::requested(), &v, !rprof::env_override())) {
@@ -3499,15 +3507,41 @@ void tab_about() {
     note("The world editor's handles use ImGuizmo (MIT License, Cedric Guillemet).");
 }
 
+// the presented frame rate, over half a second; true when it was just updated
+bool update_fps(double t) {
+    if (U.fps_t0 == 0) { U.fps_t0 = t; U.fps_n0 = gx2::flips_presented(); }
+    if (t - U.fps_t0 < 0.5) return false;
+    uint64_t n = gx2::flips_presented();
+    U.fps = (double)(n - U.fps_n0) / (t - U.fps_t0);
+    U.fps_t0 = t;
+    U.fps_n0 = n;
+    return true;
+}
+// The minimal performance overlay: one small line in the top-left corner, updated twice a second (frame rate, the
+// average frame time over the last 120 frames, and the render thread's CPU time per frame once it has samples).
+void perf_line() {
+    static char text[96] = "";
+    if (update_fps(now_s()) || !text[0]) {
+        float sum = 0;
+        for (float f : U.frame_ms) sum += f;
+        const perf::Metric render = perf::snapshot().render;
+        if (render.count)
+            snprintf(text, sizeof text, "%.0f fps  %.1f ms  R %.1f ms", U.fps, sum / 120.0f, render.average());
+        else
+            snprintf(text, sizeof text, "%.0f fps  %.1f ms", U.fps, sum / 120.0f);
+    }
+    ImGui::SetNextWindowPos(ImVec2(6, 6), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.4f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(5, 2));
+    const ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+    if (ImGui::Begin("##perf_line", nullptr, fl)) ImGui::TextUnformatted(text);
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
 void perf_window(bool menu_open) {
     const double t = now_s();
-    if (U.fps_t0 == 0) { U.fps_t0 = t; U.fps_n0 = gx2::flips_presented(); }
-    if (t - U.fps_t0 >= 0.5) {
-        uint64_t n = gx2::flips_presented();
-        U.fps = (double)(n - U.fps_n0) / (t - U.fps_t0);
-        U.fps_t0 = t;
-        U.fps_n0 = n;
-    }
+    update_fps(t);
     float worst = 0, sum = 0;
     for (float f : U.frame_ms) { worst = std::max(worst, f); sum += f; }
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
@@ -3806,7 +3840,10 @@ void activate_shortcut(int action, KeyOrigin origin) {
             if (hostui::drc_mode() != gfx::kDrcPip) { hostui::set_drc_mode(gfx::kDrcPip); hostui::show_drc(true); }
             else hostui::show_drc(!hostui::drc_shown());
             break;
-        case kPerformance: set_perf_shown(!perf_shown()); break;
+        case kPerformance:  // off -> minimal -> full -> off
+            set_perf_mode(perf_mode() == PerfOverlay::Off ? PerfOverlay::Minimal
+                          : perf_mode() == PerfOverlay::Minimal ? PerfOverlay::Full : PerfOverlay::Off);
+            break;
         case kMute: {
             static float before = 1;
             float v = audio::master_volume(); if (v > 0) before = v;
@@ -3931,11 +3968,15 @@ bool pointer_layer_active() { return file_select_quit::visible() || layer_mode()
 bool captures() { return is_open() || text_entry::active(); }
 bool dialog_open() { return is_open() && g_dialog_open.load(); }
 bool alive() { return now_s() - g_last_frame.load(std::memory_order_relaxed) < 1.0; }
-bool perf_shown() { return g_perf.load(std::memory_order_relaxed); }
-void set_perf_shown(bool on) {
-    g_perf = on;
-    hostui::post([on] { hostui::set("perfOverlay", on ? "1" : "0"); });
+PerfOverlay perf_mode() { return PerfOverlay(g_perf.load(std::memory_order_relaxed)); }
+bool perf_shown() { return perf_mode() != PerfOverlay::Off; }
+void set_perf_mode(PerfOverlay mode) {
+    g_perf = int(mode);
+    // settings.ini keeps 1 = full (files from before the minimal mode), 2 = minimal
+    const char* saved = mode == PerfOverlay::Full ? "1" : mode == PerfOverlay::Minimal ? "2" : "0";
+    hostui::post([saved] { hostui::set("perfOverlay", saved); });
 }
+void set_perf_shown(bool on) { set_perf_mode(on ? PerfOverlay::Full : PerfOverlay::Off); }
 
 void focus_lost() {
     for (auto& k : g_held_keys) k = false;
@@ -4099,7 +4140,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     if (!prefs_read) {
         prefs_read = true;
         std::string v;
-        if (hostui::get("perfOverlay", v)) g_perf = v == "1";
+        if (hostui::get("perfOverlay", v))
+            g_perf = int(v == "1" ? PerfOverlay::Full : v == "2" ? PerfOverlay::Minimal : PerfOverlay::Off);
         // the saved controller choice (WWHD_PRO_CONTROLLER wins); it also hides or shows the GamePad screen
         if (!getenv("WWHD_PRO_CONTROLLER") && hostui::get("proController", v))
             hostui::post([pro = v == "1"] { hostui::set_pro_controller(pro); });
@@ -4127,7 +4169,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         if (test.tab >= 0) U.select_tab = U.tab = test.tab;
         if (test.open) set_open(true);
         if (test.quit) g_test_quit = true;
-        if (test.perf) g_perf = true;
+        if (test.perf) g_perf = int(PerfOverlay::Full);
+        if (test.perf_minimal) g_perf = int(PerfOverlay::Minimal);
         LOG("[overlay] test switch: %s", getenv("WWHD_TEST_OVERLAY"));
     }
     // WWHD_TEST_OVERLAY_CLOSE=<TV frame>: the menu closed again (a test that opened it goes on playing)
@@ -4197,7 +4240,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
                      interp::mode(), interp::fps(), hostui::res_scale());
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
-    const bool open = is_open(), perf = perf_shown(), text = !open && text_entry::active();
+    const PerfOverlay perfMode = perf_mode();
+    const bool open = is_open(), perf = perfMode != PerfOverlay::Off, text = !open && text_entry::active();
     if (wwhd_trace::enabled()) {
         wwhd_trace::sink = [](const char* line) { LOG("[overlay-trace] %s",line); };
         wwhd_trace::open = open;
@@ -4205,7 +4249,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         if (open && !was_open) { U.gamepad_navigation.reset_trace(); wwhd_trace::emit("open frame=%d", U.init ? ImGui::GetFrameCount() : 0); }
         was_open = open;
     }
-    perf::set_demand(perf, open && shown_builtin() == kGraphics);
+    perf::set_demand(perf, open && shown_builtin() == kGraphics, perfMode == PerfOverlay::Full);
     // Headless report QA uses the same formatter as the clipboard button; no clipboard mutation.
     // WWHD_TEST_PERF_REPORT=file (at WWHD_TEST_PERF_REPORT_AT presented frames, default 300), or
     // file@frames,file@frames,... for several reports in one run
@@ -4371,7 +4415,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     }
     bool covered = false;  // a platform layer drew over the whole picture: no notice
     for (const ext::FrameLayer* layer : drawn_layers) covered |= layer->draw(io.DisplaySize.x, io.DisplaySize.y);
-    if (perf) perf_window(open);
+    if (perfMode == PerfOverlay::Full) perf_window(open);
+    else if (perfMode == PerfOverlay::Minimal) perf_line();
     if (!toast.empty() && !covered) {
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y - 24), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
         ImGui::SetNextWindowBgAlpha(0.7f);
