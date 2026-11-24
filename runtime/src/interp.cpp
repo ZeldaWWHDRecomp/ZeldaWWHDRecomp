@@ -564,12 +564,58 @@ static void cam_trace(uint32_t cam, const char* what) {
 // phase, passes per step, t60 N / tick30 / step k, pass_t, the world time, the camera's draw path (t: true 60 aligned,
 // b: blended, e: exact, -: no camera drawn) with its drawn eye and centre, Link's drawn root (the model with the most
 // joints his process drew on the pass; - none), the event mode / message status, and the host time in ms
+namespace interp { uint32_t fx_jointlog_particles(std::vector<uint8_t>& buf); }  // interp_fx.cpp (WWHD_T60_JOINTLOG)
 namespace passlog {
 FILE* const g_f = getenv("WWHD_T60_PASSLOG") ? fopen(getenv("WWHD_T60_PASSLOG"), "w") : nullptr;
 char g_cam_path = '-';
 interp::CamState g_cam{};
 uint32_t g_link_n = 0;
 float g_link[3] = {0, 0, 0};
+// debug: WWHD_T60_PASSLOG_JOINTS=1 adds the drawn 3x4 matrices of the same model's joints
+// 15 (head) to 29 (26 / 27 / 28: HATA / HATB / HATC) to each line (J then 15 x 12 floats)
+const bool g_joints = getenv("WWHD_T60_PASSLOG_JOINTS") != nullptr;
+constexpr int kJ0 = 15, kJn = 15;
+float g_jm[kJn][12] = {};
+// debug: WWHD_T60_JOINTLOG=path: a binary per-pass dump (little endian) of every
+// J3DModel's joint matrices as drawn (at viewCalc) with its drawing process, and (interp_fx.cpp fx_jointlog_particles)
+// every JPA emitter's translation and its particles' drawn positions. WWHD_T60_JOINTLOG_START=n: from logic step n on.
+// Per pass: 'P' header (pass, step, n, kind, k, t, w, camera eye / centre, record count), then the pass's records:
+// 'M' model, jnt block, joints, process, profile name, process id, model data, lr, joints x 12 f32; 'E' emitter, group,
+// translation, callback, its executeAfter, particle count, then per particle its address and drawn position. Reader:
+// a stair-sweep script. Debug only: nothing changes without the variable.
+FILE* const g_jl = [] {
+    const char* e = getenv("WWHD_T60_JOINTLOG");
+    FILE* o = e ? fopen(e, "wb") : nullptr;
+    if (o) setvbuf(o, nullptr, _IOFBF, 1 << 22);
+    return o;
+}();
+const uint64_t g_jl_start = getenv("WWHD_T60_JOINTLOG_START") ? strtoull(getenv("WWHD_T60_JOINTLOG_START"), nullptr, 10) : 0;
+std::vector<uint8_t> g_jbuf;
+uint32_t g_jrec = 0;
+template <class T> void jput(const T& v) {
+    const uint8_t* p = (const uint8_t*)&v;
+    g_jbuf.insert(g_jbuf.end(), p, p + sizeof v);
+}
+void jl_model(Cpu* c) {
+    if (!g_jl || interp::g_logic_steps < g_jl_start) return;
+    const uint32_t model = c->r[3];
+    const uint32_t jnt = ld32(model + 0x2C);
+    const uint32_t mtx = jnt ? ld32(jnt + 0x10) : 0;
+    const uint32_t n = jnt ? ld16(jnt + 0x2C) : 0;
+    if (!mtx || n == 0 || n > 1024) return;
+#if WWHD_DECOMP
+    const uint32_t proc = t60::draw::drawing();
+#else
+    const uint32_t proc = 0;
+#endif
+    jput<uint8_t>('M');
+    jput(model), jput(jnt), jput(n), jput(proc);
+    jput<int16_t>(proc ? (int16_t)ld16(proc + 0xE) : (int16_t)-1);
+    jput(proc ? ld32(proc + 0x4) : 0u), jput(ld32(model + 0xAC)), jput((uint32_t)c->lr);
+    const uint32_t* w = (const uint32_t*)ppc_ptr(mtx);
+    for (uint32_t i = 0; i < 12 * n; i++) jput(u32_as_f32(__builtin_bswap32(w[i])));
+    g_jrec++;
+}
 // debug: WWHD_T60_PASSLOG_GLIDE=1 adds the drawn joint matrices of Link's models (the CL
 // body, the Deku Leaf parachute, the gust) and his glide words (newest step) to each line: " G" then per model drawn
 // "<tag> <n> <12 n floats>" (tags c / f / g), then " W m34F2 m34F4 waistZ waistY m355E m3600 proc fanWindTimer"
@@ -579,11 +625,12 @@ uint32_t g_gw_proc = 0;
 std::vector<std::pair<uint32_t, std::vector<float>>> g_go;  // Link's other models drawn: (model, root 3x4)
 bool on() { return g_f != nullptr; }
 void cam(char path, const interp::CamState& s) {
-    if (!g_f) return;
+    if (!g_f && !g_jl) return;
     g_cam_path = path;
     g_cam = s;
 }
 void viewcalc(Cpu* c) {  // J3DModel::viewCalc as drawn (the matrices in place are the drawn ones)
+    jl_model(c);
 #if WWHD_DECOMP
     const uint32_t play = GD(0x1046F0B0);
     const uint32_t proc = t60::draw::drawing();
@@ -616,9 +663,37 @@ void viewcalc(Cpu* c) {  // J3DModel::viewCalc as drawn (the matrices in place a
     g_link_n = n;
     const uint32_t* w = (const uint32_t*)ppc_ptr(mtx);
     for (int i = 0; i < 3; i++) g_link[i] = u32_as_f32(__builtin_bswap32(w[3 + 4 * i]));
+    if (g_joints && n >= kJ0 + kJn)
+        for (int j = 0; j < kJn; j++)
+            for (int k = 0; k < 12; k++) g_jm[j][k] = u32_as_f32(__builtin_bswap32(w[12 * (kJ0 + j) + k]));
 }
 void end_pass(uint64_t pass, uint64_t step, bool hold, int phase, int passes, float t, double w) {
-    if (!g_f) return;
+    if (g_jl && interp::g_logic_steps >= g_jl_start) {
+        g_jrec += interp::fx_jointlog_particles(g_jbuf);
+#if WWHD_DECOMP
+        const uint8_t jn = (uint8_t)wwhd_t60_steps, jk = (uint8_t)wwhd_t60_stepk;
+        const uint8_t jkind = t60::tick30() ? 'T' : t60::sub_step() ? 'S' : 'h';
+#else
+        const uint8_t jn = 1, jk = 1, jkind = hold ? 'h' : 'T';
+#endif
+        const uint8_t hd = 'P';
+        fwrite(&hd, 1, 1, g_jl);
+        fwrite(&pass, 8, 1, g_jl), fwrite(&step, 8, 1, g_jl);
+        fwrite(&jn, 1, 1, g_jl), fwrite(&jkind, 1, 1, g_jl), fwrite(&jk, 1, 1, g_jl);
+        fwrite(&t, 4, 1, g_jl), fwrite(&w, 8, 1, g_jl);
+        fwrite(g_cam.eye, 4, 3, g_jl), fwrite(g_cam.center, 4, 3, g_jl);
+        const uint32_t nb = (uint32_t)g_jbuf.size();
+        fwrite(&g_jrec, 4, 1, g_jl), fwrite(&nb, 4, 1, g_jl);
+        if (nb) fwrite(g_jbuf.data(), 1, nb, g_jl);
+        if (pass % 120 == 0) fflush(g_jl);
+    }
+    g_jbuf.clear();
+    g_jrec = 0;
+    if (!g_f) {
+        g_cam_path = '-';
+        g_link_n = 0;
+        return;
+    }
     static const auto t0 = std::chrono::steady_clock::now();
     const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
     const uint32_t play = GD(0x1046F0B0);
@@ -636,6 +711,11 @@ void end_pass(uint64_t pass, uint64_t step, bool hold, int phase, int passes, fl
     if (g_link_n) fprintf(g_f, " L %.3f %.3f %.3f", g_link[0], g_link[1], g_link[2]);
     else fputs(" L - - -", g_f);
     fprintf(g_f, " ev %u %u %.3f", (unsigned)ld8(play + 0x5292), (unsigned)ld8(play + 0x5BB2), ms);
+    if (g_joints && g_link_n >= kJ0 + kJn) {
+        fputs(" J", g_f);
+        for (int j = 0; j < kJn; j++)
+            for (int k = 0; k < 12; k++) fprintf(g_f, " %.5f", g_jm[j][k]);
+    }
     if (g_glide && g_gw_proc) {
         fputs(" G", g_f);
         for (int t = 0; t < 3; t++) {
@@ -2483,7 +2563,17 @@ extern "C" void hook_0203593C(Cpu* c) {
         // B). The frame is gained on the in-between passes of phase 1 (the old stage's fade-out / teardown): quiet there
         // (mask 1 or 3) B holds 36 as A; quiet in phase 2 only it still holds 35. Not the hold-capable children 8-14
         // (each held: 35), nor the audio or loader threads (idle at every step boundary in B; waited for in A: still 36).
-        const bool quiet = ss::test_load_quiet();
+        bool quiet = ss::test_load_quiet();
+#if WWHD_DECOMP
+        // true 60 (pot route pairs): at N > 1 a pass that is a step of true 60
+        // (t60::sub_step: a logic step before the frame's tick30 step) is no in-between pass of the load: it must run.
+        // The stage change of the pot route's void-out is requested on frame 325's first step; frame 326 still runs at
+        // N (the 30 Hz fallback starts with 327), and the aid skipped its earlier step(s): Link ran dt 1/N of the frame
+        // (y 439.06 / A 437.50 at N 2) and stayed a part frame behind until the load (pos 34.06 @352 N 2, 67.5 N 4).
+        // Only the hold / fallback passes (no logic) are skipped. Negative control WWHD_TEST_LOAD_QUIET_NEGCTRL=1.
+        static const bool quiet_nc = [] { const char* e = getenv("WWHD_TEST_LOAD_QUIET_NEGCTRL"); return e && e[0] == '1'; }();
+        if (quiet && !quiet_nc && t60::sub_step()) quiet = false;
+#endif
         if (quiet) {
             static uint64_t skipped = 0;
             if (++skipped <= 3 || skipped % 50 == 0)
@@ -2798,6 +2888,32 @@ extern "C" void hook_02618940(Cpu* c) { FaderWatch fw("child 12"); g_hold_child_
 extern "C" void hook_02728A74(Cpu* c) {
     FaderWatch fw("child 13");
     g_hold_child_cpu = c;
+#if WWHD_DECOMP
+    // probe WWHD_T60_FADE_PROBE=path (opt-in): one line per call of child 13 in both arms (also
+    // with frame interpolation off), before and after: logic step, pass, t60 frame / first / tick30, hold, the HD
+    // fader's three words and the manager's start delay; the stage-change fade-out's frame count from the request on
+    struct FadeProbe {
+        FILE* f = nullptr;
+        uint32_t w0[4] = {0, 0, 0, 0};
+        FadeProbe() {
+            static FILE* out = [] { const char* p = getenv("WWHD_T60_FADE_PROBE"); return p ? fopen(p, "w") : nullptr; }();
+            f = out;
+            if (!f) return;
+            const uint32_t fo = fader_object();
+            if (fo < 0x10000000 || fo >= 0x50000000) { f = nullptr; return; }
+            for (int i = 0; i < 3; i++) w0[i] = ld32(fo + 4 * i);
+            w0[3] = ld32(ld32(GD(0x101F86B4)) + 0x448);
+        }
+        ~FadeProbe() {
+            if (!f) return;
+            const uint32_t fo = fader_object();
+            fprintf(f, "%llu %llu %u %u %u %d %08X %08X %08X %u > %08X %08X %08X %u\n", (unsigned long long)interp::g_logic_steps,
+                    (unsigned long long)interp::g_passes, wwhd_t60_frame, wwhd_t60_first, wwhd_t60_tick30, interp::g_hold_frame ? 1 : 0,
+                    w0[0], w0[1], w0[2], w0[3], ld32(fo), ld32(fo + 4), ld32(fo + 8), ld32(ld32(GD(0x101F86B4)) + 0x448));
+            fflush(f);
+        }
+    } fade_probe;
+#endif
     if (hold_skip_child(13)) return;
     static const bool off = getenv("WWHD_INTERP_FADER") && !atoi(getenv("WWHD_INTERP_FADER"));
     const uint32_t f = fader_object();

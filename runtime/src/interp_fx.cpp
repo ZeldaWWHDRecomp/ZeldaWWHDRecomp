@@ -1540,8 +1540,48 @@ void t60_ptcl_step(Cpu* c) {
 }  // namespace
 #endif
 
+namespace { uint32_t g_jl_mgr = 0; }  // (WWHD_T60_JOINTLOG: the emitter manager its calc saw last)
+// debug (interp.cpp passlog::end_pass): WWHD_T60_JOINTLOG's emitter records, the world groups
+// 0-8 as drawn on this pass (the blended / aligned values are in place until the next pass start); returns their count
+namespace interp {
+uint32_t fx_jointlog_particles(std::vector<uint8_t>& buf) {
+    const uint32_t mgr = g_jl_mgr;
+    if (!mgr) return 0;
+    auto put = [&](const auto& v) {
+        const uint8_t* p = (const uint8_t*)&v;
+        buf.insert(buf.end(), p, p + sizeof v);
+    };
+    uint32_t recs = 0;
+    int guard = 0;
+    for (uint32_t group = 0; group < 9; group++)
+        for (uint32_t el = ld32(mgr + kMgrGroups + 12 * group); el && guard < 100000; el = ld32(el + 0xC), guard++) {
+            const uint32_t emtr = ld32(el);
+            if (!emtr) continue;
+            uint32_t np = 0;
+            for (uint32_t list : {kEmtrPtcls, kEmtrChildren})
+                for (uint32_t pl = ld32(emtr + list); pl && np < 100000; pl = ld32(pl + 0xC)) np += ld32(pl) ? 1 : 0;
+            const uint32_t cb = ld32(emtr + 0x1E4), vt = cb ? ld32(cb) : 0;
+            put((uint8_t)'E'), put(emtr), put(group);
+            for (int k = 0; k < 3; k++) put((float)ldf32(emtr + 0x22C + 4 * k));
+            put(cb), put(vt ? ld32(vt + 0x24) : 0u), put(np);
+            uint32_t m = 0;
+            for (uint32_t list : {kEmtrPtcls, kEmtrChildren})
+                for (uint32_t pl = ld32(emtr + list); pl && m < np; pl = ld32(pl + 0xC)) {
+                    const uint32_t p = ld32(pl);
+                    if (!p) continue;
+                    put(p);
+                    for (int k = 0; k < 3; k++) put((float)ldf32(p + 0x28 + 4 * k));
+                    m++;
+                }
+            recs++;
+        }
+    return recs;
+}
+}  // namespace interp
+
 // JPAEmitterManager::calc(mgr, group)
 extern "C" void hook_0282167C(Cpu* c) {
+    g_jl_mgr = c->r[3];
 #if WWHD_DECOMP
     // (the world block's groups 0-8 only: the menu groups 9-12 are calculated by dPa_control_c::calcMenu 025A81F8,
     // which dScnPly_Draw calls outside the world block on every pass, at dt 1 (menu open or not): they stay a 30 Hz
