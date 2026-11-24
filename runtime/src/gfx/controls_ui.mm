@@ -313,7 +313,7 @@ struct UIState {
 
 - (const Geo&)geo {
     NSSize sz = self.bounds.size;
-    FaceLayout fl = face_layout(self.st->m);
+    FaceLayout fl = recovered_face_layout(self.st->m);
     if (NSEqualSizes(sz, _g.size) && _g.pro == self.st->pro && _g.fl == fl) return _g;
     Geo g;
     g.size = sz;
@@ -747,7 +747,7 @@ static NSRect x_rect(NSRect chip) { return NSMakeRect(NSMaxX(chip) - 7, chip.ori
             NSString* caption = p.text;
             NSColor* ink = [self lit:p.action] ? NSColor.whiteColor : P.buttonText;
             const auto look = prompt_style(self.st->m, pad_family());
-            if (p.action >= kA && p.action <= kY && face_layout(self.st->m) != FaceLayout::kLabels && look.face != FaceStyle::kOriginal) {
+            if (p.action >= kA && p.action <= kY && g.fl != FaceLayout::kLabels && look.face != FaceStyle::kOriginal) {
                 const int host = look.buttons[p.action - kA];
                 NSArray<NSString*>* captions = look.face == FaceStyle::kPlayStation
                     ? @[@"✕", @"○", @"□", @"△"] : @[@"A", @"B", @"X", @"Y"];
@@ -1160,7 +1160,9 @@ static NSTextField* label(NSString* s) {
     pp.toolTip = @"Keyboard / mouse displays the first bound key or mouse button (M1-M5, Wh+/Wh-; None if unbound). How the game's button icons look, with any face-button setting. Xbox and PlayStation show the bound face button; GameCube uses the classic coloured face look. By position on Xbox: roll is B, sword is A. "
                  @"Automatic follows the connected pad; recognized GameCube adapters use the GameCube look. By label keeps its "
                  @"existing Xbox fallback. Original keeps the game's look. Custom bindings need four "
-                 @"distinct face buttons; otherwise the original icons are used.";
+                 @"distinct face buttons; otherwise the original icons are used. A face button taken by Jump anywhere, "
+                 @"the moon jump or Slow walk keeps the look; the moved action's prompt names the button that now "
+                 @"carries it, and two game actions off the faces use the original icons.";
     self.prompts = pp;
     NSTextField* snl = label(@"Shoulder names:");
     NSPopUpButton* sn = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];

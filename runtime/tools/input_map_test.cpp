@@ -521,10 +521,17 @@ static void test_prompts() {
                     CHECK(actual.spots[i] == (expected == FaceStyle::kOriginal || expected == FaceStyle::kGameCube ? i : (candidate.pad[kA+i] - kPadA) ^ 1));
                     if (labels && expected != FaceStyle::kOriginal && expected != FaceStyle::kGameCube) CHECK(actual.spots[i] == (i ^ 1));
                 }
-                // Every invalid/ambiguous face set falls back together.
+                // An ambiguous face set falls back together to the game's own complete icon set,
+                // whatever Button prompts says (it cannot describe a four-button picture).
                 for (int invalid : {int(kPadNone), int(kPadLB), candidate.pad[kB]}) {
                     auto bad = candidate; bad.pad[kA] = invalid;
-                    CHECK(prompt_style(bad, family).face == FaceStyle::kOriginal);
+                    for (auto choice : {Mapping::Prompts::kAuto, Mapping::Prompts::kOriginal, Mapping::Prompts::kXbox,
+                                        Mapping::Prompts::kPlayStation, Mapping::Prompts::kGameCube}) {
+                        bad.prompts = choice;
+                        const auto style = prompt_style(bad, family);
+                        CHECK(style.face == FaceStyle::kOriginal && !style.positions);
+                        CHECK(style.buttons == (std::array<int, 4>{0, 1, 2, 3}));
+                    }
                 }
             }
     // hud_spots: the game draws A east, B south, X north, Y west
@@ -623,10 +630,13 @@ static void test_prompts() {
     m.shoulder_names = Mapping::ShoulderNames::kXbox;
     s = prompt_style(m, PadFamily::kXbox);
     CHECK(s.face == FaceStyle::kXbox && !s.positions && s.shoulders == ShoulderStyle::kXbox && s.active());
-    // custom face bindings: the game's face prompts
+    // custom face bindings that cannot describe four buttons: the game's prompts
     apply_face_layout(m, FaceLayout::kLabels);
     m.pad[kX] = kPadLB;
-    CHECK(prompt_style(m, PadFamily::kXbox).face == FaceStyle::kOriginal);
+    const auto custom = prompt_style(m, PadFamily::kXbox);
+    CHECK(custom.face == FaceStyle::kOriginal && !custom.positions);
+    CHECK(custom.buttons == (std::array<int, 4>{0, 1, 2, 3}));
+    CHECK(prompt_style(m, PadFamily::kNintendo).face == FaceStyle::kOriginal);
 
     // controls.json: defaults are not written; every choice comes back
     const Mapping d = Mapping::defaults();
@@ -1702,6 +1712,98 @@ static void test_displace_rules() {
     CHECK(bind_virtual(a, kJump, a.pad[kA], Displace::kMove) && !a.face_auto);
 }
 
+// Jump anywhere / the moon jump on a face button: the game action there moves off the faces (L1,
+// d-pad down, or off). The prompts must look exactly as they did before the remap: style, colours,
+// letters and by-label placement, for any explicit choice.
+static void test_prompt_after_jump_remap() {
+    for (auto layout : {FaceLayout::kPosition, FaceLayout::kLabels}) {
+        Mapping base = Mapping::defaults();
+        apply_face_layout(base, layout);
+        base.prompts = Mapping::Prompts::kXbox;
+        const PromptStyle expected = prompt_style(base, PadFamily::kXbox);
+        CHECK(recovered_face_layout(base) == layout);
+        for (int host = kPadA; host <= kPadY; ++host)
+            for (auto how : {Displace::kMove, Displace::kMoveToL1, Displace::kMoveToDDown, Displace::kTakeOff}) {
+                Mapping m = base;
+                CHECK(bind_virtual(m, kJump, host, how));
+                const PromptStyle got = prompt_style(m, PadFamily::kXbox);
+                CHECK(got.face == expected.face && got.buttons == expected.buttons && got.spots == expected.spots &&
+                      got.positions == expected.positions && got.colours == expected.colours &&
+                      got.text_colours == expected.text_colours);
+                m.face_colours = Mapping::FaceColours::kOff;
+                CHECK(prompt_style(m, PadFamily::kXbox).colours == false);
+                m.face_colours = Mapping::FaceColours::kXbox;
+                m.prompts = Mapping::Prompts::kPlayStation;
+                const PromptStyle ps = prompt_style(m, PadFamily::kXbox);
+                CHECK(ps.face == FaceStyle::kPlayStation && ps.buttons == expected.buttons &&
+                      ps.spots == expected.spots && ps.positions == expected.positions);
+                m.prompts = Mapping::Prompts::kGameCube;
+                CHECK(prompt_style(m, PadFamily::kXbox).face == FaceStyle::kGameCube);
+                m.prompts = Mapping::Prompts::kAuto;
+                CHECK(prompt_style(m, PadFamily::kXbox).face == FaceStyle::kXbox);
+                CHECK(recovered_face_layout(m) == layout);  // the Controls drawings keep it
+                Mapping n = base;
+                CHECK(bind_virtual(n, kMoonJump, host, how));
+                const PromptStyle moon = prompt_style(n, PadFamily::kXbox);
+                CHECK(moon.face == expected.face && moon.buttons == expected.buttons && moon.positions == expected.positions);
+                CHECK(recovered_face_layout(n) == layout);
+            }
+    }
+    // a face really gone, with no virtual action on the free button: the bindings cannot describe
+    // a four-button picture, so the game's own icons are used even with an explicit choice
+    Mapping off = Mapping::defaults();
+    off.prompts = Mapping::Prompts::kXbox;
+    off.pad[kA] = kPadLB;
+    CHECK(face_layout(off) == FaceLayout::kCustom);
+    const PromptStyle off_style = prompt_style(off, PadFamily::kXbox);
+    CHECK(off_style.face == FaceStyle::kOriginal && !off_style.positions &&
+          off_style.buttons == (std::array<int, 4>{0, 1, 2, 3}));
+    // duplicate bindings: the same
+    Mapping dup = Mapping::defaults();
+    dup.prompts = Mapping::Prompts::kXbox;
+    CHECK(bind_virtual(dup, kJump, kPadB, Displace::kMoveToL1));
+    dup.pad[kB] = dup.pad[kX];  // the same host face twice
+    CHECK(face_layout(dup) == FaceLayout::kCustom);
+    CHECK(prompt_style(dup, PadFamily::kXbox).face == FaceStyle::kOriginal);
+    CHECK(recovered_face_layout(off) == FaceLayout::kCustom);
+    CHECK(recovered_face_layout(dup) == FaceLayout::kCustom);
+    // two game actions off the faces (Jump anywhere and the moon jump each on a face button of its
+    // own): no single button can be put back, so the original icons are used even with an explicit
+    // choice
+    Mapping two = Mapping::defaults();
+    two.prompts = Mapping::Prompts::kXbox;
+    CHECK(bind_virtual(two, kJump, kPadA, Displace::kTakeOff));
+    CHECK(bind_virtual(two, kMoonJump, kPadB, Displace::kTakeOff));
+    CHECK(face_layout(two) == FaceLayout::kCustom);
+    const PromptStyle two_style = prompt_style(two, PadFamily::kXbox);
+    CHECK(two_style.face == FaceStyle::kOriginal && !two_style.positions &&
+          two_style.buttons == (std::array<int, 4>{0, 1, 2, 3}));
+    CHECK(recovered_face_layout(two) == FaceLayout::kCustom);
+    // moving the jump between two face buttons displaces a second game action, so two game actions
+    // are off the faces: the original icons too
+    Mapping moved = Mapping::defaults();
+    moved.prompts = Mapping::Prompts::kXbox;
+    CHECK(bind_virtual(moved, kJump, kPadA, Displace::kMove));
+    CHECK(bind_virtual(moved, kJump, kPadB, Displace::kMove));
+    CHECK(!(moved.pad[kA] >= kPadA && moved.pad[kA] <= kPadY) &&
+          !(moved.pad[kB] >= kPadA && moved.pad[kB] <= kPadY));  // both game actions left the faces
+    CHECK(face_layout(moved) == FaceLayout::kCustom);
+    const PromptStyle moved_style = prompt_style(moved, PadFamily::kXbox);
+    CHECK(moved_style.face == FaceStyle::kOriginal && !moved_style.positions &&
+          moved_style.buttons == (std::array<int, 4>{0, 1, 2, 3}));
+    CHECK(recovered_face_layout(moved) == FaceLayout::kCustom);
+    // the Controls drawings follow the recovered bindings, not the prompt style
+    Mapping drawn = Mapping::defaults();
+    apply_face_layout(drawn, FaceLayout::kLabels);
+    CHECK(recovered_face_layout(drawn) == FaceLayout::kLabels);
+    CHECK(bind_virtual(drawn, kJump, kPadY, Displace::kMoveToL1));
+    CHECK(recovered_face_layout(drawn) == FaceLayout::kLabels);
+    drawn.prompts = Mapping::Prompts::kOriginal;
+    CHECK(recovered_face_layout(drawn) == FaceLayout::kLabels);
+    drawn.pad[kJump] = drawn.pad[kMoonJump] = kPadNone;  // nothing holds the free face: no single answer
+    CHECK(recovered_face_layout(drawn) == FaceLayout::kCustom);
+}
+
 static void test_profiles() {
     Mapping m = Mapping::defaults();
     const std::string xg = "030000005e0400008e02000014010000", xn = "Xbox 360 Controller";
@@ -2154,6 +2256,7 @@ int main() {
     test_slow_walk();
     test_play_buttons();
     test_displace_rules();
+    test_prompt_after_jump_remap();
     test_profiles();
     test_binding_capture_resting_inputs();
     test_binding_choice();

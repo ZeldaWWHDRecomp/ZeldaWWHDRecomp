@@ -150,7 +150,12 @@ L1, else d-pad down: the game uses neither while you play), for an item button *
 **Move to d-pad down** (the item goes there), or **Take off** (no controller button presses it any
 more; for an item button, that item can't be used from the controller). An item button on L1 counts
 in menus too (L1 no longer turns the GamePad page); on d-pad down it is the item button only while
-you play, d-pad down in menus.
+you play, d-pad down in menus. Binding Jump anywhere, the moon jump or Slow walk (hold) to a face
+button leaves the button prompts alone: they keep the style, colours, letters and layout they had
+before that remap. The moved action's prompt stays on that face button, which now carries that
+input. This holds while one face button carries one of them; when two game actions have left the
+faces (each of those inputs has a face button of its own, or one of them moves to another face
+button), the original icons are used.
 
 L turns the game's GamePad screen between Items and Map, in play too, as on the Wii U, whichever
 game window (TV or GamePad) is in front. Only while Jump anywhere or the moon jump is on does an input
