@@ -730,7 +730,7 @@ const bool g_words_on = [] {
     const char* e = getenv("WWHD_T60_DRAW_WORDS");
     return !e || atoi(e) != 0;
 }();
-const bool g_words_frameend = [] {  // (kind 3: the frame-end blend; 0: as kind 1)
+const bool g_words_frameend = [] {  // (kind 3: the frame-end blend below; 0: as kind 1)
     const char* e = getenv("WWHD_T60_WORDS_FRAMEEND");
     return !e || atoi(e) != 0;
 }();
@@ -757,7 +757,8 @@ void words_owner_draw(uint32_t proc) {
 // kind 0: words as a whole (a point list that shifts: the step nearer W), 1: floats (lerp), 2: 3x4 matrices; kind >> 8:
 // the word the DRAWLOG point starts at (a matrix: its translation)
 bool words_begin(uint32_t owner, uint32_t ea, uint32_t n, int kind_log) {
-    const int kind = kind_log & 0xFF;
+    const int kind = kind_log & 0x7F;
+    const bool unit_vecs = (kind_log & 0x80) != 0;  // (kind 3: the block's last two thirds are unit vectors)
     const uint32_t lw = (uint32_t)kind_log >> 8;
     if (!owner) owner = g_drawing;  // (3D lines: the process whose draw runs)
     if (!g_words_on || !ea || !n || !align_on() || !converted(owner)) return false;
@@ -800,19 +801,22 @@ bool words_begin(uint32_t owner, uint32_t ea, uint32_t n, int kind_log) {
                 interp::blend_world_matrix(fa, fb, fo, f);
                 for (int k = 0; k < 12; k++) out[m + k] = f_word(fo[k]);
             }
-        } else {
+        } else {  // (kinds 1 and 3; kind 3's frame-end blend below)
             for (uint32_t k = 0; k < n; k++) out[k] = f_word(word_f(a[k]) + f * (word_f(b[k]) - word_f(a[k])));
         }
     }
-    // kind 3 (the sail cloth's frame-end blend, 2026-11-24): floats whose first third are positions and the
-    // rest unit vectors (the sail cloth: mPos, mNrm, mBackNrm). Drawn between two frame ends whose next end is kept (W one
-    // step back at N 2): the frame start + frac x (the frame end - the frame start), the vectors renormalized, in place of
-    // the earlier step's own (extrapolated) picture; a frame end, a frame end not kept, or a position jump between the
-    // two (kCut): drawn as above. Port switch WWHD_T60_WORDS_FRAMEEND=0: as kind 1
+    // kind 3: floats drawn between their frame ends (a 30 Hz value set once a frame, e.g. a converted actor's attention
+    // position the Z-target arrow follows; the sail cloth, whose earlier steps show an extrapolated picture). When W lies
+    // between two frame ends that are both kept (W one step back at N 2: the next end is kept on an earlier step's pass),
+    // the block is drawn as the frame start + frac x (the frame end - the frame start); with kind bit 0x80 the first third
+    // are positions and the last two thirds unit vectors (the sail: mPos, mNrm, mBackNrm), renormalized. A position jump
+    // between the two ends beyond kCut: the later end. A frame end not kept: drawn as kind 1 (the step pick above).
+    // Port switch WWHD_T60_WORDS_FRAMEEND=0: as kind 1.
     if (kind == 3 && g_words_frameend) {
         const double td = h.steps[p.a].first + f * (h.steps[p.b].first - h.steps[p.a].first);
         const double F1 = std::floor(td + hist::kEps), frac = td - F1;
-        if (frac > hist::kEps && frac < 1.0 - hist::kEps && n % 9 == 0) {
+        const bool vecs = unit_vecs && n % 9 == 0;
+        if (frac > hist::kEps && frac < 1.0 - hist::kEps) {
             const std::vector<uint32_t>*e1 = nullptr, *e2 = nullptr;
             for (const auto& st : h.steps) {
                 if (std::fabs(st.first - F1) < hist::kEps) e1 = &st.second;
@@ -821,13 +825,15 @@ bool words_begin(uint32_t owner, uint32_t ea, uint32_t n, int kind_log) {
             if (e1 && e2) {
                 using interp::joints::f_word;
                 using interp::joints::word_f;
-                const uint32_t np = n / 3;
+                const uint32_t np = vecs ? n / 3 : n;
                 bool cut = false;
                 for (uint32_t k = 0; k < np && !cut; k++) cut = !(std::fabs(word_f((*e2)[k]) - word_f((*e1)[k])) <= kCut);
-                if (!cut) {
+                if (cut) {
+                    out = *e2;
+                } else {
                     const float fr = (float)frac;
                     for (uint32_t k = 0; k < n; k++) out[k] = f_word(word_f((*e1)[k]) + fr * (word_f((*e2)[k]) - word_f((*e1)[k])));
-                    for (uint32_t k = np; k + 3 <= n; k += 3) {
+                    for (uint32_t k = np; vecs && k + 3 <= n; k += 3) {
                         const float x = word_f(out[k]), y = word_f(out[k + 1]), z = word_f(out[k + 2]);
                         const float l = std::sqrt(x * x + y * y + z * z);
                         if (l > 1e-6f) out[k] = f_word(x / l), out[k + 1] = f_word(y / l), out[k + 2] = f_word(z / l);
@@ -852,6 +858,56 @@ bool words_begin(uint32_t owner, uint32_t ea, uint32_t n, int kind_log) {
 // blend (interp_fx.cpp line_packet: between the record pass's and this step's points, for every owner) is left out for
 // it, or the history would keep its blended points (the rope's hand end was drawn up to 5.8 off Link's hand)
 bool words_owns(uint32_t proc) { return g_words_on && proc && align_on() && converted(proc); }
+// The Z-target arrow (2026-11-23): the Z-target arrow (dAttDraw_c, drawn by the play scene) is placed at its
+// target's attention position (+0x390), which a converted target writes on every step: it sat on the newest step while the
+// target is drawn at W, and the frame interpolation then blended the play scene's model between its record pass and this
+// pass (a staircase: ~8-11 units on sub-step passes, ~2.8 on tick30 passes against the target's even 2.7). follow_begin
+// puts the target's position of W in place (the words history) and has the models drawn until follow_end drawn as placed
+// (no interpolation: the place is W already). Only for a converted target (an unconverted one is interpolated as before).
+// WWHD_T60_ATTN_FOLLOW=0: off.
+namespace {
+const bool g_follow_on = [] {
+    const char* e = getenv("WWHD_T60_ATTN_FOLLOW");
+    return !e || atoi(e) != 0;
+}();
+int g_follow_exact = 0;
+struct Follow { uint32_t ea, anim, anim_live; };
+std::vector<Follow> g_follow_stack;  // the blocks follow_begin took (ea 0: not aligned)
+// The arrow's animation frame (its McaMorf's frame, a f32) advances once a 30 Hz frame on the frame's FIRST step (the play
+// scene runs first, the frame-level work on the frame's first step): its value on step F - 1/2 is frame F's. Kept per frame (stamp: the frame it belongs
+// to, ceil of the step time) and drawn between frames at W; a loop wrap (the frame going back) is not blended.
+struct AnimHist { uint64_t pass = 0; std::deque<std::pair<double, float>> steps; };
+std::unordered_map<uint32_t, AnimHist> g_follow_anim;
+}  // namespace
+void follow_begin(uint32_t owner, uint32_t ea, uint32_t n, uint32_t anim) {
+    const bool on = g_follow_on && words_owns(owner);
+    Follow fo{0, 0, 0};
+    if (on) {
+        words_begin(owner, ea, n, 3 /* a 30 Hz value: its frame ends, blended at W */), g_follow_exact++;
+        fo.ea = ea;
+        if (anim) {
+            AnimHist& h = g_follow_anim[anim];
+            if (h.pass + 1 < g_pass) h = AnimHist{};
+            h.pass = g_pass;
+            const uint32_t live = ld32(anim);
+            hist::stamp(h.steps, std::ceil(step_time() - hist::kEps), interp::joints::word_f(__builtin_bswap32(live)));
+            const hist::Pick p = hist::pick(h.steps, w_now());
+            const float a = h.steps[p.a].second, b = h.steps[p.b].second;
+            const float v = p.f == 0.0f ? a : (b < a ? (p.f < 0.5f ? a : b) : a + p.f * (b - a));
+            fo.anim = anim, fo.anim_live = live;
+            st32(anim, __builtin_bswap32(interp::joints::f_word(v)));
+        }
+    }
+    g_follow_stack.push_back(fo);
+}
+void follow_end() {
+    if (g_follow_stack.empty()) return;
+    const Follow fo = g_follow_stack.back();
+    g_follow_stack.pop_back();
+    if (fo.anim) st32(fo.anim, fo.anim_live);
+    if (fo.ea) words_end(fo.ea), g_follow_exact--;
+}
+bool follow_exact() { return g_follow_exact > 0; }
 void words_end(uint32_t ea) {
     for (auto it = g_words_live.rbegin(); it != g_words_live.rend(); ++it) {
         if (it->first != ea) continue;
@@ -865,6 +921,10 @@ extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_words_begin
     t60::draw::words_begin(owner, ea, n, kind);
 }
 extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_words_end(uint32_t ea) { t60::draw::words_end(ea); }
+extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_follow_begin(uint32_t owner, uint32_t ea, uint32_t n, uint32_t anim) {
+    t60::draw::follow_begin(owner, ea, n, anim);
+}
+extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_follow_end() { t60::draw::follow_end(); }
 
 // decomp d/t60_whole.h (game build): this execute of `actor` (a whole-form actor, on a step before the tick30 step) was a
 // picture step

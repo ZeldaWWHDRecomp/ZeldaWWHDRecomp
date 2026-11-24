@@ -1742,6 +1742,10 @@ extern "C" void hook_027F55FC(Cpu* c) {
         return;
     }
 #if WWHD_DECOMP
+    if (t60::draw::follow_exact()) {  // (true 60, the Z-target arrow: placed at its converted target's W: drawn as placed)
+        passlog::viewcalc(c), f_027F55FC_orig(c);
+        return;
+    }
     if (t60_model(c, model, jnt, mtx, n)) return;  // (true 60: a converted process's model)
 #endif
     const uint32_t words = 12 * n;

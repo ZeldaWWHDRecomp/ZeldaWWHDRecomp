@@ -66,7 +66,13 @@ bool camera(uint32_t cam, const interp::camera::CamState& cur, const interp::cam
 // back; owner 0: the process whose draw runs (3D lines). WWHD_T60_DRAW_WORDS=0: off. DRAWLOG: 'p' lines (drawn first point / translation, then 'new': the newest step's)
 bool words_begin(uint32_t owner, uint32_t ea, uint32_t n, int kind);
 void words_end(uint32_t ea);
-bool words_owns(uint32_t proc);  // a converted owner whose 3D lines the words history draws (interp_fx line_packet: no blend)
+bool words_owns(uint32_t proc);
+// The Z-target arrow (decomp d/d_attention_t60.h through wwhd_t60_draw_follow_*): a model placed at a converted owner's block
+// (the Z-target arrow at its target's attention position): the block at W, and the models drawn meanwhile as placed
+// (interp.cpp J3DModel::viewCalc). WWHD_T60_ATTN_FOLLOW=0: off
+void follow_begin(uint32_t owner, uint32_t ea, uint32_t n, uint32_t anim);  // anim: a frame f32 (0: none)
+void follow_end();
+bool follow_exact();  // a converted owner whose 3D lines the words history draws (interp_fx line_packet: no blend)
 
 // debug: WWHD_T60_DRAWLOG=path: one line per aligned draw: pass, kind (m model / c camera), owner process, world time,
 // the stamps of the two steps it was drawn between (equal: drawn exactly at a step), the newest stamp, the fraction, and
