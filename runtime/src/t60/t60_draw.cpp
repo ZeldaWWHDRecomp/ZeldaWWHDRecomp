@@ -16,6 +16,7 @@
 #include "runtime.h"
 #include "t60/t60.h"
 #include "t60/t60_draw_hist.h"
+#include "t60/t60_draw_glide.h"
 #include "t60/t60_world.h"
 
 // the decompiled rate gate's table (f_pc/f_pc_executor.cpp, game build only; the runtime-only decomp build has no game
@@ -246,6 +247,139 @@ bool same_cam(const interp::camera::CamState& a, const interp::camera::CamState&
     return a.fovy == b.fovy && a.bank == b.bank;
 }
 
+// Link's cap and hair between the frame ends (2026-11-23; seen in play: the cap swayed unevenly while Link
+// moves). The cap is a 30 Hz spring (decomp daPy_lk_c::setHatAngle: HATA / HATB / HATC angles chased per frame, read by
+// jointBeforeCB) that runs on the frame's tick30 step only; on the frame's earlier steps its angles hold, so the cap
+// stays rigid on the moving head and the frame's whole sway shows on one pass (a walking route at N 2: the cap's rotation
+// against the head changed on 1 pass of 2, 665 of 710 judged passes still). Link is drawn one step behind his newest step: on an
+// earlier step's pass the frame's next end is kept already. There the three cap joints are drawn with their rotation
+// against their parent blended between the two frame ends (as frame interpolation draws them at N 1); the head and
+// everything else as drawn. Only while every kept step inside the frame holds the cap against the head as at the frame's
+// start (the spring's hold; an animated cap, e.g. the original hat animation, is drawn as it is). setHatAngle also sets
+// the hair (momi) words mLMomiAngleY / mRMomiAngleY / mMomiAngleZ (the wind's lean), which jointBeforeCB concatenates
+// after the LMOMI / RMOMI joints' animated rotation (q = anim x Euler(0, y, 0) x Euler(0, 0, z)); the animation runs per
+// step, the lean holds. Their lean is drawn blended between the frame ends' words likewise (the words kept with each
+// step: the joint's drawn rotation x lean(held)^-1 x lean(blend)); the head's front angles only feed HATA. Draw only
+// (no logic). NC: WWHD_T60_HAT_FRAMEEND_NEGCTRL=1 (drawn as before).
+const bool g_hat_nc = [] {
+    const char* e = getenv("WWHD_T60_HAT_FRAMEEND_NEGCTRL");
+    return e && atoi(e) != 0;
+}();
+constexpr uint32_t kPlayerPtr = 0x5B34;  // play + 0x5B34: the player actor (interp.cpp passlog)
+constexpr uint32_t kCLModel = 0x448;     // daPy_lk_c::mpCLModel
+constexpr uint32_t kHead = 15, kHatA = 26, kHatB = 27, kHatC = 28;  // CL_JNT_HEAD_JNT_e, CL_JNT_HATA..C_JNT_e
+constexpr uint32_t kHatJ[3] = {kHatA, kHatB, kHatC}, kHatP[3] = {kHead, kHatA, kHatB};  // (HATA under the head's frame)
+constexpr uint32_t kLMomi = 16, kRMomi = 17;            // CL_JNT_LMOMI_JNT_e / CL_JNT_RMOMI_JNT_e
+constexpr uint32_t kMomiWords = 0x6966;                  // mLMomiAngleY, mRMomiAngleY, mMomiAngleZ (be s16 each)
+// the words kept after a Link CL model step's matrices: (LMomiY << 16 | RMomiY), MomiZ (host order)
+void momi_words(uint32_t proc, std::vector<uint32_t>& v) {
+    v.push_back((uint32_t)ld16(proc + kMomiWords) << 16 | ld16(proc + kMomiWords + 2));
+    v.push_back(ld16(proc + kMomiWords + 4));
+}
+// the lean rotation Ry(y) * Rz(z) (s16 angles; J3D's Euler / quaternion convention, row major 3x3)
+void lean(float y, float z, float* R) {
+    const float k = (float)(M_PI / 32768.0), cy = std::cos(y * k), sy = std::sin(y * k), cz = std::cos(z * k), sz = std::sin(z * k);
+    const float Ry[9] = {cy, 0, sy, 0, 1, 0, -sy, 0, cy}, Rz[9] = {cz, -sz, 0, sz, cz, 0, 0, 0, 1};
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) R[3 * r + c] = Ry[3 * r] * Rz[c] + Ry[3 * r + 1] * Rz[3 + c] + Ry[3 * r + 2] * Rz[6 + c];
+}
+void mtx_f(const uint32_t* w, float* m) {
+    for (int k = 0; k < 12; k++) m[k] = interp::joints::word_f(w[k]);
+}
+// inv(P) * J for 3x4 affine matrices (row major); false: P is singular
+bool local_of(const float* P, const float* J, float* L) {
+    const float a = P[0], b = P[1], c = P[2], d = P[4], e = P[5], f = P[6], g = P[8], h = P[9], i = P[10];
+    const float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if (std::fabs(det) < 1e-12f) return false;
+    const float r = 1.0f / det;
+    const float I[9] = {(e * i - f * h) * r, (c * h - b * i) * r, (b * f - c * e) * r,
+                        (f * g - d * i) * r, (a * i - c * g) * r, (c * d - a * f) * r,
+                        (d * h - e * g) * r, (b * g - a * h) * r, (a * e - b * d) * r};
+    const float t[3] = {J[3] - P[3], J[7] - P[7], J[11] - P[11]};
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 3; col++)
+            L[4 * row + col] = I[3 * row] * J[col] + I[3 * row + 1] * J[4 + col] + I[3 * row + 2] * J[8 + col];
+        L[4 * row + 3] = I[3 * row] * t[0] + I[3 * row + 1] * t[1] + I[3 * row + 2] * t[2];
+    }
+    return true;
+}
+// P * L (3x4 affine)
+void compose(const float* P, const float* L, float* O) {
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 4; col++)
+            O[4 * row + col] = P[4 * row] * L[col] + P[4 * row + 1] * L[4 + col] + P[4 * row + 2] * L[8 + col];
+        O[4 * row + 3] += P[4 * row + 3];
+    }
+}
+// the cap's rotation against its parent equal in two steps (the 3x3 parts of the locals, scale-free to ~1e-3)
+bool same_local_rot(const float* A, const float* B) {
+    for (int row = 0; row < 3; row++)
+        for (int col = 0; col < 3; col++)
+            if (std::fabs(A[4 * row + col] - B[4 * row + col]) > 1e-3f) return false;
+    return true;
+}
+// the hair joints' lean between the frame ends i1 / i2 (the words kept after the matrices), while every kept step between
+// them holds the words of i1
+template <class Steps>
+void momi_frameend(const Steps& steps, int i1, int i2, float frac, uint32_t n, uint32_t* out) {
+    const size_t at = 12 * (size_t)n;
+    for (int i = i1; i <= i2; i++)
+        if (steps[i].second.size() != at + 2) return;
+    const uint32_t* w1 = steps[i1].second.data() + at;
+    const uint32_t* w2 = steps[i2].second.data() + at;
+    for (int i = i1 + 1; i < i2; i++)
+        if (std::memcmp(steps[i].second.data() + at, w1, 8) != 0) return;  // (not held: drawn as it is)
+    if (std::memcmp(w1, w2, 8) == 0) return;  // (no change over the frame)
+    const float z1 = (int16_t)w1[1], z2 = (int16_t)w2[1];
+    const float y1[2] = {(float)(int16_t)(w1[0] >> 16), (float)(int16_t)(w1[0] & 0xFFFF)};
+    const float y2[2] = {(float)(int16_t)(w2[0] >> 16), (float)(int16_t)(w2[0] & 0xFFFF)};
+    const uint32_t jn[2] = {kLMomi, kRMomi};
+    for (int k = 0; k < 2; k++) {
+        float A[9], B[9], C[9], M[12];
+        lean(y1[k], z1, A);
+        lean(y1[k] + frac * (y2[k] - y1[k]), z1 + frac * (z2 - z1), B);
+        for (int r = 0; r < 3; r++)  // C = A^T * B
+            for (int c = 0; c < 3; c++) C[3 * r + c] = A[r] * B[c] + A[3 + r] * B[3 + c] + A[6 + r] * B[6 + c];
+        mtx_f(out + 12 * jn[k], M);
+        for (int r = 0; r < 3; r++) {
+            const float m0 = M[4 * r], m1 = M[4 * r + 1], m2 = M[4 * r + 2];
+            for (int c = 0; c < 3; c++) out[12 * jn[k] + 4 * r + c] = interp::joints::f_word(m0 * C[c] + m1 * C[3 + c] + m2 * C[6 + c]);
+        }
+    }
+}
+template <class Steps>
+void hat_frameend(const Steps& steps, double td, uint32_t* out, uint32_t n) {
+    if (n <= kHatC) return;
+    const double F1 = std::floor(td + hist::kEps), F2 = F1 + 1.0, frac = td - F1;
+    if (frac < hist::kEps || frac > 1.0 - hist::kEps) return;  // (a frame end: drawn as it is)
+    int i1 = -1, i2 = -1;
+    for (int i = 0; i < (int)steps.size(); i++) {
+        if (std::fabs(steps[i].first - F1) < hist::kEps) i1 = i;
+        if (std::fabs(steps[i].first - F2) < hist::kEps) i2 = i;
+    }
+    if (i1 < 0 || i2 < 0) return;  // (a frame end not kept: drawn as it is)
+    momi_frameend(steps, i1, i2, (float)frac, n, out);
+    float l1[3][12], l2[3][12], P[12], J[12], L[12];
+    for (int k = 0; k < 3; k++) {
+        mtx_f(steps[i1].second.data() + 12 * kHatP[k], P), mtx_f(steps[i1].second.data() + 12 * kHatJ[k], J);
+        if (!local_of(P, J, l1[k])) return;
+        mtx_f(steps[i2].second.data() + 12 * kHatP[k], P), mtx_f(steps[i2].second.data() + 12 * kHatJ[k], J);
+        if (!local_of(P, J, l2[k])) return;
+    }
+    for (int i = i1 + 1; i < i2; i++)  // (the earlier steps: the spring's hold, else drawn as it is)
+        for (int k = 0; k < 3; k++) {
+            mtx_f(steps[i].second.data() + 12 * kHatP[k], P), mtx_f(steps[i].second.data() + 12 * kHatJ[k], J);
+            if (!local_of(P, J, L) || !same_local_rot(L, l1[k])) return;
+        }
+    float O[12];
+    for (int k = 0; k < 3; k++) {
+        interp::blend_world_matrix(l1[k], l2[k], L, (float)frac);
+        mtx_f(out + 12 * kHatP[k], P);
+        compose(P, L, O);
+        for (int w = 0; w < 12; w++) out[12 * kHatJ[k] + w] = interp::joints::f_word(O[w]);
+    }
+}
+
 // (x y z: the drawn root joint's translation, or the drawn eye)
 void log_draw(char kind, uint32_t owner, double w, double ta, double tb, double newest, float f, float x, float y, float z,
               const uint32_t* joints = nullptr, uint32_t n = 0) {
@@ -330,7 +464,125 @@ uint32_t draw_begin(uint32_t proc) {
 void draw_end(uint32_t previous) { g_drawing = previous; }
 uint32_t drawing() { return g_drawing; }
 
-bool model(uint32_t /*model*/, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uint32_t* out) {
+namespace {
+// Link's leg IK between the frame ends (2026-11-23, after the per-step leg angle split): Link's leg IK on stairs / slopes
+// drawn between the frame ends. footBgCheck (decomp d_a_player_main_03.cpp) eases the foot records' leg angles once a
+// frame from the frame start; jointCB1 turns the thigh, knee and ankle joints by them after the model calc: LLEGA 32 =
+// anim x Rz(mLegAAngle), LLEGB 33 = 32 x T Q(33) x Rz(mLegBJointAngle), LFOOT 34 = 33 x T Q(34) x Rz(mFootAngle),
+// LTOE 35 = 34 x T Q(35) (left: foot record 1; right 37..40: record 0). On the frame's earlier steps the eases start
+// from the frame start toward the step's own in-between ground target (the per-step split takes k / N of that), and at the stair
+// edge that target is not the frame end's (a walking route's stair edge: right legA 609 -> 1164 -> 305). Link is drawn one step behind
+// his newest step, so on an earlier step's pass the frame's next end is kept: the three IK angles are drawn at the frame
+// start + frac x (the frame end - the frame start) (the words kept with each step, angle space, the short way): each
+// joint's matrix turned by Rz(blend - drawn) about its own z after its parent's change, the toe following. Frame-end
+// passes, or a frame end not kept: drawn as they are. Draw only (no logic), Link's CL model only.
+// NC: WWHD_T60_LEGPIC_NEGCTRL=1 (drawn as before). Debug: WWHD_T60_LEGPIC_LOG=path (one line per earlier pass).
+const bool g_legpic_nc = [] {
+    const char* e = getenv("WWHD_T60_LEGPIC_NEGCTRL");
+    return e && atoi(e) != 0;
+}();
+FILE* const g_legpic_log = getenv("WWHD_T60_LEGPIC_LOG") ? fopen(getenv("WWHD_T60_LEGPIC_LOG"), "w") : nullptr;
+constexpr uint32_t kLegPlayer = 0x5B34;   // play + 0x5B34: the player actor
+constexpr uint32_t kLegCLModel = 0x448;   // daPy_lk_c::mpCLModel
+constexpr uint32_t kFootData = 0x73F0, kFootStride = 0x118;  // daPy_lk_c::mFootData[2]
+constexpr uint32_t kFootAngle = 0x2, kLegAAngle = 0x8, kLegBJointAngle = 0xA;
+constexpr uint32_t kLegJ[2][4] = {{37, 38, 39, 40}, {32, 33, 34, 35}};  // foot record 0: right, 1: left
+struct LegWords { int16_t a[2][3]; };  // per foot record: legA, legBJoint, foot
+struct LegHist { uint32_t proc = 0, id = 0; std::deque<std::pair<double, LegWords>> steps; };
+LegHist g_leg;
+LegWords leg_words(uint32_t proc) {
+    LegWords v;
+    for (int i = 0; i < 2; i++) {
+        const uint32_t r = proc + kFootData + i * kFootStride;
+        v.a[i][0] = (int16_t)ld16(r + kLegAAngle), v.a[i][1] = (int16_t)ld16(r + kLegBJointAngle), v.a[i][2] = (int16_t)ld16(r + kFootAngle);
+    }
+    return v;
+}
+const LegWords* leg_at(double t) {
+    for (const auto& s : g_leg.steps)
+        if (std::fabs(s.first - t) < hist::kEps) return &s.second;
+    return nullptr;
+}
+float ang_d(int16_t a, int16_t b) { return (float)(int16_t)(uint16_t)((uint16_t)b - (uint16_t)a); }
+// M x Rz(d) on the 3x3 part (s16 angle units; mDoMtx_ZrotS's [[c, -s], [s, c]])
+void turn_z(float* M, float d) {
+    const float k = (float)(M_PI / 32768.0), c = std::cos(d * k), s = std::sin(d * k);
+    for (int r = 0; r < 3; r++) {
+        const float m0 = M[4 * r], m1 = M[4 * r + 1];
+        M[4 * r] = m0 * c + m1 * s;
+        M[4 * r + 1] = -m0 * s + m1 * c;
+    }
+}
+void leg_mtx(const uint32_t* w, float* m) {
+    for (int k = 0; k < 12; k++) m[k] = interp::joints::word_f(w[k]);
+}
+// inv(P) x J (3x4 affine, row major); false: P singular
+bool leg_local(const float* P, const float* J, float* L) {
+    const float a = P[0], b = P[1], c = P[2], d = P[4], e = P[5], f = P[6], g = P[8], h = P[9], i = P[10];
+    const float det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if (std::fabs(det) < 1e-12f) return false;
+    const float r = 1.0f / det;
+    const float I[9] = {(e * i - f * h) * r, (c * h - b * i) * r, (b * f - c * e) * r, (f * g - d * i) * r, (a * i - c * g) * r,
+                        (c * d - a * f) * r, (d * h - e * g) * r, (b * g - a * h) * r, (a * e - b * d) * r};
+    const float t[3] = {J[3] - P[3], J[7] - P[7], J[11] - P[11]};
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 3; col++)
+            L[4 * row + col] = I[3 * row] * J[col] + I[3 * row + 1] * J[4 + col] + I[3 * row + 2] * J[8 + col];
+        L[4 * row + 3] = I[3 * row] * t[0] + I[3 * row + 1] * t[1] + I[3 * row + 2] * t[2];
+    }
+    return true;
+}
+void leg_compose(const float* P, const float* L, float* O) {
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 4; col++)
+            O[4 * row + col] = P[4 * row] * L[col] + P[4 * row + 1] * L[4 + col] + P[4 * row + 2] * L[8 + col];
+        O[4 * row + 3] += P[4 * row + 3];
+    }
+}
+// td: the drawn time; da / db, f: the kept steps drawn (out = their blend at f)
+void leg_frameend(double td, double ta, double tb, float f, uint32_t* out, uint32_t n) {
+    if (n <= 40) return;
+    const double F1 = std::floor(td + hist::kEps), F2 = F1 + 1.0, frac = td - F1;
+    if (frac < hist::kEps || frac > 1.0 - hist::kEps) return;  // (a frame end: drawn as it is)
+    const LegWords *w1 = leg_at(F1), *w2 = leg_at(F2), *wa = leg_at(ta), *wb = leg_at(tb);
+    if (!w1 || !w2 || !wa || !wb) {
+        if (g_legpic_log) fprintf(g_legpic_log, "%.4f miss F1 %d F2 %d a %d b %d\n", td, !!w1, !!w2, !!wa, !!wb);
+        return;  // (a frame end not kept: drawn as it is)
+    }
+    float d[2][3];
+    bool any = false;
+    for (int i = 0; i < 2; i++)
+        for (int k = 0; k < 3; k++) {
+            const float drawn = (float)wa->a[i][k] + f * ang_d(wa->a[i][k], wb->a[i][k]);
+            const float want = (float)w1->a[i][k] + (float)frac * ang_d(w1->a[i][k], w2->a[i][k]);
+            d[i][k] = std::remainder(want - drawn, 65536.0f);
+            any = any || std::fabs(d[i][k]) > 0.5f;
+        }
+    if (g_legpic_log)
+        fprintf(g_legpic_log, "%.4f frac %.3f f %.3f R %d %d %d | %d %d %d | %d %d %d L %d %d %d | %d %d %d | %d %d %d\n", td, frac, f,
+                w1->a[0][0], w1->a[0][1], w1->a[0][2], wa->a[0][0], wa->a[0][1], wa->a[0][2], w2->a[0][0], w2->a[0][1], w2->a[0][2],
+                w1->a[1][0], w1->a[1][1], w1->a[1][2], wa->a[1][0], wa->a[1][1], wa->a[1][2], w2->a[1][0], w2->a[1][1], w2->a[1][2]);
+    if (!any) return;
+    for (int i = 0; i < 2; i++) {
+        const uint32_t* j = kLegJ[i];
+        float W[4][12], L[4][12], N[4][12];
+        for (int k = 0; k < 4; k++) leg_mtx(out + 12 * j[k], W[k]);
+        bool ok = true;
+        for (int k = 1; k < 4; k++) ok = ok && leg_local(W[k - 1], W[k], L[k]);
+        if (!ok) continue;
+        memcpy(N[0], W[0], sizeof N[0]);
+        turn_z(N[0], d[i][0]);
+        for (int k = 1; k < 4; k++) {
+            if (k < 3) turn_z(L[k], d[i][k]);
+            leg_compose(N[k - 1], L[k], N[k]);
+        }
+        for (int k = 0; k < 4; k++)
+            for (int w = 0; w < 12; w++) out[12 * j[k] + w] = interp::joints::f_word(N[k][w]);
+    }
+}
+}  // namespace
+
+bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uint32_t* out) {
     const uint32_t proc = g_drawing;
     if (!converted(proc)) {  // (the per-scene check: an unconverted model is visible)
         g_scene_unconverted_drawn = true;
@@ -350,7 +602,24 @@ bool model(uint32_t /*model*/, uint32_t jnt, uint32_t mtx, uint32_t n, double w,
     h.pass = g_pass;
     // (a whole-form actor's picture step is no step of its own: not kept; drawn between its frame ends)
     const bool picture = g_whole_blend && picture_step(proc);
-    if (!hist::record(h.steps, e->second.time, picture, [&] { return std::vector<uint32_t>(cur, cur + words); }))
+    const bool link_gl = !glide::g_nc && proc == ld32(kPlayInfo + 0x5B34);  // (the glide: Link's models)
+    if (link_gl && !picture) glide::record(proc, id, e->second.time);
+    const bool link_legs = !g_legpic_nc && n > 40 && proc == ld32(kPlayInfo + kLegPlayer) &&
+                           model == ld32(proc + kLegCLModel);  // (the leg IK: Link's CL model)
+    if (link_legs && !picture) {  // (the leg words kept with the step, as its matrices)
+        if (g_leg.proc != proc || g_leg.id != id) g_leg = LegHist{}, g_leg.proc = proc, g_leg.id = id;
+        const double t = e->second.time;
+        if (!g_leg.steps.empty() && std::fabs(g_leg.steps.back().first - t) < hist::kEps) g_leg.steps.back().second = leg_words(proc);
+        else if (g_leg.steps.empty() || g_leg.steps.back().first < t) g_leg.steps.emplace_back(t, leg_words(proc));
+        while (g_leg.steps.size() > 32) g_leg.steps.pop_front();
+    }
+    const bool link_cl = !g_hat_nc && n > kHatC && proc == ld32(kPlayInfo + kPlayerPtr) &&
+                         model == ld32(proc + kCLModel);  // (the cap and hair: Link's CL model)
+    if (!hist::record(h.steps, e->second.time, picture, [&] {
+            std::vector<uint32_t> v(cur, cur + words);
+            if (link_cl) momi_words(proc, v);
+            return v;
+        }))
         return false;  // (nothing kept yet: drawn as it is)
     const hist::Pick p = hist::pick(h.steps, w);
     const auto& sa = h.steps[p.a];
@@ -364,6 +633,14 @@ bool model(uint32_t /*model*/, uint32_t jnt, uint32_t mtx, uint32_t n, double w,
             memcpy(out, sb.second.data(), 4 * words);
             f = 1.0f;
         }
+    }
+    if (link_cl)  // (Link's cap and hair between the frame ends)
+        hat_frameend(h.steps, sa.first + f * (sb.first - sa.first), out, n);
+    if (link_legs)  // (Link's leg IK between the frame ends)
+        leg_frameend(sa.first + f * (sb.first - sa.first), sa.first, sb.first, f, out, n);
+    if (link_gl) {  // (the Deku Leaf glide's lean / sway / flutter, the gust)
+        glide::frameend(proc, model, sa.first, sb.first, f, out, n);
+        glide::gust(proc, model, h.steps, sa.first + f * (sb.first - sa.first), out, n);
     }
     if (g_carry_on) {  // (Link's carry by a whole-form carrier spread over the frame)
         auto c = g_carry.find(proc);

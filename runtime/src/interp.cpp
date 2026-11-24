@@ -489,6 +489,11 @@ float pass_t() {
 #if WWHD_DECOMP
 // true 60 (t60_draw.h): the time the interpolated world is drawn at on this pass, in 30 Hz frames on the step clock
 double t60_world_time() { return (double)g_logic_steps - 1.0 + pass_t(); }
+// true 60 (the flyer's magic gauge): the world time the aligned camera was drawn at on this pass (the actor draws; code after them, the HD
+// UI's layout picture, can see another pass fraction), else t60_world_time()
+double g_t60_cam_w = 0.0;
+uint64_t g_t60_cam_w_pass = ~0ull;
+double t60_camera_world_time() { return g_t60_cam_w_pass == g_passes ? g_t60_cam_w : t60_world_time(); }
 #endif
 // At 40 fps the logic pass of a step without an in-between frame also records its step (g_record_logic):
 // - after a record pass it is a blended record pass: drawn blended (pass_t()), and what it draws is
@@ -565,6 +570,13 @@ char g_cam_path = '-';
 interp::CamState g_cam{};
 uint32_t g_link_n = 0;
 float g_link[3] = {0, 0, 0};
+// debug: WWHD_T60_PASSLOG_GLIDE=1 adds the drawn joint matrices of Link's models (the CL
+// body, the Deku Leaf parachute, the gust) and his glide words (newest step) to each line: " G" then per model drawn
+// "<tag> <n> <12 n floats>" (tags c / f / g), then " W m34F2 m34F4 waistZ waistY m355E m3600 proc fanWindTimer"
+const bool g_glide = getenv("WWHD_T60_PASSLOG_GLIDE") != nullptr;
+std::vector<float> g_gm[3];
+uint32_t g_gw_proc = 0;
+std::vector<std::pair<uint32_t, std::vector<float>>> g_go;  // Link's other models drawn: (model, root 3x4)
 bool on() { return g_f != nullptr; }
 void cam(char path, const interp::CamState& s) {
     if (!g_f) return;
@@ -583,6 +595,23 @@ void viewcalc(Cpu* c) {  // J3DModel::viewCalc as drawn (the matrices in place a
     const uint32_t jnt = ld32(model + 0x2C);  // (interp kMdlJoints / kJntMtx / kJntNum)
     const uint32_t mtx = jnt ? ld32(jnt + 0x10) : 0;
     const uint32_t n = jnt ? ld16(jnt + 0x2C) : 0;
+#if WWHD_DECOMP
+    if (g_glide && mtx && n) {
+        const uint32_t morf = ld32(proc + 0x44D0);
+        const int tag = model == ld32(proc + 0x448) ? 0 : (morf && model == ld32(morf + 0x90)) ? 1 : model == ld32(proc + 0x53F0) ? 2 : -1;
+        if (tag >= 0) {
+            const uint32_t* w = (const uint32_t*)ppc_ptr(mtx);
+            g_gm[tag].resize(12 * n);
+            for (uint32_t k = 0; k < 12 * n; k++) g_gm[tag][k] = u32_as_f32(__builtin_bswap32(w[k]));
+            g_gw_proc = proc;
+        } else if (g_go.size() < 16) {
+            const uint32_t* w = (const uint32_t*)ppc_ptr(mtx);
+            std::vector<float> r(12);
+            for (int k = 0; k < 12; k++) r[k] = u32_as_f32(__builtin_bswap32(w[k]));
+            g_go.emplace_back(model, std::move(r));
+        }
+    }
+#endif
     if (!mtx || n <= g_link_n) return;
     g_link_n = n;
     const uint32_t* w = (const uint32_t*)ppc_ptr(mtx);
@@ -606,7 +635,27 @@ void end_pass(uint64_t pass, uint64_t step, bool hold, int phase, int passes, fl
             g_cam.eye[2], g_cam.center[0], g_cam.center[1], g_cam.center[2]);
     if (g_link_n) fprintf(g_f, " L %.3f %.3f %.3f", g_link[0], g_link[1], g_link[2]);
     else fputs(" L - - -", g_f);
-    fprintf(g_f, " ev %u %u %.3f\n", (unsigned)ld8(play + 0x5292), (unsigned)ld8(play + 0x5BB2), ms);
+    fprintf(g_f, " ev %u %u %.3f", (unsigned)ld8(play + 0x5292), (unsigned)ld8(play + 0x5BB2), ms);
+    if (g_glide && g_gw_proc) {
+        fputs(" G", g_f);
+        for (int t = 0; t < 3; t++) {
+            if (g_gm[t].empty()) continue;
+            fprintf(g_f, " %c %u", "cfg"[t], (unsigned)(g_gm[t].size() / 12));
+            for (float v : g_gm[t]) fprintf(g_f, " %.4f", v);
+            g_gm[t].clear();
+        }
+        for (const auto& o : g_go) {
+            fprintf(g_f, " o %08X", o.first);
+            for (float v : o.second) fprintf(g_f, " %.4f", v);
+        }
+        g_go.clear();
+        const uint32_t p = g_gw_proc;
+        fprintf(g_f, " W %d %d %d %d %d %.4f %d %d", (int16_t)ld16(p + 0x6942), (int16_t)ld16(p + 0x6944), (int16_t)ld16(p + 0x6928),
+                (int16_t)ld16(p + 0x692C), (int16_t)ld16(p + 0x69AE), u32_as_f32(ld32(p + 0x6A58)), (int)ld32(p + 0x65F0),
+                (int16_t)ld16(p + 0x6984));
+        g_gw_proc = 0;
+    }
+    fputc('\n', g_f);
     if (pass % 120 == 0) fflush(g_f);
     g_cam_path = '-';
     g_link_n = 0;
@@ -1142,7 +1191,9 @@ static bool t60_camera(Cpu* c, uint32_t cam, interp::Prev* p) {
     if (!enabled()) return false;
     const CamState cur = read_cam(cam);
     CamState drawn;
-    if (!t60::draw::camera(cam, cur, read_shake(cam), t60_world_time(), drawn)) return false;
+    const double cam_w = t60_world_time();
+    if (!t60::draw::camera(cam, cur, read_shake(cam), cam_w, drawn)) return false;
+    g_t60_cam_w = cam_w, g_t60_cam_w_pass = g_passes;  // (the flyer's magic gauge)
     if (g_blend_draw && !g_hold && p->valid) exact_prerun(c);
     write_cam(cam, drawn);
     p->drawn = drawn;

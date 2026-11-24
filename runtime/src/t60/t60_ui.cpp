@@ -301,8 +301,15 @@ uint32_t pane_hash(const PaneFrame& f, uint32_t* count) {
 }
 }  // namespace
 
+namespace interp { double t60_camera_world_time(); }  // (the flyer's gauge, interp.cpp)
+extern "C" int wwhd_t60_proc_converted(int);  // (the flyer's gauge, f_pc_executor.cpp; weak default in t60_draw.cpp)
+namespace {
+#include "t60/t60_ui_gauge.h"  // (the flyer's magic gauge)
+}  // namespace
+
 namespace t60::ui {
 void layout_exact(Cpu* c) {
+    gauge::restore();  // (the flyer's gauge: before the pane form's own put-back)
     if (!g_shown) return;
     g_shown = false;
     const Cpu saved = *c;
@@ -419,10 +426,17 @@ void layout_present(Cpu* c) {
     if (!(first_step() || sub_step() || tick30())) return;  // (a plain interpolation pass keeps the step's picture)
     if (g_cur.id == ~0ull || (uint64_t)wwhd_t60_step_counter - g_cur.id >= wwhd_t60_steps) { layout_exact(c); g_pane_prev.clear(); return; }  // (no calc this frame)
     const uint32_t k = wwhd_t60_stepk, n = wwhd_t60_steps;
+    gauge::note_step();  // (the flyer's gauge)
     if (k >= n) {  // the tick30 step: A's panes; they are the next frame's previous frame end
         layout_exact(c);
         snap_frame(c, g_pane_prev);
         if (g_traced != g_cur.id) { g_traced = g_cur.id; trace_frame(); trace_panes(g_pane_prev); }
+        {  // (the flyer's gauge: the gauge's root at this pass's camera; put back by layout_exact)
+            const Cpu saved = *c;
+            gauge::present(c, 1.0f, g_pane_prev);
+            if (gauge::g_applied) redo_matrices(c);
+            *c = saved;
+        }
         return;
     }
     uint32_t shown = 0, moving = 0;
@@ -452,6 +466,7 @@ void layout_present(Cpu* c) {
         if (p && bits(v) != bits(r.before)) moving++;
     }
     const uint32_t hand = trace_hand(k, n);
+    gauge::present(c, t, g_pane_live);  // (the flyer's gauge)
     redo_matrices(c);
     *c = saved;
     g_shown = true;
