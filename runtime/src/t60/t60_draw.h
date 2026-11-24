@@ -60,6 +60,14 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
 bool camera(uint32_t cam, const interp::camera::CamState& cur, const interp::camera::Shake& shake, double w,
             interp::camera::CamState& out);
 
+// Draw words (decomp, through wwhd_t60_draw_words_begin / _end): a draw that is no J3DModel reads `n` guest words at
+// `ea` of converted process `owner`; begin puts the words of its step at the world time in their place (kind 0: whole
+// steps, 1: floats blended, 2: 3x4 matrices blended, 3: floats between frame ends) and returns true when it changed them, end puts the live words
+// back; owner 0: the process whose draw runs (3D lines). WWHD_T60_DRAW_WORDS=0: off. DRAWLOG: 'p' lines (drawn first point / translation, then 'new': the newest step's)
+bool words_begin(uint32_t owner, uint32_t ea, uint32_t n, int kind);
+void words_end(uint32_t ea);
+bool words_owns(uint32_t proc);  // a converted owner whose 3D lines the words history draws (interp_fx line_packet: no blend)
+
 // debug: WWHD_T60_DRAWLOG=path: one line per aligned draw: pass, kind (m model / c camera), owner process, world time,
 // the stamps of the two steps it was drawn between (equal: drawn exactly at a step), the newest stamp, the fraction, and
 // the drawn root joint's translation (a camera: its eye)

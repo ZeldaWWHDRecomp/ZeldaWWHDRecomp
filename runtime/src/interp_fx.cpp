@@ -55,6 +55,7 @@
 #if WWHD_DECOMP
 #include "t60/t60_particles.h"  // (true 60: the particle calc on every step)
 #include "t60/t60.h"  // (t60::tick30: WWHD_T60_PTCL_TRACE)
+#include "t60/t60_draw.h"  // (t60::draw::words_owns)
 #endif
 
 namespace interp {
@@ -1156,6 +1157,10 @@ void line_packet(Cpu* c, void (*original)(Cpu*), ClothPacketKind kind, const Lin
     if (!on(16) || interp::in_execute()) { original(c); return; }
     static const bool off = getenv("WWHD_INTERP_LINES") && !atoi(getenv("WWHD_INTERP_LINES")); // diagnostic ablation
     if (off) { original(c); return; }
+#if WWHD_DECOMP
+    // (true 60: a converted owner's lines are drawn at the world's time by t60_draw's words history)
+    if (t60::draw::words_owns(t60::draw::drawing())) { original(c); return; }
+#endif
     const uint32_t packet = c->r[3];
     const uint32_t count = ld16(packet+lay.count);
     const uint32_t points = std::min(c->r[4] & 0xFFFFu, uint32_t(ld16(packet+lay.points)));

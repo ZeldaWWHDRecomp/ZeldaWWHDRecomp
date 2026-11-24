@@ -22,7 +22,10 @@
 // units: nothing is converted there)
 extern "C" __attribute__((weak)) int wwhd_t60_proc_converted(int) { return 0; }
 
-namespace interp { void blend_world_matrix(const float* a, const float* b, float* out, float t); }
+namespace interp {
+void blend_world_matrix(const float* a, const float* b, float* out, float t);
+double t60_world_time();  // interp.cpp (decomp build)
+}
 
 namespace t60::draw {
 namespace {
@@ -313,9 +316,11 @@ bool stepped_this_pass(uint32_t proc) {
     return it != g_exec.end() && it->second.pass == g_pass && it->second.id == ld32(proc + kProcId);
 }
 
+void words_owner_draw(uint32_t proc);  // (draw words, below)
 uint32_t draw_begin(uint32_t proc) {
     const uint32_t previous = g_drawing;
     g_drawing = proc;
+    words_owner_draw(proc);
     if (proc && (int16_t)ld16(proc + kProfName) == kPlayScene && ld32(proc + kProcId) != g_scene_id) {
         g_scene_id = ld32(proc + kProcId);  // a new scene: nothing unconverted drawn yet
         g_scene_unconverted_drawn = false;
@@ -434,6 +439,155 @@ bool camera(uint32_t cam, const interp::camera::CamState& cur, const interp::cam
     return true;
 }
 }  // namespace t60::draw
+
+// Draw words (2026-11-23): draws that are no J3DModel (the sail cloth's packet matrix and
+// vertices, the boomerang's trail, Link's sword blur) read their converted owner's newest step at draw time, while its
+// models are drawn at world time W (one step back at N 2): a constant 1/60 s lead. The decomp brackets such a draw with
+// wwhd_t60_draw_words_begin / _end on a block of guest words; begin keeps the words per step of the owner (stamped with
+// its newest step's time, as model() does), puts the words of the step at W in their place, and end puts the live words
+// back (the draw's own writes outside the block stay). Draw only. WWHD_T60_DRAW_WORDS=0: off (drawn at the newest step).
+namespace t60::draw {
+namespace {
+double w_now() { return interp::t60_world_time(); }
+const bool g_words_on = [] {
+    const char* e = getenv("WWHD_T60_DRAW_WORDS");
+    return !e || atoi(e) != 0;
+}();
+const bool g_words_frameend = [] {  // (kind 3: the frame-end blend; 0: as kind 1)
+    const char* e = getenv("WWHD_T60_WORDS_FRAMEEND");
+    return !e || atoi(e) != 0;
+}();
+struct WordsHist {
+    uint32_t owner = 0, owner_id = 0, n = 0;
+    int kind = 0;
+    uint64_t pass = 0;
+    std::deque<std::pair<double, std::vector<uint32_t>>> steps;
+};
+std::unordered_map<uint32_t, WordsHist> g_words;                         // by the block's address
+std::vector<std::pair<uint32_t, std::vector<uint32_t>>> g_words_live;  // blocks swapped now (the live words)
+// the world time at a converted owner's own draw on this pass: a packet drawn later on the pass (the draw lists: the
+// boomerang trail, the sword blur) is drawn at the time its owner's models were (the painter's pass fraction can differ)
+struct OwnerW { uint64_t pass; double w; };
+std::unordered_map<uint32_t, OwnerW> g_owner_w;
+}  // namespace
+void words_owner_draw(uint32_t proc) {
+    if (!g_words_on || !proc || !align_on() || !converted(proc)) return;
+    if (g_pass % 256 == 0)
+        for (auto it = g_owner_w.begin(); it != g_owner_w.end();) it = it->second.pass + 64 < g_pass ? g_owner_w.erase(it) : std::next(it);
+    g_owner_w[proc] = {g_pass, w_now()};
+}
+
+// kind 0: words as a whole (a point list that shifts: the step nearer W), 1: floats (lerp), 2: 3x4 matrices; kind >> 8:
+// the word the DRAWLOG point starts at (a matrix: its translation)
+bool words_begin(uint32_t owner, uint32_t ea, uint32_t n, int kind_log) {
+    const int kind = kind_log & 0xFF;
+    const uint32_t lw = (uint32_t)kind_log >> 8;
+    if (!owner) owner = g_drawing;  // (3D lines: the process whose draw runs)
+    if (!g_words_on || !ea || !n || !align_on() || !converted(owner)) return false;
+    auto e = g_exec.find(owner);
+    const uint32_t id = ld32(owner + kProcId);
+    if (e == g_exec.end() || e->second.id != id) return false;
+    if (g_pass % 256 == 0)
+        for (auto it = g_words.begin(); it != g_words.end();) it = it->second.pass + 64 < g_pass ? g_words.erase(it) : std::next(it);
+    WordsHist& h = g_words[ea];
+    // (another owner or block, or not drawn on the pass before: a new run of the draw, its old steps are no history)
+    if (h.owner != owner || h.owner_id != id || h.n != n || h.kind != kind || h.pass + 1 < g_pass) {
+        h = WordsHist{};
+        h.owner = owner, h.owner_id = id, h.n = n, h.kind = kind;
+    }
+    h.pass = g_pass;
+    uint32_t* cur = (uint32_t*)ppc_ptr(ea);
+    // (a whole-form owner's picture step is no step of its own: not kept; drawn between its frame ends, as
+    // its models)
+    const bool picture = g_whole_blend && picture_step(owner);
+    if (!hist::record(h.steps, e->second.time, picture, [&] { return std::vector<uint32_t>(cur, cur + n); })) return false;
+    double w = w_now();
+    if (owner != g_drawing) {  // (a packet drawn after its owner's draw: its owner's time)
+        auto ow = g_owner_w.find(owner);
+        if (ow != g_owner_w.end() && ow->second.pass == g_pass) w = ow->second.w;
+    }
+    const hist::Pick p = hist::pick(h.steps, w);
+    const std::vector<uint32_t>& a = h.steps[p.a].second;
+    const std::vector<uint32_t>& b = h.steps[p.b].second;
+    std::vector<uint32_t> out(a);
+    float f = p.f;
+    if (f != 0.0f) {
+        using interp::joints::f_word;
+        using interp::joints::word_f;
+        if (kind == 0) {
+            if (f >= 0.5f) out = b;
+        } else if (kind == 2) {
+            for (uint32_t m = 0; m + 12 <= n; m += 12) {
+                float fa[12], fb[12], fo[12];
+                for (int k = 0; k < 12; k++) fa[k] = word_f(a[m + k]), fb[k] = word_f(b[m + k]);
+                interp::blend_world_matrix(fa, fb, fo, f);
+                for (int k = 0; k < 12; k++) out[m + k] = f_word(fo[k]);
+            }
+        } else {
+            for (uint32_t k = 0; k < n; k++) out[k] = f_word(word_f(a[k]) + f * (word_f(b[k]) - word_f(a[k])));
+        }
+    }
+    // kind 3 (the sail cloth's frame-end blend, 2026-11-24): floats whose first third are positions and the
+    // rest unit vectors (the sail cloth: mPos, mNrm, mBackNrm). Drawn between two frame ends whose next end is kept (W one
+    // step back at N 2): the frame start + frac x (the frame end - the frame start), the vectors renormalized, in place of
+    // the earlier step's own (extrapolated) picture; a frame end, a frame end not kept, or a position jump between the
+    // two (kCut): drawn as above. Port switch WWHD_T60_WORDS_FRAMEEND=0: as kind 1
+    if (kind == 3 && g_words_frameend) {
+        const double td = h.steps[p.a].first + f * (h.steps[p.b].first - h.steps[p.a].first);
+        const double F1 = std::floor(td + hist::kEps), frac = td - F1;
+        if (frac > hist::kEps && frac < 1.0 - hist::kEps && n % 9 == 0) {
+            const std::vector<uint32_t>*e1 = nullptr, *e2 = nullptr;
+            for (const auto& st : h.steps) {
+                if (std::fabs(st.first - F1) < hist::kEps) e1 = &st.second;
+                if (std::fabs(st.first - (F1 + 1.0)) < hist::kEps) e2 = &st.second;
+            }
+            if (e1 && e2) {
+                using interp::joints::f_word;
+                using interp::joints::word_f;
+                const uint32_t np = n / 3;
+                bool cut = false;
+                for (uint32_t k = 0; k < np && !cut; k++) cut = !(std::fabs(word_f((*e2)[k]) - word_f((*e1)[k])) <= kCut);
+                if (!cut) {
+                    const float fr = (float)frac;
+                    for (uint32_t k = 0; k < n; k++) out[k] = f_word(word_f((*e1)[k]) + fr * (word_f((*e2)[k]) - word_f((*e1)[k])));
+                    for (uint32_t k = np; k + 3 <= n; k += 3) {
+                        const float x = word_f(out[k]), y = word_f(out[k + 1]), z = word_f(out[k + 2]);
+                        const float l = std::sqrt(x * x + y * y + z * z);
+                        if (l > 1e-6f) out[k] = f_word(x / l), out[k + 1] = f_word(y / l), out[k + 2] = f_word(z / l);
+                    }
+                }
+            }
+        }
+    }
+    // (log: kind 'p', the block's first point as drawn (a matrix: its translation) and as the newest step has it)
+    const uint32_t t0 = kind == 2 ? 3 : lw, t1 = kind == 2 ? 7 : lw + 1, t2 = kind == 2 ? 11 : lw + 2;
+    if (g_log && n > t2)
+        fprintf(g_log, "%llu p %08X %.4f %.4f %.4f %.4f %.3f %.3f %.3f %.3f b %08X k%d new %.3f %.3f %.3f\n", (unsigned long long)g_pass,
+                owner, w, h.steps[p.a].first, h.steps[p.b].first, h.steps.back().first, f, interp::joints::word_f(out[t0]),
+                interp::joints::word_f(out[t1]), interp::joints::word_f(out[t2]), ea, kind, interp::joints::word_f(cur[t0]),
+                interp::joints::word_f(cur[t1]), interp::joints::word_f(cur[t2]));
+    if (memcmp(cur, out.data(), 4 * n) == 0) return false;  // (W is the newest step: drawn as it is)
+    g_words_live.emplace_back(ea, std::vector<uint32_t>(cur, cur + n));
+    memcpy(cur, out.data(), 4 * n);
+    return true;
+}
+// A converted owner's 3D lines (the grappling hook's rope) are drawn at W through the words history; the frame interpolation's line
+// blend (interp_fx.cpp line_packet: between the record pass's and this step's points, for every owner) is left out for
+// it, or the history would keep its blended points (the rope's hand end was drawn up to 5.8 off Link's hand)
+bool words_owns(uint32_t proc) { return g_words_on && proc && align_on() && converted(proc); }
+void words_end(uint32_t ea) {
+    for (auto it = g_words_live.rbegin(); it != g_words_live.rend(); ++it) {
+        if (it->first != ea) continue;
+        memcpy(ppc_ptr(ea), it->second.data(), 4 * it->second.size());
+        g_words_live.erase(std::next(it).base());
+        return;
+    }
+}
+}  // namespace t60::draw
+extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_words_begin(uint32_t owner, uint32_t ea, uint32_t n, int kind) {
+    t60::draw::words_begin(owner, ea, n, kind);
+}
+extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_words_end(uint32_t ea) { t60::draw::words_end(ea); }
 
 // decomp d/t60_whole.h (game build): this execute of `actor` (a whole-form actor, on a step before the tick30 step) was a
 // picture step
