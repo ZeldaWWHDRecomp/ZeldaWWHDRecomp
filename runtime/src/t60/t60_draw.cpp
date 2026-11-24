@@ -539,9 +539,82 @@ void leg_compose(const float* P, const float* L, float* O) {
         O[4 * row + 3] += P[4 * row + 3];
     }
 }
+// The Iron Boots on the blended feet: the Iron Boots models (daPy_lk_c::mpHbootsModels[2] at +0x442C: right, left) take copies of
+// the CL leg joints in execute (setBootsModel 024038A0, heavy boots on: boots joint 1 = knee CL 38 / 33, 2 = toe 40 / 35,
+// 3 = foot 39 / 34). They are drawn from their own kept steps, i.e. with the step's own IK: on an earlier pass the boots
+// would stand off the blended foot. The CL draw of the pass leaves each leg joint's change (drawn after x drawn before
+// ^-1, world space) here; a boots model drawn on the same pass at the same time takes it on its copied joints. NC:
+// WWHD_T60_LEGPIC_BOOTS_NEGCTRL=1 (boots as before). Debug: the LEGPIC log's B lines (boots foot vs CL foot per pass).
+const bool g_legboots_nc = [] {
+    const char* e = getenv("WWHD_T60_LEGPIC_BOOTS_NEGCTRL");
+    return e && atoi(e) != 0;
+}();
+constexpr uint32_t kHboots = 0x442C;
+constexpr uint32_t kBootsCL[2][4] = {{0, 38, 40, 39}, {0, 33, 35, 34}};  // boots joint -> CL joint (boots 0: right)
+struct LegCache {
+    uint64_t pass = ~0ull;
+    double td = -1;
+    bool changed = false;
+    float delta[41][12];   // per CL joint: drawn after x drawn before^-1 (only the leg joints set)
+    uint32_t before[41][12], after[41][12];  // the CL leg joints' drawn words before / after the blend
+    float foot[2][3];      // the drawn CL foot translations ([0] right 39, [1] left 34: the boots side)
+};
+LegCache g_legcache;
+void leg_mul(const float* A, const float* B, float* O) {  // A x B (3x4 affine)
+    leg_compose(A, B, O);
+}
+bool leg_inv(const float* M, float* I) {  // M^-1 (3x4 affine)
+    const float id[12] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0};
+    return leg_local(M, id, I);
+}
+void leg_cache_note(double td, const uint32_t* before, const uint32_t* after, bool changed) {
+    g_legcache.pass = g_pass, g_legcache.td = td, g_legcache.changed = changed;
+    for (int i = 0; i < 2; i++) {
+        const uint32_t* j = kLegJ[i];
+        float A[12];
+        leg_mtx(after + 12 * j[2], A);
+        g_legcache.foot[i][0] = A[3], g_legcache.foot[i][1] = A[7], g_legcache.foot[i][2] = A[11];
+        if (!changed) continue;
+        for (int k = 0; k < 4; k++) {
+            float B[12], Bi[12];
+            memcpy(g_legcache.before[j[k]], before + 12 * j[k], 48), memcpy(g_legcache.after[j[k]], after + 12 * j[k], 48);
+            leg_mtx(before + 12 * j[k], B), leg_mtx(after + 12 * j[k], A);
+            if (!leg_inv(B, Bi)) { g_legcache.changed = false; return; }
+            leg_mul(A, Bi, g_legcache.delta[j[k]]);
+        }
+    }
+}
+// a boots model of Link drawn: side 0 right, 1 left
+void leg_boots(int side, double td, uint32_t* out, uint32_t n) {
+    if (n < 4) return;
+    const bool same = g_legcache.pass == g_pass && std::fabs(g_legcache.td - td) < hist::kEps;
+    if (same && g_legcache.changed && !g_legboots_nc)
+        for (int k = 1; k < 4; k++) {
+            const uint32_t c = kBootsCL[side][k];
+            if (memcmp(out + 12 * k, g_legcache.before[c], 48) == 0) {  // (the copy as drawn: the CL joint as drawn now)
+                memcpy(out + 12 * k, g_legcache.after[c], 48);
+                continue;
+            }
+            float B[12], O[12];
+            leg_mtx(out + 12 * k, B);
+            leg_mul(g_legcache.delta[kBootsCL[side][k]], B, O);
+            for (int w = 0; w < 12; w++) out[12 * k + w] = interp::joints::f_word(O[w]);
+        }
+    if (g_legpic_log) {
+        float F[12];
+        leg_mtx(out + 36, F);
+        if (same)
+            fprintf(g_legpic_log, "B %.4f side %d changed %d boots-foot %.4f %.4f %.4f\n", td, side, g_legcache.changed ? 1 : 0,
+                    F[3] - g_legcache.foot[side][0], F[7] - g_legcache.foot[side][1], F[11] - g_legcache.foot[side][2]);
+        else
+            fprintf(g_legpic_log, "B %.4f side %d nocache (CL pass %llu td %.4f)\n", td, side, (unsigned long long)g_legcache.pass, g_legcache.td);
+    }
+}
+
 // td: the drawn time; da / db, f: the kept steps drawn (out = their blend at f)
 void leg_frameend(double td, double ta, double tb, float f, uint32_t* out, uint32_t n) {
     if (n <= 40) return;
+    leg_cache_note(td, out, out, false);  // (the drawn CL feet; no change unless set below)
     const double F1 = std::floor(td + hist::kEps), F2 = F1 + 1.0, frac = td - F1;
     if (frac < hist::kEps || frac > 1.0 - hist::kEps) return;  // (a frame end: drawn as it is)
     const LegWords *w1 = leg_at(F1), *w2 = leg_at(F2), *wa = leg_at(ta), *wb = leg_at(tb);
@@ -563,6 +636,7 @@ void leg_frameend(double td, double ta, double tb, float f, uint32_t* out, uint3
                 w1->a[0][0], w1->a[0][1], w1->a[0][2], wa->a[0][0], wa->a[0][1], wa->a[0][2], w2->a[0][0], w2->a[0][1], w2->a[0][2],
                 w1->a[1][0], w1->a[1][1], w1->a[1][2], wa->a[1][0], wa->a[1][1], wa->a[1][2], w2->a[1][0], w2->a[1][1], w2->a[1][2]);
     if (!any) return;
+    const std::vector<uint32_t> before(out, out + 12 * n);
     for (int i = 0; i < 2; i++) {
         const uint32_t* j = kLegJ[i];
         float W[4][12], L[4][12], N[4][12];
@@ -579,6 +653,7 @@ void leg_frameend(double td, double ta, double tb, float f, uint32_t* out, uint3
         for (int k = 0; k < 4; k++)
             for (int w = 0; w < 12; w++) out[12 * j[k] + w] = interp::joints::f_word(N[k][w]);
     }
+    leg_cache_note(td, before.data(), out, true);
 }
 }  // namespace
 
@@ -638,6 +713,9 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
         hat_frameend(h.steps, sa.first + f * (sb.first - sa.first), out, n);
     if (link_legs)  // (Link's leg IK between the frame ends)
         leg_frameend(sa.first + f * (sb.first - sa.first), sa.first, sb.first, f, out, n);
+    else if (!g_legpic_nc && proc == ld32(kPlayInfo + kLegPlayer) &&
+             (model == ld32(proc + kHboots) || model == ld32(proc + kHboots + 4)))  // (the Iron Boots on the blended feet)
+        leg_boots(model == ld32(proc + kHboots) ? 0 : 1, sa.first + f * (sb.first - sa.first), out, n);
     if (link_gl) {  // (the Deku Leaf glide's lean / sway / flutter, the gust)
         glide::frameend(proc, model, sa.first, sb.first, f, out, n);
         glide::gust(proc, model, h.steps, sa.first + f * (sb.first - sa.first), out, n);
