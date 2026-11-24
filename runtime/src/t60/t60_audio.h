@@ -16,9 +16,15 @@
 //   LISTENER the camera listener (025E1B44 / 02027754): a converted camera is drawn as an exact camera on every step
 //           (interp.cpp t60_camera), so the listener follows it every step; an unconverted camera keeps interpolation's
 //           rule (the record pass's exact camera, once per 30 Hz frame).
-// Animation sounds (JAIZelAnime::setAnimSound 0201BF08) need nothing here: the frame control keeps the per-30 Hz-frame
-// rate (frame += rate x dt, mRate undivided), so the sound gets the undivided rate (pitch, loop window) and fires
-// on the step whose frame crosses the key (JAIAnimeSound keeps the last frame).
+// Animation sounds (JAIZelAnime::setAnimSound 0201BF08 -> JAIAnimeSound::setAnimSoundActor): the frame control keeps the
+// per-30 Hz-frame rate (frame += rate x dt, mRate undivided), so the sound gets the undivided rate (pitch, loop
+// window). JAIAnimeSound itself is a once-per-30-Hz-frame engine, not a pure crossing test: a loop wrap plays the keys up
+// to the last call's frame + speed, and every call re-checks / re-starts its playing slots (a start == end key restarts
+// its sound on each call). Its caller therefore runs it once per 30 Hz frame, on the tick30 step, with the frame-end
+// frame (2026-11-24: Link's daPy_lk_c::execute, lkT60_animSoundStep in
+// d_a_player_seinit_t60.h; the converted actors' mDoExt_McaMorf / McaMorf2::play likewise). Keys crossing per step
+// apply only to sound paths that are pure crossing tests. A latched first-step animation set's sound init steps the
+// whole rate back (lkT60_seInitBack), so that frame's one call sees A's key window.
 //
 // N = 1 (and every 30 Hz fallback frame): unchanged.
 // PLAYER at N = 1 with frame interpolation: once per logic step, as CTL (normal port PR #627; fades at double speed
