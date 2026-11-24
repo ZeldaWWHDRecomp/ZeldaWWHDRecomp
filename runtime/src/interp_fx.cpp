@@ -242,9 +242,31 @@ void ptcl_trace(uint32_t mgr, uint32_t group) {
             c[2] / n, sz / n, al / n);
 }
 
+// true 60 (decomp build): emitter translations (+0x22C) drawn at W. The bow wave's draw (dPa_waveEcallBack::draw
+// 025A9508, its executeAfter 025A92F4 in the callback's slot 0x24) builds its head vertex from the emitter translation, the
+// newest step's, while its particles and the hull are drawn at W (draw_lag steps back): the head ran one step ahead of the
+// hull (22 units while sailing). t60_ptcl_step keeps a short per-step history of such an emitter's translation and writes
+// W's for the pass; it is put back at the next pass start (fx_pass_start / ptcl_restore) when the words are still the
+// drawn ones (an execute that set them since keeps its value). Draw only. WWHD_T60_EMTR_DRAW=0: off (the negative control).
+struct EmtrApplied {
+    uint32_t emtr;
+    uint32_t exact[3], drawn[3];
+};
+std::vector<EmtrApplied> g_emtr_applied;
+constexpr uint32_t kEmtrTrans = 0x22C;
+void emtr_restore() {
+    for (const EmtrApplied& a : g_emtr_applied) {
+        uint32_t* w = (uint32_t*)ppc_ptr(a.emtr + kEmtrTrans);
+        if (w[0] == a.drawn[0] && w[1] == a.drawn[1] && w[2] == a.drawn[2])
+            for (int i = 0; i < 3; i++) w[i] = a.exact[i];
+    }
+    g_emtr_applied.clear();
+}
+
 void ptcl_restore() {
     for (const Applied& a : g_ptcl_applied) write_ptcl(a.ptcl, a.w);
     g_ptcl_applied.clear();
+    emtr_restore();
 }
 // a particle's drawn values at t (from its exact values and what the logic pass recorded)
 void ptcl_mid(const Applied& ap, float t, uint32_t* mid) {
@@ -1292,6 +1314,7 @@ void fx_pass_start() {
     for (const Applied& a : g_ptcl_applied) write_ptcl(a.ptcl, a.w);
     g_ptcl_keep = std::move(g_ptcl_applied);
     g_ptcl_applied.clear();
+    emtr_restore();  // (the emitter translations drawn at W, back before the pass's executes)
     g_wave_keep = 0;
     wave_restore();
     temp_restore();
@@ -1365,6 +1388,107 @@ struct PtclHist {
 };
 std::unordered_map<uint32_t, PtclHist> g_ptcl_hist;
 uint64_t g_ptcl_hist_sweep = 0;
+// (see emtr_restore): the translation history of the emitters whose draw reads it
+struct EmtrHist {
+    uint64_t stamp[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    uint32_t w[8][3];
+    bool t30[8];
+    int n = 0;
+};
+std::unordered_map<uint32_t, EmtrHist> g_emtr_hist;
+uint64_t g_emtr_hist_sweep = 0;
+bool emtr_draw_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_EMTR_DRAW");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+// The weather wind lines (2026-11-23: kankyo wether_move_windline 0257836C -> dKyr_wind_move
+// 025642AC places its emitters, no callback, once per 30 Hz frame): a callback-less emitter whose translation changes on
+// tick30 steps only is drawn between its frame-end translations at W's place in the frame, as the interpolated world;
+// one that moves on the earlier steps too is drawn at W's step. WWHD_T60_EMTR_BLEND=0: the frame-end blend off (W's step
+// only; the negative control for the wind lines)
+bool emtr_blend_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_EMTR_BLEND");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+// the group's emitters after the step's calc: record the translation; with a lag, draw W's
+void emtr_step(uint32_t mgr, uint32_t group, uint64_t stamp, int lag) {
+    int guard = 0;
+    const bool t30 = t60::tick30();
+    for (uint32_t el = ld32(mgr + kMgrGroups + 12 * group); el && guard < 100000; el = ld32(el + 0xC), guard++) {
+        const uint32_t emtr = ld32(el);
+        if (!emtr) continue;
+        const uint32_t cb = ld32(emtr + 0x1E4), vt = cb ? ld32(cb) : 0;
+        const bool wave = vt && ld32(vt + 0x24) == 0x025A92F4u;  // (the bow wave's executeAfter: its draw reads the translation)
+        if (!wave && cb) continue;
+        const uint32_t* cur = (const uint32_t*)ppc_ptr(emtr + kEmtrTrans);
+        EmtrHist& h = g_emtr_hist[emtr];
+        if (h.n && h.stamp[(h.n - 1) % 8] + 8 < stamp) h = EmtrHist{};
+        if (!h.n || h.stamp[(h.n - 1) % 8] != stamp) h.n++;
+        const int i = (h.n - 1) % 8;
+        h.stamp[i] = stamp;
+        h.t30[i] = t30;
+        memcpy(h.w[i], cur, sizeof h.w[i]);
+        if (lag > 0) {
+            const uint64_t want = stamp - (uint64_t)lag;
+            // the entries newest first: W's step, the frame end at or before it (e0) and the one after it (e1)
+            int jw = -1, j0 = -1, j1 = -1;
+            bool steady = true;  // (no change between e0 and W's step: a tick30-only mover so far)
+            for (int k = 0; k < 8 && k < h.n; k++) {
+                const int j = (h.n - 1 - k) % 8;
+                if (h.stamp[j] != stamp - (uint64_t)k) break;  // (a gap: no history over it)
+                if (h.stamp[j] > want && h.t30[j]) j1 = j;      // (the last one found going back: the first after W)
+                if (h.stamp[j] == want) jw = j;
+                if (h.stamp[j] <= want && h.t30[j]) { j0 = j; break; }
+            }
+            uint32_t drawn[3];
+            bool have = false;
+            if (jw >= 0) {
+                memcpy(drawn, h.w[jw], sizeof drawn);
+                have = true;
+                if (!wave && emtr_blend_on() && j0 >= 0 && j1 >= 0 && !h.t30[jw]) {
+                    for (int k = 0; k < 8 && k < h.n; k++) {  // (the earlier steps from e0 up to W's step held e0's value)
+                        const int j = (h.n - 1 - k) % 8;
+                        if (h.stamp[j] > want || h.stamp[j] <= h.stamp[j0]) continue;
+                        if (memcmp(h.w[j], h.w[j0], sizeof h.w[j])) steady = false;
+                    }
+                    if (steady) {
+                        const float f = (float)(want - h.stamp[j0]) / (float)(h.stamp[j1] - h.stamp[j0]);
+                        for (int c = 0; c < 3; c++) drawn[c] = fw(lerp_f(wf(h.w[j0][c]), wf(h.w[j1][c]), f));
+                    }
+                }
+            }
+            if (have && memcmp(drawn, cur, sizeof drawn)) {
+                EmtrApplied ap{emtr};
+                memcpy(ap.exact, cur, sizeof ap.exact);
+                memcpy(ap.drawn, drawn, sizeof ap.drawn);
+                g_emtr_applied.push_back(ap);
+                memcpy((uint32_t*)ppc_ptr(emtr + kEmtrTrans), drawn, sizeof drawn);
+            }
+        }
+        // debug: WWHD_T60_EMTRDRAWLOG=path: the step stamp, the emitter and the translation its draw reads on this pass
+        static FILE* dl = [] {
+            const char* e = getenv("WWHD_T60_EMTRDRAWLOG");
+            FILE* o = e ? fopen(e, "w") : nullptr;
+            if (o) setvbuf(o, nullptr, _IOFBF, 1 << 16);
+            return o;
+        }();
+        if (dl) {
+            fprintf(dl, "%llu %08X %.3f %.3f %.3f\n", (unsigned long long)stamp, emtr, (double)ldf32(emtr + kEmtrTrans),
+                    (double)ldf32(emtr + kEmtrTrans + 4), (double)ldf32(emtr + kEmtrTrans + 8));
+        }
+    }
+    if (stamp >= g_emtr_hist_sweep + 64) {
+        g_emtr_hist_sweep = stamp;
+        for (auto it = g_emtr_hist.begin(); it != g_emtr_hist.end();)
+            it = it->second.n && it->second.stamp[(it->second.n - 1) % 8] + 16 < stamp ? g_emtr_hist.erase(it) : std::next(it);
+    }
+}
 uint64_t g_ptcl_step_pass = ~0ull;
 void t60_ptcl_step(Cpu* c) {
     if (g_ptcl_step_pass != interp::pass_count()) {  // (once per pass: every group's calc of the pass comes after it)
@@ -1406,6 +1530,7 @@ void t60_ptcl_step(Cpu* c) {
         }
         t60::particles::count(2);  // born after W: drawn at its newest state
     });
+    if (emtr_draw_on()) emtr_step(mgr, group, stamp, lag);  // (the bow wave's head, the wind lines at W)
     if (stamp >= g_ptcl_hist_sweep + 64) {
         g_ptcl_hist_sweep = stamp;
         for (auto it = g_ptcl_hist.begin(); it != g_ptcl_hist.end();)
@@ -2788,6 +2913,10 @@ namespace interp {
 void fx_ss_reset() {
     g_ptcl_before.clear();
     g_ptcl_applied.clear();
+#if WWHD_DECOMP
+    g_emtr_applied.clear();
+    g_emtr_hist.clear();
+#endif
     g_ptcl_keep.clear();
     g_emtr.clear();
     g_anm.clear();
