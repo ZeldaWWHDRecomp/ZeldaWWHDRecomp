@@ -2369,6 +2369,7 @@ std::string pass_cpu_report() {
 }  // namespace interp
 
 static void fader_between_passes();  // debug (WWHD_INTERP_FADER_TRACE), below
+namespace test_aids { void after_put_back(); }
 namespace interp {
 // The game's other sead tasks (ResLoadTask: archive and stage loads) calc in the same frame as the
 // per-frame function, before it: this frame is a hold pass (frame interpolation)
@@ -2423,6 +2424,7 @@ extern "C" void hook_0203593C(Cpu* c) {
     if (!g_exact_writes.empty()) put_back_exact();
     if (!g_tev_kept.empty()) tevstr_put_back();
     if (!g_actor_kept.empty() || !g_model_kept.empty()) actors_put_back();
+    test_aids::after_put_back();  // (test aid WWHD_TEST_POKE: the last read's pokes again, test_aids.cpp tick)
     g_draw_side.clear();
     clipper_put_back();
     // (the step's camera drawn blended last: exact again before the next step's logic)

@@ -13,6 +13,8 @@
 //   WWHD_TEST_POKE=t:ADDR:HEX,...   at scenario time t (s, game time; see input.mm) writes the bytes
 //                                   HEX to guest memory at ADDR. ADDR is hex, or *PTR+OFF (the word
 //                                   at PTR plus OFF), e.g. *101F84DC+2E:38 equips the Hero's Sword.
+//                                   With frame interpolation the pokes are applied again after the next pass's
+//                                   put-back of the drawn actors (after_put_back; NC WWHD_TEST_POKE_AT_READ=1).
 //   WWHD_LINK_WARP=step:x:y:z:angle[,...]  each once, in order, before Link's full-pass execute at origin step + step
 //                                   (scenario clock: a test warp's loading steps not counted; true 60: Link's first
 //                                   step of that 30 Hz frame);
@@ -49,12 +51,15 @@
 #include "input.h"
 #include "input_map.h"
 
-namespace interp { uint64_t logic_steps(); uint64_t pass_count(); bool hold_pass(); }
+namespace interp { uint64_t logic_steps(); uint64_t pass_count(); bool hold_pass(); bool enabled(); }
 
 namespace test_aids {
 namespace {
 uint32_t g_gameover_proc = 0;  // diagnostic checkpoint at the native save-window handoff
 struct Poke { double t; uint32_t ptr; bool deref; uint32_t off; std::vector<uint8_t> bytes; bool done = false; };
+// pokes made at the latest controller read while interpolating, applied again after the pass-start put-back (after_put_back)
+struct PokeAgain { uint32_t a; std::vector<uint8_t> bytes; };
+std::vector<PokeAgain> g_poke_again;
 std::vector<Poke> parse_pokes() {
     std::vector<Poke> v;
     const char* e = getenv("WWHD_TEST_POKE");
@@ -153,6 +158,18 @@ void timing_checks() {
 }
 }  // namespace
 
+// frame interpolation: at the start of a pass, right after interp.cpp's put-back of the actors the last pass drew: the
+// pokes of the controller read in between again, so the logic sees them as at 30 Hz (see tick)
+void after_put_back() {
+    if (g_poke_again.empty()) return;
+    for (const auto& p : g_poke_again) {
+        bool undone = false;
+        for (size_t i = 0; i < p.bytes.size(); i++) undone |= ld8(p.a + (uint32_t)i) != p.bytes[i];
+        for (size_t i = 0; i < p.bytes.size(); i++) st8(p.a + (uint32_t)i, p.bytes[i]);
+        LOG("[test] poke %08X applied again after the interpolation put-back (%s)", p.a, undone ? "it had been undone" : "unchanged");
+    }
+    g_poke_again.clear();
+}
 // called with the scenario time on every controller read (input.mm)
 void tick(double t, bool ended) {
     // Native-rate checkpoint of the pending save-window request, for the phase regression.
@@ -308,6 +325,12 @@ void tick(double t, bool ended) {
         uint32_t a = (p.deref ? ld32(p.ptr) : p.ptr) + p.off;
         for (size_t i = 0; i < p.bytes.size(); i++) st8(a + (uint32_t)i, p.bytes[i]);
         LOG("[test] t=%.3f poke %08X: %zu bytes", t, a, p.bytes.size());
+        // (frame interpolation: the read runs after a pass without logic drew, and the actors that pass drew are put back
+        // at the start of the next pass, interp.cpp actors_put_back: a poke into such an actor was undone before the
+        // logic saw it, e.g. the Medli talk route's Medli position poke. Applied again right after that put-back.
+        // NC: WWHD_TEST_POKE_AT_READ=1, the read only, as before)
+        static const bool at_read = getenv("WWHD_TEST_POKE_AT_READ") && atoi(getenv("WWHD_TEST_POKE_AT_READ"));
+        if (interp::enabled() && !at_read) g_poke_again.push_back({a, p.bytes});
     }
     static const char* sd = getenv("WWHD_SAVEINFO_DUMP");
     if (!sd) return;
