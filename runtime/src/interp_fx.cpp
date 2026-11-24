@@ -1404,9 +1404,10 @@ bool emtr_draw_on() {
     }();
     return on;
 }
-// The weather wind lines (2026-11-23: kankyo wether_move_windline 0257836C -> dKyr_wind_move
-// 025642AC places its emitters, no callback, once per 30 Hz frame): a callback-less emitter whose translation changes on
-// tick30 steps only is drawn between its frame-end translations at W's place in the frame, as the interpolated world;
+// The weather wind lines and other tick30-only emitters (2026-11-23: kankyo wether_move_windline 0257836C -> dKyr_wind_move
+// 025642AC places its emitters, no callback, once per 30 Hz frame; extended 2026-11-24 to every emitter): an
+// emitter whose translation changes on tick30 steps only is drawn between its frame-end translations at W's place in the
+// frame, as the interpolated world (not across a jump of kEmtrBlendJump);
 // one that moves on the earlier steps too is drawn at W's step. WWHD_T60_EMTR_BLEND=0: the frame-end blend off (W's step
 // only; the negative control for the wind lines)
 bool emtr_blend_on() {
@@ -1416,6 +1417,41 @@ bool emtr_blend_on() {
     }();
     return on;
 }
+bool emtr_follow_ptcl_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_EMTR_FOLLOWPTCL");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+// the FollowEmtr particles of an emitter drawn blended: their drawn place shifted by d (restored with the particles' exact
+// values at the next pass start: an entry in g_ptcl_applied, the existing one when the history already drew it at W)
+void emtr_shift_followers(uint32_t emtr, const float* d) {
+    for (uint32_t list : {kEmtrPtcls, kEmtrChildren}) {
+        int guard = 0;
+        for (uint32_t pl = ld32(emtr + list); pl && guard < 100000; pl = ld32(pl + 0xC), guard++) {
+            const uint32_t p = ld32(pl);
+            if (!p || !(ld32(p + 0xCC) & 0x20u)) continue;
+            bool listed = false;
+            for (size_t i = g_ptcl_applied.size(); i-- > 0;)
+                if (g_ptcl_applied[i].ptcl == p) { listed = true; break; }
+            if (!listed) {
+                Applied ap{p};
+                const PtclState st = read_ptcl(p);
+                memcpy(ap.w, st.w, sizeof ap.w);
+                memcpy(ap.a, st.w, sizeof ap.a);
+                ap.is_born = false;
+                ap.extras = false;
+                g_ptcl_applied.push_back(ap);
+            }
+            for (int c = 0; c < 3; c++) {
+                uint32_t* wc = (uint32_t*)ppc_ptr(p + kPtclWord[kWPos + c]);
+                *wc = fw(wf(*wc) + d[c]);
+            }
+        }
+    }
+}
+constexpr float kEmtrBlendJump = 1500.0f;  // (sum of |dx|, |dy|, |dz| over a frame: the fastest movers seen ~100)
 // the group's emitters after the step's calc: record the translation; with a lag, draw W's
 void emtr_step(uint32_t mgr, uint32_t group, uint64_t stamp, int lag) {
     int guard = 0;
@@ -1425,7 +1461,11 @@ void emtr_step(uint32_t mgr, uint32_t group, uint64_t stamp, int lag) {
         if (!emtr) continue;
         const uint32_t cb = ld32(emtr + 0x1E4), vt = cb ? ld32(cb) : 0;
         const bool wave = vt && ld32(vt + 0x24) == 0x025A92F4u;  // (the bow wave's executeAfter: its draw reads the translation)
-        if (!wave && cb) continue;
+        // (every emitter, 2026-11-24 from a sweep of the drawn emitters: emitters with callbacks or placed by their owner
+        // that move on tick30 only are blended between frame ends too; one moved per step is drawn at W's step)
+        // (not dPa_simpleEcallBack's emitters, executeAfter 025A4AE0: one emitter emits at every queued place of the frame,
+        // its translation is the last of them, no place of its own: a blend between two of them is nowhere (sweep gm, P7))
+        if (vt && ld32(vt + 0x24) == 0x025A4AE0u) continue;
         const uint32_t* cur = (const uint32_t*)ppc_ptr(emtr + kEmtrTrans);
         EmtrHist& h = g_emtr_hist[emtr];
         if (h.n && h.stamp[(h.n - 1) % 8] + 8 < stamp) h = EmtrHist{};
@@ -1457,9 +1497,18 @@ void emtr_step(uint32_t mgr, uint32_t group, uint64_t stamp, int lag) {
                         if (h.stamp[j] > want || h.stamp[j] <= h.stamp[j0]) continue;
                         if (memcmp(h.w[j], h.w[j0], sizeof h.w[j])) steady = false;
                     }
-                    if (steady) {
+                    float jump = 0;  // (a teleport between the frame ends, e.g. a pooled emitter re-placed: no blend)
+                    for (int c = 0; c < 3; c++) jump += std::fabs(wf(h.w[j1][c]) - wf(h.w[j0][c]));
+                    if (steady && jump < kEmtrBlendJump) {
                         const float f = (float)(want - h.stamp[j0]) / (float)(h.stamp[j1] - h.stamp[j0]);
                         for (int c = 0; c < 3; c++) drawn[c] = fw(lerp_f(wf(h.w[j0][c]), wf(h.w[j1][c]), f));
+                        // (sweep mt, Magtail: the particles that follow the emitter (FollowEmtr: status 0x20, their offset is the
+                        // emitter centre on every calc) move with the drawn translation: shifted by the blend's offset)
+                        if (emtr_follow_ptcl_on()) {
+                            float d[3];
+                            for (int c = 0; c < 3; c++) d[c] = wf(drawn[c]) - wf(h.w[jw][c]);
+                            if (d[0] != 0.0f || d[1] != 0.0f || d[2] != 0.0f) emtr_shift_followers(emtr, d);
+                        }
                     }
                 }
             }
