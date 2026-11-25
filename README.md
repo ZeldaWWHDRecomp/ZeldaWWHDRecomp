@@ -22,16 +22,18 @@ The project has three parts:
 
 ## What's new
 
-**v0.5.1: a built-in randomizer, GameCube models and many ideas from the Android forks.**
-- **Randomizer built in:** make a randomized game from a preset, seed name or permalink in setup, or import a seed
-  from the official TWWHD Randomizer. Each randomized game keeps its own saves.
-- **New options:** GameCube player models from a pack you have, Achievements and Game progress, walk-through doors,
-  instant text, Deku Leaf wave to rise, 16-character names, a cloud save folder, GameCube controller layout and
-  prompts, keyboard and mouse prompts, and experimental 60 fps frame generation on Vulkan.
-- **Smoother and more exact:** 60 fps interpolation now runs the same game logic as 30 fps (True 60 is retired), HDR with
-  truer shadows, and Android back to full speed with less memory use and fixes for Adreno and Huawei GPUs.
-- Many fixes on every platform, and more for mod makers. Thanks to all contributors and the GreenNaugahyde and
-  Nycolazs Android forks.
+**v0.5.2: the Japanese release, Link's look, an iPhone as the GamePad and a much faster renderer.**
+- **New:** the Japanese release is supported, Link's colours can be changed per save file, an iPhone can be the
+  Wii U GamePad for the Mac, randomized games are made right in the game, and there are new Fix original game bugs,
+  Classic Wind Waker (speedrun), Quit Game and Grass draw distance options. Updates keep your files and only
+  recompile what changed.
+- **Faster:** draw batching cuts the render thread by about a quarter on phones and more on the Mac, smoother frame
+  pacing on Android and the Steam Deck, and far less memory for Metal shaders.
+- **Decomp version:** setup lets you choose the recompiled or the decomp version on every platform, with code mods
+  and a much faster fast mode.
+- Many fixes: 60 fps now matches 30 fps in more places (sky colours, music fades, message icons, objects at sea),
+  the Steam Deck Game Mode crash, randomizer fixes for European and Japanese games, and more. Thanks to all
+  contributors and VR-WakerHD.
 
 The changes in each update are in [CHANGELOG.md](CHANGELOG.md) and in the release notes on the
 [Releases](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/releases) page.
