@@ -555,6 +555,20 @@ uint32_t draw_begin(uint32_t proc) {
 }
 void draw_end(uint32_t previous) { g_drawing = previous; }
 uint32_t drawing() { return g_drawing; }
+// (2026-11-25, N 4 sweep walk: W 01B5 joint 0, 16.3 mrad, also in the interp reference):
+// the sky dome (Vrbox 0x1B5, Vrbox2 0x1B6) places its model at the view's eye on every draw (daVrbox_Draw: transS(the inverse
+// view matrix's translation)), so the matrices in place are already the drawn camera's. The model blend then mixed them
+// with the record pass's placement (the eye of another pass): the dome lagged the camera by (1 - t) of the eye's move since
+// the record pass, a staircase against the scene. Its models are drawn as placed. WWHD_T60_SKY_PLACED=0: blended as before.
+bool sky_placed() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_SKY_PLACED");
+        return !e || atoi(e) != 0;
+    }();
+    if (!on || !g_drawing) return false;
+    const int prof = (int16_t)ld16(g_drawing + kProfName);
+    return prof == 0x1B5 || prof == 0x1B6;
+}
 
 namespace {
 // Link's leg IK between the frame ends (2026-11-23, after the per-step leg angle split): Link's leg IK on stairs / slopes

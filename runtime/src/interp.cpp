@@ -1747,6 +1747,10 @@ extern "C" void hook_027F55FC(Cpu* c) {
         return;
     }
     if (t60_model(c, model, jnt, mtx, n)) return;  // (true 60: a converted process's model)
+    if (t60::draw::sky_placed()) {  // (the sky dome, placed at the drawn eye: drawn as placed)
+        passlog::viewcalc(c), f_027F55FC_orig(c);
+        return;
+    }
 #endif
     const uint32_t words = 12 * n;
     const uint32_t* cur = (const uint32_t*)ppc_ptr(mtx);  // guest (big-endian) words

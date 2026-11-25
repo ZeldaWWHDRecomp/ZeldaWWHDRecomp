@@ -72,7 +72,9 @@ bool words_owns(uint32_t proc);
 // (interp.cpp J3DModel::viewCalc). WWHD_T60_ATTN_FOLLOW=0: off
 void follow_begin(uint32_t owner, uint32_t ea, uint32_t n, uint32_t anim);  // anim: a frame f32 (0: none)
 void follow_end();
-bool follow_exact();  // a converted owner whose 3D lines the words history draws (interp_fx line_packet: no blend)
+bool follow_exact();
+// the drawing process is the sky dome (Vrbox / Vrbox2): its models are placed at the drawn eye, drawn as placed
+bool sky_placed();  // a converted owner whose 3D lines the words history draws (interp_fx line_packet: no blend)
 
 // debug: WWHD_T60_DRAWLOG=path: one line per aligned draw: pass, kind (m model / c camera), owner process, world time,
 // the stamps of the two steps it was drawn between (equal: drawn exactly at a step), the newest stamp, the fraction, and
