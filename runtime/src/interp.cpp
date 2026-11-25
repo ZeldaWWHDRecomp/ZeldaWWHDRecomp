@@ -2830,7 +2830,17 @@ extern "C" void hook_02617AF4(Cpu* c) {
 #endif
     if (!hold_skip_child(4)) f_02617AF4_orig(c);
 }
-extern "C" void hook_02614F74(Cpu* c) { FaderWatch fw("child 5"); g_hold_child_cpu = c; if (!hold_skip_child(5)) f_02614F74_orig(c); }
+extern "C" void hook_02614F74(Cpu* c) {
+    FaderWatch fw("child 5");
+    g_hold_child_cpu = c;
+#if WWHD_DECOMP
+    // (true 60: the input event manager on the pass that runs the frame-level work, before the play
+    // scene as in the original frame; at N > 1 with WWHD_T60_SCENE_FIRST the frame's first step, an in-between pass.
+    // The decompiled per-frame function calls it once per 30 Hz frame there, decomp hd/hd_sys_t60.h)
+    if (t60::frame_work_hold_pass()) { f_02614F74_orig(c); return; }
+#endif
+    if (!hold_skip_child(5)) f_02614F74_orig(c);
+}
 extern "C" void hook_0273841C(Cpu* c) { FaderWatch fw("child 6"); g_hold_child_cpu = c; if (!hold_skip_child(6)) f_0273841C_orig(c); }
 extern "C" void hook_0270870C(Cpu* c) { FaderWatch fw("child 7"); g_hold_child_cpu = c; if (!hold_skip_child(7)) f_0270870C_orig(c); }
 namespace interp { void light_trace_add(const char* fmt, ...); }
