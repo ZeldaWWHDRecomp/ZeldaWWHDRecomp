@@ -1375,6 +1375,7 @@ std::string to_json(const Mapping& m) {
     if (m.background_controllers) prompts += ",\n    \"background_controllers\": true";
     if (m.l_turns_page) prompts += ",\n    \"l_turns_gamepad_page\": true";
     if (!m.settings_pause_page) prompts += ",\n    \"settings_pause_page\": false";
+    if (!m.touchpad_touch) prompts += ",\n    \"touchpad_gamepad_touch\": false";
     char opt[320];
     snprintf(opt, sizeof opt,
              "  },\n  \"options\": {\n    \"format\": 2,\n    \"stick_deadzone\": %.3g,\n"
@@ -1513,6 +1514,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
         if (const Json* i = op->get("background_controllers"); i && i->type == Json::Bool) m.background_controllers = i->b;
         if (const Json* i = op->get("l_turns_gamepad_page"); i && i->type == Json::Bool) m.l_turns_page = i->b;
         if (const Json* i = op->get("settings_pause_page"); i && i->type == Json::Bool) m.settings_pause_page = i->b;
+        if (const Json* i = op->get("touchpad_gamepad_touch"); i && i->type == Json::Bool) m.touchpad_touch = i->b;
         // only "automatic" is stored: the two manual presets are the shape of the face bindings
         if (const Json* f = op->get("face_layout"); f && f->type == Json::Str) m.face_auto = f->s == "auto";
         // button prompts (#143); an unknown value keeps the default
@@ -1638,6 +1640,8 @@ static std::atomic<bool> g_file_select_quit{true};
 static std::atomic<bool> g_invert_camera_y{false};
 static std::atomic<bool> g_l_turns_page{false};
 static std::atomic<bool> g_settings_pause_page{true};
+static std::atomic<bool> g_touchpad_touch{true};
+static std::atomic<bool> g_touchpad_click_bound{false};
 // format 1 (or no file) at startup: the old Jump anywhere button is still to be applied
 static std::mutex g_legacy_mu;
 static bool g_loaded = false, g_legacy = true;
@@ -1797,6 +1801,13 @@ void set_current(const Mapping& requested, bool save) {
     g_file_select_quit = m.file_select_quit;
     g_l_turns_page = m.l_turns_page;
     g_settings_pause_page = m.settings_pause_page;
+    g_touchpad_touch = m.touchpad_touch;
+    {
+        bool bound = !pad_users(m, kPadTouchpad).empty();
+        for (const auto& c : m.controllers)
+            bound = bound || std::find(c.pad.begin(), c.pad.end(), kPadTouchpad) != c.pad.end();
+        g_touchpad_click_bound = bound;
+    }
     g_gen++;
     if (save && !save_file(default_path(), m))
         fprintf(stderr, "[input] could not save controls to %s\n", default_path().c_str());
@@ -1809,5 +1820,7 @@ bool background_controllers() { return g_background_controllers.load(std::memory
 bool invert_camera_y() { return g_invert_camera_y.load(std::memory_order_relaxed); }
 bool settings_pause_page() { return g_settings_pause_page.load(std::memory_order_relaxed); }
 bool l_turns_page() { return g_l_turns_page.load(std::memory_order_relaxed); }
+bool touchpad_touch() { return g_touchpad_touch.load(std::memory_order_relaxed); }
+bool touchpad_click_bound() { return g_touchpad_click_bound.load(std::memory_order_relaxed); }
 
 }  // namespace input_map

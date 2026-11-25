@@ -6,6 +6,8 @@
 #include <cstring>
 #include <set>
 
+namespace gfx { bool touchpad_highlight(float* x, float* y, bool* touching); }  // gfx/display_modes.h
+
 namespace overlay::guesthud {
 namespace {
 using namespace guestmods::hud;
@@ -83,7 +85,10 @@ void backend_destroyed() {
     }
     textures.clear();gamepad.reset();scaled_gamepad.reset();gamepad_data.Clear();
 }
-bool active() {return !textures.empty()||store().active();}
+// a controller's touchpad finger on the GamePad picture (gfx::touchpad_highlight): a ring, filled while it touches
+static bool touchpad_finger(float& x,float& y,bool& touching) {return gfx::touchpad_highlight(&x,&y,&touching);}
+static bool highlight=false;  // this frame's GamePad layer holds the finger
+bool active() {float x,y;bool t;return !textures.empty()||store().active()||touchpad_finger(x,y,t);}
 void frame() {
     // The port overlay may be open without any guest HUD. Avoid snapshots,
     // allocations and ImGui work then; active() also covers retiring textures.
@@ -125,13 +130,21 @@ void frame() {
     gamepad->PushTexture(ImGui::GetIO().Fonts->TexRef);
     gamepad->PushClipRect(ImVec2(0,0),ImVec2(854,480),false);
     draw(drc,gamepad.get(),854,480);
+    float fx,fy;bool touching;
+    highlight=touchpad_finger(fx,fy,touching);
+    if(highlight) {
+        const ImVec2 at(fx*854,fy*480);
+        if(touching)gamepad->AddCircleFilled(at,14,IM_COL32(255,255,255,150),32);
+        gamepad->AddCircle(at,18,IM_COL32(0,0,0,140),32,5);
+        gamepad->AddCircle(at,18,IM_COL32(255,255,255,235),32,3);
+    }
     gamepad->PopClipRect();gamepad->PopTexture();
 }
 ImDrawData* gamepad_frame(float width,float height) {
     return gamepad_region(width,height,0,0,width,height,1);
 }
 ImDrawData* gamepad_region(float target_width,float target_height,float x,float y,float width,float height,float opacity) {
-    if(!gamepad||gamepad->VtxBuffer.empty()||width<1||height<1||!store().active())return nullptr;
+    if(!gamepad||gamepad->VtxBuffer.empty()||width<1||height<1||!(store().active()||highlight))return nullptr;
     scaled_gamepad.reset(gamepad->CloneOutput());
     float scale=std::min(width/854.f,height/480.f),ox=x+(width-854*scale)*.5f,oy=y+(height-480*scale)*.5f;
     gamepad_pixels=std::max(gamepad_pixels,scale);

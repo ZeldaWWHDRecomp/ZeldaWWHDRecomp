@@ -146,6 +146,9 @@ struct Mapping {
     // (play_buttons, issue #406)
     bool l_turns_page = false;
     bool settings_pause_page = true; // offer the settings page in the pause menu
+    // Controls > "Touchpad as the GamePad's touch screen" (on): a DualShock 4's or DualSense's touchpad
+    // (blind_touch.h); off, the pad does nothing but a click bound to a game button
+    bool touchpad_touch = true;
     // per-controller bindings (format 2): see profile_index()
     struct Controller {
         std::string guid;   // SDL GUID (32 hex digits); empty on hosts without one (AppKit)
@@ -424,6 +427,8 @@ bool file_select_quit();
 bool invert_camera_y();  // current().invert_camera_y without copying the mapping (camera hooks)
 bool settings_pause_page(); // current().settings_pause_page, any thread
 bool l_turns_page();     // current().l_turns_page, any thread
+bool touchpad_touch();   // current().touchpad_touch, any thread
+bool touchpad_click_bound();  // the touchpad click does a game button (shared or a controller's bindings), any thread
 // The old Jump anywhere button (mods: traversal_settings): applied once to a format 1 (or missing)
 // controls.json; a format 2 file has its own Jump bindings and ignores it.
 void adopt_legacy_jump_button(uint32_t vpad_bit);
