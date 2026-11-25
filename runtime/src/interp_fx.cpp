@@ -1459,6 +1459,75 @@ bool ptcl_bornback_on() {
     return on;
 }
 constexpr uint32_t kEmtrDynScale = 0x220;  // (JPABaseEmitter::mGlobalDynamicsScale: global = local x it + offset)
+// follow-up (2026-11-24, swim WATER_MARK): the decomp's 30 Hz particles (JPA_particle_t60.h frame30:
+// a callback that creates actors from the particle's place, Link's water drop daPy_waterDropPcallBack_c 02414048) move only
+// on the tick30 step; held over the earlier steps they would be drawn as a 30 Hz staircase. Drawn instead between their
+// last two frame-end places at W's time (lag steps behind the newest step: on the tick30 step (N - lag) / N of the way from
+// the previous frame end to the new one, on the earlier step k (N + k - lag) / N), restored at the next pass start like the
+// history's values. A particle's first frame: the previous frame end taken one frame back along its velocity (x the
+// emitter's dynamics scale). WWHD_T60_PTCL_FRAME30=0 (the decomp's switch): off here too.
+struct Frame30 { uint64_t stamp; float age; uint32_t prev[3], cur[3]; bool have_prev; };
+std::unordered_map<uint32_t, Frame30> g_frame30;
+uint64_t g_frame30_sweep = 0;
+bool frame30_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_PTCL_FRAME30");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+// the decomp's kFrame30Execs (JPA_particle_t60.h): the particle callbacks that create actors from the particle's place
+//   02414048 daPy_waterDropPcallBack_c::execute (Link's water drops: WATER_MARK)
+constexpr uint32_t kFrame30Execs[] = {0x02414048u};
+bool frame30_kind(uint32_t p) {
+    const uint32_t cb = ld32(p + 0xC8);
+    if (!cb) return false;
+    const uint32_t vt = ld32(cb);
+    if (!vt) return false;
+    const uint32_t ex = ld32(vt + 0x1C);  // (JPAParticleCallbackVtable::execute)
+    for (uint32_t k : kFrame30Execs)
+        if (ex == k) return true;
+    return false;
+}
+bool frame30_picture(uint32_t p, const PtclState& cur, uint32_t emtr, uint64_t stamp, int lag) {
+    if (!frame30_on() || !frame30_kind(p)) return false;
+    const int N = (int)(wwhd_t60_steps ? wwhd_t60_steps : 1), k = (int)wwhd_t60_stepk;
+    Frame30& f = g_frame30[p];
+    if (f.stamp == 0 || cur.age < f.age || f.stamp + (uint64_t)(2 * N) < stamp) {  // (a new particle in this slot)
+        f = Frame30{};
+        memcpy(f.cur, &cur.w[kWPos], sizeof f.cur);
+        if (emtr) {  // (one frame back along its velocity: the previous frame end it would have had)
+            for (int c = 0; c < 3; c++)
+                f.prev[c] = fw(wf(cur.w[kWPos + c]) - wf(*(const uint32_t*)ppc_ptr(p + kPtclVel + 4 * c)) * (float)ldf32(emtr + kEmtrDynScale + 4 * c));
+            f.have_prev = true;
+        }
+    } else if (t60::tick30() && memcmp(f.cur, &cur.w[kWPos], sizeof f.cur)) {  // (the frame's update: a new frame end)
+        memcpy(f.prev, f.cur, sizeof f.prev);
+        memcpy(f.cur, &cur.w[kWPos], sizeof f.cur);
+        f.have_prev = true;
+    }
+    f.stamp = stamp;
+    f.age = cur.age;
+    if (lag <= 0 || !f.have_prev) return true;
+    const float t = (float)((k >= N ? 0 : N) + k - lag) / (float)N;
+    if (!(t >= 0.0f && t < 1.0f)) return true;
+    uint32_t drawn[kPW];
+    memcpy(drawn, cur.w, sizeof drawn);
+    for (int c = 0; c < 3; c++) drawn[kWPos + c] = fw(lerp_f(wf(f.prev[c]), wf(f.cur[c]), t));
+    Applied ap{p};
+    memcpy(ap.w, cur.w, sizeof ap.w);
+    memcpy(ap.a, cur.w, sizeof ap.a);
+    ap.is_born = false;
+    ap.extras = false;
+    g_ptcl_applied.push_back(ap);
+    write_ptcl(p, drawn);
+    if (stamp >= g_frame30_sweep + 64) {
+        g_frame30_sweep = stamp;
+        for (auto it = g_frame30.begin(); it != g_frame30.end();)
+            it = it->second.stamp + 16 < stamp ? g_frame30.erase(it) : std::next(it);
+    }
+    return true;
+}
 constexpr float kEmtrBlendJump = 1500.0f;  // (sum of |dx|, |dy|, |dz| over a frame: the fastest movers seen ~100)
 // the group's emitters after the step's calc: record the translation; with a lag, draw W's
 void emtr_step(uint32_t mgr, uint32_t group, uint64_t stamp, int lag) {
@@ -1561,6 +1630,7 @@ void t60_ptcl_step(Cpu* c) {
     const int lag = t60::particles::draw_lag();
     for_each_ptcl(mgr, group, [&](uint32_t p, uint32_t emtr) {
         PtclState cur = read_ptcl(p);
+        if (frame30_picture(p, cur, emtr, stamp, lag)) return;  // (a 30 Hz particle, drawn between its frame ends)
         PtclHist& h = g_ptcl_hist[p];
         if (cur.age < h.age || (h.n && h.stamp[(h.n - 1) % 4] + 4 < stamp)) h = PtclHist{};  // (a new particle in this slot)
         if (!h.n || h.stamp[(h.n - 1) % 4] != stamp) h.n++;
