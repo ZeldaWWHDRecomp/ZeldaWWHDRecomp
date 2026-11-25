@@ -54,6 +54,7 @@ extern uint32_t wwhd_t60_exec_proc;
 // 1 inside an execute (decomp fpcEx_Execute, T60_EXEC_LOGIC), 0 in a draw / create method outside one (test aid
 // WWHD_TEST_RNG_KEYED: only draws outside an execute count on a hold pass's own counters)
 extern uint32_t wwhd_t60_exec_logic;
+extern uint32_t wwhd_t60_exec_draw;  // (RNG-DRAWSTREAM) 1 inside a draw method
 // test aid WWHD_TEST_PROC_ID_BASE (savestate.cpp): the next process id after a portable state load (decomp f_pc_base.cpp
 // fpcBs_MakeOfId takes it once and clears it; 0: no change)
 extern uint32_t wwhd_test_proc_id_base;

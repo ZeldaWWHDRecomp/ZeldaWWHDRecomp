@@ -90,7 +90,7 @@ struct Cfg {
             if (km && !strcmp(km, "seq")) keyed = kKeySeq;
             else if (km && *km && strcmp(km, "frame"))
                 log_msg("[t60] WWHD_TEST_RNG_KEYED_MODE=%s: not frame or seq, frame used", km);
-            log_msg("[t60] test rng keyed mode: %s seed %llu", keyed == kKeySeq ? "seq" : "frame", (unsigned long long)seed);
+            log_msg("[t60] test rng keyed mode: %s seed %llu drawstream %d", keyed == kKeySeq ? "seq" : "frame", (unsigned long long)seed, getenv("WWHD_TEST_RNG_DRAWSTREAM") && getenv("WWHD_TEST_RNG_DRAWSTREAM")[0] == '0' ? 0 : 1);
             return;
         }
         const char* e = getenv("WWHD_TEST_RNG_CONST");
@@ -180,7 +180,15 @@ bool t60_test_rng(char fn, uint32_t lr, float max, float* out) {
         // pass and is logic (tool line ef58dc096)
         // (the frame-level work: the process handlers' create / delete methods on the frame-work hold pass run marked as logic,
         // g_in_execute, interp.cpp HandlerAsLogic b36a2cb7e: their draws are logic draws too, as at N = 1)
-        const bool hold = interp::hold_pass() && !wwhd_t60_exec_logic && !interp::in_execute();
+        // (the strict RNG-pair rule tooling, RNG-DRAWSTREAM, 2026-11-25) a draw method's draws (f_pc_draw.cpp's
+        // fpcDw_Execute marks them: wwhd_t60_exec_draw) count on the hold counters on every pass too: the picture's
+        // draws (a point light's flicker in settingTevStruct, ...) depend on how often and where the process was drawn
+        // or culled, which differs between a 30-vs-N pair's pictures; on the logic stream they shifted a logic draw's
+        // index (route ld: a seagull culled on B's frame pass at 430 / 431 drew 2 flicker values fewer; its sing gate at
+        // 805 then read another value and sang: two extra cries). WWHD_TEST_RNG_DRAWSTREAM=0: the old keying.
+        static const bool drawStream = [] { const char* e = getenv("WWHD_TEST_RNG_DRAWSTREAM"); return !(e && e[0] == '0'); }();
+        const bool hold = (interp::hold_pass() && !wwhd_t60_exec_logic && !interp::in_execute()) ||
+                          (drawStream && wwhd_t60_exec_draw && !wwhd_t60_exec_logic);
         const uint64_t htag = hold ? 0x8000000000000000ull : 0;
         uint32_t idx;
         if (c.keyed == kKeySeq) {

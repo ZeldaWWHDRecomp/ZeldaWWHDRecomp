@@ -106,6 +106,7 @@ T60_EXPORT uint32_t wwhd_t60_frame = 0;
 T60_EXPORT uint32_t wwhd_t60_exec_proc = 0;
 // test aid WWHD_TEST_RNG_KEYED: 1 inside an execute (decomp fpcEx_Execute T60_EXEC_LOGIC), else 0
 T60_EXPORT uint32_t wwhd_t60_exec_logic = 0;
+T60_EXPORT uint32_t wwhd_t60_exec_draw = 0;  // (the strict RNG-pair rule tooling, RNG-DRAWSTREAM) inside a draw method (f_pc_draw.cpp)
 // test aid WWHD_TEST_PROC_ID_BASE (savestate.cpp; decomp fpcBs_MakeOfId takes it once)
 T60_EXPORT uint32_t wwhd_test_proc_id_base = 0;
 // Integer smoothing (decomp true60.h): the c_lib integer-smoothing table's use, set by the game; logged by pass_begin when it grows
