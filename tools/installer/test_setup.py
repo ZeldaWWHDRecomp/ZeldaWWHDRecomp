@@ -2505,7 +2505,7 @@ class DecompChoice(unittest.TestCase):
     def test_decomp_only_builds_and_starts_only_it(self):
         with tempfile.TemporaryDirectory() as d:
             state, calls, data = self.run_install(d, True, code_mods_on="1")
-            dexe = str(data / "bin" / "wwhd-decomp")
+            dexe = str(data / "bin" / ("wwhd-decomp" + setup.decomp_setup.decomp_platform.EXE_SUFFIX))  # wwhd-decomp.exe on Windows
             self.assertEqual(calls["recompile"], 0)                 # no recompiled version
             self.assertEqual(len(calls["decomp"]), 1)               # one build
             self.assertTrue(calls["decomp"][0]["code_mods"])        # with the install's code-mod choice
@@ -2518,7 +2518,7 @@ class DecompChoice(unittest.TestCase):
             self.assertEqual((saved["exe"], saved["decomp_exe"]), (dexe, dexe))
             self.assertTrue(saved["start_decomp"])
             with open(data / "install.json") as f:
-                self.assertEqual(json.load(f)["exe"], "bin/wwhd-decomp")
+                self.assertEqual(json.load(f)["exe"], "bin/wwhd-decomp" + setup.decomp_setup.decomp_platform.EXE_SUFFIX)
             active = json.loads((data / "code-mods-active.json").read_text())
             self.assertEqual((active["state"], active["hooks"]), ("ready", True))
             # a repair (no choice given) builds the decomp version again, only that one
@@ -2580,6 +2580,7 @@ class DecompChoice(unittest.TestCase):
             self.assertFalse(saved.get("decomp_exe"))
 
     def test_switching(self):
+        dname = "wwhd-decomp" + setup.decomp_setup.decomp_platform.EXE_SUFFIX  # wwhd-decomp.exe on Windows
         with tempfile.TemporaryDirectory() as d:
             data = os.path.join(d, "data")
             self.run_install(d, None)                                           # recompiled
@@ -2590,12 +2591,12 @@ class DecompChoice(unittest.TestCase):
             self.assertEqual((calls["recompile"], len(calls["decomp"])), (0, 1))
             self.assertFalse(os.path.exists(os.path.join(data, "bin", "wwhd")))
             self.assertFalse(os.path.exists(os.path.join(data, "bin.previous", "wwhd")))
-            self.assertTrue(os.path.isfile(os.path.join(data, "bin", "wwhd-decomp")))
-            self.assertEqual(setup.read_state(data)["exe"], os.path.join(data, "bin", "wwhd-decomp"))
+            self.assertTrue(os.path.isfile(os.path.join(data, "bin", dname)))
+            self.assertEqual(setup.read_state(data)["exe"], os.path.join(data, "bin", dname))
             _, calls, _ = self.run_install(d, False)                            # -> recompiled again
             self.assertEqual((calls["recompile"], len(calls["decomp"])), (1, 0))
-            self.assertFalse(os.path.exists(os.path.join(data, "bin", "wwhd-decomp")))
-            self.assertFalse(os.path.exists(os.path.join(data, "bin.previous", "wwhd-decomp")))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin", dname)))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin.previous", dname)))
             saved = setup.read_state(data)
             self.assertEqual((saved["game_version"], saved["exe"]), ("recomp", os.path.join(data, "bin", "wwhd")))
 
