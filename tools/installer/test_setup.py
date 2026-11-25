@@ -1245,6 +1245,115 @@ class ModelSweepOption(unittest.TestCase):
         ui.yesno.assert_not_called()
 
 
+class DesktopEntryOption(unittest.TestCase):
+    """Issue #625: the Linux menu entry (wwhd.desktop) is a choice: yes by default, no when setup runs from an
+    AppImage (it starts the game itself); remembered in install.json; "no" removes only setup's own entry."""
+
+    def ctx(self, data_dir, state=None, **args):
+        from types import SimpleNamespace
+        values = dict(desktop_entry=None, no_shortcuts=False)
+        values.update(args)
+        return SimpleNamespace(args=SimpleNamespace(**values), data_dir=data_dir, defaults_dir=None,
+                               state=lambda: dict(state or {}))
+
+    def appimage(self, t):
+        appdir = os.path.join(t, "mount")
+        os.makedirs(appdir, exist_ok=True)
+        return {"APPIMAGE": os.path.join(t, "WindWakerHD.AppImage"), "APPDIR": appdir}, appdir
+
+    def test_default_yes_but_no_from_an_appimage(self):
+        with tempfile.TemporaryDirectory() as t:
+            env = {k: v for k, v in os.environ.items() if k not in ("APPIMAGE", "APPDIR")}
+            env["XDG_DATA_HOME"] = t
+            with mock.patch.dict(os.environ, env, clear=True):
+                self.assertTrue(setup.desktop_entry_wanted(self.ctx(t)))
+                self.assertTrue(setup.desktop_entry_wanted(self.ctx(t), setup.UI(False)))
+                appimage, appdir = self.appimage(t)
+                with mock.patch.dict(os.environ, appimage), mock.patch.object(setup, "PKG", os.path.join(appdir, "x")):
+                    self.assertTrue(setup.appimage_release())
+                    self.assertFalse(setup.desktop_entry_wanted(self.ctx(t)))
+                    # what the last setup chose wins over the AppImage default; the switches over both
+                    self.assertTrue(setup.desktop_entry_wanted(self.ctx(t, {"desktop_entry": True})))
+                    self.assertTrue(setup.desktop_entry_wanted(self.ctx(t, desktop_entry=True)))
+                    # an install from before the choice whose menu entry is there keeps it
+                    os.makedirs(os.path.join(t, "applications"))
+                    with mock.patch.object(setup, "write_game_icon", return_value=None):
+                        setup.linux_launchers(t, os.path.join(t, "wwhd"))
+                    self.assertTrue(setup.desktop_entry_wanted(self.ctx(t)))
+                self.assertFalse(setup.desktop_entry_wanted(self.ctx(t, {"desktop_entry": False})))
+                self.assertFalse(setup.desktop_entry_wanted(self.ctx(t, {"desktop_entry": True}, desktop_entry=False)))
+
+    def test_question_in_the_terminal(self):
+        with tempfile.TemporaryDirectory() as t:
+            ui = mock.Mock(interactive=True)
+            ui.yesno.side_effect = lambda question, default: default
+            with mock.patch.dict(os.environ, {"XDG_DATA_HOME": t}), mock.patch.object(setup, "say"), \
+                    mock.patch.object(setup, "IS_LINUX", True), mock.patch.object(setup, "PORTABLE", False), \
+                    mock.patch.object(setup, "appimage_release", return_value=None):
+                self.assertTrue(setup.desktop_entry_wanted(self.ctx(t), ui))
+                ui.yesno.assert_called_with("Add a menu entry?", True)
+                self.assertFalse(setup.desktop_entry_wanted(self.ctx(t, {"desktop_entry": False}), ui))
+                ui.yesno.assert_called_with("Add a menu entry?", False)
+                ui.reset_mock()
+                self.assertFalse(setup.desktop_entry_wanted(self.ctx(t, desktop_entry=False), ui))
+                self.assertTrue(setup.desktop_entry_wanted(self.ctx(t, no_shortcuts=True), ui))
+                ui.yesno.assert_not_called()  # a switch answers it; --no-shortcuts writes no launchers at all
+            with mock.patch.object(setup, "IS_LINUX", True), mock.patch.object(setup, "PORTABLE", True):
+                self.assertFalse(setup.desktop_entry_offered())  # a portable release asks for its shortcut at the end
+            with mock.patch.object(setup, "IS_LINUX", False), mock.patch.object(setup, "PORTABLE", False):
+                self.assertFalse(setup.desktop_entry_offered())
+
+    def test_switches(self):
+        seen = []
+
+        def run(args, ui):
+            seen.append(args.desktop_entry)
+            return 0
+        for argv, want in ((["--yes"], None), (["--yes", "--no-desktop-entry"], False),
+                           (["--yes", "--desktop-entry"], True)):
+            with mock.patch.object(sys, "argv", ["setup.py"] + argv), mock.patch.object(setup, "run", run):
+                self.assertEqual(setup.main(), 0)
+            self.assertEqual(seen[-1], want)
+
+    def test_no_removes_only_setups_own_entry(self):
+        with tempfile.TemporaryDirectory() as t:
+            data = os.path.join(t, "data")
+            os.makedirs(data)
+            exe = os.path.join(data, "wwhd")
+            entry = os.path.join(t, "applications", "wwhd.desktop")
+            with mock.patch.dict(os.environ, {"XDG_DATA_HOME": t}), mock.patch.object(setup, "say"), \
+                    mock.patch.object(setup, "write_game_icon", return_value=None):
+                self.assertEqual(setup.desktop_entry_path(), entry)
+                play = setup.linux_launchers(data, exe)
+                self.assertTrue(os.path.isfile(entry))
+                self.assertTrue(setup.own_desktop_entry(entry, play))
+                self.assertEqual(setup.linux_launchers(data, exe, desktop_entry=False), play)
+                self.assertFalse(os.path.exists(entry))
+                self.assertTrue(os.path.isfile(play))  # play.sh stays: it is the launcher without the menu
+                setup.linux_launchers(data, exe, desktop_entry=False)  # nothing there: fine
+                with open(play) as f:
+                    self.assertIn("written by the Wind Waker HD setup", f.read())
+                # someone else's wwhd.desktop (another name, comment or command) stays
+                own = ("[Desktop Entry]\nType=Application\nName=%s\nComment=%s\nExec=%s\n"
+                       % (setup.APP_NAME, setup.DESKTOP_ENTRY_COMMENT, setup.desktop_exec(play)))
+                for other in (own.replace("Name=" + setup.APP_NAME, "Name=My Wind Waker"),
+                              own.replace(setup.DESKTOP_ENTRY_COMMENT, "my own launcher"),
+                              own.replace(setup.desktop_exec(play), "/usr/bin/cemu"),
+                              own.replace(setup.desktop_exec(play), setup.desktop_exec(os.path.join(t, "play.sh"))),
+                              # the portable release's shortcut (create_shortcut) has no Comment
+                              "[Desktop Entry]\nName=%s\nExec=%s\n" % (setup.APP_NAME, setup.desktop_exec(play)),
+                              own.replace("[Desktop Entry]\n", "[Desktop Entry]\nName=Mine\n")):
+                    with open(entry, "w") as f:
+                        f.write(other)
+                    setup.linux_launchers(data, exe, desktop_entry=False)
+                    with open(entry) as f:
+                        self.assertEqual(f.read(), other)
+                with open(entry, "w") as f:
+                    f.write(own)
+                setup.linux_launchers(data, exe, desktop_entry=False)
+                self.assertFalse(os.path.exists(entry))
+
+
 class CodeModsBuild(unittest.TestCase):
     def test_option_default_and_override(self):
         with mock.patch.dict(os.environ, {}, clear=True):
@@ -2440,7 +2549,7 @@ class DecompChoice(unittest.TestCase):
         self.assertNotIn("decomp", setup.plan_steps("installed", False))
 
     # install() end to end with the builds replaced: what is built, what install.json says, what is removed
-    def run_install(self, d, decomp, before=None, fail_decomp=False, code_mods_on="0"):
+    def run_install(self, d, decomp, before=None, fail_decomp=False, code_mods_on="0", portable=True, **more_args):
         from pathlib import Path
         from types import SimpleNamespace
         root = Path(d)
@@ -2454,7 +2563,7 @@ class DecompChoice(unittest.TestCase):
             setup.write_state(str(data), before)
         tc = SimpleNamespace(cc=["test-compiler"], cxx=["test-compiler"], env={}, desc="fixture")
         args = SimpleNamespace(code_mods=code_mods_on, jobs=4, shortcuts=False, keep_work=False, decomp=decomp,
-                               decomp_plain=False, skip_shader_prebuild=False, model_sweep=False)
+                               decomp_plain=False, skip_shader_prebuild=False, model_sweep=False, **more_args)
         ctx = SimpleNamespace(data_dir=str(data), game_dir=str(game), args=args, manifest=dict(self.MANIFEST),
                               exe=str(data / "bin/wwhd"), exe_dir=str(data / "bin"), version="test", defaults_dir=None,
                               state=lambda: setup.read_state(str(data)))
@@ -2483,10 +2592,11 @@ class DecompChoice(unittest.TestCase):
             calls["shaders"].append(exe)
             return {"status": "ready"}
 
-        with mock.patch.multiple(setup, PKG=root, PORTABLE=True, IS_MAC=False, IS_LINUX=True), \
+        with mock.patch.multiple(setup, PKG=root, PORTABLE=portable, IS_MAC=False, IS_LINUX=True), \
                 mock.patch.object(setup, "valid_game_folder", return_value=True), \
                 mock.patch.object(setup, "game_folder_title", return_value=None), \
                 mock.patch.object(setup, "check_game_version"), \
+                mock.patch.object(setup, "write_game_icon", return_value=None), \
                 mock.patch.object(setup, "get_toolchain", return_value=tc), \
                 mock.patch.object(setup, "run_logged", return_value="fixture compiler"), \
                 mock.patch.object(setup, "free_space", return_value=20 << 30), \
@@ -2501,6 +2611,26 @@ class DecompChoice(unittest.TestCase):
                 mock.patch.object(setup.decomp_setup, "build", side_effect=decomp_build):
             state = setup.install(ctx, ("installed", str(game)))
         return state, calls, data
+
+    def test_desktop_entry_choice_is_saved_and_kept(self):
+        # issue #625: an install outside a portable folder (an AppImage, a source build) on Linux
+        with tempfile.TemporaryDirectory() as d:
+            env = {k: v for k, v in os.environ.items() if k not in ("APPIMAGE", "APPDIR")}
+            env.update(XDG_DATA_HOME=os.path.join(d, "xdg"), XDG_CONFIG_HOME=os.path.join(d, "config"),
+                       WWHD_SETTINGS=os.path.join(d, "settings.ini"))
+            entry = os.path.join(d, "xdg", "applications", "wwhd.desktop")
+            with mock.patch.dict(os.environ, env, clear=True):
+                state, _calls, data = self.run_install(d, False, portable=False, no_shortcuts=False, desktop_entry=None)
+                self.assertTrue(state["desktop_entry"])
+                self.assertTrue(setup.read_state(str(data))["desktop_entry"])
+                self.assertTrue(os.path.isfile(entry))
+                state, _calls, data = self.run_install(d, False, portable=False, no_shortcuts=False, desktop_entry=False)
+                self.assertFalse(setup.read_state(str(data))["desktop_entry"])  # --no-desktop-entry: saved
+                self.assertFalse(os.path.exists(entry))                         # and setup's own entry removed
+                self.assertTrue((data / "play.sh").is_file())
+                state, _calls, data = self.run_install(d, False, portable=False, no_shortcuts=False, desktop_entry=None)
+                self.assertFalse(state["desktop_entry"])                        # an update or repair keeps "no"
+                self.assertFalse(os.path.exists(entry))
 
     def test_decomp_only_builds_and_starts_only_it(self):
         with tempfile.TemporaryDirectory() as d:
