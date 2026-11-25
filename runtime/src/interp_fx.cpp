@@ -1451,6 +1451,14 @@ void emtr_shift_followers(uint32_t emtr, const float* d) {
         }
     }
 }
+bool ptcl_bornback_on() {
+    static const bool on = [] {
+        const char* e = getenv("WWHD_T60_PTCL_BORNBACK");
+        return !(e && e[0] == '0');
+    }();
+    return on;
+}
+constexpr uint32_t kEmtrDynScale = 0x220;  // (JPABaseEmitter::mGlobalDynamicsScale: global = local x it + offset)
 constexpr float kEmtrBlendJump = 1500.0f;  // (sum of |dx|, |dy|, |dz| over a frame: the fastest movers seen ~100)
 // the group's emitters after the step's calc: record the translation; with a lag, draw W's
 void emtr_step(uint32_t mgr, uint32_t group, uint64_t stamp, int lag) {
@@ -1551,7 +1559,7 @@ void t60_ptcl_step(Cpu* c) {
     if (t60::tick30()) ptcl_trace(mgr, group);  // (WWHD_T60_PTCL_TRACE: the frame end)
     const uint64_t stamp = t60::particles::step_stamp();
     const int lag = t60::particles::draw_lag();
-    for_each_ptcl(mgr, group, [&](uint32_t p, uint32_t) {
+    for_each_ptcl(mgr, group, [&](uint32_t p, uint32_t emtr) {
         PtclState cur = read_ptcl(p);
         PtclHist& h = g_ptcl_hist[p];
         if (cur.age < h.age || (h.n && h.stamp[(h.n - 1) % 4] + 4 < stamp)) h = PtclHist{};  // (a new particle in this slot)
@@ -1578,6 +1586,52 @@ void t60_ptcl_step(Cpu* c) {
             return;
         }
         t60::particles::count(2);  // born after W: drawn at its newest state
+        // follow-up (sweep rerun17 bk3, the exec-0 short-life particles): drawn at its newest state, a particle
+        // born after W showed the same place again on the next pass (W's step is then its birth step): every new particle
+        // held one pass (fracT 0.75). Drawn instead `lag` steps back along its own step move (velocity x dt x the emitter's
+        // dynamics scale), as the interp path draws a born particle; restored at the next pass start like the history's.
+        // WWHD_T60_PTCL_BORNBACK=0: off
+        if (h.n == 1 && ptcl_bornback_on() && emtr) {
+            const float back = (float)lag / (float)(wwhd_t60_steps ? wwhd_t60_steps : 1);  // (lag steps of 1 / N frames)
+            float d[3], d2 = 0;
+            for (int k = 0; k < 3; k++) {
+                d[k] = wf(*(const uint32_t*)ppc_ptr(p + kPtclVel + 4 * k)) * (float)ldf32(emtr + kEmtrDynScale + 4 * k) * back;
+                d2 += d[k] * d[k];
+            }
+            // (a FollowEmtr particle, status 0x20: its offset is the emitter centre on every calc: back along the emitter's
+            // move over the lag steps too (the translation history of emtr_step, not yet holding this step; the dynamics
+            // scale as the emitter matrix applies it, rotation left out); sweep sail, the wake / splash particles)
+            if (ld32(p + 0xCC) & 0x20u) {
+                auto eh = g_emtr_hist.find(emtr);
+                if (eh != g_emtr_hist.end() && eh->second.n) {
+                    const EmtrHist& h2 = eh->second;
+                    for (int k = 0; k < 8 && k < h2.n; k++) {
+                        const int j = (h2.n - 1 - k) % 8;
+                        if (h2.stamp[j] != stamp - 1 - (uint64_t)k) break;  // (a gap: no move known)
+                        if (h2.stamp[j] != stamp - (uint64_t)lag) continue;
+                        d2 = 0;
+                        for (int c = 0; c < 3; c++) {
+                            d[c] += (wf(*(const uint32_t*)ppc_ptr(emtr + kEmtrTrans + 4 * c)) - wf(h2.w[j][c])) *
+                                    (float)ldf32(emtr + kEmtrDynScale + 4 * c);
+                            d2 += d[c] * d[c];
+                        }
+                        break;
+                    }
+                }
+            }
+            if (d2 > 1e-8f && d2 < 600.0f * 600.0f) {
+                Applied ap{p};
+                memcpy(ap.w, cur.w, sizeof ap.w);
+                memcpy(ap.a, cur.w, sizeof ap.a);
+                ap.is_born = false;
+                ap.extras = false;
+                uint32_t drawn[kPW];
+                memcpy(drawn, cur.w, sizeof drawn);
+                for (int k = 0; k < 3; k++) drawn[kWPos + k] = fw(wf(cur.w[kWPos + k]) - d[k]);
+                g_ptcl_applied.push_back(ap);
+                write_ptcl(p, drawn);
+            }
+        }
     });
     if (emtr_draw_on()) emtr_step(mgr, group, stamp, lag);  // (the bow wave's head, the wind lines at W)
     if (stamp >= g_ptcl_hist_sweep + 64) {
