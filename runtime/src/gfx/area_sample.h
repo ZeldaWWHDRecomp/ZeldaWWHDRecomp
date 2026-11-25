@@ -21,9 +21,13 @@
 // texels, which passes about a third of the occlusion noise at a period near 2.7 guest texels (8
 // pixels at 3x) where the console's filter passes about 3%, so a fainter grid stayed in the AO. The
 // light buffer has one mip level, so its taps read level 0 directly (Fix::GuestTapsLevel0): the
-// explicit gradients the bloom extract's taps need made the blur about 0.3 ms slower at 3x. At
-// scale 1 (or for buffers that are not scaled) the helper takes the one sample the game asked for,
-// so the native picture is unchanged; at fractional scales it falls back to the area helper.
+// explicit gradients the bloom extract's taps need made the blur about 0.3 ms slower at 3x. On one
+// level a sampler's LOD bias only picks the minification or the magnification filter, and the blur's
+// sampler has no bias and filters linearly both ways, so the level-0 reads leave it out. At scale 1
+// (or for buffers that are not scaled) the helper takes the one sample the game asked for, so the
+// native picture is unchanged. The console's grid is only exact when every guest texel covers k x k
+// whole host texels; otherwise (fractional scales, or a size rounded up from a scale just off a whole
+// number, where the grid would drift by texels across the screen) it falls back to the area helper.
 //
 // The bloom extract (PS 44F91200, issue #307) reads the scene with four bilinear taps on guest texel
 // corners, each the average of a 2x2 block, so together they cover the 4x4 block under an output
@@ -89,27 +93,24 @@ inline uint64_t program_hash(const void* bytes, uint32_t size) {
 
 // What a pixel shader needs on upscaled render targets: the texture units whose uf_texNScale the
 // decompiler must declare (bit n = unit n) and how its source is rewritten.
-enum class Fix : uint8_t { None, AreaTaps, GuestTaps, GuestTapsLevel0, GatherRays };
+enum class Fix : uint8_t { None, GuestTaps, GuestTapsLevel0, GatherRays };
 struct Program {
     uint32_t units = 0;
     Fix fix = Fix::None;
 };
-inline Program pixel_program(const void* bytes, uint32_t size) {
-    if (!bytes) return {};
-    if (size == 448) {
-        switch (program_hash(bytes, size)) {
-        case 0x51a7ccdf69184627ull:  // PS 44B3AB00, horizontal Gaussian
-        case 0x16285301a96cbf8dull:  // PS 44B39A00, vertical Gaussian
-            return {1u, Fix::GuestTapsLevel0};
-        default:
-            return {};
-        }
-    }
-    if (size == 656 && program_hash(bytes, size) == 0x3a8d0f3808f1501bull)  // PS 44F91200, bloom extract
+inline Program pixel_program_for(uint32_t size, uint64_t hash) {
+    if (size == 448 && (hash == 0x51a7ccdf69184627ull ||  // PS 44B3AB00, horizontal Gaussian
+                        hash == 0x16285301a96cbf8dull))   // PS 44B39A00, vertical Gaussian
+        return {1u, Fix::GuestTapsLevel0};
+    if (size == 656 && hash == 0x3a8d0f3808f1501bull)  // PS 44F91200, bloom extract
         return {3u, Fix::GuestTaps};
-    if (size == 2112 && program_hash(bytes, size) == 0x62ae9ab4cb625546ull)  // sun shadow mask
+    if (size == 2112 && hash == 0x62ae9ab4cb625546ull)  // sun shadow mask
         return {1u, Fix::GatherRays};
     return {};
+}
+inline Program pixel_program(const void* bytes, uint32_t size) {
+    if (!bytes || (size != 448 && size != 656 && size != 2112)) return {};
+    return pixel_program_for(size, program_hash(bytes, size));
 }
 inline uint32_t units_for_pixel_shader(const void* bytes, uint32_t size) { return pixel_program(bytes, size).units; }
 
@@ -151,10 +152,10 @@ inline Ray gather_ray(Ray centre, Ray ray, float scale_x, float scale_y) {
 }
 
 // Rewrites the sample calls of `units` in a decompiled pixel shader (MSL or Vulkan GLSL) to the
-// helper and inserts the helper. Returns the number of calls rewritten (0: source left unchanged).
-// guest: the taps go through the console-grid helper (Fix::GuestTaps) instead of the area helper;
-// level0: its variant that reads level 0 directly (Fix::GuestTapsLevel0).
-inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool guest = false, bool level0 = false) {
+// console-grid helper (Fix::GuestTaps) or, with level0, its variant that reads level 0 directly
+// (Fix::GuestTapsLevel0), and inserts the helpers, the area helper among them as their fallback.
+// Returns the number of calls rewritten (0: source left unchanged).
+inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool level0 = false) {
     const size_t entry = src.find(msl ? "fragment FragmentOut main0" : "void main(");
     if (!units || entry == std::string::npos) return 0;
     int count = 0;
@@ -162,8 +163,8 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool gu
         if (!(units >> unit & 1)) continue;
         const std::string n = std::to_string(unit);
         const std::string from = msl ? "tex" + n + ".sample(samplr" + n + ", " : "texture(textureUnitPS" + n + ", ";
-        const std::string fn = msl ? (level0 ? "wwhd_guest_sample_level0(" : guest ? "wwhd_guest_sample(" : "wwhd_area_sample(")
-                                   : (level0 ? "wwhdGuestSampleLevel0(" : guest ? "wwhdGuestSample(" : "wwhdAreaSample(");
+        const std::string fn = msl ? (level0 ? "wwhd_guest_sample_level0(" : "wwhd_guest_sample(")
+                                   : (level0 ? "wwhdGuestSampleLevel0(" : "wwhdGuestSample(");
         const std::string to = msl ? fn + "tex" + n + ", samplr" + n + ", supportBuffer.tex" + n + "Scale, "
                                    : fn + "textureUnitPS" + n + ", uf_tex" + n + "Scale, ";
         for (size_t at = src.find(from); at != std::string::npos; at = src.find(from, at + to.size())) {
@@ -216,7 +217,8 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool gu
         "static float4 wwhd_guest_sample(texture2d<float> t, sampler s, float2 scale, float2 uv) {\n"
         "    float2 r = floor(scale + 0.5);\n"
         "    if (r.x <= 1.0 && r.y <= 1.0) return t.sample(s, uv);\n"
-        "    if (any(abs(scale - r) > float2(0.01))) return wwhd_area_sample(t, s, scale, uv);\n"
+        "    float2 size = float2(t.get_width(), t.get_height());  // k x k whole host texels per guest texel, exactly\n"
+        "    if (any(round(size / scale) * r != size)) return wwhd_area_sample(t, s, scale, uv);\n"
         "    float2 dx = dfdx(uv), dy = dfdy(uv);  // the tap's own footprint: the fetch positions jump between console texels\n"
         "#define WWHD_FETCH(p) t.sample(s, p, gradient2d(dx, dy))\n"
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
@@ -225,17 +227,20 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool gu
         "static float4 wwhd_guest_sample(texture2d<float> t, sampler s, float2 scale, float2 uv, bias lodBias) {\n"
         "    float2 r = floor(scale + 0.5);\n"
         "    if (r.x <= 1.0 && r.y <= 1.0) return t.sample(s, uv, lodBias);\n"
-        "    if (any(abs(scale - r) > float2(0.01))) return wwhd_area_sample(t, s, scale, uv, lodBias);\n"
+        "    float2 size = float2(t.get_width(), t.get_height());  // k x k whole host texels per guest texel, exactly\n"
+        "    if (any(round(size / scale) * r != size)) return wwhd_area_sample(t, s, scale, uv, lodBias);\n"
         "    float2 dx = dfdx(uv), dy = dfdy(uv);  // (the bloom samplers carry no LOD bias)\n"
         "#define WWHD_FETCH(p) t.sample(s, p, gradient2d(dx, dy))\n"
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
         "#undef WWHD_FETCH\n"
         "}\n"
-        "// the console-grid tap reading level 0 directly, for one-level textures (runtime/src/gfx/area_sample.h)\n"
+        "// the console-grid tap reading level 0 directly, for one-level textures with no LOD bias to apply\n"
+        "// (runtime/src/gfx/area_sample.h)\n"
         "static float4 wwhd_guest_sample_level0(texture2d<float> t, sampler s, float2 scale, float2 uv) {\n"
         "    float2 r = floor(scale + 0.5);\n"
         "    if (r.x <= 1.0 && r.y <= 1.0) return t.sample(s, uv);\n"
-        "    if (any(abs(scale - r) > float2(0.01))) return wwhd_area_sample(t, s, scale, uv);\n"
+        "    float2 size = float2(t.get_width(), t.get_height());  // k x k whole host texels per guest texel, exactly\n"
+        "    if (any(round(size / scale) * r != size)) return wwhd_area_sample(t, s, scale, uv);\n"
         "#define WWHD_FETCH(p) t.sample(s, p, level(0.0))\n"
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
         "#undef WWHD_FETCH\n"
@@ -243,7 +248,8 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool gu
         "static float4 wwhd_guest_sample_level0(texture2d<float> t, sampler s, float2 scale, float2 uv, bias lodBias) {\n"
         "    float2 r = floor(scale + 0.5);\n"
         "    if (r.x <= 1.0 && r.y <= 1.0) return t.sample(s, uv, lodBias);\n"
-        "    if (any(abs(scale - r) > float2(0.01))) return wwhd_area_sample(t, s, scale, uv, lodBias);\n"
+        "    float2 size = float2(t.get_width(), t.get_height());  // k x k whole host texels per guest texel, exactly\n"
+        "    if (any(round(size / scale) * r != size)) return wwhd_area_sample(t, s, scale, uv, lodBias);\n"
         "#define WWHD_FETCH(p) t.sample(s, p, level(0.0))\n"
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
         "#undef WWHD_FETCH\n"
@@ -292,7 +298,8 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool gu
         "vec4 wwhdGuestSample(sampler2D t, vec2 scale, vec2 uv) {\n"
         "    vec2 r = floor(scale + 0.5);\n"
         "    if (r.x <= 1.0 && r.y <= 1.0) return texture(t, uv);\n"
-        "    if (any(greaterThan(abs(scale - r), vec2(0.01)))) return wwhdAreaSample(t, scale, uv);\n"
+        "    vec2 size = vec2(textureSize(t, 0));  // k x k whole host texels per guest texel, exactly\n"
+        "    if (any(notEqual(round(size / scale) * r, size))) return wwhdAreaSample(t, scale, uv);\n"
         "    vec2 dx = dFdx(uv), dy = dFdy(uv);  // the tap's own footprint: the fetch positions jump between console texels\n"
         "#define WWHD_FETCH(p) textureGrad(t, p, dx, dy)\n"
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
@@ -301,17 +308,20 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool gu
         "vec4 wwhdGuestSample(sampler2D t, vec2 scale, vec2 uv, float lodBias) {\n"
         "    vec2 r = floor(scale + 0.5);\n"
         "    if (r.x <= 1.0 && r.y <= 1.0) return texture(t, uv, lodBias);\n"
-        "    if (any(greaterThan(abs(scale - r), vec2(0.01)))) return wwhdAreaSample(t, scale, uv, lodBias);\n"
+        "    vec2 size = vec2(textureSize(t, 0));  // k x k whole host texels per guest texel, exactly\n"
+        "    if (any(notEqual(round(size / scale) * r, size))) return wwhdAreaSample(t, scale, uv, lodBias);\n"
         "    vec2 dx = dFdx(uv) * exp2(lodBias), dy = dFdy(uv) * exp2(lodBias);\n"
         "#define WWHD_FETCH(p) textureGrad(t, p, dx, dy)\n"
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
         "#undef WWHD_FETCH\n"
         "}\n"
-        "// the console-grid tap reading level 0 directly, for one-level textures (runtime/src/gfx/area_sample.h)\n"
+        "// the console-grid tap reading level 0 directly, for one-level textures with no LOD bias to apply\n"
+        "// (runtime/src/gfx/area_sample.h)\n"
         "vec4 wwhdGuestSampleLevel0(sampler2D t, vec2 scale, vec2 uv) {\n"
         "    vec2 r = floor(scale + 0.5);\n"
         "    if (r.x <= 1.0 && r.y <= 1.0) return texture(t, uv);\n"
-        "    if (any(greaterThan(abs(scale - r), vec2(0.01)))) return wwhdAreaSample(t, scale, uv);\n"
+        "    vec2 size = vec2(textureSize(t, 0));  // k x k whole host texels per guest texel, exactly\n"
+        "    if (any(notEqual(round(size / scale) * r, size))) return wwhdAreaSample(t, scale, uv);\n"
         "#define WWHD_FETCH(p) textureLod(t, p, 0.0)\n"
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
         "#undef WWHD_FETCH\n"
@@ -319,7 +329,8 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool gu
         "vec4 wwhdGuestSampleLevel0(sampler2D t, vec2 scale, vec2 uv, float lodBias) {\n"
         "    vec2 r = floor(scale + 0.5);\n"
         "    if (r.x <= 1.0 && r.y <= 1.0) return texture(t, uv, lodBias);\n"
-        "    if (any(greaterThan(abs(scale - r), vec2(0.01)))) return wwhdAreaSample(t, scale, uv, lodBias);\n"
+        "    vec2 size = vec2(textureSize(t, 0));  // k x k whole host texels per guest texel, exactly\n"
+        "    if (any(notEqual(round(size / scale) * r, size))) return wwhdAreaSample(t, scale, uv, lodBias);\n"
         "#define WWHD_FETCH(p) textureLod(t, p, 0.0)\n"
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
         "#undef WWHD_FETCH\n"
@@ -384,9 +395,8 @@ inline int rewrite_gather_rays(std::string& src, bool msl) {
 // places rewritten (0: source left unchanged).
 inline int rewrite(std::string& src, const Program& program, bool msl) {
     switch (program.fix) {
-    case Fix::AreaTaps: return rewrite_area_taps(src, program.units, msl);
-    case Fix::GuestTaps: return rewrite_area_taps(src, program.units, msl, true);
-    case Fix::GuestTapsLevel0: return rewrite_area_taps(src, program.units, msl, true, true);
+    case Fix::GuestTaps: return rewrite_area_taps(src, program.units, msl);
+    case Fix::GuestTapsLevel0: return rewrite_area_taps(src, program.units, msl, true);
     case Fix::GatherRays: return program.units & 1u ? rewrite_gather_rays(src, msl) : 0;
     default: return 0;
     }
