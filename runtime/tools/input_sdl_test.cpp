@@ -34,12 +34,12 @@ namespace gfxvk { bool graphics_hotkey(char key,bool activate){if(activate){++gr
 namespace gfx { bool drc_window_wanted(){return true;} int plusPresses=0; void display_plus_pressed(){++plusPresses;} }  // display_modes.cpp: GamePad screen while paused
 static bool mouseCamera=false, wheelOption=false;
 namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return wheelOption;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} }
-namespace interp { void set_mode(int){} uint64_t logic_steps(){return 0;} }
+namespace interp { void set_mode(int){} uint64_t logic_steps(){return 0;} double input_step_offset(){return 0.0;} }
 namespace timebase { uint64_t now(){return 0;} }
 namespace game_hooks { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }  // test scenario clock (input_sdl.cpp)
 namespace test_aids { void set_origin_step(uint64_t){} void tick(double,bool){} }
 namespace t60 { void test_scenario_time(double){} }
-namespace ss { void test_origin_reseed(){} }
+namespace ss { void test_origin_reseed(){} uint64_t test_scenario_paused(uint64_t){return 0;} }
 static int lockOnResets=0,quickUseResets=0,quickUseFilters=0;static bool quickUsePending=false;
 static input::PadState quickUseSample{};
 namespace mods {
