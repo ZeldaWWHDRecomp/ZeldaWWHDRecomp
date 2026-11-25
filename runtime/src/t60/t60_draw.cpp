@@ -19,6 +19,7 @@
 #include "t60/t60_draw_glide.h"
 #include "t60/t60_draw_ratiopic.h"
 #include "t60/t60_draw_carrypic.h"
+#include "t60/t60_draw_attachpic.h"
 #include "t60/t60_world.h"
 
 // the decompiled rate gate's table (f_pc/f_pc_executor.cpp, game build only; the runtime-only decomp build has no game
@@ -810,6 +811,8 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
         carrypic::record(proc, id, e->second.time);
         if (model == ld32(proc + carrypic::kCLModel)) carrypic::g_cl_jnt = jnt;
     }
+    const bool link_ap = !attachpic::g_nc && proc == ld32(kPlayInfo + 0x5B34);  // (Link's models)
+    if (link_ap && !picture && model == ld32(proc + ratiopic::kCLModel)) attachpic::g_cl_jnt = jnt;
     const bool link_legs = !g_legpic_nc && n > 40 && proc == ld32(kPlayInfo + kLegPlayer) &&
                            model == ld32(proc + kLegCLModel);  // (the leg IK: Link's CL model)
     if (link_legs && !picture) {  // (the leg words kept with the step, as its matrices)
@@ -849,13 +852,26 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
         }
     }
     if (picture && g_heldrigid_on && heldrigid_now(proc, id)) heldrigid_move(h, sa.first, sb.first, f, w, out, n);
+    // (his attached models at their rigid CL joint as his CL is drawn; RATIOPIC's attached then not)
+    bool ap_done = false;
+    if (link_ap && model != ld32(proc + ratiopic::kCLModel) && model != ld32(proc + glide::kShadow) &&
+        model != ld32(proc + glide::kGust) && model != ld32(proc + glide::kBafo) && model != ld32(proc + kHboots) &&
+        model != ld32(proc + kHboots + 4)) {
+        auto c = g_models.find(attachpic::g_cl_jnt);
+        if (c != g_models.end() && &c->second != &h && c->second.owner == proc && c->second.owner_id == id) {
+            const double td = sa.first + f * (sb.first - sa.first);
+            double r1, r2, rf;
+            const bool rp = ratiopic::active(proc, td, r1, r2, rf);
+            ap_done = attachpic::apply(h.steps, c->second.steps, c->second.n, td, rp, out, n);
+        }
+    }
     if (link_rp) {  // (a frame whose blend changed on its earlier steps, drawn between its frame ends)
         double F1, F2, fr;
         const double td = sa.first + f * (sb.first - sa.first);
         if (ratiopic::active(proc, td, F1, F2, fr)) {
             if (model == ld32(proc + ratiopic::kCLModel)) {
                 ratiopic::body(h.steps, F1, F2, fr, out, n);
-            } else if (model != ld32(proc + glide::kShadow) && model != ld32(proc + glide::kGust) &&
+            } else if (!ap_done && model != ld32(proc + glide::kShadow) && model != ld32(proc + glide::kGust) &&
                        model != ld32(proc + glide::kBafo)) {
                 auto c = g_models.find(ratiopic::g_cl_jnt);
                 if (c != g_models.end() && c->second.owner == proc && c->second.owner_id == id)
