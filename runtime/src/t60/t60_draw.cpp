@@ -199,8 +199,25 @@ struct ModelHist {
     uint32_t owner = 0, owner_id = 0, mtx = 0, n = 0;
     uint64_t pass = 0;
     std::deque<std::pair<double, std::vector<uint32_t>>> steps;  // joint matrices (guest words) per step
+    std::deque<std::pair<double, std::vector<float>>> bases;       // the model's base matrix per kept step
 };
 std::unordered_map<uint32_t, ModelHist> g_models;  // by joint block
+// (2026-11-24; decomp d/t60_npc_held.h through wwhd_t60_draw_heldrigid): a
+// whole-form NPC that Link carries (Medli, Makar) is placed by him on each step (setGrabItemPos), and its earlier step's
+// held picture drew its skeleton at that step's place; but as a step of its own its matrices entered the
+// draw history with the frame's pose, so the pose moved on the earlier passes only (stair sweep mdk / mkc:
+// Medli's joints fracT 0.07-0.29, still 0.8; Makar's 0.01-0.16; with the held picture off (an frame interpolation picture step) none
+// flagged, but the placement cut Link's chord). Form: the held earlier step is a picture step again (the skeleton between
+// the frame ends, frame interpolation), and that in-between skeleton is moved rigidly from the frame ends' blended base matrix to the
+// held base at the draw's world time (C = B_w x inv(B_blend); B_w: the model's base matrices of every step, the held
+// picture steps' included, i.e. Link's placement of each step, blended at the draw's time as the skeleton is). Draw only
+// (host copies, guest words untouched). WWHD_T60_HELDRIGID_DRAW_NEGCTRL=1: no move (the plain frame interpolation blend).
+const bool g_heldrigid_on = [] {
+    const char* e = getenv("WWHD_T60_HELDRIGID_DRAW_NEGCTRL");
+    return !(e && e[0] == '1');
+}();
+struct HeldRigid { uint64_t pass = ~0ull; uint32_t id = 0; };
+std::unordered_map<uint32_t, HeldRigid> g_heldrigid;  // by actor
 
 struct CamStep { interp::camera::CamState s; interp::camera::Shake k; };
 struct CamHist {
@@ -727,6 +744,36 @@ void leg_frameend(double td, double ta, double tb, float f, uint32_t* out, uint3
     }
     leg_cache_note(td, before.data(), out, true);
 }
+// (above): a held NPC's picture step: the blended skeleton moved from the frame ends' blended base to
+// the base the held picture set on this step
+bool heldrigid_now(uint32_t proc, uint32_t id) {
+    auto it = g_heldrigid.find(proc);
+    return it != g_heldrigid.end() && it->second.pass == g_pass && it->second.id == id;
+}
+const std::vector<float>* heldrigid_base(const ModelHist& h, double t) {
+    for (const auto& b : h.bases)
+        if (std::fabs(b.first - t) < hist::kEps) return &b.second;
+    return nullptr;
+}
+// the frame ends' base blended as the skeleton was (sa / sb at f), moved to the held base at the draw's world time w: the
+// bases of every step, the held picture steps' included (each step's place as Link set it), blended at w
+void heldrigid_move(const ModelHist& h, double ta, double tb, float f, double w, uint32_t* out, uint32_t n) {
+    const std::vector<float>* Ba = heldrigid_base(h, ta);
+    const std::vector<float>* Bb = heldrigid_base(h, tb);
+    if (!Ba || !Bb || h.bases.empty()) return;
+    float Bl[12], B[12], Hi[12], C[12];
+    if (f == 0.0f) memcpy(Bl, Ba->data(), sizeof Bl);
+    else interp::blend_world_matrix(Ba->data(), Bb->data(), Bl, f);
+    const hist::Pick q = hist::pick(h.bases, w);
+    if (q.a < 0) return;
+    if (q.f == 0.0f) memcpy(B, h.bases[q.a].second.data(), sizeof B);
+    else interp::blend_world_matrix(h.bases[q.a].second.data(), h.bases[q.b].second.data(), B, q.f);
+    if (memcmp(B, Bl, sizeof B) == 0 || !inv34(Bl, Hi)) return;
+    mul34(B, Hi, C);
+    std::vector<uint32_t> v(out, out + 12 * n);
+    basehold_apply(C, v);
+    memcpy(out, v.data(), 4 * 12 * n);
+}
 }  // namespace
 
 bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uint32_t* out) {
@@ -761,7 +808,13 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
         while (g_leg.steps.size() > 32) g_leg.steps.pop_front();
     }
     const bool link_cl = !g_hat_nc && n > kHatC && proc == ld32(kPlayInfo + kPlayerPtr) &&
-                         model == ld32(proc + kCLModel);  // (the cap and hair: Link's CL model)
+                         model == ld32(proc + kCLModel);  // (Link's CL model)
+    if (g_heldrigid_on && (!picture || heldrigid_now(proc, id))) {  // (the step's base matrix, a held picture step's too)
+        const uint32_t* bw = (const uint32_t*)ppc_ptr(model + 0xC8);  // (J3DModel mBaseTransformMtx)
+        std::vector<float> B(12);
+        for (int k = 0; k < 12; k++) B[k] = interp::joints::word_f(bw[k]);
+        hist::stamp(h.bases, e->second.time, std::move(B));
+    }
     if (!hist::record(h.steps, e->second.time, picture, [&] {
             std::vector<uint32_t> v(cur, cur + words);
             float C[12];
@@ -783,7 +836,8 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
             f = 1.0f;
         }
     }
-    if (link_cl)  // (Link's cap and hair between the frame ends)
+    if (picture && g_heldrigid_on && heldrigid_now(proc, id)) heldrigid_move(h, sa.first, sb.first, f, w, out, n);
+    if (link_cl)  // (Link's cap and hair)
         hat_frameend(h.steps, sa.first + f * (sb.first - sa.first), out, n);
     if (link_legs)  // (Link's leg IK between the frame ends)
         leg_frameend(sa.first + f * (sb.first - sa.first), sa.first, sb.first, f, out, n);
@@ -1090,6 +1144,11 @@ extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_basehold(ui
     t60::draw::BaseHold& h = t60::draw::g_basehold[actor];
     h.pass = t60::draw::g_pass, h.model = model;
     memcpy(h.held, held, sizeof h.held);
+}
+extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_heldrigid(uint32_t actor) {
+    if (!actor) return;
+    t60::draw::HeldRigid& r = t60::draw::g_heldrigid[actor];
+    r.pass = t60::draw::g_pass, r.id = ld32(actor + t60::draw::kProcId);
 }
 extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_basefollow(uint32_t actor, uint32_t holderId) {
     if (!actor) return;
