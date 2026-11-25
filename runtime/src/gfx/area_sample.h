@@ -72,6 +72,7 @@
 // the flame's flicker lit objects had a blocky, flickering outline, at 1x too. Off keeps
 // the console's half size.
 #include <bit>
+#include <cmath>
 #include <utility>
 #include <cstdint>
 #include <cstring>
@@ -98,19 +99,37 @@ struct Program {
     uint32_t units = 0;
     Fix fix = Fix::None;
 };
+struct KnownProgram {
+    uint32_t size;
+    uint64_t hash;
+    Program program;
+};
+inline constexpr KnownProgram kPrograms[] = {
+    {448, 0x51a7ccdf69184627ull, {1u, Fix::GuestTapsLevel0}},  // PS 44B3AB00, horizontal Gaussian
+    {448, 0x16285301a96cbf8dull, {1u, Fix::GuestTapsLevel0}},  // PS 44B39A00, vertical Gaussian
+    {656, 0x3a8d0f3808f1501bull, {3u, Fix::GuestTaps}},        // PS 44F91200, bloom extract
+    {2112, 0x62ae9ab4cb625546ull, {1u, Fix::GatherRays}},      // sun shadow mask
+};
 inline Program pixel_program_for(uint32_t size, uint64_t hash) {
-    if (size == 448 && (hash == 0x51a7ccdf69184627ull ||  // PS 44B3AB00, horizontal Gaussian
-                        hash == 0x16285301a96cbf8dull))   // PS 44B39A00, vertical Gaussian
-        return {1u, Fix::GuestTapsLevel0};
-    if (size == 656 && hash == 0x3a8d0f3808f1501bull)  // PS 44F91200, bloom extract
-        return {3u, Fix::GuestTaps};
-    if (size == 2112 && hash == 0x62ae9ab4cb625546ull)  // sun shadow mask
-        return {1u, Fix::GatherRays};
+    for (const KnownProgram& known : kPrograms)
+        if (known.size == size && known.hash == hash) return known.program;
     return {};
 }
+// Hashes only programs of a size in the table.
 inline Program pixel_program(const void* bytes, uint32_t size) {
-    if (!bytes || (size != 448 && size != 656 && size != 2112)) return {};
-    return pixel_program_for(size, program_hash(bytes, size));
+    if (!bytes) return {};
+    for (const KnownProgram& known : kPrograms)
+        if (known.size == size) return pixel_program_for(size, program_hash(bytes, size));
+    return {};
+}
+
+// Whether an upscaled w x h texture, sx x sy host texels per guest texel, takes the console's grid:
+// k x k whole host texels under every guest texel, exactly. The same test is in the shader helpers
+// below; other sizes take the area helper, and scale 1 the game's own sample.
+inline bool on_console_grid(uint32_t w, uint32_t h, float sx, float sy) {
+    const float kx = std::floor(sx + 0.5f), ky = std::floor(sy + 0.5f);
+    if (kx <= 1.0f && ky <= 1.0f) return false;
+    return std::round(float(w) / sx) * kx == float(w) && std::round(float(h) / sy) * ky == float(h);
 }
 inline uint32_t units_for_pixel_shader(const void* bytes, uint32_t size) { return pixel_program(bytes, size).units; }
 
@@ -167,10 +186,18 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool le
                                    : (level0 ? "wwhdGuestSampleLevel0(" : "wwhdGuestSample(");
         const std::string to = msl ? fn + "tex" + n + ", samplr" + n + ", supportBuffer.tex" + n + "Scale, "
                                    : fn + "textureUnitPS" + n + ", uf_tex" + n + "Scale, ";
+        int calls = 0;
         for (size_t at = src.find(from); at != std::string::npos; at = src.find(from, at + to.size())) {
             src.replace(at, from.size(), to);
-            count++;
+            calls++;
         }
+        // Metal's bias() can't be read back as a number, so the helpers take the support buffer's
+        // float (as in GLSL), which the sample calls of this unit wrap in bias()
+        const std::string lodBias = "supportBuffer.tex" + n + "LodBias", wrapped = "bias(" + lodBias + ")";
+        if (msl && calls)
+            for (size_t at = src.find(wrapped); at != std::string::npos; at = src.find(wrapped, at))
+                src.replace(at, wrapped.size(), lodBias);
+        count += calls;
     }
     if (!count) return 0;
     static const char* const kMsl =
@@ -185,13 +212,13 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool le
         "    return sum / (k.x * k.y);\n"
         "}\n"
         "// with the sampler's LOD bias (runtime/src/gfx/sampler_lod_bias.h)\n"
-        "static float4 wwhd_area_sample(texture2d<float> t, sampler s, float2 scale, float2 uv, bias lodBias) {\n"
+        "static float4 wwhd_area_sample(texture2d<float> t, sampler s, float2 scale, float2 uv, float lodBias) {\n"
         "    float2 k = ceil(scale - 0.001);\n"
-        "    if (k.x <= 1.0 && k.y <= 1.0) return t.sample(s, uv, lodBias);\n"
+        "    if (k.x <= 1.0 && k.y <= 1.0) return t.sample(s, uv, bias(lodBias));\n"
         "    float2 step = scale / (float2(t.get_width(), t.get_height()) * k);\n"
         "    float4 sum = float4(0.0);\n"
         "    for (float j = 0.5; j < k.y; j += 1.0)\n"
-        "        for (float i = 0.5; i < k.x; i += 1.0) sum += t.sample(s, uv + (float2(i, j) - 0.5 * k) * step, lodBias);\n"
+        "        for (float i = 0.5; i < k.x; i += 1.0) sum += t.sample(s, uv + (float2(i, j) - 0.5 * k) * step, bias(lodBias));\n"
         "    return sum / (k.x * k.y);\n"
         "}\n"
         "// a bilinear tap on the console's texel grid, read from a texture k (whole) times larger per axis:\n"
@@ -224,12 +251,12 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool le
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
         "#undef WWHD_FETCH\n"
         "}\n"
-        "static float4 wwhd_guest_sample(texture2d<float> t, sampler s, float2 scale, float2 uv, bias lodBias) {\n"
+        "static float4 wwhd_guest_sample(texture2d<float> t, sampler s, float2 scale, float2 uv, float lodBias) {\n"
         "    float2 r = floor(scale + 0.5);\n"
-        "    if (r.x <= 1.0 && r.y <= 1.0) return t.sample(s, uv, lodBias);\n"
+        "    if (r.x <= 1.0 && r.y <= 1.0) return t.sample(s, uv, bias(lodBias));\n"
         "    float2 size = float2(t.get_width(), t.get_height());  // k x k whole host texels per guest texel, exactly\n"
         "    if (any(round(size / scale) * r != size)) return wwhd_area_sample(t, s, scale, uv, lodBias);\n"
-        "    float2 dx = dfdx(uv), dy = dfdy(uv);  // (the bloom samplers carry no LOD bias)\n"
+        "    float2 dx = dfdx(uv) * exp2(lodBias), dy = dfdy(uv) * exp2(lodBias);\n"
         "#define WWHD_FETCH(p) t.sample(s, p, gradient2d(dx, dy))\n"
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
         "#undef WWHD_FETCH\n"
@@ -245,9 +272,9 @@ inline int rewrite_area_taps(std::string& src, uint32_t units, bool msl, bool le
         "    WWHD_GUEST_SAMPLE(WWHD_FETCH)\n"
         "#undef WWHD_FETCH\n"
         "}\n"
-        "static float4 wwhd_guest_sample_level0(texture2d<float> t, sampler s, float2 scale, float2 uv, bias lodBias) {\n"
+        "static float4 wwhd_guest_sample_level0(texture2d<float> t, sampler s, float2 scale, float2 uv, float lodBias) {\n"
         "    float2 r = floor(scale + 0.5);\n"
-        "    if (r.x <= 1.0 && r.y <= 1.0) return t.sample(s, uv, lodBias);\n"
+        "    if (r.x <= 1.0 && r.y <= 1.0) return t.sample(s, uv, bias(lodBias));\n"
         "    float2 size = float2(t.get_width(), t.get_height());  // k x k whole host texels per guest texel, exactly\n"
         "    if (any(round(size / scale) * r != size)) return wwhd_area_sample(t, s, scale, uv, lodBias);\n"
         "#define WWHD_FETCH(p) t.sample(s, p, level(0.0))\n"
