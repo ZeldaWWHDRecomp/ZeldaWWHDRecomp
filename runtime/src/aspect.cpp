@@ -68,8 +68,17 @@ int parse_env_mode(float& custom) {
     custom = a;
     return kCustom;
 }
+int parse_env_hud_mode() {
+    const char* e = getenv("WWHD_HUD_ASPECT");
+    if (!e || !*e || !strcmp(e, "match") || !strcmp(e, "display") || !strcmp(e, "window")) return kHudMatch;
+    if (!strcmp(e, "32:9")) return kHud32x9;
+    if (!strcmp(e, "21:9")) return kHud21x9;
+    if (!strcmp(e, "16:9")) return kHud16x9;
+    return kHudMatch;
+}
 float g_custom = kBase;
 std::atomic<int> g_mode{parse_env_mode(g_custom)};
+std::atomic<int> g_hud_mode{parse_env_hud_mode()};
 std::atomic<float> g_window{kBase};
 // aspect of the frame being built: written by the main thread at the swap, read by the threads
 // that compute and record the frame
@@ -189,6 +198,52 @@ void set_mode(int m) {
     if (m < 0 || m >= kModes) return;
     g_mode = m;
     LOG("[aspect] %s", mode_name(m));
+}
+int hud_mode() { return g_hud_mode.load(std::memory_order_relaxed); }
+void set_hud_mode(int m) {
+    if (m < 0 || m >= kHudModes) return;
+    if (g_hud_mode.load(std::memory_order_relaxed) == m) return;
+    g_hud_mode = m;
+    // No tree-wide dirty: calculate_aspect_pane marks a HUD pane dirty whenever the transform or the
+    // offset applied to it changes (set_offset), including back to the authored place, so a pane picks
+    // the new shape up on its next calculation, after a menu or a pause too.
+    LOG("[aspect] HUD constrain %s", hud_mode_name(m));
+}
+const char* hud_mode_name(int m) {
+    static const char* n[kHudModes] = {"Match display aspect ratio", "32:9", "21:9", "16:9"};
+    return m >= 0 && m < kHudModes ? n[m] : "?";
+}
+float hud_mode_value(int m) {
+    switch (m) {
+    case kHud32x9: return 32.0f / 9.0f;
+    case kHud21x9: return 64.0f / 27.0f;  // (as mode_value)
+    case kHud16x9: return kBase;
+    default: return 0;  // kHudMatch: the picture's own shape
+    }
+}
+bool hud_mode_fits(int m, float display) {
+    if (m == kHudMatch) return true;
+    const float v = hud_mode_value(m);
+    return v > 0.0f && (!(display > 0.0f) || v <= display + 1.0e-3f);
+}
+namespace {
+float hud_aspect(float display) {
+    if (!(display > 0.5f)) display = kBase;
+    float h = hud_mode_value(hud_mode());
+    if (!(h > 0.0f) || h > display) h = display;  // never wider than the picture the HUD sits in
+    return h;
+}
+}
+void hud_factors(float display, float& kx, float& ky) {
+    if (!(display > 0.5f)) display = kBase;
+    const float h = hud_aspect(display);
+    if (h == display) { factors(display, kx, ky); return; }  // Match/unapplied: exactly the picture's factors
+    ky = display >= kBase ? 1.0f : kBase / display;
+    kx = (h / kBase) * ky;  // (h/kBase on a wide picture; on a tall one the HUD shares its vertical growth)
+}
+float hud_shape() { return hud_aspect(game()); }
+float hud_anchor_extra(float base_width) {
+    return 0.5f * base_width * (hud_aspect(game()) / kBase - 1.0f);
 }
 void set_window_aspect(float a) {
     if (!(a > 0.1f && a < 20.0f)) return;
@@ -474,12 +529,18 @@ bool anchor_changed(uint32_t root, bool anchor) {
 }
 
 // offsets applied to anchored panes in their last matrix calculation (root children and placed
-// roots): the draw hook tells panes the game parked off the 16:9 screen from panes we moved there
+// roots): the draw hook tells panes the game parked off the 16:9 screen from panes we moved there.
+// Returns true when the pane's matrix was built with another offset: an offset that goes back to
+// zero (the HUD constraint, a rule that stopped applying) leaves a stale matrix that must be
+// recomputed just as a new offset does; the draw hook would otherwise take it for a parked pane.
 std::unordered_map<uint32_t, std::pair<float, float>> g_offsets;
-void set_offset(uint32_t pane, float dx, float dy) {
+bool set_offset(uint32_t pane, float dx, float dy) {
     std::lock_guard<std::mutex> lk(g_root_mu);
-    if (dx == 0.0f && dy == 0.0f) g_offsets.erase(pane);
-    else g_offsets[pane] = {dx, dy};
+    if (dx == 0.0f && dy == 0.0f) return g_offsets.erase(pane) != 0;
+    auto it = g_offsets.find(pane);
+    if (it != g_offsets.end() && it->second.first == dx && it->second.second == dy) return false;
+    g_offsets[pane] = {dx, dy};
+    return true;
 }
 std::pair<float, float> offset_of(uint32_t pane) {
     std::lock_guard<std::mutex> lk(g_root_mu);
@@ -512,6 +573,12 @@ const panes::PaneRule* rule_of(uint32_t pane) {
 bool moved_root_child(const panes::PaneRule* r) {
     return r && (r->rule == panes::Rule::Hud || r->rule == panes::Rule::Projected);
 }
+// HUD-only rules follow the constrained HUD aspect; full-screen fills, frames and world markers keep
+// the picture's own aspect.
+bool hud_rule(const panes::PaneRule* r) {
+    return r && (r->rule == panes::Rule::Hud || r->rule == panes::Rule::Anchored ||
+                 r->rule == panes::Rule::Slide);
+}
 
 bool has_world_anchor(uint32_t pane, int depth = 0) {
     if (depth > 32) return false;
@@ -532,8 +599,9 @@ static void calculate_aspect_pane(Cpu* c) {
     using namespace aspect;
     uint32_t pane = c->r[3];
     uint32_t parent = ld32(pane + kPaneParent);
-    float kx, ky;
+    float kx, ky, hkx, hky;
     factors(g_game, kx, ky);
+    hud_factors(g_game, hkx, hky);
     if (!parent) {  // a layout's root: decide for the whole tree
         uint32_t saveRoot = t_root;
         bool saveAnchor = t_anchor;
@@ -573,10 +641,11 @@ static void calculate_aspect_pane(Cpu* c) {
     const panes::PaneRule* rule = rule_of(pane);
     if (rule) {
         float w = (float)ldf32(pane + kPaneSize) * std::fabs(sx), h = (float)ldf32(pane + kPaneSize + 4) * std::fabs(sy);
-        auto t = panes::apply(*rule, tx, ty, sx, sy, w, h, kx, ky);
+        const float rkx = hud_rule(rule) ? hkx : kx, rky = hud_rule(rule) ? hky : ky;
+        auto t = panes::apply(*rule, tx, ty, sx, sy, w, h, rkx, rky);
         nx = t.x; ny = t.y; nsx = t.sx; nsy = t.sy;
     }
-    bool moved = nx != tx || ny != ty, scaled = nsx != sx || nsy != sy;
+    bool moved = nx != tx || ny != ty, scaled = nsx != sx || nsy != sy, offset_changed = false;
     // debug: WWHD_ASPECT_LOG=1 logs each moved or stretched pane once per layout root and name
     static const bool log_panes = getenv("WWHD_ASPECT_LOG") != nullptr;
     if (log_panes && (moved || scaled)) {
@@ -587,8 +656,8 @@ static void calculate_aspect_pane(Cpu* c) {
         if (seen[key]++ == 0) LOG("[aspect] %s '%s' %.1f,%.1f x%.3f,%.3f -> %.1f,%.1f x%.3f,%.3f", scaled ? "stretched" : "moved",
                                   key.c_str(), tx, ty, sx, sy, nx, ny, nsx, nsy);
     }
-    if (parent == t_root || rule) set_offset(pane, nx - tx, ny - ty);
-    if (moved || scaled) st8(pane + kPaneFlags, ld8(pane + kPaneFlags) | kPaneMtxDirty);  // recompute with the offsets
+    if (parent == t_root || rule) offset_changed = set_offset(pane, nx - tx, ny - ty);
+    if (moved || scaled || offset_changed) st8(pane + kPaneFlags, ld8(pane + kPaneFlags) | kPaneMtxDirty);  // recompute with the offsets
     if (moved) { stf32(pane + kPaneTrans, nx); stf32(pane + kPaneTrans + 4, ny); }
     if (scaled) { stf32(pane + kPaneScale, nsx); stf32(pane + kPaneScale + 4, nsy); }
     f_028766CC_orig(c);

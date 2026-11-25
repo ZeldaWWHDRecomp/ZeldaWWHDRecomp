@@ -24,13 +24,18 @@ ImU32 color(uint32_t rgba) {return IM_COL32(rgba>>24,(rgba>>16)&255,(rgba>>8)&25
 float tv_x=0,tv_y=0,tv_width=0,tv_height=0;
 float gamepad_pixels=0;  // the largest GamePad presentation this frame (pixels per GamePad unit)
 bool tv_visible=true;
-void draw(const std::vector<std::shared_ptr<const List>>& lists,ImDrawList* output,float width,float height,float origin_x=0,float origin_y=0) {
+// HUD aspect constraint (aspect.h): edge anchors follow this half extra width; NaN keeps the picture's.
+float tv_hud_anchor_extra=std::numeric_limits<float>::quiet_NaN();
+void draw(const std::vector<std::shared_ptr<const List>>& lists,ImDrawList* output,float width,float height,float origin_x=0,float origin_y=0,bool tv=true) {
     output->PushClipRect(ImVec2(origin_x,origin_y),ImVec2(origin_x+width,origin_y+height),true);
     Blend blend=Blend::Alpha;
     for(const auto& list:lists)for(const auto& command:list->commands) {
         float base_width=list->screen==1?854.f:1280.f,base_height=list->screen==1?480.f:720.f;
         float scale=height/base_height;
-        auto point=[&](float x,float y){auto p=anchored(x,y,command.anchor,width,height,base_width,base_height);return ImVec2(origin_x+p.x,origin_y+p.y);};
+        // TV mod HUD (the minimap and other UI) follows the HUD aspect constraint; the GamePad does not.
+        // A WWHD_HUD_BOTH list is drawn to both targets, so the target decides, not the list's screen.
+        const float anchor_extra=tv?tv_hud_anchor_extra:std::numeric_limits<float>::quiet_NaN();
+        auto point=[&](float x,float y){auto p=anchored(x,y,command.anchor,width,height,base_width,base_height,anchor_extra);return ImVec2(origin_x+p.x,origin_y+p.y);};
         if(command.blend!=blend) {
             blend=command.blend;
             output->AddCallback(blend_callback,blend==Blend::Additive?reinterpret_cast<void*>(uintptr_t(1)):nullptr);
@@ -64,6 +69,9 @@ void draw(const std::vector<std::shared_ptr<const List>>& lists,ImDrawList* outp
 }
 }
 void blend_callback(const ImDrawList*,const ImDrawCmd*) {}
+void set_tv_hud_anchor_extra(float extra) {
+    tv_hud_anchor_extra=std::isfinite(extra)?extra:std::numeric_limits<float>::quiet_NaN();
+}
 bool image_texture(uint64_t id) {
     if(id==uint64_t(ImTextureID_Invalid))return false;
     if(file_select_quit::image_texture(id))return true;
@@ -124,7 +132,7 @@ void frame() {
     gamepad->_ResetForNewFrame();
     gamepad->PushTexture(ImGui::GetIO().Fonts->TexRef);
     gamepad->PushClipRect(ImVec2(0,0),ImVec2(854,480),false);
-    draw(drc,gamepad.get(),854,480);
+    draw(drc,gamepad.get(),854,480,0,0,false);
     gamepad->PopClipRect();gamepad->PopTexture();
 }
 ImDrawData* gamepad_frame(float width,float height) {

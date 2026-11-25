@@ -133,6 +133,15 @@ int main() {
     }
     auto drc=anchored(834,460,Anchor::BottomRight,1708,960,854,480);
     assert(drc.x==1668&&drc.y==920);
+    {   // HUD aspect constraint: edge anchors follow the narrower shape, the centre does not move.
+        const float width=720*(32.f/9), extra=640*(4.f/3-1);  // 21:9 inside 32:9
+        auto left=anchored(20,30,Anchor::TopLeft,width,720,1280,720,extra);
+        auto right=anchored(1260,30,Anchor::TopRight,width,720,1280,720,extra);
+        auto center=anchored(640,360,Anchor::Center,width,720,1280,720,extra);
+        assert(std::abs(left.x-(640-extra+20))<.001f);
+        assert(std::abs(right.x-(640+1260+extra))<.001f);
+        assert(std::abs(center.x-width/2)<.001f&&center.y==360);
+    }
     {   // Frame interpolation: a list committed per logic step is drawn between the step before and this one.
         Store blend;Command e;e.kind=Command::Rect;e.x=100;e.y=50;e.w=10;e.h=10;
         auto commit=[&](uint64_t step,float x){blend.set_step(step);auto h=blend.begin("m",0);e.x=x;assert(blend.append("m",h,e)&&blend.commit("m",h));};

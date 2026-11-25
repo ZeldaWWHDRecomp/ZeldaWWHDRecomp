@@ -17,6 +17,22 @@ int mode();
 void set_mode(int m);
 const char* mode_name(int m);
 float mode_value(int m);           // fixed aspect of a mode (0 for kWindow)
+// Constrain HUD placement to a narrower aspect than the picture (Graphics menu): HUD panes keep
+// their edge margins but follow the chosen shape's edges. kHudMatch is the existing placement.
+// Persisted IDs are stable (settings.ini): append new modes, and list them in kHudPresets for the menu.
+enum HudMode : int { kHudMatch = 0, kHud32x9, kHud21x9, kHud16x9, kHudModes };
+inline constexpr HudMode kHudPresets[] = {kHudMatch, kHud16x9, kHud21x9, kHud32x9};
+int hud_mode();
+void set_hud_mode(int m);
+const char* hud_mode_name(int m);
+float hud_mode_value(int m);       // fixed aspect of a HUD mode (0 for kHudMatch)
+bool hud_mode_fits(int m, float display);  // the Graphics option is not wider than the picture
+float hud_shape();                 // the HUD's effective aspect (the picture's when matched)
+// horizontal/vertical widening for HUD panes at the picture's display aspect `display`; never wider
+// than the picture itself (a saved choice from a wider display falls back to it)
+void hud_factors(float display, float& kx, float& ky);
+// half the extra width, in canvas units, that mod HUD edge anchors should use on the TV
+float hud_anchor_extra(float base_width);
 void set_window_aspect(float a);   // shape of the TV window's drawable (render thread, every present)
 float requested();                 // what the setting asks for now
 // main thread, GX2SwapScanBuffers: latch the aspect for the next game frame, update the game's

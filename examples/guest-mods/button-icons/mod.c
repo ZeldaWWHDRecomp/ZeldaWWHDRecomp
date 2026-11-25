@@ -107,8 +107,11 @@ WWHD_HOOK(0x02877100,record_button_draw,(u8* pane,void* info)) {
         if(cluster && *(u8**)(cluster+0x0C)==pane)belongs=1;
     }
     if(!belongs && !discover_buttons(pane))return;
+    /* The HUD's layout shape: display.hud_aspect when Graphics > Constrain HUD narrows it, otherwise
+     * the picture's display.aspect (all older ports report only that one). */
     aspect=16.0/9.0;
-    wwhd_setting_get("display.aspect",WWHD_SETTING_F64,&aspect,sizeof aspect);
+    if(wwhd_setting_get("display.hud_aspect",WWHD_SETTING_F64,&aspect,sizeof aspect)!=sizeof aspect)
+        wwhd_setting_get("display.aspect",WWHD_SETTING_F64,&aspect,sizeof aspect);
     f32 expansion=aspect>16.0/9.0 ? (f32)((aspect*720.0-1280.0)*0.5) : 0;
     for(u32 i=0;i<5;++i) {
         u8* p=panes[i];

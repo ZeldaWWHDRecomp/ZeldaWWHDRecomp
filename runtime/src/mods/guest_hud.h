@@ -26,12 +26,15 @@ enum class Anchor : uint32_t { Center,TopLeft,Top,TopRight,Left,Right,BottomLeft
 enum class Blend : uint32_t { Alpha,Additive };
 struct Point {float x,y;};
 // Preserve height-based game coordinates, extending the horizontal virtual canvas.
-// Anchors shift the authored 16:9 edge to the corresponding displayed edge.
-inline Point anchored(float x,float y,Anchor anchor,float width,float height,float base_width,float base_height) {
+// Anchors shift the authored 16:9 edge to the corresponding displayed edge. anchor_extra overrides
+// the half extra width for the HUD aspect constraint (aspect.h); it centres the canvas unchanged.
+inline Point anchored(float x,float y,Anchor anchor,float width,float height,float base_width,float base_height,
+                      float anchor_extra=std::numeric_limits<float>::quiet_NaN()) {
     float scale=height/base_height,extra=(width/scale-base_width)*.5f;
+    if(!std::isfinite(anchor_extra))anchor_extra=extra;
     float shift=0;
-    if(anchor==Anchor::TopLeft||anchor==Anchor::Left||anchor==Anchor::BottomLeft)shift=-extra;
-    if(anchor==Anchor::TopRight||anchor==Anchor::Right||anchor==Anchor::BottomRight)shift=extra;
+    if(anchor==Anchor::TopLeft||anchor==Anchor::Left||anchor==Anchor::BottomLeft)shift=-anchor_extra;
+    if(anchor==Anchor::TopRight||anchor==Anchor::Right||anchor==Anchor::BottomRight)shift=anchor_extra;
     return {(extra+x+shift)*scale,y*scale};
 }
 struct Command {

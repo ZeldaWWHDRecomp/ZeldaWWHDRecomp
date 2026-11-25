@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include <cassert>
 #include <cmath>
+#include <limits>
 
 int main() {
     // No guest HUD must be a no-op even without an ImGui context. Opening the
@@ -109,6 +110,17 @@ int main() {
     draw=ImGui::GetDrawData();assert(draw->TotalVtxCount==4);
     assert(std::abs(draw->CmdLists[0]->VtxBuffer[0].pos.x-1710)<.01f);
     assert(draw->CmdLists[0]->VtxBuffer[0].pos.y==80);
+    // HUD aspect constraint: TV edge anchors follow the HUD shape's edge, not the picture's. A
+    // WWHD_HUD_BOTH list (screen 2) is drawn to both targets and only its TV copy follows.
+    list=store.begin("anchor-both",2);rect={};rect.x=1260;rect.y=20;rect.w=10;rect.h=10;
+    rect.anchor=guestmods::hud::Anchor::TopRight;assert(store.append("anchor-both",list,rect)&&store.commit("anchor-both",list));
+    overlay::guesthud::set_tv_hud_anchor_extra(0.0f);  // 16:9 HUD inside the 21:9 picture
+    ImGui::NewFrame();overlay::guesthud::frame();ImGui::Render();
+    draw=ImGui::GetDrawData();assert(draw->TotalVtxCount==8);
+    assert(std::abs(draw->CmdLists[0]->VtxBuffer[0].pos.x-1510)<.01f);  // the TV-only list
+    assert(std::abs(draw->CmdLists[0]->VtxBuffer[4].pos.x-1510)<.01f);  // the BOTH list's TV copy
+    overlay::guesthud::set_tv_hud_anchor_extra(std::numeric_limits<float>::quiet_NaN());
+    store.drop("anchor-both");  // the blocks below count one list's vertices
     io.DisplaySize=ImVec2(640,360);io.DisplayFramebufferScale=ImVec2(2,2);
     overlay::guesthud::set_regions(0,0,1280,720,true,0,0,1280,720,true);
     ImGui::NewFrame();overlay::guesthud::frame();ImGui::Render();

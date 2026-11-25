@@ -460,7 +460,8 @@ settings once per logic step.
 | `game.language` | U32 | Wii U language code 0–11 in use (set at startup) |
 | `game.build` | STRING | `USA`, `EU` |
 | `display.drc_mode` | STRING | `window`, `pip`, `auto`, `off`, `gamepad` |
-| `display.aspect` | F64 | Aspect ratio of the current frame |
+| `display.aspect` | F64 | Aspect ratio of the current frame (the game's picture) |
+| `display.hud_aspect` | F64 | Aspect ratio the game's HUD is laid out in: equal to `display.aspect`, or narrower when Graphics > Constrain HUD to aspect ratio constrains the HUD. Missing on older ports: fall back to `display.aspect` |
 | `render.interp_fps` | U32 | Frame rate shown: 30 or the interpolation rate |
 | `render.true60` | BOOL | Always 0: True 60 was retired; kept so older mods still read a value. `wwhd_logic_dt` is one 30 Hz step (1/30 s) in every mode |
 | `settings.<id>` | BOOL, U32 or F64 | A setting of the item menu's Settings page by its ID: switches are BOOL, choices U32 (the choice's index), numbers F64. For example `settings.camera.invert-y`, `settings.direct-camera.speed`, `settings.screen.fov` |
@@ -504,7 +505,9 @@ WWHD_HOOK(WWHD_ADDR_daPy_Execute, register_box, (void* link)) {
   tint, rotation and alpha or additive blending. Keep elements and text in static storage or
   your heap.
 - **Coordinates:** TV 1280 × 720, GamePad 854 × 480 (`WWHD_HUD_BOTH` uses TV coordinates,
-  scaled). Anchors keep elements at the screen edges on wide screens.
+  scaled). Anchors keep elements at the screen edges on wide screens. With Graphics > Constrain
+  HUD to aspect ratio, TV edge anchors follow the chosen HUD shape instead; centre anchors do not
+  move, and the GamePad keeps its own edges.
 - **Images:** `wwhd_hud_texture(WWHD_HUD_PACKAGE, "assets/x.png")` loads your package's own
   art from `assets/` or `textures/`; `WWHD_HUD_DATA` loads from your mod's data folder.
   Keep the handle and free it with `wwhd_hud_release`. After a state load the handles are
