@@ -1591,7 +1591,11 @@ void t60_ptcl_step(Cpu* c) {
         // held one pass (fracT 0.75). Drawn instead `lag` steps back along its own step move (velocity x dt x the emitter's
         // dynamics scale), as the interp path draws a born particle; restored at the next pass start like the history's.
         // WWHD_T60_PTCL_BORNBACK=0: off
-        if (h.n == 1 && ptcl_bornback_on() && emtr) {
+        // (every particle without a history entry at W, not only on its first pass: at N 4 (W = 3 steps back) one born after
+        // W has no W entry for 3 passes; drawn at its newest state on its 2nd / 3rd passes it ran ahead, then jumped back
+        // to its birth state when W reached it (jalh N 4 flames: 20 / 4 / 12 per pass, then 4): drawn back lag steps on
+        // every such pass, the next pass with a W entry continues smoothly)
+        if (ptcl_bornback_on() && emtr) {
             const float back = (float)lag / (float)(wwhd_t60_steps ? wwhd_t60_steps : 1);  // (lag steps of 1 / N frames)
             float d[3], d2 = 0;
             for (int k = 0; k < 3; k++) {
