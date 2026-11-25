@@ -8,6 +8,16 @@ body:
         Thanks for reporting! For problems **while playing**, please use the "In-game bug" form instead (it asks for your save file).
 
         If a maintainer closed your issue and the problem comes back, comment `/reopen` on it (as the person who opened it) and it reopens automatically.
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      description: Which build you play, so the issue reaches the right project. If you're not sure, check which download or build you used.
+      options:
+        - Recomp (the standard build)
+        - Decomp (native build)
+    validations:
+      required: true
   - type: textarea
     id: what
     attributes:

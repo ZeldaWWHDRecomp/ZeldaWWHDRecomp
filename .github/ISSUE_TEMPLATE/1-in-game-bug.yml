@@ -10,6 +10,16 @@ body:
         **Never share full save states** (`slotN.bin`, hundreds of MB): they contain the game's own code and data from your console, which must not be shared publicly. The small `.wwstate` files only hold your progress and position.
 
         If a maintainer closed your issue and the problem comes back, comment `/reopen` on it (as the person who opened it) and it reopens automatically.
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      description: Which build you play, so the issue reaches the right project. If you're not sure, check which download or build you used.
+      options:
+        - Recomp (the standard build)
+        - Decomp (native build)
+    validations:
+      required: true
   - type: textarea
     id: what
     attributes:

@@ -2,6 +2,16 @@ name: Feature request
 description: An idea or a wish for the port (an option, a mod, platform support, ...).
 labels: ["enhancement"]
 body:
+  - type: dropdown
+    id: build
+    attributes:
+      label: Build
+      description: Which build you play, so the issue reaches the right project. If you're not sure, check which download or build you used.
+      options:
+        - Recomp (the standard build)
+        - Decomp (native build)
+    validations:
+      required: true
   - type: textarea
     id: idea
     attributes:
