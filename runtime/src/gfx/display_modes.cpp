@@ -22,6 +22,12 @@
 //   WWHD_VIEW_BUTTON=0|1                 the touch screens' view button (on by default on Android only)
 //   WWHD_FULLSCREEN=0|1                  the TV window starts in full screen (1) or windowed (0), instead of as it
 //                                        was left (that session's full screen is not saved; 1 takes over the screen!)
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#define WWHD_TOUCH_APPLE (TARGET_OS_IPHONE && !TARGET_OS_TV)  // iPhone, iPad: one touch screen, TV play by default
+#else
+#define WWHD_TOUCH_APPLE 0
+#endif
 #include "display_modes.h"
 #include "../platform/touch_buttons.h"
 
@@ -48,10 +54,16 @@ const char* const kModeNames[kDrcModeCount] = {"window", "pip", "auto", "off", "
 const char* const kAnchorNames[10] = {"tl", "tc", "tr", "cl", "cc", "cr", "bl", "bc", "br", "custom"};
 const char* const kFilterNames[3] = {"smooth", "sharp", "integer"};
 
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || WWHD_TOUCH_APPLE
 // one surface, no GamePad window: the TV picture first; the GamePad-only view (with the game's
 // Off-TV Play on Minus) and the overlay are a tap on the view button away
+#ifdef __ANDROID__
 std::atomic<int> g_mode{kDrcOff};
+#else
+// iPhone, iPad: Automatic (the song list and other GamePad menus in the picture-in-picture, Off-TV Play on the
+// whole screen), and the pause view: the menu Plus opens on the whole screen
+std::atomic<int> g_mode{kDrcAuto};
+#endif
 #else
 std::atomic<int> g_mode{kDrcWindow};
 #endif
@@ -200,14 +212,14 @@ void display_set_mode(int m) {
 // ---------------------------------------------------------------- GamePad screen while paused
 static const bool g_pause_view = [] {
     const char* e = getenv("WWHD_DRC_PAUSE");
-#ifdef __ANDROID__
+#if defined(__ANDROID__) || WWHD_TOUCH_APPLE
     return !e || atoi(e) != 0;
 #else
     return e && atoi(e) != 0;
 #endif
 }();
 // Host-only pause view state, updated on the guest thread and read by the window hosts.
-static bool pause_switchable(int mode) { return mode == kDrcPip || mode == kDrcOff; }
+static bool pause_switchable(int mode) { return mode == kDrcPip || mode == kDrcOff || (WWHD_TOUCH_APPLE && mode == kDrcAuto); }
 void display_plus_pressed() {
     // Only while a pause view can switch; the menu state determines when it resumes.
     if (g_pause_view && (pause_switchable(g_mode) || g_pause_restore >= 0)) g_plus_at = display_now();
@@ -229,7 +241,9 @@ void display_gamepad_ui(GamePadUiState state) {
         AutoPipDecision decision{g_auto_until.load()};
         decision.update(state, now);
         g_auto_until = decision.until;
-        return; // auto always keeps menus in PiP, including when the pause preference is on
+        // auto keeps menus in PiP, including when the pause preference is on (on an iPhone / iPad, Plus's menu
+        // goes on the whole screen: below)
+        if (!WWHD_TOUCH_APPLE) return;
     }
     if (!g_pause_view) return;
     if (g_pause_restore >= 0) {

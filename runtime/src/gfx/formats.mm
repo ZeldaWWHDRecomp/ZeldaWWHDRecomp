@@ -14,6 +14,32 @@ static FormatInfo make(MTLPixelFormat p, uint32_t bpb, FormatInfo::Kind kind = F
     return f;
 }
 
+bool bc_textures_supported() {
+    static const bool supported = [] {
+        id<MTLDevice> d = MTLCreateSystemDefaultDevice();
+        if (@available(macOS 11.0, iOS 16.4, tvOS 16.4, *)) return d && d.supportsBCTextureCompression;
+        return true;
+    }();
+    return supported;
+}
+
+static FormatInfo decoded_bc(FormatInfo f, unsigned type, bool isSigned, bool isSrgb) {
+    if (bc_textures_supported()) return f;
+    // BC4 / BC5 hold one / two channels: R8 / RG8 keep exactly what they decode to (the rest reads 0, 0, 1 as BC)
+    if (type == 4) f.pixel = isSigned ? MTLPixelFormatR8Snorm : MTLPixelFormatR8Unorm;
+    else if (type == 5) f.pixel = isSigned ? MTLPixelFormatRG8Snorm : MTLPixelFormatRG8Unorm;
+    else f.pixel = isSrgb ? MTLPixelFormatRGBA8Unorm_sRGB : MTLPixelFormatRGBA8Unorm;
+#ifdef WWHD_ETCPAK
+    if (type <= 3) {
+        f.pixel = isSrgb ? MTLPixelFormatEAC_RGBA8_sRGB : MTLPixelFormatEAC_RGBA8;
+        f.etc2 = true;
+    }
+#endif
+    f.decodeBC = true;
+    f.bcMode = uint16_t(type | (isSigned ? 256 : 0));
+    return f;
+}
+
 FormatInfo format_info(uint32_t fmt, bool isDepth) {
     const uint32_t hw = fmt & 0x3F;
     const bool isInt = fmt & 0x100, isSigned = fmt & 0x200, isSrgb = fmt & 0x400;
@@ -66,11 +92,11 @@ FormatInfo format_info(uint32_t fmt, bool isDepth) {
     case 0x20: f = make(MTLPixelFormatRGBA16Float, 8); break;
     case 0x22: f = make(isSigned ? MTLPixelFormatRGBA32Sint : MTLPixelFormatRGBA32Uint, 16, isSigned ? FormatInfo::SINT : FormatInfo::UINT); break;
     case 0x23: f = make(MTLPixelFormatRGBA32Float, 16); break;
-    case 0x31: f = make(isSrgb ? MTLPixelFormatBC1_RGBA_sRGB : MTLPixelFormatBC1_RGBA, 8); f.compressed = true; break;
-    case 0x32: f = make(isSrgb ? MTLPixelFormatBC2_RGBA_sRGB : MTLPixelFormatBC2_RGBA, 16); f.compressed = true; break;
-    case 0x33: f = make(isSrgb ? MTLPixelFormatBC3_RGBA_sRGB : MTLPixelFormatBC3_RGBA, 16); f.compressed = true; break;
-    case 0x34: f = make(isSigned ? MTLPixelFormatBC4_RSnorm : MTLPixelFormatBC4_RUnorm, 8); f.compressed = true; break;
-    case 0x35: f = make(isSigned ? MTLPixelFormatBC5_RGSnorm : MTLPixelFormatBC5_RGUnorm, 16); f.compressed = true; break;
+    case 0x31: f = make(isSrgb ? MTLPixelFormatBC1_RGBA_sRGB : MTLPixelFormatBC1_RGBA, 8); f.compressed = true; f = decoded_bc(f, 1, false, isSrgb); break;
+    case 0x32: f = make(isSrgb ? MTLPixelFormatBC2_RGBA_sRGB : MTLPixelFormatBC2_RGBA, 16); f.compressed = true; f = decoded_bc(f, 2, false, isSrgb); break;
+    case 0x33: f = make(isSrgb ? MTLPixelFormatBC3_RGBA_sRGB : MTLPixelFormatBC3_RGBA, 16); f.compressed = true; f = decoded_bc(f, 3, false, isSrgb); break;
+    case 0x34: f = make(isSigned ? MTLPixelFormatBC4_RSnorm : MTLPixelFormatBC4_RUnorm, 8); f.compressed = true; f = decoded_bc(f, 4, isSigned, false); break;
+    case 0x35: f = make(isSigned ? MTLPixelFormatBC5_RGSnorm : MTLPixelFormatBC5_RGUnorm, 16); f.compressed = true; f = decoded_bc(f, 5, isSigned, false); break;
     // depth formats sampled as color textures
     case 0x11: case 0x12: case 0x13: case 0x14: f = make(MTLPixelFormatR32Float, 4, FormatInfo::FLOAT, Convert::D24_R32F, 4); break;
     default: f = make(MTLPixelFormatRGBA8Unorm, 4); break;

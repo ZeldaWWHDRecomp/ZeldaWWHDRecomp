@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <deque>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -22,6 +23,7 @@
 #ifdef __APPLE__
 #include <arpa/inet.h>
 #include <dns_sd.h>
+#include <sys/select.h>
 #endif
 
 void log_msg(const char* fmt, ...);
@@ -53,16 +55,18 @@ std::vector<TextInput> g_text_inputs;              // g_text_mu
 DNSServiceRef g_bonjour = nullptr;
 #endif
 
+// "" when the system has no useful host name (an Apple TV's is "localhost"): Bonjour then registers the
+// device's own name ("Apple TV"), and the server takes it from the registration
 std::string host_name() {
 #ifndef _WIN32
     char buf[256] = {};
-    if (gethostname(buf, sizeof buf - 1) == 0 && buf[0]) {
+    if (gethostname(buf, sizeof buf - 1) == 0 && buf[0] && strncmp(buf, "localhost", 9) != 0) {
         std::string s = buf;
         if (const size_t dot = s.find('.'); dot != std::string::npos) s.resize(dot);  // "Mac-mini.local" -> "Mac-mini"
         return s;
     }
 #endif
-    return "Wind Waker HD";
+    return "";
 }
 
 void on_input(const Input& in) {
@@ -146,9 +150,43 @@ bool take_paired_changed(std::string& saved) {
 }
 
 namespace {
+#ifdef __APPLE__
+void DNSSD_API registered(DNSServiceRef, DNSServiceFlags, DNSServiceErrorType e, const char* name, const char*, const char*, void* out) {
+    if (e != kDNSServiceErr_NoError || !name || !*name) return;
+    *static_cast<std::string*>(out) = name;
+    log_msg("[remote pad] advertised as %s", name);
+}
+
+// mDNSResponder keeps the record while the ref is open. With no `name` (an Apple TV has no host name) it
+// registers the device's and its one reply, waited for here, puts it in `name`.
+void advertise(uint16_t port, std::string& name) {
+    const bool ask = name.empty();
+    const DNSServiceErrorType err = DNSServiceRegister(&g_bonjour, 0, 0, ask ? nullptr : name.c_str(), kBonjourType,
+                                                       nullptr, nullptr, htons(port), 0, nullptr,
+                                                       ask ? DNSServiceRegisterReply(&registered) : nullptr, &name);
+    if (err != kDNSServiceErr_NoError) {
+        g_bonjour = nullptr;
+        log_msg("[remote pad] Bonjour advertisement failed (%d): enter this computer's address on the phone", (int)err);
+    } else if (ask) {
+        const int fd = DNSServiceRefSockFD(g_bonjour);
+        fd_set fds;
+        FD_ZERO(&fds);
+        FD_SET(fd, &fds);
+        timeval wait{2, 0};
+        if (select(fd + 1, &fds, nullptr, nullptr, &wait) > 0) DNSServiceProcessResult(g_bonjour);
+    }
+}
+#endif
+
 void start_locked(uint16_t port) {
     if (g_server) return;
-    const std::string name = host_name();
+    std::string name = host_name();
+#ifdef __APPLE__
+    // the device's name before the server starts, so the first Welcome carries it (a waiting phone
+    // rejoins at once). Port 0 (tests) is only known once bound: those advertise after.
+    const bool named_first = name.empty() && port != 0;
+    if (named_first) advertise(port, name);
+#endif
     g_server = std::make_shared<Server>(Server::Callbacks{
         [](const Server::Snapshot& s) { g_turns = -1; g_keyframe = true; g_video = s.video; g_audio = s.audio; g_rumble_reset = true; g_connected = true; },
         on_input,
@@ -165,19 +203,23 @@ void start_locked(uint16_t port) {
             std::lock_guard lk(g_text_mu);
             if (g_text_inputs.size() < 64) g_text_inputs.push_back(t);
         },
-    }, name, &g_pairing);
-    if (!g_server->start(port)) { g_server.reset(); return; }
+    }, name.empty() ? "Wind Waker HD" : name, &g_pairing);
+    if (!g_server->start(port)) {
+        g_server.reset();
+#ifdef __APPLE__
+        if (g_bonjour) { DNSServiceRefDeallocate(g_bonjour); g_bonjour = nullptr; }
+#endif
+        return;
+    }
     g_server->set_text(g_text);
     g_server->set_boot_image(g_boot_image);
     log_msg("[remote pad] waiting for the iPhone GamePad on UDP port %u (%s)", (unsigned)g_server->port(),
             g_env ? "WWHD_REMOTE_PAD" : "Settings > Controls > iPhone GamePad");
 #ifdef __APPLE__
-    // Registration needs no reply processing: mDNSResponder keeps the record while the ref is open.
-    const DNSServiceErrorType err = DNSServiceRegister(&g_bonjour, 0, 0, name.c_str(), kBonjourType, nullptr, nullptr,
-                                                       htons(g_server->port()), 0, nullptr, nullptr, nullptr);
-    if (err != kDNSServiceErr_NoError) {
-        g_bonjour = nullptr;
-        log_msg("[remote pad] Bonjour advertisement failed (%d): enter this computer's address on the phone", (int)err);
+    if (!named_first) {
+        std::string bonjour = name;
+        advertise(g_server->port(), bonjour);
+        if (!bonjour.empty()) g_server->set_host(bonjour);
     }
 #endif
 }
@@ -205,6 +247,12 @@ void stop() {
     stopped(std::move(old));
 }
 
+void restart() {
+    if (!enabled()) return;
+    stop();
+    set_enabled(g_enabled);
+}
+
 Pad pad() {
     Pad p;
     const auto srv = server();
@@ -225,7 +273,7 @@ void send_video(const uint8_t* data, size_t size, bool key, uint64_t time_ns, ui
 }
 
 bool audio_wanted() { return g_audio.load(std::memory_order_relaxed); }
-void send_audio(const int32_t* left, const int32_t* right, int frames) {
+void send_audio(const int32_t* left, const int32_t* right, int frames, int delay) {
     if (!g_audio.load(std::memory_order_relaxed)) return;
     int16_t lr[2 * kMaxAudioFrames];
     frames = std::clamp(frames, 0, int(kMaxAudioFrames));
@@ -233,7 +281,22 @@ void send_audio(const int32_t* left, const int32_t* right, int frames) {
         lr[2 * i] = int16_t(std::clamp<int32_t>(left[i], -32768, 32767));
         lr[2 * i + 1] = int16_t(std::clamp<int32_t>(right[i], -32768, 32767));
     }
-    if (const auto srv = server()) srv->send_audio(lr, uint16_t(frames));
+    const auto srv = server();
+    // the delay line (AX frame thread only): what comes out is `delay` frames old. A longer delay waits (a short
+    // gap); a shorter one drops the oldest
+    static std::deque<int16_t> held;
+    if (delay <= 0) {
+        held.clear();
+        if (srv) srv->send_audio(lr, uint16_t(frames));
+        return;
+    }
+    held.insert(held.end(), lr, lr + 2 * frames);
+    const size_t want = size_t(delay + frames) * 2;
+    if (held.size() > want + size_t(frames) * 2) held.erase(held.begin(), held.end() - want);
+    if (held.size() < want) return;
+    std::copy(held.begin(), held.begin() + 2 * frames, lr);
+    held.erase(held.begin(), held.begin() + 2 * frames);
+    if (srv) srv->send_audio(lr, uint16_t(frames));
 }
 
 void set_boot_image(std::vector<uint8_t> jpeg) {

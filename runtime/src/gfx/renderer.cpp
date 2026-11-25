@@ -356,7 +356,7 @@ bool can_restart() {
 }
 
 bool restart() {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(WWHD_TVOS)  // (an Apple TV app cannot start itself again)
     return false;
 #else
     std::string exe;

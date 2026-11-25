@@ -12,7 +12,11 @@
 extern "C" {
 #endif
 
-#if defined(__ANDROID__) || (defined(__linux__) && defined(__aarch64__))
+#if defined(WWHD_TVOS)
+/* tvOS keeps apps' address space well below 32 TiB, and maps a 4 GiB block at 448 GiB when asked for one
+   anywhere (an Apple TV 4K, A15, tvOS 27): ask for it there (core.cpp) */
+#define PPC_MEM_BASE ((uint8_t*)0x7000000000ull)
+#elif defined(__ANDROID__) || (defined(__linux__) && defined(__aarch64__))
 /* arm64 Linux kernels (Android, Raspberry Pi OS and other 4K-page configurations) often have a 39-bit
    user address space (512 GiB), where 32 TiB is out of reach: stay well below it (64 GiB) */
 #define PPC_MEM_BASE ((uint8_t*)0x1000000000ull)

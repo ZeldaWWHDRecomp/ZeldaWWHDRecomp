@@ -694,6 +694,45 @@ static void test_remote_source() {
     set_settings(Settings{});
 }
 
+// Automatic: the iPhone GamePad's gyro while it sends motion, the controller's otherwise (the Apple TV default)
+static void test_auto_source() {
+    using namespace motion;
+    Settings s;
+    s.source=kAuto;
+    set_settings(s);
+    remote_reset();  // (no phone yet)
+    const float right[3]={0,-kPi/2,0},cacc[3]={0,9.80665f,0};   // a controller turning right (SDL axes)
+    const float pright[3]={0,0,-kPi/2},pacc[3]={0,0,9.80665f};  // a phone lying face up, turning right
+    uint64_t t=90000000000ull;
+    Game camera;
+    camera.frame(vpad(false));
+    float before=camera.yaw;
+    assert(effective_source()==kController);
+    for(int i=0;i<100;i++)controller_sample(7,t+=4000000,right,cacc);
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw-before,game_units_one_frame(17.82f),0.02f));
+    // the phone connects: its motion drives, the controller's is ignored
+    for(int i=0;i<100;i++)remote_sample(t+=4000000,pright,pacc,0);
+    assert(effective_source()==kDevice);
+    camera.frame(vpad(false));
+    before=camera.yaw;
+    for(int i=0;i<100;i++)controller_sample(7,t+=4000000,right,cacc);
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw,before,1e-4f));
+    for(int i=0;i<100;i++)remote_sample(t+=4000000,pright,pacc,0);
+    camera.frame(vpad(false));
+    assert(camera.yaw-before>game_units_one_frame(10));
+    // the phone goes: the controller again
+    remote_reset();
+    assert(effective_source()==kController);
+    camera.frame(vpad(false));
+    before=camera.yaw;
+    for(int i=0;i<100;i++)controller_sample(7,t+=4000000,right,cacc);
+    camera.frame(vpad(false));
+    assert(close_to(camera.yaw-before,game_units_one_frame(17.82f),0.02f));
+    set_settings(Settings{});
+}
+
 int main() {
     test_aim_conventions();
     test_game_reading();
@@ -703,6 +742,7 @@ int main() {
     test_settings_and_sources();
     test_device_source();
     test_remote_source();
+    test_auto_source();
     puts("motion_test: aim conventions (player space, yaw, roll; SDL and Cemuhook), game reading, bias, sensitivity/invert, "
-         "mouse, device switching, phone sensor rotation/reset, the iPhone GamePad, timestamps, DSU packets and loopback, settings passed");
+         "mouse, device switching, phone sensor rotation/reset, the iPhone GamePad, automatic, timestamps, DSU packets and loopback, settings passed");
 }
