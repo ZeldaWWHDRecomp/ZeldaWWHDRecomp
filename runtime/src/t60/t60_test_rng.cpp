@@ -90,7 +90,7 @@ struct Cfg {
             if (km && !strcmp(km, "seq")) keyed = kKeySeq;
             else if (km && *km && strcmp(km, "frame"))
                 log_msg("[t60] WWHD_TEST_RNG_KEYED_MODE=%s: not frame or seq, frame used", km);
-            log_msg("[t60] test rng keyed mode: %s seed %llu drawstream %d", keyed == kKeySeq ? "seq" : "frame", (unsigned long long)seed, getenv("WWHD_TEST_RNG_DRAWSTREAM") && getenv("WWHD_TEST_RNG_DRAWSTREAM")[0] == '0' ? 0 : 1);
+            log_msg("[t60] test rng keyed mode: %s seed %llu drawstream %d massstream %d", keyed == kKeySeq ? "seq" : "frame", (unsigned long long)seed, getenv("WWHD_TEST_RNG_DRAWSTREAM") && getenv("WWHD_TEST_RNG_DRAWSTREAM")[0] == '0' ? 0 : 1, getenv("WWHD_TEST_RNG_MASSSTREAM") && getenv("WWHD_TEST_RNG_MASSSTREAM")[0] == '0' ? 0 : 1);
             return;
         }
         const char* e = getenv("WWHD_TEST_RNG_CONST");
@@ -194,7 +194,16 @@ bool t60_test_rng(char fn, uint32_t lr, float max, float* out) {
         if (c.keyed == kKeySeq) {
             uint32_t mb;
             memcpy(&mb, &max, 4);
-            const uint64_t stream = ((uint64_t)(uint8_t)fn << 32) | mb;
+            uint64_t stream = ((uint64_t)(uint8_t)fn << 32) | mb;
+            // (RNG-MASSSTREAM, t60-pgp 2026-11-25, rule: the narrow form) dCcMassS_Mng::Set's
+            // tie-break (massRandom(1) < l_replaceChance, drawn only while the mass list is full at equal priority; lr in
+            // 02516C14..02516D48) gets a stream of its own: its count follows how the per-step collision Moves fill the
+            // list, and on the executing process's shared cM_rndF(1) stream it shifted that process's logic draws (long3
+            // seg 6, l3K2g13: the Darknut's mass tie-breaks A 44 / B 42 by f5200 moved tn_finishAttack's 50/50 draw at
+            // f5310 to index 664 / 662, 0.331 / 0.947: A ran, B attacked again, and its hit landed only in A).
+            // WWHD_TEST_RNG_MASSSTREAM=0: the old keying.
+            static const bool massStream = [] { const char* e = getenv("WWHD_TEST_RNG_MASSSTREAM"); return !(e && e[0] == '0'); }();
+            if (massStream && lr >= 0x02516C14u && lr < 0x02516D48u) stream |= 0x4D41000000000000ull; /* 'MA' */
             idx = seq_index(key, stream, hold);
             f = hashed(mix(mix(mix(mix(c.seed) ^ 0x5E9ull) ^ key) ^ stream) ^ idx ^ htag);
         } else {
