@@ -120,6 +120,7 @@ uint64_t record_step(uint64_t logic_steps);
 // the time (in 30 Hz frames, on the step clock) the state of a process that executes on this pass's step is at: the
 // clock S on the tick30 step, S + j/N on the frame's earlier step j (t60_draw.h)
 double step_time();
+void at_origin(uint64_t origin_step);  // test aid WWHD_T60_AT_ORIGIN=d (t60.cpp): N from the run's origin + d
 // Input (hle/system_stubs.cpp VPADRead). Frame interpolation reads the pad live on the logic pass and repeats that
 // sample on in-between passes, so the 30 Hz world sees each change once. While true 60 runs, the in-between reads poll
 // the device too (poll_every_read), for converted code (wwhd_t60_pad: every step's raw input); the game's own controller

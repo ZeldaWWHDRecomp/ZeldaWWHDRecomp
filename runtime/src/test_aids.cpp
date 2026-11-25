@@ -750,7 +750,13 @@ void logic_step(uint64_t step) {
             timebase::now() / double(timebase::kTicksPerSec));
     fflush(timeline);
 }
-void set_origin_step(uint64_t s) { g_origin_step = s; logic_step(s); }
+void set_origin_step(uint64_t s) {
+    g_origin_step = s;
+    logic_step(s);
+#if WWHD_DECOMP
+    t60::at_origin(s);  // (test aid WWHD_T60_AT_ORIGIN; no-op without it)
+#endif
+}
 uint64_t origin_step() { return g_origin_step; }
 }
 

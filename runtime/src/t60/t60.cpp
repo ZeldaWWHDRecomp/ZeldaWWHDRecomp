@@ -233,7 +233,12 @@ int g_selected = env_n();
 std::atomic<int> g_requested{0};
 // every logic step run so far, the true-60 steps before a frame's tick30 step included (steps_run: the overlay's rate)
 std::atomic<uint64_t> g_steps_run{0};
-const uint64_t g_at_step = getenv("WWHD_T60_AT_STEP") ? strtoull(getenv("WWHD_T60_AT_STEP"), nullptr, 10) : 0;
+// test aid (2026-11-24): WWHD_T60_AT_ORIGIN=d: N from the scenario origin + d steps on (the run's own
+// origin, test_aids::set_origin_step), 30 Hz before it. For pairs whose B must switch in at the same offset from its own
+// origin in every run (WWHD_T60_AT_STEP is A's origin; B's own origin lands 0..4 steps off it). Without the variable:
+// WWHD_T60_AT_STEP as before.
+const char* const g_at_origin = getenv("WWHD_T60_AT_ORIGIN");
+uint64_t g_at_step = g_at_origin ? ~0ull : getenv("WWHD_T60_AT_STEP") ? strtoull(getenv("WWHD_T60_AT_STEP"), nullptr, 10) : 0;
 uint64_t g_frames = 0;   // logic passes so far (WWHD_T60_AT_STEP)
 int g_build_n = 1;       // N of the 30 Hz frame whose steps run now: it ends with the next logic pass
 int g_spacing = 1;       // passes per step of that frame
@@ -452,5 +457,8 @@ uint32_t game_buttons(uint32_t hold) {
     const uint32_t out = hold | g_latched;
     g_latched = 0;
     return out;
+}
+void at_origin(uint64_t origin_step) {  // (test aid: WWHD_T60_AT_ORIGIN; no-op without it)
+    if (g_at_origin) g_at_step = origin_step + strtoull(g_at_origin, nullptr, 10);
 }
 }  // namespace t60
