@@ -71,6 +71,78 @@ const bool g_carry_on = [] {
 struct CarryEv { double time; float d[3]; int da; };
 struct CarryHist { uint32_t id = 0; uint64_t pass = 0; std::deque<CarryEv> ev; };
 std::unordered_map<uint32_t, CarryHist> g_carry;
+
+// (2026-11-24; decomp d/t60_basehold.h through wwhd_t60_draw_basehold /
+// _basefollow): an actor whose skeleton calc runs on a held base matrix (the process-order read rule base-frame form: the Moblin,
+// d_a_mo2_exec.cpp mo2_t60_base_frame: every step's calc on frame f - 1's end) leaves its skeleton at the held placement,
+// and the base matrix the step sets after its move is not in the drawn joints: the body was drawn at 30 Hz, one frame
+// behind (stair sweep majE15: 3.0 units every other pass). The step's models of that actor are kept in their draw history
+// moved rigidly from the held base to the step's base (C = B_step * inv(B_held), B_step = the published model's base
+// matrix at the draw); a follower placed from the holder's hand words (the Moblin's lantern) takes the holder's C of the
+// same pass. Draw only (host copies; guest words untouched). WWHD_T60_BASEHOLD_DRAW_NEGCTRL=1: as before.
+const bool g_basehold_on = [] {
+    const char* e = getenv("WWHD_T60_BASEHOLD_DRAW_NEGCTRL");
+    return !(e && e[0] == '1');
+}();
+struct BaseHold { uint64_t pass = ~0ull; uint32_t model = 0; float held[12]; };
+std::unordered_map<uint32_t, BaseHold> g_basehold;  // by actor
+struct BaseFollow { uint64_t pass = ~0ull; uint32_t holder_id = 0; };
+std::unordered_map<uint32_t, BaseFollow> g_basefollow;  // by follower actor
+// the 3x4 affine inverse (rotation-scale part by its adjugate)
+bool inv34(const float* m, float* o) {
+    const float a = m[0], b = m[1], c = m[2], d = m[4], e = m[5], f = m[6], g = m[8], h = m[9], i = m[10];
+    const float A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
+    const float det = a * A + b * B + c * C;
+    if (!(std::fabs(det) > 1e-12f)) return false;
+    const float k = 1.0f / det;
+    const float r[9] = {A * k, -(b * i - c * h) * k, (b * f - c * e) * k, B * k, (a * i - c * g) * k, -(a * f - c * d) * k,
+                        C * k, -(a * h - b * g) * k, (a * e - b * d) * k};
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 3; col++) o[4 * row + col] = r[3 * row + col];
+        o[4 * row + 3] = -(r[3 * row] * m[3] + r[3 * row + 1] * m[7] + r[3 * row + 2] * m[11]);
+    }
+    return true;
+}
+void mul34(const float* x, const float* y, float* o) {  // o = x * y (3x4 affine)
+    for (int row = 0; row < 3; row++) {
+        for (int col = 0; col < 4; col++) {
+            float v = x[4 * row] * y[col] + x[4 * row + 1] * y[4 + col] + x[4 * row + 2] * y[8 + col];
+            if (col == 3) v += x[4 * row + 3];
+            o[4 * row + col] = v;
+        }
+    }
+}
+// this pass's correction of actor `proc` (directly, or as a follower of its holder); false: none
+bool basehold_c(uint32_t proc, float* C, uint64_t pass) {
+    if (!g_basehold_on) return false;
+    auto it = g_basehold.find(proc);
+    if (it == g_basehold.end() || it->second.pass != pass) {
+        auto f = g_basefollow.find(proc);
+        if (f == g_basefollow.end() || f->second.pass != pass) return false;
+        it = g_basehold.end();
+        for (auto h = g_basehold.begin(); h != g_basehold.end(); ++h)
+            if (h->second.pass == pass && ld32(h->first + kProcId) == f->second.holder_id) { it = h; break; }
+        if (it == g_basehold.end()) return false;
+    }
+    using interp::joints::word_f;
+    const uint32_t* bw = (const uint32_t*)ppc_ptr(it->second.model + 0xC8);  // (J3DModel mBaseTransformMtx)
+    float B[12], Hi[12];
+    for (int k = 0; k < 12; k++) B[k] = word_f(bw[k]);
+    if (memcmp(B, it->second.held, sizeof B) == 0) return false;
+    if (!inv34(it->second.held, Hi)) return false;
+    mul34(B, Hi, C);
+    return true;
+}
+void basehold_apply(const float* C, std::vector<uint32_t>& w) {
+    using interp::joints::f_word;
+    using interp::joints::word_f;
+    for (size_t j = 0; j + 12 <= w.size(); j += 12) {
+        float m[12], o[12];
+        for (int k = 0; k < 12; k++) m[k] = word_f(w[j + k]);
+        mul34(C, m, o);
+        for (int k = 0; k < 12; k++) w[j + k] = f_word(o[k]);
+    }
+}
 struct Carry { float d[3] = {0, 0, 0}; float da = 0; bool any = false; };
 // The correction at step time t (in 30 Hz frames; frame F's steps lie in (F - 1, F], its tick30 step at F): what the
 // interpolated world shows of frame F's carry at t, minus what Link already got by t, i.e. frac(t) * C_F - c(t) (C_F the
@@ -692,6 +764,8 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
                          model == ld32(proc + kCLModel);  // (the cap and hair: Link's CL model)
     if (!hist::record(h.steps, e->second.time, picture, [&] {
             std::vector<uint32_t> v(cur, cur + words);
+            float C[12];
+            if (basehold_c(proc, C, g_pass)) basehold_apply(C, v);  // (the step's base placement)
             if (link_cl) momi_words(proc, v);
             return v;
         }))
@@ -1009,6 +1083,18 @@ extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_follow_end(
 // A carry a whole-form carrier gave Link on this pass's step (decomp d/actor/d_a_player_carry_t60.h)
 extern "C" __attribute__((visibility("default"))) void wwhd_t60_link_carry(uint32_t actor, float dx, float dy, float dz, int dangle) {
     t60::draw::note_carry(actor, dx, dy, dz, dangle);
+}
+// decomp d/t60_basehold.h (above)
+extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_basehold(uint32_t actor, uint32_t model, const float* held) {
+    if (!actor || !model) return;
+    t60::draw::BaseHold& h = t60::draw::g_basehold[actor];
+    h.pass = t60::draw::g_pass, h.model = model;
+    memcpy(h.held, held, sizeof h.held);
+}
+extern "C" __attribute__((visibility("default"))) void wwhd_t60_draw_basefollow(uint32_t actor, uint32_t holderId) {
+    if (!actor) return;
+    t60::draw::BaseFollow& f = t60::draw::g_basefollow[actor];
+    f.pass = t60::draw::g_pass, f.holder_id = holderId;
 }
 extern "C" __attribute__((visibility("default"))) void wwhd_t60_whole_picture(uint32_t actor) {
     t60::draw::note_picture(actor);
