@@ -1426,12 +1426,14 @@ bool emtr_follow_ptcl_on() {
 }
 // the FollowEmtr particles of an emitter drawn blended: their drawn place shifted by d (restored with the particles' exact
 // values at the next pass start: an entry in g_ptcl_applied, the existing one when the history already drew it at W)
+bool frame30_kind(uint32_t p);  // (below: the decomp's 30 Hz particles, drawn between their own frame ends)
 void emtr_shift_followers(uint32_t emtr, const float* d) {
     for (uint32_t list : {kEmtrPtcls, kEmtrChildren}) {
         int guard = 0;
         for (uint32_t pl = ld32(emtr + list); pl && guard < 100000; pl = ld32(pl + 0xC), guard++) {
             const uint32_t p = ld32(pl);
             if (!p || !(ld32(p + 0xCC) & 0x20u)) continue;
+            if (frame30_kind(p)) continue;  // (their frame-end places carry the emitter's: not shifted twice)
             bool listed = false;
             for (size_t i = g_ptcl_applied.size(); i-- > 0;)
                 if (g_ptcl_applied[i].ptcl == p) { listed = true; break; }
