@@ -18,6 +18,7 @@
 #include "t60/t60_draw_hist.h"
 #include "t60/t60_draw_glide.h"
 #include "t60/t60_draw_ratiopic.h"
+#include "t60/t60_draw_carrypic.h"
 #include "t60/t60_world.h"
 
 // the decompiled rate gate's table (f_pc/f_pc_executor.cpp, game build only; the runtime-only decomp build has no game
@@ -804,6 +805,11 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
         ratiopic::record(proc, id, e->second.time);
         if (model == ld32(proc + ratiopic::kCLModel)) ratiopic::g_cl_jnt = jnt;
     }
+    const uint32_t cy_link = carrypic::g_nc ? 0 : ld32(kPlayInfo + 0x5B34);  //
+    if (cy_link && proc == cy_link && !picture) {
+        carrypic::record(proc, id, e->second.time);
+        if (model == ld32(proc + carrypic::kCLModel)) carrypic::g_cl_jnt = jnt;
+    }
     const bool link_legs = !g_legpic_nc && n > 40 && proc == ld32(kPlayInfo + kLegPlayer) &&
                            model == ld32(proc + kLegCLModel);  // (the leg IK: Link's CL model)
     if (link_legs && !picture) {  // (the leg words kept with the step, as its matrices)
@@ -854,6 +860,19 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
                 auto c = g_models.find(ratiopic::g_cl_jnt);
                 if (c != g_models.end() && c->second.owner == proc && c->second.owner_id == id)
                     ratiopic::attached(c->second.steps, c->second.n, td, F1, F2, fr, out, n);
+            }
+        }
+    }
+    // (at his drawn hand; a held NPC that moves to its held base is left to it)
+    if (cy_link && proc != cy_link && proc == ld32(cy_link + carrypic::kGrabActor) && !(g_heldrigid_on && heldrigid_now(proc, id))) {
+        double F1, F2, fr;
+        const double td = sa.first + f * (sb.first - sa.first);
+        if (carrypic::held(proc, td, F1, F2, fr)) {
+            auto c = g_models.find(carrypic::g_cl_jnt);
+            if (c != g_models.end() && c->second.owner == cy_link) {
+                double r1, r2, rf;
+                const bool rp = ratiopic::active(cy_link, td, r1, r2, rf);
+                carrypic::apply(cy_link, h.steps, c->second.steps, c->second.n, td, F1, F2, fr, rp, out, n);
             }
         }
     }
