@@ -17,6 +17,7 @@
 #include "t60/t60.h"
 #include "t60/t60_draw_hist.h"
 #include "t60/t60_draw_glide.h"
+#include "t60/t60_draw_ratiopic.h"
 #include "t60/t60_world.h"
 
 // the decompiled rate gate's table (f_pc/f_pc_executor.cpp, game build only; the runtime-only decomp build has no game
@@ -798,6 +799,11 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
     const bool picture = g_whole_blend && picture_step(proc);
     const bool link_gl = !glide::g_nc && proc == ld32(kPlayInfo + 0x5B34);  // (the glide: Link's models)
     if (link_gl && !picture) glide::record(proc, id, e->second.time);
+    const bool link_rp = !ratiopic::g_nc && proc == ld32(kPlayInfo + 0x5B34);  // (Link's models)
+    if (link_rp && !picture) {
+        ratiopic::record(proc, id, e->second.time);
+        if (model == ld32(proc + ratiopic::kCLModel)) ratiopic::g_cl_jnt = jnt;
+    }
     const bool link_legs = !g_legpic_nc && n > 40 && proc == ld32(kPlayInfo + kLegPlayer) &&
                            model == ld32(proc + kLegCLModel);  // (the leg IK: Link's CL model)
     if (link_legs && !picture) {  // (the leg words kept with the step, as its matrices)
@@ -837,6 +843,20 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
         }
     }
     if (picture && g_heldrigid_on && heldrigid_now(proc, id)) heldrigid_move(h, sa.first, sb.first, f, w, out, n);
+    if (link_rp) {  // (a frame whose blend changed on its earlier steps, drawn between its frame ends)
+        double F1, F2, fr;
+        const double td = sa.first + f * (sb.first - sa.first);
+        if (ratiopic::active(proc, td, F1, F2, fr)) {
+            if (model == ld32(proc + ratiopic::kCLModel)) {
+                ratiopic::body(h.steps, F1, F2, fr, out, n);
+            } else if (model != ld32(proc + glide::kShadow) && model != ld32(proc + glide::kGust) &&
+                       model != ld32(proc + glide::kBafo)) {
+                auto c = g_models.find(ratiopic::g_cl_jnt);
+                if (c != g_models.end() && c->second.owner == proc && c->second.owner_id == id)
+                    ratiopic::attached(c->second.steps, c->second.n, td, F1, F2, fr, out, n);
+            }
+        }
+    }
     if (link_cl)  // (Link's cap and hair)
         hat_frameend(h.steps, sa.first + f * (sb.first - sa.first), out, n);
     if (link_legs)  // (Link's leg IK between the frame ends)
