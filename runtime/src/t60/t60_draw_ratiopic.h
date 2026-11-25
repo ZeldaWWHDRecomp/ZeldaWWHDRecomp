@@ -40,8 +40,25 @@ inline const bool g_log = [] {
 constexpr uint32_t kPacks = 0x57F8, kHeaps = 0x5848, kHeapWords = 0x50 / 4, kCLModel = 0x448;
 constexpr float kAttach = 40.0f;
 
-struct Hist { uint32_t proc = 0, id = 0; std::deque<std::pair<double, std::vector<uint32_t>>> steps; };
+struct Hist {
+    uint32_t proc = 0, id = 0;
+    std::deque<std::pair<double, std::vector<uint32_t>>> steps;
+    std::deque<std::pair<double, float>> morf;  // the old-frame blend's rate field after the step
+};
 inline Hist g_hist;
+// (2026-11-25; replaces the decomp's whose straight-line weights
+// in the pose calc changed Link's earlier-step joints that the rope camera reads: rp N 4 camera 314.6 at 115): Link's
+// old-frame morph (mDoExt_MtxCalcOldFrame, daPy_lk_c m_old_fdata +0x65CC) splits A's frame rate rho over the steps as
+// rho^(k/N) (logic as before); as rho goes to 0 (a morph's last frame, a morph of a frame or less) the earlier step
+// shows the frame's whole remaining blend at once. A frame whose morph blends (the rate field the previous frame end
+// left > 0) or whose previous frame blended (its last morph frame) is drawn between its frame ends like a RATIOPIC
+// frame (A's remaining weight falls linearly in the frame: the straight in-between is its picture).
+// NC WWHD_T60_LINK_MORFPIC_NEGCTRL=1.
+inline const bool g_morf_nc = [] {
+    const char* e = getenv("WWHD_T60_LINK_MORFPIC_NEGCTRL");
+    return e && atoi(e) != 0;
+}();
+constexpr uint32_t kOldFdata = 0x65CC, kOldRate = 0x0C;
 inline uint32_t g_cl_jnt = 0;   // the CL model's joint block (its draw history key)
 inline double g_logged = -1.0;  // (the last frame logged)
 
@@ -61,6 +78,21 @@ inline std::vector<uint32_t> words(uint32_t proc) {
 inline void record(uint32_t proc, uint32_t id, double time) {
     if (g_hist.proc != proc || g_hist.id != id) g_hist = Hist{}, g_hist.proc = proc, g_hist.id = id;
     hist::stamp(g_hist.steps, time, words(proc));
+    const uint32_t od = ld32(proc + kOldFdata);
+    float rate = 0.0f;
+    if (od) {
+        const uint32_t w = ld32(od + kOldRate);
+        std::memcpy(&rate, &w, 4);
+    }
+    hist::stamp(g_hist.morf, time, rate);
+}
+// the morph blends in the frame F1 -> F2 (rate left at F1 > 0) or ends in it (rate left at F1 - 1 > 0)
+inline bool morf_frame(double F1) {
+    if (g_morf_nc) return false;
+    for (const auto& s : g_hist.morf)
+        if ((std::fabs(s.first - F1) < hist::kEps || std::fabs(s.first - (F1 - 1.0)) < hist::kEps) && s.second > 0.0f)
+            return true;
+    return false;
 }
 // the frame around td whose blend words changed by its earlier steps and held to its end: its two ends' times, frac
 inline bool active(uint32_t proc, double td, double& F1, double& F2, double& frac) {
@@ -74,9 +106,10 @@ inline bool active(uint32_t proc, double td, double& F1, double& F2, double& fra
         if (std::fabs(st[i].first - F2) < hist::kEps) i2 = i;
     }
     if (i1 < 0 || i2 < i1 + 2) return false;
-    if (st[i1].second == st[i2].second) return false;  // (no blend change this frame)
-    for (int i = i1 + 1; i < i2; i++)
-        if (st[i].second != st[i2].second) return false;  // (changed on the tick30 step: the frame-grid change is its end)
+    bool on = st[i1].second != st[i2].second;  // (a blend change this frame,)
+    for (int i = i1 + 1; on && i < i2; i++)
+        if (st[i].second != st[i2].second) on = false;  // (not on the tick30 step: the frame-grid change is its end)
+    if (!on && !morf_frame(F1)) return false;  // (or the morph's frame)
     if (g_log && std::fabs(g_logged - F2) > hist::kEps) {
         g_logged = F2;
         fprintf(stderr, "[t60] ratiopic frame %.1f\n", F2);
