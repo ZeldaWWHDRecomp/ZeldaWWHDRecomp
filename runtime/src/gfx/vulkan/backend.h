@@ -55,6 +55,9 @@ struct Surface {
  bool artisticMips=false; // hand-drawn mip levels (gfx/artistic_mips.h): resolution-aware bias, no forced anisotropy
  uint64_t passReadyFor=0; // made ready before render pass number N (draw.cpp prefetch_pass_reads, pass_reuse.h)
  uint32_t dataSize=0; FormatInfo fmt;
+ // FXAA before the HUD (#587, reproj.cpp smooth_scene): the frame whose scene was smoothed in this TV picture;
+ // smoothed: a scan (or in-between picture) made from such a picture, which the composition does not smooth again
+ uint64_t smoothedFrame=~0ull; bool smoothed=false;
  mutable std::shared_ptr<CachedGuestLayout> guestLayout;
  float scale=1,sx=1,sy=1;
  float ax=1,ay=1; // aspect-ratio factors of screen-shaped targets (surfaces.cpp)

@@ -2327,7 +2327,7 @@ static void prepare_secondary_snapshot() {
   if(!scan || !scan->image)return;
   prepare_secondary_drawing(*scan);
   auto draw=prepare_present_image(R.drc,secondaryAcquired->image,secondaryDrawing.snapshot,
-      sourceScreen.scanSrgb,scale_filter(),fxaa_enabled());
+      sourceScreen.scanSrgb,scale_filter(),fxaa_enabled()&&!scan->smoothed);
   if(!draw)return;
   auto& snapshot=secondaryDrawing.snapshot;
   transition_image(&snapshot,VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_WRITE_BIT);
@@ -3625,6 +3625,8 @@ static void copy_surface_to_scan(Surface* src, uint32_t target) {
   }
   // the size the picture stands for (layout, dynres.h): the scan at the full internal resolution
   s.buildingScan->dyn = src->dyn;
+  // FXAA before the HUD (#587, reproj.cpp): the picture's scene was smoothed this frame; not again when shown
+  s.buildingScan->smoothed = target != 4 && !stereoEye && src->smoothedFrame == R.frame;
   resample(src, s.buildingScan.get(), 1);
   if (target & 1)
     draw_mod_overlay(*s.buildingScan,s.buildingScanDisplayExtent);
