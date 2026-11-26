@@ -4271,7 +4271,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         if (!phone_rumble::env_override() && hostui::get("phoneRumble", v)) phone_rumble::choice = phone_rumble::parse(v.c_str());
 #endif
         // the saved aspect ratio (WWHD_ASPECT wins; issue #108: it was not remembered)
-        if(hostui::get("gameplayFovScale",v))aspect::set_fov_scale(strtof(v.c_str(),nullptr));
+        if(!getenv("WWHD_FOV_SCALE")&&hostui::get("gameplayFovScale",v))aspect::set_fov_scale(strtof(v.c_str(),nullptr));
         // the saved dynamic resolution (WWHD_DYNRES_MIN wins)
         if (!dynres::min_from_env() && hostui::get("dynResMin", v)) dynres::set_min(strtof(v.c_str(), nullptr));
         if (!getenv("WWHD_ASPECT") && hostui::get("aspectMode", v)) {

@@ -3,6 +3,7 @@
 #include <cstdint>
 
 namespace ss { struct Writer; struct Reader; }
+struct Cpu;
 
 namespace aspect {
 enum Mode : int { kOriginal = 0, kWindow, k16x10, k21x9, k32x9, kCustom, k4x3, kModes };
@@ -32,6 +33,10 @@ float layout_scale(float fovyDeg);
 // (the aspect's Vert+ and the gameplay FOV scale, as adjust_projection_args draws it); 0 for a bad
 // fovy. 60 fps (generated) (framegen.cpp) reprojects the scene with it.
 float scene_tan_half_fovy(float fovyDeg);
+// game thread: the arguments of a culling frustum setup of the main camera, mDoLib_clipper::setup(f1 fovy (degrees),
+// f2 aspect, f3 near, f4 far), adjusted as view_setup's calls are (the aspect's Vert+, the gameplay FOV scale outside
+// events, the stereo margin). Frame interpolation's in-between frustum (interp.cpp clipper_blend) goes through it too.
+void clipper_setup_args(Cpu* c);
 uint64_t game_frame();                // swaps so far                      // aspect the game draws with this frame
 // HD layouts: the game thread marks uploads of layout projection matrices and the drawing of layout
 // roots; the render thread, which knows the target, narrows the projection for TV-shaped targets

@@ -110,6 +110,12 @@ int main() {
                 assert(close_enough(clip.f[1].ps0,wide.f[1].ps0));
                 assert(clip.f[2].ps0>=wide.f[2].ps0);
             }
+            {   // #656: frame interpolation's in-between culling frustum is the view_setup one, not the authored FOV's
+                auto blended=camera();aspect::clipper_setup_args(&blended);
+                auto clip=camera();site_024F811C(&clip);
+                assert(blended.f[1].ps0==clip.f[1].ps0 && blended.f[2].ps0==clip.f[2].ps0);
+                assert(close_enough(blended.f[1].ps0,wide.f[1].ps0));
+            }
             // All event modes, dialogue, menus and transitions preserve the authored view.
             for(auto address:{play+0x5292,play+0x5BB2,play+0x5BB3,play+0x5140+12,0x101EA069u}) {
                 st8(address,1);auto cut=camera();site_024FFD60(&cut);
@@ -133,6 +139,8 @@ int main() {
     }
     aspect::set_fov_scale(1);aspect::on_swap();aspect::set_mode(aspect::kOriginal);aspect::on_swap();
     auto stock=camera();site_024FFD60(&stock);assert(stock.f[1].ps0==45);
+    stereo::requestedMode=stereo::Off;auto stockClip=camera();aspect::clipper_setup_args(&stockClip);
+    assert(stockClip.f[1].ps0==45 && stockClip.f[2].ps0==16.f/9);  // (16:9 at 100 %: the game's own frustum, untouched)
     aspect::set_fov_scale(std::numeric_limits<float>::quiet_NaN());assert(aspect::fov_scale()==1);
     aspect::set_fov_scale(100);assert(aspect::fov_scale()==2.5f);aspect::on_swap();
     for(int mode:{aspect::kOriginal,aspect::k4x3,aspect::k16x10,aspect::k21x9,aspect::k32x9}) {
