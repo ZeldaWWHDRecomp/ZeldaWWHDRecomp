@@ -3,6 +3,18 @@
 HDR output is available with Vulkan on Windows and Linux. Enable HDR for your
 display in Windows or your Linux compositor, then choose HDR in Graphics settings.
 
+On Windows, **HDR (scRGB)** / **HDR (HDR10 PQ)** can be chosen whenever the GPU
+driver offers an HDR format for the game window. Whether Windows HDR is on comes
+from Windows itself (DXGI: the colour space of the monitor the window is on now),
+and is checked again when the window moves to another monitor, when displays
+change, and when the game regains focus. If **Use HDR** is off for that monitor
+(Settings › System › Display), the Graphics page shows a warning; HDR stays
+selectable, but Windows shows the picture as SDR until Use HDR is turned on.
+Controls that don't apply are dimmed: the settings below the SDR / HDR choice
+apply only once HDR is chosen. `data/captures/wwhd.log` records the decision in
+its `[HDR]` lines: the display, the DXGI colour space, the reported peak
+(MaxLuminance), the Windows SDR content brightness and the headroom.
+
 **SDR curve in HDR** controls how the game's picture is turned into HDR. The
 default, **Gamma 2.2**, matches most monitors in SDR. Try **Gamma 2.4** for darker
 shadows and a TV-like look. **sRGB** restores the previous appearance. This setting
@@ -19,7 +31,10 @@ HUD. On KDE Plasma, start with paper white 203 nits to match the desktop's SDR
 brightness. KWin scales this reference by its SDR brightness setting.
 Exposure adjusts overall brightness; settings-menu brightness is independent.
 
-**Automatic peak brightness** uses paper white × SDL HDR headroom. It follows
+**Automatic peak brightness** uses paper white × HDR headroom (the display's peak
+relative to the desktop's SDR white). On Linux the headroom comes from SDL; on
+Windows it is the reported MaxLuminance ÷ the Windows SDR content brightness of the
+window's current monitor (SDL's formula), SDL's value when Windows reports none. It follows
 changes to paper white and the window's display/headroom without restarting.
 For example, paper white 203 and headroom 5 give Peak 1015; on the reported KDE
 setup this maps to the physical display peak of 1150 nits. Valid headroom must

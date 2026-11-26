@@ -64,23 +64,60 @@ int main() {
    printf("curve=%d code=%.2f scRGB=%.9f\n",curve,v,mapped[0]);
   }
  }
- // A saved HDR preference must never prevent startup on an SDR display.
- for(bool display:{false,true})for(bool format:{false,true}) {
+ // A saved HDR preference must never prevent startup on an SDR display. Linux: the display flag
+ // (SDL's, or format support) is required. Windows (issue #593): only a missing HDR surface format
+ // drops a saved HDR choice; a display in SDR mode is a warning, not a lock.
+ for(bool windows:{false,true})for(bool display:{false,true})for(bool format:{false,true}) {
   hdr::enabled=true;hdr::displayEnabled=display;hdr::formatSupported=format;
-  const bool available=display&&format;
-  assert(hdr::resolve_output()==available);
+  const bool available=format&&(windows||display);
+  assert(hdr::selectable(windows,display,format)==available);
+  assert(hdr::resolve_output(windows)==available);
   assert(hdr::enabled.load()==available);
   assert(hdr::fellBackToSdr.load()==!available);
-  assert(hdr::resolve_output()==available); // no repeated swapchain request after fallback
+  assert(hdr::resolve_output(windows)==available); // no repeated swapchain request after fallback
  }
- hdr::enabled=false;hdr::displayEnabled=true;hdr::formatSupported=true;
- assert(!hdr::resolve_output()); // SDR remains explicit even on a capable display
- // The presentation path could not draw HDR on a capable display: SDR from the next swapchain on,
- // reported, and not re-requested by resolve_output until the user picks HDR again.
- hdr::enabled=true;assert(hdr::resolve_output());
- hdr::fall_back_to_sdr();
- assert(!hdr::enabled.load()&&hdr::fellBackToSdr.load());
- assert(!hdr::resolve_output()&&hdr::fellBackToSdr.load());
+ for(bool windows:{false,true}) {
+  hdr::enabled=false;hdr::displayEnabled=true;hdr::formatSupported=true;
+  assert(!hdr::resolve_output(windows)); // SDR remains explicit even on a capable display
+  // The presentation path could not draw HDR on a capable display: SDR from the next swapchain on,
+  // reported, and not re-requested by resolve_output until the user picks HDR again.
+  hdr::enabled=true;assert(hdr::resolve_output(windows));
+  hdr::fall_back_to_sdr();
+  assert(!hdr::enabled.load()&&hdr::fellBackToSdr.load());
+  assert(!hdr::resolve_output(windows)&&hdr::fellBackToSdr.load());
+ }
+ // Windows display decision (issue #593): DXGI's colour space for the window's current monitor,
+ // SDL's flag only when no DXGI output matched.
+ {
+  using S=hdr::DisplayState;
+  assert(hdr::dxgi_display_state(false,12)==S::Unknown);
+  assert(hdr::dxgi_display_state(true,12)==S::On);   // RGB_FULL_G2084_NONE_P2020: Windows HDR on
+  assert(hdr::dxgi_display_state(true,0)==S::Off);   // RGB_FULL_G22_NONE_P709: SDR desktop
+  assert(hdr::dxgi_display_state(true,1)==S::Off);
+  // The reporter's case: HDR on, but the peak (or no peak) is not above SDR white, so SDL says off.
+  auto d=hdr::windows_display(S::On,false,1.0f,250.0f,300.0f);
+  assert(d.enabled&&!hdr::valid_headroom(d.headroom));
+  hdr::paperWhite=240;hdr::peakAuto=true;hdr::headroom=d.headroom;
+  assert(hdr::parameters().peak==1025); // Auto falls back to the default
+  d=hdr::windows_display(S::On,false,0.0f,0.0f,0.0f);   // no luminance reported at all
+  assert(d.enabled&&d.headroom==0.0f);
+  // HDR on, the window moved from an SDR monitor (SDL's values stale): headroom of the current monitor.
+  d=hdr::windows_display(S::On,false,1.0f,1000.0f,200.0f);
+  assert(d.enabled&&std::fabs(d.headroom-5.0f)<1e-6f);
+  d=hdr::windows_display(S::On,true,4.0f,1000.0f,0.0f);  // SDR white unknown: SDL's default, 80 nits
+  assert(std::fabs(d.headroom-12.5f)<1e-6f);
+  // Windows HDR off: off even if SDL's stale flag (from another monitor) says on; SDL headroom kept.
+  d=hdr::windows_display(S::Off,true,4.0f,1000.0f,200.0f);
+  assert(!d.enabled&&d.headroom==4.0f);
+  for(bool sdl:{false,true}) {
+   d=hdr::windows_display(S::Unknown,sdl,sdl?4.0f:1.0f,0.0f,0.0f);
+   assert(d.enabled==sdl&&d.headroom==(sdl?4.0f:1.0f));
+  }
+  assert(hdr::availability_note(true,true)==hdr::Note::None);
+  assert(hdr::availability_note(false,true)==hdr::Note::DisplayOff);
+  assert(hdr::availability_note(true,false)==hdr::Note::NoFormat);
+  assert(hdr::availability_note(false,false)==hdr::Note::NoFormat);
+ }
  for(float paper:{80.f,200.f,500.f})for(float peak:{500.f,1000.f,4000.f})
   for(float ev:{-3.f,0.f,3.f})for(float boost:{0.f,.5f,1.f}) {
    hdr::Parameters p{paper,peak,ev,boost};

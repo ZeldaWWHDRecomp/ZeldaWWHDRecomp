@@ -541,8 +541,9 @@ and culling projections, including both stereo eyes; cutscenes, dialogue, menus 
 retain their authored FOV. First-person view, item aiming and the Telescope are widened by the
 same factor, so their zoom is weaker above 100%. The setting is saved between launches.
 
-**HDR output** (Vulkan, Windows and Linux) offers scRGB presentation when Windows HDR is
-enabled and the display supports it. Where the surface has no scRGB (Mesa on Wayland), it
+**HDR output** (Vulkan, Windows and Linux) offers scRGB presentation when the GPU driver offers
+it for the game window. On Windows, turn on **Use HDR** for the display the game is on; the game
+reads that setting for the window's current monitor and warns (without locking HDR) when it is off. Where the surface has no scRGB (Mesa on Wayland), it
 presents HDR10 (BT.2020, PQ) instead; enable HDR for the output in your compositor. When SDL
 runs the game through XWayland (sway and other compositors without `wp_fifo_v1`), choosing
 HDR starts the game on Wayland from the next launch; SDL prefers XWayland there for frame
