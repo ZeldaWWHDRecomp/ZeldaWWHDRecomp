@@ -39,7 +39,7 @@ mods::targeting_letterbox::Context context(uint32_t camera) {
     return {ld32(camera + 0x600), ld32(camera + 0x13C),
             ld8(play + 0x5292) != 0,
             ld32(play + 0x52E4) != 0 || (ld32(camera + 0x510) & 0x20000000u) != 0,
-            ld8(play + 0x5CEA) != 0,
+            ld8(play + GI(0x5CEA)) != 0,
             selected,
             normal_camera == camera && normal_step == mods::step(),
             target == 0 && (ld32(attention + 0x20) & 0x20000000u) != 0};

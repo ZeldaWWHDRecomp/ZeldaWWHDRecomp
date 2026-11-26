@@ -19,6 +19,10 @@
 #include "stutter_trace.h"
 #include "mods/cemu_pack.h"
 #include "mods/shader_interface.h"
+#ifdef WWHD_NATIVE_DRAW
+#include "api.h"
+#include "gx2/native_draw.h"
+#endif
 #include "graphic_pack_hash.h"
 #include "gfx/area_sample.h"
 #include "gfx/sampler_lod_bias.h"
@@ -30,6 +34,9 @@
 #include "render_prof.h"
 #include "gx2/gx2_cmd.h"
 #include "Cafe/HW/Latte/Core/FetchShader.h"
+#ifdef WWHD_DECOMP_FAST
+#include "../../cheapib/cheapib.h"  // cheapib b1: sources of the packed support uniforms
+#endif
 #include "Cafe/HW/Latte/Core/LatteShader.h"
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "Cafe/HW/Latte/LegacyShaderDecompiler/LattePSInputDefault.h"
@@ -39,9 +46,12 @@
 #include "ppc.h"
 #include "util/helpers/StringBuf.h"
 #include <memory>
+#include <regex>
+#include "../draw_batch.h"
 #include <filesystem>
 #include <glslang/build_info.h>
 #include "platform/host.h"
+#include "gfx/vulkan/draw_thread_locks.h"
 #include <array>
 #include <algorithm>
 #include <chrono>
@@ -290,6 +300,28 @@ struct ProgramUse {
 };
 std::unordered_map<uint64_t, ProgramUse> programUses;  // linkage key -> use
 std::unordered_map<uint64_t, Shader*> variants;         // full key -> shader (may be shared)
+// Direct-mapped front caches of the two lookups every draw makes (keys are hashes, so the low bits
+// index well): a hit skips the unordered_map's bucket division and node chase. The maps' nodes keep
+// their addresses until clear_shader_cache, which clears these too.
+struct UseSlot { uint64_t key; ProgramUse* use; };
+struct VariantSlot { uint64_t key; Shader* shader; };
+std::array<UseSlot, 256> useFront{};
+std::array<VariantSlot, 512> variantFront{};
+ProgramUse& program_use(uint64_t linkage) {
+    auto& slot = useFront[linkage & (useFront.size() - 1)];
+    if (slot.use && slot.key == linkage) return *slot.use;
+    ProgramUse& use = programUses[linkage];
+    slot = {linkage, &use};
+    return use;
+}
+Shader* find_variant(uint64_t key) {
+    auto& slot = variantFront[key & (variantFront.size() - 1)];
+    if (slot.shader && slot.key == key) return slot.shader;
+    auto it = variants.find(key);
+    if (it == variants.end()) return nullptr;
+    slot = {key, it->second};
+    return it->second;
+}
 std::unordered_multimap<uint64_t, Shader*> shadersByOutput;
 std::unordered_multimap<uint64_t, Shader*> shadersByModule;  // SPIR-V + resource mapping
 // A pixel shader translated for the draw's vertex shader: the semantic ids that vertex shader
@@ -523,6 +555,19 @@ uint32_t key_verify_rate() {
 bool retain_shader_source() {
     static const bool retain = [] {
         const char* value = getenv("WWHD_VK_SHADER_SOURCE_VERIFY");
+#ifdef WWHD_NATIVE_DRAW
+        // native draw packets (gx2/native_draw.h): multi-draw batches check the final text for the vertex index;
+        // shader-rewrite batches are rewritten from it (on by default in this build: WWHD_NATIVE_DRAW_BATCH_DEFAULT)
+        if (native_draw::mdi_requested()) return true;
+#ifndef WWHD_NATIVE_DRAW_BATCH_DEFAULT
+#define WWHD_NATIVE_DRAW_BATCH_DEFAULT 0
+#endif
+        if (native_draw::packets_requested() &&
+            native_draw::switch_value("WWHD_NATIVE_DRAW_BATCH", WWHD_NATIVE_DRAW_BATCH_DEFAULT) != 0)
+            return true;
+#endif
+        // same-state draw runs (gx2/draw_runs.h, batch_draw.h): the batched variants are rewritten from it
+        if (draw_batch::switch_on("WWHD_VK_BATCH_RUNS")) return true;
         return (value && !strcmp(value, "1")) || key_verify_rate() != 0;
     }();
     return retain;
@@ -917,6 +962,7 @@ DescriptorRankPlan make_descriptor_rank_plan(const LatteDecompilerShaderResource
 }
 
 LatteFetchShader* get_fetch_shader(const uint32_t* regs, uint64_t* keyOut, uint64_t frame) {
+  gfxvk::draw_locks::Guard locked(gfxvk::draw_locks::kShaders);  // (draw threads: a shared cache)
     ++stats.fetchLookups;
     if (keyOut) *keyOut = 0;
     static const bool memo = [] {
@@ -1029,6 +1075,7 @@ namespace { thread_local uint64_t lastVariantKey = 0; }
 uint64_t last_translated_variant_key() { return lastVariantKey; }
 Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, uint64_t fsKey,
                   uint64_t frame, uint64_t stateGeneration, const Shader* linkedVs, bool clipAllowed) {
+  gfxvk::draw_locks::Guard locked(gfxvk::draw_locks::kShaders);  // (draw threads: a shared cache)
     lastVariantKey = 0;
     const bool clip = clipAllowed && clip_emulation_wanted_regs(regs);
     poll_shader_binaries(frame);
@@ -1072,14 +1119,14 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
     // Level 2: the units and exports this program uses; for a pixel shader, the inputs its
     // vertex shader does not feed.
     const PsLink link = vertex ? PsLink{} : ps_link(regs, linkedVs);
-    auto& use = programUses[linkage];
+    auto& use = program_use(linkage);
     if (use.failed) return remember(use.failed);
     if (use.known) {
         const uint64_t key = lastVariantKey = variant_hash(regs, vertex, use, linkage, link);
-        if (auto it = variants.find(key); it != variants.end()) {
+        if (Shader* found = find_variant(key)) {
             ++stats.variantHits;
-            verify_key(regs, vertex, fetch, fsKey, address, size, base, key, *it->second, link, clip);
-            return remember(it->second);
+            verify_key(regs, vertex, fetch, fsKey, address, size, base, key, *found, link, clip);
+            return remember(found);
         }
     }
     auto started = std::chrono::steady_clock::now();
@@ -1106,6 +1153,15 @@ Shader* translate(const uint32_t* regs, bool vertex, LatteFetchShader* fetch, ui
         render_objects::set_shaders(shaders.size());
         fprintf(stderr, "[vulkan] shader %08X: %s\n", address, shader->error.c_str());
         return remember(shader);
+    }
+    // (TEST ONLY, WWHD_TEST_PS_LOD0=1: every pixel program's biased texture reads at explicit level 0, so pictures
+    // can be compared without the GPU's automatic level choice: checks of batched draws)
+    if (!vertex) [[unlikely]] {
+        static const bool lod0 = [] { const char* e = getenv("WWHD_TEST_PS_LOD0"); return e && *e == '1'; }();
+        if (lod0) {
+            static const std::regex read(R"(\btexture\((\w+), (vec[234]\((?:[^()]|\([^()]*\))*\)),\s*uf_tex\d+LodBias\))");
+            shader->glsl = std::regex_replace(shader->glsl, read, "textureLod($1, $2, 0.0)");
+        }
     }
     // Final GLSL identity: aliasing, the SPIR-V cache and pending compiles use
     // it, so the text can be released once the compile has been requested.
@@ -1344,6 +1400,9 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     // Reused capacity may contain another shader's payload. Define every byte,
     // including gaps, padding, and remapped blocks with missing guest addresses.
     std::fill(data.begin(), data.end(), uint8_t{0});
+#ifdef WWHD_DECOMP_FAST
+    CHEAPIB_B1_SRC_ARM(data.data(), 1)
+#endif
     if (!shader.dec) return;
     auto copy = [&](int offset, const void* src, size_t size) {
         if (offset >= 0 && size_t(offset) + size <= data.size()) memcpy(data.data() + offset, src, size);
@@ -1364,6 +1423,9 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     if (offsets.offset_remapped >= 0) {
         for (const auto& entry : shader.dec->list_remappedUniformEntries_register) {
             copy(offsets.offset_remapped + entry.mappedIndexOffset, regs + aluBase + entry.indexOffset / 4, 16);
+#ifdef WWHD_DECOMP_FAST
+            CHEAPIB_B1_REG(data.data(), uint32_t(offsets.offset_remapped + entry.mappedIndexOffset), aluBase + entry.indexOffset / 4, 4)
+#endif
             if (entry.indexOffset <= 4096-64)
                 projectionRow(offsets.offset_remapped+entry.mappedIndexOffset,
                     regs+aluBase+entry.indexOffset/4,4096-entry.indexOffset);
@@ -1379,6 +1441,10 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
                 const void* src = submitted && entry.indexOffset + 16 <= blockSize
                     ? static_cast<const void*>(submitted + entry.indexOffset) : ppc_ptr(address + entry.indexOffset);
                 copy(offsets.offset_remapped + entry.mappedIndexOffset, src, 16);
+#ifdef WWHD_DECOMP_FAST
+                CHEAPIB_B1_SRC(data.data(), uint32_t(offsets.offset_remapped + entry.mappedIndexOffset), src)  // (guest-memory reads: not noted)
+                if (!(submitted && entry.indexOffset + 16 <= blockSize)) CHEAPIB_B1_GUEST(2, address, uint32_t(blockSize))
+#endif
                 if (entry.indexOffset < blockSize)
                     projectionRow(offsets.offset_remapped+entry.mappedIndexOffset,
                         src,blockSize-entry.indexOffset);
@@ -1387,6 +1453,11 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
     }
     if (offsets.offset_uniformRegister >= 0) {
         copy(offsets.offset_uniformRegister, regs + aluBase, size_t(offsets.count_uniformRegister) * 16);
+#ifdef WWHD_DECOMP_FAST
+        if (::cheapib::g_b1_capturing)  // (per 16-byte register, so each is judged on its own)
+            for (int i = 0; i < offsets.count_uniformRegister; i++)
+                ::cheapib::b1_src_reg(data.data(), uint32_t(offsets.offset_uniformRegister + 16 * i), aluBase + 4 * i, 4);
+#endif
         if (shader.vertex && eyeOffset != 0)
             stereo::project_uniform_block(data.data()+offsets.offset_uniformRegister,
                 size_t(offsets.count_uniformRegister)*16,eyeOffset,convergence,
@@ -1430,6 +1501,9 @@ std::vector<uint8_t> pack_uniforms(const uint32_t* regs, const Shader& shader,
 }
 
 void reset_shader_memoization() {
+#ifdef WWHD_NATIVE_DRAW
+    j3d_cache_clear();  // (its entries hold program hashes and shaders)
+#endif
     stateMemo.reset();
     lastFetch = {};
     programHashes.clear();
@@ -1445,6 +1519,8 @@ void clear_shader_cache() {
     shaders.clear();
     variants.clear();
     programUses.clear();
+    useFront = {};
+    variantFront = {};
     shadersByOutput.clear();
     shadersByModule.clear();
     verifiedKeys.clear();
@@ -1458,4 +1534,16 @@ bool translate_stages(const uint32_t* regs, LatteFetchShader* fetch, uint64_t fs
         return translate(regs, vertex, fetch, fsKey, frame, stateGeneration, linkedVs, clipAllowed);
     }, vs, ps);
 }
+uint64_t vertex_program_hash(const uint32_t* regs, uint64_t frame) {
+    const uint32_t address = regs[mmSQ_PGM_START_VS] << 8, size = regs[mmSQ_PGM_START_VS + 1] << 3;
+    if (!address || !size || size > 0x100000 || uint64_t(address) + size > 0x100000000ull) return 0;
+    return program_hash(address, size, frame);
+}
+#ifdef WWHD_NATIVE_DRAW
+uint64_t pixel_program_hash(const uint32_t* regs, uint64_t frame) {
+    const uint32_t address = regs[mmSQ_PGM_START_PS] << 8, size = regs[mmSQ_PGM_START_PS + 1] << 3;
+    if (!address || !size || size > 0x100000 || uint64_t(address) + size > 0x100000000ull) return 0;
+    return program_hash(address, size, frame);
+}
+#endif
 } // namespace gfxvk::vk

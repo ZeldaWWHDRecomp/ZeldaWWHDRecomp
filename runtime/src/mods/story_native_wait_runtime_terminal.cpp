@@ -15,7 +15,7 @@ const uint32_t Play=GD(0x1046F0B0);
 const story_native_camera_capture::Layout CameraLayout{
  GD(0x1046F0B0),GD(0x101D55F0),GD(0x101D5634),GD(0x101D5538),
  {GC(0x025021A4),GC(0x02502288),GC(0x024FFA3C),GC(0x0250235C),GC(0x024FFC40)},
- {GD(0x10049348),GD(0x10049350),GD(0x10044878),GD(0x1004487C)}};
+ {GD(0x10049348),GD(0x10049350),GD(0x10044878),GD(0x1004487C)},GI(0x5AF8)};
 uint32_t word(std::span<const uint8_t>b,unsigned p){return uint32_t(b[p])<<24|uint32_t(b[p+1])<<16|uint32_t(b[p+2])<<8|b[p+3];}
 uint16_t half(std::span<const uint8_t>b,unsigned p){return uint16_t(b[p])<<8|b[p+1];}
 bool span(uint32_t at,size_t bytes){return bytes&&uint64_t(at)+bytes<=0x100000000ULL&&

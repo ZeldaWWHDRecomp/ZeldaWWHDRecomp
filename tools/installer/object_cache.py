@@ -5,8 +5,8 @@ A randomized game's code differs from another seed's in a few hundred functions;
 (code_NNN.c) that hold none of them are the same, and so are their objects. The key of an object is the
 SHA-256 of the compiler's identity (its command and `--version`), the compile flags with the build folder's
 own paths replaced by fixed names, and the preprocessed source (`-E -P`: every header it includes, without
-line markers). The same key means the compiler gets the same input, so the cached object is the one it would
-make. Objects are stored by key in <data>/code-objects/<2 hex>/<key>.o, written to a temporary name first
+line markers; written to a file, not read from a pipe). The same key means the compiler gets the same input,
+so the cached object is the one it would make. Objects are stored by key in <data>/code-objects/<2 hex>/<key>.o, written to a temporary name first
 and renamed into place (a reader sees a whole object or none); the oldest are removed once the folder holds
 more than LIMIT bytes.
 
@@ -16,10 +16,12 @@ machine, beside the builds it speeds up (code-builds/).
 import hashlib
 import os
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
 LIMIT = 1 << 30  # a full set of the game's objects is about 50 MB
+PRE_PREFIX = "pre-"  # the preprocessed sources key() hashes, in the cache folder while it runs
 
 
 class Cache:
@@ -29,20 +31,39 @@ class Cache:
         self.root = Path(root)
         norm = []
         for f in flags:
-            for path, name in replacements.items():
+            for path, name in sorted(replacements.items(), key=lambda r: -len(r[0])):  # (a folder inside another)
                 f = f.replace(path, name)
             norm.append(f)
         self.base = hashlib.sha256(("wwhd object cache 1\0" + compiler_id + "\0" + "\0".join(norm)).encode()).digest()
         self.hits = self.misses = 0
 
     def key(self, cc, flags, src, env=None):
-        """the key of one source: its preprocessed text with this cache's base; None when preprocessing fails"""
-        p = subprocess.run(cc + flags + ["-E", "-P", src], env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        if p.returncode != 0:
-            return None
-        h = hashlib.sha256(self.base)
-        h.update(p.stdout)
-        return h.hexdigest()
+        """the key of one source: its preprocessed text with this cache's base; None when preprocessing fails.
+        The preprocessor writes into a file in the cache folder (removed after hashing), never into a pipe: a
+        process bridge that bounds what it captures (the Android app's: 4 MiB per stream) would hand back the same
+        first part of every file whose headers are larger, and every such file would get the first one's object
+        (the decomp version's funcs.h is about 4 MB; phone run 2026-11-17)."""
+        try:
+            self.root.mkdir(parents=True, exist_ok=True)
+            fd, pre = tempfile.mkstemp(prefix=PRE_PREFIX, suffix=".i", dir=self.root)
+            os.close(fd)
+        except OSError:
+            return None  # (no cache folder: compiled as without a cache)
+        try:
+            p = subprocess.run(cc + flags + ["-E", "-P", src, "-o", pre], env=env, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL)
+            if p.returncode != 0:
+                return None
+            h = hashlib.sha256(self.base)
+            with open(pre, "rb") as f:
+                for chunk in iter(lambda: f.read(1 << 20), b""):
+                    h.update(chunk)
+            return h.hexdigest()
+        finally:
+            try:
+                os.remove(pre)
+            except OSError:
+                pass
 
     def path(self, key):
         return self.root / key[:2] / (key + ".o")
@@ -97,7 +118,8 @@ class Cache:
                 total -= size
             except OSError:
                 pass
-        for p in self.root.glob("??/*.tmp"):  # a crashed writer's leftovers (older than an hour)
+        for p in list(self.root.glob("??/*.tmp")) + list(self.root.glob(PRE_PREFIX + "*.i")):
+            # a crashed writer's or key()'s leftovers (older than an hour)
             try:
                 if p.stat().st_mtime < time.time() - 3600:
                     p.unlink()

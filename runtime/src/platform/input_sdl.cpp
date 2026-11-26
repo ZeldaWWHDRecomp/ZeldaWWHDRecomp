@@ -23,6 +23,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "gfx/display_modes.h"
 #include "keycodes.h"
 #include "mouse_sdl.h"
+#include "window_focus.h"
 #include "../input.h"
 #include "../audio_out.h"
 #include "../input_map.h"
@@ -73,12 +74,15 @@ static bool g_keys[256]={},g_script_keys[256]={};
 static std::atomic<bool> g_gameplay_focus{false},g_window_focus{false};
 bool gameplay_focused(){return g_gameplay_focus.load(std::memory_order_relaxed);}
 bool window_focused(){return g_window_focus.load(std::memory_order_relaxed);}
-// ---- controllers in the background (issue #267) ---------------------------------------------------
-// SDL drops controller presses and stick moves while it has windows and none of them has the keyboard
-// focus, unless SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS is set. SDL watches that hint (a hint
-// callback), so it applies at once, also after the joystick subsystem started. Controls > "Controller
-// input when the game isn't focused" sets it; keyboard and mouse are released on focus loss either
-// way (handle_event, mouse_sdl.cpp). Android: the app is in front or paused, the option does nothing.
+// ---- controllers and the focus (issues #267, #406) ------------------------------------------------
+// Controllers drive the game while the TV window or the GamePad window has the focus, and with Controls >
+// "Controller input in the background" on also while another app is in front (window_focus.h). Keyboard
+// and mouse are released on focus loss either way (handle_event, mouse_sdl.cpp).
+// Desktop: SDL reads the controllers always (SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS on) and the rule
+// above is applied here, from the window system's answer: SDL's own filter follows its keyboard focus,
+// which on Windows can stay empty after a click moved the focus from the TV window to the GamePad window
+// (issue #406: the controller stopped until the TV window was clicked again).
+// Android: the app is in front or paused; SDL's own filter stays, the option does nothing.
 bool background_controllers(){
 #ifdef __ANDROID__
  return false;
@@ -86,16 +90,38 @@ bool background_controllers(){
  return input_map::background_controllers();
 #endif
 }
+static SDL_Window* g_prompt_window=nullptr;
+static SDL_Window* g_gamepad_window=nullptr;
+static std::atomic<window_focus::Front> g_front{window_focus::Front::None};  // main thread writes (update_front)
+static void update_front(){
+#ifdef __ANDROID__
+ g_front.store(SDL_GetKeyboardFocus()?window_focus::Front::TV:window_focus::Front::None,std::memory_order_relaxed);
+#else
+ g_front.store(window_focus::front(g_prompt_window,g_gamepad_window),std::memory_order_relaxed);
+#endif
+}
 static void apply_background_hint(){
  static int applied=-1;
  const bool on=background_controllers();
  if(applied==(int)on)return;
- if(!SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,on?"1":"0"))LOG("[input] background controller hint: %s",SDL_GetError());
- if(applied>=0||on)LOG("[input] controller input while the game isn't focused: %s",on?"on":"off");
+#ifdef __ANDROID__
+ const char* hint="0";
+#else
+ const char* hint="1";  // the focus rule is applied by controllers_live(), not by SDL
+#endif
+ if(applied<0&&!SDL_SetHint(SDL_HINT_JOYSTICK_ALLOW_BACKGROUND_EVENTS,hint))LOG("[input] background controller hint: %s",SDL_GetError());
+ if(applied>=0||on)LOG("[input] controller input in the background: %s",on?"on":"off");
  applied=on;
 }
 // the controllers reach the game now: a game window has the focus, or the background option is on
-static bool controllers_live(){return SDL_GetKeyboardFocus()!=nullptr||background_controllers();}
+static bool controllers_live(){return window_focus::controllers(g_front.load(std::memory_order_relaxed),background_controllers());}
+// controller buttons, sticks and motion samples as SDL delivers them: desktop through controllers_live()
+// (SDL reads them in the background there); Android as before, SDL's own filter only
+#ifdef __ANDROID__
+static bool controller_values_live(){return true;}
+#else
+static bool controller_values_live(){return controllers_live();}
+#endif
 static PadState g_pad;
 static float g_values[input_map::kPadCount]={};
 static bool g_touch=false;static float g_tx=0,g_ty=0;
@@ -124,8 +150,6 @@ extern "C" JNIEXPORT void JNICALL Java_org_wwhdrecomp_wwhd_TouchControls_nativeC
  g_controller_announced=true;
 }
 #endif
-static SDL_Window* g_prompt_window=nullptr;
-static SDL_Window* g_gamepad_window=nullptr;
 static void update_overlay_window(SDL_Window* focus);
 void set_gamepad_window(SDL_Window* window){g_gamepad_window=window;update_overlay_window(SDL_GetKeyboardFocus());}
 static bool game_window(SDL_WindowID id){return (g_prompt_window&&id==SDL_GetWindowID(g_prompt_window))||(g_gamepad_window&&id==SDL_GetWindowID(g_gamepad_window));}
@@ -329,8 +353,8 @@ static PadState keyboard_state(bool host){bool keys[256];for(int i=0;i<256;i++)k
 // requests by more than kRumbleRefreshMs; should the main loop stall (SDL ends a rumble only while
 // it pumps events), a watchdog thread stops the motors after kRumbleStallMs.
 // The motors are still while the option is off, the settings overlay is open (the game sees no
-// input then), no game window has the keyboard (SDL reads no controllers in the background; with
-// "Controller input when the game isn't focused" on they keep running there, as the game plays on), and
+// input then), neither the TV nor the GamePad window has the focus (the controllers are idle then; with
+// "Controller input in the background" on they keep running there, as the game plays on), and
 // from the moment the process ends (quit, exit, crash): it ends without SDL_Quit, and XInput and
 // HIDAPI controllers keep the last motor level they were sent after it.
 constexpr Uint32 kRumbleRefreshMs=150,kRumbleStallMs=300;
@@ -551,8 +575,29 @@ static void device_sensor_event(const SDL_SensorEvent& e){
  motion::device_sample(e.sensor_timestamp,gyro,accel);
 }
 #endif
-// What the dominant pad (first connected still present) has printed on its face buttons, in the
-// order kPadA, kPadB, kPadX, kPadY: south, east, west, north (issue #78's Automatic preset).
+// What a pad has printed on its face buttons, in the order kPadA, kPadB, kPadX, kPadY: south, east,
+// west, north
+static void pad_labels(SDL_Gamepad* pad,input_map::FaceLabel out[4]){
+ using FL=input_map::FaceLabel;
+ auto label=[&](SDL_GamepadButton b)->FL{
+  switch(SDL_GetGamepadButtonLabel(pad,b)){
+  case SDL_GAMEPAD_BUTTON_LABEL_A:return FL::kA;
+  case SDL_GAMEPAD_BUTTON_LABEL_B:return FL::kB;
+  case SDL_GAMEPAD_BUTTON_LABEL_X:return FL::kX;
+  case SDL_GAMEPAD_BUTTON_LABEL_Y:return FL::kY;
+  case SDL_GAMEPAD_BUTTON_LABEL_CROSS:return FL::kCross;
+  case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE:return FL::kCircle;
+  case SDL_GAMEPAD_BUTTON_LABEL_SQUARE:return FL::kSquare;
+  case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE:return FL::kTriangle;
+  default:return FL::kUnknown;}};
+ out[0]=label(SDL_GAMEPAD_BUTTON_SOUTH);out[1]=label(SDL_GAMEPAD_BUTTON_EAST);
+ out[2]=label(SDL_GAMEPAD_BUTTON_WEST);out[3]=label(SDL_GAMEPAD_BUTTON_NORTH);
+}
+static bool pad_gamecube(SDL_Gamepad* pad){
+ return input_map::is_gamecube(SDL_GetGamepadType(pad)==SDL_GAMEPAD_TYPE_GAMECUBE,SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad));
+}
+// What the dominant pad (first connected still present) has printed on its face buttons (issue #78's
+// Automatic preset)
 static void dominant_labels(input_map::FaceLabel out[4]){
  using FL=input_map::FaceLabel;
  for(int i=0;i<4;i++)out[i]=FL::kUnknown;
@@ -567,19 +612,7 @@ static void dominant_labels(input_map::FaceLabel out[4]){
   if(!SDL_GamepadHasButton(pad,SDL_GAMEPAD_BUTTON_SOUTH) || !SDL_GamepadHasButton(pad,SDL_GAMEPAD_BUTTON_EAST) ||
      !SDL_GamepadHasButton(pad,SDL_GAMEPAD_BUTTON_WEST) || !SDL_GamepadHasButton(pad,SDL_GAMEPAD_BUTTON_NORTH))continue;
 #endif
-  auto label=[&](SDL_GamepadButton b)->input_map::FaceLabel{
-   switch(SDL_GetGamepadButtonLabel(pad,b)){
-   case SDL_GAMEPAD_BUTTON_LABEL_A:return FL::kA;
-   case SDL_GAMEPAD_BUTTON_LABEL_B:return FL::kB;
-   case SDL_GAMEPAD_BUTTON_LABEL_X:return FL::kX;
-   case SDL_GAMEPAD_BUTTON_LABEL_Y:return FL::kY;
-   case SDL_GAMEPAD_BUTTON_LABEL_CROSS:return FL::kCross;
-   case SDL_GAMEPAD_BUTTON_LABEL_CIRCLE:return FL::kCircle;
-   case SDL_GAMEPAD_BUTTON_LABEL_SQUARE:return FL::kSquare;
-   case SDL_GAMEPAD_BUTTON_LABEL_TRIANGLE:return FL::kTriangle;
-   default:return FL::kUnknown;}};
-  out[0]=label(SDL_GAMEPAD_BUTTON_SOUTH);out[1]=label(SDL_GAMEPAD_BUTTON_EAST);
-  out[2]=label(SDL_GAMEPAD_BUTTON_WEST);out[3]=label(SDL_GAMEPAD_BUTTON_NORTH);
+  pad_labels(pad,out);
   return;  // one pad decides, the first connected
  }
 }
@@ -595,7 +628,7 @@ static void note_dominant_labels(){
    auto it=g_controllers.find(id);if(it==g_controllers.end())continue;
    auto* pad=it->second;
    const bool type=SDL_GetGamepadType(pad)==SDL_GAMEPAD_TYPE_GAMECUBE;
-   const bool gc=input_map::is_gamecube(type,SDL_GetGamepadVendor(pad),SDL_GetGamepadProduct(pad));
+   const bool gc=pad_gamecube(pad);
    if(candidates.empty())detected=gc;
    // SDL's GameCube type uses AXBY positions. Older PC database entries use ABXY.
    const bool pc=!type && !(SDL_GetGamepadVendor(pad)==0x057e && SDL_GetGamepadProduct(pad)==0x0337);
@@ -827,9 +860,10 @@ static void post_test_keys(){
 // debug: WWHD_TEST_VIRTUAL_PAD=2000-2010:a,2100-2105:start attaches an SDL virtual gamepad and holds its
 // buttons (SDL gamepad button names) during TV frame ranges (script frames with WWHD_TEST_FIXED_SEED, as
 // WWHD_PRESS). Unlike WWHD_PRESS the presses take SDL's own
-// path, focus filter included (issue #267: a hidden run has no focus, so they reach the game only with
-// controller input in the background on). Just before the first range a window focus loss is posted for
-// the TV window, as the window manager sends it. Needs host input (no WWHD_NO_HOST_INPUT); to leave real
+// path and the host's focus rule (window_focus.h; issue #267: a hidden run has no focus, so they reach the
+// game only with controller input in the background on; issue #406: with SDL_VIDEO_DRIVER=offscreen a shown
+// window takes the focus, so a shown GamePad window holds it). Just before the first range a window focus
+// loss is posted for the TV window, as the window manager sends it. Needs host input (no WWHD_NO_HOST_INPUT); to leave real
 // controllers out, start with SDL_JOYSTICK_HIDAPI=0 SDL_JOYSTICK_MFI=0 SDL_JOYSTICK_IOKIT=0 (macOS).
 static void test_virtual_pad(){
  struct Hold{uint64_t from,to;SDL_GamepadButton button;};
@@ -934,7 +968,12 @@ void handle_event(const SDL_Event& event){
  else if(mods::handle_mouse_event(event))return;
  if(event.type==SDL_EVENT_GAMEPAD_ADDED&&!getenv("WWHD_NO_CONTROLLERS")){open_controller(event.gdevice.which);note_dominant_labels();}
  if(event.type==SDL_EVENT_GAMEPAD_REMOVED)close_controller(event.gdevice.which);
- if(event.type==SDL_EVENT_GAMEPAD_SENSOR_UPDATE){g_sensor_seen[event.gsensor.which]=SDL_GetTicks();if(!getenv("WWHD_NO_HOST_INPUT")&&!overlay::blocks_input())sensor_event(event.gsensor);return;}
+ // a device SDL sees only as a joystick (no gamepad mapping) is not used; say so for bug reports (#556)
+ if(event.type==SDL_EVENT_JOYSTICK_ADDED&&!SDL_IsGamepad(event.jdevice.which)){
+  const char* n=SDL_GetJoystickNameForID(event.jdevice.which);
+  LOG("[input] joystick without a gamepad mapping, not used: %s (vendor %04X, product %04X)",n?n:"?",
+      SDL_GetJoystickVendorForID(event.jdevice.which),SDL_GetJoystickProductForID(event.jdevice.which));}
+ if(event.type==SDL_EVENT_GAMEPAD_SENSOR_UPDATE){g_sensor_seen[event.gsensor.which]=SDL_GetTicks();if(!getenv("WWHD_NO_HOST_INPUT")&&!overlay::blocks_input()&&controller_values_live())sensor_event(event.gsensor);return;}
  static const bool trace=getenv("WWHD_OVERLAY_TRACE")&&std::string(getenv("WWHD_OVERLAY_TRACE"))=="1";
  if(trace&&(event.type==SDL_EVENT_WINDOW_FOCUS_LOST||event.type==SDL_EVENT_WINDOW_FOCUS_GAINED))
   LOG("[overlay] focus %s window %s id %u timestamp %llu",event.type==SDL_EVENT_WINDOW_FOCUS_LOST?"lost":"gained",window_name(event.window.windowID),event.window.windowID,(unsigned long long)event.window.timestamp);
@@ -990,8 +1029,10 @@ void handle_event(const SDL_Event& event){
 }
 void update(){
  update_overlay_window(SDL_GetKeyboardFocus());
- g_gameplay_focus.store(SDL_GetKeyboardFocus()!=nullptr&&!text_prompt_active(),std::memory_order_relaxed);
- g_window_focus.store(SDL_GetKeyboardFocus()!=nullptr,std::memory_order_relaxed);
+ update_front();  // the game window in front (TV or GamePad), before this poll reads the controllers
+ const bool own_focus=window_focus::keyboard_and_mouse(g_front.load(std::memory_order_relaxed));
+ g_gameplay_focus.store(own_focus&&!text_prompt_active(),std::memory_order_relaxed);
+ g_window_focus.store(own_focus,std::memory_order_relaxed);
  apply_background_hint();  // the Controls option, applied before this poll reads the controllers
  if(wwhd_trace::enabled()) {
   overlay_trace_sdl::begin(overlay::is_open());
@@ -1040,10 +1081,12 @@ void update(){
  float v[kPadCount]={},game[kPadCount]={};
  const bool captured_before=overlay::captures();
  std::vector<std::pair<SDL_JoystickID,overlay::PadValues>> devices;
+ // no game window in front and the background option off: the controllers are idle (window_focus.h)
+ const bool live=controller_values_live();
  for(auto [id,pad]:g_controllers){
   if(!SDL_GamepadConnected(pad))continue;
   std::array<float,kPadCount> d{};
-  auto put=[&](int p,float x){d[p]=std::max(d[p],x);};
+  auto put=[&](int p,float x){if(live)d[p]=std::max(d[p],x);};
   auto button=[&](SDL_GamepadButton b,int p){put(p,SDL_GetGamepadButton(pad,b)?1.f:0.f);};
   button(SDL_GAMEPAD_BUTTON_SOUTH,kPadA);button(SDL_GAMEPAD_BUTTON_EAST,kPadB);button(SDL_GAMEPAD_BUTTON_WEST,kPadX);button(SDL_GAMEPAD_BUTTON_NORTH,kPadY);
   button(SDL_GAMEPAD_BUTTON_LEFT_SHOULDER,kPadLB);button(SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER,kPadRB);
@@ -1078,6 +1121,7 @@ void update(){
  std::vector<overlay::PadValues> gated;
  g_gates.combine(devices,captured,v,game,&gated);  // a reconnected pad (new id) gets a new gate
  input_map::consume_shortcut_buttons(current,v,game);
+ overlay::hold_select_for_settings(~0ull,game);
  input::PadState state;
  if(current.controllers.empty()&&!current.preset.saved&&!current.preset.gamecube){
   state=input_map::controller_state(current,game);  // one set of bindings for all: as before
@@ -1085,6 +1129,7 @@ void update(){
   // each controller through its own bindings (a profile for its GUID / name, else the shared ones)
   for(size_t i=0;i<gated.size();i++){
    input_map::consume_shortcut_buttons(current,v,gated[i].data());
+   overlay::hold_select_for_settings(uint64_t(devices[i].first),gated[i].data());
    auto& gate=g_start_gates[devices[i].first];
    if(captured)gate={};
    state=input_map::combine(state,gate.read(input_map::view_for(current,input_map::profile_index(current,idents[i].guid,idents[i].name)),gated[i].data()));
@@ -1098,7 +1143,13 @@ void update(){
   const SDL_JoystickID id=devices[i].first;
   bool pressed=false;
   for(int p=1;p<kPadCount;p++)pressed|=devices[i].second[p]>0.6f;
-  if(pressed&&!idents[i].is_virtual&&id!=active){active=id;input_map::set_active_controller(idents[i].guid,idents[i].name);}
+  if(pressed&&!idents[i].is_virtual&&id!=active){
+   active=id;
+   // Automatic prompts follow this pad's labels and GameCube identity (issue #459)
+   input_map::FaceLabel labels[4]={};bool gc=false;
+   {std::lock_guard lk(g_pads_mu);if(auto it=g_controllers.find(id);it!=g_controllers.end()){pad_labels(it->second,labels);gc=pad_gamecube(it->second);}}
+   input_map::set_active_controller(idents[i].guid,idents[i].name,input_map::pad_family_from_labels(labels),gc);
+  }
   if(pressed){
    bool offer=false;
    {std::lock_guard lk(g_pads_mu);offer=g_offer_pending.erase(id)>0;}
@@ -1207,6 +1258,7 @@ static std::vector<Stick> scripted_stick(const char* var = "WWHD_STICK") {
 //   WWHD_TEST_PRESS=3-3.1:8000    buttons (hex)
 //   WWHD_TEST_MODE=1@0.5          60 fps mode at 0.5 s (0 off, 1 interpolation; 2, the retired True 60, = 1 at 60 fps)
 //   WWHD_TEST_END=12              writes the file "test_done" at 12 s (the test script stops the game)
+//   WWHD_TEST_PRO=2.5             the keyboard/controller act as a Pro Controller from 2.5 s (as the player's choice)
 namespace {
 struct TimedStick { double from, to; float x, y; };
 struct TimedPress { double from, to; uint32_t bits; };
@@ -1215,7 +1267,7 @@ struct Scenario {
     std::vector<TimedStick> sticks, rsticks;
     std::vector<TimedPress> presses;
     int mode = -1;
-    double mode_at = 0, end = 0;
+    double mode_at = 0, end = 0, pro_at = -1;
     Scenario() {
         if (const char* e = getenv("WWHD_TEST_ORIGIN")) origin = strtoull(e, nullptr, 10);
         auto timed_sticks = [](const char* e, std::vector<TimedStick>& out) {
@@ -1240,6 +1292,7 @@ struct Scenario {
         }
         if (const char* e = getenv("WWHD_TEST_MODE")) sscanf(e, "%d@%lf", &mode, &mode_at);
         if (const char* e = getenv("WWHD_TEST_END")) end = atof(e);
+        if (const char* e = getenv("WWHD_TEST_PRO")) pro_at = atof(e);
     }
 };
 }  // namespace
@@ -1285,6 +1338,11 @@ static void apply_scenario(PadState& s) {
     static std::atomic<bool> mode_set{false}, ended{false};
     static std::atomic<int> dbg{0};
     if (getenv("WWHD_TEST_DEBUG") && dbg++ % 30 == 0) LOG("[test] t=%.3f frame %llu", t, (unsigned long long)render::frame_count());
+    static std::atomic<bool> pro_set{false};
+    if (sc.pro_at >= 0 && t >= sc.pro_at && !pro_set.exchange(true)) {
+        LOG("[test] t=%.3f s: Pro Controller (frame %llu)", t, (unsigned long long)render::frame_count());
+        set_pro_controller(true);
+    }
     if (sc.mode >= 0 && t >= sc.mode_at && !mode_set.exchange(true)) {
         LOG("[test] t=%.3f s: 60 fps mode %d", t, sc.mode);
         interp::set_mode(sc.mode);
@@ -1323,6 +1381,23 @@ static void apply_scenario(PadState& s) {
         if (t >= p.from && t < p.to) { s.rx = p.x; s.ry = p.y; }
     for (auto& p : sc.presses)
         if (t >= p.from && t < p.to) s.buttons |= p.bits;
+    // debug: WWHD_TEST_INPUT_LOG=<file> writes every change of the input the game reads, at scenario
+    // time, as "t buttons lx ly rx ry": played live, it becomes a WWHD_TEST_* scenario that repeats it
+    static FILE* input_log = [] {
+        const char* path = getenv("WWHD_TEST_INPUT_LOG");
+        return path ? fopen(path, "w") : nullptr;
+    }();
+    if (input_log) {
+        static uint32_t last_buttons = 0;
+        static float last[4] = {};
+        const float now[4] = {s.lx, s.ly, s.rx, s.ry};
+        if (s.buttons != last_buttons || memcmp(now, last, sizeof now) != 0) {
+            fprintf(input_log, "%.4f %x %.9g %.9g %.9g %.9g\n", t, s.buttons, s.lx, s.ly, s.rx, s.ry);  // exact floats
+            fflush(input_log);
+            last_buttons = s.buttons;
+            memcpy(last, now, sizeof now);
+        }
+    }
 }
 
 static std::atomic<bool> g_pro{getenv("WWHD_PRO_CONTROLLER") != nullptr};

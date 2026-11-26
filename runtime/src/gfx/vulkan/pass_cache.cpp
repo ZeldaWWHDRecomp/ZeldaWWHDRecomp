@@ -1,4 +1,5 @@
 #include "pass_cache.h"
+#include "gfx/vulkan/draw_thread_locks.h"
 #include <cassert>
 #include <functional>
 #include <stdexcept>
@@ -39,6 +40,7 @@ size_t FramebufferKeyHash::operator()(const FramebufferKey& key) const {
 }
 PassCaches::~PassCaches() { reset(); }
 VkRenderPass PassCaches::render_pass(const PassFormats& formats, VkAttachmentLoadOp colorLoad) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     validate_formats(formats);
     if (colorLoad != VK_ATTACHMENT_LOAD_OP_LOAD && colorLoad != VK_ATTACHMENT_LOAD_OP_CLEAR)
         throw std::invalid_argument("unsupported render-pass colour load operation");
@@ -84,6 +86,7 @@ VkRenderPass PassCaches::render_pass(const PassFormats& formats, VkAttachmentLoa
     return pass;
 }
 VkFramebuffer PassCaches::framebuffer(const PassFormats& formats, const FramebufferKey& key) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     validate_formats(formats);
     if (!key.compatiblePass || !key.width || !key.height)
         throw std::invalid_argument("invalid framebuffer key");
@@ -119,6 +122,7 @@ VkFramebuffer PassCaches::framebuffer(const PassFormats& formats, const Framebuf
     return framebuffer;
 }
 std::vector<VkFramebuffer> PassCaches::forget_views(const VkImageView* views, size_t count) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     std::unordered_set<FramebufferKey, FramebufferKeyHash> keys;
     for (size_t i = 0; i < count; ++i)
         if (auto found = byView_.find(views[i]); found != byView_.end())
@@ -136,9 +140,11 @@ std::vector<VkFramebuffer> PassCaches::forget_views(const VkImageView* views, si
     return retired;
 }
 void PassCaches::destroy_framebuffers(const std::vector<VkFramebuffer>& framebuffers) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     for (auto framebuffer : framebuffers) api_.destroyFramebuffer(device_, framebuffer, nullptr);
 }
 void PassCaches::reset() {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     for (const auto& [key, framebuffer] : framebuffers_)
         api_.destroyFramebuffer(device_, framebuffer, nullptr);
     framebuffers_.clear(); byView_.clear();

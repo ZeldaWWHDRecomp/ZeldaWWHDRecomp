@@ -351,7 +351,7 @@ void register_controls() {
     {
         Item it;
         it.id = "controls.l-turns-page", it.tab = "controls", it.label = "L turns the GamePad page", it.kind = Kind::Toggle;
-        it.help = "On: in play L turns the GamePad screen between Items and Map, as on the Wii U. Off: only in menus, so L1 can jump.";
+        it.help = "L turns the GamePad screen between Items and Map. With Jump anywhere on, L1 only jumps in play; on: it jumps and turns the page.";
         it.get = [] { return input_map::current().l_turns_page ? 1.0f : 0.0f; };
         it.set = [](float v) { change_mapping([v](M& m) { m.l_turns_page = v >= 0.5f; }); };
         add(std::move(it));
@@ -677,6 +677,7 @@ void register_game() {
         {"fast-forward", "Fast forward scenes and talks", "Hold the fast forward button to speed up cutscenes and dialogue."},
         {"instant-text", "Instant text", "Message boxes show their whole text at once."},
         {"no-text-pauses", "No pauses in texts", "Texts go on without their short pauses."},
+        {"fix-game-bugs", "Fix original game bugs", "Fixes bugs of the original game. Off, it plays exactly like the original."},
         {"jump-anywhere", "Jump anywhere", "A button of its own makes Link jump, standing or running."},
         {"leaf-rise", "Deku Leaf: wave to rise", "While gliding, each wave of the leaf lifts Link a little."},
         {"wall-climb", "Climb any wall", "Grab and climb walls with a stamina wheel; A or B lets go."},
@@ -801,11 +802,11 @@ void register_builtin() {
         add(std::move(it));
     }
     add(builtin_toggle("camera", "mouse-camera", "Mouse camera",
-                       "Click the game picture to look around with the mouse; Esc lets it go."));
+                       "Click the game picture to look around and aim with the mouse, first person included; Esc lets it go."));
     {
         Item it;
         it.id = "mouse-camera.sensitivity", it.tab = "camera", it.label = "Mouse sensitivity", it.kind = Kind::Number;
-        it.help = "How far the camera turns per mouse movement.";
+        it.help = "How far the camera turns per mouse movement, the same in first person and when aiming.";
         it.min = 0.08f, it.max = 0.30f, it.step = 0.02f;
         it.get = [] { return mods::mouse_sensitivity(); };
         it.set = [](float v) { set_mouse_sensitivity(v); };

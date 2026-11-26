@@ -75,6 +75,7 @@ bool Look::load_glyphs(Cpu* c, const std::vector<std::string>& lines) {
 std::vector<Command> Look::render(std::vector<Command> cmds, std::vector<Handle>& images, uint32_t screen) {
     auto& store = guestmods::hud::store();
     const uint64_t generation = store.state_generation();
+    reads++;
     cmds = style::resolve(cmds, &art);  // each box uses its art when that piece was read
     const bool have_font = main.ready();
     // screen pixels per page unit (the page is laid out in TV units; the GamePad shows 854 / 1280 of them)
@@ -84,7 +85,7 @@ std::vector<Command> Look::render(std::vector<Command> cmds, std::vector<Handle>
         LOG("[%s] text composed at %.2f screen pixels per page unit (screen %u)", tag.c_str(), traced = pixels, screen);
     if (have_font) {
         const std::vector<std::string> lines = font::lines_of(cmds, font_scale, pixels);
-        atlas.update(lines, main, &fallback, icons.ready() ? &icons : nullptr, prompts, fonts_key, atlas_scale, atlas_budget);
+        atlas.update(lines, main, &fallback, icons.ready() ? &icons : nullptr, prompts, fonts_key, atlas_scale, atlas_budget, atlas_pages);
         if (atlas.too_tall() && !told_too_tall) {
             told_too_tall = true;
             LOG("[%s] a line is taller than a text page (%d pixels): it is drawn scaled up", tag.c_str(), font::Atlas::kMaxHeight);
@@ -124,7 +125,17 @@ std::vector<Command> Look::render(std::vector<Command> cmds, std::vector<Handle>
             box.store_generation = generation;
         }
         images[i] = box.handle;
+        box.last_read = reads;
         c.text.clear();
+    }
+    // the boxes no page has drawn for a while (another page's, an old size): their images go back
+    for (auto it = boxes.begin(); it != boxes.end();) {
+        if (reads - it->second.last_read <= box_reads) {
+            ++it;
+            continue;
+        }
+        if (it->second.handle && it->second.store_generation == generation) store.release(owner, it->second.handle);
+        it = boxes.erase(it);
     }
     return cmds;
 }
@@ -137,6 +148,7 @@ void Look::sync_pages(uint64_t generation) {
     store_generation = generation;
     // room for the pages and as much again still on the screen (guest_hud.h caps it at kMaxPortPixels)
     store.raise_pixel_quota(owner, guestmods::hud::kMaxPixels + 2 * atlas.bytes());
+    store.raise_image_quota(owner, guestmods::hud::kMaxPortImages);
     page_images.resize(std::max(page_images.size(), atlas.pages()));
     for (size_t i = 0; i < page_images.size(); i++) {
         PageImage& p = page_images[i];

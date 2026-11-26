@@ -158,6 +158,7 @@ namespace gfx {
 // WWHD_NO_HOST_INPUT only these posted events reach the overlay, never the real mouse.
 static const NSTimeInterval kTestMouseTimestamp = 4243.0;
 static bool test_mouse_event(NSEvent* e) { return e.timestamp == kTestMouseTimestamp; }
+bool posted_test_mouse(NSEvent* e) { return test_mouse_event(e); }  // mods/mouse.mm
 static void start_test_mouse(NSWindow* tv) {
     const char* env = getenv("WWHD_TEST_POST_MOUSE");
     if (!env || !*env) return;

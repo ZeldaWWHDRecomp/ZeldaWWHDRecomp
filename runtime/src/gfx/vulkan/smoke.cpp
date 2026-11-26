@@ -26,6 +26,7 @@
 #include "Cafe/HW/Latte/ISA/RegDefines.h"
 #include "runtime.h"
 #include "Cafe/HW/Latte/LatteAddrLib/LatteAddrLib.h"
+#include "hidden_tv.h"
 #include "input.h"
 #include "input_map.h"
 #include "gfx/display_modes.h"
@@ -213,7 +214,7 @@ void completed_scan_retention_check() {
  fprintf(stderr, "[renderer smoke] pending presentation retained completed pixels; next scan published only at swap\n");
 }
 void upload_arena_check() {
- const uint64_t before=R.uploadAllocations;
+ const uint64_t before=draw_counters().uploadAllocations;
  auto a=allocate_upload(16,256),b=allocate_upload(16,256);
  require(a.buffer==b.buffer&&a.offset!=b.offset,"arena slices alias or fail pooling");
  require(a.offset%256==0&&b.offset%256==0,"arena alignment failed");
@@ -225,7 +226,7 @@ void upload_arena_check() {
  record::vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,0,nullptr,1,&barrier,0,nullptr);flush();
  auto bytes=static_cast<uint8_t*>(out.mapped);for(int i=0;i<32;i++)require(bytes[i]==(i<16?0x31:0x72),"arena GPU snapshots corrupted");
  auto reuse=allocate_upload(16,256);require(reuse.buffer==a.buffer&&reuse.offset==a.offset,"arena failed fence reuse");
- require(R.uploadAllocations<=before+1,"arena allocated per slice");defer_buffer(out);command_buffer();flush();
+ require(draw_counters().uploadAllocations<=before+1,"arena allocated per slice");defer_buffer(out);command_buffer();flush();
  fprintf(stderr,"[renderer smoke] immutable upload arena GPU snapshots and fence reuse passed\n");
 }
 std::vector<uint8_t> read_buffer(VkBuffer source,VkDeviceSize offset,uint32_t size) {
@@ -550,7 +551,7 @@ void volume_target_check() {
  VkRenderingAttachmentInfo target{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};target.imageView=layer_view(s,selected);target.imageLayout=s->layout;
  target.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;target.storeOp=VK_ATTACHMENT_STORE_OP_STORE;target.clearValue.color.float32[1]=1;target.clearValue.color.float32[3]=1;
  VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};ri.renderArea.extent={w,h};ri.layerCount=1;ri.colorAttachmentCount=1;ri.pColorAttachments=&target;
- auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s->fmt.pixel,s->layout); });R.rendering=true;end_encoder();mark_gpu_written(s);
+ auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s->fmt.pixel,s->layout); });pass_state().rendering=true;end_encoder();mark_gpu_written(s);
  auto read_slice=[&](uint32_t z) {
   Buffer b=create_readback_buffer(w*h*4);
   transition_image(s,VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,VK_PIPELINE_STAGE_TRANSFER_BIT,VK_ACCESS_TRANSFER_READ_BIT);
@@ -639,7 +640,7 @@ float triangle(Surface& s, float eyeOffset=0, float clipW=1,
  transition_image(&s,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
  VkRenderingAttachmentInfo target{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};target.imageView=layer_view(&s,0);target.imageLayout=s.layout;target.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;target.storeOp=VK_ATTACHMENT_STORE_OP_STORE;target.clearValue.color.float32[3]=1;
  VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};ri.renderArea=scissor;ri.layerCount=1;ri.colorAttachmentCount=1;ri.pColorAttachments=&target;
- auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s.fmt.pixel,s.layout); });R.rendering=true;record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.pipeline);record::vkCmdPushConstants(cmd,objects.layout,VK_SHADER_STAGE_VERTEX_BIT,0,16,projection);if(textures)record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.layout,0,1,&textures,0,nullptr);if(rgbFormat!=VK_FORMAT_UNDEFINED)record::vkCmdBindVertexBuffers(cmd,0,1,&rgb.buffer,&rgb.offset);
+ auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s.fmt.pixel,s.layout); });pass_state().rendering=true;record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.pipeline);record::vkCmdPushConstants(cmd,objects.layout,VK_SHADER_STAGE_VERTEX_BIT,0,16,projection);if(textures)record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.layout,0,1,&textures,0,nullptr);if(rgbFormat!=VK_FORMAT_UNDEFINED)record::vkCmdBindVertexBuffers(cmd,0,1,&rgb.buffer,&rgb.offset);
  record::vkCmdDraw(cmd,3,1,0,0);end_encoder();mark_gpu_written(&s);flush();
  auto pixels=read_image(s,VK_IMAGE_ASPECT_COLOR_BIT,4);
  if(image)*image=pixels;
@@ -731,10 +732,10 @@ void stereo_geometry_check() {
  left->gpuWritten=right->gpuWritten=false;
  left->dirty=right->dirty=false;
  left->lastCheckedFrame=right->lastCheckedFrame=R.frame;
- const bool wasRendering=R.rendering;
+ const bool wasRendering=pass_state().rendering;
  stereo_invalidate(2,desc.addr,64*64*4);
  require(left->dirty&&right->dirty,"stereo invalidation missed an eye cache");
- require(stereoEye==0&&R.rendering==wasRendering,"CPU invalidation changed active render context");
+ require(stereoEye==0&&pass_state().rendering==wasRendering,"CPU invalidation changed active render context");
  SurfaceDesc atlas;atlas.addr=mem::host_alloc(6*1024*1024,256);
  atlas.width=atlas.height=atlas.pitch=1024;atlas.slices=3;atlas.dim=5;atlas.format=5;atlas.isDepth=true;
  auto* sun=find_or_create_surface(atlas,true);
@@ -923,7 +924,7 @@ void stereo_stream_check() {
   VkRenderingAttachmentInfo target{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};target.imageView=layer_view(s,0);target.imageLayout=s->layout;target.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;target.storeOp=VK_ATTACHMENT_STORE_OP_STORE;target.clearValue.color.float32[0]=red;target.clearValue.color.float32[3]=1;
   VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};ri.renderArea={{0,0},{s->extent.width,s->extent.height}};ri.layerCount=1;ri.colorAttachmentCount=1;ri.pColorAttachments=&target;
   auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s->fmt.pixel,s->layout); });
-  R.rendering=R.passTracked=true;R.passColors={};R.passColors[0]=s;mark_gpu_written(s);
+  pass_state().rendering=pass_state().tracked=true;pass_state().colors={};pass_state().colors[0]=s;mark_gpu_written(s);
  };
  for(int captured=0;captured<2;++captured) {
   if(captured) {
@@ -932,22 +933,22 @@ void stereo_stream_check() {
   }
   open(left,1);
   stereo_select_eye(1);
-  require(!R.rendering,"eye 1 inherited eye 0's render pass");
+  require(!pass_state().rendering,"eye 1 inherited eye 0's render pass");
   open(right,captured?.25f:.5f);
   require(eye_deferred_commands&&eye_deferred_commands->command_count(),"eye 1 commands were not held");
   stereo_select_eye(0);
-  require(R.rendering&&R.passColors[0]==left,"eye switch ended eye 0's render pass");
+  require(pass_state().rendering&&pass_state().colors[0]==left,"eye switch ended eye 0's render pass");
   stereo_select_eye(1);
-  require(R.rendering&&R.passColors[0]==right,"eye switch ended eye 1's render pass");
+  require(pass_state().rendering&&pass_state().colors[0]==right,"eye switch ended eye 1's render pass");
   if(captured) {
    const size_t before=active_deferred_commands->command_count();
    stereo_flush();
    require(active_deferred_commands->command_count()>before,"held eye 1 commands bypassed the renderer's capture");
   }
   flush();
-  require(!R.rendering&&!eye_deferred_commands->command_count(),"submission left eye 1's pass open");
+  require(!pass_state().rendering&&!eye_deferred_commands->command_count(),"submission left eye 1's pass open");
   stereo_select_eye(0);
-  require(!R.rendering,"submission left eye 0's pass open");
+  require(!pass_state().rendering,"submission left eye 0's pass open");
   auto l=read_image(*left,VK_IMAGE_ASPECT_COLOR_BIT,4),r=read_image(*right,VK_IMAGE_ASPECT_COLOR_BIT,4);
   require(l[0]==255&&std::abs(int(r[0])-(captured?64:128))<=1,"held eye 1 pass rendered the wrong image");
  }
@@ -1070,7 +1071,7 @@ void vertex_window_check(Surface& s) {
   transition_image(&s,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
   VkRenderingAttachmentInfo target{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};target.imageView=layer_view(&s,0);target.imageLayout=s.layout;target.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;target.storeOp=VK_ATTACHMENT_STORE_OP_STORE;target.clearValue.color.float32[3]=1;
   VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};ri.renderArea=scissor;ri.layerCount=1;ri.colorAttachmentCount=1;ri.pColorAttachments=&target;
-  auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s.fmt.pixel,s.layout); });R.rendering=true;record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.pipeline);
+  auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s.fmt.pixel,s.layout); });pass_state().rendering=true;record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.pipeline);
   record::vkCmdBindVertexBuffers(cmd,0,1,&vertices.buffer,&vertices.offset);record::vkCmdBindIndexBuffer(cmd,indices.buffer,indices.offset,narrow?VK_INDEX_TYPE_UINT16:VK_INDEX_TYPE_UINT32);
   record::vkCmdDrawIndexed(cmd,wide.size(),1,0,base,0);end_encoder();mark_gpu_written(&s);flush_async();
  };
@@ -1154,7 +1155,7 @@ void dynamic_uniform_check(Surface& s) {
   transition_image(&s,VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT);
   VkRenderingAttachmentInfo target{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};target.imageView=layer_view(&s,0);target.imageLayout=s.layout;target.loadOp=VK_ATTACHMENT_LOAD_OP_CLEAR;target.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
   VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};ri.renderArea=scissor;ri.layerCount=1;ri.colorAttachmentCount=1;ri.pColorAttachments=&target;
-  auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s.fmt.pixel,s.layout); });R.rendering=true;record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.pipeline);
+  auto cmd=command_buffer();begin_pass(cmd,ri,[&] { return color_pass(s.fmt.pixel,s.layout); });pass_state().rendering=true;record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,objects.pipeline);
   for(uint32_t draw=0;draw<2;++draw) {
    // Dynamic offsets are ordered by binding within VS set0, then PS set1.
    uint32_t offsets[3]={uint32_t(tintSlices[draw].offset),uint32_t(transforms[draw].offset),uint32_t(factors[draw].offset)};
@@ -1175,6 +1176,10 @@ bool android_display_touch_event(const SDL_Event&);
 int android_display_smoke_test() {
  try {
   mem::init();
+  // WWHD_VK_SKIP_HIDDEN_TV's layout decision (hidden_tv.h) runs on every swap: a second display shows the TV or the
+  // GamePad picture with the TV picture on the other one, so it must never find the TV picture hidden while one is on
+  setenv("WWHD_VK_SKIP_HIDDEN_TV", "1", 0);
+  uint64_t hiddenTvFrames = 0, hiddenTvWhileDual = 0;
   for (Screen* screen : {&R.tv, &R.drc}) {
    screen->scan = std::make_unique<Surface>();
    Surface& image = *screen->scan;
@@ -1305,6 +1310,12 @@ int android_display_smoke_test() {
    clear_image(*R.tv.scan, tv); clear_image(*R.drc.scan, drc);
    const auto swapStarted=std::chrono::steady_clock::now();
    swap();
+   if (hidden_tv::on() && !hidden_tv::shown_last()) {
+    ++hiddenTvFrames;
+    if (gfx::g_has_drc_window && ++hiddenTvWhileDual <= 5)
+     LOG("[hidden tv] smoke: TV picture found hidden while a second display is on (frame %llu, swapped %d, mode %d)",
+         (unsigned long long)R.frame, int(dual_display::active_swap.load()), int(gfx::g_mode));
+   }
    auto now = std::chrono::steady_clock::now();
    if(R.tv.presented.load()!=lastPrimaryCount) {
     if(lastPrimary!=std::chrono::steady_clock::time_point{})
@@ -1370,6 +1381,7 @@ int android_display_smoke_test() {
         << ",\"second_available\":" << (gfx::g_second_display_available ? "true" : "false")
         << ",\"second_off\":" << (gfx::drc_screen_off() ? "true" : "false")
         << ",\"dual\":" << (gfx::g_has_drc_window ? "true" : "false")
+        << ",\"hidden_tv_frames\":" << hiddenTvFrames << ",\"hidden_tv_while_dual\":" << hiddenTvWhileDual
         << ",\"swap_requested\":" << (dual_display::requested_swap ? "true" : "false")
         << ",\"swap_active\":" << (dual_display::active_swap ? "true" : "false")
         << ",\"scale_filter\":" << hostui::scale_filter()

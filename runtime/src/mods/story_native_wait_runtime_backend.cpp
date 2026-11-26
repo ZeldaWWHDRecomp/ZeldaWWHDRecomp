@@ -143,7 +143,7 @@ struct Context {
    }
    uint32_t link=0,pid=0,stage_pid=0,room_pid=0;
    std::array<uint8_t,8>stage_name{};
-   if(!scalar(Play+0x5B34,link)||link!=config.memory.link||!scalar(link+4,pid)||pid!=config.memory.link_pid||
+   if(!scalar(Play+GI(0x5B34),link)||link!=config.memory.link||!scalar(link+4,pid)||pid!=config.memory.link_pid||
       !scalar(Stage,stage_pid)||stage_pid!=expected.identity.stage||
       !scalar(Rooms+expected.room_number*0x22C,room_pid)||room_pid!=expected.identity.room||
       !raw(Play+0x5134,stage_name)||stage_name!=expected.stage_name)return false;

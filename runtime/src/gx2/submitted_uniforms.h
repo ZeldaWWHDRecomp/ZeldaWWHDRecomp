@@ -125,6 +125,9 @@ public:
     }
     std::memset(bytes_.data() + at, 0, kTail);
     for (auto& c : cache_) c = {0, 0};
+#ifdef WWHD_DECOMP_FAST
+    locLast_ = ~0u;
+#endif
     return at;
   }
   uint64_t id() const { return id_; }
@@ -146,6 +149,71 @@ public:
     const Entry& e = entries_[index];
     return size <= e.size ? bytes_.data() + e.offset : nullptr;
   }
+#ifdef WWHD_DECOMP_FAST
+  // cheapib b1 (WWHD_CHEAPIB_B1_FAST & 1): find(addr, 0) and block_size(addr) in one lookup (find's cache, else one
+  // binary search): the block's bytes and the bytes held (`held`); nullptr and 0 when the snapshot lacks the block
+  const uint8_t* find_held(uint32_t addr, uint32_t& held) const {
+    auto& c = cache_[(addr * 2654435761u) >> (32 - kCacheBits)];
+    uint32_t index;
+    if (c.addr == addr && c.index) index = c.index - 1;
+    else {
+      auto it = std::lower_bound(addrs_.begin(), addrs_.end(), addr);
+      if (it == addrs_.end() || *it != addr) {
+        held = 0;
+        return nullptr;
+      }
+      index = uint32_t(it - addrs_.begin());
+      c = {addr, index + 1};
+    }
+    const Entry& e = entries_[index];
+    held = e.size;
+    return bytes_.data() + e.offset;
+  }
+  // locate() with the last block it found tried first (blocks are disjoint: the same answer)
+  bool locate_cached(const void* p, uint32_t& addr, uint32_t& delta) const {
+    const uint8_t* b = static_cast<const uint8_t*>(p);
+    if (locLast_ < entries_.size() && b >= bytes_.data()) {
+      const Entry& e = entries_[locLast_];
+      const uint64_t at = uint64_t(b - bytes_.data());
+      if (at >= e.offset && at < uint64_t(e.offset) + ((e.size + 15) & ~15u)) {
+        addr = addrs_[locLast_];
+        delta = uint32_t(at - e.offset);
+        return true;
+      }
+    }
+    if (entries_.empty() || b < bytes_.data() || b >= bytes_.data() + bytes_.size()) return false;
+    const uint32_t at = uint32_t(b - bytes_.data());
+    auto it = std::upper_bound(entries_.begin(), entries_.end(), at, [](uint32_t v, const Entry& e) { return v < e.offset; });
+    if (it == entries_.begin()) return false;
+    --it;
+    if (at >= it->offset + ((it->size + 15) & ~15u)) return false;
+    locLast_ = uint32_t(it - entries_.begin());
+    addr = addrs_[locLast_];
+    delta = at - it->offset;
+    return true;
+  }
+  // cheapib b1 (cheapib/cheapib_b1.h): the block a pointer into this snapshot's bytes belongs to (its address and the
+  // pointer's offset in it); false: not in this snapshot
+  bool locate(const void* p, uint32_t& addr, uint32_t& delta) const {
+    const uint8_t* b = static_cast<const uint8_t*>(p);
+    if (entries_.empty() || b < bytes_.data() || b >= bytes_.data() + bytes_.size()) return false;
+    const uint32_t at = uint32_t(b - bytes_.data());
+    auto it = std::upper_bound(entries_.begin(), entries_.end(), at, [](uint32_t v, const Entry& e) { return v < e.offset; });
+    if (it == entries_.begin()) return false;
+    --it;
+    if (at >= it->offset + ((it->size + 15) & ~15u)) return false;
+    addr = addrs_[it - entries_.begin()];
+    delta = at - it->offset;
+    return true;
+  }
+  // whether [addr, addr + size) lies inside one block the snapshot holds (drawoff's census)
+  bool covers(uint32_t addr, uint32_t size) const {
+    auto it = std::upper_bound(addrs_.begin(), addrs_.end(), addr);
+    if (it == addrs_.begin()) return false;
+    const size_t i = size_t(it - addrs_.begin()) - 1;
+    return uint64_t(addr) + size <= uint64_t(addrs_[i]) + entries_[i].size;
+  }
+#endif
   // bytes the snapshot holds for the block at addr (0: not in the snapshot)
   uint32_t block_size(uint32_t addr) const {
     auto it = std::lower_bound(addrs_.begin(), addrs_.end(), addr);
@@ -166,6 +234,9 @@ private:
   std::vector<Entry> entries_;
   std::vector<uint8_t> bytes_;
   mutable Slot cache_[kCache] = {};
+#ifdef WWHD_DECOMP_FAST
+  mutable uint32_t locLast_ = ~0u;  // (locate_cached: the entry it found last)
+#endif
 };
 
 }  // namespace gx2::submitted

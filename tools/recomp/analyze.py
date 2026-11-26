@@ -23,6 +23,9 @@ def sext(v, bits):
 class Program:
     def __init__(self, path, rpx_limits=None):
         self.rpx = r = Rpx(path, limits=rpx_limits)
+        # translate what the system loader puts in memory: relocations applied (a no-op for the retail game;
+        # randomized games redirect pointers through relocations only, issue #383)
+        self.relocated = r.apply_internal_relocations()
         self.text = r.by_name[".text"]
         self.text_lo = self.text.addr
         self.text_hi = self.text.addr + self.text.size

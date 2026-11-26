@@ -24,11 +24,22 @@ def local_catalogue(metadata, package, output):
     """Keep real metadata; replace only transport with a bounded local fixture."""
     with zipfile.ZipFile(package) as archive:
         manifest = json.loads(archive.read('manifest.json'))
+        elf_name = manifest.get('guest', {}).get('elf', 'mod.elf') if isinstance(manifest.get('guest'), dict) else 'mod.elf'
+        elf = archive.read(elf_name) if elf_name in archive.namelist() else b''
     ident = manifest['id']
     entries = [entry for entry in metadata['mods'] if entry['id'] == ident]
     if len(entries) != 1 or entries[0]['version'] != manifest['version'] or manifest['kind'] != 'guest':
         raise ValueError('ZIP does not match one declared guest catalogue entry')
     entry = json.loads(json.dumps(entries[0]))
+    if b'__wwhd_ginfo_' in elf or b'.wwhd_game_info' in elf:
+        minimum = entry.get('port_versions', {}).get('minimum', '')
+        parts = minimum.split('.')
+        if len(parts) != 3 or not all(p.isdigit() for p in parts) or tuple(int(p) for p in parts) < (0, 5, 2):
+            raise ValueError('Guest mod built with guestmod-0.4 requires catalogue minimum port version 0.5.2 or newer')
+        mgr = manifest.get('minimum_manager_version', '')
+        mgr_parts = mgr.split('.') if isinstance(mgr, str) else []
+        if len(mgr_parts) != 3 or not all(p.isdigit() for p in mgr_parts) or tuple(int(p) for p in mgr_parts) < (1, 13, 0):
+            raise ValueError('Guest mod built with guestmod-0.4 requires minimum_manager_version 1.13.0 or newer')
     payload = package.read_bytes()
     output.mkdir()
     target = output / (ident + '.zip')
@@ -115,7 +126,7 @@ def main():
     parser.add_argument('--data-dir', type=Path)
     parser.add_argument('--guest-build-config', type=Path)
     parser.add_argument('--renderer', choices=('metal', 'vulkan'), required=True)
-    parser.add_argument('--region', choices=('USA', 'EU'), required=True)
+    parser.add_argument('--region', choices=('USA', 'EU', 'JP'), required=True)
     parser.add_argument('--mode', choices=('30', 'interp60'), default='30')
     parser.add_argument('--max-game-sessions', type=int, choices=range(1, 5), default=4)
     parser.add_argument('--timeout', type=int, default=600)

@@ -82,6 +82,8 @@ bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=
 static bool instant = false, no_pauses = false;
 bool instant_text() { return instant; } void set_instant_text(bool b) { instant=b; }
 bool no_text_pauses() { return no_pauses; } void set_no_text_pauses(bool b) { no_pauses=b; }
+static bool fix_bugs = true;
+bool fix_game_bugs() { return fix_bugs; } void set_fix_game_bugs(bool b) { fix_bugs=b; }
 bool quick_use() { return state[6]; } void set_quick_use(bool b) { state[6]=b; }
 static float quick_speed = 1.f;
 float quick_use_speed() { return quick_speed; }

@@ -45,7 +45,7 @@ void request_detach(Cpu*c,uint32_t r){if(!attached(c,r))return;const uint32_t ro
  // A malformed/demo rope cannot consume the ordinary force-end request. Retire
  // the rope through its own native process, keeping the target alive meanwhile.
  if((ld32(rope+0x3F8)==0||ld32(rope+0x3F8)>11)||!ordinary_demo(rope)||ld16(rope+0xF8)==2||ld32(ld32(r+8)+0xB0)!=0x00FF0000){if(!ld32(r+0x5C)){st32(r+0x5C,1);call(c,GC(0x025D57E0),{rope});}return;}
- const uint32_t play=call(c,GC(0x025200D4),{});if(address(play,0x5B38)){const uint32_t link=ld32(play+0x5B34);if(address(link,0x3C4))st32(link+0x3C0,ld32(link+0x3C0)|0x40000000u);}}
+ const uint32_t play=call(c,GC(0x025200D4),{});if(address(play,0x5B38)){const uint32_t link=ld32(play+GI(0x5B34));if(address(link,0x3C4))st32(link+0x3C0,ld32(link+0x3C0)|0x40000000u);}}
 void retire(Cpu*c,uint32_t r){const uint32_t a=ld32(r+8);if(!a||claimed(a)!=r){std::memset(mem::ptr(r),0,Stride);return;}if(ld32(r)!=3&&tracing())LOG("[world_grapple] retire proxy=%08X pid=%u parent=%08X parent_pid=%u",a,ld32(a+4),ld32(r+0xC),ld32(r+0x10));st32(r,3);request_detach(c,r);if(!attached(c,r)&&!ld32(r+0x58)){st32(r+0x58,1);call(c,GC(0x025D57E0),{a});}}
 void base_allocated(uint32_t,uint32_t a,uint32_t){if(!pending||!address(a,kProxyBytes))return;st32(pending+4,ld32(a+4));st32(pending+8,a);}
 void create(Cpu*c){const uint32_t a=c->r[3];uint32_t r=claimed(a);if(!r&&storage()&&address(a,kProxyBytes))for(unsigned i=0;i<Count;++i){const uint32_t p=row(i);if(ld32(p)==1&&ld32(p+4)==ld32(a+4)){r=p;st32(r+8,a);break;}}

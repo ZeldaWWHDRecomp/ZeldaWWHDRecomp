@@ -36,9 +36,15 @@
 #include "../runtime.h"
 
 extern "C" void f_02618094_orig(Cpu* c);
-extern "C" void f_026D7828_orig(Cpu* c);
-extern "C" void f_026D6DD4_orig(Cpu* c);
-extern "C" void f_026D87D0_orig(Cpu* c);
+// the Options hooks are for the USA and European builds only (tools/recomp/hooks_options_order.txt): the Japanese
+// build's recompiled code has no originals for them and never calls the hooks below. On a build whose originals are
+// missing although its hooks are installed (hooks_options_order.txt left out of a tool set), stop rather than skip
+// the Options window's own code.
+extern "C" {
+__attribute__((weak)) void f_026D7828_orig(Cpu*) { fatal("one_screen: the Options window's original 026D7828 is not linked"); }
+__attribute__((weak)) void f_026D6DD4_orig(Cpu*) { fatal("one_screen: the Options window's original 026D6DD4 is not linked"); }
+__attribute__((weak)) void f_026D87D0_orig(Cpu*) { fatal("one_screen: the Options window's original 026D87D0 is not linked"); }
+}
 
 namespace mods {
 namespace {
@@ -51,14 +57,19 @@ constexpr uint32_t kOptDescSize = 0x18, kOptValues = 0x104, kOptWindowKind = 0x1
 bool start_choice() {
     if (const char* e = getenv("WWHD_ONE_SCREEN"); e && *e) return atoi(e) != 0;
     std::string v;
-    if (hostui::get("oneScreen", v) && !v.empty()) return atoi(v.c_str()) != 0;
+    const bool saved = hostui::get("oneScreen", v) && !v.empty();
     std::string pro;
 #ifdef __ANDROID__
     const bool android = true;
 #else
     const bool android = false;
 #endif
-    return one_screen::default_on(android, hostui::get("proController", pro) && pro == "1");
+    // a dual-screen handheld: the second screen already shows the GamePad picture (one_screen.h)
+    const bool second = one_screen::second_screen_in_use(gfx::g_second_display_present.load(), gfx::g_second_display_available.load(),
+                                                         gfx::drc_screen_off());
+    if (!saved && android && second) LOG("[one-screen] a second screen shows the GamePad picture: off by default");
+    return one_screen::start_on(saved, saved && atoi(v.c_str()) != 0, android, hostui::get("proController", pro) && pro == "1",
+                                second);
 }
 bool enabled_at_start() {
     static const bool on = [] {

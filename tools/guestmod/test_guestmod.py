@@ -119,6 +119,80 @@ WWHD_HOOK(0x0240EBB0, mapped, (void* actor)) {
             with self.assertRaisesRegex(guestmod.ModError, 'older SDK'):
                 builder.translator_for(elf, 0x7F000000, by_name("EU"))
 
+    def test_japanese_play_offsets_follow_the_build(self):
+        from builds import by_name
+        src = r'''
+#include "wwhd/data.h"
+#include "wwhd/objects.h"
+u32 link_slot(void) { return *(volatile u32*)(wwhd_play_get() + WWHD_PLAY_PLAYER_OFFSET + 8); }
+u32 status0(void) { return *(volatile u32*)(wwhd_play_get() + WWHD_PLAY_PLAYER_STATUS0_OFFSET); }
+u8 event_running(void) { return *(volatile u8*)(wwhd_play_get() + WWHD_PLAY_EVENT_RUNNING_OFFSET); }
+volatile u32 offsets[] = {WWHD_PLAY_PLAYER_OFFSET, WWHD_PLAY_METRONOME_OFFSET};
+'''
+        with tempfile.TemporaryDirectory() as d:
+            elf = Path(self.build_elf(src, d)).read_bytes()
+            images = {name: builder.translator_for(elf, 0x7F000000, by_name(name)).image for name in ("USA", "EU", "JP")}
+            usa, jp = images["USA"], images["JP"]
+            halves = lambda image: {int.from_bytes(image[i:i + 2], "big") for i in range(0, len(image), 2)}
+            self.assertIn(0x5B2C, halves(images["EU"]))  # the European build keeps every member
+            for canonical, moved in ((0x5B2C, 0x5B28), (0x5CD8, 0x5CD4)):
+                self.assertIn(canonical, halves(usa))
+                self.assertIn(moved, halves(jp))
+                self.assertNotIn(canonical, halves(jp))
+            self.assertIn(0x5292, halves(jp))  # a member the Japanese build did not move
+            for canonical, moved in ((0x5B2C, 0x5B28), (0x5BD1, 0x5BCD)):
+                self.assertIn(canonical.to_bytes(4, "big"), usa)
+                self.assertIn(moved.to_bytes(4, "big"), jp)
+
+    def test_japanese_old_sdk_play_access_refused(self):
+        from builds import by_name
+        old = '__asm__(".section .wwhd_addresses,\\"a\\"\\n.long 1\\n.text\\n");\n'  # the European-compatible SDK
+        play = old + 'unsigned char* play(void) __asm__("__wwhd_game_0x025200D4");\n' \
+                     'unsigned int link(void) { return *(volatile unsigned int*)(play() + 0x5B34); }\n'
+        data = old + 'extern unsigned char info[] __asm__("__wwhd_gdata_0x1046F0B0");\n' \
+                     'unsigned int link(void) { return *(volatile unsigned int*)(info + 0x5B34); }\n'
+        other = old + 'extern unsigned char save[] __asm__("__wwhd_gdata_0x101F84DC");\n' \
+                      'unsigned int first(void) { return *(volatile unsigned int*)save; }\n'
+        # the play pointer from elsewhere (a hook's argument): only the USA offset in the code shows it
+        # (an older wwhd_guest.h: a hook descriptor without the .wwhd_game_info marker)
+        hook = 'struct desc { unsigned kind, target; void* func; unsigned flags; };\n' \
+               '__attribute__((section(".wwhd_hooks"), used)) static const struct desc d = {2, 0x%08X, (void*)&hook, 0};\n'
+        argument = old + 'void hook(unsigned char* play) { *(volatile unsigned int*)(play + 0x5B34) = 0; }\n' + \
+            hook % 0x0240EBB0
+        hooked = old + 'void hook(void) { }\n' + hook % 0x025200D4
+        with tempfile.TemporaryDirectory() as d:
+            for name, src in (("accessor", play), ("data", data), ("argument", argument), ("hooked accessor", hooked)):
+                with self.subTest(name):
+                    elf = Path(self.build_elf(src, d)).read_bytes()
+                    builder.translator_for(elf, 0x7F000000, by_name("EU"))
+                    with self.assertRaisesRegex(guestmod.ModError, 'older SDK whose play object offsets.*JP'):
+                        builder.translator_for(elf, 0x7F000000, by_name("JP"))
+            builder.translator_for(Path(self.build_elf(other, d)).read_bytes(), 0x7F000000, by_name("JP"))
+            # A current-SDK mod (.wwhd_game_info present) that still writes a raw moved offset by hand is also refused.
+            raw_new = '#include "wwhd/data.h"\nu32 link(void) { return *(volatile u32*)(wwhd_play_get() + 0x5B34); }\n'
+            elf = Path(self.build_elf(raw_new, d)).read_bytes()
+            builder.translator_for(elf, 0x7F000000, by_name("EU"))
+            with self.assertRaisesRegex(guestmod.ModError, r'raw play object offset on JP.*WWHD_GAME_INFO_OFFSET\(0x5B34\)'):
+                builder.translator_for(elf, 0x7F000000, by_name("JP"))
+            # Relocated halfwords (e.g. a gdata address whose low 16 bits fall in 0x5AB0..0x62F7) are not raw offsets.
+            relocated = '#include "wwhd/objects.h"\nu8 flying(void) { return WWHD_GAME_DATA(WWHD_ADDR_Medli_flying, u8); }\n'
+            builder.translator_for(Path(self.build_elf(relocated, d)).read_bytes(), 0x7F000000, by_name("JP"))
+
+    def test_play_offset_outside_the_object_refused(self):
+        src = '#include "wwhd_guest.h"\nWWHD_GAME_INFO_MEMBER(0x7000);\nu32 far(void) { return WWHD_GAME_INFO_OFFSET(0x7000); }\n'
+        with tempfile.TemporaryDirectory() as d:
+            elf = Path(self.build_elf(src, d)).read_bytes()
+            with self.assertRaisesRegex(guestmod.ModError, 'outside the play object'):
+                builder.translator_for(elf, 0x7F000000)
+
+    def test_play_offset_without_hex_prefix_refused(self):
+        # WWHD_GAME_INFO_MEMBER pastes the text of its argument: 100 would silently be 0x100
+        src = '#include "wwhd_guest.h"\nWWHD_GAME_INFO_MEMBER(100);\nu32 member(void) { return WWHD_GAME_INFO_OFFSET(100); }\n'
+        with tempfile.TemporaryDirectory() as d:
+            elf = Path(self.build_elf(src, d)).read_bytes()
+            with self.assertRaisesRegex(guestmod.ModError, 'in hex with 0x'):
+                builder.translator_for(elf, 0x7F000000)
+
     def test_public_headers_c_and_cpp(self):
         headers = ("bindings", "actor", "link", "camera", "items", "save", "messages", "data")
         source = "".join('#include "wwhd/%s.h"\n' % name for name in headers)

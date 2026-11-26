@@ -522,6 +522,16 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
             style.obj = mFullscreenModeActive ? 1 : 0;
             commandHandler.handleMessage(style);
             style.recycle();
+        } else if (startsFullscreen()) {
+            // The native window will ask for full screen: its window style now, before the window is
+            // added and laid out, so the game view and its first surface already have the full-screen
+            // size (not the size with the system bars, grown later). Applied here on the UI thread
+            // rather than through setWindowStyle, which may wait for a surfaceChanged that cannot come yet.
+            Message style = commandHandler.obtainMessage();
+            style.arg1 = COMMAND_CHANGE_WINDOW_STYLE;
+            style.obj = 1;
+            commandHandler.handleMessage(style);
+            style.recycle();
         } else {
             setWindowStyle(false);
         }
@@ -1175,6 +1185,15 @@ public class SDLActivity extends Activity implements View.OnSystemUiVisibilityCh
     /**
      * This method is called by SDL using JNI.
      */
+    /**
+     * Whether the app's native window is made full screen (SDL_WINDOW_FULLSCREEN) on a fresh start: then
+     * onCreate applies the full-screen window style before the first layout. Default false (SDL's own
+     * behaviour: the style follows when the native window asks for it).
+     */
+    protected boolean startsFullscreen() {
+        return false;
+    }
+
     public static void setWindowStyle(boolean fullscreen) {
         // Called from SDLMain() thread and can't directly affect the view
         mSingleton.sendCommand(COMMAND_CHANGE_WINDOW_STYLE, fullscreen ? 1 : 0);

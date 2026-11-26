@@ -11,6 +11,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 sys.path.insert(0, os.path.join(ROOT, "tools", "recomp"))
 import builds as game_builds  # noqa: E402
+sys.path.insert(0, HERE)
 
 
 def runtime_hook():
@@ -69,8 +70,9 @@ class GenTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_gen(self):
-        r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), self.src, self.out], capture_output=True, text=True)
+    def run_gen(self, *extra):
+        r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), self.src, self.out, *extra],
+                           capture_output=True, text=True)
         self.assertEqual(r.returncode, 0, r.stderr)
         return r.stdout
 
@@ -120,12 +122,80 @@ class GenTest(unittest.TestCase):
         self.assertEqual(sorted(os.path.basename(x["path"]) for x in units["units"][0]["sources"]), ["a.cpp", "a2.cpp"])
         self.assertTrue(units["units"][0]["glue"].endswith(os.path.join("glue", "0.cpp")))
 
+    def test_hook_shards(self):
+        # the same entry points, 3 per file after the tables; one file again removes the shards
+        self.run_gen()
+        whole = self.read("hooks.cpp")
+        entries = [l for l in whole.splitlines() if l.startswith("void hook")]
+        self.assertEqual(len(entries), 4)
+        self.assertIn('"%s"' % os.path.join(self.out, "hooks.cpp").replace("\\", "/"), self.read("units.cmake"))
+        self.run_gen("--hook-shard", "3")
+        tables = self.read("hooks.cpp")
+        self.assertEqual(tables, whole.replace("\n".join(entries) + "\n", ""))
+        shards = [self.read("hooks_1.cpp"), self.read("hooks_2.cpp")]
+        self.assertFalse(os.path.exists(os.path.join(self.out, "hooks_3.cpp")))
+        got = [l for s in shards for l in s.splitlines() if l.startswith("void hook")]
+        self.assertEqual(got, entries)
+        self.assertEqual([len([l for l in s.splitlines() if l.startswith("void hook")]) for s in shards], [3, 1])
+        for s in shards:
+            self.assertIn('#include "decomp/decomp.h"', s)
+            self.assertNotIn("g_slots[]", s)
+        units = self.read("units.cmake")
+        self.assertIn("set(WWHD_DECOMP_HOOK_SOURCES\n  \"%s\"\n  \"%s\"\n  \"%s\")" % tuple(
+            os.path.join(self.out, f).replace("\\", "/") for f in ("hooks.cpp", "hooks_1.cpp", "hooks_2.cpp")), units)
+        self.run_gen()
+        self.assertEqual(self.read("hooks.cpp"), whole)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "hooks_1.cpp")))
+
+    def test_frame_exact(self):
+        # `framexact FUNC RET` lines of a unit spec: listed functions only (0x02000700 is not decompiled)
+        with open(os.path.join(self.src, "tools/verify/units/bunit.txt"), "a") as f:
+            f.write("framexact 02000600 02000650\nframexact 02000700 0BADC0DE  # not listed\n")
+        self.run_gen()
+        self.assertEqual([l.split()[0] for l in self.read("frame_exact.txt").splitlines()], ["02000600"])
+        hooks = self.read("hooks.cpp")
+        self.assertIn("const uint32_t kFrameExact[] = {0x02000600u};", hooks)
+        self.assertIn("const unsigned kNumFrameExact = 1;", hooks)
+
+    def test_no_frame_exact(self):
+        self.run_gen()
+        self.assertEqual(self.read("frame_exact.txt"), "")
+        self.assertIn("const uint32_t kFrameExact[] = {0u};\nconst unsigned kNumFrameExact = 0;", self.read("hooks.cpp"))
+
     def test_unchanged_outputs_keep_their_time(self):
         self.run_gen()
         p = os.path.join(self.out, "hooks.cpp")
         os.utime(p, (1, 1))
+        with open(os.path.join(self.src, "tools/verify/units/empty2.txt"), "w") as f:  # a new input: gen.py runs
+            f.write("# no sources either\n")
         self.run_gen()
         self.assertEqual(os.path.getmtime(p), 1)
+
+    def test_unchanged_inputs_skip_the_run(self):
+        first = self.run_gen()
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "gen.inputs.sha256")))
+        os.remove(os.path.join(self.out, "units.json"))  # (to see whether the second run writes it)
+        os.remove(os.path.join(self.out, "functions.tsv"))
+        with open(os.path.join(self.out, "functions.tsv"), "w") as f:
+            f.write("")
+        # an output missing: gen.py runs again
+        self.assertEqual(self.run_gen(), first)
+        self.assertTrue(os.path.isfile(os.path.join(self.out, "units.json")))
+        # unchanged: nothing written, the first run's messages printed again
+        os.utime(os.path.join(self.out, "functions.tsv"), (1, 1))
+        with open(os.path.join(self.out, "functions.tsv"), "w") as f:
+            f.write("marker")
+        self.assertEqual(self.run_gen(), first)
+        self.assertEqual(self.read("functions.tsv"), "marker")
+        # a changed source or another argument: it runs
+        with open(os.path.join(self.src, "wwhd_src/b.cpp"), "a") as f:
+            f.write("VERIFY(0x02000700, b_two)\n")
+        self.run_gen()
+        self.assertIn("02000700", self.read("functions.tsv"))
+        with open(os.path.join(self.out, "functions.tsv"), "w") as f:
+            f.write("marker")
+        self.run_gen("--jobs", "1")
+        self.assertIn("02000700", self.read("functions.tsv"))
 
     def test_unmarked_shared_source_does_not_join(self):
         # c1/c2 share only c_pending.cpp (no VERIFY marks: support code): two game units, each with its copy
@@ -221,11 +291,147 @@ class GenTest(unittest.TestCase):
             self.assertIn("// glued", f.read())
         self.assertNotIn("assets.py", self.read("units.cmake"))  # no configure dependency on a missing file
 
+    def test_glue_bss_from_given_game(self):
+        # autoglue's bss_ranges() reads the decompilation's own game/code/cking.rpx, which the decompilation as it
+        # ships does not have: gen.py gives it the NOBITS sections of the --game RPX instead
+        import struct
+        def write(rel, text):
+            with open(os.path.join(self.src, rel), "w") as f:
+                f.write(text)
+        write("tools/verify/mkimage.py", "import sys\nopen(sys.argv[2], 'wb').close()\n")
+        write("tools/verify/autoglue.py", "import os\nclass GlueError(Exception): pass\n_bss = None\n"
+                                          "def bss_ranges():\n    global _bss\n    if _bss is None:\n"
+                                          "        open(os.path.join(os.path.dirname(__file__), '..', '..', 'game', 'code', "
+                                          "'cking.rpx'), 'rb')\n    return _bss\n"
+                                          "def transform(text, path): return text + '// bss %r\\n' % bss_ranges()\n"
+                                          "def include_closure(text, path): return []\n")
+        with open(os.path.join(self.src, "wwhd_src/b.cpp"), "a") as f:
+            f.write("/* WWHD glue (tools/verify/autoglue.py)\n*/\n")
+        # a minimal big-endian ELF: the null section, .bss (NOBITS at 0x10000000, 0x100 bytes), .shstrtab
+        names = b"\0.bss\0.shstrtab\0"
+        shoff = 0x34 + len(names)
+        hdr = bytearray(0x34)
+        hdr[:6] = b"\x7fELF\x01\x02"
+        struct.pack_into(">I", hdr, 0x20, shoff)
+        struct.pack_into(">HHH", hdr, 0x2E, 40, 3, 2)
+        shdrs = bytes(40) + struct.pack(">10I", 1, 8, 3, 0x10000000, 0, 0x100, 0, 0, 4, 0) \
+            + struct.pack(">10I", 6, 3, 0, 0, 0x34, len(names), 0, 0, 1, 0)
+        rpx = os.path.join(self.tmp.name, "cking.rpx")
+        with open(rpx, "wb") as f:
+            f.write(bytes(hdr) + names + shdrs)
+        r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), self.src, self.out, "--game", rpx, "--jobs", "1"],
+                           capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        with open(os.path.join(self.out, "glued/wwhd_src/b.cpp")) as f:
+            self.assertIn("// bss [(268435456, 256)]", f.read())
+
+    def test_port_sites_moved_in_game_build_only(self):
+        """port_sites.py: a decompiled function whose source carries the port hook lists its instruction hook as moved
+        (recomp.py then keeps no function for it), only with --game-build; without the marker, never"""
+        import port_sites
+        site = port_sites.SITES[0]
+        os.makedirs(os.path.join(self.src, os.path.dirname(site["path"])), exist_ok=True)
+        with open(os.path.join(self.src, site["path"]), "w") as f:
+            f.write("VERIFY(0x%08X, procTactWait)\nif (x %s) {}\n" % (site["func"], site["marker"]))
+        with open(os.path.join(self.src, "tools/verify/units/tact.txt"), "w") as f:
+            f.write("src %s\n" % site["path"])
+        moved = "# moved-site %08X" % site["site"]
+        self.run_gen()
+        self.assertIn("%08X" % site["func"], self.read("decomp_hooks.txt"))
+        self.assertNotIn(moved, self.read("decomp_hooks.txt"))
+        self.run_gen("--game-build")
+        self.assertIn(moved, self.read("decomp_hooks.txt"))
+        entries, _ = game_builds.read_hooks([os.path.join(self.out, "decomp_hooks.txt")], game_builds.canonical_build())
+        self.assertNotIn(site["site"], {canon for _, canon, _, _ in entries})  # a comment for the hook reader
+        with open(os.path.join(self.src, site["path"]), "w") as f:
+            f.write("VERIFY(0x%08X, procTactWait)\n" % site["func"])
+        self.run_gen("--game-build")
+        self.assertNotIn(moved, self.read("decomp_hooks.txt"))
+
+    def test_port_sites_empty_moved_with_function(self):
+        """port_sites.EMPTY: a retired empty site moves whenever its function is decompiled (game build), marker or not"""
+        import port_sites
+        e = port_sites.EMPTY[0]
+        path = "wwhd_src/d/actor/empty.cpp"
+        os.makedirs(os.path.join(self.src, os.path.dirname(path)), exist_ok=True)
+        with open(os.path.join(self.src, path), "w") as f:
+            f.write("VERIFY(0x%08X, someFunction)\n" % e["func"])
+        with open(os.path.join(self.src, "tools/verify/units/empty.txt"), "w") as f:
+            f.write("src %s\n" % path)
+        moved = "# moved-site %08X" % e["site"]
+        self.run_gen()
+        self.assertNotIn(moved, self.read("decomp_hooks.txt"))
+        self.run_gen("--game-build")
+        self.assertIn(moved, self.read("decomp_hooks.txt"))
+
+    def test_port_sites_are_hooks_with_handlers(self):
+        """every port_sites.py site is an instruction hook (tools/recomp/hooks*.txt); every site a point names
+        (MACRO(0xSITE) has a row in the port's table for it; every EMPTY site's handler is the empty retired SITE()"""
+        import glob
+        import re
+        import port_sites
+        entries, _ = game_builds.read_hooks(game_builds.hook_files(os.path.join(ROOT, "tools", "recomp")),
+                                            game_builds.canonical_build())
+        sites = {canon for site, canon, _, _ in entries if site}
+        runtime = {}
+        for f in glob.glob(os.path.join(ROOT, "runtime", "src", "**", "*.cpp"), recursive=True):
+            with open(f, encoding="utf-8", errors="replace") as fh:
+                runtime[f] = fh.read()
+        for s in port_sites.SITES + port_sites.EMPTY:
+            self.assertIn(s["site"], sites, "%08X" % s["site"])
+        for s in port_sites.SITES:
+            if re.match(r"PORT_\w+\(0x%08X$" % s["site"], s["marker"]):
+                # the port's table row: {0xSITE, site_SITE, ...} (or the handler chosen by its address)
+                self.assertTrue(any(re.search(r"0x%08X\b" % s["site"], t) and "wwhd_" in t for t in runtime.values()),
+                                "no port point for %08X" % s["site"])
+        game_hooks = runtime[os.path.join(ROOT, "runtime", "src", "game_hooks.cpp")]
+        retired = game_hooks[game_hooks.index('#define SITE(addr) extern "C" void site_##addr(Cpu*) {}'):
+                             game_hooks.index("#undef SITE")]
+        for e in port_sites.EMPTY:
+            self.assertIn("SITE(%08X)" % e["site"], retired)
+            defs = [f for f, t in runtime.items() if "site_%08X(" % e["site"] in t]
+            self.assertEqual(defs, [], "%08X has a handler besides the empty one" % e["site"])
+
     def test_missing_tree(self):
         r = subprocess.run([sys.executable, os.path.join(HERE, "gen.py"), os.path.join(self.tmp.name, "nothing"), self.out],
                            capture_output=True, text=True)
         self.assertNotEqual(r.returncode, 0)
         self.assertIn("git submodule update --init decomp", r.stderr)
+
+
+class FastRewriteTest(unittest.TestCase):
+    def test_rewrites(self):
+        sys.path.insert(0, HERE)
+        import gen
+        t = ("a = gabi::call<u8*>(0x02555D0C); b = gabi::call<be<u32>>(0x0273AD10, 4); c = gabi::call<void>(x, 1); "
+             "call_ptr<u32>(t, h); gabi::call_ptr(f, s); o->call_ptr(1); p.tail_ptr(2); gabi::call_ptr_site<R>(1); "
+             "!call_ptr<bool>(a); gabi::tail_ptr<void, u8*>(f, p); n::call_ptr<int>(x);")
+        self.assertEqual(gen.fast_rewrite(t, False, False), (t, 0))
+        got, n = gen.fast_rewrite(t, True, True)
+        self.assertEqual(n, 6)
+        self.assertEqual(got, (
+            "a = gabi::hcall<0x02555D0C, u8*>(); b = gabi::hcall<0x0273AD10, be<u32>>(4); c = gabi::call<void>(x, 1); "
+            "gabi::call_ptr_ic<decltype([]{}), u32>(t, h); gabi::call_ptr_ic<decltype([]{})>(f, s); o->call_ptr(1); "
+            "p.tail_ptr(2); gabi::call_ptr_site<R>(1); !gabi::call_ptr_ic<decltype([]{}), bool>(a); "
+            "gabi::tail_ptr_ic<decltype([]{}), void, u8*>(f, p); n::call_ptr<int>(x);"))
+        self.assertEqual(gen.fast_rewrite(t, True, False)[1], 2)
+        self.assertEqual(gen.fast_rewrite(t, False, True)[1], 4)
+
+
+    def test_stackarg_call(self):
+        # --stackarg: only the listed stack-argument callees' constant-address do_call sites become do_call_sa
+        sys.path.insert(0, HERE)
+        import gen
+        t = ("    gabi::do_call(gabi::cpu, args, 0x02011D2C, 0);\n"
+             "    gabi::do_call(gabi::cpu, p, 0x025580FC, 2);\n"
+             "    gabi::do_call(gabi::cpu, args, 0x02011D30, 0);\n"
+             "    gabi::do_call(c, args, 0x02011D2C, 0);\n")
+        got, n = gen.SA_CALL.subn(gen.sa_call, t)
+        self.assertEqual(n, 2)
+        self.assertIn("gabi::do_call_sa<0x02011D2C>(gabi::cpu, args, 0);", got)
+        self.assertIn("gabi::do_call_sa<0x025580FC>(gabi::cpu, p, 2);", got)
+        self.assertIn("gabi::do_call(gabi::cpu, args, 0x02011D30, 0);", got)
+        self.assertIn("gabi::do_call(c, args, 0x02011D2C, 0);", got)
 
 
 if __name__ == "__main__":

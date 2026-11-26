@@ -179,8 +179,10 @@ class Recompiler:
         # build keeps the game's code there and never reads these lists
         hook_list = game_builds.hook_files()
         if decomp_hooks:
-            hook_list += game_builds.decomp_only_hook_files() + [
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "decomp_hostrt_hooks.txt")]
+            hostrt = os.path.join(os.path.dirname(os.path.abspath(__file__)), "decomp_hostrt_hooks.txt")
+            if not os.path.isfile(hostrt):  # (read_hooks skips missing files: a release without it linked nothing)
+                sys.exit("recomp.py --decomp-hooks: %s is missing" % hostrt)
+            hook_list += game_builds.decomp_only_hook_files() + [hostrt]
         hook_entries, self.skipped_hooks = game_builds.read_hooks(hook_list, self.build)
         self.canon_of = {}              # this build's address -> canonical address (for symbol names)
         self.hooks, self.sites = set(), set()
@@ -189,8 +191,10 @@ class Recompiler:
             (self.sites if site else self.hooks).add(addr)
         self._fixpoint()
         self._check_hooks(hook_entries)
+        self._check_names()
         self.decomp_hooks_file = decomp_hooks
         self.decomp, self.decomp_kept = set(), []
+        self.hooked_rc = set()  # decomp build, `# hooked-body ADDR`: runtime-hooked functions whose original is decompiled
         if decomp_hooks:
             self._decomp_hooks(decomp_hooks)
 
@@ -204,7 +208,14 @@ class Recompiler:
         if not entries:
             raise SystemExit("--decomp-hooks: %s lists no functions" % path)
         self._bounds()
-        sites = sorted(self.sites)
+        # `# moved-site ADDR` (fast mode, tools/decomp_build/fast_hooks.py; game build, tools/decomp_build/port_sites.py):
+        # the decompiled function calls that port hook itself, so the site does not keep its function recompiled (the recompiled original still has it)
+        moved = {int(m.group(1), 16) for m in (re.match(r"#\s*moved-site\s+([0-9A-Fa-f]{8})\b", l)
+                                               for l in open(path, encoding="utf-8")) if m}
+        if moved - self.sites:
+            raise SystemExit("%s: moved-site %s is not an instruction hook" % (
+                path, " ".join("%08X" % x for x in sorted(moved - self.sites))))
+        sites = sorted(self.sites - moved)
         for site, canon, addr, where in entries:
             if site:
                 raise SystemExit("%s: instruction-level entries are not allowed in a decomp hook list" % where)
@@ -219,6 +230,21 @@ class Recompiler:
                 self.decomp_kept.append((addr, "contains instruction hook @%08X" % sites[i]))
                 continue
             self.decomp.add(addr)
+        # `# hooked-body ADDR` (gen.py --hooked-bodies, the decomp build's fast mode): a function the runtime hooks keeps
+        # hook_X; its f_X_orig enters the decompiled body (hookorig_X, the runtime's slot), the recompiled code becomes
+        # f_X_orig_rc (the slot's original). One with an instruction hook inside stays as it is (kept).
+        for line in open(path, encoding="utf-8"):
+            m = re.match(r"#\s*hooked-body\s+([0-9A-Fa-f]{8})\b", line)
+            if not m:
+                continue
+            addr = int(m.group(1), 16)
+            if addr not in self.hooks:
+                raise SystemExit("%s: hooked-body %08X is not a runtime hook" % (path, addr))
+            i = bisect.bisect_left(sites, addr)
+            if i < len(sites) and sites[i] < self.func_end(addr):
+                self.decomp_kept.append((addr, "hooked body contains instruction hook @%08X" % sites[i]))
+                continue
+            self.hooked_rc.add(addr)
         self.hooks |= self.decomp
 
     def _check_hooks(self, hook_entries):
@@ -336,8 +362,38 @@ class Recompiler:
     def sym(self, addr):
         """The canonical (USA) address `addr` is named by: the same number for the USA build, the
         function's canonical address for any other. Generated symbols use it so that the runtime's
-        f_XXXXXXXX, hook_XXXXXXXX and site_XXXXXXXX never change with the build."""
-        return self.canon_of.get(addr) or self.build.canon_code(addr)
+        f_XXXXXXXX, hook_XXXXXXXX and site_XXXXXXXX never change with the build.
+
+        Code without a canonical counterpart -- a function only this build has, or an entry the
+        fixpoint found inside a function this build compiled differently -- is named
+        f_8XXXXXXX (builds.BUILD_ONLY | its own address), so it never takes a canonical name."""
+        canon = self.canon_of.get(addr)
+        if canon is not None:
+            return canon
+        if self._differs_inside(addr):
+            return game_builds.BUILD_ONLY | addr
+        return self.build.canon_code(addr)
+
+    def _differs_inside(self, addr):
+        """Is `addr` past the entry of a function this build compiled differently (its address)?"""
+        b = self.build
+        if not getattr(b, "differing", None):
+            return False
+        if not hasattr(self, "_other_differ"):
+            self._other_differ = sorted((o, o + s) for _, _, o, s in b.differing)
+            self._other_differ_starts = [o for o, _ in self._other_differ]
+        i = bisect.bisect_right(self._other_differ_starts, addr) - 1
+        return i >= 0 and self._other_differ[i][0] < addr < self._other_differ[i][1]
+
+    def _check_names(self):
+        """Two different addresses of this build must never get the same generated name."""
+        seen = {}
+        for a in sorted(self.entries | self.hooks | self.sites):
+            n = self.sym(a)
+            if n in seen and seen[n] != a:
+                raise SystemExit("%s build: %08X and %08X would both be named %08X" % (
+                    self.build.name, seen[n], a, n))
+            seen[n] = a
 
     def imp_name(self, slot):
         lib, name, kind = self.imports[slot]
@@ -381,11 +437,14 @@ class Recompiler:
         # restrict: guest memory never aliases the register file, so the compiler may keep
         # registers in host registers across guest loads/stores
         name = self.sym(start)
-        fname = "f_%08X_orig" % name if hooked else "f_%08X" % name
+        fname = ("f_%08X_orig_rc" if start in self.hooked_rc else "f_%08X_orig") % name if hooked else "f_%08X" % name
         out = []
         if hooked:
             # runtime hook: callers reach hook_X, which may call the original code (f_X_orig)
             out.append("void f_%08X(Cpu* __restrict c) { ppc_host_call(c, hook_%08X); }\n" % (name, name))
+        if start in self.hooked_rc:
+            # decomp build (hooked-body): the hook's original is the decompiled body (or this code, the slot's original)
+            out.append("void f_%08X_orig(Cpu* __restrict c) { hookorig_%08X(c); }\n" % (name, name))
         out += ["void %s(Cpu* __restrict c) {" % fname, "    PPC_ENTER(0x%08Xu);" % start]
         if self.mod_hooks:
             # guest mods: the check sits in the game's code (f_X, or f_X_orig behind a port hook), so the
@@ -488,6 +547,10 @@ class Recompiler:
             f.write("\n/* hooked functions: hook_X is implemented in the runtime, f_X_orig is the game's code */\n")
             for e in sorted(self.sym(a) for a in self.hooks):
                 f.write("void f_%08X_orig(Cpu* __restrict c);\nvoid hook_%08X(Cpu* c);\n" % (e, e))
+            if self.hooked_rc:
+                f.write("\n/* decomp build: hooked functions whose original is decompiled (hookorig_X: runtime) */\n")
+                for e in sorted(self.sym(a) for a in self.hooked_rc):
+                    f.write("void f_%08X_orig_rc(Cpu* __restrict c);\nvoid hookorig_%08X(Cpu* c);\n" % (e, e))
             if self.decomp_kept:
                 f.write("\n/* decomp build: listed functions kept as they are (table.c g_recomp_decomp_kept) */\n")
                 for a, _ in self.decomp_kept:
@@ -544,7 +607,9 @@ class Recompiler:
         f.write("\n/* decomp build (--decomp-hooks): %d functions decompiled, %d kept */\n" % (
             len(self.decomp), len(self.decomp_kept)))
         for a, why in self.decomp_kept:
-            if a in self.entries:
+            if a in self.hooks and a not in self.decomp:  # a hooked body kept: the slot's original is f_X_orig itself
+                f.write("void f_%08X_orig_rc(Cpu* __restrict c) { f_%08X_orig(c); }  /* %s */\n" % (self.sym(a), self.sym(a), why))
+            elif a in self.entries:
                 f.write("void f_%08X_orig(Cpu* __restrict c) { f_%08X(c); }  /* %s */\n" % (self.sym(a), self.sym(a), why))
             else:
                 f.write("void f_%08X_orig(Cpu* __restrict c) { ppc_unimplemented(c, 0x%08Xu, 0); }  /* %s */\n" % (
@@ -579,6 +644,10 @@ class Recompiler:
         changed = ", ".join("{0x%08Xu, 0x%08Xu}" % (a, a + size) for a, size, _, _ in b.differing)
         f.write("const GuestChanged g_guest_changed_code[] = {%s};\n" % (changed or "{0u, 0u}"))
         f.write("const unsigned g_guest_changed_code_count = %d;\n" % len(b.differing))
+        # canonical functions the build does not have (the Japanese build): guest_code_valid() refuses them
+        removed = ", ".join("{0x%08Xu, 0x%08Xu}" % (a, a + size) for a, size in b.removed)
+        f.write("const GuestChanged g_guest_removed_code[] = {%s};\n" % (removed or "{0u, 0u}"))
+        f.write("const unsigned g_guest_removed_code_count = %d;\n" % len(b.removed))
 
     def write_report(self, outdir, nfiles):
         with _Output(os.path.join(outdir, "report.txt")) as f:
@@ -625,7 +694,7 @@ if __name__ == "__main__":
     ap.add_argument("--build", help="which build the rpx is, when it should not be identified by "
                                     "its SHA-256 (%s)" % ", ".join(b.name for b in game_builds.all_builds()))
     ap.add_argument("--mod-hooks", action="store_true", default=os.environ.get("WWHD_RECOMP_MOD_HOOKS") == "1")
-    ap.add_argument("--randomizer", action="store_true", help="validate and translate a compatible randomized RPX (USA or EU)")
+    ap.add_argument("--randomizer", action="store_true", help="validate and translate a compatible randomized RPX (USA, EU or JP)")
     ap.add_argument("--expected-rpx-sha256", help="randomizer: require the exact RPX checked by setup")
     ap.add_argument("--preserve-registers", action="store_true",
                     help="experimental patched RPX: preserve scratch GPR/FPR/CR writes across guest calls")

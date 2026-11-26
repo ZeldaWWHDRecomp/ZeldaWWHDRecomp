@@ -115,7 +115,7 @@ static void test_defaults() {
     CHECK(press(m, {kVK_F10}).buttons == 0 && press(m, {kVK_F10}).lx == 0);
     CHECK(action_bit(kScreenshot) == 0 && action_from_id("Screenshot") == kScreenshot);
     // no default key is reserved; no key is used twice, except Q / L1 by L, Jump and the moon jump
-    // (virtual inputs share the Wii U's L: in play L leaves, play_buttons)
+    // (virtual inputs share the Wii U's L: in play L leaves while they act, play_buttons)
     for (int a = 0; a < kActionCount; a++)
         for (int k : m.keys[a]) {
             CHECK(k == kNoKey || !reserved_key(k));
@@ -139,6 +139,52 @@ static void test_defaults() {
     m.deadzone = 0;  // check axis bindings independently of the default dead zone
     s = controller_state(m, v);
     CHECK(std::fabs(s.lx + 0.6f) < 1e-6 && std::fabs(s.ry - 0.3f) < 1e-6);
+}
+
+// a controller known only by its names (the iPhone GamePad's: remote_pad kControllerInfo)
+static void test_named_face_labels() {
+    using FL = FaceLabel;
+    FL l[4];
+    // PlayStation shapes from GameController's SF Symbol names: the PlayStation family
+    const char* ps[4] = {"xmark.circle", "circle.circle", "square.circle", "triangle.circle"};
+    named_face_labels("Backbone One - PlayStation Edition", "Backbone", ps, l);
+    CHECK(l[0] == FL::kCross && l[1] == FL::kCircle && l[2] == FL::kSquare && l[3] == FL::kTriangle);
+    CHECK(pad_family_from_labels(l) == PadFamily::kPlayStation);
+    // localized names
+    const char* xbox[4] = {"Button A", "Button B", "Button X", "Button Y"};
+    named_face_labels("Xbox Wireless Controller", "Xbox One", xbox, l);
+    CHECK(l[0] == FL::kA && l[3] == FL::kY && pad_family_from_labels(l) == PadFamily::kXbox);
+    // Nintendo's buttonA is its east button: letters by position
+    const char* nin[4] = {"a.circle", "b.circle", "x.circle", "y.circle"};
+    named_face_labels("Pro Controller", "Switch Pro Controller", nin, l);
+    CHECK(l[0] == FL::kB && l[1] == FL::kA && l[2] == FL::kY && l[3] == FL::kX);
+    CHECK(pad_family_from_labels(l) == PadFamily::kNintendo);
+    // no button names: the family from what it says it is
+    const char* none[4] = {"", "", "", nullptr};
+    named_face_labels("DualSense Wireless Controller", "DualSense", none, l);
+    CHECK(l[0] == FL::kCross && pad_family_from_labels(l) == PadFamily::kPlayStation);
+    CHECK(gamecube_named("Nintendo", "GameCube Controller") && !gamecube_named("Sony", "DualSense"));
+}
+
+// GameController element names (GCInputNames.h values, checked against the macOS SDK) for the pads macOS
+// lists without the extended gamepad profile, e.g. a GameCube adapter (issue #556)
+static void test_apple_element_names() {
+    CHECK(apple_button_input("Button A") == kPadA && apple_button_input("Button B") == kPadB);
+    CHECK(apple_button_input("Button X") == kPadX && apple_button_input("Button Y") == kPadY);
+    CHECK(apple_button_input("Left Shoulder") == kPadLB && apple_button_input("Right Bumper") == kPadRB);
+    CHECK(apple_button_input("Left Trigger") == kPadLT && apple_button_input("Right Trigger") == kPadRT);
+    CHECK(apple_button_input("Trigger") == kPadRT);
+    CHECK(apple_button_input("Button Menu") == kPadMenu && apple_button_input("Button Home") == kPadHome);
+    CHECK(apple_button_input("Button Options") == kPadOptions && apple_button_input("Button Share") == kPadCapture);
+    CHECK(apple_button_input("Left Thumbstick Button") == kPadL3 && apple_button_input("Right Thumbstick Button") == kPadR3);
+    for (const char* unknown : {"Button 1", "Arcade Button 0, 0", "Grip", "button a", "", static_cast<const char*>(nullptr)})
+        CHECK(apple_button_input(unknown) == kPadNone);
+    CHECK(apple_dpad_kind("Direction Pad") == AppleDpad::kDpad);
+    CHECK(apple_dpad_kind("Left Thumbstick") == AppleDpad::kLeftStick && apple_dpad_kind("Thumbstick") == AppleDpad::kLeftStick);
+    CHECK(apple_dpad_kind("Right Thumbstick") == AppleDpad::kRightStick);
+    CHECK(apple_dpad_kind("Cardinal Direction Pad") == AppleDpad::kNone && apple_dpad_kind(nullptr) == AppleDpad::kNone);
+    // the faces are raw letters, put in place by the layout as for an extended pad
+    CHECK(apple_face_input(apple_face_layout("", "GameCube Controller Adapter"), apple_button_input("Button A")) == kPadA);
 }
 
 static void test_apple_face_normalization() {
@@ -603,24 +649,33 @@ static void test_face_label_text() {
     CHECK(face_label_from_text("x.circle") == FL::kX);
     CHECK(face_label_from_text("y.circle") == FL::kY);
     CHECK(face_label_from_text("a.circle.fill") == FL::kA);
-    CHECK(face_label_from_text("xmark.circle") == FL::kA);       // PlayStation Cross
-    CHECK(face_label_from_text("xmark.circle.fill") == FL::kA);
-    CHECK(face_label_from_text("circle.circle") == FL::kB);      // PlayStation Circle
-    CHECK(face_label_from_text("circle") == FL::kB);
-    CHECK(face_label_from_text("square.circle") == FL::kX);      // PlayStation Square, not Circle
-    CHECK(face_label_from_text("square.circle.fill") == FL::kX);
-    CHECK(face_label_from_text("square.fill") == FL::kX);
-    CHECK(face_label_from_text("triangle.circle") == FL::kY);
-    CHECK(face_label_from_text("triangle") == FL::kY);
+    CHECK(face_label_from_text("xmark.circle") == FL::kCross);   // PlayStation: the shapes stay shapes
+    CHECK(face_label_from_text("xmark.circle.fill") == FL::kCross);
+    CHECK(face_label_from_text("circle.circle") == FL::kCircle);
+    CHECK(face_label_from_text("circle") == FL::kCircle);
+    CHECK(face_label_from_text("square.circle") == FL::kSquare);  // Square, not Circle
+    CHECK(face_label_from_text("square.circle.fill") == FL::kSquare);
+    CHECK(face_label_from_text("square.fill") == FL::kSquare);
+    CHECK(face_label_from_text("triangle.circle") == FL::kTriangle);
+    CHECK(face_label_from_text("triangle") == FL::kTriangle);
     CHECK(face_label_from_text("x.square.fill") == FL::kX);      // letter in a square, not Square
     // localized names and vendor-style names: the one word that is a letter
     CHECK(face_label_from_text("Button A") == FL::kA);
     CHECK(face_label_from_text("Button B") == FL::kB);
-    CHECK(face_label_from_text("Cross Button") == FL::kA);
-    CHECK(face_label_from_text("Circle Button") == FL::kB);
+    CHECK(face_label_from_text("Cross Button") == FL::kCross);
+    CHECK(face_label_from_text("Circle Button") == FL::kCircle);
     CHECK(face_label_from_text("xbox.button.a") == FL::kA);
     CHECK(face_label_from_text("xbox.button.y") == FL::kY);
     CHECK(face_label_from_text("X Button") == FL::kX);
+    // a PlayStation pad's shapes: the PlayStation family, bound as the letters in their places
+    {
+        const FL ps[4] = {face_label_from_text("xmark.circle"), face_label_from_text("circle.circle"),
+                          face_label_from_text("square.circle"), face_label_from_text("triangle.circle")};
+        CHECK(pad_family_from_labels(ps) == PadFamily::kPlayStation);
+        int bind[4];
+        CHECK(face_bindings_from_labels(ps, bind) && bind[0] == kPadA && bind[1] == kPadB && bind[2] == kPadX &&
+              bind[3] == kPadY);
+    }
     // nothing a name can say: unknown
     CHECK(face_label_from_text(nullptr) == FL::kUnknown);
     CHECK(face_label_from_text("") == FL::kUnknown);
@@ -1003,6 +1058,116 @@ static void test_binding_capture_faces() {
     }
 }
 
+// Capture against each input's resting value (issue: AYN Odin, nothing recorded). A trigger resting
+// half-way and a stick axis drifting at 0.35 never read below 0.3, which the old "everything released
+// first" rule needed before it took anything: the capture timed out or took the wrong input.
+static void test_binding_capture_resting_inputs() {
+    // the Odin-like pad: LT rests at 0.5, the left stick drifts down at 0.35 (+-0.1 noise)
+    {
+        overlay::BindingCapture capture;
+        float values[kPadCount] = {};
+        values[kPadLT] = 0.5f;
+        values[kPadLSDown] = 0.35f;
+        values[kPadB] = 1;  // the confirm that opened the capture, still held
+        CHECK(capture.poll(values) == -1);
+        for (int i = 0; i < 120; ++i) {  // two seconds of drift: nothing recorded
+            values[kPadLSDown] = 0.35f + 0.1f * std::sin(i * 0.7f);
+            values[kPadLT] = 0.5f + 0.05f * std::cos(i * 0.3f);
+            if (i == 10) values[kPadB] = 0;  // the confirm is let go
+            CHECK(capture.poll(values) == -1);
+        }
+        CHECK(capture.rest(kPadB) == 0.f && capture.rest(kPadLT) == 0.5f);
+        values[kPadX] = 1;  // a real press while LT and the stick still rest off 0
+        CHECK(capture.poll(values) == kPadX);
+        CHECK(capture.down(values, kPadX) && !capture.down(values, kPadLT) && !capture.down(values, kPadLSDown));
+        values[kPadX] = 0;
+        // the resting trigger pulled all the way, the drifting stick pushed fully: real presses
+        values[kPadLT] = 1;
+        CHECK(capture.poll(values) == kPadLT);
+        values[kPadLT] = 0.5f;
+        values[kPadLSDown] = 1;
+        CHECK(capture.poll(values) == kPadLSDown);
+        values[kPadLSDown] = 0.35f;
+        // the button held at the start counts once let go and pressed again
+        capture.reset();
+        values[kPadA] = 1;
+        CHECK(capture.poll(values) == -1);
+        CHECK(capture.poll(values) == -1 && !capture.down(values, kPadA));
+        values[kPadA] = 0;
+        CHECK(capture.poll(values) == -1);
+        values[kPadA] = 1;
+        CHECK(capture.poll(values) == kPadA);
+    }
+    // a stick that wanders up to 0.61 from a 0.35 rest is drift, not a press (the old Mac window's rule
+    // took it); a held input does not wait for the others: B while A is still held counts
+    {
+        overlay::BindingCapture capture;
+        float values[kPadCount] = {};
+        values[kPadRSLeft] = 0.35f;
+        values[kPadA] = 1;
+        CHECK(capture.poll(values) == -1);
+        values[kPadRSLeft] = 0.61f;
+        CHECK(capture.poll(values) == -1);
+        values[kPadB] = 1;
+        CHECK(capture.poll(values) == kPadB);
+    }
+    // a normal controller (everything resting at 0): exactly as before - the first input above 0.6
+    // after the one held at the start is let go, in pad order; half presses are not taken
+    {
+        overlay::BindingCapture capture;
+        float values[kPadCount] = {};
+        CHECK(capture.poll(values) == -1);
+        values[kPadRT] = 0.55f;
+        CHECK(capture.poll(values) == -1 && capture.down(values, kPadRT));  // held (> 0.5), not pressed (> 0.6)
+        values[kPadRT] = 0.61f;
+        CHECK(capture.poll(values) == kPadRT);
+        values[kPadRT] = 0;
+        values[kPadDUp] = values[kPadY] = 1;
+        CHECK(capture.poll(values) == kPadY);  // two at once: the first in pad order, as before
+        values[kPadDUp] = values[kPadY] = 0;
+        for (int p = 1; p < kPadCount; ++p) {
+            capture.reset();
+            float v[kPadCount] = {};
+            CHECK(capture.poll(v) == -1);
+            v[p] = 1;
+            CHECK(capture.poll(v) == p && capture.down(v, p));
+        }
+    }
+}
+
+// The Controls page opens on the bindings the controller in use plays with; a set the user picks wins
+// while that controller stays in use; the shared view says when its edits don't reach that controller.
+static void test_binding_choice() {
+    Mapping m = Mapping::defaults();
+    const std::string og = "odin-guid", on = "Odin Controller", xg = "xbox-guid", xn = "Xbox Controller";
+    ensure_profile(m, og, on);
+    BindingChoice choice;
+    bool own = false;
+    std::string guid, name;
+    // the Odin (its own bindings) in use: the page starts on them, the shared view shows the notice
+    CHECK(choice.open(m, og, on, own, guid, name) && own && guid == og && name == on);
+    CHECK(shared_view_notice(m, og, on) == "Odin Controller uses its own bindings, so changes here don't apply to it.");
+    // the user picks the shared set: it stays on reopening while the Odin is in use
+    choice.choose(og, on);
+    CHECK(!choice.open(m, og, on, own, guid, name));
+    CHECK(!choice.open(m, og, on, own, guid, name));
+    // another controller in use (no profile of its own): the page follows it to the shared set, no notice
+    CHECK(choice.open(m, xg, xn, own, guid, name) && !own && guid.empty() && name.empty());
+    CHECK(shared_view_notice(m, xg, xn).empty());
+    // the Odin again: its own bindings again (the earlier pick was for the Odin then, and was left)
+    CHECK(choice.open(m, og, on, own, guid, name) && own && name == on);
+    // keyboard only / no controller in use: the shared set, no notice
+    CHECK(choice.open(m, "", "", own, guid, name) && !own);
+    CHECK(shared_view_notice(m, "", "").empty());
+    // the GUID-only and name-only fallbacks the game uses (profile_index) count as its own
+    CHECK(shared_view_notice(m, og, "Odin Controller (USB)").find("Odin Controller (USB) uses its own") == 0);
+    CHECK(shared_view_notice(m, og, "").find("The controller in use uses its own") == 0);
+    // a normal setup (no profiles): always the shared set, never a notice
+    BindingChoice plain;
+    CHECK(plain.open(Mapping::defaults(), xg, xn, own, guid, name) && !own);
+    CHECK(shared_view_notice(Mapping::defaults(), xg, xn).empty());
+}
+
 static void test_android_odin_mapping() {
     const std::string old = "03000000,name,a:b0,b:b1,back:b4,start:b6,leftx:a0,lefty:a1,face:abxy,";
     CHECK(android_controller::mapping(0x045e, 0x111, old) == old);
@@ -1048,6 +1213,28 @@ static void test_settings_shortcut() {
 
 static void test_shortcuts() {
     auto m = Mapping::defaults();
+    // A persisted Quit binding must be usable, fire once per press, and keep its buttons from the game.
+    {
+        Mapping quit;
+        CHECK(from_json(R"({"shortcuts":{"Quit":{"keys":[{"key":"F9","modifiers":2}],"hold":"Options","button":"Menu"}}})", quit));
+        const int action = shortcut_for_key(quit, kVK_F9, kModCtrl);
+        CHECK(action >= 0);
+        if (action >= 0) {
+            Mapping round;
+            CHECK(from_json(to_json(quit), round) && round == quit);
+            float raw[kPadCount]{}, game[kPadCount]{};
+            ShortcutPoll poll;
+            raw[kPadOptions] = raw[kPadMenu] = raw[kPadA] = 1;
+            std::copy(std::begin(raw), std::end(raw), game);
+            CHECK(poll.poll(round, raw, game) == std::vector<int>{action});
+            CHECK(game[kPadOptions] == 0 && game[kPadMenu] == 0 && game[kPadA] == 1);
+            CHECK(poll.poll(round, raw, game).empty());
+            raw[kPadMenu] = 0;
+            CHECK(poll.poll(round, raw, game).empty());
+            raw[kPadMenu] = 1;
+            CHECK(poll.poll(round, raw, game) == std::vector<int>{action});
+        }
+    }
     CHECK(shortcut_for_key(m, kVK_F6, 0) == kLoad1);
     CHECK(shortcut_for_key(m, kVK_F1, 0) == kSettings);
     CHECK(shortcut_for_key(m, kVK_Escape, 0) == kSettings);
@@ -1251,12 +1438,33 @@ static void test_virtual_actions() {
 
 static void test_play_buttons() {
     Mapping m = Mapping::defaults();
-    // L leaves the game in play (option off), stays in menus; with the option it always reaches it
-    CHECK(play_buttons(m, input::kL | input::kA, true) == input::kA);
-    CHECK(play_buttons(m, input::kL | input::kA, false) == (input::kL | input::kA));
+    const uint32_t J = input::kVirtJump, M = input::kVirtMoonJump;
+    // issue #406: with nothing jumping (Jump anywhere and the moon jump off, the defaults) L turns the
+    // GamePad page in play too, as on the Wii U
+    CHECK(play_buttons(m, input::kL | input::kA, true, 0) == (input::kL | input::kA));
+    // L1 / Q also jump (the default bindings): in play that input jumps only (option off), in menus it is L
+    CHECK(play_buttons(m, input::kL | input::kA, true, J) == input::kA);
+    CHECK(play_buttons(m, input::kL | input::kA, true, M) == input::kA);
+    CHECK(play_buttons(m, input::kL | input::kA, false, J) == (input::kL | input::kA));
     m.l_turns_page = true;
-    CHECK(play_buttons(m, input::kL, true) == input::kL);
+    CHECK(play_buttons(m, input::kL, true, J) == input::kL);
     m.l_turns_page = false;
+    {
+        // Jump on another input than L: L and the jump held together both act
+        Mapping o = Mapping::defaults();
+        o.pad[kJump] = o.pad[kMoonJump] = kPadR3;
+        o.keys[kJump] = o.keys[kMoonJump] = {kVK_ANSI_G, kNoKey};
+        CHECK(play_buttons(o, input::kL, true, J) == input::kL);
+        CHECK(play_buttons(o, input::kL, true, J | M) == input::kL);
+        // a controller's own bindings that put Jump on L1 count
+        Mapping c = o;
+        Mapping::Controller pc;
+        pc.pad = o.pad;
+        pc.pad[kJump] = pc.pad[kL];
+        c.controllers.push_back(pc);
+        CHECK(play_buttons(c, input::kL, true, J) == 0);
+        CHECK(play_buttons(c, input::kL, true, M) == input::kL);
+    }
     // an item button moved to d-pad down: the item in play, d-pad down in menus
     CHECK(bind_virtual(m, kJump, m.pad[kY], Displace::kMoveToDDown));
     CHECK(m.pad[kY] == kPadDDown && m.pad[kDDown] == kPadDDown && !has_conflict(m, kY) && !has_conflict(m, kDDown));
@@ -1264,13 +1472,13 @@ static void test_play_buttons() {
     v[kPadDDown] = 1;
     const uint32_t both = controller_state(m, v).buttons;
     CHECK(both == (input::kY | input::kDown));
-    CHECK(play_buttons(m, both, true) == input::kY);
-    CHECK(play_buttons(m, both, false) == input::kDown);
+    CHECK(play_buttons(m, both, true, 0) == input::kY);
+    CHECK(play_buttons(m, both, false, 0) == input::kDown);
     // d-pad down pressed on its own (another input of the same bindings is not shared): kept
-    CHECK(play_buttons(m, input::kDown, true) == input::kDown);
+    CHECK(play_buttons(m, input::kDown, true, 0) == input::kDown);
     // unrelated buttons held together are not filtered
     Mapping d = Mapping::defaults();
-    CHECK(play_buttons(d, input::kDown | input::kY, true) == (input::kDown | input::kY));
+    CHECK(play_buttons(d, input::kDown | input::kY, true, J) == (input::kDown | input::kY));
 }
 
 static void test_displace_rules() {
@@ -1437,6 +1645,75 @@ static void test_active_prompts() {
     CHECK(active_view(m).pad == m.pad);
 
     set_active_controller("", "");
+    set_current(previous, false);
+}
+
+// Automatic prompts follow the controller in use, not the first connected one (issue #459)
+static void test_auto_prompts_follow_pad_in_use() {
+    using FL = FaceLabel;
+    const FL xbox[4] = {FL::kA, FL::kB, FL::kX, FL::kY};
+    const FL ps[4] = {FL::kCross, FL::kCircle, FL::kSquare, FL::kTriangle};
+    const FL gc[4] = {FL::kA, FL::kX, FL::kB, FL::kY};
+    const Mapping previous = current();
+    Mapping m = Mapping::defaults();
+    apply_face_layout(m, FaceLayout::kLabels);  // the Xbox pad plays with the shared bindings
+    const std::string gc_guid = "030042717e0500003703000000016800", gc_name = "Nintendo GameCube Controller";
+    const std::string xbox_guid = "0300fa67c82d00000b31000014017801", xbox_name = "XInput Controller #1";
+    CHECK(auto_gamecube(m, gc_guid, gc_name, true));  // the adapter's pads get their GameCube layout
+    CHECK(m.prompts == Mapping::Prompts::kAuto);
+    set_current(m, false);
+
+    // the adapter connected first: GameCube prompts until something is pressed
+    note_face_labels(gc);
+    note_gamecube(true);
+    set_active_controller("", "");
+    CHECK(active_prompt_style().face == FaceStyle::kGameCube);
+
+    uint32_t gen = generation();
+    set_active_controller(xbox_guid, xbox_name, pad_family_from_labels(xbox), false);
+    CHECK(generation() != gen);
+    CHECK(!gamecube_pad() && pad_family() == PadFamily::kXbox);
+    CHECK(active_prompt_style().face == FaceStyle::kXbox);
+    gen = generation();
+    set_active_controller(gc_guid, gc_name, pad_family_from_labels(gc), true);
+    CHECK(generation() != gen);
+    CHECK(active_prompt_style().face == FaceStyle::kGameCube);
+
+    // the Xbox pad connected first: a GameCube press still gives GameCube prompts, not the original ones
+    note_face_labels(xbox);
+    note_gamecube(false);
+    CHECK(active_prompt_style().face == FaceStyle::kGameCube);
+    set_active_controller(xbox_guid, xbox_name, PadFamily::kXbox, false);
+    CHECK(active_prompt_style().face == FaceStyle::kXbox);
+
+    // a pad in use with unknown labels takes the first pad's family, but not its GameCube identity
+    note_face_labels(ps);
+    note_gamecube(true);
+    set_active_controller("03000000000000000000000000000003", "Pad Three", PadFamily::kUnknown, false);
+    CHECK(!gamecube_pad() && pad_family() == PadFamily::kPlayStation);
+    CHECK(active_prompt_style().face == FaceStyle::kPlayStation);
+
+    // the Controls tab's button names follow the pad in use too
+    set_active_controller("03000000000000000000000000000004", "Pad Four", PadFamily::kNintendo, false);
+    CHECK(std::string(pad_label(kPadA)) == "B (bottom)");
+    set_active_controller(xbox_guid, xbox_name, PadFamily::kXbox, false);
+    CHECK(std::string(pad_label(kPadA)) != "B (bottom)");
+
+    // an explicit choice ignores the pad in use
+    Mapping fixed = m;
+    fixed.prompts = Mapping::Prompts::kXbox;
+    set_current(fixed, false);
+    set_active_controller(gc_guid, gc_name, pad_family_from_labels(gc), true);
+    CHECK(active_prompt_style().face == FaceStyle::kXbox);
+
+    // switching pads never rewrites the bindings (the Automatic face preset follows the first pad)
+    CHECK(current() == fixed);
+
+    // nothing in use again: the first connected pad decides
+    set_active_controller("", "");
+    CHECK(gamecube_pad() && pad_family() == PadFamily::kPlayStation);
+    note_gamecube(false);
+    note_face_labels(xbox);
     set_current(previous, false);
 }
 
@@ -1641,7 +1918,9 @@ int main() {
     test_conflict_helpers();
     test_mouse();
     test_defaults();
+    test_apple_element_names();
     test_apple_face_normalization();
+    test_named_face_labels();
     test_face_layout();
     test_face_auto();
     test_prompts();
@@ -1703,7 +1982,10 @@ int main() {
     test_play_buttons();
     test_displace_rules();
     test_profiles();
+    test_binding_capture_resting_inputs();
+    test_binding_choice();
     test_active_prompts();
+    test_auto_prompts_follow_pad_in_use();
     test_v1_migration();
     printf("input_map_test: %d passed, %d failed\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

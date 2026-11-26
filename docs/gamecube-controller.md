@@ -39,7 +39,7 @@ direction for these extra actions:
 | --- | --- |
 | Up | Enter first-person view |
 | Down | Switch to Off-TV Play |
-| Left | Change the GamePad page, when **L turns the GamePad page** is enabled |
+| Left | Change the GamePad page (L) |
 | Right | Open Settings (the default shortcut) |
 
 Start opens the in-game menu when released on its own. A direction used with Start is consumed by

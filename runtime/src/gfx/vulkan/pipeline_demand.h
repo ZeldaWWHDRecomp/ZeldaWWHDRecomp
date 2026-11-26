@@ -43,6 +43,17 @@ private:
 std::optional<PipelineDemandTicket> begin_pipeline_async(
     const GraphicsPipelineState& state, uint64_t frame, uint64_t key, const char* kind,
     const std::function<void(GraphicsPipelineState&)>& prepare = {});
+// The background lane: work nothing waits for (the pass subset's masked pipeline variants, draw.cpp).
+// Its own lower-priority worker and a queue of at most kBackgroundQueue jobs, neither counted against
+// the ordinary queue's limit nor in pipeline_demand_active(), so it never displaces or delays ordinary
+// pipelines. Never blocks: empty when the queue is full, the compiler is stopped or not started; the
+// caller then simply goes without the pipeline. Never wait() on such a ticket on the render thread.
+inline constexpr size_t kBackgroundQueue = 2;
+// room in the background lane (a request now would be admitted unless the compiler is stopped)
+bool pipeline_background_has_room();
+std::optional<PipelineDemandTicket> begin_pipeline_background(
+    const GraphicsPipelineState& state, uint64_t frame, uint64_t key, const char* kind,
+    const std::function<void(GraphicsPipelineState&)>& prepare = {});
 // A dedicated compiler owns its cache. The caller retains the immutable Vulkan
 // modules/layout until this operation returns; all CPU create-info arrays are
 // copied into the queued job. The callback services completed-frame presentation

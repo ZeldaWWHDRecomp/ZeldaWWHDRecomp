@@ -78,13 +78,40 @@ def metadata(path):
             'mtime_ns': stat.st_mtime_ns % 1_000_000_000}
 
 
+PIPELINE_MARKER = b'WWHD-PIPELINE-IDENTITY:'
+
+
+def pipeline_identity_of(runtime):
+    """The pipeline identity a game binary was built with (runtime/src/pipeline_runtime_identity.cpp: the hash of
+    the code that interprets prepared shaders and recipes), read from the binary; None for one without it."""
+    try:
+        data = Path(runtime).read_bytes()
+    except (OSError, TypeError):
+        return None
+    at = data.find(PIPELINE_MARKER)
+    while at >= 0:
+        value = data[at + len(PIPELINE_MARKER):at + len(PIPELINE_MARKER) + 64]
+        if len(value) == 64 and all(c in b'0123456789abcdef' for c in value):
+            return value.decode()
+        at = data.find(PIPELINE_MARKER, at + 1)
+    return None
+
+
 def launch_identity(game, template, package, runtime):
+    """What the game checks at each start (cheap: sizes and times). A runtime with a pipeline identity is checked by
+    that instead of its file: another build of the same renderer (an update, a randomized game, the code-mod
+    variant) keeps the prepared generation."""
     game = Path(game)
-    return dict(game={p.relative_to(game).as_posix(): metadata(p) for p in sorted(game.rglob('*'))
-                      if p.is_file() and p.suffix.lower() in ('.sharcfb', '.rpx', '.szs', '.pack', '.sarc')},
-                template=metadata(template), translator=metadata(Path(package) / 'tools/shaderprep.py'),
-                format=metadata(Path(package) / 'tools/shaderprep_format.py') if (Path(package) / 'tools/shaderprep_format.py').is_file() else None,
-                runtime=metadata(runtime) if runtime and Path(runtime).is_file() else None)
+    pipeline = pipeline_identity_of(runtime) if runtime else None
+    value = dict(game={p.relative_to(game).as_posix(): metadata(p) for p in sorted(game.rglob('*'))
+                       if p.is_file() and p.suffix.lower() in ('.sharcfb', '.rpx', '.szs', '.pack', '.sarc')},
+                 template=metadata(template), translator=metadata(Path(package) / 'tools/shaderprep.py'),
+                 format=metadata(Path(package) / 'tools/shaderprep_format.py') if (Path(package) / 'tools/shaderprep_format.py').is_file() else None)
+    if pipeline:
+        value['pipeline'] = pipeline
+    else:
+        value['runtime'] = metadata(runtime) if runtime and Path(runtime).is_file() else None
+    return value
 
 
 def read_marker(path):
@@ -233,6 +260,8 @@ ASSEMBLY_SHARE = 0.35
 ASSEMBLY_SHARE_SEVERAL = 0.25
 # Share of the bar "Preparing shaders: models (experimental)" takes (all renderers) when it follows the warm.
 MODELS_SHARE = 0.5
+# the Metal shader library after the warm: one more Metal warm writes every shader's source, Xcode compiles them
+LIBRARY_SHARE = 0.15
 
 
 def parse_progress(line):
@@ -444,7 +473,8 @@ def merge_templates(package, base, extras, out, message, game=None):
 def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             progress=lambda text: None, cancel=lambda: False, skip=False,
             runner=run_process, python=None, builder=None, runtime_identity=None, log=None,
-            renderers=None, extra_templates=None, models=False, sweeper=None):
+            renderers=None, extra_templates=None, models=False, sweeper=None,
+            library=False, library_toolchain=None, library_builder=None):
     """Return a nonfatal status. executable=None assembles Android's pending warm.
 
     renderers: the renderers the native warm runs for, one after the other, on one shared head
@@ -466,12 +496,22 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
     every object archive's models once, hidden, from its title screen, and records their pipelines in the live
     caches. It resumes where a cancelled or crashed sweep stopped; cancelling it keeps the prepared generation
     (result "models": {renderer: 'done'|'paused'|'failed'}). sweeper replaces model_sweep.run (tests).
+    library (macOS setup): every shader a launch replays (the head start and the live cache) compiled ahead of
+    time into the generation, where the game takes them from (no compiles at run time, no shader text kept).
+    When Metal is among the renderers, one more Metal warm writes them:
+    every shader's source (WWHD_SHADERLIB_SOURCES), which shader_library.py compiles into shaders.metallib with
+    Xcode's Metal compiler (Xcode 26 and later: its Metal toolchain is downloaded once if missing).
+    The manifest's "library" is 'ready', 'unavailable' (no Xcode 26), 'failed' or 'skipped'; without it the
+    game compiles as before. library_toolchain() / library_builder(sources, out, progress=,
+    cancel=) replace shader_library's (tests).
     Paths are private local output only. No caller-supplied source is removed.
     """
     reporter = _Reporter(progress, log or progress, cancel)
     renderers = list(renderers or [renderer])
     models = bool(models and executable)
-    warm_high = 1.0 - MODELS_SHARE if models else 1.0
+    library = bool(library and executable) and 'metal' in renderers
+    library_low = 1.0 - LIBRARY_SHARE if library else 1.0  # the bar: warm, then models, then the library
+    warm_high = library_low - MODELS_SHARE if models else library_low
     if not Path(template).is_file():
         message = 'Shader template unavailable; shaders will compile during play'
         progress(message)
@@ -481,15 +521,90 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
     wanted = None
     launch = None
 
-    def warm(generation, names, low, high, keep_going):
+    def library_toolchain_ready():
+        """Xcode 26 or later with its Metal compiler (downloaded once when missing). An older Xcode's compiler
+        lacks -fmetal-math-mode=safe (Xcode 15), which the library needs to match the game's own compiles."""
+        if library_toolchain is not None:
+            return library_toolchain()
+        import shader_library
+        if shader_library.xcode_major() < 26:
+            return False
+        if shader_library.toolchain_available():
+            return True
+        reporter.message("Downloading Xcode's Metal toolchain (once) for the Metal shader library")
+        return shader_library.ensure_toolchain(log=reporter.log, cancel=cancel)
+
+    def build_metallib(generation, low, high):
+        """shaders.metallib in the generation: the Metal warm writes the sources, Xcode's compiler builds it"""
+        sources = Path(generation) / 'shader-sources'
+        shutil.rmtree(longpath(sources), ignore_errors=True)
+        sources.mkdir(parents=True)
+        try:
+            middle = (low + high) / 2
+            written = warm(generation, ['metal'], low, middle, keep_going=False, sources=sources,
+                           title='Writing your game\'s shaders for the Metal shader library')
+            if written.get('metal') != 'ready':
+                return False
+            reporter.begin('Building the Metal shader library', middle, high)
+            if library_builder is not None:
+                build = library_builder
+            else:
+                import shader_library
+                build = shader_library.build
+            built, failed = build(str(sources), str(Path(generation) / 'shaders.metallib'),
+                                  progress=reporter.update, cancel=cancel)
+            reporter.message('Metal shader library: %d shaders%s' % (built, ', %d compile during play' % failed if failed else ''))
+            return (Path(generation) / 'shaders.metallib').is_file()
+        finally:
+            shutil.rmtree(longpath(sources), ignore_errors=True)
+
+    def finish_library(generation, states, record):
+        """The Metal shader library, last: after the warm and the model sweep, which add to the live cache. With
+        Xcode 26 or newer, one more Metal warm writes the source of every shader a launch replays, and Xcode's
+        compiler builds shaders.metallib in the generation; without it, setup says so and the game compiles its
+        shaders during play. The manifest records the state. Returns it, or None (none wanted, Metal not ready)."""
+        if not library or states.get('metal') != 'ready':
+            return None
+        generation = Path(generation)
+        metallib = generation / 'shaders.metallib'
+        state = record.get('library')
+        if state == 'failed' or (state == 'ready' and metallib.is_file()):
+            return state  # (a failed library waits for Rebuild shader cache)
+        try:
+            if not library_toolchain_ready():
+                reporter.message('Metal shader library skipped: it needs Xcode 26 or newer, which compiles every '
+                                 'shader ahead of time (about 85 MB); without it, shaders compile during play')
+                state = 'unavailable'
+            else:
+                state = 'ready' if build_metallib(generation, library_low, 1.0) else 'failed'
+        except InterruptedError:
+            state = 'skipped'
+        except Exception as error:
+            reporter.message('Metal shader library failed (%s); shaders compile during play' % error)
+            state = 'failed'
+        if state != 'ready':
+            metallib.unlink(missing_ok=True)
+        record_library(generation, library=state)
+        return state
+
+    def record_library(generation, **fields):
+        with activation_lock(root):
+            current = read_marker(root / 'active.json')
+            if current.get('generation') == generation.name:
+                current = dict(current, **fields)
+                atomic_json(generation / 'manifest.json', current)
+                atomic_json(root / 'active.json', current)
+
+    def warm(generation, names, low, high, keep_going, sources=None, title=None):
         """wwhd --warm-shaders for each renderer in turn over [low, high] of the bar ->
-        {renderer: state}. keep_going: a failed renderer is recorded instead of raised."""
+        {renderer: state}. keep_going: a failed renderer is recorded instead of raised. sources: the Metal
+        warm also writes every shader's source there (the shader library)."""
         states = {}
         share = (high - low) / len(names)
         for index, name in enumerate(names):
-            title = ('Compiling shaders and pipelines for this computer' if len(renderers) == 1 else
-                     'Compiling shaders and pipelines for %s' % RENDERER_NAMES.get(name, name))
-            reporter.begin(title, low + index * share, low + (index + 1) * share)
+            phase = title or ('Compiling shaders and pipelines for this computer' if len(renderers) == 1 else
+                              'Compiling shaders and pipelines for %s' % RENDERER_NAMES.get(name, name))
+            reporter.begin(phase, low + index * share, low + (index + 1) * share)
             env = os.environ.copy()
             for key in list(env):
                 if key.startswith('WWHD_VK_TEST_') or key == 'WWHD_VK_GRAPH_DIAGNOSTICS':
@@ -498,6 +613,9 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             # must not redirect the warm subprocess away from that directory.
             env.pop('WWHD_VK_PIPELINE_CACHE', None)
             env.update(cache_environment(generation, game, name))
+            if name == 'metal' and sources is not None:
+                env['WWHD_SHADERLIB_SOURCES'] = str(sources)
+                env['WWHD_SHADERLIB'] = '0'  # every shader written, none taken from an older library
             try:
                 runner([str(executable), '--game', str(game), '--warm-shaders'], env, cancel, reporter.line)
                 states[name] = 'ready'
@@ -514,7 +632,7 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
         return states
 
     def sweep_models(generation, states):
-        """Preparing shaders: models over [warm_high, 1] of the bar -> {renderer: state}; never raises. The
+        """Preparing shaders: models over [warm_high, library_low] of the bar -> {renderer: state}; never raises. The
         renderers' sweeps run at the same time (separate games and caches); the bar shows their archives together."""
         import threading
         import model_sweep
@@ -523,7 +641,7 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
         out = {}
         if not names:
             return out
-        reporter.begin('Preparing shaders: models (experimental)', warm_high, 1.0)
+        reporter.begin('Preparing shaders: models (experimental)', warm_high, library_low)
         lock = threading.Lock()
         counts = {name: None for name in names}
         stop = threading.Event()
@@ -576,7 +694,10 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             wanted['mod_templates'] = sorted(file_hash(p) for p in extras)
         runtime = runtime_identity or executable
         if runtime and Path(runtime).is_file():
-            wanted['runtime'] = file_hash(runtime)
+            # the renderer's identity, not the binary's: an update that leaves the renderer as it was keeps the
+            # prepared generation and its model sweep (cmake/pipeline_identity_inputs.txt)
+            pipeline = pipeline_identity_of(runtime)
+            wanted['runtime'] = ('pipeline:' + pipeline) if pipeline else file_hash(runtime)
         launch = launch_identity(game, template, package, runtime)
         if skip or cancel():
             with activation_lock(root):
@@ -598,6 +719,13 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
                     and name.startswith('generation-') and Path(name).name == name
                     and generation.parent == root and (generation / 'headstart.bin').is_file()):
                 states = renderer_states(previous)
+                if previous.get('launch') != launch:
+                    # the same inputs by content (identity), in other places or with other times (a new release
+                    # folder, the files brought over by an update): the game's start check follows them
+                    previous = dict(previous, launch=launch)
+                    with activation_lock(root):
+                        atomic_json(generation / 'manifest.json', previous)
+                        atomic_json(active, previous)
                 missing = [r for r in renderers if r not in states] if executable else []
                 if missing:
                     try:
@@ -616,6 +744,12 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
                     if any(states.get(r) == 'ready' and model_sweep.status(root, r, model_sweep.identity_of(wanted, r)) != 'done'
                            for r in renderers):
                         done['models'] = sweep_models(generation, states)
+                        if previous.get('library') == 'ready':
+                            previous = dict(previous, library=None)  # the sweep added shaders: build it again
+                # a generation prepared before the library existed gets it
+                lib_state = finish_library(generation, states, previous)
+                if lib_state:
+                    done['library'] = lib_state
                 return done
         if models and (root / 'rebuild.request').exists():
             import model_sweep
@@ -634,6 +768,26 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             assembled = staging / 'template.bin'
             used = merge_templates(package, template, extras, assembled, reporter.message, game)
             reporter.message('Including the shaders of %d mod stage template(s)' % len(used))
+        # The head start depends on the game files, the template(s) and the shader translator only (the identity
+        # without "runtime"): when only the renderer changed (an update), the previous generation's head start is
+        # what this one would assemble, and only the native warm below runs again.
+        reused_headstart = False
+        if active.is_file() and not (root / 'rebuild.request').exists():
+            previous = read_marker(active)
+            name = previous.get('generation', '')
+            source = root / name if isinstance(name, str) and name.startswith('generation-') and Path(name).name == name else None
+            same = lambda a: {k: v for k, v in (a or {}).items() if k != 'runtime'}
+            if (source is not None and source != staging and previous.get('status') == 'ready'
+                    and isinstance(previous.get('identity'), dict) and same(previous['identity']) == same(wanted)
+                    and (source / 'headstart.bin').is_file()):
+                try:
+                    import build_cache
+                    build_cache.copy_tree(source / 'headstart.bin', staging / 'headstart.bin')
+                    reused_headstart = True
+                    reporter.message('Your game\'s shaders are unchanged since the last preparation; '
+                                     'only the pipelines are compiled again')
+                except (ImportError, OSError):
+                    reused_headstart = False
         import sys
         command = [python or sys.executable, str(Path(package) / 'tools/shaderprep.py'),
                    'build', str(staging / 'headstart.bin'), '--game', str(game), '--template', str(assembled),
@@ -642,7 +796,9 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
         for key in list(env):
             if key.startswith('WWHD_VK_TEST_') or key == 'WWHD_VK_GRAPH_DIAGNOSTICS':
                 env.pop(key)
-        if builder:
+        if reused_headstart:
+            pass
+        elif builder:
             if _accepts_keyword(builder, 'progress'):
                 builder(game, staging / 'headstart.bin', assembled, progress=reporter.update)
             else:
@@ -672,11 +828,14 @@ def prepare(game, template, executable, cache_root, package, renderer='vulkan',
             (root / 'failed.json').unlink(missing_ok=True)
             if status == 'ready':
                 cleanup_generations(root, staging.name)
-        done = dict(status=status, generation=str(staging), reused=False)
+        done = dict(status=status, generation=str(staging), reused=False, headstart_reused=reused_headstart)
         if states is not None:
             done['renderers'] = states
             if models:
                 done['models'] = sweep_models(staging, states)
+            lib_state = finish_library(staging, states, result)
+            if lib_state:
+                done['library'] = lib_state
         return done
     except Exception as error:
         if staging:
@@ -728,6 +887,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     result = prepare(args.game, args.template, args.executable, args.cache_root, args.package,
                      renderer=args.renderer, skip=args.skip,
+                     library=args.renderer == 'metal' and sys.platform == 'darwin',
                      progress=lambda text, fraction=None: print(
                          text if fraction is None else '%3d%% %s' % (100 * fraction, text), file=sys.stderr, flush=True),
                      log=lambda line: print(line, file=sys.stderr, flush=True),

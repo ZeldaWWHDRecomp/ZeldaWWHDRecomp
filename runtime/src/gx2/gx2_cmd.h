@@ -57,7 +57,24 @@ enum Op : uint32_t {
     // a layout root pane is about to be drawn into the target bound now (aspect.cpp hook_02877100, as
     // OP_LAYOUT_ROOT, also with the original aspect): the first one on the TV picture ends the scene
     OP_FRAMEGEN_LAYOUT,
-    OP_COUNT
+    OP_COUNT,
+    // native draw packets (native_draw.h): emitted and executed only by WWHD_NATIVE_DRAW=ON builds (decomp build, fast
+    // mode); declared in every build, after OP_COUNT, so that no other value or OP_COUNT changes. Recorded like any command:
+    OP_PACKET_DEFINE = 0x40,  // native_draw::Packet (kPacketWords): a site's packet for this pass
+    OP_PACKET_DRAW = 0x41,    // packet id, kind, the instance's blocks and vertex input (native_draw.h): one instance
+    // native pass and copy descriptions (native_pass.h), same builds; descriptions only, they write no register
+    OP_PASS_BEGIN = 0x42,     // native_pass::Pass (kPassWords): the targets a site starts rendering into
+    OP_PASS_LOAD = 0x43,      // native_pass::Load: the site clears attachments of the open pass
+    OP_PASS_END = 0x44,       // the open pass ends (store)
+    OP_PASS_COPY = 0x45,      // native_pass::Copy: a scan-out, expand or surface copy
+    OP_PASS_VIEWPORT = 0x46,  // native_pass::Viewport: the open pass's viewport or scissor (the site sets it)
+    OP_J3D_SHAPE = 0x47,      // the J3D shape draw that follows: its key words (native_draw.h, J3D material cache)
+    // J3D material descriptions (native_j3d_desc.h), same builds: one described J3D draw (desc, env, mesh, its blocks)
+    OP_J3D_DESC_DRAW = 0x50,
+    // cheapib stage 2 (decomp build, fast mode; cheapib/cheapib_s2_vertex.cpp): host-only, never recorded: a replayed
+    // in-between's vertex bytes for CPU-written vertex sites, written into guest memory before its calls (payload: the
+    // writes object as two words)
+    OP_CHEAPIB_VTX = 0x51,
 };
 
 // debug draw provenance (WWHD_VK_PIPELINE_WHO): a provider (set by dsweep.cpp) describes the guest code issuing a
@@ -83,6 +100,8 @@ void set_regs(uint32_t first, const uint32_t* values, uint32_t count);
 
 // the live register file used for execution
 uint32_t* regs();
+// (decomp fast mode, cheapib b1: a replayed call's net ALU-constant writes, applied as its execution would)
+void apply_alu_regs(uint32_t first, const uint32_t* values, uint32_t count);
 
 // execute a sequence of encoded commands
 void execute(const uint32_t* words, uint32_t count);

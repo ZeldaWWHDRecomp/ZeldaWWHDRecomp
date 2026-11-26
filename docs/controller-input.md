@@ -104,10 +104,12 @@ more; for an item button, that item can't be used from the controller). An item 
 in menus too (L1 no longer turns the GamePad page); on d-pad down it is the item button only while
 you play, d-pad down in menus.
 
-**L turns the GamePad page** (Controls, off by default): in play the game reads L only to turn its
-GamePad screen between Items and Map. Off, L reaches the game only outside play, so L1 can jump
-without turning the page. Turn it on for a GamePad picture on a second screen. It applies the same
-way with **Wii U Pro Controller** chosen in Controls.
+L turns the game's GamePad screen between Items and Map, in play too, as on the Wii U, whichever
+game window (TV or GamePad) is in front. Only while Jump anywhere or the moon jump is on does an input
+they share with L (L1 / Q by default) jump in play without turning the page.
+
+**L turns the GamePad page** (Controls, off by default): on, that shared input jumps **and** turns the
+page in play. It applies the same way with **Wii U Pro Controller** chosen in Controls.
 
 Controls files from before these options (format 1) keep working: Jump anywhere and the moon jump
 take the inputs that pressed the Wii U's L, and the old Jump anywhere button choice (R, ZL, ZR, L3,
@@ -141,11 +143,17 @@ is **paused** (the game's own short pause, as when a strong hit lands; the music
 **Item button names**: X Y R, A1 A2 A3, or **Automatic** (default: A1, A2, A3 while you play by touch).
 The ring, the game's HUD buttons and the GamePad's item slots show them.
 
-## Controllers while the game isn't focused
+## Controllers and the window focus
 
-Controls → **Controller input when the game isn't focused** keeps your controllers playing the game
-while another window has the focus, for example with the game on a second screen, while streaming
-or with remote play. It is off by default and saved with your controls. The change takes effect at once.
+Controllers play the game while either of the game's own windows is in front: the TV window or the
+separate GamePad window. Clicking the GamePad window (for a touch, or to move it) does not stop the
+controller.
+
+## Controllers in the background
+
+Controls → **Controller input in the background** keeps your controllers playing the game while
+another app is in front, for example with the game on a second screen, while streaming or with
+remote play. It is off by default and saved with your controls. The change takes effect at once.
 
 - Only controllers are affected. Keyboard keys and mouse buttons are still released when the
   game loses the focus, and they reach the game only while it is focused again.
@@ -181,7 +189,15 @@ short press, with a release between successive notches; fractional trackpad
 scrolls accumulate to a notch.
 
 In **Controls → Camera**, enable **Mouse camera** and click the TV picture to capture the pointer. Move the
-mouse to look around on foot or while sailing, at the same mouse sensitivity. With
+mouse to look around on foot or while sailing, at the same mouse sensitivity. In first person (R3 look) and
+whenever Link aims in first person (bow, hookshot, boomerang, grappling hook, telescope, Picto Box) the mouse
+turns the view directly, as in a PC shooter: one mouse movement turns it by a fixed angle, the mouse
+sensitivity's degrees per point, the same in every view and the same as on foot, with no acceleration and no
+easing; the view follows in the same logic step. Nothing needs setting up (no gyro source, no game
+**Options → Gyro**). The game's own limits stay: how far you can look up and down, and the telescope's and
+Picto Box's slower turning while zoomed in. Up/down follows **Invert camera up/down**, as on foot; the game's
+own aiming inversion option is for the right stick (as with the gyro, it does not apply to the mouse). A right
+stick pushed at the same time aims instead, as the game does with the gyro. With
 the boat cannon equipped, mouse movement aims the cannon instead; WASD or a
 controller's left stick takes priority while held. Mouse cannon aim also follows
 **Invert camera up/down**. Firing keeps its existing button binding. The
@@ -198,7 +214,8 @@ Turn that option off to use wheel bindings. When left click is bound, it replace
 the mouse camera's automatic “fire the aimed item” action. Middle click releases
 the pointer only when `Mouse3` is unbound; with it bound, use Escape to release.
 On macOS, unbound side buttons also retain their pointer-release behavior.
-The mouse gyro still receives movement independently of button bindings.
+The mouse gyro still receives movement independently of button bindings (with the mouse camera off; with it
+on, the mouse camera aims in first person itself and the **Mouse aiming** gyro source waits).
 
 A useful manual setup is left click = B, right click = R, and middle click =
 right-stick click (first person, with that mod enabled), with WASD and the remaining keyboard bindings.

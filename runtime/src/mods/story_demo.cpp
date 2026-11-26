@@ -49,7 +49,8 @@ const uint32_t kLiteralVtable = GD(0x1004BDC8);  // the literal-string vtable se
 const uint32_t kIdTable = GD(0x100DE8F4), kIdTableCount = GD(0x100C45C0);  // archive CRC32 -> resource id order
 const uint32_t kMessageResources = GD(0x101F4AE8), kLabelVtable = GD(0x100E0A68);  // message resources; a label string's vtable
 const uint32_t kDemoMessageFlag = GD(0x101F3480);  // fopMsgM_demoMsgFlagCheck's byte
-constexpr uint32_t kManager = 0x52C4, kPlayer = 0x5B34, kFlagBytes = 1280;
+constexpr uint32_t kManager = 0x52C4, kFlagBytes = 1280;
+const uint32_t kPlayer = GI(0x5B34);
 constexpr uint32_t kActorVtable = 0xB4, kSetPlayerPosAndAngle = 0x114;  // daPy_lk_c: its vtable; setPlayerPosAndAngle(cXyz*, s16) in it
 // guest record (arena)
 constexpr uint32_t kMarker = 0x444D4F31;  // 'DMO1'

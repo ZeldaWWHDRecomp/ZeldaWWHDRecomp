@@ -39,9 +39,11 @@ struct Clock {
 // it counts as executed on (the next flip is due `interval` vsyncs after it) and updates shift:
 // less than a vsync (`period`, at every rate) late keeps the grid (due); later moves the grid so t
 // is a granule boundary (granule: ticks per vsync at the current rate).
-inline uint64_t flip_executed(const Clock& c, int64_t& shift, uint64_t due, int64_t t, uint64_t granule) {
+// keep: lateness beyond one vsync that still keeps the grid (default 0; the decomp build's c2 passes one frame at the
+// drawn rate: its frames reach the render thread a pass later by design, gx2_core.cpp)
+inline uint64_t flip_executed(const Clock& c, int64_t& shift, uint64_t due, int64_t t, uint64_t granule, int64_t keep = 0) {
     const int64_t late = t - c.time(due, shift);
-    if (late < c.period) return due;
+    if (late < c.period + keep) return due;
     // the next boundary after t, and the shift that makes it start at t
     const uint64_t at = (c.index(t, shift) / granule + 1) * granule;
     shift += c.time(at, shift) - t;

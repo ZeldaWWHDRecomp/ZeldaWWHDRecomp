@@ -74,8 +74,22 @@ if(WWHD_WRITE_WATCH)
   add_compile_definitions(WWHD_WRITE_WATCH=1)
 endif()
 
-option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS; experimental)" OFF)
+option(WWHD_DECOMP "decomp build: run the decompiled game functions (macOS, Android; the release part also Linux, Windows; experimental)" OFF)
 include(cmake/Decomp.cmake)
+include(cmake/VkSmooth.cmake)  # (option WWHD_VK_SMOOTH; wwhd_vk_smooth below)
+
+# Cafe OS message queues (runtime/src/threads.cpp, WWHD_MSGQ_FAST): lock-free queue lookups, the wake gate in every
+# build and, in the decomp fast build, a short nap of the spinning receivers before they sleep. OFF = the code as before.
+# Default ON in the decomp fast build (phone pair 2026-11-11: logic -0.4 to -1.1 ms at the cliff), OFF otherwise.
+if(WWHD_DECOMP AND WWHD_DECOMP_FAST)
+  set(WWHD_MSGQ_FAST_DEFAULT ON)
+else()
+  set(WWHD_MSGQ_FAST_DEFAULT OFF)
+endif()
+option(WWHD_MSGQ_FAST "cheaper OSSendMessage / OSReceiveMessage wake path (threads.cpp)" ${WWHD_MSGQ_FAST_DEFAULT})
+if(WWHD_MSGQ_FAST)
+  set_property(SOURCE "${CMAKE_SOURCE_DIR}/runtime/src/threads.cpp" APPEND PROPERTY COMPILE_DEFINITIONS WWHD_MSGQ_FAST=1)
+endif()
 if(WWHD_DECOMP)
   wwhd_decomp_configure()
 elseif(EXISTS "${GEN_DIR}/decomp_hooks.txt")
@@ -124,6 +138,43 @@ add_library(gamecode STATIC ${GEN_SOURCES} ${GEN_DIR}/table.c ${GEN_DIR}/imports
 target_include_directories(gamecode PUBLIC runtime/include ${GEN_DIR})
 # exact FP semantics: no contraction into FMA, no fast-math; PowerPC integer arithmetic wraps
 target_compile_options(gamecode PRIVATE -O3 -ffp-contract=off -fno-strict-aliasing -fwrapv -w)
+option(WWHD_PPC_TRACE "game code checks the function-entry trace switch (WWHD_TRACE_FUNCS and friends)" ON)
+if(NOT WWHD_PPC_TRACE)
+  target_compile_definitions(gamecode PRIVATE PPC_NO_TRACE=1)
+endif()
+# Profile-guided optimization of the runtime (the render thread): WWHD_PGO_GENERATE=<dir> builds an
+# instrumented runtime that writes profiles there; WWHD_PGO_USE=<file.profdata> optimizes with them.
+# WWHD_PGO_GAMECODE=ON also profiles the recompiled game code (the logic thread).
+# WWHD_PGO_CS_GENERATE=<dir> with WWHD_PGO_USE builds a context-sensitive (post-inline) instrumented
+# binary on top of that profile; merge its profiles with the WWHD_PGO_USE one for the final build.
+set(WWHD_PGO_GENERATE "" CACHE PATH "write runtime PGO profiles to this folder")
+set(WWHD_PGO_USE "" CACHE FILEPATH "optimize the runtime with this merged .profdata")
+set(WWHD_PGO_CS_GENERATE "" CACHE PATH "write context-sensitive PGO profiles to this folder")
+option(WWHD_PGO_GAMECODE "apply PGO to the game code too" OFF)
+if(WWHD_PGO_CS_GENERATE AND WWHD_PGO_USE)
+  add_compile_options(-fprofile-use=${WWHD_PGO_USE} -fcs-profile-generate=${WWHD_PGO_CS_GENERATE}
+                      -Wno-profile-instr-unprofiled -Wno-profile-instr-out-of-date)
+  add_link_options(-fcs-profile-generate=${WWHD_PGO_CS_GENERATE})
+  add_compile_definitions(WWHD_PGO_GENERATE_BUILD=1)
+  target_compile_options(gamecode PRIVATE -fprofile-use=${WWHD_PGO_USE}
+                         -fcs-profile-generate=${WWHD_PGO_CS_GENERATE})
+elseif(WWHD_PGO_GENERATE)
+  add_compile_options($<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-fprofile-generate=${WWHD_PGO_GENERATE}>)
+  add_link_options(-fprofile-generate=${WWHD_PGO_GENERATE})
+  add_compile_definitions(WWHD_PGO_GENERATE_BUILD=1)
+  if(WWHD_PGO_GAMECODE)
+    target_compile_options(gamecode PRIVATE -fprofile-generate=${WWHD_PGO_GENERATE})
+  endif()
+elseif(WWHD_PGO_USE)
+  add_compile_options($<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-fprofile-use=${WWHD_PGO_USE}>
+                      $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-Wno-profile-instr-unprofiled>
+                      $<$<NOT:$<STREQUAL:$<TARGET_PROPERTY:NAME>,gamecode>>:-Wno-profile-instr-out-of-date>)
+  add_link_options(-fprofile-use=${WWHD_PGO_USE})  # LTO backend: applies a context-sensitive profile
+  if(WWHD_PGO_GAMECODE)
+    target_compile_options(gamecode PRIVATE -fprofile-use=${WWHD_PGO_USE} -Wno-profile-instr-unprofiled
+                                            -Wno-profile-instr-out-of-date)
+  endif()
+endif()
 if(APPLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
   target_compile_options(gamecode PRIVATE -mcpu=apple-m1)
 endif()
@@ -169,9 +220,10 @@ target_compile_options(imgui PRIVATE -w -O2)
 # ---- build identification (runtime/src/build_info.h): version and commit, rewritten by
 # cmake/BuildInfo.cmake on every build when they change. Release builds pass the tag.
 set(WWHD_VERSION "" CACHE STRING "release version shown in reports and logs (default: from git describe)")
+set(WWHD_COMMIT "" CACHE STRING "commit reported by the build (default: from git, -dirty with local changes)")
 set(WWHD_BUILD_INFO ${CMAKE_BINARY_DIR}/generated/build_info.cpp)
 add_custom_target(wwhd_build_info
-  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${WWHD_BUILD_INFO} "-DVERSION=${WWHD_VERSION}"
+  COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${WWHD_BUILD_INFO} "-DVERSION=${WWHD_VERSION}" "-DCOMMIT=${WWHD_COMMIT}"
           "-DVARIANT=$<IF:$<BOOL:${WWHD_DECOMP}>,decomp,>"
           -P ${CMAKE_SOURCE_DIR}/cmake/BuildInfo.cmake
   BYPRODUCTS ${WWHD_BUILD_INFO}
@@ -222,7 +274,7 @@ endif()
 # GX2 sources are compiled into the executable (not a static library) so their
 # strong HLE definitions replace the generated weak import stubs.
 file(GLOB RUNTIME_SOURCES CONFIGURE_DEPENDS runtime/src/*.cpp runtime/src/*.c runtime/src/hle/*.cpp runtime/src/mods/*.cpp runtime/src/motion/*.cpp
-                                            runtime/src/overlay/*.cpp runtime/src/editor/*.cpp)
+                                            runtime/src/overlay/*.cpp runtime/src/editor/*.cpp runtime/src/remote_pad/*.cpp)
 list(REMOVE_ITEM RUNTIME_SOURCES ${CMAKE_SOURCE_DIR}/runtime/src/mods/player_model_packages.cpp)  # (in wwhd_gcmodel)
 # the world editor's MCP interface for Claude and other tool clients (runtime/src/editor/mcp.h): only in the
 # --editor launch mode of desktop builds, off until turned on in Settings -> Editor
@@ -290,7 +342,7 @@ if(WWHD_SDL_HOST)
   if(NOT TARGET SDL3::SDL3)
     find_package(SDL3 CONFIG REQUIRED)
   endif()
-  list(APPEND GFX_SOURCES runtime/src/platform/input_sdl.cpp runtime/src/platform/mouse_sdl.cpp runtime/src/platform/display_rate.cpp
+  list(APPEND GFX_SOURCES runtime/src/platform/input_sdl.cpp runtime/src/platform/window_focus.cpp runtime/src/platform/mouse_sdl.cpp runtime/src/platform/display_rate.cpp
                           runtime/src/platform/mic_sdl.cpp)
   if(APPLE)
     enable_language(OBJCXX)
@@ -342,6 +394,12 @@ if(WWHD_DECOMP)
 endif()
 if(ANDROID)
   target_link_libraries(wwhd PRIVATE log android nativewindow)
+  # libmain's calls to its own exported functions bind directly at link time instead of going through PLT stubs
+  # (normal build: 29,178 -> 637 PLT entries; phone pairs 2026-11-08, Xiaomi 14 cliff: logic -0.65 ms, render
+  # thread -1.25 ms in the normal build, logic -0.56 / render -1.68 ms in the fast decomp build). Exports stay (JNI,
+  # dlopen'ed native mods); nothing interposes libmain's functions (an app's libraries are not in bionic's global
+  # group, the bundled zlib already binds to libmain's own copy, native mods are dlopen'ed RTLD_LOCAL).
+  target_link_options(wwhd PRIVATE "LINKER:-Bsymbolic-functions")
   option(WWHD_QUEST_THEATER "Build the Quest OpenXR presentation host (inactive on other devices)" ON)
   if(WWHD_QUEST_THEATER)
     include(cmake/OpenXR.cmake)
@@ -361,15 +419,29 @@ endif()
 if(WWHD_HAS_METAL)
   target_compile_definitions(wwhd PRIVATE WWHD_HAS_METAL=1)
   target_link_libraries(wwhd PRIVATE "-framework Metal" "-framework QuartzCore" "-framework AppKit" "-framework Foundation" "-framework ImageIO" "-framework UniformTypeIdentifiers" "-framework GameController" "-framework CoreHaptics" "-framework Carbon" "-framework AudioToolbox" "-framework CoreAudio" "-framework AVFoundation" compression)
+  # the iPhone GamePad's screen (gfx/remote_video.mm): H.264 from the GamePad picture
+  target_link_libraries(wwhd PRIVATE "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo")
 endif()
+# the identity of the code that interprets saved pipeline recipes and prepared shaders (every renderer:
+# the setup's shader preparation and the launch check use it too; runtime/src/pipeline_runtime_identity.h)
+include(cmake/PipelineRuntimeIdentity.cmake)
+wwhd_pipeline_runtime_identity("${CMAKE_SOURCE_DIR}" WWHD_PIPELINE_RUNTIME_ID)
+# A build whose changes leave the renderer as released can keep the release's identity, so the
+# installer's pipeline head start and the player's saved recipes stay usable.
+set(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE "" CACHE STRING "pipeline runtime identity to report instead of the source hash")
+if(WWHD_PIPELINE_RUNTIME_ID_OVERRIDE)
+  set(WWHD_PIPELINE_RUNTIME_ID "${WWHD_PIPELINE_RUNTIME_ID_OVERRIDE}")
+endif()
+set_property(SOURCE runtime/src/pipeline_runtime_identity.cpp APPEND PROPERTY
+  COMPILE_DEFINITIONS "WWHD_PIPELINE_RUNTIME_ID=\"${WWHD_PIPELINE_RUNTIME_ID}\"")
 if(WWHD_HAS_VULKAN)
-  include(cmake/PipelineRuntimeIdentity.cmake)
-  wwhd_pipeline_runtime_identity("${CMAKE_SOURCE_DIR}" WWHD_PIPELINE_RUNTIME_ID)
   set_property(SOURCE runtime/src/gfx/vulkan/backend.cpp APPEND PROPERTY
     COMPILE_DEFINITIONS "WWHD_PIPELINE_RUNTIME_ID=\"${WWHD_PIPELINE_RUNTIME_ID}\"")
   # VK_NO_PROTOTYPES: the renderer loads every Vulkan function at run time (gfx/vulkan/loader.h), so the
   # executable starts without a Vulkan loader or with an older one, and can say what is missing
   target_compile_definitions(wwhd PRIVATE WWHD_HAS_VULKAN=1 VK_NO_PROTOTYPES)
+  # smooth frame pacing and multi-threaded recording (on by default on phones and the Steam Deck only)
+  wwhd_vk_smooth(wwhd)
   if(APPLE)
     # gfx/vulkan/handoff_trace.cpp reads CACurrentMediaTime (the present observer's clock) on every
     # Apple build with Vulkan, including Vulkan-only builds, where the Metal block above doesn't link it
@@ -447,14 +519,15 @@ add_executable(gcmodel_tool runtime/tools/gcmodel_tool.cpp)
 target_include_directories(gcmodel_tool PRIVATE runtime/src runtime/tools)
 target_link_libraries(gcmodel_tool PRIVATE wwhd_gcmodel)
 
-add_executable(mod_manager_test runtime/tools/mod_manager_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp)
-target_include_directories(mod_manager_test PRIVATE runtime/src)
+add_executable(mod_manager_test runtime/tools/mod_manager_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp
+               runtime/src/mods/speedrun.cpp)
+target_include_directories(mod_manager_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_manager_test PRIVATE -UNDEBUG)
 
 # External native package fixture and isolated lifecycle/integration tests.
 add_library(mod_fixture MODULE runtime/tools/mod_fixture.cpp)
 target_include_directories(mod_fixture PRIVATE runtime/include)
-add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/required.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_package_test runtime/tools/mod_package_test.cpp runtime/src/mods/required.cpp runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_package_test PRIVATE runtime/src runtime/include runtime/tools)
 target_compile_options(mod_package_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_package_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
@@ -545,13 +618,13 @@ target_link_libraries(guest_png_test PRIVATE ZLIB::ZLIB)
 add_test(NAME guest_png COMMAND guest_png_test "${CMAKE_SOURCE_DIR}/examples/guest-mods")
 
 # Synthetic integration tests call the real guest filesystem HLE handlers.
-add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_content_fs_test runtime/tools/mod_content_fs_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_content_fs_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_content_fs_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_content_fs_test PRIVATE ZLIB::ZLIB Threads::Threads)
 
 # language sources: synthetic European/Japanese packs read through the guest file system (game_languages.h)
-add_executable(language_source_test runtime/tools/language_source_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
+add_executable(language_source_test runtime/tools/language_source_test.cpp runtime/src/hle/fs.cpp runtime/src/hle/os_time.cpp runtime/src/mods/save_folder.cpp runtime/src/mods/mod_stages_files.cpp runtime/src/mods/actor_model_cache.cpp runtime/tools/fs_story_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/mods/content.cpp runtime/src/mods/mod_archive.cpp runtime/src/game_languages.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(language_source_test PRIVATE runtime/src runtime/include)
 target_compile_options(language_source_test PRIVATE -UNDEBUG)
 target_link_libraries(language_source_test PRIVATE ZLIB::ZLIB Threads::Threads)
@@ -559,11 +632,11 @@ target_link_libraries(language_source_test PRIVATE ZLIB::ZLIB Threads::Threads)
 # register state groups of the Vulkan continued-draw fast path (runtime/src/gx2/state_groups.h)
 add_executable(state_groups_test runtime/tools/state_groups_test.cpp)
 target_include_directories(state_groups_test PRIVATE runtime/include runtime/src runtime/src/gx2 ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
-target_compile_options(state_groups_test PRIVATE "SHELL:-include ${CEMU_DIR}/cemu_shim.h" -UNDEBUG)
+target_compile_options(state_groups_test PRIVATE "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"" -UNDEBUG)
 # register class tables of the GX2 register writes (runtime/src/gx2/register_class.h)
 add_executable(register_class_test runtime/tools/register_class_test.cpp)
 target_include_directories(register_class_test PRIVATE runtime/include runtime/src runtime/src/gx2 ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
-target_compile_options(register_class_test PRIVATE "SHELL:-include ${CEMU_DIR}/cemu_shim.h" -UNDEBUG)
+target_compile_options(register_class_test PRIVATE "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"" -UNDEBUG)
 target_link_libraries(register_class_test PRIVATE Threads::Threads)
 add_test(NAME register_class COMMAND register_class_test)
 # decomp build: the LR of a guest call from decompiled code (runtime/src/decomp/call_lr.h)
@@ -617,10 +690,20 @@ add_executable(capture_schedule_test runtime/tools/capture_schedule_test.cpp)
 target_include_directories(capture_schedule_test PRIVATE runtime/src)
 target_compile_options(capture_schedule_test PRIVATE -UNDEBUG)
 add_test(NAME capture_schedule COMMAND capture_schedule_test)
+# the exact culling pre-run per camera process of a blended logic pass (runtime/src/interp_prerun_cams.h)
+add_executable(interp_prerun_cams_test runtime/tools/interp_prerun_cams_test.cpp)
+target_include_directories(interp_prerun_cams_test PRIVATE runtime/src)
+target_compile_options(interp_prerun_cams_test PRIVATE -UNDEBUG)
+add_test(NAME interp_prerun_cams COMMAND interp_prerun_cams_test)
 add_executable(area_sample_test runtime/tools/area_sample_test.cpp)
 target_include_directories(area_sample_test PRIVATE runtime/src)
 target_compile_options(area_sample_test PRIVATE -UNDEBUG)
 add_test(NAME area_sample COMMAND area_sample_test)
+# the loader's relocations to the game module's own symbols (runtime/src/rpx_relocs.h, issue #383)
+add_executable(rpx_relocs_test runtime/tools/rpx_relocs_test.cpp)
+target_include_directories(rpx_relocs_test PRIVATE runtime/src)
+target_compile_options(rpx_relocs_test PRIVATE -UNDEBUG)
+add_test(NAME rpx_relocs COMMAND rpx_relocs_test)
 
 # guest addresses and swizzles of sampled texture levels (runtime/src/gfx/texture_levels.h, issue #297)
 add_executable(texture_levels_test runtime/tools/texture_levels_test.cpp)
@@ -635,6 +718,12 @@ target_include_directories(sampler_lod_bias_test PRIVATE runtime/src)
 target_link_libraries(sampler_lod_bias_test PRIVATE cemu_latte)
 target_compile_options(sampler_lod_bias_test PRIVATE -UNDEBUG "SHELL:-include \"${CEMU_DIR}/cemu_shim.h\"")
 add_test(NAME sampler_lod_bias COMMAND sampler_lod_bias_test)
+
+# a pixel shader's depth output removed from its MSL (runtime/src/gfx/msl_depth_output.h)
+add_executable(msl_depth_output_test runtime/tools/msl_depth_output_test.cpp)
+target_include_directories(msl_depth_output_test PRIVATE runtime/src)
+target_compile_options(msl_depth_output_test PRIVATE -UNDEBUG)
+add_test(NAME msl_depth_output COMMAND msl_depth_output_test)
 
 add_executable(gamepad_backdrop_test runtime/tools/gamepad_backdrop_test.cpp)
 target_compile_options(gamepad_backdrop_test PRIVATE -UNDEBUG)
@@ -709,6 +798,11 @@ add_executable(game_settings_page_test runtime/tools/game_settings_page_test.cpp
 target_include_directories(game_settings_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(game_settings_page_test PRIVATE -UNDEBUG)
 add_test(NAME game_settings_page COMMAND game_settings_page_test)
+# the item menu's selection cursor watch (issue #336, runtime/src/mods/menu_cursor.h)
+add_executable(menu_cursor_test runtime/tools/menu_cursor_test.cpp)
+target_include_directories(menu_cursor_test PRIVATE runtime/src)
+target_compile_options(menu_cursor_test PRIVATE -UNDEBUG)
+add_test(NAME menu_cursor COMMAND menu_cursor_test)
 # the port's layout writer (runtime/src/mods/lyt_build.cpp); tools/story_mods/test_lyt.py compares its
 # output with the reference generator's
 add_executable(lyt_build_test runtime/tools/lyt_build_test.cpp runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp
@@ -733,6 +827,23 @@ target_include_directories(link_poses_test PRIVATE runtime/include runtime/src r
 target_compile_options(link_poses_test PRIVATE -UNDEBUG)
 target_link_libraries(link_poses_test PRIVATE ZLIB::ZLIB)
 add_test(NAME link_poses COMMAND link_poses_test)
+# Link's colour masks (runtime/src/mods/link_masks.h): classification, endpoint labels, tint and the cache format on
+# synthetic textures made in the test; with WWHD_GAME_DIR set it also makes the masks of the player's own Link
+add_executable(link_masks_test runtime/tools/link_masks_test.cpp runtime/src/mods/link_masks.cpp runtime/src/mods/game_layouts.cpp
+               runtime/src/mods/item_icons.cpp runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp)
+target_include_directories(link_masks_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(link_masks_test PRIVATE -UNDEBUG)
+target_link_libraries(link_masks_test PRIVATE ZLIB::ZLIB)
+add_test(NAME link_masks COMMAND link_masks_test)
+# Link's appearance (runtime/src/mods/link_appearance.h): the record, presets, the save's story block records, each
+# save file's look (load, change, save, new game, preview), the colour page's input, the irises' endpoint labels
+add_executable(link_appearance_test runtime/tools/link_appearance_test.cpp runtime/src/mods/link_appearance.cpp
+               runtime/src/mods/link_appearance_store.cpp runtime/src/mods/link_masks.cpp runtime/src/mods/game_layouts.cpp
+               runtime/src/mods/item_icons.cpp runtime/src/mods/lyt_build.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp)
+target_include_directories(link_appearance_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(link_appearance_test PRIVATE -UNDEBUG)
+target_link_libraries(link_appearance_test PRIVATE ZLIB::ZLIB)
+add_test(NAME link_appearance COMMAND link_appearance_test)
 # Game progress (runtime/src/mods/game_progress.h): the count of a save in ten parts, on byte images built in the
 # test; WWHD_PROGRESS_SAVES=<cking.sav,...> also prints the count of real Quest Logs
 add_executable(game_progress_test runtime/tools/game_progress_test.cpp)
@@ -744,6 +855,11 @@ add_executable(game_progress_page_test runtime/tools/game_progress_page_test.cpp
 target_include_directories(game_progress_page_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(game_progress_page_test PRIVATE -UNDEBUG)
 add_test(NAME game_progress_page COMMAND game_progress_page_test)
+# the item menu's pages through the game's look and the HUD store: every line in the game's font while scrolling
+add_executable(game_pages_font_test runtime/tools/game_pages_font_test.cpp runtime/src/mods/game_look.cpp)
+target_include_directories(game_pages_font_test PRIVATE runtime/include runtime/src runtime/src/mods)
+target_compile_options(game_pages_font_test PRIVATE -UNDEBUG)
+add_test(NAME game_pages_font COMMAND game_pages_font_test)
 # Achievements (achievements_goals.h, achievements_store.h): the goals, the record, the two-read rule, the pause;
 # WWHD_PROGRESS_SAVES=<cking.sav,...> prints the goals real Quest Logs meet
 add_executable(achievements_test runtime/tools/achievements_test.cpp)
@@ -805,6 +921,14 @@ add_test(NAME interp_chain COMMAND interp_chain_test)
 add_executable(interp_nodraw_test runtime/tools/interp_nodraw_test.cpp)
 target_compile_options(interp_nodraw_test PRIVATE -UNDEBUG)
 add_test(NAME interp_nodraw COMMAND interp_nodraw_test)
+# frame interpolation: kept actors' put-back leaves the draws' GPU buffer set selectors (runtime/src/interp_keep.h, issue #446)
+add_executable(interp_keep_test runtime/tools/interp_keep_test.cpp)
+target_compile_options(interp_keep_test PRIVATE -UNDEBUG)
+add_test(NAME interp_keep COMMAND interp_keep_test)
+# frame interpolation: the sound listener takes the step's exact camera before the engine's step (runtime/src/interp_listener.h, issue #533)
+add_executable(interp_listener_test runtime/tools/interp_listener_test.cpp)
+target_compile_options(interp_listener_test PRIVATE -UNDEBUG)
+add_test(NAME interp_listener COMMAND interp_listener_test)
 # frame interpolation: the camera's distance rule (collision pull-ins, event cuts) and real cuts (runtime/src/interp_camera.h)
 add_executable(interp_camera_test runtime/tools/interp_camera_test.cpp)
 target_compile_options(interp_camera_test PRIVATE -UNDEBUG)
@@ -829,6 +953,10 @@ add_test(NAME interp_trail COMMAND interp_trail_test)
 add_executable(interp_fade_test runtime/tools/interp_fade_test.cpp)
 target_compile_options(interp_fade_test PRIVATE -UNDEBUG)
 add_test(NAME interp_fade COMMAND interp_fade_test)
+# frame interpolation: per-frame children held on hold passes, the message manager's frame end once per logic step (runtime/src/interp_hold.h)
+add_executable(interp_hold_test runtime/tools/interp_hold_test.cpp)
+target_compile_options(interp_hold_test PRIVATE -UNDEBUG)
+add_test(NAME interp_hold COMMAND interp_hold_test)
 # frame interpolation: hidden joints that were not updated (Link's hand poses) are drawn at the current step (runtime/src/interp_joints.h)
 add_executable(interp_joints_test runtime/tools/interp_joints_test.cpp)
 target_compile_options(interp_joints_test PRIVATE -UNDEBUG)
@@ -974,7 +1102,7 @@ target_link_libraries(shader_source_test PRIVATE ZLIB::ZLIB)
 target_compile_options(shader_source_test PRIVATE -UNDEBUG)
 add_test(NAME shader_source_cache COMMAND shader_source_test)
 
-add_executable(shader_prebuild_test runtime/tools/shader_prebuild_test.cpp)
+add_executable(shader_prebuild_test runtime/tools/shader_prebuild_test.cpp runtime/src/pipeline_runtime_identity.cpp)
 target_include_directories(shader_prebuild_test PRIVATE runtime/src)
 target_compile_options(shader_prebuild_test PRIVATE -UNDEBUG)
 add_test(NAME shader_prebuild_activation COMMAND shader_prebuild_test)
@@ -987,6 +1115,22 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(rendering_path_test PRIVATE runtime/src ${Vulkan_INCLUDE_DIRS})
   target_compile_options(rendering_path_test PRIVATE -UNDEBUG)
   add_test(NAME vulkan_rendering_path_selection COMMAND rendering_path_test)
+  add_executable(display_pacing_policy_test runtime/tools/display_pacing_policy_test.cpp)
+  target_include_directories(display_pacing_policy_test PRIVATE runtime/src)
+  target_compile_options(display_pacing_policy_test PRIVATE -UNDEBUG)
+  add_test(NAME vulkan_display_pacing_policy COMMAND display_pacing_policy_test)
+  add_executable(display_timing_source_test runtime/tools/display_timing_source_test.cpp)
+  target_include_directories(display_timing_source_test PRIVATE runtime/src)
+  target_compile_options(display_timing_source_test PRIVATE -UNDEBUG)
+  add_test(NAME vulkan_display_timing_source COMMAND display_timing_source_test)
+  # smooth frame pacing defaults per device as the normal build compiles them (cmake/VkSmooth.cmake, smooth_defaults.h)
+  add_executable(smooth_defaults_test runtime/tools/smooth_defaults_test.cpp)  # (includes smooth_defaults.cpp)
+  target_include_directories(smooth_defaults_test PRIVATE runtime/include runtime/src)
+  target_compile_definitions(smooth_defaults_test PRIVATE WWHD_VK_SMOOTH=1)
+  target_compile_options(smooth_defaults_test PRIVATE -UNDEBUG)
+  add_test(NAME vulkan_smooth_defaults_desktop COMMAND smooth_defaults_test desktop)
+  add_test(NAME vulkan_smooth_defaults_deck COMMAND smooth_defaults_test deck)
+  add_test(NAME vulkan_smooth_defaults_deck_pacing_off COMMAND smooth_defaults_test deck-pacing-off)
   add_executable(pass_cache_test runtime/tools/pass_cache_test.cpp runtime/src/gfx/vulkan/pass_cache.cpp)
   target_include_directories(pass_cache_test PRIVATE runtime/src ${Vulkan_INCLUDE_DIRS})
   target_compile_definitions(pass_cache_test PRIVATE VK_NO_PROTOTYPES)
@@ -1130,6 +1274,30 @@ target_link_libraries(motion_test PRIVATE Threads::Threads)
 if(WIN32)
   target_link_libraries(motion_test PRIVATE ws2_32)
 endif()
+# the iPhone GamePad (runtime/src/remote_pad/, ios/): packets, controller mapping, loopback server
+if(NOT WIN32)
+  add_executable(remote_pad_test runtime/tools/remote_pad_test.cpp runtime/src/remote_pad/protocol.cpp
+                 runtime/src/remote_pad/server.cpp runtime/src/remote_pad/remote_pad.cpp runtime/src/remote_pad/pairing.cpp ${MOTION_SOURCES})
+  target_include_directories(remote_pad_test PRIVATE runtime/src)
+  target_compile_options(remote_pad_test PRIVATE -UNDEBUG)
+  target_link_libraries(remote_pad_test PRIVATE Threads::Threads)
+  add_test(NAME remote_pad COMMAND remote_pad_test)
+  set_tests_properties(remote_pad PROPERTIES TIMEOUT 30)
+endif()
+if(WWHD_HAS_METAL)
+  # the iPhone GamePad's screen end to end: Metal frames -> H.264 -> loopback UDP -> decoded colours
+  add_executable(remote_video_test runtime/tools/remote_video_test.mm runtime/src/gfx/remote_video.mm
+                 runtime/src/remote_pad/protocol.cpp runtime/src/remote_pad/server.cpp runtime/src/remote_pad/remote_pad.cpp runtime/src/remote_pad/pairing.cpp
+                 ${MOTION_SOURCES})
+  set_source_files_properties(runtime/tools/remote_video_test.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+  # (remote_video.mm is a renderer source: it is compiled with the cemu shim, see GFX_SOURCES)
+  target_include_directories(remote_video_test PRIVATE runtime/src runtime/include ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
+  target_compile_options(remote_video_test PRIVATE -UNDEBUG)
+  target_link_libraries(remote_video_test PRIVATE Threads::Threads "-framework Metal" "-framework Foundation" "-framework CoreGraphics" "-framework ImageIO"
+                        "-framework VideoToolbox" "-framework CoreMedia" "-framework CoreVideo")
+  add_test(NAME remote_video COMMAND remote_video_test)
+  set_tests_properties(remote_video PROPERTIES TIMEOUT 60)
+endif()
 # controller packets: actual VPAD/KPAD writers, without a game or renderer
 add_executable(pad_delivery_test runtime/tools/pad_delivery_test.cpp runtime/src/hle/padscore.cpp runtime/src/hle/system_stubs.cpp runtime/src/rumble.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(pad_delivery_test PRIVATE runtime/src runtime/include)
@@ -1162,9 +1330,9 @@ if(WWHD_SDL_HOST)
   set_tests_properties(overlay_trace_paths PROPERTIES ENVIRONMENT "WWHD_NO_AUDIO=1;WWHD_OVERLAY_TRACE=1;WWHD_OVERLAY_MOUSE_HANDOFF=1")
   add_test(NAME overlay_trace_positive COMMAND overlay_scroll_test)
   set_tests_properties(overlay_trace_positive PROPERTIES ENVIRONMENT "WWHD_NO_AUDIO=1;WWHD_OVERLAY_TRACE=1;WWHD_OVERLAY_MOUSE_HANDOFF=0")
-  add_executable(input_sdl_test runtime/tools/input_sdl_test.cpp runtime/src/input_map.cpp runtime/src/rumble.cpp runtime/src/fixed_seed.cpp runtime/src/platform/input_sdl.cpp runtime/src/platform/mouse_sdl.cpp ${MOTION_SOURCES})
+  add_executable(input_sdl_test runtime/tools/input_sdl_test.cpp runtime/src/input_map.cpp runtime/src/rumble.cpp runtime/src/fixed_seed.cpp runtime/src/platform/input_sdl.cpp runtime/src/platform/window_focus.cpp runtime/src/platform/mouse_sdl.cpp ${MOTION_SOURCES})
   target_include_directories(input_sdl_test PRIVATE ${IMGUI_DIR} runtime/src runtime/include ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
-  target_compile_definitions(input_sdl_test PRIVATE WWHD_HAS_VULKAN=1 WWHD_SDL_HOST=1 WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION=1)
+  target_compile_definitions(input_sdl_test PRIVATE WWHD_HAS_VULKAN=1 WWHD_SDL_HOST=1 WWHD_TEST_VIRTUAL_GAMEPAD_DETECTION=1 WWHD_TEST_WINDOW_FOCUS=1)
   target_link_libraries(input_sdl_test PRIVATE SDL3::SDL3 Threads::Threads)
   if(WIN32)
     target_link_libraries(input_sdl_test PRIVATE ws2_32)
@@ -1256,6 +1424,26 @@ function(wwhd_isolate_test_user_folders)
   endforeach()
 endfunction()
 cmake_language(DEFER CALL wwhd_isolate_test_user_folders)
+# Tests with tight timing (a wake-up within 80 ms, a stop within 500 ms, sleeps against deadlines) run with
+# no other test beside them under ctest -j: a busy CPU makes them miss their limits without a bug.
+function(wwhd_serial_timing_tests)
+  foreach(test IN ITEMS scheduler_tick pipeline_demand_handoff editor_mcp mods_model motion depth_peek overlay_trace_budget)
+    if(TEST ${test})
+      set_property(TEST ${test} PROPERTY RUN_SERIAL TRUE)
+    endif()
+  endforeach()
+endfunction()
+cmake_language(DEFER CALL wwhd_serial_timing_tests)
+# The slowest tests (minutes each on CI's runners) start first under ctest -j, so the others run beside them
+# instead of all waiting for them at the end.
+function(wwhd_slow_tests_first)
+  foreach(test IN ITEMS controller_setup settings_popup_ui)
+    if(TEST ${test})
+      set_property(TEST ${test} PROPERTY COST 1000)
+    endif()
+  endforeach()
+endfunction()
+cmake_language(DEFER CALL wwhd_slow_tests_first)
 add_executable(presentation_queue_test runtime/tools/presentation_queue_test.cpp)
 target_include_directories(presentation_queue_test PRIVATE runtime/src)
 target_compile_options(presentation_queue_test PRIVATE -UNDEBUG)
@@ -1291,6 +1479,10 @@ add_executable(display_fallback_test runtime/tools/display_fallback_test.cpp run
 target_include_directories(display_fallback_test PRIVATE runtime/src runtime/include runtime/third_party/fmt/include)
 target_compile_options(display_fallback_test PRIVATE -UNDEBUG)
 add_test(NAME display_fallback COMMAND display_fallback_test)
+add_executable(display_obscured_test runtime/tools/display_obscured_test.cpp runtime/src/gfx/display_modes.cpp)
+target_include_directories(display_obscured_test PRIVATE runtime/src runtime/include runtime/third_party/fmt/include)
+target_compile_options(display_obscured_test PRIVATE -UNDEBUG)
+add_test(NAME display_obscured COMMAND display_obscured_test)
 add_executable(pip_placement_test runtime/tools/pip_placement_test.cpp runtime/src/gfx/display_modes.cpp)
 target_include_directories(pip_placement_test PRIVATE runtime/src runtime/include runtime/third_party/fmt/include)
 target_compile_options(pip_placement_test PRIVATE -UNDEBUG)
@@ -1347,6 +1539,10 @@ target_include_directories(mod_cemu_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_cemu_test PRIVATE -UNDEBUG)
 add_test(NAME mod_cemu COMMAND mod_cemu_test)
 add_test(NAME portable_state COMMAND portable_state_test)
+add_executable(thread_chain_test runtime/tools/thread_chain_test.cpp)
+target_include_directories(thread_chain_test PRIVATE runtime/src)
+target_compile_options(thread_chain_test PRIVATE -UNDEBUG)
+add_test(NAME thread_chain COMMAND thread_chain_test)
 # Verify the shipped EUR address tables without game code, plus the weak USA fallback.
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND AND NOT ANDROID)
@@ -1364,6 +1560,22 @@ if(Python3_Interpreter_FOUND)
   target_include_directories(guest_addr_test PRIVATE runtime/include)
   target_compile_options(guest_addr_test PRIVATE -UNDEBUG)
   add_test(NAME guest_addr COMMAND guest_addr_test)
+  # the Japanese map: removed functions and the play object members it moved (GI())
+  add_custom_command(OUTPUT "${CMAKE_BINARY_DIR}/guest_map_fixture_jp.c"
+    COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/recomp/write_map_fixture.py"
+      "${CMAKE_BINARY_DIR}/guest_map_fixture_jp.c" JP
+    DEPENDS tools/recomp/write_map_fixture.py tools/recomp/builds.py tools/recomp/builds/jp.json tools/recomp/recomp.py)
+  add_executable(guest_addr_jp_test runtime/tools/guest_addr_test.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture_jp.c")
+  target_include_directories(guest_addr_jp_test PRIVATE runtime/include)
+  target_compile_definitions(guest_addr_jp_test PRIVATE TEST_JP)
+  target_compile_options(guest_addr_jp_test PRIVATE -UNDEBUG)
+  add_test(NAME guest_addr_jp COMMAND guest_addr_jp_test)
+  add_executable(story_scene_choice_jp_test runtime/tools/story_scene_choice_test.cpp
+    runtime/src/mods/story_scene_choice.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture_jp.c")
+  target_include_directories(story_scene_choice_jp_test PRIVATE runtime/include runtime/src)
+  target_compile_definitions(story_scene_choice_jp_test PRIVATE TEST_JP)
+  target_compile_options(story_scene_choice_jp_test PRIVATE -UNDEBUG)
+  add_test(NAME story_scene_choice_jp COMMAND story_scene_choice_jp_test)
   add_executable(auto_pip_eu_test runtime/tools/auto_pip_test.cpp runtime/src/gfx/display_modes.cpp
     "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
   target_include_directories(auto_pip_eu_test PRIVATE runtime/src runtime/include runtime/third_party/fmt/include)
@@ -1373,6 +1585,7 @@ if(Python3_Interpreter_FOUND)
     runtime/src/mods/camera_directed_items.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
   target_include_directories(camera_directed_items_eu_test PRIVATE runtime/src runtime/include)
   target_compile_options(camera_directed_items_eu_test PRIVATE -UNDEBUG)
+  target_compile_definitions(camera_directed_items_eu_test PRIVATE WWHD_PORT_POINT_TESTS=1)  # (runtime/src/port_points.h)
   add_test(NAME camera_directed_items_eu COMMAND camera_directed_items_eu_test)
   set_tests_properties(camera_directed_items_eu PROPERTIES ENVIRONMENT "WWHD_MOD_CAMERA_DIRECTED_ITEMS=0")
   add_executable(guest_addr_identity_test runtime/tools/guest_addr_test.cpp runtime/src/guest_addr_identity.c)
@@ -1397,6 +1610,8 @@ add_executable(camera_directed_items_test runtime/tools/camera_directed_items_te
   runtime/src/mods/camera_directed_items.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(camera_directed_items_test PRIVATE runtime/src runtime/include)
 target_compile_options(camera_directed_items_test PRIVATE -UNDEBUG)
+# the decomp build's port points (runtime/src/port_points.h) are compiled in only for the tests that drive them
+target_compile_definitions(camera_directed_items_test PRIVATE WWHD_PORT_POINT_TESTS=1)
 add_test(NAME camera_directed_items COMMAND camera_directed_items_test)
 set_tests_properties(camera_directed_items PROPERTIES ENVIRONMENT "WWHD_MOD_CAMERA_DIRECTED_ITEMS=0")
 add_test(NAME camera_directed_items_env_on COMMAND camera_directed_items_test --env)
@@ -1619,7 +1834,7 @@ add_executable(perf_average_test runtime/tools/perf_average_test.cpp)
 target_include_directories(perf_average_test PRIVATE runtime/src)
 target_compile_options(perf_average_test PRIVATE -UNDEBUG)
 add_test(NAME perf_average COMMAND perf_average_test)
-add_executable(lock_on_runtime_test runtime/tools/lock_on_runtime_test.cpp runtime/src/mods/lock_on.cpp runtime/src/guest_addr_identity.c)
+add_executable(lock_on_runtime_test runtime/tools/lock_on_runtime_test.cpp runtime/src/mods/lock_on.cpp runtime/src/mods/lock_on_points.cpp runtime/src/guest_addr_identity.c)
 add_executable(targeting_letterbox_test runtime/tools/targeting_letterbox_test.cpp runtime/src/mods/targeting_letterbox.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(targeting_letterbox_test PRIVATE runtime/src runtime/include)
 target_compile_options(targeting_letterbox_test PRIVATE -UNDEBUG)
@@ -1629,12 +1844,13 @@ add_test(NAME targeting_letterbox_startup_on COMMAND ${CMAKE_COMMAND} -E env WWH
 add_test(NAME targeting_letterbox_startup_always_off COMMAND ${CMAKE_COMMAND} -E env WWHD_TARGET_LETTERBOX=1 WWHD_TARGET_LETTERBOX_MODE=2 $<TARGET_FILE:targeting_letterbox_test> 2)
 target_include_directories(lock_on_runtime_test PRIVATE runtime/src runtime/include)
 target_compile_options(lock_on_runtime_test PRIVATE -UNDEBUG)
+target_compile_definitions(lock_on_runtime_test PRIVATE WWHD_PORT_POINT_TESTS=1)  # (runtime/src/port_points.h)
 add_test(NAME lock_on_runtime COMMAND lock_on_runtime_test)
 if(Python3_Interpreter_FOUND)
-  add_executable(lock_on_runtime_eu_test runtime/tools/lock_on_runtime_test.cpp runtime/src/mods/lock_on.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
+  add_executable(lock_on_runtime_eu_test runtime/tools/lock_on_runtime_test.cpp runtime/src/mods/lock_on.cpp runtime/src/mods/lock_on_points.cpp "${CMAKE_BINARY_DIR}/guest_map_fixture.c")
   target_include_directories(lock_on_runtime_eu_test PRIVATE runtime/src runtime/include)
   target_compile_options(lock_on_runtime_eu_test PRIVATE -UNDEBUG)
-  target_compile_definitions(lock_on_runtime_eu_test PRIVATE TEST_EU)
+  target_compile_definitions(lock_on_runtime_eu_test PRIVATE TEST_EU WWHD_PORT_POINT_TESTS=1)
   add_test(NAME lock_on_runtime_eu COMMAND lock_on_runtime_eu_test)
 endif()
 add_test(NAME lock_on_startup COMMAND ${CMAKE_COMMAND} -E env WWHD_MOD_LOCK_ON=1 WWHD_MOD_LOCK_ON_RANGE=2.5 WWHD_MOD_LOCK_ON_CYCLING=0 $<TARGET_FILE:lock_on_runtime_test> --startup 1 2.5 0)
@@ -1756,7 +1972,13 @@ add_test(NAME moon_jump_policy COMMAND moon_jump_policy_test)
 add_executable(moon_jump_movement_test runtime/tools/moon_jump_movement_test.cpp runtime/src/mods/link_move_hooks.cpp)
 target_include_directories(moon_jump_movement_test PRIVATE runtime/src runtime/include)
 target_compile_options(moon_jump_movement_test PRIVATE -UNDEBUG)
+target_compile_definitions(moon_jump_movement_test PRIVATE WWHD_PORT_POINT_TESTS=1)  # (runtime/src/port_points.h)
 add_test(NAME moon_jump_movement COMMAND moon_jump_movement_test)
+# Classic Wind Waker (Speedrun, issue #405): the two sites against the TWWHD Randomizer's Classic-mode words
+add_executable(classic_tact_test runtime/tools/classic_tact_test.cpp runtime/src/mods/speedrun.cpp)
+target_include_directories(classic_tact_test PRIVATE runtime/src runtime/include)
+target_compile_options(classic_tact_test PRIVATE -UNDEBUG)
+add_test(NAME classic_tact COMMAND classic_tact_test)
 if(Python3_Interpreter_FOUND)
   add_test(NAME repair_medli COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/savegame/repair_medli_test.py")
   add_test(NAME medli_scenario_evidence COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/runtime/tools/medli_scenario_test.py")
@@ -2016,30 +2238,30 @@ target_compile_options(guest_hooks_test PRIVATE -UNDEBUG)
 target_link_libraries(guest_hooks_test PRIVATE ZLIB::ZLIB ${CMAKE_DL_LIBS} Threads::Threads)
 add_test(NAME guest_hooks COMMAND guest_hooks_test)
 # letters from story mods: save record, text, services and postbox hooks on synthetic guest objects
-add_executable(story_mail_test runtime/tools/story_mail_test.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
+add_executable(story_mail_test runtime/tools/story_mail_test.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_mail_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_mail_test PRIVATE -UNDEBUG)
 add_test(NAME story_mail COMMAND story_mail_test)
 # mod charts: shared save record, services and sea chart menu hooks on synthetic guest objects
-add_executable(story_chart_test runtime/tools/story_chart_test.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
+add_executable(story_chart_test runtime/tools/story_chart_test.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_chart_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_chart_test PRIVATE -UNDEBUG)
 add_test(NAME story_chart COMMAND story_chart_test)
 # mod treasure charts (a): reserved save numbers, salvage points, spawn and registration on a synthetic registry
 add_executable(story_treasure_salvage_test runtime/tools/story_treasure_salvage_test.cpp runtime/src/mods/story_treasure_salvage.cpp
-               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
+               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_treasure_salvage_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_treasure_salvage_test PRIVATE -UNDEBUG)
 add_test(NAME story_treasure_salvage COMMAND story_treasure_salvage_test)
 # mod treasure charts, chart state: the salvage code's collect-map questions for reserved save numbers
 add_executable(story_treasure_state_test runtime/tools/story_treasure_state_test.cpp runtime/src/mods/story_treasure_state.cpp
-               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c)
+               runtime/src/mods/story_chart.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(story_treasure_state_test PRIVATE runtime/include runtime/src)
 target_compile_options(story_treasure_state_test PRIVATE -UNDEBUG)
 add_test(NAME story_treasure_state COMMAND story_treasure_state_test)
 # the story notebook: quest list, save record, page navigation, services and item menu hooks
 add_executable(story_notebook_test runtime/tools/story_notebook_test.cpp runtime/src/mods/story_notebook.cpp runtime/src/mods/game_look.cpp
-               runtime/tools/story_notebook_layout_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp
+               runtime/tools/story_notebook_layout_stub.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp
                runtime/src/mods/story_chart.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_item_buttons.cpp runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c
                ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_notebook_test PRIVATE runtime/include runtime/src runtime/src/mods)
@@ -2047,7 +2269,7 @@ target_compile_options(story_notebook_test PRIVATE -UNDEBUG)
 target_link_libraries(story_notebook_test PRIVATE ZLIB::ZLIB)
 add_test(NAME story_notebook COMMAND story_notebook_test)
 # mod items: save record, manifest items, registry, services, bag actions and the item table hooks
-add_executable(story_items_test runtime/tools/story_items_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
+add_executable(story_items_test runtime/tools/story_items_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_items_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_items_test PRIVATE -UNDEBUG)
 add_test(NAME story_items COMMAND story_items_test)
@@ -2055,14 +2277,14 @@ add_executable(story_prop_rewards_test runtime/tools/story_prop_rewards_test.cpp
 target_include_directories(story_prop_rewards_test PRIVATE runtime/src)
 target_compile_options(story_prop_rewards_test PRIVATE -UNDEBUG)
 add_test(NAME story_prop_rewards COMMAND story_prop_rewards_test)
-add_executable(story_prop_rewards_runtime_test runtime/tools/story_prop_rewards_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
+add_executable(story_prop_rewards_runtime_test runtime/tools/story_prop_rewards_test.cpp runtime/src/mods/story_items.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_prop_rewards_runtime_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_prop_rewards_runtime_test PRIVATE -UNDEBUG)
 target_compile_definitions(story_prop_rewards_runtime_test PRIVATE STORY_PROP_REWARDS_RUNTIME_TEST)
 add_test(NAME story_prop_rewards_runtime COMMAND story_prop_rewards_runtime_test)
 # mod items and the notebook on X/Y/R: the decisions, the menu assignment, the game's reads and the item use
 add_executable(story_item_buttons_test runtime/tools/story_item_buttons_test.cpp runtime/src/mods/story_item_buttons.cpp runtime/src/mods/story_notebook.cpp runtime/src/mods/game_look.cpp runtime/tools/story_notebook_layout_stub.cpp
-               runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_items.cpp
+               runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_items.cpp
                runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_item_buttons_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_item_buttons_test PRIVATE -UNDEBUG)
@@ -2070,7 +2292,7 @@ target_link_libraries(story_item_buttons_test PRIVATE ZLIB::ZLIB)
 add_test(NAME story_item_buttons COMMAND story_item_buttons_test)
 # mod treasure charts, the chest's item: game items, the mod item's stand-in and its get, on a synthetic save
 add_executable(story_treasure_chest_test runtime/tools/story_treasure_chest_test.cpp runtime/src/mods/story_treasure_chest.cpp
-               runtime/src/mods/story_items.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp
+               runtime/src/mods/story_items.cpp runtime/src/mods/story_chart.cpp runtime/src/mods/story_mail.cpp runtime/src/mods/story_store.cpp runtime/src/mods/long_name.cpp runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp
                runtime/src/guest_addr_identity.c ${WWHD_NPC_CATALOGUE})
 target_include_directories(story_treasure_chest_test PRIVATE runtime/include runtime/src runtime/src/mods)
 target_compile_options(story_treasure_chest_test PRIVATE -UNDEBUG)
@@ -2085,6 +2307,11 @@ if(Python3_Interpreter_FOUND)
   # the shipped story_mods tools start in the isolated mode of the Windows embeddable Python (issue #280)
   add_test(NAME release_shipped_tools COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_shipped_tools.py")
   add_test(NAME release_gamecode_flags COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_gamecode_flags.py" "${CMAKE_BINARY_DIR}")
+  # incremental updates: the translation cache, the earlier-release transfer, staged builds (tools/installer)
+  add_test(NAME incremental_updates COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/installer/test_release_update.py")
+  # the pipeline identity's inputs cover every runtime source and header that pipeline/shader code uses
+  add_test(NAME pipeline_identity_inputs COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_pipeline_identity_inputs.py")
+  set_tests_properties(pipeline_identity_inputs PROPERTIES ENVIRONMENT "WWHD_BUILD_DIR=${CMAKE_BINARY_DIR}")
   add_test(NAME shoreline_actor_model COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_shoreline_model.py")
   add_test(NAME island_texture COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_island_texture.py")
   add_test(NAME static_actor_model COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_actor_model.py")
@@ -2095,6 +2322,12 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME story_notebook_model COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_notebook_model.py")
   add_test(NAME stage_builder COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/story_mods/test_stage_builder.py")
   add_test(NAME decomp_build_gen COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_gen.py")
+  add_test(NAME decomp_build_native_rules COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_native_rules.py")
+  add_test(NAME decomp_build_native_cache COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_native_cache.py")
+  add_test(NAME decomp_build_native_returns COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_native_returns.py")
+  add_test(NAME decomp_build_site_lr COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_site_lr.py")
+  add_test(NAME decomp_build_decl_table COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_decl_table.py")
+  add_test(NAME decomp_build_stable_src COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/decomp_build/test_stable_src.py")
   add_test(NAME release_appimage_apprun COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_appimage_apprun.py")
   add_test(NAME release_appimage_runtime COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_appimage_runtime.py")
   add_test(NAME release_appimage_licenses COMMAND "${Python3_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tools/release/test_appimage_licenses.py")
@@ -2162,6 +2395,15 @@ if(Python3_Interpreter_FOUND)
   add_test(NAME code_mods_service COMMAND code_mods_test "${Python3_EXECUTABLE}")
 endif()
 
+# Settings > Randomizer's background job (setup --randomize / --import-seed run from the game)
+add_executable(randomizer_job_test runtime/tools/randomizer_job_test.cpp runtime/src/mods/randomizer_job.cpp runtime/src/mods/code_mods.cpp)
+target_include_directories(randomizer_job_test PRIVATE runtime/include runtime/src)
+target_compile_options(randomizer_job_test PRIVATE -UNDEBUG)
+target_link_libraries(randomizer_job_test PRIVATE Threads::Threads)
+if(Python3_Interpreter_FOUND)
+  add_test(NAME randomizer_job COMMAND randomizer_job_test "${Python3_EXECUTABLE}")
+endif()
+
 add_executable(android_display_rate_test runtime/tools/android_display_rate_test.cpp)
 target_include_directories(android_display_rate_test PRIVATE runtime/src)
 target_compile_options(android_display_rate_test PRIVATE -UNDEBUG)
@@ -2217,6 +2459,13 @@ if(WWHD_HAS_VULKAN)
   target_include_directories(bc_decoder_choice_test SYSTEM PRIVATE $<TARGET_PROPERTY:Vulkan::Vulkan,INTERFACE_INCLUDE_DIRECTORIES>)
   target_compile_options(bc_decoder_choice_test PRIVATE -UNDEBUG)
   add_test(NAME bc_decoder_choice COMMAND bc_decoder_choice_test)
+  # fewer render pass splits (pass subset, textures ready before their pass): decisions and bookkeeping
+  add_executable(pass_reuse_test runtime/tools/pass_reuse_test.cpp)
+  target_include_directories(pass_reuse_test PRIVATE runtime/src)
+  target_compile_options(pass_reuse_test PRIVATE -UNDEBUG)
+  add_test(NAME pass_reuse COMMAND pass_reuse_test)
+  # the pass subset's masked pipeline variants: background only, never a recipe (source check)
+  add_test(NAME pass_subset_source COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/runtime/tools/pass_subset_source_test.py ${CMAKE_SOURCE_DIR})
   add_executable(turnip_debug_test runtime/tools/turnip_debug_test.cpp)
   target_include_directories(turnip_debug_test PRIVATE runtime/src)
   target_compile_options(turnip_debug_test PRIVATE -UNDEBUG)
@@ -2357,6 +2606,10 @@ add_executable(fast_forward_test runtime/tools/fast_forward_test.cpp)
 target_include_directories(fast_forward_test PRIVATE runtime/src)
 target_compile_options(fast_forward_test PRIVATE -UNDEBUG)
 add_test(NAME fast_forward COMMAND fast_forward_test)
+add_executable(walk_doors_hold_test runtime/tools/walk_doors_hold_test.cpp)
+target_include_directories(walk_doors_hold_test PRIVATE runtime/src)
+target_compile_options(walk_doors_hold_test PRIVATE -UNDEBUG)
+add_test(NAME walk_doors_hold COMMAND walk_doors_hold_test)
 add_executable(fast_forward_present_test runtime/tools/fast_forward_present_test.cpp runtime/src/gfx/vulkan/settings.cpp)
 target_include_directories(fast_forward_present_test PRIVATE runtime/src runtime/include
     ${CEMU_DIR} runtime/third_party/fmt/include)
@@ -2370,7 +2623,8 @@ add_test(NAME fast_forward_startup_valid COMMAND ${CMAKE_COMMAND} -E env WWHD_MO
 add_test(NAME fast_forward_startup_invalid COMMAND ${CMAKE_COMMAND} -E env WWHD_MOD_FAST_FORWARD=0 WWHD_MOD_FF_RATE=nan WWHD_MOD_FF_BUTTON=0x8000 WWHD_MOD_FF_MUTE=1 $<TARGET_FILE:fast_forward_runtime_test> --startup 0 2 0x40 1)
 add_test(NAME fast_forward_startup_bounds COMMAND ${CMAKE_COMMAND} -E env WWHD_MOD_FAST_FORWARD=0 WWHD_MOD_FF_RATE=5 WWHD_MOD_FF_BUTTON=0xffffffffffffffff WWHD_MOD_FF_MUTE=1 $<TARGET_FILE:fast_forward_runtime_test> --startup 0 2 0x40 1)
 # Quick-use exercises the real runtime hooks with a private-free native-predicate fixture.
-foreach(map native shifted)
+# points: the same replays through the decomp build's port points (wwhd_quick_use, the decompilation's port_hooks.h)
+foreach(map native shifted points)
   add_executable(quick_use_${map}_test runtime/tools/quick_use_runtime_test.cpp runtime/src/mods/quick_use.cpp)
   target_include_directories(quick_use_${map}_test PRIVATE runtime/src runtime/include)
   target_compile_options(quick_use_${map}_test PRIVATE -UNDEBUG)
@@ -2378,6 +2632,9 @@ foreach(map native shifted)
   if(map STREQUAL "shifted")
     target_compile_definitions(quick_use_${map}_test PRIVATE QUICK_USE_SHIFTED_MAP=1)
   else()
+    if(map STREQUAL "points")
+      target_compile_definitions(quick_use_${map}_test PRIVATE QUICK_USE_PORT_POINTS=1 WWHD_PORT_POINT_TESTS=1)
+    endif()
     target_sources(quick_use_${map}_test PRIVATE runtime/src/guest_addr_identity.c)
   endif()
   add_test(NAME quick_use_${map} COMMAND ${CMAKE_COMMAND} -E env --unset=WWHD_MOD_QUICK_USE --unset=WWHD_MOD_QUICK_USE_SPEED $<TARGET_FILE:quick_use_${map}_test>)
@@ -2600,7 +2857,7 @@ endif()
 if(NOT ANDROID AND SDL3_FOUND AND Python3_Interpreter_FOUND)
   add_executable(mod_oneclick_flow_test runtime/tools/mod_oneclick_flow_test.cpp
     runtime/third_party/imgui/backends/imgui_impl_sdlrenderer3.cpp runtime/src/mods/code_mods.cpp
-    runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp
+    runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp
     runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c
     runtime/src/overlay/extensions.cpp runtime/src/overlay/text_field.cpp runtime/src/mods/required.cpp ${WWHD_BUILD_INFO})
   target_include_directories(mod_oneclick_flow_test PRIVATE runtime/src runtime/include)
@@ -2613,7 +2870,7 @@ add_test(NAME mod_setup_acceptance COMMAND mod_package_test --setup-acceptance)
 add_test(NAME mod_player_models COMMAND mod_package_test --player-models)
 
 # Experimental mods: flag, list filter, save backup before enabling, retention, staged restore.
-add_executable(mod_experimental_test runtime/tools/mod_experimental_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
+add_executable(mod_experimental_test runtime/tools/mod_experimental_test.cpp runtime/src/mods/manager.cpp runtime/src/mods/speedrun.cpp runtime/src/mods/traversal_settings.cpp runtime/src/mods/packages.cpp ${WWHD_NPC_CATALOGUE} runtime/src/mods/guest_png.cpp runtime/src/mods/mod_archive.cpp runtime/src/mods/content.cpp runtime/src/mods/cemu_pack.cpp runtime/src/guest_addr_identity.c)
 target_include_directories(mod_experimental_test PRIVATE runtime/src runtime/include)
 target_compile_options(mod_experimental_test PRIVATE -UNDEBUG)
 target_link_libraries(mod_experimental_test PRIVATE wwhd_gcmodel ZLIB::ZLIB Threads::Threads ${CMAKE_DL_LIBS})
@@ -2702,6 +2959,7 @@ add_test(NAME overlay_toggle COMMAND overlay_toggle_test)
 if(WWHD_SDL_HOST)
   add_test(NAME overlay_focus_matrix COMMAND input_sdl_test --menu-matrix)
   add_test(NAME sdl_background_controllers COMMAND input_sdl_test --background)
+  add_test(NAME sdl_controller_focus COMMAND input_sdl_test --focus)  # issue #406: TV or GamePad window focused
 endif()
 
 # Link only the overlay input API and SDL boundary. Dead code elimination drops renderer/game
@@ -2722,7 +2980,7 @@ if(WWHD_SDL_HOST AND UNIX AND NOT ANDROID)
   add_executable(overlay_input_integration_test runtime/tools/overlay_input_integration_test.cpp
     runtime/src/overlay/controls_view.cpp
     runtime/src/gfx/display_modes.cpp runtime/src/overlay/extensions.cpp runtime/src/input_map.cpp
-    runtime/src/rumble.cpp runtime/src/fixed_seed.cpp runtime/src/platform/input_sdl.cpp runtime/src/platform/mouse_sdl.cpp ${MOTION_SOURCES})
+    runtime/src/rumble.cpp runtime/src/fixed_seed.cpp runtime/src/platform/input_sdl.cpp runtime/src/platform/window_focus.cpp runtime/src/platform/mouse_sdl.cpp ${MOTION_SOURCES})
   target_include_directories(overlay_input_integration_test PRIVATE ${IMGUI_DIR} runtime/src runtime/include
     ${CEMU_DIR} ${CEMU_DIR}/Cafe ${CMAKE_SOURCE_DIR}/runtime/third_party/fmt/include)
   target_compile_definitions(overlay_input_integration_test PRIVATE WWHD_HAS_VULKAN=1 WWHD_SDL_HOST=1 WWHD_TEST_GAMESCOPE=1)
@@ -2735,6 +2993,10 @@ if(WWHD_SDL_HOST AND UNIX AND NOT ANDROID)
   target_link_libraries(overlay_input_integration_test PRIVATE imgui SDL3::SDL3 Threads::Threads)
   add_test(NAME shortcut_ui COMMAND overlay_input_integration_test --shortcuts-ui)
   set_tests_properties(shortcut_ui PROPERTIES ENVIRONMENT "WWHD_NO_AUDIO=1" TIMEOUT 30)
+  add_test(NAME quit_shortcut COMMAND overlay_input_integration_test --quit-shortcut)
+  set_tests_properties(quit_shortcut PROPERTIES ENVIRONMENT "WWHD_NO_AUDIO=1" TIMEOUT 30)
+  add_test(NAME overlay_bindings_for COMMAND overlay_input_integration_test --bindings-for)
+  set_tests_properties(overlay_bindings_for PROPERTIES ENVIRONMENT "WWHD_NO_AUDIO=1" TIMEOUT 30)
   add_test(NAME overlay_window_target COMMAND overlay_input_integration_test --window-target)
   set_tests_properties(overlay_window_target PROPERTIES ENVIRONMENT "WWHD_OVERLAY_TRACE=1;WWHD_NO_AUDIO=1" TIMEOUT 30)
   add_test(NAME overlay_input_integration COMMAND overlay_input_integration_test)
@@ -2907,6 +3169,10 @@ add_executable(j3d_draw_guard_test runtime/tools/j3d_draw_guard_test.cpp)
 target_include_directories(j3d_draw_guard_test PRIVATE runtime/src)
 target_compile_options(j3d_draw_guard_test PRIVATE -UNDEBUG)
 add_test(NAME j3d_draw_guard COMMAND j3d_draw_guard_test)
+add_executable(pane_name_filter_test runtime/tools/pane_name_filter_test.cpp)
+target_include_directories(pane_name_filter_test PRIVATE runtime/src)
+target_compile_options(pane_name_filter_test PRIVATE -UNDEBUG)
+add_test(NAME pane_name_filter COMMAND pane_name_filter_test ${CMAKE_SOURCE_DIR}/runtime/src)
 if(UNIX)
   add_executable(story_demo_light_test runtime/tools/story_demo_light_test.cpp runtime/src/mods/story_demo_light.cpp runtime/src/guest_addr_identity.c)
   target_include_directories(story_demo_light_test PRIVATE runtime/src runtime/src/mods runtime/include)
@@ -3812,6 +4078,68 @@ target_sources(native_quiescence_test PRIVATE runtime/src/game_clock.cpp)
 # threads.cpp (included by the test) reads the calendar clock and the fixed-seed switch;
 # Windows' linker keeps those references, so link their sources.
 target_sources(native_quiescence_test PRIVATE runtime/src/hle/os_time.cpp runtime/src/fixed_seed.cpp)
+# ... and the full-state check's GC_OPTIONAL (thread_chain.h pair table) reads the guest address map:
+# the identity map's weak defaults (no game code linked in)
+target_sources(native_quiescence_test PRIVATE runtime/src/guest_addr_identity.c)
+
+# Decomp build fast mode, WWHD_DECOMP_FAST_MUTEX: the actual threads.cpp OSMutex code with its lock-free address cache
+# and the imports' direct host entries (built like native_quiescence_test, which includes threads.cpp the same way)
+add_executable(fast_mutex_test
+    runtime/tools/fast_mutex_test.cpp
+    runtime/tools/native_quiescence_test_stubs.cpp
+    runtime/src/native_quiescence.cpp
+    runtime/src/mods/story_native_event_game_thread.cpp
+    runtime/src/mods/story_native_stage_owner.cpp
+    runtime/src/game_clock.cpp
+    runtime/src/hle/os_time.cpp
+    runtime/src/fixed_seed.cpp)
+target_include_directories(fast_mutex_test PRIVATE
+    runtime/src runtime/include runtime/src/gx2
+    runtime/third_party/cemu runtime/third_party/cemu/Cafe
+    runtime/third_party/fmt/include runtime/third_party/imgui)
+target_compile_options(fast_mutex_test PRIVATE -UNDEBUG -O1 -ffunction-sections -fdata-sections)
+if(APPLE)
+    target_link_options(fast_mutex_test PRIVATE -Wl,-dead_strip)
+else()
+    target_link_options(fast_mutex_test PRIVATE -Wl,--gc-sections)
+endif()
+target_link_libraries(fast_mutex_test PRIVATE Threads::Threads)
+target_sources(fast_mutex_test PRIVATE runtime/src/guest_addr_identity.c)  # (as native_quiescence_test)
+add_test(NAME decomp_fast_mutex COMMAND fast_mutex_test)
+
+# Cafe OS message queues (WWHD_MSGQ_FAST): the actual threads.cpp queue code, normal and decomp fast build, switch off and on
+foreach(msgq_variant normal_off normal_on fast_off fast_on)
+  add_executable(msgq_test_${msgq_variant}
+      runtime/tools/msgq_test.cpp
+      runtime/tools/native_quiescence_test_stubs.cpp
+      runtime/src/native_quiescence.cpp
+      runtime/src/mods/story_native_event_game_thread.cpp
+      runtime/src/mods/story_native_stage_owner.cpp
+      runtime/src/game_clock.cpp
+      runtime/src/hle/os_time.cpp
+      runtime/src/fixed_seed.cpp
+      runtime/src/guest_addr_identity.c)  # (as native_quiescence_test)
+  target_include_directories(msgq_test_${msgq_variant} PRIVATE
+      runtime/src runtime/include runtime/src/gx2
+      runtime/third_party/cemu runtime/third_party/cemu/Cafe
+      runtime/third_party/fmt/include runtime/third_party/imgui)
+  target_compile_options(msgq_test_${msgq_variant} PRIVATE -UNDEBUG -O1 -ffunction-sections -fdata-sections)
+  if(msgq_variant MATCHES "^fast")
+    target_compile_definitions(msgq_test_${msgq_variant} PRIVATE WWHD_DECOMP_FAST=1)
+  endif()
+  if(msgq_variant MATCHES "_on$")
+    target_compile_definitions(msgq_test_${msgq_variant} PRIVATE WWHD_MSGQ_FAST=1)
+  endif()
+  if(APPLE)
+    target_link_options(msgq_test_${msgq_variant} PRIVATE -Wl,-dead_strip)
+  else()
+    target_link_options(msgq_test_${msgq_variant} PRIVATE -Wl,--gc-sections)
+  endif()
+  target_link_libraries(msgq_test_${msgq_variant} PRIVATE Threads::Threads)
+  add_test(NAME msgq_${msgq_variant} COMMAND msgq_test_${msgq_variant})
+  # a hang fails the run within minutes instead of holding the CI runner until the job limit (a run takes seconds)
+  set_tests_properties(msgq_${msgq_variant} PROPERTIES TIMEOUT 120)
+endforeach()
 
 # Genuine model/native-observation-backed Stage renewal; no native ticks/writes.
 get_target_property(STORY_NATIVE_STAGE_RENEW_SOURCES story_native_wait_saved_turn_model_test SOURCES)
@@ -4116,6 +4444,8 @@ add_test(NAME state_load_result COMMAND state_load_result_test)
 # off): the hook-flag table stays null and an --editor start must still come up (last: after every source
 # the targets above add to guest_hooks_test).
 target_sources(guest_hooks_test PRIVATE runtime/src/mods/map_hud.cpp)
+# Link's look: the save's records and the record format behind wwhd_appearance_* (the colour page is stubbed in the test)
+target_sources(guest_hooks_test PRIVATE runtime/src/mods/link_appearance.cpp runtime/src/mods/link_appearance_store.cpp)
 get_target_property(GUEST_HOOKS_TEST_SOURCES guest_hooks_test SOURCES)
 add_executable(guest_mods_no_hooks_test ${GUEST_HOOKS_TEST_SOURCES})
 target_compile_definitions(guest_mods_no_hooks_test PRIVATE GUEST_HOOKS_TEST_NO_HOOKS=1)

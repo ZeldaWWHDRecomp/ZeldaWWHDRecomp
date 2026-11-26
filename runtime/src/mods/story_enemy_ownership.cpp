@@ -85,7 +85,7 @@ bool owned_child_object(uint32_t object){
  return false;
 }
 // Link's boat (the play's third player pointer): a collider whose Stts owner is that actor.
-uint32_t play_ship(){return ld32(GD(0x1046F0B0)+0x5B3C);}
+uint32_t play_ship(){return ld32(GD(0x1046F0B0)+GI(0x5B3C));}
 bool ship_object(uint32_t object){if(!memory(object,0x48))return false;const uint32_t stts=ld32(object+0x44);if(!memory(stts,0x14))return false;const uint32_t ship=play_ship();return ship&&memory(ship,0x10)&&ld32(stts+0xC)==ship;}
 // A cannonball sphere (the game's BOMB): `params` tells an owned warship's (enemy cannonball) from the one
 // Link's boat fires. The low byte is the bomb's state (change_state rewrites it in flight and when it

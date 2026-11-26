@@ -72,12 +72,13 @@ const uint32_t kAssignButton = GC(0x02714B0C);    // game system: put a menu key
 constexpr uint32_t kFirstDeliveryKey = 0x30, kDeliveryPlaces = 8, kEmpty = 0xFF;
 constexpr uint32_t kNotebookItem = 0xA0;          // dItemNo SALVAGE_ITEM_2: unused by the game, no menu mapping
 constexpr uint32_t kLetterItem = 0xA1;            // dItemNo SALVAGE_ITEM_3: a quest's letter Link carries (story_takeover.h)
-constexpr uint32_t kLetterIcon = 0x25;            // the icon frame of a letter (hidden under the port's envelope)
+constexpr uint32_t kLetterIcon = 0x25;            // the icon frame of a letter (the carried letter shows it)
 bool port_item(uint32_t number) { return number == kNotebookItem || number == kLetterItem; }
 constexpr uint32_t kNotebookIcon = 0x24;          // the icon frame of the Cabana Deed (a sheet of parchment, the get-item stand-in)
 constexpr uint32_t kMenuChildren = 0x48, kItemNumber = 0xEC;  // hdParts_c::mChildren {count, data}; hdMenuItem_c::mSlot
-// The notebook's own icon (story_notebook_bag.h): drawn by the port over the bag place, the game's
-// sentinel icon pane (hdMenuItem_c::mPaneGroups[0][0], N_ItemIcon_00) kept hidden underneath.
+// The notebook's own icon (story_notebook_bag.h) when the game has none (game_draws_notebook): drawn by
+// the port over the bag place, the game's sentinel icon pane (hdMenuItem_c::mPaneGroups[0][0],
+// N_ItemIcon_00) kept hidden underneath.
 constexpr uint32_t kItemVisible = 0xFC, kItemPaneGroups = 0x8C, kItemLayout = 0x44;  // hdMenuItem_c / hdParts_c
 constexpr uint32_t kLayoutLyt = 0x4, kLytRootPane = 0xC;                            // hdPartsLayout_c / hdPartsLyt_c
 constexpr uint32_t kPaneParent = 0xC, kPaneTranslate = 0x1C, kPaneScale = 0x34, kPaneFlags = 0x44, kPaneGlobalAlpha = 0x46;
@@ -140,8 +141,8 @@ constexpr uint32_t kActorRoom = 0x326;        // fopAc_ac_c current.roomNo
 constexpr uint32_t kPlayStartStage = 0x5134;  // the game info's start stage name (char[8])
 constexpr uint16_t kCommandNone = 0, kCommandGetItem = 4, kConditionCanGetItem = 0x0008;
 constexpr uint32_t kPlayItemPartner = 0x52A0;     // dComIfGp_event_setItemPartnerId
-constexpr uint32_t kPlayPlayer = 0x5B2C;          // dComIfGp_getPlayer(0): Link
-const uint32_t kLinkActor = GD(0x1046F0B0) + 0x5B34;  // g_dComIfG_gameInfo.play mpPlayerPtr[0] (as story_chart.cpp)
+const uint32_t kPlayPlayer = GI(0x5B2C);          // dComIfGp_getPlayer(0): Link
+const uint32_t kLinkActor = GD(0x1046F0B0) + GI(0x5B34);  // g_dComIfG_gameInfo.play mpPlayerPtr[0] (as story_chart.cpp)
 const Cpu* c_or_zero(const Cpu* c) {
     static const Cpu zero{};
     return c ? c : &zero;
@@ -195,7 +196,8 @@ constexpr uint32_t kShipTurnAfterTalk = 0x00400000;  // daSFLG_UNK400000_e: the 
 constexpr uint32_t kAttentionPos = 0x390, kAttentionFlags = 0x39C;  // fopAc_ac_c attention_info.position, .flags
 constexpr uint32_t kAttnLockonTalk = 0x2, kAttnSpeak = 0x8, kAttnShip = 0x80;
 constexpr uint32_t kPlayOrderCount = 0x5290, kPlayEventMode = 0x5292;  // dEvt_control_c (play + 0x51D0) mOrderCount, mMode
-constexpr uint32_t kPlayPlayerStatus = 0x5CD8, kPlayMiniGame = 0x5CEA, kRideShip = 0x10000;  // daPyStts0_SHIP_RIDE_e
+const uint32_t kPlayPlayerStatus = GI(0x5CD8), kPlayMiniGame = GI(0x5CEA);
+constexpr uint32_t kRideShip = 0x10000;  // daPyStts0_SHIP_RIDE_e
 constexpr uint16_t kCommandTalk = 1, kConditionCanTalk = 1;
 // The message the line is shown as: the boat's own one-box line 0x5DF, which setNextMessage ends the
 // talk after without setting anything; its text is replaced for exactly that talk (story_mail::say).
@@ -388,6 +390,10 @@ uint32_t icon_pane(uint32_t item) {
 // Keeps the game's sentinel icon of that place hidden.
 IconPlace place_over(uint32_t item, uint32_t number);
 IconPlace compute_icon_place() { return place_over(g_bag_item, kNotebookItem); }
+// The game draws the notebook's icon itself from its own frame in the extended icon archive
+// (item_icons.h): the port then neither hides it nor draws its picture over it. (Both at once,
+// with the hide missing some draw passes, showed two books, one of them flickering.)
+bool game_draws_notebook() { return story_items::frame(0) >= 0; }
 // With the Pro Controller the item menu is on the TV only while the game is paused in it: the in-game
 // UI's current state (hdIngameUi_c's state machine at +0x10, asked with the game's own
 // hdStateMachine current-state function) is ToMenu, Menu or MenuSubWindow. Closing the menu with +
@@ -462,46 +468,14 @@ IconPlace place_over(uint32_t item, uint32_t number) {
     return at;
 }
 
-// the carried letter's place this frame (an envelope drawn by the port)
-IconPlace letter_place() {
-    const char* keep = g_icon_reason;
-    IconPlace at = place_over(g_letter_item, kLetterItem);
-    g_icon_reason = keep;
-    return at;
-}
-
-// The carried letter's placeholder icon: a cream envelope with its flap and a red wax seal.
-std::vector<Command> envelope(float cx, float cy, float size, float alpha) {
-    std::vector<Command> out;
-    const uint32_t a = uint32_t(alpha * 255.0f + 0.5f);
-    const float w = size * 0.80f, h = size * 0.54f, x = cx - w / 2, y = cy - h / 2;
-    Command c;
-    c.kind = Command::Rect, c.x = x + 2, c.y = y + 3, c.w = w, c.h = h, c.rgba = 0x00000000u | (a * 2 / 5);
-    out.push_back(c);
-    c.x = x, c.y = y, c.rgba = 0xF4E6C4FFu & (0xFFFFFF00u | a);
-    out.push_back(c);
-    c.kind = Command::RectOutline, c.rgba = 0x8B6A3E00u | a, c.thickness = std::max(1.0f, size / 40);
-    out.push_back(c);
-    Command l;
-    l.kind = Command::Line, l.rgba = 0x8B6A3E00u | a, l.thickness = std::max(1.0f, size / 45);
-    l.x = x, l.y = y, l.w = w / 2, l.h = h * 0.55f;
-    out.push_back(l);
-    l.x = x + w, l.y = y, l.w = -w / 2, l.h = h * 0.55f;
-    out.push_back(l);
-    Command seal;
-    seal.kind = Command::Circle, seal.x = cx, seal.y = y + h * 0.55f, seal.size = size * 0.09f, seal.rgba = 0xB2392B00u | a;
-    out.push_back(seal);
-    return out;
-}
-
 // Every frame (game thread): the notebook's icon over its bag place, or nothing.
 void bag_icon() {
     auto& store = guestmods::hud::store();
     static bool published = false;
     static guestmods::hud::Handle image = 0;
     static uint64_t generation = 0;
-    const IconPlace at = compute_icon_place();
-    const IconPlace letter = letter_place();
+    // the game's own notebook icon (the extended icon archive): nothing to draw over it
+    const IconPlace at = game_draws_notebook() ? IconPlace{} : compute_icon_place();
     if (trace()) {  // only when the decision or the place changes
         static const char* last = nullptr;
         static float lx = -1e9f, ly = -1e9f;
@@ -514,7 +488,7 @@ void bag_icon() {
     }
     // the page drawn as a game layout covers the bag (the HUD's page did by being drawn later)
     const bool open_book = story_notebook_layout::animating() && !icon_open_png().empty();
-    if ((story_notebook_layout::drawing() && !open_book) || (!at.shown && !letter.shown)) {
+    if ((story_notebook_layout::drawing() && !open_book) || !at.shown) {
         if (published) store.drop(kIconOwner);
         published = false;
         return;
@@ -542,16 +516,18 @@ void bag_icon() {
     // 854 x 480 layout, scaled to the TV's 1280 x 720).
     const bool tv = input::pro_controller();
     const float k = tv ? 1280.0f / 854.0f : 1.0f;
+    // a change of controller (Pro Controller <-> GamePad) moves the icons: the other screen's list goes
+    static int last_screen = -1;
+    if (published && last_screen != (tv ? 0 : 1)) store.drop(kIconOwner);
+    last_screen = tv ? 0 : 1;
     const guestmods::hud::Handle list = store.begin(kIconOwner, tv ? 0 : 1);
     if (!list) return;
-    if (at.shown) {
+    {
         Command c;
         c.x = (at.x - at.size * kIconAnchorX) * k, c.y = (at.y - at.size * kIconAnchorY) * k, c.w = c.h = at.size * k;
         c.rgba = 0xFFFFFF00u | uint32_t(at.alpha * 255.0f + 0.5f);
         store.picture(kIconOwner, list, open_book && open_image ? open_image : image, c);
     }
-    if (letter.shown)  // placeholder art: a sealed envelope
-        for (Command& c : envelope(letter.x * k, letter.y * k, letter.size * k, letter.alpha)) store.append(kIconOwner, list, std::move(c));
     store.commit(kIconOwner, list);
     published = true;
 }
@@ -690,6 +666,7 @@ void publish(const std::vector<Row>& all, const std::vector<Command>* caption = 
     // only on the screen with the game's item menu (the GamePad, or the TV with the Pro Controller)
     const uint32_t screen = menu_screen(input::pro_controller());
     const float k = screen == 1 ? 854.0f / 1280.0f : 1.0f;
+    if (screen != g_closing_screen) store.drop(kOwner);  // a change of controller moves the page: not on both screens
     const guestmods::hud::Handle list = store.begin(kOwner, screen);
     if (!list) return;
     std::vector<guestmods::hud::Handle> images;
@@ -1372,7 +1349,7 @@ int32_t talk(const std::string& mod, const std::string& quest, uint32_t step, co
 namespace {
 std::vector<std::pair<uint32_t, uint8_t>> g_hidden_icons;
 void hide_icon(uint32_t item) {
-    if (!item || !port_item(ld32(item + kItemNumber))) return;
+    if (!item || ld32(item + kItemNumber) != kNotebookItem || game_draws_notebook()) return;
     const uint32_t pane = icon_pane(item);
     if (!pane) return;
     for (const auto& hidden : g_hidden_icons) if (hidden.first == pane) return;
@@ -1385,7 +1362,6 @@ void hide_floating_notebook_icon() {
     static const bool show = [] { const char* e = getenv("WWHD_NOTEBOOK_SHOW_SENTINEL"); return e && *e == '1'; }();
     if (show) return;
     hide_icon(g_bag_item);
-    hide_icon(g_letter_item);
     hide_icon(ld32(GD(0x101F5578)));
 }
 void restore_notebook_icons() {

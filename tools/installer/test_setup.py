@@ -539,7 +539,7 @@ class AtomicReplace(unittest.TestCase):
                  mock.patch.object(setup, "get_toolchain", return_value=tc), \
                  mock.patch.object(setup, "run_logged", return_value="fixture compiler version"), \
                  mock.patch.object(setup, "free_space", return_value=20 << 30), \
-                 mock.patch.object(setup, "recompile", side_effect=lambda game, gen, hooks=False: Path(gen).mkdir()), \
+                 mock.patch.object(setup, "recompile", side_effect=lambda game, gen, hooks=False, cache_root=None: Path(gen).mkdir()), \
                  mock.patch.object(setup, "compile_gamecode", side_effect=compile_code), \
                  mock.patch.object(setup, "link_game", side_effect=lambda *a: Path(a[-1]).write_bytes(b"exe")), \
                  mock.patch.object(self.cm, "atomic_json", side_effect=contended):
@@ -701,10 +701,12 @@ class Titles(unittest.TestCase):
     def test_supported_ok(self):
         setup.check_title("0005000010143500")   # USA, the canonical build
         setup.check_title("0005000010143600")   # Europe (tools/recomp/builds/eu.json)
+        setup.check_title("0005000010143400")   # Japan (tools/recomp/builds/jp.json)
 
     def test_unsupported(self):
-        with self.assertRaisesRegex(setup.SetupError, "Japan.*can be built from"):
-            setup.check_title("0005000010143400")
+        with mock.patch.dict(setup.TITLE_IDS, {"0005000010143700": "Elsewhere"}):  # a region with no map
+            with self.assertRaisesRegex(setup.SetupError, "Elsewhere.*can be built from"):
+                setup.check_title("0005000010143700")
         with self.assertRaisesRegex(setup.SetupError, "not The Wind Waker HD"):
             setup.check_title("000500001010ec00")
 
@@ -746,9 +748,16 @@ class ArchiveTitles(unittest.TestCase):
         self.assertEqual(folder, "0005000010143600_v0")
         self.assertIn("the update for The Wind Waker HD (Europe), version 16", notes[0])
 
+    def test_japanese_archive(self):
+        jp, jp_update = _title("0005000010143400", 0), _title("0005000e10143400", 16)
+        folder, notes = setup.archive_choice(self.info([jp, jp_update], jp))
+        self.assertEqual(folder, "0005000010143400_v0")
+        self.assertIn("the update for The Wind Waker HD (Japan), version 16", notes[0])
+
     def test_other_region(self):
-        with self.assertRaisesRegex(setup.SetupError, "archive contains the Japan version"):
-            setup.archive_choice(self.info([_title("0005000010143400", 0), _title("0005000e10143400", 16)]))
+        with mock.patch.dict(setup.TITLE_IDS, {"0005000010143700": "Elsewhere"}):  # a region with no map
+            with self.assertRaisesRegex(setup.SetupError, "archive contains the Elsewhere version"):
+                setup.archive_choice(self.info([_title("0005000010143700", 0)]))
 
     def test_other_game(self):
         with self.assertRaisesRegex(setup.SetupError, "does not contain The Wind Waker HD.*title 00050000-1010EC00"):
@@ -1329,7 +1338,7 @@ class CodeModsBuild(unittest.TestCase):
                                   manifest={"platform": "fixture", "toolchain": {}, "exe": "fixture"},
                                   exe=str(data / "bin/fixture"), exe_dir=str(data / "bin"),
                                   version="test", state=lambda: {})
-            def translate(game, gen, hooks=False):
+            def translate(game, gen, hooks=False, cache_root=None):
                 Path(gen).mkdir()
                 Path(gen, "mode.txt").write_text("on" if hooks else "off")
                 return 1
@@ -1409,7 +1418,7 @@ class CodeModsBuild(unittest.TestCase):
                                   manifest={"toolchain": {}, "exe": "fixture"},
                                   args=SimpleNamespace(jobs=4))
             mode = []
-            def translate(game, gen, hooks=False):
+            def translate(game, gen, hooks=False, cache_root=None):
                 Path(gen).mkdir(); mode[:] = [hooks]
             def compile_code(tc, manifest, gen, obj, jobs, **kwargs):
                 Path(obj).mkdir(); kwargs["cancel"](); kwargs["progress"](1, 1)
@@ -2071,30 +2080,84 @@ class DecompOption(unittest.TestCase):
         self.assertTrue(ds.is_dev_version("development build"))
         for v in ("v0.2.13", "v0.2.13-rc1", "", None, "v0.2.13-devel.", "devel-0123abcd"):
             self.assertFalse(ds.is_dev_version(v), v)
-        self.assertTrue(ds.offered(self.DEV, True))
-        self.assertFalse(ds.offered(dict(self.DEV, version="v0.2.13"), True))   # a release
-        self.assertFalse(ds.offered({k: v for k, v in self.DEV.items() if k != "decomp"}, True))  # no parts
+        self.assertTrue(ds.offered(self.DEV))
+        self.assertTrue(ds.offered(dict(self.DEV, version="v0.2.13")))    # regular releases too (2026-11-16)
+        self.assertFalse(ds.offered({k: v for k, v in self.DEV.items() if k != "decomp"}))  # no parts
 
-    def test_platform_gate(self):
-        self.assertFalse(setup.decomp_setup.offered(self.DEV, False))
-        with mock.patch.object(setup, "IS_MAC", False):
-            self.assertFalse(setup.decomp_offered(self.DEV))
-        with mock.patch.object(setup, "IS_MAC", True):
-            self.assertTrue(setup.decomp_offered(self.DEV))
+    def test_offered_on_every_os(self):
+        # (2026-11-16: Linux, the Steam Deck and Windows too; the release's parts decide)
+        for mac, win in ((True, False), (False, False), (False, True)):
+            with mock.patch.object(setup, "IS_MAC", mac), mock.patch.object(setup, "IS_WIN", win), \
+                    mock.patch.object(setup, "IS_LINUX", not mac and not win):
+                self.assertTrue(setup.decomp_offered(dict(self.DEV, platform="linux-x86_64")))
+                self.assertFalse(setup.decomp_offered({k: v for k, v in self.DEV.items() if k != "decomp"}))
 
-    def wanted(self, manifest, arg, state, mac=True):
+    def wanted(self, manifest, arg, state):
         ctx = mock.Mock(manifest=manifest, args=mock.Mock(decomp=arg))
         ctx.state.return_value = state
-        with mock.patch.object(setup, "IS_MAC", mac):
-            return setup.decomp_wanted(ctx)
+        return setup.decomp_wanted(ctx)
 
     def test_option_default_off_and_remembered(self):
         self.assertFalse(self.wanted(self.DEV, None, {}))                 # off by default
         self.assertTrue(self.wanted(self.DEV, True, {}))                  # --decomp / the checkbox
         self.assertTrue(self.wanted(self.DEV, None, {"decomp": True}))    # a repair or update remembers it
         self.assertFalse(self.wanted(self.DEV, False, {"decomp": True}))  # --no-decomp
-        self.assertFalse(self.wanted(self.DEV, True, {}, mac=False))      # never where it is not offered
-        self.assertFalse(self.wanted(dict(self.DEV, version="v0.2.13"), True, {"decomp": True}))
+        self.assertFalse(self.wanted({k: v for k, v in self.DEV.items() if k != "decomp"}, True, {"decomp": True}))
+
+    def mode(self, manifest, decomp, plain, state, pin=True):
+        ctx = mock.Mock(manifest=manifest, args=mock.Mock(decomp=decomp, decomp_plain=plain), defaults_dir=None)
+        ctx.state.return_value = state
+        with mock.patch.object(setup.decomp_setup.decomp_platform, "capstone_pin", return_value={} if pin else None):
+            return setup.decomp_mode(ctx)
+
+    def test_mode_fast_by_default(self):
+        fast = dict(self.DEV, decomp={"tree_sha256": "", "fast": {"link": []}})
+        self.assertEqual(self.mode(fast, True, False, {}), "fast")                        # --decomp / the checkbox
+        self.assertEqual(self.mode(fast, True, True, {}), "plain")                        # --decomp-plain
+        self.assertEqual(self.mode(fast, None, False, {"decomp_mode": "plain"}), "plain")  # remembered
+        self.assertEqual(self.mode(fast, True, False, {"decomp_mode": "plain"}), "fast")   # --decomp: fast again
+        self.assertEqual(self.mode(fast, None, False, {}), "fast")
+        self.assertEqual(self.mode(self.DEV, True, False, {}), "plain")  # a release without fast parts
+        self.assertEqual(self.mode(fast, True, False, {}, pin=False), "plain")  # no disassembler here (Windows on ARM)
+
+    def test_guest_hooks_default_and_installed(self):
+        ds = setup.decomp_setup
+        with tempfile.TemporaryDirectory() as d:
+            pkg, data = os.path.join(d, "pkg"), os.path.join(d, "data")
+            os.makedirs(os.path.join(pkg, "tools", "decomp_build"))
+            os.makedirs(data)
+            with open(os.path.join(pkg, "tools", "decomp_build", "gen.py"), "w") as f:
+                f.write('ap.add_argument("--guest-hooks")\n')
+            with open(os.path.join(pkg, ds.DEFAULT_HOOKS), "w") as f:
+                f.write("# default\n0202A3B4\n0204938C\n")
+            s = mock.Mock(PKG=pkg)
+            self.assertEqual(ds.guest_hook_args(s, data, "fast", False), ([], []))   # code mods off
+            self.assertEqual(ds.guest_hook_args(s, data, "plain", True), ([], []))   # plain build
+            with open(os.path.join(data, ds.MOD_HOOKS_FILE), "w") as f:
+                f.write("0204938C\n02100000  # an installed mod\n")
+            args, _ = ds.guest_hook_args(s, data, "fast", True)
+            self.assertEqual(args[0], "--guest-hooks")
+            self.assertEqual(ds.read_hook_list(args[1]), {0x0202A3B4, 0x0204938C, 0x02100000})
+            with open(os.path.join(pkg, "tools", "decomp_build", "gen.py"), "w") as f:
+                f.write("# a gen.py without guest hooks\n")
+            self.assertEqual(ds.guest_hook_args(s, data, "fast", True), ([], []))
+
+    def test_fast_args_match_decomp_cmake(self):
+        # decomp_setup's fast mode passes what cmake/Decomp.cmake passes with its default options
+        import re as re_
+        with open(os.path.join(os.path.dirname(os.path.abspath(setup.__file__)), "..", "..", "cmake", "Decomp.cmake")) as f:
+            cm = f.read()
+        default = lambda k: re_.search(r'option\(%s "[^"]*" (ON|OFF)\)' % k, cm).group(1)
+        ds = setup.decomp_setup
+        for opt, arg in (("HOOKED", "--hooked-bodies"), ("HCALL", "--hcall"), ("PTR_IC", "--ptr-ic"),
+                         ("STACKARG", "--stackarg")):
+            self.assertEqual(default("WWHD_DECOMP_FAST_" + opt) == "ON", arg in ds.FAST_GEN_ARGS, opt)
+        for opt, arg in (("HCALL", "--hcall"), ("A3_FN", "--a3-fn"), ("A3_STUB", "--a3-stub"), ("LEAF", "--leaf"),
+                         ("LEAF_BARE", "--bare"), ("BARE_ENTRY", "--bare-entry"), ("NOCHECK", "--unbased"),
+                         ("STACKARG", "--stackarg"), ("ACCESSOR", "--accessor")):
+            self.assertEqual(default("WWHD_DECOMP_FAST_" + opt) == "ON", arg in ds.FAST_RULES_ARGS, opt)
+        self.assertIn('set(WWHD_DECOMP_HOOK_SHARD "%d"' % ds.HOOK_SHARD, cm)
+        self.assertIn('WWHD_DECOMP_FAST_WHOLE_LTO_MIN_RAM_GB "%d"' % (ds.WHOLE_LTO_MIN_RAM >> 30), cm)
 
     def test_steps(self):
         self.assertEqual(setup.plan_steps("installed", True)[-2:], ["shaders", "decomp"])
@@ -2238,6 +2301,18 @@ class DecompOption(unittest.TestCase):
                                            "and try again"), msg)
             self.assertFalse(os.path.exists(os.path.join(d, "data", "decomp-src")))
 
+    def test_source_certificate_failure_is_not_called_a_connection_problem(self):
+        with tempfile.TemporaryDirectory() as d:
+            pin = {"revision": "3" * 40, "tree_sha256": "0" * 64}
+            bad = setup.SetupError("download failed: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate verify "
+                                   "failed: unable to get local issuer certificate (_ssl.c:1000)>")
+            with self.assertRaises(setup.SetupError) as e:
+                self.fetch(os.path.join(d, "data"), pin, None, fail=bad)
+            msg = str(e.exception)
+            self.assertTrue(msg.startswith(setup.decomp_setup.FETCH_CERTIFICATE), msg)
+            self.assertNotIn("internet connection", msg)
+            self.assertIn("CERTIFICATE_VERIFY_FAILED", msg)
+
     def test_digest_ignores_finder_files(self):
         ds = setup.decomp_setup
         with tempfile.TemporaryDirectory() as d:
@@ -2312,6 +2387,518 @@ class DecompOption(unittest.TestCase):
                 os.remove(dexe)
                 setup.launch(dict(st, start_decomp=True), d)  # not built (any more): the normal game
             self.assertEqual(started, [exe, dexe, dexe, exe])
+
+
+class DecompChoice(unittest.TestCase):
+    """Setup's one choice (setup.py GAME_VERSIONS, 2026-11-17): the recompiled version or the decomp version, only the
+    chosen one built and started; an install an earlier setup built both for keeps both, starting what it started,
+    until setup runs with a choice."""
+    MANIFEST = {"version": "test", "platform": "fixture", "toolchain": {}, "exe": "wwhd", "decomp": {"tree_sha256": ""}}
+
+    def ctx_for(self, state, decomp=None):
+        ctx = mock.Mock(manifest=self.MANIFEST, args=mock.Mock(decomp=decomp, decomp_plain=False), defaults_dir=None)
+        ctx.state.return_value = state
+        return ctx
+
+    def test_choice_default_remembered_and_legacy(self):
+        v = lambda state, decomp=None: setup.game_version(self.ctx_for(state, decomp))
+        self.assertEqual(v({}), "recomp")                                         # the default
+        self.assertEqual(v({}, True), "decomp")                                   # --decomp / the window's choice
+        self.assertEqual(v({"game_version": "decomp", "decomp": True}), "decomp")  # remembered by repairs, updates
+        self.assertEqual(v({"game_version": "decomp"}, False), "recomp")         # --recomp: switch
+        self.assertEqual(v({"game_version": "recomp"}), "recomp")
+        # an earlier setup built both ("Also build the decomp version"): both until a choice is made
+        legacy = {"decomp": True, "exe": "bin/wwhd", "decomp_exe": "bin/wwhd-decomp", "start_decomp": True}
+        self.assertEqual(v(legacy), "both")
+        self.assertEqual(v(legacy, False), "recomp")
+        self.assertEqual(v(legacy, True), "decomp")
+        self.assertTrue(setup.decomp_wanted(self.ctx_for(legacy)))
+        # what the window preselects for it: the version that starts now
+        self.assertTrue(setup.decomp_selected(self.ctx_for(legacy)))
+        self.assertFalse(setup.decomp_selected(self.ctx_for(dict(legacy, start_decomp=False))))
+        self.assertTrue(setup.decomp_selected(self.ctx_for({"game_version": "decomp"})))
+        # not offered: always the recompiled version
+        ctx = self.ctx_for({"game_version": "decomp"}, True)
+        ctx.manifest = {k: x for k, x in self.MANIFEST.items() if k != "decomp"}
+        self.assertEqual(setup.game_version(ctx), "recomp")
+        # what an install.json says was built
+        self.assertEqual(setup.installed_version({}), "recomp")
+        self.assertEqual(setup.installed_version(legacy), "both")
+        self.assertEqual(setup.installed_version({"game_version": "decomp", "decomp_exe": "x"}), "decomp")
+        self.assertEqual(setup.installed_version({"game_version": "recomp"}), "recomp")
+
+    def test_steps_decomp_only(self):
+        for kind in ("image", "archive", "folder", "installed"):
+            steps = setup.plan_steps(kind, True, False)
+            self.assertNotIn("translate", steps, kind)
+            self.assertNotIn("compile", steps, kind)
+            self.assertEqual(steps[-3:], ["decomp", "app", "shaders"], kind)
+            self.assertEqual(steps.count("decomp"), 1)
+        self.assertEqual(setup.plan_steps("update", True, False), ["compiler", "transfer", "decomp", "app", "shaders"])
+        both = setup.plan_steps("installed", True)  # (an install with both: as before)
+        self.assertEqual(both, ["compiler", "translate", "compile", "app", "shaders", "decomp"])
+        self.assertNotIn("decomp", setup.plan_steps("installed", False))
+
+    # install() end to end with the builds replaced: what is built, what install.json says, what is removed
+    def run_install(self, d, decomp, before=None, fail_decomp=False, code_mods_on="0"):
+        from pathlib import Path
+        from types import SimpleNamespace
+        root = Path(d)
+        game = root / "game"
+        (game / "code").mkdir(parents=True, exist_ok=True)
+        (game / "code/cking.rpx").write_bytes(b"synthetic fingerprint input")
+        (root / "sdk").mkdir(exist_ok=True)
+        data = root / "data"
+        data.mkdir(exist_ok=True)
+        if before is not None:
+            setup.write_state(str(data), before)
+        tc = SimpleNamespace(cc=["test-compiler"], cxx=["test-compiler"], env={}, desc="fixture")
+        args = SimpleNamespace(code_mods=code_mods_on, jobs=4, shortcuts=False, keep_work=False, decomp=decomp,
+                               decomp_plain=False, skip_shader_prebuild=False, model_sweep=False)
+        ctx = SimpleNamespace(data_dir=str(data), game_dir=str(game), args=args, manifest=dict(self.MANIFEST),
+                              exe=str(data / "bin/wwhd"), exe_dir=str(data / "bin"), version="test", defaults_dir=None,
+                              state=lambda: setup.read_state(str(data)))
+        calls = {"recompile": 0, "decomp": [], "shaders": [], "notebook": []}
+
+        def translate(game, gen, hooks=False, cache_root=None):
+            calls["recompile"] += 1
+            Path(gen).mkdir()
+            return 1
+
+        def link(tc, manifest, objs, work, target, **kw):
+            Path(target).write_bytes(b"synthetic executable")
+
+        def decomp_build(s, ctx_, tc_, jobs, mode="fast", code_mods=False, step=None, before_probe=None):
+            calls["decomp"].append({"mode": mode, "code_mods": code_mods})
+            if fail_decomp:
+                raise setup.SetupError("compiling d_a_player.cpp failed")
+            exe = setup.decomp_setup.exe_path(str(data), setup.PORTABLE)
+            os.makedirs(os.path.dirname(exe), exist_ok=True)
+            Path(exe).write_bytes(b"synthetic decomp executable")
+            if before_probe:
+                before_probe(exe)
+            return exe, "2c1deae" + "0" * 33, 862, {"mode": mode, "code_mods": bool(code_mods)}
+
+        def shaders(game, template, exe, *a, **kw):
+            calls["shaders"].append(exe)
+            return {"status": "ready"}
+
+        with mock.patch.multiple(setup, PKG=root, PORTABLE=True, IS_MAC=False, IS_LINUX=True), \
+                mock.patch.object(setup, "valid_game_folder", return_value=True), \
+                mock.patch.object(setup, "game_folder_title", return_value=None), \
+                mock.patch.object(setup, "check_game_version"), \
+                mock.patch.object(setup, "get_toolchain", return_value=tc), \
+                mock.patch.object(setup, "run_logged", return_value="fixture compiler"), \
+                mock.patch.object(setup, "free_space", return_value=20 << 30), \
+                mock.patch.object(setup, "recompile", side_effect=translate), \
+                mock.patch.object(setup, "compile_gamecode", return_value=[]), \
+                mock.patch.object(setup, "link_game", side_effect=link), \
+                mock.patch.object(setup, "write_guest_build_config"), \
+                mock.patch.object(setup, "say"), mock.patch.object(setup, "step"), \
+                mock.patch.object(setup, "prepare_shaders_nonfatal", side_effect=shaders), \
+                mock.patch.object(setup, "install_story_notebook",
+                                  side_effect=lambda st, dd: calls["notebook"].append(st["exe"])), \
+                mock.patch.object(setup.decomp_setup, "build", side_effect=decomp_build):
+            state = setup.install(ctx, ("installed", str(game)))
+        return state, calls, data
+
+    def test_decomp_only_builds_and_starts_only_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            state, calls, data = self.run_install(d, True, code_mods_on="1")
+            dexe = str(data / "bin" / ("wwhd-decomp" + setup.decomp_setup.decomp_platform.EXE_SUFFIX))  # wwhd-decomp.exe on Windows
+            self.assertEqual(calls["recompile"], 0)                 # no recompiled version
+            self.assertEqual(len(calls["decomp"]), 1)               # one build
+            self.assertTrue(calls["decomp"][0]["code_mods"])        # with the install's code-mod choice
+            self.assertEqual(calls["notebook"], [dexe])             # the Story Notebook with that game, before its probe
+            self.assertEqual(calls["shaders"], [dexe])              # shaders prepared with it
+            self.assertFalse((data / "bin" / "wwhd").exists())
+            self.assertTrue((data / "bin" / "portable.txt").is_file())
+            saved = setup.read_state(str(data))                    # the choice is persisted
+            self.assertEqual(saved["game_version"], "decomp")
+            self.assertEqual((saved["exe"], saved["decomp_exe"]), (dexe, dexe))
+            self.assertTrue(saved["start_decomp"])
+            with open(data / "install.json") as f:
+                self.assertEqual(json.load(f)["exe"], "bin/wwhd-decomp" + setup.decomp_setup.decomp_platform.EXE_SUFFIX)
+            active = json.loads((data / "code-mods-active.json").read_text())
+            self.assertEqual((active["state"], active["hooks"]), ("ready", True))
+            # a repair (no choice given) builds the decomp version again, only that one
+            state, calls, data = self.run_install(d, None)
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (0, 1))
+            self.assertEqual(setup.read_state(str(data))["game_version"], "decomp")
+
+    def test_recomp_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            state, calls, data = self.run_install(d, None)
+            self.assertEqual((calls["recompile"], calls["decomp"]), (1, []))
+            saved = setup.read_state(str(data))
+            self.assertEqual(saved["game_version"], "recomp")
+            self.assertFalse(saved.get("decomp_exe"))
+            self.assertFalse(saved["start_decomp"])
+            self.assertEqual(calls["shaders"], [str(data / "bin" / "wwhd")])
+
+    def legacy(self, data, start_decomp):
+        os.makedirs(os.path.join(data, "bin"), exist_ok=True)
+        for name in ("wwhd", "wwhd-decomp"):
+            open(os.path.join(data, "bin", name), "w").close()
+        return {"version": "older", "exe": os.path.join(data, "bin", "wwhd"), "game_dir": "game",
+                "decomp_exe": os.path.join(data, "bin", "wwhd-decomp"), "decomp": True, "start_decomp": start_decomp,
+                "decomp_mode": "fast", "code_mods": False}
+
+    def test_install_with_both_keeps_its_launch_target(self):
+        for start_decomp in (True, False):
+            with tempfile.TemporaryDirectory() as d:
+                data = os.path.join(d, "data")
+                state, calls, _ = self.run_install(d, None, before=self.legacy(data, start_decomp))
+                self.assertEqual((calls["recompile"], len(calls["decomp"])), (1, 1))  # both, as before
+                saved = setup.read_state(data)
+                self.assertNotIn("game_version", saved)            # still an install with both
+                self.assertEqual(setup.installed_version(saved), "both")
+                self.assertEqual(bool(saved["start_decomp"]), start_decomp)  # no surprise switch
+                self.assertTrue(os.path.isfile(saved["exe"]) and os.path.isfile(saved["decomp_exe"]))
+                started = []
+                with mock.patch.object(setup.subprocess, "Popen", lambda a, **kw: started.append(a[0])), \
+                        mock.patch.object(setup, "say"), mock.patch.object(setup, "IS_MAC", False):
+                    setup.launch(saved, data)
+                self.assertEqual(started, [saved["decomp_exe"] if start_decomp else saved["exe"]])
+
+    def test_install_with_both_then_a_choice(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = os.path.join(d, "data")
+            state, calls, _ = self.run_install(d, True, before=self.legacy(data, False))
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (0, 1))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin", "wwhd")))     # the recompiled version went
+            self.assertEqual(setup.read_state(data)["game_version"], "decomp")
+        with tempfile.TemporaryDirectory() as d:
+            data = os.path.join(d, "data")
+            state, calls, _ = self.run_install(d, False, before=self.legacy(data, True))
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (1, 0))
+            # the decomp version went (from bin.previous too, where the build before this one is kept)
+            self.assertFalse(os.path.exists(os.path.join(data, "bin", "wwhd-decomp")))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin.previous", "wwhd-decomp")))
+            saved = setup.read_state(data)
+            self.assertEqual((saved["game_version"], saved["start_decomp"]), ("recomp", False))
+            self.assertFalse(saved.get("decomp_exe"))
+
+    def test_switching(self):
+        dname = "wwhd-decomp" + setup.decomp_setup.decomp_platform.EXE_SUFFIX  # wwhd-decomp.exe on Windows
+        with tempfile.TemporaryDirectory() as d:
+            data = os.path.join(d, "data")
+            self.run_install(d, None)                                           # recompiled
+            self.run_install(d, None)                                           # a repair: bin.previous has one too
+            self.assertTrue(os.path.isfile(os.path.join(data, "bin", "wwhd")))
+            self.assertTrue(os.path.isfile(os.path.join(data, "bin.previous", "wwhd")))
+            _, calls, _ = self.run_install(d, True)                             # -> decomp
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (0, 1))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin", "wwhd")))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin.previous", "wwhd")))
+            self.assertTrue(os.path.isfile(os.path.join(data, "bin", dname)))
+            self.assertEqual(setup.read_state(data)["exe"], os.path.join(data, "bin", dname))
+            _, calls, _ = self.run_install(d, False)                            # -> recompiled again
+            self.assertEqual((calls["recompile"], len(calls["decomp"])), (1, 0))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin", dname)))
+            self.assertFalse(os.path.exists(os.path.join(data, "bin.previous", dname)))
+            saved = setup.read_state(data)
+            self.assertEqual((saved["game_version"], saved["exe"]), ("recomp", os.path.join(data, "bin", "wwhd")))
+
+    def test_failed_switch_keeps_the_installed_game(self):
+        with tempfile.TemporaryDirectory() as d:
+            data = os.path.join(d, "data")
+            self.run_install(d, None)
+            before = open(os.path.join(data, "install.json")).read()
+            with self.assertRaises(setup.SetupError) as e:
+                self.run_install(d, True, fail_decomp=True)
+            self.assertIn("could not be built", str(e.exception))
+            self.assertIn("installed before is unchanged", str(e.exception))
+            self.assertEqual(open(os.path.join(data, "install.json")).read(), before)
+            self.assertTrue(os.path.isfile(os.path.join(data, "bin", "wwhd")))
+        with tempfile.TemporaryDirectory() as d:  # a new install: nothing to fall back to, says what to do
+            with self.assertRaises(setup.SetupError) as e:
+                self.run_install(d, True, fail_decomp=True)
+            self.assertIn("choose the recompiled version", str(e.exception))
+            self.assertFalse(os.path.exists(os.path.join(d, "data", "install.json")))
+
+    def test_launch_decomp_only(self):
+        with tempfile.TemporaryDirectory() as d:
+            dexe = os.path.join(d, "bin", "wwhd-decomp")
+            os.makedirs(os.path.dirname(dexe))
+            open(dexe, "w").close()
+            st = {"exe": dexe, "decomp_exe": dexe, "game_version": "decomp", "start_decomp": True}
+            started, said = [], []
+            with mock.patch.object(setup.subprocess, "Popen", lambda a, **kw: started.append(a[0])), \
+                    mock.patch.object(setup, "say", lambda *a: said.append(" ".join(a))), \
+                    mock.patch.object(setup, "IS_MAC", False):
+                setup.launch(st, d)
+                setup.launch(st, d, decomp=False)
+                with mock.patch("randomizer_seeds.load", return_value={"playing": "abcd"}):
+                    setup.launch(st, d)
+            self.assertEqual(started, [dexe] * 3)
+            self.assertTrue(any("recompiled version" in t for t in said))
+
+    def test_randomizer_needs_the_recompiled_version(self):
+        import randomizer_seeds
+        with self.assertRaises(setup.SetupError) as e:
+            setup.check_randomizer_version({"game_version": "decomp", "decomp_exe": "x", "exe": "x"})
+        self.assertIn("Recompiled version", str(e.exception))
+        setup.check_randomizer_version({"game_version": "recomp"})
+        setup.check_randomizer_version({"decomp_exe": "x", "exe": "y"})  # (an install with both: as before)
+        ctx = mock.Mock(manifest={}, game_dir="g")
+        ctx.state.return_value = {"game_version": "decomp", "exe": "x", "decomp_exe": "x"}
+        with self.assertRaises(setup.SetupError):
+            randomizer_seeds.check_base(setup, ctx)
+        with self.assertRaises(setup.SetupError):
+            randomizer_seeds.select(setup, ctx, "vanilla", False)
+
+    def test_code_mod_switch_rebuilds_only_the_decomp_version(self):
+        from pathlib import Path
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as d:
+            data = Path(d)
+            dexe = data / "bin" / "wwhd-decomp"
+            dexe.parent.mkdir()
+            dexe.write_bytes(b"old")
+            setup.write_state(str(data), {"exe": str(dexe), "decomp_exe": str(dexe), "game_version": "decomp",
+                                          "decomp_mode": "fast", "code_mods": False})
+            ctx = SimpleNamespace(data_dir=str(data), game_dir=str(data / "game"), manifest={"toolchain": {}, "exe": "wwhd"},
+                                  args=SimpleNamespace(jobs=4), version="test")
+            built = []
+
+            def decomp_build(s, ctx_, tc_, jobs, mode="fast", code_mods=False, **kw):
+                built.append((mode, code_mods))
+                dexe.write_bytes(b"new")
+                return str(dexe), "r" * 40, 1, {"mode": mode, "code_mods": code_mods}
+            status = data / "status.json"
+            with mock.patch.object(setup, "PORTABLE", True), \
+                    mock.patch.object(setup, "get_toolchain", return_value=SimpleNamespace(cc=["cc"], env={})), \
+                    mock.patch.object(setup, "recompile", side_effect=AssertionError("no recompiled variant")), \
+                    mock.patch.object(setup.decomp_setup, "build", side_effect=decomp_build):
+                result = setup.code_mods.rebuild(setup, ctx, True, str(status))
+            self.assertEqual(built, [("fast", True)])
+            self.assertEqual((result["state"], result["decomp"]), ("ready", "ready"))
+            self.assertEqual(json.loads(status.read_text())["decomp"], "ready")
+            active = json.loads((data / "code-mods-active.json").read_text())
+            self.assertEqual((active["state"], active["hooks"]), ("ready", True))
+            saved = setup.read_state(str(data))
+            self.assertEqual((saved["exe"], saved["decomp_code_mods"]), (str(dexe), True))
+            # a failed rebuild is the switch's failure; the game built before stays
+            with mock.patch.object(setup, "PORTABLE", True), \
+                    mock.patch.object(setup, "get_toolchain", return_value=SimpleNamespace(cc=["cc"], env={})), \
+                    mock.patch.object(setup.decomp_setup, "build", side_effect=setup.SetupError("link failed")):
+                with self.assertRaises(setup.SetupError):
+                    setup.code_mods.rebuild(setup, ctx, False, str(status))
+            self.assertEqual(json.loads(status.read_text())["state"], "error")
+            self.assertEqual(dexe.read_bytes(), b"new")
+
+
+class DecompDesktop(unittest.TestCase):
+    """The decomp version on Linux (the Steam Deck too) and Windows (decomp_platform.py, 2026-11-16): the per-OS
+    disassembler, names, path limit, unit merge commands and the decl_lint compiler; elf_localize.py (Linux's
+    llvm-objcopy --localize-hidden) on a hand-made object. tools/decomp_build/test_unit_merge.py runs the merge with
+    the real pinned toolchains in the release jobs."""
+    dp = setup.decomp_setup.decomp_platform
+    ZIG = ["/z/zig", "c++", "-target", "x86_64-linux-gnu.2.35"]
+
+    def test_capstone_pins(self):
+        dp = self.dp
+        for system, machine, tag in (("linux", "x86_64", "manylinux_2_17_x86_64"),
+                                     ("linux", "aarch64", "manylinux_2_17_aarch64"),
+                                     ("windows", "AMD64", "win_amd64"), ("darwin", "arm64", "macosx_11_0_arm64"),
+                                     ("darwin", "x86_64", "macosx_10_9_x86_64")):
+            pin = dp.capstone_pin(system, machine)
+            self.assertIn(tag, pin["url"])
+            self.assertTrue(pin["url"].startswith("https://files.pythonhosted.org/packages/"))
+            self.assertIn("/capstone-5.0.7-py3-none-", pin["url"])
+            self.assertRegex(pin["sha256"], "^[0-9a-f]{64}$")
+            self.assertGreater(pin["size"], 1000000)
+        self.assertIsNone(dp.capstone_pin("windows", "ARM64"))  # no wheel: fast mode not offered on Windows on ARM
+        self.assertEqual(dp.capstone_pin("linux", "arm64"), dp.capstone_pin("linux", "aarch64"))
+        # macOS: the pins #597 shipped, unchanged
+        self.assertEqual(dp.capstone_pin("darwin", "arm64")["sha256"],
+                         "acb89f5bf6f625745a104a3a44819d3acea173228055c1eadc60d2282ae490bb")
+        self.assertEqual(dp.capstone_pin("darwin", "x86_64")["sha256"],
+                         "a9f64e3d75d8c4d7b3d26bba153b2992aadcf6b8d57674b4ef176b4ecdd9822f")
+
+    def test_exe_names(self):
+        dp = self.dp
+        with mock.patch.object(dp, "EXE_SUFFIX", ".exe"):
+            self.assertTrue(dp.exe_path("D", True).endswith(os.path.join("bin", "wwhd-decomp.exe")))
+            self.assertTrue(dp.exe_path("D", False).endswith(os.path.join("decomp", "bin", "wwhd.exe")))
+        with mock.patch.object(dp, "EXE_SUFFIX", ""):
+            self.assertEqual(dp.exe_path("D", True), os.path.join("D", "bin", "wwhd-decomp"))
+            self.assertEqual(dp.exe_path("D", False), os.path.join("D", "decomp", "bin", "wwhd"))
+        self.assertIs(setup.decomp_setup.exe_path, dp.exe_path)
+
+    def test_windows_path_limit(self):
+        dp = self.dp
+        most = setup.WINDOWS_MAX_PATH - 1 - dp.DEEPEST_DECOMP_PATH
+        self.assertEqual(dp.WINDOWS_MAX_PATH, setup.WINDOWS_MAX_PATH)
+        self.assertIsNone(dp.windows_path_problem("C:\\" + "x" * (most - 3), windows=True))
+        msg = dp.windows_path_problem("C:\\" + "x" * (most - 2), windows=True)
+        self.assertIn("too long", msg)
+        self.assertIn("at most %d" % most, msg)
+        self.assertIsNone(dp.windows_path_problem("/" + "x" * 400, windows=False))
+
+    def test_deepest_decomp_path(self):
+        # the constant against the decompilation in the submodule: its source below DATA\decomp-src\<12 hex>\ and the
+        # glued copies below DATA\decomp-work\gen\glued\ (gen.py)
+        root = os.path.join(os.path.dirname(os.path.abspath(setup.__file__)), "..", "..", "decomp")
+        if not os.path.isdir(os.path.join(root, "wwhd_src")):
+            self.skipTest("no decompilation (git submodule update --init decomp)")
+        deepest = 0
+        for top in ("wwhd_src", os.path.join("tools", "verify", "include"), os.path.join("tools", "verify", "src")):
+            for dp_, _, fns in os.walk(os.path.join(root, top)):
+                for fn in fns:
+                    rel = os.path.relpath(os.path.join(dp_, fn), root)
+                    deepest = max(deepest, len("decomp-src\\" + "0" * 12 + "\\" + rel),
+                                  len("decomp-work\\gen\\glued\\" + rel))
+        self.assertLessEqual(deepest, self.dp.DEEPEST_DECOMP_PATH)
+
+    def test_merge_commands(self):
+        dp = self.dp
+        objs = ["/w/a.o", "/w/b.o"]
+        tools = os.path.join("/pkg", "tools", "decomp_build")
+        zig = setup.Toolchain(["/z/zig", "cc", "-target", "x86_64-linux-gnu.2.35"], self.ZIG, ["/z/zig", "ar"], kind="zig")
+        self.assertEqual(dp.merge_commands(zig, "/pkg", "/w/u.o", objs, True, python="py"),
+                         [["/z/zig", "ld.lld", "-r", "--lto-O2", "--thinlto-jobs=1", "-o", "/w/u.o"] + objs,
+                          ["py", os.path.join(tools, "elf_localize.py"), "/w/u.o"]])
+        self.assertEqual(dp.merge_commands(zig, "/pkg", "/w/u.o", objs, False, python="py")[0],
+                         ["/z/zig", "ld.lld", "-r", "-o", "/w/u.o"] + objs)
+        with tempfile.TemporaryDirectory() as d:
+            cxx = os.path.join(d, "x86_64-w64-mingw32-clang++.exe")
+            mingw = setup.Toolchain([cxx], [cxx], [os.path.join(d, "llvm-ar.exe")], rsp=True, kind="llvm-mingw")
+            with mock.patch.dict(os.environ, {"WWHD_DECOMP_LIBLLVM": ""}):
+                with self.assertRaises(OSError):  # (an llvm-mingw without its LLVM library)
+                    dp.merge_commands(mingw, "/pkg", "/w/u.o", objs, True, python="py")
+                dll = os.path.join(d, "libLLVM-23.dll")
+                open(dll, "w").close()
+                for fast in (True, False):
+                    self.assertEqual(dp.merge_commands(mingw, "/pkg", "/w/u.o", objs, fast, python="py"),
+                                     [["py", os.path.join(tools, "unit_ir.py"), "/w/u.o", "--libllvm", dll, "--cc", cxx,
+                                       "--native"] + objs])
+        # macOS: the commands #597 ran
+        mac = setup.Toolchain(["xcrun", "clang"], ["xcrun", "clang++"], ["xcrun", "ar"], kind="xcode-clt")
+        self.assertEqual(dp.merge_commands(mac, "/pkg", "/w/u.o", objs, True),
+                         [["xcrun", "clang++", "-r", "-nostdlib", "-flto=thin", "-o", "/w/u.o"] + objs])
+        self.assertEqual(dp.merge_commands(mac, "/pkg", "/w/u.o", objs, False), [["xcrun", "ld", "-r", "-o", "/w/u.o"] + objs])
+        with mock.patch.object(dp, "tool_path", return_value="/cl/clang++"):
+            self.assertEqual(dp.merge_commands(mac, "/pkg", "/w/u.o", objs, True, lto=True, liblto="/l/libLTO.dylib",
+                                               python="py"),
+                             [["py", os.path.join(tools, "unit_ir.py"), "/w/u.o", "--liblto", "/l/libLTO.dylib", "--cc",
+                               "/cl/clang++"] + objs])
+
+    def test_unit_flags_and_whole_lto(self):
+        dp, ds = self.dp, setup.decomp_setup
+        mingw = setup.Toolchain(["c"], ["x86_64-w64-mingw32-clang++.exe"], ["ar"], kind="llvm-mingw")
+        zig = setup.Toolchain(["z"], self.ZIG, ["ar"], kind="zig")
+        self.assertEqual(dp.unit_flags_extra(mingw, False), ["-flto=thin"])  # (Windows: units are bitcode)
+        self.assertEqual(dp.unit_flags_extra(mingw, True), [])               # (fast mode's flags have it)
+        self.assertEqual(dp.unit_flags_extra(zig, False), [])
+        for tc in (mingw, zig):
+            self.assertEqual(ds.whole_lto(tc), (False, None, "the whole-image link is macOS-only"))
+        self.assertEqual(dp.toolchain_kind(setup.Toolchain(["xcrun", "clang"], ["xcrun", "clang++"], ["ar"])), "xcode-clt")
+        self.assertEqual(dp.toolchain_kind(setup.Toolchain(["/z/zig"], ["/z/zig", "c++"], ["ar"])), "zig")
+        self.assertEqual(dp.toolchain_kind(setup.Toolchain(["c"], [r"C:\t\bin\aarch64-w64-mingw32-clang++.exe"], ["ar"])),
+                         "llvm-mingw")
+
+    def test_get_toolchain_kind(self):
+        with tempfile.TemporaryDirectory() as d, mock.patch.dict(os.environ, {"WWHD_TOOLCHAIN_DIR": d}):
+            self.assertEqual(setup.get_toolchain("zig-0.16.0", d, None).kind, "zig")
+            self.assertEqual(setup.get_toolchain("llvm-mingw-20260922", d, None).kind, "llvm-mingw")
+
+    def test_clangxx_for_decl_lint(self):
+        dp = self.dp
+        with tempfile.TemporaryDirectory() as d:
+            zig = setup.Toolchain(["z"], self.ZIG, ["ar"], kind="zig")
+            b = dp.clangxx_dir(zig, d)
+            script = os.path.join(b, "clang++")
+            with open(script) as f:
+                self.assertEqual(f.read(), '#!/bin/sh\nexec /z/zig c++ -target x86_64-linux-gnu.2.35 "$@"\n')
+            if os.name != "nt":
+                self.assertTrue(os.access(script, os.X_OK))
+            bin_ = os.path.join(d, "llvm-mingw", "bin")
+            os.makedirs(bin_)
+            for n in ("x86_64-w64-mingw32-clang++.exe", "clang++.exe"):
+                open(os.path.join(bin_, n), "w").close()
+            mingw = setup.Toolchain(["c"], [os.path.join(bin_, "x86_64-w64-mingw32-clang++.exe")], ["ar"], kind="llvm-mingw")
+            with mock.patch.object(dp, "EXE_SUFFIX", ".exe"):
+                self.assertEqual(dp.clangxx_dir(mingw, d), bin_)
+
+    def test_total_memory(self):
+        self.assertGreater(self.dp.total_memory(), 1 << 30)
+
+    @staticmethod
+    def elf(symbols, relocs, group_sig, addrsig):
+        """a small ELF64 relocatable: .text, .rela.text, .group (GRP_COMDAT, signature group_sig), .symtab, .strtab,
+        .llvm_addrsig, .shstrtab; symbols (name, bind, vis, defined); relocs and addrsig as symbol indices"""
+        import struct
+        strtab, names = b"\0", []
+        for n, _, _, _ in symbols:
+            names.append(len(strtab))
+            strtab += n.encode() + b"\0"
+        nlocal = 1 + sum(1 for _, b, _, _ in symbols if b == 0)
+        syms = b"\0" * 24 + b"".join(struct.pack("<IBBHQQ", names[i], (b << 4) | 2, v, 1 if d else 0, 0, 0)
+                                     for i, (n, b, v, d) in enumerate(symbols))
+        rela = b"".join(struct.pack("<QQq", 4 * k, (s << 32) | 2, 0) for k, s in enumerate(relocs))
+        group = struct.pack("<II", 1, 1)
+
+        def uleb(v):
+            out = bytearray()
+            while True:
+                b, v = v & 0x7F, v >> 7
+                out.append(b | (0x80 if v else 0))
+                if not v:
+                    return bytes(out)
+        sh_names = [b"", b".text", b".rela.text", b".group", b".symtab", b".strtab", b".llvm_addrsig", b".shstrtab"]
+        shstr, offs = b"\0", []
+        for n in sh_names:
+            offs.append(shstr.find(n + b"\0") if n == b"" else len(shstr))
+            if n:
+                shstr += n + b"\0"
+        bodies = [b"", b"\x90" * 16, rela, group, syms, strtab, b"".join(uleb(a) for a in addrsig), shstr]
+        # name type flags addr offset size link info addralign entsize
+        meta = [(0, 0, 0, 0, 0, 0), (1, 6, 0, 0, 16, 0), (4, 0x40, 4, 1, 8, 24), (17, 0, 4, group_sig, 4, 4),
+                (2, 0, 5, nlocal, 8, 24), (3, 0, 0, 0, 1, 0), (0x6FFF4C03, 0x80000000, 4, 0, 1, 0), (3, 0, 0, 0, 1, 0)]
+        data, offsets = bytearray(64), []
+        for body in bodies:
+            while len(data) % 8:
+                data.append(0)
+            offsets.append(len(data))
+            data += body
+        while len(data) % 8:
+            data.append(0)
+        shoff = len(data)
+        for i, (typ, flags, link, info, align, ent) in enumerate(meta):
+            data += struct.pack("<IIQQQQIIQQ", offs[i], typ, flags, 0, offsets[i] if i else 0, len(bodies[i]), link, info,
+                                align, ent)
+        hdr = b"\x7fELF\x02\x01\x01" + b"\0" * 9 + struct.pack("<HHIQQQIHHHHHH", 1, 62, 1, 0, 0, shoff, 0, 64, 0, 0, 64,
+                                                                 len(meta), 7)
+        data[:64] = hdr
+        return bytes(data)
+
+    def test_elf_localize(self):
+        import struct
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(setup.__file__)), "..", "decomp_build"))
+        import elf_localize
+        # 1 f: global hidden defined, 2 g: global default defined, 3 h: global hidden UNDEFINED, 4 w: weak hidden defined
+        # (the group's signature), 5 x: global default undefined
+        syms = [("f", 1, 2, True), ("g", 1, 0, True), ("h", 1, 2, False), ("w", 2, 2, True), ("x", 1, 0, False)]
+        obj = self.elf(syms, relocs=[1, 2, 3, 5], group_sig=4, addrsig=[1, 4, 2])
+        out, n = elf_localize.localize_hidden(obj)
+        self.assertEqual(n, 2)  # f and w
+        shoff, = struct.unpack_from("<Q", out, 0x28)
+        sh = [struct.unpack_from("<IIQQQQIIQQ", out, shoff + 64 * i) for i in range(8)]
+        st, strt = sh[4], sh[5]
+        name = lambda off: out[strt[4] + off:out.index(b"\0", strt[4] + off)].decode()
+        table = [(name(x[0]), x[1] >> 4) for x in struct.iter_unpack("<IBBHQQ", out[st[4]:st[4] + st[5]])]
+        self.assertEqual(table, [("", 0), ("f", 0), ("w", 0), ("g", 1), ("h", 1), ("x", 1)])  # locals first, in order
+        self.assertEqual(st[7], 3)  # sh_info: the first global
+        rel = [table[info >> 32][0] for _, info, _ in struct.iter_unpack("<QQq", out[sh[2][4]:sh[2][4] + sh[2][5]])]
+        self.assertEqual(rel, ["f", "g", "h", "x"])  # every relocation still names its symbol
+        self.assertEqual(table[sh[3][7]][0], "w")  # the group's signature, renumbered
+        self.assertEqual(struct.unpack_from("<I", out, sh[3][4])[0] & 1, 0)  # GRP_COMDAT dropped: its signature is local
+        self.assertEqual([table[i][0] for i in out[sh[6][4]:sh[6][4] + sh[6][5]]], ["f", "w", "g"])  # .llvm_addrsig
+        self.assertEqual(elf_localize.localize_hidden(out), (out, 0))  # nothing left to do
+        with self.assertRaises(elf_localize.ElfError):
+            elf_localize.localize_hidden(b"\xcf\xfa\xed\xfe" + b"\0" * 60)  # Mach-O
 
 
 class GameOptions(unittest.TestCase):
@@ -2436,6 +3023,21 @@ class StoryNotebookStep(unittest.TestCase):
         ok, _, text = self.run_step(raise_error=setup.subprocess.TimeoutExpired("wwhd", 600))
         self.assertFalse(ok)
         self.assertIn("Mods menu", text)
+
+
+class ScriptsAreAscii(unittest.TestCase):
+    def test_setup_scripts_read_the_same_in_every_windows_language(self):
+        # issue #552 (where it was not the cause): the scripts setup runs and hashes stay plain ASCII, so a tool
+        # that reads one with the Windows language encoding gets the same text, and no file needs a BOM
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        names = []
+        for folder in ("tools", os.path.join("tools", "recomp"), os.path.join("tools", "installer")):
+            for name in sorted(os.listdir(os.path.join(root, folder))):
+                if name.endswith(".py") and not name.startswith("test_"):
+                    with open(os.path.join(root, folder, name), "rb") as f:
+                        if not f.read().isascii():
+                            names.append(os.path.join(folder, name))
+        self.assertEqual(names, [])
 
 
 if __name__ == "__main__":

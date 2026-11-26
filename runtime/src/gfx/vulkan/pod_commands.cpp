@@ -1,6 +1,9 @@
 #include "pod_commands.h"
 #include "handoff_trace.h"
 #include "render_prof.h"
+#ifdef WWHD_VK_SMOOTH
+#include "record_mt.h"
+#endif
 #include <algorithm>
 #include <array>
 #include <cstring>
@@ -9,7 +12,11 @@
 #include <new>
 #include <stdexcept>
 #include <type_traits>
+#ifdef WWHD_DECOMP_FAST
+#include "../../cheapib/cheapib.h"  // cheapib b1: the commands of a logic pass's display-list calls are captured
+#endif
 namespace gfxvk {
+PFN_vkCmdDrawIndexedIndirect pod_draw_indexed_indirect = nullptr;
 std::mutex& graphics_queue_mutex() {
   static std::mutex m;
   return m;
@@ -36,10 +43,11 @@ struct Writer {
     if ((count && !p) || size == 0) {
       failure = PodFailureReason::InvalidInput; valid = false; return;
     }
-    if (count > (limit - used) / size) {
+    // overflow-checked multiply: a division here cost a large share of the packet recording
+    size_t n;
+    if (__builtin_mul_overflow(count, size, &n) || n > limit - used) {
       failure = PodFailureReason::ByteBudgetOrOverflow; valid = false; return;
     }
-    const size_t n = count * size;
     if (!n) return;
     const size_t next = used + n;
     if (overflow.empty() && next <= inline_bytes.size()) {
@@ -117,6 +125,9 @@ void checked(VkResult r) {
 } // namespace
 bool PodCommands::append(uint32_t opcode,
                          std::span<const std::byte> payload) {
+#ifdef WWHD_DECOMP_FAST
+  if (cheapib::g_b2_guard) cheapib::b2_guard(this, opcode);
+#endif
   if (commands_ >= limits_.maxCommands)
     return reject(PodFailureReason::CommandLimit);
   if (bytes_.size() > limits_.maxPayloadBytes || payload.size() > UINT32_MAX ||
@@ -125,13 +136,19 @@ bool PodCommands::append(uint32_t opcode,
     return reject(PodFailureReason::ByteBudgetOrOverflow);
   const Header h{opcode, uint32_t(payload.size())};
   try {
-    auto old = bytes_.size();
-    bytes_.resize(old + sizeof h + payload.size());
-    std::memcpy(bytes_.data() + old, &h, sizeof h);
-    if (!payload.empty())
-      std::memcpy(bytes_.data() + old + sizeof h, payload.data(),
-                  payload.size());
+    // Reserve (geometric growth) before writing: an allocation failure leaves the stream unchanged.
+    // The inserts then copy without the zero fill resize() would do first.
+    const size_t needed = bytes_.size() + sizeof h + payload.size();
+    if (needed > bytes_.capacity())
+      bytes_.reserve(std::max(needed, bytes_.capacity() * 2));
+    const auto* header = reinterpret_cast<const std::byte*>(&h);
+    bytes_.insert(bytes_.end(), header, header + sizeof h);
+    bytes_.insert(bytes_.end(), payload.begin(), payload.end());
     ++commands_;
+#ifdef WWHD_DECOMP_FAST
+    if (cheapib::g_b1_capturing) cheapib::b1_capture(this, opcode, payload.data(), payload.size());
+    if (cheapib::g_b2_shadow) cheapib::b2_shadow(this, opcode, payload.data(), payload.size());
+#endif
     return true;
   } catch (const std::bad_alloc &) {
     return reject(PodFailureReason::AllocationFailure);
@@ -142,6 +159,9 @@ template<class... T>
 bool PodCommands::append_scalars(uint32_t opcode, const T&... values) {
   static_assert((std::is_trivially_copyable_v<T> && ...));
   constexpr size_t payload = (sizeof(T) + ... + 0);
+#ifdef WWHD_DECOMP_FAST
+  if (cheapib::g_b2_guard) cheapib::b2_guard(this, opcode);
+#endif
   if (payload > limits_.maxPayloadBytes) return reject(PodFailureReason::ByteBudgetOrOverflow);
   if (commands_ >= limits_.maxCommands) return reject(PodFailureReason::CommandLimit);
   if (bytes_.size() > limits_.maxPayloadBytes || payload > UINT32_MAX ||
@@ -161,7 +181,12 @@ bool PodCommands::append_scalars(uint32_t opcode, const T&... values) {
       std::memcpy(bytes_.data() + cursor, &value, sizeof(value)); cursor += sizeof(value);
     };
     (put(values), ...); // Only nonthrowing field copies after successful growth.
-    ++commands_; return true;
+    ++commands_;
+#ifdef WWHD_DECOMP_FAST
+    if (cheapib::g_b1_capturing) cheapib::b1_capture(this, opcode, bytes_.data() + old + sizeof(Header), payload);
+    if (cheapib::g_b2_shadow) cheapib::b2_shadow(this, opcode, bytes_.data() + old + sizeof(Header), payload);
+#endif
+    return true;
   } catch (const std::bad_alloc&) { return reject(PodFailureReason::AllocationFailure); }
 }
 bool PodCommands::vkCmdBindPipeline(VkCommandBuffer cmd,
@@ -207,6 +232,23 @@ bool PodCommands::vkCmdDraw(VkCommandBuffer cmd, uint32_t vertices,
     w.put(firstInstance);
     if (!w.valid) return reject(w.failure);
     return append(3, w.view());
+  } catch (const std::bad_alloc &) {
+    return reject(PodFailureReason::AllocationFailure);
+  }
+}
+bool PodCommands::vkCmdDrawIndexedIndirect(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset,
+                                           uint32_t drawCount, uint32_t stride) {
+  if (!pod_draw_indexed_indirect) return reject(PodFailureReason::InvalidInput);
+  if (directScalars_) return append_scalars(30, cmd, buffer, offset, drawCount, stride);
+  try {
+    Writer w(limits_.maxPayloadBytes);
+    w.put(cmd);
+    w.put(buffer);
+    w.put(offset);
+    w.put(drawCount);
+    w.put(stride);
+    if (!w.valid) return reject(w.failure);
+    return append(30, w.view());
   } catch (const std::bad_alloc &) {
     return reject(PodFailureReason::AllocationFailure);
   }
@@ -703,7 +745,7 @@ bool PodCommands::submit(VkDevice device, VkQueue queue, VkCommandBuffer cmd,
 }
 void PodCommands::replay(const std::vector<std::byte> &bytes) {
   const bool smallDiagnostic = handoff_trace::enabled() && bytes.size() <= 2048;
-  std::array<uint32_t, 30> opcodeCounts;
+  std::array<uint32_t, kPodOpcodes> opcodeCounts;
   if (smallDiagnostic) opcodeCounts.fill(0);
   // Validate the entire stream before emitting its first Vulkan command.
   for (bool execute : {false, true}) {
@@ -1134,6 +1176,25 @@ void PodCommands::replay(const std::vector<std::byte> &bytes) {
         }
         break;
       }
+      case 30: {
+        auto cmd = r.get<VkCommandBuffer>();
+        auto buffer = r.get<VkBuffer>();
+        auto offset = r.get<VkDeviceSize>();
+        auto drawCount = r.get<uint32_t>();
+        auto stride = r.get<uint32_t>();
+        if (r.remaining)
+          throw std::runtime_error("trailing POD payload");
+        if (!pod_draw_indexed_indirect)
+          throw std::runtime_error("POD indirect draw without vkCmdDrawIndexedIndirect");
+        if (execute)
+          pod_draw_indexed_indirect(cmd, buffer, offset, drawCount, stride);
+        break;
+      }
+#ifdef WWHD_VK_SMOOTH
+      case 31:  // (record_mt.h)
+        record_mt::replay_extension(r.bytes, r.remaining, execute);
+        break;
+#endif
       default:
         throw std::runtime_error("unknown POD opcode");
       }

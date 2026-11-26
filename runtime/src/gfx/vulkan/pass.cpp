@@ -34,8 +34,11 @@ PreparedPass prepare_pass(PassCaches& cache, const VkRenderingInfo& info, const 
         assert(attachment.imageLayout == VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
         assert(pass.layouts[i] == attachment.imageLayout);
         assert(attachment.storeOp == VK_ATTACHMENT_STORE_OP_STORE && !attachment.resolveImageView && !attachment.pNext);
-        if (haveLoad && load != attachment.loadOp) throw std::invalid_argument("mixed pass colour load operations");
-        load = attachment.loadOp; haveLoad = true;
+        // DONT_CARE (full-screen passes that write every pixel, e.g. the 60 fps (generated) passes)
+        // becomes LOAD: a valid stronger operation, and the render-pass cache keeps LOAD/CLEAR only.
+        const auto op = attachment.loadOp == VK_ATTACHMENT_LOAD_OP_DONT_CARE ? VK_ATTACHMENT_LOAD_OP_LOAD : attachment.loadOp;
+        if (haveLoad && load != op) throw std::invalid_argument("mixed pass colour load operations");
+        load = op; haveLoad = true;
         prepared.clears[clearCount++] = attachment.clearValue;
     }
     if (info.pDepthAttachment) {

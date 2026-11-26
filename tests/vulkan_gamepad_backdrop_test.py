@@ -68,6 +68,8 @@ int main() {
  assert(!gamepad_backdrop_begin_replay(&a,true)&&created==0);
  gamepad_backdrop_scope(nullptr,false);
  policy::set_capture_requested(true);
+ // Only targets scanned out to the GamePad are captured: these two have been.
+ gamepad_backdrop_scan(&a);gamepad_backdrop_scan(&b);gamepad_backdrop_publish();
  auto capture=[&](Surface* source) {
   gamepad_backdrop_scope(nullptr,true);
   assert(gamepad_backdrop_begin_replay(source,true));assert(gamepad_backdrop_replaying());
@@ -109,13 +111,15 @@ int main() {
  const auto stable=created,stableAttempts=allocationAttempts;
  for(unsigned frame=0;frame<120;++frame){capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();}
  assert(created==stable&&allocationAttempts==stableAttempts&&imageCount<=kCaptureImages&&imageBytes<=kCaptureBytes);
- // Oversized images and allocator failure fall back without publishing a capture.
- // (an oversized image is refused before the driver is asked; a failing allocator is asked once per pane)
+ // A huge source is captured at the size cap (aspect kept), never at its own size.
+ // Allocator failure falls back without publishing a capture (asked once per pane).
  Surface huge=a;huge.extent={65535,65535,1};auto attempts=allocationAttempts;
- gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&huge,true));gamepad_backdrop_scope(nullptr,false);
- assert(allocationAttempts==attempts);
- gamepad_backdrop_scan(&huge);gamepad_backdrop_publish();assert(!gamepad_backdrop_image());
- gamepad_backdrop_reset();policy::set_capture_requested(true);failAllocation=true;
+ gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&huge,true));
+ assert(gamepad_backdrop_replay_target()->extent.width==1080&&gamepad_backdrop_replay_target()->extent.height==1080);
+ gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
+ assert(allocationAttempts<=attempts+1&&imageBytes<=kCaptureBytes);
+ gamepad_backdrop_scan(&huge);gamepad_backdrop_publish();assert(gamepad_backdrop_image()->extent.width==1080);
+ gamepad_backdrop_reset();policy::set_capture_requested(true);gamepad_backdrop_scan(&a);failAllocation=true;
  attempts=allocationAttempts;
  gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&a,true));gamepad_backdrop_scope(nullptr,false);
  assert(allocationAttempts==attempts+1);
@@ -131,6 +135,8 @@ int main() {
  // source keeps its format. Eight-bit sources keep theirs.
  policy::set_capture_requested(true);
  Surface ten=a;ten.image=300;ten.format=0x19;ten.fmt={VK_FORMAT_A2B10G10R10_UNORM_PACK32,4,4};
+ Surface ten2=ten;ten2.image=301;ten2.fmt.pixel=VK_FORMAT_A2R10G10B10_UNORM_PACK32;
+ gamepad_backdrop_scan(&a);gamepad_backdrop_scan(&ten);gamepad_backdrop_scan(&ten2);
  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&ten,true));
  auto* promoted=gamepad_backdrop_replay_target();
  assert(promoted->fmt.pixel==VK_FORMAT_R16G16B16A16_SFLOAT&&promoted->format==0x20&&promoted->allocationBytes==1280ull*720*8);
@@ -139,12 +145,11 @@ int main() {
  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&a,true));
  assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_R8G8B8A8_UNORM&&gamepad_backdrop_replay_target()->format==0x1a);
  gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
- Surface ten2=ten;ten2.image=301;ten2.fmt.pixel=VK_FORMAT_A2R10G10B10_UNORM_PACK32;
  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&ten2,true));
  assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_R16G16B16A16_SFLOAT);
  gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
  // Without blendable colour-attachment support the capture keeps the source format.
- gamepad_backdrop_reset();policy::set_capture_requested(true);
+ gamepad_backdrop_reset();policy::set_capture_requested(true);gamepad_backdrop_scan(&ten);
  promotedFeatures=~0u&~VK_FORMAT_FEATURE_COLOR_ATTACHMENT_BLEND_BIT;
  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&ten,true));
  assert(gamepad_backdrop_replay_target()->fmt.pixel==VK_FORMAT_A2B10G10R10_UNORM_PACK32&&gamepad_backdrop_replay_target()->format==0x19);
@@ -152,7 +157,7 @@ int main() {
  gamepad_backdrop_reset();assert(imageCount==0&&imageBytes==0&&retired==created);
  // Video memory: captures stop (menu closed), images move to the spare pool and
  // go after kIdleFrames presentations without a capture.
- policy::set_capture_requested(true);R.frame=1000;
+ policy::set_capture_requested(true);gamepad_backdrop_scan(&a);R.frame=1000;
  for(unsigned frame=0;frame<4;++frame){capture(&a);gamepad_backdrop_scan(&a);gamepad_backdrop_publish();gamepad_backdrop_maintain();++R.frame;}
  assert(gamepad_backdrop_image()&&imageCount>0);
  const uint64_t closed=R.frame;
@@ -179,6 +184,67 @@ int main() {
  uint32_t file[4]{};gamepad_backdrop_scope(file,true);
  assert(gamepad_backdrop_scope_registers(file)&&!gamepad_backdrop_scope_registers(file+1));
  gamepad_backdrop_scope(nullptr,false);assert(!gamepad_backdrop_scope_registers(file));
+ // Issue #493, one screen (Off-TV Play) with the item menu open: per frame the
+ // menu background is drawn twice into the TV's "Currently playing on Wii U
+ // GamePad" screen, a larger target never scanned out to the GamePad, and once
+ // into the GamePad's own. Only the GamePad's is captured (one clear per frame),
+ // the TV target never gets a private image, and after the first frames no
+ // capture image is allocated or retired (sizes as at resolution scale 2, where
+ // the TV captures made the pool reallocate an image every frame).
+ gamepad_backdrop_reset();policy::set_capture_requested(true);
+ Surface tv;tv.image=900;tv.extent={3840,2160,1};Surface pad;pad.image=901;pad.extent={2560,1440,1};
+ auto menuFrame=[&] {
+  for(Surface* s:{&tv,&tv,&pad}) {
+   gamepad_backdrop_scope(nullptr,true);
+   if(gamepad_backdrop_begin_replay(s,true)) { assert(s==&pad);gamepad_backdrop_end_replay(true); }
+   gamepad_backdrop_scope(nullptr,false);
+  }
+  gamepad_backdrop_scan(&pad);gamepad_backdrop_publish();gamepad_backdrop_maintain();++R.frame;
+ };
+ const auto startClears=clears;
+ menuFrame();assert(clears==startClears&&!gamepad_backdrop_image()); // first scan of this target: fallback
+ for(unsigned frame=0;frame<4;++frame)menuFrame();
+ assert(gamepad_backdrop_image()&&gamepad_backdrop_image()->extent.width==1920); // capped
+ const auto warmCreated=created,warmRetired=retired,warmAttempts=allocationAttempts,warmClears=clears;
+ for(unsigned frame=0;frame<120;++frame) { menuFrame();assert(gamepad_backdrop_image()); }
+ assert(clears==warmClears+120);
+ assert(created==warmCreated&&retired==warmRetired&&allocationAttempts==warmAttempts);
+ assert(imageCount<=3&&imageBytes<=3ull*1920*1080*4);
+ // A reset forgets the GamePad targets (device reset, state load).
+ gamepad_backdrop_reset();policy::set_capture_requested(true);
+ gamepad_backdrop_scope(nullptr,true);assert(!gamepad_backdrop_begin_replay(&pad,true));gamepad_backdrop_scope(nullptr,false);
+ // Resolution scale 3 and 4 (ten-bit targets, captured as RGBA16F): a full-size
+ // capture (3840x2160: 66 MB) left no room in the pool for the next one, and the
+ // bars showed the edge colour on two of three presentations; at scale 4
+ // (5120x2880: 118 MB) never the capture. Captures are at most 1920x1080 (drawn
+ // scaled), so the capture is shown on every presentation, with no allocation
+ // after the first frames. Smaller sources keep their own size.
+ for(unsigned scale:{3u,4u}) {
+  gamepad_backdrop_reset();policy::set_capture_requested(true);
+  tv.image=910+scale;tv.extent={1920*scale,1080*scale,1};
+  pad.image=920+scale;pad.extent={1280*scale,720*scale,1};
+  tv.format=pad.format=0x19;tv.fmt=pad.fmt={VK_FORMAT_A2B10G10R10_UNORM_PACK32,4,4};
+  for(unsigned frame=0;frame<5;++frame)menuFrame();
+  const auto created3=created,retired3=retired,attempts3=allocationAttempts;
+  for(unsigned frame=0;frame<120;++frame) {
+   menuFrame();auto* shown=gamepad_backdrop_image();
+   assert(shown&&shown->extent.width==1920&&shown->extent.height==1080&&shown->fmt.pixel==VK_FORMAT_R16G16B16A16_SFLOAT);
+  }
+  assert(created==created3&&retired==retired3&&allocationAttempts==attempts3);
+  assert(imageBytes<=kCaptureBytes&&imageBytes<=3ull*1920*1080*8);
+ }
+ {
+  gamepad_backdrop_reset();policy::set_capture_requested(true);
+  Surface small;small.image=930;small.extent={1000,500,1};gamepad_backdrop_scan(&small);
+  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&small,true));
+  assert(gamepad_backdrop_replay_target()->extent.width==1000&&gamepad_backdrop_replay_target()->extent.height==500);
+  gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
+  // another aspect: the longer limit binds, the aspect is kept
+  Surface wide;wide.image=931;wide.extent={5120,1440,1};gamepad_backdrop_scan(&wide);
+  gamepad_backdrop_scope(nullptr,true);assert(gamepad_backdrop_begin_replay(&wide,true));
+  assert(gamepad_backdrop_replay_target()->extent.width==1920&&gamepad_backdrop_replay_target()->extent.height==540);
+  gamepad_backdrop_end_replay(true);gamepad_backdrop_scope(nullptr,false);
+ }
  gamepad_backdrop_reset();assert(retired==created);
 }
 '''
@@ -226,6 +292,13 @@ int main() {
  capture.dynamicUniforms=true;snapshot.replay=false;assert(!gfxvk::backdrop_reuse_resources(snapshot,capture,&vs,&ps,7,v,p));
  snapshot.replay=true;snapshot.stages[0].resources.dynamicOffsetCount=18;
  assert(!gfxvk::backdrop_reuse_resources(snapshot,capture,&vs,&ps,7,v,p));
+ // A capped capture: the render area becomes the capture's, the guest-to-pixel
+ // factors shrink with it; an equal-size capture changes nothing.
+ struct Targets { unsigned width,height;float sx,sy; };
+ Targets t{3840,2160,3.f,3.f};gfxvk::backdrop_scale_targets(t,1920,1080);
+ assert(t.width==1920&&t.height==1080&&t.sx==1.5f&&t.sy==1.5f);
+ Targets same{1280,720,1.f,1.f};gfxvk::backdrop_scale_targets(same,1280,720);
+ assert(same.width==1280&&same.height==720&&same.sx==1.f&&same.sy==1.f);
 }
 '''
         with tempfile.TemporaryDirectory() as directory:
@@ -235,6 +308,7 @@ int main() {
             subprocess.run([str(exe)],check=True)
         draw=(CPP.parent/'draw.cpp').read_text()
         self.assertIn('if(backdropReplay) targets=backdropReplay->targets;',draw)
+        self.assertIn('backdrop_scale_targets(targets, backdrop->extent.width, backdrop->extent.height);',draw)
         self.assertIn('backdropShadersIn=shadersOut;',draw)
         exact=draw[draw.index('  if(backdropReplay) {\n    // Identical shaders'):draw.index('  if (shadersOut) {\n    shadersOut->targets=targets;')]
         direct=exact[:exact.index('  } else {')]
@@ -286,6 +360,23 @@ int main() {
         metalDraw=(CPP.parent.parent/'metal_draw.mm').read_text()
         self.assertIn('gamepad_backdrop::fits_pool(backdrop_pool_bytes(), backdrop_bytes(storage->texture), wanted)',metalDraw)
         self.assertIn('gamepad_backdrop::release_idle(on, R.frame, lastBackdropFrame)',metalDraw)
+
+    def test_metal_gamepad_targets_and_capture_cap(self):
+        # Metal follows the Vulkan policy (#493): only textures scanned out to the
+        # GamePad are captured, another target's pane cancels nothing, and the
+        # capture texture is at most capture_extent with the replay scaled.
+        metalDraw=(CPP.parent.parent/'metal_draw.mm').read_text()
+        scan=metalDraw[metalDraw.index('void gamepad_backdrop_scan(Surface* source) {'):metalDraw.index('void gamepad_backdrop_clear(')]
+        self.assertIn('backdropScanned[backdropScannedNext++ % backdropScanned.size()] = key;',scan)
+        self.assertIn('if (colors[0] && !backdrop_gamepad_target(colors[0]->tex)) backdropForeign = backdropFailed = true;',metalDraw)
+        self.assertIn('if (!backdropForeign || backdropCapture) metal_backdrop_finish_scope(',metalDraw)
+        prepare=metalDraw[metalDraw.index('bool prepare_backdrop(Surface* source, unsigned coverage) {'):metalDraw.index('void gamepad_backdrop_scope(')]
+        self.assertIn('gamepad_backdrop::capture_extent(unsigned(source->tex.width), unsigned(source->tex.height))',prepare)
+        self.assertIn('surface.sx *= float(size.width) / float(source->tex.width);',prepare)
+        self.assertIn('width:size.width height:size.height',prepare)
+        self.assertNotIn('width:source->tex.width height:source->tex.height',prepare)
+        reset=metalDraw[metalDraw.index('void gamepad_backdrop_reset() {'):]
+        self.assertIn('backdropScanned = {};',reset[:reset.index('\n}')])
 
     def test_bars_after_pip_frame(self):
         present=(CPP.parent/'present.cpp').read_text()

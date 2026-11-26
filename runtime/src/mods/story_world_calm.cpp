@@ -36,7 +36,7 @@ void trace(Cpu* c, uint32_t sea, uint32_t pos, float game, float used) {
     static unsigned n = 0;
     if (!every || n++ % unsigned(every)) return;
     static const uint32_t play = GD(0x1046F0B0);
-    const uint32_t link = ld32(play + 0x5B34), ship = ld32(play + 0x5B3C), table = ld32(sea + 0x20C);
+    const uint32_t link = ld32(play + GI(0x5B34)), ship = ld32(play + GI(0x5B3C)), table = ld32(sea + 0x20C);
     const float x = float(ldf32(pos)), z = float(ldf32(pos + 8));
     float grid = 0;  // the nearest point of the 65x65 height grid (800 units apart) to the player
     if (table) {

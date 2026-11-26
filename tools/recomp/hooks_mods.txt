@@ -23,6 +23,10 @@
 @02506C68 # dCamera_c::CalcSubjectAngle: after CPad_GET_SUBSTICK_POS_Y (first person / aiming)
 @02506C80 # dCamera_c::CalcSubjectAngle: the same on the game's inverted-aiming branch
 @02171B1C # new_himo2_move: after CPad_GET_SUBSTICK_POS_Y (rope-swing event camera)
+# Mouse camera in first person and item aims (issue #558; mods/camera.cpp)
+@02506CEC # dCamera_c::CalcSubjectAngle: gyro branch, x/y formed: the mouse's degrees (live style speed, yaw/pitch range)
+@02508380 # dCamera_c::subjectCamera: V ease factor (cSAngle * f1): 1 while the mouse looks around
+@025083C4 # dCamera_c::subjectCamera: U ease factor (cSAngle * f1): 1 while the mouse looks around
 0240EBB0  # daPy_Execute: Link (left click while aiming, traces)
 # Enemy lock-on (mods/lock_on.cpp): scale only category-2 horizontal distance predicates.
 024ECCFC  # judgementButton: R3 cycles the freshly rebuilt native enemy list before state update
@@ -95,8 +99,8 @@
 @02617874 # hdInputManager setup: stw r0 (3, both screens) to +0x1D0: Off-TV Play from the first title screen
 @0270AC04 # file select ControllerSelect: changeState(picker+0x18, StateID_Display): answered "GamePad" instead
 @0270ADD0 # file select SaveDataSelect, Back: changeState(this+0x10, StateID_ControllerSelect): to the title instead
-026D7828  # hdSequenceOption_c constructor: the Options items without Controller (descriptor order)
-@026D8514 # Options list setup: stw r7 (6 items) to +0x120: 5 without Controller
-@026D5D84 # Options values loaded (+0x104..+0x109), before the rows are filled: into the new order
-026D6DD4  # Options values saved (fixed offsets): the game's order around it
-026D87D0  # Options Controller item callback (its value +0x107): the game's order around it
+# (the Options items without Controller: hooks_options_order.txt, USA and European builds only)
+# Pause menu: the map tab's chart grid moves the menu's focus only among its own squares (selection follows Link)
+# (issue #336; mods/hud_gate.cpp, rule in mods/menu_cursor.h)
+026828B4  # hdSeaChartGrid_c::transferPendingFocus
+@02682930 # transferPendingFocus: setModeDefault(sEventMgr, Link's square's element)

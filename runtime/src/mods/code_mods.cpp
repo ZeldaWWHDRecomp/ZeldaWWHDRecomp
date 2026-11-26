@@ -74,17 +74,37 @@ fs::path selected(){
     return exe;
 }
 }
-void startup(int argc,char** argv,bool fixed_build){
+void startup(int argc,char** argv,bool fixed_build,bool has_mod_hooks){
     launch_args.assign(argv,argv+argc);
     g_fixed_build=fixed_build;
     if(const char* dir=std::getenv("WWHD_INSTALL_DIR"))install_dir=dir;
     else install_dir=fs::path(host::exe_dir()).parent_path();
+    // the decomp version outside a portable release lives in DATA/decomp/bin (tools/installer/decomp_setup.py
+    // exe_path): its install folder is DATA, the folder with setup's install.json, not DATA/decomp
+    if(fixed_build&&!std::getenv("WWHD_INSTALL_DIR")&&install_dir.filename()=="decomp"&&
+       !fs::is_regular_file(install_dir/"install.json")&&fs::is_regular_file(install_dir.parent_path()/"install.json"))
+        install_dir=install_dir.parent_path();
     environment("WWHD_INSTALL_DIR",install_dir.string());
     auto config=install_dir/"guest-sdk.json";
     if(!std::getenv("WWHD_GUEST_BUILD_CONFIG")&&fs::is_regular_file(config))environment("WWHD_GUEST_BUILD_CONFIG",config.string());
     // the decomp version (setup's option, docs/decomp-build.md) is a build of its own, without code-mod
     // support: it is never replaced by the cached code-mod build of the normal game
-    if(fixed_build)return;
+    if(fixed_build){
+        // a code-mod switch rebuilds the normal game only (setup's code_mods.rebuild): when the chosen support is on but
+        // this decomp version was built without it, say how to get it (a setup repair builds the decomp version again
+        // with the install's choice)
+        try {
+            if(fs::is_regular_file(install_dir/"code-mods-active.json")){
+                auto active=read(install_dir/"code-mods-active.json");
+                if(active.get("state").string()=="ready"&&active.get("hooks").boolean&&!has_mod_hooks){
+                    std::lock_guard guard(mutex);
+                    state.error="The decomp version was built without code-mod support: run setup's Repair to build it again with code mods";
+                    fprintf(stderr,"[code mods] %s\n",state.error.c_str());
+                }
+            }
+        }catch(const std::exception&){}
+        return;
+    }
     try {
         auto exe=selected();if(exe.empty())return;
         auto current=fs::path(host::exe_dir())/fs::path(argv[0]).filename();
@@ -108,7 +128,22 @@ bool restart(std::string& error){
     // the app loads the new build when it starts again (WwhdActivity); it cannot relaunch itself
     error="Close and reopen the app to use the rebuilt game code";return failed();
 #endif
+#ifdef WWHD_DECOMP
+    // the decomp version: setup's code-mod rebuild builds it again too (its result's "decomp": "ready"); it then
+    // restarts itself, otherwise the rebuild's reason ("decomp_error") stays on screen
+    if(g_fixed_build){
+        auto report=read(status_path);
+        if(report.get("decomp").string()!="ready"){
+            error=report.get("decomp_error").string("Setup did not rebuild the decomp version; run setup's Repair, or start the normal game");
+            return failed();
+        }
+        {std::lock_guard guard(mutex);if(state.ready&&std::getenv("WWHD_CODE_MODS"))environment("WWHD_CODE_MODS",state.target?"1":"0");}
+        if(!relaunch(error))return failed();
+        return true;
+    }
+#else
     if(g_fixed_build){error="The decomp version has no code-mod support; start the normal game for code mods";return failed();}
+#endif
     // The relaunched game uses the support the player just built: an explicit WWHD_CODE_MODS from the
     // launch (automated runs) would otherwise select the other build and stop a setup that resumes there.
     {std::lock_guard guard(mutex);if(state.ready&&std::getenv("WWHD_CODE_MODS"))environment("WWHD_CODE_MODS",state.target?"1":"0");}
@@ -182,6 +217,29 @@ void begin_android(){
     });
 }
 #endif
+bool fixed_build(){return g_fixed_build;}
+std::vector<std::string> setup_command(fs::path& data_dir,fs::path* script){
+    const char* override=std::getenv("WWHD_GUEST_BUILD_CONFIG");
+    fs::path config=override?fs::path(override):fs::path("guest-sdk.json");
+    auto cfg=read(config);auto base=fs::absolute(config).parent_path();
+    // the same rules as the guest build bridge: $RELEASE/ (AppImage), relative paths, stale AppImage mounts
+    const auto release=guestmods::release_root();
+    auto resolve=[&](const std::string& name){auto p=guestmods::resolve_path(cfg.get(name.c_str()).string(),base,release);if(p.empty())exception_report::raise("Code-mod setup tools are missing; run setup again");return fs::path(p);};
+    auto python=guestmods::BuildBridge::arguments(cfg.get("python"));
+    if(python.empty())exception_report::raise("Code-mod setup tools are missing; run setup again");
+    python.front()=guestmods::resolve_path(python.front(),base,release,true);
+    // issue #472: the private Python is still to be downloaded; the Python that ran setup runs setup.py,
+    // which downloads it first (pending_python_retry) for the steps that need it
+    if(std::error_code ec;fs::path(python.front()).has_parent_path()&&!fs::is_regular_file(python.front(),ec)
+       &&cfg.get("python_pending").type==mods::json::Value::String&&cfg.get("setup_python").type==mods::json::Value::Array){
+        python=guestmods::BuildBridge::arguments(cfg.get("setup_python"));
+        python.front()=guestmods::resolve_path(python.front(),base,release,true);
+    }
+    data_dir=resolve("data_dir");auto setup=resolve("setup");
+    if(script)*script=setup;
+    python.insert(python.end(),{setup.string(),"--data-dir",data_dir.string()});
+    return python;
+}
 void begin(){
     std::lock_guard guard(mutex);if(state.building||!state.requested)return;
     if(worker.thread.joinable())worker.thread.join();
@@ -189,18 +247,10 @@ void begin(){
     begin_android();return;
 #endif
     try {
-        const char* override=std::getenv("WWHD_GUEST_BUILD_CONFIG");
-        fs::path config=override?fs::path(override):fs::path("guest-sdk.json");
-        auto cfg=read(config);auto base=fs::absolute(config).parent_path();
-        // the same rules as the guest build bridge: $RELEASE/ (AppImage), relative paths, stale AppImage mounts
-        const auto release=guestmods::release_root();
-        auto resolve=[&](const std::string& name){auto p=guestmods::resolve_path(cfg.get(name.c_str()).string(),base,release);if(p.empty())exception_report::raise("Code-mod setup tools are missing; run setup again");return fs::path(p);};
-        auto python=guestmods::BuildBridge::arguments(cfg.get("python"));
-        python.front()=guestmods::resolve_path(python.front(),base,release,true);
-        auto data=resolve("data_dir");auto setup=resolve("setup");
+        fs::path data;auto python=setup_command(data);
         status_path=data/"code-mods-status.json";cancel_path=data/"code-mods-cancel";
         std::error_code ec;fs::remove(status_path,ec);fs::remove(cancel_path,ec);
-        python.insert(python.end(),{setup.string(),"--data-dir",data.string(),"--rebuild-code-mods","--code-mods",state.target?"1":"0","--code-mods-status",status_path.string(),"--code-mods-cancel",cancel_path.string(),"--jobs","4"});
+        python.insert(python.end(),{"--rebuild-code-mods","--code-mods",state.target?"1":"0","--code-mods-status",status_path.string(),"--code-mods-cancel",cancel_path.string(),"--jobs","4"});
         state.building=true;state.error.clear();state.ready=false;state.stage="Starting setup";
         bool target=state.target;auto mod=pending_mod;
         worker.thread=std::thread([command=std::move(python),target,mod]{

@@ -90,31 +90,49 @@ void test_boot_gate() {
 }
 void test_load_gate() {
     using G = fixed_seed::LoadGate;
+    uint64_t s = 1000;  // logic steps: one per boundary here (no frame interpolation)
     G g;
-    CHECK(g.step(10) == G::kNone);  // idle
-    g.start(100);                   // applied at the boundary after gameplay frame 100
-    for (uint32_t t = 101; t <= 128; t++) CHECK(g.step(t) == G::kNone);  // the old stage fades out
-    CHECK(g.step(128) == G::kLoading);                                    // mTimer stopped: loading
-    for (int i = 0; i < 35; i++) CHECK(g.step(128) == G::kNone);         // loading frames
-    CHECK(g.step(129) == G::kArrived);                                    // the new stage's first frame
-    CHECK(g.step(130) == G::kNone);                                       // once
-    CHECK(g.step(130) == G::kNone);
+    CHECK(g.step(10, ++s) == G::kNone);  // idle
+    g.start(100, s);                     // applied at the boundary after gameplay frame 100
+    for (uint32_t t = 101; t <= 128; t++) CHECK(g.step(t, ++s) == G::kNone);  // the old stage fades out
+    CHECK(g.step(128, ++s) == G::kLoading);                                   // mTimer stopped: loading
+    for (int i = 0; i < 35; i++) CHECK(g.step(128, ++s) == G::kNone);        // loading frames
+    CHECK(g.step(129, ++s) == G::kArrived);                                   // the new stage's first frame
+    CHECK(g.step(130, ++s) == G::kNone);                                      // once
+    CHECK(g.step(130, ++s) == G::kNone);
+
+    // frame interpolation on: a hold pass (no logic, same step count) after each logic pass. mTimer is unchanged after
+    // a hold pass; the gate must not take that for the loading frames (it fired at once, in the old stage)
+    G h;
+    h.start(100, s);
+    CHECK(h.step(100, s) == G::kNone);  // the boundary after a hold pass right after the start
+    for (uint32_t t = 101; t <= 128; t++) {
+        CHECK(h.step(t, ++s) == G::kNone);  // after the logic pass
+        CHECK(h.step(t, s) == G::kNone);    // after the hold pass
+    }
+    CHECK(h.step(128, ++s) == G::kLoading);  // a logic pass left mTimer as it was
+    CHECK(h.step(128, s) == G::kNone);
+    for (int i = 0; i < 35; i++) {
+        CHECK(h.step(128, ++s) == G::kNone);
+        CHECK(h.step(128, s) == G::kNone);
+    }
+    CHECK(h.step(129, ++s) == G::kArrived);
 
     G stuck;  // no stage change: gives up
-    stuck.start(5);
+    stuck.start(5, s);
     G::Event e = G::kNone;
     uint32_t t = 5, n = 0;
-    while (e == G::kNone && n < 10000) e = stuck.step(++t), n++;
+    while (e == G::kNone && n < 10000) e = stuck.step(++t, ++s), n++;
     CHECK(e == G::kTimedOut);
     CHECK(n == G::kMaxFrames + 1);
-    CHECK(stuck.step(t) == G::kNone);
+    CHECK(stuck.step(t, ++s) == G::kNone);
 
     G long_load;  // a loading phase longer than the limit gives up too
-    long_load.start(7);
-    CHECK(long_load.step(7) == G::kLoading);
+    long_load.start(7, s);
+    CHECK(long_load.step(7, ++s) == G::kLoading);
     e = G::kNone;
     n = 0;
-    while (e == G::kNone && n < 10000) e = long_load.step(7), n++;
+    while (e == G::kNone && n < 10000) e = long_load.step(7, ++s), n++;
     CHECK(e == G::kTimedOut);
 }
 void test_rebase() {

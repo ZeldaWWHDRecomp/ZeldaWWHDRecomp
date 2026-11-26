@@ -182,6 +182,7 @@ static const ShortcutInfo kShortcuts[kShortcutCount] = {
      {kVK_F11}, {kVK_Return, kModAlt}},
 #endif
     {"Screenshot", "Screenshot", "General", {kVK_F10}, {}},
+    {"Quit", "Quit Game", "General", {}, {}},
     {"Save1", "Save state 1", "Save states", {kVK_F1, kModShift}, {}},
     {"Save2", "Save state 2", "Save states", {kVK_F2, kModShift}, {}},
     {"Save3", "Save state 3", "Save states", {kVK_F3, kModShift}, {}},
@@ -289,8 +290,8 @@ Mapping Mapping::defaults() {
     key(kLUp, kVK_ANSI_W); key(kLDown, kVK_ANSI_S); key(kLLeft, kVK_ANSI_A); key(kLRight, kVK_ANSI_D);
     key(kRUp, kVK_UpArrow); key(kRDown, kVK_DownArrow); key(kRLeft, kVK_LeftArrow); key(kRRight, kVK_RightArrow);
     key(kScreenshot, kVK_F10);  // free on every host (F11: SDL full screen, F12/P: debug frame capture)
-    // Jump anywhere and the moon jump where they always were, on the L inputs: in play the game gets no
-    // L from them (play_buttons), so L1 / Q jump without turning the GamePad page
+    // Jump anywhere and the moon jump where they always were, on the L inputs: in play, while one of them
+    // is on, the game gets no L from them (play_buttons), so L1 / Q jump without turning the GamePad page
     key(kJump, kVK_ANSI_Q); key(kMoonJump, kVK_ANSI_Q);
     // controllers map by position: the bottom face button (Xbox A) is the Wii U's B (face_layout)
     const int pads[kActionCount] = {
@@ -361,10 +362,15 @@ int label_letter(FaceLabel l) {
 }
 
 FaceLabel word_letter(const std::string& w) {
-    if (w == "a" || w == "xmark" || w == "cross") return FaceLabel::kA;
-    if (w == "b" || w == "circle") return FaceLabel::kB;
-    if (w == "x" || w == "square") return FaceLabel::kX;
-    if (w == "y" || w == "triangle") return FaceLabel::kY;
+    // PlayStation's shapes stay shapes (the PlayStation prompts); they bind as the letters in their places
+    if (w == "a") return FaceLabel::kA;
+    if (w == "b") return FaceLabel::kB;
+    if (w == "x") return FaceLabel::kX;
+    if (w == "y") return FaceLabel::kY;
+    if (w == "xmark" || w == "cross") return FaceLabel::kCross;
+    if (w == "circle") return FaceLabel::kCircle;
+    if (w == "square") return FaceLabel::kSquare;
+    if (w == "triangle") return FaceLabel::kTriangle;
     return FaceLabel::kUnknown;
 }
 }  // namespace
@@ -431,6 +437,65 @@ int apple_face_input(AppleFaceLayout layout, int pad) {
 void apple_face_labels(AppleFaceLayout layout, FaceLabel labels[4]) {
     const std::array<FaceLabel, 4> raw = {labels[0], labels[1], labels[2], labels[3]};
     for (int i = 0; i < 4; ++i) labels[apple_face_input(layout, kPadA + i) - kPadA] = raw[i];
+}
+
+static std::string lower(const char* a, const char* b) {
+    std::string s = std::string(a ? a : "") + " " + (b ? b : "");
+    for (char& c : s) c = (char)tolower((unsigned char)c);
+    return s;
+}
+
+void family_face_labels(const char* vendor_name, const char* product_category, FaceLabel out[4]) {
+    using FL = FaceLabel;
+    const std::string who = lower(vendor_name, product_category);
+    auto has = [&](const char* w) { return who.find(w) != std::string::npos; };
+    if (apple_face_layout(product_category, vendor_name) == AppleFaceLayout::kNintendo) {
+        out[0] = FL::kB; out[1] = FL::kA; out[2] = FL::kY; out[3] = FL::kX;
+    } else if (has("sony") || has("dualsense") || has("dualshock") || has("playstation")) {
+        // the Xbox letters' places; the in-game prompts show the shapes (#143)
+        out[0] = FL::kCross; out[1] = FL::kCircle; out[2] = FL::kSquare; out[3] = FL::kTriangle;
+    } else if (has("xbox") || has("microsoft") || has("steam") || has("stadia") || has("luna")) {
+        out[0] = FL::kA; out[1] = FL::kB; out[2] = FL::kX; out[3] = FL::kY;
+    }
+}
+
+bool gamecube_named(const char* vendor_name, const char* product_category) {
+    return lower(vendor_name, product_category).find("gamecube") != std::string::npos;
+}
+
+int apple_button_input(const char* element_name) {
+    if (!element_name) return kPadNone;
+    static constexpr std::pair<const char*, int> names[] = {
+        {"Button A", kPadA}, {"Button B", kPadB}, {"Button X", kPadX}, {"Button Y", kPadY},
+        {"Left Shoulder", kPadLB}, {"Right Shoulder", kPadRB}, {"Left Bumper", kPadLB}, {"Right Bumper", kPadRB},
+        {"Left Trigger", kPadLT}, {"Right Trigger", kPadRT}, {"Trigger", kPadRT},
+        {"Button Menu", kPadMenu}, {"Button Options", kPadOptions}, {"Button Home", kPadHome},
+        {"Button Share", kPadCapture}, {"Left Thumbstick Button", kPadL3}, {"Right Thumbstick Button", kPadR3},
+        {"Thumbstick Button", kPadL3},
+    };
+    for (const auto& [n, pad] : names)
+        if (!std::strcmp(element_name, n)) return pad;
+    return kPadNone;
+}
+
+AppleDpad apple_dpad_kind(const char* element_name) {
+    if (!element_name) return AppleDpad::kNone;
+    if (!std::strcmp(element_name, "Direction Pad")) return AppleDpad::kDpad;
+    if (!std::strcmp(element_name, "Left Thumbstick") || !std::strcmp(element_name, "Thumbstick"))
+        return AppleDpad::kLeftStick;
+    if (!std::strcmp(element_name, "Right Thumbstick")) return AppleDpad::kRightStick;
+    return AppleDpad::kNone;
+}
+
+void named_face_labels(const char* vendor_name, const char* product_category, const char* const faces[4],
+                       FaceLabel labels[4]) {
+    bool any = false;
+    for (int i = 0; i < 4; i++) {
+        labels[i] = face_label_from_text(faces[i]);
+        any |= labels[i] != FaceLabel::kUnknown;
+    }
+    apple_face_labels(apple_face_layout(product_category, vendor_name), labels);
+    if (!any) family_face_labels(vendor_name, product_category, labels);
 }
 
 bool apple_face_workaround(const Mapping& m, AppleFaceLayout layout) {
@@ -980,6 +1045,28 @@ void store_view(Mapping& m, const Mapping& view, int index) {
     m.setup_declined = declined;
 }
 
+void BindingChoice::choose(const std::string& active_guid, const std::string& active_name) {
+    chosen = true;
+    by_guid = active_guid;
+    by_name = active_name;
+}
+
+bool BindingChoice::open(const Mapping& m, const std::string& active_guid, const std::string& active_name, bool& own,
+                         std::string& guid, std::string& name) {
+    if (chosen && by_guid == active_guid && by_name == active_name) return false;
+    chosen = false;  // another controller is in use: the page follows it again
+    own = !(active_guid.empty() && active_name.empty()) && profile_index(m, active_guid, active_name) >= 0;
+    guid = own ? active_guid : std::string();
+    name = own ? active_name : std::string();
+    return true;
+}
+
+std::string shared_view_notice(const Mapping& m, const std::string& active_guid, const std::string& active_name) {
+    if ((active_guid.empty() && active_name.empty()) || profile_index(m, active_guid, active_name) < 0) return "";
+    return (active_name.empty() ? std::string("The controller in use") : active_name) +
+           " uses its own bindings, so changes here don't apply to it.";
+}
+
 bool setup_offer_due(const Mapping& m, const std::string& guid, const std::string& name, bool is_virtual) {
     if (is_virtual || (guid.empty() && name.empty())) return false;
     if (profile_index(m, guid, name) >= 0) return false;
@@ -1052,8 +1139,7 @@ bool bind_virtual(Mapping& m, int v, int pad, Displace d) {
     return true;
 }
 
-uint32_t play_buttons(const Mapping& m, uint32_t b, bool in_play) {
-    if (in_play && !m.l_turns_page) b &= ~input::kL;
+uint32_t play_buttons(const Mapping& m, uint32_t b, bool in_play, uint32_t acting_virt) {
     auto shares = [&](int f, int g) {
         if (m.pad[f] != kPadNone && m.pad[f] == m.pad[g]) return true;
         for (const auto& c : m.controllers)  // a controller's own bindings count as well
@@ -1062,6 +1148,15 @@ uint32_t play_buttons(const Mapping& m, uint32_t b, bool in_play) {
             if (k != kNoKey && (m.keys[g][0] == k || m.keys[g][1] == k)) return true;
         return false;
     };
+    // L leaves in play only while it would also jump: a Jump / moon jump input that acts now (its mod or
+    // cheat on, held this poll) and shares an input with L. Otherwise L turns the GamePad page as on the
+    // Wii U, whichever game window is in front (issue #406).
+    if (in_play && !m.l_turns_page && (b & input::kL))
+        for (int v = kFirstVirtual; v < kActionCount; v++)
+            if ((acting_virt & action_virtual(v)) && shares(kL, v)) {
+                b &= ~input::kL;
+                break;
+            }
     for (int f : {(int)kL, (int)kDDown}) {
         const uint32_t fb = action_bit(f);
         if (!(b & fb)) continue;
@@ -1549,6 +1644,8 @@ static bool g_loaded = false, g_legacy = true;
 static uint32_t g_legacy_bit = 0;
 static std::mutex g_active_mu;
 static std::string g_active_guid, g_active_name;
+static std::atomic<int> g_active_family{(int)PadFamily::kUnknown};
+static std::atomic<int> g_active_gamecube{-1};  // -1: no controller in use
 
 // the dominant pad's labels as note_face_labels last reported them (its own lock: set_current
 // takes g_mu)
@@ -1559,12 +1656,18 @@ static FaceLabel g_labels[4] = {FaceLabel::kUnknown, FaceLabel::kUnknown, FaceLa
 static std::atomic<int> g_family{(int)PadFamily::kUnknown};
 static std::atomic<bool> g_gamecube_pad{false};
 
-PadFamily pad_family() { return (PadFamily)g_family.load(std::memory_order_relaxed); }
+PadFamily pad_family() {
+    const int active = g_active_family.load(std::memory_order_relaxed);
+    return (PadFamily)(active != (int)PadFamily::kUnknown ? active : g_family.load(std::memory_order_relaxed));
+}
 void note_gamecube(bool detected) {
     if (g_gamecube_pad.exchange(detected, std::memory_order_relaxed) != detected)
         g_gen.fetch_add(1, std::memory_order_relaxed);
 }
-bool gamecube_pad() { return g_gamecube_pad.load(std::memory_order_relaxed); }
+bool gamecube_pad() {
+    const int active = g_active_gamecube.load(std::memory_order_relaxed);
+    return active >= 0 ? active != 0 : g_gamecube_pad.load(std::memory_order_relaxed);
+}
 
 void note_face_labels(const FaceLabel labels[4]) {
     Mapping m = current();
@@ -1574,10 +1677,9 @@ void note_face_labels(const FaceLabel labels[4]) {
     }
     // the prompts follow the family (button_glyphs re-reads the style on a new generation). An
     // unplugged pad (all unknown) keeps the last family, as the Automatic face preset keeps its choice.
-    if (const PadFamily f = pad_family_from_labels(labels); f != PadFamily::kUnknown && f != pad_family()) {
-        g_family.store((int)f, std::memory_order_relaxed);
+    if (const PadFamily f = pad_family_from_labels(labels);
+        f != PadFamily::kUnknown && g_family.exchange((int)f, std::memory_order_relaxed) != (int)f)
         g_gen++;
-    }
     if (!m.face_auto) return;
     int out[4];
     if (!face_bindings_from_labels(labels, out)) return;
@@ -1649,12 +1751,18 @@ void adopt_legacy_jump_button(uint32_t vpad_bit) {
     }
 }
 
-void set_active_controller(const std::string& guid, const std::string& name) {
+void set_active_controller(const std::string& guid, const std::string& name, PadFamily family, bool gamecube) {
+    const bool none = guid.empty() && name.empty();
+    const int f = none ? (int)PadFamily::kUnknown : (int)family, gc = none ? -1 : (int)gamecube;
     std::lock_guard<std::mutex> lk(g_active_mu);
-    if (g_active_guid == guid && g_active_name == name) return;
+    if (g_active_guid == guid && g_active_name == name && g_active_family.load(std::memory_order_relaxed) == f &&
+        g_active_gamecube.load(std::memory_order_relaxed) == gc)
+        return;
     g_active_guid = guid;
     g_active_name = name;
-    g_gen++;  // the game's prompts follow the bindings of the controller in use (button_glyphs::style)
+    g_active_family.store(f, std::memory_order_relaxed);
+    g_active_gamecube.store(gc, std::memory_order_relaxed);
+    g_gen++;  // the game's prompts follow the controller in use (button_glyphs::style)
 }
 void active_controller(std::string& guid, std::string& name) {
     std::lock_guard<std::mutex> lk(g_active_mu);

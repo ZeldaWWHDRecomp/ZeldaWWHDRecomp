@@ -1,4 +1,5 @@
 #include "mods/mods.h"
+#include "../latency_test.h"
 // Libraries the game uses for system integration and online features.
 // Online services (Miiverse, SpotPass, accounts) report "unavailable".
 #include "../crashrec.h"
@@ -8,6 +9,7 @@
 #include "../mods/story_notebook.h"
 #include "../mods/story_bag.h"
 #include "../mods/game_settings_page.h"
+#include "../mods/link_appearance.h"
 #include "../mods/menu_sounds_port.h"
 #include "../mods/player_name.h"
 #include "../mods/long_name.h"
@@ -110,8 +112,10 @@ HLE(vpad, VPADRead) {
     static input::PadState last_p;
     const bool repeat = interp::repeat_input();
     input::PadState p = repeat ? last_p : crashrec::read(0);  // live input, recorded/replayed by crash recovery
+    if (!repeat && latency_test::on()) latency_test::pad(p.buttons, p.ly);  // (test: latency_test.h)
     if (!repeat) mods::one_screen_pad(p);  // One screen: Minus pauses as Plus (Off-TV Play has no TV to switch to)
     if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
+    mods::guest_gamepad_touch(p, repeat);  // a finger on a code mod's GamePad claim is the mod's only
     const uint32_t live_virt = p.virt;  // the virtual inputs (Jump, moon jump) as read now: not on a stale repeat
     const bool live = !repeat;
     if (!input::pro_controller()) mods::item_ring_pad(p, repeat);  // X / Y / R: tap, or hold for the item ring
@@ -123,6 +127,7 @@ HLE(vpad, VPADRead) {
     story_scenes::mute(p);
     story_bag::pad(p, c);       // then the Delivery Bag's extra pages (mod items), while open
     game_settings_page::pad(p, c);  // the settings page in the item menu (left of the items), while open
+    link_appearance::pad(p, c);     // the colour page of Link's look (mods/link_appearance.h), while open
     if (!repeat) menu_sounds::service(c);  // the Settings overlay's menu sounds, through the game (menu_sounds.h)
     player_name::service(c);  // a new name for Link (settings page or Settings window) goes in here, on the game's thread
     long_name::service(c);    // save file names over 8 characters (mods/long_name.h)

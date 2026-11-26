@@ -71,7 +71,7 @@ std::atomic<int> g_wanted{0};
 bool wanted() { return g_wanted.load(std::memory_order_relaxed) > 0 || log_level() > 0; }
 
 const Addresses& addresses() {
-    static const Addresses a{GD(0x1046F0B0), GD(0x101F36CC), GD(0x101F84DC)};
+    static const Addresses a{GD(0x1046F0B0), GD(0x101F36CC), GD(0x101F84DC), [](uint32_t off) { return GI(off); }};
     return a;
 }
 
@@ -157,6 +157,8 @@ playctx::PlayContext play_context() {
     std::lock_guard<std::mutex> lk(g_mu);
     return g_last;
 }
+
+bool play_context_logs_panes() { return log_level() >= 2; }
 
 void play_context_pane(uint32_t pane) {
     if (!wanted()) return;

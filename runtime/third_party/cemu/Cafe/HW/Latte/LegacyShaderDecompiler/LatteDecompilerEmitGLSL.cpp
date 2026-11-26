@@ -713,18 +713,34 @@ void _emitUniformAccessCode(LatteDecompilerShaderContext* shaderContext, LatteDe
 	}
 	else if( shaderContext->shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CFILE )
 	{
-		// uniform registers are accessed with unpredictable (dynamic) offset
+		// uniform registers are accessed with unpredictable (dynamic) offset. A relative index outside the
+		// declared array (cfileSize, LatteDecompilerEmitGLSLHeader.hpp) reads zero, and the read itself is
+		// clamped into the array, so it stays in bounds even if the compiler makes it before the condition.
 		_emitTypeConversionPrefix(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, requiredType);
+		const char* array = "";
 		if(shaderContext->shader->shaderType == LatteConst::ShaderType::Vertex )
-			src->add("uf_uniformRegisterVS[");
+			array = "uf_uniformRegisterVS";
 		else if (shaderContext->shader->shaderType == LatteConst::ShaderType::Pixel)
-			src->add("uf_uniformRegisterPS[");
+			array = "uf_uniformRegisterPS";
 		else if(shaderContext->shader->shaderType == LatteConst::ShaderType::Geometry )
-			src->add("uf_uniformRegisterGS[");
+			array = "uf_uniformRegisterGS";
 		else
 			debugBreakpoint();
-		_emitUniformAccessIndexCode(shaderContext, aluInstruction, operandIndex);
-		src->add("]");
+		if (aluInstruction->sourceOperand[operandIndex].rel != 0)
+		{
+			uint32 cfileSize = shaderContext->analyzer.uniformRegisterAccessTracker.DetermineSize(shaderContext->shaderBaseHash, 256);
+			src->add("(uint(");
+			_emitUniformAccessIndexCode(shaderContext, aluInstruction, operandIndex);
+			src->addFmt(") < {}u ? {}[min(uint(", cfileSize, array);
+			_emitUniformAccessIndexCode(shaderContext, aluInstruction, operandIndex);
+			src->addFmt("), {}u)] : ivec4(0))", cfileSize - 1);
+		}
+		else
+		{
+			src->addFmt("{}[", array);
+			_emitUniformAccessIndexCode(shaderContext, aluInstruction, operandIndex);
+			src->add("]");
+		}
 
 		_appendChannelAccess(src, aluInstruction->sourceOperand[operandIndex].chan);
 		_emitTypeConversionSuffix(shaderContext, LATTE_DECOMPILER_DTYPE_SIGNED_INT, requiredType);

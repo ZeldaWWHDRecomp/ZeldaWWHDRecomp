@@ -8,7 +8,8 @@
 # (si.bin), the log (log), and perf.txt (process CPU time, wall time, frames).
 # Extra VAR=value arguments go to the game's environment (e.g. WWHD_TEST_STICK=1-4:0:1 to walk, or the
 # decomp build's WWHD_DECOMP=none). Muted, hidden windows, no host input, own shader cache in OUT/..; the
-# game is always stopped when this script ends.
+# game is always stopped when this script ends. 30 fps: frame interpolation is off from the start (WWHD_INTERP=0, which
+# also overrides a saved 60 fps choice); compare.py refuses runs that switched it on.
 set -u
 zmodload zsh/datetime
 exe=${1:A} game=${2:A} save=${3:A} out=${4:A} end=$5; shift 5
@@ -26,7 +27,7 @@ for attempt in $(seq 1 ${BOOT_TRIES:-3}); do
     WWHD_VK_SHADER_CACHE=${VK_SHADER_CACHE:-$out/../vkshaders.bin} WWHD_VK_PIPELINE_CACHE_DIR=${VK_PIPELINE_CACHE_DIR:-$out/../vkpipelines} \
     WWHD_PRESS=${PRESS:-$press} WWHD_TEST_ORIGIN=$origin WWHD_TEST_END=$end \
     WWHD_LINK_TRACE=trace.txt WWHD_CAM_TRACE=cam.txt WWHD_SAVEINFO_DUMP=si.bin WWHD_SE_TRACE=se.txt WWHD_RNG_TRACE=rng.txt \
-    WWHD_PROC_DIGEST=${DIGEST-digest.txt} WWHD_PROC_DIGEST_SKIP=$skip "$@" \
+    WWHD_PROC_DIGEST=${DIGEST-digest.txt} WWHD_PROC_DIGEST_SKIP=$skip WWHD_INTERP=0 "$@" \
     $exe --game $game --save save > log 2>&1 &
   pid=$!
   trap 'kill -9 $pid 2>/dev/null' EXIT INT TERM HUP

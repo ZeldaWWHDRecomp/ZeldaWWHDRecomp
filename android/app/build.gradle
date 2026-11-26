@@ -49,7 +49,8 @@ android {
             signingConfig releaseKeystore != null ? signingConfigs.release : signingConfigs.debug
         }
     }
-    sourceSets.main.jniLibs.srcDirs = ['libs']
+    // -PwwhdLibsDir=libs-decomp: the decomp build's libraries (android/build_native.sh DECOMP=1)
+    sourceSets.main.jniLibs.srcDirs = [providers.gradleProperty('wwhdLibsDir').getOrElse('libs')]
     def pythonPackage = providers.gradleProperty('wwhdPythonDir').orNull
     if (pythonPackage != null) {
         sourceSets.main.jniLibs.srcDirs += [file(pythonPackage + '/jniLibs')]

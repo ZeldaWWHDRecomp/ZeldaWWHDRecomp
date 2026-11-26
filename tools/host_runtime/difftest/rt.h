@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // Host-runtime difference tests: shared runtime (rt.cpp).
 #pragma once
+#include <csetjmp>
+#include <cstddef>
 #include <cstdint>
 #include <vector>
 
@@ -34,6 +36,10 @@ inline uint32_t scratch(int slot) { return 0xE0000000u + 0x00100000u * (uint32_t
 inline uint64_t bits(double d) { return f64_as_u64(d); }
 
 extern thread_local uint32_t t_entry_sp;  // the SP the test started the function with
+// a function that may not return (a loop the arguments never end): with T_IMPORT_JMP set, the import call that
+// makes t_log longer than t_import_limit longjmps there instead of returning
+extern thread_local jmp_buf* t_import_jmp;
+extern thread_local size_t t_import_limit;
 Call make_call(Cpu* c, uint32_t addr, const char* import);
 
 }  // namespace difftest

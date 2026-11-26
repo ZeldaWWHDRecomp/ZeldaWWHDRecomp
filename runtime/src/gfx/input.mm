@@ -37,6 +37,7 @@ namespace gx2 { void checkpoint_vulkan_caches(); void checkpoint_present_observe
 #include "../game_hooks.h"
 #include "../rumble.h"
 #include "../motion/motion.h"
+#include "../remote_pad/remote_pad.h"
 #include "../overlay/overlay.h"
 #include "../overlay/release_gate.h"
 #include "../fixed_seed.h"
@@ -74,8 +75,9 @@ bool gameplay_focused() { return g_gameplay_focus.load(std::memory_order_relaxed
 bool window_focused() { return g_window_focus.load(std::memory_order_relaxed); }
 // ---- controllers in the background (issue #267)
 // GameController.framework stops sending controller input to an app that is not in front unless
-// GCController.shouldMonitorBackgroundEvents is set (macOS 11.3+); Controls > "Controller input when
-// the game isn't focused" sets it. Keyboard and mouse are released on focus loss either way.
+// GCController.shouldMonitorBackgroundEvents is set (macOS 11.3+); Controls > "Controller input in the
+// background" sets it. Keyboard and mouse are released on focus loss either way. Any window of the app in
+// front counts as focused (the TV window, the GamePad window, the controls window: issue #406).
 bool background_controllers() { return input_map::background_controllers(); }
 static void apply_background_controllers() {  // main thread
     static int applied = -1;
@@ -83,7 +85,7 @@ static void apply_background_controllers() {  // main thread
     if (applied == (int)on) return;
     if (@available(macOS 11.3, *)) GCController.shouldMonitorBackgroundEvents = on;
     else if (on) LOG("[input] controller input in the background needs macOS 11.3 or later");
-    if (applied >= 0 || on) LOG("[input] controller input while the game isn't focused: %s", on ? "on" : "off");
+    if (applied >= 0 || on) LOG("[input] controller input in the background: %s", on ? "on" : "off");
     applied = on;
 }
 static PadState g_pad;  // controller part, refreshed on the main thread
@@ -120,9 +122,66 @@ static input_map::AppleFaceLayout controller_face_layout(GCController* c) {
 }
 
 static bool gamecube_controller(GCController* c) {
-    NSString* category = c.productCategory.lowercaseString;
-    NSString* vendor = c.vendorName.lowercaseString;
-    return [category containsString:@"gamecube"] || [vendor containsString:@"gamecube"];
+    return input_map::gamecube_named(c.vendorName.UTF8String, c.productCategory.UTF8String);
+}
+
+// A pad macOS lists without the extended gamepad profile (issue #556: a GameCube adapter showed in the
+// Controls window, which lists every GCController, but not in the settings overlay or the game). Its
+// inputs are read by element name from the physical input profile every GCController has (macOS 11),
+// else from the micro gamepad profile. Elements with names we don't know stay unread; the connect log
+// (log_controller) lists them.
+static bool profile_values(GCController* c, float* v) {
+    using namespace input_map;
+    auto put = [&](int p, float x) { if (p != kPadNone && x > v[p]) v[p] = x; };
+    auto press = [](GCControllerButtonInput* in) { return in.isPressed ? std::max(in.value, 0.51f) : std::min(in.value, 0.5f); };
+    auto pad4 = [&](GCControllerDirectionPad* d, int up, int down, int left, int right) {
+        const float x = d.xAxis.value, y = d.yAxis.value;
+        put(right, std::max(x, 0.f)); put(left, std::max(-x, 0.f));
+        put(up, std::max(y, 0.f)); put(down, std::max(-y, 0.f));
+    };
+    if (@available(macOS 11.0, *)) {
+        GCPhysicalInputProfile* prof = c.physicalInputProfile;
+        if (!prof) return false;
+        const auto layout = controller_face_layout(c);
+        for (NSString* name in prof.buttons) {
+            const int p = apple_button_input(name.UTF8String);
+            if (p != kPadNone) put(apple_face_input(layout, p), press(prof.buttons[name]));
+        }
+        for (NSString* name in prof.dpads) {
+            GCControllerDirectionPad* d = prof.dpads[name];
+            switch (apple_dpad_kind(name.UTF8String)) {
+                case AppleDpad::kDpad: pad4(d, kPadDUp, kPadDDown, kPadDLeft, kPadDRight); break;
+                case AppleDpad::kLeftStick: pad4(d, kPadLSUp, kPadLSDown, kPadLSLeft, kPadLSRight); break;
+                case AppleDpad::kRightStick: pad4(d, kPadRSUp, kPadRSDown, kPadRSLeft, kPadRSRight); break;
+                case AppleDpad::kNone: break;
+            }
+        }
+        return true;
+    }
+    GCMicroGamepad* m = c.microGamepad;
+    if (!m) return false;
+    put(kPadA, press(m.buttonA)); put(kPadX, press(m.buttonX));
+    if (m.buttonMenu) put(kPadMenu, press(m.buttonMenu));
+    pad4(m.dpad, kPadDUp, kPadDDown, kPadDLeft, kPadDRight);
+    return true;
+}
+
+// once per connect: what macOS reports about a controller, for bug reports (which profile it has, and
+// the element names of one without the extended gamepad profile)
+static void log_controller(GCController* c) {
+    if (!c) return;
+    NSString* kind = c.extendedGamepad ? @"extended gamepad" : c.microGamepad ? @"micro gamepad" : @"physical input profile only";
+    NSMutableArray* names = [NSMutableArray array];
+    if (@available(macOS 11.0, *)) {
+        if (!c.extendedGamepad && c.physicalInputProfile) {
+            for (NSString* n in c.physicalInputProfile.buttons) [names addObject:n];
+            for (NSString* n in c.physicalInputProfile.dpads) [names addObject:n];
+            for (NSString* n in c.physicalInputProfile.axes) [names addObject:n];
+        }
+    }
+    LOG("[input] controller connected: \"%s\" (category \"%s\", %s)%s%s", c.vendorName.UTF8String ?: "",
+        c.productCategory.UTF8String ?: "", kind.UTF8String, names.count ? ", elements: " : "",
+        names.count ? [names componentsJoinedByString:@", "].UTF8String : "");
 }
 
 // every mappable controller input of one controller, 0..1; false: not a gamepad
@@ -131,7 +190,7 @@ static bool device_values(GCController* c, float* v) {
     for (int i = 0; i < kPadCount; i++) v[i] = 0;
     auto put = [&](int p, float x) { if (x > v[p]) v[p] = x; };
     GCExtendedGamepad* g = c.extendedGamepad;
-    if (!g) return false;
+    if (!g) return profile_values(c, v);
     {
         const auto layout = controller_face_layout(c);
         auto b = [&](GCControllerButtonInput* in, int p) {
@@ -385,11 +444,30 @@ static std::vector<std::pair<uintptr_t, overlay::PadValues>> devices_values(std:
 #ifdef WWHD_HAS_IOKIT
     io_devices_values(out, pads);
 #endif
+    // the iPhone GamePad's controller (remote_pad.h): kept while the game is in the background, since
+    // the phone is played away from this computer's keyboard and window
+    if (const remote_pad::Pad r = remote_pad::pad(); r.connected && r.input.controller) {
+        overlay::PadValues d;
+        remote_pad::pad_values(r.input, d.data());
+        // the phone sends GameController's buttonA..Y as they are; positions as for a pad on this computer
+        if (const auto layout = input_map::apple_face_layout(r.info.category.c_str(), r.info.vendor.c_str());
+            layout != input_map::AppleFaceLayout::kStandard) {
+            const overlay::PadValues raw = d;
+            for (int p = input_map::kPadA; p <= input_map::kPadY; p++) d[input_map::apple_face_input(layout, p)] = raw[p];
+        }
+        out.emplace_back((uintptr_t)remote_pad::kDeviceId, d);
+        if (pads) pads->push_back(nil);
+    }
     return out;
 }
+// the name a controller's bindings are kept under (Controls), for the pads without a GCController
+static std::string other_device_name(uintptr_t id) {
+    return id == (uintptr_t)remote_pad::kDeviceId ? std::string(remote_pad::kControllerName) : io_device_name(id);
+}
 static std::string pad_name(GCController* c) {
-    NSString* n = c.vendorName ?: c.productCategory;
-    return n ? std::string(n.UTF8String) : std::string();
+    NSString* n = c.vendorName.length ? c.vendorName : c.productCategory;
+    // as the Controls window names it (a pad that names nothing would otherwise be listed blank)
+    return n.length ? std::string(n.UTF8String) : std::string("Controller");
 }
 
 // every mappable controller input, 0..1, the strongest over all connected controllers
@@ -414,28 +492,24 @@ static input_map::FaceLabel button_letter(GCControllerButtonInput* in) {
     return input_map::face_label_from_text(s.UTF8String);
 }
 
-// A pad whose buttons do not name themselves (older MFi, some HID): guess the family from what it
-// says it is. Xbox/PlayStation letters sit where the letters are; Nintendo's are the other way.
-static void family_letters(GCController* c, input_map::FaceLabel out[4]) {
-    using FL = input_map::FaceLabel;
-    NSString* who = [NSString stringWithFormat:@"%@ %@", c.vendorName ?: @"", c.productCategory ?: @""].lowercaseString;
-    const bool nintendo = controller_face_layout(c) == input_map::AppleFaceLayout::kNintendo;
-    BOOL playstation = [who containsString:@"sony"] || [who containsString:@"dualsense"] ||
-                       [who containsString:@"dualshock"] || [who containsString:@"playstation"];
-    BOOL xboxish = [who containsString:@"xbox"] || [who containsString:@"microsoft"] ||
-                   [who containsString:@"steam"] || [who containsString:@"stadia"] || [who containsString:@"luna"];
-    if (nintendo) {
-        out[0] = FL::kB; out[1] = FL::kA; out[2] = FL::kY; out[3] = FL::kX;  // south, east, west, north
-    } else if (playstation) {  // the Xbox letters' places; the in-game prompts show the shapes (#143)
-        out[0] = FL::kCross; out[1] = FL::kCircle; out[2] = FL::kSquare; out[3] = FL::kTriangle;
-    } else if (xboxish) {
-        out[0] = FL::kA; out[1] = FL::kB; out[2] = FL::kX; out[3] = FL::kY;
-    }
-}
-
 // Connect order of the pads we have seen: GameController's own list is not that order, and the
 // Automatic preset follows the first pad still connected.
 static NSMutableArray<GCController*>* g_connect_order;
+
+// What a controller has printed on its face buttons, in the order kPadA, kPadB, kPadX, kPadY
+static void controller_labels(GCController* c, input_map::FaceLabel labels[4]) {
+    using FL = input_map::FaceLabel;
+    GCExtendedGamepad* g = c.extendedGamepad;
+    GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};  // framework element order
+    bool any = false;
+    for (int i = 0; i < 4; i++) {
+        labels[i] = button_letter(face[i]);
+        any |= labels[i] != FL::kUnknown;
+    }
+    input_map::apple_face_labels(controller_face_layout(c), labels);
+    // nothing printed we can read: guess the family
+    if (!any) input_map::family_face_labels(c.vendorName.UTF8String, c.productCategory.UTF8String, labels);
+}
 
 static void note_dominant_labels() {
     using FL = input_map::FaceLabel;
@@ -444,17 +518,7 @@ static void note_dominant_labels() {
     for (GCController* c in [g_connect_order copy]) {
         if (c.extendedGamepad) { dominant = c; break; }
     }
-    if (dominant) {
-        GCExtendedGamepad* g = dominant.extendedGamepad;
-        GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};  // framework element order
-        bool any = false;
-        for (int i = 0; i < 4; i++) {
-            labels[i] = button_letter(face[i]);
-            any |= labels[i] != FL::kUnknown;
-        }
-        input_map::apple_face_labels(controller_face_layout(dominant), labels);
-        if (!any) family_letters(dominant, labels);  // nothing printed we can read: guess the family
-    }
+    if (dominant) controller_labels(dominant, labels);
 #ifdef WWHD_HAS_IOKIT
     // no GameController pad: claim Xbox labels for the pad we know is Xbox-labelled (Steam's)
     else if (io_xbox_labels()) {
@@ -504,7 +568,7 @@ void release_keys() {
 struct HapticPad {
     __strong GCController* controller = nil;
     __strong CHHapticEngine* engine = nil;
-    __strong id<CHHapticAdvancedPatternPlayer> player = nil;
+    __strong id<CHHapticPatternPlayer> player = nil;
     float last = 0.f;
     bool ready = false;
     double retry_after = 0;
@@ -567,8 +631,11 @@ static void haptic_stop(GCController* c) {
         return;
     }
 }
-// Keep one looping player while rumble is nonzero, and update its intensity in place. Zero
-// always stops immediately, including a final strength change smaller than the update epsilon.
+// Keep one player while rumble is nonzero, and update its intensity in place. Zero always stops
+// immediately, including a final strength change smaller than the update epsilon.
+// N.B. A controller's haptics rejects the loopable advanced player
+// (createAdvancedPlayerWithPattern fails with ServerInitFailed), so a long continuous event
+// stands in for its loop and the plain player is used.
 static void haptic_apply(HapticPad& h, float level) {
     if (!std::isfinite(level) || level <= 0.f) {
         NSError* error = nil;
@@ -598,14 +665,12 @@ static void haptic_apply(HapticPad& h, float level) {
     if (!h.player) {
         CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.f];
         CHHapticEventParameter* sharpness = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.5];
-        CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[intensity, sharpness] relativeTime:0 duration:1.0];
+        CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous parameters:@[intensity, sharpness] relativeTime:0 duration:3600.0];
         CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&err];
         if (pattern) {
-            operation = "create advanced player";
-            h.player = [h.engine createAdvancedPlayerWithPattern:pattern error:&err];
+            operation = "create player";
+            h.player = [h.engine createPlayerWithPattern:pattern error:&err];
         }
-        h.player.loopEnabled = YES;
-        h.player.loopEnd = 1.0;
         created = true;
     }
     if (h.player && (created || std::fabs(level - h.last) >= 0.001f)) {
@@ -635,7 +700,7 @@ static void haptic_tick() {
     float level = std::max(0.f, std::min(1.f, rumble::host_level(1000000 / 60)));
     // as on the SDL hosts (input_sdl.cpp): the game cannot stop the motors from there while the
     // settings overlay holds the input, and they stay still while the app is not focused, unless
-    // "Controller input when the game isn't focused" is on
+    // "Controller input in the background" is on
     if (overlay::is_open() || !(window_focused() || background_controllers())) level = 0.f;
     for (auto& h : g_haptics) haptic_apply(h, level);
 }
@@ -829,6 +894,8 @@ void init() {
 #ifdef WWHD_HAS_IOKIT
     iokit_input_init();  // HID gamepads GameController.framework does not surface (Steam Input's pad)
 #endif
+    remote_pad::set_host_supported();  // Settings > Controls offers the iPhone GamePad
+    remote_pad::start_from_env();      // WWHD_REMOTE_PAD=1 keeps it on (else the setting decides)
     NSEventMask mask = NSEventMaskKeyDown | NSEventMaskKeyUp | NSEventMaskFlagsChanged;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
         // keep Cmd-Q etc.; in an overlay text field the editing shortcuts (Cmd+A/C/V/X/Z) go to the overlay
@@ -890,11 +957,12 @@ void init() {
     [GCController startWirelessControllerDiscoveryWithCompletionHandler:nil];
     // the Automatic face preset follows the pad that was plugged in first (issue #78 follow-up)
     g_connect_order = [NSMutableArray array];
-    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); }
+    for (GCController* c in [GCController controllers]) { [g_connect_order addObject:c]; haptic_start(c); log_controller(c); }
     NSNotificationCenter* nc = [NSNotificationCenter defaultCenter];
     [nc addObserverForName:GCControllerDidConnectNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(NSNotification* n) {
         GCController* c = n.object;
         if (c && ![g_connect_order containsObject:c]) [g_connect_order addObject:c];
+        log_controller(c);
         haptic_start(c);
         note_dominant_labels();
     }];
@@ -925,6 +993,7 @@ void init() {
         }
         const input_map::Mapping current = input_map::current();
         input_map::consume_shortcut_buttons(current, v, game);
+        overlay::hold_select_for_settings(~0ull, game);
         PadState s;
         if (current.controllers.empty() && !current.preset.saved && !current.preset.gamecube) {
             s = input_map::controller_state(current, game);
@@ -935,10 +1004,11 @@ void init() {
             });
             for (size_t i = 0; i < gated.size(); i++) {
                 input_map::consume_shortcut_buttons(current, v, gated[i].data());
+                overlay::hold_select_for_settings(uint64_t(devices[i].first), gated[i].data());
                 auto& gate = start_gates[devices[i].first];
                 if (overlay::captures()) gate = {};
                 s = input_map::combine(s, gate.read(input_map::view_for(current,
-                    input_map::profile_index(current, "", pads[i] ? pad_name(pads[i]) : io_device_name(devices[i].first))), gated[i].data()));
+                    input_map::profile_index(current, "", pads[i] ? pad_name(pads[i]) : other_device_name(devices[i].first))), gated[i].data()));
             }
         }
         // the one in use, the setup offer on a new controller's first press, Controller details
@@ -947,12 +1017,32 @@ void init() {
         std::vector<ControllerInfo> infos;
         for (size_t i = 0; i < devices.size(); i++) {
             GCController* c = pads[i];
-            const std::string name = c ? pad_name(c) : io_device_name(devices[i].first);
+            const std::string name = c ? pad_name(c) : other_device_name(devices[i].first);
             bool pressed = false;
             for (int p = 1; p < input_map::kPadCount; p++) pressed |= devices[i].second[p] > 0.6f;
-            if (pressed && devices[i].first != active) {
+            // its face labels, for Controller details and Automatic prompts (issue #459)
+            input_map::FaceLabel labels[4] = {};
+            bool gamecube = c && gamecube_controller(c);
+            if (c) controller_labels(c, labels);
+            const bool phone = devices[i].first == (uintptr_t)remote_pad::kDeviceId;
+            if (phone) {  // the controller on the iPhone GamePad, as the phone describes it
+                const remote_pad::Pad r = remote_pad::pad();
+                const char* faces[4] = {r.info.faces[0].c_str(), r.info.faces[1].c_str(), r.info.faces[2].c_str(),
+                                        r.info.faces[3].c_str()};
+                if (!r.info.name.empty())
+                    input_map::named_face_labels(r.info.vendor.c_str(), r.info.category.c_str(), faces, labels);
+                gamecube = input_map::gamecube_named(r.info.vendor.c_str(), r.info.category.c_str());
+            }
+#ifdef WWHD_HAS_IOKIT
+            if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first && hid_gamepad::xbox_labelled(p->layout)) {
+                labels[0] = input_map::FaceLabel::kA; labels[1] = input_map::FaceLabel::kB;
+                labels[2] = input_map::FaceLabel::kX; labels[3] = input_map::FaceLabel::kY;
+            }
+#endif
+            // (the phone's labels may arrive or change while it is in use: unchanged values are no-ops)
+            if ((pressed && devices[i].first != active) || (phone && devices[i].first == active)) {
                 active = devices[i].first;
-                input_map::set_active_controller("", name);
+                input_map::set_active_controller("", name, input_map::pad_family_from_labels(labels), gamecube);
             }
             if (pressed && known.insert(devices[i].first).second && input_map::setup_offer_due(current, "", name, false))
                 overlay::offer_controller_setup("", name);
@@ -962,7 +1052,13 @@ void init() {
             info.active = devices[i].first == active;
             info.values.assign(devices[i].second.begin(), devices[i].second.end());
             if (c && c.productCategory) info.type = c.productCategory.UTF8String;
-            if (c && gamecube_controller(c)) info.type = "gamecube-apple";
+            if (gamecube) info.type = "gamecube-apple";
+            if (devices[i].first == (uintptr_t)remote_pad::kDeviceId) {
+                const remote_pad::Pad r = remote_pad::pad();
+                info.type = r.controller.empty() ? "iPhone" : r.controller;
+                info.connection = "wireless";
+                info.gyro = info.accel = true;
+            }
 #ifdef WWHD_HAS_IOKIT
             if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first) {
                 info.type = "HID gamepad";
@@ -981,20 +1077,7 @@ void init() {
                 }
                 info.led = c && c.light != nil;
             }
-            info.gyro = info.accel = c && c.motion != nil;
-            input_map::FaceLabel labels[4] = {};
-            GCExtendedGamepad* g = c ? c.extendedGamepad : nil;
-            GCControllerButtonInput* face[4] = {g.buttonA, g.buttonB, g.buttonX, g.buttonY};
-            bool any = false;
-            for (int k = 0; k < 4; k++) any |= (labels[k] = button_letter(face[k])) != input_map::FaceLabel::kUnknown;
-            if (c) input_map::apple_face_labels(controller_face_layout(c), labels);
-            if (c && !any) family_letters(c, labels);
-#ifdef WWHD_HAS_IOKIT
-            if (!c) for (const auto* p : g_io_pads) if ((uintptr_t)p->dev == devices[i].first && hid_gamepad::xbox_labelled(p->layout)) {
-                labels[0] = input_map::FaceLabel::kA; labels[1] = input_map::FaceLabel::kB;
-                labels[2] = input_map::FaceLabel::kX; labels[3] = input_map::FaceLabel::kY;
-            }
-#endif
+            if (c) info.gyro = info.accel = c.motion != nil;
             for (int k = 0; k < 4; k++) info.labels[k] = uint8_t(labels[k]);
             infos.push_back(std::move(info));
         }
@@ -1018,6 +1101,9 @@ void init() {
         }
         mods::update_gyro_mouse();
         haptic_tick();  // controller motors, from rumble.h's requested strength
+        // the iPhone GamePad's motor (remote_pad.h): the phone is played away from this window, so
+        // window focus does not matter; the settings overlay holds the input, as for the motors above
+        remote_pad::rumble(overlay::is_open() ? 0.f : std::clamp(rumble::host_level(1000000 / 60), 0.f, 1.f));
     }];
     [[NSRunLoop mainRunLoop] addTimer:inputTimer forMode:NSRunLoopCommonModes];
 }
@@ -1090,6 +1176,7 @@ static std::vector<Stick> scripted_stick(const char* var = "WWHD_STICK") {
 //   WWHD_TEST_PRESS=3-3.1:8000    buttons (hex)
 //   WWHD_TEST_MODE=1@0.5          60 fps mode at 0.5 s (0 off, 1 interpolation; 2, the retired True 60, = 1 at 60 fps)
 //   WWHD_TEST_END=12              writes the file "test_done" at 12 s (the test script stops the game)
+//   WWHD_TEST_PRO=2.5             the keyboard/controller act as a Pro Controller from 2.5 s (as the player's choice)
 namespace {
 struct TimedStick { double from, to; float x, y; };
 struct TimedPress { double from, to; uint32_t bits; };
@@ -1098,7 +1185,7 @@ struct Scenario {
     std::vector<TimedStick> sticks, rsticks;
     std::vector<TimedPress> presses;
     int mode = -1;
-    double mode_at = 0, end = 0;
+    double mode_at = 0, end = 0, pro_at = -1;
     Scenario() {
         if (const char* e = getenv("WWHD_TEST_ORIGIN")) origin = strtoull(e, nullptr, 10);
         auto timed_sticks = [](const char* e, std::vector<TimedStick>& out) {
@@ -1123,6 +1210,7 @@ struct Scenario {
         }
         if (const char* e = getenv("WWHD_TEST_MODE")) sscanf(e, "%d@%lf", &mode, &mode_at);
         if (const char* e = getenv("WWHD_TEST_END")) end = atof(e);
+        if (const char* e = getenv("WWHD_TEST_PRO")) pro_at = atof(e);
     }
 };
 }  // namespace
@@ -1130,7 +1218,10 @@ struct Scenario {
 namespace interp { void set_mode(int m); uint64_t logic_steps(); }
 namespace test_aids { void tick(double t, bool ended); void set_origin_step(uint64_t s); }
 namespace input {
-// WWHD_TEST_TOUCH=t0-t1:x:y,...: touches the GamePad screen at (x, y) (0..1) during scenario times
+// WWHD_TEST_TOUCH=t0-t1:x:y,...: touches the GamePad screen at (x, y) (0..1) during scenario times (seconds). This is
+// the variable's meaning whenever a scenario origin is set (WWHD_TEST_ORIGIN / WWHD_TEST_ORIGIN_LOAD); without one it
+// is display_modes.cpp's frame-timed press in TV window coordinates, which then skips it while a scenario is set.
+// A frame-timed touch in a scenario run: WWHD_TEST_DRC_TOUCH (TV frames, GamePad coordinates).
 static bool g_test_touch = false;
 static float g_test_tx = 0, g_test_ty = 0;
 static void apply_scenario(PadState& s) {
@@ -1172,6 +1263,11 @@ static void apply_scenario(PadState& s) {
     static std::atomic<bool> mode_set{false}, ended{false};
     static std::atomic<int> dbg{0};
     if (getenv("WWHD_TEST_DEBUG") && dbg++ % 30 == 0) LOG("[test] t=%.3f frame %llu", t, (unsigned long long)render::frame_count());
+    static std::atomic<bool> pro_set{false};
+    if (sc.pro_at >= 0 && t >= sc.pro_at && !pro_set.exchange(true)) {
+        LOG("[test] t=%.3f s: Pro Controller (frame %llu)", t, (unsigned long long)render::frame_count());
+        set_pro_controller(true);
+    }
     if (sc.mode >= 0 && t >= sc.mode_at && !mode_set.exchange(true)) {
         LOG("[test] t=%.3f s: 60 fps mode %d", t, sc.mode);
         interp::set_mode(sc.mode);
@@ -1289,6 +1385,12 @@ PadState read() {
     s.touch = g_touch;
     s.tx = g_tx;
     s.ty = g_ty;
+    // a finger on the iPhone GamePad's screen, unless the mouse holds the GamePad window's touch
+    if (!s.touch && !no_host) if (const remote_pad::Pad r = remote_pad::pad(); r.connected && r.input.touch) {
+        s.touch = true;
+        s.tx = r.input.tx;
+        s.ty = r.input.ty;
+    }
     if (g_test_touch) s.touch = true, s.tx = g_test_tx, s.ty = g_test_ty;
     // debug: WWHD_LOG_BUTTONS=1 logs every change of the merged button bits
     static const bool log_buttons = getenv("WWHD_LOG_BUTTONS") != nullptr;

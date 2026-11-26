@@ -33,7 +33,7 @@ bool eligible_as(bool enabled, uint32_t buttons, uint32_t button) {
     const bool gameplay = *stage && std::strncmp(stage, "sea_T", 8) && std::strncmp(stage, "Name", 8) && std::strncmp(stage, "ENDumi", 8);
     // Same HD event mode as savestate.cpp's kEventRun. Exclude menus and scene transitions.
     return fast_forward_gate(enabled, ld8(play + 0x5292),
-        gameplay && ld32(play + 0x5B34) != 0 && !ld8(play + 0x5140 + 12) && !ld32(GD(0x101F36CC)),
+        gameplay && ld32(play + GI(0x5B34)) != 0 && !ld8(play + 0x5140 + 12) && !ld32(GD(0x101F36CC)),
         ld8(GD(0x101EA069)) != 0, overlay::blocks_input(), buttons, button);
 }
 bool eligible(uint32_t buttons) { return eligible_as(fast_forward(), buttons, fast_forward_button()); }

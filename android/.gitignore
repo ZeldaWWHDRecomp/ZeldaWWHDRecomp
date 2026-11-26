@@ -1,7 +1,9 @@
 # build output; app/libs holds libmain.so, the recompiled game: never commit or share it
 build/
+build-decomp/
 app/build/
 app/libs/
+app/libs-decomp/
 # the launcher icon made from the game's own icon (make_icon.py)
 app/local-res/
 .gradle/

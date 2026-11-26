@@ -7,6 +7,7 @@
 namespace perf {
 namespace {
 std::atomic<bool> active{false};
+std::atomic<bool> gpuWanted{false};  // GPU timestamps for this demand (set_demand)
 std::atomic<uint64_t> epoch{1};
 std::atomic<uint64_t> gpuCount{0}, cpuCount{0}, timestampCount{0}, queryReads{0}, minimumQueryAge{UINT64_MAX};
 std::mutex mutex;
@@ -46,8 +47,9 @@ std::string time(const Metric& m) {
     return b;
 }
 }
-void set_demand(bool overlay, bool report) {
+void set_demand(bool overlay, bool report, bool overlay_gpu) {
     const bool wanted = overlay || report;
+    gpuWanted.store(report || (overlay && overlay_gpu), std::memory_order_relaxed);
     if (active.load(std::memory_order_relaxed) == wanted) return;
     std::lock_guard<std::mutex> lock(mutex);
     active = false;
@@ -66,7 +68,7 @@ uint64_t generation() { return epoch.load(std::memory_order_acquire); }
 void game_frame() { sample(true); }
 void render_frame() { sample(false); }
 uint64_t gpu_begin(uint64_t frame) {
-    if (!enabled()) return 0;
+    if (!enabled() || !gpuWanted.load(std::memory_order_relaxed)) return 0;
     std::lock_guard<std::mutex> lock(mutex);
     if (!active) return 0;
     auto& f = gpu[frame % gpu.size()];

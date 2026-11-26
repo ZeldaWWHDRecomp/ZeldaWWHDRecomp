@@ -25,6 +25,10 @@ void set(const char *, const std::string &) {}
 namespace mods {
 bool fast_forward_mute() { return false; }
 } // namespace mods
+namespace remote_pad {
+bool audio_wanted() { return false; }
+void send_audio(const int32_t *, const int32_t *, int) {}
+} // namespace remote_pad
 void log_msg(const char *, ...) {}
 namespace mem {
 uint32_t runtime_alloc(uint32_t size, uint32_t align) {

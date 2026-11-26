@@ -16,6 +16,24 @@ from types import SimpleNamespace
 
 from setup_adapter import Adapter, Paused, atomic_json
 
+# setup's one choice (tools/installer/setup.py GAME_VERSIONS; AndroidGame's decomp-choice.json): the recompiled version
+# (the default) or the decomp version, only the chosen one is built; "both" is an install an earlier app version built
+# both for ("Also build the decomp version"), kept as it was until the player chooses
+GAME_VERSIONS = ("recomp", "decomp", "both")
+RANDOMIZER_NEEDS_RECOMP = ("Randomized games play in the recompiled version: choose \"Recompiled version\" in setup to "
+                           "play one (the decomp version is chosen).")
+
+
+def game_version(job):
+    """The version this job builds: job "game_version", else (jobs written before the choice) "both" when "decomp" is
+    set, "recomp" otherwise"""
+    version = job.get("game_version")
+    if version is None:
+        version = "both" if job.get("decomp") is True else "recomp"
+    if version not in GAME_VERSIONS:
+        raise ValueError("The game version must be recomp, decomp or both")
+    return version
+
 
 def private_input(root, name):
     path = (root / name).resolve()
@@ -81,9 +99,13 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             code_mods = job.get("code_mods", False)
             if type(code_mods) is not bool:
                 raise ValueError("The code-mod choice must be true or false")
+            version = game_version(job)
             adapter = adapter_factory(package, root / "checkpoints", job["port_revision"], publish, paused)
             adapter.boundary()
             source = job["input"]
+            if version == "decomp" and (job.get("randomize") or source.get("seed_import") is not None):
+                # (as the desktop's randomizer with only the decomp version: setup.check_randomizer_version)
+                raise ValueError(RANDOMIZER_NEEDS_RECOMP)
             # a seed made with the official randomizer (the setup screen's Import a seed...): its output folder was
             # copied privately like a game folder; it goes beside the installed game, which stays where it is
             seed_import, installed, imported = source.get("seed_import"), None, root / "seed-import.json"
@@ -181,7 +203,6 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
                     import wwhd_native
                     native_run = wwhd_native.run
                 overlay, seed = adapter.randomize(game, job["randomize"], native_run)
-            generated = adapter.translate(overlay or game, hooks=code_mods)
             compiler = job["compiler"]
             toolchain = SimpleNamespace(cc=compiler["cc"], cxx=compiler["cxx"], ar=compiler["ar"],
                                         env=compiler.get("env"), rsp=compiler.get("rsp", True))
@@ -189,12 +210,43 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             if native_run is None:
                 import wwhd_native
                 native_run = wwhd_native.run
-            objects = adapter.compile(toolchain, manifest, generated, compiler["identity"], native_run, jobs=jobs)
-            library = adapter.link(toolchain, manifest, objects, compiler["identity"], native_run)
-            adapter.boundary()
+            decomp = None
+            if version == "decomp":
+                # only the decomp version (tools/android/decomp_android.py; it translates the game code itself): no
+                # recompiled build. Its failure fails the job, so the game activated before stays selected.
+                decomp = decomp_step(adapter, job, compiler, manifest, game, native_run, jobs, code_mods, publish,
+                                     required=True)
+                library = Path(decomp["library"])
+                keep = [library.parent]
+            else:
+                generated = adapter.translate(overlay or game, hooks=code_mods)
+                objects = adapter.compile(toolchain, manifest, generated, compiler["identity"], native_run, jobs=jobs)
+                library = adapter.link(toolchain, manifest, objects, compiler["identity"], native_run)
+                adapter.boundary()
+                keep = [Path(generated).parent, Path(objects[0]).parent.parent, Path(library).parent]
+                # an install an earlier app version built both versions for: the decomp library next to the recompiled
+                # game, from the game as it is (a randomized game plays in the recompiled version only); its failure
+                # leaves the recompiled game ready
+                if version == "both" and not overlay:
+                    decomp = decomp_step(adapter, job, compiler, manifest, game, native_run, jobs, code_mods, publish)
+                    if decomp.get("library"):
+                        keep.append(Path(decomp["library"]).parent)
+            # earlier updates' stages go (this run's, and the builds the selection records name, stay; a record of the
+            # other version goes after a switch, setup_adapter.cleanup_stages): the records are in the setup storage
+            # above jobs/<id>
+            records = root.parent.parent if root.parent.name == "jobs" else None
+            if hasattr(adapter, "cleanup_stages"):
+                try:
+                    adapter.cleanup_stages(keep, records, log=lambda text: print(text, file=sys.stderr))
+                except OSError as error:
+                    print("old setup stages kept: %s" % error, file=sys.stderr)
             result = {"schema": 1, "library": str(library), "game": str(game),
                       "port_revision": job["port_revision"], "compiler_identity": compiler["identity"],
-                      "code_mods": code_mods}
+                      "code_mods": code_mods, "game_version": version}
+            if version == "decomp":
+                result["decomp_only"] = True
+            if decomp:
+                result["decomp"] = decomp
             if overlay:
                 result["randomizer"] = {"files": str(overlay), "seed": seed["id"], "hash": seed.get("hash", ""),
                                         "permalink": seed.get("permalink", "")}
@@ -249,6 +301,36 @@ def run(configuration, package=None, native_run=None, adapter_factory=Adapter, k
             state["error"] = str(failure)[:2048]
             publish({"state": "failed"})
             raise
+
+
+class DecompFailed(RuntimeError):
+    """the decomp version could not be built (game version "decomp": the job fails, the selection stays)"""
+
+
+def decomp_step(adapter, job, compiler, manifest, game, native_run, jobs, code_mods, publish, required=False):
+    """The decomp version's library ("decomp_mode" fast (default) / plain; "decomp_whole_lto": the whole-image link
+    switch; "decomp_mod_hooks": the decomp version's own record of hooked functions). Returns {"library", "mode",
+    "code_mods", ...}; a failure returns {"error"} (an install with both versions) or, required (only the decomp
+    version), raises DecompFailed. A pause passes through."""
+    from setup_adapter import Paused
+    mode = job.get("decomp_mode", "fast")
+    if mode not in ("fast", "plain"):
+        raise ValueError("The decomp mode must be fast or plain")
+    try:
+        import decomp_android
+        library, info = decomp_android.build(adapter, compiler, manifest, game, native_run, jobs=jobs,
+                                             code_mods=code_mods, mode=mode, whole=job.get("decomp_whole_lto") is True,
+                                             mod_hooks=job.get("decomp_mod_hooks"))
+        return dict(info, library=str(library), mode=mode, code_mods=code_mods)
+    except Paused:
+        raise
+    except Exception as failure:
+        message = str(failure).splitlines()[0][:300] if str(failure) else type(failure).__name__
+        print("decomp version failed: %s" % failure, file=sys.stderr)
+        publish({"stage": "decomp", "state": "failed", "detail": message})
+        if required:  # (as setup on the desktop: the game set up before stays as it is)
+            raise DecompFailed("The decomp version could not be built: %s" % message) from failure
+        return {"error": message, "mode": mode}  # (both versions: the recompiled game stays ready)
 
 
 def read_key_descriptors(descriptors):

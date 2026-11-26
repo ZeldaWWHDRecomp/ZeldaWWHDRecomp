@@ -160,6 +160,33 @@ int main() {
         [g_controls.bindingTarget selectItemAtIndex:0];[g_controls bindingTargetChanged:g_controls.bindingTarget];
         assert(g_controls.faceLayout.segmentCount==5 && [g_controls.faceLayout isEnabledForSegment:3]);
         input_map::set_current(presetBefore,false);
+        // The window opens on the controller in use when it has bindings of its own (AYN Odin report: the
+        // shared set was shown and edited, play used the Odin's own); the shared set then says so.
+        {
+            Mapping withOdin=presetBefore;ensure_profile(withOdin,"","Odin Controller");
+            withOdin.controllers[0].pad[kZR]=kPadY;set_current(withOdin,false);
+            input::ControllerInfo odin;odin.name="Odin Controller";fixtureControllers={odin};
+            set_active_controller("","Odin Controller");
+            [g_controls followActiveController];[g_controls reloadFromModel];
+            assert(g_controls.bindingTarget.indexOfSelectedItem==1 && g_controls.bindingView.pad[kZR]==kPadY);
+            assert(g_controls.sharedNotice.stringValue.length==0);
+            // the user picks the shared set: the notice shows, and the pick stays while the Odin is in use
+            [g_controls.bindingTarget selectItemAtIndex:0];[g_controls bindingTargetChanged:g_controls.bindingTarget];
+            assert([g_controls.sharedNotice.stringValue isEqualToString:@"Odin Controller uses its own bindings, so changes here don't apply to it."]);
+            [g_controls followActiveController];[g_controls reloadFromModel];
+            assert(g_controls.bindingTarget.indexOfSelectedItem==0 && g_controls.bindingView.pad[kZR]==presetBefore.pad[kZR]);
+            // a controller without bindings of its own in use: the shared set, no notice
+            set_active_controller("","Xbox Controller");
+            [g_controls followActiveController];[g_controls syncOptions];
+            assert(g_controls.bindingTarget.indexOfSelectedItem==0 && g_controls.sharedNotice.stringValue.length==0);
+            // the Odin again: its own
+            set_active_controller("","Odin Controller");
+            [g_controls followActiveController];[g_controls reloadFromModel];
+            assert(g_controls.bindingTarget.indexOfSelectedItem==1);
+            set_active_controller("","");fixtureControllers={};
+            [g_controls.bindingTarget selectItemAtIndex:0];[g_controls bindingTargetChanged:g_controls.bindingTarget];
+            input_map::set_current(presetBefore,false);[g_controls reloadFromModel];
+        }
         for (int i=0;i<3;++i) {
             NSButton* button = g_controls.cameraButtons[i];
             button.state = NSControlStateValueOn;

@@ -21,7 +21,9 @@ static int failures = 0;
 static void fail(const char* what, uint32_t reg) {
     if (++failures <= 20) std::printf("register %04X: %s\n", reg, what);
 }
-static bool prof_fast(uint32_t reg) { return rprof::fast_class_reg(reg); }
+// the classifier's predicate as gx2_core.cpp builds the table with it, and the profiler's alone
+static bool prof_fast(uint32_t reg) { return prof_fast_or_dynamic(rprof::fast_class_reg(reg), reg); }
+static bool prof_fast_base(uint32_t reg) { return rprof::fast_class_reg(reg); }
 // shader_key_changed (backend_hooks.h), restated without the renderer headers
 static bool key_changed_by_mask(uint32_t reg, uint32_t old, uint32_t value) {
     uint32_t mask;
@@ -40,6 +42,26 @@ int main() {
             if (c & ~uint8_t(kRcGroup | kRcShaderIrrelevant | kRcProfFast)) fail("stray class bits", r);
         }
     }
+    // the dynamic words in the classifier's class change kRcProfFast only: with and without them, every
+    // register keeps its state group and shader relevance (so the same writes bump g_shader_state_gen)
+    for (bool memo : {false, true}) {
+        auto with = std::make_unique<RegisterClasses>(), without = std::make_unique<RegisterClasses>();
+        with->build(memo, prof_fast);
+        without->build(memo, prof_fast_base);
+        int moved = 0;
+        for (uint32_t r = 0; r < kNumRegs; ++r) {
+            const uint8_t a = with->cls[r], b = without->cls[r];
+            if ((a ^ b) & ~uint8_t(kRcProfFast)) fail("dynamic words change more than the profiler class", r);
+            if (a != b) {
+                ++moved;
+                if (state_group(r) != kSgDynamic) fail("profiler class changed outside the dynamic words", r);
+            }
+        }
+        if (!moved) fail("no dynamic word joined the profiler class", 0);
+    }
+    if (!prof_fast(Latte::REGADDR::SX_ALPHA_REF) || shader_irrelevant_reg(Latte::REGADDR::SX_ALPHA_REF, true))
+        fail("alpha reference: profiler-fast but still shader-relevant", Latte::REGADDR::SX_ALPHA_REF);
+
     // spot checks of the relevance rules themselves
     if (!shader_irrelevant_reg(mmSQ_ALU_CONSTANT0_0 + 5, false)) fail("ALU constant counted as shader-relevant", mmSQ_ALU_CONSTANT0_0 + 5);
     if (shader_irrelevant_reg(mmSQ_VTX_ATTRIBUTE_BLOCK_START + 2, false)) fail("vertex stride counted as shader-irrelevant", mmSQ_VTX_ATTRIBUTE_BLOCK_START + 2);

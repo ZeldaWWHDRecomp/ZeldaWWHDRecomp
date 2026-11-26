@@ -4,6 +4,7 @@
 #include "backend.h"
 #include "vulkan_error.h"
 #include "deferred_dispatch.h"
+#include <array>
 #include <utility>
 #include <cstring>
 #include <cstdio>
@@ -26,6 +27,15 @@ std::vector<Pending> pending;
 std::unique_ptr<Image> active,building,published;
 std::array<std::unique_ptr<Image>,kCaptureImages> spare;
 uint64_t sourceIdentity=0,nextTicket=0,lastCaptureFrame=0;
+// The images last scanned out to the GamePad (OP_COPY_TO_SCAN target 4). Only a
+// pane drawn into one of them can ever be selected by scan(); the same menu
+// background drawn into other targets (in Off-TV Play the TV's "Currently playing
+// on Wii U GamePad" screen, twice per frame) is never captured. Capturing those
+// too cost two private replays per frame and, as the TV target has another size,
+// reallocated a capture image every frame (issue #493).
+std::array<uint64_t,4> scanned{};
+unsigned scannedNext=0;
+bool scanned_source(uint64_t id) { for(auto v:scanned)if(v==id)return true;return false; }
 unsigned scopeDepth=0;
 const uint32_t* scopeRegs=nullptr; // the gx2 register file the outermost scope was opened with
 bool replaying=false,failed=false,drawn=false,buildingDirty=false,captureOpaque=false;
@@ -58,19 +68,22 @@ CaptureFormat capture_format(const Surface* source) {
 }
 std::unique_ptr<Image> acquire(Surface* source) {
  const auto wanted=capture_format(source);
+ // At most about 1920x1080 (gfx::gamepad_backdrop::capture_extent); the replay
+ // draws into it scaled (draw.cpp), the bars cover-scale it like a full-size one.
+ const auto size=gfx::gamepad_backdrop::capture_extent(source->extent.width,source->extent.height);
  for(auto& slot:spare)if(slot && slot->surface->format==wanted.format &&
      slot->surface->fmt.pixel==wanted.fmt.pixel &&
-     slot->surface->extent.width==source->extent.width && slot->surface->extent.height==source->extent.height)
+     slot->surface->extent.width==size.width && slot->surface->extent.height==size.height)
   return std::move(slot);
  // Only idle images may be retired for a format/extent change. Pending,
  // building and published images retain exclusive ownership throughout use.
  for(auto& slot:spare)slot.reset();
- const uint64_t estimate=uint64_t(source->extent.width)*source->extent.height*
+ const uint64_t estimate=uint64_t(size.width)*size.height*
      std::max(1u,wanted.fmt.hostBytesPerBlock?wanted.fmt.hostBytesPerBlock:wanted.fmt.bytesPerBlock);
  if(!estimate||estimate>kCaptureBytes||imageCount>=kCaptureImages||estimate>kCaptureBytes-imageBytes)return {};
  try {
   auto image=std::make_unique<Image>();image->surface=std::make_unique<Surface>();
-  auto* s=image->surface.get();s->width=source->extent.width;s->height=source->extent.height;
+  auto* s=image->surface.get();s->width=size.width;s->height=size.height;
   s->format=wanted.format;s->fmt=wanted.fmt;s->scale=1;
   create_surface_image(s,false);
   const uint64_t bytes=s->allocationBytes;
@@ -98,6 +111,7 @@ void gamepad_backdrop_reset() {
  end_encoder();active.reset();building.reset();published.reset();pending.clear();for(auto& slot:spare)slot.reset();cache.reset();
  gfx::gamepad_backdrop::set_capture_requested(false);
  sourceIdentity=0;scopeDepth=0;lastCaptureFrame=0;scopeRegs=nullptr;replaying=failed=drawn=buildingDirty=false;
+ scanned={};scannedNext=0;
 }
 void gamepad_backdrop_invalidate(Surface* source) {
  const auto id=identity(source);if(!id)return;
@@ -127,6 +141,9 @@ Surface* gamepad_backdrop_replay_target() { return replaying&&active ? active->s
 bool gamepad_backdrop_begin_replay(Surface* source,bool compatible,bool opaque) {
  gamepad_backdrop_debug("begin-replay",identity(source),compatible,uint64_t(replaying)|(uint64_t(failed)<<1),scopeDepth);
  if(replaying||!scopeDepth||!gfx::gamepad_backdrop::capture_enabled()) return false;
+ // Not a GamePad picture: no clear, no replay, no capture image (the first
+ // scan of a new target uses the edge-colour fallback for that presentation).
+ if(source && !scanned_source(identity(source))) { failed=true;return false; }
  if(!compatible || !source || !source->image || (sourceIdentity&&sourceIdentity!=identity(source))) { failed=true;discard_pending(identity(source));return false; }
  if(active&&captureOpaque!=opaque)failed=true;
  if(failed) return false;
@@ -143,6 +160,7 @@ bool gamepad_backdrop_begin_replay(Surface* source,bool compatible,bool opaque) 
 }
 void gamepad_backdrop_end_replay(bool success) { gamepad_backdrop_debug("end-replay",success,sourceIdentity,active?identity(active->surface.get()):0); end_encoder();replaying=false;drawn|=success;if(!success)failed=true; }
 void gamepad_backdrop_scan(Surface* source) {
+ if(const auto id=identity(source); id && !scanned_source(id)) scanned[scannedNext++%scanned.size()]=id;
  auto selection=cache.scan(identity(source));
  if(selection.ticket||!pending.empty())gamepad_backdrop_debug("scan",identity(source),selection.ticket,pending.size(),selection.generation);
  recycle(building);

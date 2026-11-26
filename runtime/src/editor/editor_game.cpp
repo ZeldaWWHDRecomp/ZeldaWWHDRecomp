@@ -162,7 +162,8 @@ const uint32_t kPlayFn = GC(0x025200D4), kCameraFn = GC(0x024F8044), kStopCamera
                kEnd = GC(0x0253EFA8), kHideHud = GC(0x025916C4), kShowHud = GC(0x0259169C);
 const uint32_t kSearchName = GC(0x025C109C);      // dStage_searchName: the object name table entry of a stage actor name
 const uint32_t kSeStartSystem = GC(0x025E1988);   // mDoAud_seStartSystem(id): a sound effect without a place
-constexpr uint32_t kControl = 0x51D0, kMode = 0x5292, kOrderCount = 0x5290, kStage = 0x5134, kPlayer = 0x5B34, kHudShown = 0x5C22;
+constexpr uint32_t kControl = 0x51D0, kMode = 0x5292, kOrderCount = 0x5290, kStage = 0x5134;
+const uint32_t kPlayer = GI(0x5B34), kHudShown = GI(0x5C22);  // moved in the Japanese build (guest_addr.h GI)
 constexpr uint32_t kCenter = 0x10, kEye = 0x1C, kActive = 0x4;  // dCamera_c (d_camera.h)
 constexpr uint32_t kPos = 0x314, kRoom = 0x326, kAngleY = 0x32A;  // fopAc_ac_c
 

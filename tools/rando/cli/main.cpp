@@ -386,9 +386,8 @@ int main(int argc, char** argv) {
         if (c.settings.getSetting(Option::NoSpoilerLog)) return fail(kRaceMode);
         if (c.settings.getSetting(Option::Plandomizer)) return fail("plandomizer settings are not supported");
         const std::string id = read_title_id(game);
-        if (id == "0005000010143400") return fail("The Japanese release cannot be randomized yet: the port has no Japanese build.");
         (void)allowEur;  // (the European release is supported since its compatibility profile; the flag stays accepted)
-        if (id != "0005000010143500" && id != "0005000010143600")
+        if (id != "0005000010143500" && id != "0005000010143600" && id != "0005000010143400")
             return fail("Not a release of The Wind Waker HD the randomizer knows (title id " + id + ").");
         if (std::filesystem::exists(out, ec) && !std::filesystem::is_empty(out, ec))
             return fail("the output folder is not empty: " + out.string());

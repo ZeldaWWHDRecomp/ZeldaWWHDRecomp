@@ -50,6 +50,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <set>
@@ -97,6 +98,7 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "../motion/motion.h"
 #include "../platform/keycodes.h"
 #include "../rumble.h"
+#include "../remote_pad/remote_pad.h"
 #ifdef __ANDROID__
 #include "../platform/phone_rumble.h"
 #include "../platform/heat_guard.h"
@@ -126,6 +128,12 @@ namespace gfxvk { bool buffer_cache_enabled(); unsigned submission_pool_slots();
 #include "mobile_ui.h"
 #include "../report_header.h"
 #include "../dynres.h"
+#ifdef WWHD_DECOMP_FAST
+#include "../cheapib/render_replay.h"  // Frame rate: "Faster rendering" (decomp build, fast mode)
+#endif
+#ifdef WWHD_VK_SMOOTH
+#include "gfx/vulkan/smooth_defaults.h"
+#endif
 
 namespace gx2 { uint64_t flips_presented(); bool uncapped(); void set_uncapped(bool on); }
 
@@ -136,7 +144,7 @@ using clock = std::chrono::steady_clock;
 double now_s() { return std::chrono::duration<double>(clock::now().time_since_epoch()).count(); }
 
 std::atomic<bool> g_open{false};
-std::atomic<bool> g_perf{false};
+std::atomic<int> g_perf{int(PerfOverlay::Off)};  // PerfOverlay
 std::atomic<bool> g_stereo_pointer_visible{false};
 PerfAverage g_average;
 std::atomic<float> g_density{1.0f};
@@ -152,6 +160,10 @@ const bool g_no_host_mouse = g_no_host && !getenv("WWHD_TEST_POST_MOUSE");
 bool g_pad_b_used = false;  // B answered a dialog this frame: it does not also close the menu
 // a dialog (or a list) is open in Settings: Esc and Android's Back close it, not the menu (popup.h)
 std::atomic<bool> g_dialog_open{false};
+// A host shortcut requests the render thread's existing confirmation. Keep the source until it is
+// answered: cancelling a shortcut used in play returns to play; Settings > Quit stays in Settings.
+enum class QuitShortcut { None, PendingGame, PendingSettings, Game, Settings };
+std::atomic<QuitShortcut> g_quit_shortcut{QuitShortcut::None};
 
 // input events from the host's main thread, replayed into ImGui on the render thread
 struct Event {
@@ -361,6 +373,55 @@ void setup_fonts() {
     io.Fonts->AddFontDefaultVector(&cfg);
 }
 
+// Kana and kanji for Japanese games only (the Japanese build, a Japanese start through a language source, or
+// the game's text prompt in Japanese): a system font merged into the overlay's font as a fallback, so a run
+// without Japanese text never reads it (these fonts are 9-14 MB). Dear ImGui bakes glyphs on demand, so the
+// merge can come after the first frames (the game reads its language after the overlay starts); called
+// before NewFrame, while the atlas is not locked. Tried once.
+bool japanese_text_wanted() {
+    return strcmp(g_guest_build_name, "JP") == 0 || game_lang::started() == 0 || text_entry::japanese_requested();
+}
+void merge_japanese_font() {
+    static bool tried = false;
+    if (tried || !japanese_text_wanted()) return;
+    tried = true;
+    static const char* const candidates[] = {
+#if defined(__APPLE__)
+        "/System/Library/Fonts/\xE3\x83\x92\xE3\x83\xA9\xE3\x82\xAE\xE3\x83\x8E\xE8\xA7\x92\xE3\x82\xB4\xE3\x82\xB7\xE3\x83\x83\xE3\x82\xAF W3.ttc",  // Hiragino Kaku Gothic W3 (UTF-8)
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+#elif defined(_WIN32)
+        "C:/Windows/Fonts/YuGothM.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
+        "C:/Windows/Fonts/msgothic.ttc",
+#elif defined(__ANDROID__)
+        "/system/fonts/NotoSansCJK-Regular.ttc",
+#else
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+#endif
+    };
+    ImGuiIO& io = ImGui::GetIO();
+    if (io.Fonts->Fonts.empty()) return;
+    for (const char* path : candidates) {
+        if (FILE* f = fopen(path, "rb")) {
+            fclose(f);
+            ImFontConfig cfg;
+            cfg.MergeMode = true;           // a fallback: the main font's own glyphs come first
+            cfg.DstFont = io.Fonts->Fonts[0];
+            cfg.SizePixels = 0.0f;          // the main font's scale (it may have an implicit size: the platform's)
+            if (io.Fonts->AddFontFromFileTTF(path, 0.0f, &cfg)) {
+                LOG("[overlay] Japanese font %s", path);
+                return;
+            }
+        }
+    }
+    LOG("[overlay] no Japanese font found: kana and kanji show as boxes");
+}
+
 void init_context() {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -396,7 +457,7 @@ void init_context() {
 
 // ---------------------------------------------------------------- test switch
 struct TestSwitch {
-    bool open = false, perf = false, quit = false;
+    bool open = false, perf = false, perf_minimal = false, quit = false;
     int tab = -1;
     uint64_t at = 1;
     bool done = false;
@@ -416,6 +477,7 @@ TestSwitch parse_test() {
     t.quit = what == "quit";
     t.open = what == "open" || t.quit;
     t.perf = what == "perf";
+    t.perf_minimal = what == "perf-minimal";
     if (!tab.empty()) t.tab = ext::tab_index(tab);  // built-in or added (extensions.h)
     return t;
 }
@@ -952,6 +1014,27 @@ void tab_graphics() {
             note("Off: if this computer cannot reach %d fps, the whole game slows down (the performance\n"
                  "overlay then shows fewer than 30 logic steps/s). Turn it on to keep the game's speed.", interp::fps());
     }
+#ifdef WWHD_DECOMP_FAST
+    // decomp build, fast mode: cheap in-between frames + c2 as one set (cheapib/render_replay.h; saved, read at start)
+    {
+        static bool renderReplay = cheapib::render_replay::chosen();
+        const bool fixed = getenv("WWHD_RENDER_REPLAY") != nullptr;
+        bool on;
+        if (check("Faster rendering (replays unchanged draws)", renderReplay, &on, !fixed)) {
+            renderReplay = on;
+            hostui::post([on] { hostui::set("renderReplay", on ? "1" : "0"); });
+        }
+        help("Applies after restarting the game. On by default. With 40-240 fps, the frames between two game\n"
+             "steps replay the step's draws and update only what moves, instead of drawing everything again,\n"
+             "and no more of them are planned than the GPU can draw in time: faster, steadier rendering (on a\n"
+             "phone at 120 fps about a quarter less render time, up to a tenth more frames, fewer late frames).\n"
+             "Needs the Vulkan renderer and \"Record graphics on a second thread\" (Advanced; on by default\n"
+             "on phones).");
+        if (fixed) note("Set by WWHD_RENDER_REPLAY for this start.");
+        else if (renderReplay != cheapib::render_replay::chosen()) note("Restart the game to apply.");
+        else if (const char* why = cheapib::render_replay::inactive_reason()) note("%s", why);
+    }
+#endif
 #ifdef __ANDROID__
     // the heat guard exists on Android only (platform/perf_hint.cpp); WWHD_HEAT_GUARD wins and is not saved
     {
@@ -1006,6 +1089,24 @@ void tab_graphics() {
         if (dynres::on()) note("%s", dynres::status().c_str());
     }
 
+#ifdef WWHD_HAS_VULKAN
+    if (render::g_backend->api == render::Api::Vulkan) {
+        heading("Grass draw distance");
+        static const int dists[] = {0, 4000, 3000, 2000};
+        static const char* const gnames[] = {"All (original)##grass", "Far##grass", "Medium##grass", "Near##grass"};
+        const int gd = render::grass_distance();
+        const bool editable = !getenv("WWHD_GRASS_DISTANCE");
+        for (int i = 0; i < 4; i++) {
+            if (i) ImGui::SameLine();
+            const int d = dists[i];
+            if (radio(gnames[i], gd == d, editable)) post_changed([d] { render::set_grass_distance(d); });
+        }
+        help("Tall grass patches farther than this from the camera are not drawn. The forest's tall grass is drawn as\n"
+             "thousands of separate patches; drawing fewer of them frees the processor where it is the limit.\n"
+             "Near: about 60 fps instead of 46 in the thickest grass on a dual-core laptop; distant grass gets\n"
+             "thinner. All draws every patch, as the original game. Applies immediately.");
+    }
+#endif
     float fovPercent=aspect::fov_scale()*100.0f;
     if(ImGui::SliderFloat("Gameplay FOV", &fovPercent,75.0f,250.0f,"%.0f%%",ImGuiSliderFlags_AlwaysClamp))
         hostui::post([fovPercent] { game_settings::set_fov_scale(fovPercent / 100.0f); });  // (game_settings.h, as the item menu's page)
@@ -1235,7 +1336,14 @@ void tab_graphics() {
     note("This build has no Vulkan renderer.");
 #endif
     heading("Overlay");
-    if (check("Performance overlay (FPS, frame time)", perf_shown(), &v)) set_perf_shown(v);
+    {
+        int mode = int(perf_mode());
+        if (combo("Performance overlay", &mode, "Off\0Minimal (one line: fps, frame time)\0Full\0"))
+            set_perf_mode(PerfOverlay(mode));
+        help("Minimal: one small line in the top-left corner with the frame rate, the frame time and the render "
+             "thread's CPU time per frame (R). Full: frame times, averages, CPU and GPU times and a graph. The "
+             "Performance overlay shortcut (Shortcuts tab) cycles through Off, Minimal, Full.");
+    }
     if (ImGui::Button("Reset performance averages")) { g_average.reset(); perf::reset(); interp::reset_display_hz_seen(); }
     // the render-thread profiler (render_prof.h): its report is the detailed part of the performance report
     if (check("Detailed performance profiling", rprof::requested(), &v, !rprof::env_override())) {
@@ -1263,15 +1371,40 @@ void tab_graphics() {
 #ifdef WWHD_HAS_VULKAN
     heading("Advanced");
     // Vulkan commands recorded and submitted on a worker thread (gfx/vulkan/record_worker.h)
+#ifdef WWHD_VK_SMOOTH
+    // (on for phones and the Steam Deck, gfx/vulkan/smooth_defaults.h)
+    static const bool recordWorkerDefault = gfxvk::smooth_defaults::record_worker();
+#else
     constexpr bool recordWorkerDefault = false;  // gfx/vulkan/record_worker.h record_worker_default()
+#endif
     static bool recordWorker = [] { std::string value; return hostui::get("vkRecordWorker", value) ? value == "1" : recordWorkerDefault; }();
     if (check("Record graphics on a second thread", recordWorker, &v, !getenv("WWHD_VK_RECORD_WORKER"))) {
         recordWorker = v;
         hostui::post([v] { hostui::set("vkRecordWorker", v ? "1" : "0"); });
     }
+#ifdef WWHD_VK_SMOOTH
+    help(recordWorkerDefault
+         ? "Applies after restarting the game. Hands the graphics work to a second CPU thread, which raises the "
+           "frame rate on this device. Uses a little more CPU and battery. On by default here."
+         : "Applies after restarting the game. Hands the graphics work to a second CPU thread. This can raise "
+           "the frame rate on devices whose CPU holds it back (phones, handhelds). On other computers it can "
+           "make frame times less even (more short hitches). Uses a little more CPU and battery. Off by default.");
+    // Smooth frame pacing (gfx/vulkan/smooth_defaults.h, display_timing.h): phones and the Steam Deck
+    if (gfxvk::smooth_defaults::device()) {
+        static bool smoothPacing = [] { std::string value; return !hostui::get("vkSmoothPacing", value) || value != "0"; }();
+        if (check("Smooth frame pacing", smoothPacing, &v, !getenv("WWHD_VK_DISPLAY_PACING"))) {
+            smoothPacing = v;
+            hostui::post([v] { hostui::set("vkSmoothPacing", v ? "1" : "0"); });
+        }
+        help("Applies after restarting the game. Each frame asks the screen for its own refresh, so frames reach the "
+             "screen evenly (fewer short hitches at 60 fps). Shows frames about one refresh later. Needs a display "
+             "driver that can time frames (VK_GOOGLE_display_timing); without it nothing changes. On by default.");
+    }
+#else
     help("Applies after restarting the game. Hands the graphics work to a second CPU thread. This can raise "
          "the frame rate on devices whose CPU holds it back (phones, handhelds). On other computers it can "
          "make frame times less even (more short hitches). Uses a little more CPU and battery. Off by default.");
+#endif
     static bool forceVertexFallback = [] { std::string value; return hostui::get("vkVertexFallback", value) && value == "1"; }();
     if (check("Force RGB vertex fallback", forceVertexFallback, &v, !getenv("WWHD_VK_VERTEX_FALLBACK"))) {
         forceVertexFallback = v;
@@ -1514,7 +1647,7 @@ void tab_display() {
     help("The game plays on one screen as on the Wii U GamePad alone (Off-TV Play) from the start: no GamePad "
          "or Pro Controller question, Plus or Minus pauses, touches on the picture work the game's menus. "
          "Off: the TV and GamePad pictures as on the Wii U. With the Pro Controller chosen in Controls it does "
-         "nothing. Applies at the next start.");
+         "nothing. Off by default on a device with a second screen for the GamePad picture. Applies at the next start.");
     if (mods::one_screen_next() != mods::one_screen_enabled()) note("Restart the game to apply.");
 #ifdef __ANDROID__
     if (check("Swap TV and GamePad displays", hostui::displays_swapped(), &v))
@@ -2168,15 +2301,17 @@ void tab_shortcuts() {
         }
         if (U.cap_col == 2 && !done) {
             // Wait for the button that activated the UI to be released before capturing a hold.
+            // (BindingCapture: each input against its resting value; one held at the start counts
+            // once let go and pressed again)
             int& hold = capture_hold;
-            if (U.binding_capture.poll(U.values) > 0 && !hold)
-                for (int p = 1; p < kPadCount; ++p) if (U.values[p] > 0.5f) { hold = p; break; }
-            if (hold && U.values[hold] <= 0.5f) {
+            const int pressed = U.binding_capture.poll(U.values);
+            if (pressed > 0 && !hold) hold = pressed;
+            if (hold && !U.binding_capture.down(U.values, hold)) {
                 m.shortcuts[a].hold = kPadNone; m.shortcuts[a].button = hold;
                 if (a == kPhoto) m.pad[kScreenshot] = kPadNone;
                 set_current(m); done = true; hold = 0;
             }
-            if (hold) for (int p = 1; p < kPadCount; ++p) if (p != hold && U.values[p] > 0.5f) {
+            if (hold) for (int p = 1; p < kPadCount; ++p) if (p != hold && U.binding_capture.down(U.values, p)) {
                 m.shortcuts[a].hold = hold; m.shortcuts[a].button = p;
                 if (a == kPhoto) m.pad[kScreenshot] = kPadNone;
                 set_current(m); done = true; hold = 0; break;
@@ -2242,6 +2377,11 @@ controller_setup::Displacing g_displace;
 bool g_details_open = false;
 bool g_edit_controller = false;  // the Controls tab edits g_edit_guid / g_edit_name's bindings
 std::string g_edit_guid, g_edit_name;
+// "Bindings for" opens on the controller in use (its own bindings when it has them, input_map::
+// BindingChoice); a set the user picks wins while that controller stays in use. Due again each time
+// the menu opens.
+input_map::BindingChoice g_binding_choice;
+std::atomic<bool> g_binding_choice_due{true};  // (set where the menu opens: any thread)
 
 int edit_index(const input_map::Mapping& m) {
     return g_edit_controller ? input_map::profile_index(m, g_edit_guid, g_edit_name) : -1;
@@ -2291,8 +2431,9 @@ void apply_capture() {
         }
     }
     if (!done) {
-        // controller: wait for all inputs to be released, then take the first one pressed (controller
-        // slots); for a key slot, B cancels
+        // controller: the first input pressed clearly above its resting value (BindingCapture; one held
+        // at the start counts once let go and pressed again) (controller slots); for a key slot, any
+        // controller input (B too) cancels
         const int pressed = U.binding_capture.poll(U.values);
         if (pressed > 0) {
             if ((colm == kColPad || colm == kColAny) && is_virtual(a)) {
@@ -2449,6 +2590,7 @@ void controller_setup_frame() {
         g_edit_controller = true;  // the Controls tab shows what was made
         g_edit_guid = setup_state().guid;
         g_edit_name = setup_state().name;
+        g_binding_choice_due = false;
     } else if (a == Answer::kNeverAsk) {
         input_map::Mapping m = input_map::current();
         m.setup_declined.push_back(input_map::controller_key(setup_state().guid, setup_state().name));
@@ -2502,6 +2644,75 @@ void touch_question_frame() {
     if (g_question_opened_menu.exchange(false)) set_open(false, OpenReason::API);
 }
 
+// ---- the iPhone GamePad (remote_pad.h): its section in Controls and the pairing dialog
+std::atomic<bool> g_pairing_opened_menu{false};  // the dialog opened the menu: it closes it again
+
+// Settings' frame, over any tab: a phone waits for its code. Closes by itself once the phone paired
+// (or the code expired); "Don't pair" (or the X, a tap outside, Esc, B) refuses it.
+void remote_pad_pairing_frame() {
+    constexpr const char* kTitle = "Pair an iPhone##remotepad";
+    const auto code = remote_pad::pairing_code();
+    const bool open_now = ImGui::IsPopupOpen(kTitle);
+    if (!code && !open_now) {
+        if (g_pairing_opened_menu.exchange(false)) set_open(false, OpenReason::API);  // paired: back to the game
+        return;
+    }
+    if (!popup::begin(kTitle, code && !open_now)) return;
+    const bool back = navigation_pressed(input_map::face_input(input_map::kB));
+    const bool dismissed = popup::dismissed(back);
+    if (dismissed && back) g_pad_b_used = true;
+    if (!code) {
+        ImGui::CloseCurrentPopup();
+        popup::end();
+        return;
+    }
+    ImGui::PushTextWrapPos(popup::wrap_pos(28));
+    ImGui::TextWrapped("%s wants to be the GamePad. Type this code in the GamePad app on the phone:",
+                       code->device.empty() ? "An iPhone" : code->device.c_str());
+    ImGui::Spacing();
+    ImGui::PushFont(nullptr, ImGui::GetFontSize() * 2.4f);  // the code, large enough to read from the couch
+    ImGui::Text("%03u %03u", code->code / 1000, code->code % 1000);
+    ImGui::PopFont();
+    ImGui::Spacing();
+    note("Pair only a phone you know: it will play the game. The code works for 2 minutes and 3 tries.");
+    ImGui::PopTextWrapPos();
+    if (ImGui::Button("Don't pair") || dismissed) {
+        LOG("[remote pad] pairing refused");
+        remote_pad::refuse_pairing();
+        ImGui::CloseCurrentPopup();
+    }
+    popup::end();
+}
+
+// Controls > iPhone GamePad
+void remote_pad_section() {
+    heading("iPhone GamePad");
+    bool v;
+    if (check("Use an iPhone as the GamePad", remote_pad::enabled(), &v, !remote_pad::env_forced())) {
+        remote_pad::set_enabled(v);
+        hostui::post([v] { hostui::set("remotePad", v ? "1" : "0"); });
+    }
+    help("The GamePad app on an iPhone on this Wi-Fi network shows the GamePad screen and plays its sound; "
+         "the controller attached to the phone, its touch screen and its gyro (Gyro: Device gyro) play the "
+         "game. The first time, the phone pairs with a code shown here.");
+    if (remote_pad::env_forced()) note("WWHD_REMOTE_PAD keeps it on.");
+    const remote_pad::Status st = remote_pad::status();
+    if (st.connected) {
+        std::string what = st.video ? "the GamePad screen" : "no picture";
+        what += st.audio ? " and sound" : "";
+        note("Connected: %s%s%s (%s).", st.device.c_str(), st.controller.empty() ? "" : " with ",
+             st.controller.c_str(), what.c_str());
+    } else if (st.listening) {
+        note("Waiting for the phone: open GamePad on the iPhone (UDP port %u).", (unsigned)st.port);
+    }
+    if (const size_t n = remote_pad::paired_phones()) {
+        note("%zu paired phone%s.", n, n == 1 ? "" : "s");
+        flow::next(flow::button("Forget paired phones"));
+        if (ImGui::Button("Forget paired phones")) remote_pad::forget_paired_phones();
+        help("Every phone pairs again with a code. A connected phone stays connected until it leaves.");
+    }
+}
+
 void start_controller_setup(const std::string& guid, const std::string& name) {
     setup_state().begin(guid, name, false);
 }
@@ -2511,6 +2722,17 @@ void controller_row(bool tools = true) {
     const input_map::Mapping cur = input_map::current();
     const auto connected = controller_details::ordered(input::controllers());
     const auto entries = input_map::binding_targets(cur, connected);
+    std::string active_guid, active_name;
+    input_map::active_controller(active_guid, active_name);
+    if (U.cap_action < 0 && g_binding_choice_due.exchange(false)) {  // the page opens on the controller in use
+        bool own = false;
+        std::string guid, name;
+        if (g_binding_choice.open(cur, active_guid, active_name, own, guid, name)) {
+            g_edit_controller = own;
+            g_edit_guid = guid;
+            g_edit_name = name;
+        }
+    }
     if (g_edit_controller) { // still listed (connected or with bindings of its own)?
         bool listed = false;
         for (const auto& e : entries)
@@ -2527,8 +2749,10 @@ void controller_row(bool tools = true) {
     ImGui::SetNextItemWidth(
         std::min(ImGui::GetFontSize() * 16, std::max(ImGui::GetFontSize() * 8, ImGui::GetContentRegionAvail().x)));
     if (ImGui::BeginCombo("##bindings_for", preview.c_str())) {
-        if (selectable("All controllers (shared)", !g_edit_controller))
+        if (selectable("All controllers (shared)", !g_edit_controller)) {
             g_edit_controller = false;
+            g_binding_choice.choose(active_guid, active_name);
+        }
         for (size_t i = 0; i < entries.size(); i++) {
             const auto& e = entries[i];
             const bool has = input_map::profile_index(cur, e.guid, e.name) >= 0;
@@ -2538,6 +2762,7 @@ void controller_row(bool tools = true) {
                 g_edit_controller = true;
                 g_edit_guid = e.guid;
                 g_edit_name = e.name;
+                g_binding_choice.choose(active_guid, active_name);
             }
         }
         ImGui::EndCombo();
@@ -2570,6 +2795,15 @@ void controller_row(bool tools = true) {
         if (ImGui::Button("Controller details..."))
             g_details_open = true;
         help("What the system reports about each connected controller: IDs, battery, motors, sensors, buttons, axes.");
+    }
+    // the shared bindings while the controller in use plays with its own: edits here don't reach it
+    if (!own) {
+        const std::string notice = input_map::shared_view_notice(cur, active_guid, active_name);
+        if (!notice.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.62f, 0.20f, 1.0f));
+            ImGui::TextWrapped("%s", notice.c_str());
+            ImGui::PopStyleColor();
+        }
     }
 }
 
@@ -2913,6 +3147,7 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
             note("%s", why.c_str());
     }
 #endif
+    if (remote_pad::host_supported()) remote_pad_section();
     heading("Menus and background input");
     {
         const auto cur = input_map::current();
@@ -2928,9 +3163,8 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
             m.l_turns_page = v;
             input_map::set_current(m);
         }
-        help("In play the game reads L only to turn the GamePad screen between Items and Map. Off (default): L "
-             "reaches the game only in menus, so L1 can jump without turning the page. On: as on the Wii U (for a "
-             "GamePad picture on a second screen).");
+        help("L turns the GamePad screen between Items and Map. With Jump anywhere or the moon jump on, the input "
+             "they share with L (L1 by default) only jumps in play. On: it jumps and turns the page.");
     }
     if (check("File select Quit button", m.file_select_quit, &v)) {
         m.file_select_quit = v;
@@ -2946,13 +3180,13 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
 #ifndef __ANDROID__
     // issue #267 (not on Android: the app is in front or paused there). Saved with the controls; the host
     // applies it at once (input_sdl.cpp, gfx/input.mm); beside Skip, or below it in a narrow window
-    flow::next(flow::check("Controller input when the game isn't focused"), 24);
-    if (check("Controller input when the game isn't focused", m.background_controllers, &v)) {
+    flow::next(flow::check("Controller input in the background"), 24);
+    if (check("Controller input in the background", m.background_controllers, &v)) {
         m.background_controllers = v;
         edit_set(m);
     }
-    help("For a second screen, streaming or remote play. Keyboard and mouse still only work while the "
-         "game is focused.");
+    help("Controllers always work while the TV or the GamePad window is in front. Turn this on to keep them\n"
+         "working while another app is in front (streaming, remote play). Keyboard and mouse still need a game window in front.");
 #endif
 }
 
@@ -3273,15 +3507,41 @@ void tab_about() {
     note("The world editor's handles use ImGuizmo (MIT License, Cedric Guillemet).");
 }
 
+// the presented frame rate, over half a second; true when it was just updated
+bool update_fps(double t) {
+    if (U.fps_t0 == 0) { U.fps_t0 = t; U.fps_n0 = gx2::flips_presented(); }
+    if (t - U.fps_t0 < 0.5) return false;
+    uint64_t n = gx2::flips_presented();
+    U.fps = (double)(n - U.fps_n0) / (t - U.fps_t0);
+    U.fps_t0 = t;
+    U.fps_n0 = n;
+    return true;
+}
+// The minimal performance overlay: one small line in the top-left corner, updated twice a second (frame rate, the
+// average frame time over the last 120 frames, and the render thread's CPU time per frame once it has samples).
+void perf_line() {
+    static char text[96] = "";
+    if (update_fps(now_s()) || !text[0]) {
+        float sum = 0;
+        for (float f : U.frame_ms) sum += f;
+        const perf::Metric render = perf::snapshot().render;
+        if (render.count)
+            snprintf(text, sizeof text, "%.0f fps  %.1f ms  R %.1f ms", U.fps, sum / 120.0f, render.average());
+        else
+            snprintf(text, sizeof text, "%.0f fps  %.1f ms", U.fps, sum / 120.0f);
+    }
+    ImGui::SetNextWindowPos(ImVec2(6, 6), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.4f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(5, 2));
+    const ImGuiWindowFlags fl = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+                                ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs;
+    if (ImGui::Begin("##perf_line", nullptr, fl)) ImGui::TextUnformatted(text);
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
 void perf_window(bool menu_open) {
     const double t = now_s();
-    if (U.fps_t0 == 0) { U.fps_t0 = t; U.fps_n0 = gx2::flips_presented(); }
-    if (t - U.fps_t0 >= 0.5) {
-        uint64_t n = gx2::flips_presented();
-        U.fps = (double)(n - U.fps_n0) / (t - U.fps_t0);
-        U.fps_t0 = t;
-        U.fps_n0 = n;
-    }
+    update_fps(t);
     float worst = 0, sum = 0;
     for (float f : U.frame_ms) { worst = std::max(worst, f); sum += f; }
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_Always);
@@ -3391,6 +3651,14 @@ void quit_row(bool& open) {
     bool ask = quit::bottom_row(false, nullptr);
 #endif
     if (ask) LOG("[quit] Settings > Quit Game: asking");
+    auto request = g_quit_shortcut.load();
+    if (request == QuitShortcut::PendingGame || request == QuitShortcut::PendingSettings) {
+        const auto showing = request == QuitShortcut::PendingGame ? QuitShortcut::Game : QuitShortcut::Settings;
+        if (g_quit_shortcut.compare_exchange_strong(request, showing)) {
+            ask = true;
+            LOG("[quit] shortcut: asking");
+        }
+    }
     if (g_test_quit && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
         g_test_quit = false;
         ask = true;
@@ -3409,9 +3677,11 @@ void quit_row(bool& open) {
     const auto answer = quit::dialog(ask, ss::in_gameplay(), back, forced);
     if (answer == quit::Answer::None) return;
     asked = -1;
+    const bool return_to_game = g_quit_shortcut.exchange(QuitShortcut::None) == QuitShortcut::Game;
     if (answer == quit::Answer::Cancel) {
         if (back) g_pad_b_used = true;  // B answered: the menu stays open
-        LOG("[quit] answer: Cancel; back to Settings");
+        if (return_to_game) open = false;
+        LOG("[quit] answer: Cancel; back to %s", return_to_game ? "game" : "Settings");
         return;
     }
     LOG("[quit] answer: Quit");
@@ -3519,6 +3789,7 @@ void settings_window() {
         }
         quit_row(open);
         controller_setup_frame();  // the controller setup and its offer, over any tab
+        remote_pad_pairing_frame();  // a phone waits for its pairing code
         touch_question_frame();    // the first-start touch controls question (P8)
     }
     ImGui::End();
@@ -3538,6 +3809,15 @@ void activate_shortcut(int action, KeyOrigin origin) {
     using namespace input_map;
     if (action < 0 || action >= kShortcutCount) return;
     if (action == kSettings) { set_open(!is_open(), OpenReason::F1, origin); return; }
+    if (action == kQuit) {
+        if (g_capturing_keys.load() || g_external_capture.load() || g_dialog_open.load() || text_entry::active()) return;
+        auto expected = QuitShortcut::None;
+        const auto request = is_open() ? QuitShortcut::PendingSettings : QuitShortcut::PendingGame;
+        if (!g_quit_shortcut.compare_exchange_strong(expected, request)) return;
+        set_open(true, OpenReason::API, origin);
+        if (!is_open()) g_quit_shortcut = QuitShortcut::None;  // no visible window to host the question
+        return;
+    }
     LOG("[shortcuts] %s", shortcut_info(action).id);
     hostui::post([action] {
         if (action >= kSave1 && action <= kSave5) { ss::request_save(action - kSave1 + 1); return; }
@@ -3560,7 +3840,10 @@ void activate_shortcut(int action, KeyOrigin origin) {
             if (hostui::drc_mode() != gfx::kDrcPip) { hostui::set_drc_mode(gfx::kDrcPip); hostui::show_drc(true); }
             else hostui::show_drc(!hostui::drc_shown());
             break;
-        case kPerformance: set_perf_shown(!perf_shown()); break;
+        case kPerformance:  // off -> minimal -> full -> off
+            set_perf_mode(perf_mode() == PerfOverlay::Off ? PerfOverlay::Minimal
+                          : perf_mode() == PerfOverlay::Minimal ? PerfOverlay::Full : PerfOverlay::Off);
+            break;
         case kMute: {
             static float before = 1;
             float v = audio::master_volume(); if (v > 0) before = v;
@@ -3593,6 +3876,12 @@ void external_binding_capture(bool active) {
         g_external_capture = false;
     }
 }
+// The held-Select Settings shortcut is on: Select is no other shortcut's modifier and no binding capture runs
+// (poll_controller_shortcuts opens Settings with it; hold_select_for_settings keeps Select from the game meanwhile).
+static bool select_hold_shortcut(const input_map::Mapping& m) {
+    for (const auto& b : m.shortcuts) if (b.hold == input_map::kPadOptions && b.button) return false;
+    return !g_capturing_keys.load();
+}
 void poll_controller_shortcuts(const float* values) {
     if (g_no_host && !getenv("WWHD_TEST_PAD")) return;
     PadValues pad;
@@ -3609,6 +3898,7 @@ void poll_controller_shortcuts(const float* values) {
     // issue #267: a background controller press never opens Settings (settings_shortcut.h)
     const bool may_open = controller_may_open_settings(input::window_focused(), input::background_controllers());
     auto activate = [&](int a) {
+        if (a == input_map::kQuit && !is_open() && !may_open) return;
         if (a == input_map::kSettings) {
             const auto& b = m.shortcuts[a];
             if (!is_open() && !may_open) return;
@@ -3618,13 +3908,21 @@ void poll_controller_shortcuts(const float* values) {
     if (!captures()) for (int a : pressed) activate(a);
     else for (int a : pressed) if (a == input_map::kSettings && !g_capturing_keys.load()) activate(a);
     static SettingsShortcut shortcut;
-    bool selectModifier = false;
-    for (const auto& b : m.shortcuts) if (b.hold == input_map::kPadOptions && b.button) selectModifier = true;
-    const auto action = shortcut.poll(now_s(), !g_capturing_keys.load() && !selectModifier && pad[input_map::kPadOptions] > 0.5f,
+    const auto action = shortcut.poll(now_s(), select_hold_shortcut(m) && pad[input_map::kPadOptions] > 0.5f,
                                      false, is_open()); // Home is an ordinary, remappable Settings binding.
 
     if (action == SettingsShortcut::Close || (action == SettingsShortcut::Open && may_open))
         set_open(action == SettingsShortcut::Open, shortcut.reason());
+}
+void hold_select_for_settings(uint64_t device, float* game) {
+    static std::mutex mu;
+    static std::map<uint64_t, SelectForGame> states;
+    if (g_no_host && !getenv("WWHD_TEST_PAD")) return;
+    // while a Select hold could open Settings (the conditions of poll_controller_shortcuts)
+    const bool active = select_hold_shortcut(input_map::current()) && !is_open() &&
+        controller_may_open_settings(input::window_focused(), input::background_controllers());
+    std::lock_guard<std::mutex> lk(mu);
+    game[input_map::kPadOptions] = states[device].filter(now_s(), game[input_map::kPadOptions], active);
 }
 bool shortcut_took_input() { return g_shortcut_took.exchange(false); }
 
@@ -3633,7 +3931,10 @@ void set_open(bool open, OpenReason reason, KeyOrigin origin) {
     if (open && window_target::selected.load() == window_target::Window::None) return;
 #endif
     if (g_open.exchange(open) == open) return;
-    if (!open) g_dialog_open = false;
+    if (!open) {
+        g_dialog_open = false;
+        g_quit_shortcut = QuitShortcut::None;
+    }
     for (auto& k : g_held_keys) k = false;
     input::release_keys();  // keys held now belong to the menu (opening) or are not stuck in the game (closing)
     if (open) {
@@ -3643,6 +3944,7 @@ void set_open(bool open, OpenReason reason, KeyOrigin origin) {
         mods::mouse_release();
         U.just_opened = true;
         U.slots_time = -1;
+        g_binding_choice_due = true;  // Controls opens on the controller in use again
     }
     const auto message = open_message(open, reason, origin, render::frame_count());
     LOG("%s", message.c_str());
@@ -3666,11 +3968,15 @@ bool pointer_layer_active() { return file_select_quit::visible() || layer_mode()
 bool captures() { return is_open() || text_entry::active(); }
 bool dialog_open() { return is_open() && g_dialog_open.load(); }
 bool alive() { return now_s() - g_last_frame.load(std::memory_order_relaxed) < 1.0; }
-bool perf_shown() { return g_perf.load(std::memory_order_relaxed); }
-void set_perf_shown(bool on) {
-    g_perf = on;
-    hostui::post([on] { hostui::set("perfOverlay", on ? "1" : "0"); });
+PerfOverlay perf_mode() { return PerfOverlay(g_perf.load(std::memory_order_relaxed)); }
+bool perf_shown() { return perf_mode() != PerfOverlay::Off; }
+void set_perf_mode(PerfOverlay mode) {
+    g_perf = int(mode);
+    // settings.ini keeps 1 = full (files from before the minimal mode), 2 = minimal
+    const char* saved = mode == PerfOverlay::Full ? "1" : mode == PerfOverlay::Minimal ? "2" : "0";
+    hostui::post([saved] { hostui::set("perfOverlay", saved); });
 }
+void set_perf_shown(bool on) { set_perf_mode(on ? PerfOverlay::Full : PerfOverlay::Off); }
 
 void focus_lost() {
     for (auto& k : g_held_keys) k = false;
@@ -3782,7 +4088,10 @@ void prepare_menu_input(ImGuiIO& io, bool open, bool mouse_used) {
     apply_capture();
     std::copy(std::begin(U.prev), std::end(U.prev), U.nav_prev.begin());
     std::copy(std::begin(U.values), std::end(U.values), U.nav_values.begin());
-    U.capture_navigation_gate.filter(U.nav_values.data(), capturing_at_start || U.capture_completed);
+    const auto quit = g_quit_shortcut.load();
+    const bool opening_quit = quit == QuitShortcut::PendingGame || quit == QuitShortcut::PendingSettings;
+    // The opening chord must not activate a Settings control before the confirmation is drawn.
+    U.capture_navigation_gate.filter(U.nav_values.data(), capturing_at_start || U.capture_completed || opening_quit);
     const int face[4] = {input_map::face_input(input_map::kA), input_map::face_input(input_map::kB),
                           input_map::face_input(input_map::kX), input_map::face_input(input_map::kY)};
     U.gamepad_navigation.feed(io, U.nav_values.data(), U.nav_prev.data(), open && U.cap_action < 0 && !capturing_at_start, mouse_used, face);  // the text prompt reads the controller itself
@@ -3831,10 +4140,14 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     if (!prefs_read) {
         prefs_read = true;
         std::string v;
-        if (hostui::get("perfOverlay", v)) g_perf = v == "1";
+        if (hostui::get("perfOverlay", v))
+            g_perf = int(v == "1" ? PerfOverlay::Full : v == "2" ? PerfOverlay::Minimal : PerfOverlay::Off);
         // the saved controller choice (WWHD_PRO_CONTROLLER wins); it also hides or shows the GamePad screen
         if (!getenv("WWHD_PRO_CONTROLLER") && hostui::get("proController", v))
             hostui::post([pro = v == "1"] { hostui::set_pro_controller(pro); });
+        // the iPhone GamePad: its paired phones, and on if it was (WWHD_REMOTE_PAD starts it anyway)
+        remote_pad::load_paired(hostui::get("remotePadPhones", v) ? v : std::string());  // (also when none is saved)
+        if (remote_pad::host_supported() && hostui::get("remotePad", v) && v == "1") remote_pad::set_enabled(true);
         // the saved rumble choice (WWHD_RUMBLE wins)
         if (!rumble::env_override() && hostui::get("rumble", v)) rumble::set_enabled(v != "0");
 #ifdef __ANDROID__
@@ -3856,7 +4169,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         if (test.tab >= 0) U.select_tab = U.tab = test.tab;
         if (test.open) set_open(true);
         if (test.quit) g_test_quit = true;
-        if (test.perf) g_perf = true;
+        if (test.perf) g_perf = int(PerfOverlay::Full);
+        if (test.perf_minimal) g_perf = int(PerfOverlay::Minimal);
         LOG("[overlay] test switch: %s", getenv("WWHD_TEST_OVERLAY"));
     }
     // WWHD_TEST_OVERLAY_CLOSE=<TV frame>: the menu closed again (a test that opened it goes on playing)
@@ -3908,6 +4222,13 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
             tbg = nullptr;
         }
     }
+    // the iPhone GamePad: a phone asks to pair (Settings opens with the code); a changed list is saved
+    if (remote_pad::take_pairing_request() && !is_open()) {
+        g_pairing_opened_menu = true;
+        set_open(true, OpenReason::API);
+    }
+    if (std::string phones; remote_pad::take_paired_changed(phones))
+        hostui::post([phones] { hostui::set("remotePadPhones", phones); });
     const double t = now_s();
     if (U.last_present > 0) {
         U.frame_ms[U.frame_i] = (float)((t - U.last_present) * 1000.0);
@@ -3919,7 +4240,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
                      interp::mode(), interp::fps(), hostui::res_scale());
     read_controller();
     // the game's text prompt shows unless the menu is open over it (the menu has the input then)
-    const bool open = is_open(), perf = perf_shown(), text = !open && text_entry::active();
+    const PerfOverlay perfMode = perf_mode();
+    const bool open = is_open(), perf = perfMode != PerfOverlay::Off, text = !open && text_entry::active();
     if (wwhd_trace::enabled()) {
         wwhd_trace::sink = [](const char* line) { LOG("[overlay-trace] %s",line); };
         wwhd_trace::open = open;
@@ -3927,7 +4249,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         if (open && !was_open) { U.gamepad_navigation.reset_trace(); wwhd_trace::emit("open frame=%d", U.init ? ImGui::GetFrameCount() : 0); }
         was_open = open;
     }
-    perf::set_demand(perf, open && shown_builtin() == kGraphics);
+    perf::set_demand(perf, open && shown_builtin() == kGraphics, perfMode == PerfOverlay::Full);
     // Headless report QA uses the same formatter as the clipboard button; no clipboard mutation.
     // WWHD_TEST_PERF_REPORT=file (at WWHD_TEST_PERF_REPORT_AT presented frames, default 300), or
     // file@frames,file@frames,... for several reports in one run
@@ -4052,6 +4374,7 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
         }
     }
     prepare_menu_input(io, open, mouse_used);
+    merge_japanese_font();
     ImGui::NewFrame();
     setup_run_tick();
     modsui::tick(mods_host(), open);
@@ -4092,7 +4415,8 @@ ImDrawData* frame(float pw, float ph, void (*renderer_init)()) {
     }
     bool covered = false;  // a platform layer drew over the whole picture: no notice
     for (const ext::FrameLayer* layer : drawn_layers) covered |= layer->draw(io.DisplaySize.x, io.DisplaySize.y);
-    if (perf) perf_window(open);
+    if (perfMode == PerfOverlay::Full) perf_window(open);
+    else if (perfMode == PerfOverlay::Minimal) perf_line();
     if (!toast.empty() && !covered) {
         ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y - 24), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
         ImGui::SetNextWindowBgAlpha(0.7f);

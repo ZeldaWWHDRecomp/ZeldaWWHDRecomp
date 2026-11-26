@@ -1,4 +1,5 @@
 #pragma once
+#include "draw_thread_state.h"
 #include "vertex_format_policy.h"
 #include "loader.h"
 #include "barrier_state.h"
@@ -52,6 +53,7 @@ struct Surface {
  // was released to stay within the budget (made again, and uploaded from guest memory, at its next lookup)
  uint64_t lastUsedFrame=0; bool evicted=false;
  bool artisticMips=false; // hand-drawn mip levels (gfx/artistic_mips.h): resolution-aware bias, no forced anisotropy
+ uint64_t passReadyFor=0; // made ready before render pass number N (draw.cpp prefetch_pass_reads, pass_reuse.h)
  uint32_t dataSize=0; FormatInfo fmt;
  mutable std::shared_ptr<CachedGuestLayout> guestLayout;
  float scale=1,sx=1,sy=1;
@@ -116,6 +118,38 @@ struct GpuScopeMetadata {
 struct GpuScopeToken { uint64_t generation=0; uint32_t index=UINT32_MAX; };
 inline constexpr std::array<const char*,9> secondaryStageNames{
  "acquire", "acquire_wait", "ready_fd", "record", "submit", "draw_wait", "returned_fd", "present", "primary_snapshot_record"};
+// The draw path's statistics. The render thread's are R.counters; a draw thread counts into its own (draw_counters()),
+// added to the renderer's when it joins, so counting stays a plain increment (VR-WakerHD's DrawCounters, MPL in their
+// backend.h)
+struct DrawCounters {
+ uint64_t vertexBindCalls=0,vertexBindSkips=0;
+ uint64_t descriptorLookups=0,descriptorCacheHits=0,descriptorAllocations=0,descriptorFastHits=0;
+ uint64_t uploadAllocations=0,uploadBytes=0;
+ uint64_t vertexHistoryReuseChecks=0,vertexHistoryReuseHits=0,vertexHistoryReuseBytes=0;
+ uint64_t vertexHistoryRequests=0,vertexHistoryMatches=0,vertexHistoryBytes=0;
+ std::array<uint64_t,7> vertexHistoryDistances{};
+ uint64_t vertexDeclaredBytes=0,vertexCopiedBytes=0;
+ uint64_t vertexReuseChecks=0,vertexReuseHits=0,vertexReuseBytes=0,vertexReuseCompareNs=0;
+ struct CpuPreparationStats {
+  uint64_t packCalls=0,packBytes=0,packCapacityGrowths=0,packCapacityGrowthBytes=0;
+  uint64_t uniformSnapshotCalls=0,uniformSnapshotBytes=0;
+  uint64_t samplerRequests=0,samplerMemoHits=0,samplerMapLookups=0;
+  uint64_t uniformReuseChecks=0,uniformReuseComparisons=0,uniformReuseHits=0,uniformReuseBytes=0;
+  uint64_t descriptorBindCandidates=0,descriptorWholeMatches=0;
+  uint64_t descriptorBindCalls=0,descriptorSkippedSets=0;
+  uint64_t pipelineLookups=0,pipelineLastHits=0,pipelineLookasideHits=0,pipelineMapLookups=0;
+  std::array<uint64_t,2> descriptorStageMatches{};
+ } cpuPreparation;
+};
+// An open render pass: whether one is open, its attachments and size. The render thread's is R.pass; a draw thread
+// records with its own (pass_state(); VR-WakerHD's PassState, MPL in their backend.h)
+struct PassState {
+ bool rendering=false, tracked=false;
+ std::array<Surface*,8> colors{};
+ std::array<uint32_t,8> slices{};
+ Surface* depth=nullptr;
+ uint32_t depthSlice=0, width=0, height=0;
+};
 struct Renderer {
  vk::VertexFormatPolicy vertexFormats;
  vk::VertexDiagnostics vertexDiagnostics; // issue #207 driver troubleshooting (vertex_format_policy.h)
@@ -167,35 +201,24 @@ struct Renderer {
  bool pipelineCacheDirty=false;
  uint64_t pipelineCacheChangedFrame=0;
  VkCommandPool commandPool=VK_NULL_HANDLE; VkCommandBuffer cmd=VK_NULL_HANDLE; VkFence fence=VK_NULL_HANDLE;
- VkDescriptorPool descriptorPool=VK_NULL_HANDLE; bool recording=false,rendering=false;
+ VkDescriptorPool descriptorPool=VK_NULL_HANDLE; bool recording=false;
  // Descriptor reuse must include this epoch: pool handles repeat after reset.
  uint64_t submissionGeneration=0;
- uint64_t vertexBindCalls=0,vertexBindSkips=0;
- uint64_t descriptorLookups=0,descriptorCacheHits=0,descriptorAllocations=0,descriptorFastHits=0;
- struct CpuPreparationStats {
-  uint64_t packCalls=0,packBytes=0,packCapacityGrowths=0,packCapacityGrowthBytes=0;
-  uint64_t uniformSnapshotCalls=0,uniformSnapshotBytes=0;
-  uint64_t samplerRequests=0,samplerMemoHits=0,samplerMapLookups=0;
-  uint64_t uniformReuseChecks=0,uniformReuseComparisons=0,uniformReuseHits=0,uniformReuseBytes=0;
-  uint64_t descriptorBindCandidates=0,descriptorWholeMatches=0;
-  uint64_t descriptorBindCalls=0,descriptorSkippedSets=0;
-  uint64_t pipelineLookups=0,pipelineLastHits=0,pipelineLookasideHits=0,pipelineMapLookups=0;
-  std::array<uint64_t,2> descriptorStageMatches{};
- } cpuPreparation;
+ // the draw path's counters: the render thread's (draw_counters(): a draw thread's own while it records)
+ DrawCounters counters;
  uint64_t pipelineCreates=0,pipelineCreateNs=0;
  // pipelines the game asked for that were not made yet this run, and how many of them the recipe database knew
  uint64_t pipelineKeysNew=0,pipelineKeysKnown=0;
- std::array<Surface*,8> passColors{};
- std::array<uint32_t,8> passSlices{};
+ // the render thread's open render pass (pass_state(): a draw thread's own while it records)
+ PassState pass;
  uint32_t mainDepthAddr=0;
- Surface* passDepth=nullptr;
- uint32_t passDepthSlice=0,passWidth=0,passHeight=0;
- bool passTracked=false;
  uint64_t renderPassCount=0;
+ // pass_reuse.h: draws kept in the open pass with a subset of its colour targets; textures made ready before
+ // their pass, and how many of those the pass then read; sampled textures whose first read ended a pass
+ uint64_t passSubsetKept=0,passPrefetched=0,passPrefetchUsed=0,passSplitsSeen=0;
  uint64_t frame=0,drawCount=0; std::atomic<uint64_t> completed{0};
  struct UploadBlock { Buffer buffer; VkDeviceSize used=0; };
  std::vector<UploadBlock> uploadBlocks;
- uint64_t uploadAllocations=0,uploadBytes=0;
  // texture staging taken from the arena in the recording submission (reset when a submission is activated)
  VkDeviceSize textureStagingBytes=0;
  // Upload arena memory is HOST_CACHED|HOST_COHERENT (every block so far): CPU reads of it are as fast as
@@ -203,11 +226,6 @@ struct Renderer {
  // and the native index scan may read mapped upload slices instead of keeping CPU copies (auto: when
  // uploadCached; WWHD_VK_UPLOAD_READS=shadow|direct forces a mode). Set by allocate_upload.
  bool uploadCached=false,uploadReadsDirect=false;
- uint64_t vertexHistoryReuseChecks=0,vertexHistoryReuseHits=0,vertexHistoryReuseBytes=0;
- uint64_t vertexHistoryRequests=0,vertexHistoryMatches=0,vertexHistoryBytes=0;
- std::array<uint64_t,7> vertexHistoryDistances{};
- uint64_t vertexDeclaredBytes=0,vertexCopiedBytes=0;
- uint64_t vertexReuseChecks=0,vertexReuseHits=0,vertexReuseBytes=0,vertexReuseCompareNs=0;
  std::vector<std::function<void()>> completions;
  std::vector<Buffer> garbageBuffers;
  std::vector<VkFramebuffer> garbageFramebuffers;
@@ -250,6 +268,28 @@ struct Renderer {
  std::vector<Surface*> linearTargets; // linear-aligned colour surfaces (never removed, like surfaces): GX2DrawDone write-back
 };
 extern Renderer R;
+// the calling thread's render pass: R.pass unless set_thread_pass_state gave it its own (draw_thread_state.h: a plain
+// global while no draw thread is possible this session)
+namespace thread_state {
+DRAW_THREAD_VAR(pass, PassState*)
+}  // namespace thread_state
+inline PassState& pass_state() { PassState* p = thread_state::pass(); return p ? *p : R.pass; }
+namespace thread_state {
+DRAW_THREAD_VAR(counters, DrawCounters*)
+}  // namespace thread_state
+inline DrawCounters& draw_counters() { DrawCounters* c = thread_state::counters(); return c ? *c : R.counters; }
+inline void set_thread_draw_counters(DrawCounters* c) { thread_state::counters() = c; }  // null: R.counters again
+namespace thread_state {
+DRAW_THREAD_VAR(uploadBlocks, std::vector<Renderer::UploadBlock>*)
+DRAW_THREAD_VAR(descriptorPool, VkDescriptorPool*)
+}  // namespace thread_state
+// the calling thread's upload arena and descriptor pool: the active submission's (R.uploadBlocks, R.descriptorPool)
+// unless a draw thread set its own
+inline std::vector<Renderer::UploadBlock>& upload_blocks() { auto* b = thread_state::uploadBlocks(); return b ? *b : R.uploadBlocks; }
+inline VkDescriptorPool& descriptor_pool() { auto* p = thread_state::descriptorPool(); return p ? *p : R.descriptorPool; }
+inline void set_thread_upload_blocks(std::vector<Renderer::UploadBlock>* b) { thread_state::uploadBlocks() = b; }
+inline void set_thread_descriptor_pool(VkDescriptorPool* p) { thread_state::descriptorPool() = p; }
+inline void set_thread_pass_state(PassState* pass) { thread_state::pass() = pass; }  // null: R.pass again
 void invalidate_surface_cache(decltype(Renderer::surfaces)& surfaces,
                               uint32_t flags, uint32_t addr, uint32_t size);
 // Render-thread checkpoint; failures leave the cache dirty for a later retry.
@@ -260,6 +300,7 @@ void begin_pipeline_pending_frame();
 // readbacks and renderer tools; final presentation also waits synchronously.
 void flush_async();
 void reset_pipeline_lookup_cache();
+void reset_thread_lookup_memos();
 uint64_t draw_batch_submissions();
 void vk_check(VkResult result,const char* operation);
 // Immutable physical-device capabilities, cached on the renderer thread.
@@ -295,7 +336,8 @@ GpuScopeToken gpu_begin_feedback_scope(const Surface&);
 void gpu_end_feedback_scope(GpuScopeToken);
 bool narrow_barriers();
 void transition_buffer(Buffer&, VkPipelineStageFlags, VkAccessFlags);
-void transition_image(Surface*,VkImageLayout,VkPipelineStageFlags stage=VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VkAccessFlags access=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT);
+// true: a barrier was recorded
+bool transition_image(Surface*,VkImageLayout,VkPipelineStageFlags stage=VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,VkAccessFlags access=VK_ACCESS_MEMORY_READ_BIT|VK_ACCESS_MEMORY_WRITE_BIT);
 void forget_texture_views();
 void service_captures();
 void request_tv_dump(const std::string&, int);
@@ -340,10 +382,24 @@ uint64_t next_write_seq();
 extern uint64_t g_surface_epoch;
 // bumped whenever a surface cache gains, loses or swaps surfaces (texture invalidation's footprint index)
 extern uint64_t g_surface_set_gen;
-inline void mark_gpu_written(Surface* s){s->gpuWritten=true;s->writeSeq=next_write_seq();++g_surface_epoch;}
+#ifdef WWHD_NATIVE_DRAW
+// surfaces.cpp: bumped with g_surface_epoch wherever a surface's image, size or place in the cache changes (made,
+// image destroyed or replaced, rescaled, restored, eye size, CPU copy, save-state reset); not by content uploads and
+// GPU writes. The J3D material cache (draw.cpp) holds its entries while it is unchanged.
+extern uint64_t g_surface_struct_gen;
+#endif
+#ifdef WWHD_DECOMP_FAST
+}  // namespace gfxvk
+namespace cheapib { extern bool g_b1_capturing; void b1_note_written(void* surface); void b1_note_alloc(uint64_t buffer, uint64_t offset, uint64_t size, void* mapped); }  // (cheapib b1: replayed calls mark them again; WWHD_CHEAPIB_B1_CHECK's upload list)
+namespace gfxvk {
+#define CHEAPIB_NOTE_WRITTEN(s) if (cheapib::g_b1_capturing) cheapib::b1_note_written(s);
+#else
+#define CHEAPIB_NOTE_WRITTEN(s)
+#endif
+inline void mark_gpu_written(Surface* s){CHEAPIB_NOTE_WRITTEN(s) s->gpuWritten=true;s->writeSeq=next_write_seq();++g_surface_epoch;}
 // A draw's own attachments: their newer writeSeq can only change lookups at their own addresses,
 // which the fast path excludes (draw.cpp); a surface becoming GPU-written still ends the epoch.
-inline void mark_draw_target_written(Surface* s){if(!s->gpuWritten)++g_surface_epoch;s->gpuWritten=true;s->writeSeq=next_write_seq();}
+inline void mark_draw_target_written(Surface* s){CHEAPIB_NOTE_WRITTEN(s) if(!s->gpuWritten)++g_surface_epoch;s->gpuWritten=true;s->writeSeq=next_write_seq();}
 }
 
 namespace gfxvk { void reset_feedback_images(); } // Call before device teardown, then drain retirements.

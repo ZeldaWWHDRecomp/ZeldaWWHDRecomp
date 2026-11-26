@@ -11,6 +11,9 @@ namespace gfxvk {
 // Host access to the graphics queue from two threads: the record worker's submissions and a held TV
 // present (even frame delivery, backend.cpp) that the producer issues between commands.
 std::mutex& graphics_queue_mutex();
+// vkCmdDrawIndexedIndirect (multiDrawIndirect devices): resolved by draw.cpp before the first indirect draw it
+// records or encodes; the replay of opcode 30 calls it
+extern PFN_vkCmdDrawIndexedIndirect pod_draw_indexed_indirect;
 // CPU argument storage only. Submission owner retains all referenced Vulkan
 // resources. Append failure is atomic: caller drains then uses its existing
 // immediate fallback.
@@ -38,10 +41,27 @@ public:
   std::vector<std::byte> take() {
     auto result = std::move(bytes_);
     bytes_.clear();
+    // the next batch starts with the capacity this one reached, not from empty (a 32 KiB batch
+    // otherwise regrows through ~15 reallocations); on allocation failure it simply grows again
+    try { bytes_.reserve(result.capacity()); } catch (const std::bad_alloc&) {}
     commands_ = 0;
     return result;
   }
   static void replay(const std::vector<std::byte> &bytes);
+#ifdef WWHD_VK_SMOOTH
+  // MT recording stage 1 (record_mt.h): opcode 31 carries an extension command (sub-opcode + payload) that
+  // record_mt::replay_extension replays; take() that continues with a recycled byte vector
+  bool extension(std::span<const std::byte> payload) { return append(31, payload); }
+  std::vector<std::byte> take(std::vector<std::byte>&& next) {
+    auto result = std::move(bytes_);
+    bytes_ = std::move(next);
+    bytes_.clear();
+    if (bytes_.capacity() < result.capacity())
+      try { bytes_.reserve(result.capacity()); } catch (const std::bad_alloc&) {}
+    commands_ = 0;
+    return result;
+  }
+#endif
   bool beginCommandBuffer(VkCommandBuffer cmd, VkCommandBufferUsageFlags flags);
   bool submit(VkDevice device, VkQueue queue, VkCommandBuffer cmd,
               VkFence fence, VkSemaphore wait = VK_NULL_HANDLE,
@@ -57,6 +77,10 @@ public:
   bool vkCmdDrawIndexed(VkCommandBuffer cmd, uint32_t indices,
                         uint32_t instances, uint32_t firstIndex,
                         int32_t vertexOffset, uint32_t firstInstance);
+  // opcode 30: the native renderer's multi-draw batches (draw.cpp packet_mdi_flush /
+  // packet_flush) under a recorder
+  bool vkCmdDrawIndexedIndirect(VkCommandBuffer cmd, VkBuffer buffer, VkDeviceSize offset, uint32_t drawCount,
+                                uint32_t stride);
   bool vkCmdDispatch(VkCommandBuffer cmd, uint32_t x, uint32_t y, uint32_t z);
   bool vkCmdEndRendering(VkCommandBuffer cmd);
   bool vkCmdSetStencilReference(VkCommandBuffer cmd, VkStencilFaceFlags faces,
@@ -121,6 +145,10 @@ public:
                             VkSubpassContents contents);
   bool vkCmdEndRenderPass(VkCommandBuffer cmd);
 
+#ifdef WWHD_DECOMP_FAST
+  // cheapib b1 (cheapib/cheapib_b1.h): one command as captured from a stream (opcode and payload), appended again
+  bool append_raw(uint32_t opcode, std::span<const std::byte> payload) { return append(opcode, payload); }
+#endif
 private:
   // Written only by a rejected append/encoder. Every false exit records a
   // fresh cause; successful calls neither reset nor expose this diagnostic.

@@ -8,6 +8,7 @@
 #include "platform/mouse_sdl.h"
 #include "platform/keycodes.h"
 #include <cassert>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <string>
@@ -18,19 +19,19 @@
 #include "imgui_internal.h"
 
 static std::vector<std::string> logs;
-static int saves=0,loads=0,promptKeys=0;
+static int saves=0,loads=0,promptKeys=0,quits=0;
 static bool prompt=false,mouseCamera=false;
 void log_msg(const char* format,...) {
  char line[2048];va_list args;va_start(args,format);vsnprintf(line,sizeof line,format,args);va_end(args);
  logs.emplace_back(line);
 }
 namespace audio { void flush(){} float master_volume(){return 1;} void set_master_volume(float,bool){} }
-namespace ss { void request_save(int){++saves;} void request_load(int){++loads;} }
+namespace ss { void request_save(int){++saves;} void request_load(int){++loads;} bool in_gameplay(){return true;} }
 namespace render { const Backend* g_backend = nullptr; uint64_t frame_count(){return 42;} Api active(){return Api::Vulkan;} }
 namespace gx2 { void checkpoint_vulkan_caches(){} void checkpoint_present_observer(){} }
 namespace gfxvk { bool graphics_hotkey(char,bool){return false;} }
 namespace aspect { void set_window_aspect(float){} }
-namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} void quick_use_reset(){} void quick_use_filter_pad(input::PadState&){} }
+namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} void quick_use_reset(){} void quick_use_filter_pad(input::PadState&){} bool jump_anywhere(){return false;} bool infinite(int){return false;} }
 namespace interp { int mode(){return 0;} void toggle_fps(int){} void set_mode(int){} uint64_t logic_steps(){return 0;} }
 namespace dsweep { uint32_t pad_buttons(uint64_t){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
@@ -38,6 +39,7 @@ namespace game_hooks { uint64_t link_steps(){return 0;} bool state_loaded(){retu
 namespace test_aids { void set_origin_step(uint64_t){} void tick(double,bool){} }
 namespace text_entry { bool active(){return prompt;} void text(const char*){} void preedit(const char*){} void key(int,bool,bool){++promptKeys;} }
 namespace hostui {
+ void quit(){++quits;}
  void graphics_changed(){} void post(std::function<void()> fn){fn();}
  bool fullscreen(){return false;} void set_fullscreen(bool){}
  float res_scale(){return 1;} void set_res_scale(float){}
@@ -51,6 +53,86 @@ static void event_key(SDL_Window* window,SDL_Scancode key,bool down,SDL_Keymod m
  SDL_Event e{};e.type=down?SDL_EVENT_KEY_DOWN:SDL_EVENT_KEY_UP;e.key.windowID=SDL_GetWindowID(window);
  e.key.timestamp=123456789;e.key.scancode=key;e.key.mod=mods;e.key.repeat=repeat;
  input::handle_event(e);
+}
+// Issue #477: a real remapped controller chord reaches the existing confirmation directly.
+static int quit_shortcut_test() {
+ using namespace input_map;
+ using namespace overlay;
+ Mapping m;
+ assert(from_json(R"({"shortcuts":{"Quit":{"keys":[{"key":"F9","modifiers":2}],"hold":"Options","button":"Menu"}}})",m));
+ set_current(m,false);
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+ auto* window=SDL_CreateWindow("Quit shortcut",960,640,SDL_WINDOW_HIDDEN);assert(window);input::set_prompt_window(window);
+ ImGui::CreateContext();auto& io=ImGui::GetIO();io.IniFilename=nullptr;
+ io.DisplaySize=ImVec2(960,640);io.DeltaTime=1.f/60;
+ io.ConfigFlags|=ImGuiConfigFlags_NavEnableKeyboard|ImGuiConfigFlags_NavEnableGamepad;
+ io.BackendFlags|=ImGuiBackendFlags_HasGamepad|ImGuiBackendFlags_RendererHasTextures;
+ io.Fonts->AddFontDefault();
+ const int action=shortcut_for_key(m,kVK_F9,kModCtrl);
+ assert(action>=0);
+ bool setting=false;
+ auto frame=[&] {
+  poll_controller_shortcuts(U.values);
+  if(!is_open()) { // production still polls input, but skips ImGui during plain gameplay
+   std::copy(std::begin(U.values),std::end(U.values),std::begin(U.prev));
+   return;
+  }
+  prepare_menu_input(io,true,false);
+  ImGui::NewFrame();
+  if(U.just_opened)ImGui::SetNextWindowFocus();U.just_opened=false;
+  ImGui::Begin("Quit shortcut regression");bool open=true;
+  ImGui::Checkbox("Unchanged setting",&setting); // Settings draws its current page before the quit row
+  quit_row(open);ImGui::End();
+  if(!open)set_open(false);
+  if(navigation_pressed(face_input(kB))&&!g_pad_b_used&&!ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId))set_open(false);
+  g_pad_b_used=false;
+  g_dialog_open=is_open()&&ImGui::IsPopupOpen(nullptr,ImGuiPopupFlags_AnyPopupId|ImGuiPopupFlags_AnyPopupLevel);
+  ImGui::Render();
+  std::copy(std::begin(U.values),std::end(U.values),std::begin(U.prev));
+ };
+ auto settle=[&]{for(int i=0;i<4;++i)frame();};
+ auto popup_up=[&]{auto* p=ImGui::FindWindowByName(quitprompt::kTitle);return is_open()&&p&&p->Active;};
+ auto release=[&]{std::fill(std::begin(U.values),std::end(U.values),0.f);settle();};
+ auto chord=[&]{U.values[kPadOptions]=U.values[kPadMenu]=1;settle();};
+ auto press=[&](int p){U.values[p]=1;frame();U.values[p]=0;settle();};
+ settle();assert(!is_open()&&quits==0);
+ chord();assert(is_open()&&popup_up()&&quits==0);
+ auto* popup=ImGui::FindWindowByName(quitprompt::kTitle);
+ assert(GImGui->NavWindow==popup&&GImGui->NavId==popup->GetID(quit::kCancel));
+ settle();assert(popup_up()&&quits==0); // holding the chord neither reopens nor confirms
+ release();press(face_input(kA));assert(!is_open()&&quits==0);
+ chord();release();press(face_input(kB));assert(!is_open()&&quits==0);
+ chord();release();io.AddKeyEvent(ImGuiKey_Escape,true);frame();io.AddKeyEvent(ImGuiKey_Escape,false);settle();
+ assert(!is_open()&&quits==0);
+ // The opening chord may itself contain B: it must not cancel the question it just opened.
+ auto back_binding=m;back_binding.shortcuts[action].button=face_input(kB);set_current(back_binding,false);
+ U.values[kPadOptions]=U.values[face_input(kB)]=1;settle();assert(is_open()&&popup_up()&&quits==0);
+ release();press(face_input(kB));assert(!is_open()&&quits==0);set_current(m,false);release();
+ // A held opening press must not activate the Settings page's previous selection before the dialog.
+ set_open(true);settle();auto* settings=ImGui::FindWindowByName("Quit shortcut regression");
+ ImGui::SetFocusID(settings->GetID("Unchanged setting"),settings);settle();set_open(false);release();
+ auto confirm_binding=m;confirm_binding.shortcuts[action].button=face_input(kA);set_current(confirm_binding,false);
+ U.values[kPadOptions]=U.values[face_input(kA)]=1;settle();assert(!setting&&is_open()&&popup_up());
+ release();press(face_input(kB));set_current(m,false);release();
+ // Closing the overlay with its own shortcut must not leave a stale confirmation on reopening.
+ chord();release();activate_shortcut(kSettings);settle();assert(!is_open());
+ activate_shortcut(kSettings);settle();assert(is_open()&&!popup_up());set_open(false);release();
+ // Keyboard bindings use the same request; auto-repeat does not reopen the confirmation.
+ event_key(window,SDL_SCANCODE_F9,true,SDL_KMOD_CTRL);settle();assert(is_open()&&popup_up());
+ event_key(window,SDL_SCANCODE_F9,true,SDL_KMOD_CTRL,true);settle();assert(popup_up()&&quits==0);
+ event_key(window,SDL_SCANCODE_F9,false,SDL_KMOD_CTRL);press(face_input(kB));assert(!is_open());
+ // A direct request from an already open Settings window keeps that window on cancellation.
+ set_open(true);activate_shortcut(action);settle();assert(popup_up());
+ press(face_input(kB));assert(is_open()&&!popup_up());set_open(false);release();
+ // Binding capture never activates the newly chosen shortcut, including on leaving capture held.
+ external_binding_capture(true);chord();assert(!is_open());
+ external_binding_capture(false);settle();assert(!is_open());release();
+ // A request abandoned before its first rendered frame must not reopen on the next Settings visit.
+ activate_shortcut(action);set_open(false);set_open(true);settle();assert(!popup_up());set_open(false);release();
+ chord();release();press(kPadDRight);press(face_input(kA));assert(quits==1);
+ ImGui::DestroyContext();SDL_DestroyWindow(window);SDL_Quit();
+ puts("quit shortcut: controller routing, Cancel focus, A/B/Esc cancellation, capture gate and confirmed exit passed");
+ return 0;
 }
 // Exercise the actual Shortcuts widgets and capture loop without a renderer or game data.
 static int shortcut_ui_test() {
@@ -195,6 +277,86 @@ static int shortcut_ui_test() {
  return 0;
 }
 
+// The actual Controls > Bindings page (overlay.cpp, which Android uses): "Bindings for" opens on the
+// controller in use when it has bindings of its own, the shared view says its edits don't reach it, and
+// a controller capture records a real press although a trigger rests half-way and a stick drifts
+// (issue: AYN Odin, only A worked and nothing could be bound). No game, renderer or audio.
+static int bindings_for_test() {
+ using namespace input_map;
+ using namespace overlay;
+ const auto file = std::filesystem::temp_directory_path() / ("wwhd-bindings-for-" + std::to_string(getpid()) + ".json");
+ setenv("WWHD_CONTROLS", file.c_str(), 1);
+ const std::string og = "odin-guid", on = "Odin Controller";
+ Mapping withOdin = Mapping::defaults();
+ ensure_profile(withOdin, og, on);
+ set_current(withOdin, false);
+ SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy"); assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));
+ ImGui::CreateContext();
+ auto& io = ImGui::GetIO();
+ io.IniFilename = nullptr;
+ io.DisplaySize = ImVec2(1280,720); io.DeltaTime = 1.0f/60;
+ io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard | ImGuiConfigFlags_NavEnableGamepad;
+ io.BackendFlags |= ImGuiBackendFlags_HasGamepad | ImGuiBackendFlags_RendererHasTextures;
+ io.Fonts->AddFontDefault();
+ U.cap_action = -1; U.list_view = true;
+ std::fill(std::begin(U.values), std::end(U.values), 0.0f);
+ std::string shown;  // the page's text this frame (ImGui's log)
+ auto frame = [&]() {
+  prepare_menu_input(io, is_open(), false); // the production capture path (apply_capture)
+  ImGui::NewFrame();
+  ImGui::SetNextWindowPos(ImVec2(10,10), ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(1200,690), ImGuiCond_Always);
+  ImGui::Begin("Bindings for regression");
+  ImGui::LogToBuffer();
+  Mapping m = edit_current();
+  controls_bindings_page(m, false);
+  shown = ImGui::GetCurrentContext()->LogBuffer.c_str();
+  ImGui::LogFinish();
+  ImGui::End(); ImGui::Render();
+  std::copy(std::begin(U.values),std::end(U.values),std::begin(U.prev));
+ };
+ const char* notice = "Odin Controller uses its own bindings, so changes here don't apply to it.";
+ auto reopen = [&]() { set_open(false); set_open(true); frame(); frame(); };
+ // 1. the Odin (its own bindings) in use: the page opens on its bindings, no notice there
+ set_active_controller(og, on);
+ reopen();
+ assert(g_edit_controller && g_edit_guid == og && g_edit_name == on && edit_index(current()) == 0);
+ assert(shown.find("Odin Controller (its own)") != std::string::npos && shown.find(notice) == std::string::npos);
+ // 2. the user picks the shared set: the notice shows, and the pick stays on reopening
+ g_edit_controller = false; g_binding_choice.choose(og, on);
+ frame();
+ assert(shown.find(notice) != std::string::npos);
+ reopen();
+ assert(!g_edit_controller && shown.find(notice) != std::string::npos);
+ // 3. an edit there is shared (the Odin keeps its own), as the notice says
+ // the Odin-like device: LT rests at 0.5, the left stick drifts at 0.35; B (the confirm) still held
+ // when the capture starts
+ U.values[kPadLT] = 0.5f; U.values[kPadLSDown] = 0.35f; frame();
+ U.values[kPadB] = 1;
+ start_capture(kZR, kColPad); frame();
+ for (int i = 0; i < 30; ++i) { U.values[kPadLSDown] = 0.35f + 0.08f * std::sin(i * 0.9f); if (i == 5) U.values[kPadB] = 0; frame(); }
+ assert(U.cap_action == kZR);  // the resting / drifting inputs and the released B recorded nothing
+ U.values[kPadX] = 1; frame();
+ assert(U.cap_action < 0 && current().pad[kZR] == kPadX && current().controllers[0].pad[kZR] == withOdin.pad[kZR]);
+ U.values[kPadX] = 0; frame();
+ // 4. a normal controller (no profile, everything resting at 0) in use: shared set, no notice; capture as before
+ set_active_controller("xbox-guid", "Xbox Controller");
+ std::fill(std::begin(U.values), std::end(U.values), 0.0f);
+ reopen();
+ assert(!g_edit_controller && shown.find("uses its own bindings") == std::string::npos);
+ start_capture(kZL, kColPad); frame();
+ U.values[kPadRB] = 1; frame();
+ assert(U.cap_action < 0 && current().pad[kZL] == kPadRB);
+ U.values[kPadRB] = 0; frame();
+ // 5. the Odin again: its own bindings (the shared pick was made while it was in use, and it was left)
+ set_active_controller(og, on);
+ reopen();
+ assert(g_edit_controller && g_edit_name == on);
+ set_open(false); ImGui::DestroyContext(); std::filesystem::remove(file); SDL_Quit();
+ puts("Bindings for: opens on the controller in use, shared-view notice, capture against resting inputs passed");
+ return 0;
+}
+
 static int window_target_test() {
  using namespace overlay::window_target;
  unsetenv("GAMESCOPE_WAYLAND_DISPLAY");unsetenv("WAYLAND_DISPLAY");
@@ -321,8 +483,10 @@ static int window_target_test() {
  return 0;
 }
 int main(int argc,char** argv){
+ if(argc>1&&std::string(argv[1])=="--quit-shortcut")return quit_shortcut_test();
  if(argc>1&&std::string(argv[1])=="--shortcuts-ui")return shortcut_ui_test();
  if(argc>1&&std::string(argv[1])=="--window-target")return window_target_test();
+ if(argc>1&&std::string(argv[1])=="--bindings-for")return bindings_for_test();
  const auto controlsFile=std::filesystem::temp_directory_path()/("wwhd-overlay-mouse-165-"+std::to_string(getpid())+".json");
  setenv("WWHD_CONTROLS",controlsFile.c_str(),1);
  SDL_SetHint(SDL_HINT_VIDEO_DRIVER,"dummy");assert(SDL_Init(SDL_INIT_VIDEO|SDL_INIT_EVENTS));

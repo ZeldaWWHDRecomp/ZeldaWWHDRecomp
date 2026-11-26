@@ -15,7 +15,7 @@ struct Sample {
 };
 bool sample(const Read&read,const Layout&l,const Expected&e,Sample&s){
  std::array<uint8_t,4> scalar{};
- if(!read(l.play+0x5AF8,scalar))return false;s.process=word(scalar);
+ if(!read(l.play+l.camera,scalar))return false;s.process=word(scalar);
  if(!span(s.process,0xB28)||s.process!=e.camera.address-0x248||!read(s.process,s.instance))return false;
  const auto&b=s.instance;const uint32_t name=half(b,0xE),profile=word(b,0x10);
  if(word(b,4)!=e.camera.pid||b[0xC]==3||(name!=0x1DC&&name!=0x1DD)||profile!=(name==0x1DC?l.profile0:l.profile1)||word(b,0x228)!=l.methods||word(b,0x248)!=s.process)return false;
@@ -35,7 +35,7 @@ Camera decode(const Layout&l,const Sample&s){
 }
 bool capture(const Read&read,const Layout&l,const Expected&e,Camera&out){
  out={};
- if(!read||!span(l.play,0x5AFC)||!span(l.profile0,0x40)||!span(l.profile1,0x40)||l.profile0==l.profile1||!span(l.methods,20)||!span(l.tables.type_count,4)||!span(l.tables.style_count,4)||!span(l.tables.types,63*0x40)||!span(l.tables.styles,145*0x84)||e.camera.type_table!=l.tables.types||e.camera.style_table!=l.tables.styles||!span(e.camera.address,0x8B8)||e.camera.address<mem::kMem2Start+0x248u||!e.camera.pid||e.camera.pid==~0u||e.camera.event_type>=63)return false;
+ if(!read||!span(l.play,l.camera+4)||!span(l.profile0,0x40)||!span(l.profile1,0x40)||l.profile0==l.profile1||!span(l.methods,20)||!span(l.tables.type_count,4)||!span(l.tables.style_count,4)||!span(l.tables.types,63*0x40)||!span(l.tables.styles,145*0x84)||e.camera.type_table!=l.tables.types||e.camera.style_table!=l.tables.styles||!span(e.camera.address,0x8B8)||e.camera.address<mem::kMem2Start+0x248u||!e.camera.pid||e.camera.pid==~0u||e.camera.event_type>=63)return false;
  for(auto f:l.functions)if(!f||(f&3))return false;
  try{Sample first,second;if(!sample(read,l,e,first)||!sample(read,l,e,second)||first!=second)return false;out=decode(l,second);return true;}catch(...){return false;}
 }

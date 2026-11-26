@@ -157,24 +157,28 @@ jobs:
             -DVulkan_LIBRARY="$RUNNER_TEMP/vk/prefix/lib/libvulkan.1.dylib"
           cmake --build build/rel
 
-      - name: Decomp version parts (development builds; setup's experimental option, docs/decomp-build.md)
+      - name: Decomp version parts (setup's option "Also build the decomp version", docs/decomp-build.md)
         # the same runtime built for the decomp build, without game units and without the game
-        # (WWHD_DECOMP_RUNTIME_ONLY); package.py --decomp-build takes the objects that differ, how setup compiles
-        # the units, and the commit and SHA-256 of the decompilation's source (submodule decomp), which setup
-        # downloads; the source itself is not in the release
-        if: needs.version.outputs.devel == 'true'
+        # (WWHD_DECOMP_RUNTIME_ONLY), twice: fast mode (what setup builds by default) and the plain decomp build
+        # (setup --decomp-plain). package.py --decomp-build / --decomp-fast-build takes the objects that differ, how
+        # setup compiles the units, and the commit and SHA-256 of the decompilation's source (submodule decomp),
+        # which setup downloads; the source itself is not in the release
         run: |
           git submodule update --init decomp
           # the decomp build's own placeholder: its hooks (decomp-only lists) and decomp tables
           : > "$RUNNER_TEMP/no-decomp-units.txt"
           python3 tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks "$RUNNER_TEMP/no-decomp-units.txt"
-          cmake -S . -B build/rel-decomp -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DWWHD_RENDERER=BOTH \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub-decomp" \
-            -DWWHD_BUNDLED_DEPS=ON -DWWHD_BUNDLED_ZSTD=ON \
-            -DVulkan_INCLUDE_DIR="$RUNNER_TEMP/vk/prefix/include" \
-            -DVulkan_LIBRARY="$RUNNER_TEMP/vk/prefix/lib/libvulkan.1.dylib" \
-            -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON
-          cmake --build build/rel-decomp --target wwhd
+          for mode in plain fast; do
+            dir=build/rel-decomp; fast=OFF
+            if [ "$mode" = fast ]; then dir=build/rel-decomp-fast; fast=ON; fi
+            cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" -DWWHD_RENDERER=BOTH \
+              -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 -DGEN_DIR="$PWD/build/gen-stub-decomp" \
+              -DWWHD_BUNDLED_DEPS=ON -DWWHD_BUNDLED_ZSTD=ON \
+              -DVulkan_INCLUDE_DIR="$RUNNER_TEMP/vk/prefix/include" \
+              -DVulkan_LIBRARY="$RUNNER_TEMP/vk/prefix/lib/libvulkan.1.dylib" \
+              -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON -DWWHD_DECOMP_FAST=$fast
+            cmake --build "$dir" --target wwhd
+          done
 
       - name: Unit tests
         # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
@@ -184,12 +188,13 @@ jobs:
           python3 tools/installer/test_setup.py
           python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
+          python3 tools/recomp/test_mkbuildmap.py
 
       - name: Package
         run: |
           VK="$RUNNER_TEMP/vk"
           DECOMP=()
-          if [ -d build/rel-decomp ]; then DECOMP=(--decomp-build build/rel-decomp); fi
+          if [ -d build/rel-decomp ]; then DECOMP=(--decomp-build build/rel-decomp --decomp-fast-build build/rel-decomp-fast); fi
           python3 tools/release/package.py --build build/rel --platform macos-arm64 --version "$VERSION" \
             --out dist --toolchain xcode-clt --setup-gui build/rel/wwhd-setup "${DECOMP[@]}" \
             --runtime-file "$VK/runtime/libvulkan.1.dylib" \
@@ -299,7 +304,9 @@ jobs:
         shell: bash
         run: rm -f "$RUNNER_TEMP/shader-template-deploy-key" "$RUNNER_TEMP/shader-template-known-hosts"
 
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
       - name: Install dependencies
+        timeout-minutes: 15  # a stalled mirror fails fast instead of hanging until GitHub's 6 h limit
         run: |
           sudo apt-get update
           # SDL3's documented Linux build dependencies (SDL3 docs/README-linux.md, Ubuntu 22.04+ set), so
@@ -359,6 +366,33 @@ jobs:
             -DVulkan_LIBRARY="/usr/lib/$ARCH-linux-gnu/libvulkan.so.1"
           cmake --build build/rel
 
+      - name: Decomp version parts (setup's option "Also build the decomp version", docs/decomp-build.md)
+        # as in the macOS job: the runtime built for the decomp build without game units and without the game
+        # (WWHD_DECOMP_RUNTIME_ONLY), fast mode and the plain decomp build, with the same pinned zig; setup isolates the
+        # units itself (zig ld.lld -r + tools/decomp_build/elf_localize.py, tools/installer/decomp_platform.py)
+        run: |
+          git submodule update --init decomp
+          : > "$RUNNER_TEMP/no-decomp-units.txt"
+          python3 tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks "$RUNNER_TEMP/no-decomp-units.txt"
+          for mode in plain fast; do
+            dir=build/rel-decomp; fast=OFF
+            if [ "$mode" = fast ]; then dir=build/rel-decomp-fast; fast=ON; fi
+            cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" \
+              -DGEN_DIR="$PWD/build/gen-stub-decomp" \
+              -DCMAKE_C_COMPILER="$ZBIN/zcc" -DCMAKE_CXX_COMPILER="$ZBIN/zcxx" \
+              -DCMAKE_AR="$ZBIN/zar" -DCMAKE_RANLIB="$ZBIN/zranlib" \
+              -DWWHD_BUNDLED_DEPS=ON -DCMAKE_PREFIX_PATH="$HOME/sdl3" \
+              -DVulkan_INCLUDE_DIR="$HOME/vulkan/include" \
+              -DVulkan_LIBRARY="/usr/lib/$ARCH-linux-gnu/libvulkan.so.1" \
+              -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON -DWWHD_DECOMP_FAST=$fast
+            cmake --build "$dir" --target wwhd
+          done
+
+      - name: Decomp version unit isolation with the pinned zig (stub units, tools/decomp_build/test_unit_merge.py)
+        # setup's own merge commands on stub game units, linked into a program that runs and checks each unit used
+        # its own hidden symbols and inline copies (no game, no decompilation needed)
+        run: python3 tools/decomp_build/test_unit_merge.py --toolchain "$TOOLCHAIN" --toolchain-dir "$ZIG_DIR"
+
       - name: Unit tests
         # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
         timeout-minutes: 45
@@ -368,11 +402,14 @@ jobs:
           python3 tools/installer/test_setup.py
           python3 tools/installer/test_python_runtime.py
           python3 tools/recomp/test_builds.py
+          python3 tools/recomp/test_mkbuildmap.py
 
       - name: Package
         run: |
+          DECOMP=()
+          if [ -d build/rel-decomp ]; then DECOMP=(--decomp-build build/rel-decomp --decomp-fast-build build/rel-decomp-fast); fi
           python3 tools/release/package.py --build build/rel --platform "linux-$ARCH" --version "$VERSION" \
-            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup \
+            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup "${DECOMP[@]}" \
             --runtime-file "$HOME/sdl3/lib/libSDL3.so.0" \
             --linkonly-lib "/usr/lib/$ARCH-linux-gnu/libvulkan.so.1" \
             --license "SDL3 (zlib)=$PWD/SDL3-3.4.18/LICENSE.txt" \
@@ -549,6 +586,31 @@ jobs:
             -DVulkan_INCLUDE_DIR="$VULKAN_DIR/include" -DVulkan_LIBRARY="$VULKAN_DIR/libvulkan-1.a"
           ninja -C build/rel -d keeprsp
 
+      - name: Decomp version parts (setup's option "Also build the decomp version", docs/decomp-build.md)
+        # as in the macOS job, with the same pinned llvm-mingw; setup isolates the units in the IR (COFF has no
+        # relocatable link: tools/decomp_build/unit_ir.py --libllvm, tools/installer/decomp_platform.py). arm64: the plain
+        # build only (fast mode's declaration table needs capstone, which has no Windows ARM64 wheel)
+        run: |
+          git submodule update --init decomp
+          T="$(cygpath -m "$RUNNER_TEMP")"
+          : > "$T/no-decomp-units.txt"
+          python tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks "$T/no-decomp-units.txt"
+          modes="plain fast"
+          if [ "${{ matrix.arch }}" = arm64 ]; then modes=plain; fi
+          for mode in $modes; do
+            dir=build/rel-decomp; fast=OFF
+            if [ "$mode" = fast ]; then dir=build/rel-decomp-fast; fast=ON; fi
+            cmake -S . -B "$dir" -G Ninja -DCMAKE_BUILD_TYPE=Release -DWWHD_VERSION="$VERSION" \
+              -DGEN_DIR="$(cygpath -m "$PWD/build/gen-stub-decomp")" \
+              -DCMAKE_C_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang.exe" \
+              -DCMAKE_CXX_COMPILER="$LLVM_MINGW/bin/$TRIPLE-clang++.exe" \
+              -DCMAKE_RC_COMPILER="$LLVM_MINGW/bin/$TRIPLE-windres.exe" \
+              -DCMAKE_EXE_LINKER_FLAGS=-static -DWWHD_BUNDLED_DEPS=ON \
+              -DVulkan_INCLUDE_DIR="$VULKAN_DIR/include" -DVulkan_LIBRARY="$VULKAN_DIR/libvulkan-1.a" \
+              -DWWHD_DECOMP=ON -DWWHD_DECOMP_RUNTIME_ONLY=ON -DWWHD_DECOMP_FAST=$fast
+            ninja -C "$dir" -d keeprsp wwhd
+          done
+
       - name: Unit tests
         # a hung test fails fast: 10 min per test (tests with their own TIMEOUT keep it), 45 min for the step
         timeout-minutes: 45
@@ -567,11 +629,23 @@ jobs:
           echo "$SUM  $T/python-embed.zip" | sha256sum -c -
           echo "WIN_PY_ZIP=$T/python-embed.zip" >> "$GITHUB_ENV"
 
+      - name: Decomp version unit isolation with llvm-mingw and the embeddable Python (stub units, test_unit_merge.py)
+        # setup's own merge commands (unit_ir.py --libllvm through llvm-mingw's libLLVM DLL, with the Python players
+        # run setup with) on stub game units, linked into a program that runs and checks each unit kept its own copies
+        run: |
+          T="$(cygpath -m "$RUNNER_TEMP")"
+          mkdir -p "$T/pyembed" && unzip -q -o "$WIN_PY_ZIP" -d "$T/pyembed"
+          "$T/pyembed/python.exe" "$(cygpath -m "$PWD/tools/decomp_build/test_unit_merge.py")" --toolchain "$TOOLCHAIN" \
+            --toolchain-dir "$LLVM_MINGW" --work "$T/unit-merge"
+
       - name: Package
         run: |
           W="$(cygpath -m "$PWD")"  # native Windows Python cannot open /d/a/... paths
+          DECOMP=()
+          if [ -d build/rel-decomp ]; then DECOMP=(--decomp-build build/rel-decomp); fi
+          if [ -d build/rel-decomp-fast ]; then DECOMP+=(--decomp-fast-build build/rel-decomp-fast); fi
           python tools/release/package.py --build build/rel --platform windows-${{ matrix.arch }} --version "$VERSION" \
-            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup.exe \
+            --out dist --toolchain "$TOOLCHAIN" --setup-gui build/rel/wwhd-setup.exe "${DECOMP[@]}" \
             --windows-python "$WIN_PY_ZIP" \
             --runtime-file build/rel/SDL3.dll \
             --runtime-file build/rel/libusb-1.0.dll \
@@ -740,6 +814,7 @@ jobs:
   # player's own dump): a release APK per ABI, without libmain.so and without the debug test fixtures,
   # signed with the project's key. arm64 for phones, x86_64 for emulators and Chromebooks. The
   # compiler inside it comes from the cache (.github/actions/android-compiler) or is built (~1 h).
+  # The in-app randomizer (.github/actions/android-rando, cached) goes in too; the guard step fails without it.
   android:
     needs: version
     if: needs.version.outputs.skip != 'true'
@@ -786,6 +861,7 @@ jobs:
       - name: Validate the Gradle wrapper
         uses: gradle/actions/wrapper-validation@v4
 
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
       - name: Install the NDK and SDK packages
         timeout-minutes: 15
         run: |
@@ -802,6 +878,12 @@ jobs:
       - name: Compiler files for the APK
         run: python3 tools/android/package_toolchain.py --compiler build/compiler/package --out build/compiler/apk-package
 
+      - name: In-app randomizer (cached)
+        id: rando
+        uses: ./.github/actions/android-rando
+        with:
+          abi: ${{ matrix.abi }}
+
       - name: Runtime, extractor and runtime SDK (placeholder game code, only to build the runtime)
         run: |
           python3 tools/recomp/stubgen.py build/gen-stub
@@ -812,7 +894,19 @@ jobs:
           cmake --build android/build/game --target wwhd-extract --parallel 4
           NDK="$ANDROID_HOME/ndk/$NDK_VERSION"
           python3 tools/android/package_extractor.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/extractor-apk
-          python3 tools/android/package_runtime.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/runtime-sdk
+          # the decomp version's parts (setup's option, tools/android/decomp_android.py): the runtime built for the decomp
+          # build without game units and without the game, plain and fast mode, as the macOS job's; the decompilation's
+          # source is not in the APK (setup downloads the pinned commit)
+          git submodule update --init decomp
+          : > "$RUNNER_TEMP/no-decomp-units.txt"
+          python3 tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks "$RUNNER_TEMP/no-decomp-units.txt"
+          for fast in 0 1; do
+            WWHD_VERSION="$VERSION" GEN_DIR="$PWD/build/gen-stub-decomp" ANDROID_SDK="$ANDROID_HOME" JOBS=4 \
+              DECOMP=1 DECOMP_RUNTIME_ONLY=1 DECOMP_FAST=$fast OUT="$PWD/android/build-decomp-$fast" android/build_native.sh
+          done
+          python3 tools/android/package_runtime.py --build android/build/game --ndk "$NDK" --abi "$ABI" --out build/runtime-sdk \
+            --decomp-build android/build-decomp-0/game --decomp-fast-build android/build-decomp-1/game
+          rm -rf android/build-decomp-0 android/build-decomp-1  # (runner disk: the parts are in the runtime SDK now)
           # the APK carries no game library: setup links the player's own one on the phone
           rm "android/app/libs/$ABI/libmain.so"
           ls -la "android/app/libs/$ABI"
@@ -847,7 +941,7 @@ jobs:
           code=${{ github.run_number }}
           android/gradlew -p android --no-daemon -PwwhdAbi="$ABI" -PwwhdVersionName="${VERSION#v}" -PwwhdVersionCode="$code" \
             -PwwhdPythonDir="$PWD/build/embedded-python/package" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" \
-            -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleRelease
+            -PwwhdExtractorDir="$PWD/build/extractor-apk" -PwwhdRandoDir="${{ steps.rando.outputs.package }}" assembleRelease
           mkdir -p dist
           cp android/app/build/outputs/apk/release/app-release.apk "$APK"
           ls -la dist
@@ -862,9 +956,12 @@ jobs:
           if grep -a -q -E 'SmokeActivity|SyntheticSetupService' "$RUNNER_TEMP/classes.dex"; then
             echo "::error::debug test activities in the APK"; exit 1
           fi
-          for f in toolchain-apk.json runtime-sdk.json extractor-apk.json python-source.zip; do
+          for f in toolchain-apk.json runtime-sdk.json extractor-apk.json rando-apk.json python-source.zip; do
             unzip -l "$APK" "assets/$f" > /dev/null || { echo "::error::assets/$f missing"; exit 1; }
           done
+          # the in-app randomizer (Settings > Randomizer): its driver beside the other native libraries
+          unzip -l "$APK" "lib/$ABI/libwwhd-rando-driver.so" > /dev/null \
+            || { echo "::error::lib/$ABI/libwwhd-rando-driver.so missing (no in-app randomizer)"; exit 1; }
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee apksigner.txt
           if [ "$SIGNED" = true ]; then
             grep -q "^Signer #1 certificate SHA-256 digest: $CERT_SHA256\$" apksigner.txt \
@@ -892,7 +989,11 @@ jobs:
         abi: [arm64-v8a, x86_64]
     steps:
       - uses: actions/checkout@v5
-      - run: sudo apt-get update && sudo apt-get install -y ninja-build
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
+      - timeout-minutes: 15  # a stalled mirror fails fast instead of hanging until GitHub's 6 h limit
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
       - uses: ./.github/actions/android-compiler
         with:
           abi: ${{ matrix.abi }}

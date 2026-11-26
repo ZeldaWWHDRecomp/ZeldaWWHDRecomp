@@ -30,7 +30,8 @@ struct WorldPoint { float x=0,y=0,z=0; bool operator==(const WorldPoint&)const=d
 struct StoryAction {
     // GiveChart: {"action": "give", "id": "chart:<id>"}, one of the mod's charts (once; never taken)
     // EnterStage: {"action": "stage", "id": "<stage id>", "room"?, "point"?}, one of the package's own stages (mod_stages); value = room << 8 | point
-    enum class Kind { Give,Take,QuestStep,Flag,StartScene,QuestDone,GiveChart,EnterStage };
+    // Appearance: {"action": "appearance"}, the port's colour page of Link's look (link_appearance.h)
+    enum class Kind { Give,Take,QuestStep,Flag,StartScene,QuestDone,GiveChart,EnterStage,Appearance };
     Kind kind=Kind::Flag; std::string id; unsigned value=1;
     bool operator==(const StoryAction&)const=default;
 };
@@ -276,6 +277,7 @@ inline bool actions(const Value& m,const Value& v,std::vector<StoryAction>& out,
             if(a.object.contains("room")){if(!integer(a.get("room"),0,63))return why="stage room must be 0..63",false;room=unsigned(a.get("room").number);}
             if(a.object.contains("point")){if(!integer(a.get("point"),0,99))return why="stage point must be 0..99",false;point=unsigned(a.get("point").number);}
             s.value=room<<8|point;
+        } else if(kind=="appearance") {s.kind=StoryAction::Kind::Appearance;if(!keys(a,{"action"}))return why="the appearance action takes no fields",false;
         } else if(kind=="scene") {s.kind=StoryAction::Kind::StartScene;if(!keys(a,{"action","id"}))return why="unknown scene action field",false;if(!declared(m,"scenes",s.id)) return why="action names an undeclared scene",false;
         } else return why="unknown then action",false;
         out.push_back(s);

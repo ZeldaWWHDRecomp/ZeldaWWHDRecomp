@@ -204,8 +204,12 @@ public:
     // in a read that composed lines anyway, the current lines of the emptiest page under half used are
     // moved onto a new page and that page is dropped. So without a new line nothing is composed, and
     // the lines that are shown stay, however many bytes they need.
+    // Each page is an image of its own in the HUD store, which holds only so many per owner (guest_hud.h
+    // kMaxImages): a list scrolled line by line would add a small page per read. So, likewise, while there
+    // are more than `max_pages` pages, the page unused for the longest is dropped, or else, in a read that
+    // composed lines anyway, all the lines shown are composed again onto as few new pages as they need.
     void update(const std::vector<std::string>& lines, const Face& main, const Face* fallback, const Face* icons, const Prompts& look,
-                uint64_t fonts, float scale = 1.0f, size_t budget = SIZE_MAX) {
+                uint64_t fonts, float scale = 1.0f, size_t budget = SIZE_MAX, size_t max_pages = SIZE_MAX) {
         if (look != look_ || fonts != fonts_ || scale != scale_) clear();
         look_ = look, fonts_ = fonts, scale_ = scale;
         reads_++;
@@ -260,6 +264,29 @@ public:
             moved[size_t(sparse)] = true;
             measure();
         }
+        bool repacked = false;
+        while (live_pages() > std::max<size_t>(max_pages, 1)) {
+            int drop = -1;
+            for (size_t p = 0; p < pages_.size(); p++)
+                if (pages_[p].image && !use[p] && (drop < 0 || pages_[p].last_used < pages_[size_t(drop)].last_used)) drop = int(p);
+            if (drop >= 0) {
+                drop_page(drop);
+                continue;
+            }
+            if (!added_lines || repacked) break;
+            repacked = true;
+            std::vector<const std::string*> keep;
+            for (const std::string* l : shown)
+                if (cells_.erase(*l)) keep.push_back(l);
+            for (size_t p = 0; p < pages_.size(); p++)
+                if (pages_[p].image) drop_page(int(p));
+            place(keep, main, fallback, icons, look);
+            measure();
+        }
+    }
+    // the pages that hold lines (dropped ones not counted)
+    size_t live_pages() const {
+        return size_t(std::count_if(pages_.begin(), pages_.end(), [](const Page& p) { return p.image != nullptr; }));
     }
     // the line's first cell (its only one unless it is wider than a page)
     const Cell* cell(const std::string& key) const {

@@ -30,6 +30,7 @@ std::mutex g_mu;
 Settings g_settings;
 std::atomic<bool> g_wants_device_sensors{false};
 bool g_aiming = false;
+bool g_mouse_look = false;  // the mouse camera turns first person itself (set_mouse_look)
 int g_gyro_controllers = 0;
 bool g_device_sensors_available = false;
 #ifdef __ANDROID__
@@ -51,7 +52,7 @@ struct Device {
     Aim logged_aim;             // aim since the last log line
     Vec3 last_gyro, last_acc;
 };
-constexpr uint64_t kNone = ~0ull, kDsuDevice = ~1ull, kPhoneDevice = ~2ull;
+constexpr uint64_t kNone = ~0ull, kDsuDevice = ~1ull, kPhoneDevice = ~2ull, kRemoteDevice = ~3ull;
 std::map<uint64_t, Device> g_devices;   // controllers, DSU slot and this device (distinct reserved ids)
 uint64_t g_active = kNone;              // the device that turns the virtual GamePad
 Aim g_pending;                          // the active device's aim not yet read by the game
@@ -69,7 +70,7 @@ Clock::time_point g_stick_since{};
 
 double secs(Clock::duration d) { return std::chrono::duration<double>(d).count(); }
 std::string device_name(uint64_t id) {
-    return id == kPhoneDevice ? "this device" : id == kDsuDevice ? "the Cemuhook server" : "controller " + std::to_string((unsigned long long)id);
+    return id == kPhoneDevice ? "this device" : id == kRemoteDevice ? "the iPhone GamePad" : id == kDsuDevice ? "the Cemuhook server" : "controller " + std::to_string((unsigned long long)id);
 }
 
 // a sample from `id` (g_mu held). The device the player moves turns the virtual GamePad: the active one
@@ -178,7 +179,7 @@ const char* source_id(int s) {
     return s >= 0 && s < kSourceCount ? ids[s] : "off";
 }
 const char* source_label(int s) {
-    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse (Steam Input gyro to mouse)", "Device gyro (phone/tablet)",
+    static const char* labels[] = {"Off", "Controller gyro", "Cemuhook (DSU)", "Mouse aiming (also Steam Input gyro to mouse)", "Device gyro (phone/tablet)",
                                    "Automatic (the controller's, this device's while you play by touch)"};
     return s >= 0 && s < kSourceCount ? labels[s] : "Off";
 }
@@ -305,6 +306,20 @@ void device_sample(uint64_t t_ns, const float gyro[3], const float accel[3]) {
     std::lock_guard lk(g_mu);
     if (g_settings.source == kDevice || (g_settings.source == kAuto && touch_play())) feed(kPhoneDevice, t_ns, g, a);
 }
+void remote_sample(uint64_t t_ns, const float gyro[3], const float accel[3], int quarter_turns) {
+    const Vec3 gs = device_to_sdl({gyro[0], gyro[1], gyro[2]}, quarter_turns);
+    const Vec3 as = device_to_sdl({accel[0], accel[1], accel[2]}, quarter_turns);
+    const float g3[3] = {gs.x, gs.y, gs.z}, a3[3] = {as.x, as.y, as.z};
+    Vec3 g, a;
+    from_sdl(g3, a3, g, a);
+    std::lock_guard lk(g_mu);
+    if (g_settings.source == kDevice || g_settings.source == kAuto) feed(kRemoteDevice, t_ns, g, a);
+}
+void remote_reset() {
+    std::lock_guard lk(g_mu);
+    g_devices.erase(kRemoteDevice);
+    if (g_active == kRemoteDevice) { g_active = kNone; g_pending = {}; }
+}
 namespace {
 std::atomic<bool> g_touch_play{false};
 }
@@ -360,13 +375,23 @@ int gyro_controllers() {
 
 void mouse_motion(float dx, float dy) {
     std::lock_guard lk(g_mu);
-    if (g_settings.source != kMouse || !g_aiming) return;
+    if (g_settings.source != kMouse || !g_aiming || g_mouse_look) return;
     g_mouse_dx += dx;
     g_mouse_dy += dy;
 }
 bool mouse_drives_gyro() {
     std::lock_guard lk(g_mu);
-    return g_settings.source == kMouse && g_aiming;
+    return g_settings.source == kMouse && g_aiming && !g_mouse_look;
+}
+bool game_gyro_switch(bool on) {
+    if (on) return true;
+    std::lock_guard lk(g_mu);
+    return g_settings.source == kMouse && g_aiming && !g_mouse_look;
+}
+void set_mouse_look(bool on) {
+    std::lock_guard lk(g_mu);
+    if (on && !g_mouse_look) g_mouse_dx = g_mouse_dy = 0;
+    g_mouse_look = on;
 }
 void set_aiming(bool a) {
     std::lock_guard lk(g_mu);
@@ -497,7 +522,11 @@ std::string status() {
             return "Close settings to start this device’s motion sensors.";
         if (source == kDevice)
             return g_device_sensors_available ? "Device gyro ready; no motion yet (or app is in the background)."
+#ifdef __APPLE__
+                                              : "No device gyro on this host: connect the iPhone GamePad (Controls > iPhone GamePad).";
+#else
                                               : "No device gyro and accelerometer available on this host.";
+#endif
         return g_gyro_controllers ? "A controller with a gyro is connected, no motion yet."
                                   : "No connected controller has a gyro (or this host cannot read it).";
     }

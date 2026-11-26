@@ -14,6 +14,7 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 // MSL the decompiler emits (as used by Cemu's Metal renderer).
 #include "Cafe/HW/Latte/Core/FetchShader.h"
 #include "gfx/area_sample.h"
+#include "gfx/msl_depth_output.h"
 #include "gfx/sampler_lod_bias.h"
 #include "gfx/shader_linkage.h"
 #include "render_objects.h"
@@ -37,9 +38,11 @@ extern "C" uint64_t g_shader_state_gen;  // gx2_core.cpp: bumped by shader-relev
 #include "cloud_proto.h"
 #include "runtime.h"
 #include "util/helpers/StringBuf.h"
+#include <compression.h>
 
 #include <condition_variable>
 #include <mutex>
+#include <thread>
 #include <set>
 #include <cstdarg>
 #include <ctime>
@@ -383,6 +386,12 @@ struct Shader {
     std::atomic<int> state{CS_PENDING};
     int attempts = 0;                         // Metal compiles started (render thread)
     uint64_t retryFrame = 0;                  // a failed compile is retried from this frame on (0: not scheduled)
+    std::vector<uint8_t> packed;              // a deferred compile's MSL, LZ4 (pack_source); empty: none
+    uint32_t packedLen = 0;                   // its length unpacked
+    // pixel shaders that write depth: the same program without its depth output, for pipelines without a
+    // depth attachment (gfx/msl_depth_output.h, get_pipeline); compiled on first use. Same key (recipes
+    // name the shader), own copy of the translation's metadata (depthMask off) and source.
+    Shader* noDepth = nullptr;
 };
 
 // A Metal compile or pipeline build can fail for reasons that have nothing to do with the source:
@@ -489,6 +498,141 @@ static std::string snap_texcoords(const char* src) {
     return out;
 }
 
+// A shader's MSL (dec->strBuf_shaderSource, 5-25 KB) is the only copy of its translation: it stays while a
+// compile may still need it (a deferred compile, a retry after a failure, WWHD_MTL_SHADER_KEY_VERIFY's
+// comparisons) and goes once the compile succeeded. The cache replay translates every known shader at
+// startup and compiles them a few per frame afterwards: their texts waiting meanwhile (over 100 MB) left
+// holes all over the heap that it could not hand back once freed, so a deferred compile's text waits
+// LZ4-packed (pack_source; shader text packs several times smaller) and is unpacked for the compile.
+// Completion handlers queue a compiled shader; the render thread frees its source
+// (release_compiled_sources, from cache_warm_step), as only it reads the source.
+static bool key_verify();
+static std::mutex g_compiled_mu;
+static std::vector<Shader*> g_compiled;  // g_compiled_mu
+static void release_source(Shader* s) {
+    if (!s->dec || key_verify()) return;
+    delete s->dec->strBuf_shaderSource;
+    s->dec->strBuf_shaderSource = nullptr;
+    std::vector<uint8_t>().swap(s->packed);
+}
+static void pack_source(Shader* s) {
+    if (!s->dec || !s->dec->strBuf_shaderSource || key_verify()) return;
+    const char* src = s->dec->strBuf_shaderSource->c_str();
+    const size_t n = strlen(src);
+    static std::vector<uint8_t> scratch;  // render thread
+    scratch.resize(n + 64);
+    const size_t m = compression_encode_buffer(scratch.data(), scratch.size(), (const uint8_t*)src, n, nullptr, COMPRESSION_LZ4);
+    if (!m || m >= n) return;  // kept as text
+    s->packed.assign(scratch.begin(), scratch.begin() + m);
+    s->packedLen = uint32_t(n);
+    delete s->dec->strBuf_shaderSource;
+    s->dec->strBuf_shaderSource = nullptr;
+}
+// the MSL to compile: the text, or the packed text unpacked ("" if neither is there)
+static std::string shader_source(const Shader* s) {
+    if (s->dec && s->dec->strBuf_shaderSource) return s->dec->strBuf_shaderSource->c_str();
+    if (s->packed.empty()) return {};
+    std::string t(s->packedLen, '\0');
+    if (compression_decode_buffer((uint8_t*)t.data(), t.size(), s->packed.data(), s->packed.size(), nullptr, COMPRESSION_LZ4) != t.size())
+        return {};
+    return t;
+}
+static void release_compiled_sources() {
+    std::vector<Shader*> done;
+    {
+        std::lock_guard<std::mutex> lk(g_compiled_mu);
+        done.swap(g_compiled);
+    }
+    for (Shader* s : done)
+        if (s->state.load(std::memory_order_acquire) == CS_READY) release_source(s);
+}
+
+// ---------------------------------------------------------------- packaged shader library
+// Every shader a launch replays, compiled once by setup, so the game compiles none and keeps no shader text.
+// Each function is named after a hash of the exact MSL it was built from (library_name): not the shader's key,
+// which depends on the order records are replayed in, while equal sources are one function. A shader whose
+// source differs (another setting, a mod, a game update) finds nothing and compiles as before.
+// Setup makes it with Xcode 26 or newer (its Metal compiler), as shaders.metallib next to the generation's
+// headstart.bin: the Metal warm (--warm-shaders) with WWHD_SHADERLIB_SOURCES=<folder> writes every shader's
+// source, and tools/installer/shader_library.py compiles them into one library. Without it the game compiles
+// its shaders as before.
+// WWHD_SHADERLIB=<path> overrides the location (else next to WWHD_HEADSTART, then the app's resources);
+// WWHD_SHADERLIB=0: none.
+static NSDictionary<NSString*, id<MTLLibrary>>* g_shaderlibs = nil;  // function name -> its library
+static size_t g_shaderlib_hits = 0, g_shaderlib_misses = 0;
+static const char* g_shaderlib_sources = [] { const char* e = getenv("WWHD_SHADERLIB_SOURCES"); return e && *e ? e : nullptr; }();
+static size_t g_shaderlib_sources_written = 0;
+
+static std::string library_name(const std::string& msl) {
+    char name[24];
+    snprintf(name, sizeof name, "w%016llx", (unsigned long long)hash_bytes(msl.data(), msl.size()));
+    return name;
+}
+
+static void shaderlib_load() {
+    if (g_shaderlib_sources) return;  // every shader written, none taken from an older library
+    const char* env = getenv("WWHD_SHADERLIB");
+    if (env && !strcmp(env, "0")) return;
+    NSFileManager* fm = [NSFileManager defaultManager];
+    NSString* path = env && *env ? [NSString stringWithUTF8String:env] : nil;
+    if (!path) {
+        if (const char* headstart = getenv("WWHD_HEADSTART"); headstart && *headstart && strcmp(headstart, "0")) {
+            NSString* next = [[[NSString stringWithUTF8String:headstart] stringByDeletingLastPathComponent]
+                stringByAppendingPathComponent:@"shaders.metallib"];
+            if ([fm fileExistsAtPath:next]) path = next;
+        }
+    }
+    if (!path) path = [[NSBundle mainBundle] pathForResource:@"shaders" ofType:@"metallib"];
+    if (!path || ![fm fileExistsAtPath:path]) {
+        if (env && *env) LOG("[gfx] shader library %s: not found", env);
+        return;
+    }
+    // the library now (milliseconds); each function's name finds it
+    NSError* err = nil;
+    id<MTLLibrary> lib = [R.device newLibraryWithURL:[NSURL fileURLWithPath:path] error:&err];
+    if (!lib) {
+        LOG("[gfx] shader library %s: %s", path.UTF8String, err.localizedDescription.UTF8String ?: "failed");
+        return;
+    }
+    NSMutableDictionary<NSString*, id<MTLLibrary>>* names = [NSMutableDictionary dictionary];
+    for (NSString* name in lib.functionNames) names[name] = lib;
+    if (!names.count) return;
+    g_shaderlibs = names;
+    LOG("[gfx] shader library %s: %zu functions", path.UTF8String, (size_t)names.count);
+}
+
+// a translated shader from the library (true: ready, its text gone)
+static bool shaderlib_take(Shader* s) {
+    if ((!g_shaderlibs && !g_shaderlib_sources) || !s->dec || !s->dec->strBuf_shaderSource) return false;
+    const std::string msl = snap_texcoords(s->dec->strBuf_shaderSource->c_str());
+    const std::string lname = library_name(msl);
+    if (g_shaderlib_sources) {
+        // the source as shader_library.py compiles it: compile_msl's own with the entry point renamed (the
+        // same source again, from another key, is already there: one function)
+        static const bool made = (mkdir(g_shaderlib_sources, 0755), true);
+        (void)made;
+        const std::string path = std::string(g_shaderlib_sources) + "/" + lname + ".metal";
+        struct stat st;
+        if (stat(path.c_str(), &st) != 0)
+            if (FILE* f = fopen(path.c_str(), "w")) {
+                std::string out = msl;
+                if (const size_t at = out.find(" main0("); at != std::string::npos) out.replace(at + 1, 5, lname);
+                fwrite(out.data(), 1, out.size(), f);
+                fclose(f);
+                g_shaderlib_sources_written++;
+            }
+        return false;
+    }
+    NSString* name = [NSString stringWithUTF8String:lname.c_str()];
+    id<MTLFunction> fn = [g_shaderlibs[name] newFunctionWithName:name];
+    if (!fn) { g_shaderlib_misses++; return false; }
+    g_shaderlib_hits++;
+    s->fn = fn;
+    s->state = CS_READY;
+    release_source(s);
+    return true;
+}
+
 static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
     const int attempt = ++sh->attempts;
     const bool injectFailure = attempt <= g_test_fail_compiles;
@@ -523,6 +667,7 @@ static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
         if (!fn) { report_compile_error(src, key, err, attempt, lib != nil); sh->state = CS_FAILED; return; }
         sh->fn = fn;
         sh->state = CS_READY;
+        release_source(sh);
         return;
     }
     std::string copy = src;
@@ -532,6 +677,10 @@ static void compile_msl(Shader* sh, const char* rawSrc, uint64_t key) {
         id<MTLFunction> fn = lib ? [lib newFunctionWithName:entry] : nil;
         if (!fn) { report_compile_error(copy.c_str(), key, err, attempt, lib != nil); compile_done(sh->state, CS_FAILED); g_compiles_in_flight--; return; }
         sh->fn = fn;
+        {
+            std::lock_guard<std::mutex> lk(g_compiled_mu);
+            g_compiled.push_back(sh);
+        }
         compile_done(sh->state, CS_READY);
         g_compiles_in_flight--;
     }];
@@ -576,7 +725,8 @@ static std::vector<Shader*> g_deferred_shaders;
 static void compile_deferred(Shader* s) {
     if (s->state != CS_DEFERRED) return;
     s->state = CS_PENDING;
-    compile_msl(s, s->dec->strBuf_shaderSource->c_str(), s->key);
+    const std::string src = shader_source(s);
+    compile_msl(s, src.c_str(), s->key);
 }
 
 // render thread: start the retry of a failed Metal compile when it is due (see kCompileAttempts).
@@ -585,7 +735,8 @@ static void retry_failed_compile(Shader* s, bool now = false) {
     if (!s || !s->dec || s->state.load(std::memory_order_acquire) != CS_FAILED || !retry_due(s, now)) return;
     LOG("[gfx] retrying shader %016llx compile (attempt %d of %d)", (unsigned long long)s->key, s->attempts + 1, kCompileAttempts);
     s->state = CS_PENDING;
-    compile_msl(s, s->dec->strBuf_shaderSource->c_str(), s->key);
+    const std::string src = shader_source(s);
+    compile_msl(s, src.c_str(), s->key);
 }
 
 // ---------------------------------------------------------------- shader keys
@@ -793,6 +944,29 @@ static void verify_key(const uint32_t* regs, bool vertex, LatteFetchShader* fs, 
     }
 }
 
+// the variant of a depth-writing pixel shader without its depth output (Shader::noDepth), or nullptr. Made
+// while the translation's text is still there; compiled on first use (compile_deferred).
+static Shader* make_no_depth_variant(const Shader* s) {
+    if (!s->dec || !s->dec->depthMask || !s->dec->strBuf_shaderSource) return nullptr;
+    std::string src = s->dec->strBuf_shaderSource->c_str();
+    if (!gfx::msl_depth::strip_depth_output(src)) {
+        LOG("[gfx] pixel shader %016llx: depth output not found in its MSL; pipelines without a depth buffer stay unbuilt",
+            (unsigned long long)s->key);
+        return nullptr;
+    }
+    auto* v = new Shader();
+    v->key = s->key;
+    v->kind = s->kind;
+    v->gatherUnits = s->gatherUnits;
+    v->dec = new LatteDecompilerShader(*s->dec);  // bindings and outputs as translated (no owned pointers but the text)
+    v->dec->depthMask = false;
+    v->dec->strBuf_shaderSource = new StringBuf((uint32)src.size() + 1);
+    v->dec->strBuf_shaderSource->add(std::string_view(src));
+    v->state = CS_DEFERRED;
+    pack_source(v);
+    return v;
+}
+
 static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetchShader* fs, uint64_t fsKey) {
     uint32_t addr = regs[vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS] << 8;
     uint32_t size = regs[(vertex ? mmSQ_PGM_START_VS : mmSQ_PGM_START_PS) + 1] << 3;
@@ -831,6 +1005,7 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         return s;
     }
     if (!vertex) s->gatherUnits = gfx::area_sample::gathered_units(s->dec->strBuf_shaderSource->c_str(), true);
+    if (!vertex) s->noDepth = make_no_depth_variant(s);
     if (!use.known) {
         const auto& dec = *s->dec;
         use.unitCount = (uint8_t)std::clamp((int)dec.textureUnitListCount, 0, (int)LATTE_NUM_MAX_TEX_UNITS);
@@ -851,9 +1026,12 @@ static Shader* get_shader_uncached(const uint32_t* regs, bool vertex, LatteFetch
         snprintf(name, sizeof name, "shaders/%s_%08X_%016llx.metal", vertex ? "vs" : "ps", addr, (unsigned long long)key);
         if (FILE* f = fopen(name, "w")) { fputs(s->dec->strBuf_shaderSource->c_str(), f); fclose(f); }
     }
-    if (g_defer_compiles) {
+    if (shaderlib_take(s)) {
+        // ready from the packaged library
+    } else if (g_defer_compiles) {
         s->state = CS_DEFERRED;  // cache replay: compile on first use or gradually in the background
         g_deferred_shaders.push_back(s);
+        pack_source(s);
     } else {
         compile_msl(s, s->dec->strBuf_shaderSource->c_str(), key);
     }
@@ -1022,6 +1200,16 @@ static void cache_record_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, 
 
 static id<MTLRenderPipelineState> get_pipeline(const uint32_t* regs, Shader* vs, Shader* ps, LatteFetchShader* fs,
                                                uint64_t fsKey, const TargetFormats& tf, unsigned backdropCoverage = 0) {
+    // no depth attachment: a pixel shader that writes depth goes in without its depth output. Metal refuses
+    // the pipeline otherwise and then also every other pipeline of that fragment function, depth attachment
+    // or not, for the rest of the session (gfx/msl_depth_output.h)
+    if (!tf.depth && ps->noDepth) {
+        ps = ps->noDepth;
+        retry_failed_compile(ps, g_draw_must_run);
+        if (ps->state == CS_FAILED) return nil;
+        compile_deferred(ps);
+        if (!wait_compiled(ps->state)) return nil;
+    }
     FormatInfo cfmt[8], dfmt;
     for (int i = 0; i < 8; i++)
         if (tf.color[i]) cfmt[i] = format_info(tf.color[i], false);
@@ -1892,7 +2080,15 @@ static CacheScan cache_scan(const std::string& path) {
 }
 
 // load and replay the recipes; runs once on the render thread before the first draw
+static void cache_load();
+static void cache_load_once() {
+    static bool loaded = (cache_load(), true);
+    (void)loaded;
+}
+
+
 static void cache_load() {
+    shaderlib_load();
     std::string path = cache_path();
     if (path == "0") { g_cache_disabled = true; return; }
     double t0 = now_ms();
@@ -1997,6 +2193,7 @@ static void cache_load() {
     }
     void headstart_load();  // shader_headstart.mm
     headstart_load();
+    if (g_shaderlibs) LOG("[gfx] shader library: %zu shaders from it, %zu compiled here", g_shaderlib_hits, g_shaderlib_misses);
     if (versioned && policy.writable && !recordOnly) {
         struct stat st {};
         const bool exists = stat(path.c_str(), &st) == 0 && st.st_size > 0;
@@ -2088,6 +2285,18 @@ static void build_pending_pipelines(int budget, int maxInFlight) {
         retry_failed_compile(vi->second);
         retry_failed_compile(pi->second);
         if (vi->second->state != CS_READY || pi->second->state != CS_READY) { i++; continue; }
+        // without a depth attachment, a depth-writing pixel shader's variant goes in (get_pipeline)
+        if (Shader* nd = r.tf.depth ? nullptr : pi->second->noDepth) {
+            if (finallyFailed(nd)) {
+                g_pending_pipelines[i] = g_pending_pipelines.back();
+                g_pending_pipelines.pop_back();
+                g_recipes_dropped++;
+                continue;
+            }
+            retry_failed_compile(nd);
+            compile_deferred(nd);
+            if (nd->state != CS_READY) { i++; continue; }
+        }
         for (int k = 0; k < 8; k++) regs[REGADDR::CB_BLEND0_CONTROL + k] = r.blend[k];
         regs[REGADDR::CB_COLOR_CONTROL] = r.colorControl;
         regs[REGADDR::CB_TARGET_MASK] = r.targetMask;
@@ -2105,6 +2314,7 @@ static void build_pending_pipelines(int budget, int maxInFlight) {
 
 // build cached pipelines whose shaders have finished compiling; a few per frame
 void cache_warm_step() {
+    release_compiled_sources();
     // a few background compiles per frame keep the startup burst from starving the game, and none
     // start while the game's own compiles keep the compiler busy (WWHD_BG_COMPILES, default 8 in flight)
     static const int maxInFlight = getenv("WWHD_BG_COMPILES") ? atoi(getenv("WWHD_BG_COMPILES")) : 8;
@@ -2214,6 +2424,18 @@ std::shared_ptr<BackdropCapture> backdropCapture;
 uint64_t backdropTicket = 0, lastBackdropFrame = 0;
 unsigned backdropExpected = 0, backdropFinished = 0;
 bool backdropScope = false, backdropFailed = false, backdropReplay = false, backdropEncoded = false;
+// The textures last scanned out to the GamePad (gamepad_backdrop_scan). Only a
+// pane drawn into one of them can be selected; the same menu background drawn
+// into other targets (in Off-TV Play the TV's "Currently playing on Wii U
+// GamePad" screen, twice per frame) is neither captured nor allowed to cancel
+// the GamePad's pending capture (backdropForeign). As on Vulkan (#493).
+std::array<uint64_t, 4> backdropScanned{};
+unsigned backdropScannedNext = 0;
+bool backdropForeign = false;
+bool backdrop_gamepad_target(id<MTLTexture> texture) {
+    const auto key = metal_backdrop_source_key(texture);
+    return key && std::find(backdropScanned.begin(), backdropScanned.end(), key) != backdropScanned.end();
+}
 void backdrop_trace(const char* phase, uint64_t a=0, uint64_t b=0, uint64_t c=0) {
     static const uint64_t first=[] { const char* e=std::getenv("WWHD_GAMEPAD_BACKDROP_LOG"); return e&&*e?std::strtoull(e,nullptr,10):~uint64_t{0}; }();
     if(aspect::game_frame()<first)return;
@@ -2261,6 +2483,13 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
     capture->source.texture = source->tex; capture->ticket = ++backdropTicket; capture->coverage = coverage;
     capture->surface = std::make_unique<Surface>(*source);
     auto& surface = *capture->surface;
+    // At most about 1920x1080 (gamepad_backdrop::capture_extent): the replay draws
+    // the same pane scaled (its guest-to-pixel factors shrink with the texture),
+    // the bars cover-scale it like a full-size one.
+    const auto size = gamepad_backdrop::capture_extent(unsigned(source->tex.width), unsigned(source->tex.height));
+    if (!size.width || !size.height) {backdrop_trace("texture-reject",pixel,source->tex.width,source->tex.height);return false;}
+    surface.sx *= float(size.width) / float(source->tex.width);
+    surface.sy *= float(size.height) / float(source->tex.height);
     // Only the private Surface changes format. Pipeline metadata must match its
     // promoted texture; source identity and scanout colour encoding stay native.
     if(capturePixel != pixel) {
@@ -2268,7 +2497,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
         surface.fmt = format_info(surface.format, false);
     }
     surface.addr = surface.mipAddr = 0; surface.mipChain.reset(); surface.spares.clear(); surface.levelRanges.clear();
-    MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:capturePixel width:source->tex.width height:source->tex.height mipmapped:NO];
+    MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:capturePixel width:size.width height:size.height mipmapped:NO];
     d.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
     d.storageMode = MTLStorageModePrivate;
     // Bounded, nonblocking reuse. A slot is fenced by command completion and
@@ -2318,7 +2547,7 @@ bool prepare_backdrop(Surface* source, unsigned coverage) {
 void gamepad_backdrop_scope(const uint32_t*, bool begin) {
     if (begin) {
         backdrop_trace("begin",gamepad_backdrop::capture_enabled(),pendingBackdrops.size());
-        backdropCapture.reset(); backdropExpected = backdropFinished = 0; backdropFailed = false;
+        backdropCapture.reset(); backdropExpected = backdropFinished = 0; backdropFailed = backdropForeign = false;
         backdropScope = gamepad_backdrop::capture_enabled();
     } else {
         if (backdropCapture) {
@@ -2331,7 +2560,7 @@ void gamepad_backdrop_scope(const uint32_t*, bool begin) {
         }
         const bool complete = backdropScope && gamepad_backdrop::capture_enabled() && !backdropFailed && backdropExpected && backdropExpected == backdropFinished && backdropCapture && backdropCapture->source.valid;
         backdrop_trace("end",complete,(uint64_t(backdropExpected)<<32)|backdropFinished, (uint64_t(backdropFailed)<<1)|bool(backdropCapture));
-        metal_backdrop_finish_scope(complete,backdropScans,pendingBackdrops);
+        if (!backdropForeign || backdropCapture) metal_backdrop_finish_scope(complete,backdropScans,pendingBackdrops);
         if (complete) {
             if (pendingBackdrops.size() >= 16) { pendingBackdrops.clear(); backdropScans.reset(); }
             backdropScans.capture(backdropCapture->source.key(), backdropCapture->ticket);
@@ -2342,6 +2571,8 @@ void gamepad_backdrop_scope(const uint32_t*, bool begin) {
     }
 }
 void gamepad_backdrop_scan(Surface* source) {
+    if (const auto key = metal_backdrop_source_key(source->tex); key && !backdrop_gamepad_target(source->tex))
+        backdropScanned[backdropScannedNext++ % backdropScanned.size()] = key;
     const auto selection = backdropScans.scan(metal_backdrop_source_key(source->tex));
     backdrop_trace("scan",metal_backdrop_source_key(source->tex),selection.ticket,pendingBackdrops.size());
     R.drc.backdrop = nil;
@@ -2375,6 +2606,7 @@ void gamepad_backdrop_reset() {
     lastBackdropFrame = 0;
     backdropScope = backdropReplay = false; backdropCapture.reset(); pendingBackdrops.clear(); backdropPool.clear();
     backdropScans.reset(); R.drc.backdrop = nil;
+    backdropScanned = {}; backdropScannedNext = 0; backdropForeign = false;
     gamepad_backdrop::set_capture_requested(false);
 }
 void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexType, uint32_t indexAddr, uint32_t baseVertex,
@@ -2383,8 +2615,7 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
     if (captureDraw) ++backdropExpected;
     std::optional<BackdropDrawReplay> capturedBindings;
     if (captureDraw) capturedBindings.emplace();
-    static bool cacheLoaded = (cache_load(), true);
-    (void)cacheLoaded;
+    cache_load_once();
     R.drawCount++;
     extern uint32_t g_draws_since_commit;
     g_draws_since_commit++;
@@ -2802,7 +3033,10 @@ void draw(const uint32_t* regs, uint32_t prim, uint32_t count, uint32_t indexTyp
             colors[0]?metal_backdrop_source_key(colors[0]->tex):0);
         backdrop_trace("blend",regs[REGADDR::CB_COLOR_CONTROL],regs[REGADDR::CB_BLEND0_CONTROL],
             (uint64_t(colorSlices[0])<<32)|uint32_t(cloud_proto::g_active_seq));
-        if (!colors[0] || mask != 1 || colorSlices[0] || cloud_proto::g_active_seq || !coverage ||
+        // Not a GamePad picture: no clear, no replay, no capture texture (the first
+        // scan of a new target uses the edge-colour fallback for that presentation).
+        if (colors[0] && !backdrop_gamepad_target(colors[0]->tex)) backdropForeign = backdropFailed = true;
+        else if (!colors[0] || mask != 1 || colorSlices[0] || cloud_proto::g_active_seq || !coverage ||
             !prepare_backdrop(colors[0], coverage)) backdropFailed = true;
         if (!backdropFailed) {
             backdropReplay = true; backdropEncoded = false;
@@ -2879,6 +3113,16 @@ size_t headstart_build_pipelines(int maxInFlight, size_t& built, size_t& dropped
     built = g_recipes_built;
     dropped = g_recipes_dropped;
     return g_pending_pipelines.size();
+}
+
+// `wwhd --warm-shaders` with WWHD_SHADERLIB_SOURCES, after the warm: the live cache's shaders too (recorded in
+// play and by setup's model sweep; most of the game's), so the library holds what a launch replays. Returns
+// false if no source was written.
+bool shaderlib_export_finish() {
+    if (!g_shaderlib_sources) return true;
+    cache_load_once();  // the live cache's shaders, translated: their sources written too
+    LOG("[warm] shader library: %zu sources written to %s", g_shaderlib_sources_written, g_shaderlib_sources);
+    return g_shaderlib_sources_written > 0;
 }
 
 }  // namespace gfx

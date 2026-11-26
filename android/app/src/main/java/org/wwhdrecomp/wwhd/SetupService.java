@@ -274,6 +274,11 @@ public class SetupService extends Service {
                 // the setup's Code mods switch: game code with mod support (read at every start, so a
                 // changed choice rebuilds)
                 configuration.put("code_mods", AndroidGame.codeModsChosen(this));
+                // setup's choice of game version (GameVersion; tools/android/ondevice_setup.py): the recompiled or the
+                // decomp version (tools/android/decomp_android.py: fast mode, the same code-mod choice), or for an
+                // install from before the choice both (a randomized game builds the recompiled version only)
+                String version = AndroidGame.chosenVersion(this);
+                configuration.put("game_version", version).put("decomp", !version.equals(GameVersion.RECOMP));
                 configuration.put("port_revision", revision).put("jobs", compileJobs())
                     .put("shader_cache_root", AndroidUserDirectories.shaderPrebuild(getExternalFilesDir(null)).getAbsolutePath());
                 SetupStore.write(new File(active, "job.json"), configuration);
@@ -287,14 +292,23 @@ public class SetupService extends Service {
                 JSONObject ready = SetupStore.read(new File(active, "ready.json"));
                 if (ready.getInt("schema") != 1 || !ready.getString("port_revision").equals(revision) ||
                     !ready.getString("compiler_identity").equals(configuration.getJSONObject("compiler").getString("identity")) ||
-                    ready.optBoolean("code_mods", false) != configuration.getBoolean("code_mods"))
+                    ready.optBoolean("code_mods", false) != configuration.getBoolean("code_mods") ||
+                    !ready.optString("game_version", GameVersion.RECOMP).equals(version) ||
+                    ready.optBoolean("decomp_only", false) != version.equals(GameVersion.DECOMP))
                     throw new IOException("Completed build belongs to different setup inputs");
                 if (!active.equals(SetupStore.current(this))) throw new IOException("The selected setup job changed");
                 host("activating", null, null);
                 checkPause(active);
                 JSONObject randomized = ready.optJSONObject("randomizer");
+                // the decomp version: its library is the game (ready "library" = "decomp" library); both: the second
+                // library's result (an error leaves the recompiled game ready)
                 AndroidGame.activate(this, new File(ready.getString("library")), new File(ready.getString("game")),
-                    configuration.getBoolean("code_mods"), randomized != null ? new File(randomized.getString("files")) : null);
+                    configuration.getBoolean("code_mods"), randomized != null ? new File(randomized.getString("files")) : null,
+                    version.equals(GameVersion.DECOMP) ? ready.getJSONObject("decomp") :
+                    !version.equals(GameVersion.BOTH) || randomized != null ? null :
+                        ready.has("decomp") ? ready.getJSONObject("decomp") :
+                        new JSONObject().put("error", "This setup cannot build the decomp version"),
+                    version);
                 JSONObject shaders = ready.optJSONObject("shader_prebuild");
                 String message = null;
                 boolean prepared = shaders != null && shaders.optString("status").equals("ready");

@@ -34,6 +34,7 @@ def compiler(preserve, nested=False):
     c.entries = set((0x1000, 0x1004, caller))
     c.sorted_entries = sorted(c.entries)
     c.hooks, c.sites, c.imm_override, c.canon_of = set(), set(), {}, {}
+    c.hooked_rc = set()
     c.cr_stats, c.leaf_count, c.nonleaf_count = [0, 0], 0, 0
     c.unhandled, c.used_imports = collections.Counter(), set()
     return c, caller

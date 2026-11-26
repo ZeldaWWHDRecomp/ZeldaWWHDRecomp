@@ -83,6 +83,7 @@ uint64_t g_mark = 0;
 int g_upload_kind = kUpOther;
 bool g_track_unique = false;
 uint32_t g_reg_dirty = 0;
+int g_draw_class = kClassNone;
 
 namespace {
 constexpr uint32_t kSampleMask = 63;  // draws and register writes: one call in 64 is timed
@@ -91,6 +92,7 @@ struct Window {
     uint64_t opCount[kOps]{}, opTimed[kOps]{}, opNs[kOps]{};
     uint64_t phaseNs[kDrawPhases]{};
     uint64_t subNs[kSubPhases]{}, subDraws = 0;
+    uint64_t classDraws[kDrawClasses]{}, classPhaseNs[kDrawClasses][kDrawPhases]{};  // WWHD_VK_PROF_SPLIT
     uint64_t upload[kUploadKinds]{}, uploadHold[kUploadKinds]{};
     uint64_t uniqueFrames = 0, unique[kUploadKinds]{}, uniqueAll = 0, uniqueCopied[kUploadKinds]{};
     uint64_t waitNs[kWaits]{}, waitCount[kWaits]{};
@@ -118,8 +120,10 @@ std::string report;
 void mark_slow(Phase p) {
     uint64_t t = now_ns();
     W.phaseNs[p] += t - g_mark;
+    if (g_draw_class) W.classPhaseNs[g_draw_class][p] += t - g_mark;
     g_mark = t;
 }
+void count_class_draw() { W.classDraws[g_draw_class]++; }
 
 // the cost of one now_ns() call, taken off each sub-phase interval (each holds one call's cost: the
 // parts are short, a few tens of ns per stage, so the timer would otherwise be a good part of them)
@@ -300,22 +304,104 @@ static void apply_requested() {
     LOG("[prof] detailed performance profiling %s (%s)", on ? "on" : "off", source());
 }
 
-// names of frequently changing context registers (others are printed as hex addresses)
+// exact register names (RegDefines.h, LatteReg.h) for the "top other writes" list, with the address
 static std::string reg_name(uint32_t r) {
-    struct Range { uint32_t first, count; const char* name; };
-    static const Range ranges[] = {
-        {0xE000, 0x1000, "SQ_TEX_RESOURCE"}, {0xF000, 0x100, "SQ_TEX_SAMPLER"},
-        {0xA210, 0x30, "SQ_PGM"}, {0xA010, 0x50, "CB_COLOR"}, {0xA000, 0x10, "DB_DEPTH"},
-        {0xA100, 0x10, "CB_BLEND/STENCILREF"}, {0xA10F, 0x30, "PA_CL_VPORT"}, {0xA1E0, 0x8, "CB_BLEND_CONTROL"},
-        {0xA200, 0x10, "DB/CB/PA control"}, {0xA080, 0x20, "PA_SC scissor"}, {0xA0C0, 0x40, "SQ_VTX_SEMANTIC"},
-        {0xA180, 0x40, "SPI_PS_INPUT"}, {0x2200, 0x100, "VGT"},
+    struct Name { uint32_t reg; const char* name; };
+    static const Name singles[] = {
+        {0x2256, "VGT_PRIMITIVE_TYPE"}, {0x2257, "VGT_INDEX_TYPE"}, {0x225C, "VGT_NUM_INDICES"},
+        {0x225D, "VGT_NUM_INSTANCES"}, {0xA000, "DB_DEPTH_SIZE"}, {0xA001, "DB_DEPTH_VIEW"},
+        {0xA003, "DB_DEPTH_BASE"}, {0xA004, "DB_DEPTH_INFO"}, {0xA005, "DB_HTILE_DATA_BASE"},
+        {0xA00A, "DB_STENCIL_CLEAR"}, {0xA00B, "DB_DEPTH_CLEAR"}, {0xA00C, "PA_SC_SCREEN_SCISSOR_TL"},
+        {0xA00D, "PA_SC_SCREEN_SCISSOR_BR"}, {0xA080, "PA_SC_WINDOW_OFFSET"}, {0xA081, "PA_SC_WINDOW_SCISSOR_TL"},
+        {0xA082, "PA_SC_WINDOW_SCISSOR_BR"}, {0xA083, "PA_SC_CLIPRECT_RULE"}, {0xA08C, "PA_SC_EDGERULE"},
+        {0xA08E, "CB_TARGET_MASK"}, {0xA08F, "CB_SHADER_MASK"}, {0xA090, "PA_SC_GENERIC_SCISSOR_TL"},
+        {0xA091, "PA_SC_GENERIC_SCISSOR_BR"}, {0xA100, "VGT_MAX_VTX_INDX"}, {0xA101, "VGT_MIN_VTX_INDX"},
+        {0xA102, "VGT_INDX_OFFSET"}, {0xA103, "VGT_MULTI_PRIM_IB_RESET_INDX"}, {0xA104, "SX_ALPHA_TEST_CONTROL"},
+        {0xA105, "CB_BLEND_RED"}, {0xA106, "CB_BLEND_GREEN"}, {0xA107, "CB_BLEND_BLUE"}, {0xA108, "CB_BLEND_ALPHA"},
+        {0xA10C, "DB_STENCILREFMASK"}, {0xA10D, "DB_STENCILREFMASK_BF"}, {0xA10E, "SX_ALPHA_REF"},
+        {0xA10F, "PA_CL_VPORT_XSCALE"}, {0xA110, "PA_CL_VPORT_XOFFSET"}, {0xA111, "PA_CL_VPORT_YSCALE"},
+        {0xA112, "PA_CL_VPORT_YOFFSET"}, {0xA113, "PA_CL_VPORT_ZSCALE"}, {0xA114, "PA_CL_VPORT_ZOFFSET"},
+        {0xA1B1, "SPI_VS_OUT_CONFIG"}, {0xA1B2, "SPI_THREAD_GROUPING"}, {0xA1B3, "SPI_PS_IN_CONTROL_0"},
+        {0xA1B4, "SPI_PS_IN_CONTROL_1"}, {0xA1B5, "SPI_INTERP_CONTROL_0"}, {0xA1B6, "SPI_INPUT_Z"},
+        {0xA1E8, "CB_SHADER_CONTROL"}, {0xA1F9, "VGT_DMA_BASE_HI"}, {0xA1FA, "VGT_DMA_BASE"},
+        {0xA1FC, "VGT_DRAW_INITIATOR"}, {0xA1FD, "VGT_IMMED_DATA"}, {0xA1FE, "VGT_EVENT_ADDRESS_REG"},
+        {0xA200, "DB_DEPTH_CONTROL"}, {0xA202, "CB_COLOR_CONTROL"}, {0xA203, "DB_SHADER_CONTROL"},
+        {0xA204, "PA_CL_CLIP_CNTL"}, {0xA205, "PA_SU_SC_MODE_CNTL"}, {0xA206, "PA_CL_VTE_CNTL"},
+        {0xA207, "PA_CL_VS_OUT_CNTL"}, {0xA210, "SQ_PGM_START_PS"}, {0xA214, "SQ_PGM_RESOURCES_PS"},
+        {0xA215, "SQ_PGM_EXPORTS_PS"}, {0xA216, "SQ_PGM_START_VS"}, {0xA21A, "SQ_PGM_RESOURCES_VS"},
+        {0xA21B, "SQ_PGM_START_GS"}, {0xA21F, "SQ_PGM_RESOURCES_GS"}, {0xA220, "SQ_PGM_START_ES"},
+        {0xA224, "SQ_PGM_RESOURCES_ES"}, {0xA225, "SQ_PGM_START_FS"}, {0xA229, "SQ_PGM_RESOURCES_FS"},
+        {0xA22A, "SQ_ESGS_RING_ITEMSIZE"}, {0xA22B, "SQ_GSVS_RING_ITEMSIZE"}, {0xA22C, "SQ_ESTMP_RING_ITEMSIZE"},
+        {0xA22D, "SQ_GSTMP_RING_ITEMSIZE"}, {0xA22E, "SQ_VSTMP_RING_ITEMSIZE"}, {0xA22F, "SQ_PSTMP_RING_ITEMSIZE"},
+        {0xA230, "SQ_FBUF_RING_ITEMSIZE"}, {0xA231, "SQ_REDUC_RING_ITEMSIZE"}, {0xA232, "SQ_GS_VERT_ITEMSIZE"},
+        {0xA233, "SQ_PGM_CF_OFFSET_PS"}, {0xA234, "SQ_PGM_CF_OFFSET_VS"}, {0xA235, "SQ_PGM_CF_OFFSET_GS"},
+        {0xA236, "SQ_PGM_CF_OFFSET_ES"}, {0xA237, "SQ_PGM_CF_OFFSET_FS"}, {0xA238, "SQ_VTX_SEMANTIC_CLEAR"},
+        {0xA280, "PA_SU_POINT_SIZE"}, {0xA281, "PA_SU_POINT_MINMAX"}, {0xA282, "PA_SU_LINE_CNTL"},
+        {0xA283, "PA_SC_LINE_STIPPLE"}, {0xA284, "VGT_OUTPUT_PATH_CNTL"}, {0xA285, "VGT_HOS_CNTL"},
+        {0xA286, "VGT_HOS_MAX_TESS_LEVEL"}, {0xA287, "VGT_HOS_MIN_TESS_LEVEL"}, {0xA288, "VGT_HOS_REUSE_DEPTH"},
+        {0xA289, "VGT_GROUP_PRIM_TYPE"}, {0xA28A, "VGT_GROUP_FIRST_DECR"}, {0xA28B, "VGT_GROUP_DECR"},
+        {0xA28C, "VGT_GROUP_VECT_0_CNTL"}, {0xA28D, "VGT_GROUP_VECT_1_CNTL"}, {0xA28E, "VGT_GROUP_VECT_0_FMT_CNTL"},
+        {0xA28F, "VGT_GROUP_VECT_1_FMT_CNTL"}, {0xA290, "VGT_GS_MODE"}, {0xA292, "PA_SC_MPASS_PS_CNTL"},
+        {0xA293, "PA_SC_MODE_CNTL"}, {0xA294, "VGT_ENHANCE"}, {0xA29B, "VGT_GS_OUT_PRIM_TYPE"},
+        {0xA29D, "VGT_DMA_SIZE"}, {0xA29F, "VGT_DMA_INDEX_TYPE"}, {0xA2A1, "VGT_PRIMITIVEID_EN"},
+        {0xA2A2, "VGT_DMA_NUM_INSTANCES"}, {0xA2A4, "VGT_EVENT_INITIATOR"}, {0xA2A5, "VGT_MULTI_PRIM_IB_RESET_EN"},
+        {0xA2A8, "VGT_INSTANCE_STEP_RATE_0"}, {0xA2A9, "VGT_INSTANCE_STEP_RATE_1"}, {0xA2AC, "VGT_STRMOUT_EN"},
+        {0xA2AD, "VGT_REUSE_OFF"}, {0xA2AE, "VGT_VTX_CNT_EN"}, {0xA2C8, "VGT_STRMOUT_BUFFER_EN"},
+        {0xA2CA, "VGT_STRMOUT_DRAW_OPAQUE_OFFSET"}, {0xA2CB, "VGT_STRMOUT_DRAW_OPAQUE_BUFFER_FILLED_SIZE"},
+        {0xA2CC, "VGT_STRMOUT_DRAW_OPAQUE_VERTEX_STRIDE"}, {0xA300, "PA_SC_LINE_CNTL"}, {0xA301, "PA_SC_AA_CONFIG"},
+        {0xA307, "PA_SC_AA_SAMPLE_LOCS_MCTX"}, {0xA308, "PA_SC_AA_SAMPLE_LOCS_8S_WD1_MCTX"},
+        {0xA30C, "CB_CLRCMP_CONTROL"}, {0xA30D, "CB_CLRCMP_SRC"}, {0xA30E, "CB_CLRCMP_DST"},
+        {0xA30F, "CB_CLRCMP_MSK"}, {0xA312, "PA_SC_AA_MASK"}, {0xA316, "VGT_VERTEX_REUSE_BLOCK_CNTL"},
+        {0xA317, "VGT_OUT_DEALLOC_CNTL"}, {0xA343, "DB_RENDER_CONTROL"}, {0xA344, "DB_RENDER_OVERRIDE"},
+        {0xA349, "DB_HTILE_SURFACE"}, {0xA34A, "DB_SRESULTS_COMPARE_STATE0"}, {0xA34B, "DB_SRESULTS_COMPARE_STATE1"},
+        {0xA34C, "DB_PRELOAD_CONTROL"}, {0xA34D, "DB_PREFETCH_LIMIT"}, {0xA351, "DB_ALPHA_TO_MASK"},
+        {0xA37E, "PA_SU_POLY_OFFSET_DB_FMT_CNTL"}, {0xA37F, "PA_SU_POLY_OFFSET_CLAMP"},
+        {0xA380, "PA_SU_POLY_OFFSET_FRONT_SCALE"}, {0xA381, "PA_SU_POLY_OFFSET_FRONT_OFFSET"},
+        {0xA382, "PA_SU_POLY_OFFSET_BACK_SCALE"}, {0xA383, "PA_SU_POLY_OFFSET_BACK_OFFSET"},
     };
-    char buf[64];
-    for (const auto& g : ranges)
-        if (r >= g.first && r < g.first + g.count) {
-            snprintf(buf, sizeof buf, "%s(%04X)", g.name, r);
+    struct Array { uint32_t first, count, stride; const char* fmt; };  // fmt takes the index
+    static const Array arrays[] = {
+        {0xA010, 8, 1, "CB_COLOR%u_BASE"}, {0xA018, 8, 1, "CB_COLOR%u_SIZE"}, {0xA020, 8, 1, "CB_COLOR%u_VIEW"},
+        {0xA028, 8, 1, "CB_COLOR%u_INFO"}, {0xA030, 8, 1, "CB_COLOR%u_TILE"}, {0xA038, 8, 1, "CB_COLOR%u_FRAG"},
+        {0xA040, 8, 1, "CB_COLOR%u_MASK"}, {0xA084, 4, 2, "PA_SC_CLIPRECT_%u_TL"}, {0xA085, 4, 2, "PA_SC_CLIPRECT_%u_BR"},
+        {0xA0E0, 32, 1, "SQ_VTX_SEMANTIC_%u"}, {0xA185, 10, 1, "SPI_VS_OUT_ID_%u"}, {0xA191, 32, 1, "SPI_PS_INPUT_CNTL_%u"},
+        {0xA1E0, 8, 1, "CB_BLEND%u_CONTROL"}, {0xA2B4, 4, 4, "VGT_STRMOUT_BUFFER_SIZE_%u"},
+        {0xA2B5, 4, 4, "VGT_STRMOUT_VTX_STRIDE_%u"}, {0xA2B6, 4, 4, "VGT_STRMOUT_BUFFER_BASE_%u"},
+        {0xA2B7, 4, 4, "VGT_STRMOUT_BUFFER_OFFSET_%u"}, {0xA2C4, 4, 1, "VGT_STRMOUT_BASE_OFFSET_%u"},
+        {0xA2D1, 4, 1, "VGT_STRMOUT_BASE_OFFSET_HI_%u"},
+    };
+    char buf[96];
+    for (const auto& n : singles)
+        if (n.reg == r) {
+            snprintf(buf, sizeof buf, "%s(%04X)", n.name, r);
             return buf;
         }
+    for (const auto& a : arrays)
+        if (r >= a.first && r < a.first + a.count * a.stride && (r - a.first) % a.stride == 0) {
+            char name[64];
+            snprintf(name, sizeof name, a.fmt, (r - a.first) / a.stride);
+            snprintf(buf, sizeof buf, "%s(%04X)", name, r);
+            return buf;
+        }
+    // texture units (18 per stage, 7 words) and samplers (54, 3 words; PS, VS, GS)
+    static const char* const stages[] = {"PS", "VS", "GS"};
+    const uint32_t texBase[] = {0xE000, 0xE460, 0xE930};
+    for (int s = 0; s < 3; ++s)
+        if (r >= texBase[s] && r < texBase[s] + 18 * 7) {
+            snprintf(buf, sizeof buf, "SQ_TEX_RESOURCE_WORD%u_%s[%u](%04X)", (r - texBase[s]) % 7, stages[s],
+                     (r - texBase[s]) / 7, r);
+            return buf;
+        }
+    if (r >= 0xF000 && r < 0xF000 + 54 * 3) {
+        const uint32_t sampler = (r - 0xF000) / 3;
+        snprintf(buf, sizeof buf, "SQ_TEX_SAMPLER_WORD%u_%s[%u](%04X)", (r - 0xF000) % 3, stages[sampler / 18],
+                 sampler % 18, r);
+        return buf;
+    }
+    if (r >= 0x2900 && r < 0x2B00) {
+        snprintf(buf, sizeof buf, "TD_SAMPLER_BORDER(%04X)", r);
+        return buf;
+    }
     snprintf(buf, sizeof buf, "%04X", r);
     return buf;
 }
@@ -407,6 +493,26 @@ void frame_end(bool hold) {
                 W.subNs[kSubUniformPack] * subScale, W.subNs[kSubUniformBlocks] * subScale,
                 W.subNs[kSubUniformSupportUpload] * subScale);
         }
+        if (W.classDraws[kClassContinued] || W.classDraws[kClassFullRegisters]) {
+            // WWHD_VK_PROF_SPLIT: us per sampled draw of each class (marked phases only)
+            static const char* classNames[kDrawClasses] = {"", "continued", "full (registers)"};
+            std::string cl;
+            for (int c = kClassContinued; c < kDrawClasses; c++) {
+                const double n = (double)std::max<uint64_t>(1, W.classDraws[c]);
+                double total = 0;
+                snprintf(line, sizeof line, "%s %s (%llu sampled):", c == kClassContinued ? "" : ";", classNames[c],
+                         (unsigned long long)W.classDraws[c]);
+                cl += line;
+                for (int p = 0; p < kDrawPhases; p++) {
+                    snprintf(line, sizeof line, " %s %.2f", phaseNames[p], W.classPhaseNs[c][p] / 1e3 / n);
+                    cl += line;
+                    total += W.classPhaseNs[c][p] / 1e3 / n;
+                }
+                snprintf(line, sizeof line, ", sum %.2f", total);
+                cl += line;
+            }
+            add("[prof] draw phases us/draw by fast-path class:%s", cl.c_str());
+        }
     }
     static const char* syncNames[kSyncs] = {"DrawDone", "CopySurface", "flip", "other"};
     std::string syncs;
@@ -474,7 +580,7 @@ void frame_end(bool hold) {
             snprintf(line, sizeof line, " %s %.0f", reg_name(top[i].second).c_str(), top[i].first / frames);
             regs += line;
         }
-        add("[prof] draw classes: %.1f%% same registers, %.1f%% only buffer pointers/ALU constants, %.1f%% other "
+        add("[prof] draw classes: %.1f%% same registers, %.1f%% only buffer pointers/ALU constants/dynamic words, %.1f%% other "
             "(%.0f draws/frame); top other writes/frame:%s",
             100.0 * W.drawsSame / W.draws, 100.0 * W.drawsFast / W.draws, 100.0 * W.drawsOther / W.draws, W.draws / frames,
             regs.c_str());

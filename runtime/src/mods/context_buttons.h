@@ -103,6 +103,14 @@ inline Buttons context_buttons(const PlayContext& c, const Options& o = {}) {
     auto show = [&](Button i, Kind k = Kind::kPlain, uint8_t label = 0) {
         r.b[i] = {true, k, label, k == Kind::kAction ? action_variant(c, label) : uint8_t(0)};
     };
+    // a system question (the save question after a game over, which runs as a menu: dMenu_flag is set): its
+    // buttons are taken by a tap on them (touch_talk.h); A takes the one the cursor is on. (The GreenNaugahyde
+    // fork hides every button there.)
+    if (c.has(kInGame) && c.has(kQuestion) && c.question_shown) {
+        r.active = true;
+        show(kA, Kind::kAction, kActChoose);
+        return r;
+    }
     // no Quest Log, or a game menu (the pause menu and the item screen use every button): the full pad
     if (!c.has(kInGame) || c.has(kMenu)) {
         for (auto& v : r.b) v.shown = true;
@@ -113,12 +121,6 @@ inline Buttons context_buttons(const PlayContext& c, const Options& o = {}) {
     // a fade or a stage change without text: nothing to press
     if ((c.has(kFade) || c.has(kStageChange)) && !talking(c)) {
         if (ff) show(kZR, Kind::kFastForward);
-        return r;
-    }
-    // a system question (the save question after a game over): its buttons are taken by a tap on them
-    // (touch_talk.h); A takes the one the cursor is on. (The GreenNaugahyde fork hides every button there.)
-    if (c.has(kQuestion) && c.question_shown) {
-        show(kA, Kind::kAction, kActChoose);
         return r;
     }
     // a choice, a number entry, a shop's item choice: A takes it; B cancels the number entry and leaves the shop
@@ -144,6 +146,16 @@ inline Buttons context_buttons(const PlayContext& c, const Options& o = {}) {
         if (c.b_action && c.b_action != kActHidden) show(kB, Kind::kAction, c.b_action);
         return r;
     }
+    // the telescope (before the talk rule: the game keeps a message status all the time there, play_context.h
+    // scope_look): its zoom (left stick), B and its own item button put it away; A while its text waits for it
+    if (scope_look(c)) {
+        if (c.has(kKeyIcon)) show(kA, Kind::kAction, c.a_action ? c.a_action : kActNext);
+        if (c.b_action && c.b_action != kActHidden) show(kB, Kind::kAction, c.b_action);
+        const uint8_t items[3] = {c.x_item, c.y_item, c.r_item};
+        for (int i = 0; i < 3; i++)
+            if (items[i] == kItemTelescope) show(Button(kX + i), Kind::kItem, items[i]);
+        return r;
+    }
     // a talk or a scene's text: A goes on (B does the same in the game's message box); with tap to
     // continue a tap anywhere is A, so A itself goes
     if (talking(c) || c.has(kEvent)) {
@@ -165,14 +177,6 @@ inline Buttons context_buttons(const PlayContext& c, const Options& o = {}) {
         if (c.b_action && c.b_action != kActHidden) show(kB, Kind::kAction, c.b_action);
         if (c.zr_action) show(kZR, Kind::kAction, c.zr_action);
         if (album(c)) show(kDpadLeftRight);
-        return r;
-    }
-    // the telescope: its zoom (left stick), B and its own item button put it away
-    if (telescope(c)) {
-        if (c.b_action && c.b_action != kActHidden) show(kB, Kind::kAction, c.b_action);
-        const uint8_t items[3] = {c.x_item, c.y_item, c.r_item};
-        for (int i = 0; i < 3; i++)
-            if (items[i] == kItemTelescope) show(Button(kX + i), Kind::kItem, items[i]);
         return r;
     }
     // normal play

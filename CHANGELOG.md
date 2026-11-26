@@ -7,6 +7,382 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+## v0.5.2
+
+### Thanks
+
+Thanks to everyone who sent code for this release:
+- @fayep: an iPhone as the Wii U GamePad (#488, #507, #509, #534), the Metal shader library built by setup (#505),
+  less Metal memory and a leak fix (#501, #503), the Metal fault on older iPads (#520), Metal-only builds (#508),
+  holding Select for Settings (#527), no picture-in-picture box at Game Over (#528), Story Notebook icons (#589),
+  GamePad touch claims for mods (#549), and faster CI and tests (#515, #517, #530)
+- @DaniXK-96: less render-thread CPU per draw (#400), Grass draw distance (#401), renderer and build options for
+  experiments (#402)
+- @itsarahtonin: prompts that follow the controller in use (#462), the GameCube A in the action hint (#460), the
+  settings page's held stick (#463), the full save state crash (#456)
+- @DynDec: support for the Japanese release (#575)
+- @themelektaus: the randomizer fix for European and Japanese games (#629, for #628)
+- @davidsgullick: controller rumble on macOS again (#464)
+- @rhemfur: the save folder also applies from launchers (#485)
+- @RivierGrullon: the Quit Game shortcut (#537)
+
+Some features in this release come from other projects, with their authors' code or ideas:
+- **@mkooner's VR-WakerHD**: multithreaded draw recording and draw batching (#606, #608)
+- **The GreenNaugahyde and Nycolazs Android forks**: fewer render passes on Mali and PowerVR (#476)
+- **SwitchWakerHD**: the measurements behind less work on the game thread (#550)
+
+And thanks for reports, ideas and testing: @DamnFine815, @darklinkpower, @Eggtooth, @FabricioArroy0, @GoHoo,
+@Holiuwu12, @KaitoCrisHub, @LexBoosT, @mi5t, @plxjammerplx, @sebar25, @StevGod, @thejorro, @XAlboX, @xsoalokinx
+and @zeldafan2000.
+
+### New
+
+- **Support for the Japanese release** (00050000-10143400, v0; #575, thanks @DynDec). Setup accepts the Japanese
+  disc image, the recompiler maps the Japanese code onto the USA addresses (moved play-object members are
+  translated), the in-app randomizer works on it, and the overlay loads a system Japanese font when Japanese text is
+  needed. Not yet on the Japanese release: catalogue minimap mods, One-screen's controller-free Options, and story
+  scene choices. Played from the start through the Forsaken Fortress on Windows; other platforms untested so far.
+- **Link's look** (#492). Change the colours of Link's hair, skin, eyes, tunic and hat, undershirt, trousers, boots
+  and belt buckle. Link's own textures are recoloured in memory, nothing of the game is stored except the chosen
+  colours, and with no colours chosen nothing changes. The look is kept per save file. The colour page shows Link in
+  a close camera with the menu on the right in the game's menu style (right stick or L/R turn the camera, A keeps,
+  B puts the old look back).
+- **macOS: an iPhone as the Wii U GamePad** (#488, #507, #534, thanks @fayep). An iPhone app (built from `ios/`, see
+  `ios/README.md`) shows the GamePad picture over Wi-Fi and sends touch, gyro and the buttons of a controller
+  attached to the phone, with rumble and the GamePad speaker. A new phone pairs with a 6-digit code shown on the
+  Mac. The phone shows the game's GamePad boot image as its background, uses its full height in landscape, and its
+  status text is white. The picture is sent at about 2 Mbit/s (854×480; more for a larger picture, between 1.5 and
+  6 Mbit/s) with peaks capped at 1.5 times that in any second, so a busy home Wi-Fi no longer leaves it 4–5 seconds
+  behind the TV. Needs the Metal renderer; Linux and Windows don't offer it.
+- **Make randomized games in the game** (#457, #452). **Settings › Randomizer** is now always there and makes and
+  imports randomized games itself: choose Beginner, Standard or Everything, a seed name or a permalink and **Make
+  this game**, or **Import seed...** for the official randomizer's output. Setup makes and builds it in the
+  background while you keep playing (with progress, Cancel and setup's message if it fails); then **Restart now** or
+  later. On Android the phone's setup service builds it (it pauses when the phone gets hot) and the next start of
+  the app plays it. The full option pages stay in the setup window.
+- **New setting "Fix original game bugs"** (#555, Settings › Mods › Built-in and the in-game settings page, on by
+  default). The first fix: the pause menu no longer loses its selection cursor after a door or other scene change
+  once you had zoomed into a square on the MAP tab's chart (#336, thanks @XAlboX for the logs and video). Turn it
+  off and the game behaves exactly like the original.
+- **Settings › Mods › More › Speedrun: Classic Wind Waker (dive and storage)**, off by default (#470, thanks
+  @KaitoCrisHub for the request in #405). HD cancels the Wind Waker as soon as Link starts to fall and puts him back
+  into his waiting state when a demo ends, which removed the dive out of a ledge climb and dry storage. The switch
+  brings back the original GameCube behaviour, the same change the TWWHD Randomizer's Classic mode makes, now for
+  the normal game too. It takes effect at once; with it off the game runs exactly as before.
+- **New shortcut: Quit Game** (#537, thanks @RivierGrullon). **Settings › Shortcuts › General › Quit Game** opens the
+  quit confirmation directly, for example from holding Select and pressing Start. It starts on Cancel; Cancel
+  returns to play (or to Settings if you opened it there), Quit closes the game. Unbound by default.
+- **Graphics › Grass draw distance** (#401, thanks @DaniXK-96). A new Vulkan setting that skips far tall grass
+  patches: All (the original, default), Far 4000, Medium 3000 or Near 2000 units from the camera. In thick grass
+  like Forest Haven it saves a lot of render-thread time on slower PCs (46 → 60 fps on an i3 laptop at Near); palms,
+  small plants and nearby grass always stay.
+- **Updates keep what you have** (#479). A new release offers to update from your earlier release folder, cloned
+  where your drive allows (the old release keeps working), otherwise moved after you confirm. It brings over your
+  game files, saves, settings, controls, mods, randomized games and shader caches, and only recompiles the parts of
+  the game code that changed (on a Mac about 4 s when the game code is unchanged). Prepared shaders survive updates
+  that leave the renderer unchanged. Android app updates recompile only changed files and clean up old builds.
+
+### Performance
+
+- **Much less render-thread work through draw batching** (#606, from VR-WakerHD, thanks @mkooner). Runs of draws
+  that share all their state are drawn as one instanced draw. At the Outset Island cliff about 4,400 draws a frame
+  become 34, which cuts the render thread by about 28 % on a Xiaomi 14 (17.8 → 12.9 ms, now a steady 60 fps there)
+  and by 35–45 % on a Mac. The picture is unchanged. On by default in the normal build; `WWHD_VK_BATCH_RUNS=0` turns
+  it off.
+- **Groundwork for multithreaded draw recording** (#608, from VR-WakerHD, thanks @mkooner). The Vulkan renderer's
+  per-draw state and shared caches are ready to be used from more than one thread. Nothing changes for players yet.
+- **Phones and the Steam Deck: smoother frame pacing in the normal build** (#574, #576, #577). The pacing part of
+  the smooth defaults is on for Android and the Steam Deck: 8 submission slots, submission pool resets on a separate
+  thread and display pacing with bounded latency (Xiaomi 14 at 60 fps: +2.2 fps on the cliff, +1.5 fps in the Dragon
+  Roost lava room, better p99 and 1 % lows). Graphics are also recorded on a second thread, and short waits for the
+  screen (up to 8 ms) wait actively instead of sleeping, since after short sleeps the phone clocked its cores down:
+  +8 fps on the cliff (p99 −2.2 ms, 1 % low +3.9 fps) and +6 fps in the lava room. At 30 fps (frame interpolation
+  off) the active waiting is off by default, since it made no frames smoother and warmed the phone a little faster;
+  the default follows the frame rate setting while you play. `WWHD_VSYNC_HOT_WAIT_US=0` turns the active waiting off,
+  and "Smooth frame pacing" off in Settings → Graphics → Advanced turns display pacing off for the lowest latency.
+  Desktop computers are not affected.
+- **Steam Deck: graphics are recorded on a second thread again by default**, with multi-threaded recording and hot
+  vsync waits, as on Android phones. It was switched off as a precaution after the Game Mode start crash (#178); that
+  crash's real cause was fixed in how display timings are read. Settings → Graphics → Advanced → "Record graphics on
+  a second thread" (or `WWHD_VK_RECORD_WORKER=0`) still turns it off.
+- **Vulkan: cheaper window composition** (#598). Putting the TV/GamePad pictures, bars and frames into the window
+  does about 60 % less GPU work, pixel-identical. On phones this shows as lower GPU clocks (less heat and battery)
+  rather than a higher frame rate. `WWHD_VK_PRESENT_TRIM=0` turns it off.
+- **Vulkan: the hidden TV picture is no longer copied every frame** (#599). In one-screen (handheld) mode, as on
+  Android phones, the TV picture is only a "playing on the GamePad" screen that nothing displays; its 1080p copy is
+  skipped while no screen shows it, and made in the same frame as soon as one does. `WWHD_VK_SKIP_HIDDEN_TV=0` turns
+  it off.
+- **Vulkan: less render-thread CPU per draw** (#400, thanks @DaniXK-96). Faster shader lookups, buffers that keep
+  their size between frames and fewer copies for chunked draws: about 3 % less render-thread time on a laptop
+  (i3 + 920MX), the same picture.
+- **Vulkan on Mali and PowerVR: fewer render passes** (#476, from the GreenNaugahyde and Nycolazs Android forks).
+  About 3 fewer render passes per frame, which saves memory traffic on tile-based phone GPUs. On by default only on
+  Mali and PowerVR; elsewhere it measured no gain and stays off. `WWHD_PASS_SUBSET` / `WWHD_PASS_PREFETCH` turn it on
+  (1) or off (0) on any GPU.
+- **Less work on the game thread** (#550, thanks to SwitchWakerHD for the measurements). Replaced system functions and
+  port hooks no longer set up a 4 KB stack frame for their error report (about 15,000–36,000 calls a frame), layout
+  panes skip name checks that aren't about them (`WWHD_PANE_NAME_FILTER=0` restores the old path), and write-tracking
+  hints no longer update unread statistics. It matters most on slow CPUs.
+- **macOS: setup compiles every shader ahead of time with Xcode 26** (#505, thanks @fayep). With Xcode 26 or newer
+  installed, setup builds every shader the game uses into one `shaders.metallib`, so the game compiles none at start
+  and keeps no shader text in memory (about 130 MB less on an M1 Mac mini). Without Xcode 26 the step is skipped;
+  installing it later adds the library on the next setup run. A library built into an Apple TV or iPhone app contains
+  shaders made from your game, so such builds are for your own devices only.
+- **Metal: about 160 MB less memory with the full shader prebuild** (#503, thanks @fayep). Startup shader replay takes
+  about 0.1 s longer.
+- **Renderer and build options for experiments** (#402, thanks @DaniXK-96), all off by default: a partial fast path
+  (`WWHD_VK_FASTPATH_PARTIAL=1`, 0 mismatches over millions of draws, up to 1.4 ms less render-thread time in busy
+  scenes as measured by the author), a fast path oracle (`WWHD_VK_FASTPATH_ORACLE=1`) and draw cost split
+  (`WWHD_VK_PROF_SPLIT=1`), `WWHD_PPC_TRACE=OFF` and profile-guided optimisation (`WWHD_PGO_*`), and
+  `WWHD_TEST_INPUT_LOG` to record live input as a test scenario. Normal builds are unchanged.
+
+### Improved
+
+- **Minimal performance overlay** (#634). Settings → Graphics → Performance overlay is now Off / Minimal / Full.
+  Minimal shows one small line in the top-left corner (frame rate, frame time and the render thread's time per frame)
+  and writes no GPU timestamps. The shortcut cycles through the three.
+- **Mouse camera: first person and every aim turn like a PC shooter** (#561, thanks @Eggtooth, #558). First person
+  and every first-person aim (bow, hookshot, boomerang, grappling hook, telescope, Picto Box) turn directly with the
+  mouse at your Mouse sensitivity, with no stick emulation, acceleration or easing, and no gyro setup. Up/down follows
+  Invert camera up/down.
+- **Mouse aiming works with the game's Options › Gyro off** (#560, thanks @Eggtooth, #525). With the gyro source
+  "Mouse aiming", the mouse aims even when the game's own Gyro option is off. Your game's options and save are not
+  changed, and controller gyro still follows the game's Gyro option.
+- **Button prompts: Automatic follows the controller you're using** (#462, thanks @itsarahtonin; #459). With several
+  controllers connected, prompts switch to the controller you last pressed something on. The Steam Input virtual pad
+  shows Xbox prompts. The Face buttons preset still uses the first controller.
+- **PlayStation prompts for PlayStation controllers on the Mac and on the iPhone GamePad** (#509, thanks @fayep).
+  The game shows ✕ ○ □ △ instead of Xbox-style prompts, and the iPhone GamePad app tells the game which controller is
+  attached to the phone. Button bindings don't change.
+- **Controller bindings follow the controller in use** (#491). The Bindings page opens on the controller in use
+  instead of the shared set (seen on an AYN Odin, where only A worked), and the shared set says when the controller in
+  use has its own bindings. Recording a binding measures each input against where it rests, so a half-resting
+  trigger or a drifting stick no longer blocks the recording or gets recorded instead. If your controller's own
+  bindings are broken: Bindings for → your controller → **Use the shared buttons**, or Reset to defaults.
+- **21:9 fills 3440×1440 screens** (#495, #490, thanks @thejorro). The 4:3, 16:10, 21:9 and 32:9 presets use the
+  window's exact shape when it is within 1 % of the preset. Other window shapes keep the exact preset.
+- **Holding Select to open Settings no longer switches to Off-TV Play** (#527, thanks @fayep). While a hold could
+  still open Settings, Select stays from the game: a short tap reaches it on release, a hold that opens Settings and
+  the tap that closes it never do. Nothing changes when Select is part of another shortcut.
+- **Automatic picture-in-picture: no black box at the Game Over save question** (#528, thanks @fayep).
+- **Game pages: the game font stays while scrolling, and the cursor reaches the Settings tabs** (#506). On the
+  Settings page, Up from the first row moves onto the tab row, so the tabs are reachable without L/R.
+- **Pause menu: the cursor comes back if the menu loses its focus** (#510, #454, refs #336, thanks @XAlboX for the
+  logs). After long play the pause menu could stay open without its cursor; it now comes back after about a second.
+  The cause isn't found yet: `captures/wwhd.log` gets a `[menu-cursor]` line naming what is missing, so please attach
+  the log if this happens.
+- **Setup retries a game-code file that fails to compile once** (#563, thanks @LexBoosT, #552), for example when the
+  PC briefly runs low on memory or a virus scanner holds a file. If it still fails, the error shows the compiler's
+  message, and setup.log records the full command.
+- **Setup no longer stops when the Python for mods can't be downloaded** (#478, thanks @sebar25 for the report,
+  #472). The game is built anyway; the download is retried the first time a mod needs it.
+
+### Fixed
+
+- **Randomized European and Japanese games crashed when a Tingle Statue (and a few other items) was collected**
+  (#628, #629, thanks @themelektaus for the fix and @StevGod for the report). Four places (the Dampa pig minigame, the
+  two potion shop slots and Zunari's Magic Armor slot) used the USA release's addresses, so the item's number was
+  written into another of the randomizer's functions, which could close the game, and those places gave an item the
+  spoiler log did not name. Each release's own addresses are used now; USA games are unchanged. Seeds already made
+  keep the fault: make a new one.
+- **Randomized games crashed at start or ran the original item functions** (#467, thanks @KaitoCrisHub for the
+  report, #383). TWWHD Randomizer 1.2.0 points some of the game's tables at its own code through the game file's
+  relocation entries, which the port now applies too, so every 1.2.0 seed runs the randomizer's own item functions.
+  Unmodified games are byte for byte unchanged. Seeds already made are rebuilt the next time setup prepares them.
+- **Frame interpolation now matches 30 fps in more places** (#595, #615, #617, #601, #446). At 60 and 120 fps: sky
+  and light colour changes (weather, day/night fade, room and sea light blends, item-get and arrow flashes) no longer
+  run 2x–4x too fast; music fades no longer run at double speed (the HD sound player updates once per game step);
+  button icons in message boxes animate at the right speed; objects at sea (floating barrels, for example) act on the
+  same frames as at 30 fps, since each of the two ocean cameras gets its own visibility check; cut trees come to rest
+  at the exact angle (`WWHD_INTERP_TREE_MTX=0` restores the old behaviour); and the pirate ship's sail no longer tears
+  (thanks @darklinkpower for the report; a regression in v0.5.1: cloth drawn into two alternating buffers keeps
+  switching on every drawn frame). 30 fps is unchanged.
+- **The Ballad of Gales arrival whirlwind is heard again at 60 fps** (#533, thanks @DamnFine815). With frame smoothing
+  the sound engine heard the camera one game step late, so right after a stage change it dropped sounds that started
+  there.
+- **Steam Deck: crash at start in Game Mode** (#178, #582, #586, thanks @xsoalokinx for the report and testing).
+  Gamescope's Vulkan layer (up to 3.16.31) corrupted memory when the game read past display timings, and the game
+  crashed a few seconds after start ("GX2 render thread: POD Vulkan operation failed: -4"). Display timings are now
+  read safely and checked before the game paces on them; otherwise it paces on its own CPU-side pacing, so Game Mode
+  keeps smooth frame pacing. A log line (`[vulkan display pacing] source: …`) says which one is used.
+- **Quick doors: Walk through no longer freezes the game in the Tower of the Gods** (#539, #529, thanks @GoHoo for
+  the report and logs). Leaving the map room or the key room through a walk-through door started the hall's scenes
+  early; walk-through doors now give the room's new actors the same short wait the door scene does.
+- **Full save states load after taking a picto again** (#565). A full state made before the first picto of a session
+  could not be loaded after it ("thread JpegEncodeMgrThread … is at a different place"), and the other way round. If a
+  full state is still refused, the message names exactly what differs.
+- **Loading a full save state in a new session could crash the Vulkan renderer** (#456, thanks @itsarahtonin for the
+  report and fix, #451) with "missing sampled texture", when the state was saved while restyled button prompts were
+  shown. Such text is now rebuilt from the game's own font after the load.
+- **Story Notebook icons in the bag** (#589, thanks @fayep). Each bag place shows one notebook icon (no second,
+  flickering copy), the carried letter shows the game's letter icon, and switching between Pro Controller and GamePad
+  no longer leaves icons or the notebook page on the other screen.
+- **Achievements: Grandma's Secret unlocks when the chest under Grandma's house is opened** (#511).
+- **One screen (handheld) mode: the mouse camera works again** (#514, thanks @mi5t). A click in play captures the
+  pointer, while clicks in the game's touch menus still act as touches. On Android in One screen mode, a finger in
+  those menus goes straight to the game.
+- **One-screen mode: no slowdown with the GamePad menu open on Vulkan** (#497, #493, thanks @thejorro), and **no
+  flicker in the GamePad bars at resolution scales 3 and 4** (#498): the bar background is captured only from the
+  GamePad picture (on Metal too), at most at 1920×1080 and scaled up. The bars look the same.
+- **Dual-screen handhelds (AYN Thor style): Select switches between TV and GamePad play again** (#531). One screen
+  mode is now off by default when a second screen shows the GamePad picture. If you turned it on yourself, your choice
+  is kept.
+- **Controllers stopped working after clicking the GamePad window** (#406, thanks @KaitoCrisHub for the report).
+  Controllers keep driving the game while either game window is in front. The option is now called **Controller
+  input in the background** (Settings › Controls, off by default). Keyboard and mouse still need a game window in
+  front.
+- **L didn't turn the GamePad page during play** (#483, thanks @KaitoCrisHub for the report, #406). L switches
+  between Items and Map again; only with a jump mod on does a shared L1 jump instead.
+- **The pause menu cursor no longer gets stuck after the settings arrow** (#484, thanks @XAlboX for the report and
+  logs, #336).
+- **Opening the item menu's settings page with the stick turned "Invert camera up/down" off** (#463, thanks
+  @itsarahtonin for the report and fix, #461). Stick directions held when the page opens now act only after release.
+- **The GameCube A in the floating action hint was drawn about four times too large** (#460, thanks @itsarahtonin for
+  the report and fix, #458).
+- **Saves: a save folder chosen in Settings → Saves also applies when you start from a launcher** (#485, thanks
+  @rhemfur; #487), also for randomized games and save profiles; any other `--save` on the command line still wins.
+- **World editor: the warp refuses the title screen, the file select and the ending** (#538).
+- **Linux and Steam Deck: quitting can no longer hang the game on exit** (#536); on macOS it could crash at exit
+  instead.
+- **Mac: controllers with a simpler layout work in the game and the in-game Settings** (#557, thanks @zeldafan2000
+  for the report, #556), such as GameCube adapters with a third-party driver. A log line names what a newly connected
+  controller reports.
+- **Mac (Metal): the soft shading around characters and edges no longer goes missing** (#610). In some sessions a
+  depth-writing shader failed to build at startup, which skipped about 3,200 draws per session.
+- **Metal: no more frozen picture from a GPU fault on older iPads** (#520, thanks @fayep), and **Vulkan: run-time
+  indexed uniform reads stay in bounds** (#521). Out-of-range reads now return zero (on an A12Z iPad Pro the title
+  screen froze; newer Apple GPUs could show stray pixels). Prepared shaders are rebuilt once after this update.
+- **Metal: a memory leak that grew with play time** (#501, thanks @fayep). On an M1 Mac mini: 4,788 leftover
+  command buffers after 3.5 h before, 4 after.
+- **macOS: controller rumble works again** (#464, thanks @davidsgullick, #346). A change made while #347 was reviewed
+  used a looping haptic player that controllers reject; rumble now uses one long haptic event whose strength changes
+  live, and keeps the recovery when macOS resets the haptics engine.
+
+### Android
+
+- **The in-app randomizer is in the app again** (#542). The published Android builds were made without it, so
+  **Settings › Randomizer** said "This app has no randomizer." The build now fails if an APK comes out without it.
+- **Faster rendering** (#559, #473, #614). The Vulkan renderer uses render passes by default (Xiaomi 14 at the Outset
+  cliff: about 1.5 ms less render-thread time in the normal build, 17.83 → 16.04 ms and 53.5 → 58.6 fps in the decomp
+  build; `WWHD_VK_FORCE_RENDERPASS=0` brings dynamic rendering back; "60 fps (generated)" no longer stops the renderer
+  with render passes; prepared shaders are rebuilt once). The game library calls its own functions directly (`-Bsymbolic-functions`: about 0.65 ms faster game logic
+  per step and 1.25 ms on the render thread). And a per-draw lookup from #608 that cost about 0.5–0.7 ms per frame is
+  gone again.
+- **The game's picture uses the whole screen on handhelds with a navigation bar** (#349, #480, #489, #502, thanks
+  @plxjammerplx for the report, logs and testing). On the Retroid Pocket Nova the navigation bar covered the rupee
+  counter or the bottom 48 rows stayed black. The picture, the view button and Match window leave out bars the system
+  draws over the game, the full-screen calls those systems need are used and applied before the game's first layout,
+  and the log records what Android reports about the screen.
+- **The telescope works with the Flexible touch layout again** (#523, thanks @Holiuwu12). The right half looks
+  around, the left half zooms.
+- **Tapping the game-over question works** (#455, for #427) on the Flexible touch style.
+- **No "Tap to start" text on the title screen** (#466, thanks @FabricioArroy0 for the request, #465). Tapping still
+  starts the game.
+
+### Mods and mod SDK
+
+- **Code mods can claim touches on the GamePad picture** (#549, thanks @fayep). `wwhd_touch_claim` with
+  `WWHD_TOUCH_GAMEPAD` claims rectangles of the GamePad picture (854 x 480), with the same rules as on the TV picture.
+  Works in a GamePad window, on a phone and in One screen mode. Older ports refuse such a claim. Mod manager 1.12.0.
+- **Link's look for mods** (#492). Mods open the colour page with `wwhd_appearance_open` or the story action
+  `{"action": "appearance"}` (mod manager 1.11.0); a dyer on Windfall who opens it comes as the `link-appearance`
+  package.
+- **Guest mods on the Japanese release** (#575). Guest mods built with the new SDK (guestmod-0.4) resolve play-object
+  offsets per release; mods with hand-written moved offsets are refused on the Japanese release, and such packages
+  need port 0.5.2 / mod manager 1.13.0 or newer.
+
+### Decomp version
+
+- **Setup: choose the recompiled or the decomp version** (#605, #609). Setup asks which version to build, the
+  recompiled version (default) or the decomp version (experimental), and builds and starts only that one. Running
+  setup again with the other choice switches; if that build fails, the installed version stays. Installs that built
+  both keep starting the same version as before until you choose. In the terminal: `--recomp` / `--decomp`. The
+  randomizer needs the recompiled version. The Android app's setup asks too; the decomp build takes about 1.5–2 hours
+  the first time on a Xiaomi 14, and the game built before stays playable until it finishes. Also fixed on Android:
+  the compile cache was lost on every app update, and a large preprocessed file could reuse the wrong cached object.
+- **The decomp version on every macOS release, Linux, Steam Deck and Windows, with code mods** (#597, #602). Offered
+  in regular macOS releases, building the fast mode (about 40 to 80 minutes more on a busy Mac; 4 GB free while it
+  builds, about 800 MB stay), and on Linux (x86_64 and ARM64, including Steam Deck) and Windows with the compiler
+  setup already downloads. Linux and Windows x86_64 build the fast mode; Windows on ARM builds the plain decomp
+  version only; on Windows the game's data folder path must be at most 164 characters (setup checks it). Not yet
+  tested on a real Linux, Steam Deck or Windows machine: reports welcome. On the Mac it starts with Vulkan (MoltenVK)
+  and the normal game keeps Metal; a saved renderer choice still wins. Code mods work in it (Story Notebook and
+  catalogue code mods load, switching code mods rebuilds it). A randomized game plays in the normal game only. Full
+  save states load only in the version that made them; portable states move between them. Also fixed: two files
+  setup needs were missing from releases. Known issue: on MoltenVK the graphics device was lost in 1 of 5 test runs;
+  if that happens, choose Metal in Settings > Graphics > Renderer.
+- **New in fast mode: "Faster rendering (replays unchanged draws)"** in Settings > Graphics > Frame rate, on by
+  default. With 40-240 fps, the frames between two game steps replay the step's draws and update only what moves,
+  the game no longer waits for the GPU before the next step, and a step gets no more in-between frames than the GPU
+  can draw in time. On a Xiaomi 14 at 120 fps (warm phone): 24-30 % less render time, up to 11 % more frames (60
+  instead of 54-59), slowest 1 % of frames 3-7 ms shorter, late frames on screen 1-4 a minute instead of 5-73. Needs
+  the Vulkan renderer and "Record graphics on a second thread". Also fixed: the rupee counter's sparkle (and other
+  particles drawn by background jobs) sometimes vanished in the in-between frames.
+- **Fixed: the decomp version crashed when the Mirror Shield reflected light.** The recompiled version was not
+  affected.
+- **Fast mode: a native renderer, on by default** (#543, #594). The decompiled draw code describes what it draws as
+  draw packets and render passes instead of emulated GPU register writes (grass, flowers, trees, weather, sea, magma,
+  lines, particles, sky clouds, menus and text, post effects and shadows), and J3D models (characters, enemies,
+  objects, map parts) are drawn from descriptions with states made once, including depth-only draws and indirect
+  multi-draw batches. On a Xiaomi 14 at the cliff the renderer's CPU time per frame went from 24.9 to 17.4 ms
+  (38 → 54 fps) and then from 13.4 to 12.6 ms; in the lava room from 24.1 to 20.0 ms (40 → 47 fps). Pictures are the
+  same, except single grass pixels on GPUs that pick texture detail differently for grouped draws.
+  `WWHD_NATIVE_DRAW=0` turns it off; each part has its own switch (`WWHD_NATIVE_DRAW_MDI`, `_BATCH`, `WWHD_NATIVE_PASS`,
+  `_PASS_TRUST`, `WWHD_NATIVE_J3D_DESC`, `_DEPTH`, `_PASSBEGIN`, `_MSMEMO`, `WWHD_VK_RECORD_INDIRECT`); the J3D material
+  cache (`WWHD_NATIVE_DRAW_J3D=1`) stays off. The decompilation update also brings binary-order and 32-bit address
+  fixes and new port points for the GamePad gyro option and camera.
+- **Fast mode: smoother frame pacing on Android and the Steam Deck** (#573). Graphics are recorded on a second thread
+  with multi-threaded recording, and "Smooth frame pacing" (on by default) asks the screen for an even refresh. On a
+  Xiaomi 14 (120 Hz) at the cliff: 12.7 ms render thread instead of 17.3 ms, 59.8 fps instead of 53.5, about 1 % of
+  frames shown for an uneven time instead of 6–8 %. The cost: a frame reaches the screen about 22 ms after the game
+  presents it, 7 ms later than without; turn "Smooth frame pacing" off in Settings → Graphics → Advanced for the
+  lowest latency (after a restart). Screens without `VK_GOOGLE_display_timing` behave as before; see `docs/vulkan.md`.
+- **Fast mode: less render-thread work** (#553, #554, #564, #569, #572, #603, #611), each measured on a Xiaomi 14
+  with the picture unchanged: pools reset on a separate thread (cliff 17.33 → 16.54 ms, 54.8 → 56.7 fps;
+  `WWHD_VK_ASYNC_POOL_RESET=0`); leaner native draw preparation (cliff 17.41 → 16.86 ms; `WWHD_NATIVE_DRAW_LEAN=0`);
+  trees, wooden props, magma, sea waves and other repeated scenery in batches (cliff −0.72 ms, 54.1 → 56.0 fps; lava
+  room −0.89 ms, 46.4 → 49.4 fps; Forbidden Woods −0.29 ms; `WWHD_NATIVE_DRAW_BATCH_SITES`); 3D line effects reuse
+  their state (lava room −0.16 ms; `WWHD_NATIVE_DRAW_GATHER=0`); particle effects rebuild their GPU state less often
+  (lava room −0.36 ms, about +1 fps; `WWHD_NATIVE_DRAW_KEEP=0`); model and effect draws handed over as one compact
+  command (cliff −0.2 ms render, −0.45 ms recording thread; `WWHD_NATIVE_PAR_DECIDE=0` /
+  `WWHD_NATIVE_J3D_DESC_SUPPORT2=0`); UI and text draws reuse their prepared state (cliff −0.1 ms, Windfall pier
+  −0.15 ms; `WWHD_NATIVE_PKT_PERSIST=0`).
+- **Fast mode: less game logic per frame, and every game function runs decompiled** (#471, #474, #482, #522, #524,
+  #526, #541). All 38,834 functions run decompiled, including Link's player code, the camera, the Picto Box, sailing,
+  the title screen and file select; the port's features there work through port points. Decompiled functions call
+  each other natively, calls are bound at link time and the whole game is linked with ThinLTO where the machine
+  allows (on the Mac too, with Xcode's link-time optimizer; about 2 minutes more at the final link;
+  `WWHD_DECOMP_FAST_WHOLE_LTO=OFF`), math library calls take a direct path (sqrtf checked against the original on
+  all 2^32 inputs; on by default since #482), message queues wake receivers only when they sleep (`WWHD_MSGQ_FAST`),
+  and helpers, local variables, text strings and the environment-light lookup take shorter paths (each with an off
+  switch: `WWHD_DECOMP_FAST_LOCAL`, `_STR`, `_A3_FN`, `_PTR_SUB`, `_LEAF`, `-DWWHD_DECOMP_FAST_<NAME>=OFF`). The speed
+  steps are on by default in fast mode. Measured on a Xiaomi 14: the first fast mode 17.2 → 15.1 ms game logic per
+  step (#471), worker threads waiting briefly before sleeping about −1 ms (#474), all functions decompiled 13.9 →
+  11.9 ms at the cliff (#522), message queues 10.7 → 9.6 ms (#524), local variables, strings and direct calls about
+  −0.5–0.7 ms, and #541's helpers 10.2 → 9.5 ms plus −0.17 ms for the light lookup. Fixed on the way: a crash entering
+  Ice Ring Isle (decomp submodule f95e38b) and one after the file select. The decompilation submodule points to its
+  latest public version (field names, the original assert texts).
+- **Classic Wind Waker checked in the decompiled code** (#475, follow-up to #470); takes effect with the next decomp
+  update.
+- **Building the decomp version** (#532, #540, #578, #580, #583). A plain checkout of the public decompilation
+  configures and builds (the game is read from `WWHD_DECOMP_GAME`), also for the fast build. Rebuilds are much faster:
+  the declaration table is cached per source file (2–4 minutes after a `.cpp` edit instead of 13–17), `gen.py` and
+  `native_rules.py` skip unchanged inputs (a no-change reconfigure 16 s instead of about 13 minutes;
+  `native_rules.py` about 30 seconds after an edit instead of 7–16 minutes), `ccache` is used when installed, and
+  Android builds rebuild only what changed (about 1.5 minutes with no change, 11–19 minutes after a decomp edit;
+  `STABLE_SRC=1` in `android/build_native.sh`; the LTO cache is capped at 3 GB, `WWHD_DECOMP_LTO_CACHE_POLICY`). Also
+  fixed: build folders could keep an outdated live-in table. `WWHD_DECOMP_BUILD_CACHE=off` and
+  `-DWWHD_DECOMP_CCACHE=OFF` turn the caches off.
+- The normal build is unchanged by everything in this section.
+
+### Build and testing
+
+- **Backup build pipeline for GitLab** (#570). A dormant GitLab CI copy of the GitHub workflows, so a private GitLab
+  mirror can build and publish releases if the GitHub project ever becomes unavailable. It never runs on its own and
+  has no effect on the GitHub builds. See `docs/gitlab-ci.md`.
+- **macOS: Metal-only builds link again** (#508, thanks @fayep). The Vulkan crash hook is only compiled into builds
+  with Vulkan.
+
 ## v0.5.1
 
 ### Thanks

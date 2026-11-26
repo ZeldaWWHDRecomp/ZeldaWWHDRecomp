@@ -59,6 +59,15 @@ def atomic_json(path, value):
         temporary.unlink(missing_ok=True)
 
 
+def record_version(value):
+    """the game version a selection record (AndroidGame's active/previous/normal.json) names: "recomp", "decomp" or
+    "both" (records written before the choice: "both" when they have the decomp version's keys)"""
+    version = value.get("game_version")
+    if version in ("recomp", "decomp", "both"):
+        return version
+    return "both" if ("decomp_library" in value or "decomp_error" in value) else "recomp"
+
+
 class Adapter:
     def __init__(self, package, storage, port_revision, emit=lambda event: None,
                  pause_requested=lambda: False):
@@ -416,15 +425,23 @@ class Adapter:
             raise ValueError("positive jobs and a validated toolchain identity required")
         generated = Path(generated).resolve()
         roots = [Path(path).resolve() for path in
-                 (header_roots if header_roots is not None else [self.package / "sdk"])]
+                 (header_roots if header_roots is not None else self.gamecode_header_roots(manifest))]
+        # Per object, by its inputs (as the desktop's code-objects cache): an object is reused when its source,
+        # every header the game code can include, the compiler and the flags are unchanged. Not by the release
+        # (port_revision) or the whole generated tree, so an app update recompiles only the sources that
+        # changed. The installer counts by the code that makes the compile command. The compiler is known by its
+        # bundle identity: its programs' folder (the APK's native-lib folder) gets a new random name on every app
+        # update, so the command counts with that folder as a fixed name (as setup.object_cache does).
+        native = os.path.dirname(toolchain.cc[0])
+        command = [arg.replace(native, "<native-lib>") if native else arg for arg in toolchain.cc]
         identity = hashlib.sha256(json.dumps({
-            "port_revision": self.port_revision,
-            "installer": self.hash_file(self.package / "tools/installer/setup.py"),
-            "generated": self.hash_tree(generated),
-            "headers": {str(path): self.hash_tree(path) for path in roots},
+            "installer": self.compile_code_identity(),
+            "headers": {str(path.relative_to(self.package)) if path.is_relative_to(self.package) else str(path):
+                        self.hash_tree(path) for path in roots},
             "toolchain": toolchain_identity,
-            "command": toolchain.cc, "environment": toolchain.env,
+            "command": command, "environment": toolchain.env,
             "flags": manifest["gamecode_cflags"],
+            "debug_info": os.environ.get("WWHD_SETUP_DEBUG_INFO", ""),
         }, sort_keys=True).encode()).hexdigest()
         stage = self.storage / ("compile-" + identity)
         objects = stage / "obj"
@@ -477,9 +494,11 @@ class Adapter:
             if destination.parent != objects or source.parent != generated:
                 raise RuntimeError("compiler paths outside this stage")
             marker = destination.with_suffix(destination.suffix + ".json")
+            source_sha = self.hash_file(source)
             try:
                 record = json.loads(marker.read_text())
-                if record["identity"] == identity and record["sha256"] == self.hash_file(destination):
+                if (record["identity"] == identity and record.get("source") == source_sha
+                        and record["sha256"] == self.hash_file(destination)):
                     completed("reused", source)
                     return SimpleNamespace(returncode=0, stdout=b"")
             except (OSError, ValueError, TypeError, KeyError):
@@ -503,7 +522,7 @@ class Adapter:
                 with pending.open("rb") as stream:
                     os.fsync(stream.fileno())
                 os.replace(pending, destination)
-                atomic_json(marker, {"identity": identity, "sha256": self.hash_file(destination)})
+                atomic_json(marker, {"identity": identity, "source": source_sha, "sha256": self.hash_file(destination)})
                 completed("compiled", source)
                 return SimpleNamespace(returncode=0, stdout=output)
             finally:
@@ -522,6 +541,73 @@ class Adapter:
                    "bytes": sum(Path(path).stat().st_size for path in result)})
         self.boundary()
         return result
+
+    def gamecode_header_roots(self, manifest):
+        """The header folders the game code is compiled against: the flags' -I{sdk}/... (the runtime's objects and
+        libraries in sdk/ do not change an object)."""
+        roots = []
+        for flag in manifest.get("gamecode_cflags", []):
+            if flag.startswith("-I{sdk}"):
+                path = self.package / "sdk" / flag[len("-I{sdk}"):].lstrip("/")
+                if path.is_dir():
+                    roots.append(path)
+        return roots or [self.package / "sdk"]
+
+    def compile_code_identity(self):
+        import inspect
+        parts = []
+        for name in ("compile_gamecode", "gamecode_compile_flags", "debug_info_flags", "sub", "fwd"):
+            function = getattr(self.setup, name, None)
+            try:
+                parts.append(inspect.getsource(function) if function else "")
+            except (OSError, TypeError):  # no source (frozen): the whole installer
+                return self.hash_file(self.package / "tools/installer/setup.py")
+        return hashlib.sha256("\0".join(parts).encode()).hexdigest()
+
+    STAGE_PREFIXES = ("translation-", "compile-", "link-", "decomp-")
+
+    def cleanup_stages(self, keep, records_root=None, log=None):
+        """Removes this adapter's stage folders (translation-/compile-/link-<64 hex> in its storage) except `keep`
+        and the link stages the selection records name (active, previous, normal: the game, its rollback and the
+        game as it is). A record of another game version than the active one (the recompiled or the decomp version,
+        after the player switched: AndroidGame drops it at that activation) keeps nothing, as the desktop removes the
+        other version's game. Only folders this adapter creates; each removal is logged. Returns the removed names."""
+        keep = {Path(path).resolve() for path in keep}
+        named = set()
+        if records_root is not None:
+            active = None
+            for record in ("active", "previous", "normal"):
+                try:
+                    value = json.loads((Path(records_root) / (record + ".json")).read_text())
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(value, dict):
+                    continue
+                if record == "active":
+                    active = record_version(value)
+                elif active is not None and record_version(value) != active:
+                    continue
+                for key in ("library", "randomizer_files", "game", "decomp_library"):
+                    if isinstance(value.get(key), str):
+                        named.add((Path(records_root) / value[key]).resolve())
+        removed = []
+        for stage in sorted(self.storage.iterdir()):
+            name = stage.name
+            prefix = next((p for p in self.STAGE_PREFIXES if name.startswith(p)), None)
+            digest_part = name[len(prefix):] if prefix else ""
+            if (not prefix or len(digest_part) != 64 or any(c not in "0123456789abcdef" for c in digest_part)
+                    or stage.is_symlink() or not stage.is_dir()):
+                continue
+            resolved = stage.resolve()
+            if resolved in keep or any(path == resolved or resolved in path.parents for path in named):
+                continue
+            size = sum(f.stat().st_size for f in stage.rglob("*") if f.is_file())
+            shutil.rmtree(stage)
+            removed.append(name)
+            message = "removed old setup stage %s (%d MiB)" % (name, size >> 20)
+            (log or (lambda text: None))(message)
+            self.emit({"stage": "cleanup", "state": "removed", "folder": name, "bytes": size})
+        return removed
 
     def link(self, toolchain, manifest, objects, toolchain_identity, native_run,
              sdk_roots=None):

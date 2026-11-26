@@ -46,7 +46,7 @@ const uint32_t fn_changeState = GC(0x020063C0);   // hdIngameChangeState(machine
 const uint32_t fn_menuExecute = GC(0x0270E4E4);   // hdIngameUi_c::menuExecute
 const uint32_t fn_setMode = GC(0x02618094);       // hdInputManager::setMode(this, mode): 1 if switched
 const uint32_t kPlay = GD(0x1046F0B0);            // g_dComIfG_gameInfo.play
-const uint32_t kLinkPtr = kPlay + 0x5B34;         // its mpPlayerPtr[0]: daPy_lk_c
+const uint32_t kLinkPtr = kPlay + GI(0x5B34);         // its mpPlayerPtr[0]: daPy_lk_c
 constexpr uint32_t kActorPos = 0x314, kShapeAngleY = 0x32A, kLinkProc = 0x65F0;
 
 constexpr int kSettleFrames = 20;    // the in-game UI has been in this state this long (fades, arrival)

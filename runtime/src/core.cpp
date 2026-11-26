@@ -25,6 +25,7 @@
 
 #include "recomp_table.h"
 #include "runtime.h"
+#include "rpx_relocs.h"
 #include "guest_module_entry.h"
 #include "mods/guest_mods.h"
 #include "native_text_startup_seal.h"
@@ -194,21 +195,35 @@ bool load_rpx(const std::string& path, LoadedModule& out) {
     uint16_t shentsize = be16(&d[0x2E]), shnum = be16(&d[0x30]);
     out.entry = be32(&d[0x18]);
     out.data_end = 0;
+    std::vector<rpx_relocs::Section> sections(shnum);
+    std::vector<uint32_t> sizes(shnum);
+    for (int i = 0; i < shnum; i++) {
+        const uint8_t* sh = &d[shoff + i * shentsize];
+        rpx_relocs::Section& s = sections[i];
+        s.type = be32(sh + 4); s.flags = be32(sh + 8); s.addr = be32(sh + 12);
+        uint32_t off = be32(sh + 16), size = be32(sh + 20);
+        s.link = be32(sh + 24); s.info = be32(sh + 28);
+        sizes[i] = size;
+        if (s.type != 8 && size) {
+            if (s.flags & 0x08000000) {
+                uLongf dlen = be32(&d[off]);
+                s.data.resize(dlen);
+                if (uncompress(s.data.data(), &dlen, &d[off + 4], size - 4) != Z_OK) fatal("zlib error in section %d", i);
+            } else {
+                s.data.assign(d.begin() + off, d.begin() + off + size);
+            }
+        }
+    }
+    // what the system loader writes: relocations to the module's own symbols (issue #383, rpx_relocs.h)
+    long relocated = rpx_relocs::apply(sections);
+    if (relocated < 0) fatal("%s has a relocation outside its section", path.c_str());
+    out.relocated = (uint32_t)relocated;
     std::vector<crash_memory::Section> diagnostic_sections;
     size_t diagnostic_bytes = 0;
     for (int i = 0; i < shnum; i++) {
-        const uint8_t* sh = &d[shoff + i * shentsize];
-        uint32_t type = be32(sh + 4), flags = be32(sh + 8), addr = be32(sh + 12), off = be32(sh + 16), size = be32(sh + 20);
-        std::vector<uint8_t> data;
-        if (type != 8 && size) {
-            if (flags & 0x08000000) {
-                uLongf dlen = be32(&d[off]);
-                data.resize(dlen);
-                if (uncompress(data.data(), &dlen, &d[off + 4], size - 4) != Z_OK) fatal("zlib error in section %d", i);
-            } else {
-                data.assign(d.begin() + off, d.begin() + off + size);
-            }
-        }
+        const rpx_relocs::Section& s = sections[i];
+        uint32_t type = s.type, flags = s.flags, addr = s.addr, size = sizes[i];
+        const std::vector<uint8_t>& data = s.data;
         if (type == 0x80000004 && data.size() >= 0x30) {  // RPL file info
             out.sda_base = be32(&data[0x24]);
             out.sda2_base = be32(&data[0x28]);

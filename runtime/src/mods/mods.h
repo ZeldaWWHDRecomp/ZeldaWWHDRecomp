@@ -77,6 +77,9 @@ public:
 private:
     uint32_t slot_ = 0, game_ = 0;
 };
+// fpcM_Execute's hook (game_hooks.cpp): true = this process waits this step (walk_doors.cpp: the new actors of a room
+// a walk-through door just showed wait as in the door scene)
+bool walk_doors_hold(uint32_t proc);
 bool fast_scenes();
 void set_fast_scenes(bool on);
 // Instant text and No pauses in texts (instant_text.cpp): message boxes show their whole text at once; the
@@ -85,6 +88,10 @@ bool instant_text();
 void set_instant_text(bool on);
 bool no_text_pauses();
 void set_no_text_pauses(bool on);
+// Fix original game bugs (game_fixes.cpp): fixes of the original game's own bugs, on by default; off, the game
+// behaves exactly as the original.
+bool fix_game_bugs();
+void set_fix_game_bugs(bool on);
 void instant_text_step();
 
 // Optional enemy targeting assistance. Off preserves the game's targeting unchanged.
@@ -146,6 +153,9 @@ void set_sail_speed_normal_factor(float factor);
 float sail_speed_swift_factor();          // the HD Swift Sail
 void set_sail_speed_swift_factor(float factor);
 bool auto_wind();                         // the wind follows the boat with the normal sail too
+// ---- speedrun (speedrun.cpp; Settings > Mods > More > Speedrun) ----
+bool classic_wind_waker();                // HD's two Wind Waker checks off: the dive and dry storage work again
+void set_classic_wind_waker(bool on);
 // ---- jump anywhere (jump.cpp; settings in traversal_settings.cpp) ----
 bool jump_anywhere();                     // the jump button jumps from standing or running
 void set_jump_anywhere(bool on);
@@ -221,6 +231,8 @@ void touch_talk_reset();  // a state load
 // code mods (guest_mods.cpp, guest_live.h): the touches their claims got and their input filters, on the game's
 // controller reads after the port's own filters
 void guest_pad_filter(Cpu* c, input::PadState& p, bool repeat);
+// ... and before everything else that reads the GamePad's finger: the code mods' GamePad claims take theirs
+void guest_gamepad_touch(input::PadState& p, bool repeat);
 // a finger on the TV picture (Finger::Kind: 0 down, 1 move, 2 up, 3 cancel), layout units (centre, +y up)
 void touch_talk_finger(int kind, float x, float y);
 bool touch_talk_claims();  // a finger landing on the picture is the talk's now
@@ -288,7 +300,7 @@ MoveHud move_hud();
 // ---- the gameplay HUDs and the game's own screens (hud_gate.cpp) ----
 // once per frame on the game thread (interp.cpp, frame start): reads whether a game menu, an event
 // or a message is up and advances the HUDs' fade over it
-void hud_service();
+void hud_service(Cpu* c);
 // what the game shows over gameplay now: an event, a message, a menu (hud_visibility.h GameUi); game thread
 struct GameUi;
 GameUi game_ui_now();

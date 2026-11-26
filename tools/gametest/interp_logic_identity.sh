@@ -97,7 +97,7 @@ fi
 for f in ${=FPS:-30 60 120}; do
   [ $f = 30 ] && continue
   echo "== 30 fps vs $f fps"
-  python3 $here/compare.py $out/new30 $out/new$f $end || bad=1
+  INTERP_OK=1 python3 $here/compare.py $out/new30 $out/new$f $end || bad=1  # (interpolation on by design here)
 done
 if [ -n "${BASE:-}" ]; then
   echo "== base build vs this build, 30 fps"

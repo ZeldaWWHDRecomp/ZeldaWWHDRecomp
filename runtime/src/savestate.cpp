@@ -136,7 +136,7 @@ namespace aspect { void ss_reset(); }
 namespace button_glyphs { void ss_reset(); }
 namespace dispatch { std::vector<std::pair<uint32_t, std::string>> host_functions(); }
 
-namespace interp { uint64_t logic_steps(); }
+namespace interp { uint64_t logic_steps(); bool hold_pass(); }
 namespace ss {
 namespace {
 
@@ -459,8 +459,31 @@ bool write_memory_slot(int slot,const Header& h,const Writer& metadata,const std
     return host::replace_file(tmp,(destination.empty()?slot_path(slot):destination));
 }
 
+// the build kind this executable writes into its full states (full_state_header.h kBuildKindMask)
+constexpr uint32_t kOwnBuildKind =
+#if defined(WWHD_DECOMP_FAST)
+    2;
+#elif defined(WWHD_DECOMP)
+    1;
+#else
+    0;
+#endif
+// scripted comparisons load one full state into builds of different kinds (tools/gametest, the decomp build's A/B
+// checks): their test variables, or WWHD_STATE_ANY_BUILD=1, allow it; a player's load is refused
+bool cross_build_allowed() {
+    static const bool on = [] {
+        for (const char* t : {"WWHD_STATE_ANY_BUILD", "WWHD_STATE_LOAD_AT", "WWHD_TEST_LOAD"})
+            if (const char* v = getenv(t); v && *v && strcmp(v, "0")) return true;
+        return false;
+    }();
+    return on;
+}
 bool read_header(FILE* f, Header& h, std::string& why) {
     if (!read_full_state_header(f, h, why)) return false;
+    if (const uint32_t kind = build_kind(h.reserved); kind != kOwnBuildKind && !cross_build_allowed()) {
+        why = std::string("full state of the ") + build_kind_name(kind) + "; it loads only there (use a portable state)";
+        return false;
+    }
     if (!full_state_version_supported(h.version)) { why = "saved by another version"; return false; }
     if (!memchr(h.area,0,sizeof h.area)) {why="invalid state area";return false;}
     if (h.cpu_size != sizeof(Cpu)) { why = "saved by an incompatible build"; return false; }
@@ -645,7 +668,7 @@ bool do_save_fast(int slot, const std::string& destination, std::function<void(b
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kFastVersion;
-    h.reserved = g_save_profile.empty() ? 0 : kRequiresSaveProfile;
+    h.reserved = (g_save_profile.empty() ? 0 : kRequiresSaveProfile) | (kOwnBuildKind << kBuildKindShift);
     h.header_size = sizeof(Header);
     h.created = (uint64_t)time(nullptr);
     std::string stage = stage_name();
@@ -769,7 +792,7 @@ bool do_save_streaming(int slot, const std::string& destination, std::function<v
     Header h{};
     memcpy(h.magic, kMagic, 8);
     h.version = kVersion;
-    h.reserved = g_save_profile.empty() ? 0 : kRequiresSaveProfile;
+    h.reserved = (g_save_profile.empty() ? 0 : kRequiresSaveProfile) | (kOwnBuildKind << kBuildKindShift);
     h.header_size = sizeof(Header);
     h.created = (uint64_t)time(nullptr);
     std::string stage = stage_name();
@@ -979,8 +1002,8 @@ const uint32_t kPlay = GD(0x1046F0B0);              // g_dComIfG_gameInfo.play (
 const uint32_t kStartStage = kPlay + 0x5134;    // dStage_startStage_c: name[8], point s16, room s8, layer s8
 const uint32_t kNextStage = kPlay + 0x5140;     // dStage_nextStage_c: the same + enabled, wipe
 const uint32_t kStageData = kPlay + 0x5150;     // dStage_stageDt_c (getStagInfo: vtable +0x15C)
-const uint32_t kLinkPtr = kPlay + 0x5B34;       // mpPlayerPtr[0]: daPy_lk_c
-const uint32_t kShipPtr = kPlay + 0x5B3C;       // dComIfGp_getShipActor: daShip_c (0 without a boat)
+const uint32_t kLinkPtr = kPlay + GI(0x5B34);       // mpPlayerPtr[0]: daPy_lk_c
+const uint32_t kShipPtr = kPlay + GI(0x5B3C);       // dComIfGp_getShipActor: daShip_c (0 without a boat)
 constexpr uint32_t kActorPos = 0x314, kActorRoom = 0x326, kShapeAngleY = 0x32A;  // fopAc_ac_c (WWHD)
 constexpr uint32_t kLinkProc = 0x65F0;              // daPy_lk_c::mCurProc
 constexpr uint32_t kInfo = 0x20;                    // dSv_info_c in the save area
@@ -1059,11 +1082,11 @@ bool gameplay_ready(std::string& why, bool& retry) {
 // while the Telescope or the Picto Box aims; that is left out (Link restarts standing, harmless).
 // Updated every frame for the event delay.
 const uint32_t kEventRun = kPlay + 0x5292;     // dComIfGp_event_runCheck (dEvt_control_c mode)
-const uint32_t kMesgStatus = kPlay + 0x5BB2;   // dComIfGp_getMesgStatus (messageState 025F795C)
-const uint32_t kScopeMesgStatus = kPlay + 0x5BB3;
+const uint32_t kMesgStatus = kPlay + GI(0x5BB2);   // dComIfGp_getMesgStatus (messageState 025F795C)
+const uint32_t kScopeMesgStatus = kPlay + GI(0x5BB3);
 const uint32_t kMenuFlag = GD(0x101EA069);         // dMenu_flag (025986BC)
-const uint32_t kPlayerPtr = kPlay + 0x5B2C;    // mpPlayer[0]: the controlled actor
-const uint32_t kPlayerStatus0 = kPlay + 0x5CD8; // dComIfGp_checkPlayerStatus0 (mPlayerStatus[0][0])
+const uint32_t kPlayerPtr = kPlay + GI(0x5B2C);    // mpPlayer[0]: the controlled actor
+const uint32_t kPlayerStatus0 = kPlay + GI(0x5CD8); // dComIfGp_checkPlayerStatus0 (mPlayerStatus[0][0])
 constexpr uint32_t kSttsRope = 0x00800000;          // daPyStts0_UNK800000_e: set by Link's rope procedures (procRope*)
 const uint32_t fn_ovlpDoingReq = GC(0x025DBE38);   // fopOvlpM_IsDoingReq (a wipe or scene overlap runs)
 int g_event_wait = 0;                              // d_menu_window.cpp event_wait_frame
@@ -1475,7 +1498,7 @@ void service_portable_load(Cpu* c) {
             p.s->stage.c_str(), p.s->room, p.s->layer, p.s->pos[0], p.s->pos[1], p.s->pos[2]);
         if (g_fixed_seed) {
             g_fixed_seed_boot.mark();
-            g_fixed_seed_load.start(ld32(GD(0x101FF560)));  // written once the old stage is gone (service)
+            g_fixed_seed_load.start(ld32(GD(0x101FF560)), interp::logic_steps());  // written once the old stage is gone (service)
         }
         if (current_log >= 0 && current_log <= 2 && current_log != p.s->file_slot) {
             // decision: loading goes into the Quest Log being played; say so when the state is from another one
@@ -1587,16 +1610,22 @@ bool newer_is_portable(int slot) {
     return port;
 }
 
-// test aid: WWHD_STATE_SAVE_AT=frame:slot,...  WWHD_STATE_LOAD_AT=frame:slot,... (TV frames)
-struct Timed { uint64_t frame; int slot; };
+// test aid: WWHD_STATE_SAVE_AT=frame:slot,...  WWHD_STATE_LOAD_AT=frame:slot,... (TV frames; with WWHD_TEST_FIXED_SEED
+// counted from the first gameplay frame). Game time instead of TV frames: an entry sN:slot is due once the logic
+// step count (interp::logic_steps) reaches N, an entry tN:slot once g_Counter.mTimer (the game's gameplay step
+// counter: no loading frames) does. A build slower than the TV clock (a step the game thread misses under host
+// load) then still acts after the same number of steps. Each such entry fires once.
+struct Timed { uint64_t frame; int slot; char clock; };  // clock: 0 = script/TV frame, 's' = logic step, 't' = mTimer
 std::vector<Timed> parse_timed(const char* var) {
     std::vector<Timed> v;
     const char* e = getenv(var);
     unsigned long long f;
     int s, n;
-    while (e && sscanf(e, "%llu:%d%n", &f, &s, &n) == 2) {
-        v.push_back({f, s});
-        e += n;
+    while (e) {
+        const char clock = *e == 't' || *e == 's' ? *e : 0;
+        if (sscanf(e + (clock != 0), "%llu:%d%n", &f, &s, &n) != 2) break;
+        v.push_back({f, s, clock});
+        e += (clock != 0) + n;
         if (*e != ',') break;
         e++;
     }
@@ -2056,10 +2085,13 @@ void service_file_save(Cpu* c);
 
 void service(Cpu* c) {
     crashrec::service();
+    static const bool step_source = (fixed_seed::set_step_source(&interp::logic_steps), true);  // WWHD_TEST_STEP_CLOCK
+    (void)step_source;
     if (g_fixed_seed && g_fixed_seed_boot.due(ld32(GD(0x101FF560)))) {
         fixed_seed::set_boot_frame(render::frame_count());
-        LOG("[test] WWHD_TEST_FIXED_SEED: TV frame %llu counts as frame %llu for scripted test aids",
-            (unsigned long long)render::frame_count(), (unsigned long long)fixed_seed::kBootFrame);
+        LOG("[test] WWHD_TEST_FIXED_SEED: TV frame %llu (logic step %llu) counts as frame %llu for scripted test aids%s",
+            (unsigned long long)render::frame_count(), (unsigned long long)interp::logic_steps(),
+            (unsigned long long)fixed_seed::kBootFrame, fixed_seed::step_clock() ? " (WWHD_TEST_STEP_CLOCK: logic steps)" : "");
         apply_fixed_seed("first gameplay frame");
     }
     // test aids (TV frames): WWHD_STATE_SAVE_AT / WWHD_STATE_LOAD_AT for full states,
@@ -2070,14 +2102,31 @@ void service(Cpu* c) {
     if (!save_at.empty() || !load_at.empty() || !psave_at.empty() || !pload_at.empty()) {
         static uint64_t last = 0;
         uint64_t f = fixed_seed::script_frame(render::frame_count());
+        // sN / tN entries: once each, when the logic step count / mTimer first reaches N (mTimer is guest state: a
+        // load moves it)
+        static std::set<const Timed*> clock_done;
+        const uint32_t timer = ld32(GD(0x101FF560));  // g_Counter.mTimer
+        const uint64_t step = interp::logic_steps();
+        auto due = [&](const Timed& t) {
+            if (!t.clock) {
+                if (!(t.frame > last && t.frame <= f)) return false;
+            } else {
+                if ((t.clock == 's' ? step : timer) < t.frame || clock_done.count(&t)) return false;
+                clock_done.insert(&t);
+            }
+            LOG("[test] timed test aid due: entry %s%llu, script frame %llu (TV %llu), mTimer %u, logic step %llu%s",
+                t.clock == 's' ? "s" : t.clock == 't' ? "t" : "", (unsigned long long)t.frame, (unsigned long long)f, (unsigned long long)render::frame_count(),
+                timer, (unsigned long long)step, interp::hold_pass() ? " (hold pass)" : "");
+            return true;
+        };
         for (auto& t : save_at)
-            if (t.frame > last && t.frame <= f) request_save_full(t.slot);
+            if (due(t)) request_save_full(t.slot);
         for (auto& t : load_at)
-            if (t.frame > last && t.frame <= f) request_load(t.slot);
+            if (due(t)) request_load(t.slot);
         for (auto& t : psave_at)
-            if (t.frame > last && t.frame <= f) request_save_portable(t.slot);
+            if (due(t)) request_save_portable(t.slot);
         for (auto& t : pload_at)
-            if (t.frame > last && t.frame <= f) request_load_portable_file(slot_path(t.slot, pstate::kExtension));
+            if (due(t)) request_load_portable_file(slot_path(t.slot, pstate::kExtension));
         last = f;
     }
     static bool env_load = [] {
@@ -2090,7 +2139,8 @@ void service(Cpu* c) {
     service_auto_save();
     // test aid: WWHD_TEST_WARP_AT=frame:stage:room:point[,...] enters that stage (the world editor's warp, the game's
     // own stage change at a spawn point) at each TV frame; a warp the game refuses then (no control yet) is retried
-    // every 30 frames until the next one is due
+    // every 30 frames until the next one is due. frame:stage:room:@x:y:z:angle is the editor's position form (Link's
+    // restart point in that room, as a void-out restarts it), for rooms without a spawn point of their own
     static std::vector<std::pair<uint64_t, Warp>> warps = [] {
         std::vector<std::pair<uint64_t, Warp>> v;
         const char* e = getenv("WWHD_TEST_WARP_AT");
@@ -2100,8 +2150,14 @@ void service(Cpu* c) {
             all = comma == std::string::npos ? "" : all.substr(comma + 1);
             unsigned long long frame = 0;
             char stage[16] = {};
-            int room = 0, point = 0;
-            if (sscanf(item.c_str(), "%llu:%15[^:]:%d:%d", &frame, stage, &room, &point) == 4) {
+            int room = 0, point = 0, angle = 0;
+            float x = 0, y = 0, z = 0;
+            if (sscanf(item.c_str(), "%llu:%15[^:]:%d:@%f:%f:%f:%d", &frame, stage, &room, &x, &y, &z, &angle) == 7) {
+                Warp w;
+                w.stage = stage, w.room = room, w.angle = angle, w.at_position = true;
+                w.pos[0] = x, w.pos[1] = y, w.pos[2] = z;
+                v.push_back({frame, w});
+            } else if (sscanf(item.c_str(), "%llu:%15[^:]:%d:%d", &frame, stage, &room, &point) == 4) {
                 Warp w;
                 w.stage = stage, w.room = room, w.point = point;
                 v.push_back({frame, w});
@@ -2135,7 +2191,7 @@ void service(Cpu* c) {
     service_file_save(c);  // world editor test states
     if (int slot = g_psave_req.exchange(0)) do_portable_save(c, slot);
     if (g_fixed_seed) {  // (before service_portable_load: a load applied now is followed from the next boundary on)
-        switch (g_fixed_seed_load.step(ld32(GD(0x101FF560)))) {
+        switch (g_fixed_seed_load.step(ld32(GD(0x101FF560)), interp::logic_steps())) {
         case fixed_seed::LoadGate::kLoading: apply_fixed_seed("portable state: loading the new stage"); break;
         case fixed_seed::LoadGate::kArrived:
             apply_fixed_seed("portable state: first frame in the new stage");
@@ -2233,6 +2289,11 @@ void service_warp(Cpu* c) {
     // the game loads the stage's Stage archive (dStage_infoCreate halts the game without its stage.dzs): only a
     // stage it can load, an installed mod stage or one of the game's files, is ever written as the next stage
     if (!warp_stage_loadable(p.w.stage, p.w.room, why)) return finish(false, why);
+    // the title screen, the file select and the ending are no place to play: gameplay_ready refuses every warp from
+    // them, so a warp there could not be left with another one (and the ending's demo needs the archive its event
+    // loads: the game halts without it)
+    if (p.w.stage == "sea_T" || p.w.stage == "Name" || p.w.stage == "ENDumi")
+        return finish(false, "the stage " + p.w.stage + " is the title screen, the file select or the ending, not a place to play");
     if (!gameplay_ready(why, retry) || !player_has_control(c, why)) return finish(false, why);
     const uint32_t sv = ld32(kSaveInfoPtr);
     char name[8] = {};

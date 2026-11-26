@@ -1423,6 +1423,11 @@ scene's `end.then`; at the end of a demo that carries Link (see
 makes a ride into the stage. It fails (and stops the sequence) when the stage is
 not built.
 
+`{"action": "appearance"}` opens the port's colour page of Link's look once the talk has ended (manager
+version 1.11.0): Link stands in a close camera and the player chooses his colours with a live preview (see
+[Link's appearance](mod-sdk-v2.md#links-appearance)). It takes no other field, works without the Story Notebook,
+and fails (stopping the sequence) with no save file played.
+
 `{"action": "give", "id": "chart:keeper-map"}` gives Link one of your treasure charts
 (declared in the same manifest's `charts`, see
 [Charts and markers](mod-sdk-v2.md#charts-and-markers)). It works like a chart a letter

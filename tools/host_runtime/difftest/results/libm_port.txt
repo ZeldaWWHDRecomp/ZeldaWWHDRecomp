@@ -1,0 +1,8 @@
+# libmport: fast mode's libm ports (runtime/src/hostrt/hostrt_libm.cpp) vs the recompiled originals, 2026-11-07
+# (port 5600309a7 + stepg-libm, gen-decomp of wt-decomp-speed; macOS arm64, 8 threads). Per input every other
+# register randomised (both FPR lanes, f1.ps1 = the argument for half the inputs, GPRs, CR, LR) and the guest stack
+# around the call filled at random; compared: all GPRs, both lanes of all FPRs, CR, LR, CTR, XER, FPSCR, import calls
+# (__gh_set_errno with its registers), guest stack SP-0x100..SP+0x40. Mutation check: three one-token mutations of
+# the port (guess constant, saved f31 lane, LR restore) each fail on > 49% of 200k inputs.
+sqrtf: 4294967296 inputs (all 2^32 single inputs), 2155872254 with an import call, 0 differ -> EXACT
+sqrtf: 2000000 inputs (random doubles + edge set), 1000812 with an import call, 0 differ -> EXACT

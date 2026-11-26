@@ -23,6 +23,19 @@ class LifecycleHelpers(unittest.TestCase):
             self.assertEqual(actual['downloads']['all']['size'],package.stat().st_size)
             with self.assertRaises(ValueError):
                 local_catalogue({'mods':[]},package,root/'bad')
+            with zipfile.ZipFile(package,'w') as archive:
+                archive.writestr('manifest.json',json.dumps({'id':'example','version':'1.0','minimum_manager_version':'1.13.0','kind':'guest'}))
+                archive.writestr('mod.elf',b'\x7fELF\x01\x02__wwhd_ginfo_0x5B2C')
+            entry['port_versions']={'minimum':'0.5.1'}
+            with self.assertRaises(ValueError):
+                local_catalogue({'mods':[entry]},package,root/'old-port')
+            entry['port_versions']={'minimum':'0.5.2'}
+            local_catalogue({'mods':[entry]},package,root/'new-port')
+            with zipfile.ZipFile(package,'w') as archive:
+                archive.writestr('manifest.json',json.dumps({'id':'example','version':'1.0','minimum_manager_version':'1.12.0','kind':'guest'}))
+                archive.writestr('mod.elf',b'\x7fELF\x01\x02__wwhd_ginfo_0x5B2C')
+            with self.assertRaises(ValueError):
+                local_catalogue({'mods':[entry]},package,root/'old-manager')
 
     def test_selected_build_requires_actual_mode_binary_and_hash_provenance(self):
         with tempfile.TemporaryDirectory() as temporary:

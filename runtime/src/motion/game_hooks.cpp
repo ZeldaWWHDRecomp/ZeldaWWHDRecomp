@@ -12,10 +12,20 @@
 // the GamePad, through the same camera code (bow, hookshot, boomerang, telescope, Picto Box, grappling hook,
 // R3 look), with its Gyro option, its 0.1 right-stick dead zone (now the Pro Controller's stick) and its
 // per-frame calibration. With the gyro source off nothing changes.
+//
+// The mouse source (issue #525): the game's Options > Gyro switch, which 02618604 checks first, is a GamePad
+// setting; a player who picks the mouse as the aim device should not also need it. While the mouse source
+// drives the aim (the game aims: first person, bow, hookshot, boomerang, grappling hook, ...), the camera
+// reads the switch as on; the saved option is not changed. Controller, device and Cemuhook gyro keep the
+// game's switch.
 #include "input.h"
 #include "motion.h"
 #include "runtime.h"
 
+// 02618604 (orientation), right after `bl 0271FC30` (the Options > Gyro switch, options +5): r3 = 1 when on
+extern "C" void site_02618634(Cpu* c) {
+    c->r[3] = motion::game_gyro_switch(c->r[3] != 0) ? 1 : 0;
+}
 // 02618604 (orientation), right after `bl 02617AE4` (is the mode 0?): r3 = its answer
 extern "C" void site_0261864C(Cpu* c) {
     if (c->r[3] != 0 && input::pro_controller() && motion::drives_gamepad()) c->r[3] = 0;

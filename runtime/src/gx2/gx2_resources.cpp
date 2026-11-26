@@ -9,6 +9,11 @@
 #include "gx2_texture_regs.h"
 #include "runtime.h"
 #include "../aspect.h"
+#include "native_coverage.h"
+#ifdef WWHD_DECOMP_FAST
+#include "../cheapib/cheapib.h"  // the in-between verify's declared block sizes (WWHD_CHEAPIB_VERIFY)
+#include "../drawoff/drawoff.h"
+#endif
 
 using namespace Latte;
 using gx2::set_reg;
@@ -47,8 +52,13 @@ uint32 color_buffer_address(const GX2::GX2ColorBuffer* cb) {
 }  // namespace gx2
 
 HLE(gx2, GX2SetColorBuffer) {
+    NATIVE_COVERAGE(kTarget, c->lr, 1, 0);
     auto* cb = gp<GX2::GX2ColorBuffer>(arg(c, 0));
     uint32 target = arg(c, 1) & 7;
+#ifdef WWHD_DECOMP_FAST
+    // drawoff (drawoff/drawoff.h): the CPU may read a linear-aligned target back after a DrawDone
+    if ((uint32)cb->surface.tileMode.value() == 1) drawoff::linear_target();  // (TM_LINEAR_ALIGNED)
+#endif
     set_reg(mmCB_COLOR0_BASE + target, gx2::color_buffer_address(cb));  // full address; our renderer's convention
     set_reg(mmCB_COLOR0_SIZE + target, cb->reg_size);
     set_reg(mmCB_COLOR0_VIEW + target, cb->reg_view);
@@ -66,6 +76,7 @@ HLE(gx2, GX2SetColorBuffer) {
 }
 
 HLE(gx2, GX2SetDepthBuffer) {
+    NATIVE_COVERAGE(kTarget, c->lr, 1, 1);
     auto* db = gp<GX2::GX2DepthBuffer>(arg(c, 0));
     uint32 info = ((uint32)db->surface.tileMode.value() & 0xF) << 15;
     switch (db->surface.format.value()) {
@@ -143,6 +154,9 @@ HLE(gx2, GX2SetGeometrySamplerBorderColor) { set_border(REGADDR::TD_GS_SAMPLER0_
 HLE(gx2, GX2SetVertexShader) {
     gx2::ShaderBindRegs tmp;  // only the registers the bind writes are forwarded
     uint32 vs = arg(c, 0);
+#ifdef WWHD_DECOMP_FAST
+    cheapib::note_shader(vs, false);
+#endif
     uint32 n = std::min<uint32>(ld32(vs + 0x0C), 10), nsem = std::min<uint32>(ld32(vs + 0x40), 32);
     gx2::bind_vertex_shader_regs(tmp, vs);
     bool gs_mode = ld32(vs + 0xD8) == 2;
@@ -166,6 +180,9 @@ HLE(gx2, GX2SetVertexShader) {
 HLE(gx2, GX2SetPixelShader) {
     gx2::ShaderBindRegs tmp;
     uint32 ps = arg(c, 0);
+#ifdef WWHD_DECOMP_FAST
+    cheapib::note_shader(ps, true);
+#endif
     uint32 n = std::min<uint32>(ld32(ps + 4 * 4), 0x20);
     gx2::bind_pixel_shader_regs(tmp, ps);
     set_regs(mmSQ_PGM_START_PS, tmp.at(mmSQ_PGM_START_PS), 2);
@@ -263,7 +280,15 @@ HLE(gx2, GX2SetPixelUniformReg) { uniform_regs(0, arg(c, 0), arg(c, 1), arg(c, 2
 
 HLE(gx2, GX2SetAttribBuffer) {
     // (index, size, stride, data)
+#ifdef WWHD_DECOMP_FAST
+    // drawoff (drawoff/drawoff.h): the census notes the caller; with c1 a listed caller's buffer is read from a copy
+    // c2: a buffer bound while a list is recorded is noted for the list's call; one bound outside lists is copied now
+    const uint32 data = (drawoff::copies_on() || drawoff::g_census || drawoff::c2()) ? drawoff::attrib_source(c->lr, arg(c, 3), arg(c, 1)) : arg(c, 3);
+    if (drawoff::c2_notes() && !gx2::recording_display_list()) gx2::drawoff_vertex_overlay(drawoff::vertex_snapshot_now(arg(c, 3), arg(c, 1)));
+    uint32 w[7] = {data, arg(c, 1) - 1, (arg(c, 2) & 0xFFFF) << 11, 0, 0, 0, 0xC0000000};
+#else
     uint32 w[7] = {arg(c, 3), arg(c, 1) - 1, (arg(c, 2) & 0xFFFF) << 11, 0, 0, 0, 0xC0000000};
+#endif
     set_regs(mmSQ_VTX_ATTRIBUTE_BLOCK_START + arg(c, 0) * 7, w, 7);
 }
 

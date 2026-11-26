@@ -63,6 +63,29 @@ int main() {
         t.drop(1);
         assert(!t.pinching());
     }
+    // ---- the GamePad's finger on GamePad claims (854 x 480 from the top left)
+    {
+        Touch t;
+        PadFinger f;
+        int o;
+        Event e;
+        t.claim(0, 0, {100, 300, 200, 360});  // a button
+        assert(!f.step(t, true, 0.5f, 0.5f, o, e) && o == -1);          // lands outside: the game's
+        assert(!f.step(t, true, 150 / 854.0f, 0.7f, o, e) && o == -1);  // slides in: still the game's
+        assert(!f.step(t, false, 0, 0, o, e) && o == -1);
+        assert(!f.step(t, false, 0, 0, o, e) && o == -1);               // nothing changes, nothing sent
+        assert(f.step(t, true, 150 / 854.0f, 330 / 480.0f, o, e) && o == 0);
+        assert(e.kind == (kDown | kGamepadFlag) && std::fabs(e.x - 150) < 1e-3f && std::fabs(e.y - 330) < 1e-3f);
+        assert(f.step(t, true, 150 / 854.0f, 330 / 480.0f, o, e) && o == -1);  // held still: hidden, no event
+        assert(f.step(t, true, 0.9f, 0.1f, o, e) && o == 0 && e.kind == (kMove | kGamepadFlag));  // out: still the mod's
+        assert(!f.step(t, false, 0, 0, o, e) && o == 0 && e.kind == (kUp | kGamepadFlag) && t.finger_owner() == -1);
+        t.claim(1, 0, {120, 310, 180, 350});  // a newer claim over it wins
+        assert(f.step(t, true, 150 / 854.0f, 330 / 480.0f, o, e) && o == 1);
+        t.drop(1);  // its mod goes away mid-finger: no more events, and the game doesn't get a press mid-touch
+        assert(f.step(t, true, 151 / 854.0f, 330 / 480.0f, o, e) && o == -1);
+        assert(!f.step(t, false, 0, 0, o, e) && o == -1);
+        assert(!f.step(t, true, 150 / 854.0f, 0.1f, o, e) && o == -1);  // the next finger: the game's again
+    }
     // ---- projection: a camera at the origin looking down -z, 360 layout units per unit of x / z (fovy 90)
     {
         View v;

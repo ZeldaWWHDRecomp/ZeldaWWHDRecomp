@@ -199,7 +199,7 @@ class RandomizerSetup(unittest.TestCase):
                                 data_dir=str(data),game_dir=str(game),exe=str(data/'bin/fixture'),
                                 exe_dir=str(data/'bin'),version='test',state=lambda:json.loads((data/'install.json').read_text()))
             translated=[]
-            def translate(game_dir,gen,hooks=False):
+            def translate(game_dir,gen,hooks=False,cache_root=None):
                 translated.append(game_dir)
                 out=Path(gen);out.mkdir(parents=True)
                 (out/'randomizer.json').write_text(json.dumps(compiled))
@@ -256,7 +256,7 @@ class RandomizerSetup(unittest.TestCase):
                                 data_dir=str(data),game_dir=str(game),exe=str(data/'bin/fixture'),
                                 exe_dir=str(data/'bin'),version='test',state=lambda:{})
             # (an install made the old way, rebuilt from its installed files: Update / Repair)
-            def translate(game,gen,hooks=False):
+            def translate(game,gen,hooks=False,cache_root=None):
                 out=Path(gen);out.mkdir(parents=True)
                 (out/'randomizer.json').write_text(json.dumps(compiled))
                 (out/'table.c').write_text('const char g_guest_build_title_id[] = "'+setup.RANDOMIZER_TITLE+'";\nconst char g_guest_build_rpx_sha256[] = "'+'b'*64+'";\n')

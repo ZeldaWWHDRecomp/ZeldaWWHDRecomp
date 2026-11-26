@@ -1,8 +1,12 @@
 #include "../gamepad_backdrop.h"
+#include "latency_test.h"
 #include "gamepad_backdrop.h"
 #include "background_shaders.h"
 #include "vertex_cpu_policy.h"
 #include "dynres.h"
+#ifdef WWHD_PGO_GENERATE_BUILD
+extern "C" int __llvm_profile_write_file(void);
+#endif
 #include "platform/keycodes.h"
 #include "input_map.h"
 #include "atomic_temporary.h"
@@ -47,6 +51,7 @@
 #include "../../one_screen.h"
 #include "deferred_commands.h"
 #include "record_worker.h"
+#include "record_worker_choice.h"
 #include "submission_cpu_ack.h"
 #include "submission_pool.h"
 #include "worker_present_policy.h"
@@ -55,6 +60,7 @@
 #include "deferred_dispatch.h"
 #include "pipeline_cache_path.h"
 #include "bc_decode.h"
+#include "pass_reuse.h"
 #include "shader_compiler.h"
 #include "android_driver.h"
 #include "stutter_trace.h"
@@ -71,6 +77,7 @@
 #include "present.h"
 #include "present_worker.h"
 #include "reproj.h"
+#include "hidden_tv.h"  // WWHD_VK_SKIP_HIDDEN_TV (gpusave, on by default)
 #include "android_isolated_presenter.h"
 #include "presentation_queue.h"
 #include "gfx/display.h"
@@ -116,6 +123,20 @@
 #include <filesystem>
 #include <future>
 #include <mutex>
+#ifdef WWHD_NATIVE_DRAW
+#include "native_draw/j3d_desc_depth.h"
+#include "native_draw/j3d_desc_depth_inst.h"
+#include "batch_pass_end.h"
+#endif
+#ifdef WWHD_VK_SMOOTH
+#include "pool_reset.h"
+#include "record_mt.h"
+#include "record_tokens.h"
+#include "frame_breakdown.h"
+#include "display_timing.h"
+#include "present_ack.h"
+#include "smooth_defaults.h"
+#endif
 #ifdef __APPLE__
 #include <dlfcn.h>
 #include <mach-o/dyld.h>
@@ -171,6 +192,16 @@ uint64_t resident_bytes() {
 namespace gx2 { uint64_t flips_presented(); void checkpoint_vulkan_caches(); void shutdown_vulkan_caches(); void request_background_vulkan_cache_checkpoint(); }
 #include "../../interp.h"
 #include "../../fixed_seed.h"
+#ifdef WWHD_DECOMP_FAST
+#include "../../cheapib/cheapib.h"  // in-between frame dumps (WWHD_CHEAPIB_DUMP)
+#include "../../drawoff/drawoff.h"  // (frame dump names, test aid)
+#include "../../drawoff/gpu_cap.h"  // the paced plan's GPU time per frame (WWHD_DRAWOFF_GPU_CAP)
+#define DRAWOFF_GPU_TIMING() drawoff::gpu_cap::timing_wanted()
+#define DRAWOFF_GPU_INTERVAL(ns) drawoff::gpu_cap::gpu_interval(ns)
+#else
+#define DRAWOFF_GPU_TIMING() false
+#define DRAWOFF_GPU_INTERVAL(ns) ((void)0)
+#endif
 
 extern uint32_t g_latteCpuVertexClasses;
 extern bool g_latteCpuVertexDecode;  // Cemu GLSL attribute decoder (LatteDecompiler.h), issue #207 diagnostic
@@ -400,8 +431,8 @@ void open_compile_journal() {
     dir = host::config_dir() + "/shadercache/journal";
 #endif
   char key[256];
-  std::snprintf(key, sizeof key, "%08X %08X %08X %s %s %s", R.properties.vendorID, R.properties.deviceID,
-                R.properties.driverVersion, build::version(), build::commit(), WWHD_PIPELINE_RUNTIME_ID);
+  std::snprintf(key, sizeof key, "%08X %08X %08X %s", R.properties.vendorID, R.properties.deviceID,
+                R.properties.driverVersion, WWHD_PIPELINE_RUNTIME_ID);
   compile_journal::set_logger([](const char* line) { LOG("%s", line); });
   try { compile_journal::open(dir, key); }
   catch (const std::exception& e) { LOG("[vulkan] compile journal not opened: %s", e.what()); }
@@ -508,16 +539,18 @@ void init_pipeline_cache() try {
     put(8, R.properties.driverVersion);
     std::memcpy(fingerprint.data() + 12, R.properties.pipelineCacheUUID, VK_UUID_SIZE);
     uint64_t features = pipeline_cache_checksum(reinterpret_cast<const uint8_t*>(&R.enabledFeatures), sizeof R.enabledFeatures);
-    // Local recipes are runtime-build-specific as well as device-specific.
-    // The full current fixed state is independently checked at handoff.
-    for (const char* tag : {build::commit(), build::version(), WWHD_PIPELINE_RUNTIME_ID}) {
+    // Local recipes are specific to the code that interprets them (WWHD_PIPELINE_RUNTIME_ID: the renderer's
+    // sources, cmake/pipeline_identity_inputs.txt) as well as to the device; not to the release or commit, so an
+    // update that leaves the renderer as it was keeps them. The full current fixed state is independently
+    // checked at handoff.
+    for (const char* tag : {WWHD_PIPELINE_RUNTIME_ID}) {
       for (const unsigned char* c = reinterpret_cast<const unsigned char*>(tag); *c; ++c)
         features = (features ^ *c) * 1099511628211ull;
       features = (features ^ 0xffu) * 1099511628211ull;
     }
     for (int i = 0; i < 8; ++i) fingerprint[28 + i] = uint8_t(features >> (8 * i));
     put(36, R.properties.limits.maxDescriptorSetUniformBuffersDynamic);
-    put(40, 3); // Runtime-build identity, portable content IDs, exact descriptors and fixed-state recipe schema.
+    put(40, 4); // Pipeline runtime identity (4: without release and commit), portable content IDs, exact descriptors and fixed-state recipe schema.
     put(44, (R.portabilitySubset ? 1u : 0u) | (R.separateStencilMaskRef ? 2u : 0u) |
         (R.constantAlphaColorBlendFactors ? 4u : 0u) | (R.vertexAttributeAccessBeyondStride ? 8u : 0u) |
         (R.vertexFormats.fallbackMask << 4) | (R.vertexDiagnostics.cpuVertices ? 0x100u : 0u) |
@@ -771,6 +804,15 @@ Buffer create_readback_buffer(VkDeviceSize size) {
 // copies only add time, so R.uploadReadsDirect lets the reuse caches and the native index scan read the
 // slices. CACHED without COHERENT never counts: the arena requires COHERENT (no flush/invalidate).
 // WWHD_VK_UPLOAD_READS=auto (default) | shadow (always keep CPU copies) | direct (always read slices).
+#ifdef WWHD_NATIVE_DRAW
+#include "gx2/native_draw.h"
+// packets and multi-draw batches on (gx2/native_draw.h; by default, unless WWHD_NATIVE_DRAW=0 or WWHD_NATIVE_DRAW_MDI=0):
+// the device and upload buffers get what the packets' multi-draw batches need
+static bool packet_mdi_requested() {
+  static const bool on = native_draw::mdi_requested();
+  return on;
+}
+#endif
 namespace {
 enum class UploadReads { Auto, Shadow, Direct };
 UploadReads upload_reads_mode() {
@@ -787,7 +829,7 @@ UploadReads upload_reads_mode() {
 void note_upload_block(const Buffer& buffer) {
   const VkMemoryPropertyFlags readable =
       VK_MEMORY_PROPERTY_HOST_CACHED_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-  const bool first = R.uploadAllocations == 0;
+  const bool first = draw_counters().uploadAllocations == 0;
   const bool cached = (buffer.properties & readable) == readable && (first || R.uploadCached);
   const auto mode = upload_reads_mode();
   const bool direct = mode == UploadReads::Direct || (mode == UploadReads::Auto && cached);
@@ -800,8 +842,14 @@ void note_upload_block(const Buffer& buffer) {
 }
 }  // namespace
 static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, bool grow);
-UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) { return upload_slice(size,alignment,true); }
-UploadSlice allocate_upload_no_grow(VkDeviceSize size, VkDeviceSize alignment) { return upload_slice(size,alignment,false); }
+#ifdef WWHD_DECOMP_FAST
+// (cheapib b1, WWHD_CHEAPIB_B1_CHECK=1: the slices a captured or checked call allocates)
+#define CHEAPIB_B1_ALLOC(s) if (cheapib::g_b1_capturing && s.buffer) cheapib::b1_note_alloc(uint64_t(s.buffer), s.offset, s.size, s.mapped);
+#else
+#define CHEAPIB_B1_ALLOC(s)
+#endif
+UploadSlice allocate_upload(VkDeviceSize size, VkDeviceSize alignment) { auto s = upload_slice(size,alignment,true); CHEAPIB_B1_ALLOC(s) return s; }
+UploadSlice allocate_upload_no_grow(VkDeviceSize size, VkDeviceSize alignment) { auto s = upload_slice(size,alignment,false); CHEAPIB_B1_ALLOC(s) return s; }
 static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, bool grow) {
   size = std::max<VkDeviceSize>(size,16);
   alignment = std::max<VkDeviceSize>(alignment,4);
@@ -810,26 +858,32 @@ static UploadSlice upload_slice(VkDeviceSize& size, VkDeviceSize& alignment, boo
     if (offset > block.buffer.size || size > block.buffer.size - offset)
       return UploadSlice{};
     block.used = offset + size;
-    R.uploadBytes += size;
+    draw_counters().uploadBytes += size;
     rprof::add_upload(size);
     return UploadSlice{block.buffer.buffer,offset,size,
                        static_cast<uint8_t*>(block.buffer.mapped)+offset};
   };
-  for (auto& block : R.uploadBlocks) {
+  for (auto& block : upload_blocks()) {
     auto result = slice(block);
     if (result.buffer) return result;
   }
   if (!grow) return UploadSlice{};
-  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowBegin, 0, R.frame, size, R.uploadBlocks.size());
+  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowBegin, 0, R.frame, size, upload_blocks().size());
   auto buffer = create_buffer(std::max<VkDeviceSize>(32ull<<20,size),
       VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT |
-      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-      VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
-  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowEnd, 0, R.frame, buffer.size, R.uploadBlocks.size());
+      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT
+#ifdef WWHD_DECOMP_FAST
+      | VK_BUFFER_USAGE_TRANSFER_DST_BIT  // (cheapib b2: uniform slices refreshed in place by a copy)
+#endif
+#ifdef WWHD_NATIVE_DRAW
+      | (packet_mdi_requested() ? VkBufferUsageFlags(VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT) : 0)  // (multi-draw batches' commands)
+#endif
+      , VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+  if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::UploadGrowEnd, 0, R.frame, buffer.size, upload_blocks().size());
   note_upload_block(buffer);
-  R.uploadBlocks.push_back({buffer,0});
-  ++R.uploadAllocations;
-  return slice(R.uploadBlocks.back());
+  upload_blocks().push_back({buffer,0});
+  ++draw_counters().uploadAllocations;
+  return slice(upload_blocks().back());
 }
 void defer_buffer(Buffer b) { R.garbageBuffers.push_back(b); }
 void defer_surface_image(VkImage image, VkDeviceMemory memory,
@@ -995,6 +1049,7 @@ static void collect_gpu_timestamp_queries(Renderer::Submission& slot) {
     const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
     const double start = double(values[0].ticks & mask) * period;
     dynres::gpu_interval(start, start + double(elapsed) * period);
+    DRAWOFF_GPU_INTERVAL(double(elapsed) * period);
     return;
   }
   if (!R.gpuTimestampsEnabled) return;
@@ -1015,6 +1070,7 @@ static void collect_gpu_timestamp_queries(Renderer::Submission& slot) {
   }
   const double ns = double(timestamp_elapsed_ticks(values[0].ticks, values[1].ticks,
       R.gpuTimestampValidBits)) * double(R.properties.limits.timestampPeriod);
+  DRAWOFF_GPU_INTERVAL(ns);
   if (rprof::enabled()) {  // the performance report's GPU timeline (busy, idle between submissions)
     const uint64_t mask = R.gpuTimestampValidBits >= 64 ? ~0ull : (1ull << R.gpuTimestampValidBits) - 1;
     const double start = double(values[0].ticks & mask) * double(R.properties.limits.timestampPeriod);
@@ -1113,9 +1169,10 @@ VkCommandBuffer command_buffer() {
     } else vk_check(vkBeginCommandBuffer(R.cmd, &bi), "begin command buffer");
     R.recording = true;
     begin_overlay_gpu_queries(R.cmd, R.submissions[R.activeSubmission]);
-    // dynamic resolution (dynres.h) times every command buffer on the GPU while it is on
+    // dynamic resolution (dynres.h) times every command buffer on the GPU while it is on (and the drawoff GPU cap,
+    // drawoff/gpu_cap.h)
     bool dynresTiming = false;
-    if (dynres::on() && timestamp_capable(R.gpuTimestampValidBits, R.properties.limits.timestampPeriod)) {
+    if ((dynres::on() || DRAWOFF_GPU_TIMING()) && timestamp_capable(R.gpuTimestampValidBits, R.properties.limits.timestampPeriod)) {
       auto& slot = R.submissions[R.activeSubmission];
       if (!slot.timestampQueries) {
         VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -1145,7 +1202,7 @@ VkCommandBuffer command_buffer() {
 }
 static GpuScopeToken begin_gpu_scope(const GpuScopeMetadata& metadata) {
   if(!R.gpuTimestampsEnabled || !R.gpuPassTimestampsEnabled) return {};
-  if(R.rendering) { ++gpuScopeTotals.dropped;return {}; }
+  if(pass_state().rendering) { ++gpuScopeTotals.dropped;return {}; }
   const VkCommandBuffer cmd=command_buffer();
   auto& slot=R.submissions[R.activeSubmission];
   if(slot.gpuScopeCount==Renderer::Submission::maxGpuScopes) { ++gpuScopeTotals.dropped;return {}; }
@@ -1159,7 +1216,7 @@ static void end_gpu_scope(GpuScopeToken token) {
   auto& slot=R.submissions[R.activeSubmission];
   if(token.index>=slot.gpuScopeCount || slot.gpuScopes[token.index].ended ||
       slot.gpuScopes[token.index].generation!=token.generation) return;
-  if(R.rendering) { ++gpuScopeTotals.dropped;return; }
+  if(pass_state().rendering) { ++gpuScopeTotals.dropped;return; }
   record::vkCmdWriteTimestamp(R.cmd,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,slot.timestampQueries,3+2*token.index);
   slot.gpuScopes[token.index].ended=true;
 }
@@ -1195,15 +1252,18 @@ GpuScopeToken gpu_begin_feedback_scope(const Surface& source) {
 }
 void gpu_end_feedback_scope(GpuScopeToken token) { end_gpu_scope(token); }
 void end_encoder() {
-  if (R.rendering) {
+  if (pass_state().rendering) {
     end_pass(R.cmd);
-    R.rendering = false;
-    R.passTracked = false;
+    pass_state().rendering = false;
+    pass_state().tracked = false;
     if(R.gpuPassTimestampsEnabled) {
       auto& slot=R.submissions[R.activeSubmission];
       end_gpu_scope({R.submissionGeneration,slot.activeRenderScope});
       slot.activeRenderScope=UINT32_MAX;
     }
+#ifdef WWHD_VK_SMOOTH
+    record_mt::pass_ended();  // (record_mt.h)
+#endif
   }
 }
 bool narrow_barriers() {
@@ -1230,8 +1290,11 @@ void transition_buffer(Buffer& buffer, VkPipelineStageFlags stage, VkAccessFlags
   b.size = VK_WHOLE_SIZE;
   record::vkCmdPipelineBarrier(command_buffer(), d.source, d.destination, 0, 0, nullptr, 1, &b, 0, nullptr);
 }
-void transition_image(Surface *s, VkImageLayout layout,
+bool transition_image(Surface *s, VkImageLayout layout,
                       VkPipelineStageFlags stage, VkAccessFlags access) {
+#ifdef WWHD_DECOMP_FAST
+  if (cheapib::g_b1_capturing) cheapib::b1_note_image(s);  // (cheapib b1: layouts before and after a captured call)
+#endif
   const bool conservativePassBreak = s->layout != layout ||
       layout != VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL || access != VK_ACCESS_SHADER_READ_BIT;
   if (conservativePassBreak) stereo_release_texture(s);  // a texture both eyes sample
@@ -1247,10 +1310,10 @@ void transition_image(Surface *s, VkImageLayout layout,
     if (!dependency.needed) {
       // Barrier elision must not also change dynamic-rendering pass boundaries.
       if (conservativePassBreak) end_encoder();
-      return;
+      return false;
     }
   } else if (!changed && layout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL &&
-             access == VK_ACCESS_SHADER_READ_BIT) return;
+             access == VK_ACCESS_SHADER_READ_BIT) return false;
   end_encoder();
   VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
   b.oldLayout = s->layout;
@@ -1265,6 +1328,7 @@ void transition_image(Surface *s, VkImageLayout layout,
       (s->layout == VK_IMAGE_LAYOUT_UNDEFINED ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
       stage, 0, 0, nullptr, 0, nullptr, 1, &b);
   s->layout = layout;
+  return true;
 }
 static VkResult initialize_submission_queries(Renderer::Submission& slot,bool passes) {
   VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
@@ -1290,6 +1354,9 @@ static VkResult try_initialize_submission(Renderer::Submission& slot) {
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.queueFamilyIndex=R.queueFamily;
   pool.flags=VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+#ifdef WWHD_VK_SMOOTH
+  pool.flags=pool_reset::pool_flags(pool.flags);  // WWHD_VK_ASYNC_POOL_RESET (pool_reset.h)
+#endif
   VkResult result=vkCreateCommandPool(R.device,&pool,nullptr,&slot.commandPool);
   if(result!=VK_SUCCESS)return result;
   VkCommandBufferAllocateInfo ca{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
@@ -1357,10 +1424,17 @@ static void cleanup_submission(Renderer::Submission& slot) {
       vkFreeMemory(R.device, i.memory, nullptr);
   }
   slot.garbageImages.clear();
+#ifdef WWHD_VK_SMOOTH
+  if (record_mt::defer_command_pool_reset(&slot, slot.commandPool))  // (record_mt.h: on the emitter at activation)
+    vk_check(vkResetDescriptorPool(R.device, slot.descriptorPool, 0), "reset descriptor pool");
+  else
+  pool_reset::reset(&slot, R.device, slot.commandPool, slot.descriptorPool);  // (pool_reset.h)
+#else
   vk_check(vkResetCommandPool(R.device, slot.commandPool, 0),
            "reset command pool");
   vk_check(vkResetDescriptorPool(R.device, slot.descriptorPool, 0),
            "reset descriptor pool");
+#endif
   ++R.submissionGeneration;
 }
 static void retire_submission(Renderer::Submission& slot, WaitTiming& timing=submitWait) {
@@ -1371,11 +1445,19 @@ static void retire_submission(Renderer::Submission& slot, WaitTiming& timing=sub
     vk_check(timed_call(timing,[&] {
       // Submission serial identifies the fence; deque slots have no contiguous index.
       if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::FenceWaitBegin, 0, R.frame, slot.serial, 0);
+#ifdef WWHD_VK_SMOOTH
+      const frame_breakdown::Scope fencePart(frame_breakdown::FenceWait);  // (frame_breakdown.h)
+#endif
       const auto result = vkWaitForFences(R.device,1,&slot.fence,VK_TRUE,UINT64_MAX);
       if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::FenceWaitEnd, 0, R.frame, slot.serial, uint64_t(int64_t(result)));
       return result;
     },rprof::kWaitGpu),"wait submission retirement");
   } else vk_check(status,"submission fence status");
+#ifdef WWHD_DECOMP_FAST
+  // cheapib b1: the logic pass's slot stays as it is (uploads, descriptor sets, deferred objects) while its in-betweens
+  // replay its commands (its GPU work is done: waited above); its activation releases it
+  if (cheapib::b1_retire(&slot, &timing == &slotReuseWait)) return;
+#endif
   timed_call(retirementCleanupTiming,[&] {
     collect_gpu_timestamp_queries(slot);
     if(R.gpuPassTimestampsEnabled) collect_gpu_pass_queries(slot);
@@ -1398,7 +1480,10 @@ static void activate_submission(size_t index) {
   R.garbageImages=std::move(slot.garbageImages);
   R.garbageFramebuffers=std::move(slot.garbageFramebuffers);
   R.garbageCacheRegions=std::move(slot.garbageCacheRegions);
-  R.recording=false;R.rendering=false;R.passTracked=false;
+  R.recording=false;pass_state().rendering=false;pass_state().tracked=false;
+#ifdef WWHD_VK_SMOOTH
+  record_mt::activated(&slot, uint32_t(index), R.device);  // (record_mt.h)
+#endif
 }
 // depth peeks (depth_peek.h): the submission that carries the latest peek copy; retired on demand
 static uint64_t peekSubmission = 0, lastSubmissionSerial = 0;
@@ -1417,9 +1502,14 @@ static void drain_submissions() {
 // Overflow is allocated only when a captured tail prevents ring reuse. Slot
 // addresses and screenshot indices stay stable; the total is strictly bounded.
 static size_t next_submission_slot() {
-  const auto choice=subpool::next_slot(R.activeSubmission,R.submissions.size(),
-      R.submissions[(R.activeSubmission+1)%R.submissions.size()].retainedUnsubmitted);
-  const size_t next=(R.activeSubmission+1)%R.submissions.size();
+  size_t from=R.activeSubmission;
+#ifdef WWHD_DECOMP_FAST
+  // cheapib b1 (WWHD_CHEAPIB_B1_SKIP=1): the held logic slot is passed over while its in-betweens replay
+  if (cheapib::b1_skip(&R.submissions[(from+1)%R.submissions.size()])) from=(from+1)%R.submissions.size();
+#endif
+  const auto choice=subpool::next_slot(from,R.submissions.size(),
+      R.submissions[(from+1)%R.submissions.size()].retainedUnsubmitted);
+  const size_t next=(from+1)%R.submissions.size();
   if(choice.step==subpool::Step::Reuse)return choice.index;
   if(choice.step==subpool::Step::Grow) {
     bool appended=false;
@@ -1463,6 +1553,10 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
     publish_or_finish_present_prefix(*active_deferred_commands);
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::DrainEnd, 0, R.frame, uint64_t(handoff_trace::Reason::ExternalSyncPrefix));
   }
+#ifdef WWHD_NATIVE_DRAW
+  // shadow-slice instancing (native_draw/j3d_desc_depth_inst.h): collected depth draws belong to this submission
+  if (::native_draw::j3ddesc::depth::g_instPending) ::native_draw::j3ddesc::depth::inst_flush_now("submit");
+#endif
   end_encoder();
   auto& slot=R.submissions[R.activeSubmission];
   if (slot.perfQuery != UINT32_MAX) {
@@ -1519,6 +1613,9 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
     }
 #endif
     slot.pending=true;slot.retainedUnsubmitted=false;slot.deferredOwner=nullptr;
+#ifdef WWHD_VK_SMOOTH
+    pool_reset::submitted(&slot, R.device, slot.fence, slot.commandPool, slot.descriptorPool);  // (pool_reset.h)
+#endif
   };
   if (record_worker_active()) {
     if (producer_presentation_recording()) {
@@ -1540,6 +1637,15 @@ static void submit(VkSemaphore wait = VK_NULL_HANDLE,
       slot.pending = true; slot.retainedUnsubmitted = false; slot.deferredOwner = nullptr;
       // Presentation/isolated DRC handshakes share queue/semaphore host lifetime.
       // Publish them only after the worker has actually submitted the batch.
+#ifdef WWHD_VK_SMOOTH
+      const bool deferAck = present_ack::take_armed()  // (present_ack.h)
+#ifdef __ANDROID__
+          && !snapshotWait && !snapshotSignal
+#endif
+          ;
+      if (externalSync && deferAck) present_ack::defer(&slot, slot.serial);
+      else
+#endif
       if (externalSync) resolve_retained_submission(slot);
   #ifdef __ANDROID__
       if (snapshotSignal && isolatedSecondary && isolatedSecondary->prepared()) {
@@ -1567,10 +1673,19 @@ void peek_retire() {
   for (;;) {
     Renderer::Submission* oldest = nullptr;
     for (auto& slot : R.submissions)
-      if (slot.pending && slot.serial <= peekSubmission && (!oldest || slot.serial < oldest->serial)) oldest = &slot;
+      if (slot.pending && slot.serial <= peekSubmission && (!oldest || slot.serial < oldest->serial)
+#ifdef WWHD_DECOMP_FAST
+          && !cheapib::b1_hold(&slot)  // (cheapib b1's held slot stays pending: waited for, not cleaned)
+#endif
+          )
+        oldest = &slot;
     if (!oldest) break;
     retire_submission(*oldest);
   }
+#ifdef WWHD_DECOMP_FAST
+  for (auto& slot : R.submissions)  // (cheapib b1's held slot: its fence waited for, the slot kept)
+    if (slot.pending && slot.serial <= peekSubmission && cheapib::b1_hold(&slot)) retire_submission(slot);
+#endif
   peekSubmission = 0;
 }
 void flush_async() {
@@ -1662,6 +1777,9 @@ void set_present_interval(uint32_t ns, bool hold) {
   }();
   (void)leakSet;
   evenPresentInterval = async_present() ? ns : 0;  // (synchronous presentation waits for the GPU anyway)
+#ifdef WWHD_VK_SMOOTH
+  display_timing::set_interval(evenPresentInterval);  // (display_timing.h)
+#endif
   evenPresentHold = hold;
   if (!evenPresentInterval) evenSchedule.reset();
 }
@@ -1841,6 +1959,9 @@ static void make_swapchain(Screen &s) {
   ci.minImageCount = std::max(caps.minImageCount, 2u);
   if (caps.maxImageCount)
     ci.minImageCount = std::min(ci.minImageCount, caps.maxImageCount);
+#ifdef WWHD_VK_SMOOTH
+  if (&s == &R.tv) ci.minImageCount = display_timing::image_count(ci.minImageCount, caps.maxImageCount);  // (display_timing.h)
+#endif
   ci.imageFormat = format.format;
   ci.imageColorSpace = format.colorSpace;
   ci.imageExtent = extent;
@@ -2169,6 +2290,28 @@ Java_org_wwhdrecomp_wwhd_GamePadDisplay_publishAvailability(JNIEnv*, jclass, jbo
 extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_seedSavedOff(JNIEnv*, jclass, jboolean off) {
   gfx::seed_second_screen_off(off);
+}
+// ... and whether a second display is there at all: One screen mode's start default (mods/one_screen.cpp)
+extern "C" JNIEXPORT void JNICALL
+Java_org_wwhdrecomp_wwhd_GamePadDisplay_seedDisplayPresent(JNIEnv*, jclass, jboolean present) {
+  gfx::g_second_display_present = present;
+}
+// The parts of the game's view the platform does not show (WwhdActivity, ScreenCover, issue #349): the TV layout
+// uses the rest.
+extern "C" JNIEXPORT void JNICALL
+Java_org_wwhdrecomp_wwhd_WwhdActivity_publishObscured(JNIEnv*, jclass, jint left, jint top, jint right, jint bottom,
+                                                      jint viewWidth, jint viewHeight) {
+  gfx::display_set_obscured(float(left), float(top), float(right), float(bottom), float(viewWidth), float(viewHeight));
+}
+// What the system reports about the screen around the game's view (WwhdActivity, issue #349), once per change: the
+// log then shows why part of a screen stays covered.
+extern "C" JNIEXPORT void JNICALL
+Java_org_wwhdrecomp_wwhd_WwhdActivity_publishScreenReport(JNIEnv* env, jclass, jstring report) {
+  if (!report) return;
+  const char* s = env->GetStringUTFChars(report, nullptr);
+  if (!s) return;
+  LOG("[display] Android screen: %s", s);
+  env->ReleaseStringUTFChars(report, s);
 }
 extern "C" JNIEXPORT void JNICALL
 Java_org_wwhdrecomp_wwhd_GamePadDisplay_publishSurface(
@@ -2713,6 +2856,13 @@ static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t inde
   pi.swapchainCount = 1;
   pi.pSwapchains = &swapchain;
   pi.pImageIndices = &index;
+#ifdef WWHD_VK_SMOOTH
+  if (&s == &R.tv)  // (present_ack.h: a deferred TV present submission is acknowledged before its present)
+    present_ack::settle([](void* p, uint64_t serial) {
+      auto& slot = *static_cast<Renderer::Submission*>(p);
+      if (slot.serial == serial) resolve_retained_submission(slot);
+    });
+#endif
   VkResult pr = timed_call(timing.present, [&] {
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::PresentBegin, 0, frame, &s == &R.tv ? 1 : 2);
     if (presentObservation && &s == &R.tv && observedHistory) {
@@ -2732,6 +2882,11 @@ static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t inde
         return vkQueuePresentKHR(R.queue, &pi);
       }
     }
+#ifdef WWHD_VK_SMOOTH
+    display_timing::PresentTimes presentTimes;  // (display_timing.h)
+    if (&s == &R.tv) pi.pNext = display_timing::chain_present(pi.pNext, presentTimes, frame);
+    const frame_breakdown::Scope presentPart(&s == &R.tv ? frame_breakdown::Present : frame_breakdown::kParts);
+#endif
     std::lock_guard<std::mutex> queueLock(graphics_queue_mutex());
     send_hdr_metadata(s, swapchain);
     VkResult result=vkQueuePresentKHR(R.queue, &pi);
@@ -2748,6 +2903,7 @@ static VkResult queue_present(Screen &s, VkSwapchainKHR swapchain, uint32_t inde
   }
   if (pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR) {
     ++s.presented;
+    if (latency_test::on() && &s == &R.tv) latency_test::presented(frame);  // (test: latency_test.h)
 #ifndef __ANDROID__
     if (firstPicture.armed) first_picture_shown();
 #endif
@@ -2790,6 +2946,9 @@ static void present_held(bool forced) {
   }
   if (forced && at < h.due) ++evenForcedPresents;  // early: the next frame or a swapchain change forced it out
   queue_present(R.tv, h.swapchain, h.index, h.wait, nullptr, h.observedPresentId, h.frame, false, true);
+#ifdef WWHD_VK_SMOOTH
+  frame_breakdown::hold_issued(h.frame, at);  // (frame_breakdown.h)
+#endif
   evenSchedule.presented(h.due, at);
   trace_even_presented(at);
 }
@@ -3013,6 +3172,9 @@ static bool present(Screen &s) {
     }
 #endif
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::AcquireBegin, 0, R.frame, &s == &R.tv ? 1 : 2, acquireIndex);
+#ifdef WWHD_VK_SMOOTH
+    const frame_breakdown::Scope acquirePart(&s == &R.tv ? frame_breakdown::Acquire : frame_breakdown::kParts);  // (frame_breakdown.h)
+#endif
     const auto result = vkAcquireNextImageKHR(R.device, s.swapchain, present_acquire_timeout(secondary),
                                 acquireSemaphore, VK_NULL_HANDLE, &index);
     if (handoff_trace::enabled()) handoff_trace::emit(handoff_trace::Lane::Producer, handoff_trace::Kind::AcquireEnd, 0, R.frame, &s == &R.tv ? 1 : 2, uint64_t(int64_t(result)));
@@ -3185,7 +3347,13 @@ static bool present(Screen &s) {
     }
     finishedSemaphore = ap.finished[index];
     const size_t slot = R.activeSubmission;
+#ifdef WWHD_VK_SMOOTH
+    present_ack::arm(async && &s == &R.tv && !secondary && record_worker_active());  // (present_ack.h)
+#endif
     submit(acquireSemaphore, finishedSemaphore, async);
+#ifdef WWHD_VK_SMOOTH
+    (void)present_ack::take_armed();
+#endif
     ap.slot[acquireIndex] = slot;
     ap.serial[acquireIndex] = R.submissions[slot].serial;
   } else {
@@ -3246,6 +3414,9 @@ static bool present(Screen &s) {
     const int64_t ready = even_now_ns();
     const int64_t due = evenSchedule.plan(ready, evenPresentInterval);
     trace_even_present(R.frame, evenPresentHold, evenPresentInterval, ready, due);
+#ifdef WWHD_VK_SMOOTH
+    frame_breakdown::hold_planned(R.frame, ready, due, due > ready + 100'000);  // (frame_breakdown.h)
+#endif
     if (evenPresentInterval && ++evenFrames % 1200 == 0) {
       LOG("[vulkan] even pacing: %.0f%% of the last 1200 frames held (%.2f ms on average), %llu forced out early",
           evenHeldPresents / 12.0, evenHeldPresents ? evenHeldNs / 1e6 / evenHeldPresents : 0.0,
@@ -3262,6 +3433,9 @@ static bool present(Screen &s) {
     }
     const VkResult pr = queue_present(s, s.swapchain, index, finishedSemaphore, pi.pNext, observedPresentId, R.frame, false);
     const int64_t at = even_now_ns();
+#ifdef WWHD_VK_SMOOTH
+    frame_breakdown::hold_issued(R.frame, at);  // (frame_breakdown.h)
+#endif
     evenSchedule.presented(due, at);
     trace_even_presented(at);
     return pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR;
@@ -3275,9 +3449,35 @@ static bool present(Screen &s) {
              "present completion");
   return pr == VK_SUCCESS || pr == VK_SUBOPTIMAL_KHR;
 }
+static void copy_to_scan_now(uint32_t cb, uint32_t target);
+static void copy_surface_to_scan(Surface* src, uint32_t target);
 void copy_to_scan(uint32_t cb, uint32_t target) {
+  // WWHD_VK_SKIP_HIDDEN_TV (hidden_tv.h): the TV copy waits while no output shows the TV picture
+  if (target == 1 && hidden_tv::on() && hidden_tv::defer(cb, surface_from_color_buffer(cb))) return;
+  copy_to_scan_now(cb, target);
+}
+// WWHD_VK_SKIP_HIDDEN_TV: the waiting TV copy, recorded now and published (swap: after the scans are published)
+void hidden_tv_materialize(const char* why) {
+  if (!hidden_tv::pending()) return;
+  bool unchanged = false;
+  Surface* src = hidden_tv::take(unchanged);
+  hidden_tv::count_late(why, src && unchanged);
+  if (!src) return;  // (gone: the TV scan keeps its older picture; logged)
+  copy_surface_to_scan(src, 1);
+  Screen& s = R.tv;
+  if (s.buildingScanDirty) {
+    s.scan.swap(s.buildingScan);
+    std::swap(s.scanDisplayExtent, s.buildingScanDisplayExtent);
+    s.scanSrgb = s.buildingScanSrgb;
+    s.buildingScanDirty = false;
+  }
+}
+static void copy_to_scan_now(uint32_t cb, uint32_t target) {
   Surface *src = surface_from_color_buffer(cb);
   if (target == 4 && !stereoEye) gamepad_backdrop_scan(src);
+  copy_surface_to_scan(src, target);
+}
+static void copy_surface_to_scan(Surface* src, uint32_t target) {
   if (!src)
     return;
   if (stereoEye && target == 4) return; // GamePad is a shared 2D device.
@@ -3364,6 +3564,7 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
 // debug: WWHD_DUMP_FRAMES=100,300 writes the TV image of those frames to frame_<n>.png (and
 // frame_<n>_drc.png; WWHD_DUMP_PRESENT=1 adds the composed window, frame_<n>_present.png), as Metal
 static void dump_scan(Screen &s, const std::string &path) {
+  if (&s == &R.tv && !hidden_tv::stale_dumps()) hidden_tv_materialize("a frame dump");  // (hidden_tv.h)
   if (!s.scan || !s.scan->image)
     return;
   try {
@@ -3380,8 +3581,15 @@ static void request_present_dump(const std::string& path) { gfx::request_present
 static std::atomic<bool> captureRequested{false};
 void request_capture() { captureRequested = true; }
 static void frame_dumps(uint64_t frame) {
+#ifdef WWHD_DECOMP_FAST
+  if (const std::string l = cheapib::swap_dump_label(); !l.empty()) dump_scan(R.tv, l);  // (WWHD_CHEAPIB_DUMP)
+#endif
   static const auto frames = gfx::capture_schedule::parse(getenv("WWHD_DUMP_FRAMES"));
+#ifdef WWHD_DECOMP_FAST
+  const uint64_t dumpFrame = drawoff::dump_script_frame(frame, fixed_seed::script_frame(frame));  // (test: drawoff.h)
+#else
   const uint64_t dumpFrame = fixed_seed::script_frame(frame);  // (TV frame unless WWHD_TEST_FIXED_SEED)
+#endif
   // test aid: WWHD_BG_SHADERS_DUMP=n writes the TV image of the first n frames that left a draw out
   // (Shader compile Fast) and of the two frames after each, to check what went missing
   static const uint64_t leftOutDumps = getenv("WWHD_BG_SHADERS_DUMP") ? strtoull(getenv("WWHD_BG_SHADERS_DUMP"), nullptr, 10) : 0;
@@ -3452,6 +3660,7 @@ static void take_screenshots(const gfx::PresentPlan &plan) {
   std::string tvPath, drcPath;
   if (!R.tv.scan || !R.tv.scan->image || !screenshot::take(R.frame + 1, tvPath, drcPath))
     return;
+  hidden_tv_materialize("a screenshot");  // (hidden_tv.h)
   auto shoot = [&](Screen &s, const std::string &path, bool tv) {
     PendingShot p;
     p.path = path;
@@ -3761,6 +3970,9 @@ static void present_generated(bool tvShown) {
   if (!shown) reproj::not_presented();
 }
 void swap() {
+#ifdef WWHD_VK_SMOOTH
+  const uint64_t swapPartStarted = frame_breakdown::begin();  // (frame_breakdown.h)
+#endif
   texture_budget_step();
   trim_memory_step();
   fallback_stats::begin_frame(R.frame);
@@ -3821,47 +4033,66 @@ void swap() {
   // comes from gfx/display_modes.cpp, which both window hosts and the Metal renderer share
   Surface *tvScan = R.tv.scan && R.tv.scan->image ? R.tv.scan.get() : nullptr;
   Surface *drcScan = R.drc.scan && R.drc.scan->image ? R.drc.scan.get() : nullptr;
-  const auto tvDisplay = scan_display_extent(R.tv);
+  auto tvDisplay = scan_display_extent(R.tv);
 #ifdef WWHD_SDL_HOST
   gfx::g_filter = scale_filter();  // the SDL host keeps the scaling filter with the Vulkan settings
   const float layerW = float(R.tv.width.load()), layerH = float(R.tv.height.load());
 #else
   const float layerW = float(R.tv.swapExtent.width), layerH = float(R.tv.swapExtent.height);
 #endif
-  // (sizes at the full internal resolution: dynamic resolution keeps the layout)
-  gfx::PresentPlan plan = gfx::display_plan(
-      tvScan, float(tvDisplay.width), float(tvDisplay.height),
-      drcScan, nominal_width(drcScan), nominal_height(drcScan),
-      layerW, layerH, R.frame + 1, stereo::frame.mode!=stereo::FullSBS);
+  // (a function: WWHD_VK_SKIP_HIDDEN_TV makes it again once the TV scan is recorded late with another size)
+  auto make_plan = [&] {
+    tvScan = R.tv.scan && R.tv.scan->image ? R.tv.scan.get() : nullptr;
+    tvDisplay = scan_display_extent(R.tv);
+    // (sizes at the full internal resolution: dynamic resolution keeps the layout)
+    gfx::PresentPlan plan = gfx::display_plan(
+        tvScan, float(tvDisplay.width), float(tvDisplay.height),
+        drcScan, nominal_width(drcScan), nominal_height(drcScan),
+        layerW, layerH, R.frame + 1, stereo::frame.mode!=stereo::FullSBS);
 #ifdef __ANDROID__
-  // A physical second display owns the GamePad picture. Keep the requested
-  // single-screen mode intact so disconnecting restores its normal fallback.
-  if (gfx::g_has_drc_window) {
-    plan.drc_window = true;
-    plan.pip_on = false;
-    plan.pip_wanted = false;
-    plan.drc_only = false;
-    plan.tv = gfx::display_layout(layerW, layerH,
-        tvScan ? float(tvDisplay.width) : 1280,
-        tvScan ? float(tvDisplay.height) : 720);
-    if (drcScan && R.drc.width > 0 && R.drc.height > 0) {
-      bool swapped = dual_display::active_swap;
-      float w = swapped ? layerW : float(R.drc.width.load());
-      float h = swapped ? layerH : float(R.drc.height.load());
-      gfx::Box box = gfx::display_layout(w, h, nominal_width(drcScan), nominal_height(drcScan));
-      std::lock_guard<std::mutex> guard(secondaryMutex);
-      if (!secondaryChanged) {
-        auto& touchBox = swapped ? primaryTouchBox : secondaryTouchBox;
-        touchBox = {box.x / w, box.y / h, box.w / w, box.h / h};
+    // A physical second display owns the GamePad picture. Keep the requested
+    // single-screen mode intact so disconnecting restores its normal fallback.
+    if (gfx::g_has_drc_window) {
+      plan.drc_window = true;
+      plan.pip_on = false;
+      plan.pip_wanted = false;
+      plan.drc_only = false;
+      plan.tv = gfx::display_layout(layerW, layerH,
+          tvScan ? float(tvDisplay.width) : 1280,
+          tvScan ? float(tvDisplay.height) : 720);
+      if (drcScan && R.drc.width > 0 && R.drc.height > 0) {
+        bool swapped = dual_display::active_swap;
+        float w = swapped ? layerW : float(R.drc.width.load());
+        float h = swapped ? layerH : float(R.drc.height.load());
+        gfx::Box box = gfx::display_layout(w, h, nominal_width(drcScan), nominal_height(drcScan));
+        std::lock_guard<std::mutex> guard(secondaryMutex);
+        if (!secondaryChanged) {
+          auto& touchBox = swapped ? primaryTouchBox : secondaryTouchBox;
+          touchBox = {box.x / w, box.y / h, box.w / w, box.h / h};
+        }
       }
     }
-  }
-  // the view button's dot: 60 fps chosen (long press), green while drawn, yellow while paused
-  if (perf_hint::fps60_chosen())
-    plan.button_dot = interp::mode() != 0 ? 1 : 2;
+    // the view button's dot: 60 fps chosen (long press), green while drawn, yellow while paused
+    if (perf_hint::fps60_chosen())
+      plan.button_dot = interp::mode() != 0 ? 1 : 2;
 #endif
+    return plan;
+  };
+  gfx::PresentPlan plan = make_plan();
   GamepadBackdropDemandFrame backdropDemandFrame;
   set_present_plan(&plan);
+  if (hidden_tv::on()) {
+    // WWHD_VK_SKIP_HIDDEN_TV (hidden_tv.h): this frame's quads on every surface presented decide; a TV picture
+    // shown gets its waiting copy now, before anything draws or reads it
+    const bool shown = hidden_tv_scan_shown(plan.drc_window || gfx::g_has_drc_window);
+    if (shown && hidden_tv::pending()) {
+      const auto before = scan_display_extent(R.tv);
+      hidden_tv_materialize("the layout");
+      const auto after = scan_display_extent(R.tv);
+      if (after.width != before.width || after.height != before.height) { plan = make_plan(); set_present_plan(&plan); }
+    }
+    hidden_tv::layout_shown(shown);
+  }
   // Full SBS uses a half-width logical canvas before placing the two eyes.
   // Publish that same layout for GamePad hit testing and the software pointer.
   gfx::PresentPlan inputPlan=plan;
@@ -3912,6 +4143,7 @@ void swap() {
   set_overlay_draw(overlayFrame);
   compose_headless_diagnostic(R.tv);
   take_screenshots(plan);
+  hidden_tv::end_frame();  // (hidden_tv.h: the TV copy was not needed)
 #ifdef __ANDROID__
   prepare_secondary_snapshot();
 #endif
@@ -4001,7 +4233,14 @@ void swap() {
   backdropDemandFrame.publish();
   gamepad_backdrop_maintain();
   fallback_stats::complete_frame(R.frame);
+#ifdef WWHD_VK_SMOOTH
+  frame_breakdown::end(frame_breakdown::Swap, swapPartStarted);  // (frame_breakdown.h)
+  display_timing::poll(R.device, R.tv.swapchain);  // (display_timing.h)
+#endif
   stutter::frame(R.frame);
+#ifdef WWHD_VK_SMOOTH
+  frame_breakdown::frame_done(R.frame);
+#endif
   std::atomic_ref<uint64_t>(R.frame).fetch_add(1);
   fallback_stats::begin_frame(R.frame); // Attribute early next-frame state drains exactly.
   R.completed = R.frame;
@@ -4077,6 +4316,7 @@ void swap() {
     static std::array<double, 120> swapIntervals{};
     static size_t intervalCount = 0, slowIntervals = 0;
     static uint64_t frame=0,draws=0,bytes=0,allocs=0,passes=0,framebuffers=0;
+    static uint64_t subsetKept=0,prefetched=0,prefetchUsed=0,splitsSeen=0;  // pass_reuse.h
     static uint64_t descriptorLookups=0,descriptorHits=0,descriptorAllocations=0,descriptorFastHits=0;
     static uint64_t vertexDeclaredBytes=0,vertexCopiedBytes=0;
     static uint64_t vertexReuseChecks=0,vertexReuseHits=0,vertexReuseBytes=0,vertexReuseCompareNs=0;
@@ -4086,7 +4326,7 @@ void swap() {
     static uint64_t vertexHistoryRequests=0,vertexHistoryMatches=0,vertexHistoryBytes=0;
     static uint64_t vertexHistoryReuseChecks=0,vertexHistoryReuseHits=0,vertexHistoryReuseBytes=0;
     static std::array<uint64_t,7> vertexHistoryDistances{};
-    static Renderer::CpuPreparationStats previousPreparation;
+    static DrawCounters::CpuPreparationStats previousPreparation;
     static SparseHashStats previousSparse;
     static gx2::ShaderKeyDirtyStats previousShaderDirty;
 #ifndef _WIN32
@@ -4113,11 +4353,43 @@ void swap() {
             double(currentThreadCpu - previousThreadCpu) / 1e6 / (R.frame - frame));
       previousThreadCpu = currentThreadCpu;
 #endif
-      LOG("[vulkan perf] frame %llu %.2f fps, %.1f draws/frame, %.2f MiB uploads/frame, %llu new upload blocks, %.1f passes/frame",
+      // pass_reuse.h (WWHD_PASS_SUBSET, WWHD_PASS_PREFETCH): appended while either is on
+      char passReuse[256]="";
+      if (pass_reuse::subset_on() || pass_reuse::prefetch_on())
+        std::snprintf(passReuse,sizeof passReuse,"; pass subset %s %.1f kept/frame; textures ready before their pass %s %.1f/frame "
+                      "(%.1f read there), %.1f first reads inside one",
+                      pass_reuse::subset_on() ? "on" : "off", double(R.passSubsetKept-subsetKept)/(R.frame-frame),
+                      pass_reuse::prefetch_on() ? "on" : "off", double(R.passPrefetched-prefetched)/(R.frame-frame),
+                      double(R.passPrefetchUsed-prefetchUsed)/(R.frame-frame), double(R.passSplitsSeen-splitsSeen)/(R.frame-frame));
+      LOG("[vulkan perf] frame %llu %.2f fps, %.1f draws/frame, %.2f MiB uploads/frame, %llu new upload blocks, %.1f passes/frame%s",
           (unsigned long long)R.frame,(R.frame-frame)/seconds,
-          double(R.drawCount-draws)/(R.frame-frame),double(R.uploadBytes-bytes)/(R.frame-frame)/(1<<20),
-          (unsigned long long)(R.uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame));
+          double(R.drawCount-draws)/(R.frame-frame),double(draw_counters().uploadBytes-bytes)/(R.frame-frame)/(1<<20),
+          (unsigned long long)(draw_counters().uploadAllocations-allocs), double(R.renderPassCount-passes)/(R.frame-frame), passReuse);
       if (reproj::enabled()) LOG("[vulkan perf] framegen %s", reproj::perf_line().c_str());
+#ifdef WWHD_VK_SMOOTH
+      pool_reset::report(double(R.frame - frame));  // (pool_reset.h, record_mt.h, display_timing.h, present_ack.h)
+      record_mt::report(double(R.frame - frame));
+      display_timing::report(double(R.frame - frame));
+      present_ack::report(double(R.frame - frame));
+#endif
+#ifdef WWHD_NATIVE_DRAW
+      {  // batch_pass_end.h
+        static uint64_t batch0 = 0;
+        batch_pass_end::report(double(R.frame - frame), draw_batch_submissions() - batch0);
+        batch0 = draw_batch_submissions();
+      }
+#endif
+      {  // draw.cpp: totals since the start (the pass subset's no-stutter check compares them ON vs OFF)
+        extern uint64_t g_pipelineSyncCompiles, g_pipelineRenderWaits, g_pipelineBudgetWaits;
+        extern uint64_t g_backgroundRequests, g_backgroundAdmitted, g_backgroundDeclined, g_backgroundWaits;
+        LOG("[vulkan pipeline stalls] %llu compiled on the render thread, %llu render-thread waits for a compile, "
+            "%llu bounded waits (Shader compile Fast); background lane: %llu requests, %llu admitted, %llu declined, "
+            "%llu waited for",
+            (unsigned long long)g_pipelineSyncCompiles, (unsigned long long)g_pipelineRenderWaits,
+            (unsigned long long)g_pipelineBudgetWaits,
+            (unsigned long long)g_backgroundRequests, (unsigned long long)g_backgroundAdmitted,
+            (unsigned long long)g_backgroundDeclined, (unsigned long long)g_backgroundWaits);
+      }
       if (R.renderPasses) {
         const auto created = pass_caches().framebuffers_created();
         LOG("[vulkan render passes] %.3f framebuffers created/frame, %zu cached",
@@ -4193,48 +4465,48 @@ void swap() {
           (currentBatchSubmissions-batchSubmissions)/frames);
       batchSubmissions=currentBatchSubmissions;
       LOG("[vulkan vertex snapshots] declared %.2f MiB/frame; prepared %.2f MiB/frame",
-          (R.vertexDeclaredBytes-vertexDeclaredBytes)/frames/(1<<20),
-          (R.vertexCopiedBytes-vertexCopiedBytes)/frames/(1<<20));
-      vertexDeclaredBytes=R.vertexDeclaredBytes;vertexCopiedBytes=R.vertexCopiedBytes;
+          (draw_counters().vertexDeclaredBytes-vertexDeclaredBytes)/frames/(1<<20),
+          (draw_counters().vertexCopiedBytes-vertexCopiedBytes)/frames/(1<<20));
+      vertexDeclaredBytes=draw_counters().vertexDeclaredBytes;vertexCopiedBytes=draw_counters().vertexCopiedBytes;
       LOG("[vulkan vertex binds] %.1f actual/frame %.1f skipped/frame",
-          (R.vertexBindCalls-vertexBindCalls)/frames,
-          (R.vertexBindSkips-vertexBindSkips)/frames);
-      vertexBindCalls=R.vertexBindCalls;vertexBindSkips=R.vertexBindSkips;
+          (draw_counters().vertexBindCalls-vertexBindCalls)/frames,
+          (draw_counters().vertexBindSkips-vertexBindSkips)/frames);
+      vertexBindCalls=draw_counters().vertexBindCalls;vertexBindSkips=draw_counters().vertexBindSkips;
       LOG("[vulkan vertex history] %.1f requests/frame %.1f nonconsecutive keys/frame %.3f MiB potential/frame; distances 1..7 %.1f %.1f %.1f %.1f %.1f %.1f %.1f",
-          (R.vertexHistoryRequests-vertexHistoryRequests)/frames,
-          (R.vertexHistoryMatches-vertexHistoryMatches)/frames,
-          (R.vertexHistoryBytes-vertexHistoryBytes)/frames/(1<<20),
-          (R.vertexHistoryDistances[0]-vertexHistoryDistances[0])/frames,
-          (R.vertexHistoryDistances[1]-vertexHistoryDistances[1])/frames,
-          (R.vertexHistoryDistances[2]-vertexHistoryDistances[2])/frames,
-          (R.vertexHistoryDistances[3]-vertexHistoryDistances[3])/frames,
-          (R.vertexHistoryDistances[4]-vertexHistoryDistances[4])/frames,
-          (R.vertexHistoryDistances[5]-vertexHistoryDistances[5])/frames,
-          (R.vertexHistoryDistances[6]-vertexHistoryDistances[6])/frames);
-      vertexHistoryRequests=R.vertexHistoryRequests;vertexHistoryMatches=R.vertexHistoryMatches;
-      vertexHistoryBytes=R.vertexHistoryBytes;vertexHistoryDistances=R.vertexHistoryDistances;
+          (draw_counters().vertexHistoryRequests-vertexHistoryRequests)/frames,
+          (draw_counters().vertexHistoryMatches-vertexHistoryMatches)/frames,
+          (draw_counters().vertexHistoryBytes-vertexHistoryBytes)/frames/(1<<20),
+          (draw_counters().vertexHistoryDistances[0]-vertexHistoryDistances[0])/frames,
+          (draw_counters().vertexHistoryDistances[1]-vertexHistoryDistances[1])/frames,
+          (draw_counters().vertexHistoryDistances[2]-vertexHistoryDistances[2])/frames,
+          (draw_counters().vertexHistoryDistances[3]-vertexHistoryDistances[3])/frames,
+          (draw_counters().vertexHistoryDistances[4]-vertexHistoryDistances[4])/frames,
+          (draw_counters().vertexHistoryDistances[5]-vertexHistoryDistances[5])/frames,
+          (draw_counters().vertexHistoryDistances[6]-vertexHistoryDistances[6])/frames);
+      vertexHistoryRequests=draw_counters().vertexHistoryRequests;vertexHistoryMatches=draw_counters().vertexHistoryMatches;
+      vertexHistoryBytes=draw_counters().vertexHistoryBytes;vertexHistoryDistances=draw_counters().vertexHistoryDistances;
       LOG("[vulkan vertex history reuse] %.1f checks/frame %.1f hits/frame %.3f MiB reused/frame",
-          (R.vertexHistoryReuseChecks-vertexHistoryReuseChecks)/frames,
-          (R.vertexHistoryReuseHits-vertexHistoryReuseHits)/frames,
-          (R.vertexHistoryReuseBytes-vertexHistoryReuseBytes)/frames/(1<<20));
-      vertexHistoryReuseChecks=R.vertexHistoryReuseChecks;
-      vertexHistoryReuseHits=R.vertexHistoryReuseHits;vertexHistoryReuseBytes=R.vertexHistoryReuseBytes;
+          (draw_counters().vertexHistoryReuseChecks-vertexHistoryReuseChecks)/frames,
+          (draw_counters().vertexHistoryReuseHits-vertexHistoryReuseHits)/frames,
+          (draw_counters().vertexHistoryReuseBytes-vertexHistoryReuseBytes)/frames/(1<<20));
+      vertexHistoryReuseChecks=draw_counters().vertexHistoryReuseChecks;
+      vertexHistoryReuseHits=draw_counters().vertexHistoryReuseHits;vertexHistoryReuseBytes=draw_counters().vertexHistoryReuseBytes;
       LOG("[vulkan vertex reuse] %.1f checks/frame; %.1f hits/frame; %.2f MiB reused/frame; compare %.3f ms/frame",
-          (R.vertexReuseChecks-vertexReuseChecks)/frames,
-          (R.vertexReuseHits-vertexReuseHits)/frames,
-          (R.vertexReuseBytes-vertexReuseBytes)/frames/(1<<20),
-          (R.vertexReuseCompareNs-vertexReuseCompareNs)/frames/1e6);
-      vertexReuseChecks=R.vertexReuseChecks;vertexReuseHits=R.vertexReuseHits;
-      vertexReuseBytes=R.vertexReuseBytes;vertexReuseCompareNs=R.vertexReuseCompareNs;
-      uint64_t descriptorChecks=R.descriptorLookups-descriptorLookups;
-      uint64_t descriptorReuses=R.descriptorCacheHits-descriptorHits;
+          (draw_counters().vertexReuseChecks-vertexReuseChecks)/frames,
+          (draw_counters().vertexReuseHits-vertexReuseHits)/frames,
+          (draw_counters().vertexReuseBytes-vertexReuseBytes)/frames/(1<<20),
+          (draw_counters().vertexReuseCompareNs-vertexReuseCompareNs)/frames/1e6);
+      vertexReuseChecks=draw_counters().vertexReuseChecks;vertexReuseHits=draw_counters().vertexReuseHits;
+      vertexReuseBytes=draw_counters().vertexReuseBytes;vertexReuseCompareNs=draw_counters().vertexReuseCompareNs;
+      uint64_t descriptorChecks=draw_counters().descriptorLookups-descriptorLookups;
+      uint64_t descriptorReuses=draw_counters().descriptorCacheHits-descriptorHits;
       LOG("[vulkan descriptors] %.1f lookups/frame; %.1f allocations/frame; %.1f%% reused; %.1f%% consecutive",
-          descriptorChecks/frames,(R.descriptorAllocations-descriptorAllocations)/frames,
+          descriptorChecks/frames,(draw_counters().descriptorAllocations-descriptorAllocations)/frames,
           descriptorChecks ? 100.0*descriptorReuses/descriptorChecks : 0.0,
-          descriptorChecks ? 100.0*(R.descriptorFastHits-descriptorFastHits)/descriptorChecks : 0.0);
-      descriptorLookups=R.descriptorLookups;descriptorHits=R.descriptorCacheHits;
-      descriptorAllocations=R.descriptorAllocations;descriptorFastHits=R.descriptorFastHits;
-      const auto& prep=R.cpuPreparation;
+          descriptorChecks ? 100.0*(draw_counters().descriptorFastHits-descriptorFastHits)/descriptorChecks : 0.0);
+      descriptorLookups=draw_counters().descriptorLookups;descriptorHits=draw_counters().descriptorCacheHits;
+      descriptorAllocations=draw_counters().descriptorAllocations;descriptorFastHits=draw_counters().descriptorFastHits;
+      const auto& prep=draw_counters().cpuPreparation;
       const auto sparse=sparse_hash_stats();
       LOG("[vulkan sparse hash memo] %.1f checks/frame %.1f hits/frame %.3f MiB fresh samples/frame %.1f mixed words/frame %.1f overflow/frame",
           (sparse.checks-previousSparse.checks)/frames,
@@ -4315,7 +4587,8 @@ void swap() {
       }
       submitWait = {}; presentSubmitWait = {}; queueSubmitTiming = {};
       }
-      start=now;frame=R.frame;draws=R.drawCount;bytes=R.uploadBytes;allocs=R.uploadAllocations;passes=R.renderPassCount;
+      start=now;frame=R.frame;draws=R.drawCount;bytes=draw_counters().uploadBytes;allocs=draw_counters().uploadAllocations;passes=R.renderPassCount;
+      subsetKept=R.passSubsetKept;prefetched=R.passPrefetched;prefetchUsed=R.passPrefetchUsed;splitsSeen=R.passSplitsSeen;
     }
   }
 }
@@ -4698,6 +4971,14 @@ static void init_device(std::vector<const char *> extensions,
   drivers::set_vulkan_identity(std::string(R.properties.deviceName)+"; Vulkan driver "+driver_version_text(R.properties));
 #endif
   const uint32_t deviceApi = device_api_version(R.properties);
+  {
+    const char* why = "";
+    const bool def = pass_reuse::configure(R.properties.vendorID, R.properties.deviceName, &why);
+    auto src = [](const char* n) { const char* e = getenv(n); return e && *e ? "env" : "GPU default"; };
+    LOG("[vulkan] pass reduction: subset %s (%s), prefetch %s (%s); GPU default %s: %s (vendor 0x%04X)",
+        pass_reuse::subset_on() ? "on" : "off", src("WWHD_PASS_SUBSET"), pass_reuse::prefetch_on() ? "on" : "off",
+        src("WWHD_PASS_PREFETCH"), def ? "on" : "off", why, R.properties.vendorID);
+  }
   LOG("[vulkan] device: %s (Vulkan %s, driver %s%s)", R.properties.deviceName,
       version_text(R.properties.apiVersion).c_str(), driver_version_text(R.properties).c_str(),
       R.dynamicRenderingKHR ? "; dynamic rendering through VK_KHR_dynamic_rendering" : "");
@@ -4739,12 +5020,19 @@ static void init_device(std::vector<const char *> extensions,
 #ifdef __ANDROID__
     defaultWorker=defaultWorker||quest_theater::device();
 #endif
-    set_record_worker_saved_choice(::hostui::get("vkRecordWorker", value) ? value == "1" : defaultWorker);
+#ifdef WWHD_VK_SMOOTH
+    defaultWorker=defaultWorker||smooth_defaults::record_worker();  // (smooth_defaults.h)
+#endif
+    const bool saved=::hostui::get("vkRecordWorker", value);
+    set_record_worker_saved_choice(record_worker_choice(nullptr, saved ? value.c_str() : nullptr, defaultWorker));
   }
   nativeWorkerPresentation = false;
   if (record_worker_requested()) {
     const char* nativeOption = std::getenv("WWHD_R5_NATIVE_PRESENT");
-    const bool nativeRequested = nativeOption && !std::strcmp(nativeOption, "1");
+    bool nativeRequested = nativeOption && !std::strcmp(nativeOption, "1");
+#ifdef WWHD_VK_SMOOTH
+    if (!nativeOption) nativeRequested = record_mt::native_present_default();  // (record_mt.h)
+#endif
     if (nativeRequested) {
 #ifdef __APPLE__
       constexpr bool appleHost = true;
@@ -4778,6 +5066,11 @@ static void init_device(std::vector<const char *> extensions,
       presentObservation = false;
     }
   }
+#ifdef WWHD_VK_SMOOTH
+  const bool breakdownDisplayTiming = display_timing::wanted() && !presentObservation &&
+      has_extension(des, VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);  // (display_timing.h)
+  if (breakdownDisplayTiming) de.push_back(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
+#endif
   if (R.dynamicRenderingKHR) {
     de.push_back(VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME);
     if (deviceApi < VK_API_VERSION_1_2) {
@@ -4843,6 +5136,14 @@ static void init_device(std::vector<const char *> extensions,
     enabled12.samplerMirrorClampToEdge = VK_TRUE;
   }
   R.samplerMirrorClampToEdge = enabled12.samplerMirrorClampToEdge;
+#ifdef WWHD_NATIVE_DRAW
+  // shadow-slice instancing of described J3D depth draws (native_draw/j3d_desc_depth.h; off by default): gl_Layer
+  // written by the vertex stage
+  if (vulkan12 && ::native_draw::j3ddesc::depth::want_layer_output() && available12.shaderOutputLayer &&
+      available12.shaderOutputViewportIndex)
+    enabled12.shaderOutputLayer = enabled12.shaderOutputViewportIndex = VK_TRUE;
+  ::native_draw::j3ddesc::depth::set_layer_output(enabled12.shaderOutputLayer == VK_TRUE);
+#endif
   VkPhysicalDeviceFeatures available;
   vkGetPhysicalDeviceFeatures(R.physicalDevice, &available);
   VkPhysicalDeviceFeatures enabled{};
@@ -4865,6 +5166,19 @@ static void init_device(std::vector<const char *> extensions,
   enabled.largePoints = available.largePoints;
   enabled.dualSrcBlend = available.dualSrcBlend;
   enabled.logicOp = available.logicOp;
+#ifdef WWHD_NATIVE_DRAW
+  // native draw packets' multi-draw batches (gx2/native_draw.h; on unless WWHD_NATIVE_DRAW=0 or _MDI=0): the
+  // feature only when they are asked for (the enabled features are part of the pipeline cache's checksum); without it
+  // the batches draw one vkCmdDrawIndexed per instance
+  if (packet_mdi_requested()) {
+    enabled.multiDrawIndirect = available.multiDrawIndirect;
+    // (shader-rewrite stream batches: an indirect command's firstInstance selects its instance entries)
+    enabled.drawIndirectFirstInstance = available.drawIndirectFirstInstance;
+    LOG("[native-draw] multi-draw batches: multiDrawIndirect supported/enabled=%u/%u, drawIndirectFirstInstance %u/%u",
+        available.multiDrawIndirect, enabled.multiDrawIndirect, available.drawIndirectFirstInstance,
+        enabled.drawIndirectFirstInstance);
+  }
+#endif
   R.enabledFeatures = enabled;
   LOG("[vulkan diagnostics] features supported/enabled: robustBufferAccess=%u/%u shaderInt16=%u/%u shaderInt64=%u/%u shaderFloat64=%u/%u geometryShader=%u/%u",
       available.robustBufferAccess, enabled.robustBufferAccess, available.shaderInt16, enabled.shaderInt16,
@@ -5050,6 +5364,9 @@ static void init_device(std::vector<const char *> extensions,
   R.setHdrMetadata = hdrMetadata ? reinterpret_cast<PFN_vkSetHdrMetadataEXT>(vkGetDeviceProcAddr(R.device, "vkSetHdrMetadataEXT")) : nullptr;
   LOG("[HDR] metadata (VK_EXT_hdr_metadata) %s", R.setHdrMetadata ? "available" : "unavailable");
 #endif
+#ifdef WWHD_VK_SMOOTH
+  display_timing::device_created(R.device, breakdownDisplayTiming);  // (display_timing.h)
+#endif
   if (presentObservation) {
     observedHistory = reinterpret_cast<PFN_vkGetPastPresentationTimingGOOGLE>(
         vkGetDeviceProcAddr(R.device, "vkGetPastPresentationTimingGOOGLE"));
@@ -5082,7 +5399,12 @@ static void init_device(std::vector<const char *> extensions,
   {
     // WWHD_VK_SUBMISSION_POOL (submission_pool.h): slots created now; overflow adds more up to 16 only
     // while a captured tail holds the next slot
-    const auto pool=subpool::choose(std::getenv("WWHD_VK_SUBMISSION_POOL"),std::getenv("WWHD_VK_SUBMISSION_POOL8"));
+    auto pool=subpool::choose(std::getenv("WWHD_VK_SUBMISSION_POOL"),std::getenv("WWHD_VK_SUBMISSION_POOL8"));
+#ifdef WWHD_VK_SMOOTH
+    if (!std::strcmp(pool.source, "default") && smooth_defaults::submission_slots()) {  // (smooth_defaults.h)
+      pool.slots = smooth_defaults::submission_slots(); pool.source = "phone / Steam Deck default";
+    }
+#endif
     R.submissions.resize(pool.slots);
     submissionPoolSlots=pool.slots;
     LOG("[vulkan] submission pool %u slots (%s%s); overflow up to %u",pool.slots,pool.source,
@@ -5092,6 +5414,9 @@ static void init_device(std::vector<const char *> extensions,
   VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
   pool.queueFamilyIndex = R.queueFamily;
   pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+#ifdef WWHD_VK_SMOOTH
+  pool.flags = pool_reset::pool_flags(pool.flags);  // WWHD_VK_ASYNC_POOL_RESET (pool_reset.h)
+#endif
   vk_check(vkCreateCommandPool(R.device, &pool, nullptr, &slot.commandPool),
            "create command pool");
   VkCommandBufferAllocateInfo ca{
@@ -5143,6 +5468,9 @@ static void init_device(std::vector<const char *> extensions,
   merge_pipeline_demand_cache(VK_NULL_HANDLE);
   merge_pipeline_worker_cache(VK_NULL_HANDLE);
   start_record_worker();
+#ifdef WWHD_VK_SMOOTH
+  if (record_worker_active()) { (void)record_mt::bits(); record_tokens::install(R.device); }  // (record_mt.h)
+#endif
   LOG("[vulkan record worker] %s", record_worker_active()
       ? "enabled: POD recording/submission; producer-owned pipeline state"
       : "disabled: original immediate/deferred path");
@@ -5670,7 +5998,8 @@ static bool gamepad_touch(const SDL_Event& event) {
           return true;
         }
       }
-      if (!gfx::overlay_hit(nx, ny, &tx, &ty)) {
+      // the GamePad picture's touch; in One screen's Off-TV Play only in a game menu or without the mouse camera (#514)
+      if (!gfx::gamepad_click_hit(nx, ny, &tx, &ty, mods::mouse_camera())) {
         float px, py, aspect;  // a port page on the TV that wants the pointer (tv_pointer.h)
         if (picture && tv_pointer::wanted() && gfx::game_picture_hit(nx, ny, &px, &py, &aspect)) {
           tv_pointer::set(true, px, py, aspect);
@@ -5846,6 +6175,9 @@ static void quit_game() {
     LOG("[quit] closing the app");
     for (int i = 0; i < 50; i++) SDL_Delay(100);  // the activity ends the process; this is a fallback
   }
+#endif
+#ifdef WWHD_PGO_GENERATE_BUILD
+  __llvm_profile_write_file();  // instrumented build (CMake WWHD_PGO_GENERATE): _Exit skips the profile's atexit writer
 #endif
   std::_Exit(0);
 }
@@ -6045,3 +6377,6 @@ void screen_changed(int screen, bool visible) {
 }
 #endif
 } // namespace gfxvk
+#ifdef WWHD_DECOMP_FAST
+#include "../../cheapib/cheapib_b1.h"  // cheapib b1: the render side of replayed in-betweens (decomp fast build)
+#endif

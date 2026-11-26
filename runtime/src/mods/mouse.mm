@@ -2,7 +2,8 @@
 // the pointer: it is hidden and detached from the cursor position, and its movement goes to the
 // camera (camera.cpp). Esc, a middle click, switching the mod off or leaving the window releases it.
 // The mouse wheel (first person mod) works whenever the TV window is the key window.
-// WWHD_NO_HOST_INPUT ignores the real mouse (test runs; WWHD_TEST_MOUSE injects movement).
+// WWHD_NO_HOST_INPUT ignores the real mouse (test runs; WWHD_TEST_MOUSE injects movement); with WWHD_TEST_POST_MOUSE
+// the clicks a test posts (gfx/overlay_appkit.mm) take this path, and a capture leaves the real pointer alone.
 #import <AppKit/AppKit.h>
 #include "../overlay/overlay.h"
 #include <Carbon/Carbon.h>  // kVK_Escape
@@ -14,19 +15,23 @@
 #include "runtime.h"
 #include "../motion/motion.h"
 
-namespace gfx { bool drc_overlay_hit(void* window, double x, double y); }  // gfx/display.mm
+namespace gfx {
+bool drc_overlay_hit(void* window, double x, double y);  // gfx/display.mm
+bool posted_test_mouse(NSEvent* e);                      // gfx/overlay_appkit.mm
+}
 
 namespace mods {
 namespace {
 NSWindow* __weak g_tv;
 std::atomic<bool> g_captured{false};
+bool g_test_only = false;  // a test run: only posted events, the real pointer untouched
 
 bool in_tv(NSEvent* e) { return g_tv && e.window == g_tv; }
 
 bool gyro_capture_active();
 void capture() {
     if (g_captured.exchange(true)) return;
-    if (!gyro_capture_active()) {  // else the pointer is captured and hidden already
+    if (!gyro_capture_active() && !g_test_only) {  // else the pointer is captured and hidden already
         CGAssociateMouseAndMouseCursorPosition(false);
         [NSCursor hide];
     }
@@ -34,7 +39,7 @@ void capture() {
 }
 void release_now() {
     if (!g_captured.exchange(false)) return;
-    if (!gyro_capture_active()) {  // else the gyro's capture keeps the pointer until the aim ends
+    if (!gyro_capture_active() && !g_test_only) {  // else the gyro's capture keeps the pointer until the aim ends
         CGAssociateMouseAndMouseCursorPosition(true);
         [NSCursor unhide];
     }
@@ -86,12 +91,16 @@ bool host_key_down(uint16_t code) {
 
 void mouse_init(void* tv_window) {
     g_tv = (__bridge NSWindow*)tv_window;
-    if (getenv("WWHD_NO_HOST_INPUT")) return;
+    if (getenv("WWHD_NO_HOST_INPUT")) {
+        if (!getenv("WWHD_TEST_POST_MOUSE")) return;
+        g_test_only = true;
+    }
     g_tv.acceptsMouseMovedEvents = YES;
     NSEventMask mask = NSEventMaskMouseMoved | NSEventMaskLeftMouseDragged | NSEventMaskRightMouseDragged |
                        NSEventMaskOtherMouseDragged | NSEventMaskLeftMouseDown | NSEventMaskLeftMouseUp |
                        NSEventMaskRightMouseDown | NSEventMaskRightMouseUp | NSEventMaskOtherMouseDown | NSEventMaskOtherMouseUp | NSEventMaskScrollWheel;
     [NSEvent addLocalMonitorForEventsMatchingMask:mask handler:^NSEvent*(NSEvent* e) {
+        if (g_test_only && !gfx::posted_test_mouse(e)) return e;
         const bool eligible = in_tv(e) && mouse_captured() && !overlay::captures() && !overlay::layer_takes_pointer() &&
             !gfx::drc_overlay_hit((__bridge void*)g_tv, e.locationInWindow.x, e.locationInWindow.y);
         if (e.type == NSEventTypeLeftMouseDown || e.type == NSEventTypeRightMouseDown || e.type == NSEventTypeOtherMouseDown ||
@@ -151,7 +160,8 @@ void mouse_init(void* tv_window) {
         }
         return nil;
     }];
-    // leaving the game (other app, other window) releases the pointer
+    // leaving the game (other app, other window) releases the pointer (a test run's hidden window is never the key one)
+    if (g_test_only) return;
     [[NSNotificationCenter defaultCenter] addObserverForName:NSApplicationDidResignActiveNotification
                                                       object:nil queue:nil usingBlock:^(NSNotification*) { release_now(); }];
     [[NSNotificationCenter defaultCenter] addObserverForName:NSWindowDidResignKeyNotification

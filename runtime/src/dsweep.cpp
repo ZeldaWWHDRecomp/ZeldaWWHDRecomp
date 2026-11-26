@@ -579,8 +579,8 @@ void draw_room_model(Cpu* c, Model& m, uint32_t host) {
     call(c, GC(0x025626A4), {env, uint32_t(1 + m.room), 0, tevstr});  // settingTevStruct(TEV_TYPE_BG0 + i)
     call(c, GC(0x02562F5C), {env, m.model, tevstr});                  // setLightTevColorType
     const uint32_t opa = ld32(GD(0x104B4634)), xlu = ld32(GD(0x104B4638));
-    st32(GD(0x104B4634), ld32(play + (m.room == 1 ? 0x5DA0 : 0x5D70)));  // BG lists (model 1: invisible opaque)
-    st32(GD(0x104B4638), ld32(play + 0x5D74));
+    st32(GD(0x104B4634), ld32(play + GI(m.room == 1 ? 0x5DA0 : 0x5D70)));  // BG lists (model 1: invisible opaque)
+    st32(GD(0x104B4638), ld32(play + GI(0x5D74)));
     if (m.room == 1) call(c, GC(0x0255F8A0));  // the invisible model's fog (GxFog_sea_set)
     call(c, GC(0x025E2E5C), {m.model});         // mDoExt_modelEntryDL
     if (m.room == 1) call(c, GC(0x0255F84C));  // GxFog_set
@@ -1072,7 +1072,7 @@ void begin_plants() {
     g_plant_frames = 0;
 }
 void plants_step(Cpu* c) {
-    const uint32_t packet = ld32(GD(0x1046F0B0) + 0x5AB8);
+    const uint32_t packet = ld32(GD(0x1046F0B0) + GI(0x5AB8));
     if (!mem2(packet, 0x1A5CC + 64 * 4)) return begin_visits();
     if (g_plant_frames++ == 0) {
         unsigned blades = 0, cut = 0;
@@ -1922,8 +1922,8 @@ void room_test(Cpu* c, uint32_t actor) {
     call(c, GC(0x025626A4), {env, type, 0, tevstr});  // settingTevStruct(TEV_TYPE_BG0 + i)
     call(c, GC(0x02562F5C), {env, model, tevstr});    // setLightTevColorType
     const uint32_t opa = ld32(GD(0x104B4634)), xlu = ld32(GD(0x104B4638));
-    st32(GD(0x104B4634), ld32(play + 0x5D70));  // dComIfGd_setListBG
-    st32(GD(0x104B4638), ld32(play + 0x5D74));
+    st32(GD(0x104B4634), ld32(play + GI(0x5D70)));  // dComIfGd_setListBG
+    st32(GD(0x104B4638), ld32(play + GI(0x5D74)));
     call(c, GC(0x025E2E5C), {model});  // mDoExt_modelEntryDL
     st32(GD(0x104B4634), opa);
     st32(GD(0x104B4638), xlu);

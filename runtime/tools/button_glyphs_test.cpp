@@ -53,6 +53,7 @@ void emit(Op op, const uint32_t* words, uint32_t count) {
 }
 namespace mods::cemu { float aspect_ratio() { return 0; } }
 namespace mods { void play_context_pane(uint32_t) {} }  // the context buttons' pane observer (mods/play_context.cpp)
+namespace mods { bool play_context_logs_panes() { return false; } }
 namespace mods { float hud_fade_alpha_of(uint32_t) { return 1.f; } int hud_pane_hide(uint32_t) { return 0; } }  // HUD fades (mods/hud_fade.cpp)
 namespace mods { bool g_test_item_names = false; bool item_names_on_hud() { return g_test_item_names; } }  // the item ring's names (mods/item_ring.cpp)
 extern "C" void f_025A847C_orig(Cpu*) {}
@@ -1623,6 +1624,17 @@ void gamecube_hud_plate_test() {
         hud_letter=false;
         assert(drawn_quad[0]==80 && drawn_quad[1]==80 && drawn_sheet==atlas);
         assert(ldf32(first_quad)==20 && ldf32(first_quad+4)==40);
+        // CommandA_00's floating hint: the letter sits beside its picture under a much larger
+        // N_Center_01, and the disc still takes the picture's size, not the container's.
+        constexpr uint32_t center=base+0x6000;
+        pane(center,"N_Center_01",0,0); stf32(center+0x3C,196); stf32(center+0x40,101);
+        child(center,picture); child(center,text_box);
+        st32(text_box+0xFC,list);st32(text_box+0xA4,base+0xB000);st16(text_box+0xCE,1);
+        st16(list+4,0);st8(list+6,0);print("ABXY"[face]);stf32(first_quad,20);stf32(first_quad+4,40);
+        hud_letter=true;
+        c=Cpu{};c.r[3]=text_box;button_glyphs::draw_text_box(&c,[](Cpu*) { draw(); });
+        hud_letter=false;
+        assert(drawn_quad[0]==80 && drawn_quad[1]==80 && drawn_sheet==atlas);
     }
     // Keep the Y bean visible when a large telescope picture follows its letter.
     constexpr uint32_t root=base+0x6000, ygroup=base+0x6800, ypic=base+0x7000,
@@ -1671,6 +1683,34 @@ void gamecube_hud_plate_test() {
     layout(input_map::FaceLayout::kPosition);
 }
 
+// A never-restyled session (run before any restyled test latches marking): a full state from a restyled
+// process brings cached texts whose batches bind that process's host-only sheets. Those are rebuilt;
+// the session's own texts, and every text before a load, stay untouched.
+void foreign_sheet_test() {
+    static unsigned drawn = 0;
+    const auto draw_box = [] {
+        Cpu c{};c.r[3] = text_box;
+        button_glyphs::draw_text_box(&c, [](Cpu*) { ++drawn; });
+    };
+    const auto cached = [](uint32_t sheet) {
+        std::memset(mem::ptr(list), 0, 0xA4);
+        st32(text_box + 0xFC, list);
+        st8(list + 6, 1);  // valid cached vertices
+        st32(list + 0xA0, 1);
+        st32(list + 0x20, sheet);
+    };
+    const uint32_t foreign = mem::kHostStart + 0x43800, stock = base + 0xD000;
+    cached(foreign); draw_box();
+    assert(drawn == 1 && ld8(list + 6) == 1);  // no load yet: the stock path writes nothing
+    button_glyphs::ss_reset();
+    cached(stock); draw_box();
+    assert(drawn == 2 && ld8(list + 6) == 1);
+    cached(foreign); draw_box();
+    assert(drawn == 3 && ld8(list + 6) == 0);  // the game rebuilds it from its own font
+    st32(text_box + 0xFC, 0);
+    std::memset(mem::ptr(list), 0, 0xA4);
+}
+
 int main() {
     {
         const auto gc = button_glyphs::gamecube_cluster({10,0},{0,-10},{10,10},{0,0});
@@ -1709,6 +1749,7 @@ int main() {
     auto memory = map_guest_region(base, kArena);
 #endif
     assert(memory == mem::ptr(base));
+    foreign_sheet_test();
     // Prompts/dialogue cached before 3D is enabled must still replay as flat
     // layout draws. Exercise the production scope hooks, including mode changes
     // between entry and exit; immediate mono must remain marker-free.

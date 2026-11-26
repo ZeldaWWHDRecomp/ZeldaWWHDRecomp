@@ -30,6 +30,7 @@
 #include "button_glyphs.h"
 #include "aspect_panes.h"
 #include "aspect_picto.h"
+#include "pane_name_filter.h"
 #include "mods/cemu_pack.h"
 #include "mods/play_context.h"
 #include "mods/mods.h"
@@ -83,10 +84,10 @@ float gameplay_fov_scale() {
     // excluded. Never write the camera's authored FOV back into guest memory.
     const uint32_t play=GD(0x1046F0B0);
     const char* stage=reinterpret_cast<const char*>(mem::ptr(play+0x5134));
-    const uint32_t link=ld32(play+0x5B34);
+    const uint32_t link=ld32(play+GI(0x5B34));
     if(!*stage || !std::strncmp(stage,"sea_T",8) || !std::strncmp(stage,"Name",8) ||
-       !std::strncmp(stage,"ENDumi",8) || !link || ld32(play+0x5B2C)!=link ||
-       ld8(play+0x5292) || ld8(play+0x5BB2) || ld8(play+0x5BB3) ||
+       !std::strncmp(stage,"ENDumi",8) || !link || ld32(play+GI(0x5B2C))!=link ||
+       ld8(play+0x5292) || ld8(play+GI(0x5BB2)) || ld8(play+GI(0x5BB3)) ||
        ld8(play+0x5140+12) || ld32(GD(0x101F36CC)) || ld8(GD(0x101EA069)))return 1.0f;
     return scale;
 }
@@ -196,8 +197,16 @@ void set_window_aspect(float a) {
 float requested() {
     if(float pack=mods::cemu::aspect_ratio())return pack;
     int m = mode();
-    return clamp_aspect(m == kWindow ? g_window.load(std::memory_order_relaxed) /
-        (stereo::requestedMode == stereo::FullSBS ? 2.0f : 1.0f) : mode_value(m));
+    const float window = g_window.load(std::memory_order_relaxed) /
+        (stereo::requestedMode == stereo::FullSBS ? 2.0f : 1.0f);
+    if (m == kWindow) return clamp_aspect(window);
+    float v = mode_value(m);
+    // Monitors sold under one name differ (21:9 is 2560x1080 = 64:27 but 3440x1440 = 43:18),
+    // so a preset within 1 % of the window fills it instead of leaving thin bars. g_window is
+    // quantised by set_window_aspect, so the choice is stable while a window is resized.
+    if ((m == k4x3 || m == k16x10 || m == k21x9 || m == k32x9) && std::fabs(window - v) <= 0.01f * v)
+        v = window;
+    return clamp_aspect(v);
 }
 float game() { return g_game; }
 float fov_scale() { return g_fov_requested.load(); }
@@ -584,6 +593,8 @@ extern "C" void hook_028766CC(Cpu* c) {
     // HUD fades (mods/hud_fade.h): the hearts, rupees and magic bar fade by their own alpha (+0x45), which
     // the calculation passes on to the children that inherit alpha; set only for the call
     const uint32_t pane = c->r[3];
+    // a pane no fade or prompt check is about (pane_name_filter.h)
+    if (pane_name_filter::skip((const char*)mem::ptr(pane + kPaneName))) return calculate_aspect_pane(c);
     const float fade = mods::hud_fade_alpha_of(pane);
     if (fade < 1.f) {
         const uint8_t a0 = ld8(pane + 0x45);
@@ -648,11 +659,14 @@ extern "C" void hook_02877100(Cpu* c) {
         };
         if (!ld32(pane+kPaneParent)) trace(trace,pane,0);
     }
-    mods::play_context_pane(pane);  // the message's parts, the Picto Box screens... (returns at once unless wanted)
+    // a pane no play-context, hiding or prompt check is about (pane_name_filter.h)
+    const bool plain = pane_name_filter::skip((const char*)mem::ptr(pane + kPaneName));
+    if (!plain || mods::play_context_logs_panes())
+        mods::play_context_pane(pane);  // the message's parts, the Picto Box screens... (returns at once unless wanted)
     {
         // the game's HUD parts the port hides: a faded-out heart / rupee / magic display, the button cluster
         // while the touch controls show the context buttons (only TV layouts: the GamePad keeps its own)
-        const int hide = mods::hud_pane_hide(pane);
+        const int hide = plain ? 0 : mods::hud_pane_hide(pane);
         if (hide == 1) return;
         if (hide == 2) {
             uint32_t root = pane;
@@ -662,7 +676,7 @@ extern "C" void hook_02877100(Cpu* c) {
     }
     // 60 fps (generated, framegen.h): the first layout on the TV picture ends its scene (only while on)
     if (framegen::requested() && !ld32(pane + kPaneParent)) gx2::emit(gx2::OP_FRAMEGEN_LAYOUT, {});
-    if (original()) { button_glyphs::draw_pane(c, f_02877100_orig); return; }
+    if (original()) { plain ? f_02877100_orig(c) : button_glyphs::draw_pane(c, f_02877100_orig); return; }
     uint32_t parent = ld32(pane + kPaneParent);
     if (!parent) {
         gx2::emit(gx2::OP_LAYOUT_ROOT, {pane});
@@ -684,7 +698,7 @@ extern "C" void hook_02877100(Cpu* c) {
             if (panes::parked_hud(gx, gy)) return;
         }
     }
-    button_glyphs::draw_pane(c, f_02877100_orig);
+    plain ? f_02877100_orig(c) : button_glyphs::draw_pane(c, f_02877100_orig);
 }
 
 // the projection matrix uploaded during `fn` is tagged: the render thread narrows it (rows x and y

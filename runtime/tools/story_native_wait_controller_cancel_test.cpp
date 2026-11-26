@@ -83,7 +83,7 @@ static void run(unsigned cancel_fault){
  f.byte(cam+0x37C,1);copy(cam+0x380,0xD80,12);copy(cam+0x38C,0xD8C,12);copy(cam+0x398,0xD98,4);f.byte(cam+0x3A4,'-');f.byte(cam+0x3A5,'-');w(cam+0x3A8,e.program->turn_definition()->camera.hold_timer);f.byte(cam+0x3AC,1);
  }
  const auto cam=e.camera.address;
- const story_native_camera_capture::Layout camera_layout{play,0x101D55F0,0x101D5634,0x101D5538,{0x025021A4,0x02502288,0x024FFA3C,0x0250235C,0x024FFC40},{0x10049348,0x10049350,0x10044878,0x1004487C}};
+ const story_native_camera_capture::Layout camera_layout{play,0x101D55F0,0x101D5634,0x101D5538,{0x025021A4,0x02502288,0x024FFA3C,0x0250235C,0x024FFC40},{0x10049348,0x10049350,0x10044878,0x1004487C},0x5AF8};
  auto camera_read=[&](Camera&out){return story_native_camera_capture::capture(read,camera_layout,e,out);};
  auto camera_verify=[&](const auto&camera,const auto&i){return story_native_camera_policy::verify(sources.camera_tables,read,camera,i).valid;};
  if(cancel_fault!=7)assert(controller.checkpoint(&cpu)&&controller.state()==C::State::Running);

@@ -13,7 +13,7 @@
 // Each applies at once.
 // Tests on the Mac: WWHD_TEST_TALK_TOUCH=from-to:x:y[:x2:y2],... holds a finger on the TV picture from TV
 // frame `from` to `to` at (x, y) in layout units (moving to (x2, y2) on the way), as Android's finger or the
-// mouse would. WWHD_TALKTOUCH_LOG=1 logs fingers, presses, the shop's items and the hold ("[talktouch] ...").
+// mouse would. WWHD_TALKTOUCH_LOG=1 logs fingers, presses, the shop's items, a system question's buttons and the hold ("[talktouch] ...").
 //
 // Idea from the GreenNaugahyde Android fork (GreenNaugahyde/ZeldaWWHDRecompAndroid, MPL-2.0),
 // mods/minigames.cpp and turbo.cpp; reimplemented.
@@ -414,6 +414,16 @@ void touch_talk_pad(input::PadState& p, bool repeat) {
         char cb[96] = "";
         if (c.has(kChoice)) snprintf(cb, sizeof cb, "%u lines, box at %d,%d, cursor at y %d", c.choice_count, c.choice_x, c.choice_y, c.cursor_y);
         if (last_choice != cb) last_choice = cb, LOG("[talktouch] choice: %s (step %llu)", *cb ? cb : "none", (unsigned long long)in.step);
+        // a system question's buttons (drawn ones: centre, width scale per mille) and the mode, when they change
+        static std::string last_question;
+        char qb[160] = "";
+        if (c.question_shown) {
+            int n = snprintf(qb, sizeof qb, "mode %d%s", int(talktouch::mode_of(c, menu_on_tv)), talk_claim ? " claimed" : "");
+            for (int i = 0; i < 3 && n > 0 && n < int(sizeof qb); i++)
+                if (c.question_shown >> i & 1)
+                    n += snprintf(qb + n, sizeof qb - size_t(n), ", %c at %d,%d scale %d", "LRC"[i], c.question_x[i], c.question_y[i], c.question_scale[i]);
+        }
+        if (last_question != qb) last_question = qb, LOG("[talktouch] question: %s (step %llu)", *qb ? qb : "none", (unsigned long long)in.step);
         static uint32_t last_buttons = 0;
         static bool last_stick = false;
         static float last_lx = 0, last_ly = 0;

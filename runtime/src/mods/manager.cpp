@@ -23,7 +23,9 @@ const Entry catalogue[] = {
      "Lock-on, ongoing first-person aim and other projectile pitch stay native. New item coverage needs gameplay validation.",
      "WWHD_MOD_CAMERA_DIRECTED_ITEMS", camera_directed_items, set_camera_directed_items},
     {"mouse-camera", "Mouse camera", "Camera",
-     "Click the game picture to capture the mouse. Move it to look around on foot or while sailing, or to aim the boat cannon; Esc releases it.",
+     "Click the game picture to capture the mouse. Move it to look around on foot or while sailing, to look and aim in first person "
+     "(R3 look, bow, hookshot, boomerang, grappling hook, telescope, Picto Box) as in a PC shooter, or to aim the boat cannon; "
+     "Esc releases it.",
      "WWHD_MOD_MOUSE_CAMERA", mouse_camera, set_mouse_camera},
     {"first-person", "First-person shortcut", "Camera",
      "Enter first person with R3 or the mouse wheel.",
@@ -100,6 +102,16 @@ const Entry catalogue[] = {
     {"no-text-pauses", "No pauses in texts", "Gameplay",
      "Leaves out the short pauses written into some texts, so the rest of the line follows at once.",
      "WWHD_MOD_NO_TEXT_PAUSES", no_text_pauses, set_no_text_pauses},
+    {"fix-game-bugs", "Fix original game bugs", "Game",
+     "Fixes bugs that are in the original game, such as the pause menu losing its selection cursor after a door "
+     "when the map's chart was zoomed in. Off, the game behaves exactly as the original.",
+     "WWHD_MOD_FIX_GAME_BUGS", fix_game_bugs, set_fix_game_bugs, false, true},
+    // shown in Mods > More > Speedrun (overlay/mods_tab.h), not in the built-in list
+    {"classic-wind-waker", "Classic Wind Waker (dive and storage)", "Speedrun",
+     "Brings back the original GameCube Wind Waker behaviour that speedrun tricks use: the dive out of a ledge climb "
+     "and dry storage. HD normally cancels the Wind Waker as soon as Link starts to fall, and puts him back into his "
+     "waiting state when it ends. Takes effect at once.",
+     "WWHD_MOD_CLASSIC_TACT", classic_wind_waker, set_classic_wind_waker},
 };
 std::string key(const Entry& entry) { return std::string("mod.")+entry.id+".enabled"; }
 bool player_preferences() { return !std::getenv("WWHD_NO_HOST_INPUT"); }
@@ -138,6 +150,14 @@ void load_saved() {
         std::string value;
         if (hostui::get(key(entry).c_str(), value) && (value == "0" || value == "1"))
             if (entry.enabled() != (value == "1")) entry.apply(value == "1");
+    }
+    // Test aid for the settings round trip (a run that saves player preferences): WWHD_TEST_BUILTIN_SET=<id>=<0|1>
+    // switches one built-in mod as its switch in the Settings window does, saved for the next start.
+    if (const char* t = std::getenv("WWHD_TEST_BUILTIN_SET")) {
+        const std::string_view v = t;
+        const size_t eq = v.rfind('=');
+        if (eq != std::string_view::npos && (v.substr(eq + 1) == "0" || v.substr(eq + 1) == "1"))
+            set_enabled(v.substr(0, eq), v.substr(eq + 1) == "1");
     }
     auto number = [](const char* key, const char* env, float lo, float hi, void (*apply)(float)) {
         if (std::getenv(env)) return;

@@ -128,7 +128,8 @@ void draw_pane(Cpu* c, PpcFunc draw);
 // Scope the displayed command-guide button set while calculating its layout.
 void calculate_parts(Cpu* c, PpcFunc calculate);
 
-// a save state was loaded: forget which text boxes were rebuilt for by label (savestate.cpp)
+// a full save state was loaded: forget which text boxes were rebuilt for by label, and rebuild
+// texts that bind another process's sheets (savestate.cpp)
 void ss_reset();
 
 }  // namespace button_glyphs

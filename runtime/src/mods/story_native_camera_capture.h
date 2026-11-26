@@ -9,6 +9,13 @@ struct Layout {
  uint32_t play{},profile0{},profile1{},methods{};
  std::array<uint32_t,5> functions{};
  story_native_camera_policy::Tables tables{};
+ // play + camera: dComIfGp_getCamera(0)'s process (canonical +0x5AF8; callers pass GI(0x5AF8), the Japanese
+ // build moved it)
+ uint32_t camera;
+ Layout(uint32_t play,uint32_t profile0,uint32_t profile1,uint32_t methods,
+  std::array<uint32_t,5> functions,story_native_camera_policy::Tables tables,uint32_t camera)
+  :play(play),profile0(profile0),profile1(profile1),methods(methods),
+   functions(functions),tables(tables),camera(camera){}
 };
 // Relocated Layout values are supplied by the production adapter. Read must
 // independently bound actual guest memory. Two stable raw samples authenticate

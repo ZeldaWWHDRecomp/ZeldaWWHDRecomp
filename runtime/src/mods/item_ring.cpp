@@ -81,7 +81,7 @@ Option g_names{"WWHD_ITEM_NAMES", "itemButtonNames", kNamesAuto, kNamesAuto};
 // ---- the game ----
 const uint32_t kGameInfo = GD(0x1046F0B0);
 const uint32_t kSaveInfoPtr = GD(0x101F84DC);        // *this + 0x20: dSv_player_c
-const uint32_t kPlaySelect = GD(0x1046F0B0) + 0x5BBB;  // play mSelectItem (play_context.h kSelectItem)
+const uint32_t kPlaySelect = GD(0x1046F0B0) + GI(0x5BBB);  // play mSelectItem (play_context.h kSelectItem)
 const uint32_t kNextPauseTimer = GD(0x101EACB7);     // dScnPly_ply_c::nextPauseTimer (item_ring.h pace)
 const uint32_t kPauseTimer = GD(0x101EACB6);         // dScnPly_ply_c::pauseTimer
 

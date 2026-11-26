@@ -52,7 +52,7 @@ void context(){
     ui=next_ui;hud=next_hud;compass=next_compass;map=next_map;coordinator=next_coord;
     compass_layout=next_cl;map_layout=next_ml;std::memcpy(stage,mem::ptr(play+0x5134),8);
     const auto gates=mods::game_ui_now();
-    eligible=compass&&(ld32(play+0x5CD8)&0x10000)&&!(ld32(play+0x5CD8)&0x202000)&&ld8(GD(0x1047B093))&&!ld8(play+0x514C)&&!mods::game_ui_hides_hud(gates);
+    eligible=compass&&(ld32(play+GI(0x5CD8))&0x10000)&&!(ld32(play+GI(0x5CD8))&0x202000)&&ld8(GD(0x1047B093))&&!ld8(play+0x514C)&&!mods::game_ui_hides_hud(gates);
     if(!eligible){lease.clear();suppressed.store(0,std::memory_order_release);}
 }
 // Enclose the native compass/clock pictures in their current global matrices.
@@ -140,11 +140,15 @@ void map_destroy(Cpu* c){std::lock_guard guard(mutex);invalidate();original(c,GC
 void compass_destroy(Cpu* c){std::lock_guard guard(mutex);invalidate();original(c,GC(0x0264C4BC));}
 }
 void install(Original call,const std::function<bool(uint32_t,bool)>& available,const std::function<void(uint32_t,Hook)>& replace){
-    if(std::strcmp(g_guest_build_name,"USA")&&std::strcmp(g_guest_build_name,"EU"))return;
+    // Every build whose map keeps these functions the same code (USA, EU, JP): the bridge relies on what
+    // they do and on the fields they use, so a build that compiled one of them differently has no bridge.
     const uint32_t hooks[]={kEvent,CANONICAL_CODE_ID(0x026986C4).value(),CANONICAL_CODE_ID(0x0264C4BC).value()};
     const uint32_t queries[]={CANONICAL_CODE_ID(0x02877100).value(),CANONICAL_CODE_ID(0x02874D54).value(),CANONICAL_CODE_ID(0x02687A64).value(),CANONICAL_CODE_ID(0x0268A570).value(),CANONICAL_CODE_ID(0x0268A5DC).value(),CANONICAL_CODE_ID(0x025B8308).value()};
-    for(auto fn:hooks)if(!guest_code_valid(fn)||!available(GC(fn),true))return;
-    for(auto fn:queries)if(!guest_code_valid(fn)||!available(GC(fn),false))return;
+    // (the chart carousel stores of 0269B2C4 / 0269B310 and updateChartChange 0269BDE0, which event() drives)
+    const uint32_t relied[]={CANONICAL_CODE_ID(0x0269B2C4).value(),CANONICAL_CODE_ID(0x0269B310).value(),CANONICAL_CODE_ID(0x0269BDE0).value()};
+    for(auto fn:hooks)if(!guest_code_unchanged(fn)||!available(GC(fn),true))return;
+    for(auto fn:queries)if(!guest_code_unchanged(fn)||!available(GC(fn),false))return;
+    for(auto fn:relied)if(!guest_code_unchanged(fn))return;
     original=call;replace(GC(kEvent),event);
     replace(GC(0x026986C4),map_destroy);replace(GC(0x0264C4BC),compass_destroy);supported=true;
 }

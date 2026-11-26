@@ -1,3 +1,4 @@
+#include "hidden_tv.h"
 #include "background_shaders.h"
 #include "deferred_dispatch.h"
 #include "../../exception_report.h"
@@ -156,6 +157,7 @@ void service_captures() {
  std::vector<std::string> paths;
  {std::lock_guard lock(captureMutex);for(auto it=captures.begin();it!=captures.end();)if(it->frame<=frame_count()){paths.push_back(std::move(it->path));it=captures.erase(it);}else ++it;}
  if(paths.empty())return;
+ hidden_tv_materialize("a TV capture");  // (hidden_tv.h)
  try {
   auto& source=*R.tv.scan;auto rgba=read_rgba(source,R.tv.scanSrgb);
   for(const auto& path:paths)try {write_png(path,source.extent.width,source.extent.height,rgba);fprintf(stderr,"[gfx] wrote %s (%ux%u)\n",path.c_str(),source.extent.width,source.extent.height);}catch(const std::exception& e){fprintf(stderr,"[gfx] PNG capture failed: %s\n",e.what());}

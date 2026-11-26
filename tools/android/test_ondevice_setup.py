@@ -11,6 +11,10 @@ import sys
 import tempfile
 import unittest
 
+from unittest import mock
+
+import decomp_android
+import ondevice_setup
 from ondevice_setup import run, process_resources
 from setup_adapter import Adapter, digest
 
@@ -32,7 +36,8 @@ class SetupJobTests(unittest.TestCase):
             destination = "sdk/include" if name == "runtime/include" else name
             shutil.copytree(ROOT / name, self.package / destination)
         (self.package / "tools/installer").mkdir()
-        for sibling in ("setup.py", "code_mods.py", "decomp_setup.py", "shader_prebuild.py"):
+        for sibling in ("setup.py", "code_mods.py", "decomp_setup.py", "decomp_platform.py", "build_cache.py",
+                        "shader_prebuild.py"):
             shutil.copyfile(ROOT / "tools/installer" / sibling, self.package / "tools/installer" / sibling)
         shutil.copyfile(ROOT / "tools/rpx.py", self.package / "tools/rpx.py")
         link = (["-shared", "-Wl,-all_load", "{gamecode}", "-o", "{out}"] if sys.platform == "darwin" else
@@ -470,6 +475,102 @@ class SetupJobTests(unittest.TestCase):
         self.assertGreaterEqual(state["resources_latest"]["reaped_children_cpu_seconds"],
                                 state["resources_before"]["reaped_children_cpu_seconds"])
         self.assertEqual(ctypes.CDLL(result["library"]).synthetic_check(), 0)
+
+
+class GameVersionJobTests(unittest.TestCase):
+    """setup's choice of game version (job "game_version"; ondevice_setup.GAME_VERSIONS): the decomp version alone, its
+    failure, the randomizer under it, and the install with both versions from before the choice"""
+    setUp, adapter, native, execute, state = (SetupJobTests.setUp, SetupJobTests.adapter, SetupJobTests.native,
+                                              SetupJobTests.execute, SetupJobTests.state)
+
+    def decomp_build(self, fail=None):
+        calls = []
+
+        def build(adapter, compiler, manifest, game, native_run, jobs=1, code_mods=False, mode="fast", whole=False,
+                  mod_hooks=None):
+            calls.append({"game": Path(game), "code_mods": code_mods, "mode": mode})
+            if fail:
+                raise fail
+            stage = adapter.storage / ("decomp-" + "d" * 64)
+            stage.mkdir(exist_ok=True)
+            (stage / "libgame.so").write_bytes(b"decomp library")
+            return stage / "libgame.so", {"units": 3}
+        return calls, mock.patch.object(decomp_android, "build", build)
+
+    def no_recompiled_build(self, *args):
+        adapter = self.adapter(*args)
+        for step in ("translate", "compile", "link"):
+            setattr(adapter, step, lambda *a, _step=step, **k: self.fail("the decomp version ran " + _step))
+        return adapter
+
+    def run_job(self, value, adapter=None):
+        self.configuration.write_text(json.dumps(value))
+        return run(self.configuration, self.package, self.native, adapter or self.adapter)
+
+    def test_decomp_version_alone_is_the_game(self):
+        calls, patch = self.decomp_build()
+        with patch:
+            result = self.run_job({**self.value, "game_version": "decomp", "decomp": True, "code_mods": True},
+                                  self.no_recompiled_build)
+        library = self.job / "checkpoints" / ("decomp-" + "d" * 64) / "libgame.so"
+        self.assertEqual(calls, [{"game": self.game, "code_mods": True, "mode": "fast"}])
+        self.assertEqual(result["library"], str(library))  # the decomp library is the game (ready "library")
+        self.assertEqual(result["decomp"]["library"], str(library))
+        self.assertIs(result["decomp_only"], True)
+        self.assertEqual(result["game_version"], "decomp")
+        self.assertEqual(self.state()["state"], "ready_to_activate")
+
+    def test_decomp_version_failure_fails_the_job_and_keeps_the_ready_build(self):
+        first = self.execute()  # the recompiled version, ready (the selection AndroidGame activated)
+        before = (self.job / "ready.json").read_text()
+        calls, patch = self.decomp_build(fail=RuntimeError("download failed: [SSL: CERTIFICATE_VERIFY_FAILED]"))
+        with patch, self.assertRaisesRegex(ondevice_setup.DecompFailed, "decomp version could not be built"):
+            self.run_job({**self.value, "game_version": "decomp", "decomp": True}, self.no_recompiled_build)
+        state = self.state()
+        self.assertEqual(state["state"], "failed")  # (SetupService activates only ready_to_activate)
+        self.assertIn("CERTIFICATE_VERIFY_FAILED", state["error"])
+        self.assertEqual((self.job / "ready.json").read_text(), before)
+        self.assertTrue(Path(first["library"]).is_file())  # the recompiled game's stage stays
+
+    def test_randomized_game_refused_under_the_decomp_version(self):
+        calls, patch = self.decomp_build()
+        with patch:
+            with self.assertRaisesRegex(ValueError, "Randomized games play in the recompiled version"):
+                self.run_job({**self.value, "game_version": "decomp", "randomize": {"exe": "x", "data": "d",
+                                                                                     "storage": str(self.root)}})
+            with self.assertRaisesRegex(ValueError, "Randomized games play in the recompiled version"):
+                self.run_job({**self.value, "game_version": "decomp",
+                              "input": {"kind": "folder", "path": "input/game",
+                                        "seed_import": {"installed": str(self.game)}},
+                              "randomize": {"exe": "x", "data": "d", "storage": str(self.root)}})
+        self.assertEqual(calls, [])
+        with self.assertRaisesRegex(ValueError, "recomp, decomp or both"):
+            self.run_job({**self.value, "game_version": "native"})
+
+    def test_recompiled_version_builds_no_decomp_library(self):
+        calls, patch = self.decomp_build()
+        with patch:
+            result = self.run_job({**self.value, "game_version": "recomp", "decomp": False})
+        self.assertEqual(calls, [])
+        self.assertEqual(result["game_version"], "recomp")
+        self.assertNotIn("decomp", result)
+        self.assertNotIn("decomp_only", result)
+
+    def test_both_versions_from_before_the_choice(self):
+        """a job from an app before the choice ("decomp": true, no "game_version") is "both": the recompiled game,
+        then the decomp library; a decomp failure leaves the recompiled game ready"""
+        calls, patch = self.decomp_build()
+        with patch:
+            result = self.run_job({**self.value, "decomp": True})
+        self.assertEqual(result["game_version"], "both")
+        self.assertNotEqual(result["library"], result["decomp"]["library"])
+        self.assertEqual(len(calls), 1)
+        calls, patch = self.decomp_build(fail=RuntimeError("no network"))
+        with patch:
+            result = self.run_job({**self.value, "game_version": "both", "decomp": True})
+        self.assertEqual(result["decomp"], {"error": "no network", "mode": "fast"})
+        self.assertTrue(Path(result["library"]).is_file())
+        self.assertEqual(self.state()["state"], "ready_to_activate")
 
 
 class ResourceMetricsTests(unittest.TestCase):

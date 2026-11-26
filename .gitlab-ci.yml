@@ -1,0 +1,301 @@
+# DORMANT DISASTER-RECOVERY COPY of the GitHub Actions setup (.github/workflows). Never runs on its own.
+#
+# A private GitLab mirror of this repository receives every branch and tag from GitHub, this
+# file included. GitLab must not build those pushes: the workflow rules below allow a pipeline only when someone
+# starts it (Build > Pipelines > Run pipeline, or a trigger token), or for a schedule/API pipeline that sets
+# WWHD_GITLAB_CI=1. Pushes and merge requests never start one, whatever variables are set.
+#
+# The build steps are NOT copied here: each job runs the steps of the matching GitHub job with
+# ci/gitlab/gh_steps.py, so edits to existing GitHub steps reach GitLab by themselves. KEEP THIS FILE IN STEP
+# with .github/workflows when a GitHub job or a `uses:` action is added, renamed or removed (gh_steps.py fails
+# on an unknown action or expression, so a test run shows what is missing). Usage: docs/gitlab-ci.md.
+#
+# GitHub job -> GitLab job (runner)
+#   linux.yml build                      linux:build (hosted Linux)
+#   windows.yml build                    windows:build (hosted Windows, beta; or a self-hosted runner)
+#   android.yml apk                      android:apk (hosted Linux)
+#   android-toolchain.yml compiler       android-toolchain (hosted Linux; emulator steps need a KVM runner)
+#   android-display-smoke.yml display    android-display-smoke (self-hosted KVM runner only)
+#   guestmods.yml public-headers/modules guestmods:* (hosted Linux, hosted Windows, the Mac)
+#   decomp.yml macos                     decomp:macos (the Mac, self-hosted, tag wwhd-macos)
+#   release.yml                          release:* (WWHD_RELEASE=1), publishes a GitLab release
+#   reopen.yml                           not mapped: GitHub issue automation
+
+workflow:
+  name: '$WWHD_PIPELINE_NAME'
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "push" || $CI_PIPELINE_SOURCE == "merge_request_event" || $CI_PIPELINE_SOURCE == "external_pull_request_event"
+      when: never
+    - if: $CI_PIPELINE_SOURCE == "web" || $CI_PIPELINE_SOURCE == "trigger" || $WWHD_GITLAB_CI == "1"
+      variables:
+        WWHD_PIPELINE_NAME: 'WWHD $CI_COMMIT_REF_NAME (release=$WWHD_RELEASE)'
+    - when: never
+
+stages: [version, build, publish]
+
+variables:
+  GIT_DEPTH: "1"                  # actions/checkout's default
+  GIT_SUBMODULE_STRATEGY: none    # jobs that need the decomp submodule init it themselves, as on GitHub
+  WWHD_RELEASE: "0"               # 1: release pipeline (release.yml)
+  WWHD_CI_AUTO: "0"               # 1: start the CI jobs at once instead of by hand
+  WWHD_MACOS_RUNNER: "0"          # 1: a runner tagged wwhd-macos is registered (auto-start of the Mac jobs)
+  WWHD_ANDROID_EMULATOR: "0"      # 1: emulator steps/jobs on a self-hosted Linux runner with KVM (wwhd-linux-kvm)
+  WWHD_WINDOWS_TAG: saas-windows-medium-amd64   # or the tag of a self-hosted Windows runner (wwhd-windows)
+  WWHD_WINDOWS_ARM64: "0"         # 1: release also builds windows-arm64 (self-hosted runner wwhd-windows-arm64)
+  WWHD_SKIP_MACOS: "0"            # 1: release without macOS (no Mac runner)
+
+default:
+  interruptible: true
+  retry:
+    max: 1
+    when: [runner_system_failure, stuck_or_timeout_failure, scheduler_failure]
+
+# ---------------------------------------------------------------------------------------------- templates
+
+.cache: &cache
+  # actions/cache entries made by gh_steps.py (same keys as on GitHub); one GitLab cache per job
+  key: "wwhd-$CI_JOB_NAME_SLUG-v1"
+  paths: [.gitlab-ci-cache/]
+  when: always
+
+.artifacts: &artifacts
+  # actions/upload-artifact output (gh_steps.py); later jobs' actions/download-artifact read it
+  paths: [.gitlab-ci-artifacts/]
+  when: always
+  expire_in: 7 days
+
+.ci:
+  stage: build
+  timeout: 3h                     # GitLab's hosted runners stop every job at 3 hours
+  cache: *cache
+  artifacts: *artifacts
+  needs: []
+  rules:
+    - if: $WWHD_RELEASE == "1"
+      when: never
+    - if: $WWHD_CI_AUTO == "1"
+    - when: manual
+      allow_failure: true
+
+.ci-mac:
+  extends: .ci
+  tags: [wwhd-macos]
+  rules:
+    - if: $WWHD_RELEASE == "1"
+      when: never
+    - if: $WWHD_CI_AUTO == "1" && $WWHD_MACOS_RUNNER == "1"
+    - when: manual
+      allow_failure: true
+
+.linux:
+  image: ubuntu:24.04
+  tags: [saas-linux-medium-amd64]   # 4 vCPU like GitHub's runners (cost factor 2)
+  variables:
+    WWHD_IMAGE_OS: ubuntu24
+
+.windows:
+  tags: [$WWHD_WINDOWS_TAG]
+
+.release:
+  stage: build
+  timeout: 3h
+  cache: *cache
+  artifacts:
+    <<: *artifacts
+    expire_in: 30 days
+  needs: [release:version]
+  rules:
+    - if: $WWHD_RELEASE == "1"
+
+# ---------------------------------------------------------------------------------------------- CI jobs
+
+linux:build:
+  extends: [.ci, .linux]
+  script:
+    - bash ci/gitlab/linux_job.sh .github/workflows/linux.yml build
+
+windows:build:
+  extends: [.ci, .windows]
+  script:
+    - powershell -NoProfile -ExecutionPolicy Bypass -File ci/gitlab/windows_job.ps1 -Msys2 -Workflow .github/workflows/windows.yml -Job build
+
+android:apk:
+  extends: [.ci, .linux]
+  script:
+    - bash ci/gitlab/linux_job.sh --android .github/workflows/android.yml apk
+
+android-toolchain:
+  extends: [.ci, .linux]
+  tags: [$ANDROID_RUNNER_TAG]
+  variables:
+    ANDROID_RUNNER_TAG: saas-linux-medium-amd64
+  parallel:
+    matrix:
+      - ABI: [arm64-v8a, x86_64]
+  rules:
+    - if: $WWHD_RELEASE == "1"
+      when: never
+    - if: $WWHD_ANDROID_EMULATOR == "1"
+      variables: {ANDROID_RUNNER_TAG: wwhd-linux-kvm}
+      when: manual
+      allow_failure: true
+    - if: $WWHD_CI_AUTO == "1"
+    - when: manual
+      allow_failure: true
+  script:
+    - EMU=(); [ "$WWHD_ANDROID_EMULATOR" = 1 ] || EMU=(--skip-uses 'android-emulator-runner' --skip-step '(?i)emulator')
+    - bash ci/gitlab/linux_job.sh --android .github/workflows/android-toolchain.yml compiler --matrix "abi=$ABI" "${EMU[@]}"
+
+android-display-smoke:
+  extends: [.ci, .linux]
+  tags: [wwhd-linux-kvm]
+  rules:
+    - if: $WWHD_RELEASE != "1" && $WWHD_ANDROID_EMULATOR == "1"
+      when: manual
+      allow_failure: true
+  script:
+    - bash ci/gitlab/linux_job.sh --android .github/workflows/android-display-smoke.yml display
+
+guestmods:public-headers:
+  extends: [.ci, .linux]
+  tags: [saas-linux-small-amd64]
+  script:
+    - bash ci/gitlab/linux_job.sh .github/workflows/guestmods.yml public-headers
+
+guestmods:modules-linux:
+  extends: [.ci, .linux]
+  tags: [saas-linux-small-amd64]
+  script:
+    - bash ci/gitlab/linux_job.sh .github/workflows/guestmods.yml modules --matrix os=ubuntu-24.04
+
+guestmods:modules-windows:
+  extends: [.ci, .windows]
+  script:
+    - powershell -NoProfile -ExecutionPolicy Bypass -File ci/gitlab/windows_job.ps1 -Msys2 -Workflow .github/workflows/guestmods.yml -Job modules -Matrix os=windows-latest
+
+guestmods:modules-macos:
+  extends: .ci-mac
+  script:
+    - python3 ci/gitlab/gh_steps.py .github/workflows/guestmods.yml modules --matrix os=macos-15
+
+decomp:macos:
+  extends: .ci-mac
+  allow_failure: true             # informational, as on GitHub (continue-on-error)
+  script:
+    - python3 ci/gitlab/gh_steps.py .github/workflows/decomp.yml macos
+
+# ---------------------------------------------------------------------------------------------- release
+# WWHD_RELEASE=1 on a tag vX.Y.Z (or on a branch with WWHD_VERSION=vX.Y.Z): builds what release.yml builds and
+# publishes a GitLab release. WWHD_DRY_RUN=1 builds only; WWHD_DEVEL_BUILD=1 makes a development build.
+
+release:version:
+  stage: version
+  image: alpine:3.20
+  tags: [saas-linux-small-amd64]
+  needs: []
+  rules:
+    - if: $WWHD_RELEASE == "1"
+  script:
+    - apk add --no-cache git coreutils > /dev/null
+    - sh ci/gitlab/release_version.sh
+  artifacts:
+    reports:
+      dotenv: version.env
+
+release:macos:
+  extends: .release
+  tags: [wwhd-macos]
+  rules:
+    - if: $WWHD_RELEASE == "1" && $WWHD_SKIP_MACOS != "1"
+  script:
+    - python3 ci/gitlab/gh_steps.py .github/workflows/release.yml macos
+
+release:linux:
+  extends: .release
+  image: ubuntu:22.04               # glibc 2.35, as release.yml (ubuntu-22.04 / ubuntu-22.04-arm)
+  tags: [$RUNNER_TAG]
+  variables:
+    WWHD_IMAGE_OS: ubuntu22
+  parallel:
+    matrix:
+      - ARCH: x86_64
+        RUNNER_TAG: saas-linux-medium-amd64
+      - ARCH: aarch64
+        RUNNER_TAG: saas-linux-small-arm64   # the only Arm64 size on GitLab Free
+  script:
+    - bash ci/gitlab/linux_job.sh .github/workflows/release.yml linux --matrix "arch=$ARCH"
+
+release:windows-x86_64:
+  extends: [.release, .windows]
+  script:
+    - powershell -NoProfile -ExecutionPolicy Bypass -File ci/gitlab/windows_job.ps1 -Workflow .github/workflows/release.yml -Job windows -Matrix arch=x86_64
+
+release:windows-arm64:
+  extends: .release
+  tags: [wwhd-windows-arm64]        # GitLab has no hosted Windows on Arm
+  rules:
+    - if: $WWHD_RELEASE == "1" && $WWHD_WINDOWS_ARM64 == "1"
+  script:
+    - powershell -NoProfile -ExecutionPolicy Bypass -File ci/gitlab/windows_job.ps1 -Workflow .github/workflows/release.yml -Job windows -Matrix arch=arm64
+
+release:android:
+  extends: [.release, .linux]
+  parallel:
+    matrix:
+      - ABI: [arm64-v8a, x86_64]
+  script:
+    - bash ci/gitlab/linux_job.sh --android .github/workflows/release.yml android --matrix "abi=$ABI"
+
+release:virustotal:
+  extends: [.release, .linux]
+  stage: publish
+  tags: [saas-linux-small-amd64]
+  allow_failure: true               # monitor only, as on GitHub
+  cache: []
+  artifacts:
+    paths: [.gitlab-ci-artifacts/vt-report/]
+    when: always
+    expire_in: 30 days
+  needs:
+    - release:version
+    - {job: release:macos, optional: true}
+    - release:linux
+    - release:windows-x86_64
+    - {job: release:windows-arm64, optional: true}
+    - release:android
+  script:
+    - bash ci/gitlab/linux_job.sh .github/workflows/release.yml virustotal
+
+release:publish:
+  extends: [.release, .linux]
+  stage: publish
+  tags: [saas-linux-small-amd64]
+  cache: []
+  artifacts:                        # the release files stay in the build jobs' artifacts and the release
+    paths: [dist/SHA256SUMS.txt, dist/notes.md]
+    expire_in: 30 days
+  needs:
+    - release:version
+    - {job: release:macos, optional: true}
+    - release:linux
+    - release:windows-x86_64
+    - {job: release:windows-arm64, optional: true}
+    - release:android
+  script:
+    # release.yml's guard and checksum/notes steps; its GitHub release steps are replaced by publish_release.py,
+    # and its all-in-one "release-all" artifact is left out (GitLab's 1 GB artifact limit)
+    - bash ci/gitlab/linux_job.sh .github/workflows/release.yml publish --skip-step '^Publish ' --skip-uses 'upload-artifact'
+    - python3 ci/gitlab/publish_release.py publish dist
+
+release:vt-notes:
+  stage: publish
+  image: ubuntu:24.04
+  tags: [saas-linux-small-amd64]
+  allow_failure: true
+  needs: [release:version, release:virustotal, release:publish]
+  rules:
+    - if: $WWHD_RELEASE == "1"
+  script:
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends python3 > /dev/null
+    - test -f .gitlab-ci-artifacts/vt-report/vt-report.json || { echo "no VirusTotal report"; exit 0; }
+    - python3 ci/gitlab/publish_release.py vt-notes .gitlab-ci-artifacts/vt-report/vt-report.json

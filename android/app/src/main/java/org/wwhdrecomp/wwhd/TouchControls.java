@@ -356,14 +356,7 @@ public class TouchControls extends View implements InputManager.InputDeviceListe
     @Override
     protected void onDraw(Canvas canvas) {
         if (editor.editing() && grid) drawGrid(canvas);
-        if (!editor.editing() && contextPack.startupTouch()) {
-            if (contextPack.startupScene() == ContextPack.STARTUP_TITLE && !settingsOpen) {
-                text.setColor(0xE6F8F4E8);
-                text.setTextSize(getResources().getDisplayMetrics().scaledDensity * 16);
-                canvas.drawText(getContext().getString(R.string.touch_tap_to_start), getWidth() / 2f, getHeight() * .14f, text);
-            }
-            return;
-        }
+        if (!editor.editing() && contextPack.startupTouch()) return;  // boot, title and file select: no buttons, startup taps only (StartupTouch)
         if (editor.editing() || active())
             for (Control c : controls) {
                 if (!editor.editing() && !visible(c)) continue;

@@ -98,7 +98,7 @@ inline const char* action_use(int a) {
     case kA: return "action, talk";
     case kB: return "sword, back";
     case kX: case kY: case kR: return "item button";
-    case kL: return "turns the GamePad page (menus)";
+    case kL: return "turns the GamePad page";
     case kZL: return "target, shield";
     case kZR: return "crouch, Picto Box";
     case kPlus: return "item menu";

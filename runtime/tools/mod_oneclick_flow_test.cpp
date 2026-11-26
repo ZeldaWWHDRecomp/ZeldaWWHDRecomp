@@ -216,8 +216,8 @@ int main(int argc,char** argv) {
         for(int i=0;i<400&&!s.loader.snapshot().have_list;i++){listed(ui::kCommunity);std::this_thread::sleep_for(std::chrono::milliseconds(5));}
         auto builtin=listed(ui::kBuiltin),community=listed(ui::kCommunity);
         std::set<std::string> expected_builtin;
-        for(const auto& e:mods::manager::entries())if(!ui::on_controls_tab(e.id))expected_builtin.insert(e.id);
-        assert(builtin==expected_builtin);                                  // every built-in mod, nothing else
+        for(const auto& e:mods::manager::entries())if(!ui::on_controls_tab(e.id)&&!ui::in_more_section(e.id))expected_builtin.insert(e.id);
+        assert(builtin==expected_builtin);                                  // every built-in mod outside Controls and More, nothing else
         assert(community==(std::set<std::string>{id,"available-fixture"}));  // the installed one and the downloadable one
         for(const auto& b:builtin)fprintf(stderr,"[tabs] Built-in: %s\n",b.c_str());
         for(const auto& c:community)fprintf(stderr,"[tabs] Community: %s\n",c.c_str());

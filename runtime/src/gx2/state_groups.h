@@ -24,7 +24,9 @@ enum StateGroup : uint8_t {
     kSgShader,        // SQ_PGM_*, SQ_CONFIG, VGT_GS_MODE, streamout
     kSgFetch,         // vertex semantics, vertex buffer strides/formats, VS->PS interface (SPI_*)
     kSgTargets,       // CB_COLORn_*, DB_DEPTH_* (render targets)
-    kSgOutput,        // blend/depth/stencil/raster/clip control, write masks
+    kSgOutput,        // blend/stencil/raster/clip control (pipeline key; also shader key)
+    kSgOutputTargets, // CB_COLOR_CONTROL, CB_TARGET_MASK, DB_DEPTH_CONTROL: active targets (and pipeline/shader key)
+    kSgOutputShader,  // CB/DB_SHADER_*, alpha test, VTE control: shader key only
     kSgTexture,       // SQ_TEX_RESOURCE texture units
     kSgSampler,       // SQ_TEX_SAMPLER, sampler border colours
     kSgOther,         // everything else; context and save-state loads
@@ -34,11 +36,27 @@ enum StateGroup : uint8_t {
 constexpr uint32_t kSgContinuedMask = 1u << kSgAluConst | 1u << kSgUniformBlock | 1u << kSgVertexBuffer | 1u << kSgDynamic;
 // table value for DB_STENCILREFMASK(_BF): the reference byte is dynamic, the masks are pipeline state
 constexpr uint8_t kSgStencilRefMask = kSgCount;
+// Partial continuation (draw.cpp, WWHD_VK_FASTPATH_PARTIAL): a draw that registers kept from
+// continuing resolves its shaders again; with the same fetch/vertex/pixel shaders it reuses each
+// further piece of the previous draw's state while none of the groups that piece's resolution reads
+// changed (any kSgOther change resolves in full). Every register a piece's resolution reads must lie
+// in its mask (state_groups_test checks the known readers).
+// resolve_targets: CB_COLORn_*, DB_DEPTH_* (color_target, depth_target), CB_COLOR_CONTROL,
+// CB_TARGET_MASK (GetActiveColorBufferMask), DB_DEPTH_CONTROL (GetActiveDepthBufferMask); the
+// scissor (dynamic) is checked by the active colour mask itself
+constexpr uint32_t kSgPartialTargetsMask = 1u << kSgTargets | 1u << kSgOutputTargets;
+// pipeline_key: CB_COLOR_CONTROL, CB_BLENDn_CONTROL, CB_TARGET_MASK, DB_DEPTH_CONTROL, the stencil
+// masks, PA_SU_SC_MODE_CNTL, PA_SU_POLY_OFFSET_*, PA_CL_CLIP_CNTL, the vertex strides (kSgFetch);
+// the shader keys, fetch shader, topology and target formats are compared as resolved objects
+constexpr uint32_t kSgPartialPipelineMask = 1u << kSgOutput | 1u << kSgOutputTargets | 1u << kSgFetch;
+// a stage's textures and samplers (resolve_texture, sampled_texture_view, resolve_sampler):
+// SQ_TEX_RESOURCE and SQ_TEX_SAMPLER words (with the border colours, conservatively)
+constexpr uint32_t kSgPartialTexturesMask = 1u << kSgTexture | 1u << kSgSampler;
 
 inline const char* state_group_name(int g) {
     static const char* const names[kSgCount] = {"ALU constants", "uniform blocks", "vertex buffers", "dynamic",
-                                                "shader", "fetch/interface", "targets", "output", "textures",
-                                                "samplers", "other"};
+                                                "shader", "fetch/interface", "targets", "output",
+                                                "output/targets", "output/shader", "textures", "samplers", "other"};
     return g >= 0 && g < kSgCount ? names[g] : "?";
 }
 
@@ -69,9 +87,15 @@ inline uint8_t state_group(uint32_t reg) {
         return kSgStencilRefMask;
     case REGADDR::SQ_CONFIG: case REGADDR::VGT_GS_MODE: case REGADDR::VGT_STRMOUT_EN:
         return kSgShader;
-    case REGADDR::CB_COLOR_CONTROL: case REGADDR::CB_TARGET_MASK: case mmCB_SHADER_MASK: case mmCB_SHADER_CONTROL:
-    case REGADDR::DB_DEPTH_CONTROL: case mmDB_SHADER_CONTROL: case REGADDR::SX_ALPHA_TEST_CONTROL:
-    case REGADDR::PA_CL_CLIP_CNTL: case REGADDR::PA_SU_SC_MODE_CNTL: case REGADDR::PA_CL_VTE_CNTL:
+    // read by LatteMRT::GetActiveColorBufferMask/GetActiveDepthBufferMask (resolve_targets), the
+    // pipeline key and the shader key
+    case REGADDR::CB_COLOR_CONTROL: case REGADDR::CB_TARGET_MASK: case REGADDR::DB_DEPTH_CONTROL:
+        return kSgOutputTargets;
+    // read by the shader key (and per draw), not by targets, pipeline key or texture resolution
+    case mmCB_SHADER_MASK: case mmCB_SHADER_CONTROL: case mmDB_SHADER_CONTROL: case REGADDR::SX_ALPHA_TEST_CONTROL:
+    case REGADDR::PA_CL_VTE_CNTL:
+        return kSgOutputShader;
+    case REGADDR::PA_CL_CLIP_CNTL: case REGADDR::PA_SU_SC_MODE_CNTL:
     case REGADDR::PA_SU_POLY_OFFSET_FRONT_SCALE: case REGADDR::PA_SU_POLY_OFFSET_FRONT_OFFSET:
     case REGADDR::PA_SU_POLY_OFFSET_CLAMP: case mmPA_SU_POLY_OFFSET_DB_FMT_CNTL:
         return kSgOutput;

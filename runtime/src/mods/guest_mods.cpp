@@ -15,6 +15,7 @@
 // start of every game function body (PPC_MOD_HOOK in ppc.h).
 //
 // The mod manager builds and loads its frozen, trusted guest set before guest code runs.
+#include "link_appearance.h"
 #include "../editor/editor_game.h"
 #include "story_native_canonical_code_id.h"
 #include "../exception_report.h"
@@ -128,6 +129,17 @@ uint8_t*sealed_mod_flags=nullptr;const PpcFunc*sealed_mod_bodies=nullptr;unsigne
 extern "C" {
 unsigned g_mod_hook_count = 0;  // initialized only by a hook-enabled game-code build
 uint8_t* g_mod_hook_flags = nullptr;
+// every write that sets a hook flag: the decomp build stops entering that function natively (the normal build: the
+// plain store, as before)
+#ifdef WWHD_DECOMP
+extern "C" void decomp_mod_hooked(uint32_t ordinal);  // runtime/src/decomp/decomp.h
+static inline void set_mod_hook_flag(uint32_t ordinal) {
+    g_mod_hook_flags[ordinal] = 1;
+    decomp_mod_hooked(ordinal);
+}
+#else
+#define set_mod_hook_flag(ordinal) (g_mod_hook_flags[ordinal] = 1)
+#endif
 const PpcFunc* g_mod_bodies = nullptr;
 void ppc_mod_register(unsigned count, uint8_t* flags, const PpcFunc* bodies) {
     std::lock_guard mutation(native_hook_mutex());
@@ -251,7 +263,7 @@ bool install_stage_owner_pass_through() {
         for(unsigned n=0;n<inserted;++n)g_chains.erase(addresses[n]);
         return false;
     }
-    for(unsigned n=0;n<addresses.size();++n)g_mod_hook_flags[ordinals[n]]=1;
+    for(unsigned n=0;n<addresses.size();++n)set_mod_hook_flag(ordinals[n]);
     installed=true;
     return true;
 }
@@ -387,7 +399,7 @@ bool install_native_wait_routes_impl(NativeWaitDispatch route) {
     }
     native_wait_prior=prior;
     native_wait_dispatch=route;
-    for(size_t n=0;n<addresses.size();++n)g_mod_hook_flags[ordinals[n]]=1;
+    for(size_t n=0;n<addresses.size();++n)set_mod_hook_flag(ordinals[n]);
     native_wait_installed=true;
     return true;
 }
@@ -634,8 +646,9 @@ void svc_memset(Cpu* c) { memset(mem::ptr(c->r[3]), (int)(c->r[4] & 0xFF), c->r[
 // ---- live options, input filters, touches (guest_live.h; QoL track M0)
 std::mutex g_options_mutex;  // Loaded::options (the main thread changes live ones), g_revisions
 guestlive::Revisions g_revisions;
-std::mutex g_touch_mutex;    // g_touch, g_touch_queue
+std::mutex g_touch_mutex;    // g_touch, g_gamepad_touch, g_touch_queue
 guestlive::Touch g_touch;
+guestlive::Touch g_gamepad_touch;  // claims on the GamePad picture (854 x 480 from the top left)
 std::vector<std::pair<int,guestlive::Event>> g_touch_queue;  // (mod index, event) for the next pad read
 mods::json::Value option(Cpu* c) {std::lock_guard lock(g_options_mutex);return owner(c).options.get(cstr(c->r[3]));}
 void svc_config_changed(Cpu* c) {
@@ -672,15 +685,16 @@ void svc_touch_register(Cpu* c) {
     auto& mod=owner(c);uint32_t fn=c->r[3];c->r[3]=0;
     if(fn&&(!own_function(mod,fn)||!exchange_area(mod))){LOG("[guestmod:%s] touch callback refused: the callback must be the mod's own",mod.id.c_str());return;}
     mod.touch_callback=fn;
-    if(!fn){std::lock_guard lock(g_touch_mutex);g_touch.drop(int(&mod-g_loaded.data()));}
+    if(!fn){std::lock_guard lock(g_touch_mutex);g_touch.drop(int(&mod-g_loaded.data()));g_gamepad_touch.drop(int(&mod-g_loaded.data()));}
     c->r[3]=1;
 }
+// slot | guestlive::kGamepadFlag: a claim on the GamePad picture (older hosts refuse that slot: the mod's feature test)
 void svc_touch_claim(Cpu* c) {
-    auto& mod=owner(c);const int slot=int32_t(c->r[3]);c->r[3]=0;
+    auto& mod=owner(c);const bool gamepad=c->r[3]&guestlive::kGamepadFlag;const int slot=int32_t(c->r[3]&~guestlive::kGamepadFlag);c->r[3]=0;
     if(!mod.touch_callback||slot<0||slot>=guestlive::kSlots)return;
     const guestlive::Rect r{float(c->f[1].ps0),float(c->f[2].ps0),float(c->f[3].ps0),float(c->f[4].ps0)};
     std::lock_guard lock(g_touch_mutex);
-    g_touch.claim(int(&mod-g_loaded.data()),slot,r);c->r[3]=1;
+    (gamepad?g_gamepad_touch:g_touch).claim(int(&mod-g_loaded.data()),slot,r);c->r[3]=1;
 }
 // wwhd_screen_point(world xyz, out xy): a point of the world where the drawn camera shows it, in layout units (guest_live.h);
 // the camera_draw camera (interp::last_camera: eye +0xDC, center +0xE8, up +0xF4, fovy +0xD4) and the picture's aspect
@@ -1131,7 +1145,30 @@ void svc_native_actor_profile_register(Cpu*c){
     else LOG("[guestmods] %s: registered native actor profile %04X from GameMain entry",mod.id.c_str(),unsigned(result));
     c->r[3]=uint32_t(result);
 }
+// Link's appearance v1 (link_appearance.h): the look of the save file played as its record (3..27 bytes)
+void svc_appearance_get(Cpu* c) {
+    auto& mod=owner(c);const uint32_t a=c->r[3],n=c->r[4];
+    if(link_appearance::current_file()<0){c->r[3]=uint32_t(-2);return;}
+    const std::vector<uint8_t> r=link_appearance::encode(link_appearance::current());
+    if(!a||n<r.size()||!setting_buffer(mod,a,uint32_t(r.size()))){c->r[3]=UINT32_MAX;return;}
+    memcpy(mem::ptr(a),r.data(),r.size());c->r[3]=uint32_t(r.size());
+}
+void svc_appearance_set(Cpu* c) {
+    auto& mod=owner(c);const uint32_t a=c->r[3],n=c->r[4];
+    link_appearance::Look l;
+    if(!a||n>link_appearance::kMaxRecord||!setting_buffer(mod,a,n)||!link_appearance::decode(mem::ptr(a),n,l)){c->r[3]=UINT32_MAX;return;}
+    std::string why;
+    if(!link_appearance::set_current(l,why)){c->r[3]=uint32_t(-2);return;}
+    LOG("[guestmods] %s: Link's look %s",mod.id.c_str(),l.empty()?"back to his own colours":link_appearance::to_text(l).c_str());
+    c->r[3]=0;
+}
+void svc_appearance_open(Cpu* c) {
+    auto& mod=owner(c);std::string why;
+    if(!link_appearance::request_page(why)){LOG("[guestmods] %s: colour page not asked for: %s",mod.id.c_str(),why.c_str());c->r[3]=uint32_t(-2);return;}
+    LOG("[guestmods] %s: colour page asked for",mod.id.c_str());c->r[3]=0;
+}
 const std::unordered_map<std::string, PpcFunc> kServices = {
+    {"wwhd_appearance_get",svc_appearance_get},{"wwhd_appearance_set",svc_appearance_set},{"wwhd_appearance_open",svc_appearance_open},
     {"wwhd_native_actor_profile_register",svc_native_actor_profile_register},
     {"wwhd_actor_register",svc_actor_register},{"wwhd_actor_find",svc_actor_find},{"wwhd_actor_get",svc_actor_get},
     {"wwhd_actor_combat_get",svc_actor_combat_get},{"wwhd_actor_attack_begin",svc_actor_attack_begin},{"wwhd_actor_attack_cancel",svc_actor_attack_cancel},
@@ -1323,7 +1360,7 @@ bool load_one(const std::string& path, std::string& err,const mods::packages::Gu
         if (h.kind == WWHD_GUEST_REPLACE) { ch.replace = h.fn; ch.replace_mod = pkg.id; }
         else if (h.kind == WWHD_GUEST_HOOK_ENTRY) ch.entry.push_back(h.fn);
         else ch.ret.insert(ch.ret.begin(), h.fn);  // return hooks run in reverse load order
-        g_mod_hook_flags[ch.ordinal] = 1;
+        set_mod_hook_flag(ch.ordinal);
         LOG("[guestmods] %s %08X", h.kind == WWHD_GUEST_REPLACE ? "replace" : h.kind == WWHD_GUEST_HOOK_ENTRY ? "entry hook" : "return hook",
             h.target);
     }
@@ -1614,7 +1651,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] letters: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's letter service";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Mod charts: host replacements of the sea chart menu's story marks, only when a loaded mod uses
     // the chart services (story_chart.h).
@@ -1630,7 +1667,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] charts: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's chart service";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Mod treasure charts (story_treasure.h): the game's salvage point, light ring, crane and chest for a
     // declared mod chart, only when a loaded mod declares charts.
@@ -1644,7 +1681,7 @@ void init() {
             if(ordinal<0)fatal("[guestmods] treasure charts: %08X is not a game function",addr);
             Chain& ch=g_chains[addr];
             ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's treasure charts";
-            g_mod_hook_flags[ordinal]=1;
+            set_mod_hook_flag(ordinal);
         });
     }
     // Placed chests (SDK v3 "chest") that hold a mod's item: the chest item hook of the treasure charts, on its
@@ -1662,7 +1699,7 @@ void init() {
                 if(ordinal<0)fatal("[guestmods] placed chests: %08X is not a game function",addr);
                 Chain& ch=g_chains[addr];
                 ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's placed chests";
-                g_mod_hook_flags[ordinal]=1;
+                set_mod_hook_flag(ordinal);
             }
         }
         story_treasure_chest::set_item_hook_ready(ready);
@@ -1680,7 +1717,7 @@ void init() {
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's story notebook";
         if(addr==native_wait_addresses()[0])native_wait_known_notebook_people=fn;
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // World actors: with declared actors, and in the --editor launch mode always (the editor places
     // residents, props, switches, doors and enemies live even when no package declares one at start-up).
@@ -1718,6 +1755,9 @@ void init() {
            else LOG("[actors] borrowed walk %s: %s's %s on %s, %u frames, stride %.1f, %zu bytes",w.name,w.lender,w.clip,w.target,clip.frames,clip.stride,clip.fska.size());}}}
         story_actors::set_scene_start(story_scenes::request);
         story_actors::set_stage_enter(mod_stages::enter_stage);
+        story_actors::set_appearance_open([](const std::string& mod){std::string why;
+            if(!link_appearance::request_page(why)){LOG("[actors] %s: the colour page can't open: %s",mod.c_str(),why.c_str());return false;}
+            LOG("[actors] %s: the colour page of Link's look asked for",mod.c_str());return true;});
         mod_stages::set_story_actions(story_actors::actions);
         if(editor::launch_mode())story_actors::editor_live_kinds();  // --editor: native props, switches, doors and enemies placed live
         story_actors::install([](uint32_t addr) {
@@ -1729,7 +1769,7 @@ void init() {
             const auto& wait_addresses=native_wait_addresses();
             for(size_t n=0;n<wait_addresses.size();++n)
                 if(world_actor_overlap(n)&&addr==wait_addresses[n])native_wait_known_world_actor[n]=fn;
-            g_mod_hook_flags[ordinal]=1;
+            set_mod_hook_flag(ordinal);
         });
     }
     if(story_actor_textures::declared()&&!story_actor_textures::allocate_session())exception_report::raise("Owned prop texture snapshot cache allocation failed");
@@ -1765,7 +1805,7 @@ void init() {
         int ordinal=ordinal_of(addr);
         if(ordinal<0)fatal("[guestmods] scenes: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's scene player";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     };
     story_scenes::install(call_original,scenes_replaced_by,scenes_replace);
     // The King of Red Lions' one-time line for the tracked quest (story_sail.h): the boat's execute,
@@ -1777,7 +1817,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] notebook: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's story notebook (King of Red Lions)";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Story layouts (story_lyt_screen.h): a layout of our own with the item screen. Its client: the layout
     // test harness (WWHD_STORY_LYT, story_lyt_proto.cpp); nothing is hooked without one.
@@ -1796,7 +1836,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] story layout: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's story layout";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Mod items (story_items.h): the game's item tables answer for the port's item numbers, only when a
     // loaded mod declares items.
@@ -1816,7 +1856,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] items: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's mod items";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     // Mod items and the notebook on X/Y/R (story_item_buttons.h): the item use in play and the HUD's
     // button read, with the story notebook's item menu hooks.
@@ -1829,7 +1869,7 @@ void init() {
     story_items::set_hold_up_presenter(story_item_models::hold_up,story_item_models::chest_hold_up);
     story_items::set_get_text(story_mail::item_get_text);
     story_item_models::set_text(story_items::arm_get_text);
-    if(!story_item_models::install([](uint32_t fn){auto it=g_chains.find(fn);return it==g_chains.end()?std::string():it->second.replace_mod;},[](uint32_t fn,PpcFunc hook){int i=ordinal_of(fn);if(i<0)fatal("item model hook missing");auto&ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(i);ch.replace=hook;ch.replace_mod="the port's item models";g_mod_hook_flags[i]=1;}))exception_report::raise("Item model hook conflict");
+    if(!story_item_models::install([](uint32_t fn){auto it=g_chains.find(fn);return it==g_chains.end()?std::string():it->second.replace_mod;},[](uint32_t fn,PpcFunc hook){int i=ordinal_of(fn);if(i<0)fatal("item model hook missing");auto&ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(i);ch.replace=hook;ch.replace_mod="the port's item models";set_mod_hook_flag(i);}))exception_report::raise("Item model hook conflict");
     // a mod item's get moment from a chest (story_item_get_icon.h): its icon over Link's head in the place of
     // the stand-in's card; the demo item's draw hook also asks the held models first. With mod items, chests
     // of them, or in the editor launch mode (an item added there gets its chest at once).
@@ -1840,7 +1880,7 @@ void init() {
     },item_icons::picture);
     story_treasure_chest::set_icon_presenter([](uint16_t key,const std::string& png,bool on){if(on)story_item_get_icon::show(key,png);else story_item_get_icon::hide();});
     if(story_items::imported()||story_treasure_chest::placed_chests()||story_item_models::declared()||editor::launch_mode())
-        story_item_get_icon::install([](uint32_t fn){auto it=g_chains.find(fn);return it==g_chains.end()?std::string():it->second.replace_mod;},[](uint32_t fn,PpcFunc hook){int i=ordinal_of(fn);if(i<0)fatal("[guestmods] item get: %08X is not a game function",fn);auto&ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(i);ch.replace=hook;ch.replace_mod="the port's item get";g_mod_hook_flags[i]=1;});
+        story_item_get_icon::install([](uint32_t fn){auto it=g_chains.find(fn);return it==g_chains.end()?std::string():it->second.replace_mod;},[](uint32_t fn,PpcFunc hook){int i=ordinal_of(fn);if(i<0)fatal("[guestmods] item get: %08X is not a game function",fn);auto&ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(i);ch.replace=hook;ch.replace_mod="the port's item get";set_mod_hook_flag(i);});
     story_item_buttons::set_game_calls(call_original,[](Cpu* c,uint32_t fn,std::initializer_list<uint32_t> args){return guest_call(c,fn,args);});
     story_item_buttons::install([](uint32_t addr) {
         auto it=g_chains.find(addr);return it==g_chains.end()?std::string():it->second.replace_mod;
@@ -1849,7 +1889,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] item buttons: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's item buttons";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     story_store::set_game_calls(call_original);
     story_store::set_progress_loaded(story_item_models::progress_loaded);
@@ -1860,7 +1900,7 @@ void init() {
         if(ordinal<0)fatal("[guestmods] story store: %08X is not a game function",addr);
         Chain& ch=g_chains[addr];
         ch.addr=addr;ch.ordinal=uint32_t(ordinal);ch.replace=fn;ch.replace_mod="the port's story progress";
-        g_mod_hook_flags[ordinal]=1;
+        set_mod_hook_flag(ordinal);
     });
     if(getenv("WWHD_GUEST_MODS"))LOG("[guestmods] WWHD_GUEST_MODS is retired; install and trust guest packages in the mod manager");
     // The world editor's scene previews: in the --editor launch mode the scene player (its scratch, the
@@ -1888,7 +1928,7 @@ void init() {
         auto it=g_chains.find(fn);return ordinal_of(fn)>=0&&(!replacing||it==g_chains.end()||!it->second.replace);
     },[](uint32_t fn,PpcFunc hook){
         int ordinal=ordinal_of(fn);auto& ch=g_chains[fn];ch.addr=fn;ch.ordinal=uint32_t(ordinal);
-        ch.replace=hook;ch.replace_mod="the port's map/HUD bridge";g_mod_hook_flags[ordinal]=1;
+        ch.replace=hook;ch.replace_mod="the port's map/HUD bridge";set_mod_hook_flag(ordinal);
     });
     // Existing port actor services configure their before-delete listeners
     // before the central registry becomes immutable. Extend its lookup only
@@ -2045,6 +2085,15 @@ int touch_pinch(uint32_t kind,float scale,float x,float y) {
     return owner;
 }
 bool touch_claimed_at(float x,float y) {std::lock_guard lock(g_touch_mutex);return g_touch.owner_at(x,y)>=0;}
+void gamepad_touch(input::PadState& p,bool repeat) {
+    static guestlive::PadFinger finger;  // the game's controller reads come from one thread
+    if(repeat||g_loaded.empty())return;
+    std::lock_guard lock(g_touch_mutex);
+    int owner;guestlive::Event e;
+    const bool hide=finger.step(g_gamepad_touch,p.touch,p.tx,p.ty,owner,e);
+    if(owner>=0&&size_t(owner)<g_loaded.size()&&g_touch_queue.size()<64)g_touch_queue.push_back({owner,e});
+    if(hide)p.touch=false,p.tx=p.ty=0;
+}
 bool touch_claims() {std::lock_guard lock(g_touch_mutex);return g_touch.any();}
 // test aid: WWHD_TEST_MOD_OPTION=frame:mod:option:json,... changes a mod's option at that (scripted) TV frame, as the
 // Settings window would (packages::configure on the main thread: a live option reaches the mod)
@@ -2154,7 +2203,7 @@ void logic_service(Cpu* c) {
     if(const char* at=std::getenv(probe)){
         static uint32_t tick=0;const unsigned long target=std::strtoul(at,nullptr,10);
         if(++tick==target&&target>0&&target<=18000){
-            const uint32_t link=ld32(GD(0x1046F0B0)+0x5B34);
+            const uint32_t link=ld32(GD(0x1046F0B0)+GI(0x5B34));
             if(!(link&3)&&link>=mem::kMem2Start&&link<=mem::kMem2End-0x330&&ld16(link+0xE)==0xA8&&ld32(link+4)&&ld32(link+4)!=0xFFFFFFFFu){
                 story_particles::Burst burst;burst.effect=beacon?story_particles::Effect::BeaconSparkle:sparkle?story_particles::Effect::AuctionSparkle:story_particles::Effect::DoorDebris;
                 burst.position={u32_as_f32(ld32(link+0x314)),u32_as_f32(ld32(link+0x318)),u32_as_f32(ld32(link+0x31C))};
@@ -2195,6 +2244,7 @@ void state_loaded() {
 }  // namespace guestmods
 namespace mods {
 void guest_pad_filter(Cpu* c, input::PadState& p, bool repeat) { guestmods::pad_filter(c, p, repeat); }
+void guest_gamepad_touch(input::PadState& p, bool repeat) { guestmods::gamepad_touch(p, repeat); }
 bool guest_touch_claimed_at(float x, float y) { return guestmods::touch_claimed_at(x, y); }
 }  // namespace mods
 

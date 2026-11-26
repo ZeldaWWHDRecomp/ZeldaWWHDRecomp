@@ -82,7 +82,7 @@ const char* reserved_key(int code);
 constexpr float kMinStickRange = 1.0f, kMaxStickRange = 1.5f;
 
 // Host actions share controls.json, but do not drive GamePad inputs.
-enum Shortcut { kSettings, kFullscreen, kPhoto, kSave1, kSave2, kSave3, kSave4, kSave5,
+enum Shortcut { kSettings, kFullscreen, kPhoto, kQuit, kSave1, kSave2, kSave3, kSave4, kSave5,
     kLoad1, kLoad2, kLoad3, kLoad4, kLoad5, kResolution, kAO, kAOHires, kAniso,
     kInterpolation, kFXAA, kPiP, kPerformance, kMute, kVolumeDown, kVolumeUp, kShortcutCount };
 enum KeyModifier { kModShift = 1, kModCtrl = 2, kModAlt = 4, kModSuper = 8 };
@@ -141,8 +141,9 @@ struct Mapping {
     ShoulderNames shoulder_names = ShoulderNames::kAuto;
     bool prompt_colours = true;                  // coloured face buttons (Xbox / PlayStation colours)
     // Controls > Controller > "L turns the GamePad page" (off): in play the game reads L only to turn
-    // its GamePad screen between Items and Map; off, L reaches the game only outside play, so L1 can
-    // jump without turning the page (play_buttons)
+    // its GamePad screen between Items and Map; off, an input that presses L and a Jump / moon jump
+    // that acts (its mod or cheat on) only jumps in play; L on its own always reaches the game
+    // (play_buttons, issue #406)
     bool l_turns_page = false;
     bool settings_pause_page = true; // offer the settings page in the pause menu
     // per-controller bindings (format 2): see profile_index()
@@ -209,6 +210,21 @@ enum class AppleFaceLayout { kStandard, kNintendo, kJoyConSingle };
 AppleFaceLayout apple_face_layout(const char* product_category, const char* vendor_name);
 int apple_face_input(AppleFaceLayout layout, int pad);  // non-face inputs pass through
 void apple_face_labels(AppleFaceLayout layout, FaceLabel labels[4]);  // raw A/B/X/Y -> positions
+// A pad whose buttons do not name themselves (older MFi, some HID): its family's letters by position
+// (south, east, west, north) guessed from what it says it is; `out` untouched when that says nothing.
+void family_face_labels(const char* vendor_name, const char* product_category, FaceLabel out[4]);
+bool gamecube_named(const char* vendor_name, const char* product_category);
+// A GameController element by its name (GCInputNames.h: "Button A", "Left Shoulder", "Trigger"), for the
+// pads macOS lists without the extended gamepad profile (some GameCube adapters, arcade sticks, generic
+// HID pads; issue #556): the controller input a button is (kPadNone: a name we don't know), and what a
+// direction pad is. Face buttons come back as raw A/B/X/Y; apple_face_input puts them in place.
+int apple_button_input(const char* element_name);
+enum class AppleDpad { kNone, kDpad, kLeftStick, kRightStick };
+AppleDpad apple_dpad_kind(const char* element_name);
+// A GameController pad known only by its names (the iPhone GamePad's controller, remote_pad.h): the
+// letters by position from its buttonA/B/X/Y names, else its family's.
+void named_face_labels(const char* vendor_name, const char* product_category, const char* const faces[4],
+                       FaceLabel labels[4]);
 // A possible pre-#181 manual workaround; report it, never silently overwrite an intentional
 // by-label choice (or a shared mapping used with another controller).
 bool apple_face_workaround(const Mapping& m, AppleFaceLayout layout);
@@ -229,13 +245,16 @@ void note_face_labels(const FaceLabel labels[4]);
 // reported the bindings stay as they are. apply_face_layout turns it off: a preset is a choice.
 void set_face_auto(Mapping& m, bool on);
 
-// The dominant pad's family, from the labels note_face_labels last reported: PlayStation when it
-// names Cross/Circle/Square/Triangle, Xbox when its bottom button is A, Nintendo when it is B.
+// A pad's family, from its face labels: PlayStation when it names Cross/Circle/Square/Triangle,
+// Xbox when its bottom button is A, Nintendo when it is B.
 enum class PadFamily { kUnknown, kXbox, kPlayStation, kNintendo };
 // The dominant device GameCube-adapter identity, separate from its face labels.
 void note_gamecube(bool detected);
-bool gamecube_pad();
 PadFamily pad_family_from_labels(const FaceLabel labels[4]);
+// The pad Automatic prompts describe: the controller in use (set_active_controller), else the
+// dominant pad (note_gamecube, note_face_labels). A pad in use with unknown labels takes the
+// dominant pad's family.
+bool gamecube_pad();
 PadFamily pad_family();
 
 // What the in-game button prompts look like (button_glyphs.cpp draws it). Resolved from the
@@ -328,6 +347,22 @@ Mapping view_for(const Mapping& m, int index);
 // shared ones; no controller in use (keyboard only) or none of its own: `m`'s shared bindings
 Mapping active_view(const Mapping& m);
 void store_view(Mapping& m, const Mapping& view, int index);
+// The Controls page's "Bindings for" choice (the overlay's Controls tab and the Mac Controls window).
+// The page opens on the bindings the controller in use plays with: its own when it has a profile, else
+// the shared ones. A set the user picks there wins over that while the same controller stays in use.
+struct BindingChoice {
+    bool chosen = false;          // the user picked a set (choose)
+    std::string by_guid, by_name; // the controller in use then
+    // the user picked a set while (guid, name) was in use (both empty: keyboard only / none)
+    void choose(const std::string& active_guid, const std::string& active_name);
+    // the page opens with (active_guid, active_name) in use: false keeps the user's choice; true sets
+    // own / guid / name to the set to show (own: that controller's profile; else the shared ones)
+    bool open(const Mapping& m, const std::string& active_guid, const std::string& active_name, bool& own,
+              std::string& guid, std::string& name);
+};
+// The line the shared bindings show when the controller in use plays with bindings of its own (edits
+// there do not reach it); "" when it plays with the shared ones (or none is in use).
+std::string shared_view_notice(const Mapping& m, const std::string& active_guid, const std::string& active_name);
 // controller setup offer (controller_setup.h): a new controller (no profile, not declined, not virtual)
 bool setup_offer_due(const Mapping& m, const std::string& guid, const std::string& name, bool is_virtual);
 
@@ -350,10 +385,11 @@ std::vector<int> displaced_by(const Mapping& m, int pad);
 int move_target(const Mapping& m, int a);
 // bind virtual action `v` to `pad`, doing `d` with the displaced game actions; false: nothing changed
 bool bind_virtual(Mapping& m, int v, int pad, Displace d);
-// The buttons the game gets in play or outside it: L leaves in play unless l_turns_page; an input
-// shared by a game button and L or d-pad down presses, in play, the game button only and, outside
-// play, L or d-pad down only.
-uint32_t play_buttons(const Mapping& m, uint32_t buttons, bool in_play);
+// The buttons the game gets in play or outside it: in play L leaves while it shares an input with a
+// virtual action that acts now (acting_virt: input::kVirt* bits held this poll whose mod / cheat is on),
+// unless l_turns_page; an input shared by a game button and L or d-pad down presses, in play, the game
+// button only and, outside play, L or d-pad down only.
+uint32_t play_buttons(const Mapping& m, uint32_t buttons, bool in_play, uint32_t acting_virt);
 // Format 1 migration: Jump on the inputs of the Wii U button `vpad_bit` (the old Jump anywhere button
 // choice, one of L, R, ZL, ZR, L3, R3). The game button keeps them too, as it did.
 void jump_from_legacy(Mapping& m, uint32_t vpad_bit);
@@ -392,8 +428,10 @@ bool l_turns_page();     // current().l_turns_page, any thread
 // controls.json; a format 2 file has its own Jump bindings and ignores it.
 void adopt_legacy_jump_button(uint32_t vpad_bit);
 // The controller in use (hosts: the one that pressed something last), for the overlay's confirm and
-// back buttons (face_input) and the Controls tab's first choice. Empty: none.
-void set_active_controller(const std::string& guid, const std::string& name);
+// back buttons (face_input), the Controls tab's first choice and Automatic prompts (`family` and
+// `gamecube` describe it). Empty: none.
+void set_active_controller(const std::string& guid, const std::string& name,
+                           PadFamily family = PadFamily::kUnknown, bool gamecube = false);
 void active_controller(std::string& guid, std::string& name);
 
 }  // namespace input_map

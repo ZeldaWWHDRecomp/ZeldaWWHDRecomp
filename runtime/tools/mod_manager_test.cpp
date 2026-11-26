@@ -78,6 +78,8 @@ bool fast_scenes() { return state[5]; } void set_fast_scenes(bool b) { state[5]=
 static bool instant = false, no_pauses = false;
 bool instant_text() { return instant; } void set_instant_text(bool b) { instant=b; }
 bool no_text_pauses() { return no_pauses; } void set_no_text_pauses(bool b) { no_pauses=b; }
+static bool fix_bugs = true;
+bool fix_game_bugs() { return fix_bugs; } void set_fix_game_bugs(bool b) { fix_bugs=b; }
 bool quick_use() { return state[6]; } void set_quick_use(bool b) { state[6]=b; }
 static float quick_speed = 1.f;
 float quick_use_speed() { return quick_speed; }
@@ -123,7 +125,38 @@ int main() {
     for(const auto& entry:entries()) env(entry.startup_env,nullptr);
     env("WWHD_MOD_CAMERA_SPEED",nullptr);env("WWHD_MOD_MOUSE_SENS",nullptr);
     env("WWHD_MOD_MOVE_FACTOR",nullptr);env("WWHD_MOD_MOVE_SWIM",nullptr);env("WWHD_MOD_MOVE_STAMINA",nullptr);
-    assert(entries().size()==25);  // with camera-directed-items (#203), quick-use (#196), leaf-rise, instant-text, no-text-pauses, game-progress and achievements
+    assert(entries().size()==27);  // with camera-directed-items (#203), quick-use (#196), leaf-rise, instant-text, no-text-pauses, game-progress, achievements, classic-wind-waker and fix-game-bugs
+    // Fix original game bugs (#336): on by default, saved like the others, the start-up switch wins
+    assert(find("fix-game-bugs") && std::string(find("fix-game-bugs")->category)=="Game" && find("fix-game-bugs")->default_enabled);
+    assert(mods::fix_game_bugs());
+    load_saved(); assert(mods::fix_game_bugs());
+    assert(set_enabled("fix-game-bugs",false) && !mods::fix_game_bugs() && preferences["mod.fix-game-bugs.enabled"]=="0");
+    mods::set_fix_game_bugs(true);  // (a new start: the switch starts on and reads the settings)
+    load_saved(); assert(!mods::fix_game_bugs());
+    assert(set_enabled("fix-game-bugs",true) && mods::fix_game_bugs() && preferences["mod.fix-game-bugs.enabled"]=="1");
+    preferences.erase("mod.fix-game-bugs.enabled");
+    // Classic Wind Waker (Speedrun, #405; the real switch of mods/speedrun.cpp): off by default, saved, back after a
+    // restart, the start-up switch wins
+    assert(find("classic-wind-waker") && std::string(find("classic-wind-waker")->category)=="Speedrun");
+    assert(!find("classic-wind-waker")->default_enabled && !mods::classic_wind_waker());
+    load_saved(); assert(!mods::classic_wind_waker());
+    assert(set_enabled("classic-wind-waker",true) && mods::classic_wind_waker() && preferences["mod.classic-wind-waker.enabled"]=="1");
+    mods::set_classic_wind_waker(false);  // (a new start: the switch starts off and reads the settings)
+    load_saved(); assert(mods::classic_wind_waker());
+    mods::set_classic_wind_waker(false); env("WWHD_MOD_CLASSIC_TACT","0");
+    load_saved(); assert(!mods::classic_wind_waker());
+    env("WWHD_MOD_CLASSIC_TACT",nullptr);
+    load_saved(); assert(mods::classic_wind_waker());
+    assert(set_enabled("classic-wind-waker",false) && !mods::classic_wind_waker() && preferences["mod.classic-wind-waker.enabled"]=="0");
+    load_saved(); assert(!mods::classic_wind_waker());
+    // the round-trip test aid switches it as the Settings window does (saved)
+    env("WWHD_TEST_BUILTIN_SET","classic-wind-waker=1"); load_saved();
+    assert(mods::classic_wind_waker() && preferences["mod.classic-wind-waker.enabled"]=="1");
+    env("WWHD_TEST_BUILTIN_SET","classic-wind-waker=0"); load_saved();
+    assert(!mods::classic_wind_waker() && preferences["mod.classic-wind-waker.enabled"]=="0");
+    env("WWHD_TEST_BUILTIN_SET","classic-wind-waker=on"); load_saved(); assert(!mods::classic_wind_waker());  // (ignored)
+    env("WWHD_TEST_BUILTIN_SET",nullptr);
+    preferences.erase("mod.classic-wind-waker.enabled");
     assert(find("leaf-rise") && !find("leaf-rise")->default_enabled);
     assert(find("instant-text") && !find("instant-text")->default_enabled && find("no-text-pauses"));
     assert(find("camera-directed-items") && find("quick-use"));
@@ -179,7 +212,7 @@ int main() {
     env("WWHD_MOD_CAMERA_DIRECTED_ITEMS",nullptr);
     preferences.erase("mod.camera-directed-items.enabled");
     assert(set_enabled("camera-directed-items",true)); assert(mods::camera_directed_items());
-    disable_all(); assert(!mods::camera_directed_items());
+    disable_all(); assert(!mods::camera_directed_items() && !mods::classic_wind_waker());
     load_saved(); for(bool on:state) assert(!on); // stock defaults stay off
     assert(!mods::ladder_speed() && !mods::sidle_speed() && !mods::sail_speed() && !mods::auto_wind());
     // Quick doors' mode (Faster by default, Walk through) and walk-through doors opening with A (off by default)

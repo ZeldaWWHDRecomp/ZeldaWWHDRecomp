@@ -2,7 +2,7 @@
 
 [![Discord](https://img.shields.io/badge/Discord-Join%20the%20community-5865F2?style=for-the-badge&logo=discord&logoColor=white)](https://discord.gg/dhFYzCJUAm)
 
-A static recompilation of the Wii U version (USA or European) that runs natively on **macOS** (Apple Silicon),
+A static recompilation of the Wii U version (USA, European or Japanese) that runs natively on **macOS** (Apple Silicon),
 **Linux**, **Windows** and **Android** (arm64; the setup app builds the game on the phone, see
 [Android](#android-build-it-yourself)). The
 game's PowerPC code is translated to C ahead of time, the Cafe OS libraries the game uses are
@@ -22,16 +22,18 @@ The project has three parts:
 
 ## What's new
 
-**v0.5.1: a built-in randomizer, GameCube models and many ideas from the Android forks.**
-- **Randomizer built in:** make a randomized game from a preset, seed name or permalink in setup, or import a seed
-  from the official TWWHD Randomizer. Each randomized game keeps its own saves.
-- **New options:** GameCube player models from a pack you have, Achievements and Game progress, walk-through doors,
-  instant text, Deku Leaf wave to rise, 16-character names, a cloud save folder, GameCube controller layout and
-  prompts, keyboard and mouse prompts, and experimental 60 fps frame generation on Vulkan.
-- **Smoother and more exact:** 60 fps interpolation now runs the same game logic as 30 fps (True 60 is retired), HDR with
-  truer shadows, and Android back to full speed with less memory use and fixes for Adreno and Huawei GPUs.
-- Many fixes on every platform, and more for mod makers. Thanks to all contributors and the GreenNaugahyde and
-  Nycolazs Android forks.
+**v0.5.2: the Japanese release, Link's look, an iPhone as the GamePad and a much faster renderer.**
+- **New:** the Japanese release is supported, Link's colours can be changed per save file, an iPhone can be the
+  Wii U GamePad for the Mac, randomized games are made right in the game, and there are new Fix original game bugs,
+  Classic Wind Waker (speedrun), Quit Game and Grass draw distance options. Updates keep your files and only
+  recompile what changed.
+- **Faster:** draw batching cuts the render thread by about a quarter on phones and more on the Mac, smoother frame
+  pacing on Android and the Steam Deck, and far less memory for Metal shaders.
+- **Decomp version:** setup lets you choose the recompiled or the decomp version on every platform, with code mods
+  and a much faster fast mode.
+- Many fixes: 60 fps now matches 30 fps in more places (sky colours, music fades, message icons, objects at sea),
+  the Steam Deck Game Mode crash, randomizer fixes for European and Japanese games, and more. Thanks to all
+  contributors and VR-WakerHD.
 
 The changes in each update are in [CHANGELOG.md](CHANGELOG.md) and in the release notes on the
 [Releases](https://github.com/ZeldaWWHDRecomp/ZeldaWWHDRecomp/releases) page.
@@ -90,8 +92,8 @@ computer (about two minutes); every later start launches the game directly.
      release folder is used automatically). Keys are checked before anything is extracted, never
      stored, and not part of any log. A Cemu archive or an extracted folder needs no keys.
    - A Cemu archive (Cemu's "Convert to compressed Wii U archive (.wua)") often holds the game, its
-     update and DLC together. Setup uses the game itself, title 00050000-10143500 (USA) or
-     00050000-10143600 (Europe), version 0, and says
+     update and DLC together. Setup uses the game itself, title 00050000-10143500 (USA),
+     00050000-10143600 (Europe) or 00050000-10143400 (Japan), version 0, and says
      so in its log; an update in the archive is not used: the port is built for the code of version 0,
      and the update's files belong to its newer code. The archive's checksum is verified before
      anything is extracted.
@@ -99,13 +101,13 @@ computer (about two minutes); every later start launches the game directly.
    Then it prepares the game (extract, translate the code to C, compile with a pinned compiler) and
    offers to bring in a save: a Wind Waker HD `cking.sav` folder (Cemu, Wii U), a GameCube `.gci`
    (converted to HD), or the saves and settings of an earlier installation or another Wind Waker HD
-   folder (copied, never moved). The USA version (title 00050000-10143500) and the European one
-   (00050000-10143600) are supported, version 0 of either (the disc or eShop release, without the
+   folder (copied, never moved). The USA version (title 00050000-10143500), the European one
+   (00050000-10143600) and the Japanese one (00050000-10143400) are supported, version 0 of each (the disc or eShop release, without the
    update): before translating, setup checks the game's code (`code/cking.rpx`) against the SHA-256
    of each and explains what to use instead when it matches neither (e.g. a game folder with an
    update copied over it). The European game plays in English, French, German, Italian or Spanish —
-   its own text, chosen in the settings' Language tab. How one port serves both:
-   [docs/builds.md](docs/builds.md).
+   its own text, chosen in the settings' Language tab. The Japanese game plays in Japanese; One
+   screen mode's Options order is USA/Europe only. How one port serves all three: [docs/builds.md](docs/builds.md).
 3. That's it: start Wind Waker HD to play. To repair, update or change the game, hold **Shift** while
    starting it (macOS, Windows) or start it with `--setup` (Linux; also the "Setup" action of its
    menu entry).
@@ -192,9 +194,9 @@ Source builds (below) and the Linux AppImage (without a `.home` folder) are not 
 
 You also need, from your own console and disc:
 
-- a disc image of The Wind Waker HD (USA or Europe) in `.wud` or `.wux` format (or a Cemu archive,
+- a disc image of The Wind Waker HD (USA, Europe or Japan) in `.wud` or `.wux` format (or a Cemu archive,
   `.wua`: `build/cmake/wwhd-extract --title 0005000010143500 extract game.wua game`, with
-  `0005000010143600` for the European game, no keys);
+  `0005000010143600` for the European game or `0005000010143400` for the Japanese one, no keys);
 - its disc key (16 bytes) in a `.key` file next to the image, with the same base name;
 - the Wii U common key, either in a file `common.key` (16 raw bytes or 32 hex digits) next to
   the image or in the current directory, or in the `WIIU_COMMON_KEY` environment variable
@@ -336,6 +338,32 @@ libxml2 and embeds an application manifest Windows refuses to start ("side-by-si
 incorrect"); Microsoft's `link.exe` merges it correctly. CMake links clang's compiler-rt builtins on
 the MSVC ABI (128-bit division, `__udivti3`, which no MSVC library provides on ARM64).
 
+### Unit tests and faster rebuilds
+
+The unit tests can run in parallel, as CI runs them (use your core count; `-j 8` here):
+
+```sh
+ctest --test-dir build/linux --output-on-failure -j 8
+```
+
+Each test gets its own user folder. A test's temporary files need names no other test or process
+uses: a fixed name in the temp folder breaks under `-j`. A test that checks timing (a wake-up or a
+stop within some milliseconds, a sleep against a deadline) fails on a busy CPU without a bug, so
+add it to `wwhd_serial_timing_tests` in `CMakeLists.txt` and it runs alone. A test that takes
+minutes goes in `wwhd_slow_tests_first`, so it starts first rather than holding up the end of the run.
+
+Most of a build is compiling, and the generated game code is large. With
+[ccache](https://ccache.dev) installed, add these to the first `cmake` command to reuse earlier
+compiles, including from other build folders:
+
+```sh
+-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+```
+
+With several checkouts, set ccache's `base_dir` to a folder above them all
+(`ccache --set-config base_dir=$HOME/src`) so they share compiles. In CI, a full Linux build went
+from about an hour to under a minute with a filled cache.
+
 ### Android (build it yourself)
 
 The Android port is by [rhemfur](https://github.com/rhemfur) (issue #23): the Vulkan renderer on
@@ -465,13 +493,18 @@ controller sticks and an option to invert the camera's up/down are at the bottom
 Defaults…**. The mapping is saved to `~/Library/Application Support/WWHD/controls.json`
 (`WWHD_CONTROLS=<file>` uses another file); deleting it restores the defaults. The diagnostic keys P, F12 and 9, and Esc, remain reserved.
 
-**Settings → Shortcuts** remaps Settings, full screen, Screenshot (**F10**), saving and loading
+**Settings → Shortcuts** remaps Settings, full screen, Screenshot (**F10**), Quit Game, saving and loading
 slots 1–5, and the graphics shortcuts. Each action has a key with Shift/Ctrl/Alt (also Cmd on
 macOS), an alternate key, and a controller combination: hold one button, then press another,
 for example **Select + D-pad Up**. Click a binding to capture it; Esc cancels, right-click or
 **Clear** unbinds it. Conflicting keys (including game controls) and duplicate combinations
 are marked. **Reset to defaults** resets this tab. The GamePad picture-in-picture, performance
-overlay, mute and volume actions start unbound. Defaults otherwise stay unchanged.
+overlay, mute, volume and Quit Game actions start unbound. Defaults otherwise stay unchanged.
+
+**Quit Game** opens the quit confirmation directly, without navigating through Settings. Assign a
+controller combination in **Settings → Shortcuts → General → Quit Game**, for example hold Select
+and press Start. The confirmation starts on **Cancel**; A on Cancel, B or Esc returns to play.
+Move onto **Quit** and confirm to close the game. Progress since the last in-game save is lost.
 
 A combination consumes only its two buttons, only while both are held; other game inputs keep
 working. Select used as a combination's hold button is reserved for combinations instead of the
@@ -594,7 +627,7 @@ shared non-face bindings are unchanged. Existing custom profiles win. This does 
 | Start (tap, then release) | Plus: items, collection and maps; use the GamePad window for touch pages |
 | D-pad up / down / left / right | HD up (baton) / down / left (ship cannon) / right (salvage) |
 | Hold Start + D-pad up | Right stick click: first-person view (Picto Box uses its assigned item button) |
-| Hold Start + D-pad down / left / right | Minus (Off-TV Play) / L (GamePad page option) / Home (Settings by default) |
+| Hold Start + D-pad down / left / right | Minus (Off-TV Play) / L (GamePad page) / Home (Settings by default) |
 | Left stick click; screenshot; Jump / Moon jump | Unbound on the pad; existing keyboard shortcuts remain |
 
 L and R activate at **25% travel**, or at their digital click. Light L already locks on: HD has no
@@ -745,7 +778,8 @@ keeps it the same on all your computers. Choose the same folder on each computer
 - A folder inside the current save folder (or the other way round) can't be chosen. Choosing a
   folder that already holds other files (such as the OneDrive folder itself) puts the save in a
   `Wind Waker HD` folder inside it.
-- `--save DIR` on the command line still wins over the choice.
+- `--save DIR` on the command line still wins over the choice, unless it is the install's own `save`
+  folder, which the launchers and shortcuts always pass.
 
 ## Optional: bring your GameCube save to HD
 
@@ -775,6 +809,14 @@ On a Mac, where **Graphics → Renderer** lets you choose Metal or Vulkan, setup
 both, one after the other on the same progress bar, so the game starts prepared with either renderer.
 If Vulkan cannot start on your Mac, Metal is still prepared and Vulkan is skipped with a short
 message. Windows, Linux and Android prepare Vulkan.
+
+On a Mac with **Xcode 26 or newer** installed, the last step compiles every shader ahead of time for Metal
+(with Xcode's Metal compiler, downloading its Metal toolchain once if needed; about 85 MB on disk), so the
+game compiles none while you play and uses less memory (about 130 MB less on an M1). Without it, setup
+skips this step with a short message and the game compiles its shaders during play, as before; running
+setup again after installing Xcode (repair/update) adds it. A `shaders.metallib` built into an Apple TV or
+iPhone app contains shaders made from your game, so such a build is for your own devices and must not be
+distributed.
 
 You can uncheck **Prepare shaders now**, or use `--skip-shader-prebuild` with terminal setup.
 On Android, Back skips the preparation screen. If preparation fails or the build has no template,
@@ -842,11 +884,12 @@ cmake -S . -B build/decomp && cmake --build build/decomp --target wwhd -j 4
 ./build/decomp/wwhd
 ```
 
-**In setup (development builds, macOS):** tick "Also build the decomp version (experimental)" in the setup
+**In setup (macOS):** tick "Also build the decomp version (experimental)" in the setup
 window, or run `tools/Setup in Terminal.command --decomp`. Setup builds the normal game first, then a second
-version in which the decompiled game functions run as compiled source (10 to 30 minutes more, about 100 MB).
-Start it with "Start the decomp version instead of the normal game" in setup, or once with
-`Wind Waker HD --decomp`.
+version in which the decompiled game functions run as compiled source, in the decomp build's fast mode
+(about 40 to 80 minutes more on a busy Mac, less on a quiet one; about 1 GB while it builds; `--decomp-plain`: the plain decomp build, for testing). It starts with Vulkan (MoltenVK), where its
+native renderer helps; the normal game keeps Metal. Start it with "Start the decomp version instead of the normal game"
+in setup, or once with `Wind Waker HD --decomp`.
 
 What runs decompiled, the current status and how it is compared with the normal build:
 [docs/decomp-build.md](docs/decomp-build.md).

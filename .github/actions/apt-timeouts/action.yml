@@ -1,0 +1,13 @@
+name: Reliable apt
+description: >-
+  apt on a GitHub Ubuntu runner, made to give up and retry instead of hang: 30 s network timeouts and 3 retries.
+  The runners already list more than one mirror (Azure's, then Ubuntu's own archive), but apt has no network
+  timeout by default, so a stalled connection never reaches the next one: a noble-updates fetch once stalled on
+  archive.ubuntu.com and held a job until GitHub's 6 hour limit.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        echo 'Acquire::Retries "3"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";' |
+          sudo tee /etc/apt/apt.conf.d/80-ci-timeouts > /dev/null

@@ -175,8 +175,9 @@ inline bool selectable(const char* label, bool selected = false, ImGuiSelectable
 }
 // A collapsed section (tests can open them all: Host::expand_all)
 inline bool g_expand_all = false;
+inline std::string g_open_section;  // tests (WWHD_TEST_MODS_VIEW=more:<label>): this section drawn open
 inline bool section(const char* label) {
-    if (g_expand_all) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+    if (g_expand_all || g_open_section == label) ImGui::SetNextItemOpen(true, ImGuiCond_Always);
     const bool open = ImGui::CollapsingHeader(label);
     state().rects[label] = ImRect(ImGui::GetItemRectMin(), ImGui::GetItemRectMax());
     return open;
@@ -1042,12 +1043,14 @@ inline std::string unavailable_reason(const Host& h, const mods::catalogue::Entr
 inline bool on_controls_tab(std::string_view id) {
     return id == "mouse-camera" || id == "direct-camera" || id == "first-person";
 }
+// built-in switches drawn in a section of More instead of the built-in list
+inline bool in_more_section(std::string_view id) { return id == "classic-wind-waker"; }
 
 inline void builtin_list(Host& h) {
     muted(kAreaCaptions[kBuiltin]);
     if (!begin_list("builtin")) return;
     for (const auto& e : mods::manager::entries()) {
-        if (on_controls_tab(e.id)) continue;
+        if (on_controls_tab(e.id) || in_more_section(e.id)) continue;
         // the story system needs the Story Notebook package, which only the mod list provides
         if (e.id == "story-system" && !h.mod_downloads && !find_view(mods::packages::list(), mods::required::kStoryNotebook))
             continue;
@@ -1098,7 +1101,7 @@ inline void community_list(Host& h) {
         }
         for (const auto& v : list) {
             const auto* e = catalogue_entry(snap, v.id);
-            bool update = e && newer(e->version, v.version);
+            bool update = e && newer(e->version, v.version) && unavailable_reason(h, *e).empty();
             Row r = row(facts(v, update));
             auto view = v;
             std::string note;
@@ -1368,7 +1371,7 @@ inline void package_page(Host& h, const mods::packages::View& v) {
     auto& s = state();
     auto snap = s.loader.snapshot();
     const auto* entry = catalogue_entry(snap, v.id);
-    bool update = entry && newer(entry->version, v.version);
+    bool update = entry && newer(entry->version, v.version) && unavailable_reason(h, *entry).empty();
     PageFacts pf;
     pf.enabled = v.enabled;
     pf.active = v.active;
@@ -1629,6 +1632,9 @@ inline void more(Host& h) {
         if (ImGui::Checkbox("Use code mods##code_mods_switch", &code)) mods::code::request(code);
         muted((std::string("Code mods need the game code rebuilt with mod support (") + mods::code::rebuild_duration() +
                ") and a restart. Installing a code mod turns this on by itself.").c_str());
+        // e.g. the decomp version built before code-mod support was switched on (mods::code::startup)
+        if (const auto code_status = mods::code::status(); !code_status.building && !code_status.error.empty())
+            muted(code_status.error.c_str());
         ImGui::Unindent();
     }
     if (section("Save backups")) {
@@ -1665,6 +1671,17 @@ inline void more(Host& h) {
         if (snap.failed && !snap.error.empty()) muted("Last check: " + snap.error);
         ImGui::Unindent();
     }
+    if (section("Speedrun")) {
+        ImGui::Indent();
+        // a built-in mod (mods/manager.cpp: saved, in profiles, off with "Switch all mods off"), shown only here
+        if (const auto* e = mods::manager::find("classic-wind-waker")) {
+            bool on = e->enabled();
+            if (ImGui::Checkbox(e->name, &on)) hostui::post([on] { mods::manager::set_enabled("classic-wind-waker", on); });
+            muted(e->description);
+            if (const char* o = getenv(e->startup_env)) muted(std::string(e->startup_env) + "=" + o + " overrides the saved choice at startup.");
+        }
+        ImGui::Unindent();
+    }
     if (h.cheats && section("Cheats")) {
         ImGui::Indent();
         h.cheats();
@@ -1694,10 +1711,11 @@ inline void apply_test_view(Host& h) {
     static bool done = false;
     if (done || !h.test) return;
     done = true;
-    const char* v = getenv("WWHD_TEST_MODS_VIEW");  // mods | more | page:<id>
+    const char* v = getenv("WWHD_TEST_MODS_VIEW");  // mods | more | more:<section> | page:<id>
     if (!v) return;
     std::string view = v;
     if (view == "more") go_area(kMore);
+    else if (view.starts_with("more:")) { go_area(kMore); g_open_section = view.substr(5); }
     else if (view == "community") go_area(kCommunity);
     else if (view.starts_with("page:")) {
         bool builtin = mods::manager::find(view.substr(5)) != nullptr;

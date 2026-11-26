@@ -11,6 +11,7 @@
 // Shader presentation matches Metal's source-grid FXAA and scaling filters.
 #include "../../exception_report.h"
 #include "present.h"
+#include "present_trim.h"  // WWHD_VK_PRESENT_TRIM (gpusave A2, off by default)
 #include "stereo.h"
 #include "../hdr.h"
 #include "../headless_compose.h"
@@ -208,7 +209,8 @@ PresentParams present_params(bool aa,int filter,float scale,bool sourceLinear,bo
   filter==0||scale<=1?1:filter==1?scale:1e4f,scale<1?1/scale:1};
 }
 // pipeline kinds: the scaled picture (opaque / with opacity), a filled rectangle, the mod HUD
-enum Kind : uint32_t { kImage, kImageBlend, kSolid, kHud, kMoveHud, kBackdrop };
+enum Kind : uint32_t { kImage, kImageBlend, kSolid, kHud, kMoveHud, kBackdrop,
+                       kPlain, kPlainBlend, kBars, kBarsBlend };  // (the last four: present_trim.h)
 struct ScreenResources {
  bool drawable=false,captureTransfer=false; std::vector<VkImageView> views;
  Surface hdrTarget{}; // HDR10 output: the linear FP16 composition before PQ encoding
@@ -287,6 +289,7 @@ struct PresentResources {
  VkDevice device=VK_NULL_HANDLE;
  VkDescriptorSetLayout descriptors=VK_NULL_HANDLE;
  VkPipelineLayout layout=VK_NULL_HANDLE;
+ VkDescriptorSetLayout barsDescriptors=VK_NULL_HANDLE; VkPipelineLayout barsLayout=VK_NULL_HANDLE; // present_trim bars (vertex taps)
  VkSampler linear=VK_NULL_HANDLE,nearest=VK_NULL_HANDLE;
  const char* imageFragmentSource=fragmentSource; // renderer-thread-only diagnostic override
  std::unordered_map<uint64_t,VkPipeline> pipelines; // (format, kind)
@@ -340,8 +343,23 @@ VkPipeline pipeline(PresentResources& resources,VkFormat format,Kind kind=kImage
  const uint64_t key=uint64_t(format)<<8|kind;
  if(auto it=resources.pipelines.find(key);it!=resources.pipelines.end())return it->second;
  VkShaderModule vs=VK_NULL_HANDLE,fs=VK_NULL_HANDLE;VkPipeline result=VK_NULL_HANDLE;
+ const bool trimBars=kind==kBars||kind==kBarsBlend;
+ if(trimBars&&!resources.barsLayout) {
+  // present_trim bars: the vertex stage samples the image and reads the push constants too
+  VkDescriptorSetLayoutBinding binding{0,VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,1,VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,nullptr};
+  VkDescriptorSetLayoutCreateInfo dci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};dci.bindingCount=1;dci.pBindings=&binding;
+  vk_check(resources.api.vkCreateDescriptorSetLayout(resources.device,&dci,nullptr,&resources.barsDescriptors),"presentation bars descriptors");
+  VkPushConstantRange push{VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(PresentParams)};
+  VkPipelineLayoutCreateInfo lci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};lci.setLayoutCount=1;lci.pSetLayouts=&resources.barsDescriptors;lci.pushConstantRangeCount=1;lci.pPushConstantRanges=&push;
+  vk_check(resources.api.vkCreatePipelineLayout(resources.device,&lci,nullptr,&resources.barsLayout),"presentation bars layout");
+ }
  try {
+  if(kind>=kPlain) {
+   vs=module(resources,trimBars?present_trim::bars_vertex_source():vertexSource,true);
+   fs=module(resources,trimBars?present_trim::bars_fragment_source():present_trim::plain_fragment_source(),false);
+  } else {
   vs=module(resources,vertexSource,true);fs=module(resources,kind==kSolid?solidSource:kind==kHud?hudSource:kind==kMoveHud?moveHudSource:resources.imageFragmentSource,false);
+  }
   VkPipelineShaderStageCreateInfo stages[2]{};
   for(int i=0;i<2;++i){stages[i].sType=VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;stages[i].stage=i?VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_VERTEX_BIT;stages[i].module=i?fs:vs;stages[i].pName="main";}
   VkPipelineVertexInputStateCreateInfo vi{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
@@ -350,7 +368,7 @@ VkPipeline pipeline(PresentResources& resources,VkFormat format,Kind kind=kImage
   VkPipelineRasterizationStateCreateInfo rs{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};rs.polygonMode=VK_POLYGON_MODE_FILL;rs.cullMode=VK_CULL_MODE_NONE;rs.lineWidth=1;
   VkPipelineMultisampleStateCreateInfo ms{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};ms.rasterizationSamples=VK_SAMPLE_COUNT_1_BIT;
   VkPipelineColorBlendAttachmentState blend{};blend.colorWriteMask=15;
-  if(kind==kImageBlend||kind==kSolid) {
+  if(kind==kImageBlend||kind==kSolid||kind==kPlainBlend||kind==kBarsBlend) {
    // overlay opacity: source alpha over the picture underneath
    blend.blendEnable=VK_TRUE;blend.colorBlendOp=blend.alphaBlendOp=VK_BLEND_OP_ADD;
    blend.srcColorBlendFactor=blend.srcAlphaBlendFactor=VK_BLEND_FACTOR_SRC_ALPHA;
@@ -366,7 +384,7 @@ VkPipeline pipeline(PresentResources& resources,VkFormat format,Kind kind=kImage
   VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};rendering.colorAttachmentCount=1;rendering.pColorAttachmentFormats=&format;
   VkGraphicsPipelineCreateInfo ci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};ci.pNext=&rendering;
   if(resources.passes) { ci.pNext=nullptr;ci.renderPass=resources.passes->render_pass(pass_formats(rendering),VK_ATTACHMENT_LOAD_OP_LOAD); }
-  ci.stageCount=2;ci.pStages=stages;ci.pVertexInputState=&vi;ci.pInputAssemblyState=&ia;ci.pViewportState=&vp;ci.pRasterizationState=&rs;ci.pMultisampleState=&ms;ci.pColorBlendState=&bs;ci.pDynamicState=&ds;ci.layout=resources.layout;
+  ci.stageCount=2;ci.pStages=stages;ci.pVertexInputState=&vi;ci.pInputAssemblyState=&ia;ci.pViewportState=&vp;ci.pRasterizationState=&rs;ci.pMultisampleState=&ms;ci.pColorBlendState=&bs;ci.pDynamicState=&ds;ci.layout=trimBars?resources.barsLayout:resources.layout;
   const auto started=std::chrono::steady_clock::now();
   VkResult compiled;
   if(resources.device==R.device)
@@ -392,6 +410,8 @@ void destroy_resources(PresentResources& resources) {
  if(resources.linear)resources.api.vkDestroySampler(resources.device,resources.linear,nullptr);
  if(resources.nearest)resources.api.vkDestroySampler(resources.device,resources.nearest,nullptr);
  if(resources.layout)resources.api.vkDestroyPipelineLayout(resources.device,resources.layout,nullptr);
+ if(resources.barsLayout)resources.api.vkDestroyPipelineLayout(resources.device,resources.barsLayout,nullptr);
+ if(resources.barsDescriptors)resources.api.vkDestroyDescriptorSetLayout(resources.device,resources.barsDescriptors,nullptr);
  if(resources.descriptors)resources.api.vkDestroyDescriptorSetLayout(resources.device,resources.descriptors,nullptr);
  resources={};
 }
@@ -445,6 +465,42 @@ bool sampleable(const Surface& source) {
  const auto& properties=format_properties(source.fmt.pixel);
  return (properties.optimalTilingFeatures&VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT) && (source.usage&VK_IMAGE_USAGE_SAMPLED_BIT);
 }
+// WWHD_VK_PRESENT_TRIM 4: opaque picture quads (drawn without blending) cover every pixel of the target, as the
+// draw loop in compose() rasterises them (viewport box, scissor)
+present_trim::Rect quad_scissor(const ComposeQuad& q,VkExtent2D extent) {
+ present_trim::Rect scissor{0,0,int(extent.width),int(extent.height)};
+ if(q.clipped) {
+  const int x=int(std::clamp(std::floor(q.clip.x),0.f,float(extent.width)));
+  const int y=int(std::clamp(std::floor(q.clip.y),0.f,float(extent.height)));
+  scissor={x,y,int(std::clamp(std::ceil(q.clip.x+q.clip.w),float(x),float(extent.width))),
+           int(std::clamp(std::ceil(q.clip.y+q.clip.h),float(y),float(extent.height)))};
+ }
+ return scissor;
+}
+// a quad the draw loop draws without blending over its whole box (image, opacity 1, not the premultiplied backdrop)
+bool opaque_quad(const ComposeQuad& q) {
+ return !q.solid&&q.image&&q.image->view&&q.backdrop!=1&&q.alpha>=0.999f&&q.box.w>0&&q.box.h>0;
+}
+bool covered_by_opaque_quads(const std::vector<ComposeQuad>& quads,VkExtent2D extent) {
+ if(!present_trim::clear())return false;
+ std::vector<present_trim::Rect> opaque;
+ for(const auto& q:quads)
+  if(opaque_quad(q))opaque.push_back(present_trim::pixels(q.box.x,q.box.y,q.box.w,q.box.h,quad_scissor(q,extent)));
+ return present_trim::covers(opaque,extent.width,extent.height);
+}
+// WWHD_VK_PRESENT_TRIM 8: quads whose every pixel a later opaque quad overwrites (1: skip)
+std::vector<char> hidden_quads(const std::vector<ComposeQuad>& quads,VkExtent2D extent) {
+ std::vector<char> hidden(quads.size(),0);
+ if(!present_trim::hidden())return hidden;
+ std::vector<present_trim::Rect> later;
+ for(size_t i=quads.size();i-->0;) {
+  const auto& q=quads[i];
+  const auto scissor=quad_scissor(q,extent);
+  hidden[i]=!later.empty()&&present_trim::covers(later,present_trim::outer_pixels(q.box.x,q.box.y,q.box.w,q.box.h,scissor));
+  if(opaque_quad(q))later.push_back(present_trim::pixels(q.box.x,q.box.y,q.box.w,q.box.h,scissor));
+ }
+ return hidden;
+}
 // draw the quads into `view` (cleared to black first); `layout` is the target image's current layout
 void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D extent,VkFormat format,
              const std::vector<ComposeQuad>& quads,VkImageLayout finalLayout,int filter,bool fxaa,ImDrawData* overlay=nullptr,ResourceUse* use=nullptr,bool hdrOutput=false,
@@ -457,6 +513,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
    gamepadOverlay=overlay::guesthud::gamepad_region(float(extent.width),float(extent.height),q.box.x,q.box.y,q.box.w,q.box.h,q.alpha);
    break;
   }
+ if(present_trim::no_overlay())gamepadOverlay=overlay=nullptr;  // (diagnostic, WWHD_VK_PRESENT_NO_OVERLAY)
  if(gamepadOverlay)overlay_prepare(gamepadOverlay);
  if(overlay)overlay_prepare(overlay);
  for(auto& q:quads)
@@ -473,12 +530,20 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
  attachment.clearValue.color.float32[3]=1;
  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea.extent=extent;rendering.layerCount=1;rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
  layout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
- begin_pass(cmd,rendering,[&] { return color_pass(format,layout); });R.rendering=true;R.passTracked=false;
+ if(present_trim::mask()&&covered_by_opaque_quads(quads,extent))attachment.loadOp=VK_ATTACHMENT_LOAD_OP_DONT_CARE;  // (WWHD_VK_PRESENT_TRIM 4)
+ const auto hiddenQuads=present_trim::hidden()?hidden_quads(quads,extent):std::vector<char>{};  // (WWHD_VK_PRESENT_TRIM 8)
+ if(present_trim::log_every()) {
+  static uint64_t composed=0;
+  if(composed++%uint64_t(present_trim::log_every())==0)
+   present_trim::log_composition(quads,extent,overlay,gamepadOverlay,attachment.loadOp==VK_ATTACHMENT_LOAD_OP_CLEAR,hiddenQuads);
+ }
+ begin_pass(cmd,rendering,[&] { return color_pass(format,layout); });pass_state().rendering=true;pass_state().tracked=false;
  VkRect2D scissor{{0,0},extent};record::vkCmdSetScissor(cmd,0,1,&scissor);
  const bool targetLinear=srgb_format(format)||hdrOutput||pqEncode;
  const float whiteScale=hdrOutput?std::min(hdr::menuWhite.load(),hdr::parameters().peak)/80.0f:1.0f;
  for(auto& q:quads) {
   if(q.box.w<=0||q.box.h<=0)continue;
+  if(!hiddenQuads.empty()&&hiddenQuads[size_t(&q-quads.data())])continue;  // (WWHD_VK_PRESENT_TRIM 8)
   VkRect2D quadScissor{{0,0},extent};
   if(q.clipped) {
    const int x=int(std::clamp(std::floor(q.clip.x),0.f,float(extent.width)));
@@ -500,12 +565,19 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
   }
   if(!q.image||!q.image->view)continue;
   const bool blend=q.alpha<0.999f;
-  record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(format,q.backdrop==1?kBackdrop:blend?kImageBlend:kImage));
+  const bool trim=present_trim::mask()!=0;
+  if(!trim)record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(format,q.backdrop==1?kBackdrop:blend?kImageBlend:kImage));
+  // WWHD_VK_PRESENT_TRIM: the kind is chosen after the parameters below (the plain shader); bars per vertex
+  const bool trimBars=present_trim::bars()&&q.backdrop>=2;
   VkDescriptorSet set;VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=R.descriptorPool;allocation.descriptorSetCount=1;allocation.pSetLayouts=&resources.descriptors;
+  if(trimBars) { pipeline(format,blend?kBarsBlend:kBars);allocation.pSetLayouts=&resources.barsDescriptors; }
   vk_check(vkAllocateDescriptorSets(R.device,&allocation,&set),"presentation descriptor set");
   const bool linear=linear_filtering(q.image->fmt.pixel);
   VkDescriptorImageInfo info{linear?resources.linear:resources.nearest,q.image->view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};write.dstSet=set;write.dstBinding=0;write.descriptorCount=1;write.descriptorType=VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;write.pImageInfo=&info;
-  vkUpdateDescriptorSets(R.device,1,&write,0,nullptr);record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,resources.layout,0,1,&set,0,nullptr);
+  vkUpdateDescriptorSets(R.device,1,&write,0,nullptr);
+  if(!trim)record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,resources.layout,0,1,&set,0,nullptr);
+  const VkPipelineLayout quadLayout=trimBars?resources.barsLayout:resources.layout;
+  const VkShaderStageFlags pushStages=trimBars?VK_SHADER_STAGE_VERTEX_BIT|VK_SHADER_STAGE_FRAGMENT_BIT:VK_SHADER_STAGE_FRAGMENT_BIT;
   // target pixels per source texel, as the Metal composition (display.mm draw_image)
   const float scale=std::min(q.box.w/q.image->extent.width,q.box.h/q.image->extent.height);
   // sRGB texture views decode on sampling; the scan flag also identifies linear
@@ -526,7 +598,14 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
    params.hdrSdrCurve=hdr::sdrCurve.load();
   }
   params.pq=pqEncode;
-  record::vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);record::vkCmdDraw(cmd,3,1,0,0);
+  if(trim) {
+   Kind kind=q.backdrop==1?kBackdrop:blend?kImageBlend:kImage;
+   if(trimBars)kind=blend?kBarsBlend:kBars;
+   else if(present_trim::shader()&&resources.imageFragmentSource==fragmentSource&&present_trim::plain(params,q.backdrop))kind=blend?kPlainBlend:kPlain;
+   record::vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,pipeline(format,kind));
+   record::vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_GRAPHICS,quadLayout,0,1,&set,0,nullptr);
+  }
+  record::vkCmdPushConstants(cmd,quadLayout,pushStages,0,sizeof(params),&params);record::vkCmdDraw(cmd,3,1,0,0);
  }
  record::vkCmdSetScissor(cmd,0,1,&scissor);
  if(gamepadOverlay)overlay_draw(gamepadOverlay,cmd,format,extent,targetLinear,-1,whiteScale);
@@ -539,7 +618,7 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
  end_pass(cmd);
  barrier.oldLayout=VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;barrier.newLayout=finalLayout;barrier.srcAccessMask=VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;barrier.dstAccessMask=0;
  record::vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,0,0,nullptr,0,nullptr,1,&barrier);layout=finalLayout;
- R.rendering=false;R.passTracked=false;
+ pass_state().rendering=false;pass_state().tracked=false;
 }
 }  // namespace
 
@@ -1161,7 +1240,7 @@ void draw_mod_overlay(Surface& scan, VkExtent2D displayExtent) {
  attachment.loadOp=VK_ATTACHMENT_LOAD_OP_LOAD;attachment.storeOp=VK_ATTACHMENT_STORE_OP_STORE;
  const VkExtent2D extent{scan.extent.width,scan.extent.height};
  VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};rendering.renderArea.extent=extent;rendering.layerCount=1;rendering.colorAttachmentCount=1;rendering.pColorAttachments=&attachment;
- begin_pass(cmd,rendering,[&] { return color_pass(scan.fmt.pixel,scan.layout); });R.rendering=true;R.passTracked=false;
+ begin_pass(cmd,rendering,[&] { return color_pass(scan.fmt.pixel,scan.layout); });pass_state().rendering=true;pass_state().tracked=false;
  const float w=float(extent.width),h=float(extent.height);
  const float xRatio=displayExtent.width&&displayExtent.height
      ? (w/h)/(float(displayExtent.width)/displayExtent.height) : 1.0f;
@@ -1184,7 +1263,7 @@ void draw_mod_overlay(Surface& scan, VkExtent2D displayExtent) {
   PresentParams params{};const float u[4]={move.stamina,move.alpha,move.exhausted?2.0f:move.swimming?1.0f:0.0f,0};memcpy(&params,u,16);
   record::vkCmdPushConstants(cmd,resources.layout,VK_SHADER_STAGE_FRAGMENT_BIT,0,sizeof(params),&params);record::vkCmdDraw(cmd,3,1,0,0);
  }
- end_pass(cmd);R.rendering=false;R.passTracked=false;
+ end_pass(cmd);pass_state().rendering=false;pass_state().tracked=false;
 }
 
 bool present_capture_requested() { return present_capture().enabled; }

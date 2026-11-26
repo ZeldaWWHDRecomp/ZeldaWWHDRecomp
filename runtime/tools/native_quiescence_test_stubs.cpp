@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: MPL-2.0
-// Runtime functions referenced by code paths native_quiescence_test never runs. The Mac and Linux
+// Runtime functions referenced by code paths native_quiescence_test and fast_mutex_test never run. The Mac and Linux
 // linkers drop those paths (dead-strip / gc-sections) before resolving them; the Windows linker
-// resolves first, so the test links these instead. Each one aborts if a test ever reaches it.
+// resolves first, so the tests link these instead. Each one aborts if a test ever reaches it.
 #include "runtime.h"
 #include "savestate.h"
 #include "platform/perf_hint.h"
 #include "platform/thread_sampler.h"
+#include "mods/fast_forward.h"
 #include <cstdio>
 #include <cstdlib>
 #include <initializer_list>
@@ -32,6 +33,11 @@ void add_current_thread() { unreachable("perf_hint::add_current_thread"); }
 namespace thread_sampler {
 void add_current_thread(const char*) { unreachable("thread_sampler::add_current_thread"); }
 }  // namespace thread_sampler
+// fast_mutex_test gives every threads.cpp import an external entry, so OSSleepTicks and the timed waits stay in its
+// object; their virtual-time branch asks the Fast forward mod (the mutex calls the test makes never get there)
+namespace mods {
+bool fast_forward() { unreachable("mods::fast_forward"); return false; }
+}  // namespace mods
 
 // threads.cpp (included by the test) starts the main-thread profile; the test doesn't need it
 #include "main_profile.h"

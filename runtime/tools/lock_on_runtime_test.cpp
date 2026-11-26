@@ -19,6 +19,9 @@ extern "C" void site_024ECC70(Cpu*);
 extern "C" void site_024EB868(Cpu*);
 extern "C" void site_024EE574(Cpu*);
 extern "C" void hook_024ECCFC(Cpu*);
+// the decomp build's port points (port_hooks.h PORT_LOCK_ON / PORT_LOCK_ON_DISTANCE, mods/lock_on_points.cpp)
+extern "C" double wwhd_lock_on(Cpu*, unsigned, unsigned, unsigned, unsigned, double*);
+extern "C" void ppc_host_call(Cpu* c, PpcFunc fn) { fn(c); }
 namespace {
 uint64_t now = 100;
 bool blocked = false;
@@ -132,6 +135,38 @@ int main(int argc, char** argv) {
     site_024EE574(&c); assert(c.f[1].ps0 == 700); // corrupted/out-of-range index
     st32(attention + 0xD8, 7); st32(attention + 0x54 + 7*16 + 8, 0);
     site_024EE574(&c); assert(c.f[1].ps0 == 700);
+    // The points: the same scaling as each site, for the values and registers the decompiled code passes, and the
+    // Cpu comes back as it was (r1 included)
+    {
+        Cpu p{}; p.r[1] = 0x1234560; p.r[31] = 0xAAAA; p.r[25] = 0xBBBB; p.f[1].ps0 = 5; const Cpu before = p;
+        st16(rule, 2); st32(actor + 0x39C, 4);
+        double v[2] = {600, 100};
+        assert(wwhd_lock_on(&p, 0x1234000, 0x024EB4A8, rule, actor, v) == 1200 && v[1] == 200);
+        assert(!std::memcmp(&p, &before, sizeof p));
+        st16(rule, 1); v[0] = 600; v[1] = 100;
+        wwhd_lock_on(&p, 0x1234000, 0x024EB4A8, rule, actor, v); assert(v[0] == 600 && v[1] == 100);
+        st16(rule, 2);
+        st32(attention + 0x54 + 8, 2); v[0] = 600; v[1] = 100;
+        wwhd_lock_on(&p, 0x1234000, 0x024ECC70, attention + 0x54, actor, v); assert(v[0] == 1200 && v[1] == 200);
+        st32(attention + 0x54 + 8, 1); v[0] = 600; v[1] = 100;
+        wwhd_lock_on(&p, 0x1234000, 0x024ECC70, attention + 0x54, actor, v); assert(v[0] == 600 && v[1] == 100);
+        v[0] = 700; assert(wwhd_lock_on(&p, 0x1234000, 0x024EB868, actor, 0, v) == 1400);
+        st32(actor + 0x39C, 0); v[0] = 700; assert(wwhd_lock_on(&p, 0x1234000, 0x024EB868, actor, 0, v) == 700);
+        st32(actor + 0x39C, 4);
+        st32(attention + 0xD8, 7); st32(attention + 0x54 + 7*16 + 8, 2);
+        v[0] = 700; assert(wwhd_lock_on(&p, 0x1234000, 0x024EE574, attention, 0, v) == 1400);
+        st32(attention + 0x54 + 7*16 + 8, 0);
+        v[0] = 700; assert(wwhd_lock_on(&p, 0x1234000, 0x024EE574, attention, 0, v) == 700);
+        assert(!std::memcmp(&p, &before, sizeof p));
+        // a factor whose products are not exact in single precision: the points give the sites' doubles bit for bit
+        set_lock_on_range(2.7f);
+        Cpu s = arguments(); site_024EB4A8(&s);
+        v[0] = 600; v[1] = 100; wwhd_lock_on(&p, 0x1234000, 0x024EB4A8, rule, actor, v);
+        assert(v[0] == s.f[1].ps0 && v[1] == s.f[2].ps0 && v[0] != (double)(float)v[0]);
+        s = {}; s.r[31] = actor; s.f[13].ps0 = 700.1f; site_024EB868(&s);
+        v[0] = 700.1f; assert(wwhd_lock_on(&p, 0x1234000, 0x024EB868, actor, 0, v) == s.f[13].ps0);
+        set_lock_on_range(2.f);
+    }
     for (float value : {0.f, -1.f, 0.5f}) { set_lock_on_range(value); assert(lock_on_range() == 1.f); }
     set_lock_on_range(99.f); assert(lock_on_range() == 3.f);
     for (float value : {std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity(),

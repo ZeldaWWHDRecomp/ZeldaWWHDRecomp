@@ -44,6 +44,7 @@ jobs:
       - name: Validate the Gradle wrapper
         uses: gradle/actions/wrapper-validation@v4
 
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
       - name: Install the NDK and SDK packages
         timeout-minutes: 15  # a stalled download fails fast instead of hanging until GitHub's 6 h limit
         run: |
@@ -68,6 +69,8 @@ jobs:
           java -cp build/setup-policy-test SetupPolicyTest
           javac -d build/models-step-test android/app/src/main/java/org/wwhdrecomp/wwhd/ModelsStep.java tools/android/ModelsStepTest.java
           java -cp build/models-step-test ModelsStepTest
+          javac -d build/randomizer-progress-test android/app/src/main/java/org/wwhdrecomp/wwhd/RandomizerProgress.java android/app/src/main/java/org/wwhdrecomp/wwhd/SetupPresentation.java tools/android/RandomizerProgressTest.java
+          java -cp build/randomizer-progress-test RandomizerProgressTest
           javac -d build/tga-image-test android/app/src/main/java/org/wwhdrecomp/wwhd/TgaImage.java tools/android/TgaImageTest.java
           java -cp build/tga-image-test TgaImageTest
           javac -d build/resource-verifier-test android/app/src/main/java/org/wwhdrecomp/wwhd/ResourceVerifier.java tools/android/ResourceVerifierTest.java
@@ -117,14 +120,26 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+      - name: In-app randomizer (cached)
+        id: rando
+        uses: ./.github/actions/android-rando
+        with:
+          abi: arm64-v8a
+
       - name: APK
         working-directory: android
-        run: ./gradlew --no-daemon assembleRelease
+        run: ./gradlew --no-daemon -PwwhdRandoDir="${{ steps.rando.outputs.package }}" assembleRelease
 
       - name: Legal check of the APK
         run: |
           ls -la android/app/build/outputs/apk/release/
           python3 tools/release/guard.py android/app/build/outputs/apk/release/*.apk
+          # the in-app randomizer (Settings > Randomizer: "This app has no randomizer." without these)
+          for apk in android/app/build/outputs/apk/release/*.apk; do
+            for f in assets/rando-apk.json lib/arm64-v8a/libwwhd-rando-driver.so; do
+              unzip -l "$apk" "$f" > /dev/null || { echo "::error::$f missing in $apk"; exit 1; }
+            done
+          done
 
       - name: Keep the APK for a few days (placeholder code, not a release)
         uses: actions/upload-artifact@v5

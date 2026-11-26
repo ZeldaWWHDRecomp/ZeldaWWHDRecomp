@@ -1,4 +1,5 @@
 #include "mods/mods.h"
+#include "../latency_test.h"
 // padscore: Wii Remote / Pro Controller (WPAD, KPAD). Only a Pro Controller on channel 0 exists,
 // and only while the keyboard/host controllers are set to act as one (Input menu). Struct layouts
 // and constants follow Cemu's padscore.
@@ -9,6 +10,7 @@
 #include "../mods/story_notebook.h"
 #include "../mods/story_bag.h"
 #include "../mods/game_settings_page.h"
+#include "../mods/link_appearance.h"
 #include "../mods/story_scenes.h"
 #include "../motion/motion.h"
 #include "../rumble.h"
@@ -85,6 +87,7 @@ HLE(padscore, KPADReadEx) {
     static input::PadState last_p;
     const bool repeat = interp::repeat_input();
     input::PadState p = repeat ? last_p : crashrec::read(1);  // see interp.cpp; crash recovery records/replays it
+    if (!repeat && latency_test::on()) latency_test::pad(p.buttons, p.ly);  // (test: latency_test.h)
     if (!repeat) mods::pad_play_rules(p);  // L and d-pad down by whether Link plays (input_map::play_buttons)
     const uint32_t live_virt = p.virt;  // as VPADRead: the virtual inputs as read now
     const bool live = !repeat;
@@ -99,6 +102,7 @@ HLE(padscore, KPADReadEx) {
     story_scenes::mute(p);
     story_bag::mute(p);       // so do the Delivery Bag's extra pages
     game_settings_page::mute(p);  // and the settings page
+    link_appearance::mute(p);     // and the colour page of Link's look
     // the host's extras follow the host's choice: while a held Pro Controller is live, VPADRead has them
     input::PadState idle{};
     input::PadState& extras = input::pro_controller() ? p : idle;

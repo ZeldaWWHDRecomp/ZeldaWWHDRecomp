@@ -57,6 +57,26 @@ final class GamePadDisplay implements DisplayManager.DisplayListener {
     private static native boolean publishAvailability(boolean available);
     /** The saved Off choice before native settings load; ignored once they have (#222). */
     static native void seedSavedOff(boolean off);
+    /** A second display at the activity's start: One screen mode's default is off then (one_screen.h). */
+    private static native void seedDisplayPresent(boolean present);
+
+    /** Seeds whether a second display is there now, as refresh() picks one; before the game decides One screen mode. */
+    static void seedDisplayPresent(Activity activity) {
+        DisplayManager manager = activity.getSystemService(DisplayManager.class);
+        if (manager == null) return;
+        Display main = activity.getDisplay();
+        int mainId = main != null ? main.getDisplayId() : Display.DEFAULT_DISPLAY;
+        boolean present = false;
+        for (Display display : manager.getDisplays(DisplayManager.DISPLAY_CATEGORY_PRESENTATION))
+            if (display.getDisplayId() != mainId && display.isValid()) present = true;
+        try {
+            seedDisplayPresent(present);
+            if (present) Log.i("wwhd-display", "second display present at start");
+        } catch (UnsatisfiedLinkError e) {
+            // an on-device game library from before this call: One screen mode keeps its old default
+            Log.w("wwhd-display", "second display not passed: " + e.getMessage());
+        }
+    }
     private static native void publishSurface(Surface surface, int width, int height, long generation);
     private static native boolean touch(float x, float y, boolean down, boolean dragging, long generation);
 

@@ -66,13 +66,21 @@ struct Look {
     };
     std::vector<PageImage> page_images;
     size_t atlas_budget = 14u << 20;
+    // The store also counts an owner's images (kMaxImages; kMaxPortImages for the port's pages, which
+    // sync_pages asks for): the text pages are kept to atlas_pages (a list scrolled line by line would
+    // otherwise add one each read), and a box not drawn for box_reads reads gives its image back. So the
+    // text pages, as many again released but still drawn for a few frames, the boxes of the pages that
+    // share this look and the sheets stay well under kMaxPortImages, and no line falls back to the overlay
+    // font for want of an image.
+    size_t atlas_pages = 12;
+    uint64_t box_reads = 600, reads = 0;
     bool told_too_tall = false, told_quota = false;
     uint64_t store_generation = 0, fonts_key = 0;
     style::Art art;
     bool art_tried = false, art_ok = false;
     struct Box {
         Handle handle = 0;
-        uint64_t store_generation = 0;
+        uint64_t store_generation = 0, last_read = 0;
         std::shared_ptr<guestmods::hud::Image> image;
     };
     std::map<std::string, Box> boxes;  // "name:WxH" in pixels

@@ -16,7 +16,11 @@ import zipfile
 from build_toolchain import LLVM_REVISION, NDK_REVISION
 
 NAMES = {"clang": "libwwhd-clang-driver.so", "ld.lld": "libwwhd-ld.lld-driver.so",
-         "llvm-ar": "libwwhd-ar-driver.so"}
+         "llvm-ar": "libwwhd-ar-driver.so",
+         # the decomp version's unit isolation (build_toolchain.DECOMP_TOOLS); none of these names contains
+         # "strip" / "install-name-tool" / "bitcode-strip", so llvm-objcopy stays in objcopy mode
+         "llvm-objcopy": "libwwhd-objcopy-driver.so", "llvm-link": "libwwhd-llvm-link-driver.so",
+         "llvm-dis": "libwwhd-llvm-dis-driver.so", "llvm-as": "libwwhd-llvm-as-driver.so"}
 MACHINES = {"arm64-v8a": 183, "x86_64": 62}
 
 

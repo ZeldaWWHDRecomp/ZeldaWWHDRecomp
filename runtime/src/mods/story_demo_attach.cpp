@@ -30,7 +30,8 @@ const uint32_t kDemoPool = GD(0x101D5FFC);
 const uint32_t kGroundCross = GC(0x02008974);  // dBgS::GroundCross(bgs, gndchk) -> f1
 constexpr uint32_t kBgs = 0x12A0, kLinkGndChk = 0xB14, kGndChkBytes = 0x54;  // dComIfG_Bgsp(); daPy_lk_c::mGndChk (probe point +0x24)
 constexpr float kGravity = -3.f, kTerminal = -50.f;
-constexpr uint32_t kPlayer = 0x5B34, kLinkModel = 0x448, kLinkHeldMode = 0x68DE, kHeld = 0xC;
+const uint32_t kPlayer = GI(0x5B34);
+constexpr uint32_t kLinkModel = 0x448, kLinkHeldMode = 0x68DE, kHeld = 0xC;
 // record entry (0x20 each)
 enum : uint32_t { State = 0x00, Carried = 0x04, CarriedId = 0x08, Carrier = 0x0C, CarrierId = 0x10, Joint = 0x14, Waited = 0x18, IsLink = 0x1C };
 constexpr uint32_t Velocity = Waited;  // after the release: the falling speed

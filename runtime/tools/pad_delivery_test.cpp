@@ -22,13 +22,15 @@ namespace input { PadState read(){return sample;} bool pro_controller(){return p
 namespace controller_reapply { bool holds_pro_controller(){return held;} bool holds_gamepad(){return held_gamepad;} bool pro_controller_live(){return live_pro;} }
 namespace crashrec { input::PadState read(int){return sample;} }
 namespace interp { bool repeat_input(){return repeat;} void trace_read(const char*){} uint64_t logic_steps(){return 0;} }
-namespace mods { void move_speed_input(uint32_t){} void jump_input(uint32_t){} void fast_forward_input(uint32_t&){} void moon_jump_input(const input::PadState&){} void pad_play_rules(input::PadState&){} void item_ring_pad(input::PadState&, bool){} void context_touch_pad(input::PadState&, bool){} void touch_talk_pad(input::PadState&, bool){} void one_screen_pad(input::PadState&){} void guest_pad_filter(Cpu*, input::PadState&, bool){} }
+namespace mods { void move_speed_input(uint32_t){} void jump_input(uint32_t){} void fast_forward_input(uint32_t&){} void moon_jump_input(const input::PadState&){} void pad_play_rules(input::PadState&){} void item_ring_pad(input::PadState&, bool){} void context_touch_pad(input::PadState&, bool){} void touch_talk_pad(input::PadState&, bool){} void one_screen_pad(input::PadState&){} void guest_pad_filter(Cpu*, input::PadState&, bool){} void guest_gamepad_touch(input::PadState&, bool){} }
 namespace motion { void right_stick(float,float){} VpadMotion vpad(bool){return {};} }
 namespace threads { void park_sleep_until(std::chrono::steady_clock::time_point,bool,void (*)()){} }
 namespace story_notebook { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the notebook page (not under test)
 namespace story_scenes {void mute(input::PadState&){} }
 namespace story_bag { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the bag pages (not under test)
+namespace latency_test { bool g_on = false; void pad(uint32_t&, float&){} }  // the latency test aid (not under test)
 namespace game_settings_page { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the settings page (not under test)
+namespace link_appearance { void pad(input::PadState&, Cpu*){} void mute(input::PadState&){} }  // the colour page of Link's look (not under test)
 namespace menu_sounds { void service(Cpu*){} }  // the Settings overlay's menu sounds (not under test)
 namespace player_name { void service(Cpu*){} }  // a new name for Link (not under test)
 namespace long_name { void service(Cpu*){} }    // save file names over 8 characters (not under test)

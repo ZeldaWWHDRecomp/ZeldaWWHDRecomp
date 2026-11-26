@@ -51,6 +51,7 @@ struct LoadedModule {
     uint32_t sda2_base;  // r2
     uint32_t stack_size;
     uint32_t data_end;   // end of .bss: first free MEM2 address
+    uint32_t relocated;  // places the module's relocations changed (0 for the retail game; rpx_relocs.h)
 };
 bool load_rpx(const std::string& path, LoadedModule& out);
 

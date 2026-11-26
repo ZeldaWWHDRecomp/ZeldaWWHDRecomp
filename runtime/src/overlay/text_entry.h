@@ -16,7 +16,8 @@
 // Hosts: the SDL host turns SDL text input on while active() (platform/input_sdl.cpp); the AppKit host
 // hands key presses to an NSTextInputContext (gfx/text_input_appkit.mm). Where the overlay cannot show
 // (no renderer drawing it), start() returns false and the caller uses the host's own prompt
-// (input::prompt_text: window title on SDL, a sheet on macOS).
+// (input::prompt_text: window title on SDL, a sheet on macOS). An iPhone GamePad (remote_pad.h) shows
+// the prompt with its own keyboard too: its whole field arrives in draw() and goes in as typing does.
 //
 // Test switches (scripted runs, see README "Testing"):
 //   WWHD_TEST_PAD=1600-1603:A,...   host controller inputs (overlay.cpp) also drive the on-screen keyboard
@@ -53,6 +54,8 @@ void dismiss();
 // any thread: the prompt shows, or a platform keyboard that field() started (the overlay and the game
 // get no input meanwhile: overlay::captures())
 bool active();
+// any thread: a prompt in Japanese (language 0) was asked for in this run (the overlay then loads a Japanese font)
+bool japanese_requested();
 
 // ---- host input (main thread)
 // Keys (macOS virtual key codes, as overlay::key): editing and navigation only (Backspace, Delete,

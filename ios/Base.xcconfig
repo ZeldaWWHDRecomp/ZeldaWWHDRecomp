@@ -1,0 +1,5 @@
+// Build settings for the GamePad app (project.yml). The app icon: the project's own icon (AppIcon, the
+// sailing boat in android/icon), or the game's own icon (GameIcon) when make_icon.py made one from your
+// game files; that writes local.xcconfig, which is git-ignored like the icon itself.
+WWHD_APP_ICON = AppIcon
+#include? "local.xcconfig"

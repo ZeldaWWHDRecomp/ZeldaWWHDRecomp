@@ -64,7 +64,7 @@ static bool take(Snapshot& s) {
     static const uint32_t kEnvLight = GD(0x10475A68);  // g_env_light (dKy_getEnvlight 02555D0C)
     static const uint32_t kPlay = GD(0x1046F0B0);      // g_dComIfG_gameInfo.play (025200D4)
     uint32_t packet = ld32(kEnvLight + 0xA94);
-    uint32_t camera = ld32(kPlay + 0x5AF8), view = ld32(kPlay + 0x5FA4);
+    uint32_t camera = ld32(kPlay + GI(0x5AF8)), view = ld32(kPlay + GI(0x5FA4));
     if (!packet || !camera || !view) return false;
     vec3(camera + 0xDC, s.eye);
     vec3(camera + 0xE8, s.center);
@@ -167,7 +167,7 @@ static void state_log() {
     int alive = 0;
     for (uint32_t a = packet + 0xA4; a < packet + 0xA4 + 0x2C * 100; a += 4) h = (h ^ ld32(a)) * 1099511628211ull;
     for (int i = 0; i < 100; i++) alive += u32_as_f32(ld32(packet + 0xA4 + 0x2C * i + 0x20)) > 0.0001f;
-    const uint32_t play = GD(0x1046F0B0), cam = ld32(play + 0x5AF8);
+    const uint32_t play = GD(0x1046F0B0), cam = ld32(play + GI(0x5AF8));
     LOG("[cloudstate] %s %llu: digest %016llx, %d visible, time %.4f, eye %.3f %.3f %.3f", loadStep ? "load+step" : "call",
         (unsigned long long)at, (unsigned long long)h, alive, u32_as_f32(ld32(GD(0x10475A68) + 0x1020)),
         cam ? u32_as_f32(ld32(cam + 0xDC)) : 0.f, cam ? u32_as_f32(ld32(cam + 0xE0)) : 0.f, cam ? u32_as_f32(ld32(cam + 0xE4)) : 0.f);

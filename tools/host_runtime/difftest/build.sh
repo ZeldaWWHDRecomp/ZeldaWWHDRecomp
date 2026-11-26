@@ -6,6 +6,8 @@
 #   OUT/abisurvey  OUT/image.bin FUNC|all [threads] [count]   compiler helpers (64-bit, conversions)
 #   OUT/regtest    OUT/image.bin ROOT|all [count]             register-only replacements vs originals (0: every input)
 #   OUT/calltest   OUT/image.bin ROOT|all [count]             replacements that write memory / call game code
+#   OUT/libmport   OUT/image.bin FUNC [threads] [count]       fast mode's libm ports vs originals (0: all 2^32 inputs)
+#   OUT/nativemath OUT/image.bin FUNC all32|rand|grid [threads] [count] [checkpoint]   native math vs originals
 set -e
 ROOT=$(cd "$(dirname "$0")/../../.." && pwd)
 RPX=$1
@@ -32,4 +34,10 @@ clang++ $CXX "$D/mathsurvey.cpp" "$D/rt.cpp" "$OUT/closure_MATH.o" "$OUT/espress
 clang++ $CXX "$D/abisurvey.cpp" "$D/rt.cpp" "$ROOT/runtime/src/hostrt/hostrt_abi.cpp" "$OUT/closure_ABI.o" "$OUT/espresso_fp.o" -o "$OUT/abisurvey"
 clang++ $CXX "$D/regtest.cpp" "$D/rt.cpp" $HOSTRT "$OUT/closure_REG.o" "$OUT/espresso_fp.o" "$OUT/guest_addr_identity.o" -o "$OUT/regtest"
 clang++ $CXX "$D/calltest.cpp" "$D/rt.cpp" $HOSTRT "$OUT/closure_CALL.o" "$OUT/espresso_fp.o" "$OUT/guest_addr_identity.o" -o "$OUT/calltest"
+python3 "$D/mkclosure.py" "$GEN" "$OUT/closure_LIBM.c" 028F4384 > /dev/null
+clang -c $GCC "$OUT/closure_LIBM.c" -o "$OUT/closure_LIBM.o"
+clang++ $CXX -DWWHD_DECOMP_FAST_LIBM=1 "$D/libmport.cpp" "$D/rt.cpp" "$ROOT/runtime/src/hostrt/hostrt_libm.cpp" "$OUT/closure_LIBM.o" "$OUT/espresso_fp.o" -o "$OUT/libmport"
+python3 "$D/mkclosure.py" "$GEN" "$OUT/closure_NMATH.c" 028F4384 028F37F0 028F43F8 028F4BE0 028F4034 > /dev/null
+clang -c $GCC "$OUT/closure_NMATH.c" -o "$OUT/closure_NMATH.o"
+clang++ $CXX -DWWHD_NATIVE_MATH_TEST=1 "$D/nativemath.cpp" "$D/rt.cpp" "$ROOT/runtime/src/hostrt/hostrt_native_math.cpp" "$OUT/closure_NMATH.o" "$OUT/espresso_fp.o" -o "$OUT/nativemath"
 echo "difftest tools in $OUT"

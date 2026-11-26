@@ -15,6 +15,7 @@ float fraction = .5f;
 int draws = 0;
 std::vector<PacketField> observed;
 std::vector<uint32_t> uploaded;
+std::vector<uint32_t> draw_side;  // GPU buffer set selectors the uploads registered (issue #446)
 }
 
 namespace interp {
@@ -31,6 +32,7 @@ float pass_t() { return fraction; }
 void blend_world_matrix(const float* a, const float* b, float* out, float t) {
     for (int i = 0; i < 12; i++) out[i] = a[i] + (b[i] - a[i]) * t;
 }
+void keep_draw_side(uint32_t ea) { draw_side.push_back(ea); }
 }
 void log_msg(const char*, ...) {}
 
@@ -65,17 +67,18 @@ int main() {
         std::vector<PacketField> fields;
         uint32_t index = 0, stride = 0;
         bool index32 = false;
+        uint32_t gpu_set = 0;  // the upload's GPU buffer set selector (packet offset, issue #446)
     };
     // Independent packet fixtures: each matrix and position/normal array is filled
     // with known big-endian floats. The untouched bytes catch writes outside them.
     std::vector<Case> cases = {
-        {hook_021625DC, {{p+0xAC, 12, true}, {p+0xE0, 85*3*3}}},
-        {hook_0245F638, {{p+0x1294, 12, true}, {p+0x1328, 84*3}, {p+0x1EF8, 84*3}, {p+0x26D8, 84*3}}, p+0x2EBE, 0x3F0},
-        {hook_021B89B4, {{p+0x1290, 12, true}, {p+0x1344, 21*3}, {p+0x153C, 21*3}, {p+0x1734, 21*3}}, p+0x1A2E, 0xFC},
-        {hook_0232B624, {{p+0xC4C, 12, true}, {p+0x9C, 35*3*3}}, p+0xC18, 0x4EC, true},
-        {hook_0232B984, {{p+0xC1C, 12, true}}},
-        {hook_023D0E68, {{p+0x98, 12, true}, {p+0xCC, 25*3}, {p+0x324, 25*3}, {p+0x57C, 25*3}}, p+0x906, 0x12C},
-        {hook_021BBC34, {{p+0x98, 12, true}, {p+0xC8, 12, true}, {p+0xFC, 81*3*2}}},
+        {hook_021625DC, {{p+0xAC, 12, true}, {p+0xE0, 85*3*3}}, 0, 0, false, 0xCE8+0x950},
+        {hook_0245F638, {{p+0x1294, 12, true}, {p+0x1328, 84*3}, {p+0x1EF8, 84*3}, {p+0x26D8, 84*3}}, p+0x2EBE, 0x3F0, false, 0xA4+0x950},
+        {hook_021B89B4, {{p+0x1290, 12, true}, {p+0x1344, 21*3}, {p+0x153C, 21*3}, {p+0x1734, 21*3}}, p+0x1A2E, 0xFC, false, 0xA4+0x950},
+        {hook_0232B624, {{p+0xC4C, 12, true}, {p+0x9C, 35*3*3}}, p+0xC18, 0x4EC, true, 0xD24+0x950},
+        {hook_0232B984, {{p+0xC1C, 12, true}}, 0, 0, false, 0x1F1C+0x4A8},
+        {hook_023D0E68, {{p+0x98, 12, true}, {p+0xCC, 25*3}, {p+0x324, 25*3}, {p+0x57C, 25*3}}, p+0x906, 0x12C, false, 0x914+0x950},
+        {hook_021BBC34, {{p+0x98, 12, true}, {p+0xC8, 12, true}, {p+0xFC, 81*3*2}}, 0, 0, false, 0x8BC+0x4A8},
     };
     for (auto test : cases) {
         memset(ppc_ptr(p), 0x55, size);
@@ -106,9 +109,13 @@ int main() {
         auto checked_draw = [&] {
             std::vector<uint8_t> exact(ppc_ptr(p), ppc_ptr(p) + size);
             int old = draws;
+            draw_side.clear();
             test.hook(&c);
             assert(draws == old + 1);
             assert(memcmp(exact.data(), ppc_ptr(p), size) == 0);
+            // with interpolation every upload registers its GPU buffer set selector (also the ones it
+            // passes through unblended), without it none
+            assert(active ? draw_side.size() == 1 && draw_side[0] == p + test.gpu_set : draw_side.empty());
         };
         fill(10.f);
         active = false;
@@ -239,5 +246,5 @@ int main() {
         assert(std::isnan(wf(uploaded[9])));
     }
     munmap(mapped, size);
-    puts("interp_cloth: seven cloth and two line uploads, identity, fractions, buffers, restore and discontinuities PASS");
+    puts("interp_cloth: seven cloth and two line uploads, identity, fractions, buffers, restore, discontinuities and GPU buffer sets PASS");
 }

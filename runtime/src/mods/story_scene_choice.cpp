@@ -81,6 +81,7 @@ void pane(Cpu* cpu){
 void configure(OriginalCall orig,GameCall game,uint32_t memory,std::function<bool(Cpu*)> owns){original=orig;invoke=game;scratch=memory;owns_scene=std::move(owns);armed=false;}
 bool install(const std::function<std::string(uint32_t)>& replaced_by,const std::function<void(uint32_t,void(*)(Cpu*))>& replace){
     if(installed)return true;if(!original||!invoke||!scratch||!owns_scene)return false;
+    if(!guest_code_unchanged(0x025F65F4)||!guest_code_unchanged(0x025F7424)||!guest_code_unchanged(0x025F7500)){LOG("[scene_choice] message-control constructors differ on %s; scene choices disabled",g_guest_build_name);return false;}
     for(uint32_t fn:{GC(0x025F7980),GC(0x027046D4)})if(!replaced_by(fn).empty()){LOG("[scene_choice] native hook %08X is already replaced",fn);return false;}
     replace(GC(0x025F7980),route);replace(GC(0x027046D4),pane);installed=true;return true;
 }

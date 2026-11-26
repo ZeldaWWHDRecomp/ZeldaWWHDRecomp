@@ -16,6 +16,8 @@
 
 /* Old SDKs embedded data pointers without relocations and cannot safely run on EU. */
 static const unsigned int wwhd_address_format __attribute__((used, section(".wwhd_addresses"))) = 1;
+/* Old SDKs compiled the play object's member offsets as USA numbers, which the Japanese build moved. */
+static const unsigned int wwhd_game_info_format __attribute__((used, section(".wwhd_game_info"))) = 1;
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -69,6 +71,16 @@ typedef struct { u32 kind, target; void* func; u32 flags; } wwhd_hook_desc;
 #define WWHD_GAME_DATA(addr, type) (*({ \
     extern u8 WWHD__CAT(wwhd_game_data_, addr)[] __asm__("__wwhd_gdata_" WWHD__STR(addr)); \
     (type volatile*)WWHD__CAT(wwhd_game_data_, addr); }))
+
+/* The offset of a member of the play object (wwhd_play_get(), g_dComIfG_gameInfo) at USA offset `off`. Builds
+ * that moved members (the Japanese one) get theirs: the translator resolves it when the mod is installed. Declare
+ * the member once at file scope (the SDK's WWHD_PLAY_*_OFFSET members are declared):
+ *   WWHD_GAME_INFO_MEMBER(0x5B2C);  ...  wwhd_play_get() + WWHD_GAME_INFO_OFFSET(0x5B2C)
+ * Write the offset in hex with 0x (the symbol keeps its text; the translator refuses other spellings).
+ * The value is fixed when the mod is linked, not when it is compiled: it can initialize a variable, but is no
+ * integer constant expression (no case labels, array sizes or static asserts). */
+#define WWHD_GAME_INFO_MEMBER(off) extern u8 WWHD__CAT(wwhd_game_info_, off)[] __asm__("__wwhd_ginfo_" WWHD__STR(off))
+#define WWHD_GAME_INFO_OFFSET(off) ((u32)WWHD__CAT(wwhd_game_info_, off))
 
 /* ---- host services (resolved by name on install; missing ones are an install error) ---- */
 void wwhd_log(const char* message);
@@ -142,6 +154,13 @@ typedef struct {
 typedef void (*wwhd_touch_fn)(const wwhd_touch_event* event);
 int wwhd_touch_register(wwhd_touch_fn callback);
 int wwhd_touch_claim(u32 slot, f32 x0, f32 y0, f32 x1, f32 y1);
+/* Touches on the GamePad picture (mod manager 1.12.0): wwhd_touch_claim(WWHD_TOUCH_GAMEPAD | slot, ...) claims a
+ * rectangle in the GamePad's touch coordinates (854 x 480 from the top left, +y down), wherever the GamePad shows
+ * (its window, a phone, One screen mode), with the same rules: a finger landing in one goes to `callback` and to
+ * nothing else (not the game, not the port's GamePad pages, not the input filters) until it lifts. Its events have
+ * WWHD_TOUCH_GAMEPAD in `kind` (WWHD_TOUCH_GAMEPAD | WWHD_TOUCH_DOWN, ...). Slots 0..7, apart from the TV picture's.
+ * Older hosts return 0 for such a claim: fall back then. */
+#define WWHD_TOUCH_GAMEPAD 0x100
 /* Where the drawn camera shows a point of the world (x, y, z of the current room): out[0], out[1] in the same layout
  * units as touches, with the picture's shape and field of view as drawn. Returns 1, or 0 when the point is behind the
  * camera or no camera is drawn (out unchanged). Read it on the logic step you use it (the camera moves). */
@@ -373,6 +392,32 @@ unsigned long long wwhd_audio_epoch(void);
 #define WWHD_MAIL_NO_ROOM (-2)  /* no save loaded, or its story record is full (19 entries) */
 s32 wwhd_mail_send(const char* letter_id, const char* sender, const char* text);
 s32 wwhd_mail_state(const char* letter_id);
+
+/* Link's appearance v1: the colours of Link's hair, skin, eyes, tunic and its details in the save file played
+ * (kept in that file's save when the game saves). A look is a record of 3..27 bytes:
+ *   [1][slots: u16 big-endian, bit per slot][R G B for each slot set, in slot order]
+ * slots: 0 hair, 1 skin, 2 eyes, 3 tunic and hat (also the island shirt), 4 undershirt, 5 trousers, 6 boots,
+ * 7 belt buckle; a slot not set has the game's own colour, {1, 0, 0} is Link as the game has him.
+ * get: copies the record into `out` (size at least WWHD_APPEARANCE_MAX) and returns its length.
+ * set: takes a record; 0 done. open: asks for the port's colour page (Link in a close camera, the player
+ * chooses each area's colour from presets with a live preview); it opens once Link can stand still (after a
+ * talk has ended) and returns 0 when asked. All: WWHD_APPEARANCE_INVALID (-1) for a bad record or buffer,
+ * WWHD_APPEARANCE_NOT_NOW (-2) with no save file played (or the page already open). */
+#define WWHD_APPEARANCE_API_VERSION 1
+#define WWHD_APPEARANCE_MAX 27
+#define WWHD_APPEARANCE_INVALID (-1)
+#define WWHD_APPEARANCE_NOT_NOW (-2)
+#define WWHD_APPEARANCE_HAIR 0
+#define WWHD_APPEARANCE_SKIN 1
+#define WWHD_APPEARANCE_EYES 2
+#define WWHD_APPEARANCE_TUNIC 3
+#define WWHD_APPEARANCE_UNDERSHIRT 4
+#define WWHD_APPEARANCE_TROUSERS 5
+#define WWHD_APPEARANCE_BOOTS 6
+#define WWHD_APPEARANCE_BUCKLE 7
+s32 wwhd_appearance_get(u8* out, u32 size);
+s32 wwhd_appearance_set(const u8* record, u32 size);
+s32 wwhd_appearance_open(void);
 
 /* Charts and markers v1: a chart from the mod with marked places, treated like the game's treasure
  * charts. The save file records whether Link owns the chart (give) and whether it is finished

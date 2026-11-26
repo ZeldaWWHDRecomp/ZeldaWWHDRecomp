@@ -303,7 +303,7 @@ int main(int argc, char** argv) {
     if(argc==4&&std::string(argv[1])=="--quick-use-speed-startup") {
         // Numeric built-in profile options are separate from manifest option schemas.
         const std::string override=argv[2],saved=argv[3];
-        auto root=fs::temp_directory_path()/("wwhd-quick-speed-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-quick-speed-");
         fs::create_directories(root);
         env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
         env("WWHD_MOD_QUICK_USE_SPEED",override=="unset"?nullptr:override.c_str());
@@ -351,7 +351,7 @@ int main(int argc, char** argv) {
     if(argc==4&&std::string(argv[1])=="--quick-use-startup") {
         // Synthetic settings/profile fixtures: no game, native library or lock-on mod.
         const std::string override=argv[2],saved=argv[3];
-        auto root=fs::temp_directory_path()/("wwhd-quick-use-"+std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
+        auto root=unique_temp("wwhd-quick-use-");
         fs::create_directories(root);
         env("WWHD_NO_HOST_INPUT",nullptr);env("WWHD_MOD_MANAGER_DIR",root.string().c_str());
         env("WWHD_MOD_QUICK_USE",override=="unset"?nullptr:override.c_str());

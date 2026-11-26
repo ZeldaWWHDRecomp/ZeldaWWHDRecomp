@@ -160,6 +160,7 @@ std::optional<Value> read(const std::string& key) {
 namespace input {PadState read() {return {};}}
 // live options and scripted test options (QoL M0): the fixtures run no renderer or host UI
 namespace render {uint64_t frame_count() {return 0;}}
+namespace link_appearance { bool request_page(std::string& why) {why="not in this test";return false;} }  // the colour page (not under test)
 namespace hostui {void post(std::function<void()> fn) {fn();}}
 // guest module entry alignment: no emulated threads here, so the stack bounds are unknown (call kept as is)
 namespace threads {bool current_stack_bounds(const Cpu*, uint32_t&, uint32_t&) {return false;}}
@@ -314,6 +315,7 @@ void set_game_calls(void (*)(Cpu*,uint32_t),uint32_t (*)(Cpu*,uint32_t,std::init
 void set_scratch_memory(uint32_t){}
 void set_scene_start(std::function<bool(const std::string&,const std::string&)>){}
 void set_stage_enter(std::function<bool(const std::string&,const std::string&,unsigned,unsigned)>){}
+void set_appearance_open(std::function<bool(const std::string&)>){}
 // like the real install: claims a game function, which marks its byte in the hook-flag table
 static unsigned installs=0;
 void install(const std::function<std::string(uint32_t)>&,const std::function<void(uint32_t,void(*)(Cpu*))>& replace){++installs;replace(0x02000000,[](Cpu*){});}

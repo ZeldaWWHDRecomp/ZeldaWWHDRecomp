@@ -26,6 +26,7 @@ supported.
 - [Charts and markers](#charts-and-markers)
 - [Items](#items)
 - [The story notebook](#the-story-notebook)
+- [Link's appearance](#links-appearance)
 - [Packages with content and images](#packages-with-content-and-images)
 - [Trust](#trust)
 - [Save states](#save-states)
@@ -234,6 +235,10 @@ with their content:
   runs once per displayed frame. Use `wwhd_logic_dt()` for anything time-based, and don't
   count displayed frames as game steps.
 - Calling convention is the game's: arguments in r3–r10 / f1–f8, results in r3/r4/f1.
+- Don't rely on the guest stack layout of a hooked function's callers, and don't walk the back
+  chain through them. In the decomp build, decompiled functions call each other natively and
+  leave no guest frame (`WWHD_DECOMP_NATIVE=0` turns this off). Hooking any function, at start-up
+  or later, is unaffected.
 
 ## Game functions, data and objects
 
@@ -259,6 +264,27 @@ the port translates hook targets, game calls, function pointers and `WWHD_GAME_D
 references to the EU build. Functions that differ or don't exist in EU are refused with an
 error naming them. Don't cast integers to pointers (that hard-codes a USA address), and only
 use object fields that are the same in both versions.
+
+**Japanese installs.** The same translation applies. The Japanese build also moved some members of
+the play object (`wwhd_play_get()`, `g_dComIfG_gameInfo`), so the SDK's `WWHD_PLAY_*_OFFSET` values
+are resolved for the build when the mod is installed. For a member the SDK doesn't name, declare it
+once at file scope and use its USA offset:
+
+```c
+WWHD_GAME_INFO_MEMBER(0x5B2C);
+u8* slot = wwhd_play_get() + WWHD_GAME_INFO_OFFSET(0x5B2C);
+```
+
+Write the offset in hex with `0x`: the macro keeps its text, and the translator refuses an offset
+without the prefix rather than read `100` as `0x100`. These offsets are fixed when the mod is linked,
+so they can initialize variables but can't be case labels, array sizes or static asserts. On the
+Japanese build, the translator refuses any mod whose code adds a raw unrelocated offset between
+`0x5AB0` and `0x62F7` (use `WWHD_GAME_INFO_OFFSET`), as well as any mod built with an older SDK that
+calls or hooks `wwhd_play_get` or addresses `g_dComIfG_gameInfo`. Mods rebuilt with this SDK
+(`__wwhd_ginfo_*`, `guestmod-0.4`) won't load on older ports (`0.5.1` and earlier): set
+`"minimum_manager_version": "1.13.0"` in `manifest.json` and `"port_versions": {"minimum": "0.5.2"}`
+in the catalogue entry (and omit `"builds"` in a shared `index.json` when the mod supports all three
+builds, since `0.5.1` and earlier reject `index.json` if any entry's `"builds"` lists `"JP"`).
 
 ### Native save event flags
 
@@ -302,7 +328,7 @@ service requirement and do not change how ordinary saves are loaded.
 | `wwhd_item_action_dispatch` | Preserve quick-use bookkeeping immediately before an eligible native ready hookshot, rope or boomerang action; takes Link and item ID, preserves CPU context and writes no global input/equipment |
 | `wwhd_item_ready_trigger` | Preserve the port’s local quick-use predicate after a native ready-item query; takes Link and the original result, changes no global pad input |
 | `wwhd_input_filter_register` | Change the controller state the game reads, below |
-| `wwhd_touch_register`, `wwhd_touch_claim` | Touches (or mouse clicks) on parts of the TV picture your mod claims, and pinches there, below |
+| `wwhd_touch_register`, `wwhd_touch_claim` | Touches (or mouse clicks) on parts of the TV or GamePad picture your mod claims, and pinches on the TV picture, below |
 | `wwhd_screen_point` | Where the drawn camera shows a point of the world, in the touches' layout units, below |
 | `wwhd_mic_open`, `_close`, `_state`, `_pitch` | The microphone's pitch, for an option the player turned on (asks for permission then), below |
 | `wwhd_file_read`, `wwhd_file_write` | Flat file names in your mod's own data folder, at most 1 MiB per call; write replaces the file; return bytes or -1 |
@@ -313,6 +339,7 @@ service requirement and do not change how ordinary saves are loaded.
 | `wwhd_mail_send`, `wwhd_mail_state` | A letter from your mod, delivered by the Rito postbox, below |
 | `wwhd_chart_*` | A chart from your mod that marks places on Link's sea chart, below |
 | `wwhd_quest_*` | Your mod's quests in the story notebook, below |
+| `wwhd_appearance_get`, `_set`, `_open` | Link's look in the save file played, and the port's colour page, below |
 | `memcpy`, `memmove`, `memset` | As usual |
 
 Your mod can also call any game function. Original synthesized audio can use the PCM stream service below.
@@ -350,6 +377,27 @@ on-screen stick, no talk by touch. It stays yours until it lifts, even outside t
 overlap the newest wins. Claim only while your feature shows something to touch, and remove the claim (an
 empty rectangle, x1 <= x0) when it doesn't, so the player's thumbs work the game again. Events arrive at the
 next controller read, before the input filters, so a touch can become a button in the same read.
+
+**Touches on the GamePad picture.** `wwhd_touch_claim(WWHD_TOUCH_GAMEPAD | slot, x0, y0, x1, y1)` claims a
+rectangle of the GamePad picture in its touch coordinates: 854 x 480 from the top left, +y down. It works wherever the GamePad
+shows: a GamePad window, a phone, or One screen mode. The rules are the TV picture's: register the callback
+first; a finger that lands in a claim goes only to your callback until it lifts, even outside the rectangle;
+the newest claim wins where claims overlap; remove a claim with an empty rectangle. The game and the port's own
+GamePad pages don't see that finger, and neither do the input filters (`touch` stays 0). Its events have
+`WWHD_TOUCH_GAMEPAD` added to `kind` (`WWHD_TOUCH_GAMEPAD | WWHD_TOUCH_DOWN`, and so on), so one callback can
+tell the pictures apart. The GamePad's 8 slots are separate from the TV picture's. There are no pinches on the
+GamePad picture. Hosts from before mod manager 1.12.0 refuse such a slot and return 0, so the return value is
+the feature test: fall back to something else there, or set `"minimum_manager_version": "1.12.0"`.
+
+```c
+static void touched(const wwhd_touch_event* e) {
+    if (e->kind == (WWHD_TOUCH_GAMEPAD | WWHD_TOUCH_UP)) answer(e->x, e->y);  /* a tap on our button */
+}
+/* while the prompt is up (0 on older hosts: fall back): */
+claimed = wwhd_touch_claim(WWHD_TOUCH_GAMEPAD | 0, 190, 300, 680, 370);
+/* when it closes: */
+wwhd_touch_claim(WWHD_TOUCH_GAMEPAD | 0, 0, 0, 0, 0);
+```
 
 **Pinches.** A second finger next to your mod's finger (Android, with the on-screen controls shown or hidden), or the
 mouse wheel over one of your claims (desktop), comes as `WWHD_TOUCH_PINCH` with `x` = the spread now divided by the
@@ -1376,6 +1424,29 @@ save on Windfall: letter, notebook, page, tracking and the sea chart, and checks
 `wwhd_quest_*`. If another mod replaces one of them, the notebook is not in the item menu that
 session and the log says so.
 
+## Link's appearance
+
+The player's choice of colours for Link (hair, skin, eyes, tunic and hat, undershirt, trousers, boots, belt
+buckle) belongs to each save file and is kept in it when the game saves (manager version 1.11.0). Only colours
+change: the port recolours Link's own textures from the player's game in memory; nothing is shipped or stored
+but the colours. A mod reads or sets the look as a record of 3 to 27 bytes (`wwhd_guest.h` has the layout and
+the slot numbers), or opens the port's colour page:
+
+```c
+u8 look[WWHD_APPEARANCE_MAX];
+s32 n = wwhd_appearance_get(look, sizeof look);           /* 3..27, or -2 with no save file played */
+static const u8 red_tunic[] = {1, 0x00, 0x08, 0xE5, 0x2B, 0x36};  /* slot 3 (tunic) set */
+wwhd_appearance_set(red_tunic, sizeof red_tunic);          /* 0, -1 a bad record, -2 no save file */
+wwhd_appearance_open();                                   /* the colour page, once Link can stand still */
+```
+
+The colour page holds Link still in a close camera with the page on the right of the screen; the player
+steps through each area's colours (the first is "Original", the game's own) and sees them on Link at once,
+turns the camera around him with the right stick or L / R, and keeps the look with Done or puts it back with B.
+A character's talk can open it with no code: the story action `{"action": "appearance"}` in a talk's `then`
+([SDK v3](mod-sdk-v3.md#dialogue-and-actions)). Buffers must be in your module's memory. Declare
+`"minimum_manager_version": "1.11.0"` in a mod that uses these.
+
 ## Packages with content and images
 
 A code mod may also contain content replacements in `content/` (or a `content_dir` named in
@@ -1469,7 +1540,7 @@ its real catalogue metadata. Supply an installed release/data directory, regiona
 normal save and extracted HD game, the ZIP, source `catalogue.json`, an explicit
 private game-source JSON and a private output folder. The JSON maps declared game
 IDs to the player's local paths (for example `gc_wind_waker` to an RVZ); use `{}`
-for a mod without a game-source step. Run separately with `--region USA`/`EU` and
+for a mod without a game-source step. Run separately with `--region USA`/`EU`/`JP` and
 `--renderer metal`/`vulkan`; `--mode` accepts `30` and `interp60`.
 
 Before launching, the driver invokes the real installer with

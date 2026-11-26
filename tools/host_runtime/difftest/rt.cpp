@@ -1,3 +1,4 @@
+#include <unistd.h>
 // SPDX-License-Identifier: MPL-2.0
 // Minimal runtime for the host-runtime difference tests: guest memory at PPC_MEM_BASE with the RPX image
 // loaded, the symbols the recompiled originals need, and a log of the calls they make outside their
@@ -46,6 +47,8 @@ namespace difftest {
 
 thread_local CallLog* t_log = nullptr;
 thread_local uint32_t t_entry_sp = 0;
+thread_local jmp_buf* t_import_jmp = nullptr;
+thread_local size_t t_import_limit = 0;
 
 Call make_call(Cpu* c, uint32_t addr, const char* import) {
     Call k{};
@@ -92,8 +95,21 @@ void reset(Cpu* c, int slot) {
 
 using namespace difftest;
 
+// Hard memory cap: a call log never grows past kLogHardCap entries (about 20 MB per thread). An original that keeps
+// calling out without an expected stop is a difference anyway; the whole run stops at once instead of filling swap.
+static constexpr size_t kLogHardCap = 100000;
+static void log_hard_cap() {
+    if (t_log->size() <= kLogHardCap) return;
+    fprintf(stderr, "difftest: call log over %zu entries (runaway original), stopping\n", kLogHardCap);
+    _exit(3);
+}
+
 extern "C" void hostrt_test_import(Cpu* c, const char* name) {
-    if (t_log) t_log->push_back(make_call(c, 0, name));
+    if (t_log) {
+        t_log->push_back(make_call(c, 0, name));
+        if (t_import_jmp && t_log->size() > t_import_limit) longjmp(*t_import_jmp, 1);
+        log_hard_cap();
+    }
     if (!strcmp(name, "coreinit___gh_set_errno")) return;  // the port's HLE is a no-op too
     if (!strcmp(name, "coreinit_memset")) {
         memset(PPC_MEM_BASE + c->r[3], (int)(c->r[4] & 0xFF), c->r[5]);
@@ -109,7 +125,7 @@ extern "C" void hostrt_test_import(Cpu* c, const char* name) {
 }
 
 extern "C" void hostrt_test_outside(Cpu* c, uint32_t addr) {
-    if (t_log) t_log->push_back(make_call(c, addr, nullptr));
+    if (t_log) t_log->push_back(make_call(c, addr, nullptr)), log_hard_cap();
     if (outside_hook && outside_hook(c, addr)) return;
     fprintf(stderr, "difftest: call to game function %08X not modelled\n", addr);
     abort();

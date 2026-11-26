@@ -11,7 +11,7 @@ namespace D=story_native_event_depth;namespace M=story_native_event_memory;names
 const story_native_camera_capture::Layout CameraLayout{
  GD(0x1046F0B0),GD(0x101D55F0),GD(0x101D5634),GD(0x101D5538),
  {GC(0x025021A4),GC(0x02502288),GC(0x024FFA3C),GC(0x0250235C),GC(0x024FFC40)},
- {GD(0x10049348),GD(0x10049350),GD(0x10044878),GD(0x1004487C)}};
+ {GD(0x10049348),GD(0x10049350),GD(0x10044878),GD(0x1004487C)},GI(0x5AF8)};
 struct Context {
  story_native_wait_session::Session*session;D::Tracker*depth;B::O::Expected expected;
  story_native_event_arena::Layout arena;story_native_stage_owner_observer::Snapshot stage;

@@ -43,6 +43,13 @@ class Build:
                           for a, s1, b, s2 in d.get("differing_functions", [])]
         self._differ_starts = [a for a, _, _, _ in self.differing]
         self._differ_ends = [a + s for a, s, _, _ in self.differing]
+        self._differ_here = sorted((b, s2) for _, _, b, s2 in self.differing)  # their code in this build
+        # functions only the canonical build has, and functions only this build has (mkbuildmap.py
+        # derive_aligned); [(address, size)], sorted
+        self.removed = sorted((int(a, 16), int(s)) for a, s in d.get("removed_functions", []))
+        self.inserted = sorted((int(a, 16), int(s)) for a, s in d.get("inserted_functions", []))
+        # objects whose fields moved in this build (the field shifts are part of the data map)
+        self.layouts = d.get("layouts", [])
 
     @property
     def canonical(self):
@@ -50,10 +57,21 @@ class Build:
 
     def code(self, canon):
         """Canonical (USA) code address -> this build's address."""
+        if self.build_only(canon) and (_in_ranges(self.inserted, canon & ~BUILD_ONLY) or
+                                       _in_ranges(self._differ_here, canon & ~BUILD_ONLY)):
+            # an id of code without a canonical counterpart: a function only this build has (canon_code()), or
+            # an entry inside one this build compiled differently (the recompiler's sym())
+            return canon & ~BUILD_ONLY
         self.require_address("code", canon)
+        if _in_ranges(self.removed, canon):
+            raise ValueError("%08X is in a function the %s build does not have" % (canon, self.name))
         if self.body_differs(canon) and canon not in self._differ_starts:
             raise ValueError("%08X is inside changed code; no instruction mapping" % canon)
         return self._code.apply(canon)
+
+    @staticmethod
+    def build_only(canon):
+        return bool(canon & BUILD_ONLY)
 
     def data(self, canon):
         """Canonical (USA) data address -> this build's address."""
@@ -73,8 +91,19 @@ class Build:
         Exact for every address the build really has. The other direction is not exact inside a
         function this build compiled shorter: the canonical bytes past its end have no address here,
         and code() would put them where the next function already is. body_differs() tells those
-        apart; a function's entry always maps both ways."""
+        apart; a function's entry always maps both ways.
+
+        An address in a function only this build has (`inserted`) has no canonical address: it gets
+        the id BUILD_ONLY | address, outside every canonical address, so the recompiler's names for
+        it (f_8XXXXXXX) never meet a canonical one; code() turns it back, as it does the recompiler's
+        id of an entry inside a function this build compiled differently."""
+        if _in_ranges(self.inserted, addr):
+            return BUILD_ONLY | addr
         return self._code.unapply(addr)
+
+    def removed_function(self, canon):
+        """Is `canon` in a function only the canonical build has?"""
+        return _in_ranges(self.removed, canon)
 
     def code_steps(self):
         """[(canonical start, shift)] of the code map, sorted; [(0, 0)] for the canonical build."""
@@ -92,6 +121,17 @@ class Build:
 
     def __repr__(self):
         return "<Build %s title %s>" % (self.name, self.title_id)
+
+
+# canon_code() of an address in a function only a non-canonical build has: game code is at
+# 0x02000000..0x10000000, so the bit is free and the id is never a canonical address
+BUILD_ONLY = 0x80000000
+
+
+def _in_ranges(ranges, a):
+    """Is `a` in one of the sorted [(start, size)]?"""
+    i = bisect.bisect_right(ranges, (a, 0xFFFFFFFF)) - 1
+    return i >= 0 and ranges[i][0] <= a < ranges[i][0] + ranges[i][1]
 
 
 class _Shift:

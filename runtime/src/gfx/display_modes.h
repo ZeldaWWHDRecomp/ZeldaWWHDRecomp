@@ -87,6 +87,9 @@ extern std::atomic<bool> g_one_screen_off_tv;  // ... and the game plays Off-TV 
 // GamePad screen hidden (#222). Not the single-screen mode, which is Off by default on Android.
 extern std::atomic<bool> g_second_screen_off;
 extern std::atomic<bool> g_second_display_available; // capability, independent of live surface
+// Android: a second (Presentation) display was there when the activity started (GamePadDisplay.seedDisplayPresent),
+// before the display host publishes availability; One screen mode's start default reads it (mods/one_screen.cpp)
+extern std::atomic<bool> g_second_display_present;
 // Android start: the saved Off choice read by Java before the native settings load, so a saved Off never
 // acquires the second screen for a moment (#222). Ignored once load_second_screen_off ran.
 void seed_second_screen_off(bool off);
@@ -122,15 +125,23 @@ void display_set_mode(int m);      // a new mode (shown again unless off; auto s
 void display_plus_pressed();
 int display_saved_mode();
 bool display_gamepad_state_needed();
-void display_read_gamepad_ui(); // guest thread, once at swap; returns immediately outside auto/pause
+void display_read_gamepad_ui(); // guest thread, once at swap; returns immediately outside auto/pause/One screen's Off-TV Play
 void display_gamepad_ui(GamePadUiState state); // publish a host-only snapshot
-bool gamepad_ui_menu();                          // that snapshot: a GamePad menu is open (any thread)
+bool gamepad_ui_menu();                          // that snapshot: a game menu is on the GamePad's touch screen (any thread)
 
 // pixel rectangles in the target (drawable), top-left origin
 struct Layout { Box tv, pip; bool pip_on = false; bool drc_only = false; float scale = 1; };
 // the TV window's layout: TV picture (tw x th) scaled to fit dw x dh, GamePad picture (pw x ph) in
 // the selected anchor (pip_on) or alone, fitted (drc_only)
 Layout layout(float dw, float dh, float tw, float th, float pw, float ph, bool pip_on, bool drc_only = false);
+// The part of the TV surface the system leaves visible: Android may draw its navigation/status bars over the
+// game instead of hiding them (issue #349). display_set_obscured: the bars' thickness at each edge in the
+// platform view's pixels and that view's size (any thread); the TV layout and "Match window" then use the rest.
+struct VisibleArea { float x = 0, y = 0, w = 0, h = 0; };
+void display_set_obscured(float left, float top, float right, float bottom, float view_w, float view_h);
+// the visible part of a dw x dh target for obscured (left, top, right, bottom) of a view_w x view_h view
+// (scaled to the target; ignored when it would leave less than half of either side)
+VisibleArea visible_area(float dw, float dh, const float obscured[4], float view_w, float view_h);
 // The game's picture in a layout: the TV picture, or in One screen mode's Off-TV Play (one_screen.h) the GamePad
 // picture, which is the game then; false while the window shows the GamePad picture alone otherwise, or before a
 // layout. Touches (game_picture_hit) and the code mods' TV HUD layer (overlay/guest_hud.cpp) both use this box, so
@@ -146,6 +157,9 @@ bool game_picture_box(const PresentPlan& plan, Box* box);  // the same for a pla
 // a point in the TV window (0..1 from top left) on the GamePad picture -> touch position (0..1),
 // from the last display_plan; clamp_outside: a drag that left the picture keeps touching its edge
 bool overlay_hit(float nx, float ny, float* tx, float* ty, bool clamp_outside = false);
+// a left mouse click there that is a touch of the game's touch screen (tv_pointer::gamepad_picture_touch: in One
+// screen's Off-TV Play only in a game menu or without the mouse camera); else it goes on to the mouse camera
+bool gamepad_click_hit(float nx, float ny, float* tx, float* ty, bool mouse_camera);
 void display_input_plan(const PresentPlan& plan); // publish the logical canvas used by the compositor
 // the main picture of the last TV layout (the TV picture, or the GamePad picture in GamePad-only
 // mode), 0..1 of the TV window from the top left; false before the first layout (the settings

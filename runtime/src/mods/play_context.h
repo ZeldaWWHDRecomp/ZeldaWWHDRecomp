@@ -15,7 +15,8 @@
 //
 // Offsets. g_dComIfG_gameInfo (dComIfGp_get() 025200D4) is at GD(0x1046F0B0); its play member
 // (dComIfG_play_c) starts at +0x12A0, so a play member at decomp offset P is at gameInfo + 0x12A0 + P
-// (the same layout in USA and EUR; only GD() moves the base):
+// (the same layout in USA and EUR; only GD() moves the base; the Japanese build moved the members from +0x5AB0,
+// so the reader maps each offset through Addresses::member, GI() in play_context.cpp):
 //   +0x5134 current stage name (char[8])          +0x514C dStage_nextStage_c enable (stage change)
 //   +0x5292 dEvt_control_c mode (event running)   +0x5B2C mPlayerInfo[0].mpPlayer (Link when he plays)
 //   +0x5BB2 mMesgStatus, +0x5BB3 mScopeMesgStatus (hud_gate.cpp, savestate.cpp)
@@ -203,6 +204,14 @@ inline bool item_in_hand(const PlayContext& c) {
 // a talk or a scene's text is up
 // (the message status, not kMessage: that one also holds the telescope's / Picto Box's scope status)
 inline bool talking(const PlayContext& c) { return c.mesg_status != 0 || c.has(kKeyIcon) || c.has(kMsgWindow); }
+// Link looks through the telescope, in play (no event, menu): the sticks look around (right) and zoom (left),
+// also while the telescope's own text shows (Aryll's lines on Outset: she waits for him to look and zoom). HD
+// puts the telescope's screen state (fopMsgStts_SCOPE_ACTIVE 11, ...) into the game's message status too, not
+// only into the scope's (the Picto Box sets only the scope's), so talking() is true all the time there: the
+// touch talk must not take the fingers, nor the talk rule the buttons.
+inline bool scope_look(const PlayContext& c) {
+    return telescope(c) && c.has(kLink) && !c.has(kEvent) && !c.has(kMenu);
+}
 
 // ---- the layout panes the observer notes (nw::lyt::Pane names, as the game's layouts have them) ----
 enum PaneSignal : int {
@@ -298,20 +307,24 @@ struct Addresses {  // this build's addresses of the globals (play_context.cpp: 
     uint32_t game_info = 0;      // g_dComIfG_gameInfo (dComIfGp_get() returns it)
     uint32_t overlap = 0;        // l_fopOvlpM_overlap[0]: a fade / wipe runs (turbo.cpp)
     uint32_t save_info_ptr = 0;  // *this + 0x20: dSv_player_c (cheats.cpp)
+    // this build's offset of the game_info member at canonical offset `off` (GI(), guest_addr.h); none: the same
+    uint32_t (*member)(uint32_t off) = nullptr;
 };
+// the address of the game_info member at canonical (USA) offset `off`
+inline uint32_t game_info_at(const Addresses& a, uint32_t off) { return a.game_info + (a.member ? a.member(off) : off); }
 
 // A Quest Log is played: a stage is loaded that is not the title screen ("sea_T") or the file select ("Name")
 template <class Mem>
 bool in_game(const Mem& m, const Addresses& a) {
     char stage[9] = {};
-    for (int i = 0; i < 8; i++) stage[i] = char(m.u8(a.game_info + kStage + i));
+    for (int i = 0; i < 8; i++) stage[i] = char(m.u8(game_info_at(a, kStage + i)));
     return stage[0] && strcmp(stage, "sea_T") != 0 && strcmp(stage, "Name") != 0;
 }
 
 // Link's actor if he is the controlled player, else 0
 template <class Mem>
 uint32_t link_actor(const Mem& m, const Addresses& a) {
-    const uint32_t link = m.u32(a.game_info + kPlayer);
+    const uint32_t link = m.u32(game_info_at(a, kPlayer));
     return m.object(link, kLinkSize) ? link : 0;
 }
 
@@ -414,7 +427,6 @@ PlayContext read(const Mem& m, const Addresses& a, const GameUiSignals& ui, cons
     PlayContext c;
     c.step = step;
     c.defeats = lock.defeats;  // also on the title screen: the count only grows
-    const uint32_t g = a.game_info;
     if (m.u32(a.overlap) != 0) c.flags |= kFade;
     if (ui.event) c.flags |= kEvent;
     if (ui.message) c.flags |= kMessage;
@@ -439,25 +451,25 @@ PlayContext read(const Mem& m, const Addresses& a, const GameUiSignals& ui, cons
         return c;
     }
     c.flags |= kInGame;
-    if (m.u8(g + kNextStageEnable)) c.flags |= kStageChange;
-    c.mesg_status = m.u8(g + kMesgStatus);
-    c.scope_mesg_status = m.u8(g + kScopeMesgStatus);
-    c.zr_normal = m.u8(g + kRStatus);
-    c.b_normal = m.u8(g + kAStatus);
-    c.a_normal = m.u8(g + kDoStatus);
-    c.zr_forced = m.u8(g + kRStatus + kForce);
-    c.b_forced = m.u8(g + kAStatus + kForce);
-    c.a_forced = m.u8(g + kDoStatus + kForce);
+    if (m.u8(game_info_at(a, kNextStageEnable))) c.flags |= kStageChange;
+    c.mesg_status = m.u8(game_info_at(a, kMesgStatus));
+    c.scope_mesg_status = m.u8(game_info_at(a, kScopeMesgStatus));
+    c.zr_normal = m.u8(game_info_at(a, kRStatus));
+    c.b_normal = m.u8(game_info_at(a, kAStatus));
+    c.a_normal = m.u8(game_info_at(a, kDoStatus));
+    c.zr_forced = m.u8(game_info_at(a, kRStatus + kForce));
+    c.b_forced = m.u8(game_info_at(a, kAStatus + kForce));
+    c.a_forced = m.u8(game_info_at(a, kDoStatus + kForce));
     // the HUD shows a forced action instead of the normal one (dMeter: Picto Box, album, telescope...)
     c.zr_action = c.zr_forced ? c.zr_forced : c.zr_normal;
     c.b_action = c.b_forced ? c.b_forced : c.b_normal;
     c.a_action = c.a_forced ? c.a_forced : c.a_normal;
-    c.x_item = m.u8(g + kSelectItem);
-    c.y_item = m.u8(g + kSelectItem + 1);
-    c.r_item = m.u8(g + kSelectItem + 2);
-    c.player_status0 = m.u32(g + kPlayerStatus0);
-    c.player_status1 = m.u32(g + kPlayerStatus1);
-    c.minigame = m.u8(g + kMiniGameType);
+    c.x_item = m.u8(game_info_at(a, kSelectItem));
+    c.y_item = m.u8(game_info_at(a, kSelectItem + 1));
+    c.r_item = m.u8(game_info_at(a, kSelectItem + 2));
+    c.player_status0 = m.u32(game_info_at(a, kPlayerStatus0));
+    c.player_status1 = m.u32(game_info_at(a, kPlayerStatus1));
+    c.minigame = m.u8(game_info_at(a, kMiniGameType));
     // the inventory (the Wind Waker, the Swift Sail), from the save data when it looks loaded
     const uint32_t info = m.u32(a.save_info_ptr);
     if (m.object(info, 0x20 + kSaveInventory + 21)) {
@@ -557,4 +569,5 @@ void play_context_want(bool on);
 playctx::PlayContext play_context();
 // nw::lyt::Pane::Draw (aspect.cpp hook_02877100): notes the message's parts, the Picto Box screens...
 void play_context_pane(uint32_t pane);
+bool play_context_logs_panes();  // WWHD_PLAYCTX_LOG=2: play_context_pane logs every pane name it sees
 }  // namespace mods

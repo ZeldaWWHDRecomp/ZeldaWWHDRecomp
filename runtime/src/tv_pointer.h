@@ -9,6 +9,8 @@
 #pragma once
 #include <atomic>
 
+#include "one_screen.h"
+
 namespace tv_pointer {
 
 struct State {
@@ -41,6 +43,16 @@ inline bool picture_takes_click(bool left_bound, bool mouse_camera) { return !(l
 // The GamePad picture on the TV (picture-in-picture) takes a click as a touch unless that click is a bound
 // button (the captured pointer is hidden: no one aims a touch with it)
 inline bool gamepad_takes_click(bool left_bound, bool captured) { return !(left_bound && captured); }
+// A left click on the GamePad picture in the TV window is a touch of the game's touch screen (input::set_touch),
+// else the click goes on to the TV picture's users (the pages and talks that want the pointer, then the mouse
+// camera's capture). One screen's Off-TV Play (one_screen.h) shows only the GamePad picture, so every click lands on
+// it: there it is a touch where a finger would be the game's (one_screen::picture_is_game_touch, the mouse camera in
+// the place of the touch controls): in a game menu on it (the item menu's drags onto X / Y / R, the map, the
+// bottles) or without the mouse camera. In play with the mouse camera it captures the pointer as on the TV picture
+// (issue #514).
+inline bool gamepad_picture_touch(bool on_gamepad_picture, bool one_screen_off_tv, bool game_menu, bool mouse_camera) {
+    return on_gamepad_picture && (!one_screen_off_tv || one_screen::picture_is_game_touch(game_menu, mouse_camera));
+}
 bool left_button_bound();  // the left mouse button does a game button in the current controls (tv_pointer.cpp)
 
 // The point in a 1280 x 720 page centred on the picture (the HUD's centre anchor: a wider picture

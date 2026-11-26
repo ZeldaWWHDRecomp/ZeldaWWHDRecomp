@@ -34,6 +34,9 @@ on:
       - tools/android/embedding_smoke.py
       - tools/android/python_smoke.py
       - tools/android/package_runtime.py
+      - tools/android/decomp_android.py
+      - tools/installer/decomp_setup.py
+      - tools/decomp_build/**
       - tools/android/runtime_smoke.py
       - tools/android/service_fixture.py
       - tools/android/debug_fixture_build.py
@@ -83,6 +86,9 @@ on:
       - tools/android/embedding_smoke.py
       - tools/android/python_smoke.py
       - tools/android/package_runtime.py
+      - tools/android/decomp_android.py
+      - tools/installer/decomp_setup.py
+      - tools/decomp_build/**
       - tools/android/runtime_smoke.py
       - tools/android/service_fixture.py
       - tools/android/debug_fixture_build.py
@@ -116,7 +122,9 @@ jobs:
         with:
           distribution: temurin
           java-version: "17"
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
       - name: Build tools
+        timeout-minutes: 15  # a stalled mirror fails fast instead of hanging until GitHub's 6 h limit
         run: |
           sudo apt-get update
           sudo apt-get install -y ninja-build libzstd-dev
@@ -162,7 +170,17 @@ jobs:
           python3 tools/recomp/android_fixture.py --output build/extraction-fixture-source
           c++ -std=c++17 tools/android/extraction_fixture.cpp tools/wudextract/crypto.cpp -lzstd -o build/extraction-fixture-writer
           build/extraction-fixture-writer build/extraction-fixture-source/synthetic.rpx build/extraction-fixture.bin
-          python3 tools/android/package_runtime.py --build android/build/game --ndk "$ANDROID_HOME/ndk/30.0.16248370" --abi "${{ matrix.abi }}" --out build/runtime-sdk
+          # the decomp version's parts, as release.yml (tools/android/decomp_android.py; no game, no units)
+          git submodule update --init decomp
+          : > build/no-decomp-units.txt
+          python3 tools/recomp/stubgen.py build/gen-stub-decomp --decomp-hooks build/no-decomp-units.txt
+          for fast in 0 1; do
+            ABI="${{ matrix.abi }}" GEN_DIR="$PWD/build/gen-stub-decomp" ANDROID_SDK="$ANDROID_HOME" JOBS=4 \
+              DECOMP=1 DECOMP_RUNTIME_ONLY=1 DECOMP_FAST=$fast OUT="$PWD/android/build-decomp-$fast" android/build_native.sh
+          done
+          python3 tools/android/package_runtime.py --build android/build/game --ndk "$ANDROID_HOME/ndk/30.0.16248370" --abi "${{ matrix.abi }}" --out build/runtime-sdk \
+            --decomp-build android/build-decomp-0/game --decomp-fast-build android/build-decomp-1/game
+          rm -rf android/build-decomp-0 android/build-decomp-1
           python3 tools/android/prepare_python.py --abi "${{ matrix.abi }}" --ndk "$ANDROID_HOME/ndk/30.0.16248370" --out build/embedded-python --runtime-sdk build/runtime-sdk --extraction-fixture build/extraction-fixture.bin --service-fixture
           android/gradlew -p android --no-daemon -PwwhdAbi="${{ matrix.abi }}" -PwwhdPythonDir="$PWD/build/embedded-python/package" -PwwhdToolchainDir="$PWD/build/compiler/apk-package" -PwwhdExtractorDir="$PWD/build/extractor-apk" assembleDebug
           python3 tools/release/guard.py --allow-android-test-fixtures android/app/build/outputs/apk/debug/app-debug.apk

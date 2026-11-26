@@ -65,6 +65,26 @@ def verified_download(url, archive, expected):
         temporary.unlink(missing_ok=True)
 
 
+def decomp_tool_files(root):
+    """The decomp version in setup (tools/android/decomp_android.py; the desktop release's parts, tools/release/package.py
+    DECOMP_TOOLS): the tools that prepare the decompilation's source, the capstone stand-in for the declaration table, and
+    the port's runtime headers and HLE sources decl_lint.py reads. No game code."""
+    import importlib.util
+    if not (root / "tools/release/package.py").is_file():  # (an older tree, test trees)
+        return []
+    spec = importlib.util.spec_from_file_location("wwhd_release_package", root / "tools/release/package.py")
+    desktop = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(desktop)
+    files = [root / rel for rel in desktop.DECOMP_TOOLS]
+    files += [root / "tools/android/decomp_android.py",
+              # pre-included into every game unit on Android (the release's unit flags) and decl_lint's check
+              root / "tools/decomp_build/android_compat.h"]
+    files += sorted(p for p in (root / "runtime/include").rglob("*") if p.is_file())
+    files += sorted(p for p in (root / "runtime/src").rglob("*.cpp")
+                    if "HLE(" in p.read_text(encoding="utf-8", errors="replace"))
+    return [path for path in files if path.is_file()]
+
+
 def source_files(root, test_fixtures=False):
     source_paths = [root / "tools/installer/setup.py",
                     root / "tools/installer/shader_prebuild.py", root / "tools/shaderprep.py", root / "tools/shaderprep_format.py", root / "tools/android/setup_adapter.py",
@@ -78,11 +98,12 @@ def source_files(root, test_fixtures=False):
                     # the in-app randomizer (randomized games made in setup) and its compatibility profile
                     root / "tools/installer/randomizer_seeds.py", root / "tools/installer/object_cache.py",
                     root / "tools/rando/places.py", root / "tools/recomp/randomizer-usa.json",
-                    root / "tools/recomp/randomizer-eu.json"]
+                    root / "tools/recomp/randomizer-eu.json",
+                    root / "tools/recomp/randomizer-jp.json"]
     # Newer desktop installers import these production siblings at start-up (setup.py:
-    # "import code_mods", "import decomp_setup"). Older branches do not have them; support
-    # both without changing installer behavior.
-    for sibling in ("code_mods.py", "decomp_setup.py"):
+    # "import code_mods", "import decomp_setup"; decomp_setup.py: "import decomp_platform"). Older branches do not
+    # have them; support both without changing installer behavior.
+    for sibling in ("code_mods.py", "decomp_setup.py", "decomp_platform.py", "build_cache.py", "release_update.py"):
         path = root / "tools/installer" / sibling
         if path.is_file():
             source_paths.append(path)
@@ -90,6 +111,7 @@ def source_files(root, test_fixtures=False):
                      if path.is_file() and (path.suffix in (".py", ".txt") or (path.parent.name == "builds" and path.suffix == ".json"))
                      and path.name != "android_fixture.py" and "__pycache__" not in path.parts]
     source_paths += guest_tool_files(root)
+    source_paths += decomp_tool_files(root)
     if test_fixtures:
         source_paths += [root / "tools/android/debug_fixture_build.py",
                          root / "tools/android/embedding_smoke.py", root / "tools/recomp/android_fixture.py"]

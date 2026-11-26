@@ -145,7 +145,7 @@ int main() {
     assert(!profile::compatible_full_state(invalid, {}));
     writer.b.push_back(0);
     assert(!profile::compatible_full_state(ss::Reader(writer.b.data(), writer.b.size()), identity));
-    for (uint32_t flags : {0u, ss::kRequiresSaveProfile, 2u}) {
+    for (uint32_t flags : {0u, ss::kRequiresSaveProfile, 4u}) {  // (4: an unknown bit; bits 8-9: the build kind)
         ss::FullStateHeader header{};
         memcpy(header.magic, "WWHDSTAT", 8);
         header.header_size = sizeof header;

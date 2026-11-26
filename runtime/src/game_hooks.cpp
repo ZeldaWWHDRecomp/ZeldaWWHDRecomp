@@ -8,6 +8,7 @@
 #include <cstring>
 
 #include "game_hooks.h"
+#include "latency_test.h"
 #include "guest_addr.h"
 #include "runtime.h"
 #include "mods/mods.h"
@@ -19,6 +20,7 @@ bool hold_pass();        // this is an in-between (hold) pass: no game logic
 uint64_t logic_steps();  // logic steps so far
 bool zoom_ease(Cpu* c, void (*orig)(Cpu*));
 void fx_actor_draw(uint32_t proc, uint32_t exec, bool begin);
+void kankyo_draw(uint32_t proc, bool begin);  // interp_kankyo.cpp: the environment's draw-time state
 bool fx_hold_anim();
 }
 namespace test_aids {  // test_aids.cpp (debug dumps)
@@ -155,6 +157,10 @@ void f_02593B10_orig(Cpu* c);  // d_meter per-step update
 extern "C" void hook_025DF940(Cpu* c) {
     uint32_t proc = c->r[3];
     mods::DoorExecuteWrap door_wrap{proc};  // Quick doors' walk-through mode (mods/walk_doors.cpp)
+    if (mods::walk_doors_hold(proc)) {  // a new actor of a room a walk-through door just showed: it waits
+        c->r[3] = 1;
+        return;
+    }
     uint32_t rx_s0 = ld32(kRndSeeds);
     uint32_t wv = watch_val();
     const uint32_t fn = actor_execute_fn(proc);
@@ -162,11 +168,13 @@ extern "C" void hook_025DF940(Cpu* c) {
     const bool is_cam = g_cam_trace && is_camera(proc);
     if (is_cam) g_follow_called = false;
     const uint32_t dump_fn = test_aids::dumping() ? fn : 0;
+    const uint32_t latencyProc = is_link && latency_test::on() ? ld32(proc + kCurProc) : 0;
     if (is_link) {
         g_link = proc;
         if (dump_fn) test_aids::before_execute_link(proc);
     }
     f_025DF940_orig(c);
+    if (is_link && latency_test::on()) latency_test::link_execute(latencyProc, ld32(proc + kCurProc));  // (latency_test.h)
     if (test_aids::digesting()) test_aids::proc_digest(proc);
     if (dump_fn) test_aids::after_execute(proc, dump_fn, is_link);
     if (is_cam) trace_camera(proc);
@@ -179,13 +187,16 @@ extern "C" void hook_025DF940(Cpu* c) {
 }
 
 // fpcM_Draw(process): frame interpolation's actor draws that advance their own state, once per
-// logic step (interp_fx.cpp: replayed draws and fields blended between the steps)
+// logic step (interp_fx.cpp: replayed draws and fields blended between the steps; interp_kankyo.cpp: the
+// environment's draw)
 extern "C" void hook_025DF904(Cpu* c) {
     uint32_t proc = c->r[3];
     uint32_t wv = watch_val();
     const uint32_t keep_exec = interp::enabled() ? actor_execute_fn(proc) : 0;
     if (keep_exec) interp::fx_actor_draw(proc, keep_exec, true);
+    interp::kankyo_draw(proc, true);
     f_025DF904_orig(c);
+    interp::kankyo_draw(proc, false);
     if (keep_exec) interp::fx_actor_draw(proc, keep_exec, false);
     watch_link("draw", proc, wv);
 }

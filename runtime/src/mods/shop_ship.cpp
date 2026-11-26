@@ -15,9 +15,9 @@ namespace mods {
 namespace {
 const uint32_t kPlay = GD(0x1046F0B0);       // g_dComIfG_gameInfo.play (dComIfG_getGameInfo 025200D4)
 constexpr uint32_t kStartStage = 0x5134;     // dStage_startStage_c: name[8] (the current stage)
-constexpr uint32_t kShipRoom = 0x5D16;       // s8: the sea room of the ship entered (IkadaShipBeforeRoomId)
-constexpr uint32_t kShipId = 0x5D17;         // u8: that ship's id in its room
-constexpr uint32_t kShipX = 0x5D18, kShipZ = 0x5D20;  // f32: the ship's position when entered
+const uint32_t kShipRoom = GI(0x5D16);       // s8: the sea room of the ship entered (IkadaShipBeforeRoomId)
+const uint32_t kShipId = GI(0x5D17);         // u8: that ship's id in its room
+const uint32_t kShipX = GI(0x5D18), kShipZ = GI(0x5D20);  // f32: the ship's position when entered
 
 std::string current_stage() {
     std::string s;

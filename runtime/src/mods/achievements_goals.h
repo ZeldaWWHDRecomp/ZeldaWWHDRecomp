@@ -164,7 +164,9 @@ inline const Goal kAll[] = {
     {"song_wind", kSongs, 3, "Song of the Wind", kLearn, -1004, 0, [](const Read& s) { return s.song(4); }, false, kCount},
     {"song_passing", kSongs, 3, "Day and Night", kLearn, -1005, 0, [](const Read& s) { return s.song(5); }, false, kCount},
     // side quests
-    {"grandma_chest", kQuests, 2, "Grandma's Secret", "Open the chest hidden in Grandma's house.", 0, 0, [](const Read& s) { return (s.stage_byte(0x0B, 3) & 0x09) == 0x09; }, false, kSaves},
+    // Grandma's basement chest (LinkUG, stage table 0x0B): its takara2's chest number 5 (params >> 7 & 31); the table's
+    // other chests are Windfall's jail maze (0), Lenzo's house (1, 2), the House of Wealth (3) and Mesa's house (4)
+    {"grandma_chest", kQuests, 2, "Grandma's Secret", "Open the chest hidden in Grandma's house.", 0, 0, [](const Read& s) { return s.chests(0x0B, 1ul << 5); }, false, kDecomp},
     {"grandma_soup", kQuests, 5, "Feeling Better", "Cheer Grandma up with a fairy and get her soup.", 0, 0, [](const Read& s) { return s.event(0x2A20); }, false, kSaves},
     {"black_pig", kQuests, 3, "Truffle Hunter", "Let the black pig dig up its treasure on %s.", 0, kOutset, [](const Read& s) { return s.stage_bit(0, 0x17, 2); }, false, kSaves},
     {"orca_500", kQuests, 5, "Sword Training", "Land 500 hits in Orca's training.", 0, 0, [](const Read& s) { return s.reg(0xD0) >= 3; }, false, kDecomp},

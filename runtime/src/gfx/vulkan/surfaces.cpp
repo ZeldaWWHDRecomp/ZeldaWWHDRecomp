@@ -13,6 +13,7 @@
 #include "mods/cemu_pack.h"
 // Guest surfaces backed by Vulkan images. LatteAddrLib supplies guest tiling geometry.
 #include "backend.h"
+#include "gfx/vulkan/draw_thread_locks.h"
 #include "stereo.h"
 #include "attachment_view_usage.h"
 #include "pipeline_trace.h"
@@ -51,6 +52,12 @@
 #include <tuple>
 #include <unordered_map>
 #include <vector>
+#ifdef WWHD_NATIVE_DRAW
+#include "native_draw/j3d_desc_depth_inst.h"
+#endif
+#ifdef WWHD_DECOMP_FAST
+#include "../../drawoff/drawoff.h"
+#endif
 
 Latte::E_GX2SURFFMT LatteTexture_ReconstructGX2Format(const Latte::LATTE_SQ_TEX_RESOURCE_WORD1_N&, const Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N&);
 namespace gfxvk {
@@ -129,6 +136,7 @@ static void log_view(const Surface* s,const char* kind) {
 static void warm_dynamic_resolution();
 static void precreate_levels();
 static void latch_dynamic_resolution() {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     g_dyn_frame = dynres::latch(R.frame, g_res_frame);
     if (dynres::on()) { warm_dynamic_resolution(); precreate_levels(); }
     // off: the images kept for scale changes go (a target not drawn any more keeps its own until then)
@@ -294,7 +302,7 @@ Surface* color_target(const uint32_t* regs, int i, uint32_t* slice, gfx::SizeReq
     if (volume && !R.imageView2DOn3DImage) {
         // the device cannot render into a volume slice (portability subset without imageView2DOn3DImage):
         // render into an array of the same size; sampling it as a volume then reads the guest memory
-        static bool logged = false;
+        DRAW_THREAD_STATIC(logged, bool);
         if (!logged) LOG("[gfx] Vulkan: this device cannot render into 3D texture slices; volume render targets stay empty");
         logged = true;
         volume = false;
@@ -370,10 +378,17 @@ Surface* surface_from_depth_buffer(uint32_t addr, uint32_t* firstSlice, uint32_t
 static uint64_t sparse_hash(Surface* s);
 uint64_t g_stat_full_checks, g_stat_uploads, g_stat_invalidates, g_stat_invalidated_surfaces;
 uint64_t g_surface_epoch = 1;  // backend.h
+#ifdef WWHD_NATIVE_DRAW
+uint64_t g_surface_struct_gen = 1;  // backend.h
+#define J3D_STRUCT ++g_surface_struct_gen;
+#else
+#define J3D_STRUCT
+#endif
 
 // Based on GreenNaugahyde/ZeldaWWHDRecompAndroid, commit 73b54e1 (rendered mip chains); the
 // sampler-reach limit and the per-level rebuild are from its v0.9.5 (b1993cf).
 static Surface* with_mip_chain(Surface* s, const SurfaceDesc& d, uint32_t maxLevels) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     static const bool off = getenv("WWHD_NO_RT_MIPS") != nullptr;
     uint32_t mips = d.mips;
     if (off || mips <= 1 || s->fmt.depth || s->fmt.compressed || s->fmt.kind != FormatInfo::FLOAT || s->imageType != VK_IMAGE_TYPE_2D || s->arrayLayers != 1 ||
@@ -522,6 +537,7 @@ static Surface* with_mip_chain(Surface* s, const SurfaceDesc& d, uint32_t maxLev
 }
 
 Surface* sampled_texture(const uint32_t* w, bool isDepthSampler, uint32_t maxLevels) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     Latte::LATTE_SQ_TEX_RESOURCE_WORD0_N w0;
     Latte::LATTE_SQ_TEX_RESOURCE_WORD1_N w1;
     Latte::LATTE_SQ_TEX_RESOURCE_WORD4_N w4;
@@ -815,12 +831,13 @@ void create_surface_image(Surface* s, bool forRendering, VkExtent3D explicitExte
     }
 }
 void destroy_surface_image(Surface* s) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     if (!s) return;
     gamepad_backdrop_invalidate(s);
     if (s->mipChain) { destroy_surface_image(s->mipChain.get()); s->mipChain.reset(); }
     if (!s->spares.empty()) release_spares(s);
     if(!s->image)return;
-    ++g_surface_epoch;
+    ++g_surface_epoch;J3D_STRUCT
     auto views=std::move(s->layerViews);if(s->view)views.push_back(s->view);
     for(auto& [key,view]:s->sampledViews)if(view)views.push_back(view);s->sampledViews.clear();
     defer_surface_image(s->image,s->memory,std::move(views));
@@ -937,7 +954,7 @@ static bool eye_sized(const FormatInfo& fmt) {
     if (scaled_copy_mode(fmt) != ScaledCopy::Unsupported) return true;
     g_eyeSizedTargets = false;
     ++g_eyeSizeGeneration;
-    ++g_surface_epoch;  // continued draws hold the eye-sized targets' extents
+    ++g_surface_epoch;J3D_STRUCT  // continued draws hold the eye-sized targets' extents
     LOG("[stereo] Vulkan format %d can be neither blitted nor drawn on this device: Half SBS and "
         "top-and-bottom now render each eye at full size", int(fmt.pixel));
     return false;
@@ -1077,7 +1094,7 @@ static void draw_depth_copy(Surface* src,uint32_t srcLevel,uint32_t srcLayer,uin
     VkViewport viewport{0,0,float(dstW),float(dstH),0,1};VkRect2D area{{0,0},{dstW,dstH}};
     for(uint32_t i=0;i<layers;++i) {
         VkDescriptorSet set=VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=R.descriptorPool;
+        VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};allocation.descriptorPool=descriptor_pool();
         allocation.descriptorSetCount=1;allocation.pSetLayouts=&depthCopy.descriptors;
         check_vk(vkAllocateDescriptorSets(R.device,&allocation,&set),"allocate depth copy descriptors");
         VkDescriptorImageInfo images[2]{{depthCopy.sampler,depth_copy_source_view(src,VK_IMAGE_ASPECT_DEPTH_BIT,srcLevel,srcLayer+i),VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
@@ -1146,6 +1163,7 @@ static void clear_unscalable(Surface* dst,uint32_t dstW,uint32_t dstH) {
 // tiny scaled copy per format of the existing render targets is made ahead, so the first scale change
 // does not wait for it.
 static void warm_dynamic_resolution() {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     static std::vector<VkFormat> warmed;
     static uint64_t checked = ~0ull;
     if (checked == R.surfaces.size()) return;  // cheap: look again only when surfaces were added
@@ -1279,6 +1297,7 @@ static int level_of(float f) {
 // (about 10 ms for a whole set on an Adreno phone) is spread over frames instead of landing on the frame
 // of a scale change.
 static void precreate_levels() {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     static uint64_t epoch=~0ull;static float doneBase=0,doneKx=0,doneKy=0,doneDyn=0;static int doneLevels=0;static bool complete=false;
     static size_t doneViews=0;
     size_t views=0;
@@ -1385,7 +1404,7 @@ static Surface* rescale(Surface* s) {
     try { resample(s,&replacement,s->arrayLayers,1,1,0,0); }
     catch(...) { destroy_surface_image(&replacement);throw; }
     if(keep) {
-        ++g_surface_epoch;  // as destroy_surface_image: the surface's image changes
+        ++g_surface_epoch;J3D_STRUCT  // as destroy_surface_image: the surface's image changes
         keep_spare(s,*s);   // (its mip chain goes with it)
     } else destroy_surface_image(s);
     if(dynres::on())dynres::note_rescale(!reused,std::chrono::duration<double,std::milli>(t1-t0).count(),
@@ -1403,6 +1422,7 @@ static Surface* rescale(Surface* s) {
 // then through the plain one (issue #53). Each format gets its own image here, so before one is
 // used, take over the texels of a more recent compatible one (a raw copy, as the memory is shared).
 static Surface* adopt_newer_alias(Surface* s) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     if(!s||!s->formatViews||!s->image)return s;  // the common case: one view per address, nothing to do
     Surface* newest=nullptr;
     auto range=R.surfaces.equal_range(s->addr);
@@ -1432,6 +1452,7 @@ static Surface* adopt_newer_alias(Surface* s) {
 }
 static void restore_evicted(Surface* s);  // (texture budget, below)
 Surface* find_or_create_surface(const SurfaceDesc& d,bool forRendering) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     if(!d.addr)return nullptr;
     auto& cache=stereo_surface_cache(d);
     auto range=cache.equal_range(d.addr);
@@ -1469,7 +1490,7 @@ Surface* find_or_create_surface(const SurfaceDesc& d,bool forRendering) {
     s->fmt=d.isDepth&&!forRendering?comparison_format_info(d.format):format_info(d.format,d.isDepth);
     if(forRendering)s->sizeClaim.request(d.sizeRequest,R.frame);
     create_surface_image(s.get(),forRendering);
-    auto* raw=s.get();cache.emplace(d.addr,std::move(s));++g_surface_epoch;++g_surface_set_gen;
+    auto* raw=s.get();cache.emplace(d.addr,std::move(s));++g_surface_epoch;++g_surface_set_gen;J3D_STRUCT
     // format views of one guest surface (adopt_newer_alias): flag them once, so lookups stay cheap
     if(!raw->isDepth&&!raw->fmt.compressed&&raw->fmt.convert==Convert::NONE) {
         auto views=cache.equal_range(d.addr);
@@ -1544,7 +1565,7 @@ static void restore_evicted(Surface* s) {
     s->evicted = false;
     create_surface_image(s, false);
     s->dirty = true; s->contentHash = 0; s->watched = false; s->lastCheckedFrame = ~0ull;
-    ++g_surface_epoch; ++g_stat_tex_restores;
+    ++g_surface_epoch; ++g_stat_tex_restores;J3D_STRUCT
     rprof::add_texture_remake();
 }
 // Low memory (platform/memory_trim.h): every released-able texture not looked up within the last `idle` frames goes,
@@ -1628,6 +1649,7 @@ void texture_budget_step() {
             total / 1048576.0);
 }
 void upload_surface(Surface* s) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     if(!s)return;
     s->lastUsedFrame=R.frame;
     if(s->evicted)restore_evicted(s);
@@ -1650,6 +1672,9 @@ void upload_surface(Surface* s) {
         ranges[level]={base,uint32_t(std::min<uint64_t>(guest_info(s,level).surfSize,0x100000000ull-base))};
     }
     s->dataSize=ranges[0].second;
+#ifdef WWHD_DECOMP_FAST
+    if(drawoff::g_census)for(uint32_t level=0;level<levels;++level)drawoff::read(drawoff::kTexture,ranges[level].first,ranges[level].second);
+#endif
     bool full = s->dirty || !s->watched;
     if (wwatch::active()) {
         for(uint32_t level=0;level<levels&&!full;++level)full=wwatch::written_since(ranges[level].first,ranges[level].second,s->watchStamp);
@@ -1776,6 +1801,10 @@ void clear_color(const uint32_t*,uint32_t cb,const float rgba[4]) {
 }
 void clear_depth_stencil(const uint32_t*,uint32_t db,float depth,uint32_t stencil,uint32_t flags) {
     uint32_t first,num;auto* s=surface_from_depth_buffer(db,&first,&num);if(!s)return;
+#ifdef WWHD_NATIVE_DRAW
+    // shadow-slice instancing (native_draw/j3d_desc_depth_inst.h): a clear of a collected layer draws them first
+    if(::native_draw::j3ddesc::depth::g_instPending)::native_draw::j3ddesc::depth::inst_before_clear(s,first,num);
+#endif
     VkImageAspectFlags aspects=0;if(flags&1)aspects|=VK_IMAGE_ASPECT_DEPTH_BIT;if((flags&2)&&s->fmt.stencil)aspects|=VK_IMAGE_ASPECT_STENCIL_BIT;
     if(!aspects)return;
     // 60 fps (generated, reproj.cpp): a second 3D pass of the frame keeps the first one's depth (only while on)
@@ -1867,6 +1896,7 @@ void write_back_linear_targets() {
     rprof::add_write_back(std::max<uint64_t>(1,rprof::now_ns()-t0-readNs),count,bytesDone,readNs);
 }
 void copy_surface_impl(uint32_t srcAddr,uint32_t srcMip,uint32_t srcSlice,uint32_t dstAddr,uint32_t dstMip,uint32_t dstSlice) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     auto* s=reinterpret_cast<GX2Surface*>(mem::ptr(srcAddr));auto* d=reinterpret_cast<GX2Surface*>(mem::ptr(dstAddr));
     if(srcMip>=uint32_t(s->numLevels)||dstMip>=uint32_t(d->numLevels))exception_report::raise("GX2CopySurface mip is out of range");
     uint32_t sbase=level_address(s,srcMip),dbase=level_address(d,dstMip);
@@ -1958,12 +1988,13 @@ void copy_surface_impl(uint32_t srcAddr,uint32_t srcMip,uint32_t srcSlice,uint32
         memcpy(mem::ptr(dbase+offset),rows.data()+(size_t(y)*bw+x)*sf.bytesPerBlock,sf.bytesPerBlock);
     }
     for(auto& [address,image]:stereo_copy_cache(dbase,dw,dh,d->depth))if(address==dbase){image->gpuWritten=false;image->dirty=true;image->lastCheckedFrame=~0ull;}
-    ++g_surface_epoch;
+    ++g_surface_epoch;J3D_STRUCT
 }
 void copy_surface(uint32_t src,uint32_t srcMip,uint32_t srcSlice,uint32_t dst,uint32_t dstMip,uint32_t dstSlice) {
     copy_surface_impl(src,srcMip,srcSlice,dst,dstMip,dstSlice);
 }
 void invalidate(uint32_t flags,uint32_t addr,uint32_t size) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     ++g_stat_invalidates; // once per guest invalidate; the stereo eye cache is a second pass of the same one
     buffer_cache_guest_invalidate(flags,addr,size);
     invalidate_surface_cache(R.surfaces,flags,addr,size);
@@ -2030,6 +2061,7 @@ static void invalidation_footprint(Surface* s,uint32_t base,uint64_t& lo,uint64_
 uint64_t g_surface_set_gen=0;
 void invalidate_surface_cache(decltype(Renderer::surfaces)& surfaces,
                               uint32_t flags,uint32_t addr,uint32_t size) {
+  draw_locks::Guard locked(draw_locks::kSurfaces);  // (draw threads: a shared cache)
     if(!(flags&2)||size>=0x10000000)return;
     uint64_t end=uint64_t(addr)+size;
     auto mark=[](Surface* s){s->dirty=true;s->lastCheckedFrame=~0ull;++g_stat_invalidated_surfaces;};
@@ -2081,7 +2113,7 @@ void ss_reset_surfaces() {
     gamepad_backdrop_reset();
     R.mainDepthAddr = 0;
     bgshaders::tracker().forget();
-    ++g_surface_epoch;
+    ++g_surface_epoch;J3D_STRUCT
     reset_ao_private_cache();
     for(auto& [addr,s]:R.surfaces){s->guestLayout.reset();s->dirty=true;s->lastCheckedFrame=~0ull;}
 }

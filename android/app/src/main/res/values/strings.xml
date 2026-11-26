@@ -1,5 +1,4 @@
 <resources>
-    <string name="touch_tap_to_start">Tap to start</string>
     <string name="app_name">Wind Waker HD</string>
     <string name="game_setup">Game setup</string>
     <string name="game_widget">The game, with its own icon</string>
@@ -126,6 +125,13 @@
     <string name="setup_code_mods">Code mods</string>
     <string name="setup_code_mods_detail">Lets you turn on code mods (for example the story quests) in Settings › Mods. The game code is built again with mod support, which takes about as long as the first setup, and the game runs a little slower. You can keep playing the current build meanwhile.</string>
     <string name="game_icon_unsupported">This launcher cannot add app icons.</string>
+    <string name="setup_version_title">Which version of the game to build:</string>
+    <string name="setup_recomp">Recompiled version (default)</string>
+    <string name="setup_recomp_detail">The original game code from your copy, translated and compiled on this device: the recommended way to play, and the fastest setup.</string>
+    <string name="setup_decomp">Decomp version (experimental)</string>
+    <string name="setup_decomp_detail">Rebuilt from the public decompilation\'s source (ZeldaWWHDDecomp/wwhd): the decompiled game functions run as compiled source instead of translated code, in its fast mode. Experimental. It follows your Code mods choice. Setup takes much longer (an hour or more on a phone), downloads the decompilation\'s source (about 17 MB) from GitHub and needs about 4 GB of free space while it builds. Randomized games play in the recompiled version only. Only the chosen version is built; if the build fails, the game built before stays.</string>
+    <string name="setup_decomp_start">Start the decomp version instead</string>
+    <string name="setup_decomp_building">Building the decomp version…</string>
     <string name="setup_models">Prepare model shaders (recommended)</string>
     <string name="setup_models_detail">Far fewer stutters the first time you see a place. Takes about 40 minutes after setup on a recent phone, behind a progress screen; keep the screen on. Untick to skip it; Cancel keeps what was prepared (tick again to continue).</string>
     <string name="setup_models_running">Preparing shaders: models</string>

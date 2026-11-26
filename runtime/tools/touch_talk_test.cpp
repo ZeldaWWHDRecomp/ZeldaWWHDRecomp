@@ -98,6 +98,23 @@ int main() {
     assert(tv_pointer::picture_takes_click(true, false) && !tv_pointer::picture_takes_click(true, true));
     assert(tv_pointer::gamepad_takes_click(false, true) && tv_pointer::gamepad_takes_click(true, false));
     assert(!tv_pointer::gamepad_takes_click(true, true));
+    // issue #514: a left click on the GamePad picture. Two screens (picture-in-picture): a touch there, the TV
+    // picture's elsewhere, whatever the game shows. One screen's Off-TV Play (the whole window is the GamePad
+    // picture): with the mouse camera, in play the click goes on to its capture, in a game menu it is a touch;
+    // without the mouse camera always a touch, as before
+    using tv_pointer::gamepad_picture_touch;  // (on the GamePad picture, One screen Off-TV, game menu, mouse camera)
+    for (bool menu : {false, true})
+        for (bool camera : {false, true}) {
+            assert(gamepad_picture_touch(true, false, menu, camera));    // One screen off: unchanged
+            assert(!gamepad_picture_touch(false, false, menu, camera));
+            assert(!gamepad_picture_touch(false, true, menu, camera));   // (never off the picture)
+        }
+    assert(!gamepad_picture_touch(true, true, false, true));  // One screen + mouse camera + play: the capture's
+    assert(gamepad_picture_touch(true, true, true, true));    // ... + a game menu: the game's touch screen
+    assert(gamepad_picture_touch(true, true, false, false) && gamepad_picture_touch(true, true, true, false));  // no camera
+    // a left button bound to a game button keeps winning: with the mouse camera an uncaptured click in play captures
+    // (above), a captured one is the bound button before the picture is asked (gamepad_takes_click)
+    assert(tv_pointer::picture_takes_click(true, true) == false && !tv_pointer::gamepad_takes_click(true, true));
 
     // ---- claims
     {
@@ -461,6 +478,47 @@ int main() {
         v = g.run(q, 12);
         assert(count_press(v, kBtnA) == 0);
     }
+    // ---- the game over's question as the game runs it: dGameover_c sets dMenu_flag while it asks (kMenu), in a
+    // stage (kInGame), and the phone check saw no claim (the menu rule came first). The question wins, whether
+    // a game menu would show on the TV (Pro Controller) or not; and Link isn't the player there
+    {
+        PlayContext q;
+        q.flags = kInGame | kMenu | kQuestion;
+        q.question_shown = 3;
+        q.question_x[0] = -250, q.question_y[0] = -170, q.question_x[1] = 250, q.question_y[1] = -170;
+        q.question_scale[0] = 1000, q.question_scale[1] = 1100;  // the cursor on the right one ("Save" / "Continue")
+        Options o;
+        for (bool tv : {false, true}) {
+            assert(claims(q, o, tv) && mode_of(q, tv) == kModeQuestion);
+            // a tap on the left one ("Cancel" / "To Title Screen"): the stick left, then A
+            Driver d;
+            d.in.menu_on_tv = tv;
+            d.down(-250, -170);
+            d.read(q);
+            d.up(-250, -170);
+            std::vector<Out> v = d.run(q, 16);
+            assert(count_stick(v, -1, 0) == 1 && count_stick(v, 1, 0) == 0 && count_press(v, kBtnA) == 1 && count_press(v, kBtnL) == 0);
+            // a tap on the right one: A only
+            Driver e;
+            e.in.menu_on_tv = tv;
+            e.down(250, -170);
+            e.read(q);
+            e.up(250, -170);
+            v = e.run(q, 12);
+            assert(count_press(v, kBtnA) == 1 && count_stick(v, -1, 0) == 0 && count_stick(v, 1, 0) == 0);
+        }
+        // the buttons gone (the window closes; the menu flag alone): the menu rules again
+        q.question_shown = 0;
+        assert(mode_of(q, false) == kModeNone && !claims(q, o, false) && mode_of(q, true) == kModeMenu);
+        // with touch off nothing is claimed
+        o.touch = false;
+        q.question_shown = 3;
+        assert(!claims(q, o, false));
+        // no Quest Log (title screen, file select): never the question's
+        q.flags = kMenu | kQuestion;
+        o.touch = true;
+        assert(mode_of(q, false) == kModeNone && !claims(q, o, true));
+    }
     // ---- a letter / stone tablet / sign: its scroll window is the message window, so a tap goes on (A)
     {
         PlayContext letter;
@@ -472,6 +530,31 @@ int main() {
         d.read(letter);
         d.up(0, 0);
         assert(count_press(d.run(letter, 8), kBtnA) == 1);
+    }
+    // ---- the telescope: HD keeps a message status there all the time (the scope's own state, 11 SCOPE_ACTIVE, in
+    // dComIfGp_getMesgStatus too; measured at sea with the Mac build), and Aryll's lines show in it. A finger
+    // there looks around and zooms (the touch controls' sticks / swipe), never the talk's; in an event it is the talk's
+    {
+        Options o;
+        PlayContext scope = play();
+        scope.player_status0 = kSt0Telescope;
+        scope.flags = kInGame | kLink | kMessage | kZoomBar;  // as the game had it (no kInPlay: a message status)
+        scope.mesg_status = scope.scope_mesg_status = 11;
+        assert(talking(scope) && scope_look(scope));
+        assert(mode_of(scope, false) == kModeNone && !claims(scope, o, false));
+        PlayContext text = scope;  // her line waits for A: the key icon and the message window show
+        text.flags |= kKeyIcon | kMsgWindow;
+        text.mesg_status = text.scope_mesg_status = 10;
+        assert(!claims(text, o, false));
+        PlayContext event = scope;
+        event.flags |= kEvent;
+        assert(!scope_look(event) && claims(event, o, false) && mode_of(event, false) == kModeTalk);
+        // the Picto Box: only the scope's status (0/11), no talk anyway
+        PlayContext picto = play();
+        picto.player_status1 = kSt1PictoAim;
+        picto.flags |= kMessage | kPictoFinder | kZoomBar;
+        picto.scope_mesg_status = 11;
+        assert(!talking(picto) && !claims(picto, o, false));
     }
     printf("touch_talk_test: ok\n");
     return 0;

@@ -265,6 +265,8 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
         check()
         progress('Getting the compiler')
         tc = setup.get_toolchain(ctx.manifest['toolchain'], ctx.data_dir, setup.UI(False))
+        if decomp_only(setup, data):
+            return rebuild_decomp_only(setup, ctx, tc, hooks, progress, status_file, started)
         version = setup.run_logged(tc.cc + ['--version'], env=tc.env, what='checking the compiler')
         key = fingerprint(setup.PKG, ctx.manifest, ctx.game_dir, [tc.cc, version], hooks)
         cache = data / 'code-builds' / cache_name(key)
@@ -287,7 +289,7 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
             work.mkdir(parents=True)
             make_build_space(setup, data)
             progress('Translating game code')
-            setup.recompile(ctx.game_dir, str(work / 'gen'), hooks=hooks)
+            setup.recompile(ctx.game_dir, str(work / 'gen'), hooks=hooks, cache_root=ctx.data_dir)
             check()
             progress('Compiling game code')
             objs = setup.compile_gamecode(tc, ctx.manifest, str(work / 'gen'), str(work / 'obj'),
@@ -305,7 +307,7 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
                 (target.parent / 'portable.txt').write_text('')
             with target.open('rb') as f:
                 digest = file_sha256(f)
-            record = {'fingerprint': key, 'hooks': bool(hooks), 'sha256': digest,
+            record = {'fingerprint': key, 'hooks': bool(hooks), 'sha256': digest, 'release': ctx.manifest.get('version'),
                       'gamecode_objects': file_hashes(objs),
                       'generated': file_hashes(sorted(p for p in (work / 'gen').rglob('*') if p.is_file()), work / 'gen')}
 
@@ -323,10 +325,12 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
             os.replace(setup.longpath(work), setup.longpath(cache))
             work = None
         check()
+        decomp = rebuild_decomp(setup, ctx, tc, hooks, progress)
         result = {'state': 'ready', 'hooks': bool(hooks), 'fingerprint': key,
                   'exe': str(exe.resolve()), 'cached': cached,
                   'seconds': round(time.monotonic() - started, 2),
                   'user_dir': str((data / 'user').resolve()) if setup.PORTABLE else ''}
+        result.update(decomp)
         if status_file:
             atomic_json(status_file, result)
         # Selection is the last fallible write: a reporting error must not switch
@@ -341,6 +345,64 @@ def rebuild(setup, ctx, hooks, status_file=None, cancel_file=None):
         if work:
             shutil.rmtree(setup.longpath(work), ignore_errors=True)
         lock.close()
+
+
+def decomp_only(setup, data):
+    """the install has only the decomp version (setup's choice, install.json game_version "decomp")"""
+    try:
+        return hasattr(setup, 'installed_version') and setup.installed_version(setup.read_state(str(data))) == 'decomp'
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def rebuild_decomp_only(setup, ctx, tc, hooks, progress, status_file, started):
+    """An install with only the decomp version: a code-mod switch rebuilds that game alone (no recompiled variant is
+    built). Its failure is the rebuild's failure (SetupError: the game built before stays as it is). The result has
+    "decomp": "ready" (the decomp version's Settings > Mods restart reads it); code-mods-active.json gets the choice."""
+    outcome = rebuild_decomp(setup, ctx, tc, hooks, progress)
+    if 'decomp_error' in outcome:
+        raise setup.SetupError('The decomp version could not be rebuilt: %s' % outcome['decomp_error'])
+    state = setup.read_state(str(ctx.data_dir))
+    result = {'state': 'ready', 'hooks': bool(hooks), 'exe': state.get('exe', ''), 'cached': False,
+              'seconds': round(time.monotonic() - started, 2), 'game_version': 'decomp'}
+    result.update(outcome)
+    if status_file:
+        atomic_json(status_file, result)
+    atomic_json(Path(ctx.data_dir) / 'code-mods-active.json',
+                {'state': 'ready', 'hooks': bool(hooks), 'game_version': 'decomp'})
+    return result
+
+
+def rebuild_decomp(setup, ctx, tc, hooks, progress):
+    """A code-mod switch rebuilds the install's decomp version too (decomp_setup.build with the new choice), after the
+    normal game's variant. Returns what the result JSON gets: {"decomp": "ready"} or {"decomp_error": "<one line>"}
+    (the decomp version's Settings > Mods restart reads them), or {} when the install has no decomp version. A failure
+    never fails the normal game's rebuild; install.json then says the decomp version is stale."""
+    import decomp_setup
+    data = str(ctx.data_dir)
+    state = setup.read_state(data)
+    if not state.get('decomp_exe') or not os.path.isfile(state['decomp_exe']):
+        return {}
+    progress('Building the decomp version')
+    try:
+        exe, rev, _, info = decomp_setup.build(setup, ctx, tc, ctx.args.jobs or setup.default_jobs(),
+                                               mode=state.get('decomp_mode') or 'plain', code_mods=bool(hooks))
+        if hasattr(setup, 'installed_version') and setup.installed_version(state) == 'decomp':
+            # only the decomp version: it is the install's game ("exe"; in the app on a Mac, made again here)
+            exe = setup.place_decomp_game(ctx, state, exe)
+            state['exe'] = exe
+        state.update(decomp_exe=exe, decomp_revision=rev, decomp_code_mods=info['code_mods'])
+        for k in ('decomp_error', 'decomp_stale'):
+            state.pop(k, None)
+        outcome = {'decomp': 'ready'}
+    except Exception as e:  # (SetupError and anything else: the normal game's variant is ready regardless)
+        message = (str(e).splitlines() or [e.__class__.__name__])[0][:300]
+        setup.LOG.write('decomp version not rebuilt: %s' % e)
+        decomp_setup.code_mods_changed(state, hooks)
+        state['decomp_error'] = message
+        outcome = {'decomp_error': message}
+    setup.write_state(data, state)
+    return outcome
 
 
 def remember_installed(setup, ctx, tc, hooks, exe, gen, objs):
@@ -359,7 +421,9 @@ def remember_installed(setup, ctx, tc, hooks, exe, gen, objs):
         shutil.rmtree(setup.longpath(stage), ignore_errors=True)
         (stage / 'bin').mkdir(parents=True)
         source = Path(exe)
-        shutil.copy2(source, stage / 'bin' / ctx.manifest['exe'])
+        # a copy-on-write clone where the file system has them (build_cache.copy_tree): no second 70 MB
+        import build_cache
+        build_cache.copy_tree(source, stage / 'bin' / ctx.manifest['exe'])
         for name in ctx.manifest.get('runtime_files', []):
             shutil.copy2(source.parent / name, stage / 'bin' / name)
         if setup.PORTABLE:
@@ -367,7 +431,7 @@ def remember_installed(setup, ctx, tc, hooks, exe, gen, objs):
         with source.open('rb') as stream:
             digest = file_sha256(stream)
         atomic_json(stage / 'ready.json', {
-            'fingerprint': key, 'hooks': bool(hooks), 'sha256': digest,
+            'fingerprint': key, 'hooks': bool(hooks), 'sha256': digest, 'release': ctx.manifest.get('version'),
             'gamecode_objects': file_hashes(objs),
             'generated': file_hashes(sorted(p for p in Path(gen).rglob('*') if p.is_file()), Path(gen))})
         cache.parent.mkdir(parents=True, exist_ok=True)

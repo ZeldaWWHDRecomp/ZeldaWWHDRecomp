@@ -399,6 +399,111 @@ class Import(Base):
         self.assertEqual(rs.load(self.data)["playing"], entry["id"])
 
 
+class FromTheGame(Base):
+    """the game's Settings > Randomizer runs setup --randomize / --import-seed with --code-mods-status (randomizer_job.cpp)
+    and follows that file: progress, then ready with the seed, or the error"""
+
+    def args(self, **k):
+        root = Path(self.tmp.name)
+        a = dict(list_seeds=False, code_mods="1", delete_seed=None, yes=True, randomize=False, play_seed=None,
+                 import_seed=None, rando_no_build=False, rando_preset=None, rando_permalink=None, rando_settings=None,
+                 rando_seed=None, rando_new_seed=False, code_mods_status=str(root / "status.json"),
+                 code_mods_cancel=str(root / "cancel"))
+        a.update(k)
+        return SimpleNamespace(**a)
+
+    def run_setup(self, args, rebuild=None):
+        ctx = SimpleNamespace(**vars(self.ctx), installed=lambda: True, state=lambda: {"code_mods": False})
+        seen, built = [], []
+        status = Path(args.code_mods_status)
+
+        def default(setup_, c, hooks, status_file=None, cancel_file=None):
+            seen.append(json.loads(status.read_text()))  # what the game sees while the seed is made, before the build
+            built.append((c.game_dir, hooks, status_file, cancel_file))
+            result = {"state": "ready", "hooks": hooks, "fingerprint": "f" * 64, "exe": "/x/wwhd", "cached": False,
+                      "seconds": 3}
+            Path(status_file).write_text(json.dumps(result))
+            return result
+        with mock.patch("code_mods.rebuild", side_effect=rebuild or default), mock.patch.object(setup, "say"):
+            try:
+                setup.run_randomizer(args, ctx)
+                error = None
+            except setup.SetupError as e:
+                error = str(e)
+        return json.loads(status.read_text()), seen, built, error
+
+    def test_new_game_reports_progress_and_the_seed(self):
+        final, seen, built, error = self.run_setup(self.args(randomize=True, rando_preset="everything", rando_seed="Delta"))
+        self.assertIsNone(error)
+        self.assertEqual(seen, [{"state": "building", "stage": "Making the randomized game (TWWHD Randomizer)",
+                                 "done": 0, "total": 0}])
+        entry = rs.load(self.data)["seeds"][0]
+        self.assertEqual((final["state"], final["seed"], final["hash"], final["imported"]), ("ready", entry["id"], "Hash Delta", False))
+        self.assertEqual(final["exe"], "/x/wwhd")  # (code_mods.rebuild's own result: the build selected for the next start)
+        root = Path(self.tmp.name)
+        self.assertEqual(built, [(str(rs.seed_dir(self.data, entry["id"]) / "out"), True, str(root / "status.json"), str(root / "cancel"))])
+        self.assertEqual(entry["permalink"], "LINK-everything-Delta")
+        self.assertEqual(rs.load(self.data)["playing"], entry["id"])
+
+    def test_new_random_seed_and_permalink(self):
+        final, _, _, _ = self.run_setup(self.args(randomize=True, rando_preset="beginner", rando_new_seed=True))
+        self.assertEqual(final["hash"], "Hash Random1")
+        final, _, _, _ = self.run_setup(self.args(randomize=True, rando_permalink="LINK-standard-Epsilon"))
+        self.assertEqual(final["hash"], "Hash Epsilon")
+
+    def test_refused_seed_reports_the_reason(self):
+        self.refuse = True
+        final, seen, built, error = self.run_setup(self.args(randomize=True, rando_preset="standard", rando_seed="Zeta"))
+        self.assertIn("not compatible", error)
+        self.assertEqual(final, {"state": "error", "message": error})
+        self.assertEqual((seen, built), ([], []))
+        self.assertEqual(rs.load(self.data)["seeds"], [])
+        final, _, _, error = self.run_setup(self.args(randomize=True, rando_permalink="RACE-x-y"))
+        self.assertEqual(final, {"state": "error", "message": error})
+        self.assertIn("Race-mode", error)
+
+    def test_cancel_before_the_build_keeps_the_game(self):
+        (self.data / "code-mods-active.json").write_text(json.dumps({"state": "ready", "hooks": False, "fingerprint": "fp0"}))
+        Path(self.tmp.name, "cancel").write_text("cancel")
+        final, _, built, error = self.run_setup(self.args(randomize=True, rando_preset="standard", rando_seed="Eta"))
+        self.assertEqual(final["state"], "error")
+        self.assertIn("Cancelled", final["message"])
+        self.assertEqual(built, [])
+        self.assertEqual(rs.load(self.data).get("playing", "vanilla"), "vanilla")
+        self.assertEqual(json.loads((self.data / "code-mods-active.json").read_text())["fingerprint"], "fp0")
+
+    def test_build_failure_reports_the_reason(self):
+        def broken(setup_, c, hooks, status_file=None, cancel_file=None):
+            raise setup.SetupError("Not enough space for rebuilding game code (2 GB needed); previous build retained")
+        final, _, _, error = self.run_setup(self.args(randomize=True, rando_preset="standard", rando_seed="Theta"), broken)
+        self.assertEqual(final, {"state": "error", "message": error})
+        self.assertIn("2 GB", error)
+
+    def test_import_reports_the_imported_seed(self):
+        out = self.official()
+        final, seen, _, error = self.run_setup(self.args(import_seed=str(out)))
+        self.assertIsNone(error)
+        self.assertEqual(seen[0]["stage"], "Importing the seed")
+        entry = rs.load(self.data)["seeds"][0]
+        self.assertEqual((final["state"], final["seed"], final["hash"], final["imported"]), ("ready", entry["id"], "", True))
+        final, _, _, error = self.run_setup(self.args(import_seed=str(self.game)))
+        self.assertEqual(final, {"state": "error", "message": error})
+        self.assertIn("not a randomized game", error)
+
+    def test_the_game_s_command_line_is_accepted(self):
+        """the options the game passes (randomizer_job.cpp) parse as the CLI the tests above stand in for"""
+        seen = {}
+        with mock.patch.object(setup, "run", side_effect=lambda args, ui: seen.setdefault("a", args) and 0), \
+             mock.patch.object(setup.sys, "argv", ["setup.py", "--data-dir", "/d", "--randomize", "--rando-preset", "beginner",
+                                                   "--rando-new-seed", "--code-mods", "0", "--yes", "--code-mods-status",
+                                                   "/d/randomizer-status.json", "--code-mods-cancel", "/d/randomizer-cancel",
+                                                   "--jobs", "4"]):
+            setup.main()
+        a = seen["a"]
+        self.assertTrue(a.randomize and a.rando_new_seed and a.yes)
+        self.assertEqual((a.rando_preset, a.code_mods, a.code_mods_status, a.jobs), ("beginner", "0", "/d/randomizer-status.json", 4))
+
+
 class Trim(unittest.TestCase):
     def test_trim_keeps_identity_files(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -24,6 +24,7 @@
 #include "../audio_out.h"
 #include "../audio_channels.h"
 #include "../dsp_overload_guard.h"
+#include "../remote_pad/remote_pad.h"
 #include "../runtime.h"
 
 namespace interp { const char* phase_name(); }
@@ -560,7 +561,12 @@ void output_frame(Cpu* c) {
             input[i] = (int32_t)std::clamp(g_gamepad_only[ch][i], -2147483648.0f, 2147483520.0f);
         upsample(input, pad_lr[ch], g_gamepad_only_hist[ch], 8);
     }
-    const float pad_gain = g_output.play_gamepad_only && audio::gamepad_sounds() ? audio::gamepad_sounds_volume() : 0.f;
+    // the iPhone GamePad's speaker (remote_pad.h): the GamePad mix goes to the phone, and the host plays
+    // the TV mix alone, as a Wii U does (GamePad-only sounds and Off-TV Play from the GamePad)
+    const bool remote_speaker = remote_pad::audio_wanted();
+    if (remote_speaker) remote_pad::send_audio(drc_lr[0], drc_lr[1], kSamples48);
+    const bool host_drc = g_output.play_drc && !remote_speaker;
+    const float pad_gain = !remote_speaker && g_output.play_gamepad_only && audio::gamepad_sounds() ? audio::gamepad_sounds_volume() : 0.f;
     static const bool trace_pad = getenv("WWHD_AX_GAMEPAD_TRACE") != nullptr;
     static uint64_t output_block = 0;
     if (trace_pad) {
@@ -578,7 +584,9 @@ void output_frame(Cpu* c) {
     int16_t pcm[kSamples48 * kTvChannels];
     if (channels == 2) {
         // Preserve the original stereo path, including its rounding and fader rules.
-        g_output.mix(tv_lr[0], tv_lr[1], drc_lr[0], drc_lr[1], kSamples48, lr[0], lr[1]);
+        static const int32_t silent[kSamples48] = {};
+        g_output.mix(tv_lr[0], tv_lr[1], remote_speaker ? silent : drc_lr[0], remote_speaker ? silent : drc_lr[1], kSamples48,
+                     lr[0], lr[1]);
         for (int i = 0; i < kSamples48; ++i)
             for (int ch = 0; ch < 2; ++ch)
                 pcm[i * 2 + ch] = int16_t(std::clamp<int64_t>(int64_t(lr[ch][i]) + int64_t(pad_lr[ch][i] * pad_gain), -32768, 32767));
@@ -590,8 +598,8 @@ void output_frame(Cpu* c) {
             for (int ch = 0; ch < kTvChannels; ++ch)
                 pcm[i * kTvChannels + ch] =
                     audio::tv_sample(ax, ch, g_output.play_tv,
-                                     ch < 2 ? (g_output.play_drc ? drc_lr[ch][i] : 0) + int32_t(pad_lr[ch][i] * pad_gain) : 0,
-                                     g_output.play_drc || pad_gain > 0);
+                                     ch < 2 ? (host_drc ? drc_lr[ch][i] : 0) + int32_t(pad_lr[ch][i] * pad_gain) : 0,
+                                     host_drc || pad_gain > 0);
         }
     }
     audio::push(pcm, kSamples48);

@@ -105,6 +105,10 @@ void peek_z(const uint32_t* cells, uint32_t n) {
         answerOnce(cmd.status == MTLCommandBufferStatusCompleted);
     } else if (depth_peek::synchronous()) {
         flush();
+        // peek_retire runs only while the game waits for an answer, which it rarely does (the
+        // completion handler usually answers first): without this, every peeked frame's command
+        // buffer and staging buffer stayed alive for the rest of the session
+        std::erase_if(g_pending_peeks, [](const PendingPeek& p) { return p.cmd.status >= MTLCommandBufferStatusCompleted; });
         g_pending_peeks.push_back({cmd, answerOnce});
     }
 }

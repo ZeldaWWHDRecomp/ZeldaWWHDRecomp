@@ -18,6 +18,7 @@
 #include "backends/imgui_impl_sdlrenderer3.h"
 #include <SDL3/SDL.h>
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -76,6 +77,14 @@ struct Ui {
         ImGui::NewFrame();
         draw();
         ImGui::Render();
+        // the font atlas still goes to the renderer each frame; the pixels are drawn only for a picture
+        // (save), as the software renderer spends minutes on them over a run
+        if (ImVector<ImTextureData*>* textures = ImGui::GetDrawData()->Textures)
+            for (ImTextureData* tex : *textures)
+                if (tex->Status != ImTextureStatus_OK) ImGui_ImplSDLRenderer3_UpdateTexture(tex);
+    }
+    // the latest frame's pixels into the surface
+    void draw_pixels() {
         SDL_SetRenderDrawColor(renderer, 20, 23, 29, 255);
         SDL_RenderClear(renderer);
         ImGui_ImplSDLRenderer3_RenderDrawData(ImGui::GetDrawData(), renderer);
@@ -83,6 +92,7 @@ struct Ui {
     }
     void save(const char* dir, const std::string& what) {
         if (!dir) return;
+        draw_pixels();
         std::filesystem::create_directories(dir);
         assert(SDL_SaveBMP(surface, (std::filesystem::path(dir) / (std::string(c.name) + "-" + what + ".bmp")).string().c_str()));
     }
@@ -333,6 +343,28 @@ void flows(const Case& c, const char* dir) {
         f.click("Next");
         f.click("Next");  // Original: Try it
         assert(f.s.step == cs::Step::kTry);
+        f.click("Cancel");
+    }
+    // a controller with a trigger resting half-way and a drifting stick (the AYN Odin report): the jump
+    // button is still taken, and never the resting trigger or the drifting stick
+    {
+        Flow f(ui);
+        f.values[kPadLT] = 0.5f;
+        f.values[kPadLSDown] = 0.35f;
+        f.s.begin("odin", "Odin Controller", false);
+        f.frames(20);
+        f.click("Next");
+        f.click("Jump on any button, its use moved to L1");
+        f.click("Next");
+        assert(f.s.step == cs::Step::kJumpButton);
+        for (int i = 0; i < 60; ++i) {
+            f.values[kPadLSDown] = 0.35f + 0.1f * std::sin(i * 0.7f);
+            f.frames(1);
+        }
+        assert(f.s.step == cs::Step::kJumpButton);
+        f.press(kPadA);
+        assert(f.s.step == cs::Step::kTry && f.s.jump_pad == kPadA);
+        f.release(kPadA);
         f.click("Cancel");
     }
     std::printf("%-26s setup flows by touch and by controller\n", c.name);

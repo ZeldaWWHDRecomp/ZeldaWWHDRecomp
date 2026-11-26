@@ -154,6 +154,11 @@ static void test_flip_executed() {
     shift = 0;
     CHECK(flip_executed(kClock, shift, 40, kClock.time(40, 0) + 16 * kMs, 1) == 40);
     CHECK(flip_executed(kClock, shift, 40, kClock.time(40, 0) + 17 * kMs, 1) == 45 && shift > 0);
+    // keep (c2: one frame at the drawn rate more): 120 fps, 20 ms late keeps the grid, 26 ms moves it
+    shift = 0;
+    const int64_t frame120 = kClock.granule_ns(2);
+    CHECK(flip_executed(kClock, shift, 40, kClock.time(40, 0) + 20 * kMs, 2, frame120) == 40 && shift == 0);
+    CHECK(flip_executed(kClock, shift, 40, kClock.time(40, 0) + 26 * kMs, 2, frame120) == 48 && shift > 0);
 }
 
 

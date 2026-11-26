@@ -36,10 +36,11 @@ and `last.json`.
 Refused:
 - race-mode settings (no spoiler log). The official builds add a secret key to those seeds, so the same permalink would make a different game here.
 - plandomizer settings.
-- the Japanese release (the port has no Japanese build).
 
-The European release uses the fork's port of the randomizer's patches (`twwhd_rando/asm_eur`). Every patched word
-was checked against this port's own USA-to-EU address map (`tools/recomp/builds/eu.json`).
+The European and Japanese releases use the fork's port of the randomizer's patches (`twwhd_rando/asm_eur`,
+`asm_jpn`). `test_ported_patches.py` checks every patched word and relocation against the USA patches through this
+port's own address maps (`tools/recomp/builds/eu.json`, `jp.json`); the few sites in functions the Japanese build
+changed were compared by hand and are listed there.
 
 ## Spoiler map places
 

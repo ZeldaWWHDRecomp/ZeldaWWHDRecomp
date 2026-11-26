@@ -42,7 +42,7 @@ namespace F=story_native_wait_run_footprint;
 struct RunLife {std::shared_ptr<const story_native_scene_playback::Activation>activation;std::array<story_native_people_admission::Reference,2>references;std::weak_ptr<story_native_scene_playback::RunOwnerCell>owner;std::shared_ptr<const void>original_frontend_life;std::atomic<bool>alive{true};uint64_t last_restore_epoch=0,pending_epoch=0;bool restore_revoked=false;};
 uint32_t word(std::span<const uint8_t>b,unsigned p=0){return uint32_t(b[p])<<24|uint32_t(b[p+1])<<16|uint32_t(b[p+2])<<8|b[p+3];}
 bool overlap(uint32_t a,uint32_t n,uint32_t b,uint32_t m){return uint64_t(a)<uint64_t(b)+m&&uint64_t(b)<uint64_t(a)+n;}
-const story_native_camera_capture::Layout CameraLayout{GD(0x1046F0B0),GD(0x101D55F0),GD(0x101D5634),GD(0x101D5538),{GC(0x025021A4),GC(0x02502288),GC(0x024FFA3C),GC(0x0250235C),GC(0x024FFC40)},{GD(0x10049348),GD(0x10049350),GD(0x10044878),GD(0x1004487C)}};
+const story_native_camera_capture::Layout CameraLayout{GD(0x1046F0B0),GD(0x101D55F0),GD(0x101D5634),GD(0x101D5538),{GC(0x025021A4),GC(0x02502288),GC(0x024FFA3C),GC(0x0250235C),GC(0x024FFC40)},{GD(0x10049348),GD(0x10049350),GD(0x10044878),GD(0x1004487C)},GI(0x5AF8)};
 }
 struct SavedRunReceipt::Capture {
  // Original host preclaim provenance only. Its old game-thread ticket is
@@ -188,7 +188,7 @@ struct Context::Impl {
        unsigned(captured),args[0],args[1],args[2],c?c->r[4]:0,c?c->r[5]:0,c?c->r[6]:0,unsigned(name_read),unsigned(terminated),name_bytes,name.data());
    std::array<uint8_t,0x328>actor{};const uint32_t actor_at=args[1];
    const bool actor_read=actor_at>=mem::kMem2Start&&uint64_t(actor_at)+actor.size()<=mem::kMem2End&&backend.sources.read(actor_at,actor);
-   std::array<uint8_t,4>ship_word{},ship_pid{};const bool ship_global_read=backend.sources.read(GD(0x1046F0B0)+0x5B3C,ship_word);const uint32_t ship_at=word(ship_word);
+   std::array<uint8_t,4>ship_word{},ship_pid{};const bool ship_global_read=backend.sources.read(GD(0x1046F0B0)+GI(0x5B3C),ship_word);const uint32_t ship_at=word(ship_word);
    const bool ship_pid_read=ship_global_read&&ship_at>=mem::kMem2Start&&uint64_t(ship_at)+8<=mem::kMem2End&&backend.sources.read(ship_at+4,ship_pid);
    LOG("[native_wait] first fault actor r5=%08X read=%u pid=%08X class=%04X profile=%08X vtable=%08X phase=%u room=%u status=%08X ship_global=%08X/%08X global_read=%u pid_read=%u captured_ship=%08X/%08X captured_link=%08X/%08X",
        actor_at,unsigned(actor_read),word(actor,4),unsigned(uint16_t(actor[0xE])<<8|actor[0xF]),word(actor,0x10),word(actor,0xB4),unsigned(actor[0xC]),unsigned(actor[0x326]),word(actor,0x2E0),ship_at,word(ship_pid),unsigned(ship_global_read),unsigned(ship_pid_read),captured_ship,captured_ship_pid,backend.config.memory.link,backend.config.memory.link_pid);
@@ -318,7 +318,7 @@ struct Context::Impl {
   // immutable identity input to the separate typed retail proof, never a
   // generic actor-memory or lifetime authority.
   std::array<uint8_t,4>ship{},ship_pid{};
-  if(backend.sources.read(GD(0x1046F0B0)+0x5B3C,ship)){
+  if(backend.sources.read(GD(0x1046F0B0)+GI(0x5B3C),ship)){
    const uint32_t at=word(ship);
    if(!(at&3)&&at>=mem::kMem2Start&&uint64_t(at)+0x328<=mem::kMem2End&&backend.sources.read(at+4,ship_pid)&&word(ship_pid)&&word(ship_pid)!=~0u){captured_ship=at;captured_ship_pid=word(ship_pid);}
   }

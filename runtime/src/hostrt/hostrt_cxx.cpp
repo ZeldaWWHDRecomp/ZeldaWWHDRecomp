@@ -2,6 +2,7 @@
 // C++ runtime replacements: array construction. The calling protocol (which registers and stack words a
 // constructor sees, what is written where) was measured on the recompiled original with
 // tools/host_runtime/difftest (calltest.cpp checks it on every input class); it is stated here as facts.
+#include <cstdlib>
 #include <cstring>
 
 #include "guest_addr.h"
@@ -27,6 +28,34 @@ inline void restore_registers(Cpu* c, const Cpu& e) {
     c->xer_so = e.xer_so, c->xer_ov = e.xer_ov, c->xer_ca = e.xer_ca, c->xer_bc = e.xer_bc;
     memcpy(c->gqr, e.gqr, sizeof c->gqr);
 }
+
+#ifdef WWHD_DECOMP_FAST
+// fast mode: a constructor that is a decompiled function with a native entry taking only integer registers is called
+// as C++ (r3 = the element, the other integer registers 0, as the guest call passes them) when the code that called
+// the root is a decompiled body whose calls may go native (glue.cpp gabi_fast_native_ctx); WWHD_HOSTRT_FAST=0: never
+struct FastPtrEntry {  // runtime/src/decomp/decomp.h GabiPtrEntry
+    uint32_t addr, sig;
+    void* fn;
+};
+extern "C" const FastPtrEntry* g_decomp_ptr_tab;
+extern "C" uint32_t g_decomp_ptr_mask;
+extern "C" int gabi_fast_native_ctx(Cpu* c);
+using NativeCtor = void (*)(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t);
+inline NativeCtor native_ctor(Cpu* c, uint32_t fn) {
+    static const bool off = [] { const char* f = getenv("WWHD_HOSTRT_FAST"); return f && !strcmp(f, "0"); }();
+    const FastPtrEntry* t = g_decomp_ptr_tab;
+    if (off || !t) return nullptr;
+    const uint32_t m = g_decomp_ptr_mask;
+    for (uint32_t h = ((fn >> 2) * 0x9E3779B1u >> 7) & m;; h = (h + 1) & m) {  // gabi.h gabi_ptr_find
+        if (t[h].addr == fn) {
+            const uint32_t sig = t[h].sig, ni = sig & 15, nf = sig >> 4 & 15;
+            if (nf || ni < 1 || ni > 8 || !gabi_fast_native_ctx(c)) return nullptr;
+            return (NativeCtor)t[h].fn;
+        }
+        if (!t[h].addr) return nullptr;
+    }
+}
+#endif
 
 }  // namespace
 
@@ -89,6 +118,16 @@ bool array_new(Cpu* c, uint32_t p, uint32_t n, uint32_t size, uint32_t ctor, uin
     }
     if (ctor && n) {
         static const uint32_t ret = GC(0x028EFF60u);
+#ifdef WWHD_DECOMP_FAST
+        if (const NativeCtor nc = native_ctor(c, ctor)) {
+            frame();
+            st32(sp - 0x48 + 8, 0);
+            for (int k = 4; k <= 10; k++) c->r[k] = 0;
+            for (uint32_t i = 0; i < n; i++) nc(p + i * size, 0, 0, 0, 0, 0, 0, 0);
+            called = true;
+            n = 0;  // done
+        }
+#endif
         for (uint32_t i = 0; i < n; i++) {
             frame();
             st32(sp - 0x48 + 8, 0);

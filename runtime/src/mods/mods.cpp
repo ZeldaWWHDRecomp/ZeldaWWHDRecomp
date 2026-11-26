@@ -9,6 +9,7 @@
 //   WWHD_MOD_FAST_SCENES=1     fast scene changes
 //   WWHD_MOD_INSTANT_TEXT=1    instant text (instant_text.cpp)
 //   WWHD_MOD_NO_TEXT_PAUSES=1  no pauses in texts (instant_text.cpp)
+//   WWHD_MOD_CLASSIC_TACT=1    Classic Wind Waker: dive and dry storage (speedrun.cpp)
 //   WWHD_MODS_TRACE=path       log of mod decisions and timing events (door events, scene changes,
 //                              Link's control), one line per event with the logic step
 #include "mods.h"
@@ -328,7 +329,7 @@ void move_start_effect(Cpu* c, uint32_t link) {
     if (move_speed_land_factor() <= 1.f) { g_move_dust_pending = 0; return; }
     // Reuse the native one-shot land-smoke helper, which stops emission after one particle step.
     // Keep the ordinary foot emitters untouched. No dust in water, midair, lock-on or a demo.
-    const uint32_t play = GD(0x1046F0B0), manager = ld32(play + 0x5AB0);
+    const uint32_t play = GD(0x1046F0B0), manager = ld32(play + GI(0x5AB0));
     if (!manager || !move_speed() || ld32(link + 0x65F0) != kProcMove ||
         !(ld32(link + 0x834) & 0x20) || (ld32(link + 0x6A70) & (1u | 2u | 0x40000u)) ||
         ld32(link + 0x69D4) == 0x13 || ld16(link + 0x420) || ld8(play + 0x5292)) return;
@@ -372,7 +373,7 @@ void move_trail_effect(Cpu* c, uint32_t link) {
     if (!running || move_speed_land_factor() <= 1.f) { g_move_trail_step = 0; return; }
     if (++g_move_trail_step < 5) return;
     g_move_trail_step = 0;
-    const uint32_t play = GD(0x1046F0B0), manager = ld32(play + 0x5AB0);
+    const uint32_t play = GD(0x1046F0B0), manager = ld32(play + GI(0x5AB0));
     if (!manager || !move_speed() || !(ld32(link + 0x834) & 0x20) ||
         (ld32(link + 0x6A70) & (1u | 2u | 0x40000u)) ||
         ld32(link + 0x69D4) == 0x13 || ld16(link + 0x420) || ld8(play + 0x5292)) return;
@@ -404,7 +405,7 @@ void move_swim_effect(Cpu* c, uint32_t link) {
     if (!c || !link) return;
     const bool swimming = g_move_boosted.load(std::memory_order_relaxed) && ld32(link + 0x65F0) == kProcSwimMove;
     if (!swimming || move_speed_swim_factor() <= 1.f) { g_move_swirl_sign = 0; g_move_swim_trail_step = 0; return; }
-    const uint32_t play = GD(0x1046F0B0), manager = ld32(play + 0x5AB0);
+    const uint32_t play = GD(0x1046F0B0), manager = ld32(play + GI(0x5AB0));
     if (!manager || !move_speed() || !(ld32(link + 0x6A70) & 0x40000u) ||
         ld16(link + 0x420) || ld8(play + 0x5292)) return;
     const Cpu saved = *c;

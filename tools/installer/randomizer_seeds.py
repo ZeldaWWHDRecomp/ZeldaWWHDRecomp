@@ -171,10 +171,18 @@ def ensure_places(setup, data_dir, game_dir):
         return None
 
 
+def check_version(setup, ctx):
+    """an install with only the decomp version (setup's choice) has no recompiled version to build seeds with"""
+    if hasattr(setup, "check_randomizer_version") and hasattr(ctx, "state"):
+        setup.check_randomizer_version(ctx.state())
+
+
 def check_base(setup, ctx):
-    """the installed game a seed is made from: the USA release as it is, the regular (not decomp) release"""
+    """the installed game a seed is made from: the USA, European or Japanese release as it is, the regular (not decomp)
+    release"""
     if ctx.manifest.get("variant") == "decomp":
         raise setup.SetupError("Randomized games need the regular port release, not the decomp version.")
+    check_version(setup, ctx)
     if not setup.valid_game_folder(ctx.game_dir):
         raise setup.SetupError("No installed game: run setup with your game first, then make a randomized game.")
     if setup.game_folder_title(ctx.game_dir) == setup.RANDOMIZER_TITLE:
@@ -183,8 +191,9 @@ def check_base(setup, ctx):
                                "is (Change the game); the randomized game's saves stay, and importing the same output "
                                "folder again plays it with them.")
     build = setup.check_game_version(ctx.game_dir)
-    if build.name not in ("USA", "EU"):
-        raise setup.SetupError("Randomized games can be made from the USA and European releases (yours is the %s one)." % build.name)
+    if build.name not in ("USA", "EU", "JP"):
+        raise setup.SetupError("Randomized games can be made from the USA, European and Japanese releases (yours is the %s "
+                               "one)." % build.name)
     return build
 
 
@@ -361,6 +370,7 @@ def select(setup, ctx, which, hooks, status_file=None, cancel_file=None):
     """the game the next start plays: "vanilla" (the game as it is) or a seed; builds its game code when not cached"""
     import code_mods
     import copy
+    check_version(setup, ctx)
     c = copy.copy(ctx)
     if which != "vanilla":
         s = find(ctx.data_dir, which)

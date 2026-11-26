@@ -47,7 +47,7 @@ bool Collector::collect(Captured&out){
  if(!bytes(Play+0x5134,c.stage_name))return false;
  if(c.identity.stage!=i.stage||c.identity.room!=i.room||c.stage_name!=e.stage_name)return fail(Error::Stage);
  c.resource_generation_matches=true;
- if(!bytes(Play+0x5B34,scalar))return false;const uint32_t link=word(scalar);
+ if(!bytes(Play+GI(0x5B34),scalar))return false;const uint32_t link=word(scalar);
  std::array<uint8_t,0x328>link_bytes{};if(!bytes(link,link_bytes))return false;
  if(half(link_bytes,14)!=0xA8||!word(link_bytes,4)||word(link_bytes,4)==0xFFFFFFFFu||link_bytes[0x326]!=e.room_number)return fail(Error::Link);
  c.room_number=link_bytes[0x326];
@@ -68,7 +68,7 @@ bool Collector::collect(Captured&out){
   if(want.profile!=0x175||want.subtype!=1||a.pid!=want.pid||a.profile!=0x175||a.subtype!=1||a.token!=want.token||word(actor,0x10)!=PeopleProfile||word(actor,0xB0)!=0x00FF0000||actor[0x905]!=1||actor[0x326]!=e.room_number||half(actor,0xF8)!=0||!actor_(a,i))return fail(Error::Actor);
   c.actors[n]=a;
  }
- if(!bytes(Play+0x5AF8,scalar))return false;const uint32_t process=word(scalar);
+ if(!bytes(Play+GI(0x5AF8),scalar))return false;const uint32_t process=word(scalar);
  if(!span(process,0xB28,false)||uint64_t(process)+0x248!=e.camera.address)return fail(Error::Camera);
  std::array<uint8_t,0xB28>camera{};if(!bytes(process,camera))return false;
  const uint32_t profile=word(camera,0x10);const uint16_t name=half(camera,14);

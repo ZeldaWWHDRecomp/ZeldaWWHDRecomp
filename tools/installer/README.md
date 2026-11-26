@@ -52,16 +52,59 @@ no-op without the marker).
 | file | what |
 |---|---|
 | `setup.py` | all of the installation logic (Python 3.8+, standard library only) |
-| `decomp_setup.py` | the optional decomp version (macOS development builds; [docs/decomp-build.md](../../docs/decomp-build.md)) |
+| `decomp_setup.py` | the optional decomp version (macOS, Linux, Windows; fast mode by default, `--decomp-plain` the plain decomp build; [docs/decomp-build.md](../../docs/decomp-build.md)) |
+| `decomp_platform.py` | the decomp version's per-OS parts: unit isolation on Linux (zig `ld.lld -r` + `tools/decomp_build/elf_localize.py`) and Windows (`unit_ir.py --libllvm`), capstone pins, the Windows path limit |
 | `toolchains.json` | pinned compilers and Python downloads (URL + SHA-256); CI builds with the same ones |
 | `gui/setup_gui.cpp` | **Wind Waker HD**, the program a release starts: first-start setup, then the game launcher (SDL3 + Dear ImGui) |
 | `install-macos.command` | setup in Terminal, macOS (shipped as `tools/Setup in Terminal.command`) |
 | `install-windows.bat` | setup in a console window, Windows (`tools/Setup in a console window.bat`): runs `Wind Waker HD.exe --console-setup`, which runs `setup.py` in that console with the bundled Python (`tools/python`) |
 | `install-linux.sh` | setup in a terminal, Linux (`tools/setup-in-terminal.sh`; falls back to a pinned standalone Python) |
+| `build_cache.py` | kept translations (`data/code-translations`) and copy-on-write copies (updates, below) |
+| `release_update.py` | updating from an earlier release folder (below) |
 | `test_setup.py` | unit tests of the helpers (`python3 tools/installer/test_setup.py`) |
+| `test_release_update.py` | unit tests of the update pieces |
 
 In a release folder the program is `Wind Waker HD.app` (macOS), `Wind Waker HD.exe` (Windows) or
 `wind-waker-hd` plus `Wind Waker HD.desktop` (Linux); the terminal setup in `tools/` is the fallback.
+
+## Updating to a new release
+
+A new release keeps everything the player has and builds only what changed.
+
+- **What is reused.** The translated game code is kept by its inputs in `data/code-translations/`
+  (`build_cache.py`: the game's code, the shipped translator, its arguments; two kept, compressed): an
+  update whose translator is unchanged translates nothing. Compiled objects are kept in
+  `data/code-objects/` by their preprocessed source, flags and compiler (`object_cache.py`; the release
+  folder's own path does not count), so a changed translator or runtime header recompiles only the files
+  whose text changed. Shaders: the prepared generation is keyed by the renderer's identity
+  (`cmake/pipeline_identity_inputs.txt`), not by the game binary, so an update that leaves the renderer
+  as it was keeps it as it is; when only the renderer changed, the head start is reused and only the
+  pipelines are compiled again (the driver's own caches keep what still matches).
+  macOS: the last step compiles every shader a launch replays ahead of time into the generation, where
+  the game takes them instead of compiling (and keeps no shader text). With Xcode 26 or newer (its Metal
+  toolchain is downloaded once if missing), one more Metal warm writes every shader's source
+  (`WWHD_SHADERLIB_SOURCES`), compiled by `shader_library.py` into `shaders.metallib` with Xcode's Metal
+  compiler. The manifest records it (`library`: `ready`, `unavailable` without Xcode 26, `failed`,
+  `skipped`); without it, shaders compile during play as before. A `shaders.metallib` built into an
+  Apple TV or iPhone app contains shaders made from the game: such a build is for your own devices and
+  must not be distributed.
+- **Staged.** The new game is linked into `data/bin.staging`, started once (`wwhd --build-identity`) and
+  only then swapped in. The game before it stays as `data/bin.previous` (one previous build; an older
+  one goes once the new build has passed its check). An interruption leaves the game before it in
+  place; one between the two renames is finished at the next start.
+- **From an earlier release folder.** The Welcome screen of a new release that has nothing prepared
+  offers *Update from <version>* when an earlier release folder with a prepared game is next to it (or
+  one the player chooses). The game is built from that folder's game files and caches first; then its
+  data comes over: game files, saves, settings, controls, mods, randomized games, shader caches, the
+  compiler and the caches. Where the drive has copy-on-write clones (APFS on macOS, Btrfs or XFS on
+  Linux) everything is cloned, which takes no extra space, and the earlier release keeps working on its
+  own copy. Elsewhere (NTFS, ext4) it is moved; the screen says before the player confirms that the
+  earlier release will not start the game afterwards, its game is kept as `data/bin.previous` and a
+  `DATA-MOVED.txt` in its folder says where the data went. The transfer is journaled
+  (`data/update-from.json`); an interrupted one is finished from the Welcome screen (*Finish the
+  update*). Console: the same question, or `setup.py --update-from <folder> [--allow-move]`.
+- **Not brought over:** the earlier release's game binary, its code-mod and randomized-game builds
+  (`code-builds/`: they belong to that release; this one builds its own when they are played) and its logs.
 
 ## Wind Waker HD (the program a release starts)
 
@@ -201,7 +244,7 @@ One JSON object per line. Events on stdout all have `"event"`:
 
 | event | fields |
 |---|---|
-| `hello` | `version`, `platform`, `data_dir`, `app_dir`, `log`, `portable`, `package`, `installed` (state or null), `game_files`, `game_dir`, `save_exists`, `legacy` (an earlier installation to copy from), `free_bytes`, `language_sources` (as the `language_sources` reply), `toolchain`, `code_mods`, `model_sweep` (the experimental step "Preparing shaders: models", off by default; the last choice), `model_sweep_text`, `decomp_offered` (the decomp version can be built: macOS development builds), `decomp` (its option), `decomp_text`, `decomp_docs` |
+| `hello` | `version`, `platform`, `data_dir`, `app_dir`, `log`, `portable`, `package`, `installed` (state or null), `game_files`, `game_dir`, `save_exists`, `legacy` (an earlier installation to copy from), `free_bytes`, `language_sources` (as the `language_sources` reply), `toolchain`, `code_mods`, `model_sweep` (the experimental step "Preparing shaders: models", off by default; the last choice), `model_sweep_text`, `decomp_offered` (the decomp version can be built: releases that bring its parts), `decomp` (its option), `decomp_text`, `decomp_docs` |
 | `log` | `text` (also written to `setup.log`) |
 | `plan` | `steps`: `[{id, title}]` of the installation that starts |
 | `step` | `n`, `total`, `title`, `id` (`keys`, `archive`, `folder`, `compiler`, `extract`, `copy`, `translate`, `compile`, `app`, `shaders`, `decomp`) |
@@ -215,7 +258,7 @@ Requests on stdin: `{"cmd": ..., "id": n, ...}`
 |---|---|---|
 | `probe` | `path` | `kind` (`image`/`archive`/`folder`), `disc_key` (found next to the image), `common_key` (where one was found); for a folder `in_place`, `bytes`; for an archive `title`, `folder`, `bytes`, `message` (which title is used and why); problem `wrong_title` when the archive has no usable game |
 | `check_keys` | `image`, optional `disc_key_file`, `common_key_file` or `common_key_hex` | `title_id`, `files`, `bytes`; problems `disc_key_wrong`, `common_key_wrong`, `wrong_title`, ... |
-| `install` | `source` (`image`/`archive`/`folder`/`installed`), `path`, optional `jobs`, `code_mods`, `model_sweep` (also prepare model shaders, experimental; remembered), `decomp` (also build the decomp version, [docs/decomp-build.md](../../docs/decomp-build.md); remembered) | streams `plan`/`step`/`progress`/`log`, then `app`, `exe`, `data_dir`, `game_dir`, `toolchain_bytes`, `decomp_exe` (empty when not built), `decomp_error` (why it failed; the normal game is installed) |
+| `install` | `source` (`image`/`archive`/`folder`/`installed`), `path`, optional `jobs`, `code_mods`, `model_sweep` (also prepare model shaders, experimental; remembered), `decomp` (also build the decomp version, in fast mode unless the install chose `--decomp-plain`, [docs/decomp-build.md](../../docs/decomp-build.md); remembered) | streams `plan`/`step`/`progress`/`log`, then `app`, `exe`, `data_dir`, `game_dir`, `toolchain_bytes`, `decomp_exe` (empty when not built), `decomp_error` (why it failed; the normal game is installed) |
 | `import_save` | `kind` (`hd`/`gc`), `path`, optional `replace` | `message`; problem `exists` when a save is installed and `replace` is not set (with `replace`, the old save is moved to `save/user.backup-<time>` first) |
 | `import_existing` | optional `path` (another release folder; none: the earlier per-user installation), `replace` | `message` (saves and settings copied, never moved; problem `exists` as above) |
 | `language_sources` | | `sources`: `[{region (EU/JP), title_id, source, packs: [{file, language, bytes, sha256}]}]` (experimental, [docs/language-packs.md](../../docs/language-packs.md)) |
@@ -241,8 +284,8 @@ the GUI skips the key screen and the terminal setup asks for none.
 `wwhd-extract --title 0005000010143500 info GAME.wua` lists every title folder and the one selected;
 setup then decides (`archive_choice` in `setup.py`) and logs which title it uses and why:
 
-- the game itself, `0005000010143500_v0` or `0005000010143600_v0`, is used: the port's translated code and its hooks are made
-  for version 0 of the USA or European game (the disc and eShop release);
+- the game itself, `0005000010143500_v0`, `0005000010143600_v0` or `0005000010143400_v0`, is used: the port's translated
+  code and its hooks are made for version 0 of the USA, European or Japanese game (the disc and eShop release);
 - an update (`0005000e10143500_v..`) is not used, neither its code (another version) nor its data
   files (they belong to the update's code); DLC or other titles are listed as not used;
 - an unsupported region, an archive with only the update, another game, or a version other than 0 stop
@@ -258,8 +301,8 @@ archive written by the test) and `ArchiveTitles` in `test_setup.py`.
 ## Game version check
 
 The hooks (`tools/recomp/hooks*.txt`) use canonical USA addresses. Setup accepts `code/cking.rpx`
-from The Wind Waker HD USA (00050000-10143500) or Europe (00050000-10143600), version 0.
-The build registry (`tools/recomp/builds.py`, `builds/eu.json`) keeps each SHA-256
+from The Wind Waker HD USA (00050000-10143500), Europe (00050000-10143600) or Japan (00050000-10143400),
+version 0. The build registry (`tools/recomp/builds.py`, `builds/eu.json`, `builds/jp.json`) keeps each SHA-256
 (a checksum only: it identifies the file and contains nothing of it;
 `guard.py` flags 32-digit, key-shaped strings, not 64-digit sums) and `check_game_version` compares
 it for every source before anything is translated: an extracted folder at the "folder" step (and
@@ -290,6 +333,14 @@ Python pinned in `toolchains.json`, verifies its SHA-256, and installs it privat
 `data/setup-python/`. It probes the staged interpreter before selecting it. The system
 Python is unchanged. Downloads remain installer operations; mod setup tools retain their
 reviewed local file capabilities and cannot download or launch programs.
+
+If that download fails after its retries (issue #472: GitHub answering HTTP 504), setup
+still finishes and the game starts. `guest-sdk.json` then names the private Python's
+future path in `python`, the reason in `python_pending`, and the interpreter that ran
+setup in `setup_python`; `install.json` records `setup_python_missing`. The first mod tool
+that needs the Python starts `setup.py --repair-guest-python` with `setup_python` in the
+background and shows that it is downloading; a failure is shown once and the next use
+retries. A code-mod rebuild or randomizer build first downloads it the same way.
 
 Existing installations can update only this interpreter, preserving the compiler and
 other bridge settings, by passing `--repair-guest-python` to their release's terminal

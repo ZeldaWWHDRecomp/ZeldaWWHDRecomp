@@ -190,7 +190,7 @@ No. The on-screen controls cover the whole GamePad. A controller works too and h
 buttons while it is connected.
 
 **Which version of the game?**
-The Wii U release of The Wind Waker HD, USA or Europe. Saves from a real Wii U work too.
+The Wii U release of The Wind Waker HD, USA, Europe or Japan. Saves from a real USA or European Wii U work too.
 
 **My Android device gets hot. Is that normal?**
 The game is demanding. When the Android device gets warm, the game drops from 60 to a steady 30 fps on its

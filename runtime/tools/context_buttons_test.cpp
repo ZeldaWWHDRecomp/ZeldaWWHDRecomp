@@ -114,6 +114,21 @@ static void game_over_question() {
     for (int i = kB; i < kCount; i++) assert(!b[Button(i)].shown);
     c.question_shown = 0;  // (the flag without a drawn button: the usual rules)
     assert(context_buttons(c)[kZL].shown);
+    // as the game runs it: dGameover_c sets dMenu_flag while it asks (kMenu); the question's rule still holds
+    // (the menu's full pad showed on the phone, and the taps weren't the question's)
+    c.flags = kInGame | kMenu | kQuestion;
+    c.question_shown = 3;
+    const Buttons m = context_buttons(c);
+    assert(m.active);
+    action(m, kA, kActChoose);
+    for (int i = kB; i < kCount; i++) assert(!m[Button(i)].shown);
+    // the window closed, the menu flag alone: the full pad
+    c.question_shown = 0;
+    for (int i = 0; i < kCount; i++) assert(context_buttons(c)[Button(i)].shown);
+    // no Quest Log: the full pad, question or not
+    c.flags = kMenu | kQuestion;
+    c.question_shown = 3;
+    assert(!context_buttons(c).active && context_buttons(c)[kZL].shown);
 }
 
 static void swimming_around() {
@@ -194,6 +209,25 @@ static void picto_box() {
     b = context_buttons(c);
     only(b, {kB, kR});
     item(b, kR, kItemTelescope);
+    // as the game really has it: its message status stays at the scope's own state (11) all the time there, which
+    // reads as a talk; the telescope's buttons stay (not the talk's lone A)
+    c.flags = (c.flags & ~kInPlay) | kMessage | kZoomBar;
+    c.mesg_status = c.scope_mesg_status = 11;
+    c.b_action = kActReturn;
+    b = context_buttons(c);
+    only(b, {kB, kR});
+    item(b, kR, kItemTelescope);
+    assert(!jump_buttons(c, true, true));
+    // its own text (Aryll on Outset) waiting for A: A goes on, B and the item stay
+    c.flags |= kKeyIcon | kMsgWindow;
+    c.mesg_status = c.scope_mesg_status = 10;
+    b = context_buttons(c);
+    only(b, {kA, kB, kR});
+    action(b, kA, kActNext);
+    // ... but in an event the talk rule decides
+    c.flags |= kEvent;
+    b = context_buttons(c);
+    only(b, {kA});
 }
 
 static void talking_to_someone() {

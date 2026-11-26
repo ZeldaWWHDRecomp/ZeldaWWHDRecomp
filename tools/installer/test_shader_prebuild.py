@@ -188,6 +188,47 @@ class ShaderPrebuildTests(unittest.TestCase):
         executable.write_text('synthetic version two')
         self.assertFalse(prepare()['reused'])
 
+    def test_pipeline_identity_keys_the_generation_not_the_binary(self):
+        # incremental updates: another binary of the same renderer (an update, a randomized game, the code-mod
+        # variant) keeps the generation; another renderer warms again on the head start assembled before
+        executable = self.root / 'synthetic-executable'
+        marker = lambda digit: b'binary bytes WWHD-PIPELINE-IDENTITY:' + digit * 64 + b' more'
+        executable.write_bytes(marker(b'a') + b' build one')
+        def prepare():
+            return prebuild.prepare(self.game, self.template, executable, self.cache,
+                                    self.package, runner=self.runner)
+        prepare()
+        self.assertEqual(prebuild.pipeline_identity_of(executable), 'a' * 64)
+        active = json.loads((self.cache / 'active.json').read_text())
+        self.assertEqual(active['identity']['runtime'], 'pipeline:' + 'a' * 64)
+        self.assertEqual(active['launch']['pipeline'], 'a' * 64)
+        self.assertNotIn('runtime', active['launch'])
+        executable.write_bytes(marker(b'a') + b' build two, other game code')
+        self.assertTrue(prepare()['reused'])
+        assembled = sum(1 for c, _ in self.calls if c[1] == str(self.package / 'tools/shaderprep.py'))
+        executable.write_bytes(marker(b'b') + b' build three, another renderer')
+        result = prepare()
+        self.assertFalse(result['reused'])
+        self.assertTrue(result['headstart_reused'])
+        self.assertEqual(assembled, sum(1 for c, _ in self.calls if c[1] == str(self.package / 'tools/shaderprep.py')))
+        self.assertTrue(any('--warm-shaders' in c for c, _ in self.calls))
+        # a changed game assembles again
+        (self.game / 'synthetic.pack').write_text('synthetic packed archive')
+        self.assertFalse(prepare()['headstart_reused'])
+
+    def test_moved_inputs_refresh_the_launch_record(self):
+        executable = self.root / 'synthetic-executable'
+        executable.write_bytes(b'WWHD-PIPELINE-IDENTITY:' + b'c' * 64)
+        prebuild.prepare(self.game, self.template, executable, self.cache, self.package, runner=self.runner)
+        before = json.loads((self.cache / 'active.json').read_text())['launch']
+        time.sleep(0.01)
+        self.template.write_text('synthetic template identity')  # same content, new time (a new release folder)
+        self.assertTrue(prebuild.prepare(self.game, self.template, executable, self.cache, self.package,
+                                         runner=self.runner)['reused'])
+        after = json.loads((self.cache / 'active.json').read_text())['launch']
+        self.assertNotEqual(before['template'], after['template'])
+        self.assertEqual(after['template'], prebuild.metadata(self.template))
+
     def test_failed_rebuild_keeps_previous_active_and_cleans_staging(self):
         self.prepare()
         active = (self.cache / 'active.json').read_bytes()
@@ -562,6 +603,119 @@ class TwoRendererTests(unittest.TestCase):
         self.assertEqual(result['status'], 'ready')
         self.assertEqual(self.active()['renderers'], {'metal': 'ready', 'vulkan': 'skipped'})
         self.assertFalse((self.cache / 'skip.json').exists())
+
+
+class ShaderLibraryTests(unittest.TestCase):
+    """macOS: with Xcode 26 or newer, one more Metal warm writes every shader's source and Xcode's compiler builds
+    shaders.metallib; without it, shaders compile during play. (TwoRendererTests' fixture, without running its
+    tests again.)"""
+    def setUp(self):
+        TwoRendererTests.setUp(self)
+        self.exports = {}
+        self.order = []
+        self.toolchain = True
+        self.built = []
+        self.build_error = None
+
+    def runner(self, command, env, cancel, progress):
+        if command[1] != str(self.package / 'tools/shaderprep.py'):
+            renderer = env['WWHD_RENDERER_RUNTIME']
+            self.exports[renderer] = (env.get('WWHD_SHADERLIB_SOURCES'), env.get('WWHD_SHADERLIB'))
+            self.assertNotIn('WWHD_SHADERLIB_EXPORT', env)  # no shader archive any more
+            if env.get('WWHD_SHADERLIB_SOURCES'):
+                self.order.append('sources')
+                Path(env['WWHD_SHADERLIB_SOURCES'], 'w1.metal').write_text('synthetic shader source')
+        TwoRendererTests.runner(self, command, env, cancel, progress)
+
+    def builder(self, sources, out, progress=None, cancel=None):
+        self.built.append(sorted(p.name for p in Path(sources).iterdir()))
+        if self.build_error:
+            raise self.build_error
+        progress(1, 1)
+        Path(out).write_text('synthetic library')
+        return 1, 0
+
+    def prepare(self, **kwargs):
+        kwargs.setdefault('library', True)
+        return TwoRendererTests.prepare(self, library_toolchain=lambda: self.toolchain, library_builder=self.builder,
+                                        **kwargs)
+
+    def manifest(self):
+        return json.loads((self.cache / 'active.json').read_text())
+
+    def test_with_xcode_the_sources_become_shaders_metallib(self):
+        result = self.prepare()
+        self.assertEqual(result['library'], 'ready')
+        generation = Path(result['generation'])
+        sources, library = self.exports['metal']
+        self.assertEqual((Path(sources), library), (generation / 'shader-sources', '0'))
+        self.assertEqual(self.exports['vulkan'], (None, None))
+        self.assertEqual(self.built, [['w1.metal']])
+        self.assertTrue((generation / 'shaders.metallib').is_file())
+        self.assertFalse((generation / 'shader-sources').exists())  # the sources are not kept
+        self.assertEqual(self.manifest()['library'], 'ready')
+        self.assertNotIn('library_kind', self.manifest())
+
+    def test_without_xcode_shaders_compile_during_play(self):
+        self.toolchain = False
+        result = self.prepare()
+        self.assertEqual((result['status'], result['library']), ('ready', 'unavailable'))
+        self.assertEqual(self.order, [])  # no library warm
+        self.assertFalse((Path(result['generation']) / 'shaders.metallib').exists())
+        self.assertEqual(self.manifest()['library'], 'unavailable')
+        # Xcode installed later: the next setup run builds it
+        self.toolchain = True
+        self.calls.clear()
+        self.assertEqual(self.prepare()['library'], 'ready')
+        self.assertEqual(self.calls, ['metal'])  # one Metal warm, for the sources
+        self.assertTrue((Path(result['generation']) / 'shaders.metallib').is_file())
+
+    def test_a_failed_build_leaves_the_preparation_ready_and_is_not_repeated(self):
+        self.build_error = RuntimeError('metallib: synthetic failure')
+        result = self.prepare()
+        self.assertEqual((result['status'], result['library']), ('ready', 'failed'))
+        self.assertFalse((Path(result['generation']) / 'shaders.metallib').exists())
+        # a failed one is not retried on every setup run (Rebuild shader cache does)
+        self.calls.clear()
+        self.assertEqual(self.prepare()['library'], 'failed')
+        self.assertEqual(self.calls, [])
+
+    def test_a_generation_without_its_library_gets_one(self):
+        first = self.prepare(library=False)
+        self.assertNotIn('library', first)
+        self.calls.clear()
+        second = self.prepare()
+        self.assertTrue(second['reused'])
+        self.assertEqual(self.calls, ['metal'])  # the Metal warm again, for the sources; Vulkan stays
+        self.assertEqual(second['library'], 'ready')
+        self.assertTrue((Path(first['generation']) / 'shaders.metallib').is_file())
+        self.calls.clear()
+        self.assertEqual(self.prepare()['library'], 'ready')
+        self.assertEqual(self.calls, [])
+
+    def test_the_library_comes_after_the_model_sweep(self):
+        order = self.order
+
+        def sweeper(executable, game, root, name, identity, env, line=None, cancel=None, log=None, **kwargs):
+            order.append('sweep ' + name)
+            return 'done'
+
+        events = []
+        result = self.prepare(models=True, sweeper=sweeper, events=events)
+        self.assertEqual(result['library'], 'ready')
+        self.assertEqual(order[-1], 'sources')
+        self.assertIn('sweep metal', order)
+        fractions = [f for _, f in events if f is not None]
+        self.assertEqual(fractions, sorted(fractions))  # one bar, never backwards
+        self.assertEqual(fractions[-1], 1.0)
+
+    def test_off_by_default_and_for_vulkan_only(self):
+        self.prepare(library=False)
+        self.assertEqual(self.exports['metal'], (None, None))
+        self.assertNotIn('library', self.manifest())
+        self.cache = self.root / 'other-cache'
+        result = self.prepare(renderers=('vulkan',))
+        self.assertNotIn('library', result)
 
 
 if __name__ == '__main__':
