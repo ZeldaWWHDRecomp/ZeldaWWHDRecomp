@@ -511,6 +511,14 @@ void register_graphics() {
     }
     {
         Item it;
+        it.id = "graphics.sharp-text", it.tab = "graphics", it.label = "Sharper text", it.kind = Kind::Toggle;
+        it.help = "Crisp text edges above 1x resolution instead of soft, scaled-up letters.";
+        it.get = [] { return render::sharp_text() ? 1.0f : 0.0f; };
+        it.set = [](float v) { saved([v] { render::set_sharp_text(v >= 0.5f); }); };
+        add(std::move(it));
+    }
+    {
+        Item it;
         it.id = "graphics.aniso", it.tab = "graphics", it.label = "Anisotropic filtering (16x)", it.kind = Kind::Toggle;
         it.help = "Sharper ground and walls seen at a slant or far away.";
         it.get = [backend] { return backend() && render::aniso() ? 1.0f : 0.0f; };

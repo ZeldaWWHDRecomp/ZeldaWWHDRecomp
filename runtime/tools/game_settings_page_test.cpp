@@ -355,7 +355,7 @@ int main() {
         assert(g::dyn_choice(0) == 0 && g::dyn_choice(0.75f) == 1 && g::dyn_choice(0.5f) == 2 && g::dyn_choice(0.55f) == 2);
         // its words are translated (French, German, Italian, Spanish), as the other tabs'
         const char* words[] = {"Graphics", "Internal resolution", "Frame rate", "Dynamic resolution", "Bloom", "Edge smoothing (FXAA)",
-                               "Anisotropic filtering (16x)", "Clouds", "Cloud shadows", "Full-size torchlight", "Down to 75%",
+                               "Anisotropic filtering (16x)", "Clouds", "Cloud shadows", "Full-size torchlight", "Sharper text", "Down to 75%",
                                "Down to 50%", "30 fps (original)", "60 fps (generated, experimental)", "Toon (Lite)", "Toon (High)",
                                "40 fps and more add in-between frames; the game logic keeps its 30 steps. Generated: "
                                "every other frame made on the graphics chip."};

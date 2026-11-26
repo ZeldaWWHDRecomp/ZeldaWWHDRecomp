@@ -1257,6 +1257,10 @@ void tab_graphics() {
     flow::next(flow::check("Edge smoothing (FXAA)"), 30);
     if (check("Edge smoothing (FXAA)", render::fxaa(), &v, render::feature_available(render::kFeatureFXAA)))
         post_changed([v] { render::set_fxaa(v); });
+    flow::next(flow::check("Sharper text"), 30);
+    if (check("Sharper text", render::sharp_text(), &v)) post_changed([v] { render::set_sharp_text(v); });
+    help("The game's text (dialogue, the HUD's counters and button words, menus) keeps crisp edges at resolutions "
+         "above 1x instead of being scaled up soft. No change at 1x. Off matches the original game.");
     // background_shaders.h: what a draw does while its shader compiles (off / fast)
     {
         static const char* const names[] = {"Shader compile: Off (exact)", "Fast (not exact)"};
