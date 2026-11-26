@@ -2446,18 +2446,53 @@ def desktop_string(value):
     return value.replace("\\", "\\\\")
 
 
-def linux_launchers(data_dir, exe):
+DESKTOP_ENTRY_COMMENT = "The Wind Waker HD, native PC port"
+
+
+def desktop_entry_path():
+    """The menu entry linux_launchers writes (issue #625: optional)."""
+    return os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications",
+                        "wwhd.desktop")
+
+
+def own_desktop_entry(path, play):
+    """True when the menu entry at path is the one linux_launchers wrote for play.sh: its Name, Comment and Exec
+    lines are setup's own. Any other wwhd.desktop (the user's, another launcher's) is left alone."""
+    try:
+        with open(path, encoding="utf-8") as f:
+            lines = f.read().splitlines()
+    except (OSError, UnicodeDecodeError):
+        return False
+    keys = {}
+    for line in lines:
+        if line.startswith("[") and line != "[Desktop Entry]":
+            break  # only the main group (an Action group has its own Name and Exec)
+        if "=" in line:
+            k, v = line.split("=", 1)
+            keys.setdefault(k, v)
+    return (keys.get("Name") == APP_NAME and keys.get("Comment") == DESKTOP_ENTRY_COMMENT
+            and keys.get("Exec") == desktop_exec(play))
+
+
+def linux_launchers(data_dir, exe, desktop_entry=True):
+    """play.sh in the data folder, and with desktop_entry the applications menu's entry for it; without, a menu
+    entry an earlier setup wrote for this play.sh is removed (issue #625)."""
     play = os.path.join(data_dir, "play.sh")
     with open(play, "w") as f:
         f.write('#!/bin/sh\n# written by the Wind Waker HD setup\ncd %s || exit 1\nexec %s --game game --save save "$@"\n'
                 % (shlex.quote(data_dir), shlex.quote(exe)))
     os.chmod(play, 0o755)
-    apps = os.path.join(os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share"), "applications")
-    os.makedirs(apps, exist_ok=True)
-    with open(os.path.join(apps, "wwhd.desktop"), "w") as f:
-        f.write("[Desktop Entry]\nType=Application\nName=%s\nComment=The Wind Waker HD, native PC port\n"
+    entry = desktop_entry_path()
+    if not desktop_entry:
+        if own_desktop_entry(entry, play):
+            os.remove(entry)
+            say("  Removed the menu entry %s" % entry)
+        return play
+    os.makedirs(os.path.dirname(entry), exist_ok=True)
+    with open(entry, "w") as f:
+        f.write("[Desktop Entry]\nType=Application\nName=%s\nComment=%s\n"
                 "Exec=%s\nPath=%s\nTerminal=false\nCategories=Game;\n"
-                % (APP_NAME, desktop_exec(play), desktop_string(data_dir)))
+                % (APP_NAME, DESKTOP_ENTRY_COMMENT, desktop_exec(play), desktop_string(data_dir)))
         icon = write_game_icon(data_dir, ico=False)
         if icon:
             f.write("Icon=%s\n" % desktop_string(icon))
@@ -3017,6 +3052,36 @@ def model_sweep_wanted(ctx, ui=None):
     return default
 
 
+DESKTOP_ENTRY_TEXT = (
+    "Linux: a Wind Waker HD entry in your applications menu (~/.local/share/applications/wwhd.desktop). "
+    "The AppImage starts the game itself, so there it is off by default.")
+
+
+def desktop_entry_offered(args=None):
+    """The menu entry question (issue #625): Linux installs outside a portable folder (a source build or the
+    AppImage), not with --no-shortcuts. A portable release asks for its shortcut at the end instead."""
+    return IS_LINUX and not PORTABLE and not getattr(args, "no_shortcuts", False)
+
+
+def desktop_entry_wanted(ctx, ui=None):
+    """Add the applications menu entry? --desktop-entry / --no-desktop-entry (or the setup window's choice); else
+    the question (interactive), defaulting to what the last setup chose (install.json "desktop_entry"), else yes,
+    except when setup runs from an AppImage, which launches the game itself."""
+    choice = getattr(ctx.args, "desktop_entry", None)
+    if choice is not None:
+        return bool(choice)
+    folder, state = install_defaults(ctx)
+    remembered = state.get("desktop_entry")
+    if not isinstance(remembered, bool) and folder and own_desktop_entry(desktop_entry_path(),
+                                                                         os.path.join(folder, "play.sh")):
+        remembered = True  # an install from before the choice, whose menu entry is there: an update keeps it
+    default = remembered if isinstance(remembered, bool) else not appimage_release()
+    if ui and ui.interactive and desktop_entry_offered(ctx.args):
+        say(DESKTOP_ENTRY_TEXT)
+        return ui.yesno("Add a menu entry?", default)
+    return default
+
+
 CODE_MODS_TEXT = (
     "For mods in the catalogue or Mods tab marked as code mods. Built-in mods, graphics packs and "
     "content mods do not need this. The game code gets a small check in every function, which can "
@@ -3122,6 +3187,7 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
     args.code_mods = "1" if setup_code_mods(ctx, ui) else "0"
     kind = source[0]
     want_models = kind != "gen" and model_sweep_wanted(ctx, ui)
+    want_desktop_entry = kind != "gen" and desktop_entry_offered(args) and desktop_entry_wanted(ctx, ui)
     version = game_version(ctx) if kind != "gen" else "recomp"  # (GAME_VERSIONS)
     if kind in ("folder", "installed") and game_folder_title(source[1]) == RANDOMIZER_TITLE:
         if version == "decomp":
@@ -3314,8 +3380,9 @@ def install(ctx, source, keys=None, info=None, ui=None, check_keys=None, update_
             state["exe"] = os.path.join(app, "Contents", "MacOS", "wwhd")
             say("  App: %s" % app)
         elif IS_LINUX:
-            state["launcher"] = linux_launchers(data_dir, exe)
-            say("  Launcher: %s (also in your applications menu)" % state["launcher"])
+            state["launcher"] = linux_launchers(data_dir, exe, want_desktop_entry)
+            state["desktop_entry"] = want_desktop_entry  # remembered: updates and repairs keep the choice
+            say("  Launcher: %s%s" % (state["launcher"], " (also in your applications menu)" if want_desktop_entry else ""))
         else:
             windows_shortcuts(data_dir, exe)
             say("  Shortcuts: Start menu and desktop (\"%s\")" % APP_NAME)
@@ -3614,6 +3681,10 @@ def main():
     ap.add_argument("--yes", action="store_true", help="non-interactive (also WWHD_SETUP_NONINTERACTIVE=1)")
     ap.add_argument("--no-launch", action="store_true", help="do not start the game at the end")
     ap.add_argument("--no-shortcuts", action="store_true", help="no app bundle / menu entries")
+    ap.add_argument("--desktop-entry", dest="desktop_entry", action="store_const", const=True, default=None,
+                    help="Linux: add the applications menu entry (wwhd.desktop; the default, except from an AppImage)")
+    ap.add_argument("--no-desktop-entry", dest="desktop_entry", action="store_const", const=False,
+                    help="Linux: no applications menu entry (removes the one an earlier setup added); remembered")
     ap.add_argument("--shortcuts", action="store_true",
                     help="portable release: also add a shortcut (Applications / Start menu / applications menu)")
     ap.add_argument("--keep-work", action="store_true", help="keep the generated code and objects")
@@ -4181,6 +4252,9 @@ def gui_main(args):
                   "code_mods": setup_code_mods(ctx),
                   # "Preparing shaders: models (experimental)": opt-in, off by default
                   "model_sweep": model_sweep_wanted(ctx), "model_sweep_text": MODEL_SWEEP_TEXT,
+                  # Linux (not portable): "Add a menu entry" (issue #625; off by default in an AppImage)
+                  "desktop_entry_offered": desktop_entry_offered(ctx.args),
+                  "desktop_entry": desktop_entry_wanted(ctx), "desktop_entry_text": DESKTOP_ENTRY_TEXT,
                   # the decomp version (decomp_setup.py): offered on macOS releases that bring its parts
                   # setup's one choice (GAME_VERSIONS): "decomp" true = the decomp version is preselected;
                   # game_version: what is installed ("recomp", "decomp" or "both" from an earlier setup), "" if nothing
@@ -4307,6 +4381,10 @@ def gui_main(args):
             if not isinstance(req["model_sweep"], bool):
                 return fail(req, "bad_request", "model_sweep must be a boolean")
             ctx.args.model_sweep = req["model_sweep"]
+        if "desktop_entry" in req:
+            if not isinstance(req["desktop_entry"], bool):
+                return fail(req, "bad_request", "desktop_entry must be a boolean")
+            ctx.args.desktop_entry = req["desktop_entry"]
         if req.get("shader_prebuild_cancel"):
             # GUI marker is confined to this installation, not an arbitrary path.
             ctx.args.shader_prebuild_cancel = str(Path(ctx.data_dir) / "shader-prebuild-cancel")

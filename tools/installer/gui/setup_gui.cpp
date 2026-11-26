@@ -489,6 +489,10 @@ struct App {
     bool prepare_shaders = true;
     bool model_sweep = false;  // "Preparing shaders: models (experimental)": opt-in, off by default
     std::string model_sweep_text;
+    // Linux outside a portable folder: "Add a menu entry" (issue #625; setup.py desktop_entry_wanted, off by
+    // default in an AppImage, which starts the game itself)
+    bool desktop_entry_offered = false, desktop_entry = true;
+    std::string desktop_entry_text;
     bool shader_skip_requested = false;
     std::deque<std::pair<std::string, std::string>> queue;  // requests to send one after another
     std::string after;                                       // then: play | quit | open
@@ -860,6 +864,7 @@ static void start_install(const std::string& source) {
     } else if (source != "installed") f += ",\"path\":" + jstr(A.source_path);
     f += std::string(",\"skip_shader_prebuild\":") + (A.prepare_shaders ? "false" : "true");
     f += std::string(",\"model_sweep\":") + (A.prepare_shaders && A.model_sweep ? "true" : "false");
+    if (A.desktop_entry_offered) f += std::string(",\"desktop_entry\":") + (A.desktop_entry ? "true" : "false");
     f += ",\"shader_prebuild_cancel\":" + jstr(A.data_dir + "/shader-prebuild-cancel");
     request("install", f);
     go(Screen::Installing);
@@ -978,6 +983,9 @@ static void handle_event(const J& ev) {
         A.code_mods = ev.boolean("code_mods");
         A.model_sweep = ev.boolean("model_sweep");
         A.model_sweep_text = ev.str("model_sweep_text");
+        A.desktop_entry_offered = ev.boolean("desktop_entry_offered");
+        A.desktop_entry = ev.boolean("desktop_entry");
+        A.desktop_entry_text = ev.str("desktop_entry_text");
         A.decomp_offered = ev.boolean("decomp_offered");
         A.decomp = ev.boolean("decomp");
         A.decomp_text = ev.str("decomp_text");
@@ -1305,6 +1313,10 @@ static void code_mods_choice() {
           "content mods do not need this. The game code gets a small check in every function, which can "
           "cost some performance, and the build takes a bit longer. You can switch this later in "
           "Settings > Mods; that requires another rebuild.");
+    if (A.desktop_entry_offered) {
+        checkbox("Add a menu entry", &A.desktop_entry);
+        muted(A.desktop_entry_text);
+    }
     if (A.decomp_offered) {
         // one choice: only the chosen version is built and started (setup.py GAME_VERSIONS)
         ImGui::Spacing();
@@ -1929,7 +1941,8 @@ static void screen_done() {
 #elif defined(_WIN32)
         muted("The game: Start menu and desktop shortcut \"Wind Waker HD\".");
 #else
-        muted("The game: your applications menu, or " + A.data_dir + "/play.sh.");
+        muted(A.desktop_entry_offered && !A.desktop_entry ? "The game: " + A.data_dir + "/play.sh."
+                                                          : "The game: your applications menu, or " + A.data_dir + "/play.sh.");
 #endif
         muted("Game files and saves: " + A.data_dir);
     }
@@ -2298,7 +2311,7 @@ static void start_child() {
 // automation (tests): a JSON array of steps, each run when its screen is showing:
 //   {"screen": "keys", "set": {"common_mode": "file", "common_key_file": "..."}, "when_step": "compile",
 //    "idle": true, "shot": "03-keys.png", "click": "Check keys and install"}
-// "set" fields: code_mods (boolean), decomp (boolean), model_sweep (boolean), source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
+// "set" fields: code_mods (boolean), decomp (boolean), model_sweep (boolean), desktop_entry (boolean), source (as if chosen in the dialog), disc_key_file, common_key_file, common_mode
 // (file|paste), save_kind (none|hd|gc|legacy|other), save_path, open_details (true), rando_tab (games|new), rando_page ("0".."5"), rando_import (a folder, as if chosen with Import seed...). Screenshots are PNG files
 // of the window. The run ends (exit 0) after the last step, or with exit 2 on a 45-minute timeout.
 
@@ -2338,6 +2351,7 @@ static void automation_frame() {
             else if (k == "code_mods") A.code_mods = kv.second.t == J::Bool && kv.second.b;
             else if (k == "decomp") A.decomp = kv.second.t == J::Bool && kv.second.b;
             else if (k == "model_sweep") A.model_sweep = kv.second.t == J::Bool && kv.second.b;
+            else if (k == "desktop_entry") A.desktop_entry = kv.second.t == J::Bool && kv.second.b;
             else if (k == "open_details") details_open = true;
             else if (k == "rando_tab") R.select_tab = v == "new" ? 1 : 0;  // the Randomizer page's Games / New game
             else if (k == "rando_page") R.page = std::clamp(atoi(v.c_str()), 0, 5);

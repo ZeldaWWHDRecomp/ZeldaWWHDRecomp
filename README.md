@@ -157,9 +157,12 @@ and settings from the old folder.
 The **Linux AppImage is not a portable folder** (issue #55): its file is read-only, so the game, its
 code and saves go to `~/.local/share/wwhd` and the settings, controls, save states and caches to
 `~/.config/wwhd` (or `$XDG_DATA_HOME` / `$XDG_CONFIG_HOME`; `--data-dir FOLDER` chooses another place
-for the first, for example an SD card on a Steam Deck). Nothing is written beside the `.AppImage`; the
-menu entry the setup adds starts the same game. To remove everything, delete the file and those two
-folders. **Portable use** (the AppImage runtime's own portable mode): start the AppImage once with
+for the first, for example an SD card on a Steam Deck). Nothing is written beside the `.AppImage`. The
+applications menu entry (`~/.local/share/applications/wwhd.desktop`, starting the same game) is a setup
+choice, "Add a menu entry": off by default from the AppImage, since the AppImage starts the game itself, on
+by default for a source build; `--desktop-entry` / `--no-desktop-entry` answer it in a terminal, updates
+keep the choice, and "no" removes an entry an earlier setup added (only its own). To remove everything,
+delete the file, those two folders and the menu entry if you added one. **Portable use** (the AppImage runtime's own portable mode): start the AppImage once with
 `--appimage-portable-home`, or create a folder named like it plus `.home` next to it (for example
 `WindWakerHD-v0.2.13-linux-x86_64.AppImage.home`). The AppImage then uses that folder as your home
 folder, so the game, its code, saves, settings and caches stay in it (`.local/share/wwhd`,

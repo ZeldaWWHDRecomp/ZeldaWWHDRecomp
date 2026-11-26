@@ -36,7 +36,10 @@ Runtime side: a `portable.txt` next to the game executable makes `host::config_d
 display settings, Metal shader cache) there through their existing overrides; `gfx/menu.mm` keeps the
 graphics options in `user/graphics.plist` instead of NSUserDefaults; the Controls window does not
 autosave its frame. Without the marker (source builds) nothing changes. Shortcuts (Applications link,
-Start menu, applications menu) are only created when the player asks for one.
+Start menu, applications menu) are only created when the player asks for one. Outside a portable folder on
+Linux (a source build, the AppImage) setup asks "Add a menu entry" (`--desktop-entry` / `--no-desktop-entry`;
+yes by default, no from an AppImage; remembered in `install.json` as `desktop_entry`); "no" removes a
+`wwhd.desktop` only when its Name, Comment and Exec lines are setup's own.
 
 Without `portable.txt` (a source build, or a Linux AppImage: its mount is read-only, issue #55) the
 same tree lives in the per-user folders of earlier releases instead: `data/` above becomes
@@ -244,7 +247,7 @@ One JSON object per line. Events on stdout all have `"event"`:
 
 | event | fields |
 |---|---|
-| `hello` | `version`, `platform`, `data_dir`, `app_dir`, `log`, `portable`, `package`, `installed` (state or null), `game_files`, `game_dir`, `save_exists`, `legacy` (an earlier installation to copy from), `free_bytes`, `language_sources` (as the `language_sources` reply), `toolchain`, `code_mods`, `model_sweep` (the experimental step "Preparing shaders: models", off by default; the last choice), `model_sweep_text`, `decomp_offered` (the decomp version can be built: releases that bring its parts), `decomp` (its option), `decomp_text`, `decomp_docs` |
+| `hello` | `version`, `platform`, `data_dir`, `app_dir`, `log`, `portable`, `package`, `installed` (state or null), `game_files`, `game_dir`, `save_exists`, `legacy` (an earlier installation to copy from), `free_bytes`, `language_sources` (as the `language_sources` reply), `toolchain`, `code_mods`, `model_sweep` (the experimental step "Preparing shaders: models", off by default; the last choice), `model_sweep_text`, `desktop_entry_offered` (Linux outside a portable folder: the "Add a menu entry" choice, issue #625), `desktop_entry` (its default: the last choice, else yes, no from an AppImage), `desktop_entry_text`, `decomp_offered` (the decomp version can be built: releases that bring its parts), `decomp` (its option), `decomp_text`, `decomp_docs` |
 | `log` | `text` (also written to `setup.log`) |
 | `plan` | `steps`: `[{id, title}]` of the installation that starts |
 | `step` | `n`, `total`, `title`, `id` (`keys`, `archive`, `folder`, `compiler`, `extract`, `copy`, `translate`, `compile`, `app`, `shaders`, `decomp`) |
@@ -258,7 +261,7 @@ Requests on stdin: `{"cmd": ..., "id": n, ...}`
 |---|---|---|
 | `probe` | `path` | `kind` (`image`/`archive`/`folder`), `disc_key` (found next to the image), `common_key` (where one was found); for a folder `in_place`, `bytes`; for an archive `title`, `folder`, `bytes`, `message` (which title is used and why); problem `wrong_title` when the archive has no usable game |
 | `check_keys` | `image`, optional `disc_key_file`, `common_key_file` or `common_key_hex` | `title_id`, `files`, `bytes`; problems `disc_key_wrong`, `common_key_wrong`, `wrong_title`, ... |
-| `install` | `source` (`image`/`archive`/`folder`/`installed`), `path`, optional `jobs`, `code_mods`, `model_sweep` (also prepare model shaders, experimental; remembered), `decomp` (also build the decomp version, in fast mode unless the install chose `--decomp-plain`, [docs/decomp-build.md](../../docs/decomp-build.md); remembered) | streams `plan`/`step`/`progress`/`log`, then `app`, `exe`, `data_dir`, `game_dir`, `toolchain_bytes`, `decomp_exe` (empty when not built), `decomp_error` (why it failed; the normal game is installed) |
+| `install` | `source` (`image`/`archive`/`folder`/`installed`), `path`, optional `jobs`, `code_mods`, `model_sweep` (also prepare model shaders, experimental; remembered), `desktop_entry` (Linux: the applications menu entry; remembered), `decomp` (also build the decomp version, in fast mode unless the install chose `--decomp-plain`, [docs/decomp-build.md](../../docs/decomp-build.md); remembered) | streams `plan`/`step`/`progress`/`log`, then `app`, `exe`, `data_dir`, `game_dir`, `toolchain_bytes`, `decomp_exe` (empty when not built), `decomp_error` (why it failed; the normal game is installed) |
 | `import_save` | `kind` (`hd`/`gc`), `path`, optional `replace` | `message`; problem `exists` when a save is installed and `replace` is not set (with `replace`, the old save is moved to `save/user.backup-<time>` first) |
 | `import_existing` | optional `path` (another release folder; none: the earlier per-user installation), `replace` | `message` (saves and settings copied, never moved; problem `exists` as above) |
 | `language_sources` | | `sources`: `[{region (EU/JP), title_id, source, packs: [{file, language, bytes, sha256}]}]` (experimental, [docs/language-packs.md](../../docs/language-packs.md)) |
