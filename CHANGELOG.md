@@ -18,6 +18,12 @@ what is on `devel` and not released yet (also in the
 
 ### Fixed
 
+- **Frame interpolation: distant grass and bushes no longer flicker at 120 / 240 fps with a wider field of view**
+  (#656, thanks @Ren148). With a gameplay FOV scale above 100 %, the in-between frames that 120 and 240 fps add
+  decided what to draw with the original, narrower view, while showing the wider one. Tall grass, bushes and
+  flowers near the edges of the picture were then drawn in some frames and missing in others. These frames now
+  decide with the view they show. At 30 fps, and at a FOV scale of 100 % with 16:9 or a wider aspect ratio, nothing
+  changes.
 - **Achievements: "Love Letters" no longer unlocks with the Note to Mom's Piece of Heart** (#650, thanks @rnp509). It
   checked the reply letter to the Note to Mom (from Baito's mother) instead of Maggie's quest. It now unlocks when
   Moblin's Letter has been handed to Maggie, the same check Maggie makes before she gives her Piece of Heart. Already

@@ -3,6 +3,7 @@
 #include "mods/player_models.h"
 #include "mods/achievements_host.h"
 #include "interp.h"
+#include "aspect.h"
 #include "interp_prerun_cams.h"
 #include "dsweep.h"
 #include "mods/story_native_restore_resume.h"
@@ -958,12 +959,23 @@ struct ExactCullView {
 // they draw with (mDoLib_clipper::setup 025F11AC), the exact one is back at the start of the next pass;
 // the logic pass keeps the exact frustum for its culling (the 30 fps game's) and its edge draws
 // (edge_draw) test with the blended one. debug: WWHD_INTERP_CLIPPER=0 keeps the exact frustum
+// The blended frustum takes the fovy and aspect as view_setup's setup calls do (aspect::clipper_setup_args: Vert+, the
+// gameplay FOV scale, the stereo margin). It took the camera's authored fovy as it was: with a gameplay FOV scale above
+// 100 % the in-between passes of 120 / 240 fps culled with the narrower original view while drawing the wider one, so
+// tall grass, bushes and flowers near the picture's edges (mDoLib_clipper::clip per patch) were drawn on some passes
+// and dropped on others (#656; 60 fps has no blended pass without logic). Paced 120 / 240 fps blends at t = k/(n+1)
+// with n the in-between frames that fit; lerp_f's (1-t)a + tb then misses even a constant fovy by its last bit, so the
+// blended frustum is in use on most steps, not only during zooms. debug: WWHD_INTERP_CLIPPER_FOV=0 as before
 constexpr uint32_t kClipperBytes = 0x64;
 uint8_t g_clipper_exact[kClipperBytes], g_clipper_blended[kClipperBytes];
 uint64_t g_clipper_pass = ~0ull;  // the pass that has a blended frustum
 bool g_clipper_in_memory = false; // the blended frustum is in guest memory (a pass without logic)
 bool clipper_on() {
     static const bool off = getenv("WWHD_INTERP_CLIPPER") && !atoi(getenv("WWHD_INTERP_CLIPPER"));
+    return !off;
+}
+static bool clipper_fov_on() {
+    static const bool off = getenv("WWHD_INTERP_CLIPPER_FOV") && !atoi(getenv("WWHD_INTERP_CLIPPER_FOV"));
     return !off;
 }
 void clipper_put_back() {
@@ -994,6 +1006,7 @@ void clipper_blend(Cpu* c, uint32_t cam, float fovy, float exact) {
     c->f[2].ps0 = (float)ldf32(cam + 0xD8);
     c->f[3].ps0 = (float)ldf32(cam + 0xCC);
     c->f[4].ps0 = far_plane;
+    if (clipper_fov_on()) aspect::clipper_setup_args(c);  // (as view_setup's calls: the frustum of the view drawn)
     f_025F11AC(c);
     *c = saved;
     memcpy(g_clipper_blended, ppc_ptr(a), kClipperBytes);
@@ -1261,11 +1274,34 @@ extern "C" void hook_025D6B70(Cpu* c) { interp_exact_cull(c, f_025D6B70_orig); }
 // own visibility (bombs, before they set up their light; the particle system's simple emitters; the
 // trees' clip state)
 extern "C" void f_02838148_orig(Cpu* c);
+// debug: WWHD_INTERP_CLIP_STATS=from-to logs, for each pass of logic steps from..to, how many of these checks ran and
+// how many culled (tall grass, flowers and trees check each patch here: #656's in-between frustum)
+static void clip_stats(bool culled) {
+    static uint64_t from = 0, to = 0;
+    static const bool on = [] {
+        const char* e = getenv("WWHD_INTERP_CLIP_STATS");
+        return e && sscanf(e, "%llu-%llu", (unsigned long long*)&from, (unsigned long long*)&to) == 2;
+    }();
+    if (!on) return;
+    static uint64_t pass = ~0ull, step = 0;
+    static double t = 0;
+    static bool hold = false;
+    static unsigned calls = 0, cut = 0;
+    if (pass != interp::g_passes) {
+        if (calls && step >= from && step <= to)
+            LOG("[interp] clip stats step %llu pass %llu t %.3f %s: %u checks, %u culled", (unsigned long long)step, (unsigned long long)pass, t,
+                hold ? "hold" : "logic", calls, cut);
+        pass = interp::g_passes, step = interp::g_logic_steps, t = interp::pass_t(), hold = interp::g_hold, calls = cut = 0;
+    }
+    calls++;
+    cut += culled;
+}
 extern "C" void hook_02838148(Cpu* c) {
     static const uint32_t view = GD(0x104B45F8);
     if (c->r[4] != view) { f_02838148_orig(c); return; }
     interp::ExactCullView v;
     f_02838148_orig(c);
+    clip_stats(c->r[3] != 0);
 }
 #if WWHD_DECOMP
 // true 60 (t60_draw.h): a converted camera process is drawn at the interpolated world's phase: the camera of its step at

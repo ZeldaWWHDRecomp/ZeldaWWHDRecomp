@@ -74,7 +74,13 @@ std::atomic<float> g_window{kBase};
 // aspect of the frame being built: written by the main thread at the swap, read by the threads
 // that compute and record the frame
 std::atomic<float> g_game{kBase};
-std::atomic<float> g_fov_requested{1.0f}, g_fov_game{1.0f};
+// WWHD_FOV_SCALE=1.5 starts with that gameplay FOV scale (tests; it wins over the saved one)
+float env_fov_scale() {
+    const char* e = getenv("WWHD_FOV_SCALE");
+    const float v = e && *e ? strtof(e, nullptr) : 1.0f;
+    return std::isfinite(v) ? std::clamp(v, 0.75f, 2.5f) : 1.0f;
+}
+std::atomic<float> g_fov_requested{env_fov_scale()}, g_fov_game{1.0f};
 
 float gameplay_fov_scale() {
     const float scale=g_fov_game.load();
@@ -287,6 +293,7 @@ static void stereo_clipper(Cpu* c) {
     c->f[2].ps0 *= 1.0f+margin;
     c->f[2].ps1 = c->f[2].ps0;
 }
+void aspect::clipper_setup_args(Cpu* c) { stereo_clipper(c); }
 extern "C" void site_024F811C(Cpu* c) { stereo_clipper(c); }
 extern "C" void site_024F8168(Cpu* c) { stereo_clipper(c); }
 // dScnName_c::setView: C_MTXPerspective (file select)
