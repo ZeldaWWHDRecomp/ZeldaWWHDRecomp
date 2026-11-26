@@ -7,6 +7,30 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+### Highlight
+
+- **True 60 fps game logic (decomp version)** (#633). The decomp version (setup's "Also build the decomp version")
+  can now run the game's logic at a true 60 or 120 steps a second instead of drawing in-between pictures of 30 Hz
+  frames: **Graphics › Frame rate › 60 fps (true logic)** or **120 fps (true logic, experimental)**. Link, enemies,
+  the camera, effects and sound run on every step, and the game stays exactly on the 30 Hz game's path: on 36 test
+  routes (short scenes, Link's moves, four event scenes and three long play-throughs) the game state matches the
+  30 Hz game frame for frame at both rates. Off by default; a change applies at the next frame and is saved
+  (`WWHD_T60_STEPS` overrides it at start). The performance overlay shows a "True logic" line while it runs. The
+  recompiled (standard) version is unchanged; its 60 and 120 fps stay frame interpolation.
+
+### New
+
+- **Slow walk** (#626). A new input in **Settings › Controls**, **Slow walk (hold)**, under Jump anywhere and the
+  moon jump: while it is held, the left stick (the movement keys or a controller) moves Link at a share of its
+  tilt, so a full tilt walks instead of running. The share is its **Speed**, 10–90 %, 30 % by default (also on
+  the settings page as **Controls › Slow walk speed**). Unbound by default, since Left Shift is the keyboard's ZL;
+  choose a key or controller input for it. Controls files from before keep working unchanged.
+- **FXAA no longer blurs the HUD and text** (#587). With FXAA (Graphics › Edge smoothing) on, the game's 3D picture
+  is now smoothed before the HUD is drawn over it, so hearts, rupees, the buttons, text and menus stay sharp while
+  3D edges are smoothed as before. Pictures without a HUD (cutscenes, the title's 2D parts) are smoothed as before.
+  Metal and Vulkan, with every resolution scale, HDR, frame interpolation and 60 fps (generated). `WWHD_FXAA_HUD=1`
+  smooths the whole picture as before; with FXAA off nothing changes.
+
 ### Improved
 
 - **Sharper text at higher resolutions** (#621). The game's letters come from small font pictures made for the Wii U's
@@ -15,6 +39,18 @@ what is on `devel` and not released yet (also in the
   drop shadows; icons and other pictures are unchanged, and at 1x nothing changes. New option Settings › Graphics ›
   **Sharper text** (on by default; also in the in-game settings page and the macOS Graphics menu; `WWHD_SHARP_TEXT=0`
   turns it off). Metal and Vulkan.
+- **Steam Deck: Controller gyro works under Steam Input** (#566). In Game Mode (and any game started from Steam with
+  Steam Input) Steam hides the Deck's built-in controller from games and gives them its virtual pad, which has no
+  gyro, so **Controller gyro** had nothing to read. The game now keeps reading every button from Steam's virtual pad
+  and opens the built-in controller next to it for its gyro and accelerometer only: its buttons never count twice,
+  it never rumbles and the prompts keep following the controller in use. A controller with its own gyro in use
+  keeps its gyro. Without Steam Input the built-in controller is the normal controller, as before.
+  `WWHD_DECK_GYRO=0` turns this off. Thanks to the Metroid Prime 2 port's approach and rivyr, who worked it out
+  there.
+- **Linux: the applications menu entry is optional** (#625). Setup asks "Add a menu entry" (in the setup window
+  and in a terminal; `--desktop-entry` / `--no-desktop-entry` answer it). It is on by default for a source build
+  and off when setup runs from the AppImage, which starts the game itself. Updates and repairs keep the choice,
+  and "no" removes the `wwhd.desktop` an earlier setup wrote (only setup's own entry, never another one).
 
 ### Fixed
 
@@ -51,32 +87,18 @@ what is on `devel` and not released yet (also in the
   the in-between frames never further from Link than both game steps (so not inside the wall). The first pull-in
   onto a wall, a sudden jump of more than 30 % and cutscene cuts are still drawn exactly. `WWHD_INTERP_CAM_WALL=0`
   restores the old behaviour.
-### Improved
+- **Lighting: no dotted grid in the ambient occlusion at 2x and 3x** (#631, thanks @itsarahtonin for the fix, #632).
+  At higher internal resolutions the blur of the AO and sun-shadow light buffer read its taps off the console's
+  texel grid, which left a faint dotted pattern wherever the AO is partly dark. The taps now read the console's grid
+  at whole-number scales (fractional scales keep the previous filter, 1x is unchanged), so the AO looks as it does at
+  1x; Metal and Vulkan.
 
-- **Steam Deck: Controller gyro works under Steam Input** (#566). In Game Mode (and any game started from Steam with
-  Steam Input) Steam hides the Deck's built-in controller from games and gives them its virtual pad, which has no
-  gyro, so **Controller gyro** had nothing to read. The game now keeps reading every button from Steam's virtual pad
-  and opens the built-in controller next to it for its gyro and accelerometer only: its buttons never count twice,
-  it never rumbles and the prompts keep following the controller in use. A controller with its own gyro in use
-  keeps its gyro. Without Steam Input the built-in controller is the normal controller, as before.
-  `WWHD_DECK_GYRO=0` turns this off. Thanks to the Metroid Prime 2 port's approach and rivyr, who worked it out
-  there.
-- **Linux: the applications menu entry is optional** (#625). Setup asks "Add a menu entry" (in the setup window
-  and in a terminal; `--desktop-entry` / `--no-desktop-entry` answer it). It is on by default for a source build
-  and off when setup runs from the AppImage, which starts the game itself. Updates and repairs keep the choice,
-  and "no" removes the `wwhd.desktop` an earlier setup wrote (only setup's own entry, never another one).
-### New
+### Build and testing
 
-- **Slow walk** (#626). A new input in **Settings › Controls**, **Slow walk (hold)**, under Jump anywhere and the
-  moon jump: while it is held, the left stick (the movement keys or a controller) moves Link at a share of its
-  tilt, so a full tilt walks instead of running. The share is its **Speed**, 10–90 %, 30 % by default (also on
-  the settings page as **Controls › Slow walk speed**). Unbound by default, since Left Shift is the keyboard's ZL;
-  choose a key or controller input for it. Controls files from before keep working unchanged.
-- **FXAA no longer blurs the HUD and text** (#587). With FXAA (Graphics › Edge smoothing) on, the game's 3D picture
-  is now smoothed before the HUD is drawn over it, so hearts, rupees, the buttons, text and menus stay sharp while
-  3D edges are smoothed as before. Pictures without a HUD (cutscenes, the title's 2D parts) are smoothed as before.
-  Metal and Vulkan, with every resolution scale, HDR, frame interpolation and 60 fps (generated). `WWHD_FXAA_HUD=1`
-  smooths the whole picture as before; with FXAA off nothing changes.
+- **Releases from a green dry run** (#657). A release tag now publishes the already checked files of a green dry
+  run of the same commit (started with `version` set to the release, e.g. `v0.6.0`) instead of building every
+  platform again; the files are checked again (names, version, signatures, the guard) before publishing. Without such
+  a dry run the tag builds as before.
 
 ## v0.5.2
 
