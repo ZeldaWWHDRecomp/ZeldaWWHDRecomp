@@ -99,6 +99,12 @@ void set_invert_camera_y(bool on) {
     m.invert_camera_y = on;
     input_map::set_current(m);
 }
+void set_invert_camera_x(bool on) {
+    input_map::Mapping m = input_map::current();
+    if (m.invert_camera_x == on) return;
+    m.invert_camera_x = on;
+    input_map::set_current(m);
+}
 
 std::vector<std::string> tabs() {
     std::lock_guard lock(g_mu);
@@ -785,6 +791,17 @@ void register_builtin() {
         it.help = "The camera, first person and aiming turn the other way up and down.";
         it.get = [] { return input_map::invert_camera_y() ? 1.0f : 0.0f; };
         it.set = [](float v) { set_invert_camera_y(v >= 0.5f); };
+        add(std::move(it));
+    }
+    {
+        Item it;
+        it.id = "camera.invert-x", it.tab = "camera", it.label = "Invert camera left/right", it.kind = Kind::Toggle;
+        // the decomp build until its camera carries the points (mods/camera.cpp): dimmed, the saved value kept
+        it.help = mods::invert_camera_x_available() ? "The camera, first person and aiming turn the other way left and right."
+                                                    : "Recompiled version only for now.";
+        it.get = [] { return input_map::invert_camera_x() ? 1.0f : 0.0f; };
+        it.set = [](float v) { set_invert_camera_x(v >= 0.5f); };
+        it.enabled = [] { return mods::invert_camera_x_available(); };
         add(std::move(it));
     }
     {

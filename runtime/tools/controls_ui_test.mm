@@ -24,6 +24,7 @@ float cameraSpeed = 1.f, mouseSensitivity = .15f;
 }
 namespace mods {
 float camera_speed() { return cameraSpeed; }
+bool invert_camera_x_available() { return true; }
 float mouse_sensitivity() { return mouseSensitivity; }
 }
 namespace game_settings {

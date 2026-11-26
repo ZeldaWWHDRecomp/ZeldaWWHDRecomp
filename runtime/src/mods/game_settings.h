@@ -61,6 +61,7 @@ void set_targeting_letterbox_mode(int mode); // main thread, applies and persist
 void set_camera_speed(float speed);         // main thread
 void set_mouse_sensitivity(float degrees);  // main thread
 void set_invert_camera_y(bool on);          // main thread
+void set_invert_camera_x(bool on);          // main thread (issue #604)
 void set_fov_scale(float scale);            // main thread (1 = the original gameplay field of view)
 void set_rumble(bool on);                   // main thread
 void set_move_speed_bar(bool on);           // main thread

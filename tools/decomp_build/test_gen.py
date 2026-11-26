@@ -348,6 +348,33 @@ class GenTest(unittest.TestCase):
         self.run_gen("--game-build")
         self.assertNotIn(moved, self.read("decomp_hooks.txt"))
 
+    def test_port_sites_option_moved_unwired(self):
+        """port_sites.py OPTION sites (Invert camera left/right, #604): moved whenever the function is decompiled (game
+        build), so they never keep it recompiled; without the marker hooks.cpp lists them in kUnwiredSites (the option is
+        off), with it not"""
+        import port_sites
+        site = next(s for s in port_sites.SITES if s.get("option"))
+        os.makedirs(os.path.join(self.src, os.path.dirname(site["path"])), exist_ok=True)
+        with open(os.path.join(self.src, "tools/verify/units/opt.txt"), "w") as f:
+            f.write("src %s\n" % site["path"])
+        moved = "# moved-site %08X" % site["site"]
+        unwired = "kUnwiredSites[] = {0x%08Xu" % site["site"]
+        with open(os.path.join(self.src, site["path"]), "w") as f:
+            f.write("VERIFY(0x%08X, updatePad)\n" % site["func"])
+        self.run_gen()
+        self.assertNotIn(moved, self.read("decomp_hooks.txt"))  # not a game build: as before
+        self.assertIn("kNumUnwiredSites = 0;", self.read("hooks.cpp"))
+        self.run_gen("--game-build")
+        self.assertIn(moved, self.read("decomp_hooks.txt"))
+        self.assertIn("unwired:", self.read("decomp_hooks.txt"))
+        self.assertIn(unwired, self.read("hooks.cpp"))
+        with open(os.path.join(self.src, site["path"]), "w") as f:
+            f.write("VERIFY(0x%08X, updatePad)\nx = %s, this, y);\n" % (site["func"], site["marker"]))
+        self.run_gen("--game-build")
+        self.assertIn(moved, self.read("decomp_hooks.txt"))
+        self.assertNotIn("unwired:", self.read("decomp_hooks.txt"))
+        self.assertIn("kNumUnwiredSites = 0;", self.read("hooks.cpp"))
+
     def test_port_sites_empty_moved_with_function(self):
         """port_sites.EMPTY: a retired empty site moves whenever its function is decompiled (game build), marker or not"""
         import port_sites

@@ -795,7 +795,7 @@ input::PadState keyboard_state(const Mapping& m, const bool* keys, int count) {
     s.rx = v[kRRight] - v[kRLeft];
     s.ry = v[kRUp] - v[kRDown];
     if (s.lx && s.ly) { s.lx *= 0.7071f; s.ly *= 0.7071f; }  // keep diagonal walking at full-stick length
-    // invert_camera_y is not applied here: the camera applies it (camera_invert.h, issue #167)
+    // invert_camera_y / _x are not applied here: the camera applies them (camera_invert.h, issues #167, #604)
     return s;
 }
 
@@ -1373,6 +1373,8 @@ std::string to_json(const Mapping& m) {
     if (!m.prompt_text_colours) prompts += ",\n    \"button_text_colours\": false";
     // issue #267: written only when on (files without it stay as they were)
     if (m.background_controllers) prompts += ",\n    \"background_controllers\": true";
+    // issue #604: written only when on
+    if (m.invert_camera_x) prompts += ",\n    \"invert_camera_x\": true";
     if (m.l_turns_page) prompts += ",\n    \"l_turns_gamepad_page\": true";
     if (!m.settings_pause_page) prompts += ",\n    \"settings_pause_page\": false";
     char opt[320];
@@ -1510,6 +1512,7 @@ bool from_json(const std::string& text, Mapping& out, std::string* error) {
         if (const Json* i = op->get("file_select_quit"); i && i->type == Json::Bool) m.file_select_quit = i->b;
         if (const Json* i = op->get("skip_controller_selection"); i && i->type == Json::Bool) m.skip_controller_selection = i->b;
         if (const Json* i = op->get("invert_camera_y"); i && i->type == Json::Bool) m.invert_camera_y = i->b;
+        if (const Json* i = op->get("invert_camera_x"); i && i->type == Json::Bool) m.invert_camera_x = i->b;
         if (const Json* i = op->get("background_controllers"); i && i->type == Json::Bool) m.background_controllers = i->b;
         if (const Json* i = op->get("l_turns_gamepad_page"); i && i->type == Json::Bool) m.l_turns_page = i->b;
         if (const Json* i = op->get("settings_pause_page"); i && i->type == Json::Bool) m.settings_pause_page = i->b;
@@ -1636,6 +1639,7 @@ static std::atomic<bool> g_skip_controller_selection{true};
 static std::atomic<bool> g_background_controllers{false};
 static std::atomic<bool> g_file_select_quit{true};
 static std::atomic<bool> g_invert_camera_y{false};
+static std::atomic<bool> g_invert_camera_x{false};
 static std::atomic<bool> g_l_turns_page{false};
 static std::atomic<bool> g_settings_pause_page{true};
 // format 1 (or no file) at startup: the old Jump anywhere button is still to be applied
@@ -1791,6 +1795,7 @@ void set_current(const Mapping& requested, bool save) {
         // writer overwrite a newer value, leaving the camera inverted while
         // current().invert_camera_y is false until another mapping update.
         g_invert_camera_y = m.invert_camera_y;
+        g_invert_camera_x = m.invert_camera_x;
     }
     g_skip_controller_selection = m.skip_controller_selection;
     g_background_controllers = m.background_controllers;
@@ -1807,6 +1812,7 @@ bool file_select_quit() { return g_file_select_quit.load(std::memory_order_relax
 bool skip_controller_selection() { return g_skip_controller_selection.load(std::memory_order_relaxed); }
 bool background_controllers() { return g_background_controllers.load(std::memory_order_relaxed); }
 bool invert_camera_y() { return g_invert_camera_y.load(std::memory_order_relaxed); }
+bool invert_camera_x() { return g_invert_camera_x.load(std::memory_order_relaxed); }
 bool settings_pause_page() { return g_settings_pause_page.load(std::memory_order_relaxed); }
 bool l_turns_page() { return g_l_turns_page.load(std::memory_order_relaxed); }
 

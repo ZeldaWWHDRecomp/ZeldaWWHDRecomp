@@ -3092,6 +3092,8 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
     controls_options::Values o;
     o.deadzone = m.deadzone;
     o.invert_camera_y = m.invert_camera_y;
+    o.invert_camera_x = m.invert_camera_x;
+    o.invert_x_available = mods::invert_camera_x_available();
     o.rumble = rumble::enabled();
     o.rumble_available = input::has_rumble();
 #ifdef __ANDROID__
@@ -3111,6 +3113,7 @@ void controls_controller_page(input_map::Mapping& m, bool pro) {
                    controls_options::kRangeRight)) {
         m.deadzone = o.deadzone;
         m.invert_camera_y = o.invert_camera_y;
+        m.invert_camera_x = o.invert_camera_x;
         m.left_range = o.range[0];
         m.right_range = o.range[1];
         edit_set(m);

@@ -238,6 +238,7 @@ struct UIState {
 @property(strong) NSTextField* leftRangeValue;
 @property(strong) NSTextField* rightRangeValue;
 @property(strong) NSButton* invertY;
+@property(strong) NSButton* invertX;  // issue #604
 @property(strong) NSArray<NSButton*>* cameraButtons;
 @property(strong) NSSlider* cameraSpeed;
 @property(strong) NSSlider* mouseSensitivity;
@@ -1115,6 +1116,22 @@ static NSTextField* label(NSString* s) {
     NSButton* inv = [NSButton checkboxWithTitle:@"Invert camera up/down" target:self action:@selector(invertChanged:)];
     inv.toolTip = @"Camera only, including first-person views and item aiming (bow, hookshot, telescope, Picto Box) and the mouse camera. The Wind Waker baton and other right-stick controls are not inverted.";
     self.invertY = inv;
+    NSButton* invx = [NSButton checkboxWithTitle:@"Invert camera left/right" target:self action:@selector(invertChanged:)];
+    invx.toolTip = @"The same for left and right: the camera, first-person views, item aiming and the mouse camera turn the other way. The Wind Waker baton and other right-stick controls are not inverted.";
+    self.invertX = invx;
+    // the decomp build until its camera carries the points for the X reads (mods/camera.cpp): greyed out with a
+    // note under it, the saved value kept
+    NSTextField* invxNote = label(@"Recompiled version only for now");
+    invxNote.font = [NSFont systemFontOfSize:NSFont.smallSystemFontSize];
+    invxNote.textColor = NSColor.secondaryLabelColor;
+    const bool invxOk = mods::invert_camera_x_available();
+    invx.enabled = invxOk;
+    invxNote.hidden = invxOk;
+    if (!invxOk) invx.toolTip = @"Recompiled version only for now: this decomp build's camera does not apply it yet. Your setting is kept.";
+    NSStackView* invxs = [NSStackView stackViewWithViews:@[invx, invxNote]];
+    invxs.orientation = NSUserInterfaceLayoutOrientationVertical;
+    invxs.alignment = NSLayoutAttributeLeading;
+    invxs.spacing = 1;
     // issue #40: stick range, one slider per stick (worn sticks usually wear one at a time)
     NSString* rangeTip = @"Default: 100% (no change). Scales the stick after the dead zone so a short stick reaches full deflection.";
     auto rangeSlider = [&](NSInteger tag) {
@@ -1203,12 +1220,12 @@ static NSTextField* label(NSString* s) {
     NSStackView* cameraOptions = [NSStackView stackViewWithViews:@[label(@"Camera speed:"),cameraSpeed,label(@"Mouse sensitivity:"),mouseSensitivity]];
     cameraOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameraOptions.spacing = 12;
-    for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions]) {
+    for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, invxs, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:v];
     }
 
-    NSDictionary* v = NSDictionaryOfVariableBindings(bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh,
+    NSDictionary* v = NSDictionaryOfVariableBindings(bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, invxs, lrl, lr, lrv, rrl, rr, rrv, rh,
                                                      ppl, pp, snl, sn, pc, ptc, cameras, cameraOptions);
     auto C = [&](NSString* f, NSLayoutFormatOptions o = 0) {
         [root addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:f options:o metrics:nil views:v]];
@@ -1219,11 +1236,12 @@ static NSTextField* label(NSString* s) {
     C(@"H:|-0-[pv]-0-|");
     C(@"H:|-0-[sep]-0-|");
     C(@"H:|-16-[st]-16-|");
-    C(@"H:|-16-[reset]-(>=24)-[dzl]-8-[dz(160)]-6-[dzv(40)]-24-[inv]-16-|", NSLayoutFormatAlignAllCenterY);
+    C(@"H:|-16-[reset]-(>=24)-[dzl]-8-[dz(160)]-6-[dzv(40)]-24-[inv]-16-[invxs]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[rh]-(>=24)-[lrl]-8-[lr(160)]-6-[lrv(40)]-24-[rrl]-8-[rr(160)]-6-[rrv(40)]-16-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[ppl]-8-[pp]-24-[snl]-8-[sn]-24-[pc]-16-[ptc]-(>=16)-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[cameras]-(>=16)-|");
     C(@"H:|-16-[cameraOptions]-(>=16)-|");
+    C(@"V:[invxs]-(>=6)-[lr]");  // the note under Invert camera left/right keeps clear of the stick ranges
     C(@"V:|-12-[which]-6-[skip]-6-[fl]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-10-[cameras]-8-[cameraOptions]-14-|");
     [w center];
     [self syncOptions];
@@ -1282,6 +1300,7 @@ static NSTextField* label(NSString* s) {
     self.cameraSpeed.doubleValue = mods::camera_speed();
     self.mouseSensitivity.doubleValue = mods::mouse_sensitivity();
     self.invertY.state = _st.m.invert_camera_y ? NSControlStateValueOn : NSControlStateValueOff;
+    self.invertX.state = _st.m.invert_camera_x ? NSControlStateValueOn : NSControlStateValueOff;
     self.leftRange.doubleValue = _st.m.left_range;
     self.rightRange.doubleValue = _st.m.right_range;
     self.leftRangeValue.stringValue = [NSString stringWithFormat:@"%.0f%%", _st.m.left_range * 100];
@@ -1685,7 +1704,9 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 - (void)mouseSensitivityChanged:(NSSlider*)s { game_settings::set_mouse_sensitivity(s.floatValue); }
 
 - (void)invertChanged:(NSButton*)b {
-    _st.m.invert_camera_y = b.state == NSControlStateValueOn;
+    // both checkboxes (issue #604): each changes its own axis
+    if (b == self.invertX) _st.m.invert_camera_x = b.state == NSControlStateValueOn;
+    else _st.m.invert_camera_y = b.state == NSControlStateValueOn;
     [self commit];
 }
 
@@ -1897,6 +1918,15 @@ static int self_test() {
     c.invertY.state = NSControlStateValueOn;
     [c invertChanged:c.invertY];
     expect(current().invert_camera_y, "invert camera Y");
+    expect(!current().invert_camera_x, "invert camera Y leaves X alone");
+    c.invertX.state = NSControlStateValueOn;
+    [c invertChanged:c.invertX];
+    expect(current().invert_camera_x && current().invert_camera_y, "invert camera X");
+    c.invertX.state = NSControlStateValueOff;
+    [c invertChanged:c.invertX];
+    expect(!current().invert_camera_x && current().invert_camera_y, "invert camera X off, Y stays");
+    c.invertX.state = NSControlStateValueOn;
+    [c invertChanged:c.invertX];
     c.rightRange.doubleValue = 1.111;
     [c rangeChanged:c.rightRange];
     expect(current().right_range == 1.11f && current().left_range == 1.0f, "right stick range = 111%");

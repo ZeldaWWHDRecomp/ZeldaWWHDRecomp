@@ -719,8 +719,11 @@ def _main():
     lines += ["# moved-site %08X  # in %08X (tools/decomp_build/fast_hooks.py)" % x for x in sorted(moved_sites)]
     # port hooks the decompiled source carries itself (port_sites.py; game build only): recomp.py keeps no function for
     # these sites
+    # (an OPTION site without its marker is moved too: its option is off in this build, hooks.cpp kUnwiredSites)
+    unwired = port_sites.unwired(set(listed), texts) if a.game_build else []
     if a.game_build:
-        lines += ["# moved-site %08X  # in %08X (%s)" % (m["site"], m["func"], m["path"])
+        lines += ["# moved-site %08X  # in %08X (%s)%s" % (m["site"], m["func"], m["path"],
+                                                           ", unwired: %s off" % m["option"] if m in unwired else "")
                   for m in port_sites.moved(set(listed), texts)]
     write_if_changed(os.path.join(out, "decomp_hooks.txt"), "\n".join(lines) + "\n")
     write_if_changed(os.path.join(out, "excluded.txt"), "".join(
@@ -749,7 +752,10 @@ def _main():
     h += ["const uint32_t kGuestHooked[] = {%s};" % ", ".join(["0x%08Xu" % x for x in gh] or ["0u"]),
           "const unsigned kNumGuestHooked = %d;" % len(gh)]
     h += ["const uint32_t kFrameExact[] = {%s};" % ", ".join(["0x%08Xu" % x for x in fx] or ["0u"]),
-          "const unsigned kNumFrameExact = %d;" % len(fx), "}  // namespace decomp", "", 'extern "C" {']
+          "const unsigned kNumFrameExact = %d;" % len(fx)]
+    uw = sorted(m["site"] for m in unwired)
+    h += ["const uint32_t kUnwiredSites[] = {%s};" % ", ".join(["0x%08Xu" % x for x in uw] or ["0u"]),
+          "const unsigned kNumUnwiredSites = %d;" % len(uw), "}  // namespace decomp", "", 'extern "C" {']
     entries = ["void hook_%08X(Cpu* c) { decomp::call(c, %d); }" % (x, i) for i, x in enumerate(listed) if x not in hooks]
     # a hooked function's original (recomp.py: f_X_orig calls hookorig_X): the decompiled body, else f_X_orig_rc
     entries += ["void hookorig_%08X(Cpu* c) { decomp::call(c, %d); }" % (x, i) for i, x in enumerate(listed) if x in hooks]
