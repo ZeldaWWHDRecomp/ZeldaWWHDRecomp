@@ -861,6 +861,15 @@ void register_builtin() {
         add(std::move(it));
     }
     {
+        Item it;
+        it.id = "camera.aim-stick", it.tab = "camera", it.label = "First-person aiming", it.kind = Kind::Choice;
+        it.help = "The stick that aims in first person. Left: as on the GameCube; the right stick then moves and zooms.";
+        it.choices = {"Right stick (HD)", "Left stick (classic)"};
+        it.get = [] { return mods::aim_left_stick() ? 1.0f : 0.0f; };
+        it.set = [](float v) { mods::set_aim_left_stick(std::lround(v) == 1); };
+        add(std::move(it));
+    }
+    {
         Item it = builtin_toggle("camera", "direct-camera", "Direct camera",
                                  "The right stick turns the camera at once, without the game's easing.");
         add(std::move(it));

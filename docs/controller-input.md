@@ -62,6 +62,33 @@ and the event cameras keep their own use of the stick. The mouse and touch
 camera's up/down follow the same choice. It is saved in the settings
 (`cameraStickPitch`); `WWHD_CAM_STICK_PITCH=1` (or `0`) overrides it for a run.
 
+**First-person aiming** (Controls → Camera, the item menu's settings page under
+Camera, and the macOS Controls window; issue #666) chooses which controller stick
+aims in first person:
+
+- **Right stick (HD)**, the default: as on the Wii U, the right stick aims and
+  the left stick walks (HD lets Link walk while he aims) and zooms the telescope
+  and the Picto Box.
+- **Left stick (classic)**: as on the GameCube, the left stick aims, and the
+  right stick does what the left one did: it walks, and it zooms the telescope
+  and the Picto Box (the GameCube zoomed with the C stick).
+
+It applies in first person (R3 look) and while Link aims the bow, hookshot,
+boomerang, grappling hook, telescope or Picto Box, also from the boat. The aim
+keeps the game's speed, response and limits (including the telescope's and the
+Picto Box's slower turning while zoomed in); **Invert camera up/down** and the
+game's own aiming inversion still apply. Outside first person nothing changes,
+nor while targeting with the bow, hookshot or boomerang (that view uses the
+targeting camera, and the left stick keeps walking), nor in the Picto Box's
+album, in choices, talks, menus and cutscenes, nor with the boat cannon (it aims
+with the left stick already). Only controllers swap, including the Android on-
+screen sticks: the keyboard's movement keys still walk, and the mouse camera and
+the gyro aim as before (the gyro aims while the aiming stick is at rest, so with
+Left stick (classic) while the left stick is). The port swaps the two sticks as
+read from the controller, before the keyboard is added, so the game itself is
+unchanged. It is saved in the settings (`aimLeftStick`); `WWHD_AIM_LEFT_STICK=1`
+(or `0`) overrides it for a run.
+
 While conducting, the **right stick supplies the notes**, including down. The
 **left stick controls the meter**: hold left or right to change the beat count.
 The D-pad does not substitute for the note stick in the original game. For example,

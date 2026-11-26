@@ -28,6 +28,9 @@ float mouse_sensitivity() { return mouseSensitivity; }
 bool stickPitch = false;
 bool camera_stick_pitch() { return stickPitch; }
 void set_camera_stick_pitch(bool look) { stickPitch = look; }
+bool aimLeft = false;
+bool aim_left_stick() { return aimLeft; }
+void set_aim_left_stick(bool left) { aimLeft = left; }
 }
 namespace game_settings {
 void set_camera_speed(float v) { cameraSpeed = v; }
@@ -211,6 +214,13 @@ int main() {
         assert(mods::stickPitch);
         mods::stickPitch=false;[g_controls syncOptions];
         assert(g_controls.stickPitch.indexOfSelectedItem==0);
+        // #666: First-person aiming, Right stick (HD) by default
+        assert(g_controls.aimStick.indexOfSelectedItem==0&&g_controls.aimStick.numberOfItems==2);
+        [g_controls.aimStick selectItemAtIndex:1];[g_controls aimStickChanged:g_controls.aimStick];
+        assert(mods::aimLeft);
+        [g_controls syncOptions];assert(g_controls.aimStick.indexOfSelectedItem==1);
+        mods::aimLeft=false;[g_controls syncOptions];
+        assert(g_controls.aimStick.indexOfSelectedItem==0);
         menu_settings_key_test();
         std::filesystem::remove(path);
         fprintf(stderr,"controls_ui_test: passed (incl. fixed Cmd+, Settings menu key)\n");

@@ -3401,6 +3401,15 @@ void controls_camera_page() {
     help("Zoom (original): up brings the camera closer and lower, down further and higher, as in the game. Look up "
          "and down: the camera tilts up and down around Link and keeps its distance. Invert camera up/down still "
          "applies; the mouse camera's up/down follows this too. First person, aiming and targeting are unchanged.");
+    // issue #666: which controller stick aims in first person (mods/camera.cpp aim_stick_filter; saved, applies at once)
+    int aim = mods::aim_left_stick() ? 1 : 0;
+    if (combo("First-person aiming", &aim, "Right stick (HD)\0Left stick (classic)\0"))
+        hostui::post([aim] { mods::set_aim_left_stick(aim == 1); });
+    help("Right stick (HD): the right stick aims and the left stick walks and zooms, as on the Wii U. Left stick "
+         "(classic): the left stick aims, as on the GameCube, and the right stick walks and zooms the telescope and "
+         "the Picto Box. In first person (R3) and when aiming the bow, hookshot, boomerang, grappling hook, "
+         "telescope or Picto Box; elsewhere nothing changes. Invert camera up/down still applies; the keyboard, "
+         "mouse and gyro aim as before.");
     heading("Movement and sailing");
     camera_extra_rows();
 }

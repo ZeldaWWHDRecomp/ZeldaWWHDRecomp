@@ -60,6 +60,9 @@
 //   delta. @02510DEC cancels that reversal for both inputs at the latitude call only, without
 //   changing the style's limits or its centre-height, radius and field-of-view input.
 //
+// First-person aiming: Left stick (classic) (issue #666): aim_stick_filter swaps the controllers' sticks in
+//   input::read() while Link looks or aims in first person (aim_stick.h has when and why); no hooks of its own.
+//
 // Logic only runs on logic passes: the sites run inside the camera's execute, and the camera's
 // manual and subject modes run at 30 Hz with frame interpolation, so the per-step amounts above hold in all modes; interpolation blends the drawn camera.
 #include <atomic>
@@ -70,6 +73,7 @@
 #include <vector>
 
 #include "../camera_invert.h"
+#include "aim_stick.h"
 #include "camera_mouse.h"
 #include "camera_swipe.h"
 #include "steer.h"
@@ -399,6 +403,28 @@ void filter_pad(input::PadState& s) {
     leaf_filter_pad(s);
     lock_on_filter_pad(s);
     editor::filter_pad(s);  // the world editor's fly camera takes the controller (the game gets nothing)
+}
+
+// First-person aiming: Left stick (classic) (issue #666, aim_stick.h): the controller sticks swap while Link looks
+// or aims in first person. In input::read() before the keyboard is merged in, so only controllers (and the scripted
+// test sticks) swap.
+void aim_stick_filter(input::PadState& s) {
+    static std::atomic<bool> was{false};  // (traces only; input::read runs on more than one thread)
+    bool on = false;
+    if (aim_left_stick()) {
+        static const bool wanted = (play_context_want(true), true);  // (the album, menus, events)
+        (void)wanted;
+        const uint32_t gi = GD(0x1046F0B0);
+        const uint32_t st0 = ld32(gi + GI(playctx::kPlayerStatus0)), st1 = ld32(gi + GI(playctx::kPlayerStatus1));
+        on = aim_stick::active(true, in_first_person(), camera_mouse::cannon_aim(link_proc(), link_in_ship()), st0, st1,
+                               play_context());
+        if (on != was.exchange(on)) trace("aim stick: %s (step %llu, subject camera %llu, proc %X, status %08X %08X)",
+                             on ? "left stick aims" : "sticks as the game", (unsigned long long)step(),
+                             (unsigned long long)g_subject_step, link_proc(), st0, st1);
+    } else {
+        was = false;
+    }
+    if (on) aim_stick::swap(s.lx, s.ly, s.rx, s.ry);
 }
 
 // the camera turned by the player lately: the right stick's manual camera ran, or the mouse / a swipe (and the

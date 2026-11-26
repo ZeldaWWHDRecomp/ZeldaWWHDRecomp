@@ -243,6 +243,7 @@ struct UIState {
 @property(strong) NSSlider* cameraSpeed;
 @property(strong) NSSlider* mouseSensitivity;
 @property(strong) NSPopUpButton* stickPitch;  // Right stick up/down (#661)
+@property(strong) NSPopUpButton* aimStick;    // First-person aiming: right / left stick (#666)
 @property(strong) NSButton* skipController;
 @property(strong) NSPopUpButton* prompts;        // in-game button prompts (#143)
 @property(strong) NSPopUpButton* shoulderNames;
@@ -1219,17 +1220,28 @@ static NSTextField* label(NSString* s) {
     stickPitch.toolTip = @"Zoom (original): up brings the camera closer and lower, down further and higher, as in the game. "
                          @"Look up and down: the camera tilts up and down around Link and keeps its distance.";
     self.stickPitch = stickPitch;
+    // issue #666: the stick that aims in first person (mods/camera.cpp aim_stick_filter)
+    NSPopUpButton* aimStick = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [aimStick addItemsWithTitles:@[@"Right stick (HD)", @"Left stick (classic)"]];
+    aimStick.target = self;
+    aimStick.action = @selector(aimStickChanged:);
+    aimStick.toolTip = @"Right stick (HD): the right stick aims in first person, as on the Wii U. "
+                       @"Left stick (classic): the left stick aims, as on the GameCube, and the right stick walks and zooms.";
+    self.aimStick = aimStick;
     NSStackView* cameraOptions = [NSStackView stackViewWithViews:@[label(@"Camera speed:"),cameraSpeed,label(@"Mouse sensitivity:"),mouseSensitivity,
                                                                    label(@"Right stick up/down:"),stickPitch]];
     cameraOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameraOptions.spacing = 12;
-    for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pcl, pc, ptc, cameras, cameraOptions]) {
+    NSStackView* aimOptions = [NSStackView stackViewWithViews:@[label(@"First-person aiming:"),aimStick]];
+    aimOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
+    aimOptions.spacing = 12;
+    for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pcl, pc, ptc, cameras, cameraOptions, aimOptions]) {
         v.translatesAutoresizingMaskIntoConstraints = NO;
         [root addSubview:v];
     }
 
     NSDictionary* v = NSDictionaryOfVariableBindings(bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh,
-                                                     ppl, pp, snl, sn, pcl, pc, ptc, cameras, cameraOptions);
+                                                     ppl, pp, snl, sn, pcl, pc, ptc, cameras, cameraOptions, aimOptions);
     auto C = [&](NSString* f, NSLayoutFormatOptions o = 0) {
         [root addConstraints:[NSLayoutConstraint constraintsWithVisualFormat:f options:o metrics:nil views:v]];
     };
@@ -1244,7 +1256,8 @@ static NSTextField* label(NSString* s) {
     C(@"H:|-16-[ppl]-8-[pp]-24-[snl]-8-[sn]-24-[pcl]-8-[pc]-16-[ptc]-(>=16)-|", NSLayoutFormatAlignAllCenterY);
     C(@"H:|-16-[cameras]-(>=16)-|");
     C(@"H:|-16-[cameraOptions]-(>=16)-|");
-    C(@"V:|-12-[which]-6-[skip]-6-[fl]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-10-[cameras]-8-[cameraOptions]-14-|");
+    C(@"H:|-16-[aimOptions]-(>=16)-|");
+    C(@"V:|-12-[which]-6-[skip]-6-[fl]-6-[pv(>=400)]-0-[sep]-8-[st]-8-[reset]-10-[lr]-10-[pp]-10-[cameras]-8-[cameraOptions]-8-[aimOptions]-14-|");
     [w center];
     [self syncOptions];
     [self syncWhich];
@@ -1302,6 +1315,7 @@ static NSTextField* label(NSString* s) {
     self.cameraSpeed.doubleValue = mods::camera_speed();
     self.mouseSensitivity.doubleValue = mods::mouse_sensitivity();
     [self.stickPitch selectItemAtIndex:mods::camera_stick_pitch() ? 1 : 0];
+    [self.aimStick selectItemAtIndex:mods::aim_left_stick() ? 1 : 0];
     self.invertY.state = _st.m.invert_camera_y ? NSControlStateValueOn : NSControlStateValueOff;
     self.leftRange.doubleValue = _st.m.left_range;
     self.rightRange.doubleValue = _st.m.right_range;
@@ -1705,6 +1719,7 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 - (void)cameraSpeedChanged:(NSSlider*)s { game_settings::set_camera_speed(s.floatValue); }
 - (void)mouseSensitivityChanged:(NSSlider*)s { game_settings::set_mouse_sensitivity(s.floatValue); }
 - (void)stickPitchChanged:(NSPopUpButton*)p { mods::set_camera_stick_pitch(p.indexOfSelectedItem == 1); }
+- (void)aimStickChanged:(NSPopUpButton*)p { mods::set_aim_left_stick(p.indexOfSelectedItem == 1); }
 
 - (void)invertChanged:(NSButton*)b {
     _st.m.invert_camera_y = b.state == NSControlStateValueOn;

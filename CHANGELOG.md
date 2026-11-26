@@ -20,6 +20,14 @@ what is on `devel` and not released yet (also in the
 
 ### New
 
+- **First-person aiming: Right stick (HD) or Left stick (classic)** (#666, thanks @rnp509). A new choice in
+  **Settings › Controls › Camera**: with *Left stick (classic)* the left stick aims in first person, as on the
+  GameCube: R3 look, the bow, hookshot, boomerang, grappling hook, telescope and Picto Box (also from the boat), and
+  the right stick takes over what the left stick did there (walking, and zooming the telescope and the Picto Box).
+  The game's aiming speed and limits stay, and Invert camera up/down and the game's own aiming inversion still
+  apply. Outside first person, and while targeting with an item, nothing changes. Only controllers swap: the
+  keyboard, mouse and gyro aim as before. *Right stick (HD)* is the default; also on the item menu's settings page
+  and in the macOS Controls window (`WWHD_AIM_LEFT_STICK=1` for a run).
 - **Right stick up/down: Zoom or Look up and down** (#661, thanks @stonerbong42069). A new choice in
   **Settings › Controls › Camera**: *Zoom (original)* keeps Wind Waker's camera, where up brings the camera closer
   and lower and down further and higher; *Look up and down* tilts the camera up and down around Link instead and
