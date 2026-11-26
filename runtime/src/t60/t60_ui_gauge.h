@@ -28,7 +28,7 @@ const bool g_nc = [] {
 }();
 FILE* const g_log = getenv("WWHD_T60_FLYGAUGE_LOG") ? fopen(getenv("WWHD_T60_FLYGAUGE_LOG"), "w") : nullptr;
 const uint32_t kPlay = GD(0x1046F0B0);                // g_dComIfG_gameInfo.play
-constexpr uint32_t kPlayer0 = 0x5B2C, kPartner = 0x5B38;  // mPlayerInfo[0].mpPlayer, mpPlayerPtr[1]
+const uint32_t kPlayer0 = GI(0x5B2C), kPartner = GI(0x5B38);  // mPlayerInfo[0].mpPlayer, mpPlayerPtr[1]
 constexpr uint32_t kEyePos = 0x37C;                    // fopAc_ac_c::eyePos
 const uint32_t kHudBlock = GD(0x1047B03Cu);            // sHeartTimers / sMagicPlacement (d_meter_00 / hd_screen_magic_bar)
 constexpr uint32_t kPointX = 0xC, kPointY = 0x10, kBlend = 0x30;

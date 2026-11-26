@@ -710,7 +710,7 @@ void end_pass(uint64_t pass, uint64_t step, bool hold, int phase, int passes, fl
             g_cam.eye[2], g_cam.center[0], g_cam.center[1], g_cam.center[2]);
     if (g_link_n) fprintf(g_f, " L %.3f %.3f %.3f", g_link[0], g_link[1], g_link[2]);
     else fputs(" L - - -", g_f);
-    fprintf(g_f, " ev %u %u %.3f", (unsigned)ld8(play + 0x5292), (unsigned)ld8(play + 0x5BB2), ms);
+    fprintf(g_f, " ev %u %u %.3f", (unsigned)ld8(play + 0x5292), (unsigned)ld8(play + GI(0x5BB2)), ms);
     if (g_joints && g_link_n >= kJ0 + kJn) {
         fputs(" J", g_f);
         for (int j = 0; j < kJn; j++)

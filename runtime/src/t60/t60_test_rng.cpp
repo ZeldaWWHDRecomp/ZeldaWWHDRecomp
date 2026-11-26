@@ -65,6 +65,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <unordered_map>
+#include "guest_addr.h"
 #include "ppc.h"
 #include "t60/t60.h"
 #include "t60/t60_test_rng_key.h"
@@ -203,7 +204,8 @@ bool t60_test_rng(char fn, uint32_t lr, float max, float* out) {
             // f5310 to index 664 / 662, 0.331 / 0.947: A ran, B attacked again, and its hit landed only in A).
             // WWHD_TEST_RNG_MASSSTREAM=0: the old keying.
             static const bool massStream = [] { const char* e = getenv("WWHD_TEST_RNG_MASSSTREAM"); return !(e && e[0] == '0'); }();
-            if (massStream && lr >= 0x02516C14u && lr < 0x02516D48u) stream |= 0x4D41000000000000ull; /* 'MA' */
+            static const uint32_t massLo = GC(0x02516C14u), massHi = GC(0x02516D48u);  // (this build's addresses)
+            if (massStream && lr >= massLo && lr < massHi) stream |= 0x4D41000000000000ull; /* 'MA' */
             idx = seq_index(key, stream, hold);
             f = hashed(mix(mix(mix(mix(c.seed) ^ 0x5E9ull) ^ key) ^ stream) ^ idx ^ htag);
         } else {

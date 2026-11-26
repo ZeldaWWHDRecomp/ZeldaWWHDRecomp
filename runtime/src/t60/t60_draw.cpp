@@ -270,7 +270,8 @@ const bool g_rot_newest = [] {
 }();
 constexpr float kRotStick = 0.1f;  // right-stick magnitude that counts as manual input (the raw -1..1 value)
 const uint32_t kPlayInfo = GD(0x1046F0B0);  // g_dComIfG_gameInfo.play (mods/hud_gate.cpp)
-constexpr uint32_t kEventRun = 0x5292, kMesgStatus = 0x5BB2, kScopeMesgStatus = 0x5BB3;
+constexpr uint32_t kEventRun = 0x5292;  // (before +0x5AB0: the same offset in every build)
+const uint32_t kMesgStatus = GI(0x5BB2), kScopeMesgStatus = GI(0x5BB3);  // (moved in the Japanese build: guest_addr.h GI)
 bool rot_manual_now() {
     const float rx = wwhd_t60_pad.stick[2], ry = wwhd_t60_pad.stick[3];
     if (rx * rx + ry * ry < kRotStick * kRotStick) return false;
@@ -357,7 +358,7 @@ const bool g_hat_nc = [] {
     const char* e = getenv("WWHD_T60_HAT_FRAMEEND_NEGCTRL");
     return e && atoi(e) != 0;
 }();
-constexpr uint32_t kPlayerPtr = 0x5B34;  // play + 0x5B34: the player actor (interp.cpp passlog)
+const uint32_t kPlayerPtr = GI(0x5B34);  // play + GI(0x5B34): the player actor (interp.cpp passlog)
 constexpr uint32_t kCLModel = 0x448;     // daPy_lk_c::mpCLModel
 constexpr uint32_t kHead = 15, kHatA = 26, kHatB = 27, kHatC = 28;  // CL_JNT_HEAD_JNT_e, CL_JNT_HATA..C_JNT_e
 constexpr uint32_t kHatJ[3] = {kHatA, kHatB, kHatC}, kHatP[3] = {kHead, kHatA, kHatB};  // (HATA under the head's frame)
@@ -588,7 +589,7 @@ const bool g_legpic_nc = [] {
     return e && atoi(e) != 0;
 }();
 FILE* const g_legpic_log = getenv("WWHD_T60_LEGPIC_LOG") ? fopen(getenv("WWHD_T60_LEGPIC_LOG"), "w") : nullptr;
-constexpr uint32_t kLegPlayer = 0x5B34;   // play + 0x5B34: the player actor
+const uint32_t kLegPlayer = GI(0x5B34);   // play + GI(0x5B34): the player actor
 constexpr uint32_t kLegCLModel = 0x448;   // daPy_lk_c::mpCLModel
 constexpr uint32_t kFootData = 0x73F0, kFootStride = 0x118;  // daPy_lk_c::mFootData[2]
 constexpr uint32_t kFootAngle = 0x2, kLegAAngle = 0x8, kLegBJointAngle = 0xA;
@@ -813,19 +814,19 @@ bool model(uint32_t model, uint32_t jnt, uint32_t mtx, uint32_t n, double w, uin
     h.pass = g_pass;
     // (a whole-form actor's picture step is no step of its own: not kept; drawn between its frame ends)
     const bool picture = g_whole_blend && picture_step(proc);
-    const bool link_gl = !glide::g_nc && proc == ld32(kPlayInfo + 0x5B34);  // (the glide: Link's models)
+    const bool link_gl = !glide::g_nc && proc == ld32(kPlayInfo + GI(0x5B34));  // (the glide: Link's models)
     if (link_gl && !picture) glide::record(proc, id, e->second.time);
-    const bool link_rp = !ratiopic::g_nc && proc == ld32(kPlayInfo + 0x5B34);  // (Link's models)
+    const bool link_rp = !ratiopic::g_nc && proc == ld32(kPlayInfo + GI(0x5B34));  // (Link's models)
     if (link_rp && !picture) {
         ratiopic::record(proc, id, e->second.time);
         if (model == ld32(proc + ratiopic::kCLModel)) ratiopic::g_cl_jnt = jnt;
     }
-    const uint32_t cy_link = carrypic::g_nc ? 0 : ld32(kPlayInfo + 0x5B34);  //
+    const uint32_t cy_link = carrypic::g_nc ? 0 : ld32(kPlayInfo + GI(0x5B34));  //
     if (cy_link && proc == cy_link && !picture) {
         carrypic::record(proc, id, e->second.time);
         if (model == ld32(proc + carrypic::kCLModel)) carrypic::g_cl_jnt = jnt;
     }
-    const bool link_ap = !attachpic::g_nc && proc == ld32(kPlayInfo + 0x5B34);  // (Link's models)
+    const bool link_ap = !attachpic::g_nc && proc == ld32(kPlayInfo + GI(0x5B34));  // (Link's models)
     if (link_ap && !picture && model == ld32(proc + ratiopic::kCLModel)) attachpic::g_cl_jnt = jnt;
     const bool link_legs = !g_legpic_nc && n > 40 && proc == ld32(kPlayInfo + kLegPlayer) &&
                            model == ld32(proc + kLegCLModel);  // (the leg IK: Link's CL model)
