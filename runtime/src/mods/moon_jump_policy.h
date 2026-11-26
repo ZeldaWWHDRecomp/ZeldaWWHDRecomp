@@ -4,6 +4,16 @@
 #include <cstdint>
 
 namespace mods::moon_jump_policy {
+// The moon jump leaves Link alone (no new flight, a flight ends) while the game runs an event (dComIfGp_event_runCheck:
+// talks, cutscenes, the lava / void-out restart) or while Link is in one of his damage or demo procedures
+// (daPyProc_*, the same ids in the HD): issue #616, holding it as he fell into lava put him into a fall out of
+// DEMO_LAVA_DAMAGE, whose step starts the restart, so the event it had ordered never ended (no control, no save).
+constexpr uint32_t kProcDamage = 0x66, kProcElecDamage = 0x6C;  // DAMAGE .. POLY, LARGE, LAVA (Gohma) .. ELEC_DAMAGE
+constexpr uint32_t kProcDemoFirst = 0xA9;                       // DEMO_TOOL: the demo procedures from here on
+constexpr uint32_t kProcDemoLavaDamage = 0xB0;
+inline bool leaves_alone(uint32_t proc, uint8_t event_mode) {
+    return event_mode != 0 || (proc >= kProcDamage && proc <= kProcElecDamage) || proc >= kProcDemoFirst;
+}
 // Speeds use the game's 30 Hz units; dt (a fraction of one 30 Hz step, the game passes 1) scales
 // only the turning rate.
 struct Steering { int16_t facing; float x = 0, z = 0; };

@@ -60,6 +60,11 @@ what is on `devel` and not released yet (also in the
 
 ### Fixed
 
+- **Moon jump: no more softlock when Link touches lava** (#616, thanks @swinter-code). Holding the moon jump as
+  Link fell into lava (in Dragon Roost Cavern, for example) skipped the burn and the return to the room's entrance:
+  afterwards only the moon jump moved Link, and saving was refused because the game still thought an event was
+  running. The moon jump now leaves Link alone while he takes damage, during his lava, freeze and death sequences,
+  and while an event or cutscene runs (talks too). It works again as soon as he is back in play.
 - **Frame interpolation: distant grass and bushes no longer flicker at 120 / 240 fps with a wider field of view**
   (#656, thanks @Ren148). With a gameplay FOV scale above 100 %, the in-between frames that 120 and 240 fps add
   decided what to draw with the original, narrower view, while showing the wider one. Tall grass, bushes and
