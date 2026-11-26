@@ -12,6 +12,8 @@
 extern "C" {
 void site_02171B1C(Cpu*); void site_024F9DA4(Cpu*); void site_0250074C(Cpu*); void site_02506C68(Cpu*);
 void site_02506C80(Cpu*);                                                    // camera.cpp: the right stick's y
+void site_02171B28(Cpu*); void site_02171DCC(Cpu*); void site_024F9D98(Cpu*); void site_0250073C(Cpu*);
+void site_02506C5C(Cpu*); void site_02506C74(Cpu*);                          // camera.cpp: the right stick's x
 void site_024FFA98(Cpu*); void site_025020E0(Cpu*);                          // aspect.cpp: the 16:9 aspect stored
 void site_024FF980(Cpu*); void site_024FF4C0(Cpu*); void site_024FF4E4(Cpu*);  // targeting_letterbox.cpp
 void site_024FC080(Cpu*); void site_024FF8C0(Cpu*);
@@ -22,6 +24,8 @@ constexpr CameraPoint kCameraFloats[] = {
     {0x02171B1C, site_02171B1C, -1, 1}, {0x024F9DA4, site_024F9DA4, -1, 1}, {0x0250074C, site_0250074C, -1, 1},
     {0x02506C68, site_02506C68, -1, 1}, {0x02506C80, site_02506C80, -1, 1}, {0x024FFA98, site_024FFA98, -1, 0},
     {0x025020E0, site_025020E0, -1, 0}, {0x024FF980, site_024FF980, 31, 11},
+    {0x02171B28, site_02171B28, -1, 1}, {0x02171DCC, site_02171DCC, -1, 1}, {0x024F9D98, site_024F9D98, -1, 1},
+    {0x0250073C, site_0250073C, -1, 1}, {0x02506C5C, site_02506C5C, -1, 1}, {0x02506C74, site_02506C74, -1, 1},
 };
 constexpr CameraPoint kCameraWords[] = {
     {0x024FF4C0, site_024FF4C0, 31, 5}, {0x024FF4E4, site_024FF4E4, 31, 5}, {0x024FC080, site_024FC080, 31, 3},

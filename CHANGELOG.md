@@ -7,6 +7,14 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+### New
+
+- **Invert camera left/right** (#604). A new setting next to Invert camera up/down (Settings → Controls, the macOS
+  Controls window and the item menu's Settings page) turns the camera the other way left and right: the follow
+  camera, first person, every item aim, the rope-swing camera and the mouse and touch camera. Like up/down it is
+  applied where the camera reads the right stick, so the Wind Waker baton and other right-stick controls are not
+  inverted. Off by default; saved controls are unchanged until you turn it on.
+
 ### Fixed
 
 - **Settings: "Coloured face buttons" is dimmed when it has no effect** (#584, thanks @jamescastells). With Button

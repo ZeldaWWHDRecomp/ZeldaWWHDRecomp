@@ -41,6 +41,14 @@ directions. The game also has its own setting for the vertical direction of
 first-person aiming; it still works, and with both inverted they cancel out in
 first person.
 
+**Invert camera left/right** (issue #604) does the same for left and right, for
+the same views and readers (the game's calls of `CPad_GET_SUBSTICK_POS_X`;
+`runtime/src/camera_invert.h` lists them), including the Dragon Roost rope-swing
+camera and the mouse and touch (swipe) camera. The baton keeps its directions and
+the camera swing behind Link keeps turning the way it does. It is saved as
+`invert_camera_x` in the controls file's `options`, written only when it is on,
+so files without it load with it off.
+
 While conducting, the **right stick supplies the notes**, including down. The
 **left stick controls the meter**: hold left or right to change the beat count.
 The D-pad does not substitute for the note stick in the original game. For example,
@@ -195,12 +203,13 @@ turns the view directly, as in a PC shooter: one mouse movement turns it by a fi
 sensitivity's degrees per point, the same in every view and the same as on foot, with no acceleration and no
 easing; the view follows in the same logic step. Nothing needs setting up (no gyro source, no game
 **Options → Gyro**). The game's own limits stay: how far you can look up and down, and the telescope's and
-Picto Box's slower turning while zoomed in. Up/down follows **Invert camera up/down**, as on foot; the game's
+Picto Box's slower turning while zoomed in. Up/down follows **Invert camera up/down** and left/right
+**Invert camera left/right**, as on foot; the game's
 own aiming inversion option is for the right stick (as with the gyro, it does not apply to the mouse). A right
 stick pushed at the same time aims instead, as the game does with the gyro. With
 the boat cannon equipped, mouse movement aims the cannon instead; WASD or a
 controller's left stick takes priority while held. Mouse cannon aim also follows
-**Invert camera up/down**. Firing keeps its existing button binding. The
+**Invert camera up/down** and **Invert camera left/right**. Firing keeps its existing button binding. The
 first click only captures; release it and click again to use its binding. Bound
 buttons work only in the TV window while the mouse camera has captured the
 pointer. Escape releases it; with the pointer free, Escape opens Settings. A left

@@ -758,6 +758,15 @@ static void test_json_roundtrip() {
     CHECK(press(r, {kVK_ANSI_J}).buttons == input::kA);
     CHECK(press(r, {kVK_ANSI_H}).buttons == 0);
     CHECK(press(r, {kVK_UpArrow}).ry == 1);   // issue #167: the stick stays as it is (the camera inverts)
+    // issue #604: Invert camera left/right round-trips, is written only when on (older files unchanged)
+    CHECK(j.find("invert_camera_x") == std::string::npos);
+    m.invert_camera_x = true;
+    j = to_json(m);
+    CHECK(j.find("\"invert_camera_x\": true") != std::string::npos);
+    CHECK(from_json(j, r, &err) && err.empty() && r == m && r.invert_camera_x);
+    CHECK(press(r, {kVK_RightArrow}).rx == 1);  // the stick stays as it is (the camera inverts)
+    m.invert_camera_x = false;
+    j = to_json(m);
     CHECK(press(r, {kVK_ANSI_W}).ly == 1);    // move stick not inverted
     // the Automatic preset is the one face state that is stored
     CHECK(to_json(Mapping::defaults()).find("face_layout") == std::string::npos);
@@ -779,7 +788,7 @@ static void test_json_partial_and_bad() {
     CHECK(r.keys[kB][0] == kVK_ANSI_K && r.keys[kB][1] == kVK_Space);
     CHECK(r.keys[kX] == Mapping::defaults().keys[kX]);
     CHECK(r.pad[kHome] == kPadNone && r.pad[kA] == kPadB);
-    CHECK(r.deadzone == 0.15f && !r.invert_camera_y);
+    CHECK(r.deadzone == 0.15f && !r.invert_camera_y && !r.invert_camera_x);
     // unknown names and app shortcuts are dropped with a warning, the rest still loads
     CHECK(from_json(R"({"keyboard": {"A": ["R", "K"], "Jump": ["J"], "B": ["Bogus"]}, "options": {"stick_deadzone": 5}})", r, &err));
     CHECK(!err.empty());
@@ -841,6 +850,9 @@ static void test_deadzone() {
     v[kPadLSRight] = 0; v[kPadRSDown] = 0.6f;
     m.invert_camera_y = true;
     CHECK(std::fabs(controller_state(m, v).ry + 0.5f) < 1e-6);  // issue #167: not inverted here
+    v[kPadRSDown] = 0; v[kPadRSRight] = 0.6f;
+    m.invert_camera_x = true;
+    CHECK(std::fabs(controller_state(m, v).rx - 0.5f) < 1e-6);  // issue #604: not inverted here either
 }
 
 // issue #167: Invert camera up/down is camera only (camera_invert.h): the mapping hands the game the
@@ -894,6 +906,35 @@ static void test_camera_invert() {
         }
     }
     set_current(previous_mapping, false);
+    // issue #604: left/right, the same way, independent of up/down
+    v[kPadRSUp] = 0; v[kPadRSRight] = 1.0f;
+    for (bool inv : {false, true}) {
+        m = Mapping::defaults();
+        m.invert_camera_x = inv;
+        const float rx = controller_state(m, v).rx;
+        CHECK(rx == 1.0f);                                                  // controller: raw either way
+        CHECK(camera_invert::stick_x(rx, inv, Use::kBaton) == 1.0f);        // baton: conducts right
+        CHECK(camera_invert::stick_x(rx, inv, Use::kCamera) == (inv ? -1.0f : 1.0f));  // camera inverted
+        CHECK(camera_invert::stick_y(1.0f, m.invert_camera_y, Use::kCamera) == 1.0f);  // up/down untouched
+        CHECK(camera_invert::mouse_yaw_sign(inv) == (inv ? -1.0f : 1.0f));
+        // the camera swing behind Link is pre-signed: after the inverted read it turns as before
+        CHECK(camera_invert::stick_x(camera_invert::mouse_yaw_sign(inv), inv, Use::kCamera) == 1.0f);
+        CHECK(camera_invert::mouse_yaw_sign(inv) * camera_invert::mouse_yaw_sign(inv) == 1.0f);
+    }
+    int camera_x = 0, baton_x = 0;
+    for (const auto& site : camera_invert::kSitesX) {
+        camera_x += site.use == Use::kCamera;
+        baton_x += site.use == Use::kBaton;
+        CHECK(site.use != Use::kFigureZoom);  // the figure viewer reads no X
+    }
+    CHECK(camera_x == 6 && baton_x == 1);
+    for (bool inv : {false, true, false}) {
+        m = Mapping::defaults();
+        m.invert_camera_x = inv;
+        set_current(m, false);
+        CHECK(invert_camera_x() == inv && !invert_camera_y());  // publishes immediately, on its own
+    }
+    set_current(previous_mapping, false);
     CHECK(!std::signbit(camera_invert::manual_pitch_delta(0.0, 10.0, -10.0)));
     CHECK(std::signbit(camera_invert::manual_pitch_delta(-0.0, 10.0, -10.0)));
     CHECK(camera_invert::manual_pitch_delta(1.0, 5.0, 5.0) == 1.0);
@@ -906,6 +947,7 @@ static void test_live_camera_invert_publication() {
     const Mapping previous = current();
     auto on = Mapping::defaults(), off = on;
     on.invert_camera_y = true;
+    on.invert_camera_x = true;
     constexpr unsigned rounds = 2048;
     std::barrier phase(3);
     auto writer = [&](Mapping m) {
@@ -920,6 +962,7 @@ static void test_live_camera_invert_publication() {
         phase.arrive_and_wait();
         phase.arrive_and_wait();
         CHECK(current().invert_camera_y == invert_camera_y());
+        CHECK(current().invert_camera_x == invert_camera_x());
     }
     first.join();
     second.join();

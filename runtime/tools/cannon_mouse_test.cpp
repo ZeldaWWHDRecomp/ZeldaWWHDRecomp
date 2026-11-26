@@ -18,7 +18,7 @@
 static uint64_t clock_step=100;
 static bool enabled=true,captured=true,gyro_mouse=true,aiming=false,look=false;
 static float sensitivity=.15f;
-static bool inverted=false;
+static bool inverted=false,inverted_x=false;
 void log_msg(const char*, ...) {}
 namespace mods {
 void filter_pad(input::PadState&);
@@ -47,6 +47,7 @@ std::array<ShortcutBinding,kShortcutCount> shortcut_defaults(){return {};}
 Mapping current(){return {};}
 std::vector<int> key_users(const Mapping&,int,int){return {};}
 bool invert_camera_y(){return inverted;}
+bool invert_camera_x(){return inverted_x;}
 }
 extern "C" {
 void f_0240EBB0_orig(Cpu*){} void f_024FA9C8_orig(Cpu*){}
@@ -83,6 +84,7 @@ int main(){
     p=sample(-5,5);assert(close(p.lx,-.4f)&&close(p.ly,-.4f));
     sensitivity=.3f;p=sample(5,0);assert(close(p.lx,.8f));sensitivity=.15f;
     inverted=true;p=sample(0,-5);assert(close(p.ly,-.4f));inverted=false;
+    inverted_x=true;p=sample(5,-5);assert(close(p.lx,-.4f)&&close(p.ly,.4f));inverted_x=false;  // issue #604
     p=sample(100,-100);assert(p.lx==1&&p.ly==1);
     input::PadState physical;physical.lx=-1;physical.ly=.5f;physical.rx=.7f;
     p=sample(5,-5,physical);assert(p.lx==-1&&p.ly==.5f&&p.rx==.7f);
@@ -122,6 +124,7 @@ int main(){
     p=sample(400,0);s=subject(0,0);assert(turned(s,0,0,90,0));p=sample(0,0);s=subject(0,0);assert(turned(s,0,0,30,0));
     sensitivity=.15f;
     inverted=true;p=sample(0,10);s=subject(0,0);assert(turned(s,0,0,0,-1.5));inverted=false;
+    inverted_x=true;p=sample(10,0);s=subject(0,0);assert(turned(s,0,0,-1.5,0));inverted_x=false;  // issue #604
     // movement the game did not take (a first-person transition) is dropped, never added to a later step
     p=sample(20,0);++clock_step;++clock_step;s=subject(0,0);assert(s.f[22].ps0==0);
     p=sample(0,0);p=sample(2,0);s=subject(0,0);assert(turned(s,0,0,.3,0));
@@ -131,6 +134,8 @@ int main(){
     enabled=true;
     // Not aiming (on foot): the follow camera keeps its synthetic stick.
     procedure(0x0,false);clock_step+=10;p=sample(5,0);assert(close(p.rx,.4f));s=subject(0,0);assert(s.f[22].ps0==0);
+    // Invert camera left/right: the synthetic stick stays as it is, the camera's POS_X reads invert it (issue #604)
+    inverted_x=true;clock_step+=10;p=sample(5,0);assert(close(p.rx,.4f));inverted_x=false;
     puts("Cannon mouse: routing, gyro exclusion, priority, sensitivity, repeated reads and mode transitions PASS");
     puts("First-person mouse look: degrees per view, once per step, ease, inversion, stale movement, mouse camera off PASS");
 }

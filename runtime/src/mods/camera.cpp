@@ -59,6 +59,10 @@
 //   Manual styles can have descending latitude limits: limited_range_addition then reverses its
 //   delta. @02510DEC cancels that reversal for both inputs at the latitude call only, without
 //   changing the style's limits or its centre-height, radius and field-of-view input.
+// Invert camera left/right (Controls; issue #604): the same for the right stick's X, at the camera's
+//   CPad_GET_SUBSTICK_POS_X calls (camera_invert.h kSitesX). The mouse and the swipe follow through the
+//   sign of their yaw (first person: filter_pad; follow / manual camera: manual_speed; boat cannon); the
+//   camera swing behind Link is pre-signed so that the inverted reads turn it the way it always went.
 //
 // Logic only runs on logic passes: the sites run inside the camera's execute, and the camera's
 // manual and subject modes run at 30 Hz with frame interpolation, so the per-step amounts above hold in all modes; interpolation blends the drawn camera.
@@ -301,7 +305,8 @@ void filter_pad(input::PadState& s) {
             swing_step = now;
             const float deg = steer_swing_degrees(player);
             if (deg != 0 && !player) {
-                g_swipe_dx += deg * kSwingSign;
+                // pre-signed: the inverted reads (Invert camera left/right) turn it back the way it goes
+                g_swipe_dx += deg * kSwingSign * camera_invert::mouse_yaw_sign(input_map::invert_camera_x());
                 g_swipe_step = g_move_step = now;
             }
         }
@@ -317,7 +322,7 @@ void filter_pad(input::PadState& s) {
     if (look && g_look_step != now) {
         g_look_step = now;
         const float sens = mouse_sensitivity();
-        g_look_dx = g_dx * sens;
+        g_look_dx = g_dx * sens * camera_invert::mouse_yaw_sign(input_map::invert_camera_x());
         g_look_dy = g_dy * sens * camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
         if (trace_on() && (g_look_dx != 0 || g_look_dy != 0)) trace("mouse look degrees right=%.3f down=%.3f", g_look_dx, g_look_dy);
     }
@@ -332,7 +337,8 @@ void filter_pad(input::PadState& s) {
         if (g_cannon_step != now) {
             g_cannon_step = now;
             const float scale = mouse_sensitivity() / camera_swipe::kNominalSensitivity;
-            g_cannon_x = camera_mouse::fallback_stick(g_dx * scale);
+            g_cannon_x = camera_mouse::fallback_stick(g_dx * scale) *
+                camera_invert::mouse_yaw_sign(input_map::invert_camera_x());
             g_cannon_y = camera_mouse::fallback_stick(-g_dy * scale) *
                 camera_invert::mouse_pitch_sign(input_map::invert_camera_y());
             g_dx = g_dy = 0;
@@ -426,7 +432,9 @@ static void manual_speed(Cpu* c) {
     float speed;
     if (mouse) {
         // mouse right = stick right = negative speed (the camera stores stick x negated); dx in degrees
-        speed = camera_mouse::yaw_speed(dx, 1.0f, c->f[25].ps0);
+        // (the other way with Invert camera left/right)
+        speed = camera_mouse::yaw_speed(dx * camera_invert::mouse_yaw_sign(input_map::invert_camera_x()), 1.0f,
+                                        c->f[25].ps0);
     } else if (direct_camera()) {
         float x = (float)ldf32(cam + kCamStickX);
         speed = std::fmax(-1.0f, std::fmin(1.0f, x)) * camera_speed();
@@ -517,6 +525,22 @@ extern "C" void site_0250074C(Cpu* c) { camera_stick_y(c, "0250074C"); }  // dCa
 extern "C" void site_02506C68(Cpu* c) { camera_stick_y(c, "02506C68"); }  // dCamera_c::CalcSubjectAngle (first person, aiming)
 extern "C" void site_02506C80(Cpu* c) { camera_stick_y(c, "02506C80"); }  // the same, with the game's inverted-aiming option
 extern "C" void site_02171B1C(Cpu* c) { camera_stick_y(c, "02171B1C"); }  // new_himo2_move: rope-swing event camera
+
+// ---- Invert camera left/right (issue #604): right after the camera's CPad_GET_SUBSTICK_POS_X calls (f1 = stick x)
+static void camera_stick_x(Cpu* c, const char* site) {
+    if (!input_map::invert_camera_x()) return;
+    const float x = (float)c->f[1].ps0;
+    c->f[1].ps0 = camera_invert::stick_x(x, true, camera_invert::Use::kCamera);
+    c->f[1].ps1 = c->f[1].ps0;  // lfs result: both halves
+    static uint64_t n = 0;
+    if (x != 0.0f && trace_on() && (n++ % 30) == 0) trace("invert camera: %s stick x %.2f -> %.2f", site, x, -x);
+}
+extern "C" void site_024F9D98(Cpu* c) { camera_stick_x(c, "024F9D98"); }  // dCamera_c::updatePad
+extern "C" void site_0250073C(Cpu* c) { camera_stick_x(c, "0250073C"); }  // dCamera_c::initPad
+extern "C" void site_02506C5C(Cpu* c) { camera_stick_x(c, "02506C5C"); }  // dCamera_c::CalcSubjectAngle (first person, aiming)
+extern "C" void site_02506C74(Cpu* c) { camera_stick_x(c, "02506C74"); }  // the same, with the game's inverted-aiming option
+extern "C" void site_02171B28(Cpu* c) { camera_stick_x(c, "02171B28"); }  // new_himo2_move: rope-swing event camera
+extern "C" void site_02171DCC(Cpu* c) { camera_stick_x(c, "02171DCC"); }  // the same statement, compiled twice
 
 // ---- First person and item aims with the mouse camera (issue #558; camera_mouse.h subject_step) ----
 // dCamera_c::CalcSubjectAngle (this: r27), its GamePad (gyro) branch: x (f22) and y (f0) are the GamePad's turn x 30,

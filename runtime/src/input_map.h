@@ -133,6 +133,8 @@ struct Mapping {
     // Camera only (issue #167): applied where the game's camera reads the right stick
     // (camera_invert.h, mods/camera.cpp), never to the stick itself, so the baton is not inverted
     bool invert_camera_y = false;
+    // The same for left/right (issue #604): the camera's reads of the right stick's X
+    bool invert_camera_x = false;
     bool face_auto = false;         // Automatic face preset: follow the dominant pad's labels
     // In-game button prompts (issues #110, #141, #143; runtime/src/button_glyphs.cpp)
     enum class Prompts : uint8_t { kAuto, kOriginal, kXbox, kPlayStation, kGameCube, kKeyboard };
@@ -430,6 +432,7 @@ bool skip_controller_selection();
 bool background_controllers();  // current().background_controllers, any thread (hosts poll it)
 bool file_select_quit();
 bool invert_camera_y();  // current().invert_camera_y without copying the mapping (camera hooks)
+bool invert_camera_x();  // current().invert_camera_x, the same (issue #604)
 bool settings_pause_page(); // current().settings_pause_page, any thread
 bool l_turns_page();     // current().l_turns_page, any thread
 // The old Jump anywhere button (mods: traversal_settings): applied once to a format 1 (or missing)

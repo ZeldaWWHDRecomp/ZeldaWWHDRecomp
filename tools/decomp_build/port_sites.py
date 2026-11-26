@@ -103,6 +103,13 @@ SITES = [
     _p(0x0250074C, 0x025006D8, CU, "PORT_CAMERA_F"),     # dCamera_c::initPad
     _p(0x02506C68, 0x02506964, CS, "PORT_CAMERA_F"),     # dCamera_c::CalcSubjectAngle: one statement, compiled twice
     dict(site=0x02506C80, func=0x02506964, path=CS, marker="PORT_CAMERA_F(0x02506C68"),
+    # ... and its x (Invert camera left/right, issue #604): moved once the decompilation carries these points
+    _p(0x02171B28, 0x0216F7FC, "wwhd_src/d/actor/d_a_himo2_move.cpp", "PORT_CAMERA_F"),  # new_himo2_move, compiled twice
+    dict(site=0x02171DCC, func=0x0216F7FC, path="wwhd_src/d/actor/d_a_himo2_move.cpp", marker="PORT_CAMERA_F(0x02171B28"),
+    _p(0x024F9D98, 0x024F9BF4, CU, "PORT_CAMERA_F"),     # dCamera_c::updatePad
+    _p(0x0250073C, 0x025006D8, CU, "PORT_CAMERA_F"),     # dCamera_c::initPad
+    _p(0x02506C5C, 0x02506964, CS, "PORT_CAMERA_F"),     # dCamera_c::CalcSubjectAngle: one statement, compiled twice
+    dict(site=0x02506C74, func=0x02506964, path=CS, marker="PORT_CAMERA_F(0x02506C5C"),
     # First person and item aims with the mouse camera (mods/camera.cpp, issue #558): CalcSubjectAngle's GamePad (gyro)
     # turn, and subjectCamera's view ease of V and U (fast mode: subjectCamera's hook runs the decompiled body)
     _p(0x02506CEC, 0x02506964, CS, "PORT_CAMERA_SUBJECT"),

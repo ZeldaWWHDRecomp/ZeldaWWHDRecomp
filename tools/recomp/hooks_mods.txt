@@ -23,6 +23,13 @@
 @02506C68 # dCamera_c::CalcSubjectAngle: after CPad_GET_SUBSTICK_POS_Y (first person / aiming)
 @02506C80 # dCamera_c::CalcSubjectAngle: the same on the game's inverted-aiming branch
 @02171B1C # new_himo2_move: after CPad_GET_SUBSTICK_POS_Y (rope-swing event camera)
+# Invert camera left/right (issue #604; runtime/src/camera_invert.h kSitesX): after the camera's right-stick X reads
+@024F9D98 # dCamera_c::updatePad: after CPad_GET_SUBSTICK_POS_X
+@0250073C # dCamera_c::initPad: after CPad_GET_SUBSTICK_POS_X
+@02506C5C # dCamera_c::CalcSubjectAngle: after CPad_GET_SUBSTICK_POS_X (first person / aiming)
+@02506C74 # dCamera_c::CalcSubjectAngle: the same on the game's inverted-aiming branch
+@02171B28 # new_himo2_move: after CPad_GET_SUBSTICK_POS_X (rope-swing event camera)
+@02171DCC # new_himo2_move: the same statement, compiled twice
 # Mouse camera in first person and item aims (issue #558; mods/camera.cpp)
 @02506CEC # dCamera_c::CalcSubjectAngle: gyro branch, x/y formed: the mouse's degrees (live style speed, yaw/pitch range)
 @02508380 # dCamera_c::subjectCamera: V ease factor (cSAngle * f1): 1 while the mouse looks around

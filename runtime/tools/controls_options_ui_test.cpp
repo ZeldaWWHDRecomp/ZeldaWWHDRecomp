@@ -99,7 +99,7 @@ static void run(const Case& c, const char* dir) {
                 io.DisplaySize.x, io.DisplaySize.y, page.GetWidth(), lines, hint);
     if (!c.phone && io.DisplaySize.x >= 1240) {
         // desktop as before: dead zone .. reset on one line; the stick ranges and the hint on the next
-        for (Item i : {kItemInvert, kItemRumble, kItemGyro, kItemReset}) assert(layout.min[i].y < layout.max[kItemDeadzone].y);
+        for (Item i : {kItemInvert, kItemInvertX, kItemRumble, kItemGyro, kItemReset}) assert(layout.min[i].y < layout.max[kItemDeadzone].y);
         for (Item i : {kItemRangeRight, kItemHint}) assert(layout.min[i].y < layout.max[kItemRangeLeft].y);
         assert(layout.min[kItemRangeLeft].y >= layout.max[kItemDeadzone].y);
         assert(lines == 2);
