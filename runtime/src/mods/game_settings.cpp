@@ -852,6 +852,15 @@ void register_builtin() {
         add(std::move(it));
     }
     {
+        Item it;
+        it.id = "camera.stick-pitch", it.tab = "camera", it.label = "Right stick up/down", it.kind = Kind::Choice;
+        it.help = "Zoom: closer and lower, as in the game. Look: the camera tilts up and down at the same distance.";
+        it.choices = {"Zoom (original)", "Look up and down"};
+        it.get = [] { return mods::camera_stick_pitch() ? 1.0f : 0.0f; };
+        it.set = [](float v) { mods::set_camera_stick_pitch(std::lround(v) == 1); };
+        add(std::move(it));
+    }
+    {
         Item it = builtin_toggle("camera", "direct-camera", "Direct camera",
                                  "The right stick turns the camera at once, without the game's easing.");
         add(std::move(it));

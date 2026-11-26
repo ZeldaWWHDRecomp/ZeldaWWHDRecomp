@@ -20,6 +20,12 @@ what is on `devel` and not released yet (also in the
 
 ### New
 
+- **Right stick up/down: Zoom or Look up and down** (#661, thanks @stonerbong42069). A new choice in
+  **Settings › Controls › Camera**: *Zoom (original)* keeps Wind Waker's camera, where up brings the camera closer
+  and lower and down further and higher; *Look up and down* tilts the camera up and down around Link instead and
+  keeps its distance, as in most current third-person games. Invert camera up/down still applies, and the mouse
+  and touch camera follow the choice. First person, aiming and targeting are unchanged. Off (Zoom) by default; also
+  on the item menu's settings page and in the macOS Controls window (`WWHD_CAM_STICK_PITCH=1` for a run).
 - **Slow walk** (#626). A new input in **Settings › Controls**, **Slow walk (hold)**, under Jump anywhere and the
   moon jump: while it is held, the left stick (the movement keys or a controller) moves Link at a share of its
   tilt, so a full tilt walks instead of running. The share is its **Speed**, 10–90 %, 30 % by default (also on

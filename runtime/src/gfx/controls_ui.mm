@@ -242,6 +242,7 @@ struct UIState {
 @property(strong) NSArray<NSButton*>* cameraButtons;
 @property(strong) NSSlider* cameraSpeed;
 @property(strong) NSSlider* mouseSensitivity;
+@property(strong) NSPopUpButton* stickPitch;  // Right stick up/down (#661)
 @property(strong) NSButton* skipController;
 @property(strong) NSPopUpButton* prompts;        // in-game button prompts (#143)
 @property(strong) NSPopUpButton* shoulderNames;
@@ -1210,7 +1211,16 @@ static NSTextField* label(NSString* s) {
     mouseSensitivity.toolTip = @"Mouse camera sensitivity.";
     [mouseSensitivity.widthAnchor constraintEqualToConstant:160].active = YES;
     self.mouseSensitivity = mouseSensitivity;
-    NSStackView* cameraOptions = [NSStackView stackViewWithViews:@[label(@"Camera speed:"),cameraSpeed,label(@"Mouse sensitivity:"),mouseSensitivity]];
+    // issue #661: the right stick's up/down in the follow camera (mods/camera.cpp look_pitch)
+    NSPopUpButton* stickPitch = [[NSPopUpButton alloc] initWithFrame:NSZeroRect pullsDown:NO];
+    [stickPitch addItemsWithTitles:@[@"Zoom (original)", @"Look up and down"]];
+    stickPitch.target = self;
+    stickPitch.action = @selector(stickPitchChanged:);
+    stickPitch.toolTip = @"Zoom (original): up brings the camera closer and lower, down further and higher, as in the game. "
+                         @"Look up and down: the camera tilts up and down around Link and keeps its distance.";
+    self.stickPitch = stickPitch;
+    NSStackView* cameraOptions = [NSStackView stackViewWithViews:@[label(@"Camera speed:"),cameraSpeed,label(@"Mouse sensitivity:"),mouseSensitivity,
+                                                                   label(@"Right stick up/down:"),stickPitch]];
     cameraOptions.orientation = NSUserInterfaceLayoutOrientationHorizontal;
     cameraOptions.spacing = 12;
     for (NSView* v in @[bt, sn0, which, skip, fl, pi, pv, sep, st, reset, dzl, dz, dzv, inv, lrl, lr, lrv, rrl, rr, rrv, rh, ppl, pp, snl, sn, pcl, pc, ptc, cameras, cameraOptions]) {
@@ -1291,6 +1301,7 @@ static NSTextField* label(NSString* s) {
         self.cameraButtons[i].state = mods::manager::find(ids[i])->enabled() ? NSControlStateValueOn : NSControlStateValueOff;
     self.cameraSpeed.doubleValue = mods::camera_speed();
     self.mouseSensitivity.doubleValue = mods::mouse_sensitivity();
+    [self.stickPitch selectItemAtIndex:mods::camera_stick_pitch() ? 1 : 0];
     self.invertY.state = _st.m.invert_camera_y ? NSControlStateValueOn : NSControlStateValueOff;
     self.leftRange.doubleValue = _st.m.left_range;
     self.rightRange.doubleValue = _st.m.right_range;
@@ -1693,6 +1704,7 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
 }
 - (void)cameraSpeedChanged:(NSSlider*)s { game_settings::set_camera_speed(s.floatValue); }
 - (void)mouseSensitivityChanged:(NSSlider*)s { game_settings::set_mouse_sensitivity(s.floatValue); }
+- (void)stickPitchChanged:(NSPopUpButton*)p { mods::set_camera_stick_pitch(p.indexOfSelectedItem == 1); }
 
 - (void)invertChanged:(NSButton*)b {
     _st.m.invert_camera_y = b.state == NSControlStateValueOn;
