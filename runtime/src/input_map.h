@@ -279,6 +279,14 @@ struct PromptStyle {
     bool operator==(const PromptStyle&) const = default;
 };
 PromptStyle prompt_style(const Mapping& m, PadFamily family);
+// Whether the two colour options change the prompts of a resolved look, so the settings can dim
+// them where they do nothing (#584; the saved choices are kept): coloured face buttons with the
+// Xbox and PlayStation looks (the GameCube look always has its own colours), coloured face button
+// text with those and the GameCube look. The original look and keyboard / mouse ignore both.
+inline bool face_colours_apply(const PromptStyle& s) { return s.face == FaceStyle::kXbox || s.face == FaceStyle::kPlayStation; }
+inline bool text_colours_apply(const PromptStyle& s) { return face_colours_apply(s) || s.face == FaceStyle::kGameCube; }
+inline const char* face_colours_note() { return "Xbox and PlayStation looks only"; }
+inline const char* text_colours_note() { return "Xbox, PlayStation and GameCube looks only"; }
 // The game's prompts: prompt_style of the bindings the controller in use plays with (active_view)
 // and the pad family. generation() bumps when the controller in use changes, so a cached style
 // follows a switch to a controller with other bindings.

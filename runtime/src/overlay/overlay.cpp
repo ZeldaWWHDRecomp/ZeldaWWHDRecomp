@@ -3241,22 +3241,30 @@ void controls_prompts_page(input_map::Mapping& m) {
                     : look.shoulders == input_map::ShoulderStyle::kNumbered ? "L1 / R1 / L2 / R2"
                     : look.shoulders == input_map::ShoulderStyle::kGameCube ? "L / R / Z"
                                                                             : "L / R / ZL / ZR"));
+    // dimmed where the resolved look ignores them (#584); the saved choice stays as it is
+    const bool colours_apply = input_map::face_colours_apply(look), text_apply = input_map::text_colours_apply(look);
     bool colours = m.prompt_colours;
+    ImGui::BeginDisabled(!colours_apply);
     if (ImGui::Checkbox("Coloured face buttons", &colours)) {
         m.prompt_colours = colours;
         edit_set(m);
     }
+    ImGui::EndDisabled();
     help("Green A, red B, blue X and yellow Y in the Xbox look; blue cross, red circle, pink "
          "square and green triangle with the PlayStation shapes. Off: the game's white buttons, "
          "still placed where the bound buttons sit on the pad.");
+    if (!colours_apply) disabled_after(input_map::face_colours_note());
     flow::next(flow::check("Coloured face button text"));
     bool text_colours = m.prompt_text_colours;
+    ImGui::BeginDisabled(!text_apply);
     if (ImGui::Checkbox("Coloured face button text", &text_colours)) {
         m.prompt_text_colours = text_colours;
         edit_set(m);
     }
+    ImGui::EndDisabled();
     help("Action text follows the mapped button's prompt colour, independently of icon colours. "
          "Off: the game's own text colours (white).");
+    if (!text_apply) disabled_after(input_map::text_colours_note());
 }
 
 void controls_camera_page() {
