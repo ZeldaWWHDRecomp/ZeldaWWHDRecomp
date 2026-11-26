@@ -231,6 +231,7 @@ struct LatteDecompilerShaderContext
 		// textures
 		std::bitset<LATTE_NUM_MAX_TEX_UNITS> texUnitUsesTexelCoordinates;
 		std::bitset<LATTE_NUM_MAX_TEX_UNITS> texUnitUsesLodBias; // WWHD: declares texNLodBias (options->emulateSamplerLodBias)
+		std::bitset<LATTE_NUM_MAX_TEX_UNITS> texUnitUsesSharpText; // WWHD: declares texNSharp (options->sharpTextTextures)
 		std::bitset<LATTE_NUM_MAX_TEX_UNITS> texUnitSetsCubeMapIndex; // WWHD: units a SET_CUBEMAP_INDEX writes (declares cubeMapArrayIndexN)
 		bool hasCubeMapTexture; // set to true if a cubemap texture is used
 		bool hasGradientLookup; // set to true if texture lookup with custom gradients is used

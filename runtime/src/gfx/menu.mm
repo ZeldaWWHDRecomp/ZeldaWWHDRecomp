@@ -118,6 +118,7 @@ static void load_prefs() {
     if (saved(@"horizonHaze", {"WWHD_HORIZON_HAZE", "WWHD_SKY_HAZE"})) render::set_horizon_haze([pref(@"horizonHaze") floatValue]);
     if (saved(@"cloudShadows", {"WWHD_CLOUD_SHADOWS"})) render::set_cloud_shadows([pref(@"cloudShadows") boolValue]);
     if (saved(@"fullLight", {"WWHD_FULL_LIGHT"})) render::set_full_light([pref(@"fullLight") boolValue]);
+    if (saved(@"sharpText", {"WWHD_SHARP_TEXT"})) render::set_sharp_text([pref(@"sharpText") boolValue]);
     if (saved(@"cloudStyle", {"WWHD_CLOUD_STYLE"})) render::set_cloud_style([pref(@"cloudStyle") intValue]);
     if (saved(@"fxaa", {"WWHD_FXAA"})) render::set_fxaa([pref(@"fxaa") boolValue]);
     // frame rate: fps60 is the mode (0 30 fps, 1 frame interpolation; a saved 2, the retired True 60,
@@ -142,6 +143,7 @@ static void save_prefs() {
     if (!env_set({"WWHD_HORIZON_HAZE", "WWHD_SKY_HAZE"})) set_pref(@"horizonHaze", @(render::horizon_haze()));
     if (!env_set({"WWHD_CLOUD_SHADOWS"})) set_pref(@"cloudShadows", @(render::cloud_shadows()));
     if (!env_set({"WWHD_FULL_LIGHT"})) set_pref(@"fullLight", @(render::full_light()));
+    if (!env_set({"WWHD_SHARP_TEXT"})) set_pref(@"sharpText", @(render::sharp_text()));
     if (!env_set({"WWHD_CLOUD_STYLE"})) set_pref(@"cloudStyle", @(render::cloud_style()));
     if (!env_set({"WWHD_FXAA"})) set_pref(@"fxaa", @(render::fxaa()));
     if (!env_set({"WWHD_INTERP", "WWHD_TRUE60", "WWHD_INTERP_FPS"})) set_pref(@"fps60", @(interp::mode()));
@@ -302,6 +304,7 @@ static WWStateMenu* g_state_menu;
 - (void)setCloudStyle:(NSMenuItem*)item { render::set_cloud_style((int)item.tag); update_title(); }
 - (void)toggleCloudShadows:(NSMenuItem*)item { render::set_cloud_shadows(!render::cloud_shadows()); update_title(); }
 - (void)toggleFullLight:(NSMenuItem*)item { render::set_full_light(!render::full_light()); update_title(); }
+- (void)toggleSharpText:(NSMenuItem*)item { render::set_sharp_text(!render::sharp_text()); update_title(); }
 - (void)setAO:(NSMenuItem*)item { render::set_ao_mode((int)item.tag); update_title(); }
 - (void)toggleAniso:(NSMenuItem*)item { render::set_aniso(!render::aniso()); update_title(); }
 - (void)capture:(NSMenuItem*)item { render::request_capture(); }
@@ -381,6 +384,8 @@ static WWStateMenu* g_state_menu;
         item.state = render::cloud_shadows() ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleFullLight:))
         item.state = render::full_light() ? NSControlStateValueOn : NSControlStateValueOff;
+    if (item.action == @selector(toggleSharpText:))
+        item.state = render::sharp_text() ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(setHaze:))
         item.state = fabsf(render::horizon_haze() * 100.0f - item.tag) < 0.5f ? NSControlStateValueOn : NSControlStateValueOff;
     if (item.action == @selector(toggleFxaa:)) {
@@ -525,6 +530,8 @@ void install_menu(NSWindow* tv) {
         @"Soft shadows of the drifting sky clouds on the sea, islands and characters";
     add(g, @"16x anisotropic filtering (N)", @selector(toggleAniso:), @"N");
     add(g, @"Edge smoothing, FXAA", @selector(toggleFxaa:), @"8");
+    add(g, @"Sharper text", @selector(toggleSharpText:), @"").toolTip =
+        @"The game's text and button words keep crisp edges above 1x resolution instead of being scaled up soft";
     add(g, @"40 fps: frame interpolation (for 40, 80 and 120 Hz screens)", @selector(toggleInterpFps:), @"", 40);
     add(g, @"60 fps: frame interpolation (6)", @selector(toggleInterpFps:), @"6", 60);
     add(g, @"120 fps: frame interpolation", @selector(toggleInterpFps:), @"", 120);

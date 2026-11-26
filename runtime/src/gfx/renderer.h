@@ -194,6 +194,10 @@ void set_cloud_shadows(bool on);
 // gfx/area_sample.h.
 bool full_light();
 void set_full_light(bool on);
+// Sharper text: the game's glyphs keep crisp edges at internal resolutions above 1x instead of being
+// magnified soft (on by default; no change at 1x; off: the original game). WWHD_SHARP_TEXT=0|1. gfx/sharp_text.h.
+bool sharp_text();
+void set_sharp_text(bool on);
 void set_horizon_haze(float haze);
 // The bloom extract shader's remapped[2].z is cThresholdParam.z (intensity).
 void scale_bloom_uniforms(void* remapped, size_t size);

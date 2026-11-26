@@ -44,7 +44,7 @@ same values.
 - **Screen:** gameplay field of view, the boost bar. On Android also the touch buttons and the
   on-screen controls.
 - **Graphics:** internal resolution, frame rate (30, 40, 60, 120 or 240 fps), dynamic
-  resolution, bloom, edge smoothing (FXAA), anisotropic filtering, clouds, cloud shadows and
+  resolution, bloom, edge smoothing (FXAA), sharper text, anisotropic filtering, clouds, cloud shadows and
   full-size torchlight. They apply at once. The rest (renderer, aspect ratio, HDR, ambient occlusion
   and more) is in the Settings window's Graphics tab.
 - **Game:** *Change Link's name* gives the save file being played a new name of up to 16 characters.

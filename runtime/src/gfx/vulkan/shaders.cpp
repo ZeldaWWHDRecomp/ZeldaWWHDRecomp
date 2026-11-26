@@ -26,6 +26,8 @@
 #include "graphic_pack_hash.h"
 #include "gfx/area_sample.h"
 #include "gfx/sampler_lod_bias.h"
+#include "gfx/sharp_text.h"
+#include "gfx/renderer.h"
 #include "gfx/shader_linkage.h"
 #include "render_objects.h"
 #include "exact_state_memo.h"
@@ -593,7 +595,7 @@ uint64_t portable_output_identity(const Shader& shader) {
     id.word(uint32_t(u.count_uniformRegister)); id.word(uint32_t(u.offset_alphaTestRef));
     id.word(uint32_t(u.offset_pointSize)); id.word(uint32_t(u.offset_fragCoordScale));
     id.words(u.offset_framebufferFetchSize); id.word(uint32_t(u.offset_windowSpaceToClipSpaceTransform));
-    id.words(u.offset_texScale); id.words(u.offset_texLodBias); id.word(uint32_t(u.offset_verticesPerInstance));
+    id.words(u.offset_texScale); id.words(u.offset_texLodBias); id.words(u.offset_texSharp); id.word(uint32_t(u.offset_verticesPerInstance));
     id.words(u.offset_streamoutBufferBase); id.word(uint32_t(u.offset_endOfBlock));
     const auto& r=shader.descriptorRanks;
     id.words(r.blocks); id.words(r.textures); id.word(r.support); id.word(r.count); id.word(r.valid ? 1 : 0);
@@ -688,6 +690,8 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     options.areaSampledTextures = fixes.units;
     // MoltenVK can't apply the sampler's mipLodBias: the shader adds it (gfx/sampler_lod_bias.h)
     options.emulateSamplerLodBias = !R.samplerMipLodBias;
+    // the glyph samples of the text shaders (gfx/sharp_text.h)
+    options.sharpTextTextures = vertex ? 0 : ::gfx::sharp_text::pixel_units(program, size);
     LatteDecompilerOutput_t output{};
     auto translate = [&] {
         if (vertex) LatteDecompiler_DecompileVertexShader(decompilerBase, const_cast<uint32_t*>(regs),
@@ -699,12 +703,13 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     if (!translate()) {
         free_decompiler(output.shader); shader.error = "Latte GLSL translation failed"; return false;
     }
-    if ((options.areaSampledTextures || options.emulateSamplerLodBias) && packReplacement && mods::cemu::has_shaders() &&
+    if ((options.areaSampledTextures || options.emulateSamplerLodBias || options.sharpTextTextures) && packReplacement && mods::cemu::has_shaders() &&
         !mods::cemu::shader_source(packBase, cemu_pack_hash::auxiliary(*output.shader, regs, vertex), vertex).empty()) {
         // a graphics pack replaces this shader: translate it as Cemu does, so its interface matches
         free_decompiler(output.shader);
         options.areaSampledTextures = 0;
         options.emulateSamplerLodBias = false;
+        options.sharpTextTextures = 0;
         output = LatteDecompilerOutput_t{};
         if (!translate()) {
             free_decompiler(output.shader); shader.error = "Latte GLSL translation failed"; return false;
@@ -717,6 +722,8 @@ bool decompile(Shader& shader, const uint32_t* regs, bool vertex, LatteFetchShad
     shader.glsl = shader.dec->strBuf_shaderSource->c_str();
     if (options.areaSampledTextures && ::gfx::area_sample::rewrite(shader.glsl, fixes, false) <= 0)
         fprintf(stderr, "[vulkan] pixel shader %08X: upscaling fix not applied\n", address);
+    if (options.sharpTextTextures && ::gfx::sharp_text::rewrite(shader.glsl, options.sharpTextTextures, false) <= 0)
+        fprintf(stderr, "[vulkan] pixel shader %08X: sharper text not applied\n", address);
     shader.gatherUnits = vertex ? 0 : ::gfx::area_sample::gathered_units(shader.glsl, false);
     if (vertex) {
         // Depth-only and shaded variants must rasterize identical positions.
@@ -1490,6 +1497,24 @@ void pack_uniforms_into(const uint32_t* regs, const Shader& shader,
         put(offsets.offset_texLodBias[unit],
             add ? ::gfx::sampler_lod_bias::host(regs[Latte::REGADDR::SQ_TEX_SAMPLER_WORD0_0 + ((shader.vertex ? 18 : 0) + samplerId) * 3 + 1])
                 : 0.0f);
+    }
+    // sharper text: the target's scale for a glyph sheet (gfx/sharp_text.h)
+    for (int unit = 0; !shader.vertex && unit < LATTE_NUM_MAX_TEX_UNITS; ++unit) {
+        if (offsets.offset_texSharp[unit] < 0) continue;
+        const uint32_t* words = regs + Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS + unit * 7;
+        const bool sheet = ::gfx::sharp_text::glyph_sheet(words);
+        const float gain = ::gfx::sharp_text::gain(render::sharp_text(), sheet, scaleX, scaleY);
+        put(offsets.offset_texSharp[unit], gain);
+        static const bool logText = std::getenv("WWHD_SHARP_TEXT_LOG") != nullptr;
+        if (logText) {
+            static std::mutex logMutex;
+            static std::unordered_set<uint64_t> seen;
+            const uint32_t key[4] = {regs[mmSQ_PGM_START_PS], words[2], words[4], uint32_t(gain * 64.0f)};
+            std::lock_guard lock(logMutex);
+            if (seen.insert(hash_bytes(key, sizeof key)).second)
+                fprintf(stderr, "[sharp text] PS %08X tex%d %08X fmt %02X dim %u sel %03X: %s, gain %.2f\n", regs[mmSQ_PGM_START_PS] << 8, unit,
+                    words[2] << 8, words[1] >> 26, words[0] & 7, (words[4] >> 16) & 0xFFF, sheet ? "glyph sheet" : "not a glyph sheet", gain);
+        }
     }
 }
 

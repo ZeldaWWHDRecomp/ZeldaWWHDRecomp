@@ -7,6 +7,15 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+### Improved
+
+- **Sharper text at higher resolutions** (#621). The game's letters come from small font pictures made for the Wii U's
+  1280x720; at a higher internal resolution they were only scaled up, so dialogue, the HUD's counters and button words
+  and the menus looked soft. Their edges are now drawn as crisp at 2x-4x as at 1x, with the same colours, outlines and
+  drop shadows; icons and other pictures are unchanged, and at 1x nothing changes. New option Settings › Graphics ›
+  **Sharper text** (on by default; also in the in-game settings page and the macOS Graphics menu; `WWHD_SHARP_TEXT=0`
+  turns it off). Metal and Vulkan.
+
 ### Fixed
 
 - **Settings: "Coloured face buttons" is dimmed when it has no effect** (#584, thanks @jamescastells). With Button

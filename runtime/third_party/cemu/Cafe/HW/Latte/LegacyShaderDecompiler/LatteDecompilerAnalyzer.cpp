@@ -621,6 +621,8 @@ namespace LatteDecompiler
 		}
 		if (decompilerContext->analyzer.texUnitUsesLodBias.any())
 			decompilerContext->hasUniformVarBlock = true; // WWHD: uf_tex%dLodBias
+		if (decompilerContext->analyzer.texUnitUsesSharpText.any())
+			decompilerContext->hasUniformVarBlock = true; // WWHD: uf_tex%dSharp
 		// assign binding point to uniform var block
 		if (decompilerContext->hasUniformVarBlock)
 		{
@@ -1183,6 +1185,14 @@ void LatteDecompiler_analyze(LatteDecompilerShaderContext* shaderContext, LatteD
 		for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS && t < 32; t++)
 			if ((shaderContext->options->areaSampledTextures >> t) & 1 && shaderContext->output->textureUnitMask[t])
 				shaderContext->analyzer.texUnitUsesTexelCoordinates.set(t);
+	}
+	// WWHD: units whose glyph samples the host sharpens need the gain (uf_texNSharp, gfx/sharp_text.h)
+	if (shaderContext->shaderType == LatteConst::ShaderType::Pixel)
+	{
+		for (sint32 t = 0; t < LATTE_NUM_MAX_TEX_UNITS && t < 32; t++)
+			if ((shaderContext->options->sharpTextTextures >> t) & 1 && shaderContext->output->textureUnitMask[t] &&
+				!shader->textureUsesDepthCompare[t])
+				shaderContext->analyzer.texUnitUsesSharpText.set(t);
 	}
 	// WWHD: no LOD bias for units that compare depth (sample_compare/shadow lookups take none on every
 	// host) or are one-dimensional (no levels on Metal)
