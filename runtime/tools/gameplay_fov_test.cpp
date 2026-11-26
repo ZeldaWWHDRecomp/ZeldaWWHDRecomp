@@ -17,6 +17,7 @@
 
 void log_msg(const char*, ...) {}
 namespace framegen { bool requested() { return false; } }  // 60 fps (generated): off in this test
+namespace hud_layout { bool marked() { return false; } }  // (no layout marker in this test)
 namespace gx2 {
 void emit(Op, const uint32_t*, uint32_t) {}
 bool recording_display_list() { return false; }

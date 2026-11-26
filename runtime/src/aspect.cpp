@@ -23,7 +23,7 @@
 // switches its render-target factors at the matching swap (the value travels with the swap
 // command), so a change never lands in the middle of a frame.
 #include "aspect.h"
-#include "framegen.h"
+#include "hud_layout.h"
 #include "savestate.h"
 #include "gfx/stereo.h"
 #include "gfx/gamepad_backdrop.h"
@@ -674,8 +674,9 @@ extern "C" void hook_02877100(Cpu* c) {
             if (root != pane && root_on_tv(root)) return;
         }
     }
-    // 60 fps (generated, framegen.h): the first layout on the TV picture ends its scene (only while on)
-    if (framegen::requested() && !ld32(pane + kPaneParent)) gx2::emit(gx2::OP_FRAMEGEN_LAYOUT, {});
+    // 60 fps (generated, framegen.h), FXAA before the HUD: the first layout on the TV picture ends its
+    // scene (only while one of them is on; hud_layout.h)
+    if (!ld32(pane + kPaneParent) && hud_layout::marked()) gx2::emit(gx2::OP_HUD_LAYOUT, {});
     if (original()) { plain ? f_02877100_orig(c) : button_glyphs::draw_pane(c, f_02877100_orig); return; }
     uint32_t parent = ld32(pane + kPaneParent);
     if (!parent) {

@@ -55,8 +55,9 @@ enum Op : uint32_t {
     // host-only, never recorded: the 3D camera of the frame being drawn (framegen::kCameraWords words)
     OP_FRAMEGEN_CAMERA,
     // a layout root pane is about to be drawn into the target bound now (aspect.cpp hook_02877100, as
-    // OP_LAYOUT_ROOT, also with the original aspect): the first one on the TV picture ends the scene
-    OP_FRAMEGEN_LAYOUT,
+    // OP_LAYOUT_ROOT, also with the original aspect): the first one on the TV picture ends the scene.
+    // Emitted while 60 fps (generated) runs or FXAA smooths the scene before the HUD (hud_layout.h)
+    OP_HUD_LAYOUT,
     OP_COUNT,
     // native draw packets (native_draw.h): emitted and executed only by WWHD_NATIVE_DRAW=ON builds (decomp build, fast
     // mode); declared in every build, after OP_COUNT, so that no other value or OP_COUNT changes. Recorded like any command:
