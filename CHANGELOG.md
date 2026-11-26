@@ -38,6 +38,13 @@ what is on `devel` and not released yet (also in the
   choice is no longer switched to SDR at start because of SDL's flag. Dimmed (unavailable) controls in the settings
   are now clearly dimmed. The `[HDR]` log lines name the display, its DXGI colour space, reported peak and SDR
   white, and the headroom. See [docs/hdr.md](docs/hdr.md).
+- **Frame interpolation: the camera no longer turns choppily along walls above 30 fps** (#585, thanks @PeonTheGrate
+  for the report and the video). When the camera touches a wall the game pulls it in front of the wall, and those
+  steps were drawn exactly so the in-between frames could not end up inside the wall; turning the camera along a
+  wall does that on almost every step, so the camera moved in 30 fps steps there. Those steps are blended now, with
+  the in-between frames never further from Link than both game steps (so not inside the wall). The first pull-in
+  onto a wall, a sudden jump of more than 30 % and cutscene cuts are still drawn exactly. `WWHD_INTERP_CAM_WALL=0`
+  restores the old behaviour.
 
 ## v0.5.2
 
