@@ -1429,9 +1429,10 @@ PadState read() {
         if (frame >= p.from && frame <= p.to) { s.rx = p.x; s.ry = p.y; }
     apply_scenario(s);
     s.buttons |= k.buttons;
-    s.virt |= k.virt;  // Jump anywhere, the moon jump (keys of their own)
+    s.virt |= k.virt;  // Jump anywhere, the moon jump, the slow walk (keys of their own)
     if (k.lx || k.ly) { s.lx = k.lx; s.ly = k.ly; }
     if (k.rx || k.ry) { s.rx = k.rx; s.ry = k.ry; }
+    input_map::apply_slow_walk(s, input_map::slow_walk_share());  // issue #626: held, the stick walks slowly
     s.touch = g_touch;
     s.tx = g_tx;
     s.ty = g_ty;

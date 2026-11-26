@@ -1457,6 +1457,111 @@ static void test_virtual_actions() {
     CHECK(s.buttons == input::kA && s.virt == input::kVirtJump && s.lx == -.9f && s.ry == .5f);
 }
 
+// issue #626: the slow walk, a third virtual action that scales the left stick while held
+static void test_slow_walk() {
+    auto near = [](float a, float b) { return std::fabs(a - b) < 1e-5f; };
+    Mapping m = Mapping::defaults();
+    CHECK(is_virtual(kSlowWalk) && !is_jump(kSlowWalk) && is_jump(kJump) && is_jump(kMoonJump));
+    CHECK(action_bit(kSlowWalk) == 0 && action_virtual(kSlowWalk) == input::kVirtSlowWalk);
+    CHECK(action_from_id("SlowWalk") == kSlowWalk && std::string(action_label(kSlowWalk)) == "Slow walk (hold)");
+    // unbound by default: Left Shift, the usual walk key, is the keyboard's ZL
+    CHECK(m.keys[kZL][0] == kVK_Shift);
+    CHECK(m.keys[kSlowWalk][0] == kNoKey && m.keys[kSlowWalk][1] == kNoKey && m.pad[kSlowWalk] == kPadNone);
+    CHECK(m.slow_walk_share == kDefaultSlowWalk && kDefaultSlowWalk == 0.3f);
+    // bound to G: a full-tilt keyboard diagonal ends at the share (0.3 of length 1), direction kept
+    m.keys[kSlowWalk] = {kVK_ANSI_G, kNoKey};
+    CHECK(!has_conflict(m, kSlowWalk) && conflict_count(m) == 0);
+    auto k = press(m, {kVK_ANSI_W, kVK_ANSI_D, kVK_ANSI_G});
+    CHECK(k.buttons == 0 && k.virt == input::kVirtSlowWalk);
+    apply_slow_walk(k, m.slow_walk_share);
+    CHECK(near(std::sqrt(k.lx * k.lx + k.ly * k.ly), 0.3f) && near(k.lx, k.ly));
+    k = press(m, {kVK_ANSI_W});
+    apply_slow_walk(k, m.slow_walk_share);  // not held: unchanged
+    CHECK(k.ly == 1 && k.lx == 0);
+    // a controller at full tilt, after its dead zone and range: the share too
+    m.pad[kSlowWalk] = kPadRB;  // (R1 is the Wii U's R: a conflict, but it still works)
+    m.left_range = 1.5f;
+    float v[kPadCount] = {};
+    v[kPadLSLeft] = 1.0f;
+    v[kPadRB] = 1.0f;
+    auto c = controller_state(m, v);
+    CHECK(c.virt == input::kVirtSlowWalk && c.lx == -1.0f);
+    apply_slow_walk(c, m.slow_walk_share);
+    CHECK(near(c.lx, -0.3f) && c.ly == 0);
+    // a half tilt walks at the share of that; the right stick is never touched
+    v[kPadLSLeft] = 0.5f;
+    v[kPadRSUp] = 1.0f;
+    m.left_range = 1.0f;
+    m.deadzone = 0;
+    c = controller_state(m, v);
+    apply_slow_walk(c, 0.5f);
+    CHECK(near(c.lx, -0.25f) && c.ry == 1.0f);
+    // the share is clamped to 10..90 %
+    input::PadState s;
+    s.virt = input::kVirtSlowWalk; s.lx = 1;
+    apply_slow_walk(s, 0.01f);
+    CHECK(near(s.lx, kMinSlowWalk));
+    s.lx = 1; apply_slow_walk(s, 2.0f);
+    CHECK(near(s.lx, kMaxSlowWalk));
+    // its bit rides with keyboard and controllers like the jumps (combine), never a game button
+    input::PadState a, b;
+    a.lx = 1; b.virt = input::kVirtSlowWalk;
+    auto both = combine(a, b);
+    apply_slow_walk(both, 0.3f);
+    CHECK(near(both.lx, 0.3f) && both.buttons == 0);
+    // it shares no input with the jumps (holding it would also jump) but may share L or d-pad down
+    Mapping j = Mapping::defaults();
+    j.keys[kSlowWalk] = {kVK_ANSI_Q, kNoKey};
+    CHECK(has_conflict(j, kSlowWalk));
+    j.keys[kJump] = j.keys[kMoonJump] = {kVK_ANSI_G, kNoKey};
+    CHECK(!has_conflict(j, kSlowWalk));  // alone with the Wii U's L on Q
+    j.pad[kSlowWalk] = kPadDDown;
+    CHECK(!has_conflict(j, kSlowWalk));
+    // in play a held slow walk on L's input keeps L back (it acts whenever held), as a jump does
+    CHECK(play_buttons(j, input::kL, true, input::kVirtSlowWalk) == 0);
+    CHECK(play_buttons(j, input::kL, false, input::kVirtSlowWalk) == input::kL);
+    // moving Jump off L1 does not take the slow walk along (only the moon jump follows the jump)
+    Mapping f = Mapping::defaults();
+    f.pad[kSlowWalk] = kPadLB;
+    CHECK(bind_virtual(f, kJump, kPadR3, Displace::kTakeOff));
+    CHECK(f.pad[kSlowWalk] == kPadLB);
+    // a slow walk on a face button leaves the prompt look alone (it reads only A, B, X, Y)
+    Mapping p = Mapping::defaults(), q = p;
+    q.pad[kSlowWalk] = kPadA;  // shared with the Wii U's B: a conflict the page shows, not a new look
+    for (PadFamily fam : {PadFamily::kUnknown, PadFamily::kXbox, PadFamily::kPlayStation, PadFamily::kNintendo})
+        CHECK(prompt_style(q, fam) == prompt_style(p, fam));
+    CHECK(hud_spots(q) == hud_spots(p) && face_layout(q) == face_layout(p));
+    // JSON: the share only when not the default; older files keep 30 %; out of range is clamped
+    std::string err;
+    Mapping r, w = Mapping::defaults();
+    std::string text = to_json(w);
+    CHECK(text.find("slow_walk_share") == std::string::npos);
+    CHECK(text.find("\"SlowWalk\": []") != std::string::npos && text.find("\"SlowWalk\": null") != std::string::npos);
+    w.slow_walk_share = 0.45f;
+    w.keys[kSlowWalk] = {kVK_ANSI_G, kNoKey};
+    w.pad[kSlowWalk] = kPadR3;
+    text = to_json(w);
+    CHECK(text.find("\"slow_walk_share\": 0.45") != std::string::npos);
+    CHECK(from_json(text, r, &err) && err.empty() && r == w);
+    CHECK(from_json(R"({"version":2,"options":{"format":2}})", r, &err) && r.slow_walk_share == kDefaultSlowWalk);
+    CHECK(r.keys[kSlowWalk][0] == kNoKey && r.pad[kSlowWalk] == kPadNone);
+    CHECK(from_json(R"({"version":2,"options":{"format":2,"slow_walk_share":5}})", r, &err) && r.slow_walk_share == kMaxSlowWalk);
+    CHECK(from_json(R"({"version":2,"options":{"format":2,"slow_walk_share":0}})", r, &err) && r.slow_walk_share == kMinSlowWalk);
+    // format 1: Jump and the moon jump take L's inputs; the slow walk stays unbound
+    CHECK(from_json(R"({"keyboard":{"L":["R"]}})", r, &err));
+    CHECK(r.keys[kJump][0] == r.keys[kL][0] && r.keys[kSlowWalk][0] == kNoKey && r.pad[kSlowWalk] == kPadNone);
+    // a GameCube preset saved before the slow walk (one action less in "previous") still restores
+    Mapping g = Mapping::defaults();
+    apply_gamecube(g);
+    std::string saved = to_json(g);
+    const std::string tail = ", \"" + std::string(pad_id(kPadNone)) + "\"]";
+    const size_t at = saved.find(tail, saved.find("\"previous\""));
+    CHECK(at != std::string::npos);
+    saved.replace(at, tail.size(), "]");
+    CHECK(from_json(saved, r, &err) && r.preset.saved);
+    CHECK(restore_pad_preset(r) && r.pad == Mapping::defaults().pad);
+}
+
 static void test_play_buttons() {
     Mapping m = Mapping::defaults();
     const uint32_t J = input::kVirtJump, M = input::kVirtMoonJump;
@@ -1774,7 +1879,7 @@ static void test_gamecube() {
         kPadA,kPadX,kPadB,kPadY,kPadStartLeft,kPadRB,kPadGCL,kPadGCR,
         kPadMenu,kPadStartDown,kPadStartRight,kPadDUp,kPadDDown,kPadDLeft,kPadDRight,
         kPadNone,kPadStartUp,kPadLSUp,kPadLSDown,kPadLSLeft,kPadLSRight,
-        kPadRSUp,kPadRSDown,kPadRSLeft,kPadRSRight,kPadNone,kPadNone,kPadNone};
+        kPadRSUp,kPadRSDown,kPadRSLeft,kPadRSRight,kPadNone,kPadNone,kPadNone,kPadNone};
     CHECK(m.pad == expected); CHECK(m.keys == original.keys); CHECK(m.shortcuts == original.shortcuts);
     for (int p=kPadGCL;p<kPadCount;++p) {
         CHECK(pad_from_id(pad_id(p))==p); CHECK(pad_label(p)[0]); CHECK(pad_short_label(p)[0]);
@@ -2000,6 +2105,7 @@ int main() {
     CHECK(!background_controllers());
     test_files();
     test_virtual_actions();
+    test_slow_walk();
     test_play_buttons();
     test_displace_rules();
     test_profiles();

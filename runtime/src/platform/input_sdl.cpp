@@ -1592,6 +1592,7 @@ PadState read() {
     s.ty = g_ty;
     s.virt |= g_touch_virt.load(std::memory_order_relaxed);  // the on-screen Jump / Moon jump buttons
     s.virt |= k.virt;
+    input_map::apply_slow_walk(s, input_map::slow_walk_share());  // issue #626: held, the stick walks slowly
     // debug: WWHD_LOG_BUTTONS=1 logs every change of the merged button bits
     static const bool log_buttons = getenv("WWHD_LOG_BUTTONS") != nullptr;
     static uint32_t last_buttons = 0;

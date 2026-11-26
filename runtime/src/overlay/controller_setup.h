@@ -111,6 +111,7 @@ inline const char* action_use(int a) {
     case kStickRClick: return "first person";
     case kJump: return "jumps (Jump anywhere)";
     case kMoonJump: return "moon jump (when on)";
+    case kSlowWalk: return "slow walk (held)";
     default: return "";
     }
 }
@@ -124,7 +125,8 @@ inline std::vector<std::string> describe(const std::array<int, input_map::kActio
         if (pad[a] != input || a == kScreenshot) continue;
         if (a >= kLUp && a <= kRRight) continue;  // the sticks: shown as sticks
         const char* use = action_use(a);
-        if (is_virtual(a)) out.push_back(std::string("Jump: ") + use);
+        if (is_jump(a)) out.push_back(std::string("Jump: ") + use);
+        else if (a == kSlowWalk) out.push_back("Slow walk (held)");
         else out.push_back(std::string("Wii U ") + action_label(a) + (*use ? std::string(": ") + use : std::string()));
     }
     if (out.empty()) out.push_back("nothing in the game");

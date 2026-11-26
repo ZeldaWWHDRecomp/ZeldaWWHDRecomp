@@ -40,7 +40,7 @@ same values.
 - **Camera:** invert up/down, direct camera and its speed, mouse camera and its sensitivity,
   first person on R3 or the mouse wheel, letterbox while targeting.
 - **Controls:** face buttons, button prompts, shoulder names, coloured face buttons and their text,
-  rumble, stick dead zone, skip controller selection.
+  rumble, stick dead zone, slow walk speed (#626), skip controller selection.
 - **Screen:** gameplay field of view, the boost bar. On Android also the touch buttons and the
   on-screen controls.
 - **Graphics:** internal resolution, frame rate (30, 40, 60, 120 or 240 fps), dynamic
