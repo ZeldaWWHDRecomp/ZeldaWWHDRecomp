@@ -58,19 +58,21 @@ inline unsigned draw(Values& v, Layout* layout = nullptr) {
     mark(kItemInvert);
     tip("Camera only, including first-person views and item aiming (bow, hookshot, telescope, Picto Box) and the "
         "mouse camera. The Wind Waker baton and other right-stick controls are not inverted.");
-    // the decomp build until its camera carries the points for the X reads (mods/camera.cpp
-    // invert_camera_x_available): greyed out with a note, the saved value kept
-    const char* invx = v.invert_x_available ? "Invert camera left/right"
-                                            : "Invert camera left/right (Recompiled version only for now)###invx";
-    flow::next(flow::check(v.invert_x_available ? invx : "Invert camera left/right (Recompiled version only for now)"), gap);
+    // Invert camera left/right, short beside up/down so the dead zone .. reset line still fits a 1240 px
+    // window with wider fonts (DejaVu Sans on Linux). The decomp build until its camera carries the points for
+    // the X reads (mods/camera.cpp invert_camera_x_available): greyed out with a note, the saved value kept
+    const char* invx = v.invert_x_available ? "Invert left/right"
+                                            : "Invert left/right (Recompiled version only for now)###invx";
+    flow::next(flow::check(v.invert_x_available ? invx : "Invert left/right (Recompiled version only for now)"), gap);
     ImGui::BeginDisabled(!v.invert_x_available);
     if (ImGui::Checkbox(invx, &v.invert_camera_x)) changed |= kInvert;
     ImGui::EndDisabled();
     mark(kItemInvertX);
     tip(v.invert_x_available
-            ? "The same for left and right: the camera, first-person views, item aiming and the mouse camera turn the "
+            ? "Invert camera left/right: the camera, first-person views, item aiming and the mouse camera turn the "
               "other way. The Wind Waker baton and other right-stick controls are not inverted."
-            : "Recompiled version only for now: this decomp build's camera does not apply it yet. Your setting is kept.");
+            : "Invert camera left/right: Recompiled version only for now, this decomp build's camera does not apply it "
+              "yet. Your setting is kept.");
     // issue #35: a way to keep the controller motors still (saved; WWHD_RUMBLE=0 starts with it off)
     flow::next(flow::check("Rumble"), gap);
     ImGui::BeginDisabled(!v.rumble_available);
