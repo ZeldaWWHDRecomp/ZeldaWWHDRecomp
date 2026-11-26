@@ -27,6 +27,7 @@ bool aniso_enabled();
 void set_aniso(bool v);
 bool fxaa_enabled();
 void set_fxaa(bool v);
+void hud_layout(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase);  // display.mm (FXAA before the HUD)
 std::string device_name();
 }  // namespace gfx
 
@@ -71,6 +72,7 @@ const Backend& metal_backend() {
         b.set_aniso = gfx::set_aniso;
         b.fxaa = gfx::fxaa_enabled;
         b.set_fxaa = gfx::set_fxaa;
+        b.hud_layout = gfx::hud_layout;  // (OP_HUD_LAYOUT: FXAA before the HUD; hud_layout.h)
         b.feature_available = [](int) { return true; };
         b.device = gfx::device_name;
         return b;

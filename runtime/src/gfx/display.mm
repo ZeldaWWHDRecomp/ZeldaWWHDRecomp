@@ -53,6 +53,7 @@
 #include "input.h"
 #include "metal.h"
 #include "renderer.h"
+#include "../hud_layout.h"
 #include "runtime.h"
 #include "../interp.h"
 #include "../savestate.h"
@@ -694,6 +695,11 @@ fragment float4 present_fs(VOut in [[stage_in]], texture2d<float> tex [[texture(
     return float4(c, 1.0);
 }
 fragment float4 solid_fs(VOut in [[stage_in]], constant float4& color [[buffer(0)]]) { return color; }
+// FXAA before the HUD (#587, hud_layout below): the TV picture's scene smoothed from a copy of it, back
+// into it, as present_fs smooths a picture when it is shown; alpha as it was
+fragment float4 fxaa_fs(VOut in [[stage_in]], texture2d<float> tex [[texture(0)]], sampler s [[sampler(0)]]) {
+    return float4(fxaa(tex, s, in.uv), tex.sample(s, in.uv).a);
+}
 )";
 
 static id<MTLLibrary> g_lib;
@@ -722,6 +728,77 @@ static id<MTLRenderPipelineState> pipeline(MTLPixelFormat fmt, bool solid, bool 
     if (!p) fatal("present pipeline: %s", err.localizedDescription.UTF8String);
     cache[key] = p;
     return p;
+}
+
+// FXAA before the HUD (#587; render::fxaa_before_hud, hud_layout.h): at the first layout root drawn into
+// the TV picture of a frame (OP_HUD_LAYOUT) its scene is complete; it is smoothed there (copied aside, FXAA
+// back into it), the open encoder ends and the HUD's draws start a new one, so the HUD and text stay sharp.
+// The picture is marked (Surface::smoothedFrame): its scan is not smoothed again when shown (Screen::smoothed).
+// Frames without a layout on the TV picture keep FXAA when shown.
+static id<MTLRenderPipelineState> fxaa_pipeline(MTLPixelFormat fmt) {
+    static std::map<int, id<MTLRenderPipelineState>> cache;
+    auto it = cache.find((int)fmt);
+    if (it != cache.end()) return it->second;
+    MTLRenderPipelineDescriptor* d = [MTLRenderPipelineDescriptor new];
+    d.vertexFunction = [g_lib newFunctionWithName:@"present_vs"];
+    d.fragmentFunction = [g_lib newFunctionWithName:@"fxaa_fs"];
+    d.colorAttachments[0].pixelFormat = fmt;
+    NSError* err = nil;
+    id<MTLRenderPipelineState> p = [R.device newRenderPipelineStateWithDescriptor:d error:&err];
+    if (!p) LOG("[gfx] FXAA before the HUD: no pipeline for format %d: %s", (int)fmt, err.localizedDescription.UTF8String);
+    cache[(int)fmt] = p;  // (nil: not tried again; FXAA stays at the present)
+    return p;
+}
+void hud_layout(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t) {
+    static uint64_t seenFrame = ~0ull;
+    if (seenFrame == R.frame || !hud_layout::tv_picture(width, height) || !render::fxaa_before_hud() || !g_lib) return;
+    // the TV picture: the newest colour surface of that guest size at that address
+    Surface* s = nullptr;
+    auto range = R.surfaces.equal_range(colorBase);
+    for (auto it = range.first; it != range.second; ++it) {
+        Surface* c = it->second.get();
+        if (c->isDepth || !c->tex || c->width != width || c->height != height || c->tex.textureType != MTLTextureType2D) continue;
+        if (!s || c->writeSeq > s->writeSeq) s = c;
+    }
+    if (!s || s->fmt.depth || s->fmt.kind != FormatInfo::FLOAT || s->fmt.compressed || !(s->tex.usage & MTLTextureUsageRenderTarget)) return;
+    seenFrame = R.frame;
+    id<MTLRenderPipelineState> pipe = fxaa_pipeline(s->tex.pixelFormat);
+    if (!pipe) return;
+    static id<MTLTexture> src = nil;
+    if (!src || src.width != s->tex.width || src.height != s->tex.height || src.pixelFormat != s->tex.pixelFormat) {
+        MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:s->tex.pixelFormat width:s->tex.width
+                                                                                    height:s->tex.height mipmapped:NO];
+        d.usage = MTLTextureUsageShaderRead;
+        d.storageMode = MTLStorageModePrivate;
+        src = [R.device newTextureWithDescriptor:d];
+        if (!src) return;
+    }
+    end_encoder();
+    id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
+    [b copyFromTexture:s->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
+            sourceSize:MTLSizeMake(s->tex.width, s->tex.height, 1) toTexture:src destinationSlice:0 destinationLevel:0
+     destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [b endEncoding];
+    MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+    rp.colorAttachments[0].texture = s->tex;
+    rp.colorAttachments[0].loadAction = MTLLoadActionDontCare;  // (every pixel is written)
+    rp.colorAttachments[0].storeAction = MTLStoreActionStore;
+    id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
+    const float rect[4] = {0, 0, 1, 1};
+    [e setRenderPipelineState:pipe];
+    [e setVertexBytes:rect length:sizeof rect atIndex:0];
+    [e setFragmentTexture:src atIndex:0];
+    [e setFragmentSamplerState:R.linearClamp atIndex:0];
+    [e drawPrimitives:MTLPrimitiveTypeTriangleStrip vertexStart:0 vertexCount:4];
+    [e endEncoding];
+    mark_gpu_written(s);
+    s->smoothedFrame = R.frame;
+    static int logged = 0;
+    if (logged < 2) {
+        logged++;
+        LOG("[gfx] FXAA before the HUD: TV picture %08X %ux%u (%lux%lu) format %d", s->addr, s->width, s->height,
+            (unsigned long)s->tex.width, (unsigned long)s->tex.height, (int)s->tex.pixelFormat);
+    }
 }
 
 static void create_present_pipeline() {
@@ -849,15 +926,16 @@ static bool is_srgb(MTLPixelFormat f) { return f == MTLPixelFormatBGRA8Unorm_sRG
 // draw `tex` into the target rectangle (pixels); src_linear: the image holds linear values (sRGB scan buffer)
 // dyn: the picture's dynamic resolution factor (Screen::dyn; below 1: always scaled filtered, as the Vulkan
 // presentation: integer scaling becomes smooth, sharp scaling takes its sharpness from the full size)
+// smoothed: the picture's scene was smoothed at its HUD point already (FXAA before the HUD): no FXAA here
 static void draw_image(id<MTLRenderCommandEncoder> e, MTLPixelFormat fmt, float dw, float dh, id<MTLTexture> tex,
-                       bool src_linear, Box b, float alpha, float dyn = 1.0f) {
+                       bool src_linear, Box b, float alpha, float dyn = 1.0f, bool smoothed = false) {
     if (!tex || b.w <= 0 || b.h <= 0) return;
     float rect[4] = {b.x / dw, b.y / dh, b.w / dw, b.h / dh};
     bool blend = alpha < 0.999f;
     [e setRenderPipelineState:pipeline(fmt, false, blend)];
     if (blend) [e setBlendColorRed:0 green:0 blue:0 alpha:alpha];
     struct { int aa, conv; float sharp, foot; } p;
-    p.aa = fxaa_enabled() ? 1 : 0;
+    p.aa = fxaa_enabled() && !smoothed ? 1 : 0;
     bool dst_linear = is_srgb(fmt);
     p.conv = src_linear == dst_linear ? 0 : dst_linear ? 1 : 2;
     float scale = std::min(b.w / tex.width, b.h / tex.height);  // target pixels per source texel
@@ -898,7 +976,7 @@ static void compose_tv(id<MTLTexture> target, const Layout& L) {
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
     float dw = target.width, dh = target.height;
     MTLPixelFormat fmt = target.pixelFormat;
-    draw_image(e, fmt, dw, dh, R.tv.tex, R.tv.srgb, L.tv, 1.0f, R.tv.dyn);
+    draw_image(e, fmt, dw, dh, R.tv.tex, R.tv.srgb, L.tv, 1.0f, R.tv.dyn, R.tv.smoothed);
     if (L.pip_on && R.drc.tex) {
         float op = L.drc_only ? 1.0f : g_pip_opacity.load(), bw = std::max(1.0f, roundf(L.pip.w / 200.0f));
         float frame[4] = {0, 0, 0, 0.6f * op};
@@ -990,7 +1068,7 @@ static void screenshot_screen(Screen& scr, const std::string& path, bool tv) {
     rp.colorAttachments[0].clearColor = MTLClearColorMake(0, 0, 0, 1);
     rp.colorAttachments[0].storeAction = MTLStoreActionStore;
     id<MTLRenderCommandEncoder> e = [command_buffer() renderCommandEncoderWithDescriptor:rp];
-    draw_image(e, t.pixelFormat, w, h, scr.tex, scr.srgb, Box{0, 0, (float)w, (float)h}, 1.0f, scr.dyn);
+    draw_image(e, t.pixelFormat, w, h, scr.tex, scr.srgb, Box{0, 0, (float)w, (float)h}, 1.0f, scr.dyn, scr.smoothed);
     [e endEncoding];
     id<MTLBuffer> buf = [R.device newBufferWithLength:w * h * 4 options:MTLResourceStorageModeShared];
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];

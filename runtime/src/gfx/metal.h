@@ -52,6 +52,7 @@ struct Surface {
     // dynamic resolution (dynres.h): the factor of the internal resolution the texture was made at (1: off),
     // and textures of other recent scales kept for the next change (metal_surfaces.mm rescale)
     float dyn = 1.0f;
+    uint64_t smoothedFrame = ~0ull;  // FXAA before the HUD (display.mm hud_layout): the frame its scene was smoothed in
     bool artisticMips = false;  // hand-drawn mip levels (artistic_mips.h): resolution-aware bias, no forced anisotropy
     struct Kept { id<MTLTexture> tex; float scale, dyn, ax, ay, sx, sy; };
     std::vector<Kept> spares;
@@ -65,6 +66,7 @@ struct Screen {
     std::vector<id<MTLTexture>> scanSpares;  // dynamic resolution: scan textures of other sizes
     CAMetalLayer* layer = nil;
     std::atomic<bool> srgb{false};     // scan buffer is sRGB: the display applies the encoding
+    bool smoothed = false;             // FXAA before the HUD (display.mm hud_layout): tex's scene smoothed already
     std::atomic<bool> visible{true};   // nextDrawable blocks while the window is covered
 };
 
