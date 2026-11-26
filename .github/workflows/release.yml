@@ -11,6 +11,30 @@
 # checks the same artifacts without publishing (dry run); with dry_run unchecked on a v* tag it
 # publishes too.
 #
+# Publishing a green dry run (no second 1.5-2 h build): a release is built once, by a dry run, and the
+# tag publishes exactly those files.
+#   1. "Run workflow" on main (dry_run checked) with version = the coming tag, e.g. v0.6.0: the
+#      artifacts are then named and built as that version (a dry run without it is "dryrun-<commit>"
+#      and can never be published), with the shader template and the Android release key required.
+#   2. When that run is green, push the tag on the same commit: git tag v0.6.0 <commit> && git push
+#      origin v0.6.0. The tag run (job "version", tools/release/find_dry_run.py) looks for the newest
+#      run that qualifies and, if there is one, skips the builds: the "reuse" jobs download its
+#      artifacts, check them again and hand them to virustotal and publish as if built here. The job
+#      summary/log says which path was taken ("release path: ..."). No qualifying run: it builds
+#      everything as before.
+#   A run qualifies only if it is this workflow in this repository, started by workflow_dispatch,
+#   completed with success, on exactly the tag's commit (git rev-list -n1 <tag>), with every build
+#   job, the guard and the checksum steps green, both publish steps skipped (a dry run, no
+#   development build), built as the tag's version, and every release artifact still downloadable
+#   (they keep the repository's 90 days). The reuse jobs then check that each artifact holds exactly
+#   the release files of the tag (names, sdk/manifest.json version and platform, the pinned shader
+#   template), run guard.py again (the AppImage extracted), check the APK's release certificate and
+#   versionName, and upload them unchanged; publish recomputes SHA256SUMS, writes the notes from
+#   CHANGELOG.md at the tag, runs its own guard and publishes; virustotal scans them again.
+#   Override: "Run workflow" on the tag with dry_run unchecked and from_run = a run id publishes that
+#   run's artifacts (the same checks; it fails instead of building when they do not pass). The same
+#   without from_run rebuilds and publishes, as before (e.g. when the tag run's reuse failed).
+#
 # Development builds: "Run workflow" on devel with devel_build checked publishes the same artifacts
 # as the rolling pre-release "devel-build" (replaced each time, never marked latest, no VirusTotal scan to
 # save the API quota). The nightly schedule runs on the default branch and only starts such a run
@@ -36,6 +60,14 @@ on:
         description: "Development build: publish as the rolling pre-release 'devel-build' (run on devel)"
         type: boolean
         default: false
+      version:
+        description: "Dry run of a coming release: build as this version (vX.Y.Z); the tag push on the same commit then publishes these artifacts"
+        type: string
+        default: ""
+      from_run:
+        description: "On a v* tag with dry_run unchecked: publish the artifacts of this green dry run (run id) instead of building"
+        type: string
+        default: ""
 
 permissions:
   contents: read
@@ -59,10 +91,19 @@ jobs:
       publish: ${{ steps.v.outputs.publish }}
       devel: ${{ steps.v.outputs.devel }}
       skip: ${{ steps.v.outputs.skip }}
+      candidate: ${{ steps.v.outputs.candidate }}  # a dry run built as a coming release (input version)
+      from_run: ${{ steps.v.outputs.from_run }}    # publish this dry run's artifacts, no build
     env:
       GH_TOKEN: ${{ github.token }}
       GH_REPO: ${{ github.repository }}
+      # strings from the dispatch form: only through the environment, never pasted into the script
+      VERSION_IN: ${{ inputs.version }}
+      FROM_RUN: ${{ inputs.from_run }}
     steps:
+      # tools/release/find_dry_run.py and the tag (tag runs only)
+      - uses: actions/checkout@v5
+        if: startsWith(github.ref, 'refs/tags/v')
+
       - id: v
         run: |
           if [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
@@ -76,6 +117,9 @@ jobs:
             fi
             echo "skip=true" >> "$GITHUB_OUTPUT"
             exit 0
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "${{ inputs.devel_build }}" == true && -n "$VERSION_IN$FROM_RUN" ]]; then
+            echo "::error::version and from_run are for releases, not development builds"; exit 1
           fi
           if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "${{ inputs.devel_build }}" == true ]]; then
             if [[ "$GITHUB_REF" != refs/heads/devel ]]; then
@@ -92,10 +136,18 @@ jobs:
             exit 0
           fi
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            if [[ -n "$VERSION_IN" && "$VERSION_IN" != "$GITHUB_REF_NAME" ]]; then
+              echo "::error::version $VERSION_IN on tag $GITHUB_REF_NAME: a tag builds as its own name"; exit 1
+            fi
             echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          elif [[ -n "$VERSION_IN" ]]; then
+            # a dry run of a coming release (on main): built as that version, so the tag can publish it
+            [[ "$VERSION_IN" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::version must be vX.Y.Z (got '$VERSION_IN')"; exit 1; }
+            echo "version=$VERSION_IN" >> "$GITHUB_OUTPUT"
           else
             echo "version=dryrun-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
           fi
+          if [[ -n "$VERSION_IN" ]]; then echo "candidate=true" >> "$GITHUB_OUTPUT"; fi
           publish=false
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             if [[ "$GITHUB_EVENT_NAME" == push ]]; then publish=true; fi
@@ -103,10 +155,39 @@ jobs:
           fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "version: $(grep version= "$GITHUB_OUTPUT"), publish: $publish"
+          # A release from a green dry run on the same commit (header): from_run given, or found for a tag push.
+          if [[ -n "$FROM_RUN" && "$publish" != true ]]; then
+            echo "::error::from_run publishes: run it on a v* tag with dry_run unchecked"; exit 1
+          fi
+          if [[ "$publish" == true && ( -n "$FROM_RUN" || "$GITHUB_EVENT_NAME" == push ) ]]; then
+            sha=$(git rev-list -n1 "$GITHUB_REF" 2>/dev/null || true)
+            from_run=
+            if [[ "$sha" != "$GITHUB_SHA" ]]; then
+              # from_run fails; a tag push builds as before (never fails because of the reuse path)
+              if [[ -n "$FROM_RUN" ]]; then
+                echo "::error::tag $GITHUB_REF_NAME is commit '$sha', the run is on $GITHUB_SHA"; exit 1
+              fi
+              echo "::warning::tag $GITHUB_REF_NAME is commit '$sha', the run is on $GITHUB_SHA: building"
+            elif [[ -n "$FROM_RUN" ]]; then
+              python3 tools/release/find_dry_run.py check --repo "$GH_REPO" --tag "$GITHUB_REF_NAME" --sha "$sha" --run "$FROM_RUN"
+              from_run=$FROM_RUN
+            elif ! from_run=$(python3 tools/release/find_dry_run.py find --repo "$GH_REPO" --tag "$GITHUB_REF_NAME" --sha "$sha"); then
+              echo "::warning::could not look for a green dry run: building"
+              from_run=
+            fi
+            if [[ -n "$from_run" ]]; then
+              echo "from_run=$from_run" >> "$GITHUB_OUTPUT"
+              msg="release path: publishing the artifacts of dry run $from_run ($GITHUB_SERVER_URL/$GH_REPO/actions/runs/$from_run), no build"
+            else
+              msg="release path: full build (no green dry run of ${sha::8} built as $GITHUB_REF_NAME)"
+            fi
+            echo "::notice::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
 
   macos:
     needs: version
-    if: needs.version.outputs.skip != 'true'
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.from_run == ''
     # macOS 15 SDK (Xcode 16) needed: the Metal renderer uses MTLMathMode; the app runs on macOS 14+
     runs-on: macos-15
     env:
@@ -117,7 +198,8 @@ jobs:
       - name: Fetch pinned optional shader template
         env:
           SHADER_TEMPLATE_DEPLOY_KEY: ${{ secrets.SHADER_TEMPLATE_DEPLOY_KEY }}
-          SHADER_TEMPLATE_DEVEL_BUILD: ${{ inputs.devel_build }}
+          # also required for a dry run of a coming release (input version): the tag publishes its files
+          SHADER_TEMPLATE_DEVEL_BUILD: ${{ inputs.devel_build || needs.version.outputs.candidate == 'true' }}
         shell: bash
         run: |
           umask 077
@@ -267,7 +349,7 @@ jobs:
 
   linux:
     needs: version
-    if: needs.version.outputs.skip != 'true'
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.from_run == ''
     # x86-64 and arm64 (aarch64), each built and tested on its own architecture's runner.
     # glibc 2.35: the oldest base the release supports (Ubuntu 22.04, Debian 12, Fedora 36, SteamOS 3,
     # Raspberry Pi OS 12 64-bit)
@@ -293,7 +375,8 @@ jobs:
       - name: Fetch pinned optional shader template
         env:
           SHADER_TEMPLATE_DEPLOY_KEY: ${{ secrets.SHADER_TEMPLATE_DEPLOY_KEY }}
-          SHADER_TEMPLATE_DEVEL_BUILD: ${{ inputs.devel_build }}
+          # also required for a dry run of a coming release (input version): the tag publishes its files
+          SHADER_TEMPLATE_DEVEL_BUILD: ${{ inputs.devel_build || needs.version.outputs.candidate == 'true' }}
         shell: bash
         run: |
           umask 077
@@ -503,7 +586,7 @@ jobs:
 
   windows:
     needs: version
-    if: needs.version.outputs.skip != 'true'
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.from_run == ''
     # x86-64 and arm64 (Windows on ARM, e.g. Snapdragon X), each built and tested on its own
     # architecture's runner with the llvm-mingw for that host and target
     strategy:
@@ -538,7 +621,8 @@ jobs:
       - name: Fetch pinned optional shader template
         env:
           SHADER_TEMPLATE_DEPLOY_KEY: ${{ secrets.SHADER_TEMPLATE_DEPLOY_KEY }}
-          SHADER_TEMPLATE_DEVEL_BUILD: ${{ inputs.devel_build }}
+          # also required for a dry run of a coming release (input version): the tag publishes its files
+          SHADER_TEMPLATE_DEVEL_BUILD: ${{ inputs.devel_build || needs.version.outputs.candidate == 'true' }}
         shell: bash
         run: |
           umask 077
@@ -817,7 +901,7 @@ jobs:
   # The in-app randomizer (.github/actions/android-rando, cached) goes in too; the guard step fails without it.
   android:
     needs: version
-    if: needs.version.outputs.skip != 'true'
+    if: needs.version.outputs.skip != 'true' && needs.version.outputs.from_run == ''
     runs-on: ubuntu-24.04
     timeout-minutes: 180
     strategy:
@@ -842,7 +926,8 @@ jobs:
       - name: Fetch pinned optional shader template
         env:
           SHADER_TEMPLATE_DEPLOY_KEY: ${{ secrets.SHADER_TEMPLATE_DEPLOY_KEY }}
-          SHADER_TEMPLATE_DEVEL_BUILD: ${{ inputs.devel_build }}
+          # also required for a dry run of a coming release (input version): the tag publishes its files
+          SHADER_TEMPLATE_DEVEL_BUILD: ${{ inputs.devel_build || needs.version.outputs.candidate == 'true' }}
         shell: bash
         run: |
           umask 077
@@ -927,7 +1012,7 @@ jobs:
           KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_B64 }}
           WWHD_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           WWHD_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          PUBLISHING: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.devel == 'true' }}
+          PUBLISHING: ${{ needs.version.outputs.publish == 'true' || needs.version.outputs.devel == 'true' || needs.version.outputs.candidate == 'true' }}
         run: |
           if [ -n "$KEYSTORE_B64" ]; then
             export WWHD_KEYSTORE="$RUNNER_TEMP/wwhd-release.p12"
@@ -999,12 +1084,100 @@ jobs:
           abi: ${{ matrix.abi }}
           lookup-only: "true"
 
+  # A release from a green dry run (header; only when the version job set from_run, instead of the build
+  # jobs): each of the dry run's release artifacts is downloaded, checked again and uploaded unchanged under
+  # its own name, so virustotal and publish take it exactly as a build job's artifact.
+  reuse:
+    needs: version
+    if: needs.version.outputs.from_run != ''
+    permissions:
+      contents: read
+      actions: read   # download-artifact from another run of this workflow (the dry run)
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {artifact: release-macos-arm64, runner: ubuntu-24.04}
+          - {artifact: release-linux-x86_64, runner: ubuntu-22.04}     # the AppImage is extracted on its own architecture
+          - {artifact: release-linux-aarch64, runner: ubuntu-22.04-arm}
+          - {artifact: release-windows-x86_64, runner: ubuntu-24.04}
+          - {artifact: release-windows-arm64, runner: ubuntu-24.04}
+          - {artifact: release-android-arm64, runner: ubuntu-24.04}
+          - {artifact: release-android-x86_64, runner: ubuntu-24.04}
+    name: reuse-${{ matrix.artifact }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      ARTIFACT: ${{ matrix.artifact }}
+      # the release certificate, as in the android job
+      CERT_SHA256: 7ff6d35e4e45115ee49365ef5b40c0eb83eaf76cc11ce967f2645c504f58b213
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/download-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist
+          run-id: ${{ needs.version.outputs.from_run }}
+          github-token: ${{ github.token }}
+
+      - name: Exactly the release files of this tag (names, version, platform, shader template)
+        run: |
+          ls -la dist
+          python3 tools/release/find_dry_run.py files --artifact "$ARTIFACT" --version "$VERSION" \
+            --template-ref tools/shadercache/template.ref dist
+
+      - name: Guard (no game code, game files or keys)
+        run: |
+          shopt -s nullglob
+          python3 tools/release/guard.py dist/*.zip dist/*.apk
+          PIN=$(cd tools/release && python3 -c 'import appimage; print(appimage.RUNTIME_COMMIT)')
+          for app in dist/*.AppImage; do
+            chmod +x "$app"
+            "$app" --appimage-version 2>&1 | grep -F "type2-runtime/commit/$PIN"
+            (cd "$RUNNER_TEMP" && "$GITHUB_WORKSPACE/$app" --appimage-extract > /dev/null)
+            python3 tools/release/guard.py "$RUNNER_TEMP"/squashfs-root
+            rm -rf "$RUNNER_TEMP"/squashfs-root
+          done
+
+      - uses: ./.github/actions/apt-timeouts  # apt timeouts and retries
+        if: startsWith(matrix.artifact, 'release-android-')
+      - name: APK signed with the release key only, version and no game library
+        if: startsWith(matrix.artifact, 'release-android-')
+        timeout-minutes: 15
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "build-tools;35.0.0"
+          APK=$(echo dist/*.apk)
+          if unzip -l "$APK" | grep -E ' lib/[^/]+/libmain\.so$'; then echo "::error::libmain.so in the APK"; exit 1; fi
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose --print-certs "$APK" | tee apksigner.txt
+          grep -q "^Signer #1 certificate SHA-256 digest: $CERT_SHA256\$" apksigner.txt \
+            || { echo "::error::the APK is not signed with the release certificate"; exit 1; }
+          if grep -q '^Signer #2' apksigner.txt; then echo "::error::more than one signer"; exit 1; fi
+          "$ANDROID_HOME/build-tools/35.0.0/aapt2" dump badging "$APK" | sed -n 1p | tee badging.txt
+          grep -qF "versionName='${VERSION#v}'" badging.txt || { echo "::error::the APK's versionName is not ${VERSION#v}"; exit 1; }
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+
   # Uploads every release zip and the Windows "Wind Waker HD.exe" to VirusTotal and writes the results to the
   # job summary and vt-report.json; on a published release the vt-notes job adds them to the release. It never
   # fails the release; the publish job does not wait for it. Without the VT_API_KEY secret it only says so.
+  # (A dry run reused for a release is scanned again here, like a build: same files, fresh results.)
   virustotal:
-    needs: [version, macos, linux, windows, android]
-    if: needs.version.outputs.devel != 'true'   # development builds save the VirusTotal API quota
+    needs: [version, macos, linux, windows, android, reuse]
+    # development builds save the VirusTotal API quota; the artifacts come from the builds or from reuse (both
+    # are listed, so the default success() would see the skipped side: spelled out)
+    if: >-
+      !cancelled() && needs.version.result == 'success' && needs.version.outputs.devel != 'true' &&
+      ((needs.version.outputs.from_run == '' && needs.macos.result == 'success' && needs.linux.result == 'success' &&
+        needs.windows.result == 'success' && needs.android.result == 'success') ||
+       (needs.version.outputs.from_run != '' && needs.reuse.result == 'success'))
     runs-on: ubuntu-24.04
     continue-on-error: true
     timeout-minutes: 45
@@ -1036,7 +1209,13 @@ jobs:
           if-no-files-found: ignore
 
   publish:
-    needs: [version, macos, linux, windows, android]
+    needs: [version, macos, linux, windows, android, reuse]
+    # all builds green, or (a release from a dry run) all reuse jobs green; as in virustotal
+    if: >-
+      !cancelled() && needs.version.result == 'success' &&
+      ((needs.version.outputs.from_run == '' && needs.macos.result == 'success' && needs.linux.result == 'success' &&
+        needs.windows.result == 'success' && needs.android.result == 'success') ||
+       (needs.version.outputs.from_run != '' && needs.reuse.result == 'success'))
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -1092,7 +1271,10 @@ jobs:
   # Runs after both publish and the scan; any failure only leaves the release without the section.
   vt-notes:
     needs: [version, virustotal, publish]
-    if: needs.version.outputs.publish == 'true'
+    # spelled out: success() would also see the skipped build or reuse jobs behind virustotal and publish
+    if: >-
+      !cancelled() && needs.version.outputs.publish == 'true' &&
+      needs.publish.result == 'success' && needs.virustotal.result == 'success'
     runs-on: ubuntu-24.04
     continue-on-error: true
     permissions:
