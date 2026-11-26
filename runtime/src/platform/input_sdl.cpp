@@ -1584,6 +1584,7 @@ PadState read() {
     for (auto& p : rsticks)
         if (frame >= p.from && frame <= p.to) { s.rx = p.x; s.ry = p.y; }
     apply_scenario(s);
+    mods::aim_stick_filter(s);  // issue #666: Left stick (classic) aims in first person (controllers, not the keys)
     s.buttons |= k.buttons;
     if (k.lx || k.ly) { s.lx = k.lx; s.ly = k.ly; }
     if (k.rx || k.ry) { s.rx = k.rx; s.ry = k.ry; }

@@ -18,7 +18,8 @@
 static uint64_t clock_step=100;
 static bool enabled=true,captured=true,gyro_mouse=true,aiming=false,look=false;
 static float sensitivity=.15f;
-static bool inverted=false,look_pitch=false;
+static bool inverted=false,look_pitch=false,aim_left=false;
+static mods::playctx::PlayContext ctx;  // the last play context (issue #666)
 void log_msg(const char*, ...) {}
 namespace mods {
 void filter_pad(input::PadState&);
@@ -31,6 +32,8 @@ bool trace_on(){return false;} void trace(const char*,...){}
 void link_executed(uint32_t){} void lock_on_filter_pad(input::PadState&){} void leaf_filter_pad(input::PadState&){}
 float steer_swing_degrees(bool){return 0;}
 bool camera_stick_pitch(){return look_pitch;}
+bool aim_left_stick(){return aim_left;}
+void play_context_want(bool){} playctx::PlayContext play_context(){return ctx;}
 }
 namespace motion {
 void set_aiming(bool on){aiming=on;} bool mouse_drives_gyro(){return gyro_mouse&&aiming&&!look;}
@@ -151,6 +154,43 @@ int main(){
         look_pitch=false;
         assert(rate(.7)==.7&&lat(-0.0,-10,60)==0&&std::signbit(m.f[1].ps0));
     }
+    // First-person aiming: Left stick (classic) (issue #666): the production filter, the subject-camera hook and
+    // Link's live status (gameInfo + 0x5CD8 / 0x5CDC, mapped above)
+    {
+        using namespace mods::playctx;
+        constexpr uint32_t st0=0x1046F0B0+kPlayerStatus0,st1=0x1046F0B0+kPlayerStatus1;
+        ctx.flags=kLink|kInPlay;
+        auto read=[](){input::PadState p;p.lx=.6f;p.ly=-.3f;p.rx=.1f;p.ry=.9f;mods::aim_stick_filter(p);return p;};
+        auto as_game=[](const input::PadState& p){return p.lx==.6f&&p.ly==-.3f&&p.rx==.1f&&p.ry==.9f;};
+        auto swapped=[](const input::PadState& p){return p.lx==.1f&&p.ly==.9f&&p.rx==.6f&&p.ry==-.3f;};
+        clock_step+=20;procedure(0x94,false);st32(st0,kSt0BowAim);st32(st1,0);
+        c.r[3]=kLinkBase;hook_025071FC(&c);  // the subject camera runs (bow in first person)
+        assert(as_game(read()));                  // Right stick (HD), the default: nothing changes
+        aim_left=true;
+        assert(swapped(read()));                  // Left stick (classic): the left stick aims, the right one walks
+        ++clock_step;assert(swapped(read()));      // the camera ran in the step before this read
+        // each view: R3 look, telescope, Picto Box, the other aims (also from the boat)
+        for(uint32_t w:{uint32_t(kSt0FirstPerson),uint32_t(kSt0Telescope),uint32_t(kSt0HookshotAim),uint32_t(kSt0BoomerangAim),uint32_t(kSt0RopeAim)}){
+            st32(st0,w);hook_025071FC(&c);assert(swapped(read()));
+        }
+        st32(st0,kSt0ShipRide|kSt0BowAim);procedure(0x8B);hook_025071FC(&c);assert(swapped(read()));
+        st32(st0,0);st32(st1,kSt1PictoAim);procedure(0x94,false);hook_025071FC(&c);assert(swapped(read()));
+        // the album, a choice, a talk, an event or a menu take the left stick back
+        for(uint32_t f:{uint32_t(kAlbum),uint32_t(kChoice),uint32_t(kEvent),uint32_t(kMenu),uint32_t(kFade)}){ctx.flags=kLink|f;assert(as_game(read()));}
+        ctx.flags=kLink;ctx.mesg_status=1;assert(as_game(read()));  // a talk's text
+        st32(st0,kSt0Telescope);st32(st1,0);assert(swapped(read()));  // the telescope's own message status: still aims
+        ctx.mesg_status=0;ctx.flags=kLink|kInPlay;
+        // the cannon keeps its own left-stick aim
+        st32(st0,kSt0ShipRide);procedure(0x8E);hook_025071FC(&c);assert(as_game(read()));
+        // leaving first person: Link's status ends it at once; the lock-on aim (no subject camera) never swaps
+        procedure(0x94,false);st32(st0,kSt0BowAim);hook_025071FC(&c);assert(swapped(read()));
+        st32(st0,0);assert(as_game(read()));
+        procedure(0x95,false);st32(st0,kSt0BowAim);clock_step+=3;assert(as_game(read()));  // bow while targeting
+        // on foot, no first person: nothing changes
+        procedure(0x0,false);st32(st0,0);clock_step+=10;assert(as_game(read()));
+        aim_left=false;ctx=mods::playctx::PlayContext{};
+    }
+    puts("First-person aiming: Left stick (classic) swaps the sticks only in first person, Right stick (HD) by default PASS");
     puts("Cannon mouse: routing, gyro exclusion, priority, sensitivity, repeated reads and mode transitions PASS");
     puts("Look up and down: the vertical rate goes to the latitude alone, once per manualCamera run, off by default PASS");
     puts("First-person mouse look: degrees per view, once per step, ease, inversion, stale movement, mouse camera off PASS");

@@ -38,8 +38,8 @@ same values.
 ## What is on it
 
 - **Camera:** invert up/down, right stick up/down (Zoom (original) / Look up and down; `camera.stick-pitch`, #661),
-  direct camera and its speed, mouse camera and its sensitivity, first person on R3 or the mouse wheel, letterbox
-  while targeting.
+  first-person aiming (Right stick (HD) / Left stick (classic); `camera.aim-stick`, #666), direct camera and its
+  speed, mouse camera and its sensitivity, first person on R3 or the mouse wheel, letterbox while targeting.
 - **Controls:** face buttons, button prompts, shoulder names, face button colours (Off / Xbox / GameCube;
   `controls.prompt-colours`, a choice whose values 0 and 1 are the former toggle's off and on) and coloured face
   button text, rumble, stick dead zone, slow walk speed (#626), skip controller selection.

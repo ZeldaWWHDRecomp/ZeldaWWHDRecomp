@@ -256,6 +256,8 @@ bool pinch_fov_on();               // Android: a pinch changes the field of view
 void set_pinch_fov_on(bool on);
 bool camera_stick_pitch();         // Right stick up/down: false Zoom (original, default), true Look up and down (#661)
 void set_camera_stick_pitch(bool look);
+bool aim_left_stick();             // First-person aiming: false Right stick (HD, default), true Left stick (classic) (#666)
+void set_aim_left_stick(bool left);
 float steer_swing_degrees(bool player_camera);  // camera.cpp, once per logic step
 bool steer_pinch(int phase, float d);           // 0 begin (true: on), 1 move, 2 end
 void steer_reset();                // a state load
@@ -317,6 +319,9 @@ MoveHud move_hud_drawn();
 // ---- input (input.mm) ----
 // called at the end of input::read(): synthetic stick and buttons (mouse camera, R3 pulses)
 void filter_pad(input::PadState& s);
+// in input::read(), on the controllers' sticks before the keyboard is merged in: First-person aiming, Left stick
+// (classic) swaps the sticks while Link looks or aims in first person (camera.cpp, aim_stick.h; issue #666)
+void aim_stick_filter(input::PadState& s);
 // a key went down in the game window (before the game's own mapping); true = consumed
 bool host_key_down(uint16_t code);
 

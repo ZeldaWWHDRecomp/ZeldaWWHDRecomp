@@ -31,7 +31,7 @@ namespace render { const Backend* g_backend = nullptr; uint64_t frame_count(){re
 namespace gx2 { void checkpoint_vulkan_caches(){} void checkpoint_present_observer(){} }
 namespace gfxvk { bool graphics_hotkey(char,bool){return false;} }
 namespace aspect { void set_window_aspect(float){} }
-namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} void quick_use_reset(){} void quick_use_filter_pad(input::PadState&){} bool jump_anywhere(){return false;} bool infinite(int){return false;} }
+namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} void quick_use_reset(){} void quick_use_filter_pad(input::PadState&){} bool jump_anywhere(){return false;} bool infinite(int){return false;} void aim_stick_filter(input::PadState&){} }
 namespace interp { int mode(){return 0;} void toggle_fps(int){} void set_mode(int){} uint64_t logic_steps(){return 0;} double input_step_offset(){return 0.0;} }
 namespace dsweep { uint32_t pad_buttons(uint64_t){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
