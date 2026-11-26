@@ -98,6 +98,12 @@ what is on `devel` and not released yet (also in the
   texel grid, which left a faint dotted pattern wherever the AO is partly dark. The taps now read the console's grid
   at whole-number scales (fractional scales keep the previous filter, 1x is unchanged), so the AO looks as it does at
   1x; Metal and Vulkan.
+- **Portable release: the shortcut has the game's icon** (#660, thanks @joonkimdmd). The shortcut setup offers at
+  the end (Start menu, applications menu, Applications folder) showed the release launcher's plain icon. It now
+  shows the game's own icon, made from your game files as the per-user install's shortcuts already do: on Windows
+  the Start menu shortcut, on Linux the menu entry (`Icon=`), and on macOS the Applications entry, now a small app
+  of its own that starts the release's app (a link while the game is not set up yet). A shortcut made by an
+  earlier setup gets the icon at the next repair or update.
 
 ### Build and testing
 

@@ -35,8 +35,9 @@ Runtime side: a `portable.txt` next to the game executable makes `host::config_d
 `<folder>/user` (`runtime/src/platform/host.h`); `main.cpp` points the macOS-only paths (save states,
 display settings, Metal shader cache) there through their existing overrides; `gfx/menu.mm` keeps the
 graphics options in `user/graphics.plist` instead of NSUserDefaults; the Controls window does not
-autosave its frame. Without the marker (source builds) nothing changes. Shortcuts (Applications link,
-Start menu, applications menu) are only created when the player asks for one. Outside a portable folder on
+autosave its frame. Without the marker (source builds) nothing changes. Shortcuts (Applications entry,
+Start menu, applications menu) are only created when the player asks for one; they show the game's own icon
+(`write_game_icon`; on macOS a small app that starts the release's app, a link before the game is set up). Outside a portable folder on
 Linux (a source build, the AppImage) setup asks "Add a menu entry" (`--desktop-entry` / `--no-desktop-entry`;
 yes by default, no from an AppImage; remembered in `install.json` as `desktop_entry`); "no" removes a
 `wwhd.desktop` only when its Name, Comment and Exec lines are setup's own.
@@ -268,7 +269,7 @@ Requests on stdin: `{"cmd": ..., "id": n, ...}`
 | `add_language_source` | `path` (a European or Japanese `.wux`/`.wud`, `.wua` or extracted folder), for an image optional `disc_key_file`, `common_key_file` or `common_key_hex` | `sources` (the added ones); only `content/Common/Pack/permanent_2d_*.pack` and `meta/meta.xml` are taken, into `data/game-lang/<EU\|JP>`; problem `language_source` (e.g. the USA game, an update, no packs) or a key problem as for `check_keys` |
 | `remove_language_source` | `region` (`EU`/`JP`) | `removed` (the folder) |
 | `remove_toolchain` | | `freed` bytes |
-| `shortcut` | | `path` of the created shortcut |
+| `shortcut` | | `path` of the created shortcut (portable release; with the game's own icon once the game is set up, issue #660; remembered in `install.json` as `shortcut`, and a repair or update writes it again) |
 | `launch` | | starts the installed game (the decomp version when `start_decomp` is set) |
 | `start_decomp` | `on` | `start_decomp`: Play (and starting Wind Waker HD) starts the decomp version from now on; problem `not_built` |
 | `quit` | | |
