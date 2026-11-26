@@ -32,13 +32,13 @@ namespace gx2 { void checkpoint_vulkan_caches(){} void checkpoint_present_observ
 namespace gfxvk { bool graphics_hotkey(char,bool){return false;} }
 namespace aspect { void set_window_aspect(float){} }
 namespace mods { double game_time(){return 0;} void filter_pad(input::PadState&){} bool mouse_camera(){return mouseCamera;} bool first_person_wheel(){return false;} void mouse_button(int,bool){} void mouse_add(float,float){} void mouse_wheel(float){} void fast_forward_reset(){} void lock_on_reset(){} void quick_use_reset(){} void quick_use_filter_pad(input::PadState&){} bool jump_anywhere(){return false;} bool infinite(int){return false;} }
-namespace interp { int mode(){return 0;} void toggle_fps(int){} void set_mode(int){} uint64_t logic_steps(){return 0;} }
+namespace interp { int mode(){return 0;} void toggle_fps(int){} void set_mode(int){} uint64_t logic_steps(){return 0;} double input_step_offset(){return 0.0;} }
 namespace dsweep { uint32_t pad_buttons(uint64_t){return 0;} }
 namespace timebase { uint64_t now(){return 0;} }
 namespace game_hooks { uint64_t link_steps(){return 0;} bool state_loaded(){return false;} }
 namespace test_aids { void set_origin_step(uint64_t){} void tick(double,bool){} }
 namespace t60 { void test_scenario_time(double){} }
-namespace ss { void test_origin_reseed(){} }
+namespace ss { void test_origin_reseed(){} uint64_t test_scenario_paused(uint64_t){return 0;} }
 namespace text_entry { bool active(){return prompt;} void text(const char*){} void preedit(const char*){} void key(int,bool,bool){++promptKeys;} }
 namespace hostui {
  void quit(){++quits;}
