@@ -13,7 +13,12 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+#if defined(__has_include)
+#if __has_include(<execinfo.h>)
 #include <execinfo.h>
+#define WWHD_DRAWOFF_BACKTRACE 1
+#endif
+#endif
 
 #include "fixed_seed.h"
 #include "gfx/renderer.h"
@@ -1044,11 +1049,15 @@ void read_slow(int kind, uint32_t addr, uint64_t size) {
         static int left = 3;
         if (left > 0) {
             left--;
+#ifdef WWHD_DRAWOFF_BACKTRACE
             void* frames[24];
             const int n = backtrace(frames, 24);
             char** names = backtrace_symbols(frames, n);
             for (int i = 0; i < n; ++i) LOG("[drawoff] read %08X+%llX tag %X: %s", addr, (unsigned long long)size, g_tag, names ? names[i] : "?");
             free(names);
+#else
+            LOG("[drawoff] read %08X+%llX tag %X (no host backtrace on this platform)", addr, (unsigned long long)size, g_tag);
+#endif
         }
     }
     if (kind == kUbo && gx2::submitted_uniform_covers(addr, uint32_t(size))) return;  // (served from the snapshot)
