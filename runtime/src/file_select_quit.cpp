@@ -376,7 +376,7 @@ void prompt(ImDrawList *d, ImVec2 center, float radius) {
         const auto &g = rendered_font->letters[i];
         const float w = radius * 2 * g.width / g.height;
         ImVec2 uv((i % 16) * float(Font::cell) / Font::width, (i / 16) * float(Font::cell) / Font::height);
-        const uint32_t rgba = button_glyphs::colour(face);
+        const uint32_t rgba = button_glyphs::colour(face, look.gamecube_colours);
         const ImU32 tint =
             !shapes && !gamecube && look.colours ? IM_COL32(rgba >> 24, (rgba >> 16) & 255, (rgba >> 8) & 255, 255) : IM_COL32_WHITE;
         d->AddImage(texture->GetTexRef(), ImVec2(center.x - w * .5f, center.y - radius),
@@ -389,7 +389,7 @@ void prompt(ImDrawList *d, ImVec2 center, float radius) {
         center, radius * .84f,
         look.face == input_map::FaceStyle::kOriginal ? IM_COL32(8, 14, 6, 255) : IM_COL32(244, 244, 231, 255), 40);
     const char name[] = {"ABXY"[face], 0};
-    const uint32_t rgba = button_glyphs::colour(face);
+    const uint32_t rgba = button_glyphs::colour(face, look.gamecube_colours);
     const ImU32 color = look.colours ? IM_COL32(rgba >> 24, (rgba >> 16) & 255, (rgba >> 8) & 255, 255)
                         : look.face == input_map::FaceStyle::kOriginal ? IM_COL32(235, 237, 215, 255)
                                                                        : IM_COL32(58, 58, 58, 255);

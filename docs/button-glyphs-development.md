@@ -29,7 +29,7 @@ draws B). By position keeps the authored positions (roll right, sword bottom), b
 bottom, B right, X left and Y top, and a custom set such as Xbox X for the sword puts the sword on
 the left.
 
-Face-action words use the mapped button's Xbox or PlayStation prompt colour across all layouts, independently of **Coloured face buttons**. With **Coloured face button text** off, they keep the game's own text colours (white). Original prompts always keep the game's text colours, so the setting changes nothing there. Custom bindings must use four distinct host face buttons; duplicate bindings or non-face inputs fall back to the complete original icon set because they cannot describe a four-button controller picture.
+Face-action words use the mapped button's Xbox or PlayStation prompt colour across all layouts, also with **Face button colours** off; with *GameCube* the Xbox look's words take the GameCube palette too (`PromptStyle::gamecube_colours`, #584). With **Coloured face button text** off, they keep the game's own text colours (white). Original prompts always keep the game's text colours, so the setting changes nothing there. Custom bindings must use four distinct host face buttons; duplicate bindings or non-face inputs fall back to the complete original icon set because they cannot describe a four-button controller picture.
 
 The item menu's OK/Back pair keeps the mapped buttons' relative directions while fitting the original menu area: unused vertical rows are removed, and a pair without the rightmost button shifts one position right. The top/bottom pair retains one-third of its empty middle row to give the labels more clearance. The pair stays compact throughout its exit animation; the separate gameplay guide retains the full diamond spacing.
 
@@ -49,7 +49,7 @@ In the settings overlay's **Controls** tab (and the Controls window on macOS), s
 |---|---|---|
 | **Button prompts** | Automatic, Original, Xbox, PlayStation, GameCube | Automatic: follows the connected pad; By label retains its Xbox fallback |
 | **Shoulder names** | Automatic, L / R / ZL / ZR, L1 / R1 / L2 / R2, LB / RB / LT / RT | Automatic: follows the button prompts |
-| **Coloured face buttons** | on, off | on; affects button icons only, leaving mapped action-text colours enabled |
+| **Face button colours** | Off, Xbox, GameCube | Xbox; GameCube: the Xbox letters and layout in the GameCube look's palette (green A, red B, grey X and Y), icons and action text; the PlayStation shapes keep their own colours; Off affects button icons only, leaving mapped action-text colours enabled |
 | **Coloured face button text** | on, off | on; off keeps the game's own text colours (white); no effect with Original prompts |
 
 A fixed **Shoulder names** choice applies with any face-buttons setting. Automatic shoulder
@@ -138,7 +138,8 @@ and shoulder marking, colour restoration, live switches, the untouched-until-use
 HUD positions including 21:9, font fallback, every option, the PlayStation shapes, CommandA sibling letters for all
 four faces in coloured/plain PS and Xbox/Original looks, and special A);
 `runtime/tools/input_map_test.cpp` covers the option resolution and the `controls.json` keys
-(`button_prompts`, `shoulder_names`, `button_colours`). The EU build maps these hooks. After a change to the
+(`button_prompts`, `shoulder_names`, `face_colours`: `"off"` / `"gamecube"`, written when not Xbox; the
+older `button_colours` bool still reads as Xbox (true) or Off (false), and Off also writes it for older builds). The EU build maps these hooks. After a change to the
 hook list, regenerate the game code (setup does this on update).
 ## SDL adapter coverage
 

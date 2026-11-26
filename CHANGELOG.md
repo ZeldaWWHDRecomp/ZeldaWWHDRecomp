@@ -30,6 +30,12 @@ what is on `devel` and not released yet (also in the
   3D edges are smoothed as before. Pictures without a HUD (cutscenes, the title's 2D parts) are smoothed as before.
   Metal and Vulkan, with every resolution scale, HDR, frame interpolation and 60 fps (generated). `WWHD_FXAA_HUD=1`
   smooths the whole picture as before; with FXAA off nothing changes.
+- **Face button colours: Off / Xbox / GameCube** (#584, thanks @jamescastells). The "Coloured face buttons" on/off
+  setting is now a choice in **Settings › Controls**: *Xbox* (green A, red B, blue X, yellow Y, as before), *GameCube*
+  (the Xbox letters and layout in the GameCube look's colours: green A, red B, grey X and Y, to match pads such as the
+  Retroid Pocket 5) or *Off* (white buttons). "Coloured face button text" follows the chosen colours. The PlayStation
+  shapes keep their own colours, and the settings say so. Also on the item menu's settings page and in the macOS
+  Controls window. Controls files from before keep working: on reads as Xbox, off as Off.
 
 ### Improved
 
@@ -64,10 +70,10 @@ what is on `devel` and not released yet (also in the
   checked the reply letter to the Note to Mom (from Baito's mother) instead of Maggie's quest. It now unlocks when
   Moblin's Letter has been handed to Maggie, the same check Maggie makes before she gives her Piece of Heart. Already
   earned achievements are kept.
-- **Settings: "Coloured face buttons" is dimmed when it has no effect** (#584, thanks @jamescastells). With Button
-  prompts set to Original (or Keyboard / mouse, or an automatic look that resolves to one of them) the game's own
-  buttons are shown and the colour options do nothing, but their checkboxes stayed active. They are now dimmed there,
-  with a note: "Coloured face buttons" works with the Xbox and PlayStation looks (GameCube buttons always have their
+- **Settings: the face button colour options are dimmed when they have no effect** (#584, thanks @jamescastells).
+  With Button prompts set to Original (or Keyboard / mouse, or an automatic look that resolves to one of them) the
+  game's own buttons are shown and the colour options do nothing, but they stayed active. They are now dimmed there,
+  with a note: "Face button colours" works with the Xbox and PlayStation looks (GameCube buttons always have their
   own colours), "Coloured face button text" with those and GameCube. In the in-game settings, the macOS Controls
   window and the item menu's settings page; the saved choices are kept.
 - **Windows: "HDR (scRGB)" can be chosen with Windows HDR on** (#593, thanks @jlchips). The game used SDL's "HDR

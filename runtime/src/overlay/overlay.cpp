@@ -3349,27 +3349,35 @@ void controls_prompts_page(input_map::Mapping& m) {
                                                                             : "L / R / ZL / ZR"));
     // dimmed where the resolved look ignores them (#584); the saved choice stays as it is
     const bool colours_apply = input_map::face_colours_apply(look), text_apply = input_map::text_colours_apply(look);
-    bool colours = m.prompt_colours;
+    using F = input_map::Mapping::FaceColours;
     ImGui::BeginDisabled(!colours_apply);
-    if (ImGui::Checkbox("Coloured face buttons", &colours)) {
-        m.prompt_colours = colours;
-        edit_set(m);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextUnformatted("Face button colours");
+    ImGui::PushID("face-colours");  // "Xbox" and "GameCube" are also button prompts choices
+    for (F f : {F::kOff, F::kXbox, F::kGameCube}) {
+        flow::next(flow::check(input_map::face_colours_label(f)));
+        if (radio(input_map::face_colours_label(f), m.face_colours == f)) {
+            m.face_colours = f;
+            edit_set(m);
+        }
     }
+    ImGui::PopID();
     ImGui::EndDisabled();
-    help("Green A, red B, blue X and yellow Y in the Xbox look; blue cross, red circle, pink "
-         "square and green triangle with the PlayStation shapes. Off: the game's white buttons, "
-         "still placed where the bound buttons sit on the pad.");
+    help("Xbox: green A, red B, blue X and yellow Y in the Xbox look. GameCube: the Xbox letters and layout in the "
+         "GameCube colours (green A, red B, grey X and Y). The PlayStation shapes keep their own colours (blue cross, "
+         "red circle, pink square, green triangle) with either. Off: the game's white buttons, still placed where "
+         "the bound buttons sit on the pad.");
     if (!colours_apply) disabled_after(input_map::face_colours_note());
-    flow::next(flow::check("Coloured face button text"));
-    bool text_colours = m.prompt_text_colours;
+    else if (input_map::face_colours_shapes(m, look)) disabled_after(input_map::face_colours_shapes_note());
+    bool text_colours = m.prompt_text_colours;  // its own line, after the colour choice
     ImGui::BeginDisabled(!text_apply);
     if (ImGui::Checkbox("Coloured face button text", &text_colours)) {
         m.prompt_text_colours = text_colours;
         edit_set(m);
     }
     ImGui::EndDisabled();
-    help("Action text follows the mapped button's prompt colour, independently of icon colours. "
-         "Off: the game's own text colours (white).");
+    help("Action text follows the mapped button's prompt colour (with Face button colours: GameCube, the GameCube "
+         "colours), also with Face button colours off. Off: the game's own text colours (white).");
     if (!text_apply) disabled_after(input_map::text_colours_note());
 }
 

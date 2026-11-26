@@ -310,10 +310,13 @@ void register_controls() {
     }
     {
         Item it;
-        it.id = "controls.prompt-colours", it.tab = "controls", it.label = "Coloured face buttons", it.kind = Kind::Toggle;
-        it.help = "Xbox and PlayStation prompts in their buttons' colours.";
-        it.get = [] { return input_map::current().prompt_colours ? 1.0f : 0.0f; };
-        it.set = [](float v) { change_mapping([v](M& m) { m.prompt_colours = v >= 0.5f; }); };
+        // #584: a choice now; the values 0 (Off) and 1 (Xbox) are the former toggle's off and on
+        it.id = "controls.prompt-colours", it.tab = "controls", it.label = "Face button colours", it.kind = Kind::Choice;
+        it.help = "Xbox colours, or the Xbox letters in GameCube colours (green A, red B, grey X and Y).";
+        for (M::FaceColours f : {M::FaceColours::kOff, M::FaceColours::kXbox, M::FaceColours::kGameCube})
+            it.choices.push_back(input_map::face_colours_label(f));
+        it.get = [] { return float(int(input_map::current().face_colours)); };
+        it.set = [](float v) { change_mapping([v](M& m) { m.face_colours = M::FaceColours(std::clamp(int(std::lround(v)), 0, 2)); }); };
         it.enabled = [] { return input_map::face_colours_apply(input_map::active_prompt_style()); };  // #584
         add(std::move(it));
     }
