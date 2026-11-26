@@ -47,6 +47,7 @@ runtime/src/dynres.h
 runtime/src/exception_report.h
 runtime/src/fixed_seed.h
 runtime/src/framegen.h
+runtime/src/hud_layout.h
 runtime/src/input.h
 runtime/src/input_map.h
 runtime/src/interp.h
