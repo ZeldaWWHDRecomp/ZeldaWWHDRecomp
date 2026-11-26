@@ -18,8 +18,10 @@ GameCube prompts with any controller or binding.
 
 The GameCube style arranges the HUD buttons like a GameCube controller: A is large and to the
 right, B is down-left, X is to the right of A, and Y is above A. An action, its item and its word
-stay together when they move. The GameCube artwork replaces the original button plates, and
-its labels remain visible in front of large item pictures. Messages and menu prompts use the
+stay together when they move. The GameCube artwork replaces the original button plates. A
+and B and the shoulder plates outside the item buttons are drawn in front of the cluster; the X,
+Y and Z (R item) buttons stay behind their item picture, as the original plates and the Xbox
+and PlayStation looks do, so an equipped item is never covered (#669). Messages and menu prompts use the
 same button style. The item menu's OK and Back prompts stay close together to fit its Wii U
 layout, and the item ring keeps its existing layout.
 

@@ -123,6 +123,11 @@ what is on `devel` and not released yet (also in the
   the Start menu shortcut, on Linux the menu entry (`Icon=`), and on macOS the Applications entry, now a small app
   of its own that starts the release's app (a link while the game is not set up yet). A shortcut made by an
   earlier setup gets the icon at the next repair or update.
+- **GameCube button prompts: X, Y and Z no longer cover the item icons** (#669, thanks @rnp509). With **Controls ›
+  Button prompts › GameCube**, the X and Y beans and the purple Z plate were drawn on top of the items on those
+  buttons (the bow, the bombs, the hookshot), so the item could hardly be seen. They are drawn behind their item
+  again, as the original plates and the Xbox and PlayStation looks do; with an empty slot the button looks as
+  before. A, B and the R plate are unchanged, at every aspect ratio.
 
 ### Build and testing
 

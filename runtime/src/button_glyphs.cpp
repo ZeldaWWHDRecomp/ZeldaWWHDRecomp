@@ -672,6 +672,15 @@ bool inside(uint32_t pane, uint32_t ancestor) {
         if (pane == ancestor) return true;
     return false;
 }
+
+// Inside one of the cluster's item buttons (X, Y, R: N_X_00, N_Y_00, N_R_00), below the cluster.
+bool in_item_button(uint32_t pane, uint32_t cluster) {
+    for (unsigned depth = 0; pane && pane != cluster && depth < 16; depth++, pane = ld32(pane + 0x0C)) {
+        const auto name = pane_name(pane);
+        if (name == "N_X_00" || name == "N_Y_00" || name == "N_R_00") return true;
+    }
+    return false;
+}
 }  // namespace
 
 // Pane::Draw draws a pane, then its children through Pane::Draw again, so the cluster's groups come
@@ -699,8 +708,16 @@ void button_glyphs::draw_pane(Cpu* c, PpcFunc draw) {
         return;
     }
     if (deferring_cluster) {
-        if ((command_word(pane) || (style().face == FaceStyle::kGameCube && shoulder_action(pane)>=0) || ((style().face == FaceStyle::kKeyboard || style().face == FaceStyle::kGameCube) &&
-             (face_box(pane)>=0 || shoulder_box(pane)>=0))) && inside(pane, deferring_cluster)) {
+        // Keyboard keycaps and the GameCube glyphs of A, B and the shoulder plates are drawn above
+        // the cluster. The GameCube X, Y and Z glyphs on the item buttons are not: like the Wii U
+        // disc they replace (and the Xbox and PlayStation looks), they stay below their item
+        // picture, which the game draws after them in the button's tree (#669).
+        const FaceStyle face = style().face;
+        const bool glyph = face_box(pane)>=0 || shoulder_box(pane)>=0;
+        const bool lifted_glyph = glyph && (face == FaceStyle::kKeyboard ||
+            (face == FaceStyle::kGameCube && !in_item_button(pane, deferring_cluster)));
+        if ((command_word(pane) || (face == FaceStyle::kGameCube && shoulder_action(pane)>=0) || lifted_glyph) &&
+            inside(pane, deferring_cluster)) {
             deferred_words.emplace_back(pane, draw);
             return;
         }

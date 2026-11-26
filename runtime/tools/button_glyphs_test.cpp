@@ -1622,7 +1622,7 @@ void concurrent_draw_test() {
     layout(input_map::FaceLayout::kPosition);
 }
 
-// #355: full GC discs/shoulders replace native plates and remain above item art.
+// #355: full GC discs/shoulders replace native plates; #669: X, Y and Z stay below their item art.
 void gamecube_hud_plate_test() {
     assert(button_glyphs::gamecube_shoulder_icon(1,true,32,32)==0xFFFFFFFF); // white Z ink
     assert(button_glyphs::gamecube_shoulder_icon(1,true,20,32)==0x6754C8FF); // purple plate
@@ -1661,20 +1661,48 @@ void gamecube_hud_plate_test() {
         hud_letter=false;
         assert(drawn_quad[0]==80 && drawn_quad[1]==80 && drawn_sheet==atlas);
     }
-    // Keep the Y bean visible when a large telescope picture follows its letter.
+    // #669: the X, Y and Z (R item) glyphs stay below their own item picture, in the game's tree
+    // order, as the Wii U disc and the Xbox / PlayStation looks do; the A glyph and the R / ZR
+    // shoulder plate outside the item buttons are still drawn above the rest of the cluster.
+    // The CommandGuide tree as the game builds it: N_Y_00 > P_Y_00 > {T_Y_00, L_YItemIcon_00},
+    // N_R_00 > P_R_00 > {T_R_00, L_RItemIcon_00}, W_SetSeatA_00 > P_A_00 > T_A_00, P_ZR_00 > T_ZR_00.
     constexpr uint32_t root=base+0x6000, ygroup=base+0x6800, ypic=base+0x7000,
-                       ytext=base+0x7800, telescope=base+0x7A00;
+                       ytext=base+0x7800, telescope=base+0x7A00, agroup=base+0x6200,
+                       apic=base+0x7C00, atext=base+0x7E00, rgroup=base+0x8000, rplate=base+0x8200,
+                       rtext=base+0x8400, ritem=base+0x8600, zrplate=base+0x8800, zrtext=base+0x8A00;
     pane(root,"N_All_00",0,0);
     const char* groups[]={"W_SetSeatA_00","P_B_00","N_X_00","N_Y_00"};
-    for (int i=0;i<4;++i) { const uint32_t g=base+0x6200+i*0x200;pane(g,groups[i],0,0);child(root,g); }
+    pane(ygroup,"N_Y_00",0,0);child(root,ygroup);  // the game's child order: Y first, then R, B, A, X
+    pane(rgroup,"N_R_00",0,0);child(root,rgroup);
+    for (int i : {1,0,2}) { const uint32_t g=base+0x6200+i*0x200;pane(g,groups[i],0,0);child(root,g); }
+    pane(zrplate,"P_ZR_00",0,0);child(root,zrplate);
     pane(ypic,"P_Y_00",0,0);child(ygroup,ypic);
     pane(ytext,"T_Y_00",0,0);child(ypic,ytext);
     st32(ytext+0xA4,base+0xB000);st16(base+0xB000,'Y');st16(ytext+0xCE,1);
-    pane(telescope,"P_ItemY_00",0,0);child(ypic,telescope);
-    drawn_panes.clear();Cpu tree{};tree.r[3]=root;tree.r[4]=0x1234;
-    button_glyphs::draw_pane(&tree,draw_tree);
-    assert(at("T_Y_00")>at("P_ItemY_00"));
-    assert(std::count(drawn_panes.begin(),drawn_panes.end(),"T_Y_00")==1);
+    pane(telescope,"L_YItemIcon_00",0,0);child(ypic,telescope);
+    pane(rplate,"P_R_00",0,0);child(rgroup,rplate);
+    pane(rtext,"T_R_00",0,0);child(rplate,rtext);
+    st32(rtext+0xA4,base+0x9A10);st16(base+0x9A10,'R');st16(rtext+0xCE,1);
+    pane(ritem,"L_RItemIcon_00",0,0);child(rplate,ritem);
+    pane(apic,"P_A_00",0,0);child(agroup,apic);
+    pane(atext,"T_A_00",0,0);child(apic,atext);
+    st32(atext+0xA4,base+0x9A20);st16(base+0x9A20,'A');st16(atext+0xCE,1);
+    pane(zrtext,"T_ZR_00",0,0);child(zrplate,zrtext);
+    st32(zrtext+0xA4,base+0x9A30);st16(base+0x9A30,'Z');st16(base+0x9A32,'R');st16(zrtext+0xCE,2);
+    {
+        // (keyboard keycaps stay above the item pictures: the keyboard R item check in main)
+        drawn_panes.clear();Cpu tree{};tree.r[3]=root;tree.r[4]=0x1234;
+        button_glyphs::draw_pane(&tree,draw_tree);
+        for (const char* name : {"T_Y_00","T_R_00","T_A_00","T_ZR_00","L_YItemIcon_00","L_RItemIcon_00"})
+            assert(std::count(drawn_panes.begin(),drawn_panes.end(),name)==1);
+        assert(at("T_Y_00")<at("L_YItemIcon_00"));  // the item picture over its Y glyph
+        assert(at("T_R_00")<at("L_RItemIcon_00"));  // ... and over the Z plate
+        assert(at("L_YItemIcon_00")<at("N_R_00"));  // each in its own button's place in the tree
+        // A and the ZR plate outside the item buttons: above everything else in the cluster
+        for (const char* name : {"T_A_00","T_ZR_00"})
+            for (const char* other : {"L_YItemIcon_00","L_RItemIcon_00","P_ZR_00","P_A_00"})
+                assert(at(name)>at(other));
+    }
     // Defend follows GC's grey R rather than multiplying grey into the old blue ink.
     for (auto prompts : {input_map::Mapping::Prompts::kGameCube,input_map::Mapping::Prompts::kOriginal})
       for (bool colours : {false,true}) {
