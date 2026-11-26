@@ -1,6 +1,7 @@
 // Unit tests for the controls mapping (runtime/src/input_map.cpp).
 //   make -C build/cmake input_map_test && ./build/cmake/input_map_test
 #include "platform/keycodes.h"
+#include <tuple>
 #include <array>
 #include <filesystem>
 #include <chrono>
@@ -572,6 +573,26 @@ static void test_prompts() {
     m.prompts = Mapping::Prompts::kOriginal;
     s = prompt_style(m, PadFamily::kXbox);
     CHECK(!s.active() && !s.positions && !s.colours);
+    // the colour options are dimmed where the resolved look ignores them (#584); the saved choice stays
+    CHECK(!face_colours_apply(s) && !text_colours_apply(s) && m.prompt_colours && m.prompt_text_colours);
+    {
+        Mapping c = m;
+        for (auto [p, icons, text] : {std::tuple{Mapping::Prompts::kXbox, true, true}, std::tuple{Mapping::Prompts::kPlayStation, true, true},
+                                      std::tuple{Mapping::Prompts::kGameCube, false, true}, std::tuple{Mapping::Prompts::kKeyboard, false, false},
+                                      std::tuple{Mapping::Prompts::kOriginal, false, false}}) {
+            c.prompts = p;
+            const PromptStyle r = prompt_style(c, PadFamily::kXbox);
+            CHECK(face_colours_apply(r) == icons && text_colours_apply(r) == text);
+            // where they apply they change the look (GameCube keeps the icon flag, its art ignores it)
+            Mapping off = c;
+            off.prompt_colours = off.prompt_text_colours = false;
+            const PromptStyle o = prompt_style(off, PadFamily::kXbox);
+            CHECK((r.colours != o.colours) == (icons || p == Mapping::Prompts::kGameCube));
+            CHECK((r.text_colours != o.text_colours) == text);
+        }
+        c.prompts = Mapping::Prompts::kAuto;  // automatic: follows the pad
+        CHECK(face_colours_apply(prompt_style(c, PadFamily::kPlayStation)));
+    }
     m.shoulder_names = Mapping::ShoulderNames::kNumbered;  // today's R1/R2 names, kept on request
     CHECK(prompt_style(m, PadFamily::kXbox).shoulders == ShoulderStyle::kNumbered);
     m.shoulder_names = Mapping::ShoulderNames::kNintendo;

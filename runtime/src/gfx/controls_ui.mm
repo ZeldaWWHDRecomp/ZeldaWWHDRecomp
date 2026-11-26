@@ -38,6 +38,10 @@ using namespace input_map;
 
 static NSString* ns(const std::string& s) { return [NSString stringWithUTF8String:s.c_str()]; }
 static NSString* ns(const char* s) { return [NSString stringWithUTF8String:s]; }
+static NSString* const kPromptColoursTip = @"Green A, red B, blue X and yellow Y in the Xbox look; coloured shapes in the PlayStation look. "
+                                           @"Off: the game's white buttons, still placed where the bound buttons sit on the pad.";
+static NSString* const kPromptTextColoursTip = @"Action text follows the mapped button's prompt colour, independently of icon colours. "
+                                               @"Off: the game's own text colours (white).";
 
 static NSString* action_list(const std::vector<int>& v) {
     NSMutableArray* names = [NSMutableArray array];
@@ -1169,12 +1173,10 @@ static NSTextField* label(NSString* s) {
                  @"L / R / Z with GameCube prompts, the game's L / R / ZL / ZR otherwise. A fixed choice applies with any face buttons setting.";
     self.shoulderNames = sn;
     NSButton* pc = [NSButton checkboxWithTitle:@"Coloured face buttons" target:self action:@selector(promptsChanged:)];
-    pc.toolTip = @"Green A, red B, blue X and yellow Y in the Xbox look; coloured shapes in the PlayStation look. "
-                 @"Off: the game's white buttons, still placed where the bound buttons sit on the pad.";
+    pc.toolTip = kPromptColoursTip;
     self.promptColours = pc;
     NSButton* ptc = [NSButton checkboxWithTitle:@"Coloured face button text" target:self action:@selector(promptsChanged:)];
-    ptc.toolTip = @"Action text follows the mapped button's prompt colour, independently of icon colours. "
-                  @"Off: the game's own text colours (white).";
+    ptc.toolTip = kPromptTextColoursTip;
     self.promptTextColours = ptc;
     NSMutableArray<NSButton*>* cameraButtons = [NSMutableArray array];
     for (const char* id : {"mouse-camera", "direct-camera", "first-person"}) {
@@ -1288,6 +1290,7 @@ static NSTextField* label(NSString* s) {
     [self.shoulderNames selectItemWithTag:(NSInteger)_st.m.shoulder_names];
     self.promptColours.state = _st.m.prompt_colours ? NSControlStateValueOn : NSControlStateValueOff;
     self.promptTextColours.state = _st.m.prompt_text_colours ? NSControlStateValueOn : NSControlStateValueOff;
+    [self syncPromptColours];
     // kCustom: no segment chosen (as the overlay's "(custom)"); any segment then applies its preset.
     // Automatic is segment 2 whatever the bindings resolved to (as the overlay's "(-> ...)").
     if (_st.m.preset.gamecube) self.faceLayout.selectedSegment = _ownBindings ? 2 : 3;
@@ -1343,6 +1346,7 @@ static NSTextField* label(NSString* s) {
 
 // status line: capture prompt > recent message > hover > conflicts / help
 - (void)refreshStatus {
+    [self syncPromptColours];  // (automatic prompts follow the connected pad)
     NSString* s;
     int level = 0;
     WWPadView* pv = self.padView;
@@ -1692,6 +1696,24 @@ static bool modifier_down(uint16_t code, NSEventModifierFlags f, bool* known) {
     _st.m.prompt_colours = self.promptColours.state == NSControlStateValueOn;
     _st.m.prompt_text_colours = self.promptTextColours.state == NSControlStateValueOn;
     [self commit];
+    [self syncPromptColours];
+}
+
+// The colour checkboxes are dimmed where the resolved look ignores them (#584: Original, keyboard /
+// mouse; icons also GameCube), with the reason in front of the tooltip. Their saved state is kept.
+- (void)syncPromptColours {
+    const auto look = prompt_style(_st.m, pad_family());
+    const bool icons = face_colours_apply(look), text = text_colours_apply(look);
+    if (self.promptColours.enabled != icons) {
+        self.promptColours.enabled = icons;
+        self.promptColours.toolTip = icons ? kPromptColoursTip
+                                           : [NSString stringWithFormat:@"%s. %@", face_colours_note(), kPromptColoursTip];
+    }
+    if (self.promptTextColours.enabled != text) {
+        self.promptTextColours.enabled = text;
+        self.promptTextColours.toolTip = text ? kPromptTextColoursTip
+                                              : [NSString stringWithFormat:@"%s. %@", text_colours_note(), kPromptTextColoursTip];
+    }
 }
 
 - (void)whichChanged:(NSSegmentedControl*)c {
@@ -1886,6 +1908,17 @@ static int self_test() {
     expect(current().prompts == Mapping::Prompts::kGameCube && current().shoulder_names == Mapping::ShoulderNames::kXbox &&
                !current().prompt_colours && !current().prompt_text_colours,
            "button prompts: GameCube, LB/RB/LT/RT, no colours");
+    // #584: the colour checkboxes are dimmed where the look ignores them, their saved state kept
+    expect(!c.promptColours.enabled && c.promptTextColours.enabled, "GameCube: icon colours dimmed, text colours available");
+    c.promptColours.state = NSControlStateValueOn;
+    [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kOriginal];
+    [c promptsChanged:c.prompts];
+    expect(!c.promptColours.enabled && !c.promptTextColours.enabled && current().prompt_colours && !current().prompt_text_colours,
+           "Original: both colour checkboxes dimmed, saved values kept");
+    expect([c.promptColours.toolTip hasPrefix:@"Xbox and PlayStation looks only"], "Original: the dimmed checkbox says why");
+    [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kXbox];
+    [c promptsChanged:c.prompts];
+    expect(c.promptColours.enabled && c.promptTextColours.enabled && current().prompt_colours, "Xbox: both colour checkboxes available");
     [c.prompts selectItemWithTag:(NSInteger)Mapping::Prompts::kKeyboard];
     [c promptsChanged:c.prompts];
     expect(current().prompts == Mapping::Prompts::kKeyboard &&

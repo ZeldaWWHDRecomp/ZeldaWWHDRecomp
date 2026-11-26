@@ -311,14 +311,16 @@ void register_controls() {
         it.help = "Xbox and PlayStation prompts in their buttons' colours.";
         it.get = [] { return input_map::current().prompt_colours ? 1.0f : 0.0f; };
         it.set = [](float v) { change_mapping([v](M& m) { m.prompt_colours = v >= 0.5f; }); };
+        it.enabled = [] { return input_map::face_colours_apply(input_map::active_prompt_style()); };  // #584
         add(std::move(it));
     }
     {
         Item it;
         it.id = "controls.prompt-text-colours", it.tab = "controls", it.label = "Coloured face button text", it.kind = Kind::Toggle;
-        it.help = "Xbox and PlayStation action words in their button's colour; off keeps the game's white.";
+        it.help = "Xbox, PlayStation and GameCube action words in their button's colour; off keeps the game's white.";
         it.get = [] { return input_map::current().prompt_text_colours ? 1.0f : 0.0f; };
         it.set = [](float v) { change_mapping([v](M& m) { m.prompt_text_colours = v >= 0.5f; }); };
+        it.enabled = [] { return input_map::text_colours_apply(input_map::active_prompt_style()); };  // #584
         add(std::move(it));
     }
     {

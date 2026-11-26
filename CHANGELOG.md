@@ -7,6 +7,15 @@ what is on `devel` and not released yet (also in the
 
 ## Next update
 
+### Fixed
+
+- **Settings: "Coloured face buttons" is dimmed when it has no effect** (#584, thanks @jamescastells). With Button
+  prompts set to Original (or Keyboard / mouse, or an automatic look that resolves to one of them) the game's own
+  buttons are shown and the colour options do nothing, but their checkboxes stayed active. They are now dimmed there,
+  with a note: "Coloured face buttons" works with the Xbox and PlayStation looks (GameCube buttons always have their
+  own colours), "Coloured face button text" with those and GameCube. In the in-game settings, the macOS Controls
+  window and the item menu's settings page; the saved choices are kept.
+
 ## v0.5.2
 
 ### Thanks
