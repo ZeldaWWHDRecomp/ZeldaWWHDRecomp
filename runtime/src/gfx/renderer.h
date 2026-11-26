@@ -86,11 +86,13 @@ struct Backend {
     // buffer, whose pass is the open one; `seq` names the cloud snapshot. Draws the horizon-haze grade.
     void (*sky_clouds_begin)(const uint32_t* regs, uint32_t seq);
     // optional, render thread, 60 fps (generated) (framegen.h; Vulkan: gfx/vulkan/reproj.cpp): the
-    // frame's camera (OP_FRAMEGEN_CAMERA payload), and a layout root about to be drawn into the colour
-    // target at `colorBase` (guest width x height) with the depth buffer at `depthBase` bound
-    // (OP_FRAMEGEN_LAYOUT). Only called while framegen::requested().
+    // frame's camera (OP_FRAMEGEN_CAMERA payload). Only called while framegen::requested().
     void (*framegen_camera)(const uint32_t* words, uint32_t n);
-    void (*framegen_layout)(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase);
+    // optional, render thread: a layout root about to be drawn into the colour target at `colorBase`
+    // (guest width x height) with the depth buffer at `depthBase` bound (OP_HUD_LAYOUT). The first one
+    // on the TV picture ends its scene: 60 fps (generated) copies it aside, FXAA smooths it there
+    // (fxaa_before_hud). Only called while hud_layout::marked() (hud_layout.h).
+    void (*hud_layout)(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase);
     // Optional: bracket ONLY P_BgPattern_00 DrawSelf. Duplicate its original GPU
     // draws into an isolated transparent backdrop; never redirect or alter the
     // original draw. Source target recognition and texture lifetime are backend-owned.
@@ -203,6 +205,13 @@ void set_horizon_haze(float haze);
 void scale_bloom_uniforms(void* remapped, size_t size);
 inline bool fxaa() { return g_backend->fxaa(); }
 inline void set_fxaa(bool v) { g_backend->set_fxaa(v); }
+// FXAA (#587): with it on, the TV picture's scene is smoothed at the first HUD layout drawn into it
+// (OP_HUD_LAYOUT, hud_layout.h), so the HUD and text stay sharp, and the window composition does not
+// smooth that picture again; a picture without a HUD layout (cutscenes, title 2D) is smoothed when
+// it is shown, as before. WWHD_FXAA_HUD=1 (read once): the old way, FXAA over the whole picture
+// when it is shown.
+bool fxaa_over_hud();
+inline bool fxaa_before_hud() { return g_backend && g_backend->fxaa && g_backend->fxaa() && !fxaa_over_hud(); }
 inline bool feature_available(Feature f) { return g_backend->feature_available(f); }
 inline std::string device() { return g_backend && g_backend->device ? g_backend->device() : std::string(); }
 

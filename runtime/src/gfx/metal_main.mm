@@ -371,6 +371,7 @@ void copy_to_scan(uint32_t cb, uint32_t target) {
     }
     if (!dynres::on() && !scr.scanSpares.empty()) scr.scanSpares.clear();
     scr.dyn = s->dyn;  // the layout uses the size at the full internal resolution
+    scr.smoothed = (target & 1) && s->smoothedFrame == R.frame;  // (FXAA before the HUD, display.mm hud_layout)
     id<MTLBlitCommandEncoder> b = [command_buffer() blitCommandEncoder];
     [b copyFromTexture:s->tex sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(0, 0, 0)
             sourceSize:MTLSizeMake(w, h, 1) toTexture:scr.tex destinationSlice:0 destinationLevel:0

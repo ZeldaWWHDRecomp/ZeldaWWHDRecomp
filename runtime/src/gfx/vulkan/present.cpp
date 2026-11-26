@@ -11,6 +11,7 @@
 // Shader presentation matches Metal's source-grid FXAA and scaling filters.
 #include "../../exception_report.h"
 #include "present.h"
+#include "fxaa_glsl.h"
 #include "present_trim.h"  // WWHD_VK_PRESENT_TRIM (gpusave A2, off by default)
 #include "stereo.h"
 #include "../hdr.h"
@@ -58,23 +59,7 @@ layout(set=0,binding=0) uniform sampler2D image;
 layout(location=0) in vec2 uv;
 layout(location=0) out vec4 result;
 layout(push_constant) uniform Params { int aa; int conv; float sharp; float foot; float alpha; float hdrWhite; float hdrPeak; float hdrExposure; float hdrHighlights; int pq; int hdrSdrCurve; float backdrop; } params;
-float luma(vec3 c) { return dot(c,vec3(0.299,0.587,0.114)); }
-vec3 fxaa(vec2 at) {
- vec2 rcp=1.0/vec2(textureSize(image,0));
- vec3 nw=texture(image,at+vec2(-1,-1)*rcp).rgb, ne=texture(image,at+vec2(1,-1)*rcp).rgb;
- vec3 sw=texture(image,at+vec2(-1,1)*rcp).rgb, se=texture(image,at+vec2(1,1)*rcp).rgb;
- vec3 m=texture(image,at).rgb;
- float lnw=luma(nw),lne=luma(ne),lsw=luma(sw),lse=luma(se),lm=luma(m);
- float lmin=min(lm,min(min(lnw,lne),min(lsw,lse))),lmax=max(lm,max(max(lnw,lne),max(lsw,lse)));
- if(lmax-lmin<max(0.0312,lmax*0.125))return m;
- vec2 dir=vec2(-((lnw+lne)-(lsw+lse)),(lnw+lsw)-(lne+lse));
- float reduce=max((lnw+lne+lsw+lse)*(0.25/8.0),1.0/128.0);
- dir=clamp(dir/(min(abs(dir.x),abs(dir.y))+reduce),vec2(-8.0),vec2(8.0))*rcp;
- vec3 a=0.5*(texture(image,at+dir*(1.0/3.0-0.5)).rgb+texture(image,at+dir*(2.0/3.0-0.5)).rgb);
- vec3 b=a*0.5+0.25*(texture(image,at-dir*0.5).rgb+texture(image,at+dir*0.5).rgb);
- float lb=luma(b);return (lb<lmin||lb>lmax)?a:b;
-}
-vec3 toLinear(vec3 c) {
+)glsl" WWHD_FXAA_GLSL R"glsl(vec3 toLinear(vec3 c) {
  return mix(pow((c+0.055)/1.055,vec3(2.4)),c/12.92,lessThanEqual(c,vec3(0.04045)));
 }
 vec3 toSrgb(vec3 c) {
@@ -591,7 +576,8 @@ void compose(VkImage image,VkImageView view,VkImageLayout& layout,VkExtent2D ext
    if(qfilter==2)qfilter=0;
    else if(qfilter==1)qscale=std::min(q.box.w/nominal_width(q.image),q.box.h/nominal_height(q.image));
   }
-  auto params=present_params(!q.backdrop&&fxaa&&linear,q.backdrop?0:qfilter,q.backdrop?1.f:qscale,sourceLinear,targetLinear);params.alpha=q.alpha;params.pad[0]=float(q.backdrop);
+  // (FXAA before the HUD, #587: a picture smoothed at its HUD point is not smoothed again)
+  auto params=present_params(!q.backdrop&&fxaa&&linear&&!q.image->smoothed,q.backdrop?0:qfilter,q.backdrop?1.f:qscale,sourceLinear,targetLinear);params.alpha=q.alpha;params.pad[0]=float(q.backdrop);
   if(hdrOutput) {
    const auto h=hdr::parameters();params.hdrWhite=h.paper;params.hdrPeak=h.peak;
    params.hdrExposure=h.exposure;params.hdrHighlights=h.highlights;

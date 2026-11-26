@@ -32,9 +32,11 @@ enum Skip : int {
 
 // OP_FRAMEGEN_CAMERA (framegen::kCameraWords words)
 void note_camera(const uint32_t* words, uint32_t n);
-// OP_FRAMEGEN_LAYOUT: a layout root about to be drawn into the colour target at colorBase (guest size),
-// with the depth buffer at depthBase bound. At the first one on the TV picture this frame the scene is
-// complete: it is copied aside, and its depth buffer noted.
+// OP_HUD_LAYOUT (hud_layout.h): a layout root about to be drawn into the colour target at colorBase (guest
+// size), with the depth buffer at depthBase bound. At the first one on the TV picture this frame the scene
+// is complete: FXAA smooths it (render::fxaa_before_hud, #587; the picture's Surface::smoothedFrame), and
+// with 60 fps (generated) it is copied aside, and its depth buffer noted. Also called while frame
+// generation is off (FXAA before the HUD).
 void layout(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase);
 
 // surfaces.cpp clear_depth_stencil, around a depth clear: the main depth buffer cleared again in a frame

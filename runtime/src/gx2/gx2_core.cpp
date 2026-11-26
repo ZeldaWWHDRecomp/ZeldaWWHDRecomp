@@ -1250,9 +1250,9 @@ static void execute_op(Op op, const uint32* p, uint32 n) {
     case OP_FRAMEGEN_CAMERA:
         if (render::g_backend->framegen_camera) render::g_backend->framegen_camera(p, n);
         break;
-    case OP_FRAMEGEN_LAYOUT:
-        if (render::g_backend->framegen_layout)
-            render::g_backend->framegen_layout(g_regs[mmCB_COLOR0_BASE], g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG],
+    case OP_HUD_LAYOUT:  // (60 fps (generated), FXAA before the HUD: hud_layout.h)
+        if (render::g_backend->hud_layout)
+            render::g_backend->hud_layout(g_regs[mmCB_COLOR0_BASE], g_regs[mmCB_COLOR0_TILE] & 0xFFFF, g_regs[mmCB_COLOR0_FRAG],
                                                g_regs[mmDB_DEPTH_BASE]);
         break;
 #ifdef WWHD_NATIVE_DRAW

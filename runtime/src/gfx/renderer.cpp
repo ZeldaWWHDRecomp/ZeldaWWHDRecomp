@@ -123,6 +123,16 @@ void scale_bloom_uniforms(void* remapped, size_t size) {
 
 const Backend* g_backend = nullptr;
 
+bool fxaa_over_hud() {
+    static const bool on = [] {
+        const char* e = std::getenv("WWHD_FXAA_HUD");
+        const bool v = e && *e && std::atoi(e) != 0;
+        if (v) LOG("[gfx] WWHD_FXAA_HUD=1: FXAA smooths the whole picture, the HUD too");
+        return v;
+    }();
+    return on;
+}
+
 // ---------------------------------------------------------------- platform backend (renderer_ext.h)
 namespace ext {
 namespace {

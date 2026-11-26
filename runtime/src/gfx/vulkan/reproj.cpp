@@ -7,7 +7,7 @@
 // movement search, the depth merge, the warped mesh and the HUD's coverage (hud_coverage.h). Fitted to
 // this renderer: their images, render passes and layouts are our Surfaces, dynamic-rendering passes
 // (pass.h) and tracked transitions; their window picture is our TV scan. The capture (framegen.cpp,
-// OP_FRAMEGEN_CAMERA / OP_FRAMEGEN_LAYOUT) and the present step (backend.cpp present_generated) are this
+// OP_FRAMEGEN_CAMERA / OP_HUD_LAYOUT) and the present step (backend.cpp present_generated) are this
 // port's own: their present side rode on a Lossless Scaling present thread, which is not part of this port.
 //
 // The in-between frame is the real one reprojected with the scene's depth to the camera moved on by
@@ -39,6 +39,9 @@
 #include "shaders.h"
 #include "stereo.h"
 #include "framegen.h"
+#include "fxaa_glsl.h"
+#include "gfx/renderer.h"
+#include "hud_layout.h"
 #include "runtime.h"
 
 #include <algorithm>
@@ -620,6 +623,15 @@ void main() {
 }
 )glsl";
 
+// FXAA before the HUD (#587, layout() smooth_scene): the TV picture's scene smoothed as the window
+// composition smooths a picture (fxaa_glsl.h), from a copy of it, back into it; alpha as it was
+const char* kFxaa = R"glsl(#version 450
+layout(set=0,binding=0) uniform sampler2D image;
+layout(location=0) in vec2 uv;
+layout(location=0) out vec4 result;
+)glsl" WWHD_FXAA_GLSL R"glsl(void main() { result = vec4(fxaa(uv), textureLod(image, uv, 0.0).a); }
+)glsl";
+
 struct Push { float r0[4], r1[4], r2[4], t[4], z[4], rect[4], a[4]; };
 static_assert(sizeof(Push) == 112, "push constants: 7 vec4");
 // every pass's push constants and samplers are visible to both stages (the mesh's vertex shader
@@ -647,6 +659,10 @@ struct State {
     // at the swap is one ahead of the picture, and the in-between frame came out 1.5 steps on.)
     Cam sceneCam, sceneCamPrev;
     uint64_t cameras = 0;
+    // the frame whose first layout on the TV picture was seen (layout(): once a frame)
+    uint64_t layoutFrame = ~0ull;
+    // FXAA before the HUD: the copy of the TV picture it smooths from
+    std::unique_ptr<Surface> fxaaSrc;
     // the TV picture before the HUD, and the scene's depth buffer, of this frame
     std::unique_ptr<Surface> scene;
     uint64_t sceneFrame = ~0ull;
@@ -809,7 +825,7 @@ const char* shader_name(const char* src) {
     return src == kWarp ? "the warp" : src == kHudMask ? "the HUD mask" : src == kGridFragment ? "the warped mesh" : src == kCompose ? "the composition"
          : src == kWarpCov ? "the warp with the HUD's coverage" : src == kFlow ? "the block movement" : src == kFilter ? "the movement filter"
          : src == kSelect ? "the movement choice" : src == kSpread ? "the movement spread" : src == kDepthMerge ? "the depth merge"
-         : src == kQuarter ? "the quarter-size scene" : "?";
+         : src == kQuarter ? "the quarter-size scene" : src == kFxaa ? "FXAA before the HUD" : "?";
 }
 
 // the pipeline of fragment shader `src` drawing into `format`: a full-screen triangle (kVertex), or with
@@ -1140,16 +1156,42 @@ void note_camera(const uint32_t* words, uint32_t n) {
     }
 }
 
-// render thread (OP_FRAMEGEN_LAYOUT): a layout is about to be drawn into the target bound now. At the
-// first one on the TV picture this frame, the scene is complete: copy it aside, and note its depth buffer.
-void layout(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase) {
-    if (S.sceneFrame == R.frame || stereo::frame.mode != stereo::Off) return;
+namespace {
+// FXAA before the HUD (#587, render::fxaa_before_hud): the TV picture `color`, its scene complete, smoothed
+// in place (copied aside, FXAA back into it) before the first HUD layout draws; the open pass ends here and
+// the HUD's draws start a new one. Marks the picture (Surface::smoothedFrame): its scan is not smoothed again
+// when shown (present.cpp). Not with stereo 3D (each eye's picture; FXAA stays at the present).
+void smooth_scene(Surface* color) {
+    if (!color->linearFiltering || !(color->usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) || !make_layout()) return;
+    if (!ensure_image(S.fxaaSrc, color->format, color->fmt, color->extent.width, color->extent.height,
+                      VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+        return;
+    const VkPipeline pipe = pipeline_for(kFxaa, color->fmt.pixel);
+    if (!pipe) return;
+    transition_image(color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_READ_BIT);
+    transition_image(S.fxaaSrc.get(), VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+    VkImageCopy r{};
+    r.srcSubresource = r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+    r.extent = {color->extent.width, color->extent.height, 1};
+    record::vkCmdCopyImage(command_buffer(), color->image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, S.fxaaSrc->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &r);
+    mark_gpu_written(S.fxaaSrc.get());
+    const Input in[] = {{S.fxaaSrc.get(), S.linear}};
+    run_pass(*color, pipe, in, 1, Push{});
+    color->smoothedFrame = R.frame;
+    static int logged = 0;
+    if (logged < 2) {
+        logged++;
+        LOG("[gfx] FXAA before the HUD: TV picture %08X %ux%u (%ux%u) format %d", color->addr, color->width, color->height,
+            color->extent.width, color->extent.height, int(color->fmt.pixel));
+    }
+}
+
+// 60 fps (generated): the scene of this frame (the TV picture `color` at its first layout) copied aside
+void scene_copy(Surface* color, uint32_t width, uint32_t height, uint32_t depthBase) {
+    if (S.sceneFrame == R.frame) return;
     // (no copy while another 60 fps mode or fast forward runs: no in-between frame follows)
     if (S.cur.valid && S.cur.frame == R.frame && (S.cur.flags & (framegen::kInterp | framegen::kFastForward))) return;
-    // the TV picture: 16:9 at the console's size (the GamePad's 854x480 family is not it)
-    if (height < 360 || height == 480 || std::abs((float)width * 9.0f / ((float)height * 16.0f) - 1.0f) > 0.03f) return;
-    Surface* color = find_surface(colorBase, width, height, false);
-    if (!color || color->fmt.depth || color->fmt.kind != FormatInfo::FLOAT) return;
     S.sceneFrame = R.frame;
     if (!ensure_image(S.scene, color->format, color->fmt, color->extent.width, color->extent.height,
                       VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT)) {
@@ -1188,6 +1230,21 @@ void layout(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthB
         LOG("[framegen] scene %08X %ux%u (%ux%u) format %d, depth %08X format %d", color->addr, width, height, color->extent.width,
             color->extent.height, int(color->fmt.pixel), S.depthAddr, d && S.depthAddr ? int(d->fmt.pixel) : 0);
     }
+}
+}  // namespace
+
+// render thread (OP_HUD_LAYOUT, hud_layout.h): a layout is about to be drawn into the target bound now. At
+// the first one on the TV picture this frame the scene is complete: FXAA smooths it (fxaa_before_hud), and
+// 60 fps (generated) copies it aside and notes its depth buffer.
+void layout(uint32_t colorBase, uint32_t width, uint32_t height, uint32_t depthBase) {
+    if (S.layoutFrame == R.frame || stereo::frame.mode != stereo::Off) return;
+    // the TV picture: 16:9 at the console's size (the GamePad's 854x480 family is not it)
+    if (!hud_layout::tv_picture(width, height)) return;
+    Surface* color = find_surface(colorBase, width, height, false);
+    if (!color || color->fmt.depth || color->fmt.kind != FormatInfo::FLOAT) return;
+    S.layoutFrame = R.frame;
+    if (render::fxaa_before_hud()) smooth_scene(color);  // (before the copy: the in-between frame's scene is smoothed too)
+    if (framegen::requested()) scene_copy(color, width, height, depthBase);
 }
 
 int64_t real_presented(bool shown, int64_t now) {
@@ -1398,6 +1455,7 @@ Surface* generate(Surface* scan, Skip skip) {
         return nullptr;
     }
     S.gen->dyn = scan->dyn;  // (the size the picture stands for: as the real scan's)
+    S.gen->smoothed = scan->smoothed;  // (FXAA before the HUD: made from a smoothed picture, not smoothed again)
     S.generated++;
     S.totalGenerated++;
     if (byMesh) S.mesh++, S.totalMesh++;

@@ -43,6 +43,7 @@ void log_msg(const char* fmt, ...) {
     if (std::strstr(fmt,"key captions unavailable")) ++missing_caption_logs;
 }
 namespace framegen { bool requested() { return false; } }  // 60 fps (generated): off in this test
+namespace hud_layout { bool marked() { return false; } }  // (no layout marker in this test)
 namespace gx2 {
 bool recording = false;
 std::vector<std::vector<uint32_t>> layoutCommands;
